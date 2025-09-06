@@ -1,0 +1,16 @@
+[package]
+name = "p3-trace-generator"
+description.workspace = true
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+p3-field = { git = "https://github.com/Plonky3/Plonky3", version = "0.3.0" }
+p3-baby-bear = { git = "https://github.com/Plonky3/Plonky3", version = "0.3.0" }
+serde = { version = "1.0", default-features = false, features = ["derive", "alloc"] }
+hashbrown = "0.16.0"
