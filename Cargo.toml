@@ -15,6 +15,7 @@ members = [
     "fri-air",
     "interpolation-air",
     "merkle-tree-air",
+    "prover",
     "recursion",
     "trace-generator",
     "symmetric-air",
