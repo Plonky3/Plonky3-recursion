@@ -3,6 +3,8 @@ use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
 use p3_matrix::{dense::RowMajorMatrix, Matrix};
 use p3_trace_generator::tables::MulTrace;
 
+use super::utils::pad_to_power_of_two;
+
 /// AIR for proving multiplication operations: lhs * rhs = result
 ///
 /// Column layout (main trace):
@@ -84,6 +86,9 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> MulAir<F, D> {
             values.push(F::from_u64(trace.result_index[i] as u64));
         }
 
+        // Pad to power of two by repeating last row
+        pad_to_power_of_two(&mut values, width, height);
+
         RowMajorMatrix::new(values, width)
     }
 
@@ -123,6 +128,9 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> MulAir<F, D> {
             values.push(result_coeffs[0]); // const term
             values.push(F::from_u64(trace.result_index[i] as u64));
         }
+
+        // Pad to power of two by repeating last row
+        pad_to_power_of_two(&mut values, width, height);
 
         RowMajorMatrix::new(values, width)
     }

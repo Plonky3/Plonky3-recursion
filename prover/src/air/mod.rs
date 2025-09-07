@@ -3,6 +3,7 @@ pub mod const_air;
 pub mod mul_air;
 pub mod public_air;
 pub mod sub_air;
+pub mod utils;
 pub mod witness_air;
 
 #[cfg(test)]

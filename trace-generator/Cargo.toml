@@ -10,7 +10,7 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
-p3-field = { git = "https://github.com/Plonky3/Plonky3", version = "0.3.0" }
-p3-baby-bear = { git = "https://github.com/Plonky3/Plonky3", version = "0.3.0" }
-serde = { version = "1.0", default-features = false, features = ["derive", "alloc"] }
+p3-field.workspace = true
+p3-baby-bear.workspace = true
+serde.workspace = true
 hashbrown = "0.16.0"
