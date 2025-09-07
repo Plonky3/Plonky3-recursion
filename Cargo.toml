@@ -23,12 +23,31 @@ members = [
 
 [workspace.dependencies]
 
+# Plonky3 dependencies - shared across all crates
+p3-air = { git = "https://github.com/Plonky3/Plonky3", version = "0.3.0" }
+p3-baby-bear = { git = "https://github.com/Plonky3/Plonky3", version = "0.3.0" }
+p3-challenger = { git = "https://github.com/Plonky3/Plonky3", version = "0.3.0" }
+p3-circle = { git = "https://github.com/Plonky3/Plonky3", version = "0.3.0" }
+p3-commit = { git = "https://github.com/Plonky3/Plonky3", version = "0.3.0" }
+p3-dft = { git = "https://github.com/Plonky3/Plonky3", version = "0.3.0" }
+p3-field = { git = "https://github.com/Plonky3/Plonky3", version = "0.3.0" }
+p3-fri = { git = "https://github.com/Plonky3/Plonky3", version = "0.3.0" }
+p3-matrix = { git = "https://github.com/Plonky3/Plonky3", version = "0.3.0" }
+p3-merkle-tree = { git = "https://github.com/Plonky3/Plonky3", version = "0.3.0" }
+p3-symmetric = { git = "https://github.com/Plonky3/Plonky3", version = "0.3.0" }
+p3-uni-stark = { git = "https://github.com/Plonky3/Plonky3", version = "0.3.0" }
+
+# Other common dependencies
+rand = "0.9.2"
+serde = { version = "1.0", default-features = false, features = ["derive", "alloc"] }
+
 # Local dependencies
 p3-challenger-air = { path = "challenger-air", version = "0.1.0" }
 p3-field-air = { path = "field-air", version = "0.1.0" }
 p3-fri-air = { path = "fri-air", version = "0.1.0" }
 p3-interpolation-air = { path = "interpolation-air", version = "0.1.0" }
 p3-merkle-tree-air = { path = "merkle-tree-air", version = "0.1.0" }
+p3-prover = { path = "prover", version = "0.1.0" }
 p3-recursion = { path = "recursion", version = "0.1.0" }
 p3-trace-generator = { path = "trace-generator", version = "0.1.0" }
 p3-symmetric-air = { path = "symmetric-air", version = "0.1.0" }
