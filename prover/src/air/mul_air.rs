@@ -91,49 +91,6 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> MulAir<F, D> {
 
         RowMajorMatrix::new(values, width)
     }
-
-    /// Convert extension field trace to a base-field matrix by extracting the constant term.
-    ///
-    /// This is only sound when the extension elements are *lifts* of base elements
-    /// (i.e., all higher coefficients are zero). We debug-assert that invariant here.
-    pub fn ext_trace_to_base_matrix<ExtF: BasedVectorSpace<F>>(
-        trace: &MulTrace<ExtF>,
-    ) -> RowMajorMatrix<F> {
-        let height = trace.lhs_values.len();
-        let width = 6; // [lhs_value, lhs_index, rhs_value, rhs_index, result_value, result_index]
-        let mut values = Vec::with_capacity(height * width);
-
-        for i in 0..height {
-            let lhs_coeffs = trace.lhs_values[i].as_basis_coefficients_slice();
-            let rhs_coeffs = trace.rhs_values[i].as_basis_coefficients_slice();
-            let result_coeffs = trace.result_values[i].as_basis_coefficients_slice();
-
-            debug_assert!(
-                lhs_coeffs.iter().skip(1).all(|&x| x.is_zero()),
-                "lhs is not a base lift"
-            );
-            debug_assert!(
-                rhs_coeffs.iter().skip(1).all(|&x| x.is_zero()),
-                "rhs is not a base lift"
-            );
-            debug_assert!(
-                result_coeffs.iter().skip(1).all(|&x| x.is_zero()),
-                "result is not a base lift"
-            );
-
-            values.push(lhs_coeffs[0]); // const term
-            values.push(F::from_u64(trace.lhs_index[i] as u64));
-            values.push(rhs_coeffs[0]); // const term
-            values.push(F::from_u64(trace.rhs_index[i] as u64));
-            values.push(result_coeffs[0]); // const term
-            values.push(F::from_u64(trace.result_index[i] as u64));
-        }
-
-        // Pad to power of two by repeating last row
-        pad_to_power_of_two(&mut values, width, height);
-
-        RowMajorMatrix::new(values, width)
-    }
 }
 
 impl<F: Field, const D: usize> BaseAir<F> for MulAir<F, D> {

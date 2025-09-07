@@ -1,6 +1,7 @@
 use p3_air::{Air, AirBuilder, BaseAir};
-use p3_field::{Field, PrimeCharacteristicRing};
+use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
 use p3_matrix::{dense::RowMajorMatrix, Matrix};
+use p3_trace_generator::tables::WitnessTrace;
 
 use super::utils::pad_witness_to_power_of_two;
 
@@ -23,29 +24,35 @@ impl<F: Field, const D: usize> WitnessAir<F, D> {
         }
     }
 
-    /// Build a matrix from limb values and indices (already flattened to base field limbs).
-    /// values_lims: row-major [value[0..D-1]] limbs per row
-    pub fn trace_to_matrix(values_limbs: &[F], indices: &[u32]) -> RowMajorMatrix<F> {
-        let height = indices.len();
+    /// Convert WitnessTrace to RowMajorMatrix for proving with generic extension degree D
+    /// Layout: [value[0..D-1], index]
+    pub fn trace_to_matrix<ExtF: BasedVectorSpace<F>>(trace: &WitnessTrace<ExtF>) -> RowMajorMatrix<F> {
+        let height = trace.values.len();
         assert_eq!(
-            values_limbs.len(),
-            height * D,
-            "values_limbs must be height*D"
+            height,
+            trace.index.len(),
+            "WitnessTrace column length mismatch"
         );
         let width = D + 1;
-        let mut v = Vec::with_capacity(height * width);
+
+        let mut values = Vec::with_capacity(height * width);
         for i in 0..height {
-            let base = i * D;
+            let coeffs = trace.values[i].as_basis_coefficients_slice();
+            assert_eq!(
+                coeffs.len(),
+                D,
+                "Extension field degree mismatch for witness value"
+            );
             for j in 0..D {
-                v.push(values_limbs[base + j]);
+                values.push(coeffs[j]);
             }
-            v.push(F::from_u64(indices[i] as u64));
+            values.push(F::from_u64(trace.index[i] as u64));
         }
 
         // Pad to power of two with monotonic index continuation
-        pad_witness_to_power_of_two(&mut v, width, height);
+        pad_witness_to_power_of_two(&mut values, width, height);
 
-        RowMajorMatrix::new(v, width)
+        RowMajorMatrix::new(values, width)
     }
 }
 
@@ -96,7 +103,9 @@ mod tests {
         // Use D=1; values can be arbitrary (unused by constraints)
         let values: Vec<Val> = vec![Val::from_u64(123); n];
         let indices: Vec<u32> = (0..n as u32).collect();
-        let matrix = WitnessAir::<Val, 1>::trace_to_matrix(&values, &indices);
+        
+        let trace = WitnessTrace { values, index: indices };
+        let matrix = WitnessAir::<Val, 1>::trace_to_matrix(&trace);
         assert_eq!(matrix.height(), n);
         assert_eq!(matrix.width(), 2);
 
