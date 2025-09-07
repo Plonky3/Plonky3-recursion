@@ -115,7 +115,7 @@ mod tests {
     use super::*;
     use crate::air::test_utils::build_test_config;
     use p3_baby_bear::BabyBear as Val;
-    use p3_field::{extension::BinomialExtensionField, BasedVectorSpace, Field};
+    use p3_field::{extension::BinomialExtensionField, BasedVectorSpace};
     use p3_matrix::dense::RowMajorMatrix;
     use p3_trace_generator::tables::AddTrace;
     use p3_uni_stark::{prove, verify};

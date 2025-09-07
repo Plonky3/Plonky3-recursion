@@ -1,3 +1,48 @@
-// TODO: Implement ConstAir properly
+use p3_air::{Air, AirBuilder, BaseAir};
+use p3_field::{BasedVectorSpace, Field};
+use p3_matrix::dense::RowMajorMatrix;
+use p3_trace_generator::tables::ConstTrace;
 
-pub struct ConstAir;
+/// ConstAir: vector-valued constant binding with generic extension degree D.
+/// Layout per row: [value[0..D-1], index] → width = D + 1
+#[derive(Debug, Clone)]
+pub struct ConstAir<F, const D: usize = 1> {
+    pub height: usize,
+    _phantom: core::marker::PhantomData<F>,
+}
+
+impl<F: Field, const D: usize> ConstAir<F, D> {
+    pub fn new(height: usize) -> Self {
+        Self { height, _phantom: core::marker::PhantomData }
+    }
+
+    /// Flatten a ConstTrace over an extension into a base-field matrix with D limbs + index.
+    pub fn trace_to_matrix<ExtF: BasedVectorSpace<F>>(trace: &ConstTrace<ExtF>) -> RowMajorMatrix<F> {
+        let height = trace.values.len();
+        assert_eq!(height, trace.index.len(), "ConstTrace column length mismatch");
+        let width = D + 1;
+
+        let mut values = Vec::with_capacity(height * width);
+        for i in 0..height {
+            let coeffs = trace.values[i].as_basis_coefficients_slice();
+            assert_eq!(coeffs.len(), D, "extension degree mismatch for ConstTrace value");
+            for j in 0..D { values.push(coeffs[j]); }
+            values.push(F::from_u64(trace.index[i] as u64));
+        }
+
+        RowMajorMatrix::new(values, width)
+    }
+}
+
+impl<F: Field, const D: usize> BaseAir<F> for ConstAir<F, D> {
+    fn width(&self) -> usize { D + 1 }
+}
+
+impl<AB: AirBuilder, const D: usize> Air<AB> for ConstAir<AB::F, D>
+where
+    AB::F: Field,
+{
+    fn eval(&self, _builder: &mut AB) {
+        // No constraints for constants in Stage 1
+    }
+}
