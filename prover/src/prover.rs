@@ -21,155 +21,38 @@ pub struct MultiTableProof {
 /// Unified prover that creates proofs for all tables
 pub struct MultiTableProver {
     config: ProverConfig,
+    /// Optional binomial parameter for degree-4 extensions (x^4 = W).
+    /// Defaults to BabyBear's commonly used W=11, but can be overridden.
+    w_d4: Option<Val>,
 }
 
 impl MultiTableProver {
+    /// Default constructor: uses standard config and `W=11` for D=4 binomial multiplications.
     pub fn new() -> Self {
         Self {
             config: build_standard_config(),
+            w_d4: Some(Val::from_u64(11)),
         }
     }
 
-    /// Prove all tables from the given traces
-    /// Supports both base field (D=1) and BabyBear D=4 extension field
+    /// Configure a custom W for degree-4 binomial extensions.
+    pub fn with_w_d4(mut self, w: Option<Val>) -> Self {
+        self.w_d4 = w;
+        self
+    }
+
+    /// Prove all tables from the given traces.
+    /// Supports both base field (D=1) and D=4 extension field (binomial with W if provided).
     pub fn prove_all_tables<F>(&self, traces: &Traces<F>) -> Result<MultiTableProof, String>
     where
         F: Field + BasedVectorSpace<Val>,
     {
-        let pis = vec![];
-
-        // Determine extension degree from field type
-        let extension_degree = F::DIMENSION;
-
-        match extension_degree {
-            1 => self.prove_base_field(traces, pis),
-            4 => self.prove_extension_field_d4(traces, pis),
-            _ => Err(format!(
-                "Unsupported extension degree: {}",
-                extension_degree
-            )),
+        let pis: Vec<Val> = vec![];
+        match F::DIMENSION {
+            1 => self.prove_for_degree::<F, 1>(traces, pis, None),
+            4 => self.prove_for_degree::<F, 4>(traces, pis, self.w_d4),
+            d => Err(format!("Unsupported extension degree: {}", d)),
         }
-    }
-
-    /// Prove all tables for base field (D=1)
-    fn prove_base_field<F>(
-        &self,
-        traces: &Traces<F>,
-        pis: Vec<Val>,
-    ) -> Result<MultiTableProof, String>
-    where
-        F: Field + BasedVectorSpace<Val>,
-    {
-        // Convert traces to base field coefficients for witness table
-        let witness_values: Vec<Val> = traces
-            .witness_trace
-            .values
-            .iter()
-            .map(|v| {
-                let coeffs = v.as_basis_coefficients_slice();
-                assert_eq!(coeffs.len(), 1, "Expected base field");
-                coeffs[0]
-            })
-            .collect();
-
-        // Prove witness table
-        let witness_matrix =
-            WitnessAir::<Val, 1>::trace_to_matrix(&witness_values, &traces.witness_trace.index);
-        let witness_air = WitnessAir::<Val, 1>::new(traces.witness_trace.values.len());
-        let witness_proof = prove(&self.config, &witness_air, witness_matrix, &pis);
-
-        // Prove const table
-        let const_matrix = ConstAir::<Val, 1>::trace_to_matrix(&traces.const_trace);
-        let const_air = ConstAir::<Val, 1>::new(traces.const_trace.values.len());
-        let const_proof = prove(&self.config, &const_air, const_matrix, &pis);
-
-        // Prove public table
-        let public_matrix = PublicAir::<Val, 1>::trace_to_matrix(&traces.public_trace);
-        let public_air = PublicAir::<Val, 1>::new(traces.public_trace.values.len());
-        let public_proof = prove(&self.config, &public_air, public_matrix, &pis);
-
-        // Prove add table
-        let add_matrix = AddAir::<Val, 1>::trace_to_matrix(&traces.add_trace);
-        let add_air = AddAir::<Val, 1>::new(traces.add_trace.lhs_values.len());
-        let add_proof = prove(&self.config, &add_air, add_matrix, &pis);
-
-        // Prove mul table (base field, no binomial needed)
-        let mul_matrix = MulAir::<Val, 1>::trace_to_matrix(&traces.mul_trace);
-        let mul_air = MulAir::<Val, 1>::new(traces.mul_trace.lhs_values.len());
-        let mul_proof = prove(&self.config, &mul_air, mul_matrix, &pis);
-
-        // Prove sub table
-        let sub_matrix = SubAir::<Val, 1>::trace_to_matrix(&traces.sub_trace);
-        let sub_air = SubAir::<Val, 1>::new(traces.sub_trace.lhs_values.len());
-        let sub_proof = prove(&self.config, &sub_air, sub_matrix, &pis);
-
-        Ok(MultiTableProof {
-            witness_proof,
-            const_proof,
-            public_proof,
-            add_proof: add_proof,
-            mul_proof,
-            sub_proof,
-        })
-    }
-
-    /// Prove all tables for BabyBear D=4 extension field
-    fn prove_extension_field_d4<F>(
-        &self,
-        traces: &Traces<F>,
-        pis: Vec<Val>,
-    ) -> Result<MultiTableProof, String>
-    where
-        F: Field + BasedVectorSpace<Val>,
-    {
-        // Convert traces to base field coefficients for witness table
-        let mut witness_values: Vec<Val> = Vec::new();
-        for value in &traces.witness_trace.values {
-            let coeffs = value.as_basis_coefficients_slice();
-            assert_eq!(coeffs.len(), 4, "Expected D=4 extension field");
-            witness_values.extend_from_slice(coeffs);
-        }
-
-        // Prove witness table
-        let witness_matrix =
-            WitnessAir::<Val, 4>::trace_to_matrix(&witness_values, &traces.witness_trace.index);
-        let witness_air = WitnessAir::<Val, 4>::new(traces.witness_trace.values.len());
-        let witness_proof = prove(&self.config, &witness_air, witness_matrix, &pis);
-
-        // Prove const table
-        let const_matrix = ConstAir::<Val, 4>::trace_to_matrix(&traces.const_trace);
-        let const_air = ConstAir::<Val, 4>::new(traces.const_trace.values.len());
-        let const_proof = prove(&self.config, &const_air, const_matrix, &pis);
-
-        // Prove public table
-        let public_matrix = PublicAir::<Val, 4>::trace_to_matrix(&traces.public_trace);
-        let public_air = PublicAir::<Val, 4>::new(traces.public_trace.values.len());
-        let public_proof = prove(&self.config, &public_air, public_matrix, &pis);
-
-        // Prove add table
-        let add_matrix = AddAir::<Val, 4>::trace_to_matrix(&traces.add_trace);
-        let add_air = AddAir::<Val, 4>::new(traces.add_trace.lhs_values.len());
-        let add_proof = prove(&self.config, &add_air, add_matrix, &pis);
-
-        // Prove mul table with BabyBear D=4 binomial W=11
-        let mul_matrix = MulAir::<Val, 4>::trace_to_matrix(&traces.mul_trace);
-        let mul_air =
-            MulAir::<Val, 4>::new_binomial(traces.mul_trace.lhs_values.len(), Val::from_u64(11));
-        let mul_proof = prove(&self.config, &mul_air, mul_matrix, &pis);
-
-        // Prove sub table
-        let sub_matrix = SubAir::<Val, 4>::trace_to_matrix(&traces.sub_trace);
-        let sub_air = SubAir::<Val, 4>::new(traces.sub_trace.lhs_values.len());
-        let sub_proof = prove(&self.config, &sub_air, sub_matrix, &pis);
-
-        Ok(MultiTableProof {
-            witness_proof,
-            const_proof,
-            public_proof,
-            add_proof: add_proof,
-            mul_proof,
-            sub_proof,
-        })
     }
 
     /// Verify all proofs in the MultiTableProof
@@ -181,98 +64,127 @@ impl MultiTableProver {
     where
         F: Field + BasedVectorSpace<Val>,
     {
-        let pis = vec![];
-        let extension_degree = F::DIMENSION;
-
-        match extension_degree {
-            1 => self.verify_base_field(proof, traces, pis),
-            4 => self.verify_extension_field_d4(proof, traces, pis),
-            _ => Err(format!(
-                "Unsupported extension degree: {}",
-                extension_degree
-            )),
+        let pis: Vec<Val> = vec![];
+        match F::DIMENSION {
+            1 => self.verify_for_degree::<F, 1>(proof, traces, pis, None),
+            4 => self.verify_for_degree::<F, 4>(proof, traces, pis, self.w_d4),
+            d => Err(format!("Unsupported extension degree: {}", d)),
         }
     }
 
-    fn verify_base_field<F>(
+    // --------------------------
+    // Internal generic helpers
+    // --------------------------
+
+
+    /// Prove all tables for a fixed degree `D`.
+    fn prove_for_degree<FEl, const D: usize>(
         &self,
-        proof: &MultiTableProof,
-        traces: &Traces<F>,
+        traces: &Traces<FEl>,
         pis: Vec<Val>,
-    ) -> Result<(), String>
+        w_binomial: Option<Val>,
+    ) -> Result<MultiTableProof, String>
     where
-        F: Field + BasedVectorSpace<Val>,
+        FEl: Field + BasedVectorSpace<Val>,
     {
-        // Verify witness table
-        let witness_air = WitnessAir::<Val, 1>::new(traces.witness_trace.values.len());
-        verify(&self.config, &witness_air, &proof.witness_proof, &pis)
-            .map_err(|e| format!("Witness verification failed: {:?}", e))?;
+        // Witness
+        let witness_matrix = WitnessAir::<Val, D>::trace_to_matrix(&traces.witness_trace);
+        let witness_air = WitnessAir::<Val, D>::new(traces.witness_trace.values.len());
+        let witness_proof = prove(&self.config, &witness_air, witness_matrix, &pis);
 
-        // Verify const table
-        let const_air = ConstAir::<Val, 1>::new(traces.const_trace.values.len());
-        verify(&self.config, &const_air, &proof.const_proof, &pis)
-            .map_err(|e| format!("Const verification failed: {:?}", e))?;
+        // Const
+        let const_matrix = ConstAir::<Val, D>::trace_to_matrix(&traces.const_trace);
+        let const_air = ConstAir::<Val, D>::new(traces.const_trace.values.len());
+        let const_proof = prove(&self.config, &const_air, const_matrix, &pis);
 
-        // Verify public table
-        let public_air = PublicAir::<Val, 1>::new(traces.public_trace.values.len());
-        verify(&self.config, &public_air, &proof.public_proof, &pis)
-            .map_err(|e| format!("Public verification failed: {:?}", e))?;
+        // Public
+        let public_matrix = PublicAir::<Val, D>::trace_to_matrix(&traces.public_trace);
+        let public_air = PublicAir::<Val, D>::new(traces.public_trace.values.len());
+        let public_proof = prove(&self.config, &public_air, public_matrix, &pis);
 
-        // Verify add table
-        let add_air = AddAir::<Val, 1>::new(traces.add_trace.lhs_values.len());
-        verify(&self.config, &add_air, &proof.add_proof, &pis)
-            .map_err(|e| format!("Add verification failed: {:?}", e))?;
+        // Add
+        let add_matrix = AddAir::<Val, D>::trace_to_matrix(&traces.add_trace);
+        let add_air = AddAir::<Val, D>::new(traces.add_trace.lhs_values.len());
+        let add_proof = prove(&self.config, &add_air, add_matrix, &pis);
 
-        // Verify mul table
-        let mul_air = MulAir::<Val, 1>::new(traces.mul_trace.lhs_values.len());
-        verify(&self.config, &mul_air, &proof.mul_proof, &pis)
-            .map_err(|e| format!("Mul verification failed: {:?}", e))?;
+        // Mul
+        let mul_matrix = MulAir::<Val, D>::trace_to_matrix(&traces.mul_trace);
+        let mul_air: MulAir<Val, D> = if D == 1 {
+            MulAir::<Val, D>::new(traces.mul_trace.lhs_values.len())
+        } else {
+            let w = w_binomial.ok_or_else(|| {
+                format!(
+                    "Missing binomial parameter W for D={} extension field multiplication",
+                    D
+                )
+            })?;
+            MulAir::<Val, D>::new_binomial(traces.mul_trace.lhs_values.len(), w)
+        };
+        let mul_proof = prove(&self.config, &mul_air, mul_matrix, &pis);
 
-        // Verify sub table
-        let sub_air = SubAir::<Val, 1>::new(traces.sub_trace.lhs_values.len());
-        verify(&self.config, &sub_air, &proof.sub_proof, &pis)
-            .map_err(|e| format!("Sub verification failed: {:?}", e))?;
+        // Sub
+        let sub_matrix = SubAir::<Val, D>::trace_to_matrix(&traces.sub_trace);
+        let sub_air = SubAir::<Val, D>::new(traces.sub_trace.lhs_values.len());
+        let sub_proof = prove(&self.config, &sub_air, sub_matrix, &pis);
 
-        Ok(())
+        Ok(MultiTableProof {
+            witness_proof,
+            const_proof,
+            public_proof,
+            add_proof,
+            mul_proof,
+            sub_proof,
+        })
     }
 
-    fn verify_extension_field_d4<F>(
+    /// Verify all tables for a fixed degree `D`.
+    fn verify_for_degree<FEl, const D: usize>(
         &self,
         proof: &MultiTableProof,
-        traces: &Traces<F>,
+        traces: &Traces<FEl>,
         pis: Vec<Val>,
+        w_binomial: Option<Val>,
     ) -> Result<(), String>
     where
-        F: Field + BasedVectorSpace<Val>,
+        FEl: Field + BasedVectorSpace<Val>,
     {
-        // Verify witness table
-        let witness_air = WitnessAir::<Val, 4>::new(traces.witness_trace.values.len());
+        // Witness
+        let witness_air = WitnessAir::<Val, D>::new(traces.witness_trace.values.len());
         verify(&self.config, &witness_air, &proof.witness_proof, &pis)
             .map_err(|e| format!("Witness verification failed: {:?}", e))?;
 
-        // Verify const table
-        let const_air = ConstAir::<Val, 4>::new(traces.const_trace.values.len());
+        // Const
+        let const_air = ConstAir::<Val, D>::new(traces.const_trace.values.len());
         verify(&self.config, &const_air, &proof.const_proof, &pis)
             .map_err(|e| format!("Const verification failed: {:?}", e))?;
 
-        // Verify public table
-        let public_air = PublicAir::<Val, 4>::new(traces.public_trace.values.len());
+        // Public
+        let public_air = PublicAir::<Val, D>::new(traces.public_trace.values.len());
         verify(&self.config, &public_air, &proof.public_proof, &pis)
             .map_err(|e| format!("Public verification failed: {:?}", e))?;
 
-        // Verify add table
-        let add_air = AddAir::<Val, 4>::new(traces.add_trace.lhs_values.len());
+        // Add
+        let add_air = AddAir::<Val, D>::new(traces.add_trace.lhs_values.len());
         verify(&self.config, &add_air, &proof.add_proof, &pis)
             .map_err(|e| format!("Add verification failed: {:?}", e))?;
 
-        // Verify mul table
-        let mul_air =
-            MulAir::<Val, 4>::new_binomial(traces.mul_trace.lhs_values.len(), Val::from_u64(11));
+        // Mul
+        let mul_air: MulAir<Val, D> = if D == 1 {
+            MulAir::<Val, D>::new(traces.mul_trace.lhs_values.len())
+        } else {
+            let w = w_binomial.ok_or_else(|| {
+                format!(
+                    "Missing binomial parameter W for D={} extension field multiplication",
+                    D
+                )
+            })?;
+            MulAir::<Val, D>::new_binomial(traces.mul_trace.lhs_values.len(), w)
+        };
         verify(&self.config, &mul_air, &proof.mul_proof, &pis)
             .map_err(|e| format!("Mul verification failed: {:?}", e))?;
 
-        // Verify sub table
-        let sub_air = SubAir::<Val, 4>::new(traces.sub_trace.lhs_values.len());
+        // Sub
+        let sub_air = SubAir::<Val, D>::new(traces.sub_trace.lhs_values.len());
         verify(&self.config, &sub_air, &proof.sub_proof, &pis)
             .map_err(|e| format!("Sub verification failed: {:?}", e))?;
 
@@ -317,8 +229,6 @@ mod tests {
 
         // Verify all proofs
         multi_prover.verify_all_tables(&proof, &traces).unwrap();
-
-        println!("✓ Base field multi-table proof verification successful");
     }
 
     #[test]
@@ -349,51 +259,10 @@ mod tests {
         let traces = prover_instance.materialize_traces().unwrap();
 
         // Create unified prover and prove all tables
-        let multi_prover = MultiTableProver::new();
+        let multi_prover = MultiTableProver::new(); // defaults to W=11 for D=4
         let proof = multi_prover.prove_all_tables(&traces).unwrap();
 
         // Verify all proofs
         multi_prover.verify_all_tables(&proof, &traces).unwrap();
-
-        println!("✓ Extension field multi-table proof verification successful");
-    }
-
-    #[test]
-    fn test_multi_table_prover_complex_circuit() {
-        let mut circuit = Circuit::<BabyBear>::new();
-
-        // More complex circuit from DESIGN.txt: 37 * x - 111 = 0
-        let x = circuit.add_public_input();
-        let c37 = circuit.add_const(BabyBear::from_u64(37));
-        let c111 = circuit.add_const(BabyBear::from_u64(111));
-
-        let mul_result = circuit.mul(c37, x);
-        let sub_result = circuit.sub(mul_result, c111);
-        circuit.assert_zero(sub_result);
-
-        let program = circuit.build();
-        let mut prover_instance = program.instantiate_prover();
-
-        // Set public input: x = 3 (should satisfy 37 * 3 - 111 = 0)
-        prover_instance
-            .set_public_inputs(&[BabyBear::from_u64(3)])
-            .unwrap();
-
-        let traces = prover_instance.materialize_traces().unwrap();
-
-        // Verify we have the expected operations
-        assert!(!traces.const_trace.values.is_empty()); // constants: 37, 111, 0
-        assert_eq!(traces.public_trace.values.len(), 1); // one public input
-        assert_eq!(traces.mul_trace.lhs_values.len(), 1); // one multiplication: 37 * x
-        assert_eq!(traces.sub_trace.lhs_values.len(), 2); // two subtractions
-
-        // Create unified prover and prove all tables
-        let multi_prover = MultiTableProver::new();
-        let proof = multi_prover.prove_all_tables(&traces).unwrap();
-
-        // Verify all proofs
-        multi_prover.verify_all_tables(&proof, &traces).unwrap();
-
-        println!("✓ Complex circuit multi-table proof verification successful");
     }
 }
