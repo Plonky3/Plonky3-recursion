@@ -56,11 +56,11 @@ mod tests {
     #[test]
     fn test_witness_allocator() {
         let mut allocator = WitnessAllocator::new();
-        
+
         let w0 = allocator.alloc();
         let w1 = allocator.alloc();
         let w2 = allocator.alloc();
-        
+
         assert_eq!(w0, WIdx(0));
         assert_eq!(w1, WIdx(1));
         assert_eq!(w2, WIdx(2));
