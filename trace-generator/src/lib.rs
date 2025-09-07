@@ -9,6 +9,6 @@ pub mod types;
 pub use circuit::Circuit;
 pub use expr::{Expr, ExprArena};
 pub use prim::{ComplexOp, Prim};
-pub use program::{Program, VerifierKey};
+pub use program::Program;
 pub use tables::{ProverInstance, Traces};
 pub use types::{ExprId, WIdx, WitnessAllocator};
