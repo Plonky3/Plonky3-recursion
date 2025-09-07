@@ -3,6 +3,8 @@ use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
 use p3_matrix::{dense::RowMajorMatrix, Matrix};
 use p3_trace_generator::tables::SubTrace;
 
+use super::utils::pad_to_power_of_two;
+
 /// AIR for proving subtraction operations: lhs - rhs = result
 /// Generic over extension degree D (component-wise subtraction)
 /// Layout: [lhs[0..D-1], lhs_index, rhs[0..D-1], rhs_index, result[0..D-1], result_index]
@@ -67,6 +69,9 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> SubAir<F, D> {
             }
             values.push(F::from_u64(trace.result_index[i] as u64));
         }
+
+        // Pad to power of two by repeating last row
+        pad_to_power_of_two(&mut values, width, height);
 
         RowMajorMatrix::new(values, width)
     }

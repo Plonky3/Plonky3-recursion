@@ -2,6 +2,8 @@ use p3_air::{Air, AirBuilder, BaseAir};
 use p3_field::{Field, PrimeCharacteristicRing};
 use p3_matrix::{dense::RowMajorMatrix, Matrix};
 
+use super::utils::pad_witness_to_power_of_two;
+
 /// WitnessAir: enforces transparent index column monotonicity.
 /// Layout per row: [value[0..D-1], index]
 /// Constraints:
@@ -15,27 +17,42 @@ pub struct WitnessAir<F, const D: usize = 1> {
 
 impl<F: Field, const D: usize> WitnessAir<F, D> {
     pub fn new(height: usize) -> Self {
-        Self { height, _phantom: core::marker::PhantomData }
+        Self {
+            height,
+            _phantom: core::marker::PhantomData,
+        }
     }
 
     /// Build a matrix from limb values and indices (already flattened to base field limbs).
     /// values_lims: row-major [value[0..D-1]] limbs per row
     pub fn trace_to_matrix(values_limbs: &[F], indices: &[u32]) -> RowMajorMatrix<F> {
         let height = indices.len();
-        assert_eq!(values_limbs.len(), height * D, "values_limbs must be height*D");
+        assert_eq!(
+            values_limbs.len(),
+            height * D,
+            "values_limbs must be height*D"
+        );
         let width = D + 1;
         let mut v = Vec::with_capacity(height * width);
         for i in 0..height {
             let base = i * D;
-            for j in 0..D { v.push(values_limbs[base + j]); }
+            for j in 0..D {
+                v.push(values_limbs[base + j]);
+            }
             v.push(F::from_u64(indices[i] as u64));
         }
+
+        // Pad to power of two with monotonic index continuation
+        pad_witness_to_power_of_two(&mut v, width, height);
+
         RowMajorMatrix::new(v, width)
     }
 }
 
 impl<F: Field, const D: usize> BaseAir<F> for WitnessAir<F, D> {
-    fn width(&self) -> usize { D + 1 }
+    fn width(&self) -> usize {
+        D + 1
+    }
 }
 
 impl<AB: AirBuilder, const D: usize> Air<AB> for WitnessAir<AB::F, D>
