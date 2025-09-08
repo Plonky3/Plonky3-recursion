@@ -15,6 +15,10 @@ impl fmt::Display for WIdx {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ExprId(pub u32);
 
+/// Handle to a complex operation (for setting private data later)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ComplexOpId(pub u32);
+
 /// Witness allocator for monotonic index assignment
 #[derive(Debug, Clone)]
 pub struct WitnessAllocator {

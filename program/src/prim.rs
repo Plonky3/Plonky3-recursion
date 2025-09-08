@@ -17,18 +17,29 @@ pub enum Prim<F> {
 }
 
 /// Complex operations that are not primitive arithmetic
-/// These have their own dedicated tables and include private auxiliary data
+/// These have their own dedicated tables and only contain public interface (witness indices)
 #[derive(Debug, Clone, PartialEq)]
-pub enum ComplexOp<F> {
-    /// Merkle verification operation
-    MerkleVerify {
-        leaf: Vec<WIdx>, // Multiple extension elements for large hashes
-        root: Vec<WIdx>, // Multiple extension elements for large hashes
-        /// Private sibling values for the Merkle path (not on witness bus)
-        /// Each sibling is a vector of extension elements
-        path_siblings: Vec<Vec<F>>,
-        /// Path direction bits (0 = left, 1 = right)  
-        path_directions: Vec<bool>,
+pub enum ComplexOp {
+    /// Fake Merkle verification operation (simplified: single field elements)
+    FakeMerkleVerify {
+        leaf: WIdx, // Public input - on witness bus (single field element)
+        root: WIdx, // Public output - on witness bus (single field element)
+                    // Private data is set separately via ComplexOpId
     },
     // Future: FriVerify, HashAbsorb, etc.
+}
+
+/// Private auxiliary data for complex operations (not on witness bus)
+#[derive(Debug, Clone, PartialEq)]
+pub enum ComplexOpPrivateData<F> {
+    FakeMerkleVerify(FakeMerklePrivateData<F>),
+}
+
+/// Private data for fake Merkle verification (simplified)
+#[derive(Debug, Clone, PartialEq)]
+pub struct FakeMerklePrivateData<F> {
+    /// Private sibling values for the Merkle path (single field elements)
+    pub path_siblings: Vec<F>,
+    /// Path direction bits (0 = left, 1 = right)
+    pub path_directions: Vec<bool>,
 }

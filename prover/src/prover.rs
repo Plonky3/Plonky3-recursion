@@ -1,4 +1,4 @@
-use crate::air::{AddAir, ConstAir, MulAir, PublicAir, SubAir, WitnessAir};
+use crate::air::{AddAir, ConstAir, FakeMerkleVerifyAir, MulAir, PublicAir, SubAir, WitnessAir};
 use crate::config::{build_standard_config, ProverConfig};
 use p3_baby_bear::BabyBear as Val;
 use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
@@ -16,6 +16,7 @@ pub struct MultiTableProof {
     pub add_proof: StarkProof,
     pub mul_proof: StarkProof,
     pub sub_proof: StarkProof,
+    pub fake_merkle_proof: StarkProof,
 }
 
 /// Unified prover that creates proofs for all tables
@@ -126,6 +127,11 @@ impl MultiTableProver {
         let sub_air = SubAir::<Val, D>::new(traces.sub_trace.lhs_values.len());
         let sub_proof = prove(&self.config, &sub_air, sub_matrix, &pis);
 
+        // FakeMerkle
+        let fake_merkle_matrix = FakeMerkleVerifyAir::trace_to_matrix(&traces.fake_merkle_trace);
+        let fake_merkle_air = FakeMerkleVerifyAir::new(traces.fake_merkle_trace.left_values.len());
+        let fake_merkle_proof = prove(&self.config, &fake_merkle_air, fake_merkle_matrix, &pis);
+
         Ok(MultiTableProof {
             witness_proof,
             const_proof,
@@ -133,6 +139,7 @@ impl MultiTableProver {
             add_proof,
             mul_proof,
             sub_proof,
+            fake_merkle_proof,
         })
     }
 
@@ -186,6 +193,16 @@ impl MultiTableProver {
         let sub_air = SubAir::<Val, D>::new(traces.sub_trace.lhs_values.len());
         verify(&self.config, &sub_air, &proof.sub_proof, &pis)
             .map_err(|e| format!("Sub verification failed: {:?}", e))?;
+
+        // FakeMerkle
+        let fake_merkle_air = FakeMerkleVerifyAir::new(traces.fake_merkle_trace.left_values.len());
+        verify(
+            &self.config,
+            &fake_merkle_air,
+            &proof.fake_merkle_proof,
+            &pis,
+        )
+        .map_err(|e| format!("FakeMerkle verification failed: {:?}", e))?;
 
         Ok(())
     }

@@ -1,11 +1,18 @@
 use crate::{
     expr::{Expr, ExprArena},
-    prim::Prim,
+    prim::{ComplexOp, Prim},
     program::Program,
-    types::{ExprId, WIdx, WitnessAllocator},
+    types::{ComplexOpId, ExprId, WIdx, WitnessAllocator},
 };
 use p3_field::PrimeCharacteristicRing;
 use std::collections::HashMap;
+
+/// Type of complex operation for circuit building
+#[derive(Debug, Clone, PartialEq)]
+pub enum ComplexOpType {
+    FakeMerkleVerify,
+    // Future: FriVerify, HashAbsorb, etc.
+}
 
 /// Circuit builder for constructing field programs
 pub struct Circuit<F> {
@@ -17,6 +24,8 @@ pub struct Circuit<F> {
     public_input_count: usize,
     /// Pending zero assertions to lower in build()
     pending_asserts: Vec<ExprId>,
+    /// Complex operations (without private data) - will be lowered later
+    complex_ops: Vec<(ComplexOpId, ComplexOpType, Vec<ExprId>)>, // (op_id, op_type, witness_exprs)
 }
 
 impl<F: Clone> Circuit<F> {
@@ -27,6 +36,7 @@ impl<F: Clone> Circuit<F> {
             witness_alloc: WitnessAllocator::new(),
             public_input_count: 0,
             pending_asserts: Vec::new(),
+            complex_ops: Vec::new(),
         }
     }
 
@@ -68,21 +78,40 @@ impl<F: Clone> Circuit<F> {
     pub fn assert_zero(&mut self, expr: ExprId) {
         self.pending_asserts.push(expr);
     }
+
+    /// Add a fake Merkle verification operation (simplified: single field elements)
+    /// leaf_expr: leaf hash expression (input on witness bus)
+    /// root_expr: root hash expression (output on witness bus)
+    /// Returns the complex operation ID for setting private data later
+    pub fn add_fake_merkle_verify(&mut self, leaf_expr: ExprId, root_expr: ExprId) -> ComplexOpId {
+        // Store the expression IDs - will be lowered to WIdx during build()
+        // Use current length as the next ComplexOpId
+        let op_id = ComplexOpId(self.complex_ops.len() as u32);
+        let witness_exprs = vec![leaf_expr, root_expr];
+        self.complex_ops
+            .push((op_id, ComplexOpType::FakeMerkleVerify, witness_exprs));
+
+        op_id
+    }
 }
 
 impl<F: Clone + PrimeCharacteristicRing + PartialEq + Eq + std::hash::Hash> Circuit<F> {
     /// Build the circuit into a Program with separate lowering and IR transformation stages
     pub fn build(mut self) -> Program<F> {
         // Stage 1: Lower expressions to naive primitives with constant pooling
-        let (prim_ops, const_pool, public_rows) = self.lower_to_primitives();
+        let (prim_ops, const_pool, public_rows, expr_to_widx) = self.lower_to_primitives();
 
-        // Stage 2: IR transformations and optimizations
+        // Stage 2: Lower complex operations using the expr_to_widx mapping
+        let lowered_complex_ops = self.lower_complex_ops(&expr_to_widx);
+
+        // Stage 3: IR transformations and optimizations
         let prim_ops = Self::optimize_primitives(prim_ops, &const_pool);
 
-        // Stage 3: Generate final program
+        // Stage 4: Generate final program
         let slot_count = self.witness_alloc.slot_count();
         let mut program = Program::new(slot_count);
         program.prim_ops = prim_ops;
+        program.complex_ops = lowered_complex_ops;
         program.public_rows = public_rows;
         program.public_flat_len = self.public_input_count;
 
@@ -90,7 +119,14 @@ impl<F: Clone + PrimeCharacteristicRing + PartialEq + Eq + std::hash::Hash> Circ
     }
 
     /// Stage 1: Lower expressions to primitives with constant pooling
-    fn lower_to_primitives(&mut self) -> (Vec<Prim<F>>, HashMap<F, WIdx>, Vec<WIdx>) {
+    fn lower_to_primitives(
+        &mut self,
+    ) -> (
+        Vec<Prim<F>>,
+        HashMap<F, WIdx>,
+        Vec<WIdx>,
+        HashMap<ExprId, WIdx>,
+    ) {
         let mut prim_ops = Vec::new();
         let mut const_pool: HashMap<F, WIdx> = HashMap::new();
         let mut expr_to_widx: HashMap<ExprId, WIdx> = HashMap::new();
@@ -185,10 +221,45 @@ impl<F: Clone + PrimeCharacteristicRing + PartialEq + Eq + std::hash::Hash> Circ
             }
         }
 
-        (prim_ops, const_pool, public_rows)
+        (prim_ops, const_pool, public_rows, expr_to_widx)
     }
 
-    /// Stage 2: IR transformations and optimizations
+    /// Stage 2: Lower complex operations from ExprIds to WIdx
+    fn lower_complex_ops(&self, expr_to_widx: &HashMap<ExprId, WIdx>) -> Vec<ComplexOp> {
+        use crate::prim::ComplexOp;
+
+        let mut lowered_ops = Vec::new();
+
+        for (_op_id, op_type, witness_exprs) in &self.complex_ops {
+            match op_type {
+                ComplexOpType::FakeMerkleVerify => {
+                    if witness_exprs.len() != 2 {
+                        panic!(
+                            "FakeMerkleVerify expects exactly 2 witness expressions, got {}",
+                            witness_exprs.len()
+                        );
+                    }
+                    let leaf_widx = expr_to_widx
+                        .get(&witness_exprs[0])
+                        .copied()
+                        .expect("Leaf expression should have been lowered to WIdx");
+                    let root_widx = expr_to_widx
+                        .get(&witness_exprs[1])
+                        .copied()
+                        .expect("Root expression should have been lowered to WIdx");
+
+                    lowered_ops.push(ComplexOp::FakeMerkleVerify {
+                        leaf: leaf_widx,
+                        root: root_widx,
+                    });
+                } // Future operations can be added here with different witness expression counts
+            }
+        }
+
+        lowered_ops
+    }
+
+    /// Stage 3: IR transformations and optimizations
     fn optimize_primitives(prim_ops: Vec<Prim<F>>, _const_pool: &HashMap<F, WIdx>) -> Vec<Prim<F>> {
         // Future passes can be added here:
         // - Dead code elimination
