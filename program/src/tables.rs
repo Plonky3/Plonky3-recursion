@@ -294,7 +294,7 @@ impl<
                     values.push(value.clone());
                 }
                 None => {
-                    return Err(format!("Witness not set for index {}", i));
+                    return Err(format!("Witness not set for index {i}"));
                 }
             }
         }
@@ -445,8 +445,7 @@ impl<
                         val.clone()
                     } else {
                         return Err(format!(
-                            "Leaf value not set for FakeMerkleVerify operation {}",
-                            op_idx
+                            "Leaf value not set for FakeMerkleVerify operation {op_idx}"
                         ));
                     };
 
@@ -486,8 +485,7 @@ impl<
                 self.set_witness(root, current_hash.clone())?;
             } else {
                 return Err(format!(
-                    "Missing private data for FakeMerkleVerify operation {}",
-                    op_idx
+                    "Missing private data for FakeMerkleVerify operation {op_idx}"
                 ));
             }
         }
@@ -578,7 +576,7 @@ mod tests {
         let program = circuit.build();
         println!("=== PROGRAM PRIMITIVE OPERATIONS ===");
         for (i, prim) in program.prim_ops.iter().enumerate() {
-            println!("{}: {:?}", i, prim);
+            println!("{i}: {prim:?}");
         }
 
         let slot_count = program.slot_count;
@@ -599,7 +597,7 @@ mod tests {
             .zip(traces.witness_trace.values.iter())
             .enumerate()
         {
-            println!("Row {}: WIdx({}) = {:?}", i, idx, val);
+            println!("Row {i}: WIdx({idx}) = {val:?}");
         }
 
         println!("\n=== CONST TRACE ===");
@@ -610,7 +608,7 @@ mod tests {
             .zip(traces.const_trace.values.iter())
             .enumerate()
         {
-            println!("Row {}: WIdx({}) = {:?}", i, idx, val);
+            println!("Row {i}: WIdx({idx}) = {val:?}");
         }
 
         println!("\n=== PUBLIC TRACE ===");
@@ -621,7 +619,7 @@ mod tests {
             .zip(traces.public_trace.values.iter())
             .enumerate()
         {
-            println!("Row {}: WIdx({}) = {:?}", i, idx, val);
+            println!("Row {i}: WIdx({idx}) = {val:?}");
         }
 
         println!("\n=== MUL TRACE ===");

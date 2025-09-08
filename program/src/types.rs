@@ -54,7 +54,7 @@ mod tests {
     #[test]
     fn test_widx_display() {
         let idx = WIdx(42);
-        assert_eq!(format!("{}", idx), "w42");
+        assert_eq!(format!("{idx}"), "w42");
     }
 
     #[test]

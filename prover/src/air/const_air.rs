@@ -1,3 +1,4 @@
+#![allow(clippy::needless_range_loop)]
 use p3_air::{Air, AirBuilder, BaseAir};
 use p3_field::{BasedVectorSpace, Field};
 use p3_matrix::dense::RowMajorMatrix;

@@ -1,3 +1,4 @@
+#![allow(clippy::type_complexity)]
 use p3_baby_bear::{BabyBear as Val, Poseidon2BabyBear as Perm};
 use p3_field::extension::BinomialExtensionField;
 use p3_uni_stark::StarkConfig;
