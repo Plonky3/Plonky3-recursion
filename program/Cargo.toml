@@ -1,5 +1,5 @@
 [package]
-name = "p3-trace-generator"
+name = "p3-program"
 description.workspace = true
 version.workspace = true
 edition.workspace = true

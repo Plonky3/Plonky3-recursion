@@ -3,7 +3,7 @@
 use p3_baby_bear::BabyBear;
 use p3_field::PrimeCharacteristicRing;
 use p3_prover::MultiTableProver;
-use p3_trace_generator::circuit::Circuit;
+use p3_program::circuit::Circuit;
 use std::env;
 
 type F = BabyBear;

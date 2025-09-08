@@ -16,7 +16,7 @@ p3-matrix.workspace = true
 p3-merkle-tree.workspace = true
 p3-symmetric.workspace = true
 p3-uni-stark.workspace = true
-p3-trace-generator.workspace = true
+p3-program.workspace = true
 rand.workspace = true
 postcard = { version = "1.0", features = ["alloc"] }
 

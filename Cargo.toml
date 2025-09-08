@@ -17,7 +17,7 @@ members = [
     "merkle-tree-air",
     "prover",
     "recursion",
-    "trace-generator",
+    "program",
     "symmetric-air",
 ]
 
@@ -49,7 +49,7 @@ p3-interpolation-air = { path = "interpolation-air", version = "0.1.0" }
 p3-merkle-tree-air = { path = "merkle-tree-air", version = "0.1.0" }
 p3-prover = { path = "prover", version = "0.1.0" }
 p3-recursion = { path = "recursion", version = "0.1.0" }
-p3-trace-generator = { path = "trace-generator", version = "0.1.0" }
+p3-program = { path = "program", version = "0.1.0" }
 p3-symmetric-air = { path = "symmetric-air", version = "0.1.0" }
 
 [profile.profiling]

@@ -1,7 +1,7 @@
 use p3_air::{Air, AirBuilder, BaseAir};
 use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
 use p3_matrix::{dense::RowMajorMatrix, Matrix};
-use p3_trace_generator::tables::WitnessTrace;
+use p3_program::tables::WitnessTrace;
 
 use super::utils::pad_witness_to_power_of_two;
 
