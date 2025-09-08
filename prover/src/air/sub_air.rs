@@ -1,7 +1,7 @@
 use p3_air::{Air, AirBuilder, BaseAir};
 use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
 use p3_matrix::{dense::RowMajorMatrix, Matrix};
-use p3_trace_generator::tables::SubTrace;
+use p3_program::tables::SubTrace;
 
 use super::utils::pad_to_power_of_two;
 
@@ -122,7 +122,7 @@ mod tests {
     use p3_baby_bear::BabyBear as Val;
     use p3_field::{extension::BinomialExtensionField, BasedVectorSpace};
     use p3_matrix::dense::RowMajorMatrix;
-    use p3_trace_generator::tables::SubTrace;
+    use p3_program::tables::SubTrace;
     use p3_uni_stark::{prove, verify};
 
     #[test]

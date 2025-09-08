@@ -2,7 +2,7 @@ use crate::air::{AddAir, ConstAir, MulAir, PublicAir, SubAir, WitnessAir};
 use crate::config::{build_standard_config, ProverConfig};
 use p3_baby_bear::BabyBear as Val;
 use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
-use p3_trace_generator::tables::Traces;
+use p3_program::tables::Traces;
 use p3_uni_stark::{prove, verify};
 
 // Re-export the proof type from the config module
@@ -196,7 +196,7 @@ mod tests {
     use super::*;
     use p3_baby_bear::BabyBear;
     use p3_field::{extension::BinomialExtensionField, BasedVectorSpace, PrimeCharacteristicRing};
-    use p3_trace_generator::circuit::Circuit;
+    use p3_program::circuit::Circuit;
 
     #[test]
     fn test_multi_table_prover_base_field() {
