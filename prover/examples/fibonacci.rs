@@ -43,7 +43,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let traces = program_instance.execute()?;
     let multi_prover = MultiTableProver::new();
     let proof = multi_prover.prove_all_tables(&traces)?;
-    multi_prover.verify_all_tables(&proof, &traces)?;
+    multi_prover.verify_all_tables(&proof)?;
 
     println!("✅ Verified F({}) = {}", n, expected_fib);
 
