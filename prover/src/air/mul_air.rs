@@ -1,3 +1,4 @@
+#![allow(clippy::needless_range_loop)]
 use p3_air::{Air, AirBuilder, BaseAir};
 use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
 use p3_matrix::{dense::RowMajorMatrix, Matrix};
@@ -134,7 +135,7 @@ where
         }
 
         // Binomial polynomial-basis path: x^D = W
-        if let Some(w_raw) = self.w_binomial.clone() {
+        if let Some(w_raw) = self.w_binomial {
             let w = AB::Expr::from(w_raw);
 
             // acc[k] = sum_{i+j=k} a_i b_j + W * sum_{i+j=k+D} a_i b_j

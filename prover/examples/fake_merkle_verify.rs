@@ -44,8 +44,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     multi_prover.verify_all_tables(&proof)?;
 
     println!(
-        "✅ Verified Merkle path for leaf {} with depth {} → root {}",
-        leaf_value, depth, expected_root_value
+        "✅ Verified Merkle path for leaf {leaf_value} with depth {depth} → root {expected_root_value}"
     );
 
     Ok(())
