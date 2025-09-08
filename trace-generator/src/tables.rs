@@ -96,7 +96,7 @@ pub struct SubTrace<F> {
 }
 
 /// Prover instance for generating traces
-pub struct ProverInstance<F> {
+pub struct ProgramInstance<F> {
     program: Program<F>,
     witness: Vec<Option<F>>,
 }
@@ -109,7 +109,7 @@ impl<
         + std::ops::Mul<Output = F>
         + PartialEq
         + std::fmt::Debug,
-> ProverInstance<F>
+> ProgramInstance<F>
 {
     /// Create a new prover instance
     pub fn new(program: Program<F>) -> Self {
@@ -138,8 +138,8 @@ impl<
         Ok(())
     }
 
-    /// Generate execution traces
-    pub fn materialize_traces(mut self) -> Result<Traces<F>, String> {
+    /// Execute the program and generate traces
+    pub fn execute(mut self) -> Result<Traces<F>, String> {
         // Step 1: Execute primitives to fill witness vector
         self.execute_primitives()?;
 
@@ -365,9 +365,9 @@ impl<
         + std::fmt::Debug,
 > Program<F>
 {
-    /// Create a prover instance for this program
-    pub fn instantiate_prover(self) -> ProverInstance<F> {
-        ProverInstance::new(self)
+    /// Create a program instance for execution and trace materialization
+    pub fn instantiate(self) -> ProgramInstance<F> {
+        ProgramInstance::new(self)
     }
 }
 
@@ -387,12 +387,14 @@ mod tests {
         let _result = circuit.add(x, c5);
 
         let program = circuit.build();
-        let mut prover = program.instantiate_prover();
+        let mut program_instance = program.instantiate();
 
         // Set public input: x = 3
-        prover.set_public_inputs(&[BabyBear::from_u64(3)]).unwrap();
+        program_instance
+            .set_public_inputs(&[BabyBear::from_u64(3)])
+            .unwrap();
 
-        let traces = prover.materialize_traces().unwrap();
+        let traces = program_instance.execute().unwrap();
 
         // Check witness trace
         assert_eq!(
@@ -430,12 +432,14 @@ mod tests {
         }
 
         let slot_count = program.slot_count;
-        let mut prover = program.instantiate_prover();
+        let mut program_instance = program.instantiate();
 
         // Set public input: x = 3 (should satisfy 37 * 3 - 111 = 0)
-        prover.set_public_inputs(&[BabyBear::from_u64(3)]).unwrap();
+        program_instance
+            .set_public_inputs(&[BabyBear::from_u64(3)])
+            .unwrap();
 
-        let traces = prover.materialize_traces().unwrap();
+        let traces = program_instance.execute().unwrap();
 
         println!("\n=== WITNESS TRACE ===");
         for (i, (idx, val)) in traces
@@ -530,7 +534,7 @@ mod tests {
         let _result = circuit.add(x, yz);
 
         let program = circuit.build();
-        let mut prover = program.instantiate_prover();
+        let mut program_instance = program.instantiate();
 
         // Set public inputs to genuine extension field values with ALL non-zero coefficients
         let x_val = ExtField::from_basis_coefficients_slice(&[
@@ -538,22 +542,27 @@ mod tests {
             BabyBear::from_u64(2), // a1
             BabyBear::from_u64(3), // a2
             BabyBear::from_u64(4), // a3
-        ]).unwrap();
+        ])
+        .unwrap();
         let y_val = ExtField::from_basis_coefficients_slice(&[
             BabyBear::from_u64(5), // b0
             BabyBear::from_u64(6), // b1
             BabyBear::from_u64(7), // b2
             BabyBear::from_u64(8), // b3
-        ]).unwrap();
+        ])
+        .unwrap();
         let z_val = ExtField::from_basis_coefficients_slice(&[
             BabyBear::from_u64(9),  // c0
             BabyBear::from_u64(10), // c1
             BabyBear::from_u64(11), // c2
             BabyBear::from_u64(12), // c3
-        ]).unwrap();
+        ])
+        .unwrap();
 
-        prover.set_public_inputs(&[x_val, y_val, z_val]).unwrap();
-        let traces = prover.materialize_traces().unwrap();
+        program_instance
+            .set_public_inputs(&[x_val, y_val, z_val])
+            .unwrap();
+        let traces = program_instance.execute().unwrap();
 
         // Verify extension field traces were generated correctly
         assert_eq!(traces.public_trace.values.len(), 3);
