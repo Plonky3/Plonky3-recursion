@@ -1,4 +1,9 @@
-use crate::{prim::Prim, program::Program, types::WIdx};
+use crate::{
+    prim::{ComplexOpPrivateData, Prim},
+    program::Program,
+    types::{ComplexOpId, WIdx},
+};
+use p3_field::PrimeCharacteristicRing;
 
 /// Execution traces for all tables
 #[derive(Debug, Clone)]
@@ -15,6 +20,8 @@ pub struct Traces<F> {
     pub mul_trace: MulTrace<F>,
     /// Sub operation table
     pub sub_trace: SubTrace<F>,
+    /// Fake Merkle verification table
+    pub fake_merkle_trace: FakeMerkleTrace<F>,
 }
 
 /// Central witness table with transparent index column
@@ -95,10 +102,31 @@ pub struct SubTrace<F> {
     pub result_index: Vec<u32>,
 }
 
+/// Fake Merkle verification table (simplified: single field elements)
+#[derive(Debug, Clone)]
+pub struct FakeMerkleTrace<F> {
+    /// Left operand values (current hash)
+    pub left_values: Vec<F>,
+    /// Left operand indices
+    pub left_index: Vec<u32>,
+    /// Right operand values (sibling hash)
+    pub right_values: Vec<F>,
+    /// Right operand indices (not on witness bus - private)
+    pub right_index: Vec<u32>,
+    /// Result values (computed parent hash)
+    pub result_values: Vec<F>,
+    /// Result indices
+    pub result_index: Vec<u32>,
+    /// Path direction bits (0 = left, 1 = right) - private
+    pub path_directions: Vec<u32>,
+}
+
 /// Prover instance for generating traces
 pub struct ProgramInstance<F> {
     program: Program<F>,
     witness: Vec<Option<F>>,
+    /// Private data for complex operations (not on witness bus)
+    complex_op_private_data: Vec<Option<ComplexOpPrivateData<F>>>,
 }
 
 impl<
@@ -108,13 +136,19 @@ impl<
         + std::ops::Sub<Output = F>
         + std::ops::Mul<Output = F>
         + PartialEq
-        + std::fmt::Debug,
+        + std::fmt::Debug
+        + PrimeCharacteristicRing,
 > ProgramInstance<F>
 {
     /// Create a new prover instance
     pub fn new(program: Program<F>) -> Self {
         let witness = vec![None; program.slot_count as usize];
-        Self { program, witness }
+        let complex_op_private_data = vec![None; program.complex_ops.len()];
+        Self {
+            program,
+            witness,
+            complex_op_private_data,
+        }
     }
 
     /// Set public inputs according to Program.public_rows mapping
@@ -138,6 +172,36 @@ impl<
         Ok(())
     }
 
+    /// Set private data for a complex operation
+    pub fn set_complex_op_private_data(
+        &mut self,
+        op_id: ComplexOpId,
+        private_data: ComplexOpPrivateData<F>,
+    ) -> Result<(), String> {
+        // Validate that the op_id exists in the program
+        if op_id.0 as usize >= self.program.complex_ops.len() {
+            return Err(format!(
+                "ComplexOpId {} out of range (program has {} complex ops)",
+                op_id.0,
+                self.program.complex_ops.len()
+            ));
+        }
+
+        // Validate that the private data matches the operation type
+        let complex_op = &self.program.complex_ops[op_id.0 as usize];
+        match (complex_op, &private_data) {
+            (
+                crate::prim::ComplexOp::FakeMerkleVerify { .. },
+                ComplexOpPrivateData::FakeMerkleVerify(_),
+            ) => {
+                // Type match - good!
+            }
+        }
+
+        self.complex_op_private_data[op_id.0 as usize] = Some(private_data);
+        Ok(())
+    }
+
     /// Execute the program and generate traces
     pub fn execute(mut self) -> Result<Traces<F>, String> {
         // Step 1: Execute primitives to fill witness vector
@@ -150,6 +214,7 @@ impl<
         let add_trace = self.generate_add_trace()?;
         let mul_trace = self.generate_mul_trace()?;
         let sub_trace = self.generate_sub_trace()?;
+        let fake_merkle_trace = self.generate_fake_merkle_trace()?;
 
         Ok(Traces {
             witness_trace,
@@ -158,6 +223,7 @@ impl<
             add_trace,
             mul_trace,
             sub_trace,
+            fake_merkle_trace,
         })
     }
 
@@ -353,6 +419,89 @@ impl<
             result_index,
         })
     }
+
+    fn generate_fake_merkle_trace(&mut self) -> Result<FakeMerkleTrace<F>, String> {
+        let mut left_values = Vec::new();
+        let mut left_index = Vec::new();
+        let mut right_values = Vec::new();
+        let mut right_index = Vec::new();
+        let mut result_values = Vec::new();
+        let mut result_index = Vec::new();
+        let mut path_directions = Vec::new();
+
+        // Process each complex operation by index to avoid borrowing conflicts
+        for op_idx in 0..self.program.complex_ops.len() {
+            // Copy out leaf/root to end immutable borrow immediately
+            let (leaf, root) = match &self.program.complex_ops[op_idx] {
+                crate::prim::ComplexOp::FakeMerkleVerify { leaf, root } => (*leaf, *root),
+            };
+
+            // Clone private data option to avoid holding a borrow on self
+            if let Some(Some(ComplexOpPrivateData::FakeMerkleVerify(private_data))) =
+                self.complex_op_private_data.get(op_idx).cloned()
+            {
+                let mut current_hash =
+                    if let Some(val) = self.witness.get(leaf.0 as usize).and_then(|x| x.as_ref()) {
+                        val.clone()
+                    } else {
+                        return Err(format!(
+                            "Leaf value not set for FakeMerkleVerify operation {}",
+                            op_idx
+                        ));
+                    };
+
+                // For each step in the Merkle path
+                for (sibling_value, &direction) in private_data
+                    .path_siblings
+                    .iter()
+                    .zip(private_data.path_directions.iter())
+                {
+                    // Current hash becomes left operand
+                    left_values.push(current_hash.clone());
+                    left_index.push(leaf.0); // Points to witness bus
+
+                    // Sibling becomes right operand (private data - not on witness bus)
+                    right_values.push(sibling_value.clone());
+                    right_index.push(0); // Not on witness bus - private data
+
+                    // Compute parent hash (simple mock hash: left + right + direction)
+                    let parent_hash = current_hash.clone()
+                        + sibling_value.clone()
+                        + if direction {
+                            F::from_u64(1)
+                        } else {
+                            F::from_u64(0)
+                        };
+
+                    result_values.push(parent_hash.clone());
+                    result_index.push(root.0); // Points to witness bus
+
+                    path_directions.push(if direction { 1 } else { 0 });
+
+                    // Update current hash for next iteration
+                    current_hash = parent_hash;
+                }
+
+                // Root is computed; write back to the witness bus at root index
+                self.set_witness(root, current_hash.clone())?;
+            } else {
+                return Err(format!(
+                    "Missing private data for FakeMerkleVerify operation {}",
+                    op_idx
+                ));
+            }
+        }
+
+        Ok(FakeMerkleTrace {
+            left_values,
+            left_index,
+            right_values,
+            right_index,
+            result_values,
+            result_index,
+            path_directions,
+        })
+    }
 }
 
 impl<
@@ -362,7 +511,8 @@ impl<
         + std::ops::Sub<Output = F>
         + std::ops::Mul<Output = F>
         + PartialEq
-        + std::fmt::Debug,
+        + std::fmt::Debug
+        + PrimeCharacteristicRing,
 > Program<F>
 {
     /// Create a program instance for execution and trace materialization

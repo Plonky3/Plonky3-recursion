@@ -24,6 +24,10 @@ postcard = { version = "1.0", features = ["alloc"] }
 name = "fibonacci"
 path = "examples/fibonacci.rs"
 
+[[example]]
+name = "fake_merkle_verify"
+path = "examples/fake_merkle_verify.rs"
+
 [dev-dependencies]
 rand.workspace = true
 tracing = "0.1.40"
