@@ -196,7 +196,7 @@ impl MultiTableProver {
 mod tests {
     use super::*;
     use p3_baby_bear::BabyBear;
-    use p3_field::{extension::BinomialExtensionField, PrimeCharacteristicRing};
+    use p3_field::{extension::BinomialExtensionField, BasedVectorSpace, PrimeCharacteristicRing};
     use p3_trace_generator::circuit::Circuit;
 
     #[test]
@@ -247,10 +247,25 @@ mod tests {
         let program = circuit.build();
         let mut prover_instance = program.instantiate_prover();
 
-        // Set public inputs to extension field values
-        let x_val = ExtField::from(BabyBear::from_u64(2)); // [2, 0, 0, 0]
-        let y_val = ExtField::from(BabyBear::from_u64(3)); // [3, 0, 0, 0]
-        let z_val = ExtField::from(BabyBear::from_u64(1)); // [1, 0, 0, 0]
+        // Set public inputs to genuine extension field values with ALL non-zero coefficients
+        let x_val = ExtField::from_basis_coefficients_slice(&[
+            BabyBear::from_u64(2), // a0
+            BabyBear::from_u64(3), // a1
+            BabyBear::from_u64(5), // a2
+            BabyBear::from_u64(7), // a3
+        ]).unwrap();
+        let y_val = ExtField::from_basis_coefficients_slice(&[
+            BabyBear::from_u64(11), // b0
+            BabyBear::from_u64(13), // b1
+            BabyBear::from_u64(17), // b2
+            BabyBear::from_u64(19), // b3
+        ]).unwrap();
+        let z_val = ExtField::from_basis_coefficients_slice(&[
+            BabyBear::from_u64(23), // c0
+            BabyBear::from_u64(29), // c1
+            BabyBear::from_u64(31), // c2
+            BabyBear::from_u64(37), // c3
+        ]).unwrap();
 
         prover_instance
             .set_public_inputs(&[x_val, y_val, z_val])

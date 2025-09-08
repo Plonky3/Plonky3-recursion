@@ -160,13 +160,13 @@ mod tests {
         type ExtField = BinomialExtensionField<Val, 4>;
         let n = 4;
 
-        // Build genuine degree-4 elements via explicit coefficients:
+        // Build genuine degree-4 elements via explicit coefficients with ALL non-zero values:
         // a = a0 + a1 x + a2 x^2 + a3 x^3
         let lhs = ExtField::from_basis_coefficients_slice(&[
             Val::from_u64(20), // a0
             Val::from_u64(3),  // a1
             Val::from_u64(9),  // a2
-            Val::from_u64(1),  // a3
+            Val::from_u64(7),  // a3
         ])
         .unwrap();
 
@@ -174,7 +174,7 @@ mod tests {
             Val::from_u64(5), // b0
             Val::from_u64(2), // b1
             Val::from_u64(4), // b2
-            Val::from_u64(0), // b3
+            Val::from_u64(1), // b3
         ])
         .unwrap();
 

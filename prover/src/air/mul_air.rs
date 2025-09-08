@@ -227,20 +227,20 @@ mod tests {
         let w: Val = x4_coeffs[0];
         assert!(!w.is_zero(), "W must be non-zero");
 
-        // Build some extension elements
+        // Build genuine extension elements with ALL non-zero coefficients
         let lhs = ExtField::from_basis_coefficients_slice(&[
             Val::from_u64(3), // a0
             Val::from_u64(1), // a1
-            Val::from_u64(0), // a2
+            Val::from_u64(4), // a2
             Val::from_u64(2), // a3
         ])
         .unwrap();
 
         let rhs = ExtField::from_basis_coefficients_slice(&[
             Val::from_u64(2), // b0
-            Val::from_u64(1), // b1
+            Val::from_u64(5), // b1
             Val::from_u64(1), // b2
-            Val::from_u64(0), // b3
+            Val::from_u64(3), // b3
         ])
         .unwrap();
 
