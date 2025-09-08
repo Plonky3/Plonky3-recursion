@@ -119,6 +119,7 @@ impl<F: Clone + PrimeCharacteristicRing + PartialEq + Eq + std::hash::Hash> Circ
     }
 
     /// Stage 1: Lower expressions to primitives with constant pooling
+    #[allow(clippy::type_complexity)]
     fn lower_to_primitives(
         &mut self,
     ) -> (

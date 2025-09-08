@@ -62,7 +62,7 @@ impl MultiTableProver {
         match F::DIMENSION {
             1 => self.prove_for_degree::<F, 1>(traces, pis, None),
             4 => self.prove_for_degree::<F, 4>(traces, pis, self.w_d4),
-            d => Err(format!("Unsupported extension degree: {}", d)),
+            d => Err(format!("Unsupported extension degree: {d}")),
         }
     }
 
@@ -72,7 +72,7 @@ impl MultiTableProver {
         match proof.ext_degree {
             1 => self.verify_for_degree::<1>(proof, pis, None),
             4 => self.verify_for_degree::<4>(proof, pis, self.w_d4),
-            d => Err(format!("Unsupported extension degree in proof: {}", d)),
+            d => Err(format!("Unsupported extension degree in proof: {d}")),
         }
     }
 
@@ -116,10 +116,7 @@ impl MultiTableProver {
             MulAir::<Val, D>::new(traces.mul_trace.lhs_values.len())
         } else {
             let w = w_binomial.ok_or_else(|| {
-                format!(
-                    "Missing binomial parameter W for D={} extension field multiplication",
-                    D
-                )
+                format!("Missing binomial parameter W for D={D} extension field multiplication",)
             })?;
             MulAir::<Val, D>::new_binomial(traces.mul_trace.lhs_values.len(), w)
         };
@@ -165,42 +162,39 @@ impl MultiTableProver {
         // Witness
         let witness_air = WitnessAir::<Val, D>::new(proof.witness_rows);
         verify(&self.config, &witness_air, &proof.witness_proof, &pis)
-            .map_err(|e| format!("Witness verification failed: {:?}", e))?;
+            .map_err(|e| format!("Witness verification failed: {e:?}"))?;
 
         // Const
         let const_air = ConstAir::<Val, D>::new(proof.const_rows);
         verify(&self.config, &const_air, &proof.const_proof, &pis)
-            .map_err(|e| format!("Const verification failed: {:?}", e))?;
+            .map_err(|e| format!("Const verification failed: {e:?}"))?;
 
         // Public
         let public_air = PublicAir::<Val, D>::new(proof.public_rows);
         verify(&self.config, &public_air, &proof.public_proof, &pis)
-            .map_err(|e| format!("Public verification failed: {:?}", e))?;
+            .map_err(|e| format!("Public verification failed: {e:?}"))?;
 
         // Add
         let add_air = AddAir::<Val, D>::new(proof.add_rows);
         verify(&self.config, &add_air, &proof.add_proof, &pis)
-            .map_err(|e| format!("Add verification failed: {:?}", e))?;
+            .map_err(|e| format!("Add verification failed: {e:?}"))?;
 
         // Mul
         let mul_air: MulAir<Val, D> = if D == 1 {
             MulAir::<Val, D>::new(proof.mul_rows)
         } else {
             let w = w_binomial.ok_or_else(|| {
-                format!(
-                    "Missing binomial parameter W for D={} extension field multiplication",
-                    D
-                )
+                format!("Missing binomial parameter W for D={D} extension field multiplication",)
             })?;
             MulAir::<Val, D>::new_binomial(proof.mul_rows, w)
         };
         verify(&self.config, &mul_air, &proof.mul_proof, &pis)
-            .map_err(|e| format!("Mul verification failed: {:?}", e))?;
+            .map_err(|e| format!("Mul verification failed: {e:?}"))?;
 
         // Sub
         let sub_air = SubAir::<Val, D>::new(proof.sub_rows);
         verify(&self.config, &sub_air, &proof.sub_proof, &pis)
-            .map_err(|e| format!("Sub verification failed: {:?}", e))?;
+            .map_err(|e| format!("Sub verification failed: {e:?}"))?;
 
         // FakeMerkle
         let fake_merkle_air = FakeMerkleVerifyAir::new(proof.fake_merkle_rows);
@@ -210,9 +204,15 @@ impl MultiTableProver {
             &proof.fake_merkle_proof,
             &pis,
         )
-        .map_err(|e| format!("FakeMerkle verification failed: {:?}", e))?;
+        .map_err(|e| format!("FakeMerkle verification failed: {e:?}"))?;
 
         Ok(())
+    }
+}
+
+impl Default for MultiTableProver {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -297,7 +297,6 @@ mod tests {
         program_instance
             .set_public_inputs(&[x_val, y_val, z_val])
             .unwrap();
-
         let traces = program_instance.execute().unwrap();
 
         // Create unified prover and prove all tables
