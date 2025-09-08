@@ -17,6 +17,16 @@ pub struct MultiTableProof {
     pub mul_proof: StarkProof,
     pub sub_proof: StarkProof,
     pub fake_merkle_proof: StarkProof,
+    // Row counts needed for verification
+    pub witness_rows: usize,
+    pub const_rows: usize,
+    pub public_rows: usize,
+    pub add_rows: usize,
+    pub mul_rows: usize,
+    pub sub_rows: usize,
+    pub fake_merkle_rows: usize,
+    // Extension field degree used for proving (1 or 4 for now)
+    pub ext_degree: usize,
 }
 
 /// Unified prover that creates proofs for all tables
@@ -57,19 +67,12 @@ impl MultiTableProver {
     }
 
     /// Verify all proofs in the MultiTableProof
-    pub fn verify_all_tables<F>(
-        &self,
-        proof: &MultiTableProof,
-        traces: &Traces<F>,
-    ) -> Result<(), String>
-    where
-        F: Field + BasedVectorSpace<Val>,
-    {
+    pub fn verify_all_tables(&self, proof: &MultiTableProof) -> Result<(), String> {
         let pis: Vec<Val> = vec![];
-        match F::DIMENSION {
-            1 => self.verify_for_degree::<F, 1>(proof, traces, pis, None),
-            4 => self.verify_for_degree::<F, 4>(proof, traces, pis, self.w_d4),
-            d => Err(format!("Unsupported extension degree: {}", d)),
+        match proof.ext_degree {
+            1 => self.verify_for_degree::<1>(proof, pis, None),
+            4 => self.verify_for_degree::<4>(proof, pis, self.w_d4),
+            d => Err(format!("Unsupported extension degree in proof: {}", d)),
         }
     }
 
@@ -140,43 +143,48 @@ impl MultiTableProver {
             mul_proof,
             sub_proof,
             fake_merkle_proof,
+            // lengths for verification
+            witness_rows: traces.witness_trace.values.len(),
+            const_rows: traces.const_trace.values.len(),
+            public_rows: traces.public_trace.values.len(),
+            add_rows: traces.add_trace.lhs_values.len(),
+            mul_rows: traces.mul_trace.lhs_values.len(),
+            sub_rows: traces.sub_trace.lhs_values.len(),
+            fake_merkle_rows: traces.fake_merkle_trace.left_values.len(),
+            ext_degree: D,
         })
     }
 
     /// Verify all tables for a fixed degree `D`.
-    fn verify_for_degree<FEl, const D: usize>(
+    fn verify_for_degree<const D: usize>(
         &self,
         proof: &MultiTableProof,
-        traces: &Traces<FEl>,
         pis: Vec<Val>,
         w_binomial: Option<Val>,
-    ) -> Result<(), String>
-    where
-        FEl: Field + BasedVectorSpace<Val>,
-    {
+    ) -> Result<(), String> {
         // Witness
-        let witness_air = WitnessAir::<Val, D>::new(traces.witness_trace.values.len());
+        let witness_air = WitnessAir::<Val, D>::new(proof.witness_rows);
         verify(&self.config, &witness_air, &proof.witness_proof, &pis)
             .map_err(|e| format!("Witness verification failed: {:?}", e))?;
 
         // Const
-        let const_air = ConstAir::<Val, D>::new(traces.const_trace.values.len());
+        let const_air = ConstAir::<Val, D>::new(proof.const_rows);
         verify(&self.config, &const_air, &proof.const_proof, &pis)
             .map_err(|e| format!("Const verification failed: {:?}", e))?;
 
         // Public
-        let public_air = PublicAir::<Val, D>::new(traces.public_trace.values.len());
+        let public_air = PublicAir::<Val, D>::new(proof.public_rows);
         verify(&self.config, &public_air, &proof.public_proof, &pis)
             .map_err(|e| format!("Public verification failed: {:?}", e))?;
 
         // Add
-        let add_air = AddAir::<Val, D>::new(traces.add_trace.lhs_values.len());
+        let add_air = AddAir::<Val, D>::new(proof.add_rows);
         verify(&self.config, &add_air, &proof.add_proof, &pis)
             .map_err(|e| format!("Add verification failed: {:?}", e))?;
 
         // Mul
         let mul_air: MulAir<Val, D> = if D == 1 {
-            MulAir::<Val, D>::new(traces.mul_trace.lhs_values.len())
+            MulAir::<Val, D>::new(proof.mul_rows)
         } else {
             let w = w_binomial.ok_or_else(|| {
                 format!(
@@ -184,18 +192,18 @@ impl MultiTableProver {
                     D
                 )
             })?;
-            MulAir::<Val, D>::new_binomial(traces.mul_trace.lhs_values.len(), w)
+            MulAir::<Val, D>::new_binomial(proof.mul_rows, w)
         };
         verify(&self.config, &mul_air, &proof.mul_proof, &pis)
             .map_err(|e| format!("Mul verification failed: {:?}", e))?;
 
         // Sub
-        let sub_air = SubAir::<Val, D>::new(traces.sub_trace.lhs_values.len());
+        let sub_air = SubAir::<Val, D>::new(proof.sub_rows);
         verify(&self.config, &sub_air, &proof.sub_proof, &pis)
             .map_err(|e| format!("Sub verification failed: {:?}", e))?;
 
         // FakeMerkle
-        let fake_merkle_air = FakeMerkleVerifyAir::new(traces.fake_merkle_trace.left_values.len());
+        let fake_merkle_air = FakeMerkleVerifyAir::new(proof.fake_merkle_rows);
         verify(
             &self.config,
             &fake_merkle_air,
@@ -244,7 +252,7 @@ mod tests {
         let proof = multi_prover.prove_all_tables(&traces).unwrap();
 
         // Verify all proofs
-        multi_prover.verify_all_tables(&proof, &traces).unwrap();
+        multi_prover.verify_all_tables(&proof).unwrap();
     }
 
     #[test]
@@ -297,6 +305,6 @@ mod tests {
         let proof = multi_prover.prove_all_tables(&traces).unwrap();
 
         // Verify all proofs
-        multi_prover.verify_all_tables(&proof, &traces).unwrap();
+        multi_prover.verify_all_tables(&proof).unwrap();
     }
 }
