@@ -20,6 +20,10 @@ p3-trace-generator.workspace = true
 rand.workspace = true
 postcard = { version = "1.0", features = ["alloc"] }
 
+[[example]]
+name = "fibonacci"
+path = "examples/fibonacci.rs"
+
 [dev-dependencies]
 rand.workspace = true
 tracing = "0.1.40"
