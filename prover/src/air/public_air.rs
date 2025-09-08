@@ -1,7 +1,7 @@
 use p3_air::{Air, AirBuilder, BaseAir};
 use p3_field::{BasedVectorSpace, Field};
 use p3_matrix::dense::RowMajorMatrix;
-use p3_trace_generator::tables::PublicTrace;
+use p3_program::tables::PublicTrace;
 
 use super::utils::pad_to_power_of_two;
 
