@@ -10,7 +10,7 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
-p3-field.workspace = true
-p3-baby-bear.workspace = true
-serde.workspace = true
 hashbrown = "0.16.0"
+p3-baby-bear.workspace = true
+p3-field.workspace = true
+serde.workspace = true

@@ -1,3 +1,16 @@
+
+[workspace]
+members = [
+    "challenger-air",
+    "field-air",
+    "fri-air",
+    "interpolation-air",
+    "merkle-tree-air",
+    "program",
+    "prover",
+    "recursion",
+    "symmetric-air",
+]
 [workspace.package]
 description = "Plonky3 native support for recursive proof composition"
 version = "0.1.0"
@@ -7,19 +20,6 @@ repository = "https://github.com/Plonky3/Plonky3-recursion"
 homepage = "https://github.com/Plonky3/Plonky3-recursion"
 keywords = ["cryptography", "SNARK", "PLONK", "FRI", "plonky3"]
 categories = ["cryptography::cryptocurrencies"]
-
-[workspace]
-members = [
-    "challenger-air",
-    "field-air",
-    "fri-air",
-    "interpolation-air",
-    "merkle-tree-air",
-    "prover",
-    "recursion",
-    "program",
-    "symmetric-air",
-]
 
 [workspace.dependencies]
 
@@ -47,9 +47,9 @@ p3-field-air = { path = "field-air", version = "0.1.0" }
 p3-fri-air = { path = "fri-air", version = "0.1.0" }
 p3-interpolation-air = { path = "interpolation-air", version = "0.1.0" }
 p3-merkle-tree-air = { path = "merkle-tree-air", version = "0.1.0" }
+p3-program = { path = "program", version = "0.1.0" }
 p3-prover = { path = "prover", version = "0.1.0" }
 p3-recursion = { path = "recursion", version = "0.1.0" }
-p3-program = { path = "program", version = "0.1.0" }
 p3-symmetric-air = { path = "symmetric-air", version = "0.1.0" }
 
 [profile.profiling]

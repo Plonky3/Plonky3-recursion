@@ -14,11 +14,16 @@ p3-field.workspace = true
 p3-fri.workspace = true
 p3-matrix.workspace = true
 p3-merkle-tree.workspace = true
+p3-program.workspace = true
 p3-symmetric.workspace = true
 p3-uni-stark.workspace = true
-p3-program.workspace = true
-rand.workspace = true
 postcard = { version = "1.0", features = ["alloc"] }
+rand.workspace = true
+
+[dev-dependencies]
+postcard = { version = "1.0", features = ["alloc"] }
+rand.workspace = true
+tracing = "0.1.40"
 
 [[example]]
 name = "fibonacci"
@@ -27,8 +32,3 @@ path = "examples/fibonacci.rs"
 [[example]]
 name = "fake_merkle_verify"
 path = "examples/fake_merkle_verify.rs"
-
-[dev-dependencies]
-rand.workspace = true
-tracing = "0.1.40"
-postcard = { version = "1.0", features = ["alloc"] }
