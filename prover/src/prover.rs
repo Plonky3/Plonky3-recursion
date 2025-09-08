@@ -76,7 +76,6 @@ impl MultiTableProver {
     // Internal generic helpers
     // --------------------------
 
-
     /// Prove all tables for a fixed degree `D`.
     fn prove_for_degree<FEl, const D: usize>(
         &self,
@@ -214,14 +213,14 @@ mod tests {
         let _final_result = circuit.sub(add_result, c3); // (x + 10) - 3
 
         let program = circuit.build();
-        let mut prover_instance = program.instantiate_prover();
+        let mut program_instance = program.instantiate();
 
         // Set public input: x = 7, so final result = 7 + 10 - 3 = 14
-        prover_instance
+        program_instance
             .set_public_inputs(&[BabyBear::from_u64(7)])
             .unwrap();
 
-        let traces = prover_instance.materialize_traces().unwrap();
+        let traces = program_instance.execute().unwrap();
 
         // Create unified prover and prove all tables
         let multi_prover = MultiTableProver::new();
@@ -245,7 +244,7 @@ mod tests {
         let _result = circuit.add(xy, z);
 
         let program = circuit.build();
-        let mut prover_instance = program.instantiate_prover();
+        let mut program_instance = program.instantiate();
 
         // Set public inputs to genuine extension field values with ALL non-zero coefficients
         let x_val = ExtField::from_basis_coefficients_slice(&[
@@ -253,25 +252,28 @@ mod tests {
             BabyBear::from_u64(3), // a1
             BabyBear::from_u64(5), // a2
             BabyBear::from_u64(7), // a3
-        ]).unwrap();
+        ])
+        .unwrap();
         let y_val = ExtField::from_basis_coefficients_slice(&[
             BabyBear::from_u64(11), // b0
             BabyBear::from_u64(13), // b1
             BabyBear::from_u64(17), // b2
             BabyBear::from_u64(19), // b3
-        ]).unwrap();
+        ])
+        .unwrap();
         let z_val = ExtField::from_basis_coefficients_slice(&[
             BabyBear::from_u64(23), // c0
             BabyBear::from_u64(29), // c1
             BabyBear::from_u64(31), // c2
             BabyBear::from_u64(37), // c3
-        ]).unwrap();
+        ])
+        .unwrap();
 
-        prover_instance
+        program_instance
             .set_public_inputs(&[x_val, y_val, z_val])
             .unwrap();
 
-        let traces = prover_instance.materialize_traces().unwrap();
+        let traces = program_instance.execute().unwrap();
 
         // Create unified prover and prove all tables
         let multi_prover = MultiTableProver::new(); // defaults to W=11 for D=4

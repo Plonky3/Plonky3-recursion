@@ -10,5 +10,5 @@ pub use circuit::Circuit;
 pub use expr::{Expr, ExprArena};
 pub use prim::{ComplexOp, Prim};
 pub use program::Program;
-pub use tables::{ProverInstance, Traces};
+pub use tables::{ProgramInstance, Traces};
 pub use types::{ExprId, WIdx, WitnessAllocator};
