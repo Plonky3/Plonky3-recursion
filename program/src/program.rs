@@ -9,7 +9,7 @@ pub struct Program<F> {
     /// Primitive operations in topological order
     pub prim_ops: Vec<Prim<F>>,
     /// Complex operations (non-primitive)
-    pub complex_ops: Vec<ComplexOp<F>>,
+    pub complex_ops: Vec<ComplexOp>,
     /// Public input witness indices
     pub public_rows: Vec<WIdx>,
     /// Total number of public field elements
