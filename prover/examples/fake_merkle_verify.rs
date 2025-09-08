@@ -1,11 +1,13 @@
+use std::env;
+
 /// Fake Merkle verification circuit: Prove knowledge of a leaf in a Merkle tree
 /// Public inputs: leaf_hash, expected_root
 /// Private inputs: merkle path (siblings + directions)
 use p3_baby_bear::BabyBear;
 use p3_field::PrimeCharacteristicRing;
-use p3_program::{circuit::Circuit, ComplexOpPrivateData, FakeMerklePrivateData};
+use p3_program::circuit::Circuit;
+use p3_program::{ComplexOpPrivateData, FakeMerklePrivateData};
 use p3_prover::MultiTableProver;
-use std::env;
 
 type F = BabyBear;
 

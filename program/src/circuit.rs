@@ -1,11 +1,11 @@
-use crate::{
-    expr::{Expr, ExprArena},
-    prim::{ComplexOp, Prim},
-    program::Program,
-    types::{ComplexOpId, ExprId, WIdx, WitnessAllocator},
-};
-use p3_field::PrimeCharacteristicRing;
 use std::collections::HashMap;
+
+use p3_field::PrimeCharacteristicRing;
+
+use crate::expr::{Expr, ExprArena};
+use crate::prim::{ComplexOp, Prim};
+use crate::program::Program;
+use crate::types::{ComplexOpId, ExprId, WIdx, WitnessAllocator};
 
 /// Type of complex operation for circuit building
 #[derive(Debug, Clone, PartialEq)]
@@ -280,9 +280,10 @@ impl<F: Clone> Default for Circuit<F> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use p3_baby_bear::BabyBear;
     use p3_field::PrimeCharacteristicRing;
+
+    use super::*;
 
     #[test]
     fn test_circuit_basic_api() {

@@ -1,7 +1,8 @@
 #![allow(clippy::needless_range_loop)]
 use p3_air::{Air, AirBuilder, BaseAir};
 use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
-use p3_matrix::{dense::RowMajorMatrix, Matrix};
+use p3_matrix::dense::RowMajorMatrix;
+use p3_matrix::Matrix;
 use p3_program::tables::MulTrace;
 
 use super::utils::pad_to_power_of_two;
@@ -169,13 +170,15 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::air::test_utils::build_test_config;
     use p3_baby_bear::BabyBear as Val;
-    use p3_field::{extension::BinomialExtensionField, BasedVectorSpace, Field};
+    use p3_field::extension::BinomialExtensionField;
+    use p3_field::{BasedVectorSpace, Field};
     use p3_matrix::dense::RowMajorMatrix;
     use p3_program::tables::MulTrace;
     use p3_uni_stark::{prove, verify};
+
+    use super::*;
+    use crate::air::test_utils::build_test_config;
 
     #[test]
     fn prove_verify_mul_base_field() {
