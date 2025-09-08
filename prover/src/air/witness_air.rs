@@ -26,7 +26,9 @@ impl<F: Field, const D: usize> WitnessAir<F, D> {
 
     /// Convert WitnessTrace to RowMajorMatrix for proving with generic extension degree D
     /// Layout: [value[0..D-1], index]
-    pub fn trace_to_matrix<ExtF: BasedVectorSpace<F>>(trace: &WitnessTrace<ExtF>) -> RowMajorMatrix<F> {
+    pub fn trace_to_matrix<ExtF: BasedVectorSpace<F>>(
+        trace: &WitnessTrace<ExtF>,
+    ) -> RowMajorMatrix<F> {
         let height = trace.values.len();
         assert_eq!(
             height,
@@ -103,8 +105,11 @@ mod tests {
         // Use D=1; values can be arbitrary (unused by constraints)
         let values: Vec<Val> = vec![Val::from_u64(123); n];
         let indices: Vec<u32> = (0..n as u32).collect();
-        
-        let trace = WitnessTrace { values, index: indices };
+
+        let trace = WitnessTrace {
+            values,
+            index: indices,
+        };
         let matrix = WitnessAir::<Val, 1>::trace_to_matrix(&trace);
         assert_eq!(matrix.height(), n);
         assert_eq!(matrix.width(), 2);
