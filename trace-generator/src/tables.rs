@@ -375,7 +375,7 @@ impl<
 mod tests {
     use crate::circuit::Circuit;
     use p3_baby_bear::BabyBear;
-    use p3_field::{PrimeCharacteristicRing, extension::BinomialExtensionField};
+    use p3_field::{BasedVectorSpace, PrimeCharacteristicRing, extension::BinomialExtensionField};
 
     #[test]
     fn test_table_generation_basic() {
@@ -532,10 +532,25 @@ mod tests {
         let program = circuit.build();
         let mut prover = program.instantiate_prover();
 
-        // Set public inputs to extension field values - use simple values
-        let x_val = ExtField::from(BabyBear::from_u64(1)); // [1, 0, 0, 0]
-        let y_val = ExtField::from(BabyBear::from_u64(2)); // [2, 0, 0, 0]  
-        let z_val = ExtField::from(BabyBear::from_u64(3)); // [3, 0, 0, 0]
+        // Set public inputs to genuine extension field values with ALL non-zero coefficients
+        let x_val = ExtField::from_basis_coefficients_slice(&[
+            BabyBear::from_u64(1), // a0
+            BabyBear::from_u64(2), // a1
+            BabyBear::from_u64(3), // a2
+            BabyBear::from_u64(4), // a3
+        ]).unwrap();
+        let y_val = ExtField::from_basis_coefficients_slice(&[
+            BabyBear::from_u64(5), // b0
+            BabyBear::from_u64(6), // b1
+            BabyBear::from_u64(7), // b2
+            BabyBear::from_u64(8), // b3
+        ]).unwrap();
+        let z_val = ExtField::from_basis_coefficients_slice(&[
+            BabyBear::from_u64(9),  // c0
+            BabyBear::from_u64(10), // c1
+            BabyBear::from_u64(11), // c2
+            BabyBear::from_u64(12), // c3
+        ]).unwrap();
 
         prover.set_public_inputs(&[x_val, y_val, z_val]).unwrap();
         let traces = prover.materialize_traces().unwrap();
@@ -550,13 +565,13 @@ mod tests {
         assert_eq!(traces.mul_trace.lhs_values.len(), 1);
         assert_eq!(traces.add_trace.lhs_values.len(), 1);
 
-        // Verify mul operation: y * z = 2 * 3 = 6 (in extension field: [6, 0, 0, 0])
+        // Verify mul operation: y * z with genuine extension field multiplication
         let expected_yz = y_val * z_val;
         assert_eq!(traces.mul_trace.lhs_values[0], y_val);
         assert_eq!(traces.mul_trace.rhs_values[0], z_val);
         assert_eq!(traces.mul_trace.result_values[0], expected_yz);
 
-        // Verify add operation: x + yz = 1 + 6 = 7 (in extension field: [7, 0, 0, 0])
+        // Verify add operation: x + yz with genuine extension field addition
         let expected_result = x_val + expected_yz;
         assert_eq!(traces.add_trace.lhs_values[0], x_val);
         assert_eq!(traces.add_trace.rhs_values[0], expected_yz);
