@@ -1,4 +1,5 @@
 use core::fmt;
+
 use serde::{Deserialize, Serialize};
 
 /// Witness index type - a unique identifier for extension field values in the global witness bus
