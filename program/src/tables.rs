@@ -1,9 +1,8 @@
-use crate::{
-    prim::{ComplexOpPrivateData, Prim},
-    program::Program,
-    types::{ComplexOpId, WIdx},
-};
 use p3_field::PrimeCharacteristicRing;
+
+use crate::prim::{ComplexOpPrivateData, Prim};
+use crate::program::Program;
+use crate::types::{ComplexOpId, WIdx};
 
 /// Execution traces for all tables
 #[derive(Debug, Clone)]
@@ -521,9 +520,11 @@ impl<
 
 #[cfg(test)]
 mod tests {
-    use crate::circuit::Circuit;
     use p3_baby_bear::BabyBear;
-    use p3_field::{BasedVectorSpace, PrimeCharacteristicRing, extension::BinomialExtensionField};
+    use p3_field::extension::BinomialExtensionField;
+    use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
+
+    use crate::circuit::Circuit;
 
     #[test]
     fn test_table_generation_basic() {
