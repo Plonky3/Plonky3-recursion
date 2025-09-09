@@ -1,3 +1,1 @@
-pub fn main() {
-    println!("Hello, world!");
-}
+pub mod recursive_traits;
