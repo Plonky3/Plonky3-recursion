@@ -1,5 +1,6 @@
 
 [workspace]
+resolver = "2"
 members = [
     "challenger-air",
     "field-air",
@@ -38,7 +39,7 @@ p3-symmetric = { git = "https://github.com/Plonky3/Plonky3", version = "0.3.0" }
 p3-uni-stark = { git = "https://github.com/Plonky3/Plonky3", version = "0.3.0" }
 
 # Other common dependencies
-rand = "0.9.2"
+rand = { version = "0.9.2", default-features = false, features = ["small_rng"] }
 serde = { version = "1.0", default-features = false, features = ["derive", "alloc"] }
 
 # Local dependencies

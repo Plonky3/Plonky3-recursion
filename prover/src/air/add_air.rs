@@ -1,8 +1,10 @@
 #![allow(clippy::needless_range_loop)]
+use alloc::vec::Vec;
+
 use p3_air::{Air, AirBuilder, BaseAir};
 use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
-use p3_matrix::dense::RowMajorMatrix;
 use p3_matrix::Matrix;
+use p3_matrix::dense::RowMajorMatrix;
 use p3_program::tables::AddTrace;
 
 use super::utils::pad_to_power_of_two;
@@ -119,9 +121,11 @@ where
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec;
+
     use p3_baby_bear::BabyBear as Val;
-    use p3_field::extension::BinomialExtensionField;
     use p3_field::BasedVectorSpace;
+    use p3_field::extension::BinomialExtensionField;
     use p3_matrix::dense::RowMajorMatrix;
     use p3_program::tables::AddTrace;
     use p3_uni_stark::{prove, verify};

@@ -1,7 +1,13 @@
 [package]
 name = "p3-prover"
-version = "0.1.0"
-edition = "2021"
+description.workspace = true
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [dependencies]
 p3-air.workspace = true
@@ -17,13 +23,13 @@ p3-merkle-tree.workspace = true
 p3-program.workspace = true
 p3-symmetric.workspace = true
 p3-uni-stark.workspace = true
-postcard = { version = "1.0", features = ["alloc"] }
+postcard = { version = "1.0", default-features = false, features = ["alloc"] }
 rand.workspace = true
 
 [dev-dependencies]
-postcard = { version = "1.0", features = ["alloc"] }
+postcard = { version = "1.0", default-features = false, features = ["alloc"] }
 rand.workspace = true
-tracing = "0.1.40"
+tracing = { version = "0.1.40", default-features = false, features = ["attributes"] }
 
 [[example]]
 name = "fibonacci"
