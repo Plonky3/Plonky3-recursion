@@ -1,4 +1,6 @@
 /// Shared utilities for AIR implementations
+use alloc::vec::Vec;
+
 use p3_field::Field;
 
 /// Helper to pad trace values to power-of-two height by repeating the last row

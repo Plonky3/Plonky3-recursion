@@ -1,3 +1,7 @@
+#![no_std]
+
+extern crate alloc;
+
 pub mod air;
 pub mod config;
 pub mod prover;

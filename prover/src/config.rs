@@ -3,7 +3,7 @@ use p3_challenger::DuplexChallenger as Challenger;
 use p3_commit::ExtensionMmcs;
 use p3_dft::Radix2DitParallel as Dft;
 use p3_field::extension::BinomialExtensionField;
-use p3_fri::{create_test_fri_params, TwoAdicFriPcs as Pcs};
+use p3_fri::{TwoAdicFriPcs as Pcs, create_test_fri_params};
 use p3_merkle_tree::MerkleTreeMmcs;
 use p3_symmetric::{PaddingFreeSponge as MyHash, TruncatedPermutation as MyCompress};
 use p3_uni_stark::StarkConfig;
@@ -26,8 +26,8 @@ pub type ProverConfig = StarkConfig<
 
 /// Build a standard STARK config for BabyBear with Poseidon2, matching tests.
 pub fn build_standard_config() -> ProverConfig {
-    use rand::rngs::SmallRng;
     use rand::SeedableRng;
+    use rand::rngs::SmallRng;
 
     let mut rng = SmallRng::seed_from_u64(1);
     let perm = Perm::<16>::new_from_rng_128(&mut rng);
