@@ -9,7 +9,6 @@ use p3_field::{ExtensionField, Field};
 use p3_uni_stark::{Commitments, OpenedValues, Proof, StarkGenericConfig};
 
 /// Structure representing all the wires necessary for an input proof.
-#[derive(Clone)]
 pub struct ProofTargets<
     SC: StarkGenericConfig,
     Comm: Recursive<SC::Challenge>,
@@ -21,7 +20,6 @@ pub struct ProofTargets<
     pub degree_bits: usize,
 }
 
-#[derive(Clone)]
 pub struct CommitmentTargets<F: Field, Comm: Recursive<F>> {
     pub trace_targets: Comm,
     pub quotient_chunks_targets: Comm,
@@ -30,7 +28,6 @@ pub struct CommitmentTargets<F: Field, Comm: Recursive<F>> {
 }
 
 // TODO: Move these structures to their respective crates.
-#[derive(Clone)]
 pub struct OpenedValuesTargets<SC: StarkGenericConfig> {
     pub trace_local_targets: Vec<ExprId>,
     pub trace_next_targets: Vec<ExprId>,
@@ -83,16 +80,16 @@ pub trait Recursive<F: Field> {
 /// Trait representing the `Commitment` and `Proof` of an `Input` with type `Mmcs`.
 pub trait RecursiveMmcs<F: Field, EF: ExtensionField<F>> {
     type Input: Mmcs<F>;
-    type Commitment: Recursive<EF, Input = <Self::Input as Mmcs<F>>::Commitment> + Clone;
-    type Proof: Recursive<EF, Input = <Self::Input as Mmcs<F>>::Proof> + Clone;
+    type Commitment: Recursive<EF, Input = <Self::Input as Mmcs<F>>::Commitment>;
+    type Proof: Recursive<EF, Input = <Self::Input as Mmcs<F>>::Proof>;
 }
 
 /// Extension version of `RecursiveMmcs`.
 pub trait RecursiveExtensionMmcs<F: Field, EF: ExtensionField<F>> {
     type Input: Mmcs<EF>;
 
-    type Commitment: Recursive<EF, Input = <Self::Input as Mmcs<EF>>::Commitment> + Clone;
-    type Proof: Recursive<EF, Input = <Self::Input as Mmcs<EF>>::Proof> + Clone;
+    type Commitment: Recursive<EF, Input = <Self::Input as Mmcs<EF>>::Commitment>;
+    type Proof: Recursive<EF, Input = <Self::Input as Mmcs<EF>>::Proof>;
 }
 
 type Commitment<SC> = <<SC as StarkGenericConfig>::Pcs as Pcs<
@@ -199,7 +196,7 @@ pub trait RecursiveAir<F: Field> {
 
 // Implemeting `Recursive` for the `ProofTargets`, `CommitmentTargets` and `OpenedValuesTargets` base structures.
 impl<
-    SC: StarkGenericConfig + Clone,
+    SC: StarkGenericConfig,
     Comm: Recursive<SC::Challenge, Input = <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment>,
     OpeningProof: Recursive<SC::Challenge, Input = <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Proof>,
 > Recursive<SC::Challenge> for ProofTargets<SC, Comm, OpeningProof>
