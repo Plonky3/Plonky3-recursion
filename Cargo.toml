@@ -12,6 +12,7 @@ members = [
     "recursion",
     "symmetric-air",
 ]
+
 [workspace.package]
 description = "Plonky3 native support for recursive proof composition"
 version = "0.1.0"
