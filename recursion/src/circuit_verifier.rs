@@ -70,17 +70,19 @@ where
 
 pub fn verify_circuit<
     A,
-    SC: StarkGenericConfig,
-    Comm: Recursive<Val<SC>, D, Input = <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment>,
+    SC: StarkGenericConfig + Clone,
+    Comm: Recursive<Val<SC>, D, Input = <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment>
+        + Clone,
     InputProof: Recursive<Val<SC>, D>,
-    OpeningProof: Recursive<Val<SC>, D>,
+    OpeningProof: Recursive<Val<SC>, D, Input = <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Proof> + Clone,
     const D: usize,
     const DIGEST_ELEMS: usize,
 >(
     config: &SC,
     air: &A,
-    proof_wires: &ProofWires<SC, Comm, OpeningProof, D>,
     public_values: &Vec<WireId>,
+    lens: &mut impl Iterator<Item = usize>,
+    degree_bits: usize,
 ) -> Result<CircuitBuilder<Val<SC>, D>, CircuitError>
 where
     Val<SC>: BinomiallyExtendable<D>,
@@ -95,6 +97,8 @@ where
             D,
         >,
 {
+    let mut circuit = CircuitBuilder::<Val<SC>, D>::new();
+    let proof_wires = ProofWires::<SC, Comm, OpeningProof, D>::new(&mut circuit, lens, degree_bits);
     let ProofWires {
         commitments_wires:
             CommitmentWires {
@@ -113,7 +117,7 @@ where
             },
         opening_proof,
         degree_bits,
-    } = proof_wires;
+    } = proof_wires.clone();
     let degree = 1 << degree_bits;
     let log_quotient_degree =
         A::get_log_quotient_degree(air, 0, public_values.len(), config.is_zk());
@@ -122,7 +126,6 @@ where
     let pcs = config.pcs();
     let trace_domain = pcs.natural_domain_for_degree(degree);
     let init_trace_domain = pcs.natural_domain_for_degree(degree >> (config.is_zk()));
-    let mut circuit = CircuitBuilder::<Val<SC>, D>::new();
 
     let quotient_domain =
         pcs.create_disjoint_domain(trace_domain, 1 << (degree_bits + log_quotient_degree));
@@ -135,7 +138,7 @@ where
 
     // Challenger is called here. But we don't have the interactions or hash tables yet.
     let challenge_wires =
-        get_circuit_challenges::<SC, Comm, InputProof, OpeningProof, D>(proof_wires, &mut circuit);
+        get_circuit_challenges::<SC, Comm, InputProof, OpeningProof, D>(&proof_wires, &mut circuit);
 
     // Verify shape.
     let air_width = A::width(air);
@@ -167,7 +170,7 @@ where
     };
     coms_to_verify.extend(vec![
         (
-            trace_wires,
+            &trace_wires,
             vec![(
                 trace_domain,
                 vec![
@@ -177,11 +180,11 @@ where
             )],
         ),
         (
-            quotient_chunks_wires,
+            &quotient_chunks_wires,
             // Check the commitment on the randomized domains.
             zip_eq(
                 randomized_quotient_chunks_domains.iter(),
-                opened_quotient_chunks_wires,
+                opened_quotient_chunks_wires.clone(),
             )
             .map(|(domain, values)| (*domain, vec![(zeta, values.clone())]))
             .collect_vec(),
@@ -191,7 +194,7 @@ where
         &mut circuit,
         &challenge_wires[3..],
         &coms_to_verify,
-        opening_proof,
+        &opening_proof,
     );
 
     let zero = circuit.add_extension_constant(SC::Challenge::ZERO);
@@ -274,8 +277,8 @@ where
         &alpha,
         &vec![],
         &vec![],
-        opened_trace_local_wires,
-        opened_trace_next_wires,
+        &opened_trace_local_wires,
+        &opened_trace_next_wires,
         &public_values,
     );
 

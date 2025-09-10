@@ -599,13 +599,6 @@ where
 
     // Finally, check that
     //     folded_constraints(zeta) / Z_H(zeta) = quotient(zeta)
-    println!(
-        "In testing folded constraints {:?}, inv vanishing {:?}, quotient {:?}, mul {:?}",
-        folded_constraints,
-        sels.inv_vanishing,
-        quotient,
-        folded_constraints * sels.inv_vanishing
-    );
     if folded_constraints * sels.inv_vanishing != quotient {
         return Err(VerificationError::OodEvaluationMismatch);
     }
