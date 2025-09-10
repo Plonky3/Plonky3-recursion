@@ -12,6 +12,7 @@ use p3_uni_stark::Val;
 use crate::circuit_builder::CircuitBuilder;
 use crate::circuit_builder::CircuitError;
 use crate::circuit_builder::ExtensionWireId;
+use crate::circuit_builder::WireId;
 use crate::gates::arith_gates::AddExtensionGate;
 use crate::gates::arith_gates::MulExtensionGate;
 use crate::gates::arith_gates::SubExtensionGate;
@@ -80,16 +81,10 @@ pub fn verify_circuit<
 >(
     config: &SC,
     air: &A,
-    public_values_len: usize,
-    lens: &mut impl Iterator<Item = usize>,
-    degree_bits: usize,
-) -> Result<
-    (
-        CircuitBuilder<Val<SC>, D>,
-        ProofWires<SC, Comm, OpeningProof, D>,
-    ),
-    CircuitError,
->
+    circuit: &mut CircuitBuilder<Val<SC>, D>,
+    proof_wires: &ProofWires<SC, Comm, OpeningProof, D>,
+    public_values: &[WireId],
+) -> Result<(), CircuitError>
 where
     Val<SC>: BinomiallyExtendable<D>,
     A: RecursiveAir<Val<SC>, D>,
@@ -103,11 +98,6 @@ where
             D,
         >,
 {
-    let mut circuit = CircuitBuilder::<Val<SC>, D>::new();
-    let public_values = (0..public_values_len)
-        .map(|_| circuit.new_wire())
-        .collect::<Vec<_>>();
-    let proof_wires = ProofWires::<SC, Comm, OpeningProof, D>::new(&mut circuit, lens, degree_bits);
     let ProofWires {
         commitments_wires:
             CommitmentWires {
@@ -147,7 +137,7 @@ where
 
     // Challenger is called here. But we don't have the interactions or hash tables yet.
     let challenge_wires =
-        get_circuit_challenges::<SC, Comm, InputProof, OpeningProof, D>(&proof_wires, &mut circuit);
+        get_circuit_challenges::<SC, Comm, InputProof, OpeningProof, D>(&proof_wires, circuit);
 
     // Verify shape.
     let air_width = A::width(air);
@@ -200,7 +190,7 @@ where
         ),
     ]);
     pcs.verify_circuit(
-        &mut circuit,
+        circuit,
         &challenge_wires[3..],
         &coms_to_verify,
         &opening_proof,
@@ -224,7 +214,7 @@ where
                         Comm,
                         <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain,
                         D,
-                    >(config, *other_domain, zeta, &mut circuit);
+                    >(config, *other_domain, zeta, circuit);
 
                     let first_point = circuit
                         .add_extension_constant(SC::Challenge::from(pcs.first_point(domain)));
@@ -236,22 +226,12 @@ where
                             Comm,
                             <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain,
                             D,
-                        >(config, *other_domain, first_point, &mut circuit);
+                        >(config, *other_domain, first_point, circuit);
                     let div = circuit.new_extension_wires();
-                    MulExtensionGate::<Val<SC>, D>::add_to_circuit(
-                        &mut circuit,
-                        other_v_n,
-                        div,
-                        v_n,
-                    );
+                    MulExtensionGate::<Val<SC>, D>::add_to_circuit(circuit, other_v_n, div, v_n);
 
                     let new_total = circuit.new_extension_wires();
-                    MulExtensionGate::<Val<SC>, D>::add_to_circuit(
-                        &mut circuit,
-                        total,
-                        v_n,
-                        new_total,
-                    );
+                    MulExtensionGate::<Val<SC>, D>::add_to_circuit(circuit, total, v_n, new_total);
                     total = new_total;
                 });
             total
@@ -267,21 +247,21 @@ where
             let e_i_wire =
                 circuit.add_extension_constant(SC::Challenge::ith_basis_element(e_i).unwrap());
             let inner_mul = circuit.new_extension_wires();
-            MulExtensionGate::<Val<SC>, D>::add_to_circuit(&mut circuit, e_i_wire, *c, inner_mul);
+            MulExtensionGate::<Val<SC>, D>::add_to_circuit(circuit, e_i_wire, *c, inner_mul);
             let new_s = circuit.new_extension_wires();
-            AddExtensionGate::<Val<SC>, D>::add_to_circuit(&mut circuit, cur_s, inner_mul, new_s);
+            AddExtensionGate::<Val<SC>, D>::add_to_circuit(circuit, cur_s, inner_mul, new_s);
             cur_s = inner_mul;
         }
         let mul = circuit.new_extension_wires();
-        MulExtensionGate::<Val<SC>, D>::add_to_circuit(&mut circuit, cur_s, zp, mul);
+        MulExtensionGate::<Val<SC>, D>::add_to_circuit(circuit, cur_s, zp, mul);
         let add_wire = circuit.new_extension_wires();
-        AddExtensionGate::<Val<SC>, D>::add_to_circuit(&mut circuit, quotient, mul, add_wire);
+        AddExtensionGate::<Val<SC>, D>::add_to_circuit(circuit, quotient, mul, add_wire);
         quotient = add_wire;
     }
 
-    let sels = pcs.selectors_at_point_circuit(&mut circuit, &init_trace_domain, &zeta);
+    let sels = pcs.selectors_at_point_circuit(circuit, &init_trace_domain, &zeta);
     let folded_constraints = air.eval_folded_circuit::<SC::Challenge>(
-        &mut circuit,
+        circuit,
         &sels,
         &alpha,
         &vec![],
@@ -294,16 +274,16 @@ where
     // Compute folded_constraints * sels.inv_vanishing.
     let folded_mul = circuit.new_extension_wires();
     MulExtensionGate::<Val<SC>, D>::add_to_circuit(
-        &mut circuit,
+        circuit,
         folded_constraints,
         sels.inv_vanishing,
         folded_mul,
     );
 
     // Check that folded_constraints * sels.inv_vanishing == quotient
-    SubExtensionGate::<Val<SC>, D>::add_to_circuit(&mut circuit, folded_mul, quotient, zero);
+    SubExtensionGate::<Val<SC>, D>::add_to_circuit(circuit, folded_mul, quotient, zero);
 
-    Ok((circuit, proof_wires))
+    Ok(())
 }
 
 fn vanishing_poly_at_point_circuit<

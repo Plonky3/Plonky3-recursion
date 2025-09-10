@@ -15,7 +15,9 @@ use p3_matrix::dense::RowMajorMatrixView;
 use p3_matrix::stack::VerticalPair;
 use p3_matrix::{Matrix, dense::RowMajorMatrix};
 use p3_merkle_tree::MerkleTreeMmcs;
-use p3_recursion::circuit_builder::{CircuitBuilder, ExtensionWireId, WireId, symbolic_to_circuit};
+use p3_recursion::circuit_builder::{
+    CircuitBuilder, CircuitError, ExtensionWireId, WireId, symbolic_to_circuit,
+};
 use p3_recursion::circuit_verifier::verify_circuit;
 use p3_recursion::gates::arith_gates::{AddExtensionGate, MulExtensionGate};
 use p3_recursion::recursive_pcs::{
@@ -326,7 +328,7 @@ fn test_symbolic_to_circuit() {
 }
 
 #[test]
-fn test_fibonacci_verifier() {
+fn test_fibonacci_verifier() -> Result<(), CircuitError> {
     let mut rng = SmallRng::seed_from_u64(1);
     let n = 1 << 3;
     let x = 21;
@@ -391,8 +393,36 @@ fn test_fibonacci_verifier() {
 
     let degree_bits = proof.degree_bits;
 
-    // Build a new circuit for a proof verification, and return the proof wires along with the circuit.
-    let (mut circuit_builder, proof_circuit) = verify_circuit::<
+    let mut circuit_builder = CircuitBuilder::<F, D>::new();
+
+    // Create a new `ProofWires` instance.
+    let proof_wires = ProofWires::<
+        MyConfig,
+        HashWires<DIGEST_ELEMS>,
+        FriProofWires<
+            F,
+            Challenge,
+            RecExtensionValMmcs<
+                F,
+                Challenge,
+                DIGEST_ELEMS,
+                D,
+                RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>,
+            >,
+            InputProofWires<F, RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>, D>,
+            WireId,
+            D,
+        >,
+        D,
+    >::new(&mut circuit_builder, &mut all_lens, degree_bits);
+
+    // Add public input wires.
+    let pis_wires = (0..pis.len())
+        .map(|_| circuit_builder.new_wire())
+        .collect_vec();
+
+    // Add the circuit for proof verification to the `circuit_builder`.
+    verify_circuit::<
         FibonacciAir,
         MyConfig,
         HashWires<DIGEST_ELEMS>,
@@ -403,15 +433,19 @@ fn test_fibonacci_verifier() {
     >(
         &config,
         &FibonacciAir {},
-        pis.len(),
-        &mut all_lens,
-        degree_bits,
+        &mut circuit_builder,
+        &proof_wires,
+        &pis_wires,
     )
     .unwrap();
 
-    let res = proof_circuit.set_wires(&mut circuit_builder, proof);
+    // Set the proof wires and the public input wires.
+    proof_wires.set_wires(&mut circuit_builder, proof)?;
+    for (pi_w, pi) in pis_wires.iter().zip_eq(pis.iter()) {
+        circuit_builder.set_wire_value(*pi_w, *pi)?;
+    }
 
-    assert!(res.is_ok());
+    Ok(())
 }
 
 // `Verify` function which returns the `alpha` challenge used to fold the constraints, as well as the result of folding the constraints. It is used to test `symbolic_to_constraints`.
