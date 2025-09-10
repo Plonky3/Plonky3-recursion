@@ -16,6 +16,7 @@ use p3_matrix::stack::VerticalPair;
 use p3_matrix::{Matrix, dense::RowMajorMatrix};
 use p3_merkle_tree::MerkleTreeMmcs;
 use p3_recursion::circuit_builder::{CircuitBuilder, ExtensionWireId, WireId, symbolic_to_circuit};
+use p3_recursion::circuit_verifier::verify_circuit;
 use p3_recursion::gates::arith_gates::{AddExtensionGate, MulExtensionGate};
 use p3_recursion::recursive_pcs::{
     FriProofWires, HashWires, InputProofWires, RecExtensionValMmcs, RecValMmcs,
@@ -350,8 +351,6 @@ fn test_fibonacci_verifier() {
     const DIGEST_ELEMS: usize = 8;
 
     // Initialize the circuit builder.
-    let mut circuit_builder = &mut CircuitBuilder::new();
-
     let proof_clone = proof.clone();
 
     // Determine the lengths of all the vectors within the proof.
@@ -375,26 +374,40 @@ fn test_fibonacci_verifier() {
         D,
     >::lens(&proof_clone);
 
-    // Add the wires for the proof.
-    let proof_circuit = ProofWires::<
-        MyConfig,
-        HashWires<DIGEST_ELEMS>,
-        FriProofWires<
+    type OpeningProof = FriProofWires<
+        F,
+        Challenge,
+        RecExtensionValMmcs<
             F,
             Challenge,
-            RecExtensionValMmcs<
-                F,
-                Challenge,
-                DIGEST_ELEMS,
-                D,
-                RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>,
-            >,
-            InputProofWires<F, RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>, D>,
-            WireId,
+            DIGEST_ELEMS,
             D,
+            RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>,
         >,
+        InputProofWires<F, RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>, D>,
+        WireId,
         D,
-    >::new(circuit_builder, &mut all_lens, proof.degree_bits);
+    >;
+
+    let degree_bits = proof.degree_bits;
+
+    // Build a new circuit for a proof verification, and return the proof wires along with the circuit.
+    let (mut circuit_builder, proof_circuit) = verify_circuit::<
+        FibonacciAir,
+        MyConfig,
+        HashWires<DIGEST_ELEMS>,
+        InputProofWires<F, RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>, D>,
+        OpeningProof,
+        D,
+        DIGEST_ELEMS,
+    >(
+        &config,
+        &FibonacciAir {},
+        pis.len(),
+        &mut all_lens,
+        degree_bits,
+    )
+    .unwrap();
 
     let res = proof_circuit.set_wires(&mut circuit_builder, proof);
 

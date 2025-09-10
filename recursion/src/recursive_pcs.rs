@@ -4,14 +4,22 @@ use std::{array, iter, marker::PhantomData};
 
 use crate::{
     circuit_builder::{CircuitBuilder, ExtensionWireId, WireId},
-    recursive_traits::{Recursive, RecursiveExtensionMmcs, RecursiveMmcs},
+    gates::arith_gates::{MulExtensionGate, SubExtensionGate},
+    recursive_traits::{
+        Recursive, RecursiveExtensionMmcs, RecursiveLagrangeSels, RecursiveMmcs, RecursivePcs,
+    },
 };
+use p3_fri::TwoAdicFriPcs;
 
-use p3_commit::{BatchOpening, ExtensionMmcs};
-use p3_field::{ExtensionField, Field, PackedValue};
+use p3_commit::{BatchOpening, ExtensionMmcs, PolynomialSpace};
+use p3_field::{
+    ExtensionField, Field, PackedValue, TwoAdicField, coset::TwoAdicMultiplicativeCoset,
+};
+use p3_field::{PrimeCharacteristicRing, extension::BinomiallyExtendable};
 use p3_fri::{CommitPhaseProofStep, FriProof, QueryProof};
 use p3_merkle_tree::MerkleTreeMmcs;
 use p3_symmetric::{CryptographicHasher, Hash, PseudoCompressionFunction};
+use p3_uni_stark::{Domain, StarkGenericConfig, Val};
 use serde::{Deserialize, Serialize};
 
 /// `Recursive` version of `FriProof`.
@@ -141,7 +149,10 @@ impl<
     }
 
     fn num_challenges(&self) -> usize {
-        0
+        1 // alpha
+        + self.commit_phase_commits.len() // Observe each commit and sample a beta challenge
+        + self.final_poly.len() // Observe the final polynomial coefficients
+        + self.query_proofs.len() // Sample an index for each query proof.
     }
 
     fn lens(input: &Self::Input) -> impl Iterator<Item = usize> {
@@ -600,6 +611,7 @@ impl<F: Field, const D: usize> Recursive<F, D> for Witness {
     }
 }
 
+#[derive(Clone)]
 /// `Recursive` version of a `MerkleTreeMmcs` where the leaf and digest elements are base field values.
 pub struct RecValMmcs<F: Field, const DIGEST_ELEMS: usize, H, C>
 where
@@ -630,6 +642,7 @@ where
     type Proof = HashProofWires<DIGEST_ELEMS>;
 }
 
+#[derive(Clone)]
 /// `Recursive` version of an `ExtensionFieldMmcs` where the inner `Mmcs` is a `MerkleTreeMmcs`.
 pub struct RecExtensionValMmcs<
     F: Field,
@@ -712,5 +725,133 @@ impl<F: Field, Inner: RecursiveMmcs<F, D>, const D: usize> Recursive<F, D>
             all_lens.extend(BatchOpeningWires::<F, Inner, D>::lens(batch_opening));
         }
         all_lens.into_iter()
+    }
+}
+
+//Implement RecursivePcs for TwoAdicFriPcs.
+impl<
+    SC: StarkGenericConfig,
+    Dft,
+    Comm: Recursive<Val<SC>, D>,
+    // OpeningProof: Recursive<Val<SC>, D>,
+    InputMmcs,
+    RecursiveInputProof: Recursive<Val<SC>, D, Input = InputProof>,
+    InputProof,
+    RecursiveFriMmcs: RecursiveExtensionMmcs<Val<SC>, SC::Challenge, D, Input = FriMmcs>,
+    FriMmcs,
+    const D: usize,
+>
+    RecursivePcs<
+        SC,
+        RecursiveInputProof,
+        FriProofWires<Val<SC>, SC::Challenge, RecursiveFriMmcs, RecursiveInputProof, WireId, D>,
+        Comm,
+        TwoAdicMultiplicativeCoset<Val<SC>>,
+        D,
+    > for TwoAdicFriPcs<Val<SC>, Dft, InputMmcs, FriMmcs>
+where
+    Domain<SC>: PolynomialSpace,
+    Val<SC>: TwoAdicField + BinomiallyExtendable<D>,
+{
+    type RecursiveProof =
+        FriProofWires<Val<SC>, SC::Challenge, RecursiveFriMmcs, RecursiveInputProof, WireId, D>;
+
+    fn get_challenges_circuit(
+        circuit: &mut CircuitBuilder<p3_uni_stark::Val<SC>, D>,
+        proof_wires: &crate::recursive_traits::ProofWires<SC, Comm, Self::RecursiveProof, D>,
+    ) -> Vec<ExtensionWireId<D>> {
+        proof_wires.opened_values_wires.get_challenges(circuit)
+    }
+
+    fn verify_circuit(
+        &self,
+        _circuit: &mut CircuitBuilder<p3_uni_stark::Val<SC>, D>,
+        _challenges: &[ExtensionWireId<D>],
+        _commitments_with_opening_points: &[(
+            &Comm,
+            Vec<(
+                TwoAdicMultiplicativeCoset<Val<SC>>,
+                Vec<([usize; D], Vec<[usize; D]>)>,
+            )>,
+        )],
+        _opening_proof: &Self::RecursiveProof,
+    ) {
+        // TODO
+    }
+
+    fn selectors_at_point_circuit(
+        &self,
+        circuit: &mut CircuitBuilder<p3_uni_stark::Val<SC>, D>,
+        domain: &TwoAdicMultiplicativeCoset<Val<SC>>,
+        point: &ExtensionWireId<D>,
+    ) -> crate::recursive_traits::RecursiveLagrangeSels<D> {
+        // Constants that we will need.
+        let shift_inv = circuit.add_extension_constant(SC::Challenge::from(domain.shift_inverse()));
+        let one = circuit.add_extension_constant(SC::Challenge::from(Val::<SC>::ONE));
+        let subgroup_gen_inv = circuit
+            .add_extension_constant(SC::Challenge::from(domain.subgroup_generator().inverse()));
+        let exp = circuit.add_extension_constant(SC::Challenge::from_usize(domain.size()));
+
+        // Unshifted and z_h
+        let unshifted_point: [usize; D] = circuit.new_extension_wires();
+        MulExtensionGate::add_to_circuit(circuit, shift_inv, *point, unshifted_point);
+        let us_exp = circuit.new_extension_wires();
+        MulExtensionGate::add_to_circuit(circuit, unshifted_point, exp, us_exp);
+        let z_h = circuit.new_extension_wires();
+        SubExtensionGate::add_to_circuit(circuit, us_exp, one, z_h);
+
+        // Denominators
+        let us_minus_one = circuit.new_extension_wires();
+        SubExtensionGate::add_to_circuit(circuit, unshifted_point, one, us_minus_one);
+        let us_minus_gen_inv = circuit.new_extension_wires();
+        SubExtensionGate::add_to_circuit(
+            circuit,
+            unshifted_point,
+            subgroup_gen_inv,
+            us_minus_gen_inv,
+        );
+
+        // Selectors
+        let is_first_row = circuit.new_extension_wires();
+        MulExtensionGate::add_to_circuit(circuit, us_minus_one, is_first_row, z_h);
+        let is_last_row = circuit.new_extension_wires();
+        MulExtensionGate::add_to_circuit(circuit, us_minus_gen_inv, is_last_row, z_h);
+        let is_transition = us_minus_gen_inv;
+        let inv_vanishing = circuit.new_extension_wires();
+        MulExtensionGate::add_to_circuit(circuit, z_h, inv_vanishing, one);
+
+        RecursiveLagrangeSels {
+            is_first_row,
+            is_last_row,
+            is_transition,
+            inv_vanishing,
+        }
+    }
+
+    fn create_disjoint_domain(
+        &self,
+        trace_domain: TwoAdicMultiplicativeCoset<Val<SC>>,
+        degree: usize,
+    ) -> TwoAdicMultiplicativeCoset<Val<SC>> {
+        trace_domain.create_disjoint_domain(degree)
+    }
+
+    fn split_domains(
+        &self,
+        trace_domain: &TwoAdicMultiplicativeCoset<Val<SC>>,
+        degree: usize,
+    ) -> Vec<TwoAdicMultiplicativeCoset<Val<SC>>> {
+        trace_domain.split_domains(degree)
+    }
+
+    fn size(&self, trace_domain: &TwoAdicMultiplicativeCoset<Val<SC>>) -> usize {
+        trace_domain.size()
+    }
+
+    fn first_point(
+        &self,
+        trace_domain: &TwoAdicMultiplicativeCoset<Val<SC>>,
+    ) -> p3_uni_stark::Val<SC> {
+        trace_domain.first_point()
     }
 }

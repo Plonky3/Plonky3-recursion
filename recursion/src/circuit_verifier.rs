@@ -9,9 +9,9 @@ use p3_field::extension::BinomiallyExtendable;
 use p3_uni_stark::StarkGenericConfig;
 use p3_uni_stark::Val;
 
+use crate::circuit_builder::CircuitBuilder;
 use crate::circuit_builder::CircuitError;
 use crate::circuit_builder::ExtensionWireId;
-use crate::circuit_builder::{CircuitBuilder, WireId};
 use crate::gates::arith_gates::AddExtensionGate;
 use crate::gates::arith_gates::MulExtensionGate;
 use crate::gates::arith_gates::SubExtensionGate;
@@ -80,10 +80,16 @@ pub fn verify_circuit<
 >(
     config: &SC,
     air: &A,
-    public_values: &Vec<WireId>,
+    public_values_len: usize,
     lens: &mut impl Iterator<Item = usize>,
     degree_bits: usize,
-) -> Result<CircuitBuilder<Val<SC>, D>, CircuitError>
+) -> Result<
+    (
+        CircuitBuilder<Val<SC>, D>,
+        ProofWires<SC, Comm, OpeningProof, D>,
+    ),
+    CircuitError,
+>
 where
     Val<SC>: BinomiallyExtendable<D>,
     A: RecursiveAir<Val<SC>, D>,
@@ -98,6 +104,9 @@ where
         >,
 {
     let mut circuit = CircuitBuilder::<Val<SC>, D>::new();
+    let public_values = (0..public_values_len)
+        .map(|_| circuit.new_wire())
+        .collect::<Vec<_>>();
     let proof_wires = ProofWires::<SC, Comm, OpeningProof, D>::new(&mut circuit, lens, degree_bits);
     let ProofWires {
         commitments_wires:
@@ -294,7 +303,7 @@ where
     // Check that folded_constraints * sels.inv_vanishing == quotient
     SubExtensionGate::<Val<SC>, D>::add_to_circuit(&mut circuit, folded_mul, quotient, zero);
 
-    Ok(circuit)
+    Ok((circuit, proof_wires))
 }
 
 fn vanishing_poly_at_point_circuit<

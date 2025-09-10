@@ -110,7 +110,6 @@ pub trait PcsGeneration<SC: StarkGenericConfig, OpeningProof> {
 }
 
 /// Trait including the methods necessary for the recursive version of Pcs.
-/// Prepend Recursive
 pub trait RecursivePcs<
     SC: StarkGenericConfig,
     InputProof: Recursive<Val<SC>, D>,
