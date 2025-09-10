@@ -1,5 +1,5 @@
 use p3_air::AirBuilder;
-use p3_uni_stark::{PcsError, StarkGenericConfig, VerificationError, verify as base_verify};
+use p3_uni_stark::{PcsError, StarkGenericConfig, VerificationError};
 
 use crate::air::asic::Asic;
 use crate::prover::RecursiveProof;

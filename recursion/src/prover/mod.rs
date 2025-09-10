@@ -1,9 +1,8 @@
 pub mod tables;
 
 use p3_air::AirBuilder;
-use p3_uni_stark::{Proof, StarkGenericConfig, Val, prove as base_prove};
+use p3_uni_stark::{Proof, StarkGenericConfig, Val};
 
-use crate::air::alu::air::{AddAir, SubAir};
 use crate::air::asic::Asic;
 use crate::circuit_builder::gates::event::AllEvents;
 pub struct RecursiveProof<SC: StarkGenericConfig> {

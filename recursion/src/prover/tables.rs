@@ -1,19 +1,12 @@
 use p3_air::{Air, AirBuilder};
-use p3_field::Field;
 use p3_matrix::dense::RowMajorMatrix;
-#[cfg(debug_assertions)]
-use p3_uni_stark::{DebugConstraintBuilder, PcsError, Proof, VerificationError};
-use p3_uni_stark::{ProverConstraintFolder, StarkGenericConfig, SymbolicAirBuilder, Val};
+use p3_uni_stark::{
+    DebugConstraintBuilder, PcsError, Proof, ProverConstraintFolder, StarkGenericConfig,
+    SymbolicAirBuilder, Val, VerificationError,
+};
 
 use crate::circuit_builder::gates::event::AllEvents;
 
-#[cfg(not(debug_assertions))]
-pub trait AirWithTraceGenerationFromEvents<SC: StarkGenericConfig, AB: AirBuilder, F: Field>:
-    Air<SymbolicAirBuilder<Val<SC>>> + for<'a> Air<ProverConstraintFolder<'a, SC>>
-{
-    fn generate_trace(&self, all_events: &AllEvents<F>) -> RowMajorMatrix<F>;
-}
-#[cfg(debug_assertions)]
 pub trait AirWithTraceGenerationFromEvents<SC: StarkGenericConfig, AB: AirBuilder>:
     Air<SymbolicAirBuilder<Val<SC>>>
     + for<'a> Air<ProverConstraintFolder<'a, SC>>
