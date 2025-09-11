@@ -2,12 +2,12 @@
 resolver = "2"
 members = [
     "challenger-air",
+    "circuit",
+    "circuit-prover",
     "field-air",
     "fri-air",
     "interpolation-air",
     "merkle-tree-air",
-    "circuit",
-    "circuit-prover",
     "recursion",
     "symmetric-air",
 ]
@@ -43,12 +43,12 @@ serde = { version = "1.0", default-features = false, features = ["derive", "allo
 
 # Local dependencies
 p3-challenger-air = { path = "challenger-air", version = "0.1.0" }
+p3-circuit = { path = "circuit", version = "0.1.0" }
+p3-circuit-prover = { path = "circuit-prover", version = "0.1.0" }
 p3-field-air = { path = "field-air", version = "0.1.0" }
 p3-fri-air = { path = "fri-air", version = "0.1.0" }
 p3-interpolation-air = { path = "interpolation-air", version = "0.1.0" }
 p3-merkle-tree-air = { path = "merkle-tree-air", version = "0.1.0" }
-p3-circuit = { path = "circuit", version = "0.1.0" }
-p3-circuit-prover = { path = "circuit-prover", version = "0.1.0" }
 p3-recursion = { path = "recursion", version = "0.1.0" }
 p3-symmetric-air = { path = "symmetric-air", version = "0.1.0" }
 

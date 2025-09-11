@@ -1,15 +1,15 @@
 use crate::prim::{NonPrimitiveOp, Prim};
 use crate::types::WitnessId;
 
-/// Immutable circuit specification containing constraint system and metadata
+/// Static circuit specification containing constraint system and metadata
 ///
 /// This represents the compiled output of a `CircuitBuilder`. It contains:
 /// - Primitive operations (add, multiply, subtract, constants, public inputs)
 /// - Non-primitive operations (complex operations like Merkle verification)
 /// - Public input metadata and witness table structure
 ///
-/// The circuit is immutable and serializable. Use `.instantiate()` to create
-/// a `CircuitInstance` for execution with specific input values.
+/// The circuit is static and serializable. Use `.runner()` to create
+/// a `CircuitRunner` for execution with specific input values.
 #[derive(Debug, Clone)]
 pub struct Circuit<F> {
     /// Number of witness table rows
