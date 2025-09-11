@@ -4,8 +4,8 @@ use std::env;
 /// Public input: expected_result (F(n))
 use p3_baby_bear::BabyBear;
 use p3_circuit::builder::CircuitBuilder;
+use p3_circuit_prover::MultiTableProver;
 use p3_field::PrimeCharacteristicRing;
-use p3_prover::MultiTableProver;
 
 type F = BabyBear;
 

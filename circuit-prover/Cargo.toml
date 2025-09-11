@@ -1,5 +1,5 @@
 [package]
-name = "p3-prover"
+name = "p3-circuit-prover"
 description.workspace = true
 version.workspace = true
 edition.workspace = true
