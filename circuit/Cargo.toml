@@ -1,5 +1,5 @@
 [package]
-name = "p3-program"
+name = "p3-circuit"
 description.workspace = true
 version.workspace = true
 edition.workspace = true

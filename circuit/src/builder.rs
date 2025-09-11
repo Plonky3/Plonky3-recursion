@@ -2,9 +2,9 @@ use std::collections::HashMap;
 
 use p3_field::PrimeCharacteristicRing;
 
+use crate::circuit::Circuit;
 use crate::expr::{Expr, ExpressionGraph};
 use crate::prim::{NonPrimitiveOp, Prim};
-use crate::program::Program;
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};
 
 /// Type of non-primitive operation for circuit building
@@ -14,8 +14,17 @@ pub enum NonPrimitiveOpType {
     // Future: FriVerify, HashAbsorb, etc.
 }
 
-/// Circuit builder for constructing field programs
-pub struct Circuit<F> {
+/// Builder for constructing circuits using a fluent API
+///
+/// This struct provides methods to build up a computation graph by adding:
+/// - Public inputs
+/// - Constants  
+/// - Arithmetic operations (add, multiply, subtract)
+/// - Assertions (values that must equal zero)
+/// - Complex operations (like Merkle tree verification)
+///
+/// Call `.build()` to compile into an immutable `Circuit<F>` specification.
+pub struct CircuitBuilder<F> {
     /// Expression graph for building the DAG
     expressions: ExpressionGraph<F>,
     /// Witness index allocator
@@ -28,7 +37,7 @@ pub struct Circuit<F> {
     non_primitive_ops: Vec<(NonPrimitiveOpId, NonPrimitiveOpType, Vec<ExprId>)>, // (op_id, op_type, witness_exprs)
 }
 
-impl<F: Clone> Circuit<F> {
+impl<F: Clone> CircuitBuilder<F> {
     /// Create a new circuit builder
     pub fn new() -> Self {
         Self {
@@ -99,9 +108,9 @@ impl<F: Clone> Circuit<F> {
     }
 }
 
-impl<F: Clone + PrimeCharacteristicRing + PartialEq + Eq + std::hash::Hash> Circuit<F> {
-    /// Build the circuit into a Program with separate lowering and IR transformation stages
-    pub fn build(mut self) -> Program<F> {
+impl<F: Clone + PrimeCharacteristicRing + PartialEq + Eq + std::hash::Hash> CircuitBuilder<F> {
+    /// Build the circuit into a Circuit with separate lowering and IR transformation stages
+    pub fn build(mut self) -> Circuit<F> {
         // Stage 1: Lower expressions to naive primitives with constant pooling
         let (primitive_op_vec, const_pool, public_rows, expr_to_widx) = self.lower_to_primitives();
 
@@ -111,15 +120,15 @@ impl<F: Clone + PrimeCharacteristicRing + PartialEq + Eq + std::hash::Hash> Circ
         // Stage 3: IR transformations and optimizations
         let primitive_op_vec = Self::optimize_primitives(primitive_op_vec, &const_pool);
 
-        // Stage 4: Generate final program
+        // Stage 4: Generate final circuit
         let slot_count = self.witness_alloc.slot_count();
-        let mut program = Program::new(slot_count);
-        program.primitive_ops = primitive_op_vec;
-        program.non_primitive_ops = lowered_non_primitive_ops;
-        program.public_rows = public_rows;
-        program.public_flat_len = self.public_input_count;
+        let mut circuit = Circuit::new(slot_count);
+        circuit.primitive_ops = primitive_op_vec;
+        circuit.non_primitive_ops = lowered_non_primitive_ops;
+        circuit.public_rows = public_rows;
+        circuit.public_flat_len = self.public_input_count;
 
-        program
+        circuit
     }
 
     /// Stage 1: Lower expressions to primitives with constant pooling
@@ -282,7 +291,7 @@ impl<F: Clone + PrimeCharacteristicRing + PartialEq + Eq + std::hash::Hash> Circ
     }
 }
 
-impl<F: Clone> Default for Circuit<F> {
+impl<F: Clone> Default for CircuitBuilder<F> {
     fn default() -> Self {
         Self::new()
     }
@@ -297,51 +306,51 @@ mod tests {
 
     #[test]
     fn test_circuit_basic_api() {
-        let mut circuit = Circuit::<BabyBear>::new();
+        let mut builder = CircuitBuilder::<BabyBear>::new();
 
         // Test the DESIGN.txt example: 37 * x - 111 = 0
-        let x = circuit.add_public_input();
-        let c37 = circuit.add_const(BabyBear::from_u64(37));
-        let c111 = circuit.add_const(BabyBear::from_u64(111));
+        let x = builder.add_public_input();
+        let c37 = builder.add_const(BabyBear::from_u64(37));
+        let c111 = builder.add_const(BabyBear::from_u64(111));
 
-        let mul_result = circuit.mul(c37, x);
-        let sub_result = circuit.sub(mul_result, c111);
-        circuit.assert_zero(sub_result);
+        let mul_result = builder.mul(c37, x);
+        let sub_result = builder.sub(mul_result, c111);
+        builder.assert_zero(sub_result);
 
-        let program = circuit.build();
-        assert_eq!(program.slot_count, 6); // 0:zero, 1:public, 2:c37, 3:c111, 4:mul_result, 5:sub_result
+        let circuit = builder.build();
+        assert_eq!(circuit.slot_count, 6); // 0:zero, 1:public, 2:c37, 3:c111, 4:mul_result, 5:sub_result
 
         // Assert all primitive operations
-        assert_eq!(program.primitive_ops.len(), 7);
-        match &program.primitive_ops[0] {
+        assert_eq!(circuit.primitive_ops.len(), 7);
+        match &circuit.primitive_ops[0] {
             Prim::Const { out, val } => {
                 assert_eq!(out.0, 0);
                 assert_eq!(*val, BabyBear::from_u64(0));
             }
             _ => panic!("Expected Const(0)"),
         }
-        match &program.primitive_ops[1] {
+        match &circuit.primitive_ops[1] {
             Prim::Public { out, public_pos } => {
                 assert_eq!(out.0, 1);
                 assert_eq!(*public_pos, 0);
             }
             _ => panic!("Expected Public"),
         }
-        match &program.primitive_ops[2] {
+        match &circuit.primitive_ops[2] {
             Prim::Const { out, val } => {
                 assert_eq!(out.0, 2);
                 assert_eq!(*val, BabyBear::from_u64(37));
             }
             _ => panic!("Expected Const(37)"),
         }
-        match &program.primitive_ops[3] {
+        match &circuit.primitive_ops[3] {
             Prim::Const { out, val } => {
                 assert_eq!(out.0, 3);
                 assert_eq!(*val, BabyBear::from_u64(111));
             }
             _ => panic!("Expected Const(111)"),
         }
-        match &program.primitive_ops[4] {
+        match &circuit.primitive_ops[4] {
             Prim::Mul { a, b, out } => {
                 assert_eq!(a.0, 2);
                 assert_eq!(b.0, 1);
@@ -349,7 +358,7 @@ mod tests {
             }
             _ => panic!("Expected Mul"),
         }
-        match &program.primitive_ops[5] {
+        match &circuit.primitive_ops[5] {
             Prim::Sub { a, b, out } => {
                 assert_eq!(a.0, 4);
                 assert_eq!(b.0, 3);
@@ -357,7 +366,7 @@ mod tests {
             }
             _ => panic!("Expected Sub(mul_result - c111)"),
         }
-        match &program.primitive_ops[6] {
+        match &circuit.primitive_ops[6] {
             Prim::Sub { a, b, out } => {
                 assert_eq!(a.0, 5);
                 assert_eq!(b.0, 0);
@@ -366,7 +375,7 @@ mod tests {
             _ => panic!("Expected Sub assertion"),
         }
 
-        assert_eq!(program.public_flat_len, 1);
-        assert_eq!(program.public_rows, vec![WitnessId(1)]); // Public input at slot 1
+        assert_eq!(circuit.public_flat_len, 1);
+        assert_eq!(circuit.public_rows, vec![WitnessId(1)]); // Public input at slot 1
     }
 }

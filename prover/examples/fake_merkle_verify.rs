@@ -4,9 +4,9 @@ use std::env;
 /// Public inputs: leaf_hash, expected_root
 /// Private inputs: merkle path (siblings + directions)
 use p3_baby_bear::BabyBear;
+use p3_circuit::builder::CircuitBuilder;
+use p3_circuit::{FakeMerklePrivateData, NonPrimitiveOpPrivateData};
 use p3_field::PrimeCharacteristicRing;
-use p3_program::circuit::Circuit;
-use p3_program::{FakeMerklePrivateData, NonPrimitiveOpPrivateData};
 use p3_prover::MultiTableProver;
 
 type F = BabyBear;
@@ -14,33 +14,33 @@ type F = BabyBear;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let depth = env::args().nth(1).and_then(|s| s.parse().ok()).unwrap_or(3);
 
-    let mut circuit = Circuit::<F>::new();
+    let mut builder = CircuitBuilder::<F>::new();
 
     // Public inputs: leaf hash and expected root hash
-    let leaf_hash = circuit.add_public_input();
-    let expected_root = circuit.add_public_input();
+    let leaf_hash = builder.add_public_input();
+    let expected_root = builder.add_public_input();
 
     // Add fake Merkle verification operation
     // This declares that leaf_hash and expected_root are connected to witness bus
     // The AIR constraints will verify the Merkle path is valid
-    let merkle_op_id = circuit.add_fake_merkle_verify(leaf_hash, expected_root);
+    let merkle_op_id = builder.add_fake_merkle_verify(leaf_hash, expected_root);
 
-    let program = circuit.build();
-    let mut program_instance = program.instantiate();
+    let circuit = builder.build();
+    let mut runner = circuit.runner();
 
     // Set public inputs
     let leaf_value = F::from_u64(42); // Our leaf value
     let expected_root_value = compute_merkle_root_classical(leaf_value, depth);
-    program_instance.set_public_inputs(&[leaf_value, expected_root_value])?;
+    runner.set_public_inputs(&[leaf_value, expected_root_value])?;
 
     // Create private Merkle path data
     let private_data = create_merkle_path_data(leaf_value, depth);
-    program_instance.set_complex_op_private_data(
+    runner.set_complex_op_private_data(
         merkle_op_id,
         NonPrimitiveOpPrivateData::FakeMerkleVerify(private_data),
     )?;
 
-    let traces = program_instance.execute()?;
+    let traces = runner.run()?;
     let multi_prover = MultiTableProver::new();
     let proof = multi_prover.prove_all_tables(&traces)?;
     multi_prover.verify_all_tables(&proof)?;
