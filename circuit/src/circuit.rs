@@ -1,9 +1,17 @@
 use crate::prim::{NonPrimitiveOp, Prim};
 use crate::types::WitnessId;
 
-/// Main program artifact - serializable and immutable
+/// Immutable circuit specification containing constraint system and metadata
+///
+/// This represents the compiled output of a `CircuitBuilder`. It contains:
+/// - Primitive operations (add, multiply, subtract, constants, public inputs)
+/// - Non-primitive operations (complex operations like Merkle verification)
+/// - Public input metadata and witness table structure
+///
+/// The circuit is immutable and serializable. Use `.instantiate()` to create
+/// a `CircuitInstance` for execution with specific input values.
 #[derive(Debug, Clone)]
-pub struct Program<F> {
+pub struct Circuit<F> {
     /// Number of witness table rows
     pub slot_count: u32,
     /// Primitive operations in topological order
@@ -16,7 +24,7 @@ pub struct Program<F> {
     pub public_flat_len: usize,
 }
 
-impl<F> Program<F> {
+impl<F> Circuit<F> {
     pub fn new(slot_count: u32) -> Self {
         Self {
             slot_count,

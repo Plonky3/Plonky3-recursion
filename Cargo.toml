@@ -6,7 +6,7 @@ members = [
     "fri-air",
     "interpolation-air",
     "merkle-tree-air",
-    "program",
+    "circuit",
     "prover",
     "recursion",
     "symmetric-air",
@@ -47,7 +47,7 @@ p3-field-air = { path = "field-air", version = "0.1.0" }
 p3-fri-air = { path = "fri-air", version = "0.1.0" }
 p3-interpolation-air = { path = "interpolation-air", version = "0.1.0" }
 p3-merkle-tree-air = { path = "merkle-tree-air", version = "0.1.0" }
-p3-program = { path = "program", version = "0.1.0" }
+p3-circuit = { path = "circuit", version = "0.1.0" }
 p3-prover = { path = "prover", version = "0.1.0" }
 p3-recursion = { path = "recursion", version = "0.1.0" }
 p3-symmetric-air = { path = "symmetric-air", version = "0.1.0" }

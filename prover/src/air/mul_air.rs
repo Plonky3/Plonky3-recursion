@@ -2,10 +2,10 @@
 use alloc::vec::Vec;
 
 use p3_air::{Air, AirBuilder, BaseAir};
+use p3_circuit::tables::MulTrace;
 use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
-use p3_program::tables::MulTrace;
 
 use super::utils::pad_to_power_of_two;
 
@@ -175,10 +175,10 @@ mod tests {
     use alloc::vec;
 
     use p3_baby_bear::BabyBear as Val;
+    use p3_circuit::tables::MulTrace;
     use p3_field::extension::BinomialExtensionField;
     use p3_field::{BasedVectorSpace, Field};
     use p3_matrix::dense::RowMajorMatrix;
-    use p3_program::tables::MulTrace;
     use p3_uni_stark::{prove, verify};
 
     use super::*;

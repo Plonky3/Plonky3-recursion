@@ -1,7 +1,7 @@
 use p3_field::PrimeCharacteristicRing;
 
+use crate::circuit::Circuit;
 use crate::prim::{NonPrimitiveOpPrivateData, Prim};
-use crate::program::Program;
 use crate::types::{NonPrimitiveOpId, WitnessId};
 
 /// Execution traces for all tables
@@ -120,9 +120,17 @@ pub struct FakeMerkleTrace<F> {
     pub path_directions: Vec<u32>,
 }
 
-/// Prover instance for generating traces
-pub struct ProgramInstance<F> {
-    program: Program<F>,
+/// Circuit runner that executes circuits and generates execution traces
+///
+/// This struct manages the runtime execution of a `Circuit` specification:
+/// - Maintains a mutable witness table for intermediate values  
+/// - Accepts public input values and private data for complex operations
+/// - Runs all operations to generate execution traces for proving
+///
+/// Created from a `Circuit` via `.runner()`, this provides the execution
+/// layer between the immutable constraint specification and trace generation.
+pub struct CircuitRunner<F> {
+    circuit: Circuit<F>,
     witness: Vec<Option<F>>,
     /// Private data for complex operations (not on witness bus)
     complex_op_private_data: Vec<Option<NonPrimitiveOpPrivateData<F>>>,
@@ -137,34 +145,34 @@ impl<
         + PartialEq
         + std::fmt::Debug
         + PrimeCharacteristicRing,
-> ProgramInstance<F>
+> CircuitRunner<F>
 {
     /// Create a new prover instance
-    pub fn new(program: Program<F>) -> Self {
-        let witness = vec![None; program.slot_count as usize];
-        let complex_op_private_data = vec![None; program.non_primitive_ops.len()];
+    pub fn new(circuit: Circuit<F>) -> Self {
+        let witness = vec![None; circuit.slot_count as usize];
+        let complex_op_private_data = vec![None; circuit.non_primitive_ops.len()];
         Self {
-            program,
+            circuit,
             witness,
             complex_op_private_data,
         }
     }
 
-    /// Set public inputs according to Program.public_rows mapping
+    /// Set public inputs according to Circuit.public_rows mapping
     pub fn set_public_inputs(&mut self, public_values: &[F]) -> Result<(), String> {
-        if public_values.len() != self.program.public_flat_len {
+        if public_values.len() != self.circuit.public_flat_len {
             return Err(format!(
                 "Public input length mismatch: expected {}, got {}",
-                self.program.public_flat_len,
+                self.circuit.public_flat_len,
                 public_values.len()
             ));
         }
-        if self.program.public_rows.len() != self.program.public_flat_len {
-            return Err("Program missing public_rows mapping".to_string());
+        if self.circuit.public_rows.len() != self.circuit.public_flat_len {
+            return Err("Circuit missing public_rows mapping".to_string());
         }
 
         for (i, value) in public_values.iter().enumerate() {
-            let widx = self.program.public_rows[i];
+            let widx = self.circuit.public_rows[i];
             self.witness[widx.0 as usize] = Some(value.clone());
         }
 
@@ -177,17 +185,17 @@ impl<
         op_id: NonPrimitiveOpId,
         private_data: NonPrimitiveOpPrivateData<F>,
     ) -> Result<(), String> {
-        // Validate that the op_id exists in the program
-        if op_id.0 as usize >= self.program.non_primitive_ops.len() {
+        // Validate that the op_id exists in the circuit
+        if op_id.0 as usize >= self.circuit.non_primitive_ops.len() {
             return Err(format!(
-                "NonPrimitiveOpId {} out of range (program has {} complex ops)",
+                "NonPrimitiveOpId {} out of range (circuit has {} complex ops)",
                 op_id.0,
-                self.program.non_primitive_ops.len()
+                self.circuit.non_primitive_ops.len()
             ));
         }
 
         // Validate that the private data matches the operation type
-        let complex_op = &self.program.non_primitive_ops[op_id.0 as usize];
+        let complex_op = &self.circuit.non_primitive_ops[op_id.0 as usize];
         match (complex_op, &private_data) {
             (
                 crate::prim::NonPrimitiveOp::FakeMerkleVerify { .. },
@@ -201,8 +209,8 @@ impl<
         Ok(())
     }
 
-    /// Execute the program and generate traces
-    pub fn execute(mut self) -> Result<Traces<F>, String> {
+    /// Run the circuit and generate traces
+    pub fn run(mut self) -> Result<Traces<F>, String> {
         // Step 1: Execute primitives to fill witness vector
         self.execute_primitives()?;
 
@@ -229,7 +237,7 @@ impl<
     /// Execute all primitive operations to fill witness vector
     fn execute_primitives(&mut self) -> Result<(), String> {
         // Clone primitive operations to avoid borrowing issues
-        let primitive_op_vec = self.program.primitive_ops.clone();
+        let primitive_op_vec = self.circuit.primitive_ops.clone();
 
         for prim in primitive_op_vec {
             match prim {
@@ -306,7 +314,7 @@ impl<
         let mut values = Vec::new();
 
         // Collect all constants from primitive operations
-        for prim in &self.program.primitive_ops {
+        for prim in &self.circuit.primitive_ops {
             if let Prim::Const { out, val } = prim {
                 index.push(out.0);
                 values.push(val.clone());
@@ -321,7 +329,7 @@ impl<
         let mut values = Vec::new();
 
         // Collect all public inputs from primitive operations
-        for prim in &self.program.primitive_ops {
+        for prim in &self.circuit.primitive_ops {
             if let Prim::Public { out, public_pos: _ } = prim {
                 index.push(out.0);
                 let value = self.get_witness(*out)?;
@@ -340,7 +348,7 @@ impl<
         let mut result_values = Vec::new();
         let mut result_index = Vec::new();
 
-        for prim in &self.program.primitive_ops {
+        for prim in &self.circuit.primitive_ops {
             if let Prim::Add { a, b, out } = prim {
                 lhs_values.push(self.get_witness(*a)?);
                 lhs_index.push(a.0);
@@ -369,7 +377,7 @@ impl<
         let mut result_values = Vec::new();
         let mut result_index = Vec::new();
 
-        for prim in &self.program.primitive_ops {
+        for prim in &self.circuit.primitive_ops {
             if let Prim::Mul { a, b, out } = prim {
                 lhs_values.push(self.get_witness(*a)?);
                 lhs_index.push(a.0);
@@ -398,7 +406,7 @@ impl<
         let mut result_values = Vec::new();
         let mut result_index = Vec::new();
 
-        for prim in &self.program.primitive_ops {
+        for prim in &self.circuit.primitive_ops {
             if let Prim::Sub { a, b, out } = prim {
                 lhs_values.push(self.get_witness(*a)?);
                 lhs_index.push(a.0);
@@ -429,9 +437,9 @@ impl<
         let mut path_directions = Vec::new();
 
         // Process each complex operation by index to avoid borrowing conflicts
-        for op_idx in 0..self.program.non_primitive_ops.len() {
+        for op_idx in 0..self.circuit.non_primitive_ops.len() {
             // Copy out leaf/root to end immutable borrow immediately
-            let (leaf, root) = match &self.program.non_primitive_ops[op_idx] {
+            let (leaf, root) = match &self.circuit.non_primitive_ops[op_idx] {
                 crate::prim::NonPrimitiveOp::FakeMerkleVerify { leaf, root } => (*leaf, *root),
             };
 
@@ -510,11 +518,11 @@ impl<
         + PartialEq
         + std::fmt::Debug
         + PrimeCharacteristicRing,
-> Program<F>
+> Circuit<F>
 {
-    /// Create a program instance for execution and trace materialization
-    pub fn instantiate(self) -> ProgramInstance<F> {
-        ProgramInstance::new(self)
+    /// Create a circuit runner for execution and trace generation
+    pub fn runner(self) -> CircuitRunner<F> {
+        CircuitRunner::new(self)
     }
 }
 
@@ -524,26 +532,24 @@ mod tests {
     use p3_field::extension::BinomialExtensionField;
     use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
 
-    use crate::circuit::Circuit;
+    use crate::builder::CircuitBuilder;
 
     #[test]
     fn test_table_generation_basic() {
-        let mut circuit = Circuit::<BabyBear>::new();
+        let mut builder = CircuitBuilder::<BabyBear>::new();
 
         // Simple test: x + 5 = result
-        let x = circuit.add_public_input();
-        let c5 = circuit.add_const(BabyBear::from_u64(5));
-        let _result = circuit.add(x, c5);
+        let x = builder.add_public_input();
+        let c5 = builder.add_const(BabyBear::from_u64(5));
+        let _result = builder.add(x, c5);
 
-        let program = circuit.build();
-        let mut program_instance = program.instantiate();
+        let circuit = builder.build();
+        let mut runner = circuit.runner();
 
         // Set public input: x = 3
-        program_instance
-            .set_public_inputs(&[BabyBear::from_u64(3)])
-            .unwrap();
+        runner.set_public_inputs(&[BabyBear::from_u64(3)]).unwrap();
 
-        let traces = program_instance.execute().unwrap();
+        let traces = runner.run().unwrap();
 
         // Check witness trace
         assert_eq!(
@@ -563,32 +569,30 @@ mod tests {
 
     #[test]
     fn test_toy_example_37_times_x_minus_111() {
-        let mut circuit = Circuit::<BabyBear>::new();
+        let mut builder = CircuitBuilder::<BabyBear>::new();
 
         // DESIGN.txt example: 37 * x - 111 = 0
-        let x = circuit.add_public_input();
-        let c37 = circuit.add_const(BabyBear::from_u64(37));
-        let c111 = circuit.add_const(BabyBear::from_u64(111));
+        let x = builder.add_public_input();
+        let c37 = builder.add_const(BabyBear::from_u64(37));
+        let c111 = builder.add_const(BabyBear::from_u64(111));
 
-        let mul_result = circuit.mul(c37, x);
-        let sub_result = circuit.sub(mul_result, c111);
-        circuit.assert_zero(sub_result);
+        let mul_result = builder.mul(c37, x);
+        let sub_result = builder.sub(mul_result, c111);
+        builder.assert_zero(sub_result);
 
-        let program = circuit.build();
-        println!("=== PROGRAM PRIMITIVE OPERATIONS ===");
-        for (i, prim) in program.primitive_ops.iter().enumerate() {
+        let circuit = builder.build();
+        println!("=== CIRCUIT PRIMITIVE OPERATIONS ===");
+        for (i, prim) in circuit.primitive_ops.iter().enumerate() {
             println!("{i}: {prim:?}");
         }
 
-        let slot_count = program.slot_count;
-        let mut program_instance = program.instantiate();
+        let slot_count = circuit.slot_count;
+        let mut runner = circuit.runner();
 
         // Set public input: x = 3 (should satisfy 37 * 3 - 111 = 0)
-        program_instance
-            .set_public_inputs(&[BabyBear::from_u64(3)])
-            .unwrap();
+        runner.set_public_inputs(&[BabyBear::from_u64(3)]).unwrap();
 
-        let traces = program_instance.execute().unwrap();
+        let traces = runner.run().unwrap();
 
         println!("\n=== WITNESS TRACE ===");
         for (i, (idx, val)) in traces
@@ -672,18 +676,18 @@ mod tests {
     fn test_extension_field_support() {
         type ExtField = BinomialExtensionField<BabyBear, 4>;
 
-        let mut circuit = Circuit::<ExtField>::new();
+        let mut builder = CircuitBuilder::<ExtField>::new();
 
         // Test extension field operations: x + y * z
-        let x = circuit.add_public_input();
-        let y = circuit.add_public_input();
-        let z = circuit.add_public_input();
+        let x = builder.add_public_input();
+        let y = builder.add_public_input();
+        let z = builder.add_public_input();
 
-        let yz = circuit.mul(y, z);
-        let _result = circuit.add(x, yz);
+        let yz = builder.mul(y, z);
+        let _result = builder.add(x, yz);
 
-        let program = circuit.build();
-        let mut program_instance = program.instantiate();
+        let circuit = builder.build();
+        let mut runner = circuit.runner();
 
         // Set public inputs to genuine extension field values with ALL non-zero coefficients
         let x_val = ExtField::from_basis_coefficients_slice(&[
@@ -708,10 +712,8 @@ mod tests {
         ])
         .unwrap();
 
-        program_instance
-            .set_public_inputs(&[x_val, y_val, z_val])
-            .unwrap();
-        let traces = program_instance.execute().unwrap();
+        runner.set_public_inputs(&[x_val, y_val, z_val]).unwrap();
+        let traces = runner.run().unwrap();
 
         // Verify extension field traces were generated correctly
         assert_eq!(traces.public_trace.values.len(), 3);
