@@ -15,18 +15,18 @@ pub enum Expr<F> {
     Mul { lhs: ExprId, rhs: ExprId },
 }
 
-/// Arena for storing expression DAG nodes
+/// Graph for storing expression DAG nodes
 #[derive(Debug, Clone)]
-pub struct ExprArena<F> {
+pub struct ExpressionGraph<F> {
     nodes: Vec<Expr<F>>,
 }
 
-impl<F> ExprArena<F> {
+impl<F> ExpressionGraph<F> {
     pub fn new() -> Self {
         Self { nodes: Vec::new() }
     }
 
-    /// Add an expression to the arena, returning its ID
+    /// Add an expression to the graph, returning its ID
     pub fn add_expr(&mut self, expr: Expr<F>) -> ExprId {
         let id = ExprId(self.nodes.len() as u32);
         self.nodes.push(expr);
@@ -38,13 +38,13 @@ impl<F> ExprArena<F> {
         &self.nodes[id.0 as usize]
     }
 
-    /// Get all nodes in the arena
+    /// Get all nodes in the graph
     pub fn nodes(&self) -> &[Expr<F>] {
         &self.nodes
     }
 }
 
-impl<F> Default for ExprArena<F> {
+impl<F> Default for ExpressionGraph<F> {
     fn default() -> Self {
         Self::new()
     }
@@ -59,27 +59,27 @@ mod tests {
     struct MockExtField(u64);
 
     #[test]
-    fn test_expr_arena() {
-        let mut arena = ExprArena::<MockExtField>::new();
+    fn test_expression_graph() {
+        let mut graph = ExpressionGraph::<MockExtField>::new();
 
         let const_expr = Expr::Const(MockExtField(42));
         let public_expr = Expr::Public(0);
 
-        let const_id = arena.add_expr(const_expr.clone());
-        let public_id = arena.add_expr(public_expr.clone());
+        let const_id = graph.add_expr(const_expr.clone());
+        let public_id = graph.add_expr(public_expr.clone());
 
         assert_eq!(const_id, ExprId(0));
         assert_eq!(public_id, ExprId(1));
 
-        assert_eq!(arena.get_expr(const_id), &const_expr);
-        assert_eq!(arena.get_expr(public_id), &public_expr);
+        assert_eq!(graph.get_expr(const_id), &const_expr);
+        assert_eq!(graph.get_expr(public_id), &public_expr);
 
         let add_expr = Expr::Add {
             lhs: const_id,
             rhs: public_id,
         };
-        let add_id = arena.add_expr(add_expr.clone());
+        let add_id = graph.add_expr(add_expr.clone());
         assert_eq!(add_id, ExprId(2));
-        assert_eq!(arena.get_expr(add_id), &add_expr);
+        assert_eq!(graph.get_expr(add_id), &add_expr);
     }
 }

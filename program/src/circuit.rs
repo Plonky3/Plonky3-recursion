@@ -2,10 +2,10 @@ use std::collections::HashMap;
 
 use p3_field::PrimeCharacteristicRing;
 
-use crate::expr::{Expr, ExprArena};
+use crate::expr::{Expr, ExpressionGraph};
 use crate::prim::{ComplexOp, Prim};
 use crate::program::Program;
-use crate::types::{ComplexOpId, ExprId, WIdx, WitnessAllocator};
+use crate::types::{ComplexOpId, ExprId, WitnessAllocator, WitnessIndex};
 
 /// Type of complex operation for circuit building
 #[derive(Debug, Clone, PartialEq)]
@@ -16,8 +16,8 @@ pub enum ComplexOpType {
 
 /// Circuit builder for constructing field programs
 pub struct Circuit<F> {
-    /// Expression arena for building the DAG
-    expr_arena: ExprArena<F>,
+    /// Expression graph for building the DAG
+    expressions: ExpressionGraph<F>,
     /// Witness index allocator
     witness_alloc: WitnessAllocator,
     /// Track public input positions
@@ -32,7 +32,7 @@ impl<F: Clone> Circuit<F> {
     /// Create a new circuit builder
     pub fn new() -> Self {
         Self {
-            expr_arena: ExprArena::new(),
+            expressions: ExpressionGraph::new(),
             witness_alloc: WitnessAllocator::new(),
             public_input_count: 0,
             pending_asserts: Vec::new(),
@@ -46,31 +46,31 @@ impl<F: Clone> Circuit<F> {
         self.public_input_count += 1;
 
         let public_expr = Expr::Public(public_pos);
-        self.expr_arena.add_expr(public_expr)
+        self.expressions.add_expr(public_expr)
     }
 
     /// Add a constant to the circuit
     pub fn add_const(&mut self, val: F) -> ExprId {
         let const_expr = Expr::Const(val);
-        self.expr_arena.add_expr(const_expr)
+        self.expressions.add_expr(const_expr)
     }
 
     /// Add two expressions
     pub fn add(&mut self, lhs: ExprId, rhs: ExprId) -> ExprId {
         let add_expr = Expr::Add { lhs, rhs };
-        self.expr_arena.add_expr(add_expr)
+        self.expressions.add_expr(add_expr)
     }
 
     /// Subtract two expressions  
     pub fn sub(&mut self, lhs: ExprId, rhs: ExprId) -> ExprId {
         let sub_expr = Expr::Sub { lhs, rhs };
-        self.expr_arena.add_expr(sub_expr)
+        self.expressions.add_expr(sub_expr)
     }
 
     /// Multiply two expressions
     pub fn mul(&mut self, lhs: ExprId, rhs: ExprId) -> ExprId {
         let mul_expr = Expr::Mul { lhs, rhs };
-        self.expr_arena.add_expr(mul_expr)
+        self.expressions.add_expr(mul_expr)
     }
 
     /// Assert that an expression equals zero.
@@ -84,7 +84,7 @@ impl<F: Clone> Circuit<F> {
     /// root_expr: root hash expression (output on witness bus)
     /// Returns the complex operation ID for setting private data later
     pub fn add_fake_merkle_verify(&mut self, leaf_expr: ExprId, root_expr: ExprId) -> ComplexOpId {
-        // Store the expression IDs - will be lowered to WIdx during build()
+        // Store the expression IDs - will be lowered to WitnessIndex during build()
         // Use current length as the next ComplexOpId
         let op_id = ComplexOpId(self.complex_ops.len() as u32);
         let witness_exprs = vec![leaf_expr, root_expr];
@@ -124,13 +124,13 @@ impl<F: Clone + PrimeCharacteristicRing + PartialEq + Eq + std::hash::Hash> Circ
         &mut self,
     ) -> (
         Vec<Prim<F>>,
-        HashMap<F, WIdx>,
-        Vec<WIdx>,
-        HashMap<ExprId, WIdx>,
+        HashMap<F, WitnessIndex>,
+        Vec<WitnessIndex>,
+        HashMap<ExprId, WitnessIndex>,
     ) {
         let mut prim_ops = Vec::new();
-        let mut const_pool: HashMap<F, WIdx> = HashMap::new();
-        let mut expr_to_widx: HashMap<ExprId, WIdx> = HashMap::new();
+        let mut const_pool: HashMap<F, WitnessIndex> = HashMap::new();
+        let mut expr_to_widx: HashMap<ExprId, WitnessIndex> = HashMap::new();
         let mut public_rows = Vec::new();
 
         // First, ensure zero constant always exists
@@ -143,7 +143,7 @@ impl<F: Clone + PrimeCharacteristicRing + PartialEq + Eq + std::hash::Hash> Circ
         });
 
         // Lower each expression to primitives
-        for (expr_idx, expr) in self.expr_arena.nodes().iter().enumerate() {
+        for (expr_idx, expr) in self.expressions.nodes().iter().enumerate() {
             let expr_id = ExprId(expr_idx as u32);
 
             match expr {
@@ -171,7 +171,7 @@ impl<F: Clone + PrimeCharacteristicRing + PartialEq + Eq + std::hash::Hash> Circ
                     expr_to_widx.insert(expr_id, out_widx);
                     // Track public input mapping
                     if *pos >= public_rows.len() {
-                        public_rows.resize(*pos + 1, WIdx(0));
+                        public_rows.resize(*pos + 1, WitnessIndex(0));
                     }
                     public_rows[*pos] = out_widx;
                 }
@@ -225,8 +225,8 @@ impl<F: Clone + PrimeCharacteristicRing + PartialEq + Eq + std::hash::Hash> Circ
         (prim_ops, const_pool, public_rows, expr_to_widx)
     }
 
-    /// Stage 2: Lower complex operations from ExprIds to WIdx
-    fn lower_complex_ops(&self, expr_to_widx: &HashMap<ExprId, WIdx>) -> Vec<ComplexOp> {
+    /// Stage 2: Lower complex operations from ExprIds to WitnessIndex
+    fn lower_complex_ops(&self, expr_to_widx: &HashMap<ExprId, WitnessIndex>) -> Vec<ComplexOp> {
         use crate::prim::ComplexOp;
 
         let mut lowered_ops = Vec::new();
@@ -243,11 +243,11 @@ impl<F: Clone + PrimeCharacteristicRing + PartialEq + Eq + std::hash::Hash> Circ
                     let leaf_widx = expr_to_widx
                         .get(&witness_exprs[0])
                         .copied()
-                        .expect("Leaf expression should have been lowered to WIdx");
+                        .expect("Leaf expression should have been lowered to WitnessIndex");
                     let root_widx = expr_to_widx
                         .get(&witness_exprs[1])
                         .copied()
-                        .expect("Root expression should have been lowered to WIdx");
+                        .expect("Root expression should have been lowered to WitnessIndex");
 
                     lowered_ops.push(ComplexOp::FakeMerkleVerify {
                         leaf: leaf_widx,
@@ -261,7 +261,10 @@ impl<F: Clone + PrimeCharacteristicRing + PartialEq + Eq + std::hash::Hash> Circ
     }
 
     /// Stage 3: IR transformations and optimizations
-    fn optimize_primitives(prim_ops: Vec<Prim<F>>, _const_pool: &HashMap<F, WIdx>) -> Vec<Prim<F>> {
+    fn optimize_primitives(
+        prim_ops: Vec<Prim<F>>,
+        _const_pool: &HashMap<F, WitnessIndex>,
+    ) -> Vec<Prim<F>> {
         // Future passes can be added here:
         // - Dead code elimination
         // - Common subexpression elimination
@@ -357,6 +360,6 @@ mod tests {
         }
 
         assert_eq!(program.public_flat_len, 1);
-        assert_eq!(program.public_rows, vec![WIdx(1)]); // Public input at slot 1
+        assert_eq!(program.public_rows, vec![WitnessIndex(1)]); // Public input at slot 1
     }
 }

@@ -2,7 +2,7 @@ use p3_field::PrimeCharacteristicRing;
 
 use crate::prim::{ComplexOpPrivateData, Prim};
 use crate::program::Program;
-use crate::types::{ComplexOpId, WIdx};
+use crate::types::{ComplexOpId, WitnessIndex};
 
 /// Execution traces for all tables
 #[derive(Debug, Clone)]
@@ -35,7 +35,7 @@ pub struct WitnessTrace<F> {
 /// Constant table
 #[derive(Debug, Clone)]
 pub struct ConstTrace<F> {
-    /// Transparent index column (equals the WIdx this row binds)
+    /// Transparent index column (equals the WitnessIndex this row binds)
     pub index: Vec<u32>,
     /// Constant values
     pub values: Vec<F>,
@@ -44,7 +44,7 @@ pub struct ConstTrace<F> {
 /// Public input table
 #[derive(Debug, Clone)]
 pub struct PublicTrace<F> {
-    /// Transparent index column (equals the WIdx of that public)
+    /// Transparent index column (equals the WitnessIndex of that public)
     pub index: Vec<u32>,
     /// Public input values
     pub values: Vec<F>,
@@ -239,7 +239,7 @@ impl<
                 Prim::Public { out, public_pos: _ } => {
                     // Public inputs should already be set
                     if self.witness[out.0 as usize].is_none() {
-                        return Err(format!("Public input not set for WIdx({})", out.0));
+                        return Err(format!("Public input not set for WitnessIndex({})", out.0));
                     }
                 }
                 Prim::Add { a, b, out } => {
@@ -266,17 +266,17 @@ impl<
         Ok(())
     }
 
-    fn get_witness(&self, widx: WIdx) -> Result<F, String> {
+    fn get_witness(&self, widx: WitnessIndex) -> Result<F, String> {
         self.witness
             .get(widx.0 as usize)
             .and_then(|opt| opt.as_ref())
             .cloned()
-            .ok_or_else(|| format!("Witness not set for WIdx({})", widx.0))
+            .ok_or_else(|| format!("Witness not set for WitnessIndex({})", widx.0))
     }
 
-    fn set_witness(&mut self, widx: WIdx, value: F) -> Result<(), String> {
+    fn set_witness(&mut self, widx: WitnessIndex, value: F) -> Result<(), String> {
         if widx.0 as usize >= self.witness.len() {
-            return Err(format!("WIdx({}) out of bounds", widx.0));
+            return Err(format!("WitnessIndex({}) out of bounds", widx.0));
         }
         self.witness[widx.0 as usize] = Some(value);
         Ok(())
@@ -598,7 +598,7 @@ mod tests {
             .zip(traces.witness_trace.values.iter())
             .enumerate()
         {
-            println!("Row {i}: WIdx({idx}) = {val:?}");
+            println!("Row {i}: WitnessIndex({idx}) = {val:?}");
         }
 
         println!("\n=== CONST TRACE ===");
@@ -609,7 +609,7 @@ mod tests {
             .zip(traces.const_trace.values.iter())
             .enumerate()
         {
-            println!("Row {i}: WIdx({idx}) = {val:?}");
+            println!("Row {i}: WitnessIndex({idx}) = {val:?}");
         }
 
         println!("\n=== PUBLIC TRACE ===");
@@ -620,13 +620,13 @@ mod tests {
             .zip(traces.public_trace.values.iter())
             .enumerate()
         {
-            println!("Row {i}: WIdx({idx}) = {val:?}");
+            println!("Row {i}: WitnessIndex({idx}) = {val:?}");
         }
 
         println!("\n=== MUL TRACE ===");
         for i in 0..traces.mul_trace.lhs_values.len() {
             println!(
-                "Row {}: WIdx({}) * WIdx({}) -> WIdx({}) | {:?} * {:?} -> {:?}",
+                "Row {}: WitnessIndex({}) * WitnessIndex({}) -> WitnessIndex({}) | {:?} * {:?} -> {:?}",
                 i,
                 traces.mul_trace.lhs_index[i],
                 traces.mul_trace.rhs_index[i],
@@ -640,7 +640,7 @@ mod tests {
         println!("\n=== SUB TRACE ===");
         for i in 0..traces.sub_trace.lhs_values.len() {
             println!(
-                "Row {}: WIdx({}) - WIdx({}) -> WIdx({}) | {:?} - {:?} -> {:?}",
+                "Row {}: WitnessIndex({}) - WitnessIndex({}) -> WitnessIndex({}) | {:?} - {:?} -> {:?}",
                 i,
                 traces.sub_trace.lhs_index[i],
                 traces.sub_trace.rhs_index[i],

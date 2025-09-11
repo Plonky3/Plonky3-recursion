@@ -4,15 +4,15 @@ use serde::{Deserialize, Serialize};
 
 /// Witness index type - a unique identifier for extension field values in the global witness bus
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
-pub struct WIdx(pub u32);
+pub struct WitnessIndex(pub u32);
 
-impl fmt::Display for WIdx {
+impl fmt::Display for WitnessIndex {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "w{}", self.0)
     }
 }
 
-/// Handle to an expression in the arena
+/// Handle to an expression in the graph
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ExprId(pub u32);
 
@@ -31,8 +31,8 @@ impl WitnessAllocator {
         Self { next_idx: 0 }
     }
 
-    pub fn alloc(&mut self) -> WIdx {
-        let idx = WIdx(self.next_idx);
+    pub fn alloc(&mut self) -> WitnessIndex {
+        let idx = WitnessIndex(self.next_idx);
         self.next_idx += 1;
         idx
     }
@@ -53,8 +53,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_widx_display() {
-        let idx = WIdx(42);
+    fn test_witness_index_display() {
+        let idx = WitnessIndex(42);
         assert_eq!(format!("{idx}"), "w42");
     }
 
@@ -66,9 +66,9 @@ mod tests {
         let w1 = allocator.alloc();
         let w2 = allocator.alloc();
 
-        assert_eq!(w0, WIdx(0));
-        assert_eq!(w1, WIdx(1));
-        assert_eq!(w2, WIdx(2));
+        assert_eq!(w0, WitnessIndex(0));
+        assert_eq!(w1, WitnessIndex(1));
+        assert_eq!(w2, WitnessIndex(2));
         assert_eq!(allocator.slot_count(), 3);
     }
 }
