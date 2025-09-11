@@ -3,8 +3,8 @@ use alloc::vec::Vec;
 use alloc::{format, vec};
 
 use p3_baby_bear::BabyBear as Val;
+use p3_circuit::tables::Traces;
 use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
-use p3_program::tables::Traces;
 use p3_uni_stark::{prove, verify};
 
 use crate::air::{AddAir, ConstAir, FakeMerkleVerifyAir, MulAir, PublicAir, SubAir, WitnessAir};
@@ -224,35 +224,33 @@ impl Default for MultiTableProver {
 #[cfg(test)]
 mod tests {
     use p3_baby_bear::BabyBear;
+    use p3_circuit::builder::CircuitBuilder;
     use p3_field::extension::BinomialExtensionField;
     use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
-    use p3_program::circuit::Circuit;
 
     use super::*;
 
     #[test]
     fn test_multi_table_prover_base_field() {
-        let mut circuit = Circuit::<BabyBear>::new();
+        let mut builder = CircuitBuilder::<BabyBear>::new();
 
         // Create a simple circuit: x + 5 * 2 - 3 = result
-        let x = circuit.add_public_input();
-        let c5 = circuit.add_const(BabyBear::from_u64(5));
-        let c2 = circuit.add_const(BabyBear::from_u64(2));
-        let c3 = circuit.add_const(BabyBear::from_u64(3));
+        let x = builder.add_public_input();
+        let c5 = builder.add_const(BabyBear::from_u64(5));
+        let c2 = builder.add_const(BabyBear::from_u64(2));
+        let c3 = builder.add_const(BabyBear::from_u64(3));
 
-        let mul_result = circuit.mul(c5, c2); // 5 * 2 = 10
-        let add_result = circuit.add(x, mul_result); // x + 10
-        let _final_result = circuit.sub(add_result, c3); // (x + 10) - 3
+        let mul_result = builder.mul(c5, c2); // 5 * 2 = 10
+        let add_result = builder.add(x, mul_result); // x + 10
+        let _final_result = builder.sub(add_result, c3); // (x + 10) - 3
 
-        let program = circuit.build();
-        let mut program_instance = program.instantiate();
+        let circuit = builder.build();
+        let mut runner = circuit.runner();
 
         // Set public input: x = 7, so final result = 7 + 10 - 3 = 14
-        program_instance
-            .set_public_inputs(&[BabyBear::from_u64(7)])
-            .unwrap();
+        runner.set_public_inputs(&[BabyBear::from_u64(7)]).unwrap();
 
-        let traces = program_instance.execute().unwrap();
+        let traces = runner.run().unwrap();
 
         // Create unified prover and prove all tables
         let multi_prover = MultiTableProver::new();
@@ -265,18 +263,18 @@ mod tests {
     #[test]
     fn test_multi_table_prover_extension_field() {
         type ExtField = BinomialExtensionField<BabyBear, 4>;
-        let mut circuit = Circuit::<ExtField>::new();
+        let mut builder = CircuitBuilder::<ExtField>::new();
 
         // Create a circuit with extension field operations: x * y + z
-        let x = circuit.add_public_input();
-        let y = circuit.add_public_input();
-        let z = circuit.add_public_input();
+        let x = builder.add_public_input();
+        let y = builder.add_public_input();
+        let z = builder.add_public_input();
 
-        let xy = circuit.mul(x, y);
-        let _result = circuit.add(xy, z);
+        let xy = builder.mul(x, y);
+        let _result = builder.add(xy, z);
 
-        let program = circuit.build();
-        let mut program_instance = program.instantiate();
+        let circuit = builder.build();
+        let mut runner = circuit.runner();
 
         // Set public inputs to genuine extension field values with ALL non-zero coefficients
         let x_val = ExtField::from_basis_coefficients_slice(&[
@@ -301,10 +299,8 @@ mod tests {
         ])
         .unwrap();
 
-        program_instance
-            .set_public_inputs(&[x_val, y_val, z_val])
-            .unwrap();
-        let traces = program_instance.execute().unwrap();
+        runner.set_public_inputs(&[x_val, y_val, z_val]).unwrap();
+        let traces = runner.run().unwrap();
 
         // Create unified prover and prove all tables
         let multi_prover = MultiTableProver::new(); // defaults to W=11 for D=4
