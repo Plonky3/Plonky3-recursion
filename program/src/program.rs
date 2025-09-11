@@ -1,5 +1,5 @@
 use crate::prim::{ComplexOp, Prim};
-use crate::types::WIdx;
+use crate::types::WitnessIndex;
 
 /// Main program artifact - serializable and immutable
 #[derive(Debug, Clone)]
@@ -11,7 +11,7 @@ pub struct Program<F> {
     /// Complex operations (non-primitive)
     pub complex_ops: Vec<ComplexOp>,
     /// Public input witness indices
-    pub public_rows: Vec<WIdx>,
+    pub public_rows: Vec<WitnessIndex>,
     /// Total number of public field elements
     pub public_flat_len: usize,
 }
