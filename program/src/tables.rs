@@ -1,8 +1,8 @@
 use p3_field::PrimeCharacteristicRing;
 
-use crate::prim::{ComplexOpPrivateData, Prim};
+use crate::prim::{NonPrimitiveOpPrivateData, Prim};
 use crate::program::Program;
-use crate::types::{ComplexOpId, WitnessIndex};
+use crate::types::{NonPrimitiveOpId, WitnessId};
 
 /// Execution traces for all tables
 #[derive(Debug, Clone)]
@@ -35,7 +35,7 @@ pub struct WitnessTrace<F> {
 /// Constant table
 #[derive(Debug, Clone)]
 pub struct ConstTrace<F> {
-    /// Transparent index column (equals the WitnessIndex this row binds)
+    /// Transparent index column (equals the WitnessId this row binds)
     pub index: Vec<u32>,
     /// Constant values
     pub values: Vec<F>,
@@ -44,7 +44,7 @@ pub struct ConstTrace<F> {
 /// Public input table
 #[derive(Debug, Clone)]
 pub struct PublicTrace<F> {
-    /// Transparent index column (equals the WitnessIndex of that public)
+    /// Transparent index column (equals the WitnessId of that public)
     pub index: Vec<u32>,
     /// Public input values
     pub values: Vec<F>,
@@ -125,7 +125,7 @@ pub struct ProgramInstance<F> {
     program: Program<F>,
     witness: Vec<Option<F>>,
     /// Private data for complex operations (not on witness bus)
-    complex_op_private_data: Vec<Option<ComplexOpPrivateData<F>>>,
+    complex_op_private_data: Vec<Option<NonPrimitiveOpPrivateData<F>>>,
 }
 
 impl<
@@ -142,7 +142,7 @@ impl<
     /// Create a new prover instance
     pub fn new(program: Program<F>) -> Self {
         let witness = vec![None; program.slot_count as usize];
-        let complex_op_private_data = vec![None; program.complex_ops.len()];
+        let complex_op_private_data = vec![None; program.non_primitive_op.len()];
         Self {
             program,
             witness,
@@ -174,24 +174,24 @@ impl<
     /// Set private data for a complex operation
     pub fn set_complex_op_private_data(
         &mut self,
-        op_id: ComplexOpId,
-        private_data: ComplexOpPrivateData<F>,
+        op_id: NonPrimitiveOpId,
+        private_data: NonPrimitiveOpPrivateData<F>,
     ) -> Result<(), String> {
         // Validate that the op_id exists in the program
-        if op_id.0 as usize >= self.program.complex_ops.len() {
+        if op_id.0 as usize >= self.program.non_primitive_op.len() {
             return Err(format!(
-                "ComplexOpId {} out of range (program has {} complex ops)",
+                "NonPrimitiveOpId {} out of range (program has {} complex ops)",
                 op_id.0,
-                self.program.complex_ops.len()
+                self.program.non_primitive_op.len()
             ));
         }
 
         // Validate that the private data matches the operation type
-        let complex_op = &self.program.complex_ops[op_id.0 as usize];
+        let complex_op = &self.program.non_primitive_op[op_id.0 as usize];
         match (complex_op, &private_data) {
             (
-                crate::prim::ComplexOp::FakeMerkleVerify { .. },
-                ComplexOpPrivateData::FakeMerkleVerify(_),
+                crate::prim::NonPrimitiveOp::FakeMerkleVerify { .. },
+                NonPrimitiveOpPrivateData::FakeMerkleVerify(_),
             ) => {
                 // Type match - good!
             }
@@ -229,7 +229,7 @@ impl<
     /// Execute all primitive operations to fill witness vector
     fn execute_primitives(&mut self) -> Result<(), String> {
         // Clone primitive operations to avoid borrowing issues
-        let prim_ops = self.program.prim_ops.clone();
+        let prim_ops = self.program.primitive_op.clone();
 
         for prim in prim_ops {
             match prim {
@@ -239,7 +239,7 @@ impl<
                 Prim::Public { out, public_pos: _ } => {
                     // Public inputs should already be set
                     if self.witness[out.0 as usize].is_none() {
-                        return Err(format!("Public input not set for WitnessIndex({})", out.0));
+                        return Err(format!("Public input not set for WitnessId({})", out.0));
                     }
                 }
                 Prim::Add { a, b, out } => {
@@ -266,17 +266,17 @@ impl<
         Ok(())
     }
 
-    fn get_witness(&self, widx: WitnessIndex) -> Result<F, String> {
+    fn get_witness(&self, widx: WitnessId) -> Result<F, String> {
         self.witness
             .get(widx.0 as usize)
             .and_then(|opt| opt.as_ref())
             .cloned()
-            .ok_or_else(|| format!("Witness not set for WitnessIndex({})", widx.0))
+            .ok_or_else(|| format!("Witness not set for WitnessId({})", widx.0))
     }
 
-    fn set_witness(&mut self, widx: WitnessIndex, value: F) -> Result<(), String> {
+    fn set_witness(&mut self, widx: WitnessId, value: F) -> Result<(), String> {
         if widx.0 as usize >= self.witness.len() {
-            return Err(format!("WitnessIndex({}) out of bounds", widx.0));
+            return Err(format!("WitnessId({}) out of bounds", widx.0));
         }
         self.witness[widx.0 as usize] = Some(value);
         Ok(())
@@ -306,7 +306,7 @@ impl<
         let mut values = Vec::new();
 
         // Collect all constants from primitive operations
-        for prim in &self.program.prim_ops {
+        for prim in &self.program.primitive_op {
             if let Prim::Const { out, val } = prim {
                 index.push(out.0);
                 values.push(val.clone());
@@ -321,7 +321,7 @@ impl<
         let mut values = Vec::new();
 
         // Collect all public inputs from primitive operations
-        for prim in &self.program.prim_ops {
+        for prim in &self.program.primitive_op {
             if let Prim::Public { out, public_pos: _ } = prim {
                 index.push(out.0);
                 let value = self.get_witness(*out)?;
@@ -340,7 +340,7 @@ impl<
         let mut result_values = Vec::new();
         let mut result_index = Vec::new();
 
-        for prim in &self.program.prim_ops {
+        for prim in &self.program.primitive_op {
             if let Prim::Add { a, b, out } = prim {
                 lhs_values.push(self.get_witness(*a)?);
                 lhs_index.push(a.0);
@@ -369,7 +369,7 @@ impl<
         let mut result_values = Vec::new();
         let mut result_index = Vec::new();
 
-        for prim in &self.program.prim_ops {
+        for prim in &self.program.primitive_op {
             if let Prim::Mul { a, b, out } = prim {
                 lhs_values.push(self.get_witness(*a)?);
                 lhs_index.push(a.0);
@@ -398,7 +398,7 @@ impl<
         let mut result_values = Vec::new();
         let mut result_index = Vec::new();
 
-        for prim in &self.program.prim_ops {
+        for prim in &self.program.primitive_op {
             if let Prim::Sub { a, b, out } = prim {
                 lhs_values.push(self.get_witness(*a)?);
                 lhs_index.push(a.0);
@@ -429,14 +429,14 @@ impl<
         let mut path_directions = Vec::new();
 
         // Process each complex operation by index to avoid borrowing conflicts
-        for op_idx in 0..self.program.complex_ops.len() {
+        for op_idx in 0..self.program.non_primitive_op.len() {
             // Copy out leaf/root to end immutable borrow immediately
-            let (leaf, root) = match &self.program.complex_ops[op_idx] {
-                crate::prim::ComplexOp::FakeMerkleVerify { leaf, root } => (*leaf, *root),
+            let (leaf, root) = match &self.program.non_primitive_op[op_idx] {
+                crate::prim::NonPrimitiveOp::FakeMerkleVerify { leaf, root } => (*leaf, *root),
             };
 
             // Clone private data option to avoid holding a borrow on self
-            if let Some(Some(ComplexOpPrivateData::FakeMerkleVerify(private_data))) =
+            if let Some(Some(NonPrimitiveOpPrivateData::FakeMerkleVerify(private_data))) =
                 self.complex_op_private_data.get(op_idx).cloned()
             {
                 let mut current_hash =
@@ -576,7 +576,7 @@ mod tests {
 
         let program = circuit.build();
         println!("=== PROGRAM PRIMITIVE OPERATIONS ===");
-        for (i, prim) in program.prim_ops.iter().enumerate() {
+        for (i, prim) in program.primitive_op.iter().enumerate() {
             println!("{i}: {prim:?}");
         }
 
@@ -598,7 +598,7 @@ mod tests {
             .zip(traces.witness_trace.values.iter())
             .enumerate()
         {
-            println!("Row {i}: WitnessIndex({idx}) = {val:?}");
+            println!("Row {i}: WitnessId({idx}) = {val:?}");
         }
 
         println!("\n=== CONST TRACE ===");
@@ -609,7 +609,7 @@ mod tests {
             .zip(traces.const_trace.values.iter())
             .enumerate()
         {
-            println!("Row {i}: WitnessIndex({idx}) = {val:?}");
+            println!("Row {i}: WitnessId({idx}) = {val:?}");
         }
 
         println!("\n=== PUBLIC TRACE ===");
@@ -620,13 +620,13 @@ mod tests {
             .zip(traces.public_trace.values.iter())
             .enumerate()
         {
-            println!("Row {i}: WitnessIndex({idx}) = {val:?}");
+            println!("Row {i}: WitnessId({idx}) = {val:?}");
         }
 
         println!("\n=== MUL TRACE ===");
         for i in 0..traces.mul_trace.lhs_values.len() {
             println!(
-                "Row {}: WitnessIndex({}) * WitnessIndex({}) -> WitnessIndex({}) | {:?} * {:?} -> {:?}",
+                "Row {}: WitnessId({}) * WitnessId({}) -> WitnessId({}) | {:?} * {:?} -> {:?}",
                 i,
                 traces.mul_trace.lhs_index[i],
                 traces.mul_trace.rhs_index[i],
@@ -640,7 +640,7 @@ mod tests {
         println!("\n=== SUB TRACE ===");
         for i in 0..traces.sub_trace.lhs_values.len() {
             println!(
-                "Row {}: WitnessIndex({}) - WitnessIndex({}) -> WitnessIndex({}) | {:?} - {:?} -> {:?}",
+                "Row {}: WitnessId({}) - WitnessId({}) -> WitnessId({}) | {:?} - {:?} -> {:?}",
                 i,
                 traces.sub_trace.lhs_index[i],
                 traces.sub_trace.rhs_index[i],

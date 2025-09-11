@@ -8,7 +8,7 @@ pub mod types;
 // Re-export public API
 pub use circuit::Circuit;
 pub use expr::{Expr, ExpressionGraph};
-pub use prim::{ComplexOp, ComplexOpPrivateData, FakeMerklePrivateData, Prim};
+pub use prim::{FakeMerklePrivateData, NonPrimitiveOp, NonPrimitiveOpPrivateData, Prim};
 pub use program::Program;
 pub use tables::{FakeMerkleTrace, ProgramInstance, Traces};
-pub use types::{ComplexOpId, ExprId, WitnessAllocator, WitnessIndex};
+pub use types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};
