@@ -142,7 +142,7 @@ impl<
     /// Create a new prover instance
     pub fn new(program: Program<F>) -> Self {
         let witness = vec![None; program.slot_count as usize];
-        let complex_op_private_data = vec![None; program.non_primitive_op.len()];
+        let complex_op_private_data = vec![None; program.non_primitive_ops.len()];
         Self {
             program,
             witness,
@@ -178,16 +178,16 @@ impl<
         private_data: NonPrimitiveOpPrivateData<F>,
     ) -> Result<(), String> {
         // Validate that the op_id exists in the program
-        if op_id.0 as usize >= self.program.non_primitive_op.len() {
+        if op_id.0 as usize >= self.program.non_primitive_ops.len() {
             return Err(format!(
                 "NonPrimitiveOpId {} out of range (program has {} complex ops)",
                 op_id.0,
-                self.program.non_primitive_op.len()
+                self.program.non_primitive_ops.len()
             ));
         }
 
         // Validate that the private data matches the operation type
-        let complex_op = &self.program.non_primitive_op[op_id.0 as usize];
+        let complex_op = &self.program.non_primitive_ops[op_id.0 as usize];
         match (complex_op, &private_data) {
             (
                 crate::prim::NonPrimitiveOp::FakeMerkleVerify { .. },
@@ -229,9 +229,9 @@ impl<
     /// Execute all primitive operations to fill witness vector
     fn execute_primitives(&mut self) -> Result<(), String> {
         // Clone primitive operations to avoid borrowing issues
-        let prim_ops = self.program.primitive_op.clone();
+        let primitive_op_vec = self.program.primitive_ops.clone();
 
-        for prim in prim_ops {
+        for prim in primitive_op_vec {
             match prim {
                 Prim::Const { out, val } => {
                     self.set_witness(out, val)?;
@@ -306,7 +306,7 @@ impl<
         let mut values = Vec::new();
 
         // Collect all constants from primitive operations
-        for prim in &self.program.primitive_op {
+        for prim in &self.program.primitive_ops {
             if let Prim::Const { out, val } = prim {
                 index.push(out.0);
                 values.push(val.clone());
@@ -321,7 +321,7 @@ impl<
         let mut values = Vec::new();
 
         // Collect all public inputs from primitive operations
-        for prim in &self.program.primitive_op {
+        for prim in &self.program.primitive_ops {
             if let Prim::Public { out, public_pos: _ } = prim {
                 index.push(out.0);
                 let value = self.get_witness(*out)?;
@@ -340,7 +340,7 @@ impl<
         let mut result_values = Vec::new();
         let mut result_index = Vec::new();
 
-        for prim in &self.program.primitive_op {
+        for prim in &self.program.primitive_ops {
             if let Prim::Add { a, b, out } = prim {
                 lhs_values.push(self.get_witness(*a)?);
                 lhs_index.push(a.0);
@@ -369,7 +369,7 @@ impl<
         let mut result_values = Vec::new();
         let mut result_index = Vec::new();
 
-        for prim in &self.program.primitive_op {
+        for prim in &self.program.primitive_ops {
             if let Prim::Mul { a, b, out } = prim {
                 lhs_values.push(self.get_witness(*a)?);
                 lhs_index.push(a.0);
@@ -398,7 +398,7 @@ impl<
         let mut result_values = Vec::new();
         let mut result_index = Vec::new();
 
-        for prim in &self.program.primitive_op {
+        for prim in &self.program.primitive_ops {
             if let Prim::Sub { a, b, out } = prim {
                 lhs_values.push(self.get_witness(*a)?);
                 lhs_index.push(a.0);
@@ -429,9 +429,9 @@ impl<
         let mut path_directions = Vec::new();
 
         // Process each complex operation by index to avoid borrowing conflicts
-        for op_idx in 0..self.program.non_primitive_op.len() {
+        for op_idx in 0..self.program.non_primitive_ops.len() {
             // Copy out leaf/root to end immutable borrow immediately
-            let (leaf, root) = match &self.program.non_primitive_op[op_idx] {
+            let (leaf, root) = match &self.program.non_primitive_ops[op_idx] {
                 crate::prim::NonPrimitiveOp::FakeMerkleVerify { leaf, root } => (*leaf, *root),
             };
 
@@ -576,7 +576,7 @@ mod tests {
 
         let program = circuit.build();
         println!("=== PROGRAM PRIMITIVE OPERATIONS ===");
-        for (i, prim) in program.primitive_op.iter().enumerate() {
+        for (i, prim) in program.primitive_ops.iter().enumerate() {
             println!("{i}: {prim:?}");
         }
 
