@@ -1,19 +1,34 @@
-use crate::types::WIdx;
+use crate::types::WitnessIndex;
 
 /// Primitive operations after lowering from expressions  
 /// These are the basic extension field arithmetic operations only
 #[derive(Debug, Clone)]
 pub enum Prim<F> {
     /// Set output to constant value
-    Const { out: WIdx, val: F },
+    Const { out: WitnessIndex, val: F },
     /// Set output to public input at position
-    Public { out: WIdx, public_pos: usize },
+    Public {
+        out: WitnessIndex,
+        public_pos: usize,
+    },
     /// Addition operation
-    Add { a: WIdx, b: WIdx, out: WIdx },
+    Add {
+        a: WitnessIndex,
+        b: WitnessIndex,
+        out: WitnessIndex,
+    },
     /// Subtraction operation  
-    Sub { a: WIdx, b: WIdx, out: WIdx },
+    Sub {
+        a: WitnessIndex,
+        b: WitnessIndex,
+        out: WitnessIndex,
+    },
     /// Multiplication operation
-    Mul { a: WIdx, b: WIdx, out: WIdx },
+    Mul {
+        a: WitnessIndex,
+        b: WitnessIndex,
+        out: WitnessIndex,
+    },
 }
 
 /// Complex operations that are not primitive arithmetic
@@ -22,9 +37,9 @@ pub enum Prim<F> {
 pub enum ComplexOp {
     /// Fake Merkle verification operation (simplified: single field elements)
     FakeMerkleVerify {
-        leaf: WIdx, // Public input - on witness bus (single field element)
-        root: WIdx, // Public output - on witness bus (single field element)
-                    // Private data is set separately via ComplexOpId
+        leaf: WitnessIndex, // Public input - on witness bus (single field element)
+        root: WitnessIndex, // Public output - on witness bus (single field element)
+                            // Private data is set separately via ComplexOpId
     },
     // Future: FriVerify, HashAbsorb, etc.
 }
