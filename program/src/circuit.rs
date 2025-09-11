@@ -25,7 +25,7 @@ pub struct Circuit<F> {
     /// Pending zero assertions to lower in build()
     pending_asserts: Vec<ExprId>,
     /// Non-primitive operations (without private data) - will be lowered later
-    non_primitive_op: Vec<(NonPrimitiveOpId, NonPrimitiveOpType, Vec<ExprId>)>, // (op_id, op_type, witness_exprs)
+    non_primitive_ops: Vec<(NonPrimitiveOpId, NonPrimitiveOpType, Vec<ExprId>)>, // (op_id, op_type, witness_exprs)
 }
 
 impl<F: Clone> Circuit<F> {
@@ -36,7 +36,7 @@ impl<F: Clone> Circuit<F> {
             witness_alloc: WitnessAllocator::new(),
             public_input_count: 0,
             pending_asserts: Vec::new(),
-            non_primitive_op: Vec::new(),
+            non_primitive_ops: Vec::new(),
         }
     }
 
@@ -90,9 +90,9 @@ impl<F: Clone> Circuit<F> {
     ) -> NonPrimitiveOpId {
         // Store the expression IDs - will be lowered to WitnessId during build()
         // Use current length as the next NonPrimitiveOpId
-        let op_id = NonPrimitiveOpId(self.non_primitive_op.len() as u32);
+        let op_id = NonPrimitiveOpId(self.non_primitive_ops.len() as u32);
         let witness_exprs = vec![leaf_expr, root_expr];
-        self.non_primitive_op
+        self.non_primitive_ops
             .push((op_id, NonPrimitiveOpType::FakeMerkleVerify, witness_exprs));
 
         op_id
@@ -103,19 +103,19 @@ impl<F: Clone + PrimeCharacteristicRing + PartialEq + Eq + std::hash::Hash> Circ
     /// Build the circuit into a Program with separate lowering and IR transformation stages
     pub fn build(mut self) -> Program<F> {
         // Stage 1: Lower expressions to naive primitives with constant pooling
-        let (prim_ops, const_pool, public_rows, expr_to_widx) = self.lower_to_primitives();
+        let (primitive_op_vec, const_pool, public_rows, expr_to_widx) = self.lower_to_primitives();
 
         // Stage 2: Lower non-primitive operations using the expr_to_widx mapping
         let lowered_non_primitive_ops = self.lower_non_primitive_ops(&expr_to_widx);
 
         // Stage 3: IR transformations and optimizations
-        let prim_ops = Self::optimize_primitives(prim_ops, &const_pool);
+        let primitive_op_vec = Self::optimize_primitives(primitive_op_vec, &const_pool);
 
         // Stage 4: Generate final program
         let slot_count = self.witness_alloc.slot_count();
         let mut program = Program::new(slot_count);
-        program.primitive_op = prim_ops;
-        program.non_primitive_op = lowered_non_primitive_ops;
+        program.primitive_ops = primitive_op_vec;
+        program.non_primitive_ops = lowered_non_primitive_ops;
         program.public_rows = public_rows;
         program.public_flat_len = self.public_input_count;
 
@@ -132,7 +132,7 @@ impl<F: Clone + PrimeCharacteristicRing + PartialEq + Eq + std::hash::Hash> Circ
         Vec<WitnessId>,
         HashMap<ExprId, WitnessId>,
     ) {
-        let mut prim_ops = Vec::new();
+        let mut primitive_op_vec = Vec::new();
         let mut const_pool: HashMap<F, WitnessId> = HashMap::new();
         let mut expr_to_widx: HashMap<ExprId, WitnessId> = HashMap::new();
         let mut public_rows = Vec::new();
@@ -141,7 +141,7 @@ impl<F: Clone + PrimeCharacteristicRing + PartialEq + Eq + std::hash::Hash> Circ
         let zero = F::ZERO;
         let zero_widx = self.witness_alloc.alloc();
         const_pool.insert(zero.clone(), zero_widx);
-        prim_ops.push(Prim::Const {
+        primitive_op_vec.push(Prim::Const {
             out: zero_widx,
             val: zero.clone(),
         });
@@ -158,7 +158,7 @@ impl<F: Clone + PrimeCharacteristicRing + PartialEq + Eq + std::hash::Hash> Circ
                     } else {
                         let new_widx = self.witness_alloc.alloc();
                         const_pool.insert(val.clone(), new_widx);
-                        prim_ops.push(Prim::Const {
+                        primitive_op_vec.push(Prim::Const {
                             out: new_widx,
                             val: val.clone(),
                         });
@@ -168,7 +168,7 @@ impl<F: Clone + PrimeCharacteristicRing + PartialEq + Eq + std::hash::Hash> Circ
                 }
                 Expr::Public(pos) => {
                     let out_widx = self.witness_alloc.alloc();
-                    prim_ops.push(Prim::Public {
+                    primitive_op_vec.push(Prim::Public {
                         out: out_widx,
                         public_pos: *pos,
                     });
@@ -183,7 +183,7 @@ impl<F: Clone + PrimeCharacteristicRing + PartialEq + Eq + std::hash::Hash> Circ
                     let out_widx = self.witness_alloc.alloc();
                     let a_widx = expr_to_widx[lhs];
                     let b_widx = expr_to_widx[rhs];
-                    prim_ops.push(Prim::Add {
+                    primitive_op_vec.push(Prim::Add {
                         a: a_widx,
                         b: b_widx,
                         out: out_widx,
@@ -194,7 +194,7 @@ impl<F: Clone + PrimeCharacteristicRing + PartialEq + Eq + std::hash::Hash> Circ
                     let out_widx = self.witness_alloc.alloc();
                     let a_widx = expr_to_widx[lhs];
                     let b_widx = expr_to_widx[rhs];
-                    prim_ops.push(Prim::Sub {
+                    primitive_op_vec.push(Prim::Sub {
                         a: a_widx,
                         b: b_widx,
                         out: out_widx,
@@ -205,7 +205,7 @@ impl<F: Clone + PrimeCharacteristicRing + PartialEq + Eq + std::hash::Hash> Circ
                     let out_widx = self.witness_alloc.alloc();
                     let a_widx = expr_to_widx[lhs];
                     let b_widx = expr_to_widx[rhs];
-                    prim_ops.push(Prim::Mul {
+                    primitive_op_vec.push(Prim::Mul {
                         a: a_widx,
                         b: b_widx,
                         out: out_widx,
@@ -218,7 +218,7 @@ impl<F: Clone + PrimeCharacteristicRing + PartialEq + Eq + std::hash::Hash> Circ
         // Lower pending assertions: encode z - 0 = 0 by writing a Sub with out = zero_widx
         for z_expr in &self.pending_asserts {
             if let Some(&z_widx) = expr_to_widx.get(z_expr) {
-                prim_ops.push(Prim::Sub {
+                primitive_op_vec.push(Prim::Sub {
                     a: z_widx,
                     b: zero_widx,
                     out: zero_widx,
@@ -226,7 +226,7 @@ impl<F: Clone + PrimeCharacteristicRing + PartialEq + Eq + std::hash::Hash> Circ
             }
         }
 
-        (prim_ops, const_pool, public_rows, expr_to_widx)
+        (primitive_op_vec, const_pool, public_rows, expr_to_widx)
     }
 
     /// Stage 2: Lower non-primitive operations from ExprIds to WitnessId
@@ -238,7 +238,7 @@ impl<F: Clone + PrimeCharacteristicRing + PartialEq + Eq + std::hash::Hash> Circ
 
         let mut lowered_ops = Vec::new();
 
-        for (_op_id, op_type, witness_exprs) in &self.non_primitive_op {
+        for (_op_id, op_type, witness_exprs) in &self.non_primitive_ops {
             match op_type {
                 NonPrimitiveOpType::FakeMerkleVerify => {
                     if witness_exprs.len() != 2 {
@@ -269,7 +269,7 @@ impl<F: Clone + PrimeCharacteristicRing + PartialEq + Eq + std::hash::Hash> Circ
 
     /// Stage 3: IR transformations and optimizations
     fn optimize_primitives(
-        prim_ops: Vec<Prim<F>>,
+        primitive_op_vec: Vec<Prim<F>>,
         _const_pool: &HashMap<F, WitnessId>,
     ) -> Vec<Prim<F>> {
         // Future passes can be added here:
@@ -278,7 +278,7 @@ impl<F: Clone + PrimeCharacteristicRing + PartialEq + Eq + std::hash::Hash> Circ
         // - Instruction combining
         // - Constant folding
 
-        prim_ops
+        primitive_op_vec
     }
 }
 
@@ -312,36 +312,36 @@ mod tests {
         assert_eq!(program.slot_count, 6); // 0:zero, 1:public, 2:c37, 3:c111, 4:mul_result, 5:sub_result
 
         // Assert all primitive operations
-        assert_eq!(program.primitive_op.len(), 7);
-        match &program.primitive_op[0] {
+        assert_eq!(program.primitive_ops.len(), 7);
+        match &program.primitive_ops[0] {
             Prim::Const { out, val } => {
                 assert_eq!(out.0, 0);
                 assert_eq!(*val, BabyBear::from_u64(0));
             }
             _ => panic!("Expected Const(0)"),
         }
-        match &program.primitive_op[1] {
+        match &program.primitive_ops[1] {
             Prim::Public { out, public_pos } => {
                 assert_eq!(out.0, 1);
                 assert_eq!(*public_pos, 0);
             }
             _ => panic!("Expected Public"),
         }
-        match &program.primitive_op[2] {
+        match &program.primitive_ops[2] {
             Prim::Const { out, val } => {
                 assert_eq!(out.0, 2);
                 assert_eq!(*val, BabyBear::from_u64(37));
             }
             _ => panic!("Expected Const(37)"),
         }
-        match &program.primitive_op[3] {
+        match &program.primitive_ops[3] {
             Prim::Const { out, val } => {
                 assert_eq!(out.0, 3);
                 assert_eq!(*val, BabyBear::from_u64(111));
             }
             _ => panic!("Expected Const(111)"),
         }
-        match &program.primitive_op[4] {
+        match &program.primitive_ops[4] {
             Prim::Mul { a, b, out } => {
                 assert_eq!(a.0, 2);
                 assert_eq!(b.0, 1);
@@ -349,7 +349,7 @@ mod tests {
             }
             _ => panic!("Expected Mul"),
         }
-        match &program.primitive_op[5] {
+        match &program.primitive_ops[5] {
             Prim::Sub { a, b, out } => {
                 assert_eq!(a.0, 4);
                 assert_eq!(b.0, 3);
@@ -357,7 +357,7 @@ mod tests {
             }
             _ => panic!("Expected Sub(mul_result - c111)"),
         }
-        match &program.primitive_op[6] {
+        match &program.primitive_ops[6] {
             Prim::Sub { a, b, out } => {
                 assert_eq!(a.0, 5);
                 assert_eq!(b.0, 0);
