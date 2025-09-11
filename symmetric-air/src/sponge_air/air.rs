@@ -1,13 +1,14 @@
 //! An AIR for a sponge construction using an arbitrary permutation on field elements.
 //!
-//! For each instance, the sponge hashes a certain number of chunks of `RATE` field elements across multiple rows,
-//! and outputs exactly one chunk of `RATE` field elements.
-//! The sponge is in overwrite mode: at each step, the next `RATE` input elements overwrite the
-//! first `RATE` elements of the state, while the capacity is unchanged.
-//! On the last row of the instance, the `rate` columns contain the output of the sponge.
+//! We instantiate a duplex challenger in overwrite mode: at each row, the challenger applies
+//! one permutation.
+//! Depending on the situation, the rate part of the state comes either from the input
+//! (during absorbing) or is the output of the previous row (during squeezing).
+//! When we want to clear the state, we set the `reset` flag to 1 to clear the capacity.
 //!
 //! We assume that the input is correctly padded, and that its length is a multiple of `RATE`.
 
+use core::array;
 use core::borrow::Borrow;
 use core::marker::PhantomData;
 
@@ -70,7 +71,12 @@ impl<AB: AirBuilder, const RATE: usize, const CAPACITY: usize> Air<AB>
         let local: &SpongeCols<AB::Var, RATE, CAPACITY> = (*local).borrow();
         let _next: &SpongeCols<AB::Var, RATE, CAPACITY> = (*next).borrow();
 
-        let _is_not_final = AB::Expr::ONE - local.is_final.clone();
+        let _output_mode = AB::Expr::ONE - local.absorb.clone();
+
+        // When resetting the state, we just have to clear the capacity. The rate will be overwritten by the input.
+        builder
+            .when(local.reset.clone())
+            .assert_zeros::<CAPACITY, _>(array::from_fn(|i| local.capacity[i].clone()));
 
         // TODO: Add all lookups.
         todo!()

@@ -4,7 +4,9 @@ use core::mem::size_of;
 /// Columns for the sponge AIR which hashes an arbitrary-length input.
 #[repr(C)]
 pub struct SpongeCols<T, const RATE: usize, const CAPACITY: usize> {
-    pub is_final: T,
+    pub reset: T,
+
+    pub absorb: T,
 
     pub input_addresses: [T; RATE],
 
