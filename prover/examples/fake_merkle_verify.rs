@@ -6,7 +6,7 @@ use std::env;
 use p3_baby_bear::BabyBear;
 use p3_field::PrimeCharacteristicRing;
 use p3_program::circuit::Circuit;
-use p3_program::{ComplexOpPrivateData, FakeMerklePrivateData};
+use p3_program::{FakeMerklePrivateData, NonPrimitiveOpPrivateData};
 use p3_prover::MultiTableProver;
 
 type F = BabyBear;
@@ -37,7 +37,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let private_data = create_merkle_path_data(leaf_value, depth);
     program_instance.set_complex_op_private_data(
         merkle_op_id,
-        ComplexOpPrivateData::FakeMerkleVerify(private_data),
+        NonPrimitiveOpPrivateData::FakeMerkleVerify(private_data),
     )?;
 
     let traces = program_instance.execute()?;

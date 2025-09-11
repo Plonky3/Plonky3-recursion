@@ -3,13 +3,13 @@ use std::collections::HashMap;
 use p3_field::PrimeCharacteristicRing;
 
 use crate::expr::{Expr, ExpressionGraph};
-use crate::prim::{ComplexOp, Prim};
+use crate::prim::{NonPrimitiveOp, Prim};
 use crate::program::Program;
-use crate::types::{ComplexOpId, ExprId, WitnessAllocator, WitnessIndex};
+use crate::types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};
 
-/// Type of complex operation for circuit building
+/// Type of non-primitive operation for circuit building
 #[derive(Debug, Clone, PartialEq)]
-pub enum ComplexOpType {
+pub enum NonPrimitiveOpType {
     FakeMerkleVerify,
     // Future: FriVerify, HashAbsorb, etc.
 }
@@ -24,8 +24,8 @@ pub struct Circuit<F> {
     public_input_count: usize,
     /// Pending zero assertions to lower in build()
     pending_asserts: Vec<ExprId>,
-    /// Complex operations (without private data) - will be lowered later
-    complex_ops: Vec<(ComplexOpId, ComplexOpType, Vec<ExprId>)>, // (op_id, op_type, witness_exprs)
+    /// Non-primitive operations (without private data) - will be lowered later
+    non_primitive_op: Vec<(NonPrimitiveOpId, NonPrimitiveOpType, Vec<ExprId>)>, // (op_id, op_type, witness_exprs)
 }
 
 impl<F: Clone> Circuit<F> {
@@ -36,7 +36,7 @@ impl<F: Clone> Circuit<F> {
             witness_alloc: WitnessAllocator::new(),
             public_input_count: 0,
             pending_asserts: Vec::new(),
-            complex_ops: Vec::new(),
+            non_primitive_op: Vec::new(),
         }
     }
 
@@ -83,13 +83,17 @@ impl<F: Clone> Circuit<F> {
     /// leaf_expr: leaf hash expression (input on witness bus)
     /// root_expr: root hash expression (output on witness bus)
     /// Returns the complex operation ID for setting private data later
-    pub fn add_fake_merkle_verify(&mut self, leaf_expr: ExprId, root_expr: ExprId) -> ComplexOpId {
-        // Store the expression IDs - will be lowered to WitnessIndex during build()
-        // Use current length as the next ComplexOpId
-        let op_id = ComplexOpId(self.complex_ops.len() as u32);
+    pub fn add_fake_merkle_verify(
+        &mut self,
+        leaf_expr: ExprId,
+        root_expr: ExprId,
+    ) -> NonPrimitiveOpId {
+        // Store the expression IDs - will be lowered to WitnessId during build()
+        // Use current length as the next NonPrimitiveOpId
+        let op_id = NonPrimitiveOpId(self.non_primitive_op.len() as u32);
         let witness_exprs = vec![leaf_expr, root_expr];
-        self.complex_ops
-            .push((op_id, ComplexOpType::FakeMerkleVerify, witness_exprs));
+        self.non_primitive_op
+            .push((op_id, NonPrimitiveOpType::FakeMerkleVerify, witness_exprs));
 
         op_id
     }
@@ -101,8 +105,8 @@ impl<F: Clone + PrimeCharacteristicRing + PartialEq + Eq + std::hash::Hash> Circ
         // Stage 1: Lower expressions to naive primitives with constant pooling
         let (prim_ops, const_pool, public_rows, expr_to_widx) = self.lower_to_primitives();
 
-        // Stage 2: Lower complex operations using the expr_to_widx mapping
-        let lowered_complex_ops = self.lower_complex_ops(&expr_to_widx);
+        // Stage 2: Lower non-primitive operations using the expr_to_widx mapping
+        let lowered_non_primitive_ops = self.lower_non_primitive_ops(&expr_to_widx);
 
         // Stage 3: IR transformations and optimizations
         let prim_ops = Self::optimize_primitives(prim_ops, &const_pool);
@@ -110,8 +114,8 @@ impl<F: Clone + PrimeCharacteristicRing + PartialEq + Eq + std::hash::Hash> Circ
         // Stage 4: Generate final program
         let slot_count = self.witness_alloc.slot_count();
         let mut program = Program::new(slot_count);
-        program.prim_ops = prim_ops;
-        program.complex_ops = lowered_complex_ops;
+        program.primitive_op = prim_ops;
+        program.non_primitive_op = lowered_non_primitive_ops;
         program.public_rows = public_rows;
         program.public_flat_len = self.public_input_count;
 
@@ -124,13 +128,13 @@ impl<F: Clone + PrimeCharacteristicRing + PartialEq + Eq + std::hash::Hash> Circ
         &mut self,
     ) -> (
         Vec<Prim<F>>,
-        HashMap<F, WitnessIndex>,
-        Vec<WitnessIndex>,
-        HashMap<ExprId, WitnessIndex>,
+        HashMap<F, WitnessId>,
+        Vec<WitnessId>,
+        HashMap<ExprId, WitnessId>,
     ) {
         let mut prim_ops = Vec::new();
-        let mut const_pool: HashMap<F, WitnessIndex> = HashMap::new();
-        let mut expr_to_widx: HashMap<ExprId, WitnessIndex> = HashMap::new();
+        let mut const_pool: HashMap<F, WitnessId> = HashMap::new();
+        let mut expr_to_widx: HashMap<ExprId, WitnessId> = HashMap::new();
         let mut public_rows = Vec::new();
 
         // First, ensure zero constant always exists
@@ -171,7 +175,7 @@ impl<F: Clone + PrimeCharacteristicRing + PartialEq + Eq + std::hash::Hash> Circ
                     expr_to_widx.insert(expr_id, out_widx);
                     // Track public input mapping
                     if *pos >= public_rows.len() {
-                        public_rows.resize(*pos + 1, WitnessIndex(0));
+                        public_rows.resize(*pos + 1, WitnessId(0));
                     }
                     public_rows[*pos] = out_widx;
                 }
@@ -225,15 +229,18 @@ impl<F: Clone + PrimeCharacteristicRing + PartialEq + Eq + std::hash::Hash> Circ
         (prim_ops, const_pool, public_rows, expr_to_widx)
     }
 
-    /// Stage 2: Lower complex operations from ExprIds to WitnessIndex
-    fn lower_complex_ops(&self, expr_to_widx: &HashMap<ExprId, WitnessIndex>) -> Vec<ComplexOp> {
-        use crate::prim::ComplexOp;
+    /// Stage 2: Lower non-primitive operations from ExprIds to WitnessId
+    fn lower_non_primitive_ops(
+        &self,
+        expr_to_widx: &HashMap<ExprId, WitnessId>,
+    ) -> Vec<NonPrimitiveOp> {
+        use crate::prim::NonPrimitiveOp;
 
         let mut lowered_ops = Vec::new();
 
-        for (_op_id, op_type, witness_exprs) in &self.complex_ops {
+        for (_op_id, op_type, witness_exprs) in &self.non_primitive_op {
             match op_type {
-                ComplexOpType::FakeMerkleVerify => {
+                NonPrimitiveOpType::FakeMerkleVerify => {
                     if witness_exprs.len() != 2 {
                         panic!(
                             "FakeMerkleVerify expects exactly 2 witness expressions, got {}",
@@ -243,13 +250,13 @@ impl<F: Clone + PrimeCharacteristicRing + PartialEq + Eq + std::hash::Hash> Circ
                     let leaf_widx = expr_to_widx
                         .get(&witness_exprs[0])
                         .copied()
-                        .expect("Leaf expression should have been lowered to WitnessIndex");
+                        .expect("Leaf expression should have been lowered to WitnessId");
                     let root_widx = expr_to_widx
                         .get(&witness_exprs[1])
                         .copied()
-                        .expect("Root expression should have been lowered to WitnessIndex");
+                        .expect("Root expression should have been lowered to WitnessId");
 
-                    lowered_ops.push(ComplexOp::FakeMerkleVerify {
+                    lowered_ops.push(NonPrimitiveOp::FakeMerkleVerify {
                         leaf: leaf_widx,
                         root: root_widx,
                     });
@@ -263,7 +270,7 @@ impl<F: Clone + PrimeCharacteristicRing + PartialEq + Eq + std::hash::Hash> Circ
     /// Stage 3: IR transformations and optimizations
     fn optimize_primitives(
         prim_ops: Vec<Prim<F>>,
-        _const_pool: &HashMap<F, WitnessIndex>,
+        _const_pool: &HashMap<F, WitnessId>,
     ) -> Vec<Prim<F>> {
         // Future passes can be added here:
         // - Dead code elimination
@@ -305,36 +312,36 @@ mod tests {
         assert_eq!(program.slot_count, 6); // 0:zero, 1:public, 2:c37, 3:c111, 4:mul_result, 5:sub_result
 
         // Assert all primitive operations
-        assert_eq!(program.prim_ops.len(), 7);
-        match &program.prim_ops[0] {
+        assert_eq!(program.primitive_op.len(), 7);
+        match &program.primitive_op[0] {
             Prim::Const { out, val } => {
                 assert_eq!(out.0, 0);
                 assert_eq!(*val, BabyBear::from_u64(0));
             }
             _ => panic!("Expected Const(0)"),
         }
-        match &program.prim_ops[1] {
+        match &program.primitive_op[1] {
             Prim::Public { out, public_pos } => {
                 assert_eq!(out.0, 1);
                 assert_eq!(*public_pos, 0);
             }
             _ => panic!("Expected Public"),
         }
-        match &program.prim_ops[2] {
+        match &program.primitive_op[2] {
             Prim::Const { out, val } => {
                 assert_eq!(out.0, 2);
                 assert_eq!(*val, BabyBear::from_u64(37));
             }
             _ => panic!("Expected Const(37)"),
         }
-        match &program.prim_ops[3] {
+        match &program.primitive_op[3] {
             Prim::Const { out, val } => {
                 assert_eq!(out.0, 3);
                 assert_eq!(*val, BabyBear::from_u64(111));
             }
             _ => panic!("Expected Const(111)"),
         }
-        match &program.prim_ops[4] {
+        match &program.primitive_op[4] {
             Prim::Mul { a, b, out } => {
                 assert_eq!(a.0, 2);
                 assert_eq!(b.0, 1);
@@ -342,7 +349,7 @@ mod tests {
             }
             _ => panic!("Expected Mul"),
         }
-        match &program.prim_ops[5] {
+        match &program.primitive_op[5] {
             Prim::Sub { a, b, out } => {
                 assert_eq!(a.0, 4);
                 assert_eq!(b.0, 3);
@@ -350,7 +357,7 @@ mod tests {
             }
             _ => panic!("Expected Sub(mul_result - c111)"),
         }
-        match &program.prim_ops[6] {
+        match &program.primitive_op[6] {
             Prim::Sub { a, b, out } => {
                 assert_eq!(a.0, 5);
                 assert_eq!(b.0, 0);
@@ -360,6 +367,6 @@ mod tests {
         }
 
         assert_eq!(program.public_flat_len, 1);
-        assert_eq!(program.public_rows, vec![WitnessIndex(1)]); // Public input at slot 1
+        assert_eq!(program.public_rows, vec![WitnessId(1)]); // Public input at slot 1
     }
 }

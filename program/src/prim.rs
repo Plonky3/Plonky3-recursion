@@ -1,52 +1,49 @@
-use crate::types::WitnessIndex;
+use crate::types::WitnessId;
 
 /// Primitive operations after lowering from expressions  
 /// These are the basic extension field arithmetic operations only
 #[derive(Debug, Clone)]
 pub enum Prim<F> {
     /// Set output to constant value
-    Const { out: WitnessIndex, val: F },
+    Const { out: WitnessId, val: F },
     /// Set output to public input at position
-    Public {
-        out: WitnessIndex,
-        public_pos: usize,
-    },
+    Public { out: WitnessId, public_pos: usize },
     /// Addition operation
     Add {
-        a: WitnessIndex,
-        b: WitnessIndex,
-        out: WitnessIndex,
+        a: WitnessId,
+        b: WitnessId,
+        out: WitnessId,
     },
     /// Subtraction operation  
     Sub {
-        a: WitnessIndex,
-        b: WitnessIndex,
-        out: WitnessIndex,
+        a: WitnessId,
+        b: WitnessId,
+        out: WitnessId,
     },
     /// Multiplication operation
     Mul {
-        a: WitnessIndex,
-        b: WitnessIndex,
-        out: WitnessIndex,
+        a: WitnessId,
+        b: WitnessId,
+        out: WitnessId,
     },
 }
 
-/// Complex operations that are not primitive arithmetic
+/// Non-primitive operations that are not basic arithmetic
 /// These have their own dedicated tables and only contain public interface (witness indices)
 #[derive(Debug, Clone, PartialEq)]
-pub enum ComplexOp {
+pub enum NonPrimitiveOp {
     /// Fake Merkle verification operation (simplified: single field elements)
     FakeMerkleVerify {
-        leaf: WitnessIndex, // Public input - on witness bus (single field element)
-        root: WitnessIndex, // Public output - on witness bus (single field element)
-                            // Private data is set separately via ComplexOpId
+        leaf: WitnessId, // Public input - on witness bus (single field element)
+        root: WitnessId, // Public output - on witness bus (single field element)
+                         // Private data is set separately via NonPrimitiveOpId
     },
     // Future: FriVerify, HashAbsorb, etc.
 }
 
-/// Private auxiliary data for complex operations (not on witness bus)
+/// Private auxiliary data for non-primitive operations (not on witness bus)
 #[derive(Debug, Clone, PartialEq)]
-pub enum ComplexOpPrivateData<F> {
+pub enum NonPrimitiveOpPrivateData<F> {
     FakeMerkleVerify(FakeMerklePrivateData<F>),
 }
 
