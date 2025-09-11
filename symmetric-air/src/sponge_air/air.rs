@@ -79,6 +79,5 @@ impl<AB: AirBuilder, const RATE: usize, const CAPACITY: usize> Air<AB>
             .assert_zeros::<CAPACITY, _>(array::from_fn(|i| local.capacity[i].clone()));
 
         // TODO: Add all lookups.
-        todo!()
     }
 }

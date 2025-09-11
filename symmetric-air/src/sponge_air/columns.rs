@@ -4,8 +4,12 @@ use core::mem::size_of;
 /// Columns for the sponge AIR which hashes an arbitrary-length input.
 #[repr(C)]
 pub struct SpongeCols<T, const RATE: usize, const CAPACITY: usize> {
+    // Flag to clear the capacity, which will clear the state.
+    // Transparent.
     pub reset: T,
-
+    // When set to 1, the rate is overwritten by external input.
+    // When set to 0, the rate is copied from the previous row.
+    // Transparent.
     pub absorb: T,
 
     pub input_addresses: [T; RATE],
