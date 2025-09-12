@@ -1,17 +1,15 @@
-use core::fmt::Debug;
-use core::marker::PhantomData;
-use core::{
-    borrow::{Borrow, BorrowMut},
-    cmp::Reverse,
-};
-
 use alloc::vec;
 use alloc::vec::Vec;
+use core::borrow::{Borrow, BorrowMut};
+use core::cmp::Reverse;
+use core::fmt::Debug;
+use core::marker::PhantomData;
+
 use itertools::Itertools;
 use p3_air::{Air, AirBuilder, BaseAir};
-
 use p3_field::{Field, PackedField, PrimeCharacteristicRing, PrimeField};
-use p3_matrix::{Dimensions, Matrix, dense::RowMajorMatrix};
+use p3_matrix::dense::RowMajorMatrix;
+use p3_matrix::{Dimensions, Matrix};
 use p3_symmetric::FieldCompression;
 // `DIGEST_ELEMS` is the number of digest elements of the hash. `MAX_TREE_HEIGHT` is the maximal tree height that can be handled by the AIR.
 pub struct MerkleTreeAir<F, C, const DIGEST_ELEMS: usize, const MAX_TREE_HEIGHT: usize>
@@ -366,24 +364,20 @@ fn prove_mmcs_verify_poseidon() -> Result<
     >,
 > {
     use core::array;
-    use p3_challenger::HashChallenger;
-    use p3_challenger::SerializingChallenger32;
+
+    use p3_challenger::{HashChallenger, SerializingChallenger32};
     use p3_commit::ExtensionMmcs;
     use p3_field::extension::BinomialExtensionField;
-    use p3_fri::TwoAdicFriPcs;
-    use p3_fri::create_benchmark_fri_params;
-    use p3_keccak::Keccak256Hash;
-    use p3_keccak::KeccakF;
-    use p3_koala_bear::KoalaBear;
-    use p3_koala_bear::Poseidon2KoalaBear;
+    use p3_fri::{TwoAdicFriPcs, create_benchmark_fri_params};
+    use p3_keccak::{Keccak256Hash, KeccakF};
+    use p3_koala_bear::{KoalaBear, Poseidon2KoalaBear};
     use p3_merkle_tree::MerkleTreeMmcs;
     use p3_symmetric::{
         CompressionFunctionFromHasher, PaddingFreeSponge, SerializingHasher, TruncatedPermutation,
     };
-    use p3_uni_stark::StarkConfig;
-    use p3_uni_stark::prove;
-    use p3_uni_stark::verify;
-    use rand::{Rng, SeedableRng, rngs::SmallRng};
+    use p3_uni_stark::{StarkConfig, prove, verify};
+    use rand::rngs::SmallRng;
+    use rand::{Rng, SeedableRng};
 
     type Val = KoalaBear;
     type FieldHash = SerializingHasher<U64Hash>;
@@ -489,21 +483,18 @@ fn prove_mmcs_verify_keccak() -> Result<
     >,
 > {
     use core::array;
-    use p3_challenger::HashChallenger;
-    use p3_challenger::SerializingChallenger32;
+
+    use p3_challenger::{HashChallenger, SerializingChallenger32};
     use p3_commit::ExtensionMmcs;
     use p3_field::extension::BinomialExtensionField;
-    use p3_fri::TwoAdicFriPcs;
-    use p3_fri::create_benchmark_fri_params;
-    use p3_keccak::Keccak256Hash;
-    use p3_keccak::KeccakF;
+    use p3_fri::{TwoAdicFriPcs, create_benchmark_fri_params};
+    use p3_keccak::{Keccak256Hash, KeccakF};
     use p3_koala_bear::KoalaBear;
     use p3_merkle_tree::MerkleTreeMmcs;
     use p3_symmetric::{CompressionFunctionFromHasher, PaddingFreeSponge, SerializingHasher};
-    use p3_uni_stark::StarkConfig;
-    use p3_uni_stark::prove;
-    use p3_uni_stark::verify;
-    use rand::{Rng, SeedableRng, rngs::SmallRng};
+    use p3_uni_stark::{StarkConfig, prove, verify};
+    use rand::rngs::SmallRng;
+    use rand::{Rng, SeedableRng};
 
     type U64Hash = PaddingFreeSponge<KeccakF, 25, 17, DIGEST_ELEMS>;
     type Val = KoalaBear;
