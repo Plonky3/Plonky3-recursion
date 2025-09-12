@@ -237,9 +237,9 @@ impl<
     /// Execute all primitive operations to fill witness vector
     fn execute_primitives(&mut self) -> Result<(), String> {
         // Clone primitive operations to avoid borrowing issues
-        let primitive_op_vec = self.circuit.primitive_ops.clone();
+        let primitive_ops = self.circuit.primitive_ops.clone();
 
-        for prim in primitive_op_vec {
+        for prim in primitive_ops {
             match prim {
                 Prim::Const { out, val } => {
                     self.set_witness(out, val)?;
