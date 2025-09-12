@@ -74,6 +74,11 @@ impl<F: Clone> CircuitBuilder<F> {
         let mul_expr = Expr::Mul { lhs, rhs };
         self.expressions.add_expr(mul_expr)
     }
+    /// Divide two expressions
+    pub fn div(&mut self, lhs: ExprId, rhs: ExprId) -> ExprId {
+        let div_expr = Expr::Div { lhs, rhs };
+        self.expressions.add_expr(div_expr)
+    }
 
     /// Assert that an expression equals zero.
     /// Recorded as a pending assertion to be lowered in build() to a Sub with zero.
@@ -263,6 +268,27 @@ impl<F: Clone + PrimeCharacteristicRing + PartialEq + Eq + std::hash::Hash> Circ
                     });
                     expr_to_widx.insert(expr_id, out_widx);
                 } // No AssertZero variant; assertions are not encoded as expressions in Stage 1
+                Expr::Div { lhs, rhs } => {
+                    // lhs / rhs = out  is encoded as rhs * out = lhs
+                    let b_widx = self.witness_alloc.alloc();
+                    let out_widx = Self::get_witness_id(
+                        &expr_to_widx,
+                        *lhs,
+                        &format!("Div lhs for {:?}", expr_id),
+                    );
+                    let a_widx = Self::get_witness_id(
+                        &expr_to_widx,
+                        *rhs,
+                        &format!("Div rhs for {:?}", expr_id),
+                    );
+                    primitive_ops.push(Prim::Mul {
+                        a: a_widx,
+                        b: b_widx,
+                        out: out_widx,
+                    });
+                    // The output of Div is the b_widx.
+                    expr_to_widx.insert(expr_id, b_widx);
+                }
             }
         }
 
@@ -356,16 +382,21 @@ mod tests {
         let x = builder.add_public_input();
         let c37 = builder.add_const(BabyBear::from_u64(37));
         let c111 = builder.add_const(BabyBear::from_u64(111));
+        let c1 = builder.add_const(BabyBear::from_u64(1));
 
         let mul_result = builder.mul(c37, x);
         let sub_result = builder.sub(mul_result, c111);
         builder.assert_zero(sub_result);
 
+        let div_result = builder.div(mul_result, c111);
+        let sub_one = builder.sub(div_result, c1);
+        builder.assert_zero(sub_one);
+
         let circuit = builder.build();
-        assert_eq!(circuit.slot_count, 6); // 0:zero, 1:public, 2:c37, 3:c111, 4:mul_result, 5:sub_result
+        assert_eq!(circuit.slot_count, 9); // 0:zero, 1:public, 2:c37, 3:c111, 4:c1, 5:mul_result, 6:sub_result, 7:div_result, 8:sub_one
 
         // Assert all primitive operations
-        assert_eq!(circuit.primitive_ops.len(), 7);
+        assert_eq!(circuit.primitive_ops.len(), 11);
         match &circuit.primitive_ops[0] {
             Prim::Const { out, val } => {
                 assert_eq!(out.0, 0);
@@ -395,24 +426,55 @@ mod tests {
             _ => panic!("Expected Const(111)"),
         }
         match &circuit.primitive_ops[4] {
+            Prim::Const { out, val } => {
+                assert_eq!(out.0, 4);
+                assert_eq!(*val, BabyBear::from_u64(1));
+            }
+            _ => panic!("Expected Const(1)"),
+        }
+        match &circuit.primitive_ops[5] {
             Prim::Mul { a, b, out } => {
                 assert_eq!(a.0, 2);
                 assert_eq!(b.0, 1);
-                assert_eq!(out.0, 4);
-            }
-            _ => panic!("Expected Mul"),
-        }
-        match &circuit.primitive_ops[5] {
-            Prim::Sub { a, b, out } => {
-                assert_eq!(a.0, 4);
-                assert_eq!(b.0, 3);
                 assert_eq!(out.0, 5);
             }
-            _ => panic!("Expected Sub(mul_result - c111)"),
+            _ => panic!("Expected Mul"),
         }
         match &circuit.primitive_ops[6] {
             Prim::Sub { a, b, out } => {
                 assert_eq!(a.0, 5);
+                assert_eq!(b.0, 3);
+                assert_eq!(out.0, 6);
+            }
+            _ => panic!("Expected Sub(mul_result - c111)"),
+        }
+        match &circuit.primitive_ops[7] {
+            Prim::Mul { a, b, out } => {
+                assert_eq!(a.0, 3);
+                assert_eq!(b.0, 7);
+                assert_eq!(out.0, 5);
+            }
+            _ => panic!("Expected Mul"),
+        }
+        match &circuit.primitive_ops[8] {
+            Prim::Sub { a, b, out } => {
+                assert_eq!(a.0, 7);
+                assert_eq!(b.0, 4);
+                assert_eq!(out.0, 8);
+            }
+            _ => panic!("Expected Sub(div_result - c1)"),
+        }
+        match &circuit.primitive_ops[9] {
+            Prim::Sub { a, b, out } => {
+                assert_eq!(a.0, 6);
+                assert_eq!(b.0, 0);
+                assert_eq!(out.0, 0);
+            }
+            _ => panic!("Expected Sub assertion"),
+        }
+        match &circuit.primitive_ops[10] {
+            Prim::Sub { a, b, out } => {
+                assert_eq!(a.0, 8);
                 assert_eq!(b.0, 0);
                 assert_eq!(out.0, 0);
             }
