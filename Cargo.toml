@@ -32,18 +32,18 @@ p3-recursion = { path = "recursion", version = "0.1.0" }
 p3-symmetric-air = { path = "symmetric-air", version = "0.1.0" }
 
 # Plonky3 dependencies
-p3-field = { path = "../Plonky3_2/field" }
 p3-air = { path = "../Plonky3_2/air" }
-p3-matrix = { path = "../Plonky3_2/matrix" }
-p3-symmetric = { path = "../Plonky3_2/symmetric" }
-p3-uni-stark = { path = "../Plonky3_2/uni-stark" }
-p3-fri = { path = "../Plonky3_2/fri" }
-p3-merkle-tree = { path = "../Plonky3_2/merkle-tree" }
-p3-commit = { path = "../Plonky3_2/commit" }
 p3-challenger = { path = "../Plonky3_2/challenger" }
+p3-commit = { path = "../Plonky3_2/commit" }
+p3-dft = { path = "../Plonky3_2/dft" }
+p3-field = { path = "../Plonky3_2/field" }
+p3-fri = { path = "../Plonky3_2/fri" }
 p3-keccak = { path = "../Plonky3_2/keccak" }
 p3-koala-bear = { path = "../Plonky3_2/koala-bear" }
-p3-dft = { path = "../Plonky3_2/dft" }
+p3-matrix = { path = "../Plonky3_2/matrix" }
+p3-merkle-tree = { path = "../Plonky3_2/merkle-tree" }
+p3-symmetric = { path = "../Plonky3_2/symmetric" }
+p3-uni-stark = { path = "../Plonky3_2/uni-stark" }
 
 itertools = { version = "0.14.0", default-features = false, features = [
     "use_alloc",
