@@ -1,30 +1,25 @@
 use alloc::vec;
 use alloc::vec::Vec;
 use core::borrow::{Borrow, BorrowMut};
-use core::cmp::Reverse;
 use core::fmt::Debug;
 use core::marker::PhantomData;
+use p3_symmetric::PseudoCompressionFunction;
 
-use itertools::Itertools;
 use p3_air::{Air, AirBuilder, BaseAir};
-use p3_field::{Field, PackedField, PrimeCharacteristicRing, PrimeField};
+use p3_field::{Field, PackedField, PackedValue, PrimeCharacteristicRing, PrimeField};
+use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
-use p3_matrix::{Dimensions, Matrix};
-use p3_symmetric::FieldCompression;
 // `DIGEST_ELEMS` is the number of digest elements of the hash. `MAX_TREE_HEIGHT` is the maximal tree height that can be handled by the AIR.
 pub struct MerkleTreeAir<F, C, const DIGEST_ELEMS: usize, const MAX_TREE_HEIGHT: usize>
 where
-    F: PrimeField,
-    C: FieldCompression<F, 2, DIGEST_ELEMS>,
+    F: Field,
 {
     pub compress: C,
     _phantom: PhantomData<F>,
 }
 
-impl<F: PrimeField, C, const DIGEST_ELEMS: usize, const MAX_TREE_HEIGHT: usize>
+impl<F: Field, C, const DIGEST_ELEMS: usize, const MAX_TREE_HEIGHT: usize>
     MerkleTreeAir<F, C, DIGEST_ELEMS, MAX_TREE_HEIGHT>
-where
-    C: FieldCompression<F, 2, DIGEST_ELEMS>,
 {
     #[allow(unused)]
     fn new(compress: C) -> Self {
@@ -35,11 +30,14 @@ where
     }
 }
 
-impl<F: PrimeField, C, const DIGEST_ELEMS: usize, const MAX_TREE_HEIGHT: usize> BaseAir<F>
+impl<F: Field, C, const DIGEST_ELEMS: usize, const MAX_TREE_HEIGHT: usize> BaseAir<F>
     for MerkleTreeAir<F, C, DIGEST_ELEMS, MAX_TREE_HEIGHT>
 where
     F: Field,
-    C: FieldCompression<F, 2, DIGEST_ELEMS> + Sync,
+    C: PseudoCompressionFunction<[<F as PackedValue>::Value; DIGEST_ELEMS], 2>
+        + PseudoCompressionFunction<[F; DIGEST_ELEMS], 2>
+        + Sync,
+    F: Eq,
 {
     fn width(&self) -> usize {
         get_num_merkle_tree_cols::<DIGEST_ELEMS, MAX_TREE_HEIGHT>()
@@ -50,7 +48,10 @@ impl<AB: AirBuilder, C, const DIGEST_ELEMS: usize, const MAX_TREE_HEIGHT: usize>
     for MerkleTreeAir<AB::F, C, DIGEST_ELEMS, MAX_TREE_HEIGHT>
 where
     AB::F: PrimeField,
-    C: FieldCompression<AB::F, 2, DIGEST_ELEMS> + Sync,
+    C: PseudoCompressionFunction<[<AB::F as PackedValue>::Value; DIGEST_ELEMS], 2>
+        + PseudoCompressionFunction<[AB::F; DIGEST_ELEMS], 2>
+        + Sync,
+    AB::F: Eq,
 {
     #[inline]
     fn eval(&self, builder: &mut AB) {
@@ -255,7 +256,9 @@ type MerkleTreeInputs<F, const DIGEST_ELEMS: usize> = (
 impl<F: PrimeField, C, const DIGEST_ELEMS: usize, const MAX_TREE_HEIGHT: usize>
     MerkleTreeAir<F, C, DIGEST_ELEMS, MAX_TREE_HEIGHT>
 where
-    C: FieldCompression<F, 2, DIGEST_ELEMS>,
+    C: PseudoCompressionFunction<[<F as PackedValue>::Value; DIGEST_ELEMS], 2>
+        + PseudoCompressionFunction<[F; DIGEST_ELEMS], 2>
+        + Sync,
 {
     pub fn generate_trace_rows(
         &self,
@@ -316,7 +319,7 @@ where
                 };
 
                 // Combine the current node with the sibling node to get the parent node.
-                state = self.compress.compress_field([left, right]);
+                state = self.compress.compress([left, right]);
                 index >>= 1;
                 cur_height_padded >>= 1;
 
@@ -334,7 +337,7 @@ where
                     // If there are new matrix rows, hash the rows together and then combine with the current root.
                     row.sibling = extra_sibling;
 
-                    state = self.compress.compress_field([state, extra_sibling]);
+                    state = self.compress.compress([state, extra_sibling]);
                 }
             }
 
@@ -438,126 +441,6 @@ fn prove_mmcs_verify_poseidon() -> Result<
 
     type MyCompress = CompressionFunctionFromHasher<U64Hash, 2, 4>;
     let compress = MyCompress::new(u64_hash);
-
-    type ValMmcs = MerkleTreeMmcs<
-        [Val; p3_keccak::VECTOR_LEN],
-        [u64; p3_keccak::VECTOR_LEN],
-        FieldHash,
-        MyCompress,
-        4,
-    >;
-
-    let val_mmcs = ValMmcs::new(field_hash, compress);
-
-    type ChallengeMmcs = ExtensionMmcs<Val, Challenge, ValMmcs>;
-    let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
-
-    type Challenger = SerializingChallenger32<Val, HashChallenger<u8, ByteHash, 32>>;
-    let challenger = Challenger::from_hasher(vec![], byte_hash);
-
-    let fri_params = create_benchmark_fri_params(challenge_mmcs);
-
-    type Dft = p3_dft::Radix2Bowers;
-    let dft = Dft::default();
-
-    type Pcs = TwoAdicFriPcs<Val, Dft, ValMmcs, ChallengeMmcs>;
-    let pcs = Pcs::new(dft, val_mmcs, fri_params);
-
-    type MyConfig = StarkConfig<Pcs, Challenge, Challenger>;
-    let config = MyConfig::new(pcs, challenger);
-
-    let proof = prove(&config, &air, trace, &vec![]);
-
-    // Verify the proof.
-    verify(&config, &air, &proof, &vec![])
-}
-
-#[test]
-fn prove_mmcs_verify_keccak() -> Result<
-    (),
-    p3_uni_stark::VerificationError<
-        p3_fri::verifier::FriError<
-            p3_merkle_tree::MerkleTreeError,
-            p3_merkle_tree::MerkleTreeError,
-        >,
-    >,
-> {
-    use core::array;
-
-    use p3_challenger::{HashChallenger, SerializingChallenger32};
-    use p3_commit::ExtensionMmcs;
-    use p3_field::extension::BinomialExtensionField;
-    use p3_fri::{TwoAdicFriPcs, create_benchmark_fri_params};
-    use p3_keccak::{Keccak256Hash, KeccakF};
-    use p3_koala_bear::KoalaBear;
-    use p3_merkle_tree::MerkleTreeMmcs;
-    use p3_symmetric::{CompressionFunctionFromHasher, PaddingFreeSponge, SerializingHasher};
-    use p3_uni_stark::{StarkConfig, prove, verify};
-    use rand::rngs::SmallRng;
-    use rand::{Rng, SeedableRng};
-
-    type U64Hash = PaddingFreeSponge<KeccakF, 25, 17, DIGEST_ELEMS>;
-    type Val = KoalaBear;
-    type FieldHash = SerializingHasher<U64Hash>;
-
-    const NUM_INPUTS: usize = 4;
-    const HEIGHT: usize = 8;
-    const DIGEST_ELEMS: usize = 4;
-    const MAX_TREE_HEIGHT: usize = 8;
-
-    // Generate random inputs.
-    let mut rng = SmallRng::seed_from_u64(1);
-    let roots: [_; NUM_INPUTS] = array::from_fn(|_| rng.random::<[Val; DIGEST_ELEMS]>());
-    let indices: [_; NUM_INPUTS] = array::from_fn(|_| rng.random::<u32>() as usize);
-
-    // We generate the siblings, with an extra hash at half the height for half of the inputs.
-    let siblings: [[_; HEIGHT]; NUM_INPUTS] = array::from_fn(|i| {
-        if i % 2 == 0 {
-            array::from_fn(|j| {
-                if j == HEIGHT / 2 {
-                    (
-                        rng.random::<[Val; DIGEST_ELEMS]>(),
-                        Some(rng.random::<[Val; DIGEST_ELEMS]>()),
-                    )
-                } else {
-                    (rng.random::<[Val; DIGEST_ELEMS]>(), None)
-                }
-            })
-        } else {
-            array::from_fn(|_| (rng.random::<[Val; DIGEST_ELEMS]>(), None))
-        }
-    });
-
-    let inputs = (0..NUM_INPUTS)
-        .map(|i| {
-            (
-                roots[i],
-                indices[i],
-                siblings[i].to_vec(),
-                // extra_heights[i].to_vec(),
-            )
-        })
-        .collect::<Vec<_>>();
-
-    let u64_hash = U64Hash::new(KeccakF {});
-
-    type MyCompress = CompressionFunctionFromHasher<U64Hash, 2, DIGEST_ELEMS>;
-    let compress = MyCompress::new(u64_hash);
-
-    // Create the AIR.
-    let air =
-        MerkleTreeAir::<Val, MyCompress, DIGEST_ELEMS, MAX_TREE_HEIGHT>::new(compress.clone());
-
-    // Generate trace for Merkle tree table.
-    let trace = air.generate_trace_rows(&inputs);
-
-    // Prove with Keccak.
-    type Challenge = BinomialExtensionField<Val, 4>;
-
-    type ByteHash = Keccak256Hash;
-    let byte_hash = ByteHash {};
-
-    let field_hash = FieldHash::new(u64_hash);
 
     type ValMmcs = MerkleTreeMmcs<
         [Val; p3_keccak::VECTOR_LEN],
