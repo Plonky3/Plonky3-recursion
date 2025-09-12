@@ -49,9 +49,7 @@ impl<F: Field, const D: usize> WitnessAir<F, D> {
                 D,
                 "Extension field degree mismatch for witness value"
             );
-            for j in 0..D {
-                values.push(coeffs[j]);
-            }
+            values.extend_from_slice(coeffs);
             values.push(F::from_u64(trace.index[i] as u64));
         }
 

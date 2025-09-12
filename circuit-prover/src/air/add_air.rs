@@ -44,9 +44,7 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AddAir<F, D> {
                 D,
                 "Extension field degree mismatch for lhs"
             );
-            for j in 0..D {
-                values.push(lhs_coeffs[j]);
-            }
+            values.extend_from_slice(lhs_coeffs);
             values.push(F::from_u64(trace.lhs_index[i] as u64));
 
             // RHS
@@ -56,9 +54,7 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AddAir<F, D> {
                 D,
                 "Extension field degree mismatch for rhs"
             );
-            for j in 0..D {
-                values.push(rhs_coeffs[j]);
-            }
+            values.extend_from_slice(rhs_coeffs);
             values.push(F::from_u64(trace.rhs_index[i] as u64));
 
             // RESULT
@@ -68,9 +64,7 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AddAir<F, D> {
                 D,
                 "Extension field degree mismatch for result"
             );
-            for j in 0..D {
-                values.push(result_coeffs[j]);
-            }
+            values.extend_from_slice(result_coeffs);
             values.push(F::from_u64(trace.result_index[i] as u64));
         }
 

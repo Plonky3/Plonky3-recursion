@@ -64,17 +64,13 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> MulAir<F, D> {
             // LHS
             let lhs_coeffs = trace.lhs_values[i].as_basis_coefficients_slice();
             assert_eq!(lhs_coeffs.len(), D, "Extension degree mismatch for lhs");
-            for j in 0..D {
-                values.push(lhs_coeffs[j]);
-            }
+            values.extend_from_slice(lhs_coeffs);
             values.push(F::from_u64(trace.lhs_index[i] as u64));
 
             // RHS
             let rhs_coeffs = trace.rhs_values[i].as_basis_coefficients_slice();
             assert_eq!(rhs_coeffs.len(), D, "Extension degree mismatch for rhs");
-            for j in 0..D {
-                values.push(rhs_coeffs[j]);
-            }
+            values.extend_from_slice(rhs_coeffs);
             values.push(F::from_u64(trace.rhs_index[i] as u64));
 
             // RESULT
@@ -84,9 +80,7 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> MulAir<F, D> {
                 D,
                 "Extension degree mismatch for result"
             );
-            for j in 0..D {
-                values.push(result_coeffs[j]);
-            }
+            values.extend_from_slice(result_coeffs);
             values.push(F::from_u64(trace.result_index[i] as u64));
         }
 
