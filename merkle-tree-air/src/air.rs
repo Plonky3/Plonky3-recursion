@@ -3,12 +3,12 @@ use alloc::vec::Vec;
 use core::borrow::{Borrow, BorrowMut};
 use core::fmt::Debug;
 use core::marker::PhantomData;
-use p3_symmetric::PseudoCompressionFunction;
 
 use p3_air::{Air, AirBuilder, BaseAir};
 use p3_field::{Field, PackedField, PackedValue, PrimeCharacteristicRing, PrimeField};
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
+use p3_symmetric::PseudoCompressionFunction;
 // `DIGEST_ELEMS` is the number of digest elements of the hash. `MAX_TREE_HEIGHT` is the maximal tree height that can be handled by the AIR.
 pub struct MerkleTreeAir<F, C, const DIGEST_ELEMS: usize, const MAX_TREE_HEIGHT: usize>
 where
