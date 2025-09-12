@@ -4,10 +4,10 @@ use p3_field::PrimeCharacteristicRing;
 
 use crate::circuit::Circuit;
 use crate::expr::{Expr, ExpressionGraph};
-use crate::prim::{NonPrimitiveOp, Prim};
+use crate::op::{NonPrimitiveOp, Prim};
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};
 
-/// Type of non-primitive operation for circuit building
+/// Non-primitive operation types (complex constraints excluded from optimization)
 #[derive(Debug, Clone, PartialEq)]
 pub enum NonPrimitiveOpType {
     FakeMerkleVerify,
@@ -33,7 +33,7 @@ pub struct CircuitBuilder<F> {
     public_input_count: usize,
     /// Pending zero assertions to lower in build()
     pending_asserts: Vec<ExprId>,
-    /// Non-primitive operations (without private data) - will be lowered later
+    /// Non-primitive operations (complex constraints that don't produce ExprIds)
     non_primitive_ops: Vec<(NonPrimitiveOpId, NonPrimitiveOpType, Vec<ExprId>)>, // (op_id, op_type, witness_exprs)
 }
 
@@ -88,17 +88,22 @@ impl<F: Clone> CircuitBuilder<F> {
         self.pending_asserts.push(expr);
     }
 
-    /// Add a fake Merkle verification operation (simplified: single field elements)
-    /// leaf_expr: leaf hash expression (input on witness bus)
-    /// root_expr: root hash expression (output on witness bus)
-    /// Returns the complex operation ID for setting private data later
+    /// Add a fake Merkle verification constraint (non-primitive operation)
+    ///
+    /// Non-primitive operations are complex constraints that:
+    /// - Take existing expressions as inputs (leaf_expr, root_expr)
+    /// - Add verification constraints to the circuit
+    /// - Don't produce new ExprIds (unlike primitive ops)
+    /// - Are kept separate from primitives to avoid disrupting optimization
+    ///
+    /// Returns an operation ID for setting private data later during execution.
     pub fn add_fake_merkle_verify(
         &mut self,
         leaf_expr: ExprId,
         root_expr: ExprId,
     ) -> NonPrimitiveOpId {
-        // Store the expression IDs - will be lowered to WitnessId during build()
-        // Use current length as the next NonPrimitiveOpId
+        // Store input expression IDs - will be lowered to WitnessId during build()
+        // Non-primitive ops consume ExprIds but don't produce them
         let op_id = NonPrimitiveOpId(self.non_primitive_ops.len() as u32);
         let witness_exprs = vec![leaf_expr, root_expr];
         self.non_primitive_ops
@@ -132,6 +137,12 @@ impl<F: Clone + PrimeCharacteristicRing + PartialEq + Eq + std::hash::Hash> Circ
     }
 
     /// Stage 1: Lower expressions to primitives with constant pooling
+    ///
+    /// INVARIANT: All ExprIds reference only previously processed expressions.
+    /// This is guaranteed because:
+    /// - ExprIds are only created by primitive operations (add_*, mul, sub)
+    /// - Non-primitive operations consume ExprIds but don't produce them
+    /// - Expression graph construction maintains topological order
     #[allow(clippy::type_complexity)]
     fn lower_to_primitives(
         &mut self,
@@ -243,7 +254,7 @@ impl<F: Clone + PrimeCharacteristicRing + PartialEq + Eq + std::hash::Hash> Circ
         &self,
         expr_to_widx: &HashMap<ExprId, WitnessId>,
     ) -> Vec<NonPrimitiveOp> {
-        use crate::prim::NonPrimitiveOp;
+        use crate::op::NonPrimitiveOp;
 
         let mut lowered_ops = Vec::new();
 
