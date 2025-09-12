@@ -3,7 +3,6 @@ use alloc::vec::Vec;
 use core::borrow::{Borrow, BorrowMut};
 use core::fmt::Debug;
 use core::marker::PhantomData;
-use p3_symmetric::PseudoCompressionFunction;
 
 use p3_air::{Air, AirBuilder, BaseAir};
 use p3_field::{Field, PackedField, PackedValue, PrimeCharacteristicRing, PrimeField};
