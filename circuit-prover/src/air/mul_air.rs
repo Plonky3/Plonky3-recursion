@@ -1,5 +1,6 @@
 #![allow(clippy::needless_range_loop)]
 use alloc::vec::Vec;
+use core::borrow::{Borrow, BorrowMut};
 
 use p3_air::{Air, AirBuilder, BaseAir};
 use p3_circuit::tables::MulTrace;
@@ -8,6 +9,19 @@ use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
 
 use super::utils::pad_to_power_of_two;
+
+/// Columns for a Mul AIR that proves lhs * rhs = result
+/// Layout: [lhs[0..D-1], lhs_index, rhs[0..D-1], rhs_index, result[0..D-1], result_index]
+#[repr(C)]
+#[derive(Debug)]
+pub struct MulCols<T, const D: usize> {
+    pub lhs: [T; D],
+    pub lhs_index: T,
+    pub rhs: [T; D],
+    pub rhs_index: T,
+    pub result: [T; D],
+    pub result_index: T,
+}
 
 /// AIR for proving multiplication operations: lhs * rhs = result
 ///
@@ -107,26 +121,13 @@ where
         debug_assert_eq!(main.width(), 3 * D + 3, "column width mismatch");
 
         let local = main.row_slice(0).expect("matrix must be non-empty");
-
-        // Offsets:
-        // [0..D)           -> lhs coefficients
-        // [D]              -> lhs_index
-        // [D+1 .. 2D+1)    -> rhs coefficients
-        // [2D+1]           -> rhs_index
-        // [2D+2 .. 3D+2)   -> result coefficients
-        // [3D+2]           -> result_index
-        let lhs = &local[0..D];
-        let _lhs_idx = local[D].clone();
-        let rhs = &local[D + 1..2 * D + 1];
-        let _rhs_idx = local[2 * D + 1].clone();
-        let out = &local[2 * D + 2..3 * D + 2];
-        let _out_idx = local[3 * D + 2].clone();
+        let local: &MulCols<_, D> = (*local).borrow();
 
         if D == 1 && self.w_binomial.is_none() {
             // Base field constraint: lhs * rhs = out
-            let lhs_value = lhs[0].clone();
-            let rhs_value = rhs[0].clone();
-            let out_value = out[0].clone();
+            let lhs_value = local.lhs[0].clone();
+            let rhs_value = local.rhs[0].clone();
+            let out_value = local.result[0].clone();
             builder.assert_zero(lhs_value * rhs_value - out_value);
             return;
         }
@@ -140,7 +141,7 @@ where
 
             for i in 0..D {
                 for j in 0..D {
-                    let term = lhs[i].clone() * rhs[j].clone();
+                    let term = local.lhs[i].clone() * local.rhs[j].clone();
                     let k = i + j;
                     if k < D {
                         acc[k] = acc[k].clone() + term;
@@ -151,7 +152,7 @@ where
             }
 
             for k in 0..D {
-                builder.assert_zero(out[k].clone() - acc[k].clone());
+                builder.assert_zero(local.result[k].clone() - acc[k].clone());
             }
             return;
         }
@@ -161,6 +162,27 @@ where
             "Unsupported configuration: D={} with w_binomial={:?}",
             D, self.w_binomial
         );
+    }
+}
+
+// Borrow implementations to convert [T] to MulCols<T, D>
+impl<T, const D: usize> Borrow<MulCols<T, D>> for [T] {
+    fn borrow(&self) -> &MulCols<T, D> {
+        let (prefix, shorts, suffix) = unsafe { self.align_to::<MulCols<T, D>>() };
+        debug_assert!(prefix.is_empty(), "Alignment should match");
+        debug_assert!(suffix.is_empty(), "Alignment should match");
+        debug_assert_eq!(shorts.len(), 1);
+        &shorts[0]
+    }
+}
+
+impl<T, const D: usize> BorrowMut<MulCols<T, D>> for [T] {
+    fn borrow_mut(&mut self) -> &mut MulCols<T, D> {
+        let (prefix, shorts, suffix) = unsafe { self.align_to_mut::<MulCols<T, D>>() };
+        debug_assert!(prefix.is_empty(), "Alignment should match");
+        debug_assert!(suffix.is_empty(), "Alignment should match");
+        debug_assert_eq!(shorts.len(), 1);
+        &mut shorts[0]
     }
 }
 
