@@ -1,4 +1,4 @@
-use crate::prim::{NonPrimitiveOp, Prim};
+use crate::op::{NonPrimitiveOp, Prim};
 use crate::types::WitnessId;
 
 /// Static circuit specification containing constraint system and metadata

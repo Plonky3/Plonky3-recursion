@@ -1,7 +1,7 @@
 use p3_field::PrimeCharacteristicRing;
 
 use crate::circuit::Circuit;
-use crate::prim::{NonPrimitiveOpPrivateData, Prim};
+use crate::op::{NonPrimitiveOpPrivateData, Prim};
 use crate::types::{NonPrimitiveOpId, WitnessId};
 
 /// Execution traces for all tables
@@ -198,7 +198,7 @@ impl<
         let complex_op = &self.circuit.non_primitive_ops[op_id.0 as usize];
         match (complex_op, &private_data) {
             (
-                crate::prim::NonPrimitiveOp::FakeMerkleVerify { .. },
+                crate::op::NonPrimitiveOp::FakeMerkleVerify { .. },
                 NonPrimitiveOpPrivateData::FakeMerkleVerify(_),
             ) => {
                 // Type match - good!
@@ -440,7 +440,7 @@ impl<
         for op_idx in 0..self.circuit.non_primitive_ops.len() {
             // Copy out leaf/root to end immutable borrow immediately
             let (leaf, root) = match &self.circuit.non_primitive_ops[op_idx] {
-                crate::prim::NonPrimitiveOp::FakeMerkleVerify { leaf, root } => (*leaf, *root),
+                crate::op::NonPrimitiveOp::FakeMerkleVerify { leaf, root } => (*leaf, *root),
             };
 
             // Clone private data option to avoid holding a borrow on self
