@@ -1,4 +1,3 @@
-#[allow(dead_code)]
-fn main() {
+pub fn main() {
     println!("Hello, world!");
 }

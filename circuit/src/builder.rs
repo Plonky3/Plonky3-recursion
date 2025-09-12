@@ -129,6 +129,20 @@ impl<F: Clone + PrimeCharacteristicRing + PartialEq + Eq + std::hash::Hash> Circ
         circuit
     }
 
+    /// Helper function to get WitnessId with descriptive error messages
+    fn get_witness_id(
+        expr_to_widx: &HashMap<ExprId, WitnessId>,
+        expr_id: ExprId,
+        context: &str,
+    ) -> WitnessId {
+        *expr_to_widx.get(&expr_id).unwrap_or_else(|| {
+            panic!(
+                "Expression {:?} not found in witness mapping: {}",
+                expr_id, context
+            )
+        })
+    }
+
     /// Stage 1: Lower expressions to primitives with constant pooling
     ///
     /// INVARIANT: All ExprIds reference only previously processed expressions.
@@ -194,8 +208,16 @@ impl<F: Clone + PrimeCharacteristicRing + PartialEq + Eq + std::hash::Hash> Circ
                 }
                 Expr::Add { lhs, rhs } => {
                     let out_widx = self.witness_alloc.alloc();
-                    let a_widx = expr_to_widx[lhs];
-                    let b_widx = expr_to_widx[rhs];
+                    let a_widx = Self::get_witness_id(
+                        &expr_to_widx,
+                        *lhs,
+                        &format!("Add lhs for {:?}", expr_id),
+                    );
+                    let b_widx = Self::get_witness_id(
+                        &expr_to_widx,
+                        *rhs,
+                        &format!("Add rhs for {:?}", expr_id),
+                    );
                     primitive_ops.push(Prim::Add {
                         a: a_widx,
                         b: b_widx,
@@ -205,8 +227,16 @@ impl<F: Clone + PrimeCharacteristicRing + PartialEq + Eq + std::hash::Hash> Circ
                 }
                 Expr::Sub { lhs, rhs } => {
                     let out_widx = self.witness_alloc.alloc();
-                    let a_widx = expr_to_widx[lhs];
-                    let b_widx = expr_to_widx[rhs];
+                    let a_widx = Self::get_witness_id(
+                        &expr_to_widx,
+                        *lhs,
+                        &format!("Sub lhs for {:?}", expr_id),
+                    );
+                    let b_widx = Self::get_witness_id(
+                        &expr_to_widx,
+                        *rhs,
+                        &format!("Sub rhs for {:?}", expr_id),
+                    );
                     primitive_ops.push(Prim::Sub {
                         a: a_widx,
                         b: b_widx,
@@ -216,8 +246,16 @@ impl<F: Clone + PrimeCharacteristicRing + PartialEq + Eq + std::hash::Hash> Circ
                 }
                 Expr::Mul { lhs, rhs } => {
                     let out_widx = self.witness_alloc.alloc();
-                    let a_widx = expr_to_widx[lhs];
-                    let b_widx = expr_to_widx[rhs];
+                    let a_widx = Self::get_witness_id(
+                        &expr_to_widx,
+                        *lhs,
+                        &format!("Mul lhs for {:?}", expr_id),
+                    );
+                    let b_widx = Self::get_witness_id(
+                        &expr_to_widx,
+                        *rhs,
+                        &format!("Mul rhs for {:?}", expr_id),
+                    );
                     primitive_ops.push(Prim::Mul {
                         a: a_widx,
                         b: b_widx,
@@ -260,14 +298,16 @@ impl<F: Clone + PrimeCharacteristicRing + PartialEq + Eq + std::hash::Hash> Circ
                             witness_exprs.len()
                         );
                     }
-                    let leaf_widx = expr_to_widx
-                        .get(&witness_exprs[0])
-                        .copied()
-                        .expect("Leaf expression should have been lowered to WitnessId");
-                    let root_widx = expr_to_widx
-                        .get(&witness_exprs[1])
-                        .copied()
-                        .expect("Root expression should have been lowered to WitnessId");
+                    let leaf_widx = Self::get_witness_id(
+                        expr_to_widx,
+                        witness_exprs[0],
+                        "FakeMerkleVerify leaf input",
+                    );
+                    let root_widx = Self::get_witness_id(
+                        expr_to_widx,
+                        witness_exprs[1],
+                        "FakeMerkleVerify root input",
+                    );
 
                     lowered_ops.push(NonPrimitiveOp::FakeMerkleVerify {
                         leaf: leaf_widx,
