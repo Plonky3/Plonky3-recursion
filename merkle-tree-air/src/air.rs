@@ -99,7 +99,7 @@ where
         }
 
         // `is_extra` may only be set before a hash with a sibling at the current height.
-        // So `local.is_extra` and `local.is_final` cannot be set at the same time.
+        // So `local.is_extra`, `local.is_final` and `next.is_final` cannot be set at the same time.
         builder
             .assert_bool(local.is_extra.clone() + local.is_final.clone() + next.is_final.clone());
 
@@ -116,7 +116,7 @@ where
                 .when(next.is_final.clone())
                 .when_transition()
                 .assert_zero(local.height_encoding[i].clone() - next.height_encoding[i].clone());
-            // During one merkle batch verification, and when the current row is not `is_extra` and the next row is not final, the height encoding is shifted.
+            // During one merkle batch verification, and when the current row is not `is_extra` and neither the current nor the next row are final, the height encoding is shifted.
             builder
                 .when_transition()
                 .when(
@@ -294,7 +294,7 @@ where
         for input in inputs {
             let max_height = input.2.len();
 
-            // We start at the highest height. It corresponds to the length of the siblings.
+            // We start at the highest height. It corresponds to the length of the siblings. In `verify_batch`, `cur_height_padded` is divided by 2 at each step. So the initial `cur_height_padded` should be `1 << max_height`.
             let mut cur_height_padded = 1 << max_height;
             let initial_root = input.0;
             let mut state = initial_root;
@@ -418,6 +418,7 @@ fn prove_mmcs_verify_poseidon() -> Result<
         .map(|i| (roots[i], indices[i], siblings[i].to_vec()))
         .collect::<Vec<_>>();
 
+    // The permutation and compression correspond to those of Poseidon2.
     let perm16 = Poseidon2KoalaBear::<16>::new_from_rng_128(&mut rng);
 
     let compress = Poseidon2Compression::new(perm16);
