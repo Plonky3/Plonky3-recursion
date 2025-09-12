@@ -45,6 +45,8 @@ pub struct MulAir<F, const D: usize = 1> {
 }
 
 impl<F: Field + PrimeCharacteristicRing, const D: usize> MulAir<F, D> {
+    pub const WIDTH: usize = 3 * D + 3;
+
     /// Constructor for base or non-binomial cases (no W).
     pub fn new(num_ops: usize) -> Self {
         Self {
@@ -71,7 +73,7 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> MulAir<F, D> {
     /// For D>1: flattens each extension element into D coefficients followed by index columns.
     pub fn trace_to_matrix<ExtF: BasedVectorSpace<F>>(trace: &MulTrace<ExtF>) -> RowMajorMatrix<F> {
         let height = trace.lhs_values.len();
-        let width = 3 * D + 3; // D coeffs each for lhs/rhs/result + 3 indices
+        let width = Self::WIDTH;
         let mut values = Vec::with_capacity(height * width);
 
         for i in 0..height {
@@ -107,7 +109,7 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> MulAir<F, D> {
 
 impl<F: Field, const D: usize> BaseAir<F> for MulAir<F, D> {
     fn width(&self) -> usize {
-        3 * D + 3
+        Self::WIDTH
     }
 }
 
@@ -118,7 +120,7 @@ where
     fn eval(&self, builder: &mut AB) {
         let main = builder.main();
 
-        debug_assert_eq!(main.width(), 3 * D + 3, "column width mismatch");
+        debug_assert_eq!(main.width(), Self::WIDTH, "column width mismatch");
 
         let local = main.row_slice(0).expect("matrix must be non-empty");
         let local: &MulCols<_, D> = (*local).borrow();

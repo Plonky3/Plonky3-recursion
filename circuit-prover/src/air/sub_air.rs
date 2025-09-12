@@ -35,6 +35,8 @@ pub struct SubAir<F, const D: usize = 1> {
 }
 
 impl<F: Field + PrimeCharacteristicRing, const D: usize> SubAir<F, D> {
+    pub const WIDTH: usize = 3 * D + 3;
+
     pub fn new(num_ops: usize) -> Self {
         Self {
             num_ops,
@@ -46,7 +48,7 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> SubAir<F, D> {
     /// Layout: [lhs[0..D-1], lhs_index, rhs[0..D-1], rhs_index, result[0..D-1], result_index]
     pub fn trace_to_matrix<ExtF: BasedVectorSpace<F>>(trace: &SubTrace<ExtF>) -> RowMajorMatrix<F> {
         let height = trace.lhs_values.len();
-        let width = 3 * D + 3; // D coefficients each for lhs, rhs, result + 3 indices
+        let width = Self::WIDTH;
 
         let mut values = Vec::with_capacity(height * width);
 
@@ -91,7 +93,7 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> SubAir<F, D> {
 
 impl<F: Field, const D: usize> BaseAir<F> for SubAir<F, D> {
     fn width(&self) -> usize {
-        3 * D + 3 // D coefficients each for lhs, rhs, result + 3 indices
+        Self::WIDTH
     }
 }
 
@@ -102,7 +104,7 @@ where
     fn eval(&self, builder: &mut AB) {
         let main = builder.main();
 
-        debug_assert_eq!(main.width(), 3 * D + 3, "column width mismatch");
+        debug_assert_eq!(main.width(), Self::WIDTH, "column width mismatch");
 
         let local = main.row_slice(0).expect("matrix must be non-empty");
         let local: &SubCols<_, D> = (*local).borrow();
