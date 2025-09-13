@@ -1,4 +1,3 @@
-
 [workspace]
 resolver = "2"
 members = [
@@ -12,6 +11,7 @@ members = [
     "recursion",
     "symmetric-air",
 ]
+
 [workspace.package]
 description = "Plonky3 native support for recursive proof composition"
 version = "0.1.0"
@@ -21,7 +21,6 @@ repository = "https://github.com/Plonky3/Plonky3-recursion"
 homepage = "https://github.com/Plonky3/Plonky3-recursion"
 keywords = ["cryptography", "SNARK", "PLONK", "FRI", "plonky3"]
 categories = ["cryptography::cryptocurrencies"]
-
 [workspace.dependencies]
 
 # Plonky3 dependencies - shared across all crates
