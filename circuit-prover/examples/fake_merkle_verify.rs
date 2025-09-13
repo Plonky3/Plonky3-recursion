@@ -12,7 +12,7 @@ use p3_field::PrimeCharacteristicRing;
 
 type F = BabyBear;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() {
     let depth = env::args().nth(1).and_then(|s| s.parse().ok()).unwrap_or(3);
 
     let mut builder = CircuitBuilder::<F>::new();
@@ -32,26 +32,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Set public inputs
     let leaf_value = F::from_u64(42); // Our leaf value
     let expected_root_value = compute_merkle_root_classical(leaf_value, depth);
-    runner.set_public_inputs(&[leaf_value, expected_root_value])?;
+    runner
+        .set_public_inputs(&[leaf_value, expected_root_value])
+        .unwrap();
 
     // Create private Merkle path data
     let private_data = create_merkle_path_data(leaf_value, depth);
-    runner.set_complex_op_private_data(
-        merkle_op_id,
-        NonPrimitiveOpPrivateData::FakeMerkleVerify(private_data),
-    )?;
+    runner
+        .set_complex_op_private_data(
+            merkle_op_id,
+            NonPrimitiveOpPrivateData::FakeMerkleVerify(private_data),
+        )
+        .unwrap();
 
-    let traces = runner.run()?;
+    let traces = runner.run().unwrap();
     let config = build_standard_config_babybear();
     let multi_prover = MultiTableProver::new(config);
-    let proof = multi_prover.prove_all_tables(&traces)?;
-    multi_prover.verify_all_tables(&proof)?;
+    let proof = multi_prover.prove_all_tables(&traces).unwrap();
+    multi_prover.verify_all_tables(&proof).unwrap();
 
     println!(
         "✅ Verified Merkle path for leaf {leaf_value} with depth {depth} → root {expected_root_value}"
     );
-
-    Ok(())
 }
 
 /// Simulate classical Merkle root computation for testing

@@ -1,9 +1,9 @@
 //! Multi-table prover and verifier for STARK proofs.
 //!
-//! Supports both base fields and degree-4 extension fields, with automatic
-//! detection of the appropriate binomial parameter W for extension field operations.
+//! Supports base fields (D=1) and binomial extension fields (D>1), with automatic
+//! detection of the binomial parameter W for extension-field multiplication.
 
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::vec::Vec;
 use alloc::{format, vec};
 
@@ -13,7 +13,7 @@ use p3_uni_stark::{prove, verify};
 
 use crate::air::{AddAir, ConstAir, FakeMerkleVerifyAir, MulAir, PublicAir, SubAir, WitnessAir};
 use crate::config::{ProverConfig, StarkField, StarkPermutation};
-use crate::field_params::ExtractWParameter;
+use crate::field_params::ExtractBinomialW;
 
 /// STARK proof type alias for convenience.
 pub type StarkProof<F, P> = p3_uni_stark::Proof<ProverConfig<F, P>>;
@@ -38,13 +38,24 @@ pub struct MultiTableProof<F: StarkField, P: StarkPermutation<F>> {
     pub fake_merkle: TableProof<F, P>,
     /// Extension field degree: 1 for base field, 4 for degree-4 extensions
     pub ext_degree: usize,
-    /// Binomial parameter W for degree-4 extensions (x^4 = W), None for base fields
-    pub w_d4: Option<F>,
+    /// Binomial parameter W for extension fields (e.g., x^D = W); None for base fields
+    pub w_binomial: Option<F>,
 }
 
 /// Multi-table STARK prover for circuit execution traces.
 pub struct MultiTableProver<F: StarkField, P: StarkPermutation<F>> {
     config: ProverConfig<F, P>,
+}
+
+/// Errors that can arise during proving or verification.
+#[derive(Debug)]
+pub enum ProverError {
+    /// Unsupported extension degree encountered.
+    UnsupportedDegree(usize),
+    /// Missing binomial parameter W for extension-field multiplication.
+    MissingWForExtension,
+    /// Verification failed for a specific table/phase with details.
+    VerificationFailed { phase: &'static str, error: String },
 }
 
 impl<F: StarkField, P: StarkPermutation<F>> MultiTableProver<F, P> {
@@ -54,41 +65,39 @@ impl<F: StarkField, P: StarkPermutation<F>> MultiTableProver<F, P> {
 
     /// Generate proofs for all circuit tables.
     ///
-    /// Automatically detects whether to use base field or degree-4 extension field
+    /// Automatically detects whether to use base field or binomial extension field
     /// proving based on the circuit element type `EF`. For extension fields,
     /// the binomial parameter W is automatically extracted.
-    pub fn prove_all_tables<EF>(&self, traces: &Traces<EF>) -> Result<MultiTableProof<F, P>, String>
+    pub fn prove_all_tables<EF>(
+        &self,
+        traces: &Traces<EF>,
+    ) -> Result<MultiTableProof<F, P>, ProverError>
     where
-        EF: Field + BasedVectorSpace<F> + ExtractWParameter<F>,
+        EF: Field + BasedVectorSpace<F> + ExtractBinomialW<F>,
     {
         let pis: Vec<F> = vec![];
-
         match EF::DIMENSION {
             1 => self.prove_for_degree::<EF, 1>(traces, pis, None),
             4 => {
-                let w = EF::extract_w_d4().ok_or_else(|| {
-                    "Missing W for D=4: implement ExtractWParameter<F> for EF".to_string()
-                })?;
+                let w = EF::extract_w().ok_or(ProverError::MissingWForExtension)?;
                 self.prove_for_degree::<EF, 4>(traces, pis, Some(w))
             }
-            d => Err(format!("Unsupported extension degree: {d}")),
+            d => Err(ProverError::UnsupportedDegree(d)),
         }
     }
 
     /// Verify all proofs in the given proof bundle.
-    /// Uses the extension degree and binomial parameter recorded during proving.
-    pub fn verify_all_tables(&self, proof: &MultiTableProof<F, P>) -> Result<(), String> {
+    /// Uses the recorded extension degree and binomial parameter recorded during proving.
+    pub fn verify_all_tables(&self, proof: &MultiTableProof<F, P>) -> Result<(), ProverError> {
         let pis: Vec<F> = vec![];
 
         match proof.ext_degree {
             1 => self.verify_for_degree::<1>(proof, pis, None),
             4 => {
-                let w = proof.w_d4.ok_or_else(|| {
-                    "Proof is D=4 but missing W; prover should have persisted it.".to_string()
-                })?;
+                let w = proof.w_binomial.ok_or(ProverError::MissingWForExtension)?;
                 self.verify_for_degree::<4>(proof, pis, Some(w))
             }
-            d => Err(format!("Unsupported extension degree in proof: {d}")),
+            d => Err(ProverError::UnsupportedDegree(d)),
         }
     }
 
@@ -100,7 +109,7 @@ impl<F: StarkField, P: StarkPermutation<F>> MultiTableProver<F, P> {
         traces: &Traces<EF>,
         pis: Vec<F>,
         w_binomial: Option<F>,
-    ) -> Result<MultiTableProof<F, P>, String>
+    ) -> Result<MultiTableProof<F, P>, ProverError>
     where
         EF: Field + BasedVectorSpace<F>,
     {
@@ -129,9 +138,7 @@ impl<F: StarkField, P: StarkPermutation<F>> MultiTableProver<F, P> {
         let mul_air: MulAir<F, D> = if D == 1 {
             MulAir::<F, D>::new(traces.mul_trace.lhs_values.len())
         } else {
-            let w = w_binomial.ok_or_else(|| {
-                format!("Missing binomial parameter W for D={D} extension field multiplication")
-            })?;
+            let w = w_binomial.ok_or(ProverError::MissingWForExtension)?;
             MulAir::<F, D>::new_binomial(traces.mul_trace.lhs_values.len(), w)
         };
         let mul_proof = prove(&self.config, &mul_air, mul_matrix, &pis);
@@ -176,7 +183,7 @@ impl<F: StarkField, P: StarkPermutation<F>> MultiTableProver<F, P> {
                 rows: traces.fake_merkle_trace.left_values.len(),
             },
             ext_degree: D,
-            w_d4: if D == 4 { w_binomial } else { None },
+            w_binomial: if D == 4 { w_binomial } else { None },
         })
     }
 
@@ -186,43 +193,65 @@ impl<F: StarkField, P: StarkPermutation<F>> MultiTableProver<F, P> {
         proof: &MultiTableProof<F, P>,
         pis: Vec<F>,
         w_binomial: Option<F>,
-    ) -> Result<(), String> {
+    ) -> Result<(), ProverError> {
         // Witness
         let witness_air = WitnessAir::<F, D>::new(proof.witness.rows);
-        verify(&self.config, &witness_air, &proof.witness.proof, &pis)
-            .map_err(|e| format!("Witness verification failed: {e:?}"))?;
+        verify(&self.config, &witness_air, &proof.witness.proof, &pis).map_err(|e| {
+            ProverError::VerificationFailed {
+                phase: "witness",
+                error: format!("{e:?}"),
+            }
+        })?;
 
         // Const
         let const_air = ConstAir::<F, D>::new(proof.const_table.rows);
-        verify(&self.config, &const_air, &proof.const_table.proof, &pis)
-            .map_err(|e| format!("Const verification failed: {e:?}"))?;
+        verify(&self.config, &const_air, &proof.const_table.proof, &pis).map_err(|e| {
+            ProverError::VerificationFailed {
+                phase: "const",
+                error: format!("{e:?}"),
+            }
+        })?;
 
         // Public
         let public_air = PublicAir::<F, D>::new(proof.public.rows);
-        verify(&self.config, &public_air, &proof.public.proof, &pis)
-            .map_err(|e| format!("Public verification failed: {e:?}"))?;
+        verify(&self.config, &public_air, &proof.public.proof, &pis).map_err(|e| {
+            ProverError::VerificationFailed {
+                phase: "public",
+                error: format!("{e:?}"),
+            }
+        })?;
 
         // Add
         let add_air = AddAir::<F, D>::new(proof.add.rows);
-        verify(&self.config, &add_air, &proof.add.proof, &pis)
-            .map_err(|e| format!("Add verification failed: {e:?}"))?;
+        verify(&self.config, &add_air, &proof.add.proof, &pis).map_err(|e| {
+            ProverError::VerificationFailed {
+                phase: "add",
+                error: format!("{e:?}"),
+            }
+        })?;
 
         // Mul
         let mul_air: MulAir<F, D> = if D == 1 {
             MulAir::<F, D>::new(proof.mul.rows)
         } else {
-            let w = w_binomial.ok_or_else(|| {
-                format!("Missing binomial parameter W for D={D} extension field multiplication",)
-            })?;
+            let w = w_binomial.ok_or(ProverError::MissingWForExtension)?;
             MulAir::<F, D>::new_binomial(proof.mul.rows, w)
         };
-        verify(&self.config, &mul_air, &proof.mul.proof, &pis)
-            .map_err(|e| format!("Mul verification failed: {e:?}"))?;
+        verify(&self.config, &mul_air, &proof.mul.proof, &pis).map_err(|e| {
+            ProverError::VerificationFailed {
+                phase: "mul",
+                error: format!("{e:?}"),
+            }
+        })?;
 
         // Sub
         let sub_air = SubAir::<F, D>::new(proof.sub.rows);
-        verify(&self.config, &sub_air, &proof.sub.proof, &pis)
-            .map_err(|e| format!("Sub verification failed: {e:?}"))?;
+        verify(&self.config, &sub_air, &proof.sub.proof, &pis).map_err(|e| {
+            ProverError::VerificationFailed {
+                phase: "sub",
+                error: format!("{e:?}"),
+            }
+        })?;
 
         // FakeMerkle
         let fake_merkle_air = FakeMerkleVerifyAir::new(proof.fake_merkle.rows);
@@ -232,7 +261,10 @@ impl<F: StarkField, P: StarkPermutation<F>> MultiTableProver<F, P> {
             &proof.fake_merkle.proof,
             &pis,
         )
-        .map_err(|e| format!("FakeMerkle verification failed: {e:?}"))?;
+        .map_err(|e| ProverError::VerificationFailed {
+            phase: "fake_merkle",
+            error: format!("{e:?}"),
+        })?;
 
         Ok(())
     }
@@ -367,7 +399,9 @@ mod tests {
 
         // Verify proof has correct extension degree and W parameter
         assert_eq!(proof.ext_degree, 4);
-        assert_eq!(proof.w_d4, Some(BabyBear::from_u64(11))); // BabyBear W for D=4
+        // Derive W via trait to avoid hardcoding constants
+        let expected_w = <ExtField as ExtractBinomialW<BabyBear>>::extract_w().unwrap();
+        assert_eq!(proof.w_binomial, Some(expected_w));
 
         multi_prover.verify_all_tables(&proof).unwrap();
     }
@@ -479,7 +513,8 @@ mod tests {
 
         // Verify proof has correct extension degree and W parameter for KoalaBear
         assert_eq!(proof.ext_degree, 4);
-        assert_eq!(proof.w_d4, Some(KoalaBear::from_u64(3))); // KoalaBear W for D=4
+        let expected_w_kb = <KBExtField as ExtractBinomialW<KoalaBear>>::extract_w().unwrap();
+        assert_eq!(proof.w_binomial, Some(expected_w_kb));
 
         multi_prover.verify_all_tables(&proof).unwrap();
     }
