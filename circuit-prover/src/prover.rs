@@ -18,26 +18,24 @@ use crate::field_params::ExtractWParameter;
 /// STARK proof type alias for convenience.
 pub type StarkProof<F, P> = p3_uni_stark::Proof<ProverConfig<F, P>>;
 
+/// Proof and metadata for a single table
+pub struct TableProof<F: StarkField, P: StarkPermutation<F>> {
+    pub proof: StarkProof<F, P>,
+    pub rows: usize,
+}
+
 /// Complete proof bundle containing proofs for all circuit tables.
 ///
 /// Includes metadata for verification, such as the extension field degree
 /// and binomial parameter W when using degree-4 extension fields.
 pub struct MultiTableProof<F: StarkField, P: StarkPermutation<F>> {
-    pub witness_proof: StarkProof<F, P>,
-    pub const_proof: StarkProof<F, P>,
-    pub public_proof: StarkProof<F, P>,
-    pub add_proof: StarkProof<F, P>,
-    pub mul_proof: StarkProof<F, P>,
-    pub sub_proof: StarkProof<F, P>,
-    pub fake_merkle_proof: StarkProof<F, P>,
-    // Table row counts for verification
-    pub witness_rows: usize,
-    pub const_rows: usize,
-    pub public_rows: usize,
-    pub add_rows: usize,
-    pub mul_rows: usize,
-    pub sub_rows: usize,
-    pub fake_merkle_rows: usize,
+    pub witness: TableProof<F, P>,
+    pub const_table: TableProof<F, P>,
+    pub public: TableProof<F, P>,
+    pub add: TableProof<F, P>,
+    pub mul: TableProof<F, P>,
+    pub sub: TableProof<F, P>,
+    pub fake_merkle: TableProof<F, P>,
     /// Extension field degree: 1 for base field, 4 for degree-4 extensions
     pub ext_degree: usize,
     /// Binomial parameter W for degree-4 extensions (x^4 = W), None for base fields
@@ -151,21 +149,34 @@ impl<F: StarkField, P: StarkPermutation<F>> MultiTableProver<F, P> {
         let fake_merkle_proof = prove(&self.config, &fake_merkle_air, fake_merkle_matrix, &pis);
 
         Ok(MultiTableProof {
-            witness_proof,
-            const_proof,
-            public_proof,
-            add_proof,
-            mul_proof,
-            sub_proof,
-            fake_merkle_proof,
-            // Table lengths for verification
-            witness_rows: traces.witness_trace.values.len(),
-            const_rows: traces.const_trace.values.len(),
-            public_rows: traces.public_trace.values.len(),
-            add_rows: traces.add_trace.lhs_values.len(),
-            mul_rows: traces.mul_trace.lhs_values.len(),
-            sub_rows: traces.sub_trace.lhs_values.len(),
-            fake_merkle_rows: traces.fake_merkle_trace.left_values.len(),
+            witness: TableProof {
+                proof: witness_proof,
+                rows: traces.witness_trace.values.len(),
+            },
+            const_table: TableProof {
+                proof: const_proof,
+                rows: traces.const_trace.values.len(),
+            },
+            public: TableProof {
+                proof: public_proof,
+                rows: traces.public_trace.values.len(),
+            },
+            add: TableProof {
+                proof: add_proof,
+                rows: traces.add_trace.lhs_values.len(),
+            },
+            mul: TableProof {
+                proof: mul_proof,
+                rows: traces.mul_trace.lhs_values.len(),
+            },
+            sub: TableProof {
+                proof: sub_proof,
+                rows: traces.sub_trace.lhs_values.len(),
+            },
+            fake_merkle: TableProof {
+                proof: fake_merkle_proof,
+                rows: traces.fake_merkle_trace.left_values.len(),
+            },
             ext_degree: D,
             w_d4: if D == 4 { w_binomial } else { None },
             _phantom_p: core::marker::PhantomData,
@@ -180,48 +191,48 @@ impl<F: StarkField, P: StarkPermutation<F>> MultiTableProver<F, P> {
         w_binomial: Option<F>,
     ) -> Result<(), String> {
         // Witness
-        let witness_air = WitnessAir::<F, D>::new(proof.witness_rows);
-        verify(&self.config, &witness_air, &proof.witness_proof, &pis)
+        let witness_air = WitnessAir::<F, D>::new(proof.witness.rows);
+        verify(&self.config, &witness_air, &proof.witness.proof, &pis)
             .map_err(|e| format!("Witness verification failed: {e:?}"))?;
 
         // Const
-        let const_air = ConstAir::<F, D>::new(proof.const_rows);
-        verify(&self.config, &const_air, &proof.const_proof, &pis)
+        let const_air = ConstAir::<F, D>::new(proof.const_table.rows);
+        verify(&self.config, &const_air, &proof.const_table.proof, &pis)
             .map_err(|e| format!("Const verification failed: {e:?}"))?;
 
         // Public
-        let public_air = PublicAir::<F, D>::new(proof.public_rows);
-        verify(&self.config, &public_air, &proof.public_proof, &pis)
+        let public_air = PublicAir::<F, D>::new(proof.public.rows);
+        verify(&self.config, &public_air, &proof.public.proof, &pis)
             .map_err(|e| format!("Public verification failed: {e:?}"))?;
 
         // Add
-        let add_air = AddAir::<F, D>::new(proof.add_rows);
-        verify(&self.config, &add_air, &proof.add_proof, &pis)
+        let add_air = AddAir::<F, D>::new(proof.add.rows);
+        verify(&self.config, &add_air, &proof.add.proof, &pis)
             .map_err(|e| format!("Add verification failed: {e:?}"))?;
 
         // Mul
         let mul_air: MulAir<F, D> = if D == 1 {
-            MulAir::<F, D>::new(proof.mul_rows)
+            MulAir::<F, D>::new(proof.mul.rows)
         } else {
             let w = w_binomial.ok_or_else(|| {
-                format!("Missing binomial parameter W for D={D} extension field multiplication")
+                format!("Missing binomial parameter W for D={D} extension field multiplication",)
             })?;
-            MulAir::<F, D>::new_binomial(proof.mul_rows, w)
+            MulAir::<F, D>::new_binomial(proof.mul.rows, w)
         };
-        verify(&self.config, &mul_air, &proof.mul_proof, &pis)
+        verify(&self.config, &mul_air, &proof.mul.proof, &pis)
             .map_err(|e| format!("Mul verification failed: {e:?}"))?;
 
         // Sub
-        let sub_air = SubAir::<F, D>::new(proof.sub_rows);
-        verify(&self.config, &sub_air, &proof.sub_proof, &pis)
+        let sub_air = SubAir::<F, D>::new(proof.sub.rows);
+        verify(&self.config, &sub_air, &proof.sub.proof, &pis)
             .map_err(|e| format!("Sub verification failed: {e:?}"))?;
 
         // FakeMerkle
-        let fake_merkle_air = FakeMerkleVerifyAir::new(proof.fake_merkle_rows);
+        let fake_merkle_air = FakeMerkleVerifyAir::new(proof.fake_merkle.rows);
         verify(
             &self.config,
             &fake_merkle_air,
-            &proof.fake_merkle_proof,
+            &proof.fake_merkle.proof,
             &pis,
         )
         .map_err(|e| format!("FakeMerkle verification failed: {e:?}"))?;

@@ -286,7 +286,19 @@ impl<
         if widx.0 as usize >= self.witness.len() {
             return Err(format!("WitnessId({}) out of bounds", widx.0));
         }
-        self.witness[widx.0 as usize] = Some(value);
+
+        // Check for conflicting reassignment
+        if let Some(existing_value) = self.witness[widx.0 as usize].clone() {
+            if existing_value != value {
+                return Err(format!(
+                    "Witness conflict: WitnessId({}) already set to {:?}, cannot reassign to {:?}",
+                    widx.0, existing_value, value
+                ));
+            }
+        } else {
+            self.witness[widx.0 as usize] = Some(value);
+        }
+
         Ok(())
     }
 
