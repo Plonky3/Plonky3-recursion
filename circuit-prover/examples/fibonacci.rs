@@ -5,6 +5,7 @@ use std::env;
 use p3_baby_bear::BabyBear;
 use p3_circuit::builder::CircuitBuilder;
 use p3_circuit_prover::MultiTableProver;
+use p3_circuit_prover::config::babybear_config::build_standard_config_babybear;
 use p3_field::PrimeCharacteristicRing;
 
 type F = BabyBear;
@@ -42,7 +43,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     runner.set_public_inputs(&[expected_fib])?;
 
     let traces = runner.run()?;
-    let multi_prover = MultiTableProver::new();
+    let config = build_standard_config_babybear();
+    let multi_prover = MultiTableProver::new(config);
     let proof = multi_prover.prove_all_tables(&traces)?;
     multi_prover.verify_all_tables(&proof)?;
 
