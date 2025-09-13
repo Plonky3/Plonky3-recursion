@@ -12,7 +12,6 @@ categories.workspace = true
 [dependencies]
 p3-air.workspace = true
 p3-baby-bear.workspace = true
-p3-koala-bear.workspace = true
 p3-challenger.workspace = true
 p3-circle.workspace = true
 p3-circuit.workspace = true
@@ -20,6 +19,7 @@ p3-commit.workspace = true
 p3-dft.workspace = true
 p3-field.workspace = true
 p3-fri.workspace = true
+p3-koala-bear.workspace = true
 p3-matrix.workspace = true
 p3-merkle-tree.workspace = true
 p3-symmetric.workspace = true
