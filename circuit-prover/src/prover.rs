@@ -40,8 +40,6 @@ pub struct MultiTableProof<F: StarkField, P: StarkPermutation<F>> {
     pub ext_degree: usize,
     /// Binomial parameter W for degree-4 extensions (x^4 = W), None for base fields
     pub w_d4: Option<F>,
-    /// Phantom data to maintain the permutation type parameter
-    pub(crate) _phantom_p: core::marker::PhantomData<P>,
 }
 
 /// Multi-table STARK prover for circuit execution traces.
@@ -179,7 +177,6 @@ impl<F: StarkField, P: StarkPermutation<F>> MultiTableProver<F, P> {
             },
             ext_degree: D,
             w_d4: if D == 4 { w_binomial } else { None },
-            _phantom_p: core::marker::PhantomData,
         })
     }
 
