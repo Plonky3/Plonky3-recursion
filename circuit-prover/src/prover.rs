@@ -58,6 +58,28 @@ pub enum ProverError {
     VerificationFailed { phase: &'static str, error: String },
 }
 
+impl core::fmt::Display for ProverError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            ProverError::UnsupportedDegree(d) => {
+                write!(
+                    f,
+                    "unsupported extension degree: {d} (supported: 1,2,4,6,8)"
+                )
+            }
+            ProverError::MissingWForExtension => {
+                write!(
+                    f,
+                    "missing binomial parameter W for extension-field multiplication"
+                )
+            }
+            ProverError::VerificationFailed { phase, error } => {
+                write!(f, "verification failed in {phase}: {error}")
+            }
+        }
+    }
+}
+
 impl<F: StarkField, P: StarkPermutation<F>> MultiTableProver<F, P> {
     pub fn new(config: ProverConfig<F, P>) -> Self {
         Self { config }
@@ -76,12 +98,13 @@ impl<F: StarkField, P: StarkPermutation<F>> MultiTableProver<F, P> {
         EF: Field + BasedVectorSpace<F> + ExtractBinomialW<F>,
     {
         let pis: Vec<F> = vec![];
+        let w_opt = EF::extract_w();
         match EF::DIMENSION {
             1 => self.prove_for_degree::<EF, 1>(traces, pis, None),
-            4 => {
-                let w = EF::extract_w().ok_or(ProverError::MissingWForExtension)?;
-                self.prove_for_degree::<EF, 4>(traces, pis, Some(w))
-            }
+            2 => self.prove_for_degree::<EF, 2>(traces, pis, w_opt),
+            4 => self.prove_for_degree::<EF, 4>(traces, pis, w_opt),
+            6 => self.prove_for_degree::<EF, 6>(traces, pis, w_opt),
+            8 => self.prove_for_degree::<EF, 8>(traces, pis, w_opt),
             d => Err(ProverError::UnsupportedDegree(d)),
         }
     }
@@ -91,12 +114,13 @@ impl<F: StarkField, P: StarkPermutation<F>> MultiTableProver<F, P> {
     pub fn verify_all_tables(&self, proof: &MultiTableProof<F, P>) -> Result<(), ProverError> {
         let pis: Vec<F> = vec![];
 
+        let w_opt = proof.w_binomial;
         match proof.ext_degree {
             1 => self.verify_for_degree::<1>(proof, pis, None),
-            4 => {
-                let w = proof.w_binomial.ok_or(ProverError::MissingWForExtension)?;
-                self.verify_for_degree::<4>(proof, pis, Some(w))
-            }
+            2 => self.verify_for_degree::<2>(proof, pis, w_opt),
+            4 => self.verify_for_degree::<4>(proof, pis, w_opt),
+            6 => self.verify_for_degree::<6>(proof, pis, w_opt),
+            8 => self.verify_for_degree::<8>(proof, pis, w_opt),
             d => Err(ProverError::UnsupportedDegree(d)),
         }
     }
@@ -183,7 +207,7 @@ impl<F: StarkField, P: StarkPermutation<F>> MultiTableProver<F, P> {
                 rows: traces.fake_merkle_trace.left_values.len(),
             },
             ext_degree: D,
-            w_binomial: if D == 4 { w_binomial } else { None },
+            w_binomial: if D > 1 { w_binomial } else { None },
         })
     }
 
@@ -446,8 +470,8 @@ mod tests {
     }
 
     #[test]
-    fn test_koalabear_prover_extension_field_d4() {
-        type KBExtField = BinomialExtensionField<KoalaBear, 4>;
+    fn test_koalabear_prover_extension_field_d8() {
+        type KBExtField = BinomialExtensionField<KoalaBear, 8>;
         let mut builder = CircuitBuilder::<KBExtField>::new();
 
         // Create circuit: x * y * z = expected_result, then assert result == expected
@@ -457,9 +481,13 @@ mod tests {
         let z = builder.add_const(
             KBExtField::from_basis_coefficients_slice(&[
                 KoalaBear::from_u64(1),
-                KoalaBear::NEG_ONE, // Mix of 1 and -1 for boundary test
+                KoalaBear::NEG_ONE, // Mix: 1 and -1
                 KoalaBear::from_u64(2),
                 KoalaBear::from_u64(3),
+                KoalaBear::from_u64(4),
+                KoalaBear::from_u64(5),
+                KoalaBear::from_u64(6),
+                KoalaBear::from_u64(7),
             ])
             .unwrap(),
         );
@@ -480,6 +508,10 @@ mod tests {
             KoalaBear::from_u64(6),
             KoalaBear::from_u64(8),
             KoalaBear::from_u64(10),
+            KoalaBear::from_u64(12),
+            KoalaBear::from_u64(14),
+            KoalaBear::from_u64(16),
+            KoalaBear::from_u64(18),
         ])
         .unwrap();
         let y_val = KBExtField::from_basis_coefficients_slice(&[
@@ -487,6 +519,10 @@ mod tests {
             KoalaBear::from_u64(14),
             KoalaBear::from_u64(16),
             KoalaBear::from_u64(18),
+            KoalaBear::from_u64(20),
+            KoalaBear::from_u64(22),
+            KoalaBear::from_u64(24),
+            KoalaBear::from_u64(26),
         ])
         .unwrap();
         let z_val = KBExtField::from_basis_coefficients_slice(&[
@@ -494,6 +530,10 @@ mod tests {
             KoalaBear::NEG_ONE,
             KoalaBear::from_u64(2),
             KoalaBear::from_u64(3),
+            KoalaBear::from_u64(4),
+            KoalaBear::from_u64(5),
+            KoalaBear::from_u64(6),
+            KoalaBear::from_u64(7),
         ])
         .unwrap();
 
@@ -506,13 +546,13 @@ mod tests {
             .unwrap();
         let traces = runner.run().unwrap();
 
-        // Create KoalaBear prover for extension field (W=3)
+        // Create KoalaBear prover for extension field (D=8)
         let config = build_standard_config_koalabear();
         let multi_prover = MultiTableProver::new(config);
         let proof = multi_prover.prove_all_tables(&traces).unwrap();
 
-        // Verify proof has correct extension degree and W parameter for KoalaBear
-        assert_eq!(proof.ext_degree, 4);
+        // Verify proof has correct extension degree and W parameter for KoalaBear (D=8)
+        assert_eq!(proof.ext_degree, 8);
         let expected_w_kb = <KBExtField as ExtractBinomialW<KoalaBear>>::extract_w().unwrap();
         assert_eq!(proof.w_binomial, Some(expected_w_kb));
 
