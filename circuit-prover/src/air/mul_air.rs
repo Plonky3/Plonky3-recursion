@@ -138,7 +138,7 @@ where
         let w = self
             .w_binomial
             .as_ref()
-            .map(|w| AB::Expr::from(w.clone()))
+            .map(|w| AB::Expr::from(*w))
             .expect("MulAir with D>1 requires binomial parameter W for wrap-around");
 
         // acc[k] = sum_{i+j=k} a_i b_j + W * sum_{i+j=k+D} a_i b_j
