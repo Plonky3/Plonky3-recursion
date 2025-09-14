@@ -27,7 +27,7 @@ pub struct TableProof<F: StarkField, P: StarkPermutation<F>> {
 /// Complete proof bundle containing proofs for all circuit tables.
 ///
 /// Includes metadata for verification, such as the extension field degree
-/// and binomial parameter W when using degree-4 extension fields.
+/// and the binomial parameter W when using extension fields.
 pub struct MultiTableProof<F: StarkField, P: StarkPermutation<F>> {
     pub witness: TableProof<F, P>,
     pub const_table: TableProof<F, P>,
@@ -36,7 +36,7 @@ pub struct MultiTableProof<F: StarkField, P: StarkPermutation<F>> {
     pub mul: TableProof<F, P>,
     pub sub: TableProof<F, P>,
     pub fake_merkle: TableProof<F, P>,
-    /// Extension field degree: 1 for base field, 4 for degree-4 extensions
+    /// Extension field degree: 1 for base field; otherwise the extension degree used.
     pub ext_degree: usize,
     /// Binomial parameter W for extension fields (e.g., x^D = W); None for base fields
     pub w_binomial: Option<F>,

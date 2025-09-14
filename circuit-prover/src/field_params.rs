@@ -26,7 +26,7 @@ where
     }
 }
 
-/// Degree-4 extension fields provide their binomial parameter W.
+/// Binomial extension fields (for any supported degree D) provide their parameter W.
 impl<F, const D: usize> ExtractBinomialW<F> for BinomialExtensionField<F, D>
 where
     F: Field + BinomiallyExtendable<D>,

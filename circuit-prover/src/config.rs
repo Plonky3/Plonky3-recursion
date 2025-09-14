@@ -39,7 +39,7 @@ where
 {
 }
 
-/// FRI challenge field: D4 binomial extension over base field `F`.
+/// FRI challenge field: a degree-4 (D=4) binomial extension over base field `F`.
 pub type Challenge<F> = BinomialExtensionField<F, 4>;
 
 /// Merkle tree MMCS over the base field `F` with permutation `P` (width 16).
