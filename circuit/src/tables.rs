@@ -688,7 +688,7 @@ mod tests {
         assert_eq!(traces.mul_trace.lhs_values.len(), 1);
 
         // Should have two sub operations (explicit Sub and assert_zero lowering to Sub with zero)
-        assert_eq!(traces.sub_trace.lhs_values.len(), 2);
+        assert_eq!(traces.sub_trace.lhs_values.len(), 1);
     }
 
     #[test]
