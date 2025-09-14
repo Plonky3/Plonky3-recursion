@@ -10,7 +10,7 @@ use p3_field::PrimeCharacteristicRing;
 
 type F = BabyBear;
 
-fn main() {
+fn main() -> Result<(), impl core::fmt::Debug> {
     let n = env::args()
         .nth(1)
         .and_then(|s| s.parse().ok())
@@ -45,10 +45,8 @@ fn main() {
     let traces = runner.run().unwrap();
     let config = build_standard_config_babybear();
     let multi_prover = MultiTableProver::new(config);
-    let proof = multi_prover.prove_all_tables(&traces).unwrap();
-    multi_prover.verify_all_tables(&proof).unwrap();
-
-    println!("✅ Verified F({n}) = {expected_fib}");
+    let proof = multi_prover.prove_all_tables(&traces)?;
+    multi_prover.verify_all_tables(&proof)
 }
 
 fn compute_fibonacci_classical(n: usize) -> F {

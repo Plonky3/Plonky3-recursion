@@ -12,7 +12,7 @@ use p3_field::PrimeCharacteristicRing;
 
 type F = BabyBear;
 
-fn main() {
+fn main() -> Result<(), impl core::fmt::Debug> {
     let depth = env::args().nth(1).and_then(|s| s.parse().ok()).unwrap_or(3);
 
     let mut builder = CircuitBuilder::<F>::new();
@@ -48,12 +48,8 @@ fn main() {
     let traces = runner.run().unwrap();
     let config = build_standard_config_babybear();
     let multi_prover = MultiTableProver::new(config);
-    let proof = multi_prover.prove_all_tables(&traces).unwrap();
-    multi_prover.verify_all_tables(&proof).unwrap();
-
-    println!(
-        "✅ Verified Merkle path for leaf {leaf_value} with depth {depth} → root {expected_root_value}"
-    );
+    let proof = multi_prover.prove_all_tables(&traces)?;
+    multi_prover.verify_all_tables(&proof)
 }
 
 /// Simulate classical Merkle root computation for testing
