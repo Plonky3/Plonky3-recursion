@@ -29,15 +29,14 @@ fn main() -> Result<(), impl core::fmt::Debug> {
     let circuit = builder.build();
     let mut runner = circuit.runner();
 
-    // Set public inputs
+    // Create private Merkle path data and compute expected root with same mock hash
     let leaf_value = F::from_u64(42); // Our leaf value
-    let expected_root_value = compute_merkle_root_classical(leaf_value, depth);
+    let private_data = create_merkle_path_data(leaf_value, depth);
+    let expected_root_value = compute_merkle_root_from_private(leaf_value, &private_data);
+    // Set public inputs
     runner
         .set_public_inputs(&[leaf_value, expected_root_value])
         .unwrap();
-
-    // Create private Merkle path data
-    let private_data = create_merkle_path_data(leaf_value, depth);
     runner
         .set_complex_op_private_data(
             merkle_op_id,
@@ -52,17 +51,17 @@ fn main() -> Result<(), impl core::fmt::Debug> {
     multi_prover.verify_all_tables(&proof)
 }
 
-/// Simulate classical Merkle root computation for testing
-fn compute_merkle_root_classical(leaf: F, depth: usize) -> F {
+/// Compute the expected root using the same mock hash as the circuit runner
+fn compute_merkle_root_from_private(leaf: F, private: &FakeMerklePrivateData<F>) -> F {
     let mut current = leaf;
-
-    // Simulate hashing up the tree
-    for i in 0..depth {
-        // Simple mock hash: hash(left, right) = left + right + i
-        let sibling = F::from_u64((i + 1) as u64 * 10); // Mock sibling values
-        current = current + sibling + F::from_u64(i as u64);
+    for (sibling, &dir) in private
+        .path_siblings
+        .iter()
+        .zip(private.path_directions.iter())
+    {
+        // Mock hash: left + right + (direction ? 1 : 0)
+        current = current + *sibling + if dir { F::ONE } else { F::ZERO };
     }
-
     current
 }
 
