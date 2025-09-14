@@ -16,26 +16,43 @@ use crate::config::{ProverConfig, StarkField, StarkPermutation};
 use crate::field_params::ExtractBinomialW;
 
 /// STARK proof type alias for convenience.
-pub type StarkProof<F, P> = p3_uni_stark::Proof<ProverConfig<F, P>>;
+///
+/// - `F`: Base field for values and commitments.
+/// - `P`: Permutation over `F` used by hash/challenger.
+/// - `CD`: Challenge field degree (binomial extension over `F`).
+pub type StarkProof<F, P, const CD: usize> = p3_uni_stark::Proof<ProverConfig<F, P, CD>>;
 
-/// Proof and metadata for a single table
-pub struct TableProof<F: StarkField, P: StarkPermutation<F>> {
-    pub proof: StarkProof<F, P>,
+/// Proof and metadata for a single table.
+///
+/// - `F`: Base field.
+/// - `P`: Permutation over `F`.
+/// - `CD`: Challenge field degree.
+pub struct TableProof<F, P, const CD: usize>
+where
+    F: StarkField + p3_field::extension::BinomiallyExtendable<CD>,
+    P: StarkPermutation<F>,
+{
+    pub proof: StarkProof<F, P, CD>,
     pub rows: usize,
 }
 
 /// Complete proof bundle containing proofs for all circuit tables.
 ///
-/// Includes metadata for verification, such as the extension field degree
-/// and the binomial parameter W when using extension fields.
-pub struct MultiTableProof<F: StarkField, P: StarkPermutation<F>> {
-    pub witness: TableProof<F, P>,
-    pub const_table: TableProof<F, P>,
-    pub public: TableProof<F, P>,
-    pub add: TableProof<F, P>,
-    pub mul: TableProof<F, P>,
-    pub sub: TableProof<F, P>,
-    pub fake_merkle: TableProof<F, P>,
+/// Includes metadata for verification, such as:
+/// - `ext_degree`: circuit element extension degree used in traces (may differ from `CD`).
+/// - `w_binomial`: binomial parameter `W` for element-field multiplication, when applicable.
+pub struct MultiTableProof<F, P, const CD: usize>
+where
+    F: StarkField + p3_field::extension::BinomiallyExtendable<CD>,
+    P: StarkPermutation<F>,
+{
+    pub witness: TableProof<F, P, CD>,
+    pub const_table: TableProof<F, P, CD>,
+    pub public: TableProof<F, P, CD>,
+    pub add: TableProof<F, P, CD>,
+    pub mul: TableProof<F, P, CD>,
+    pub sub: TableProof<F, P, CD>,
+    pub fake_merkle: TableProof<F, P, CD>,
     /// Extension field degree: 1 for base field; otherwise the extension degree used.
     pub ext_degree: usize,
     /// Binomial parameter W for extension fields (e.g., x^D = W); None for base fields
@@ -43,8 +60,16 @@ pub struct MultiTableProof<F: StarkField, P: StarkPermutation<F>> {
 }
 
 /// Multi-table STARK prover for circuit execution traces.
-pub struct MultiTableProver<F: StarkField, P: StarkPermutation<F>> {
-    config: ProverConfig<F, P>,
+///
+/// - `F`: Base field for values/commitments.
+/// - `P`: Permutation over `F` (hash/challenger).
+/// - `CD`: Challenge field degree; traces may use element fields of different degree.
+pub struct MultiTableProver<F, P, const CD: usize>
+where
+    F: StarkField + p3_field::extension::BinomiallyExtendable<CD>,
+    P: StarkPermutation<F>,
+{
+    config: ProverConfig<F, P, CD>,
 }
 
 /// Errors that can arise during proving or verification.
@@ -80,8 +105,12 @@ impl core::fmt::Display for ProverError {
     }
 }
 
-impl<F: StarkField, P: StarkPermutation<F>> MultiTableProver<F, P> {
-    pub fn new(config: ProverConfig<F, P>) -> Self {
+impl<F, P, const CD: usize> MultiTableProver<F, P, CD>
+where
+    F: StarkField + p3_field::extension::BinomiallyExtendable<CD>,
+    P: StarkPermutation<F>,
+{
+    pub fn new(config: ProverConfig<F, P, CD>) -> Self {
         Self { config }
     }
 
@@ -93,7 +122,7 @@ impl<F: StarkField, P: StarkPermutation<F>> MultiTableProver<F, P> {
     pub fn prove_all_tables<EF>(
         &self,
         traces: &Traces<EF>,
-    ) -> Result<MultiTableProof<F, P>, ProverError>
+    ) -> Result<MultiTableProof<F, P, CD>, ProverError>
     where
         EF: Field + BasedVectorSpace<F> + ExtractBinomialW<F>,
     {
@@ -111,7 +140,7 @@ impl<F: StarkField, P: StarkPermutation<F>> MultiTableProver<F, P> {
 
     /// Verify all proofs in the given proof bundle.
     /// Uses the recorded extension degree and binomial parameter recorded during proving.
-    pub fn verify_all_tables(&self, proof: &MultiTableProof<F, P>) -> Result<(), ProverError> {
+    pub fn verify_all_tables(&self, proof: &MultiTableProof<F, P, CD>) -> Result<(), ProverError> {
         let pis: Vec<F> = vec![];
 
         let w_opt = proof.w_binomial;
@@ -127,13 +156,13 @@ impl<F: StarkField, P: StarkPermutation<F>> MultiTableProver<F, P> {
 
     // Internal implementation methods
 
-    /// Prove all tables for a fixed degree `D`.
+    /// Prove all tables for a fixed extension degree.
     fn prove_for_degree<EF, const D: usize>(
         &self,
         traces: &Traces<EF>,
         pis: Vec<F>,
         w_binomial: Option<F>,
-    ) -> Result<MultiTableProof<F, P>, ProverError>
+    ) -> Result<MultiTableProof<F, P, CD>, ProverError>
     where
         EF: Field + BasedVectorSpace<F>,
     {
@@ -211,10 +240,10 @@ impl<F: StarkField, P: StarkPermutation<F>> MultiTableProver<F, P> {
         })
     }
 
-    /// Verify all tables for a fixed degree `D`.
+    /// Verify all tables for a fixed extension degree.
     fn verify_for_degree<const D: usize>(
         &self,
-        proof: &MultiTableProof<F, P>,
+        proof: &MultiTableProof<F, P, CD>,
         pis: Vec<F>,
         w_binomial: Option<F>,
     ) -> Result<(), ProverError> {
@@ -300,10 +329,12 @@ mod tests {
     use p3_circuit::builder::CircuitBuilder;
     use p3_field::extension::BinomialExtensionField;
     use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
+    use p3_goldilocks::Goldilocks;
     use p3_koala_bear::KoalaBear;
 
     use super::*;
     use crate::config::babybear_config::build_standard_config_babybear;
+    use crate::config::goldilocks_config::build_standard_config_goldilocks;
     use crate::config::koalabear_config::build_standard_config_koalabear;
 
     #[test]
@@ -416,7 +447,7 @@ mod tests {
             .unwrap();
         let traces = runner.run().unwrap();
 
-        // Create BabyBear prover for extension field (W=11)
+        // Create BabyBear prover for extension field (D=4)
         let config = build_standard_config_babybear();
         let multi_prover = MultiTableProver::new(config);
         let proof = multi_prover.prove_all_tables(&traces).unwrap();
@@ -555,6 +586,63 @@ mod tests {
         assert_eq!(proof.ext_degree, 8);
         let expected_w_kb = <KBExtField as ExtractBinomialW<KoalaBear>>::extract_w().unwrap();
         assert_eq!(proof.w_binomial, Some(expected_w_kb));
+
+        multi_prover.verify_all_tables(&proof).unwrap();
+    }
+
+    #[test]
+    fn test_goldilocks_prover_extension_field_d2() {
+        type ExtField = BinomialExtensionField<Goldilocks, 2>;
+        let mut builder = CircuitBuilder::<ExtField>::new();
+
+        // Simple circuit over D=2: x * y + z = expected
+        let x = builder.add_public_input();
+        let y = builder.add_public_input();
+        let z = builder.add_public_input();
+        let expected_result = builder.add_public_input();
+
+        let xy = builder.mul(x, y);
+        let res = builder.add(xy, z);
+
+        let diff = builder.sub(res, expected_result);
+        builder.assert_zero(diff);
+
+        let circuit = builder.build();
+        let mut runner = circuit.runner();
+
+        let x_val = ExtField::from_basis_coefficients_slice(&[
+            Goldilocks::from_u64(3),
+            Goldilocks::NEG_ONE,
+        ])
+        .unwrap();
+        let y_val = ExtField::from_basis_coefficients_slice(&[
+            Goldilocks::from_u64(7),
+            Goldilocks::from_u64(11),
+        ])
+        .unwrap();
+        let z_val = ExtField::from_basis_coefficients_slice(&[
+            Goldilocks::from_u64(13),
+            Goldilocks::from_u64(17),
+        ])
+        .unwrap();
+
+        let expected_val = x_val * y_val + z_val;
+        runner
+            .set_public_inputs(&[x_val, y_val, z_val, expected_val])
+            .unwrap();
+
+        let traces = runner.run().unwrap();
+
+        // Build Goldilocks config with challenge degree 2 (Poseidon2)
+        let config = build_standard_config_goldilocks();
+        let multi_prover = MultiTableProver::new(config);
+
+        let proof = multi_prover.prove_all_tables(&traces).unwrap();
+
+        // Check extension metadata and verify
+        assert_eq!(proof.ext_degree, 2);
+        let expected_w = <ExtField as ExtractBinomialW<Goldilocks>>::extract_w().unwrap();
+        assert_eq!(proof.w_binomial, Some(expected_w));
 
         multi_prover.verify_all_tables(&proof).unwrap();
     }
