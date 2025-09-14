@@ -77,6 +77,15 @@ pub struct CircuitBuilder<F> {
     const_pool: HashMap<F, ExprId>,
 }
 
+impl<F> Default for CircuitBuilder<F>
+where
+    F: Clone + PrimeCharacteristicRing + Eq + core::hash::Hash,
+{
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<F> CircuitBuilder<F>
 where
     F: Clone + PrimeCharacteristicRing + Eq + core::hash::Hash,
@@ -328,9 +337,9 @@ where
                         &mut root_to_widx,
                     );
                     let a_widx =
-                        Self::get_witness_id(&expr_to_widx, *lhs, &format!("Add lhs for {:?}", id));
+                        Self::get_witness_id(&expr_to_widx, *lhs, &format!("Add lhs for {id:?}"));
                     let b_widx =
-                        Self::get_witness_id(&expr_to_widx, *rhs, &format!("Add rhs for {:?}", id));
+                        Self::get_witness_id(&expr_to_widx, *rhs, &format!("Add rhs for {id:?}"));
                     primitive_ops.push(Prim::Add {
                         a: a_widx,
                         b: b_widx,
@@ -346,9 +355,9 @@ where
                         &mut root_to_widx,
                     );
                     let a_widx =
-                        Self::get_witness_id(&expr_to_widx, *lhs, &format!("Sub lhs for {:?}", id));
+                        Self::get_witness_id(&expr_to_widx, *lhs, &format!("Sub lhs for {id:?}"));
                     let b_widx =
-                        Self::get_witness_id(&expr_to_widx, *rhs, &format!("Sub rhs for {:?}", id));
+                        Self::get_witness_id(&expr_to_widx, *rhs, &format!("Sub rhs for {id:?}"));
                     primitive_ops.push(Prim::Sub {
                         a: a_widx,
                         b: b_widx,
@@ -364,9 +373,9 @@ where
                         &mut root_to_widx,
                     );
                     let a_widx =
-                        Self::get_witness_id(&expr_to_widx, *lhs, &format!("Mul lhs for {:?}", id));
+                        Self::get_witness_id(&expr_to_widx, *lhs, &format!("Mul lhs for {id:?}"));
                     let b_widx =
-                        Self::get_witness_id(&expr_to_widx, *rhs, &format!("Mul rhs for {:?}", id));
+                        Self::get_witness_id(&expr_to_widx, *rhs, &format!("Mul rhs for {id:?}"));
                     primitive_ops.push(Prim::Mul {
                         a: a_widx,
                         b: b_widx,
