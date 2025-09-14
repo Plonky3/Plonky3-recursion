@@ -50,6 +50,8 @@ impl Default for WitnessAllocator {
 
 #[cfg(test)]
 mod tests {
+    use alloc::format;
+
     use super::*;
 
     #[test]

@@ -1,3 +1,5 @@
+use alloc::vec::Vec;
+
 use crate::types::ExprId;
 
 /// Expression DAG for field operations

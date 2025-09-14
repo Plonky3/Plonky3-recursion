@@ -1,3 +1,5 @@
+use alloc::vec::Vec;
+
 use crate::types::WitnessId;
 
 /// Primitive operations that represent basic field arithmetic

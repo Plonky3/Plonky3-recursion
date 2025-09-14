@@ -1,3 +1,7 @@
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
+use alloc::{format, vec};
+
 use p3_field::PrimeCharacteristicRing;
 
 use crate::circuit::Circuit;
@@ -139,11 +143,11 @@ pub struct CircuitRunner<F> {
 impl<
     F: Clone
         + Default
-        + std::ops::Add<Output = F>
-        + std::ops::Sub<Output = F>
-        + std::ops::Mul<Output = F>
+        + core::ops::Add<Output = F>
+        + core::ops::Sub<Output = F>
+        + core::ops::Mul<Output = F>
         + PartialEq
-        + std::fmt::Debug
+        + core::fmt::Debug
         + PrimeCharacteristicRing,
 > CircuitRunner<F>
 {
@@ -173,7 +177,7 @@ impl<
 
         for (i, value) in public_values.iter().enumerate() {
             let widx = self.circuit.public_rows[i];
-            self.witness[widx.0 as usize] = Some(value.clone());
+            self.set_witness(widx, value.clone())?;
         }
 
         Ok(())
@@ -524,11 +528,11 @@ impl<
 impl<
     F: Clone
         + Default
-        + std::ops::Add<Output = F>
-        + std::ops::Sub<Output = F>
-        + std::ops::Mul<Output = F>
+        + core::ops::Add<Output = F>
+        + core::ops::Sub<Output = F>
+        + core::ops::Mul<Output = F>
         + PartialEq
-        + std::fmt::Debug
+        + core::fmt::Debug
         + PrimeCharacteristicRing,
 > Circuit<F>
 {
@@ -540,6 +544,9 @@ impl<
 
 #[cfg(test)]
 mod tests {
+    extern crate std;
+    use std::println;
+
     use p3_baby_bear::BabyBear;
     use p3_field::extension::BinomialExtensionField;
     use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
@@ -583,7 +590,7 @@ mod tests {
     fn test_toy_example_37_times_x_minus_111() {
         let mut builder = CircuitBuilder::<BabyBear>::new();
 
-        // DESIGN.txt example: 37 * x - 111 = 0
+        // DESIGN example: 37 * x - 111 = 0
         let x = builder.add_public_input();
         let c37 = builder.add_const(BabyBear::from_u64(37));
         let c111 = builder.add_const(BabyBear::from_u64(111));

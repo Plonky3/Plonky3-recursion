@@ -1,3 +1,5 @@
+use alloc::vec::Vec;
+
 use crate::op::{NonPrimitiveOp, Prim};
 use crate::types::WitnessId;
 

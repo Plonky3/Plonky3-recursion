@@ -1,3 +1,6 @@
+#![no_std]
+extern crate alloc;
+
 pub mod builder;
 pub mod circuit;
 pub mod expr;
