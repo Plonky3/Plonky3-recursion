@@ -1,5 +1,6 @@
 #![allow(clippy::needless_range_loop)]
 use alloc::vec::Vec;
+use core::borrow::{Borrow, BorrowMut};
 
 use p3_air::{Air, AirBuilder, BaseAir};
 use p3_circuit::tables::SubTrace;
@@ -8,6 +9,19 @@ use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
 
 use super::utils::pad_to_power_of_two;
+
+/// Columns for a Sub AIR that proves lhs - rhs = result
+/// Layout: [lhs[0..D-1], lhs_index, rhs[0..D-1], rhs_index, result[0..D-1], result_index]
+#[repr(C)]
+#[derive(Debug)]
+pub struct SubCols<T, const D: usize> {
+    pub lhs: [T; D],
+    pub lhs_index: T,
+    pub rhs: [T; D],
+    pub rhs_index: T,
+    pub result: [T; D],
+    pub result_index: T,
+}
 
 /// AIR for proving subtraction operations: lhs - rhs = result
 /// Generic over extension degree D (component-wise subtraction)
@@ -21,6 +35,8 @@ pub struct SubAir<F, const D: usize = 1> {
 }
 
 impl<F: Field + PrimeCharacteristicRing, const D: usize> SubAir<F, D> {
+    pub const WIDTH: usize = 3 * D + 3;
+
     pub fn new(num_ops: usize) -> Self {
         Self {
             num_ops,
@@ -32,7 +48,7 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> SubAir<F, D> {
     /// Layout: [lhs[0..D-1], lhs_index, rhs[0..D-1], rhs_index, result[0..D-1], result_index]
     pub fn trace_to_matrix<ExtF: BasedVectorSpace<F>>(trace: &SubTrace<ExtF>) -> RowMajorMatrix<F> {
         let height = trace.lhs_values.len();
-        let width = 3 * D + 3; // D coefficients each for lhs, rhs, result + 3 indices
+        let width = Self::WIDTH;
 
         let mut values = Vec::with_capacity(height * width);
 
@@ -44,9 +60,7 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> SubAir<F, D> {
                 D,
                 "Extension field degree mismatch for lhs"
             );
-            for j in 0..D {
-                values.push(lhs_coeffs[j]);
-            }
+            values.extend_from_slice(lhs_coeffs);
             values.push(F::from_u64(trace.lhs_index[i] as u64));
 
             // RHS
@@ -56,9 +70,7 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> SubAir<F, D> {
                 D,
                 "Extension field degree mismatch for rhs"
             );
-            for j in 0..D {
-                values.push(rhs_coeffs[j]);
-            }
+            values.extend_from_slice(rhs_coeffs);
             values.push(F::from_u64(trace.rhs_index[i] as u64));
 
             // RESULT
@@ -68,9 +80,7 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> SubAir<F, D> {
                 D,
                 "Extension field degree mismatch for result"
             );
-            for j in 0..D {
-                values.push(result_coeffs[j]);
-            }
+            values.extend_from_slice(result_coeffs);
             values.push(F::from_u64(trace.result_index[i] as u64));
         }
 
@@ -83,7 +93,7 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> SubAir<F, D> {
 
 impl<F: Field, const D: usize> BaseAir<F> for SubAir<F, D> {
     fn width(&self) -> usize {
-        3 * D + 3 // D coefficients each for lhs, rhs, result + 3 indices
+        Self::WIDTH
     }
 }
 
@@ -94,28 +104,37 @@ where
     fn eval(&self, builder: &mut AB) {
         let main = builder.main();
 
-        debug_assert_eq!(main.width(), 3 * D + 3, "column width mismatch");
+        debug_assert_eq!(main.width(), Self::WIDTH, "column width mismatch");
 
         let local = main.row_slice(0).expect("matrix must be non-empty");
-
-        // Offsets:
-        // [0..D)           -> lhs coefficients
-        // [D]              -> lhs_index
-        // [D+1 .. 2D+1)    -> rhs coefficients
-        // [2D+1]           -> rhs_index
-        // [2D+2 .. 3D+2)   -> result coefficients
-        // [3D+2]           -> result_index
-        let lhs = &local[0..D];
-        let _lhs_idx = local[D].clone();
-        let rhs = &local[D + 1..2 * D + 1];
-        let _rhs_idx = local[2 * D + 1].clone();
-        let out = &local[2 * D + 2..3 * D + 2];
-        let _out_idx = local[3 * D + 2].clone();
+        let local: &SubCols<_, D> = (*local).borrow();
 
         // Component-wise: lhs[i] - rhs[i] = out[i]
         for i in 0..D {
-            builder.assert_zero(lhs[i].clone() - rhs[i].clone() - out[i].clone());
+            builder
+                .assert_zero(local.lhs[i].clone() - local.rhs[i].clone() - local.result[i].clone());
         }
+    }
+}
+
+// Borrow implementations to convert [T] to SubCols<T, D>
+impl<T, const D: usize> Borrow<SubCols<T, D>> for [T] {
+    fn borrow(&self) -> &SubCols<T, D> {
+        let (prefix, shorts, suffix) = unsafe { self.align_to::<SubCols<T, D>>() };
+        debug_assert!(prefix.is_empty(), "Alignment should match");
+        debug_assert!(suffix.is_empty(), "Alignment should match");
+        debug_assert_eq!(shorts.len(), 1);
+        &shorts[0]
+    }
+}
+
+impl<T, const D: usize> BorrowMut<SubCols<T, D>> for [T] {
+    fn borrow_mut(&mut self) -> &mut SubCols<T, D> {
+        let (prefix, shorts, suffix) = unsafe { self.align_to_mut::<SubCols<T, D>>() };
+        debug_assert!(prefix.is_empty(), "Alignment should match");
+        debug_assert!(suffix.is_empty(), "Alignment should match");
+        debug_assert_eq!(shorts.len(), 1);
+        &mut shorts[0]
     }
 }
 

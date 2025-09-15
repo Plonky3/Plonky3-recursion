@@ -44,9 +44,7 @@ impl<F: Field, const D: usize> ConstAir<F, D> {
                 D,
                 "extension degree mismatch for ConstTrace value"
             );
-            for j in 0..D {
-                values.push(coeffs[j]);
-            }
+            values.extend_from_slice(coeffs);
             values.push(F::from_u64(trace.index[i] as u64));
         }
 

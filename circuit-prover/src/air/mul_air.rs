@@ -1,5 +1,6 @@
 #![allow(clippy::needless_range_loop)]
 use alloc::vec::Vec;
+use core::borrow::{Borrow, BorrowMut};
 
 use p3_air::{Air, AirBuilder, BaseAir};
 use p3_circuit::tables::MulTrace;
@@ -8,6 +9,19 @@ use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
 
 use super::utils::pad_to_power_of_two;
+
+/// Columns for a Mul AIR that proves lhs * rhs = result
+/// Layout: [lhs[0..D-1], lhs_index, rhs[0..D-1], rhs_index, result[0..D-1], result_index]
+#[repr(C)]
+#[derive(Debug)]
+pub struct MulCols<T, const D: usize> {
+    pub lhs: [T; D],
+    pub lhs_index: T,
+    pub rhs: [T; D],
+    pub rhs_index: T,
+    pub result: [T; D],
+    pub result_index: T,
+}
 
 /// AIR for proving multiplication operations: lhs * rhs = result
 ///
@@ -31,6 +45,8 @@ pub struct MulAir<F, const D: usize = 1> {
 }
 
 impl<F: Field + PrimeCharacteristicRing, const D: usize> MulAir<F, D> {
+    pub const WIDTH: usize = 3 * D + 3;
+
     /// Constructor for base or non-binomial cases (no W).
     pub fn new(num_ops: usize) -> Self {
         Self {
@@ -57,24 +73,20 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> MulAir<F, D> {
     /// For D>1: flattens each extension element into D coefficients followed by index columns.
     pub fn trace_to_matrix<ExtF: BasedVectorSpace<F>>(trace: &MulTrace<ExtF>) -> RowMajorMatrix<F> {
         let height = trace.lhs_values.len();
-        let width = 3 * D + 3; // D coeffs each for lhs/rhs/result + 3 indices
+        let width = Self::WIDTH;
         let mut values = Vec::with_capacity(height * width);
 
         for i in 0..height {
             // LHS
             let lhs_coeffs = trace.lhs_values[i].as_basis_coefficients_slice();
             assert_eq!(lhs_coeffs.len(), D, "Extension degree mismatch for lhs");
-            for j in 0..D {
-                values.push(lhs_coeffs[j]);
-            }
+            values.extend_from_slice(lhs_coeffs);
             values.push(F::from_u64(trace.lhs_index[i] as u64));
 
             // RHS
             let rhs_coeffs = trace.rhs_values[i].as_basis_coefficients_slice();
             assert_eq!(rhs_coeffs.len(), D, "Extension degree mismatch for rhs");
-            for j in 0..D {
-                values.push(rhs_coeffs[j]);
-            }
+            values.extend_from_slice(rhs_coeffs);
             values.push(F::from_u64(trace.rhs_index[i] as u64));
 
             // RESULT
@@ -84,9 +96,7 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> MulAir<F, D> {
                 D,
                 "Extension degree mismatch for result"
             );
-            for j in 0..D {
-                values.push(result_coeffs[j]);
-            }
+            values.extend_from_slice(result_coeffs);
             values.push(F::from_u64(trace.result_index[i] as u64));
         }
 
@@ -99,7 +109,7 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> MulAir<F, D> {
 
 impl<F: Field, const D: usize> BaseAir<F> for MulAir<F, D> {
     fn width(&self) -> usize {
-        3 * D + 3
+        Self::WIDTH
     }
 }
 
@@ -110,29 +120,16 @@ where
     fn eval(&self, builder: &mut AB) {
         let main = builder.main();
 
-        debug_assert_eq!(main.width(), 3 * D + 3, "column width mismatch");
+        debug_assert_eq!(main.width(), Self::WIDTH, "column width mismatch");
 
         let local = main.row_slice(0).expect("matrix must be non-empty");
-
-        // Offsets:
-        // [0..D)           -> lhs coefficients
-        // [D]              -> lhs_index
-        // [D+1 .. 2D+1)    -> rhs coefficients
-        // [2D+1]           -> rhs_index
-        // [2D+2 .. 3D+2)   -> result coefficients
-        // [3D+2]           -> result_index
-        let lhs = &local[0..D];
-        let _lhs_idx = local[D].clone();
-        let rhs = &local[D + 1..2 * D + 1];
-        let _rhs_idx = local[2 * D + 1].clone();
-        let out = &local[2 * D + 2..3 * D + 2];
-        let _out_idx = local[3 * D + 2].clone();
+        let local: &MulCols<_, D> = (*local).borrow();
 
         if D == 1 && self.w_binomial.is_none() {
             // Base field constraint: lhs * rhs = out
-            let lhs_value = lhs[0].clone();
-            let rhs_value = rhs[0].clone();
-            let out_value = out[0].clone();
+            let lhs_value = local.lhs[0].clone();
+            let rhs_value = local.rhs[0].clone();
+            let out_value = local.result[0].clone();
             builder.assert_zero(lhs_value * rhs_value - out_value);
             return;
         }
@@ -146,7 +143,7 @@ where
 
             for i in 0..D {
                 for j in 0..D {
-                    let term = lhs[i].clone() * rhs[j].clone();
+                    let term = local.lhs[i].clone() * local.rhs[j].clone();
                     let k = i + j;
                     if k < D {
                         acc[k] = acc[k].clone() + term;
@@ -157,7 +154,7 @@ where
             }
 
             for k in 0..D {
-                builder.assert_zero(out[k].clone() - acc[k].clone());
+                builder.assert_zero(local.result[k].clone() - acc[k].clone());
             }
             return;
         }
@@ -167,6 +164,27 @@ where
             "Unsupported configuration: D={} with w_binomial={:?}",
             D, self.w_binomial
         );
+    }
+}
+
+// Borrow implementations to convert [T] to MulCols<T, D>
+impl<T, const D: usize> Borrow<MulCols<T, D>> for [T] {
+    fn borrow(&self) -> &MulCols<T, D> {
+        let (prefix, shorts, suffix) = unsafe { self.align_to::<MulCols<T, D>>() };
+        debug_assert!(prefix.is_empty(), "Alignment should match");
+        debug_assert!(suffix.is_empty(), "Alignment should match");
+        debug_assert_eq!(shorts.len(), 1);
+        &shorts[0]
+    }
+}
+
+impl<T, const D: usize> BorrowMut<MulCols<T, D>> for [T] {
+    fn borrow_mut(&mut self) -> &mut MulCols<T, D> {
+        let (prefix, shorts, suffix) = unsafe { self.align_to_mut::<MulCols<T, D>>() };
+        debug_assert!(prefix.is_empty(), "Alignment should match");
+        debug_assert!(suffix.is_empty(), "Alignment should match");
+        debug_assert_eq!(shorts.len(), 1);
+        &mut shorts[0]
     }
 }
 
