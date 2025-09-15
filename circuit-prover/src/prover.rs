@@ -250,85 +250,6 @@ impl MultiTableProver {
     }
 }
 
-#[cfg(test)]
-mod transparent_setup_tests {
-    extern crate std;
-    use p3_baby_bear::BabyBear;
-    use p3_circuit::builder::CircuitBuilder;
-    use p3_field::PrimeCharacteristicRing;
-
-    use super::*;
-
-    #[test]
-    fn transparent_setup_in_prover() {
-        // Build a small circuit.
-        let mut b = CircuitBuilder::<BabyBear>::new();
-        let x = b.add_public_input();
-        let c1 = b.add_const(BabyBear::from_i64(7));
-        let c2 = b.add_const(BabyBear::from_i64(5));
-        let y = b.mul(c1, x);
-        let z = b.sub(y, c2);
-        b.assert_zero(z);
-
-        let circuit = b.build();
-
-        // Prover sets up transparent columns once.
-        let prover = MultiTableProver::new();
-        let (tpk, tvk) = prover.setup_transparent_for_circuit(&circuit);
-
-        // Basic sanity checks on PK/VK.
-        assert!(!tpk.traces.is_empty(), "no transparent traces produced");
-        assert_eq!(
-            tpk.traces.len(),
-            tpk.infos.len(),
-            "trace/infos length mismatch"
-        );
-        for (info, rows) in tpk.infos.iter().zip(tpk.traces.iter()) {
-            assert_eq!(info.width, rows.width, "width mismatch for {}", info.name);
-            assert_eq!(
-                info.height, rows.height,
-                "height mismatch for {}",
-                info.name
-            );
-            if info.height > 0 {
-                assert!(
-                    info.height.is_power_of_two(),
-                    "height not power of two for {}",
-                    info.name
-                );
-            }
-        }
-
-        // Verifier stub accepts the VK.
-        prover
-            .verify_transparent_setup(&tvk)
-            .expect("transparent VK verification stub failed");
-
-        std::println!("transparent providers: {}", tpk.ordering.len());
-        // Dump each provider with up to 8 rows for readability.
-        let max_rows = 8usize;
-        for (name, idx) in tpk.ordering.iter() {
-            if let Some(rows) = tpk.traces.get(*idx) {
-                std::println!(
-                    "provider={} width={} height={}",
-                    name,
-                    rows.width,
-                    rows.height
-                );
-                let limit = core::cmp::min(rows.height, max_rows);
-                for r in 0..limit {
-                    let start = r * rows.width;
-                    let end = start + rows.width;
-                    std::println!("row {:>3}: {:?}", r, &rows.values[start..end]);
-                }
-                if rows.height > limit {
-                    std::println!("... ({} more rows)", rows.height - limit);
-                }
-            }
-        }
-    }
-}
-
 impl Default for MultiTableProver {
     fn default() -> Self {
         Self::new()
@@ -337,6 +258,7 @@ impl Default for MultiTableProver {
 
 #[cfg(test)]
 mod prover_tests {
+    extern crate std;
     use p3_baby_bear::BabyBear;
     use p3_circuit::builder::CircuitBuilder;
     use p3_field::extension::BinomialExtensionField;
@@ -422,5 +344,68 @@ mod prover_tests {
 
         // Verify all proofs
         multi_prover.verify_all_tables(&proof).unwrap();
+    }
+
+    #[test]
+    fn transparent_setup_in_prover() {
+        // Build a small circuit.
+        let mut b = CircuitBuilder::<BabyBear>::new();
+        let x = b.add_public_input();
+        let c1 = b.add_const(BabyBear::from_i64(7));
+        let c2 = b.add_const(BabyBear::from_i64(5));
+        let y = b.mul(c1, x);
+        let z = b.sub(y, c2);
+        b.assert_zero(z);
+
+        let circuit = b.build();
+
+        // Prover sets up transparent columns once.
+        let prover = MultiTableProver::new();
+        let (tpk, tvk) = prover.setup_transparent_for_circuit(&circuit);
+
+        // Basic sanity checks on PK/VK.
+        assert!(!tpk.traces.is_empty(), "no transparent traces produced");
+        assert_eq!(
+            tpk.traces.len(),
+            tpk.infos.len(),
+            "trace/infos length mismatch"
+        );
+        for (info, rows) in tpk.infos.iter().zip(tpk.traces.iter()) {
+            assert_eq!(info.width, rows.width, "width mismatch for {}", info.name);
+            assert_eq!(
+                info.height, rows.height,
+                "height mismatch for {}",
+                info.name
+            );
+            if info.height > 0 {
+                assert!(
+                    info.height.is_power_of_two(),
+                    "height not power of two for {}",
+                    info.name
+                );
+            }
+        }
+
+        // Verifier stub accepts the VK.
+        prover
+            .verify_transparent_setup(&tvk)
+            .expect("transparent VK verification stub failed");
+
+        std::println!("transparent providers: {}", tpk.ordering.len());
+        for (name, idx) in tpk.ordering.iter() {
+            if let Some(rows) = tpk.traces.get(*idx) {
+                std::println!(
+                    "provider={} width={} height={}",
+                    name,
+                    rows.width,
+                    rows.height
+                );
+                for r in 0..rows.height {
+                    let start = r * rows.width;
+                    let end = start + rows.width;
+                    std::println!("row {:>3}: {:?}", r, &rows.values[start..end]);
+                }
+            }
+        }
     }
 }
