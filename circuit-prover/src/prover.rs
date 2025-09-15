@@ -133,14 +133,14 @@ where
     where
         EF: Field + BasedVectorSpace<F> + ExtractBinomialW<F>,
     {
-        let pis: Vec<F> = vec![];
+        let pis = vec![];
         let w_opt = EF::extract_w();
         match EF::DIMENSION {
-            1 => self.prove_for_degree::<EF, 1>(traces, pis, None),
-            2 => self.prove_for_degree::<EF, 2>(traces, pis, w_opt),
-            4 => self.prove_for_degree::<EF, 4>(traces, pis, w_opt),
-            6 => self.prove_for_degree::<EF, 6>(traces, pis, w_opt),
-            8 => self.prove_for_degree::<EF, 8>(traces, pis, w_opt),
+            1 => self.prove_for_degree::<EF, 1>(traces, &pis, None),
+            2 => self.prove_for_degree::<EF, 2>(traces, &pis, w_opt),
+            4 => self.prove_for_degree::<EF, 4>(traces, &pis, w_opt),
+            6 => self.prove_for_degree::<EF, 6>(traces, &pis, w_opt),
+            8 => self.prove_for_degree::<EF, 8>(traces, &pis, w_opt),
             d => Err(ProverError::UnsupportedDegree(d)),
         }
     }
@@ -148,15 +148,15 @@ where
     /// Verify all proofs in the given proof bundle.
     /// Uses the recorded extension degree and binomial parameter recorded during proving.
     pub fn verify_all_tables(&self, proof: &MultiTableProof<F, P, CD>) -> Result<(), ProverError> {
-        let pis: Vec<F> = vec![];
+        let pis = vec![];
 
         let w_opt = proof.w_binomial;
         match proof.ext_degree {
-            1 => self.verify_for_degree::<1>(proof, pis, None),
-            2 => self.verify_for_degree::<2>(proof, pis, w_opt),
-            4 => self.verify_for_degree::<4>(proof, pis, w_opt),
-            6 => self.verify_for_degree::<6>(proof, pis, w_opt),
-            8 => self.verify_for_degree::<8>(proof, pis, w_opt),
+            1 => self.verify_for_degree::<1>(proof, &pis, None),
+            2 => self.verify_for_degree::<2>(proof, &pis, w_opt),
+            4 => self.verify_for_degree::<4>(proof, &pis, w_opt),
+            6 => self.verify_for_degree::<6>(proof, &pis, w_opt),
+            8 => self.verify_for_degree::<8>(proof, &pis, w_opt),
             d => Err(ProverError::UnsupportedDegree(d)),
         }
     }
@@ -167,31 +167,32 @@ where
     fn prove_for_degree<EF, const D: usize>(
         &self,
         traces: &Traces<EF>,
-        pis: Vec<F>,
+        pis: &Vec<F>,
         w_binomial: Option<F>,
     ) -> Result<MultiTableProof<F, P, CD>, ProverError>
     where
         EF: Field + BasedVectorSpace<F>,
     {
+        debug_assert_eq!(D, EF::DIMENSION, "D parameter must match EF::DIMENSION");
         // Witness
         let witness_matrix = WitnessAir::<F, D>::trace_to_matrix(&traces.witness_trace);
         let witness_air = WitnessAir::<F, D>::new(traces.witness_trace.values.len());
-        let witness_proof = prove(&self.config, &witness_air, witness_matrix, &pis);
+        let witness_proof = prove(&self.config, &witness_air, witness_matrix, pis);
 
         // Const
         let const_matrix = ConstAir::<F, D>::trace_to_matrix(&traces.const_trace);
         let const_air = ConstAir::<F, D>::new(traces.const_trace.values.len());
-        let const_proof = prove(&self.config, &const_air, const_matrix, &pis);
+        let const_proof = prove(&self.config, &const_air, const_matrix, pis);
 
         // Public
         let public_matrix = PublicAir::<F, D>::trace_to_matrix(&traces.public_trace);
         let public_air = PublicAir::<F, D>::new(traces.public_trace.values.len());
-        let public_proof = prove(&self.config, &public_air, public_matrix, &pis);
+        let public_proof = prove(&self.config, &public_air, public_matrix, pis);
 
         // Add
         let add_matrix = AddAir::<F, D>::trace_to_matrix(&traces.add_trace);
         let add_air = AddAir::<F, D>::new(traces.add_trace.lhs_values.len());
-        let add_proof = prove(&self.config, &add_air, add_matrix, &pis);
+        let add_proof = prove(&self.config, &add_air, add_matrix, pis);
 
         // Multiplication (uses binomial arithmetic for extension fields)
         let mul_matrix = MulAir::<F, D>::trace_to_matrix(&traces.mul_trace);
@@ -201,17 +202,19 @@ where
             let w = w_binomial.ok_or(ProverError::MissingWForExtension)?;
             MulAir::<F, D>::new_binomial(traces.mul_trace.lhs_values.len(), w)
         };
-        let mul_proof = prove(&self.config, &mul_air, mul_matrix, &pis);
+        let mul_proof = prove(&self.config, &mul_air, mul_matrix, pis);
 
         // Sub
         let sub_matrix = SubAir::<F, D>::trace_to_matrix(&traces.sub_trace);
         let sub_air = SubAir::<F, D>::new(traces.sub_trace.lhs_values.len());
-        let sub_proof = prove(&self.config, &sub_air, sub_matrix, &pis);
+        let sub_proof = prove(&self.config, &sub_air, sub_matrix, pis);
 
         // FakeMerkle (always uses base field regardless of traces D)
-        let fake_merkle_matrix = FakeMerkleVerifyAir::trace_to_matrix(&traces.fake_merkle_trace);
-        let fake_merkle_air = FakeMerkleVerifyAir::new(traces.fake_merkle_trace.left_values.len());
-        let fake_merkle_proof = prove(&self.config, &fake_merkle_air, fake_merkle_matrix, &pis);
+        let fake_merkle_matrix =
+            FakeMerkleVerifyAir::<F>::trace_to_matrix(&traces.fake_merkle_trace);
+        let fake_merkle_air =
+            FakeMerkleVerifyAir::<F>::new(traces.fake_merkle_trace.left_values.len());
+        let fake_merkle_proof = prove(&self.config, &fake_merkle_air, fake_merkle_matrix, pis);
 
         Ok(MultiTableProof {
             witness: TableProof {
@@ -251,12 +254,12 @@ where
     fn verify_for_degree<const D: usize>(
         &self,
         proof: &MultiTableProof<F, P, CD>,
-        pis: Vec<F>,
+        pis: &Vec<F>,
         w_binomial: Option<F>,
     ) -> Result<(), ProverError> {
         // Witness
         let witness_air = WitnessAir::<F, D>::new(proof.witness.rows);
-        verify(&self.config, &witness_air, &proof.witness.proof, &pis).map_err(|e| {
+        verify(&self.config, &witness_air, &proof.witness.proof, pis).map_err(|e| {
             ProverError::VerificationFailed {
                 phase: "witness",
                 error: format!("{e:?}"),
@@ -265,7 +268,7 @@ where
 
         // Const
         let const_air = ConstAir::<F, D>::new(proof.const_table.rows);
-        verify(&self.config, &const_air, &proof.const_table.proof, &pis).map_err(|e| {
+        verify(&self.config, &const_air, &proof.const_table.proof, pis).map_err(|e| {
             ProverError::VerificationFailed {
                 phase: "const",
                 error: format!("{e:?}"),
@@ -274,7 +277,7 @@ where
 
         // Public
         let public_air = PublicAir::<F, D>::new(proof.public.rows);
-        verify(&self.config, &public_air, &proof.public.proof, &pis).map_err(|e| {
+        verify(&self.config, &public_air, &proof.public.proof, pis).map_err(|e| {
             ProverError::VerificationFailed {
                 phase: "public",
                 error: format!("{e:?}"),
@@ -283,7 +286,7 @@ where
 
         // Add
         let add_air = AddAir::<F, D>::new(proof.add.rows);
-        verify(&self.config, &add_air, &proof.add.proof, &pis).map_err(|e| {
+        verify(&self.config, &add_air, &proof.add.proof, pis).map_err(|e| {
             ProverError::VerificationFailed {
                 phase: "add",
                 error: format!("{e:?}"),
@@ -297,7 +300,7 @@ where
             let w = w_binomial.ok_or(ProverError::MissingWForExtension)?;
             MulAir::<F, D>::new_binomial(proof.mul.rows, w)
         };
-        verify(&self.config, &mul_air, &proof.mul.proof, &pis).map_err(|e| {
+        verify(&self.config, &mul_air, &proof.mul.proof, pis).map_err(|e| {
             ProverError::VerificationFailed {
                 phase: "mul",
                 error: format!("{e:?}"),
@@ -306,7 +309,7 @@ where
 
         // Sub
         let sub_air = SubAir::<F, D>::new(proof.sub.rows);
-        verify(&self.config, &sub_air, &proof.sub.proof, &pis).map_err(|e| {
+        verify(&self.config, &sub_air, &proof.sub.proof, pis).map_err(|e| {
             ProverError::VerificationFailed {
                 phase: "sub",
                 error: format!("{e:?}"),
@@ -314,12 +317,12 @@ where
         })?;
 
         // FakeMerkle
-        let fake_merkle_air = FakeMerkleVerifyAir::new(proof.fake_merkle.rows);
+        let fake_merkle_air = FakeMerkleVerifyAir::<F>::new(proof.fake_merkle.rows);
         verify(
             &self.config,
             &fake_merkle_air,
             &proof.fake_merkle.proof,
-            &pis,
+            pis,
         )
         .map_err(|e| ProverError::VerificationFailed {
             phase: "fake_merkle",
