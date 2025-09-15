@@ -111,7 +111,9 @@ where
         }
     }
 
-    /// Add a public input to the circuit
+    /// Add a public input to the circuit.
+    ///
+    /// Cost: 1 row in Public table + 1 row in witness table.
     pub fn add_public_input(&mut self) -> ExprId {
         let public_pos = self.public_input_count;
         self.public_input_count += 1;
@@ -123,6 +125,7 @@ where
     /// Add a constant to the circuit (deduplicated).
     ///
     /// If this value was previously added, returns the original ExprId.
+    /// Cost: 1 row in Const table + 1 row in witness table (only for new constants).
     pub fn add_const(&mut self, val: F) -> ExprId {
         if let Some(&id) = self.const_pool.get(&val) {
             return id;
@@ -132,30 +135,40 @@ where
         id
     }
 
-    /// Add two expressions
+    /// Add two expressions.
+    ///
+    /// Cost: 1 row in Add table + 1 row in witness table.
     pub fn add(&mut self, lhs: ExprId, rhs: ExprId) -> ExprId {
         let add_expr = Expr::Add { lhs, rhs };
         self.expressions.add_expr(add_expr)
     }
 
-    /// Subtract two expressions
+    /// Subtract two expressions.
+    ///
+    /// Cost: 1 row in Sub table + 1 row in witness table.
     pub fn sub(&mut self, lhs: ExprId, rhs: ExprId) -> ExprId {
         let sub_expr = Expr::Sub { lhs, rhs };
         self.expressions.add_expr(sub_expr)
     }
 
-    /// Multiply two expressions
+    /// Multiply two expressions.
+    ///
+    /// Cost: 1 row in Mul table + 1 row in witness table.
     pub fn mul(&mut self, lhs: ExprId, rhs: ExprId) -> ExprId {
         let mul_expr = Expr::Mul { lhs, rhs };
         self.expressions.add_expr(mul_expr)
     }
 
     /// Assert that an expression equals zero by connecting it to Const(0).
+    ///
+    /// Cost: Free in proving (implemented via connect).
     pub fn assert_zero(&mut self, expr: ExprId) {
         self.connect(expr, ExprId::ZERO);
     }
 
     /// Connect two expressions, enforcing a == b (by aliasing outputs).
+    ///
+    /// Cost: Free in proving (handled by IR optimization layer via witness slot aliasing).
     pub fn connect(&mut self, a: ExprId, b: ExprId) {
         if a != b {
             self.pending_connects.push((a, b));
