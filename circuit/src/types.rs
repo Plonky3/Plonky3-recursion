@@ -16,6 +16,11 @@ impl fmt::Display for WitnessId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ExprId(pub u32);
 
+impl ExprId {
+    /// The zero expression ID - always points to Const(0)
+    pub const ZERO: ExprId = ExprId(0);
+}
+
 /// Handle to a non-primitive operation (for setting private data later)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct NonPrimitiveOpId(pub u32);

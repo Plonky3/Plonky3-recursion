@@ -70,7 +70,7 @@ mod tests {
         let const_id = graph.add_expr(const_expr.clone());
         let public_id = graph.add_expr(public_expr.clone());
 
-        assert_eq!(const_id, ExprId(0));
+        assert_eq!(const_id, ExprId::ZERO);
         assert_eq!(public_id, ExprId(1));
 
         assert_eq!(graph.get_expr(const_id), &const_expr);

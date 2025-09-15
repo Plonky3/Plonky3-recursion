@@ -94,7 +94,7 @@ where
     pub fn new() -> Self {
         let mut expressions = ExpressionGraph::new();
 
-        // Insert Const(0) as the very first node so it has ExprId(0).
+        // Insert Const(0) as the very first node so it has ExprId::ZERO.
         let zero_val = F::ZERO;
         let zero_id = expressions.add_expr(Expr::Const(zero_val.clone()));
 
@@ -152,7 +152,7 @@ where
 
     /// Assert that an expression equals zero by connecting it to Const(0).
     pub fn assert_zero(&mut self, expr: ExprId) {
-        self.connect(expr, ExprId(0));
+        self.connect(expr, ExprId::ZERO);
     }
 
     /// Connect two expressions, enforcing a == b (by aliasing outputs).
@@ -254,8 +254,6 @@ where
 
         // Unified class slot map: DSU root -> chosen out slot
         let mut root_to_widx: HashMap<usize, WitnessId> = HashMap::new();
-        // For conflict detection when multiple Consts appear in the same class
-        let mut root_const_val: HashMap<usize, F> = HashMap::new();
 
         // Pass A: emit constants (once per Const node; Expr-level dedup ensures one per value)
         for (expr_idx, expr) in self.expressions.nodes().iter().enumerate() {
@@ -271,15 +269,6 @@ where
                 // If this Const participates in a connect class, bind the class to the const slot
                 if in_connect.contains(&expr_idx) {
                     let rep = dsu_find(&mut parent, expr_idx);
-                    if let Some(prev) = root_const_val.get(&rep) {
-                        if prev != val {
-                            panic!(
-                                "Conflicting constants in connected class (rep {}): {:?} vs {:?}",
-                                rep, prev, val
-                            );
-                        }
-                    }
-                    root_const_val.insert(rep, val.clone());
                     root_to_widx.insert(rep, w);
                 }
             }
@@ -558,7 +547,7 @@ mod tests {
     fn test_build_connect_dsu_basic() {
         // 0~1~3~4 in one set; 2 alone
         let connects = vec![
-            (ExprId(0), ExprId(1)),
+            (ExprId::ZERO, ExprId(1)),
             (ExprId(3), ExprId(4)),
             (ExprId(1), ExprId(4)),
             (ExprId(2), ExprId(2)), // self-union no-op
