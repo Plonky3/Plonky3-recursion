@@ -1,7 +1,14 @@
 //! Multi-table prover and verifier for STARK proofs.
 //!
+//! Generic roles and degrees:
+//! - F: Prover/verifier base field (BabyBear/KoalaBear/Goldilocks). All PCS/FRI arithmetic runs over `F`.
+//! - P: Cryptographic permutation over `F` used by the hash/compress functions and challenger.
+//! - EF: Element field used in circuit traces. Either the base field `F` or a binomial extension `BinomialExtensionField<F, D>`.
+//! - D: Element-field extension degree. Must equal `EF::DIMENSION` and is used by AIRs like `WitnessAir<F, D>` to expand EF values into D base limbs.
+//! - CD: Challenge field degree for FRI (independent of `D`). The challenger/PCS use `BinomialExtensionField<F, CD>`.
+//!
 //! Supports base fields (D=1) and binomial extension fields (D>1), with automatic
-//! detection of the binomial parameter W for extension-field multiplication.
+//! detection of the binomial parameter `W` for extension-field multiplication.
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -201,7 +208,7 @@ where
         let sub_air = SubAir::<F, D>::new(traces.sub_trace.lhs_values.len());
         let sub_proof = prove(&self.config, &sub_air, sub_matrix, &pis);
 
-        // FakeMerkle
+        // FakeMerkle (always uses base field regardless of traces D)
         let fake_merkle_matrix = FakeMerkleVerifyAir::trace_to_matrix(&traces.fake_merkle_trace);
         let fake_merkle_air = FakeMerkleVerifyAir::new(traces.fake_merkle_trace.left_values.len());
         let fake_merkle_proof = prove(&self.config, &fake_merkle_air, fake_merkle_matrix, &pis);

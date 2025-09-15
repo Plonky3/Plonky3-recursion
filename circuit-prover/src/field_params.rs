@@ -1,5 +1,11 @@
 //! Utilities for extracting extension field parameters.
 //!
+//! Glossary:
+//! - `F`: Base field (BabyBear/KoalaBear/Goldilocks) that extension fields are built over.
+//! - `EF`: Element field for circuit traces. If `EF = F`, there is no binomial parameter. If
+//!   `EF = BinomialExtensionField<F, D>`, then there is a binomial parameter `W` with `x^D = W`.
+//! - `D`: Element-field extension degree.
+//!
 //! Provides traits to dynamically determine binomial extension parameters
 //! from field types at runtime, supporting both base fields and extension fields.
 

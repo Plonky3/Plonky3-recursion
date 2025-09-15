@@ -1,6 +1,13 @@
 //! Plonky3 circuit prover (PoC): generic over base field and permutation.
 //!
-//! - Build a field-specific config via `config::{babybear_config, koalabear_config}`.
+//! Generics glossary used across this crate:
+//! - `F`: Prover/verifier base field (BabyBear/KoalaBear/Goldilocks). PCS and FFTs operate over `F`.
+//! - `P`: Cryptographic permutation over `F` used by hash/compress and the challenger.
+//! - `EF`: Element field in circuit traces. Either `F` (base) or `BinomialExtensionField<F, D>`.
+//! - `D`: Element-field extension degree. Must equal `EF::DIMENSION`. AIRs are parameterized as `<F, D>`.
+//! - `CD`: FRI challenge field degree, independent of `D`.
+//!
+//! - Build a field-specific config via `config::{babybear_config, koalabear_config, goldilocks_config}`.
 //! - Create a `MultiTableProver` from that config.
 //! - Generate traces from a `p3_circuit::Circuit` runner and prove/verify.
 //!

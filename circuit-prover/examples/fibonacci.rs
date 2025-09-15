@@ -32,8 +32,7 @@ fn main() -> Result<(), impl core::fmt::Debug> {
     }
 
     // Assert computed F(n) equals expected result
-    let diff = builder.sub(b, expected_result);
-    builder.assert_zero(diff);
+    builder.connect(b, expected_result);
 
     let circuit = builder.build();
     let mut runner = circuit.runner();

@@ -1,8 +1,13 @@
 //! STARK config, generic over base field `F`, permutation `P`, and challenge degree `CD`.
 //!
-//! - `F`: Base field for values, FFTs and commitments.
+//! Generics glossary:
+//! - `F`: Base field for values, FFTs and commitments (BabyBear/KoalaBear/Goldilocks).
 //! - `P`: Cryptographic permutation over `F` used by hash/compress and the challenger.
 //! - `CD`: Degree of the binomial extension used for the FRI challenge field.
+//!
+//! Notes:
+//! - `CD` is independent from the circuit element-field degree `D` used by AIRs; the circuit can use
+//!   element fields `EF = BinomialExtensionField<F, D>` while the FRI challenge field is `BinomialExtensionField<F, CD>`.
 //!
 //! Provides convenience builders for BabyBear, KoalaBear, and Goldilocks.
 
