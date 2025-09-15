@@ -12,10 +12,10 @@ use crate::types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};
 /// Sparse disjoint-set "find" with path compression over a HashMap (iterative).
 /// If `x` is not present, it's its own representative and is not inserted.
 #[inline]
-fn dsu_find(parent: &mut HashMap<usize, usize>, x: usize) -> usize {
+fn dsu_find(parents: &mut HashMap<usize, usize>, x: usize) -> usize {
     let mut v = x;
     let mut trail: Vec<usize> = Vec::new();
-    while let Some(&p) = parent.get(&v) {
+    while let Some(&p) = parents.get(&v) {
         if p == v {
             break;
         }
@@ -24,31 +24,31 @@ fn dsu_find(parent: &mut HashMap<usize, usize>, x: usize) -> usize {
     }
     let root = v;
     for u in trail {
-        parent.insert(u, root);
+        parents.insert(u, root);
     }
     root
 }
 
 /// Sparse disjoint-set "union" by attaching `b`'s root under `a`'s root.
 #[inline]
-fn dsu_union(parent: &mut HashMap<usize, usize>, a: usize, b: usize) {
-    let ra = dsu_find(parent, a);
-    let rb = dsu_find(parent, b);
+fn dsu_union(parents: &mut HashMap<usize, usize>, a: usize, b: usize) {
+    let ra = dsu_find(parents, a);
+    let rb = dsu_find(parents, b);
     if ra != rb {
-        parent.insert(rb, ra);
+        parents.insert(rb, ra);
     }
 }
 
 /// Build a sparse disjoint-set forest honoring all pending connects.
 /// Returns a parent map keyed only by ExprIds that appear in `connects`.
 fn build_connect_dsu(connects: &[(ExprId, ExprId)]) -> HashMap<usize, usize> {
-    let mut parent: HashMap<usize, usize> = HashMap::new();
+    let mut parents: HashMap<usize, usize> = HashMap::new();
     for (a, b) in connects {
         let ai = a.0 as usize;
         let bi = b.0 as usize;
-        dsu_union(&mut parent, ai, bi);
+        dsu_union(&mut parents, ai, bi);
     }
-    parent
+    parents
 }
 
 /// Builder for constructing circuits using a fluent API
@@ -257,7 +257,7 @@ where
         &mut self,
     ) -> (Vec<Prim<F>>, Vec<WitnessId>, HashMap<ExprId, WitnessId>) {
         // Build DSU over expression IDs to honor connect(a, b)
-        let mut parent: HashMap<usize, usize> = build_connect_dsu(&self.pending_connects);
+        let mut parents: HashMap<usize, usize> = build_connect_dsu(&self.pending_connects);
 
         // Track nodes that participate in any connect
         let mut in_connect: HashSet<usize> = HashSet::new();
@@ -268,7 +268,7 @@ where
 
         let mut primitive_ops = Vec::new();
         let mut expr_to_widx: HashMap<ExprId, WitnessId> = HashMap::new();
-        let mut public_rows: Vec<WitnessId> = Vec::new();
+        let mut public_rows: Vec<WitnessId> = vec![WitnessId(0); self.public_input_count];
 
         // Unified class slot map: DSU root -> chosen out slot
         let mut root_to_widx: HashMap<usize, WitnessId> = HashMap::new();
@@ -286,45 +286,35 @@ where
 
                 // If this Const participates in a connect class, bind the class to the const slot
                 if in_connect.contains(&expr_idx) {
-                    let root = dsu_find(&mut parent, expr_idx);
+                    let root = dsu_find(&mut parents, expr_idx);
                     root_to_widx.insert(root, w);
                 }
             }
         }
 
-        let mut alloc_witness_id_for_expr =
-            |expr_idx: usize,
-             in_connect: &HashSet<usize>,
-             parent: &mut HashMap<usize, usize>,
-             root_to_widx: &mut HashMap<usize, WitnessId>| {
-                if in_connect.contains(&expr_idx) {
-                    let root = dsu_find(parent, expr_idx);
-                    *root_to_widx
-                        .entry(root)
-                        .or_insert_with(|| self.witness_alloc.alloc())
-                } else {
-                    self.witness_alloc.alloc()
-                }
-            };
+        let mut alloc_witness_id_for_expr = |expr_idx: usize| {
+            if in_connect.contains(&expr_idx) {
+                let root = dsu_find(&mut parents, expr_idx);
+                *root_to_widx
+                    .entry(root)
+                    .or_insert_with(|| self.witness_alloc.alloc())
+            } else {
+                self.witness_alloc.alloc()
+            }
+        };
 
         // Pass B: emit public inputs
         for (expr_idx, expr) in self.expressions.nodes().iter().enumerate() {
             if let Expr::Public(pos) = expr {
                 let id = ExprId(expr_idx as u32);
 
-                let out_widx = alloc_witness_id_for_expr(
-                    expr_idx,
-                    &in_connect,
-                    &mut parent,
-                    &mut root_to_widx,
-                );
+                let out_widx = alloc_witness_id_for_expr(expr_idx);
 
                 primitive_ops.push(Prim::Public {
                     out: out_widx,
                     public_pos: *pos,
                 });
                 expr_to_widx.insert(id, out_widx);
-                public_rows.resize(public_rows.len().max(*pos + 1), WitnessId(0));
                 public_rows[*pos] = out_widx;
             }
         }
@@ -335,12 +325,7 @@ where
             match expr {
                 Expr::Const(_) | Expr::Public(_) => { /* handled above */ }
                 Expr::Add { lhs, rhs } => {
-                    let out_widx = alloc_witness_id_for_expr(
-                        expr_idx,
-                        &in_connect,
-                        &mut parent,
-                        &mut root_to_widx,
-                    );
+                    let out_widx = alloc_witness_id_for_expr(expr_idx);
                     let a_widx = Self::get_witness_id(
                         &expr_to_widx,
                         *lhs,
@@ -359,12 +344,7 @@ where
                     expr_to_widx.insert(expr_id, out_widx);
                 }
                 Expr::Sub { lhs, rhs } => {
-                    let out_widx = alloc_witness_id_for_expr(
-                        expr_idx,
-                        &in_connect,
-                        &mut parent,
-                        &mut root_to_widx,
-                    );
+                    let out_widx = alloc_witness_id_for_expr(expr_idx);
                     let a_widx = Self::get_witness_id(
                         &expr_to_widx,
                         *lhs,
@@ -383,12 +363,7 @@ where
                     expr_to_widx.insert(expr_id, out_widx);
                 }
                 Expr::Mul { lhs, rhs } => {
-                    let out_widx = alloc_witness_id_for_expr(
-                        expr_idx,
-                        &in_connect,
-                        &mut parent,
-                        &mut root_to_widx,
-                    );
+                    let out_widx = alloc_witness_id_for_expr(expr_idx);
                     let a_widx = Self::get_witness_id(
                         &expr_to_widx,
                         *lhs,
@@ -408,12 +383,7 @@ where
                 }
                 Expr::Div { lhs, rhs } => {
                     // lhs / rhs = out  is encoded as rhs * out = lhs
-                    let b_widx = alloc_witness_id_for_expr(
-                        expr_idx,
-                        &in_connect,
-                        &mut parent,
-                        &mut root_to_widx,
-                    );
+                    let b_widx = alloc_witness_id_for_expr(expr_idx);
                     let out_widx = Self::get_witness_id(
                         &expr_to_widx,
                         *lhs,
@@ -639,12 +609,12 @@ mod tests {
             (ExprId(1), ExprId(4)),
             (ExprId(2), ExprId(2)), // self-union no-op
         ];
-        let mut parent = build_connect_dsu(&connects);
-        let r0 = dsu_find(&mut parent, 0);
-        let r1 = dsu_find(&mut parent, 1);
-        let r3 = dsu_find(&mut parent, 3);
-        let r4 = dsu_find(&mut parent, 4);
-        let r2 = dsu_find(&mut parent, 2);
+        let mut parents = build_connect_dsu(&connects);
+        let r0 = dsu_find(&mut parents, 0);
+        let r1 = dsu_find(&mut parents, 1);
+        let r3 = dsu_find(&mut parents, 3);
+        let r4 = dsu_find(&mut parents, 4);
+        let r2 = dsu_find(&mut parents, 2);
         assert_eq!(r0, r1);
         assert_eq!(r0, r3);
         assert_eq!(r0, r4);
