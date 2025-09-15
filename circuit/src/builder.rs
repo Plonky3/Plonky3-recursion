@@ -210,9 +210,16 @@ where
     F: Clone + PrimeCharacteristicRing + PartialEq + Eq + core::hash::Hash,
 {
     /// Build the circuit into a Circuit with separate lowering and IR transformation stages
-    pub fn build(mut self) -> Circuit<F> {
+    pub fn build(self) -> Circuit<F> {
+        let (circuit, _) = self.build_with_public_mapping();
+        circuit
+    }
+
+    /// Build the circuit and return both the circuit and the ExprId→WitnessId mapping for public inputs.
+    pub fn build_with_public_mapping(mut self) -> (Circuit<F>, HashMap<ExprId, WitnessId>) {
         // Stage 1: Lower expressions to primitives
-        let (primitive_ops, public_rows, expr_to_widx) = self.lower_to_primitives();
+        let (primitive_ops, public_rows, expr_to_widx, public_mappings) =
+            self.lower_to_primitives();
 
         // Stage 2: Lower non-primitive operations using the expr_to_widx mapping
         let lowered_non_primitive_ops = self.lower_non_primitive_ops(&expr_to_widx);
@@ -228,7 +235,7 @@ where
         circuit.public_rows = public_rows;
         circuit.public_flat_len = self.public_input_count;
 
-        circuit
+        (circuit, public_mappings)
     }
 
     /// Helper function to get WitnessId with descriptive error messages
@@ -255,7 +262,12 @@ where
     #[allow(clippy::type_complexity)]
     fn lower_to_primitives(
         &mut self,
-    ) -> (Vec<Prim<F>>, Vec<WitnessId>, HashMap<ExprId, WitnessId>) {
+    ) -> (
+        Vec<Prim<F>>,
+        Vec<WitnessId>,
+        HashMap<ExprId, WitnessId>,
+        HashMap<ExprId, WitnessId>,
+    ) {
         // Build DSU over expression IDs to honor connect(a, b)
         let mut parents: HashMap<usize, usize> = build_connect_dsu(&self.pending_connects);
 
@@ -269,6 +281,7 @@ where
         let mut primitive_ops = Vec::new();
         let mut expr_to_widx: HashMap<ExprId, WitnessId> = HashMap::new();
         let mut public_rows: Vec<WitnessId> = vec![WitnessId(0); self.public_input_count];
+        let mut public_mappings = HashMap::new();
 
         // Unified class slot map: DSU root -> chosen out slot
         let mut root_to_widx: HashMap<usize, WitnessId> = HashMap::new();
@@ -316,6 +329,7 @@ where
                 });
                 expr_to_widx.insert(id, out_widx);
                 public_rows[*pos] = out_widx;
+                public_mappings.insert(id, out_widx);
             }
         }
 
@@ -405,7 +419,7 @@ where
             }
         }
 
-        (primitive_ops, public_rows, expr_to_widx)
+        (primitive_ops, public_rows, expr_to_widx, public_mappings)
     }
 
     /// Stage 2: Lower non-primitive operations from ExprIds to WitnessId
@@ -619,5 +633,49 @@ mod tests {
         assert_eq!(r0, r3);
         assert_eq!(r0, r4);
         assert_ne!(r0, r2);
+    }
+
+    #[test]
+    fn test_public_input_mapping() {
+        let mut builder = CircuitBuilder::<BabyBear>::new();
+
+        let pub1 = builder.add_public_input();
+        let c5 = builder.add_const(BabyBear::from_u64(5));
+        let pub2 = builder.add_public_input();
+        let sum = builder.add(pub1, pub2);
+        let result = builder.mul(sum, c5);
+        let pub3 = builder.add_public_input();
+        let pub4 = builder.add_public_input();
+
+        builder.connect(result, pub3);
+        builder.connect(pub3, pub4);
+
+        // Build with public mapping
+        let (circuit, public_mapping) = builder.build_with_public_mapping();
+
+        // Verify we have mappings for all public inputs
+        assert_eq!(public_mapping.len(), 4);
+        assert!(public_mapping.contains_key(&pub1));
+        assert!(public_mapping.contains_key(&pub2));
+        assert!(public_mapping.contains_key(&pub3));
+        assert!(public_mapping.contains_key(&pub4));
+
+        // Verify the mapping is consistent with circuit.public_rows
+        assert_eq!(circuit.public_rows.len(), 4);
+        assert_eq!(public_mapping[&pub1], circuit.public_rows[0]);
+        assert_eq!(public_mapping[&pub2], circuit.public_rows[1]);
+        assert_eq!(public_mapping[&pub3], circuit.public_rows[2]);
+        assert_eq!(public_mapping[&pub4], circuit.public_rows[3]);
+
+        assert_eq!(public_mapping[&pub1], WitnessId(2));
+        assert_eq!(public_mapping[&pub2], WitnessId(3));
+        assert_eq!(public_mapping[&pub3], WitnessId(4));
+        assert_eq!(public_mapping[&pub4], WitnessId(4));
+
+        // Verify that regular build() still works (backward compatibility)
+        let mut builder2 = CircuitBuilder::<BabyBear>::new();
+        let _pub = builder2.add_public_input();
+        let circuit2 = builder2.build(); // Should not return mapping
+        assert_eq!(circuit2.public_flat_len, 1);
     }
 }
