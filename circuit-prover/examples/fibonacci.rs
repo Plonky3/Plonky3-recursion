@@ -8,8 +8,9 @@ use p3_circuit_prover::MultiTableProver;
 use p3_circuit_prover::config::babybear_config::build_standard_config_babybear;
 use p3_circuit_prover::prover::ProverError;
 use p3_field::PrimeCharacteristicRing;
+use p3_field::extension::BinomialExtensionField;
 
-type F = BabyBear;
+type F = BinomialExtensionField<BabyBear, 4>;
 
 fn main() -> Result<(), ProverError> {
     let n = env::args()

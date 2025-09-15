@@ -4,6 +4,7 @@ use alloc::{format, vec};
 
 use p3_field::Field;
 
+use crate::NonPrimitiveOp;
 use crate::circuit::Circuit;
 use crate::op::{NonPrimitiveOpPrivateData, Prim};
 use crate::types::{NonPrimitiveOpId, WitnessId};
@@ -290,10 +291,19 @@ impl<
         let non_primitive_op = &self.circuit.non_primitive_ops[op_id.0 as usize];
         match (non_primitive_op, &private_data) {
             (
-                crate::op::NonPrimitiveOp::FakeMerkleVerify { .. },
+                NonPrimitiveOp::FakeMerkleVerify { .. },
                 NonPrimitiveOpPrivateData::FakeMerkleVerify(_),
             ) => {
                 // Type match - good!
+            }
+            (NonPrimitiveOp::MerkleVerify { .. }, NonPrimitiveOpPrivateData::MerkleVerify(_)) => {
+                // Type match - good!
+            }
+            _ => {
+                return Err(format!(
+                    "NonPrimitiveOp {:?} does not match NonPrimitiveOpPrivateData {:?}",
+                    complex_op, private_data,
+                ));
             }
         }
 
@@ -595,10 +605,18 @@ impl<
                     result_values.push(parent_hash);
                     result_index.push(root.0); // Points to witness bus
 
-                    path_directions.push(if direction { 1 } else { 0 });
+                        path_directions.push(if direction { 1 } else { 0 });
 
-                    // Update current hash for next iteration
-                    current_hash = parent_hash;
+                        // Update current hash for next iteration
+                        current_hash = parent_hash;
+                    }
+
+                    // Root is computed; write back to the witness bus at root index
+                    self.set_witness(root, current_hash.clone())?;
+                } else {
+                    return Err(format!(
+                        "Missing private data for FakeMerkleVerify operation {op_idx}"
+                    ));
                 }
 
                 // Root is computed; write back to the witness bus at root index
