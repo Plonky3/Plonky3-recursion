@@ -5,14 +5,14 @@ use alloc::{format, vec};
 use p3_baby_bear::BabyBear as Val;
 use p3_circuit::Circuit;
 use p3_circuit::tables::Traces;
-use p3_circuit::transparent::{
-    TransparentProvingKey as TransparentPK, TransparentVerifyingKey as TransparentVK,
-};
 use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
 use p3_uni_stark::{prove, verify};
 
 use crate::air::{AddAir, ConstAir, FakeMerkleVerifyAir, MulAir, PublicAir, SubAir, WitnessAir};
 use crate::config::{ProverConfig, build_standard_config};
+use crate::transparent::{
+    TransparentProvingKey as TransparentPK, TransparentVerifyingKey as TransparentVK,
+};
 
 // Re-export the proof type from the config module
 pub type StarkProof = p3_uni_stark::Proof<ProverConfig>;
@@ -64,7 +64,7 @@ impl MultiTableProver {
     where
         F: p3_field::Field + Clone,
     {
-        p3_circuit::setup_default_transparent_indices(circuit)
+        crate::transparent::setup_default_transparent_indices(circuit)
     }
 
     /// Configure a custom W for degree-4 binomial extensions.
@@ -277,16 +277,13 @@ mod transparent_setup_tests {
         let (tpk, tvk) = prover.setup_transparent_for_circuit(&circuit);
 
         // Basic sanity checks on PK/VK.
-        assert!(
-            !tpk.bundle.traces.is_empty(),
-            "no transparent traces produced"
-        );
+        assert!(!tpk.traces.is_empty(), "no transparent traces produced");
         assert_eq!(
-            tpk.bundle.traces.len(),
-            tpk.bundle.infos.len(),
+            tpk.traces.len(),
+            tpk.infos.len(),
             "trace/infos length mismatch"
         );
-        for (info, rows) in tpk.bundle.infos.iter().zip(tpk.bundle.traces.iter()) {
+        for (info, rows) in tpk.infos.iter().zip(tpk.traces.iter()) {
             assert_eq!(info.width, rows.width, "width mismatch for {}", info.name);
             assert_eq!(
                 info.height, rows.height,
@@ -311,7 +308,7 @@ mod transparent_setup_tests {
         // Dump each provider with up to 8 rows for readability.
         let max_rows = 8usize;
         for (name, idx) in tpk.ordering.iter() {
-            if let Some(rows) = tpk.bundle.traces.get(*idx) {
+            if let Some(rows) = tpk.traces.get(*idx) {
                 std::println!(
                     "provider={} width={} height={}",
                     name,
