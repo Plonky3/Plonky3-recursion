@@ -1,10 +1,9 @@
 use std::marker::PhantomData;
 
+use p3_circuit::{CircuitBuilder, ExprId};
 use p3_commit::{Mmcs, Pcs};
 use p3_field::{BasedVectorSpace, ExtensionField, Field};
 use p3_uni_stark::{Commitments, OpenedValues, Proof, StarkGenericConfig, Val};
-
-use p3_circuit::{CircuitBuilder, ExprId};
 
 /// Structure representing all the wires necessary for an input proof.
 #[derive(Clone)]
