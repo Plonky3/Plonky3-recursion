@@ -221,8 +221,8 @@ where
         let primitive_ops = Self::optimize_primitives(primitive_ops);
 
         // Stage 4: Generate final circuit
-        let slot_count = self.witness_alloc.slot_count();
-        let mut circuit = Circuit::new(slot_count);
+        let witness_count = self.witness_alloc.witness_count();
+        let mut circuit = Circuit::new(witness_count);
         circuit.primitive_ops = primitive_ops;
         circuit.non_primitive_ops = lowered_non_primitive_ops;
         circuit.public_rows = public_rows;
@@ -331,7 +331,7 @@ where
 
         // Pass C: emit arithmetic ops in creation order; tie outputs to class slot if connected
         for (expr_idx, expr) in self.expressions.nodes().iter().enumerate() {
-            let id = ExprId(expr_idx as u32);
+            let expr_id = ExprId(expr_idx as u32);
             match expr {
                 Expr::Const(_) | Expr::Public(_) => { /* handled above */ }
                 Expr::Add { lhs, rhs } => {
@@ -341,16 +341,22 @@ where
                         &mut parent,
                         &mut root_to_widx,
                     );
-                    let a_widx =
-                        Self::get_witness_id(&expr_to_widx, *lhs, &format!("Add lhs for {id:?}"));
-                    let b_widx =
-                        Self::get_witness_id(&expr_to_widx, *rhs, &format!("Add rhs for {id:?}"));
+                    let a_widx = Self::get_witness_id(
+                        &expr_to_widx,
+                        *lhs,
+                        &format!("Add lhs for {expr_id:?}"),
+                    );
+                    let b_widx = Self::get_witness_id(
+                        &expr_to_widx,
+                        *rhs,
+                        &format!("Add rhs for {expr_id:?}"),
+                    );
                     primitive_ops.push(Prim::Add {
                         a: a_widx,
                         b: b_widx,
                         out: out_widx,
                     });
-                    expr_to_widx.insert(id, out_widx);
+                    expr_to_widx.insert(expr_id, out_widx);
                 }
                 Expr::Sub { lhs, rhs } => {
                     let out_widx = alloc_witness_id_for_expr(
@@ -359,16 +365,22 @@ where
                         &mut parent,
                         &mut root_to_widx,
                     );
-                    let a_widx =
-                        Self::get_witness_id(&expr_to_widx, *lhs, &format!("Sub lhs for {id:?}"));
-                    let b_widx =
-                        Self::get_witness_id(&expr_to_widx, *rhs, &format!("Sub rhs for {id:?}"));
+                    let a_widx = Self::get_witness_id(
+                        &expr_to_widx,
+                        *lhs,
+                        &format!("Sub lhs for {expr_id:?}"),
+                    );
+                    let b_widx = Self::get_witness_id(
+                        &expr_to_widx,
+                        *rhs,
+                        &format!("Sub rhs for {expr_id:?}"),
+                    );
                     primitive_ops.push(Prim::Sub {
                         a: a_widx,
                         b: b_widx,
                         out: out_widx,
                     });
-                    expr_to_widx.insert(id, out_widx);
+                    expr_to_widx.insert(expr_id, out_widx);
                 }
                 Expr::Mul { lhs, rhs } => {
                     let out_widx = alloc_witness_id_for_expr(
@@ -377,29 +389,40 @@ where
                         &mut parent,
                         &mut root_to_widx,
                     );
-                    let a_widx =
-                        Self::get_witness_id(&expr_to_widx, *lhs, &format!("Mul lhs for {id:?}"));
-                    let b_widx =
-                        Self::get_witness_id(&expr_to_widx, *rhs, &format!("Mul rhs for {id:?}"));
+                    let a_widx = Self::get_witness_id(
+                        &expr_to_widx,
+                        *lhs,
+                        &format!("Mul lhs for {expr_id:?}"),
+                    );
+                    let b_widx = Self::get_witness_id(
+                        &expr_to_widx,
+                        *rhs,
+                        &format!("Mul rhs for {expr_id:?}"),
+                    );
                     primitive_ops.push(Prim::Mul {
                         a: a_widx,
                         b: b_widx,
                         out: out_widx,
                     });
-                    expr_to_widx.insert(id, out_widx);
+                    expr_to_widx.insert(expr_id, out_widx);
                 }
                 Expr::Div { lhs, rhs } => {
                     // lhs / rhs = out  is encoded as rhs * out = lhs
-                    let b_widx = self.witness_alloc.alloc();
+                    let b_widx = alloc_witness_id_for_expr(
+                        expr_idx,
+                        &in_connect,
+                        &mut parent,
+                        &mut root_to_widx,
+                    );
                     let out_widx = Self::get_witness_id(
                         &expr_to_widx,
                         *lhs,
-                        &format!("Div lhs for {:?}", expr_id),
+                        &format!("Div lhs for {expr_id:?}"),
                     );
                     let a_widx = Self::get_witness_id(
                         &expr_to_widx,
                         *rhs,
-                        &format!("Div rhs for {:?}", expr_id),
+                        &format!("Div rhs for {expr_id:?}"),
                     );
                     primitive_ops.push(Prim::Mul {
                         a: a_widx,
@@ -490,7 +513,7 @@ mod tests {
         builder.assert_zero(sub_one);
 
         let circuit = builder.build();
-        assert_eq!(circuit.slot_count, 9); // 0:zero, 1:public, 2:c37, 3:c111, 4:c1, 5:mul_result, 6:sub_result, 7:div_result, 8:sub_one
+        assert_eq!(circuit.witness_count, 7); // 0:zero, 1:public, 2:c37, 3:c111, 4:c1, 5:mul_result, 6:sub_result, 7:div_result, 8:sub_one
 
         // Assert all primitive operations (lowering order: Consts first, then Public, then ops)
         assert_eq!(circuit.primitive_ops.len(), 6);

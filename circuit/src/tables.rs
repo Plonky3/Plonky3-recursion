@@ -153,7 +153,7 @@ impl<
 {
     /// Create a new prover instance
     pub fn new(circuit: Circuit<F>) -> Self {
-        let witness = vec![None; circuit.slot_count as usize];
+        let witness = vec![None; circuit.witness_count as usize];
         let complex_op_private_data = vec![None; circuit.non_primitive_ops.len()];
         Self {
             circuit,
@@ -177,7 +177,7 @@ impl<
 
         for (i, value) in public_values.iter().enumerate() {
             let widx = self.circuit.public_rows[i];
-            self.set_witness(widx, value.clone())?;
+            self.set_witness(widx, *value)?;
         }
 
         Ok(())
@@ -618,7 +618,7 @@ mod tests {
             println!("{i}: {prim:?}");
         }
 
-        let slot_count = circuit.slot_count;
+        let witness_count = circuit.witness_count;
         let mut runner = circuit.runner();
 
         // Set public input: x = 3 (should satisfy 37 * 3 - 111 = 0)
@@ -688,7 +688,7 @@ mod tests {
         }
 
         // Verify trace structure
-        assert_eq!(traces.witness_trace.index.len(), slot_count as usize);
+        assert_eq!(traces.witness_trace.index.len(), witness_count as usize);
 
         // Should have constants: 37, 111, 1 and 0 (for assert_zero)
         assert!(traces.const_trace.values.len() >= 4);

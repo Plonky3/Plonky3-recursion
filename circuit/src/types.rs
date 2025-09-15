@@ -42,7 +42,7 @@ impl WitnessAllocator {
         idx
     }
 
-    pub fn slot_count(&self) -> u32 {
+    pub fn witness_count(&self) -> u32 {
         self.next_idx
     }
 }
@@ -76,6 +76,6 @@ mod tests {
         assert_eq!(w0, WitnessId(0));
         assert_eq!(w1, WitnessId(1));
         assert_eq!(w2, WitnessId(2));
-        assert_eq!(allocator.slot_count(), 3);
+        assert_eq!(allocator.witness_count(), 3);
     }
 }

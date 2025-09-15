@@ -15,7 +15,7 @@ use crate::types::WitnessId;
 #[derive(Debug, Clone)]
 pub struct Circuit<F> {
     /// Number of witness table rows
-    pub slot_count: u32,
+    pub witness_count: u32,
     /// Primitive operations in topological order
     pub primitive_ops: Vec<Prim<F>>,
     /// Non-primitive operations
@@ -27,9 +27,9 @@ pub struct Circuit<F> {
 }
 
 impl<F> Circuit<F> {
-    pub fn new(slot_count: u32) -> Self {
+    pub fn new(witness_count: u32) -> Self {
         Self {
-            slot_count,
+            witness_count,
             primitive_ops: Vec::new(),
             non_primitive_ops: Vec::new(),
             public_rows: Vec::new(),
