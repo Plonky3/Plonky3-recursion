@@ -173,7 +173,7 @@ impl<
 
         for (i, value) in public_values.iter().enumerate() {
             let widx = self.circuit.public_rows[i];
-            self.witness[widx.0 as usize] = Some(value.clone());
+            self.witness[widx.0 as usize] = Some(*value);
         }
 
         Ok(())
@@ -296,7 +296,7 @@ impl<
         }
 
         // Check for conflicting reassignment
-        if let Some(existing_value) = self.witness[widx.0 as usize].clone() {
+        if let Some(existing_value) = self.witness[widx.0 as usize] {
             if existing_value != value {
                 return Err(format!(
                     "Witness conflict: WitnessId({}) already set to {:?}, cannot reassign to {:?}",
@@ -318,7 +318,7 @@ impl<
             match witness_opt {
                 Some(value) => {
                     index.push(i as u32);
-                    values.push(value.clone());
+                    values.push(*value);
                 }
                 None => {
                     return Err(format!("Witness not set for index {i}"));
@@ -337,7 +337,7 @@ impl<
         for prim in &self.circuit.primitive_ops {
             if let Prim::Const { out, val } = prim {
                 index.push(out.0);
-                values.push(val.clone());
+                values.push(*val);
             }
         }
 
@@ -469,7 +469,7 @@ impl<
             {
                 let mut current_hash =
                     if let Some(val) = self.witness.get(leaf.0 as usize).and_then(|x| x.as_ref()) {
-                        val.clone()
+                        *val
                     } else {
                         return Err(format!(
                             "Leaf value not set for FakeMerkleVerify operation {op_idx}"
@@ -483,23 +483,23 @@ impl<
                     .zip(private_data.path_directions.iter())
                 {
                     // Current hash becomes left operand
-                    left_values.push(current_hash.clone());
+                    left_values.push(current_hash);
                     left_index.push(leaf.0); // Points to witness bus
 
                     // Sibling becomes right operand (private data - not on witness bus)
-                    right_values.push(sibling_value.clone());
+                    right_values.push(*sibling_value);
                     right_index.push(0); // Not on witness bus - private data
 
                     // Compute parent hash (simple mock hash: left + right + direction)
-                    let parent_hash = current_hash.clone()
-                        + sibling_value.clone()
+                    let parent_hash = current_hash
+                        + *sibling_value
                         + if direction {
                             F::from_u64(1)
                         } else {
                             F::from_u64(0)
                         };
 
-                    result_values.push(parent_hash.clone());
+                    result_values.push(parent_hash);
                     result_index.push(root.0); // Points to witness bus
 
                     path_directions.push(if direction { 1 } else { 0 });
@@ -509,7 +509,7 @@ impl<
                 }
 
                 // Root is computed; write back to the witness bus at root index
-                self.set_witness(root, current_hash.clone())?;
+                self.set_witness(root, current_hash)?;
             } else {
                 return Err(format!(
                     "Missing private data for FakeMerkleVerify operation {op_idx}"
