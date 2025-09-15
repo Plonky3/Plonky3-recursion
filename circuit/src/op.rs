@@ -53,6 +53,7 @@ pub enum Prim<F> {
 #[derive(Debug, Clone, PartialEq)]
 pub enum NonPrimitiveOpType {
     FakeMerkleVerify,
+    // MerkleVerify,
     // Future: FriVerify, HashAbsorb, etc.
 }
 
@@ -86,7 +87,23 @@ pub enum NonPrimitiveOp {
     /// - Merkle path siblings and direction bits
     /// - See `FakeMerklePrivateData` for complete specification
     FakeMerkleVerify { leaf: WitnessId, root: WitnessId },
+    /// Verifies that a leaf value is contained in a Merkle tree with given root.
+    /// The actual Merkle path verification logic is implemented in a dedicated
+    /// AIR table that constrains the relationship between leaf and root.
+    ///
+    /// Public interface (on witness bus):
+    /// - `leaf`: The leaf value being verified (single field element)
+    /// - `root`: The expected Merkle tree root (single field element)
+    ///
+    /// Private data (set via NonPrimitiveOpId):
+    /// - Merkle path siblings and direction bits
+    /// - See `MerklePrivateData` for complete specification
+    MerkleVerify { leaf: WitnessId, root: WitnessId },
 }
+
+// TODO: Maybe [WitnessId; HASH_LEN] is better, but that introduces a new type. It requires changing
+// the callers, and ends up making everything more cumbersome.
+pub type MerkleWitnessId = Vec<WitnessId>;
 
 /// Private auxiliary data for non-primitive operations
 ///
@@ -103,6 +120,7 @@ pub enum NonPrimitiveOpPrivateData<F> {
     /// to generate a valid proof. This data is not part of the public
     /// circuit specification.
     FakeMerkleVerify(FakeMerklePrivateData<F>),
+    MerkleVerify(MerklePrivateData<F>),
 }
 
 /// Private Merkle path data for fake Merkle verification (simplified)
@@ -123,6 +141,33 @@ pub struct FakeMerklePrivateData<F> {
     /// sibling hash needed to compute the parent hash. In a real
     /// implementation, these would be cryptographic hash outputs.
     pub path_siblings: Vec<F>,
+
+    /// Direction bits indicating path through the tree
+    ///
+    /// For each level: `false` = current node is left child,
+    /// `true` = current node is right child. Used to determine
+    /// hash input ordering: `hash(current, sibling)` vs `hash(sibling, current)`.
+    pub path_directions: Vec<bool>,
+}
+
+/// Private Merkle path data for fake Merkle verification (simplified)
+///
+/// This represents the private witness information that the prover needs
+/// to demonstrate knowledge of a valid Merkle path from leaf to root.
+/// In a real implementation, this would contain cryptographic hash values
+/// and tree structure information.
+///
+/// Note: This is a simplified "fake" implementation for demonstration.
+/// Production Merkle verification would use proper cryptographic hashes
+/// and handle multi-element hash digests, not single field elements.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MerklePrivateData<F> {
+    /// Sibling hash values along the Merkle path
+    ///
+    /// For each level of the tree (from leaf to root), contains the
+    /// sibling hash needed to compute the parent hash. It might optionally
+    /// include the hash of the row of a smaller matrix in the Mmcs.
+    pub path_siblings: Vec<(F, Option<F>)>,
 
     /// Direction bits indicating path through the tree
     ///

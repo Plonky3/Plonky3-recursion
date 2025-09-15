@@ -1,5 +1,6 @@
 use p3_field::PrimeCharacteristicRing;
 
+use crate::NonPrimitiveOp;
 use crate::circuit::Circuit;
 use crate::op::{NonPrimitiveOpPrivateData, Prim};
 use crate::types::{NonPrimitiveOpId, WitnessId};
@@ -198,10 +199,19 @@ impl<
         let complex_op = &self.circuit.non_primitive_ops[op_id.0 as usize];
         match (complex_op, &private_data) {
             (
-                crate::op::NonPrimitiveOp::FakeMerkleVerify { .. },
+                NonPrimitiveOp::FakeMerkleVerify { .. },
                 NonPrimitiveOpPrivateData::FakeMerkleVerify(_),
             ) => {
                 // Type match - good!
+            }
+            (NonPrimitiveOp::MerkleVerify { .. }, NonPrimitiveOpPrivateData::MerkleVerify(_)) => {
+                // Type match - good!
+            }
+            _ => {
+                return Err(format!(
+                    "NonPrimitiveOp {:?} does not match NonPrimitiveOpPrivateData {:?}",
+                    complex_op, private_data,
+                ));
             }
         }
 
@@ -439,16 +449,16 @@ impl<
         // Process each complex operation by index to avoid borrowing conflicts
         for op_idx in 0..self.circuit.non_primitive_ops.len() {
             // Copy out leaf/root to end immutable borrow immediately
-            let (leaf, root) = match &self.circuit.non_primitive_ops[op_idx] {
-                crate::op::NonPrimitiveOp::FakeMerkleVerify { leaf, root } => (*leaf, *root),
-            };
-
-            // Clone private data option to avoid holding a borrow on self
-            if let Some(Some(NonPrimitiveOpPrivateData::FakeMerkleVerify(private_data))) =
-                self.complex_op_private_data.get(op_idx).cloned()
+            if let NonPrimitiveOp::FakeMerkleVerify { leaf, root } =
+                self.circuit.non_primitive_ops[op_idx]
             {
-                let mut current_hash =
-                    if let Some(val) = self.witness.get(leaf.0 as usize).and_then(|x| x.as_ref()) {
+                // Clone private data option to avoid holding a borrow on self
+                if let Some(Some(NonPrimitiveOpPrivateData::FakeMerkleVerify(private_data))) =
+                    self.complex_op_private_data.get(op_idx).cloned()
+                {
+                    let mut current_hash = if let Some(val) =
+                        self.witness.get(leaf.0 as usize).and_then(|x| x.as_ref())
+                    {
                         val.clone()
                     } else {
                         return Err(format!(
@@ -456,44 +466,45 @@ impl<
                         ));
                     };
 
-                // For each step in the Merkle path
-                for (sibling_value, &direction) in private_data
-                    .path_siblings
-                    .iter()
-                    .zip(private_data.path_directions.iter())
-                {
-                    // Current hash becomes left operand
-                    left_values.push(current_hash.clone());
-                    left_index.push(leaf.0); // Points to witness bus
+                    // For each step in the Merkle path
+                    for (sibling_value, &direction) in private_data
+                        .path_siblings
+                        .iter()
+                        .zip(private_data.path_directions.iter())
+                    {
+                        // Current hash becomes left operand
+                        left_values.push(current_hash.clone());
+                        left_index.push(leaf.0); // Points to witness bus
 
-                    // Sibling becomes right operand (private data - not on witness bus)
-                    right_values.push(sibling_value.clone());
-                    right_index.push(0); // Not on witness bus - private data
+                        // Sibling becomes right operand (private data - not on witness bus)
+                        right_values.push(sibling_value.clone());
+                        right_index.push(0); // Not on witness bus - private data
 
-                    // Compute parent hash (simple mock hash: left + right + direction)
-                    let parent_hash = current_hash.clone()
-                        + sibling_value.clone()
-                        + if direction {
-                            F::from_u64(1)
-                        } else {
-                            F::from_u64(0)
-                        };
+                        // Compute parent hash (simple mock hash: left + right + direction)
+                        let parent_hash = current_hash.clone()
+                            + sibling_value.clone()
+                            + if direction {
+                                F::from_u64(1)
+                            } else {
+                                F::from_u64(0)
+                            };
 
-                    result_values.push(parent_hash.clone());
-                    result_index.push(root.0); // Points to witness bus
+                        result_values.push(parent_hash.clone());
+                        result_index.push(root.0); // Points to witness bus
 
-                    path_directions.push(if direction { 1 } else { 0 });
+                        path_directions.push(if direction { 1 } else { 0 });
 
-                    // Update current hash for next iteration
-                    current_hash = parent_hash;
+                        // Update current hash for next iteration
+                        current_hash = parent_hash;
+                    }
+
+                    // Root is computed; write back to the witness bus at root index
+                    self.set_witness(root, current_hash.clone())?;
+                } else {
+                    return Err(format!(
+                        "Missing private data for FakeMerkleVerify operation {op_idx}"
+                    ));
                 }
-
-                // Root is computed; write back to the witness bus at root index
-                self.set_witness(root, current_hash.clone())?;
-            } else {
-                return Err(format!(
-                    "Missing private data for FakeMerkleVerify operation {op_idx}"
-                ));
             }
         }
 
