@@ -88,6 +88,15 @@ pub trait RecursiveExtensionMmcs<F: Field, EF: ExtensionField<F>> {
     type Proof: Recursive<F, Input = <Self::Input as Mmcs<EF>>::Proof> + Clone;
 }
 
+type Commitment<SC> = <<SC as StarkGenericConfig>::Pcs as Pcs<
+    <SC as StarkGenericConfig>::Challenge,
+    <SC as StarkGenericConfig>::Challenger,
+>>::Commitment;
+
+type ComsWithOpenings<Comm, Domain> = [(Comm, Vec<(Domain, Vec<(ExprId, Vec<ExprId>)>)>)];
+
+type ComsToVerify<SC> = [(Commitment<SC>, Vec<Vec<(Val<SC>, Vec<Val<SC>>)>>)];
+
 /// Trait which defines the methods necessary
 /// for a Pcs to generate values for associated wires.
 /// Generalize
@@ -95,10 +104,7 @@ pub trait PcsGeneration<SC: StarkGenericConfig, OpeningProof> {
     fn generate_challenges<InputProof: Recursive<Val<SC>>, const D: usize>(
         config: &SC,
         challenger: &mut SC::Challenger,
-        coms_to_verify: &[(
-            <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment,
-            Vec<Vec<(SC::Challenge, Vec<SC::Challenge>)>>,
-        )],
+        coms_to_verify: &ComsToVerify<SC>,
         opening_proof: &OpeningProof,
     ) -> Vec<SC::Challenge>;
 }
@@ -126,7 +132,7 @@ pub trait RecursivePcs<
         &self,
         circuit: &mut CircuitBuilder<Val<SC>>,
         challenges: &[ExprId],
-        commitments_with_opening_points: &[(&Comm, Vec<(Domain, Vec<(ExprId, Vec<ExprId>)>)>)],
+        commitments_with_opening_points: &ComsWithOpenings<Comm, Domain>,
         opening_proof: &OpeningProof,
     );
 
@@ -161,6 +167,7 @@ pub struct RecursiveLagrangeSels {
 
 /// Trait including methods necessary to compute the verification of an AIR's constraints,
 /// as well as AIR-specific methods used in the full verification circuit.
+#[allow(clippy::too_many_arguments)]
 pub trait RecursiveAir<F: Field> {
     fn width(&self) -> usize;
 
