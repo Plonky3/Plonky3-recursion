@@ -2,7 +2,7 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use alloc::{format, vec};
 
-use p3_field::PrimeCharacteristicRing;
+use p3_field::Field;
 
 use crate::circuit::Circuit;
 use crate::op::{NonPrimitiveOpPrivateData, Prim};
@@ -148,7 +148,7 @@ impl<
         + core::ops::Mul<Output = F>
         + PartialEq
         + core::fmt::Debug
-        + PrimeCharacteristicRing,
+        + Field,
 > CircuitRunner<F>
 {
     /// Create a new prover instance
@@ -267,10 +267,18 @@ impl<
                     self.set_witness(out, result)?;
                 }
                 Prim::Mul { a, b, out } => {
+                    // Mul is used to represent either `Mul` or `Div` operations.
+                    // We determine which based on which inputs are set.
                     let a_val = self.get_witness(a)?;
-                    let b_val = self.get_witness(b)?;
-                    let result = a_val * b_val;
-                    self.set_witness(out, result)?;
+                    if let Ok(b_val) = self.get_witness(b) {
+                        let result = a_val * b_val;
+                        self.set_witness(out, result)?;
+                    } else {
+                        let result_val = self.get_witness(out)?;
+                        let b_val =
+                            result_val * a_val.try_inverse().expect("Cannot divide by zero");
+                        self.set_witness(b, b_val)?;
+                    }
                 }
             }
         }
@@ -292,7 +300,7 @@ impl<
         }
 
         // Check for conflicting reassignment
-        if let Some(existing_value) = self.witness[widx.0 as usize].clone() {
+        if let Some(existing_value) = self.witness[widx.0 as usize] {
             if existing_value != value {
                 return Err(format!(
                     "Witness conflict: WitnessId({}) already set to {:?}, cannot reassign to {:?}",
@@ -314,7 +322,7 @@ impl<
             match witness_opt {
                 Some(value) => {
                     index.push(i as u32);
-                    values.push(value.clone());
+                    values.push(*value);
                 }
                 None => {
                     return Err(format!("Witness not set for index {i}"));
@@ -333,7 +341,7 @@ impl<
         for prim in &self.circuit.primitive_ops {
             if let Prim::Const { out, val } = prim {
                 index.push(out.0);
-                values.push(val.clone());
+                values.push(*val);
             }
         }
 
@@ -465,7 +473,7 @@ impl<
             {
                 let mut current_hash =
                     if let Some(val) = self.witness.get(leaf.0 as usize).and_then(|x| x.as_ref()) {
-                        val.clone()
+                        *val
                     } else {
                         return Err(format!(
                             "Leaf value not set for FakeMerkleVerify operation {op_idx}"
@@ -479,23 +487,23 @@ impl<
                     .zip(private_data.path_directions.iter())
                 {
                     // Current hash becomes left operand
-                    left_values.push(current_hash.clone());
+                    left_values.push(current_hash);
                     left_index.push(leaf.0); // Points to witness bus
 
                     // Sibling becomes right operand (private data - not on witness bus)
-                    right_values.push(sibling_value.clone());
+                    right_values.push(*sibling_value);
                     right_index.push(0); // Not on witness bus - private data
 
                     // Compute parent hash (simple mock hash: left + right + direction)
-                    let parent_hash = current_hash.clone()
-                        + sibling_value.clone()
+                    let parent_hash = current_hash
+                        + *sibling_value
                         + if direction {
                             F::from_u64(1)
                         } else {
                             F::from_u64(0)
                         };
 
-                    result_values.push(parent_hash.clone());
+                    result_values.push(parent_hash);
                     result_index.push(root.0); // Points to witness bus
 
                     path_directions.push(if direction { 1 } else { 0 });
@@ -505,7 +513,7 @@ impl<
                 }
 
                 // Root is computed; write back to the witness bus at root index
-                self.set_witness(root, current_hash.clone())?;
+                self.set_witness(root, current_hash)?;
             } else {
                 return Err(format!(
                     "Missing private data for FakeMerkleVerify operation {op_idx}"
@@ -533,7 +541,7 @@ impl<
         + core::ops::Mul<Output = F>
         + PartialEq
         + core::fmt::Debug
-        + PrimeCharacteristicRing,
+        + Field,
 > Circuit<F>
 {
     /// Create a circuit runner for execution and trace generation
@@ -594,10 +602,15 @@ mod tests {
         let x = builder.add_public_input();
         let c37 = builder.add_const(BabyBear::from_u64(37));
         let c111 = builder.add_const(BabyBear::from_u64(111));
+        let c1 = builder.add_const(BabyBear::from_u64(1));
 
         let mul_result = builder.mul(c37, x);
         let sub_result = builder.sub(mul_result, c111);
         builder.assert_zero(sub_result);
+
+        let div_result = builder.div(mul_result, c111);
+        let sub_one = builder.sub(div_result, c1);
+        builder.assert_zero(sub_one);
 
         let circuit = builder.build();
         println!("=== CIRCUIT PRIMITIVE OPERATIONS ===");
@@ -677,15 +690,15 @@ mod tests {
         // Verify trace structure
         assert_eq!(traces.witness_trace.index.len(), slot_count as usize);
 
-        // Should have constants: 37, 111, and 0 (for assert_zero)
-        assert!(traces.const_trace.values.len() >= 2);
+        // Should have constants: 37, 111, 1 and 0 (for assert_zero)
+        assert!(traces.const_trace.values.len() >= 4);
 
         // Should have one public input
         assert_eq!(traces.public_trace.values.len(), 1);
         assert_eq!(traces.public_trace.values[0], BabyBear::from_u64(3));
 
-        // Should have one mul operation
-        assert_eq!(traces.mul_trace.lhs_values.len(), 1);
+        // Should have two mul operations (explicit Mul and Div lowering to Mul with inverse)
+        assert_eq!(traces.mul_trace.lhs_values.len(), 2);
 
         // Should have two sub operations (explicit Sub and assert_zero lowering to Sub with zero)
         assert_eq!(traces.sub_trace.lhs_values.len(), 1);

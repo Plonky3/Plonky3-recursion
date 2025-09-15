@@ -15,6 +15,8 @@ pub enum Expr<F> {
     Sub { lhs: ExprId, rhs: ExprId },
     /// Multiplication of two expressions
     Mul { lhs: ExprId, rhs: ExprId },
+    /// Division of two expressions
+    Div { lhs: ExprId, rhs: ExprId },
 }
 
 /// Graph for storing expression DAG nodes
