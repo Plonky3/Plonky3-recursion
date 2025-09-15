@@ -268,8 +268,8 @@ where
 
                 // If this Const participates in a connect class, bind the class to the const slot
                 if in_connect.contains(&expr_idx) {
-                    let rep = dsu_find(&mut parent, expr_idx);
-                    root_to_widx.insert(rep, w);
+                    let root = dsu_find(&mut parent, expr_idx);
+                    root_to_widx.insert(root, w);
                 }
             }
         }
@@ -280,9 +280,9 @@ where
              parent: &mut HashMap<usize, usize>,
              root_to_widx: &mut HashMap<usize, WitnessId>| {
                 if in_connect.contains(&expr_idx) {
-                    let rep = dsu_find(parent, expr_idx);
+                    let root = dsu_find(parent, expr_idx);
                     *root_to_widx
-                        .entry(rep)
+                        .entry(root)
                         .or_insert_with(|| self.witness_alloc.alloc())
                 } else {
                     self.witness_alloc.alloc()
@@ -306,9 +306,7 @@ where
                     public_pos: *pos,
                 });
                 expr_to_widx.insert(id, out_widx);
-                if *pos >= public_rows.len() {
-                    public_rows.resize(*pos + 1, WitnessId(0));
-                }
+                public_rows.resize(public_rows.len().max(*pos + 1), WitnessId(0));
                 public_rows[*pos] = out_widx;
             }
         }
