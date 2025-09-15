@@ -57,6 +57,7 @@ pub enum NonPrimitiveOpType {
     FakeMerkleVerify,
     // MerkleVerify,
     // Future: FriVerify, HashAbsorb, etc.
+    MerkleVerify,
 }
 
 /// Non-primitive operations representing complex cryptographic constraints
