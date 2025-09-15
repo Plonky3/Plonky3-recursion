@@ -498,7 +498,6 @@ mod tests {
     fn test_circuit_basic_api() {
         let mut builder = CircuitBuilder::<BabyBear>::new();
 
-        // Test the DESIGN example: 37 * x - 111 = 0
         let x = builder.add_public_input();
         let c37 = builder.add_const(BabyBear::from_u64(37));
         let c111 = builder.add_const(BabyBear::from_u64(111));
@@ -513,10 +512,10 @@ mod tests {
         builder.assert_zero(sub_one);
 
         let circuit = builder.build();
-        assert_eq!(circuit.witness_count, 7); // 0:zero, 1:public, 2:c37, 3:c111, 4:c1, 5:mul_result, 6:sub_result, 7:div_result, 8:sub_one
+        assert_eq!(circuit.witness_count, 7); // 0:zero, 1:c37, 2:c111, 3:c1, 4:public, 5:mul_result, 6:sub_result, 7:div_result, 8:sub_one
 
         // Assert all primitive operations (lowering order: Consts first, then Public, then ops)
-        assert_eq!(circuit.primitive_ops.len(), 6);
+        assert_eq!(circuit.primitive_ops.len(), 9);
         match &circuit.primitive_ops[0] {
             Prim::Const { out, val } => {
                 assert_eq!(out.0, 0);
@@ -539,23 +538,23 @@ mod tests {
             _ => panic!("Expected Const(111) at op 2"),
         }
         match &circuit.primitive_ops[3] {
-            Prim::Public { out, public_pos } => {
-                assert_eq!(out.0, 3);
-                assert_eq!(*public_pos, 0);
-            }
-            _ => panic!("Expected Public at op 3"),
-        }
-        match &circuit.primitive_ops[4] {
             Prim::Const { out, val } => {
-                assert_eq!(out.0, 4);
+                assert_eq!(out.0, 3);
                 assert_eq!(*val, BabyBear::from_u64(1));
             }
             _ => panic!("Expected Const(1)"),
         }
+        match &circuit.primitive_ops[4] {
+            Prim::Public { out, public_pos } => {
+                assert_eq!(out.0, 4);
+                assert_eq!(*public_pos, 0);
+            }
+            _ => panic!("Expected Public at op 3"),
+        }
         match &circuit.primitive_ops[5] {
             Prim::Mul { a, b, out } => {
-                assert_eq!(a.0, 2);
-                assert_eq!(b.0, 1);
+                assert_eq!(a.0, 1);
+                assert_eq!(b.0, 4);
                 assert_eq!(out.0, 5);
             }
             _ => panic!("Expected Mul at op 4"),
@@ -563,46 +562,30 @@ mod tests {
         match &circuit.primitive_ops[6] {
             Prim::Sub { a, b, out } => {
                 assert_eq!(a.0, 5);
-                assert_eq!(b.0, 3);
-                assert_eq!(out.0, 6);
+                assert_eq!(b.0, 2);
+                assert_eq!(out.0, 0);
             }
             _ => panic!("Expected Sub(mul_result - c111)"),
         }
         match &circuit.primitive_ops[7] {
             Prim::Mul { a, b, out } => {
-                assert_eq!(a.0, 3);
-                assert_eq!(b.0, 7);
+                assert_eq!(a.0, 2);
+                assert_eq!(b.0, 6);
                 assert_eq!(out.0, 5);
             }
             _ => panic!("Expected Mul"),
         }
         match &circuit.primitive_ops[8] {
             Prim::Sub { a, b, out } => {
-                assert_eq!(a.0, 7);
-                assert_eq!(b.0, 4);
-                assert_eq!(out.0, 8);
+                assert_eq!(a.0, 6);
+                assert_eq!(b.0, 3);
+                assert_eq!(out.0, 0);
             }
             _ => panic!("Expected Sub(div_result - c1)"),
         }
-        match &circuit.primitive_ops[9] {
-            Prim::Sub { a, b, out } => {
-                assert_eq!(a.0, 6);
-                assert_eq!(b.0, 0);
-                assert_eq!(out.0, 0);
-            }
-            _ => panic!("Expected Sub assertion"),
-        }
-        match &circuit.primitive_ops[10] {
-            Prim::Sub { a, b, out } => {
-                assert_eq!(a.0, 8);
-                assert_eq!(b.0, 0);
-                assert_eq!(out.0, 0);
-            }
-            _ => panic!("Expected Sub(mul_result - c111) at op 5"),
-        }
 
         assert_eq!(circuit.public_flat_len, 1);
-        assert_eq!(circuit.public_rows, vec![WitnessId(3)]); // Public input at slot 3 (after consts)
+        assert_eq!(circuit.public_rows, vec![WitnessId(4)]); // Public input at slot 4 (after consts)
     }
 
     #[test]

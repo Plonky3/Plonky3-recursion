@@ -598,7 +598,6 @@ mod tests {
     fn test_toy_example_37_times_x_minus_111() {
         let mut builder = CircuitBuilder::<BabyBear>::new();
 
-        // DESIGN example: 37 * x - 111 = 0
         let x = builder.add_public_input();
         let c37 = builder.add_const(BabyBear::from_u64(37));
         let c111 = builder.add_const(BabyBear::from_u64(111));
@@ -673,6 +672,20 @@ mod tests {
             );
         }
 
+        println!("\n=== ADD TRACE ===");
+        for i in 0..traces.add_trace.lhs_values.len() {
+            println!(
+                "Row {}: WitnessId({}) + WitnessId({}) -> WitnessId({}) | {:?} + {:?} -> {:?}",
+                i,
+                traces.add_trace.lhs_index[i],
+                traces.add_trace.rhs_index[i],
+                traces.add_trace.result_index[i],
+                traces.add_trace.lhs_values[i],
+                traces.add_trace.rhs_values[i],
+                traces.add_trace.result_values[i]
+            );
+        }
+
         println!("\n=== SUB TRACE ===");
         for i in 0..traces.sub_trace.lhs_values.len() {
             println!(
@@ -700,8 +713,8 @@ mod tests {
         // Should have two mul operations (explicit Mul and Div lowering to Mul with inverse)
         assert_eq!(traces.mul_trace.lhs_values.len(), 2);
 
-        // Should have two sub operations (explicit Sub and assert_zero lowering to Sub with zero)
-        assert_eq!(traces.sub_trace.lhs_values.len(), 1);
+        // Should have two sub operations
+        assert_eq!(traces.sub_trace.lhs_values.len(), 2);
     }
 
     #[test]
