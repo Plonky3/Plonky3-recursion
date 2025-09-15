@@ -104,6 +104,26 @@ impl<F: Clone> CircuitBuilder<F> {
 
         op_id
     }
+
+    /// Add a Merkle verification constraint (non-primitive operation)
+    ///
+    /// Non-primitive operations are complex constraints that:
+    /// - Take existing expressions as inputs (leaf_expr, root_expr)
+    /// - Add verification constraints to the circuit
+    /// - Don't produce new ExprIds (unlike primitive ops)
+    /// - Are kept separate from primitives to avoid disrupting optimization
+    ///
+    /// Returns an operation ID for setting private data later during execution.
+    pub fn add_merkle_verify(&mut self, leaf_expr: ExprId, root_expr: ExprId) -> NonPrimitiveOpId {
+        // Store input expression IDs - will be lowered to WitnessId during build()
+        // Non-primitive ops consume ExprIds but don't produce them
+        let op_id = NonPrimitiveOpId(self.non_primitive_ops.len() as u32);
+        let witness_exprs = vec![leaf_expr, root_expr];
+        self.non_primitive_ops
+            .push((op_id, NonPrimitiveOpType::MerkleVerify, witness_exprs));
+
+        op_id
+    }
 }
 
 impl<F: Clone + PrimeCharacteristicRing + PartialEq + Eq + std::hash::Hash> CircuitBuilder<F> {
@@ -313,7 +333,30 @@ impl<F: Clone + PrimeCharacteristicRing + PartialEq + Eq + std::hash::Hash> Circ
                         leaf: leaf_widx,
                         root: root_widx,
                     });
-                } // Future operations can be added here with different witness expression counts
+                }
+                NonPrimitiveOpType::MerkleVerify => {
+                    if witness_exprs.len() != 2 {
+                        panic!(
+                            "MerkleVerify expects exactly 2 witness expressions, got {}",
+                            witness_exprs.len()
+                        );
+                    }
+                    let leaf_widx = Self::get_witness_id(
+                        expr_to_widx,
+                        witness_exprs[0],
+                        "eMerkleVerify leaf input",
+                    );
+                    let root_widx = Self::get_witness_id(
+                        expr_to_widx,
+                        witness_exprs[1],
+                        "MerkleVerify root input",
+                    );
+
+                    lowered_ops.push(NonPrimitiveOp::MerkleVerify {
+                        leaf: leaf_widx,
+                        root: root_widx,
+                    });
+                }
             }
         }
 

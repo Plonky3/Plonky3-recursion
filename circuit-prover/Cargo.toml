@@ -19,17 +19,21 @@ p3-commit.workspace = true
 p3-dft.workspace = true
 p3-field.workspace = true
 p3-fri.workspace = true
+p3-keccak.workspace = true
 p3-matrix.workspace = true
 p3-merkle-tree.workspace = true
 p3-symmetric.workspace = true
 p3-uni-stark.workspace = true
+p3-merkle-tree-air.workspace = true
 postcard = { version = "1.0", default-features = false, features = ["alloc"] }
 rand.workspace = true
 
 [dev-dependencies]
 postcard = { version = "1.0", default-features = false, features = ["alloc"] }
 rand.workspace = true
-tracing = { version = "0.1.40", default-features = false, features = ["attributes"] }
+tracing = { version = "0.1.40", default-features = false, features = [
+    "attributes",
+] }
 
 [[example]]
 name = "fibonacci"
@@ -38,3 +42,7 @@ path = "examples/fibonacci.rs"
 [[example]]
 name = "fake_merkle_verify"
 path = "examples/fake_merkle_verify.rs"
+
+[[example]]
+name = "merkle_verify"
+path = "examples/merkle_verify.rs"
