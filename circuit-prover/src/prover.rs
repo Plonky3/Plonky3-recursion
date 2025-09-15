@@ -3,12 +3,16 @@ use alloc::vec::Vec;
 use alloc::{format, vec};
 
 use p3_baby_bear::BabyBear as Val;
+use p3_circuit::Circuit;
 use p3_circuit::tables::Traces;
 use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
 use p3_uni_stark::{prove, verify};
 
 use crate::air::{AddAir, ConstAir, FakeMerkleVerifyAir, MulAir, PublicAir, SubAir, WitnessAir};
 use crate::config::{ProverConfig, build_standard_config};
+use crate::transparent::{
+    TransparentProvingKey as TransparentPK, TransparentVerifyingKey as TransparentVK,
+};
 
 // Re-export the proof type from the config module
 pub type StarkProof = p3_uni_stark::Proof<ProverConfig>;
@@ -49,10 +53,30 @@ impl MultiTableProver {
         }
     }
 
+    /// Run transparent setup for index columns once per circuit build.
+    ///
+    /// This produces a placeholder commitment and metadata for all index columns across tables.
+    /// It does not alter proof generation in this POC.
+    pub fn setup_transparent_for_circuit<F>(
+        &self,
+        circuit: &Circuit<F>,
+    ) -> (TransparentPK<F>, TransparentVK)
+    where
+        F: p3_field::Field + Clone,
+    {
+        crate::transparent::setup_default_transparent_indices(circuit)
+    }
+
     /// Configure a custom W for degree-4 binomial extensions.
     pub fn with_w_d4(mut self, w: Option<Val>) -> Self {
         self.w_d4 = w;
         self
+    }
+
+    /// Verifier-side stub for transparent setup.
+    /// Accepts the transparent verifying key and performs no checks yet.
+    pub fn verify_transparent_setup(&self, _vk: &TransparentVK) -> Result<(), String> {
+        Ok(())
     }
 
     /// Prove all tables from the given traces.
@@ -233,7 +257,8 @@ impl Default for MultiTableProver {
 }
 
 #[cfg(test)]
-mod tests {
+mod prover_tests {
+    extern crate std;
     use p3_baby_bear::BabyBear;
     use p3_circuit::builder::CircuitBuilder;
     use p3_field::extension::BinomialExtensionField;
@@ -319,5 +344,68 @@ mod tests {
 
         // Verify all proofs
         multi_prover.verify_all_tables(&proof).unwrap();
+    }
+
+    #[test]
+    fn transparent_setup_in_prover() {
+        // Build a small circuit.
+        let mut b = CircuitBuilder::<BabyBear>::new();
+        let x = b.add_public_input();
+        let c1 = b.add_const(BabyBear::from_i64(7));
+        let c2 = b.add_const(BabyBear::from_i64(5));
+        let y = b.mul(c1, x);
+        let z = b.sub(y, c2);
+        b.assert_zero(z);
+
+        let circuit = b.build();
+
+        // Prover sets up transparent columns once.
+        let prover = MultiTableProver::new();
+        let (tpk, tvk) = prover.setup_transparent_for_circuit(&circuit);
+
+        // Basic sanity checks on PK/VK.
+        assert!(!tpk.traces.is_empty(), "no transparent traces produced");
+        assert_eq!(
+            tpk.traces.len(),
+            tpk.infos.len(),
+            "trace/infos length mismatch"
+        );
+        for (info, rows) in tpk.infos.iter().zip(tpk.traces.iter()) {
+            assert_eq!(info.width, rows.width, "width mismatch for {}", info.name);
+            assert_eq!(
+                info.height, rows.height,
+                "height mismatch for {}",
+                info.name
+            );
+            if info.height > 0 {
+                assert!(
+                    info.height.is_power_of_two(),
+                    "height not power of two for {}",
+                    info.name
+                );
+            }
+        }
+
+        // Verifier stub accepts the VK.
+        prover
+            .verify_transparent_setup(&tvk)
+            .expect("transparent VK verification stub failed");
+
+        std::println!("transparent providers: {}", tpk.ordering.len());
+        for (name, idx) in tpk.ordering.iter() {
+            if let Some(rows) = tpk.traces.get(*idx) {
+                std::println!(
+                    "provider={} width={} height={}",
+                    name,
+                    rows.width,
+                    rows.height
+                );
+                for r in 0..rows.height {
+                    let start = r * rows.width;
+                    let end = start + rows.width;
+                    std::println!("row {:>3}: {:?}", r, &rows.values[start..end]);
+                }
+            }
+        }
     }
 }
