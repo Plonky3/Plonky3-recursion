@@ -2,17 +2,17 @@ use std::marker::PhantomData;
 
 use p3_circuit::{CircuitBuilder, ExprId};
 use p3_commit::{Mmcs, Pcs};
-use p3_field::{BasedVectorSpace, ExtensionField, Field};
-use p3_uni_stark::{Commitments, OpenedValues, Proof, StarkGenericConfig, Val};
+use p3_field::{ExtensionField, Field};
+use p3_uni_stark::{Commitments, OpenedValues, Proof, StarkGenericConfig};
 
 /// Structure representing all the wires necessary for an input proof.
 #[derive(Clone)]
 pub struct ProofWires<
     SC: StarkGenericConfig,
-    Comm: Recursive<Val<SC>>,
-    OpeningProof: Recursive<Val<SC>>,
+    Comm: Recursive<SC::Challenge>,
+    OpeningProof: Recursive<SC::Challenge>,
 > {
-    pub commitments_wires: CommitmentWires<Val<SC>, Comm>,
+    pub commitments_wires: CommitmentWires<SC::Challenge, Comm>,
     pub opened_values_wires: OpenedValuesWires<SC>,
     pub opening_proof: OpeningProof,
     pub degree_bits: usize,
@@ -73,18 +73,18 @@ pub trait Recursive<F: Field> {
 }
 
 /// Trait representing the `Commitment` and `Proof` of an `Input` with type `Mmcs`.
-pub trait RecursiveMmcs<F: Field> {
+pub trait RecursiveMmcs<F: Field, EF: ExtensionField<F>> {
     type Input: Mmcs<F>;
-    type Commitment: Recursive<F, Input = <Self::Input as Mmcs<F>>::Commitment> + Clone;
-    type Proof: Recursive<F, Input = <Self::Input as Mmcs<F>>::Proof> + Clone;
+    type Commitment: Recursive<EF, Input = <Self::Input as Mmcs<F>>::Commitment> + Clone;
+    type Proof: Recursive<EF, Input = <Self::Input as Mmcs<F>>::Proof> + Clone;
 }
 
 /// Extension version of `RecursiveMmcs`.
 pub trait RecursiveExtensionMmcs<F: Field, EF: ExtensionField<F>> {
     type Input: Mmcs<EF>;
 
-    type Commitment: Recursive<F, Input = <Self::Input as Mmcs<EF>>::Commitment> + Clone;
-    type Proof: Recursive<F, Input = <Self::Input as Mmcs<EF>>::Proof> + Clone;
+    type Commitment: Recursive<EF, Input = <Self::Input as Mmcs<EF>>::Commitment> + Clone;
+    type Proof: Recursive<EF, Input = <Self::Input as Mmcs<EF>>::Proof> + Clone;
 }
 
 type Commitment<SC> = <<SC as StarkGenericConfig>::Pcs as Pcs<
@@ -94,13 +94,21 @@ type Commitment<SC> = <<SC as StarkGenericConfig>::Pcs as Pcs<
 
 type ComsWithOpenings<Comm, Domain> = [(Comm, Vec<(Domain, Vec<(ExprId, Vec<ExprId>)>)>)];
 
-type ComsToVerify<SC> = [(Commitment<SC>, Vec<Vec<(Val<SC>, Vec<Val<SC>>)>>)];
+type ComsToVerify<SC> = [(
+    Commitment<SC>,
+    Vec<
+        Vec<(
+            <SC as StarkGenericConfig>::Challenge,
+            Vec<<SC as StarkGenericConfig>::Challenge>,
+        )>,
+    >,
+)];
 
 /// Trait which defines the methods necessary
 /// for a Pcs to generate values for associated wires.
 /// Generalize
 pub trait PcsGeneration<SC: StarkGenericConfig, OpeningProof> {
-    fn generate_challenges<InputProof: Recursive<Val<SC>>, const D: usize>(
+    fn generate_challenges<InputProof: Recursive<SC::Challenge>, const D: usize>(
         config: &SC,
         challenger: &mut SC::Challenger,
         coms_to_verify: &ComsToVerify<SC>,
@@ -112,9 +120,9 @@ pub trait PcsGeneration<SC: StarkGenericConfig, OpeningProof> {
 /// Prepend Recursive
 pub trait RecursivePcs<
     SC: StarkGenericConfig,
-    InputProof: Recursive<Val<SC>>,
-    OpeningProof: Recursive<Val<SC>>,
-    Comm: Recursive<Val<SC>>,
+    InputProof: Recursive<SC::Challenge>,
+    OpeningProof: Recursive<SC::Challenge>,
+    Comm: Recursive<SC::Challenge>,
     Domain,
 >
 {
@@ -122,14 +130,14 @@ pub trait RecursivePcs<
 
     /// Creates new wires for all the challenges necessary when computing the Pcs.
     fn get_challenges_circuit(
-        circuit: &mut CircuitBuilder<Val<SC>>,
+        circuit: &mut CircuitBuilder<SC::Challenge>,
         proof_wires: &ProofWires<SC, Comm, OpeningProof>,
     ) -> Vec<ExprId>;
 
     /// Adds the circuit which verifies the Pcs computation.
     fn verify_circuit(
         &self,
-        circuit: &mut CircuitBuilder<Val<SC>>,
+        circuit: &mut CircuitBuilder<SC::Challenge>,
         challenges: &[ExprId],
         commitments_with_opening_points: &ComsWithOpenings<Comm, Domain>,
         opening_proof: &OpeningProof,
@@ -138,7 +146,7 @@ pub trait RecursivePcs<
     /// Computes wire selectors at `point` in the circuit.
     fn selectors_at_point_circuit(
         &self,
-        circuit: &mut CircuitBuilder<Val<SC>>,
+        circuit: &mut CircuitBuilder<SC::Challenge>,
         domain: &Domain,
         point: &ExprId,
     ) -> RecursiveLagrangeSels;
@@ -153,7 +161,7 @@ pub trait RecursivePcs<
     fn size(&self, trace_domain: &Domain) -> usize;
 
     /// Returns the first point in the domain. This is the same as the original method in Pcs, but is also used in the verifier circuit.
-    fn first_point(&self, trace_domain: &Domain) -> Val<SC>;
+    fn first_point(&self, trace_domain: &Domain) -> SC::Challenge;
 }
 
 /// Circuit version of the `LangrangeSelectors`.
@@ -170,7 +178,7 @@ pub struct RecursiveLagrangeSels {
 pub trait RecursiveAir<F: Field> {
     fn width(&self) -> usize;
 
-    fn eval_folded_circuit<EF: ExtensionField<F>>(
+    fn eval_folded_circuit(
         &self,
         builder: &mut CircuitBuilder<F>,
         sels: &RecursiveLagrangeSels,
@@ -193,14 +201,14 @@ pub trait RecursiveAir<F: Field> {
 // Implemeting `Recursive` for the `ProofWires`, `CommitmentWires` and `OpenedValuesWires` base structures.
 impl<
     SC: StarkGenericConfig + Clone,
-    Comm: Recursive<Val<SC>, Input = <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment>,
-    OpeningProof: Recursive<Val<SC>, Input = <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Proof>,
-> Recursive<Val<SC>> for ProofWires<SC, Comm, OpeningProof>
+    Comm: Recursive<SC::Challenge, Input = <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment>,
+    OpeningProof: Recursive<SC::Challenge, Input = <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Proof>,
+> Recursive<SC::Challenge> for ProofWires<SC, Comm, OpeningProof>
 {
     type Input = Proof<SC>;
 
     fn new(
-        circuit: &mut CircuitBuilder<Val<SC>>,
+        circuit: &mut CircuitBuilder<SC::Challenge>,
         lens: &mut impl Iterator<Item = usize>,
         degree_bits: usize,
     ) -> Self {
@@ -216,7 +224,7 @@ impl<
         }
     }
 
-    fn get_values(input: Self::Input) -> Vec<Val<SC>> {
+    fn get_values(input: Self::Input) -> Vec<SC::Challenge> {
         let Proof {
             commitments,
             opened_values,
@@ -224,7 +232,9 @@ impl<
             degree_bits: _,
         } = input;
         let mut values = vec![];
-        values.extend::<Vec<Val<SC>>>(CommitmentWires::<Val<SC>, Comm>::get_values(commitments));
+        values.extend::<Vec<SC::Challenge>>(CommitmentWires::<SC::Challenge, Comm>::get_values(
+            commitments,
+        ));
         values.extend(OpenedValuesWires::<SC>::get_values(opened_values));
         values.extend(OpeningProof::get_values(opening_proof));
         values
@@ -244,7 +254,7 @@ impl<
             degree_bits: _,
         } = input;
         let mut all_lens = vec![];
-        all_lens.extend(CommitmentWires::<Val<SC>, Comm>::lens(commitments));
+        all_lens.extend(CommitmentWires::<SC::Challenge, Comm>::lens(commitments));
         all_lens.extend(OpenedValuesWires::<SC>::lens(opened_values));
         all_lens.extend(OpeningProof::lens(opening_proof));
         all_lens.into_iter()
@@ -317,11 +327,11 @@ where
     }
 }
 
-impl<SC: StarkGenericConfig> Recursive<Val<SC>> for OpenedValuesWires<SC> {
+impl<SC: StarkGenericConfig> Recursive<SC::Challenge> for OpenedValuesWires<SC> {
     type Input = OpenedValues<SC::Challenge>;
 
     fn new(
-        circuit: &mut CircuitBuilder<Val<SC>>,
+        circuit: &mut CircuitBuilder<SC::Challenge>,
         lens: &mut impl Iterator<Item = usize>,
         _degree_bits: usize,
     ) -> Self {
@@ -365,7 +375,7 @@ impl<SC: StarkGenericConfig> Recursive<Val<SC>> for OpenedValuesWires<SC> {
         }
     }
 
-    fn get_values(input: Self::Input) -> Vec<Val<SC>> {
+    fn get_values(input: Self::Input) -> Vec<SC::Challenge> {
         let OpenedValues {
             trace_local,
             trace_next,
@@ -374,21 +384,13 @@ impl<SC: StarkGenericConfig> Recursive<Val<SC>> for OpenedValuesWires<SC> {
         } = input;
 
         let mut values = vec![];
-        values.extend(
-            trace_local
-                .iter()
-                .flat_map(|t| t.as_basis_coefficients_slice()),
-        );
-        values.extend(
-            trace_next
-                .iter()
-                .flat_map(|t| t.as_basis_coefficients_slice()),
-        );
+        values.extend(&trace_local);
+        values.extend(&trace_next);
         for chunk in quotient_chunks {
-            values.extend(chunk.iter().flat_map(|t| t.as_basis_coefficients_slice()));
+            values.extend(&chunk);
         }
         if let Some(random) = random {
-            values.extend(random.iter().flat_map(|t| t.as_basis_coefficients_slice()));
+            values.extend(&random);
         }
 
         values
