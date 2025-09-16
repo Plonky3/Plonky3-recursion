@@ -98,33 +98,31 @@ where
 // Field-specific configuration builders
 
 pub mod babybear_config {
-    use p3_baby_bear::{BabyBear as BB, Poseidon2BabyBear as Poseidon2BB};
-    use rand::SeedableRng;
-    use rand::rngs::SmallRng;
+    use p3_baby_bear::{
+        BabyBear as BB, Poseidon2BabyBear as Poseidon2BB, default_babybear_poseidon2_16,
+    };
 
     use super::*;
 
     pub type BabyBearConfig = ProverConfig<BB, Poseidon2BB<16>, 4>;
 
     pub fn build_standard_config_babybear() -> BabyBearConfig {
-        let mut rng = SmallRng::seed_from_u64(1);
-        let perm = Poseidon2BB::<16>::new_from_rng_128(&mut rng);
+        let perm = default_babybear_poseidon2_16();
         build_standard_config_generic::<BB, _, 4>(perm)
     }
 }
 
 pub mod koalabear_config {
-    use p3_koala_bear::{KoalaBear as KB, Poseidon2KoalaBear as Poseidon2KB};
-    use rand::SeedableRng;
-    use rand::rngs::SmallRng;
+    use p3_koala_bear::{
+        KoalaBear as KB, Poseidon2KoalaBear as Poseidon2KB, default_koalabear_poseidon2_16,
+    };
 
     use super::*;
 
     pub type KoalaBearConfig = ProverConfig<KB, Poseidon2KB<16>, 4>;
 
     pub fn build_standard_config_koalabear() -> KoalaBearConfig {
-        let mut rng = SmallRng::seed_from_u64(1);
-        let perm = Poseidon2KB::<16>::new_from_rng_128(&mut rng);
+        let perm = default_koalabear_poseidon2_16();
         build_standard_config_generic::<KB, _, 4>(perm)
     }
 }
