@@ -54,7 +54,7 @@ where
     P: StarkPermutation<F>,
 {
     pub witness: TableProof<F, P, CD>,
-    pub const_table: TableProof<F, P, CD>,
+    pub constants: TableProof<F, P, CD>,
     pub public: TableProof<F, P, CD>,
     pub add: TableProof<F, P, CD>,
     pub mul: TableProof<F, P, CD>,
@@ -221,7 +221,7 @@ where
                 proof: witness_proof,
                 rows: traces.witness_trace.values.len(),
             },
-            const_table: TableProof {
+            constants: TableProof {
                 proof: const_proof,
                 rows: traces.const_trace.values.len(),
             },
@@ -267,8 +267,8 @@ where
         })?;
 
         // Const
-        let const_air = ConstAir::<F, D>::new(proof.const_table.rows);
-        verify(&self.config, &const_air, &proof.const_table.proof, pis).map_err(|e| {
+        let const_air = ConstAir::<F, D>::new(proof.constants.rows);
+        verify(&self.config, &const_air, &proof.constants.proof, pis).map_err(|e| {
             ProverError::VerificationFailed {
                 phase: "const",
                 error: format!("{e:?}"),

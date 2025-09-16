@@ -134,7 +134,6 @@ pub mod goldilocks_config {
 
     use super::*;
 
-    /// Goldilocks config with CD=2 (challenge degree) and Poseidon2 permutation.
     pub type GoldilocksConfig = ProverConfig<GL, Poseidon2GL<16>, 2>;
 
     pub fn build_standard_config_goldilocks() -> GoldilocksConfig {

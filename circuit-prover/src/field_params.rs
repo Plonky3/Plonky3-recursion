@@ -22,7 +22,7 @@ pub trait ExtractBinomialW<F: Field> {
     fn extract_w() -> Option<F>;
 }
 
-/// Base fields have no extension parameter.
+/// When the element field is the same as the base field (no extension), there's no binomial parameter W.
 impl<F> ExtractBinomialW<F> for F
 where
     F: Field,
