@@ -98,8 +98,7 @@ impl core::fmt::Display for CircuitBuilderError {
         match self {
             CircuitBuilderError::MissingExprMapping { expr_id, context } => write!(
                 f,
-                "Expression {:?} not found in witness mapping: {}",
-                expr_id, context
+                "Expression {expr_id:?} not found in witness mapping: {context}"
             ),
             CircuitBuilderError::NonPrimitiveOpArity { op, expected, got } => write!(
                 f,
@@ -271,17 +270,6 @@ where
         circuit.public_flat_len = self.public_input_count;
 
         Ok((circuit, public_mappings))
-    }
-
-    /// Convenience wrapper that panics on build errors (for tests/examples).
-    pub fn build_or_panic(self) -> Circuit<F> {
-        self.build().expect("circuit build failed")
-    }
-
-    /// Convenience wrapper that panics on build errors (for tests/examples).
-    pub fn build_with_public_mapping_or_panic(self) -> (Circuit<F>, HashMap<ExprId, WitnessId>) {
-        self.build_with_public_mapping()
-            .expect("circuit build failed")
     }
 
     /// Helper function to get WitnessId with descriptive error messages
@@ -528,6 +516,7 @@ mod tests {
     use p3_field::PrimeCharacteristicRing;
 
     use super::*;
+    use crate::CircuitError;
 
     #[test]
     fn test_circuit_basic_api() {
@@ -662,7 +651,10 @@ mod tests {
         let err = runner
             .set_public_inputs(&[BabyBear::from_u64(3), BabyBear::from_u64(4)])
             .unwrap_err();
-        assert!(err.contains("Witness conflict"));
+        match err {
+            CircuitError::WitnessConflict { .. } => {}
+            other => panic!("expected WitnessConflict, got {other}"),
+        }
     }
 
     #[test]

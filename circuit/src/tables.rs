@@ -392,8 +392,8 @@ impl<
             if existing_value != value {
                 return Err(CircuitError::WitnessConflict {
                     witness_id: widx.0,
-                    existing: format!("{:?}", existing_value),
-                    new: format!("{:?}", value),
+                    existing: format!("{existing_value:?}"),
+                    new: format!("{value:?}"),
                 });
             }
         } else {
