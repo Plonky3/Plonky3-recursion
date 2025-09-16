@@ -49,7 +49,7 @@ pub trait Recursive<F: Field> {
     ) -> Self;
 
     /// Returns a vec of field elements representing the elements of the Input. Used to populate public inputs.
-    fn get_values(input: Self::Input) -> Vec<F>;
+    fn get_values(input: &Self::Input) -> Vec<F>;
 
     /// Returns the number of challenges necessary.
     /// TODO: Should we move this to Pcs instead?
@@ -149,7 +149,7 @@ pub trait RecursivePcs<
         circuit: &mut CircuitBuilder<SC::Challenge>,
         domain: &Domain,
         point: &ExprId,
-    ) -> RecursiveLagrangeSels;
+    ) -> RecursiveLagrangeSelectors;
 
     /// Computes a disjoint domain given the degree and the current domain. This is the same as the original method in Pcs, but is also used in the verifier circuit.
     fn create_disjoint_domain(&self, trace_domain: Domain, degree: usize) -> Domain;
@@ -164,8 +164,8 @@ pub trait RecursivePcs<
     fn first_point(&self, trace_domain: &Domain) -> SC::Challenge;
 }
 
-/// Circuit version of the `LangrangeSelectors`.
-pub struct RecursiveLagrangeSels {
+/// Circuit version of the `LagrangeSelectors`.
+pub struct RecursiveLagrangeSelectors {
     pub is_first_row: ExprId,
     pub is_last_row: ExprId,
     pub is_transition: ExprId,
@@ -181,7 +181,7 @@ pub trait RecursiveAir<F: Field> {
     fn eval_folded_circuit(
         &self,
         builder: &mut CircuitBuilder<F>,
-        sels: &RecursiveLagrangeSels,
+        sels: &RecursiveLagrangeSelectors,
         alpha: &ExprId,
         local_prep_values: &[ExprId],
         next_prep_values: &[ExprId],
@@ -224,7 +224,7 @@ impl<
         }
     }
 
-    fn get_values(input: Self::Input) -> Vec<SC::Challenge> {
+    fn get_values(input: &Self::Input) -> Vec<SC::Challenge> {
         let Proof {
             commitments,
             opened_values,
@@ -288,7 +288,7 @@ where
         }
     }
 
-    fn get_values(input: Self::Input) -> Vec<F> {
+    fn get_values(input: &Self::Input) -> Vec<F> {
         let Commitments {
             trace,
             quotient_chunks,
@@ -375,7 +375,7 @@ impl<SC: StarkGenericConfig> Recursive<SC::Challenge> for OpenedValuesWires<SC> 
         }
     }
 
-    fn get_values(input: Self::Input) -> Vec<SC::Challenge> {
+    fn get_values(input: &Self::Input) -> Vec<SC::Challenge> {
         let OpenedValues {
             trace_local,
             trace_next,
@@ -384,13 +384,13 @@ impl<SC: StarkGenericConfig> Recursive<SC::Challenge> for OpenedValuesWires<SC> 
         } = input;
 
         let mut values = vec![];
-        values.extend(&trace_local);
-        values.extend(&trace_next);
+        values.extend(trace_local);
+        values.extend(trace_next);
         for chunk in quotient_chunks {
-            values.extend(&chunk);
+            values.extend(chunk);
         }
         if let Some(random) = random {
-            values.extend(&random);
+            values.extend(random);
         }
 
         values
