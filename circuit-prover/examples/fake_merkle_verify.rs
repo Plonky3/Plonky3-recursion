@@ -36,7 +36,7 @@ fn main() -> Result<(), ProverError> {
     let expected_root_value = compute_merkle_root_from_private(leaf_value, &private_data);
     // Set public inputs
     runner.set_public_inputs(&[leaf_value, expected_root_value])?;
-    runner.set_complex_op_private_data(
+    runner.set_non_primitive_op_private_data(
         merkle_op_id,
         NonPrimitiveOpPrivateData::FakeMerkleVerify(private_data),
     )?;

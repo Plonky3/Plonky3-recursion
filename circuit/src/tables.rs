@@ -31,10 +31,10 @@ pub enum CircuitError {
     },
     /// Witness not set for an index during trace generation.
     WitnessNotSetForIndex { index: usize },
-    /// Leaf value not set for complex operation.
-    LeafValueNotSet { operation_index: usize },
-    /// Missing private data for complex operation.
-    MissingPrivateData { operation_index: usize },
+    /// Non-primitive op attempted to read a witness value that was not set.
+    NonPrimitiveOpWitnessNotSet { operation_index: usize },
+    /// Missing private data for a non-primitive operation.
+    NonPrimitiveOpMissingPrivateData { operation_index: usize },
     /// Division by zero encountered.
     DivisionByZero,
 }
@@ -79,16 +79,16 @@ impl core::fmt::Display for CircuitError {
             CircuitError::WitnessNotSetForIndex { index } => {
                 write!(f, "Witness not set for index {index}")
             }
-            CircuitError::LeafValueNotSet { operation_index } => {
+            CircuitError::NonPrimitiveOpWitnessNotSet { operation_index } => {
                 write!(
                     f,
-                    "Leaf value not set for complex operation {operation_index}"
+                    "Witness value not set for non-primitive operation {operation_index}"
                 )
             }
-            CircuitError::MissingPrivateData { operation_index } => {
+            CircuitError::NonPrimitiveOpMissingPrivateData { operation_index } => {
                 write!(
                     f,
-                    "Missing private data for complex operation {operation_index}"
+                    "Missing private data for non-primitive operation {operation_index}"
                 )
             }
             CircuitError::DivisionByZero => {
@@ -227,7 +227,7 @@ pub struct CircuitRunner<F> {
     circuit: Circuit<F>,
     witness: Vec<Option<F>>,
     /// Private data for complex operations (not on witness bus)
-    complex_op_private_data: Vec<Option<NonPrimitiveOpPrivateData<F>>>,
+    non_primitive_op_private_data: Vec<Option<NonPrimitiveOpPrivateData<F>>>,
 }
 
 impl<
@@ -244,11 +244,11 @@ impl<
     /// Create a new prover instance
     pub fn new(circuit: Circuit<F>) -> Self {
         let witness = vec![None; circuit.witness_count as usize];
-        let complex_op_private_data = vec![None; circuit.non_primitive_ops.len()];
+        let non_primitive_op_private_data = vec![None; circuit.non_primitive_ops.len()];
         Self {
             circuit,
             witness,
-            complex_op_private_data,
+            non_primitive_op_private_data,
         }
     }
 
@@ -273,7 +273,7 @@ impl<
     }
 
     /// Set private data for a complex operation
-    pub fn set_complex_op_private_data(
+    pub fn set_non_primitive_op_private_data(
         &mut self,
         op_id: NonPrimitiveOpId,
         private_data: NonPrimitiveOpPrivateData<F>,
@@ -287,8 +287,8 @@ impl<
         }
 
         // Validate that the private data matches the operation type
-        let complex_op = &self.circuit.non_primitive_ops[op_id.0 as usize];
-        match (complex_op, &private_data) {
+        let non_primitive_op = &self.circuit.non_primitive_ops[op_id.0 as usize];
+        match (non_primitive_op, &private_data) {
             (
                 crate::op::NonPrimitiveOp::FakeMerkleVerify { .. },
                 NonPrimitiveOpPrivateData::FakeMerkleVerify(_),
@@ -297,7 +297,7 @@ impl<
             }
         }
 
-        self.complex_op_private_data[op_id.0 as usize] = Some(private_data);
+        self.non_primitive_op_private_data[op_id.0 as usize] = Some(private_data);
         Ok(())
     }
 
@@ -558,13 +558,13 @@ impl<
 
             // Clone private data option to avoid holding a borrow on self
             if let Some(Some(NonPrimitiveOpPrivateData::FakeMerkleVerify(private_data))) =
-                self.complex_op_private_data.get(op_idx).cloned()
+                self.non_primitive_op_private_data.get(op_idx).cloned()
             {
                 let mut current_hash =
                     if let Some(val) = self.witness.get(leaf.0 as usize).and_then(|x| x.as_ref()) {
                         *val
                     } else {
-                        return Err(CircuitError::LeafValueNotSet {
+                        return Err(CircuitError::NonPrimitiveOpWitnessNotSet {
                             operation_index: op_idx,
                         });
                     };
@@ -604,7 +604,7 @@ impl<
                 // Root is computed; write back to the witness bus at root index
                 self.set_witness(root, current_hash)?;
             } else {
-                return Err(CircuitError::MissingPrivateData {
+                return Err(CircuitError::NonPrimitiveOpMissingPrivateData {
                     operation_index: op_idx,
                 });
             }
