@@ -1,4 +1,14 @@
-use p3_field::PrimeCharacteristicRing;
+use std::marker::PhantomData;
+
+use p3_baby_bear::{BabyBear, Poseidon2BabyBear};
+use p3_field::extension::BinomiallyExtendable;
+use p3_field::{
+    BasedVectorSpace, ExtensionField, Field, PrimeCharacteristicRing, PrimeField, PrimeField64,
+};
+use p3_keccak::KeccakF;
+use p3_merkle_tree_air::cols::{MerklePathTrace, MerklePrivateData, MerkleTrace};
+use p3_merkle_tree_air::compress::FieldCompression;
+use p3_symmetric::{CompressionFunctionFromHasher, PaddingFreeSponge, TruncatedPermutation};
 
 use crate::NonPrimitiveOp;
 use crate::circuit::Circuit;
@@ -123,25 +133,6 @@ pub struct FakeMerkleTrace<F> {
     pub path_directions: Vec<u32>,
 }
 
-/// Merkle verification table (simplified: single field elements)
-#[derive(Debug, Clone)]
-pub struct MerkleTrace<F> {
-    /// Left operand values (current hash)
-    pub left_values: Vec<F>,
-    /// Left operand indices
-    pub left_index: Vec<u32>,
-    /// Right operand values (sibling hash)
-    pub right_values: Vec<F>,
-    /// Right operand indices (not on witness bus - private)
-    pub right_index: Vec<u32>,
-    /// Result values (computed parent hash)
-    pub result_values: Vec<F>,
-    /// Result indices
-    pub result_index: Vec<u32>,
-    /// Path direction bits (0 = left, 1 = right) - private
-    pub path_directions: Vec<u32>,
-}
-
 /// Circuit runner that executes circuits and generates execution traces
 ///
 /// This struct manages the runtime execution of a `Circuit` specification:
@@ -166,7 +157,10 @@ impl<
         + std::ops::Mul<Output = F>
         + PartialEq
         + std::fmt::Debug
-        + PrimeCharacteristicRing,
+        + PrimeCharacteristicRing
+        + Field
+        + BasedVectorSpace<BabyBear>
+        + ExtensionField<BabyBear>,
 > CircuitRunner<F>
 {
     /// Create a new prover instance
@@ -253,6 +247,21 @@ impl<
         let mul_trace = self.generate_mul_trace()?;
         let sub_trace = self.generate_sub_trace()?;
         let fake_merkle_trace = self.generate_fake_merkle_trace()?;
+        let merkle_trace = match F::DIMENSION {
+            1 => Ok(MerkleTrace {
+                merkle_paths: vec![],
+            }),
+            4 => {
+                // TODO: This is not the right hash
+                type U64Hash = PaddingFreeSponge<KeccakF, 25, 17, 4>;
+                let u64_hash = U64Hash::new(KeccakF {});
+
+                type MyCompress = CompressionFunctionFromHasher<U64Hash, 2, 4>;
+                let compress = MyCompress::new(u64_hash);
+                self.generate_merkle_trace::<_, 1, 4>(&compress)
+            }
+            _ => Err(format!("Degree {} no supported!", F::DIMENSION)),
+        }?;
 
         Ok(Traces {
             witness_trace,
@@ -262,6 +271,7 @@ impl<
             mul_trace,
             sub_trace,
             fake_merkle_trace,
+            merkle_trace,
         })
     }
 
@@ -532,7 +542,7 @@ impl<
                     }
 
                     // Root is computed; write back to the witness bus at root index
-                    self.set_witness(root, current_hash.clone())?;
+                    // self.set_witness(root, current_hash.clone())?;
                 } else {
                     return Err(format!(
                         "Missing private data for FakeMerkleVerify operation {op_idx}"
@@ -552,14 +562,15 @@ impl<
         })
     }
 
-    fn generate_merkle_trace(&mut self) -> Result<MerkleTrace<F>, String> {
-        let mut left_values = Vec::new();
-        let mut left_index = Vec::new();
-        let mut right_values = Vec::new();
-        let mut right_index = Vec::new();
-        let mut result_values = Vec::new();
-        let mut result_index = Vec::new();
-        let mut path_directions = Vec::new();
+    fn generate_merkle_trace<C, const HASH_ELEMS: usize, const D: usize>(
+        &mut self,
+        compress: &C,
+    ) -> Result<MerkleTrace<F>, String>
+    where
+        C: FieldCompression<BabyBear, F, D, 2, HASH_ELEMS>,
+    {
+        debug_assert!(F::DIMENSION == D);
+        let mut merkle_paths = Vec::new();
 
         // Process each complex operation by index to avoid borrowing conflicts
         for op_idx in 0..self.circuit.non_primitive_ops.len() {
@@ -568,70 +579,35 @@ impl<
                 self.circuit.non_primitive_ops[op_idx]
             {
                 // Clone private data option to avoid holding a borrow on self
-                if let Some(Some(NonPrimitiveOpPrivateData::FakeMerkleVerify(private_data))) =
-                    self.complex_op_private_data.get(op_idx).cloned()
-                {
-                    let mut current_hash = if let Some(val) =
-                        self.witness.get(leaf.0 as usize).and_then(|x| x.as_ref())
-                    {
-                        val.clone()
-                    } else {
-                        return Err(format!(
-                            "Leaf value not set for FakeMerkleVerify operation {op_idx}"
-                        ));
-                    };
-
-                    // For each step in the Merkle path
-                    for (sibling_value, &direction) in private_data
-                        .path_siblings
-                        .iter()
-                        .zip(private_data.path_directions.iter())
-                    {
-                        // Current hash becomes left operand
-                        left_values.push(current_hash.clone());
-                        left_index.push(leaf.0); // Points to witness bus
-
-                        // Sibling becomes right operand (private data - not on witness bus)
-                        right_values.push(sibling_value.clone());
-                        right_index.push(0); // Not on witness bus - private data
-
-                        // Compute parent hash (simple mock hash: left + right + direction)
-                        let parent_hash = current_hash.clone()
-                            + sibling_value.clone()
-                            + if direction {
-                                F::from_u64(1)
-                            } else {
-                                F::from_u64(0)
-                            };
-
-                        result_values.push(parent_hash.clone());
-                        result_index.push(root.0); // Points to witness bus
-
-                        path_directions.push(if direction { 1 } else { 0 });
-
-                        // Update current hash for next iteration
-                        current_hash = parent_hash;
-                    }
-
-                    // Root is computed; write back to the witness bus at root index
-                    self.set_witness(root, current_hash.clone())?;
+                let first = leaf.0 as usize;
+                let last = first + HASH_ELEMS;
+                let leaf: [F; HASH_ELEMS] = if let Some(val) =
+                    self.witness.get(first..last).and_then(|xs| {
+                        xs.into_iter()
+                            .map(|x| x.clone())
+                            .collect::<Option<Vec<F>>>()
+                    }) {
+                    val.try_into().map_err(|_| "Incorrect size of hahses")?
                 } else {
                     return Err(format!(
-                        "Missing private data for FakeMerkleVerify operation {op_idx}"
+                        "Leaf value not set for MerkleVerify operation {op_idx}"
+                    ));
+                };
+
+                if let Some(Some(NonPrimitiveOpPrivateData::MerkleVerify(private_data))) =
+                    self.complex_op_private_data.get(op_idx).cloned()
+                {
+                    let trace = private_data.to_trace(compress, first as u32, leaf)?;
+                    merkle_paths.push(trace);
+                } else {
+                    return Err(format!(
+                        "Missing private data for eMerkleVerify operation {op_idx}"
                     ));
                 }
             }
         }
 
-        Ok(MerkleTrace {
-            left_values,
-            left_index,
-            right_values,
-            right_index,
-            result_values,
-            result_index,
-            path_directions,
-        })
+        Ok(MerkleTrace { merkle_paths })
     }
 }
 
@@ -643,7 +619,9 @@ impl<
         + std::ops::Mul<Output = F>
         + PartialEq
         + std::fmt::Debug
-        + PrimeCharacteristicRing,
+        + PrimeCharacteristicRing
+        + Field
+        + ExtensionField<BabyBear>,
 > Circuit<F>
 {
     /// Create a circuit runner for execution and trace generation
@@ -657,6 +635,8 @@ mod tests {
     use p3_baby_bear::BabyBear;
     use p3_field::extension::BinomialExtensionField;
     use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
+    use p3_keccak::KeccakF;
+    use p3_symmetric::{CompressionFunctionFromHasher, PaddingFreeSponge};
 
     use crate::builder::CircuitBuilder;
 
@@ -813,6 +793,13 @@ mod tests {
         let _result = builder.add(x, yz);
 
         let circuit = builder.build();
+
+        type U64Hash = PaddingFreeSponge<KeccakF, 25, 17, 1>;
+        type MyCompress = CompressionFunctionFromHasher<U64Hash, 2, 1>;
+
+        let u64_hash = U64Hash::new(KeccakF {});
+
+        let compress = MyCompress::new(u64_hash);
         let mut runner = circuit.runner();
 
         // Set public inputs to genuine extension field values with ALL non-zero coefficients

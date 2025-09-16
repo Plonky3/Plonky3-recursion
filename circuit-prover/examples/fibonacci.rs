@@ -6,6 +6,8 @@ use p3_baby_bear::BabyBear;
 use p3_circuit::builder::CircuitBuilder;
 use p3_circuit_prover::MultiTableProver;
 use p3_field::PrimeCharacteristicRing;
+use p3_keccak::KeccakF;
+use p3_symmetric::{CompressionFunctionFromHasher, PaddingFreeSponge};
 
 type F = BabyBear;
 

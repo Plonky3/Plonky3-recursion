@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::marker::PhantomData;
 
 use p3_field::PrimeCharacteristicRing;
 

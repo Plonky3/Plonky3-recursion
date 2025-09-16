@@ -8,6 +8,8 @@ use p3_circuit::builder::CircuitBuilder;
 use p3_circuit::{FakeMerklePrivateData, NonPrimitiveOpPrivateData};
 use p3_circuit_prover::MultiTableProver;
 use p3_field::PrimeCharacteristicRing;
+use p3_keccak::KeccakF;
+use p3_symmetric::{CompressionFunctionFromHasher, PaddingFreeSponge};
 
 type F = BabyBear;
 
@@ -26,6 +28,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let merkle_op_id = builder.add_fake_merkle_verify(leaf_hash, expected_root);
 
     let circuit = builder.build();
+
+    type U64Hash = PaddingFreeSponge<KeccakF, 25, 17, 4>;
+    type MyCompress = CompressionFunctionFromHasher<U64Hash, 2, 4>;
     let mut runner = circuit.runner();
 
     // Set public inputs

@@ -6,11 +6,11 @@ use std::env;
 use p3_baby_bear::BabyBear;
 use p3_circuit::NonPrimitiveOpPrivateData;
 use p3_circuit::builder::CircuitBuilder;
-use p3_circuit::op::MerklePrivateData;
 use p3_circuit_prover::MultiTableProver;
 use p3_field::extension::BinomialExtensionField;
 use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
 use p3_keccak::KeccakF;
+use p3_merkle_tree_air::cols::MerklePrivateData;
 use p3_merkle_tree_air::compress::FieldCompression;
 use p3_symmetric::{CompressionFunctionFromHasher, PaddingFreeSponge};
 
@@ -42,22 +42,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Set public inputs
     let leaf_value = F::from_u64(42); // Our leaf value
-    let siblings: Vec<(F, Option<F>)> = (0..depth)
+    let siblings: Vec<(Vec<F>, Option<Vec<F>>)> = (0..depth)
         .map(|i| {
             (
-                F::from_u64((i + 1) * 10),
+                vec![F::from_u64((i + 1) * 10)],
                 if i % 2 == 0 {
                     None
                 } else {
-                    Some(F::from_u64(i + 1))
+                    Some(vec![F::from_u64(i + 1)])
                 },
             )
         })
         .collect();
     let directions: Vec<bool> = (0..depth).map(|i| i % 2 == 0).collect();
-    let expected_root_value = compute_merkle_root(&compress, &leaf_value, &siblings, &directions);
-    let expected_root_value = F::from_basis_coefficients_fn(|i| expected_root_value[i]);
-    runner.set_public_inputs(&[leaf_value, expected_root_value])?;
+    let expected_root_value =
+        compute_merkle_root(&compress, &vec![leaf_value], &siblings, &directions);
+    runner.set_public_inputs(&[leaf_value, expected_root_value[0]])?;
 
     // Set private Merkle path data
     runner.set_complex_op_private_data(
@@ -74,46 +74,42 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     multi_prover.verify_all_tables(&proof)?;
 
     println!(
-        "✅ Verified Merkle path for leaf {leaf_value} with depth {depth} → root {expected_root_value}"
+        "✅ Verified Merkle path for leaf {leaf_value} with depth {depth} → root {:?}",
+        expected_root_value[0]
     );
 
     Ok(())
 }
 
 pub type Hash = [BabyBear; 4];
+pub type EF = BinomialExtensionField<BabyBear, 4>;
 
 /// Simulate classical Merkle root computation for testing
-fn compute_merkle_root<C: FieldCompression<BabyBear, 2, 4>>(
+fn compute_merkle_root<C: FieldCompression<BabyBear, EF, 4, 2, 1>>(
     compress: &C,
-    leaf: &F,
-    siblings: &Vec<(F, Option<F>)>,
+    leaf: &Vec<F>,
+    siblings: &Vec<(Vec<F>, Option<Vec<F>>)>,
     directions: &Vec<bool>,
-) -> Hash {
+) -> Vec<EF> {
     directions.iter().zip(siblings.iter()).fold(
-        leaf.as_basis_coefficients_slice()
-            .try_into()
-            .expect("Extension degree is 4."),
+        leaf.clone(),
         |state, (direction, (sibling, other_sibling))| {
-            let sibling = sibling
-                .as_basis_coefficients_slice()
-                .try_into()
-                .expect("Extension degree is 4.");
             let (left, right) = if *direction {
-                (state, sibling)
+                (state.clone(), sibling.clone())
             } else {
-                (sibling, state)
+                (sibling.clone(), state.clone())
             };
-            let mut new_state = compress.compress_field([left, right]);
+            let mut new_state = compress.compress_field([
+                left.try_into().expect("Size is 1"),
+                right.try_into().expect("Size is 1"),
+            ]);
             if let Some(other_sibling) = other_sibling {
                 new_state = compress.compress_field([
-                    state,
-                    other_sibling
-                        .as_basis_coefficients_slice()
-                        .try_into()
-                        .expect("Extension degree is 4."),
+                    state.try_into().expect("Size is one"),
+                    other_sibling.clone().try_into().expect("Size is one"),
                 ]);
             }
-            new_state
+            new_state.to_vec()
         },
     )
 }

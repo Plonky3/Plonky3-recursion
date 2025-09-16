@@ -4,7 +4,8 @@ use alloc::{format, vec};
 
 use p3_baby_bear::BabyBear as Val;
 use p3_circuit::tables::Traces;
-use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
+use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing, PrimeField};
+use p3_merkle_tree_air::air::MerkleVerifyAir;
 use p3_uni_stark::{prove, verify};
 
 use crate::air::{AddAir, ConstAir, FakeMerkleVerifyAir, MulAir, PublicAir, SubAir, WitnessAir};
@@ -28,6 +29,7 @@ pub struct MultiTableProof {
     pub mul: TableProof,
     pub sub: TableProof,
     pub fake_merkle: TableProof,
+    pub merkle: TableProof,
     // Extension field degree used for proving (1 or 4 for now)
     pub ext_degree: usize,
 }
@@ -63,8 +65,8 @@ impl MultiTableProver {
     {
         let pis: Vec<Val> = vec![];
         match F::DIMENSION {
-            1 => self.prove_for_degree::<F, 1>(traces, pis, None),
-            4 => self.prove_for_degree::<F, 4>(traces, pis, self.w_d4),
+            1 => self.prove_for_degree::<F, 4, 32, 1>(traces, pis, None),
+            4 => self.prove_for_degree::<F, 4, 32, 4>(traces, pis, self.w_d4),
             d => Err(format!("Unsupported extension degree: {d}")),
         }
     }
@@ -84,7 +86,12 @@ impl MultiTableProver {
     // --------------------------
 
     /// Prove all tables for a fixed degree `D`.
-    fn prove_for_degree<FEl, const D: usize>(
+    fn prove_for_degree<
+        FEl,
+        const HASH_ELEMS: usize,
+        const MAX_TREE_HEIGHT: usize,
+        const D: usize,
+    >(
         &self,
         traces: &Traces<FEl>,
         pis: Vec<Val>,
@@ -135,6 +142,12 @@ impl MultiTableProver {
         let fake_merkle_air = FakeMerkleVerifyAir::new(traces.fake_merkle_trace.left_values.len());
         let fake_merkle_proof = prove(&self.config, &fake_merkle_air, fake_merkle_matrix, &pis);
 
+        let merkle_matrix = MerkleVerifyAir::<Val, HASH_ELEMS, MAX_TREE_HEIGHT>::trace_to_matrix(
+            &traces.merkle_trace,
+        );
+        let merkle_air = MerkleVerifyAir::<Val, HASH_ELEMS, MAX_TREE_HEIGHT>::new();
+        let merkle_proof = prove(&self.config, &merkle_air, merkle_matrix, &pis);
+
         Ok(MultiTableProof {
             witness: TableProof {
                 proof: witness_proof,
@@ -163,6 +176,15 @@ impl MultiTableProver {
             fake_merkle: TableProof {
                 proof: fake_merkle_proof,
                 rows: traces.fake_merkle_trace.left_values.len(),
+            },
+            merkle: TableProof {
+                proof: merkle_proof,
+                rows: traces
+                    .merkle_trace
+                    .merkle_paths
+                    .iter()
+                    .map(|path| path.left_values.len() + 1)
+                    .sum(),
             },
             ext_degree: D,
         })
@@ -238,6 +260,8 @@ mod tests {
     use p3_circuit::builder::CircuitBuilder;
     use p3_field::extension::BinomialExtensionField;
     use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
+    use p3_keccak::KeccakF;
+    use p3_symmetric::{CompressionFunctionFromHasher, PaddingFreeSponge};
 
     use super::*;
 
@@ -256,6 +280,13 @@ mod tests {
         let _final_result = builder.sub(add_result, c3); // (x + 10) - 3
 
         let circuit = builder.build();
+
+        type U64Hash = PaddingFreeSponge<KeccakF, 25, 17, 4>;
+        type MyCompress = CompressionFunctionFromHasher<U64Hash, 2, 4>;
+
+        let u64_hash = U64Hash::new(KeccakF {});
+
+        let compress = MyCompress::new(u64_hash);
         let mut runner = circuit.runner();
 
         // Set public input: x = 7, so final result = 7 + 10 - 3 = 14
@@ -285,6 +316,13 @@ mod tests {
         let _result = builder.add(xy, z);
 
         let circuit = builder.build();
+
+        type U64Hash = PaddingFreeSponge<KeccakF, 25, 17, 4>;
+        type MyCompress = CompressionFunctionFromHasher<U64Hash, 2, 4>;
+
+        let u64_hash = U64Hash::new(KeccakF {});
+
+        let compress = MyCompress::new(u64_hash);
         let mut runner = circuit.runner();
 
         // Set public inputs to genuine extension field values with ALL non-zero coefficients

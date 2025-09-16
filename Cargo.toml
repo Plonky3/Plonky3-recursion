@@ -33,6 +33,7 @@ p3-dft = { git = "https://github.com/Plonky3/Plonky3", version = "0.3.0" }
 p3-field = { git = "https://github.com/Plonky3/Plonky3", version = "0.3.0" }
 p3-fri = { git = "https://github.com/Plonky3/Plonky3", version = "0.3.0" }
 p3-keccak = { git = "https://github.com/Plonky3/Plonky3", version = "0.3.0" }
+p3-koala-bear = { git = "https://github.com/Plonky3/Plonky3.git", version = "0.3.0" }
 p3-matrix = { git = "https://github.com/Plonky3/Plonky3", version = "0.3.0" }
 p3-merkle-tree = { git = "https://github.com/Plonky3/Plonky3", version = "0.3.0" }
 p3-symmetric = { git = "https://github.com/Plonky3/Plonky3", version = "0.3.0" }
@@ -55,6 +56,10 @@ p3-interpolation-air = { path = "interpolation-air", version = "0.1.0" }
 p3-merkle-tree-air = { path = "merkle-tree-air", version = "0.1.0" }
 p3-recursion = { path = "recursion", version = "0.1.0" }
 p3-symmetric-air = { path = "symmetric-air", version = "0.1.0" }
+
+itertools = { version = "0.14.0", default-features = false, features = [
+    "use_alloc",
+] }
 
 [profile.profiling]
 inherits = "release"

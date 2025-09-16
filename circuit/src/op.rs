@@ -1,3 +1,5 @@
+use p3_merkle_tree_air::cols::MerklePrivateData;
+
 use crate::types::WitnessId;
 
 /// Primitive operations that represent basic field arithmetic
@@ -142,33 +144,6 @@ pub struct FakeMerklePrivateData<F> {
     /// sibling hash needed to compute the parent hash. In a real
     /// implementation, these would be cryptographic hash outputs.
     pub path_siblings: Vec<F>,
-
-    /// Direction bits indicating path through the tree
-    ///
-    /// For each level: `false` = current node is left child,
-    /// `true` = current node is right child. Used to determine
-    /// hash input ordering: `hash(current, sibling)` vs `hash(sibling, current)`.
-    pub path_directions: Vec<bool>,
-}
-
-/// Private Merkle path data for fake Merkle verification (simplified)
-///
-/// This represents the private witness information that the prover needs
-/// to demonstrate knowledge of a valid Merkle path from leaf to root.
-/// In a real implementation, this would contain cryptographic hash values
-/// and tree structure information.
-///
-/// Note: This is a simplified "fake" implementation for demonstration.
-/// Production Merkle verification would use proper cryptographic hashes
-/// and handle multi-element hash digests, not single field elements.
-#[derive(Debug, Clone, PartialEq)]
-pub struct MerklePrivateData<F> {
-    /// Sibling hash values along the Merkle path
-    ///
-    /// For each level of the tree (from leaf to root), contains the
-    /// sibling hash needed to compute the parent hash. It might optionally
-    /// include the hash of the row of a smaller matrix in the Mmcs.
-    pub path_siblings: Vec<(F, Option<F>)>,
 
     /// Direction bits indicating path through the tree
     ///
