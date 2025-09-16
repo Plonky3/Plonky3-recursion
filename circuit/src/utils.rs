@@ -161,7 +161,10 @@ pub fn symbolic_to_circuit<F: Field>(
 
 #[cfg(test)]
 mod tests {
-    use std::borrow::Borrow;
+    use alloc::string::String;
+    use alloc::vec;
+    use alloc::vec::Vec;
+    use core::borrow::Borrow;
 
     use p3_air::{Air, AirBuilder, AirBuilderWithPublicValues, BaseAir};
     use p3_baby_bear::{BabyBear, Poseidon2BabyBear};
