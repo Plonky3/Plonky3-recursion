@@ -7,6 +7,7 @@ pub mod expr;
 pub mod op;
 pub mod tables;
 pub mod types;
+pub mod utils;
 
 // Re-export public API
 pub use builder::CircuitBuilder;
