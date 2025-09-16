@@ -9,7 +9,7 @@ pub mod tables;
 pub mod types;
 
 // Re-export public API
-pub use builder::CircuitBuilder;
+pub use builder::{CircuitBuilder, CircuitBuilderError};
 pub use circuit::Circuit;
 pub use expr::{Expr, ExpressionGraph};
 pub use op::{FakeMerklePrivateData, NonPrimitiveOp, NonPrimitiveOpPrivateData, Prim};

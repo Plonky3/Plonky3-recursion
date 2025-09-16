@@ -77,6 +77,38 @@ pub struct CircuitBuilder<F> {
     const_pool: HashMap<F, ExprId>,
 }
 
+/// Errors that can occur during circuit building/lowering.
+#[derive(Debug)]
+pub enum CircuitBuilderError {
+    /// Expression not found in the witness mapping during lowering.
+    MissingExprMapping {
+        expr_id: ExprId,
+        context: alloc::string::String,
+    },
+    /// Non-primitive op received an unexpected number of input expressions.
+    NonPrimitiveOpArity {
+        op: &'static str,
+        expected: usize,
+        got: usize,
+    },
+}
+
+impl core::fmt::Display for CircuitBuilderError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            CircuitBuilderError::MissingExprMapping { expr_id, context } => write!(
+                f,
+                "Expression {:?} not found in witness mapping: {}",
+                expr_id, context
+            ),
+            CircuitBuilderError::NonPrimitiveOpArity { op, expected, got } => write!(
+                f,
+                "{op} expects exactly {expected} witness expressions, got {got}"
+            ),
+        }
+    }
+}
+
 impl<F> Default for CircuitBuilder<F>
 where
     F: Clone + PrimeCharacteristicRing + Eq + core::hash::Hash,
@@ -209,20 +241,23 @@ impl<F> CircuitBuilder<F>
 where
     F: Clone + PrimeCharacteristicRing + PartialEq + Eq + core::hash::Hash,
 {
-    /// Build the circuit into a Circuit with separate lowering and IR transformation stages
-    pub fn build(self) -> Circuit<F> {
-        let (circuit, _) = self.build_with_public_mapping();
-        circuit
+    /// Build the circuit into a Circuit with separate lowering and IR transformation stages.
+    /// Returns an error if lowering fails due to an internal inconsistency.
+    pub fn build(self) -> Result<Circuit<F>, CircuitBuilderError> {
+        let (circuit, _) = self.build_with_public_mapping()?;
+        Ok(circuit)
     }
 
     /// Build the circuit and return both the circuit and the ExprId→WitnessId mapping for public inputs.
-    pub fn build_with_public_mapping(mut self) -> (Circuit<F>, HashMap<ExprId, WitnessId>) {
+    pub fn build_with_public_mapping(
+        mut self,
+    ) -> Result<(Circuit<F>, HashMap<ExprId, WitnessId>), CircuitBuilderError> {
         // Stage 1: Lower expressions to primitives
         let (primitive_ops, public_rows, expr_to_widx, public_mappings) =
-            self.lower_to_primitives();
+            self.lower_to_primitives()?;
 
         // Stage 2: Lower non-primitive operations using the expr_to_widx mapping
-        let lowered_non_primitive_ops = self.lower_non_primitive_ops(&expr_to_widx);
+        let lowered_non_primitive_ops = self.lower_non_primitive_ops(&expr_to_widx)?;
 
         // Stage 3: IR transformations and optimizations
         let primitive_ops = Self::optimize_primitives(primitive_ops);
@@ -235,7 +270,18 @@ where
         circuit.public_rows = public_rows;
         circuit.public_flat_len = self.public_input_count;
 
-        (circuit, public_mappings)
+        Ok((circuit, public_mappings))
+    }
+
+    /// Convenience wrapper that panics on build errors (for tests/examples).
+    pub fn build_or_panic(self) -> Circuit<F> {
+        self.build().expect("circuit build failed")
+    }
+
+    /// Convenience wrapper that panics on build errors (for tests/examples).
+    pub fn build_with_public_mapping_or_panic(self) -> (Circuit<F>, HashMap<ExprId, WitnessId>) {
+        self.build_with_public_mapping()
+            .expect("circuit build failed")
     }
 
     /// Helper function to get WitnessId with descriptive error messages
@@ -243,10 +289,14 @@ where
         expr_to_widx: &HashMap<ExprId, WitnessId>,
         expr_id: ExprId,
         context: &str,
-    ) -> WitnessId {
-        *expr_to_widx.get(&expr_id).unwrap_or_else(|| {
-            panic!("Expression {expr_id:?} not found in witness mapping: {context}",)
-        })
+    ) -> Result<WitnessId, CircuitBuilderError> {
+        expr_to_widx
+            .get(&expr_id)
+            .copied()
+            .ok_or_else(|| CircuitBuilderError::MissingExprMapping {
+                expr_id,
+                context: context.into(),
+            })
     }
 
     /// Stage 1: Lower expressions to primitives (Consts, Publics, then Ops) with DSU-aware class slots
@@ -259,12 +309,15 @@ where
     #[allow(clippy::type_complexity)]
     fn lower_to_primitives(
         &mut self,
-    ) -> (
-        Vec<Prim<F>>,
-        Vec<WitnessId>,
-        HashMap<ExprId, WitnessId>,
-        HashMap<ExprId, WitnessId>,
-    ) {
+    ) -> Result<
+        (
+            Vec<Prim<F>>,
+            Vec<WitnessId>,
+            HashMap<ExprId, WitnessId>,
+            HashMap<ExprId, WitnessId>,
+        ),
+        CircuitBuilderError,
+    > {
         // Build DSU over expression IDs to honor connect(a, b)
         let mut parents: HashMap<usize, usize> = build_connect_dsu(&self.pending_connects);
 
@@ -341,12 +394,12 @@ where
                         &expr_to_widx,
                         *lhs,
                         &format!("Add lhs for {expr_id:?}"),
-                    );
+                    )?;
                     let b_widx = Self::get_witness_id(
                         &expr_to_widx,
                         *rhs,
                         &format!("Add rhs for {expr_id:?}"),
-                    );
+                    )?;
                     primitive_ops.push(Prim::Add {
                         a: a_widx,
                         b: b_widx,
@@ -360,12 +413,12 @@ where
                         &expr_to_widx,
                         *lhs,
                         &format!("Sub lhs for {expr_id:?}"),
-                    );
+                    )?;
                     let b_widx = Self::get_witness_id(
                         &expr_to_widx,
                         *rhs,
                         &format!("Sub rhs for {expr_id:?}"),
-                    );
+                    )?;
                     primitive_ops.push(Prim::Sub {
                         a: a_widx,
                         b: b_widx,
@@ -379,12 +432,12 @@ where
                         &expr_to_widx,
                         *lhs,
                         &format!("Mul lhs for {expr_id:?}"),
-                    );
+                    )?;
                     let b_widx = Self::get_witness_id(
                         &expr_to_widx,
                         *rhs,
                         &format!("Mul rhs for {expr_id:?}"),
-                    );
+                    )?;
                     primitive_ops.push(Prim::Mul {
                         a: a_widx,
                         b: b_widx,
@@ -399,12 +452,12 @@ where
                         &expr_to_widx,
                         *lhs,
                         &format!("Div lhs for {expr_id:?}"),
-                    );
+                    )?;
                     let a_widx = Self::get_witness_id(
                         &expr_to_widx,
                         *rhs,
                         &format!("Div rhs for {expr_id:?}"),
-                    );
+                    )?;
                     primitive_ops.push(Prim::Mul {
                         a: a_widx,
                         b: b_widx,
@@ -416,35 +469,36 @@ where
             }
         }
 
-        (primitive_ops, public_rows, expr_to_widx, public_mappings)
+        Ok((primitive_ops, public_rows, expr_to_widx, public_mappings))
     }
 
     /// Stage 2: Lower non-primitive operations from ExprIds to WitnessId
     fn lower_non_primitive_ops(
         &self,
         expr_to_widx: &HashMap<ExprId, WitnessId>,
-    ) -> Vec<NonPrimitiveOp> {
+    ) -> Result<Vec<NonPrimitiveOp>, CircuitBuilderError> {
         let mut lowered_ops = Vec::new();
 
         for (_op_id, op_type, witness_exprs) in &self.non_primitive_ops {
             match op_type {
                 NonPrimitiveOpType::FakeMerkleVerify => {
                     if witness_exprs.len() != 2 {
-                        panic!(
-                            "FakeMerkleVerify expects exactly 2 witness expressions, got {}",
-                            witness_exprs.len()
-                        );
+                        return Err(CircuitBuilderError::NonPrimitiveOpArity {
+                            op: "FakeMerkleVerify",
+                            expected: 2,
+                            got: witness_exprs.len(),
+                        });
                     }
                     let leaf_widx = Self::get_witness_id(
                         expr_to_widx,
                         witness_exprs[0],
                         "FakeMerkleVerify leaf input",
-                    );
+                    )?;
                     let root_widx = Self::get_witness_id(
                         expr_to_widx,
                         witness_exprs[1],
                         "FakeMerkleVerify root input",
-                    );
+                    )?;
 
                     lowered_ops.push(NonPrimitiveOp::FakeMerkleVerify {
                         leaf: leaf_widx,
@@ -454,7 +508,7 @@ where
             }
         }
 
-        lowered_ops
+        Ok(lowered_ops)
     }
 
     /// Stage 3: IR transformations and optimizations
@@ -492,7 +546,7 @@ mod tests {
         let sub_one = builder.sub(div_result, c1);
         builder.assert_zero(sub_one);
 
-        let circuit = builder.build();
+        let circuit = builder.build().unwrap();
         assert_eq!(circuit.witness_count, 7); // 0:zero, 1:c37, 2:c111, 3:c1, 4:public, 5:mul_result, 6:sub_result, 7:div_result, 8:sub_one
 
         // Assert all primitive operations (lowering order: Consts first, then Public, then ops)
@@ -583,7 +637,7 @@ mod tests {
         // Enforce a == b
         builder.connect(a, b);
 
-        let circuit = builder.build();
+        let circuit = builder.build().unwrap();
         let mut runner = circuit.runner();
 
         runner.set_public_inputs(&[BabyBear::from_u64(5)]).unwrap();
@@ -601,7 +655,7 @@ mod tests {
         // Enforce x == y
         builder.connect(x, y);
 
-        let circuit = builder.build();
+        let circuit = builder.build().unwrap();
         let mut runner = circuit.runner();
 
         // Provide different values; should error due to witness conflict on shared slot
@@ -648,7 +702,7 @@ mod tests {
         builder.connect(pub3, pub4);
 
         // Build with public mapping
-        let (circuit, public_mapping) = builder.build_with_public_mapping();
+        let (circuit, public_mapping) = builder.build_with_public_mapping().unwrap();
 
         // Verify we have mappings for all public inputs
         assert_eq!(public_mapping.len(), 4);
@@ -672,7 +726,7 @@ mod tests {
         // Verify that regular build() still works (backward compatibility)
         let mut builder2 = CircuitBuilder::<BabyBear>::new();
         let _pub = builder2.add_public_input();
-        let circuit2 = builder2.build(); // Should not return mapping
+        let circuit2 = builder2.build().unwrap(); // Should not return mapping
         assert_eq!(circuit2.public_flat_len, 1);
     }
 }

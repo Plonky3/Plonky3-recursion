@@ -8,11 +8,12 @@ use p3_circuit::builder::CircuitBuilder;
 use p3_circuit::{FakeMerklePrivateData, NonPrimitiveOpPrivateData};
 use p3_circuit_prover::MultiTableProver;
 use p3_circuit_prover::config::babybear_config::build_standard_config_babybear;
+use p3_circuit_prover::prover::ProverError;
 use p3_field::PrimeCharacteristicRing;
 
 type F = BabyBear;
 
-fn main() -> Result<(), impl core::fmt::Debug> {
+fn main() -> Result<(), ProverError> {
     let depth = env::args().nth(1).and_then(|s| s.parse().ok()).unwrap_or(3);
 
     let mut builder = CircuitBuilder::<F>::new();
@@ -26,7 +27,7 @@ fn main() -> Result<(), impl core::fmt::Debug> {
     // The AIR constraints will verify the Merkle path is valid
     let merkle_op_id = builder.add_fake_merkle_verify(leaf_hash, expected_root);
 
-    let circuit = builder.build();
+    let circuit = builder.build()?;
     let mut runner = circuit.runner();
 
     // Create private Merkle path data and compute expected root with same mock hash
@@ -34,17 +35,13 @@ fn main() -> Result<(), impl core::fmt::Debug> {
     let private_data = create_merkle_path_data(leaf_value, depth);
     let expected_root_value = compute_merkle_root_from_private(leaf_value, &private_data);
     // Set public inputs
-    runner
-        .set_public_inputs(&[leaf_value, expected_root_value])
-        .unwrap();
-    runner
-        .set_complex_op_private_data(
-            merkle_op_id,
-            NonPrimitiveOpPrivateData::FakeMerkleVerify(private_data),
-        )
-        .unwrap();
+    runner.set_public_inputs(&[leaf_value, expected_root_value])?;
+    runner.set_complex_op_private_data(
+        merkle_op_id,
+        NonPrimitiveOpPrivateData::FakeMerkleVerify(private_data),
+    )?;
 
-    let traces = runner.run().unwrap();
+    let traces = runner.run()?;
     let config = build_standard_config_babybear();
     let multi_prover = MultiTableProver::new(config);
     let proof = multi_prover.prove_all_tables(&traces)?;
