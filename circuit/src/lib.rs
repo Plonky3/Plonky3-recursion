@@ -13,5 +13,5 @@ pub use builder::CircuitBuilder;
 pub use circuit::Circuit;
 pub use expr::{Expr, ExpressionGraph};
 pub use op::{FakeMerklePrivateData, NonPrimitiveOp, NonPrimitiveOpPrivateData, Prim};
-pub use tables::{CircuitRunner, FakeMerkleTrace, Traces};
+pub use tables::{CircuitError, CircuitRunner, FakeMerkleTrace, Traces};
 pub use types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};

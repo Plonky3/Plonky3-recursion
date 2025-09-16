@@ -1,4 +1,4 @@
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::vec::Vec;
 use alloc::{format, vec};
 
@@ -7,6 +7,96 @@ use p3_field::Field;
 use crate::circuit::Circuit;
 use crate::op::{NonPrimitiveOpPrivateData, Prim};
 use crate::types::{NonPrimitiveOpId, WitnessId};
+
+/// Errors that can occur during circuit execution and trace generation.
+#[derive(Debug)]
+pub enum CircuitError {
+    /// Public input length mismatch.
+    PublicInputLengthMismatch { expected: usize, got: usize },
+    /// Circuit missing public_rows mapping.
+    MissingPublicRowsMapping,
+    /// NonPrimitiveOpId out of range.
+    NonPrimitiveOpIdOutOfRange { op_id: u32, max_ops: usize },
+    /// Public input not set for a WitnessId.
+    PublicInputNotSet { witness_id: u32 },
+    /// Witness not set for a WitnessId.
+    WitnessNotSet { witness_id: u32 },
+    /// WitnessId out of bounds.
+    WitnessIdOutOfBounds { witness_id: u32 },
+    /// Witness conflict: trying to reassign to a different value.
+    WitnessConflict {
+        witness_id: u32,
+        existing: String,
+        new: String,
+    },
+    /// Witness not set for an index during trace generation.
+    WitnessNotSetForIndex { index: usize },
+    /// Leaf value not set for complex operation.
+    LeafValueNotSet { operation_index: usize },
+    /// Missing private data for complex operation.
+    MissingPrivateData { operation_index: usize },
+    /// Division by zero encountered.
+    DivisionByZero,
+}
+
+impl core::fmt::Display for CircuitError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            CircuitError::PublicInputLengthMismatch { expected, got } => {
+                write!(
+                    f,
+                    "Public input length mismatch: expected {expected}, got {got}"
+                )
+            }
+            CircuitError::MissingPublicRowsMapping => {
+                write!(f, "Circuit missing public_rows mapping")
+            }
+            CircuitError::NonPrimitiveOpIdOutOfRange { op_id, max_ops } => {
+                write!(
+                    f,
+                    "NonPrimitiveOpId {op_id} out of range (circuit has {max_ops} complex ops)"
+                )
+            }
+            CircuitError::PublicInputNotSet { witness_id } => {
+                write!(f, "Public input not set for WitnessId({witness_id})")
+            }
+            CircuitError::WitnessNotSet { witness_id } => {
+                write!(f, "Witness not set for WitnessId({witness_id})")
+            }
+            CircuitError::WitnessIdOutOfBounds { witness_id } => {
+                write!(f, "WitnessId({witness_id}) out of bounds")
+            }
+            CircuitError::WitnessConflict {
+                witness_id,
+                existing,
+                new,
+            } => {
+                write!(
+                    f,
+                    "Witness conflict: WitnessId({witness_id}) already set to {existing}, cannot reassign to {new}"
+                )
+            }
+            CircuitError::WitnessNotSetForIndex { index } => {
+                write!(f, "Witness not set for index {index}")
+            }
+            CircuitError::LeafValueNotSet { operation_index } => {
+                write!(
+                    f,
+                    "Leaf value not set for complex operation {operation_index}"
+                )
+            }
+            CircuitError::MissingPrivateData { operation_index } => {
+                write!(
+                    f,
+                    "Missing private data for complex operation {operation_index}"
+                )
+            }
+            CircuitError::DivisionByZero => {
+                write!(f, "Division by zero encountered")
+            }
+        }
+    }
+}
 
 /// Execution traces for all tables
 #[derive(Debug, Clone)]
@@ -163,16 +253,15 @@ impl<
     }
 
     /// Set public inputs according to Circuit.public_rows mapping
-    pub fn set_public_inputs(&mut self, public_values: &[F]) -> Result<(), String> {
+    pub fn set_public_inputs(&mut self, public_values: &[F]) -> Result<(), CircuitError> {
         if public_values.len() != self.circuit.public_flat_len {
-            return Err(format!(
-                "Public input length mismatch: expected {}, got {}",
-                self.circuit.public_flat_len,
-                public_values.len()
-            ));
+            return Err(CircuitError::PublicInputLengthMismatch {
+                expected: self.circuit.public_flat_len,
+                got: public_values.len(),
+            });
         }
         if self.circuit.public_rows.len() != self.circuit.public_flat_len {
-            return Err("Circuit missing public_rows mapping".to_string());
+            return Err(CircuitError::MissingPublicRowsMapping);
         }
 
         for (i, value) in public_values.iter().enumerate() {
@@ -188,14 +277,13 @@ impl<
         &mut self,
         op_id: NonPrimitiveOpId,
         private_data: NonPrimitiveOpPrivateData<F>,
-    ) -> Result<(), String> {
+    ) -> Result<(), CircuitError> {
         // Validate that the op_id exists in the circuit
         if op_id.0 as usize >= self.circuit.non_primitive_ops.len() {
-            return Err(format!(
-                "NonPrimitiveOpId {} out of range (circuit has {} complex ops)",
-                op_id.0,
-                self.circuit.non_primitive_ops.len()
-            ));
+            return Err(CircuitError::NonPrimitiveOpIdOutOfRange {
+                op_id: op_id.0,
+                max_ops: self.circuit.non_primitive_ops.len(),
+            });
         }
 
         // Validate that the private data matches the operation type
@@ -214,7 +302,7 @@ impl<
     }
 
     /// Run the circuit and generate traces
-    pub fn run(mut self) -> Result<Traces<F>, String> {
+    pub fn run(mut self) -> Result<Traces<F>, CircuitError> {
         // Step 1: Execute primitives to fill witness vector
         self.execute_primitives()?;
 
@@ -239,7 +327,7 @@ impl<
     }
 
     /// Execute all primitive operations to fill witness vector
-    fn execute_primitives(&mut self) -> Result<(), String> {
+    fn execute_primitives(&mut self) -> Result<(), CircuitError> {
         // Clone primitive operations to avoid borrowing issues
         let primitive_ops = self.circuit.primitive_ops.clone();
 
@@ -251,7 +339,7 @@ impl<
                 Prim::Public { out, public_pos: _ } => {
                     // Public inputs should already be set
                     if self.witness[out.0 as usize].is_none() {
-                        return Err(format!("Public input not set for WitnessId({})", out.0));
+                        return Err(CircuitError::PublicInputNotSet { witness_id: out.0 });
                     }
                 }
                 Prim::Add { a, b, out } => {
@@ -275,8 +363,8 @@ impl<
                         self.set_witness(out, result)?;
                     } else {
                         let result_val = self.get_witness(out)?;
-                        let b_val =
-                            result_val * a_val.try_inverse().expect("Cannot divide by zero");
+                        let a_inv = a_val.try_inverse().ok_or(CircuitError::DivisionByZero)?;
+                        let b_val = result_val * a_inv;
                         self.set_witness(b, b_val)?;
                     }
                 }
@@ -286,26 +374,27 @@ impl<
         Ok(())
     }
 
-    fn get_witness(&self, widx: WitnessId) -> Result<F, String> {
+    fn get_witness(&self, widx: WitnessId) -> Result<F, CircuitError> {
         self.witness
             .get(widx.0 as usize)
             .and_then(|opt| opt.as_ref())
             .cloned()
-            .ok_or_else(|| format!("Witness not set for WitnessId({})", widx.0))
+            .ok_or(CircuitError::WitnessNotSet { witness_id: widx.0 })
     }
 
-    fn set_witness(&mut self, widx: WitnessId, value: F) -> Result<(), String> {
+    fn set_witness(&mut self, widx: WitnessId, value: F) -> Result<(), CircuitError> {
         if widx.0 as usize >= self.witness.len() {
-            return Err(format!("WitnessId({}) out of bounds", widx.0));
+            return Err(CircuitError::WitnessIdOutOfBounds { witness_id: widx.0 });
         }
 
         // Check for conflicting reassignment
         if let Some(existing_value) = self.witness[widx.0 as usize] {
             if existing_value != value {
-                return Err(format!(
-                    "Witness conflict: WitnessId({}) already set to {:?}, cannot reassign to {:?}",
-                    widx.0, existing_value, value
-                ));
+                return Err(CircuitError::WitnessConflict {
+                    witness_id: widx.0,
+                    existing: format!("{:?}", existing_value),
+                    new: format!("{:?}", value),
+                });
             }
         } else {
             self.witness[widx.0 as usize] = Some(value);
@@ -314,7 +403,7 @@ impl<
         Ok(())
     }
 
-    fn generate_witness_trace(&self) -> Result<WitnessTrace<F>, String> {
+    fn generate_witness_trace(&self) -> Result<WitnessTrace<F>, CircuitError> {
         let mut index = Vec::new();
         let mut values = Vec::new();
 
@@ -325,7 +414,7 @@ impl<
                     values.push(*value);
                 }
                 None => {
-                    return Err(format!("Witness not set for index {i}"));
+                    return Err(CircuitError::WitnessNotSetForIndex { index: i });
                 }
             }
         }
@@ -333,7 +422,7 @@ impl<
         Ok(WitnessTrace { index, values })
     }
 
-    fn generate_const_trace(&self) -> Result<ConstTrace<F>, String> {
+    fn generate_const_trace(&self) -> Result<ConstTrace<F>, CircuitError> {
         let mut index = Vec::new();
         let mut values = Vec::new();
 
@@ -348,7 +437,7 @@ impl<
         Ok(ConstTrace { index, values })
     }
 
-    fn generate_public_trace(&self) -> Result<PublicTrace<F>, String> {
+    fn generate_public_trace(&self) -> Result<PublicTrace<F>, CircuitError> {
         let mut index = Vec::new();
         let mut values = Vec::new();
 
@@ -364,7 +453,7 @@ impl<
         Ok(PublicTrace { index, values })
     }
 
-    fn generate_add_trace(&self) -> Result<AddTrace<F>, String> {
+    fn generate_add_trace(&self) -> Result<AddTrace<F>, CircuitError> {
         let mut lhs_values = Vec::new();
         let mut lhs_index = Vec::new();
         let mut rhs_values = Vec::new();
@@ -393,7 +482,7 @@ impl<
         })
     }
 
-    fn generate_mul_trace(&self) -> Result<MulTrace<F>, String> {
+    fn generate_mul_trace(&self) -> Result<MulTrace<F>, CircuitError> {
         let mut lhs_values = Vec::new();
         let mut lhs_index = Vec::new();
         let mut rhs_values = Vec::new();
@@ -422,7 +511,7 @@ impl<
         })
     }
 
-    fn generate_sub_trace(&self) -> Result<SubTrace<F>, String> {
+    fn generate_sub_trace(&self) -> Result<SubTrace<F>, CircuitError> {
         let mut lhs_values = Vec::new();
         let mut lhs_index = Vec::new();
         let mut rhs_values = Vec::new();
@@ -451,7 +540,7 @@ impl<
         })
     }
 
-    fn generate_fake_merkle_trace(&mut self) -> Result<FakeMerkleTrace<F>, String> {
+    fn generate_fake_merkle_trace(&mut self) -> Result<FakeMerkleTrace<F>, CircuitError> {
         let mut left_values = Vec::new();
         let mut left_index = Vec::new();
         let mut right_values = Vec::new();
@@ -475,9 +564,9 @@ impl<
                     if let Some(val) = self.witness.get(leaf.0 as usize).and_then(|x| x.as_ref()) {
                         *val
                     } else {
-                        return Err(format!(
-                            "Leaf value not set for FakeMerkleVerify operation {op_idx}"
-                        ));
+                        return Err(CircuitError::LeafValueNotSet {
+                            operation_index: op_idx,
+                        });
                     };
 
                 // For each step in the Merkle path
@@ -515,9 +604,9 @@ impl<
                 // Root is computed; write back to the witness bus at root index
                 self.set_witness(root, current_hash)?;
             } else {
-                return Err(format!(
-                    "Missing private data for FakeMerkleVerify operation {op_idx}"
-                ));
+                return Err(CircuitError::MissingPrivateData {
+                    operation_index: op_idx,
+                });
             }
         }
 

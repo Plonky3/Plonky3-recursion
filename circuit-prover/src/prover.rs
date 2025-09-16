@@ -10,10 +10,10 @@
 //! Supports base fields (D=1) and binomial extension fields (D>1), with automatic
 //! detection of the binomial parameter `W` for extension-field multiplication.
 
-use alloc::string::String;
+use alloc::vec;
 use alloc::vec::Vec;
-use alloc::{format, vec};
 
+use p3_circuit::CircuitError;
 use p3_circuit::tables::Traces;
 use p3_field::{BasedVectorSpace, Field};
 use p3_uni_stark::{prove, verify};
@@ -86,8 +86,10 @@ pub enum ProverError {
     UnsupportedDegree(usize),
     /// Missing binomial parameter W for extension-field multiplication.
     MissingWForExtension,
-    /// Verification failed for a specific table/phase with details.
-    VerificationFailed { phase: &'static str, error: String },
+    /// Circuit execution error.
+    Circuit(CircuitError),
+    /// Verification failed for a specific table/phase.
+    VerificationFailed { phase: &'static str },
 }
 
 impl core::fmt::Display for ProverError {
@@ -105,10 +107,19 @@ impl core::fmt::Display for ProverError {
                     "missing binomial parameter W for extension-field multiplication"
                 )
             }
-            ProverError::VerificationFailed { phase, error } => {
-                write!(f, "verification failed in {phase}: {error}")
+            ProverError::Circuit(err) => {
+                write!(f, "circuit error: {err}")
+            }
+            ProverError::VerificationFailed { phase } => {
+                write!(f, "verification failed in {phase}")
             }
         }
+    }
+}
+
+impl From<CircuitError> for ProverError {
+    fn from(err: CircuitError) -> Self {
+        ProverError::Circuit(err)
     }
 }
 
@@ -259,39 +270,23 @@ where
     ) -> Result<(), ProverError> {
         // Witness
         let witness_air = WitnessAir::<F, D>::new(proof.witness.rows);
-        verify(&self.config, &witness_air, &proof.witness.proof, pis).map_err(|e| {
-            ProverError::VerificationFailed {
-                phase: "witness",
-                error: format!("{e:?}"),
-            }
-        })?;
+        verify(&self.config, &witness_air, &proof.witness.proof, pis)
+            .map_err(|_| ProverError::VerificationFailed { phase: "witness" })?;
 
         // Const
         let const_air = ConstAir::<F, D>::new(proof.constants.rows);
-        verify(&self.config, &const_air, &proof.constants.proof, pis).map_err(|e| {
-            ProverError::VerificationFailed {
-                phase: "const",
-                error: format!("{e:?}"),
-            }
-        })?;
+        verify(&self.config, &const_air, &proof.constants.proof, pis)
+            .map_err(|_| ProverError::VerificationFailed { phase: "const" })?;
 
         // Public
         let public_air = PublicAir::<F, D>::new(proof.public.rows);
-        verify(&self.config, &public_air, &proof.public.proof, pis).map_err(|e| {
-            ProverError::VerificationFailed {
-                phase: "public",
-                error: format!("{e:?}"),
-            }
-        })?;
+        verify(&self.config, &public_air, &proof.public.proof, pis)
+            .map_err(|_| ProverError::VerificationFailed { phase: "public" })?;
 
         // Add
         let add_air = AddAir::<F, D>::new(proof.add.rows);
-        verify(&self.config, &add_air, &proof.add.proof, pis).map_err(|e| {
-            ProverError::VerificationFailed {
-                phase: "add",
-                error: format!("{e:?}"),
-            }
-        })?;
+        verify(&self.config, &add_air, &proof.add.proof, pis)
+            .map_err(|_| ProverError::VerificationFailed { phase: "add" })?;
 
         // Mul
         let mul_air: MulAir<F, D> = if D == 1 {
@@ -300,21 +295,13 @@ where
             let w = w_binomial.ok_or(ProverError::MissingWForExtension)?;
             MulAir::<F, D>::new_binomial(proof.mul.rows, w)
         };
-        verify(&self.config, &mul_air, &proof.mul.proof, pis).map_err(|e| {
-            ProverError::VerificationFailed {
-                phase: "mul",
-                error: format!("{e:?}"),
-            }
-        })?;
+        verify(&self.config, &mul_air, &proof.mul.proof, pis)
+            .map_err(|_| ProverError::VerificationFailed { phase: "mul" })?;
 
         // Sub
         let sub_air = SubAir::<F, D>::new(proof.sub.rows);
-        verify(&self.config, &sub_air, &proof.sub.proof, pis).map_err(|e| {
-            ProverError::VerificationFailed {
-                phase: "sub",
-                error: format!("{e:?}"),
-            }
-        })?;
+        verify(&self.config, &sub_air, &proof.sub.proof, pis)
+            .map_err(|_| ProverError::VerificationFailed { phase: "sub" })?;
 
         // FakeMerkle
         let fake_merkle_air = FakeMerkleVerifyAir::<F>::new(proof.fake_merkle.rows);
@@ -324,9 +311,8 @@ where
             &proof.fake_merkle.proof,
             pis,
         )
-        .map_err(|e| ProverError::VerificationFailed {
+        .map_err(|_| ProverError::VerificationFailed {
             phase: "fake_merkle",
-            error: format!("{e:?}"),
         })?;
 
         Ok(())
