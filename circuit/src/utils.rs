@@ -20,142 +20,66 @@ pub fn symbolic_to_circuit<F: Field>(
     symbolic: &SymbolicExpression<F>,
     circuit: &mut CircuitBuilder<F>,
 ) -> ExprId {
+    let mut get_wire = |s: &SymbolicExpression<F>| {
+        symbolic_to_circuit::<F>(
+            is_first_row,
+            is_last_row,
+            is_transition,
+            challenges,
+            public_values,
+            local_prep_values,
+            next_prep_values,
+            local_values,
+            next_values,
+            s,
+            circuit,
+        )
+    };
+
     match symbolic {
         SymbolicExpression::Constant(c) => circuit.add_const(*c),
-        SymbolicExpression::Variable(v) => match v.entry {
-            Entry::Preprocessed { offset } => {
-                if offset == 0 {
-                    local_prep_values[v.index]
-                } else if offset == 1 {
-                    next_prep_values[v.index]
-                } else {
-                    panic!("Cannot have expressions involving more than two rows.")
+        SymbolicExpression::Variable(v) => {
+            let get_val =
+                |offset: usize, index: usize, local_vals: &[ExprId], next_vals: &[ExprId]| {
+                    match offset {
+                        0 => local_vals[index],
+                        1 => next_vals[index],
+                        _ => panic!("Cannot have expressions involving more than two rows."),
+                    }
+                };
+
+            match v.entry {
+                Entry::Preprocessed { offset } => {
+                    get_val(offset, v.index, local_prep_values, next_prep_values)
                 }
+                Entry::Main { offset } => get_val(offset, v.index, local_values, next_values),
+                Entry::Public => public_values[v.index],
+                Entry::Challenge => challenges[v.index],
+                _ => unimplemented!(),
             }
-            Entry::Main { offset } => {
-                if offset == 0 {
-                    local_values[v.index]
-                } else if offset == 1 {
-                    next_values[v.index]
-                } else {
-                    panic!("Cannot have expressions involving more than two rows.")
-                }
-            }
-            Entry::Public => public_values[v.index],
-            Entry::Challenge => challenges[v.index],
-            _ => unimplemented!(),
-        },
-        SymbolicExpression::Add { x, y, .. } => {
-            let x_wire = symbolic_to_circuit::<F>(
-                is_first_row,
-                is_last_row,
-                is_transition,
-                challenges,
-                public_values,
-                local_prep_values,
-                next_prep_values,
-                local_values,
-                next_values,
-                x,
-                circuit,
-            );
-            let y_wire = symbolic_to_circuit::<F>(
-                is_first_row,
-                is_last_row,
-                is_transition,
-                challenges,
-                public_values,
-                local_prep_values,
-                next_prep_values,
-                local_values,
-                next_values,
-                y,
-                circuit,
-            );
-
-            circuit.add(x_wire, y_wire)
-        }
-        SymbolicExpression::Mul { x, y, .. } => {
-            let x_wire = symbolic_to_circuit::<F>(
-                is_first_row,
-                is_last_row,
-                is_transition,
-                challenges,
-                public_values,
-                local_prep_values,
-                next_prep_values,
-                local_values,
-                next_values,
-                x,
-                circuit,
-            );
-            let y_wire = symbolic_to_circuit::<F>(
-                is_first_row,
-                is_last_row,
-                is_transition,
-                challenges,
-                public_values,
-                local_prep_values,
-                next_prep_values,
-                local_values,
-                next_values,
-                y,
-                circuit,
-            );
-
-            circuit.mul(x_wire, y_wire)
-        }
-        SymbolicExpression::Sub { x, y, .. } => {
-            let x_wire = symbolic_to_circuit::<F>(
-                is_first_row,
-                is_last_row,
-                is_transition,
-                challenges,
-                public_values,
-                local_prep_values,
-                next_prep_values,
-                local_values,
-                next_values,
-                x,
-                circuit,
-            );
-            let y_wire = symbolic_to_circuit::<F>(
-                is_first_row,
-                is_last_row,
-                is_transition,
-                challenges,
-                public_values,
-                local_prep_values,
-                next_prep_values,
-                local_values,
-                next_values,
-                y,
-                circuit,
-            );
-
-            circuit.sub(x_wire, y_wire)
-        }
-        SymbolicExpression::Neg { x, .. } => {
-            let x_wire = symbolic_to_circuit::<F>(
-                is_first_row,
-                is_last_row,
-                is_transition,
-                challenges,
-                public_values,
-                local_prep_values,
-                next_prep_values,
-                local_values,
-                next_values,
-                x,
-                circuit,
-            );
-            let zero = circuit.add_const(F::ZERO);
-
-            circuit.sub(zero, x_wire)
         }
         SymbolicExpression::IsFirstRow => is_first_row,
         SymbolicExpression::IsLastRow => is_last_row,
         SymbolicExpression::IsTransition => is_transition,
+        SymbolicExpression::Neg { x, .. } => {
+            let x_wire = get_wire(x);
+            let zero = circuit.add_const(F::ZERO);
+
+            circuit.sub(zero, x_wire)
+        }
+        SymbolicExpression::Add { x, y, .. }
+        | SymbolicExpression::Sub { x, y, .. }
+        | SymbolicExpression::Mul { x, y, .. } => {
+            let x_wire = get_wire(x);
+            let y_wire = get_wire(y);
+
+            match symbolic {
+                SymbolicExpression::Add { .. } => circuit.add(x_wire, y_wire),
+                SymbolicExpression::Mul { .. } => circuit.mul(x_wire, y_wire),
+                SymbolicExpression::Sub { .. } => circuit.sub(x_wire, y_wire),
+                _ => unreachable!(),
+            }
+        }
     }
 }
 
@@ -365,8 +289,7 @@ mod tests {
 
         // Check that the circuit output equals the folded constraints.
         let final_result_const = circuit.add_const(folded_constraints);
-        let sub = circuit.sub(final_result_const, sum);
-        circuit.assert_zero(sub);
+        circuit.connect(final_result_const, sum);
 
         let mut all_public_values = sels.to_vec();
         all_public_values.extend_from_slice(&pis_ext);
