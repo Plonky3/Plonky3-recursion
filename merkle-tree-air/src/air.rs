@@ -9,8 +9,15 @@ use p3_field::{Field, PackedField, PackedValue, PrimeCharacteristicRing, PrimeFi
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_symmetric::PseudoCompressionFunction;
-// `DIGEST_ELEMS` is the number of digest elements of the hash. `MAX_TREE_HEIGHT` is the maximal tree height that can be handled by the AIR.
-pub struct MerkleTreeAir<F, C, const DIGEST_ELEMS: usize, const MAX_TREE_HEIGHT: usize>
+/// `MerkleVerifyAir` is an AIR which verifies a Merkle proof for a leaf to be part of a Merkle tree with a given root.
+/// It corresponds to `verify_batch` in Plonky3's mmcs.rs, which means it can handle batch verification.
+///
+/// It assumes that leaf elements are hash digests of the form `[F; DIGEST_ELEMS]`, where:
+/// - `F` is the field over which the AIR is defined.
+/// - `DIGEST_ELEMS` is the number of digest elements of the hash.
+///
+/// `MAX_TREE_HEIGHT` is the maximal tree height that can be handled by the AIR.
+pub struct MerkleVerifyAir<F, C, const DIGEST_ELEMS: usize, const MAX_TREE_HEIGHT: usize>
 where
     F: Field,
 {
@@ -19,7 +26,7 @@ where
 }
 
 impl<F: Field, C, const DIGEST_ELEMS: usize, const MAX_TREE_HEIGHT: usize>
-    MerkleTreeAir<F, C, DIGEST_ELEMS, MAX_TREE_HEIGHT>
+    MerkleVerifyAir<F, C, DIGEST_ELEMS, MAX_TREE_HEIGHT>
 {
     #[allow(unused)]
     fn new(compress: C) -> Self {
@@ -31,7 +38,7 @@ impl<F: Field, C, const DIGEST_ELEMS: usize, const MAX_TREE_HEIGHT: usize>
 }
 
 impl<F: Field, C, const DIGEST_ELEMS: usize, const MAX_TREE_HEIGHT: usize> BaseAir<F>
-    for MerkleTreeAir<F, C, DIGEST_ELEMS, MAX_TREE_HEIGHT>
+    for MerkleVerifyAir<F, C, DIGEST_ELEMS, MAX_TREE_HEIGHT>
 where
     F: Field,
     C: PseudoCompressionFunction<[<F as PackedValue>::Value; DIGEST_ELEMS], 2>
@@ -40,12 +47,12 @@ where
     F: Eq,
 {
     fn width(&self) -> usize {
-        get_num_merkle_tree_cols::<DIGEST_ELEMS, MAX_TREE_HEIGHT>()
+        num_cols::<DIGEST_ELEMS, MAX_TREE_HEIGHT>()
     }
 }
 
 impl<AB: AirBuilder, C, const DIGEST_ELEMS: usize, const MAX_TREE_HEIGHT: usize> Air<AB>
-    for MerkleTreeAir<AB::F, C, DIGEST_ELEMS, MAX_TREE_HEIGHT>
+    for MerkleVerifyAir<AB::F, C, DIGEST_ELEMS, MAX_TREE_HEIGHT>
 where
     AB::F: PrimeField,
     C: PseudoCompressionFunction<[<AB::F as PackedValue>::Value; DIGEST_ELEMS], 2>
@@ -60,8 +67,8 @@ where
             main.row_slice(0).expect("The matrix is empty?"),
             main.row_slice(1).expect("The matrix only has 1 row?"),
         );
-        let local: &MerkleTreeCols<AB::Var, DIGEST_ELEMS, MAX_TREE_HEIGHT> = (*local).borrow();
-        let next: &MerkleTreeCols<AB::Var, DIGEST_ELEMS, MAX_TREE_HEIGHT> = (*next).borrow();
+        let local: &MerkleVerifyCols<AB::Var, DIGEST_ELEMS, MAX_TREE_HEIGHT> = (*local).borrow();
+        let next: &MerkleVerifyCols<AB::Var, DIGEST_ELEMS, MAX_TREE_HEIGHT> = (*next).borrow();
 
         // Assert that the height encoding is boolean.
         for i in 0..local.height_encoding.len() {
@@ -186,9 +193,9 @@ where
 
 #[derive(Debug)]
 #[repr(C)]
-pub struct MerkleTreeCols<T, const DIGEST_ELEMS: usize, const MAX_TREE_HEIGHT: usize> {
+pub struct MerkleVerifyCols<T, const DIGEST_ELEMS: usize, const MAX_TREE_HEIGHT: usize> {
     /// Bits of the leaf index we are currently verifying.
-    pub index_bits: [T; DIGEST_ELEMS],
+    pub index_bits: [T; MAX_TREE_HEIGHT],
     /// Max height of the Merkle trees, which is equal to the index's bit length.
     /// Transparent column.
     pub length: T,
@@ -208,18 +215,20 @@ pub struct MerkleTreeCols<T, const DIGEST_ELEMS: usize, const MAX_TREE_HEIGHT: u
     pub extra_height: T,
 }
 
-fn get_num_merkle_tree_cols<const DIGEST_ELEMS: usize, const MAX_TREE_HEIGHT: usize>() -> usize {
-    size_of::<MerkleTreeCols<u8, DIGEST_ELEMS, MAX_TREE_HEIGHT>>()
+fn num_cols<const DIGEST_ELEMS: usize, const MAX_TREE_HEIGHT: usize>() -> usize {
+    size_of::<MerkleVerifyCols<u8, DIGEST_ELEMS, MAX_TREE_HEIGHT>>()
 }
 
 impl<T, const DIGEST_ELEMS: usize, const MAX_TREE_HEIGHT: usize>
-    Borrow<MerkleTreeCols<T, DIGEST_ELEMS, MAX_TREE_HEIGHT>> for [T]
+    Borrow<MerkleVerifyCols<T, DIGEST_ELEMS, MAX_TREE_HEIGHT>> for [T]
 {
-    fn borrow(&self) -> &MerkleTreeCols<T, DIGEST_ELEMS, MAX_TREE_HEIGHT> {
-        let num_merkle_tree_cols = get_num_merkle_tree_cols::<DIGEST_ELEMS, MAX_TREE_HEIGHT>();
+    fn borrow(&self) -> &MerkleVerifyCols<T, DIGEST_ELEMS, MAX_TREE_HEIGHT> {
+        let num_merkle_tree_cols = num_cols::<DIGEST_ELEMS, MAX_TREE_HEIGHT>();
         debug_assert_eq!(self.len(), num_merkle_tree_cols);
+
+        // Safety: The size of of `self` is the same as that of `MerkleTreeCols`, which is also `repr(C)`
         let (prefix, shorts, suffix) =
-            unsafe { self.align_to::<MerkleTreeCols<T, DIGEST_ELEMS, MAX_TREE_HEIGHT>>() };
+            unsafe { self.align_to::<MerkleVerifyCols<T, DIGEST_ELEMS, MAX_TREE_HEIGHT>>() };
         debug_assert!(prefix.is_empty(), "Alignment should match");
         debug_assert!(suffix.is_empty(), "Alignment should match");
         debug_assert_eq!(shorts.len(), 1);
@@ -228,15 +237,14 @@ impl<T, const DIGEST_ELEMS: usize, const MAX_TREE_HEIGHT: usize>
 }
 
 impl<T, const DIGEST_ELEMS: usize, const MAX_TREE_HEIGHT: usize>
-    BorrowMut<MerkleTreeCols<T, DIGEST_ELEMS, MAX_TREE_HEIGHT>> for [T]
+    BorrowMut<MerkleVerifyCols<T, DIGEST_ELEMS, MAX_TREE_HEIGHT>> for [T]
 {
-    fn borrow_mut(&mut self) -> &mut MerkleTreeCols<T, DIGEST_ELEMS, MAX_TREE_HEIGHT> {
-        debug_assert_eq!(
-            self.len(),
-            get_num_merkle_tree_cols::<DIGEST_ELEMS, MAX_TREE_HEIGHT>()
-        );
+    fn borrow_mut(&mut self) -> &mut MerkleVerifyCols<T, DIGEST_ELEMS, MAX_TREE_HEIGHT> {
+        debug_assert_eq!(self.len(), num_cols::<DIGEST_ELEMS, MAX_TREE_HEIGHT>());
+
+        // Safety: The size of of `self` is the same as that of `MerkleTreeCols`, which is also `repr(C)`
         let (prefix, shorts, suffix) =
-            unsafe { self.align_to_mut::<MerkleTreeCols<T, DIGEST_ELEMS, MAX_TREE_HEIGHT>>() };
+            unsafe { self.align_to_mut::<MerkleVerifyCols<T, DIGEST_ELEMS, MAX_TREE_HEIGHT>>() };
         debug_assert!(prefix.is_empty(), "Alignment should match");
         debug_assert!(suffix.is_empty(), "Alignment should match");
         debug_assert_eq!(shorts.len(), 1);
@@ -244,29 +252,41 @@ impl<T, const DIGEST_ELEMS: usize, const MAX_TREE_HEIGHT: usize>
     }
 }
 
-type MerkleTreeInputs<F, const DIGEST_ELEMS: usize> = (
-    // Initial computed root: hash of all the leaves.
+/// Trace for the MerkleVerifyAir, composed of all the merkle verfication operations.
+/// Each operation is of type `MerkleTreeInputs`, and therefore consusts in:
+/// - the leaf that is currently being verified
+/// - the index of the leaf within the Merkle tree
+/// - the siblings along the path to the root, each paired with an optional extra sibling (for batch verification). Each extra sibling corresponds to an extra hash at that height coming from another tree.
+#[derive(Debug)]
+pub struct MerkleVerifyTrace<F, const DIGEST_ELEMS: usize, const MAX_TREE_HEIGHT: usize> {
+    operations: Vec<MerkleVerifyInputs<F, DIGEST_ELEMS>>,
+}
+
+type MerkleVerifyInputs<F, const DIGEST_ELEMS: usize> = (
+    // Leaf that is currently being verified.
     [F; DIGEST_ELEMS],
-    // Index
+    // Index, within the Merkle Tree, of the leaf that is being verified.
     usize,
-    // Sibling, and optional extra hash (corresponding to the hash of the leaves of a new tree)
+    // Siblings along the path to the root. Each sibling is paired with an optional extra sibling.
+    // The latter comes from batch verifying, and corresponds to an extra hash due to another tree starting at that height.
     Vec<([F; DIGEST_ELEMS], Option<[F; DIGEST_ELEMS]>)>,
 );
 
 impl<F: PrimeField, C, const DIGEST_ELEMS: usize, const MAX_TREE_HEIGHT: usize>
-    MerkleTreeAir<F, C, DIGEST_ELEMS, MAX_TREE_HEIGHT>
+    MerkleVerifyAir<F, C, DIGEST_ELEMS, MAX_TREE_HEIGHT>
 where
     C: PseudoCompressionFunction<[<F as PackedValue>::Value; DIGEST_ELEMS], 2>
         + PseudoCompressionFunction<[F; DIGEST_ELEMS], 2>
         + Sync,
 {
-    pub fn generate_trace_rows(
+    pub fn trace_to_matrix(
         &self,
-        inputs: &[MerkleTreeInputs<F, DIGEST_ELEMS>],
+        inputs: &MerkleVerifyTrace<F, DIGEST_ELEMS, MAX_TREE_HEIGHT>,
     ) -> RowMajorMatrix<<F as PackedField>::Scalar> {
         // Compute the number of rows exactly: whenever the height changes, we need an extra row.
         let mut max_num_rows: usize = 0;
-        for (_, _, siblings) in inputs {
+        for operation in &inputs.operations {
+            let siblings = &operation.2;
             for (_, o_s) in siblings {
                 max_num_rows += 1;
                 if o_s.is_some() {
@@ -276,7 +296,7 @@ where
         }
         // Count padding rows.
         max_num_rows = max_num_rows.next_power_of_two();
-        let num_merkle_tree_cols = get_num_merkle_tree_cols::<DIGEST_ELEMS, MAX_TREE_HEIGHT>();
+        let num_merkle_tree_cols = num_cols::<DIGEST_ELEMS, MAX_TREE_HEIGHT>();
         let trace_length = max_num_rows * num_merkle_tree_cols;
 
         let mut trace = RowMajorMatrix::new(F::zero_vec(trace_length), num_merkle_tree_cols);
@@ -284,14 +304,14 @@ where
         let (prefix, rows, suffix) = unsafe {
             trace
                 .values
-                .align_to_mut::<MerkleTreeCols<F, DIGEST_ELEMS, MAX_TREE_HEIGHT>>()
+                .align_to_mut::<MerkleVerifyCols<F, DIGEST_ELEMS, MAX_TREE_HEIGHT>>()
         };
         assert!(prefix.is_empty(), "Alignment should match");
         assert!(suffix.is_empty(), "Alignment should match");
         assert_eq!(rows.len(), max_num_rows);
 
         let mut row_counter = 0;
-        for input in inputs {
+        for input in &inputs.operations {
             let max_height = input.2.len();
 
             // We start at the highest height. It corresponds to the length of the siblings. In `verify_batch`, `cur_height_padded` is divided by 2 at each step. So the initial `cur_height_padded` should be `1 << max_height`.
@@ -300,14 +320,15 @@ where
             let mut state = initial_root;
 
             let mut index = input.1;
-            let mut index_bits = [F::ZERO; DIGEST_ELEMS];
-            for (i, idx) in index_bits.iter_mut().enumerate().take(DIGEST_ELEMS) {
+            let mut index_bits = [F::ZERO; MAX_TREE_HEIGHT];
+            for (i, idx) in index_bits.iter_mut().enumerate().take(MAX_TREE_HEIGHT) {
                 *idx = F::from_usize((index >> i) & 1);
             }
 
             for (row_height, &(sibling, o_sibling)) in input.2.iter().enumerate() {
                 let row = &mut rows[row_counter];
                 row.state = state;
+                row.sibling = sibling;
                 row.index_bits = index_bits;
                 row.height_encoding[row_height] = F::ONE;
                 row.length = F::from_usize(max_height);
@@ -417,6 +438,7 @@ fn prove_mmcs_verify_poseidon() -> Result<
     let inputs = (0..NUM_INPUTS)
         .map(|i| (roots[i], indices[i], siblings[i].to_vec()))
         .collect::<Vec<_>>();
+    let trace = MerkleVerifyTrace::<Val, DIGEST_ELEMS, MAX_TREE_HEIGHT> { operations: inputs };
 
     // The permutation and compression correspond to those of Poseidon2.
     let perm16 = Poseidon2KoalaBear::<16>::new_from_rng_128(&mut rng);
@@ -424,10 +446,10 @@ fn prove_mmcs_verify_poseidon() -> Result<
     let compress = Poseidon2Compression::new(perm16);
 
     // Create the AIR.
-    let air = MerkleTreeAir::<Val, _, DIGEST_ELEMS, MAX_TREE_HEIGHT>::new(compress);
+    let air = MerkleVerifyAir::<Val, _, DIGEST_ELEMS, MAX_TREE_HEIGHT>::new(compress);
 
     // Generate trace for Merkle tree table.
-    let trace = air.generate_trace_rows(&inputs);
+    let trace = air.trace_to_matrix(&trace);
 
     // Prove with Keccak.
     type Challenge = BinomialExtensionField<Val, 4>;

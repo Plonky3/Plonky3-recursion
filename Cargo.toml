@@ -32,6 +32,8 @@ p3-commit = { git = "https://github.com/Plonky3/Plonky3", version = "0.3.0" }
 p3-dft = { git = "https://github.com/Plonky3/Plonky3", version = "0.3.0" }
 p3-field = { git = "https://github.com/Plonky3/Plonky3", version = "0.3.0" }
 p3-fri = { git = "https://github.com/Plonky3/Plonky3", version = "0.3.0" }
+p3-keccak = { git = "https://github.com/Plonky3/Plonky3", version = "0.3.0" }
+p3-koala-bear = { git = "https://github.com/Plonky3/Plonky3", version = "0.3.0" }
 p3-matrix = { git = "https://github.com/Plonky3/Plonky3", version = "0.3.0" }
 p3-merkle-tree = { git = "https://github.com/Plonky3/Plonky3", version = "0.3.0" }
 p3-symmetric = { git = "https://github.com/Plonky3/Plonky3", version = "0.3.0" }
@@ -52,24 +54,9 @@ p3-merkle-tree-air = { path = "merkle-tree-air", version = "0.1.0" }
 p3-recursion = { path = "recursion", version = "0.1.0" }
 p3-symmetric-air = { path = "symmetric-air", version = "0.1.0" }
 
-# Plonky3 dependencies
-p3-air = { git = "https://github.com/Plonky3/Plonky3.git" }
-p3-challenger = { git = "https://github.com/Plonky3/Plonky3.git" }
-p3-commit = { git = "https://github.com/Plonky3/Plonky3.git" }
-p3-dft = { git = "https://github.com/Plonky3/Plonky3.git" }
-p3-field = { git = "https://github.com/Plonky3/Plonky3.git" }
-p3-fri = { git = "https://github.com/Plonky3/Plonky3.git" }
-p3-keccak = { git = "https://github.com/Plonky3/Plonky3.git" }
-p3-koala-bear = { git = "https://github.com/Plonky3/Plonky3.git" }
-p3-matrix = { git = "https://github.com/Plonky3/Plonky3.git" }
-p3-merkle-tree = { git = "https://github.com/Plonky3/Plonky3.git" }
-p3-symmetric = { git = "https://github.com/Plonky3/Plonky3.git" }
-p3-uni-stark = { git = "https://github.com/Plonky3/Plonky3.git" }
-
 itertools = { version = "0.14.0", default-features = false, features = [
     "use_alloc",
 ] }
-rand = { version = "0.9.0", default-features = false, features = ["small_rng"] }
 
 [profile.profiling]
 inherits = "release"
