@@ -48,6 +48,11 @@ pub trait Recursive<F: Field> {
         degree_bits: usize,
     ) -> Self;
 
+    /// Returns a vec of field elements representing the private elements of the Input. Used to populate private inputs.
+    /// Default implementation returns an empty vec.
+    fn get_private_values(_input: &Self::Input) -> Vec<F> {
+        vec![]
+    }
     /// Returns a vec of field elements representing the elements of the Input. Used to populate public inputs.
     fn get_values(input: &Self::Input) -> Vec<F>;
 
