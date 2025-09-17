@@ -176,8 +176,10 @@ pub struct RecursiveLagrangeSelectors {
 /// as well as AIR-specific methods used in the full verification circuit.
 #[allow(clippy::too_many_arguments)]
 pub trait RecursiveAir<F: Field> {
+    /// Number of AIR columns.
     fn width(&self) -> usize;
 
+    /// Circuit version of the AIR constraints.
     fn eval_folded_circuit(
         &self,
         builder: &mut CircuitBuilder<F>,
@@ -190,6 +192,7 @@ pub trait RecursiveAir<F: Field> {
         public_values: &[ExprId],
     ) -> ExprId;
 
+    /// Infers log of constraint degree.
     fn get_log_quotient_degree(&self, num_public_values: usize, is_zk: usize) -> usize;
 }
 
