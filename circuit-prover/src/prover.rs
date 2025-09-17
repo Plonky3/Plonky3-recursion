@@ -18,7 +18,7 @@ use p3_circuit::{CircuitBuilderError, CircuitError};
 use p3_field::{BasedVectorSpace, Field};
 use p3_uni_stark::{prove, verify};
 
-use crate::air::{AddAir, ConstAir, FakeMerkleVerifyAir, MulAir, PublicAir, SubAir, WitnessAir};
+use crate::air::{AddAir, ConstAir, FakeMerkleVerifyAir, MulAir, PublicAir, WitnessAir};
 use crate::config::{ProverConfig, StarkField, StarkPermutation};
 use crate::field_params::ExtractBinomialW;
 
@@ -58,7 +58,6 @@ where
     pub public: TableProof<F, P, CD>,
     pub add: TableProof<F, P, CD>,
     pub mul: TableProof<F, P, CD>,
-    pub sub: TableProof<F, P, CD>,
     pub fake_merkle: TableProof<F, P, CD>,
     /// Extension field degree: 1 for base field; otherwise the extension degree used.
     pub ext_degree: usize,
@@ -226,11 +225,6 @@ where
         };
         let mul_proof = prove(&self.config, &mul_air, mul_matrix, pis);
 
-        // Sub
-        let sub_matrix = SubAir::<F, D>::trace_to_matrix(&traces.sub_trace);
-        let sub_air = SubAir::<F, D>::new(traces.sub_trace.lhs_values.len());
-        let sub_proof = prove(&self.config, &sub_air, sub_matrix, pis);
-
         // FakeMerkle (always uses base field regardless of traces D)
         let fake_merkle_matrix =
             FakeMerkleVerifyAir::<F>::trace_to_matrix(&traces.fake_merkle_trace);
@@ -258,10 +252,6 @@ where
             mul: TableProof {
                 proof: mul_proof,
                 rows: traces.mul_trace.lhs_values.len(),
-            },
-            sub: TableProof {
-                proof: sub_proof,
-                rows: traces.sub_trace.lhs_values.len(),
             },
             fake_merkle: TableProof {
                 proof: fake_merkle_proof,
@@ -308,11 +298,6 @@ where
         };
         verify(&self.config, &mul_air, &proof.mul.proof, pis)
             .map_err(|_| ProverError::VerificationFailed { phase: "mul" })?;
-
-        // Sub
-        let sub_air = SubAir::<F, D>::new(proof.sub.rows);
-        verify(&self.config, &sub_air, &proof.sub.proof, pis)
-            .map_err(|_| ProverError::VerificationFailed { phase: "sub" })?;
 
         // FakeMerkle
         let fake_merkle_air = FakeMerkleVerifyAir::<F>::new(proof.fake_merkle.rows);
