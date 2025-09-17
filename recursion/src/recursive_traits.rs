@@ -38,7 +38,7 @@ pub struct OpenedValuesTargets<SC: StarkGenericConfig> {
 
 pub trait Recursive<F: Field> {
     /// The nonrecursive type associated with the recursive type implementing the trait.
-    type Input: Clone;
+    type Input;
 
     /// Creates a new instance of the recursive type. `lens` corresponds to all the vector lengths necessary to build the structure.
     /// TODO: They can actually be deduced from StarkGenericConfig and `degree_bits`.
