@@ -190,12 +190,7 @@ pub trait RecursiveAir<F: Field> {
         public_values: &[ExprId],
     ) -> ExprId;
 
-    fn get_log_quotient_degree(
-        &self,
-        preprocessed_width: usize,
-        num_public_values: usize,
-        is_zk: usize,
-    ) -> usize;
+    fn get_log_quotient_degree(&self, num_public_values: usize, is_zk: usize) -> usize;
 }
 
 // Implemeting `Recursive` for the `ProofTargets`, `CommitmentTargets` and `OpenedValuesTargets` base structures.
