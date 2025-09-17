@@ -10,11 +10,11 @@
 //! Supports base fields (D=1) and binomial extension fields (D>1), with automatic
 //! detection of the binomial parameter `W` for extension-field multiplication.
 
-use alloc::string::String;
+use alloc::vec;
 use alloc::vec::Vec;
-use alloc::{format, vec};
 
 use p3_circuit::tables::Traces;
+use p3_circuit::{CircuitBuilderError, CircuitError};
 use p3_field::{BasedVectorSpace, Field};
 use p3_uni_stark::{prove, verify};
 
@@ -86,8 +86,12 @@ pub enum ProverError {
     UnsupportedDegree(usize),
     /// Missing binomial parameter W for extension-field multiplication.
     MissingWForExtension,
-    /// Verification failed for a specific table/phase with details.
-    VerificationFailed { phase: &'static str, error: String },
+    /// Circuit execution error.
+    Circuit(CircuitError),
+    /// Circuit building/lowering error.
+    Builder(CircuitBuilderError),
+    /// Verification failed for a specific table/phase.
+    VerificationFailed { phase: &'static str },
 }
 
 impl core::fmt::Display for ProverError {
@@ -105,10 +109,28 @@ impl core::fmt::Display for ProverError {
                     "missing binomial parameter W for extension-field multiplication"
                 )
             }
-            ProverError::VerificationFailed { phase, error } => {
-                write!(f, "verification failed in {phase}: {error}")
+            ProverError::Circuit(err) => {
+                write!(f, "circuit error: {err}")
+            }
+            ProverError::Builder(err) => {
+                write!(f, "circuit build error: {err}")
+            }
+            ProverError::VerificationFailed { phase } => {
+                write!(f, "verification failed in {phase}")
             }
         }
+    }
+}
+
+impl From<CircuitError> for ProverError {
+    fn from(err: CircuitError) -> Self {
+        ProverError::Circuit(err)
+    }
+}
+
+impl From<CircuitBuilderError> for ProverError {
+    fn from(err: CircuitBuilderError) -> Self {
+        ProverError::Builder(err)
     }
 }
 
@@ -259,39 +281,23 @@ where
     ) -> Result<(), ProverError> {
         // Witness
         let witness_air = WitnessAir::<F, D>::new(proof.witness.rows);
-        verify(&self.config, &witness_air, &proof.witness.proof, pis).map_err(|e| {
-            ProverError::VerificationFailed {
-                phase: "witness",
-                error: format!("{e:?}"),
-            }
-        })?;
+        verify(&self.config, &witness_air, &proof.witness.proof, pis)
+            .map_err(|_| ProverError::VerificationFailed { phase: "witness" })?;
 
         // Const
         let const_air = ConstAir::<F, D>::new(proof.constants.rows);
-        verify(&self.config, &const_air, &proof.constants.proof, pis).map_err(|e| {
-            ProverError::VerificationFailed {
-                phase: "const",
-                error: format!("{e:?}"),
-            }
-        })?;
+        verify(&self.config, &const_air, &proof.constants.proof, pis)
+            .map_err(|_| ProverError::VerificationFailed { phase: "const" })?;
 
         // Public
         let public_air = PublicAir::<F, D>::new(proof.public.rows);
-        verify(&self.config, &public_air, &proof.public.proof, pis).map_err(|e| {
-            ProverError::VerificationFailed {
-                phase: "public",
-                error: format!("{e:?}"),
-            }
-        })?;
+        verify(&self.config, &public_air, &proof.public.proof, pis)
+            .map_err(|_| ProverError::VerificationFailed { phase: "public" })?;
 
         // Add
         let add_air = AddAir::<F, D>::new(proof.add.rows);
-        verify(&self.config, &add_air, &proof.add.proof, pis).map_err(|e| {
-            ProverError::VerificationFailed {
-                phase: "add",
-                error: format!("{e:?}"),
-            }
-        })?;
+        verify(&self.config, &add_air, &proof.add.proof, pis)
+            .map_err(|_| ProverError::VerificationFailed { phase: "add" })?;
 
         // Mul
         let mul_air: MulAir<F, D> = if D == 1 {
@@ -300,21 +306,13 @@ where
             let w = w_binomial.ok_or(ProverError::MissingWForExtension)?;
             MulAir::<F, D>::new_binomial(proof.mul.rows, w)
         };
-        verify(&self.config, &mul_air, &proof.mul.proof, pis).map_err(|e| {
-            ProverError::VerificationFailed {
-                phase: "mul",
-                error: format!("{e:?}"),
-            }
-        })?;
+        verify(&self.config, &mul_air, &proof.mul.proof, pis)
+            .map_err(|_| ProverError::VerificationFailed { phase: "mul" })?;
 
         // Sub
         let sub_air = SubAir::<F, D>::new(proof.sub.rows);
-        verify(&self.config, &sub_air, &proof.sub.proof, pis).map_err(|e| {
-            ProverError::VerificationFailed {
-                phase: "sub",
-                error: format!("{e:?}"),
-            }
-        })?;
+        verify(&self.config, &sub_air, &proof.sub.proof, pis)
+            .map_err(|_| ProverError::VerificationFailed { phase: "sub" })?;
 
         // FakeMerkle
         let fake_merkle_air = FakeMerkleVerifyAir::<F>::new(proof.fake_merkle.rows);
@@ -324,9 +322,8 @@ where
             &proof.fake_merkle.proof,
             pis,
         )
-        .map_err(|e| ProverError::VerificationFailed {
+        .map_err(|_| ProverError::VerificationFailed {
             phase: "fake_merkle",
-            error: format!("{e:?}"),
         })?;
 
         Ok(())
@@ -348,7 +345,7 @@ mod tests {
     use crate::config::koalabear_config::build_standard_config_koalabear;
 
     #[test]
-    fn test_babybear_prover_base_field() {
+    fn test_babybear_prover_base_field() -> Result<(), ProverError> {
         let mut builder = CircuitBuilder::<BabyBear>::new();
 
         // Create circuit: x + 5 * 2 - 3 + (-1) = expected_result, then assert result == expected
@@ -368,26 +365,27 @@ mod tests {
         let diff = builder.sub(final_result, expected_result);
         builder.assert_zero(diff);
 
-        let circuit = builder.build();
+        let circuit = builder.build()?;
         let mut runner = circuit.runner();
 
         // Set public inputs: x = 7, expected = 7 + 10 - 3 + (-1) = 13
         let x_val = BabyBear::from_u64(7);
         let expected_val = BabyBear::from_u64(13); // 7 + 10 - 3 - 1 = 13
-        runner.set_public_inputs(&[x_val, expected_val]).unwrap();
-        let traces = runner.run().unwrap();
+        runner.set_public_inputs(&[x_val, expected_val])?;
+        let traces = runner.run()?;
 
         // Create BabyBear prover and prove all tables
         let config = build_standard_config_babybear();
         let multi_prover = MultiTableProver::new(config);
-        let proof = multi_prover.prove_all_tables(&traces).unwrap();
+        let proof = multi_prover.prove_all_tables(&traces)?;
 
         // Verify all proofs
-        multi_prover.verify_all_tables(&proof).unwrap();
+        multi_prover.verify_all_tables(&proof)?;
+        Ok(())
     }
 
     #[test]
-    fn test_babybear_prover_extension_field_d4() {
+    fn test_babybear_prover_extension_field_d4() -> Result<(), ProverError> {
         type ExtField = BinomialExtensionField<BabyBear, 4>;
         let mut builder = CircuitBuilder::<ExtField>::new();
 
@@ -414,7 +412,7 @@ mod tests {
         let diff = builder.sub(sub_result, expected_result);
         builder.assert_zero(diff);
 
-        let circuit = builder.build();
+        let circuit = builder.build()?;
         let mut runner = circuit.runner();
 
         // Set public inputs with all non-zero coefficients
@@ -452,15 +450,13 @@ mod tests {
         let add_expected = xy_expected + z_val;
         let expected_val = add_expected - w_val;
 
-        runner
-            .set_public_inputs(&[x_val, y_val, z_val, expected_val])
-            .unwrap();
-        let traces = runner.run().unwrap();
+        runner.set_public_inputs(&[x_val, y_val, z_val, expected_val])?;
+        let traces = runner.run()?;
 
         // Create BabyBear prover for extension field (D=4)
         let config = build_standard_config_babybear();
         let multi_prover = MultiTableProver::new(config);
-        let proof = multi_prover.prove_all_tables(&traces).unwrap();
+        let proof = multi_prover.prove_all_tables(&traces)?;
 
         // Verify proof has correct extension degree and W parameter
         assert_eq!(proof.ext_degree, 4);
@@ -468,11 +464,12 @@ mod tests {
         let expected_w = <ExtField as ExtractBinomialW<BabyBear>>::extract_w().unwrap();
         assert_eq!(proof.w_binomial, Some(expected_w));
 
-        multi_prover.verify_all_tables(&proof).unwrap();
+        multi_prover.verify_all_tables(&proof)?;
+        Ok(())
     }
 
     #[test]
-    fn test_koalabear_prover_base_field() {
+    fn test_koalabear_prover_base_field() -> Result<(), ProverError> {
         let mut builder = CircuitBuilder::<KoalaBear>::new();
 
         // Create circuit: a * b + c - d = expected_result, then assert result == expected
@@ -490,28 +487,27 @@ mod tests {
         let diff = builder.sub(final_result, expected_result);
         builder.assert_zero(diff);
 
-        let circuit = builder.build();
+        let circuit = builder.build()?;
         let mut runner = circuit.runner();
 
         // Set public inputs: a=42, b=13, expected = 42*13 + 100 - (-1) = 546 + 100 + 1 = 647
         let a_val = KoalaBear::from_u64(42);
         let b_val = KoalaBear::from_u64(13);
         let expected_val = KoalaBear::from_u64(647); // 42*13 + 100 - (-1) = 647
-        runner
-            .set_public_inputs(&[a_val, b_val, expected_val])
-            .unwrap();
-        let traces = runner.run().unwrap();
+        runner.set_public_inputs(&[a_val, b_val, expected_val])?;
+        let traces = runner.run()?;
 
         // Create KoalaBear prover
         let config = build_standard_config_koalabear();
         let multi_prover = MultiTableProver::new(config);
-        let proof = multi_prover.prove_all_tables(&traces).unwrap();
+        let proof = multi_prover.prove_all_tables(&traces)?;
 
-        multi_prover.verify_all_tables(&proof).unwrap();
+        multi_prover.verify_all_tables(&proof)?;
+        Ok(())
     }
 
     #[test]
-    fn test_koalabear_prover_extension_field_d8() {
+    fn test_koalabear_prover_extension_field_d8() -> Result<(), ProverError> {
         type KBExtField = BinomialExtensionField<KoalaBear, 8>;
         let mut builder = CircuitBuilder::<KBExtField>::new();
 
@@ -540,7 +536,7 @@ mod tests {
         let diff = builder.sub(xyz, expected_result);
         builder.assert_zero(diff);
 
-        let circuit = builder.build();
+        let circuit = builder.build()?;
         let mut runner = circuit.runner();
 
         // Set public inputs with diverse coefficients
@@ -582,26 +578,25 @@ mod tests {
         let xy_expected = x_val * y_val;
         let expected_val = xy_expected * z_val;
 
-        runner
-            .set_public_inputs(&[x_val, y_val, expected_val])
-            .unwrap();
-        let traces = runner.run().unwrap();
+        runner.set_public_inputs(&[x_val, y_val, expected_val])?;
+        let traces = runner.run()?;
 
         // Create KoalaBear prover for extension field (D=8)
         let config = build_standard_config_koalabear();
         let multi_prover = MultiTableProver::new(config);
-        let proof = multi_prover.prove_all_tables(&traces).unwrap();
+        let proof = multi_prover.prove_all_tables(&traces)?;
 
         // Verify proof has correct extension degree and W parameter for KoalaBear (D=8)
         assert_eq!(proof.ext_degree, 8);
         let expected_w_kb = <KBExtField as ExtractBinomialW<KoalaBear>>::extract_w().unwrap();
         assert_eq!(proof.w_binomial, Some(expected_w_kb));
 
-        multi_prover.verify_all_tables(&proof).unwrap();
+        multi_prover.verify_all_tables(&proof)?;
+        Ok(())
     }
 
     #[test]
-    fn test_goldilocks_prover_extension_field_d2() {
+    fn test_goldilocks_prover_extension_field_d2() -> Result<(), ProverError> {
         type ExtField = BinomialExtensionField<Goldilocks, 2>;
         let mut builder = CircuitBuilder::<ExtField>::new();
 
@@ -617,7 +612,7 @@ mod tests {
         let diff = builder.sub(res, expected_result);
         builder.assert_zero(diff);
 
-        let circuit = builder.build();
+        let circuit = builder.build()?;
         let mut runner = circuit.runner();
 
         let x_val = ExtField::from_basis_coefficients_slice(&[
@@ -637,23 +632,22 @@ mod tests {
         .unwrap();
 
         let expected_val = x_val * y_val + z_val;
-        runner
-            .set_public_inputs(&[x_val, y_val, z_val, expected_val])
-            .unwrap();
+        runner.set_public_inputs(&[x_val, y_val, z_val, expected_val])?;
 
-        let traces = runner.run().unwrap();
+        let traces = runner.run()?;
 
         // Build Goldilocks config with challenge degree 2 (Poseidon2)
         let config = build_standard_config_goldilocks();
         let multi_prover = MultiTableProver::new(config);
 
-        let proof = multi_prover.prove_all_tables(&traces).unwrap();
+        let proof = multi_prover.prove_all_tables(&traces)?;
 
         // Check extension metadata and verify
         assert_eq!(proof.ext_degree, 2);
         let expected_w = <ExtField as ExtractBinomialW<Goldilocks>>::extract_w().unwrap();
         assert_eq!(proof.w_binomial, Some(expected_w));
 
-        multi_prover.verify_all_tables(&proof).unwrap();
+        multi_prover.verify_all_tables(&proof)?;
+        Ok(())
     }
 }
