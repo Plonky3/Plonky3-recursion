@@ -85,7 +85,6 @@ pub fn symbolic_to_circuit<F: Field>(
 
 #[cfg(test)]
 mod tests {
-    use alloc::string::String;
     use alloc::vec;
     use alloc::vec::Vec;
     use core::borrow::Borrow;
@@ -125,8 +124,8 @@ mod tests {
     type MyConfig = StarkConfig<MyPcs, Challenge, Challenger>;
     use p3_field::PrimeCharacteristicRing;
 
-    use crate::CircuitBuilder;
     use crate::utils::symbolic_to_circuit;
+    use crate::{CircuitBuilder, CircuitError};
 
     /// For testing the public values feature
     pub struct FibonacciAir {}
@@ -190,7 +189,7 @@ mod tests {
     }
 
     #[test]
-    fn test_symbolic_to_circuit() -> Result<(), String> {
+    fn test_symbolic_to_circuit() -> Result<(), CircuitError> {
         let mut rng = SmallRng::seed_from_u64(1);
         let x = 21;
 
@@ -298,7 +297,7 @@ mod tests {
             all_public_values.push(trace_next[i]);
         }
 
-        let runner = circuit.build();
+        let runner = circuit.build().unwrap();
         let mut runner = runner.runner();
         runner.set_public_inputs(&all_public_values).unwrap();
         let _ = runner.run()?;
