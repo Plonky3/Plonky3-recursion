@@ -7,19 +7,19 @@ use p3_uni_stark::{Commitments, OpenedValues, Proof, StarkGenericConfig};
 
 /// Structure representing all the wires necessary for an input proof.
 #[derive(Clone)]
-pub struct ProofWires<
+pub struct ProofTargets<
     SC: StarkGenericConfig,
     Comm: Recursive<SC::Challenge>,
     OpeningProof: Recursive<SC::Challenge>,
 > {
-    pub commitments_wires: CommitmentWires<SC::Challenge, Comm>,
-    pub opened_values_wires: OpenedValuesWires<SC>,
+    pub commitments_wires: CommitmentTargets<SC::Challenge, Comm>,
+    pub opened_values_wires: OpenedValuesTargets<SC>,
     pub opening_proof: OpeningProof,
     pub degree_bits: usize,
 }
 
 #[derive(Clone)]
-pub struct CommitmentWires<F: Field, Comm: Recursive<F>> {
+pub struct CommitmentTargets<F: Field, Comm: Recursive<F>> {
     pub trace_wires: Comm,
     pub quotient_chunks_wires: Comm,
     pub random_commit: Option<Comm>,
@@ -28,7 +28,7 @@ pub struct CommitmentWires<F: Field, Comm: Recursive<F>> {
 
 // TODO: Move these structures to their respective crates.
 #[derive(Clone)]
-pub struct OpenedValuesWires<SC: StarkGenericConfig> {
+pub struct OpenedValuesTargets<SC: StarkGenericConfig> {
     pub trace_local_wires: Vec<ExprId>,
     pub trace_next_wires: Vec<ExprId>,
     pub quotient_chunks_wires: Vec<Vec<ExprId>>,
@@ -131,7 +131,7 @@ pub trait RecursivePcs<
     /// Creates new wires for all the challenges necessary when computing the Pcs.
     fn get_challenges_circuit(
         circuit: &mut CircuitBuilder<SC::Challenge>,
-        proof_wires: &ProofWires<SC, Comm, OpeningProof>,
+        proof_wires: &ProofTargets<SC, Comm, OpeningProof>,
     ) -> Vec<ExprId>;
 
     /// Adds the circuit which verifies the Pcs computation.
@@ -198,12 +198,12 @@ pub trait RecursiveAir<F: Field> {
     ) -> usize;
 }
 
-// Implemeting `Recursive` for the `ProofWires`, `CommitmentWires` and `OpenedValuesWires` base structures.
+// Implemeting `Recursive` for the `ProofTargets`, `CommitmentTargets` and `OpenedValuesTargets` base structures.
 impl<
     SC: StarkGenericConfig + Clone,
     Comm: Recursive<SC::Challenge, Input = <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment>,
     OpeningProof: Recursive<SC::Challenge, Input = <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Proof>,
-> Recursive<SC::Challenge> for ProofWires<SC, Comm, OpeningProof>
+> Recursive<SC::Challenge> for ProofTargets<SC, Comm, OpeningProof>
 {
     type Input = Proof<SC>;
 
@@ -212,8 +212,8 @@ impl<
         lens: &mut impl Iterator<Item = usize>,
         degree_bits: usize,
     ) -> Self {
-        let commitments_wires = CommitmentWires::new(circuit, lens, degree_bits);
-        let opened_values_wires = OpenedValuesWires::new(circuit, lens, degree_bits);
+        let commitments_wires = CommitmentTargets::new(circuit, lens, degree_bits);
+        let opened_values_wires = OpenedValuesTargets::new(circuit, lens, degree_bits);
         let opening_proof = OpeningProof::new(circuit, lens, degree_bits);
 
         Self {
@@ -232,10 +232,10 @@ impl<
             degree_bits: _,
         } = input;
         let mut values = vec![];
-        values.extend::<Vec<SC::Challenge>>(CommitmentWires::<SC::Challenge, Comm>::get_values(
+        values.extend::<Vec<SC::Challenge>>(CommitmentTargets::<SC::Challenge, Comm>::get_values(
             commitments,
         ));
-        values.extend(OpenedValuesWires::<SC>::get_values(opened_values));
+        values.extend(OpenedValuesTargets::<SC>::get_values(opened_values));
         values.extend(OpeningProof::get_values(opening_proof));
         values
     }
@@ -254,14 +254,14 @@ impl<
             degree_bits: _,
         } = input;
         let mut all_lens = vec![];
-        all_lens.extend(CommitmentWires::<SC::Challenge, Comm>::lens(commitments));
-        all_lens.extend(OpenedValuesWires::<SC>::lens(opened_values));
+        all_lens.extend(CommitmentTargets::<SC::Challenge, Comm>::lens(commitments));
+        all_lens.extend(OpenedValuesTargets::<SC>::lens(opened_values));
         all_lens.extend(OpeningProof::lens(opening_proof));
         all_lens.into_iter()
     }
 }
 
-impl<F: Field, Comm> Recursive<F> for CommitmentWires<F, Comm>
+impl<F: Field, Comm> Recursive<F> for CommitmentTargets<F, Comm>
 where
     Comm: Recursive<F>,
 {
@@ -327,7 +327,7 @@ where
     }
 }
 
-impl<SC: StarkGenericConfig> Recursive<SC::Challenge> for OpenedValuesWires<SC> {
+impl<SC: StarkGenericConfig> Recursive<SC::Challenge> for OpenedValuesTargets<SC> {
     type Input = OpenedValues<SC::Challenge>;
 
     fn new(
