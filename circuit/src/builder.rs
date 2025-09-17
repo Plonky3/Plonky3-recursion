@@ -1,11 +1,55 @@
-use std::collections::HashMap;
+use alloc::vec::Vec;
+use alloc::{format, vec};
 
+use hashbrown::{HashMap, HashSet};
 use p3_field::PrimeCharacteristicRing;
 
 use crate::circuit::Circuit;
 use crate::expr::{Expr, ExpressionGraph};
 use crate::op::{NonPrimitiveOp, NonPrimitiveOpType, Prim};
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};
+
+/// Sparse disjoint-set "find" with path compression over a HashMap (iterative).
+/// If `x` is not present, it's its own representative and is not inserted.
+#[inline]
+fn dsu_find(parents: &mut HashMap<usize, usize>, x: usize) -> usize {
+    let mut v = x;
+    let mut trail: Vec<usize> = Vec::new();
+    while let Some(&p) = parents.get(&v) {
+        if p == v {
+            break;
+        }
+        trail.push(v);
+        v = p;
+    }
+    let root = v;
+    for u in trail {
+        parents.insert(u, root);
+    }
+    root
+}
+
+/// Sparse disjoint-set "union" by attaching `b`'s root under `a`'s root.
+#[inline]
+fn dsu_union(parents: &mut HashMap<usize, usize>, a: usize, b: usize) {
+    let ra = dsu_find(parents, a);
+    let rb = dsu_find(parents, b);
+    if ra != rb {
+        parents.insert(rb, ra);
+    }
+}
+
+/// Build a sparse disjoint-set forest honoring all pending connects.
+/// Returns a parent map keyed only by ExprIds that appear in `connects`.
+fn build_connect_dsu(connects: &[(ExprId, ExprId)]) -> HashMap<usize, usize> {
+    let mut parents: HashMap<usize, usize> = HashMap::new();
+    for (a, b) in connects {
+        let ai = a.0 as usize;
+        let bi = b.0 as usize;
+        dsu_union(&mut parents, ai, bi);
+    }
+    parents
+}
 
 /// Builder for constructing circuits using a fluent API
 ///
@@ -24,25 +68,52 @@ pub struct CircuitBuilder<F> {
     witness_alloc: WitnessAllocator,
     /// Track public input positions
     public_input_count: usize,
-    /// Pending zero assertions to lower in build()
-    pending_asserts: Vec<ExprId>,
+    /// Equality constraints to enforce at lowering
+    pending_connects: Vec<(ExprId, ExprId)>,
     /// Non-primitive operations (complex constraints that don't produce ExprIds)
     non_primitive_ops: Vec<(NonPrimitiveOpId, NonPrimitiveOpType, Vec<ExprId>)>, // (op_id, op_type, witness_exprs)
+
+    /// Builder-level constant pool: value -> unique Const ExprId
+    const_pool: HashMap<F, ExprId>,
 }
 
-impl<F: Clone> CircuitBuilder<F> {
+impl<F> Default for CircuitBuilder<F>
+where
+    F: Clone + PrimeCharacteristicRing + Eq + core::hash::Hash,
+{
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<F> CircuitBuilder<F>
+where
+    F: Clone + PrimeCharacteristicRing + Eq + core::hash::Hash,
+{
     /// Create a new circuit builder
     pub fn new() -> Self {
+        let mut expressions = ExpressionGraph::new();
+
+        // Insert Const(0) as the very first node so it has ExprId::ZERO.
+        let zero_val = F::ZERO;
+        let zero_id = expressions.add_expr(Expr::Const(zero_val.clone()));
+
+        let mut const_pool = HashMap::new();
+        const_pool.insert(zero_val, zero_id);
+
         Self {
-            expressions: ExpressionGraph::new(),
+            expressions,
             witness_alloc: WitnessAllocator::new(),
             public_input_count: 0,
-            pending_asserts: Vec::new(),
+            pending_connects: Vec::new(),
             non_primitive_ops: Vec::new(),
+            const_pool,
         }
     }
 
-    /// Add a public input to the circuit
+    /// Add a public input to the circuit.
+    ///
+    /// Cost: 1 row in Public table + 1 row in witness table.
     pub fn add_public_input(&mut self) -> ExprId {
         let public_pos = self.public_input_count;
         self.public_input_count += 1;
@@ -51,34 +122,62 @@ impl<F: Clone> CircuitBuilder<F> {
         self.expressions.add_expr(public_expr)
     }
 
-    /// Add a constant to the circuit
+    /// Add a constant to the circuit (deduplicated).
+    ///
+    /// If this value was previously added, returns the original ExprId.
+    /// Cost: 1 row in Const table + 1 row in witness table (only for new constants).
     pub fn add_const(&mut self, val: F) -> ExprId {
-        let const_expr = Expr::Const(val);
-        self.expressions.add_expr(const_expr)
+        if let Some(&id) = self.const_pool.get(&val) {
+            return id;
+        }
+        let id = self.expressions.add_expr(Expr::Const(val.clone()));
+        self.const_pool.insert(val, id);
+        id
     }
 
-    /// Add two expressions
+    /// Add two expressions.
+    ///
+    /// Cost: 1 row in Add table + 1 row in witness table.
     pub fn add(&mut self, lhs: ExprId, rhs: ExprId) -> ExprId {
         let add_expr = Expr::Add { lhs, rhs };
         self.expressions.add_expr(add_expr)
     }
 
-    /// Subtract two expressions  
+    /// Subtract two expressions.
+    ///
+    /// Cost: 1 row in Sub table + 1 row in witness table.
     pub fn sub(&mut self, lhs: ExprId, rhs: ExprId) -> ExprId {
         let sub_expr = Expr::Sub { lhs, rhs };
         self.expressions.add_expr(sub_expr)
     }
 
-    /// Multiply two expressions
+    /// Multiply two expressions.
+    ///
+    /// Cost: 1 row in Mul table + 1 row in witness table.
     pub fn mul(&mut self, lhs: ExprId, rhs: ExprId) -> ExprId {
         let mul_expr = Expr::Mul { lhs, rhs };
         self.expressions.add_expr(mul_expr)
     }
+    /// Divide two expressions
+    pub fn div(&mut self, lhs: ExprId, rhs: ExprId) -> ExprId {
+        let div_expr = Expr::Div { lhs, rhs };
+        self.expressions.add_expr(div_expr)
+    }
 
-    /// Assert that an expression equals zero.
-    /// Recorded as a pending assertion to be lowered in build() to a Sub with zero.
+    /// Assert that an expression equals zero by connecting it to Const(0).
+    ///
+    /// Cost: Free in proving (implemented via connect).
     pub fn assert_zero(&mut self, expr: ExprId) {
-        self.pending_asserts.push(expr);
+        self.connect(expr, ExprId::ZERO);
+    }
+
+    /// Connect two expressions, enforcing a == b (by aliasing outputs).
+    ///
+    /// Cost: Free in proving (handled by IR optimization layer via witness slot aliasing).
+    pub fn connect(&mut self, a: ExprId, b: ExprId) {
+        if a != b {
+            self.pending_connects.push((a, b));
+        }
     }
 
     /// Add a fake Merkle verification constraint (non-primitive operation)
@@ -106,27 +205,37 @@ impl<F: Clone> CircuitBuilder<F> {
     }
 }
 
-impl<F: Clone + PrimeCharacteristicRing + PartialEq + Eq + std::hash::Hash> CircuitBuilder<F> {
+impl<F> CircuitBuilder<F>
+where
+    F: Clone + PrimeCharacteristicRing + PartialEq + Eq + core::hash::Hash,
+{
     /// Build the circuit into a Circuit with separate lowering and IR transformation stages
-    pub fn build(mut self) -> Circuit<F> {
-        // Stage 1: Lower expressions to naive primitives with constant pooling
-        let (primitive_ops, const_pool, public_rows, expr_to_widx) = self.lower_to_primitives();
+    pub fn build(self) -> Circuit<F> {
+        let (circuit, _) = self.build_with_public_mapping();
+        circuit
+    }
+
+    /// Build the circuit and return both the circuit and the ExprId→WitnessId mapping for public inputs.
+    pub fn build_with_public_mapping(mut self) -> (Circuit<F>, HashMap<ExprId, WitnessId>) {
+        // Stage 1: Lower expressions to primitives
+        let (primitive_ops, public_rows, expr_to_widx, public_mappings) =
+            self.lower_to_primitives();
 
         // Stage 2: Lower non-primitive operations using the expr_to_widx mapping
         let lowered_non_primitive_ops = self.lower_non_primitive_ops(&expr_to_widx);
 
         // Stage 3: IR transformations and optimizations
-        let primitive_ops = Self::optimize_primitives(primitive_ops, &const_pool);
+        let primitive_ops = Self::optimize_primitives(primitive_ops);
 
         // Stage 4: Generate final circuit
-        let slot_count = self.witness_alloc.slot_count();
-        let mut circuit = Circuit::new(slot_count);
+        let witness_count = self.witness_alloc.witness_count();
+        let mut circuit = Circuit::new(witness_count);
         circuit.primitive_ops = primitive_ops;
         circuit.non_primitive_ops = lowered_non_primitive_ops;
         circuit.public_rows = public_rows;
         circuit.public_flat_len = self.public_input_count;
 
-        circuit
+        (circuit, public_mappings)
     }
 
     /// Helper function to get WitnessId with descriptive error messages
@@ -136,14 +245,11 @@ impl<F: Clone + PrimeCharacteristicRing + PartialEq + Eq + std::hash::Hash> Circ
         context: &str,
     ) -> WitnessId {
         *expr_to_widx.get(&expr_id).unwrap_or_else(|| {
-            panic!(
-                "Expression {:?} not found in witness mapping: {}",
-                expr_id, context
-            )
+            panic!("Expression {expr_id:?} not found in witness mapping: {context}",)
         })
     }
 
-    /// Stage 1: Lower expressions to primitives with constant pooling
+    /// Stage 1: Lower expressions to primitives (Consts, Publics, then Ops) with DSU-aware class slots
     ///
     /// INVARIANT: All ExprIds reference only previously processed expressions.
     /// This is guaranteed because:
@@ -155,68 +261,91 @@ impl<F: Clone + PrimeCharacteristicRing + PartialEq + Eq + std::hash::Hash> Circ
         &mut self,
     ) -> (
         Vec<Prim<F>>,
-        HashMap<F, WitnessId>,
         Vec<WitnessId>,
         HashMap<ExprId, WitnessId>,
+        HashMap<ExprId, WitnessId>,
     ) {
+        // Build DSU over expression IDs to honor connect(a, b)
+        let mut parents: HashMap<usize, usize> = build_connect_dsu(&self.pending_connects);
+
+        // Track nodes that participate in any connect
+        let mut in_connect: HashSet<usize> = HashSet::new();
+        for (a, b) in &self.pending_connects {
+            in_connect.insert(a.0 as usize);
+            in_connect.insert(b.0 as usize);
+        }
+
         let mut primitive_ops = Vec::new();
-        let mut const_pool: HashMap<F, WitnessId> = HashMap::new();
         let mut expr_to_widx: HashMap<ExprId, WitnessId> = HashMap::new();
-        let mut public_rows = Vec::new();
+        let mut public_rows: Vec<WitnessId> = vec![WitnessId(0); self.public_input_count];
+        let mut public_mappings = HashMap::new();
 
-        // First, ensure zero constant always exists
-        let zero = F::ZERO;
-        let zero_widx = self.witness_alloc.alloc();
-        const_pool.insert(zero.clone(), zero_widx);
-        primitive_ops.push(Prim::Const {
-            out: zero_widx,
-            val: zero.clone(),
-        });
+        // Unified class slot map: DSU root -> chosen out slot
+        let mut root_to_widx: HashMap<usize, WitnessId> = HashMap::new();
 
-        // Lower each expression to primitives
+        // Pass A: emit constants (once per Const node; Expr-level dedup ensures one per value)
+        for (expr_idx, expr) in self.expressions.nodes().iter().enumerate() {
+            if let Expr::Const(val) = expr {
+                let id = ExprId(expr_idx as u32);
+                let w = self.witness_alloc.alloc();
+                primitive_ops.push(Prim::Const {
+                    out: w,
+                    val: val.clone(),
+                });
+                expr_to_widx.insert(id, w);
+
+                // If this Const participates in a connect class, bind the class to the const slot
+                if in_connect.contains(&expr_idx) {
+                    let root = dsu_find(&mut parents, expr_idx);
+                    root_to_widx.insert(root, w);
+                }
+            }
+        }
+
+        let mut alloc_witness_id_for_expr = |expr_idx: usize| {
+            if in_connect.contains(&expr_idx) {
+                let root = dsu_find(&mut parents, expr_idx);
+                *root_to_widx
+                    .entry(root)
+                    .or_insert_with(|| self.witness_alloc.alloc())
+            } else {
+                self.witness_alloc.alloc()
+            }
+        };
+
+        // Pass B: emit public inputs
+        for (expr_idx, expr) in self.expressions.nodes().iter().enumerate() {
+            if let Expr::Public(pos) = expr {
+                let id = ExprId(expr_idx as u32);
+
+                let out_widx = alloc_witness_id_for_expr(expr_idx);
+
+                primitive_ops.push(Prim::Public {
+                    out: out_widx,
+                    public_pos: *pos,
+                });
+                expr_to_widx.insert(id, out_widx);
+                public_rows[*pos] = out_widx;
+                public_mappings.insert(id, out_widx);
+            }
+        }
+
+        // Pass C: emit arithmetic ops in creation order; tie outputs to class slot if connected
         for (expr_idx, expr) in self.expressions.nodes().iter().enumerate() {
             let expr_id = ExprId(expr_idx as u32);
-
             match expr {
-                Expr::Const(val) => {
-                    // Use existing constant from pool if available
-                    let out_widx = if let Some(&existing_widx) = const_pool.get(val) {
-                        existing_widx
-                    } else {
-                        let new_widx = self.witness_alloc.alloc();
-                        const_pool.insert(val.clone(), new_widx);
-                        primitive_ops.push(Prim::Const {
-                            out: new_widx,
-                            val: val.clone(),
-                        });
-                        new_widx
-                    };
-                    expr_to_widx.insert(expr_id, out_widx);
-                }
-                Expr::Public(pos) => {
-                    let out_widx = self.witness_alloc.alloc();
-                    primitive_ops.push(Prim::Public {
-                        out: out_widx,
-                        public_pos: *pos,
-                    });
-                    expr_to_widx.insert(expr_id, out_widx);
-                    // Track public input mapping
-                    if *pos >= public_rows.len() {
-                        public_rows.resize(*pos + 1, WitnessId(0));
-                    }
-                    public_rows[*pos] = out_widx;
-                }
+                Expr::Const(_) | Expr::Public(_) => { /* handled above */ }
                 Expr::Add { lhs, rhs } => {
-                    let out_widx = self.witness_alloc.alloc();
+                    let out_widx = alloc_witness_id_for_expr(expr_idx);
                     let a_widx = Self::get_witness_id(
                         &expr_to_widx,
                         *lhs,
-                        &format!("Add lhs for {:?}", expr_id),
+                        &format!("Add lhs for {expr_id:?}"),
                     );
                     let b_widx = Self::get_witness_id(
                         &expr_to_widx,
                         *rhs,
-                        &format!("Add rhs for {:?}", expr_id),
+                        &format!("Add rhs for {expr_id:?}"),
                     );
                     primitive_ops.push(Prim::Add {
                         a: a_widx,
@@ -226,16 +355,16 @@ impl<F: Clone + PrimeCharacteristicRing + PartialEq + Eq + std::hash::Hash> Circ
                     expr_to_widx.insert(expr_id, out_widx);
                 }
                 Expr::Sub { lhs, rhs } => {
-                    let out_widx = self.witness_alloc.alloc();
+                    let out_widx = alloc_witness_id_for_expr(expr_idx);
                     let a_widx = Self::get_witness_id(
                         &expr_to_widx,
                         *lhs,
-                        &format!("Sub lhs for {:?}", expr_id),
+                        &format!("Sub lhs for {expr_id:?}"),
                     );
                     let b_widx = Self::get_witness_id(
                         &expr_to_widx,
                         *rhs,
-                        &format!("Sub rhs for {:?}", expr_id),
+                        &format!("Sub rhs for {expr_id:?}"),
                     );
                     primitive_ops.push(Prim::Sub {
                         a: a_widx,
@@ -245,16 +374,16 @@ impl<F: Clone + PrimeCharacteristicRing + PartialEq + Eq + std::hash::Hash> Circ
                     expr_to_widx.insert(expr_id, out_widx);
                 }
                 Expr::Mul { lhs, rhs } => {
-                    let out_widx = self.witness_alloc.alloc();
+                    let out_widx = alloc_witness_id_for_expr(expr_idx);
                     let a_widx = Self::get_witness_id(
                         &expr_to_widx,
                         *lhs,
-                        &format!("Mul lhs for {:?}", expr_id),
+                        &format!("Mul lhs for {expr_id:?}"),
                     );
                     let b_widx = Self::get_witness_id(
                         &expr_to_widx,
                         *rhs,
-                        &format!("Mul rhs for {:?}", expr_id),
+                        &format!("Mul rhs for {expr_id:?}"),
                     );
                     primitive_ops.push(Prim::Mul {
                         a: a_widx,
@@ -262,22 +391,32 @@ impl<F: Clone + PrimeCharacteristicRing + PartialEq + Eq + std::hash::Hash> Circ
                         out: out_widx,
                     });
                     expr_to_widx.insert(expr_id, out_widx);
-                } // No AssertZero variant; assertions are not encoded as expressions in Stage 1
+                }
+                Expr::Div { lhs, rhs } => {
+                    // lhs / rhs = out  is encoded as rhs * out = lhs
+                    let b_widx = alloc_witness_id_for_expr(expr_idx);
+                    let out_widx = Self::get_witness_id(
+                        &expr_to_widx,
+                        *lhs,
+                        &format!("Div lhs for {expr_id:?}"),
+                    );
+                    let a_widx = Self::get_witness_id(
+                        &expr_to_widx,
+                        *rhs,
+                        &format!("Div rhs for {expr_id:?}"),
+                    );
+                    primitive_ops.push(Prim::Mul {
+                        a: a_widx,
+                        b: b_widx,
+                        out: out_widx,
+                    });
+                    // The output of Div is the b_widx.
+                    expr_to_widx.insert(expr_id, b_widx);
+                }
             }
         }
 
-        // Lower pending assertions: encode z - 0 = 0 by writing a Sub with out = zero_widx
-        for z_expr in &self.pending_asserts {
-            if let Some(&z_widx) = expr_to_widx.get(z_expr) {
-                primitive_ops.push(Prim::Sub {
-                    a: z_widx,
-                    b: zero_widx,
-                    out: zero_widx,
-                });
-            }
-        }
-
-        (primitive_ops, const_pool, public_rows, expr_to_widx)
+        (primitive_ops, public_rows, expr_to_widx, public_mappings)
     }
 
     /// Stage 2: Lower non-primitive operations from ExprIds to WitnessId
@@ -285,8 +424,6 @@ impl<F: Clone + PrimeCharacteristicRing + PartialEq + Eq + std::hash::Hash> Circ
         &self,
         expr_to_widx: &HashMap<ExprId, WitnessId>,
     ) -> Vec<NonPrimitiveOp> {
-        use crate::op::NonPrimitiveOp;
-
         let mut lowered_ops = Vec::new();
 
         for (_op_id, op_type, witness_exprs) in &self.non_primitive_ops {
@@ -313,7 +450,7 @@ impl<F: Clone + PrimeCharacteristicRing + PartialEq + Eq + std::hash::Hash> Circ
                         leaf: leaf_widx,
                         root: root_widx,
                     });
-                } // Future operations can be added here with different witness expression counts
+                } // Add more variants here as needed
             }
         }
 
@@ -321,23 +458,13 @@ impl<F: Clone + PrimeCharacteristicRing + PartialEq + Eq + std::hash::Hash> Circ
     }
 
     /// Stage 3: IR transformations and optimizations
-    fn optimize_primitives(
-        primitive_ops: Vec<Prim<F>>,
-        _const_pool: &HashMap<F, WitnessId>,
-    ) -> Vec<Prim<F>> {
+    fn optimize_primitives(primitive_ops: Vec<Prim<F>>) -> Vec<Prim<F>> {
         // Future passes can be added here:
         // - Dead code elimination
         // - Common subexpression elimination
         // - Instruction combining
         // - Constant folding
-
         primitive_ops
-    }
-}
-
-impl<F: Clone> Default for CircuitBuilder<F> {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -352,74 +479,200 @@ mod tests {
     fn test_circuit_basic_api() {
         let mut builder = CircuitBuilder::<BabyBear>::new();
 
-        // Test the DESIGN.txt example: 37 * x - 111 = 0
         let x = builder.add_public_input();
         let c37 = builder.add_const(BabyBear::from_u64(37));
         let c111 = builder.add_const(BabyBear::from_u64(111));
+        let c1 = builder.add_const(BabyBear::from_u64(1));
 
         let mul_result = builder.mul(c37, x);
         let sub_result = builder.sub(mul_result, c111);
         builder.assert_zero(sub_result);
 
-        let circuit = builder.build();
-        assert_eq!(circuit.slot_count, 6); // 0:zero, 1:public, 2:c37, 3:c111, 4:mul_result, 5:sub_result
+        let div_result = builder.div(mul_result, c111);
+        let sub_one = builder.sub(div_result, c1);
+        builder.assert_zero(sub_one);
 
-        // Assert all primitive operations
-        assert_eq!(circuit.primitive_ops.len(), 7);
+        let circuit = builder.build();
+        assert_eq!(circuit.witness_count, 7); // 0:zero, 1:c37, 2:c111, 3:c1, 4:public, 5:mul_result, 6:sub_result, 7:div_result, 8:sub_one
+
+        // Assert all primitive operations (lowering order: Consts first, then Public, then ops)
+        assert_eq!(circuit.primitive_ops.len(), 9);
         match &circuit.primitive_ops[0] {
             Prim::Const { out, val } => {
                 assert_eq!(out.0, 0);
                 assert_eq!(*val, BabyBear::from_u64(0));
             }
-            _ => panic!("Expected Const(0)"),
+            _ => panic!("Expected Const(0) at op 0"),
         }
         match &circuit.primitive_ops[1] {
-            Prim::Public { out, public_pos } => {
+            Prim::Const { out, val } => {
                 assert_eq!(out.0, 1);
-                assert_eq!(*public_pos, 0);
+                assert_eq!(*val, BabyBear::from_u64(37));
             }
-            _ => panic!("Expected Public"),
+            _ => panic!("Expected Const(37) at op 1"),
         }
         match &circuit.primitive_ops[2] {
             Prim::Const { out, val } => {
                 assert_eq!(out.0, 2);
-                assert_eq!(*val, BabyBear::from_u64(37));
+                assert_eq!(*val, BabyBear::from_u64(111));
             }
-            _ => panic!("Expected Const(37)"),
+            _ => panic!("Expected Const(111) at op 2"),
         }
         match &circuit.primitive_ops[3] {
             Prim::Const { out, val } => {
                 assert_eq!(out.0, 3);
-                assert_eq!(*val, BabyBear::from_u64(111));
+                assert_eq!(*val, BabyBear::from_u64(1));
             }
-            _ => panic!("Expected Const(111)"),
+            _ => panic!("Expected Const(1)"),
         }
         match &circuit.primitive_ops[4] {
-            Prim::Mul { a, b, out } => {
-                assert_eq!(a.0, 2);
-                assert_eq!(b.0, 1);
+            Prim::Public { out, public_pos } => {
                 assert_eq!(out.0, 4);
+                assert_eq!(*public_pos, 0);
             }
-            _ => panic!("Expected Mul"),
+            _ => panic!("Expected Public at op 3"),
         }
         match &circuit.primitive_ops[5] {
-            Prim::Sub { a, b, out } => {
-                assert_eq!(a.0, 4);
-                assert_eq!(b.0, 3);
+            Prim::Mul { a, b, out } => {
+                assert_eq!(a.0, 1);
+                assert_eq!(b.0, 4);
                 assert_eq!(out.0, 5);
             }
-            _ => panic!("Expected Sub(mul_result - c111)"),
+            _ => panic!("Expected Mul at op 4"),
         }
         match &circuit.primitive_ops[6] {
             Prim::Sub { a, b, out } => {
                 assert_eq!(a.0, 5);
-                assert_eq!(b.0, 0);
+                assert_eq!(b.0, 2);
                 assert_eq!(out.0, 0);
             }
-            _ => panic!("Expected Sub assertion"),
+            _ => panic!("Expected Sub(mul_result - c111)"),
+        }
+        match &circuit.primitive_ops[7] {
+            Prim::Mul { a, b, out } => {
+                assert_eq!(a.0, 2);
+                assert_eq!(b.0, 6);
+                assert_eq!(out.0, 5);
+            }
+            _ => panic!("Expected Mul"),
+        }
+        match &circuit.primitive_ops[8] {
+            Prim::Sub { a, b, out } => {
+                assert_eq!(a.0, 6);
+                assert_eq!(b.0, 3);
+                assert_eq!(out.0, 0);
+            }
+            _ => panic!("Expected Sub(div_result - c1)"),
         }
 
         assert_eq!(circuit.public_flat_len, 1);
-        assert_eq!(circuit.public_rows, vec![WitnessId(1)]); // Public input at slot 1
+        assert_eq!(circuit.public_rows, vec![WitnessId(4)]); // Public input at slot 4 (after consts)
+    }
+
+    #[test]
+    fn test_connect_enforces_equality() {
+        let mut builder = CircuitBuilder::<BabyBear>::new();
+
+        let x = builder.add_public_input();
+        let c1 = builder.add_const(BabyBear::ONE);
+
+        // a = x + 1, b = 1 + x
+        let a = builder.add(x, c1);
+        let b = builder.add(c1, x);
+
+        // Enforce a == b
+        builder.connect(a, b);
+
+        let circuit = builder.build();
+        let mut runner = circuit.runner();
+
+        runner.set_public_inputs(&[BabyBear::from_u64(5)]).unwrap();
+        // Should succeed; both write the same value into the shared slot
+        runner.run().unwrap();
+    }
+
+    #[test]
+    fn test_connect_conflict() {
+        let mut builder = CircuitBuilder::<BabyBear>::new();
+
+        let x = builder.add_public_input();
+        let y = builder.add_public_input();
+
+        // Enforce x == y
+        builder.connect(x, y);
+
+        let circuit = builder.build();
+        let mut runner = circuit.runner();
+
+        // Provide different values; should error due to witness conflict on shared slot
+        let err = runner
+            .set_public_inputs(&[BabyBear::from_u64(3), BabyBear::from_u64(4)])
+            .unwrap_err();
+        assert!(err.contains("Witness conflict"));
+    }
+
+    #[test]
+    fn test_build_connect_dsu_basic() {
+        // 0~1~3~4 in one set; 2 alone
+        let connects = vec![
+            (ExprId::ZERO, ExprId(1)),
+            (ExprId(3), ExprId(4)),
+            (ExprId(1), ExprId(4)),
+            (ExprId(2), ExprId(2)), // self-union no-op
+        ];
+        let mut parents = build_connect_dsu(&connects);
+        let r0 = dsu_find(&mut parents, 0);
+        let r1 = dsu_find(&mut parents, 1);
+        let r3 = dsu_find(&mut parents, 3);
+        let r4 = dsu_find(&mut parents, 4);
+        let r2 = dsu_find(&mut parents, 2);
+        assert_eq!(r0, r1);
+        assert_eq!(r0, r3);
+        assert_eq!(r0, r4);
+        assert_ne!(r0, r2);
+    }
+
+    #[test]
+    fn test_public_input_mapping() {
+        let mut builder = CircuitBuilder::<BabyBear>::new();
+
+        let pub1 = builder.add_public_input();
+        let c5 = builder.add_const(BabyBear::from_u64(5));
+        let pub2 = builder.add_public_input();
+        let sum = builder.add(pub1, pub2);
+        let result = builder.mul(sum, c5);
+        let pub3 = builder.add_public_input();
+        let pub4 = builder.add_public_input();
+
+        builder.connect(result, pub3);
+        builder.connect(pub3, pub4);
+
+        // Build with public mapping
+        let (circuit, public_mapping) = builder.build_with_public_mapping();
+
+        // Verify we have mappings for all public inputs
+        assert_eq!(public_mapping.len(), 4);
+        assert!(public_mapping.contains_key(&pub1));
+        assert!(public_mapping.contains_key(&pub2));
+        assert!(public_mapping.contains_key(&pub3));
+        assert!(public_mapping.contains_key(&pub4));
+
+        // Verify the mapping is consistent with circuit.public_rows
+        assert_eq!(circuit.public_rows.len(), 4);
+        assert_eq!(public_mapping[&pub1], circuit.public_rows[0]);
+        assert_eq!(public_mapping[&pub2], circuit.public_rows[1]);
+        assert_eq!(public_mapping[&pub3], circuit.public_rows[2]);
+        assert_eq!(public_mapping[&pub4], circuit.public_rows[3]);
+
+        assert_eq!(public_mapping[&pub1], WitnessId(2));
+        assert_eq!(public_mapping[&pub2], WitnessId(3));
+        assert_eq!(public_mapping[&pub3], WitnessId(4));
+        assert_eq!(public_mapping[&pub4], WitnessId(4));
+
+        // Verify that regular build() still works (backward compatibility)
+        let mut builder2 = CircuitBuilder::<BabyBear>::new();
+        let _pub = builder2.add_public_input();
+        let circuit2 = builder2.build(); // Should not return mapping
+        assert_eq!(circuit2.public_flat_len, 1);
     }
 }
