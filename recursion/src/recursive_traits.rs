@@ -1,5 +1,6 @@
 use std::marker::PhantomData;
 
+use p3_circuit::utils::{ColumnsTargets, RowSelectorsTargets};
 use p3_circuit::{CircuitBuilder, ExprId};
 use p3_commit::{Mmcs, Pcs};
 use p3_field::{ExtensionField, Field};
@@ -171,15 +172,12 @@ pub trait RecursivePcs<
 
 /// Circuit version of the `LagrangeSelectors`.
 pub struct RecursiveLagrangeSelectors {
-    pub is_first_row: ExprId,
-    pub is_last_row: ExprId,
-    pub is_transition: ExprId,
+    pub row_selectors: RowSelectorsTargets,
     pub inv_vanishing: ExprId,
 }
 
 /// Trait including methods necessary to compute the verification of an AIR's constraints,
 /// as well as AIR-specific methods used in the full verification circuit.
-#[allow(clippy::too_many_arguments)]
 pub trait RecursiveAir<F: Field> {
     /// Number of AIR columns.
     fn width(&self) -> usize;
@@ -190,11 +188,7 @@ pub trait RecursiveAir<F: Field> {
         builder: &mut CircuitBuilder<F>,
         sels: &RecursiveLagrangeSelectors,
         alpha: &ExprId,
-        local_prep_values: &[ExprId],
-        next_prep_values: &[ExprId],
-        local_values: &[ExprId],
-        next_values: &[ExprId],
-        public_values: &[ExprId],
+        columns: ColumnsTargets,
     ) -> ExprId;
 
     /// Infers log of constraint degree.

@@ -3,38 +3,56 @@ use p3_uni_stark::{Entry, SymbolicExpression};
 
 use crate::{CircuitBuilder, ExprId};
 
+/// Identifiers for special row selector flags in the circuit.
+#[derive(Clone, Copy, Debug)]
+pub struct RowSelectorsTargets {
+    pub is_first_row: ExprId,
+    pub is_last_row: ExprId,
+    pub is_transition: ExprId,
+}
+
+/// Targets for all columns in the circuit.
+#[derive(Clone, Debug)]
+pub struct ColumnsTargets<'a> {
+    /// Challenges added to the circuit.
+    pub challenges: &'a [ExprId],
+    /// Public values added to the circuit.
+    pub public_values: &'a [ExprId],
+    /// Targets for the preprocessed values used in the circuit.
+    pub local_prep_values: &'a [ExprId],
+    /// Targets for the preprocessed values evaluated at the next row.
+    pub next_prep_values: &'a [ExprId],
+    /// Targets for the main trace values.
+    pub local_values: &'a [ExprId],
+    /// Targets for the main trace values evaluated at the next row.
+    pub next_values: &'a [ExprId],
+}
+
 /// Given symbolic constraints, adds the corresponding recursive circuit to `circuit`.
 /// The `public_values`, `local_prep_values`, `next_prep_values`, `local_values`, and `next_values`
 /// are assumed to be in the same order as those used to create the symbolic expressions.
-#[allow(clippy::too_many_arguments)]
 pub fn symbolic_to_circuit<F: Field>(
-    is_first_row: ExprId,
-    is_last_row: ExprId,
-    is_transition: ExprId,
-    challenges: &[ExprId],
-    public_values: &[ExprId],
-    local_prep_values: &[ExprId],
-    next_prep_values: &[ExprId],
-    local_values: &[ExprId],
-    next_values: &[ExprId],
+    row_selectors: RowSelectorsTargets,
+    columns: &ColumnsTargets<'_>,
     symbolic: &SymbolicExpression<F>,
     circuit: &mut CircuitBuilder<F>,
 ) -> ExprId {
-    let mut get_wire = |s: &SymbolicExpression<F>| {
-        symbolic_to_circuit::<F>(
-            is_first_row,
-            is_last_row,
-            is_transition,
-            challenges,
-            public_values,
-            local_prep_values,
-            next_prep_values,
-            local_values,
-            next_values,
-            s,
-            circuit,
-        )
-    };
+    let RowSelectorsTargets {
+        is_first_row,
+        is_last_row,
+        is_transition,
+    } = row_selectors;
+    let ColumnsTargets {
+        challenges,
+        public_values,
+        local_prep_values,
+        next_prep_values,
+        local_values,
+        next_values,
+    } = columns;
+
+    let mut get_wire =
+        |s: &SymbolicExpression<F>| symbolic_to_circuit::<F>(row_selectors, columns, s, circuit);
 
     match symbolic {
         SymbolicExpression::Constant(c) => circuit.add_const(*c),
@@ -124,7 +142,7 @@ mod tests {
     type MyConfig = StarkConfig<MyPcs, Challenge, Challenger>;
     use p3_field::PrimeCharacteristicRing;
 
-    use crate::utils::symbolic_to_circuit;
+    use crate::utils::{ColumnsTargets, RowSelectorsTargets, symbolic_to_circuit};
     use crate::{CircuitBuilder, CircuitError};
 
     /// For testing the public values feature
@@ -271,17 +289,25 @@ mod tests {
             circuit_next_values.push(circuit.add_public_input());
         }
 
+        let row_selectors = RowSelectorsTargets {
+            is_first_row: circuit_sels[0],
+            is_last_row: circuit_sels[1],
+            is_transition: circuit_sels[2],
+        };
+
+        let columns = ColumnsTargets {
+            challenges: &[],
+            public_values: &circuit_public_values,
+            local_prep_values: &[],
+            next_prep_values: &[],
+            local_values: &circuit_local_values,
+            next_values: &circuit_next_values,
+        };
+
         // Get the circuit for the folded constraints.
         let sum = symbolic_to_circuit::<Challenge>(
-            circuit_sels[0],
-            circuit_sels[1],
-            circuit_sels[2],
-            &[],
-            &circuit_public_values,
-            &[],
-            &[],
-            &circuit_local_values,
-            &circuit_next_values,
+            row_selectors,
+            &columns,
             &folded_symbolic_constraints,
             &mut circuit,
         );
