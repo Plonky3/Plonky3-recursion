@@ -2,7 +2,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use itertools::{Itertools, zip_eq};
-use p3_circuit::{CircuitBuilder, ExprId};
+use p3_circuit::{CircuitBuilder, ExprId, utils::ColumnsTargets};
 use p3_commit::Pcs;
 use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
 use p3_uni_stark::StarkGenericConfig;
@@ -249,16 +249,15 @@ where
     }
 
     let sels = pcs.selectors_at_point_circuit(circuit, &init_trace_domain, &zeta);
-    let folded_constraints = air.eval_folded_circuit(
-        circuit,
-        &sels,
-        &alpha,
-        &[],
-        &[],
-        opened_trace_local_targets,
-        opened_trace_next_targets,
+    let columns_targets = ColumnsTargets {
+        challenges: &[],
         public_values,
-    );
+        local_prep_values: &[],
+        next_prep_values: &[],
+        local_values: opened_trace_local_targets,
+        next_values: opened_trace_next_targets,
+    };
+    let folded_constraints = air.eval_folded_circuit(circuit, &sels, &alpha, columns_targets);
 
     // Compute folded_constraints * sels.inv_vanishing.
     let folded_mul = circuit.add(folded_constraints, sels.inv_vanishing);
