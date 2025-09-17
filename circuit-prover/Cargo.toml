@@ -1,0 +1,42 @@
+[package]
+name = "p3-circuit-prover"
+description.workspace = true
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+p3-air.workspace = true
+p3-baby-bear.workspace = true
+p3-challenger.workspace = true
+p3-circle.workspace = true
+p3-circuit.workspace = true
+p3-commit.workspace = true
+p3-dft.workspace = true
+p3-field.workspace = true
+p3-fri.workspace = true
+p3-goldilocks.workspace = true
+p3-koala-bear.workspace = true
+p3-matrix.workspace = true
+p3-merkle-tree.workspace = true
+p3-symmetric.workspace = true
+p3-uni-stark.workspace = true
+postcard = { version = "1.0", default-features = false, features = ["alloc"] }
+rand.workspace = true
+
+[dev-dependencies]
+postcard = { version = "1.0", default-features = false, features = ["alloc"] }
+rand.workspace = true
+tracing = { version = "0.1.40", default-features = false, features = ["attributes"] }
+
+[[example]]
+name = "fibonacci"
+path = "examples/fibonacci.rs"
+
+[[example]]
+name = "fake_merkle_verify"
+path = "examples/fake_merkle_verify.rs"

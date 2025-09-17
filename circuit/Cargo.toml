@@ -1,5 +1,5 @@
 [package]
-name = "p3-merkle-tree-air"
+name = "p3-circuit"
 description.workspace = true
 version.workspace = true
 edition.workspace = true
@@ -10,18 +10,24 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
-itertools.workspace = true
+
+# Plonky3 dependencies
+p3-field.workspace = true
+p3-uni-stark.workspace = true
+
+# Other common dependencies
+hashbrown = "0.16.0"
+serde.workspace = true
+
+[dev-dependencies]
 p3-air.workspace = true
+p3-baby-bear.workspace = true
 p3-challenger.workspace = true
 p3-commit.workspace = true
 p3-dft.workspace = true
-p3-field.workspace = true
 p3-fri.workspace = true
-p3-keccak.workspace = true
-p3-koala-bear.workspace = true
 p3-matrix.workspace = true
 p3-merkle-tree.workspace = true
 p3-symmetric.workspace = true
-p3-uni-stark.workspace = true
 
 rand.workspace = true
