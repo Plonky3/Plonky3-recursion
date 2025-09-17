@@ -125,8 +125,8 @@ where
         let local = main.row_slice(0).expect("matrix must be non-empty");
         let local: &MulCols<_, D> = (*local).borrow();
 
-        if D == 1 && self.w_binomial.is_none() {
-            // Base field constraint: lhs * rhs = out
+        // Readable split: base field (D==1) vs binomial extension (D>1).
+        if D == 1 {
             let lhs_value = local.lhs[0].clone();
             let rhs_value = local.rhs[0].clone();
             let out_value = local.result[0].clone();
@@ -134,36 +134,31 @@ where
             return;
         }
 
-        // Binomial polynomial-basis path: x^D = W
-        if let Some(w_raw) = self.w_binomial {
-            let w = AB::Expr::from(w_raw);
+        // Binomial polynomial-basis path: x^D = W, with W hoisted once.
+        let w = self
+            .w_binomial
+            .as_ref()
+            .map(|w| AB::Expr::from(*w))
+            .expect("MulAir with D>1 requires binomial parameter W for wrap-around");
 
-            // acc[k] = sum_{i+j=k} a_i b_j + W * sum_{i+j=k+D} a_i b_j
-            let mut acc: Vec<AB::Expr> = (0..D).map(|_| AB::Expr::ZERO).collect();
+        // acc[k] = sum_{i+j=k} a_i b_j + W * sum_{i+j=k+D} a_i b_j
+        let mut acc: Vec<AB::Expr> = (0..D).map(|_| AB::Expr::ZERO).collect();
 
-            for i in 0..D {
-                for j in 0..D {
-                    let term = local.lhs[i].clone() * local.rhs[j].clone();
-                    let k = i + j;
-                    if k < D {
-                        acc[k] = acc[k].clone() + term;
-                    } else {
-                        acc[k - D] = acc[k - D].clone() + w.clone() * term;
-                    }
+        for i in 0..D {
+            for j in 0..D {
+                let term = local.lhs[i].clone() * local.rhs[j].clone();
+                let k = i + j;
+                if k < D {
+                    acc[k] = acc[k].clone() + term;
+                } else {
+                    acc[k - D] = acc[k - D].clone() + w.clone() * term;
                 }
             }
-
-            for k in 0..D {
-                builder.assert_zero(local.result[k].clone() - acc[k].clone());
-            }
-            return;
         }
 
-        // If we got here, we don't know how to multiply for this D.
-        panic!(
-            "Unsupported configuration: D={} with w_binomial={:?}",
-            D, self.w_binomial
-        );
+        for k in 0..D {
+            builder.assert_zero(local.result[k].clone() - acc[k].clone());
+        }
     }
 }
 

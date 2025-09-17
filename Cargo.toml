@@ -1,3 +1,4 @@
+
 [workspace]
 resolver = "2"
 members = [
@@ -21,6 +22,7 @@ repository = "https://github.com/Plonky3/Plonky3-recursion"
 homepage = "https://github.com/Plonky3/Plonky3-recursion"
 keywords = ["cryptography", "SNARK", "PLONK", "FRI", "plonky3"]
 categories = ["cryptography::cryptocurrencies"]
+
 [workspace.dependencies]
 
 # Plonky3 dependencies - shared across all crates
@@ -32,6 +34,7 @@ p3-commit = { git = "https://github.com/Plonky3/Plonky3", version = "0.3.0" }
 p3-dft = { git = "https://github.com/Plonky3/Plonky3", version = "0.3.0" }
 p3-field = { git = "https://github.com/Plonky3/Plonky3", version = "0.3.0" }
 p3-fri = { git = "https://github.com/Plonky3/Plonky3", version = "0.3.0" }
+p3-goldilocks = { git = "https://github.com/Plonky3/Plonky3", version = "0.3.0" }
 p3-keccak = { git = "https://github.com/Plonky3/Plonky3", version = "0.3.0" }
 p3-koala-bear = { git = "https://github.com/Plonky3/Plonky3", version = "0.3.0" }
 p3-matrix = { git = "https://github.com/Plonky3/Plonky3", version = "0.3.0" }
