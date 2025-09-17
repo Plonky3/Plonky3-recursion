@@ -13,4 +13,6 @@ categories.workspace = true
 hashbrown = "0.16.0"
 p3-baby-bear.workspace = true
 p3-field.workspace = true
+p3-symmetric.workspace = true
+rand.workspace = true
 serde.workspace = true

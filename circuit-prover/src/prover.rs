@@ -28,6 +28,7 @@ pub struct MultiTableProof {
     pub mul: TableProof,
     pub sub: TableProof,
     pub fake_merkle: TableProof,
+    // TODO: add HashSponge table
     // Extension field degree used for proving (1 or 4 for now)
     pub ext_degree: usize,
 }

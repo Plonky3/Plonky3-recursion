@@ -1,4 +1,5 @@
 pub mod builder;
+pub mod challenger;
 pub mod circuit;
 pub mod expr;
 pub mod op;
@@ -7,6 +8,7 @@ pub mod types;
 
 // Re-export public API
 pub use builder::CircuitBuilder;
+pub use challenger::Challenger;
 pub use circuit::Circuit;
 pub use expr::{Expr, ExpressionGraph};
 pub use op::{FakeMerklePrivateData, NonPrimitiveOp, NonPrimitiveOpPrivateData, Prim};

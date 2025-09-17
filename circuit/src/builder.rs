@@ -1,11 +1,21 @@
 use std::collections::HashMap;
 
+use p3_baby_bear::Poseidon2BabyBear;
 use p3_field::PrimeCharacteristicRing;
+use p3_symmetric::PaddingFreeSponge;
 
 use crate::circuit::Circuit;
 use crate::expr::{Expr, ExpressionGraph};
 use crate::op::{NonPrimitiveOp, NonPrimitiveOpType, Prim};
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};
+
+pub const CIRCUIT_HASH_RATE: usize = 8;
+pub const CIRCUIT_HASH_CAPACITY: usize = 8;
+pub const CIRCUIT_HASH_STATE_SIZE: usize = CIRCUIT_HASH_RATE + CIRCUIT_HASH_CAPACITY;
+
+pub type CircuitPerm = Poseidon2BabyBear<CIRCUIT_HASH_STATE_SIZE>;
+pub type CircuitHash =
+    PaddingFreeSponge<CircuitPerm, CIRCUIT_HASH_STATE_SIZE, CIRCUIT_HASH_RATE, CIRCUIT_HASH_RATE>;
 
 /// Builder for constructing circuits using a fluent API
 ///
@@ -101,6 +111,26 @@ impl<F: Clone> CircuitBuilder<F> {
         let witness_exprs = vec![leaf_expr, root_expr];
         self.non_primitive_ops
             .push((op_id, NonPrimitiveOpType::FakeMerkleVerify, witness_exprs));
+
+        op_id
+    }
+
+    /// Add a hash absorb operation (non-primitive operation)
+    pub fn add_hash_absorb(&mut self, input_exprs: &[ExprId], reset: bool) -> NonPrimitiveOpId {
+        let op_id = NonPrimitiveOpId(self.non_primitive_ops.len() as u32);
+        let witness_exprs = input_exprs.to_vec();
+        self.non_primitive_ops
+            .push((op_id, NonPrimitiveOpType::HashAbsorb(reset), witness_exprs));
+
+        op_id
+    }
+
+    /// Add a hash squeeze operation (non-primitive operation)
+    pub fn add_hash_squeeze(&mut self, output_exprs: &[ExprId]) -> NonPrimitiveOpId {
+        let op_id = NonPrimitiveOpId(self.non_primitive_ops.len() as u32);
+        let witness_exprs = output_exprs.to_vec();
+        self.non_primitive_ops
+            .push((op_id, NonPrimitiveOpType::HashSqueeze, witness_exprs));
 
         op_id
     }
@@ -313,7 +343,28 @@ impl<F: Clone + PrimeCharacteristicRing + PartialEq + Eq + std::hash::Hash> Circ
                         leaf: leaf_widx,
                         root: root_widx,
                     });
-                } // Future operations can be added here with different witness expression counts
+                }
+                NonPrimitiveOpType::HashAbsorb(reset) => {
+                    let inputs_widx = witness_exprs
+                        .iter()
+                        .map(|expr| Self::get_witness_id(expr_to_widx, *expr, "HashAbsorb input"))
+                        .collect();
+
+                    lowered_ops.push(NonPrimitiveOp::HashAbsorb {
+                        reset_flag: *reset,
+                        inputs: inputs_widx,
+                    });
+                }
+                NonPrimitiveOpType::HashSqueeze => {
+                    let outputs_widx = witness_exprs
+                        .iter()
+                        .map(|expr| Self::get_witness_id(expr_to_widx, *expr, "HashSqueeze output"))
+                        .collect();
+
+                    lowered_ops.push(NonPrimitiveOp::HashSqueeze {
+                        outputs: outputs_widx,
+                    });
+                }
             }
         }
 

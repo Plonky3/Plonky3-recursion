@@ -1,5 +1,11 @@
-use p3_field::PrimeCharacteristicRing;
+use core::array;
 
+use p3_field::{Field, PrimeCharacteristicRing};
+use p3_symmetric::{CryptographicHasher, CryptographicPermutation};
+use rand::SeedableRng;
+use rand::rngs::SmallRng;
+
+use crate::builder::{CIRCUIT_HASH_CAPACITY, CIRCUIT_HASH_RATE, CircuitPerm};
 use crate::circuit::Circuit;
 use crate::op::{NonPrimitiveOpPrivateData, Prim};
 use crate::types::{NonPrimitiveOpId, WitnessId};
@@ -21,6 +27,8 @@ pub struct Traces<F> {
     pub sub_trace: SubTrace<F>,
     /// Fake Merkle verification table
     pub fake_merkle_trace: FakeMerkleTrace<F>,
+    /// Sponge hash table
+    pub sponge_trace: SpongeTrace<CIRCUIT_HASH_RATE, CIRCUIT_HASH_CAPACITY, F>, // Example sizes; adjust as needed
 }
 
 /// Central witness table with transparent index column
@@ -120,6 +128,19 @@ pub struct FakeMerkleTrace<F> {
     pub path_directions: Vec<u32>,
 }
 
+/// Sponge hash table (for hash absorb/squeeze)
+#[derive(Debug, Clone, Default)]
+pub struct SpongeTrace<const R: usize, const C: usize, F> {
+    /// Flags to reset the capacity
+    pub reset: Vec<bool>,
+    /// Rate values; either absorbed inputs or squeezed outputs
+    pub rate_values: Vec<[F; R]>,
+    /// Rate indices
+    pub rate_indices: Vec<[u32; R]>,
+    /// Capacity values (not on witness bus - private)
+    pub capacity_values: Vec<[F; C]>,
+}
+
 /// Circuit runner that executes circuits and generates execution traces
 ///
 /// This struct manages the runtime execution of a `Circuit` specification:
@@ -203,6 +224,21 @@ impl<
             ) => {
                 // Type match - good!
             }
+            (
+                crate::op::NonPrimitiveOp::HashAbsorb { .. },
+                NonPrimitiveOpPrivateData::HashAbsorb(_),
+            ) => {
+                // Type match - good!
+            }
+            (
+                crate::op::NonPrimitiveOp::HashSqueeze { .. },
+                NonPrimitiveOpPrivateData::HashSqueeze(_),
+            ) => {
+                // Type match - good!
+            }
+            _ => {
+                panic!("Private data type does not match operation type");
+            }
         }
 
         self.complex_op_private_data[op_id.0 as usize] = Some(private_data);
@@ -222,6 +258,35 @@ impl<
         let mul_trace = self.generate_mul_trace()?;
         let sub_trace = self.generate_sub_trace()?;
         let fake_merkle_trace = self.generate_fake_merkle_trace()?;
+        Ok(Traces {
+            witness_trace,
+            const_trace,
+            public_trace,
+            add_trace,
+            mul_trace,
+            sub_trace,
+            fake_merkle_trace,
+            sponge_trace: SpongeTrace::default(),
+        })
+    }
+
+    /// Run the circuit and generate traces
+    pub fn run_with_hash<P: CryptographicPermutation<[F; N]>, const N: usize>(
+        mut self,
+        perm: P,
+    ) -> Result<Traces<F>, String> {
+        // Step 1: Execute primitives to fill witness vector
+        self.execute_primitives()?;
+
+        // Step 2: Generate all table traces
+        let witness_trace = self.generate_witness_trace()?;
+        let const_trace = self.generate_const_trace()?;
+        let public_trace = self.generate_public_trace()?;
+        let add_trace = self.generate_add_trace()?;
+        let mul_trace = self.generate_mul_trace()?;
+        let sub_trace = self.generate_sub_trace()?;
+        let fake_merkle_trace = self.generate_fake_merkle_trace()?;
+        let sponge_trace = self.generate_sponge_trace(perm)?;
 
         Ok(Traces {
             witness_trace,
@@ -231,6 +296,7 @@ impl<
             mul_trace,
             sub_trace,
             fake_merkle_trace,
+            sponge_trace,
         })
     }
 
@@ -450,63 +516,68 @@ impl<
 
         // Process each complex operation by index to avoid borrowing conflicts
         for op_idx in 0..self.circuit.non_primitive_ops.len() {
-            // Copy out leaf/root to end immutable borrow immediately
-            let (leaf, root) = match &self.circuit.non_primitive_ops[op_idx] {
-                crate::op::NonPrimitiveOp::FakeMerkleVerify { leaf, root } => (*leaf, *root),
-            };
+            // Only handle FakeMerkleVerify ops here
+            match &self.circuit.non_primitive_ops[op_idx] {
+                crate::op::NonPrimitiveOp::FakeMerkleVerify { leaf, root } => {
+                    // Copy out leaf/root to end immutable borrow immediately
+                    let (leaf, root) = (*leaf, *root);
 
-            // Clone private data option to avoid holding a borrow on self
-            if let Some(Some(NonPrimitiveOpPrivateData::FakeMerkleVerify(private_data))) =
-                self.complex_op_private_data.get(op_idx).cloned()
-            {
-                let mut current_hash =
-                    if let Some(val) = self.witness.get(leaf.0 as usize).and_then(|x| x.as_ref()) {
-                        val.clone()
-                    } else {
-                        return Err(format!(
-                            "Leaf value not set for FakeMerkleVerify operation {op_idx}"
-                        ));
-                    };
-
-                // For each step in the Merkle path
-                for (sibling_value, &direction) in private_data
-                    .path_siblings
-                    .iter()
-                    .zip(private_data.path_directions.iter())
-                {
-                    // Current hash becomes left operand
-                    left_values.push(current_hash.clone());
-                    left_index.push(leaf.0); // Points to witness bus
-
-                    // Sibling becomes right operand (private data - not on witness bus)
-                    right_values.push(sibling_value.clone());
-                    right_index.push(0); // Not on witness bus - private data
-
-                    // Compute parent hash (simple mock hash: left + right + direction)
-                    let parent_hash = current_hash.clone()
-                        + sibling_value.clone()
-                        + if direction {
-                            F::from_u64(1)
+                    // Clone private data option to avoid holding a borrow on self
+                    if let Some(Some(NonPrimitiveOpPrivateData::FakeMerkleVerify(private_data))) =
+                        self.complex_op_private_data.get(op_idx).cloned()
+                    {
+                        let mut current_hash = if let Some(val) =
+                            self.witness.get(leaf.0 as usize).and_then(|x| x.as_ref())
+                        {
+                            val.clone()
                         } else {
-                            F::from_u64(0)
+                            return Err(format!(
+                                "Leaf value not set for FakeMerkleVerify operation {op_idx}"
+                            ));
                         };
 
-                    result_values.push(parent_hash.clone());
-                    result_index.push(root.0); // Points to witness bus
+                        // For each step in the Merkle path
+                        for (sibling_value, &direction) in private_data
+                            .path_siblings
+                            .iter()
+                            .zip(private_data.path_directions.iter())
+                        {
+                            // Current hash becomes left operand
+                            left_values.push(current_hash.clone());
+                            left_index.push(leaf.0); // Points to witness bus
 
-                    path_directions.push(if direction { 1 } else { 0 });
+                            // Sibling becomes right operand (private data - not on witness bus)
+                            right_values.push(sibling_value.clone());
+                            right_index.push(0); // Not on witness bus - private data
 
-                    // Update current hash for next iteration
-                    current_hash = parent_hash;
+                            // Compute parent hash (simple mock hash: left + right + direction)
+                            let parent_hash = current_hash.clone()
+                                + sibling_value.clone()
+                                + if direction {
+                                    F::from_u64(1)
+                                } else {
+                                    F::from_u64(0)
+                                };
+
+                            result_values.push(parent_hash.clone());
+                            result_index.push(root.0); // Points to witness bus
+
+                            path_directions.push(if direction { 1 } else { 0 });
+
+                            // Update current hash for next iteration
+                            current_hash = parent_hash;
+                        }
+
+                        // Root is computed; write back to the witness bus at root index
+                        self.set_witness(root, current_hash.clone())?;
+                    } else {
+                        return Err(format!(
+                            "Missing private data for FakeMerkleVerify operation {op_idx}"
+                        ));
+                    }
                 }
-
-                // Root is computed; write back to the witness bus at root index
-                self.set_witness(root, current_hash.clone())?;
-            } else {
-                return Err(format!(
-                    "Missing private data for FakeMerkleVerify operation {op_idx}"
-                ));
-            }
+                _ => continue,
+            };
         }
 
         Ok(FakeMerkleTrace {
@@ -517,6 +588,73 @@ impl<
             result_values,
             result_index,
             path_directions,
+        })
+    }
+
+    fn generate_sponge_trace<P, const R: usize, const C: usize, const N: usize>(
+        &mut self,
+        perm: P,
+    ) -> Result<SpongeTrace<R, C, F>, String>
+    where
+        P: CryptographicPermutation<[F; N]>,
+    {
+        let mut reset = Vec::new();
+        let mut rate_values = Vec::new();
+        let mut rate_indices = Vec::new();
+        let mut capacity_values = Vec::new();
+
+        let mut state = array::from_fn(|_| F::default());
+
+        // Process each complex operation by index to avoid borrowing conflicts
+        for op_idx in 0..self.circuit.non_primitive_ops.len() {
+            // Only handle SpongeTrace ops here
+            match &self.circuit.non_primitive_ops[op_idx] {
+                crate::op::NonPrimitiveOp::HashAbsorb { reset_flag, inputs } => {
+                    reset.push(*reset_flag);
+                    rate_indices.push(array::from_fn(|i| inputs[i].0));
+                    let input_values: [Result<F, String>; R] =
+                        array::from_fn(|i| self.get_witness(inputs[i]));
+                    let input_values = input_values.into_iter().collect::<Result<Vec<_>, _>>()?;
+                    let input_values: [F; R] = input_values
+                        .try_into()
+                        .expect("input_values should have R elements");
+                    state[0..R].clone_from_slice(&input_values);
+                    rate_values.push(input_values);
+                    if *reset_flag {
+                        state[R..].fill(F::default());
+                    }
+                    let current_capacity = array::from_fn(|i| state[R + i].clone());
+                    capacity_values.push(current_capacity);
+
+                    state = perm.permute(state.into());
+                }
+                crate::op::NonPrimitiveOp::HashSqueeze { outputs } => {
+                    reset.push(false);
+                    // Clone outputs to end immutable borrow immediately
+                    let outputs = outputs.clone();
+                    rate_indices.push(array::from_fn(|i| outputs[i].0));
+
+                    let output_values: [F; R] = array::from_fn(|i| state[i].clone());
+                    for i in 0..R {
+                        // Sanity check that outputs are set to the correct values
+                        self.set_witness(outputs[i], output_values[i].clone())?;
+                    }
+                    rate_values.push(output_values);
+
+                    let current_capacity = array::from_fn(|i| state[R + i].clone());
+                    capacity_values.push(current_capacity);
+
+                    state = perm.permute(state);
+                }
+                _ => continue,
+            };
+        }
+
+        Ok(SpongeTrace {
+            reset,
+            rate_values,
+            rate_indices,
+            capacity_values,
         })
     }
 }

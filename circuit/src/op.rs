@@ -53,6 +53,8 @@ pub enum Prim<F> {
 #[derive(Debug, Clone, PartialEq)]
 pub enum NonPrimitiveOpType {
     FakeMerkleVerify,
+    HashAbsorb(bool), // bool: If true, reset the capacity before absorbing
+    HashSqueeze,
     // Future: FriVerify, HashAbsorb, etc.
 }
 
@@ -86,6 +88,22 @@ pub enum NonPrimitiveOp {
     /// - Merkle path siblings and direction bits
     /// - See `FakeMerklePrivateData` for complete specification
     FakeMerkleVerify { leaf: WitnessId, root: WitnessId },
+    /// Sponge hash absorb operation. Absorbs a single chunk of input.
+    ///
+    /// Public interface (on witness bus):
+    /// - `reset_flag`: Whether to reset the capacity before absorbing
+    /// - `inputs`: The input chunk to be absorbed.
+    ///
+    /// Private data (set via NonPrimitiveOpId):
+    /// - `reset`: Whether to reset the capacity before absorbing.
+    /// - `capacity`: Elements of the state not directly affected by input.`
+    HashAbsorb {
+        reset_flag: bool,
+        inputs: Vec<WitnessId>,
+    },
+    /// Sponge hash squeeze operation. Produces a single chunk of output.
+    /// - `capacity`: The rest of the state, not part of the output.
+    HashSqueeze { outputs: Vec<WitnessId> },
 }
 
 /// Private auxiliary data for non-primitive operations
@@ -103,6 +121,10 @@ pub enum NonPrimitiveOpPrivateData<F> {
     /// to generate a valid proof. This data is not part of the public
     /// circuit specification.
     FakeMerkleVerify(FakeMerklePrivateData<F>),
+    /// Private data for the hash absorb operation
+    HashAbsorb(HashAbsorbPrivateData<F>),
+    /// Private data for the hash squeeze operation
+    HashSqueeze(HashSqueezePrivateData<F>),
 }
 
 /// Private Merkle path data for fake Merkle verification (simplified)
@@ -130,4 +152,20 @@ pub struct FakeMerklePrivateData<F> {
     /// `true` = current node is right child. Used to determine
     /// hash input ordering: `hash(current, sibling)` vs `hash(sibling, current)`.
     pub path_directions: Vec<bool>,
+}
+
+/// Private data for the hash absorb operation
+#[derive(Debug, Clone, PartialEq)]
+pub struct HashAbsorbPrivateData<F> {
+    /// Flag indicating whether to reset the capacity before absorbing
+    pub reset: bool,
+    /// Current capacity of the sponge state; zeros if `reset` is true
+    pub capacity: Vec<F>,
+}
+
+/// Private data for the hash squeeze operation
+#[derive(Debug, Clone, PartialEq)]
+pub struct HashSqueezePrivateData<F> {
+    /// Current capacity of the sponge state
+    pub capacity: Vec<F>,
 }
