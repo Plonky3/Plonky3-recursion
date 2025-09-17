@@ -87,9 +87,10 @@ pub fn verify_circuit<
 >(
     config: &SC,
     air: &A,
+    circuit: &mut CircuitBuilder<SC::Challenge>,
     proof_targets: &ProofTargets<SC, Comm, OpeningProof>,
     public_values: &[ExprId],
-) -> Result<CircuitBuilder<SC::Challenge>, VerificationError>
+) -> Result<(), VerificationError>
 where
     A: RecursiveAir<SC::Challenge>,
     <SC as StarkGenericConfig>::Pcs: RecursivePcs<
@@ -126,7 +127,6 @@ where
     let pcs = config.pcs();
     let trace_domain = pcs.natural_domain_for_degree(degree);
     let init_trace_domain = pcs.natural_domain_for_degree(degree >> (config.is_zk()));
-    let mut circuit = CircuitBuilder::<SC::Challenge>::new();
 
     let quotient_domain =
         pcs.create_disjoint_domain(trace_domain, 1 << (degree_bits + log_quotient_degree));
@@ -138,10 +138,8 @@ where
         .collect_vec();
 
     // Challenger is called here. But we don't have the interactions or hash tables yet.
-    let challenge_targets = get_circuit_challenges::<SC, Comm, InputProof, OpeningProof, D>(
-        proof_targets,
-        &mut circuit,
-    );
+    let challenge_targets =
+        get_circuit_challenges::<SC, Comm, InputProof, OpeningProof, D>(proof_targets, circuit);
 
     // Verify shape.
     let air_width = A::width(air);
@@ -194,7 +192,7 @@ where
         ),
     ]);
     pcs.verify_circuit(
-        &mut circuit,
+        circuit,
         &challenge_targets[3..],
         &coms_to_verify,
         opening_proof,
@@ -217,7 +215,7 @@ where
                         OpeningProof,
                         Comm,
                         <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain,
-                    >(config, *other_domain, zeta, &mut circuit);
+                    >(config, *other_domain, zeta, circuit);
 
                     let first_point = circuit.add_const(pcs.first_point(domain));
                     let other_v_n =
@@ -227,7 +225,7 @@ where
                             OpeningProof,
                             Comm,
                             <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain,
-                        >(config, *other_domain, first_point, &mut circuit);
+                        >(config, *other_domain, first_point, circuit);
                     let div = circuit.div(v_n, other_v_n);
 
                     total = circuit.mul(total, div);
@@ -250,9 +248,9 @@ where
         quotient = circuit.add(quotient, mul);
     }
 
-    let sels = pcs.selectors_at_point_circuit(&mut circuit, &init_trace_domain, &zeta);
+    let sels = pcs.selectors_at_point_circuit(circuit, &init_trace_domain, &zeta);
     let folded_constraints = air.eval_folded_circuit(
-        &mut circuit,
+        circuit,
         &sels,
         &alpha,
         &[],
@@ -269,7 +267,7 @@ where
     let check = circuit.sub(folded_mul, quotient);
     circuit.assert_zero(check);
 
-    Ok(circuit)
+    Ok(())
 }
 
 fn vanishing_poly_at_point_circuit<
