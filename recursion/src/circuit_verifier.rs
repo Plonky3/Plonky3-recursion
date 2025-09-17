@@ -2,7 +2,8 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use itertools::{Itertools, zip_eq};
-use p3_circuit::{CircuitBuilder, ExprId, utils::ColumnsTargets};
+use p3_circuit::utils::ColumnsTargets;
+use p3_circuit::{CircuitBuilder, ExprId};
 use p3_commit::Pcs;
 use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
 use p3_uni_stark::StarkGenericConfig;
