@@ -1,3 +1,5 @@
-pub fn main() {
-    println!("Hello, world!");
-}
+#![no_std]
+
+extern crate alloc;
+
+pub mod recursive_traits;
