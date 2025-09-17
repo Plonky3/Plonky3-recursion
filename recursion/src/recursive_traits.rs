@@ -12,16 +12,16 @@ pub struct ProofTargets<
     Comm: Recursive<SC::Challenge>,
     OpeningProof: Recursive<SC::Challenge>,
 > {
-    pub commitments_wires: CommitmentTargets<SC::Challenge, Comm>,
-    pub opened_values_wires: OpenedValuesTargets<SC>,
+    pub commitments_targets: CommitmentTargets<SC::Challenge, Comm>,
+    pub opened_values_targets: OpenedValuesTargets<SC>,
     pub opening_proof: OpeningProof,
     pub degree_bits: usize,
 }
 
 #[derive(Clone)]
 pub struct CommitmentTargets<F: Field, Comm: Recursive<F>> {
-    pub trace_wires: Comm,
-    pub quotient_chunks_wires: Comm,
+    pub trace_targets: Comm,
+    pub quotient_chunks_targets: Comm,
     pub random_commit: Option<Comm>,
     pub _phantom: PhantomData<F>,
 }
@@ -29,10 +29,10 @@ pub struct CommitmentTargets<F: Field, Comm: Recursive<F>> {
 // TODO: Move these structures to their respective crates.
 #[derive(Clone)]
 pub struct OpenedValuesTargets<SC: StarkGenericConfig> {
-    pub trace_local_wires: Vec<ExprId>,
-    pub trace_next_wires: Vec<ExprId>,
-    pub quotient_chunks_wires: Vec<Vec<ExprId>>,
-    pub random_wires: Option<Vec<ExprId>>,
+    pub trace_local_targets: Vec<ExprId>,
+    pub trace_next_targets: Vec<ExprId>,
+    pub quotient_chunks_targets: Vec<Vec<ExprId>>,
+    pub random_targets: Option<Vec<ExprId>>,
     _phantom: PhantomData<SC>,
 }
 
@@ -136,7 +136,7 @@ pub trait RecursivePcs<
     /// Creates new wires for all the challenges necessary when computing the Pcs.
     fn get_challenges_circuit(
         circuit: &mut CircuitBuilder<SC::Challenge>,
-        proof_wires: &ProofTargets<SC, Comm, OpeningProof>,
+        proof_targets: &ProofTargets<SC, Comm, OpeningProof>,
     ) -> Vec<ExprId>;
 
     /// Adds the circuit which verifies the Pcs computation.
@@ -215,13 +215,13 @@ impl<
         lens: &mut impl Iterator<Item = usize>,
         degree_bits: usize,
     ) -> Self {
-        let commitments_wires = CommitmentTargets::new(circuit, lens, degree_bits);
-        let opened_values_wires = OpenedValuesTargets::new(circuit, lens, degree_bits);
+        let commitments_targets = CommitmentTargets::new(circuit, lens, degree_bits);
+        let opened_values_targets = OpenedValuesTargets::new(circuit, lens, degree_bits);
         let opening_proof = OpeningProof::new(circuit, lens, degree_bits);
 
         Self {
-            commitments_wires,
-            opened_values_wires,
+            commitments_targets,
+            opened_values_targets,
             opening_proof,
             degree_bits,
         }
@@ -244,8 +244,8 @@ impl<
     }
 
     fn num_challenges(&self) -> usize {
-        self.commitments_wires.num_challenges()
-            + self.opened_values_wires.num_challenges()
+        self.commitments_targets.num_challenges()
+            + self.opened_values_targets.num_challenges()
             + self.opening_proof.num_challenges()
     }
 
@@ -275,8 +275,8 @@ where
         lens: &mut impl Iterator<Item = usize>,
         degree_bits: usize,
     ) -> Self {
-        let trace_wires = Comm::new(circuit, lens, degree_bits);
-        let quotient_chunks_wires = Comm::new(circuit, lens, degree_bits);
+        let trace_targets = Comm::new(circuit, lens, degree_bits);
+        let quotient_chunks_targets = Comm::new(circuit, lens, degree_bits);
         let random_commit_len = lens.next().unwrap();
         let random_commit = if random_commit_len > 0 {
             Some(Comm::new(circuit, lens, degree_bits))
@@ -284,8 +284,8 @@ where
             None
         };
         Self {
-            trace_wires,
-            quotient_chunks_wires,
+            trace_targets,
+            quotient_chunks_targets,
             random_commit,
             _phantom: PhantomData,
         }
@@ -339,27 +339,27 @@ impl<SC: StarkGenericConfig> Recursive<SC::Challenge> for OpenedValuesTargets<SC
         _degree_bits: usize,
     ) -> Self {
         let trace_local_len = lens.next().unwrap();
-        let mut trace_local_wires = Vec::with_capacity(trace_local_len);
+        let mut trace_local_targets = Vec::with_capacity(trace_local_len);
         for _ in 0..trace_local_len {
-            trace_local_wires.push(circuit.add_public_input());
+            trace_local_targets.push(circuit.add_public_input());
         }
         let trace_next_len = lens.next().unwrap();
-        let mut trace_next_wires = Vec::with_capacity(trace_next_len);
+        let mut trace_next_targets = Vec::with_capacity(trace_next_len);
         for _ in 0..trace_next_len {
-            trace_next_wires.push(circuit.add_public_input());
+            trace_next_targets.push(circuit.add_public_input());
         }
         let quotient_chunks_len = lens.next().unwrap();
-        let mut quotient_chunks_wires = Vec::with_capacity(quotient_chunks_len);
+        let mut quotient_chunks_targets = Vec::with_capacity(quotient_chunks_len);
         for _ in 0..quotient_chunks_len {
             let quotient_chunks_cols_len = lens.next().unwrap();
             let mut quotient_col = Vec::with_capacity(quotient_chunks_cols_len);
             for _ in 0..quotient_chunks_cols_len {
                 quotient_col.push(circuit.add_public_input());
             }
-            quotient_chunks_wires.push(quotient_col);
+            quotient_chunks_targets.push(quotient_col);
         }
         let random_len = lens.next().unwrap();
-        let random_wires = if random_len > 0 {
+        let random_targets = if random_len > 0 {
             let mut r = Vec::with_capacity(random_len);
             for _ in 0..random_len {
                 r.push(circuit.add_public_input());
@@ -370,10 +370,10 @@ impl<SC: StarkGenericConfig> Recursive<SC::Challenge> for OpenedValuesTargets<SC
         };
 
         Self {
-            trace_local_wires,
-            trace_next_wires,
-            quotient_chunks_wires,
-            random_wires,
+            trace_local_targets,
+            trace_next_targets,
+            quotient_chunks_targets,
+            random_targets,
             _phantom: PhantomData,
         }
     }
