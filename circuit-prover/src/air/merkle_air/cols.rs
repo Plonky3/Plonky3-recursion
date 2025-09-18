@@ -1,149 +1,12 @@
-use alloc::format;
-use alloc::string::String;
 use alloc::vec::Vec;
 use core::borrow::{Borrow, BorrowMut};
 
 use itertools::izip;
-use p3_baby_bear::BabyBear;
-use p3_field::extension::BinomiallyExtendable;
-use p3_field::{BasedVectorSpace, ExtensionField, Field, PrimeField, PrimeField64};
+use p3_circuit::tables::MerkleTrace;
+use p3_field::{BasedVectorSpace, Field};
 use p3_matrix::dense::RowMajorMatrix;
 
-use crate::air::MerkleVerifyAir;
-use crate::compress::FieldCompression;
-
-/// Merkle verification table (simplified: single field elements) containing
-/// the verification of several merkle paths.
-#[derive(Debug, Clone)]
-pub struct MerkleTrace<F> {
-    /// All the merkle paths computed in this trace
-    pub merkle_paths: Vec<MerklePathTrace<F>>,
-}
-
-/// A single Merkle Path verification table (simplified: single field elements)
-#[derive(Debug, Clone)]
-pub struct MerklePathTrace<F> {
-    /// Left operand values (current hash)
-    pub left_values: Vec<Vec<F>>,
-    /// Left operand indices
-    pub left_index: Vec<u32>,
-    /// Right operand values (sibling hash)
-    pub right_values: Vec<Vec<F>>,
-    /// Right operand indices (not on witness bus - private)
-    pub right_index: Vec<u32>,
-    /// Path direction bits (0 = left, 1 = right) - private
-    pub path_directions: Vec<bool>,
-    /// Indicates if the current row is processing a smaller
-    /// matrix of the Mmcs.
-    pub is_extra: Vec<bool>,
-}
-
-impl<F> MerklePathTrace<F> {
-    pub fn new() -> Self {
-        MerklePathTrace {
-            left_values: Vec::new(),
-            left_index: Vec::new(),
-            right_values: Vec::new(),
-            right_index: Vec::new(),
-            path_directions: Vec::new(),
-            is_extra: Vec::new(),
-        }
-    }
-}
-
-/// Private Merkle path data for fake Merkle verification (simplified)
-///
-/// This represents the private witness information that the prover needs
-/// to demonstrate knowledge of a valid Merkle path from leaf to root.
-/// In a real implementation, this would contain cryptographic hash values
-/// and tree structure information.
-///
-/// Note: This is a simplified "fake" implementation for demonstration.
-/// Production Merkle verification would use proper cryptographic hashes
-/// and handle multi-element hash digests, not single field elements.
-#[derive(Debug, Clone, PartialEq)]
-pub struct MerklePrivateData<F> {
-    /// Sibling hash values along the Merkle path
-    ///
-    /// For each level of the tree (from leaf to root), contains the
-    /// sibling hash needed to compute the parent hash. It might optionally
-    /// include the hash of the row of a smaller matrix in the Mmcs.
-    pub path_siblings: Vec<(Vec<F>, Option<Vec<F>>)>,
-
-    /// Direction bits indicating path through the tree
-    ///
-    /// For each level: `false` = current node is left child,
-    /// `true` = current node is right child. Used to determine
-    /// hash input ordering: `hash(current, sibling)` vs `hash(sibling, current)`.
-    pub path_directions: Vec<bool>,
-}
-
-impl<F: Clone> MerklePrivateData<F> {
-    pub fn to_trace<C, const HASH_ELEMS: usize, const D: usize>(
-        &self,
-        compress: &C,
-        leaf_index: u32,
-        leaf_value: [F; HASH_ELEMS],
-    ) -> Result<MerklePathTrace<F>, String>
-    where
-        C: FieldCompression<BabyBear, F, D, 2, HASH_ELEMS>,
-    {
-        let mut trace = MerklePathTrace::new();
-        let mut state = leaf_value;
-
-        // For each step in the Merkle path
-        for ((sibling_value, extra_sibling_value), &direction) in
-            self.path_siblings.iter().zip(self.path_directions.iter())
-        {
-            let sibling_value: [F; HASH_ELEMS] = sibling_value
-                .clone()
-                .try_into()
-                .map_err(|_| "Incorrect size of hahses")?;
-            // Current hash becomes left operand
-            trace.left_values.push(state.to_vec());
-            // TODO: What is the address of this value?
-            trace.left_index.push(leaf_index); // Points to witness bus
-
-            // Sibling becomes right operand (private data - not on witness bus)
-            trace.right_values.push(sibling_value.to_vec());
-            trace.right_index.push(0); // Not on witness bus - private data
-
-            // Compute parent hash (simple mock hash: left + right + direction)
-            let parent_hash = if direction {
-                compress.compress_field([state, sibling_value])
-            } else {
-                compress.compress_field([sibling_value, state])
-            };
-
-            trace.path_directions.push(direction);
-            trace.is_extra.push(false);
-
-            // Update current hash for next iteration
-            state = parent_hash;
-
-            // If there's an extra sibling we push another row to the trace
-            if let Some(extra_sibling_value) = extra_sibling_value {
-                let extra_sibling_value: [F; HASH_ELEMS] =
-                    extra_sibling_value
-                        .clone()
-                        .try_into()
-                        .map_err(|_| "Incorrect size of hahses")?;
-                trace.left_values.push(state.to_vec());
-                trace.left_index.push(leaf_index);
-
-                trace.right_values.push(extra_sibling_value.to_vec());
-                trace.right_index.push(0); // TODO: This should have an address on the witness table
-
-                let parent_hash = compress.compress_field([state, extra_sibling_value.clone()]);
-                trace.path_directions.push(direction);
-                trace.is_extra.push(true);
-
-                state = parent_hash.clone();
-            }
-        }
-        Ok(trace)
-    }
-}
+use crate::air::merkle_air::air::MerkleVerifyAir;
 
 #[derive(Debug)]
 #[repr(C)]
@@ -220,11 +83,7 @@ impl<F: Field, const DIGEST_ELEMS: usize, const MAX_TREE_HEIGHT: usize>
             .iter()
             .map(|path| path.left_values.len() + 1)
             .sum::<usize>();
-        let padded_height = if height > 0 {
-            height.next_power_of_two()
-        } else {
-            0
-        };
+        let padded_height = height.next_power_of_two();
 
         let width = get_num_merkle_tree_cols::<DIGEST_ELEMS, MAX_TREE_HEIGHT>();
 
@@ -242,9 +101,6 @@ impl<F: Field, const DIGEST_ELEMS: usize, const MAX_TREE_HEIGHT: usize>
         let mut row_counter = 0;
         for path in trace.merkle_paths.iter() {
             let max_height = path.is_extra.iter().filter(|is_extra| !*is_extra).count();
-
-            // We start at the highest height. It corresponds to the length of the siblings. In `verify_batch`, `cur_height_padded` is divided by 2 at each step. So the initial `cur_height_padded` should be `1 << max_height`.
-            let mut cur_height_padded = 1 << max_height;
 
             let index_bits = path
                 .path_directions

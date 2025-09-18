@@ -16,6 +16,11 @@ impl fmt::Display for WitnessId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ExprId(pub u32);
 
+impl ExprId {
+    /// The zero expression ID - always points to Const(0)
+    pub const ZERO: ExprId = ExprId(0);
+}
+
 /// Handle to a non-primitive operation (for setting private data later)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct NonPrimitiveOpId(pub u32);
@@ -37,7 +42,7 @@ impl WitnessAllocator {
         idx
     }
 
-    pub fn slot_count(&self) -> u32 {
+    pub fn witness_count(&self) -> u32 {
         self.next_idx
     }
 }
@@ -50,6 +55,8 @@ impl Default for WitnessAllocator {
 
 #[cfg(test)]
 mod tests {
+    use alloc::format;
+
     use super::*;
 
     #[test]
@@ -69,6 +76,6 @@ mod tests {
         assert_eq!(w0, WitnessId(0));
         assert_eq!(w1, WitnessId(1));
         assert_eq!(w2, WitnessId(2));
-        assert_eq!(allocator.slot_count(), 3);
+        assert_eq!(allocator.witness_count(), 3);
     }
 }

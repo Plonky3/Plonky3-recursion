@@ -1,5 +1,6 @@
-use p3_merkle_tree_air::cols::MerklePrivateData;
+use alloc::vec::Vec;
 
+use crate::tables::MerklePrivateData;
 use crate::types::WitnessId;
 
 /// Primitive operations that represent basic field arithmetic

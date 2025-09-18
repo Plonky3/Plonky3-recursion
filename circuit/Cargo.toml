@@ -10,10 +10,28 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
-hashbrown = "0.16.0"
+
+# Plonky3 dependencies
 p3-baby-bear.workspace = true
 p3-field.workspace = true
 p3-merkle-tree-air.workspace = true
 p3-keccak.workspace = true
 p3-symmetric.workspace = true
+p3-uni-stark.workspace = true
+
+# Other common dependencies
+hashbrown = "0.16.0"
 serde.workspace = true
+
+[dev-dependencies]
+p3-air.workspace = true
+p3-baby-bear.workspace = true
+p3-challenger.workspace = true
+p3-commit.workspace = true
+p3-dft.workspace = true
+p3-fri.workspace = true
+p3-matrix.workspace = true
+p3-merkle-tree.workspace = true
+p3-symmetric.workspace = true
+
+rand.workspace = true

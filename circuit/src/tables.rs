@@ -1,19 +1,113 @@
-use std::marker::PhantomData;
+use alloc::string::String;
+use alloc::vec::Vec;
+use alloc::{format, vec};
 
-use p3_baby_bear::{BabyBear, Poseidon2BabyBear};
-use p3_field::extension::BinomiallyExtendable;
-use p3_field::{
-    BasedVectorSpace, ExtensionField, Field, PrimeCharacteristicRing, PrimeField, PrimeField64,
-};
-use p3_keccak::KeccakF;
-use p3_merkle_tree_air::cols::{MerklePathTrace, MerklePrivateData, MerkleTrace};
-use p3_merkle_tree_air::compress::FieldCompression;
-use p3_symmetric::{CompressionFunctionFromHasher, PaddingFreeSponge, TruncatedPermutation};
+use p3_field::{BasedVectorSpace, Field, Packable, PackedValue, PrimeCharacteristicRing};
+use p3_symmetric::PseudoCompressionFunction;
 
 use crate::NonPrimitiveOp;
 use crate::circuit::Circuit;
 use crate::op::{NonPrimitiveOpPrivateData, Prim};
 use crate::types::{NonPrimitiveOpId, WitnessId};
+use crate::utils::MockCompression;
+
+/// Errors that can occur during circuit execution and trace generation.
+#[derive(Debug)]
+pub enum CircuitError {
+    /// Public input length mismatch.
+    PublicInputLengthMismatch { expected: usize, got: usize },
+    /// Circuit missing public_rows mapping.
+    MissingPublicRowsMapping,
+    /// NonPrimitiveOpId out of range.
+    NonPrimitiveOpIdOutOfRange { op_id: u32, max_ops: usize },
+    /// Public input not set for a WitnessId.
+    PublicInputNotSet { witness_id: u32 },
+    /// Witness not set for a WitnessId.
+    WitnessNotSet { witness_id: u32 },
+    /// WitnessId out of bounds.
+    WitnessIdOutOfBounds { witness_id: u32 },
+    /// Witness conflict: trying to reassign to a different value.
+    WitnessConflict {
+        witness_id: u32,
+        existing: String,
+        new: String,
+    },
+    /// Witness not set for an index during trace generation.
+    WitnessNotSetForIndex { index: usize },
+    /// Non-primitive op attempted to read a witness value that was not set.
+    NonPrimitiveOpWitnessNotSet { operation_index: usize },
+    /// Missing private data for a non-primitive operation.
+    NonPrimitiveOpMissingPrivateData { operation_index: usize },
+    /// Division by zero encountered.
+    DivisionByZero,
+    /// Degree not supported.
+    UnsupportedDegree(usize),
+    ///
+    MerkleVerifyDigestLengthMismatch { expected: usize, got: usize },
+}
+
+impl core::fmt::Display for CircuitError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            CircuitError::PublicInputLengthMismatch { expected, got } => {
+                write!(
+                    f,
+                    "Public input length mismatch: expected {expected}, got {got}"
+                )
+            }
+            CircuitError::MissingPublicRowsMapping => {
+                write!(f, "Circuit missing public_rows mapping")
+            }
+            CircuitError::NonPrimitiveOpIdOutOfRange { op_id, max_ops } => {
+                write!(
+                    f,
+                    "NonPrimitiveOpId {op_id} out of range (circuit has {max_ops} complex ops)"
+                )
+            }
+            CircuitError::PublicInputNotSet { witness_id } => {
+                write!(f, "Public input not set for WitnessId({witness_id})")
+            }
+            CircuitError::WitnessNotSet { witness_id } => {
+                write!(f, "Witness not set for WitnessId({witness_id})")
+            }
+            CircuitError::WitnessIdOutOfBounds { witness_id } => {
+                write!(f, "WitnessId({witness_id}) out of bounds")
+            }
+            CircuitError::WitnessConflict {
+                witness_id,
+                existing,
+                new,
+            } => {
+                write!(
+                    f,
+                    "Witness conflict: WitnessId({witness_id}) already set to {existing}, cannot reassign to {new}"
+                )
+            }
+            CircuitError::WitnessNotSetForIndex { index } => {
+                write!(f, "Witness not set for index {index}")
+            }
+            CircuitError::NonPrimitiveOpWitnessNotSet { operation_index } => {
+                write!(
+                    f,
+                    "Witness value not set for non-primitive operation {operation_index}"
+                )
+            }
+            CircuitError::NonPrimitiveOpMissingPrivateData { operation_index } => {
+                write!(
+                    f,
+                    "Missing private data for non-primitive operation {operation_index}"
+                )
+            }
+            CircuitError::DivisionByZero => {
+                write!(f, "Division by zero encountered")
+            }
+            CircuitError::UnsupportedDegree(degree) => write!(f, "Degree {degree} not supported"),
+            CircuitError::MerkleVerifyDigestLengthMismatch { expected, got } => {
+                write!(f, "Expected digest len {expected} got {got}")
+            }
+        }
+    }
+}
 
 /// Execution traces for all tables
 #[derive(Debug, Clone)]
@@ -133,6 +227,146 @@ pub struct FakeMerkleTrace<F> {
     pub path_directions: Vec<u32>,
 }
 
+/// Merkle verification table (simplified: single field elements) containing
+/// the verification of several merkle paths.
+#[derive(Debug, Clone)]
+pub struct MerkleTrace<F> {
+    /// All the merkle paths computed in this trace
+    pub merkle_paths: Vec<MerklePathTrace<F>>,
+}
+
+/// A single Merkle Path verification table (simplified: single field elements)
+#[derive(Debug, Clone)]
+pub struct MerklePathTrace<F> {
+    /// Left operand values (current hash)
+    pub left_values: Vec<Vec<F>>,
+    /// Left operand indices
+    pub left_index: Vec<u32>,
+    /// Right operand values (sibling hash)
+    pub right_values: Vec<Vec<F>>,
+    /// Right operand indices (not on witness bus - private)
+    pub right_index: Vec<u32>,
+    /// Path direction bits (0 = left, 1 = right) - private
+    pub path_directions: Vec<bool>,
+    /// Indicates if the current row is processing a smaller
+    /// matrix of the Mmcs.
+    pub is_extra: Vec<bool>,
+}
+
+impl<F> MerklePathTrace<F> {
+    pub fn new() -> Self {
+        MerklePathTrace {
+            left_values: Vec::new(),
+            left_index: Vec::new(),
+            right_values: Vec::new(),
+            right_index: Vec::new(),
+            path_directions: Vec::new(),
+            is_extra: Vec::new(),
+        }
+    }
+}
+
+/// Private Merkle path data for fake Merkle verification (simplified)
+///
+/// This represents the private witness information that the prover needs
+/// to demonstrate knowledge of a valid Merkle path from leaf to root.
+/// In a real implementation, this would contain cryptographic hash values
+/// and tree structure information.
+///
+/// Note: This is a simplified "fake" implementation for demonstration.
+/// Production Merkle verification would use proper cryptographic hashes
+/// and handle multi-element hash digests, not single field elements.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MerklePrivateData<F> {
+    /// Sibling hash values along the Merkle path
+    ///
+    /// For each level of the tree (from leaf to root), contains the
+    /// sibling hash needed to compute the parent hash. It might optionally
+    /// include the hash of the row of a smaller matrix in the Mmcs.
+    pub path_siblings: Vec<(Vec<F>, Option<Vec<F>>)>,
+
+    /// Direction bits indicating path through the tree
+    ///
+    /// For each level: `false` = current node is left child,
+    /// `true` = current node is right child. Used to determine
+    /// hash input ordering: `hash(current, sibling)` vs `hash(sibling, current)`.
+    pub path_directions: Vec<bool>,
+}
+
+impl<F: Packable + Clone> MerklePrivateData<F> {
+    pub fn to_trace<C, const DIGEST_ELEMS: usize, const D: usize>(
+        &self,
+        compress: &C,
+        leaf_index: u32,
+        leaf_value: [F; DIGEST_ELEMS],
+    ) -> Result<MerklePathTrace<F>, CircuitError>
+    where
+        C: PseudoCompressionFunction<[<F as PackedValue>::Value; DIGEST_ELEMS], 2>
+            + PseudoCompressionFunction<[F; DIGEST_ELEMS], 2>
+            + Sync,
+    {
+        let mut trace = MerklePathTrace::new();
+        let mut state = leaf_value;
+
+        // For each step in the Merkle path
+        for ((sibling_value, extra_sibling_value), &direction) in
+            self.path_siblings.iter().zip(self.path_directions.iter())
+        {
+            let sibling_value: [F; DIGEST_ELEMS] =
+                sibling_value.clone().try_into().map_err(|_| {
+                    CircuitError::MerkleVerifyDigestLengthMismatch {
+                        expected: DIGEST_ELEMS,
+                        got: sibling_value.len(),
+                    }
+                })?;
+            // Current hash becomes left operand
+            trace.left_values.push(state.to_vec());
+            // TODO: What is the address of this value?
+            trace.left_index.push(leaf_index); // Points to witness bus
+
+            // Sibling becomes right operand (private data - not on witness bus)
+            trace.right_values.push(sibling_value.to_vec());
+            trace.right_index.push(0); // Not on witness bus - private data
+
+            // Compute parent hash (simple mock hash: left + right + direction)
+            let parent_hash = if direction {
+                compress.compress([state, sibling_value])
+            } else {
+                compress.compress([sibling_value, state])
+            };
+
+            trace.path_directions.push(direction);
+            trace.is_extra.push(false);
+
+            // Update current hash for next iteration
+            state = parent_hash;
+
+            // If there's an extra sibling we push another row to the trace
+            if let Some(extra_sibling_value) = extra_sibling_value {
+                let extra_sibling_value: [F; DIGEST_ELEMS] = extra_sibling_value
+                    .clone()
+                    .try_into()
+                    .map_err(|_| CircuitError::MerkleVerifyDigestLengthMismatch {
+                        expected: DIGEST_ELEMS,
+                        got: extra_sibling_value.len(),
+                    })?;
+                trace.left_values.push(state.to_vec());
+                trace.left_index.push(leaf_index);
+
+                trace.right_values.push(extra_sibling_value.to_vec());
+                trace.right_index.push(0); // TODO: This should have an address on the witness table
+
+                let parent_hash = compress.compress([state, extra_sibling_value.clone()]);
+                trace.path_directions.push(direction);
+                trace.is_extra.push(true);
+
+                state = parent_hash.clone();
+            }
+        }
+        Ok(trace)
+    }
+}
+
 /// Circuit runner that executes circuits and generates execution traces
 ///
 /// This struct manages the runtime execution of a `Circuit` specification:
@@ -146,73 +380,70 @@ pub struct CircuitRunner<F> {
     circuit: Circuit<F>,
     witness: Vec<Option<F>>,
     /// Private data for complex operations (not on witness bus)
-    complex_op_private_data: Vec<Option<NonPrimitiveOpPrivateData<F>>>,
+    non_primitive_op_private_data: Vec<Option<NonPrimitiveOpPrivateData<F>>>,
 }
 
 impl<
     F: Clone
         + Default
-        + std::ops::Add<Output = F>
-        + std::ops::Sub<Output = F>
-        + std::ops::Mul<Output = F>
+        + core::ops::Add<Output = F>
+        + core::ops::Sub<Output = F>
+        + core::ops::Mul<Output = F>
         + PartialEq
-        + std::fmt::Debug
+        + core::fmt::Debug
         + PrimeCharacteristicRing
-        + Field
-        + BasedVectorSpace<BabyBear>
-        + ExtensionField<BabyBear>,
+        + Packable
+        + Field,
 > CircuitRunner<F>
 {
     /// Create a new prover instance
     pub fn new(circuit: Circuit<F>) -> Self {
-        let witness = vec![None; circuit.slot_count as usize];
-        let complex_op_private_data = vec![None; circuit.non_primitive_ops.len()];
+        let witness = vec![None; circuit.witness_count as usize];
+        let non_primitive_op_private_data = vec![None; circuit.non_primitive_ops.len()];
         Self {
             circuit,
             witness,
-            complex_op_private_data,
+            non_primitive_op_private_data,
         }
     }
 
     /// Set public inputs according to Circuit.public_rows mapping
-    pub fn set_public_inputs(&mut self, public_values: &[F]) -> Result<(), String> {
+    pub fn set_public_inputs(&mut self, public_values: &[F]) -> Result<(), CircuitError> {
         if public_values.len() != self.circuit.public_flat_len {
-            return Err(format!(
-                "Public input length mismatch: expected {}, got {}",
-                self.circuit.public_flat_len,
-                public_values.len()
-            ));
+            return Err(CircuitError::PublicInputLengthMismatch {
+                expected: self.circuit.public_flat_len,
+                got: public_values.len(),
+            });
         }
         if self.circuit.public_rows.len() != self.circuit.public_flat_len {
-            return Err("Circuit missing public_rows mapping".to_string());
+            return Err(CircuitError::MissingPublicRowsMapping);
         }
 
         for (i, value) in public_values.iter().enumerate() {
             let widx = self.circuit.public_rows[i];
-            self.witness[widx.0 as usize] = Some(value.clone());
+            self.set_witness(widx, value.clone())?;
         }
 
         Ok(())
     }
 
     /// Set private data for a complex operation
-    pub fn set_complex_op_private_data(
+    pub fn set_non_primitive_op_private_data(
         &mut self,
         op_id: NonPrimitiveOpId,
         private_data: NonPrimitiveOpPrivateData<F>,
-    ) -> Result<(), String> {
+    ) -> Result<(), CircuitError> {
         // Validate that the op_id exists in the circuit
         if op_id.0 as usize >= self.circuit.non_primitive_ops.len() {
-            return Err(format!(
-                "NonPrimitiveOpId {} out of range (circuit has {} complex ops)",
-                op_id.0,
-                self.circuit.non_primitive_ops.len()
-            ));
+            return Err(CircuitError::NonPrimitiveOpIdOutOfRange {
+                op_id: op_id.0,
+                max_ops: self.circuit.non_primitive_ops.len(),
+            });
         }
 
         // Validate that the private data matches the operation type
-        let complex_op = &self.circuit.non_primitive_ops[op_id.0 as usize];
-        match (complex_op, &private_data) {
+        let non_primitive_op = &self.circuit.non_primitive_ops[op_id.0 as usize];
+        match (non_primitive_op, &private_data) {
             (
                 NonPrimitiveOp::FakeMerkleVerify { .. },
                 NonPrimitiveOpPrivateData::FakeMerkleVerify(_),
@@ -222,20 +453,18 @@ impl<
             (NonPrimitiveOp::MerkleVerify { .. }, NonPrimitiveOpPrivateData::MerkleVerify(_)) => {
                 // Type match - good!
             }
-            _ => {
-                return Err(format!(
-                    "NonPrimitiveOp {:?} does not match NonPrimitiveOpPrivateData {:?}",
-                    complex_op, private_data,
-                ));
-            }
+            _ => return Err(CircuitError::DivisionByZero), // TODO: This won't be necessary when fake doesn't exists anymore
         }
 
-        self.complex_op_private_data[op_id.0 as usize] = Some(private_data);
+        self.non_primitive_op_private_data[op_id.0 as usize] = Some(private_data);
         Ok(())
     }
 
     /// Run the circuit and generate traces
-    pub fn run(mut self) -> Result<Traces<F>, String> {
+    pub fn run<BF: PrimeCharacteristicRing>(mut self) -> Result<Traces<F>, CircuitError>
+    where
+        F: Field + BasedVectorSpace<BF>,
+    {
         // Step 1: Execute primitives to fill witness vector
         self.execute_primitives()?;
 
@@ -248,19 +477,15 @@ impl<
         let sub_trace = self.generate_sub_trace()?;
         let fake_merkle_trace = self.generate_fake_merkle_trace()?;
         let merkle_trace = match F::DIMENSION {
-            1 => Ok(MerkleTrace {
+            1..=3 | 5..=8 => Ok(MerkleTrace {
                 merkle_paths: vec![],
             }),
             4 => {
-                // TODO: This is not the right hash
-                type U64Hash = PaddingFreeSponge<KeccakF, 25, 17, 4>;
-                let u64_hash = U64Hash::new(KeccakF {});
-
-                type MyCompress = CompressionFunctionFromHasher<U64Hash, 2, 4>;
-                let compress = MyCompress::new(u64_hash);
+                // TODO: Is this the right hash?
+                let compress = MockCompression {};
                 self.generate_merkle_trace::<_, 1, 4>(&compress)
             }
-            _ => Err(format!("Degree {} no supported!", F::DIMENSION)),
+            _ => Err(CircuitError::UnsupportedDegree(F::DIMENSION)),
         }?;
 
         Ok(Traces {
@@ -276,7 +501,7 @@ impl<
     }
 
     /// Execute all primitive operations to fill witness vector
-    fn execute_primitives(&mut self) -> Result<(), String> {
+    fn execute_primitives(&mut self) -> Result<(), CircuitError> {
         // Clone primitive operations to avoid borrowing issues
         let primitive_ops = self.circuit.primitive_ops.clone();
 
@@ -288,7 +513,7 @@ impl<
                 Prim::Public { out, public_pos: _ } => {
                     // Public inputs should already be set
                     if self.witness[out.0 as usize].is_none() {
-                        return Err(format!("Public input not set for WitnessId({})", out.0));
+                        return Err(CircuitError::PublicInputNotSet { witness_id: out.0 });
                     }
                 }
                 Prim::Add { a, b, out } => {
@@ -304,10 +529,18 @@ impl<
                     self.set_witness(out, result)?;
                 }
                 Prim::Mul { a, b, out } => {
+                    // Mul is used to represent either `Mul` or `Div` operations.
+                    // We determine which based on which inputs are set.
                     let a_val = self.get_witness(a)?;
-                    let b_val = self.get_witness(b)?;
-                    let result = a_val * b_val;
-                    self.set_witness(out, result)?;
+                    if let Ok(b_val) = self.get_witness(b) {
+                        let result = a_val * b_val;
+                        self.set_witness(out, result)?;
+                    } else {
+                        let result_val = self.get_witness(out)?;
+                        let a_inv = a_val.try_inverse().ok_or(CircuitError::DivisionByZero)?;
+                        let b_val = result_val * a_inv;
+                        self.set_witness(b, b_val)?;
+                    }
                 }
             }
         }
@@ -315,26 +548,27 @@ impl<
         Ok(())
     }
 
-    fn get_witness(&self, widx: WitnessId) -> Result<F, String> {
+    fn get_witness(&self, widx: WitnessId) -> Result<F, CircuitError> {
         self.witness
             .get(widx.0 as usize)
             .and_then(|opt| opt.as_ref())
             .cloned()
-            .ok_or_else(|| format!("Witness not set for WitnessId({})", widx.0))
+            .ok_or(CircuitError::WitnessNotSet { witness_id: widx.0 })
     }
 
-    fn set_witness(&mut self, widx: WitnessId, value: F) -> Result<(), String> {
+    fn set_witness(&mut self, widx: WitnessId, value: F) -> Result<(), CircuitError> {
         if widx.0 as usize >= self.witness.len() {
-            return Err(format!("WitnessId({}) out of bounds", widx.0));
+            return Err(CircuitError::WitnessIdOutOfBounds { witness_id: widx.0 });
         }
 
         // Check for conflicting reassignment
-        if let Some(existing_value) = self.witness[widx.0 as usize].clone() {
+        if let Some(existing_value) = self.witness[widx.0 as usize] {
             if existing_value != value {
-                return Err(format!(
-                    "Witness conflict: WitnessId({}) already set to {:?}, cannot reassign to {:?}",
-                    widx.0, existing_value, value
-                ));
+                return Err(CircuitError::WitnessConflict {
+                    witness_id: widx.0,
+                    existing: format!("{existing_value:?}"),
+                    new: format!("{value:?}"),
+                });
             }
         } else {
             self.witness[widx.0 as usize] = Some(value);
@@ -343,7 +577,7 @@ impl<
         Ok(())
     }
 
-    fn generate_witness_trace(&self) -> Result<WitnessTrace<F>, String> {
+    fn generate_witness_trace(&self) -> Result<WitnessTrace<F>, CircuitError> {
         let mut index = Vec::new();
         let mut values = Vec::new();
 
@@ -351,10 +585,10 @@ impl<
             match witness_opt {
                 Some(value) => {
                     index.push(i as u32);
-                    values.push(value.clone());
+                    values.push(*value);
                 }
                 None => {
-                    return Err(format!("Witness not set for index {i}"));
+                    return Err(CircuitError::WitnessNotSetForIndex { index: i });
                 }
             }
         }
@@ -362,7 +596,7 @@ impl<
         Ok(WitnessTrace { index, values })
     }
 
-    fn generate_const_trace(&self) -> Result<ConstTrace<F>, String> {
+    fn generate_const_trace(&self) -> Result<ConstTrace<F>, CircuitError> {
         let mut index = Vec::new();
         let mut values = Vec::new();
 
@@ -370,14 +604,14 @@ impl<
         for prim in &self.circuit.primitive_ops {
             if let Prim::Const { out, val } = prim {
                 index.push(out.0);
-                values.push(val.clone());
+                values.push(*val);
             }
         }
 
         Ok(ConstTrace { index, values })
     }
 
-    fn generate_public_trace(&self) -> Result<PublicTrace<F>, String> {
+    fn generate_public_trace(&self) -> Result<PublicTrace<F>, CircuitError> {
         let mut index = Vec::new();
         let mut values = Vec::new();
 
@@ -393,7 +627,7 @@ impl<
         Ok(PublicTrace { index, values })
     }
 
-    fn generate_add_trace(&self) -> Result<AddTrace<F>, String> {
+    fn generate_add_trace(&self) -> Result<AddTrace<F>, CircuitError> {
         let mut lhs_values = Vec::new();
         let mut lhs_index = Vec::new();
         let mut rhs_values = Vec::new();
@@ -422,7 +656,7 @@ impl<
         })
     }
 
-    fn generate_mul_trace(&self) -> Result<MulTrace<F>, String> {
+    fn generate_mul_trace(&self) -> Result<MulTrace<F>, CircuitError> {
         let mut lhs_values = Vec::new();
         let mut lhs_index = Vec::new();
         let mut rhs_values = Vec::new();
@@ -451,7 +685,7 @@ impl<
         })
     }
 
-    fn generate_sub_trace(&self) -> Result<SubTrace<F>, String> {
+    fn generate_sub_trace(&self) -> Result<SubTrace<F>, CircuitError> {
         let mut lhs_values = Vec::new();
         let mut lhs_index = Vec::new();
         let mut rhs_values = Vec::new();
@@ -480,7 +714,7 @@ impl<
         })
     }
 
-    fn generate_fake_merkle_trace(&mut self) -> Result<FakeMerkleTrace<F>, String> {
+    fn generate_fake_merkle_trace(&mut self) -> Result<FakeMerkleTrace<F>, CircuitError> {
         let mut left_values = Vec::new();
         let mut left_index = Vec::new();
         let mut right_values = Vec::new();
@@ -497,16 +731,16 @@ impl<
             {
                 // Clone private data option to avoid holding a borrow on self
                 if let Some(Some(NonPrimitiveOpPrivateData::FakeMerkleVerify(private_data))) =
-                    self.complex_op_private_data.get(op_idx).cloned()
+                    self.non_primitive_op_private_data.get(op_idx).cloned()
                 {
                     let mut current_hash = if let Some(val) =
                         self.witness.get(leaf.0 as usize).and_then(|x| x.as_ref())
                     {
                         val.clone()
                     } else {
-                        return Err(format!(
-                            "Leaf value not set for FakeMerkleVerify operation {op_idx}"
-                        ));
+                        return Err(CircuitError::NonPrimitiveOpWitnessNotSet {
+                            operation_index: op_idx,
+                        });
                     };
 
                     // For each step in the Merkle path
@@ -544,9 +778,9 @@ impl<
                     // Root is computed; write back to the witness bus at root index
                     // self.set_witness(root, current_hash.clone())?;
                 } else {
-                    return Err(format!(
-                        "Missing private data for FakeMerkleVerify operation {op_idx}"
-                    ));
+                    return Err(CircuitError::NonPrimitiveOpMissingPrivateData {
+                        operation_index: op_idx,
+                    });
                 }
             }
         }
@@ -562,47 +796,56 @@ impl<
         })
     }
 
-    fn generate_merkle_trace<C, const HASH_ELEMS: usize, const D: usize>(
+    fn generate_merkle_trace<C, const DIGEST_ELEMS: usize, const D: usize>(
         &mut self,
         compress: &C,
-    ) -> Result<MerkleTrace<F>, String>
+    ) -> Result<MerkleTrace<F>, CircuitError>
     where
-        C: FieldCompression<BabyBear, F, D, 2, HASH_ELEMS>,
+        C: PseudoCompressionFunction<[<F as PackedValue>::Value; DIGEST_ELEMS], 2> + Sync,
     {
-        debug_assert!(F::DIMENSION == D);
+        // debug_assert_eq!(F::DIMENSION, D);
         let mut merkle_paths = Vec::new();
 
         // Process each complex operation by index to avoid borrowing conflicts
         for op_idx in 0..self.circuit.non_primitive_ops.len() {
             // Copy out leaf/root to end immutable borrow immediately
-            if let NonPrimitiveOp::MerkleVerify { leaf, root } =
+            if let NonPrimitiveOp::MerkleVerify { leaf, root: _ } =
                 self.circuit.non_primitive_ops[op_idx]
             {
                 // Clone private data option to avoid holding a borrow on self
                 let first = leaf.0 as usize;
-                let last = first + HASH_ELEMS;
-                let leaf: [F; HASH_ELEMS] = if let Some(val) =
+                let last = first + DIGEST_ELEMS;
+                let leaf: [F; DIGEST_ELEMS] = if let Some(val) =
                     self.witness.get(first..last).and_then(|xs| {
                         xs.into_iter()
                             .map(|x| x.clone())
                             .collect::<Option<Vec<F>>>()
                     }) {
-                    val.try_into().map_err(|_| "Incorrect size of hahses")?
+                    let val_len = val.len();
+                    val.try_into()
+                        .map_err(|_| CircuitError::MerkleVerifyDigestLengthMismatch {
+                            expected: DIGEST_ELEMS,
+                            got: val_len,
+                        })?
                 } else {
-                    return Err(format!(
-                        "Leaf value not set for MerkleVerify operation {op_idx}"
-                    ));
+                    return Err(CircuitError::NonPrimitiveOpWitnessNotSet {
+                        operation_index: op_idx,
+                    });
                 };
 
                 if let Some(Some(NonPrimitiveOpPrivateData::MerkleVerify(private_data))) =
-                    self.complex_op_private_data.get(op_idx).cloned()
+                    self.non_primitive_op_private_data.get(op_idx).cloned()
                 {
-                    let trace = private_data.to_trace(compress, first as u32, leaf)?;
+                    let trace = private_data.to_trace::<C, DIGEST_ELEMS, D>(
+                        compress,
+                        first as u32,
+                        leaf,
+                    )?;
                     merkle_paths.push(trace);
                 } else {
-                    return Err(format!(
-                        "Missing private data for eMerkleVerify operation {op_idx}"
-                    ));
+                    return Err(CircuitError::NonPrimitiveOpMissingPrivateData {
+                        operation_index: op_idx,
+                    });
                 }
             }
         }
@@ -614,14 +857,14 @@ impl<
 impl<
     F: Clone
         + Default
-        + std::ops::Add<Output = F>
-        + std::ops::Sub<Output = F>
-        + std::ops::Mul<Output = F>
+        + core::ops::Add<Output = F>
+        + core::ops::Sub<Output = F>
+        + core::ops::Mul<Output = F>
         + PartialEq
-        + std::fmt::Debug
+        + core::fmt::Debug
         + PrimeCharacteristicRing
-        + Field
-        + ExtensionField<BabyBear>,
+        + Packable
+        + Field,
 > Circuit<F>
 {
     /// Create a circuit runner for execution and trace generation
@@ -632,11 +875,12 @@ impl<
 
 #[cfg(test)]
 mod tests {
+    extern crate std;
+    use std::println;
+
     use p3_baby_bear::BabyBear;
     use p3_field::extension::BinomialExtensionField;
     use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
-    use p3_keccak::KeccakF;
-    use p3_symmetric::{CompressionFunctionFromHasher, PaddingFreeSponge};
 
     use crate::builder::CircuitBuilder;
 
@@ -649,7 +893,7 @@ mod tests {
         let c5 = builder.add_const(BabyBear::from_u64(5));
         let _result = builder.add(x, c5);
 
-        let circuit = builder.build();
+        let circuit = builder.build().unwrap();
         let mut runner = circuit.runner();
 
         // Set public input: x = 3
@@ -677,22 +921,26 @@ mod tests {
     fn test_toy_example_37_times_x_minus_111() {
         let mut builder = CircuitBuilder::<BabyBear>::new();
 
-        // DESIGN.txt example: 37 * x - 111 = 0
         let x = builder.add_public_input();
         let c37 = builder.add_const(BabyBear::from_u64(37));
         let c111 = builder.add_const(BabyBear::from_u64(111));
+        let c1 = builder.add_const(BabyBear::from_u64(1));
 
         let mul_result = builder.mul(c37, x);
         let sub_result = builder.sub(mul_result, c111);
         builder.assert_zero(sub_result);
 
-        let circuit = builder.build();
+        let div_result = builder.div(mul_result, c111);
+        let sub_one = builder.sub(div_result, c1);
+        builder.assert_zero(sub_one);
+
+        let circuit = builder.build().unwrap();
         println!("=== CIRCUIT PRIMITIVE OPERATIONS ===");
         for (i, prim) in circuit.primitive_ops.iter().enumerate() {
             println!("{i}: {prim:?}");
         }
 
-        let slot_count = circuit.slot_count;
+        let witness_count = circuit.witness_count;
         let mut runner = circuit.runner();
 
         // Set public input: x = 3 (should satisfy 37 * 3 - 111 = 0)
@@ -747,6 +995,20 @@ mod tests {
             );
         }
 
+        println!("\n=== ADD TRACE ===");
+        for i in 0..traces.add_trace.lhs_values.len() {
+            println!(
+                "Row {}: WitnessId({}) + WitnessId({}) -> WitnessId({}) | {:?} + {:?} -> {:?}",
+                i,
+                traces.add_trace.lhs_index[i],
+                traces.add_trace.rhs_index[i],
+                traces.add_trace.result_index[i],
+                traces.add_trace.lhs_values[i],
+                traces.add_trace.rhs_values[i],
+                traces.add_trace.result_values[i]
+            );
+        }
+
         println!("\n=== SUB TRACE ===");
         for i in 0..traces.sub_trace.lhs_values.len() {
             println!(
@@ -762,19 +1024,19 @@ mod tests {
         }
 
         // Verify trace structure
-        assert_eq!(traces.witness_trace.index.len(), slot_count as usize);
+        assert_eq!(traces.witness_trace.index.len(), witness_count as usize);
 
-        // Should have constants: 37, 111, and 0 (for assert_zero)
-        assert!(traces.const_trace.values.len() >= 2);
+        // Should have constants: 37, 111, 1 and 0 (for assert_zero)
+        assert!(traces.const_trace.values.len() >= 4);
 
         // Should have one public input
         assert_eq!(traces.public_trace.values.len(), 1);
         assert_eq!(traces.public_trace.values[0], BabyBear::from_u64(3));
 
-        // Should have one mul operation
-        assert_eq!(traces.mul_trace.lhs_values.len(), 1);
+        // Should have two mul operations (explicit Mul and Div lowering to Mul with inverse)
+        assert_eq!(traces.mul_trace.lhs_values.len(), 2);
 
-        // Should have two sub operations (explicit Sub and assert_zero lowering to Sub with zero)
+        // Should have two sub operations
         assert_eq!(traces.sub_trace.lhs_values.len(), 2);
     }
 
@@ -792,14 +1054,7 @@ mod tests {
         let yz = builder.mul(y, z);
         let _result = builder.add(x, yz);
 
-        let circuit = builder.build();
-
-        type U64Hash = PaddingFreeSponge<KeccakF, 25, 17, 1>;
-        type MyCompress = CompressionFunctionFromHasher<U64Hash, 2, 1>;
-
-        let u64_hash = U64Hash::new(KeccakF {});
-
-        let compress = MyCompress::new(u64_hash);
+        let circuit = builder.build().unwrap();
         let mut runner = circuit.runner();
 
         // Set public inputs to genuine extension field values with ALL non-zero coefficients
@@ -826,7 +1081,7 @@ mod tests {
         .unwrap();
 
         runner.set_public_inputs(&[x_val, y_val, z_val]).unwrap();
-        let traces = runner.run().unwrap();
+        let traces = runner.run::<BabyBear>().unwrap();
 
         // Verify extension field traces were generated correctly
         assert_eq!(traces.public_trace.values.len(), 3);

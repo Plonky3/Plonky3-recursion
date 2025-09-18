@@ -51,6 +51,45 @@ jobs:
       - name: Test
         run: cargo test --verbose
 
+  check_embedded:
+    name: Build embedded
+    runs-on: ubuntu-latest
+    if: "! contains(toJSON(github.event.commits.*.message), '[skip-ci]')"
+
+    env:
+      target: thumbv7em-none-eabi
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ env.target }}
+        id: rs-stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: rust-${{ steps.rs-stable.outputs.rustc_hash }}-${{ env.target }}-${{ hashFiles('**/Cargo.toml') }}
+
+      # NB: Some crates are currently skipped as unimplemented.
+      - name: Build
+        run: |
+          # cargo build --verbose --target ${{ env.target }} -p p3-challenger-air
+          cargo build --verbose --target ${{ env.target }} -p p3-circuit
+          cargo build --verbose --target ${{ env.target }} -p p3-circuit-prover
+          # cargo build --verbose --target ${{ env.target }} -p p3-field-air
+          # cargo build --verbose --target ${{ env.target }} -p p3-fri-air
+          # cargo build --verbose --target ${{ env.target }} -p p3-interpolation-air
+          cargo build --verbose --target ${{ env.target }} -p p3-merkle-tree-air
+          # cargo build --verbose --target ${{ env.target }} -p p3-symmetric-air
+          cargo build --verbose --target ${{ env.target }} -p p3-recursion
+
   lint:
     name: Formatting and Clippy
     runs-on: ubuntu-latest
