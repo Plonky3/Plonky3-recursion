@@ -36,7 +36,6 @@ fn get_circuit_challenges<
     Comm: Recursive<SC::Challenge, Input = <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment>,
     InputProof: Recursive<SC::Challenge>,
     OpeningProof: Recursive<SC::Challenge>,
-    const D: usize,
 >(
     proof_targets: &ProofTargets<SC, Comm, OpeningProof>,
     circuit: &mut CircuitBuilder<SC::Challenge>,
@@ -51,12 +50,13 @@ where
         >,
 {
     let mut challenges = vec![];
-    // Observe degree bits and degree_bits - is_zk.
-    // Observe local wires.
-    // Observe public values.
+    // TODO: Observe degree bits and degree_bits - is_zk.
+    // TODO: Observe local wires.
+    // TODO: Observe public values.
+    // First Fiat-Shamir challenge `alpha`.
     challenges.push(circuit.add_public_input());
-    // Observe quotient chunks.
-    // Observe random commitment if any.
+    // TODO: Observe quotient chunks.
+    // TODO: Observe random commitment if any.
     // zeta and zeta_next
     challenges.push(circuit.add_public_input());
     challenges.push(circuit.add_public_input());
@@ -83,8 +83,6 @@ pub fn verify_circuit<
         > + Clone,
     InputProof: Recursive<SC::Challenge> + Clone,
     OpeningProof: Recursive<SC::Challenge>,
-    const D: usize,
-    const DIGEST_ELEMS: usize,
 >(
     config: &SC,
     air: &A,
@@ -140,7 +138,7 @@ where
 
     // Challenger is called here. But we don't have the interactions or hash tables yet.
     let challenge_targets =
-        get_circuit_challenges::<SC, Comm, InputProof, OpeningProof, D>(proof_targets, circuit);
+        get_circuit_challenges::<SC, Comm, InputProof, OpeningProof>(proof_targets, circuit);
 
     // Verify shape.
     let air_width = A::width(air);
@@ -200,11 +198,12 @@ where
     );
 
     let zero = circuit.add_const(SC::Challenge::ZERO);
+    let one = circuit.add_const(SC::Challenge::ONE);
     let zps = quotient_chunks_domains
         .iter()
         .enumerate()
         .map(|(i, domain)| {
-            let mut total = zero;
+            let mut total = one;
             quotient_chunks_domains
                 .iter()
                 .enumerate()
@@ -261,7 +260,7 @@ where
     let folded_constraints = air.eval_folded_circuit(circuit, &sels, &alpha, columns_targets);
 
     // Compute folded_constraints * sels.inv_vanishing.
-    let folded_mul = circuit.add(folded_constraints, sels.inv_vanishing);
+    let folded_mul = circuit.mul(folded_constraints, sels.inv_vanishing);
 
     // Check that folded_constraints * sels.inv_vanishing == quotient
     let check = circuit.sub(folded_mul, quotient);
@@ -287,7 +286,7 @@ where
 {
     let pcs = config.pcs();
     let inv = circuit.add_const(pcs.first_point(&domain).inverse());
-    let mul = circuit.add(zeta, inv);
+    let mul = circuit.mul(zeta, inv);
     let exp = exp_power_of_2(circuit, mul, pcs.log_size(&domain));
     let one = circuit.add_const(SC::Challenge::ONE);
 
