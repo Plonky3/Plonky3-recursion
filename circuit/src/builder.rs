@@ -244,11 +244,16 @@ where
     /// - Are kept separate from primitives to avoid disrupting optimization
     ///
     /// Returns an operation ID for setting private data later during execution.
-    pub fn add_merkle_verify(&mut self, leaf_expr: ExprId, root_expr: ExprId) -> NonPrimitiveOpId {
+    pub fn add_merkle_verify(
+        &mut self,
+        leaf_expr: ExprId,
+        index_expr: ExprId,
+        root_expr: ExprId,
+    ) -> NonPrimitiveOpId {
         // Store input expression IDs - will be lowered to WitnessId during build()
         // Non-primitive ops consume ExprIds but don't produce them
         let op_id = NonPrimitiveOpId(self.non_primitive_ops.len() as u32);
-        let witness_exprs = vec![leaf_expr, root_expr];
+        let witness_exprs = vec![leaf_expr, index_expr, root_expr];
         self.non_primitive_ops
             .push((op_id, NonPrimitiveOpType::MerkleVerify, witness_exprs));
 

@@ -30,12 +30,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Public inputs: leaf hash and expected root hash
     let leaf_hash = builder.add_public_input();
+    let index_expr = builder.add_public_input();
     let expected_root = builder.add_public_input();
 
     // Add fake Merkle verification operation
     // This declares that leaf_hash and expected_root are connected to witness bus
     // The AIR constraints will verify the Merkle path is valid
-    let merkle_op_id = builder.add_merkle_verify(leaf_hash, expected_root);
+    let merkle_op_id = builder.add_merkle_verify(leaf_hash, index_expr, expected_root);
 
     let circuit = builder.build();
     let mut runner = circuit.runner();
@@ -55,6 +56,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .collect();
     let directions: Vec<bool> = (0..depth).map(|i| i % 2 == 0).collect();
+    let index_value = F::from_u64(
+        (0..32)
+            .zip(directions.iter())
+            .filter(|(_, dir)| **dir)
+            .map(|(i, _)| 1 << i)
+            .sum(),
+    );
     let expected_root_value = compute_merkle_root(&compress, &leaf_value, &siblings, &directions);
     let expected_root_value = F::from_basis_coefficients_fn(|i| expected_root_value[i]);
     runner.set_public_inputs(&[leaf_value, expected_root_value])?;
@@ -64,7 +72,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         merkle_op_id,
         NonPrimitiveOpPrivateData::MerkleVerify(MerklePrivateData {
             path_siblings: siblings,
-            path_directions: directions,
         }),
     )?;
 
