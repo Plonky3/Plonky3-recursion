@@ -1,7 +1,9 @@
 use alloc::vec::Vec;
 
+use hashbrown::HashMap;
+
 use crate::op::{NonPrimitiveOp, Prim};
-use crate::types::WitnessId;
+use crate::types::{ExprId, WitnessId};
 
 /// Static circuit specification containing constraint system and metadata
 ///
@@ -24,6 +26,8 @@ pub struct Circuit<F> {
     pub public_rows: Vec<WitnessId>,
     /// Total number of public field elements
     pub public_flat_len: usize,
+    /// Mapping from ExprId to WitnessId for public inputs
+    pub public_mappings: HashMap<ExprId, WitnessId>,
 }
 
 impl<F> Circuit<F> {
@@ -34,6 +38,7 @@ impl<F> Circuit<F> {
             non_primitive_ops: Vec::new(),
             public_rows: Vec::new(),
             public_flat_len: 0,
+            public_mappings: HashMap::new(),
         }
     }
 }

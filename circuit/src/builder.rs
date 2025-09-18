@@ -189,7 +189,10 @@ where
         let mul_expr = Expr::Mul { lhs, rhs };
         self.expressions.add_expr(mul_expr)
     }
+
     /// Divide two expressions
+    ///
+    /// Cost: 1 row in Mul table + 1 row in witness table.
     pub fn div(&mut self, lhs: ExprId, rhs: ExprId) -> ExprId {
         let div_expr = Expr::Div { lhs, rhs };
         self.expressions.add_expr(div_expr)
@@ -242,15 +245,7 @@ where
 {
     /// Build the circuit into a Circuit with separate lowering and IR transformation stages.
     /// Returns an error if lowering fails due to an internal inconsistency.
-    pub fn build(self) -> Result<Circuit<F>, CircuitBuilderError> {
-        let (circuit, _) = self.build_with_public_mapping()?;
-        Ok(circuit)
-    }
-
-    /// Build the circuit and return both the circuit and the ExprId→WitnessId mapping for public inputs.
-    pub fn build_with_public_mapping(
-        mut self,
-    ) -> Result<(Circuit<F>, HashMap<ExprId, WitnessId>), CircuitBuilderError> {
+    pub fn build(mut self) -> Result<Circuit<F>, CircuitBuilderError> {
         // Stage 1: Lower expressions to primitives
         let (primitive_ops, public_rows, expr_to_widx, public_mappings) =
             self.lower_to_primitives()?;
@@ -263,13 +258,14 @@ where
 
         // Stage 4: Generate final circuit
         let witness_count = self.witness_alloc.witness_count();
-        let mut circuit = Circuit::new(witness_count);
-        circuit.primitive_ops = primitive_ops;
-        circuit.non_primitive_ops = lowered_non_primitive_ops;
-        circuit.public_rows = public_rows;
-        circuit.public_flat_len = self.public_input_count;
-
-        Ok((circuit, public_mappings))
+        Ok(Circuit {
+            witness_count,
+            primitive_ops,
+            non_primitive_ops: lowered_non_primitive_ops,
+            public_rows,
+            public_flat_len: self.public_input_count,
+            public_mappings,
+        })
     }
 
     /// Helper function to get WitnessId with descriptive error messages
@@ -693,8 +689,9 @@ mod tests {
         builder.connect(result, pub3);
         builder.connect(pub3, pub4);
 
-        // Build with public mapping
-        let (circuit, public_mapping) = builder.build_with_public_mapping().unwrap();
+        // Build circuit with public mapping included
+        let circuit = builder.build().unwrap();
+        let public_mapping = &circuit.public_mappings;
 
         // Verify we have mappings for all public inputs
         assert_eq!(public_mapping.len(), 4);
@@ -714,11 +711,5 @@ mod tests {
         assert_eq!(public_mapping[&pub2], WitnessId(3));
         assert_eq!(public_mapping[&pub3], WitnessId(4));
         assert_eq!(public_mapping[&pub4], WitnessId(4));
-
-        // Verify that regular build() still works (backward compatibility)
-        let mut builder2 = CircuitBuilder::<BabyBear>::new();
-        let _pub = builder2.add_public_input();
-        let circuit2 = builder2.build().unwrap(); // Should not return mapping
-        assert_eq!(circuit2.public_flat_len, 1);
     }
 }
