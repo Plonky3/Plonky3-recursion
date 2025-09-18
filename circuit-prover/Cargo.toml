@@ -43,9 +43,5 @@ name = "fibonacci"
 path = "examples/fibonacci.rs"
 
 [[example]]
-name = "fake_merkle_verify"
-path = "examples/fake_merkle_verify.rs"
-
-[[example]]
 name = "merkle_verify"
 path = "examples/merkle_verify.rs"

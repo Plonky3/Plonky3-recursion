@@ -124,9 +124,7 @@ pub struct Traces<F> {
     pub mul_trace: MulTrace<F>,
     /// Sub operation table
     pub sub_trace: SubTrace<F>,
-    /// Fake Merkle verification table
-    pub fake_merkle_trace: FakeMerkleTrace<F>,
-    /// Fake Merkle verification table
+    /// Merkle verification table
     pub merkle_trace: MerkleTrace<F>,
 }
 
@@ -206,25 +204,6 @@ pub struct SubTrace<F> {
     pub result_values: Vec<F>,
     /// Result indices
     pub result_index: Vec<u32>,
-}
-
-/// Fake Merkle verification table (simplified: single field elements)
-#[derive(Debug, Clone)]
-pub struct FakeMerkleTrace<F> {
-    /// Left operand values (current hash)
-    pub left_values: Vec<F>,
-    /// Left operand indices
-    pub left_index: Vec<u32>,
-    /// Right operand values (sibling hash)
-    pub right_values: Vec<F>,
-    /// Right operand indices (not on witness bus - private)
-    pub right_index: Vec<u32>,
-    /// Result values (computed parent hash)
-    pub result_values: Vec<F>,
-    /// Result indices
-    pub result_index: Vec<u32>,
-    /// Path direction bits (0 = left, 1 = right) - private
-    pub path_directions: Vec<u32>,
 }
 
 /// Merkle verification table (simplified: single field elements) containing
@@ -439,16 +418,9 @@ impl<
         // Validate that the private data matches the operation type
         let non_primitive_op = &self.circuit.non_primitive_ops[op_id.0 as usize];
         match (non_primitive_op, &private_data) {
-            (
-                NonPrimitiveOp::FakeMerkleVerify { .. },
-                NonPrimitiveOpPrivateData::FakeMerkleVerify(_),
-            ) => {
-                // Type match - good!
-            }
             (NonPrimitiveOp::MerkleVerify { .. }, NonPrimitiveOpPrivateData::MerkleVerify(_)) => {
                 // Type match - good!
             }
-            _ => return Err(CircuitError::DivisionByZero), // TODO: This won't be necessary when fake doesn't exists anymore
         }
 
         self.non_primitive_op_private_data[op_id.0 as usize] = Some(private_data);
@@ -470,7 +442,6 @@ impl<
         let add_trace = self.generate_add_trace()?;
         let mul_trace = self.generate_mul_trace()?;
         let sub_trace = self.generate_sub_trace()?;
-        let fake_merkle_trace = self.generate_fake_merkle_trace()?;
         let merkle_trace = match F::DIMENSION {
             1..=3 | 5..=8 => Ok(MerkleTrace {
                 merkle_paths: vec![],
@@ -490,7 +461,6 @@ impl<
             add_trace,
             mul_trace,
             sub_trace,
-            fake_merkle_trace,
             merkle_trace,
         })
     }
@@ -709,88 +679,6 @@ impl<
         })
     }
 
-    fn generate_fake_merkle_trace(&mut self) -> Result<FakeMerkleTrace<F>, CircuitError> {
-        let mut left_values = Vec::new();
-        let mut left_index = Vec::new();
-        let mut right_values = Vec::new();
-        let mut right_index = Vec::new();
-        let mut result_values = Vec::new();
-        let mut result_index = Vec::new();
-        let mut path_directions = Vec::new();
-
-        // Process each complex operation by index to avoid borrowing conflicts
-        for op_idx in 0..self.circuit.non_primitive_ops.len() {
-            // Copy out leaf/root to end immutable borrow immediately
-            if let NonPrimitiveOp::FakeMerkleVerify { leaf, root } =
-                self.circuit.non_primitive_ops[op_idx]
-            {
-                // Clone private data option to avoid holding a borrow on self
-                if let Some(Some(NonPrimitiveOpPrivateData::FakeMerkleVerify(private_data))) =
-                    self.non_primitive_op_private_data.get(op_idx).cloned()
-                {
-                    let mut current_hash = if let Some(val) =
-                        self.witness.get(leaf.0 as usize).and_then(|x| x.as_ref())
-                    {
-                        val.clone()
-                    } else {
-                        return Err(CircuitError::NonPrimitiveOpWitnessNotSet {
-                            operation_index: op_idx,
-                        });
-                    };
-
-                    // For each step in the Merkle path
-                    for (sibling_value, &direction) in private_data
-                        .path_siblings
-                        .iter()
-                        .zip(private_data.path_directions.iter())
-                    {
-                        // Current hash becomes left operand
-                        left_values.push(current_hash.clone());
-                        left_index.push(leaf.0); // Points to witness bus
-
-                        // Sibling becomes right operand (private data - not on witness bus)
-                        right_values.push(sibling_value.clone());
-                        right_index.push(0); // Not on witness bus - private data
-
-                        // Compute parent hash (simple mock hash: left + right + direction)
-                        let parent_hash = current_hash.clone()
-                            + sibling_value.clone()
-                            + if direction {
-                                F::from_u64(1)
-                            } else {
-                                F::from_u64(0)
-                            };
-
-                        result_values.push(parent_hash.clone());
-                        result_index.push(root.0); // Points to witness bus
-
-                        path_directions.push(if direction { 1 } else { 0 });
-
-                        // Update current hash for next iteration
-                        current_hash = parent_hash;
-                    }
-
-                    // Root is computed; write back to the witness bus at root index
-                    // self.set_witness(root, current_hash.clone())?;
-                } else {
-                    return Err(CircuitError::NonPrimitiveOpMissingPrivateData {
-                        operation_index: op_idx,
-                    });
-                }
-            }
-        }
-
-        Ok(FakeMerkleTrace {
-            left_values,
-            left_index,
-            right_values,
-            right_index,
-            result_values,
-            result_index,
-            path_directions,
-        })
-    }
-
     fn generate_merkle_trace<C, const DIGEST_ELEMS: usize, const D: usize>(
         &mut self,
         compress: &C,
@@ -804,48 +692,47 @@ impl<
         // Process each complex operation by index to avoid borrowing conflicts
         for op_idx in 0..self.circuit.non_primitive_ops.len() {
             // Copy out leaf/root to end immutable borrow immediately
-            if let NonPrimitiveOp::MerkleVerify {
+            let NonPrimitiveOp::MerkleVerify {
                 leaf,
                 index,
                 root: _,
-            } = self.circuit.non_primitive_ops[op_idx]
-            {
-                // Clone private data option to avoid holding a borrow on self
-                let first = leaf.0 as usize;
-                let last = first + DIGEST_ELEMS;
-                let leaf: [F; DIGEST_ELEMS] = if let Some(val) =
-                    self.witness.get(first..last).and_then(|xs| {
-                        xs.into_iter()
-                            .map(|x| x.clone())
-                            .collect::<Option<Vec<F>>>()
-                    }) {
-                    let val_len = val.len();
-                    val.try_into()
-                        .map_err(|_| CircuitError::MerkleVerifyDigestLengthMismatch {
-                            expected: DIGEST_ELEMS,
-                            got: val_len,
-                        })?
-                } else {
-                    return Err(CircuitError::NonPrimitiveOpWitnessNotSet {
-                        operation_index: op_idx,
-                    });
-                };
+            } = self.circuit.non_primitive_ops[op_idx];
 
-                if let Some(Some(NonPrimitiveOpPrivateData::MerkleVerify(private_data))) =
-                    self.non_primitive_op_private_data.get(op_idx).cloned()
-                {
-                    let trace = private_data.to_trace::<C, DIGEST_ELEMS, D>(
-                        compress,
-                        first as u32,
-                        leaf,
-                        index.0 as u32,
-                    )?;
-                    merkle_paths.push(trace);
-                } else {
-                    return Err(CircuitError::NonPrimitiveOpMissingPrivateData {
-                        operation_index: op_idx,
-                    });
-                }
+            // Clone private data option to avoid holding a borrow on self
+            let first = leaf.0 as usize;
+            let last = first + DIGEST_ELEMS;
+            let leaf: [F; DIGEST_ELEMS] = if let Some(val) =
+                self.witness.get(first..last).and_then(|xs| {
+                    xs.into_iter()
+                        .map(|x| x.clone())
+                        .collect::<Option<Vec<F>>>()
+                }) {
+                let val_len = val.len();
+                val.try_into()
+                    .map_err(|_| CircuitError::MerkleVerifyDigestLengthMismatch {
+                        expected: DIGEST_ELEMS,
+                        got: val_len,
+                    })?
+            } else {
+                return Err(CircuitError::NonPrimitiveOpWitnessNotSet {
+                    operation_index: op_idx,
+                });
+            };
+
+            if let Some(Some(NonPrimitiveOpPrivateData::MerkleVerify(private_data))) =
+                self.non_primitive_op_private_data.get(op_idx).cloned()
+            {
+                let trace = private_data.to_trace::<C, DIGEST_ELEMS, D>(
+                    compress,
+                    first as u32,
+                    leaf,
+                    index.0 as u32,
+                )?;
+                merkle_paths.push(trace);
+            } else {
+                return Err(CircuitError::NonPrimitiveOpMissingPrivateData {
+                    operation_index: op_idx,
+                });
             }
         }
 

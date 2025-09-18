@@ -19,7 +19,7 @@ use p3_field::{BasedVectorSpace, Field};
 use p3_uni_stark::{prove, verify};
 
 use crate::air::merkle_air::air::MerkleVerifyAir;
-use crate::air::{AddAir, ConstAir, FakeMerkleVerifyAir, MulAir, PublicAir, SubAir, WitnessAir};
+use crate::air::{AddAir, ConstAir, MulAir, PublicAir, SubAir, WitnessAir};
 use crate::config::{ProverConfig, StarkField, StarkPermutation};
 use crate::field_params::ExtractBinomialW;
 
@@ -60,7 +60,6 @@ where
     pub add: TableProof<F, P, CD>,
     pub mul: TableProof<F, P, CD>,
     pub sub: TableProof<F, P, CD>,
-    pub fake_merkle: TableProof<F, P, CD>,
     pub merkle: TableProof<F, P, CD>,
     /// Extension field degree: 1 for base field; otherwise the extension degree used.
     pub ext_degree: usize,
@@ -233,13 +232,6 @@ where
         let sub_air = SubAir::<F, D>::new(traces.sub_trace.lhs_values.len());
         let sub_proof = prove(&self.config, &sub_air, sub_matrix, pis);
 
-        // FakeMerkle (always uses base field regardless of traces D)
-        let fake_merkle_matrix =
-            FakeMerkleVerifyAir::<F>::trace_to_matrix(&traces.fake_merkle_trace);
-        let fake_merkle_air =
-            FakeMerkleVerifyAir::<F>::new(traces.fake_merkle_trace.left_values.len());
-        let fake_merkle_proof = prove(&self.config, &fake_merkle_air, fake_merkle_matrix, pis);
-
         let merkle_matrix = match D {
             1..=8 => Ok(MerkleVerifyAir::<F, 4, 32>::trace_to_matrix(
                 &traces.merkle_trace,
@@ -274,10 +266,6 @@ where
             sub: TableProof {
                 proof: sub_proof,
                 rows: traces.sub_trace.lhs_values.len(),
-            },
-            fake_merkle: TableProof {
-                proof: fake_merkle_proof,
-                rows: traces.fake_merkle_trace.left_values.len(),
             },
             merkle: TableProof {
                 proof: merkle_proof,
@@ -335,16 +323,12 @@ where
         verify(&self.config, &sub_air, &proof.sub.proof, pis)
             .map_err(|_| ProverError::VerificationFailed { phase: "sub" })?;
 
-        // FakeMerkle
-        let fake_merkle_air = FakeMerkleVerifyAir::<F>::new(proof.fake_merkle.rows);
-        verify(
-            &self.config,
-            &fake_merkle_air,
-            &proof.fake_merkle.proof,
-            pis,
-        )
-        .map_err(|_| ProverError::VerificationFailed {
-            phase: "fake_merkle",
+        // MerkleVerify
+        let merkle_air = MerkleVerifyAir::<F, 4, 32>::new();
+        verify(&self.config, &merkle_air, &proof.merkle.proof, pis).map_err(|_| {
+            ProverError::VerificationFailed {
+                phase: "merkle_verify",
+            }
         })?;
 
         Ok(())
