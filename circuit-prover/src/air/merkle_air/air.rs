@@ -178,7 +178,6 @@ where
 #[cfg(test)]
 mod test {
     use alloc::vec;
-    use alloc::vec::Vec;
 
     use p3_circuit::tables::{MerklePrivateData, MerkleTrace};
     use p3_circuit::utils::MockCompression;
@@ -237,14 +236,11 @@ mod test {
             } else {
                 vec![(vec![rng.random::<Val>(); DIGEST_ELEMS], None); HEIGHT]
             };
-            let path_directions = vec![rng.random::<bool>(); HEIGHT];
-            MerklePrivateData {
-                path_siblings,
-                path_directions,
-            }
+            MerklePrivateData { path_siblings }
         });
 
         let public_data = [[rng.random::<Val>(); DIGEST_ELEMS]; NUM_INPUTS];
+        let indices = [rng.random::<u32>(); NUM_INPUTS];
 
         type ByteHash = Keccak256Hash;
         let byte_hash = ByteHash {};
@@ -257,25 +253,14 @@ mod test {
         type MyCompress = CompressionFunctionFromHasher<U64Hash, 2, 4>;
         let compress = MyCompress::new(u64_hash);
 
-        let leaf_index = |x: &Vec<bool>| {
-            x.iter()
-                .enumerate()
-                .filter(|(_, dir)| **dir)
-                .map(|(i, _)| 1 << i)
-                .sum()
-        };
-
         let trace = MerkleTrace {
             merkle_paths: private_data
                 .iter()
-                .zip(public_data.iter())
-                .map(|(data, leaf)| {
-                    data.to_trace::<_, _, 1>(
-                        &MockCompression {},
-                        leaf_index(&data.path_directions),
-                        *leaf,
-                    )
-                    .unwrap()
+                .zip(public_data)
+                .zip(indices)
+                .map(|((data, leaf), index)| {
+                    data.to_trace::<_, _, 1>(&MockCompression {}, 0, leaf, index)
+                        .unwrap()
                 })
                 .collect(),
         };

@@ -26,12 +26,13 @@ fn main() -> Result<(), ProverError> {
 
     // Public inputs: leaf hash and expected root hash
     let leaf_hash = builder.add_public_input();
+    let index_expr = builder.add_public_input();
     let expected_root = builder.add_public_input();
 
     // Add fake Merkle verification operation
     // This declares that leaf_hash and expected_root are connected to witness bus
     // The AIR constraints will verify the Merkle path is valid
-    let merkle_op_id = builder.add_merkle_verify(leaf_hash, expected_root);
+    let merkle_op_id = builder.add_merkle_verify(leaf_hash, index_expr, expected_root);
 
     let circuit = builder.build()?;
     let mut runner = circuit.runner();
@@ -51,15 +52,21 @@ fn main() -> Result<(), ProverError> {
         })
         .collect();
     let directions: Vec<bool> = (0..depth).map(|i| i % 2 == 0).collect();
+    let index_value = F::from_u64(
+        (0..32)
+            .zip(directions.iter())
+            .filter(|(_, dir)| **dir)
+            .map(|(i, _)| 1 << i)
+            .sum(),
+    );
     let expected_root_value = compute_merkle_root(&compress, &leaf_value, &siblings, &directions);
-    runner.set_public_inputs(&[leaf_value, expected_root_value])?;
+    runner.set_public_inputs(&[leaf_value, index_value, expected_root_value])?;
 
     // Set private Merkle path data
     runner.set_non_primitive_op_private_data(
         merkle_op_id,
         NonPrimitiveOpPrivateData::MerkleVerify(MerklePrivateData {
             path_siblings: siblings,
-            path_directions: directions,
         }),
     )?;
 
@@ -94,7 +101,6 @@ fn compute_merkle_root(
             } else {
                 (sibling[0].clone(), state.clone())
             };
-            println!("left = {:?}, right = {:?}", left, right);
             let mut new_state: [BabyBear; 4] = compress.compress([
                 left.as_basis_coefficients_slice()
                     .try_into()
@@ -118,7 +124,6 @@ fn compute_merkle_root(
                 ]);
             }
             let result = F::from_basis_coefficients_slice(&new_state).expect("Size is 4");
-            println!("res = {:?}", result);
             result
         },
     )

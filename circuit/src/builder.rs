@@ -244,11 +244,16 @@ where
     /// - Are kept separate from primitives to avoid disrupting optimization
     ///
     /// Returns an operation ID for setting private data later during execution.
-    pub fn add_merkle_verify(&mut self, leaf_expr: ExprId, root_expr: ExprId) -> NonPrimitiveOpId {
+    pub fn add_merkle_verify(
+        &mut self,
+        leaf_expr: ExprId,
+        index_expr: ExprId,
+        root_expr: ExprId,
+    ) -> NonPrimitiveOpId {
         // Store input expression IDs - will be lowered to WitnessId during build()
         // Non-primitive ops consume ExprIds but don't produce them
         let op_id = NonPrimitiveOpId(self.non_primitive_ops.len() as u32);
-        let witness_exprs = vec![leaf_expr, root_expr];
+        let witness_exprs = vec![leaf_expr, index_expr, root_expr];
         self.non_primitive_ops
             .push((op_id, NonPrimitiveOpType::MerkleVerify, witness_exprs));
 
@@ -514,25 +519,31 @@ where
                     });
                 }
                 NonPrimitiveOpType::MerkleVerify => {
-                    if witness_exprs.len() != 2 {
+                    if witness_exprs.len() != 3 {
                         panic!(
-                            "MerkleVerify expects exactly 2 witness expressions, got {}",
+                            "MerkleVerify expects exactly 3 witness expressions, got {}",
                             witness_exprs.len()
                         );
                     }
                     let leaf_widx = Self::get_witness_id(
                         expr_to_widx,
                         witness_exprs[0],
-                        "eMerkleVerify leaf input",
+                        "MerkleVerify leaf input",
+                    )?;
+                    let index_widx = Self::get_witness_id(
+                        expr_to_widx,
+                        witness_exprs[1],
+                        "MerkleVerify leaf input",
                     )?;
                     let root_widx = Self::get_witness_id(
                         expr_to_widx,
-                        witness_exprs[1],
+                        witness_exprs[2],
                         "MerkleVerify root input",
                     )?;
 
                     lowered_ops.push(NonPrimitiveOp::MerkleVerify {
                         leaf: leaf_widx,
+                        index: index_widx,
                         root: root_widx,
                     });
                 }

@@ -102,12 +102,12 @@ pub enum NonPrimitiveOp {
     /// Private data (set via NonPrimitiveOpId):
     /// - Merkle path siblings and direction bits
     /// - See `MerklePrivateData` for complete specification
-    MerkleVerify { leaf: WitnessId, root: WitnessId },
+    MerkleVerify {
+        leaf: WitnessId,
+        index: WitnessId,
+        root: WitnessId,
+    },
 }
-
-// TODO: Maybe [WitnessId; HASH_LEN] is better, but that introduces a new type. It requires changing
-// the callers, and ends up making everything more cumbersome.
-pub type MerkleWitnessId = Vec<WitnessId>;
 
 /// Private auxiliary data for non-primitive operations
 ///

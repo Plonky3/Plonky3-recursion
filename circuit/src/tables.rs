@@ -284,13 +284,6 @@ pub struct MerklePrivateData<F> {
     /// sibling hash needed to compute the parent hash. It might optionally
     /// include the hash of the row of a smaller matrix in the Mmcs.
     pub path_siblings: Vec<(Vec<F>, Option<Vec<F>>)>,
-
-    /// Direction bits indicating path through the tree
-    ///
-    /// For each level: `false` = current node is left child,
-    /// `true` = current node is right child. Used to determine
-    /// hash input ordering: `hash(current, sibling)` vs `hash(sibling, current)`.
-    pub path_directions: Vec<bool>,
 }
 
 impl<F: Packable + Clone> MerklePrivateData<F> {
@@ -299,6 +292,7 @@ impl<F: Packable + Clone> MerklePrivateData<F> {
         compress: &C,
         leaf_index: u32,
         leaf_value: [F; DIGEST_ELEMS],
+        index_value: u32,
     ) -> Result<MerklePathTrace<F>, CircuitError>
     where
         C: PseudoCompressionFunction<[<F as PackedValue>::Value; DIGEST_ELEMS], 2>
@@ -308,9 +302,10 @@ impl<F: Packable + Clone> MerklePrivateData<F> {
         let mut trace = MerklePathTrace::new();
         let mut state = leaf_value;
 
+        let path_directions = (0..32).map(|i| (index_value >> i) & 1 == 1);
         // For each step in the Merkle path
-        for ((sibling_value, extra_sibling_value), &direction) in
-            self.path_siblings.iter().zip(self.path_directions.iter())
+        for ((sibling_value, extra_sibling_value), direction) in
+            self.path_siblings.iter().zip(path_directions)
         {
             let sibling_value: [F; DIGEST_ELEMS] =
                 sibling_value.clone().try_into().map_err(|_| {
@@ -809,8 +804,11 @@ impl<
         // Process each complex operation by index to avoid borrowing conflicts
         for op_idx in 0..self.circuit.non_primitive_ops.len() {
             // Copy out leaf/root to end immutable borrow immediately
-            if let NonPrimitiveOp::MerkleVerify { leaf, root: _ } =
-                self.circuit.non_primitive_ops[op_idx]
+            if let NonPrimitiveOp::MerkleVerify {
+                leaf,
+                index,
+                root: _,
+            } = self.circuit.non_primitive_ops[op_idx]
             {
                 // Clone private data option to avoid holding a borrow on self
                 let first = leaf.0 as usize;
@@ -840,6 +838,7 @@ impl<
                         compress,
                         first as u32,
                         leaf,
+                        index.0 as u32,
                     )?;
                     merkle_paths.push(trace);
                 } else {
