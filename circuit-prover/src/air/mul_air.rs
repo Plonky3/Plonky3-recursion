@@ -111,9 +111,8 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> MulAir<F, D> {
                     values.extend_from_slice(result_coeffs);
                     values.push(F::from_u64(trace.result_index[op_idx] as u64));
                 } else {
-                    for _ in 0..lane_width {
-                        values.push(F::ZERO);
-                    }
+                    // Filler lane: append zeros for unused slot to keep the row width uniform.
+                    values.resize(values.len() + lane_width, F::ZERO);
                 }
             }
         }

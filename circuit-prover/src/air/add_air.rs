@@ -93,9 +93,7 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AddAir<F, D> {
                     values.push(F::from_u64(trace.result_index[op_idx] as u64));
                 } else {
                     // Filler lane: append zeros for unused slot to keep the row width uniform.
-                    for _ in 0..lane_width {
-                        values.push(F::ZERO);
-                    }
+                    values.resize(values.len() + lane_width, F::ZERO);
                 }
             }
         }
