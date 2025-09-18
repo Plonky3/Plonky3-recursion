@@ -114,9 +114,7 @@ pub struct Traces<F> {
     pub mul_trace: MulTrace<F>,
     /// Sub operation table
     pub sub_trace: SubTrace<F>,
-    /// Fake Merkle verification table
-    pub fake_merkle_trace: FakeMerkleTrace<F>,
-    /// Fake Merkle verification table
+    /// Merkle verification table
     pub merkle_trace: MerkleTrace<F>,
 }
 
@@ -311,12 +309,6 @@ impl<
         // Validate that the private data matches the operation type
         let non_primitive_op = &self.circuit.non_primitive_ops[op_id.0 as usize];
         match (non_primitive_op, &private_data) {
-            (
-                NonPrimitiveOp::FakeMerkleVerify { .. },
-                NonPrimitiveOpPrivateData::FakeMerkleVerify(_),
-            ) => {
-                // Type match - good!
-            }
             (NonPrimitiveOp::MerkleVerify { .. }, NonPrimitiveOpPrivateData::MerkleVerify(_)) => {
                 // Type match - good!
             }

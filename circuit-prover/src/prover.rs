@@ -314,16 +314,12 @@ where
         verify(&self.config, &sub_air, &proof.sub.proof, pis)
             .map_err(|_| ProverError::VerificationFailed { phase: "sub" })?;
 
-        // FakeMerkle
-        let fake_merkle_air = FakeMerkleVerifyAir::<F>::new(proof.fake_merkle.rows);
-        verify(
-            &self.config,
-            &fake_merkle_air,
-            &proof.fake_merkle.proof,
-            pis,
-        )
-        .map_err(|_| ProverError::VerificationFailed {
-            phase: "fake_merkle",
+        // MerkleVerify
+        let merkle_air = MerkleVerifyAir::<F, 4, 32>::new();
+        verify(&self.config, &merkle_air, &proof.merkle.proof, pis).map_err(|_| {
+            ProverError::VerificationFailed {
+                phase: "merkle_verify",
+            }
         })?;
 
         Ok(())

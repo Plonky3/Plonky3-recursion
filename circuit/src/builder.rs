@@ -211,30 +211,6 @@ where
         }
     }
 
-    /// Add a fake Merkle verification constraint (non-primitive operation)
-    ///
-    /// Non-primitive operations are complex constraints that:
-    /// - Take existing expressions as inputs (leaf_expr, root_expr)
-    /// - Add verification constraints to the circuit
-    /// - Don't produce new ExprIds (unlike primitive ops)
-    /// - Are kept separate from primitives to avoid disrupting optimization
-    ///
-    /// Returns an operation ID for setting private data later during execution.
-    pub fn add_fake_merkle_verify(
-        &mut self,
-        leaf_expr: ExprId,
-        root_expr: ExprId,
-    ) -> NonPrimitiveOpId {
-        // Store input expression IDs - will be lowered to WitnessId during build()
-        // Non-primitive ops consume ExprIds but don't produce them
-        let op_id = NonPrimitiveOpId(self.non_primitive_ops.len() as u32);
-        let witness_exprs = vec![leaf_expr, root_expr];
-        self.non_primitive_ops
-            .push((op_id, NonPrimitiveOpType::FakeMerkleVerify, witness_exprs));
-
-        op_id
-    }
-
     /// Add a Merkle verification constraint (non-primitive operation)
     ///
     /// Non-primitive operations are complex constraints that:

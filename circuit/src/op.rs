@@ -54,8 +54,6 @@ pub enum Prim<F> {
 /// Non-primitive operation types
 #[derive(Debug, Clone, PartialEq)]
 pub enum NonPrimitiveOpType {
-    FakeMerkleVerify,
-    // MerkleVerify,
     // Future: FriVerify, HashAbsorb, etc.
     MerkleVerify,
 }
@@ -76,20 +74,6 @@ pub enum NonPrimitiveOpType {
 /// 4. Avoid optimization passes breaking complex constraint relationships
 #[derive(Debug, Clone, PartialEq)]
 pub enum NonPrimitiveOp {
-    /// Fake Merkle tree path verification (simplified for testing)
-    ///
-    /// Verifies that a leaf value is contained in a Merkle tree with given root.
-    /// The actual Merkle path verification logic is implemented in a dedicated
-    /// AIR table that constrains the relationship between leaf and root.
-    ///
-    /// Public interface (on witness bus):
-    /// - `leaf`: The leaf value being verified (single field element)
-    /// - `root`: The expected Merkle tree root (single field element)
-    ///
-    /// Private data (set via NonPrimitiveOpId):
-    /// - Merkle path siblings and direction bits
-    /// - See `FakeMerklePrivateData` for complete specification
-    FakeMerkleVerify { leaf: WitnessId, root: WitnessId },
     /// Verifies that a leaf value is contained in a Merkle tree with given root.
     /// The actual Merkle path verification logic is implemented in a dedicated
     /// AIR table that constrains the relationship between leaf and root.
@@ -122,7 +106,6 @@ pub enum NonPrimitiveOpPrivateData<F> {
     /// Contains the complete Merkle path information needed by the prover
     /// to generate a valid proof. This data is not part of the public
     /// circuit specification.
-    FakeMerkleVerify(FakeMerklePrivateData<F>),
     MerkleVerify(MerklePrivateData<F>),
 }
 
