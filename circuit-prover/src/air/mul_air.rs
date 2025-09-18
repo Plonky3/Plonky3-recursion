@@ -1,6 +1,5 @@
 #![allow(clippy::needless_range_loop)]
 use alloc::vec::Vec;
-use core::borrow::{Borrow, BorrowMut};
 
 use p3_air::{Air, AirBuilder, BaseAir};
 use p3_circuit::tables::MulTrace;
@@ -10,20 +9,9 @@ use p3_matrix::dense::RowMajorMatrix;
 
 use super::utils::pad_to_power_of_two;
 
-/// Columns for a Mul AIR that proves lhs * rhs = result
-/// Layout: [lhs[0..D-1], lhs_index, rhs[0..D-1], rhs_index, result[0..D-1], result_index]
-#[repr(C)]
-#[derive(Debug)]
-pub struct MulCols<T, const D: usize> {
-    pub lhs: [T; D],
-    pub lhs_index: T,
-    pub rhs: [T; D],
-    pub rhs_index: T,
-    pub result: [T; D],
-    pub result_index: T,
-}
-
-/// AIR for proving multiplication operations: lhs * rhs = result
+/// AIR for proving multiplication operations: lhs * rhs = result.
+/// Parameterised over extension degree `D` and a runtime lane count controlling how many
+/// multiplications are packed side-by-side in each row.
 ///
 /// Column layout (main trace):
 ///   For D == 1 (base field):
@@ -37,20 +25,25 @@ pub struct MulCols<T, const D: usize> {
 /// schoolbook convolution with the reduction x^k = W * x^(k-D) for k >= D.
 #[derive(Debug, Clone)]
 pub struct MulAir<F, const D: usize = 1> {
-    /// Number of multiplication operations (height of the trace)
+    /// Number of logical multiplication operations in the trace.
     pub num_ops: usize,
+    /// Number of lanes (operations) packed per row.
+    pub lanes: usize,
     /// For binomial extensions x^D = W over a polynomial basis; None for non-binomial / base cases.
     pub w_binomial: Option<F>,
     _phantom: core::marker::PhantomData<F>,
 }
 
 impl<F: Field + PrimeCharacteristicRing, const D: usize> MulAir<F, D> {
-    pub const WIDTH: usize = 3 * D + 3;
+    /// Number of base-field columns contributed by a single multiplication lane.
+    pub const LANE_WIDTH: usize = 3 * D + 3;
 
-    /// Constructor for base or non-binomial cases (no W).
-    pub fn new(num_ops: usize) -> Self {
+    /// Constructor for base-field or non-binomial cases (`D == 1`).
+    pub fn new(num_ops: usize, lanes: usize) -> Self {
+        assert!(lanes > 0, "lane count must be non-zero");
         Self {
             num_ops,
+            lanes,
             w_binomial: None,
             _phantom: core::marker::PhantomData,
         }
@@ -58,50 +51,74 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> MulAir<F, D> {
 
     /// Constructor for binomial polynomial-basis extensions x^D = W.
     /// Works for any D >= 2 (for D==1 this is meaningless).
-    pub fn new_binomial(num_ops: usize, w: F) -> Self {
+    pub fn new_binomial(num_ops: usize, lanes: usize, w: F) -> Self {
+        assert!(lanes > 0, "lane count must be non-zero");
         assert!(D >= 2, "Binomial constructor requires D >= 2");
         Self {
             num_ops,
+            lanes,
             w_binomial: Some(w),
             _phantom: core::marker::PhantomData,
         }
     }
 
-    /// Convert MulTrace to RowMajorMatrix for proving with generic extension degree D.
-    ///
-    /// For D==1: packs base elements directly (ignoring basis logic).
-    /// For D>1: flattens each extension element into D coefficients followed by index columns.
-    pub fn trace_to_matrix<ExtF: BasedVectorSpace<F>>(trace: &MulTrace<ExtF>) -> RowMajorMatrix<F> {
-        let height = trace.lhs_values.len();
-        let width = Self::WIDTH;
-        let mut values = Vec::with_capacity(height * width);
+    pub const fn lane_width() -> usize {
+        Self::LANE_WIDTH
+    }
 
-        for i in 0..height {
-            // LHS
-            let lhs_coeffs = trace.lhs_values[i].as_basis_coefficients_slice();
-            assert_eq!(lhs_coeffs.len(), D, "Extension degree mismatch for lhs");
-            values.extend_from_slice(lhs_coeffs);
-            values.push(F::from_u64(trace.lhs_index[i] as u64));
+    pub fn total_width(&self) -> usize {
+        self.lanes * Self::lane_width()
+    }
 
-            // RHS
-            let rhs_coeffs = trace.rhs_values[i].as_basis_coefficients_slice();
-            assert_eq!(rhs_coeffs.len(), D, "Extension degree mismatch for rhs");
-            values.extend_from_slice(rhs_coeffs);
-            values.push(F::from_u64(trace.rhs_index[i] as u64));
+    /// Convert `MulTrace` to a row-major matrix, packing `lanes` multiplications per row.
+    /// Layout per lane mirrors the addition table: `[lhs[D], lhs_idx, rhs[D], rhs_idx, result[D], result_idx]`.
+    pub fn trace_to_matrix<ExtF: BasedVectorSpace<F>>(
+        trace: &MulTrace<ExtF>,
+        lanes: usize,
+    ) -> RowMajorMatrix<F> {
+        assert!(lanes > 0, "lane count must be non-zero");
 
-            // RESULT
-            let result_coeffs = trace.result_values[i].as_basis_coefficients_slice();
-            assert_eq!(
-                result_coeffs.len(),
-                D,
-                "Extension degree mismatch for result"
-            );
-            values.extend_from_slice(result_coeffs);
-            values.push(F::from_u64(trace.result_index[i] as u64));
+        let lane_width = Self::lane_width();
+        let width = lane_width * lanes;
+        let op_count = trace.lhs_values.len();
+        let row_count = op_count.div_ceil(lanes);
+
+        let mut values = Vec::with_capacity(width * row_count.max(1));
+
+        for row in 0..row_count {
+            for lane in 0..lanes {
+                let op_idx = row * lanes + lane;
+                if op_idx < op_count {
+                    // LHS limbs + index
+                    let lhs_coeffs = trace.lhs_values[op_idx].as_basis_coefficients_slice();
+                    assert_eq!(lhs_coeffs.len(), D, "Extension degree mismatch for lhs");
+                    values.extend_from_slice(lhs_coeffs);
+                    values.push(F::from_u64(trace.lhs_index[op_idx] as u64));
+
+                    // RHS limbs + index
+                    let rhs_coeffs = trace.rhs_values[op_idx].as_basis_coefficients_slice();
+                    assert_eq!(rhs_coeffs.len(), D, "Extension degree mismatch for rhs");
+                    values.extend_from_slice(rhs_coeffs);
+                    values.push(F::from_u64(trace.rhs_index[op_idx] as u64));
+
+                    // Result limbs + index
+                    let result_coeffs = trace.result_values[op_idx].as_basis_coefficients_slice();
+                    assert_eq!(
+                        result_coeffs.len(),
+                        D,
+                        "Extension degree mismatch for result",
+                    );
+                    values.extend_from_slice(result_coeffs);
+                    values.push(F::from_u64(trace.result_index[op_idx] as u64));
+                } else {
+                    for _ in 0..lane_width {
+                        values.push(F::ZERO);
+                    }
+                }
+            }
         }
 
-        // Pad to power of two by repeating last row
-        pad_to_power_of_two(&mut values, width, height);
+        pad_to_power_of_two(&mut values, width, row_count);
 
         RowMajorMatrix::new(values, width)
     }
@@ -109,7 +126,7 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> MulAir<F, D> {
 
 impl<F: Field, const D: usize> BaseAir<F> for MulAir<F, D> {
     fn width(&self) -> usize {
-        Self::WIDTH
+        self.total_width()
     }
 }
 
@@ -120,66 +137,57 @@ where
     fn eval(&self, builder: &mut AB) {
         let main = builder.main();
 
-        debug_assert_eq!(main.width(), Self::WIDTH, "column width mismatch");
+        debug_assert_eq!(main.width(), self.total_width(), "column width mismatch");
 
         let local = main.row_slice(0).expect("matrix must be non-empty");
-        let local: &MulCols<_, D> = (*local).borrow();
+        let local = &*local;
+        let lane_width = Self::lane_width();
 
-        // Readable split: base field (D==1) vs binomial extension (D>1).
         if D == 1 {
-            let lhs_value = local.lhs[0].clone();
-            let rhs_value = local.rhs[0].clone();
-            let out_value = local.result[0].clone();
-            builder.assert_zero(lhs_value * rhs_value - out_value);
+            for lane in 0..self.lanes {
+                let mut cursor = lane * lane_width;
+                let lhs_value = local[cursor].clone();
+                cursor += 2; // skip lhs limb and index
+                let rhs_value = local[cursor].clone();
+                cursor += 2; // skip rhs limb and index
+                let out_value = local[cursor].clone();
+                builder.assert_zero(lhs_value * rhs_value - out_value);
+            }
             return;
         }
 
-        // Binomial polynomial-basis path: x^D = W, with W hoisted once.
         let w = self
             .w_binomial
             .as_ref()
             .map(|w| AB::Expr::from(*w))
             .expect("MulAir with D>1 requires binomial parameter W for wrap-around");
 
-        // acc[k] = sum_{i+j=k} a_i b_j + W * sum_{i+j=k+D} a_i b_j
-        let mut acc: Vec<AB::Expr> = (0..D).map(|_| AB::Expr::ZERO).collect();
+        for lane in 0..self.lanes {
+            let mut cursor = lane * lane_width;
+            let lhs_slice = &local[cursor..cursor + D];
+            cursor += D + 1;
+            let rhs_slice = &local[cursor..cursor + D];
+            cursor += D + 1;
+            let result_slice = &local[cursor..cursor + D];
 
-        for i in 0..D {
-            for j in 0..D {
-                let term = local.lhs[i].clone() * local.rhs[j].clone();
-                let k = i + j;
-                if k < D {
-                    acc[k] = acc[k].clone() + term;
-                } else {
-                    acc[k - D] = acc[k - D].clone() + w.clone() * term;
+            let mut acc: Vec<AB::Expr> = (0..D).map(|_| AB::Expr::ZERO).collect();
+
+            for i in 0..D {
+                for j in 0..D {
+                    let term = lhs_slice[i].clone() * rhs_slice[j].clone();
+                    let k = i + j;
+                    if k < D {
+                        acc[k] = acc[k].clone() + term;
+                    } else {
+                        acc[k - D] = acc[k - D].clone() + w.clone() * term;
+                    }
                 }
             }
+
+            for k in 0..D {
+                builder.assert_zero(result_slice[k].clone() - acc[k].clone());
+            }
         }
-
-        for k in 0..D {
-            builder.assert_zero(local.result[k].clone() - acc[k].clone());
-        }
-    }
-}
-
-// Borrow implementations to convert [T] to MulCols<T, D>
-impl<T, const D: usize> Borrow<MulCols<T, D>> for [T] {
-    fn borrow(&self) -> &MulCols<T, D> {
-        let (prefix, shorts, suffix) = unsafe { self.align_to::<MulCols<T, D>>() };
-        debug_assert!(prefix.is_empty(), "Alignment should match");
-        debug_assert!(suffix.is_empty(), "Alignment should match");
-        debug_assert_eq!(shorts.len(), 1);
-        &shorts[0]
-    }
-}
-
-impl<T, const D: usize> BorrowMut<MulCols<T, D>> for [T] {
-    fn borrow_mut(&mut self) -> &mut MulCols<T, D> {
-        let (prefix, shorts, suffix) = unsafe { self.align_to_mut::<MulCols<T, D>>() };
-        debug_assert!(prefix.is_empty(), "Alignment should match");
-        debug_assert!(suffix.is_empty(), "Alignment should match");
-        debug_assert_eq!(shorts.len(), 1);
-        &mut shorts[0]
     }
 }
 
@@ -216,13 +224,13 @@ mod tests {
             result_index,
         };
 
-        let matrix: RowMajorMatrix<Val> = MulAir::<Val, 1>::trace_to_matrix(&trace);
-        assert_eq!(matrix.width(), 6); // 3*1 + 3
+        let matrix: RowMajorMatrix<Val> = MulAir::<Val, 1>::trace_to_matrix(&trace, 1);
+        assert_eq!(matrix.width(), MulAir::<Val, 1>::lane_width());
 
         let config = build_test_config();
         let pis: Vec<Val> = vec![];
 
-        let air = MulAir::<Val, 1>::new(n);
+        let air = MulAir::<Val, 1>::new(n, 1);
         let proof = prove(&config, &air, matrix, &pis);
         verify(&config, &air, &proof, &pis).expect("verification failed");
     }
@@ -248,7 +256,6 @@ mod tests {
         let w: Val = x4_coeffs[0];
         assert!(!w.is_zero(), "W must be non-zero");
 
-        // Build genuine extension elements with ALL non-zero coefficients
         let lhs = ExtField::from_basis_coefficients_slice(&[
             Val::from_u64(3), // a0
             Val::from_u64(1), // a1
@@ -283,18 +290,40 @@ mod tests {
             result_index,
         };
 
-        // Pack coefficients for D=4: width must be 3*4 + 3 = 15.
-        let matrix: RowMajorMatrix<Val> = MulAir::<Val, 4>::trace_to_matrix(&trace);
+        let matrix: RowMajorMatrix<Val> = MulAir::<Val, 4>::trace_to_matrix(&trace, 1);
         assert_eq!(matrix.height(), n);
-        assert_eq!(matrix.width(), 15);
-
-        // AIR configured with the derived W for binomial x^4 = W
-        let air = MulAir::<Val, 4>::new_binomial(n, w);
+        assert_eq!(matrix.width(), MulAir::<Val, 4>::lane_width());
 
         let config = build_test_config();
         let pis: Vec<Val> = vec![];
 
+        let air = MulAir::<Val, 4>::new_binomial(n, 1, w);
         let proof = prove(&config, &air, matrix, &pis);
         verify(&config, &air, &proof, &pis).expect("extension field verification failed");
+    }
+
+    #[test]
+    fn trace_to_matrix_packs_multiple_lanes() {
+        let n = 3;
+        let lanes = 2;
+        let lhs_values = vec![Val::from_u64(1); n];
+        let rhs_values = vec![Val::from_u64(2); n];
+        let result_values = vec![Val::from_u64(2); n];
+        let lhs_index = vec![10u32; n];
+        let rhs_index = vec![20u32; n];
+        let result_index = vec![30u32; n];
+
+        let trace = MulTrace {
+            lhs_values,
+            lhs_index,
+            rhs_values,
+            rhs_index,
+            result_values,
+            result_index,
+        };
+
+        let matrix: RowMajorMatrix<Val> = MulAir::<Val, 1>::trace_to_matrix(&trace, lanes);
+        assert_eq!(matrix.width(), MulAir::<Val, 1>::lane_width() * lanes);
+        assert_eq!(matrix.height(), 2);
     }
 }

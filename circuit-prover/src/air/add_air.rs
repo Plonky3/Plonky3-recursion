@@ -1,6 +1,5 @@
 #![allow(clippy::needless_range_loop)]
 use alloc::vec::Vec;
-use core::borrow::{Borrow, BorrowMut};
 
 use p3_air::{Air, AirBuilder, BaseAir};
 use p3_circuit::tables::AddTrace;
@@ -10,83 +9,98 @@ use p3_matrix::dense::RowMajorMatrix;
 
 use super::utils::pad_to_power_of_two;
 
-/// AIR for proving addition operations: lhs + rhs = result
-/// Generic over extension degree D (component-wise addition)
-/// Columns for an Add AIR that proves lhs + rhs = result
-/// Layout: [lhs[0..D-1], lhs_index, rhs[0..D-1], rhs_index, result[0..D-1], result_index]
-#[repr(C)]
-#[derive(Debug)]
-pub struct AddCols<T, const D: usize> {
-    pub lhs: [T; D],
-    pub lhs_index: T,
-    pub rhs: [T; D],
-    pub rhs_index: T,
-    pub result: [T; D],
-    pub result_index: T,
-}
-
-/// AIR for proving addition operations: lhs + rhs = result
-/// Generic over extension degree D (component-wise addition)
-/// Width = 3*D + 3
+/// AIR for proving addition operations: lhs + rhs = result.
+/// Generic over extension degree `D` (component-wise addition) and a runtime lane count
+/// that controls how many additions are packed side-by-side in a single row.
 #[derive(Debug, Clone)]
 pub struct AddAir<F, const D: usize = 1> {
-    /// Number of addition operations (height of the trace)
+    /// Number of logical addition operations in the trace.
     pub num_ops: usize,
+    /// Number of lanes (operations) packed per row.
+    pub lanes: usize,
     _phantom: core::marker::PhantomData<F>,
 }
 
 impl<F: Field + PrimeCharacteristicRing, const D: usize> AddAir<F, D> {
-    pub const WIDTH: usize = 3 * D + 3;
+    /// Number of base-field columns contributed by a single lane.
+    pub const LANE_WIDTH: usize = 3 * D + 3;
 
-    pub fn new(num_ops: usize) -> Self {
+    pub fn new(num_ops: usize, lanes: usize) -> Self {
+        assert!(lanes > 0, "lane count must be non-zero");
         Self {
             num_ops,
+            lanes,
             _phantom: core::marker::PhantomData,
         }
     }
 
-    /// Convert AddTrace to RowMajorMatrix for proving with generic extension degree D
-    /// Layout: [lhs[0..D-1], lhs_index, rhs[0..D-1], rhs_index, result[0..D-1], result_index]
-    pub fn trace_to_matrix<ExtF: BasedVectorSpace<F>>(trace: &AddTrace<ExtF>) -> RowMajorMatrix<F> {
-        let height = trace.lhs_values.len();
-        let width = Self::WIDTH;
+    pub const fn lane_width() -> usize {
+        Self::LANE_WIDTH
+    }
 
-        let mut values = Vec::with_capacity(height * width);
+    pub fn total_width(&self) -> usize {
+        self.lanes * Self::lane_width()
+    }
 
-        for i in 0..height {
-            // LHS
-            let lhs_coeffs = trace.lhs_values[i].as_basis_coefficients_slice();
-            assert_eq!(
-                lhs_coeffs.len(),
-                D,
-                "Extension field degree mismatch for lhs"
-            );
-            values.extend_from_slice(lhs_coeffs);
-            values.push(F::from_u64(trace.lhs_index[i] as u64));
+    /// Convert `AddTrace` to a row-major matrix, packing `lanes` additions per row.
+    /// Resulting layout per row:
+    /// `[lhs[D], lhs_idx, rhs[D], rhs_idx, result[D], result_idx]` repeated `lanes` times.
+    pub fn trace_to_matrix<ExtF: BasedVectorSpace<F>>(
+        trace: &AddTrace<ExtF>,
+        lanes: usize,
+    ) -> RowMajorMatrix<F> {
+        assert!(lanes > 0, "lane count must be non-zero");
 
-            // RHS
-            let rhs_coeffs = trace.rhs_values[i].as_basis_coefficients_slice();
-            assert_eq!(
-                rhs_coeffs.len(),
-                D,
-                "Extension field degree mismatch for rhs"
-            );
-            values.extend_from_slice(rhs_coeffs);
-            values.push(F::from_u64(trace.rhs_index[i] as u64));
+        let lane_width = Self::lane_width();
+        let width = lane_width * lanes;
+        let op_count = trace.lhs_values.len();
+        let row_count = op_count.div_ceil(lanes);
 
-            // RESULT
-            let result_coeffs = trace.result_values[i].as_basis_coefficients_slice();
-            assert_eq!(
-                result_coeffs.len(),
-                D,
-                "Extension field degree mismatch for result"
-            );
-            values.extend_from_slice(result_coeffs);
-            values.push(F::from_u64(trace.result_index[i] as u64));
+        let mut values = Vec::with_capacity(width * row_count.max(1));
+
+        for row in 0..row_count {
+            for lane in 0..lanes {
+                let op_idx = row * lanes + lane;
+                if op_idx < op_count {
+                    // LHS limbs + index
+                    let lhs_coeffs = trace.lhs_values[op_idx].as_basis_coefficients_slice();
+                    assert_eq!(
+                        lhs_coeffs.len(),
+                        D,
+                        "Extension field degree mismatch for lhs",
+                    );
+                    values.extend_from_slice(lhs_coeffs);
+                    values.push(F::from_u64(trace.lhs_index[op_idx] as u64));
+
+                    // RHS limbs + index
+                    let rhs_coeffs = trace.rhs_values[op_idx].as_basis_coefficients_slice();
+                    assert_eq!(
+                        rhs_coeffs.len(),
+                        D,
+                        "Extension field degree mismatch for rhs",
+                    );
+                    values.extend_from_slice(rhs_coeffs);
+                    values.push(F::from_u64(trace.rhs_index[op_idx] as u64));
+
+                    // Result limbs + index
+                    let result_coeffs = trace.result_values[op_idx].as_basis_coefficients_slice();
+                    assert_eq!(
+                        result_coeffs.len(),
+                        D,
+                        "Extension field degree mismatch for result",
+                    );
+                    values.extend_from_slice(result_coeffs);
+                    values.push(F::from_u64(trace.result_index[op_idx] as u64));
+                } else {
+                    // Filler lane: append zeros for unused slot to keep the row width uniform.
+                    for _ in 0..lane_width {
+                        values.push(F::ZERO);
+                    }
+                }
+            }
         }
 
-        // Pad to power of two by repeating last row
-        pad_to_power_of_two(&mut values, width, height);
+        pad_to_power_of_two(&mut values, width, row_count);
 
         RowMajorMatrix::new(values, width)
     }
@@ -94,7 +108,7 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AddAir<F, D> {
 
 impl<F: Field, const D: usize> BaseAir<F> for AddAir<F, D> {
     fn width(&self) -> usize {
-        Self::WIDTH
+        self.total_width()
     }
 }
 
@@ -105,37 +119,26 @@ where
     fn eval(&self, builder: &mut AB) {
         let main = builder.main();
 
-        debug_assert_eq!(main.width(), Self::WIDTH, "column width mismatch");
+        debug_assert_eq!(main.width(), self.total_width(), "column width mismatch");
 
         let local = main.row_slice(0).expect("matrix must be non-empty");
-        let local: &AddCols<_, D> = (*local).borrow();
+        let local = &*local;
+        let lane_width = Self::lane_width();
 
-        // Component-wise: lhs[i] + rhs[i] = out[i]
-        for i in 0..D {
-            builder
-                .assert_zero(local.lhs[i].clone() + local.rhs[i].clone() - local.result[i].clone());
+        for lane in 0..self.lanes {
+            let mut cursor = lane * lane_width;
+            let lhs_slice = &local[cursor..cursor + D];
+            cursor += D + 1; // Skip lhs index
+            let rhs_slice = &local[cursor..cursor + D];
+            cursor += D + 1; // Skip rhs index
+            let result_slice = &local[cursor..cursor + D];
+
+            for i in 0..D {
+                builder.assert_zero(
+                    lhs_slice[i].clone() + rhs_slice[i].clone() - result_slice[i].clone(),
+                );
+            }
         }
-    }
-}
-
-// Borrow implementations to convert [T] to AddCols<T, D>
-impl<T, const D: usize> Borrow<AddCols<T, D>> for [T] {
-    fn borrow(&self) -> &AddCols<T, D> {
-        let (prefix, shorts, suffix) = unsafe { self.align_to::<AddCols<T, D>>() };
-        debug_assert!(prefix.is_empty(), "Alignment should match");
-        debug_assert!(suffix.is_empty(), "Alignment should match");
-        debug_assert_eq!(shorts.len(), 1);
-        &shorts[0]
-    }
-}
-
-impl<T, const D: usize> BorrowMut<AddCols<T, D>> for [T] {
-    fn borrow_mut(&mut self) -> &mut AddCols<T, D> {
-        let (prefix, shorts, suffix) = unsafe { self.align_to_mut::<AddCols<T, D>>() };
-        debug_assert!(prefix.is_empty(), "Alignment should match");
-        debug_assert!(suffix.is_empty(), "Alignment should match");
-        debug_assert_eq!(shorts.len(), 1);
-        &mut shorts[0]
     }
 }
 
@@ -172,13 +175,13 @@ mod tests {
             result_index,
         };
 
-        let matrix: RowMajorMatrix<Val> = AddAir::<Val, 1>::trace_to_matrix(&trace);
+        let matrix: RowMajorMatrix<Val> = AddAir::<Val, 1>::trace_to_matrix(&trace, 1);
         assert_eq!(matrix.width(), 6);
 
         let config = build_test_config();
         let pis: Vec<Val> = vec![];
 
-        let air = AddAir::<Val, 1>::new(n);
+        let air = AddAir::<Val, 1>::new(n, 1);
         let proof = prove(&config, &air, matrix, &pis);
         verify(&config, &air, &proof, &pis).expect("verification failed");
     }
@@ -230,15 +233,40 @@ mod tests {
             result_index,
         };
 
-        let matrix: RowMajorMatrix<Val> = AddAir::<Val, 4>::trace_to_matrix(&trace);
+        let matrix: RowMajorMatrix<Val> = AddAir::<Val, 4>::trace_to_matrix(&trace, 1);
         assert_eq!(matrix.height(), n);
-        assert_eq!(matrix.width(), 15); // 3*4 + 3
+        assert_eq!(matrix.width(), AddAir::<Val, 4>::lane_width());
 
         let config = build_test_config();
         let pis: Vec<Val> = vec![];
 
-        let air = AddAir::<Val, 4>::new(n);
+        let air = AddAir::<Val, 4>::new(n, 1);
         let proof = prove(&config, &air, matrix, &pis);
         verify(&config, &air, &proof, &pis).expect("extension field verification failed");
+    }
+
+    #[test]
+    fn trace_to_matrix_packs_multiple_lanes() {
+        let n = 3;
+        let lanes = 2;
+        let lhs_values = vec![Val::from_u64(1); n];
+        let rhs_values = vec![Val::from_u64(2); n];
+        let result_values = vec![Val::from_u64(3); n];
+        let lhs_index = vec![10u32; n];
+        let rhs_index = vec![20u32; n];
+        let result_index = vec![30u32; n];
+
+        let trace = AddTrace {
+            lhs_values,
+            lhs_index,
+            rhs_values,
+            rhs_index,
+            result_values,
+            result_index,
+        };
+
+        let matrix: RowMajorMatrix<Val> = AddAir::<Val, 1>::trace_to_matrix(&trace, lanes);
+        assert_eq!(matrix.width(), AddAir::<Val, 1>::lane_width() * lanes);
+        assert_eq!(matrix.height(), 2);
     }
 }
