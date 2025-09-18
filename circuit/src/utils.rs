@@ -105,9 +105,8 @@ pub fn symbolic_to_circuit<F: Field>(
 mod tests {
     use alloc::vec;
     use alloc::vec::Vec;
-    use core::borrow::Borrow;
 
-    use p3_air::{Air, AirBuilder, AirBuilderWithPublicValues, BaseAir};
+    use p3_air::{Air, BaseAir};
     use p3_baby_bear::{BabyBear, Poseidon2BabyBear};
     use p3_challenger::DuplexChallenger;
     use p3_commit::ExtensionMmcs;
@@ -116,7 +115,6 @@ mod tests {
     use p3_field::extension::BinomialExtensionField;
     use p3_field::integers::QuotientMap;
     use p3_fri::TwoAdicFriPcs;
-    use p3_matrix::Matrix;
     use p3_matrix::dense::RowMajorMatrixView;
     use p3_matrix::stack::VerticalPair;
     use p3_merkle_tree::MerkleTreeMmcs;
@@ -142,69 +140,9 @@ mod tests {
     type MyConfig = StarkConfig<MyPcs, Challenge, Challenger>;
     use p3_field::PrimeCharacteristicRing;
 
+    use crate::test_utils::{FibonacciAir, NUM_FIBONACCI_COLS};
     use crate::utils::{ColumnsTargets, RowSelectorsTargets, symbolic_to_circuit};
     use crate::{CircuitBuilder, CircuitError};
-
-    /// For testing the public values feature
-    pub struct FibonacciAir {}
-
-    impl<F> BaseAir<F> for FibonacciAir {
-        fn width(&self) -> usize {
-            NUM_FIBONACCI_COLS
-        }
-    }
-
-    impl<AB: AirBuilderWithPublicValues> Air<AB> for FibonacciAir {
-        fn eval(&self, builder: &mut AB) {
-            let main = builder.main();
-
-            let pis = builder.public_values();
-
-            let a = pis[0];
-            let b = pis[1];
-            let x = pis[2];
-
-            let (local, next) = (
-                main.row_slice(0).expect("Matrix is empty?"),
-                main.row_slice(1).expect("Matrix only has 1 row?"),
-            );
-            let local: &FibonacciRow<AB::Var> = (*local).borrow();
-            let next: &FibonacciRow<AB::Var> = (*next).borrow();
-
-            let mut when_first_row = builder.when_first_row();
-
-            when_first_row.assert_eq(local.left.clone(), a);
-            when_first_row.assert_eq(local.right.clone(), b);
-
-            let mut when_transition = builder.when_transition();
-
-            // a' <- b
-            when_transition.assert_eq(local.right.clone(), next.left.clone());
-
-            // b' <- a + b
-            when_transition.assert_eq(local.left.clone() + local.right.clone(), next.right.clone());
-
-            builder.when_last_row().assert_eq(local.right.clone(), x);
-        }
-    }
-
-    const NUM_FIBONACCI_COLS: usize = 2;
-
-    pub struct FibonacciRow<F> {
-        pub left: F,
-        pub right: F,
-    }
-
-    impl<F> Borrow<FibonacciRow<F>> for [F] {
-        fn borrow(&self) -> &FibonacciRow<F> {
-            debug_assert_eq!(self.len(), NUM_FIBONACCI_COLS);
-            let (prefix, shorts, suffix) = unsafe { self.align_to::<FibonacciRow<F>>() };
-            debug_assert!(prefix.is_empty(), "Alignment should match");
-            debug_assert!(suffix.is_empty(), "Alignment should match");
-            debug_assert_eq!(shorts.len(), 1);
-            &shorts[0]
-        }
-    }
 
     #[test]
     fn test_symbolic_to_circuit() -> Result<(), CircuitError> {

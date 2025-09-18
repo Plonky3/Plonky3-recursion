@@ -44,6 +44,7 @@ impl<
         lens: &mut impl Iterator<Item = usize>,
         degree_bits: usize,
     ) -> Self {
+        // Note that the iterator `lens` is updated by each call to `new`. So we can always pass the same `lens` for all structures.
         let num_commit_phase_commits = lens.next().unwrap();
         let mut commit_phase_commits = Vec::with_capacity(num_commit_phase_commits);
         for _ in 0..num_commit_phase_commits {
@@ -59,7 +60,7 @@ impl<
                 degree_bits,
             ));
         }
-        // `lens` has been updated by the other structures. So the first element is indeed the length of the final polynomial.
+
         let final_poly_len = lens.next().unwrap();
         let mut final_poly = Vec::with_capacity(final_poly_len);
         for _ in 0..final_poly_len {
@@ -99,10 +100,9 @@ impl<
     }
 
     fn num_challenges(&self) -> usize {
-        1 // alpha: FRI batch combination challenge
-        + self.commit_phase_commits.len() // Observe each commit and sample a beta challenge for the FRI rounds
-        // Observe the final polynomial coefficients
-        + self.query_proofs.len() // Sample an index for each query proof.
+        1 // `alpha`: FRI batch combination challenge
+        + self.commit_phase_commits.len() // `beta` challenges for the FRI rounds
+        + self.query_proofs.len() // Indices for all query proofs
     }
 
     fn lens(input: &Self::Input) -> impl Iterator<Item = usize> {
@@ -157,6 +157,7 @@ impl<
         lens: &mut impl Iterator<Item = usize>,
         degree_bits: usize,
     ) -> Self {
+        // Note that the iterator `lens` is updated by each call to `new`. So we can always pass the same `lens` for all structures.
         let input_proof = InputProof::new(circuit, lens, degree_bits);
         let num_commit_phase_openings = lens.next().unwrap();
         let mut commit_phase_openings = Vec::with_capacity(num_commit_phase_openings);
