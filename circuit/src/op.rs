@@ -157,15 +157,11 @@ pub struct FakeMerklePrivateData<F> {
 /// Private data for the hash absorb operation
 #[derive(Debug, Clone, PartialEq)]
 pub struct HashAbsorbPrivateData<F> {
-    /// Flag indicating whether to reset the capacity before absorbing
-    pub reset: bool,
-    /// Current capacity of the sponge state; zeros if `reset` is true
-    pub capacity: Vec<F>,
+    _phantom: core::marker::PhantomData<F>,
 }
 
 /// Private data for the hash squeeze operation
 #[derive(Debug, Clone, PartialEq)]
 pub struct HashSqueezePrivateData<F> {
-    /// Current capacity of the sponge state
-    pub capacity: Vec<F>,
+    _phantom: core::marker::PhantomData<F>,
 }
