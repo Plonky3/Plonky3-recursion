@@ -83,16 +83,16 @@ pub trait Recursive<F: Field> {
 /// Trait representing the `Commitment` and `Proof` of an `Input` with type `Mmcs`.
 pub trait RecursiveMmcs<F: Field, EF: ExtensionField<F>> {
     type Input: Mmcs<F>;
-    type Commitment: Recursive<EF, Input = <Self::Input as Mmcs<F>>::Commitment> + Clone;
-    type Proof: Recursive<EF, Input = <Self::Input as Mmcs<F>>::Proof> + Clone;
+    type Commitment: Recursive<EF, Input = <Self::Input as Mmcs<F>>::Commitment>;
+    type Proof: Recursive<EF, Input = <Self::Input as Mmcs<F>>::Proof>;
 }
 
 /// Extension version of `RecursiveMmcs`.
 pub trait RecursiveExtensionMmcs<F: Field, EF: ExtensionField<F>> {
     type Input: Mmcs<EF>;
 
-    type Commitment: Recursive<EF, Input = <Self::Input as Mmcs<EF>>::Commitment> + Clone;
-    type Proof: Recursive<EF, Input = <Self::Input as Mmcs<EF>>::Proof> + Clone;
+    type Commitment: Recursive<EF, Input = <Self::Input as Mmcs<EF>>::Commitment>;
+    type Proof: Recursive<EF, Input = <Self::Input as Mmcs<EF>>::Proof>;
 }
 
 type Commitment<SC> = <<SC as StarkGenericConfig>::Pcs as Pcs<
@@ -100,7 +100,7 @@ type Commitment<SC> = <<SC as StarkGenericConfig>::Pcs as Pcs<
     <SC as StarkGenericConfig>::Challenger,
 >>::Commitment;
 
-type ComsWithOpenings<Comm, Domain> = [(Comm, Vec<(Domain, Vec<(ExprId, Vec<ExprId>)>)>)];
+pub type ComsWithOpenings<Comm, Domain> = [(Comm, Vec<(Domain, Vec<(ExprId, Vec<ExprId>)>)>)];
 
 type ComsToVerify<SC> = [(
     Commitment<SC>,
@@ -204,7 +204,7 @@ pub trait RecursiveAir<F: Field> {
 
 // Implemeting `Recursive` for the `ProofTargets`, `CommitmentTargets` and `OpenedValuesTargets` base structures.
 impl<
-    SC: StarkGenericConfig + Clone,
+    SC: StarkGenericConfig,
     Comm: Recursive<SC::Challenge, Input = <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment>,
     OpeningProof: Recursive<SC::Challenge, Input = <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Proof>,
 > Recursive<SC::Challenge> for ProofTargets<SC, Comm, OpeningProof>
