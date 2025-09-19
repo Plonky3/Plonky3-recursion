@@ -176,7 +176,7 @@ where
 
     /// Subtract two expressions.
     ///
-    /// Cost: 1 row in Sub table + 1 row in witness table.
+    /// Cost: 1 row in Add table + 1 row in witness table (encoded as result + rhs = lhs).
     pub fn sub(&mut self, lhs: ExprId, rhs: ExprId) -> ExprId {
         let sub_expr = Expr::Sub { lhs, rhs };
         self.expressions.add_expr(sub_expr)
@@ -192,7 +192,7 @@ where
 
     /// Divide two expressions
     ///
-    /// Cost: 1 row in Mul table + 1 row in witness table.
+    /// Cost: 1 row in Mul table + 1 row in witness table (encoded as rhs * out = lhs).
     pub fn div(&mut self, lhs: ExprId, rhs: ExprId) -> ExprId {
         let div_expr = Expr::Div { lhs, rhs };
         self.expressions.add_expr(div_expr)
@@ -392,23 +392,24 @@ where
                     expr_to_widx.insert(expr_id, out_widx);
                 }
                 Expr::Sub { lhs, rhs } => {
-                    let out_widx = alloc_witness_id_for_expr(expr_idx);
-                    let a_widx = Self::get_witness_id(
+                    let result_widx = alloc_witness_id_for_expr(expr_idx);
+                    let lhs_widx = Self::get_witness_id(
                         &expr_to_widx,
                         *lhs,
                         &format!("Sub lhs for {expr_id:?}"),
                     )?;
-                    let b_widx = Self::get_witness_id(
+                    let rhs_widx = Self::get_witness_id(
                         &expr_to_widx,
                         *rhs,
                         &format!("Sub rhs for {expr_id:?}"),
                     )?;
-                    primitive_ops.push(Prim::Sub {
-                        a: a_widx,
-                        b: b_widx,
-                        out: out_widx,
+                    // Encode lhs - rhs = result as result + rhs = lhs.
+                    primitive_ops.push(Prim::Add {
+                        a: rhs_widx,
+                        b: result_widx,
+                        out: lhs_widx,
                     });
-                    expr_to_widx.insert(expr_id, out_widx);
+                    expr_to_widx.insert(expr_id, result_widx);
                 }
                 Expr::Mul { lhs, rhs } => {
                     let out_widx = alloc_witness_id_for_expr(expr_idx);
@@ -518,21 +519,21 @@ mod tests {
     fn test_circuit_basic_api() {
         let mut builder = CircuitBuilder::<BabyBear>::new();
 
-        let x = builder.add_public_input();
-        let c37 = builder.add_const(BabyBear::from_u64(37));
-        let c111 = builder.add_const(BabyBear::from_u64(111));
-        let c1 = builder.add_const(BabyBear::from_u64(1));
+        let c37 = builder.add_const(BabyBear::from_u64(37)); // w1
+        let c111 = builder.add_const(BabyBear::from_u64(111)); // w2
+        let c1 = builder.add_const(BabyBear::from_u64(1)); // w3
+        let x = builder.add_public_input(); // w4
 
-        let mul_result = builder.mul(c37, x);
-        let sub_result = builder.sub(mul_result, c111);
+        let mul_result = builder.mul(c37, x); // w5
+        let sub_result = builder.sub(mul_result, c111); // writes into the zero slot (w0)
         builder.assert_zero(sub_result);
 
-        let div_result = builder.div(mul_result, c111);
+        let div_result = builder.div(mul_result, c111); // w6
         let sub_one = builder.sub(div_result, c1);
         builder.assert_zero(sub_one);
 
         let circuit = builder.build().unwrap();
-        assert_eq!(circuit.witness_count, 7); // 0:zero, 1:c37, 2:c111, 3:c1, 4:public, 5:mul_result, 6:sub_result, 7:div_result, 8:sub_one
+        assert_eq!(circuit.witness_count, 7); // w0 reused for both assert_zero targets; w1-6 as annotated above
 
         // Assert all primitive operations (lowering order: Consts first, then Public, then ops)
         assert_eq!(circuit.primitive_ops.len(), 9);
@@ -578,30 +579,30 @@ mod tests {
                 assert_eq!(out.0, 5);
             }
             _ => panic!("Expected Mul at op 4"),
-        }
+        } // w1 * w4 = w5
         match &circuit.primitive_ops[6] {
-            Prim::Sub { a, b, out } => {
-                assert_eq!(a.0, 5);
-                assert_eq!(b.0, 2);
-                assert_eq!(out.0, 0);
-            }
-            _ => panic!("Expected Sub(mul_result - c111)"),
+            Prim::Add { a, b, out } => {
+                assert_eq!(a.0, 2);
+                assert_eq!(b.0, 0);
+                assert_eq!(out.0, 5);
+            } // w5 - w2 = w0
+            _ => panic!("Expected Add encoding mul_result - c111"),
         }
         match &circuit.primitive_ops[7] {
             Prim::Mul { a, b, out } => {
                 assert_eq!(a.0, 2);
                 assert_eq!(b.0, 6);
                 assert_eq!(out.0, 5);
-            }
+            } // w2 * w6 = w5
             _ => panic!("Expected Mul"),
         }
         match &circuit.primitive_ops[8] {
-            Prim::Sub { a, b, out } => {
-                assert_eq!(a.0, 6);
-                assert_eq!(b.0, 3);
-                assert_eq!(out.0, 0);
-            }
-            _ => panic!("Expected Sub(div_result - c1)"),
+            Prim::Add { a, b, out } => {
+                assert_eq!(a.0, 3);
+                assert_eq!(b.0, 0);
+                assert_eq!(out.0, 6);
+            } // w6 - w3 = w0
+            _ => panic!("Expected Add encoding div_result - c1"),
         }
 
         assert_eq!(circuit.public_flat_len, 1);
