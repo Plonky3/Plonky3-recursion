@@ -224,17 +224,11 @@ impl<
             ) => {
                 // Type match - good!
             }
-            (
-                crate::op::NonPrimitiveOp::HashAbsorb { .. },
-                NonPrimitiveOpPrivateData::HashAbsorb(_),
-            ) => {
-                // Type match - good!
+            (crate::op::NonPrimitiveOp::HashAbsorb { .. }, _) => {
+                panic!("HashAbsorb operation does not take private data");
             }
-            (
-                crate::op::NonPrimitiveOp::HashSqueeze { .. },
-                NonPrimitiveOpPrivateData::HashSqueeze(_),
-            ) => {
-                // Type match - good!
+            (crate::op::NonPrimitiveOp::HashSqueeze { .. }, _) => {
+                panic!("HashSqueeze operation does not take private data");
             }
             _ => {
                 panic!("Private data type does not match operation type");

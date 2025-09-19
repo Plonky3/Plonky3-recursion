@@ -121,10 +121,6 @@ pub enum NonPrimitiveOpPrivateData<F> {
     /// to generate a valid proof. This data is not part of the public
     /// circuit specification.
     FakeMerkleVerify(FakeMerklePrivateData<F>),
-    /// Private data for the hash absorb operation
-    HashAbsorb(HashAbsorbPrivateData<F>),
-    /// Private data for the hash squeeze operation
-    HashSqueeze(HashSqueezePrivateData<F>),
 }
 
 /// Private Merkle path data for fake Merkle verification (simplified)
@@ -152,16 +148,4 @@ pub struct FakeMerklePrivateData<F> {
     /// `true` = current node is right child. Used to determine
     /// hash input ordering: `hash(current, sibling)` vs `hash(sibling, current)`.
     pub path_directions: Vec<bool>,
-}
-
-/// Private data for the hash absorb operation
-#[derive(Debug, Clone, PartialEq)]
-pub struct HashAbsorbPrivateData<F> {
-    _phantom: core::marker::PhantomData<F>,
-}
-
-/// Private data for the hash squeeze operation
-#[derive(Debug, Clone, PartialEq)]
-pub struct HashSqueezePrivateData<F> {
-    _phantom: core::marker::PhantomData<F>,
 }
