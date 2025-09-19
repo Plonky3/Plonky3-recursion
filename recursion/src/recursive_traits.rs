@@ -2,11 +2,15 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::marker::PhantomData;
 
-use p3_circuit::utils::{ColumnsTargets, RowSelectorsTargets};
+use p3_air::Air;
+use p3_circuit::utils::{ColumnsTargets, RowSelectorsTargets, symbolic_to_circuit};
 use p3_circuit::{CircuitBuilder, ExprId};
 use p3_commit::{Mmcs, Pcs};
 use p3_field::{ExtensionField, Field};
-use p3_uni_stark::{Commitments, OpenedValues, Proof, StarkGenericConfig};
+use p3_uni_stark::{
+    Commitments, OpenedValues, Proof, StarkGenericConfig, SymbolicAirBuilder, SymbolicExpression,
+    get_log_quotient_degree, get_symbolic_constraints,
+};
 
 /// Structure representing all the wires necessary for an input proof.
 #[derive(Clone)]
@@ -195,6 +199,39 @@ pub trait RecursiveAir<F: Field> {
 
     /// Infers log of constraint degree.
     fn get_log_quotient_degree(&self, num_public_values: usize, is_zk: usize) -> usize;
+}
+
+impl<F: Field, A> RecursiveAir<F> for A
+where
+    A: Air<SymbolicAirBuilder<F>>,
+{
+    fn width(&self) -> usize {
+        Self::width(self)
+    }
+
+    fn eval_folded_circuit(
+        &self,
+        builder: &mut CircuitBuilder<F>,
+        sels: &RecursiveLagrangeSelectors,
+        alpha: &ExprId,
+        columns: ColumnsTargets,
+    ) -> ExprId {
+        let symbolic_constraints: Vec<SymbolicExpression<F>> =
+            get_symbolic_constraints(self, 0, columns.public_values.len());
+
+        let mut acc = builder.add_const(F::ZERO);
+        for s_c in symbolic_constraints {
+            let mul_prev = builder.mul(acc, *alpha);
+            let constraints = symbolic_to_circuit(sels.row_selectors, &columns, &s_c, builder);
+            acc = builder.add(mul_prev, constraints);
+        }
+
+        acc
+    }
+
+    fn get_log_quotient_degree(&self, num_public_values: usize, is_zk: usize) -> usize {
+        get_log_quotient_degree(self, 0, num_public_values, is_zk)
+    }
 }
 
 // Implemeting `Recursive` for the `ProofTargets`, `CommitmentTargets` and `OpenedValuesTargets` base structures.
