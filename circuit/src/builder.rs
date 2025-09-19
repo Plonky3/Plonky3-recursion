@@ -470,30 +470,35 @@ where
 
         for (_op_id, op_type, witness_exprs) in &self.non_primitive_ops {
             match op_type {
-                NonPrimitiveOpType::FakeMerkleVerify => {
-                    if witness_exprs.len() != 2 {
-                        return Err(CircuitBuilderError::NonPrimitiveOpArity {
-                            op: "FakeMerkleVerify",
-                            expected: 2,
-                            got: witness_exprs.len(),
-                        });
+                NonPrimitiveOpType::MerkleVerify => {
+                    if witness_exprs.len() != 3 {
+                        panic!(
+                            "MerkleVerify expects exactly 3 witness expressions, got {}",
+                            witness_exprs.len()
+                        );
                     }
                     let leaf_widx = Self::get_witness_id(
                         expr_to_widx,
                         witness_exprs[0],
-                        "FakeMerkleVerify leaf input",
+                        "MerkleVerify leaf input",
+                    )?;
+                    let index_widx = Self::get_witness_id(
+                        expr_to_widx,
+                        witness_exprs[1],
+                        "MerkleVerify leaf input",
                     )?;
                     let root_widx = Self::get_witness_id(
                         expr_to_widx,
-                        witness_exprs[1],
-                        "FakeMerkleVerify root input",
+                        witness_exprs[2],
+                        "MerkleVerify root input",
                     )?;
 
-                    lowered_ops.push(NonPrimitiveOp::FakeMerkleVerify {
+                    lowered_ops.push(NonPrimitiveOp::MerkleVerify {
                         leaf: leaf_widx,
+                        index: index_widx,
                         root: root_widx,
                     });
-                } // Add more variants here as needed
+                }
             }
         }
 

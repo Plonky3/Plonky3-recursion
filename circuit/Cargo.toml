@@ -12,7 +12,11 @@ categories.workspace = true
 [dependencies]
 
 # Plonky3 dependencies
+p3-baby-bear.workspace = true
 p3-field.workspace = true
+p3-merkle-tree-air.workspace = true
+p3-keccak.workspace = true
+p3-symmetric.workspace = true
 p3-uni-stark.workspace = true
 
 # Other common dependencies

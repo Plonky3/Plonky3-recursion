@@ -43,7 +43,7 @@ fn main() -> Result<(), ProverError> {
     let expected_fib = compute_fibonacci_classical(n);
     runner.set_public_inputs(&[expected_fib])?;
 
-    let traces = runner.run()?;
+    let traces = runner.run::<F>()?;
     let config = build_standard_config_babybear();
     let multi_prover = MultiTableProver::new(config);
     let proof = multi_prover.prove_all_tables(&traces)?;

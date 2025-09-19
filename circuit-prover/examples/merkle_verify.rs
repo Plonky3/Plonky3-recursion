@@ -6,23 +6,19 @@ use std::env;
 use p3_baby_bear::BabyBear;
 use p3_circuit::NonPrimitiveOpPrivateData;
 use p3_circuit::builder::CircuitBuilder;
-use p3_circuit::op::MerklePrivateData;
+use p3_circuit::tables::MerklePrivateData;
+use p3_circuit::utils::MockCompression;
 use p3_circuit_prover::MultiTableProver;
+use p3_circuit_prover::config::babybear_config::build_standard_config_babybear;
+use p3_circuit_prover::prover::ProverError;
 use p3_field::extension::BinomialExtensionField;
 use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
-use p3_keccak::KeccakF;
-use p3_merkle_tree_air::compress::FieldCompression;
-use p3_symmetric::{CompressionFunctionFromHasher, PaddingFreeSponge};
+use p3_symmetric::PseudoCompressionFunction;
 
 type F = BinomialExtensionField<BabyBear, 4>;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    type U64Hash = PaddingFreeSponge<KeccakF, 25, 17, 4>;
-    type MyCompress = CompressionFunctionFromHasher<U64Hash, 2, 4>;
-
-    let u64_hash = U64Hash::new(KeccakF {});
-
-    let compress = MyCompress::new(u64_hash);
+fn main() -> Result<(), ProverError> {
+    let compress = MockCompression {};
 
     let depth = env::args().nth(1).and_then(|s| s.parse().ok()).unwrap_or(3);
 
@@ -38,19 +34,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The AIR constraints will verify the Merkle path is valid
     let merkle_op_id = builder.add_merkle_verify(leaf_hash, index_expr, expected_root);
 
-    let circuit = builder.build();
+    let circuit = builder.build()?;
     let mut runner = circuit.runner();
 
     // Set public inputs
     let leaf_value = F::from_u64(42); // Our leaf value
-    let siblings: Vec<(F, Option<F>)> = (0..depth)
+    let siblings: Vec<(Vec<F>, Option<Vec<F>>)> = (0..depth)
         .map(|i| {
             (
-                F::from_u64((i + 1) * 10),
+                vec![F::from_u64((i + 1) * 10)],
                 if i % 2 == 0 {
                     None
                 } else {
-                    Some(F::from_u64(i + 1))
+                    Some(vec![F::from_u64(i + 1)])
                 },
             )
         })
@@ -64,24 +60,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .sum(),
     );
     let expected_root_value = compute_merkle_root(&compress, &leaf_value, &siblings, &directions);
-    let expected_root_value = F::from_basis_coefficients_fn(|i| expected_root_value[i]);
-    runner.set_public_inputs(&[leaf_value, expected_root_value])?;
+    runner.set_public_inputs(&[leaf_value, index_value, expected_root_value])?;
 
     // Set private Merkle path data
-    runner.set_complex_op_private_data(
+    runner.set_non_primitive_op_private_data(
         merkle_op_id,
         NonPrimitiveOpPrivateData::MerkleVerify(MerklePrivateData {
             path_siblings: siblings,
         }),
     )?;
 
-    let traces = runner.run()?;
-    let multi_prover = MultiTableProver::new();
+    let traces = runner.run::<BabyBear>()?;
+    let config = build_standard_config_babybear();
+    let multi_prover = MultiTableProver::new(config);
     let proof = multi_prover.prove_all_tables(&traces)?;
     multi_prover.verify_all_tables(&proof)?;
 
     println!(
-        "✅ Verified Merkle path for leaf {leaf_value} with depth {depth} → root {expected_root_value}"
+        "✅ Verified Merkle path for leaf {leaf_value} with depth {depth} → root {:?}",
+        expected_root_value
     );
 
     Ok(())
@@ -90,37 +87,44 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 pub type Hash = [BabyBear; 4];
 
 /// Simulate classical Merkle root computation for testing
-fn compute_merkle_root<C: FieldCompression<BabyBear, 2, 4>>(
-    compress: &C,
+fn compute_merkle_root(
+    compress: &MockCompression,
     leaf: &F,
-    siblings: &Vec<(F, Option<F>)>,
+    siblings: &Vec<(Vec<F>, Option<Vec<F>>)>,
     directions: &Vec<bool>,
-) -> Hash {
+) -> F {
     directions.iter().zip(siblings.iter()).fold(
-        leaf.as_basis_coefficients_slice()
-            .try_into()
-            .expect("Extension degree is 4."),
+        leaf.clone(),
         |state, (direction, (sibling, other_sibling))| {
-            let sibling = sibling
-                .as_basis_coefficients_slice()
-                .try_into()
-                .expect("Extension degree is 4.");
             let (left, right) = if *direction {
-                (state, sibling)
+                (state.clone(), sibling[0].clone())
             } else {
-                (sibling, state)
+                (sibling[0].clone(), state.clone())
             };
-            let mut new_state = compress.compress_field([left, right]);
+            let mut new_state: [BabyBear; 4] = compress.compress([
+                left.as_basis_coefficients_slice()
+                    .try_into()
+                    .expect("Size is 4"),
+                right
+                    .as_basis_coefficients_slice()
+                    .try_into()
+                    .expect("Size is 4"),
+            ]);
             if let Some(other_sibling) = other_sibling {
-                new_state = compress.compress_field([
-                    state,
-                    other_sibling
+                new_state = compress.compress([
+                    state
                         .as_basis_coefficients_slice()
                         .try_into()
-                        .expect("Extension degree is 4."),
+                        .expect("Size is 4"),
+                    other_sibling[0]
+                        .clone()
+                        .as_basis_coefficients_slice()
+                        .try_into()
+                        .expect("Size is o4"),
                 ]);
             }
-            new_state
+            let result = F::from_basis_coefficients_slice(&new_state).expect("Size is 4");
+            result
         },
     )
 }
