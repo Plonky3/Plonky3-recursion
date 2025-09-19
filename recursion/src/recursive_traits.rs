@@ -83,16 +83,16 @@ pub trait Recursive<F: Field> {
 /// Trait representing the `Commitment` and `Proof` of an `Input` with type `Mmcs`.
 pub trait RecursiveMmcs<F: Field, EF: ExtensionField<F>> {
     type Input: Mmcs<F>;
-    type Commitment: Recursive<EF, Input = <Self::Input as Mmcs<F>>::Commitment> + Clone;
-    type Proof: Recursive<EF, Input = <Self::Input as Mmcs<F>>::Proof> + Clone;
+    type Commitment: Recursive<EF, Input = <Self::Input as Mmcs<F>>::Commitment>;
+    type Proof: Recursive<EF, Input = <Self::Input as Mmcs<F>>::Proof>;
 }
 
 /// Extension version of `RecursiveMmcs`.
 pub trait RecursiveExtensionMmcs<F: Field, EF: ExtensionField<F>> {
     type Input: Mmcs<EF>;
 
-    type Commitment: Recursive<EF, Input = <Self::Input as Mmcs<EF>>::Commitment> + Clone;
-    type Proof: Recursive<EF, Input = <Self::Input as Mmcs<EF>>::Proof> + Clone;
+    type Commitment: Recursive<EF, Input = <Self::Input as Mmcs<EF>>::Commitment>;
+    type Proof: Recursive<EF, Input = <Self::Input as Mmcs<EF>>::Proof>;
 }
 
 type Commitment<SC> = <<SC as StarkGenericConfig>::Pcs as Pcs<
@@ -100,7 +100,7 @@ type Commitment<SC> = <<SC as StarkGenericConfig>::Pcs as Pcs<
     <SC as StarkGenericConfig>::Challenger,
 >>::Commitment;
 
-type ComsWithOpenings<Comm, Domain> = [(Comm, Vec<(Domain, Vec<(ExprId, Vec<ExprId>)>)>)];
+pub type ComsWithOpenings<Comm, Domain> = [(Comm, Vec<(Domain, Vec<(ExprId, Vec<ExprId>)>)>)];
 
 type ComsToVerify<SC> = [(
     Commitment<SC>,
@@ -165,8 +165,13 @@ pub trait RecursivePcs<
     /// Split a domain given the degree and the current domain. This is the same as the original method in Pcs, but is also used in the verifier circuit.
     fn split_domains(&self, trace_domain: &Domain, degree: usize) -> Vec<Domain>;
 
+    /// Returns the log of the domain's size. This is the same as the original method in Pcs, but is also used in the verifier circuit.
+    fn log_size(&self, trace_domain: &Domain) -> usize;
+
     /// Returns the size of the domain. This is the same as the original method in Pcs, but is also used in the verifier circuit.
-    fn size(&self, trace_domain: &Domain) -> usize;
+    fn size(&self, trace_domain: &Domain) -> usize {
+        1 << self.log_size(trace_domain)
+    }
 
     /// Returns the first point in the domain. This is the same as the original method in Pcs, but is also used in the verifier circuit.
     fn first_point(&self, trace_domain: &Domain) -> SC::Challenge;
@@ -199,7 +204,7 @@ pub trait RecursiveAir<F: Field> {
 
 // Implemeting `Recursive` for the `ProofTargets`, `CommitmentTargets` and `OpenedValuesTargets` base structures.
 impl<
-    SC: StarkGenericConfig + Clone,
+    SC: StarkGenericConfig,
     Comm: Recursive<SC::Challenge, Input = <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment>,
     OpeningProof: Recursive<SC::Challenge, Input = <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Proof>,
 > Recursive<SC::Challenge> for ProofTargets<SC, Comm, OpeningProof>
