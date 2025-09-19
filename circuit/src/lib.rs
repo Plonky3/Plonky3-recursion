@@ -6,6 +6,7 @@ pub mod circuit;
 pub mod expr;
 pub mod op;
 pub mod tables;
+pub mod test_utils;
 pub mod types;
 pub mod utils;
 
