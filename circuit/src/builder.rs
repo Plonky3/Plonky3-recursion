@@ -13,10 +13,6 @@ pub const CIRCUIT_HASH_RATE: usize = 8;
 pub const CIRCUIT_HASH_CAPACITY: usize = 8;
 pub const CIRCUIT_HASH_STATE_SIZE: usize = CIRCUIT_HASH_RATE + CIRCUIT_HASH_CAPACITY;
 
-pub type CircuitPerm = Poseidon2BabyBear<CIRCUIT_HASH_STATE_SIZE>;
-pub type CircuitHash =
-    PaddingFreeSponge<CircuitPerm, CIRCUIT_HASH_STATE_SIZE, CIRCUIT_HASH_RATE, CIRCUIT_HASH_RATE>;
-
 /// Builder for constructing circuits using a fluent API
 ///
 /// This struct provides methods to build up a computation graph by adding:

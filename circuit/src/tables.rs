@@ -5,7 +5,7 @@ use p3_symmetric::{CryptographicHasher, CryptographicPermutation};
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
 
-use crate::builder::{CIRCUIT_HASH_CAPACITY, CIRCUIT_HASH_RATE, CircuitPerm};
+use crate::builder::{CIRCUIT_HASH_CAPACITY, CIRCUIT_HASH_RATE};
 use crate::circuit::Circuit;
 use crate::op::{NonPrimitiveOpPrivateData, Prim};
 use crate::types::{NonPrimitiveOpId, WitnessId};

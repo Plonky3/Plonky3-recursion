@@ -4,7 +4,7 @@ use std::env;
 /// Hash verification circuit: prove the correct computation of a hash.
 /// Public inputs: inputs, output
 use p3_baby_bear::{BabyBear, Poseidon2BabyBear};
-use p3_circuit::builder::{CircuitBuilder, CircuitHash, CircuitPerm};
+use p3_circuit::builder::{CIRCUIT_HASH_RATE, CIRCUIT_HASH_STATE_SIZE, CircuitBuilder};
 use p3_circuit::{Challenger, FakeMerklePrivateData, NonPrimitiveOpPrivateData};
 use p3_circuit_prover::MultiTableProver;
 use p3_field::PrimeCharacteristicRing;
@@ -13,6 +13,10 @@ use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 
 type F = BabyBear;
+
+pub type CircuitPerm = Poseidon2BabyBear<CIRCUIT_HASH_STATE_SIZE>;
+pub type CircuitHash =
+    PaddingFreeSponge<CircuitPerm, CIRCUIT_HASH_STATE_SIZE, CIRCUIT_HASH_RATE, CIRCUIT_HASH_RATE>;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut rng = SmallRng::seed_from_u64(1);
