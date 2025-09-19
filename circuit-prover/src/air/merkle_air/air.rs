@@ -9,21 +9,12 @@ use p3_matrix::Matrix;
 use crate::air::merkle_air::cols::{MerkleTreeCols, get_num_merkle_tree_cols};
 
 // `DIGEST_ELEMS` is the number of digest elements of the hash. `MAX_TREE_HEIGHT` is the maximal tree height that can be handled by the AIR.
+#[derive(Default)]
 pub struct MerkleVerifyAir<F, const DIGEST_ELEMS: usize, const MAX_TREE_HEIGHT: usize>
 where
     F: Field,
 {
     _phantom: PhantomData<F>,
-}
-
-impl<F: Field, const DIGEST_ELEMS: usize, const MAX_TREE_HEIGHT: usize>
-    MerkleVerifyAir<F, DIGEST_ELEMS, MAX_TREE_HEIGHT>
-{
-    pub fn new() -> Self {
-        Self {
-            _phantom: PhantomData,
-        }
-    }
 }
 
 impl<F: Field, const DIGEST_ELEMS: usize, const MAX_TREE_HEIGHT: usize> BaseAir<F>
@@ -266,7 +257,7 @@ mod test {
         };
 
         // Create the AIR.
-        let air = MerkleVerifyAir::<Val, DIGEST_ELEMS, MAX_TREE_HEIGHT>::new();
+        let air = MerkleVerifyAir::<Val, DIGEST_ELEMS, MAX_TREE_HEIGHT>::default();
 
         // Generate trace for Merkle tree table.
         let trace = MerkleVerifyAir::<Val, DIGEST_ELEMS, MAX_TREE_HEIGHT>::trace_to_matrix(&trace);

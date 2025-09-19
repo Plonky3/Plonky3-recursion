@@ -77,8 +77,7 @@ fn main() -> Result<(), ProverError> {
     multi_prover.verify_all_tables(&proof)?;
 
     println!(
-        "✅ Verified Merkle path for leaf {leaf_value} with depth {depth} → root {:?}",
-        expected_root_value
+        "✅ Verified Merkle path for leaf {leaf_value} with depth {depth} → root {expected_root_value}",
     );
 
     Ok(())
@@ -90,16 +89,16 @@ pub type Hash = [BabyBear; 4];
 fn compute_merkle_root(
     compress: &MockCompression,
     leaf: &F,
-    siblings: &Vec<(Vec<F>, Option<Vec<F>>)>,
-    directions: &Vec<bool>,
+    siblings: &[(Vec<F>, Option<Vec<F>>)],
+    directions: &[bool],
 ) -> F {
     directions.iter().zip(siblings.iter()).fold(
-        leaf.clone(),
+        *leaf,
         |state, (direction, (sibling, other_sibling))| {
             let (left, right) = if *direction {
-                (state.clone(), sibling[0].clone())
+                (state, sibling[0])
             } else {
-                (sibling[0].clone(), state.clone())
+                (sibling[0], state)
             };
             let mut new_state: [BabyBear; 4] = compress.compress([
                 left.as_basis_coefficients_slice()
@@ -123,8 +122,7 @@ fn compute_merkle_root(
                         .expect("Size is o4"),
                 ]);
             }
-            let result = F::from_basis_coefficients_slice(&new_state).expect("Size is 4");
-            result
+            F::from_basis_coefficients_slice(&new_state).expect("Size is 4")
         },
     )
 }

@@ -109,7 +109,7 @@ impl<F: Field, const DIGEST_ELEMS: usize, const MAX_TREE_HEIGHT: usize>
                 .filter(|(_, is_extra)| !*is_extra)
                 .map(|(dir, _)| F::from_bool(*dir))
                 // Pad with zeroes if necessary.
-                .chain(core::iter::repeat(F::ZERO).take(MAX_TREE_HEIGHT - max_height))
+                .chain(core::iter::repeat_n(F::ZERO, MAX_TREE_HEIGHT - max_height))
                 .collect::<Vec<_>>()
                 .try_into()
                 .expect("TODO: this needs an error");

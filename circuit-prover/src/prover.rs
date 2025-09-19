@@ -239,8 +239,8 @@ where
             _ => Err(ProverError::UnsupportedDegree(D)),
         }?;
 
-        let merkle_air = MerkleVerifyAir::<F, 4, 32>::new();
-        let merkle_proof = prove(&self.config, &merkle_air, merkle_matrix, &pis);
+        let merkle_air = MerkleVerifyAir::<F, 4, 32>::default();
+        let merkle_proof = prove(&self.config, &merkle_air, merkle_matrix, pis);
 
         Ok(MultiTableProof {
             witness: TableProof {
@@ -324,7 +324,7 @@ where
             .map_err(|_| ProverError::VerificationFailed { phase: "sub" })?;
 
         // MerkleVerify
-        let merkle_air = MerkleVerifyAir::<F, 4, 32>::new();
+        let merkle_air = MerkleVerifyAir::<F, 4, 32>::default();
         verify(&self.config, &merkle_air, &proof.merkle.proof, pis).map_err(|_| {
             ProverError::VerificationFailed {
                 phase: "merkle_verify",

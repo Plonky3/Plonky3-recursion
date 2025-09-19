@@ -42,7 +42,7 @@ pub enum CircuitError {
     DivisionByZero,
     /// Degree not supported.
     UnsupportedDegree(usize),
-    ///
+    /// The size of the digest does not match the expected one.
     MerkleVerifyDigestLengthMismatch { expected: usize, got: usize },
 }
 
@@ -215,7 +215,7 @@ pub struct MerkleTrace<F> {
 }
 
 /// A single Merkle Path verification table (simplified: single field elements)
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct MerklePathTrace<F> {
     /// Left operand values (current hash)
     pub left_values: Vec<Vec<F>>,
@@ -230,19 +230,6 @@ pub struct MerklePathTrace<F> {
     /// Indicates if the current row is processing a smaller
     /// matrix of the Mmcs.
     pub is_extra: Vec<bool>,
-}
-
-impl<F> MerklePathTrace<F> {
-    pub fn new() -> Self {
-        MerklePathTrace {
-            left_values: Vec::new(),
-            left_index: Vec::new(),
-            right_values: Vec::new(),
-            right_index: Vec::new(),
-            path_directions: Vec::new(),
-            is_extra: Vec::new(),
-        }
-    }
 }
 
 /// Private Merkle path data for fake Merkle verification (simplified)
@@ -278,7 +265,7 @@ impl<F: Packable + Clone> MerklePrivateData<F> {
             + PseudoCompressionFunction<[F; DIGEST_ELEMS], 2>
             + Sync,
     {
-        let mut trace = MerklePathTrace::new();
+        let mut trace = MerklePathTrace::default();
         let mut state = leaf_value;
 
         let path_directions = (0..32).map(|i| (index_value >> i) & 1 == 1);
@@ -330,11 +317,11 @@ impl<F: Packable + Clone> MerklePrivateData<F> {
                 trace.right_values.push(extra_sibling_value.to_vec());
                 trace.right_index.push(0); // TODO: This should have an address on the witness table
 
-                let parent_hash = compress.compress([state, extra_sibling_value.clone()]);
+                let parent_hash = compress.compress([state, extra_sibling_value]);
                 trace.path_directions.push(direction);
                 trace.is_extra.push(true);
 
-                state = parent_hash.clone();
+                state = parent_hash;
             }
         }
         Ok(trace)
@@ -395,7 +382,7 @@ impl<
 
         for (i, value) in public_values.iter().enumerate() {
             let widx = self.circuit.public_rows[i];
-            self.set_witness(widx, value.clone())?;
+            self.set_witness(widx, *value)?;
         }
 
         Ok(())
@@ -701,12 +688,11 @@ impl<
             // Clone private data option to avoid holding a borrow on self
             let first = leaf.0 as usize;
             let last = first + DIGEST_ELEMS;
-            let leaf: [F; DIGEST_ELEMS] = if let Some(val) =
-                self.witness.get(first..last).and_then(|xs| {
-                    xs.into_iter()
-                        .map(|x| x.clone())
-                        .collect::<Option<Vec<F>>>()
-                }) {
+            let leaf: [F; DIGEST_ELEMS] = if let Some(val) = self
+                .witness
+                .get(first..last)
+                .and_then(|xs| xs.iter().copied().collect::<Option<Vec<F>>>())
+            {
                 let val_len = val.len();
                 val.try_into()
                     .map_err(|_| CircuitError::MerkleVerifyDigestLengthMismatch {
@@ -726,7 +712,7 @@ impl<
                     compress,
                     first as u32,
                     leaf,
-                    index.0 as u32,
+                    index.0,
                 )?;
                 merkle_paths.push(trace);
             } else {
