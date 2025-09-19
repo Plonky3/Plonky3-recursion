@@ -4,9 +4,9 @@ use std::env;
 /// Public input: expected_result (F(n))
 use p3_baby_bear::BabyBear;
 use p3_circuit::builder::CircuitBuilder;
-use p3_circuit_prover::MultiTableProver;
 use p3_circuit_prover::config::babybear_config::build_standard_config_babybear;
 use p3_circuit_prover::prover::ProverError;
+use p3_circuit_prover::{MultiTableProver, TablePacking};
 use p3_field::PrimeCharacteristicRing;
 
 type F = BabyBear;
@@ -44,7 +44,8 @@ fn main() -> Result<(), ProverError> {
 
     let traces = runner.run()?;
     let config = build_standard_config_babybear();
-    let multi_prover = MultiTableProver::new(config);
+    let table_packing = TablePacking::from_counts(4, 1);
+    let multi_prover = MultiTableProver::new(config).with_table_packing(table_packing);
     let proof = multi_prover.prove_all_tables(&traces)?;
     multi_prover.verify_all_tables(&proof)
 }

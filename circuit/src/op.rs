@@ -36,13 +36,6 @@ pub enum Prim<F> {
         out: WitnessId,
     },
 
-    /// Field subtraction: witness[out] = witness[a] - witness[b]
-    Sub {
-        a: WitnessId,
-        b: WitnessId,
-        out: WitnessId,
-    },
-
     /// Field multiplication: witness[out] = witness[a] * witness[b]
     Mul {
         a: WitnessId,
