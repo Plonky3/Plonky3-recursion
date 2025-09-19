@@ -43,4 +43,4 @@ pub mod field_params;
 pub mod prover;
 
 // Re-export main API
-pub use prover::{MultiTableProof, MultiTableProver};
+pub use prover::{MultiTableProof, MultiTableProver, TablePacking};

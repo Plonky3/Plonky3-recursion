@@ -19,9 +19,43 @@ use p3_field::{BasedVectorSpace, Field};
 use p3_uni_stark::{prove, verify};
 
 use crate::air::merkle_air::air::MerkleVerifyAir;
-use crate::air::{AddAir, ConstAir, MulAir, PublicAir, SubAir, WitnessAir};
+use crate::air::{AddAir, ConstAir, MulAir, PublicAir, WitnessAir};
 use crate::config::{ProverConfig, StarkField, StarkPermutation};
 use crate::field_params::ExtractBinomialW;
+
+/// Configuration for packing multiple primitive operations into a single AIR row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TablePacking {
+    add_lanes: usize,
+    mul_lanes: usize,
+}
+
+impl TablePacking {
+    pub fn new(add_lanes: usize, mul_lanes: usize) -> Self {
+        Self {
+            add_lanes: add_lanes.max(1),
+            mul_lanes: mul_lanes.max(1),
+        }
+    }
+
+    pub fn from_counts(add_lanes: usize, mul_lanes: usize) -> Self {
+        Self::new(add_lanes, mul_lanes)
+    }
+
+    pub const fn add_lanes(self) -> usize {
+        self.add_lanes
+    }
+
+    pub const fn mul_lanes(self) -> usize {
+        self.mul_lanes
+    }
+}
+
+impl Default for TablePacking {
+    fn default() -> Self {
+        Self::new(1, 1)
+    }
+}
 
 /// STARK proof type alias for convenience.
 ///
@@ -41,6 +75,7 @@ where
     P: StarkPermutation<F>,
 {
     pub proof: StarkProof<F, P, CD>,
+    /// Number of logical rows (operations) prior to any per-row packing.
     pub rows: usize,
 }
 
@@ -59,8 +94,9 @@ where
     pub public: TableProof<F, P, CD>,
     pub add: TableProof<F, P, CD>,
     pub mul: TableProof<F, P, CD>,
-    pub sub: TableProof<F, P, CD>,
     pub merkle: TableProof<F, P, CD>,
+    /// Packing configuration used when generating the proofs.
+    pub table_packing: TablePacking,
     /// Extension field degree: 1 for base field; otherwise the extension degree used.
     pub ext_degree: usize,
     /// Binomial parameter W for extension fields (e.g., x^D = W); None for base fields
@@ -78,6 +114,7 @@ where
     P: StarkPermutation<F>,
 {
     config: ProverConfig<F, P, CD>,
+    table_packing: TablePacking,
 }
 
 /// Errors that can arise during proving or verification.
@@ -141,7 +178,23 @@ where
     P: StarkPermutation<F>,
 {
     pub fn new(config: ProverConfig<F, P, CD>) -> Self {
-        Self { config }
+        Self {
+            config,
+            table_packing: TablePacking::default(),
+        }
+    }
+
+    pub fn with_table_packing(mut self, table_packing: TablePacking) -> Self {
+        self.table_packing = table_packing;
+        self
+    }
+
+    pub fn set_table_packing(&mut self, table_packing: TablePacking) {
+        self.table_packing = table_packing;
+    }
+
+    pub const fn table_packing(&self) -> TablePacking {
+        self.table_packing
     }
 
     /// Generate proofs for all circuit tables.
@@ -197,6 +250,9 @@ where
         EF: Field + BasedVectorSpace<F>,
     {
         debug_assert_eq!(D, EF::DIMENSION, "D parameter must match EF::DIMENSION");
+        let table_packing = self.table_packing;
+        let add_lanes = table_packing.add_lanes();
+        let mul_lanes = table_packing.mul_lanes();
         // Witness
         let witness_matrix = WitnessAir::<F, D>::trace_to_matrix(&traces.witness_trace);
         let witness_air = WitnessAir::<F, D>::new(traces.witness_trace.values.len());
@@ -213,24 +269,19 @@ where
         let public_proof = prove(&self.config, &public_air, public_matrix, pis);
 
         // Add
-        let add_matrix = AddAir::<F, D>::trace_to_matrix(&traces.add_trace);
-        let add_air = AddAir::<F, D>::new(traces.add_trace.lhs_values.len());
+        let add_matrix = AddAir::<F, D>::trace_to_matrix(&traces.add_trace, add_lanes);
+        let add_air = AddAir::<F, D>::new(traces.add_trace.lhs_values.len(), add_lanes);
         let add_proof = prove(&self.config, &add_air, add_matrix, pis);
 
         // Multiplication (uses binomial arithmetic for extension fields)
-        let mul_matrix = MulAir::<F, D>::trace_to_matrix(&traces.mul_trace);
+        let mul_matrix = MulAir::<F, D>::trace_to_matrix(&traces.mul_trace, mul_lanes);
         let mul_air: MulAir<F, D> = if D == 1 {
-            MulAir::<F, D>::new(traces.mul_trace.lhs_values.len())
+            MulAir::<F, D>::new(traces.mul_trace.lhs_values.len(), mul_lanes)
         } else {
             let w = w_binomial.ok_or(ProverError::MissingWForExtension)?;
-            MulAir::<F, D>::new_binomial(traces.mul_trace.lhs_values.len(), w)
+            MulAir::<F, D>::new_binomial(traces.mul_trace.lhs_values.len(), mul_lanes, w)
         };
         let mul_proof = prove(&self.config, &mul_air, mul_matrix, pis);
-
-        // Sub
-        let sub_matrix = SubAir::<F, D>::trace_to_matrix(&traces.sub_trace);
-        let sub_air = SubAir::<F, D>::new(traces.sub_trace.lhs_values.len());
-        let sub_proof = prove(&self.config, &sub_air, sub_matrix, pis);
 
         let merkle_matrix = match D {
             1..=8 => Ok(MerkleVerifyAir::<F, 4, 32>::trace_to_matrix(
@@ -263,10 +314,6 @@ where
                 proof: mul_proof,
                 rows: traces.mul_trace.lhs_values.len(),
             },
-            sub: TableProof {
-                proof: sub_proof,
-                rows: traces.sub_trace.lhs_values.len(),
-            },
             merkle: TableProof {
                 proof: merkle_proof,
                 rows: traces
@@ -276,6 +323,7 @@ where
                     .map(|path| path.left_values.len() + 1)
                     .sum(),
             },
+            table_packing,
             ext_degree: D,
             w_binomial: if D > 1 { w_binomial } else { None },
         })
@@ -288,6 +336,9 @@ where
         pis: &Vec<F>,
         w_binomial: Option<F>,
     ) -> Result<(), ProverError> {
+        let table_packing = proof.table_packing;
+        let add_lanes = table_packing.add_lanes();
+        let mul_lanes = table_packing.mul_lanes();
         // Witness
         let witness_air = WitnessAir::<F, D>::new(proof.witness.rows);
         verify(&self.config, &witness_air, &proof.witness.proof, pis)
@@ -304,24 +355,19 @@ where
             .map_err(|_| ProverError::VerificationFailed { phase: "public" })?;
 
         // Add
-        let add_air = AddAir::<F, D>::new(proof.add.rows);
+        let add_air = AddAir::<F, D>::new(proof.add.rows, add_lanes);
         verify(&self.config, &add_air, &proof.add.proof, pis)
             .map_err(|_| ProverError::VerificationFailed { phase: "add" })?;
 
         // Mul
         let mul_air: MulAir<F, D> = if D == 1 {
-            MulAir::<F, D>::new(proof.mul.rows)
+            MulAir::<F, D>::new(proof.mul.rows, mul_lanes)
         } else {
             let w = w_binomial.ok_or(ProverError::MissingWForExtension)?;
-            MulAir::<F, D>::new_binomial(proof.mul.rows, w)
+            MulAir::<F, D>::new_binomial(proof.mul.rows, mul_lanes, w)
         };
         verify(&self.config, &mul_air, &proof.mul.proof, pis)
             .map_err(|_| ProverError::VerificationFailed { phase: "mul" })?;
-
-        // Sub
-        let sub_air = SubAir::<F, D>::new(proof.sub.rows);
-        verify(&self.config, &sub_air, &proof.sub.proof, pis)
-            .map_err(|_| ProverError::VerificationFailed { phase: "sub" })?;
 
         // MerkleVerify
         let merkle_air = MerkleVerifyAir::<F, 4, 32>::default();
