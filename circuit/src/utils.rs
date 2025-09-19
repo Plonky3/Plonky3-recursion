@@ -1,4 +1,7 @@
+use core::array;
+
 use p3_field::Field;
+use p3_symmetric::PseudoCompressionFunction;
 use p3_uni_stark::{Entry, SymbolicExpression};
 
 use crate::{CircuitBuilder, ExprId};
@@ -98,6 +101,17 @@ pub fn symbolic_to_circuit<F: Field>(
                 _ => unreachable!(),
             }
         }
+    }
+}
+
+#[derive(Clone)]
+pub struct MockCompression {}
+
+impl<F: Field, const DIGEST_ELEMS: usize> PseudoCompressionFunction<[F; DIGEST_ELEMS], 2>
+    for MockCompression
+{
+    fn compress(&self, input: [[F; DIGEST_ELEMS]; 2]) -> [F; DIGEST_ELEMS] {
+        array::from_fn(|i| input[0][i] - input[1][i])
     }
 }
 
@@ -326,7 +340,7 @@ mod tests {
         let runner = circuit.build().unwrap();
         let mut runner = runner.runner();
         runner.set_public_inputs(&all_public_values).unwrap();
-        let _ = runner.run()?;
+        let _ = runner.run::<BabyBear>()?;
 
         Ok(())
     }

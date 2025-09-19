@@ -47,7 +47,10 @@ itertools = { version = "0.14.0", default-features = false, features = [
     "use_alloc",
 ] }
 rand = { version = "0.9.2", default-features = false, features = ["small_rng"] }
-serde = { version = "1.0", default-features = false, features = ["derive", "alloc"] }
+serde = { version = "1.0", default-features = false, features = [
+    "derive",
+    "alloc",
+] }
 
 # Local dependencies
 p3-challenger-air = { path = "challenger-air", version = "0.1.0" }

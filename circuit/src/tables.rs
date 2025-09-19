@@ -2,11 +2,14 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use alloc::{format, vec};
 
-use p3_field::Field;
+use p3_field::{BasedVectorSpace, Field, Packable, PackedValue, PrimeCharacteristicRing};
+use p3_symmetric::PseudoCompressionFunction;
 
+use crate::NonPrimitiveOp;
 use crate::circuit::Circuit;
 use crate::op::{NonPrimitiveOpPrivateData, Prim};
 use crate::types::{NonPrimitiveOpId, WitnessId};
+use crate::utils::MockCompression;
 
 /// Errors that can occur during circuit execution and trace generation.
 #[derive(Debug)]
@@ -37,6 +40,10 @@ pub enum CircuitError {
     NonPrimitiveOpMissingPrivateData { operation_index: usize },
     /// Division by zero encountered.
     DivisionByZero,
+    /// Degree not supported.
+    UnsupportedDegree(usize),
+    /// The size of the digest does not match the expected one.
+    MerkleVerifyDigestLengthMismatch { expected: usize, got: usize },
 }
 
 impl core::fmt::Display for CircuitError {
@@ -94,6 +101,10 @@ impl core::fmt::Display for CircuitError {
             CircuitError::DivisionByZero => {
                 write!(f, "Division by zero encountered")
             }
+            CircuitError::UnsupportedDegree(degree) => write!(f, "Degree {degree} not supported"),
+            CircuitError::MerkleVerifyDigestLengthMismatch { expected, got } => {
+                write!(f, "Expected digest len {expected} got {got}")
+            }
         }
     }
 }
@@ -111,8 +122,8 @@ pub struct Traces<F> {
     pub add_trace: AddTrace<F>,
     /// Mul operation table
     pub mul_trace: MulTrace<F>,
-    /// Fake Merkle verification table
-    pub fake_merkle_trace: FakeMerkleTrace<F>,
+    /// Merkle verification table
+    pub merkle_trace: MerkleTrace<F>,
 }
 
 /// Central witness table with transparent index column
@@ -178,21 +189,123 @@ pub struct MulTrace<F> {
 
 /// Fake Merkle verification table (simplified: single field elements)
 #[derive(Debug, Clone)]
-pub struct FakeMerkleTrace<F> {
+pub struct MerkleTrace<F> {
+    /// All the merkle paths computed in this trace
+    pub merkle_paths: Vec<MerklePathTrace<F>>,
+}
+
+/// A single Merkle Path verification table (simplified: single field elements)
+#[derive(Debug, Clone, Default)]
+pub struct MerklePathTrace<F> {
     /// Left operand values (current hash)
-    pub left_values: Vec<F>,
+    pub left_values: Vec<Vec<F>>,
     /// Left operand indices
     pub left_index: Vec<u32>,
     /// Right operand values (sibling hash)
-    pub right_values: Vec<F>,
+    pub right_values: Vec<Vec<F>>,
     /// Right operand indices (not on witness bus - private)
     pub right_index: Vec<u32>,
-    /// Result values (computed parent hash)
-    pub result_values: Vec<F>,
-    /// Result indices
-    pub result_index: Vec<u32>,
     /// Path direction bits (0 = left, 1 = right) - private
-    pub path_directions: Vec<u32>,
+    pub path_directions: Vec<bool>,
+    /// Indicates if the current row is processing a smaller
+    /// matrix of the Mmcs.
+    pub is_extra: Vec<bool>,
+}
+
+/// Private Merkle path data for fake Merkle verification (simplified)
+///
+/// This represents the private witness information that the prover needs
+/// to demonstrate knowledge of a valid Merkle path from leaf to root.
+/// In a real implementation, this would contain cryptographic hash values
+/// and tree structure information.
+///
+/// Note: This is a simplified "fake" implementation for demonstration.
+/// Production Merkle verification would use proper cryptographic hashes
+/// and handle multi-element hash digests, not single field elements.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MerklePrivateData<F> {
+    /// Sibling hash values along the Merkle path
+    ///
+    /// For each level of the tree (from leaf to root), contains the
+    /// sibling hash needed to compute the parent hash. It might optionally
+    /// include the hash of the row of a smaller matrix in the Mmcs.
+    pub path_siblings: Vec<(Vec<F>, Option<Vec<F>>)>,
+}
+
+impl<F: Packable + Clone> MerklePrivateData<F> {
+    pub fn to_trace<C, const DIGEST_ELEMS: usize, const D: usize>(
+        &self,
+        compress: &C,
+        leaf_index: u32,
+        leaf_value: [F; DIGEST_ELEMS],
+        index_value: u32,
+    ) -> Result<MerklePathTrace<F>, CircuitError>
+    where
+        C: PseudoCompressionFunction<[<F as PackedValue>::Value; DIGEST_ELEMS], 2>
+            + PseudoCompressionFunction<[F; DIGEST_ELEMS], 2>
+            + Sync,
+    {
+        let mut trace = MerklePathTrace::default();
+        let mut state = leaf_value;
+
+        let path_directions = (0..32).map(|i| (index_value >> i) & 1 == 1);
+        // For each step in the Merkle path
+        for ((sibling_value, extra_sibling_value), direction) in
+            self.path_siblings.iter().zip(path_directions)
+        {
+            let sibling_value: [F; DIGEST_ELEMS] =
+                sibling_value.clone().try_into().map_err(|_| {
+                    CircuitError::MerkleVerifyDigestLengthMismatch {
+                        expected: DIGEST_ELEMS,
+                        got: sibling_value.len(),
+                    }
+                })?;
+            // Current hash becomes left operand
+            trace.left_values.push(state.to_vec());
+            // TODO: What is the address of this value?
+            trace.left_index.push(leaf_index); // Points to witness bus
+
+            // Sibling becomes right operand (private data - not on witness bus)
+            trace.right_values.push(sibling_value.to_vec());
+            trace.right_index.push(0); // Not on witness bus - private data
+
+            // Compute parent hash (simple mock hash: left + right + direction)
+            let parent_hash = if direction {
+                compress.compress([state, sibling_value])
+            } else {
+                compress.compress([sibling_value, state])
+            };
+
+            trace.path_directions.push(direction);
+            trace.is_extra.push(false);
+
+            // Update current hash for next iteration
+            state = parent_hash;
+
+            // If there's an extra sibling we push another row to the trace
+            if let Some(extra_sibling_value) = extra_sibling_value {
+                let extra_sibling_value: [F; DIGEST_ELEMS] = extra_sibling_value
+                    .clone()
+                    .try_into()
+                    .map_err(|_| CircuitError::MerkleVerifyDigestLengthMismatch {
+                        expected: DIGEST_ELEMS,
+                        got: extra_sibling_value.len(),
+                    })?;
+                trace.left_values.push(state.to_vec());
+                trace.left_index.push(leaf_index);
+
+                trace.right_values.push(extra_sibling_value.to_vec());
+                trace.right_index.push(0); // TODO: This should have an address on the witness table
+
+                let parent_hash = compress.compress([state, extra_sibling_value]);
+                trace.path_directions.push(direction);
+                trace.is_extra.push(true);
+
+                state = parent_hash;
+            }
+        }
+        Ok(trace)
+    }
 }
 
 /// Circuit runner that executes circuits and generates execution traces
@@ -219,6 +332,8 @@ impl<
         + core::ops::Mul<Output = F>
         + PartialEq
         + core::fmt::Debug
+        + PrimeCharacteristicRing
+        + Packable
         + Field,
 > CircuitRunner<F>
 {
@@ -270,10 +385,7 @@ impl<
         // Validate that the private data matches the operation type
         let non_primitive_op = &self.circuit.non_primitive_ops[op_id.0 as usize];
         match (non_primitive_op, &private_data) {
-            (
-                crate::op::NonPrimitiveOp::FakeMerkleVerify { .. },
-                NonPrimitiveOpPrivateData::FakeMerkleVerify(_),
-            ) => {
+            (NonPrimitiveOp::MerkleVerify { .. }, NonPrimitiveOpPrivateData::MerkleVerify(_)) => {
                 // Type match - good!
             }
         }
@@ -283,7 +395,10 @@ impl<
     }
 
     /// Run the circuit and generate traces
-    pub fn run(mut self) -> Result<Traces<F>, CircuitError> {
+    pub fn run<BF: PrimeCharacteristicRing>(mut self) -> Result<Traces<F>, CircuitError>
+    where
+        F: Field + BasedVectorSpace<BF>,
+    {
         // Step 1: Execute primitives to fill witness vector
         self.execute_primitives()?;
 
@@ -293,7 +408,17 @@ impl<
         let public_trace = self.generate_public_trace()?;
         let add_trace = self.generate_add_trace()?;
         let mul_trace = self.generate_mul_trace()?;
-        let fake_merkle_trace = self.generate_fake_merkle_trace()?;
+        let merkle_trace = match F::DIMENSION {
+            1..=3 | 5..=8 => Ok(MerkleTrace {
+                merkle_paths: vec![],
+            }),
+            4 => {
+                // TODO: Is this the right hash?
+                let compress = MockCompression {};
+                self.generate_merkle_trace::<_, 1, 4>(&compress)
+            }
+            _ => Err(CircuitError::UnsupportedDegree(F::DIMENSION)),
+        }?;
 
         Ok(Traces {
             witness_trace,
@@ -301,7 +426,7 @@ impl<
             public_trace,
             add_trace,
             mul_trace,
-            fake_merkle_trace,
+            merkle_trace,
         })
     }
 
@@ -489,69 +614,55 @@ impl<
         })
     }
 
-    fn generate_fake_merkle_trace(&mut self) -> Result<FakeMerkleTrace<F>, CircuitError> {
-        let mut left_values = Vec::new();
-        let mut left_index = Vec::new();
-        let mut right_values = Vec::new();
-        let mut right_index = Vec::new();
-        let mut result_values = Vec::new();
-        let mut result_index = Vec::new();
-        let mut path_directions = Vec::new();
+    fn generate_merkle_trace<C, const DIGEST_ELEMS: usize, const D: usize>(
+        &mut self,
+        compress: &C,
+    ) -> Result<MerkleTrace<F>, CircuitError>
+    where
+        C: PseudoCompressionFunction<[<F as PackedValue>::Value; DIGEST_ELEMS], 2> + Sync,
+    {
+        // debug_assert_eq!(F::DIMENSION, D);
+        let mut merkle_paths = Vec::new();
 
         // Process each complex operation by index to avoid borrowing conflicts
         for op_idx in 0..self.circuit.non_primitive_ops.len() {
             // Copy out leaf/root to end immutable borrow immediately
-            let (leaf, root) = match &self.circuit.non_primitive_ops[op_idx] {
-                crate::op::NonPrimitiveOp::FakeMerkleVerify { leaf, root } => (*leaf, *root),
-            };
+            let NonPrimitiveOp::MerkleVerify {
+                leaf,
+                index,
+                root: _,
+            } = self.circuit.non_primitive_ops[op_idx];
 
             // Clone private data option to avoid holding a borrow on self
-            if let Some(Some(NonPrimitiveOpPrivateData::FakeMerkleVerify(private_data))) =
+            let first = leaf.0 as usize;
+            let last = first + DIGEST_ELEMS;
+            let leaf: [F; DIGEST_ELEMS] = if let Some(val) = self
+                .witness
+                .get(first..last)
+                .and_then(|xs| xs.iter().copied().collect::<Option<Vec<F>>>())
+            {
+                let val_len = val.len();
+                val.try_into()
+                    .map_err(|_| CircuitError::MerkleVerifyDigestLengthMismatch {
+                        expected: DIGEST_ELEMS,
+                        got: val_len,
+                    })?
+            } else {
+                return Err(CircuitError::NonPrimitiveOpWitnessNotSet {
+                    operation_index: op_idx,
+                });
+            };
+
+            if let Some(Some(NonPrimitiveOpPrivateData::MerkleVerify(private_data))) =
                 self.non_primitive_op_private_data.get(op_idx).cloned()
             {
-                let mut current_hash =
-                    if let Some(val) = self.witness.get(leaf.0 as usize).and_then(|x| x.as_ref()) {
-                        *val
-                    } else {
-                        return Err(CircuitError::NonPrimitiveOpWitnessNotSet {
-                            operation_index: op_idx,
-                        });
-                    };
-
-                // For each step in the Merkle path
-                for (sibling_value, &direction) in private_data
-                    .path_siblings
-                    .iter()
-                    .zip(private_data.path_directions.iter())
-                {
-                    // Current hash becomes left operand
-                    left_values.push(current_hash);
-                    left_index.push(leaf.0); // Points to witness bus
-
-                    // Sibling becomes right operand (private data - not on witness bus)
-                    right_values.push(*sibling_value);
-                    right_index.push(0); // Not on witness bus - private data
-
-                    // Compute parent hash (simple mock hash: left + right + direction)
-                    let parent_hash = current_hash
-                        + *sibling_value
-                        + if direction {
-                            F::from_u64(1)
-                        } else {
-                            F::from_u64(0)
-                        };
-
-                    result_values.push(parent_hash);
-                    result_index.push(root.0); // Points to witness bus
-
-                    path_directions.push(if direction { 1 } else { 0 });
-
-                    // Update current hash for next iteration
-                    current_hash = parent_hash;
-                }
-
-                // Root is computed; write back to the witness bus at root index
-                self.set_witness(root, current_hash)?;
+                let trace = private_data.to_trace::<C, DIGEST_ELEMS, D>(
+                    compress,
+                    first as u32,
+                    leaf,
+                    index.0,
+                )?;
+                merkle_paths.push(trace);
             } else {
                 return Err(CircuitError::NonPrimitiveOpMissingPrivateData {
                     operation_index: op_idx,
@@ -559,15 +670,7 @@ impl<
             }
         }
 
-        Ok(FakeMerkleTrace {
-            left_values,
-            left_index,
-            right_values,
-            right_index,
-            result_values,
-            result_index,
-            path_directions,
-        })
+        Ok(MerkleTrace { merkle_paths })
     }
 }
 
@@ -579,6 +682,8 @@ impl<
         + core::ops::Mul<Output = F>
         + PartialEq
         + core::fmt::Debug
+        + PrimeCharacteristicRing
+        + Packable
         + Field,
 > Circuit<F>
 {
@@ -786,7 +891,7 @@ mod tests {
         .unwrap();
 
         runner.set_public_inputs(&[x_val, y_val, z_val]).unwrap();
-        let traces = runner.run().unwrap();
+        let traces = runner.run::<BabyBear>().unwrap();
 
         // Verify extension field traces were generated correctly
         assert_eq!(traces.public_trace.values.len(), 3);

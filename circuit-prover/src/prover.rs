@@ -18,7 +18,8 @@ use p3_circuit::{CircuitBuilderError, CircuitError};
 use p3_field::{BasedVectorSpace, Field};
 use p3_uni_stark::{prove, verify};
 
-use crate::air::{AddAir, ConstAir, FakeMerkleVerifyAir, MulAir, PublicAir, WitnessAir};
+use crate::air::merkle_air::air::MerkleVerifyAir;
+use crate::air::{AddAir, ConstAir, MulAir, PublicAir, WitnessAir};
 use crate::config::{ProverConfig, StarkField, StarkPermutation};
 use crate::field_params::ExtractBinomialW;
 
@@ -93,7 +94,7 @@ where
     pub public: TableProof<F, P, CD>,
     pub add: TableProof<F, P, CD>,
     pub mul: TableProof<F, P, CD>,
-    pub fake_merkle: TableProof<F, P, CD>,
+    pub merkle: TableProof<F, P, CD>,
     /// Packing configuration used when generating the proofs.
     pub table_packing: TablePacking,
     /// Extension field degree: 1 for base field; otherwise the extension degree used.
@@ -282,12 +283,15 @@ where
         };
         let mul_proof = prove(&self.config, &mul_air, mul_matrix, pis);
 
-        // FakeMerkle (always uses base field regardless of traces D)
-        let fake_merkle_matrix =
-            FakeMerkleVerifyAir::<F>::trace_to_matrix(&traces.fake_merkle_trace);
-        let fake_merkle_air =
-            FakeMerkleVerifyAir::<F>::new(traces.fake_merkle_trace.left_values.len());
-        let fake_merkle_proof = prove(&self.config, &fake_merkle_air, fake_merkle_matrix, pis);
+        let merkle_matrix = match D {
+            1..=8 => Ok(MerkleVerifyAir::<F, 4, 32>::trace_to_matrix(
+                &traces.merkle_trace,
+            )),
+            _ => Err(ProverError::UnsupportedDegree(D)),
+        }?;
+
+        let merkle_air = MerkleVerifyAir::<F, 4, 32>::default();
+        let merkle_proof = prove(&self.config, &merkle_air, merkle_matrix, pis);
 
         Ok(MultiTableProof {
             witness: TableProof {
@@ -310,9 +314,14 @@ where
                 proof: mul_proof,
                 rows: traces.mul_trace.lhs_values.len(),
             },
-            fake_merkle: TableProof {
-                proof: fake_merkle_proof,
-                rows: traces.fake_merkle_trace.left_values.len(),
+            merkle: TableProof {
+                proof: merkle_proof,
+                rows: traces
+                    .merkle_trace
+                    .merkle_paths
+                    .iter()
+                    .map(|path| path.left_values.len() + 1)
+                    .sum(),
             },
             table_packing,
             ext_degree: D,
@@ -360,16 +369,12 @@ where
         verify(&self.config, &mul_air, &proof.mul.proof, pis)
             .map_err(|_| ProverError::VerificationFailed { phase: "mul" })?;
 
-        // FakeMerkle
-        let fake_merkle_air = FakeMerkleVerifyAir::<F>::new(proof.fake_merkle.rows);
-        verify(
-            &self.config,
-            &fake_merkle_air,
-            &proof.fake_merkle.proof,
-            pis,
-        )
-        .map_err(|_| ProverError::VerificationFailed {
-            phase: "fake_merkle",
+        // MerkleVerify
+        let merkle_air = MerkleVerifyAir::<F, 4, 32>::default();
+        verify(&self.config, &merkle_air, &proof.merkle.proof, pis).map_err(|_| {
+            ProverError::VerificationFailed {
+                phase: "merkle_verify",
+            }
         })?;
 
         Ok(())
@@ -497,7 +502,7 @@ mod tests {
         let expected_val = add_expected - w_val;
 
         runner.set_public_inputs(&[x_val, y_val, z_val, expected_val])?;
-        let traces = runner.run()?;
+        let traces = runner.run::<BabyBear>()?;
 
         // Create BabyBear prover for extension field (D=4)
         let config = build_standard_config_babybear();
@@ -625,7 +630,7 @@ mod tests {
         let expected_val = xy_expected * z_val;
 
         runner.set_public_inputs(&[x_val, y_val, expected_val])?;
-        let traces = runner.run()?;
+        let traces = runner.run::<KoalaBear>()?;
 
         // Create KoalaBear prover for extension field (D=8)
         let config = build_standard_config_koalabear();
@@ -680,7 +685,7 @@ mod tests {
         let expected_val = x_val * y_val + z_val;
         runner.set_public_inputs(&[x_val, y_val, z_val, expected_val])?;
 
-        let traces = runner.run()?;
+        let traces = runner.run::<Goldilocks>()?;
 
         // Build Goldilocks config with challenge degree 2 (Poseidon2)
         let config = build_standard_config_goldilocks();
