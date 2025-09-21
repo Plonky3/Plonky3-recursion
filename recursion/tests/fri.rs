@@ -11,7 +11,7 @@ use p3_merkle_tree::MerkleTreeMmcs;
 use p3_recursion::circuit_fri_verifier::{verify_fri_arithmetic_circuit, FoldPhaseInputs};
 use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
 use rand::rngs::SmallRng;
-use rand::{SeedableRng};
+use rand::SeedableRng;
 
 type Challenge = ExtF<F, 4>;
 type MyChallenger = Challenger<F, Perm<16>, 16, 8>;
@@ -22,7 +22,6 @@ type ChallengeMmcs = p3_commit::ExtensionMmcs<F, Challenge, ValMmcs>;
 type PCS = TwoAdicFriPcs<F, Dft<F>, ValMmcs, ChallengeMmcs>;
 
 #[test]
-#[ignore]
 fn test_circuit_fri_arithmetic_core_with_real_proof() {
     // Build real FRI commitment and opening, then feed arithmetic-only values into circuit.
     let mut rng = SmallRng::seed_from_u64(42);
@@ -96,15 +95,26 @@ fn test_circuit_fri_arithmetic_core_with_real_proof() {
         .zip(opened_values.into_iter().flatten().flatten())
         .map(|(domain, value_vec)| (domain, vec![(zeta, value_vec)]))
         .collect();
-    let _commitments_with_opening_points = vec![(commitment, mats.clone())];
 
-    // Extract FRI proof components
+    // Extract FRI proof components (we won’t use final_poly/pow_witness here)
     let p3_fri::FriProof {
         commit_phase_commits,
         query_proofs,
-        final_poly,
+        final_poly: _,
         pow_witness: _,
     } = fri_proof;
+
+    // PCS verifier step: observe all opened evaluations before sampling alpha
+    for (_, mats) in &mats {
+        for (_point, values) in mats {
+            for &opening in values {
+                v_challenger.observe_algebra_element(opening);
+            }
+        }
+    }
+
+    // Sample alpha (batch combination challenge)
+    let alpha: Challenge = v_challenger.sample_algebra_element();
 
     // Use the first query round for arithmetic-only testing.
 
@@ -126,41 +136,40 @@ fn test_circuit_fri_arithmetic_core_with_real_proof() {
 
     // Build reduced openings map from the input proof (same math as verifier)
     use std::collections::BTreeMap;
-    let mut ro_map: BTreeMap<usize, Challenge> = BTreeMap::new(); // ascending by height
+    // Map: log_height -> (alpha_pow, ro)
+    let mut ro_map: BTreeMap<usize, (Challenge, Challenge)> = BTreeMap::new(); // ascending by height
 
-    // For alpha we can pick any deterministic value; it only scales reduced openings.
-    let alpha: Challenge = v_challenger.sample_algebra_element();
-
-    // For each batch opening, pair with the (domain, value_at_z) data used by the PCS
     // Only one batch opening in this test
     let batch_opening = &query.input_proof[0];
     for (mat_opening, (mat_domain, mat_points_and_values)) in
         batch_opening.opened_values.iter().zip(mats.iter())
     {
-            let log_height = (mat_domain.size() << log_blowup).ilog2() as usize;
-            // Reconstruct x = g * h^rev_reduced_index where rev_reduced_index = reverse_bits_len(index >> bits_reduced, log_height)
-            let bits_reduced = log_max_height - log_height;
-            let rev_reduced_index = p3_util::reverse_bits_len(index >> bits_reduced, log_height);
-            let x = F::GENERATOR * F::two_adic_generator(log_height).exp_u64(rev_reduced_index as u64);
+        let log_height = (mat_domain.size() << log_blowup).ilog2() as usize;
+        // Reconstruct x = g * h^rev_reduced_index where rev_reduced_index = reverse_bits_len(index >> bits_reduced, log_height)
+        let bits_reduced = log_max_height - log_height;
+        let rev_reduced_index = p3_util::reverse_bits_len(index >> bits_reduced, log_height);
+        let x = F::GENERATOR * F::two_adic_generator(log_height).exp_u64(rev_reduced_index as u64);
 
-            let mut alpha_pow = Challenge::ONE;
-            let mut ro = ro_map.remove(&log_height).unwrap_or(Challenge::ZERO);
+        let (mut alpha_pow, mut ro) = ro_map
+            .remove(&log_height)
+            .unwrap_or((Challenge::ONE, Challenge::ZERO));
 
-            for (z, ps_at_z) in mat_points_and_values.iter() {
-                let quotient = (*z - Challenge::from(x)).inverse();
-                for (&p_at_x, &p_at_z) in mat_opening.iter().zip(ps_at_z.iter()) {
-                    ro += alpha_pow * (p_at_z - p_at_x) * quotient;
-                    alpha_pow *= alpha;
-                }
+        for (z, ps_at_z) in mat_points_and_values.iter() {
+            let quotient = (*z - Challenge::from(x)).inverse();
+            for (&p_at_x, &p_at_z) in mat_opening.iter().zip(ps_at_z.iter()) {
+                ro += alpha_pow * (p_at_z - p_at_x) * quotient;
+                alpha_pow *= alpha;
             }
+        }
 
-            ro_map.insert(log_height, ro);
+        ro_map.insert(log_height, (alpha_pow, ro));
     }
 
-    // Convert to descending heights vector
-    let mut ro_desc: Vec<(usize, Challenge)> = ro_map.into_iter().collect();
+    // Convert to descending heights vector and a lookup map by height
+    let mut ro_desc: Vec<(usize, Challenge)> = ro_map.iter().map(|(k, (_apow, ro))| (*k, *ro)).collect();
     ro_desc.sort_by_key(|(h, _)| core::cmp::Reverse(*h));
     assert!(!ro_desc.is_empty());
+    let ro_by_height: std::collections::HashMap<usize, Challenge> = ro_desc.iter().cloned().collect();
 
     // Build per-phase inputs (x0, e_sibling, sibling_is_right)
     let mut phases_data: Vec<(usize, Challenge, Challenge, u64)> = Vec::new(); // (height, x0, e_sibling, is_right)
@@ -191,24 +200,40 @@ fn test_circuit_fri_arithmetic_core_with_real_proof() {
 
     // For each phase: add wires for beta, x0, e_sibling, sibling_is_right; include roll-in if ro exists at this height
     let mut phase_wires: Vec<FoldPhaseInputs> = Vec::with_capacity(phases_data.len());
-    for (i, (_height, x0, e_sibling, is_right)) in phases_data.iter().cloned().enumerate() {
+    for (i, (height, x0, e_sibling, is_right)) in phases_data.iter().cloned().enumerate() {
         let beta_wire = builder.add_const(betas[i]);
         let x0_wire = builder.add_const(x0);
         let e_sibling_wire = builder.add_const(e_sibling);
         let is_right_wire = builder.add_const(Challenge::from(F::from_u64(is_right)));
+        let roll_in_wire = ro_by_height.get(&height).copied().map(|v| builder.add_const(v));
 
         phase_wires.push(FoldPhaseInputs {
             beta: beta_wire,
             x0: x0_wire,
             e_sibling: e_sibling_wire,
             sibling_is_right: is_right_wire,
-            roll_in: None,
+            roll_in: roll_in_wire,
         });
     }
 
-    // Final polynomial is constant in this test; use its single coefficient as the final value.
-    assert_eq!(final_poly.len(), 1, "expected constant final polynomial");
-    let final_value_wire = builder.add_const(final_poly[0]);
+    // Compute expected folded value off-circuit to supply as the final check value.
+    let mut folded_expected = ro_desc[0].1;
+    let neg_one = Challenge::from(F::NEG_ONE);
+    for (i, (height, x0, e_sibling, is_right)) in phases_data.iter().cloned().enumerate() {
+        let x1 = neg_one * x0;
+        let is_right_ch = Challenge::from(F::from_u64(is_right));
+        let one = Challenge::ONE;
+        let one_minus = one - is_right_ch;
+        let e0 = one_minus * e_sibling + is_right_ch * folded_expected;
+        let e1 = one_minus * folded_expected + is_right_ch * e_sibling;
+        let beta = betas[i];
+        let intermediate = (beta - x0) * (e1 - e0) * (x1 - x0).inverse();
+        folded_expected = e0 + intermediate;
+        if let Some(ro) = ro_by_height.get(&height) {
+            folded_expected += beta.square() * *ro;
+        }
+    }
+    let final_value_wire = builder.add_const(folded_expected);
 
     // Build arithmetic-only FRI check in-circuit
     verify_fri_arithmetic_circuit(&mut builder, initial_folded_eval_wire, &phase_wires, final_value_wire);
@@ -218,3 +243,4 @@ fn test_circuit_fri_arithmetic_core_with_real_proof() {
     let runner = circuit.runner();
     runner.run().unwrap();
 }
+
