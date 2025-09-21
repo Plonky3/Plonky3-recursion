@@ -1,4 +1,4 @@
-use p3_baby_bear::{BabyBear as F, Poseidon2BabyBear as Perm};
+use p3_baby_bear::{BabyBear as F, Poseidon2BabyBear as Perm, default_babybear_poseidon2_16};
 use p3_challenger::{CanObserve, CanSampleBits, DuplexChallenger as Challenger, FieldChallenger};
 use p3_commit::Pcs;
 use p3_dft::Radix2DitParallel as Dft;
@@ -27,7 +27,7 @@ fn test_circuit_fri_arithmetic_core_with_real_proof() {
     let mut rng = SmallRng::seed_from_u64(42);
 
     // Permutation/hash/MMCS/PCS setup
-    let perm = Perm::<16>::new_from_rng_128(&mut rng);
+    let perm = default_babybear_poseidon2_16();
     let hash = MyHash::new(perm.clone());
     let compress = MyCompress::new(perm.clone());
     let val_mmcs = ValMmcs::new(hash, compress);
@@ -243,4 +243,3 @@ fn test_circuit_fri_arithmetic_core_with_real_proof() {
     let runner = circuit.runner();
     runner.run().unwrap();
 }
-

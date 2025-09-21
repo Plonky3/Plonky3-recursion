@@ -1,4 +1,4 @@
-use p3_baby_bear::{BabyBear, Poseidon2BabyBear};
+use p3_baby_bear::{BabyBear, Poseidon2BabyBear, default_babybear_poseidon2_16};
 use p3_challenger::DuplexChallenger;
 use p3_circuit::test_utils::{FibonacciAir, generate_trace_rows};
 use p3_circuit::{CircuitBuilder, CircuitError};
@@ -36,7 +36,7 @@ fn test_fibonacci_verifier() -> Result<(), CircuitError> {
     let n = 1 << 3;
     let x = 21;
 
-    let perm = Perm::new_from_rng_128(&mut rng);
+    let perm = default_babybear_poseidon2_16();
     let hash = MyHash::new(perm.clone());
     let compress = MyCompress::new(perm.clone());
     let val_mmcs = ValMmcs::new(hash, compress);

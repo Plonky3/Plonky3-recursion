@@ -17,26 +17,6 @@ pub struct FoldPhaseInputs {
     pub roll_in: Option<p3_circuit::ExprId>,
 }
 
-/// Evaluate a polynomial at `x` using Horner's method.
-/// Coefficients are in ascending order: coeffs[0] + coeffs[1] * X + ...
-pub fn eval_poly_horner<F: Field>(
-    builder: &mut CircuitBuilder<F>,
-    coeffs: &[p3_circuit::ExprId],
-    x: p3_circuit::ExprId,
-) -> p3_circuit::ExprId {
-    // Handle empty polynomial defensively as zero.
-    if coeffs.is_empty() {
-        return builder.add_const(F::ZERO);
-    }
-    // Start from highest degree coefficient.
-    let mut acc = *coeffs.last().unwrap();
-    for &c in coeffs.iter().rev().skip(1) {
-        acc = builder.mul(acc, x);
-        acc = builder.add(acc, c);
-    }
-    acc
-}
-
 /// Perform the FRI folding chain arithmetic with optional roll-ins.
 ///
 /// Starts from the initial reduced opening at the maximum height, then for each phase:
