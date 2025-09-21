@@ -706,15 +706,15 @@ mod tests {
             .collect::<Vec<_>>();
 
         verify_circuit(&config, &air, &mut circuit_builder, &proof_targets, &[])
-            .map_err(|e| format!("{:?}", e))?;
+            .map_err(|e| format!("{e:?}"))?;
 
         let circuit = circuit_builder.build().unwrap();
         let mut runner = circuit.runner();
         runner
             .set_public_inputs(&pvs)
-            .map_err(|e| format!("{:?}", e))?;
+            .map_err(|e| format!("{e:?}"))?;
 
-        let _traces = runner.run().map_err(|e| format!("{:?}", e))?;
+        let _traces = runner.run().map_err(|e| format!("{e:?}"))?;
 
         Ok(())
     }

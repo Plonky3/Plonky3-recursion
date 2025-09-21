@@ -8,10 +8,10 @@ use p3_field::{Field, PrimeCharacteristicRing, TwoAdicField};
 use p3_fri::{TwoAdicFriPcs, create_test_fri_params};
 use p3_matrix::dense::RowMajorMatrix;
 use p3_merkle_tree::MerkleTreeMmcs;
-use p3_recursion::circuit_fri_verifier::{verify_fri_arithmetic_circuit, FoldPhaseInputs};
+use p3_recursion::circuit_fri_verifier::{FoldPhaseInputs, verify_fri_arithmetic_circuit};
 use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
-use rand::rngs::SmallRng;
 use rand::SeedableRng;
+use rand::rngs::SmallRng;
 
 type Challenge = ExtF<F, 4>;
 type MyChallenger = Challenger<F, Perm<16>, 16, 8>;
@@ -19,7 +19,12 @@ type MyHash = PaddingFreeSponge<Perm<16>, 16, 8, 8>;
 type MyCompress = TruncatedPermutation<Perm<16>, 2, 8, 16>;
 type ValMmcs = MerkleTreeMmcs<<F as Field>::Packing, <F as Field>::Packing, MyHash, MyCompress, 8>;
 type ChallengeMmcs = p3_commit::ExtensionMmcs<F, Challenge, ValMmcs>;
+#[allow(clippy::upper_case_acronyms)]
 type PCS = TwoAdicFriPcs<F, Dft<F>, ValMmcs, ChallengeMmcs>;
+type MatBatch = Vec<(
+    TwoAdicMultiplicativeCoset<F>,
+    Vec<(Challenge, Vec<Challenge>)>,
+)>;
 
 #[test]
 fn test_circuit_fri_arithmetic_core_with_real_proof() {
@@ -45,7 +50,10 @@ fn test_circuit_fri_arithmetic_core_with_real_proof() {
 
     // Prover: set up challenger and sample zeta
     let mut p_challenger = MyChallenger::new(perm.clone());
-    let val_sizes: Vec<F> = polynomial_log_sizes.iter().map(|&b| F::from_u8(b)).collect();
+    let val_sizes: Vec<F> = polynomial_log_sizes
+        .iter()
+        .map(|&b| F::from_u8(b))
+        .collect();
     p_challenger.observe_slice(&val_sizes);
 
     // Build evaluation matrices for each polynomial log-size
@@ -55,7 +63,11 @@ fn test_circuit_fri_arithmetic_core_with_real_proof() {
             let deg = 1usize << deg_bits;
             (
                 <PCS as Pcs<Challenge, MyChallenger>>::natural_domain_for_degree(&pcs, deg),
-                RowMajorMatrix::<F>::rand_nonzero(&mut rng, deg, (deg_bits as usize).saturating_sub(4)),
+                RowMajorMatrix::<F>::rand_nonzero(
+                    &mut rng,
+                    deg,
+                    (deg_bits as usize).saturating_sub(4),
+                ),
             )
         })
         .collect();
@@ -68,11 +80,8 @@ fn test_circuit_fri_arithmetic_core_with_real_proof() {
     let zeta: Challenge = p_challenger.sample_algebra_element();
     let num_evaluations = polynomial_log_sizes.len();
     let open_data = vec![(&prover_data, vec![vec![zeta]; num_evaluations])];
-    let (opened_values, fri_proof) = <PCS as Pcs<Challenge, MyChallenger>>::open(
-        &pcs,
-        open_data,
-        &mut p_challenger,
-    );
+    let (opened_values, fri_proof) =
+        <PCS as Pcs<Challenge, MyChallenger>>::open(&pcs, open_data, &mut p_challenger);
 
     // Verifier-like view: construct domains and zipped openings for reduction
     let mut v_challenger = MyChallenger::new(perm.clone());
@@ -83,14 +92,13 @@ fn test_circuit_fri_arithmetic_core_with_real_proof() {
 
     let domains: Vec<TwoAdicMultiplicativeCoset<F>> = polynomial_log_sizes
         .iter()
-        .map(|&size| <PCS as Pcs<Challenge, MyChallenger>>::natural_domain_for_degree(&pcs, 1 << size))
+        .map(|&size| {
+            <PCS as Pcs<Challenge, MyChallenger>>::natural_domain_for_degree(&pcs, 1 << size)
+        })
         .collect();
 
     // Flatten to (domain, value_at_zeta) pairs for reduction use
-    let mats: Vec<(
-        TwoAdicMultiplicativeCoset<F>,
-        Vec<(Challenge, Vec<Challenge>)>,
-    )> = domains
+    let mats: MatBatch = domains
         .into_iter()
         .zip(opened_values.into_iter().flatten().flatten())
         .map(|(domain, value_vec)| (domain, vec![(zeta, value_vec)]))
@@ -121,7 +129,7 @@ fn test_circuit_fri_arithmetic_core_with_real_proof() {
     // Derive betas exactly like verifier: observe each commit, then sample beta
     let mut betas = Vec::with_capacity(commit_phase_commits.len());
     for c in &commit_phase_commits {
-        v_challenger.observe(c.clone());
+        v_challenger.observe(*c);
         betas.push(v_challenger.sample_algebra_element());
     }
 
@@ -166,10 +174,12 @@ fn test_circuit_fri_arithmetic_core_with_real_proof() {
     }
 
     // Convert to descending heights vector and a lookup map by height
-    let mut ro_desc: Vec<(usize, Challenge)> = ro_map.iter().map(|(k, (_apow, ro))| (*k, *ro)).collect();
+    let mut ro_desc: Vec<(usize, Challenge)> =
+        ro_map.iter().map(|(k, (_apow, ro))| (*k, *ro)).collect();
     ro_desc.sort_by_key(|(h, _)| core::cmp::Reverse(*h));
     assert!(!ro_desc.is_empty());
-    let ro_by_height: std::collections::HashMap<usize, Challenge> = ro_desc.iter().cloned().collect();
+    let ro_by_height: std::collections::HashMap<usize, Challenge> =
+        ro_desc.iter().cloned().collect();
 
     // Build per-phase inputs (x0, e_sibling, sibling_is_right)
     let mut phases_data: Vec<(usize, Challenge, Challenge, u64)> = Vec::new(); // (height, x0, e_sibling, is_right)
@@ -189,7 +199,12 @@ fn test_circuit_fri_arithmetic_core_with_real_proof() {
         let subgroup_start = generator.exp_u64(rev_bits as u64);
         let x0 = subgroup_start; // x1 = -x0
 
-        phases_data.push((log_folded_height, Challenge::from(x0), opening.sibling_value, is_right));
+        phases_data.push((
+            log_folded_height,
+            Challenge::from(x0),
+            opening.sibling_value,
+            is_right,
+        ));
     }
 
     // Prepare circuit with constants for all arithmetic inputs (no publics)
@@ -205,7 +220,10 @@ fn test_circuit_fri_arithmetic_core_with_real_proof() {
         let x0_wire = builder.add_const(x0);
         let e_sibling_wire = builder.add_const(e_sibling);
         let is_right_wire = builder.add_const(Challenge::from(F::from_u64(is_right)));
-        let roll_in_wire = ro_by_height.get(&height).copied().map(|v| builder.add_const(v));
+        let roll_in_wire = ro_by_height
+            .get(&height)
+            .copied()
+            .map(|v| builder.add_const(v));
 
         phase_wires.push(FoldPhaseInputs {
             beta: beta_wire,
@@ -236,7 +254,12 @@ fn test_circuit_fri_arithmetic_core_with_real_proof() {
     let final_value_wire = builder.add_const(folded_expected);
 
     // Build arithmetic-only FRI check in-circuit
-    verify_fri_arithmetic_circuit(&mut builder, initial_folded_eval_wire, &phase_wires, final_value_wire);
+    verify_fri_arithmetic_circuit(
+        &mut builder,
+        initial_folded_eval_wire,
+        &phase_wires,
+        final_value_wire,
+    );
 
     // Execute circuit (no public inputs)
     let circuit = builder.build().unwrap();

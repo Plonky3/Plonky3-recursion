@@ -14,8 +14,6 @@ use p3_recursion::recursive_pcs::{
 use p3_recursion::recursive_traits::{ProofTargets, Recursive};
 use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
 use p3_uni_stark::{StarkConfig, prove, verify};
-use rand::SeedableRng;
-use rand::rngs::SmallRng;
 
 type F = BabyBear;
 const D: usize = 4;
@@ -32,7 +30,6 @@ type MyConfig = StarkConfig<MyPcs, Challenge, Challenger>;
 
 #[test]
 fn test_fibonacci_verifier() -> Result<(), CircuitError> {
-    let mut rng = SmallRng::seed_from_u64(1);
     let n = 1 << 3;
     let x = 21;
 

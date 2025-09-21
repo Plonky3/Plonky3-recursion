@@ -22,7 +22,7 @@ pub struct FoldPhaseInputs {
 /// Starts from the initial reduced opening at the maximum height, then for each phase:
 /// - Interpolates between (x0, e0) and (x1, e1) at beta, where x1 = -x0 and e0 is the current folded evaluation.
 /// - Optionally adds a roll-in term beta^2 * roll_in for that height.
-/// Returns the final folded evaluation after all phases.
+///   Returns the final folded evaluation after all phases.
 pub fn fri_fold_chain<F: Field>(
     builder: &mut CircuitBuilder<F>,
     initial_folded_eval: p3_circuit::ExprId,
@@ -32,7 +32,14 @@ pub fn fri_fold_chain<F: Field>(
     let neg_one = builder.add_const(F::NEG_ONE);
     let one = builder.add_const(F::ONE);
 
-    for FoldPhaseInputs { beta, x0, e_sibling, sibling_is_right, roll_in } in phases.iter().cloned() {
+    for FoldPhaseInputs {
+        beta,
+        x0,
+        e_sibling,
+        sibling_is_right,
+        roll_in,
+    } in phases.iter().cloned()
+    {
         // x1 = -x0
         let x1 = builder.mul(neg_one, x0);
 
