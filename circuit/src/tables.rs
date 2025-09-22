@@ -111,8 +111,6 @@ pub struct Traces<F> {
     pub add_trace: AddTrace<F>,
     /// Mul operation table
     pub mul_trace: MulTrace<F>,
-    /// Sub operation table
-    pub sub_trace: SubTrace<F>,
     /// Fake Merkle verification table
     pub fake_merkle_trace: FakeMerkleTrace<F>,
 }
@@ -164,23 +162,6 @@ pub struct AddTrace<F> {
 /// Mul operation table
 #[derive(Debug, Clone)]
 pub struct MulTrace<F> {
-    /// Left operand values
-    pub lhs_values: Vec<F>,
-    /// Left operand indices
-    pub lhs_index: Vec<u32>,
-    /// Right operand values
-    pub rhs_values: Vec<F>,
-    /// Right operand indices
-    pub rhs_index: Vec<u32>,
-    /// Result values
-    pub result_values: Vec<F>,
-    /// Result indices
-    pub result_index: Vec<u32>,
-}
-
-/// Sub operation table
-#[derive(Debug, Clone)]
-pub struct SubTrace<F> {
     /// Left operand values
     pub lhs_values: Vec<F>,
     /// Left operand indices
@@ -312,7 +293,6 @@ impl<
         let public_trace = self.generate_public_trace()?;
         let add_trace = self.generate_add_trace()?;
         let mul_trace = self.generate_mul_trace()?;
-        let sub_trace = self.generate_sub_trace()?;
         let fake_merkle_trace = self.generate_fake_merkle_trace()?;
 
         Ok(Traces {
@@ -321,7 +301,6 @@ impl<
             public_trace,
             add_trace,
             mul_trace,
-            sub_trace,
             fake_merkle_trace,
         })
     }
@@ -344,15 +323,14 @@ impl<
                 }
                 Prim::Add { a, b, out } => {
                     let a_val = self.get_witness(a)?;
-                    let b_val = self.get_witness(b)?;
-                    let result = a_val + b_val;
-                    self.set_witness(out, result)?;
-                }
-                Prim::Sub { a, b, out } => {
-                    let a_val = self.get_witness(a)?;
-                    let b_val = self.get_witness(b)?;
-                    let result = a_val - b_val;
-                    self.set_witness(out, result)?;
+                    if let Ok(b_val) = self.get_witness(b) {
+                        let result = a_val + b_val;
+                        self.set_witness(out, result)?;
+                    } else {
+                        let out_val = self.get_witness(out)?;
+                        let b_val = out_val - a_val;
+                        self.set_witness(b, b_val)?;
+                    }
                 }
                 Prim::Mul { a, b, out } => {
                     // Mul is used to represent either `Mul` or `Div` operations.
@@ -511,35 +489,6 @@ impl<
         })
     }
 
-    fn generate_sub_trace(&self) -> Result<SubTrace<F>, CircuitError> {
-        let mut lhs_values = Vec::new();
-        let mut lhs_index = Vec::new();
-        let mut rhs_values = Vec::new();
-        let mut rhs_index = Vec::new();
-        let mut result_values = Vec::new();
-        let mut result_index = Vec::new();
-
-        for prim in &self.circuit.primitive_ops {
-            if let Prim::Sub { a, b, out } = prim {
-                lhs_values.push(self.get_witness(*a)?);
-                lhs_index.push(a.0);
-                rhs_values.push(self.get_witness(*b)?);
-                rhs_index.push(b.0);
-                result_values.push(self.get_witness(*out)?);
-                result_index.push(out.0);
-            }
-        }
-
-        Ok(SubTrace {
-            lhs_values,
-            lhs_index,
-            rhs_values,
-            rhs_index,
-            result_values,
-            result_index,
-        })
-    }
-
     fn generate_fake_merkle_trace(&mut self) -> Result<FakeMerkleTrace<F>, CircuitError> {
         let mut left_values = Vec::new();
         let mut left_index = Vec::new();
@@ -642,6 +591,7 @@ impl<
 #[cfg(test)]
 mod tests {
     extern crate std;
+    use alloc::vec;
     use std::println;
 
     use p3_baby_bear::BabyBear;
@@ -775,20 +725,6 @@ mod tests {
             );
         }
 
-        println!("\n=== SUB TRACE ===");
-        for i in 0..traces.sub_trace.lhs_values.len() {
-            println!(
-                "Row {}: WitnessId({}) - WitnessId({}) -> WitnessId({}) | {:?} - {:?} -> {:?}",
-                i,
-                traces.sub_trace.lhs_index[i],
-                traces.sub_trace.rhs_index[i],
-                traces.sub_trace.result_index[i],
-                traces.sub_trace.lhs_values[i],
-                traces.sub_trace.rhs_values[i],
-                traces.sub_trace.result_values[i]
-            );
-        }
-
         // Verify trace structure
         assert_eq!(traces.witness_trace.index.len(), witness_count as usize);
 
@@ -802,8 +738,11 @@ mod tests {
         // Should have two mul operations (explicit Mul and Div lowering to Mul with inverse)
         assert_eq!(traces.mul_trace.lhs_values.len(), 2);
 
-        // Should have two sub operations
-        assert_eq!(traces.sub_trace.lhs_values.len(), 2);
+        // Encoded subtractions land in the add table (result + rhs = lhs).
+        assert_eq!(traces.add_trace.lhs_values.len(), 2);
+        assert_eq!(traces.add_trace.lhs_index, vec![2, 3]);
+        assert_eq!(traces.add_trace.rhs_index, vec![0, 0]);
+        assert_eq!(traces.add_trace.result_index, vec![5, 6]);
     }
 
     #[test]
@@ -870,8 +809,5 @@ mod tests {
         assert_eq!(traces.add_trace.lhs_values[0], x_val);
         assert_eq!(traces.add_trace.rhs_values[0], expected_yz);
         assert_eq!(traces.add_trace.result_values[0], expected_result);
-
-        // No sub operations in this simplified test
-        assert_eq!(traces.sub_trace.lhs_values.len(), 0);
     }
 }
