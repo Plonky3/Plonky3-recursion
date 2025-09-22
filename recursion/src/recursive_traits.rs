@@ -13,7 +13,6 @@ use p3_uni_stark::{
 };
 
 /// Structure representing all the wires necessary for an input proof.
-#[derive(Clone)]
 pub struct ProofTargets<
     SC: StarkGenericConfig,
     Comm: Recursive<SC::Challenge>,
@@ -25,7 +24,6 @@ pub struct ProofTargets<
     pub degree_bits: usize,
 }
 
-#[derive(Clone)]
 pub struct CommitmentTargets<F: Field, Comm: Recursive<F>> {
     pub trace_targets: Comm,
     pub quotient_chunks_targets: Comm,
@@ -34,7 +32,6 @@ pub struct CommitmentTargets<F: Field, Comm: Recursive<F>> {
 }
 
 // TODO: Move these structures to their respective crates.
-#[derive(Clone)]
 pub struct OpenedValuesTargets<SC: StarkGenericConfig> {
     pub trace_local_targets: Vec<ExprId>,
     pub trace_next_targets: Vec<ExprId>,

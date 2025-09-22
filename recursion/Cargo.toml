@@ -14,10 +14,14 @@ categories.workspace = true
 p3-air.workspace = true
 p3-commit.workspace = true
 p3-field.workspace = true
+p3-fri.workspace = true
+p3-merkle-tree.workspace = true
+p3-symmetric.workspace = true
 p3-uni-stark.workspace = true
 
 # Other dependencies
 itertools.workspace = true
+serde.workspace = true
 
 # Local dependencies
 p3-circuit.workspace = true
