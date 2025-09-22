@@ -213,7 +213,7 @@ where
         }
     }
 
-    /// Add a fake Merkle verification constraint (non-primitive operation)
+    /// Add a Merkle verification constraint (non-primitive operation)
     ///
     /// Non-primitive operations are complex constraints that:
     /// - Take existing expressions as inputs (leaf_expr, root_expr)
@@ -222,17 +222,18 @@ where
     /// - Are kept separate from primitives to avoid disrupting optimization
     ///
     /// Returns an operation ID for setting private data later during execution.
-    pub fn add_fake_merkle_verify(
+    pub fn add_merkle_verify(
         &mut self,
         leaf_expr: ExprId,
+        index_expr: ExprId,
         root_expr: ExprId,
     ) -> NonPrimitiveOpId {
         // Store input expression IDs - will be lowered to WitnessId during build()
         // Non-primitive ops consume ExprIds but don't produce them
         let op_id = NonPrimitiveOpId(self.non_primitive_ops.len() as u32);
-        let witness_exprs = vec![leaf_expr, root_expr];
+        let witness_exprs = vec![leaf_expr, index_expr, root_expr];
         self.non_primitive_ops
-            .push((op_id, NonPrimitiveOpType::FakeMerkleVerify, witness_exprs));
+            .push((op_id, NonPrimitiveOpType::MerkleVerify, witness_exprs));
 
         op_id
     }
@@ -472,30 +473,35 @@ where
 
         for (_op_id, op_type, witness_exprs) in &self.non_primitive_ops {
             match op_type {
-                NonPrimitiveOpType::FakeMerkleVerify => {
-                    if witness_exprs.len() != 2 {
-                        return Err(CircuitBuilderError::NonPrimitiveOpArity {
-                            op: "FakeMerkleVerify",
-                            expected: 2,
-                            got: witness_exprs.len(),
-                        });
+                NonPrimitiveOpType::MerkleVerify => {
+                    if witness_exprs.len() != 3 {
+                        panic!(
+                            "MerkleVerify expects exactly 3 witness expressions, got {}",
+                            witness_exprs.len()
+                        );
                     }
                     let leaf_widx = Self::get_witness_id(
                         expr_to_widx,
                         witness_exprs[0],
-                        "FakeMerkleVerify leaf input",
+                        "MerkleVerify leaf input",
+                    )?;
+                    let index_widx = Self::get_witness_id(
+                        expr_to_widx,
+                        witness_exprs[1],
+                        "MerkleVerify leaf input",
                     )?;
                     let root_widx = Self::get_witness_id(
                         expr_to_widx,
-                        witness_exprs[1],
-                        "FakeMerkleVerify root input",
+                        witness_exprs[2],
+                        "MerkleVerify root input",
                     )?;
 
-                    lowered_ops.push(NonPrimitiveOp::FakeMerkleVerify {
+                    lowered_ops.push(NonPrimitiveOp::MerkleVerify {
                         leaf: leaf_widx,
+                        index: index_widx,
                         root: root_widx,
                     });
-                } // Add more variants here as needed
+                }
             }
         }
 
@@ -520,6 +526,7 @@ mod tests {
 
     use super::*;
     use crate::CircuitError;
+    use crate::config::babybear_config::default_babybear_poseidon2_circuit_runner_config;
 
     #[test]
     fn test_circuit_basic_api() {
@@ -630,7 +637,8 @@ mod tests {
         builder.connect(a, b);
 
         let circuit = builder.build().unwrap();
-        let mut runner = circuit.runner();
+        let config = default_babybear_poseidon2_circuit_runner_config();
+        let mut runner = circuit.runner(config);
 
         runner.set_public_inputs(&[BabyBear::from_u64(5)]).unwrap();
         // Should succeed; both write the same value into the shared slot
@@ -648,7 +656,8 @@ mod tests {
         builder.connect(x, y);
 
         let circuit = builder.build().unwrap();
-        let mut runner = circuit.runner();
+        let config = default_babybear_poseidon2_circuit_runner_config();
+        let mut runner = circuit.runner(config);
 
         // Provide different values; should error due to witness conflict on shared slot
         let err = runner

@@ -1,5 +1,6 @@
 use p3_baby_bear::{BabyBear, Poseidon2BabyBear};
 use p3_challenger::DuplexChallenger;
+use p3_circuit::config::babybear_config::default_babybear_poseidon2_circuit_runner_config;
 use p3_circuit::test_utils::{FibonacciAir, generate_trace_rows};
 use p3_circuit::{CircuitBuilder, CircuitError};
 use p3_commit::ExtensionMmcs;
@@ -116,6 +117,7 @@ fn test_fibonacci_verifier() -> Result<(), CircuitError> {
         proof_circuit.commitments_targets.trace_targets.hash_targets
     );
     let circuit = circuit_builder.build().unwrap();
-    let mut runner = circuit.runner();
+    let config = default_babybear_poseidon2_circuit_runner_config();
+    let mut runner = circuit.runner(config);
     runner.set_public_inputs(&all_proof_values)
 }

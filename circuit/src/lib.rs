@@ -3,6 +3,7 @@ extern crate alloc;
 
 pub mod builder;
 pub mod circuit;
+pub mod config;
 pub mod expr;
 pub mod op;
 pub mod tables;
@@ -14,6 +15,6 @@ pub mod utils;
 pub use builder::{CircuitBuilder, CircuitBuilderError};
 pub use circuit::Circuit;
 pub use expr::{Expr, ExpressionGraph};
-pub use op::{FakeMerklePrivateData, NonPrimitiveOp, NonPrimitiveOpPrivateData, Prim};
-pub use tables::{CircuitError, CircuitRunner, FakeMerkleTrace, Traces};
+pub use op::{NonPrimitiveOp, NonPrimitiveOpPrivateData, Prim};
+pub use tables::{CircuitError, CircuitRunner, MerklePrivateData, MerkleTrace, Traces};
 pub use types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};

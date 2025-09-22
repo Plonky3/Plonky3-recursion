@@ -1,0 +1,132 @@
+use std::env;
+
+/// Fake Merkle verification circuit: Prove knowledge of a leaf in a Merkle tree
+/// Public inputs: leaf_hash, expected_root
+/// Private inputs: merkle path (siblings + directions)
+use p3_baby_bear::BabyBear;
+use p3_circuit::NonPrimitiveOpPrivateData;
+use p3_circuit::builder::CircuitBuilder;
+use p3_circuit::config::CircuitRunnerConfig;
+use p3_circuit::config::babybear_config::default_babybear_poseidon2_circuit_runner_config;
+use p3_circuit::tables::MerklePrivateData;
+use p3_circuit_prover::MultiTableProver;
+use p3_circuit_prover::config::babybear_config::build_standard_config_babybear;
+use p3_circuit_prover::prover::ProverError;
+use p3_field::extension::BinomialExtensionField;
+use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
+use p3_symmetric::PseudoCompressionFunction;
+
+type F = BinomialExtensionField<BabyBear, 4>;
+
+fn main() -> Result<(), ProverError> {
+    let depth = env::args().nth(1).and_then(|s| s.parse().ok()).unwrap_or(3);
+
+    let mut builder = CircuitBuilder::<F>::new();
+
+    // Public inputs: leaf hash and expected root hash
+    let leaf_hash = builder.add_public_input();
+    let index_expr = builder.add_public_input();
+    let expected_root = builder.add_public_input();
+
+    // Add fake Merkle verification operation
+    // This declares that leaf_hash and expected_root are connected to witness bus
+    // The AIR constraints will verify the Merkle path is valid
+    let merkle_op_id = builder.add_merkle_verify(leaf_hash, index_expr, expected_root);
+
+    let circuit = builder.build()?;
+    let config = default_babybear_poseidon2_circuit_runner_config();
+    let compress = config.compress().clone();
+    let mut runner = circuit.runner(config);
+
+    // Set public inputs
+    let leaf_value = F::from_u64(42); // Our leaf value
+    let siblings: Vec<(Vec<F>, Option<Vec<F>>)> = (0..depth)
+        .map(|i| {
+            (
+                vec![F::from_u64((i + 1) * 10)],
+                if i % 2 == 0 {
+                    None
+                } else {
+                    Some(vec![F::from_u64(i + 1)])
+                },
+            )
+        })
+        .collect();
+    let directions: Vec<bool> = (0..depth).map(|i| i % 2 == 0).collect();
+    let index_value = F::from_u64(
+        (0..32)
+            .zip(directions.iter())
+            .filter(|(_, dir)| **dir)
+            .map(|(i, _)| 1 << i)
+            .sum(),
+    );
+    let expected_root_value = compute_merkle_root(&compress, &leaf_value, &siblings, &directions);
+    runner.set_public_inputs(&[leaf_value, index_value, expected_root_value])?;
+
+    // Set private Merkle path data
+    runner.set_non_primitive_op_private_data(
+        merkle_op_id,
+        NonPrimitiveOpPrivateData::MerkleVerify(MerklePrivateData {
+            path_siblings: siblings,
+        }),
+    )?;
+
+    let traces = runner.run()?;
+    let config = build_standard_config_babybear();
+    let multi_prover = MultiTableProver::new(config);
+    let proof = multi_prover.prove_all_tables(&traces)?;
+    multi_prover.verify_all_tables(&proof)?;
+
+    println!(
+        "✅ Verified Merkle path for leaf {leaf_value} with depth {depth} → root {expected_root_value}",
+    );
+
+    Ok(())
+}
+
+pub type Hash = [BabyBear; 8];
+
+/// Simulate classical Merkle root computation for testing
+fn compute_merkle_root<C>(
+    compress: &C,
+    leaf: &F,
+    siblings: &[(Vec<F>, Option<Vec<F>>)],
+    directions: &[bool],
+) -> F
+where
+    C: PseudoCompressionFunction<Hash, 2> + Sync,
+{
+    directions.iter().zip(siblings.iter()).fold(
+        *leaf,
+        |state, (direction, (sibling, other_sibling))| {
+            let (left, right) = if *direction {
+                (state, sibling[0])
+            } else {
+                (sibling[0], state)
+            };
+            let mut new_state: Hash = compress.compress([
+                left.as_basis_coefficients_slice()
+                    .try_into()
+                    .expect("Size is 4"),
+                right
+                    .as_basis_coefficients_slice()
+                    .try_into()
+                    .expect("Size is 4"),
+            ]);
+            if let Some(other_sibling) = other_sibling {
+                new_state = compress.compress([
+                    state
+                        .as_basis_coefficients_slice()
+                        .try_into()
+                        .expect("Size is 4"),
+                    other_sibling[0]
+                        .clone()
+                        .as_basis_coefficients_slice()
+                        .try_into()
+                        .expect("Size is o4"),
+                ]);
+            }
+            F::from_basis_coefficients_slice(&new_state).expect("Size is 4")
+        },
+    )
+}

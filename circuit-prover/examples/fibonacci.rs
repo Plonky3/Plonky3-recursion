@@ -4,12 +4,14 @@ use std::env;
 /// Public input: expected_result (F(n))
 use p3_baby_bear::BabyBear;
 use p3_circuit::builder::CircuitBuilder;
+use p3_circuit::config::babybear_config::default_babybear_poseidon2_circuit_runner_config;
 use p3_circuit_prover::config::babybear_config::build_standard_config_babybear;
 use p3_circuit_prover::prover::ProverError;
 use p3_circuit_prover::{MultiTableProver, TablePacking};
 use p3_field::PrimeCharacteristicRing;
+use p3_field::extension::BinomialExtensionField;
 
-type F = BabyBear;
+type F = BinomialExtensionField<BabyBear, 4>;
 
 fn main() -> Result<(), ProverError> {
     let n = env::args()
@@ -36,7 +38,8 @@ fn main() -> Result<(), ProverError> {
     builder.connect(b, expected_result);
 
     let circuit = builder.build()?;
-    let mut runner = circuit.runner();
+    let config = default_babybear_poseidon2_circuit_runner_config();
+    let mut runner = circuit.runner(config);
 
     // Set public input
     let expected_fib = compute_fibonacci_classical(n);
