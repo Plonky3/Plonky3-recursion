@@ -674,8 +674,8 @@ where
         trace_domain.split_domains(degree)
     }
 
-    fn size(&self, trace_domain: &TwoAdicMultiplicativeCoset<Val<SC>>) -> usize {
-        trace_domain.size()
+    fn log_size(&self, trace_domain: &TwoAdicMultiplicativeCoset<Val<SC>>) -> usize {
+        trace_domain.log_size()
     }
 
     fn first_point(&self, trace_domain: &TwoAdicMultiplicativeCoset<Val<SC>>) -> SC::Challenge {

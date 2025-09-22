@@ -28,7 +28,10 @@ serde.workspace = true
 p3-circuit.workspace = true
 
 [dev-dependencies]
+p3-air.workspace = true
 p3-baby-bear.workspace = true
 p3-challenger.workspace = true
 p3-dft.workspace = true
+p3-matrix.workspace = true
+p3-util.workspace = true
 rand.workspace = true
