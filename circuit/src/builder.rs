@@ -213,6 +213,16 @@ where
         }
     }
 
+    /// Exponentiate a base expression to a power of 2 (i.e. base^(2^power_log)), by squaring repeatedly.
+    pub fn exp_power_of_2(&mut self, base: ExprId, power_log: usize) -> ExprId {
+        let mut res = base;
+        for _ in 0..power_log {
+            let square = self.mul(res, res);
+            res = square;
+        }
+        res
+    }
+
     /// Add a fake Merkle verification constraint (non-primitive operation)
     ///
     /// Non-primitive operations are complex constraints that:

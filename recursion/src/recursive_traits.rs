@@ -101,7 +101,8 @@ type Commitment<SC> = <<SC as StarkGenericConfig>::Pcs as Pcs<
     <SC as StarkGenericConfig>::Challenger,
 >>::Commitment;
 
-type ComsWithOpenings<Comm, Domain> = [(Comm, Vec<(Domain, Vec<(ExprId, Vec<ExprId>)>)>)];
+pub(crate) type ComsWithOpenings<Comm, Domain> =
+    [(Comm, Vec<(Domain, Vec<(ExprId, Vec<ExprId>)>)>)];
 
 type ComsToVerify<SC> = [(
     Commitment<SC>,
