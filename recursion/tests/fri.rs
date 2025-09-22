@@ -10,7 +10,7 @@ use p3_field::{Field, PrimeCharacteristicRing, TwoAdicField};
 use p3_fri::{TwoAdicFriPcs, create_test_fri_params};
 use p3_matrix::dense::RowMajorMatrix;
 use p3_merkle_tree::MerkleTreeMmcs;
-use p3_recursion::circuit_fri_verifier::verify_query_from_index_bits;
+use p3_recursion::circuit_fri_verifier::{constrain_bits_boolean, verify_query_from_index_bits};
 use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
@@ -37,24 +37,28 @@ fn test_circuit_fri_verifier() {
     let val_mmcs = ValMmcs::new(hash, compress);
     let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
     let dft = Dft::<F>::default();
+    // final_poly_len = 0 (constant), log_blowup = 1 in test params
     let fri_params = create_test_fri_params(challenge_mmcs, 0);
     let log_blowup = fri_params.log_blowup;
     let log_final_poly_len = fri_params.log_final_poly_len;
     let pow_bits = fri_params.proof_of_work_bits;
     let pcs = PCS::new(dft, val_mmcs, fri_params);
+
+    // Keep widths >= 1 with these sizes
     let polynomial_log_sizes = [5u8, 8, 8, 10];
 
     // Helper to produce public inputs for a given seed
     let produce_inputs = |seed: u64| -> (Vec<Challenge>, usize, usize) {
         let mut rng = SmallRng::seed_from_u64(seed);
 
-        // Prover path
+        // --- Prover path ---
         let mut p_challenger = MyChallenger::new(perm.clone());
         let val_sizes: Vec<F> = polynomial_log_sizes
             .iter()
             .map(|&b| F::from_u8(b))
             .collect();
         p_challenger.observe_slice(&val_sizes);
+
         let evals: Vec<(TwoAdicMultiplicativeCoset<F>, RowMajorMatrix<F>)> = polynomial_log_sizes
             .iter()
             .map(|&deg_bits| {
@@ -69,92 +73,117 @@ fn test_circuit_fri_verifier() {
                 )
             })
             .collect();
+
         let (commitment, prover_data) = <PCS as Pcs<Challenge, MyChallenger>>::commit(&pcs, evals);
         p_challenger.observe(commitment);
         let zeta: Challenge = p_challenger.sample_algebra_element();
+
         let num_evaluations = polynomial_log_sizes.len();
         let open_data = vec![(&prover_data, vec![vec![zeta]; num_evaluations])];
         let (opened_values, fri_proof) =
             <PCS as Pcs<Challenge, MyChallenger>>::open(&pcs, open_data, &mut p_challenger);
 
-        // Verifier transcript replay
+        // --- Verifier transcript replay (to derive the public inputs) ---
         let mut v_challenger = MyChallenger::new(perm.clone());
         v_challenger.observe_slice(&val_sizes);
         v_challenger.observe(commitment);
         let _zeta_v: Challenge = v_challenger.sample_algebra_element();
+
         let domains: Vec<TwoAdicMultiplicativeCoset<F>> = polynomial_log_sizes
             .iter()
             .map(|&size| {
                 <PCS as Pcs<Challenge, MyChallenger>>::natural_domain_for_degree(&pcs, 1 << size)
             })
             .collect();
+
         let mats: MatBatch = domains
             .into_iter()
             .zip(opened_values.into_iter().flatten().flatten())
             .map(|(domain, value_vec)| (domain, vec![(zeta, value_vec)]))
             .collect();
+
         let p3_fri::FriProof {
             commit_phase_commits,
             query_proofs,
             final_poly,
             pow_witness,
         } = fri_proof;
-        for (_, mats) in &mats {
-            for (_point, values) in mats {
+
+        // Observe all opened evaluation points
+        for (_domain, round) in &mats {
+            for (_point, values) in round {
                 for &opening in values {
                     v_challenger.observe_algebra_element(opening);
                 }
             }
         }
-        let _alpha: Challenge = v_challenger.sample_algebra_element();
+
+        // α (batch combiner)
+        let alpha: Challenge = v_challenger.sample_algebra_element();
+
+        // β_i per phase: observe commitment, then sample β
         let mut betas: Vec<Challenge> = Vec::with_capacity(commit_phase_commits.len());
         for c in &commit_phase_commits {
             v_challenger.observe(*c);
             betas.push(v_challenger.sample_algebra_element());
         }
+
+        // Final poly coeffs (constant here)
         for &c in &final_poly {
             v_challenger.observe_algebra_element(c);
         }
+
+        // PoW check
         assert!(v_challenger.check_witness(pow_bits, pow_witness));
 
+        // Query index
         let log_max_height = commit_phase_commits.len() + log_blowup + log_final_poly_len;
         let query = &query_proofs[0];
         let index: usize = v_challenger.sample_bits(log_max_height);
 
-        // Reductions per height
-        use std::collections::BTreeMap;
+        // --- Compute reduced openings by height (real formula) ---
+        use std::collections::{BTreeMap, HashMap};
         let mut ro_map: BTreeMap<usize, (Challenge, Challenge)> = BTreeMap::new();
+
         let batch_opening = &query.input_proof[0];
         for (mat_opening, (mat_domain, mat_points_and_values)) in
             batch_opening.opened_values.iter().zip(mats.iter())
         {
             let log_height = (mat_domain.size() << log_blowup).ilog2() as usize;
+
+            // index for this height
             let bits_reduced = log_max_height - log_height;
             let rev_reduced_index = p3_util::reverse_bits_len(index >> bits_reduced, log_height);
-            let x =
+
+            let x_base =
                 F::GENERATOR * F::two_adic_generator(log_height).exp_u64(rev_reduced_index as u64);
+            let x = Challenge::from(x_base);
 
             let (mut alpha_pow, mut ro) = ro_map
                 .remove(&log_height)
                 .unwrap_or((Challenge::ONE, Challenge::ZERO));
             for (z, ps_at_z) in mat_points_and_values.iter() {
-                let quotient = (*z - Challenge::from(x)).inverse();
+                let quotient = (*z - x).inverse();
                 for (&p_at_x, &p_at_z) in mat_opening.iter().zip(ps_at_z.iter()) {
                     ro += alpha_pow * (p_at_z - p_at_x) * quotient;
-                    alpha_pow *= _alpha; // re-use alpha derived above
+                    alpha_pow *= alpha;
                 }
             }
             ro_map.insert(log_height, (alpha_pow, ro));
         }
-        let mut ro_desc: Vec<(usize, Challenge)> =
-            ro_map.iter().map(|(k, (_apow, ro))| (*k, *ro)).collect();
-        ro_desc.sort_by_key(|(h, _)| core::cmp::Reverse(*h));
-        let ro_by_height: std::collections::HashMap<usize, Challenge> =
-            ro_desc.iter().cloned().collect();
 
-        // Build public inputs vector in the order expected by the circuit
+        // Sort reduced openings descending by height
+        let mut ro_desc: Vec<(usize, Challenge)> =
+            ro_map.iter().map(|(h, (_apow, ro))| (*h, *ro)).collect();
+        ro_desc.sort_by_key(|(h, _)| core::cmp::Reverse(*h));
+
+        let ro_by_height: HashMap<usize, Challenge> = ro_desc.iter().cloned().collect();
+
+        // --- Build public inputs in the exact order the circuit expects ---
+
         let mut pub_inputs: Vec<Challenge> = Vec::new();
-        // index bits
+
+        // (a) index bits, little-endian
         for k in 0..log_max_height {
             let bit_val = if (index >> k) & 1 == 1 {
                 F::ONE
@@ -163,25 +192,29 @@ fn test_circuit_fri_verifier() {
             };
             pub_inputs.push(Challenge::from(bit_val));
         }
-        // initial folded
+
+        // (b) initial folded eval = reduced opening at the maximum height
         pub_inputs.push(ro_desc[0].1);
-        // betas
+
+        // (c) betas (per phase)
         pub_inputs.extend(betas.iter().copied());
-        // sibling values per phase
+
+        // (d) sibling values per phase (same order as commit_phase_openings)
         let mut _domain_index = index;
-        for (i, opening) in query.commit_phase_openings.iter().enumerate() {
-            let _log_folded_height = log_max_height - i - 1;
+        for opening in &query.commit_phase_openings {
             let e_sibling = opening.sibling_value;
             pub_inputs.push(e_sibling);
-            _domain_index >>= 1;
+            _domain_index >>= 1; // keep parity aligned with verifier semantics
         }
-        // roll‑ins per phase (pad with ZERO when absent)
+
+        // (e) roll-ins per phase, aligned by height; zero if absent
         for i in 0..commit_phase_commits.len() {
             let h = log_max_height - i - 1;
             let val = ro_by_height.get(&h).copied().unwrap_or(Challenge::ZERO);
             pub_inputs.push(val);
         }
-        // final value
+
+        // (f) final constant value
         pub_inputs.push(final_poly[0]);
 
         (pub_inputs, log_max_height, commit_phase_commits.len())
@@ -196,38 +229,45 @@ fn test_circuit_fri_verifier() {
     // Build circuit once using only shape information
     let log_max_height = log_max_height_1;
     let num_phases = phases_1;
+
     let mut builder = p3_circuit::CircuitBuilder::<Challenge>::new();
-    let index_bits_targets: Vec<p3_circuit::ExprId> = (0..log_max_height)
+
+    // Public inputs (must match the order used above)
+    let index_bits_targets: Vec<_> = (0..log_max_height)
         .map(|_| builder.add_public_input())
         .collect();
     let initial_folded_eval_wire = builder.add_public_input();
-    let betas_targets: Vec<p3_circuit::ExprId> = (0..num_phases)
+    let betas_targets: Vec<_> = (0..num_phases)
         .map(|_| builder.add_public_input())
         .collect();
-    let sibling_values_targets: Vec<p3_circuit::ExprId> = (0..num_phases)
+    let sibling_values_targets: Vec<_> = (0..num_phases)
         .map(|_| builder.add_public_input())
         .collect();
-    let roll_ins_targets: Vec<Option<p3_circuit::ExprId>> = (0..num_phases)
+    let roll_ins_targets: Vec<Option<_>> = (0..num_phases)
         .map(|_| Some(builder.add_public_input()))
         .collect();
     let final_value_wire = builder.add_public_input();
 
-    // Precompute per‑phase power ladders as constants
+    // Constrain the index bits to be boolean (good hygiene)
+    constrain_bits_boolean(&mut builder, &index_bits_targets);
+
+    // Precompute per-phase power ladders as constants:
+    // For phase i, k = log_folded_height = log_max_height - i - 1.
+    // g = two_adic_generator(k + 1); ladder = [g, g^2, g^4, ..., g^{2^(k-1)}].
     let pows_per_phase: Vec<Vec<Challenge>> = (0..num_phases)
         .map(|i| {
-            let log_folded_height = log_max_height - i - 1;
-            let g = F::two_adic_generator(log_folded_height + 1);
-            let mut p = Vec::with_capacity(log_folded_height);
-            let mut cur = g;
-            for j in 0..log_folded_height {
-                if j == 0 {
-                    cur = g;
-                } else {
-                    cur = cur.square();
-                }
-                p.push(Challenge::from(cur));
+            let k = log_max_height - i - 1;
+            let mut out = Vec::with_capacity(k);
+            if k == 0 {
+                return out;
             }
-            p
+            let g = F::two_adic_generator(k + 1);
+            let mut cur = g;
+            for _ in 0..k {
+                out.push(Challenge::from(cur));
+                cur = cur.square(); // next power is ^(2^{j+1})
+            }
+            out
         })
         .collect();
 

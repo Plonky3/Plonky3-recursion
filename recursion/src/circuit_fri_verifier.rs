@@ -1,8 +1,3 @@
-//! Arithmetic-only FRI fold gadget (arity-2) for Plonky3-style verification.
-//! - Implements the fold chain from `verify_query` (MMCS/PoW/transcript handled elsewhere).
-//! - Assumes final polynomial length == 1 (constant), enforced by caller via equality.
-//! - Generic over `F: Field` with odd characteristic (uses 1/2).
-
 use alloc::vec::Vec;
 
 use p3_circuit::{CircuitBuilder, ExprId};
