@@ -1,100 +1,89 @@
-use alloc::vec::Vec;
+//! Arithmetic-only FRI fold gadget (arity-2) for Plonky3-style verification.
+//! - Implements the fold chain from `verify_query` (MMCS/PoW/transcript handled elsewhere).
+//! - Assumes final polynomial length == 1 (constant), enforced by caller via equality.
+//! - Generic over `F: Field` with odd characteristic (uses 1/2).
 
+use alloc::vec::Vec;
 use p3_circuit::{CircuitBuilder, ExprId};
-use p3_field::{Field, PrimeCharacteristicRing};
+use p3_field::Field;
 
 /// Canonical circuit target type used across recursive components.
 pub type Target = ExprId;
 
-/// Inputs needed for one FRI fold phase in-circuit.
-///
-/// Maps 1:1 to the values used inside Plonky3 `verifier::verify_query` for each round:
-/// - `beta`: per‑phase challenge sampled after observing the commit.
-/// - `x0`: subgroup point for the phase (we interpolate between x0 and x1 = −x0).
-/// - `e_sibling`: sibling evaluation value from the proof at the sibling index.
-/// - `sibling_is_right`: boolean target in {0,1}; equals 1 iff sibling occupies `evals[1]` (right).
-///   In terms of index bits: `sibling_is_right = 1 − bit[phase]`.
-/// - `roll_in`: optional reduced opening added as `beta^2 * roll_in`.
+/// Inputs for one FRI fold phase (matches the values used by the verifier per round).
 #[derive(Clone, Debug)]
 pub struct FoldPhaseInputsTarget {
+    /// Per-phase challenge β (sampled after observing that layer's commitment).
     pub beta: Target,
+    /// Subgroup point x₀ for this phase (the other point is x₁ = −x₀).
     pub x0: Target,
+    /// Sibling evaluation at the opposite child index.
     pub e_sibling: Target,
+    /// Boolean {0,1}. Equals 1 iff sibling occupies evals[1] (the "right" slot).
+    /// In Plonky3 this is 1 − (domain_index & 1) at this phase.
     pub sibling_is_right: Target,
+    /// Optional reduced opening to roll in at this height (added as β² · roll_in).
     pub roll_in: Option<Target>,
 }
 
-/// Perform the FRI folding chain arithmetic with optional roll‑ins.
+/// Perform the arity-2 FRI fold chain with optional roll-ins.
+/// Starts from the initial reduced opening at max height; returns the final folded value.
 ///
-/// Starts from the initial reduced opening at the maximum height, then for each phase:
-/// - Interpolates between (x0, e0) and (x1, e1) at `beta`, where `x1 = −x0` and `e0` is the
-///   current folded evaluation.
-/// - Optionally adds a roll‑in term `beta^2 * roll_in` for that height.
-///
-///   Returns the final folded evaluation after all phases.
-///
-///   Corresponds to repeatedly applying `TwoAdicFriFolding::fold_row` in Plonky3.
+/// Interpolation step (per phase):
+///   folded ← e0 + (β − x0)·(e1 − e0)·(x1 − x0)^{-1}, with x1 = −x0
+///           = e0 + (β − x0)·(e1 − e0)·(−1/2)·x0^{-1}
 pub fn fold_row_chain<F: Field>(
     builder: &mut CircuitBuilder<F>,
     initial_folded_eval: Target,
     phases: &[FoldPhaseInputsTarget],
 ) -> Target {
     let mut folded = initial_folded_eval;
-    let neg_one = builder.add_const(F::NEG_ONE);
+
     let one = builder.add_const(F::ONE);
+    let neg_one = builder.add_const(F::NEG_ONE);
 
-    for FoldPhaseInputsTarget {
-        beta,
-        x0,
-        e_sibling,
-        sibling_is_right,
-        roll_in,
-    } in phases.iter().cloned()
-    {
-        // x1 = -x0
-        let x1 = builder.mul(neg_one, x0);
+    // Precompute constants: 2^{-1} and −1/2.
+    let two = builder.add_const(F::ONE + F::ONE);
+    let two_inv = builder.div(one, two);              // 1/2
+    let neg_half = builder.mul(neg_one, two_inv);     // −1/2
 
-        // Determine (e0, e1) ordering based on sibling position.
-        // If sibling_is_right == 1, then evals = [folded, e_sibling]
-        // If sibling_is_right == 0, then evals = [e_sibling, folded]
-        // e0 = evals[0], e1 = evals[1]
-        let one_minus_bit = builder.sub(one, sibling_is_right);
-        let e0_l = builder.mul(one_minus_bit, e_sibling);
-        let e0_r = builder.mul(sibling_is_right, folded);
-        let e0 = builder.add(e0_l, e0_r);
-        let e1_l = builder.mul(one_minus_bit, folded);
-        let e1_r = builder.mul(sibling_is_right, e_sibling);
-        let e1 = builder.add(e1_l, e1_r);
+    for FoldPhaseInputsTarget { beta, x0, e_sibling, sibling_is_right, roll_in } in phases.iter().cloned() {
+        // Decide (e0, e1) without branching:
+        // sibling_right = 1 ⇒ evals = [folded, e_sibling]
+        // sibling_right = 0 ⇒ evals = [e_sibling, folded]
+        let one_minus = builder.sub(one, sibling_is_right);
+        let e0 = builder.add(
+            builder.mul(one_minus, e_sibling),
+            builder.mul(sibling_is_right, folded),
+        );
+        let e1 = builder.add(
+            builder.mul(one_minus, folded),
+            builder.mul(sibling_is_right, e_sibling),
+        );
 
-        // Interpolation: e0 + (beta - x0) * (e1 - e0) * (x1 - x0)^(-1)
+        // inv = (x1 − x0)^{-1} = (−2x0)^{-1} = (−1/2) * x0^{-1}
+        let inv_x0 = builder.div(one, x0);
+        let inv = builder.mul(neg_half, inv_x0);
+
+        // folded = e0 + (β − x0) * (e1 − e0) * inv
         let beta_minus_x0 = builder.sub(beta, x0);
         let e1_minus_e0 = builder.sub(e1, e0);
-        let x1_minus_x0 = builder.sub(x1, x0);
-
-        // inv = 1 / (x1 - x0)
-        let inv = builder.div(one, x1_minus_x0);
         let t = builder.mul(beta_minus_x0, e1_minus_e0);
-        let intermediate = builder.mul(t, inv);
-        folded = builder.add(e0, intermediate);
+        folded = builder.add(e0, builder.mul(t, inv));
 
-        // Optional roll-in: folded += beta^2 * ro
+        // Optional roll-in: folded += β² · roll_in
         if let Some(ro) = roll_in {
             let beta_sq = builder.mul(beta, beta);
-            let add_term = builder.mul(beta_sq, ro);
-            folded = builder.add(folded, add_term);
+            folded = builder.add(folded, builder.mul(beta_sq, ro));
         }
     }
 
     folded
 }
 
-/// Arithmetic‑only circuit version of Plonky3 `verify_query`.
-///
-/// - Starts from `initial_folded_eval` (reduced opening at the maximum height).
-/// - Applies the folding chain using `phases` (one per commit phase).
-/// - Enforces equality by connecting the folded result to `final_value`.
-///
-/// Omits MMCS verifications, challenger transcript logic, and PoW checks (to be added separately).
+/// Arithmetic-only version of Plonky3 `verify_query`:
+/// - Applies the fold chain and enforces equality to the provided final constant value.
+/// - Caller must supply `initial_folded_eval` (the reduced opening at max height).
 pub fn verify_query<F: Field>(
     builder: &mut CircuitBuilder<F>,
     initial_folded_eval: Target,
@@ -105,21 +94,17 @@ pub fn verify_query<F: Field>(
     builder.connect(folded_eval, final_value);
 }
 
-/// Maximum number of index bits supported for query index decomposition.
-pub const MAX_INDEX_BITS: usize = 32;
-
-/// Constrain a list of targets to be boolean bits: for each `b`, enforce `b · (b − 1) = 0`.
+/// Constrain each element of `bits` to be boolean: b ∈ {0,1}.
 pub fn constrain_bits_boolean<F: Field>(builder: &mut CircuitBuilder<F>, bits: &[Target]) {
+    let one = builder.add_const(F::ONE);
     for &b in bits {
-        let one = builder.add_const(F::ONE);
         let b_minus_one = builder.sub(b, one);
-        let prod = builder.mul(b, b_minus_one);
-        builder.assert_zero(prod);
+        builder.assert_zero(builder.mul(b, b_minus_one));
     }
 }
 
-/// Reconstruct an integer index target from its little‑endian bit decomposition:
-///   `index = Σ_{i=0..n−1} bits[i] · 2^i`.
+/// Reconstruct an integer (as a field element) from little-endian bits:
+///   index = Σ b_i · 2^i
 pub fn reconstruct_index_from_bits<F: Field>(
     builder: &mut CircuitBuilder<F>,
     bits: &[Target],
@@ -127,86 +112,53 @@ pub fn reconstruct_index_from_bits<F: Field>(
     let mut acc = builder.add_const(F::ZERO);
     let mut pow2 = builder.add_const(F::ONE);
     for &b in bits {
-        let term = builder.mul(b, pow2);
-        acc = builder.add(acc, term);
-        // pow2 *= 2
-        pow2 = builder.add(pow2, pow2);
+        acc = builder.add(acc, builder.mul(b, pow2));
+        pow2 = builder.add(pow2, pow2); // *= 2
     }
     acc
 }
 
-/// Return a reversed slice of the index bits for the given (`offset`, `len`) window.
+/// Compute x₀ for phase `i` from the query index bits and a caller-provided power ladder.
 ///
-/// This corresponds to `reverse_bits_len(index >> offset, len)` in Plonky3 — i.e. the bits of the
-/// per‑phase `domain_index` in reverse order.
-pub fn reversed_bits_window(bits: &[Target], offset: usize, len: usize) -> Vec<Target> {
-    (0..len).map(|j| bits[offset + len - 1 - j]).collect()
-}
-
-/// Compute a gated exponentiation product: `result = Π_j pows[j]^{bits_rev[j]}`.
+/// For phase with folded height `k` (log_folded_height), caller must pass:
+///   `pows = [g^{2^0}, g^{2^1}, ..., g^{2^{k-1}}]`
+/// where `g = two_adic_generator(k + 1)` (note the +1 for arity-2).
 ///
-/// Implemented via multiplicative gating (no branching):
-///   `res *= (1 + (pow_j − 1) · bit_j)`.
-/// Caller provides the constant subgroup powers for the appropriate generator.
-pub fn gated_exp_product<F: Field>(
+/// We use bit window `bits[i+1 .. i+1+k]` (little-endian), but multiplied in reverse to match
+/// `reverse_bits_len(index >> (i+1), k)` semantics from the verifier.
+fn compute_x0_from_index_bits<F: Field>(
     builder: &mut CircuitBuilder<F>,
+    index_bits: &[Target],
+    phase: usize,
     pows: &[F],
-    bits_rev: &[Target],
 ) -> Target {
-    debug_assert_eq!(pows.len(), bits_rev.len());
     let one = builder.add_const(F::ONE);
     let mut res = one;
-    for (j, &bit) in bits_rev.iter().enumerate() {
+
+    // Bits window: offset = i+1, length = pows.len() = k
+    let offset = phase + 1;
+    let k = pows.len();
+
+    // Multiply powers gated by reversed bits: ∏_j g^{2^j · bit_rev[j]}
+    for j in 0..k {
+        let bit = index_bits[offset + k - 1 - j]; // reversed
         let pow_const = builder.add_const(pows[j]);
-        let diff = builder.sub(pow_const, one);
-        let diff_mul_bit = builder.mul(diff, bit);
-        let gate = builder.add(one, diff_mul_bit);
+        // Gate: (1 + (pow - 1) * bit)
+        let gate = builder.add(one, builder.mul(builder.sub(pow_const, one), bit));
         res = builder.mul(res, gate);
     }
     res
 }
 
-/// Convenience: raw parity bit for phase `i` is `bit[i]` (for `domain_index % 2`).
-/// The “right‑sibling” flag used by folding is `1 − bit[i]`.
-pub fn sibling_is_right_bit(bits: &[Target], phase: usize) -> Target {
-    bits[phase]
-}
-
-// Note: We intentionally do not provide a helper which allocates proof-dependent
-// values (e.g., bits or index) as constants. Callers should pass these as public
-// inputs or witness values, then use `constrain_bits_boolean` and
-// `reconstruct_index_from_bits` to constrain them as needed.
-
-/// Compute x0 for a given phase from index bits and a provided generator power ladder.
-///
-/// - `index_bits`: little‑endian bits of the query index (one target per bit).
-/// - `offset`: number of low bits to skip (typically `phase + 1`).
-/// - `pows`: constant powers `[g^{2^0}, g^{2^1}, ..., g^{2^{k-1}}]`, where `k` is the
-///   current `log_folded_height`.
-pub fn compute_x0_from_bits_and_pows<F: Field>(
-    builder: &mut CircuitBuilder<F>,
-    index_bits: &[Target],
-    offset: usize,
-    pows: &[F],
-) -> Target {
-    let bits_rev = reversed_bits_window(index_bits, offset, pows.len());
-    gated_exp_product(builder, pows, &bits_rev)
-}
-
-/// Build and verify the fold chain for a FRI query using index bits to derive x0 and parity.
-///
-/// - `index_bits`: little‑endian query index bits.
-/// - `log_max_height`: total height H for this query (rounds + log_blowup + log_final_poly_len).
-/// - `betas`: per‑phase β targets.
-/// - `sibling_values`: per‑phase sibling evaluation targets.
-/// - `roll_ins`: per‑phase optional reduced opening targets.
-/// - `pows_per_phase`: per‑phase generator power ladders `[g^{2^0}, ..., g^{2^{k-1}}]`.
+/// Build and verify the fold chain from index bits:
+/// - `index_bits`: little-endian query index bits (must be boolean-constrained by caller).
+/// - `betas`/`sibling_values`/`roll_ins`: per-phase arrays.
+/// - `pows_per_phase[i]`: power ladder for the generator at that phase (see `compute_x0_from_index_bits`).
 #[allow(clippy::too_many_arguments)]
-pub fn verify_query_from_index_bits<F: Field + PrimeCharacteristicRing>(
+pub fn verify_query_from_index_bits<F: Field>(
     builder: &mut CircuitBuilder<F>,
     initial_folded_eval: Target,
     index_bits: &[Target],
-    _log_max_height: usize,
     betas: &[Target],
     sibling_values: &[Target],
     roll_ins: &[Option<Target>],
@@ -214,25 +166,30 @@ pub fn verify_query_from_index_bits<F: Field + PrimeCharacteristicRing>(
     final_value: Target,
 ) {
     let num_phases = betas.len();
-    debug_assert_eq!(sibling_values.len(), num_phases);
-    debug_assert_eq!(roll_ins.len(), num_phases);
-    debug_assert_eq!(pows_per_phase.len(), num_phases);
+    debug_assert_eq!(sibling_values.len(), num_phases, "sibling_values len mismatch");
+    debug_assert_eq!(roll_ins.len(), num_phases, "roll_ins len mismatch");
+    debug_assert_eq!(pows_per_phase.len(), num_phases, "pows_per_phase len mismatch");
 
     let one = builder.add_const(F::ONE);
-    let phase_inputs: Vec<FoldPhaseInputsTarget> = (0..num_phases)
-        .map(|i| {
-            let x0 = compute_x0_from_bits_and_pows(builder, index_bits, i + 1, &pows_per_phase[i]);
-            let raw_bit = sibling_is_right_bit(index_bits, i);
-            let is_right = builder.sub(one, raw_bit); // 1 − bit[i]
-            FoldPhaseInputsTarget {
-                beta: betas[i],
-                x0,
-                e_sibling: sibling_values[i],
-                sibling_is_right: is_right,
-                roll_in: roll_ins[i],
-            }
-        })
-        .collect();
 
-    verify_query(builder, initial_folded_eval, &phase_inputs, final_value);
+    // Assemble per-phase inputs
+    let mut phases = Vec::with_capacity(num_phases);
+    for i in 0..num_phases {
+        // x0 from bits (using the appropriate generator ladder for this phase)
+        let x0 = compute_x0_from_index_bits(builder, index_bits, i, &pows_per_phase[i]);
+
+        // sibling_is_right = 1 − (index_bit[i])
+        let raw_bit = index_bits[i];
+        let sibling_is_right = builder.sub(one, raw_bit);
+
+        phases.push(FoldPhaseInputsTarget {
+            beta: betas[i],
+            x0,
+            e_sibling: sibling_values[i],
+            sibling_is_right,
+            roll_in: roll_ins[i],
+        });
+    }
+
+    verify_query(builder, initial_folded_eval, &phases, final_value);
 }
