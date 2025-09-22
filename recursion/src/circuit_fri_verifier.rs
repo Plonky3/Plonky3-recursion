@@ -4,6 +4,7 @@
 //! - Generic over `F: Field` with odd characteristic (uses 1/2).
 
 use alloc::vec::Vec;
+
 use p3_circuit::{CircuitBuilder, ExprId};
 use p3_field::Field;
 
@@ -29,7 +30,7 @@ pub struct FoldPhaseInputsTarget {
 /// Perform the arity-2 FRI fold chain with optional roll-ins.
 /// Starts from the initial reduced opening at max height; returns the final folded value.
 ///
-/// Interpolation step (per phase):
+/// Interpolation per phase:
 ///   folded ← e0 + (β − x0)·(e1 − e0)·(x1 − x0)^{-1}, with x1 = −x0
 ///           = e0 + (β − x0)·(e1 − e0)·(−1/2)·x0^{-1}
 pub fn fold_row_chain<F: Field>(
@@ -44,37 +45,48 @@ pub fn fold_row_chain<F: Field>(
 
     // Precompute constants: 2^{-1} and −1/2.
     let two = builder.add_const(F::ONE + F::ONE);
-    let two_inv = builder.div(one, two);              // 1/2
-    let neg_half = builder.mul(neg_one, two_inv);     // −1/2
+    let two_inv = builder.div(one, two); // 1/2
+    let neg_half = builder.mul(neg_one, two_inv); // −1/2
 
-    for FoldPhaseInputsTarget { beta, x0, e_sibling, sibling_is_right, roll_in } in phases.iter().cloned() {
-        // Decide (e0, e1) without branching:
-        // sibling_right = 1 ⇒ evals = [folded, e_sibling]
-        // sibling_right = 0 ⇒ evals = [e_sibling, folded]
+    for FoldPhaseInputsTarget {
+        beta,
+        x0,
+        e_sibling,
+        sibling_is_right,
+        roll_in,
+    } in phases.iter().cloned()
+    {
+        // one_minus = 1 - sibling_is_right
         let one_minus = builder.sub(one, sibling_is_right);
-        let e0 = builder.add(
-            builder.mul(one_minus, e_sibling),
-            builder.mul(sibling_is_right, folded),
-        );
-        let e1 = builder.add(
-            builder.mul(one_minus, folded),
-            builder.mul(sibling_is_right, e_sibling),
-        );
+
+        // e0 = (1 - bit)*e_sibling + bit*folded
+        let e0_l = builder.mul(one_minus, e_sibling);
+        let e0_r = builder.mul(sibling_is_right, folded);
+        let e0 = builder.add(e0_l, e0_r);
+
+        // e1 = (1 - bit)*folded + bit*e_sibling
+        let e1_l = builder.mul(one_minus, folded);
+        let e1_r = builder.mul(sibling_is_right, e_sibling);
+        let e1 = builder.add(e1_l, e1_r);
 
         // inv = (x1 − x0)^{-1} = (−2x0)^{-1} = (−1/2) * x0^{-1}
         let inv_x0 = builder.div(one, x0);
         let inv = builder.mul(neg_half, inv_x0);
 
-        // folded = e0 + (β − x0) * (e1 − e0) * inv
+        // t = (β − x0) * (e1 − e0)
         let beta_minus_x0 = builder.sub(beta, x0);
         let e1_minus_e0 = builder.sub(e1, e0);
         let t = builder.mul(beta_minus_x0, e1_minus_e0);
-        folded = builder.add(e0, builder.mul(t, inv));
+
+        // folded = e0 + t * inv
+        let t_inv = builder.mul(t, inv);
+        folded = builder.add(e0, t_inv);
 
         // Optional roll-in: folded += β² · roll_in
         if let Some(ro) = roll_in {
             let beta_sq = builder.mul(beta, beta);
-            folded = builder.add(folded, builder.mul(beta_sq, ro));
+            let add_term = builder.mul(beta_sq, ro);
+            folded = builder.add(folded, add_term);
         }
     }
 
@@ -99,7 +111,8 @@ pub fn constrain_bits_boolean<F: Field>(builder: &mut CircuitBuilder<F>, bits: &
     let one = builder.add_const(F::ONE);
     for &b in bits {
         let b_minus_one = builder.sub(b, one);
-        builder.assert_zero(builder.mul(b, b_minus_one));
+        let prod = builder.mul(b, b_minus_one);
+        builder.assert_zero(prod);
     }
 }
 
@@ -112,7 +125,8 @@ pub fn reconstruct_index_from_bits<F: Field>(
     let mut acc = builder.add_const(F::ZERO);
     let mut pow2 = builder.add_const(F::ONE);
     for &b in bits {
-        acc = builder.add(acc, builder.mul(b, pow2));
+        let term = builder.mul(b, pow2);
+        acc = builder.add(acc, term);
         pow2 = builder.add(pow2, pow2); // *= 2
     }
     acc
@@ -139,12 +153,12 @@ fn compute_x0_from_index_bits<F: Field>(
     let offset = phase + 1;
     let k = pows.len();
 
-    // Multiply powers gated by reversed bits: ∏_j g^{2^j · bit_rev[j]}
     for j in 0..k {
         let bit = index_bits[offset + k - 1 - j]; // reversed
         let pow_const = builder.add_const(pows[j]);
-        // Gate: (1 + (pow - 1) * bit)
-        let gate = builder.add(one, builder.mul(builder.sub(pow_const, one), bit));
+        let diff = builder.sub(pow_const, one);
+        let diff_bit = builder.mul(diff, bit);
+        let gate = builder.add(one, diff_bit);
         res = builder.mul(res, gate);
     }
     res
@@ -166,14 +180,21 @@ pub fn verify_query_from_index_bits<F: Field>(
     final_value: Target,
 ) {
     let num_phases = betas.len();
-    debug_assert_eq!(sibling_values.len(), num_phases, "sibling_values len mismatch");
+    debug_assert_eq!(
+        sibling_values.len(),
+        num_phases,
+        "sibling_values len mismatch"
+    );
     debug_assert_eq!(roll_ins.len(), num_phases, "roll_ins len mismatch");
-    debug_assert_eq!(pows_per_phase.len(), num_phases, "pows_per_phase len mismatch");
+    debug_assert_eq!(
+        pows_per_phase.len(),
+        num_phases,
+        "pows_per_phase len mismatch"
+    );
 
     let one = builder.add_const(F::ONE);
 
-    // Assemble per-phase inputs
-    let mut phases = Vec::with_capacity(num_phases);
+    let mut phases_vec = Vec::with_capacity(num_phases);
     for i in 0..num_phases {
         // x0 from bits (using the appropriate generator ladder for this phase)
         let x0 = compute_x0_from_index_bits(builder, index_bits, i, &pows_per_phase[i]);
@@ -182,7 +203,7 @@ pub fn verify_query_from_index_bits<F: Field>(
         let raw_bit = index_bits[i];
         let sibling_is_right = builder.sub(one, raw_bit);
 
-        phases.push(FoldPhaseInputsTarget {
+        phases_vec.push(FoldPhaseInputsTarget {
             beta: betas[i],
             x0,
             e_sibling: sibling_values[i],
@@ -191,5 +212,5 @@ pub fn verify_query_from_index_bits<F: Field>(
         });
     }
 
-    verify_query(builder, initial_folded_eval, &phases, final_value);
+    verify_query(builder, initial_folded_eval, &phases_vec, final_value);
 }

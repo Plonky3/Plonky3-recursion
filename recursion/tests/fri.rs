@@ -235,7 +235,6 @@ fn test_circuit_fri_verifier() {
         &mut builder,
         initial_folded_eval_wire,
         &index_bits_targets,
-        log_max_height,
         &betas_targets,
         &sibling_values_targets,
         &roll_ins_targets,
