@@ -1,4 +1,3 @@
-use alloc::vec::Vec;
 use core::borrow::{Borrow, BorrowMut};
 
 use itertools::izip;
@@ -6,7 +5,7 @@ use p3_circuit::tables::MerkleTrace;
 use p3_field::{BasedVectorSpace, Field};
 use p3_matrix::dense::RowMajorMatrix;
 
-use crate::air::merkle_air::air::MerkleVerifyAir;
+use crate::air::MerkleVerifyAir;
 
 #[derive(Debug)]
 #[repr(C)]

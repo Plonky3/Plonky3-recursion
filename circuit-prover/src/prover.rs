@@ -16,9 +16,9 @@ use alloc::vec::Vec;
 use p3_circuit::tables::Traces;
 use p3_circuit::{CircuitBuilderError, CircuitError};
 use p3_field::{BasedVectorSpace, Field};
+use p3_merkle_tree_air::air::MerkleVerifyAir;
 use p3_uni_stark::{prove, verify};
 
-use crate::air::merkle_air::air::MerkleVerifyAir;
 use crate::air::{AddAir, ConstAir, MulAir, PublicAir, WitnessAir};
 use crate::config::{ProverConfig, StarkField, StarkPermutation};
 use crate::field_params::ExtractBinomialW;
