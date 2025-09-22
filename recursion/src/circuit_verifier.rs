@@ -317,7 +317,7 @@ mod tests {
     use p3_air::{Air, AirBuilder, BaseAir};
     use p3_baby_bear::{BabyBear, Poseidon2BabyBear};
     use p3_challenger::{CanObserve, DuplexChallenger, FieldChallenger};
-    use p3_circuit::utils::{RowSelectorsTargets, symbolic_to_circuit};
+    use p3_circuit::utils::RowSelectorsTargets;
     use p3_circuit::{CircuitBuilder, ExprId};
     use p3_commit::testing::TrivialPcs;
     use p3_commit::{Pcs, PolynomialSpace};
@@ -327,10 +327,7 @@ mod tests {
     use p3_field::{ExtensionField, Field, PrimeCharacteristicRing, TwoAdicField};
     use p3_matrix::Matrix;
     use p3_matrix::dense::RowMajorMatrix;
-    use p3_uni_stark::{
-        Domain, StarkConfig, StarkGenericConfig, SymbolicExpression, Val, get_log_quotient_degree,
-        get_symbolic_constraints, prove,
-    };
+    use p3_uni_stark::{Domain, StarkConfig, StarkGenericConfig, Val, prove};
     use p3_util::log2_strict_usize;
     use rand::distr::{Distribution, StandardUniform};
     use rand::rngs::SmallRng;
@@ -338,8 +335,7 @@ mod tests {
 
     use crate::circuit_verifier::{exp_power_of_2, verify_circuit};
     use crate::recursive_traits::{
-        ComsWithOpenings, ProofTargets, Recursive, RecursiveAir, RecursiveLagrangeSelectors,
-        RecursivePcs,
+        ComsWithOpenings, ProofTargets, Recursive, RecursiveLagrangeSelectors, RecursivePcs,
     };
 
     type DummyCom<F> = Vec<Vec<F>>;
@@ -557,36 +553,6 @@ mod tests {
                     .when_transition()
                     .assert_eq(a + AB::Expr::from_u8(REPETITIONS as u8), next_a);
             }
-        }
-    }
-
-    impl<F: Field> RecursiveAir<F> for MulAir {
-        fn get_log_quotient_degree(&self, num_public_values: usize, is_zk: usize) -> usize {
-            get_log_quotient_degree::<F, MulAir>(self, 0, num_public_values, is_zk)
-        }
-
-        fn width(&self) -> usize {
-            <Self as BaseAir<F>>::width(self)
-        }
-
-        fn eval_folded_circuit(
-            &self,
-            builder: &mut CircuitBuilder<F>,
-            sels: &RecursiveLagrangeSelectors,
-            alpha: &ExprId,
-            columns: p3_circuit::utils::ColumnsTargets,
-        ) -> ExprId {
-            let symbolic_constraints: Vec<SymbolicExpression<F>> =
-                get_symbolic_constraints(self, 0, columns.public_values.len());
-
-            let mut acc = builder.add_const(F::ZERO);
-            for s_c in symbolic_constraints {
-                let mul_prev = builder.mul(acc, *alpha);
-                let constraints = symbolic_to_circuit(sels.row_selectors, &columns, &s_c, builder);
-                acc = builder.add(mul_prev, constraints);
-            }
-
-            acc
         }
     }
 
