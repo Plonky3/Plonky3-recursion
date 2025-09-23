@@ -51,7 +51,7 @@ pub fn symbolic_to_circuit<F: Field>(
         next_values,
     } = columns;
 
-    let mut get_wire =
+    let mut get_target =
         |s: &SymbolicExpression<F>| symbolic_to_circuit::<F>(row_selectors, columns, s, circuit);
 
     match symbolic {
@@ -80,21 +80,21 @@ pub fn symbolic_to_circuit<F: Field>(
         SymbolicExpression::IsLastRow => is_last_row,
         SymbolicExpression::IsTransition => is_transition,
         SymbolicExpression::Neg { x, .. } => {
-            let x_wire = get_wire(x);
+            let x_target = get_target(x);
             let zero = circuit.add_const(F::ZERO);
 
-            circuit.sub(zero, x_wire)
+            circuit.sub(zero, x_target)
         }
         SymbolicExpression::Add { x, y, .. }
         | SymbolicExpression::Sub { x, y, .. }
         | SymbolicExpression::Mul { x, y, .. } => {
-            let x_wire = get_wire(x);
-            let y_wire = get_wire(y);
+            let x_target = get_target(x);
+            let y_target = get_target(y);
 
             match symbolic {
-                SymbolicExpression::Add { .. } => circuit.add(x_wire, y_wire),
-                SymbolicExpression::Mul { .. } => circuit.mul(x_wire, y_wire),
-                SymbolicExpression::Sub { .. } => circuit.sub(x_wire, y_wire),
+                SymbolicExpression::Add { .. } => circuit.add(x_target, y_target),
+                SymbolicExpression::Mul { .. } => circuit.mul(x_target, y_target),
+                SymbolicExpression::Sub { .. } => circuit.sub(x_target, y_target),
                 _ => unreachable!(),
             }
         }

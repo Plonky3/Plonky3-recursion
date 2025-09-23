@@ -88,7 +88,7 @@ fn test_fibonacci_verifier() -> Result<(), VerificationError> {
     let mut all_lens =
         ProofTargets::<MyConfig, HashTargets<F, DIGEST_ELEMS>, InnerFri>::lens(&proof);
 
-    // Add the wires for the proof.
+    // Add the targets for the proof.
     let proof_targets = ProofTargets::<MyConfig, HashTargets<F, DIGEST_ELEMS>, InnerFri>::new(
         &mut circuit_builder,
         &mut all_lens,

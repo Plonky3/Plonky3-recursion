@@ -6,8 +6,8 @@ use core::marker::PhantomData;
 use core::{array, iter};
 
 use p3_challenger::GrindingChallenger;
+use p3_circuit::CircuitBuilder;
 use p3_circuit::utils::RowSelectorsTargets;
-use p3_circuit::{CircuitBuilder, ExprId};
 use p3_commit::{BatchOpening, ExtensionMmcs, Mmcs, PolynomialSpace};
 use p3_field::coset::TwoAdicMultiplicativeCoset;
 use p3_field::{ExtensionField, Field, PackedValue, PrimeCharacteristicRing, TwoAdicField};
@@ -17,6 +17,7 @@ use p3_symmetric::{CryptographicHasher, Hash, PseudoCompressionFunction};
 use p3_uni_stark::{StarkGenericConfig, Val};
 use serde::{Deserialize, Serialize};
 
+use crate::Target;
 use crate::recursive_traits::{
     ComsWithOpenings, Recursive, RecursiveExtensionMmcs, RecursiveLagrangeSelectors, RecursiveMmcs,
     RecursivePcs,
@@ -32,7 +33,7 @@ pub struct FriProofTargets<
 > {
     pub commit_phase_commits: Vec<RecMmcs::Commitment>,
     pub query_proofs: Vec<QueryProofTargets<F, EF, InputProof, RecMmcs>>,
-    pub final_poly: Vec<ExprId>,
+    pub final_poly: Vec<Target>,
     pub pow_witness: Witness,
 }
 
@@ -222,7 +223,7 @@ pub struct CommitPhaseProofStepTargets<
     EF: ExtensionField<F>,
     RecMmcs: RecursiveExtensionMmcs<F, EF>,
 > {
-    pub sibling_value: ExprId,
+    pub sibling_value: Target,
     pub opening_proof: RecMmcs::Proof,
     // This is necessary because the `Input` type can include the extension field element.
     _phantom: PhantomData<EF>,
@@ -277,7 +278,7 @@ impl<F: Field, EF: ExtensionField<F>, RecMmcs: RecursiveExtensionMmcs<F, EF>> Re
 pub struct BatchOpeningTargets<F: Field, EF: ExtensionField<F>, RecMmcs: RecursiveMmcs<F, EF>> {
     /// The opened row values from each matrix in the batch.
     /// Each inner vector corresponds to one matrix.
-    pub opened_values: Vec<Vec<ExprId>>,
+    pub opened_values: Vec<Vec<Target>>,
     /// The proof showing the values are valid openings.
     pub opening_proof: RecMmcs::Proof,
 }
@@ -347,7 +348,7 @@ impl<F: Field, EF: ExtensionField<F>, Inner: RecursiveMmcs<F, EF>> Recursive<EF>
 /// `HashTargets` corresponds to a commitment in the form of hashes with `DIGEST_ELEMS` digest elements.
 #[derive(Clone)]
 pub struct HashTargets<F, const DIGEST_ELEMS: usize> {
-    pub hash_targets: [ExprId; DIGEST_ELEMS],
+    pub hash_targets: [Target; DIGEST_ELEMS],
     _phantom: PhantomData<F>,
 }
 
@@ -385,7 +386,7 @@ impl<F: Field, EF: ExtensionField<F>, const DIGEST_ELEMS: usize> Recursive<EF>
 
 /// `HashProofTargets` corresponds to a Merkle tree `Proof` in the form of a vector of hashes with `DIGEST_ELEMS` digest elements.
 pub struct HashProofTargets<F, const DIGEST_ELEMS: usize> {
-    pub hash_proof_targets: Vec<[ExprId; DIGEST_ELEMS]>,
+    pub hash_proof_targets: Vec<[Target; DIGEST_ELEMS]>,
     _phantom: PhantomData<F>,
 }
 
@@ -431,7 +432,7 @@ impl<F: Field, EF: ExtensionField<F>, const DIGEST_ELEMS: usize> Recursive<EF>
 
 /// In TwoAdicFriPcs, the POW witness is just a base field element.
 pub struct Witness<F> {
-    pub witness: ExprId,
+    pub witness: Target,
     _phantom: PhantomData<F>,
 }
 
@@ -517,7 +518,7 @@ impl<F: Field, EF: ExtensionField<F>, const DIGEST_ELEMS: usize, RecValMmcs: Rec
 pub type InputProofTargets<F, EF, Inner> = Vec<BatchOpeningTargets<F, EF, Inner>>;
 
 pub type TwoAdicFriProofTargets<F, EF, RecMmcs, Inner> =
-    FriProofTargets<F, EF, RecMmcs, InputProofTargets<F, EF, Inner>, ExprId>;
+    FriProofTargets<F, EF, RecMmcs, InputProofTargets<F, EF, Inner>, Target>;
 
 pub type InputProof<F, InputMmcs> = Vec<BatchOpening<F, InputMmcs>>;
 
@@ -604,14 +605,14 @@ where
     fn get_challenges_circuit(
         circuit: &mut CircuitBuilder<SC::Challenge>,
         proof_targets: &crate::recursive_traits::ProofTargets<SC, Comm, Self::RecursiveProof>,
-    ) -> Vec<ExprId> {
+    ) -> Vec<Target> {
         proof_targets.opening_proof.get_challenges(circuit)
     }
 
     fn verify_circuit(
         &self,
         _circuit: &mut CircuitBuilder<SC::Challenge>,
-        _challenges: &[ExprId],
+        _challenges: &[Target],
         _commitments_with_opening_points: &ComsWithOpenings<
             Comm,
             TwoAdicMultiplicativeCoset<Val<SC>>,
@@ -625,7 +626,7 @@ where
         &self,
         circuit: &mut CircuitBuilder<SC::Challenge>,
         domain: &TwoAdicMultiplicativeCoset<Val<SC>>,
-        point: &ExprId,
+        point: &Target,
     ) -> RecursiveLagrangeSelectors {
         // Constants that we will need.
         let shift_inv = circuit.add_const(SC::Challenge::from(domain.shift_inverse()));
