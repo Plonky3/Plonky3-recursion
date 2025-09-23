@@ -9,7 +9,14 @@ use p3_matrix::dense::RowMajorMatrix;
 use super::utils::pad_to_power_of_two;
 
 /// ConstAir: vector-valued constant binding with generic extension degree D.
+///
+/// This chip exposes transparent constants that don't need to be committed during proving.
+/// It serves as the source of truth for constant values in the system, with each row
+/// representing a (value, index) pair where the index corresponds to a WitnessId.
+///
 /// Layout per row: [value[0..D-1], index] → width = D + 1
+/// - value[0..D-1]: Extension field value represented as D base field coefficients
+/// - index: Transparent WitnessId that this constant binds to
 #[derive(Debug, Clone)]
 pub struct ConstAir<F, const D: usize = 1> {
     pub height: usize,
@@ -17,7 +24,7 @@ pub struct ConstAir<F, const D: usize = 1> {
 }
 
 impl<F: Field, const D: usize> ConstAir<F, D> {
-    pub fn new(height: usize) -> Self {
+    pub const fn new(height: usize) -> Self {
         Self {
             height,
             _phantom: core::marker::PhantomData,
@@ -67,5 +74,136 @@ where
 {
     fn eval(&self, _builder: &mut AB) {
         // No constraints for constants in Stage 1
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec;
+
+    use p3_baby_bear::BabyBear;
+    use p3_field::PrimeCharacteristicRing;
+    use p3_field::extension::BinomialExtensionField;
+    use p3_matrix::Matrix;
+    use p3_uni_stark::{prove, verify};
+
+    use super::*;
+    use crate::air::test_utils::build_test_config;
+
+    type F = BabyBear;
+    type EF = BinomialExtensionField<F, 4>;
+
+    #[test]
+    fn test_const_air_base_field() {
+        // Create a CONST trace with several constant values
+        // Toy example used: assert(37 * x - 111 = 0)
+        let const_values = vec![
+            F::from_u64(37),  // CONST 1 37
+            F::from_u64(111), // CONST 3 111
+            F::from_u64(0),   // CONST 4 0
+        ];
+        // Witness IDs these constants bind to
+        let const_indices = vec![1u32, 3u32, 4u32];
+
+        let trace = ConstTrace {
+            index: const_indices,
+            values: const_values.clone(),
+        };
+
+        // Convert to matrix using the ConstAir
+        let matrix = ConstAir::<F, 1>::trace_to_matrix(&trace);
+
+        // Verify matrix dimensions
+        //
+        // D + 1 = 1 + 1 = 2 (value + index)
+        assert_eq!(matrix.width(), 2);
+
+        // Height should be next power of two >= 3
+        let height = matrix.height();
+        assert_eq!(height, 4);
+
+        // Verify the data layout: [value, index] per row
+        let data = &matrix.values;
+
+        // First row: value=37, index=1
+        assert_eq!(data[0], F::from_u64(37));
+        assert_eq!(data[1], F::from_u64(1));
+
+        // Second row: value=111, index=3
+        assert_eq!(data[2], F::from_u64(111));
+        assert_eq!(data[3], F::from_u64(3));
+
+        // Third row: value=0, index=4
+        assert_eq!(data[4], F::from_u64(0));
+        assert_eq!(data[5], F::from_u64(4));
+
+        // Test that we can prove and verify (should succeed since no constraints)
+        let config = build_test_config();
+        // No public inputs for CONST chip
+        let pis: Vec<F> = vec![];
+
+        let air = ConstAir::<F, 1>::new(height);
+        let proof = prove(&config, &air, matrix, &pis);
+        verify(&config, &air, &proof, &pis).expect("CONST chip verification failed");
+    }
+
+    #[test]
+    fn test_const_air_extension_field() {
+        // Create extension field constants with all non-zero coefficients
+        let const1 = EF::from_basis_coefficients_slice(&[
+            F::from_u64(1), // a0
+            F::from_u64(2), // a1
+            F::from_u64(3), // a2
+            F::from_u64(4), // a3
+        ])
+        .unwrap();
+
+        let const2 = EF::from_basis_coefficients_slice(&[
+            F::from_u64(5), // b0
+            F::from_u64(6), // b1
+            F::from_u64(7), // b2
+            F::from_u64(8), // b3
+        ])
+        .unwrap();
+
+        let const_values = vec![const1, const2];
+        let const_indices = vec![10u32, 20u32];
+
+        let trace = ConstTrace {
+            index: const_indices,
+            values: const_values,
+        };
+
+        // Convert to matrix for D=4 extension field
+        let matrix: RowMajorMatrix<F> = ConstAir::<F, 4>::trace_to_matrix(&trace);
+
+        // Verify matrix dimensions: D + 1 = 4 + 1 = 5 (4 value coefficients + 1 index)
+        assert_eq!(matrix.width(), 5);
+        let height = matrix.height();
+        assert_eq!(height, 2);
+
+        let data = &matrix.values;
+
+        // First row: [a0, a1, a2, a3, index] = [1, 2, 3, 4, 10]
+        assert_eq!(data[0], F::from_u64(1));
+        assert_eq!(data[1], F::from_u64(2));
+        assert_eq!(data[2], F::from_u64(3));
+        assert_eq!(data[3], F::from_u64(4));
+        assert_eq!(data[4], F::from_u64(10));
+
+        // Second row: [b0, b1, b2, b3, index] = [5, 6, 7, 8, 20]
+        assert_eq!(data[5], F::from_u64(5));
+        assert_eq!(data[6], F::from_u64(6));
+        assert_eq!(data[7], F::from_u64(7));
+        assert_eq!(data[8], F::from_u64(8));
+        assert_eq!(data[9], F::from_u64(20));
+
+        // Test proving and verification for extension field
+        let config = build_test_config();
+        let pis: Vec<F> = vec![];
+
+        let air = ConstAir::<F, 4>::new(height);
+        let proof = prove(&config, &air, matrix, &pis);
+        verify(&config, &air, &proof, &pis).expect("Extension field CONST verification failed");
     }
 }

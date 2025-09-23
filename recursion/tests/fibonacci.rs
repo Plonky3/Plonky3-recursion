@@ -76,7 +76,7 @@ fn test_fibonacci_verifier() -> Result<(), CircuitError> {
         >,
     >::lens(&proof);
 
-    // Add the wires for the proof.
+    // Add the targets for the proof.
     let proof_circuit = ProofTargets::<
         MyConfig,
         HashTargets<F, DIGEST_ELEMS>,
@@ -112,7 +112,7 @@ fn test_fibonacci_verifier() -> Result<(), CircuitError> {
     >::get_values(&proof);
 
     println!(
-        "proof wires: {:?}",
+        "proof targets: {:?}",
         proof_circuit.commitments_targets.trace_targets.hash_targets
     );
     let circuit = circuit_builder.build().unwrap();
