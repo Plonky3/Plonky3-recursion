@@ -101,7 +101,7 @@ type Commitment<SC> = <<SC as StarkGenericConfig>::Pcs as Pcs<
     <SC as StarkGenericConfig>::Challenger,
 >>::Commitment;
 
-type ComsWithOpenings<Comm, Domain> = [(Comm, Vec<(Domain, Vec<(ExprId, Vec<ExprId>)>)>)];
+pub type ComsWithOpenings<Comm, Domain> = [(Comm, Vec<(Domain, Vec<(ExprId, Vec<ExprId>)>)>)];
 
 type ComsToVerify<SC> = [(
     Commitment<SC>,
@@ -166,8 +166,13 @@ pub trait RecursivePcs<
     /// Split a domain given the degree and the current domain. This is the same as the original method in Pcs, but is also used in the verifier circuit.
     fn split_domains(&self, trace_domain: &Domain, degree: usize) -> Vec<Domain>;
 
+    /// Returns the log of the domain's size. This is the same as the original method in Pcs, but is also used in the verifier circuit.
+    fn log_size(&self, trace_domain: &Domain) -> usize;
+
     /// Returns the size of the domain. This is the same as the original method in Pcs, but is also used in the verifier circuit.
-    fn size(&self, trace_domain: &Domain) -> usize;
+    fn size(&self, trace_domain: &Domain) -> usize {
+        1 << self.log_size(trace_domain)
+    }
 
     /// Returns the first point in the domain. This is the same as the original method in Pcs, but is also used in the verifier circuit.
     fn first_point(&self, trace_domain: &Domain) -> SC::Challenge;
