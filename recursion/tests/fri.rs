@@ -236,7 +236,7 @@ fn test_circuit_fri_verifier() {
     let index_bits_targets: Vec<_> = (0..log_max_height)
         .map(|_| builder.add_public_input())
         .collect();
-    let initial_folded_eval_wire = builder.add_public_input();
+    let initial_folded_eval_target = builder.add_public_input();
     let betas_targets: Vec<_> = (0..num_phases)
         .map(|_| builder.add_public_input())
         .collect();
@@ -246,7 +246,7 @@ fn test_circuit_fri_verifier() {
     let roll_ins_targets: Vec<Option<_>> = (0..num_phases)
         .map(|_| Some(builder.add_public_input()))
         .collect();
-    let final_value_wire = builder.add_public_input();
+    let final_value_target = builder.add_public_input();
 
     // Precompute per-phase power ladders as constants:
     // For phase i, k = log_folded_height = log_max_height - i - 1.
@@ -270,13 +270,13 @@ fn test_circuit_fri_verifier() {
 
     verify_query_from_index_bits(
         &mut builder,
-        initial_folded_eval_wire,
+        initial_folded_eval_target,
         &index_bits_targets,
         &betas_targets,
         &sibling_values_targets,
         &roll_ins_targets,
         &pows_per_phase,
-        final_value_wire,
+        final_value_target,
     );
 
     let circuit = builder.build().unwrap();

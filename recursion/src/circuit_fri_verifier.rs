@@ -1,10 +1,9 @@
 use alloc::vec::Vec;
 
-use p3_circuit::{CircuitBuilder, ExprId};
+use p3_circuit::CircuitBuilder;
 use p3_field::Field;
 
-/// Canonical circuit target type used across recursive components.
-pub type Target = ExprId;
+use crate::Target;
 
 /// Inputs for one FRI fold phase (matches the values used by the verifier per round).
 #[derive(Clone, Debug)]
