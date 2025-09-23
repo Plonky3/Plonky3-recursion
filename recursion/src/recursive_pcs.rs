@@ -345,6 +345,7 @@ impl<F: Field, EF: ExtensionField<F>, Inner: RecursiveMmcs<F, EF>> Recursive<EF>
 // Now, we define the commitment schemes.
 
 /// `HashTargets` corresponds to a commitment in the form of hashes with `DIGEST_ELEMS` digest elements.
+#[derive(Clone)]
 pub struct HashTargets<F, const DIGEST_ELEMS: usize> {
     pub hash_targets: [ExprId; DIGEST_ELEMS],
     _phantom: PhantomData<F>,
@@ -580,7 +581,7 @@ impl<
             SC::Challenge,
             RecursiveFriMmcs,
             RecursiveInputProof,
-            Witness<SC::Challenge>,
+            Witness<Val<SC>>,
         >,
         Comm,
         TwoAdicMultiplicativeCoset<Val<SC>>,
@@ -597,7 +598,7 @@ where
         SC::Challenge,
         RecursiveFriMmcs,
         RecursiveInputProof,
-        Witness<SC::Challenge>,
+        Witness<Val<SC>>,
     >;
 
     fn get_challenges_circuit(

@@ -3,11 +3,12 @@ use alloc::vec::Vec;
 
 use itertools::{Itertools, zip_eq};
 use p3_circuit::utils::ColumnsTargets;
-use p3_circuit::{CircuitBuilder, ExprId};
+use p3_circuit::{CircuitBuilder, CircuitBuilderError, CircuitError, ExprId};
 use p3_commit::Pcs;
 use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
 use p3_uni_stark::StarkGenericConfig;
 
+use crate::recursive_generation::GenerationError;
 use crate::recursive_traits::{
     CommitmentTargets, OpenedValuesTargets, ProofTargets, Recursive, RecursiveAir, RecursivePcs,
 };
@@ -16,6 +17,9 @@ use crate::recursive_traits::{
 pub enum VerificationError {
     InvalidProofShape,
     RandomizationError,
+    CircuitError(CircuitError),
+    CircuitBuilderError(CircuitBuilderError),
+    GenerationError(GenerationError),
 }
 
 impl core::fmt::Display for VerificationError {
@@ -26,7 +30,34 @@ impl core::fmt::Display for VerificationError {
                 f,
                 "Missing random opened values for existing random commitment"
             ),
+            VerificationError::CircuitError(e) => {
+                write!(f, "Circuit error: {}", e)
+            }
+            VerificationError::CircuitBuilderError(e) => {
+                write!(f, "Circuit builder error: {}", e)
+            }
+            VerificationError::GenerationError(e) => {
+                write!(f, "Challenge generation error: {}", e)
+            }
         }
+    }
+}
+
+impl From<CircuitError> for VerificationError {
+    fn from(err: CircuitError) -> Self {
+        VerificationError::CircuitError(err)
+    }
+}
+
+impl From<CircuitBuilderError> for VerificationError {
+    fn from(err: CircuitBuilderError) -> Self {
+        VerificationError::CircuitBuilderError(err)
+    }
+}
+
+impl From<GenerationError> for VerificationError {
+    fn from(err: GenerationError) -> Self {
+        VerificationError::GenerationError(err)
     }
 }
 
@@ -81,7 +112,7 @@ pub fn verify_circuit<
             SC::Challenge,
             Input = <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment,
         > + Clone,
-    InputProof: Recursive<SC::Challenge> + Clone,
+    InputProof: Recursive<SC::Challenge>,
     OpeningProof: Recursive<SC::Challenge>,
 >(
     config: &SC,
@@ -287,23 +318,10 @@ where
     let pcs = config.pcs();
     let inv = circuit.add_const(pcs.first_point(&domain).inverse());
     let mul = circuit.mul(zeta, inv);
-    let exp = exp_power_of_2(circuit, mul, pcs.log_size(&domain));
+    let exp = circuit.exp_power_of_2(mul, pcs.log_size(&domain));
     let one = circuit.add_const(SC::Challenge::ONE);
 
     circuit.sub(exp, one)
-}
-
-fn exp_power_of_2<F: Field>(
-    circuit: &mut CircuitBuilder<F>,
-    base: ExprId,
-    power_log: usize,
-) -> ExprId {
-    let mut res = base;
-    for _ in 0..power_log {
-        let square = circuit.mul(res, res);
-        res = square;
-    }
-    res
 }
 
 #[cfg(test)]
@@ -333,7 +351,7 @@ mod tests {
     use rand::rngs::SmallRng;
     use rand::{Rng, SeedableRng};
 
-    use crate::circuit_verifier::{exp_power_of_2, verify_circuit};
+    use crate::circuit_verifier::verify_circuit;
     use crate::recursive_traits::{
         ComsWithOpenings, ProofTargets, Recursive, RecursiveLagrangeSelectors, RecursivePcs,
     };
@@ -431,7 +449,7 @@ mod tests {
 
             // Unshifted and z_h
             let unshifted_point = circuit.mul(shift_inv, *point);
-            let us_exp = exp_power_of_2(circuit, unshifted_point, domain.log_size());
+            let us_exp = circuit.exp_power_of_2(unshifted_point, domain.log_size());
             let z_h = circuit.sub(us_exp, one);
 
             // Denominators
