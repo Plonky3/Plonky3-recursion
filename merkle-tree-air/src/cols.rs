@@ -9,7 +9,12 @@ use crate::air::MerkleVerifyAir;
 
 #[derive(Debug)]
 #[repr(C)]
-pub struct MerkleTreeCols<T, const DIGEST_ELEMS: usize, const MAX_TREE_HEIGHT: usize> {
+pub struct MerkleTreeCols<
+    T,
+    const BF_DIGEST_ELEMS: usize,
+    const EF_DIGEST_ELEMS: usize,
+    const MAX_TREE_HEIGHT: usize,
+> {
     /// Bits of the leaf index we are currently verifying.
     pub index_bits: [T; MAX_TREE_HEIGHT],
     /// Max height of the Merkle trees, which is equal to the index's bit length.
@@ -18,11 +23,11 @@ pub struct MerkleTreeCols<T, const DIGEST_ELEMS: usize, const MAX_TREE_HEIGHT: u
     /// One-hot encoding of the height within the Merkle tree.
     pub height_encoding: [T; MAX_TREE_HEIGHT],
     /// Sibling we are currently processing.
-    pub sibling: [T; DIGEST_ELEMS],
+    pub sibling: [T; BF_DIGEST_ELEMS],
     /// Current state of the hash, which we are updating.
-    pub state: [T; DIGEST_ELEMS],
+    pub state: [T; BF_DIGEST_ELEMS],
     /// The state index in the witness table
-    pub state_index: T,
+    pub state_index: [T; EF_DIGEST_ELEMS],
     /// Whether this is the final step of the Merkle
     /// tree verification for this index.
     pub is_final: T,
@@ -33,19 +38,24 @@ pub struct MerkleTreeCols<T, const DIGEST_ELEMS: usize, const MAX_TREE_HEIGHT: u
     pub extra_height: T,
 }
 
-pub(crate) fn get_num_merkle_tree_cols<const DIGEST_ELEMS: usize, const MAX_TREE_HEIGHT: usize>()
--> usize {
-    size_of::<MerkleTreeCols<u8, DIGEST_ELEMS, MAX_TREE_HEIGHT>>()
+pub(crate) fn get_num_merkle_tree_cols<
+    const BF_DIGEST_ELEMS: usize,
+    const EF_DIGES_ELEMS: usize,
+    const MAX_TREE_HEIGHT: usize,
+>() -> usize {
+    size_of::<MerkleTreeCols<u8, BF_DIGEST_ELEMS, EF_DIGES_ELEMS, MAX_TREE_HEIGHT>>()
 }
 
-impl<T, const DIGEST_ELEMS: usize, const MAX_TREE_HEIGHT: usize>
-    Borrow<MerkleTreeCols<T, DIGEST_ELEMS, MAX_TREE_HEIGHT>> for [T]
+impl<T, const BF_DIGEST_ELEMS: usize, const EF_DIGEST_ELEMS: usize, const MAX_TREE_HEIGHT: usize>
+    Borrow<MerkleTreeCols<T, BF_DIGEST_ELEMS, EF_DIGEST_ELEMS, MAX_TREE_HEIGHT>> for [T]
 {
-    fn borrow(&self) -> &MerkleTreeCols<T, DIGEST_ELEMS, MAX_TREE_HEIGHT> {
-        let num_merkle_tree_cols = get_num_merkle_tree_cols::<DIGEST_ELEMS, MAX_TREE_HEIGHT>();
+    fn borrow(&self) -> &MerkleTreeCols<T, BF_DIGEST_ELEMS, EF_DIGEST_ELEMS, MAX_TREE_HEIGHT> {
+        let num_merkle_tree_cols =
+            get_num_merkle_tree_cols::<BF_DIGEST_ELEMS, EF_DIGEST_ELEMS, MAX_TREE_HEIGHT>();
         debug_assert_eq!(self.len(), num_merkle_tree_cols);
-        let (prefix, shorts, suffix) =
-            unsafe { self.align_to::<MerkleTreeCols<T, DIGEST_ELEMS, MAX_TREE_HEIGHT>>() };
+        let (prefix, shorts, suffix) = unsafe {
+            self.align_to::<MerkleTreeCols<T, BF_DIGEST_ELEMS, EF_DIGEST_ELEMS, MAX_TREE_HEIGHT>>()
+        };
         debug_assert!(prefix.is_empty(), "Alignment should match");
         debug_assert!(suffix.is_empty(), "Alignment should match");
         debug_assert_eq!(shorts.len(), 1);
@@ -53,16 +63,19 @@ impl<T, const DIGEST_ELEMS: usize, const MAX_TREE_HEIGHT: usize>
     }
 }
 
-impl<T, const DIGEST_ELEMS: usize, const MAX_TREE_HEIGHT: usize>
-    BorrowMut<MerkleTreeCols<T, DIGEST_ELEMS, MAX_TREE_HEIGHT>> for [T]
+impl<T, const BF_DIGEST_ELEMS: usize, const EF_DIGEST_ELEMS: usize, const MAX_TREE_HEIGHT: usize>
+    BorrowMut<MerkleTreeCols<T, BF_DIGEST_ELEMS, EF_DIGEST_ELEMS, MAX_TREE_HEIGHT>> for [T]
 {
-    fn borrow_mut(&mut self) -> &mut MerkleTreeCols<T, DIGEST_ELEMS, MAX_TREE_HEIGHT> {
+    fn borrow_mut(
+        &mut self,
+    ) -> &mut MerkleTreeCols<T, BF_DIGEST_ELEMS, EF_DIGEST_ELEMS, MAX_TREE_HEIGHT> {
         debug_assert_eq!(
             self.len(),
-            get_num_merkle_tree_cols::<DIGEST_ELEMS, MAX_TREE_HEIGHT>()
+            get_num_merkle_tree_cols::<BF_DIGEST_ELEMS, EF_DIGEST_ELEMS, MAX_TREE_HEIGHT>()
         );
-        let (prefix, shorts, suffix) =
-            unsafe { self.align_to_mut::<MerkleTreeCols<T, DIGEST_ELEMS, MAX_TREE_HEIGHT>>() };
+        let (prefix, shorts, suffix) = unsafe {
+            self.align_to_mut::<MerkleTreeCols<T, BF_DIGEST_ELEMS, EF_DIGEST_ELEMS, MAX_TREE_HEIGHT>>()
+        };
         debug_assert!(prefix.is_empty(), "Alignment should match");
         debug_assert!(suffix.is_empty(), "Alignment should match");
         debug_assert_eq!(shorts.len(), 1);
@@ -70,8 +83,12 @@ impl<T, const DIGEST_ELEMS: usize, const MAX_TREE_HEIGHT: usize>
     }
 }
 
-impl<F: Field, const DIGEST_ELEMS: usize, const MAX_TREE_HEIGHT: usize>
-    MerkleVerifyAir<F, DIGEST_ELEMS, MAX_TREE_HEIGHT>
+impl<
+    F: Field,
+    const BF_DIGEST_ELEMS: usize,
+    const EF_DIGEST_ELEMS: usize,
+    const MAX_TREE_HEIGHT: usize,
+> MerkleVerifyAir<F, BF_DIGEST_ELEMS, EF_DIGEST_ELEMS, MAX_TREE_HEIGHT>
 {
     pub fn trace_to_matrix<ExtF: BasedVectorSpace<F>>(
         trace: &MerkleTrace<ExtF>,
@@ -84,14 +101,14 @@ impl<F: Field, const DIGEST_ELEMS: usize, const MAX_TREE_HEIGHT: usize>
             .sum::<usize>();
         let padded_height = height.next_power_of_two();
 
-        let width = get_num_merkle_tree_cols::<DIGEST_ELEMS, MAX_TREE_HEIGHT>();
+        let width = get_num_merkle_tree_cols::<BF_DIGEST_ELEMS, EF_DIGEST_ELEMS, MAX_TREE_HEIGHT>();
 
         let mut matrix = RowMajorMatrix::new(F::zero_vec(padded_height * width), width);
 
         let (prefix, rows, suffix) = unsafe {
             matrix
                 .values
-                .align_to_mut::<MerkleTreeCols<F, DIGEST_ELEMS, MAX_TREE_HEIGHT>>()
+                .align_to_mut::<MerkleTreeCols<F, BF_DIGEST_ELEMS, EF_DIGEST_ELEMS, MAX_TREE_HEIGHT>>()
         };
         assert!(prefix.is_empty(), "Alignment should match");
         assert!(suffix.is_empty(), "Alignment should match");
@@ -123,7 +140,7 @@ impl<F: Field, const DIGEST_ELEMS: usize, const MAX_TREE_HEIGHT: usize>
                 let row = &mut rows[row_counter];
 
                 // Fill the state with the right ammount of base field elements
-                debug_assert_eq!(DIGEST_ELEMS, left_value.len() * ExtF::DIMENSION);
+                debug_assert_eq!(BF_DIGEST_ELEMS, left_value.len() * ExtF::DIMENSION);
                 let mut i = 0;
                 for values in left_value {
                     for value in values.as_basis_coefficients_slice() {
@@ -131,10 +148,15 @@ impl<F: Field, const DIGEST_ELEMS: usize, const MAX_TREE_HEIGHT: usize>
                         i += 1;
                     }
                 }
-                row.state_index = F::from_u32(*left_index);
+                row.state_index = left_index
+                    .iter()
+                    .map(|idx| F::from_u32(*idx))
+                    .collect::<Vec<_>>()
+                    .try_into()
+                    .expect("Size mismatch");
 
                 // Fill the sibling with the right ammount of base field elements
-                debug_assert_eq!(DIGEST_ELEMS, left_value.len() * ExtF::DIMENSION);
+                debug_assert_eq!(BF_DIGEST_ELEMS, left_value.len() * ExtF::DIMENSION);
                 let mut i = 0;
                 for values in right_value {
                     for value in values.as_basis_coefficients_slice() {
@@ -157,7 +179,7 @@ impl<F: Field, const DIGEST_ELEMS: usize, const MAX_TREE_HEIGHT: usize>
 
             // Fill the state with the right ammount of base field elements
             let last_state = path.left_values.last().expect("Left values can't be empty");
-            debug_assert_eq!(DIGEST_ELEMS, last_state.len() * ExtF::DIMENSION);
+            debug_assert_eq!(BF_DIGEST_ELEMS, last_state.len() * ExtF::DIMENSION);
             let mut i = 0;
             for values in last_state {
                 for value in values.as_basis_coefficients_slice() {

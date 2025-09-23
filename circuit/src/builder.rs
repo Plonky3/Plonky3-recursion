@@ -5,6 +5,7 @@ use hashbrown::{HashMap, HashSet};
 use p3_field::PrimeCharacteristicRing;
 
 use crate::circuit::Circuit;
+use crate::config::CircuitConfig;
 use crate::expr::{Expr, ExpressionGraph};
 use crate::op::{NonPrimitiveOp, NonPrimitiveOpType, Prim};
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};
@@ -61,7 +62,12 @@ fn build_connect_dsu(connects: &[(ExprId, ExprId)]) -> HashMap<usize, usize> {
 /// - Complex operations (like Merkle tree verification)
 ///
 /// Call `.build()` to compile into an immutable `Circuit<F>` specification.
-pub struct CircuitBuilder<F> {
+pub struct CircuitBuilder<
+    F,
+    C: CircuitConfig<BF_DIGEST_ELEMS, EF_DIGEST_ELEMS>,
+    const BF_DIGEST_ELEMS: usize,
+    const EF_DIGEST_ELEMS: usize,
+> {
     /// Expression graph for building the DAG
     expressions: ExpressionGraph<F>,
     /// Witness index allocator
@@ -72,7 +78,8 @@ pub struct CircuitBuilder<F> {
     pending_connects: Vec<(ExprId, ExprId)>,
     /// Non-primitive operations (complex constraints that don't produce ExprIds)
     non_primitive_ops: Vec<(NonPrimitiveOpId, NonPrimitiveOpType, Vec<ExprId>)>, // (op_id, op_type, witness_exprs)
-
+    /// Circuit builder configuration
+    config: C,
     /// Builder-level constant pool: value -> unique Const ExprId
     const_pool: HashMap<F, ExprId>,
 }
@@ -108,7 +115,8 @@ impl core::fmt::Display for CircuitBuilderError {
     }
 }
 
-impl<F> Default for CircuitBuilder<F>
+impl<F, C: CircuitConfig<BF, EF>, const BF: usize, const EF: usize> Default
+    for CircuitBuilder<F, C, BF, EF>
 where
     F: Clone + PrimeCharacteristicRing + Eq + core::hash::Hash,
 {
@@ -117,7 +125,7 @@ where
     }
 }
 
-impl<F> CircuitBuilder<F>
+impl<F, C: CircuitConfig<BF, EF>, const BF: usize, const EF: usize> CircuitBuilder<F, C, BF, EF>
 where
     F: Clone + PrimeCharacteristicRing + Eq + core::hash::Hash,
 {
@@ -138,6 +146,7 @@ where
             public_input_count: 0,
             pending_connects: Vec::new(),
             non_primitive_ops: Vec::new(),
+            config: C::new(),
             const_pool,
         }
     }
@@ -224,14 +233,17 @@ where
     /// Returns an operation ID for setting private data later during execution.
     pub fn add_merkle_verify(
         &mut self,
-        leaf_expr: ExprId,
+        leaf_expr: Vec<ExprId>,
         index_expr: ExprId,
-        root_expr: ExprId,
+        root_expr: Vec<ExprId>,
     ) -> NonPrimitiveOpId {
         // Store input expression IDs - will be lowered to WitnessId during build()
         // Non-primitive ops consume ExprIds but don't produce them
         let op_id = NonPrimitiveOpId(self.non_primitive_ops.len() as u32);
-        let witness_exprs = vec![leaf_expr, index_expr, root_expr];
+        let mut witness_exprs = vec![];
+        witness_exprs.extend(leaf_expr);
+        witness_exprs.push(index_expr);
+        witness_exprs.extend(root_expr);
         self.non_primitive_ops
             .push((op_id, NonPrimitiveOpType::MerkleVerify, witness_exprs));
 
@@ -239,21 +251,35 @@ where
     }
 }
 
-impl<F> CircuitBuilder<F>
+impl<
+    F,
+    C: CircuitConfig<BF_DIGEST_ELEMS, EF_DIGEST_ELEMS>,
+    const BF_DIGEST_ELEMS: usize,
+    const EF_DIGEST_ELEMS: usize,
+> CircuitBuilder<F, C, BF_DIGEST_ELEMS, EF_DIGEST_ELEMS>
 where
     F: Clone + PrimeCharacteristicRing + PartialEq + Eq + core::hash::Hash,
 {
     /// Build the circuit into a Circuit with separate lowering and IR transformation stages.
     /// Returns an error if lowering fails due to an internal inconsistency.
-    pub fn build(self) -> Result<Circuit<F>, CircuitBuilderError> {
+    pub fn build(
+        self,
+    ) -> Result<Circuit<F, C, BF_DIGEST_ELEMS, EF_DIGEST_ELEMS>, CircuitBuilderError> {
         let (circuit, _) = self.build_with_public_mapping()?;
         Ok(circuit)
     }
 
     /// Build the circuit and return both the circuit and the ExprId→WitnessId mapping for public inputs.
+    #[allow(clippy::type_complexity)]
     pub fn build_with_public_mapping(
         mut self,
-    ) -> Result<(Circuit<F>, HashMap<ExprId, WitnessId>), CircuitBuilderError> {
+    ) -> Result<
+        (
+            Circuit<F, C, BF_DIGEST_ELEMS, EF_DIGEST_ELEMS>,
+            HashMap<ExprId, WitnessId>,
+        ),
+        CircuitBuilderError,
+    > {
         // Stage 1: Lower expressions to primitives
         let (primitive_ops, public_rows, expr_to_widx, public_mappings) =
             self.lower_to_primitives()?;
@@ -266,7 +292,7 @@ where
 
         // Stage 4: Generate final circuit
         let witness_count = self.witness_alloc.witness_count();
-        let mut circuit = Circuit::new(witness_count);
+        let mut circuit = Circuit::new(witness_count, self.config);
         circuit.primitive_ops = primitive_ops;
         circuit.non_primitive_ops = lowered_non_primitive_ops;
         circuit.public_rows = public_rows;
@@ -474,27 +500,36 @@ where
         for (_op_id, op_type, witness_exprs) in &self.non_primitive_ops {
             match op_type {
                 NonPrimitiveOpType::MerkleVerify => {
-                    if witness_exprs.len() != 3 {
+                    if witness_exprs.len() != C::MERKLE_GATE_INPUT_SIZE {
                         panic!(
-                            "MerkleVerify expects exactly 3 witness expressions, got {}",
+                            "MerkleVerify expects exactly {} witness expressions, got {}",
+                            C::MERKLE_GATE_INPUT_SIZE,
                             witness_exprs.len()
                         );
                     }
-                    let leaf_widx = Self::get_witness_id(
-                        expr_to_widx,
-                        witness_exprs[0],
-                        "MerkleVerify leaf input",
-                    )?;
+                    let leaf_widx: Vec<WitnessId> = (0..EF_DIGEST_ELEMS)
+                        .map(|i| {
+                            Self::get_witness_id(
+                                expr_to_widx,
+                                witness_exprs[i],
+                                "MerkleVerify leaf input",
+                            )
+                        })
+                        .collect::<Result<_, _>>()?;
                     let index_widx = Self::get_witness_id(
                         expr_to_widx,
-                        witness_exprs[1],
-                        "MerkleVerify leaf input",
+                        witness_exprs[EF_DIGEST_ELEMS],
+                        "MerkleVerify index input",
                     )?;
-                    let root_widx = Self::get_witness_id(
-                        expr_to_widx,
-                        witness_exprs[2],
-                        "MerkleVerify root input",
-                    )?;
+                    let root_widx = (EF_DIGEST_ELEMS + 1..C::MERKLE_GATE_INPUT_SIZE)
+                        .map(|i| {
+                            Self::get_witness_id(
+                                expr_to_widx,
+                                witness_exprs[i],
+                                "MerkleVerify root input",
+                            )
+                        })
+                        .collect::<Result<_, _>>()?;
 
                     lowered_ops.push(NonPrimitiveOp::MerkleVerify {
                         leaf: leaf_widx,
@@ -526,11 +561,11 @@ mod tests {
 
     use super::*;
     use crate::CircuitError;
-    use crate::config::babybear_config::default_babybear_poseidon2_circuit_runner_config;
+    use crate::config::babybear_config::BabyBearCircuitBuilder;
 
     #[test]
     fn test_circuit_basic_api() {
-        let mut builder = CircuitBuilder::<BabyBear>::new();
+        let mut builder = BabyBearCircuitBuilder::new();
 
         let c37 = builder.add_const(BabyBear::from_u64(37)); // w1
         let c111 = builder.add_const(BabyBear::from_u64(111)); // w2
@@ -624,7 +659,7 @@ mod tests {
 
     #[test]
     fn test_connect_enforces_equality() {
-        let mut builder = CircuitBuilder::<BabyBear>::new();
+        let mut builder = BabyBearCircuitBuilder::new();
 
         let x = builder.add_public_input();
         let c1 = builder.add_const(BabyBear::ONE);
@@ -637,8 +672,7 @@ mod tests {
         builder.connect(a, b);
 
         let circuit = builder.build().unwrap();
-        let config = default_babybear_poseidon2_circuit_runner_config();
-        let mut runner = circuit.runner(config);
+        let mut runner = circuit.runner();
 
         runner.set_public_inputs(&[BabyBear::from_u64(5)]).unwrap();
         // Should succeed; both write the same value into the shared slot
@@ -647,7 +681,7 @@ mod tests {
 
     #[test]
     fn test_connect_conflict() {
-        let mut builder = CircuitBuilder::<BabyBear>::new();
+        let mut builder = BabyBearCircuitBuilder::new();
 
         let x = builder.add_public_input();
         let y = builder.add_public_input();
@@ -656,8 +690,7 @@ mod tests {
         builder.connect(x, y);
 
         let circuit = builder.build().unwrap();
-        let config = default_babybear_poseidon2_circuit_runner_config();
-        let mut runner = circuit.runner(config);
+        let mut runner = circuit.runner();
 
         // Provide different values; should error due to witness conflict on shared slot
         let err = runner
@@ -692,7 +725,7 @@ mod tests {
 
     #[test]
     fn test_public_input_mapping() {
-        let mut builder = CircuitBuilder::<BabyBear>::new();
+        let mut builder = BabyBearCircuitBuilder::new();
 
         let pub1 = builder.add_public_input();
         let c5 = builder.add_const(BabyBear::from_u64(5));
@@ -728,7 +761,7 @@ mod tests {
         assert_eq!(public_mapping[&pub4], WitnessId(4));
 
         // Verify that regular build() still works (backward compatibility)
-        let mut builder2 = CircuitBuilder::<BabyBear>::new();
+        let mut builder2 = BabyBearCircuitBuilder::new();
         let _pub = builder2.add_public_input();
         let circuit2 = builder2.build().unwrap(); // Should not return mapping
         assert_eq!(circuit2.public_flat_len, 1);

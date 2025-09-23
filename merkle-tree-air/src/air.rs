@@ -9,26 +9,38 @@ use crate::cols::{MerkleTreeCols, get_num_merkle_tree_cols};
 
 // `DIGEST_ELEMS` is the number of digest elements of the hash. `MAX_TREE_HEIGHT` is the maximal tree height that can be handled by the AIR.
 #[derive(Default)]
-pub struct MerkleVerifyAir<F, const DIGEST_ELEMS: usize, const MAX_TREE_HEIGHT: usize>
-where
+pub struct MerkleVerifyAir<
+    F,
+    const BF_DIGEST_ELEMS: usize,
+    const EF_DIGEST_ELEMS: usize,
+    const MAX_TREE_HEIGHT: usize,
+> where
     F: Field,
 {
     _phantom: PhantomData<F>,
 }
 
-impl<F: Field, const DIGEST_ELEMS: usize, const MAX_TREE_HEIGHT: usize> BaseAir<F>
-    for MerkleVerifyAir<F, DIGEST_ELEMS, MAX_TREE_HEIGHT>
+impl<
+    F: Field,
+    const BF_DIGEST_ELEMS: usize,
+    const EF_DIGEST_ELEMS: usize,
+    const MAX_TREE_HEIGHT: usize,
+> BaseAir<F> for MerkleVerifyAir<F, BF_DIGEST_ELEMS, EF_DIGEST_ELEMS, MAX_TREE_HEIGHT>
 where
     F: Field,
     F: Eq,
 {
     fn width(&self) -> usize {
-        get_num_merkle_tree_cols::<DIGEST_ELEMS, MAX_TREE_HEIGHT>()
+        get_num_merkle_tree_cols::<BF_DIGEST_ELEMS, EF_DIGEST_ELEMS, MAX_TREE_HEIGHT>()
     }
 }
 
-impl<AB: AirBuilder, const DIGEST_ELEMS: usize, const MAX_TREE_HEIGHT: usize> Air<AB>
-    for MerkleVerifyAir<AB::F, DIGEST_ELEMS, MAX_TREE_HEIGHT>
+impl<
+    AB: AirBuilder,
+    const BF_DIGEST_ELEMS: usize,
+    const EF_DIGEST_ELEMS: usize,
+    const MAX_TREE_HEIGHT: usize,
+> Air<AB> for MerkleVerifyAir<AB::F, BF_DIGEST_ELEMS, EF_DIGEST_ELEMS, MAX_TREE_HEIGHT>
 where
     AB::F: PrimeField,
     AB::F: Eq,
@@ -40,8 +52,10 @@ where
             main.row_slice(0).expect("The matrix is empty?"),
             main.row_slice(1).expect("The matrix only has 1 row?"),
         );
-        let local: &MerkleTreeCols<AB::Var, DIGEST_ELEMS, MAX_TREE_HEIGHT> = (*local).borrow();
-        let next: &MerkleTreeCols<AB::Var, DIGEST_ELEMS, MAX_TREE_HEIGHT> = (*next).borrow();
+        let local: &MerkleTreeCols<AB::Var, BF_DIGEST_ELEMS, EF_DIGEST_ELEMS, MAX_TREE_HEIGHT> =
+            (*local).borrow();
+        let next: &MerkleTreeCols<AB::Var, BF_DIGEST_ELEMS, EF_DIGEST_ELEMS, MAX_TREE_HEIGHT> =
+            (*next).borrow();
 
         // Assert that the height encoding is boolean.
         for i in 0..local.height_encoding.len() {
@@ -138,22 +152,22 @@ where
         // - (state, sibling) when we are hashing the current state with the sibling (current index bit is 0)
         // - (sibling, state) when we are hashing the sibling with the current state; (current index bit is 1)
         // - (state, extra_sibling) when we are hashing the current state with an extra sibling (when `is_extra` is set)
-        let mut cur_to_hash = vec![AB::Expr::ZERO; 2 * DIGEST_ELEMS];
-        for i in 0..DIGEST_ELEMS {
-            for j in 0..DIGEST_ELEMS {
+        let mut cur_to_hash = vec![AB::Expr::ZERO; 2 * BF_DIGEST_ELEMS];
+        for i in 0..BF_DIGEST_ELEMS {
+            for j in 0..MAX_TREE_HEIGHT {
                 cur_to_hash[i] += local.height_encoding[j].clone()
-                    * (local.index_bits[j].clone() * local.sibling[j].clone()
-                        + (AB::Expr::ONE - local.index_bits[j].clone()) * local.state[j].clone());
-                cur_to_hash[DIGEST_ELEMS + i] += local.index_bits[j].clone()
-                    * (local.index_bits[j].clone() * local.sibling[j].clone()
+                    * (local.index_bits[j].clone() * local.sibling[i].clone()
+                        + (AB::Expr::ONE - local.index_bits[j].clone()) * local.state[i].clone());
+                cur_to_hash[BF_DIGEST_ELEMS + i] += local.index_bits[j].clone()
+                    * (local.index_bits[j].clone() * local.sibling[i].clone()
                         + (AB::Expr::ONE - local.height_encoding[j].clone())
-                            * local.state[j].clone());
+                            * local.state[i].clone());
             }
             let tmp = cur_to_hash[i].clone();
             cur_to_hash[i] += (AB::Expr::ONE - local.is_extra.clone()) * tmp
                 + AB::Expr::ONE * local.state[i].clone();
-            let tmp = cur_to_hash[DIGEST_ELEMS + i].clone();
-            cur_to_hash[DIGEST_ELEMS + i] += (AB::Expr::ONE - local.is_extra.clone()) * tmp
+            let tmp = cur_to_hash[BF_DIGEST_ELEMS + i].clone();
+            cur_to_hash[BF_DIGEST_ELEMS + i] += (AB::Expr::ONE - local.is_extra.clone()) * tmp
                 + AB::Expr::ONE * local.sibling[i].clone();
         }
 
@@ -168,8 +182,11 @@ where
 #[cfg(test)]
 mod test {
 
-    use p3_circuit::config::CircuitRunnerConfig;
-    use p3_circuit::config::babybear_config::default_babybear_poseidon2_circuit_runner_config;
+    use p3_circuit::WitnessId;
+    use p3_circuit::config::CircuitConfig as _;
+    use p3_circuit::config::babybear_config::{
+        DefaultBabyBearConfig, default_babybear_poseidon2_circuit_runner_config,
+    };
     use p3_circuit::tables::{MerklePrivateData, MerkleTrace};
     use p3_keccak::{Keccak256Hash, KeccakF};
     use p3_symmetric::{CompressionFunctionFromHasher, PaddingFreeSponge, SerializingHasher};
@@ -244,7 +261,7 @@ mod test {
         let public_data = [[rng.random::<Val>(); DIGEST_ELEMS]; NUM_INPUTS];
         let indices = [rng.random::<u32>(); NUM_INPUTS];
 
-        let config = default_babybear_poseidon2_circuit_runner_config();
+        let config: DefaultBabyBearConfig = default_babybear_poseidon2_circuit_runner_config();
 
         let trace = MerkleTrace {
             merkle_paths: private_data
@@ -254,8 +271,8 @@ mod test {
                 .map(|((data, leaf), index)| {
                     data.to_trace::<_, _, DIGEST_ELEMS, DIGEST_ELEMS>(
                         config.compress(),
-                        0,
-                        leaf,
+                        vec![WitnessId(0); DIGEST_ELEMS],
+                        leaf.to_vec(),
                         index,
                     )
                     .unwrap()
@@ -264,10 +281,13 @@ mod test {
         };
 
         // Create the AIR.
-        let air = MerkleVerifyAir::<Val, DIGEST_ELEMS, MAX_TREE_HEIGHT>::default();
+        let air = MerkleVerifyAir::<Val, DIGEST_ELEMS, DIGEST_ELEMS, MAX_TREE_HEIGHT>::default();
 
         // Generate trace for Merkle tree table.
-        let trace = MerkleVerifyAir::<Val, DIGEST_ELEMS, MAX_TREE_HEIGHT>::trace_to_matrix(&trace);
+        let trace =
+            MerkleVerifyAir::<Val, DIGEST_ELEMS, DIGEST_ELEMS, MAX_TREE_HEIGHT>::trace_to_matrix(
+                &trace,
+            );
 
         // Prove with Keccak.
         type Challenge = BinomialExtensionField<Val, 4>;

@@ -1,5 +1,6 @@
 use alloc::vec::Vec;
 
+use crate::config::CircuitConfig;
 use crate::op::{NonPrimitiveOp, Prim};
 use crate::types::WitnessId;
 
@@ -13,7 +14,7 @@ use crate::types::WitnessId;
 /// The circuit is static and serializable. Use `.runner()` to create
 /// a `CircuitRunner` for execution with specific input values.
 #[derive(Debug, Clone)]
-pub struct Circuit<F> {
+pub struct Circuit<F, C: CircuitConfig<BF, EF>, const BF: usize, const EF: usize> {
     /// Number of witness table rows
     pub witness_count: u32,
     /// Primitive operations in topological order
@@ -24,16 +25,19 @@ pub struct Circuit<F> {
     pub public_rows: Vec<WitnessId>,
     /// Total number of public field elements
     pub public_flat_len: usize,
+    /// The circuit configuration
+    pub config: C,
 }
 
-impl<F> Circuit<F> {
-    pub fn new(witness_count: u32) -> Self {
+impl<F, C: CircuitConfig<BF, EF>, const BF: usize, const EF: usize> Circuit<F, C, BF, EF> {
+    pub fn new(witness_count: u32, config: C) -> Self {
         Self {
             witness_count,
             primitive_ops: Vec::new(),
             non_primitive_ops: Vec::new(),
             public_rows: Vec::new(),
             public_flat_len: 0,
+            config,
         }
     }
 }

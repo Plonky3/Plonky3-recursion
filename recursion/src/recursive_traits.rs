@@ -3,6 +3,7 @@ use alloc::vec::Vec;
 use core::marker::PhantomData;
 
 use p3_air::Air;
+use p3_circuit::config::CircuitConfig;
 use p3_circuit::utils::{ColumnsTargets, RowSelectorsTargets, symbolic_to_circuit};
 use p3_circuit::{CircuitBuilder, ExprId};
 use p3_commit::{Mmcs, Pcs};
@@ -46,8 +47,8 @@ pub trait Recursive<F: Field> {
 
     /// Creates a new instance of the recursive type. `lens` corresponds to all the vector lengths necessary to build the structure.
     /// TODO: They can actually be deduced from StarkGenericConfig and `degree_bits`.
-    fn new(
-        circuit: &mut CircuitBuilder<F>,
+    fn new<C: CircuitConfig<BF, EF>, const BF: usize, const EF: usize>(
+        circuit: &mut CircuitBuilder<F, C, BF, EF>,
         lens: &mut impl Iterator<Item = usize>,
         degree_bits: usize,
     ) -> Self;
@@ -66,7 +67,10 @@ pub trait Recursive<F: Field> {
 
     /// Creates new wires for all the necessary challenges.
     /// TODO: Should we move this to Pcs instead?
-    fn get_challenges(&self, circuit: &mut CircuitBuilder<F>) -> Vec<ExprId> {
+    fn get_challenges<C: CircuitConfig<BF, EF>, const BF: usize, const EF: usize>(
+        &self,
+        circuit: &mut CircuitBuilder<F, C, BF, EF>,
+    ) -> Vec<ExprId> {
         let num_challenges = self.num_challenges();
 
         let mut challenges = Vec::with_capacity(num_challenges);
@@ -138,24 +142,24 @@ pub trait RecursivePcs<
     type RecursiveProof;
 
     /// Creates new wires for all the challenges necessary when computing the Pcs.
-    fn get_challenges_circuit(
-        circuit: &mut CircuitBuilder<SC::Challenge>,
+    fn get_challenges_circuit<C: CircuitConfig<BF, EF>, const BF: usize, const EF: usize>(
+        circuit: &mut CircuitBuilder<SC::Challenge, C, BF, EF>,
         proof_targets: &ProofTargets<SC, Comm, OpeningProof>,
     ) -> Vec<ExprId>;
 
     /// Adds the circuit which verifies the Pcs computation.
-    fn verify_circuit(
+    fn verify_circuit<C: CircuitConfig<BF, EF>, const BF: usize, const EF: usize>(
         &self,
-        circuit: &mut CircuitBuilder<SC::Challenge>,
+        circuit: &mut CircuitBuilder<SC::Challenge, C, BF, EF>,
         challenges: &[ExprId],
         commitments_with_opening_points: &ComsWithOpenings<Comm, Domain>,
         opening_proof: &OpeningProof,
     );
 
     /// Computes wire selectors at `point` in the circuit.
-    fn selectors_at_point_circuit(
+    fn selectors_at_point_circuit<C: CircuitConfig<BF, EF>, const BF: usize, const EF: usize>(
         &self,
-        circuit: &mut CircuitBuilder<SC::Challenge>,
+        circuit: &mut CircuitBuilder<SC::Challenge, C, BF, EF>,
         domain: &Domain,
         point: &ExprId,
     ) -> RecursiveLagrangeSelectors;
@@ -186,9 +190,9 @@ pub trait RecursiveAir<F: Field> {
     fn width(&self) -> usize;
 
     /// Circuit version of the AIR constraints.
-    fn eval_folded_circuit(
+    fn eval_folded_circuit<C: CircuitConfig<BF, EF>, const BF: usize, const EF: usize>(
         &self,
-        builder: &mut CircuitBuilder<F>,
+        builder: &mut CircuitBuilder<F, C, BF, EF>,
         sels: &RecursiveLagrangeSelectors,
         alpha: &ExprId,
         columns: ColumnsTargets,
@@ -206,9 +210,9 @@ where
         Self::width(self)
     }
 
-    fn eval_folded_circuit(
+    fn eval_folded_circuit<C: CircuitConfig<BF, EF>, const BF: usize, const EF: usize>(
         &self,
-        builder: &mut CircuitBuilder<F>,
+        builder: &mut CircuitBuilder<F, C, BF, EF>,
         sels: &RecursiveLagrangeSelectors,
         alpha: &ExprId,
         columns: ColumnsTargets,
@@ -240,8 +244,8 @@ impl<
 {
     type Input = Proof<SC>;
 
-    fn new(
-        circuit: &mut CircuitBuilder<SC::Challenge>,
+    fn new<C: CircuitConfig<BF, EF>, const BF: usize, const EF: usize>(
+        circuit: &mut CircuitBuilder<SC::Challenge, C, BF, EF>,
         lens: &mut impl Iterator<Item = usize>,
         degree_bits: usize,
     ) -> Self {
@@ -300,8 +304,8 @@ where
 {
     type Input = Commitments<Comm::Input>;
 
-    fn new(
-        circuit: &mut CircuitBuilder<F>,
+    fn new<C: CircuitConfig<BF, EF>, const BF: usize, const EF: usize>(
+        circuit: &mut CircuitBuilder<F, C, BF, EF>,
         lens: &mut impl Iterator<Item = usize>,
         degree_bits: usize,
     ) -> Self {
@@ -363,8 +367,8 @@ where
 impl<SC: StarkGenericConfig> Recursive<SC::Challenge> for OpenedValuesTargets<SC> {
     type Input = OpenedValues<SC::Challenge>;
 
-    fn new(
-        circuit: &mut CircuitBuilder<SC::Challenge>,
+    fn new<C: CircuitConfig<BF, EF>, const BF: usize, const EF: usize>(
+        circuit: &mut CircuitBuilder<SC::Challenge, C, BF, EF>,
         lens: &mut impl Iterator<Item = usize>,
         _degree_bits: usize,
     ) -> Self {

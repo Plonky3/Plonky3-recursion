@@ -7,7 +7,7 @@ use p3_symmetric::PseudoCompressionFunction;
 
 use crate::NonPrimitiveOp;
 use crate::circuit::Circuit;
-use crate::config::CircuitRunnerConfig;
+use crate::config::CircuitConfig;
 use crate::op::{NonPrimitiveOpPrivateData, Prim};
 use crate::types::{NonPrimitiveOpId, WitnessId};
 
@@ -200,7 +200,7 @@ pub struct MerklePathTrace<F> {
     /// Left operand values (current hash)
     pub left_values: Vec<Vec<F>>,
     /// Left operand indices
-    pub left_index: Vec<u32>,
+    pub left_index: Vec<Vec<u32>>,
     /// Right operand values (sibling hash)
     pub right_values: Vec<Vec<F>>,
     /// Right operand indices (not on witness bus - private)
@@ -280,24 +280,26 @@ impl<F: Clone + Default> MerklePrivateData<F> {
     pub fn to_trace<
         BF: PrimeCharacteristicRing + Copy,
         C,
-        const DIGEST_ELEMS: usize,
         const BF_DIGEST_ELEMS: usize,
+        const EF_DIGEST_ELEMS: usize,
     >(
         &self,
         compress: &C,
-        leaf_index: u32,
-        leaf_value: [F; DIGEST_ELEMS],
+        leaf_indices: Vec<WitnessId>,
+        leaf_value: Vec<F>,
         index_value: u32,
     ) -> Result<MerklePathTrace<F>, CircuitError>
     where
         F: BasedVectorSpace<BF>,
         C: PseudoCompressionFunction<[BF; BF_DIGEST_ELEMS], 2> + Sync,
     {
-        debug_assert_eq!(DIGEST_ELEMS * F::DIMENSION, BF_DIGEST_ELEMS);
+        debug_assert_eq!(EF_DIGEST_ELEMS * F::DIMENSION, BF_DIGEST_ELEMS);
 
         let mut trace = MerklePathTrace::default();
         let mut state: [BF; BF_DIGEST_ELEMS] =
-            Self::into_bf_slice::<_, DIGEST_ELEMS, _>(&leaf_value)?;
+            Self::into_bf_slice::<_, EF_DIGEST_ELEMS, _>(&leaf_value)?;
+
+        let leaf_indices: Vec<u32> = leaf_indices.iter().map(|wid| wid.0).collect();
 
         let path_directions = (0..32).map(|i| (index_value >> i) & 1 == 1);
         // For each step in the Merkle path
@@ -305,17 +307,17 @@ impl<F: Clone + Default> MerklePrivateData<F> {
             self.path_siblings.iter().zip(path_directions)
         {
             let sibling_value: [BF; BF_DIGEST_ELEMS] =
-                Self::into_bf_slice::<_, DIGEST_ELEMS, _>(sibling_value)?;
+                Self::into_bf_slice::<_, EF_DIGEST_ELEMS, _>(sibling_value)?;
             // Current hash becomes left operand
             trace
                 .left_values
-                .push(Self::into_f_slice::<_, DIGEST_ELEMS, BF_DIGEST_ELEMS>(&state)?.to_vec());
+                .push(Self::into_f_slice::<_, EF_DIGEST_ELEMS, BF_DIGEST_ELEMS>(&state)?.to_vec());
             // TODO: What is the address of this value?
-            trace.left_index.push(leaf_index); // Points to witness bus
+            trace.left_index.push(leaf_indices.clone()); // Points to witness bus
 
             // Sibling becomes right operand (private data - not on witness bus)
             trace.right_values.push(
-                Self::into_f_slice::<_, DIGEST_ELEMS, BF_DIGEST_ELEMS>(&sibling_value)?.to_vec(),
+                Self::into_f_slice::<_, EF_DIGEST_ELEMS, BF_DIGEST_ELEMS>(&sibling_value)?.to_vec(),
             );
             trace.right_index.push(0); // Not on witness bus - private data
 
@@ -335,15 +337,17 @@ impl<F: Clone + Default> MerklePrivateData<F> {
             // If there's an extra sibling we push another row to the trace
             if let Some(extra_sibling_value) = extra_sibling_value {
                 let extra_sibling_value: [BF; BF_DIGEST_ELEMS] =
-                    Self::into_bf_slice::<_, DIGEST_ELEMS, _>(extra_sibling_value)?;
-                trace
-                    .left_values
-                    .push(Self::into_f_slice::<_, DIGEST_ELEMS, BF_DIGEST_ELEMS>(&state)?.to_vec());
-                trace.left_index.push(leaf_index);
+                    Self::into_bf_slice::<_, EF_DIGEST_ELEMS, _>(extra_sibling_value)?;
+                trace.left_values.push(
+                    Self::into_f_slice::<_, EF_DIGEST_ELEMS, BF_DIGEST_ELEMS>(&state)?.to_vec(),
+                );
+                trace.left_index.push(leaf_indices.clone());
 
                 trace.right_values.push(
-                    Self::into_f_slice::<_, DIGEST_ELEMS, BF_DIGEST_ELEMS>(&extra_sibling_value)?
-                        .to_vec(),
+                    Self::into_f_slice::<_, EF_DIGEST_ELEMS, BF_DIGEST_ELEMS>(
+                        &extra_sibling_value,
+                    )?
+                    .to_vec(),
                 );
                 trace.right_index.push(0); // TODO: This should have an address on the witness table
 
@@ -367,13 +371,11 @@ impl<F: Clone + Default> MerklePrivateData<F> {
 ///
 /// Created from a `Circuit` via `.runner()`, this provides the execution
 /// layer between the immutable constraint specification and trace generation.
-pub struct CircuitRunner<F, RC: CircuitRunnerConfig<DIGEST_ELEMS>, const DIGEST_ELEMS: usize> {
-    circuit: Circuit<F>,
+pub struct CircuitRunner<F, C: CircuitConfig<BF, EF>, const BF: usize, const EF: usize> {
+    circuit: Circuit<F, C, BF, EF>,
     witness: Vec<Option<F>>,
     /// Private data for complex operations (not on witness bus)
     non_primitive_op_private_data: Vec<Option<NonPrimitiveOpPrivateData<F>>>,
-    /// The circuit runner configuration data
-    config: RC,
 }
 
 impl<
@@ -387,20 +389,20 @@ impl<
         + PrimeCharacteristicRing
         + Packable
         + Field
-        + BasedVectorSpace<RC::Field>,
-    RC: CircuitRunnerConfig<DIGEST_ELEMS>,
-    const DIGEST_ELEMS: usize,
-> CircuitRunner<F, RC, DIGEST_ELEMS>
+        + BasedVectorSpace<C::Field>,
+    C: CircuitConfig<BF, EF>,
+    const BF: usize,
+    const EF: usize,
+> CircuitRunner<F, C, BF, EF>
 {
     /// Create a new prover instance
-    pub fn new(circuit: Circuit<F>, config: RC) -> Self {
+    pub fn new(circuit: Circuit<F, C, BF, EF>) -> Self {
         let witness = vec![None; circuit.witness_count as usize];
         let non_primitive_op_private_data = vec![None; circuit.non_primitive_ops.len()];
         Self {
             circuit,
             witness,
             non_primitive_op_private_data,
-            config,
         }
     }
 
@@ -667,33 +669,31 @@ impl<
                 leaf,
                 index,
                 root: _,
-            } = self.circuit.non_primitive_ops[op_idx];
+            } = &self.circuit.non_primitive_ops[op_idx];
 
             // Clone private data option to avoid holding a borrow on self
-            let first = leaf.0 as usize;
-            let last = first + DIGEST_ELEMS;
-            let leaf: [F; DIGEST_ELEMS] = if let Some(val) = self
-                .witness
-                .get(first..last)
-                .and_then(|xs| xs.iter().copied().collect::<Option<Vec<F>>>())
-            {
-                let val_len = val.len();
-                val.try_into()
-                    .map_err(|_| CircuitError::MerkleVerifyDigestLengthMismatch {
-                        expected: DIGEST_ELEMS,
-                        got: val_len,
-                    })?
-            } else {
-                return Err(CircuitError::NonPrimitiveOpWitnessNotSet {
-                    operation_index: op_idx,
-                });
-            };
+            let leaf_value = leaf
+                .iter()
+                .map(|limb| {
+                    if let Some(val) = self.witness.get(limb.0 as usize).and_then(|x| x.as_ref()) {
+                        Ok(*val)
+                    } else {
+                        Err(CircuitError::NonPrimitiveOpWitnessNotSet {
+                            operation_index: op_idx,
+                        })
+                    }
+                })
+                .collect::<Result<Vec<F>, CircuitError>>()?;
 
             if let Some(Some(NonPrimitiveOpPrivateData::MerkleVerify(private_data))) =
                 self.non_primitive_op_private_data.get(op_idx).cloned()
             {
-                let trace =
-                    private_data.to_trace(self.config.compress(), first as u32, leaf, index.0)?;
+                let trace = private_data.to_trace::<_, _, BF, EF>(
+                    self.circuit.config.compress(),
+                    leaf.clone(),
+                    leaf_value,
+                    index.0,
+                )?;
                 merkle_paths.push(trace);
             } else {
                 return Err(CircuitError::NonPrimitiveOpMissingPrivateData {
@@ -717,17 +717,17 @@ impl<
         + PrimeCharacteristicRing
         + Packable
         + Field,
-> Circuit<F>
+    C: CircuitConfig<BF, EF>,
+    const BF: usize,
+    const EF: usize,
+> Circuit<F, C, BF, EF>
 {
     /// Create a circuit runner for execution and trace generation
-    pub fn runner<RC: CircuitRunnerConfig<DIGEST_ELEMS>, const DIGEST_ELEMS: usize>(
-        self,
-        config: RC,
-    ) -> CircuitRunner<F, RC, DIGEST_ELEMS>
+    pub fn runner(self) -> CircuitRunner<F, C, BF, EF>
     where
-        F: BasedVectorSpace<RC::Field>,
+        F: BasedVectorSpace<C::Field>,
     {
-        CircuitRunner::new(self, config)
+        CircuitRunner::new(self)
     }
 }
 
@@ -741,12 +741,13 @@ mod tests {
     use p3_field::extension::BinomialExtensionField;
     use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
 
-    use crate::builder::CircuitBuilder;
-    use crate::config::babybear_config::default_babybear_poseidon2_circuit_runner_config;
+    use crate::config::babybear_config::{
+        BabyBearCircuitBuilder, BabyBearQuarticExtensionCircuitBuilder,
+    };
 
     #[test]
     fn test_table_generation_basic() {
-        let mut builder = CircuitBuilder::<BabyBear>::new();
+        let mut builder = BabyBearCircuitBuilder::new();
 
         // Simple test: x + 5 = result
         let x = builder.add_public_input();
@@ -754,8 +755,7 @@ mod tests {
         let _result = builder.add(x, c5);
 
         let circuit = builder.build().unwrap();
-        let config = default_babybear_poseidon2_circuit_runner_config();
-        let mut runner = circuit.runner(config);
+        let mut runner = circuit.runner();
 
         // Set public input: x = 3
         runner.set_public_inputs(&[BabyBear::from_u64(3)]).unwrap();
@@ -780,7 +780,7 @@ mod tests {
 
     #[test]
     fn test_toy_example_37_times_x_minus_111() {
-        let mut builder = CircuitBuilder::<BabyBear>::new();
+        let mut builder = BabyBearCircuitBuilder::new();
 
         let x = builder.add_public_input();
         let c37 = builder.add_const(BabyBear::from_u64(37));
@@ -802,8 +802,7 @@ mod tests {
         }
 
         let witness_count = circuit.witness_count;
-        let config = default_babybear_poseidon2_circuit_runner_config();
-        let mut runner = circuit.runner(config);
+        let mut runner = circuit.runner();
 
         // Set public input: x = 3 (should satisfy 37 * 3 - 111 = 0)
         runner.set_public_inputs(&[BabyBear::from_u64(3)]).unwrap();
@@ -895,7 +894,7 @@ mod tests {
     fn test_extension_field_support() {
         type ExtField = BinomialExtensionField<BabyBear, 4>;
 
-        let mut builder = CircuitBuilder::<ExtField>::new();
+        let mut builder = BabyBearQuarticExtensionCircuitBuilder::new();
 
         // Test extension field operations: x + y * z
         let x = builder.add_public_input();
@@ -906,8 +905,7 @@ mod tests {
         let _result = builder.add(x, yz);
 
         let circuit = builder.build().unwrap();
-        let config = default_babybear_poseidon2_circuit_runner_config();
-        let mut runner = circuit.runner(config);
+        let mut runner = circuit.runner();
 
         // Set public inputs to genuine extension field values with ALL non-zero coefficients
         let x_val = ExtField::from_basis_coefficients_slice(&[

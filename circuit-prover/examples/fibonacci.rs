@@ -3,8 +3,7 @@ use std::env;
 /// Fibonacci circuit: Compute F(n) and prove correctness
 /// Public input: expected_result (F(n))
 use p3_baby_bear::BabyBear;
-use p3_circuit::builder::CircuitBuilder;
-use p3_circuit::config::babybear_config::default_babybear_poseidon2_circuit_runner_config;
+use p3_circuit::config::babybear_config::BabyBearQuarticExtensionCircuitBuilder;
 use p3_circuit_prover::config::babybear_config::build_standard_config_babybear;
 use p3_circuit_prover::prover::ProverError;
 use p3_circuit_prover::{MultiTableProver, TablePacking};
@@ -19,7 +18,7 @@ fn main() -> Result<(), ProverError> {
         .and_then(|s| s.parse().ok())
         .unwrap_or(100);
 
-    let mut builder = CircuitBuilder::<F>::new();
+    let mut builder = BabyBearQuarticExtensionCircuitBuilder::new();
 
     // Public input: expected F(n)
     let expected_result = builder.add_public_input();
@@ -38,8 +37,7 @@ fn main() -> Result<(), ProverError> {
     builder.connect(b, expected_result);
 
     let circuit = builder.build()?;
-    let config = default_babybear_poseidon2_circuit_runner_config();
-    let mut runner = circuit.runner(config);
+    let mut runner = circuit.runner();
 
     // Set public input
     let expected_fib = compute_fibonacci_classical(n);

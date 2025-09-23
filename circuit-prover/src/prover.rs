@@ -283,15 +283,33 @@ where
         };
         let mul_proof = prove(&self.config, &mul_air, mul_matrix, pis);
 
-        let merkle_matrix = match D {
-            1..=8 => Ok(MerkleVerifyAir::<F, 8, 32>::trace_to_matrix(
-                &traces.merkle_trace,
-            )),
+        let merkle_proof = match D {
+            1 => {
+                let merkle_matrix =
+                    MerkleVerifyAir::<F, 8, 8, 32>::trace_to_matrix(&traces.merkle_trace);
+                let merkle_air = MerkleVerifyAir::<F, 8, 8, 32>::default();
+                Ok(prove(&self.config, &merkle_air, merkle_matrix, pis))
+            }
+            2 => {
+                let merkle_matrix =
+                    MerkleVerifyAir::<F, 8, 4, 32>::trace_to_matrix(&traces.merkle_trace);
+                let merkle_air = MerkleVerifyAir::<F, 8, 4, 32>::default();
+                Ok(prove(&self.config, &merkle_air, merkle_matrix, pis))
+            }
+            4 => {
+                let merkle_matrix =
+                    MerkleVerifyAir::<F, 8, 2, 32>::trace_to_matrix(&traces.merkle_trace);
+                let merkle_air = MerkleVerifyAir::<F, 8, 2, 32>::default();
+                Ok(prove(&self.config, &merkle_air, merkle_matrix, pis))
+            }
+            8 => {
+                let merkle_matrix =
+                    MerkleVerifyAir::<F, 8, 1, 32>::trace_to_matrix(&traces.merkle_trace);
+                let merkle_air = MerkleVerifyAir::<F, 8, 1, 32>::default();
+                Ok(prove(&self.config, &merkle_air, merkle_matrix, pis))
+            }
             _ => Err(ProverError::UnsupportedDegree(D)),
         }?;
-
-        let merkle_air = MerkleVerifyAir::<F, 8, 32>::default();
-        let merkle_proof = prove(&self.config, &merkle_air, merkle_matrix, pis);
 
         Ok(MultiTableProof {
             witness: TableProof {
@@ -370,12 +388,41 @@ where
             .map_err(|_| ProverError::VerificationFailed { phase: "mul" })?;
 
         // MerkleVerify
-        let merkle_air = MerkleVerifyAir::<F, 8, 32>::default();
-        verify(&self.config, &merkle_air, &proof.merkle.proof, pis).map_err(|_| {
-            ProverError::VerificationFailed {
-                phase: "merkle_verify",
+        match D {
+            1 => {
+                let merkle_air = MerkleVerifyAir::<F, 8, 8, 32>::default();
+                verify(&self.config, &merkle_air, &proof.merkle.proof, pis).map_err(|_| {
+                    ProverError::VerificationFailed {
+                        phase: "merkle_verify",
+                    }
+                })
             }
-        })?;
+            2 => {
+                let merkle_air = MerkleVerifyAir::<F, 8, 4, 32>::default();
+                verify(&self.config, &merkle_air, &proof.merkle.proof, pis).map_err(|_| {
+                    ProverError::VerificationFailed {
+                        phase: "merkle_verify",
+                    }
+                })
+            }
+            4 => {
+                let merkle_air = MerkleVerifyAir::<F, 8, 2, 32>::default();
+                verify(&self.config, &merkle_air, &proof.merkle.proof, pis).map_err(|_| {
+                    ProverError::VerificationFailed {
+                        phase: "merkle_verify",
+                    }
+                })
+            }
+            8 => {
+                let merkle_air = MerkleVerifyAir::<F, 8, 1, 32>::default();
+                verify(&self.config, &merkle_air, &proof.merkle.proof, pis).map_err(|_| {
+                    ProverError::VerificationFailed {
+                        phase: "merkle_verify",
+                    }
+                })
+            }
+            _ => Err(ProverError::UnsupportedDegree(D)),
+        }?;
 
         Ok(())
     }
@@ -384,10 +431,13 @@ where
 #[cfg(test)]
 mod tests {
     use p3_baby_bear::BabyBear;
-    use p3_circuit::builder::CircuitBuilder;
-    use p3_circuit::config::babybear_config::default_babybear_poseidon2_circuit_runner_config;
-    use p3_circuit::config::goldilocks_config::default_goldilocks_poseidon2_circuit_runner_config;
-    use p3_circuit::config::koalabear_config::default_koalabear_poseidon2_circuit_runner_config;
+    use p3_circuit::config::babybear_config::{
+        BabyBearCircuitBuilder, BabyBearQuarticExtensionCircuitBuilder,
+    };
+    use p3_circuit::config::goldilocks_config::GoldilocksQuadraticExtensionCircuitBuilder;
+    use p3_circuit::config::koalabear_config::{
+        KoalaBearCircuitBuilder, KoalaBearOcticExtensionCircuitBuilder,
+    };
     use p3_field::extension::BinomialExtensionField;
     use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
     use p3_goldilocks::Goldilocks;
@@ -400,7 +450,7 @@ mod tests {
 
     #[test]
     fn test_babybear_prover_base_field() -> Result<(), ProverError> {
-        let mut builder = CircuitBuilder::<BabyBear>::new();
+        let mut builder = BabyBearCircuitBuilder::new();
 
         // Create circuit: x + 5 * 2 - 3 + (-1) = expected_result, then assert result == expected
         let x = builder.add_public_input();
@@ -420,8 +470,7 @@ mod tests {
         builder.assert_zero(diff);
 
         let circuit = builder.build()?;
-        let config = default_babybear_poseidon2_circuit_runner_config();
-        let mut runner = circuit.runner(config);
+        let mut runner = circuit.runner();
 
         // Set public inputs: x = 7, expected = 7 + 10 - 3 + (-1) = 13
         let x_val = BabyBear::from_u64(7);
@@ -443,7 +492,7 @@ mod tests {
     #[test]
     fn test_babybear_prover_extension_field_d4() -> Result<(), ProverError> {
         type ExtField = BinomialExtensionField<BabyBear, 4>;
-        let mut builder = CircuitBuilder::<ExtField>::new();
+        let mut builder = BabyBearQuarticExtensionCircuitBuilder::new();
 
         // Create circuit: x * y + z - w = expected_result, then assert result == expected
         let x = builder.add_public_input();
@@ -469,8 +518,7 @@ mod tests {
         builder.assert_zero(diff);
 
         let circuit = builder.build()?;
-        let config = default_babybear_poseidon2_circuit_runner_config();
-        let mut runner = circuit.runner(config);
+        let mut runner = circuit.runner();
 
         // Set public inputs with all non-zero coefficients
         let x_val = ExtField::from_basis_coefficients_slice(&[
@@ -527,7 +575,7 @@ mod tests {
 
     #[test]
     fn test_koalabear_prover_base_field() -> Result<(), ProverError> {
-        let mut builder = CircuitBuilder::<KoalaBear>::new();
+        let mut builder = KoalaBearCircuitBuilder::new();
 
         // Create circuit: a * b + c - d = expected_result, then assert result == expected
         let a = builder.add_public_input();
@@ -545,8 +593,7 @@ mod tests {
         builder.assert_zero(diff);
 
         let circuit = builder.build()?;
-        let config = default_koalabear_poseidon2_circuit_runner_config();
-        let mut runner = circuit.runner(config);
+        let mut runner = circuit.runner();
 
         // Set public inputs: a=42, b=13, expected = 42*13 + 100 - (-1) = 546 + 100 + 1 = 647
         let a_val = KoalaBear::from_u64(42);
@@ -567,7 +614,7 @@ mod tests {
     #[test]
     fn test_koalabear_prover_extension_field_d8() -> Result<(), ProverError> {
         type KBExtField = BinomialExtensionField<KoalaBear, 8>;
-        let mut builder = CircuitBuilder::<KBExtField>::new();
+        let mut builder = KoalaBearOcticExtensionCircuitBuilder::new();
 
         // Create circuit: x * y * z = expected_result, then assert result == expected
         let x = builder.add_public_input();
@@ -595,8 +642,7 @@ mod tests {
         builder.assert_zero(diff);
 
         let circuit = builder.build()?;
-        let config = default_koalabear_poseidon2_circuit_runner_config();
-        let mut runner = circuit.runner(config);
+        let mut runner = circuit.runner();
 
         // Set public inputs with diverse coefficients
         let x_val = KBExtField::from_basis_coefficients_slice(&[
@@ -657,7 +703,7 @@ mod tests {
     #[test]
     fn test_goldilocks_prover_extension_field_d2() -> Result<(), ProverError> {
         type ExtField = BinomialExtensionField<Goldilocks, 2>;
-        let mut builder = CircuitBuilder::<ExtField>::new();
+        let mut builder = GoldilocksQuadraticExtensionCircuitBuilder::new();
 
         // Simple circuit over D=2: x * y + z = expected
         let x = builder.add_public_input();
@@ -672,8 +718,7 @@ mod tests {
         builder.assert_zero(diff);
 
         let circuit = builder.build()?;
-        let config = default_goldilocks_poseidon2_circuit_runner_config();
-        let mut runner = circuit.runner(config);
+        let mut runner = circuit.runner();
 
         let x_val = ExtField::from_basis_coefficients_slice(&[
             Goldilocks::from_u64(3),

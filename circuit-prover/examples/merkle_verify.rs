@@ -5,9 +5,11 @@ use std::env;
 /// Private inputs: merkle path (siblings + directions)
 use p3_baby_bear::BabyBear;
 use p3_circuit::NonPrimitiveOpPrivateData;
-use p3_circuit::builder::CircuitBuilder;
-use p3_circuit::config::CircuitRunnerConfig;
-use p3_circuit::config::babybear_config::default_babybear_poseidon2_circuit_runner_config;
+use p3_circuit::config::CircuitConfig;
+use p3_circuit::config::babybear_config::{
+    BabyBearQuarticExtensionCircuitBuilder, DefaultBabyBearQuarticExtensionConfig,
+    default_babybear_poseidon2_circuit_runner_config,
+};
 use p3_circuit::tables::MerklePrivateData;
 use p3_circuit_prover::MultiTableProver;
 use p3_circuit_prover::config::babybear_config::build_standard_config_babybear;
@@ -21,12 +23,12 @@ type F = BinomialExtensionField<BabyBear, 4>;
 fn main() -> Result<(), ProverError> {
     let depth = env::args().nth(1).and_then(|s| s.parse().ok()).unwrap_or(3);
 
-    let mut builder = CircuitBuilder::<F>::new();
+    let mut builder = BabyBearQuarticExtensionCircuitBuilder::new();
 
     // Public inputs: leaf hash and expected root hash
-    let leaf_hash = builder.add_public_input();
+    let leaf_hash = vec![builder.add_public_input(), builder.add_public_input()];
     let index_expr = builder.add_public_input();
-    let expected_root = builder.add_public_input();
+    let expected_root = vec![builder.add_public_input(), builder.add_public_input()];
 
     // Add fake Merkle verification operation
     // This declares that leaf_hash and expected_root are connected to witness bus
@@ -34,20 +36,18 @@ fn main() -> Result<(), ProverError> {
     let merkle_op_id = builder.add_merkle_verify(leaf_hash, index_expr, expected_root);
 
     let circuit = builder.build()?;
-    let config = default_babybear_poseidon2_circuit_runner_config();
-    let compress = config.compress().clone();
-    let mut runner = circuit.runner(config);
+    let mut runner = circuit.runner();
 
     // Set public inputs
-    let leaf_value = F::from_u64(42); // Our leaf value
+    let leaf_value = [F::ZERO, F::from_u64(42)]; // Our leaf value
     let siblings: Vec<(Vec<F>, Option<Vec<F>>)> = (0..depth)
         .map(|i| {
             (
-                vec![F::from_u64((i + 1) * 10)],
+                vec![F::ZERO, F::from_u64((i + 1) * 10)],
                 if i % 2 == 0 {
                     None
                 } else {
-                    Some(vec![F::from_u64(i + 1)])
+                    Some(vec![F::ZERO, F::from_u64(i + 1)])
                 },
             )
         })
@@ -60,8 +60,18 @@ fn main() -> Result<(), ProverError> {
             .map(|(i, _)| 1 << i)
             .sum(),
     );
-    let expected_root_value = compute_merkle_root(&compress, &leaf_value, &siblings, &directions);
-    runner.set_public_inputs(&[leaf_value, index_value, expected_root_value])?;
+    let config: DefaultBabyBearQuarticExtensionConfig =
+        default_babybear_poseidon2_circuit_runner_config();
+    let expected_root_value =
+        compute_merkle_root(config.compress(), &leaf_value, &siblings, &directions);
+
+    runner.set_public_inputs(&[
+        leaf_value[0],
+        leaf_value[1],
+        index_value,
+        expected_root_value[0],
+        expected_root_value[1],
+    ])?;
 
     // Set private Merkle path data
     runner.set_non_primitive_op_private_data(
@@ -78,7 +88,7 @@ fn main() -> Result<(), ProverError> {
     multi_prover.verify_all_tables(&proof)?;
 
     println!(
-        "✅ Verified Merkle path for leaf {leaf_value} with depth {depth} → root {expected_root_value}",
+        "✅ Verified Merkle path for leaf {leaf_value:?}, index {index_value} with depth {depth} → root {expected_root_value:?}",
     );
 
     Ok(())
@@ -89,44 +99,59 @@ pub type Hash = [BabyBear; 8];
 /// Simulate classical Merkle root computation for testing
 fn compute_merkle_root<C>(
     compress: &C,
-    leaf: &F,
+    leaf: &[F; 2],
     siblings: &[(Vec<F>, Option<Vec<F>>)],
     directions: &[bool],
-) -> F
+) -> Vec<F>
 where
     C: PseudoCompressionFunction<Hash, 2> + Sync,
 {
     directions.iter().zip(siblings.iter()).fold(
-        *leaf,
+        leaf.to_vec(),
         |state, (direction, (sibling, other_sibling))| {
             let (left, right) = if *direction {
-                (state, sibling[0])
+                (state.clone(), sibling.clone())
             } else {
-                (sibling[0], state)
+                (sibling.clone(), state.clone())
             };
             let mut new_state: Hash = compress.compress([
-                left.as_basis_coefficients_slice()
+                left.iter()
+                    .flat_map(|xs| xs.as_basis_coefficients_slice())
+                    .copied()
+                    .collect::<Vec<BabyBear>>()
                     .try_into()
-                    .expect("Size is 4"),
+                    .expect("Size is 8"),
                 right
-                    .as_basis_coefficients_slice()
+                    .iter()
+                    .flat_map(|xs| xs.as_basis_coefficients_slice())
+                    .copied()
+                    .collect::<Vec<BabyBear>>()
                     .try_into()
-                    .expect("Size is 4"),
+                    .expect("Size is 8"),
             ]);
             if let Some(other_sibling) = other_sibling {
                 new_state = compress.compress([
                     state
-                        .as_basis_coefficients_slice()
-                        .try_into()
-                        .expect("Size is 4"),
-                    other_sibling[0]
                         .clone()
-                        .as_basis_coefficients_slice()
+                        .iter()
+                        .flat_map(|xs| xs.as_basis_coefficients_slice())
+                        .copied()
+                        .collect::<Vec<BabyBear>>()
                         .try_into()
-                        .expect("Size is o4"),
+                        .expect("Size is 8"),
+                    other_sibling
+                        .iter()
+                        .flat_map(|xs| xs.as_basis_coefficients_slice())
+                        .copied()
+                        .collect::<Vec<BabyBear>>()
+                        .try_into()
+                        .expect("Size is 8"),
                 ]);
             }
-            F::from_basis_coefficients_slice(&new_state).expect("Size is 4")
+            vec![
+                F::from_basis_coefficients_slice(&new_state[..4]).expect("Size is 4"),
+                F::from_basis_coefficients_slice(&new_state[4..]).expect("Size is 4"),
+            ]
         },
     )
 }

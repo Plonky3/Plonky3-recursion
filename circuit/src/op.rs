@@ -1,3 +1,5 @@
+use alloc::vec::Vec;
+
 use crate::tables::MerklePrivateData;
 use crate::types::WitnessId;
 
@@ -78,11 +80,13 @@ pub enum NonPrimitiveOp {
     /// - Merkle path siblings and direction bits
     /// - See `MerklePrivateData` for complete specification
     MerkleVerify {
-        leaf: WitnessId,
+        leaf: MerkleWitnessId,
         index: WitnessId,
-        root: WitnessId,
+        root: MerkleWitnessId,
     },
 }
+
+pub type MerkleWitnessId = Vec<WitnessId>;
 
 /// Private auxiliary data for non-primitive operations
 ///
