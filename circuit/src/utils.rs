@@ -35,11 +35,11 @@ pub struct ColumnsTargets<'a> {
 /// Given symbolic constraints, adds the corresponding recursive circuit to `circuit`.
 /// The `public_values`, `local_prep_values`, `next_prep_values`, `local_values`, and `next_values`
 /// are assumed to be in the same order as those used to create the symbolic expressions.
-pub fn symbolic_to_circuit<F: Field, C: CircuitConfig<BF, EF>, const BF: usize, const EF: usize>(
+pub fn symbolic_to_circuit<F: Field, C: CircuitConfig>(
     row_selectors: RowSelectorsTargets,
     columns: &ColumnsTargets<'_>,
     symbolic: &SymbolicExpression<F>,
-    circuit: &mut CircuitBuilder<F, C, BF, EF>,
+    circuit: &mut CircuitBuilder<F, C>,
 ) -> ExprId {
     let RowSelectorsTargets {
         is_first_row,

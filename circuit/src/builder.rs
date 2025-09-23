@@ -62,12 +62,7 @@ fn build_connect_dsu(connects: &[(ExprId, ExprId)]) -> HashMap<usize, usize> {
 /// - Complex operations (like Merkle tree verification)
 ///
 /// Call `.build()` to compile into an immutable `Circuit<F>` specification.
-pub struct CircuitBuilder<
-    F,
-    C: CircuitConfig<BF_DIGEST_ELEMS, EF_DIGEST_ELEMS>,
-    const BF_DIGEST_ELEMS: usize,
-    const EF_DIGEST_ELEMS: usize,
-> {
+pub struct CircuitBuilder<F, C: CircuitConfig> {
     /// Expression graph for building the DAG
     expressions: ExpressionGraph<F>,
     /// Witness index allocator
@@ -115,8 +110,7 @@ impl core::fmt::Display for CircuitBuilderError {
     }
 }
 
-impl<F, C: CircuitConfig<BF, EF>, const BF: usize, const EF: usize> Default
-    for CircuitBuilder<F, C, BF, EF>
+impl<F, C: CircuitConfig> Default for CircuitBuilder<F, C>
 where
     F: Clone + PrimeCharacteristicRing + Eq + core::hash::Hash,
 {
@@ -125,7 +119,7 @@ where
     }
 }
 
-impl<F, C: CircuitConfig<BF, EF>, const BF: usize, const EF: usize> CircuitBuilder<F, C, BF, EF>
+impl<F, C: CircuitConfig> CircuitBuilder<F, C>
 where
     F: Clone + PrimeCharacteristicRing + Eq + core::hash::Hash,
 {
@@ -251,20 +245,13 @@ where
     }
 }
 
-impl<
-    F,
-    C: CircuitConfig<BF_DIGEST_ELEMS, EF_DIGEST_ELEMS>,
-    const BF_DIGEST_ELEMS: usize,
-    const EF_DIGEST_ELEMS: usize,
-> CircuitBuilder<F, C, BF_DIGEST_ELEMS, EF_DIGEST_ELEMS>
+impl<F, C: CircuitConfig> CircuitBuilder<F, C>
 where
     F: Clone + PrimeCharacteristicRing + PartialEq + Eq + core::hash::Hash,
 {
     /// Build the circuit into a Circuit with separate lowering and IR transformation stages.
     /// Returns an error if lowering fails due to an internal inconsistency.
-    pub fn build(
-        self,
-    ) -> Result<Circuit<F, C, BF_DIGEST_ELEMS, EF_DIGEST_ELEMS>, CircuitBuilderError> {
+    pub fn build(self) -> Result<Circuit<F, C>, CircuitBuilderError> {
         let (circuit, _) = self.build_with_public_mapping()?;
         Ok(circuit)
     }
@@ -273,13 +260,7 @@ where
     #[allow(clippy::type_complexity)]
     pub fn build_with_public_mapping(
         mut self,
-    ) -> Result<
-        (
-            Circuit<F, C, BF_DIGEST_ELEMS, EF_DIGEST_ELEMS>,
-            HashMap<ExprId, WitnessId>,
-        ),
-        CircuitBuilderError,
-    > {
+    ) -> Result<(Circuit<F, C>, HashMap<ExprId, WitnessId>), CircuitBuilderError> {
         // Stage 1: Lower expressions to primitives
         let (primitive_ops, public_rows, expr_to_widx, public_mappings) =
             self.lower_to_primitives()?;
@@ -507,7 +488,7 @@ where
                             witness_exprs.len()
                         );
                     }
-                    let leaf_widx: Vec<WitnessId> = (0..EF_DIGEST_ELEMS)
+                    let leaf_widx: Vec<WitnessId> = (0..C::EF_DIGEST_ELEMS)
                         .map(|i| {
                             Self::get_witness_id(
                                 expr_to_widx,
@@ -518,10 +499,10 @@ where
                         .collect::<Result<_, _>>()?;
                     let index_widx = Self::get_witness_id(
                         expr_to_widx,
-                        witness_exprs[EF_DIGEST_ELEMS],
+                        witness_exprs[C::EF_DIGEST_ELEMS],
                         "MerkleVerify index input",
                     )?;
-                    let root_widx = (EF_DIGEST_ELEMS + 1..C::MERKLE_GATE_INPUT_SIZE)
+                    let root_widx = (C::EF_DIGEST_ELEMS + 1..C::MERKLE_GATE_INPUT_SIZE)
                         .map(|i| {
                             Self::get_witness_id(
                                 expr_to_widx,

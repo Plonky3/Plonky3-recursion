@@ -14,7 +14,7 @@ use crate::types::WitnessId;
 /// The circuit is static and serializable. Use `.runner()` to create
 /// a `CircuitRunner` for execution with specific input values.
 #[derive(Debug, Clone)]
-pub struct Circuit<F, C: CircuitConfig<BF, EF>, const BF: usize, const EF: usize> {
+pub struct Circuit<F, C: CircuitConfig> {
     /// Number of witness table rows
     pub witness_count: u32,
     /// Primitive operations in topological order
@@ -29,7 +29,7 @@ pub struct Circuit<F, C: CircuitConfig<BF, EF>, const BF: usize, const EF: usize
     pub config: C,
 }
 
-impl<F, C: CircuitConfig<BF, EF>, const BF: usize, const EF: usize> Circuit<F, C, BF, EF> {
+impl<F, C: CircuitConfig> Circuit<F, C> {
     pub fn new(witness_count: u32, config: C) -> Self {
         Self {
             witness_count,
