@@ -10,7 +10,7 @@ use p3_field::{Field, PrimeCharacteristicRing, TwoAdicField};
 use p3_fri::{TwoAdicFriPcs, create_test_fri_params};
 use p3_matrix::dense::RowMajorMatrix;
 use p3_merkle_tree::MerkleTreeMmcs;
-use p3_recursion::circuit_fri_verifier::{constrain_bits_boolean, verify_query_from_index_bits};
+use p3_recursion::circuit_fri_verifier::verify_query_from_index_bits;
 use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
@@ -141,7 +141,7 @@ fn test_circuit_fri_verifier() {
         let query = &query_proofs[0];
         let index: usize = v_challenger.sample_bits(log_max_height);
 
-        // --- Compute reduced openings by height (real formula) ---
+        // --- Compute reduced openings by height ---
         use std::collections::{BTreeMap, HashMap};
         let mut ro_map: BTreeMap<usize, (Challenge, Challenge)> = BTreeMap::new();
 
@@ -247,9 +247,6 @@ fn test_circuit_fri_verifier() {
         .map(|_| Some(builder.add_public_input()))
         .collect();
     let final_value_wire = builder.add_public_input();
-
-    // Constrain the index bits to be boolean (good hygiene)
-    constrain_bits_boolean(&mut builder, &index_bits_targets);
 
     // Precompute per-phase power ladders as constants:
     // For phase i, k = log_folded_height = log_max_height - i - 1.

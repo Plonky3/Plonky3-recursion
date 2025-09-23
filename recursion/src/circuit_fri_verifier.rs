@@ -36,12 +36,10 @@ pub fn fold_row_chain<F: Field>(
     let mut folded = initial_folded_eval;
 
     let one = builder.add_const(F::ONE);
-    let neg_one = builder.add_const(F::NEG_ONE);
 
-    // Precompute constants: 2^{-1} and −1/2.
-    let two = builder.add_const(F::ONE + F::ONE);
-    let two_inv = builder.div(one, two); // 1/2
-    let neg_half = builder.mul(neg_one, two_inv); // −1/2
+    // Precompute constants as field constants: 2^{-1} and −1/2.
+    let two_inv_val = (F::ONE + F::ONE).inverse(); // 1/2
+    let neg_half = builder.add_const(F::NEG_ONE * two_inv_val); // −1/2
 
     for FoldPhaseInputsTarget {
         beta,
@@ -51,26 +49,20 @@ pub fn fold_row_chain<F: Field>(
         roll_in,
     } in phases.iter().cloned()
     {
-        // one_minus = 1 - sibling_is_right
-        let one_minus = builder.sub(one, sibling_is_right);
+        // e0 = select(bit, folded, e_sibling)
+        let e0 = builder.select(sibling_is_right, folded, e_sibling);
 
-        // e0 = (1 - bit)*e_sibling + bit*folded
-        let e0_l = builder.mul(one_minus, e_sibling);
-        let e0_r = builder.mul(sibling_is_right, folded);
-        let e0 = builder.add(e0_l, e0_r);
+        // inv = (x1 − x0)^{-1} = (−2x0)^{-1} = (−1/2) / x0
+        let inv = builder.div(neg_half, x0);
 
-        // e1 = (1 - bit)*folded + bit*e_sibling
-        let e1_l = builder.mul(one_minus, folded);
-        let e1_r = builder.mul(sibling_is_right, e_sibling);
-        let e1 = builder.add(e1_l, e1_r);
-
-        // inv = (x1 − x0)^{-1} = (−2x0)^{-1} = (−1/2) * x0^{-1}
-        let inv_x0 = builder.div(one, x0);
-        let inv = builder.mul(neg_half, inv_x0);
+        // e1 − e0 = (2b − 1) · (e_sibling − folded)
+        let d = builder.sub(e_sibling, folded);
+        let two_b = builder.add(sibling_is_right, sibling_is_right);
+        let two_b_minus_one = builder.sub(two_b, one);
+        let e1_minus_e0 = builder.mul(two_b_minus_one, d);
 
         // t = (β − x0) * (e1 − e0)
         let beta_minus_x0 = builder.sub(beta, x0);
-        let e1_minus_e0 = builder.sub(e1, e0);
         let t = builder.mul(beta_minus_x0, e1_minus_e0);
 
         // folded = e0 + t * inv
@@ -101,16 +93,6 @@ pub fn verify_query<F: Field>(
     builder.connect(folded_eval, final_value);
 }
 
-/// Constrain each element of `bits` to be boolean: b ∈ {0,1}.
-pub fn constrain_bits_boolean<F: Field>(builder: &mut CircuitBuilder<F>, bits: &[Target]) {
-    let one = builder.add_const(F::ONE);
-    for &b in bits {
-        let b_minus_one = builder.sub(b, one);
-        let prod = builder.mul(b, b_minus_one);
-        builder.assert_zero(prod);
-    }
-}
-
 /// Reconstruct an integer (as a field element) from little-endian bits:
 ///   index = Σ b_i · 2^i
 pub fn reconstruct_index_from_bits<F: Field>(
@@ -120,6 +102,7 @@ pub fn reconstruct_index_from_bits<F: Field>(
     let mut acc = builder.add_const(F::ZERO);
     let mut pow2 = builder.add_const(F::ONE);
     for &b in bits {
+        builder.assert_bool(b);
         let term = builder.mul(b, pow2);
         acc = builder.add(acc, term);
         pow2 = builder.add(pow2, pow2); // *= 2
