@@ -1,12 +1,14 @@
-use alloc::vec;
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
+use alloc::{format, vec};
 
-use itertools::{Itertools, zip_eq};
+use itertools::Itertools;
 use p3_circuit::utils::ColumnsTargets;
 use p3_circuit::{CircuitBuilder, CircuitBuilderError, CircuitError};
 use p3_commit::Pcs;
 use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
 use p3_uni_stark::StarkGenericConfig;
+use p3_util::zip_eq::zip_eq;
 use thiserror::Error;
 
 use crate::Target;
@@ -17,8 +19,8 @@ use crate::recursive_traits::{
 
 #[derive(Debug, Error)]
 pub enum VerificationError {
-    #[error("Invalid proof shape")]
-    InvalidProofShape,
+    #[error("Invalid proof shape: {0}")]
+    InvalidProofShape(String),
 
     #[error("Missing random opened values for existing random commitment")]
     RandomizationError,
@@ -31,6 +33,9 @@ pub enum VerificationError {
 
     #[error("Generation error: {0}")]
     Generation(#[from] GenerationError),
+
+    #[error("Invalid number of Pcs parameters: expected {0}, got {1}")]
+    InvalidPcsParameterCount(usize, usize),
 }
 
 // Method to get all the challenge targets.
@@ -86,6 +91,7 @@ pub fn verify_circuit<
     circuit: &mut CircuitBuilder<SC::Challenge>,
     proof_targets: &ProofTargets<SC, Comm, OpeningProof>,
     public_values: &[Target],
+    params: &[usize],
 ) -> Result<(), VerificationError>
 where
     A: RecursiveAir<SC::Challenge>,
@@ -137,23 +143,55 @@ where
     let challenge_targets =
         get_circuit_challenges::<SC, Comm, InputProof, OpeningProof>(proof_targets, circuit);
 
+    // Check that the random commitments are/are not present depending on the ZK setting.
+    // - If ZK is enabled, the prover should have random commitments.
+    // - If ZK is not enabled, the prover should not have random commitments.
+    if (opened_random.is_some() != SC::Pcs::ZK) || (random_commit.is_some() != SC::Pcs::ZK) {
+        return Err(VerificationError::RandomizationError);
+    }
+
     // Verify shape.
     let air_width = A::width(air);
-    let validate_shape = opened_trace_local_targets.len() == air_width
-        && opened_trace_next_targets.len() == air_width
-        && opened_quotient_chunks_targets.len() == quotient_degree
-        && opened_quotient_chunks_targets
-            .iter()
-            .all(|opened_chunk| opened_chunk.len() == SC::Challenge::DIMENSION);
-    if !validate_shape {
-        return Err(VerificationError::InvalidProofShape);
+    if opened_trace_local_targets.len() != air_width || opened_trace_next_targets.len() != air_width
+    {
+        return Err(VerificationError::InvalidProofShape(format!(
+            "Expected opened_trace_local_targets and opened_trace_next_targets to have length {}, got {} and {}",
+            air_width,
+            opened_trace_local_targets.len(),
+            opened_trace_next_targets.len()
+        )));
+    }
+    if opened_quotient_chunks_targets.len() != quotient_degree {
+        return Err(VerificationError::InvalidProofShape(format!(
+            "Expected opened_quotient_chunks_targets to have length {}, got {}",
+            quotient_degree,
+            opened_quotient_chunks_targets.len()
+        )));
+    }
+    if opened_quotient_chunks_targets
+        .iter()
+        .any(|opened_chunk| opened_chunk.len() != SC::Challenge::DIMENSION)
+    {
+        return Err(VerificationError::InvalidProofShape(format!(
+            "Invalid quotient chunk length: expected {}",
+            SC::Challenge::DIMENSION
+        )));
+    }
+    if let Some(r_comm) = &opened_random {
+        if r_comm.len() != SC::Challenge::DIMENSION {
+            return Err(VerificationError::InvalidProofShape(format!(
+                "Expected opened random values to have length {}, got {}",
+                SC::Challenge::DIMENSION,
+                r_comm.len()
+            )));
+        }
     }
 
     let alpha = challenge_targets[0];
     let zeta = challenge_targets[1];
     let zeta_next = challenge_targets[2];
 
-    // Need to simulate Fri here.
+    // We've already checked that commitments.random and opened_values.random are present if and only if ZK is enabled.
     let mut coms_to_verify = if let Some(r_commit) = &random_commit {
         let random_values = opened_random
             .as_ref()
@@ -182,17 +220,22 @@ where
             zip_eq(
                 randomized_quotient_chunks_domains.iter(),
                 opened_quotient_chunks_targets,
-            )
+                VerificationError::InvalidProofShape(
+                    "Randomized quotient chunks length mismatch".to_string(),
+                ),
+            )?
             .map(|(domain, values)| (*domain, vec![(zeta, values.clone())]))
             .collect_vec(),
         ),
     ]);
+
     pcs.verify_circuit(
         circuit,
         &challenge_targets[3..],
         &coms_to_verify,
         opening_proof,
-    );
+        params,
+    )?;
 
     let zero = circuit.add_const(SC::Challenge::ZERO);
     let one = circuit.add_const(SC::Challenge::ONE);
@@ -318,7 +361,7 @@ mod tests {
     use rand::{Rng, SeedableRng};
 
     use crate::Target;
-    use crate::circuit_verifier::verify_circuit;
+    use crate::circuit_verifier::{VerificationError, verify_circuit};
     use crate::recursive_traits::{
         ComsWithOpeningsTargets, ProofTargets, Recursive, RecursiveLagrangeSelectors, RecursivePcs,
     };
@@ -399,7 +442,9 @@ mod tests {
                 TwoAdicMultiplicativeCoset<Val<SC>>,
             >,
             _opening_proof: &EmptyTarget,
-        ) {
+            _params: &[usize],
+        ) -> Result<(), VerificationError> {
+            Ok(())
         }
 
         fn selectors_at_point_circuit(
@@ -656,8 +701,15 @@ mod tests {
             .copied()
             .collect::<Vec<_>>();
 
-        verify_circuit(&config, &air, &mut circuit_builder, &proof_targets, &[])
-            .map_err(|e| format!("{e:?}"))?;
+        verify_circuit(
+            &config,
+            &air,
+            &mut circuit_builder,
+            &proof_targets,
+            &[],
+            &[],
+        )
+        .map_err(|e| format!("{e:?}"))?;
 
         let circuit = circuit_builder.build().unwrap();
         let mut runner = circuit.runner();

@@ -1,6 +1,7 @@
 use alloc::collections::btree_map::BTreeMap;
-use alloc::vec;
+use alloc::string::ToString;
 use alloc::vec::Vec;
+use alloc::{format, vec};
 use core::iter;
 
 use p3_circuit::CircuitBuilder;
@@ -8,6 +9,7 @@ use p3_field::coset::TwoAdicMultiplicativeCoset;
 use p3_field::{ExtensionField, Field, TwoAdicField};
 
 use crate::Target;
+use crate::circuit_verifier::VerificationError;
 use crate::recursive_pcs::{FriProofTargets, InputProofTargets};
 use crate::recursive_traits::{
     ComsWithOpeningsTargets, Recursive, RecursiveExtensionMmcs, RecursiveMmcs,
@@ -384,7 +386,8 @@ pub fn verify_fri_circuit<F, EF, RecMmcs, Inner, Witness, Comm>(
     index_bits_per_query: &[Vec<Target>],
     commitments_with_opening_points: &ComsWithOpeningsTargets<Comm, TwoAdicMultiplicativeCoset<F>>,
     log_blowup: usize,
-) where
+) -> Result<(), VerificationError>
+where
     F: Field + TwoAdicField,
     EF: ExtensionField<F>,
     RecMmcs: RecursiveExtensionMmcs<F, EF>,
@@ -394,34 +397,51 @@ pub fn verify_fri_circuit<F, EF, RecMmcs, Inner, Witness, Comm>(
     let num_phases = betas.len();
     let num_queries = fri_proof_targets.query_proofs.len();
     // Sanity: number of betas must match number of commit phases.
-    assert_eq!(
-        num_phases,
-        fri_proof_targets.commit_phase_commits.len(),
-        "betas length must equal number of commit-phase commitments"
-    );
-    assert_eq!(
-        num_queries,
-        index_bits_per_query.len(),
-        "index_bits_per_query length must equal number of query proofs"
-    );
+    if num_phases != fri_proof_targets.commit_phase_commits.len() {
+        return Err(VerificationError::InvalidProofShape(format!(
+            "betas length must equal number of commit-phase commitments: expected {}, got {}",
+            num_phases,
+            fri_proof_targets.commit_phase_commits.len()
+        )));
+    }
+    if num_queries != index_bits_per_query.len() {
+        return Err(VerificationError::InvalidProofShape(format!(
+            "index_bits_per_query length must equal number of query proofs: expected {}, got {}",
+            num_queries,
+            index_bits_per_query.len()
+        )));
+    }
+
     let log_max_height = index_bits_per_query[0].len();
-    assert!(
-        index_bits_per_query
-            .iter()
-            .all(|v| v.len() == log_max_height),
-        "all index_bits_per_query entries must have same length"
-    );
+    if index_bits_per_query
+        .iter()
+        .any(|v| v.len() != log_max_height)
+    {
+        return Err(VerificationError::InvalidProofShape(format!(
+            "all index_bits_per_query entries must have same length"
+        )));
+    }
 
     // Basic shape checks
-    assert!(!betas.is_empty(), "FRI must have at least one fold phase");
+    if betas.is_empty() {
+        return Err(VerificationError::InvalidProofShape(
+            "FRI must have at least one fold phase".to_string(),
+        ));
+    }
 
     // Fail fast if final polynomial is not constant (current circuit assumes len=1)
     let final_poly_len = fri_proof_targets.final_poly.len();
-    assert_eq!(
-        final_poly_len, 1,
-        "This circuit assumes a constant final polynomial (len=1). Got len={final_poly_len}"
-    );
+    if final_poly_len != 1 {
+        return Err(VerificationError::InvalidProofShape(format!(
+            "This circuit assumes a constant final polynomial (len=1). Got len={}",
+            final_poly_len
+        )));
+    }
     let final_value = fri_proof_targets.final_poly[0];
+
+    // TODO: Ensure the number of queries is OK.
+
+    // TODO: Check PoW
 
     // Precompute two-adic generator ladders for each phase (in circuit field EF).
     //
@@ -465,14 +485,18 @@ pub fn verify_fri_circuit<F, EF, RecMmcs, Inner, Witness, Comm>(
         );
 
         // Must have the max-height entry at the front
-        assert!(
-            !reduced_by_height.is_empty(),
-            "No reduced openings; did you commit to zero polynomials?"
-        );
-        assert_eq!(
-            reduced_by_height[0].0, log_max_height,
-            "First reduced opening must be at max height"
-        );
+
+        if reduced_by_height.is_empty() {
+            return Err(VerificationError::InvalidProofShape(
+                "No reduced openings; did you commit to zero polynomials?".to_string(),
+            ));
+        }
+        if reduced_by_height[0].0 != log_max_height {
+            return Err(VerificationError::InvalidProofShape(format!(
+                "First reduced opening must be at max height {}, got {}",
+                log_max_height, reduced_by_height[0].0
+            )));
+        }
         let initial_folded_eval = reduced_by_height[0].1;
 
         // Sibling values for this query (one per phase)
@@ -481,11 +505,14 @@ pub fn verify_fri_circuit<F, EF, RecMmcs, Inner, Witness, Comm>(
             .iter()
             .map(|opening| opening.sibling_value)
             .collect();
-        assert_eq!(
-            sibling_values.len(),
-            num_phases,
-            "sibling_values must match number of betas/phases"
-        );
+
+        if sibling_values.len() != num_phases {
+            return Err(VerificationError::InvalidProofShape(format!(
+                "sibling_values must match number of betas/phases: expected {}, got {}",
+                num_phases,
+                sibling_values.len()
+            )));
+        }
 
         // Build height-aligned roll-ins for each phase (desc heights -> phases)
         let mut roll_ins: Vec<Option<Target>> = vec![None; num_phases];
@@ -500,10 +527,11 @@ pub fn verify_fri_circuit<F, EF, RecMmcs, Inner, Witness, Comm>(
                 // aggregates all matrices at the same height already (and we only support a
                 // single input batch). Multiple entries mapping to the same phase indicate an
                 // invariant violation.
-                assert!(
-                    roll_ins[i].is_none(),
-                    "duplicate roll-in for phase {i} (height {h})",
-                );
+                if roll_ins[i].is_some() {
+                    return Err(VerificationError::InvalidProofShape(format!(
+                        "duplicate roll-in for phase {i} (height {h})",
+                    )));
+                }
                 roll_ins[i] = Some(ro);
             } else {
                 // If a height is below final folded height, it should be unused; connect to zero.
@@ -524,4 +552,6 @@ pub fn verify_fri_circuit<F, EF, RecMmcs, Inner, Witness, Comm>(
             final_value,
         );
     }
+
+    Ok(())
 }

@@ -1,5 +1,6 @@
 //! In this file, we define all the structures required to have a recursive version of `TwoAdicFriPcs`.
 
+use alloc::string::ToString;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::marker::PhantomData;
@@ -18,6 +19,7 @@ use p3_uni_stark::{StarkGenericConfig, Val};
 use serde::{Deserialize, Serialize};
 
 use crate::Target;
+use crate::circuit_verifier::VerificationError;
 use crate::recursive_traits::{
     ComsWithOpeningsTargets, Recursive, RecursiveExtensionMmcs, RecursiveLagrangeSelectors,
     RecursiveMmcs, RecursivePcs,
@@ -602,14 +604,62 @@ where
     fn verify_circuit(
         &self,
         _circuit: &mut CircuitBuilder<SC::Challenge>,
-        _challenges: &[Target],
+        challenges: &[Target],
         _commitments_with_opening_points: &ComsWithOpeningsTargets<
             Comm,
             TwoAdicMultiplicativeCoset<Val<SC>>,
         >,
-        _opening_proof: &Self::RecursiveProof,
-    ) {
+        opening_proof: &Self::RecursiveProof,
+        // FRI parameters needed: final_poly_len, num_queries
+        fri_params: &[usize],
+    ) -> Result<(), VerificationError> {
         // TODO
+
+        if fri_params.len() != 2 {
+            return Err(VerificationError::InvalidPcsParameterCount(
+                2,
+                fri_params.len(),
+            ));
+        }
+        // Verify the shape of the opening proof.
+        let final_poly_len = fri_params[0];
+
+        if opening_proof.final_poly.len() != final_poly_len {
+            return Err(VerificationError::InvalidProofShape(
+                "Incorrect final_poly length".to_string(),
+            ));
+        }
+
+        let query_proof_len = fri_params[1];
+        if opening_proof.query_proofs.len() != query_proof_len {
+            return Err(VerificationError::InvalidProofShape(
+                "Incorrect query_proofs length".to_string(),
+            ));
+        }
+
+        if challenges.len()
+            < (
+                1 // for alpha
+        + opening_proof.commit_phase_commits.len() * opening_proof.query_proofs.len()
+                // for beta challenges
+            )
+        {
+            return Err(VerificationError::InvalidProofShape(
+                "Not enough Pcs challenges".to_string(),
+            ));
+        }
+
+        for query_proof in &opening_proof.query_proofs {
+            if query_proof.commit_phase_openings.len() != opening_proof.commit_phase_commits.len() {
+                return Err(VerificationError::InvalidProofShape(
+                    "Incorrect number of commit_phase_openings".to_string(),
+                ));
+            }
+        }
+
+        // TODO: validate shape in `verify_query` and `open_input`.
+
+        Ok(())
     }
 
     fn selectors_at_point_circuit(
