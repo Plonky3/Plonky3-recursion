@@ -5,12 +5,14 @@ use std::env;
 use p3_baby_bear::BabyBear;
 use p3_circuit::builder::CircuitBuilder;
 use p3_circuit::tables::DummyPerm;
-use p3_circuit_prover::MultiTableProver;
+use p3_circuit_prover::config::babybear_config::build_standard_config_babybear;
+use p3_circuit_prover::prover::ProverError;
+use p3_circuit_prover::{MultiTableProver, TablePacking};
 use p3_field::PrimeCharacteristicRing;
 
 type F = BabyBear;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), ProverError> {
     let n = env::args()
         .nth(1)
         .and_then(|s| s.parse().ok())
@@ -32,10 +34,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Assert computed F(n) equals expected result
-    let diff = builder.sub(b, expected_result);
-    builder.assert_zero(diff);
+    builder.connect(b, expected_result);
 
-    let circuit = builder.build();
+    let circuit = builder.build()?;
     let mut runner = circuit.runner();
 
     // Set public input
@@ -43,13 +44,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     runner.set_public_inputs(&[expected_fib])?;
 
     let traces = runner.run::<DummyPerm, 0, 0, 0>(DummyPerm::default())?;
-    let multi_prover = MultiTableProver::new();
+    let config = build_standard_config_babybear();
+    let table_packing = TablePacking::from_counts(4, 1);
+    let multi_prover = MultiTableProver::new(config).with_table_packing(table_packing);
     let proof = multi_prover.prove_all_tables(&traces)?;
-    multi_prover.verify_all_tables(&proof)?;
-
-    println!("✅ Verified F({n}) = {expected_fib}");
-
-    Ok(())
+    multi_prover.verify_all_tables(&proof)
 }
 
 fn compute_fibonacci_classical(n: usize) -> F {

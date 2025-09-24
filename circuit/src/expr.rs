@@ -1,3 +1,5 @@
+use alloc::vec::Vec;
+
 use crate::types::ExprId;
 
 /// Expression DAG for field operations
@@ -13,6 +15,8 @@ pub enum Expr<F> {
     Sub { lhs: ExprId, rhs: ExprId },
     /// Multiplication of two expressions
     Mul { lhs: ExprId, rhs: ExprId },
+    /// Division of two expressions
+    Div { lhs: ExprId, rhs: ExprId },
 }
 
 /// Graph for storing expression DAG nodes
@@ -68,7 +72,7 @@ mod tests {
         let const_id = graph.add_expr(const_expr.clone());
         let public_id = graph.add_expr(public_expr.clone());
 
-        assert_eq!(const_id, ExprId(0));
+        assert_eq!(const_id, ExprId::ZERO);
         assert_eq!(public_id, ExprId(1));
 
         assert_eq!(graph.get_expr(const_id), &const_expr);

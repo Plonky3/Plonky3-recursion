@@ -1,3 +1,5 @@
+use alloc::vec::Vec;
+
 use crate::types::WitnessId;
 
 /// Primitive operations that represent basic field arithmetic
@@ -29,13 +31,6 @@ pub enum Prim<F> {
 
     /// Field addition: witness[out] = witness[a] + witness[b]
     Add {
-        a: WitnessId,
-        b: WitnessId,
-        out: WitnessId,
-    },
-
-    /// Field subtraction: witness[out] = witness[a] - witness[b]
-    Sub {
         a: WitnessId,
         b: WitnessId,
         out: WitnessId,

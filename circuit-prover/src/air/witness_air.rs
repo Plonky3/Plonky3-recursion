@@ -21,7 +21,7 @@ pub struct WitnessAir<F, const D: usize = 1> {
 }
 
 impl<F: Field, const D: usize> WitnessAir<F, D> {
-    pub fn new(height: usize) -> Self {
+    pub const fn new(height: usize) -> Self {
         Self {
             height,
             _phantom: core::marker::PhantomData,
@@ -99,6 +99,7 @@ mod tests {
 
     use p3_baby_bear::BabyBear as Val;
     use p3_field::PrimeCharacteristicRing;
+    use p3_matrix::Matrix;
     use p3_uni_stark::{prove, verify};
 
     use super::*;
@@ -125,5 +126,125 @@ mod tests {
 
         let proof = prove(&config, &air, matrix, &pis);
         verify(&config, &air, &proof, &pis).expect("verification failed");
+    }
+
+    #[test]
+    fn test_witness_air_extension_field() {
+        use p3_field::BasedVectorSpace;
+        use p3_field::extension::BinomialExtensionField;
+
+        type Ext4 = BinomialExtensionField<Val, 4>;
+
+        let a = Ext4::from_basis_coefficients_slice(&[
+            Val::from_u64(1),
+            Val::from_u64(2),
+            Val::from_u64(3),
+            Val::from_u64(4),
+        ])
+        .unwrap();
+
+        let b = Ext4::from_basis_coefficients_slice(&[
+            Val::from_u64(5),
+            Val::from_u64(6),
+            Val::from_u64(7),
+            Val::from_u64(8),
+        ])
+        .unwrap();
+
+        let values = vec![a, b];
+        let indices = vec![0, 1];
+
+        let trace = WitnessTrace {
+            values,
+            index: indices,
+        };
+        let matrix = WitnessAir::<Val, 4>::trace_to_matrix(&trace);
+
+        // Verify dimensions: D + 1 = 4 + 1 = 5 columns
+        assert_eq!(matrix.width(), 5);
+        assert_eq!(matrix.height(), 2);
+
+        // Check first row layout: [a_coeffs[0..3], index]
+        {
+            let row0 = matrix.row_slice(0).unwrap();
+            let a_coeffs = a.as_basis_coefficients_slice();
+            assert_eq!(&row0[0..4], a_coeffs);
+            assert_eq!(row0[4], Val::from_u64(0)); // index
+        }
+
+        let config = build_test_config();
+        let air = WitnessAir::<Val, 4>::new(2);
+        let pis: Vec<Val> = vec![];
+
+        let proof = prove(&config, &air, matrix, &pis);
+        verify(&config, &air, &proof, &pis).expect("Extension field verification failed");
+    }
+
+    #[test]
+    fn test_witness_air_single_element() {
+        let values = vec![Val::from_u64(42)];
+        let indices = vec![0];
+
+        let trace = WitnessTrace {
+            values,
+            index: indices,
+        };
+        let matrix = WitnessAir::<Val, 1>::trace_to_matrix(&trace);
+
+        // Should be padded to power of two
+        assert!(matrix.height().is_power_of_two());
+        assert_eq!(matrix.width(), 2);
+
+        // Check the single element
+        {
+            let row0 = matrix.row_slice(0).unwrap();
+            assert_eq!(row0[0], Val::from_u64(42)); // value
+            assert_eq!(row0[1], Val::from_u64(0)); // index = 0
+        }
+
+        let config = build_test_config();
+        let air = WitnessAir::<Val, 1>::new(1);
+        let pis: Vec<Val> = vec![];
+
+        let proof = prove(&config, &air, matrix, &pis);
+        verify(&config, &air, &proof, &pis).expect("Single element verification failed");
+    }
+
+    #[test]
+    fn test_witness_air_matrix_padding() {
+        let n = 3; // Not a power of two
+        let values: Vec<Val> = (1..=n as u64).map(Val::from_u64).collect();
+        let indices: Vec<u32> = (0..n as u32).collect();
+
+        let trace = WitnessTrace {
+            values,
+            index: indices,
+        };
+        let matrix = WitnessAir::<Val, 1>::trace_to_matrix(&trace);
+
+        // Should be padded to next power of two (4)
+        assert_eq!(matrix.height(), 4);
+        assert!(matrix.height().is_power_of_two());
+
+        // Original rows should be preserved
+        for i in 0..n {
+            let row = matrix.row_slice(i).unwrap();
+            assert_eq!(row[0], Val::from_u64((i + 1) as u64)); // value
+            assert_eq!(row[1], Val::from_u64(i as u64)); // index
+        }
+
+        // Padded row should continue monotonic sequence
+        {
+            let last_row = matrix.row_slice(3).unwrap();
+            assert_eq!(last_row[0], Val::from_u64(3)); // last value repeated
+            assert_eq!(last_row[1], Val::from_u64(3)); // index continues: 2 + 1 = 3
+        }
+
+        let config = build_test_config();
+        let air = WitnessAir::<Val, 1>::new(3);
+        let pis: Vec<Val> = vec![];
+
+        let proof = prove(&config, &air, matrix, &pis);
+        verify(&config, &air, &proof, &pis).expect("Padding verification failed");
     }
 }

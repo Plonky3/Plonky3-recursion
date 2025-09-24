@@ -19,12 +19,15 @@ p3-commit.workspace = true
 p3-dft.workspace = true
 p3-field.workspace = true
 p3-fri.workspace = true
+p3-goldilocks.workspace = true
+p3-koala-bear.workspace = true
 p3-matrix.workspace = true
 p3-merkle-tree.workspace = true
 p3-symmetric.workspace = true
 p3-uni-stark.workspace = true
 postcard = { version = "1.0", default-features = false, features = ["alloc"] }
 rand.workspace = true
+thiserror.workspace = true
 
 [dev-dependencies]
 postcard = { version = "1.0", default-features = false, features = ["alloc"] }
