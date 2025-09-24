@@ -6,4 +6,4 @@ This project aims at addressing this limitation, by proposing a minimal, fixed r
 
 The source code is open-source, available at [Plonky3 recursion](https://github.com/Plonky3/Plonky3) and dual-licensed MIT/APACHE-2.
 
-***NOTE***: *This project is under heavy development, unaudited and as such not ready for production use. We welcome all external contributors who would like to support the development effort.*
+***NOTE***: *This project is under active development, unaudited and as such not ready for production use. We welcome all external contributors who would like to support the development effort.*
