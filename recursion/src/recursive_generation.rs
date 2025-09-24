@@ -21,25 +21,32 @@ pub enum GenerationError {
     #[error(
         "Invalid number of parameters provided for challenge generation: got {0}, expected {1}"
     )]
-    TooManyParametersError(usize, usize),
+    InvalidParameterCount(usize, usize),
 
     #[error("The FRI batch randomization does not correspond to the ZK setting.")]
     RandomizationError,
 }
 
-type ComsWithOpenings<SC> = [(
+/// A type alias for a single opening point and its values.
+type PointOpening<SC> = (
+    <SC as StarkGenericConfig>::Challenge,
+    Vec<<SC as StarkGenericConfig>::Challenge>,
+);
+
+/// A type alias for all openings within a specific domain.
+type DomainOpenings<SC> = Vec<(Domain<SC>, Vec<PointOpening<SC>>)>;
+
+/// A type alias for a commitment and its associated domain openings.
+type CommitmentWithOpenings<SC> = (
     <<SC as StarkGenericConfig>::Pcs as Pcs<
         <SC as StarkGenericConfig>::Challenge,
         <SC as StarkGenericConfig>::Challenger,
     >>::Commitment,
-    Vec<(
-        Domain<SC>,
-        Vec<(
-            <SC as StarkGenericConfig>::Challenge,
-            Vec<<SC as StarkGenericConfig>::Challenge>,
-        )>,
-    )>,
-)];
+    DomainOpenings<SC>,
+);
+
+/// The final type alias for a slice of commitments with their openings.
+type ComsWithOpenings<SC> = [CommitmentWithOpenings<SC>];
 
 /// Trait which defines the methods necessary
 /// for a Pcs to generate challenge values.
@@ -228,7 +235,7 @@ where
         let params = extra_params.ok_or(GenerationError::MissingParameterError)?;
 
         if params.len() != 1 {
-            return Err(GenerationError::TooManyParametersError(params.len(), 1));
+            return Err(GenerationError::InvalidParameterCount(params.len(), 1));
         }
         let log_height_max = params[0];
         let log_global_max_height = opening_proof.commit_phase_commits.len() + log_height_max;

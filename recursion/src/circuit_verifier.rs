@@ -23,7 +23,7 @@ pub enum VerificationError {
     #[error("Missing random opened values for existing random commitment")]
     RandomizationError,
 
-    #[error("Error in circuit builder: {0}")]
+    #[error("Circuit error: {0}")]
     Circuit(#[from] CircuitError),
 
     #[error("Circuit builder error: {0}")]
