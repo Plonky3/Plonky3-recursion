@@ -48,6 +48,8 @@ pub fn fold_row_chain<F: Field>(
         roll_in,
     } in phases.iter().cloned()
     {
+        // TODO: MMCS batch verification needed for each phase.
+
         // e0 = select(bit, folded, e_sibling)
         let e0 = builder.select(sibling_is_right, folded, e_sibling);
 
@@ -88,6 +90,8 @@ pub fn verify_query<F: Field>(
     phases: &[FoldPhaseInputsTarget],
     final_value: Target,
 ) {
+    // TODO: Support higher-degree final polynomial by evaluating it at the query point
+    // using provided coefficients instead of a single constant `final_value`.
     let folded_eval = fold_row_chain(builder, initial_folded_eval, phases);
     builder.connect(folded_eval, final_value);
 }
