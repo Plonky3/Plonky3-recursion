@@ -218,18 +218,6 @@ impl<F> SpongeRow<F> {
 }
 
 pub type SpongeTrace<F> = Vec<SpongeRow<F>>;
-// /// Sponge hash table (for hash absorb/squeeze)
-// #[derive(Debug, Clone, Default)]
-// pub struct SpongeTrace<F> {
-//     /// Flags to reset the capacity
-//     pub reset: Vec<bool>,
-//     /// Rate values; either absorbed inputs or squeezed outputs
-//     pub rate_values: Vec<F>,
-//     /// Rate indices
-//     pub rate_indices: Vec<F>,
-//     /// Capacity values (not on witness bus - private)
-//     pub capacity_values: Vec<F>,
-// }
 
 /// Circuit runner that executes circuits and generates execution traces
 ///

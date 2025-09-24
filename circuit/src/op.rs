@@ -88,16 +88,11 @@ pub enum NonPrimitiveOp {
     /// Public interface (on witness bus):
     /// - `reset_flag`: Whether to reset the capacity before absorbing
     /// - `inputs`: The input chunk to be absorbed.
-    ///
-    /// Private data (set via NonPrimitiveOpId):
-    /// - `reset`: Whether to reset the capacity before absorbing.
-    /// - `capacity`: Elements of the state not directly affected by input.`
     HashAbsorb {
         reset_flag: bool,
         inputs: Vec<WitnessId>,
     },
     /// Sponge hash squeeze operation. Produces a single chunk of output.
-    /// - `capacity`: The rest of the state, not part of the output.
     HashSqueeze { outputs: Vec<WitnessId> },
 }
 
