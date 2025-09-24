@@ -4,6 +4,7 @@ use std::env;
 /// Public input: expected_result (F(n))
 use p3_baby_bear::BabyBear;
 use p3_circuit::builder::CircuitBuilder;
+use p3_circuit::tables::DummyPerm;
 use p3_circuit_prover::MultiTableProver;
 use p3_field::PrimeCharacteristicRing;
 
@@ -41,7 +42,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let expected_fib = compute_fibonacci_classical(n);
     runner.set_public_inputs(&[expected_fib])?;
 
-    let traces = runner.run()?;
+    let traces = runner.run::<DummyPerm, 0, 0, 0>(DummyPerm::default())?;
     let multi_prover = MultiTableProver::new();
     let proof = multi_prover.prove_all_tables(&traces)?;
     multi_prover.verify_all_tables(&proof)?;

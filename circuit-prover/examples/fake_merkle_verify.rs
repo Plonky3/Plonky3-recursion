@@ -5,6 +5,7 @@ use std::env;
 /// Private inputs: merkle path (siblings + directions)
 use p3_baby_bear::BabyBear;
 use p3_circuit::builder::CircuitBuilder;
+use p3_circuit::tables::DummyPerm;
 use p3_circuit::{FakeMerklePrivateData, NonPrimitiveOpPrivateData};
 use p3_circuit_prover::MultiTableProver;
 use p3_field::PrimeCharacteristicRing;
@@ -40,7 +41,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         NonPrimitiveOpPrivateData::FakeMerkleVerify(private_data),
     )?;
 
-    let traces = runner.run()?;
+    let traces = runner.run::<DummyPerm, 0, 0, 0>(DummyPerm::default())?;
     let multi_prover = MultiTableProver::new();
     let proof = multi_prover.prove_all_tables(&traces)?;
     multi_prover.verify_all_tables(&proof)?;

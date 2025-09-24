@@ -47,7 +47,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .collect::<Vec<_>>();
     runner.set_public_inputs(&public_inputs)?;
 
-    let traces = runner.run_with_hash::<_, HASH_STATE_SIZE, HASH_RATE, HASH_CAPACITY>(perm)?;
+    let traces = runner.run::<_, HASH_STATE_SIZE, HASH_RATE, HASH_CAPACITY>(perm)?;
     let multi_prover = MultiTableProver::new();
     let proof = multi_prover.prove_all_tables(&traces)?;
     multi_prover.verify_all_tables(&proof)?;

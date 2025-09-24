@@ -237,6 +237,7 @@ impl Default for MultiTableProver {
 mod tests {
     use p3_baby_bear::BabyBear;
     use p3_circuit::builder::CircuitBuilder;
+    use p3_circuit::tables::DummyPerm;
     use p3_field::extension::BinomialExtensionField;
     use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
 
@@ -262,7 +263,9 @@ mod tests {
         // Set public input: x = 7, so final result = 7 + 10 - 3 = 14
         runner.set_public_inputs(&[BabyBear::from_u64(7)]).unwrap();
 
-        let traces = runner.run().unwrap();
+        let traces = runner
+            .run::<DummyPerm, 0, 0, 0>(DummyPerm::default())
+            .unwrap();
 
         // Create unified prover and prove all tables
         let multi_prover = MultiTableProver::new();
@@ -312,7 +315,9 @@ mod tests {
         .unwrap();
 
         runner.set_public_inputs(&[x_val, y_val, z_val]).unwrap();
-        let traces = runner.run().unwrap();
+        let traces = runner
+            .run::<DummyPerm, 0, 0, 0>(DummyPerm::default())
+            .unwrap();
 
         // Create unified prover and prove all tables
         let multi_prover = MultiTableProver::new(); // defaults to W=11 for D=4
