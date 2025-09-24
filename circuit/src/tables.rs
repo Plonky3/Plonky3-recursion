@@ -1,11 +1,8 @@
 use core::array;
 
-use p3_field::{Field, PrimeCharacteristicRing};
-use p3_symmetric::{CryptographicHasher, CryptographicPermutation};
-use rand::SeedableRng;
-use rand::rngs::SmallRng;
+use p3_field::PrimeCharacteristicRing;
+use p3_symmetric::CryptographicPermutation;
 
-use crate::builder::{CIRCUIT_HASH_CAPACITY, CIRCUIT_HASH_RATE};
 use crate::circuit::Circuit;
 use crate::op::{NonPrimitiveOpPrivateData, Prim};
 use crate::types::{NonPrimitiveOpId, WitnessId};
@@ -28,7 +25,7 @@ pub struct Traces<F> {
     /// Fake Merkle verification table
     pub fake_merkle_trace: FakeMerkleTrace<F>,
     /// Sponge hash table
-    pub sponge_trace: SpongeTrace<CIRCUIT_HASH_RATE, CIRCUIT_HASH_CAPACITY, F>, // Example sizes; adjust as needed
+    pub sponge_trace: SpongeTrace<F>,
 }
 
 /// Central witness table with transparent index column
@@ -128,18 +125,42 @@ pub struct FakeMerkleTrace<F> {
     pub path_directions: Vec<u32>,
 }
 
-/// Sponge hash table (for hash absorb/squeeze)
-#[derive(Debug, Clone, Default)]
-pub struct SpongeTrace<const R: usize, const C: usize, F> {
-    /// Flags to reset the capacity
-    pub reset: Vec<bool>,
+#[derive(Debug, Clone)]
+pub struct SpongeRow<F> {
+    /// Flag to reset the capacity
+    pub reset: bool,
     /// Rate values; either absorbed inputs or squeezed outputs
-    pub rate_values: Vec<[F; R]>,
-    /// Rate indices
-    pub rate_indices: Vec<[u32; R]>,
+    pub rate_values: Vec<F>,
+    /// Rate indices for witness bus lookups
+    pub rate_indices: Vec<u32>,
     /// Capacity values (not on witness bus - private)
-    pub capacity_values: Vec<[F; C]>,
+    pub capacity_values: Vec<F>,
 }
+
+impl<F> SpongeRow<F> {
+    pub fn new_with_alloc(reset: bool, rate: usize, capacity: usize) -> Self {
+        Self {
+            reset,
+            rate_values: Vec::<F>::with_capacity(rate),
+            rate_indices: Vec::<u32>::with_capacity(rate),
+            capacity_values: Vec::<F>::with_capacity(capacity),
+        }
+    }
+}
+
+pub type SpongeTrace<F> = Vec<SpongeRow<F>>;
+// /// Sponge hash table (for hash absorb/squeeze)
+// #[derive(Debug, Clone, Default)]
+// pub struct SpongeTrace<F> {
+//     /// Flags to reset the capacity
+//     pub reset: Vec<bool>,
+//     /// Rate values; either absorbed inputs or squeezed outputs
+//     pub rate_values: Vec<F>,
+//     /// Rate indices
+//     pub rate_indices: Vec<F>,
+//     /// Capacity values (not on witness bus - private)
+//     pub capacity_values: Vec<F>,
+// }
 
 /// Circuit runner that executes circuits and generates execution traces
 ///
@@ -265,7 +286,12 @@ impl<
     }
 
     /// Run the circuit and generate traces
-    pub fn run_with_hash<P: CryptographicPermutation<[F; N]>, const N: usize>(
+    pub fn run_with_hash<
+        P: CryptographicPermutation<[F; N]>,
+        const N: usize,
+        const R: usize,
+        const C: usize,
+    >(
         mut self,
         perm: P,
     ) -> Result<Traces<F>, String> {
@@ -280,7 +306,7 @@ impl<
         let mul_trace = self.generate_mul_trace()?;
         let sub_trace = self.generate_sub_trace()?;
         let fake_merkle_trace = self.generate_fake_merkle_trace()?;
-        let sponge_trace = self.generate_sponge_trace(perm)?;
+        let sponge_trace = self.generate_sponge_trace::<_, N, R, C>(perm)?;
 
         Ok(Traces {
             witness_trace,
@@ -585,17 +611,20 @@ impl<
         })
     }
 
-    fn generate_sponge_trace<P, const R: usize, const C: usize, const N: usize>(
+    fn generate_sponge_trace<P, const N: usize, const R: usize, const C: usize>(
         &mut self,
         perm: P,
-    ) -> Result<SpongeTrace<R, C, F>, String>
+    ) -> Result<SpongeTrace<F>, String>
     where
         P: CryptographicPermutation<[F; N]>,
     {
-        let mut reset = Vec::new();
-        let mut rate_values = Vec::new();
-        let mut rate_indices = Vec::new();
-        let mut capacity_values = Vec::new();
+        // let n = rate + capacity;
+
+        let mut trace: SpongeTrace<F> = Vec::with_capacity(1 << 10);
+        // let mut reset = Vec::new();
+        // let mut rate_values = Vec::new();
+        // let mut rate_indices = Vec::new();
+        // let mut capacity_values = Vec::new();
 
         let mut state = array::from_fn(|_| F::default());
 
@@ -604,39 +633,66 @@ impl<
             // Only handle SpongeTrace ops here
             match &self.circuit.non_primitive_ops[op_idx] {
                 crate::op::NonPrimitiveOp::HashAbsorb { reset_flag, inputs } => {
-                    reset.push(*reset_flag);
-                    rate_indices.push(array::from_fn(|i| inputs[i].0));
-                    let input_values: [Result<F, String>; R] =
-                        array::from_fn(|i| self.get_witness(inputs[i]));
-                    let input_values = input_values.into_iter().collect::<Result<Vec<_>, _>>()?;
-                    let input_values: [F; R] = input_values
-                        .try_into()
-                        .expect("input_values should have R elements");
-                    state[0..R].clone_from_slice(&input_values);
-                    rate_values.push(input_values);
+                    let mut row: SpongeRow<F> = SpongeRow::new_with_alloc(*reset_flag, R, C);
+
+                    // reset.push(*reset_flag);
+                    for i in 0..R {
+                        let idx = inputs[i];
+                        row.rate_indices.push(idx.0);
+                        let val = self.get_witness(idx)?;
+                        row.rate_values.push(val.clone());
+                        state[i] = val;
+                    }
+
+                    // rate_indices.push(array::from_fn(|i| inputs[i].0));
+                    // let input_values: [Result<F, String>; R] =
+                    //     array::from_fn(|i| self.get_witness(inputs[i]));
+                    // let input_values = input_values.into_iter().collect::<Result<Vec<_>, _>>()?;
+                    // let input_values: [F; R] = input_values
+                    //     .try_into()
+                    //     .expect("input_values should have R elements");
+                    // state[0..R].clone_from_slice(&input_values);
+                    // rate_values.push(input_values);
                     if *reset_flag {
                         state[R..].fill(F::default());
                     }
-                    let current_capacity = array::from_fn(|i| state[R + i].clone());
-                    capacity_values.push(current_capacity);
+                    row.capacity_values.extend_from_slice(&state[R..]);
+                    // let current_capacity = array::from_fn(|i| state[R + i].clone());
+                    // capacity_values.push(current_capacity);
+                    trace.push(row);
 
                     state = perm.permute(state.into());
                 }
                 crate::op::NonPrimitiveOp::HashSqueeze { outputs } => {
-                    reset.push(false);
+                    let mut row: SpongeRow<F> = SpongeRow::new_with_alloc(false, R, C);
+                    // reset.push(false);
                     // Clone outputs to end immutable borrow immediately
                     let outputs = outputs.clone();
-                    rate_indices.push(array::from_fn(|i| outputs[i].0));
 
-                    let output_values: [F; R] = array::from_fn(|i| state[i].clone());
                     for i in 0..R {
+                        let idx = outputs[i];
+                        row.rate_indices.push(idx.0);
+                        let val = self.get_witness(idx)?;
                         // Sanity check that outputs are set to the correct values
-                        self.set_witness(outputs[i], output_values[i].clone())?;
+                        self.set_witness(idx, val.clone())?;
+                        row.rate_values.push(val.clone());
+                        state[i] = val;
                     }
-                    rate_values.push(output_values);
 
-                    let current_capacity = array::from_fn(|i| state[R + i].clone());
-                    capacity_values.push(current_capacity);
+                    // let outputs = outputs.clone();
+                    // rate_indices.push(array::from_fn(|i| outputs[i].0));
+
+                    // let output_values: [F; R] = array::from_fn(|i| state[i].clone());
+                    // for i in 0..R {
+                    //     // Sanity check that outputs are set to the correct values
+                    //     self.set_witness(outputs[i], output_values[i].clone())?;
+                    // }
+                    // rate_values.push(output_values);
+
+                    // let current_capacity = array::from_fn(|i| state[R + i].clone());
+                    // capacity_values.push(current_capacity);
+                    row.capacity_values.extend_from_slice(&state[R..]);
+                    trace.push(row);
 
                     state = perm.permute(state);
                 }
@@ -644,12 +700,7 @@ impl<
             };
         }
 
-        Ok(SpongeTrace {
-            reset,
-            rate_values,
-            rate_indices,
-            capacity_values,
-        })
+        Ok(trace)
     }
 }
 

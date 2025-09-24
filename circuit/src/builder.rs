@@ -1,17 +1,11 @@
 use std::collections::HashMap;
 
-use p3_baby_bear::Poseidon2BabyBear;
 use p3_field::PrimeCharacteristicRing;
-use p3_symmetric::PaddingFreeSponge;
 
 use crate::circuit::Circuit;
 use crate::expr::{Expr, ExpressionGraph};
 use crate::op::{NonPrimitiveOp, NonPrimitiveOpType, Prim};
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};
-
-pub const CIRCUIT_HASH_RATE: usize = 8;
-pub const CIRCUIT_HASH_CAPACITY: usize = 8;
-pub const CIRCUIT_HASH_STATE_SIZE: usize = CIRCUIT_HASH_RATE + CIRCUIT_HASH_CAPACITY;
 
 /// Builder for constructing circuits using a fluent API
 ///
