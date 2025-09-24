@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 
-use crate::config::CircuitConfig;
+use crate::config::MerkleVerifyConfig;
 use crate::op::{NonPrimitiveOp, Prim};
 use crate::types::WitnessId;
 
@@ -14,7 +14,7 @@ use crate::types::WitnessId;
 /// The circuit is static and serializable. Use `.runner()` to create
 /// a `CircuitRunner` for execution with specific input values.
 #[derive(Debug, Clone)]
-pub struct Circuit<F, C: CircuitConfig> {
+pub struct Circuit<F, C: MerkleVerifyConfig> {
     /// Number of witness table rows
     pub witness_count: u32,
     /// Primitive operations in topological order
@@ -29,7 +29,7 @@ pub struct Circuit<F, C: CircuitConfig> {
     pub config: C,
 }
 
-impl<F, C: CircuitConfig> Circuit<F, C> {
+impl<F, C: MerkleVerifyConfig> Circuit<F, C> {
     pub fn new(witness_count: u32, config: C) -> Self {
         Self {
             witness_count,

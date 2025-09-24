@@ -4,7 +4,7 @@ use p3_field::Field;
 use p3_symmetric::PseudoCompressionFunction;
 use p3_uni_stark::{Entry, SymbolicExpression};
 
-use crate::config::CircuitConfig;
+use crate::config::MerkleVerifyConfig;
 use crate::{CircuitBuilder, ExprId};
 
 /// Identifiers for special row selector flags in the circuit.
@@ -35,7 +35,7 @@ pub struct ColumnsTargets<'a> {
 /// Given symbolic constraints, adds the corresponding recursive circuit to `circuit`.
 /// The `public_values`, `local_prep_values`, `next_prep_values`, `local_values`, and `next_values`
 /// are assumed to be in the same order as those used to create the symbolic expressions.
-pub fn symbolic_to_circuit<F: Field, C: CircuitConfig>(
+pub fn symbolic_to_circuit<F: Field, C: MerkleVerifyConfig>(
     row_selectors: RowSelectorsTargets,
     columns: &ColumnsTargets<'_>,
     symbolic: &SymbolicExpression<F>,

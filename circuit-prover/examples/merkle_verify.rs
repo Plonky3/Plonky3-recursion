@@ -5,7 +5,7 @@ use std::env;
 /// Private inputs: merkle path (siblings + directions)
 use p3_baby_bear::BabyBear;
 use p3_circuit::NonPrimitiveOpPrivateData;
-use p3_circuit::config::CircuitConfig;
+use p3_circuit::config::MerkleVerifyConfig;
 use p3_circuit::config::babybear_config::{
     BabyBearQuarticExtensionCircuitBuilder, DefaultBabyBearQuarticExtensionConfig,
     default_babybear_poseidon2_circuit_runner_config,

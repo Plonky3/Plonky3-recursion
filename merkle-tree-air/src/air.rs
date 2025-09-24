@@ -183,7 +183,7 @@ where
 mod test {
 
     use p3_circuit::WitnessId;
-    use p3_circuit::config::CircuitConfig as _;
+    use p3_circuit::config::MerkleVerifyConfig as _;
     use p3_circuit::config::babybear_config::{
         DEFAULT_BABY_BEAR_DIGEST_SIZE, DefaultBabyBearConfig,
         default_babybear_poseidon2_circuit_runner_config,

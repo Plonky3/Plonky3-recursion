@@ -2,15 +2,15 @@ use alloc::vec::Vec;
 
 use p3_symmetric::PseudoCompressionFunction;
 
-pub trait CircuitConfig {
+pub trait MerkleVerifyConfig {
     /// An array of base field elements that corresponds to the output
     /// of the compression function used for this configuration.
-    type BaseFieldHash: ArrayHash;
+    type BaseFieldDigest: FeltArray;
     /// An array of extension field elements that correspond to the output
     /// of the compression function used for this configuration.
-    type ExtensionFieldHash: ArrayHash;
+    type ExtensionFieldDigest: FeltArray;
     /// The comression function used in merkle verify gates.
-    type C: PseudoCompressionFunction<Self::BaseFieldHash, 2> + Sync;
+    type C: PseudoCompressionFunction<Self::BaseFieldDigest, 2> + Sync;
 
     /// The number of base field element that fit in the output of the compression function.
     const BF_DIGEST_ELEMS: usize;
@@ -26,12 +26,12 @@ pub trait CircuitConfig {
     fn compress(&self) -> &Self::C;
 }
 
-pub trait ArrayHash: TryFrom<Vec<Self::Field>> + Into<Vec<Self::Field>> + Clone {
+pub trait FeltArray: TryFrom<Vec<Self::Field>> + Into<Vec<Self::Field>> + Clone {
     type Field;
     const DIGEST_ELEMS: usize;
 }
 
-impl<T: Clone, const N: usize> ArrayHash for [T; N] {
+impl<T: Clone, const N: usize> FeltArray for [T; N] {
     type Field = T;
     const DIGEST_ELEMS: usize = N;
 }
@@ -44,11 +44,13 @@ pub mod babybear_config {
     use p3_symmetric::TruncatedPermutation;
 
     use crate::CircuitBuilder;
-    use crate::config::{ArrayHash, CircuitConfig};
+    use crate::config::{FeltArray, MerkleVerifyConfig};
 
-    pub struct DefaultBabyBearConfig<ExtensionFieldHash = [BabyBear; DEFAULT_BABY_BEAR_DIGEST_SIZE]> {
+    pub struct DefaultBabyBearConfig<
+        ExtensionFieldDigest = [BabyBear; DEFAULT_BABY_BEAR_DIGEST_SIZE],
+    > {
         compress: TruncatedPermutation<Poseidon2BabyBear<16>, 2, 8, 16>,
-        _phantom: PhantomData<ExtensionFieldHash>,
+        _phantom: PhantomData<ExtensionFieldDigest>,
     }
 
     pub type DefaultBabyBearQuarticExtensionConfig =
@@ -62,13 +64,15 @@ pub mod babybear_config {
     pub type BabyBearQuarticExtensionCircuitBuilder =
         CircuitBuilder<BinomialExtensionField<BabyBear, 4>, DefaultBabyBearQuarticExtensionConfig>;
 
-    impl<ExtensionFieldHash: ArrayHash> CircuitConfig for DefaultBabyBearConfig<ExtensionFieldHash> {
-        type BaseFieldHash = [BabyBear; DEFAULT_BABY_BEAR_DIGEST_SIZE];
-        type ExtensionFieldHash = ExtensionFieldHash;
+    impl<ExtensionFieldDigest: FeltArray> MerkleVerifyConfig
+        for DefaultBabyBearConfig<ExtensionFieldDigest>
+    {
+        type BaseFieldDigest = [BabyBear; DEFAULT_BABY_BEAR_DIGEST_SIZE];
+        type ExtensionFieldDigest = ExtensionFieldDigest;
 
         const BF_DIGEST_ELEMS: usize = DEFAULT_BABY_BEAR_DIGEST_SIZE;
 
-        const EF_DIGEST_ELEMS: usize = ExtensionFieldHash::DIGEST_ELEMS;
+        const EF_DIGEST_ELEMS: usize = ExtensionFieldDigest::DIGEST_ELEMS;
         type C = TruncatedPermutation<Poseidon2BabyBear<16>, 2, 8, 16>;
 
         fn new() -> Self {
@@ -80,8 +84,8 @@ pub mod babybear_config {
         }
     }
 
-    pub fn default_babybear_poseidon2_circuit_runner_config<ExtensionFieldHash: ArrayHash>()
-    -> DefaultBabyBearConfig<ExtensionFieldHash> {
+    pub fn default_babybear_poseidon2_circuit_runner_config<ExtensionFieldDigest: FeltArray>()
+    -> DefaultBabyBearConfig<ExtensionFieldDigest> {
         let permutation = default_babybear_poseidon2_16();
         let compress = TruncatedPermutation::<_, 2, 8, 16>::new(permutation);
         DefaultBabyBearConfig {
@@ -98,11 +102,11 @@ pub mod koalabear_config {
     use p3_symmetric::TruncatedPermutation;
 
     use crate::CircuitBuilder;
-    use crate::config::{ArrayHash, CircuitConfig};
+    use crate::config::{FeltArray, MerkleVerifyConfig};
 
-    pub struct DefaultKoalaBearConfig<ExtensionFieldHash: ArrayHash> {
+    pub struct DefaultKoalaBearConfig<ExtensionFieldDigest: FeltArray> {
         compress: TruncatedPermutation<Poseidon2KoalaBear<16>, 2, 8, 16>,
-        _phantom: PhantomData<ExtensionFieldHash>,
+        _phantom: PhantomData<ExtensionFieldDigest>,
     }
 
     pub type DefaultKoalaBearQuarticExtensionConfig =
@@ -125,14 +129,16 @@ pub mod koalabear_config {
         DefaultKoalaBearConfig<[BinomialExtensionField<KoalaBear, 8>; 1]>,
     >;
 
-    impl<ExtensionFieldHash: ArrayHash> CircuitConfig for DefaultKoalaBearConfig<ExtensionFieldHash> {
-        type BaseFieldHash = [KoalaBear; DEFAULT_KOALA_BEAR_DIGEST_SIZE];
+    impl<ExtensionFieldDigest: FeltArray> MerkleVerifyConfig
+        for DefaultKoalaBearConfig<ExtensionFieldDigest>
+    {
+        type BaseFieldDigest = [KoalaBear; DEFAULT_KOALA_BEAR_DIGEST_SIZE];
 
-        type ExtensionFieldHash = ExtensionFieldHash;
+        type ExtensionFieldDigest = ExtensionFieldDigest;
 
         const BF_DIGEST_ELEMS: usize = DEFAULT_KOALA_BEAR_DIGEST_SIZE;
 
-        const EF_DIGEST_ELEMS: usize = ExtensionFieldHash::DIGEST_ELEMS;
+        const EF_DIGEST_ELEMS: usize = ExtensionFieldDigest::DIGEST_ELEMS;
 
         type C = TruncatedPermutation<Poseidon2KoalaBear<16>, 2, 8, 16>;
 
@@ -145,8 +151,8 @@ pub mod koalabear_config {
         }
     }
 
-    pub fn default_koalabear_poseidon2_circuit_runner_config<ExtensionFieldHash: ArrayHash>()
-    -> DefaultKoalaBearConfig<ExtensionFieldHash> {
+    pub fn default_koalabear_poseidon2_circuit_runner_config<ExtensionFieldDigest: FeltArray>()
+    -> DefaultKoalaBearConfig<ExtensionFieldDigest> {
         let permutation = default_koalabear_poseidon2_16();
         let compress = TruncatedPermutation::<_, 2, 8, 16>::new(permutation);
         DefaultKoalaBearConfig {
@@ -166,11 +172,11 @@ pub mod goldilocks_config {
     use rand::rngs::SmallRng;
 
     use crate::CircuitBuilder;
-    use crate::config::{ArrayHash, CircuitConfig};
+    use crate::config::{FeltArray, MerkleVerifyConfig};
 
-    pub struct DefaultGoldilocksConfig<ExtensionFieldHash> {
+    pub struct DefaultGoldilocksConfig<ExtensionFieldDigest> {
         compress: TruncatedPermutation<Poseidon2Goldilocks<8>, 2, 4, 8>,
-        _phantom: PhantomData<ExtensionFieldHash>,
+        _phantom: PhantomData<ExtensionFieldDigest>,
     }
 
     pub type DefaultGoldilocksQuadraticExtensionConfig =
@@ -188,14 +194,16 @@ pub mod goldilocks_config {
         DefaultGoldilocksQuadraticExtensionConfig,
     >;
 
-    impl<ExtensionFieldHash: ArrayHash> CircuitConfig for DefaultGoldilocksConfig<ExtensionFieldHash> {
-        type BaseFieldHash = [Goldilocks; DEFAULT_GOLDILOCKS_DIGEST_SIZE];
+    impl<ExtensionFieldDigest: FeltArray> MerkleVerifyConfig
+        for DefaultGoldilocksConfig<ExtensionFieldDigest>
+    {
+        type BaseFieldDigest = [Goldilocks; DEFAULT_GOLDILOCKS_DIGEST_SIZE];
 
-        type ExtensionFieldHash = ExtensionFieldHash;
+        type ExtensionFieldDigest = ExtensionFieldDigest;
 
         const BF_DIGEST_ELEMS: usize = DEFAULT_GOLDILOCKS_DIGEST_SIZE;
 
-        const EF_DIGEST_ELEMS: usize = ExtensionFieldHash::DIGEST_ELEMS;
+        const EF_DIGEST_ELEMS: usize = ExtensionFieldDigest::DIGEST_ELEMS;
 
         type C = TruncatedPermutation<Poseidon2Goldilocks<8>, 2, 4, 8>;
 
@@ -208,8 +216,8 @@ pub mod goldilocks_config {
         }
     }
 
-    pub fn default_goldilocks_poseidon2_circuit_runner_config<ExtensionFieldHash: ArrayHash>()
-    -> DefaultGoldilocksConfig<ExtensionFieldHash> {
+    pub fn default_goldilocks_poseidon2_circuit_runner_config<ExtensionFieldDigest: FeltArray>()
+    -> DefaultGoldilocksConfig<ExtensionFieldDigest> {
         type Perm = Poseidon2Goldilocks<8>;
         let mut rng = SmallRng::seed_from_u64(1);
         let perm = Perm::new_from_rng_128(&mut rng);

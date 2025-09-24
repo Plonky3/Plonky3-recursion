@@ -3,7 +3,7 @@ use alloc::vec::Vec;
 use core::marker::PhantomData;
 
 use p3_air::Air;
-use p3_circuit::config::CircuitConfig;
+use p3_circuit::config::MerkleVerifyConfig;
 use p3_circuit::utils::{ColumnsTargets, RowSelectorsTargets, symbolic_to_circuit};
 use p3_circuit::{CircuitBuilder, ExprId};
 use p3_commit::{Mmcs, Pcs};
@@ -47,7 +47,7 @@ pub trait Recursive<F: Field> {
 
     /// Creates a new instance of the recursive type. `lens` corresponds to all the vector lengths necessary to build the structure.
     /// TODO: They can actually be deduced from StarkGenericConfig and `degree_bits`.
-    fn new<C: CircuitConfig>(
+    fn new<C: MerkleVerifyConfig>(
         circuit: &mut CircuitBuilder<F, C>,
         lens: &mut impl Iterator<Item = usize>,
         degree_bits: usize,
@@ -67,7 +67,7 @@ pub trait Recursive<F: Field> {
 
     /// Creates new wires for all the necessary challenges.
     /// TODO: Should we move this to Pcs instead?
-    fn get_challenges<C: CircuitConfig, const BF: usize, const EF: usize>(
+    fn get_challenges<C: MerkleVerifyConfig, const BF: usize, const EF: usize>(
         &self,
         circuit: &mut CircuitBuilder<F, C>,
     ) -> Vec<ExprId> {
@@ -142,13 +142,13 @@ pub trait RecursivePcs<
     type RecursiveProof;
 
     /// Creates new wires for all the challenges necessary when computing the Pcs.
-    fn get_challenges_circuit<C: CircuitConfig, const BF: usize, const EF: usize>(
+    fn get_challenges_circuit<C: MerkleVerifyConfig, const BF: usize, const EF: usize>(
         circuit: &mut CircuitBuilder<SC::Challenge, C>,
         proof_targets: &ProofTargets<SC, Comm, OpeningProof>,
     ) -> Vec<ExprId>;
 
     /// Adds the circuit which verifies the Pcs computation.
-    fn verify_circuit<C: CircuitConfig, const BF: usize, const EF: usize>(
+    fn verify_circuit<C: MerkleVerifyConfig, const BF: usize, const EF: usize>(
         &self,
         circuit: &mut CircuitBuilder<SC::Challenge, C>,
         challenges: &[ExprId],
@@ -157,7 +157,7 @@ pub trait RecursivePcs<
     );
 
     /// Computes wire selectors at `point` in the circuit.
-    fn selectors_at_point_circuit<C: CircuitConfig, const BF: usize, const EF: usize>(
+    fn selectors_at_point_circuit<C: MerkleVerifyConfig, const BF: usize, const EF: usize>(
         &self,
         circuit: &mut CircuitBuilder<SC::Challenge, C>,
         domain: &Domain,
@@ -190,7 +190,7 @@ pub trait RecursiveAir<F: Field> {
     fn width(&self) -> usize;
 
     /// Circuit version of the AIR constraints.
-    fn eval_folded_circuit<C: CircuitConfig, const BF: usize, const EF: usize>(
+    fn eval_folded_circuit<C: MerkleVerifyConfig, const BF: usize, const EF: usize>(
         &self,
         builder: &mut CircuitBuilder<F, C>,
         sels: &RecursiveLagrangeSelectors,
@@ -210,7 +210,7 @@ where
         Self::width(self)
     }
 
-    fn eval_folded_circuit<C: CircuitConfig, const BF: usize, const EF: usize>(
+    fn eval_folded_circuit<C: MerkleVerifyConfig, const BF: usize, const EF: usize>(
         &self,
         builder: &mut CircuitBuilder<F, C>,
         sels: &RecursiveLagrangeSelectors,
@@ -244,7 +244,7 @@ impl<
 {
     type Input = Proof<SC>;
 
-    fn new<C: CircuitConfig>(
+    fn new<C: MerkleVerifyConfig>(
         circuit: &mut CircuitBuilder<SC::Challenge, C>,
         lens: &mut impl Iterator<Item = usize>,
         degree_bits: usize,
@@ -304,7 +304,7 @@ where
 {
     type Input = Commitments<Comm::Input>;
 
-    fn new<C: CircuitConfig>(
+    fn new<C: MerkleVerifyConfig>(
         circuit: &mut CircuitBuilder<F, C>,
         lens: &mut impl Iterator<Item = usize>,
         degree_bits: usize,
@@ -367,7 +367,7 @@ where
 impl<SC: StarkGenericConfig> Recursive<SC::Challenge> for OpenedValuesTargets<SC> {
     type Input = OpenedValues<SC::Challenge>;
 
-    fn new<C: CircuitConfig>(
+    fn new<C: MerkleVerifyConfig>(
         circuit: &mut CircuitBuilder<SC::Challenge, C>,
         lens: &mut impl Iterator<Item = usize>,
         _degree_bits: usize,

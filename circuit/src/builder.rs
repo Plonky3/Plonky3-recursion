@@ -5,7 +5,7 @@ use hashbrown::{HashMap, HashSet};
 use p3_field::PrimeCharacteristicRing;
 
 use crate::circuit::Circuit;
-use crate::config::CircuitConfig;
+use crate::config::MerkleVerifyConfig;
 use crate::expr::{Expr, ExpressionGraph};
 use crate::op::{NonPrimitiveOp, NonPrimitiveOpType, Prim};
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};
@@ -62,7 +62,7 @@ fn build_connect_dsu(connects: &[(ExprId, ExprId)]) -> HashMap<usize, usize> {
 /// - Complex operations (like Merkle tree verification)
 ///
 /// Call `.build()` to compile into an immutable `Circuit<F>` specification.
-pub struct CircuitBuilder<F, C: CircuitConfig> {
+pub struct CircuitBuilder<F, C: MerkleVerifyConfig> {
     /// Expression graph for building the DAG
     expressions: ExpressionGraph<F>,
     /// Witness index allocator
@@ -110,7 +110,7 @@ impl core::fmt::Display for CircuitBuilderError {
     }
 }
 
-impl<F, C: CircuitConfig> Default for CircuitBuilder<F, C>
+impl<F, C: MerkleVerifyConfig> Default for CircuitBuilder<F, C>
 where
     F: Clone + PrimeCharacteristicRing + Eq + core::hash::Hash,
 {
@@ -119,7 +119,7 @@ where
     }
 }
 
-impl<F, C: CircuitConfig> CircuitBuilder<F, C>
+impl<F, C: MerkleVerifyConfig> CircuitBuilder<F, C>
 where
     F: Clone + PrimeCharacteristicRing + Eq + core::hash::Hash,
 {
@@ -245,7 +245,7 @@ where
     }
 }
 
-impl<F, C: CircuitConfig> CircuitBuilder<F, C>
+impl<F, C: MerkleVerifyConfig> CircuitBuilder<F, C>
 where
     F: Clone + PrimeCharacteristicRing + PartialEq + Eq + core::hash::Hash,
 {
