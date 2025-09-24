@@ -27,6 +27,7 @@ p3-symmetric.workspace = true
 p3-uni-stark.workspace = true
 postcard = { version = "1.0", default-features = false, features = ["alloc"] }
 rand.workspace = true
+thiserror.workspace = true
 
 [dev-dependencies]
 postcard = { version = "1.0", default-features = false, features = ["alloc"] }

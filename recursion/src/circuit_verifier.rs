@@ -7,28 +7,20 @@ use p3_circuit::utils::ColumnsTargets;
 use p3_commit::Pcs;
 use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
 use p3_uni_stark::StarkGenericConfig;
+use thiserror::Error;
 
 use crate::Target;
 use crate::recursive_traits::{
     CommitmentTargets, OpenedValuesTargets, ProofTargets, Recursive, RecursiveAir, RecursivePcs,
 };
 
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum VerificationError {
+    #[error("Invalid proof shape")]
     InvalidProofShape,
-    RandomizationError,
-}
 
-impl core::fmt::Display for VerificationError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            VerificationError::InvalidProofShape => write!(f, "Invalid proof shape"),
-            VerificationError::RandomizationError => write!(
-                f,
-                "Missing random opened values for existing random commitment"
-            ),
-        }
-    }
+    #[error("Missing random opened values for existing random commitment")]
+    RandomizationError,
 }
 
 // Method to get all the challenge targets.

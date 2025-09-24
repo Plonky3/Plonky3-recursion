@@ -25,7 +25,7 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AddAir<F, D> {
     /// Number of base-field columns contributed by a single lane.
     pub const LANE_WIDTH: usize = 3 * D + 3;
 
-    pub fn new(num_ops: usize, lanes: usize) -> Self {
+    pub const fn new(num_ops: usize, lanes: usize) -> Self {
         assert!(lanes > 0, "lane count must be non-zero");
         Self {
             num_ops,
