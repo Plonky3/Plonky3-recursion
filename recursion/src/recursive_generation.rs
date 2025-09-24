@@ -11,38 +11,20 @@ use p3_uni_stark::{
     Domain, Proof, StarkGenericConfig, SymbolicAirBuilder, Val, VerifierConstraintFolder,
     get_log_quotient_degree,
 };
+use thiserror::Error;
 
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum GenerationError {
-    /// Missing parameter for generation,
+    #[error("Missing parameter for challenge generation")]
     MissingParameterError,
-    /// Too many parameters provided for generation.
-    /// First usize is number of provided parameters,
-    /// second usize is number of expected parameters.
-    TooManyParametersError(usize, usize),
-    /// The FRI batch randomization does not correspond to the ZK setting.
-    RandomizationError,
-}
 
-impl core::fmt::Display for GenerationError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            GenerationError::MissingParameterError => {
-                write!(f, "Missing parameter for challenge generation")
-            }
-            GenerationError::TooManyParametersError(got, expected) => write!(
-                f,
-                "Too many parameters provided for challenge generation: got {}, expected {}",
-                got, expected
-            ),
-            GenerationError::RandomizationError => {
-                write!(
-                    f,
-                    "The FRI batch randomization does not correspond to the ZK setting."
-                )
-            }
-        }
-    }
+    #[error(
+        "Invalid number of parameters provided for challenge generation: got {0}, expected {1}"
+    )]
+    TooManyParametersError(usize, usize),
+
+    #[error("The FRI batch randomization does not correspond to the ZK setting.")]
+    RandomizationError,
 }
 
 type ComsWithOpenings<SC> = [(

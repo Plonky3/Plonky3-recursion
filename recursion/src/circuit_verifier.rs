@@ -7,6 +7,7 @@ use p3_circuit::{CircuitBuilder, CircuitBuilderError, CircuitError};
 use p3_commit::Pcs;
 use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
 use p3_uni_stark::StarkGenericConfig;
+use thiserror::Error;
 
 use crate::Target;
 use crate::recursive_generation::GenerationError;
@@ -14,52 +15,22 @@ use crate::recursive_traits::{
     CommitmentTargets, OpenedValuesTargets, ProofTargets, Recursive, RecursiveAir, RecursivePcs,
 };
 
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum VerificationError {
+    #[error("Invalid proof shape")]
     InvalidProofShape,
+
+    #[error("Missing random opened values for existing random commitment")]
     RandomizationError,
-    CircuitError(CircuitError),
-    CircuitBuilderError(CircuitBuilderError),
-    GenerationError(GenerationError),
-}
 
-impl core::fmt::Display for VerificationError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            VerificationError::InvalidProofShape => write!(f, "Invalid proof shape"),
-            VerificationError::RandomizationError => write!(
-                f,
-                "Missing random opened values for existing random commitment"
-            ),
-            VerificationError::CircuitError(e) => {
-                write!(f, "Circuit error: {}", e)
-            }
-            VerificationError::CircuitBuilderError(e) => {
-                write!(f, "Circuit builder error: {}", e)
-            }
-            VerificationError::GenerationError(e) => {
-                write!(f, "Challenge generation error: {}", e)
-            }
-        }
-    }
-}
+    #[error("Error in circuit builder: {0}")]
+    Circuit(#[from] CircuitError),
 
-impl From<CircuitError> for VerificationError {
-    fn from(err: CircuitError) -> Self {
-        VerificationError::CircuitError(err)
-    }
-}
+    #[error("Circuit builder error: {0}")]
+    CircuitBuilder(#[from] CircuitBuilderError),
 
-impl From<CircuitBuilderError> for VerificationError {
-    fn from(err: CircuitBuilderError) -> Self {
-        VerificationError::CircuitBuilderError(err)
-    }
-}
-
-impl From<GenerationError> for VerificationError {
-    fn from(err: GenerationError) -> Self {
-        VerificationError::GenerationError(err)
-    }
+    #[error("Generation error: {0}")]
+    Generation(#[from] GenerationError),
 }
 
 // Method to get all the challenge targets.

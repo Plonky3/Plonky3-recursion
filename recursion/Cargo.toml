@@ -23,6 +23,7 @@ p3-uni-stark.workspace = true
 # Other dependencies
 itertools.workspace = true
 serde.workspace = true
+thiserror.workspace = true
 
 # Local dependencies
 p3-circuit.workspace = true

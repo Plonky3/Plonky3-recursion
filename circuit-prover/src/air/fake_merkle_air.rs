@@ -16,7 +16,7 @@ pub struct FakeMerkleVerifyAir<F> {
 }
 
 impl<F: Field + PrimeCharacteristicRing> FakeMerkleVerifyAir<F> {
-    pub fn new(num_rows: usize) -> Self {
+    pub const fn new(num_rows: usize) -> Self {
         Self {
             num_rows,
             _phantom: core::marker::PhantomData,
@@ -24,7 +24,7 @@ impl<F: Field + PrimeCharacteristicRing> FakeMerkleVerifyAir<F> {
     }
 
     /// Convert FakeMerkleTrace to RowMajorMatrix for proving
-    /// Layout: [left_value, left_index, right_value, right_index, result_value, result_index, path_direction]  
+    /// Layout: [left_value, left_index, right_value, right_index, result_value, result_index, path_direction]
     pub fn trace_to_matrix<ExtF: BasedVectorSpace<F>>(
         trace: &FakeMerkleTrace<ExtF>,
     ) -> RowMajorMatrix<F> {

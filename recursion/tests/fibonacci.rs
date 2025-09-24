@@ -131,9 +131,9 @@ fn test_fibonacci_verifier() -> Result<(), VerificationError> {
     // Set the public inputs and run the verification circuit.
     runner
         .set_public_inputs(&public_values)
-        .map_err(VerificationError::CircuitError)?;
+        .map_err(VerificationError::Circuit)?;
 
-    let _traces = runner.run().map_err(VerificationError::CircuitError)?;
+    let _traces = runner.run().map_err(VerificationError::Circuit)?;
 
     Ok(())
 }
