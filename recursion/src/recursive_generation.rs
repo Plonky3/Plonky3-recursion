@@ -25,6 +25,9 @@ pub enum GenerationError {
 
     #[error("The FRI batch randomization does not correspond to the ZK setting.")]
     RandomizationError,
+
+    #[error("Witness check failed during challenge generation.")]
+    InvalidPowWitness,
 }
 
 /// A type alias for a single opening point and its values.
@@ -191,7 +194,9 @@ impl<SC: StarkGenericConfig, Dft, InputMmcs: Mmcs<Val<SC>>, FriMmcs: Mmcs<SC::Ch
     for TwoAdicFriPcs<Val<SC>, Dft, InputMmcs, FriMmcs>
 where
     Val<SC>: TwoAdicField,
-    SC::Challenger: FieldChallenger<Val<SC>> + GrindingChallenger + CanObserve<FriMmcs::Commitment>,
+    SC::Challenger: FieldChallenger<Val<SC>>
+        + GrindingChallenger<Witness = Val<SC>>
+        + CanObserve<FriMmcs::Commitment>,
 {
     fn generate_challenges(
         &self,
@@ -234,10 +239,16 @@ where
 
         let params = extra_params.ok_or(GenerationError::MissingParameterError)?;
 
-        if params.len() != 1 {
-            return Err(GenerationError::InvalidParameterCount(params.len(), 1));
+        if params.len() != 2 {
+            return Err(GenerationError::InvalidParameterCount(params.len(), 2));
         }
-        let log_height_max = params[0];
+        // Observe PoW and sample bits.
+        let pow_bits = params[0];
+        if !challenger.check_witness(pow_bits, opening_proof.pow_witness) {
+            return Err(GenerationError::InvalidPowWitness);
+        }
+
+        let log_height_max = params[1];
         let log_global_max_height = opening_proof.commit_phase_commits.len() + log_height_max;
         for _ in &opening_proof.query_proofs {
             // For each query proof, we start by generating the random index.

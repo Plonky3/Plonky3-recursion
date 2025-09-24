@@ -47,6 +47,7 @@ fn test_fibonacci_verifier() -> Result<(), VerificationError> {
     let trace = generate_trace_rows::<F>(0, 1, n);
     let fri_params = create_test_fri_params(challenge_mmcs, 1);
     let log_height_max = fri_params.log_final_poly_len + fri_params.log_blowup;
+    let pow_bits = fri_params.proof_of_work_bits;
     let pcs = MyPcs::new(dft, val_mmcs, fri_params);
     let challenger = Challenger::new(perm);
 
@@ -99,7 +100,13 @@ fn test_fibonacci_verifier() -> Result<(), VerificationError> {
         ProofTargets::<MyConfig, HashTargets<F, DIGEST_ELEMS>, InnerFri>::get_values(&proof);
 
     // Generate all the challenge values.
-    let all_challenges = generate_challenges(&air, &config, &proof, &pis, Some(&[log_height_max]))?;
+    let all_challenges = generate_challenges(
+        &air,
+        &config,
+        &proof,
+        &pis,
+        Some(&[pow_bits, log_height_max]),
+    )?;
 
     // Add the verification circuit to the builder.
     verify_circuit::<
