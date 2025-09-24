@@ -3,7 +3,7 @@ use alloc::vec::Vec;
 use alloc::{format, vec};
 use core::array;
 
-use p3_field::{Field, PrimeCharacteristicRing};
+use p3_field::Field;
 use p3_symmetric::{CryptographicPermutation, Permutation};
 use thiserror::Error;
 
@@ -560,7 +560,7 @@ impl<
 
                     // Clone private data option to avoid holding a borrow on self
                     if let Some(Some(NonPrimitiveOpPrivateData::FakeMerkleVerify(private_data))) =
-                        self.complex_op_private_data.get(op_idx).cloned()
+                        self.non_primitive_op_private_data.get(op_idx).cloned()
                     {
                         let mut current_hash = if let Some(val) =
                             self.witness.get(leaf.0 as usize).and_then(|x| x.as_ref())
@@ -630,7 +630,7 @@ impl<
     fn generate_sponge_trace<P, const N: usize, const R: usize, const C: usize>(
         &mut self,
         perm: P,
-    ) -> Result<SpongeTrace<F>, String>
+    ) -> Result<SpongeTrace<F>, CircuitError>
     where
         P: CryptographicPermutation<[F; N]>,
     {

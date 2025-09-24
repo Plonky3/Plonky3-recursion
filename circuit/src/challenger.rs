@@ -1,3 +1,7 @@
+use alloc::vec::Vec;
+
+use p3_field::PrimeCharacteristicRing;
+
 use crate::{CircuitBuilder, ExprId};
 
 pub struct Challenger<const R: usize> {
@@ -26,7 +30,11 @@ impl<const R: usize> Challenger<R> {
         self.reset_flag = true;
     }
 
-    pub fn squeeze<F: Clone>(&mut self, builder: &mut CircuitBuilder<F>, outputs: &[ExprId; R]) {
+    pub fn squeeze<F: Clone + PrimeCharacteristicRing + Eq + core::hash::Hash>(
+        &mut self,
+        builder: &mut CircuitBuilder<F>,
+        outputs: &[ExprId; R],
+    ) {
         assert!(
             self.inputs.len() % R == 0,
             "Number of inputs must be a multiple of R"

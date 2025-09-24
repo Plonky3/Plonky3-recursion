@@ -48,7 +48,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     runner.set_public_inputs(&public_inputs)?;
 
     let traces = runner.run::<_, HASH_STATE_SIZE, HASH_RATE, HASH_CAPACITY>(perm)?;
-    let multi_prover = MultiTableProver::new();
+    let config = build_standard_config_babybear();
+    let table_packing = TablePacking::from_counts(4, 1);
+    let multi_prover = MultiTableProver::new(config).with_table_packing(table_packing);
     let proof = multi_prover.prove_all_tables(&traces)?;
     multi_prover.verify_all_tables(&proof)?;
 

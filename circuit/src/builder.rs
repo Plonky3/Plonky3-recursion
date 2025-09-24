@@ -492,7 +492,7 @@ where
                     let leaf_widx = Self::get_witness_id(
                         expr_to_widx,
                         witness_exprs[0],
-                        "FakeMerkleVerify leaf input",
+                        "FakeMerkl    let multi_prover = MultiTableProver::new();eVerify leaf input",
                     )?;
                     let root_widx = Self::get_witness_id(
                         expr_to_widx,
@@ -509,21 +509,21 @@ where
                     let inputs_widx = witness_exprs
                         .iter()
                         .map(|expr| Self::get_witness_id(expr_to_widx, *expr, "HashAbsorb input"))
-                        .collect();
+                        .collect::<Vec<_>>();
 
                     lowered_ops.push(NonPrimitiveOp::HashAbsorb {
                         reset_flag: *reset,
-                        inputs: inputs_widx,
+                        inputs: inputs_widx.into_iter().collect::<Result<Vec<_>, _>>()?,
                     });
                 }
                 NonPrimitiveOpType::HashSqueeze => {
                     let outputs_widx = witness_exprs
                         .iter()
                         .map(|expr| Self::get_witness_id(expr_to_widx, *expr, "HashSqueeze output"))
-                        .collect();
+                        .collect::<Vec<_>>();
 
                     lowered_ops.push(NonPrimitiveOp::HashSqueeze {
-                        outputs: outputs_widx,
+                        outputs: outputs_widx.into_iter().collect::<Result<Vec<_>, _>>()?,
                     });
                 }
             }
