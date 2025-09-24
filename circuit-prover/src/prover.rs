@@ -95,7 +95,6 @@ where
     pub add: TableProof<F, P, CD>,
     pub mul: TableProof<F, P, CD>,
     pub fake_merkle: TableProof<F, P, CD>,
-    // TODO: add HashSponge table
     /// Packing configuration used when generating the proofs.
     pub table_packing: TablePacking,
     /// Extension field degree: 1 for base field; otherwise the extension degree used.
@@ -220,6 +219,9 @@ where
         EF: Field + BasedVectorSpace<F>,
     {
         debug_assert_eq!(D, EF::DIMENSION, "D parameter must match EF::DIMENSION");
+        let table_packing = self.table_packing;
+        let add_lanes = table_packing.add_lanes();
+        let mul_lanes = table_packing.mul_lanes();
         // Witness
         let witness_matrix = WitnessAir::<F, D>::trace_to_matrix(&traces.witness_trace);
         let witness_air = WitnessAir::<F, D>::new(traces.witness_trace.values.len());
@@ -236,17 +238,17 @@ where
         let public_proof = prove(&self.config, &public_air, public_matrix, pis);
 
         // Add
-        let add_matrix = AddAir::<F, D>::trace_to_matrix(&traces.add_trace);
-        let add_air = AddAir::<F, D>::new(traces.add_trace.lhs_values.len());
+        let add_matrix = AddAir::<F, D>::trace_to_matrix(&traces.add_trace, add_lanes);
+        let add_air = AddAir::<F, D>::new(traces.add_trace.lhs_values.len(), add_lanes);
         let add_proof = prove(&self.config, &add_air, add_matrix, pis);
 
         // Multiplication (uses binomial arithmetic for extension fields)
-        let mul_matrix = MulAir::<F, D>::trace_to_matrix(&traces.mul_trace);
+        let mul_matrix = MulAir::<F, D>::trace_to_matrix(&traces.mul_trace, mul_lanes);
         let mul_air: MulAir<F, D> = if D == 1 {
-            MulAir::<F, D>::new(traces.mul_trace.lhs_values.len())
+            MulAir::<F, D>::new(traces.mul_trace.lhs_values.len(), mul_lanes)
         } else {
             let w = w_binomial.ok_or(ProverError::MissingWForExtension)?;
-            MulAir::<F, D>::new_binomial(traces.mul_trace.lhs_values.len(), w)
+            MulAir::<F, D>::new_binomial(traces.mul_trace.lhs_values.len(), mul_lanes, w)
         };
         let mul_proof = prove(&self.config, &mul_air, mul_matrix, pis);
 
@@ -295,6 +297,9 @@ where
         pis: &Vec<F>,
         w_binomial: Option<F>,
     ) -> Result<(), ProverError> {
+        let table_packing = proof.table_packing;
+        let add_lanes = table_packing.add_lanes();
+        let mul_lanes = table_packing.mul_lanes();
         // Witness
         let witness_air = WitnessAir::<F, D>::new(proof.witness.rows);
         verify(&self.config, &witness_air, &proof.witness.proof, pis)
@@ -311,16 +316,16 @@ where
             .map_err(|_| ProverError::VerificationFailed { phase: "public" })?;
 
         // Add
-        let add_air = AddAir::<F, D>::new(proof.add.rows);
+        let add_air = AddAir::<F, D>::new(proof.add.rows, add_lanes);
         verify(&self.config, &add_air, &proof.add.proof, pis)
             .map_err(|_| ProverError::VerificationFailed { phase: "add" })?;
 
         // Mul
         let mul_air: MulAir<F, D> = if D == 1 {
-            MulAir::<F, D>::new(proof.mul.rows)
+            MulAir::<F, D>::new(proof.mul.rows, mul_lanes)
         } else {
             let w = w_binomial.ok_or(ProverError::MissingWForExtension)?;
-            MulAir::<F, D>::new_binomial(proof.mul.rows, w)
+            MulAir::<F, D>::new_binomial(proof.mul.rows, mul_lanes, w)
         };
         verify(&self.config, &mul_air, &proof.mul.proof, pis)
             .map_err(|_| ProverError::VerificationFailed { phase: "mul" })?;
@@ -384,11 +389,7 @@ mod tests {
         let x_val = BabyBear::from_u64(7);
         let expected_val = BabyBear::from_u64(13); // 7 + 10 - 3 - 1 = 13
         runner.set_public_inputs(&[x_val, expected_val])?;
-        let traces = runner.run()?;
-
-        let traces = runner
-            .run::<DummyPerm, 0, 0, 0>(DummyPerm::default())
-            .unwrap();
+        let traces = runner.run::<DummyPerm, 0, 0, 0>(DummyPerm::default())?;
 
         // Create BabyBear prover and prove all tables
         let config = build_standard_config_babybear();
@@ -467,9 +468,7 @@ mod tests {
         let expected_val = add_expected - w_val;
 
         runner.set_public_inputs(&[x_val, y_val, z_val, expected_val])?;
-        let traces = runner
-            .run::<DummyPerm, 0, 0, 0>(DummyPerm::default())
-            .unwrap();
+        let traces = runner.run::<DummyPerm, 0, 0, 0>(DummyPerm::default())?;
 
         // Create BabyBear prover for extension field (D=4)
         let config = build_standard_config_babybear();
@@ -513,7 +512,7 @@ mod tests {
         let b_val = KoalaBear::from_u64(13);
         let expected_val = KoalaBear::from_u64(647); // 42*13 + 100 - (-1) = 647
         runner.set_public_inputs(&[a_val, b_val, expected_val])?;
-        let traces = runner.run()?;
+        let traces = runner.run::<DummyPerm, 0, 0, 0>(DummyPerm::default())?;
 
         // Create KoalaBear prover
         let config = build_standard_config_koalabear();
@@ -597,7 +596,7 @@ mod tests {
         let expected_val = xy_expected * z_val;
 
         runner.set_public_inputs(&[x_val, y_val, expected_val])?;
-        let traces = runner.run()?;
+        let traces = runner.run::<DummyPerm, 0, 0, 0>(DummyPerm::default())?;
 
         // Create KoalaBear prover for extension field (D=8)
         let config = build_standard_config_koalabear();
@@ -652,7 +651,7 @@ mod tests {
         let expected_val = x_val * y_val + z_val;
         runner.set_public_inputs(&[x_val, y_val, z_val, expected_val])?;
 
-        let traces = runner.run()?;
+        let traces = runner.run::<DummyPerm, 0, 0, 0>(DummyPerm::default())?;
 
         // Build Goldilocks config with challenge degree 2 (Poseidon2)
         let config = build_standard_config_goldilocks();

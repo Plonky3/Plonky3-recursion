@@ -6,6 +6,8 @@ use p3_baby_bear::{BabyBear, Poseidon2BabyBear};
 use p3_circuit::Challenger;
 use p3_circuit::builder::CircuitBuilder;
 use p3_circuit_prover::MultiTableProver;
+use p3_circuit_prover::config::babybear_config::build_standard_config_babybear;
+use p3_circuit_prover::prover::{ProverError, TablePacking};
 use p3_symmetric::{CryptographicHasher, PaddingFreeSponge};
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
@@ -16,13 +18,13 @@ const HASH_RATE: usize = 8;
 const HASH_CAPACITY: usize = 8;
 const HASH_STATE_SIZE: usize = HASH_RATE + HASH_CAPACITY;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), ProverError> {
     let mut rng = SmallRng::seed_from_u64(1);
     let perm = Poseidon2BabyBear::<HASH_STATE_SIZE>::new_from_rng_128(&mut rng);
 
     let mut builder = CircuitBuilder::<F>::new();
 
-    let mut challenger = Challenger::new();
+    let mut challenger = Challenger::default();
 
     // Public inputs: hash inputs and hash output
     let inputs: [_; HASH_STATE_SIZE] = array::from_fn(|_| builder.add_public_input());
@@ -32,7 +34,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     challenger.add_inputs(&inputs);
     challenger.squeeze(&mut builder, &outputs);
 
-    let circuit = builder.build();
+    let circuit = builder.build()?;
     let mut runner = circuit.runner();
 
     // Generate random inputs

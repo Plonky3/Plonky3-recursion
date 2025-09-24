@@ -565,7 +565,7 @@ impl<
                         let mut current_hash = if let Some(val) =
                             self.witness.get(leaf.0 as usize).and_then(|x| x.as_ref())
                         {
-                            val.clone()
+                            *val
                         } else {
                             return Err(CircuitError::NonPrimitiveOpWitnessNotSet {
                                 operation_index: op_idx,
@@ -579,23 +579,23 @@ impl<
                             .zip(private_data.path_directions.iter())
                         {
                             // Current hash becomes left operand
-                            left_values.push(current_hash.clone());
+                            left_values.push(current_hash);
                             left_index.push(leaf.0); // Points to witness bus
 
                             // Sibling becomes right operand (private data - not on witness bus)
-                            right_values.push(sibling_value.clone());
+                            right_values.push(*sibling_value);
                             right_index.push(0); // Not on witness bus - private data
 
                             // Compute parent hash (simple mock hash: left + right + direction)
-                            let parent_hash = current_hash.clone()
-                                + sibling_value.clone()
+                            let parent_hash = current_hash
+                                + *sibling_value
                                 + if direction {
                                     F::from_u64(1)
                                 } else {
                                     F::from_u64(0)
                                 };
 
-                            result_values.push(parent_hash.clone());
+                            result_values.push(parent_hash);
                             result_index.push(root.0); // Points to witness bus
 
                             path_directions.push(if direction { 1 } else { 0 });
@@ -605,7 +605,7 @@ impl<
                         }
 
                         // Root is computed; write back to the witness bus at root index
-                        self.set_witness(root, current_hash.clone())?;
+                        self.set_witness(root, current_hash)?;
                     } else {
                         return Err(CircuitError::NonPrimitiveOpMissingPrivateData {
                             operation_index: op_idx,
@@ -648,7 +648,7 @@ impl<
                         let idx = inputs[i];
                         row.rate_indices.push(idx.0);
                         let val = self.get_witness(idx)?;
-                        row.rate_values.push(val.clone());
+                        row.rate_values.push(val);
                         state[i] = val;
                     }
 
@@ -670,8 +670,8 @@ impl<
                         row.rate_indices.push(idx.0);
                         let val = self.get_witness(idx)?;
                         // Sanity check that outputs are set to the correct values
-                        self.set_witness(idx, val.clone())?;
-                        row.rate_values.push(val.clone());
+                        self.set_witness(idx, val)?;
+                        row.rate_values.push(val);
                         state[i] = val;
                     }
 

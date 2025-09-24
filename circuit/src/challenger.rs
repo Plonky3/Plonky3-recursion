@@ -9,6 +9,12 @@ pub struct Challenger<const R: usize> {
     pub reset_flag: bool,
 }
 
+impl<const R: usize> Default for Challenger<R> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<const R: usize> Challenger<R> {
     pub fn new() -> Self {
         Self {
