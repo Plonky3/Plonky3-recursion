@@ -42,7 +42,7 @@ impl<const R: usize> Challenger<R> {
         outputs: &[ExprId; R],
     ) {
         assert!(
-            self.inputs.len() % R == 0,
+            self.inputs.len().is_multiple_of(R),
             "Number of inputs must be a multiple of R"
         );
 
