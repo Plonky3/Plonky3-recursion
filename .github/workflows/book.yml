@@ -39,7 +39,7 @@ jobs:
         run: mdbook build book
 
       - name: Upload built book
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: built-mdbook
           path: ./book/book
