@@ -18,6 +18,7 @@ use p3_circuit::{CircuitBuilderError, CircuitError};
 use p3_field::{BasedVectorSpace, Field};
 use p3_merkle_tree_air::air::MerkleVerifyAir;
 use p3_uni_stark::{prove, verify};
+use thiserror::Error;
 
 use crate::air::{AddAir, ConstAir, MulAir, PublicAir, WitnessAir};
 use crate::config::{ProverConfig, StarkField, StarkPermutation};
@@ -118,58 +119,27 @@ where
 }
 
 /// Errors that can arise during proving or verification.
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum ProverError {
     /// Unsupported extension degree encountered.
+    #[error("unsupported extension degree: {0} (supported: 1,2,4,6,8)")]
     UnsupportedDegree(usize),
+
     /// Missing binomial parameter W for extension-field multiplication.
+    #[error("missing binomial parameter W for extension-field multiplication")]
     MissingWForExtension,
+
     /// Circuit execution error.
-    Circuit(CircuitError),
+    #[error("circuit error: {0}")]
+    Circuit(#[from] CircuitError),
+
     /// Circuit building/lowering error.
-    Builder(CircuitBuilderError),
+    #[error("circuit build error: {0}")]
+    Builder(#[from] CircuitBuilderError),
+
     /// Verification failed for a specific table/phase.
+    #[error("verification failed in {phase}")]
     VerificationFailed { phase: &'static str },
-}
-
-impl core::fmt::Display for ProverError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            ProverError::UnsupportedDegree(d) => {
-                write!(
-                    f,
-                    "unsupported extension degree: {d} (supported: 1,2,4,6,8)"
-                )
-            }
-            ProverError::MissingWForExtension => {
-                write!(
-                    f,
-                    "missing binomial parameter W for extension-field multiplication"
-                )
-            }
-            ProverError::Circuit(err) => {
-                write!(f, "circuit error: {err}")
-            }
-            ProverError::Builder(err) => {
-                write!(f, "circuit build error: {err}")
-            }
-            ProverError::VerificationFailed { phase } => {
-                write!(f, "verification failed in {phase}")
-            }
-        }
-    }
-}
-
-impl From<CircuitError> for ProverError {
-    fn from(err: CircuitError) -> Self {
-        ProverError::Circuit(err)
-    }
-}
-
-impl From<CircuitBuilderError> for ProverError {
-    fn from(err: CircuitBuilderError) -> Self {
-        ProverError::Builder(err)
-    }
 }
 
 impl<F, P, const CD: usize> MultiTableProver<F, P, CD>

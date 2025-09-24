@@ -41,6 +41,7 @@ p3-matrix = { git = "https://github.com/Plonky3/Plonky3" }
 p3-merkle-tree = { git = "https://github.com/Plonky3/Plonky3" }
 p3-symmetric = { git = "https://github.com/Plonky3/Plonky3" }
 p3-uni-stark = { git = "https://github.com/Plonky3/Plonky3" }
+p3-util = { git = "https://github.com/Plonky3/Plonky3" }
 
 # Other common dependencies
 itertools = { version = "0.14.0", default-features = false, features = [
@@ -51,6 +52,7 @@ serde = { version = "1.0", default-features = false, features = [
     "derive",
     "alloc",
 ] }
+thiserror = { version = "2.0", default-features = false }
 
 # Local dependencies
 p3-challenger-air = { path = "challenger-air", version = "0.1.0" }

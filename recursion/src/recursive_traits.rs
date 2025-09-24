@@ -3,9 +3,9 @@ use alloc::vec::Vec;
 use core::marker::PhantomData;
 
 use p3_air::Air;
+use p3_circuit::CircuitBuilder;
 use p3_circuit::config::MerkleVerifyConfig;
 use p3_circuit::utils::{ColumnsTargets, RowSelectorsTargets, symbolic_to_circuit};
-use p3_circuit::{CircuitBuilder, ExprId};
 use p3_commit::{Mmcs, Pcs};
 use p3_field::{ExtensionField, Field};
 use p3_uni_stark::{
@@ -13,7 +13,9 @@ use p3_uni_stark::{
     get_log_quotient_degree, get_symbolic_constraints,
 };
 
-/// Structure representing all the wires necessary for an input proof.
+use crate::Target;
+
+/// Structure representing all the targets necessary for an input proof.
 pub struct ProofTargets<
     SC: StarkGenericConfig,
     Comm: Recursive<SC::Challenge>,
@@ -34,10 +36,10 @@ pub struct CommitmentTargets<F: Field, Comm: Recursive<F>> {
 
 // TODO: Move these structures to their respective crates.
 pub struct OpenedValuesTargets<SC: StarkGenericConfig> {
-    pub trace_local_targets: Vec<ExprId>,
-    pub trace_next_targets: Vec<ExprId>,
-    pub quotient_chunks_targets: Vec<Vec<ExprId>>,
-    pub random_targets: Option<Vec<ExprId>>,
+    pub trace_local_targets: Vec<Target>,
+    pub trace_next_targets: Vec<Target>,
+    pub quotient_chunks_targets: Vec<Vec<Target>>,
+    pub random_targets: Option<Vec<Target>>,
     _phantom: PhantomData<SC>,
 }
 
@@ -65,12 +67,12 @@ pub trait Recursive<F: Field> {
     /// TODO: Should we move this to Pcs instead?
     fn num_challenges(&self) -> usize;
 
-    /// Creates new wires for all the necessary challenges.
+    /// Creates new targets for all the necessary challenges.
     /// TODO: Should we move this to Pcs instead?
-    fn get_challenges<C: MerkleVerifyConfig, const BF: usize, const EF: usize>(
+    fn get_challenges<C: MerkleVerifyConfig>(
         &self,
         circuit: &mut CircuitBuilder<F, C>,
-    ) -> Vec<ExprId> {
+    ) -> Vec<Target> {
         let num_challenges = self.num_challenges();
 
         let mut challenges = Vec::with_capacity(num_challenges);
@@ -105,7 +107,7 @@ type Commitment<SC> = <<SC as StarkGenericConfig>::Pcs as Pcs<
     <SC as StarkGenericConfig>::Challenger,
 >>::Commitment;
 
-type ComsWithOpenings<Comm, Domain> = [(Comm, Vec<(Domain, Vec<(ExprId, Vec<ExprId>)>)>)];
+pub type ComsWithOpenings<Comm, Domain> = [(Comm, Vec<(Domain, Vec<(Target, Vec<Target>)>)>)];
 
 type ComsToVerify<SC> = [(
     Commitment<SC>,
@@ -118,7 +120,7 @@ type ComsToVerify<SC> = [(
 )];
 
 /// Trait which defines the methods necessary
-/// for a Pcs to generate values for associated wires.
+/// for a Pcs to generate values for associated targets.
 /// Generalize
 pub trait PcsGeneration<SC: StarkGenericConfig, OpeningProof> {
     fn generate_challenges<InputProof: Recursive<SC::Challenge>, const D: usize>(
@@ -130,7 +132,6 @@ pub trait PcsGeneration<SC: StarkGenericConfig, OpeningProof> {
 }
 
 /// Trait including the methods necessary for the recursive version of Pcs.
-/// Prepend Recursive
 pub trait RecursivePcs<
     SC: StarkGenericConfig,
     InputProof: Recursive<SC::Challenge>,
@@ -141,27 +142,27 @@ pub trait RecursivePcs<
 {
     type RecursiveProof;
 
-    /// Creates new wires for all the challenges necessary when computing the Pcs.
-    fn get_challenges_circuit<C: MerkleVerifyConfig, const BF: usize, const EF: usize>(
+    /// Creates new targets for all the challenges necessary when computing the Pcs.
+    fn get_challenges_circuit<C: MerkleVerifyConfig>(
         circuit: &mut CircuitBuilder<SC::Challenge, C>,
         proof_targets: &ProofTargets<SC, Comm, OpeningProof>,
-    ) -> Vec<ExprId>;
+    ) -> Vec<Target>;
 
     /// Adds the circuit which verifies the Pcs computation.
-    fn verify_circuit<C: MerkleVerifyConfig, const BF: usize, const EF: usize>(
+    fn verify_circuit<C: MerkleVerifyConfig>(
         &self,
         circuit: &mut CircuitBuilder<SC::Challenge, C>,
-        challenges: &[ExprId],
+        challenges: &[Target],
         commitments_with_opening_points: &ComsWithOpenings<Comm, Domain>,
         opening_proof: &OpeningProof,
     );
 
-    /// Computes wire selectors at `point` in the circuit.
-    fn selectors_at_point_circuit<C: MerkleVerifyConfig, const BF: usize, const EF: usize>(
+    /// Computes target selectors at `point` in the circuit.
+    fn selectors_at_point_circuit<C: MerkleVerifyConfig>(
         &self,
         circuit: &mut CircuitBuilder<SC::Challenge, C>,
         domain: &Domain,
-        point: &ExprId,
+        point: &Target,
     ) -> RecursiveLagrangeSelectors;
 
     /// Computes a disjoint domain given the degree and the current domain. This is the same as the original method in Pcs, but is also used in the verifier circuit.
@@ -170,8 +171,13 @@ pub trait RecursivePcs<
     /// Split a domain given the degree and the current domain. This is the same as the original method in Pcs, but is also used in the verifier circuit.
     fn split_domains(&self, trace_domain: &Domain, degree: usize) -> Vec<Domain>;
 
+    /// Returns the log of the domain's size. This is the same as the original method in Pcs, but is also used in the verifier circuit.
+    fn log_size(&self, trace_domain: &Domain) -> usize;
+
     /// Returns the size of the domain. This is the same as the original method in Pcs, but is also used in the verifier circuit.
-    fn size(&self, trace_domain: &Domain) -> usize;
+    fn size(&self, trace_domain: &Domain) -> usize {
+        1 << self.log_size(trace_domain)
+    }
 
     /// Returns the first point in the domain. This is the same as the original method in Pcs, but is also used in the verifier circuit.
     fn first_point(&self, trace_domain: &Domain) -> SC::Challenge;
@@ -180,7 +186,7 @@ pub trait RecursivePcs<
 /// Circuit version of the `LagrangeSelectors`.
 pub struct RecursiveLagrangeSelectors {
     pub row_selectors: RowSelectorsTargets,
-    pub inv_vanishing: ExprId,
+    pub inv_vanishing: Target,
 }
 
 /// Trait including methods necessary to compute the verification of an AIR's constraints,
@@ -190,13 +196,13 @@ pub trait RecursiveAir<F: Field> {
     fn width(&self) -> usize;
 
     /// Circuit version of the AIR constraints.
-    fn eval_folded_circuit<C: MerkleVerifyConfig, const BF: usize, const EF: usize>(
+    fn eval_folded_circuit<C: MerkleVerifyConfig>(
         &self,
         builder: &mut CircuitBuilder<F, C>,
         sels: &RecursiveLagrangeSelectors,
-        alpha: &ExprId,
+        alpha: &Target,
         columns: ColumnsTargets,
-    ) -> ExprId;
+    ) -> Target;
 
     /// Infers log of constraint degree.
     fn get_log_quotient_degree(&self, num_public_values: usize, is_zk: usize) -> usize;
@@ -210,13 +216,13 @@ where
         Self::width(self)
     }
 
-    fn eval_folded_circuit<C: MerkleVerifyConfig, const BF: usize, const EF: usize>(
+    fn eval_folded_circuit<C: MerkleVerifyConfig>(
         &self,
         builder: &mut CircuitBuilder<F, C>,
         sels: &RecursiveLagrangeSelectors,
-        alpha: &ExprId,
+        alpha: &Target,
         columns: ColumnsTargets,
-    ) -> ExprId {
+    ) -> Target {
         let symbolic_constraints: Vec<SymbolicExpression<F>> =
             get_symbolic_constraints(self, 0, columns.public_values.len());
 

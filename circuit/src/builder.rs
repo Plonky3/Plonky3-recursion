@@ -3,6 +3,7 @@ use alloc::{format, vec};
 
 use hashbrown::{HashMap, HashSet};
 use p3_field::PrimeCharacteristicRing;
+use thiserror::Error;
 
 use crate::circuit::Circuit;
 use crate::config::MerkleVerifyConfig;
@@ -56,7 +57,7 @@ fn build_connect_dsu(connects: &[(ExprId, ExprId)]) -> HashMap<usize, usize> {
 ///
 /// This struct provides methods to build up a computation graph by adding:
 /// - Public inputs
-/// - Constants  
+/// - Constants
 /// - Arithmetic operations (add, multiply, subtract)
 /// - Assertions (values that must equal zero)
 /// - Complex operations (like Merkle tree verification)
@@ -80,34 +81,22 @@ pub struct CircuitBuilder<F, C: MerkleVerifyConfig> {
 }
 
 /// Errors that can occur during circuit building/lowering.
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum CircuitBuilderError {
     /// Expression not found in the witness mapping during lowering.
+    #[error("Expression {expr_id:?} not found in witness mapping: {context}")]
     MissingExprMapping {
         expr_id: ExprId,
         context: alloc::string::String,
     },
+
     /// Non-primitive op received an unexpected number of input expressions.
+    #[error("{op} expects exactly {expected} witness expressions, got {got}")]
     NonPrimitiveOpArity {
         op: &'static str,
         expected: usize,
         got: usize,
     },
-}
-
-impl core::fmt::Display for CircuitBuilderError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            CircuitBuilderError::MissingExprMapping { expr_id, context } => write!(
-                f,
-                "Expression {expr_id:?} not found in witness mapping: {context}"
-            ),
-            CircuitBuilderError::NonPrimitiveOpArity { op, expected, got } => write!(
-                f,
-                "{op} expects exactly {expected} witness expressions, got {got}"
-            ),
-        }
-    }
 }
 
 impl<F, C: MerkleVerifyConfig> Default for CircuitBuilder<F, C>
