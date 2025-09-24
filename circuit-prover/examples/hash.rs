@@ -45,7 +45,7 @@ fn main() -> Result<(), ProverError> {
     let output_values = hasher.hash_iter(input_values);
     let public_inputs = input_values
         .into_iter()
-        .chain(output_values.into_iter())
+        .chain(output_values)
         .collect::<Vec<_>>();
     runner.set_public_inputs(&public_inputs)?;
 
