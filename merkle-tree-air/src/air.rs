@@ -1,5 +1,7 @@
+use alloc::vec;
+use alloc::vec::Vec;
 use core::marker::PhantomData;
-use std::ops::Range;
+use core::ops::Range;
 
 use itertools::izip;
 use p3_air::{Air, AirBuilder, BaseAir};
