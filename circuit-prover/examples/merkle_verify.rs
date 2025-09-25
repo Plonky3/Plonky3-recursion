@@ -1,7 +1,7 @@
 use std::env;
 
-/// Fake Merkle verification circuit: Prove knowledge of a leaf in a Merkle tree
-/// Public inputs: leaf_hash, expected_root
+/// Merkle verification circuit: Prove knowledge of a leaf in a Merkle tree
+/// Public inputs: leaf_hash, leaf_index, expected_root
 /// Private inputs: merkle path (siblings + directions)
 use p3_baby_bear::BabyBear;
 use p3_circuit::op::MerkleVerifyConfig;
@@ -26,7 +26,7 @@ fn main() -> Result<(), ProverError> {
     let index_expr = builder.add_public_input();
     let expected_root = vec![builder.add_public_input(), builder.add_public_input()];
 
-    // Add fake Merkle verification operation
+    // Add a Merkle verification operation
     // This declares that leaf_hash and expected_root are connected to witness bus
     // The AIR constraints will verify the Merkle path is valid
     let merkle_op_id =

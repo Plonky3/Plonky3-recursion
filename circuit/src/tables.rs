@@ -173,14 +173,14 @@ pub struct MerkleTrace<F> {
     pub merkle_paths: Vec<MerklePathTrace<F>>,
 }
 
-/// A single Merkle Path verification table (simplified: single field elements)
+/// A single Merkle Path verification table
 #[derive(Debug, Clone, Default)]
 pub struct MerklePathTrace<F> {
-    /// Left operand values (current hash)
+    /// Left operand values (current hash). A vector of field elements representing a digest.
     pub left_values: Vec<Vec<F>>,
-    /// Left operand indices
+    /// Left operand indices.
     pub left_index: Vec<Vec<u32>>,
-    /// Right operand values (sibling hash)
+    /// Right operand values (sibling hash). A vector of field elements representing a digest
     pub right_values: Vec<Vec<F>>,
     /// Right operand indices (not on witness bus - private)
     pub right_index: Vec<u32>,
@@ -212,51 +212,6 @@ pub struct MerklePrivateData<F> {
 }
 
 impl<F: Clone + Default> MerklePrivateData<F> {
-    // // TODO: Maybe an unsafe cast might be more efficient here
-    // fn into_bf_slice<BF, BaseFieldDigest>(f_slice: &[F]) -> Result<BaseFieldDigest, CircuitError>
-    // where
-    //     BF: PrimeCharacteristicRing + Copy,
-    //     F: BasedVectorSpace<BF>,
-    //     BaseFieldDigest: FeltArray<Field = BF>,
-    // {
-    //     f_slice
-    //         .iter()
-    //         .flat_map(F::as_basis_coefficients_slice)
-    //         .copied()
-    //         .collect::<Vec<BF>>()
-    //         .try_into()
-    //         .map_err(|_| CircuitError::MerkleVerifyDigestLengthMismatch {
-    //             expected: BaseFieldDigest::DIGEST_ELEMS,
-    //             got: f_slice.len() * F::DIMENSION,
-    //         })
-    // }
-
-    // // TODO: Maybe an unsafe cast might be more efficient here
-    // fn into_ef_slice<BF, BaseFieldDigest, ExtensionFieldDigest>(
-    //     bf_slice: &BaseFieldDigest,
-    // ) -> Result<ExtensionFieldDigest, CircuitError>
-    // where
-    //     BF: PrimeCharacteristicRing + Copy,
-    //     F: BasedVectorSpace<BF>,
-    //     BaseFieldDigest: FeltArray<Field = BF>,
-    //     ExtensionFieldDigest: FeltArray<Field = F>,
-    // {
-    //     let f_vec = <BaseFieldDigest as Into<Vec<BF>>>::into(bf_slice.clone())
-    //         .chunks(F::DIMENSION)
-    //         .map(F::from_basis_coefficients_slice)
-    //         .collect::<Option<Vec<F>>>()
-    //         .ok_or(CircuitError::MerkleVerifyDigestLengthMismatch {
-    //             expected: BaseFieldDigest::DIGEST_ELEMS,
-    //             got: BaseFieldDigest::DIGEST_ELEMS * F::DIMENSION,
-    //         })?;
-    //     f_vec
-    //         .try_into()
-    //         .map_err(|_| CircuitError::MerkleVerifyDigestLengthMismatch {
-    //             expected: ExtensionFieldDigest::DIGEST_ELEMS,
-    //             got: BaseFieldDigest::DIGEST_ELEMS * F::DIMENSION,
-    //         })
-    // }
-
     pub fn to_trace(
         &self,
         merkle_config: &MerkleVerifyConfig<F>,

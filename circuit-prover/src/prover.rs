@@ -400,8 +400,8 @@ mod tests {
         let traces = runner.run()?;
 
         // Create BabyBear prover and prove all tables
-        let (config, merkle_config) = build_standard_config_babybear::<BabyBear>();
-        let multi_prover = MultiTableProver::new(config).with_merkle_table(merkle_config.into());
+        let (config, _) = build_standard_config_babybear::<BabyBear>();
+        let multi_prover = MultiTableProver::new(config);
         let proof = multi_prover.prove_all_tables(&traces)?;
 
         // Verify all proofs

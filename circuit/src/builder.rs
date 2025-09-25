@@ -502,11 +502,11 @@ where
             match op_type {
                 NonPrimitiveOpType::MerkleVerify(config) => {
                     if witness_exprs.len() != config.input_size() {
-                        panic!(
-                            "MerkleVerify expects exactly {} witness expressions, got {}",
-                            config.input_size(),
-                            witness_exprs.len()
-                        );
+                        return Err(CircuitBuilderError::NonPrimitiveOpArity {
+                            op: "MerkleVerify",
+                            expected: config.input_size(),
+                            got: witness_exprs.len(),
+                        });
                     }
                     let leaf_widx: Vec<WitnessId> = (0..config.ext_field_digest_elems)
                         .map(|i| {
