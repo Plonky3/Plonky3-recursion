@@ -23,6 +23,7 @@ where
         // Currently no concrete FRI op type is wired; reject for now
 
         // For now, return unsupported error since FRI lowering is not implemented
+        // TODO: Add FRI ops when they land
         Err(CircuitBuilderError::UnsupportedNonPrimitiveOp {
             op: NonPrimitiveOpType::FriVerify,
         })

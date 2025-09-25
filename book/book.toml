@@ -1,0 +1,35 @@
+[book]
+authors = ["Polygon Labs"]
+language = "en"
+multilingual = false
+src = "src"
+title = "The Plonky3 recursion book"
+
+[rust]
+edition = "2024"
+
+[build]
+create-missing = true
+
+[preprocessor.index]
+
+[preprocessor.links]
+
+[preprocessor.katex]
+
+[preprocessor.bib]
+bibliography = "bibliography.bib"
+link-citations = true
+
+[preprocessor.mermaid]
+command = "mdbook-mermaid"
+
+[output.html]
+additional-js = ["mermaid.min.js", "mermaid-init.js"]
+
+[output.html.print]
+# Disable page break
+page-break = false
+
+[output.html.search]
+limit-results = 15

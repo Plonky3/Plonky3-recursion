@@ -98,34 +98,8 @@ pub trait RecursiveExtensionMmcs<F: Field, EF: ExtensionField<F>> {
     type Proof: Recursive<EF, Input = <Self::Input as Mmcs<EF>>::Proof>;
 }
 
-type Commitment<SC> = <<SC as StarkGenericConfig>::Pcs as Pcs<
-    <SC as StarkGenericConfig>::Challenge,
-    <SC as StarkGenericConfig>::Challenger,
->>::Commitment;
-
-pub type ComsWithOpenings<Comm, Domain> = [(Comm, Vec<(Domain, Vec<(Target, Vec<Target>)>)>)];
-
-type ComsToVerify<SC> = [(
-    Commitment<SC>,
-    Vec<
-        Vec<(
-            <SC as StarkGenericConfig>::Challenge,
-            Vec<<SC as StarkGenericConfig>::Challenge>,
-        )>,
-    >,
-)];
-
-/// Trait which defines the methods necessary
-/// for a Pcs to generate values for associated targets.
-/// Generalize
-pub trait PcsGeneration<SC: StarkGenericConfig, OpeningProof> {
-    fn generate_challenges<InputProof: Recursive<SC::Challenge>, const D: usize>(
-        config: &SC,
-        challenger: &mut SC::Challenger,
-        coms_to_verify: &ComsToVerify<SC>,
-        opening_proof: &OpeningProof,
-    ) -> Vec<SC::Challenge>;
-}
+pub(crate) type ComsWithOpeningsTargets<Comm, Domain> =
+    [(Comm, Vec<(Domain, Vec<(Target, Vec<Target>)>)>)];
 
 /// Trait including the methods necessary for the recursive version of Pcs.
 pub trait RecursivePcs<
@@ -149,7 +123,7 @@ pub trait RecursivePcs<
         &self,
         circuit: &mut CircuitBuilder<SC::Challenge>,
         challenges: &[Target],
-        commitments_with_opening_points: &ComsWithOpenings<Comm, Domain>,
+        commitments_with_opening_points: &ComsWithOpeningsTargets<Comm, Domain>,
         opening_proof: &OpeningProof,
     );
 

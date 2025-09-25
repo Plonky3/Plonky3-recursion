@@ -17,6 +17,6 @@ pub use builder::{CircuitBuilder, CircuitBuilderError};
 pub use circuit::Circuit;
 pub use expr::{Expr, ExpressionGraph};
 pub use op::{FakeMerklePrivateData, NonPrimitiveOp, NonPrimitiveOpPrivateData, Prim};
-pub use ops::{FriConfig, FriOps, MerkleConfig, MerkleOps};
+pub use ops::{FriOps, MerkleOps};
 pub use tables::{CircuitError, CircuitRunner, FakeMerkleTrace, Traces};
 pub use types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};

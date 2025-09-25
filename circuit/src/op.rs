@@ -14,7 +14,7 @@ use crate::types::WitnessId;
 ///
 /// Primitive operations are kept separate from complex operations to maintain
 /// clean optimization boundaries and enable aggressive compiler transformations.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Prim<F> {
     /// Load a constant value into the witness table
     ///
@@ -49,7 +49,8 @@ pub enum Prim<F> {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum NonPrimitiveOpType {
     FakeMerkleVerify,
-    // Future: FriVerify, HashAbsorb, etc.
+    FriVerify, // TODO: unimplemented
+               // Future: FriVerify, HashAbsorb, etc.
 }
 
 /// Non-primitive operations representing complex cryptographic constraints.
