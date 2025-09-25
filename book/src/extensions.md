@@ -3,7 +3,7 @@
 The fixed recursive verifier described in this book supports only fixed, predetermined programs.  
 This design choice maximizes performance but raises the question: **how can one prove statements of varying size or complexity?**
 
-We highlight below to distinct approaches to alleviate this limitation and allow for arbitrary recursion
+We highlight below two distinct approaches to alleviate this limitation and allow for arbitrary recursion
 
 ## Tree-style recursion for variable-length inputs
 

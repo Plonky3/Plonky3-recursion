@@ -41,7 +41,7 @@ The actual soundness comes from the constraints inside the operation-specific ST
 The Witness table is a central bus that stores values shared across operations. It gathers the pairs `(index, value)` that will be accessed by 
 the different chips via lookups to enforce consistency.
 
-- The index column is *transparent*, or *preprocessed* [@@rap]: it is known to both prover and verifier in advance, requiring no online commitment.[^1]
+- The index column is *preprocessed*, or *preprocessed* [@@rap]: it is known to both prover and verifier in advance, requiring no online commitment.[^1]
 - The Witness table values are represented as extension field elements directly (where base field elements are padded with 0 on higher coordinates) for addressing efficiency.
 
 
@@ -71,12 +71,11 @@ flowchart TB
     end
 
     subgraph C[CONST Chip]
-      C1["• Transparent rows: (1, 37), (3, 111), (4, 0)"]
-      C2["• Lookup: transparent pairs must be present in Witness (aggregated lookup)."]
+      C1["• Preprocessed rows: (1, 37), (3, 111), (4, 0)"]
+      C2["• Lookup: preprocessed pairs must be present in Witness (aggregated lookup)."]
     end
 
     subgraph W[Witness Table]
-      <!-- Note: The ugly `&nbsp;` are just empty whitespaces for alignment, I couldn't find a better way. -->
       W0["0: 3 // &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;public input x"]
       W1["1: 37 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;// constant"]
       W2["2: 111 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;// p = 37 * x"]
@@ -101,4 +100,4 @@ flowchart TB
 ```
 
 
-[^1]: Transparent columns / polynomials can be reconstructed manually by the verifier, removing the need for a prover to commit to them and later perform the FRI protocol on them. However, the verifier needs $O(n)$ work when these columns are not structured, as it still needs to interpolate them. To alleviate this, the Plonky3 recursion stack performs *offline* commitment of unstructured transparent columns, so that we need only one instance of the FRI protocol to verify all transparent columns evaluations. 
+[^1]: Preprocessed columns / polynomials can be reconstructed manually by the verifier, removing the need for a prover to commit to them and later perform the FRI protocol on them. However, the verifier needs $O(n)$ work when these columns are not structured, as it still needs to interpolate them. To alleviate this, the Plonky3 recursion stack performs *offline* commitment of unstructured preprocessed columns, so that we need only one instance of the FRI protocol to verify all preprocessed columns evaluations. 
