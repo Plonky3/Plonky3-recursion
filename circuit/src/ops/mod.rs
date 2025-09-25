@@ -1,3 +1,5 @@
+pub mod fri;
 pub mod merkle;
 
-pub use merkle::MerkleOps;
+pub use fri::{FriConfig, FriOps};
+pub use merkle::{MerkleConfig, MerkleOps};

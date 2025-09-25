@@ -8,7 +8,6 @@ use thiserror::Error;
 use crate::circuit::Circuit;
 use crate::expr::{Expr, ExpressionGraph};
 use crate::op::{NonPrimitiveOp, NonPrimitiveOpType, Prim};
-use crate::policy::NonPrimPolicy;
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};
 
 /// Sparse disjoint-set "find" with path compression over a HashMap (iterative).
@@ -78,8 +77,8 @@ pub struct CircuitBuilder<F> {
     /// Builder-level constant pool: value -> unique Const ExprId
     const_pool: HashMap<F, ExprId>,
 
-    /// Runtime policy for non-primitive ops
-    policy: alloc::boxed::Box<dyn NonPrimPolicy>,
+    /// Enabled non-primitive operation types
+    enabled_ops: HashSet<NonPrimitiveOpType>,
 }
 
 /// Errors that can occur during circuit building/lowering.
@@ -140,26 +139,24 @@ where
             pending_connects: Vec::new(),
             non_primitive_ops: Vec::new(),
             const_pool,
-            policy: alloc::boxed::Box::new(crate::policy::DefaultProfile),
+            enabled_ops: HashSet::new(), // All non-primitive ops are disabled by default
         }
     }
 
-    /// Create a new builder with a custom policy.
-    pub fn with_policy(policy: alloc::boxed::Box<dyn NonPrimPolicy>) -> Self {
-        let mut builder = Self::new();
-        builder.policy = policy;
-        builder
+    /// Enable a non-primitive operation type on this builder.
+    pub fn enable_op(&mut self, op: NonPrimitiveOpType) {
+        self.enabled_ops.insert(op);
     }
 
-    /// Create a new builder that allows all non-primitive ops.
-    pub fn with_allow_all() -> Self {
-        Self::with_policy(alloc::boxed::Box::new(crate::policy::AllowAllProfile))
+    /// Enable Merkle verification operations.
+    // TODO: Replace with actual Merkle verification once it lands
+    pub fn enable_merkle(&mut self) {
+        self.enable_op(NonPrimitiveOpType::FakeMerkleVerify);
     }
 
-    /// Create a new builder with a runtime list of allowed ops.
-    pub fn with_allowlist(ops: &[crate::op::NonPrimitiveOpType]) -> Self {
-        let allow = crate::policy::RuntimeAllowlist::from_slice(ops);
-        Self::with_policy(alloc::boxed::Box::new(allow))
+    /// Enable FRI verification operations.
+    pub fn enable_fri(&mut self) {
+        // TODO: Add FRI ops when they land
     }
 
     /// Add a public input to the circuit.
@@ -233,18 +230,27 @@ where
         }
     }
 
-    /// Helper to push a non-primitive op after policy check. Returns op id.
+    /// Helper to push a non-primitive op. Returns op id.
     pub(crate) fn push_non_primitive_op(
         &mut self,
         op_type: NonPrimitiveOpType,
         witness_exprs: Vec<ExprId>,
-    ) -> Result<NonPrimitiveOpId, CircuitBuilderError> {
-        if !self.policy.is_allowed(op_type.clone()) {
-            return Err(CircuitBuilderError::OpNotAllowed { op: op_type });
-        }
+    ) -> NonPrimitiveOpId {
         let op_id = NonPrimitiveOpId(self.non_primitive_ops.len() as u32);
         self.non_primitive_ops.push((op_id, op_type, witness_exprs));
-        Ok(op_id)
+        op_id
+    }
+
+    /// Check whether an op type is enabled on this builder.
+   fn is_op_enabled(&self, op: &NonPrimitiveOpType) -> bool {
+        self.enabled_ops.contains(op)
+    }
+
+    pub(crate) fn ensure_op_enabled(&self, op: NonPrimitiveOpType) -> Result<(), CircuitBuilderError> {
+        if !self.is_op_enabled(&op) {
+            return Err(CircuitBuilderError::OpNotAllowed { op });
+        }
+        Ok(())
     }
 }
 
@@ -530,9 +536,7 @@ mod tests {
 
     use super::*;
     use crate::op::NonPrimitiveOpType;
-    use crate::ops::MerkleOps;
-    use crate::policy::RuntimeAllowlist;
-    use crate::{AllowAllProfile, CircuitError, NonPrimitiveOp};
+    use crate::{CircuitError, MerkleConfig, MerkleOps, NonPrimitiveOp};
 
     #[test]
     fn test_circuit_basic_api() {
@@ -739,12 +743,13 @@ mod tests {
     }
 
     #[test]
-    fn test_policy_blocks_non_primitive_by_default() {
+    fn test_merkle_config_blocks_when_disabled() {
         let mut builder = CircuitBuilder::<BabyBear>::new();
 
         let leaf = builder.add_public_input();
         let root = builder.add_public_input();
 
+        // not enabled yet
         let err = builder.add_fake_merkle_verify(leaf, root).unwrap_err();
         match err {
             CircuitBuilderError::OpNotAllowed { op } => {
@@ -755,13 +760,13 @@ mod tests {
     }
 
     #[test]
-    fn test_allow_all_accepts_merkle() {
-        let mut builder: CircuitBuilder<BabyBear> =
-            CircuitBuilder::with_policy(alloc::boxed::Box::new(AllowAllProfile));
+    fn test_merkle_config_allows_when_enabled() {
+        let mut builder = CircuitBuilder::<BabyBear>::new();
 
         let leaf = builder.add_public_input();
         let root = builder.add_public_input();
 
+        builder.enable_merkle();
         builder
             .add_fake_merkle_verify(leaf, root)
             .expect("should be allowed");
@@ -774,31 +779,18 @@ mod tests {
     }
 
     #[test]
-    fn test_runtime_allowlist_gates_ops() {
-        // Allow only FakeMerkleVerify among non-primitive ops
-        let allow = RuntimeAllowlist::from_slice(&[NonPrimitiveOpType::FakeMerkleVerify]);
-        let mut builder: CircuitBuilder<BabyBear> =
-            CircuitBuilder::with_policy(alloc::boxed::Box::new(allow));
+    fn test_merkle_config_with_custom_params() {
+        let mut builder = CircuitBuilder::<BabyBear>::new();
 
         let leaf = builder.add_public_input();
         let root = builder.add_public_input();
 
-        // Allowed op works
+        builder.enable_merkle();
         builder
             .add_fake_merkle_verify(leaf, root)
-            .expect("fake merkle allowed");
+            .expect("should be allowed with custom config");
 
-        let mut builder: CircuitBuilder<BabyBear> = CircuitBuilder::default();
-
-        // Try adding a disallowed op by pushing directly
-        let err = builder
-            .push_non_primitive_op(NonPrimitiveOpType::FakeMerkleVerify, alloc::vec![])
-            .unwrap_err();
-        match err {
-            CircuitBuilderError::OpNotAllowed { op } => {
-                assert_eq!(op, NonPrimitiveOpType::FakeMerkleVerify)
-            }
-            other => panic!("expected OpNotAllowed, got {other:?}"),
-        }
+        let circuit = builder.build().unwrap();
+        assert_eq!(circuit.non_primitive_ops.len(), 1);
     }
 }

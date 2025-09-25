@@ -16,8 +16,8 @@ type F = BabyBear;
 fn main() -> Result<(), ProverError> {
     let depth = env::args().nth(1).and_then(|s| s.parse().ok()).unwrap_or(3);
 
-    // Enable Merkle non-primitive op via policy
-    let mut builder = CircuitBuilder::<F>::with_allow_all();
+    let mut builder = CircuitBuilder::<F>::new();
+    builder.enable_merkle(); // Enable Merkle ops
 
     // Public inputs: leaf hash and expected root hash
     let leaf_hash = builder.add_public_input();
