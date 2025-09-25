@@ -146,12 +146,10 @@ where
     /// If this value was previously added, returns the original ExprId.
     /// Cost: 1 row in Const table + 1 row in witness table (only for new constants).
     pub fn add_const(&mut self, val: F) -> ExprId {
-        if let Some(&id) = self.const_pool.get(&val) {
-            return id;
-        }
-        let id = self.expressions.add_expr(Expr::Const(val.clone()));
-        self.const_pool.insert(val, id);
-        id
+        *self
+            .const_pool
+            .entry(val)
+            .or_insert_with_key(|k| self.expressions.add_expr(Expr::Const(k.clone())))
     }
 
     /// Add two expressions.
@@ -192,6 +190,29 @@ where
         self.connect(expr, ExprId::ZERO);
     }
 
+    /// Assert that an expression is boolean: b ∈ {0,1}.
+    ///
+    /// Encodes the constraint b · (b − 1) = 0 via `assert_zero`.
+    /// Cost: 1 mul + 1 add.
+    pub fn assert_bool(&mut self, b: ExprId) {
+        let one = self.add_const(F::ONE);
+        let b_minus_one = self.sub(b, one);
+        let prod = self.mul(b, b_minus_one);
+        self.assert_zero(prod);
+    }
+
+    /// Select between two values using selector `b`:
+    /// result = s + b · (t − s).
+    ///
+    /// When `b` ∈ {0,1}, this returns `t` if b = 1, else `s` if b = 0.
+    /// Call `assert_bool(b)` beforehand if you need booleanity enforced.
+    /// Cost: 1 mul + 2 add.
+    pub fn select(&mut self, b: ExprId, t: ExprId, s: ExprId) -> ExprId {
+        let t_minus_s = self.sub(t, s);
+        let scaled = self.mul(b, t_minus_s);
+        self.add(s, scaled)
+    }
+
     /// Connect two expressions, enforcing a == b (by aliasing outputs).
     ///
     /// Cost: Free in proving (handled by IR optimization layer via witness slot aliasing).
@@ -199,6 +220,16 @@ where
         if a != b {
             self.pending_connects.push((a, b));
         }
+    }
+
+    /// Exponentiate a base expression to a power of 2 (i.e. base^(2^power_log)), by squaring repeatedly.
+    pub fn exp_power_of_2(&mut self, base: ExprId, power_log: usize) -> ExprId {
+        let mut res = base;
+        for _ in 0..power_log {
+            let square = self.mul(res, res);
+            res = square;
+        }
+        res
     }
 
     /// Add a Merkle verification constraint (non-primitive operation)
@@ -309,11 +340,11 @@ where
         let mut parents: HashMap<usize, usize> = build_connect_dsu(&self.pending_connects);
 
         // Track nodes that participate in any connect
-        let mut in_connect: HashSet<usize> = HashSet::new();
-        for (a, b) in &self.pending_connects {
-            in_connect.insert(a.0 as usize);
-            in_connect.insert(b.0 as usize);
-        }
+        let in_connect: HashSet<usize> = self
+            .pending_connects
+            .iter()
+            .flat_map(|(a, b)| [a.0 as usize, b.0 as usize])
+            .collect();
 
         let mut primitive_ops = Vec::new();
         let mut expr_to_widx: HashMap<ExprId, WitnessId> = HashMap::new();
@@ -735,5 +766,689 @@ mod tests {
         let _pub = builder2.add_public_input();
         let circuit2 = builder2.build().unwrap(); // Should not return mapping
         assert_eq!(circuit2.public_flat_len, 1);
+    }
+
+    #[test]
+    fn test_constant_deduplication() {
+        // Test that identical constants are deduplicated and reuse ExprIds
+        let mut builder = CircuitBuilder::<BabyBear>::new();
+
+        // Add the same constant multiple times
+        let c1_first = builder.add_const(BabyBear::from_u64(42));
+        let c1_second = builder.add_const(BabyBear::from_u64(42));
+        let c1_third = builder.add_const(BabyBear::from_u64(42));
+
+        // Should all return the same ExprId due to deduplication
+        assert_eq!(c1_first, c1_second);
+        assert_eq!(c1_second, c1_third);
+
+        // Add a different constant - should get different ExprId
+        let c2 = builder.add_const(BabyBear::from_u64(43));
+        assert_ne!(c1_first, c2);
+
+        // Build circuit and verify that only 3 constants exist:
+        // - Const(0) automatically added during builder creation
+        // - Const(42) added by user (deduplicated)
+        // - Const(43) added by user
+        let circuit = builder.build().unwrap();
+
+        // Zero is always ExprId(0), so we expect exactly 2 user constants
+        let const_count = circuit
+            .primitive_ops
+            .iter()
+            .filter(|op| matches!(op, Prim::Const { .. }))
+            .count();
+        assert_eq!(const_count, 3); // 0, 42, 43
+    }
+
+    #[test]
+    fn test_arithmetic_operations_chain() {
+        // Test chaining multiple arithmetic operations: ((x + 5) * 3) - 2 = result
+        let mut builder = CircuitBuilder::<BabyBear>::new();
+
+        // Create public input and constants
+        let x = builder.add_public_input();
+        let c5 = builder.add_const(BabyBear::from_u64(5));
+        let c3 = builder.add_const(BabyBear::from_u64(3));
+        let c2 = builder.add_const(BabyBear::from_u64(2));
+
+        // Chain operations: ((x + 5) * 3) - 2
+        let step1 = builder.add(x, c5); // x + 5
+        let step2 = builder.mul(step1, c3); // (x + 5) * 3
+        let result = builder.sub(step2, c2); // ((x + 5) * 3) - 2
+
+        // Add expected result as public input and assert equality
+        let expected = builder.add_public_input();
+        builder.connect(result, expected);
+
+        let circuit = builder.build().unwrap();
+        let mut runner = circuit.runner();
+
+        // Test with x = 7: ((7 + 5) * 3) - 2 = (12 * 3) - 2 = 36 - 2 = 34
+        let x_val = BabyBear::from_u64(7);
+        let expected_val = BabyBear::from_u64(34);
+        runner.set_public_inputs(&[x_val, expected_val]).unwrap();
+
+        // Should succeed - constraint is satisfied
+        let traces = runner.run().unwrap();
+
+        // Verify we have the expected number of operations in traces
+        assert_eq!(traces.add_trace.lhs_values.len(), 2); // Two adds: x+5 and internal sub encoding
+        assert_eq!(traces.mul_trace.lhs_values.len(), 1); // One mul: (x+5)*3
+    }
+
+    #[test]
+    fn test_division_operation() {
+        // Test division: (x * y) / z = result, where division is encoded as z * result = (x * y)
+        let mut builder = CircuitBuilder::<BabyBear>::new();
+
+        let x = builder.add_public_input();
+        let y = builder.add_public_input();
+        let z = builder.add_public_input();
+        let expected_result = builder.add_public_input();
+
+        // Compute x * y
+        let xy = builder.mul(x, y);
+
+        // Divide by z: (x * y) / z
+        let division_result = builder.div(xy, z);
+
+        // Assert division result equals expected
+        builder.connect(division_result, expected_result);
+
+        let circuit = builder.build().unwrap();
+        let mut runner = circuit.runner();
+
+        // Test: (6 * 7) / 2 = 42 / 2 = 21
+        let x_val = BabyBear::from_u64(6);
+        let y_val = BabyBear::from_u64(7);
+        let z_val = BabyBear::from_u64(2);
+        let expected_val = BabyBear::from_u64(21);
+
+        runner
+            .set_public_inputs(&[x_val, y_val, z_val, expected_val])
+            .unwrap();
+        let traces = runner.run().unwrap();
+
+        // Verify traces: should have 2 multiplications (x*y and the div encoding z*result=xy)
+        assert_eq!(traces.mul_trace.lhs_values.len(), 2);
+    }
+
+    #[test]
+    fn test_assert_zero_functionality() {
+        // Test assert_zero by creating an expression that should equal zero
+        let mut builder = CircuitBuilder::<BabyBear>::new();
+
+        let x = builder.add_public_input();
+        let y = builder.add_public_input();
+
+        // Create expression: x - y (should be zero when x == y)
+        let difference = builder.sub(x, y);
+
+        // Assert that difference equals zero
+        builder.assert_zero(difference);
+
+        let circuit = builder.build().unwrap();
+        let mut runner = circuit.runner();
+
+        // Test case 1: Equal values - should succeed
+        let equal_val = BabyBear::from_u64(15);
+        runner.set_public_inputs(&[equal_val, equal_val]).unwrap();
+        runner.run().unwrap(); // Should succeed
+
+        // Test case 2: Different values - should fail
+        let mut builder2 = CircuitBuilder::<BabyBear>::new();
+        let x2 = builder2.add_public_input();
+        let y2 = builder2.add_public_input();
+        let difference2 = builder2.sub(x2, y2);
+        builder2.assert_zero(difference2);
+        let circuit2 = builder2.build().unwrap();
+        let mut runner2 = circuit2.runner();
+        let val1 = BabyBear::from_u64(15);
+        let val2 = BabyBear::from_u64(16);
+        runner2.set_public_inputs(&[val1, val2]).unwrap();
+
+        // Should fail because difference is not zero
+        let err = runner2.run().unwrap_err();
+        match err {
+            CircuitError::WitnessConflict { .. } => {} // Expected: can't satisfy x-y=0 when x≠y
+            other => panic!("Expected WitnessConflict, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_complex_connect_chains() {
+        // Test complex connection chains: a=b, b=c, c=d should make all equivalent
+        let mut builder = CircuitBuilder::<BabyBear>::new();
+
+        let x = builder.add_public_input();
+        let c1 = builder.add_const(BabyBear::from_u64(10));
+        let c2 = builder.add_const(BabyBear::from_u64(5));
+
+        // Create chain of equivalent expressions
+        let _a = builder.add(x, c1); // a = x + 10
+        let _b = builder.add(x, c1); // b = x + 10 (same as a)
+        let const_2 = builder.add_const(BabyBear::from_u64(2));
+        let _c = builder.mul(c2, const_2); // c = 5 * 2 = 10
+        let const_10 = builder.add_const(BabyBear::from_u64(10));
+        let _d = builder.add(x, const_10); // d = x + 10
+
+        // Actually test with simpler expressions to focus on connect functionality
+        let pub1 = builder.add_public_input(); // This will be at position 0
+        let pub2 = builder.add_public_input(); // This will be at position 1
+        let pub3 = builder.add_public_input(); // This will be at position 2
+        let pub4 = builder.add_public_input(); // This will be at position 3
+
+        // Create connection chain: pub1 = pub2 = pub3 = pub4
+        builder.connect(pub1, pub2);
+        builder.connect(pub2, pub3);
+        builder.connect(pub3, pub4);
+
+        let circuit = builder.build().unwrap();
+        let mut runner = circuit.runner();
+
+        // All should have same value due to connections
+        let shared_val = BabyBear::from_u64(99);
+        runner
+            .set_public_inputs(&[shared_val, shared_val, shared_val, shared_val, shared_val])
+            .unwrap();
+        runner.run().unwrap(); // Should succeed
+
+        // Test with different values - should fail - create new circuit
+        let mut builder2 = CircuitBuilder::<BabyBear>::new();
+        let p1 = builder2.add_public_input();
+        let p2 = builder2.add_public_input();
+        let p3 = builder2.add_public_input();
+        let p4 = builder2.add_public_input();
+        builder2.connect(p1, p2);
+        builder2.connect(p2, p3);
+        builder2.connect(p3, p4);
+        let circuit2 = builder2.build().unwrap();
+        let mut runner2 = circuit2.runner();
+        let val1 = BabyBear::from_u64(99);
+        let val2 = BabyBear::from_u64(100); // Different value
+        // This should fail during public input setting due to connection constraints
+        let result = runner2.set_public_inputs(&[val1, val2, val1, val1]);
+        match result {
+            Err(CircuitError::WitnessConflict { .. }) => {} // Expected - conflict detected early
+            other => panic!("Expected WitnessConflict, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_zero_constant_special_case() {
+        // Test that zero constant gets special handling and is always ExprId::ZERO
+        let mut builder = CircuitBuilder::<BabyBear>::new();
+
+        // Zero should already exist and be ExprId::ZERO
+        let zero_id = builder.add_const(BabyBear::ZERO);
+        assert_eq!(zero_id, ExprId::ZERO);
+
+        // Adding zero again should return the same ID
+        let zero_id2 = builder.add_const(BabyBear::ZERO);
+        assert_eq!(zero_id2, ExprId::ZERO);
+
+        // Use zero in an operation
+        let x = builder.add_public_input();
+        let result = builder.add(x, zero_id); // x + 0 = x
+
+        // Connect result back to x (should be equivalent)
+        builder.connect(result, x);
+
+        let circuit = builder.build().unwrap();
+        let mut runner = circuit.runner();
+
+        // Should work with any value since x + 0 = x
+        runner.set_public_inputs(&[BabyBear::from_u64(42)]).unwrap();
+        runner.run().unwrap();
+    }
+
+    #[test]
+    fn test_self_connect_no_op() {
+        // Test that connecting an expression to itself is a no-op
+        let mut builder = CircuitBuilder::<BabyBear>::new();
+
+        let x = builder.add_public_input();
+        let y = builder.add_public_input();
+
+        // Self-connects should be ignored
+        builder.connect(x, x);
+        builder.connect(y, y);
+
+        // Real connect should still work
+        builder.connect(x, y);
+
+        let circuit = builder.build().unwrap();
+        let mut runner = circuit.runner();
+
+        // Should enforce x = y
+        let val = BabyBear::from_u64(123);
+        runner.set_public_inputs(&[val, val]).unwrap();
+        runner.run().unwrap(); // Should succeed
+
+        // Different values should fail - create new circuit
+        let mut builder2 = CircuitBuilder::<BabyBear>::new();
+        let x2 = builder2.add_public_input();
+        let y2 = builder2.add_public_input();
+        builder2.connect(x2, x2); // Self-connects should be ignored
+        builder2.connect(y2, y2);
+        builder2.connect(x2, y2); // Real connect should still work
+        let circuit2 = builder2.build().unwrap();
+        let mut runner2 = circuit2.runner();
+        // This should fail during public input setting due to connection constraint
+        let result = runner2.set_public_inputs(&[BabyBear::from_u64(123), BabyBear::from_u64(124)]);
+        match result {
+            Err(CircuitError::WitnessConflict { .. }) => {} // Expected - conflict detected early
+            other => panic!("Expected WitnessConflict, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_lower_to_primitives_constants() {
+        // Test constant lowering creates Const primitive operations
+        let mut builder = CircuitBuilder::<BabyBear>::new();
+
+        let c1 = builder.add_const(BabyBear::from_u64(42));
+        let c2 = builder.add_const(BabyBear::from_u64(100));
+
+        let (primitives, public_rows, expr_to_widx, public_mappings) =
+            builder.lower_to_primitives().unwrap();
+
+        // Expected primitives: 3 constants (ZERO, 42, 100)
+        let expected_primitives = vec![
+            Prim::Const {
+                out: WitnessId(0),
+                val: BabyBear::ZERO,
+            },
+            Prim::Const {
+                out: WitnessId(1),
+                val: BabyBear::from_u64(42),
+            },
+            Prim::Const {
+                out: WitnessId(2),
+                val: BabyBear::from_u64(100),
+            },
+        ];
+        assert_eq!(primitives, expected_primitives);
+
+        // No public inputs
+        let expected_public_rows: Vec<WitnessId> = vec![];
+        assert_eq!(public_rows, expected_public_rows);
+
+        // Expression to witness mapping
+        let mut expected_expr_to_widx = HashMap::new();
+        expected_expr_to_widx.insert(ExprId::ZERO, WitnessId(0));
+        expected_expr_to_widx.insert(c1, WitnessId(1));
+        expected_expr_to_widx.insert(c2, WitnessId(2));
+        assert_eq!(expr_to_widx, expected_expr_to_widx);
+
+        // No public mappings
+        let expected_public_mappings = HashMap::new();
+        assert_eq!(public_mappings, expected_public_mappings);
+    }
+
+    #[test]
+    fn test_lower_to_primitives_public_inputs() {
+        // Test public input lowering creates Public primitive operations
+        let mut builder = CircuitBuilder::<BabyBear>::new();
+
+        let p1 = builder.add_public_input(); // position 0
+        let p2 = builder.add_public_input(); // position 1
+
+        let (primitives, public_rows, expr_to_widx, public_mappings) =
+            builder.lower_to_primitives().unwrap();
+
+        // Expected primitives: 1 constant (ZERO) + 2 public inputs
+        let expected_primitives = vec![
+            Prim::Const {
+                out: WitnessId(0),
+                val: BabyBear::ZERO,
+            },
+            Prim::Public {
+                out: WitnessId(1),
+                public_pos: 0,
+            },
+            Prim::Public {
+                out: WitnessId(2),
+                public_pos: 1,
+            },
+        ];
+        assert_eq!(primitives, expected_primitives);
+
+        // Public rows mapping
+        let expected_public_rows = vec![WitnessId(1), WitnessId(2)];
+        assert_eq!(public_rows, expected_public_rows);
+
+        // Expression to witness mapping
+        let mut expected_expr_to_widx = HashMap::new();
+        expected_expr_to_widx.insert(ExprId::ZERO, WitnessId(0));
+        expected_expr_to_widx.insert(p1, WitnessId(1));
+        expected_expr_to_widx.insert(p2, WitnessId(2));
+        assert_eq!(expr_to_widx, expected_expr_to_widx);
+
+        // Public mappings
+        let mut expected_public_mappings = HashMap::new();
+        expected_public_mappings.insert(p1, WitnessId(1));
+        expected_public_mappings.insert(p2, WitnessId(2));
+        assert_eq!(public_mappings, expected_public_mappings);
+    }
+
+    #[test]
+    fn test_lower_to_primitives_arithmetic_operations() {
+        // Test arithmetic operations create correct primitive operations
+        let mut builder = CircuitBuilder::<BabyBear>::new();
+
+        let x = builder.add_public_input();
+        let y = builder.add_public_input();
+        let add_result = builder.add(x, y); // x + y
+
+        let (primitives, public_rows, expr_to_widx, public_mappings) =
+            builder.lower_to_primitives().unwrap();
+
+        // Expected primitives: ZERO + 2 public inputs + 1 add operation
+        let expected_primitives = vec![
+            Prim::Const {
+                out: WitnessId(0),
+                val: BabyBear::ZERO,
+            },
+            Prim::Public {
+                out: WitnessId(1),
+                public_pos: 0,
+            },
+            Prim::Public {
+                out: WitnessId(2),
+                public_pos: 1,
+            },
+            Prim::Add {
+                a: WitnessId(1),
+                b: WitnessId(2),
+                out: WitnessId(3),
+            },
+        ];
+        assert_eq!(primitives, expected_primitives);
+
+        // Public rows mapping
+        let expected_public_rows = vec![WitnessId(1), WitnessId(2)];
+        assert_eq!(public_rows, expected_public_rows);
+
+        // Expression to witness mapping
+        let mut expected_expr_to_widx = HashMap::new();
+        expected_expr_to_widx.insert(ExprId::ZERO, WitnessId(0));
+        expected_expr_to_widx.insert(x, WitnessId(1));
+        expected_expr_to_widx.insert(y, WitnessId(2));
+        expected_expr_to_widx.insert(add_result, WitnessId(3));
+        assert_eq!(expr_to_widx, expected_expr_to_widx);
+
+        // Public mappings
+        let mut expected_public_mappings = HashMap::new();
+        expected_public_mappings.insert(x, WitnessId(1));
+        expected_public_mappings.insert(y, WitnessId(2));
+        assert_eq!(public_mappings, expected_public_mappings);
+    }
+
+    #[test]
+    fn test_lower_to_primitives_subtraction_encoding() {
+        // Test that subtraction is properly encoded as addition:
+        // x - y = result becomes result + y = x
+        let mut builder = CircuitBuilder::<BabyBear>::new();
+
+        let x = builder.add_public_input();
+        let y = builder.add_public_input();
+        let result = builder.sub(x, y); // x - y = result
+
+        let (primitives, public_rows, expr_to_widx, public_mappings) =
+            builder.lower_to_primitives().unwrap();
+
+        // Expected primitives: ZERO + 2 public inputs + 1 add (encoding subtraction)
+        let expected_primitives = vec![
+            Prim::Const {
+                out: WitnessId(0),
+                val: BabyBear::ZERO,
+            },
+            Prim::Public {
+                out: WitnessId(1),
+                public_pos: 0,
+            },
+            Prim::Public {
+                out: WitnessId(2),
+                public_pos: 1,
+            },
+            // Sub encoding: result + y = x, so a=y, b=result, out=x
+            Prim::Add {
+                a: WitnessId(2),
+                b: WitnessId(3),
+                out: WitnessId(1),
+            },
+        ];
+        assert_eq!(primitives, expected_primitives);
+
+        // Public rows mapping
+        let expected_public_rows = vec![WitnessId(1), WitnessId(2)];
+        assert_eq!(public_rows, expected_public_rows);
+
+        // Expression to witness mapping
+        let mut expected_expr_to_widx = HashMap::new();
+        expected_expr_to_widx.insert(ExprId::ZERO, WitnessId(0));
+        expected_expr_to_widx.insert(x, WitnessId(1));
+        expected_expr_to_widx.insert(y, WitnessId(2));
+        expected_expr_to_widx.insert(result, WitnessId(3));
+        assert_eq!(expr_to_widx, expected_expr_to_widx);
+
+        // Public mappings
+        let mut expected_public_mappings = HashMap::new();
+        expected_public_mappings.insert(x, WitnessId(1));
+        expected_public_mappings.insert(y, WitnessId(2));
+        assert_eq!(public_mappings, expected_public_mappings);
+    }
+
+    #[test]
+    fn test_lower_to_primitives_division_encoding() {
+        // Test that division is properly encoded as multiplication: x / y = result becomes y * result = x
+        let mut builder = CircuitBuilder::<BabyBear>::new();
+
+        let x = builder.add_public_input();
+        let y = builder.add_public_input();
+        let result = builder.div(x, y); // x / y = result
+
+        let (primitives, public_rows, expr_to_widx, public_mappings) =
+            builder.lower_to_primitives().unwrap();
+
+        // Expected primitives: ZERO + 2 public inputs + 1 mul (encoding division)
+        let expected_primitives = vec![
+            Prim::Const {
+                out: WitnessId(0),
+                val: BabyBear::ZERO,
+            },
+            Prim::Public {
+                out: WitnessId(1),
+                public_pos: 0,
+            },
+            Prim::Public {
+                out: WitnessId(2),
+                public_pos: 1,
+            },
+            // Div encoding: y * result = x, so a=y, b=result, out=x
+            Prim::Mul {
+                a: WitnessId(2),
+                b: WitnessId(3),
+                out: WitnessId(1),
+            },
+        ];
+        assert_eq!(primitives, expected_primitives);
+
+        // Public rows mapping
+        let expected_public_rows = vec![WitnessId(1), WitnessId(2)];
+        assert_eq!(public_rows, expected_public_rows);
+
+        // Expression to witness mapping
+        let mut expected_expr_to_widx = HashMap::new();
+        expected_expr_to_widx.insert(ExprId::ZERO, WitnessId(0));
+        expected_expr_to_widx.insert(x, WitnessId(1));
+        expected_expr_to_widx.insert(y, WitnessId(2));
+        expected_expr_to_widx.insert(result, WitnessId(3));
+        assert_eq!(expr_to_widx, expected_expr_to_widx);
+
+        // Public mappings
+        let mut expected_public_mappings = HashMap::new();
+        expected_public_mappings.insert(x, WitnessId(1));
+        expected_public_mappings.insert(y, WitnessId(2));
+        assert_eq!(public_mappings, expected_public_mappings);
+    }
+
+    #[test]
+    fn test_lower_to_primitives_connections_share_witnesses() {
+        // Test that connected expressions share the same witness ID
+        let mut builder = CircuitBuilder::<BabyBear>::new();
+
+        let x = builder.add_public_input();
+        let y = builder.add_public_input();
+
+        // Connect x and y - they should share witness ID
+        builder.connect(x, y);
+
+        let (primitives, public_rows, expr_to_widx, public_mappings) =
+            builder.lower_to_primitives().unwrap();
+
+        // Expected primitives: ZERO + 2 public inputs (but sharing WitnessId(1))
+        let expected_primitives = vec![
+            Prim::Const {
+                out: WitnessId(0),
+                val: BabyBear::ZERO,
+            },
+            Prim::Public {
+                out: WitnessId(1),
+                public_pos: 0,
+            },
+            Prim::Public {
+                out: WitnessId(1), // Same witness as x
+                public_pos: 1,
+            },
+        ];
+        assert_eq!(primitives, expected_primitives);
+
+        // Public rows mapping - both positions map to same witness
+        let expected_public_rows = vec![WitnessId(1), WitnessId(1)];
+        assert_eq!(public_rows, expected_public_rows);
+
+        // Expression to witness mapping - both x and y map to same witness
+        let mut expected_expr_to_widx = HashMap::new();
+        expected_expr_to_widx.insert(ExprId::ZERO, WitnessId(0));
+        expected_expr_to_widx.insert(x, WitnessId(1));
+        expected_expr_to_widx.insert(y, WitnessId(1)); // Same witness as x
+        assert_eq!(expr_to_widx, expected_expr_to_widx);
+
+        // Public mappings - both expressions map to same witness
+        let mut expected_public_mappings = HashMap::new();
+        expected_public_mappings.insert(x, WitnessId(1));
+        expected_public_mappings.insert(y, WitnessId(1));
+        assert_eq!(public_mappings, expected_public_mappings);
+    }
+
+    #[test]
+    fn test_lower_to_primitives_constant_connection_binding() {
+        // Test that constants bound to connection classes work correctly
+        let mut builder = CircuitBuilder::<BabyBear>::new();
+
+        let x = builder.add_public_input();
+        let c = builder.add_const(BabyBear::from_u64(42));
+
+        // Connect public input to constant
+        builder.connect(x, c);
+
+        let (primitives, public_rows, expr_to_widx, public_mappings) =
+            builder.lower_to_primitives().unwrap();
+
+        // Expected primitives: ZERO + constant 42 + public input (all sharing witness)
+        let expected_primitives = vec![
+            Prim::Const {
+                out: WitnessId(0),
+                val: BabyBear::ZERO,
+            },
+            Prim::Const {
+                out: WitnessId(1), // Constants processed first
+                val: BabyBear::from_u64(42),
+            },
+            Prim::Public {
+                out: WitnessId(1), // Shares witness with constant
+                public_pos: 0,
+            },
+        ];
+        assert_eq!(primitives, expected_primitives);
+
+        // Public rows mapping
+        let expected_public_rows = vec![WitnessId(1)];
+        assert_eq!(public_rows, expected_public_rows);
+
+        // Expression to witness mapping - constant and public input share witness
+        let mut expected_expr_to_widx = HashMap::new();
+        expected_expr_to_widx.insert(ExprId::ZERO, WitnessId(0));
+        expected_expr_to_widx.insert(c, WitnessId(1)); // Constant processed first
+        expected_expr_to_widx.insert(x, WitnessId(1)); // Same witness as constant
+        assert_eq!(expr_to_widx, expected_expr_to_widx);
+
+        // Public mappings
+        let mut expected_public_mappings = HashMap::new();
+        expected_public_mappings.insert(x, WitnessId(1));
+        assert_eq!(public_mappings, expected_public_mappings);
+    }
+
+    #[test]
+    fn test_lower_to_primitives_witness_allocation_order() {
+        // Test that witness IDs are allocated in predictable order
+        let mut builder = CircuitBuilder::<BabyBear>::new();
+
+        // Add expressions in specific order
+        let c1 = builder.add_const(BabyBear::from_u64(10));
+        let p1 = builder.add_public_input();
+        let p2 = builder.add_public_input();
+        let add_result = builder.add(p1, p2);
+
+        let (primitives, public_rows, expr_to_widx, public_mappings) =
+            builder.lower_to_primitives().unwrap();
+
+        // Expected primitives in processing order: constants, public inputs, arithmetic ops
+        let expected_primitives = vec![
+            Prim::Const {
+                out: WitnessId(0),
+                val: BabyBear::ZERO,
+            },
+            Prim::Const {
+                out: WitnessId(1),
+                val: BabyBear::from_u64(10),
+            },
+            Prim::Public {
+                out: WitnessId(2),
+                public_pos: 0,
+            },
+            Prim::Public {
+                out: WitnessId(3),
+                public_pos: 1,
+            },
+            Prim::Add {
+                a: WitnessId(2),
+                b: WitnessId(3),
+                out: WitnessId(4),
+            },
+        ];
+        assert_eq!(primitives, expected_primitives);
+
+        // Public rows mapping
+        let expected_public_rows = vec![WitnessId(2), WitnessId(3)];
+        assert_eq!(public_rows, expected_public_rows);
+
+        // Expression to witness mapping
+        let mut expected_expr_to_widx = HashMap::new();
+        expected_expr_to_widx.insert(ExprId::ZERO, WitnessId(0));
+        expected_expr_to_widx.insert(c1, WitnessId(1));
+        expected_expr_to_widx.insert(p1, WitnessId(2));
+        expected_expr_to_widx.insert(p2, WitnessId(3));
+        expected_expr_to_widx.insert(add_result, WitnessId(4));
+        assert_eq!(expr_to_widx, expected_expr_to_widx);
+
+        // Public mappings
+        let mut expected_public_mappings = HashMap::new();
+        expected_public_mappings.insert(p1, WitnessId(2));
+        expected_public_mappings.insert(p2, WitnessId(3));
+        assert_eq!(public_mappings, expected_public_mappings);
     }
 }

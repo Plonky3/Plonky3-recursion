@@ -5,16 +5,23 @@ use alloc::vec::Vec;
 use core::marker::PhantomData;
 use core::{array, iter};
 
+use p3_challenger::GrindingChallenger;
 use p3_circuit::CircuitBuilder;
-use p3_commit::{BatchOpening, ExtensionMmcs};
-use p3_field::{ExtensionField, Field, PackedValue};
-use p3_fri::{CommitPhaseProofStep, FriProof, QueryProof};
+use p3_circuit::utils::RowSelectorsTargets;
+use p3_commit::{BatchOpening, ExtensionMmcs, Mmcs, PolynomialSpace};
+use p3_field::coset::TwoAdicMultiplicativeCoset;
+use p3_field::{ExtensionField, Field, PackedValue, PrimeCharacteristicRing, TwoAdicField};
+use p3_fri::{CommitPhaseProofStep, FriProof, QueryProof, TwoAdicFriPcs};
 use p3_merkle_tree::MerkleTreeMmcs;
 use p3_symmetric::{CryptographicHasher, Hash, PseudoCompressionFunction};
+use p3_uni_stark::{StarkGenericConfig, Val};
 use serde::{Deserialize, Serialize};
 
 use crate::Target;
-use crate::recursive_traits::{Recursive, RecursiveExtensionMmcs, RecursiveMmcs};
+use crate::recursive_traits::{
+    ComsWithOpeningsTargets, Recursive, RecursiveExtensionMmcs, RecursiveLagrangeSelectors,
+    RecursiveMmcs, RecursivePcs,
+};
 
 /// `Recursive` version of `FriProof`.
 pub struct FriProofTargets<
@@ -339,6 +346,7 @@ impl<F: Field, EF: ExtensionField<F>, Inner: RecursiveMmcs<F, EF>> Recursive<EF>
 // Now, we define the commitment schemes.
 
 /// `HashTargets` corresponds to a commitment in the form of hashes with `DIGEST_ELEMS` digest elements.
+#[derive(Clone)]
 pub struct HashTargets<F, const DIGEST_ELEMS: usize> {
     pub hash_targets: [Target; DIGEST_ELEMS],
     _phantom: PhantomData<F>,
@@ -552,5 +560,119 @@ impl<F: Field, EF: ExtensionField<F>, Inner: RecursiveMmcs<F, EF>> Recursive<EF>
             all_lens.extend(BatchOpeningTargets::<F, EF, Inner>::lens(batch_opening));
         }
         all_lens.into_iter()
+    }
+}
+
+// Recursive type for the `FriProof` of `TwoAdicFriPcs`.
+type RecursiveFriProof<SC, RecursiveFriMmcs, RecursiveInputProof> = FriProofTargets<
+    Val<SC>,
+    <SC as StarkGenericConfig>::Challenge,
+    RecursiveFriMmcs,
+    RecursiveInputProof,
+    Witness<Val<SC>>,
+>;
+
+// Implement `RecursivePcs` for `TwoAdicFriPcs`.
+impl<SC, Dft, Comm, InputMmcs, RecursiveInputProof, InputProof, RecursiveFriMmcs, FriMmcs>
+    RecursivePcs<
+        SC,
+        RecursiveInputProof,
+        RecursiveFriProof<SC, RecursiveFriMmcs, RecursiveInputProof>,
+        Comm,
+        TwoAdicMultiplicativeCoset<Val<SC>>,
+    > for TwoAdicFriPcs<Val<SC>, Dft, InputMmcs, FriMmcs>
+where
+    SC: StarkGenericConfig,
+    Val<SC>: TwoAdicField,
+    InputMmcs: Mmcs<Val<SC>>,
+    FriMmcs: Mmcs<SC::Challenge>,
+    Comm: Recursive<SC::Challenge>,
+    RecursiveInputProof: Recursive<SC::Challenge, Input = InputProof>,
+    RecursiveFriMmcs: RecursiveExtensionMmcs<Val<SC>, SC::Challenge, Input = FriMmcs>,
+    SC::Challenger: GrindingChallenger,
+    SC::Challenger: p3_challenger::CanObserve<<FriMmcs as Mmcs<SC::Challenge>>::Commitment>,
+{
+    type RecursiveProof = RecursiveFriProof<SC, RecursiveFriMmcs, RecursiveInputProof>;
+
+    fn get_challenges_circuit(
+        circuit: &mut CircuitBuilder<SC::Challenge>,
+        proof_targets: &crate::recursive_traits::ProofTargets<SC, Comm, Self::RecursiveProof>,
+    ) -> Vec<Target> {
+        proof_targets.opening_proof.get_challenges(circuit)
+    }
+
+    fn verify_circuit(
+        &self,
+        _circuit: &mut CircuitBuilder<SC::Challenge>,
+        _challenges: &[Target],
+        _commitments_with_opening_points: &ComsWithOpeningsTargets<
+            Comm,
+            TwoAdicMultiplicativeCoset<Val<SC>>,
+        >,
+        _opening_proof: &Self::RecursiveProof,
+    ) {
+        // TODO
+    }
+
+    fn selectors_at_point_circuit(
+        &self,
+        circuit: &mut CircuitBuilder<SC::Challenge>,
+        domain: &TwoAdicMultiplicativeCoset<Val<SC>>,
+        point: &Target,
+    ) -> RecursiveLagrangeSelectors {
+        // Constants that we will need.
+        let shift_inv = circuit.add_const(SC::Challenge::from(domain.shift_inverse()));
+        let one = circuit.add_const(SC::Challenge::from(Val::<SC>::ONE));
+        let subgroup_gen_inv =
+            circuit.add_const(SC::Challenge::from(domain.subgroup_generator().inverse()));
+
+        // Unshifted and z_h
+        let unshifted_point = circuit.mul(shift_inv, *point);
+        let us_exp = circuit.exp_power_of_2(unshifted_point, domain.log_size());
+        let z_h = circuit.sub(us_exp, one);
+
+        // Denominators
+        let us_minus_one = circuit.sub(unshifted_point, one);
+        let us_minus_gen_inv = circuit.sub(unshifted_point, subgroup_gen_inv);
+
+        // Selectors
+        let is_first_row = circuit.div(z_h, us_minus_one);
+        let is_last_row = circuit.div(z_h, us_minus_gen_inv);
+        let is_transition = us_minus_gen_inv;
+        let inv_vanishing = circuit.div(one, z_h);
+
+        let row_selectors = RowSelectorsTargets {
+            is_first_row,
+            is_last_row,
+            is_transition,
+        };
+        RecursiveLagrangeSelectors {
+            row_selectors,
+            inv_vanishing,
+        }
+    }
+
+    fn create_disjoint_domain(
+        &self,
+        trace_domain: TwoAdicMultiplicativeCoset<Val<SC>>,
+        degree: usize,
+    ) -> TwoAdicMultiplicativeCoset<Val<SC>> {
+        trace_domain.create_disjoint_domain(degree)
+    }
+
+    fn split_domains(
+        &self,
+        trace_domain: &TwoAdicMultiplicativeCoset<Val<SC>>,
+        degree: usize,
+    ) -> Vec<TwoAdicMultiplicativeCoset<Val<SC>>> {
+        trace_domain.split_domains(degree)
+    }
+
+    fn log_size(&self, trace_domain: &TwoAdicMultiplicativeCoset<Val<SC>>) -> usize {
+        trace_domain.log_size()
+    }
+
+    fn first_point(&self, trace_domain: &TwoAdicMultiplicativeCoset<Val<SC>>) -> SC::Challenge {
+        SC::Challenge::from(trace_domain.first_point())
     }
 }

@@ -9,7 +9,7 @@ use p3_matrix::dense::RowMajorMatrix;
 
 use super::utils::pad_witness_to_power_of_two;
 
-/// WitnessAir: enforces transparent index column monotonicity.
+/// WitnessAir: enforces preprocessed index column monotonicity.
 /// Layout per row: [value[0..D-1], index]
 /// Constraints:
 ///  - index[0] = 0
