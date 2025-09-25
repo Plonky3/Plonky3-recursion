@@ -19,8 +19,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::Target;
 use crate::recursive_traits::{
-    ComsWithOpenings, Recursive, RecursiveExtensionMmcs, RecursiveLagrangeSelectors, RecursiveMmcs,
-    RecursivePcs,
+    ComsWithOpeningsTargets, Recursive, RecursiveExtensionMmcs, RecursiveLagrangeSelectors,
+    RecursiveMmcs, RecursivePcs,
 };
 
 /// `Recursive` version of `FriProof`.
@@ -563,44 +563,36 @@ impl<F: Field, EF: ExtensionField<F>, Inner: RecursiveMmcs<F, EF>> Recursive<EF>
     }
 }
 
+// Recursive type for the `FriProof` of `TwoAdicFriPcs`.
+type RecursiveFriProof<SC, RecursiveFriMmcs, RecursiveInputProof> = FriProofTargets<
+    Val<SC>,
+    <SC as StarkGenericConfig>::Challenge,
+    RecursiveFriMmcs,
+    RecursiveInputProof,
+    Witness<Val<SC>>,
+>;
+
 // Implement `RecursivePcs` for `TwoAdicFriPcs`.
-impl<
-    SC: StarkGenericConfig,
-    Dft,
-    Comm: Recursive<SC::Challenge>,
-    InputMmcs: Mmcs<Val<SC>>,
-    RecursiveInputProof: Recursive<SC::Challenge, Input = InputProof>,
-    InputProof,
-    RecursiveFriMmcs: RecursiveExtensionMmcs<Val<SC>, SC::Challenge, Input = FriMmcs>,
-    FriMmcs: Mmcs<SC::Challenge>,
->
+impl<SC, Dft, Comm, InputMmcs, RecursiveInputProof, InputProof, RecursiveFriMmcs, FriMmcs>
     RecursivePcs<
         SC,
         RecursiveInputProof,
-        FriProofTargets<
-            Val<SC>,
-            SC::Challenge,
-            RecursiveFriMmcs,
-            RecursiveInputProof,
-            Witness<Val<SC>>,
-        >,
+        RecursiveFriProof<SC, RecursiveFriMmcs, RecursiveInputProof>,
         Comm,
         TwoAdicMultiplicativeCoset<Val<SC>>,
     > for TwoAdicFriPcs<Val<SC>, Dft, InputMmcs, FriMmcs>
 where
+    SC: StarkGenericConfig,
     Val<SC>: TwoAdicField,
-    <SC as StarkGenericConfig>::Challenger: p3_challenger::CanObserve<
-            <FriMmcs as Mmcs<<SC as StarkGenericConfig>::Challenge>>::Commitment,
-        >,
-    <SC as StarkGenericConfig>::Challenger: GrindingChallenger,
+    InputMmcs: Mmcs<Val<SC>>,
+    FriMmcs: Mmcs<SC::Challenge>,
+    Comm: Recursive<SC::Challenge>,
+    RecursiveInputProof: Recursive<SC::Challenge, Input = InputProof>,
+    RecursiveFriMmcs: RecursiveExtensionMmcs<Val<SC>, SC::Challenge, Input = FriMmcs>,
+    SC::Challenger: GrindingChallenger,
+    SC::Challenger: p3_challenger::CanObserve<<FriMmcs as Mmcs<SC::Challenge>>::Commitment>,
 {
-    type RecursiveProof = FriProofTargets<
-        Val<SC>,
-        SC::Challenge,
-        RecursiveFriMmcs,
-        RecursiveInputProof,
-        Witness<Val<SC>>,
-    >;
+    type RecursiveProof = RecursiveFriProof<SC, RecursiveFriMmcs, RecursiveInputProof>;
 
     fn get_challenges_circuit(
         circuit: &mut CircuitBuilder<SC::Challenge>,
@@ -613,7 +605,7 @@ where
         &self,
         _circuit: &mut CircuitBuilder<SC::Challenge>,
         _challenges: &[Target],
-        _commitments_with_opening_points: &ComsWithOpenings<
+        _commitments_with_opening_points: &ComsWithOpeningsTargets<
             Comm,
             TwoAdicMultiplicativeCoset<Val<SC>>,
         >,

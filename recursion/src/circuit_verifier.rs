@@ -326,7 +326,7 @@ mod tests {
     use crate::Target;
     use crate::circuit_verifier::verify_circuit;
     use crate::recursive_traits::{
-        ComsWithOpenings, ProofTargets, Recursive, RecursiveLagrangeSelectors, RecursivePcs,
+        ComsWithOpeningsTargets, ProofTargets, Recursive, RecursiveLagrangeSelectors, RecursivePcs,
     };
 
     type DummyCom<F> = Vec<Vec<F>>;
@@ -400,7 +400,7 @@ mod tests {
             &self,
             _circuit: &mut CircuitBuilder<<SC as StarkGenericConfig>::Challenge>,
             _challenges: &[Target],
-            _commitments_with_opening_points: &ComsWithOpenings<
+            _commitments_with_opening_points: &ComsWithOpeningsTargets<
                 Comm,
                 TwoAdicMultiplicativeCoset<Val<SC>>,
             >,

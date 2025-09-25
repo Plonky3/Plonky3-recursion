@@ -98,7 +98,7 @@ pub trait RecursiveExtensionMmcs<F: Field, EF: ExtensionField<F>> {
     type Proof: Recursive<EF, Input = <Self::Input as Mmcs<EF>>::Proof>;
 }
 
-pub(crate) type ComsWithOpenings<Comm, Domain> =
+pub(crate) type ComsWithOpeningsTargets<Comm, Domain> =
     [(Comm, Vec<(Domain, Vec<(Target, Vec<Target>)>)>)];
 
 /// Trait including the methods necessary for the recursive version of Pcs.
@@ -123,7 +123,7 @@ pub trait RecursivePcs<
         &self,
         circuit: &mut CircuitBuilder<SC::Challenge>,
         challenges: &[Target],
-        commitments_with_opening_points: &ComsWithOpenings<Comm, Domain>,
+        commitments_with_opening_points: &ComsWithOpeningsTargets<Comm, Domain>,
         opening_proof: &OpeningProof,
     );
 
