@@ -3,7 +3,7 @@ extern crate alloc;
 
 pub mod builder;
 pub mod circuit;
-pub mod config;
+// pub mod config;
 pub mod expr;
 pub mod op;
 pub mod tables;

@@ -1,8 +1,7 @@
 use p3_baby_bear::{BabyBear, Poseidon2BabyBear};
 use p3_challenger::DuplexChallenger;
-use p3_circuit::CircuitError;
-use p3_circuit::config::babybear_config::BabyBearQuarticExtensionCircuitBuilder;
 use p3_circuit::test_utils::{FibonacciAir, generate_trace_rows};
+use p3_circuit::{CircuitBuilder, CircuitError};
 use p3_commit::ExtensionMmcs;
 use p3_dft::Radix2DitParallel;
 use p3_field::extension::BinomialExtensionField;
@@ -57,7 +56,7 @@ fn test_fibonacci_verifier() -> Result<(), CircuitError> {
     const DIGEST_ELEMS: usize = 8;
 
     // Initialize the circuit builder.
-    let mut circuit_builder = BabyBearQuarticExtensionCircuitBuilder::new();
+    let mut circuit_builder = CircuitBuilder::new();
 
     // Determine the lengths of all the vectors within the proof.
     let mut all_lens = ProofTargets::<

@@ -4,26 +4,22 @@ use std::env;
 /// Public inputs: leaf_hash, expected_root
 /// Private inputs: merkle path (siblings + directions)
 use p3_baby_bear::BabyBear;
-use p3_circuit::NonPrimitiveOpPrivateData;
-use p3_circuit::config::MerkleVerifyConfig;
-use p3_circuit::config::babybear_config::{
-    BabyBearQuarticExtensionCircuitBuilder, DefaultBabyBearQuarticExtensionConfig,
-    default_babybear_poseidon2_circuit_runner_config,
-};
+use p3_circuit::op::MerkleVerifyConfig;
 use p3_circuit::tables::MerklePrivateData;
+use p3_circuit::{CircuitBuilder, NonPrimitiveOpPrivateData};
 use p3_circuit_prover::MultiTableProver;
 use p3_circuit_prover::config::babybear_config::build_standard_config_babybear;
 use p3_circuit_prover::prover::ProverError;
+use p3_field::PrimeCharacteristicRing;
 use p3_field::extension::BinomialExtensionField;
-use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
-use p3_symmetric::PseudoCompressionFunction;
 
 type F = BinomialExtensionField<BabyBear, 4>;
 
 fn main() -> Result<(), ProverError> {
     let depth = env::args().nth(1).and_then(|s| s.parse().ok()).unwrap_or(3);
+    let (config, merkle_config) = build_standard_config_babybear();
 
-    let mut builder = BabyBearQuarticExtensionCircuitBuilder::new();
+    let mut builder = CircuitBuilder::new();
 
     // Public inputs: leaf hash and expected root hash
     let leaf_hash = vec![builder.add_public_input(), builder.add_public_input()];
@@ -33,7 +29,8 @@ fn main() -> Result<(), ProverError> {
     // Add fake Merkle verification operation
     // This declares that leaf_hash and expected_root are connected to witness bus
     // The AIR constraints will verify the Merkle path is valid
-    let merkle_op_id = builder.add_merkle_verify(leaf_hash, index_expr, expected_root);
+    let merkle_op_id =
+        builder.add_merkle_verify(merkle_config.clone(), leaf_hash, index_expr, expected_root);
 
     let circuit = builder.build()?;
     let mut runner = circuit.runner();
@@ -60,10 +57,8 @@ fn main() -> Result<(), ProverError> {
             .map(|(i, _)| 1 << i)
             .sum(),
     );
-    let config: DefaultBabyBearQuarticExtensionConfig =
-        default_babybear_poseidon2_circuit_runner_config();
     let expected_root_value =
-        compute_merkle_root(config.compress(), &leaf_value, &siblings, &directions);
+        compute_merkle_root(&merkle_config, &leaf_value, &siblings, &directions);
 
     runner.set_public_inputs(&[
         leaf_value[0],
@@ -82,8 +77,7 @@ fn main() -> Result<(), ProverError> {
     )?;
 
     let traces = runner.run()?;
-    let config = build_standard_config_babybear();
-    let multi_prover = MultiTableProver::new(config);
+    let multi_prover = MultiTableProver::new(config).with_merkle_table(merkle_config.into());
     let proof = multi_prover.prove_all_tables(&traces)?;
     multi_prover.verify_all_tables(&proof)?;
 
@@ -97,15 +91,12 @@ fn main() -> Result<(), ProverError> {
 pub type Hash = [BabyBear; 8];
 
 /// Simulate classical Merkle root computation for testing
-fn compute_merkle_root<C>(
-    compress: &C,
+fn compute_merkle_root(
+    merkle_config: &MerkleVerifyConfig<F>,
     leaf: &[F; 2],
     siblings: &[(Vec<F>, Option<Vec<F>>)],
     directions: &[bool],
-) -> Vec<F>
-where
-    C: PseudoCompressionFunction<Hash, 2> + Sync,
-{
+) -> Vec<F> {
     directions.iter().zip(siblings.iter()).fold(
         leaf.to_vec(),
         |state, (direction, (sibling, other_sibling))| {
@@ -114,44 +105,11 @@ where
             } else {
                 (sibling.clone(), state.clone())
             };
-            let mut new_state: Hash = compress.compress([
-                left.iter()
-                    .flat_map(|xs| xs.as_basis_coefficients_slice())
-                    .copied()
-                    .collect::<Vec<BabyBear>>()
-                    .try_into()
-                    .expect("Size is 8"),
-                right
-                    .iter()
-                    .flat_map(|xs| xs.as_basis_coefficients_slice())
-                    .copied()
-                    .collect::<Vec<BabyBear>>()
-                    .try_into()
-                    .expect("Size is 8"),
-            ]);
+            let mut new_state = (merkle_config.compress)([&left, &right]);
             if let Some(other_sibling) = other_sibling {
-                new_state = compress.compress([
-                    state
-                        .clone()
-                        .iter()
-                        .flat_map(|xs| xs.as_basis_coefficients_slice())
-                        .copied()
-                        .collect::<Vec<BabyBear>>()
-                        .try_into()
-                        .expect("Size is 8"),
-                    other_sibling
-                        .iter()
-                        .flat_map(|xs| xs.as_basis_coefficients_slice())
-                        .copied()
-                        .collect::<Vec<BabyBear>>()
-                        .try_into()
-                        .expect("Size is 8"),
-                ]);
+                new_state = (merkle_config.compress)([&state, other_sibling]);
             }
-            vec![
-                F::from_basis_coefficients_slice(&new_state[..4]).expect("Size is 4"),
-                F::from_basis_coefficients_slice(&new_state[4..]).expect("Size is 4"),
-            ]
+            new_state
         },
     )
 }

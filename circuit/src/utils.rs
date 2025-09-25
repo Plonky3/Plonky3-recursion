@@ -4,7 +4,6 @@ use p3_field::Field;
 use p3_symmetric::PseudoCompressionFunction;
 use p3_uni_stark::{Entry, SymbolicExpression};
 
-use crate::config::MerkleVerifyConfig;
 use crate::{CircuitBuilder, ExprId};
 
 /// Identifiers for special row selector flags in the circuit.
@@ -35,11 +34,11 @@ pub struct ColumnsTargets<'a> {
 /// Given symbolic constraints, adds the corresponding recursive circuit to `circuit`.
 /// The `public_values`, `local_prep_values`, `next_prep_values`, `local_values`, and `next_values`
 /// are assumed to be in the same order as those used to create the symbolic expressions.
-pub fn symbolic_to_circuit<F: Field, C: MerkleVerifyConfig>(
+pub fn symbolic_to_circuit<F: Field>(
     row_selectors: RowSelectorsTargets,
     columns: &ColumnsTargets<'_>,
     symbolic: &SymbolicExpression<F>,
-    circuit: &mut CircuitBuilder<F, C>,
+    circuit: &mut CircuitBuilder<F>,
 ) -> ExprId {
     let RowSelectorsTargets {
         is_first_row,
@@ -155,10 +154,9 @@ mod tests {
     type MyConfig = StarkConfig<MyPcs, Challenge, Challenger>;
     use p3_field::PrimeCharacteristicRing;
 
-    use crate::CircuitError;
-    use crate::config::babybear_config::BabyBearQuarticExtensionCircuitBuilder;
     use crate::test_utils::{FibonacciAir, NUM_FIBONACCI_COLS};
     use crate::utils::{ColumnsTargets, RowSelectorsTargets, symbolic_to_circuit};
+    use crate::{CircuitBuilder, CircuitError};
 
     #[test]
     fn test_symbolic_to_circuit() -> Result<(), CircuitError> {
@@ -225,7 +223,7 @@ mod tests {
         };
 
         // Build a circuit adding public inputs for `sels`, public values, local values and next values.
-        let mut circuit = BabyBearQuarticExtensionCircuitBuilder::new();
+        let mut circuit = CircuitBuilder::new();
         let circuit_sels = [
             circuit.add_public_input(),
             circuit.add_public_input(),

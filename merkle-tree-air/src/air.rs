@@ -1,78 +1,109 @@
-use core::borrow::Borrow;
 use core::marker::PhantomData;
+use std::ops::Range;
 
+use itertools::izip;
 use p3_air::{Air, AirBuilder, BaseAir};
-use p3_field::{Field, PrimeCharacteristicRing, PrimeField};
+use p3_circuit::MerkleTrace;
+use p3_circuit::op::MerkleVerifyConfig;
+use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing, PrimeField};
 use p3_matrix::Matrix;
+use p3_matrix::dense::RowMajorMatrix;
 
-use crate::cols::{MerkleTreeCols, get_num_merkle_tree_cols};
+/// Configuration for the merkle table AIR rows.
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MerkleTableConfig {
+    digest_elems: usize,
+    max_tree_height: usize,
+    digest_addresses: usize,
+}
 
-// `DIGEST_ELEMS` is the number of digest elements of the hash. `MAX_TREE_HEIGHT` is the maximal tree height that can be handled by the AIR.
-#[derive(Default)]
-pub struct MerkleVerifyAir<
-    F,
-    const BF_DIGEST_ELEMS: usize,
-    const EF_DIGEST_ELEMS: usize,
-    const MAX_TREE_HEIGHT: usize,
-> where
+impl<T> From<MerkleVerifyConfig<T>> for MerkleTableConfig {
+    fn from(value: MerkleVerifyConfig<T>) -> Self {
+        Self {
+            digest_elems: value.base_field_digest_elems,
+            max_tree_height: value.max_tree_height,
+            digest_addresses: value.ext_field_digest_elems,
+        }
+    }
+}
+
+impl MerkleTableConfig {
+    pub fn width(&self) -> usize {
+        self.max_tree_height // index_bits
+        + 1 // length
+        + self.max_tree_height // height_encoding
+        + self.digest_elems // sibling
+        + self.digest_elems  // state
+        + self.digest_addresses // state_index
+        + 1 // is_final
+        + 1 // is_extra
+        + 1 // extra_height}
+    }
+}
+pub struct MerkleVerifyAir<F>
+where
     F: Field,
 {
+    config: MerkleTableConfig,
     _phantom: PhantomData<F>,
 }
 
-impl<
-    F: Field,
-    const BF_DIGEST_ELEMS: usize,
-    const EF_DIGEST_ELEMS: usize,
-    const MAX_TREE_HEIGHT: usize,
-> BaseAir<F> for MerkleVerifyAir<F, BF_DIGEST_ELEMS, EF_DIGEST_ELEMS, MAX_TREE_HEIGHT>
+impl<F: Field> BaseAir<F> for MerkleVerifyAir<F>
 where
     F: Field,
     F: Eq,
 {
     fn width(&self) -> usize {
-        get_num_merkle_tree_cols::<BF_DIGEST_ELEMS, EF_DIGEST_ELEMS, MAX_TREE_HEIGHT>()
+        self.config.width()
     }
 }
 
-impl<
-    AB: AirBuilder,
-    const BF_DIGEST_ELEMS: usize,
-    const EF_DIGEST_ELEMS: usize,
-    const MAX_TREE_HEIGHT: usize,
-> Air<AB> for MerkleVerifyAir<AB::F, BF_DIGEST_ELEMS, EF_DIGEST_ELEMS, MAX_TREE_HEIGHT>
+impl<AB: AirBuilder> Air<AB> for MerkleVerifyAir<AB::F>
 where
     AB::F: PrimeField,
     AB::F: Eq,
 {
     #[inline]
     fn eval(&self, builder: &mut AB) {
+        // TODO: Since the user is free to not add Merkle gates, it may happen that the Merkle table configuration
+        // is the default (all values 0). Given that the Merkle AIR proof is always included, we need to handle the case where no
+        // Merkle config was provided and skip evaluation.
+        if self.config.max_tree_height == 0 {
+            return;
+        }
         let main = builder.main();
         let (local, next) = (
             main.row_slice(0).expect("The matrix is empty?"),
             main.row_slice(1).expect("The matrix only has 1 row?"),
         );
-        let local: &MerkleTreeCols<AB::Var, BF_DIGEST_ELEMS, EF_DIGEST_ELEMS, MAX_TREE_HEIGHT> =
-            (*local).borrow();
-        let next: &MerkleTreeCols<AB::Var, BF_DIGEST_ELEMS, EF_DIGEST_ELEMS, MAX_TREE_HEIGHT> =
-            (*next).borrow();
+
+        let index_bits = &local[self.index_bits()];
+        let length = &local[self.length()];
+        let next_length = &next[self.length()];
+        let sibling = &local[self.sibling()];
+        let state = &local[self.sibling()];
+        let height_encoding = &local[self.height_encoding()];
+        let next_height_encoding = &next[self.height_encoding()];
+        let is_final = &local[self.is_final()];
+        let next_is_final = &next[self.is_final()];
+        let is_extra = &local[self.is_extra()];
 
         // Assert that the height encoding is boolean.
-        for i in 0..local.height_encoding.len() {
-            builder.assert_bool(local.height_encoding[i].clone());
+        for height_encoding_bit in height_encoding {
+            builder.assert_bool(height_encoding_bit.clone());
         }
 
         // Assert that there is at most one height encoding index that is equal to 1.
         let mut is_real = AB::Expr::ZERO;
-        for i in 0..MAX_TREE_HEIGHT {
-            is_real += local.height_encoding[i].clone();
+        for height_encoding_bit in height_encoding {
+            is_real += height_encoding_bit.clone();
         }
         builder.assert_bool(is_real.clone());
 
         // If the current row is a padding row, the next row must also be a padding row.
         let mut next_is_real = AB::Expr::ZERO;
-        for i in 0..MAX_TREE_HEIGHT {
-            next_is_real += next.height_encoding[i].clone();
+        for next_height_encoding_bit in next_height_encoding {
+            next_is_real += next_height_encoding_bit.clone();
         }
         builder
             .when_transition()
@@ -80,95 +111,90 @@ where
             .assert_zero(next_is_real.clone());
 
         // Assert that the index bits are boolean.
-        for i in 0..local.index_bits.len() {
-            builder.assert_bool(local.index_bits[i].clone());
+        for index_bit in index_bits {
+            builder.assert_bool(index_bit.clone());
         }
 
         // Within the same execution, index bits are unchanged.
-        for i in 0..local.index_bits.len() {
+        for index_bit in index_bits {
             builder
                 .when_transition()
-                .when(AB::Expr::ONE - local.is_final.clone())
-                .assert_zero(local.index_bits[i].clone() - next.index_bits[i].clone());
+                .when(AB::Expr::ONE - is_final.clone())
+                .assert_zero(index_bit.clone() - index_bit.clone());
         }
 
         // `is_extra` may only be set before a hash with a sibling at the current height.
         // So `local.is_extra`, `local.is_final` and `next.is_final` cannot be set at the same time.
-        builder
-            .assert_bool(local.is_extra.clone() + local.is_final.clone() + next.is_final.clone());
+        builder.assert_bool(is_extra.clone() + is_final.clone() + next_is_final.clone());
 
         // Assert that the height encoding is updated correctly.
-        for i in 0..local.height_encoding.len() {
+        for i in 0..height_encoding.len() {
             // When we are processing an extra hash, the height encoding does not change.
             builder
-                .when(local.is_extra.clone())
+                .when(is_extra.clone())
                 .when_transition()
-                .assert_zero(local.height_encoding[i].clone() - next.height_encoding[i].clone());
+                .assert_zero(height_encoding[i].clone() - next_height_encoding[i].clone());
             // When the next row is a final row, the height encoding does not change:
             // the final row is an extra row used to store the output of the last hash.
             builder
-                .when(next.is_final.clone())
+                .when(next_is_final.clone())
                 .when_transition()
-                .assert_zero(local.height_encoding[i].clone() - next.height_encoding[i].clone());
+                .assert_zero(height_encoding[i].clone() - next_height_encoding[i].clone());
             // During one merkle batch verification, and when the current row is not `is_extra` and neither the current nor the next row are final, the height encoding is shifted.
             builder
                 .when_transition()
-                .when(
-                    AB::Expr::ONE
-                        - (local.is_extra.clone() + next.is_final.clone() + local.is_final.clone()),
-                )
+                .when(AB::Expr::ONE - (is_extra.clone() + next_is_final.clone() + is_final.clone()))
                 .assert_zero(
-                    local.height_encoding[i].clone()
-                        - next.height_encoding[(i + 1) % MAX_TREE_HEIGHT].clone(),
+                    height_encoding[i].clone()
+                        - next_height_encoding[(i + 1) % self.config.max_tree_height].clone(),
                 );
         }
         // At the start, the height encoding is 1.
         builder
             .when_first_row()
             .when(is_real)
-            .assert_zero(AB::Expr::ONE - local.height_encoding[0].clone());
+            .assert_zero(AB::Expr::ONE - height_encoding[0].clone());
         // When the next row is real and the current row is final, then the next height encoding should be 1.
         builder
             .when_transition()
             .when(next_is_real.clone())
-            .when(local.is_final.clone())
-            .assert_zero(AB::Expr::ONE - next.height_encoding[0].clone());
+            .when(is_final.clone())
+            .assert_zero(AB::Expr::ONE - next_height_encoding[0].clone());
 
         // Assert that we reach the maximal height.
         let mut sum = AB::Expr::ZERO;
-        for i in 0..MAX_TREE_HEIGHT {
-            sum += local.height_encoding[i].clone() * AB::Expr::from_usize(i + 1);
+        for (i, height_encoding_bit) in height_encoding.iter().enumerate() {
+            sum += height_encoding_bit.clone() * AB::Expr::from_usize(i + 1);
         }
         builder
-            .when(local.is_final.clone())
-            .assert_zero(sum - local.length.clone());
+            .when(is_final.clone())
+            .assert_zero(sum - length.clone());
 
         builder
             .when_transition()
-            .when(AB::Expr::ONE - local.is_final.clone())
-            .assert_zero(local.length.clone() - next.length.clone());
+            .when(AB::Expr::ONE - is_final.clone())
+            .assert_zero(length.clone() - next_length.clone());
 
         // `cur_hash` corresponds to the columns that need to be sent to the hash table. It is one of:
         // - (state, sibling) when we are hashing the current state with the sibling (current index bit is 0)
         // - (sibling, state) when we are hashing the sibling with the current state; (current index bit is 1)
         // - (state, extra_sibling) when we are hashing the current state with an extra sibling (when `is_extra` is set)
-        let mut cur_to_hash = vec![AB::Expr::ZERO; 2 * BF_DIGEST_ELEMS];
-        for i in 0..BF_DIGEST_ELEMS {
-            for j in 0..MAX_TREE_HEIGHT {
-                cur_to_hash[i] += local.height_encoding[j].clone()
-                    * (local.index_bits[j].clone() * local.sibling[i].clone()
-                        + (AB::Expr::ONE - local.index_bits[j].clone()) * local.state[i].clone());
-                cur_to_hash[BF_DIGEST_ELEMS + i] += local.index_bits[j].clone()
-                    * (local.index_bits[j].clone() * local.sibling[i].clone()
-                        + (AB::Expr::ONE - local.height_encoding[j].clone())
-                            * local.state[i].clone());
+        let mut cur_to_hash = vec![AB::Expr::ZERO; 2 * self.config.digest_elems];
+        for i in 0..self.config.digest_elems {
+            for j in 0..self.config.max_tree_height {
+                cur_to_hash[i] += height_encoding[j].clone()
+                    * (index_bits[j].clone() * sibling[i].clone()
+                        + (AB::Expr::ONE - index_bits[j].clone()) * state[i].clone());
+                cur_to_hash[self.config.digest_addresses + i] += index_bits[j].clone()
+                    * (index_bits[j].clone() * sibling[i].clone()
+                        + (AB::Expr::ONE - height_encoding[j].clone()) * state[i].clone());
             }
             let tmp = cur_to_hash[i].clone();
-            cur_to_hash[i] += (AB::Expr::ONE - local.is_extra.clone()) * tmp
-                + AB::Expr::ONE * local.state[i].clone();
-            let tmp = cur_to_hash[BF_DIGEST_ELEMS + i].clone();
-            cur_to_hash[BF_DIGEST_ELEMS + i] += (AB::Expr::ONE - local.is_extra.clone()) * tmp
-                + AB::Expr::ONE * local.sibling[i].clone();
+            cur_to_hash[i] +=
+                (AB::Expr::ONE - is_extra.clone()) * tmp + AB::Expr::ONE * state[i].clone();
+            let tmp = cur_to_hash[self.config.digest_elems + i].clone();
+            cur_to_hash[self.config.digest_elems + i] +=
+                (AB::Expr::ONE - is_extra.clone()) * tmp + AB::Expr::ONE * sibling[i].clone();
         }
 
         // Interactions:
@@ -179,150 +205,197 @@ where
     }
 }
 
-#[cfg(test)]
-mod test {
+impl<F: Field> MerkleVerifyAir<F> {
+    pub fn new(config: MerkleTableConfig) -> Self {
+        MerkleVerifyAir {
+            config,
+            _phantom: PhantomData,
+        }
+    }
 
-    use p3_circuit::WitnessId;
-    use p3_circuit::config::MerkleVerifyConfig as _;
-    use p3_circuit::config::babybear_config::{
-        DEFAULT_BABY_BEAR_DIGEST_SIZE, DefaultBabyBearConfig,
-        default_babybear_poseidon2_circuit_runner_config,
-    };
-    use p3_circuit::tables::{MerklePrivateData, MerkleTrace};
-    use p3_keccak::{Keccak256Hash, KeccakF};
-    use p3_symmetric::{CompressionFunctionFromHasher, PaddingFreeSponge, SerializingHasher};
+    pub fn index_bits(&self) -> Range<usize> {
+        0..self.config.max_tree_height
+    }
+    pub fn length(&self) -> usize {
+        self.index_bits().end
+    }
+    pub fn height_encoding(&self) -> Range<usize> {
+        self.length() + 1..self.length() + 1 + self.config.max_tree_height
+    }
+    pub fn sibling(&self) -> Range<usize> {
+        self.height_encoding().end..self.height_encoding().end + self.config.digest_elems
+    }
+    pub fn state(&self) -> Range<usize> {
+        self.sibling().end..self.sibling().end + self.config.digest_elems
+    }
+    pub fn state_index(&self) -> Range<usize> {
+        self.state().end..self.state().end + self.config.digest_addresses
+    }
+    pub fn is_final(&self) -> usize {
+        self.state_index().end
+    }
+    pub fn is_extra(&self) -> usize {
+        self.is_final() + 1
+    }
+    pub fn is_extra_height(&self) -> usize {
+        self.is_extra() + 1
+    }
 
-    use crate::air::MerkleVerifyAir;
+    pub fn trace_to_matrix<ExtF: BasedVectorSpace<F>>(
+        config: &MerkleTableConfig,
+        trace: &MerkleTrace<ExtF>,
+    ) -> RowMajorMatrix<F> {
+        let &MerkleTableConfig {
+            digest_elems,
+            max_tree_height,
+            digest_addresses,
+        } = config;
+        let width = config.width();
+        // Compute the number of rows exactly: whenever the height changes, we need an extra row.
+        let row_count = trace
+            .merkle_paths
+            .iter()
+            .map(|path| path.left_values.len() + 1)
+            .sum::<usize>();
 
-    #[test]
-    fn prove_mmcs_verify_poseidon() -> Result<
-        (),
-        p3_uni_stark::VerificationError<
-            p3_fri::verifier::FriError<
-                p3_merkle_tree::MerkleTreeError,
-                p3_merkle_tree::MerkleTreeError,
-            >,
-        >,
-    > {
-        use core::array;
+        let mut values = Vec::with_capacity(width * row_count);
 
-        use p3_baby_bear::BabyBear;
-        use p3_challenger::{HashChallenger, SerializingChallenger32};
-        use p3_commit::ExtensionMmcs;
-        use p3_field::extension::BinomialExtensionField;
-        use p3_fri::{TwoAdicFriPcs, create_benchmark_fri_params};
-        use p3_merkle_tree::MerkleTreeMmcs;
-        use p3_uni_stark::{StarkConfig, prove, verify};
-        use rand::rngs::SmallRng;
-        use rand::{Rng, SeedableRng};
+        // TODO: Since the user is free to not add Merkle gates, it may happen that the Merkle table configuration
+        // is the default. Given that the Merkle AIR proof is always included, we need to handle the case where no
+        // Merkle config was provided and skip trace generation.
+        if config.max_tree_height != 0 {
+            for path in trace.merkle_paths.iter() {
+                let max_height = path.is_extra.iter().filter(|is_extra| !*is_extra).count();
 
-        type Val = BabyBear;
+                let index_bits = path
+                    .path_directions
+                    .iter()
+                    .zip(path.is_extra.iter())
+                    .filter(|(_, is_extra)| !*is_extra)
+                    .map(|(dir, _)| F::from_bool(*dir))
+                    // Pad with zeroes if necessary.
+                    .chain(core::iter::repeat_n(F::ZERO, max_tree_height - max_height))
+                    .collect::<Vec<_>>();
 
-        type FieldHash = SerializingHasher<U64Hash>;
+                let mut row_height = 0;
+                for (left_value, left_index, right_value, is_extra) in izip!(
+                    path.left_values.iter(),
+                    path.left_index.iter(),
+                    path.right_values.iter(),
+                    path.is_extra.iter()
+                ) {
+                    // Start filling a new row with the index bits
+                    debug_assert_eq!(index_bits.len(), max_tree_height);
+                    values.extend_from_slice(&index_bits);
 
-        type ByteHash = Keccak256Hash;
-        let byte_hash = ByteHash {};
+                    // Add the length of the path
+                    values.push(F::from_usize(max_height));
 
-        type U64Hash = PaddingFreeSponge<KeccakF, 25, 17, 4>;
-        let u64_hash = U64Hash::new(KeccakF {});
+                    // height encoding
+                    if row_height > 0 {
+                        values.extend_from_slice(&vec![F::ZERO; row_height]);
+                    }
+                    values.push(F::ONE);
+                    if row_height < max_tree_height {
+                        values.extend_from_slice(&vec![F::ZERO; max_tree_height - row_height - 1]);
+                    }
 
-        let field_hash = FieldHash::new(u64_hash);
+                    // sibling and state
+                    debug_assert_eq!(digest_elems, left_value.len() * ExtF::DIMENSION);
+                    values.extend(
+                        left_value
+                            .iter()
+                            .flat_map(|xs| xs.as_basis_coefficients_slice()),
+                    );
 
-        type MyCompress = CompressionFunctionFromHasher<U64Hash, 2, 4>;
-        let compress = MyCompress::new(u64_hash);
+                    debug_assert_eq!(digest_elems, right_value.len() * ExtF::DIMENSION);
+                    values.extend(
+                        right_value
+                            .iter()
+                            .flat_map(|xs| xs.as_basis_coefficients_slice()),
+                    );
 
-        const NUM_INPUTS: usize = 4;
-        const HEIGHT: usize = 8;
-        const DIGEST_ELEMS: usize = 8;
-        const MAX_TREE_HEIGHT: usize = 8;
+                    // state index
+                    values.extend(left_index.iter().map(|idx| F::from_u32(*idx)));
 
-        // Generate random inputs.
+                    // is final
+                    values.push(F::ZERO);
 
-        let mut rng = SmallRng::seed_from_u64(1);
-        let private_data: [MerklePrivateData<Val>; NUM_INPUTS] = array::from_fn(|i| {
-            let path_siblings = if i % 2 == 0 {
-                (0..HEIGHT)
-                    .map(|j| {
-                        if j == HEIGHT / 2 {
-                            (
-                                vec![rng.random::<Val>(); DIGEST_ELEMS],
-                                Some(vec![rng.random::<Val>(); DIGEST_ELEMS]),
-                            )
-                        } else {
-                            (vec![rng.random::<Val>(); DIGEST_ELEMS], None)
-                        }
-                    })
-                    .collect()
-            } else {
-                vec![(vec![rng.random::<Val>(); DIGEST_ELEMS], None); HEIGHT]
-            };
-            MerklePrivateData { path_siblings }
-        });
+                    // is extra
+                    values.push(F::from_bool(*is_extra));
+                    // extra_height
+                    if !*is_extra {
+                        // Add extra height
+                        values.push(F::ZERO);
+                        row_height += 1;
+                    } else {
+                        values.push(F::from_usize(row_height));
+                    }
+                }
 
-        let public_data = [[rng.random::<Val>(); DIGEST_ELEMS]; NUM_INPUTS];
-        let indices = [rng.random::<u32>(); NUM_INPUTS];
+                // Final row. The one-hot-encoded height_encoding remains unchanged.
 
-        let config: DefaultBabyBearConfig = default_babybear_poseidon2_circuit_runner_config();
+                // Start filling a new row with the index bits
+                values.extend_from_slice(&index_bits);
+                // Add the length of the path
+                values.push(F::from_usize(max_height));
+                // height encoding
+                let row_height = if *path.is_extra.last().unwrap_or(&true) {
+                    row_height
+                } else {
+                    row_height - 1
+                };
+                if row_height > 0 {
+                    values.extend_from_slice(&vec![F::ZERO; row_height]);
+                }
+                values.push(F::ONE);
+                if row_height < max_tree_height {
+                    values.extend_from_slice(&vec![F::ZERO; max_tree_height - row_height - 1]);
+                }
+                // sibling and state
+                let left_value = path.left_values.last().expect("Left values can't be empty");
+                debug_assert_eq!(digest_elems, left_value.len() * ExtF::DIMENSION);
+                values.extend(
+                    left_value
+                        .iter()
+                        .flat_map(|xs| xs.as_basis_coefficients_slice()),
+                );
+                values.extend(vec![F::ZERO; digest_elems]);
 
-        let trace = MerkleTrace {
-            merkle_paths: private_data
-                .iter()
-                .zip(public_data)
-                .zip(indices)
-                .map(|((data, leaf), index)| {
-                    data.to_trace::<_, _, _, [BabyBear; DEFAULT_BABY_BEAR_DIGEST_SIZE]>(
-                        config.compress(),
-                        vec![WitnessId(0); DIGEST_ELEMS],
-                        leaf.to_vec(),
-                        index,
-                    )
-                    .unwrap()
-                })
-                .collect(),
-        };
+                // state index
+                values.extend(vec![F::ZERO; digest_addresses]);
 
-        // Create the AIR.
-        let air = MerkleVerifyAir::<Val, DIGEST_ELEMS, DIGEST_ELEMS, MAX_TREE_HEIGHT>::default();
+                // is final
+                values.push(F::ONE);
+                // is extra
+                values.push(F::ZERO);
+                // extra_height
+                values.push(F::ZERO);
+            }
+        }
 
-        // Generate trace for Merkle tree table.
-        let trace =
-            MerkleVerifyAir::<Val, DIGEST_ELEMS, DIGEST_ELEMS, MAX_TREE_HEIGHT>::trace_to_matrix(
-                &trace,
-            );
+        pad_to_power_of_two(&mut values, width, row_count);
 
-        // Prove with Keccak.
-        type Challenge = BinomialExtensionField<Val, 4>;
+        RowMajorMatrix::new(values, width)
+    }
+}
 
-        type ValMmcs = MerkleTreeMmcs<
-            [Val; p3_keccak::VECTOR_LEN],
-            [u64; p3_keccak::VECTOR_LEN],
-            FieldHash,
-            MyCompress,
-            4,
-        >;
+/// Helper to pad trace values to power-of-two height with zeroes
+pub fn pad_to_power_of_two<F: Field>(values: &mut Vec<F>, width: usize, original_height: usize) {
+    if original_height == 0 {
+        // Empty trace - just ensure we have at least one row of zeros
+        values.resize(width, F::ZERO);
+        return;
+    }
 
-        let val_mmcs = ValMmcs::new(field_hash, compress);
+    let target_height = original_height.next_power_of_two();
+    if target_height == original_height {
+        return; // Already power of two
+    }
 
-        type ChallengeMmcs = ExtensionMmcs<Val, Challenge, ValMmcs>;
-        let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
+    // Repeat the last row to reach target height
 
-        type Challenger = SerializingChallenger32<Val, HashChallenger<u8, ByteHash, 32>>;
-        let challenger = Challenger::from_hasher(vec![], byte_hash);
-
-        let fri_params = create_benchmark_fri_params(challenge_mmcs);
-
-        type Dft = p3_dft::Radix2Bowers;
-        let dft = Dft::default();
-
-        type Pcs = TwoAdicFriPcs<Val, Dft, ValMmcs, ChallengeMmcs>;
-        let pcs = Pcs::new(dft, val_mmcs, fri_params);
-
-        type MyConfig = StarkConfig<Pcs, Challenge, Challenger>;
-        let config = MyConfig::new(pcs, challenger);
-
-        let proof = prove(&config, &air, trace, &vec![]);
-
-        // Verify the proof.
-        verify(&config, &air, &proof, &vec![])
+    for _ in original_height..target_height {
+        values.extend_from_slice(&vec![F::ZERO; width]);
     }
 }

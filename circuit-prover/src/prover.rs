@@ -16,7 +16,7 @@ use alloc::vec::Vec;
 use p3_circuit::tables::Traces;
 use p3_circuit::{CircuitBuilderError, CircuitError};
 use p3_field::{BasedVectorSpace, Field};
-use p3_merkle_tree_air::air::MerkleVerifyAir;
+use p3_merkle_tree_air::air::{MerkleTableConfig, MerkleVerifyAir};
 use p3_uni_stark::{prove, verify};
 use thiserror::Error;
 
@@ -116,6 +116,7 @@ where
 {
     config: ProverConfig<F, P, CD>,
     table_packing: TablePacking,
+    merkle_config: MerkleTableConfig,
 }
 
 /// Errors that can arise during proving or verification.
@@ -151,6 +152,7 @@ where
         Self {
             config,
             table_packing: TablePacking::default(),
+            merkle_config: MerkleTableConfig::default(),
         }
     }
 
@@ -165,6 +167,11 @@ where
 
     pub const fn table_packing(&self) -> TablePacking {
         self.table_packing
+    }
+
+    pub fn with_merkle_table(mut self, merkle_config: MerkleTableConfig) -> Self {
+        self.merkle_config = merkle_config;
+        self
     }
 
     /// Generate proofs for all circuit tables.
@@ -253,33 +260,10 @@ where
         };
         let mul_proof = prove(&self.config, &mul_air, mul_matrix, pis);
 
-        let merkle_proof = match D {
-            1 => {
-                let merkle_matrix =
-                    MerkleVerifyAir::<F, 8, 8, 32>::trace_to_matrix(&traces.merkle_trace);
-                let merkle_air = MerkleVerifyAir::<F, 8, 8, 32>::default();
-                Ok(prove(&self.config, &merkle_air, merkle_matrix, pis))
-            }
-            2 => {
-                let merkle_matrix =
-                    MerkleVerifyAir::<F, 8, 4, 32>::trace_to_matrix(&traces.merkle_trace);
-                let merkle_air = MerkleVerifyAir::<F, 8, 4, 32>::default();
-                Ok(prove(&self.config, &merkle_air, merkle_matrix, pis))
-            }
-            4 => {
-                let merkle_matrix =
-                    MerkleVerifyAir::<F, 8, 2, 32>::trace_to_matrix(&traces.merkle_trace);
-                let merkle_air = MerkleVerifyAir::<F, 8, 2, 32>::default();
-                Ok(prove(&self.config, &merkle_air, merkle_matrix, pis))
-            }
-            8 => {
-                let merkle_matrix =
-                    MerkleVerifyAir::<F, 8, 1, 32>::trace_to_matrix(&traces.merkle_trace);
-                let merkle_air = MerkleVerifyAir::<F, 8, 1, 32>::default();
-                Ok(prove(&self.config, &merkle_air, merkle_matrix, pis))
-            }
-            _ => Err(ProverError::UnsupportedDegree(D)),
-        }?;
+        let merkle_matrix =
+            MerkleVerifyAir::<F>::trace_to_matrix(&self.merkle_config, &traces.merkle_trace);
+        let merkle_air = MerkleVerifyAir::<F>::new(self.merkle_config);
+        let merkle_proof = prove(&self.config, &merkle_air, merkle_matrix, pis);
 
         Ok(MultiTableProof {
             witness: TableProof {
@@ -358,41 +342,13 @@ where
             .map_err(|_| ProverError::VerificationFailed { phase: "mul" })?;
 
         // MerkleVerify
-        match D {
-            1 => {
-                let merkle_air = MerkleVerifyAir::<F, 8, 8, 32>::default();
-                verify(&self.config, &merkle_air, &proof.merkle.proof, pis).map_err(|_| {
-                    ProverError::VerificationFailed {
-                        phase: "merkle_verify",
-                    }
-                })
+
+        let merkle_air = MerkleVerifyAir::<F>::new(self.merkle_config);
+        verify(&self.config, &merkle_air, &proof.merkle.proof, pis).map_err(|_| {
+            ProverError::VerificationFailed {
+                phase: "merkle_verify",
             }
-            2 => {
-                let merkle_air = MerkleVerifyAir::<F, 8, 4, 32>::default();
-                verify(&self.config, &merkle_air, &proof.merkle.proof, pis).map_err(|_| {
-                    ProverError::VerificationFailed {
-                        phase: "merkle_verify",
-                    }
-                })
-            }
-            4 => {
-                let merkle_air = MerkleVerifyAir::<F, 8, 2, 32>::default();
-                verify(&self.config, &merkle_air, &proof.merkle.proof, pis).map_err(|_| {
-                    ProverError::VerificationFailed {
-                        phase: "merkle_verify",
-                    }
-                })
-            }
-            8 => {
-                let merkle_air = MerkleVerifyAir::<F, 8, 1, 32>::default();
-                verify(&self.config, &merkle_air, &proof.merkle.proof, pis).map_err(|_| {
-                    ProverError::VerificationFailed {
-                        phase: "merkle_verify",
-                    }
-                })
-            }
-            _ => Err(ProverError::UnsupportedDegree(D)),
-        }?;
+        })?;
 
         Ok(())
     }
@@ -401,13 +357,7 @@ where
 #[cfg(test)]
 mod tests {
     use p3_baby_bear::BabyBear;
-    use p3_circuit::config::babybear_config::{
-        BabyBearCircuitBuilder, BabyBearQuarticExtensionCircuitBuilder,
-    };
-    use p3_circuit::config::goldilocks_config::GoldilocksQuadraticExtensionCircuitBuilder;
-    use p3_circuit::config::koalabear_config::{
-        KoalaBearCircuitBuilder, KoalaBearOcticExtensionCircuitBuilder,
-    };
+    use p3_circuit::CircuitBuilder;
     use p3_field::extension::BinomialExtensionField;
     use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
     use p3_goldilocks::Goldilocks;
@@ -420,7 +370,7 @@ mod tests {
 
     #[test]
     fn test_babybear_prover_base_field() -> Result<(), ProverError> {
-        let mut builder = BabyBearCircuitBuilder::new();
+        let mut builder = CircuitBuilder::new();
 
         // Create circuit: x + 5 * 2 - 3 + (-1) = expected_result, then assert result == expected
         let x = builder.add_public_input();
@@ -450,8 +400,8 @@ mod tests {
         let traces = runner.run()?;
 
         // Create BabyBear prover and prove all tables
-        let config = build_standard_config_babybear();
-        let multi_prover = MultiTableProver::new(config);
+        let (config, merkle_config) = build_standard_config_babybear::<BabyBear>();
+        let multi_prover = MultiTableProver::new(config).with_merkle_table(merkle_config.into());
         let proof = multi_prover.prove_all_tables(&traces)?;
 
         // Verify all proofs
@@ -462,7 +412,7 @@ mod tests {
     #[test]
     fn test_babybear_prover_extension_field_d4() -> Result<(), ProverError> {
         type ExtField = BinomialExtensionField<BabyBear, 4>;
-        let mut builder = BabyBearQuarticExtensionCircuitBuilder::new();
+        let mut builder = CircuitBuilder::new();
 
         // Create circuit: x * y + z - w = expected_result, then assert result == expected
         let x = builder.add_public_input();
@@ -529,7 +479,7 @@ mod tests {
         let traces = runner.run()?;
 
         // Create BabyBear prover for extension field (D=4)
-        let config = build_standard_config_babybear();
+        let (config, _) = build_standard_config_babybear::<ExtField>();
         let multi_prover = MultiTableProver::new(config);
         let proof = multi_prover.prove_all_tables(&traces)?;
 
@@ -545,7 +495,7 @@ mod tests {
 
     #[test]
     fn test_koalabear_prover_base_field() -> Result<(), ProverError> {
-        let mut builder = KoalaBearCircuitBuilder::new();
+        let mut builder = CircuitBuilder::new();
 
         // Create circuit: a * b + c - d = expected_result, then assert result == expected
         let a = builder.add_public_input();
@@ -573,7 +523,7 @@ mod tests {
         let traces = runner.run()?;
 
         // Create KoalaBear prover
-        let config = build_standard_config_koalabear();
+        let (config, _) = build_standard_config_koalabear::<KoalaBear>();
         let multi_prover = MultiTableProver::new(config);
         let proof = multi_prover.prove_all_tables(&traces)?;
 
@@ -584,7 +534,7 @@ mod tests {
     #[test]
     fn test_koalabear_prover_extension_field_d8() -> Result<(), ProverError> {
         type KBExtField = BinomialExtensionField<KoalaBear, 8>;
-        let mut builder = KoalaBearOcticExtensionCircuitBuilder::new();
+        let mut builder = CircuitBuilder::new();
 
         // Create circuit: x * y * z = expected_result, then assert result == expected
         let x = builder.add_public_input();
@@ -657,7 +607,7 @@ mod tests {
         let traces = runner.run()?;
 
         // Create KoalaBear prover for extension field (D=8)
-        let config = build_standard_config_koalabear();
+        let (config, _) = build_standard_config_koalabear::<KBExtField>();
         let multi_prover = MultiTableProver::new(config);
         let proof = multi_prover.prove_all_tables(&traces)?;
 
@@ -673,7 +623,7 @@ mod tests {
     #[test]
     fn test_goldilocks_prover_extension_field_d2() -> Result<(), ProverError> {
         type ExtField = BinomialExtensionField<Goldilocks, 2>;
-        let mut builder = GoldilocksQuadraticExtensionCircuitBuilder::new();
+        let mut builder = CircuitBuilder::new();
 
         // Simple circuit over D=2: x * y + z = expected
         let x = builder.add_public_input();
@@ -711,7 +661,7 @@ mod tests {
         let traces = runner.run()?;
 
         // Build Goldilocks config with challenge degree 2 (Poseidon2)
-        let config = build_standard_config_goldilocks();
+        let (config, _) = build_standard_config_goldilocks::<ExtField>();
         let multi_prover = MultiTableProver::new(config);
 
         let proof = multi_prover.prove_all_tables(&traces)?;

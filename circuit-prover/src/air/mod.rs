@@ -1,5 +1,6 @@
 pub mod add_air;
 pub mod const_air;
+pub mod merkle_verify_air;
 pub mod mul_air;
 pub mod public_air;
 pub mod utils;

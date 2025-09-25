@@ -3,7 +3,6 @@ use alloc::vec::Vec;
 
 use itertools::{Itertools, zip_eq};
 use p3_circuit::CircuitBuilder;
-use p3_circuit::config::MerkleVerifyConfig;
 use p3_circuit::utils::ColumnsTargets;
 use p3_commit::Pcs;
 use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
@@ -30,10 +29,9 @@ fn get_circuit_challenges<
     Comm: Recursive<SC::Challenge, Input = <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment>,
     InputProof: Recursive<SC::Challenge>,
     OpeningProof: Recursive<SC::Challenge>,
-    C: MerkleVerifyConfig,
 >(
     proof_targets: &ProofTargets<SC, Comm, OpeningProof>,
-    circuit: &mut CircuitBuilder<SC::Challenge, C>,
+    circuit: &mut CircuitBuilder<SC::Challenge>,
 ) -> Vec<Target>
 where
     SC::Pcs: RecursivePcs<
@@ -78,11 +76,10 @@ pub fn verify_circuit<
         > + Clone,
     InputProof: Recursive<SC::Challenge> + Clone,
     OpeningProof: Recursive<SC::Challenge>,
-    C: MerkleVerifyConfig,
 >(
     config: &SC,
     air: &A,
-    circuit: &mut CircuitBuilder<SC::Challenge, C>,
+    circuit: &mut CircuitBuilder<SC::Challenge>,
     proof_targets: &ProofTargets<SC, Comm, OpeningProof>,
     public_values: &[Target],
 ) -> Result<(), VerificationError>
@@ -263,12 +260,11 @@ fn vanishing_poly_at_point_circuit<
     OpeningProof: Recursive<SC::Challenge>,
     Comm: Recursive<SC::Challenge>,
     Domain,
-    C: MerkleVerifyConfig,
 >(
     config: &SC,
     domain: Domain,
     zeta: Target,
-    circuit: &mut CircuitBuilder<SC::Challenge, C>,
+    circuit: &mut CircuitBuilder<SC::Challenge>,
 ) -> Target
 where
     <SC as StarkGenericConfig>::Pcs: RecursivePcs<SC, InputProof, OpeningProof, Comm, Domain>,
@@ -282,8 +278,8 @@ where
     circuit.sub(exp, one)
 }
 
-fn exp_power_of_2<F: Field, C: MerkleVerifyConfig>(
-    circuit: &mut CircuitBuilder<F, C>,
+fn exp_power_of_2<F: Field>(
+    circuit: &mut CircuitBuilder<F>,
     base: Target,
     power_log: usize,
 ) -> Target {
@@ -307,8 +303,6 @@ mod tests {
     use p3_baby_bear::{BabyBear, Poseidon2BabyBear};
     use p3_challenger::{CanObserve, DuplexChallenger, FieldChallenger};
     use p3_circuit::CircuitBuilder;
-    use p3_circuit::config::MerkleVerifyConfig;
-    use p3_circuit::config::babybear_config::BabyBearQuarticExtensionCircuitBuilder;
     use p3_circuit::utils::RowSelectorsTargets;
     use p3_commit::testing::TrivialPcs;
     use p3_commit::{Pcs, PolynomialSpace};
@@ -335,8 +329,8 @@ mod tests {
     impl<F: Field, EF: ExtensionField<F>> Recursive<EF> for DummyCom<F> {
         type Input = Vec<Vec<F>>;
 
-        fn new<C: MerkleVerifyConfig>(
-            _circuit: &mut CircuitBuilder<EF, C>,
+        fn new(
+            _circuit: &mut CircuitBuilder<EF>,
             _lens: &mut impl Iterator<Item = usize>,
             _degree_bits: usize,
         ) -> Self {
@@ -360,8 +354,8 @@ mod tests {
     impl<F: Field> Recursive<F> for EmptyTarget {
         type Input = ();
 
-        fn new<C: MerkleVerifyConfig>(
-            _circuit: &mut p3_circuit::CircuitBuilder<F, C>,
+        fn new(
+            _circuit: &mut p3_circuit::CircuitBuilder<F>,
             _lens: &mut impl Iterator<Item = usize>,
             _degree_bits: usize,
         ) -> Self {
@@ -390,16 +384,16 @@ mod tests {
     {
         type RecursiveProof = EmptyTarget;
 
-        fn get_challenges_circuit<C: MerkleVerifyConfig>(
-            _circuit: &mut CircuitBuilder<<SC as StarkGenericConfig>::Challenge, C>,
+        fn get_challenges_circuit(
+            _circuit: &mut CircuitBuilder<<SC as StarkGenericConfig>::Challenge>,
             _proof_targets: &crate::recursive_traits::ProofTargets<SC, Comm, EmptyTarget>,
         ) -> vec::Vec<Target> {
             vec![]
         }
 
-        fn verify_circuit<C: MerkleVerifyConfig>(
+        fn verify_circuit(
             &self,
-            _circuit: &mut CircuitBuilder<<SC as StarkGenericConfig>::Challenge, C>,
+            _circuit: &mut CircuitBuilder<<SC as StarkGenericConfig>::Challenge>,
             _challenges: &[Target],
             _commitments_with_opening_points: &ComsWithOpenings<
                 Comm,
@@ -409,9 +403,9 @@ mod tests {
         ) {
         }
 
-        fn selectors_at_point_circuit<C: MerkleVerifyConfig>(
+        fn selectors_at_point_circuit(
             &self,
-            circuit: &mut CircuitBuilder<SC::Challenge, C>,
+            circuit: &mut CircuitBuilder<SC::Challenge>,
             domain: &TwoAdicMultiplicativeCoset<Val<SC>>,
             point: &Target,
         ) -> RecursiveLagrangeSelectors {
@@ -644,7 +638,7 @@ mod tests {
         >::lens(&proof);
 
         // Initialize the circuit builder.
-        let mut circuit_builder = BabyBearQuarticExtensionCircuitBuilder::new();
+        let mut circuit_builder = CircuitBuilder::new();
         let proof_targets = ProofTargets::<
             StarkConfig<TrivialPcs<Val, Dft>, Challenge, Challenger>,
             DummyCom<Val>,

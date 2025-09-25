@@ -2,14 +2,12 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use alloc::{format, vec};
 
-use p3_field::{BasedVectorSpace, Field, Packable, PrimeCharacteristicRing};
-use p3_symmetric::PseudoCompressionFunction;
+use p3_field::{Field, Packable, PrimeCharacteristicRing};
 use thiserror::Error;
 
 use crate::NonPrimitiveOp;
 use crate::circuit::Circuit;
-use crate::config::{FeltArray, MerkleVerifyConfig};
-use crate::op::{NonPrimitiveOpPrivateData, Prim};
+use crate::op::{MerkleVerifyConfig, NonPrimitiveOpPrivateData, Prim};
 use crate::types::{NonPrimitiveOpId, WitnessId};
 
 /// Errors that can occur during circuit execution and trace generation.
@@ -214,98 +212,85 @@ pub struct MerklePrivateData<F> {
 }
 
 impl<F: Clone + Default> MerklePrivateData<F> {
-    // TODO: Maybe an unsafe cast might be more efficient here
-    fn into_bf_slice<BF, BaseFieldDigest>(f_slice: &[F]) -> Result<BaseFieldDigest, CircuitError>
-    where
-        BF: PrimeCharacteristicRing + Copy,
-        F: BasedVectorSpace<BF>,
-        BaseFieldDigest: FeltArray<Field = BF>,
-    {
-        f_slice
-            .iter()
-            .flat_map(F::as_basis_coefficients_slice)
-            .copied()
-            .collect::<Vec<BF>>()
-            .try_into()
-            .map_err(|_| CircuitError::MerkleVerifyDigestLengthMismatch {
-                expected: BaseFieldDigest::DIGEST_ELEMS,
-                got: f_slice.len() * F::DIMENSION,
-            })
-    }
+    // // TODO: Maybe an unsafe cast might be more efficient here
+    // fn into_bf_slice<BF, BaseFieldDigest>(f_slice: &[F]) -> Result<BaseFieldDigest, CircuitError>
+    // where
+    //     BF: PrimeCharacteristicRing + Copy,
+    //     F: BasedVectorSpace<BF>,
+    //     BaseFieldDigest: FeltArray<Field = BF>,
+    // {
+    //     f_slice
+    //         .iter()
+    //         .flat_map(F::as_basis_coefficients_slice)
+    //         .copied()
+    //         .collect::<Vec<BF>>()
+    //         .try_into()
+    //         .map_err(|_| CircuitError::MerkleVerifyDigestLengthMismatch {
+    //             expected: BaseFieldDigest::DIGEST_ELEMS,
+    //             got: f_slice.len() * F::DIMENSION,
+    //         })
+    // }
 
-    // TODO: Maybe an unsafe cast might be more efficient here
-    fn into_ef_slice<BF, BaseFieldDigest, ExtensionFieldDigest>(
-        bf_slice: &BaseFieldDigest,
-    ) -> Result<ExtensionFieldDigest, CircuitError>
-    where
-        BF: PrimeCharacteristicRing + Copy,
-        F: BasedVectorSpace<BF>,
-        BaseFieldDigest: FeltArray<Field = BF>,
-        ExtensionFieldDigest: FeltArray<Field = F>,
-    {
-        let f_vec = <BaseFieldDigest as Into<Vec<BF>>>::into(bf_slice.clone())
-            .chunks(F::DIMENSION)
-            .map(F::from_basis_coefficients_slice)
-            .collect::<Option<Vec<F>>>()
-            .ok_or(CircuitError::MerkleVerifyDigestLengthMismatch {
-                expected: BaseFieldDigest::DIGEST_ELEMS,
-                got: BaseFieldDigest::DIGEST_ELEMS * F::DIMENSION,
-            })?;
-        f_vec
-            .try_into()
-            .map_err(|_| CircuitError::MerkleVerifyDigestLengthMismatch {
-                expected: ExtensionFieldDigest::DIGEST_ELEMS,
-                got: BaseFieldDigest::DIGEST_ELEMS * F::DIMENSION,
-            })
-    }
+    // // TODO: Maybe an unsafe cast might be more efficient here
+    // fn into_ef_slice<BF, BaseFieldDigest, ExtensionFieldDigest>(
+    //     bf_slice: &BaseFieldDigest,
+    // ) -> Result<ExtensionFieldDigest, CircuitError>
+    // where
+    //     BF: PrimeCharacteristicRing + Copy,
+    //     F: BasedVectorSpace<BF>,
+    //     BaseFieldDigest: FeltArray<Field = BF>,
+    //     ExtensionFieldDigest: FeltArray<Field = F>,
+    // {
+    //     let f_vec = <BaseFieldDigest as Into<Vec<BF>>>::into(bf_slice.clone())
+    //         .chunks(F::DIMENSION)
+    //         .map(F::from_basis_coefficients_slice)
+    //         .collect::<Option<Vec<F>>>()
+    //         .ok_or(CircuitError::MerkleVerifyDigestLengthMismatch {
+    //             expected: BaseFieldDigest::DIGEST_ELEMS,
+    //             got: BaseFieldDigest::DIGEST_ELEMS * F::DIMENSION,
+    //         })?;
+    //     f_vec
+    //         .try_into()
+    //         .map_err(|_| CircuitError::MerkleVerifyDigestLengthMismatch {
+    //             expected: ExtensionFieldDigest::DIGEST_ELEMS,
+    //             got: BaseFieldDigest::DIGEST_ELEMS * F::DIMENSION,
+    //         })
+    // }
 
-    pub fn to_trace<BF: PrimeCharacteristicRing + Copy, C, BaseFieldDigest, ExtensionFieldDigest>(
+    pub fn to_trace(
         &self,
-        compress: &C,
+        merkle_config: &MerkleVerifyConfig<F>,
         leaf_indices: Vec<WitnessId>,
-        leaf_value: Vec<F>,
+        leaf_value: &[F],
         index_value: u32,
-    ) -> Result<MerklePathTrace<F>, CircuitError>
-    where
-        BaseFieldDigest: FeltArray<Field = BF>,
-        ExtensionFieldDigest: FeltArray<Field = F>,
-        F: BasedVectorSpace<BF>,
-        C: PseudoCompressionFunction<BaseFieldDigest, 2> + Sync,
-    {
-        debug_assert_eq!(
-            ExtensionFieldDigest::DIGEST_ELEMS * F::DIMENSION,
-            BaseFieldDigest::DIGEST_ELEMS
-        );
+    ) -> Result<MerklePathTrace<F>, CircuitError> {
+        debug_assert_eq!(merkle_config.ext_field_digest_elems, leaf_value.len());
 
         let mut trace = MerklePathTrace::default();
-        let mut state: BaseFieldDigest = Self::into_bf_slice(&leaf_value)?;
+        let mut state = leaf_value.to_vec();
 
         let leaf_indices: Vec<u32> = leaf_indices.iter().map(|wid| wid.0).collect();
 
-        let path_directions = (0..32).map(|i| (index_value >> i) & 1 == 1);
+        let path_directions =
+            (0..merkle_config.max_tree_height).map(|i| (index_value >> i) & 1 == 1);
         // For each step in the Merkle path
         for ((sibling_value, extra_sibling_value), direction) in
             self.path_siblings.iter().zip(path_directions)
         {
-            let sibling_value: BaseFieldDigest = Self::into_bf_slice(sibling_value)?;
             // Current hash becomes left operand
-            trace
-                .left_values
-                .push(Self::into_ef_slice::<_, _, ExtensionFieldDigest>(&state)?.into());
+            trace.left_values.push(state.clone());
             // TODO: What is the address of this value?
             trace.left_index.push(leaf_indices.clone()); // Points to witness bus
 
             // Sibling becomes right operand (private data - not on witness bus)
-            trace
-                .right_values
-                .push(Self::into_ef_slice::<_, _, ExtensionFieldDigest>(&sibling_value)?.into());
+            trace.right_values.push(sibling_value.clone());
             trace.right_index.push(0); // Not on witness bus - private data
 
-            // Compute parent hash (simple mock hash: left + right + direction)
+            // Compute parent hash
             let parent_hash = if direction {
-                compress.compress([state, sibling_value])
+                (merkle_config.compress)([&state, sibling_value])
             } else {
-                compress.compress([sibling_value, state])
+                (merkle_config.compress)([sibling_value, &state])
             };
 
             trace.path_directions.push(direction);
@@ -316,19 +301,13 @@ impl<F: Clone + Default> MerklePrivateData<F> {
 
             // If there's an extra sibling we push another row to the trace
             if let Some(extra_sibling_value) = extra_sibling_value {
-                let extra_sibling_value: BaseFieldDigest =
-                    Self::into_bf_slice(extra_sibling_value)?;
-                trace
-                    .left_values
-                    .push(Self::into_ef_slice::<_, _, ExtensionFieldDigest>(&state)?.into());
+                trace.left_values.push(state.to_vec());
                 trace.left_index.push(leaf_indices.clone());
 
-                trace.right_values.push(
-                    Self::into_ef_slice::<_, _, ExtensionFieldDigest>(&extra_sibling_value)?.into(),
-                );
+                trace.right_values.push(extra_sibling_value.clone());
                 trace.right_index.push(0); // TODO: This should have an address on the witness table
 
-                let parent_hash = compress.compress([state, extra_sibling_value]);
+                let parent_hash = (merkle_config.compress)([&state, extra_sibling_value]).to_vec();
                 trace.path_directions.push(direction);
                 trace.is_extra.push(true);
 
@@ -348,8 +327,8 @@ impl<F: Clone + Default> MerklePrivateData<F> {
 ///
 /// Created from a `Circuit` via `.runner()`, this provides the execution
 /// layer between the immutable constraint specification and trace generation.
-pub struct CircuitRunner<F, C: MerkleVerifyConfig> {
-    circuit: Circuit<F, C>,
+pub struct CircuitRunner<F> {
+    circuit: Circuit<F>,
     witness: Vec<Option<F>>,
     /// Private data for complex operations (not on witness bus)
     non_primitive_op_private_data: Vec<Option<NonPrimitiveOpPrivateData<F>>>,
@@ -365,16 +344,11 @@ impl<
         + core::fmt::Debug
         + PrimeCharacteristicRing
         + Packable
-        + Field
-        + BasedVectorSpace<BF>,
-    BF: PrimeCharacteristicRing + Copy,
-    C: MerkleVerifyConfig<BaseFieldDigest = BFH, ExtensionFieldDigest = EFH>,
-    EFH: FeltArray<Field = F>,
-    BFH: FeltArray<Field = BF>,
-> CircuitRunner<F, C>
+        + Field,
+> CircuitRunner<F>
 {
     /// Create a new prover instance
-    pub fn new(circuit: Circuit<F, C>) -> Self {
+    pub fn new(circuit: Circuit<F>) -> Self {
         let witness = vec![None; circuit.witness_count as usize];
         let non_primitive_op_private_data = vec![None; circuit.non_primitive_ops.len()];
         Self {
@@ -647,6 +621,7 @@ impl<
                 leaf,
                 index,
                 root: _,
+                config,
             } = &self.circuit.non_primitive_ops[op_idx];
 
             // Clone private data option to avoid holding a borrow on self
@@ -666,13 +641,7 @@ impl<
             if let Some(Some(NonPrimitiveOpPrivateData::MerkleVerify(private_data))) =
                 self.non_primitive_op_private_data.get(op_idx).cloned()
             {
-                let trace = private_data
-                    .to_trace::<BF, _, C::BaseFieldDigest, C::ExtensionFieldDigest>(
-                        self.circuit.config.compress(),
-                        leaf.clone(),
-                        leaf_value,
-                        index.0,
-                    )?;
+                let trace = private_data.to_trace(config, leaf.clone(), &leaf_value, index.0)?;
                 merkle_paths.push(trace);
             } else {
                 return Err(CircuitError::NonPrimitiveOpMissingPrivateData {
@@ -695,16 +664,11 @@ impl<
         + core::fmt::Debug
         + PrimeCharacteristicRing
         + Packable
-        + Field
-        + BasedVectorSpace<BF>,
-    BF: PrimeCharacteristicRing + Copy,
-    C: MerkleVerifyConfig<BaseFieldDigest = BFH, ExtensionFieldDigest = EFH>,
-    BFH: FeltArray<Field = BF>,
-    EFH: FeltArray<Field = F>,
-> Circuit<F, C>
+        + Field,
+> Circuit<F>
 {
     /// Create a circuit runner for execution and trace generation
-    pub fn runner(self) -> CircuitRunner<F, C> {
+    pub fn runner(self) -> CircuitRunner<F> {
         CircuitRunner::new(self)
     }
 }
@@ -719,13 +683,11 @@ mod tests {
     use p3_field::extension::BinomialExtensionField;
     use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
 
-    use crate::config::babybear_config::{
-        BabyBearCircuitBuilder, BabyBearQuarticExtensionCircuitBuilder,
-    };
+    use crate::CircuitBuilder;
 
     #[test]
     fn test_table_generation_basic() {
-        let mut builder = BabyBearCircuitBuilder::new();
+        let mut builder = CircuitBuilder::new();
 
         // Simple test: x + 5 = result
         let x = builder.add_public_input();
@@ -758,7 +720,7 @@ mod tests {
 
     #[test]
     fn test_toy_example_37_times_x_minus_111() {
-        let mut builder = BabyBearCircuitBuilder::new();
+        let mut builder = CircuitBuilder::new();
 
         let x = builder.add_public_input();
         let c37 = builder.add_const(BabyBear::from_u64(37));
@@ -872,7 +834,7 @@ mod tests {
     fn test_extension_field_support() {
         type ExtField = BinomialExtensionField<BabyBear, 4>;
 
-        let mut builder = BabyBearQuarticExtensionCircuitBuilder::new();
+        let mut builder = CircuitBuilder::new();
 
         // Test extension field operations: x + y * z
         let x = builder.add_public_input();

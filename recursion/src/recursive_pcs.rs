@@ -6,7 +6,6 @@ use core::marker::PhantomData;
 use core::{array, iter};
 
 use p3_circuit::CircuitBuilder;
-use p3_circuit::config::MerkleVerifyConfig;
 use p3_commit::{BatchOpening, ExtensionMmcs};
 use p3_field::{ExtensionField, Field, PackedValue};
 use p3_fri::{CommitPhaseProofStep, FriProof, QueryProof};
@@ -41,8 +40,8 @@ impl<
 {
     type Input = FriProof<EF, RecMmcs::Input, Witness::Input, InputProof::Input>;
 
-    fn new<C: MerkleVerifyConfig>(
-        circuit: &mut CircuitBuilder<EF, C>,
+    fn new(
+        circuit: &mut CircuitBuilder<EF>,
         lens: &mut impl Iterator<Item = usize>,
         degree_bits: usize,
     ) -> Self {
@@ -154,8 +153,8 @@ impl<
 {
     type Input = QueryProof<EF, RecMmcs::Input, InputProof::Input>;
 
-    fn new<C: MerkleVerifyConfig>(
-        circuit: &mut CircuitBuilder<EF, C>,
+    fn new(
+        circuit: &mut CircuitBuilder<EF>,
         lens: &mut impl Iterator<Item = usize>,
         degree_bits: usize,
     ) -> Self {
@@ -229,8 +228,8 @@ impl<F: Field, EF: ExtensionField<F>, RecMmcs: RecursiveExtensionMmcs<F, EF>> Re
     // This is used with an extension field element, since it is part of `FriProof`, not a base field element.
     type Input = CommitPhaseProofStep<EF, RecMmcs::Input>;
 
-    fn new<C: MerkleVerifyConfig>(
-        circuit: &mut CircuitBuilder<EF, C>,
+    fn new(
+        circuit: &mut CircuitBuilder<EF>,
         lens: &mut impl Iterator<Item = usize>,
         degree_bits: usize,
     ) -> Self {
@@ -282,8 +281,8 @@ impl<F: Field, EF: ExtensionField<F>, Inner: RecursiveMmcs<F, EF>> Recursive<EF>
 {
     type Input = BatchOpening<F, Inner::Input>;
 
-    fn new<C: MerkleVerifyConfig>(
-        circuit: &mut CircuitBuilder<EF, C>,
+    fn new(
+        circuit: &mut CircuitBuilder<EF>,
         lens: &mut impl Iterator<Item = usize>,
         degree_bits: usize,
     ) -> Self {
@@ -353,12 +352,11 @@ impl<F: Field, EF: ExtensionField<F>, const DIGEST_ELEMS: usize> Recursive<EF>
 {
     type Input = ValMmcsCommitment<F, DIGEST_ELEMS>;
 
-    fn new<C: MerkleVerifyConfig>(
-        circuit: &mut CircuitBuilder<EF, C>,
+    fn new(
+        circuit: &mut CircuitBuilder<EF>,
         _lens: &mut impl Iterator<Item = usize>,
         _degree_bits: usize,
     ) -> Self {
-        debug_assert_eq!(DIGEST_ELEMS, C::BF_DIGEST_ELEMS);
         Self {
             hash_targets: array::from_fn(|_| circuit.add_public_input()),
             _phantom: PhantomData,
@@ -391,12 +389,11 @@ impl<F: Field, EF: ExtensionField<F>, const DIGEST_ELEMS: usize> Recursive<EF>
 {
     type Input = ValMmcsProof<F, DIGEST_ELEMS>;
 
-    fn new<C: MerkleVerifyConfig>(
-        circuit: &mut CircuitBuilder<EF, C>,
+    fn new(
+        circuit: &mut CircuitBuilder<EF>,
         lens: &mut impl Iterator<Item = usize>,
         _degree_bits: usize,
     ) -> Self {
-        debug_assert_eq!(DIGEST_ELEMS, C::BF_DIGEST_ELEMS);
         let proof_len = lens.next().unwrap();
         let mut proof = Vec::with_capacity(proof_len);
         for _ in 0..proof_len {
@@ -434,8 +431,8 @@ pub struct Witness<F> {
 impl<F: Field, EF: ExtensionField<F>> Recursive<EF> for Witness<F> {
     type Input = F;
 
-    fn new<C: MerkleVerifyConfig>(
-        circuit: &mut CircuitBuilder<EF, C>,
+    fn new(
+        circuit: &mut CircuitBuilder<EF>,
         _lens: &mut impl Iterator<Item = usize>,
         _degree_bits: usize,
     ) -> Self {
@@ -522,8 +519,8 @@ impl<F: Field, EF: ExtensionField<F>, Inner: RecursiveMmcs<F, EF>> Recursive<EF>
 {
     type Input = Vec<BatchOpening<F, Inner::Input>>;
 
-    fn new<C: MerkleVerifyConfig>(
-        circuit: &mut CircuitBuilder<EF, C>,
+    fn new(
+        circuit: &mut CircuitBuilder<EF>,
         lens: &mut impl Iterator<Item = usize>,
         degree_bits: usize,
     ) -> Self {
