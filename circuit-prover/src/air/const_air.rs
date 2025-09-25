@@ -10,13 +10,13 @@ use super::utils::pad_to_power_of_two;
 
 /// ConstAir: vector-valued constant binding with generic extension degree D.
 ///
-/// This chip exposes transparent constants that don't need to be committed during proving.
+/// This chip exposes preprocessed constants that don't need to be committed during proving.
 /// It serves as the source of truth for constant values in the system, with each row
 /// representing a (value, index) pair where the index corresponds to a WitnessId.
 ///
 /// Layout per row: [value[0..D-1], index] → width = D + 1
 /// - value[0..D-1]: Extension field value represented as D base field coefficients
-/// - index: Transparent WitnessId that this constant binds to
+/// - index: Preprocessed WitnessId that this constant binds to
 #[derive(Debug, Clone)]
 pub struct ConstAir<F, const D: usize = 1> {
     pub height: usize,

@@ -197,7 +197,7 @@ pub struct MerkleVerifyCols<T, const DIGEST_ELEMS: usize, const MAX_TREE_HEIGHT:
     /// Bits of the leaf index we are currently verifying.
     pub index_bits: [T; MAX_TREE_HEIGHT],
     /// Max height of the Merkle trees, which is equal to the index's bit length.
-    /// Transparent column.
+    /// Preprocessed column.
     pub length: T,
     /// One-hot encoding of the height within the Merkle tree.
     pub height_encoding: [T; MAX_TREE_HEIGHT],
@@ -209,9 +209,9 @@ pub struct MerkleVerifyCols<T, const DIGEST_ELEMS: usize, const MAX_TREE_HEIGHT:
     /// tree verification for this index.
     pub is_final: T,
     /// Whether there is an extra step for the current height (due to batching).
-    /// Transparent column.
+    /// Preprocessed column.
     pub is_extra: T,
-    /// The height at the extra step. Transparent column.
+    /// The height at the extra step. Preprocessed column.
     pub extra_height: T,
 }
 
