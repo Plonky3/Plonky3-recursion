@@ -1,4 +1,7 @@
+use core::array;
+
 use p3_field::Field;
+use p3_symmetric::PseudoCompressionFunction;
 use p3_uni_stark::{Entry, SymbolicExpression};
 
 use crate::{CircuitBuilder, ExprId};
@@ -52,7 +55,7 @@ pub fn symbolic_to_circuit<F: Field>(
     } = columns;
 
     let mut get_target =
-        |s: &SymbolicExpression<F>| symbolic_to_circuit::<F>(row_selectors, columns, s, circuit);
+        |s: &SymbolicExpression<F>| symbolic_to_circuit(row_selectors, columns, s, circuit);
 
     match symbolic {
         SymbolicExpression::Constant(c) => circuit.add_const(*c),
@@ -98,6 +101,17 @@ pub fn symbolic_to_circuit<F: Field>(
                 _ => unreachable!(),
             }
         }
+    }
+}
+
+#[derive(Clone)]
+pub struct MockCompression {}
+
+impl<F: Field, const DIGEST_ELEMS: usize> PseudoCompressionFunction<[F; DIGEST_ELEMS], 2>
+    for MockCompression
+{
+    fn compress(&self, input: [[F; DIGEST_ELEMS]; 2]) -> [F; DIGEST_ELEMS] {
+        array::from_fn(|i| input[0][i] - input[1][i])
     }
 }
 
@@ -209,7 +223,7 @@ mod tests {
         };
 
         // Build a circuit adding public inputs for `sels`, public values, local values and next values.
-        let mut circuit = CircuitBuilder::<Challenge>::new();
+        let mut circuit = CircuitBuilder::new();
         let circuit_sels = [
             circuit.add_public_input(),
             circuit.add_public_input(),
@@ -243,7 +257,7 @@ mod tests {
         };
 
         // Get the circuit for the folded constraints.
-        let sum = symbolic_to_circuit::<Challenge>(
+        let sum = symbolic_to_circuit(
             row_selectors,
             &columns,
             &folded_symbolic_constraints,

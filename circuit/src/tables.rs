@@ -2,11 +2,12 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use alloc::{format, vec};
 
-use p3_field::Field;
+use p3_field::{Field, Packable, PrimeCharacteristicRing};
 use thiserror::Error;
 
+use crate::NonPrimitiveOp;
 use crate::circuit::Circuit;
-use crate::op::{NonPrimitiveOpPrivateData, Prim};
+use crate::op::{MerkleVerifyConfig, NonPrimitiveOpPrivateData, Prim};
 use crate::types::{NonPrimitiveOpId, WitnessId};
 
 /// Errors that can occur during circuit execution and trace generation.
@@ -80,6 +81,11 @@ pub enum CircuitError {
         expected: String,
         reconstructed: String,
     },
+    /// The size of the digest does not match the expected one.
+    #[error(
+        "The size of the digest does not match the expected one: expected {expected}, got {got}"
+    )]
+    MerkleVerifyDigestLengthMismatch { expected: usize, got: usize },
 }
 
 /// Execution traces for all tables
@@ -95,8 +101,8 @@ pub struct Traces<F> {
     pub add_trace: AddTrace<F>,
     /// Mul operation table
     pub mul_trace: MulTrace<F>,
-    /// Fake Merkle verification table
-    pub fake_merkle_trace: FakeMerkleTrace<F>,
+    /// Merkle verification table
+    pub merkle_trace: MerkleTrace<F>,
 }
 
 /// Central witness table with preprocessed index column
@@ -162,21 +168,109 @@ pub struct MulTrace<F> {
 
 /// Fake Merkle verification table (simplified: single field elements)
 #[derive(Debug, Clone)]
-pub struct FakeMerkleTrace<F> {
-    /// Left operand values (current hash)
-    pub left_values: Vec<F>,
-    /// Left operand indices
-    pub left_index: Vec<u32>,
-    /// Right operand values (sibling hash)
-    pub right_values: Vec<F>,
+pub struct MerkleTrace<F> {
+    /// All the merkle paths computed in this trace
+    pub merkle_paths: Vec<MerklePathTrace<F>>,
+}
+
+/// A single Merkle Path verification table
+#[derive(Debug, Clone, Default)]
+pub struct MerklePathTrace<F> {
+    /// Left operand values (current hash). A vector of field elements representing a digest.
+    pub left_values: Vec<Vec<F>>,
+    /// Left operand indices.
+    pub left_index: Vec<Vec<u32>>,
+    /// Right operand values (sibling hash). A vector of field elements representing a digest
+    pub right_values: Vec<Vec<F>>,
     /// Right operand indices (not on witness bus - private)
     pub right_index: Vec<u32>,
-    /// Result values (computed parent hash)
-    pub result_values: Vec<F>,
-    /// Result indices
-    pub result_index: Vec<u32>,
     /// Path direction bits (0 = left, 1 = right) - private
-    pub path_directions: Vec<u32>,
+    pub path_directions: Vec<bool>,
+    /// Indicates if the current row is processing a smaller
+    /// matrix of the Mmcs.
+    pub is_extra: Vec<bool>,
+}
+
+/// Private Merkle path data for fake Merkle verification (simplified)
+///
+/// This represents the private witness information that the prover needs
+/// to demonstrate knowledge of a valid Merkle path from leaf to root.
+/// In a real implementation, this would contain cryptographic hash values
+/// and tree structure information.
+///
+/// Note: This is a simplified "fake" implementation for demonstration.
+/// Production Merkle verification would use proper cryptographic hashes
+/// and handle multi-element hash digests, not single field elements.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MerklePrivateData<F> {
+    /// Sibling hash values along the Merkle path
+    ///
+    /// For each level of the tree (from leaf to root), contains the
+    /// sibling hash needed to compute the parent hash. It might optionally
+    /// include the hash of the row of a smaller matrix in the Mmcs.
+    pub path_siblings: Vec<(Vec<F>, Option<Vec<F>>)>,
+}
+
+impl<F: Clone + Default> MerklePrivateData<F> {
+    pub fn to_trace(
+        &self,
+        merkle_config: &MerkleVerifyConfig<F>,
+        leaf_indices: Vec<WitnessId>,
+        leaf_value: &[F],
+        index_value: u32,
+    ) -> Result<MerklePathTrace<F>, CircuitError> {
+        debug_assert_eq!(merkle_config.ext_field_digest_elems, leaf_value.len());
+
+        let mut trace = MerklePathTrace::default();
+        let mut state = leaf_value.to_vec();
+
+        let leaf_indices: Vec<u32> = leaf_indices.iter().map(|wid| wid.0).collect();
+
+        let path_directions =
+            (0..merkle_config.max_tree_height).map(|i| (index_value >> i) & 1 == 1);
+        // For each step in the Merkle path
+        for ((sibling_value, extra_sibling_value), direction) in
+            self.path_siblings.iter().zip(path_directions)
+        {
+            // Current hash becomes left operand
+            trace.left_values.push(state.clone());
+            // TODO: What is the address of this value?
+            trace.left_index.push(leaf_indices.clone()); // Points to witness bus
+
+            // Sibling becomes right operand (private data - not on witness bus)
+            trace.right_values.push(sibling_value.clone());
+            trace.right_index.push(0); // Not on witness bus - private data
+
+            // Compute parent hash
+            let parent_hash = if direction {
+                (merkle_config.compress)([&state, sibling_value])
+            } else {
+                (merkle_config.compress)([sibling_value, &state])
+            };
+
+            trace.path_directions.push(direction);
+            trace.is_extra.push(false);
+
+            // Update current hash for next iteration
+            state = parent_hash;
+
+            // If there's an extra sibling we push another row to the trace
+            if let Some(extra_sibling_value) = extra_sibling_value {
+                trace.left_values.push(state.to_vec());
+                trace.left_index.push(leaf_indices.clone());
+
+                trace.right_values.push(extra_sibling_value.clone());
+                trace.right_index.push(0); // TODO: This should have an address on the witness table
+
+                let parent_hash = (merkle_config.compress)([&state, extra_sibling_value]).to_vec();
+                trace.path_directions.push(direction);
+                trace.is_extra.push(true);
+
+                state = parent_hash;
+            }
+        }
+        Ok(trace)
+    }
 }
 
 /// Circuit runner that executes circuits and generates execution traces
@@ -203,6 +297,8 @@ impl<
         + core::ops::Mul<Output = F>
         + PartialEq
         + core::fmt::Debug
+        + PrimeCharacteristicRing
+        + Packable
         + Field,
 > CircuitRunner<F>
 {
@@ -254,10 +350,7 @@ impl<
         // Validate that the private data matches the operation type
         let non_primitive_op = &self.circuit.non_primitive_ops[op_id.0 as usize];
         match (non_primitive_op, &private_data) {
-            (
-                crate::op::NonPrimitiveOp::FakeMerkleVerify { .. },
-                NonPrimitiveOpPrivateData::FakeMerkleVerify(_),
-            ) => {
+            (NonPrimitiveOp::MerkleVerify { .. }, NonPrimitiveOpPrivateData::MerkleVerify(_)) => {
                 // Type match - good!
             }
         }
@@ -277,7 +370,7 @@ impl<
         let public_trace = self.generate_public_trace()?;
         let add_trace = self.generate_add_trace()?;
         let mul_trace = self.generate_mul_trace()?;
-        let fake_merkle_trace = self.generate_fake_merkle_trace()?;
+        let merkle_trace = self.generate_merkle_trace()?;
 
         Ok(Traces {
             witness_trace,
@@ -285,7 +378,7 @@ impl<
             public_trace,
             add_trace,
             mul_trace,
-            fake_merkle_trace,
+            merkle_trace,
         })
     }
 
@@ -473,69 +566,38 @@ impl<
         })
     }
 
-    fn generate_fake_merkle_trace(&mut self) -> Result<FakeMerkleTrace<F>, CircuitError> {
-        let mut left_values = Vec::new();
-        let mut left_index = Vec::new();
-        let mut right_values = Vec::new();
-        let mut right_index = Vec::new();
-        let mut result_values = Vec::new();
-        let mut result_index = Vec::new();
-        let mut path_directions = Vec::new();
+    fn generate_merkle_trace(&mut self) -> Result<MerkleTrace<F>, CircuitError> {
+        let mut merkle_paths = Vec::new();
 
         // Process each complex operation by index to avoid borrowing conflicts
         for op_idx in 0..self.circuit.non_primitive_ops.len() {
             // Copy out leaf/root to end immutable borrow immediately
-            let (leaf, root) = match &self.circuit.non_primitive_ops[op_idx] {
-                crate::op::NonPrimitiveOp::FakeMerkleVerify { leaf, root } => (*leaf, *root),
-            };
+            let NonPrimitiveOp::MerkleVerify {
+                leaf,
+                index,
+                root: _,
+                config,
+            } = &self.circuit.non_primitive_ops[op_idx];
 
             // Clone private data option to avoid holding a borrow on self
-            if let Some(Some(NonPrimitiveOpPrivateData::FakeMerkleVerify(private_data))) =
+            let leaf_value = leaf
+                .iter()
+                .map(|limb| {
+                    if let Some(val) = self.witness.get(limb.0 as usize).and_then(|x| x.as_ref()) {
+                        Ok(*val)
+                    } else {
+                        Err(CircuitError::NonPrimitiveOpWitnessNotSet {
+                            operation_index: op_idx,
+                        })
+                    }
+                })
+                .collect::<Result<Vec<F>, CircuitError>>()?;
+
+            if let Some(Some(NonPrimitiveOpPrivateData::MerkleVerify(private_data))) =
                 self.non_primitive_op_private_data.get(op_idx).cloned()
             {
-                let mut current_hash =
-                    if let Some(val) = self.witness.get(leaf.0 as usize).and_then(|x| x.as_ref()) {
-                        *val
-                    } else {
-                        return Err(CircuitError::NonPrimitiveOpWitnessNotSet {
-                            operation_index: op_idx,
-                        });
-                    };
-
-                // For each step in the Merkle path
-                for (sibling_value, &direction) in private_data
-                    .path_siblings
-                    .iter()
-                    .zip(private_data.path_directions.iter())
-                {
-                    // Current hash becomes left operand
-                    left_values.push(current_hash);
-                    left_index.push(leaf.0); // Points to witness bus
-
-                    // Sibling becomes right operand (private data - not on witness bus)
-                    right_values.push(*sibling_value);
-                    right_index.push(0); // Not on witness bus - private data
-
-                    // Compute parent hash (simple mock hash: left + right + direction)
-                    let parent_hash = current_hash
-                        + *sibling_value
-                        + if direction {
-                            F::from_u64(1)
-                        } else {
-                            F::from_u64(0)
-                        };
-
-                    result_values.push(parent_hash);
-                    result_index.push(root.0); // Points to witness bus
-
-                    path_directions.push(if direction { 1 } else { 0 });
-
-                    // Update current hash for next iteration
-                    current_hash = parent_hash;
-                }
-
-                // Root is computed; write back to the witness bus at root index
-                self.set_witness(root, current_hash)?;
+                let trace = private_data.to_trace(config, leaf.clone(), &leaf_value, index.0)?;
+                merkle_paths.push(trace);
             } else {
                 return Err(CircuitError::NonPrimitiveOpMissingPrivateData {
                     operation_index: op_idx,
@@ -543,15 +605,7 @@ impl<
             }
         }
 
-        Ok(FakeMerkleTrace {
-            left_values,
-            left_index,
-            right_values,
-            right_index,
-            result_values,
-            result_index,
-            path_directions,
-        })
+        Ok(MerkleTrace { merkle_paths })
     }
 }
 
@@ -563,6 +617,8 @@ impl<
         + core::ops::Mul<Output = F>
         + PartialEq
         + core::fmt::Debug
+        + PrimeCharacteristicRing
+        + Packable
         + Field,
 > Circuit<F>
 {
@@ -582,11 +638,11 @@ mod tests {
     use p3_field::extension::BinomialExtensionField;
     use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
 
-    use crate::builder::CircuitBuilder;
+    use crate::CircuitBuilder;
 
     #[test]
     fn test_table_generation_basic() {
-        let mut builder = CircuitBuilder::<BabyBear>::new();
+        let mut builder = CircuitBuilder::new();
 
         // Simple test: x + 5 = result
         let x = builder.add_public_input();
@@ -619,7 +675,7 @@ mod tests {
 
     #[test]
     fn test_toy_example_37_times_x_minus_111() {
-        let mut builder = CircuitBuilder::<BabyBear>::new();
+        let mut builder = CircuitBuilder::new();
 
         let x = builder.add_public_input();
         let c37 = builder.add_const(BabyBear::from_u64(37));
@@ -733,7 +789,7 @@ mod tests {
     fn test_extension_field_support() {
         type ExtField = BinomialExtensionField<BabyBear, 4>;
 
-        let mut builder = CircuitBuilder::<ExtField>::new();
+        let mut builder = CircuitBuilder::new();
 
         // Test extension field operations: x + y * z
         let x = builder.add_public_input();

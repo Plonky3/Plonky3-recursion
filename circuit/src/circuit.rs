@@ -19,7 +19,7 @@ pub struct Circuit<F> {
     /// Primitive operations in topological order
     pub primitive_ops: Vec<Prim<F>>,
     /// Non-primitive operations
-    pub non_primitive_ops: Vec<NonPrimitiveOp>,
+    pub non_primitive_ops: Vec<NonPrimitiveOp<F>>,
     /// Public input witness indices
     pub public_rows: Vec<WitnessId>,
     /// Total number of public field elements

@@ -140,8 +140,7 @@ where
         .collect_vec();
 
     // Challenger is called here. But we don't have the interactions or hash tables yet.
-    let challenge_targets =
-        get_circuit_challenges::<SC, Comm, InputProof, OpeningProof>(proof_targets, circuit);
+    let challenge_targets = get_circuit_challenges(proof_targets, circuit);
 
     // Verify shape.
     let air_width = A::width(air);
@@ -211,23 +210,16 @@ where
                 .enumerate()
                 .filter(|(j, _)| *j != i)
                 .fold(one, |total, (_, other_domain)| {
-                    let vp_zeta = vanishing_poly_at_point_circuit::<
-                        SC,
-                        InputProof,
-                        OpeningProof,
-                        Comm,
-                        <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain,
-                    >(config, *other_domain, zeta, circuit);
+                    let vp_zeta =
+                        vanishing_poly_at_point_circuit(config, *other_domain, zeta, circuit);
 
                     let first_point = circuit.add_const(pcs.first_point(domain));
-                    let vp_first_point =
-                        vanishing_poly_at_point_circuit::<
-                            SC,
-                            InputProof,
-                            OpeningProof,
-                            Comm,
-                            <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain,
-                        >(config, *other_domain, first_point, circuit);
+                    let vp_first_point = vanishing_poly_at_point_circuit(
+                        config,
+                        *other_domain,
+                        first_point,
+                        circuit,
+                    );
                     let div = circuit.div(vp_zeta, vp_first_point);
 
                     circuit.mul(total, div)
@@ -643,7 +635,7 @@ mod tests {
         >::lens(&proof);
 
         // Initialize the circuit builder.
-        let mut circuit_builder = CircuitBuilder::<Challenge>::new();
+        let mut circuit_builder = CircuitBuilder::new();
         let proof_targets = ProofTargets::<
             StarkConfig<TrivialPcs<Val, Dft>, Challenge, Challenger>,
             DummyCom<Val>,

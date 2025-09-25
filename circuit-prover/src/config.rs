@@ -11,15 +11,20 @@
 //!
 //! Provides convenience builders for BabyBear, KoalaBear, and Goldilocks.
 
+use alloc::sync::Arc;
+use alloc::vec::Vec;
+
 use p3_challenger::DuplexChallenger as Challenger;
+use p3_circuit::op::MerkleVerifyConfig;
 use p3_commit::ExtensionMmcs;
 use p3_dft::Radix2DitParallel as Dft;
 use p3_field::extension::{BinomialExtensionField, BinomiallyExtendable};
-use p3_field::{Field, PrimeCharacteristicRing, PrimeField64, TwoAdicField};
+use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing, PrimeField64, TwoAdicField};
 use p3_fri::{TwoAdicFriPcs as Pcs, create_test_fri_params};
 use p3_merkle_tree::MerkleTreeMmcs;
 use p3_symmetric::{
-    CryptographicPermutation, PaddingFreeSponge as MyHash, TruncatedPermutation as MyCompress,
+    CryptographicPermutation, PaddingFreeSponge as MyHash, PseudoCompressionFunction,
+    TruncatedPermutation as MyCompress,
 };
 use p3_uni_stark::StarkConfig;
 
@@ -76,14 +81,17 @@ pub type ProverConfig<F, P, const CD: usize> = StarkConfig<
 /// - Two-adic FRI PCS for polynomial commitments
 /// - Merkle tree MMCS for vector commitments  
 /// - Duplex challenger for Fiat-Shamir
-pub fn build_standard_config_generic<F, P, const CD: usize>(perm: P) -> ProverConfig<F, P, CD>
+pub fn build_standard_config_generic<EF, F, P, const CD: usize>(
+    perm: P,
+) -> (ProverConfig<F, P, CD>, MerkleVerifyConfig<EF>)
 where
     F: StarkField + BinomiallyExtendable<CD>,
-    P: StarkPermutation<F>,
+    P: StarkPermutation<F> + Clone + 'static,
+    EF: BasedVectorSpace<F>,
 {
     let hash = MyHash::<P, 16, 8, 8>::new(perm.clone());
     let compress = MyCompress::<P, 2, 8, 16>::new(perm.clone());
-    let val_mmcs = ValMmcs::<F, P>::new(hash, compress);
+    let val_mmcs = ValMmcs::<F, P>::new(hash, compress.clone());
     let challenge_mmcs = ChallengeMmcs::<F, P, CD>::new(val_mmcs.clone());
 
     let dft = Dft::<F>::default();
@@ -92,7 +100,38 @@ where
 
     let challenger = Challenger::<F, P, 16, 8>::new(perm);
 
-    StarkConfig::new(pcs, challenger)
+    let config = StarkConfig::new(pcs, challenger);
+
+    let compress = move |[left, right]: [&[EF]; 2]| -> Vec<EF> {
+        let left: [F; 8] = left
+            .iter()
+            .flat_map(|x| x.as_basis_coefficients_slice())
+            .copied()
+            .collect::<Vec<F>>()
+            .try_into()
+            .expect("Incorrect size of the compression function input");
+        let right: [F; 8] = right
+            .iter()
+            .flat_map(|x| x.as_basis_coefficients_slice())
+            .copied()
+            .collect::<Vec<F>>()
+            .try_into()
+            .expect("Incorrect size of the compression function input");
+        let output = compress.compress([left, right]);
+        output
+            .chunks(EF::DIMENSION)
+            .map(|xs| {
+                EF::from_basis_coefficients_slice(xs).expect("Chunks are of size EF::DIMENSION")
+            })
+            .collect::<Vec<EF>>()
+    };
+    let merkle_config = MerkleVerifyConfig {
+        base_field_digest_elems: 8,
+        ext_field_digest_elems: 8 / EF::DIMENSION,
+        max_tree_height: 32,
+        compress: Arc::new(compress),
+    };
+    (config, merkle_config)
 }
 
 // Field-specific configuration builders
@@ -101,14 +140,18 @@ pub mod babybear_config {
     use p3_baby_bear::{
         BabyBear as BB, Poseidon2BabyBear as Poseidon2BB, default_babybear_poseidon2_16,
     };
+    use p3_field::BasedVectorSpace;
 
     use super::*;
 
-    pub type BabyBearConfig = ProverConfig<BB, Poseidon2BB<16>, 4>;
+    pub type BabyBearConfig<F> = (ProverConfig<BB, Poseidon2BB<16>, 4>, MerkleVerifyConfig<F>);
 
-    pub fn build_standard_config_babybear() -> BabyBearConfig {
+    pub fn build_standard_config_babybear<F>() -> BabyBearConfig<F>
+    where
+        F: BasedVectorSpace<BB>,
+    {
         let perm = default_babybear_poseidon2_16();
-        build_standard_config_generic::<BB, _, 4>(perm)
+        build_standard_config_generic::<F, BB, _, 4>(perm)
     }
 }
 
@@ -119,11 +162,14 @@ pub mod koalabear_config {
 
     use super::*;
 
-    pub type KoalaBearConfig = ProverConfig<KB, Poseidon2KB<16>, 4>;
+    pub type KoalaBearConfig<F> = (ProverConfig<KB, Poseidon2KB<16>, 4>, MerkleVerifyConfig<F>);
 
-    pub fn build_standard_config_koalabear() -> KoalaBearConfig {
+    pub fn build_standard_config_koalabear<F>() -> KoalaBearConfig<F>
+    where
+        F: BasedVectorSpace<KB>,
+    {
         let perm = default_koalabear_poseidon2_16();
-        build_standard_config_generic::<KB, _, 4>(perm)
+        build_standard_config_generic::<F, KB, _, 4>(perm)
     }
 }
 
@@ -134,11 +180,14 @@ pub mod goldilocks_config {
 
     use super::*;
 
-    pub type GoldilocksConfig = ProverConfig<GL, Poseidon2GL<16>, 2>;
+    pub type GoldilocksConfig<F> = (ProverConfig<GL, Poseidon2GL<16>, 2>, MerkleVerifyConfig<F>);
 
-    pub fn build_standard_config_goldilocks() -> GoldilocksConfig {
+    pub fn build_standard_config_goldilocks<F>() -> GoldilocksConfig<F>
+    where
+        F: BasedVectorSpace<GL>,
+    {
         let mut rng = SmallRng::seed_from_u64(1);
         let perm = Poseidon2GL::<16>::new_from_rng_128(&mut rng);
-        build_standard_config_generic::<GL, _, 2>(perm)
+        build_standard_config_generic::<F, GL, _, 2>(perm)
     }
 }

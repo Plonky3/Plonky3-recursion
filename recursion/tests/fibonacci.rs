@@ -61,7 +61,7 @@ fn test_fibonacci_verifier() -> Result<(), VerificationError> {
     const DIGEST_ELEMS: usize = 8;
 
     // Initialize the circuit builder.
-    let mut circuit_builder = CircuitBuilder::<Challenge>::new();
+    let mut circuit_builder = CircuitBuilder::new();
 
     let public_values = (0..pis.len())
         .map(|_| circuit_builder.add_public_input())
