@@ -27,7 +27,7 @@ pub struct Circuit<F> {
 }
 
 impl<F> Circuit<F> {
-    pub fn new(witness_count: u32) -> Self {
+    pub const fn new(witness_count: u32) -> Self {
         Self {
             witness_count,
             primitive_ops: Vec::new(),

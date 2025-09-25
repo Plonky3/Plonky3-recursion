@@ -99,10 +99,10 @@ pub struct Traces<F> {
     pub fake_merkle_trace: FakeMerkleTrace<F>,
 }
 
-/// Central witness table with transparent index column
+/// Central witness table with preprocessed index column
 #[derive(Debug, Clone)]
 pub struct WitnessTrace<F> {
-    /// Transparent index column (0, 1, 2, ...)
+    /// Preprocessed index column (0, 1, 2, ...)
     pub index: Vec<u32>,
     /// Witness values
     pub values: Vec<F>,
@@ -111,7 +111,7 @@ pub struct WitnessTrace<F> {
 /// Constant table
 #[derive(Debug, Clone)]
 pub struct ConstTrace<F> {
-    /// Transparent index column (equals the WitnessId this row binds)
+    /// Preprocessed index column (equals the WitnessId this row binds)
     pub index: Vec<u32>,
     /// Constant values
     pub values: Vec<F>,
@@ -120,7 +120,7 @@ pub struct ConstTrace<F> {
 /// Public input table
 #[derive(Debug, Clone)]
 pub struct PublicTrace<F> {
-    /// Transparent index column (equals the WitnessId of that public)
+    /// Preprocessed index column (equals the WitnessId of that public)
     pub index: Vec<u32>,
     /// Public input values
     pub values: Vec<F>,
