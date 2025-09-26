@@ -5,6 +5,7 @@ use std::env;
 /// Private inputs: merkle path (siblings + directions)
 use p3_baby_bear::BabyBear;
 use p3_circuit::builder::CircuitBuilder;
+use p3_circuit::tables::DummyPerm;
 use p3_circuit::{FakeMerklePrivateData, NonPrimitiveOpPrivateData};
 use p3_circuit_prover::MultiTableProver;
 use p3_circuit_prover::config::babybear_config::build_standard_config_babybear;
@@ -41,7 +42,7 @@ fn main() -> Result<(), ProverError> {
         NonPrimitiveOpPrivateData::FakeMerkleVerify(private_data),
     )?;
 
-    let traces = runner.run()?;
+    let traces = runner.run::<DummyPerm, 0, 0, 0>(DummyPerm::default())?;
     let config = build_standard_config_babybear();
     let multi_prover = MultiTableProver::new(config);
     let proof = multi_prover.prove_all_tables(&traces)?;

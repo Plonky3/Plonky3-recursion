@@ -48,6 +48,8 @@ pub enum Prim<F> {
 #[derive(Debug, Clone, PartialEq)]
 pub enum NonPrimitiveOpType {
     FakeMerkleVerify,
+    HashAbsorb(bool), // bool: If true, reset the capacity before absorbing
+    HashSqueeze,
     // Future: FriVerify, HashAbsorb, etc.
 }
 
@@ -81,6 +83,17 @@ pub enum NonPrimitiveOp {
     /// - Merkle path siblings and direction bits
     /// - See `FakeMerklePrivateData` for complete specification
     FakeMerkleVerify { leaf: WitnessId, root: WitnessId },
+    /// Sponge hash absorb operation. Absorbs a single chunk of input.
+    ///
+    /// Public interface (on witness bus):
+    /// - `reset_flag`: Whether to reset the capacity before absorbing
+    /// - `inputs`: The input chunk to be absorbed.
+    HashAbsorb {
+        reset_flag: bool,
+        inputs: Vec<WitnessId>,
+    },
+    /// Sponge hash squeeze operation. Produces a single chunk of output.
+    HashSqueeze { outputs: Vec<WitnessId> },
 }
 
 /// Private auxiliary data for non-primitive operations

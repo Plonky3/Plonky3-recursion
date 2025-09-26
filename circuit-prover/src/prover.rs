@@ -350,6 +350,7 @@ where
 mod tests {
     use p3_baby_bear::BabyBear;
     use p3_circuit::builder::CircuitBuilder;
+    use p3_circuit::tables::DummyPerm;
     use p3_field::extension::BinomialExtensionField;
     use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
     use p3_goldilocks::Goldilocks;
@@ -388,7 +389,7 @@ mod tests {
         let x_val = BabyBear::from_u64(7);
         let expected_val = BabyBear::from_u64(13); // 7 + 10 - 3 - 1 = 13
         runner.set_public_inputs(&[x_val, expected_val])?;
-        let traces = runner.run()?;
+        let traces = runner.run::<DummyPerm, 0, 0, 0>(DummyPerm::default())?;
 
         // Create BabyBear prover and prove all tables
         let config = build_standard_config_babybear();
@@ -467,7 +468,7 @@ mod tests {
         let expected_val = add_expected - w_val;
 
         runner.set_public_inputs(&[x_val, y_val, z_val, expected_val])?;
-        let traces = runner.run()?;
+        let traces = runner.run::<DummyPerm, 0, 0, 0>(DummyPerm::default())?;
 
         // Create BabyBear prover for extension field (D=4)
         let config = build_standard_config_babybear();
@@ -511,7 +512,7 @@ mod tests {
         let b_val = KoalaBear::from_u64(13);
         let expected_val = KoalaBear::from_u64(647); // 42*13 + 100 - (-1) = 647
         runner.set_public_inputs(&[a_val, b_val, expected_val])?;
-        let traces = runner.run()?;
+        let traces = runner.run::<DummyPerm, 0, 0, 0>(DummyPerm::default())?;
 
         // Create KoalaBear prover
         let config = build_standard_config_koalabear();
@@ -595,7 +596,7 @@ mod tests {
         let expected_val = xy_expected * z_val;
 
         runner.set_public_inputs(&[x_val, y_val, expected_val])?;
-        let traces = runner.run()?;
+        let traces = runner.run::<DummyPerm, 0, 0, 0>(DummyPerm::default())?;
 
         // Create KoalaBear prover for extension field (D=8)
         let config = build_standard_config_koalabear();
@@ -650,7 +651,7 @@ mod tests {
         let expected_val = x_val * y_val + z_val;
         runner.set_public_inputs(&[x_val, y_val, z_val, expected_val])?;
 
-        let traces = runner.run()?;
+        let traces = runner.run::<DummyPerm, 0, 0, 0>(DummyPerm::default())?;
 
         // Build Goldilocks config with challenge degree 2 (Poseidon2)
         let config = build_standard_config_goldilocks();

@@ -256,6 +256,26 @@ where
 
         op_id
     }
+
+    /// Add a hash absorb operation (non-primitive operation)
+    pub fn add_hash_absorb(&mut self, input_exprs: &[ExprId], reset: bool) -> NonPrimitiveOpId {
+        let op_id = NonPrimitiveOpId(self.non_primitive_ops.len() as u32);
+        let witness_exprs = input_exprs.to_vec();
+        self.non_primitive_ops
+            .push((op_id, NonPrimitiveOpType::HashAbsorb(reset), witness_exprs));
+
+        op_id
+    }
+
+    /// Add a hash squeeze operation (non-primitive operation)
+    pub fn add_hash_squeeze(&mut self, output_exprs: &[ExprId]) -> NonPrimitiveOpId {
+        let op_id = NonPrimitiveOpId(self.non_primitive_ops.len() as u32);
+        let witness_exprs = output_exprs.to_vec();
+        self.non_primitive_ops
+            .push((op_id, NonPrimitiveOpType::HashSqueeze, witness_exprs));
+
+        op_id
+    }
 }
 
 impl<F> CircuitBuilder<F>
@@ -503,7 +523,7 @@ where
                     let leaf_widx = Self::get_witness_id(
                         expr_to_widx,
                         witness_exprs[0],
-                        "FakeMerkleVerify leaf input",
+                        "FakeMerkl    let multi_prover = MultiTableProver::new();eVerify leaf input",
                     )?;
                     let root_widx = Self::get_witness_id(
                         expr_to_widx,
@@ -515,7 +535,28 @@ where
                         leaf: leaf_widx,
                         root: root_widx,
                     });
-                } // Add more variants here as needed
+                }
+                NonPrimitiveOpType::HashAbsorb(reset) => {
+                    let inputs_widx = witness_exprs
+                        .iter()
+                        .map(|expr| Self::get_witness_id(expr_to_widx, *expr, "HashAbsorb input"))
+                        .collect::<Vec<_>>();
+
+                    lowered_ops.push(NonPrimitiveOp::HashAbsorb {
+                        reset_flag: *reset,
+                        inputs: inputs_widx.into_iter().collect::<Result<Vec<_>, _>>()?,
+                    });
+                }
+                NonPrimitiveOpType::HashSqueeze => {
+                    let outputs_widx = witness_exprs
+                        .iter()
+                        .map(|expr| Self::get_witness_id(expr_to_widx, *expr, "HashSqueeze output"))
+                        .collect::<Vec<_>>();
+
+                    lowered_ops.push(NonPrimitiveOp::HashSqueeze {
+                        outputs: outputs_widx.into_iter().collect::<Result<Vec<_>, _>>()?,
+                    });
+                }
             }
         }
 
@@ -540,6 +581,7 @@ mod tests {
 
     use super::*;
     use crate::CircuitError;
+    use crate::tables::DummyPerm;
 
     #[test]
     fn test_circuit_basic_api() {
@@ -654,7 +696,9 @@ mod tests {
 
         runner.set_public_inputs(&[BabyBear::from_u64(5)]).unwrap();
         // Should succeed; both write the same value into the shared slot
-        runner.run().unwrap();
+        runner
+            .run::<DummyPerm, 0, 0, 0>(DummyPerm::default())
+            .unwrap();
     }
 
     #[test]

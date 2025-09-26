@@ -308,6 +308,7 @@ mod tests {
     use p3_baby_bear::{BabyBear, Poseidon2BabyBear};
     use p3_challenger::{CanObserve, DuplexChallenger, FieldChallenger};
     use p3_circuit::CircuitBuilder;
+    use p3_circuit::tables::DummyPerm;
     use p3_circuit::utils::RowSelectorsTargets;
     use p3_commit::testing::TrivialPcs;
     use p3_commit::{Pcs, PolynomialSpace};
@@ -671,7 +672,9 @@ mod tests {
             .set_public_inputs(&pvs)
             .map_err(|e| format!("{e:?}"))?;
 
-        let _traces = runner.run().map_err(|e| format!("{e:?}"))?;
+        let _traces = runner
+            .run::<DummyPerm, 0, 0, 0>(DummyPerm::default())
+            .map_err(|e| format!("{e:?}"))?;
 
         Ok(())
     }

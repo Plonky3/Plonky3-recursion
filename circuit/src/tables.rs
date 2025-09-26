@@ -1,13 +1,26 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 use alloc::{format, vec};
+use core::array;
 
 use p3_field::Field;
+use p3_symmetric::{CryptographicPermutation, Permutation};
 use thiserror::Error;
 
 use crate::circuit::Circuit;
 use crate::op::{NonPrimitiveOpPrivateData, Prim};
 use crate::types::{NonPrimitiveOpId, WitnessId};
+
+#[derive(Debug, Clone, Default)]
+pub struct DummyPerm {}
+impl<T: Clone> Permutation<T> for DummyPerm {
+    fn permute(&self, input: T) -> T {
+        input
+    }
+    fn permute_mut(&self, _input: &mut T) {}
+}
+
+impl<T: Clone> CryptographicPermutation<T> for DummyPerm {}
 
 /// Errors that can occur during circuit execution and trace generation.
 #[derive(Debug, Error)]
@@ -97,6 +110,8 @@ pub struct Traces<F> {
     pub mul_trace: MulTrace<F>,
     /// Fake Merkle verification table
     pub fake_merkle_trace: FakeMerkleTrace<F>,
+    /// Sponge hash table
+    pub sponge_trace: SpongeTrace<F>,
 }
 
 /// Central witness table with preprocessed index column
@@ -179,6 +194,31 @@ pub struct FakeMerkleTrace<F> {
     pub path_directions: Vec<u32>,
 }
 
+#[derive(Debug, Clone)]
+pub struct SpongeRow<F> {
+    /// Flag to reset the capacity
+    pub reset: bool,
+    /// Rate values; either absorbed inputs or squeezed outputs
+    pub rate_values: Vec<F>,
+    /// Rate indices for witness bus lookups
+    pub rate_indices: Vec<u32>,
+    /// Capacity values (not on witness bus - private)
+    pub capacity_values: Vec<F>,
+}
+
+impl<F> SpongeRow<F> {
+    pub fn new_with_alloc(reset: bool, rate: usize, capacity: usize) -> Self {
+        Self {
+            reset,
+            rate_values: Vec::<F>::with_capacity(rate),
+            rate_indices: Vec::<u32>::with_capacity(rate),
+            capacity_values: Vec::<F>::with_capacity(capacity),
+        }
+    }
+}
+
+pub type SpongeTrace<F> = Vec<SpongeRow<F>>;
+
 /// Circuit runner that executes circuits and generates execution traces
 ///
 /// This struct manages the runtime execution of a `Circuit` specification:
@@ -260,6 +300,12 @@ impl<
             ) => {
                 // Type match - good!
             }
+            (crate::op::NonPrimitiveOp::HashAbsorb { .. }, _) => {
+                panic!("HashAbsorb operation does not take private data");
+            }
+            (crate::op::NonPrimitiveOp::HashSqueeze { .. }, _) => {
+                panic!("HashSqueeze operation does not take private data");
+            }
         }
 
         self.non_primitive_op_private_data[op_id.0 as usize] = Some(private_data);
@@ -267,7 +313,15 @@ impl<
     }
 
     /// Run the circuit and generate traces
-    pub fn run(mut self) -> Result<Traces<F>, CircuitError> {
+    pub fn run<
+        P: CryptographicPermutation<[F; N]>,
+        const N: usize,
+        const R: usize,
+        const C: usize,
+    >(
+        mut self,
+        perm: P,
+    ) -> Result<Traces<F>, CircuitError> {
         // Step 1: Execute primitives to fill witness vector
         self.execute_primitives()?;
 
@@ -278,6 +332,7 @@ impl<
         let add_trace = self.generate_add_trace()?;
         let mul_trace = self.generate_mul_trace()?;
         let fake_merkle_trace = self.generate_fake_merkle_trace()?;
+        let sponge_trace = self.generate_sponge_trace::<_, N, R, C>(perm)?;
 
         Ok(Traces {
             witness_trace,
@@ -286,6 +341,7 @@ impl<
             add_trace,
             mul_trace,
             fake_merkle_trace,
+            sponge_trace,
         })
     }
 
@@ -484,63 +540,68 @@ impl<
 
         // Process each complex operation by index to avoid borrowing conflicts
         for op_idx in 0..self.circuit.non_primitive_ops.len() {
-            // Copy out leaf/root to end immutable borrow immediately
-            let (leaf, root) = match &self.circuit.non_primitive_ops[op_idx] {
-                crate::op::NonPrimitiveOp::FakeMerkleVerify { leaf, root } => (*leaf, *root),
-            };
+            // Only handle FakeMerkleVerify ops here
+            match &self.circuit.non_primitive_ops[op_idx] {
+                crate::op::NonPrimitiveOp::FakeMerkleVerify { leaf, root } => {
+                    // Copy out leaf/root to end immutable borrow immediately
+                    let (leaf, root) = (*leaf, *root);
 
-            // Clone private data option to avoid holding a borrow on self
-            if let Some(Some(NonPrimitiveOpPrivateData::FakeMerkleVerify(private_data))) =
-                self.non_primitive_op_private_data.get(op_idx).cloned()
-            {
-                let mut current_hash =
-                    if let Some(val) = self.witness.get(leaf.0 as usize).and_then(|x| x.as_ref()) {
-                        *val
-                    } else {
-                        return Err(CircuitError::NonPrimitiveOpWitnessNotSet {
-                            operation_index: op_idx,
-                        });
-                    };
-
-                // For each step in the Merkle path
-                for (sibling_value, &direction) in private_data
-                    .path_siblings
-                    .iter()
-                    .zip(private_data.path_directions.iter())
-                {
-                    // Current hash becomes left operand
-                    left_values.push(current_hash);
-                    left_index.push(leaf.0); // Points to witness bus
-
-                    // Sibling becomes right operand (private data - not on witness bus)
-                    right_values.push(*sibling_value);
-                    right_index.push(0); // Not on witness bus - private data
-
-                    // Compute parent hash (simple mock hash: left + right + direction)
-                    let parent_hash = current_hash
-                        + *sibling_value
-                        + if direction {
-                            F::from_u64(1)
+                    // Clone private data option to avoid holding a borrow on self
+                    if let Some(Some(NonPrimitiveOpPrivateData::FakeMerkleVerify(private_data))) =
+                        self.non_primitive_op_private_data.get(op_idx).cloned()
+                    {
+                        let mut current_hash = if let Some(val) =
+                            self.witness.get(leaf.0 as usize).and_then(|x| x.as_ref())
+                        {
+                            *val
                         } else {
-                            F::from_u64(0)
+                            return Err(CircuitError::NonPrimitiveOpWitnessNotSet {
+                                operation_index: op_idx,
+                            });
                         };
 
-                    result_values.push(parent_hash);
-                    result_index.push(root.0); // Points to witness bus
+                        // For each step in the Merkle path
+                        for (sibling_value, &direction) in private_data
+                            .path_siblings
+                            .iter()
+                            .zip(private_data.path_directions.iter())
+                        {
+                            // Current hash becomes left operand
+                            left_values.push(current_hash);
+                            left_index.push(leaf.0); // Points to witness bus
 
-                    path_directions.push(if direction { 1 } else { 0 });
+                            // Sibling becomes right operand (private data - not on witness bus)
+                            right_values.push(*sibling_value);
+                            right_index.push(0); // Not on witness bus - private data
 
-                    // Update current hash for next iteration
-                    current_hash = parent_hash;
+                            // Compute parent hash (simple mock hash: left + right + direction)
+                            let parent_hash = current_hash
+                                + *sibling_value
+                                + if direction {
+                                    F::from_u64(1)
+                                } else {
+                                    F::from_u64(0)
+                                };
+
+                            result_values.push(parent_hash);
+                            result_index.push(root.0); // Points to witness bus
+
+                            path_directions.push(if direction { 1 } else { 0 });
+
+                            // Update current hash for next iteration
+                            current_hash = parent_hash;
+                        }
+
+                        // Root is computed; write back to the witness bus at root index
+                        self.set_witness(root, current_hash)?;
+                    } else {
+                        return Err(CircuitError::NonPrimitiveOpMissingPrivateData {
+                            operation_index: op_idx,
+                        });
+                    }
                 }
-
-                // Root is computed; write back to the witness bus at root index
-                self.set_witness(root, current_hash)?;
-            } else {
-                return Err(CircuitError::NonPrimitiveOpMissingPrivateData {
-                    operation_index: op_idx,
-                });
-            }
+                _ => continue,
+            };
         }
 
         Ok(FakeMerkleTrace {
@@ -552,6 +613,66 @@ impl<
             result_index,
             path_directions,
         })
+    }
+
+    fn generate_sponge_trace<P, const N: usize, const R: usize, const C: usize>(
+        &mut self,
+        perm: P,
+    ) -> Result<SpongeTrace<F>, CircuitError>
+    where
+        P: CryptographicPermutation<[F; N]>,
+    {
+        let mut trace: SpongeTrace<F> = Vec::with_capacity(1 << 10);
+        let mut state = array::from_fn(|_| F::default());
+
+        // Process each complex operation by index to avoid borrowing conflicts
+        for op_idx in 0..self.circuit.non_primitive_ops.len() {
+            // Only handle SpongeTrace ops here
+            match &self.circuit.non_primitive_ops[op_idx] {
+                crate::op::NonPrimitiveOp::HashAbsorb { reset_flag, inputs } => {
+                    let mut row: SpongeRow<F> = SpongeRow::new_with_alloc(*reset_flag, R, C);
+
+                    for i in 0..R {
+                        let idx = inputs[i];
+                        row.rate_indices.push(idx.0);
+                        let val = self.get_witness(idx)?;
+                        row.rate_values.push(val);
+                        state[i] = val;
+                    }
+
+                    if *reset_flag {
+                        state[R..].fill(F::default());
+                    }
+                    row.capacity_values.extend_from_slice(&state[R..]);
+
+                    trace.push(row);
+                    state = perm.permute(state);
+                }
+                crate::op::NonPrimitiveOp::HashSqueeze { outputs } => {
+                    let mut row: SpongeRow<F> = SpongeRow::new_with_alloc(false, R, C);
+                    // Clone outputs to end immutable borrow immediately
+                    let outputs = outputs.clone();
+
+                    for i in 0..R {
+                        let idx = outputs[i];
+                        row.rate_indices.push(idx.0);
+                        let val = self.get_witness(idx)?;
+                        // Sanity check that outputs are set to the correct values
+                        self.set_witness(idx, val)?;
+                        row.rate_values.push(val);
+                        state[i] = val;
+                    }
+
+                    row.capacity_values.extend_from_slice(&state[R..]);
+
+                    trace.push(row);
+                    state = perm.permute(state);
+                }
+                _ => continue,
+            };
+        }
+
+        Ok(trace)
     }
 }
 
@@ -583,6 +704,7 @@ mod tests {
     use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
 
     use crate::builder::CircuitBuilder;
+    use crate::tables::DummyPerm;
 
     #[test]
     fn test_table_generation_basic() {
@@ -599,7 +721,9 @@ mod tests {
         // Set public input: x = 3
         runner.set_public_inputs(&[BabyBear::from_u64(3)]).unwrap();
 
-        let traces = runner.run().unwrap();
+        let traces = runner
+            .run::<DummyPerm, 0, 0, 0>(DummyPerm::default())
+            .unwrap();
 
         // Check witness trace
         assert_eq!(
@@ -646,7 +770,9 @@ mod tests {
         // Set public input: x = 3 (should satisfy 37 * 3 - 111 = 0)
         runner.set_public_inputs(&[BabyBear::from_u64(3)]).unwrap();
 
-        let traces = runner.run().unwrap();
+        let traces = runner
+            .run::<DummyPerm, 0, 0, 0>(DummyPerm::default())
+            .unwrap();
 
         println!("\n=== WITNESS TRACE ===");
         for (i, (idx, val)) in traces
@@ -770,7 +896,9 @@ mod tests {
         .unwrap();
 
         runner.set_public_inputs(&[x_val, y_val, z_val]).unwrap();
-        let traces = runner.run().unwrap();
+        let traces = runner
+            .run::<DummyPerm, 0, 0, 0>(DummyPerm::default())
+            .unwrap();
 
         // Verify extension field traces were generated correctly
         assert_eq!(traces.public_trace.values.len(), 3);
