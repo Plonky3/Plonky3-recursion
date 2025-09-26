@@ -6,7 +6,7 @@ use p3_field::{ExtensionField, Field, TwoAdicField};
 
 use crate::Target;
 use crate::recursive_pcs::FriProofTargets;
-use crate::recursive_traits::{Recursive, RecursiveExtensionMmcs};
+use crate::recursive_traits::{Recursive, RecursiveExtensionMmcs, RecursiveMmcs};
 
 /// Inputs for one FRI fold phase (matches the values used by the verifier per round).
 #[derive(Clone, Debug)]
@@ -26,6 +26,7 @@ pub struct FoldPhaseInputsTarget {
 
 /// Perform the arity-2 FRI fold chain with optional roll-ins.
 /// Starts from the initial reduced opening at max height; returns the final folded value.
+/// All arithmetic is over the circuit field `EF`.
 ///
 /// Interpolation per phase:
 ///   folded ← e0 + (β − x0)·(e1 − e0)·(x1 − x0)^{-1}, with x1 = −x0
@@ -206,7 +207,6 @@ where
     let one = builder.add_const(EF::ONE);
     let mut result = one;
     for (i, &bit) in rev_reduced_index_bits.iter().enumerate() {
-        builder.assert_bool(bit);
         let diff = builder.sub(powers_e[i], one);
         let diff_bit = builder.mul(diff, bit);
         let multiplier = builder.add(one, diff_bit);
@@ -282,7 +282,7 @@ where
     use alloc::collections::BTreeMap;
     let mut by_height: BTreeMap<usize, (Target, Target)> = BTreeMap::new();
 
-    // Sanity: bits are boolean
+    // TODO: Remove once inputs are sanitized — enforce boolean bits here for safety.
     for &b in index_bits {
         builder.assert_bool(b);
     }
@@ -338,13 +338,18 @@ where
 
 /// Verify FRI arithmetic in-circuit.
 #[allow(clippy::too_many_arguments)]
-pub fn verify_fri_circuit<F, EF, RecMmcs, InputProof, Witness>(
+pub fn verify_fri_circuit<F, EF, RecMmcs, Inner, Witness>(
     builder: &mut CircuitBuilder<EF>,
-    fri_proof_targets: &FriProofTargets<F, EF, RecMmcs, InputProof, Witness>,
+    fri_proof_targets: &FriProofTargets<
+        F,
+        EF,
+        RecMmcs,
+        crate::recursive_pcs::InputProofTargets<F, EF, Inner>,
+        Witness,
+    >,
     alpha: Target,
     betas: &[Target],
-    index_bits: &[Target],
-    opened_values: &[Vec<Target>],
+    index_bits_per_query: &[Vec<Target>],
     challenge_points: &[Target],
     challenge_point_values: &[Vec<Target>],
     domains_log_sizes: &[usize],
@@ -353,96 +358,42 @@ pub fn verify_fri_circuit<F, EF, RecMmcs, InputProof, Witness>(
     F: Field + TwoAdicField,
     EF: ExtensionField<F> + TwoAdicField,
     RecMmcs: RecursiveExtensionMmcs<F, EF>,
-    InputProof: Recursive<EF>,
+    Inner: RecursiveMmcs<F, EF>,
     Witness: Recursive<EF>,
 {
     let num_phases = betas.len();
-    let log_max_height = index_bits.len();
+    let num_queries = fri_proof_targets.query_proofs.len();
+    assert_eq!(
+        num_queries,
+        index_bits_per_query.len(),
+        "index_bits_per_query length must equal number of query proofs"
+    );
+    let log_max_height = index_bits_per_query[0].len();
+    assert!(
+        index_bits_per_query
+            .iter()
+            .all(|v| v.len() == log_max_height),
+        "all index_bits_per_query entries must have same length"
+    );
 
     // Basic shape checks
     assert!(!betas.is_empty(), "FRI must have at least one fold phase");
-    assert_eq!(
-        opened_values.len(),
-        challenge_point_values.len(),
-        "opened_values/challenge_point_values shape mismatch"
-    );
-    assert_eq!(
-        opened_values.len(),
-        domains_log_sizes.len(),
-        "opened_values/domains_log_sizes shape mismatch"
-    );
-    for row in opened_values {
-        assert!(!row.is_empty(), "each matrix must have at least one column");
-    }
-
-    // 1) Compute reduced openings grouped by height (descending order)
-    let reduced_by_height: Vec<(usize, Target)> = compute_reduced_openings_by_height::<F, EF>(
-        builder,
-        opened_values,
-        domains_log_sizes,
-        challenge_points,
-        challenge_point_values,
-        alpha,
-        index_bits,
-        log_blowup,
-        log_max_height,
-    );
-
-    // Must have at least the max-height entry
-    assert!(
-        !reduced_by_height.is_empty(),
-        "No reduced openings; did you commit to zero polynomials?"
-    );
-    assert_eq!(
-        reduced_by_height[0].0, log_max_height,
-        "First reduced opening must be at max height"
-    );
-
-    // 2) Initialize running fold with the max-height reduced opening
-    let initial_folded_eval = reduced_by_height[0].1;
-
-    // 3) Extract sibling values from FRI proof targets (for the first query)
-    //    (MMCS checks omitted; we assume `fri_proof_targets` is bound elsewhere)
-    let query_proof = &fri_proof_targets.query_proofs[0];
-    let sibling_values: Vec<Target> = query_proof
-        .commit_phase_openings
+    // Extract opened_values per query from FriProofTargets (first batch).
+    let opened_values_per_query: Vec<&[Vec<Target>]> = fri_proof_targets
+        .query_proofs
         .iter()
-        .map(|opening| opening.sibling_value)
+        .map(|qp| &qp.input_proof[0].opened_values[..])
         .collect();
-    assert_eq!(
-        sibling_values.len(),
-        num_phases,
-        "sibling_values must match number of betas/phases"
-    );
-
-    // 4) Build height-aligned roll-ins for each phase:
-    //
-    // Phase i folds from height (log_max_height - i) down to (log_max_height - i - 1).
-    // If we have a reduced opening `ro` at height h, we must add it at the phase i where:
-    //     h == log_max_height - i - 1  =>  i = log_max_height - 1 - h
-    //
-    // We skip the first entry (max height), which was used to seed `folded`.
-    let mut roll_ins: Vec<Option<Target>> = vec![None; num_phases];
-    for &(h, ro) in reduced_by_height.iter().skip(1) {
-        let i = log_max_height
-            .checked_sub(1)
-            .and_then(|x| x.checked_sub(h))
-            .expect("height->phase mapping underflow");
-        if i < num_phases {
-            // sum multiple ROs that may land on the same phase
-            roll_ins[i] = Some(match roll_ins[i] {
-                None => ro,
-                Some(prev) => builder.add(prev, ro),
-            });
-        } else {
-            // Should not happen in a well-shaped proof; if it does, force ro == 0
-            // so we don't silently drop it.
-            let zero = builder.add_const(EF::ZERO);
-            builder.connect(ro, zero);
+    // Shape checks
+    for opened_values in &opened_values_per_query {
+        assert_eq!(opened_values.len(), challenge_point_values.len());
+        assert_eq!(opened_values.len(), domains_log_sizes.len());
+        for row in opened_values.iter() {
+            assert!(!row.is_empty());
         }
     }
 
-    // 5) Grab the final polynomial (constant case expected here).
+    // 1) Grab the final polynomial (constant case expected here).
     let final_poly_len = fri_proof_targets.final_poly.len();
     assert_eq!(
         final_poly_len, 1,
@@ -450,7 +401,7 @@ pub fn verify_fri_circuit<F, EF, RecMmcs, InputProof, Witness>(
     );
     let final_value = fri_proof_targets.final_poly[0];
 
-    // 6) Precompute two-adic generator ladders for each phase (in circuit field EF).
+    // 2) Precompute two-adic generator ladders for each phase (in circuit field EF).
     //
     // For phase i, folded height k = log_max_height - i - 1.
     // Use generator g = two_adic_generator(k + 1) and ladder [g^{2^0},...,g^{2^{k-1}}].
@@ -471,15 +422,72 @@ pub fn verify_fri_circuit<F, EF, RecMmcs, InputProof, Witness>(
         })
         .collect();
 
-    // 7) Perform the complete FRI folding arithmetic in-circuit
-    verify_query_from_index_bits(
-        builder,
-        initial_folded_eval,
-        index_bits,
-        betas,
-        &sibling_values,
-        &roll_ins,
-        &pows_per_phase,
-        final_value,
-    );
+    // 3) For each query, compute reduced openings, build roll-ins, and perform fold chain
+    for q in 0..num_queries {
+        let reduced_by_height: Vec<(usize, Target)> = compute_reduced_openings_by_height::<F, EF>(
+            builder,
+            opened_values_per_query[q],
+            domains_log_sizes,
+            challenge_points,
+            challenge_point_values,
+            alpha,
+            &index_bits_per_query[q],
+            log_blowup,
+            log_max_height,
+        );
+
+        // 3a) Must have at least the max-height entry
+        assert!(
+            !reduced_by_height.is_empty(),
+            "No reduced openings; did you commit to zero polynomials?"
+        );
+        assert_eq!(
+            reduced_by_height[0].0, log_max_height,
+            "First reduced opening must be at max height"
+        );
+        let initial_folded_eval = reduced_by_height[0].1;
+
+        // 3b) Sibling values for this query
+        let query_proof = &fri_proof_targets.query_proofs[q];
+        let sibling_values: Vec<Target> = query_proof
+            .commit_phase_openings
+            .iter()
+            .map(|opening| opening.sibling_value)
+            .collect();
+        assert_eq!(
+            sibling_values.len(),
+            num_phases,
+            "sibling_values must match number of betas/phases"
+        );
+
+        // 3c) Build height-aligned roll-ins for each phase
+        let mut roll_ins: Vec<Option<Target>> = vec![None; num_phases];
+        for &(h, ro) in reduced_by_height.iter().skip(1) {
+            let i = log_max_height
+                .checked_sub(1)
+                .and_then(|x| x.checked_sub(h))
+                .expect("height->phase mapping underflow");
+            if i < num_phases {
+                roll_ins[i] = Some(match roll_ins[i] {
+                    None => ro,
+                    Some(prev) => builder.add(prev, ro),
+                });
+            } else {
+                let zero = builder.add_const(EF::ZERO);
+                builder.connect(ro, zero);
+            }
+        }
+
+        // 3d) Perform the fold chain and connect to the final constant value
+        verify_query_from_index_bits(
+            builder,
+            initial_folded_eval,
+            &index_bits_per_query[q],
+            betas,
+            &sibling_values,
+            &roll_ins,
+            &pows_per_phase,
+            final_value,
+        );
+    }
 }

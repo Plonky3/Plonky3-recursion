@@ -45,8 +45,7 @@ struct ProduceInputsResult {
     fri_values: Vec<Challenge>, // fri_values ordered to match FriProofTargets::new
     alpha: Challenge,           // alpha
     betas: Vec<Challenge>,      // betas
-    index_bits: Vec<Challenge>, // index_bits (LE)
-    opened_values: Vec<Vec<Challenge>>, // opened_values at x (per matrix)
+    index_bits_per_query: Vec<Vec<Challenge>>, // index_bits per query (LE)
     challenge_points: Vec<Challenge>, // challenge_points z (per matrix)
     point_values: Vec<Vec<Challenge>>, // f(z) per matrix
     domains_log_sizes: Vec<usize>, // domains_log_sizes
@@ -65,7 +64,9 @@ fn test_circuit_fri_verifier() {
     let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
     let dft = Dft::<F>::default();
     // final_poly_len = 0 (constant), log_blowup = 1 in test params
-    let fri_params = create_test_fri_params(challenge_mmcs, 0);
+    let mut fri_params = create_test_fri_params(challenge_mmcs, 0);
+    // Increase query rounds to 2 to ensure circuit handles multiple queries.
+    fri_params.num_queries = 2;
     let log_blowup = fri_params.log_blowup;
     let log_final_poly_len = fri_params.log_final_poly_len;
     let pow_bits = fri_params.proof_of_work_bits;
@@ -139,7 +140,7 @@ fn test_circuit_fri_verifier() {
 
         let p3_fri::FriProof {
             commit_phase_commits,
-            query_proofs,
+            ref query_proofs,
             final_poly,
             pow_witness,
         } = fri_proof;
@@ -171,31 +172,30 @@ fn test_circuit_fri_verifier() {
         // PoW check
         assert!(v_challenger.check_witness(pow_bits, pow_witness));
 
-        // Query index
+        // Query indices
         let num_phases = commit_phase_commits.len();
         let log_max_height = num_phases + log_blowup + log_final_poly_len;
-        let index: usize = v_challenger.sample_bits(log_max_height);
+        let num_queries = query_proofs.len();
+        let mut indices: Vec<usize> = Vec::with_capacity(num_queries);
+        for _ in 0..num_queries {
+            indices.push(v_challenger.sample_bits(log_max_height));
+        }
 
-        // Index bits (LE)
-        let mut index_bits: Vec<Challenge> = Vec::with_capacity(log_max_height);
-        for k in 0..log_max_height {
-            index_bits.push(if (index >> k) & 1 == 1 {
-                Challenge::ONE
-            } else {
-                Challenge::ZERO
-            });
+        // Index bits per query (LE)
+        let mut index_bits_per_query: Vec<Vec<Challenge>> = Vec::with_capacity(num_queries);
+        for &index in &indices {
+            let mut bits_one = Vec::with_capacity(log_max_height);
+            for k in 0..log_max_height {
+                bits_one.push(if (index >> k) & 1 == 1 {
+                    Challenge::ONE
+                } else {
+                    Challenge::ZERO
+                });
+            }
+            index_bits_per_query.push(bits_one);
         }
 
         // Sibling values are embedded inside `fri_proof` targets; we won’t extract here.
-
-        // opened_values at x for each matrix come from qp.input_proof[0]
-        let qp = &query_proofs[0];
-        let batch_opening = &qp.input_proof[0];
-        let opened_values_at_x: Vec<Vec<Challenge>> = batch_opening
-            .opened_values
-            .iter()
-            .map(|col| col.iter().map(|&v| Challenge::from(v)).collect())
-            .collect();
 
         // challenge points (zeta per matrix) and f(z) per matrix
         let challenge_points: Vec<Challenge> = mats.iter().map(|(_d, v)| v[0].0).collect();
@@ -225,7 +225,7 @@ fn test_circuit_fri_verifier() {
 
         let fri_values: Vec<Challenge> = FriTargets::get_values(&p3_fri::FriProof {
             commit_phase_commits,
-            query_proofs,
+            query_proofs: query_proofs.clone(),
             final_poly,
             pow_witness,
         });
@@ -234,8 +234,7 @@ fn test_circuit_fri_verifier() {
             fri_values,
             alpha,
             betas,
-            index_bits,
-            opened_values: opened_values_at_x,
+            index_bits_per_query,
             challenge_points,
             point_values,
             domains_log_sizes,
@@ -278,46 +277,35 @@ fn test_circuit_fri_verifier() {
         .map(|_| builder.add_public_input())
         .collect();
 
-    let index_bits_t: Vec<_> = (0..log_max_height)
-        .map(|_| builder.add_public_input())
+    let index_bits_t_per_query: Vec<Vec<_>> = (0..2)
+        .map(|_| {
+            (0..log_max_height)
+                .map(|_| builder.add_public_input())
+                .collect()
+        })
         .collect();
 
-    // Shapes per matrix for opened_values and point_values
+    // Shapes per matrix for point_values (opened_values come from FriProofTargets now)
     let num_mats = result_1.domains_log_sizes.len();
-    let mut opened_t: Vec<Vec<_>> = Vec::with_capacity(num_mats);
     let mut fz_t: Vec<Vec<_>> = Vec::with_capacity(num_mats);
     let mut zetas_t: Vec<_> = Vec::with_capacity(num_mats);
     for m in 0..num_mats {
         zetas_t.push(builder.add_public_input());
-        let cols_x = result_1.opened_values[m].len();
         let cols_z = result_1.point_values[m].len();
-        assert_eq!(cols_x, cols_z);
-        let mut ov = Vec::with_capacity(cols_x);
         let mut pv = Vec::with_capacity(cols_z);
-        for _ in 0..cols_x {
-            ov.push(builder.add_public_input());
-        }
         for _ in 0..cols_z {
             pv.push(builder.add_public_input());
         }
-        opened_t.push(ov);
         fz_t.push(pv);
     }
 
     // 3) Wire the actual in-circuit verifier
-    verify_fri_circuit::<
-        F,
-        Challenge,
-        RecExt,
-        InputProofTargets<F, Challenge, RecVal>,
-        RecWitness<F>,
-    >(
+    verify_fri_circuit::<F, Challenge, RecExt, RecVal, RecWitness<F>>(
         &mut builder,
         &fri_targets,
         alpha_t,
         &betas_t,
-        &index_bits_t,
-        &opened_t,
+        &index_bits_t_per_query,
         &zetas_t,
         &fz_t,
         &result_1.domains_log_sizes,
@@ -330,8 +318,8 @@ fn test_circuit_fri_verifier() {
     let pack_inputs = |fri_vals: Vec<Challenge>,
                        alpha: Challenge,
                        betas: Vec<Challenge>,
-                       index_bits: Vec<Challenge>,
-                       opened_x: Vec<Vec<Challenge>>,
+                       index_bits_q0: Vec<Challenge>,
+                       index_bits_q1: Vec<Challenge>,
                        zetas: Vec<Challenge>,
                        fz: Vec<Vec<Challenge>>|
      -> Vec<Challenge> {
@@ -346,13 +334,13 @@ fn test_circuit_fri_verifier() {
         // (3) betas
         v.extend(betas);
 
-        // (4) index bits (LE)
-        v.extend(index_bits);
+        // (4) index bits per query (LE)
+        v.extend(index_bits_q0);
+        v.extend(index_bits_q1);
 
-        // (5) per-matrix: z, opened_x columns, f(z) columns
-        for m in 0..opened_x.len() {
+        // (5) per-matrix: z, f(z) columns (opened rows come from FriProofTargets)
+        for m in 0..fz.len() {
             v.push(zetas[m]);
-            v.extend(opened_x[m].iter().copied());
             v.extend(fz[m].iter().copied());
         }
         v
@@ -363,8 +351,8 @@ fn test_circuit_fri_verifier() {
         result_1.fri_values,
         result_1.alpha,
         result_1.betas,
-        result_1.index_bits,
-        result_1.opened_values,
+        result_1.index_bits_per_query[0].clone(),
+        result_1.index_bits_per_query[1].clone(),
         result_1.challenge_points,
         result_1.point_values,
     );
@@ -377,8 +365,8 @@ fn test_circuit_fri_verifier() {
         result_2.fri_values,
         result_2.alpha,
         result_2.betas,
-        result_2.index_bits,
-        result_2.opened_values,
+        result_2.index_bits_per_query[0].clone(),
+        result_2.index_bits_per_query[1].clone(),
         result_2.challenge_points,
         result_2.point_values,
     );
