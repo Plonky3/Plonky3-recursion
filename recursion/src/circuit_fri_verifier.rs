@@ -30,18 +30,18 @@ pub struct FoldPhaseInputsTarget {
 /// Interpolation per phase:
 ///   folded ← e0 + (β − x0)·(e1 − e0)·(x1 − x0)^{-1}, with x1 = −x0
 ///           = e0 + (β − x0)·(e1 − e0)·(−1/2)·x0^{-1}
-fn fold_row_chain<F: Field>(
-    builder: &mut CircuitBuilder<F>,
+fn fold_row_chain<EF: Field>(
+    builder: &mut CircuitBuilder<EF>,
     initial_folded_eval: Target,
     phases: &[FoldPhaseInputsTarget],
 ) -> Target {
     let mut folded = initial_folded_eval;
 
-    let one = builder.add_const(F::ONE);
+    let one = builder.add_const(EF::ONE);
 
     // Precompute constants as field constants: 2^{-1} and −1/2.
-    let two_inv_val = (F::ONE + F::ONE).inverse(); // 1/2
-    let neg_half = builder.add_const(F::NEG_ONE * two_inv_val); // −1/2
+    let two_inv_val = (EF::ONE + EF::ONE).inverse(); // 1/2
+    let neg_half = builder.add_const(EF::NEG_ONE * two_inv_val); // −1/2
 
     for FoldPhaseInputsTarget {
         beta,
@@ -87,8 +87,8 @@ fn fold_row_chain<F: Field>(
 /// Arithmetic-only version of Plonky3 `verify_query`:
 /// - Applies the fold chain and enforces equality to the provided final constant value.
 /// - Caller must supply `initial_folded_eval` (the reduced opening at max height).
-fn verify_query<F: Field>(
-    builder: &mut CircuitBuilder<F>,
+fn verify_query<EF: Field>(
+    builder: &mut CircuitBuilder<EF>,
     initial_folded_eval: Target,
     phases: &[FoldPhaseInputsTarget],
     final_value: Target,
@@ -107,13 +107,13 @@ fn verify_query<F: Field>(
 ///
 /// We use bit window `bits[i+1 .. i+1+k]` (little-endian), but multiplied in reverse to match
 /// `reverse_bits_len(index >> (i+1), k)` semantics from the verifier.
-fn compute_x0_from_index_bits<F: Field>(
-    builder: &mut CircuitBuilder<F>,
+fn compute_x0_from_index_bits<EF: Field>(
+    builder: &mut CircuitBuilder<EF>,
     index_bits: &[Target],
     phase: usize,
-    pows: &[F],
+    pows: &[EF],
 ) -> Target {
-    let one = builder.add_const(F::ONE);
+    let one = builder.add_const(EF::ONE);
     let mut res = one;
 
     // Bits window: offset = i+1, length = pows.len() = k
@@ -136,14 +136,14 @@ fn compute_x0_from_index_bits<F: Field>(
 /// - `betas`/`sibling_values`/`roll_ins`: per-phase arrays.
 /// - `pows_per_phase[i]`: power ladder for the generator at that phase (see `compute_x0_from_index_bits`).
 #[allow(clippy::too_many_arguments)]
-fn verify_query_from_index_bits<F: Field>(
-    builder: &mut CircuitBuilder<F>,
+fn verify_query_from_index_bits<EF: Field>(
+    builder: &mut CircuitBuilder<EF>,
     initial_folded_eval: Target,
     index_bits: &[Target],
     betas: &[Target],
     sibling_values: &[Target],
     roll_ins: &[Option<Target>],
-    pows_per_phase: &[Vec<F>],
+    pows_per_phase: &[Vec<EF>],
     final_value: Target,
 ) {
     let num_phases = betas.len();
@@ -159,7 +159,7 @@ fn verify_query_from_index_bits<F: Field>(
         "pows_per_phase len mismatch"
     );
 
-    let one = builder.add_const(F::ONE);
+    let one = builder.add_const(EF::ONE);
 
     let mut phases_vec = Vec::with_capacity(num_phases);
     for i in 0..num_phases {
@@ -182,28 +182,28 @@ fn verify_query_from_index_bits<F: Field>(
     verify_query(builder, initial_folded_eval, &phases_vec, final_value);
 }
 
-/// Compute evaluation point x from domain height and reversed reduced index bits in the circuit field E.
+/// Compute evaluation point x from domain height and reversed reduced index bits in the circuit field EF.
 /// x = GENERATOR * two_adic_generator(log_height)^{rev_reduced_index}
-fn compute_evaluation_point<F, E>(
-    builder: &mut CircuitBuilder<E>,
+fn compute_evaluation_point<F, EF>(
+    builder: &mut CircuitBuilder<EF>,
     log_height: usize,
     rev_reduced_index_bits: &[Target],
 ) -> Target
 where
     F: Field + TwoAdicField,
-    E: ExtensionField<F> + TwoAdicField, // E is the circuit field
+    EF: ExtensionField<F> + TwoAdicField, // circuit field
 {
-    // Precompute powers of the two-adic generator (in the base field), then lift to E.
+    // Precompute powers of the two-adic generator (in the base field), then lift to EF.
     let h = F::two_adic_generator(log_height);
     let mut powers_e = Vec::with_capacity(rev_reduced_index_bits.len());
     let mut current_f = h;
     for _ in 0..rev_reduced_index_bits.len() {
-        powers_e.push(builder.add_const(E::from(current_f)));
+        powers_e.push(builder.add_const(EF::from(current_f)));
         current_f = current_f.square();
     }
 
     // Compute h^{rev_reduced_index} via gated multiplication
-    let one = builder.add_const(E::ONE);
+    let one = builder.add_const(EF::ONE);
     let mut result = one;
     for (i, &bit) in rev_reduced_index_bits.iter().enumerate() {
         builder.assert_bool(bit);
@@ -213,15 +213,15 @@ where
         result = builder.mul(result, multiplier);
     }
 
-    // Multiply by the coset generator (also lifted to E)
-    let generator = builder.add_const(E::from(F::GENERATOR));
+    // Multiply by the coset generator (also lifted to EF)
+    let generator = builder.add_const(EF::from(F::GENERATOR));
     builder.mul(generator, result)
 }
 
-/// Compute reduced opening for a single matrix in circuit form (E-field).
+/// Compute reduced opening for a single matrix in circuit form (EF-field).
 /// ro += alpha_pow * (p_at_z - p_at_x) * (z - x)^{-1}; and alpha_pow *= alpha (per column)
-fn compute_single_reduced_opening<F: Field>(
-    builder: &mut CircuitBuilder<F>,
+fn compute_single_reduced_opening<EF: Field>(
+    builder: &mut CircuitBuilder<EF>,
     opened_values: &[Target], // Values at evaluation point x
     point_values: &[Target],  // Values at challenge point z
     evaluation_point: Target, // x
@@ -230,12 +230,12 @@ fn compute_single_reduced_opening<F: Field>(
     alpha: Target,            // Alpha challenge
 ) -> (Target, Target) {
     // (new_alpha_pow, reduced_opening_contrib)
-    let mut reduced_opening = builder.add_const(F::ZERO);
+    let mut reduced_opening = builder.add_const(EF::ZERO);
     let mut current_alpha_pow = alpha_pow;
 
     // quotient = (z - x)^{-1}
     let z_minus_x = builder.sub(challenge_point, evaluation_point);
-    let one = builder.add_const(F::ONE);
+    let one = builder.add_const(EF::ONE);
     let quotient = builder.div(one, z_minus_x);
 
     for (&p_at_x, &p_at_z) in opened_values.iter().zip(point_values.iter()) {
@@ -263,8 +263,8 @@ fn compute_single_reduced_opening<F: Field>(
 /// - For each matrix (domain), bits_reduced = log_max_height - log_height;
 ///   use the window of length `log_height`, then reverse those bits for the eval point.
 #[allow(clippy::too_many_arguments)]
-fn compute_reduced_openings_by_height<F, E>(
-    builder: &mut CircuitBuilder<E>,
+fn compute_reduced_openings_by_height<F, EF>(
+    builder: &mut CircuitBuilder<EF>,
     batch_opened_values: &[Vec<Target>], // Opened values per matrix
     domains_log_sizes: &[usize],         // Log size of each domain (base, before blowup)
     challenge_points: &[Target],         // z per matrix
@@ -276,7 +276,7 @@ fn compute_reduced_openings_by_height<F, E>(
 ) -> Vec<(usize, Target)>
 where
     F: Field + TwoAdicField,
-    E: ExtensionField<F> + TwoAdicField,
+    EF: ExtensionField<F> + TwoAdicField,
 {
     // height -> (alpha_pow_for_this_height, ro_sum_for_this_height)
     use alloc::collections::BTreeMap;
@@ -303,13 +303,13 @@ where
         let mut rev_bits = height_bits.to_vec();
         rev_bits.reverse();
 
-        // Compute evaluation point x in the circuit field E using base field two-adic generator
-        let x = compute_evaluation_point::<F, E>(builder, log_height, &rev_bits);
+        // Compute evaluation point x in the circuit field using base field two-adic generator
+        let x = compute_evaluation_point::<F, EF>(builder, log_height, &rev_bits);
 
         // Initialize / fetch per-height (alpha_pow, ro)
         let (alpha_pow_h, ro_h) = by_height
             .entry(log_height)
-            .or_insert((builder.add_const(E::ONE), builder.add_const(E::ZERO)));
+            .or_insert((builder.add_const(EF::ONE), builder.add_const(EF::ZERO)));
 
         // Compute this matrix's contribution to ro at this height
         let (new_alpha_pow_h, ro_contrib) = compute_single_reduced_opening(
@@ -338,9 +338,9 @@ where
 
 /// Verify FRI arithmetic in-circuit.
 #[allow(clippy::too_many_arguments)]
-pub fn verify_fri_circuit<F, E, RecMmcs, InputProof, Witness>(
-    builder: &mut CircuitBuilder<E>,
-    fri_proof_targets: &FriProofTargets<F, E, RecMmcs, InputProof, Witness>,
+pub fn verify_fri_circuit<F, EF, RecMmcs, InputProof, Witness>(
+    builder: &mut CircuitBuilder<EF>,
+    fri_proof_targets: &FriProofTargets<F, EF, RecMmcs, InputProof, Witness>,
     alpha: Target,
     betas: &[Target],
     index_bits: &[Target],
@@ -351,10 +351,10 @@ pub fn verify_fri_circuit<F, E, RecMmcs, InputProof, Witness>(
     log_blowup: usize,
 ) where
     F: Field + TwoAdicField,
-    E: ExtensionField<F> + TwoAdicField,
-    RecMmcs: RecursiveExtensionMmcs<F, E>,
-    InputProof: Recursive<E>,
-    Witness: Recursive<E>,
+    EF: ExtensionField<F> + TwoAdicField,
+    RecMmcs: RecursiveExtensionMmcs<F, EF>,
+    InputProof: Recursive<EF>,
+    Witness: Recursive<EF>,
 {
     let num_phases = betas.len();
     let log_max_height = index_bits.len();
@@ -376,7 +376,7 @@ pub fn verify_fri_circuit<F, E, RecMmcs, InputProof, Witness>(
     }
 
     // 1) Compute reduced openings grouped by height (descending order)
-    let reduced_by_height: Vec<(usize, Target)> = compute_reduced_openings_by_height::<F, E>(
+    let reduced_by_height: Vec<(usize, Target)> = compute_reduced_openings_by_height::<F, EF>(
         builder,
         opened_values,
         domains_log_sizes,
@@ -437,7 +437,7 @@ pub fn verify_fri_circuit<F, E, RecMmcs, InputProof, Witness>(
         } else {
             // Should not happen in a well-shaped proof; if it does, force ro == 0
             // so we don't silently drop it.
-            let zero = builder.add_const(E::ZERO);
+            let zero = builder.add_const(EF::ZERO);
             builder.connect(ro, zero);
         }
     }
@@ -450,11 +450,11 @@ pub fn verify_fri_circuit<F, E, RecMmcs, InputProof, Witness>(
     );
     let final_value = fri_proof_targets.final_poly[0];
 
-    // 6) Precompute two-adic generator ladders for each phase (in circuit field E).
+    // 6) Precompute two-adic generator ladders for each phase (in circuit field EF).
     //
     // For phase i, folded height k = log_max_height - i - 1.
     // Use generator g = two_adic_generator(k + 1) and ladder [g^{2^0},...,g^{2^{k-1}}].
-    let pows_per_phase: Vec<Vec<E>> = (0..num_phases)
+    let pows_per_phase: Vec<Vec<EF>> = (0..num_phases)
         .map(|i| {
             let k = log_max_height.saturating_sub(i + 1);
             if k == 0 {
@@ -464,7 +464,7 @@ pub fn verify_fri_circuit<F, E, RecMmcs, InputProof, Witness>(
             let mut ladder = Vec::with_capacity(k);
             let mut cur = g_f;
             for _ in 0..k {
-                ladder.push(E::from(cur));
+                ladder.push(EF::from(cur));
                 cur = cur.square();
             }
             ladder
