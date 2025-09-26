@@ -1,4 +1,5 @@
 use alloc::vec::Vec;
+use core::hash::Hash;
 
 use crate::types::WitnessId;
 
@@ -45,13 +46,14 @@ pub enum Prim<F> {
 }
 
 /// Non-primitive operation types
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum NonPrimitiveOpType {
     FakeMerkleVerify,
-    // Future: FriVerify, HashAbsorb, etc.
+    FriVerify, // TODO: unimplemented
+               // Future: FriVerify, HashAbsorb, etc.
 }
 
-/// Non-primitive operations representing complex cryptographic constraints
+/// Non-primitive operations representing complex cryptographic constraints.
 ///
 /// These operations implement sophisticated cryptographic primitives that:
 /// - Have dedicated AIR tables for constraint verification
