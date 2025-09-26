@@ -11,7 +11,7 @@ pub enum Expr<F> {
     Public(usize),
     /// Addition of two expressions
     Add { lhs: ExprId, rhs: ExprId },
-    /// Subtraction of two expressions  
+    /// Subtraction of two expressions
     Sub { lhs: ExprId, rhs: ExprId },
     /// Multiplication of two expressions
     Mul { lhs: ExprId, rhs: ExprId },

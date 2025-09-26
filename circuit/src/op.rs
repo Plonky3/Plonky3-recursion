@@ -6,14 +6,14 @@ use crate::types::WitnessId;
 ///
 /// These operations form the core computational primitives after expression lowering.
 /// All primitive operations:
-/// - Operate on witness table slots (WitnessId)  
+/// - Operate on witness table slots (WitnessId)
 /// - Can be heavily optimized (constant folding, CSE, etc.)
 /// - Are executed in topological order during circuit evaluation
 /// - Form a directed acyclic graph (DAG) of dependencies
 ///
 /// Primitive operations are kept separate from complex operations to maintain
 /// clean optimization boundaries and enable aggressive compiler transformations.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Prim<F> {
     /// Load a constant value into the witness table
     ///

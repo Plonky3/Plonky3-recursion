@@ -5,11 +5,11 @@ use core::mem::size_of;
 #[repr(C)]
 pub struct SpongeCols<T, const RATE: usize, const CAPACITY: usize> {
     // Flag to clear the capacity, which will clear the state.
-    // Transparent.
+    // Preprocessed.
     pub reset: T,
     // When set to 1, the rate is overwritten by external input.
     // When set to 0, the rate is copied from the previous row.
-    // Transparent.
+    // Preprocessed.
     pub absorb: T,
 
     pub input_addresses: [T; RATE],
