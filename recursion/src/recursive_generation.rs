@@ -201,11 +201,11 @@ where
     fn generate_challenges(
         &self,
         _config: &SC,
-        challenger: &mut <SC as StarkGenericConfig>::Challenger,
+        challenger: &mut SC::Challenger,
         coms_to_verify: &ComsWithOpenings<SC>,
         opening_proof: &InnerFriProof<SC, InputMmcs, FriMmcs>,
         extra_params: Option<&[usize]>,
-    ) -> Result<Vec<<SC as StarkGenericConfig>::Challenge>, GenerationError> {
+    ) -> Result<Vec<SC::Challenge>, GenerationError> {
         let num_challenges =
             1 + opening_proof.commit_phase_commits.len() + opening_proof.query_proofs.len();
         let mut challenges = Vec::with_capacity(num_challenges);

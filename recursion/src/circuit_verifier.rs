@@ -64,13 +64,7 @@ where
     challenges.push(circuit.add_public_input());
     challenges.push(circuit.add_public_input());
 
-    let pcs_challenges = <SC::Pcs as RecursivePcs<
-        SC,
-        InputProof,
-        OpeningProof,
-        Comm,
-        <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain,
-    >>::get_challenges_circuit(circuit, proof_targets);
+    let pcs_challenges = SC::Pcs::get_challenges_circuit(circuit, proof_targets);
 
     challenges.extend(pcs_challenges);
 
