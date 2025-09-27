@@ -35,6 +35,10 @@ type RecExt = RecExtensionValMmcs<F, Challenge, 8, RecVal>;
 /// Bring the circuit we're testing.
 use p3_recursion::circuit_fri_verifier::verify_fri_circuit;
 
+// Alias for FriProofTargets used for lens/value extraction and allocation
+type FriTargets =
+    FriProofTargets<F, Challenge, RecExt, InputProofTargets<F, Challenge, RecVal>, RecWitness<F>>;
+
 type MatBatch = Vec<(
     TwoAdicMultiplicativeCoset<F>,
     Vec<(Challenge, Vec<Challenge>)>,
@@ -65,7 +69,6 @@ fn test_circuit_fri_verifier() {
     let dft = Dft::<F>::default();
     // final_poly_len = 0 (constant), log_blowup = 1 in test params
     let mut fri_params = create_test_fri_params(challenge_mmcs, 0);
-    // Increase query rounds to 2 to ensure circuit handles multiple queries.
     fri_params.num_queries = 2;
     let log_blowup = fri_params.log_blowup;
     let log_final_poly_len = fri_params.log_final_poly_len;
@@ -73,15 +76,9 @@ fn test_circuit_fri_verifier() {
     let pcs = PCS::new(dft, val_mmcs, fri_params);
 
     // Keep widths >= 1 with these sizes
-    let polynomial_log_sizes = [5u8, 8, 8, 10];
+    let polynomial_log_sizes = [5, 8, 8, 10];
 
-    // Helper to produce *all* public inputs for a given seed, AND the FriProof lens.
-    // We return:
-    //  - fri_values: the public inputs that FriProofTargets::new created (commitments, openings,
-    //                sibling values, final_poly coeffs, pow witness, etc.)
-    //  - alpha, betas, index_bits, opened_values@x, challenge_points z, f(z) values,
-    //  - domains_log_sizes, phase count, and log_max_height
-    //  - fri_lens: the iterator materialized as a Vec<usize>, used to size FriProofTargets.
+    // Helper to produce *all* public inputs for a given seed
     let produce_inputs = |seed: u64| -> ProduceInputsResult {
         let mut rng = SmallRng::seed_from_u64(seed);
 
@@ -112,9 +109,9 @@ fn test_circuit_fri_verifier() {
         p_challenger.observe(commitment);
         let zeta: Challenge = p_challenger.sample_algebra_element();
 
-        let num_mats = polynomial_log_sizes.len();
-        let open_data = vec![(&prover_data, vec![vec![zeta]; num_mats])];
-        let (opened_values_nested, fri_proof) =
+        let num_evaluations = polynomial_log_sizes.len();
+        let open_data = vec![(&prover_data, vec![vec![zeta]; num_evaluations])];
+        let (opened_values, fri_proof) =
             <PCS as Pcs<Challenge, MyChallenger>>::open(&pcs, open_data, &mut p_challenger);
 
         // --- Verifier transcript replay (to derive the public inputs) ---
@@ -130,11 +127,9 @@ fn test_circuit_fri_verifier() {
             })
             .collect();
 
-        // Flatten into the shape we need: one batch of matrices at the same zeta
         let mats: MatBatch = domains
-            .iter()
-            .cloned()
-            .zip(opened_values_nested.into_iter().flatten().flatten())
+            .into_iter()
+            .zip(opened_values.into_iter().flatten().flatten())
             .map(|(domain, value_vec)| (domain, vec![(zeta, value_vec)]))
             .collect();
 
@@ -145,9 +140,9 @@ fn test_circuit_fri_verifier() {
             pow_witness,
         } = fri_proof;
 
-        // Observe all openings f(z) into the challenger
+        // Observe all opened evaluation points
         for (_domain, round) in &mats {
-            for (_z, values) in round {
+            for (_point, values) in round {
                 for &opening in values {
                     v_challenger.observe_algebra_element(opening);
                 }
@@ -207,14 +202,6 @@ fn test_circuit_fri_verifier() {
 
         // —— FriProofTargets lens + values ——
         // Build lens for FriProofTargets from the *real* FriProof we just produced.
-        type FriTargets = FriProofTargets<
-            F,
-            Challenge,
-            RecExt,
-            InputProofTargets<F, Challenge, RecVal>,
-            RecWitness<F>,
-        >;
-
         let fri_lens_vec: Vec<usize> = FriTargets::lens(&p3_fri::FriProof {
             commit_phase_commits: commit_phase_commits.clone(),
             query_proofs: query_proofs.clone(),
@@ -261,15 +248,8 @@ fn test_circuit_fri_verifier() {
     let mut builder = p3_circuit::CircuitBuilder::<Challenge>::new();
 
     // 1) Allocate FriProofTargets using lens from instance 1
-    type FriTargets = FriProofTargets<
-        F,
-        Challenge,
-        RecExt,
-        InputProofTargets<F, Challenge, RecVal>,
-        RecWitness<F>,
-    >;
     let mut lens_iter = result_1.fri_lens.clone().into_iter();
-    let fri_targets = FriTargets::new(&mut builder, &mut lens_iter, /*degree_bits*/ 0);
+    let fri_targets = FriTargets::new(&mut builder, &mut lens_iter, /*degree_bits unused*/ 0);
 
     // 2) Public inputs for α, βs, index bits, opened_values@x, z points, f(z)
     let alpha_t = builder.add_public_input();
