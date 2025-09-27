@@ -1,3 +1,4 @@
+use alloc::collections::btree_map::BTreeMap;
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -5,7 +6,7 @@ use p3_circuit::CircuitBuilder;
 use p3_field::{ExtensionField, Field, TwoAdicField};
 
 use crate::Target;
-use crate::recursive_pcs::FriProofTargets;
+use crate::recursive_pcs::{FriProofTargets, InputProofTargets};
 use crate::recursive_traits::{Recursive, RecursiveExtensionMmcs, RecursiveMmcs};
 
 /// Inputs for one FRI fold phase (matches the values used by the verifier per round).
@@ -278,11 +279,7 @@ where
     F: Field + TwoAdicField,
     EF: ExtensionField<F> + TwoAdicField,
 {
-    // height -> (alpha_pow_for_this_height, ro_sum_for_this_height)
-    use alloc::collections::BTreeMap;
-    let mut by_height: BTreeMap<usize, (Target, Target)> = BTreeMap::new();
-
-    // TODO: Remove once inputs are sanitized — enforce boolean bits here for safety.
+    // TODO(challenger): Indices should be sampled from a RecursiveChallenger, not passed in.
     for &b in index_bits {
         builder.assert_bool(b);
     }
@@ -292,10 +289,11 @@ where
         "index_bits.len() must equal log_max_height"
     );
 
+    // height -> (alpha_pow_for_this_height, ro_sum_for_this_height)
+    let mut by_height: BTreeMap<usize, (Target, Target)> = BTreeMap::new();
+
     for (mat_idx, &log_domain_size) in domains_log_sizes.iter().enumerate() {
         let log_height = log_domain_size + log_blowup;
-
-        // bits_reduced = log_max_height - log_height
         let bits_reduced = log_max_height - log_height;
 
         // Take the next log_height bits, then reverse to match reverse_bits_len semantics
@@ -337,16 +335,16 @@ where
 }
 
 /// Verify FRI arithmetic in-circuit.
+///
+/// TODO:
+/// - Introduce `RecursiveChallenger` and derive `alpha`, `betas`, and `index_bits_per_query`
+///   internally (observe commitments, sample challenges, check PoW, observe final poly coeffs).
+/// - Enforce FRI parameters (final_poly_len, num_queries) as in native verifier.
+/// - Add recursive MMCS verification for both input openings (open_input) and per-phase commitments.
 #[allow(clippy::too_many_arguments)]
 pub fn verify_fri_circuit<F, EF, RecMmcs, Inner, Witness>(
     builder: &mut CircuitBuilder<EF>,
-    fri_proof_targets: &FriProofTargets<
-        F,
-        EF,
-        RecMmcs,
-        crate::recursive_pcs::InputProofTargets<F, EF, Inner>,
-        Witness,
-    >,
+    fri_proof_targets: &FriProofTargets<F, EF, RecMmcs, InputProofTargets<F, EF, Inner>, Witness>,
     alpha: Target,
     betas: &[Target],
     index_bits_per_query: &[Vec<Target>],
@@ -378,6 +376,7 @@ pub fn verify_fri_circuit<F, EF, RecMmcs, Inner, Witness>(
 
     // Basic shape checks
     assert!(!betas.is_empty(), "FRI must have at least one fold phase");
+
     // Extract opened_values per query from FriProofTargets (first batch).
     let opened_values_per_query: Vec<&[Vec<Target>]> = fri_proof_targets
         .query_proofs
@@ -424,6 +423,7 @@ pub fn verify_fri_circuit<F, EF, RecMmcs, Inner, Witness>(
 
     // 3) For each query, compute reduced openings, build roll-ins, and perform fold chain
     for q in 0..num_queries {
+        // TODO(mmcs): When recursive MMCS is wired, this step must *also* verify input batch openings.
         let reduced_by_height: Vec<(usize, Target)> = compute_reduced_openings_by_height::<F, EF>(
             builder,
             opened_values_per_query[q],
