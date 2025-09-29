@@ -8,7 +8,7 @@ use p3_circuit::utils::{ColumnsTargets, RowSelectorsTargets, symbolic_to_circuit
 use p3_commit::{Mmcs, Pcs};
 use p3_field::{ExtensionField, Field};
 use p3_uni_stark::{
-    Commitments, OpenedValues, Proof, StarkGenericConfig, SymbolicAirBuilder, SymbolicExpression,
+    Commitments, OpenedValues, Proof, StarkGenericConfig, SymbolicAirBuilder,
     get_log_quotient_degree, get_symbolic_constraints,
 };
 
@@ -193,8 +193,7 @@ where
         alpha: &Target,
         columns: ColumnsTargets,
     ) -> Target {
-        let symbolic_constraints: Vec<SymbolicExpression<F>> =
-            get_symbolic_constraints(self, 0, columns.public_values.len());
+        let symbolic_constraints = get_symbolic_constraints(self, 0, columns.public_values.len());
 
         let mut acc = builder.add_const(F::ZERO);
         for s_c in symbolic_constraints {
@@ -244,13 +243,12 @@ impl<
             opening_proof,
             degree_bits: _,
         } = input;
-        let mut values = vec![];
-        values.extend::<Vec<SC::Challenge>>(CommitmentTargets::<SC::Challenge, Comm>::get_values(
-            commitments,
-        ));
-        values.extend(OpenedValuesTargets::<SC>::get_values(opened_values));
-        values.extend(OpeningProof::get_values(opening_proof));
-        values
+
+        CommitmentTargets::<SC::Challenge, Comm>::get_values(commitments)
+            .into_iter()
+            .chain(OpenedValuesTargets::<SC>::get_values(opened_values))
+            .chain(OpeningProof::get_values(opening_proof))
+            .collect()
     }
 
     fn num_challenges(&self) -> usize {
@@ -266,11 +264,10 @@ impl<
             opening_proof,
             degree_bits: _,
         } = input;
-        let mut all_lens = vec![];
-        all_lens.extend(CommitmentTargets::<SC::Challenge, Comm>::lens(commitments));
-        all_lens.extend(OpenedValuesTargets::<SC>::lens(opened_values));
-        all_lens.extend(OpeningProof::lens(opening_proof));
-        all_lens.into_iter()
+
+        CommitmentTargets::<SC::Challenge, Comm>::lens(commitments)
+            .chain(OpenedValuesTargets::<SC>::lens(opened_values))
+            .chain(OpeningProof::lens(opening_proof))
     }
 }
 

@@ -92,18 +92,14 @@ impl<
 
         commit_phase_commits
             .iter()
-            .flat_map(|c| {
-                <<RecMmcs as RecursiveExtensionMmcs<F, EF>>::Commitment as Recursive<EF>>::get_values(
-                    c,
-                )
-            })
-            .chain(query_proofs.iter().flat_map(|c| {
-                <QueryProofTargets<F, EF, InputProof, RecMmcs> as Recursive<EF>>::get_values(
-                    c,
-                )
-            }))
+            .flat_map(|c| RecMmcs::Commitment::get_values(c))
+            .chain(
+                query_proofs
+                    .iter()
+                    .flat_map(|c| QueryProofTargets::<F, EF, InputProof, RecMmcs>::get_values(c)),
+            )
             .chain(final_poly.iter().copied())
-            .chain(<Witness as Recursive<EF>>::get_values(pow_witness))
+            .chain(Witness::get_values(pow_witness))
             .collect()
     }
 
@@ -189,10 +185,12 @@ impl<
         } = input;
 
         let mut all_values = vec![];
-        all_values.extend(<InputProof as Recursive<EF>>::get_values(input_proof));
-        all_values.extend(commit_phase_openings.iter().flat_map(|o| {
-            <CommitPhaseProofStepTargets<F, EF, RecMmcs> as Recursive<EF>>::get_values(o)
-        }));
+        all_values.extend(InputProof::get_values(input_proof));
+        all_values.extend(
+            commit_phase_openings
+                .iter()
+                .flat_map(|o| CommitPhaseProofStepTargets::<F, EF, RecMmcs>::get_values(o)),
+        );
         all_values
     }
 
@@ -241,7 +239,7 @@ impl<F: Field, EF: ExtensionField<F>, RecMmcs: RecursiveExtensionMmcs<F, EF>> Re
         degree_bits: usize,
     ) -> Self {
         let sibling_value = circuit.add_public_input();
-        let opening_proof = <RecMmcs::Proof as Recursive<EF>>::new(circuit, lens, degree_bits);
+        let opening_proof = RecMmcs::Proof::new(circuit, lens, degree_bits);
         Self {
             sibling_value,
             opening_proof,
@@ -256,7 +254,7 @@ impl<F: Field, EF: ExtensionField<F>, RecMmcs: RecursiveExtensionMmcs<F, EF>> Re
         } = input;
 
         let mut values = vec![*sibling_value];
-        values.extend(<RecMmcs::Proof as Recursive<EF>>::get_values(opening_proof));
+        values.extend(RecMmcs::Proof::get_values(opening_proof));
         values
     }
 
@@ -321,7 +319,7 @@ impl<F: Field, EF: ExtensionField<F>, Inner: RecursiveMmcs<F, EF>> Recursive<EF>
         opened_values
             .iter()
             .flat_map(|inner| inner.iter().map(|v| EF::from(*v)))
-            .chain(<Inner::Proof as Recursive<EF>>::get_values(opening_proof))
+            .chain(Inner::Proof::get_values(opening_proof))
             .collect()
     }
 
@@ -467,7 +465,7 @@ impl<F: Field, EF: ExtensionField<F>> Recursive<EF> for Witness<F> {
 pub struct RecValMmcs<F: Field, const DIGEST_ELEMS: usize, H, C>
 where
     H: CryptographicHasher<F, [F; DIGEST_ELEMS]>
-        + CryptographicHasher<<F as Field>::Packing, [<F as Field>::Packing; DIGEST_ELEMS]>
+        + CryptographicHasher<F::Packing, [F::Packing; DIGEST_ELEMS]>
         + Sync,
 {
     pub hash: H,
@@ -479,14 +477,14 @@ impl<F: Field, EF: ExtensionField<F>, const DIGEST_ELEMS: usize, H, C> Recursive
     for RecValMmcs<F, DIGEST_ELEMS, H, C>
 where
     H: CryptographicHasher<F, [F; DIGEST_ELEMS]>
-        + CryptographicHasher<<F as Field>::Packing, [<F as Field>::Packing; DIGEST_ELEMS]>
+        + CryptographicHasher<F::Packing, [F::Packing; DIGEST_ELEMS]>
         + Sync,
     C: PseudoCompressionFunction<[F; DIGEST_ELEMS], 2>
-        + PseudoCompressionFunction<[<F as Field>::Packing; DIGEST_ELEMS], 2>
+        + PseudoCompressionFunction<[F::Packing; DIGEST_ELEMS], 2>
         + Sync,
     [F; DIGEST_ELEMS]: Serialize + for<'a> Deserialize<'a>,
 {
-    type Input = MerkleTreeMmcs<<F as Field>::Packing, <F as Field>::Packing, H, C, DIGEST_ELEMS>;
+    type Input = MerkleTreeMmcs<F::Packing, F::Packing, H, C, DIGEST_ELEMS>;
 
     type Commitment = HashTargets<F, DIGEST_ELEMS>;
 
@@ -590,7 +588,7 @@ where
     RecursiveInputProof: Recursive<SC::Challenge, Input = InputProof>,
     RecursiveFriMmcs: RecursiveExtensionMmcs<Val<SC>, SC::Challenge, Input = FriMmcs>,
     SC::Challenger: GrindingChallenger,
-    SC::Challenger: p3_challenger::CanObserve<<FriMmcs as Mmcs<SC::Challenge>>::Commitment>,
+    SC::Challenger: p3_challenger::CanObserve<FriMmcs::Commitment>,
 {
     type RecursiveProof = RecursiveFriProof<SC, RecursiveFriMmcs, RecursiveInputProof>;
 

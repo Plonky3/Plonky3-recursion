@@ -50,7 +50,7 @@ impl<F: Field, const D: usize> WitnessAir<F, D> {
                 "Extension field degree mismatch for witness value"
             );
             values.extend_from_slice(coeffs);
-            values.push(F::from_u64(trace.index[i] as u64));
+            values.push(F::from_u64(trace.index[i].0 as u64));
         }
 
         // Pad to power of two with monotonic index continuation
@@ -98,6 +98,7 @@ mod tests {
     use alloc::vec;
 
     use p3_baby_bear::BabyBear as Val;
+    use p3_circuit::WitnessId;
     use p3_field::PrimeCharacteristicRing;
     use p3_matrix::Matrix;
     use p3_uni_stark::{prove, verify};
@@ -110,7 +111,7 @@ mod tests {
         let n = 8usize;
         // Use D=1; values can be arbitrary (unused by constraints)
         let values: Vec<Val> = vec![Val::from_u64(123); n];
-        let indices: Vec<u32> = (0..n as u32).collect();
+        let indices: Vec<WitnessId> = (0..n as u32).map(WitnessId).collect();
 
         let trace = WitnessTrace {
             values,
@@ -152,7 +153,7 @@ mod tests {
         .unwrap();
 
         let values = vec![a, b];
-        let indices = vec![0, 1];
+        let indices = vec![WitnessId(0), WitnessId(1)];
 
         let trace = WitnessTrace {
             values,
@@ -183,7 +184,7 @@ mod tests {
     #[test]
     fn test_witness_air_single_element() {
         let values = vec![Val::from_u64(42)];
-        let indices = vec![0];
+        let indices = vec![WitnessId(0)];
 
         let trace = WitnessTrace {
             values,
@@ -214,7 +215,7 @@ mod tests {
     fn test_witness_air_matrix_padding() {
         let n = 3; // Not a power of two
         let values: Vec<Val> = (1..=n as u64).map(Val::from_u64).collect();
-        let indices: Vec<u32> = (0..n as u32).collect();
+        let indices: Vec<WitnessId> = (0..n as u32).map(WitnessId).collect();
 
         let trace = WitnessTrace {
             values,
