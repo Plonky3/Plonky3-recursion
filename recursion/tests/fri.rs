@@ -180,7 +180,7 @@ fn produce_inputs(
     }
 
     // challenge points (zeta per matrix) and f(z) per matrix
-    let challenge_points: Vec<Challenge> = core::iter::repeat(zeta).take(num_mats).collect();
+    let challenge_points: Vec<Challenge> = core::iter::repeat_n(zeta, num_mats).collect();
     let point_values: Vec<Vec<Challenge>> = point_values_vec;
 
     // —— FriProofTargets lens + values ——

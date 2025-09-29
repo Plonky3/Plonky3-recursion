@@ -196,28 +196,24 @@ where
     F: Field + TwoAdicField,
     EF: ExtensionField<F> + TwoAdicField, // circuit field
 {
-    // Precompute powers of the two-adic generator (in the base field), then lift to EF.
-    let h = F::two_adic_generator(log_height);
-    let mut powers_e = Vec::with_capacity(rev_reduced_index_bits.len());
-    let mut current_f = h;
-    for _ in 0..rev_reduced_index_bits.len() {
-        powers_e.push(builder.add_const(EF::from(current_f)));
-        current_f = current_f.square();
-    }
+    // Build power-of-two ladder for two-adic generator g: [g, g^2, g^4, ...]
+    let g = F::two_adic_generator(log_height);
+    let powers_of_g: Vec<_> = iter::successors(Some(g), |&prev| Some(prev.square()))
+        .take(rev_reduced_index_bits.len())
+        .map(|p| builder.add_const(EF::from(p)))
+        .collect();
 
-    // Compute h^{rev_reduced_index} via gated multiplication
+    // Compute g^{rev_reduced_index} using the provided reversed bits
     let one = builder.add_const(EF::ONE);
-    let mut result = one;
-    for (i, &bit) in rev_reduced_index_bits.iter().enumerate() {
-        let diff = builder.sub(powers_e[i], one);
-        let diff_bit = builder.mul(diff, bit);
-        let multiplier = builder.add(one, diff_bit);
-        result = builder.mul(result, multiplier);
+    let mut g_pow_index = one;
+    for (&bit, &power) in rev_reduced_index_bits.iter().zip(&powers_of_g) {
+        let multiplier = builder.select(bit, power, one);
+        g_pow_index = builder.mul(g_pow_index, multiplier);
     }
 
-    // Multiply by the coset generator (also lifted to EF)
+    // Multiply by the coset generator (also lifted to EF) to get x
     let generator = builder.add_const(EF::from(F::GENERATOR));
-    builder.mul(generator, result)
+    builder.mul(generator, g_pow_index)
 }
 
 /// Compute reduced opening for a single matrix in circuit form (EF-field).
@@ -230,8 +226,8 @@ fn compute_single_reduced_opening<EF: Field>(
     challenge_point: Target,  // z
     alpha_pow: Target,        // Current alpha power (for this height)
     alpha: Target,            // Alpha challenge
-) -> (Target, Target) {
-    // (new_alpha_pow, reduced_opening_contrib)
+) -> (Target, Target) // (new_alpha_pow, reduced_opening_contrib)
+{
     let mut reduced_opening = builder.add_const(EF::ZERO);
     let mut current_alpha_pow = alpha_pow;
 
@@ -264,6 +260,8 @@ fn compute_single_reduced_opening<EF: Field>(
 /// - `index_bits` is the full query index as little-endian bits; length must be `log_max_height`.
 /// - For each matrix (domain), bits_reduced = log_max_height - log_height;
 ///   use the window of length `log_height`, then reverse those bits for the eval point.
+///
+/// Reference (Plonky3): `p3_fri::verifier::open_input`
 #[allow(clippy::too_many_arguments)]
 fn compute_reduced_openings_by_height<F, EF>(
     builder: &mut CircuitBuilder<EF>,
@@ -329,21 +327,24 @@ where
     }
 
     // Into descending (height, ro) list
-    let mut v: Vec<(usize, Target)> = by_height
+    by_height
         .into_iter()
+        .rev()
         .map(|(h, (_ap, ro))| (h, ro))
-        .collect();
-    v.sort_by(|a, b| b.0.cmp(&a.0)); // descending by height
-    v
+        .collect()
 }
 
 /// Verify FRI arithmetic in-circuit.
 ///
 /// TODO:
-/// - Introduce `RecursiveChallenger` and derive `alpha`, `betas`, and `index_bits_per_query`
-///   internally (observe commitments, sample challenges, check PoW, observe final poly coeffs).
-/// - Enforce FRI parameters (final_poly_len, num_queries) as in native verifier.
-/// - Add recursive MMCS verification for both input openings (open_input) and per-phase commitments.
+/// - Challenge/indices generation lives in the outer verifier. Keep this
+///   function purely arithmetic and take `alpha`, `betas`, and
+///   `index_bits_per_query` as inputs.
+/// - Enforce FRI parameters (final_poly_len, num_queries) as in the native verifier.
+/// - Add recursive MMCS verification for both input openings (`open_input`) and
+///   per-phase commitments.
+///
+/// Reference (Plonky3): `p3_fri::verifier::verify_fri`
 #[allow(clippy::too_many_arguments)]
 pub fn verify_fri_circuit<F, EF, RecMmcs, Inner, Witness>(
     builder: &mut CircuitBuilder<EF>,
@@ -351,6 +352,7 @@ pub fn verify_fri_circuit<F, EF, RecMmcs, Inner, Witness>(
     alpha: Target,
     betas: &[Target],
     index_bits_per_query: &[Vec<Target>],
+    // TODO: Change interface to accept `ComsWithOpeningsTargets`.
     challenge_points: &[Target],
     challenge_point_values: &[Vec<Target>],
     domains_log_sizes: &[usize],
@@ -380,6 +382,14 @@ pub fn verify_fri_circuit<F, EF, RecMmcs, Inner, Witness>(
     // Basic shape checks
     assert!(!betas.is_empty(), "FRI must have at least one fold phase");
 
+    // Fail fast if final polynomial is not constant (current circuit assumes len=1)
+    let final_poly_len = fri_proof_targets.final_poly.len();
+    assert_eq!(
+        final_poly_len, 1,
+        "This circuit assumes a constant final polynomial (len=1). Got len={final_poly_len}"
+    );
+    let final_value = fri_proof_targets.final_poly[0];
+
     // Extract opened_values per query from FriProofTargets (first batch).
     let opened_values_per_query: Vec<&[Vec<Target>]> = fri_proof_targets
         .query_proofs
@@ -394,14 +404,6 @@ pub fn verify_fri_circuit<F, EF, RecMmcs, Inner, Witness>(
             assert!(!row.is_empty());
         }
     }
-
-    // 1) Grab the final polynomial (constant case expected here).
-    let final_poly_len = fri_proof_targets.final_poly.len();
-    assert_eq!(
-        final_poly_len, 1,
-        "This circuit assumes a constant final polynomial (len=1). Got len={final_poly_len}"
-    );
-    let final_value = fri_proof_targets.final_poly[0];
 
     // 2) Precompute two-adic generator ladders for each phase (in circuit field EF).
     //
@@ -425,6 +427,12 @@ pub fn verify_fri_circuit<F, EF, RecMmcs, Inner, Witness>(
 
     // 3) For each query, compute reduced openings, build roll-ins, and perform fold chain
     for q in 0..num_queries {
+        // Only support a single input batch ("round") for now.
+        let num_batches = fri_proof_targets.query_proofs[q].input_proof.len();
+        assert_eq!(
+            num_batches, 1,
+            "Only a single input batch (round) is supported for now",
+        );
         // TODO(mmcs): When recursive MMCS is wired, this step must *also* verify input batch openings.
         let reduced_by_height = compute_reduced_openings_by_height::<F, EF>(
             builder,
@@ -470,10 +478,15 @@ pub fn verify_fri_circuit<F, EF, RecMmcs, Inner, Witness>(
                 .and_then(|x| x.checked_sub(h))
                 .expect("height->phase mapping underflow");
             if i < num_phases {
-                roll_ins[i] = Some(match roll_ins[i] {
-                    None => ro,
-                    Some(prev) => builder.add(prev, ro),
-                });
+                // There should be at most one roll-in per phase since `reduced_by_height`
+                // aggregates all matrices at the same height already (and we only support a
+                // single input batch). Multiple entries mapping to the same phase indicate an
+                // invariant violation.
+                assert!(
+                    roll_ins[i].is_none(),
+                    "duplicate roll-in for phase {i} (height {h})",
+                );
+                roll_ins[i] = Some(ro);
             } else {
                 let zero = builder.add_const(EF::ZERO);
                 builder.connect(ro, zero);
