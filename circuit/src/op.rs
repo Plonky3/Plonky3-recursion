@@ -9,7 +9,7 @@ use crate::types::WitnessId;
 ///
 /// These operations form the core computational primitives after expression lowering.
 /// All primitive operations:
-/// - Operate on witness table slots (WitnessId)  
+/// - Operate on witness table slots (WitnessId)
 /// - Can be heavily optimized (constant folding, CSE, etc.)
 /// - Are executed in topological order during circuit evaluation
 /// - Form a directed acyclic graph (DAG) of dependencies

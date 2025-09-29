@@ -1,7 +1,6 @@
-use core::array;
+use alloc::vec::Vec;
 
 use p3_field::Field;
-use p3_symmetric::PseudoCompressionFunction;
 use p3_uni_stark::{Entry, SymbolicExpression};
 
 use crate::{CircuitBuilder, ExprId};
@@ -104,15 +103,46 @@ pub fn symbolic_to_circuit<F: Field>(
     }
 }
 
-#[derive(Clone)]
-pub struct MockCompression {}
-
-impl<F: Field, const DIGEST_ELEMS: usize> PseudoCompressionFunction<[F; DIGEST_ELEMS], 2>
-    for MockCompression
-{
-    fn compress(&self, input: [[F; DIGEST_ELEMS]; 2]) -> [F; DIGEST_ELEMS] {
-        array::from_fn(|i| input[0][i] - input[1][i])
+/// Reconstruct an integer (as a field element) from little-endian bits:
+///   index = Σ b_i · 2^i
+pub fn reconstruct_index_from_bits<F: Field>(
+    builder: &mut CircuitBuilder<F>,
+    bits: &[ExprId],
+) -> ExprId {
+    let mut acc = builder.add_const(F::ZERO);
+    let mut pow2 = builder.add_const(F::ONE);
+    for &b in bits {
+        builder.assert_bool(b);
+        let term = builder.mul(b, pow2);
+        acc = builder.add(acc, term);
+        pow2 = builder.add(pow2, pow2); // *= 2
     }
+    acc
+}
+
+/// Decompose a field element into its little-endian bits.
+///
+/// For a given target `x`, this function creates `N_BITS` new boolean targets `b_i`
+/// and adds constraints to enforce that:
+///     x = Σ b_i · 2^i
+pub fn decompose_to_bits<F: Field, const N_BITS: usize>(
+    builder: &mut CircuitBuilder<F>,
+    x: ExprId,
+) -> Vec<ExprId> {
+    let mut bits = Vec::with_capacity(N_BITS);
+
+    // Create bit witness variables
+    for _ in 0..N_BITS {
+        let bit = builder.add_public_input(); // TODO: Should be witness
+        builder.assert_bool(bit);
+        bits.push(bit);
+    }
+
+    // Constrain that the bits reconstruct to the original element
+    let reconstructed = reconstruct_index_from_bits(builder, &bits);
+    builder.connect(x, reconstructed);
+
+    bits
 }
 
 #[cfg(test)]
@@ -138,6 +168,8 @@ mod tests {
     };
     use rand::rngs::SmallRng;
     use rand::{RngCore, SeedableRng};
+
+    use super::*;
 
     type F = BabyBear;
     const D: usize = 4;
@@ -281,5 +313,72 @@ mod tests {
         let _ = runner.run()?;
 
         Ok(())
+    }
+
+    #[test]
+    fn test_reconstruct_index_from_bits() {
+        let mut builder = CircuitBuilder::<BabyBear>::new();
+
+        // Test reconstructing the value 5 (binary: 101)
+        let bit0 = builder.add_const(BabyBear::ONE); // 1
+        let bit1 = builder.add_const(BabyBear::ZERO); // 0
+        let bit2 = builder.add_const(BabyBear::ONE); // 1
+
+        let bits = vec![bit0, bit1, bit2];
+        let result = reconstruct_index_from_bits(&mut builder, &bits);
+
+        // Connect result to a public input so we can verify its value
+        let output = builder.add_public_input();
+        builder.connect(result, output);
+
+        // Build and run the circuit
+        let circuit = builder.build().expect("Failed to build circuit");
+        let mut runner = circuit.runner();
+
+        // Set public inputs: the expected result value 5
+        let expected_result = BabyBear::from_u64(5); // 1*1 + 0*2 + 1*4 = 5
+        runner
+            .set_public_inputs(&[expected_result])
+            .expect("Failed to set public inputs");
+
+        let traces = runner.run().expect("Failed to run circuit");
+
+        // Just verify the calculation is correct - reconstruct gives us 5
+        assert_eq!(traces.public_trace.values[0], BabyBear::from_u64(5));
+    }
+
+    #[test]
+    fn test_decompose_to_bits() {
+        let mut builder = CircuitBuilder::<BabyBear>::new();
+
+        // Create a target representing the value we want to decompose
+        let value = builder.add_const(BabyBear::from_u64(6)); // Binary: 110
+
+        // Decompose into 3 bits - this creates its own public inputs for the bits
+        let bits = decompose_to_bits::<BabyBear, 3>(&mut builder, value);
+
+        // Build and run the circuit
+        let circuit = builder.build().expect("Failed to build circuit");
+        let mut runner = circuit.runner();
+
+        // Set public inputs: expected bit decomposition of 6 (binary: 110) in little-endian
+        let public_inputs = vec![
+            BabyBear::ZERO, // bit 0: 0
+            BabyBear::ONE,  // bit 1: 1
+            BabyBear::ONE,  // bit 2: 1
+        ];
+
+        runner
+            .set_public_inputs(&public_inputs)
+            .expect("Failed to set public inputs");
+        let traces = runner.run().expect("Failed to run circuit");
+
+        // Verify the bits are correctly decomposed - 6 = [0,1,1] in little-endian
+        assert_eq!(traces.public_trace.values[0], BabyBear::ZERO); // bit 0
+        assert_eq!(traces.public_trace.values[1], BabyBear::ONE); // bit 1
+        assert_eq!(traces.public_trace.values[2], BabyBear::ONE); // bit 2
+
+        // Also verify that the returned bits have the expected length
+        assert_eq!(bits.len(), 3);
     }
 }

@@ -96,23 +96,6 @@ pub fn verify_query<F: Field>(
     builder.connect(folded_eval, final_value);
 }
 
-/// Reconstruct an integer (as a field element) from little-endian bits:
-///   index = Σ b_i · 2^i
-pub fn reconstruct_index_from_bits<F: Field>(
-    builder: &mut CircuitBuilder<F>,
-    bits: &[Target],
-) -> Target {
-    let mut acc = builder.add_const(F::ZERO);
-    let mut pow2 = builder.add_const(F::ONE);
-    for &b in bits {
-        builder.assert_bool(b);
-        let term = builder.mul(b, pow2);
-        acc = builder.add(acc, term);
-        pow2 = builder.add(pow2, pow2); // *= 2
-    }
-    acc
-}
-
 /// Compute x₀ for phase `i` from the query index bits and a caller-provided power ladder.
 ///
 /// For phase with folded height `k` (log_folded_height), caller must pass:

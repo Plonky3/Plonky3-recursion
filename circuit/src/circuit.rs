@@ -1,7 +1,35 @@
 use alloc::vec::Vec;
 
+use p3_field::Field;
+
 use crate::op::{NonPrimitiveOp, Prim};
+use crate::tables::CircuitRunner;
 use crate::types::WitnessId;
+
+/// Trait encapsulating the required field operations for circuits
+pub trait CircuitField:
+    Clone
+    + Default
+    + core::ops::Add<Output = Self>
+    + core::ops::Sub<Output = Self>
+    + core::ops::Mul<Output = Self>
+    + PartialEq
+    + core::fmt::Debug
+    + Field
+{
+}
+
+impl<F> CircuitField for F where
+    F: Clone
+        + Default
+        + core::ops::Add<Output = F>
+        + core::ops::Sub<Output = F>
+        + core::ops::Mul<Output = F>
+        + PartialEq
+        + core::fmt::Debug
+        + Field
+{
+}
 
 /// Static circuit specification containing constraint system and metadata
 ///
@@ -35,5 +63,12 @@ impl<F> Circuit<F> {
             public_rows: Vec::new(),
             public_flat_len: 0,
         }
+    }
+}
+
+impl<F: CircuitField> Circuit<F> {
+    /// Create a circuit runner for execution and trace generation
+    pub fn runner(self) -> CircuitRunner<F> {
+        CircuitRunner::new(self)
     }
 }

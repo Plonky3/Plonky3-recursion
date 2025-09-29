@@ -45,7 +45,7 @@ impl<F: Field, const D: usize> PublicAir<F, D> {
                 "extension degree mismatch for PublicTrace value"
             );
             values.extend_from_slice(coeffs);
-            values.push(F::from_u64(trace.index[i] as u64));
+            values.push(F::from_u64(trace.index[i].0 as u64));
         }
 
         // Pad to power of two by repeating last row
@@ -75,6 +75,7 @@ mod tests {
     use alloc::vec;
 
     use p3_baby_bear::BabyBear;
+    use p3_circuit::WitnessId;
     use p3_field::PrimeCharacteristicRing;
     use p3_field::extension::BinomialExtensionField;
     use p3_matrix::Matrix;
@@ -90,7 +91,7 @@ mod tests {
     fn test_public_air_base_field() {
         let n = 8usize;
         let values: Vec<F> = (1..=n as u64).map(F::from_u64).collect();
-        let indices: Vec<u32> = (0..n as u32).collect();
+        let indices: Vec<WitnessId> = (0..n as u32).map(WitnessId).collect();
 
         let trace = PublicTrace {
             values,
@@ -143,7 +144,7 @@ mod tests {
         .unwrap();
 
         let values = vec![a, b];
-        let indices = vec![10, 20];
+        let indices = vec![WitnessId(10), WitnessId(20)];
 
         let trace = PublicTrace {
             values,
@@ -182,7 +183,7 @@ mod tests {
     #[should_panic]
     fn test_public_air_mismatched_lengths() {
         let values = vec![F::from_u64(1), F::from_u64(2)];
-        let indices = vec![0]; // Wrong length
+        let indices = vec![WitnessId(0)]; // Wrong length
 
         let trace = PublicTrace {
             values,
