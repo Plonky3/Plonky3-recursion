@@ -71,8 +71,7 @@ where
     challenges
 }
 
-pub fn verify_circuit<
-    A,
+pub fn verify_multitable_circuit<
     SC: StarkGenericConfig,
     Comm: Recursive<
             SC::Challenge,
@@ -82,13 +81,45 @@ pub fn verify_circuit<
     OpeningProof: Recursive<SC::Challenge>,
 >(
     config: &SC,
-    air: &A,
+    airs: &[&dyn RecursiveAir<SC::Challenge>],
+    circuit: &mut CircuitBuilder<SC::Challenge>,
+    proof_targets: &[ProofTargets<SC, Comm, OpeningProof>],
+    // Each `Vec` corresponds to the public inputs for one AIR.
+    all_public_values: &[Vec<Target>],
+) -> Result<(), VerificationError>
+where
+    <SC as StarkGenericConfig>::Pcs: RecursivePcs<
+            SC,
+            InputProof,
+            OpeningProof,
+            Comm,
+            <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain,
+        >,
+{
+    for (air, (proof_target, public_values)) in
+        zip_eq(airs, zip_eq(proof_targets, all_public_values))
+    {
+        verify_circuit(config, *air, circuit, proof_target, public_values)?;
+    }
+    Ok(())
+}
+
+pub fn verify_circuit<
+    SC: StarkGenericConfig,
+    Comm: Recursive<
+            SC::Challenge,
+            Input = <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment,
+        > + Clone,
+    InputProof: Recursive<SC::Challenge>,
+    OpeningProof: Recursive<SC::Challenge>,
+>(
+    config: &SC,
+    air: &dyn RecursiveAir<SC::Challenge>,
     circuit: &mut CircuitBuilder<SC::Challenge>,
     proof_targets: &ProofTargets<SC, Comm, OpeningProof>,
     public_values: &[Target],
 ) -> Result<(), VerificationError>
 where
-    A: RecursiveAir<SC::Challenge>,
     <SC as StarkGenericConfig>::Pcs: RecursivePcs<
             SC,
             InputProof,
@@ -117,7 +148,7 @@ where
         degree_bits,
     } = proof_targets;
     let degree = 1 << degree_bits;
-    let log_quotient_degree = A::get_log_quotient_degree(air, public_values.len(), config.is_zk());
+    let log_quotient_degree = air.get_log_quotient_degree(public_values.len(), config.is_zk());
     let quotient_degree = 1 << (log_quotient_degree + config.is_zk());
 
     let pcs = config.pcs();
@@ -138,7 +169,7 @@ where
         get_circuit_challenges::<SC, Comm, InputProof, OpeningProof>(proof_targets, circuit);
 
     // Verify shape.
-    let air_width = A::width(air);
+    let air_width = air.width();
     let validate_shape = opened_trace_local_targets.len() == air_width
         && opened_trace_next_targets.len() == air_width
         && opened_quotient_chunks_targets.len() == quotient_degree

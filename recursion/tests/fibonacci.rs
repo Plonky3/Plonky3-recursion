@@ -110,7 +110,6 @@ fn test_fibonacci_verifier() -> Result<(), VerificationError> {
 
     // Add the verification circuit to the builder.
     verify_circuit::<
-        FibonacciAir,
         MyConfig,
         HashTargets<F, DIGEST_ELEMS>,
         InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>>,
