@@ -1,6 +1,7 @@
 use alloc::collections::btree_map::BTreeMap;
 use alloc::vec;
 use alloc::vec::Vec;
+use core::iter;
 
 use p3_circuit::CircuitBuilder;
 use p3_field::{ExtensionField, Field, TwoAdicField};
@@ -42,7 +43,7 @@ fn fold_row_chain<EF: Field>(
     let one = builder.add_const(EF::ONE);
 
     // Precompute constants as field constants: 2^{-1} and −1/2.
-    let two_inv_val = (EF::ONE + EF::ONE).inverse(); // 1/2
+    let two_inv_val = EF::ONE.halve(); // 1/2
     let neg_half = builder.add_const(EF::NEG_ONE * two_inv_val); // −1/2
 
     for FoldPhaseInputsTarget {
@@ -297,9 +298,11 @@ where
         let bits_reduced = log_max_height - log_height;
 
         // Take the next log_height bits, then reverse to match reverse_bits_len semantics
-        let height_bits = &index_bits[bits_reduced..bits_reduced + log_height];
-        let mut rev_bits = height_bits.to_vec();
-        rev_bits.reverse();
+        let rev_bits: Vec<Target> = index_bits[bits_reduced..bits_reduced + log_height]
+            .iter()
+            .rev()
+            .copied()
+            .collect();
 
         // Compute evaluation point x in the circuit field using base field two-adic generator
         let x = compute_evaluation_point::<F, EF>(builder, log_height, &rev_bits);
@@ -406,25 +409,24 @@ pub fn verify_fri_circuit<F, EF, RecMmcs, Inner, Witness>(
     // Use generator g = two_adic_generator(k + 1) and ladder [g^{2^0},...,g^{2^{k-1}}].
     let pows_per_phase: Vec<Vec<EF>> = (0..num_phases)
         .map(|i| {
+            // `k` is the height of the folded domain after `i` rounds of folding.
             let k = log_max_height.saturating_sub(i + 1);
             if k == 0 {
                 return Vec::new();
             }
-            let g_f = F::two_adic_generator(k + 1);
-            let mut ladder = Vec::with_capacity(k);
-            let mut cur = g_f;
-            for _ in 0..k {
-                ladder.push(EF::from(cur));
-                cur = cur.square();
-            }
-            ladder
+            let g = F::two_adic_generator(k + 1);
+            // Create the power ladder [g, g^2, g^4, ...].
+            iter::successors(Some(g), |&prev| Some(prev.square()))
+                .take(k)
+                .map(EF::from)
+                .collect()
         })
         .collect();
 
     // 3) For each query, compute reduced openings, build roll-ins, and perform fold chain
     for q in 0..num_queries {
         // TODO(mmcs): When recursive MMCS is wired, this step must *also* verify input batch openings.
-        let reduced_by_height: Vec<(usize, Target)> = compute_reduced_openings_by_height::<F, EF>(
+        let reduced_by_height = compute_reduced_openings_by_height::<F, EF>(
             builder,
             opened_values_per_query[q],
             domains_log_sizes,

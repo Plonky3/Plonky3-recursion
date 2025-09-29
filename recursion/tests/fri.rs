@@ -32,10 +32,10 @@ use p3_recursion::recursive_traits::Recursive;
 type RecVal = RecValMmcs<F, 8, MyHash, MyCompress>;
 type RecExt = RecExtensionValMmcs<F, Challenge, 8, RecVal>;
 
-/// Bring the circuit we're testing.
+// Bring the circuit we're testing.
 use p3_recursion::circuit_fri_verifier::verify_fri_circuit;
 
-// Alias for FriProofTargets used for lens/value extraction and allocation
+/// Alias for FriProofTargets used for lens/value extraction and allocation
 type FriTargets =
     FriProofTargets<F, Challenge, RecExt, InputProofTargets<F, Challenge, RecVal>, RecWitness<F>>;
 
@@ -44,18 +44,29 @@ type MatBatch = Vec<(
     Vec<(Challenge, Vec<Challenge>)>,
 )>;
 
+/// Holds all the public inputs and challenges required for a recursive FRI verification circuit.
 #[derive(Debug)]
 struct ProduceInputsResult {
-    fri_values: Vec<Challenge>, // fri_values ordered to match FriProofTargets::new
-    alpha: Challenge,           // alpha
-    betas: Vec<Challenge>,      // betas
-    index_bits_per_query: Vec<Vec<Challenge>>, // index_bits per query (LE)
-    challenge_points: Vec<Challenge>, // challenge_points z (per matrix)
-    point_values: Vec<Vec<Challenge>>, // f(z) per matrix
-    domains_log_sizes: Vec<usize>, // domains_log_sizes
-    num_phases: usize,          // num_phases
-    log_max_height: usize,      // log_max_height
-    fri_lens: Vec<usize>,       // fri_lens (shape)
+    /// FRI values, ordered to match the structure required by `FriProofTargets`.
+    fri_values: Vec<Challenge>,
+    /// The `alpha` challenge used for batching polynomial commitments.
+    alpha: Challenge,
+    /// The `beta` challenges, one for each FRI folding phase.
+    betas: Vec<Challenge>,
+    /// The query indices, represented as little-endian bits, for each query.
+    index_bits_per_query: Vec<Vec<Challenge>>,
+    /// The challenge points `z`, one for each opened polynomial matrix.
+    challenge_points: Vec<Challenge>,
+    /// The evaluations `f(z)` of each polynomial matrix at its corresponding challenge point.
+    point_values: Vec<Vec<Challenge>>,
+    /// The log base 2 of the domain size for each polynomial matrix.
+    domains_log_sizes: Vec<usize>,
+    /// The total number of FRI folding phases (rounds).
+    num_phases: usize,
+    /// The log base 2 of the size of the largest domain.
+    log_max_height: usize,
+    /// The shape of the FRI values, indicating the number of values per proof component.
+    fri_lens: Vec<usize>,
 }
 
 #[test]
@@ -68,8 +79,7 @@ fn test_circuit_fri_verifier() {
     let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
     let dft = Dft::<F>::default();
     // final_poly_len = 0 (constant), log_blowup = 1 in test params
-    let mut fri_params = create_test_fri_params(challenge_mmcs, 0);
-    fri_params.num_queries = 2;
+    let fri_params = create_test_fri_params(challenge_mmcs, 0);
     let log_blowup = fri_params.log_blowup;
     let log_final_poly_len = fri_params.log_final_poly_len;
     let pow_bits = fri_params.proof_of_work_bits;
