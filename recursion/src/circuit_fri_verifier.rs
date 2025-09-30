@@ -42,7 +42,7 @@ fn fold_row_chain<EF: Field>(
 
     let one = builder.add_const(EF::ONE);
 
-    // Precompute constants: 2^{-1} and −1/2.
+    // Precompute constants as field constants: 2^{-1} and −1/2.
     let two_inv_val = EF::ONE.halve(); // 1/2
     let neg_half = builder.add_const(EF::NEG_ONE * two_inv_val); // −1/2
 
@@ -55,6 +55,7 @@ fn fold_row_chain<EF: Field>(
     } in phases.iter().cloned()
     {
         // TODO(mmcs): MMCS batch verification needed for each phase.
+
         // e0 = select(bit, folded, e_sibling)
         let e0 = builder.select(sibling_is_right, folded, e_sibling);
 
@@ -193,7 +194,7 @@ fn compute_evaluation_point<F, EF>(
 ) -> Target
 where
     F: Field + TwoAdicField,
-    EF: ExtensionField<F>, // only need to lift F -> EF
+    EF: ExtensionField<F>,
 {
     // Build power-of-two ladder for two-adic generator g: [g, g^2, g^4, ...]
     let g = F::two_adic_generator(log_height);
@@ -260,7 +261,7 @@ fn compute_single_reduced_opening<EF: Field>(
 /// - For each matrix (domain), bits_reduced = log_max_height - log_height;
 ///   use the window of length `log_height`, then reverse those bits for the eval point.
 ///
-/// Mirrors p3_fri::verifier::open_input (but without MMCS checks).
+/// Reference (Plonky3): `p3_fri::verifier::open_input`
 #[allow(clippy::too_many_arguments)]
 fn compute_reduced_openings_by_height<F, EF>(
     builder: &mut CircuitBuilder<EF>,
@@ -351,16 +352,7 @@ where
         .collect()
 }
 
-/// Verify FRI arithmetic in-circuit, supporting **multiple input batches** (rounds).
-///
-/// Notes:
-/// - `domains_log_sizes`, `challenge_points`, and `challenge_point_values` must be
-///   **flattened across all batches in order**:
-///   for batch in 0..num_batches { for each matrix in batch { ... } }.
-/// - MMCS verifications (both input and commit-phase) and challenger sampling
-///   are intentionally omitted here.
-///
-/// Mirrors p3_fri::verifier::verify_fri (arithmetic only).
+/// Verify FRI arithmetic in-circuit.
 ///
 /// TODO:
 /// - Challenge/indices generation lives in the outer verifier. Keep this
@@ -369,6 +361,8 @@ where
 /// - Enforce FRI parameters (final_poly_len, num_queries) as in the native verifier.
 /// - Add recursive MMCS verification for both input openings (`open_input`) and
 ///   per-phase commitments.
+///
+/// Reference (Plonky3): `p3_fri::verifier::verify_fri`
 #[allow(clippy::too_many_arguments)]
 pub fn verify_fri_circuit<F, EF, RecMmcs, Inner, Witness>(
     builder: &mut CircuitBuilder<EF>,
@@ -509,6 +503,10 @@ pub fn verify_fri_circuit<F, EF, RecMmcs, Inner, Witness>(
                 .and_then(|x| x.checked_sub(h))
                 .expect("height->phase mapping underflow");
             if i < num_phases {
+                // There should be at most one roll-in per phase since `reduced_by_height`
+                // aggregates all matrices at the same height already (and we only support a
+                // single input batch). Multiple entries mapping to the same phase indicate an
+                // invariant violation.
                 assert!(
                     roll_ins[i].is_none(),
                     "duplicate roll-in for phase {i} (height {h})",

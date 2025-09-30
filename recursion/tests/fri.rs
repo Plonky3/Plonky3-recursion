@@ -1,7 +1,3 @@
-// tests/fri_multi_rounds.rs
-
-#![allow(clippy::type_complexity)]
-
 use p3_baby_bear::{BabyBear as F, Poseidon2BabyBear as Perm, default_babybear_poseidon2_16};
 use p3_challenger::{
     CanObserve, CanSampleBits, DuplexChallenger as Challenger, FieldChallenger, GrindingChallenger,
