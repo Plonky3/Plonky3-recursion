@@ -7,7 +7,9 @@ use thiserror::Error;
 
 use crate::circuit::Circuit;
 use crate::expr::{Expr, ExpressionGraph};
-use crate::op::{MerkleVerifyConfig, NonPrimitiveOp, NonPrimitiveOpType, Prim};
+use crate::op::{
+    MerkleVerifyConfig, NonPrimitiveOp, NonPrimitiveOpConfig, NonPrimitiveOpType, Prim,
+};
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};
 
 /// Sparse disjoint-set "find" with path compression over a HashMap (iterative).
@@ -68,13 +70,16 @@ pub struct CircuitBuilder<F> {
     /// Witness index allocator
     witness_alloc: WitnessAllocator,
     /// Track public input positions
-    public_input_count: usize,
+    pub public_input_count: usize,
     /// Equality constraints to enforce at lowering
     pending_connects: Vec<(ExprId, ExprId)>,
     /// Non-primitive operations (complex constraints that don't produce ExprIds)
-    non_primitive_ops: Vec<(NonPrimitiveOpId, NonPrimitiveOpType<F>, Vec<ExprId>)>, // (op_id, op_type, witness_exprs)
+    non_primitive_ops: Vec<(NonPrimitiveOpId, NonPrimitiveOpType, Vec<ExprId>)>, // (op_id, op_type, witness_exprs)
     /// Builder-level constant pool: value -> unique Const ExprId
     const_pool: HashMap<F, ExprId>,
+
+    /// Enabled non-primitive operation types with their respective configuration
+    enabled_ops: HashMap<NonPrimitiveOpType, NonPrimitiveOpConfig<F>>,
 }
 
 /// Errors that can occur during circuit building/lowering.
@@ -94,6 +99,18 @@ pub enum CircuitBuilderError {
         expected: usize,
         got: usize,
     },
+
+    /// Non-primitive operation rejected by the active policy/profile.
+    #[error("Operation {op:?} is not allowed by the current profile")]
+    OpNotAllowed { op: NonPrimitiveOpType },
+
+    /// Non-primitive operation is recognized but not implemented in lowering.
+    #[error("Operation {op:?} is not implemented in lowering")]
+    UnsupportedNonPrimitiveOp { op: NonPrimitiveOpType },
+
+    /// Mismatched non-primitive operation configuration
+    #[error("Invalid configuration for operation {op:?}")]
+    InvalidNonPrimitiveOpConfiguration { op: NonPrimitiveOpType },
 }
 
 impl<F> Default for CircuitBuilder<F>
@@ -127,7 +144,27 @@ where
             pending_connects: Vec::new(),
             non_primitive_ops: Vec::new(),
             const_pool,
+            enabled_ops: HashMap::new(), // All non-primitive ops are disabled by default
         }
+    }
+
+    /// Enable a non-primitive operation type on this builder.
+    pub fn enable_op(&mut self, op: NonPrimitiveOpType, cfg: NonPrimitiveOpConfig<F>) {
+        self.enabled_ops.insert(op, cfg);
+    }
+
+    /// Enable Merkle verification operations.
+    // TODO: Replace with actual Merkle verification once it lands
+    pub fn enable_merkle(&mut self, merkle_config: &MerkleVerifyConfig<F>) {
+        self.enable_op(
+            NonPrimitiveOpType::MerkleVerify,
+            NonPrimitiveOpConfig::MerkleVerifyConfig(merkle_config.clone()),
+        );
+    }
+
+    /// Enable FRI verification operations.
+    pub fn enable_fri(&mut self) {
+        // TODO: Add FRI ops when they land
     }
 
     /// Add a public input to the circuit.
@@ -232,36 +269,30 @@ where
         res
     }
 
-    /// Add a Merkle verification constraint (non-primitive operation)
-    ///
-    /// Non-primitive operations are complex constraints that:
-    /// - Take existing expressions as inputs (leaf_expr, root_expr)
-    /// - Add verification constraints to the circuit
-    /// - Don't produce new ExprIds (unlike primitive ops)
-    /// - Are kept separate from primitives to avoid disrupting optimization
-    ///
-    /// Returns an operation ID for setting private data later during execution.
-    pub fn add_merkle_verify(
+    /// Helper to push a non-primitive op. Returns op id.
+    pub(crate) fn push_non_primitive_op(
         &mut self,
-        config: MerkleVerifyConfig<F>,
-        leaf_expr: Vec<ExprId>,
-        index_expr: ExprId,
-        root_expr: Vec<ExprId>,
+        op_type: NonPrimitiveOpType,
+        witness_exprs: Vec<ExprId>,
     ) -> NonPrimitiveOpId {
-        // Store input expression IDs - will be lowered to WitnessId during build()
-        // Non-primitive ops consume ExprIds but don't produce them
         let op_id = NonPrimitiveOpId(self.non_primitive_ops.len() as u32);
-        let mut witness_exprs = vec![];
-        witness_exprs.extend(leaf_expr);
-        witness_exprs.push(index_expr);
-        witness_exprs.extend(root_expr);
-        self.non_primitive_ops.push((
-            op_id,
-            NonPrimitiveOpType::MerkleVerify(config),
-            witness_exprs,
-        ));
-
+        self.non_primitive_ops.push((op_id, op_type, witness_exprs));
         op_id
+    }
+
+    /// Check whether an op type is enabled on this builder.
+    fn is_op_enabled(&self, op: &NonPrimitiveOpType) -> bool {
+        self.enabled_ops.contains_key(op)
+    }
+
+    pub(crate) fn ensure_op_enabled(
+        &self,
+        op: NonPrimitiveOpType,
+    ) -> Result<(), CircuitBuilderError> {
+        if !self.is_op_enabled(&op) {
+            return Err(CircuitBuilderError::OpNotAllowed { op });
+        }
+        Ok(())
     }
 }
 
@@ -298,6 +329,7 @@ where
         circuit.non_primitive_ops = lowered_non_primitive_ops;
         circuit.public_rows = public_rows;
         circuit.public_flat_len = self.public_input_count;
+        circuit.enabled_ops = self.enabled_ops;
 
         Ok((circuit, public_mappings))
     }
@@ -495,12 +527,19 @@ where
     fn lower_non_primitive_ops(
         &self,
         expr_to_widx: &HashMap<ExprId, WitnessId>,
-    ) -> Result<Vec<NonPrimitiveOp<F>>, CircuitBuilderError> {
+    ) -> Result<Vec<NonPrimitiveOp>, CircuitBuilderError> {
         let mut lowered_ops = Vec::new();
 
         for (_op_id, op_type, witness_exprs) in &self.non_primitive_ops {
+            let config = self.enabled_ops.get(op_type);
             match op_type {
-                NonPrimitiveOpType::MerkleVerify(config) => {
+                NonPrimitiveOpType::MerkleVerify => {
+                    let config = match config {
+                        Some(NonPrimitiveOpConfig::MerkleVerifyConfig(config)) => Ok(config),
+                        _ => Err(CircuitBuilderError::InvalidNonPrimitiveOpConfiguration {
+                            op: op_type.clone(),
+                        }),
+                    }?;
                     if witness_exprs.len() != config.input_size() {
                         return Err(CircuitBuilderError::NonPrimitiveOpArity {
                             op: "MerkleVerify",
@@ -536,9 +575,11 @@ where
                         leaf: leaf_widx,
                         index: index_widx,
                         root: root_widx,
-                        config: config.clone(),
                     });
                 }
+                NonPrimitiveOpType::FriVerify => {
+                    todo!() // TODO: Add FRIVerify when it lands
+                } // Add more variants here as needed
             }
         }
 
@@ -562,7 +603,8 @@ mod tests {
     use p3_field::PrimeCharacteristicRing;
 
     use super::*;
-    use crate::CircuitError;
+    use crate::op::NonPrimitiveOpType;
+    use crate::{CircuitError, MerkleOps, NonPrimitiveOp};
 
     #[test]
     fn test_circuit_basic_api() {
@@ -769,6 +811,29 @@ mod tests {
     }
 
     #[test]
+    fn test_merkle_config_blocks_when_disabled() {
+        let mut builder = CircuitBuilder::<BabyBear>::new();
+        let merkle_config = MerkleVerifyConfig::<BabyBear>::mock_config();
+
+        let leaf = (0..merkle_config.ext_field_digest_elems)
+            .map(|_| builder.add_public_input())
+            .collect::<Vec<ExprId>>();
+        let index = builder.add_public_input();
+        let root = (0..merkle_config.ext_field_digest_elems)
+            .map(|_| builder.add_public_input())
+            .collect::<Vec<ExprId>>();
+
+        // not enabled yet
+        let err = builder.add_merkle_verify(&leaf, &index, &root).unwrap_err();
+        match err {
+            CircuitBuilderError::OpNotAllowed { op } => {
+                assert_eq!(op, NonPrimitiveOpType::MerkleVerify);
+            }
+            other => panic!("expected OpNotAllowed, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn test_constant_deduplication() {
         // Test that identical constants are deduplicated and reuse ExprIds
         let mut builder = CircuitBuilder::<BabyBear>::new();
@@ -917,6 +982,31 @@ mod tests {
     }
 
     #[test]
+    fn test_merkle_config_allows_when_enabled() {
+        let mut builder = CircuitBuilder::<BabyBear>::new();
+        let merkle_config = MerkleVerifyConfig::<BabyBear>::mock_config();
+
+        let leaf = (0..merkle_config.ext_field_digest_elems)
+            .map(|_| builder.add_public_input())
+            .collect::<Vec<ExprId>>();
+        let index = builder.add_public_input();
+        let root = (0..merkle_config.ext_field_digest_elems)
+            .map(|_| builder.add_public_input())
+            .collect::<Vec<ExprId>>();
+
+        builder.enable_merkle(&merkle_config);
+        builder
+            .add_merkle_verify(&leaf, &index, &root)
+            .expect("should be allowed");
+
+        let circuit = builder.build().unwrap();
+        assert_eq!(circuit.non_primitive_ops.len(), 1);
+        match &circuit.non_primitive_ops[0] {
+            NonPrimitiveOp::MerkleVerify { .. } => {}
+        }
+    }
+
+    #[test]
     fn test_complex_connect_chains() {
         // Test complex connection chains: a=b, b=c, c=d should make all equivalent
         let mut builder = CircuitBuilder::<BabyBear>::new();
@@ -973,6 +1063,28 @@ mod tests {
             Err(CircuitError::WitnessConflict { .. }) => {} // Expected - conflict detected early
             other => panic!("Expected WitnessConflict, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_merkle_config_with_custom_params() {
+        let mut builder = CircuitBuilder::<BabyBear>::new();
+        let merkle_config = MerkleVerifyConfig::<BabyBear>::mock_config();
+
+        let leaf = (0..merkle_config.ext_field_digest_elems)
+            .map(|_| builder.add_public_input())
+            .collect::<Vec<ExprId>>();
+        let index = builder.add_public_input();
+        let root = (0..merkle_config.ext_field_digest_elems)
+            .map(|_| builder.add_public_input())
+            .collect::<Vec<ExprId>>();
+
+        builder.enable_merkle(&merkle_config);
+        builder
+            .add_merkle_verify(&leaf, &index, &root)
+            .expect("should be allowed with custom config");
+
+        let circuit = builder.build().unwrap();
+        assert_eq!(circuit.non_primitive_ops.len(), 1);
     }
 
     #[test]

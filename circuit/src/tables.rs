@@ -2,7 +2,9 @@ use alloc::vec::Vec;
 use alloc::{format, vec};
 
 use crate::circuit::Circuit;
-use crate::op::{MerkleVerifyConfig, NonPrimitiveOpPrivateData, Prim};
+use crate::op::{
+    MerkleVerifyConfig, NonPrimitiveOpConfig, NonPrimitiveOpPrivateData, NonPrimitiveOpType, Prim,
+};
 use crate::types::{NonPrimitiveOpId, WitnessId};
 use crate::{CircuitError, CircuitField, NonPrimitiveOp};
 
@@ -482,7 +484,6 @@ impl<F: CircuitField> CircuitRunner<F> {
                 leaf,
                 index,
                 root: _,
-                config,
             } = &self.circuit.non_primitive_ops[op_idx];
 
             // Clone private data option to avoid holding a borrow on self
@@ -502,6 +503,16 @@ impl<F: CircuitField> CircuitRunner<F> {
             if let Some(Some(NonPrimitiveOpPrivateData::MerkleVerify(private_data))) =
                 self.non_primitive_op_private_data.get(op_idx).cloned()
             {
+                let config = match self
+                    .circuit
+                    .enabled_ops
+                    .get(&NonPrimitiveOpType::MerkleVerify)
+                {
+                    Some(NonPrimitiveOpConfig::MerkleVerifyConfig(config)) => Ok(config),
+                    _ => Err(CircuitError::InvalidNonPrimitiveOpConfiguration {
+                        op: NonPrimitiveOpType::MerkleVerify,
+                    }),
+                }?;
                 let trace = private_data.to_trace(config, leaf.clone(), &leaf_value, index.0)?;
                 merkle_paths.push(trace);
             } else {

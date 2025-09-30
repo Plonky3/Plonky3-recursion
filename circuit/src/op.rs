@@ -1,6 +1,10 @@
 use alloc::sync::Arc;
+use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt;
+use core::hash::{Hash, Hasher};
+
+use p3_field::Field;
 
 use crate::tables::MerklePrivateData;
 use crate::types::WitnessId;
@@ -48,13 +52,22 @@ pub enum Prim<F> {
 }
 
 /// Non-primitive operation types
-#[derive(Debug, Clone, PartialEq)]
-pub enum NonPrimitiveOpType<T> {
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum NonPrimitiveOpType {
+    // Merkle Verify gate with the argument is the size of the path
+    MerkleVerify,
+    FriVerify,
     // Future: FriVerify, HashAbsorb, etc.
-    MerkleVerify(MerkleVerifyConfig<T>),
 }
 
-/// Non-primitive operations representing complex cryptographic constraints
+/// Non-primitive operation types
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum NonPrimitiveOpConfig<F> {
+    MerkleVerifyConfig(MerkleVerifyConfig<F>),
+    None,
+}
+
+/// Non-primitive operations representing complex cryptographic constraints.
 ///
 /// These operations implement sophisticated cryptographic primitives that:
 /// - Have dedicated AIR tables for constraint verification
@@ -69,7 +82,7 @@ pub enum NonPrimitiveOpType<T> {
 /// 3. Enable parallel development of different cryptographic primitives
 /// 4. Avoid optimization passes breaking complex constraint relationships
 #[derive(Debug, Clone, PartialEq)]
-pub enum NonPrimitiveOp<T> {
+pub enum NonPrimitiveOp {
     /// Verifies that a leaf value is contained in a Merkle tree with given root.
     /// The actual Merkle path verification logic is implemented in a dedicated
     /// AIR table that constrains the relationship between leaf and root.
@@ -78,7 +91,6 @@ pub enum NonPrimitiveOp<T> {
     /// - `leaf`: The leaf value being verified (single field element)
     /// - `index`: The index of the leaf
     /// - `root`: The expected Merkle tree root (single field element)
-    /// - `config`: The configuration of this gate.
     ///
     /// Private data (set via NonPrimitiveOpId):
     /// - Merkle path siblings and direction bits
@@ -87,7 +99,6 @@ pub enum NonPrimitiveOp<T> {
         leaf: MerkleWitnessId,
         index: WitnessId,
         root: MerkleWitnessId,
-        config: MerkleVerifyConfig<T>,
     },
 }
 
@@ -124,11 +135,35 @@ impl<T> PartialEq for MerkleVerifyConfig<T> {
     }
 }
 
+impl<T> Eq for MerkleVerifyConfig<T> {}
+
+impl<T> Hash for MerkleVerifyConfig<T> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.base_field_digest_elems.hash(state);
+        self.ext_field_digest_elems.hash(state);
+        self.max_tree_height.hash(state);
+        // intentionally ignore `compress` to match PartialEq
+    }
+}
+
 impl<T> MerkleVerifyConfig<T> {
     /// Returns the number of wires received as input.
     pub const fn input_size(&self) -> usize {
-        // ext_field_digest_elems for the leaf and root and 1 for the leaf index
+        // `ext_field_digest_elems`` for the leaf and root and 1 for the index
         2 * self.ext_field_digest_elems + 1
+    }
+
+    /// Returns a mock configuration with the 0 compression function
+    pub fn mock_config() -> Self
+    where
+        T: Field,
+    {
+        Self {
+            base_field_digest_elems: 1,
+            ext_field_digest_elems: 1,
+            max_tree_height: 1,
+            compress: Arc::new(|_: [&[T]; 2]| -> Vec<T> { vec![T::ZERO] }),
+        }
     }
 }
 
@@ -143,7 +178,7 @@ pub type MerkleWitnessId = Vec<WitnessId>;
 /// - Is used by AIR tables to generate the appropriate constraints
 #[derive(Debug, Clone, PartialEq)]
 pub enum NonPrimitiveOpPrivateData<F> {
-    /// Private data for fake Merkle verification
+    /// Private data for Merkle verification
     ///
     /// Contains the complete Merkle path information needed by the prover
     /// to generate a valid proof. This data is not part of the public
