@@ -75,6 +75,8 @@ pub struct CircuitBuilder<F> {
     non_primitive_ops: Vec<(NonPrimitiveOpId, NonPrimitiveOpType<F>, Vec<ExprId>)>, // (op_id, op_type, witness_exprs)
     /// Builder-level constant pool: value -> unique Const ExprId
     const_pool: HashMap<F, ExprId>,
+    /// Merkle config
+    merkle_config: Option<MerkleVerifyConfig<F>>,
 }
 
 /// Errors that can occur during circuit building/lowering.
@@ -127,6 +129,7 @@ where
             pending_connects: Vec::new(),
             non_primitive_ops: Vec::new(),
             const_pool,
+            merkle_config: None,
         }
     }
 
@@ -243,17 +246,24 @@ where
     /// Returns an operation ID for setting private data later during execution.
     pub fn add_merkle_verify(
         &mut self,
-        config: MerkleVerifyConfig<F>,
-        leaf_expr: Vec<ExprId>,
-        index_expr: ExprId,
-        root_expr: Vec<ExprId>,
+        leaf_expr: &[ExprId],
+        directions: &[ExprId],
+        root_expr: &[ExprId],
     ) -> NonPrimitiveOpId {
+        let config = self
+            .merkle_config
+            .clone()
+            .expect("Merkle verification configuration not set");
+        // Assert that inputs are consistent with the configuration
+        assert_eq!(leaf_expr.len(), config.ext_field_digest_elems);
+        assert_eq!(directions.len(), config.max_tree_height);
+        assert_eq!(root_expr.len(), config.ext_field_digest_elems);
         // Store input expression IDs - will be lowered to WitnessId during build()
         // Non-primitive ops consume ExprIds but don't produce them
         let op_id = NonPrimitiveOpId(self.non_primitive_ops.len() as u32);
-        let mut witness_exprs = vec![];
+        let mut witness_exprs: Vec<ExprId> = vec![];
         witness_exprs.extend(leaf_expr);
-        witness_exprs.push(index_expr);
+        witness_exprs.extend(directions);
         witness_exprs.extend(root_expr);
         self.non_primitive_ops.push((
             op_id,
@@ -262,6 +272,11 @@ where
         ));
 
         op_id
+    }
+
+    /// Set the Merkle verification config being used byt the circuit builder.
+    pub fn set_merkle_verify_config(&mut self, merkle_config: &MerkleVerifyConfig<F>) {
+        self.merkle_config = Some(merkle_config.clone());
     }
 }
 

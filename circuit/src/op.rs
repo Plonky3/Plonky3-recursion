@@ -130,6 +130,8 @@ impl<T> MerkleVerifyConfig<T> {
         // ext_field_digest_elems for the leaf and root and 1 for the leaf index
         2 * self.ext_field_digest_elems + 1
     }
+    // /// Derive the merkle configuration from a given RecursiveMmcs
+    // pub const fn from_recursive_mmcs<Recur>()
 }
 
 pub type MerkleWitnessId = Vec<WitnessId>;

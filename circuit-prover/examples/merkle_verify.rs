@@ -20,17 +20,17 @@ fn main() -> Result<(), ProverError> {
     let (config, merkle_config) = build_standard_config_babybear();
 
     let mut builder = CircuitBuilder::new();
+    builder.set_merkle_verify_config(&merkle_config);
 
     // Public inputs: leaf hash and expected root hash
-    let leaf_hash = vec![builder.add_public_input(), builder.add_public_input()];
-    let index_expr = builder.add_public_input();
-    let expected_root = vec![builder.add_public_input(), builder.add_public_input()];
+    let leaf_hash = vec![builder.add_public_input(); merkle_config.ext_field_digest_elems];
+    let directions_expr = vec![builder.add_public_input(); merkle_config.max_tree_height];
+    let expected_root = vec![builder.add_public_input(); merkle_config.ext_field_digest_elems];
 
     // Add a Merkle verification operation
     // This declares that leaf_hash and expected_root are connected to witness bus
     // The AIR constraints will verify the Merkle path is valid
-    let merkle_op_id =
-        builder.add_merkle_verify(merkle_config.clone(), leaf_hash, index_expr, expected_root);
+    let merkle_op_id = builder.add_merkle_verify(&leaf_hash, &directions_expr, &expected_root);
 
     let circuit = builder.build()?;
     let mut runner = circuit.runner();
@@ -60,13 +60,12 @@ fn main() -> Result<(), ProverError> {
     let expected_root_value =
         compute_merkle_root(&merkle_config, &leaf_value, &siblings, &directions);
 
-    runner.set_public_inputs(&[
-        leaf_value[0],
-        leaf_value[1],
-        index_value,
-        expected_root_value[0],
-        expected_root_value[1],
-    ])?;
+    let mut public_inputs = vec![];
+    public_inputs.extend(leaf_value);
+    public_inputs.extend(directions.iter().map(|dir| F::from_bool(*dir)));
+    public_inputs.extend(expected_root_value.clone());
+
+    runner.set_public_inputs(&public_inputs)?;
 
     // Set private Merkle path data
     runner.set_non_primitive_op_private_data(

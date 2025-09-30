@@ -433,7 +433,11 @@ pub fn verify_fri_circuit<F, EF, RecMmcs, Inner, Witness>(
             num_batches, 1,
             "Only a single input batch (round) is supported for now",
         );
+
         // TODO(mmcs): When recursive MMCS is wired, this step must *also* verify input batch openings.
+        let merkle_op_id =
+            builder.add_merkle_verify(&leaf_hash, &index_bits_per_query[q], &expected_root);
+
         let reduced_by_height = compute_reduced_openings_by_height::<F, EF>(
             builder,
             opened_values_per_query[q],
