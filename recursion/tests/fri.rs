@@ -45,7 +45,6 @@ type FriTargets =
 
 /// Helper: build one group's evaluation matrices for a given seed and sizes.
 fn make_evals(
-    _pcs: &PCS,
     polynomial_log_sizes: &[u8],
     seed: u64,
 ) -> Vec<(TwoAdicMultiplicativeCoset<F>, RowMajorMatrix<F>)> {
@@ -109,7 +108,7 @@ fn produce_inputs_multi(
     // Build per-group evals and commit
     let mut groups_evals = Vec::new();
     for (i, sizes) in group_sizes.iter().enumerate() {
-        groups_evals.push(make_evals(pcs, sizes, seed_base + i as u64));
+        groups_evals.push(make_evals(sizes, seed_base + i as u64));
     }
 
     // Flatten domain sizes (base log sizes) for public inputs
@@ -117,9 +116,14 @@ fn produce_inputs_multi(
     for sizes in group_sizes {
         domains_log_sizes.extend(sizes.iter().map(|&b| b as usize));
     }
+    let val_sizes: Vec<F> = domains_log_sizes
+        .iter()
+        .map(|&b| F::from_u8(b as u8))
+        .collect();
 
     // --- Prover path ---
     let mut p_challenger = MyChallenger::new(perm.clone());
+    p_challenger.observe_slice(&val_sizes);
 
     // Commit each group and observe all commitments before sampling zeta
     let mut commitments_and_data = Vec::new();
@@ -146,6 +150,7 @@ fn produce_inputs_multi(
 
     // --- Verifier transcript replay (to derive the public inputs) ---
     let mut v_challenger = MyChallenger::new(perm.clone());
+    v_challenger.observe_slice(&val_sizes);
     for (commitment, _) in &commitments_and_data {
         v_challenger.observe(*commitment);
     }

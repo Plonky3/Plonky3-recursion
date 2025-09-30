@@ -312,11 +312,19 @@ where
             .entry(log_height)
             .or_insert((builder.add_const(EF::ONE), builder.add_const(EF::ZERO)));
 
+        let opened_values = &batch_opened_values[mat_idx];
+        let point_values = &challenge_point_values[mat_idx];
+        assert_eq!(
+            opened_values.len(),
+            point_values.len(),
+            "opened_values columns must match challenge_point_values columns",
+        );
+
         // ro contribution for this matrix
         let (new_alpha_pow_h, ro_contrib) = compute_single_reduced_opening(
             builder,
-            &batch_opened_values[mat_idx],
-            &challenge_point_values[mat_idx],
+            opened_values,
+            point_values,
             x,
             challenge_points[mat_idx],
             *alpha_pow_h,
