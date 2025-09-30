@@ -54,7 +54,7 @@ fn fold_row_chain<EF: Field>(
         roll_in,
     } in phases.iter().cloned()
     {
-        // TODO(mmcs): MMCS batch verification needed for each phase.
+        // TODO: MMCS batch verification needed for each phase.
 
         // e0 = select(bit, folded, e_sibling)
         let e0 = builder.select(sibling_is_right, folded, e_sibling);
@@ -421,11 +421,13 @@ pub fn verify_fri_circuit<F, EF, RecMmcs, Inner, Witness>(
     // Use generator g = two_adic_generator(k + 1) and ladder [g^{2^0},...,g^{2^{k-1}}].
     let pows_per_phase: Vec<Vec<EF>> = (0..num_phases)
         .map(|i| {
+            // `k` is the height of the folded domain after `i` rounds of folding.
             let k = log_max_height.saturating_sub(i + 1);
             if k == 0 {
                 return Vec::new();
             }
             let g = F::two_adic_generator(k + 1);
+            // Create the power ladder [g, g^2, g^4, ...].
             iter::successors(Some(g), |&prev| Some(prev.square()))
                 .take(k)
                 .map(EF::from)
