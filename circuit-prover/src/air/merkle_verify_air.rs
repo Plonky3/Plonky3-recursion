@@ -1,3 +1,9 @@
+/// Definition of the AIR to verify Merkle tree authentication paths.
+/// 
+/// Re-exported from Plonky3.
+
+pub use p3_merkle_tree_air::air::MerkleVerifyAir;
+
 #[cfg(test)]
 mod test {
 
