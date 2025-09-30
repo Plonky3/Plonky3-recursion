@@ -32,7 +32,7 @@ use p3_recursion::recursive_traits::Recursive;
 type RecVal = RecValMmcs<F, 8, MyHash, MyCompress>;
 type RecExt = RecExtensionValMmcs<F, Challenge, 8, RecVal>;
 
-// Circuit under test
+// Bring the circuit we're testing.
 use p3_recursion::circuit_fri_verifier::verify_fri_circuit;
 
 /// Alias for FriProofTargets used for lens/value extraction and allocation
@@ -49,7 +49,6 @@ fn make_evals(
         .iter()
         .map(|&deg_bits| {
             let rows = 1usize << deg_bits;
-            // Build domain as g·H (shift = F::GENERATOR) to match TwoAdicFriPcs internals.
             let domain = TwoAdicMultiplicativeCoset::new(F::GENERATOR, deg_bits as usize)
                 .expect("valid two-adic size");
 
@@ -83,15 +82,15 @@ struct ProduceInputsResult {
     domains_log_sizes: Vec<usize>,
     /// The total number of FRI folding phases (rounds).
     num_phases: usize,
-    /// The log2 of the size of the largest domain.
+    /// The log base 2 of the size of the largest domain.
     log_max_height: usize,
-    /// The `FriProofTargets` lens to build the circuit.
+    /// The shape of the FRI values, indicating the number of values per proof component.
     fri_lens: Vec<usize>,
 }
 
 /// Produce all public inputs for a recursive FRI verification circuit over **multiple input batches**.
 ///
-/// `group_sizes` is a list of groups, each group is a list of log2 degrees (e.g. `[5,8,8,10]`).
+/// `group_sizes` is a list of groups, each group is a list of log2 degrees.
 fn produce_inputs_multi(
     pcs: &PCS,
     perm: &Perm<16>,
@@ -219,7 +218,7 @@ fn produce_inputs_multi(
     let point_values = point_values_flat;
 
     // —— FriProofTargets lens + values ——
-    let fri_lens_vec: Vec<usize> = FriTargets::lens(&p3_fri::FriProof {
+    let fri_lens: Vec<usize> = FriTargets::lens(&p3_fri::FriProof {
         commit_phase_commits: commit_phase_commits.clone(),
         query_proofs: query_proofs.clone(),
         final_poly: final_poly.clone(),
@@ -244,7 +243,7 @@ fn produce_inputs_multi(
         domains_log_sizes,
         num_phases,
         log_max_height,
-        fri_lens: fri_lens_vec,
+        fri_lens,
     }
 }
 
@@ -297,9 +296,10 @@ fn test_circuit_fri_verifier_multi_rounds() {
     let pow_bits = fri_params.proof_of_work_bits;
     let pcs = PCS::new(dft, val_mmcs, fri_params);
 
-    // Three "rounds"/batches of inputs, different shapes:
-    //   [5, 8, 8, 10], [8, 11], [4, 5, 8]
-    let groups = vec![vec![5u8, 8, 8, 10], vec![8u8, 11], vec![4u8, 5, 8]];
+    // Three "rounds"/batches of inputs, different shapes. Include a degree-0 (height=1)
+    // matrix so the `log_height == log_blowup` reduced-opening constraint is exercised.
+    //   [0, 5, 8, 8, 10], [8, 11], [4, 5, 8]
+    let groups = vec![vec![0u8, 5, 8, 8, 10], vec![8u8, 11], vec![4u8, 5, 8]];
 
     // Produce two proofs with different inputs (same shape), to reuse one circuit
     let result_1 = produce_inputs_multi(
@@ -387,8 +387,8 @@ fn test_circuit_fri_verifier_multi_rounds() {
         alpha_t,
         &betas_t,
         &index_bits_t_per_query,
-        &zetas_t, // flattened per-matrix z
-        &fz_t,    // flattened per-matrix f(z) columns
+        &zetas_t,
+        &fz_t,
         &result_1.domains_log_sizes,
         log_blowup,
     );
