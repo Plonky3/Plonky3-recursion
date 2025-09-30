@@ -57,7 +57,8 @@ fn fold_row_chain<EF: Field>(
         roll_in,
     } in phases.iter().cloned()
     {
-        // TODO: MMCS batch verification needed for each phase.
+        // TODO: Add recursive MMCS batch verification for this commit phase:
+        // Verify the sibling value against the commitment at the parent index.
 
         // e0 = select(bit, folded, e_sibling)
         let e0 = builder.select(sibling_is_right, folded, e_sibling);
@@ -257,7 +258,6 @@ fn compute_single_reduced_opening<EF: Field>(
 }
 
 /// Compute reduced openings grouped **by height** with **per-height alpha powers**,
-/// matching the p3 `open_input` function.
 /// Returns a vector of (log_height, ro) sorted by descending height.
 ///
 /// Reference (Plonky3): `p3_fri::verifier::open_input`
@@ -294,6 +294,9 @@ where
         .zip(batch_opened_values.iter())
         .enumerate()
     {
+        // TODO: Add recursive MMCS verification here for this batch:
+        // Verify batch_openings against _batch_commit at the computed reduced_index.
+
         assert_eq!(
             mats.len(),
             batch_openings.len(),

@@ -2,6 +2,7 @@ use p3_baby_bear::{BabyBear as F, Poseidon2BabyBear as Perm, default_babybear_po
 use p3_challenger::{
     CanObserve, CanSampleBits, DuplexChallenger as Challenger, FieldChallenger, GrindingChallenger,
 };
+use p3_circuit::CircuitBuilder;
 use p3_commit::Pcs;
 use p3_dft::Radix2DitParallel as Dft;
 use p3_field::coset::TwoAdicMultiplicativeCoset;
@@ -355,7 +356,6 @@ fn test_circuit_fri_verifier_multi_rounds() {
     let log_max_height = result_1.log_max_height;
 
     // ——— Build circuit once (using first proof's shape) ———
-    use p3_circuit::CircuitBuilder;
     let mut builder = CircuitBuilder::<Challenge>::new();
 
     // 1) Allocate FriProofTargets using lens from instance 1
