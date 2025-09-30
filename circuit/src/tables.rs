@@ -111,16 +111,10 @@ pub struct MerklePathTrace<F> {
     pub is_extra: Vec<bool>,
 }
 
-/// Private Merkle path data for fake Merkle verification (simplified)
+/// Private Merkle path data for Merkle verification
 ///
 /// This represents the private witness information that the prover needs
 /// to demonstrate knowledge of a valid Merkle path from leaf to root.
-/// In a real implementation, this would contain cryptographic hash values
-/// and tree structure information.
-///
-/// Note: This is a simplified "fake" implementation for demonstration.
-/// Production Merkle verification would use proper cryptographic hashes
-/// and handle multi-element hash digests, not single field elements.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MerklePrivateData<F> {
     /// Sibling hash values along the Merkle path
