@@ -1,3 +1,7 @@
+/// Definition of the AIR to verify Merkle tree authentication paths.
+/// Re-exported from Plonky3.
+pub use p3_merkle_tree_air::air::MerkleVerifyAir;
+
 #[cfg(test)]
 mod test {
 
@@ -76,7 +80,7 @@ mod test {
         });
 
         let public_data = [[rng.random::<Val>(); DIGEST_ELEMS]; NUM_INPUTS];
-        let indices = [rng.random::<u32>(); NUM_INPUTS];
+        let all_directions = [[rng.random::<bool>(); HEIGHT]; NUM_INPUTS];
 
         let (_, merkle_config) = build_standard_config_babybear();
 
@@ -84,15 +88,10 @@ mod test {
             merkle_paths: private_data
                 .iter()
                 .zip(public_data)
-                .zip(indices)
-                .map(|((data, leaf), index)| {
-                    data.to_trace(
-                        &merkle_config,
-                        vec![WitnessId(0); DIGEST_ELEMS],
-                        &leaf,
-                        index,
-                    )
-                    .unwrap()
+                .zip(all_directions)
+                .map(|((data, leaf), directions)| {
+                    data.to_trace(&merkle_config, &vec![0; DIGEST_ELEMS], &leaf, &directions)
+                        .unwrap()
                 })
                 .collect(),
         };

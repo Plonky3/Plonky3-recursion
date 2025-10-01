@@ -2,9 +2,11 @@
 
 use alloc::vec;
 use alloc::vec::Vec;
+use core::cmp::Reverse;
 use core::marker::PhantomData;
-use core::{array, iter};
+use core::{array, iter, panic};
 
+use itertools::Itertools;
 use p3_challenger::GrindingChallenger;
 use p3_circuit::CircuitBuilder;
 use p3_circuit::utils::RowSelectorsTargets;
@@ -12,9 +14,11 @@ use p3_commit::{BatchOpening, ExtensionMmcs, Mmcs, PolynomialSpace};
 use p3_field::coset::TwoAdicMultiplicativeCoset;
 use p3_field::{ExtensionField, Field, PackedValue, PrimeCharacteristicRing, TwoAdicField};
 use p3_fri::{CommitPhaseProofStep, FriProof, QueryProof, TwoAdicFriPcs};
+use p3_matrix::Dimensions;
 use p3_merkle_tree::MerkleTreeMmcs;
 use p3_symmetric::{CryptographicHasher, Hash, PseudoCompressionFunction};
 use p3_uni_stark::{StarkGenericConfig, Val};
+use p3_util::log2_strict_usize;
 use serde::{Deserialize, Serialize};
 
 use crate::Target;
@@ -489,6 +493,104 @@ where
     type Commitment = HashTargets<F, DIGEST_ELEMS>;
 
     type Proof = HashProofTargets<F, DIGEST_ELEMS>;
+
+    fn verify_batch_circuit(
+        &self,
+        circuit: &mut CircuitBuilder<EF>,
+        commitment: &Self::Commitment,
+        dimensions: &[Dimensions],
+        index_bits: &[Target],
+        opened_values: &[Target],
+        opening_proof: &Self::Proof,
+    ) {
+        // Check that the openings have the correct shape.
+        if dimensions.len() != opened_values.len() {
+            panic!("Wrong batch size"); // TODO: Add errors
+        }
+
+        // TODO: Disabled for now since TwoAdicFriPcs and CirclePcs currently pass 0 for width.
+        // for (dims, opened_vals) in zip_eq(dimensions.iter(), opened_values) {
+        //     if opened_vals.len() != dims.width {
+        //         return Err(WrongWidth);
+        //     }
+        // }
+
+        let mut heights_tallest_first = dimensions
+            .iter()
+            .enumerate()
+            .sorted_by_key(|(_, dims)| Reverse(dims.height))
+            .peekable();
+
+        // Matrix heights that round up to the same power of two must be equal
+        if !heights_tallest_first
+            .clone()
+            .map(|(_, dims)| dims.height)
+            .tuple_windows()
+            .all(|(curr, next)| {
+                curr == next || curr.next_power_of_two() != next.next_power_of_two()
+            })
+        {
+            panic!("Heights that round up to the same power of two must be equal"); //TODO: Add errors
+        }
+
+        // Get the initial height padded to a power of two. As heights_tallest_first is sorted,
+        // the initial height will be the maximum height.
+        // Returns an error if either:
+        //              1. proof.len() != log_max_height
+        //              2. heights_tallest_first is empty.
+        let mut curr_height_padded = match heights_tallest_first.peek() {
+            Some((_, dims)) => {
+                let max_height = dims.height.next_power_of_two();
+                let log_max_height = log2_strict_usize(max_height);
+                if opening_proof.hash_proof_targets.len() != log_max_height {
+                    panic!("Proof length does not match log_max_height"); // TODO: Add errors
+                }
+                max_height
+            }
+            None => panic!("No dimensions provided"), // TODO: Add errors
+        };
+
+        // Hash all matrix openings at the current height.
+        // TODO: The root should be the hash of all matrix openings at the current height.
+        let mut root = ();
+
+        for &sibling in opening_proof {
+            // The last bit of index informs us whether the current node is on the left or right.
+            let (left, right) = if index & 1 == 0 {
+                (root, sibling)
+            } else {
+                (sibling, root)
+            };
+
+            // Combine the current node with the sibling node to get the parent node.
+            root = self.compress.compress([left, right]);
+            index >>= 1;
+            curr_height_padded >>= 1;
+
+            // Check if there are any new matrix rows to inject at the next height.
+            let next_height = heights_tallest_first
+                .peek()
+                .map(|(_, dims)| dims.height)
+                .filter(|h| h.next_power_of_two() == curr_height_padded);
+            if let Some(next_height) = next_height {
+                // If there are new matrix rows, hash the rows together and then combine with the current root.
+                let next_height_openings_digest = self.hash.hash_iter_slices(
+                    heights_tallest_first
+                        .peeking_take_while(|(_, dims)| dims.height == next_height)
+                        .map(|(i, _)| opened_values[i].as_slice()),
+                );
+
+                root = self.compress.compress([root, next_height_openings_digest]);
+            }
+        }
+
+        // The computed root should equal the committed one.
+        if commit == &root {
+            Ok(())
+        } else {
+            Err(RootMismatch)
+        }
+    }
 }
 
 /// `Recursive` version of an `ExtensionFieldMmcs` where the inner `Mmcs` is a `MerkleTreeMmcs`.

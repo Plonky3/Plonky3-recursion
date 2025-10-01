@@ -3,7 +3,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::iter;
 
-use p3_circuit::CircuitBuilder;
+use p3_circuit::{CircuitBuilder, MerkleOps};
 use p3_field::{ExtensionField, Field, TwoAdicField};
 
 use crate::Target;
@@ -349,6 +349,7 @@ where
 pub fn verify_fri_circuit<F, EF, RecMmcs, Inner, Witness>(
     builder: &mut CircuitBuilder<EF>,
     fri_proof_targets: &FriProofTargets<F, EF, RecMmcs, InputProofTargets<F, EF, Inner>, Witness>,
+    mmcs: &RecMmcs,
     alpha: Target,
     betas: &[Target],
     index_bits_per_query: &[Vec<Target>],

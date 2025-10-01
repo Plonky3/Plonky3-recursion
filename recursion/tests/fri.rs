@@ -337,6 +337,7 @@ fn test_circuit_fri_verifier() {
     verify_fri_circuit::<F, Challenge, RecExt, RecVal, RecWitness<F>>(
         &mut builder,
         &fri_targets,
+        pcs.mmcs,
         alpha_t,
         &betas_t,
         &index_bits_t_per_query,

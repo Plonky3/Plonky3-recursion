@@ -2,7 +2,9 @@ use alloc::vec::Vec;
 use alloc::{format, vec};
 
 use crate::circuit::Circuit;
-use crate::op::{MerkleVerifyConfig, NonPrimitiveOpPrivateData, Prim};
+use crate::op::{
+    MerkleVerifyConfig, NonPrimitiveOpConfig, NonPrimitiveOpPrivateData, NonPrimitiveOpType, Prim,
+};
 use crate::types::{NonPrimitiveOpId, WitnessId};
 use crate::{CircuitError, CircuitField, NonPrimitiveOp};
 
@@ -109,16 +111,10 @@ pub struct MerklePathTrace<F> {
     pub is_extra: Vec<bool>,
 }
 
-/// Private Merkle path data for fake Merkle verification (simplified)
+/// Private Merkle path data for Merkle verification
 ///
 /// This represents the private witness information that the prover needs
 /// to demonstrate knowledge of a valid Merkle path from leaf to root.
-/// In a real implementation, this would contain cryptographic hash values
-/// and tree structure information.
-///
-/// Note: This is a simplified "fake" implementation for demonstration.
-/// Production Merkle verification would use proper cryptographic hashes
-/// and handle multi-element hash digests, not single field elements.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MerklePrivateData<F> {
     /// Sibling hash values along the Merkle path
@@ -133,19 +129,15 @@ impl<F: Clone + Default> MerklePrivateData<F> {
     pub fn to_trace(
         &self,
         merkle_config: &MerkleVerifyConfig<F>,
-        leaf_indices: Vec<WitnessId>,
+        leaf_indices: &Vec<u32>,
         leaf_value: &[F],
-        index_value: u32,
+        path_directions: &[bool],
     ) -> Result<MerklePathTrace<F>, CircuitError> {
         debug_assert_eq!(merkle_config.ext_field_digest_elems, leaf_value.len());
 
         let mut trace = MerklePathTrace::default();
         let mut state = leaf_value.to_vec();
 
-        let leaf_indices: Vec<u32> = leaf_indices.iter().map(|wid| wid.0).collect();
-
-        let path_directions =
-            (0..merkle_config.max_tree_height).map(|i| (index_value >> i) & 1 == 1);
         // For each step in the Merkle path
         for ((sibling_value, extra_sibling_value), direction) in
             self.path_siblings.iter().zip(path_directions)
@@ -160,13 +152,13 @@ impl<F: Clone + Default> MerklePrivateData<F> {
             trace.right_index.push(0); // Not on witness bus - private data
 
             // Compute parent hash
-            let parent_hash = if direction {
+            let parent_hash = if *direction {
                 (merkle_config.compress)([&state, sibling_value])
             } else {
                 (merkle_config.compress)([sibling_value, &state])
             };
 
-            trace.path_directions.push(direction);
+            trace.path_directions.push(*direction);
             trace.is_extra.push(false);
 
             // Update current hash for next iteration
@@ -181,7 +173,7 @@ impl<F: Clone + Default> MerklePrivateData<F> {
                 trace.right_index.push(0); // TODO: This should have an address on the witness table
 
                 let parent_hash = (merkle_config.compress)([&state, extra_sibling_value]).to_vec();
-                trace.path_directions.push(direction);
+                trace.path_directions.push(*direction);
                 trace.is_extra.push(true);
 
                 state = parent_hash;
@@ -480,9 +472,8 @@ impl<F: CircuitField> CircuitRunner<F> {
             // Copy out leaf/root to end immutable borrow immediately
             let NonPrimitiveOp::MerkleVerify {
                 leaf,
-                index,
+                directions,
                 root: _,
-                config,
             } = &self.circuit.non_primitive_ops[op_idx];
 
             // Clone private data option to avoid holding a borrow on self
@@ -502,7 +493,39 @@ impl<F: CircuitField> CircuitRunner<F> {
             if let Some(Some(NonPrimitiveOpPrivateData::MerkleVerify(private_data))) =
                 self.non_primitive_op_private_data.get(op_idx).cloned()
             {
-                let trace = private_data.to_trace(config, leaf.clone(), &leaf_value, index.0)?;
+                let config = match self
+                    .circuit
+                    .enabled_ops
+                    .get(&NonPrimitiveOpType::MerkleVerify)
+                {
+                    Some(NonPrimitiveOpConfig::MerkleVerifyConfig(config)) => Ok(config),
+                    _ => Err(CircuitError::InvalidNonPrimitiveOpConfiguration {
+                        op: NonPrimitiveOpType::MerkleVerify,
+                    }),
+                }?;
+
+                // Clone private data option to avoid holding a borrow on self
+                let directions_values = directions
+                    .iter()
+                    .map(|limb| {
+                        if let Some(val) =
+                            self.witness.get(limb.0 as usize).and_then(|x| x.as_ref())
+                        {
+                            Ok(*val == F::ONE)
+                        } else {
+                            Err(CircuitError::NonPrimitiveOpWitnessNotSet {
+                                operation_index: op_idx,
+                            })
+                        }
+                    })
+                    .collect::<Result<Vec<bool>, CircuitError>>()?;
+
+                let trace = private_data.to_trace(
+                    config,
+                    &leaf.iter().map(|x| x.0).collect(),
+                    &leaf_value,
+                    &directions_values,
+                )?;
                 merkle_paths.push(trace);
             } else {
                 return Err(CircuitError::NonPrimitiveOpMissingPrivateData {

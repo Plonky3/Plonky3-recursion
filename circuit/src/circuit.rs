@@ -1,8 +1,9 @@
 use alloc::vec::Vec;
 
+use hashbrown::HashMap;
 use p3_field::Field;
 
-use crate::op::{NonPrimitiveOp, Prim};
+use crate::op::{NonPrimitiveOp, NonPrimitiveOpConfig, NonPrimitiveOpType, Prim};
 use crate::tables::CircuitRunner;
 use crate::types::WitnessId;
 
@@ -47,21 +48,24 @@ pub struct Circuit<F> {
     /// Primitive operations in topological order
     pub primitive_ops: Vec<Prim<F>>,
     /// Non-primitive operations
-    pub non_primitive_ops: Vec<NonPrimitiveOp<F>>,
+    pub non_primitive_ops: Vec<NonPrimitiveOp>,
     /// Public input witness indices
     pub public_rows: Vec<WitnessId>,
     /// Total number of public field elements
     pub public_flat_len: usize,
+    /// Enabled non-primitive operation types with their respective configuration
+    pub enabled_ops: HashMap<NonPrimitiveOpType, NonPrimitiveOpConfig<F>>,
 }
 
 impl<F> Circuit<F> {
-    pub const fn new(witness_count: u32) -> Self {
+    pub fn new(witness_count: u32) -> Self {
         Self {
             witness_count,
             primitive_ops: Vec::new(),
             non_primitive_ops: Vec::new(),
             public_rows: Vec::new(),
             public_flat_len: 0,
+            enabled_ops: HashMap::new(),
         }
     }
 }

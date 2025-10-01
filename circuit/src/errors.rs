@@ -3,6 +3,7 @@ use alloc::string::String;
 use thiserror::Error;
 
 use crate::WitnessId;
+use crate::op::NonPrimitiveOpType;
 
 /// Errors that can occur during circuit execution and trace generation.
 #[derive(Debug, Error)]
@@ -75,4 +76,8 @@ pub enum CircuitError {
         expected: String,
         reconstructed: String,
     },
+
+    /// Mismatched non-primitive operation configuration
+    #[error("Invalid configuration for operation {op:?}")]
+    InvalidNonPrimitiveOpConfiguration { op: NonPrimitiveOpType },
 }

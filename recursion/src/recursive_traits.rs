@@ -7,6 +7,7 @@ use p3_circuit::CircuitBuilder;
 use p3_circuit::utils::{ColumnsTargets, RowSelectorsTargets, symbolic_to_circuit};
 use p3_commit::{Mmcs, Pcs};
 use p3_field::{ExtensionField, Field};
+use p3_matrix::Dimensions;
 use p3_uni_stark::{
     Commitments, OpenedValues, Proof, StarkGenericConfig, SymbolicAirBuilder,
     get_log_quotient_degree, get_symbolic_constraints,
@@ -88,6 +89,16 @@ pub trait RecursiveMmcs<F: Field, EF: ExtensionField<F>> {
     type Input: Mmcs<F>;
     type Commitment: Recursive<EF, Input = <Self::Input as Mmcs<F>>::Commitment>;
     type Proof: Recursive<EF, Input = <Self::Input as Mmcs<F>>::Proof>;
+
+    fn verify_batch_circuit(
+        &self,
+        circuit: &mut CircuitBuilder<EF>,
+        commitment: &Self::Commitment,
+        dimensions: &[Dimensions],
+        directions: &[Target],
+        opened_values: &[Target],
+        proof: &Self::Proof,
+    );
 }
 
 /// Extension version of `RecursiveMmcs`.
