@@ -1,13 +1,12 @@
-use alloc::vec::Vec;
 use itertools::zip_eq;
 use p3_circuit::CircuitBuilder;
 use p3_commit::Pcs;
 use p3_uni_stark::StarkGenericConfig;
 
 use crate::{
-    Target,
-    circuit_verifier::{VerificationError, verify_circuit},
-    recursive_traits::{ProofTargets, Recursive, RecursiveAir, RecursivePcs},
+    circuit_verifier::{ProofTargetsWithPVs, VerificationError, verify_circuit},
+    lookup::RecursiveAirWithLookupVerification,
+    recursive_traits::{Recursive, RecursivePcs},
 };
 
 pub fn verify_multitable_circuit<
@@ -20,11 +19,9 @@ pub fn verify_multitable_circuit<
     OpeningProof: Recursive<SC::Challenge>,
 >(
     config: &SC,
-    airs: &[&dyn RecursiveAir<SC::Challenge>],
+    airs: &[&dyn RecursiveAirWithLookupVerification<SC::Challenge, Comm>],
     circuit: &mut CircuitBuilder<SC::Challenge>,
-    proof_targets: &[ProofTargets<SC, Comm, OpeningProof>],
-    // Each `Vec` corresponds to the public inputs for one AIR.
-    all_public_values: &[Vec<Target>],
+    proof_targets: &[ProofTargetsWithPVs<SC, Comm, OpeningProof>],
 ) -> Result<(), VerificationError>
 where
     <SC as StarkGenericConfig>::Pcs: RecursivePcs<
@@ -35,10 +32,9 @@ where
             <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain,
         >,
 {
-    for (air, (proof_target, public_values)) in
-        zip_eq(airs, zip_eq(proof_targets, all_public_values))
-    {
-        verify_circuit(config, *air, circuit, proof_target, public_values)?;
+    // TODO: Deal with recursive lookups.
+    for (air, proof_targets_pvs_cum_sum) in zip_eq(airs, proof_targets) {
+        verify_circuit(config, *air, circuit, &proof_targets_pvs_cum_sum, &[], &[])?;
     }
     Ok(())
 }

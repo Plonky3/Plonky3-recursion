@@ -171,7 +171,8 @@ pub trait RecursiveAir<F: Field> {
         builder: &mut CircuitBuilder<F>,
         sels: &RecursiveLagrangeSelectors,
         alpha: &Target,
-        columns: ColumnsTargets,
+        columns: &ColumnsTargets,
+        acc_start: Target,
     ) -> Target;
 
     /// Infers log of constraint degree.
@@ -191,11 +192,12 @@ where
         builder: &mut CircuitBuilder<F>,
         sels: &RecursiveLagrangeSelectors,
         alpha: &Target,
-        columns: ColumnsTargets,
+        columns: &ColumnsTargets,
+        acc_start: Target,
     ) -> Target {
         let symbolic_constraints = get_symbolic_constraints(self, 0, columns.public_values.len());
 
-        let mut acc = builder.add_const(F::ZERO);
+        let mut acc = acc_start;
         for s_c in symbolic_constraints {
             let mul_prev = builder.mul(acc, *alpha);
             let constraints = symbolic_to_circuit(sels.row_selectors, &columns, &s_c, builder);

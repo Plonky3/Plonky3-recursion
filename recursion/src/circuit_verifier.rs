@@ -1,5 +1,4 @@
 use alloc::vec;
-use alloc::vec::Vec;
 
 use itertools::{Itertools, zip_eq};
 use p3_circuit::utils::ColumnsTargets;
@@ -10,9 +9,11 @@ use p3_uni_stark::StarkGenericConfig;
 use thiserror::Error;
 
 use crate::Target;
+use crate::challenges::ProofChallengesTargets;
+use crate::lookup::{GlobalLookup, LocalLookup, RecursiveAirWithLookupVerification};
 use crate::recursive_generation::GenerationError;
 use crate::recursive_traits::{
-    CommitmentTargets, OpenedValuesTargets, ProofTargets, Recursive, RecursiveAir, RecursivePcs,
+    CommitmentTargets, OpenedValuesTargets, ProofTargets, Recursive, RecursivePcs,
 };
 
 #[derive(Debug, Error)]
@@ -40,9 +41,12 @@ fn get_circuit_challenges<
     InputProof: Recursive<SC::Challenge>,
     OpeningProof: Recursive<SC::Challenge>,
 >(
+    air: &dyn RecursiveAirWithLookupVerification<SC::Challenge, Comm>,
     proof_targets: &ProofTargets<SC, Comm, OpeningProof>,
+    local_lookups: &[LocalLookup],
+    global_lookups: &[GlobalLookup],
     circuit: &mut CircuitBuilder<SC::Challenge>,
-) -> Vec<Target>
+) -> ProofChallengesTargets
 where
     SC::Pcs: RecursivePcs<
             SC,
@@ -52,56 +56,39 @@ where
             <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain,
         >,
 {
-    let mut challenges = vec![];
     // TODO: Observe degree bits and degree_bits - is_zk.
     // TODO: Observe local targets.
     // TODO: Observe public values.
+    let local_lookup_challenges =
+        air.get_challenges_circuit(circuit, local_lookups, global_lookups);
+
     // First Fiat-Shamir challenge `alpha`.
-    challenges.push(circuit.add_public_input());
+    let alpha = circuit.add_public_input();
     // TODO: Observe quotient chunks.
     // TODO: Observe random commitment if any.
     // zeta and zeta_next
-    challenges.push(circuit.add_public_input());
-    challenges.push(circuit.add_public_input());
+    let zeta = circuit.add_public_input();
+    let zeta_next = circuit.add_public_input();
 
     let pcs_challenges = SC::Pcs::get_challenges_circuit(circuit, proof_targets);
 
-    challenges.extend(pcs_challenges);
-
-    challenges
+    ProofChallengesTargets {
+        alpha,
+        zeta,
+        zeta_next,
+        pcs_challenges,
+        local_lookup_challenges,
+    }
 }
 
-pub fn verify_multitable_circuit<
+pub struct ProofTargetsWithPVs<
+    'a,
     SC: StarkGenericConfig,
-    Comm: Recursive<
-            SC::Challenge,
-            Input = <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment,
-        > + Clone,
-    InputProof: Recursive<SC::Challenge>,
+    Comm: Recursive<SC::Challenge, Input = <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment>,
     OpeningProof: Recursive<SC::Challenge>,
->(
-    config: &SC,
-    airs: &[&dyn RecursiveAir<SC::Challenge>],
-    circuit: &mut CircuitBuilder<SC::Challenge>,
-    proof_targets: &[ProofTargets<SC, Comm, OpeningProof>],
-    // Each `Vec` corresponds to the public inputs for one AIR.
-    all_public_values: &[Vec<Target>],
-) -> Result<(), VerificationError>
-where
-    <SC as StarkGenericConfig>::Pcs: RecursivePcs<
-            SC,
-            InputProof,
-            OpeningProof,
-            Comm,
-            <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain,
-        >,
-{
-    for (air, (proof_target, public_values)) in
-        zip_eq(airs, zip_eq(proof_targets, all_public_values))
-    {
-        verify_circuit(config, *air, circuit, proof_target, public_values)?;
-    }
-    Ok(())
+> {
+    pub proof_targets: &'a ProofTargets<SC, Comm, OpeningProof>,
+    pub public_values: &'a [Target],
 }
 
 pub fn verify_circuit<
@@ -114,10 +101,11 @@ pub fn verify_circuit<
     OpeningProof: Recursive<SC::Challenge>,
 >(
     config: &SC,
-    air: &dyn RecursiveAir<SC::Challenge>,
+    air: &dyn RecursiveAirWithLookupVerification<SC::Challenge, Comm>,
     circuit: &mut CircuitBuilder<SC::Challenge>,
-    proof_targets: &ProofTargets<SC, Comm, OpeningProof>,
-    public_values: &[Target],
+    proof_targets_pvs_cum_sum: &ProofTargetsWithPVs<SC, Comm, OpeningProof>,
+    local_lookups: &[LocalLookup],
+    global_lookups: &[GlobalLookup],
 ) -> Result<(), VerificationError>
 where
     <SC as StarkGenericConfig>::Pcs: RecursivePcs<
@@ -128,6 +116,11 @@ where
             <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain,
         >,
 {
+    let ProofTargetsWithPVs {
+        proof_targets,
+        public_values,
+    } = proof_targets_pvs_cum_sum;
+
     let ProofTargets {
         commitments_targets:
             CommitmentTargets {
@@ -147,6 +140,7 @@ where
         opening_proof,
         degree_bits,
     } = proof_targets;
+
     let degree = 1 << degree_bits;
     let log_quotient_degree = air.get_log_quotient_degree(public_values.len(), config.is_zk());
     let quotient_degree = 1 << (log_quotient_degree + config.is_zk());
@@ -165,8 +159,13 @@ where
         .collect_vec();
 
     // Challenger is called here. But we don't have the interactions or hash tables yet.
-    let challenge_targets =
-        get_circuit_challenges::<SC, Comm, InputProof, OpeningProof>(proof_targets, circuit);
+    let challenge_targets = get_circuit_challenges::<SC, Comm, InputProof, OpeningProof>(
+        air,
+        proof_targets,
+        local_lookups,
+        global_lookups,
+        circuit,
+    );
 
     // Verify shape.
     let air_width = air.width();
@@ -180,9 +179,9 @@ where
         return Err(VerificationError::InvalidProofShape);
     }
 
-    let alpha = challenge_targets[0];
-    let zeta = challenge_targets[1];
-    let zeta_next = challenge_targets[2];
+    let alpha = challenge_targets.alpha;
+    let zeta = challenge_targets.zeta;
+    let zeta_next = challenge_targets.zeta_next;
 
     // Need to simulate Fri here.
     let mut coms_to_verify = if let Some(r_commit) = &random_commit {
@@ -220,7 +219,7 @@ where
     ]);
     pcs.verify_circuit(
         circuit,
-        &challenge_targets[3..],
+        &challenge_targets.pcs_challenges,
         &coms_to_verify,
         opening_proof,
     );
@@ -277,6 +276,7 @@ where
                 circuit.add(quotient, mul)
             });
 
+    let zero = circuit.add_const(SC::Challenge::ZERO);
     let sels = pcs.selectors_at_point_circuit(circuit, &init_trace_domain, &zeta);
     let columns_targets = ColumnsTargets {
         challenges: &[],
@@ -286,7 +286,16 @@ where
         local_values: opened_trace_local_targets,
         next_values: opened_trace_next_targets,
     };
-    let folded_constraints = air.eval_folded_circuit(circuit, &sels, &alpha, columns_targets);
+    let folded_constraints = RecursiveAirWithLookupVerification::eval_folded_circuit(
+        air,
+        circuit,
+        &sels,
+        &alpha,
+        local_lookups,
+        global_lookups,
+        columns_targets.clone(),
+        zero,
+    );
 
     // Compute folded_constraints * sels.inv_vanishing.
     let folded_mul = circuit.mul(folded_constraints, sels.inv_vanishing);
@@ -349,7 +358,8 @@ mod tests {
     use rand::{Rng, SeedableRng};
 
     use crate::Target;
-    use crate::circuit_verifier::verify_circuit;
+    use crate::circuit_verifier::{ProofTargetsWithPVs, verify_circuit};
+    use crate::lookup::AirWithoutLookup;
     use crate::recursive_traits::{
         ComsWithOpeningsTargets, ProofTargets, Recursive, RecursiveLagrangeSelectors, RecursivePcs,
     };
@@ -572,6 +582,7 @@ mod tests {
         }
     }
 
+    // TODO: Get rid of this by implementing PcsGeneration for TrivialPcs.
     fn get_challenges<SC: StarkGenericConfig>(
         config: &SC,
         degree: usize,
@@ -667,6 +678,9 @@ mod tests {
             EmptyTarget,
         >::lens(&proof);
 
+        // Create an air without lookups.
+        let air_no_lookup = AirWithoutLookup::new(air);
+
         // Initialize the circuit builder.
         let mut circuit_builder = CircuitBuilder::<Challenge>::new();
         let proof_targets = ProofTargets::<
@@ -687,8 +701,19 @@ mod tests {
             .copied()
             .collect::<Vec<_>>();
 
-        verify_circuit(&config, &air, &mut circuit_builder, &proof_targets, &[])
-            .map_err(|e| format!("{e:?}"))?;
+        let proof_targets_pvs_cum_sum = ProofTargetsWithPVs {
+            proof_targets: &proof_targets,
+            public_values: &[],
+        };
+        verify_circuit(
+            &config,
+            &air_no_lookup,
+            &mut circuit_builder,
+            &proof_targets_pvs_cum_sum,
+            &[],
+            &[],
+        )
+        .map_err(|e| format!("{e:?}"))?;
 
         let circuit = circuit_builder.build().unwrap();
         let mut runner = circuit.runner();

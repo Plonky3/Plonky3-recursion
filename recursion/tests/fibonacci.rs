@@ -8,7 +8,8 @@ use p3_field::extension::BinomialExtensionField;
 use p3_field::{Field, PrimeCharacteristicRing};
 use p3_fri::{TwoAdicFriPcs, create_test_fri_params};
 use p3_merkle_tree::MerkleTreeMmcs;
-use p3_recursion::circuit_verifier::{VerificationError, verify_circuit};
+use p3_recursion::circuit_verifier::{ProofTargetsWithPVs, VerificationError, verify_circuit};
+use p3_recursion::lookup::AirWithoutLookup;
 use p3_recursion::recursive_generation::generate_challenges;
 use p3_recursion::recursive_pcs::{
     FriProofTargets, HashTargets, InputProofTargets, RecExtensionValMmcs, RecValMmcs, Witness,
@@ -108,6 +109,13 @@ fn test_fibonacci_verifier() -> Result<(), VerificationError> {
         Some(&[pow_bits, log_height_max]),
     )?;
 
+    // Create air without lookups.
+    let air_no_lookups = AirWithoutLookup::new(air);
+
+    let proof_targets_pvs_cum_sum = ProofTargetsWithPVs {
+        proof_targets: &proof_targets,
+        public_values: &public_values,
+    };
     // Add the verification circuit to the builder.
     verify_circuit::<
         MyConfig,
@@ -116,10 +124,11 @@ fn test_fibonacci_verifier() -> Result<(), VerificationError> {
         InnerFri,
     >(
         &config,
-        &air,
+        &air_no_lookups,
         &mut circuit_builder,
-        &proof_targets,
-        &public_values,
+        &proof_targets_pvs_cum_sum,
+        &[],
+        &[],
     )?;
 
     // Build the circuit.
