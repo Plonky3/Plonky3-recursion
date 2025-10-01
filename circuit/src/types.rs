@@ -26,30 +26,24 @@ impl ExprId {
 pub struct NonPrimitiveOpId(pub u32);
 
 /// Witness allocator for monotonic index assignment
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct WitnessAllocator {
     next_idx: u32,
 }
 
 impl WitnessAllocator {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self { next_idx: 0 }
     }
 
-    pub fn alloc(&mut self) -> WitnessId {
+    pub const fn alloc(&mut self) -> WitnessId {
         let idx = WitnessId(self.next_idx);
         self.next_idx += 1;
         idx
     }
 
-    pub fn witness_count(&self) -> u32 {
+    pub const fn witness_count(&self) -> u32 {
         self.next_idx
-    }
-}
-
-impl Default for WitnessAllocator {
-    fn default() -> Self {
-        Self::new()
     }
 }
 

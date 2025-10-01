@@ -42,7 +42,7 @@ impl<F: Field + PrimeCharacteristicRing> FakeMerkleVerifyAir<F> {
                 "FakeMerkleVerifyAir only supports base field elements (D=1)"
             );
             values.push(left_coeffs[0]);
-            values.push(F::from_u64(trace.left_index[i] as u64));
+            values.push(F::from_u64(trace.left_index[i].0 as u64));
 
             // RIGHT
             let right_coeffs = trace.right_values[i].as_basis_coefficients_slice();
@@ -62,7 +62,7 @@ impl<F: Field + PrimeCharacteristicRing> FakeMerkleVerifyAir<F> {
                 "FakeMerkleVerifyAir only supports base field elements (D=1)"
             );
             values.push(result_coeffs[0]);
-            values.push(F::from_u64(trace.result_index[i] as u64));
+            values.push(F::from_u64(trace.result_index[i].0 as u64));
 
             // DIRECTION
             values.push(F::from_u64(trace.path_directions[i] as u64));
@@ -118,6 +118,7 @@ mod tests {
     use alloc::vec;
 
     use p3_baby_bear::BabyBear as Val;
+    use p3_circuit::WitnessId;
     use p3_circuit::tables::FakeMerkleTrace;
     use p3_matrix::dense::RowMajorMatrix;
     use p3_uni_stark::{prove, verify};
@@ -131,9 +132,9 @@ mod tests {
         let left_values = vec![Val::from_u64(42); n];
         let right_values = vec![Val::from_u64(50); n];
         let result_values = vec![Val::from_u64(92); n]; // 42 + 50 + 0
-        let left_index = vec![1u32; n];
-        let right_index = vec![2u32; n];
-        let result_index = vec![3u32; n];
+        let left_index = vec![WitnessId(1); n];
+        let right_index = vec![2u32; n]; // Note: right_index stays u32 (private data)
+        let result_index = vec![WitnessId(3); n];
         let path_directions = vec![0u32; n]; // left direction
 
         let trace = FakeMerkleTrace {

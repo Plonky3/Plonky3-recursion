@@ -1,4 +1,5 @@
 use alloc::vec::Vec;
+use core::hash::Hash;
 
 use crate::types::WitnessId;
 
@@ -6,14 +7,14 @@ use crate::types::WitnessId;
 ///
 /// These operations form the core computational primitives after expression lowering.
 /// All primitive operations:
-/// - Operate on witness table slots (WitnessId)  
+/// - Operate on witness table slots (WitnessId)
 /// - Can be heavily optimized (constant folding, CSE, etc.)
 /// - Are executed in topological order during circuit evaluation
 /// - Form a directed acyclic graph (DAG) of dependencies
 ///
 /// Primitive operations are kept separate from complex operations to maintain
 /// clean optimization boundaries and enable aggressive compiler transformations.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Prim<F> {
     /// Load a constant value into the witness table
     ///
@@ -45,15 +46,15 @@ pub enum Prim<F> {
 }
 
 /// Non-primitive operation types
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum NonPrimitiveOpType {
     FakeMerkleVerify,
     HashAbsorb(bool), // bool: If true, reset the capacity before absorbing
     HashSqueeze,
-    // Future: FriVerify, HashAbsorb, etc.
+    FriVerify, // TODO: unimplemented
 }
 
-/// Non-primitive operations representing complex cryptographic constraints
+/// Non-primitive operations representing complex cryptographic constraints.
 ///
 /// These operations implement sophisticated cryptographic primitives that:
 /// - Have dedicated AIR tables for constraint verification

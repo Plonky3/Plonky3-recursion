@@ -6,7 +6,7 @@ use std::env;
 use p3_baby_bear::BabyBear;
 use p3_circuit::builder::CircuitBuilder;
 use p3_circuit::tables::DummyPerm;
-use p3_circuit::{FakeMerklePrivateData, NonPrimitiveOpPrivateData};
+use p3_circuit::{FakeMerklePrivateData, MerkleOps, NonPrimitiveOpPrivateData};
 use p3_circuit_prover::MultiTableProver;
 use p3_circuit_prover::config::babybear_config::build_standard_config_babybear;
 use p3_circuit_prover::prover::ProverError;
@@ -18,6 +18,7 @@ fn main() -> Result<(), ProverError> {
     let depth = env::args().nth(1).and_then(|s| s.parse().ok()).unwrap_or(3);
 
     let mut builder = CircuitBuilder::<F>::new();
+    builder.enable_merkle(); // Enable Merkle ops
 
     // Public inputs: leaf hash and expected root hash
     let leaf_hash = builder.add_public_input();
@@ -26,7 +27,7 @@ fn main() -> Result<(), ProverError> {
     // Add fake Merkle verification operation
     // This declares that leaf_hash and expected_root are connected to witness bus
     // The AIR constraints will verify the Merkle path is valid
-    let merkle_op_id = builder.add_fake_merkle_verify(leaf_hash, expected_root);
+    let merkle_op_id = builder.add_fake_merkle_verify(leaf_hash, expected_root)?;
 
     let circuit = builder.build()?;
     let mut runner = circuit.runner();

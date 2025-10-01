@@ -10,13 +10,13 @@ use super::utils::pad_to_power_of_two;
 
 /// ConstAir: vector-valued constant binding with generic extension degree D.
 ///
-/// This chip exposes transparent constants that don't need to be committed during proving.
+/// This chip exposes preprocessed constants that don't need to be committed during proving.
 /// It serves as the source of truth for constant values in the system, with each row
 /// representing a (value, index) pair where the index corresponds to a WitnessId.
 ///
 /// Layout per row: [value[0..D-1], index] → width = D + 1
 /// - value[0..D-1]: Extension field value represented as D base field coefficients
-/// - index: Transparent WitnessId that this constant binds to
+/// - index: Preprocessed WitnessId that this constant binds to
 #[derive(Debug, Clone)]
 pub struct ConstAir<F, const D: usize = 1> {
     pub height: usize,
@@ -52,7 +52,7 @@ impl<F: Field, const D: usize> ConstAir<F, D> {
                 "extension degree mismatch for ConstTrace value"
             );
             values.extend_from_slice(coeffs);
-            values.push(F::from_u64(trace.index[i] as u64));
+            values.push(F::from_u64(trace.index[i].0 as u64));
         }
 
         // Pad to power of two by repeating last row
@@ -82,6 +82,7 @@ mod tests {
     use alloc::vec;
 
     use p3_baby_bear::BabyBear;
+    use p3_circuit::WitnessId;
     use p3_field::PrimeCharacteristicRing;
     use p3_field::extension::BinomialExtensionField;
     use p3_matrix::Matrix;
@@ -103,7 +104,7 @@ mod tests {
             F::from_u64(0),   // CONST 4 0
         ];
         // Witness IDs these constants bind to
-        let const_indices = vec![1u32, 3u32, 4u32];
+        let const_indices = vec![WitnessId(1), WitnessId(3), WitnessId(4)];
 
         let trace = ConstTrace {
             index: const_indices,
@@ -167,7 +168,7 @@ mod tests {
         .unwrap();
 
         let const_values = vec![const1, const2];
-        let const_indices = vec![10u32, 20u32];
+        let const_indices = vec![WitnessId(10), WitnessId(20)];
 
         let trace = ConstTrace {
             index: const_indices,

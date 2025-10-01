@@ -70,7 +70,7 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AddAir<F, D> {
                         "Extension field degree mismatch for lhs",
                     );
                     values.extend_from_slice(lhs_coeffs);
-                    values.push(F::from_u64(trace.lhs_index[op_idx] as u64));
+                    values.push(F::from_u64(trace.lhs_index[op_idx].0 as u64));
 
                     // RHS limbs + index
                     let rhs_coeffs = trace.rhs_values[op_idx].as_basis_coefficients_slice();
@@ -80,7 +80,7 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AddAir<F, D> {
                         "Extension field degree mismatch for rhs",
                     );
                     values.extend_from_slice(rhs_coeffs);
-                    values.push(F::from_u64(trace.rhs_index[op_idx] as u64));
+                    values.push(F::from_u64(trace.rhs_index[op_idx].0 as u64));
 
                     // Result limbs + index
                     let result_coeffs = trace.result_values[op_idx].as_basis_coefficients_slice();
@@ -90,7 +90,7 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AddAir<F, D> {
                         "Extension field degree mismatch for result",
                     );
                     values.extend_from_slice(result_coeffs);
-                    values.push(F::from_u64(trace.result_index[op_idx] as u64));
+                    values.push(F::from_u64(trace.result_index[op_idx].0 as u64));
                 } else {
                     // Filler lane: append zeros for unused slot to keep the row width uniform.
                     values.resize(values.len() + lane_width, F::ZERO);
@@ -145,6 +145,7 @@ mod tests {
     use alloc::vec;
 
     use p3_baby_bear::BabyBear as Val;
+    use p3_circuit::WitnessId;
     use p3_circuit::tables::AddTrace;
     use p3_field::BasedVectorSpace;
     use p3_field::extension::BinomialExtensionField;
@@ -160,9 +161,9 @@ mod tests {
         let lhs_values = vec![Val::from_u64(3); n];
         let rhs_values = vec![Val::from_u64(5); n];
         let result_values = vec![Val::from_u64(8); n];
-        let lhs_index = vec![1u32; n];
-        let rhs_index = vec![2u32; n];
-        let result_index = vec![3u32; n];
+        let lhs_index = vec![WitnessId(1); n];
+        let rhs_index = vec![WitnessId(2); n];
+        let result_index = vec![WitnessId(3); n];
 
         let trace = AddTrace {
             lhs_values,
@@ -218,9 +219,9 @@ mod tests {
         let lhs_values = vec![lhs; n];
         let rhs_values = vec![rhs; n];
         let result_values = vec![result; n];
-        let lhs_index = vec![1u32; n];
-        let rhs_index = vec![2u32; n];
-        let result_index = vec![3u32; n];
+        let lhs_index = vec![WitnessId(1); n];
+        let rhs_index = vec![WitnessId(2); n];
+        let result_index = vec![WitnessId(3); n];
 
         let trace = AddTrace {
             lhs_values,
@@ -250,9 +251,9 @@ mod tests {
         let lhs_values = vec![Val::from_u64(1); n];
         let rhs_values = vec![Val::from_u64(2); n];
         let result_values = vec![Val::from_u64(3); n];
-        let lhs_index = vec![10u32; n];
-        let rhs_index = vec![20u32; n];
-        let result_index = vec![30u32; n];
+        let lhs_index = vec![WitnessId(10); n];
+        let rhs_index = vec![WitnessId(20); n];
+        let result_index = vec![WitnessId(30); n];
 
         let trace = AddTrace {
             lhs_values,
