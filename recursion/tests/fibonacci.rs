@@ -47,8 +47,8 @@ fn test_fibonacci_verifier() -> Result<(), VerificationError> {
     let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
     let dft = Dft::default();
     let trace = generate_trace_rows::<F>(0, 1, n);
-    // Use log_final_poly_len = 0 for constant final polynomial (length = 1)
-    let fri_params = create_test_fri_params(challenge_mmcs, 0);
+    let log_final_poly_len = 0;
+    let fri_params = create_test_fri_params(challenge_mmcs, log_final_poly_len);
     let log_height_max = fri_params.log_final_poly_len + fri_params.log_blowup;
     let pow_bits = fri_params.proof_of_work_bits;
     let log_blowup = fri_params.log_blowup;
@@ -126,6 +126,7 @@ fn test_fibonacci_verifier() -> Result<(), VerificationError> {
         &proof_targets,
         &public_values,
         log_blowup,
+        log_final_poly_len,
     )?;
 
     // Build the circuit.

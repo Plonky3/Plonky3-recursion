@@ -77,7 +77,7 @@ where
 /// # Parameters
 /// - `public_values`: The AIR public input values
 /// - `proof_values`: Values extracted from the proof targets
-/// - `challenges`: All challenge values (including query indices)
+/// - `challenges`: All challenge values
 /// - `num_queries`: Number of FRI query proofs
 ///
 /// # Returns
@@ -152,6 +152,7 @@ pub fn verify_circuit<
     proof_targets: &ProofTargets<SC, Comm, OpeningProof>,
     public_values: &[Target],
     log_blowup: usize,
+    log_final_poly_len: usize,
 ) -> Result<(), VerificationError>
 where
     A: RecursiveAir<SC::Challenge>,
@@ -259,6 +260,7 @@ where
         &coms_to_verify,
         opening_proof,
         log_blowup,
+        log_final_poly_len,
     );
 
     let zero = circuit.add_const(SC::Challenge::ZERO);
@@ -467,6 +469,7 @@ mod tests {
             >,
             _opening_proof: &EmptyTarget,
             _log_blowup: usize,
+            _log_final_poly_len: usize,
         ) {
         }
 
@@ -724,8 +727,16 @@ mod tests {
             .copied()
             .collect::<Vec<_>>();
 
-        verify_circuit(&config, &air, &mut circuit_builder, &proof_targets, &[], 0)
-            .map_err(|e| format!("{e:?}"))?;
+        verify_circuit(
+            &config,
+            &air,
+            &mut circuit_builder,
+            &proof_targets,
+            &[],
+            0,
+            0,
+        )
+        .map_err(|e| format!("{e:?}"))?;
 
         let circuit = circuit_builder.build().unwrap();
         let mut runner = circuit.runner();

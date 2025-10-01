@@ -126,6 +126,7 @@ pub trait RecursivePcs<
         commitments_with_opening_points: &ComsWithOpeningsTargets<Comm, Domain>,
         opening_proof: &OpeningProof,
         log_blowup: usize,
+        log_final_poly_len: usize,
     );
 
     /// Computes target selectors at `point` in the circuit.

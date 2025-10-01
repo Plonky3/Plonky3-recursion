@@ -634,6 +634,7 @@ where
         >,
         opening_proof: &Self::RecursiveProof,
         log_blowup: usize,
+        log_final_poly_len: usize,
     ) {
         // Extract FRI challenges from the challenges slice.
         // Layout: [alpha, beta_0, ..., beta_{n-1}, query_0, ..., query_{m-1}]
@@ -649,8 +650,6 @@ where
         let query_indices = &challenges[1 + num_betas..1 + num_betas + num_queries];
 
         // Calculate the maximum height of the FRI proof tree.
-        // log_max_height = num_folding_rounds + log_final_poly_len + log_blowup
-        let log_final_poly_len = opening_proof.final_poly.len().trailing_zeros() as usize;
         let log_max_height = num_betas + log_final_poly_len + log_blowup;
 
         assert!(
