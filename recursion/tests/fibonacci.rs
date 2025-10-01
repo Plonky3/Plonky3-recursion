@@ -112,7 +112,7 @@ fn test_fibonacci_verifier() -> Result<(), VerificationError> {
     // Create air without lookups.
     let air_no_lookups = AirWithoutLookup::new(air);
 
-    let proof_targets_pvs_cum_sum = ProofTargetsWithPVs {
+    let proof_targets_pvs = ProofTargetsWithPVs {
         proof_targets: &proof_targets,
         public_values: &public_values,
     };
@@ -126,7 +126,7 @@ fn test_fibonacci_verifier() -> Result<(), VerificationError> {
         &config,
         &air_no_lookups,
         &mut circuit_builder,
-        &proof_targets_pvs_cum_sum,
+        &proof_targets_pvs,
         &[],
         &[],
     )?;

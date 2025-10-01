@@ -102,7 +102,7 @@ pub fn verify_circuit<
     config: &SC,
     air: &dyn RecursiveAirWithLookupVerification<SC::Challenge, Comm>,
     circuit: &mut CircuitBuilder<SC::Challenge>,
-    proof_targets_pvs_cum_sum: &ProofTargetsWithPVs<SC, Comm, OpeningProof>,
+    proof_targets_pvs: &ProofTargetsWithPVs<SC, Comm, OpeningProof>,
     local_lookups: &[LocalLookup],
     global_lookups: &[GlobalLookup],
 ) -> Result<(), VerificationError>
@@ -118,7 +118,7 @@ where
     let ProofTargetsWithPVs {
         proof_targets,
         public_values,
-    } = proof_targets_pvs_cum_sum;
+    } = proof_targets_pvs;
 
     let ProofTargets {
         commitments_targets:
@@ -699,7 +699,7 @@ mod tests {
             .copied()
             .collect::<Vec<_>>();
 
-        let proof_targets_pvs_cum_sum = ProofTargetsWithPVs {
+        let proof_targets_pvs = ProofTargetsWithPVs {
             proof_targets: &proof_targets,
             public_values: &[],
         };
@@ -707,7 +707,7 @@ mod tests {
             &config,
             &air_no_lookup,
             &mut circuit_builder,
-            &proof_targets_pvs_cum_sum,
+            &proof_targets_pvs,
             &[],
             &[],
         )

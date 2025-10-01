@@ -1,44 +1,42 @@
+use alloc::string::String;
+use alloc::vec;
+use alloc::vec::Vec;
 use core::marker::PhantomData;
 
-use alloc::vec;
-use alloc::{string::String, vec::Vec};
 use p3_circuit::CircuitBuilder;
 use p3_circuit::utils::ColumnsTargets;
 use p3_field::Field;
 
-use crate::recursive_traits::RecursiveAir;
-use crate::{
-    Target,
-    recursive_traits::{Recursive, RecursiveLagrangeSelectors},
-};
+use crate::Target;
+use crate::recursive_traits::{Recursive, RecursiveAir, RecursiveLagrangeSelectors};
 
 enum Direction {
-    Send,
-    Receive,
+    _Send,
+    _Receive,
 }
 
-struct Table {
-    index: usize,
-    name: String,
+pub struct Table {
+    _index: usize,
+    _name: String,
 }
 
 /// Structure representing global lookups. The information contained in this structure is provided by the prover.
 pub struct GlobalLookup<'a> {
-    table_idx: usize,                // table index
-    perm_idx: usize,                 // index within the auxiliary lookup columns
-    columns: &'a [Target],           // columns taking part in the lookup
-    multiplicities: &'a [Target],    // multiplicities
-    direction: Direction, // whether the multiplicities are positive (Receive) or negative (Send)
-    expected_cumulative_sum: Target, // expected cumulative sum at the end of the trace
+    _table_idx: usize,                // table index
+    _perm_idx: usize,                 // index within the auxiliary lookup columns
+    _columns: &'a [Target],           // columns taking part in the lookup
+    _multiplicities: &'a [Target],    // multiplicities
+    _direction: Direction, // whether the multiplicities are positive (Receive) or negative (Send)
+    _expected_cumulative_sum: Target, // expected cumulative sum at the end of the trace
 }
 
 /// Structure representing local lookups. The information contained in this structure is provided by the prover.
 pub struct LocalLookup<'a> {
-    perm_idx: usize,                        // index within the auxiliary lookup columns
-    sending_columns: &'a [Target],          // columns sending to the lookup table
-    sending_multiplicities: &'a [Target],   // multiplicities of the sending columns
-    receiving_columns: &'a [Target],        // columns receiving from the lookup table
-    receiving_multiplicities: &'a [Target], // multiplicities of the receiving columns
+    _perm_idx: usize,                        // index within the auxiliary lookup columns
+    _sending_columns: &'a [Target],          // columns sending to the lookup table
+    _sending_multiplicities: &'a [Target],   // multiplicities of the sending columns
+    _receiving_columns: &'a [Target],        // columns receiving from the lookup table
+    _receiving_multiplicities: &'a [Target], // multiplicities of the receiving columns
 }
 
 /// Contains the columns required for a lookup constraint evaluation, both local and global.
@@ -115,6 +113,7 @@ pub trait RecursiveAirWithLookupVerification<F: Field, Comm: Recursive<F>>:
         acc_start: Target,
     ) -> Target;
 
+    #[allow(clippy::too_many_arguments)]
     fn eval_folded_circuit(
         &self,
         circuit: &mut CircuitBuilder<F>,
@@ -156,7 +155,7 @@ pub trait RecursiveAirWithLookupVerification<F: Field, Comm: Recursive<F>>:
         local_lookups: &[LocalLookup],
         global_lookups: &[GlobalLookup],
         columns: &ColumnsTargets,
-    ) -> (Vec<LocalLookupColumns>, Vec<GlobalLookupColumns>);
+    ) -> (Vec<LocalLookupColumns<'_>>, Vec<GlobalLookupColumns<'_>>);
 
     /// Returns the columns corresponding to the auxiliary lookup polynomials.
     /// `is_current` indicates whether to return the columns evaluated at `zeta` or `next_zeta`.
@@ -217,24 +216,24 @@ impl<F: Field, Comm: Recursive<F>, A: RecursiveAir<F>> RecursiveAirWithLookupVer
 {
     fn eval_global_constraints(
         &self,
-        circuit: &mut CircuitBuilder<F>,
+        _circuit: &mut CircuitBuilder<F>,
         _sels: &RecursiveLagrangeSelectors,
         _alpha: &Target,
         _lookup_columns: &[GlobalLookupColumns],
-        _acc_start: Target,
+        acc_start: Target,
     ) -> Target {
-        circuit.add_const(F::ZERO)
+        acc_start
     }
 
     fn eval_local_folded_circuit(
         &self,
-        circuit: &mut CircuitBuilder<F>,
+        _circuit: &mut CircuitBuilder<F>,
         _sels: &RecursiveLagrangeSelectors,
         _alpha: &Target,
         _lookup_columns: &[LocalLookupColumns],
-        _acc_start: Target,
+        acc_start: Target,
     ) -> Target {
-        circuit.add_const(F::ZERO)
+        acc_start
     }
 
     fn get_lookup_columns_from_all_cols(
@@ -243,7 +242,7 @@ impl<F: Field, Comm: Recursive<F>, A: RecursiveAir<F>> RecursiveAirWithLookupVer
         _local_lookups: &[LocalLookup],
         _global_lookups: &[GlobalLookup],
         _columns: &ColumnsTargets,
-    ) -> (Vec<LocalLookupColumns>, Vec<GlobalLookupColumns>) {
+    ) -> (Vec<LocalLookupColumns<'_>>, Vec<GlobalLookupColumns<'_>>) {
         (vec![], vec![])
     }
 

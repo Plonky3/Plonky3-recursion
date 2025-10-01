@@ -3,11 +3,9 @@ use p3_circuit::CircuitBuilder;
 use p3_commit::Pcs;
 use p3_uni_stark::StarkGenericConfig;
 
-use crate::{
-    circuit_verifier::{ProofTargetsWithPVs, VerificationError, verify_circuit},
-    lookup::RecursiveAirWithLookupVerification,
-    recursive_traits::{Recursive, RecursivePcs},
-};
+use crate::circuit_verifier::{ProofTargetsWithPVs, VerificationError, verify_circuit};
+use crate::lookup::RecursiveAirWithLookupVerification;
+use crate::recursive_traits::{Recursive, RecursivePcs};
 
 pub fn verify_multitable_circuit<
     SC: StarkGenericConfig,
@@ -33,8 +31,8 @@ where
         >,
 {
     // TODO: Deal with recursive lookups.
-    for (air, proof_targets_pvs_cum_sum) in zip_eq(airs, proof_targets) {
-        verify_circuit(config, *air, circuit, &proof_targets_pvs_cum_sum, &[], &[])?;
+    for (air, proof_targets_pvs) in zip_eq(airs, proof_targets) {
+        verify_circuit(config, *air, circuit, proof_targets_pvs, &[], &[])?;
     }
     Ok(())
 }

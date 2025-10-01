@@ -200,7 +200,7 @@ where
         let mut acc = acc_start;
         for s_c in symbolic_constraints {
             let mul_prev = builder.mul(acc, *alpha);
-            let constraints = symbolic_to_circuit(sels.row_selectors, &columns, &s_c, builder);
+            let constraints = symbolic_to_circuit(sels.row_selectors, columns, &s_c, builder);
             acc = builder.add(mul_prev, constraints);
         }
 
