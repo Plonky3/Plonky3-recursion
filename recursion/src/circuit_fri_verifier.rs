@@ -346,12 +346,14 @@ where
                 *alpha_pow_h = new_alpha_pow_h;
             }
         }
-    }
 
-    // If there's an entry at height == log_blowup (trace height 1), it must be zero
-    if let Some((_ap, ro0)) = reduced_openings.get(&log_blowup) {
-        let zero = builder.add_const(EF::ZERO);
-        builder.connect(*ro0, zero);
+        // `reduced_openings` would have a log_height = log_blowup entry only if there was a
+        // trace matrix of height 1. In this case `f` is constant, so `(f(zeta) - f(x))/(zeta - x)`
+        // must equal `0`.
+        if let Some((_ap, ro0)) = reduced_openings.get(&log_blowup) {
+            let zero = builder.add_const(EF::ZERO);
+            builder.connect(*ro0, zero);
+        }
     }
 
     // Into descending (height, ro) list
@@ -421,7 +423,7 @@ pub fn verify_fri_circuit<F, EF, RecMmcs, Inner, Witness, Comm>(
     );
     let final_value = fri_proof_targets.final_poly[0];
 
-    // 1) Precompute two-adic generator ladders for each phase (in circuit field EF).
+    // Precompute two-adic generator ladders for each phase (in circuit field EF).
     //
     // For phase i, folded height k = log_max_height - i - 1.
     // Use generator g = two_adic_generator(k + 1) and ladder [g^{2^0},...,g^{2^{k-1}}].
@@ -441,7 +443,7 @@ pub fn verify_fri_circuit<F, EF, RecMmcs, Inner, Witness, Comm>(
         })
         .collect();
 
-    // 2) For each query, extract opened values from proof and compute reduced openings and fold.
+    // For each query, extract opened values from proof and compute reduced openings and fold.
     for (q, query_proof) in fri_proof_targets.query_proofs.iter().enumerate() {
         // Extract opened values from the input_proof (batch openings)
         // Structure: Vec<BatchOpening> where each BatchOpening has Vec<Vec<Target>> (matrices -> columns)
@@ -451,7 +453,7 @@ pub fn verify_fri_circuit<F, EF, RecMmcs, Inner, Witness, Comm>(
             .map(|batch| batch.opened_values.clone())
             .collect();
 
-        // (b) Arithmetic `open_input` to get (height, ro) descending
+        // Arithmetic `open_input` to get (height, ro) descending
         let reduced_by_height = open_input::<F, EF, Comm>(
             builder,
             log_max_height,
@@ -473,7 +475,7 @@ pub fn verify_fri_circuit<F, EF, RecMmcs, Inner, Witness, Comm>(
         );
         let initial_folded_eval = reduced_by_height[0].1;
 
-        // (c) Sibling values for this query (one per phase)
+        // Sibling values for this query (one per phase)
         let sibling_values: Vec<Target> = query_proof
             .commit_phase_openings
             .iter()
@@ -485,7 +487,7 @@ pub fn verify_fri_circuit<F, EF, RecMmcs, Inner, Witness, Comm>(
             "sibling_values must match number of betas/phases"
         );
 
-        // (d) Build height-aligned roll-ins for each phase (desc heights -> phases)
+        // Build height-aligned roll-ins for each phase (desc heights -> phases)
         let mut roll_ins: Vec<Option<Target>> = vec![None; num_phases];
         for &(h, ro) in reduced_by_height.iter().skip(1) {
             // height -> phase index mapping
@@ -510,7 +512,7 @@ pub fn verify_fri_circuit<F, EF, RecMmcs, Inner, Witness, Comm>(
             }
         }
 
-        // (e) Perform the fold chain and connect to the (constant) final polynomial value
+        // Perform the fold chain and connect to the (constant) final polynomial value
         verify_query_from_index_bits(
             builder,
             initial_folded_eval,
