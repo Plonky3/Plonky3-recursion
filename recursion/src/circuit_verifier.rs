@@ -44,7 +44,6 @@ fn get_circuit_challenges<
     air: &dyn RecursiveAirWithLookupVerification<SC::Challenge, Comm>,
     proof_targets: &ProofTargets<SC, Comm, OpeningProof>,
     local_lookups: &[LocalLookup],
-    global_lookups: &[GlobalLookup],
     circuit: &mut CircuitBuilder<SC::Challenge>,
 ) -> ProofChallengesTargets
 where
@@ -59,8 +58,8 @@ where
     // TODO: Observe degree bits and degree_bits - is_zk.
     // TODO: Observe local targets.
     // TODO: Observe public values.
-    let local_lookup_challenges =
-        air.get_challenges_circuit(circuit, local_lookups, global_lookups);
+    // TODO: Global challenges should be generated beforehand.
+    let local_lookup_challenges = air.get_challenges_circuit(circuit, local_lookups);
 
     // First Fiat-Shamir challenge `alpha`.
     let alpha = circuit.add_public_input();
@@ -163,7 +162,6 @@ where
         air,
         proof_targets,
         local_lookups,
-        global_lookups,
         circuit,
     );
 

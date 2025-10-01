@@ -162,12 +162,11 @@ pub trait RecursiveAirWithLookupVerification<F: Field, Comm: Recursive<F>>:
     /// `is_current` indicates whether to return the columns evaluated at `zeta` or `next_zeta`.
     fn permutation(&self, circuit: &mut CircuitBuilder<F>, is_current: bool) -> Vec<Target>;
 
-    /// Creates the targets for the lookup challenges in the circuit.
+    /// Creates the targets for the local lookup challenges in the circuit.
     fn get_challenges_circuit(
         &self,
         circuit: &mut CircuitBuilder<F>,
         local_lookups: &[LocalLookup],
-        global_lookups: &[GlobalLookup],
     ) -> Vec<Vec<Target>>;
 }
 
@@ -256,7 +255,6 @@ impl<F: Field, Comm: Recursive<F>, A: RecursiveAir<F>> RecursiveAirWithLookupVer
         &self,
         _circuit: &mut CircuitBuilder<F>,
         _local_lookups: &[LocalLookup],
-        _global_lookups: &[GlobalLookup],
     ) -> Vec<Vec<Target>> {
         vec![]
     }
