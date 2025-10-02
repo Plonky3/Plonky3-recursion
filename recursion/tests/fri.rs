@@ -2,6 +2,7 @@ use p3_baby_bear::{BabyBear as F, Poseidon2BabyBear as Perm, default_babybear_po
 use p3_challenger::{
     CanObserve, CanSampleBits, DuplexChallenger as Challenger, FieldChallenger, GrindingChallenger,
 };
+use p3_circuit::CircuitBuilder;
 use p3_commit::Pcs;
 use p3_dft::Radix2DitParallel as Dft;
 use p3_field::coset::TwoAdicMultiplicativeCoset;
@@ -39,9 +40,17 @@ use p3_recursion::circuit_fri_verifier::verify_fri_circuit;
 type FriTargets =
     FriProofTargets<F, Challenge, RecExt, InputProofTargets<F, Challenge, RecVal>, RecWitness<F>>;
 
-/// Helper to build evaluation matrices for a given seed and sizes.
+/// Type alias for commitments with opening points structure
+type CommitmentsWithPoints = Vec<(
+    Challenge,
+    Vec<(
+        TwoAdicMultiplicativeCoset<F>,
+        Vec<(Challenge, Vec<Challenge>)>,
+    )>,
+)>;
+
+/// Helper: build one group's evaluation matrices for a given seed and sizes.
 fn make_evals(
-    pcs: &PCS,
     polynomial_log_sizes: &[u8],
     seed: u64,
 ) -> Vec<(TwoAdicMultiplicativeCoset<F>, RowMajorMatrix<F>)> {
@@ -49,14 +58,16 @@ fn make_evals(
     polynomial_log_sizes
         .iter()
         .map(|&deg_bits| {
-            let deg = 1usize << deg_bits;
+            let rows = 1usize << deg_bits;
+            let domain = TwoAdicMultiplicativeCoset::new(F::GENERATOR, deg_bits as usize)
+                .expect("valid two-adic size");
+
+            // Ensure width >= 1 to avoid zero-width matrices for small degrees.
+            let width = core::cmp::max(1, (deg_bits as usize).saturating_sub(4));
+
             (
-                <PCS as Pcs<Challenge, MyChallenger>>::natural_domain_for_degree(pcs, deg),
-                RowMajorMatrix::<F>::rand_nonzero(
-                    &mut rng,
-                    deg,
-                    (deg_bits as usize).saturating_sub(4),
-                ),
+                domain,
+                RowMajorMatrix::<F>::rand_nonzero(&mut rng, rows, width),
             )
         })
         .collect()
@@ -73,12 +84,8 @@ struct ProduceInputsResult {
     betas: Vec<Challenge>,
     /// The query indices, represented as little-endian bits, for each query.
     index_bits_per_query: Vec<Vec<Challenge>>,
-    /// The challenge points `z`, one for each opened polynomial matrix.
-    challenge_points: Vec<Challenge>,
-    /// The evaluations `f(z)` of each polynomial matrix at its corresponding challenge point.
-    point_values: Vec<Vec<Challenge>>,
-    /// The log base 2 of the domain size for each polynomial matrix.
-    domains_log_sizes: Vec<usize>,
+    /// Commitments with opening points structure (per batch)
+    commitments_with_points: CommitmentsWithPoints,
     /// The total number of FRI folding phases (rounds).
     num_phases: usize,
     /// The log base 2 of the size of the largest domain.
@@ -87,43 +94,75 @@ struct ProduceInputsResult {
     fri_lens: Vec<usize>,
 }
 
-/// Produce all public inputs for a recursive FRI verification circuit, for a given RNG seed.
-fn produce_inputs(
+/// Produce all public inputs for a recursive FRI verification circuit over **multiple input batches**.
+///
+/// `group_sizes` is a list of groups, each group is a list of log2 degrees.
+fn produce_inputs_multi(
     pcs: &PCS,
     perm: &Perm<16>,
     log_blowup: usize,
     log_final_poly_len: usize,
     pow_bits: usize,
-    evals: Vec<(TwoAdicMultiplicativeCoset<F>, RowMajorMatrix<F>)>,
+    group_sizes: &[Vec<u8>],
+    seed_base: u64,
 ) -> ProduceInputsResult {
-    // --- Prover path ---
-    let mut p_challenger = MyChallenger::new(perm.clone());
-    let domains_log_sizes: Vec<usize> = evals.iter().map(|(d, _)| d.log_size()).collect();
+    // Build per-group evals and commit
+    let mut groups_evals = Vec::new();
+    for (i, sizes) in group_sizes.iter().enumerate() {
+        groups_evals.push(make_evals(sizes, seed_base + i as u64));
+    }
+
+    // Flatten domain sizes (base log sizes) for public inputs
+    let mut domains_log_sizes = Vec::new();
+    for sizes in group_sizes {
+        domains_log_sizes.extend(sizes.iter().map(|&b| b as usize));
+    }
     let val_sizes: Vec<F> = domains_log_sizes
         .iter()
         .map(|&b| F::from_u8(b as u8))
         .collect();
+
+    // --- Prover path ---
+    let mut p_challenger = MyChallenger::new(perm.clone());
     p_challenger.observe_slice(&val_sizes);
 
-    let (commitment, prover_data) = <PCS as Pcs<Challenge, MyChallenger>>::commit(pcs, evals);
-    p_challenger.observe(commitment);
+    // Commit each group and observe all commitments before sampling zeta
+    let mut commitments_and_data = Vec::new();
+    for evals in &groups_evals {
+        let (commitment, prover_data) =
+            <PCS as Pcs<Challenge, MyChallenger>>::commit(pcs, evals.clone());
+        p_challenger.observe(commitment);
+        commitments_and_data.push((commitment, prover_data));
+    }
+
+    // Single zeta for all matrices across all groups
     let zeta: Challenge = p_challenger.sample_algebra_element();
 
-    let num_evaluations = domains_log_sizes.len();
-    let open_data = vec![(&prover_data, vec![vec![zeta]; num_evaluations])];
+    // Build open request: one (&ProverData, points_per_matrix) per group
+    let mut open_data = Vec::new();
+    for (i, _evals) in groups_evals.iter().enumerate() {
+        let mat_count = groups_evals[i].len();
+        open_data.push((&commitments_and_data[i].1, vec![vec![zeta]; mat_count]));
+    }
+
+    // Open and produce FRI proof
     let (opened_values, fri_proof) =
         <PCS as Pcs<Challenge, MyChallenger>>::open(pcs, open_data, &mut p_challenger);
 
     // --- Verifier transcript replay (to derive the public inputs) ---
     let mut v_challenger = MyChallenger::new(perm.clone());
     v_challenger.observe_slice(&val_sizes);
-    v_challenger.observe(commitment);
+    for (commitment, _) in &commitments_and_data {
+        v_challenger.observe(*commitment);
+    }
     let _zeta_v: Challenge = v_challenger.sample_algebra_element();
 
-    let num_mats = domains_log_sizes.len();
-    let point_values_vec: Vec<Vec<Challenge>> =
+    // Flatten opened values in the same order we passed to `open`
+    // Shape: OpenedValues -> groups -> matrices -> columns
+    let point_values_flat: Vec<Vec<Challenge>> =
         opened_values.into_iter().flatten().flatten().collect();
 
+    // Extract proof pieces
     let p3_fri::FriProof {
         commit_phase_commits,
         ref query_proofs,
@@ -131,8 +170,8 @@ fn produce_inputs(
         pow_witness,
     } = fri_proof;
 
-    // Observe all opened evaluation points
-    for values in &point_values_vec {
+    // Observe all opened evaluation values (same order)
+    for values in &point_values_flat {
         for &opening in values {
             v_challenger.observe_algebra_element(opening);
         }
@@ -179,13 +218,26 @@ fn produce_inputs(
         index_bits_per_query.push(bits_one);
     }
 
-    // challenge points (zeta per matrix) and f(z) per matrix
-    let challenge_points: Vec<Challenge> = core::iter::repeat_n(zeta, num_mats).collect();
-    let point_values: Vec<Vec<Challenge>> = point_values_vec;
+    // Build commitments_with_points structure
+    // For each batch: (commitment_placeholder, Vec<(domain, Vec<(z, [f(z)])>)>)
+    let mut commitments_with_points = Vec::new();
+    let mut pv_idx = 0;
+    for sizes in group_sizes.iter() {
+        let mut mats_data = Vec::new();
+        for &log_size in sizes {
+            let domain = TwoAdicMultiplicativeCoset::new(F::GENERATOR, log_size as usize)
+                .expect("valid domain");
+            let points_and_values = vec![(zeta, point_values_flat[pv_idx].clone())];
+            mats_data.push((domain, points_and_values));
+            pv_idx += 1;
+        }
+        // Use a placeholder value for the commitment (not used in arithmetic verification)
+        let commit_placeholder = Challenge::ZERO;
+        commitments_with_points.push((commit_placeholder, mats_data));
+    }
 
     // —— FriProofTargets lens + values ——
-    // Build lens for FriProofTargets from the *real* FriProof we just produced.
-    let fri_lens_vec: Vec<usize> = FriTargets::lens(&p3_fri::FriProof {
+    let fri_lens: Vec<usize> = FriTargets::lens(&p3_fri::FriProof {
         commit_phase_commits: commit_phase_commits.clone(),
         query_proofs: query_proofs.clone(),
         final_poly: final_poly.clone(),
@@ -205,12 +257,10 @@ fn produce_inputs(
         alpha,
         betas,
         index_bits_per_query,
-        challenge_points,
-        point_values,
-        domains_log_sizes,
+        commitments_with_points,
         num_phases,
         log_max_height,
-        fri_lens: fri_lens_vec,
+        fri_lens,
     }
 }
 
@@ -219,10 +269,8 @@ fn pack_inputs(
     fri_vals: Vec<Challenge>,
     alpha: Challenge,
     betas: Vec<Challenge>,
-    index_bits_q0: Vec<Challenge>,
-    index_bits_q1: Vec<Challenge>,
-    zetas: Vec<Challenge>,
-    fz: Vec<Vec<Challenge>>,
+    index_bits_all_queries: Vec<Vec<Challenge>>,
+    commitments_with_points: CommitmentsWithPoints,
 ) -> Vec<Challenge> {
     let mut v = Vec::new();
 
@@ -235,20 +283,30 @@ fn pack_inputs(
     // (3) betas
     v.extend(betas);
 
-    // (4) index bits per query (LE)
-    v.extend(index_bits_q0);
-    v.extend(index_bits_q1);
-
-    // (5) per-matrix: z, f(z) columns (opened rows come from FriProofTargets)
-    for m in 0..fz.len() {
-        v.push(zetas[m]);
-        v.extend(fz[m].iter().copied());
+    // (4) index bits per query (LE), in order
+    for bits in index_bits_all_queries {
+        v.extend(bits);
     }
+
+    // (5) For each batch: commitment, then z and f(z) for all matrices in that batch
+    for (commit_placeholder, mats) in commitments_with_points {
+        // Commitment for this batch
+        v.push(commit_placeholder);
+
+        // Then all matrices in this batch
+        for (_domain, points_and_values) in mats {
+            for (z, fz) in points_and_values {
+                v.push(z);
+                v.extend(fz);
+            }
+        }
+    }
+
     v
 }
 
 #[test]
-fn test_circuit_fri_verifier() {
+fn test_circuit_fri_verifier_multi_rounds() {
     // Common setup
     let perm = default_babybear_poseidon2_16();
     let hash = MyHash::new(perm.clone());
@@ -263,55 +321,55 @@ fn test_circuit_fri_verifier() {
     let pow_bits = fri_params.proof_of_work_bits;
     let pcs = PCS::new(dft, val_mmcs, fri_params);
 
-    // Keep widths >= 1 with these sizes
-    let polynomial_log_sizes: [u8; 4] = [5, 8, 8, 10];
+    // Three "rounds"/batches of inputs, different shapes. Include a degree-0 (height=1)
+    // matrix so the `log_height == log_blowup` reduced-opening constraint is exercised.
+    //   [0, 5, 8, 8, 10], [8, 11], [4, 5, 8]
+    let groups = vec![vec![0u8, 5, 8, 8, 10], vec![8u8, 11], vec![4u8, 5, 8]];
 
-    // Build evals outside to keep helper small and reusable
-    let evals_1 = make_evals(&pcs, &polynomial_log_sizes, 0);
-    let evals_2 = make_evals(&pcs, &polynomial_log_sizes, 1);
-
-    // Produce two proofs with different inputs
-    let result_1 = produce_inputs(
+    // Produce two proofs with different inputs (same shape), to reuse one circuit
+    let result_1 = produce_inputs_multi(
         &pcs,
         &perm,
         log_blowup,
         log_final_poly_len,
         pow_bits,
-        evals_1,
+        &groups,
+        /*seed_base=*/ 0,
     );
 
-    let result_2 = produce_inputs(
+    let result_2 = produce_inputs_multi(
         &pcs,
         &perm,
         log_blowup,
         log_final_poly_len,
         pow_bits,
-        evals_2,
+        &groups,
+        /*seed_base=*/ 1,
     );
 
     // Shape checks (must match so we can reuse one circuit)
     assert_eq!(result_1.num_phases, result_2.num_phases);
     assert_eq!(result_1.log_max_height, result_2.log_max_height);
-    assert_eq!(result_1.domains_log_sizes, result_2.domains_log_sizes);
     assert_eq!(result_1.fri_lens, result_2.fri_lens);
 
     let num_phases = result_1.num_phases;
     let log_max_height = result_1.log_max_height;
 
     // ——— Build circuit once (using first proof's shape) ———
-    let mut builder = p3_circuit::CircuitBuilder::<Challenge>::new();
+    let mut builder = CircuitBuilder::<Challenge>::new();
 
     // 1) Allocate FriProofTargets using lens from instance 1
     let mut lens_iter = result_1.fri_lens.clone().into_iter();
     let fri_targets = FriTargets::new(&mut builder, &mut lens_iter, /*degree_bits unused*/ 0);
 
-    // 2) Public inputs for α, βs, index bits, opened_values@x, z points, f(z)
+    // 2) Public inputs for α, βs, index bits
     let alpha_t = builder.add_public_input();
     let betas_t: Vec<_> = (0..num_phases)
         .map(|_| builder.add_public_input())
         .collect();
 
-    let index_bits_t_per_query: Vec<Vec<_>> = (0..2)
+    let num_queries = result_1.index_bits_per_query.len();
+    let index_bits_t_per_query: Vec<Vec<_>> = (0..num_queries)
         .map(|_| {
             (0..log_max_height)
                 .map(|_| builder.add_public_input())
@@ -319,30 +377,34 @@ fn test_circuit_fri_verifier() {
         })
         .collect();
 
-    // Shapes per matrix for point_values (opened_values come from FriProofTargets now)
-    let num_mats = result_1.domains_log_sizes.len();
-    let mut fz_t: Vec<Vec<_>> = Vec::with_capacity(num_mats);
-    let mut zetas_t: Vec<_> = Vec::with_capacity(num_mats);
-    for m in 0..num_mats {
-        zetas_t.push(builder.add_public_input());
-        let cols_z = result_1.point_values[m].len();
-        let mut pv = Vec::with_capacity(cols_z);
-        for _ in 0..cols_z {
-            pv.push(builder.add_public_input());
+    // 3) Build commitments_with_opening_points targets structure
+    // For each batch: allocate commitment target + (domain, Vec<(z_target, [fz_targets])>)
+    let mut commitments_with_opening_points_targets = Vec::new();
+    for (_commit_val, mats_data) in &result_1.commitments_with_points {
+        // Allocate commitment target (placeholder, not used in arithmetic verification)
+        let commit_t = builder.add_public_input();
+
+        let mut mats_targets = Vec::new();
+        for (domain, points_and_values) in mats_data {
+            let mut pv_targets = Vec::new();
+            for (_z, fz) in points_and_values {
+                let z_t = builder.add_public_input();
+                let fz_t: Vec<_> = (0..fz.len()).map(|_| builder.add_public_input()).collect();
+                pv_targets.push((z_t, fz_t));
+            }
+            mats_targets.push((*domain, pv_targets));
         }
-        fz_t.push(pv);
+        commitments_with_opening_points_targets.push((commit_t, mats_targets));
     }
 
-    // 3) Wire the actual in-circuit verifier
-    verify_fri_circuit::<F, Challenge, RecExt, RecVal, RecWitness<F>>(
+    // 4) Wire the arithmetic-only FRI verifier
+    verify_fri_circuit::<F, Challenge, RecExt, RecVal, RecWitness<F>, p3_recursion::Target>(
         &mut builder,
         &fri_targets,
         alpha_t,
         &betas_t,
         &index_bits_t_per_query,
-        &zetas_t,
-        &fz_t,
-        &result_1.domains_log_sizes,
+        &commitments_with_opening_points_targets,
         log_blowup,
     );
 
@@ -353,10 +415,8 @@ fn test_circuit_fri_verifier() {
         result_1.fri_values,
         result_1.alpha,
         result_1.betas,
-        result_1.index_bits_per_query[0].clone(),
-        result_1.index_bits_per_query[1].clone(),
-        result_1.challenge_points,
-        result_1.point_values,
+        result_1.index_bits_per_query.clone(),
+        result_1.commitments_with_points,
     );
     let mut runner1 = circuit.clone().runner();
     runner1.set_public_inputs(&pub_inputs1).unwrap();
@@ -367,10 +427,8 @@ fn test_circuit_fri_verifier() {
         result_2.fri_values,
         result_2.alpha,
         result_2.betas,
-        result_2.index_bits_per_query[0].clone(),
-        result_2.index_bits_per_query[1].clone(),
-        result_2.challenge_points,
-        result_2.point_values,
+        result_2.index_bits_per_query.clone(),
+        result_2.commitments_with_points,
     );
     let mut runner2 = circuit.runner();
     runner2.set_public_inputs(&pub_inputs2).unwrap();
