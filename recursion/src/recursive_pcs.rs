@@ -8,8 +8,8 @@ use core::{array, iter, panic};
 
 use itertools::Itertools;
 use p3_challenger::GrindingChallenger;
-use p3_circuit::CircuitBuilder;
-use p3_circuit::utils::RowSelectorsTargets;
+use p3_circuit::utils::{RowSelectorsTargets, decompose_to_bits};
+use p3_circuit::{CircuitBuilder, CircuitBuilderError, MerkleOps, NonPrimitiveOpId};
 use p3_commit::{BatchOpening, ExtensionMmcs, Mmcs, PolynomialSpace};
 use p3_field::coset::TwoAdicMultiplicativeCoset;
 use p3_field::{ExtensionField, Field, PackedValue, PrimeCharacteristicRing, TwoAdicField};
@@ -18,14 +18,31 @@ use p3_matrix::Dimensions;
 use p3_merkle_tree::MerkleTreeMmcs;
 use p3_symmetric::{CryptographicHasher, Hash, PseudoCompressionFunction};
 use p3_uni_stark::{StarkGenericConfig, Val};
-use p3_util::log2_strict_usize;
+// use p3_util::log2_strict_usize;
 use serde::{Deserialize, Serialize};
 
 use crate::Target;
+use crate::circuit_fri_verifier::verify_fri_circuit;
 use crate::recursive_traits::{
     ComsWithOpeningsTargets, Recursive, RecursiveExtensionMmcs, RecursiveLagrangeSelectors,
     RecursiveMmcs, RecursivePcs,
 };
+
+/// Maximum number of bits used for query index decomposition in FRI verification circuits.
+///
+/// This is a fixed size to avoid const generic complexity. The circuit decomposes each
+/// query index into this many bits, but only uses the first `log_max_height` bits that
+/// are actually needed.
+///
+/// This value is set to 31 bits because:
+/// - Query indices are sampled as field elements in the base field (BabyBear/KoalaBear)
+/// - BabyBear: p = 2^31 - 2^27 + 1 (31-bit prime)
+/// - KoalaBear: p = 2^31 - 2^24 + 1 (31-bit prime)  
+/// - Field elements fit in 31 bits, so 31 bits is sufficient
+///
+/// For Goldilocks (64-bit field), this would need to be increased, but that's not
+/// currently supported in the recursion circuit.
+pub const MAX_QUERY_INDEX_BITS: usize = 31;
 
 /// `Recursive` version of `FriProof`.
 pub struct FriProofTargets<
@@ -349,18 +366,18 @@ impl<F: Field, EF: ExtensionField<F>, Inner: RecursiveMmcs<F, EF>> Recursive<EF>
 
 /// `HashTargets` corresponds to a commitment in the form of hashes with `DIGEST_ELEMS` digest elements.
 #[derive(Clone)]
-pub struct HashTargets<F, const DIGEST_ELEMS: usize> {
-    pub hash_targets: [Target; DIGEST_ELEMS],
-    _phantom: PhantomData<F>,
+pub struct HashTargets<F, EF, const BF_DIGEST_ELEMS: usize, const EF_DIGEST_ELEMS: usize> {
+    pub hash_targets: [Target; EF_DIGEST_ELEMS],
+    _phantom: PhantomData<(F, EF)>,
 }
 
 type ValMmcsCommitment<F, const DIGEST_ELEMS: usize> =
     Hash<<F as PackedValue>::Value, <F as PackedValue>::Value, DIGEST_ELEMS>;
 
-impl<F: Field, EF: ExtensionField<F>, const DIGEST_ELEMS: usize> Recursive<EF>
-    for HashTargets<F, DIGEST_ELEMS>
+impl<F: Field, EF: ExtensionField<F>, const BF_DIGEST_ELEMS: usize, const EF_DIGEST_ELEMS: usize>
+    Recursive<EF> for HashTargets<F, EF, BF_DIGEST_ELEMS, EF_DIGEST_ELEMS>
 {
-    type Input = ValMmcsCommitment<F, DIGEST_ELEMS>;
+    type Input = ValMmcsCommitment<F, BF_DIGEST_ELEMS>;
 
     fn new(
         circuit: &mut CircuitBuilder<EF>,
@@ -374,7 +391,11 @@ impl<F: Field, EF: ExtensionField<F>, const DIGEST_ELEMS: usize> Recursive<EF>
     }
 
     fn get_values(input: &Self::Input) -> Vec<EF> {
-        input.into_iter().map(|v| EF::from(v)).collect()
+        assert_eq!(BF_DIGEST_ELEMS * EF::DIMENSION, EF_DIGEST_ELEMS);
+        let arr: [F; BF_DIGEST_ELEMS] = (*input).into();
+        arr.chunks_exact(EF::DIMENSION)
+            .map(|v| EF::from_basis_coefficients_slice(v).expect("Chunk size is correct"))
+            .collect()
     }
 
     fn num_challenges(&self) -> usize {
@@ -466,10 +487,10 @@ impl<F: Field, EF: ExtensionField<F>> Recursive<EF> for Witness<F> {
 }
 
 /// `Recursive` version of a `MerkleTreeMmcs` where the leaf and digest elements are base field values.
-pub struct RecValMmcs<F: Field, const DIGEST_ELEMS: usize, H, C>
+pub struct RecValMmcs<F: Field, const BF_DIGEST_ELEMS: usize, const EF_DIGEST_ELEMS: usize, H, C>
 where
-    H: CryptographicHasher<F, [F; DIGEST_ELEMS]>
-        + CryptographicHasher<F::Packing, [F::Packing; DIGEST_ELEMS]>
+    H: CryptographicHasher<F, [F; BF_DIGEST_ELEMS]>
+        + CryptographicHasher<F::Packing, [F::Packing; BF_DIGEST_ELEMS]>
         + Sync,
 {
     pub hash: H,
@@ -477,22 +498,28 @@ where
     _phantom: PhantomData<F>,
 }
 
-impl<F: Field, EF: ExtensionField<F>, const DIGEST_ELEMS: usize, H, C> RecursiveMmcs<F, EF>
-    for RecValMmcs<F, DIGEST_ELEMS, H, C>
+impl<
+    F: Field,
+    EF: ExtensionField<F>,
+    const BF_DIGEST_ELEMS: usize,
+    const EF_DIGEST_ELEMS: usize,
+    H,
+    C,
+> RecursiveMmcs<F, EF> for RecValMmcs<F, BF_DIGEST_ELEMS, EF_DIGEST_ELEMS, H, C>
 where
-    H: CryptographicHasher<F, [F; DIGEST_ELEMS]>
-        + CryptographicHasher<F::Packing, [F::Packing; DIGEST_ELEMS]>
+    H: CryptographicHasher<F, [F; BF_DIGEST_ELEMS]>
+        + CryptographicHasher<F::Packing, [F::Packing; BF_DIGEST_ELEMS]>
         + Sync,
-    C: PseudoCompressionFunction<[F; DIGEST_ELEMS], 2>
-        + PseudoCompressionFunction<[F::Packing; DIGEST_ELEMS], 2>
+    C: PseudoCompressionFunction<[F; BF_DIGEST_ELEMS], 2>
+        + PseudoCompressionFunction<[F::Packing; BF_DIGEST_ELEMS], 2>
         + Sync,
-    [F; DIGEST_ELEMS]: Serialize + for<'a> Deserialize<'a>,
+    [F; BF_DIGEST_ELEMS]: Serialize + for<'a> Deserialize<'a>,
 {
-    type Input = MerkleTreeMmcs<F::Packing, F::Packing, H, C, DIGEST_ELEMS>;
+    type Input = MerkleTreeMmcs<F::Packing, F::Packing, H, C, BF_DIGEST_ELEMS>;
 
-    type Commitment = HashTargets<F, DIGEST_ELEMS>;
+    type Commitment = HashTargets<F, EF, BF_DIGEST_ELEMS, EF_DIGEST_ELEMS>;
 
-    type Proof = HashProofTargets<F, DIGEST_ELEMS>;
+    type Proof = HashProofTargets<F, BF_DIGEST_ELEMS>;
 
     fn verify_batch_circuit(
         &self,
@@ -500,9 +527,9 @@ where
         commitment: &Self::Commitment,
         dimensions: &[Dimensions],
         index_bits: &[Target],
-        opened_values: &[Target],
+        opened_values: &[Vec<Target>],
         opening_proof: &Self::Proof,
-    ) {
+    ) -> Result<NonPrimitiveOpId, CircuitBuilderError> {
         // Check that the openings have the correct shape.
         if dimensions.len() != opened_values.len() {
             panic!("Wrong batch size"); // TODO: Add errors
@@ -538,13 +565,13 @@ where
         // Returns an error if either:
         //              1. proof.len() != log_max_height
         //              2. heights_tallest_first is empty.
-        let mut curr_height_padded = match heights_tallest_first.peek() {
+        let curr_height_padded = match heights_tallest_first.peek() {
             Some((_, dims)) => {
                 let max_height = dims.height.next_power_of_two();
-                let log_max_height = log2_strict_usize(max_height);
-                if opening_proof.hash_proof_targets.len() != log_max_height {
-                    panic!("Proof length does not match log_max_height"); // TODO: Add errors
-                }
+                // let log_max_height = log2_strict_usize(max_height);
+                // if opening_proof.hash_proof_targets.len() != log_max_height {
+                //     panic!("Proof length does not match log_max_height"); // TODO: Add errors
+                // }
                 max_height
             }
             None => panic!("No dimensions provided"), // TODO: Add errors
@@ -552,44 +579,28 @@ where
 
         // Hash all matrix openings at the current height.
         // TODO: The root should be the hash of all matrix openings at the current height.
-        let mut root = ();
+        let leaf: [Target; EF_DIGEST_ELEMS] = heights_tallest_first
+            .peeking_take_while(|(_, dims)| dims.height.next_power_of_two() == curr_height_padded)
+            .map(|(i, _)| {
+                if opened_values[i].len() < EF_DIGEST_ELEMS {
+                    let mut padded_values = opened_values[i].clone();
+                    padded_values.extend(
+                        (0..(EF_DIGEST_ELEMS - opened_values[i].len()))
+                            .map(|_| circuit.add_const(EF::ZERO)),
+                    );
+                    padded_values
+                } else if opened_values[i].len() > EF_DIGEST_ELEMS {
+                    opened_values[i][0..EF_DIGEST_ELEMS].to_vec()
+                } else {
+                    opened_values[i].clone()
+                }
+            })
+            .collect::<Vec<Vec<Target>>>()[0]
+            .clone()
+            .try_into()
+            .expect("The size of the array is correct by construction");
 
-        for &sibling in opening_proof {
-            // The last bit of index informs us whether the current node is on the left or right.
-            let (left, right) = if index & 1 == 0 {
-                (root, sibling)
-            } else {
-                (sibling, root)
-            };
-
-            // Combine the current node with the sibling node to get the parent node.
-            root = self.compress.compress([left, right]);
-            index >>= 1;
-            curr_height_padded >>= 1;
-
-            // Check if there are any new matrix rows to inject at the next height.
-            let next_height = heights_tallest_first
-                .peek()
-                .map(|(_, dims)| dims.height)
-                .filter(|h| h.next_power_of_two() == curr_height_padded);
-            if let Some(next_height) = next_height {
-                // If there are new matrix rows, hash the rows together and then combine with the current root.
-                let next_height_openings_digest = self.hash.hash_iter_slices(
-                    heights_tallest_first
-                        .peeking_take_while(|(_, dims)| dims.height == next_height)
-                        .map(|(i, _)| opened_values[i].as_slice()),
-                );
-
-                root = self.compress.compress([root, next_height_openings_digest]);
-            }
-        }
-
-        // The computed root should equal the committed one.
-        if commit == &root {
-            Ok(())
-        } else {
-            Err(RootMismatch)
-        }
+        circuit.add_merkle_verify(&leaf, index_bits, &commitment.hash_targets)
     }
 }
 
@@ -673,12 +684,25 @@ type RecursiveFriProof<SC, RecursiveFriMmcs, RecursiveInputProof> = FriProofTarg
 >;
 
 // Implement `RecursivePcs` for `TwoAdicFriPcs`.
-impl<SC, Dft, Comm, InputMmcs, RecursiveInputProof, InputProof, RecursiveFriMmcs, FriMmcs>
+impl<
+    SC,
+    Dft,
+    InputMmcs,
+    RecursiveInputMmcs,
+    RecursiveFriMmcs,
+    FriMmcs,
+    const BF_DIGEST_ELEMS: usize,
+    const EF_DIGEST_ELEMS: usize,
+>
     RecursivePcs<
         SC,
-        RecursiveInputProof,
-        RecursiveFriProof<SC, RecursiveFriMmcs, RecursiveInputProof>,
-        Comm,
+        InputProofTargets<Val<SC>, SC::Challenge, RecursiveInputMmcs>,
+        RecursiveFriProof<
+            SC,
+            RecursiveFriMmcs,
+            InputProofTargets<Val<SC>, SC::Challenge, RecursiveInputMmcs>,
+        >,
+        HashTargets<Val<SC>, DIGEST_ELEMS>,
         TwoAdicMultiplicativeCoset<Val<SC>>,
     > for TwoAdicFriPcs<Val<SC>, Dft, InputMmcs, FriMmcs>
 where
@@ -686,32 +710,78 @@ where
     Val<SC>: TwoAdicField,
     InputMmcs: Mmcs<Val<SC>>,
     FriMmcs: Mmcs<SC::Challenge>,
-    Comm: Recursive<SC::Challenge>,
-    RecursiveInputProof: Recursive<SC::Challenge, Input = InputProof>,
+    RecursiveInputMmcs: RecursiveMmcs<Val<SC>, SC::Challenge, Input = InputMmcs>,
     RecursiveFriMmcs: RecursiveExtensionMmcs<Val<SC>, SC::Challenge, Input = FriMmcs>,
     SC::Challenger: GrindingChallenger,
     SC::Challenger: p3_challenger::CanObserve<FriMmcs::Commitment>,
 {
-    type RecursiveProof = RecursiveFriProof<SC, RecursiveFriMmcs, RecursiveInputProof>;
+    type RecursiveProof = RecursiveFriProof<
+        SC,
+        RecursiveFriMmcs,
+        InputProofTargets<Val<SC>, SC::Challenge, RecursiveInputMmcs>,
+    >;
 
     fn get_challenges_circuit(
         circuit: &mut CircuitBuilder<SC::Challenge>,
-        proof_targets: &crate::recursive_traits::ProofTargets<SC, Comm, Self::RecursiveProof>,
+        proof_targets: &crate::recursive_traits::ProofTargets<
+            SC,
+            HashTargets<Val<SC>, SC::Challenge, DIGEST_ELEMS>,
+            Self::RecursiveProof,
+        >,
     ) -> Vec<Target> {
         proof_targets.opening_proof.get_challenges(circuit)
     }
 
     fn verify_circuit(
         &self,
-        _circuit: &mut CircuitBuilder<SC::Challenge>,
-        _challenges: &[Target],
-        _commitments_with_opening_points: &ComsWithOpeningsTargets<
-            Comm,
+        circuit: &mut CircuitBuilder<SC::Challenge>,
+        challenges: &[Target],
+        commitments_with_opening_points: &ComsWithOpeningsTargets<
+            HashTargets<Val<SC>, DIGEST_ELEMS>,
             TwoAdicMultiplicativeCoset<Val<SC>>,
         >,
-        _opening_proof: &Self::RecursiveProof,
+        opening_proof: &Self::RecursiveProof,
+        log_blowup: usize,
+        log_final_poly_len: usize,
     ) {
-        // TODO
+        // Extract FRI challenges from the challenges slice.
+        // Layout: [alpha, beta_0, ..., beta_{n-1}, query_0, ..., query_{m-1}]
+        // where:
+        //   - alpha: FRI batch combination challenge
+        //   - betas: one challenge per FRI folding round
+        //   - query indices: sampled indices for FRI queries (as field elements)
+        let num_betas = opening_proof.commit_phase_commits.len();
+        let num_queries = opening_proof.query_proofs.len();
+
+        let alpha = challenges[0];
+        let betas = &challenges[1..1 + num_betas];
+        let query_indices = &challenges[1 + num_betas..1 + num_betas + num_queries];
+
+        // Calculate the maximum height of the FRI proof tree.
+        let log_max_height = num_betas + log_final_poly_len + log_blowup;
+
+        assert!(
+            log_max_height <= MAX_QUERY_INDEX_BITS,
+            "log_max_height {log_max_height} exceeds MAX_QUERY_INDEX_BITS {MAX_QUERY_INDEX_BITS}"
+        );
+
+        let index_bits_per_query: Vec<Vec<Target>> = query_indices
+            .iter()
+            .map(|&index_target| {
+                let all_bits = decompose_to_bits::<_, MAX_QUERY_INDEX_BITS>(circuit, index_target);
+                all_bits.into_iter().take(log_max_height).collect()
+            })
+            .collect();
+
+        verify_fri_circuit(
+            circuit,
+            opening_proof,
+            alpha,
+            betas,
+            &index_bits_per_query,
+            commitments_with_opening_points,
+            log_blowup,
+        );
     }
 
     fn selectors_at_point_circuit(

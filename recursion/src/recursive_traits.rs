@@ -3,8 +3,8 @@ use alloc::vec::Vec;
 use core::marker::PhantomData;
 
 use p3_air::Air;
-use p3_circuit::CircuitBuilder;
 use p3_circuit::utils::{ColumnsTargets, RowSelectorsTargets, symbolic_to_circuit};
+use p3_circuit::{CircuitBuilder, CircuitBuilderError, NonPrimitiveOpId};
 use p3_commit::{Mmcs, Pcs};
 use p3_field::{ExtensionField, Field};
 use p3_matrix::Dimensions;
@@ -90,15 +90,28 @@ pub trait RecursiveMmcs<F: Field, EF: ExtensionField<F>> {
     type Commitment: Recursive<EF, Input = <Self::Input as Mmcs<F>>::Commitment>;
     type Proof: Recursive<EF, Input = <Self::Input as Mmcs<F>>::Proof>;
 
+    /// Recursive verison of `verify_circuit_batch`. Adds a ircuit that verifies an opened batch of rows with respect to a given commitment.
+    ///
+    /// - `circuit`: The circuit builder to which we add the verify_batch circuit
+    /// - `commit`: The merkle root of the tree.
+    /// - `dimensions`: A vector of the dimensions of the matrices committed to.
+    /// - `directions`: The binary decomposition of the index of a leaf in the tree.
+    /// - `opened_values`: A vector of matrix rows. Assume that the tallest matrix committed
+    ///   to has height `2^n >= M_tall.height() > 2^{n - 1}` and the `j`th matrix has height
+    ///   `2^m >= Mj.height() > 2^{m - 1}`. Then `j`'th value of opened values must be the row `Mj[index >> (m - n)]`.
+    /// - `proof`: A vector of sibling nodes. The `i`th element should be the node at level `i`
+    ///   with index `(index << i) ^ 1`.
+    ///
+    /// Returns the new merkle_verify gate, otherwise returns an error.
     fn verify_batch_circuit(
         &self,
         circuit: &mut CircuitBuilder<EF>,
         commitment: &Self::Commitment,
         dimensions: &[Dimensions],
         directions: &[Target],
-        opened_values: &[Target],
+        opened_values: &[Vec<Target>],
         proof: &Self::Proof,
-    );
+    ) -> Result<NonPrimitiveOpId, CircuitBuilderError>;
 }
 
 /// Extension version of `RecursiveMmcs`.
@@ -109,6 +122,11 @@ pub trait RecursiveExtensionMmcs<F: Field, EF: ExtensionField<F>> {
     type Proof: Recursive<EF, Input = <Self::Input as Mmcs<EF>>::Proof>;
 }
 
+/// A collection of Mmcs commitments such that for each one we have:
+/// - The commitment itself.
+/// - For each matrix:
+///     - The domain of the matrix.
+///     - A vector of pairs (point, values), where `values` are the rows of the matrix at `point`.
 pub(crate) type ComsWithOpeningsTargets<Comm, Domain> =
     [(Comm, Vec<(Domain, Vec<(Target, Vec<Target>)>)>)];
 
@@ -136,6 +154,8 @@ pub trait RecursivePcs<
         challenges: &[Target],
         commitments_with_opening_points: &ComsWithOpeningsTargets<Comm, Domain>,
         opening_proof: &OpeningProof,
+        log_blowup: usize,
+        log_final_poly_len: usize,
     );
 
     /// Computes target selectors at `point` in the circuit.

@@ -25,7 +25,7 @@ link-citations = true
 command = "mdbook-mermaid"
 
 [output.html]
-additional-js = ["mermaid.min.js", "mermaid-init.js"]
+# additional-js = ["mermaid.min.js", "mermaid-init.js"]
 
 [output.html.print]
 # Disable page break

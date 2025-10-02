@@ -3,12 +3,18 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::iter;
 
+use itertools::Itertools;
 use p3_circuit::{CircuitBuilder, MerkleOps};
+use p3_field::coset::TwoAdicMultiplicativeCoset;
 use p3_field::{ExtensionField, Field, TwoAdicField};
+use p3_matrix::Dimensions;
 
 use crate::Target;
-use crate::recursive_pcs::{FriProofTargets, InputProofTargets};
-use crate::recursive_traits::{Recursive, RecursiveExtensionMmcs, RecursiveMmcs};
+use crate::circuit_mmcs_verifier::verify_batch_circuit;
+use crate::recursive_pcs::{FriProofTargets, HashProofTargets, HashTargets, InputProofTargets};
+use crate::recursive_traits::{
+    ComsWithOpeningsTargets, Recursive, RecursiveExtensionMmcs, RecursiveMmcs,
+};
 
 /// Inputs for one FRI fold phase (matches the values used by the verifier per round).
 #[derive(Clone, Debug)]
@@ -54,7 +60,8 @@ fn fold_row_chain<EF: Field>(
         roll_in,
     } in phases.iter().cloned()
     {
-        // TODO: MMCS batch verification needed for each phase.
+        // TODO: Add recursive MMCS batch verification for this commit phase:
+        // Verify the sibling value against the commitment at the parent index.
 
         // e0 = select(bit, folded, e_sibling)
         let e0 = builder.select(sibling_is_right, folded, e_sibling);
@@ -194,7 +201,7 @@ fn compute_evaluation_point<F, EF>(
 ) -> Target
 where
     F: Field + TwoAdicField,
-    EF: ExtensionField<F> + TwoAdicField, // circuit field
+    EF: ExtensionField<F>,
 {
     // Build power-of-two ladder for two-adic generator g: [g, g^2, g^4, ...]
     let g = F::two_adic_generator(log_height);
@@ -253,30 +260,26 @@ fn compute_single_reduced_opening<EF: Field>(
     (current_alpha_pow, reduced_opening)
 }
 
-/// Compute reduced openings grouped **by height** with **per-height alpha powers**, as in the real verifier.
+/// Compute reduced openings grouped **by height** with **per-height alpha powers**,
 /// Returns a vector of (log_height, ro) sorted by descending height.
-///
-/// Notes:
-/// - `index_bits` is the full query index as little-endian bits; length must be `log_max_height`.
-/// - For each matrix (domain), bits_reduced = log_max_height - log_height;
-///   use the window of length `log_height`, then reverse those bits for the eval point.
 ///
 /// Reference (Plonky3): `p3_fri::verifier::open_input`
 #[allow(clippy::too_many_arguments)]
-fn compute_reduced_openings_by_height<F, EF>(
+fn open_input<F, EF, const BF_DIGEST_ELEMS: usize, const EF_DIGEST_ELEMS: usize>(
     builder: &mut CircuitBuilder<EF>,
-    batch_opened_values: &[Vec<Target>], // Opened values per matrix
-    domains_log_sizes: &[usize],         // Log size of each domain (base, before blowup)
-    challenge_points: &[Target],         // z per matrix
-    challenge_point_values: &[Vec<Target>], // f(z) per matrix (columns)
-    alpha: Target,                       // batch combination challenge
-    index_bits: &[Target],               // query index (little-endian)
-    log_blowup: usize,                   // blowup factor (log)
-    log_max_height: usize,               // global max height
+    log_global_max_height: usize,
+    index_bits: &[Target],
+    alpha: Target,
+    log_blowup: usize,
+    commitments_with_opening_points: &ComsWithOpeningsTargets<
+        HashTargets<F, EF, BF_DIGEST_ELEMS, EF_DIGEST_ELEMS>,
+        TwoAdicMultiplicativeCoset<F>,
+    >,
+    batch_opened_values: &[Vec<Vec<Target>>], // Per batch -> per matrix -> per column
 ) -> Vec<(usize, Target)>
 where
     F: Field + TwoAdicField,
-    EF: ExtensionField<F> + TwoAdicField,
+    EF: ExtensionField<F>,
 {
     // TODO(challenger): Indices should be sampled from a RecursiveChallenger, not passed in.
     for &b in index_bits {
@@ -284,50 +287,100 @@ where
     }
     debug_assert_eq!(
         index_bits.len(),
-        log_max_height,
-        "index_bits.len() must equal log_max_height"
+        log_global_max_height,
+        "index_bits.len() must equal log_global_max_height"
     );
 
     // height -> (alpha_pow_for_this_height, ro_sum_for_this_height)
-    let mut by_height: BTreeMap<usize, (Target, Target)> = BTreeMap::new();
+    let mut reduced_openings = BTreeMap::<usize, (Target, Target)>::new();
 
-    for (mat_idx, &log_domain_size) in domains_log_sizes.iter().enumerate() {
-        let log_height = log_domain_size + log_blowup;
-        let bits_reduced = log_max_height - log_height;
-
-        // Take the next log_height bits, then reverse to match reverse_bits_len semantics
-        let rev_bits: Vec<Target> = index_bits[bits_reduced..bits_reduced + log_height]
+    // Process each batch
+    for (batch_idx, ((batch_commit, mats), batch_openings)) in commitments_with_opening_points
+        .iter()
+        .zip(batch_opened_values.iter())
+        .enumerate()
+    {
+        // TODO: Add recursive MMCS verification here for this batch:
+        // Verify batch_openings against _batch_commit at the computed reduced_index.
+        let batch_heights = mats
             .iter()
-            .rev()
-            .copied()
-            .collect();
+            .map(|(domain, _)| domain.size() << log_blowup)
+            .collect_vec();
+        let batch_dims = batch_heights
+            .iter()
+            // TODO: MMCS doesn't really need width; we put 0 for now.
+            .map(|&height| Dimensions { width: 0, height })
+            .collect_vec();
 
-        // Compute evaluation point x in the circuit field using base field two-adic generator
-        let x = compute_evaluation_point::<F, EF>(builder, log_height, &rev_bits);
-
-        // Initialize / fetch per-height (alpha_pow, ro)
-        let (alpha_pow_h, ro_h) = by_height
-            .entry(log_height)
-            .or_insert((builder.add_const(EF::ONE), builder.add_const(EF::ZERO)));
-
-        // Compute this matrix's contribution to ro at this height
-        let (new_alpha_pow_h, ro_contrib) = compute_single_reduced_opening(
+        verify_batch_circuit(
             builder,
-            &batch_opened_values[mat_idx],
-            &challenge_point_values[mat_idx],
-            x,
-            challenge_points[mat_idx],
-            *alpha_pow_h,
-            alpha,
+            batch_commit,
+            &batch_dims,
+            index_bits,
+            batch_openings,
         );
 
-        // Accumulate and store updated per-height state
-        *ro_h = builder.add(*ro_h, ro_contrib);
-        *alpha_pow_h = new_alpha_pow_h;
+        assert_eq!(
+            mats.len(),
+            batch_openings.len(),
+            "batch {batch_idx}: mats count must match opened_values count"
+        );
+
+        // For each matrix in the batch
+        for (mat_idx, ((mat_domain, mat_points_and_values), mat_opening)) in
+            mats.iter().zip(batch_openings.iter()).enumerate()
+        {
+            let log_height = mat_domain.log_size() + log_blowup;
+
+            let bits_reduced = log_global_max_height - log_height;
+            let rev_bits: Vec<Target> = index_bits[bits_reduced..bits_reduced + log_height]
+                .iter()
+                .rev()
+                .copied()
+                .collect();
+
+            // Compute evaluation point x
+            let x = compute_evaluation_point::<F, EF>(builder, log_height, &rev_bits);
+
+            // Initialize / fetch per-height (alpha_pow, ro)
+            let (alpha_pow_h, ro_h) = reduced_openings
+                .entry(log_height)
+                .or_insert((builder.add_const(EF::ONE), builder.add_const(EF::ZERO)));
+
+            // Process each (z, ps_at_z) pair for this matrix
+            for (z, ps_at_z) in mat_points_and_values {
+                assert_eq!(
+                    mat_opening.len(),
+                    ps_at_z.len(),
+                    "batch {batch_idx} mat {mat_idx}: opened_values columns must match point_values columns"
+                );
+
+                let (new_alpha_pow_h, ro_contrib) = compute_single_reduced_opening(
+                    builder,
+                    mat_opening,
+                    ps_at_z,
+                    x,
+                    *z,
+                    *alpha_pow_h,
+                    alpha,
+                );
+
+                *ro_h = builder.add(*ro_h, ro_contrib);
+                *alpha_pow_h = new_alpha_pow_h;
+            }
+        }
+
+        // `reduced_openings` would have a log_height = log_blowup entry only if there was a
+        // trace matrix of height 1. In this case `f` is constant, so `(f(zeta) - f(x))/(zeta - x)`
+        // must equal `0`.
+        if let Some((_ap, ro0)) = reduced_openings.get(&log_blowup) {
+            let zero = builder.add_const(EF::ZERO);
+            builder.connect(*ro0, zero);
+        }
     }
 
     // Into descending (height, ro) list
-    by_height
+    reduced_openings
         .into_iter()
         .rev()
         .map(|(h, (_ap, ro))| (h, ro))
@@ -346,27 +399,40 @@ where
 ///
 /// Reference (Plonky3): `p3_fri::verifier::verify_fri`
 #[allow(clippy::too_many_arguments)]
-pub fn verify_fri_circuit<F, EF, RecMmcs, Inner, Witness>(
+pub fn verify_fri_circuit<
+    F,
+    EF,
+    RecMmcs,
+    Inner,
+    Witness,
+    const BF_DIGEST_ELEMS: usize,
+    const EF_DIGEST_ELEMS: usize,
+>(
     builder: &mut CircuitBuilder<EF>,
     fri_proof_targets: &FriProofTargets<F, EF, RecMmcs, InputProofTargets<F, EF, Inner>, Witness>,
-    mmcs: &RecMmcs,
     alpha: Target,
     betas: &[Target],
     index_bits_per_query: &[Vec<Target>],
-    // TODO: Change interface to accept `ComsWithOpeningsTargets`.
-    challenge_points: &[Target],
-    challenge_point_values: &[Vec<Target>],
-    domains_log_sizes: &[usize],
+    commitments_with_opening_points: &ComsWithOpeningsTargets<
+        HashTargets<F, EF, BF_DIGEST_ELEMS, EF_DIGEST_ELEMS>,
+        TwoAdicMultiplicativeCoset<F>,
+    >,
     log_blowup: usize,
 ) where
     F: Field + TwoAdicField,
-    EF: ExtensionField<F> + TwoAdicField,
+    EF: ExtensionField<F>,
     RecMmcs: RecursiveExtensionMmcs<F, EF>,
     Inner: RecursiveMmcs<F, EF>,
     Witness: Recursive<EF>,
 {
     let num_phases = betas.len();
     let num_queries = fri_proof_targets.query_proofs.len();
+    // Sanity: number of betas must match number of commit phases.
+    assert_eq!(
+        num_phases,
+        fri_proof_targets.commit_phase_commits.len(),
+        "betas length must equal number of commit-phase commitments"
+    );
     assert_eq!(
         num_queries,
         index_bits_per_query.len(),
@@ -391,22 +457,7 @@ pub fn verify_fri_circuit<F, EF, RecMmcs, Inner, Witness>(
     );
     let final_value = fri_proof_targets.final_poly[0];
 
-    // Extract opened_values per query from FriProofTargets (first batch).
-    let opened_values_per_query: Vec<&[Vec<Target>]> = fri_proof_targets
-        .query_proofs
-        .iter()
-        .map(|qp| &qp.input_proof[0].opened_values[..])
-        .collect();
-    // Shape checks
-    for opened_values in &opened_values_per_query {
-        assert_eq!(opened_values.len(), challenge_point_values.len());
-        assert_eq!(opened_values.len(), domains_log_sizes.len());
-        for row in opened_values.iter() {
-            assert!(!row.is_empty());
-        }
-    }
-
-    // 2) Precompute two-adic generator ladders for each phase (in circuit field EF).
+    // Precompute two-adic generator ladders for each phase (in circuit field EF).
     //
     // For phase i, folded height k = log_max_height - i - 1.
     // Use generator g = two_adic_generator(k + 1) and ladder [g^{2^0},...,g^{2^{k-1}}].
@@ -426,32 +477,28 @@ pub fn verify_fri_circuit<F, EF, RecMmcs, Inner, Witness>(
         })
         .collect();
 
-    // 3) For each query, compute reduced openings, build roll-ins, and perform fold chain
-    for q in 0..num_queries {
-        // Only support a single input batch ("round") for now.
-        let num_batches = fri_proof_targets.query_proofs[q].input_proof.len();
-        assert_eq!(
-            num_batches, 1,
-            "Only a single input batch (round) is supported for now",
-        );
+    // For each query, extract opened values from proof and compute reduced openings and fold.
+    for (q, query_proof) in fri_proof_targets.query_proofs.iter().enumerate() {
+        // Extract opened values from the input_proof (batch openings)
+        // Structure: Vec<BatchOpening> where each BatchOpening has Vec<Vec<Target>> (matrices -> columns)
+        let batch_opened_values: Vec<Vec<Vec<Target>>> = query_proof
+            .input_proof
+            .iter()
+            .map(|batch| batch.opened_values.clone())
+            .collect();
 
-        // TODO(mmcs): When recursive MMCS is wired, this step must *also* verify input batch openings.
-        let merkle_op_id =
-            builder.add_merkle_verify(&leaf_hash, &index_bits_per_query[q], &expected_root);
-
-        let reduced_by_height = compute_reduced_openings_by_height::<F, EF>(
+        // Arithmetic `open_input` to get (height, ro) descending
+        let reduced_by_height = open_input::<F, EF, BF_DIGEST_ELEMS, EF_DIGEST_ELEMS>(
             builder,
-            opened_values_per_query[q],
-            domains_log_sizes,
-            challenge_points,
-            challenge_point_values,
-            alpha,
-            &index_bits_per_query[q],
-            log_blowup,
             log_max_height,
+            &index_bits_per_query[q],
+            alpha,
+            log_blowup,
+            commitments_with_opening_points,
+            &batch_opened_values,
         );
 
-        // 3a) Must have at least the max-height entry
+        // Must have the max-height entry at the front
         assert!(
             !reduced_by_height.is_empty(),
             "No reduced openings; did you commit to zero polynomials?"
@@ -462,8 +509,7 @@ pub fn verify_fri_circuit<F, EF, RecMmcs, Inner, Witness>(
         );
         let initial_folded_eval = reduced_by_height[0].1;
 
-        // 3b) Sibling values for this query
-        let query_proof = &fri_proof_targets.query_proofs[q];
+        // Sibling values for this query (one per phase)
         let sibling_values: Vec<Target> = query_proof
             .commit_phase_openings
             .iter()
@@ -475,9 +521,10 @@ pub fn verify_fri_circuit<F, EF, RecMmcs, Inner, Witness>(
             "sibling_values must match number of betas/phases"
         );
 
-        // 3c) Build height-aligned roll-ins for each phase
+        // Build height-aligned roll-ins for each phase (desc heights -> phases)
         let mut roll_ins: Vec<Option<Target>> = vec![None; num_phases];
         for &(h, ro) in reduced_by_height.iter().skip(1) {
+            // height -> phase index mapping
             let i = log_max_height
                 .checked_sub(1)
                 .and_then(|x| x.checked_sub(h))
@@ -493,12 +540,13 @@ pub fn verify_fri_circuit<F, EF, RecMmcs, Inner, Witness>(
                 );
                 roll_ins[i] = Some(ro);
             } else {
+                // If a height is below final folded height, it should be unused; connect to zero.
                 let zero = builder.add_const(EF::ZERO);
                 builder.connect(ro, zero);
             }
         }
 
-        // 3d) Perform the fold chain and connect to the final constant value
+        // Perform the fold chain and connect to the (constant) final polynomial value
         verify_query_from_index_bits(
             builder,
             initial_folded_eval,
