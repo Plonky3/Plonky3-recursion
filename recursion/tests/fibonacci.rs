@@ -8,7 +8,9 @@ use p3_field::extension::BinomialExtensionField;
 use p3_field::{Field, PrimeCharacteristicRing};
 use p3_fri::{TwoAdicFriPcs, create_test_fri_params};
 use p3_merkle_tree::MerkleTreeMmcs;
-use p3_recursion::circuit_verifier::{ProofTargetsWithPVs, VerificationError, verify_circuit};
+use p3_recursion::circuit_verifier::{
+    ProofTargetsWithPVs, VerificationError, verify_circuit_no_lookups,
+};
 use p3_recursion::lookup::AirWithoutLookup;
 use p3_recursion::recursive_generation::generate_challenges;
 use p3_recursion::recursive_pcs::{
@@ -116,8 +118,9 @@ fn test_fibonacci_verifier() -> Result<(), VerificationError> {
         proof_targets: &proof_targets,
         public_values: &public_values,
     };
+
     // Add the verification circuit to the builder.
-    verify_circuit::<
+    verify_circuit_no_lookups::<
         MyConfig,
         HashTargets<F, DIGEST_ELEMS>,
         InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>>,
@@ -127,8 +130,6 @@ fn test_fibonacci_verifier() -> Result<(), VerificationError> {
         &air_no_lookups,
         &mut circuit_builder,
         &proof_targets_pvs,
-        &[],
-        &[],
     )?;
 
     // Build the circuit.

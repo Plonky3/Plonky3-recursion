@@ -8,9 +8,10 @@ use p3_circuit::utils::ColumnsTargets;
 use p3_field::Field;
 
 use crate::Target;
-use crate::recursive_traits::{Recursive, RecursiveAir, RecursiveLagrangeSelectors};
+use crate::recursive_traits::{RecursiveAir, RecursiveLagrangeSelectors};
 
-enum Direction {
+#[derive(Clone, Copy)]
+pub enum Direction {
     _Send,
     _Receive,
 }
@@ -21,13 +22,14 @@ pub struct Table {
 }
 
 /// Structure representing global lookups. The information contained in this structure is provided by the prover.
+#[derive(Clone)]
 pub struct GlobalLookup<'a> {
-    _table_idx: usize,                // table index
-    _perm_idx: usize,                 // index within the auxiliary lookup columns
-    _columns: &'a [Target],           // columns taking part in the lookup
-    _multiplicities: &'a [Target],    // multiplicities
+    _table_idx: usize,             // table index
+    _perm_idx: usize,              // index within the auxiliary lookup columns
+    _columns: &'a [Target],        // columns taking part in the lookup
+    _multiplicities: &'a [Target], // multiplicities
     _direction: Direction, // whether the multiplicities are positive (Receive) or negative (Send)
-    _expected_cumulative_sum: Target, // expected cumulative sum at the end of the trace
+    _expected_cumulative: Target, // target holding the expected cumulative value at the end of the trace
 }
 
 /// Structure representing local lookups. The information contained in this structure is provided by the prover.
@@ -70,23 +72,31 @@ pub struct LocalLookupColumns<'a> {
 /// Contains the columns required for a global lookup constraint evaluation.
 /// This structure is created from `LocalLookup` and opening values.
 pub struct GlobalLookupColumns<'a> {
+    // Indicates whether we should negate (Send) the multiplicities or not (Receive).
+    pub direction: Direction,
     /// Contains the core columns required for a lookup constraint evaluation.
     pub core_lookup_columns: LookupColumnsCore<'a>,
-    /// Evaluation of the cumulative sum at the last row of the main trace.
-    pub expected_cumulative_sum: Target,
+    /// Evaluation of the cumulative value at the last row of the main trace.
+    pub expected_cumulative: Target,
+}
+
+pub struct AllColumnTargets<'a> {
+    pub local_lookups: &'a [LocalLookup<'a>],
+    pub global_lookups: &'a [GlobalLookup<'a>],
+    pub columns_targets: &'a ColumnsTargets<'a>,
+    pub local_lookup_challenges: &'a [Vec<Target>],
+    pub global_lookup_challenges: &'a [Vec<Target>],
 }
 
 /// Trait containing lookup methods, so that we can verify both local and global lookups.
 /// Global lookups correspond to interactions between different tables, while local lookups correspond to
 /// lookups within a single table.
-pub trait RecursiveAirWithLookupVerification<F: Field, Comm: Recursive<F>>:
-    RecursiveAir<F>
-{
+pub trait RecursiveLookupVerification<F: Field> {
     /// Checks the update of the auxiliary lookup polynomials for global interations.
     /// It also checks that the final value of the auxiliary polynomial corresponds to the expected value.
     /// The method folds the associated constraints with the previously computed accumulator and returns the new accumulator.
     /// Note that global interactions correspond to interactions between different tables.
-    fn eval_global_constraints(
+    fn eval_global_update_constraints(
         &self,
         circuit: &mut CircuitBuilder<F>,
         sels: &RecursiveLagrangeSelectors,
@@ -94,6 +104,8 @@ pub trait RecursiveAirWithLookupVerification<F: Field, Comm: Recursive<F>>:
         alpha: &Target,
         // Permutation columns corresponding to the auxiliary columns used in the lookup argument, along with the looking and multiplicities columns.
         lookup_columns: &[GlobalLookupColumns],
+        // Challenges used in the lookup argument.
+        global_lookup_challenges: &[Vec<Target>],
         // Initial value of the accumulator.
         acc_start: Target,
     ) -> Target;
@@ -109,45 +121,68 @@ pub trait RecursiveAirWithLookupVerification<F: Field, Comm: Recursive<F>>:
         alpha: &Target,
         // Columns required to evaluate the constraints for the lookup argument.
         lookup_columns: &[LocalLookupColumns],
+        // Challenges used in the lookup argument.
+        local_lookup_challenges: &[Vec<Target>],
         // Initial value of the accumulator.
         acc_start: Target,
     ) -> Target;
 
-    #[allow(clippy::too_many_arguments)]
-    fn eval_folded_circuit(
+    /// Evaluates the local constraints as well as the global update constraints for a given `air` and slices of local and global lookups.
+    /// The method folds the associated constraints with the previously computed accumulator and returns the new accumulator.
+    fn eval_lookup_constraints(
         &self,
+        air: &dyn RecursivePermutationAir<F>,
         circuit: &mut CircuitBuilder<F>,
         sels: &RecursiveLagrangeSelectors,
+        // Folding challenge
         alpha: &Target,
-        local_lookups: &[LocalLookup],
-        global_lookups: &[GlobalLookup],
-        columns: ColumnsTargets,
+        // Columns required to evaluate the constraints for the lookup argument.
+        all_columns_targets: AllColumnTargets,
+        // Initial value of the accumulator.
         acc_start: Target,
     ) -> Target {
-        let mut folded_constraints = <Self as RecursiveAir<F>>::eval_folded_circuit(
-            self, circuit, sels, alpha, &columns, acc_start,
-        );
-        let (local_lookup_columns, global_lookup_columns) =
-            self.get_lookup_columns_from_all_cols(circuit, local_lookups, global_lookups, &columns);
+        let AllColumnTargets {
+            local_lookups,
+            global_lookups,
+            columns_targets,
+            local_lookup_challenges,
+            global_lookup_challenges,
+        } = all_columns_targets;
 
-        folded_constraints = self.eval_local_folded_circuit(
+        let (local_lookup_columns, global_lookup_columns) = air.get_lookup_columns_from_all_cols(
+            circuit,
+            local_lookups,
+            global_lookups,
+            columns_targets,
+        );
+
+        let folded_constraints = self.eval_local_folded_circuit(
             circuit,
             sels,
             alpha,
             &local_lookup_columns,
-            folded_constraints,
+            local_lookup_challenges,
+            acc_start,
         );
 
-        folded_constraints = self.eval_global_constraints(
+        self.eval_global_update_constraints(
             circuit,
             sels,
             alpha,
             &global_lookup_columns,
+            global_lookup_challenges,
             folded_constraints,
-        );
-
-        folded_constraints
+        )
     }
+
+    /// This method computes the final value of all global lookup arguments, and ensures it is correct. For `LogUp`, the final value is 0.
+    /// Since
+    fn eval_global_final_value(
+        &self,
+        circuit: &mut CircuitBuilder<F>,
+        global_lookups: &[GlobalLookup],
+        challenges: &[Vec<Target>],
+    );
 
     fn get_lookup_columns_from_all_cols(
         &self,
@@ -162,13 +197,34 @@ pub trait RecursiveAirWithLookupVerification<F: Field, Comm: Recursive<F>>:
     fn permutation(&self, circuit: &mut CircuitBuilder<F>, is_current: bool) -> Vec<Target>;
 
     /// Creates the targets for the local lookup challenges in the circuit.
-    fn get_challenges_circuit(
+    fn get_local_lookup_challenges_circuit(
         &self,
         circuit: &mut CircuitBuilder<F>,
         local_lookups: &[LocalLookup],
     ) -> Vec<Vec<Target>>;
+
+    /// Creates the targets for the global lookup challenges in the circuit.
+    fn get_global_lookup_challenges_circuit(
+        &self,
+        circuit: &mut CircuitBuilder<F>,
+        global_lookups: &[GlobalLookup],
+    ) -> Vec<Vec<Target>>;
 }
 
+pub trait RecursivePermutationAir<F: Field>: RecursiveAir<F> {
+    /// Returns the columns corresponding to the auxiliary permutation polynomials.
+    /// `is_current` indicates whether to return the columns evaluated at `zeta` or `next_zeta`.
+    fn permutation(&self, circuit: &mut CircuitBuilder<F>, is_current: bool) -> Vec<Target>;
+
+    /// Given `LocalLookup` and `GlobalLookup` structures, returns the columns required to evaluate the lookup constraints.
+    fn get_lookup_columns_from_all_cols(
+        &self,
+        circuit: &mut CircuitBuilder<F>,
+        local_lookups: &[LocalLookup],
+        global_lookups: &[GlobalLookup],
+        columns: &ColumnsTargets,
+    ) -> (Vec<LocalLookupColumns<'_>>, Vec<GlobalLookupColumns<'_>>);
+}
 /// Structure for any AIR that does not use lookups. We use it to provide a default implementation of the
 /// `RecursiveLookupVerification` trait.
 pub struct AirWithoutLookup<F: Field, A: RecursiveAir<F>> {
@@ -211,17 +267,22 @@ where
     }
 }
 
-impl<F: Field, Comm: Recursive<F>, A: RecursiveAir<F>> RecursiveAirWithLookupVerification<F, Comm>
-    for AirWithoutLookup<F, A>
-{
-    fn eval_global_constraints(
+pub struct NoLookup {}
+
+impl<F: Field> RecursiveLookupVerification<F> for NoLookup {
+    fn eval_global_update_constraints(
         &self,
         _circuit: &mut CircuitBuilder<F>,
         _sels: &RecursiveLagrangeSelectors,
         _alpha: &Target,
-        _lookup_columns: &[GlobalLookupColumns],
+        lookup_columns: &[GlobalLookupColumns],
+        _global_lookup_challenges: &[Vec<Target>],
         acc_start: Target,
     ) -> Target {
+        assert!(
+            lookup_columns.is_empty(),
+            "There is no support for lookups when using NoLookup."
+        );
         acc_start
     }
 
@@ -229,20 +290,50 @@ impl<F: Field, Comm: Recursive<F>, A: RecursiveAir<F>> RecursiveAirWithLookupVer
         &self,
         _circuit: &mut CircuitBuilder<F>,
         _sels: &RecursiveLagrangeSelectors,
+        // Folding challenge
         _alpha: &Target,
-        _lookup_columns: &[LocalLookupColumns],
+        // Columns required to evaluate the constraints for the lookup argument.
+        lookup_columns: &[LocalLookupColumns],
+        _local_lookup_challenges: &[Vec<Target>],
+        // Initial value of the accumulator.
         acc_start: Target,
     ) -> Target {
+        assert!(
+            lookup_columns.is_empty(),
+            "There is no support for lookups when using NoLookup."
+        );
         acc_start
+    }
+
+    fn eval_global_final_value(
+        &self,
+        _circuit: &mut CircuitBuilder<F>,
+        global_lookups: &[GlobalLookup],
+        _challenges: &[Vec<Target>],
+    ) {
+        // There are no lookups, so we do nothing.
+        assert!(
+            global_lookups.is_empty(),
+            "There is no support for lookups when using NoLookup."
+        );
     }
 
     fn get_lookup_columns_from_all_cols(
         &self,
         _circuit: &mut CircuitBuilder<F>,
-        _local_lookups: &[LocalLookup],
-        _global_lookups: &[GlobalLookup],
+        local_lookups: &[LocalLookup],
+        global_lookups: &[GlobalLookup],
         _columns: &ColumnsTargets,
     ) -> (Vec<LocalLookupColumns<'_>>, Vec<GlobalLookupColumns<'_>>) {
+        // There are no lookups, so we do nothing.
+        assert!(
+            global_lookups.is_empty(),
+            "There is no support for lookups when using NoLookup."
+        );
+        assert!(
+            local_lookups.is_empty(),
+            "There is no support for lookups when using NoLookup."
+        );
         (vec![], vec![])
     }
 
@@ -250,11 +341,52 @@ impl<F: Field, Comm: Recursive<F>, A: RecursiveAir<F>> RecursiveAirWithLookupVer
         vec![]
     }
 
-    fn get_challenges_circuit(
+    fn get_local_lookup_challenges_circuit(
         &self,
         _circuit: &mut CircuitBuilder<F>,
-        _local_lookups: &[LocalLookup],
+        local_lookups: &[LocalLookup],
     ) -> Vec<Vec<Target>> {
+        assert!(
+            local_lookups.is_empty(),
+            "There is no support for lookups when using NoLookup."
+        );
         vec![]
+    }
+
+    fn get_global_lookup_challenges_circuit(
+        &self,
+        _circuit: &mut CircuitBuilder<F>,
+        global_lookups: &[GlobalLookup],
+    ) -> Vec<Vec<Target>> {
+        assert!(
+            global_lookups.is_empty(),
+            "There is no support for lookups when using NoLookup."
+        );
+        vec![]
+    }
+}
+
+impl<F: Field, A: RecursiveAir<F>> RecursivePermutationAir<F> for AirWithoutLookup<F, A> {
+    fn permutation(&self, _circuit: &mut CircuitBuilder<F>, _is_current: bool) -> Vec<Target> {
+        vec![]
+    }
+
+    fn get_lookup_columns_from_all_cols(
+        &self,
+        _circuit: &mut CircuitBuilder<F>,
+        local_lookups: &[LocalLookup],
+        global_lookups: &[GlobalLookup],
+        _columns: &ColumnsTargets,
+    ) -> (Vec<LocalLookupColumns<'_>>, Vec<GlobalLookupColumns<'_>>) {
+        // There are no lookups, so we do nothing.
+        assert!(
+            global_lookups.is_empty(),
+            "There is no support for lookups when using an AIR without lookups."
+        );
+        assert!(
+            local_lookups.is_empty(),
+            "There is no support for lookups when using an AIR without lookups."
+        );
+        (vec![], vec![])
     }
 }

@@ -8,6 +8,7 @@ pub struct ProofChallengesTargets {
     pub zeta_next: Target,
     pub pcs_challenges: Vec<Target>,
     pub local_lookup_challenges: Vec<Vec<Target>>,
+    pub global_lookup_challenges: Vec<Vec<Target>>,
 }
 
 pub struct MultiProofChallenges {
