@@ -51,6 +51,9 @@ jobs:
       - name: Test
         run: cargo test --verbose
 
+      - name: Test examples
+        run: cargo test --verbose --examples
+
   check_embedded:
     name: Build embedded
     runs-on: ubuntu-latest
