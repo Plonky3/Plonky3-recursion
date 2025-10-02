@@ -11,7 +11,7 @@ use p3_circuit::utils::{RowSelectorsTargets, decompose_to_bits};
 use p3_commit::{BatchOpening, ExtensionMmcs, Mmcs, PolynomialSpace};
 use p3_field::coset::TwoAdicMultiplicativeCoset;
 use p3_field::{ExtensionField, Field, PackedValue, PrimeCharacteristicRing, TwoAdicField};
-use p3_fri::{CommitPhaseProofStep, FriProof, QueryProof, TwoAdicFriPcs};
+use p3_fri::{CommitPhaseProofStep, FriParameters, FriProof, QueryProof, TwoAdicFriPcs};
 use p3_merkle_tree::MerkleTreeMmcs;
 use p3_symmetric::{CryptographicHasher, Hash, PseudoCompressionFunction};
 use p3_uni_stark::{StarkGenericConfig, Val};
@@ -39,6 +39,21 @@ use crate::recursive_traits::{
 /// For Goldilocks (64-bit field), this would need to be increased, but that's not
 /// currently supported in the recursion circuit.
 pub const MAX_QUERY_INDEX_BITS: usize = 31;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FriVerifierParams {
+    pub log_blowup: usize,
+    pub log_final_poly_len: usize,
+}
+
+impl<M> From<&FriParameters<M>> for FriVerifierParams {
+    fn from(params: &FriParameters<M>) -> Self {
+        Self {
+            log_blowup: params.log_blowup,
+            log_final_poly_len: params.log_final_poly_len,
+        }
+    }
+}
 
 /// `Recursive` version of `FriProof`.
 pub struct FriProofTargets<
@@ -611,6 +626,7 @@ where
     SC::Challenger: GrindingChallenger,
     SC::Challenger: p3_challenger::CanObserve<FriMmcs::Commitment>,
 {
+    type VerifierParams = FriVerifierParams;
     type RecursiveProof = RecursiveFriProof<
         SC,
         RecursiveFriMmcs,
@@ -620,6 +636,7 @@ where
     fn get_challenges_circuit(
         circuit: &mut CircuitBuilder<SC::Challenge>,
         proof_targets: &crate::recursive_traits::ProofTargets<SC, Comm, Self::RecursiveProof>,
+        _params: &Self::VerifierParams,
     ) -> Vec<Target> {
         proof_targets.opening_proof.get_challenges(circuit)
     }
@@ -633,9 +650,12 @@ where
             TwoAdicMultiplicativeCoset<Val<SC>>,
         >,
         opening_proof: &Self::RecursiveProof,
-        log_blowup: usize,
-        log_final_poly_len: usize,
+        params: &Self::VerifierParams,
     ) {
+        let FriVerifierParams {
+            log_blowup,
+            log_final_poly_len,
+        } = *params;
         // Extract FRI challenges from the challenges slice.
         // Layout: [alpha, beta_0, ..., beta_{n-1}, query_0, ..., query_{m-1}]
         // where:

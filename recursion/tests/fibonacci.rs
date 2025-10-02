@@ -13,7 +13,8 @@ use p3_recursion::circuit_verifier::{
 };
 use p3_recursion::recursive_generation::generate_challenges;
 use p3_recursion::recursive_pcs::{
-    FriProofTargets, HashTargets, InputProofTargets, RecExtensionValMmcs, RecValMmcs, Witness,
+    FriProofTargets, FriVerifierParams, HashTargets, InputProofTargets, RecExtensionValMmcs,
+    RecValMmcs, Witness,
 };
 use p3_recursion::recursive_traits::{ProofTargets, Recursive};
 use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
@@ -49,9 +50,9 @@ fn test_fibonacci_verifier() -> Result<(), VerificationError> {
     let trace = generate_trace_rows::<F>(0, 1, n);
     let log_final_poly_len = 0;
     let fri_params = create_test_fri_params(challenge_mmcs, log_final_poly_len);
+    let fri_verifier_params = FriVerifierParams::from(&fri_params);
     let log_height_max = fri_params.log_final_poly_len + fri_params.log_blowup;
     let pow_bits = fri_params.proof_of_work_bits;
-    let log_blowup = fri_params.log_blowup;
     let pcs = MyPcs::new(dft, val_mmcs, fri_params);
     let challenger = Challenger::new(perm);
 
@@ -125,8 +126,7 @@ fn test_fibonacci_verifier() -> Result<(), VerificationError> {
         &mut circuit_builder,
         &proof_targets,
         &public_values,
-        log_blowup,
-        log_final_poly_len,
+        &fri_verifier_params,
     )?;
 
     // Build the circuit.
