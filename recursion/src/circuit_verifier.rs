@@ -397,11 +397,11 @@ mod tests {
     use itertools::Itertools;
     use p3_air::{Air, AirBuilder, BaseAir};
     use p3_baby_bear::{BabyBear, Poseidon2BabyBear};
-    use p3_challenger::{CanObserve, DuplexChallenger, FieldChallenger};
+    use p3_challenger::DuplexChallenger;
     use p3_circuit::CircuitBuilder;
     use p3_circuit::utils::RowSelectorsTargets;
+    use p3_commit::PolynomialSpace;
     use p3_commit::testing::TrivialPcs;
-    use p3_commit::{Pcs, PolynomialSpace};
     use p3_dft::{Radix2DitParallel, TwoAdicSubgroupDft};
     use p3_field::coset::TwoAdicMultiplicativeCoset;
     use p3_field::extension::BinomialExtensionField;
@@ -409,7 +409,6 @@ mod tests {
     use p3_matrix::Matrix;
     use p3_matrix::dense::RowMajorMatrix;
     use p3_uni_stark::{Domain, StarkConfig, StarkGenericConfig, Val, prove};
-    use p3_util::log2_strict_usize;
     use rand::distr::{Distribution, StandardUniform};
     use rand::rngs::SmallRng;
     use rand::{Rng, SeedableRng};
@@ -417,6 +416,9 @@ mod tests {
     use crate::Target;
     use crate::circuit_verifier::{ProofTargetsWithPVs, verify_circuit_no_lookups};
     use crate::lookup::AirWithoutLookup;
+    use crate::recursive_generation::{
+        ComsWithOpenings, GenerationError, PcsGeneration, generate_challenges,
+    };
     use crate::recursive_traits::{
         ComsWithOpeningsTargets, ProofTargets, Recursive, RecursiveLagrangeSelectors, RecursivePcs,
     };
@@ -567,6 +569,29 @@ mod tests {
         }
     }
 
+    impl<SC: StarkGenericConfig> PcsGeneration<SC, EmptyTarget>
+        for TrivialPcs<BabyBear, Radix2DitParallel<BabyBear>>
+    {
+        fn generate_challenges(
+            &self,
+            _config: &SC,
+            _challenger: &mut <SC as StarkGenericConfig>::Challenger,
+            _coms_to_verify: &ComsWithOpenings<SC>,
+            _opening_proof: &EmptyTarget,
+            // Depending on the `OpeningProof`, we might need additional parameters. For example, for a `FriProof`, we need the `log_max_height` to sample query indices.
+            _extra_params: Option<&[usize]>,
+        ) -> Result<Vec<SC::Challenge>, GenerationError> {
+            Ok(vec![])
+        }
+
+        fn num_challenges(
+            _opening_proof: &EmptyTarget,
+            _extra_params: Option<&[usize]>,
+        ) -> Result<usize, GenerationError> {
+            Ok(0)
+        }
+    }
+
     const REPETITIONS: usize = 20; // This should be < 255 so it can fit into a u8.
     const TRACE_WIDTH: usize = REPETITIONS * 3;
 
@@ -639,52 +664,6 @@ mod tests {
         }
     }
 
-    // TODO: Get rid of this by implementing PcsGeneration for TrivialPcs.
-    fn get_challenges<SC: StarkGenericConfig>(
-        config: &SC,
-        degree: usize,
-        trace_commit: &<SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment,
-        quotient_chunks: &<SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment,
-        random: &Option<<SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment>,
-    ) -> Vec<SC::Challenge> {
-        let log_degree = log2_strict_usize(degree);
-        let log_ext_degree = log_degree + config.is_zk();
-
-        let pcs = config.pcs();
-        let init_trace_domain = pcs.natural_domain_for_degree(degree >> (config.is_zk()));
-
-        // Initialize the PCS and the Challenger.
-        let mut challenger = config.initialise_challenger();
-
-        // Observe the instance.
-        // degree < 2^255 so we can safely cast log_degree to a u8.
-        challenger.observe(Val::<SC>::from_u8(log_ext_degree as u8));
-        challenger.observe(Val::<SC>::from_u8(log_degree as u8));
-        // TODO: Might be best practice to include other instance data here; see verifier comment.
-
-        // Observe the Merkle root of the trace commitment.
-        challenger.observe(trace_commit.clone());
-
-        // There are no public values to observe.
-        let alpha: SC::Challenge = challenger.sample_algebra_element();
-
-        challenger.observe(quotient_chunks.clone());
-
-        // We've already checked that commitments.random is present if and only if ZK is enabled.
-        // Observe the random commitment if it is present.
-        if let Some(r_commit) = random.clone() {
-            challenger.observe(r_commit);
-        }
-
-        // Get an out-of-domain point to open our values at.
-        //
-        // Soundness Error: dN/|EF| where `N` is the trace length and our constraint polynomial has degree `d`.
-        let zeta = challenger.sample_algebra_element();
-        let zeta_next = init_trace_domain.next_point(zeta).unwrap();
-
-        vec![alpha, zeta, zeta_next]
-    }
-
     #[test]
     fn test_mul_verifier_circuit() -> Result<(), String> {
         let log_n = 8;
@@ -717,13 +696,8 @@ mod tests {
 
         let mut proof = prove(&config, &air, trace, &vec![]);
 
-        let challenges = get_challenges(
-            &config,
-            1 << log_n,
-            &proof.commitments.trace,
-            &proof.commitments.quotient_chunks,
-            &proof.commitments.random,
-        );
+        let challenges = generate_challenges(&air, &config, &proof, &[], None)
+            .map_err(|e| format!("Error when generating challenges {e:?}"))?;
 
         proof.commitments.random = None;
         proof.commitments.quotient_chunks = vec![];

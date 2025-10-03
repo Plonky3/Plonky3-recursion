@@ -24,9 +24,9 @@ pub struct Table {
 /// Structure representing global lookups. The information contained in this structure is provided by the prover.
 #[derive(Clone)]
 pub struct GlobalLookup<'a> {
-    _table_idx: usize,             // table index
-    _perm_idx: usize,              // index within the auxiliary lookup columns
-    _columns: &'a [Target],        // columns taking part in the lookup
+    _name: String, // name of the interaction: used to group together members of the same interaction
+    _perm_idx: usize, // index within the auxiliary lookup columns
+    _columns: &'a [Target], // columns taking part in the lookup
     _multiplicities: &'a [Target], // multiplicities
     _direction: Direction, // whether the multiplicities are positive (Receive) or negative (Send)
     _expected_cumulative: Target, // target holding the expected cumulative value at the end of the trace
@@ -209,8 +209,22 @@ pub trait RecursiveLookupVerification<F: Field> {
         circuit: &mut CircuitBuilder<F>,
         global_lookups: &[GlobalLookup],
     ) -> Vec<Vec<Target>>;
+
+    /// Returns the number of challenges required for the local lookup arguments;
+    fn num_local_lookup_challenges(&self, local_lookups: &[LocalLookup]) -> usize;
+
+    /// Returns the number of challenges required for the global lookup arguments;
+    fn num_global_lookup_challenges(&self, global_lookups: &[GlobalLookup]) -> usize;
+
+    /// Generates challenges for the global lookup.
+    fn generate_global_lookup_challenges<Challenger>(
+        &self,
+        challenger: &mut Challenger,
+        global_lookups: &[GlobalLookup],
+    ) -> Vec<Vec<F>>;
 }
 
+/// Trait for `RecursiveAir`s that support lookups.
 pub trait RecursivePermutationAir<F: Field>: RecursiveAir<F> {
     /// Returns the columns corresponding to the auxiliary permutation polynomials.
     /// `is_current` indicates whether to return the columns evaluated at `zeta` or `next_zeta`.
@@ -225,6 +239,7 @@ pub trait RecursivePermutationAir<F: Field>: RecursiveAir<F> {
         columns: &ColumnsTargets,
     ) -> (Vec<LocalLookupColumns<'_>>, Vec<GlobalLookupColumns<'_>>);
 }
+
 /// Structure for any AIR that does not use lookups. We use it to provide a default implementation of the
 /// `RecursiveLookupVerification` trait.
 pub struct AirWithoutLookup<F: Field, A: RecursiveAir<F>> {
@@ -362,6 +377,27 @@ impl<F: Field> RecursiveLookupVerification<F> for NoLookup {
             global_lookups.is_empty(),
             "There is no support for lookups when using NoLookup."
         );
+        vec![]
+    }
+
+    fn num_local_lookup_challenges(&self, _local_lookups: &[LocalLookup]) -> usize {
+        0
+    }
+
+    fn num_global_lookup_challenges(&self, _local_lookups: &[GlobalLookup]) -> usize {
+        0
+    }
+
+    fn generate_global_lookup_challenges<Challenger>(
+        &self,
+        _challenger: &mut Challenger,
+        global_lookups: &[GlobalLookup],
+    ) -> Vec<Vec<F>> {
+        assert!(
+            global_lookups.is_empty(),
+            "There is no support for lookups when using NoLookup."
+        );
+
         vec![]
     }
 }
