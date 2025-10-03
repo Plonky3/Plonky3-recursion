@@ -2,8 +2,8 @@
 
 use alloc::vec;
 use alloc::vec::Vec;
+use core::iter;
 use core::marker::PhantomData;
-use core::{array, iter};
 
 use p3_challenger::GrindingChallenger;
 use p3_circuit::CircuitBuilder;
@@ -378,7 +378,7 @@ impl<F: Field, EF: ExtensionField<F>, Inner: RecursiveMmcs<F, EF>> Recursive<EF>
 /// `HashTargets` corresponds to a commitment in the form of hashes with `DIGEST_ELEMS` digest elements.
 #[derive(Clone)]
 pub struct HashTargets<F, const DIGEST_ELEMS: usize> {
-    pub hash_targets: [Target; DIGEST_ELEMS],
+    pub hash_targets: Vec<Target>,
     _phantom: PhantomData<F>,
 }
 
@@ -395,14 +395,26 @@ impl<F: Field, EF: ExtensionField<F>, const DIGEST_ELEMS: usize> Recursive<EF>
         _lens: &mut impl Iterator<Item = usize>,
         _degree_bits: usize,
     ) -> Self {
+        // DIGEST_ELEMS must be a multiple of the extension degree so that a hash can be packed
+        // into extension field elements.
+        assert_eq!(DIGEST_ELEMS % EF::DIMENSION, 0);
         Self {
-            hash_targets: array::from_fn(|_| circuit.add_public_input()),
+            hash_targets: (0..DIGEST_ELEMS / EF::DIMENSION)
+                .map(|_| circuit.add_public_input())
+                .collect(),
             _phantom: PhantomData,
         }
     }
 
     fn get_values(input: &Self::Input) -> Vec<EF> {
-        input.into_iter().map(|v| EF::from(v)).collect()
+        let array: [F; DIGEST_ELEMS] = (*input).into();
+        array
+            .chunks_exact(EF::DIMENSION)
+            .map(|v| {
+                EF::from_basis_coefficients_slice(v)
+                    .expect("The size of each chunk is the extension degree")
+            })
+            .collect()
     }
 
     fn num_challenges(&self) -> usize {
@@ -416,7 +428,7 @@ impl<F: Field, EF: ExtensionField<F>, const DIGEST_ELEMS: usize> Recursive<EF>
 
 /// `HashProofTargets` corresponds to a Merkle tree `Proof` in the form of a vector of hashes with `DIGEST_ELEMS` digest elements.
 pub struct HashProofTargets<F, const DIGEST_ELEMS: usize> {
-    pub hash_proof_targets: Vec<[Target; DIGEST_ELEMS]>,
+    pub hash_proof_targets: Vec<Vec<Target>>,
     _phantom: PhantomData<F>,
 }
 
@@ -432,10 +444,15 @@ impl<F: Field, EF: ExtensionField<F>, const DIGEST_ELEMS: usize> Recursive<EF>
         lens: &mut impl Iterator<Item = usize>,
         _degree_bits: usize,
     ) -> Self {
+        assert_eq!(DIGEST_ELEMS % EF::DIMENSION, 0);
         let proof_len = lens.next().unwrap();
         let mut proof = Vec::with_capacity(proof_len);
         for _ in 0..proof_len {
-            proof.push(array::from_fn(|_| circuit.add_public_input()));
+            proof.push(
+                (0..DIGEST_ELEMS / EF::DIMENSION)
+                    .map(|_| circuit.add_public_input())
+                    .collect(),
+            );
         }
 
         Self {
@@ -447,7 +464,12 @@ impl<F: Field, EF: ExtensionField<F>, const DIGEST_ELEMS: usize> Recursive<EF>
     fn get_values(input: &Self::Input) -> Vec<EF> {
         input
             .iter()
-            .flat_map(|h| h.iter().map(|v| EF::from(*v)))
+            .flat_map(|h| {
+                h.chunks_exact(EF::DIMENSION).map(|v| {
+                    EF::from_basis_coefficients_slice(v)
+                        .expect("The size of each chunk is the extension degree")
+                })
+            })
             .collect()
     }
 
