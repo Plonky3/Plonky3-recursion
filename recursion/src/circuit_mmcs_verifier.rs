@@ -24,9 +24,9 @@ use crate::recursive_pcs::HashTargets;
 ///   with index `(index << i) ^ 1`.
 ///
 /// Returns the new merkle_verify gate, otherwise returns an error.
-pub fn verify_batch_circuit<F, EF, const BF_DIGEST_ELEMS: usize, const EF_DIGEST_ELEMS: usize>(
+pub fn verify_batch_circuit<F, EF, const DIGEST_ELEMS: usize>(
     circuit: &mut CircuitBuilder<EF>,
-    commitment: &HashTargets<F, EF, BF_DIGEST_ELEMS, EF_DIGEST_ELEMS>,
+    commitment: &HashTargets<F, DIGEST_ELEMS>,
     dimensions: &[Dimensions],
     index_bits: &[Target],
     opened_values: &[Vec<Target>],
@@ -78,26 +78,24 @@ where
 
     // Hash all matrix openings at the current height.
     // TODO: The root should be the hash of all matrix openings at the current height.
-    let leaf: [Target; EF_DIGEST_ELEMS] = heights_tallest_first
+    let leaf: Vec<Target> = heights_tallest_first
         .peeking_take_while(|(_, dims)| dims.height.next_power_of_two() == curr_height_padded)
         .map(|(i, _)| {
-            if opened_values[i].len() < EF_DIGEST_ELEMS {
+            if opened_values[i].len() < DIGEST_ELEMS / EF::DIMENSION {
                 let mut padded_values = opened_values[i].clone();
                 padded_values.extend(
-                    (0..(EF_DIGEST_ELEMS - opened_values[i].len()))
+                    (0..(DIGEST_ELEMS / EF::DIMENSION - opened_values[i].len()))
                         .map(|_| circuit.add_const(EF::ZERO)),
                 );
                 padded_values
-            } else if opened_values[i].len() > EF_DIGEST_ELEMS {
-                opened_values[i][0..EF_DIGEST_ELEMS].to_vec()
+            } else if opened_values[i].len() > DIGEST_ELEMS / EF::DIMENSION {
+                opened_values[i][0..DIGEST_ELEMS].to_vec()
             } else {
                 opened_values[i].clone()
             }
         })
         .collect::<Vec<Vec<Target>>>()[0]
-        .clone()
-        .try_into()
-        .expect("The size of the array is correct by construction");
+        .clone();
 
     circuit.add_merkle_verify(&leaf, index_bits, &commitment.hash_targets)
 }

@@ -265,14 +265,14 @@ fn compute_single_reduced_opening<EF: Field>(
 ///
 /// Reference (Plonky3): `p3_fri::verifier::open_input`
 #[allow(clippy::too_many_arguments)]
-fn open_input<F, EF, const BF_DIGEST_ELEMS: usize, const EF_DIGEST_ELEMS: usize>(
+fn open_input<F, EF, const DIGEST_ELEMS: usize>(
     builder: &mut CircuitBuilder<EF>,
     log_global_max_height: usize,
     index_bits: &[Target],
     alpha: Target,
     log_blowup: usize,
     commitments_with_opening_points: &ComsWithOpeningsTargets<
-        HashTargets<F, EF, BF_DIGEST_ELEMS, EF_DIGEST_ELEMS>,
+        HashTargets<F, DIGEST_ELEMS>,
         TwoAdicMultiplicativeCoset<F>,
     >,
     batch_opened_values: &[Vec<Vec<Target>>], // Per batch -> per matrix -> per column
@@ -399,22 +399,14 @@ where
 ///
 /// Reference (Plonky3): `p3_fri::verifier::verify_fri`
 #[allow(clippy::too_many_arguments)]
-pub fn verify_fri_circuit<
-    F,
-    EF,
-    RecMmcs,
-    Inner,
-    Witness,
-    const BF_DIGEST_ELEMS: usize,
-    const EF_DIGEST_ELEMS: usize,
->(
+pub fn verify_fri_circuit<F, EF, RecMmcs, Inner, Witness, const DIGEST_ELEMS: usize>(
     builder: &mut CircuitBuilder<EF>,
     fri_proof_targets: &FriProofTargets<F, EF, RecMmcs, InputProofTargets<F, EF, Inner>, Witness>,
     alpha: Target,
     betas: &[Target],
     index_bits_per_query: &[Vec<Target>],
     commitments_with_opening_points: &ComsWithOpeningsTargets<
-        HashTargets<F, EF, BF_DIGEST_ELEMS, EF_DIGEST_ELEMS>,
+        HashTargets<F, DIGEST_ELEMS>,
         TwoAdicMultiplicativeCoset<F>,
     >,
     log_blowup: usize,
@@ -488,7 +480,7 @@ pub fn verify_fri_circuit<
             .collect();
 
         // Arithmetic `open_input` to get (height, ro) descending
-        let reduced_by_height = open_input::<F, EF, BF_DIGEST_ELEMS, EF_DIGEST_ELEMS>(
+        let reduced_by_height = open_input::<F, EF, DIGEST_ELEMS>(
             builder,
             log_max_height,
             &index_bits_per_query[q],

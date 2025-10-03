@@ -49,7 +49,12 @@ jobs:
         run: cargo build --verbose --all-targets
 
       - name: Test
-        run: cargo test --verbose
+        run: cargo test --verbose --all-targets
+
+      - name: Run examples
+        run: |
+          cargo run --package p3-circuit-prover --example fibonacci
+          cargo run --package p3-circuit-prover --example fake_merkle_verify
 
   check_embedded:
     name: Build embedded

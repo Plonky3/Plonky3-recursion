@@ -16,6 +16,18 @@ use crate::recursive_traits::{
     CommitmentTargets, OpenedValuesTargets, ProofTargets, Recursive, RecursiveAir, RecursivePcs,
 };
 
+type PcsVerifierParams<SC, InputProof, OpeningProof, Comm> =
+    <<SC as StarkGenericConfig>::Pcs as RecursivePcs<
+        SC,
+        InputProof,
+        OpeningProof,
+        Comm,
+        <<SC as StarkGenericConfig>::Pcs as Pcs<
+            <SC as StarkGenericConfig>::Challenge,
+            <SC as StarkGenericConfig>::Challenger,
+        >>::Domain,
+    >>::VerifierParams;
+
 #[derive(Debug, Error)]
 pub enum VerificationError {
     #[error("Invalid proof shape")]
@@ -43,6 +55,7 @@ fn get_circuit_challenges<
 >(
     proof_targets: &ProofTargets<SC, Comm, OpeningProof>,
     circuit: &mut CircuitBuilder<SC::Challenge>,
+    pcs_params: &PcsVerifierParams<SC, InputProof, OpeningProof, Comm>,
 ) -> Vec<Target>
 where
     SC::Pcs: RecursivePcs<
@@ -65,7 +78,7 @@ where
     challenges.push(circuit.add_public_input());
     challenges.push(circuit.add_public_input());
 
-    let pcs_challenges = SC::Pcs::get_challenges_circuit(circuit, proof_targets);
+    let pcs_challenges = SC::Pcs::get_challenges_circuit(circuit, proof_targets, pcs_params);
 
     challenges.extend(pcs_challenges);
 
@@ -132,7 +145,7 @@ where
 /// - `circuit`: Circuit builder to add verification constraints to
 /// - `proof_targets`: Recursive representation of the proof
 /// - `public_values`: Public input targets
-/// - `log_blowup`: Log2 of the blowup factor used in the FRI PCS
+/// - `pcs_params`: PCS-specific verifier parameters (e.g. FRI's log blowup / final poly size)
 ///
 /// # Returns
 /// `Ok(())` if the circuit was successfully constructed, `Err` otherwise.
@@ -151,8 +164,7 @@ pub fn verify_circuit<
     circuit: &mut CircuitBuilder<SC::Challenge>,
     proof_targets: &ProofTargets<SC, Comm, OpeningProof>,
     public_values: &[Target],
-    log_blowup: usize,
-    log_final_poly_len: usize,
+    pcs_params: &PcsVerifierParams<SC, InputProof, OpeningProof, Comm>,
 ) -> Result<(), VerificationError>
 where
     A: RecursiveAir<SC::Challenge>,
@@ -201,7 +213,11 @@ where
         .collect_vec();
 
     // Challenger is called here. But we don't have the interactions or hash tables yet.
-    let challenge_targets = get_circuit_challenges(proof_targets, circuit);
+    let challenge_targets = get_circuit_challenges::<SC, Comm, InputProof, OpeningProof>(
+        proof_targets,
+        circuit,
+        pcs_params,
+    );
 
     // Verify shape.
     let air_width = A::width(air);
@@ -258,8 +274,7 @@ where
         &challenge_targets[3..],
         &coms_to_verify,
         opening_proof,
-        log_blowup,
-        log_final_poly_len,
+        pcs_params,
     );
 
     let zero = circuit.add_const(SC::Challenge::ZERO);
@@ -442,11 +457,13 @@ mod tests {
         Val<SC>: TwoAdicField,
         Dft: TwoAdicSubgroupDft<Val<SC>>,
     {
+        type VerifierParams = ();
         type RecursiveProof = EmptyTarget;
 
         fn get_challenges_circuit(
             _circuit: &mut CircuitBuilder<<SC as StarkGenericConfig>::Challenge>,
             _proof_targets: &crate::recursive_traits::ProofTargets<SC, Comm, EmptyTarget>,
+            _params: &Self::VerifierParams,
         ) -> vec::Vec<Target> {
             vec![]
         }
@@ -460,8 +477,7 @@ mod tests {
                 TwoAdicMultiplicativeCoset<Val<SC>>,
             >,
             _opening_proof: &EmptyTarget,
-            _log_blowup: usize,
-            _log_final_poly_len: usize,
+            _params: &Self::VerifierParams,
         ) {
         }
 
@@ -725,8 +741,7 @@ mod tests {
             &mut circuit_builder,
             &proof_targets,
             &[],
-            0,
-            0,
+            &(),
         )
         .map_err(|e| format!("{e:?}"))?;
 
