@@ -16,7 +16,7 @@ use p3_commit::ExtensionMmcs;
 use p3_dft::Radix2DitParallel as Dft;
 use p3_field::extension::{BinomialExtensionField, BinomiallyExtendable};
 use p3_field::{Field, PrimeCharacteristicRing, PrimeField64, TwoAdicField};
-use p3_fri::{TwoAdicFriPcs as Pcs, create_test_fri_params};
+use p3_fri::{TwoAdicFriPcs as Pcs, create_benchmark_fri_params};
 use p3_merkle_tree::MerkleTreeMmcs;
 use p3_symmetric::{
     CryptographicPermutation, PaddingFreeSponge as MyHash, TruncatedPermutation as MyCompress,
