@@ -87,7 +87,7 @@ where
     let challenge_mmcs = ChallengeMmcs::<F, P, CD>::new(val_mmcs.clone());
 
     let dft = Dft::<F>::default();
-    let fri_params = create_test_fri_params::<ChallengeMmcs<F, P, CD>>(challenge_mmcs, 0);
+    let fri_params = create_benchmark_fri_params::<ChallengeMmcs<F, P, CD>>(challenge_mmcs);
     let pcs = Pcs::<F, _, _, _>::new(dft, val_mmcs, fri_params);
 
     let challenger = Challenger::<F, P, 16, 8>::new(perm);
