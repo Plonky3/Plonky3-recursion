@@ -514,21 +514,17 @@ mod tests {
     }
 
     #[test]
+    // Proves that we know x such that 37 * x - 111 = 0
     fn test_toy_example_37_times_x_minus_111() {
         let mut builder = CircuitBuilder::<BabyBear>::new();
 
         let x = builder.add_public_input();
         let c37 = builder.add_const(BabyBear::from_u64(37));
         let c111 = builder.add_const(BabyBear::from_u64(111));
-        let c1 = builder.add_const(BabyBear::from_u64(1));
 
         let mul_result = builder.mul(c37, x);
         let sub_result = builder.sub(mul_result, c111);
         builder.assert_zero(sub_result);
-
-        let div_result = builder.div(mul_result, c111);
-        let sub_one = builder.sub(div_result, c1);
-        builder.assert_zero(sub_one);
 
         let circuit = builder.build().unwrap();
         println!("=== CIRCUIT PRIMITIVE OPERATIONS ===");
@@ -608,24 +604,21 @@ mod tests {
         // Verify trace structure
         assert_eq!(traces.witness_trace.index.len(), witness_count as usize);
 
-        // Should have constants: 37, 111, 1 and 0 (for assert_zero)
-        assert!(traces.const_trace.values.len() >= 4);
+        // Should have constants: 0, 37, 111
+        assert_eq!(traces.const_trace.values.len(), 3);
 
         // Should have one public input
         assert_eq!(traces.public_trace.values.len(), 1);
         assert_eq!(traces.public_trace.values[0], BabyBear::from_u64(3));
 
-        // Should have two mul operations (explicit Mul and Div lowering to Mul with inverse)
-        assert_eq!(traces.mul_trace.lhs_values.len(), 2);
+        // Should have one mul operation: 37 * x
+        assert_eq!(traces.mul_trace.lhs_values.len(), 1);
 
-        // Encoded subtractions land in the add table (result + rhs = lhs).
-        assert_eq!(traces.add_trace.lhs_values.len(), 2);
-        assert_eq!(traces.add_trace.lhs_index, vec![WitnessId(2), WitnessId(3)]);
-        assert_eq!(traces.add_trace.rhs_index, vec![WitnessId(0), WitnessId(0)]);
-        assert_eq!(
-            traces.add_trace.result_index,
-            vec![WitnessId(5), WitnessId(6)]
-        );
+        // Encoded subtraction lands in the add table (result + rhs = lhs).
+        assert_eq!(traces.add_trace.lhs_values.len(), 1);
+        assert_eq!(traces.add_trace.lhs_index, vec![WitnessId(2)]);
+        assert_eq!(traces.add_trace.rhs_index, vec![WitnessId(0)]);
+        assert_eq!(traces.add_trace.result_index, vec![WitnessId(4)]);
     }
 
     #[test]
