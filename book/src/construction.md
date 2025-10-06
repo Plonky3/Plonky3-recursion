@@ -69,7 +69,7 @@ We then need to lower these `Target`s to the IR, thus allocating actual slots in
 
 The computation graph that represents all primitive and nonprimitive operations in the IR is called `circuit`. 
 
-A `circuit_builder` provides convenient helper functions and macros for representing and defining operations within this graph. See section "Circuit Building" for more details on how to build a circuit.
+A `circuit_builder` provides convenient helper functions and macros for representing and defining operations within this graph. See section "Building Circuits" for more details on how to build a circuit.
 
 ## Witness Table
 
