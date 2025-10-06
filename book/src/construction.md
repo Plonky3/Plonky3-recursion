@@ -40,23 +40,28 @@ This IR is *not itself proved*, but will be used as source of truth between prov
 The actual soundness comes from the constraints inside the operation-specific STARK chips along with an aggregated lookup argument ensuring consistency of the common values they operate on.
 The lookups can be seen as representing the `READ`/`WRITE` operations from/to the witness table.
 
-The example below represents the (fixed) IR associated to the statement `37.x - 111 = 0`, where `x` is a public input.
-A given row of the represented IR contains an operation and its associated operands, i.e.:
-
-- `MUL 0 1 2` corresponds to `W[2] <- W[0].W[1]`, where `W[i]` represents the value stored at index `i`
-of the associated Witness table / Memory bus
-- `CONST 4 0` corresponds to `W[4] <- 0`
+The example below represents the (fixed) IR associated to the statement `37.x - 111 = 0`, where `x` is a public input. It can be reproduced by running
 
 ```bash
-         OP  X  Y  Z
-----------------------
-PUBLIC_INPUT 0
-       CONST 1 37
-       CONST 3 111
-       CONST 4  0
-        MUL  0  1  2
-        SUB  2  3  4
+cargo test --package p3-circuit --lib -- tables::tests::test_toy_example_37_times_x_minus_111 --exact --show-output
 ```
+
+A given row of the represented IR contains an operation and its associated operands. 
+
+```bash
+=== CIRCUIT PRIMITIVE OPERATIONS ===
+0: Const { out: WitnessId(0), val: 0 }
+1: Const { out: WitnessId(1), val: 37 }
+2: Const { out: WitnessId(2), val: 111 }
+3: Const { out: WitnessId(3), val: 1 }
+4: Public { out: WitnessId(4), public_pos: 0 }
+5: Mul { a: WitnessId(1), b: WitnessId(4), out: WitnessId(5) }
+6: Add { a: WitnessId(2), b: WitnessId(0), out: WitnessId(5) }
+7: Mul { a: WitnessId(2), b: WitnessId(6), out: WitnessId(5) }
+8: Add { a: WitnessId(3), b: WitnessId(0), out: WitnessId(6) }
+```
+
+i.e. the operation at index 5 will perform `w[5] <- w[1] * w[4]`.
 
 
 ## Witness Table
@@ -70,12 +75,14 @@ the different chips via lookups to enforce consistency.
 From the fixed IR of the example above, we can deduce an associated `Witness` table as follows:
 
 ```bash
-IDX: VAL
-  0:  3     // public input x
-  1: 37     // constant
-  2: 111    // p = 37 * x
-  3: 111    // constant
-  4:  0     // constant (y = p - 111)
+=== WITNESS TRACE ===
+Row 0: WitnessId(w0) = 0
+Row 1: WitnessId(w1) = 37
+Row 2: WitnessId(w2) = 111
+Row 3: WitnessId(w3) = 1
+Row 4: WitnessId(w4) = 3
+Row 5: WitnessId(w5) = 111
+Row 6: WitnessId(w6) = 1
 ```
 
 Note that the initial version of the recursion machine, for the sake of simplicity and ease of iteration, contains a `Witness` table. However, because the verifier effectively knows the order of
@@ -99,24 +106,28 @@ non-primitive chips and plug them at runtime.
 
 Going back to the previous example, prover and verifier can agree on the following logic for each chip:
 
-- `PublicInput` chip (`index` preprocessed)
-  - **Purpose**: bind index=0 to the declared public input x.
-  - **Lookup**: (0, x) must appear in the `Witness` table; also exposed as a public value.
+```bash
+=== CONST TRACE ===
+Row 0: WitnessId(w0) = 0
+Row 1: WitnessId(w1) = 37
+Row 2: WitnessId(w2) = 111
+Row 3: WitnessId(w3) = 1
 
-- `CONST` chip (Fully preprocessed)
-  - Preprocessed rows: `(1, 37), (3, 111), (4, 0)`
-  - **Lookup**: each preprocessed pair must be present in the `Witness` table.
+=== PUBLIC TRACE ===
+Row 0: WitnessId(w4) = 3
 
-- `MUL` chip (`index` preprocessed)
-  - **Lookup**: `(0, x)`, `(1, 37)` as inputs; `(2, p)` as output.
-  - **AIR**: x * 37 = p.
+=== MUL TRACE ===
+Row 0: WitnessId(w1) * WitnessId(w4) -> WitnessId(w5) | 37 * 3 -> 111
+Row 1: WitnessId(w2) * WitnessId(w6) -> WitnessId(w5) | 111 * 1 -> 111
 
-- `ADD` chip (`index` preprocessed)
-  - **Lookup**: `(4, y)`, `(3, 111)` as inputs; `(2, p)` as output.
-  - **AIR**: y + 111 = p (corresponding to p - 111 = y)
+=== ADD TRACE ===
+Row 0: WitnessId(w2) + WitnessId(w0) -> WitnessId(w5) | 111 + 0 -> 111
+Row 1: WitnessId(w3) + WitnessId(w0) -> WitnessId(w6) | 1 + 0 -> 1
+```
 
-Having the `CONST` chip entirely preprocessed (i.e. known to the verifier), as well as all `index` columns of the chips directly stems from the fact that we started
-from a known, fixed program that has been lowered to an IR.
+Note that because we started from a known, fixed program that has been lowered to a deterministic IR, we can have the `CONST` chip's table entirely preprocessed
+(i.e. known to the verifier), as well as all `index` columns of the other primitive chips.
+
 
 
 ## Lookups
@@ -125,17 +136,20 @@ All chips interactions are performed via a lookup argument against the central `
 
 Using the terms `SEND` and `RECEIVE`, we can go back to the previous example and illustrate the interactions between all the chips and the central `Witness` table[^2]:
 
+
 ```bash
-  0:  3     // RECEIVE from PublicInput table, SEND to MUL table
+  0:  0     // RECEIVE from CONST table, SEND to ADD table
   1: 37     // RECEIVE from CONST table, SEND to MUL table
-  2: 111    // RECEIVE from ADD and MUL tables
-  3: 111    // RECEIVE from CONST table, SEND to ADD table
-  4:  0     // RECEIVE from CONST table, SEND to ADD table
+  2: 111    // RECEIVE from CONST table, SEND to ADD and MUL tables
+  3:  1     // RECEIVE from CONST table, SEND to ADD table
+  4:  3     // RECEIVE from PublicInput table, SEND to MUL table
+  5: 111    // RECEIVE from ADD and MUL tables
+  6:  1     // RECEIVE from ADD table, SEND to MUL table
 ```
 
 
 [^1]: Preprocessed columns / polynomials can be reconstructed manually by the verifier, removing the need for a prover to commit to them and later perform the FRI protocol on them. However, the verifier needs $O(n)$ work when these columns are not structured, as it still needs to interpolate them. To alleviate this, the Plonky3 recursion stack performs *offline* commitment of unstructured preprocessed columns, so that we need only one instance of the FRI protocol to verify all preprocessed columns evaluations. 
 
 [^2]: We can see that both `ADD` and `MUL` tables are *writing* the output of one of their operations at the *same* location of the `Witness` table.
-As the latter can be seen as a *read-only* / *write-once* memory bus, having two identical lookup entries `(2, 111)` against the `Witness` table
+As the latter can be seen as a *read-only* / *write-once* memory bus, having two identical lookup writes `w5 = 111` to the `Witness` table
 effectively enforces equality on both outputs sharing the same witness location, which translates in our example to `37.3 = 111 = 0 + 111`
