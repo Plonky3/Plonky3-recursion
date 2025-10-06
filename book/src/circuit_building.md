@@ -66,9 +66,6 @@ let mut runner = circuit.runner();
 let expected_fib = compute_fibonacci_classical(n);
 runner.set_public_inputs(&[expected_fib])?;
 
-// Packing configuration to store multiple arithmetic operations in a single row
-let table_packing = TablePacking::from_counts(4, 1); // 4 ADD per row, 1 MUL per row
-
 // Instantiate prover instance
 let config = build_standard_config_koalabear();
 let multi_prover = MultiTableProver::new(config).with_table_packing(table_packing);
