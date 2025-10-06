@@ -99,7 +99,7 @@ A chip contains:
 - Lookup ports into the witness table.
 - An AIR that enforces its semantics.
 
-We distinguish two kind of chips: those representive native, i.e. primitive operations, and additional non-primitive ones, defined at runtime, that serve as precompiles to optimize certain operations.
+We distinguish two kind of chips: those representing native, i.e. primitive operations, and additional non-primitive ones, defined at runtime, that serve as precompiles to optimize certain operations.
 The recursion machine contains 4 primitive chips: `CONST` / `PUBLIC_INPUT` / `ADD` and `MUL`, with `SUB` and `DIV` being emulated via the `ADD` and `MUL` chips. This library aims at providing a certain
 number of non-primary chips so that projects can natively inherit from full recursive verifiers, which implies chips for FRI, Merkle paths verification, etc. Specific applications can also build their own
 non-primitive chips and plug them at runtime.
@@ -132,7 +132,7 @@ Note that because we started from a known, fixed program that has been lowered t
 
 ## Lookups
 
-All chips interactions are performed via a lookup argument against the central `Witness` table. Enforcing multiset equality between chip ports and the `Witness` table entries ensures correctness without proving the execution order of the entire IR itself. Lookups can be seen as `READ`/`WRITE` or `RECEIVE`/`SEND` interactions between tables which allow global consistency over local AIRs.
+All chips interactions are performed via a lookup argument. Enforcing multiset equality between all chip ports and the `Witness` table entries ensures correctness without proving the execution order of the entire IR itself. Lookups can be seen as `READ`/`WRITE` or `RECEIVE`/`SEND` interactions between tables which allow global consistency over local AIRs.
 
 Using the terms `SEND` and `RECEIVE`, we can go back to the previous example and illustrate the interactions between all the chips and the central `Witness` table[^2]:
 
