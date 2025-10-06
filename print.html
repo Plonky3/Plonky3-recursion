@@ -237,14 +237,11 @@ The lookups can be seen as representing the <code>READ</code>/<code>WRITE</code>
 0: Const { out: WitnessId(0), val: 0 }
 1: Const { out: WitnessId(1), val: 37 }
 2: Const { out: WitnessId(2), val: 111 }
-3: Const { out: WitnessId(3), val: 1 }
-4: Public { out: WitnessId(4), public_pos: 0 }
-5: Mul { a: WitnessId(1), b: WitnessId(4), out: WitnessId(5) }
-6: Add { a: WitnessId(2), b: WitnessId(0), out: WitnessId(5) }
-7: Mul { a: WitnessId(2), b: WitnessId(6), out: WitnessId(5) }
-8: Add { a: WitnessId(3), b: WitnessId(0), out: WitnessId(6) }
+3: Public { out: WitnessId(3), public_pos: 0 }
+4: Mul { a: WitnessId(1), b: WitnessId(3), out: WitnessId(4) }
+5: Add { a: WitnessId(2), b: WitnessId(0), out: WitnessId(4) }
 </code></pre>
-<p>i.e. the operation at index 5 will perform <code>w[5] &lt;- w[1] * w[4]</code>.</p>
+<p>i.e. operation 4 performs <code>w[4] &lt;- w[1] * w[3]</code>, and operation 5 encodes the subtraction check as an addition <code>w[2] + w[0] = w[4]</code> (verifying <code>37 * x - 111 = 0</code>).</p>
 <h2 id="witness-table"><a class="header" href="#witness-table">Witness Table</a></h2>
 <p>The <code>Witness</code> table can be seen as a central memory bus that stores values shared across all operations. It is represented as pairs <code>(index, value)</code>, where indices are  that will be accessed by
 the different chips via lookups to enforce consistency.</p>
@@ -257,10 +254,8 @@ the different chips via lookups to enforce consistency.</p>
 Row 0: WitnessId(w0) = 0
 Row 1: WitnessId(w1) = 37
 Row 2: WitnessId(w2) = 111
-Row 3: WitnessId(w3) = 1
-Row 4: WitnessId(w4) = 3
-Row 5: WitnessId(w5) = 111
-Row 6: WitnessId(w6) = 1
+Row 3: WitnessId(w3) = 3
+Row 4: WitnessId(w4) = 111
 </code></pre>
 <p>Note that the initial version of the recursion machine, for the sake of simplicity and ease of iteration, contains a <code>Witness</code> table. However, because the verifier effectively knows the order of
 each operation and the interaction between them, the <code>Witness</code> table can be entirely removed, and global consistency can still be enforced at the cost of additional (smaller) lookups between the different chips.</p>
@@ -281,40 +276,31 @@ non-primitive chips and plug them at runtime.</p>
 Row 0: WitnessId(w0) = 0
 Row 1: WitnessId(w1) = 37
 Row 2: WitnessId(w2) = 111
-Row 3: WitnessId(w3) = 1
 
 === PUBLIC TRACE ===
-Row 0: WitnessId(w4) = 3
+Row 0: WitnessId(w3) = 3
 
 === MUL TRACE ===
-Row 0: WitnessId(w1) * WitnessId(w4) -&gt; WitnessId(w5) | 37 * 3 -&gt; 111
-Row 1: WitnessId(w2) * WitnessId(w6) -&gt; WitnessId(w5) | 111 * 1 -&gt; 111
+Row 0: WitnessId(w1) * WitnessId(w3) -&gt; WitnessId(w4) | 37 * 3 -&gt; 111
 
 === ADD TRACE ===
-Row 0: WitnessId(w2) + WitnessId(w0) -&gt; WitnessId(w5) | 111 + 0 -&gt; 111
-Row 1: WitnessId(w3) + WitnessId(w0) -&gt; WitnessId(w6) | 1 + 0 -&gt; 1
+Row 0: WitnessId(w2) + WitnessId(w0) -&gt; WitnessId(w4) | 111 + 0 -&gt; 111
 </code></pre>
 <p>Note that because we started from a known, fixed program that has been lowered to a deterministic IR, we can have the <code>CONST</code> chip's table entirely preprocessed
 (i.e. known to the verifier), as well as all <code>index</code> columns of the other primitive chips.</p>
 <h2 id="lookups"><a class="header" href="#lookups">Lookups</a></h2>
 <p>All chips interactions are performed via a lookup argument. Enforcing multiset equality between all chip ports and the <code>Witness</code> table entries ensures correctness without proving the execution order of the entire IR itself. Lookups can be seen as <code>READ</code>/<code>WRITE</code> or <code>RECEIVE</code>/<code>SEND</code> interactions between tables which allow global consistency over local AIRs.</p>
-<p>Using the terms <code>SEND</code> and <code>RECEIVE</code>, we can go back to the previous example and illustrate the interactions between all the chips and the central <code>Witness</code> table<sup class="footnote-reference" id="fr-2-1"><a href="#footnote-2">2</a></sup>:</p>
-<pre><code class="language-bash">  0:  0     // RECEIVE from CONST table, SEND to ADD table
-  1: 37     // RECEIVE from CONST table, SEND to MUL table
-  2: 111    // RECEIVE from CONST table, SEND to ADD and MUL tables
-  3:  1     // RECEIVE from CONST table, SEND to ADD table
-  4:  3     // RECEIVE from PublicInput table, SEND to MUL table
-  5: 111    // RECEIVE from ADD and MUL tables
-  6:  1     // RECEIVE from ADD table, SEND to MUL table
+<p>Cross-table lookups (CTLs) ensure that <strong>every</strong> chip interaction happens through the Witness table: producers write a <code>(index, value)</code> pair into Witness and consumers read the same pair back. No chip talks directly to any other chip; the aggregated LogUp argument enforces multiset equality between the writes and reads.</p>
+<p>For the toy example the CTL relations are:</p>
+<pre><code class="language-bash">(index 0, value 0)   : CONST → Witness ← ADD
+(index 1, value 37)  : CONST → Witness ← MUL
+(index 2, value 111) : CONST → Witness ← ADD
+(index 3, value 3)   : PUBLIC → Witness ← MUL
+(index 4, value 111) : MUL → Witness ← ADD (duplicate writes enforce equality)
 </code></pre>
 <hr>
 <ol class="footnote-definition"><li id="footnote-1">
 <p>Preprocessed columns / polynomials can be reconstructed manually by the verifier, removing the need for a prover to commit to them and later perform the FRI protocol on them. However, the verifier needs <span class="katex"><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:1em;vertical-align:-0.25em;"></span><span class="mord mathnormal" style="margin-right:0.02778em;">O</span><span class="mopen">(</span><span class="mord mathnormal">n</span><span class="mclose">)</span></span></span></span> work when these columns are not structured, as it still needs to interpolate them. To alleviate this, the Plonky3 recursion stack performs <em>offline</em> commitment of unstructured preprocessed columns, so that we need only one instance of the FRI protocol to verify all preprocessed columns evaluations. <a href="#fr-1-1">↩</a></p>
-</li>
-<li id="footnote-2">
-<p>We can see that both <code>ADD</code> and <code>MUL</code> tables are <em>writing</em> the output of one of their operations at the <em>same</em> location of the <code>Witness</code> table.
-As the latter can be seen as a <em>read-only</em> / <em>write-once</em> memory bus, having two identical lookup writes <code>w5 = 111</code> to the <code>Witness</code> table
-effectively enforces equality on both outputs sharing the same witness location, which translates in our example to <code>37.3 = 111 = 0 + 111</code> <a href="#fr-2-1">↩</a></p>
 </li>
 </ol><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="building-circuits"><a class="header" href="#building-circuits">Building Circuits</a></h1>
