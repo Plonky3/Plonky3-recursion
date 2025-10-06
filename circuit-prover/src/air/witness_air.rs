@@ -3,6 +3,7 @@
 //! The generic parameter `D` allows the AIR to handle values from an extension field of degree `D` over the base field.
 //!
 //! # Columns
+//!
 //! [`WitnessAir`] has `D + 1` columns:
 //!
 //! - 1 column for the index of the element,

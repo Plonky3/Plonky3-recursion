@@ -11,7 +11,7 @@
 //!
 //! The AIR has no constraints.
 //!
-//! # Interactions
+//! # Global Interactions
 //!
 //! There is one interaction with the witness bus:
 //! - (index, value)

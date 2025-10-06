@@ -27,7 +27,7 @@
 //!     - reduce modulo `x^D - W`,
 //!     - ensure the result equals `output`.
 //!
-//! Global Interactions
+//! # Global Interactions
 //!
 //! There are three interactions per operation with the witness bus:
 //! - `(index_left, left)`
