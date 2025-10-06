@@ -154,7 +154,6 @@ where
     }
 
     /// Enable Merkle verification operations.
-    // TODO: Replace with actual Merkle verification once it lands
     pub fn enable_merkle(&mut self, merkle_config: &MerkleVerifyConfig<F>) {
         self.enable_op(
             NonPrimitiveOpType::MerkleVerify,

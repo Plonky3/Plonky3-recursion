@@ -14,9 +14,14 @@ use p3_matrix::dense::RowMajorMatrix;
 /// Configuration for the merkle table AIR rows.
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MerkleTableConfig {
+    /// The number of base field elements in a digest.
     digest_elems: usize,
+    /// The maximum height of the merkle tree.
     max_tree_height: usize,
+    /// The number of base field elements used to represent the index of a digest.
     digest_addresses: usize,
+    /// Whether digests are packed into extension field elements or not.
+    packing: bool,
 }
 
 impl<T> From<MerkleVerifyConfig<T>> for MerkleTableConfig {
@@ -25,6 +30,7 @@ impl<T> From<MerkleVerifyConfig<T>> for MerkleTableConfig {
             digest_elems: value.base_field_digest_elems,
             max_tree_height: value.max_tree_height,
             digest_addresses: value.ext_field_digest_elems,
+            packing: value.is_packing(),
         }
     }
 }
@@ -39,9 +45,21 @@ impl MerkleTableConfig {
         + self.digest_addresses // state_index
         + 1 // is_final
         + 1 // is_extra
-        + 1 // extra_height}
+        + 1 // extra_height
     }
 }
+
+/// AIR for the Merkle verification table. Each row corresponds to one hash operation in the Merkle path verification.
+/// In each row we store:
+/// - `index_bits`: The binary decomposition of the index of the leaf being verified, padded
+///   to `max_tree_height` bits.
+/// - `length`: The length of the Merkle path (i.e., the height of the tree).
+/// - `height_encoding`: One-hot encoding of the current height in the Merkle path.
+/// - `sibling`: The sibling node at the current height.    
+/// - `state`: The current hash state (the result of hashing the leaf with siblings up to the current height).
+/// - `state_index`: The index of the current in the witness table.
+/// - `is_final`: Whether this is the final row for this Merkle path (i.e., the one that outputs the root).
+/// - `is_extra`: Whether this row is hashing the row of a smaller matrix in the Mmcs.
 pub struct MerkleVerifyAir<F>
 where
     F: Field,
@@ -80,10 +98,11 @@ where
         );
 
         let index_bits = &local[self.index_bits()];
+        let next_index_bits = &next[self.index_bits()];
         let length = &local[self.length()];
         let next_length = &next[self.length()];
         let sibling = &local[self.sibling()];
-        let state = &local[self.sibling()];
+        let state = &local[self.state()];
         let height_encoding = &local[self.height_encoding()];
         let next_height_encoding = &next[self.height_encoding()];
         let is_final = &local[self.is_final()];
@@ -118,11 +137,11 @@ where
         }
 
         // Within the same execution, index bits are unchanged.
-        for index_bit in index_bits {
+        for (index_bit, next_index_bit) in index_bits.iter().zip(next_index_bits.iter()) {
             builder
                 .when_transition()
                 .when(AB::Expr::ONE - is_final.clone())
-                .assert_zero(index_bit.clone() - index_bit.clone());
+                .assert_zero(index_bit.clone() - next_index_bit.clone());
         }
 
         // `is_extra` may only be set before a hash with a sibling at the current height.
@@ -251,6 +270,7 @@ impl<F: Field> MerkleVerifyAir<F> {
             digest_elems,
             max_tree_height,
             digest_addresses,
+            packing,
         } = config;
         let width = config.width();
         // Compute the number of rows exactly: whenever the height changes, we need an extra row.
@@ -303,19 +323,31 @@ impl<F: Field> MerkleVerifyAir<F> {
                     }
 
                     // sibling and state
-                    debug_assert_eq!(digest_elems, left_value.len() * ExtF::DIMENSION);
-                    values.extend(
-                        left_value
-                            .iter()
-                            .flat_map(|xs| xs.as_basis_coefficients_slice()),
-                    );
+                    debug_assert!(if packing {
+                        digest_elems == left_value.len() * ExtF::DIMENSION
+                    } else {
+                        digest_elems == left_value.len()
+                    });
+                    values.extend(left_value.iter().flat_map(|xs| {
+                        if config.packing {
+                            xs.as_basis_coefficients_slice()
+                        } else {
+                            &xs.as_basis_coefficients_slice()[0..1]
+                        }
+                    }));
 
-                    debug_assert_eq!(digest_elems, right_value.len() * ExtF::DIMENSION);
-                    values.extend(
-                        right_value
-                            .iter()
-                            .flat_map(|xs| xs.as_basis_coefficients_slice()),
-                    );
+                    debug_assert!(if packing {
+                        digest_elems == right_value.len() * ExtF::DIMENSION
+                    } else {
+                        digest_elems == right_value.len()
+                    });
+                    values.extend(right_value.iter().flat_map(|xs| {
+                        if config.packing {
+                            xs.as_basis_coefficients_slice()
+                        } else {
+                            &xs.as_basis_coefficients_slice()[0..1]
+                        }
+                    }));
 
                     // state index
                     values.extend(left_index.iter().map(|idx| F::from_u32(*idx)));
@@ -333,6 +365,8 @@ impl<F: Field> MerkleVerifyAir<F> {
                     } else {
                         values.push(F::from_usize(row_height));
                     }
+
+                    debug_assert_eq!(values.len() % width, 0);
                 }
 
                 // Final row. The one-hot-encoded height_encoding remains unchanged.
@@ -356,12 +390,18 @@ impl<F: Field> MerkleVerifyAir<F> {
                 }
                 // sibling and state
                 let left_value = path.left_values.last().expect("Left values can't be empty");
-                debug_assert_eq!(digest_elems, left_value.len() * ExtF::DIMENSION);
-                values.extend(
-                    left_value
-                        .iter()
-                        .flat_map(|xs| xs.as_basis_coefficients_slice()),
-                );
+                debug_assert!(if packing {
+                    digest_elems == left_value.len() * ExtF::DIMENSION
+                } else {
+                    digest_elems == left_value.len()
+                });
+                values.extend(left_value.iter().flat_map(|xs| {
+                    if config.packing {
+                        xs.as_basis_coefficients_slice()
+                    } else {
+                        &xs.as_basis_coefficients_slice()[0..1]
+                    }
+                }));
                 values.extend(vec![F::ZERO; digest_elems]);
 
                 // state index

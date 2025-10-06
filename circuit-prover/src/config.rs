@@ -19,7 +19,7 @@ use p3_circuit::op::MerkleVerifyConfig;
 use p3_commit::ExtensionMmcs;
 use p3_dft::Radix2DitParallel as Dft;
 use p3_field::extension::{BinomialExtensionField, BinomiallyExtendable};
-use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing, PrimeField64, TwoAdicField};
+use p3_field::{ExtensionField, Field, PrimeCharacteristicRing, PrimeField64, TwoAdicField};
 use p3_fri::{TwoAdicFriPcs as Pcs, create_test_fri_params};
 use p3_merkle_tree::MerkleTreeMmcs;
 use p3_symmetric::{
@@ -83,11 +83,12 @@ pub type ProverConfig<F, P, const CD: usize> = StarkConfig<
 /// - Duplex challenger for Fiat-Shamir
 pub fn build_standard_config_generic<EF, F, P, const CD: usize>(
     perm: P,
+    packing: bool,
 ) -> (ProverConfig<F, P, CD>, MerkleVerifyConfig<EF>)
 where
     F: StarkField + BinomiallyExtendable<CD>,
     P: StarkPermutation<F> + Clone + 'static,
-    EF: BasedVectorSpace<F>,
+    EF: ExtensionField<F> + Clone,
 {
     let hash = MyHash::<P, 16, 8, 8>::new(perm.clone());
     let compress = MyCompress::<P, 2, 8, 16>::new(perm.clone());
@@ -105,29 +106,49 @@ where
     let compress = move |[left, right]: [&[EF]; 2]| -> Vec<EF> {
         let left: [F; 8] = left
             .iter()
-            .flat_map(|x| x.as_basis_coefficients_slice())
+            .flat_map(|x| {
+                if packing {
+                    x.as_basis_coefficients_slice()
+                } else {
+                    &x.as_basis_coefficients_slice()[0..1]
+                }
+            })
             .copied()
             .collect::<Vec<F>>()
             .try_into()
             .expect("Incorrect size of the compression function input");
         let right: [F; 8] = right
             .iter()
-            .flat_map(|x| x.as_basis_coefficients_slice())
+            .flat_map(|x| {
+                if packing {
+                    x.as_basis_coefficients_slice()
+                } else {
+                    &x.as_basis_coefficients_slice()[0..1]
+                }
+            })
             .copied()
             .collect::<Vec<F>>()
             .try_into()
             .expect("Incorrect size of the compression function input");
         let output = compress.compress([left, right]);
-        output
-            .chunks(EF::DIMENSION)
-            .map(|xs| {
-                EF::from_basis_coefficients_slice(xs).expect("Chunks are of size EF::DIMENSION")
-            })
-            .collect::<Vec<EF>>()
+        if packing {
+            output
+                .chunks(EF::DIMENSION)
+                .map(|xs| {
+                    EF::from_basis_coefficients_slice(xs).expect("Chunks are of size EF::DIMENSION")
+                })
+                .collect::<Vec<EF>>()
+        } else {
+            output.map(|x| EF::from(x)).to_vec()
+        }
     };
     let merkle_config = MerkleVerifyConfig {
-        base_field_digest_elems: 8,
-        ext_field_digest_elems: 8 / EF::DIMENSION,
+        base_field_digest_elems: 32 / size_of::<F>(),
+        ext_field_digest_elems: if packing {
+            32 / (size_of::<F>() * EF::DIMENSION)
+        } else {
+            32 / size_of::<F>()
+        },
         max_tree_height: 32,
         compress: Arc::new(compress),
     };
@@ -140,7 +161,6 @@ pub mod babybear_config {
     use p3_baby_bear::{
         BabyBear as BB, Poseidon2BabyBear as Poseidon2BB, default_babybear_poseidon2_16,
     };
-    use p3_field::BasedVectorSpace;
 
     use super::*;
 
@@ -148,10 +168,11 @@ pub mod babybear_config {
 
     pub fn build_standard_config_babybear<F>() -> BabyBearConfig<F>
     where
-        F: BasedVectorSpace<BB>,
+        F: ExtensionField<BB> + Clone,
     {
         let perm = default_babybear_poseidon2_16();
-        build_standard_config_generic::<F, BB, _, 4>(perm)
+        // For now we are not considering packed inputs for BabyBear
+        build_standard_config_generic::<F, BB, _, 4>(perm, false)
     }
 }
 
@@ -166,10 +187,11 @@ pub mod koalabear_config {
 
     pub fn build_standard_config_koalabear<F>() -> KoalaBearConfig<F>
     where
-        F: BasedVectorSpace<KB>,
+        F: ExtensionField<KB> + Clone,
     {
         let perm = default_koalabear_poseidon2_16();
-        build_standard_config_generic::<F, KB, _, 4>(perm)
+        // For now we are not considering packed inputs for KoalaBear
+        build_standard_config_generic::<F, KB, _, 4>(perm, false)
     }
 }
 
@@ -184,10 +206,11 @@ pub mod goldilocks_config {
 
     pub fn build_standard_config_goldilocks<F>() -> GoldilocksConfig<F>
     where
-        F: BasedVectorSpace<GL>,
+        F: ExtensionField<GL> + Clone,
     {
         let mut rng = SmallRng::seed_from_u64(1);
         let perm = Poseidon2GL::<16>::new_from_rng_128(&mut rng);
-        build_standard_config_generic::<F, GL, _, 2>(perm)
+        // For now we are considering packed inputs for Goldilocks
+        build_standard_config_generic::<F, GL, _, 2>(perm, false)
     }
 }
