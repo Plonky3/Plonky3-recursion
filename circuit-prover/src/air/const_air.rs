@@ -14,7 +14,7 @@
 //! # Global Interactions
 //!
 //! There is one interaction with the witness bus:
-//! - (index, value)
+//! - send (index, value)
 
 #![allow(clippy::needless_range_loop)]
 use alloc::vec::Vec;

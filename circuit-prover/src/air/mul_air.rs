@@ -1,5 +1,5 @@
 //! [`MulAir`] deals with multiplication and division. In the case of division, `a / b = c` is written in the table as `b * c = a`.
-//! The chip handles both base field and extension field operations, as it is parametrized by the extensions degree `D`.
+//! The chip handles both base field and extension field operations, as it is parametrized by the extension degree `D`.
 //! The runtime parameter `lanes` also controls the number of operations carried out in a row.
 //! The `w_binomial` parameter is used for binomial extensions (i.e. x^D = W) and is `None` for base field or non-binomial cases.
 //!
@@ -30,9 +30,9 @@
 //! # Global Interactions
 //!
 //! There are three interactions per operation with the witness bus:
-//! - `(index_left, left)`
-//! - `(index_right, right)`
-//! - `(index_output, output)`
+//! - send `(index_left, left)`
+//! - send `(index_right, right)`
+//! - send `(index_output, output)`
 
 #![allow(clippy::needless_range_loop)]
 use alloc::vec::Vec;
