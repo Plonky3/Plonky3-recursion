@@ -68,7 +68,7 @@ runner.set_public_inputs(&[expected_fib])?;
 
 // Instantiate prover instance
 let config = build_standard_config_koalabear();
-let multi_prover = MultiTableProver::new(config).with_table_packing(table_packing);
+let multi_prover = MultiTableProver::new(config);
 
 // Generate traces
 let traces = runner.run()?;
