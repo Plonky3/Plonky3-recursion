@@ -546,7 +546,6 @@ where
         dimensions: &[Dimensions],
         index_bits: &[Target],
         opened_values: &[Vec<Target>],
-        opening_proof: &Self::Proof,
     ) -> Result<NonPrimitiveOpId, CircuitBuilderError> {
         // Check that the openings have the correct shape.
         if dimensions.len() != opened_values.len() {

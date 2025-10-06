@@ -318,7 +318,8 @@ where
             &batch_dims,
             index_bits,
             batch_openings,
-        );
+        )
+        .expect("verify_batch_circuit failed");
 
         assert_eq!(
             mats.len(),

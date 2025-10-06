@@ -3,6 +3,8 @@ use p3_challenger::{
     CanObserve, CanSampleBits, DuplexChallenger as Challenger, FieldChallenger, GrindingChallenger,
 };
 use p3_circuit::CircuitBuilder;
+use p3_circuit::ops::merkle;
+use p3_circuit_prover::config::babybear_config::build_standard_config_babybear;
 use p3_commit::Pcs;
 use p3_dft::Radix2DitParallel as Dft;
 use p3_field::coset::TwoAdicMultiplicativeCoset;
@@ -358,6 +360,8 @@ fn test_circuit_fri_verifier_multi_rounds() {
 
     // ——— Build circuit once (using first proof's shape) ———
     let mut builder = CircuitBuilder::<Challenge>::new();
+    let (_, merkle_config) = build_standard_config_babybear();
+    builder.enable_merkle(&merkle_config);
 
     // 1) Allocate FriProofTargets using lens from instance 1
     let mut lens_iter = result_1.fri_lens.clone().into_iter();
@@ -382,7 +386,7 @@ fn test_circuit_fri_verifier_multi_rounds() {
     // For each batch: allocate commitment target + (domain, Vec<(z_target, [fz_targets])>)
     let mut commitments_with_opening_points_targets = Vec::new();
     for (_commit_val, mats_data) in &result_1.commitments_with_points {
-        // Allocate commitment target (placeholder, not used in arithmetic verification)
+        // Allocate commitment target
         let commit_t: HashTargets<F, 8> =
             HashTargets::new(&mut builder, &mut lens_iter, /*degree_bits unused*/ 0);
 

@@ -1,7 +1,9 @@
 use p3_baby_bear::{BabyBear, Poseidon2BabyBear};
 use p3_challenger::DuplexChallenger;
-use p3_circuit::CircuitBuilder;
 use p3_circuit::test_utils::{FibonacciAir, generate_trace_rows};
+use p3_circuit::{CircuitBuilder, circuit};
+use p3_circuit_prover::MultiTableProver;
+use p3_circuit_prover::config::babybear_config::build_standard_config_babybear;
 use p3_commit::ExtensionMmcs;
 use p3_dft::Radix2DitParallel;
 use p3_field::extension::BinomialExtensionField;
@@ -57,7 +59,7 @@ fn test_fibonacci_verifier() -> Result<(), VerificationError> {
     let pcs = MyPcs::new(dft, val_mmcs, fri_params);
     let challenger = Challenger::new(perm);
 
-    let config = MyConfig::new(pcs, challenger);
+    let (config, merkle_config) = build_standard_config_babybear::<Challenge>();
     let pis = vec![BabyBear::ZERO, BabyBear::ONE, BabyBear::from_u64(x)];
 
     let air = FibonacciAir {};
@@ -68,6 +70,7 @@ fn test_fibonacci_verifier() -> Result<(), VerificationError> {
 
     // Initialize the circuit builder.
     let mut circuit_builder = CircuitBuilder::new();
+    circuit_builder.enable_merkle(&merkle_config);
 
     let public_values = (0..pis.len())
         .map(|_| circuit_builder.add_public_input())
@@ -143,7 +146,10 @@ fn test_fibonacci_verifier() -> Result<(), VerificationError> {
         .set_public_inputs(&public_values)
         .map_err(VerificationError::Circuit)?;
 
-    let _traces = runner.run().map_err(VerificationError::Circuit)?;
+    let traces = runner.run()?;
+    let multi_prover = MultiTableProver::new(config).with_merkle_table(merkle_config.into());
+    let proof = multi_prover.prove_all_tables(&traces).unwrap();
+    multi_prover.verify_all_tables(&proof).unwrap();
 
     Ok(())
 }

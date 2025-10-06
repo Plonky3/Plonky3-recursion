@@ -110,7 +110,6 @@ pub trait RecursiveMmcs<F: Field, EF: ExtensionField<F>> {
         dimensions: &[Dimensions],
         directions: &[Target],
         opened_values: &[Vec<Target>],
-        proof: &Self::Proof,
     ) -> Result<NonPrimitiveOpId, CircuitBuilderError>;
 }
 
