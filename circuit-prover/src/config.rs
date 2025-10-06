@@ -16,7 +16,7 @@ use p3_commit::ExtensionMmcs;
 use p3_dft::Radix2DitParallel as Dft;
 use p3_field::extension::{BinomialExtensionField, BinomiallyExtendable};
 use p3_field::{Field, PrimeCharacteristicRing, PrimeField64, TwoAdicField};
-use p3_fri::{TwoAdicFriPcs as Pcs, create_test_fri_params};
+use p3_fri::{TwoAdicFriPcs as Pcs, create_benchmark_fri_params};
 use p3_merkle_tree::MerkleTreeMmcs;
 use p3_symmetric::{
     CryptographicPermutation, PaddingFreeSponge as MyHash, TruncatedPermutation as MyCompress,
@@ -87,7 +87,7 @@ where
     let challenge_mmcs = ChallengeMmcs::<F, P, CD>::new(val_mmcs.clone());
 
     let dft = Dft::<F>::default();
-    let fri_params = create_test_fri_params::<ChallengeMmcs<F, P, CD>>(challenge_mmcs, 0);
+    let fri_params = create_benchmark_fri_params::<ChallengeMmcs<F, P, CD>>(challenge_mmcs);
     let pcs = Pcs::<F, _, _, _>::new(dft, val_mmcs, fri_params);
 
     let challenger = Challenger::<F, P, 16, 8>::new(perm);

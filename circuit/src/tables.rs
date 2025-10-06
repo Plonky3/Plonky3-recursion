@@ -1,6 +1,8 @@
 use alloc::vec::Vec;
 use alloc::{format, vec};
 
+use tracing::instrument;
+
 use crate::circuit::Circuit;
 use crate::op::{NonPrimitiveOpPrivateData, Prim};
 use crate::types::{NonPrimitiveOpId, WitnessId};
@@ -181,6 +183,7 @@ impl<F: CircuitField> CircuitRunner<F> {
     }
 
     /// Run the circuit and generate traces
+    #[instrument(skip_all)]
     pub fn run(mut self) -> Result<Traces<F>, CircuitError> {
         // Step 1: Execute primitives to fill witness vector
         self.execute_primitives()?;

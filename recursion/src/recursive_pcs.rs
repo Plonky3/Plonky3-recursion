@@ -7,21 +7,53 @@ use core::{array, iter};
 
 use p3_challenger::GrindingChallenger;
 use p3_circuit::CircuitBuilder;
-use p3_circuit::utils::RowSelectorsTargets;
+use p3_circuit::utils::{RowSelectorsTargets, decompose_to_bits};
 use p3_commit::{BatchOpening, ExtensionMmcs, Mmcs, PolynomialSpace};
 use p3_field::coset::TwoAdicMultiplicativeCoset;
 use p3_field::{ExtensionField, Field, PackedValue, PrimeCharacteristicRing, TwoAdicField};
-use p3_fri::{CommitPhaseProofStep, FriProof, QueryProof, TwoAdicFriPcs};
+use p3_fri::{CommitPhaseProofStep, FriParameters, FriProof, QueryProof, TwoAdicFriPcs};
 use p3_merkle_tree::MerkleTreeMmcs;
 use p3_symmetric::{CryptographicHasher, Hash, PseudoCompressionFunction};
 use p3_uni_stark::{StarkGenericConfig, Val};
 use serde::{Deserialize, Serialize};
 
 use crate::Target;
+use crate::circuit_fri_verifier::verify_fri_circuit;
 use crate::recursive_traits::{
     ComsWithOpeningsTargets, Recursive, RecursiveExtensionMmcs, RecursiveLagrangeSelectors,
     RecursiveMmcs, RecursivePcs,
 };
+
+/// Maximum number of bits used for query index decomposition in FRI verification circuits.
+///
+/// This is a fixed size to avoid const generic complexity. The circuit decomposes each
+/// query index into this many bits, but only uses the first `log_max_height` bits that
+/// are actually needed.
+///
+/// This value is set to 31 bits because:
+/// - Query indices are sampled as field elements in the base field (BabyBear/KoalaBear)
+/// - BabyBear: p = 2^31 - 2^27 + 1 (31-bit prime)
+/// - KoalaBear: p = 2^31 - 2^24 + 1 (31-bit prime)  
+/// - Field elements fit in 31 bits, so 31 bits is sufficient
+///
+/// For Goldilocks (64-bit field), this would need to be increased, but that's not
+/// currently supported in the recursion circuit.
+pub const MAX_QUERY_INDEX_BITS: usize = 31;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FriVerifierParams {
+    pub log_blowup: usize,
+    pub log_final_poly_len: usize,
+}
+
+impl<M> From<&FriParameters<M>> for FriVerifierParams {
+    fn from(params: &FriParameters<M>) -> Self {
+        Self {
+            log_blowup: params.log_blowup,
+            log_final_poly_len: params.log_final_poly_len,
+        }
+    }
+}
 
 /// `Recursive` version of `FriProof`.
 pub struct FriProofTargets<
@@ -571,11 +603,15 @@ type RecursiveFriProof<SC, RecursiveFriMmcs, RecursiveInputProof> = FriProofTarg
 >;
 
 // Implement `RecursivePcs` for `TwoAdicFriPcs`.
-impl<SC, Dft, Comm, InputMmcs, RecursiveInputProof, InputProof, RecursiveFriMmcs, FriMmcs>
+impl<SC, Dft, Comm, InputMmcs, RecursiveInputMmcs, RecursiveFriMmcs, FriMmcs>
     RecursivePcs<
         SC,
-        RecursiveInputProof,
-        RecursiveFriProof<SC, RecursiveFriMmcs, RecursiveInputProof>,
+        InputProofTargets<Val<SC>, SC::Challenge, RecursiveInputMmcs>,
+        RecursiveFriProof<
+            SC,
+            RecursiveFriMmcs,
+            InputProofTargets<Val<SC>, SC::Challenge, RecursiveInputMmcs>,
+        >,
         Comm,
         TwoAdicMultiplicativeCoset<Val<SC>>,
     > for TwoAdicFriPcs<Val<SC>, Dft, InputMmcs, FriMmcs>
@@ -585,31 +621,79 @@ where
     InputMmcs: Mmcs<Val<SC>>,
     FriMmcs: Mmcs<SC::Challenge>,
     Comm: Recursive<SC::Challenge>,
-    RecursiveInputProof: Recursive<SC::Challenge, Input = InputProof>,
+    RecursiveInputMmcs: RecursiveMmcs<Val<SC>, SC::Challenge, Input = InputMmcs>,
     RecursiveFriMmcs: RecursiveExtensionMmcs<Val<SC>, SC::Challenge, Input = FriMmcs>,
     SC::Challenger: GrindingChallenger,
     SC::Challenger: p3_challenger::CanObserve<FriMmcs::Commitment>,
 {
-    type RecursiveProof = RecursiveFriProof<SC, RecursiveFriMmcs, RecursiveInputProof>;
+    type VerifierParams = FriVerifierParams;
+    type RecursiveProof = RecursiveFriProof<
+        SC,
+        RecursiveFriMmcs,
+        InputProofTargets<Val<SC>, SC::Challenge, RecursiveInputMmcs>,
+    >;
 
     fn get_challenges_circuit(
         circuit: &mut CircuitBuilder<SC::Challenge>,
         proof_targets: &crate::recursive_traits::ProofTargets<SC, Comm, Self::RecursiveProof>,
+        _params: &Self::VerifierParams,
     ) -> Vec<Target> {
         proof_targets.opening_proof.get_challenges(circuit)
     }
 
     fn verify_circuit(
         &self,
-        _circuit: &mut CircuitBuilder<SC::Challenge>,
-        _challenges: &[Target],
-        _commitments_with_opening_points: &ComsWithOpeningsTargets<
+        circuit: &mut CircuitBuilder<SC::Challenge>,
+        challenges: &[Target],
+        commitments_with_opening_points: &ComsWithOpeningsTargets<
             Comm,
             TwoAdicMultiplicativeCoset<Val<SC>>,
         >,
-        _opening_proof: &Self::RecursiveProof,
+        opening_proof: &Self::RecursiveProof,
+        params: &Self::VerifierParams,
     ) {
-        // TODO
+        let FriVerifierParams {
+            log_blowup,
+            log_final_poly_len,
+        } = *params;
+        // Extract FRI challenges from the challenges slice.
+        // Layout: [alpha, beta_0, ..., beta_{n-1}, query_0, ..., query_{m-1}]
+        // where:
+        //   - alpha: FRI batch combination challenge
+        //   - betas: one challenge per FRI folding round
+        //   - query indices: sampled indices for FRI queries (as field elements)
+        let num_betas = opening_proof.commit_phase_commits.len();
+        let num_queries = opening_proof.query_proofs.len();
+
+        let alpha = challenges[0];
+        let betas = &challenges[1..1 + num_betas];
+        let query_indices = &challenges[1 + num_betas..1 + num_betas + num_queries];
+
+        // Calculate the maximum height of the FRI proof tree.
+        let log_max_height = num_betas + log_final_poly_len + log_blowup;
+
+        assert!(
+            log_max_height <= MAX_QUERY_INDEX_BITS,
+            "log_max_height {log_max_height} exceeds MAX_QUERY_INDEX_BITS {MAX_QUERY_INDEX_BITS}"
+        );
+
+        let index_bits_per_query: Vec<Vec<Target>> = query_indices
+            .iter()
+            .map(|&index_target| {
+                let all_bits = decompose_to_bits::<_, MAX_QUERY_INDEX_BITS>(circuit, index_target);
+                all_bits.into_iter().take(log_max_height).collect()
+            })
+            .collect();
+
+        verify_fri_circuit(
+            circuit,
+            opening_proof,
+            alpha,
+            betas,
+            &index_bits_per_query,
+            commitments_with_opening_points,
+            log_blowup,
+        );
     }
 
     fn selectors_at_point_circuit(
