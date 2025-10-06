@@ -14,9 +14,13 @@ use p3_matrix::dense::RowMajorMatrix;
 /// Configuration for the merkle table AIR rows.
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MerkleTableConfig {
+    /// The number of base field elements in a digest.
     digest_elems: usize,
+    /// The maximum height of the merkle tree.
     max_tree_height: usize,
+    /// The number of base field elements used to represent the index of a digest.
     digest_addresses: usize,
+    /// Whether digests are packed into extension field elements or not.
     packing: bool,
 }
 
@@ -44,6 +48,18 @@ impl MerkleTableConfig {
         + 1 // extra_height}
     }
 }
+
+/// AIR for the Merkle verification table. Each row corresponds to one hash operation in the Merkle path verification.
+/// In each row we store:
+/// - `index_bits`: The binary decomposition of the index of the leaf being verified, padded
+///  to `max_tree_height` bits.
+/// - `length`: The length of the Merkle path (i.e., the height of the tree).
+/// - `height_encoding`: One-hot encoding of the current height in the Merkle path.
+/// - `sibling`: The sibling node at the current height.    
+/// - `state`: The current hash state (the result of hashing the leaf with siblings up to the current height).
+/// - `state_index`: The index of the current in the witness table.
+/// - `is_final`: Whether this is the final row for this Merkle path (i.e., the one that outputs the root).
+/// - `is_extra`: Whether this row is hashing the row of a smaller matrix in the Mmcs.
 pub struct MerkleVerifyAir<F>
 where
     F: Field,
@@ -82,10 +98,11 @@ where
         );
 
         let index_bits = &local[self.index_bits()];
+        let next_index_bits = &next[self.index_bits()];
         let length = &local[self.length()];
         let next_length = &next[self.length()];
         let sibling = &local[self.sibling()];
-        let state = &local[self.sibling()];
+        let state = &local[self.state()];
         let height_encoding = &local[self.height_encoding()];
         let next_height_encoding = &next[self.height_encoding()];
         let is_final = &local[self.is_final()];
@@ -120,11 +137,11 @@ where
         }
 
         // Within the same execution, index bits are unchanged.
-        for index_bit in index_bits {
+        for (index_bit, next_index_bit) in index_bits.iter().zip(next_index_bits.iter()) {
             builder
                 .when_transition()
                 .when(AB::Expr::ONE - is_final.clone())
-                .assert_zero(index_bit.clone() - index_bit.clone());
+                .assert_zero(index_bit.clone() - next_index_bit.clone());
         }
 
         // `is_extra` may only be set before a hash with a sibling at the current height.
