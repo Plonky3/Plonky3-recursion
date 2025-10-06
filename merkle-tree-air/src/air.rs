@@ -45,7 +45,7 @@ impl MerkleTableConfig {
         + self.digest_addresses // state_index
         + 1 // is_final
         + 1 // is_extra
-        + 1 // extra_height}
+        + 1 // extra_height
     }
 }
 
