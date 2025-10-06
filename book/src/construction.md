@@ -33,7 +33,7 @@ and why it provides a powerful foundation for recursive proof systems.
 
 An **Execution IR** (intermediate representation) is defined to describe the steps of the verifier.
 This IR is *not proved itself*; it only guides trace population.
-The actual soundness comes from the constraints inside the operation-specific STARK chips along with their lookups into the central witness table.
+The actual soundness comes from the constraints inside the operation-specific STARK chips along with their lookups into the central `Witness` table.
 
 In the IR, we differentiate between *primitive* and *nonprimitive operations*. 
 
@@ -46,18 +46,14 @@ Primitive operations represent the core of the verification computation, and wil
 
 Given only the primitive operations, one should be able to carry out most operations necessary in circuit verification. Primitive operations have the following properties:
 
-- They operate on elements of the witness table, through their `WitnessId` (index within the witness table).
+- They operate on elements of the `Witness` table, through their `WitnessId` (index within the `Witness` table).
 - The representation can be heavily optimized. For example, every time a constant is added to the IR, we either create a new `WitnessId` or return an already existing one. We could also carry out common subexpression elimination.
 - They are executed in topological order during the circuit evaluation, and
 - they form a directed acyclic graph of dependencies.
 
-But relying only on primitive operations for the entire verification would lead to the introduction of many temporary values in the IR. In turn, this would lead to enlarged witness and primitive tables. This can be alleviated by the introduction of chips which carry out more complex operations: *nonprimitive operations*. These have more complex constraints, for example for sensitive cryptographic operations, and are verified by specialized AIRs. As such, they cannot be optimized similarly to primitive operations.
+But relying only on primitive operations for the entire verification would lead to the introduction of many temporary values in the IR. In turn, this would lead to enlarged `Witness` and primitive tables. To reduce the overall surface area of our AIRs, we can introduce *nonprimitive* specialized chips that carry out specific (nonprimitive) operations. We can offload repeated computations to these nonprimitive chips to optimize the overall proving flow.
 
-These nonprimitive operations use not only witness table elements (including public inputs), but may also require the use of *private data*. For example, when verifying a Merkle path, hash outputs are not stored in the witness table. Nonprimitive operations make it easy to add *complex functionality*, and therefore contribute to the *modularity* of the system.
-
-In our implementation of the recursive verifier, we leverage the following nonprimitive operation:
-
-- `MerkleVerify` -- to verify the inclusion of a leaf in a Merkle tree (in other words, it is used to verify a Merkle path)
+These nonprimitive operations use not only `Witness` table elements (including public inputs), but may also require the use of *private data*. For example, when verifying a Merkle path, hash outputs are not stored in the `Witness` table. 
 
 In order to generate the IR, the first step is to create all operations symbolically.
 
@@ -69,23 +65,19 @@ In the symbolic executor, the computation is represented as a graph where nodes 
 
 Nonprimitive operations can use `Target`s, but they do not introduce new ones. 
 
-We then need to lower these `Target`s to the IR, thus allocating actual slots in the witness table. Slot allocation cannot be carried out beforehand, as some `Target`s are connected through expressions and should therefore share the same slot in the witness table.
+We then need to lower these `Target`s to the IR, thus allocating actual slots in the `Witness` table. Slot allocation cannot be carried out beforehand, as some `Target`s are connected through expressions and should therefore share the same slot in the `Witness` table.
 
 The computation graph that represents all primitive and nonprimitive operations in the IR is called `circuit`. 
 
-A `circuit_builder` manages the insertion of operations in the graph thanks to methods like `connect` (for ensuring that the values associated to two witness indices are equal), `sub` (for subtraction), `add_public_input` (for adding a new public input) etc. The `build()` method:
-
-- lowers graph expressions to primitives: it allocates slots in the witness tables, and creates the operations on the witness slots directly (instead of `Target`s)
-- optimizes the primive operations when possible,
-- and returns the full `circuit`.
+A `circuit_builder` provides convenient helper functions and macros for representing and defining operations within this graph. See section "Circuit Building" for more details on how to build a circuit.
 
 ## Witness Table
 
-The Witness table is a central bus that stores values shared across operations. It gathers the pairs `(index, value)` that will be accessed by 
+The `Witness` table is a central bus that stores values shared across operations. It gathers the pairs `(index, value)` that will be accessed by 
 the different chips via lookups to enforce consistency.
 
 - The index column is *preprocessed* [@@rap]: it is known to both prover and verifier in advance, requiring no online commitment.[^1]
-- The Witness table values are represented as extension field elements directly (where base field elements are padded with 0 on higher coordinates) for addressing efficiency.
+- The `Witness` table values are represented as extension field elements directly (where base field elements are padded with 0 on higher coordinates) for addressing efficiency.
 
 
 ## Operation-specific STARK Chips
@@ -95,14 +87,14 @@ Each operation family (e.g. addition, multiplication, Merkle path verification, 
 A chip contains:
 
 - Local columns for its variables.
-- Lookup ports into the witness table.
+- Lookup ports into the `Witness` table.
 - An AIR that enforces its semantics.
 
 ## Lookups
 
-All chips interactions are performed via a lookup argument against the central Witness table. Enforcing multiset equality between chip ports and the Witness table entries ensures correctness without proving the execution order of the entire IR itself.
+All chips interactions are performed via a lookup argument against the central `Witness` table. Enforcing multiset equality between chip ports and the `Witness` table entries ensures correctness without proving the execution order of the entire IR itself.
 
-Below is a representation of the interactions between the main Witness table and the different chips.
+Below is a representation of the interactions between the main `Witness` table and the different chips.
 
 ```mermaid
 %%{init: {'theme':'dark',"flowchart":{"htmlLabels":true}}}%%
