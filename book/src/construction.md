@@ -117,8 +117,6 @@ Row 0: WitnessId(w1) * WitnessId(w3) -> WitnessId(w4) | 37 * 3 -> 111
 Row 0: WitnessId(w2) + WitnessId(w0) -> WitnessId(w4) | 111 + 0 -> 111
 ```
 
-These traces are copied directly from the stdout of the test command above, so future changes that alter the execution should be reflected by re-running the test and updating this section.
-
 Note that because we started from a known, fixed program that has been lowered to a deterministic IR, we can have the `CONST` chip's table entirely preprocessed
 (i.e. known to the verifier), as well as all `index` columns of the other primitive chips.
 
