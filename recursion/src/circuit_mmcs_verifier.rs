@@ -81,14 +81,14 @@ where
     let leaf: Vec<Target> = heights_tallest_first
         .peeking_take_while(|(_, dims)| dims.height.next_power_of_two() == curr_height_padded)
         .map(|(i, _)| {
-            if opened_values[i].len() < DIGEST_ELEMS / EF::DIMENSION {
+            if opened_values[i].len() < DIGEST_ELEMS {
                 let mut padded_values = opened_values[i].clone();
                 padded_values.extend(
-                    (0..(DIGEST_ELEMS / EF::DIMENSION - opened_values[i].len()))
+                    (0..(DIGEST_ELEMS - opened_values[i].len()))
                         .map(|_| circuit.add_const(EF::ZERO)),
                 );
                 padded_values
-            } else if opened_values[i].len() > DIGEST_ELEMS / EF::DIMENSION {
+            } else if opened_values[i].len() > DIGEST_ELEMS {
                 opened_values[i][0..DIGEST_ELEMS].to_vec()
             } else {
                 opened_values[i].clone()

@@ -43,7 +43,7 @@ type FriTargets =
 
 /// Type alias for commitments with opening points structure
 type CommitmentsWithPoints = Vec<(
-    Challenge,
+    Vec<Challenge>,
     Vec<(
         TwoAdicMultiplicativeCoset<F>,
         Vec<(Challenge, Vec<Challenge>)>,
@@ -233,7 +233,7 @@ fn produce_inputs_multi(
             pv_idx += 1;
         }
         // Use a placeholder value for the commitment (not used in arithmetic verification)
-        let commit_placeholder = Challenge::ZERO;
+        let commit_placeholder = vec![Challenge::ZERO; 8];
         commitments_with_points.push((commit_placeholder, mats_data));
     }
 
@@ -292,7 +292,7 @@ fn pack_inputs(
     // (5) For each batch: commitment, then z and f(z) for all matrices in that batch
     for (commit_placeholder, mats) in commitments_with_points {
         // Commitment for this batch
-        v.push(commit_placeholder);
+        v.extend(commit_placeholder);
 
         // Then all matrices in this batch
         for (_domain, points_and_values) in mats {
@@ -383,7 +383,7 @@ fn test_circuit_fri_verifier_multi_rounds() {
     let mut commitments_with_opening_points_targets = Vec::new();
     for (_commit_val, mats_data) in &result_1.commitments_with_points {
         // Allocate commitment target (placeholder, not used in arithmetic verification)
-        let commit_t: HashTargets<F, 2> =
+        let commit_t: HashTargets<F, 8> =
             HashTargets::new(&mut builder, &mut lens_iter, /*degree_bits unused*/ 0);
 
         let mut mats_targets = Vec::new();

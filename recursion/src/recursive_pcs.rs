@@ -399,11 +399,8 @@ impl<F: Field, EF: ExtensionField<F>, const DIGEST_ELEMS: usize> Recursive<EF>
         _lens: &mut impl Iterator<Item = usize>,
         _degree_bits: usize,
     ) -> Self {
-        // DIGEST_ELEMS must be a multiple of the extension degree so that a hash can be packed
-        // into extension field elements.
-        assert_eq!(DIGEST_ELEMS % EF::DIMENSION, 0);
         Self {
-            hash_targets: (0..DIGEST_ELEMS / EF::DIMENSION)
+            hash_targets: (0..DIGEST_ELEMS)
                 .map(|_| circuit.add_public_input())
                 .collect(),
             _phantom: PhantomData,
@@ -412,13 +409,7 @@ impl<F: Field, EF: ExtensionField<F>, const DIGEST_ELEMS: usize> Recursive<EF>
 
     fn get_values(input: &Self::Input) -> Vec<EF> {
         let array: [F; DIGEST_ELEMS] = (*input).into();
-        array
-            .chunks_exact(EF::DIMENSION)
-            .map(|v| {
-                EF::from_basis_coefficients_slice(v)
-                    .expect("The size of each chunk is the extension degree")
-            })
-            .collect()
+        array.map(|v| EF::from(v)).to_vec()
     }
 
     fn num_challenges(&self) -> usize {
