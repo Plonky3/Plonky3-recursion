@@ -8,10 +8,13 @@ use p3_field::extension::BinomialExtensionField;
 use p3_field::{Field, PrimeCharacteristicRing};
 use p3_fri::{TwoAdicFriPcs, create_test_fri_params};
 use p3_merkle_tree::MerkleTreeMmcs;
-use p3_recursion::circuit_verifier::{VerificationError, verify_circuit};
+use p3_recursion::circuit_verifier::{
+    VerificationError, construct_verifier_public_inputs, verify_circuit,
+};
 use p3_recursion::recursive_generation::generate_challenges;
 use p3_recursion::recursive_pcs::{
-    FriProofTargets, HashTargets, InputProofTargets, RecExtensionValMmcs, RecValMmcs, Witness,
+    FriProofTargets, FriVerifierParams, HashTargets, InputProofTargets, RecExtensionValMmcs,
+    RecValMmcs, Witness,
 };
 use p3_recursion::recursive_traits::{ProofTargets, Recursive};
 use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
@@ -45,7 +48,9 @@ fn test_fibonacci_verifier() -> Result<(), VerificationError> {
     let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
     let dft = Dft::default();
     let trace = generate_trace_rows::<F>(0, 1, n);
-    let fri_params = create_test_fri_params(challenge_mmcs, 1);
+    let log_final_poly_len = 0;
+    let fri_params = create_test_fri_params(challenge_mmcs, log_final_poly_len);
+    let fri_verifier_params = FriVerifierParams::from(&fri_params);
     let log_height_max = fri_params.log_final_poly_len + fri_params.log_blowup;
     let pow_bits = fri_params.proof_of_work_bits;
     let pcs = MyPcs::new(dft, val_mmcs, fri_params);
@@ -121,21 +126,18 @@ fn test_fibonacci_verifier() -> Result<(), VerificationError> {
         &mut circuit_builder,
         &proof_targets,
         &public_values,
+        &fri_verifier_params,
     )?;
 
     // Build the circuit.
     let circuit = circuit_builder.build()?;
     let mut runner = circuit.runner();
 
-    // Construct the public input values.
-    let public_values = pis
-        .iter()
-        .map(|pi| Challenge::from(*pi))
-        .chain(all_proof_values)
-        .chain(all_challenges)
-        .collect::<Vec<_>>();
-
     // Set the public inputs and run the verification circuit.
+    let num_queries = proof.opening_proof.query_proofs.len();
+    let public_values =
+        construct_verifier_public_inputs(&pis, &all_proof_values, &all_challenges, num_queries);
+
     runner
         .set_public_inputs(&public_values)
         .map_err(VerificationError::Circuit)?;
