@@ -39,15 +39,42 @@ fn main() -> Result<(), ProverError> {
     let mut runner = circuit.runner();
 
     // Set public inputs
-    let leaf_value = [F::ZERO, F::from_u64(42)]; // Our leaf value
+    let leaf_value = [
+        F::ZERO,
+        F::ZERO,
+        F::ZERO,
+        F::ZERO,
+        F::ZERO,
+        F::ZERO,
+        F::ZERO,
+        F::from_u64(42),
+    ]; // Our leaf value
     let siblings: Vec<(Vec<F>, Option<Vec<F>>)> = (0..depth)
         .map(|i| {
             (
-                vec![F::ZERO, F::from_u64((i + 1) * 10)],
+                vec![
+                    F::ZERO,
+                    F::ZERO,
+                    F::ZERO,
+                    F::ZERO,
+                    F::ZERO,
+                    F::ZERO,
+                    F::ZERO,
+                    F::from_u64((i + 1) * 10),
+                ],
                 if i % 2 == 0 {
                     None
                 } else {
-                    Some(vec![F::ZERO, F::from_u64(i + 1)])
+                    Some(vec![
+                        F::ZERO,
+                        F::ZERO,
+                        F::ZERO,
+                        F::ZERO,
+                        F::ZERO,
+                        F::ZERO,
+                        F::ZERO,
+                        F::from_u64(i + 1),
+                    ])
                 },
             )
         })
@@ -94,7 +121,7 @@ pub type Hash = [BabyBear; 8];
 /// Simulate classical Merkle root computation for testing
 fn compute_merkle_root(
     merkle_config: &MerkleVerifyConfig<F>,
-    leaf: &[F; 2],
+    leaf: &[F; 8],
     siblings: &[(Vec<F>, Option<Vec<F>>)],
     directions: &[bool],
 ) -> Vec<F> {

@@ -17,6 +17,7 @@ pub struct MerkleTableConfig {
     digest_elems: usize,
     max_tree_height: usize,
     digest_addresses: usize,
+    packing: bool,
 }
 
 impl<T> From<MerkleVerifyConfig<T>> for MerkleTableConfig {
@@ -25,6 +26,7 @@ impl<T> From<MerkleVerifyConfig<T>> for MerkleTableConfig {
             digest_elems: value.base_field_digest_elems,
             max_tree_height: value.max_tree_height,
             digest_addresses: value.ext_field_digest_elems,
+            packing: value.is_packing(),
         }
     }
 }
@@ -251,6 +253,7 @@ impl<F: Field> MerkleVerifyAir<F> {
             digest_elems,
             max_tree_height,
             digest_addresses,
+            packing,
         } = config;
         let width = config.width();
         // Compute the number of rows exactly: whenever the height changes, we need an extra row.
@@ -303,19 +306,31 @@ impl<F: Field> MerkleVerifyAir<F> {
                     }
 
                     // sibling and state
-                    debug_assert_eq!(digest_elems, left_value.len() * ExtF::DIMENSION);
-                    values.extend(
-                        left_value
-                            .iter()
-                            .flat_map(|xs| xs.as_basis_coefficients_slice()),
-                    );
+                    debug_assert!(if packing {
+                        digest_elems == left_value.len() * ExtF::DIMENSION
+                    } else {
+                        digest_elems == left_value.len()
+                    });
+                    values.extend(left_value.iter().flat_map(|xs| {
+                        if config.packing {
+                            xs.as_basis_coefficients_slice()
+                        } else {
+                            &xs.as_basis_coefficients_slice()[0..1]
+                        }
+                    }));
 
-                    debug_assert_eq!(digest_elems, right_value.len() * ExtF::DIMENSION);
-                    values.extend(
-                        right_value
-                            .iter()
-                            .flat_map(|xs| xs.as_basis_coefficients_slice()),
-                    );
+                    debug_assert!(if packing {
+                        digest_elems == right_value.len() * ExtF::DIMENSION
+                    } else {
+                        digest_elems == right_value.len()
+                    });
+                    values.extend(right_value.iter().flat_map(|xs| {
+                        if config.packing {
+                            xs.as_basis_coefficients_slice()
+                        } else {
+                            &xs.as_basis_coefficients_slice()[0..1]
+                        }
+                    }));
 
                     // state index
                     values.extend(left_index.iter().map(|idx| F::from_u32(*idx)));
@@ -333,6 +348,8 @@ impl<F: Field> MerkleVerifyAir<F> {
                     } else {
                         values.push(F::from_usize(row_height));
                     }
+
+                    debug_assert_eq!(values.len() % width, 0);
                 }
 
                 // Final row. The one-hot-encoded height_encoding remains unchanged.
@@ -356,12 +373,18 @@ impl<F: Field> MerkleVerifyAir<F> {
                 }
                 // sibling and state
                 let left_value = path.left_values.last().expect("Left values can't be empty");
-                debug_assert_eq!(digest_elems, left_value.len() * ExtF::DIMENSION);
-                values.extend(
-                    left_value
-                        .iter()
-                        .flat_map(|xs| xs.as_basis_coefficients_slice()),
-                );
+                debug_assert!(if packing {
+                    digest_elems == left_value.len() * ExtF::DIMENSION
+                } else {
+                    digest_elems == left_value.len()
+                });
+                values.extend(left_value.iter().flat_map(|xs| {
+                    if config.packing {
+                        xs.as_basis_coefficients_slice()
+                    } else {
+                        &xs.as_basis_coefficients_slice()[0..1]
+                    }
+                }));
                 values.extend(vec![F::ZERO; digest_elems]);
 
                 // state index

@@ -165,6 +165,11 @@ impl<T> MerkleVerifyConfig<T> {
             compress: Arc::new(|_: [&[T]; 2]| -> Vec<T> { vec![T::ZERO] }),
         }
     }
+
+    /// Returns wether digests are packed into extension field elements or not.
+    pub fn is_packing(&self) -> bool {
+        self.base_field_digest_elems > self.ext_field_digest_elems
+    }
 }
 
 pub type MerkleWitnessId = Vec<WitnessId>;
