@@ -52,7 +52,7 @@ impl MerkleTableConfig {
 /// AIR for the Merkle verification table. Each row corresponds to one hash operation in the Merkle path verification.
 /// In each row we store:
 /// - `index_bits`: The binary decomposition of the index of the leaf being verified, padded
-///  to `max_tree_height` bits.
+///   to `max_tree_height` bits.
 /// - `length`: The length of the Merkle path (i.e., the height of the tree).
 /// - `height_encoding`: One-hot encoding of the current height in the Merkle path.
 /// - `sibling`: The sibling node at the current height.    
