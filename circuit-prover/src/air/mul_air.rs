@@ -1,3 +1,39 @@
+//! [`MulAir`] deals with multiplication and division. In the case of division, `a / b = c` is written in the table as `b * c = a`.
+//! The chip handles both base field and extension field operations, as it is parametrized by the extensions degree `D`.
+//! The runtime parameter `lanes` also controls the number of operations carried out in a row.
+//! The `w_binomial` parameter is used for binomial extensions (i.e. x^D = W) and is `None` for base field or non-binomial cases.
+//!
+//! /!\ Note that only base field and binomial extensions are currently supported.
+//!
+//! # Columns
+//!
+//! The AIR has `3 * D + 3` columns for each operation:
+//!
+//! - `D` columns for the `left` operand value,
+//! - 1 column for the `left` operand witness index,
+//! - `D` columns for the `right` operand value,
+//! - 1 column for the `right` operand witness index,
+//! - `D` columns for the `output` value,
+//! - 1 column for the `output` witness index.
+//!
+//! # Constraints
+//!
+//! In the base field case (`D == 1`):
+//! - for each triple `(left, right, output)`: `left * right - output`.
+//!
+//! In the binomial extension case (`D > 1`):
+//! - for each triple `(left, right, output)`:
+//!     - perform schoolbook multiplication of the polynomials represented by `left` and `right`,
+//!     - reduce modulo `x^D - W`,
+//!     - ensure the result equals `output`.
+//!
+//! Global Interactions
+//!
+//! There are three interactions per operation with the witness bus:
+//! - `(index_left, left)`
+//! - `(index_right, right)`
+//! - `(index_output, output)`
+
 #![allow(clippy::needless_range_loop)]
 use alloc::vec::Vec;
 

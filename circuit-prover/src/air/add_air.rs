@@ -1,3 +1,29 @@
+//! [`AddAir`] deals with addition and subtraction. In the case of subtraction, `a - b = c` is written in the table as `b + c = a`. \
+//! The chip handles both base field and extension field operations, as it is parametrized by the extensions degree `D`.
+//! The runtime parameter `lanes` also controls the number of operations carried out in a row.
+//!
+//! # Columns
+//!
+//! The AIR has `3 * D + 3` columns for each operation:
+//!
+//! - `D` columns for the left operand,
+//! - 1 column for `index_left`: the index of the left operand in the witness bus,
+//! - `D` columns for the right operand,
+//! - 1 column for `index_right`: the index of the right operand in the witness bus,
+//! - `D` columns for the output,
+//! - 1 column for `index_output`:  the index of the output in the witness bus.
+//!
+//! # Constraints
+//!
+//! - for each triple `(left, right, output)`: `left[i] + right[i] - output[i]`, for `i` in `0..D`.
+//!
+//! # Global Interactions
+//!
+//! There are three interactions per operation with the witness bus:
+//! - `(index_left, left)`
+//! - `(index_right, right)`
+//! - `(index_output, output)`
+
 #![allow(clippy::needless_range_loop)]
 use alloc::vec::Vec;
 
