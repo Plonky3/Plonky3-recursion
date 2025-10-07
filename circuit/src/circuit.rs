@@ -54,7 +54,7 @@ pub struct Circuit<F> {
     /// Total number of public field elements
     pub public_flat_len: usize,
     /// Enabled non-primitive operation types with their respective configuration
-    pub enabled_ops: HashMap<NonPrimitiveOpType, NonPrimitiveOpConfig<F>>,
+    pub enabled_ops: HashMap<NonPrimitiveOpType, NonPrimitiveOpConfig>,
 }
 
 impl<F> Circuit<F> {

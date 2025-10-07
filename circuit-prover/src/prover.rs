@@ -400,7 +400,7 @@ mod tests {
         let traces = runner.run()?;
 
         // Create BabyBear prover and prove all tables
-        let (config, _) = build_standard_config_babybear::<BabyBear>();
+        let config = build_standard_config_babybear();
         let multi_prover = MultiTableProver::new(config);
         let proof = multi_prover.prove_all_tables(&traces)?;
 
@@ -479,7 +479,7 @@ mod tests {
         let traces = runner.run()?;
 
         // Create BabyBear prover for extension field (D=4)
-        let (config, _) = build_standard_config_babybear::<ExtField>();
+        let config = build_standard_config_babybear();
         let multi_prover = MultiTableProver::new(config);
         let proof = multi_prover.prove_all_tables(&traces)?;
 
@@ -523,7 +523,7 @@ mod tests {
         let traces = runner.run()?;
 
         // Create KoalaBear prover
-        let (config, _) = build_standard_config_koalabear::<KoalaBear>();
+        let config = build_standard_config_koalabear();
         let multi_prover = MultiTableProver::new(config);
         let proof = multi_prover.prove_all_tables(&traces)?;
 
@@ -607,7 +607,7 @@ mod tests {
         let traces = runner.run()?;
 
         // Create KoalaBear prover for extension field (D=8)
-        let (config, _) = build_standard_config_koalabear::<KBExtField>();
+        let config = build_standard_config_koalabear();
         let multi_prover = MultiTableProver::new(config);
         let proof = multi_prover.prove_all_tables(&traces)?;
 
@@ -661,7 +661,7 @@ mod tests {
         let traces = runner.run()?;
 
         // Build Goldilocks config with challenge degree 2 (Poseidon2)
-        let (config, _) = build_standard_config_goldilocks::<ExtField>();
+        let config = build_standard_config_goldilocks();
         let multi_prover = MultiTableProver::new(config);
 
         let proof = multi_prover.prove_all_tables(&traces)?;

@@ -24,8 +24,8 @@ pub struct MerkleTableConfig {
     packing: bool,
 }
 
-impl<T> From<MerkleVerifyConfig<T>> for MerkleTableConfig {
-    fn from(value: MerkleVerifyConfig<T>) -> Self {
+impl From<MerkleVerifyConfig> for MerkleTableConfig {
+    fn from(value: MerkleVerifyConfig) -> Self {
         Self {
             digest_elems: value.base_field_digest_elems,
             max_tree_height: value.max_tree_height,

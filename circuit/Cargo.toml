@@ -25,6 +25,7 @@ rand.workspace = true
 
 # Other common dependencies
 hashbrown = "0.16.0"
+itertools.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 

@@ -79,7 +79,7 @@ pub struct CircuitBuilder<F> {
     const_pool: HashMap<F, ExprId>,
 
     /// Enabled non-primitive operation types with their respective configuration
-    enabled_ops: HashMap<NonPrimitiveOpType, NonPrimitiveOpConfig<F>>,
+    enabled_ops: HashMap<NonPrimitiveOpType, NonPrimitiveOpConfig>,
 }
 
 /// Errors that can occur during circuit building/lowering.
@@ -149,12 +149,12 @@ where
     }
 
     /// Enable a non-primitive operation type on this builder.
-    pub fn enable_op(&mut self, op: NonPrimitiveOpType, cfg: NonPrimitiveOpConfig<F>) {
+    pub fn enable_op(&mut self, op: NonPrimitiveOpType, cfg: NonPrimitiveOpConfig) {
         self.enabled_ops.insert(op, cfg);
     }
 
     /// Enable Merkle verification operations.
-    pub fn enable_merkle(&mut self, merkle_config: &MerkleVerifyConfig<F>) {
+    pub fn enable_merkle(&mut self, merkle_config: &MerkleVerifyConfig) {
         self.enable_op(
             NonPrimitiveOpType::MerkleVerify,
             NonPrimitiveOpConfig::MerkleVerifyConfig(merkle_config.clone()),
@@ -812,7 +812,7 @@ mod tests {
     #[test]
     fn test_merkle_config_blocks_when_disabled() {
         let mut builder = CircuitBuilder::<BabyBear>::new();
-        let merkle_config = MerkleVerifyConfig::<BabyBear>::mock_config();
+        let merkle_config = MerkleVerifyConfig::mock_config();
 
         let leaf = (0..merkle_config.ext_field_digest_elems)
             .map(|_| builder.add_public_input())
@@ -983,7 +983,7 @@ mod tests {
     #[test]
     fn test_merkle_config_allows_when_enabled() {
         let mut builder = CircuitBuilder::<BabyBear>::new();
-        let merkle_config = MerkleVerifyConfig::<BabyBear>::mock_config();
+        let merkle_config = MerkleVerifyConfig::mock_config();
 
         let leaf = (0..merkle_config.ext_field_digest_elems)
             .map(|_| builder.add_public_input())
@@ -1067,7 +1067,7 @@ mod tests {
     #[test]
     fn test_merkle_config_with_custom_params() {
         let mut builder = CircuitBuilder::<BabyBear>::new();
-        let merkle_config = MerkleVerifyConfig::<BabyBear>::mock_config();
+        let merkle_config = MerkleVerifyConfig::mock_config();
 
         let leaf = (0..merkle_config.ext_field_digest_elems)
             .map(|_| builder.add_public_input())

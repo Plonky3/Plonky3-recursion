@@ -1,11 +1,9 @@
-use alloc::sync::Arc;
-use alloc::vec;
 use alloc::vec::Vec;
-use core::fmt;
-use core::hash::{Hash, Hasher};
+use core::hash::Hash;
 
-use p3_field::Field;
+use p3_field::{ExtensionField, Field};
 
+use crate::CircuitError;
 use crate::tables::MerklePrivateData;
 use crate::types::WitnessId;
 
@@ -62,8 +60,8 @@ pub enum NonPrimitiveOpType {
 
 /// Non-primitive operation types
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum NonPrimitiveOpConfig<F> {
-    MerkleVerifyConfig(MerkleVerifyConfig<F>),
+pub enum NonPrimitiveOpConfig {
+    MerkleVerifyConfig(MerkleVerifyConfig),
     None,
 }
 
@@ -102,67 +100,133 @@ pub enum NonPrimitiveOp {
     },
 }
 
-#[derive(Clone)]
-pub struct MerkleVerifyConfig<T> {
+/// Configuration parameters for Merkle verification operations. When
+/// `base_field_digest_elems > ext_field_digest_elems`, we say the configuration
+/// is packing digests into extension field elements.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct MerkleVerifyConfig {
     /// The number of base field elements required for represeting a digest.
     pub base_field_digest_elems: usize,
     /// The number of extension field elements required for representing a digest.
     pub ext_field_digest_elems: usize,
     /// The maximum height of the merkle tree
     pub max_tree_height: usize,
-    /// The compression function
-    #[allow(clippy::type_complexity)]
-    pub compress: Arc<dyn Fn([&[T]; 2]) -> Vec<T>>,
 }
 
-impl<T> fmt::Debug for MerkleVerifyConfig<T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("MerkleVerifyConfig")
-            .field("base_field_digest_elems", &self.base_field_digest_elems)
-            .field("ext_field_digest_elems", &self.ext_field_digest_elems)
-            .field("max_tree_height", &self.max_tree_height)
-            .field("compress", &"<omitted>") // placeholder; not printing closure
-            .finish()
-    }
-}
-
-impl<T> PartialEq for MerkleVerifyConfig<T> {
-    fn eq(&self, other: &Self) -> bool {
-        self.base_field_digest_elems == other.base_field_digest_elems
-            && self.ext_field_digest_elems == other.ext_field_digest_elems
-            && self.max_tree_height == other.max_tree_height
-        // `compress` intentionally ignored: closures/trait objects have no general equality
-    }
-}
-
-impl<T> Eq for MerkleVerifyConfig<T> {}
-
-impl<T> Hash for MerkleVerifyConfig<T> {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.base_field_digest_elems.hash(state);
-        self.ext_field_digest_elems.hash(state);
-        self.max_tree_height.hash(state);
-        // intentionally ignore `compress` to match PartialEq
-    }
-}
-
-impl<T> MerkleVerifyConfig<T> {
+impl MerkleVerifyConfig {
     /// Returns the number of wires received as input.
     pub const fn input_size(&self) -> usize {
         // `ext_field_digest_elems`` for the leaf and root and 1 for the index
         2 * self.ext_field_digest_elems + 1
     }
 
-    /// Returns a mock configuration with the 0 compression function
-    pub fn mock_config() -> Self
+    /// Convert a digest represented as base field elements into extension field elements.
+    pub fn ext_to_base<F, EF, const DIGEST_ELEMS: usize>(
+        &self,
+        digest: &[EF],
+    ) -> Result<[F; DIGEST_ELEMS], CircuitError>
     where
-        T: Field,
+        F: Field,
+        EF: ExtensionField<F> + Clone,
     {
+        digest
+            .iter()
+            .flat_map(|limb| {
+                if self.is_packing() {
+                    limb.as_basis_coefficients_slice()
+                } else {
+                    &limb.as_basis_coefficients_slice()[0..1]
+                }
+            })
+            .copied()
+            .collect::<Vec<F>>()
+            .try_into()
+            .map_err(|_| CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
+                op: NonPrimitiveOpType::MerkleVerify,
+                expected: self.ext_field_digest_elems,
+                got: digest.len(),
+            })
+    }
+
+    /// Convert a digest represented as base field elements into extension field elements.
+    pub fn base_to_ext<F, EF>(&self, digest: &[F]) -> Result<Vec<EF>, CircuitError>
+    where
+        F: Field,
+        EF: ExtensionField<F> + Clone,
+    {
+        if digest.len() != self.base_field_digest_elems {
+            return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
+                op: NonPrimitiveOpType::MerkleVerify,
+                expected: self.base_field_digest_elems,
+                got: digest.len(),
+            });
+        }
+        if self.is_packing() {
+            Ok(digest
+                .chunks(EF::DIMENSION)
+                .map(|v| {
+                    EF::from_basis_coefficients_slice(v)
+                        .expect("chunk size is the extension field dimension")
+                })
+                .collect())
+        } else {
+            Ok(digest.iter().map(|&x| EF::from(x)).collect())
+        }
+    }
+
+    pub fn mock_config() -> Self {
         Self {
             base_field_digest_elems: 1,
             ext_field_digest_elems: 1,
             max_tree_height: 1,
-            compress: Arc::new(|_: [&[T]; 2]| -> Vec<T> { vec![T::ZERO] }),
+        }
+    }
+
+    pub fn babybear_default() -> Self {
+        Self {
+            base_field_digest_elems: 8,
+            ext_field_digest_elems: 8,
+            max_tree_height: 32,
+        }
+    }
+
+    pub fn babybear_quartic_extension_default(packing: bool) -> Self {
+        Self {
+            base_field_digest_elems: 8,
+            ext_field_digest_elems: if packing { 2 } else { 8 },
+            max_tree_height: 32,
+        }
+    }
+
+    pub fn koalabear_default() -> Self {
+        Self {
+            base_field_digest_elems: 8,
+            ext_field_digest_elems: 8,
+            max_tree_height: 32,
+        }
+    }
+
+    pub fn koalabear_quartic_extension_default(packing: bool) -> Self {
+        Self {
+            base_field_digest_elems: 8,
+            ext_field_digest_elems: if packing { 2 } else { 8 },
+            max_tree_height: 32,
+        }
+    }
+
+    pub fn goldilocks_default() -> Self {
+        Self {
+            base_field_digest_elems: 4,
+            ext_field_digest_elems: 4,
+            max_tree_height: 32,
+        }
+    }
+
+    pub fn goldilocks_quadratic_extension_default() -> Self {
+        Self {
+            base_field_digest_elems: 4,
+            ext_field_digest_elems: 1,
+            max_tree_height: 32,
         }
     }
 

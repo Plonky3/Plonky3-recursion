@@ -8,7 +8,9 @@ use p3_circuit::op::MerkleVerifyConfig;
 use p3_circuit::tables::MerklePrivateData;
 use p3_circuit::{CircuitBuilder, ExprId, MerkleOps, NonPrimitiveOpPrivateData};
 use p3_circuit_prover::MultiTableProver;
-use p3_circuit_prover::config::babybear_config::build_standard_config_babybear;
+use p3_circuit_prover::config::babybear_config::{
+    baby_bear_standard_compression_function, build_standard_config_babybear,
+};
 use p3_circuit_prover::prover::ProverError;
 use p3_field::PrimeCharacteristicRing;
 use p3_field::extension::BinomialExtensionField;
@@ -17,7 +19,9 @@ type F = BinomialExtensionField<BabyBear, 4>;
 
 fn main() -> Result<(), ProverError> {
     let depth = env::args().nth(1).and_then(|s| s.parse().ok()).unwrap_or(3);
-    let (config, merkle_config) = build_standard_config_babybear();
+    let config = build_standard_config_babybear();
+    let compress = baby_bear_standard_compression_function();
+    let merkle_config = MerkleVerifyConfig::babybear_quartic_extension_default(false);
 
     let mut builder = CircuitBuilder::new();
     builder.enable_merkle(&merkle_config);
@@ -78,8 +82,9 @@ fn main() -> Result<(), ProverError> {
                 },
             )
         })
-        .collect();
+        .collect(); // The siblings, containing extra siblings every other level
     let directions: Vec<bool> = (0..depth).map(|i| i % 2 == 0).collect();
+    // the index is 0b1010...
     let index_value = F::from_u64(
         (0..32)
             .zip(directions.iter())
@@ -87,21 +92,37 @@ fn main() -> Result<(), ProverError> {
             .map(|(i, _)| 1 << i)
             .sum(),
     );
-    let expected_root_value =
-        compute_merkle_root(&merkle_config, &leaf_value, &siblings, &directions);
+    let MerklePrivateData {
+        path_states: intermediate_states,
+        ..
+    } = MerklePrivateData::new(
+        &compress,
+        &merkle_config,
+        &leaf_value,
+        &siblings,
+        &directions,
+    )?;
+    let expected_root_value = intermediate_states
+        .last()
+        .expect("There is always at least the leaf hash")
+        .clone();
 
     let mut public_inputs = vec![];
     public_inputs.extend(leaf_value);
     public_inputs.push(index_value);
-    public_inputs.extend(expected_root_value.clone());
-    runner.set_public_inputs(&public_inputs)?;
+    public_inputs.extend(&expected_root_value);
 
+    runner.set_public_inputs(&public_inputs)?;
     // Set private Merkle path data
     runner.set_non_primitive_op_private_data(
         merkle_op_id,
-        NonPrimitiveOpPrivateData::MerkleVerify(MerklePrivateData {
-            path_siblings: siblings,
-        }),
+        NonPrimitiveOpPrivateData::MerkleVerify(MerklePrivateData::new(
+            &compress,
+            &merkle_config,
+            &leaf_value,
+            &siblings,
+            &directions,
+        )?),
     )?;
 
     let traces = runner.run()?;
@@ -114,30 +135,4 @@ fn main() -> Result<(), ProverError> {
     );
 
     Ok(())
-}
-
-pub type Hash = [BabyBear; 8];
-
-/// Simulate classical Merkle root computation for testing
-fn compute_merkle_root(
-    merkle_config: &MerkleVerifyConfig<F>,
-    leaf: &[F; 8],
-    siblings: &[(Vec<F>, Option<Vec<F>>)],
-    directions: &[bool],
-) -> Vec<F> {
-    directions.iter().zip(siblings.iter()).fold(
-        leaf.to_vec(),
-        |state, (direction, (sibling, other_sibling))| {
-            let (left, right) = if *direction {
-                (state.clone(), sibling.clone())
-            } else {
-                (sibling.clone(), state.clone())
-            };
-            let mut new_state = (merkle_config.compress)([&left, &right]);
-            if let Some(other_sibling) = other_sibling {
-                new_state = (merkle_config.compress)([&state, other_sibling]);
-            }
-            new_state
-        },
-    )
 }

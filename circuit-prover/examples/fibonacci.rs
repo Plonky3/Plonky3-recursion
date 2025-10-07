@@ -8,9 +8,8 @@ use p3_circuit_prover::config::babybear_config::build_standard_config_babybear;
 use p3_circuit_prover::prover::ProverError;
 use p3_circuit_prover::{MultiTableProver, TablePacking};
 use p3_field::PrimeCharacteristicRing;
-use p3_field::extension::BinomialExtensionField;
 
-type F = BinomialExtensionField<BabyBear, 4>;
+type F = BabyBear;
 
 fn main() -> Result<(), ProverError> {
     let n = env::args()
@@ -44,7 +43,7 @@ fn main() -> Result<(), ProverError> {
     runner.set_public_inputs(&[expected_fib])?;
 
     let traces = runner.run()?;
-    let (config, _) = build_standard_config_babybear::<F>();
+    let config = build_standard_config_babybear();
     let table_packing = TablePacking::from_counts(4, 1);
     let multi_prover = MultiTableProver::new(config).with_table_packing(table_packing);
     let proof = multi_prover.prove_all_tables(&traces)?;

@@ -1,6 +1,10 @@
 use alloc::vec::Vec;
 use alloc::{format, vec};
 
+use itertools::izip;
+use p3_field::{ExtensionField, Field};
+use p3_symmetric::PseudoCompressionFunction;
+
 use crate::circuit::Circuit;
 use crate::op::{
     MerkleVerifyConfig, NonPrimitiveOpConfig, NonPrimitiveOpPrivateData, NonPrimitiveOpType, Prim,
@@ -117,70 +121,110 @@ pub struct MerklePathTrace<F> {
 /// to demonstrate knowledge of a valid Merkle path from leaf to root.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MerklePrivateData<F> {
-    /// Sibling hash values along the Merkle path
+    /// Sibling and state hash values along the Merkle path
     ///
-    /// For each level of the tree (from leaf to root), contains the
-    /// sibling hash needed to compute the parent hash. It might optionally
-    /// include the hash of the row of a smaller matrix in the Mmcs.
-    pub path_siblings: Vec<(Vec<F>, Option<Vec<F>>)>,
+    /// The sequence of states along the path.
+    pub path_states: Vec<Vec<F>>,
+    /// The sequence of sibling with optional tuple of extra state
+    /// and siblings, present when the Mmcs has a smaller matrix at this step.
+    pub path_siblings: Vec<SiblingWithExtra<F>>,
 }
 
-impl<F: Clone + Default> MerklePrivateData<F> {
+type SiblingWithExtra<F> = (Vec<F>, Option<(Vec<F>, Vec<F>)>);
+
+impl<F: Field + Clone + Default> MerklePrivateData<F> {
+    /// Computes the private merkle data for the merkle path defined by `leaf`, `siblings` and `directions`,
+    /// for a given a compression function.
+    pub fn new<BF, C, const DIGEST_ELEMS: usize>(
+        compress: &C,
+        config: &MerkleVerifyConfig,
+        leaf: &[F],
+        siblings: &[(Vec<F>, Option<Vec<F>>)],
+        directions: &[bool],
+    ) -> Result<Self, CircuitError>
+    where
+        BF: Field,
+        F: ExtensionField<BF> + Clone,
+        C: PseudoCompressionFunction<[BF; DIGEST_ELEMS], 2>,
+    {
+        // Worst case we push two states per step (if `other_sibling` is Some).
+        let mut private_data = Self {
+            path_states: Vec::with_capacity(siblings.len() + 1),
+            path_siblings: Vec::with_capacity(siblings.len()),
+        };
+        let path_states = &mut private_data.path_states;
+        let path_siblings = &mut private_data.path_siblings;
+
+        let mut state = leaf.to_vec();
+        for (&dir, (sibling, other)) in directions.iter().zip(siblings.iter()) {
+            path_states.push(state.to_vec());
+
+            let state_as_slice = config.ext_to_base(&state)?;
+            let sibling_as_slice = config.ext_to_base(sibling)?;
+
+            let input = if dir {
+                [state_as_slice, sibling_as_slice]
+            } else {
+                [sibling_as_slice, state_as_slice]
+            };
+            state = config.base_to_ext(&compress.compress(input))?;
+
+            // Optional second hash when the step has an extra sibling.
+            if let Some(other) = other {
+                path_siblings.push((sibling.to_vec(), Some((state.to_vec(), other.clone()))));
+                let other = config.ext_to_base(other)?;
+                state = config.base_to_ext(&compress.compress([state_as_slice, other]))?;
+            } else {
+                path_siblings.push((sibling.to_vec(), None));
+            }
+        }
+        Ok(private_data)
+    }
+    /// Builds a valid `MerkleVerifyAir` trace from a private Merkle proof,
+    /// given also the leaf’s digest wires and value used in the circuit, and the leaf’s index in the tree.
     pub fn to_trace(
         &self,
-        merkle_config: &MerkleVerifyConfig<F>,
-        leaf_indices: Vec<WitnessId>,
-        leaf_value: &[F],
+        merkle_config: &MerkleVerifyConfig,
+        leaf_wires: &[WitnessId],
         index_value: u32,
     ) -> Result<MerklePathTrace<F>, CircuitError> {
-        debug_assert_eq!(merkle_config.ext_field_digest_elems, leaf_value.len());
-
         let mut trace = MerklePathTrace::default();
-        let mut state = leaf_value.to_vec();
 
-        let leaf_indices: Vec<u32> = leaf_indices.iter().map(|wid| wid.0).collect();
+        // Get the adrresses of the leaf wires
+        let leaf_indices: Vec<u32> = leaf_wires.iter().map(|wid| wid.0).collect();
 
         let path_directions =
             (0..merkle_config.max_tree_height).map(|i| (index_value >> i) & 1 == 1);
+
         // For each step in the Merkle path
-        for ((sibling_value, extra_sibling_value), direction) in
-            self.path_siblings.iter().zip(path_directions)
-        {
+        assert_eq!(self.path_states.len(), self.path_siblings.len());
+        for (state, (sibling, extra), direction) in izip!(
+            self.path_states.iter(),
+            self.path_siblings.iter(),
+            path_directions
+        ) {
             // Current hash becomes left operand
             trace.left_values.push(state.clone());
             // TODO: What is the address of this value?
             trace.left_index.push(leaf_indices.clone()); // Points to witness bus
 
             // Sibling becomes right operand (private data - not on witness bus)
-            trace.right_values.push(sibling_value.clone());
+            trace.right_values.push(sibling.clone());
             trace.right_index.push(0); // Not on witness bus - private data
-
-            // Compute parent hash
-            let parent_hash = if direction {
-                (merkle_config.compress)([&state, sibling_value])
-            } else {
-                (merkle_config.compress)([sibling_value, &state])
-            };
 
             trace.path_directions.push(direction);
             trace.is_extra.push(false);
 
-            // Update current hash for next iteration
-            state = parent_hash;
-
             // If there's an extra sibling we push another row to the trace
-            if let Some(extra_sibling_value) = extra_sibling_value {
-                trace.left_values.push(state.to_vec());
+            if let Some((extra_state, extra_sibling)) = extra {
+                trace.left_values.push(extra_state.to_vec());
                 trace.left_index.push(leaf_indices.clone());
 
-                trace.right_values.push(extra_sibling_value.clone());
+                trace.right_values.push(extra_sibling.clone());
                 trace.right_index.push(0); // TODO: This should have an address on the witness table
 
-                let parent_hash = (merkle_config.compress)([&state, extra_sibling_value]).to_vec();
                 trace.path_directions.push(direction);
                 trace.is_extra.push(true);
-
-                state = parent_hash;
             }
         }
         Ok(trace)
@@ -480,20 +524,6 @@ impl<F: CircuitField> CircuitRunner<F> {
                 root: _,
             } = &self.circuit.non_primitive_ops[op_idx];
 
-            // Clone private data option to avoid holding a borrow on self
-            let leaf_value = leaf
-                .iter()
-                .map(|limb| {
-                    if let Some(val) = self.witness.get(limb.0 as usize).and_then(|x| x.as_ref()) {
-                        Ok(*val)
-                    } else {
-                        Err(CircuitError::NonPrimitiveOpWitnessNotSet {
-                            operation_index: op_idx,
-                        })
-                    }
-                })
-                .collect::<Result<Vec<F>, CircuitError>>()?;
-
             if let Some(Some(NonPrimitiveOpPrivateData::MerkleVerify(private_data))) =
                 self.non_primitive_op_private_data.get(op_idx).cloned()
             {
@@ -507,7 +537,7 @@ impl<F: CircuitField> CircuitRunner<F> {
                         op: NonPrimitiveOpType::MerkleVerify,
                     }),
                 }?;
-                let trace = private_data.to_trace(config, leaf.clone(), &leaf_value, index.0)?;
+                let trace = private_data.to_trace(config, leaf, index.0)?;
                 merkle_paths.push(trace);
             } else {
                 return Err(CircuitError::NonPrimitiveOpMissingPrivateData {
