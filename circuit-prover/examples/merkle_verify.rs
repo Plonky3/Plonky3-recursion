@@ -130,9 +130,5 @@ fn main() -> Result<(), ProverError> {
     let proof = multi_prover.prove_all_tables(&traces)?;
     multi_prover.verify_all_tables(&proof)?;
 
-    println!(
-        "✅ Verified Merkle path for leaf {leaf_value:?}, index {index_value} with depth {depth} → root {expected_root_value:?}",
-    );
-
     Ok(())
 }
