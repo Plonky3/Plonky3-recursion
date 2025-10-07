@@ -561,8 +561,11 @@ mod tests {
     use p3_baby_bear::BabyBear;
     use p3_field::extension::BinomialExtensionField;
     use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
+    use p3_symmetric::PseudoCompressionFunction;
 
+    use crate::MerklePrivateData;
     use crate::builder::CircuitBuilder;
+    use crate::op::MerkleVerifyConfig;
     use crate::types::WitnessId;
 
     #[test]
@@ -770,5 +773,65 @@ mod tests {
         assert_eq!(traces.add_trace.lhs_values[0], x_val);
         assert_eq!(traces.add_trace.rhs_values[0], expected_yz);
         assert_eq!(traces.add_trace.result_values[0], expected_result);
+    }
+
+    #[derive(Clone, Debug)]
+    struct MockCompression {}
+
+    impl PseudoCompressionFunction<[BabyBear; 1], 2> for MockCompression {
+        fn compress(&self, input: [[BabyBear; 1]; 2]) -> [BabyBear; 1] {
+            input[0]
+        }
+    }
+
+    #[test]
+    fn test_merkle_private_data() {
+        let leaf = [BabyBear::from_u64(1)];
+        let siblings = [
+            (vec![BabyBear::from_u64(2)], None),
+            (
+                vec![BabyBear::from_u64(3)],
+                Some(vec![BabyBear::from_u64(4)]),
+            ),
+            (vec![BabyBear::from_u64(5)], None),
+        ];
+        let directions = [false, true, true];
+
+        let expected_private_data = MerklePrivateData {
+            path_states: vec![
+                // The first state is the leaf
+                vec![BabyBear::from_u64(1)],
+                // here there's an extra sibling, so we do two compressions.
+                // Since dir = false, the first input is [2, 1] and thus compress.compress(input) = 2.
+                // The extra input is [2, 4] compress.compress(input) = 2
+                vec![BabyBear::from_u64(2)],
+                // direction = true and then input is [2, 5] compress.compress(input) = 2
+                vec![BabyBear::from_u64(2)],
+            ],
+            path_siblings: vec![
+                (vec![BabyBear::from_u64(2)], None), // The first sibling
+                // The second sibling with the extra state and sibling
+                (
+                    vec![BabyBear::from_u64(3)],
+                    Some((vec![BabyBear::from_u64(2)], vec![BabyBear::from_u64(4)])),
+                ),
+                // The third sibling
+                (vec![BabyBear::from_u64(5)], None),
+            ],
+        };
+
+        let compress = MockCompression {};
+        let config = MerkleVerifyConfig::mock_config();
+
+        let private_data = MerklePrivateData::new::<BabyBear, _, 1>(
+            &compress,
+            &config,
+            &leaf,
+            &siblings,
+            &directions,
+        )
+        .unwrap();
+
+        assert_eq!(private_data, expected_private_data);
     }
 }
