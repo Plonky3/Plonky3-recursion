@@ -1,3 +1,21 @@
+//! [`ConstAir`] stores constants either in the base field or the extension field (of extension degree `D`).
+//!
+//!  # Columns
+//!
+//! The AIR has `D + 1` columns:
+//!
+//! - 1 column for the index of the constant within the witness table,
+//! - `D` columns for the constant value.
+//!
+//! # Constraints
+//!
+//! The AIR has no constraints.
+//!
+//! # Global Interactions
+//!
+//! There is one interaction with the witness bus:
+//! - send (index, value)
+
 #![allow(clippy::needless_range_loop)]
 use alloc::vec::Vec;
 

@@ -1,3 +1,25 @@
+//! [`WitnessAir`] is the central AIR in our construction of a recursive verifier. It represents the **global witness bus**,
+//! storing all witness indices and associated values used within the verifier circuit.
+//! The generic parameter `D` allows the AIR to handle values from an extension field of degree `D` over the base field.
+//!
+//! # Columns
+//!
+//! [`WitnessAir`] has `D + 1` columns:
+//!
+//! - 1 column for the index of the element,
+//! - `D` columns to store the value, where `D` is the degree extension of the used field compared to the current field
+//!
+//! Each row in the table increments the index by 1, starting from 0 (and so the index column is the range from 0 to `height - 1`).
+//!
+//!  # Constraints
+//!  - in the first row: ensure that `index = 0`.
+//!  - for transitions: `index_next - index_current - 1`.
+//!
+//! # Global Interactions
+//!
+//! Since this AIR serves as a witness bus, where the other chips read values from, it has interactions with all the other AIRs.
+//! The AIR *receives* (meaning with positive multiplicities) interactions of the form (i, v) where i is the index of the value in the witness bus and v is the value itself.
+
 #![allow(clippy::needless_range_loop)]
 use alloc::vec::Vec;
 

@@ -28,6 +28,7 @@ hashbrown = "0.16.0"
 itertools.workspace = true
 serde.workspace = true
 thiserror.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
 p3-air.workspace = true

@@ -19,6 +19,7 @@ use p3_field::{BasedVectorSpace, Field};
 use p3_merkle_tree_air::air::{MerkleTableConfig, MerkleVerifyAir};
 use p3_uni_stark::{prove, verify};
 use thiserror::Error;
+use tracing::instrument;
 
 use crate::air::{AddAir, ConstAir, MulAir, PublicAir, WitnessAir};
 use crate::config::{ProverConfig, StarkField, StarkPermutation};
@@ -179,6 +180,7 @@ where
     /// Automatically detects whether to use base field or binomial extension field
     /// proving based on the circuit element type `EF`. For extension fields,
     /// the binomial parameter W is automatically extracted.
+    #[instrument(skip_all)]
     pub fn prove_all_tables<EF>(
         &self,
         traces: &Traces<EF>,
