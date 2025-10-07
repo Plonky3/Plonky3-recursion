@@ -12,11 +12,11 @@ use p3_recursion::circuit_verifier::{
     ProofTargetsWithPVs, VerificationError, verify_circuit_no_lookups,
 };
 use p3_recursion::lookup::AirWithoutLookup;
-use p3_recursion::recursive_generation::generate_challenges;
+use p3_recursion::recursive_generation::generate_challenges_no_lookups;
 use p3_recursion::recursive_pcs::{
     FriProofTargets, HashTargets, InputProofTargets, RecExtensionValMmcs, RecValMmcs, Witness,
 };
-use p3_recursion::recursive_traits::{ProofTargets, Recursive};
+use p3_recursion::recursive_traits::{ProofTargets, Recursive, RecursiveAir};
 use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
 use p3_uni_stark::{StarkConfig, StarkGenericConfig, Val, prove, verify};
 use rand::SeedableRng;
@@ -102,12 +102,14 @@ fn test_fibonacci_verifier() -> Result<(), VerificationError> {
     let all_proof_values =
         ProofTargets::<MyConfig, HashTargets<F, DIGEST_ELEMS>, InnerFri>::get_values(&proof);
 
+    let log_quotient_degree =
+        <FibonacciAir as RecursiveAir<F>>::get_log_quotient_degree(&air, pis.len(), config.is_zk());
     // Generate all the challenge values.
-    let all_challenges = generate_challenges(
-        &air,
+    let all_challenges = generate_challenges_no_lookups(
         &config,
-        &proof,
-        &pis,
+        &[&proof],
+        &[log_quotient_degree],
+        &[&pis],
         Some(&[pow_bits, log_height_max]),
     )?;
 

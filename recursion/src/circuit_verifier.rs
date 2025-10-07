@@ -389,9 +389,8 @@ where
 
 #[cfg(test)]
 mod tests {
-    use alloc::string::String;
+    use alloc::vec;
     use alloc::vec::Vec;
-    use alloc::{format, vec};
     use core::marker::PhantomData;
 
     use itertools::Itertools;
@@ -417,10 +416,11 @@ mod tests {
     use crate::circuit_verifier::{ProofTargetsWithPVs, verify_circuit_no_lookups};
     use crate::lookup::AirWithoutLookup;
     use crate::recursive_generation::{
-        ComsWithOpenings, GenerationError, PcsGeneration, generate_challenges,
+        ComsWithOpenings, GenerationError, PcsGeneration, generate_challenges_no_lookups,
     };
     use crate::recursive_traits::{
-        ComsWithOpeningsTargets, ProofTargets, Recursive, RecursiveLagrangeSelectors, RecursivePcs,
+        ComsWithOpeningsTargets, ProofTargets, Recursive, RecursiveAir, RecursiveLagrangeSelectors,
+        RecursivePcs,
     };
 
     type DummyCom<F> = Vec<Vec<F>>;
@@ -665,7 +665,7 @@ mod tests {
     }
 
     #[test]
-    fn test_mul_verifier_circuit() -> Result<(), String> {
+    fn test_mul_verifier_circuit() -> anyhow::Result<()> {
         let log_n = 8;
         type Val = BabyBear;
         type Challenge = BinomialExtensionField<Val, 4>;
@@ -696,8 +696,15 @@ mod tests {
 
         let mut proof = prove(&config, &air, trace, &vec![]);
 
-        let challenges = generate_challenges(&air, &config, &proof, &[], None)
-            .map_err(|e| format!("Error when generating challenges {e:?}"))?;
+        let log_quotient_degree =
+            <MulAir as RecursiveAir<Val>>::get_log_quotient_degree(&air, 0, config.is_zk());
+        let challenges = generate_challenges_no_lookups(
+            &config,
+            &[&proof],
+            &[log_quotient_degree],
+            &[&[]],
+            None,
+        )?;
 
         proof.commitments.random = None;
         proof.commitments.quotient_chunks = vec![];
@@ -742,16 +749,13 @@ mod tests {
             &air_no_lookup,
             &mut circuit_builder,
             &proof_targets_pvs,
-        )
-        .map_err(|e| format!("{e:?}"))?;
+        )?;
 
         let circuit = circuit_builder.build().unwrap();
         let mut runner = circuit.runner();
-        runner
-            .set_public_inputs(&pvs)
-            .map_err(|e| format!("{e:?}"))?;
+        runner.set_public_inputs(&pvs)?;
 
-        let _traces = runner.run().map_err(|e| format!("{e:?}"))?;
+        let _traces = runner.run()?;
 
         Ok(())
     }
