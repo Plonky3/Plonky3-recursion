@@ -4,7 +4,7 @@ use core::hash::Hash;
 use p3_field::{ExtensionField, Field};
 
 use crate::CircuitError;
-use crate::tables::MerklePrivateData;
+use crate::tables::MmcsPrivateData;
 use crate::types::WitnessId;
 
 /// Primitive operations that represent basic field arithmetic
@@ -52,8 +52,8 @@ pub enum Prim<F> {
 /// Non-primitive operation types
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum NonPrimitiveOpType {
-    // Merkle Verify gate with the argument is the size of the path
-    MerkleVerify,
+    // Mmcs Verify gate with the argument is the size of the path
+    MmcsVerify,
     FriVerify,
     // Future: FriVerify, HashAbsorb, etc.
 }
@@ -61,7 +61,7 @@ pub enum NonPrimitiveOpType {
 /// Non-primitive operation types
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum NonPrimitiveOpConfig {
-    MerkleVerifyConfig(MerkleVerifyConfig),
+    MmcsVerifyConfig(MmcsVerifyConfig),
     None,
 }
 
@@ -81,39 +81,39 @@ pub enum NonPrimitiveOpConfig {
 /// 4. Avoid optimization passes breaking complex constraint relationships
 #[derive(Debug, Clone, PartialEq)]
 pub enum NonPrimitiveOp {
-    /// Verifies that a leaf value is contained in a Merkle tree with given root.
-    /// The actual Merkle path verification logic is implemented in a dedicated
+    /// Verifies that a leaf value is contained in a Mmcs with given root.
+    /// The actual Mmcs path verification logic is implemented in a dedicated
     /// AIR table that constrains the relationship between leaf and root.
     ///
     /// Public interface (on witness bus):
     /// - `leaf`: The leaf value being verified (single field element)
     /// - `index`: The index of the leaf
-    /// - `root`: The expected Merkle tree root (single field element)
+    /// - `root`: The expected Mmcs root (single field element)
     ///
     /// Private data (set via NonPrimitiveOpId):
-    /// - Merkle path siblings and direction bits
-    /// - See `MerklePrivateData` for complete specification
-    MerkleVerify {
-        leaf: MerkleWitnessId,
+    /// - Mmcs path siblings and direction bits
+    /// - See `MmcsPrivateData` for complete specification
+    MmcsVerify {
+        leaf: MmcsWitnessId,
         index: WitnessId,
-        root: MerkleWitnessId,
+        root: MmcsWitnessId,
     },
 }
 
-/// Configuration parameters for Merkle verification operations. When
+/// Configuration parameters for Mmcs verification operations. When
 /// `base_field_digest_elems > ext_field_digest_elems`, we say the configuration
 /// is packing digests into extension field elements.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct MerkleVerifyConfig {
+pub struct MmcsVerifyConfig {
     /// The number of base field elements required for represeting a digest.
     pub base_field_digest_elems: usize,
     /// The number of extension field elements required for representing a digest.
     pub ext_field_digest_elems: usize,
-    /// The maximum height of the merkle tree
+    /// The maximum height of the mmcs
     pub max_tree_height: usize,
 }
 
-impl MerkleVerifyConfig {
+impl MmcsVerifyConfig {
     /// Returns the number of wires received as input.
     pub const fn input_size(&self) -> usize {
         // `ext_field_digest_elems`` for the leaf and root and 1 for the index
@@ -142,7 +142,7 @@ impl MerkleVerifyConfig {
             .collect::<Vec<F>>()
             .try_into()
             .map_err(|_| CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
-                op: NonPrimitiveOpType::MerkleVerify,
+                op: NonPrimitiveOpType::MmcsVerify,
                 expected: self.ext_field_digest_elems,
                 got: digest.len(),
             })
@@ -156,7 +156,7 @@ impl MerkleVerifyConfig {
     {
         if digest.len() != self.base_field_digest_elems {
             return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
-                op: NonPrimitiveOpType::MerkleVerify,
+                op: NonPrimitiveOpType::MmcsVerify,
                 expected: self.base_field_digest_elems,
                 got: digest.len(),
             });
@@ -236,7 +236,7 @@ impl MerkleVerifyConfig {
     }
 }
 
-pub type MerkleWitnessId = Vec<WitnessId>;
+pub type MmcsWitnessId = Vec<WitnessId>;
 
 /// Private auxiliary data for non-primitive operations
 ///
@@ -247,10 +247,10 @@ pub type MerkleWitnessId = Vec<WitnessId>;
 /// - Is used by AIR tables to generate the appropriate constraints
 #[derive(Debug, Clone, PartialEq)]
 pub enum NonPrimitiveOpPrivateData<F> {
-    /// Private data for Merkle verification
+    /// Private data for Mmcs verification
     ///
-    /// Contains the complete Merkle path information needed by the prover
+    /// Contains the complete Mmcs path information needed by the prover
     /// to generate a valid proof. This data is not part of the public
     /// circuit specification.
-    MerkleVerify(MerklePrivateData<F>),
+    MmcsVerify(MmcsPrivateData<F>),
 }

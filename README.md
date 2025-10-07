@@ -14,7 +14,7 @@ for a walkthrough of the recursion approach.
 
 ## Modular circuit builder & runtime policy
 
-The `CircuitBuilder<F>` uses a runtime policy to control which non-primitive operations (Merkle, FRI, etc.) are allowed. Primitive ops like `Const`, `Public`, `Add` are always available.
+The `CircuitBuilder<F>` uses a runtime policy to control which non-primitive operations (MMCS, FRI, etc.) are allowed. Primitive ops like `Const`, `Public`, `Add` are always available.
 
 By default, all non-primitive ops are disabled with `DefaultProfile`.
 Define a custom policy to enable them, or use `AllowAllProfile` to activate them all.

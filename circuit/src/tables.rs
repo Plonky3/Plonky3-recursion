@@ -8,7 +8,7 @@ use tracing::instrument;
 
 use crate::circuit::Circuit;
 use crate::op::{
-    MerkleVerifyConfig, NonPrimitiveOpConfig, NonPrimitiveOpPrivateData, NonPrimitiveOpType, Prim,
+    MmcsVerifyConfig, NonPrimitiveOpConfig, NonPrimitiveOpPrivateData, NonPrimitiveOpType, Prim,
 };
 use crate::types::{NonPrimitiveOpId, WitnessId};
 use crate::{CircuitError, CircuitField, NonPrimitiveOp};
@@ -26,8 +26,8 @@ pub struct Traces<F> {
     pub add_trace: AddTrace<F>,
     /// Mul operation table
     pub mul_trace: MulTrace<F>,
-    /// Merkle verification table
-    pub merkle_trace: MerkleTrace<F>,
+    /// Mmcs verification table
+    pub mmcs_trace: MmcsTrace<F>,
 }
 
 /// Central witness table with preprocessed index column
@@ -91,16 +91,16 @@ pub struct MulTrace<F> {
     pub result_index: Vec<WitnessId>,
 }
 
-/// Fake Merkle verification table (simplified: single field elements)
+/// Fake Mmcs verification table (simplified: single field elements)
 #[derive(Debug, Clone)]
-pub struct MerkleTrace<F> {
-    /// All the merkle paths computed in this trace
-    pub merkle_paths: Vec<MerklePathTrace<F>>,
+pub struct MmcsTrace<F> {
+    /// All the mmcs paths computed in this trace
+    pub mmcs_paths: Vec<MmcsPathTrace<F>>,
 }
 
-/// A single Merkle Path verification table
+/// A single Mmcs Path verification table
 #[derive(Debug, Clone, Default)]
-pub struct MerklePathTrace<F> {
+pub struct MmcsPathTrace<F> {
     /// Left operand values (current hash). A vector of field elements representing a digest.
     pub left_values: Vec<Vec<F>>,
     /// Left operand indices.
@@ -116,13 +116,13 @@ pub struct MerklePathTrace<F> {
     pub is_extra: Vec<bool>,
 }
 
-/// Private Merkle path data for Merkle verification
+/// Private Mmcs path data for Mmcs verification
 ///
 /// This represents the private witness information that the prover needs
-/// to demonstrate knowledge of a valid Merkle path from leaf to root.
+/// to demonstrate knowledge of a valid Mmcs path from leaf to root.
 #[derive(Debug, Clone, PartialEq)]
-pub struct MerklePrivateData<F> {
-    /// Sibling and state hash values along the Merkle path
+pub struct MmcsPrivateData<F> {
+    /// Sibling and state hash values along the Mmcs path
     ///
     /// The sequence of states along the path.
     pub path_states: Vec<Vec<F>>,
@@ -133,12 +133,12 @@ pub struct MerklePrivateData<F> {
 
 type SiblingWithExtra<F> = (Vec<F>, Option<(Vec<F>, Vec<F>)>);
 
-impl<F: Field + Clone + Default> MerklePrivateData<F> {
-    /// Computes the private merkle data for the merkle path defined by `leaf`, `siblings` and `directions`,
+impl<F: Field + Clone + Default> MmcsPrivateData<F> {
+    /// Computes the private mmcs data for the mmcs path defined by `leaf`, `siblings` and `directions`,
     /// for a given a compression function.
     pub fn new<BF, C, const DIGEST_ELEMS: usize>(
         compress: &C,
-        config: &MerkleVerifyConfig,
+        config: &MmcsVerifyConfig,
         leaf: &[F],
         siblings: &[(Vec<F>, Option<Vec<F>>)],
         directions: &[bool],
@@ -181,23 +181,22 @@ impl<F: Field + Clone + Default> MerklePrivateData<F> {
         }
         Ok(private_data)
     }
-    /// Builds a valid `MerkleVerifyAir` trace from a private Merkle proof,
+    /// Builds a valid `MmcsVerifyAir` trace from a private Mmcs proof,
     /// given also the leaf’s digest wires and value used in the circuit, and the leaf’s index in the tree.
     pub fn to_trace(
         &self,
-        merkle_config: &MerkleVerifyConfig,
+        mmcs_config: &MmcsVerifyConfig,
         leaf_wires: &[WitnessId],
         index_value: u32,
-    ) -> Result<MerklePathTrace<F>, CircuitError> {
-        let mut trace = MerklePathTrace::default();
+    ) -> Result<MmcsPathTrace<F>, CircuitError> {
+        let mut trace = MmcsPathTrace::default();
 
         // Get the adrresses of the leaf wires
         let leaf_indices: Vec<u32> = leaf_wires.iter().map(|wid| wid.0).collect();
 
-        let path_directions =
-            (0..merkle_config.max_tree_height).map(|i| (index_value >> i) & 1 == 1);
+        let path_directions = (0..mmcs_config.max_tree_height).map(|i| (index_value >> i) & 1 == 1);
 
-        // For each step in the Merkle path
+        // For each step in the Mmcs path
         assert_eq!(self.path_states.len(), self.path_siblings.len());
         for (state, (sibling, extra), direction) in izip!(
             self.path_states.iter(),
@@ -297,7 +296,7 @@ impl<F: CircuitField> CircuitRunner<F> {
         // Validate that the private data matches the operation type
         let non_primitive_op = &self.circuit.non_primitive_ops[op_id.0 as usize];
         match (non_primitive_op, &private_data) {
-            (NonPrimitiveOp::MerkleVerify { .. }, NonPrimitiveOpPrivateData::MerkleVerify(_)) => {
+            (NonPrimitiveOp::MmcsVerify { .. }, NonPrimitiveOpPrivateData::MmcsVerify(_)) => {
                 // Type match - good!
             }
         }
@@ -318,7 +317,7 @@ impl<F: CircuitField> CircuitRunner<F> {
         let public_trace = self.generate_public_trace()?;
         let add_trace = self.generate_add_trace()?;
         let mul_trace = self.generate_mul_trace()?;
-        let merkle_trace = self.generate_merkle_trace()?;
+        let mmcs_trace = self.generate_mmcs_trace()?;
 
         Ok(Traces {
             witness_trace,
@@ -326,7 +325,7 @@ impl<F: CircuitField> CircuitRunner<F> {
             public_trace,
             add_trace,
             mul_trace,
-            merkle_trace,
+            mmcs_trace,
         })
     }
 
@@ -514,33 +513,33 @@ impl<F: CircuitField> CircuitRunner<F> {
         })
     }
 
-    fn generate_merkle_trace(&mut self) -> Result<MerkleTrace<F>, CircuitError> {
-        let mut merkle_paths = Vec::new();
+    fn generate_mmcs_trace(&mut self) -> Result<MmcsTrace<F>, CircuitError> {
+        let mut mmcs_paths = Vec::new();
 
         // Process each complex operation by index to avoid borrowing conflicts
         for op_idx in 0..self.circuit.non_primitive_ops.len() {
             // Copy out leaf/root to end immutable borrow immediately
-            let NonPrimitiveOp::MerkleVerify {
+            let NonPrimitiveOp::MmcsVerify {
                 leaf,
                 index,
                 root: _,
             } = &self.circuit.non_primitive_ops[op_idx];
 
-            if let Some(Some(NonPrimitiveOpPrivateData::MerkleVerify(private_data))) =
+            if let Some(Some(NonPrimitiveOpPrivateData::MmcsVerify(private_data))) =
                 self.non_primitive_op_private_data.get(op_idx).cloned()
             {
                 let config = match self
                     .circuit
                     .enabled_ops
-                    .get(&NonPrimitiveOpType::MerkleVerify)
+                    .get(&NonPrimitiveOpType::MmcsVerify)
                 {
-                    Some(NonPrimitiveOpConfig::MerkleVerifyConfig(config)) => Ok(config),
+                    Some(NonPrimitiveOpConfig::MmcsVerifyConfig(config)) => Ok(config),
                     _ => Err(CircuitError::InvalidNonPrimitiveOpConfiguration {
-                        op: NonPrimitiveOpType::MerkleVerify,
+                        op: NonPrimitiveOpType::MmcsVerify,
                     }),
                 }?;
                 let trace = private_data.to_trace(config, leaf, index.0)?;
-                merkle_paths.push(trace);
+                mmcs_paths.push(trace);
             } else {
                 return Err(CircuitError::NonPrimitiveOpMissingPrivateData {
                     operation_index: op_idx,
@@ -548,7 +547,7 @@ impl<F: CircuitField> CircuitRunner<F> {
             }
         }
 
-        Ok(MerkleTrace { merkle_paths })
+        Ok(MmcsTrace { mmcs_paths })
     }
 }
 
@@ -563,9 +562,9 @@ mod tests {
     use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
     use p3_symmetric::PseudoCompressionFunction;
 
-    use crate::MerklePrivateData;
+    use crate::MmcsPrivateData;
     use crate::builder::CircuitBuilder;
-    use crate::op::MerkleVerifyConfig;
+    use crate::op::MmcsVerifyConfig;
     use crate::types::WitnessId;
 
     #[test]
@@ -785,7 +784,7 @@ mod tests {
     }
 
     #[test]
-    fn test_merkle_private_data() {
+    fn test_mmcs_private_data() {
         let leaf = [BabyBear::from_u64(1)];
         let siblings = [
             (vec![BabyBear::from_u64(2)], None),
@@ -797,7 +796,7 @@ mod tests {
         ];
         let directions = [false, true, true];
 
-        let expected_private_data = MerklePrivateData {
+        let expected_private_data = MmcsPrivateData {
             path_states: vec![
                 // The first state is the leaf
                 vec![BabyBear::from_u64(1)],
@@ -821,9 +820,9 @@ mod tests {
         };
 
         let compress = MockCompression {};
-        let config = MerkleVerifyConfig::mock_config();
+        let config = MmcsVerifyConfig::mock_config();
 
-        let private_data = MerklePrivateData::new::<BabyBear, _, 1>(
+        let private_data = MmcsPrivateData::new::<BabyBear, _, 1>(
             &compress,
             &config,
             &leaf,

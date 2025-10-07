@@ -36,7 +36,7 @@ impl<F> CircuitField for F where
 ///
 /// This represents the compiled output of a `CircuitBuilder`. It contains:
 /// - Primitive operations (add, multiply, subtract, constants, public inputs)
-/// - Non-primitive operations (complex operations like Merkle verification)
+/// - Non-primitive operations (complex operations like MMCS verification)
 /// - Public input metadata and witness table structure
 ///
 /// The circuit is static and serializable. Use `.runner()` to create

@@ -5,18 +5,18 @@ use core::ops::Range;
 
 use itertools::izip;
 use p3_air::{Air, AirBuilder, BaseAir};
-use p3_circuit::MerkleTrace;
-use p3_circuit::op::MerkleVerifyConfig;
+use p3_circuit::MmcsTrace;
+use p3_circuit::op::MmcsVerifyConfig;
 use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing, PrimeField};
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
 
-/// Configuration for the merkle table AIR rows.
+/// Configuration for the mmcs table AIR rows.
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MerkleTableConfig {
+pub struct MmcsTableConfig {
     /// The number of base field elements in a digest.
     digest_elems: usize,
-    /// The maximum height of the merkle tree.
+    /// The maximum height of the mmcs tree.
     max_tree_height: usize,
     /// The number of base field elements used to represent the index of a digest.
     digest_addresses: usize,
@@ -24,8 +24,8 @@ pub struct MerkleTableConfig {
     packing: bool,
 }
 
-impl From<MerkleVerifyConfig> for MerkleTableConfig {
-    fn from(value: MerkleVerifyConfig) -> Self {
+impl From<MmcsVerifyConfig> for MmcsTableConfig {
+    fn from(value: MmcsVerifyConfig) -> Self {
         Self {
             digest_elems: value.base_field_digest_elems,
             max_tree_height: value.max_tree_height,
@@ -35,7 +35,7 @@ impl From<MerkleVerifyConfig> for MerkleTableConfig {
     }
 }
 
-impl MerkleTableConfig {
+impl MmcsTableConfig {
     pub fn width(&self) -> usize {
         self.max_tree_height // index_bits
         + 1 // length
@@ -49,26 +49,26 @@ impl MerkleTableConfig {
     }
 }
 
-/// AIR for the Merkle verification table. Each row corresponds to one hash operation in the Merkle path verification.
+/// AIR for the Mmcs verification table. Each row corresponds to one hash operation in the Mmcs path verification.
 /// In each row we store:
 /// - `index_bits`: The binary decomposition of the index of the leaf being verified, padded
 ///   to `max_tree_height` bits.
-/// - `length`: The length of the Merkle path (i.e., the height of the tree).
-/// - `height_encoding`: One-hot encoding of the current height in the Merkle path.
+/// - `length`: The length of the Mmcs path (i.e., the height of the tree).
+/// - `height_encoding`: One-hot encoding of the current height in the Mmcs path.
 /// - `sibling`: The sibling node at the current height.    
 /// - `state`: The current hash state (the result of hashing the leaf with siblings up to the current height).
 /// - `state_index`: The index of the current in the witness table.
-/// - `is_final`: Whether this is the final row for this Merkle path (i.e., the one that outputs the root).
+/// - `is_final`: Whether this is the final row for this Mmcs path (i.e., the one that outputs the root).
 /// - `is_extra`: Whether this row is hashing the row of a smaller matrix in the Mmcs.
-pub struct MerkleVerifyAir<F>
+pub struct MmcsVerifyAir<F>
 where
     F: Field,
 {
-    config: MerkleTableConfig,
+    config: MmcsTableConfig,
     _phantom: PhantomData<F>,
 }
 
-impl<F: Field> BaseAir<F> for MerkleVerifyAir<F>
+impl<F: Field> BaseAir<F> for MmcsVerifyAir<F>
 where
     F: Field,
     F: Eq,
@@ -78,16 +78,16 @@ where
     }
 }
 
-impl<AB: AirBuilder> Air<AB> for MerkleVerifyAir<AB::F>
+impl<AB: AirBuilder> Air<AB> for MmcsVerifyAir<AB::F>
 where
     AB::F: PrimeField,
     AB::F: Eq,
 {
     #[inline]
     fn eval(&self, builder: &mut AB) {
-        // TODO: Since the user is free to not add Merkle gates, it may happen that the Merkle table configuration
-        // is the default (all values 0). Given that the Merkle AIR proof is always included, we need to handle the case where no
-        // Merkle config was provided and skip evaluation.
+        // TODO: Since the user is free to not add Mmcs gates, it may happen that the Mmcs table configuration
+        // is the default (all values 0). Given that the Mmcs AIR proof is always included, we need to handle the case where no
+        // Mmcs config was provided and skip evaluation.
         if self.config.max_tree_height == 0 {
             return;
         }
@@ -161,7 +161,7 @@ where
                 .when(next_is_final.clone())
                 .when_transition()
                 .assert_zero(height_encoding[i].clone() - next_height_encoding[i].clone());
-            // During one merkle batch verification, and when the current row is not `is_extra` and neither the current nor the next row are final, the height encoding is shifted.
+            // During one mmcs batch verification, and when the current row is not `is_extra` and neither the current nor the next row are final, the height encoding is shifted.
             builder
                 .when_transition()
                 .when(AB::Expr::ONE - (is_extra.clone() + next_is_final.clone() + is_final.clone()))
@@ -226,9 +226,9 @@ where
     }
 }
 
-impl<F: Field> MerkleVerifyAir<F> {
-    pub fn new(config: MerkleTableConfig) -> Self {
-        MerkleVerifyAir {
+impl<F: Field> MmcsVerifyAir<F> {
+    pub fn new(config: MmcsTableConfig) -> Self {
+        MmcsVerifyAir {
             config,
             _phantom: PhantomData,
         }
@@ -263,10 +263,10 @@ impl<F: Field> MerkleVerifyAir<F> {
     }
 
     pub fn trace_to_matrix<ExtF: BasedVectorSpace<F>>(
-        config: &MerkleTableConfig,
-        trace: &MerkleTrace<ExtF>,
+        config: &MmcsTableConfig,
+        trace: &MmcsTrace<ExtF>,
     ) -> RowMajorMatrix<F> {
-        let &MerkleTableConfig {
+        let &MmcsTableConfig {
             digest_elems,
             max_tree_height,
             digest_addresses,
@@ -275,18 +275,18 @@ impl<F: Field> MerkleVerifyAir<F> {
         let width = config.width();
         // Compute the number of rows exactly: whenever the height changes, we need an extra row.
         let row_count = trace
-            .merkle_paths
+            .mmcs_paths
             .iter()
             .map(|path| path.left_values.len() + 1)
             .sum::<usize>();
 
         let mut values = Vec::with_capacity(width * row_count);
 
-        // TODO: Since the user is free to not add Merkle gates, it may happen that the Merkle table configuration
-        // is the default. Given that the Merkle AIR proof is always included, we need to handle the case where no
-        // Merkle config was provided and skip trace generation.
+        // TODO: Since the user is free to not add Mmcs gates, it may happen that the Mmcs table configuration
+        // is the default. Given that the Mmcs AIR proof is always included, we need to handle the case where no
+        // Mmcs config was provided and skip trace generation.
         if config.max_tree_height != 0 {
-            for path in trace.merkle_paths.iter() {
+            for path in trace.mmcs_paths.iter() {
                 let max_height = path.is_extra.iter().filter(|is_extra| !*is_extra).count();
 
                 let index_bits = path
@@ -451,8 +451,8 @@ mod test {
     use p3_baby_bear::BabyBear;
     use p3_challenger::{HashChallenger, SerializingChallenger32};
     use p3_circuit::WitnessId;
-    use p3_circuit::op::MerkleVerifyConfig;
-    use p3_circuit::tables::{MerklePrivateData, MerkleTrace};
+    use p3_circuit::op::MmcsVerifyConfig;
+    use p3_circuit::tables::{MmcsPrivateData, MmcsTrace};
     use p3_commit::ExtensionMmcs;
     use p3_field::extension::BinomialExtensionField;
     use p3_fri::{TwoAdicFriPcs, create_benchmark_fri_params};
@@ -466,7 +466,7 @@ mod test {
     use rand::rngs::SmallRng;
     use rand::{Rng, SeedableRng};
 
-    use crate::air::MerkleVerifyAir;
+    use crate::air::MmcsVerifyAir;
 
     #[derive(Clone)]
     struct MockCompression {}
@@ -496,11 +496,11 @@ mod test {
 
         let mut rng = SmallRng::seed_from_u64(1);
 
-        let merkle_config = MerkleVerifyConfig::babybear_default();
+        let mmcs_config = MmcsVerifyConfig::babybear_default();
         let compress = MockCompression {};
 
         let leafs = [[rng.random::<Val>(); DIGEST_ELEMS]; NUM_INPUTS];
-        let private_data: [MerklePrivateData<Val>; NUM_INPUTS] = array::from_fn(|i| {
+        let private_data: [MmcsPrivateData<Val>; NUM_INPUTS] = array::from_fn(|i| {
             let path_siblings = if i % 2 == 0 {
                 (0..HEIGHT)
                     .map(|j| {
@@ -518,9 +518,9 @@ mod test {
                 vec![(vec![rng.random::<Val>(); DIGEST_ELEMS], None); HEIGHT]
             };
             let directions: [bool; HEIGHT] = array::from_fn(|_| rng.random::<bool>());
-            MerklePrivateData::new(
+            MmcsPrivateData::new(
                 &compress,
-                &merkle_config,
+                &mmcs_config,
                 &leafs[i],
                 &path_siblings,
                 &directions,
@@ -530,23 +530,23 @@ mod test {
 
         let indices = [rng.random::<u32>(); NUM_INPUTS];
 
-        let trace = MerkleTrace {
-            merkle_paths: private_data
+        let trace = MmcsTrace {
+            mmcs_paths: private_data
                 .iter()
                 .zip(indices)
                 .map(|(data, index)| {
-                    data.to_trace(&merkle_config, &[WitnessId(0); DIGEST_ELEMS], index)
+                    data.to_trace(&mmcs_config, &[WitnessId(0); DIGEST_ELEMS], index)
                         .unwrap()
                 })
                 .collect(),
         };
 
         // Create the AIR.
-        let merkle_table_config = merkle_config.into();
-        let air = MerkleVerifyAir::<Val>::new(merkle_table_config);
+        let mmcs_table_config = mmcs_config.into();
+        let air = MmcsVerifyAir::<Val>::new(mmcs_table_config);
 
-        // Generate trace for Merkle tree table.
-        let trace = MerkleVerifyAir::<Val>::trace_to_matrix(&merkle_table_config, &trace);
+        // Generate trace for Mmcs tree table.
+        let trace = MmcsVerifyAir::<Val>::trace_to_matrix(&mmcs_table_config, &trace);
 
         // Create the STARK config.
         type Challenge = BinomialExtensionField<Val, 4>;

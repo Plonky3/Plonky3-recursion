@@ -7,9 +7,7 @@ use thiserror::Error;
 
 use crate::circuit::Circuit;
 use crate::expr::{Expr, ExpressionGraph};
-use crate::op::{
-    MerkleVerifyConfig, NonPrimitiveOp, NonPrimitiveOpConfig, NonPrimitiveOpType, Prim,
-};
+use crate::op::{MmcsVerifyConfig, NonPrimitiveOp, NonPrimitiveOpConfig, NonPrimitiveOpType, Prim};
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};
 
 /// Sparse disjoint-set "find" with path compression over a HashMap (iterative).
@@ -61,7 +59,7 @@ fn build_connect_dsu(connects: &[(ExprId, ExprId)]) -> HashMap<usize, usize> {
 /// - Constants
 /// - Arithmetic operations (add, multiply, subtract)
 /// - Assertions (values that must equal zero)
-/// - Complex operations (like Merkle tree verification)
+/// - Complex operations (like Mmcs tree verification)
 ///
 /// Call `.build()` to compile into an immutable `Circuit<F>` specification.
 pub struct CircuitBuilder<F> {
@@ -153,11 +151,11 @@ where
         self.enabled_ops.insert(op, cfg);
     }
 
-    /// Enable Merkle verification operations.
-    pub fn enable_merkle(&mut self, merkle_config: &MerkleVerifyConfig) {
+    /// Enable Mmcs verification operations.
+    pub fn enable_mmcs(&mut self, mmcs_config: &MmcsVerifyConfig) {
         self.enable_op(
-            NonPrimitiveOpType::MerkleVerify,
-            NonPrimitiveOpConfig::MerkleVerifyConfig(merkle_config.clone()),
+            NonPrimitiveOpType::MmcsVerify,
+            NonPrimitiveOpConfig::MmcsVerifyConfig(mmcs_config.clone()),
         );
     }
 
@@ -532,16 +530,16 @@ where
         for (_op_id, op_type, witness_exprs) in &self.non_primitive_ops {
             let config = self.enabled_ops.get(op_type);
             match op_type {
-                NonPrimitiveOpType::MerkleVerify => {
+                NonPrimitiveOpType::MmcsVerify => {
                     let config = match config {
-                        Some(NonPrimitiveOpConfig::MerkleVerifyConfig(config)) => Ok(config),
+                        Some(NonPrimitiveOpConfig::MmcsVerifyConfig(config)) => Ok(config),
                         _ => Err(CircuitBuilderError::InvalidNonPrimitiveOpConfiguration {
                             op: op_type.clone(),
                         }),
                     }?;
                     if witness_exprs.len() != config.input_size() {
                         return Err(CircuitBuilderError::NonPrimitiveOpArity {
-                            op: "MerkleVerify",
+                            op: "MmcsVerify",
                             expected: config.input_size(),
                             got: witness_exprs.len(),
                         });
@@ -551,26 +549,26 @@ where
                             Self::get_witness_id(
                                 expr_to_widx,
                                 witness_exprs[i],
-                                "MerkleVerify leaf input",
+                                "MmcsVerify leaf input",
                             )
                         })
                         .collect::<Result<_, _>>()?;
                     let index_widx = Self::get_witness_id(
                         expr_to_widx,
                         witness_exprs[config.ext_field_digest_elems],
-                        "MerkleVerify index input",
+                        "MmcsVerify index input",
                     )?;
                     let root_widx = (config.ext_field_digest_elems + 1..config.input_size())
                         .map(|i| {
                             Self::get_witness_id(
                                 expr_to_widx,
                                 witness_exprs[i],
-                                "MerkleVerify root input",
+                                "MmcsVerify root input",
                             )
                         })
                         .collect::<Result<_, _>>()?;
 
-                    lowered_ops.push(NonPrimitiveOp::MerkleVerify {
+                    lowered_ops.push(NonPrimitiveOp::MmcsVerify {
                         leaf: leaf_widx,
                         index: index_widx,
                         root: root_widx,
@@ -603,7 +601,7 @@ mod tests {
 
     use super::*;
     use crate::op::NonPrimitiveOpType;
-    use crate::{CircuitError, MerkleOps, NonPrimitiveOp};
+    use crate::{CircuitError, MmcsOps, NonPrimitiveOp};
 
     #[test]
     fn test_circuit_basic_api() {
@@ -810,23 +808,23 @@ mod tests {
     }
 
     #[test]
-    fn test_merkle_config_blocks_when_disabled() {
+    fn test_mmcs_config_blocks_when_disabled() {
         let mut builder = CircuitBuilder::<BabyBear>::new();
-        let merkle_config = MerkleVerifyConfig::mock_config();
+        let mmcs_config = MmcsVerifyConfig::mock_config();
 
-        let leaf = (0..merkle_config.ext_field_digest_elems)
+        let leaf = (0..mmcs_config.ext_field_digest_elems)
             .map(|_| builder.add_public_input())
             .collect::<Vec<ExprId>>();
         let index = builder.add_public_input();
-        let root = (0..merkle_config.ext_field_digest_elems)
+        let root = (0..mmcs_config.ext_field_digest_elems)
             .map(|_| builder.add_public_input())
             .collect::<Vec<ExprId>>();
 
         // not enabled yet
-        let err = builder.add_merkle_verify(&leaf, &index, &root).unwrap_err();
+        let err = builder.add_mmcs_verify(&leaf, &index, &root).unwrap_err();
         match err {
             CircuitBuilderError::OpNotAllowed { op } => {
-                assert_eq!(op, NonPrimitiveOpType::MerkleVerify);
+                assert_eq!(op, NonPrimitiveOpType::MmcsVerify);
             }
             other => panic!("expected OpNotAllowed, got {other:?}"),
         }
@@ -981,27 +979,27 @@ mod tests {
     }
 
     #[test]
-    fn test_merkle_config_allows_when_enabled() {
+    fn test_mmcs_config_allows_when_enabled() {
         let mut builder = CircuitBuilder::<BabyBear>::new();
-        let merkle_config = MerkleVerifyConfig::mock_config();
+        let mmcs_config = MmcsVerifyConfig::mock_config();
 
-        let leaf = (0..merkle_config.ext_field_digest_elems)
+        let leaf = (0..mmcs_config.ext_field_digest_elems)
             .map(|_| builder.add_public_input())
             .collect::<Vec<ExprId>>();
         let index = builder.add_public_input();
-        let root = (0..merkle_config.ext_field_digest_elems)
+        let root = (0..mmcs_config.ext_field_digest_elems)
             .map(|_| builder.add_public_input())
             .collect::<Vec<ExprId>>();
 
-        builder.enable_merkle(&merkle_config);
+        builder.enable_mmcs(&mmcs_config);
         builder
-            .add_merkle_verify(&leaf, &index, &root)
+            .add_mmcs_verify(&leaf, &index, &root)
             .expect("should be allowed");
 
         let circuit = builder.build().unwrap();
         assert_eq!(circuit.non_primitive_ops.len(), 1);
         match &circuit.non_primitive_ops[0] {
-            NonPrimitiveOp::MerkleVerify { .. } => {}
+            NonPrimitiveOp::MmcsVerify { .. } => {}
         }
     }
 
@@ -1065,21 +1063,21 @@ mod tests {
     }
 
     #[test]
-    fn test_merkle_config_with_custom_params() {
+    fn test_mmcs_config_with_custom_params() {
         let mut builder = CircuitBuilder::<BabyBear>::new();
-        let merkle_config = MerkleVerifyConfig::mock_config();
+        let mmcs_config = MmcsVerifyConfig::mock_config();
 
-        let leaf = (0..merkle_config.ext_field_digest_elems)
+        let leaf = (0..mmcs_config.ext_field_digest_elems)
             .map(|_| builder.add_public_input())
             .collect::<Vec<ExprId>>();
         let index = builder.add_public_input();
-        let root = (0..merkle_config.ext_field_digest_elems)
+        let root = (0..mmcs_config.ext_field_digest_elems)
             .map(|_| builder.add_public_input())
             .collect::<Vec<ExprId>>();
 
-        builder.enable_merkle(&merkle_config);
+        builder.enable_mmcs(&mmcs_config);
         builder
-            .add_merkle_verify(&leaf, &index, &root)
+            .add_mmcs_verify(&leaf, &index, &root)
             .expect("should be allowed with custom config");
 
         let circuit = builder.build().unwrap();

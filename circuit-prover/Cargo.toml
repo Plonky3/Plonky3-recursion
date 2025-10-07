@@ -26,7 +26,7 @@ p3-koala-bear.workspace = true
 p3-matrix.workspace = true
 p3-maybe-rayon.workspace = true
 p3-merkle-tree.workspace = true
-p3-merkle-tree-air.workspace = true
+p3-mmcs-air.workspace = true
 p3-symmetric.workspace = true
 p3-uni-stark.workspace = true
 rand.workspace = true
@@ -47,5 +47,5 @@ name = "fibonacci"
 path = "examples/fibonacci.rs"
 
 [[example]]
-name = "merkle_verify"
-path = "examples/merkle_verify.rs"
+name = "mmcs_verify"
+path = "examples/mmcs_verify.rs"

@@ -16,7 +16,7 @@ use alloc::vec::Vec;
 use p3_circuit::tables::Traces;
 use p3_circuit::{CircuitBuilderError, CircuitError};
 use p3_field::{BasedVectorSpace, Field};
-use p3_merkle_tree_air::air::{MerkleTableConfig, MerkleVerifyAir};
+use p3_mmcs_air::air::{MmcsTableConfig, MmcsVerifyAir};
 use p3_uni_stark::{prove, verify};
 use thiserror::Error;
 use tracing::instrument;
@@ -96,7 +96,7 @@ where
     pub public: TableProof<F, P, CD>,
     pub add: TableProof<F, P, CD>,
     pub mul: TableProof<F, P, CD>,
-    pub merkle: TableProof<F, P, CD>,
+    pub mmcs: TableProof<F, P, CD>,
     /// Packing configuration used when generating the proofs.
     pub table_packing: TablePacking,
     /// Extension field degree: 1 for base field; otherwise the extension degree used.
@@ -117,7 +117,7 @@ where
 {
     config: ProverConfig<F, P, CD>,
     table_packing: TablePacking,
-    merkle_config: MerkleTableConfig,
+    mmcs_config: MmcsTableConfig,
 }
 
 /// Errors that can arise during proving or verification.
@@ -153,7 +153,7 @@ where
         Self {
             config,
             table_packing: TablePacking::default(),
-            merkle_config: MerkleTableConfig::default(),
+            mmcs_config: MmcsTableConfig::default(),
         }
     }
 
@@ -170,8 +170,8 @@ where
         self.table_packing
     }
 
-    pub fn with_merkle_table(mut self, merkle_config: MerkleTableConfig) -> Self {
-        self.merkle_config = merkle_config;
+    pub fn with_mmcs_table(mut self, mmcs_config: MmcsTableConfig) -> Self {
+        self.mmcs_config = mmcs_config;
         self
     }
 
@@ -262,10 +262,10 @@ where
         };
         let mul_proof = prove(&self.config, &mul_air, mul_matrix, pis);
 
-        let merkle_matrix =
-            MerkleVerifyAir::<F>::trace_to_matrix(&self.merkle_config, &traces.merkle_trace);
-        let merkle_air = MerkleVerifyAir::<F>::new(self.merkle_config);
-        let merkle_proof = prove(&self.config, &merkle_air, merkle_matrix, pis);
+        let mmcs_matrix =
+            MmcsVerifyAir::<F>::trace_to_matrix(&self.mmcs_config, &traces.mmcs_trace);
+        let mmcs_air = MmcsVerifyAir::<F>::new(self.mmcs_config);
+        let mmcs_proof = prove(&self.config, &mmcs_air, mmcs_matrix, pis);
 
         Ok(MultiTableProof {
             witness: TableProof {
@@ -288,11 +288,11 @@ where
                 proof: mul_proof,
                 rows: traces.mul_trace.lhs_values.len(),
             },
-            merkle: TableProof {
-                proof: merkle_proof,
+            mmcs: TableProof {
+                proof: mmcs_proof,
                 rows: traces
-                    .merkle_trace
-                    .merkle_paths
+                    .mmcs_trace
+                    .mmcs_paths
                     .iter()
                     .map(|path| path.left_values.len() + 1)
                     .sum(),
@@ -343,12 +343,12 @@ where
         verify(&self.config, &mul_air, &proof.mul.proof, pis)
             .map_err(|_| ProverError::VerificationFailed { phase: "mul" })?;
 
-        // MerkleVerify
+        // MmcsVerify
 
-        let merkle_air = MerkleVerifyAir::<F>::new(self.merkle_config);
-        verify(&self.config, &merkle_air, &proof.merkle.proof, pis).map_err(|_| {
+        let mmcs_air = MmcsVerifyAir::<F>::new(self.mmcs_config);
+        verify(&self.config, &mmcs_air, &proof.mmcs.proof, pis).map_err(|_| {
             ProverError::VerificationFailed {
-                phase: "merkle_verify",
+                phase: "mmcs_verify",
             }
         })?;
 

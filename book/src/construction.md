@@ -86,7 +86,7 @@ each operation and the interaction between them, the `Witness` table can be enti
 
 ## Operation-specific STARK Chips
 
-Each operation family (e.g. addition, multiplication, Merkle path verification, FRI folding) has its own chip.
+Each operation family (e.g. addition, multiplication, MMCS path verification, FRI folding) has its own chip.
 
 A chip contains:
 
@@ -96,7 +96,7 @@ A chip contains:
 
 We distinguish two kind of chips: those representing native, i.e. primitive operations, and additional non-primitive ones, defined at runtime, that serve as precompiles to optimize certain operations.
 The recursion machine contains 4 primitive chips: `CONST` / `PUBLIC_INPUT` / `ADD` and `MUL`, with `SUB` and `DIV` being emulated via the `ADD` and `MUL` chips. This library aims at providing a certain
-number of non-primary chips so that projects can natively inherit from full recursive verifiers, which implies chips for FRI, Merkle paths verification, etc. Specific applications can also build their own
+number of non-primary chips so that projects can natively inherit from full recursive verifiers, which implies chips for FRI, MMCS path verification, etc. Specific applications can also build their own
 non-primitive chips and plug them at runtime.
 
 Going back to the previous example, prover and verifier can agree on the following logic for each chip:

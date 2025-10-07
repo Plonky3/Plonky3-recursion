@@ -1,5 +1,5 @@
 pub mod fri;
-pub mod merkle;
+pub mod mmcs;
 
 pub use fri::FriOps;
-pub use merkle::MerkleOps;
+pub use mmcs::MmcsOps;
