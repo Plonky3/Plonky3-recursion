@@ -56,51 +56,52 @@ Once all the nodes have been assigned, and the circuit has been fully optimized,
 
 ## Building recursive AIR constraints
 
-In order to recursively verify an AIR, its constraints need to be added to the circuit and folded together. In our Fibonacci example, we had to add the constraints manually, one by one. But in reality, it is possible to automatically deduce the circuit constraints from its original set of constraints by leveraging Plonky3's symbolic constraint representation.
+In order to recursively verify an AIR, its constraints need to be added to the circuit and folded together. In Plonky3, we can get an AIR's constraints in symbolic form. Since our primitive chips (see section "Execution IR") encompass the various entries in the symbolic representation, we can simply map each symbolic operation to its circuit counterpart. The `symbolic_to_circuit` function does exactly that for a given symbolic constraint. 
 
-In plonky3, the method `get_symbolic_constraints` for Airs returns a symbolic representation of constraints. Since our primitive chips (see section "Execution IR") encompass the various entries in the symbolic representation, we can map the operations to their circuit equivalent automatically. The `symbolic_to_circuit` function does exactly that. 
+We can consider a small example to show how operations are mapped. Given public inputs `a` and `b`, and a constant `c`, we have the following symbolic constraint: `Mul{ a, Sub {b, Const{ c }}}` (which corresponds to: `a * (b - c)`).
 
-We can explain in more details how the automated deduction of constraints and folding work. Assume we have a circuit builder `builder`, an `ExprId` for folding challenge `alpha`, and `ExprId`s for the local row (`local`) and the next row (`next`) of a `FibonacciAir`. `FibonacciAir`'s constraints for public inputs `a`, `b` and `output` are the following:
-(1) `is_first_row * (local.left - a)`
-(2) `is_first_row * (local.right - b)`
-(3) `is_transition * (local.right - next.left)`
-(4) `is_transition * (local.left + local.right - next.right)`
-
-Plonky3's `get_symbolic_constraints` gives us this list of constraints in the symbolic form. For instance, the first constraint is given as: `Mul{ is_first_row, Sub {local.left, Const{ a }}}`. We call `symbolic_to_circuit` on it:
-
-- `Mul {x, y}` is turned into `builder.mul(x, y)`. Thus:
-  - we call `symbolic_to_circuit` on `Sub {local.left, Const { a }}` to get `y`
-  - we return `builder.mul(is_first_row, y)`
-- `Sub {x, y}` is turned into `builder.sub(x, y)`. Thus:
-  - we call `symbolic_to_circuit` on `Const { a }` to get `y`
-  - we return `builder.sub(local.left, y)`
-- `Const { a }`: we return the constant `ExprId`: `builder.add_const(a)`.
-
-We can get the circuit constraints this way for each constraint `c`. 
-Once we have the circuit version of each constraint, we can fold them together. We introduce an accumulator `acc`:
+```rust
+let x = builder.add_const(c); // We get the `ExprId` corresponding to Const{ c } by adding a constant to the circuit.
+let y = builder.sub(b, x);    // We use the previously computed `x` to compute the subtraction in the circuit.
+let z = builder.mul(a, y);    // We use the previously computed `y` to compute the multiplication in the circuit.
 ```
-let mut acc = circuit.add_const(0);
-```
-Then, for each deduced circuit constraint `c`, we do:
-```
-let mul = builder.mul(acc, alpha);
-acc = builder.add(mul, c);
+`z` is then the output `ExprId` of the constraint in the circuit.
+
+Using this function, we have implemented, for all AIRs, the automatic translation from their set of symbolic constraints to the circuit version of the folded constraints:
+
+```rust
+// Transforms an AIR's symbolic constraints into its counterpart circuit version, 
+// and folds all the constraints in the circuit using the challenge `alpha`.
+fn eval_folded_circuit(
+        // The AIR at hand.
+        &self,
+        builder: &mut CircuitBuilder<F>,
+        // Circuit version of Langrange selectors.
+        sels: &RecursiveLagrangeSelectors,
+        // Folding challenge.
+        alpha: &ExprId,
+        // Main columns, preprocessed columns and any other columns that could be involved in constraints.
+        columns: ColumnsTargets,
+    ) -> Target {
+
+        // Get all the constraints in symbolic form.
+        let symbolic_constraints = get_symbolic_constraints(self, 0, columns.public_values.len());
+
+        // Fold all the constraints using the folding challenge.
+        let mut acc = builder.add_const(F::ZERO);
+        for s_c in symbolic_constraints {
+            let mul_prev = builder.mul(acc, *alpha);
+            // Get the current constraint in circuit form.
+            let constraints = symbolic_to_circuit(sels.row_selectors, &columns, &s_c, builder);
+            // Fold the current constraint with the previous value.
+            acc = builder.add(mul_prev, constraints);
+        }
+
+        acc
+    }
 ```
 
-Thanks to this automatic transformation of constraints into a circuit, we can easily integrate *any* AIR verification into our circuit. We implement a newly introduced `RecursiveAir` trait for all `Air<SymbolicAirBuilder<F>>`. This trait includes all the methods necessary to the AIR's recursive verification.
-
-Let us assume, for example, that we have at hand the Plonky3-defined `FibonacciAir`. Let us also assume we have:
-
-- a circuit builder `builder`, 
-- a set of `ExprId`s for the Lagrange selectors `sels`,
-- an `ExprId` for the challenge `alpha`,
-- a set of `ExprId` for all the columns possibly involved in the symbolic constraints, `columns`.
-
-Then, in order to obtain `Fibonacci`'s constraints, we simply have to create an instance `air = FibonacciAir` and call:
-```
-let folded_constraints = air.eval_folded_circuit(builder, sels, alpha, columns);
-```
-to fold all the `air`'s constraints in the circuit using the challenge `alpha`.
+This facilitates the integration of *any* AIR verification into our circuit. 
 
 ## Proving
 
