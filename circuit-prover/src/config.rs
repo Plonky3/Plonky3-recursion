@@ -121,7 +121,6 @@ pub mod babybear_config {
         build_standard_config_generic::<BB, _, 4>(perm)
     }
 
-    // TODO: For now we are not considering packed inputs for BabyBear
     pub fn baby_bear_standard_compression_function() -> impl PseudoCompressionFunction<[BB; 8], 2> {
         let perm = default_babybear_poseidon2_16();
         standard_compression_function_generic::<BB, _>(perm)
@@ -142,7 +141,6 @@ pub mod koalabear_config {
         build_standard_config_generic::<KB, _, 4>(perm)
     }
 
-    // TODO:For now we are not considering packed inputs for KoalaBear
     pub fn koala_bear_standard_compression_function() -> impl PseudoCompressionFunction<[KB; 8], 2>
     {
         let perm = default_koalabear_poseidon2_16();
@@ -165,7 +163,6 @@ pub mod goldilocks_config {
         build_standard_config_generic::<GL, _, 2>(perm)
     }
 
-    // TODO: For now we are considering packed inputs for Goldilocks
     pub fn goldilocks_standard_compression_function() -> impl PseudoCompressionFunction<[GL; 8], 2>
     {
         let mut rng = SmallRng::seed_from_u64(1);
