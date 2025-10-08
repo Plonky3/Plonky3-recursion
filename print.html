@@ -260,7 +260,7 @@ Row 4: WitnessId(w4) = 111
 <p>Note that the initial version of the recursion machine, for the sake of simplicity and ease of iteration, contains a <code>Witness</code> table. However, because the verifier effectively knows the order of
 each operation and the interaction between them, the <code>Witness</code> table can be entirely removed, and global consistency can still be enforced at the cost of additional (smaller) lookups between the different chips.</p>
 <h2 id="operation-specific-stark-chips"><a class="header" href="#operation-specific-stark-chips">Operation-specific STARK Chips</a></h2>
-<p>Each operation family (e.g. addition, multiplication, Merkle path verification, FRI folding) has its own chip.</p>
+<p>Each operation family (e.g. addition, multiplication, MMCS path verification, FRI folding) has its own chip.</p>
 <p>A chip contains:</p>
 <ul>
 <li>Local columns for its variables.</li>
@@ -269,7 +269,7 @@ each operation and the interaction between them, the <code>Witness</code> table 
 </ul>
 <p>We distinguish two kind of chips: those representing native, i.e. primitive operations, and additional non-primitive ones, defined at runtime, that serve as precompiles to optimize certain operations.
 The recursion machine contains 4 primitive chips: <code>CONST</code> / <code>PUBLIC_INPUT</code> / <code>ADD</code> and <code>MUL</code>, with <code>SUB</code> and <code>DIV</code> being emulated via the <code>ADD</code> and <code>MUL</code> chips. This library aims at providing a certain
-number of non-primary chips so that projects can natively inherit from full recursive verifiers, which implies chips for FRI, Merkle paths verification, etc. Specific applications can also build their own
+number of non-primary chips so that projects can natively inherit from full recursive verifiers, which implies chips for FRI, MMCS path verification, etc. Specific applications can also build their own
 non-primitive chips and plug them at runtime.</p>
 <p>Going back to the previous example, prover and verifier can agree on the following logic for each chip:</p>
 <pre><code class="language-bash">=== CONST TRACE ===
