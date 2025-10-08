@@ -190,7 +190,9 @@ impl MmcsVerifyConfig {
         }
     }
 
-    pub fn babybear_quartic_extension_default(packing: bool) -> Self {
+    // TODO: For now we are not considering packed inputs for BabyBear.
+    pub fn babybear_quartic_extension_default() -> Self {
+        let packing = false;
         Self {
             base_field_digest_elems: 8,
             ext_field_digest_elems: if packing { 2 } else { 8 },
@@ -206,7 +208,9 @@ impl MmcsVerifyConfig {
         }
     }
 
-    pub fn koalabear_quartic_extension_default(packing: bool) -> Self {
+    // TODO: For now we are not considering packed inputs for KoalaBear.
+    pub fn koalabear_quartic_extension_default() -> Self {
+        let packing = false;
         Self {
             base_field_digest_elems: 8,
             ext_field_digest_elems: if packing { 2 } else { 8 },
@@ -222,10 +226,12 @@ impl MmcsVerifyConfig {
         }
     }
 
+    // TODO: For now we are not considering packed inputs for Goldilocks.
     pub fn goldilocks_quadratic_extension_default() -> Self {
+        let packing = false;
         Self {
             base_field_digest_elems: 4,
-            ext_field_digest_elems: 1,
+            ext_field_digest_elems: if packing { 1 } else { 4 },
             max_tree_height: 32,
         }
     }

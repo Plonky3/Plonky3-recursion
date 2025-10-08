@@ -815,7 +815,7 @@ mod tests {
                 vec![BabyBear::from_u64(1)],
                 // here there's an extra sibling, so we do two compressions.
                 // Since dir = false, the first input is [2, 1] and thus compress.compress(input) = 2.
-                // The extra input is [2, 4] compress.compress(input) = 2
+                // The extra input is [2, 4] and compress.compress(input) = 2
                 vec![BabyBear::from_u64(2)],
                 // direction = true and then input is [2, 5] compress.compress(input) = 2
                 vec![BabyBear::from_u64(2)],
