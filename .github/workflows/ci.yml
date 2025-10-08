@@ -54,7 +54,7 @@ jobs:
       - name: Run examples
         run: |
           cargo run --package p3-circuit-prover --example fibonacci
-          cargo run --package p3-circuit-prover --example merkle_verify
+          cargo run --package p3-circuit-prover --example mmcs_verify
 
   check_embedded:
     name: Build embedded
@@ -91,7 +91,7 @@ jobs:
           # cargo build --verbose --target ${{ env.target }} -p p3-field-air
           # cargo build --verbose --target ${{ env.target }} -p p3-fri-air
           # cargo build --verbose --target ${{ env.target }} -p p3-interpolation-air
-          cargo build --verbose --target ${{ env.target }} -p p3-merkle-tree-air
+          cargo build --verbose --target ${{ env.target }} -p p3-mmcs-air
           cargo build --verbose --target ${{ env.target }} -p p3-symmetric-air
           cargo build --verbose --target ${{ env.target }} -p p3-recursion
 
