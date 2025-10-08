@@ -114,7 +114,7 @@ fn main() -> Result<(), ProverError> {
         path_states: intermediate_states,
         ..
     } = MmcsPrivateData::new(&compress, &mmcs_config, &leaf_value, &siblings, &directions)?;
-    let mut expected_root_value = intermediate_states
+    let expected_root_value = intermediate_states
         .last()
         .expect("There is always at least the leaf hash")
         .clone();
@@ -122,7 +122,6 @@ fn main() -> Result<(), ProverError> {
     let mut public_inputs = vec![];
     public_inputs.extend(leaf_value);
     public_inputs.push(index_value);
-    expected_root_value[1] = expected_root_value[0];
     public_inputs.extend(&expected_root_value);
 
     runner.set_public_inputs(&public_inputs)?;
