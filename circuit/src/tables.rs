@@ -114,6 +114,10 @@ pub struct MmcsPathTrace<F> {
     /// Indicates if the current row is processing a smaller
     /// matrix of the Mmcs.
     pub is_extra: Vec<bool>,
+    /// Final digest after traversing the path (expected root value).
+    pub final_value: Vec<F>,
+    /// Witness indices corresponding to the final digest wires.
+    pub final_index: Vec<u32>,
 }
 
 /// Private Mmcs path data for Mmcs verification
@@ -172,13 +176,20 @@ impl<F: Field + Clone + Default> MmcsPrivateData<F> {
 
             // Optional second hash when the step has an extra sibling.
             if let Some(other) = other {
-                path_siblings.push((sibling.to_vec(), Some((state.to_vec(), other.clone()))));
+                let intermediate = state.to_vec();
+                path_siblings.push((
+                    sibling.to_vec(),
+                    Some((intermediate.clone(), other.clone())),
+                ));
+                let state_as_slice = config.ext_to_base(&intermediate)?;
                 let other = config.ext_to_base(other)?;
                 state = config.base_to_ext(&compress.compress([state_as_slice, other]))?;
             } else {
                 path_siblings.push((sibling.to_vec(), None));
             }
         }
+        // Append the final state (root).
+        path_states.push(state.to_vec());
         Ok(private_data)
     }
     /// Builds a valid `MmcsVerifyAir` trace from a private Mmcs proof,
@@ -187,19 +198,22 @@ impl<F: Field + Clone + Default> MmcsPrivateData<F> {
         &self,
         mmcs_config: &MmcsVerifyConfig,
         leaf_wires: &[WitnessId],
+        root_wires: &[WitnessId],
         index_value: u32,
     ) -> Result<MmcsPathTrace<F>, CircuitError> {
         let mut trace = MmcsPathTrace::default();
 
         // Get the adrresses of the leaf wires
         let leaf_indices: Vec<u32> = leaf_wires.iter().map(|wid| wid.0).collect();
+        let root_indices: Vec<u32> = root_wires.iter().map(|wid| wid.0).collect();
 
+        debug_assert!(self.path_siblings.len() <= mmcs_config.max_tree_height);
         let path_directions = (0..mmcs_config.max_tree_height).map(|i| (index_value >> i) & 1 == 1);
 
-        // For each step in the Mmcs path
-        assert_eq!(self.path_states.len(), self.path_siblings.len());
+        // For each step in the Mmcs path (excluding the final state which is the root)
+        debug_assert_eq!(self.path_states.len(), self.path_siblings.len() + 1);
         for (state, (sibling, extra), direction) in izip!(
-            self.path_states.iter(),
+            self.path_states.iter().take(self.path_siblings.len()),
             self.path_siblings.iter(),
             path_directions
         ) {
@@ -227,6 +241,8 @@ impl<F: Field + Clone + Default> MmcsPrivateData<F> {
                 trace.is_extra.push(true);
             }
         }
+        trace.final_value = self.path_states.last().cloned().unwrap_or_default();
+        trace.final_index = root_indices;
         Ok(trace)
     }
 }
@@ -519,11 +535,8 @@ impl<F: CircuitField> CircuitRunner<F> {
         // Process each complex operation by index to avoid borrowing conflicts
         for op_idx in 0..self.circuit.non_primitive_ops.len() {
             // Copy out leaf/root to end immutable borrow immediately
-            let NonPrimitiveOp::MmcsVerify {
-                leaf,
-                index,
-                root: _,
-            } = &self.circuit.non_primitive_ops[op_idx];
+            let NonPrimitiveOp::MmcsVerify { leaf, index, root } =
+                &self.circuit.non_primitive_ops[op_idx];
 
             if let Some(Some(NonPrimitiveOpPrivateData::MmcsVerify(private_data))) =
                 self.non_primitive_op_private_data.get(op_idx).cloned()
@@ -538,7 +551,7 @@ impl<F: CircuitField> CircuitRunner<F> {
                         op: NonPrimitiveOpType::MmcsVerify,
                     }),
                 }?;
-                let trace = private_data.to_trace(config, leaf, index.0)?;
+                let trace = private_data.to_trace(config, leaf, root, index.0)?;
                 mmcs_paths.push(trace);
             } else {
                 return Err(CircuitError::NonPrimitiveOpMissingPrivateData {
@@ -805,6 +818,8 @@ mod tests {
                 // The extra input is [2, 4] compress.compress(input) = 2
                 vec![BabyBear::from_u64(2)],
                 // direction = true and then input is [2, 5] compress.compress(input) = 2
+                vec![BabyBear::from_u64(2)],
+                // final root state after the full path
                 vec![BabyBear::from_u64(2)],
             ],
             path_siblings: vec![

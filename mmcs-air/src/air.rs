@@ -109,6 +109,10 @@ where
         let next_is_final = &next[self.is_final()];
         let is_extra = &local[self.is_extra()];
 
+        builder.assert_bool(is_final.clone());
+        builder.assert_bool(next_is_final.clone());
+        builder.assert_bool(is_extra.clone());
+
         // Assert that the height encoding is boolean.
         for height_encoding_bit in height_encoding {
             builder.assert_bool(height_encoding_bit.clone());
@@ -200,22 +204,29 @@ where
         // - (state, sibling) when we are hashing the current state with the sibling (current index bit is 0)
         // - (sibling, state) when we are hashing the sibling with the current state; (current index bit is 1)
         // - (state, extra_sibling) when we are hashing the current state with an extra sibling (when `is_extra` is set)
+        // TODO: These values are not yet wired anywhere. Once we thread hash-table CTLs, move these expressions into
+        // the interaction wiring rather than keeping separate columns.
         let mut cur_to_hash = vec![AB::Expr::ZERO; 2 * self.config.digest_elems];
         for i in 0..self.config.digest_elems {
+            let mut left = AB::Expr::ZERO;
+            let mut right = AB::Expr::ZERO;
             for j in 0..self.config.max_tree_height {
-                cur_to_hash[i] += height_encoding[j].clone()
-                    * (index_bits[j].clone() * sibling[i].clone()
-                        + (AB::Expr::ONE - index_bits[j].clone()) * state[i].clone());
-                cur_to_hash[self.config.digest_addresses + i] += index_bits[j].clone()
-                    * (index_bits[j].clone() * sibling[i].clone()
-                        + (AB::Expr::ONE - height_encoding[j].clone()) * state[i].clone());
+                let gate = height_encoding[j].clone();
+                let idx_bit = index_bits[j].clone();
+                let state_term = state[i].clone();
+                let sibling_term = sibling[i].clone();
+
+                left += gate.clone()
+                    * ((AB::Expr::ONE - idx_bit.clone()) * state_term.clone()
+                        + idx_bit.clone() * sibling_term.clone());
+                right += gate
+                    * (idx_bit.clone() * state_term.clone()
+                        + (AB::Expr::ONE - idx_bit.clone()) * sibling_term.clone());
             }
-            let tmp = cur_to_hash[i].clone();
-            cur_to_hash[i] +=
-                (AB::Expr::ONE - is_extra.clone()) * tmp + AB::Expr::ONE * state[i].clone();
-            let tmp = cur_to_hash[self.config.digest_elems + i].clone();
-            cur_to_hash[self.config.digest_elems + i] +=
-                (AB::Expr::ONE - is_extra.clone()) * tmp + AB::Expr::ONE * sibling[i].clone();
+            cur_to_hash[i] =
+                (AB::Expr::ONE - is_extra.clone()) * left + is_extra.clone() * state[i].clone();
+            cur_to_hash[self.config.digest_elems + i] =
+                (AB::Expr::ONE - is_extra.clone()) * right + is_extra.clone() * sibling[i].clone();
         }
 
         // Interactions:
@@ -389,7 +400,11 @@ impl<F: Field> MmcsVerifyAir<F> {
                     values.extend_from_slice(&vec![F::ZERO; max_tree_height - row_height - 1]);
                 }
                 // sibling and state
-                let left_value = path.left_values.last().expect("Left values can't be empty");
+                let left_value = if path.final_value.is_empty() {
+                    path.left_values.last().expect("Left values can't be empty")
+                } else {
+                    &path.final_value
+                };
                 debug_assert!(if packing {
                     digest_elems == left_value.len() * ExtF::DIMENSION
                 } else {
@@ -405,7 +420,12 @@ impl<F: Field> MmcsVerifyAir<F> {
                 values.extend(vec![F::ZERO; digest_elems]);
 
                 // state index
-                values.extend(vec![F::ZERO; digest_addresses]);
+                if path.final_index.is_empty() {
+                    values.extend(vec![F::ZERO; digest_addresses]);
+                } else {
+                    debug_assert_eq!(path.final_index.len(), digest_addresses);
+                    values.extend(path.final_index.iter().map(|idx| F::from_u32(*idx)));
+                }
 
                 // is final
                 values.push(F::ONE);
@@ -535,8 +555,13 @@ mod test {
                 .iter()
                 .zip(indices)
                 .map(|(data, index)| {
-                    data.to_trace(&mmcs_config, &[WitnessId(0); DIGEST_ELEMS], index)
-                        .unwrap()
+                    data.to_trace(
+                        &mmcs_config,
+                        &[WitnessId(0); DIGEST_ELEMS],
+                        &[WitnessId(0); DIGEST_ELEMS],
+                        index,
+                    )
+                    .unwrap()
                 })
                 .collect(),
         };

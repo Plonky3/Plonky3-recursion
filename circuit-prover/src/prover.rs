@@ -372,7 +372,7 @@ mod tests {
 
     #[test]
     fn test_babybear_prover_base_field() -> Result<(), ProverError> {
-        let mut builder = CircuitBuilder::new();
+        let mut builder = CircuitBuilder::<BabyBear>::new();
 
         // Create circuit: x + 5 * 2 - 3 + (-1) = expected_result, then assert result == expected
         let x = builder.add_public_input();
@@ -414,7 +414,7 @@ mod tests {
     #[test]
     fn test_babybear_prover_extension_field_d4() -> Result<(), ProverError> {
         type ExtField = BinomialExtensionField<BabyBear, 4>;
-        let mut builder = CircuitBuilder::new();
+        let mut builder = CircuitBuilder::<ExtField>::new();
 
         // Create circuit: x * y + z - w = expected_result, then assert result == expected
         let x = builder.add_public_input();
@@ -497,7 +497,7 @@ mod tests {
 
     #[test]
     fn test_koalabear_prover_base_field() -> Result<(), ProverError> {
-        let mut builder = CircuitBuilder::new();
+        let mut builder = CircuitBuilder::<KoalaBear>::new();
 
         // Create circuit: a * b + c - d = expected_result, then assert result == expected
         let a = builder.add_public_input();
@@ -536,7 +536,7 @@ mod tests {
     #[test]
     fn test_koalabear_prover_extension_field_d8() -> Result<(), ProverError> {
         type KBExtField = BinomialExtensionField<KoalaBear, 8>;
-        let mut builder = CircuitBuilder::new();
+        let mut builder = CircuitBuilder::<KBExtField>::new();
 
         // Create circuit: x * y * z = expected_result, then assert result == expected
         let x = builder.add_public_input();
@@ -625,7 +625,7 @@ mod tests {
     #[test]
     fn test_goldilocks_prover_extension_field_d2() -> Result<(), ProverError> {
         type ExtField = BinomialExtensionField<Goldilocks, 2>;
-        let mut builder = CircuitBuilder::new();
+        let mut builder = CircuitBuilder::<ExtField>::new();
 
         // Simple circuit over D=2: x * y + z = expected
         let x = builder.add_public_input();
