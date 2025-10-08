@@ -338,11 +338,11 @@ where
         air.eval_folded_circuit(circuit, &sels, &alpha, &columns_targets, zero);
 
     let all_columns_targets = AllColumnTargets {
-        local_lookups,
-        global_lookups,
-        columns_targets: &columns_targets,
-        local_lookup_challenges: &challenge_targets.local_lookup_challenges,
-        global_lookup_challenges: &challenge_targets.global_lookup_challenges,
+        local_lookups: local_lookups.to_vec(),
+        global_lookups: global_lookups.to_vec(),
+        columns_targets,
+        local_lookup_challenges: challenge_targets.local_lookup_challenges,
+        global_lookup_challenges: challenge_targets.global_lookup_challenges,
     };
     // Fold the lookup constraints with the previously computed AIR constraints.
     let folded_constraints = lookup_gadget.eval_lookup_constraints(

@@ -23,6 +23,7 @@ p3-util.workspace = true
 
 # Other dependencies
 anyhow.workspace = true
+hashbrown = "0.16.0"
 itertools.workspace = true
 serde.workspace = true
 thiserror.workspace = true
@@ -37,4 +38,5 @@ p3-challenger.workspace = true
 p3-dft.workspace = true
 p3-matrix.workspace = true
 p3-util.workspace = true
+p3-circuit-prover.workspace = true
 rand.workspace = true

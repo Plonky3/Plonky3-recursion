@@ -76,7 +76,7 @@ pub trait PcsGeneration<SC: StarkGenericConfig, OpeningProof> {
 }
 
 /// A type alias for a proof along with its associated local and global lookups.
-pub type ProofWithLookup<'a, SC> = (&'a Proof<SC>, &'a [LocalLookup<'a>], &'a [GlobalLookup<'a>]);
+pub type ProofWithLookup<'a, SC> = (&'a Proof<SC>, &'a [LocalLookup], &'a [GlobalLookup]);
 
 /// Given proofs of various AIRs that do not have any lookups, generate all the challenges needed for their joint verification.
 pub fn generate_challenges_no_lookups<SC: StarkGenericConfig>(

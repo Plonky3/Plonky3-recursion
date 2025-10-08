@@ -13,8 +13,8 @@ use crate::recursive_traits::{Recursive, RecursivePcs};
 
 type ProofTargetsWithLookups<'a, SC, Comm, OpeningProof> = (
     ProofTargetsWithPVs<'a, SC, Comm, OpeningProof>,
-    Vec<LocalLookup<'a>>,
-    Vec<GlobalLookup<'a>>,
+    Vec<LocalLookup>,
+    Vec<GlobalLookup>,
 );
 
 pub fn verify_multitable_circuit<
