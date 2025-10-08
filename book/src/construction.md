@@ -66,7 +66,9 @@ i.e. the operation at index 5 will perform `w[5] <- w[1] * w[4]`.
 
 In the IR, we differentiate between *primitive* and *nonprimitive operations*. 
 
-Primitive operations represent the core of the verification computation, and will always be available when building a recursive verifier, regardless of the sub-protocols and parameterization:
+Primitive operations represent the core of the verification computation. They are always available when building a recursive verifier, regardless of the sub-protocols and parameterization. Nonprimitive operations, on the other hand, can be added modularly to optimize instructions tailored to particular use cases. 
+
+The primitive operations are:
 
 - `Constant` -- for constants,
 - `Public` -- for public inputs,
@@ -77,8 +79,7 @@ Given only the primitive operations, one should be able to carry out most operat
 
 - They operate on elements of the `Witness` table, through their `WitnessId` (index within the `Witness` table).
 - The representation can be heavily optimized. For example, every time a constant is added to the IR, we either create a new `WitnessId` or return an already existing one. We could also carry out common subexpression elimination.
-- They are executed in topological order during the circuit evaluation, and
-- they form a directed acyclic graph of dependencies.
+- They are executed in topological order during the circuit evaluation, and they form a directed acyclic graph of dependencies.
 
 But relying only on primitive operations for the entire verification would lead to the introduction of many temporary values in the IR. In turn, this would lead to enlarged `Witness` and primitive tables. To reduce the overall surface area of our AIRs, we can introduce *nonprimitive* specialized chips that carry out specific (nonprimitive) operations. We can offload repeated computations to these nonprimitive chips to optimize the overall proving flow.
 
@@ -86,7 +87,7 @@ These nonprimitive operations use not only `Witness` table elements (including p
 
 In order to generate the IR, the first step is to create all operations symbolically.
 
-In the symbolic executor, the computation is represented as a graph where nodes are called either `ExprId` (since they represent the index of an expression) or `Target` in the code. Each `Target` (expression) can be:
+In the symbolic executor, the computation is represented as a graph where nodes are called either `ExprId` (since they represent the index of an expression) or `Target` in the code. Each `Target` can be:
 
 - a constant, 
 - a public input, 
@@ -94,11 +95,9 @@ In the symbolic executor, the computation is represented as a graph where nodes 
 
 Nonprimitive operations can use `Target`s, but they do not introduce new ones. 
 
-We then need to lower these `Target`s to the IR, thus allocating actual slots in the `Witness` table. Slot allocation cannot be carried out beforehand, as some `Target`s are connected through expressions and should therefore share the same slot in the `Witness` table.
+The computation graph that represents all primitive and nonprimitive operations in the IR is called `Circuit`. 
 
-The computation graph that represents all primitive and nonprimitive operations in the IR is called `circuit`. 
-
-A `circuit_builder` provides convenient helper functions and macros for representing and defining operations within this graph. See section "Building Circuits" for more details on how to build a circuit.
+A `circuit_builder` provides convenient helper functions and macros for representing and defining operations within this graph. See section [Building Circuits](./circuit_building.md#building-circuits) for more details on how to build a circuit.
 
 ## Witness Table
 
