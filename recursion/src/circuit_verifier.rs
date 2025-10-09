@@ -5,15 +5,28 @@ use itertools::{Itertools, zip_eq};
 use p3_circuit::utils::ColumnsTargets;
 use p3_circuit::{CircuitBuilder, CircuitBuilderError, CircuitError};
 use p3_commit::Pcs;
-use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
+use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing, PrimeField64};
 use p3_uni_stark::StarkGenericConfig;
 use thiserror::Error;
 
 use crate::Target;
 use crate::recursive_generation::GenerationError;
+use crate::recursive_pcs::MAX_QUERY_INDEX_BITS;
 use crate::recursive_traits::{
     CommitmentTargets, OpenedValuesTargets, ProofTargets, Recursive, RecursiveAir, RecursivePcs,
 };
+
+type PcsVerifierParams<SC, InputProof, OpeningProof, Comm> =
+    <<SC as StarkGenericConfig>::Pcs as RecursivePcs<
+        SC,
+        InputProof,
+        OpeningProof,
+        Comm,
+        <<SC as StarkGenericConfig>::Pcs as Pcs<
+            <SC as StarkGenericConfig>::Challenge,
+            <SC as StarkGenericConfig>::Challenger,
+        >>::Domain,
+    >>::VerifierParams;
 
 #[derive(Debug, Error)]
 pub enum VerificationError {
@@ -42,6 +55,7 @@ fn get_circuit_challenges<
 >(
     proof_targets: &ProofTargets<SC, Comm, OpeningProof>,
     circuit: &mut CircuitBuilder<SC::Challenge>,
+    pcs_params: &PcsVerifierParams<SC, InputProof, OpeningProof, Comm>,
 ) -> Vec<Target>
 where
     SC::Pcs: RecursivePcs<
@@ -64,13 +78,77 @@ where
     challenges.push(circuit.add_public_input());
     challenges.push(circuit.add_public_input());
 
-    let pcs_challenges = SC::Pcs::get_challenges_circuit(circuit, proof_targets);
+    let pcs_challenges = SC::Pcs::get_challenges_circuit(circuit, proof_targets, pcs_params);
 
     challenges.extend(pcs_challenges);
 
     challenges
 }
 
+/// Constructs the public input values for a STARK verification circuit.
+///
+/// # Parameters
+/// - `public_values`: The AIR public input values
+/// - `proof_values`: Values extracted from the proof targets
+/// - `challenges`: All challenge values
+/// - `num_queries`: Number of FRI query proofs
+///
+/// # Returns
+/// A vector of field elements ready to be passed to `CircuitRunner::set_public_inputs`
+pub fn construct_verifier_public_inputs<F, EF>(
+    public_values: &[F],
+    proof_values: &[EF],
+    challenges: &[EF],
+    num_queries: usize,
+) -> Vec<EF>
+where
+    F: Field + PrimeField64,
+    EF: Field + BasedVectorSpace<F> + From<F>,
+{
+    let num_challenges_before_queries = challenges.len() - num_queries;
+
+    // Start with public values, proof values, and all challenges
+    let mut inputs: Vec<EF> = public_values
+        .iter()
+        .map(|&pv| pv.into())
+        .chain(proof_values.iter().copied())
+        .chain(challenges.iter().copied())
+        .collect();
+
+    // Add bit decompositions for query indices.
+    // The circuit calls decompose_to_bits on each query index,
+    // which creates MAX_QUERY_INDEX_BITS additional public inputs.
+    for &query_index in &challenges[num_challenges_before_queries..] {
+        let coeffs = query_index.as_basis_coefficients_slice();
+        let index_usize = coeffs[0].as_canonical_u64() as usize;
+
+        for k in 0..MAX_QUERY_INDEX_BITS {
+            let bit = if (index_usize >> k) & 1 == 1 {
+                EF::ONE
+            } else {
+                EF::ZERO
+            };
+            inputs.push(bit);
+        }
+    }
+
+    inputs
+}
+
+/// Verifies a STARK proof within a circuit.
+///
+/// This function adds constraints to the circuit builder that verify a STARK proof.
+///
+/// # Parameters
+/// - `config`: STARK configuration including PCS and challenger
+/// - `air`: The Algebraic Intermediate Representation defining the computation
+/// - `circuit`: Circuit builder to add verification constraints to
+/// - `proof_targets`: Recursive representation of the proof
+/// - `public_values`: Public input targets
+/// - `pcs_params`: PCS-specific verifier parameters (e.g. FRI's log blowup / final poly size)
+///
+/// # Returns
+/// `Ok(())` if the circuit was successfully constructed, `Err` otherwise.
 pub fn verify_circuit<
     A,
     SC: StarkGenericConfig,
@@ -86,6 +164,7 @@ pub fn verify_circuit<
     circuit: &mut CircuitBuilder<SC::Challenge>,
     proof_targets: &ProofTargets<SC, Comm, OpeningProof>,
     public_values: &[Target],
+    pcs_params: &PcsVerifierParams<SC, InputProof, OpeningProof, Comm>,
 ) -> Result<(), VerificationError>
 where
     A: RecursiveAir<SC::Challenge>,
@@ -134,8 +213,11 @@ where
         .collect_vec();
 
     // Challenger is called here. But we don't have the interactions or hash tables yet.
-    let challenge_targets =
-        get_circuit_challenges::<SC, Comm, InputProof, OpeningProof>(proof_targets, circuit);
+    let challenge_targets = get_circuit_challenges::<SC, Comm, InputProof, OpeningProof>(
+        proof_targets,
+        circuit,
+        pcs_params,
+    );
 
     // Verify shape.
     let air_width = A::width(air);
@@ -192,6 +274,7 @@ where
         &challenge_targets[3..],
         &coms_to_verify,
         opening_proof,
+        pcs_params,
     );
 
     let zero = circuit.add_const(SC::Challenge::ZERO);
@@ -205,23 +288,16 @@ where
                 .enumerate()
                 .filter(|(j, _)| *j != i)
                 .fold(one, |total, (_, other_domain)| {
-                    let vp_zeta = vanishing_poly_at_point_circuit::<
-                        SC,
-                        InputProof,
-                        OpeningProof,
-                        Comm,
-                        <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain,
-                    >(config, *other_domain, zeta, circuit);
+                    let vp_zeta =
+                        vanishing_poly_at_point_circuit(config, *other_domain, zeta, circuit);
 
                     let first_point = circuit.add_const(pcs.first_point(domain));
-                    let vp_first_point =
-                        vanishing_poly_at_point_circuit::<
-                            SC,
-                            InputProof,
-                            OpeningProof,
-                            Comm,
-                            <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain,
-                        >(config, *other_domain, first_point, circuit);
+                    let vp_first_point = vanishing_poly_at_point_circuit(
+                        config,
+                        *other_domain,
+                        first_point,
+                        circuit,
+                    );
                     let div = circuit.div(vp_zeta, vp_first_point);
 
                     circuit.mul(total, div)
@@ -382,11 +458,13 @@ mod tests {
         Val<SC>: TwoAdicField,
         Dft: TwoAdicSubgroupDft<Val<SC>>,
     {
+        type VerifierParams = ();
         type RecursiveProof = EmptyTarget;
 
         fn get_challenges_circuit(
             _circuit: &mut CircuitBuilder<<SC as StarkGenericConfig>::Challenge>,
             _proof_targets: &crate::recursive_traits::ProofTargets<SC, Comm, EmptyTarget>,
+            _params: &Self::VerifierParams,
         ) -> vec::Vec<Target> {
             vec![]
         }
@@ -400,6 +478,7 @@ mod tests {
                 TwoAdicMultiplicativeCoset<Val<SC>>,
             >,
             _opening_proof: &EmptyTarget,
+            _params: &Self::VerifierParams,
         ) {
         }
 
@@ -638,7 +717,7 @@ mod tests {
         >::lens(&proof);
 
         // Initialize the circuit builder.
-        let mut circuit_builder = CircuitBuilder::<Challenge>::new();
+        let mut circuit_builder = CircuitBuilder::new();
         let proof_targets = ProofTargets::<
             StarkConfig<TrivialPcs<Val, Dft>, Challenge, Challenger>,
             DummyCom<Val>,
@@ -657,8 +736,15 @@ mod tests {
             .copied()
             .collect::<Vec<_>>();
 
-        verify_circuit(&config, &air, &mut circuit_builder, &proof_targets, &[])
-            .map_err(|e| format!("{e:?}"))?;
+        verify_circuit(
+            &config,
+            &air,
+            &mut circuit_builder,
+            &proof_targets,
+            &[],
+            &(),
+        )
+        .map_err(|e| format!("{e:?}"))?;
 
         let circuit = circuit_builder.build().unwrap();
         let mut runner = circuit.runner();

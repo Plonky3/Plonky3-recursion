@@ -7,7 +7,7 @@ use thiserror::Error;
 
 use crate::circuit::Circuit;
 use crate::expr::{Expr, ExpressionGraph};
-use crate::op::{NonPrimitiveOp, NonPrimitiveOpType, Prim};
+use crate::op::{MmcsVerifyConfig, NonPrimitiveOp, NonPrimitiveOpConfig, NonPrimitiveOpType, Prim};
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};
 
 /// Sparse disjoint-set "find" with path compression over a HashMap (iterative).
@@ -59,7 +59,7 @@ fn build_connect_dsu(connects: &[(ExprId, ExprId)]) -> HashMap<usize, usize> {
 /// - Constants
 /// - Arithmetic operations (add, multiply, subtract)
 /// - Assertions (values that must equal zero)
-/// - Complex operations (like Merkle tree verification)
+/// - Complex operations (like Mmcs tree verification)
 ///
 /// Call `.build()` to compile into an immutable `Circuit<F>` specification.
 pub struct CircuitBuilder<F> {
@@ -68,17 +68,16 @@ pub struct CircuitBuilder<F> {
     /// Witness index allocator
     witness_alloc: WitnessAllocator,
     /// Track public input positions
-    public_input_count: usize,
+    pub public_input_count: usize,
     /// Equality constraints to enforce at lowering
     pending_connects: Vec<(ExprId, ExprId)>,
     /// Non-primitive operations (complex constraints that don't produce ExprIds)
     non_primitive_ops: Vec<(NonPrimitiveOpId, NonPrimitiveOpType, Vec<ExprId>)>, // (op_id, op_type, witness_exprs)
-
     /// Builder-level constant pool: value -> unique Const ExprId
     const_pool: HashMap<F, ExprId>,
 
-    /// Enabled non-primitive operation types
-    enabled_ops: HashSet<NonPrimitiveOpType>,
+    /// Enabled non-primitive operation types with their respective configuration
+    enabled_ops: HashMap<NonPrimitiveOpType, NonPrimitiveOpConfig>,
 }
 
 /// Errors that can occur during circuit building/lowering.
@@ -106,6 +105,10 @@ pub enum CircuitBuilderError {
     /// Non-primitive operation is recognized but not implemented in lowering.
     #[error("Operation {op:?} is not implemented in lowering")]
     UnsupportedNonPrimitiveOp { op: NonPrimitiveOpType },
+
+    /// Mismatched non-primitive operation configuration
+    #[error("Invalid configuration for operation {op:?}")]
+    InvalidNonPrimitiveOpConfiguration { op: NonPrimitiveOpType },
 }
 
 impl<F> Default for CircuitBuilder<F>
@@ -139,19 +142,21 @@ where
             pending_connects: Vec::new(),
             non_primitive_ops: Vec::new(),
             const_pool,
-            enabled_ops: HashSet::new(), // All non-primitive ops are disabled by default
+            enabled_ops: HashMap::new(), // All non-primitive ops are disabled by default
         }
     }
 
     /// Enable a non-primitive operation type on this builder.
-    pub fn enable_op(&mut self, op: NonPrimitiveOpType) {
-        self.enabled_ops.insert(op);
+    pub fn enable_op(&mut self, op: NonPrimitiveOpType, cfg: NonPrimitiveOpConfig) {
+        self.enabled_ops.insert(op, cfg);
     }
 
-    /// Enable Merkle verification operations.
-    // TODO: Replace with actual Merkle verification once it lands
-    pub fn enable_merkle(&mut self) {
-        self.enable_op(NonPrimitiveOpType::FakeMerkleVerify);
+    /// Enable Mmcs verification operations.
+    pub fn enable_mmcs(&mut self, mmcs_config: &MmcsVerifyConfig) {
+        self.enable_op(
+            NonPrimitiveOpType::MmcsVerify,
+            NonPrimitiveOpConfig::MmcsVerifyConfig(mmcs_config.clone()),
+        );
     }
 
     /// Enable FRI verification operations.
@@ -294,7 +299,7 @@ where
 
     /// Check whether an op type is enabled on this builder.
     fn is_op_enabled(&self, op: &NonPrimitiveOpType) -> bool {
-        self.enabled_ops.contains(op)
+        self.enabled_ops.contains_key(op)
     }
 
     pub(crate) fn ensure_op_enabled(
@@ -320,6 +325,7 @@ where
     }
 
     /// Build the circuit and return both the circuit and the ExprId→WitnessId mapping for public inputs.
+    #[allow(clippy::type_complexity)]
     pub fn build_with_public_mapping(
         mut self,
     ) -> Result<(Circuit<F>, HashMap<ExprId, WitnessId>), CircuitBuilderError> {
@@ -340,6 +346,7 @@ where
         circuit.non_primitive_ops = lowered_non_primitive_ops;
         circuit.public_rows = public_rows;
         circuit.public_flat_len = self.public_input_count;
+        circuit.enabled_ops = self.enabled_ops;
 
         Ok((circuit, public_mappings))
     }
@@ -541,28 +548,49 @@ where
         let mut lowered_ops = Vec::new();
 
         for (_op_id, op_type, witness_exprs) in &self.non_primitive_ops {
+            let config = self.enabled_ops.get(op_type);
             match op_type {
-                NonPrimitiveOpType::FakeMerkleVerify => {
-                    if witness_exprs.len() != 2 {
+                NonPrimitiveOpType::MmcsVerify => {
+                    let config = match config {
+                        Some(NonPrimitiveOpConfig::MmcsVerifyConfig(config)) => Ok(config),
+                        _ => Err(CircuitBuilderError::InvalidNonPrimitiveOpConfiguration {
+                            op: op_type.clone(),
+                        }),
+                    }?;
+                    if witness_exprs.len() != config.input_size() {
                         return Err(CircuitBuilderError::NonPrimitiveOpArity {
-                            op: "FakeMerkleVerify",
-                            expected: 2,
+                            op: "MmcsVerify",
+                            expected: config.input_size(),
                             got: witness_exprs.len(),
                         });
                     }
-                    let leaf_widx = Self::get_witness_id(
+                    let leaf_widx: Vec<WitnessId> = (0..config.ext_field_digest_elems)
+                        .map(|i| {
+                            Self::get_witness_id(
+                                expr_to_widx,
+                                witness_exprs[i],
+                                "MmcsVerify leaf input",
+                            )
+                        })
+                        .collect::<Result<_, _>>()?;
+                    let index_widx = Self::get_witness_id(
                         expr_to_widx,
-                        witness_exprs[0],
-                        "FakeMerkl    let multi_prover = MultiTableProver::new();eVerify leaf input",
+                        witness_exprs[config.ext_field_digest_elems],
+                        "MmcsVerify index input",
                     )?;
-                    let root_widx = Self::get_witness_id(
-                        expr_to_widx,
-                        witness_exprs[1],
-                        "FakeMerkleVerify root input",
-                    )?;
+                    let root_widx = (config.ext_field_digest_elems + 1..config.input_size())
+                        .map(|i| {
+                            Self::get_witness_id(
+                                expr_to_widx,
+                                witness_exprs[i],
+                                "MmcsVerify root input",
+                            )
+                        })
+                        .collect::<Result<_, _>>()?;
 
-                    lowered_ops.push(NonPrimitiveOp::FakeMerkleVerify {
+                    lowered_ops.push(NonPrimitiveOp::MmcsVerify {
                         leaf: leaf_widx,
+                        index: index_widx,
                         root: root_widx,
                     });
                 }
@@ -615,11 +643,11 @@ mod tests {
     use super::*;
     use crate::op::NonPrimitiveOpType;
     use crate::tables::DummyPerm;
-    use crate::{CircuitError, MerkleOps, NonPrimitiveOp};
+    use crate::{CircuitError, MerkleOps, MmcsOps, NonPrimitiveOp};
 
     #[test]
     fn test_circuit_basic_api() {
-        let mut builder = CircuitBuilder::<BabyBear>::new();
+        let mut builder = CircuitBuilder::new();
 
         let c37 = builder.add_const(BabyBear::from_u64(37)); // w1
         let c111 = builder.add_const(BabyBear::from_u64(111)); // w2
@@ -713,7 +741,7 @@ mod tests {
 
     #[test]
     fn test_connect_enforces_equality() {
-        let mut builder = CircuitBuilder::<BabyBear>::new();
+        let mut builder = CircuitBuilder::new();
 
         let x = builder.add_public_input();
         let c1 = builder.add_const(BabyBear::ONE);
@@ -737,7 +765,7 @@ mod tests {
 
     #[test]
     fn test_connect_conflict() {
-        let mut builder = CircuitBuilder::<BabyBear>::new();
+        let mut builder = CircuitBuilder::new();
 
         let x = builder.add_public_input();
         let y = builder.add_public_input();
@@ -781,7 +809,7 @@ mod tests {
 
     #[test]
     fn test_public_input_mapping() {
-        let mut builder = CircuitBuilder::<BabyBear>::new();
+        let mut builder = CircuitBuilder::new();
 
         let pub1 = builder.add_public_input();
         let c5 = builder.add_const(BabyBear::from_u64(5));
@@ -824,17 +852,23 @@ mod tests {
     }
 
     #[test]
-    fn test_merkle_config_blocks_when_disabled() {
+    fn test_mmcs_config_blocks_when_disabled() {
         let mut builder = CircuitBuilder::<BabyBear>::new();
+        let mmcs_config = MmcsVerifyConfig::mock_config();
 
-        let leaf = builder.add_public_input();
-        let root = builder.add_public_input();
+        let leaf = (0..mmcs_config.ext_field_digest_elems)
+            .map(|_| builder.add_public_input())
+            .collect::<Vec<ExprId>>();
+        let index = builder.add_public_input();
+        let root = (0..mmcs_config.ext_field_digest_elems)
+            .map(|_| builder.add_public_input())
+            .collect::<Vec<ExprId>>();
 
         // not enabled yet
-        let err = builder.add_fake_merkle_verify(leaf, root).unwrap_err();
+        let err = builder.add_mmcs_verify(&leaf, &index, &root).unwrap_err();
         match err {
             CircuitBuilderError::OpNotAllowed { op } => {
-                assert_eq!(op, NonPrimitiveOpType::FakeMerkleVerify);
+                assert_eq!(op, NonPrimitiveOpType::MmcsVerify);
             }
             other => panic!("expected OpNotAllowed, got {other:?}"),
         }
@@ -997,22 +1031,28 @@ mod tests {
     }
 
     #[test]
-    fn test_merkle_config_allows_when_enabled() {
+    fn test_mmcs_config_allows_when_enabled() {
         let mut builder = CircuitBuilder::<BabyBear>::new();
+        let mmcs_config = MmcsVerifyConfig::mock_config();
 
-        let leaf = builder.add_public_input();
-        let root = builder.add_public_input();
+        let leaf = (0..mmcs_config.ext_field_digest_elems)
+            .map(|_| builder.add_public_input())
+            .collect::<Vec<ExprId>>();
+        let index = builder.add_public_input();
+        let root = (0..mmcs_config.ext_field_digest_elems)
+            .map(|_| builder.add_public_input())
+            .collect::<Vec<ExprId>>();
 
-        builder.enable_merkle();
+        builder.enable_mmcs(&mmcs_config);
         builder
-            .add_fake_merkle_verify(leaf, root)
+            .add_mmcs_verify(&leaf, &index, &root)
             .expect("should be allowed");
 
         let circuit = builder.build().unwrap();
         assert_eq!(circuit.non_primitive_ops.len(), 1);
         match &circuit.non_primitive_ops[0] {
-            NonPrimitiveOp::FakeMerkleVerify { .. } => {}
-            _ => panic!("Expected FakeMerkleVerify operation"),
+            NonPrimitiveOp::MmcsVerify { .. } => {}
+            _ => panic!("Expected MmcsVerify operation"),
         }
     }
 
@@ -1078,15 +1118,21 @@ mod tests {
     }
 
     #[test]
-    fn test_merkle_config_with_custom_params() {
+    fn test_mmcs_config_with_custom_params() {
         let mut builder = CircuitBuilder::<BabyBear>::new();
+        let mmcs_config = MmcsVerifyConfig::mock_config();
 
-        let leaf = builder.add_public_input();
-        let root = builder.add_public_input();
+        let leaf = (0..mmcs_config.ext_field_digest_elems)
+            .map(|_| builder.add_public_input())
+            .collect::<Vec<ExprId>>();
+        let index = builder.add_public_input();
+        let root = (0..mmcs_config.ext_field_digest_elems)
+            .map(|_| builder.add_public_input())
+            .collect::<Vec<ExprId>>();
 
-        builder.enable_merkle();
+        builder.enable_mmcs(&mmcs_config);
         builder
-            .add_fake_merkle_verify(leaf, root)
+            .add_mmcs_verify(&leaf, &index, &root)
             .expect("should be allowed with custom config");
 
         let circuit = builder.build().unwrap();

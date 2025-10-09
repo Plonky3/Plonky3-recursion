@@ -16,10 +16,11 @@ use p3_commit::ExtensionMmcs;
 use p3_dft::Radix2DitParallel as Dft;
 use p3_field::extension::{BinomialExtensionField, BinomiallyExtendable};
 use p3_field::{Field, PrimeCharacteristicRing, PrimeField64, TwoAdicField};
-use p3_fri::{TwoAdicFriPcs as Pcs, create_test_fri_params};
+use p3_fri::{TwoAdicFriPcs as Pcs, create_benchmark_fri_params};
 use p3_merkle_tree::MerkleTreeMmcs;
 use p3_symmetric::{
-    CryptographicPermutation, PaddingFreeSponge as MyHash, TruncatedPermutation as MyCompress,
+    CryptographicPermutation, PaddingFreeSponge as MyHash, PseudoCompressionFunction,
+    TruncatedPermutation as MyCompress,
 };
 use p3_uni_stark::StarkConfig;
 
@@ -87,12 +88,21 @@ where
     let challenge_mmcs = ChallengeMmcs::<F, P, CD>::new(val_mmcs.clone());
 
     let dft = Dft::<F>::default();
-    let fri_params = create_test_fri_params::<ChallengeMmcs<F, P, CD>>(challenge_mmcs, 0);
+    let fri_params = create_benchmark_fri_params::<ChallengeMmcs<F, P, CD>>(challenge_mmcs);
     let pcs = Pcs::<F, _, _, _>::new(dft, val_mmcs, fri_params);
 
     let challenger = Challenger::<F, P, 16, 8>::new(perm);
 
     StarkConfig::new(pcs, challenger)
+}
+
+/// Build a standard 2-to-1 compression function for any supported field and permutation.
+pub fn standard_compression_function_generic<F, P>(perm: P) -> MyCompress<P, 2, 8, 16>
+where
+    F: StarkField,
+    P: StarkPermutation<F> + Clone + 'static,
+{
+    MyCompress::new(perm)
 }
 
 // Field-specific configuration builders
@@ -110,6 +120,11 @@ pub mod babybear_config {
         let perm = default_babybear_poseidon2_16();
         build_standard_config_generic::<BB, _, 4>(perm)
     }
+
+    pub fn baby_bear_standard_compression_function() -> impl PseudoCompressionFunction<[BB; 8], 2> {
+        let perm = default_babybear_poseidon2_16();
+        standard_compression_function_generic::<BB, _>(perm)
+    }
 }
 
 pub mod koalabear_config {
@@ -124,6 +139,12 @@ pub mod koalabear_config {
     pub fn build_standard_config_koalabear() -> KoalaBearConfig {
         let perm = default_koalabear_poseidon2_16();
         build_standard_config_generic::<KB, _, 4>(perm)
+    }
+
+    pub fn koala_bear_standard_compression_function() -> impl PseudoCompressionFunction<[KB; 8], 2>
+    {
+        let perm = default_koalabear_poseidon2_16();
+        standard_compression_function_generic::<KB, _>(perm)
     }
 }
 
@@ -140,5 +161,12 @@ pub mod goldilocks_config {
         let mut rng = SmallRng::seed_from_u64(1);
         let perm = Poseidon2GL::<16>::new_from_rng_128(&mut rng);
         build_standard_config_generic::<GL, _, 2>(perm)
+    }
+
+    pub fn goldilocks_standard_compression_function() -> impl PseudoCompressionFunction<[GL; 8], 2>
+    {
+        let mut rng = SmallRng::seed_from_u64(1);
+        let perm = Poseidon2GL::<16>::new_from_rng_128(&mut rng);
+        standard_compression_function_generic::<GL, _>(perm)
     }
 }

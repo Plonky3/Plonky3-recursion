@@ -110,12 +110,15 @@ pub trait RecursivePcs<
     Domain,
 >
 {
+    type VerifierParams;
+
     type RecursiveProof;
 
     /// Creates new targets for all the challenges necessary when computing the Pcs.
     fn get_challenges_circuit(
         circuit: &mut CircuitBuilder<SC::Challenge>,
         proof_targets: &ProofTargets<SC, Comm, OpeningProof>,
+        params: &Self::VerifierParams,
     ) -> Vec<Target>;
 
     /// Adds the circuit which verifies the Pcs computation.
@@ -125,6 +128,7 @@ pub trait RecursivePcs<
         challenges: &[Target],
         commitments_with_opening_points: &ComsWithOpeningsTargets<Comm, Domain>,
         opening_proof: &OpeningProof,
+        params: &Self::VerifierParams,
     );
 
     /// Computes target selectors at `point` in the circuit.

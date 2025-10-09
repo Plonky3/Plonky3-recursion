@@ -54,7 +54,7 @@ pub fn symbolic_to_circuit<F: Field>(
     } = columns;
 
     let mut get_target =
-        |s: &SymbolicExpression<F>| symbolic_to_circuit::<F>(row_selectors, columns, s, circuit);
+        |s: &SymbolicExpression<F>| symbolic_to_circuit(row_selectors, columns, s, circuit);
 
     match symbolic {
         SymbolicExpression::Constant(c) => circuit.add_const(*c),
@@ -256,7 +256,7 @@ mod tests {
         };
 
         // Build a circuit adding public inputs for `sels`, public values, local values and next values.
-        let mut circuit = CircuitBuilder::<Challenge>::new();
+        let mut circuit = CircuitBuilder::new();
         let circuit_sels = [
             circuit.add_public_input(),
             circuit.add_public_input(),
@@ -290,7 +290,7 @@ mod tests {
         };
 
         // Get the circuit for the folded constraints.
-        let sum = symbolic_to_circuit::<Challenge>(
+        let sum = symbolic_to_circuit(
             row_selectors,
             &columns,
             &folded_symbolic_constraints,

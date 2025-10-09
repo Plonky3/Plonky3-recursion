@@ -2,12 +2,17 @@ use alloc::vec::Vec;
 use alloc::{format, vec};
 use core::array;
 
-use p3_symmetric::{CryptographicPermutation, Permutation};
+use itertools::izip;
+use p3_field::{ExtensionField, Field};
+use p3_symmetric::{CryptographicPermutation, Permutation, PseudoCompressionFunction};
+use tracing::instrument;
 
 use crate::circuit::Circuit;
-use crate::op::{NonPrimitiveOpPrivateData, Prim};
+use crate::op::{
+    MmcsVerifyConfig, NonPrimitiveOpConfig, NonPrimitiveOpPrivateData, NonPrimitiveOpType, Prim,
+};
 use crate::types::{NonPrimitiveOpId, WitnessId};
-use crate::{CircuitError, CircuitField};
+use crate::{CircuitError, CircuitField, NonPrimitiveOp};
 
 #[derive(Debug, Clone, Default)]
 pub struct DummyPerm {}
@@ -32,8 +37,8 @@ pub struct Traces<F> {
     pub add_trace: AddTrace<F>,
     /// Mul operation table
     pub mul_trace: MulTrace<F>,
-    /// Fake Merkle verification table
-    pub fake_merkle_trace: FakeMerkleTrace<F>,
+    /// Mmcs verification table
+    pub mmcs_trace: MmcsTrace<F>,
     /// Sponge hash table
     pub sponge_trace: SpongeTrace<F>,
 }
@@ -99,23 +104,160 @@ pub struct MulTrace<F> {
     pub result_index: Vec<WitnessId>,
 }
 
-/// Fake Merkle verification table (simplified: single field elements)
+/// Fake Mmcs verification table (simplified: single field elements)
 #[derive(Debug, Clone)]
-pub struct FakeMerkleTrace<F> {
-    /// Left operand values (current hash)
-    pub left_values: Vec<F>,
-    /// Left operand indices (references witness bus)
-    pub left_index: Vec<WitnessId>,
-    /// Right operand values (sibling hash)
-    pub right_values: Vec<F>,
-    /// Right operand indices (not on witness bus - private data, so stays u32)
+pub struct MmcsTrace<F> {
+    /// All the mmcs paths computed in this trace
+    pub mmcs_paths: Vec<MmcsPathTrace<F>>,
+}
+
+/// A single Mmcs Path verification table
+#[derive(Debug, Clone, Default)]
+pub struct MmcsPathTrace<F> {
+    /// Left operand values (current hash). A vector of field elements representing a digest.
+    pub left_values: Vec<Vec<F>>,
+    /// Left operand indices.
+    pub left_index: Vec<Vec<u32>>,
+    /// Right operand values (sibling hash). A vector of field elements representing a digest
+    pub right_values: Vec<Vec<F>>,
+    /// Right operand indices (not on witness bus - private)
     pub right_index: Vec<u32>,
-    /// Result values (computed parent hash)
-    pub result_values: Vec<F>,
-    /// Result indices (references witness bus)
-    pub result_index: Vec<WitnessId>,
-    /// Path direction bits (0 = left, 1 = right) - private data
-    pub path_directions: Vec<u32>,
+    /// Path direction bits (0 = left, 1 = right) - private
+    pub path_directions: Vec<bool>,
+    /// Indicates if the current row is processing a smaller
+    /// matrix of the Mmcs.
+    pub is_extra: Vec<bool>,
+    /// Final digest after traversing the path (expected root value).
+    pub final_value: Vec<F>,
+    /// Witness indices corresponding to the final digest wires.
+    pub final_index: Vec<u32>,
+}
+
+/// Private Mmcs path data for Mmcs verification
+///
+/// This represents the private witness information that the prover needs
+/// to demonstrate knowledge of a valid Mmcs path from leaf to root.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MmcsPrivateData<F> {
+    /// Sibling and state hash values along the Mmcs path
+    ///
+    /// The sequence of states along the path.
+    pub path_states: Vec<Vec<F>>,
+    /// The sequence of sibling with optional tuple of extra state
+    /// and siblings, present when the Mmcs has a smaller matrix at this step.
+    pub path_siblings: Vec<SiblingWithExtra<F>>,
+}
+
+type SiblingWithExtra<F> = (Vec<F>, Option<(Vec<F>, Vec<F>)>);
+
+impl<F: Field + Clone + Default> MmcsPrivateData<F> {
+    /// Computes the private mmcs data for the mmcs path defined by `leaf`, `siblings` and `directions`,
+    /// for a given a compression function.
+    pub fn new<BF, C, const DIGEST_ELEMS: usize>(
+        compress: &C,
+        config: &MmcsVerifyConfig,
+        leaf: &[F],
+        siblings: &[(Vec<F>, Option<Vec<F>>)],
+        directions: &[bool],
+    ) -> Result<Self, CircuitError>
+    where
+        BF: Field,
+        F: ExtensionField<BF> + Clone,
+        C: PseudoCompressionFunction<[BF; DIGEST_ELEMS], 2>,
+    {
+        // Worst case we push two states per step (if `other_sibling` is Some).
+        let mut private_data = Self {
+            path_states: Vec::with_capacity(siblings.len() + 1),
+            path_siblings: Vec::with_capacity(siblings.len()),
+        };
+        let path_states = &mut private_data.path_states;
+        let path_siblings = &mut private_data.path_siblings;
+
+        let mut state = leaf.to_vec();
+        for (&dir, (sibling, other)) in directions.iter().zip(siblings.iter()) {
+            path_states.push(state.to_vec());
+
+            let state_as_slice = config.ext_to_base(&state)?;
+            let sibling_as_slice = config.ext_to_base(sibling)?;
+
+            let input = if dir {
+                [state_as_slice, sibling_as_slice]
+            } else {
+                [sibling_as_slice, state_as_slice]
+            };
+            state = config.base_to_ext(&compress.compress(input))?;
+
+            // Optional second hash when the step has an extra sibling.
+            if let Some(other) = other {
+                let intermediate = state.to_vec();
+                path_siblings.push((
+                    sibling.to_vec(),
+                    Some((intermediate.clone(), other.clone())),
+                ));
+                let state_as_slice = config.ext_to_base(&intermediate)?;
+                let other = config.ext_to_base(other)?;
+                state = config.base_to_ext(&compress.compress([state_as_slice, other]))?;
+            } else {
+                path_siblings.push((sibling.to_vec(), None));
+            }
+        }
+        // Append the final state (root).
+        path_states.push(state.to_vec());
+        Ok(private_data)
+    }
+    /// Builds a valid `MmcsVerifyAir` trace from a private Mmcs proof,
+    /// given also the leaf’s digest wires and value used in the circuit, and the leaf’s index in the tree.
+    pub fn to_trace(
+        &self,
+        mmcs_config: &MmcsVerifyConfig,
+        leaf_wires: &[WitnessId],
+        root_wires: &[WitnessId],
+        index_value: u32,
+    ) -> Result<MmcsPathTrace<F>, CircuitError> {
+        let mut trace = MmcsPathTrace::default();
+
+        // Get the adrresses of the leaf wires
+        let leaf_indices: Vec<u32> = leaf_wires.iter().map(|wid| wid.0).collect();
+        let root_indices: Vec<u32> = root_wires.iter().map(|wid| wid.0).collect();
+
+        debug_assert!(self.path_siblings.len() <= mmcs_config.max_tree_height);
+        let path_directions = (0..mmcs_config.max_tree_height).map(|i| (index_value >> i) & 1 == 1);
+
+        // For each step in the Mmcs path (excluding the final state which is the root)
+        debug_assert_eq!(self.path_states.len(), self.path_siblings.len() + 1);
+        for (state, (sibling, extra), direction) in izip!(
+            self.path_states.iter().take(self.path_siblings.len()),
+            self.path_siblings.iter(),
+            path_directions
+        ) {
+            // Current hash becomes left operand
+            trace.left_values.push(state.clone());
+            // TODO: What is the address of this value?
+            trace.left_index.push(leaf_indices.clone()); // Points to witness bus
+
+            // Sibling becomes right operand (private data - not on witness bus)
+            trace.right_values.push(sibling.clone());
+            trace.right_index.push(0); // Not on witness bus - private data
+
+            trace.path_directions.push(direction);
+            trace.is_extra.push(false);
+
+            // If there's an extra sibling we push another row to the trace
+            if let Some((extra_state, extra_sibling)) = extra {
+                trace.left_values.push(extra_state.to_vec());
+                trace.left_index.push(leaf_indices.clone());
+
+                trace.right_values.push(extra_sibling.clone());
+                trace.right_index.push(0); // TODO: This should have an address on the witness table
+
+                trace.path_directions.push(direction);
+                trace.is_extra.push(true);
+            }
+        }
+        trace.final_value = self.path_states.last().cloned().unwrap_or_default();
+        trace.final_index = root_indices;
+        Ok(trace)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -208,10 +350,7 @@ impl<F: CircuitField> CircuitRunner<F> {
         // Validate that the private data matches the operation type
         let non_primitive_op = &self.circuit.non_primitive_ops[op_id.0 as usize];
         match (non_primitive_op, &private_data) {
-            (
-                crate::op::NonPrimitiveOp::FakeMerkleVerify { .. },
-                NonPrimitiveOpPrivateData::FakeMerkleVerify(_),
-            ) => {
+            (NonPrimitiveOp::MmcsVerify { .. }, NonPrimitiveOpPrivateData::MmcsVerify(_)) => {
                 // Type match - good!
             }
             (crate::op::NonPrimitiveOp::HashAbsorb { .. }, _) => {
@@ -245,7 +384,7 @@ impl<F: CircuitField> CircuitRunner<F> {
         let public_trace = self.generate_public_trace()?;
         let add_trace = self.generate_add_trace()?;
         let mul_trace = self.generate_mul_trace()?;
-        let fake_merkle_trace = self.generate_fake_merkle_trace()?;
+        let mmcs_trace = self.generate_mmcs_trace()?;
         let sponge_trace = self.generate_sponge_trace::<_, N, R, C>(perm)?;
 
         Ok(Traces {
@@ -254,7 +393,7 @@ impl<F: CircuitField> CircuitRunner<F> {
             public_trace,
             add_trace,
             mul_trace,
-            fake_merkle_trace,
+            mmcs_trace,
             sponge_trace,
         })
     }
@@ -443,67 +582,33 @@ impl<F: CircuitField> CircuitRunner<F> {
         })
     }
 
-    fn generate_fake_merkle_trace(&mut self) -> Result<FakeMerkleTrace<F>, CircuitError> {
-        let mut left_values = Vec::new();
-        let mut left_index = Vec::new();
-        let mut right_values = Vec::new();
-        let mut right_index = Vec::new();
-        let mut result_values = Vec::new();
-        let mut result_index = Vec::new();
-        let mut path_directions = Vec::new();
+    fn generate_mmcs_trace(&mut self) -> Result<MmcsTrace<F>, CircuitError> {
+        let mut mmcs_paths = Vec::new();
 
         // Process each complex operation by index to avoid borrowing conflicts
         for op_idx in 0..self.circuit.non_primitive_ops.len() {
-            // Only handle FakeMerkleVerify ops here
+            // Only handle MmcsVerify ops here
             match &self.circuit.non_primitive_ops[op_idx] {
-                crate::op::NonPrimitiveOp::FakeMerkleVerify { leaf, root } => {
+                crate::op::NonPrimitiveOp::MmcsVerify { leaf, index, root } => {
                     // Copy out leaf/root to end immutable borrow immediately
-                    let (leaf, root) = (*leaf, *root);
+                    let (leaf, index, root) = (*leaf, *index, *root);
 
                     // Clone private data option to avoid holding a borrow on self
-                    if let Some(Some(NonPrimitiveOpPrivateData::FakeMerkleVerify(private_data))) =
+                    if let Some(Some(NonPrimitiveOpPrivateData::MmcsVerify(private_data))) =
                         self.non_primitive_op_private_data.get(op_idx).cloned()
                     {
-                        let mut current_hash = if let Some(val) =
-                            self.witness.get(leaf.0 as usize).and_then(|x| x.as_ref())
+                        let config = match self
+                            .circuit
+                            .enabled_ops
+                            .get(&NonPrimitiveOpType::MmcsVerify)
                         {
-                            *val
-                        } else {
-                            return Err(CircuitError::NonPrimitiveOpWitnessNotSet {
-                                operation_index: op_idx,
-                            });
-                        };
-
-                        // For each step in the Merkle path
-                        for (sibling_value, &direction) in private_data
-                            .path_siblings
-                            .iter()
-                            .zip(private_data.path_directions.iter())
-                        {
-                            // Current hash becomes left operand
-                            left_values.push(current_hash);
-                            left_index.push(leaf); // Points to witness bus
-
-                            // Sibling becomes right operand (private data - not on witness bus)
-                            right_values.push(*sibling_value);
-                            right_index.push(0); // Not on witness bus - private data
-
-                            // Compute parent hash (simple mock hash: left + right + direction)
-                            let parent_hash = current_hash
-                                + *sibling_value
-                                + if direction { F::ONE } else { F::ZERO };
-
-                            result_values.push(parent_hash);
-                            result_index.push(root); // Points to witness bus
-
-                            path_directions.push(if direction { 1 } else { 0 });
-
-                            // Update current hash for next iteration
-                            current_hash = parent_hash;
-                        }
-
-                        // Root is computed; write back to the witness bus at root index
-                        self.set_witness(root, current_hash)?;
+                            Some(NonPrimitiveOpConfig::MmcsVerifyConfig(config)) => Ok(config),
+                            _ => Err(CircuitError::InvalidNonPrimitiveOpConfiguration {
+                                op: NonPrimitiveOpType::MmcsVerify,
+                            }),
+                        }?;
+                        let trace = private_data.to_trace(config, leaf, root, index.0)?;
+                        mmcs_paths.push(trace);
                     } else {
                         return Err(CircuitError::NonPrimitiveOpMissingPrivateData {
                             operation_index: op_idx,
@@ -514,15 +619,7 @@ impl<F: CircuitField> CircuitRunner<F> {
             };
         }
 
-        Ok(FakeMerkleTrace {
-            left_values,
-            left_index,
-            right_values,
-            right_index,
-            result_values,
-            result_index,
-            path_directions,
-        })
+        Ok(MmcsTrace { mmcs_paths })
     }
 
     fn generate_sponge_trace<P, const N: usize, const R: usize, const C: usize>(
@@ -595,14 +692,17 @@ mod tests {
     use p3_baby_bear::BabyBear;
     use p3_field::extension::BinomialExtensionField;
     use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
+    use p3_symmetric::PseudoCompressionFunction;
 
+    use crate::MmcsPrivateData;
     use crate::builder::CircuitBuilder;
+    use crate::op::MmcsVerifyConfig;
     use crate::tables::DummyPerm;
     use crate::types::WitnessId;
 
     #[test]
     fn test_table_generation_basic() {
-        let mut builder = CircuitBuilder::<BabyBear>::new();
+        let mut builder = CircuitBuilder::new();
 
         // Simple test: x + 5 = result
         let x = builder.add_public_input();
@@ -636,21 +736,17 @@ mod tests {
     }
 
     #[test]
+    // Proves that we know x such that 37 * x - 111 = 0
     fn test_toy_example_37_times_x_minus_111() {
-        let mut builder = CircuitBuilder::<BabyBear>::new();
+        let mut builder = CircuitBuilder::new();
 
         let x = builder.add_public_input();
         let c37 = builder.add_const(BabyBear::from_u64(37));
         let c111 = builder.add_const(BabyBear::from_u64(111));
-        let c1 = builder.add_const(BabyBear::from_u64(1));
 
         let mul_result = builder.mul(c37, x);
         let sub_result = builder.sub(mul_result, c111);
         builder.assert_zero(sub_result);
-
-        let div_result = builder.div(mul_result, c111);
-        let sub_one = builder.sub(div_result, c1);
-        builder.assert_zero(sub_one);
 
         let circuit = builder.build().unwrap();
         println!("=== CIRCUIT PRIMITIVE OPERATIONS ===");
@@ -732,31 +828,28 @@ mod tests {
         // Verify trace structure
         assert_eq!(traces.witness_trace.index.len(), witness_count as usize);
 
-        // Should have constants: 37, 111, 1 and 0 (for assert_zero)
-        assert!(traces.const_trace.values.len() >= 4);
+        // Should have constants: 0, 37, 111
+        assert_eq!(traces.const_trace.values.len(), 3);
 
         // Should have one public input
         assert_eq!(traces.public_trace.values.len(), 1);
         assert_eq!(traces.public_trace.values[0], BabyBear::from_u64(3));
 
-        // Should have two mul operations (explicit Mul and Div lowering to Mul with inverse)
-        assert_eq!(traces.mul_trace.lhs_values.len(), 2);
+        // Should have one mul operation: 37 * x
+        assert_eq!(traces.mul_trace.lhs_values.len(), 1);
 
-        // Encoded subtractions land in the add table (result + rhs = lhs).
-        assert_eq!(traces.add_trace.lhs_values.len(), 2);
-        assert_eq!(traces.add_trace.lhs_index, vec![WitnessId(2), WitnessId(3)]);
-        assert_eq!(traces.add_trace.rhs_index, vec![WitnessId(0), WitnessId(0)]);
-        assert_eq!(
-            traces.add_trace.result_index,
-            vec![WitnessId(5), WitnessId(6)]
-        );
+        // Encoded subtraction lands in the add table (result + rhs = lhs).
+        assert_eq!(traces.add_trace.lhs_values.len(), 1);
+        assert_eq!(traces.add_trace.lhs_index, vec![WitnessId(2)]);
+        assert_eq!(traces.add_trace.rhs_index, vec![WitnessId(0)]);
+        assert_eq!(traces.add_trace.result_index, vec![WitnessId(4)]);
     }
 
     #[test]
     fn test_extension_field_support() {
         type ExtField = BinomialExtensionField<BabyBear, 4>;
 
-        let mut builder = CircuitBuilder::<ExtField>::new();
+        let mut builder = CircuitBuilder::new();
 
         // Test extension field operations: x + y * z
         let x = builder.add_public_input();
@@ -818,5 +911,67 @@ mod tests {
         assert_eq!(traces.add_trace.lhs_values[0], x_val);
         assert_eq!(traces.add_trace.rhs_values[0], expected_yz);
         assert_eq!(traces.add_trace.result_values[0], expected_result);
+    }
+
+    #[derive(Clone, Debug)]
+    struct MockCompression {}
+
+    impl PseudoCompressionFunction<[BabyBear; 1], 2> for MockCompression {
+        fn compress(&self, input: [[BabyBear; 1]; 2]) -> [BabyBear; 1] {
+            input[0]
+        }
+    }
+
+    #[test]
+    fn test_mmcs_private_data() {
+        let leaf = [BabyBear::from_u64(1)];
+        let siblings = [
+            (vec![BabyBear::from_u64(2)], None),
+            (
+                vec![BabyBear::from_u64(3)],
+                Some(vec![BabyBear::from_u64(4)]),
+            ),
+            (vec![BabyBear::from_u64(5)], None),
+        ];
+        let directions = [false, true, true];
+
+        let expected_private_data = MmcsPrivateData {
+            path_states: vec![
+                // The first state is the leaf
+                vec![BabyBear::from_u64(1)],
+                // here there's an extra sibling, so we do two compressions.
+                // Since dir = false, the first input is [2, 1] and thus compress.compress(input) = 2.
+                // The extra input is [2, 4] and compress.compress(input) = 2
+                vec![BabyBear::from_u64(2)],
+                // direction = true and then input is [2, 5] compress.compress(input) = 2
+                vec![BabyBear::from_u64(2)],
+                // final root state after the full path
+                vec![BabyBear::from_u64(2)],
+            ],
+            path_siblings: vec![
+                (vec![BabyBear::from_u64(2)], None), // The first sibling
+                // The second sibling with the extra state and sibling
+                (
+                    vec![BabyBear::from_u64(3)],
+                    Some((vec![BabyBear::from_u64(2)], vec![BabyBear::from_u64(4)])),
+                ),
+                // The third sibling
+                (vec![BabyBear::from_u64(5)], None),
+            ],
+        };
+
+        let compress = MockCompression {};
+        let config = MmcsVerifyConfig::mock_config();
+
+        let private_data = MmcsPrivateData::new::<BabyBear, _, 1>(
+            &compress,
+            &config,
+            &leaf,
+            &siblings,
+            &directions,
+        )
+        .unwrap();
+
+        assert_eq!(private_data, expected_private_data);
     }
 }
