@@ -2,6 +2,7 @@ use hashbrown::HashMap;
 
 use crate::op::{NonPrimitiveOpConfig, NonPrimitiveOpType};
 use crate::ops::MmcsVerifyConfig;
+use crate::ops::hash::HashConfig;
 
 /// Configuration for the circuit builder.
 #[derive(Debug, Clone, Default)]
@@ -40,8 +41,15 @@ impl BuilderConfig {
     }
 
     /// Enables HashSqueeze operations.
-    pub fn enable_hash_squeeze(&mut self) {
-        self.enable_op(NonPrimitiveOpType::HashSqueeze, NonPrimitiveOpConfig::None);
+    pub fn enable_hash_squeeze(&mut self, hash_config: &HashConfig) {
+        self.enable_op(
+            NonPrimitiveOpType::HashSqueeze { reset: true },
+            NonPrimitiveOpConfig::HashConfig(hash_config.clone()),
+        );
+        self.enable_op(
+            NonPrimitiveOpType::HashSqueeze { reset: false },
+            NonPrimitiveOpConfig::HashConfig(hash_config.clone()),
+        );
     }
 
     /// Enables FRI verification operations.

@@ -1,3 +1,4 @@
+use alloc::boxed::Box;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt::Debug;
@@ -9,6 +10,7 @@ use p3_field::Field;
 use strum::EnumCount;
 
 use crate::op::{NonPrimitiveOpConfig, NonPrimitiveOpType, Op, PrimitiveOpType};
+use crate::ops::hash::CircuitPermutation;
 use crate::tables::{CircuitRunner, TraceGeneratorFn};
 use crate::types::{ExprId, WitnessId};
 
@@ -159,5 +161,14 @@ impl<F: CircuitField> Circuit<F> {
     /// Create a circuit runner for execution and trace generation
     pub fn runner(self) -> CircuitRunner<F> {
         CircuitRunner::new(self)
+    }
+
+    /// Create a circuit runner with a permutation
+    pub fn runner_with_permutation(
+        self,
+        perm: Box<dyn CircuitPermutation<F>>,
+        width: usize,
+    ) -> CircuitRunner<F> {
+        CircuitRunner::new_with_permutation(self, perm, width)
     }
 }

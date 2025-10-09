@@ -1,11 +1,12 @@
 use p3_baby_bear::{BabyBear, Poseidon2BabyBear};
 use p3_challenger::DuplexChallenger;
 use p3_circuit::CircuitBuilder;
+use p3_circuit::ops::hash::CircuitPermutation;
 use p3_circuit::test_utils::{FibonacciAir, generate_trace_rows};
 use p3_commit::ExtensionMmcs;
 use p3_dft::Radix2DitParallel;
 use p3_field::extension::BinomialExtensionField;
-use p3_field::{Field, PrimeCharacteristicRing};
+use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
 use p3_fri::{TwoAdicFriPcs, create_test_fri_params};
 use p3_merkle_tree::MerkleTreeMmcs;
 use p3_recursion::pcs::fri::{
@@ -14,27 +15,61 @@ use p3_recursion::pcs::fri::{
 };
 use p3_recursion::public_inputs::StarkVerifierInputsBuilder;
 use p3_recursion::{VerificationError, generate_challenges, verify_circuit};
-use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
+use p3_symmetric::{PaddingFreeSponge, Permutation, TruncatedPermutation};
 use p3_uni_stark::{StarkConfig, StarkGenericConfig, Val, prove, verify};
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
+use tracing_forest::ForestLayer;
+use tracing_forest::util::LevelFilter;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::{EnvFilter, Registry};
 
 type F = BabyBear;
 const D: usize = 4;
 const RATE: usize = 8;
+const EXT_RATE: usize = RATE / D;
+const BASE_WIDTH: usize = 16;
 type Challenge = BinomialExtensionField<F, D>;
 type Dft = Radix2DitParallel<F>;
-type Perm = Poseidon2BabyBear<16>;
-type MyHash = PaddingFreeSponge<Perm, 16, RATE, 8>;
-type MyCompress = TruncatedPermutation<Perm, 2, 8, 16>;
+type Perm = Poseidon2BabyBear<BASE_WIDTH>;
+type MyHash = PaddingFreeSponge<Perm, BASE_WIDTH, RATE, RATE>;
+type MyCompress = TruncatedPermutation<Perm, 2, RATE, BASE_WIDTH>;
 type ValMmcs = MerkleTreeMmcs<<F as Field>::Packing, <F as Field>::Packing, MyHash, MyCompress, 8>;
 type ChallengeMmcs = ExtensionMmcs<F, Challenge, ValMmcs>;
-type Challenger = DuplexChallenger<F, Perm, 16, RATE>;
+type Challenger = DuplexChallenger<F, Perm, BASE_WIDTH, RATE>;
 type MyPcs = TwoAdicFriPcs<F, Dft, ValMmcs, ChallengeMmcs>;
 type MyConfig = StarkConfig<MyPcs, Challenge, Challenger>;
 
+fn init_logger() {
+    let env_filter = EnvFilter::builder()
+        .with_default_directive(LevelFilter::INFO.into())
+        .from_env_lossy();
+
+    Registry::default()
+        .with(env_filter)
+        .with(ForestLayer::default())
+        .init();
+}
+
+struct MyPerm(Perm);
+
+impl CircuitPermutation<Challenge> for MyPerm {
+    fn permute(&self, state: &[Challenge]) -> Vec<Challenge> {
+        let base_elems: Vec<F> = Challenge::flatten_to_base(state.to_vec());
+        let base_array = base_elems.try_into().expect("invalid state length");
+        let result_base = self.0.permute(base_array).to_vec();
+        Challenge::reconstitute_from_base(result_base)
+    }
+
+    fn width(&self) -> usize {
+        BASE_WIDTH / D
+    }
+}
+
 #[test]
 fn test_fibonacci_verifier() -> Result<(), VerificationError> {
+    init_logger();
     let mut rng = SmallRng::seed_from_u64(1);
     let n = 1 << 3;
     let x = 21;
@@ -52,7 +87,7 @@ fn test_fibonacci_verifier() -> Result<(), VerificationError> {
     let log_height_max = fri_params.log_final_poly_len + fri_params.log_blowup;
     let pow_bits = fri_params.proof_of_work_bits;
     let pcs = MyPcs::new(dft, val_mmcs, fri_params);
-    let challenger = Challenger::new(perm);
+    let challenger = Challenger::new(perm.clone());
 
     let config = MyConfig::new(pcs, challenger);
     let pis = vec![BabyBear::ZERO, BabyBear::ONE, BabyBear::from_u64(x)];
@@ -97,7 +132,7 @@ fn test_fibonacci_verifier() -> Result<(), VerificationError> {
         HashTargets<F, DIGEST_ELEMS>,
         InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>>,
         InnerFri,
-        RATE,
+        EXT_RATE,
     >(
         &config,
         &air,
@@ -108,10 +143,14 @@ fn test_fibonacci_verifier() -> Result<(), VerificationError> {
         &fri_verifier_params,
     )?;
 
+    circuit_builder.dump_allocation_log();
+
     // Build the circuit.
     let (circuit, _) = circuit_builder.build()?;
 
-    let mut runner = circuit.runner();
+    let circuit_perm = MyPerm(perm.clone());
+    let circuit_perm_width = circuit_perm.width();
+    let mut runner = circuit.runner_with_permutation(Box::new(circuit_perm), circuit_perm_width);
 
     // Generate all the challenge values.
     let all_challenges = generate_challenges(

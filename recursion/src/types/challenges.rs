@@ -94,6 +94,7 @@ impl StarkChallenges {
 
         // Sample alpha challenge
         let alpha = challenger.sample(circuit);
+        circuit.alloc_public_input("Evaluation alpha");
 
         // Observe quotient chunks commitment
         challenger.observe_slice(circuit, &quotient_comm_targets);
@@ -105,7 +106,9 @@ impl StarkChallenges {
 
         // Sample zeta and zeta_next challenges
         let zeta = challenger.sample(circuit);
+        circuit.alloc_public_input("Evaluation zeta");
         let zeta_next = challenger.sample(circuit);
+        circuit.alloc_public_input("Evaluation zeta_next");
 
         Self {
             alpha,

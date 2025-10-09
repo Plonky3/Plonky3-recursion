@@ -170,7 +170,7 @@ impl<'a> NonPrimitiveLowerer<'a> {
                         op_id: *op_id,
                     });
                 }
-                NonPrimitiveOpType::HashSqueeze => {
+                NonPrimitiveOpType::HashSqueeze { reset } => {
                     // Operation must be enabled
                     if config_opt.is_none() {
                         return Err(CircuitBuilderError::InvalidNonPrimitiveOpConfiguration {
@@ -193,7 +193,7 @@ impl<'a> NonPrimitiveLowerer<'a> {
                     lowered_ops.push(Op::NonPrimitiveOpWithExecutor {
                         inputs: Vec::new(),
                         outputs,
-                        executor: Box::new(HashSqueezeExecutor::new()),
+                        executor: Box::new(HashSqueezeExecutor::new(*reset)),
                         op_id: *op_id,
                     });
                 }

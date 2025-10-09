@@ -1,9 +1,10 @@
 use alloc::vec::Vec;
 use alloc::{format, vec};
 use core::marker::PhantomData;
+use core::panic;
 
 use p3_challenger::{CanObserve, GrindingChallenger};
-use p3_circuit::utils::{RowSelectorsTargets, decompose_to_bits};
+use p3_circuit::utils::{RowSelectorsTargets, decompose_to_bits, reconstruct_index_from_bits};
 use p3_circuit::{CircuitBuilder, CircuitError};
 use p3_commit::{BatchOpening, ExtensionMmcs, Mmcs, PolynomialSpace};
 use p3_field::coset::TwoAdicMultiplicativeCoset;
@@ -454,6 +455,7 @@ where
 
         // Sample FRI alpha (for batch opening reduction)
         let fri_alpha = challenger.sample(circuit);
+        circuit.alloc_public_input("FRI alpha");
 
         // Sample FRI betas: one per commit phase
         // For each FRI commitment, observe it and sample beta
@@ -462,6 +464,7 @@ where
             let commit_targets = commit.to_observation_targets();
             challenger.observe_slice(circuit, &commit_targets);
             let beta = challenger.sample(circuit);
+            circuit.alloc_public_input("FRI beta");
             betas.push(beta);
         }
 
@@ -476,11 +479,16 @@ where
             Val::<SC>::bits(),
         )?;
 
+        let log_height_max = params.log_final_poly_len + params.log_blowup;
+
         // Sample query indices
         let num_queries = fri_proof.query_proofs.len();
         let mut query_indices = Vec::with_capacity(num_queries);
         for _ in 0..num_queries {
-            let index = challenger.sample(circuit);
+            let index_bits = challenger.sample_public_bits(circuit, 64, log_height_max)?;
+            let index = reconstruct_index_from_bits(circuit, &index_bits);
+            circuit.alloc_public_input("FRI query index");
+            // panic!("index: {:?}", index);
             query_indices.push(index);
         }
 

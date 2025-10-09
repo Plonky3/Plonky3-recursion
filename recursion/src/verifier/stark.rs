@@ -3,11 +3,13 @@ use alloc::vec::Vec;
 use alloc::{format, vec};
 
 use itertools::Itertools;
-use p3_circuit::op::{NonPrimitiveOpConfig, NonPrimitiveOpType};
+use p3_circuit::ops::hash::HashConfig;
+use p3_circuit::tables::generate_poseidon2_trace;
 use p3_circuit::utils::ColumnsTargets;
 use p3_circuit::{CircuitBuilder, CircuitError};
 use p3_commit::Pcs;
 use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
+use p3_poseidon2_circuit_air::BabyBearD4Width16;
 use p3_uni_stark::StarkGenericConfig;
 
 use super::{ObservableCommitment, VerificationError, recompose_quotient_from_chunks_circuit};
@@ -81,11 +83,12 @@ where
 {
     // Enable hash operations for CircuitChallenger
     // Note: These are placeholders until Poseidon2CircuitAir is implemented
-    circuit.enable_op(
-        NonPrimitiveOpType::HashAbsorb { reset: true },
-        NonPrimitiveOpConfig::None,
+    let hash_config = HashConfig { rate: RATE };
+    // TODO: Replace trace generator with generic one.
+    circuit.enable_hash_squeeze(
+        &hash_config,
+        generate_poseidon2_trace::<SC::Challenge, BabyBearD4Width16>,
     );
-    circuit.enable_op(NonPrimitiveOpType::HashSqueeze, NonPrimitiveOpConfig::None);
 
     let ProofTargets {
         commitments_targets:

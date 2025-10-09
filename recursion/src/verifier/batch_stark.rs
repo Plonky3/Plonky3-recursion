@@ -433,6 +433,7 @@ where
         challenger.observe_slice(circuit, pv);
     }
     let alpha = challenger.sample(circuit);
+    circuit.alloc_public_input("Evaluation alpha");
 
     challenger.observe_slice(
         circuit,
@@ -441,6 +442,7 @@ where
             .to_observation_targets(),
     );
     let zeta = challenger.sample(circuit);
+    circuit.alloc_public_input("Evaluation zeta");
 
     // Build per-instance domains.
     let mut trace_domains = Vec::with_capacity(n_instances);

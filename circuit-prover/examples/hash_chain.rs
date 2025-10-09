@@ -5,8 +5,9 @@ use std::error::Error;
 /// The circuit absorbs multiple inputs sequentially and squeezes outputs,
 /// enforcing that the in-circuit hash matches the native computation.
 use p3_baby_bear::{BabyBear, default_babybear_poseidon2_16};
-use p3_circuit::op::WitnessHintsFiller;
+use p3_circuit::op::{ExecutionContext, WitnessHintsFiller};
 use p3_circuit::ops::HashOps;
+use p3_circuit::ops::hash::HashConfig;
 use p3_circuit::tables::generate_poseidon2_trace;
 use p3_circuit::{CircuitBuilder, CircuitError, ExprId};
 use p3_circuit_prover::{BatchStarkProver, Poseidon2Config, TablePacking, config};
@@ -36,7 +37,11 @@ impl WitnessHintsFiller<F> for PrecomputedHashOutputs {
         self.outputs.len()
     }
 
-    fn compute_outputs(&self, _inputs_val: Vec<F>) -> Result<Vec<F>, CircuitError> {
+    fn compute_outputs(
+        &self,
+        _inputs_val: Vec<F>,
+        ctx: &mut ExecutionContext<F>,
+    ) -> Result<Vec<F>, CircuitError> {
         Ok(self.outputs.clone())
     }
 }
@@ -63,8 +68,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut builder = CircuitBuilder::new();
 
     // Enable hash operations with BabyBear D=4, WIDTH=16 configuration
-    builder.enable_hash(true, generate_poseidon2_trace::<F, BabyBearD4Width16>);
-    builder.enable_hash_absorb(false, generate_poseidon2_trace::<F, BabyBearD4Width16>); // Enable reset=false variant for stateful operations
+    let hash_config = HashConfig { rate: 16 };
+    builder.enable_hash_squeeze(
+        &hash_config,
+        generate_poseidon2_trace::<F, BabyBearD4Width16>,
+    );
 
     // First absorb (reset=true)
     let mut inputs: Vec<ExprId> = Vec::new();
@@ -72,8 +80,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         let input = builder.alloc_const(F::from_u64(i as u64 + 1), "hash_input");
         inputs.push(input);
     }
-    builder.add_hash_absorb(&inputs, true)?;
+    builder.add_hash_squeeze(&inputs, true)?;
 
+    let mut final_output = Vec::new();
     // Following absorbs (reset=false)
     for step in 1..chain_length {
         inputs.clear();
@@ -81,16 +90,10 @@ fn main() -> Result<(), Box<dyn Error>> {
             let input = builder.alloc_const(F::from_u64((step * 2 + i + 1) as u64), "hash_input");
             inputs.push(input);
         }
-        builder.add_hash_absorb(&inputs, false)?;
+        final_output = builder.add_hash_squeeze(&inputs, false)?;
     }
 
     // Squeeze outputs
-    let precomputed_hint = PrecomputedHashOutputs {
-        outputs: expected_outputs.clone(),
-    };
-    let squeeze_outputs =
-        builder.add_hash_squeeze_with_filler(precomputed_hint, "hash_squeeze_output")?;
-
     builder.dump_allocation_log();
 
     let (circuit, _) = builder.build()?;
@@ -104,7 +107,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Extract actual computed values from the witness trace
     let mut actual_outputs = Vec::new();
-    for squeeze_output_expr in &squeeze_outputs {
+    for squeeze_output_expr in &final_output {
         let witness_id = expr_to_widx.get(squeeze_output_expr).ok_or_else(|| {
             format!(
                 "Could not find witness ID for squeeze output ExprId({})",

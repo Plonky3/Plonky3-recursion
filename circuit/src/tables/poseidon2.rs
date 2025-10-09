@@ -234,7 +234,7 @@ impl<'a, F: CircuitField, Config: Poseidon2Params> Poseidon2TraceBuilder<'a, F, 
                     // TODO: When lookups are implemented, connect the output indices to the input
                     // indices of the next operation.
                 }
-                NonPrimitiveOpType::HashSqueeze => {
+                NonPrimitiveOpType::HashSqueeze { reset } => {
                     // For HashSqueeze, outputs[0] contains squeezed values + new state capacity
                     let output_wids = outputs.first().ok_or(
                         CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {

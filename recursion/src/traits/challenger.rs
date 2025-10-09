@@ -120,6 +120,7 @@ pub trait RecursiveChallenger<F: Field> {
     {
         self.observe(circuit, witness);
         let bits = self.sample_public_bits(circuit, total_num_bits, witness_bits)?;
+        circuit.alloc_public_input("PoW challenge");
 
         // All bits must be zero for valid PoW
         for bit in bits {
