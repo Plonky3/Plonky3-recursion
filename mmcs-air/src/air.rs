@@ -107,8 +107,8 @@ where
         let local_row = main.row_slice(0).expect("The matrix is empty?");
         let next_row = main.row_slice(1).expect("The matrix only has 1 row?");
 
-        let local = self.get_cols(&*local_row);
-        let next = self.get_cols(&*next_row);
+        let local = self.get_cols(&local_row);
+        let next = self.get_cols(&next_row);
 
         let index_bits = local.index_bits;
         let next_index_bits = next.index_bits;
