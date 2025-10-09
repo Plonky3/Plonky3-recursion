@@ -350,6 +350,50 @@ let mut runner = circuit.runner();
 For instance, if the output of a primitive operation is never used elsewhere in the circuit, its associated node can
 be pruned away from the graph, and the operation removed.</p>
 <p>Once all the nodes have been assigned, and the circuit has been fully optimized, we output it.</p>
+<h2 id="building-recursive-air-constraints"><a class="header" href="#building-recursive-air-constraints">Building recursive AIR constraints</a></h2>
+<p>In order to recursively verify an AIR, its constraints need to be added to the circuit and folded together. In Plonky3, we can get an AIR's constraints in symbolic form. Since our primitive chips (see section <a href="./construction.html#execution-ir">Execution IR</a>) encompass the various entries in the symbolic representation, we can simply map each symbolic operation to its circuit counterpart. The <code>symbolic_to_circuit</code> function does exactly that for a given symbolic constraint.</p>
+<p>We can consider a small example to show how operations are mapped. Given public inputs <code>a</code> and <code>b</code>, and a constant <code>c</code>, we have the following symbolic constraint: <code>Mul{ a, Sub {b, Const{ c }}}</code> (which corresponds to: <code>a * (b - c)</code>).</p>
+<pre><pre class="playground"><code class="language-rust edition2024"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let x = builder.add_const(c); // We get the `ExprId` corresponding to Const{ c } by adding a constant to the circuit.
+let y = builder.sub(b, x);    // We use the previously computed `x` to compute the subtraction in the circuit.
+let z = builder.mul(a, y);    // We use the previously computed `y` to compute the multiplication in the circuit.
+<span class="boring">}</span></code></pre></pre>
+<p><code>z</code> is then the output <code>ExprId</code> of the constraint in the circuit.</p>
+<p>Using this function, we have implemented, for all AIRs, the automatic translation from their set of symbolic constraints to the circuit version of the folded constraints:</p>
+<pre><pre class="playground"><code class="language-rust edition2024"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Transforms an AIR's symbolic constraints into its counterpart circuit version, 
+// and folds all the constraints in the circuit using the challenge `alpha`.
+fn eval_folded_circuit(
+        // The AIR at hand.
+        &amp;self,
+        builder: &amp;mut CircuitBuilder&lt;F&gt;,
+        // Circuit version of Langrange selectors.
+        sels: &amp;RecursiveLagrangeSelectors,
+        // Folding challenge.
+        alpha: &amp;ExprId,
+        // Main columns, preprocessed columns and any other columns that could be involved in constraints.
+        columns: ColumnsTargets,
+    ) -&gt; Target {
+
+        // Get all the constraints in symbolic form.
+        let symbolic_constraints = get_symbolic_constraints(self, 0, columns.public_values.len());
+
+        // Fold all the constraints using the folding challenge.
+        let mut acc = builder.add_const(F::ZERO);
+        for s_c in symbolic_constraints {
+            let mul_prev = builder.mul(acc, *alpha);
+            // Get the current constraint in circuit form.
+            let constraints = symbolic_to_circuit(sels.row_selectors, &amp;columns, &amp;s_c, builder);
+            // Fold the current constraint with the previous value.
+            acc = builder.add(mul_prev, constraints);
+        }
+
+        acc
+    }
+<span class="boring">}</span></code></pre></pre>
+<p>This facilitates the integration of <em>any</em> AIR verification into our circuit.</p>
 <h2 id="proving"><a class="header" href="#proving">Proving</a></h2>
 <p>Calling <code>circuit.runner()</code> will return a instance of <code>CircuitRunner</code> allowing to execute the
 represented program and generate associated execution traces needed for proving:</p>
