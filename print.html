@@ -246,7 +246,7 @@ The lookups can be seen as representing the <code>READ</code>/<code>WRITE</code>
 <p>The <code>Witness</code> table can be seen as a central memory bus that stores values shared across all operations. It is represented as pairs <code>(index, value)</code>, where indices are  that will be accessed by
 the different chips via lookups to enforce consistency.</p>
 <ul>
-<li>The index column is <em>preprocessed</em>, or <em>preprocessed</em> [[<a href="bibliography.html#rap">rap</a>]]: it is known to both prover and verifier in advance, requiring no online commitment.<sup class="footnote-reference" id="fr-1-1"><a href="#footnote-1">1</a></sup></li>
+<li>The index column is <em>preprocessed</em>, or <em>read-after-preprocess</em> (<a href="https://hackmd.io/@aztec-network/plonk-arithmetiization-air">RAP</a>): it is known to both prover and verifier in advance, requiring no online commitment.<sup class="footnote-reference" id="fr-1-1"><a href="#footnote-1">1</a></sup></li>
 <li>The Witness table values are represented as extension field elements directly (where base field elements are padded with 0 on higher coordinates) for addressing efficiency.</li>
 </ul>
 <p>From the fixed IR of the example above, we can deduce an associated <code>Witness</code> table as follows:</p>
@@ -291,24 +291,25 @@ Row 0: WitnessId(w2) + WitnessId(w0) -&gt; WitnessId(w4) | 111 + 0 -&gt; 111
 <h2 id="lookups"><a class="header" href="#lookups">Lookups</a></h2>
 <p>All chips interactions are performed via a lookup argument. Enforcing multiset equality between all chip ports and the <code>Witness</code> table entries ensures correctness without proving the execution order of the entire IR itself. Lookups can be seen as <code>READ</code>/<code>WRITE</code> or <code>RECEIVE</code>/<code>SEND</code> interactions between tables which allow global consistency over local AIRs.</p>
 <p>Cross-table lookups (CTLs) ensure that <strong>every</strong> chip interaction happens through the Witness table: producers write a <code>(index, value)</code> pair into Witness and consumers read the same pair back. No chip talks directly to any other chip; the aggregated LogUp argument enforces multiset equality between the writes and reads.</p>
-<p>For the toy example the CTL relations are:</p>
-<pre><code class="language-bash">(index 0, value 0)   : CONST → Witness ← ADD
-(index 1, value 37)  : CONST → Witness ← MUL
-(index 2, value 111) : CONST → Witness ← ADD
-(index 3, value 3)   : PUBLIC → Witness ← MUL
-(index 4, value 111) : MUL → Witness ← ADD (duplicate writes enforce equality)
+<p>For the toy example the CTL relations are:<sup class="footnote-reference" id="fr-2-1"><a href="#footnote-2">2</a></sup></p>
+<pre><code class="language-bash">(index 0, value 0)   : CONST → Witness → ADD
+(index 1, value 37)  : CONST → Witness → MUL
+(index 2, value 111) : CONST → Witness → ADD
+(index 3, value 3)   : PUBLIC → Witness → MUL
+(index 4, value 111) : MUL → Witness ← ADD
 </code></pre>
 <hr>
 <ol class="footnote-definition"><li id="footnote-1">
 <p>Preprocessed columns / polynomials can be reconstructed manually by the verifier, removing the need for a prover to commit to them and later perform the FRI protocol on them. However, the verifier needs <span class="katex"><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:1em;vertical-align:-0.25em;"></span><span class="mord mathnormal" style="margin-right:0.02778em;">O</span><span class="mopen">(</span><span class="mord mathnormal">n</span><span class="mclose">)</span></span></span></span> work when these columns are not structured, as it still needs to interpolate them. To alleviate this, the Plonky3 recursion stack performs <em>offline</em> commitment of unstructured preprocessed columns, so that we need only one instance of the FRI protocol to verify all preprocessed columns evaluations. <a href="#fr-1-1">↩</a></p>
 </li>
+<li id="footnote-2">
+<p>The <code>ADD</code> and <code>MUL</code> tables both issue CTL writes of their outputs to the same Witness row. Because the Witness table is a <em>read-only</em> / <em>write-once</em> memory bus, the aggregated lookup forces those duplicate writes <code>w4 = 111</code> to agree, which is exactly the constraint <code>37 * 3 = 111 = 0 + 111</code>. <a href="#fr-2-1">↩</a></p>
+</li>
 </ol><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="building-circuits"><a class="header" href="#building-circuits">Building Circuits</a></h1>
 <p>This section explains how the <code>CircuitBuilder</code> allows to build a concrete <code>Circuit</code> for a given program.
 We’ll use a simple Fibonacci example throughout this page to ground the ideas behind circuit building:</p>
-<pre><pre class="playground"><code class="language-rust edition2024"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>let mut builder = CircuitBuilder::&lt;F&gt;::new();
+<pre><code class="language-rust ignore">let mut builder = CircuitBuilder::&lt;F&gt;::new();
 
 // Public input: expected F(n)
 let expected_result = builder.add_public_input();
@@ -327,8 +328,7 @@ for _i in 2..=n {
 builder.connect(b, expected_result);
 
 let circuit = builder.build()?;
-let mut runner = circuit.runner();
-<span class="boring">}</span></code></pre></pre>
+let mut runner = circuit.runner();</code></pre>
 <h2 id="building-pipeline"><a class="header" href="#building-pipeline">Building Pipeline</a></h2>
 <p>In what follows, we call <code>WitnessId</code> what serves as identifier for values in the global Witness storage bus, and
 <code>ExprId</code> position identifiers in the <code>ExpressionGraph</code> (with the hardcoded constant <code>ZERO</code> always stored at position 0).</p>
@@ -353,17 +353,15 @@ be pruned away from the graph, and the operation removed.</p>
 <h2 id="building-recursive-air-constraints"><a class="header" href="#building-recursive-air-constraints">Building recursive AIR constraints</a></h2>
 <p>In order to recursively verify an AIR, its constraints need to be added to the circuit and folded together. In Plonky3, we can get an AIR's constraints in symbolic form. Since our primitive chips (see section <a href="./construction.html#execution-ir">Execution IR</a>) encompass the various entries in the symbolic representation, we can simply map each symbolic operation to its circuit counterpart. The <code>symbolic_to_circuit</code> function does exactly that for a given symbolic constraint.</p>
 <p>We can consider a small example to show how operations are mapped. Given public inputs <code>a</code> and <code>b</code>, and a constant <code>c</code>, we have the following symbolic constraint: <code>Mul{ a, Sub {b, Const{ c }}}</code> (which corresponds to: <code>a * (b - c)</code>).</p>
-<pre><pre class="playground"><code class="language-rust edition2024"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>let x = builder.add_const(c); // We get the `ExprId` corresponding to Const{ c } by adding a constant to the circuit.
-let y = builder.sub(b, x);    // We use the previously computed `x` to compute the subtraction in the circuit.
-let z = builder.mul(a, y);    // We use the previously computed `y` to compute the multiplication in the circuit.
-<span class="boring">}</span></code></pre></pre>
+<pre><code class="language-rust ignore">// We get the `ExprId` corresponding to Const{ c } by adding a constant to the circuit.
+let x = builder.add_const(c);
+// We use the previously computed `x` to compute the subtraction in the circuit.
+let y = builder.sub(b, x);
+// We use the previously computed `y` to compute the multiplication in the circuit.
+let z = builder.mul(a, y);</code></pre>
 <p><code>z</code> is then the output <code>ExprId</code> of the constraint in the circuit.</p>
 <p>Using this function, we have implemented, for all AIRs, the automatic translation from their set of symbolic constraints to the circuit version of the folded constraints:</p>
-<pre><pre class="playground"><code class="language-rust edition2024"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>// Transforms an AIR's symbolic constraints into its counterpart circuit version, 
+<pre><code class="language-rust ignore">// Transforms an AIR's symbolic constraints into its counterpart circuit version, 
 // and folds all the constraints in the circuit using the challenge `alpha`.
 fn eval_folded_circuit(
         // The AIR at hand.
@@ -373,33 +371,33 @@ fn eval_folded_circuit(
         sels: &amp;RecursiveLagrangeSelectors,
         // Folding challenge.
         alpha: &amp;ExprId,
-        // Main columns, preprocessed columns and any other columns that could be involved in constraints.
+        // All kind of columns that could be involved in constraints.
         columns: ColumnsTargets,
     ) -&gt; Target {
-
         // Get all the constraints in symbolic form.
-        let symbolic_constraints = get_symbolic_constraints(self, 0, columns.public_values.len());
+        let symbolic_constraints = 
+            get_symbolic_constraints(self, 0, columns.public_values.len());
 
         // Fold all the constraints using the folding challenge.
         let mut acc = builder.add_const(F::ZERO);
         for s_c in symbolic_constraints {
             let mul_prev = builder.mul(acc, *alpha);
+
             // Get the current constraint in circuit form.
-            let constraints = symbolic_to_circuit(sels.row_selectors, &amp;columns, &amp;s_c, builder);
+            let constraints = 
+                symbolic_to_circuit(sels.row_selectors, &amp;columns, &amp;s_c, builder);
+
             // Fold the current constraint with the previous value.
             acc = builder.add(mul_prev, constraints);
         }
 
         acc
-    }
-<span class="boring">}</span></code></pre></pre>
+    }</code></pre>
 <p>This facilitates the integration of <em>any</em> AIR verification into our circuit.</p>
 <h2 id="proving"><a class="header" href="#proving">Proving</a></h2>
 <p>Calling <code>circuit.runner()</code> will return a instance of <code>CircuitRunner</code> allowing to execute the
 represented program and generate associated execution traces needed for proving:</p>
-<pre><pre class="playground"><code class="language-rust edition2024"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>let mut runner = circuit.runner();
+<pre><code class="language-rust ignore">let mut runner = circuit.runner();
 
 // Set public input
 let expected_fib = compute_fibonacci_classical(n);
@@ -413,8 +411,7 @@ let multi_prover = MultiTableProver::new(config);
 let traces = runner.run()?;
 
 // Prove the program
-let proof = multi_prover.prove_all_tables(&amp;traces)?;
-<span class="boring">}</span></code></pre></pre>
+let proof = multi_prover.prove_all_tables(&amp;traces)?;</code></pre>
 <h2 id="key-takeaways"><a class="header" href="#key-takeaways">Key takeaways</a></h2>
 <ul>
 <li>
@@ -435,12 +432,12 @@ This design choice maximizes performance but raises the question: <strong>how ca
 <h2 id="tree-style-recursion-for-variable-length-inputs"><a class="header" href="#tree-style-recursion-for-variable-length-inputs">Tree-style recursion for variable-length inputs</a></h2>
 <p>One can split a large computation into chunks and prove each piece using a fixed inner circuit in parallel.
 These proofs can then be <em>recursively aggregated</em> in a tree structure, where each leaf of the tree corresponds to a prover portion of the computation. The tree root yields a single proof attesting to the validity of the entire computation.</p>
-<p>A formal description of this tree-style recursion for STARKs can be seen in [[<a href="bibliography.html#zktree">zktree</a>]].</p>
+<p>A formal description of this tree-style recursion for STARKs can be seen in <a href="https://eprint.iacr.org/2023/208">zkTree</a>.</p>
 <h2 id="flexible-fri-verification"><a class="header" href="#flexible-fri-verification">Flexible FRI verification</a></h2>
 <p>To support proofs with different FRI shapes, one can:</p>
 <ul>
 <li>
-<p><strong>Lift the proofs</strong> to a larger domain, as described in [[<a href="bibliography.html#fri_lift">fri_lift</a>]].<br />
+<p><strong>Lift the proofs</strong> to a larger domain, as described in <a href="https://hackmd.io/HkfET6x1Qh-yNvm4fKc7zA">Lifting plonky3</a>.<br />
 Lifting allows a fixed circuit to efficiently verify proofs of varying trace sizes
 by projecting smaller domains into larger ones, reusing the original LDE and commitments without recomputation.</p>
 </li>
@@ -454,86 +451,6 @@ size that can be verified by a given FRI verifier circuit, one can extend it ove
 <p>This section will present empirical performance results for the Plonky3 recursion system,
 including instructions for reproducibility across target machines.</p>
 <p><em>To be filled soon.</em></p>
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
-<h1 id="bibliography"><a class="header" href="#bibliography">Bibliography</a></h1>
-<script type="text/javascript">
-function defaultCopyTextToClipboard(text) {
-    var textArea = document.createElement("textarea");
-    textArea.value = text;
-
-    // Avoid scrolling to bottom
-    textArea.style.top = "0";
-    textArea.style.left = "0";
-    textArea.style.position = "fixed";
-
-    document.body.appendChild(textArea);
-    textArea.focus();
-    textArea.select();
-
-    try {
-        var ok = document.execCommand('copy');
-        var msg = ok ? 'was ok' : 'failed';
-        console.log('Backing copy: Text copy was ' + msg);
-    } catch (err) {
-        console.error('Backing copy: Unable to copy text', err);
-    }
-
-    document.body.removeChild(textArea);
-}
-
-function copyToClipboard(text) {
-    if (!navigator.clipboard) {
-        defaultCopyTextToClipboard(text);
-        return;
-    }
-    navigator.clipboard.writeText(text).then(function() {
-        console.log('Text copied to clipboard');
-    }, function(err) {
-        console.error('Error copying text: ', err);
-    });
-}
-
-</script>
-<style></style>
-<div class="bib_div">
-<details data-key="rap" class=ref>
-<summary class=citation>
-<a id="rap">[rap]</a> - Ariel Gabizon - <a href="https://hackmd.io/@aztec-network/plonk-arithmetiization-air" target="_blank"><cite>From AIRs to RAPs - how PLONK-style arithmetization works</cite></a>. - 2021. -
-<button onclick="copyToClipboard('\{\{ #cite rap \}\}')">Copy citation_key</button>
-</summary>
-<section class=abstract>
-<h1 id="summaryabstract"><a class="header" href="#summaryabstract">Summary/Abstract</a></h1>
-<div>N/A</div>
-</section>
-</details>
-</div>
-<br/>
-<div class="bib_div">
-<details data-key="zktree" class=ref>
-<summary class=citation>
-<a id="zktree">[zktree]</a> - Sai Deng and Bo Du - <a href="https://eprint.iacr.org/2023/208" target="_blank"><cite>{zkTree}: A Zero-Knowledge Recursion Tree with {ZKP} Membership Proofs</cite></a>. - 2023. -
-<button onclick="copyToClipboard('\{\{ #cite zktree \}\}')">Copy citation_key</button>
-</summary>
-<section class=abstract>
-<h1 id="summaryabstract-1"><a class="header" href="#summaryabstract-1">Summary/Abstract</a></h1>
-<div>N/A</div>
-</section>
-</details>
-</div>
-<br/>
-<div class="bib_div">
-<details data-key="fri_lift" class=ref>
-<summary class=citation>
-<a id="fri_lift">[fri_lift]</a> - Adrian Hamelink - <a href="https://hackmd.io/HkfET6x1Qh-yNvm4fKc7zA" target="_blank"><cite>Lifting plonky3</cite></a>. - 2025. -
-<button onclick="copyToClipboard('\{\{ #cite fri_lift \}\}')">Copy citation_key</button>
-</summary>
-<section class=abstract>
-<h1 id="summaryabstract-2"><a class="header" href="#summaryabstract-2">Summary/Abstract</a></h1>
-<div>N/A</div>
-</section>
-</details>
-</div>
-<br/>
 
                     </main>
 

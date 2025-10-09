@@ -183,12 +183,12 @@ This design choice maximizes performance but raises the question: <strong>how ca
 <h2 id="tree-style-recursion-for-variable-length-inputs"><a class="header" href="#tree-style-recursion-for-variable-length-inputs">Tree-style recursion for variable-length inputs</a></h2>
 <p>One can split a large computation into chunks and prove each piece using a fixed inner circuit in parallel.
 These proofs can then be <em>recursively aggregated</em> in a tree structure, where each leaf of the tree corresponds to a prover portion of the computation. The tree root yields a single proof attesting to the validity of the entire computation.</p>
-<p>A formal description of this tree-style recursion for STARKs can be seen in [[<a href="bibliography.html#zktree">zktree</a>]].</p>
+<p>A formal description of this tree-style recursion for STARKs can be seen in <a href="https://eprint.iacr.org/2023/208">zkTree</a>.</p>
 <h2 id="flexible-fri-verification"><a class="header" href="#flexible-fri-verification">Flexible FRI verification</a></h2>
 <p>To support proofs with different FRI shapes, one can:</p>
 <ul>
 <li>
-<p><strong>Lift the proofs</strong> to a larger domain, as described in [[<a href="bibliography.html#fri_lift">fri_lift</a>]].<br />
+<p><strong>Lift the proofs</strong> to a larger domain, as described in <a href="https://hackmd.io/HkfET6x1Qh-yNvm4fKc7zA">Lifting plonky3</a>.<br />
 Lifting allows a fixed circuit to efficiently verify proofs of varying trace sizes
 by projecting smaller domains into larger ones, reusing the original LDE and commitments without recomputation.</p>
 </li>

@@ -235,7 +235,7 @@ The lookups can be seen as representing the <code>READ</code>/<code>WRITE</code>
 <p>The <code>Witness</code> table can be seen as a central memory bus that stores values shared across all operations. It is represented as pairs <code>(index, value)</code>, where indices are  that will be accessed by
 the different chips via lookups to enforce consistency.</p>
 <ul>
-<li>The index column is <em>preprocessed</em>, or <em>preprocessed</em> [[<a href="bibliography.html#rap">rap</a>]]: it is known to both prover and verifier in advance, requiring no online commitment.<sup class="footnote-reference" id="fr-1-1"><a href="#footnote-1">1</a></sup></li>
+<li>The index column is <em>preprocessed</em>, or <em>read-after-preprocess</em> (<a href="https://hackmd.io/@aztec-network/plonk-arithmetiization-air">RAP</a>): it is known to both prover and verifier in advance, requiring no online commitment.<sup class="footnote-reference" id="fr-1-1"><a href="#footnote-1">1</a></sup></li>
 <li>The Witness table values are represented as extension field elements directly (where base field elements are padded with 0 on higher coordinates) for addressing efficiency.</li>
 </ul>
 <p>From the fixed IR of the example above, we can deduce an associated <code>Witness</code> table as follows:</p>
@@ -280,16 +280,19 @@ Row 0: WitnessId(w2) + WitnessId(w0) -&gt; WitnessId(w4) | 111 + 0 -&gt; 111
 <h2 id="lookups"><a class="header" href="#lookups">Lookups</a></h2>
 <p>All chips interactions are performed via a lookup argument. Enforcing multiset equality between all chip ports and the <code>Witness</code> table entries ensures correctness without proving the execution order of the entire IR itself. Lookups can be seen as <code>READ</code>/<code>WRITE</code> or <code>RECEIVE</code>/<code>SEND</code> interactions between tables which allow global consistency over local AIRs.</p>
 <p>Cross-table lookups (CTLs) ensure that <strong>every</strong> chip interaction happens through the Witness table: producers write a <code>(index, value)</code> pair into Witness and consumers read the same pair back. No chip talks directly to any other chip; the aggregated LogUp argument enforces multiset equality between the writes and reads.</p>
-<p>For the toy example the CTL relations are:</p>
-<pre><code class="language-bash">(index 0, value 0)   : CONST → Witness ← ADD
-(index 1, value 37)  : CONST → Witness ← MUL
-(index 2, value 111) : CONST → Witness ← ADD
-(index 3, value 3)   : PUBLIC → Witness ← MUL
-(index 4, value 111) : MUL → Witness ← ADD (duplicate writes enforce equality)
+<p>For the toy example the CTL relations are:<sup class="footnote-reference" id="fr-2-1"><a href="#footnote-2">2</a></sup></p>
+<pre><code class="language-bash">(index 0, value 0)   : CONST → Witness → ADD
+(index 1, value 37)  : CONST → Witness → MUL
+(index 2, value 111) : CONST → Witness → ADD
+(index 3, value 3)   : PUBLIC → Witness → MUL
+(index 4, value 111) : MUL → Witness ← ADD
 </code></pre>
 <hr>
 <ol class="footnote-definition"><li id="footnote-1">
 <p>Preprocessed columns / polynomials can be reconstructed manually by the verifier, removing the need for a prover to commit to them and later perform the FRI protocol on them. However, the verifier needs <span class="katex"><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:1em;vertical-align:-0.25em;"></span><span class="mord mathnormal" style="margin-right:0.02778em;">O</span><span class="mopen">(</span><span class="mord mathnormal">n</span><span class="mclose">)</span></span></span></span> work when these columns are not structured, as it still needs to interpolate them. To alleviate this, the Plonky3 recursion stack performs <em>offline</em> commitment of unstructured preprocessed columns, so that we need only one instance of the FRI protocol to verify all preprocessed columns evaluations. <a href="#fr-1-1">↩</a></p>
+</li>
+<li id="footnote-2">
+<p>The <code>ADD</code> and <code>MUL</code> tables both issue CTL writes of their outputs to the same Witness row. Because the Witness table is a <em>read-only</em> / <em>write-once</em> memory bus, the aggregated lookup forces those duplicate writes <code>w4 = 111</code> to agree, which is exactly the constraint <code>37 * 3 = 111 = 0 + 111</code>. <a href="#fr-2-1">↩</a></p>
 </li>
 </ol>
                     </main>
