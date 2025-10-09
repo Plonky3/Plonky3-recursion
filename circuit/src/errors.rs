@@ -91,9 +91,9 @@ pub enum CircuitError {
         got: usize,
     },
 
-    /// MMCS witness validation failed: the computed root doesn't match the public input root.
+    /// MMCS witness validation failed: the computed value doesn't match the public input value.
     #[error(
-        "MMCS witness validation failed for operation {operation_index}: leaf hash from witness {witness_value} doesn't match public input {public_value}"
+        "MMCS witness validation failed for operation {operation_index}: value from witness {witness_value} doesn't match public input {public_value}"
     )]
     MmcsWitnessMismatch {
         operation_index: usize,

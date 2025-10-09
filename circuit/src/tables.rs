@@ -940,69 +940,69 @@ mod tests {
         .unwrap();
         let correct_root = correct_private_data.path_states.last().unwrap();
 
-        // Test 1: Valid witness should be accepted
-        {
-            // Index corresponds to directions: [false, true, false] -> 0b010 = 2
-            let index_value = F::from_u64(
-                directions
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, dir)| **dir)
-                    .map(|(i, _)| 1 << i)
-                    .sum::<u64>(),
-            );
+        // Index corresponds to directions: [false, true, false] -> 0b010 = 2
+        let index_value = F::from_u64(
+            directions
+                .iter()
+                .enumerate()
+                .filter(|(_, dir)| **dir)
+                .map(|(i, _)| 1 << i)
+                .sum::<u64>(),
+        );
 
+        // Helper to run test with given inputs and private data
+        let run_test = |leaf: &[F], root: &[F], private_data: &MmcsPrivateData<F>| {
             let mut public_inputs = vec![];
-            public_inputs.extend(leaf_value);
+            public_inputs.extend(leaf);
             public_inputs.push(index_value);
-            public_inputs.extend(correct_root);
+            public_inputs.extend(root);
 
             let mut runner = circuit.clone().runner();
             runner.set_public_inputs(&public_inputs).unwrap();
             runner
                 .set_non_primitive_op_private_data(
                     mmcs_op_id,
-                    NonPrimitiveOpPrivateData::MmcsVerify(correct_private_data.clone()),
+                    NonPrimitiveOpPrivateData::MmcsVerify(private_data.clone()),
                 )
                 .unwrap();
+            runner.run()
+        };
 
-            assert!(runner.run().is_ok(), "Valid witness should be accepted");
-        }
+        // Test 1: Valid witness should be accepted
+        assert!(
+            run_test(&leaf_value, correct_root, &correct_private_data).is_ok(),
+            "Valid witness should be accepted"
+        );
 
         // Test 2: Invalid witness (wrong root) should be rejected
-        {
-            // Use same index as test 1
-            let index_value = F::from_u64(
-                directions
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, dir)| **dir)
-                    .map(|(i, _)| 1 << i)
-                    .sum::<u64>(),
-            );
-
-            let wrong_root = [F::from_u64(999)];
-            let mut public_inputs = vec![];
-            public_inputs.extend(leaf_value);
-            public_inputs.push(index_value);
-            public_inputs.extend(wrong_root);
-
-            let mut runner = circuit.clone().runner();
-            runner.set_public_inputs(&public_inputs).unwrap();
-            runner
-                .set_non_primitive_op_private_data(
-                    mmcs_op_id,
-                    NonPrimitiveOpPrivateData::MmcsVerify(correct_private_data),
-                )
-                .unwrap();
-
-            match runner.run() {
-                Err(CircuitError::MmcsWitnessMismatch { .. }) => {
-                    // Expected! The witness validation caught the mismatch
-                }
-                Ok(_) => panic!("Expected witness validation to fail, but it succeeded!"),
-                Err(e) => panic!("Expected MmcsWitnessMismatch error, got: {:?}", e),
+        let wrong_root = [F::from_u64(999)];
+        match run_test(&leaf_value, &wrong_root, &correct_private_data) {
+            Err(CircuitError::MmcsWitnessMismatch { .. }) => {
+                // Expected! The witness validation caught the mismatch
             }
+            Ok(_) => panic!("Expected witness validation to fail, but it succeeded!"),
+            Err(e) => panic!("Expected MmcsWitnessMismatch error, got: {:?}", e),
+        }
+
+        // Test 3: Invalid witness (wrong leaf) should be rejected
+        let wrong_leaf_value = [F::from_u64(999)];
+        let wrong_private_data = MmcsPrivateData::new::<BabyBear, _, 1>(
+            &compress,
+            &config,
+            &wrong_leaf_value,
+            &siblings,
+            &directions,
+        )
+        .unwrap();
+
+        match run_test(&leaf_value, correct_root, &wrong_private_data) {
+            Err(CircuitError::MmcsWitnessMismatch { .. }) => {
+                // Expected! The witness validation caught the mismatch
+            }
+            Ok(_) => {
+                panic!("Expected witness validation to fail for wrong leaf, but it succeeded!")
+            }
+            Err(e) => panic!("Expected MmcsWitnessMismatch error, got: {:?}", e),
         }
     }
 }
