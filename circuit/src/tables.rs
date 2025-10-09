@@ -159,8 +159,9 @@ impl<F: Field + Clone + Default> MmcsPrivateData<F> {
         {
             return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
                 op: NonPrimitiveOpType::MmcsVerify,
-                expected: "None".to_string(),
-                got: format!("{:?}", extra_sibling),
+                operation_index: 0, // Unknown at construction time
+                expected: "last sibling should not have extra sibling (None)".to_string(),
+                got: format!("last sibling has extra sibling: {extra_sibling:?}"),
             });
         }
         // Worst case we push two states per step (if `other_sibling` is Some).
@@ -576,10 +577,11 @@ impl<F: CircuitField> CircuitRunner<F> {
                     },
                 )?;
                 if witness_leaf != *private_data_leaf {
-                    return Err(CircuitError::MmcsWitnessMismatch {
+                    return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
+                        op: NonPrimitiveOpType::MmcsVerify,
                         operation_index: op_idx,
-                        witness_value: alloc::format!("{private_data_leaf:?}"),
-                        public_value: alloc::format!("{witness_leaf:?}"),
+                        expected: alloc::format!("leaf: {witness_leaf:?}"),
+                        got: alloc::format!("leaf: {private_data_leaf:?}"),
                     });
                 }
 
@@ -594,10 +596,11 @@ impl<F: CircuitField> CircuitRunner<F> {
                     },
                 )?;
                 if witness_root != *computed_root {
-                    return Err(CircuitError::MmcsWitnessMismatch {
+                    return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
+                        op: NonPrimitiveOpType::MmcsVerify,
                         operation_index: op_idx,
-                        witness_value: alloc::format!("{computed_root:?}"),
-                        public_value: alloc::format!("{witness_root:?}"),
+                        expected: alloc::format!("root: {witness_root:?}"),
+                        got: alloc::format!("root: {computed_root:?}"),
                     });
                 }
 
@@ -988,11 +991,14 @@ mod tests {
         // Test 2: Invalid witness (wrong root) should be rejected
         let wrong_root = [F::from_u64(999)];
         match run_test(&leaf_value, &wrong_root, &correct_private_data) {
-            Err(CircuitError::MmcsWitnessMismatch { .. }) => {
+            Err(CircuitError::IncorrectNonPrimitiveOpPrivateData { .. }) => {
                 // Expected! The witness validation caught the mismatch
             }
             Ok(_) => panic!("Expected witness validation to fail, but it succeeded!"),
-            Err(e) => panic!("Expected MmcsWitnessMismatch error, got: {:?}", e),
+            Err(e) => panic!(
+                "Expected IncorrectNonPrimitiveOpPrivateData error, got: {:?}",
+                e
+            ),
         }
 
         // Test 3: Invalid witness (wrong leaf) should be rejected
@@ -1007,13 +1013,16 @@ mod tests {
         .unwrap();
 
         match run_test(&leaf_value, correct_root, &wrong_private_data) {
-            Err(CircuitError::MmcsWitnessMismatch { .. }) => {
+            Err(CircuitError::IncorrectNonPrimitiveOpPrivateData { .. }) => {
                 // Expected! The witness validation caught the mismatch
             }
             Ok(_) => {
                 panic!("Expected witness validation to fail for wrong leaf, but it succeeded!")
             }
-            Err(e) => panic!("Expected MmcsWitnessMismatch error, got: {:?}", e),
+            Err(e) => panic!(
+                "Expected IncorrectNonPrimitiveOpPrivateData error, got: {:?}",
+                e
+            ),
         }
     }
 }
