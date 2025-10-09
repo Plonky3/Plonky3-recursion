@@ -192,7 +192,7 @@ impl<F: Field + Clone + Default> MmcsPrivateData<F> {
         path_states.push(state.to_vec());
         Ok(private_data)
     }
-    
+
     /// Builds a valid `MmcsVerifyAir` trace from a private Mmcs proof,
     /// given also the leaf’s digest wires and value used in the circuit, and the leaf’s index in the tree.
     pub fn to_trace(
@@ -559,17 +559,16 @@ impl<F: CircuitField> CircuitRunner<F> {
                     .iter()
                     .map(|&wid| self.get_witness(wid))
                     .collect::<Result<_, _>>()?;
-                let private_data_leaf = private_data
-                    .path_states
-                    .first()
-                    .ok_or(CircuitError::NonPrimitiveOpMissingPrivateData {
+                let private_data_leaf = private_data.path_states.first().ok_or(
+                    CircuitError::NonPrimitiveOpMissingPrivateData {
                         operation_index: op_idx,
-                    })?;
+                    },
+                )?;
                 if witness_leaf != *private_data_leaf {
                     return Err(CircuitError::MmcsWitnessMismatch {
                         operation_index: op_idx,
-                        witness_value: alloc::format!("{:?}", private_data_leaf),
-                        public_value: alloc::format!("{:?}", witness_leaf),
+                        witness_value: alloc::format!("{private_data_leaf:?}"),
+                        public_value: alloc::format!("{witness_leaf:?}"),
                     });
                 }
 
@@ -578,17 +577,16 @@ impl<F: CircuitField> CircuitRunner<F> {
                     .iter()
                     .map(|&wid| self.get_witness(wid))
                     .collect::<Result<_, _>>()?;
-                let computed_root = private_data
-                    .path_states
-                    .last()
-                    .ok_or(CircuitError::NonPrimitiveOpMissingPrivateData {
+                let computed_root = private_data.path_states.last().ok_or(
+                    CircuitError::NonPrimitiveOpMissingPrivateData {
                         operation_index: op_idx,
-                    })?;
+                    },
+                )?;
                 if witness_root != *computed_root {
                     return Err(CircuitError::MmcsWitnessMismatch {
                         operation_index: op_idx,
-                        witness_value: alloc::format!("{:?}", computed_root),
-                        public_value: alloc::format!("{:?}", witness_root),
+                        witness_value: alloc::format!("{computed_root:?}"),
+                        public_value: alloc::format!("{witness_root:?}"),
                     });
                 }
 
@@ -892,9 +890,9 @@ mod tests {
 
     #[test]
     fn test_mmcs_witness_validation() {
+        use crate::NonPrimitiveOpPrivateData;
         use crate::errors::CircuitError;
         use crate::ops::MmcsOps;
-        use crate::NonPrimitiveOpPrivateData;
 
         type F = BinomialExtensionField<BabyBear, 4>;
 
@@ -925,10 +923,7 @@ mod tests {
             // Layer 0: direction=false, no extra sibling
             (vec![F::from_u64(10)], None),
             // Layer 1: direction=true, WITH extra sibling
-            (
-                vec![F::from_u64(20)],
-                Some(vec![F::from_u64(25)]),
-            ),
+            (vec![F::from_u64(20)], Some(vec![F::from_u64(25)])),
             // Layer 2: direction=false, no extra sibling
             (vec![F::from_u64(30)], None),
         ];
