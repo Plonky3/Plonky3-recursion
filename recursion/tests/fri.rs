@@ -3,7 +3,6 @@ use p3_challenger::{
     CanObserve, CanSampleBits, DuplexChallenger as Challenger, FieldChallenger, GrindingChallenger,
 };
 use p3_circuit::CircuitBuilder;
-use p3_circuit::tables::DummyPerm;
 use p3_commit::Pcs;
 use p3_dft::Radix2DitParallel as Dft;
 use p3_field::coset::TwoAdicMultiplicativeCoset;
@@ -421,9 +420,7 @@ fn test_circuit_fri_verifier_multi_rounds() {
     );
     let mut runner1 = circuit.clone().runner();
     runner1.set_public_inputs(&pub_inputs1).unwrap();
-    runner1
-        .run::<DummyPerm, 0, 0, 0>(DummyPerm::default())
-        .unwrap();
+    runner1.run().unwrap();
 
     // ---- Run instance 2 ----
     let pub_inputs2 = pack_inputs(
@@ -435,7 +432,5 @@ fn test_circuit_fri_verifier_multi_rounds() {
     );
     let mut runner2 = circuit.runner();
     runner2.set_public_inputs(&pub_inputs2).unwrap();
-    runner2
-        .run::<DummyPerm, 0, 0, 0>(DummyPerm::default())
-        .unwrap();
+    runner2.run().unwrap();
 }

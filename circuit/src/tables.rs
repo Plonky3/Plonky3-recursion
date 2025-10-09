@@ -1,11 +1,9 @@
 use alloc::vec::Vec;
 use alloc::{format, vec};
-use core::array;
 
 use itertools::izip;
 use p3_field::{ExtensionField, Field};
-use p3_symmetric::{CryptographicPermutation, Permutation, PseudoCompressionFunction};
-use tracing::instrument;
+use p3_symmetric::PseudoCompressionFunction;
 
 use crate::circuit::Circuit;
 use crate::op::{
@@ -14,16 +12,6 @@ use crate::op::{
 use crate::types::{NonPrimitiveOpId, WitnessId};
 use crate::{CircuitError, CircuitField, NonPrimitiveOp};
 
-#[derive(Debug, Clone, Default)]
-pub struct DummyPerm {}
-impl<T: Clone> Permutation<T> for DummyPerm {
-    fn permute(&self, input: T) -> T {
-        input
-    }
-    fn permute_mut(&self, _input: &mut T) {}
-}
-
-impl<T: Clone> CryptographicPermutation<T> for DummyPerm {}
 /// Execution traces for all tables
 #[derive(Debug, Clone)]
 pub struct Traces<F> {
@@ -260,30 +248,16 @@ impl<F: Field + Clone + Default> MmcsPrivateData<F> {
     }
 }
 
+/// Sponge operations table
 #[derive(Debug, Clone)]
-pub struct SpongeRow<F> {
+pub struct SpongeTrace<F> {
     /// Flag to reset the capacity
-    pub reset: bool,
+    pub reset: Vec<bool>,
     /// Rate values; either absorbed inputs or squeezed outputs
     pub rate_values: Vec<F>,
     /// Rate indices for witness bus lookups
     pub rate_indices: Vec<u32>,
-    /// Capacity values (not on witness bus - private)
-    pub capacity_values: Vec<F>,
 }
-
-impl<F> SpongeRow<F> {
-    pub fn new_with_alloc(reset: bool, rate: usize, capacity: usize) -> Self {
-        Self {
-            reset,
-            rate_values: Vec::<F>::with_capacity(rate),
-            rate_indices: Vec::<u32>::with_capacity(rate),
-            capacity_values: Vec::<F>::with_capacity(capacity),
-        }
-    }
-}
-
-pub type SpongeTrace<F> = Vec<SpongeRow<F>>;
 
 /// Circuit runner that executes circuits and generates execution traces
 ///
@@ -366,15 +340,7 @@ impl<F: CircuitField> CircuitRunner<F> {
     }
 
     /// Run the circuit and generate traces
-    pub fn run<
-        P: CryptographicPermutation<[F; N]>,
-        const N: usize,
-        const R: usize,
-        const C: usize,
-    >(
-        mut self,
-        perm: P,
-    ) -> Result<Traces<F>, CircuitError> {
+    pub fn run(mut self) -> Result<Traces<F>, CircuitError> {
         // Step 1: Execute primitives to fill witness vector
         self.execute_primitives()?;
 
@@ -385,7 +351,7 @@ impl<F: CircuitField> CircuitRunner<F> {
         let add_trace = self.generate_add_trace()?;
         let mul_trace = self.generate_mul_trace()?;
         let mmcs_trace = self.generate_mmcs_trace()?;
-        let sponge_trace = self.generate_sponge_trace::<_, N, R, C>(perm)?;
+        let sponge_trace = self.generate_sponge_trace()?;
 
         Ok(Traces {
             witness_trace,
@@ -590,9 +556,6 @@ impl<F: CircuitField> CircuitRunner<F> {
             // Only handle MmcsVerify ops here
             match &self.circuit.non_primitive_ops[op_idx] {
                 crate::op::NonPrimitiveOp::MmcsVerify { leaf, index, root } => {
-                    // Copy out leaf/root to end immutable borrow immediately
-                    let (leaf, index, root) = (*leaf, *index, *root);
-
                     // Clone private data option to avoid holding a borrow on self
                     if let Some(Some(NonPrimitiveOpPrivateData::MmcsVerify(private_data))) =
                         self.non_primitive_op_private_data.get(op_idx).cloned()
@@ -622,64 +585,79 @@ impl<F: CircuitField> CircuitRunner<F> {
         Ok(MmcsTrace { mmcs_paths })
     }
 
-    fn generate_sponge_trace<P, const N: usize, const R: usize, const C: usize>(
-        &mut self,
-        perm: P,
-    ) -> Result<SpongeTrace<F>, CircuitError>
-    where
-        P: CryptographicPermutation<[F; N]>,
-    {
-        let mut trace: SpongeTrace<F> = Vec::with_capacity(1 << 10);
-        let mut state = array::from_fn(|_| F::default());
+    fn generate_sponge_trace(&mut self) -> Result<SpongeTrace<F>, CircuitError> {
+        let mut reset = Vec::new();
+        let mut rate_values = Vec::new();
+        let mut rate_indices = Vec::new();
+        // let mut capacity_values = Vec::new();
+
+        // let mut trace: SpongeTrace<F> = Vec::with_capacity(1 << 10);
+        // let mut state = array::from_fn(|_| F::default());
 
         // Process each complex operation by index to avoid borrowing conflicts
         for op_idx in 0..self.circuit.non_primitive_ops.len() {
             // Only handle SpongeTrace ops here
             match &self.circuit.non_primitive_ops[op_idx] {
                 crate::op::NonPrimitiveOp::HashAbsorb { reset_flag, inputs } => {
-                    let mut row: SpongeRow<F> = SpongeRow::new_with_alloc(*reset_flag, R, C);
-
-                    for i in 0..R {
-                        let idx = inputs[i];
-                        row.rate_indices.push(idx.0);
-                        let val = self.get_witness(idx)?;
-                        row.rate_values.push(val);
-                        state[i] = val;
+                    // let mut row: SpongeRow<F> = SpongeRow::new_with_alloc(*reset_flag, R, C);
+                    reset.push(*reset_flag);
+                    for input in inputs {
+                        rate_indices.push(input.0);
+                        let val = self.get_witness(*input)?;
+                        rate_values.push(val);
                     }
 
-                    if *reset_flag {
-                        state[R..].fill(F::default());
-                    }
-                    row.capacity_values.extend_from_slice(&state[R..]);
+                    // for i in 0..R {
+                    //     let idx = inputs[i];
+                    //     row.rate_indices.push(idx.0);
+                    //     let val = self.get_witness(idx)?;
+                    //     row.rate_values.push(val);
+                    //     state[i] = val;
+                    // }
 
-                    trace.push(row);
-                    state = perm.permute(state);
+                    // if *reset_flag {
+                    //     state[R..].fill(F::default());
+                    // }
+                    // row.capacity_values.extend_from_slice(&state[R..]);
+
+                    // trace.push(row);
+                    // state = perm.permute(state);
                 }
                 crate::op::NonPrimitiveOp::HashSqueeze { outputs } => {
-                    let mut row: SpongeRow<F> = SpongeRow::new_with_alloc(false, R, C);
-                    // Clone outputs to end immutable borrow immediately
-                    let outputs = outputs.clone();
-
-                    for i in 0..R {
-                        let idx = outputs[i];
-                        row.rate_indices.push(idx.0);
-                        let val = self.get_witness(idx)?;
-                        // Sanity check that outputs are set to the correct values
-                        self.set_witness(idx, val)?;
-                        row.rate_values.push(val);
-                        state[i] = val;
+                    reset.push(false);
+                    for output in outputs {
+                        rate_indices.push(output.0);
+                        let val = self.get_witness(*output)?;
+                        rate_values.push(val);
                     }
+                    // let mut row: SpongeRow<F> = SpongeRow::new_with_alloc(false, R, C);
+                    // Clone outputs to end immutable borrow immediately
+                    // let outputs = outputs.clone();
 
-                    row.capacity_values.extend_from_slice(&state[R..]);
+                    // for i in 0..R {
+                    //     let idx = outputs[i];
+                    //     row.rate_indices.push(idx.0);
+                    //     let val = self.get_witness(idx)?;
+                    //     // Sanity check that outputs are set to the correct values
+                    //     self.set_witness(idx, val)?;
+                    //     row.rate_values.push(val);
+                    //     state[i] = val;
+                    // }
 
-                    trace.push(row);
-                    state = perm.permute(state);
+                    // row.capacity_values.extend_from_slice(&state[R..]);
+
+                    // trace.push(row);
+                    // state = perm.permute(state);
                 }
                 _ => continue,
             };
         }
 
-        Ok(trace)
+        Ok(SpongeTrace {
+            reset,
+            rate_values,
+            rate_indices,
+        })
     }
 }
 
@@ -697,7 +675,6 @@ mod tests {
     use crate::MmcsPrivateData;
     use crate::builder::CircuitBuilder;
     use crate::op::MmcsVerifyConfig;
-    use crate::tables::DummyPerm;
     use crate::types::WitnessId;
 
     #[test]
@@ -715,9 +692,7 @@ mod tests {
         // Set public input: x = 3
         runner.set_public_inputs(&[BabyBear::from_u64(3)]).unwrap();
 
-        let traces = runner
-            .run::<DummyPerm, 0, 0, 0>(DummyPerm::default())
-            .unwrap();
+        let traces = runner.run().unwrap();
 
         // Check witness trace
         assert_eq!(
@@ -760,9 +735,7 @@ mod tests {
         // Set public input: x = 3 (should satisfy 37 * 3 - 111 = 0)
         runner.set_public_inputs(&[BabyBear::from_u64(3)]).unwrap();
 
-        let traces = runner
-            .run::<DummyPerm, 0, 0, 0>(DummyPerm::default())
-            .unwrap();
+        let traces = runner.run().unwrap();
 
         println!("\n=== WITNESS TRACE ===");
         for (i, (idx, val)) in traces
@@ -886,9 +859,7 @@ mod tests {
         .unwrap();
 
         runner.set_public_inputs(&[x_val, y_val, z_val]).unwrap();
-        let traces = runner
-            .run::<DummyPerm, 0, 0, 0>(DummyPerm::default())
-            .unwrap();
+        let traces = runner.run().unwrap();
 
         // Verify extension field traces were generated correctly
         assert_eq!(traces.public_trace.values.len(), 3);

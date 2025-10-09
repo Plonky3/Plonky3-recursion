@@ -186,7 +186,6 @@ mod tests {
     type MyConfig = StarkConfig<MyPcs, Challenge, Challenger>;
     use p3_field::PrimeCharacteristicRing;
 
-    use crate::tables::DummyPerm;
     use crate::test_utils::{FibonacciAir, NUM_FIBONACCI_COLS};
     use crate::utils::{ColumnsTargets, RowSelectorsTargets, symbolic_to_circuit};
     use crate::{CircuitBuilder, CircuitError};
@@ -311,7 +310,7 @@ mod tests {
         let runner = circuit.build().unwrap();
         let mut runner = runner.runner();
         runner.set_public_inputs(&all_public_values).unwrap();
-        let _ = runner.run::<DummyPerm, 0, 0, 0>(DummyPerm::default())?;
+        let _ = runner.run()?;
 
         Ok(())
     }
@@ -342,9 +341,7 @@ mod tests {
             .set_public_inputs(&[expected_result])
             .expect("Failed to set public inputs");
 
-        let traces = runner
-            .run::<DummyPerm, 0, 0, 0>(DummyPerm::default())
-            .expect("Failed to run circuit");
+        let traces = runner.run().expect("Failed to run circuit");
 
         // Just verify the calculation is correct - reconstruct gives us 5
         assert_eq!(traces.public_trace.values[0], BabyBear::from_u64(5));
@@ -374,9 +371,7 @@ mod tests {
         runner
             .set_public_inputs(&public_inputs)
             .expect("Failed to set public inputs");
-        let traces = runner
-            .run::<DummyPerm, 0, 0, 0>(DummyPerm::default())
-            .expect("Failed to run circuit");
+        let traces = runner.run().expect("Failed to run circuit");
 
         // Verify the bits are correctly decomposed - 6 = [0,1,1] in little-endian
         assert_eq!(traces.public_trace.values[0], BabyBear::ZERO); // bit 0

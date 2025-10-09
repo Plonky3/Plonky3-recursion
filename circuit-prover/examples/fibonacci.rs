@@ -4,7 +4,6 @@ use std::env;
 /// Public input: expected_result (F(n))
 use p3_baby_bear::BabyBear;
 use p3_circuit::CircuitBuilder;
-use p3_circuit::tables::DummyPerm;
 use p3_circuit_prover::config::babybear_config::build_standard_config_babybear;
 use p3_circuit_prover::prover::ProverError;
 use p3_circuit_prover::{MultiTableProver, TablePacking};
@@ -61,7 +60,7 @@ fn main() -> Result<(), ProverError> {
     let expected_fib = compute_fibonacci_classical(n);
     runner.set_public_inputs(&[expected_fib])?;
 
-    let traces = runner.run::<DummyPerm, 0, 0, 0>(DummyPerm::default())?;
+    let traces = runner.run()?;
     let config = build_standard_config_babybear();
     let table_packing = TablePacking::from_counts(4, 1);
     let multi_prover = MultiTableProver::new(config).with_table_packing(table_packing);

@@ -1,7 +1,6 @@
 use p3_baby_bear::{BabyBear, Poseidon2BabyBear};
 use p3_challenger::DuplexChallenger;
 use p3_circuit::CircuitBuilder;
-use p3_circuit::tables::DummyPerm;
 use p3_circuit::test_utils::{FibonacciAir, generate_trace_rows};
 use p3_commit::ExtensionMmcs;
 use p3_dft::Radix2DitParallel;
@@ -143,9 +142,7 @@ fn test_fibonacci_verifier() -> Result<(), VerificationError> {
         .set_public_inputs(&public_values)
         .map_err(VerificationError::Circuit)?;
 
-    let _traces = runner
-        .run::<DummyPerm, 0, 0, 0>(DummyPerm::default())
-        .map_err(VerificationError::Circuit)?;
+    let _traces = runner.run().map_err(VerificationError::Circuit)?;
 
     Ok(())
 }

@@ -49,7 +49,7 @@ fn main() -> Result<(), ProverError> {
         .collect::<Vec<_>>();
     runner.set_public_inputs(&public_inputs)?;
 
-    let traces = runner.run::<_, HASH_STATE_SIZE, HASH_RATE, HASH_CAPACITY>(perm)?;
+    let traces = runner.run()?;
     let config = build_standard_config_babybear();
     let table_packing = TablePacking::from_counts(4, 1);
     let multi_prover = MultiTableProver::new(config).with_table_packing(table_packing);

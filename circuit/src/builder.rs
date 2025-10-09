@@ -642,8 +642,7 @@ mod tests {
 
     use super::*;
     use crate::op::NonPrimitiveOpType;
-    use crate::tables::DummyPerm;
-    use crate::{CircuitError, MerkleOps, MmcsOps, NonPrimitiveOp};
+    use crate::{CircuitError, MmcsOps, NonPrimitiveOp};
 
     #[test]
     fn test_circuit_basic_api() {
@@ -758,9 +757,7 @@ mod tests {
 
         runner.set_public_inputs(&[BabyBear::from_u64(5)]).unwrap();
         // Should succeed; both write the same value into the shared slot
-        runner
-            .run::<DummyPerm, 0, 0, 0>(DummyPerm::default())
-            .unwrap();
+        runner.run().unwrap();
     }
 
     #[test]
@@ -936,9 +933,7 @@ mod tests {
         runner.set_public_inputs(&[x_val, expected_val]).unwrap();
 
         // Should succeed - constraint is satisfied
-        let traces = runner
-            .run::<DummyPerm, 0, 0, 0>(DummyPerm::default())
-            .unwrap();
+        let traces = runner.run().unwrap();
 
         // Verify we have the expected number of operations in traces
         assert_eq!(traces.add_trace.lhs_values.len(), 2); // Two adds: x+5 and internal sub encoding
@@ -976,9 +971,7 @@ mod tests {
         runner
             .set_public_inputs(&[x_val, y_val, z_val, expected_val])
             .unwrap();
-        let traces = runner
-            .run::<DummyPerm, 0, 0, 0>(DummyPerm::default())
-            .unwrap();
+        let traces = runner.run().unwrap();
 
         // Verify traces: should have 2 multiplications (x*y and the div encoding z*result=xy)
         assert_eq!(traces.mul_trace.lhs_values.len(), 2);
@@ -1004,9 +997,7 @@ mod tests {
         // Test case 1: Equal values - should succeed
         let equal_val = BabyBear::from_u64(15);
         runner.set_public_inputs(&[equal_val, equal_val]).unwrap();
-        runner
-            .run::<DummyPerm, 0, 0, 0>(DummyPerm::default())
-            .unwrap(); // Should succeed
+        runner.run().unwrap(); // Should succeed
 
         // Test case 2: Different values - should fail
         let mut builder2 = CircuitBuilder::<BabyBear>::new();
@@ -1021,9 +1012,7 @@ mod tests {
         runner2.set_public_inputs(&[val1, val2]).unwrap();
 
         // Should fail because difference is not zero
-        let err = runner2
-            .run::<DummyPerm, 0, 0, 0>(DummyPerm::default())
-            .unwrap_err();
+        let err = runner2.run().unwrap_err();
         match err {
             CircuitError::WitnessConflict { .. } => {} // Expected: can't satisfy x-y=0 when x≠y
             other => panic!("Expected WitnessConflict, got {:?}", other),
@@ -1092,9 +1081,7 @@ mod tests {
         runner
             .set_public_inputs(&[shared_val, shared_val, shared_val, shared_val, shared_val])
             .unwrap();
-        runner
-            .run::<DummyPerm, 0, 0, 0>(DummyPerm::default())
-            .unwrap(); // Should succeed
+        runner.run().unwrap(); // Should succeed
 
         // Test with different values - should fail - create new circuit
         let mut builder2 = CircuitBuilder::<BabyBear>::new();
@@ -1164,9 +1151,7 @@ mod tests {
 
         // Should work with any value since x + 0 = x
         runner.set_public_inputs(&[BabyBear::from_u64(42)]).unwrap();
-        runner
-            .run::<DummyPerm, 0, 0, 0>(DummyPerm::default())
-            .unwrap();
+        runner.run().unwrap();
     }
 
     #[test]
@@ -1190,9 +1175,7 @@ mod tests {
         // Should enforce x = y
         let val = BabyBear::from_u64(123);
         runner.set_public_inputs(&[val, val]).unwrap();
-        runner
-            .run::<DummyPerm, 0, 0, 0>(DummyPerm::default())
-            .unwrap(); // Should succeed
+        runner.run().unwrap(); // Should succeed
 
         // Different values should fail - create new circuit
         let mut builder2 = CircuitBuilder::<BabyBear>::new();
