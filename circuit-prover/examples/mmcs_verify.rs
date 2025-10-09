@@ -81,7 +81,7 @@ fn main() -> Result<(), ProverError> {
                     F::ZERO,
                     F::from_u64((i + 1) * 10),
                 ],
-                if i % 2 == 0 {
+                if i % 2 == 0 || i == depth - 1 {
                     None
                 } else {
                     Some(vec![
