@@ -81,7 +81,8 @@ fn main() -> Result<(), ProverError> {
                     F::ZERO,
                     F::from_u64((i + 1) * 10),
                 ],
-                if i % 2 == 0 {
+                // Extra siblings at odd levels, but NEVER at the last level
+                if i % 2 == 0 || i == depth - 1 {
                     None
                 } else {
                     Some(vec![
@@ -97,7 +98,7 @@ fn main() -> Result<(), ProverError> {
                 },
             )
         })
-        .collect(); // The siblings, containing extra siblings every other level
+        .collect(); // The siblings, containing extra siblings every other level (except the last)
     let directions: Vec<bool> = (0..depth).map(|i| i % 2 == 0).collect();
     // the index is 0b1010...
     let index_value = F::from_u64(

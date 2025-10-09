@@ -192,6 +192,7 @@ impl<F: Field + Clone + Default> MmcsPrivateData<F> {
         path_states.push(state.to_vec());
         Ok(private_data)
     }
+
     /// Builds a valid `MmcsVerifyAir` trace from a private Mmcs proof,
     /// given also the leaf’s digest wires and value used in the circuit, and the leaf’s index in the tree.
     pub fn to_trace(
