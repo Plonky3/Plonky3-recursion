@@ -3,7 +3,7 @@
 This section explains how the `CircuitBuilder` allows to build a concrete `Circuit` for a given program.
 We’ll use a simple Fibonacci example throughout this page to ground the ideas behind circuit building:
 
-```rust
+```rust,ignore
 let mut builder = CircuitBuilder::<F>::new();
 
 // Public input: expected F(n)
@@ -60,16 +60,19 @@ In order to recursively verify an AIR, its constraints need to be added to the c
 
 We can consider a small example to show how operations are mapped. Given public inputs `a` and `b`, and a constant `c`, we have the following symbolic constraint: `Mul{ a, Sub {b, Const{ c }}}` (which corresponds to: `a * (b - c)`).
 
-```rust
-let x = builder.add_const(c); // We get the `ExprId` corresponding to Const{ c } by adding a constant to the circuit.
-let y = builder.sub(b, x);    // We use the previously computed `x` to compute the subtraction in the circuit.
-let z = builder.mul(a, y);    // We use the previously computed `y` to compute the multiplication in the circuit.
+```rust,ignore
+// We get the `ExprId` corresponding to Const{ c } by adding a constant to the circuit.
+let x = builder.add_const(c);
+// We use the previously computed `x` to compute the subtraction in the circuit.
+let y = builder.sub(b, x);
+// We use the previously computed `y` to compute the multiplication in the circuit.
+let z = builder.mul(a, y);
 ```
 `z` is then the output `ExprId` of the constraint in the circuit.
 
 Using this function, we have implemented, for all AIRs, the automatic translation from their set of symbolic constraints to the circuit version of the folded constraints:
 
-```rust
+```rust,ignore
 // Transforms an AIR's symbolic constraints into its counterpart circuit version, 
 // and folds all the constraints in the circuit using the challenge `alpha`.
 fn eval_folded_circuit(
@@ -80,19 +83,22 @@ fn eval_folded_circuit(
         sels: &RecursiveLagrangeSelectors,
         // Folding challenge.
         alpha: &ExprId,
-        // Main columns, preprocessed columns and any other columns that could be involved in constraints.
+        // All kind of columns that could be involved in constraints.
         columns: ColumnsTargets,
     ) -> Target {
-
         // Get all the constraints in symbolic form.
-        let symbolic_constraints = get_symbolic_constraints(self, 0, columns.public_values.len());
+        let symbolic_constraints = 
+            get_symbolic_constraints(self, 0, columns.public_values.len());
 
         // Fold all the constraints using the folding challenge.
         let mut acc = builder.add_const(F::ZERO);
         for s_c in symbolic_constraints {
             let mul_prev = builder.mul(acc, *alpha);
+
             // Get the current constraint in circuit form.
-            let constraints = symbolic_to_circuit(sels.row_selectors, &columns, &s_c, builder);
+            let constraints = 
+                symbolic_to_circuit(sels.row_selectors, &columns, &s_c, builder);
+
             // Fold the current constraint with the previous value.
             acc = builder.add(mul_prev, constraints);
         }
@@ -108,7 +114,7 @@ This facilitates the integration of *any* AIR verification into our circuit.
 Calling `circuit.runner()` will return a instance of `CircuitRunner` allowing to execute the
 represented program and generate associated execution traces needed for proving:
 
-```rust
+```rust,ignore
 let mut runner = circuit.runner();
 
 // Set public input
