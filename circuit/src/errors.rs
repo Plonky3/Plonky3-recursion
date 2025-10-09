@@ -92,7 +92,7 @@ pub enum CircuitError {
     },
 
     /// Non primitive private data is not correct
-    #[error("Incorrecct private data provided for op {op:?}: expected {expected}, got {got}")]
+    #[error("Incorrect private data provided for op {op:?}: expected {expected}, got {got}")]
     IncorrectNonPrimitiveOpPrivateData {
         op: NonPrimitiveOpType,
         expected: String,

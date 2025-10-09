@@ -153,7 +153,7 @@ impl<F: Field + Clone + Default> MmcsPrivateData<F> {
         F: ExtensionField<BF> + Clone,
         C: PseudoCompressionFunction<[BF; DIGEST_ELEMS], 2>,
     {
-        // The last sibling can't containt an extra sibling
+        // The last sibling can't contain an extra sibling
         if let Some((_, extra_sibling)) = siblings.last()
             && extra_sibling.is_some()
         {
