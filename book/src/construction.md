@@ -66,7 +66,7 @@ i.e. operation 4 performs `w[4] <- w[1] * w[3]`, and operation 5 encodes the sub
 The `Witness` table can be seen as a central memory bus that stores values shared across all operations. It is represented as pairs `(index, value)`, where indices are  that will be accessed by 
 the different chips via lookups to enforce consistency.
 
-- The index column is *preprocessed*, or *preprocessed* [@@rap]: it is known to both prover and verifier in advance, requiring no online commitment.[^1]
+- The index column is *preprocessed*, or *read-after-preprocess* ([RAP](https://hackmd.io/@aztec-network/plonk-arithmetiization-air)): it is known to both prover and verifier in advance, requiring no online commitment.[^1]
 - The Witness table values are represented as extension field elements directly (where base field elements are padded with 0 on higher coordinates) for addressing efficiency.
 
 From the fixed IR of the example above, we can deduce an associated `Witness` table as follows:
@@ -128,14 +128,14 @@ All chips interactions are performed via a lookup argument. Enforcing multiset e
 
 Cross-table lookups (CTLs) ensure that **every** chip interaction happens through the Witness table: producers write a `(index, value)` pair into Witness and consumers read the same pair back. No chip talks directly to any other chip; the aggregated LogUp argument enforces multiset equality between the writes and reads.
 
-For the toy example the CTL relations are:
+For the toy example the CTL relations are:[^2]
 
 ```bash
-(index 0, value 0)   : CONST → Witness ← ADD
-(index 1, value 37)  : CONST → Witness ← MUL
-(index 2, value 111) : CONST → Witness ← ADD
-(index 3, value 3)   : PUBLIC → Witness ← MUL
-(index 4, value 111) : MUL → Witness ← ADD (duplicate writes enforce equality)
+(index 0, value 0)   : CONST → Witness → ADD
+(index 1, value 37)  : CONST → Witness → MUL
+(index 2, value 111) : CONST → Witness → ADD
+(index 3, value 3)   : PUBLIC → Witness → MUL
+(index 4, value 111) : MUL → Witness ← ADD
 ```
 
 

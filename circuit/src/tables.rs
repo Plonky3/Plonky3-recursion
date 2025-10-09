@@ -1,3 +1,4 @@
+use alloc::string::ToString;
 use alloc::vec::Vec;
 use alloc::{format, vec};
 
@@ -152,6 +153,16 @@ impl<F: Field + Clone + Default> MmcsPrivateData<F> {
         F: ExtensionField<BF> + Clone,
         C: PseudoCompressionFunction<[BF; DIGEST_ELEMS], 2>,
     {
+        // The last sibling can't contain an extra sibling
+        if let Some((_, extra_sibling)) = siblings.last()
+            && extra_sibling.is_some()
+        {
+            return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
+                op: NonPrimitiveOpType::MmcsVerify,
+                expected: "None".to_string(),
+                got: format!("{:?}", extra_sibling),
+            });
+        }
         // Worst case we push two states per step (if `other_sibling` is Some).
         let mut private_data = Self {
             path_states: Vec::with_capacity(siblings.len() + 1),

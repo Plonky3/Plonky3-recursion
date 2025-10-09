@@ -7,11 +7,8 @@ use p3_baby_bear::BabyBear;
 use p3_circuit::op::MmcsVerifyConfig;
 use p3_circuit::tables::MmcsPrivateData;
 use p3_circuit::{CircuitBuilder, ExprId, MmcsOps, NonPrimitiveOpPrivateData};
-use p3_circuit_prover::MultiTableProver;
-use p3_circuit_prover::config::babybear_config::{
-    baby_bear_standard_compression_function, build_standard_config_babybear,
-};
 use p3_circuit_prover::prover::ProverError;
+use p3_circuit_prover::{MultiTableProver, config};
 use p3_field::PrimeCharacteristicRing;
 use p3_field::extension::BinomialExtensionField;
 use tracing_forest::ForestLayer;
@@ -37,8 +34,8 @@ fn main() -> Result<(), ProverError> {
     init_logger();
 
     let depth = env::args().nth(1).and_then(|s| s.parse().ok()).unwrap_or(3);
-    let config = build_standard_config_babybear();
-    let compress = baby_bear_standard_compression_function();
+    let config = config::baby_bear().build();
+    let compress = config::baby_bear_compression();
     let mmcs_config = MmcsVerifyConfig::babybear_quartic_extension_default();
 
     let mut builder = CircuitBuilder::new();
@@ -84,7 +81,8 @@ fn main() -> Result<(), ProverError> {
                     F::ZERO,
                     F::from_u64((i + 1) * 10),
                 ],
-                if i % 2 == 0 {
+                // Extra siblings on odd levels, but never on the last level
+                if i % 2 == 0 || i == depth - 1 {
                     None
                 } else {
                     Some(vec![
@@ -100,7 +98,7 @@ fn main() -> Result<(), ProverError> {
                 },
             )
         })
-        .collect(); // The siblings, containing extra siblings every other level
+        .collect(); // The siblings, containing extra siblings every other level (except the last)
     let directions: Vec<bool> = (0..depth).map(|i| i % 2 == 0).collect();
     // the index is 0b1010...
     let index_value = F::from_u64(

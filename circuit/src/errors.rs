@@ -91,13 +91,11 @@ pub enum CircuitError {
         got: usize,
     },
 
-    /// MMCS witness validation failed: the computed value doesn't match the public input value.
-    #[error(
-        "MMCS witness validation failed for operation {operation_index}: value from witness {witness_value} doesn't match public input {public_value}"
-    )]
-    MmcsWitnessMismatch {
-        operation_index: usize,
-        witness_value: String,
-        public_value: String,
+    /// Non primitive private data is not correct
+    #[error("Incorrect private data provided for op {op:?}: expected {expected}, got {got}")]
+    IncorrectNonPrimitiveOpPrivateData {
+        op: NonPrimitiveOpType,
+        expected: String,
+        got: String,
     },
 }
