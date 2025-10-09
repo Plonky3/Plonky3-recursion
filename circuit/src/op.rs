@@ -55,7 +55,8 @@ pub enum NonPrimitiveOpType {
     // Mmcs Verify gate with the argument is the size of the path
     MmcsVerify,
     FriVerify,
-    // Future: FriVerify, HashAbsorb, etc.
+    HashAbsorb(bool), // bool: If true, reset the capacity before absorbing
+    HashSqueeze,
 }
 
 /// Non-primitive operation types
@@ -98,6 +99,17 @@ pub enum NonPrimitiveOp {
         index: WitnessId,
         root: MmcsWitnessId,
     },
+    /// Sponge hash absorb operation. Absorbs a single chunk of input.
+    ///
+    /// Public interface (on witness bus):
+    /// - `reset_flag`: Whether to reset the capacity before absorbing
+    /// - `inputs`: The input chunk to be absorbed.
+    HashAbsorb {
+        reset_flag: bool,
+        inputs: Vec<WitnessId>,
+    },
+    /// Sponge hash squeeze operation. Produces a single chunk of output.
+    HashSqueeze { outputs: Vec<WitnessId> },
 }
 
 /// Configuration parameters for Mmcs verification operations. When

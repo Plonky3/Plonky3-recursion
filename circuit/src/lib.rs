@@ -2,6 +2,7 @@
 extern crate alloc;
 
 pub mod builder;
+pub mod challenger;
 pub mod circuit;
 pub mod errors;
 pub mod expr;
@@ -15,6 +16,7 @@ pub mod utils;
 
 // Re-export public API
 pub use builder::{CircuitBuilder, CircuitBuilderError};
+pub use challenger::Challenger;
 pub use circuit::{Circuit, CircuitField};
 pub use errors::CircuitError;
 pub use expr::{Expr, ExpressionGraph};

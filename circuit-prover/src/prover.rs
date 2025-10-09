@@ -253,6 +253,9 @@ where
         let mmcs_air = MmcsVerifyAir::new(self.mmcs_config);
         let mmcs_proof = prove(&self.config, &mmcs_air, mmcs_matrix, pis);
 
+        // TODO: Add sponge AIR
+        // let sponge_matrix = SpongeAir::<F, Perm>::trace_to_matrix(&traces.sponge_trace);
+
         Ok(MultiTableProof {
             witness: TableProof {
                 proof: witness_proof,
@@ -382,7 +385,6 @@ mod tests {
         let x_val = BabyBear::from_u64(7);
         let expected_val = BabyBear::from_u64(13); // 7 + 10 - 3 - 1 = 13
         runner.set_public_inputs(&[x_val, expected_val])?;
-
         let traces = runner.run()?;
 
         // Create BabyBear prover and prove all tables
@@ -644,6 +646,7 @@ mod tests {
 
         let expected_val = x_val * y_val + z_val;
         runner.set_public_inputs(&[x_val, y_val, z_val, expected_val])?;
+
         let traces = runner.run()?;
 
         // Build Goldilocks config with challenge degree 2 (Poseidon2)

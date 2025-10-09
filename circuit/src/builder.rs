@@ -277,6 +277,26 @@ where
         op_id
     }
 
+    /// Add a hash absorb operation (non-primitive operation)
+    pub fn add_hash_absorb(&mut self, input_exprs: &[ExprId], reset: bool) -> NonPrimitiveOpId {
+        let op_id = NonPrimitiveOpId(self.non_primitive_ops.len() as u32);
+        let witness_exprs = input_exprs.to_vec();
+        self.non_primitive_ops
+            .push((op_id, NonPrimitiveOpType::HashAbsorb(reset), witness_exprs));
+
+        op_id
+    }
+
+    /// Add a hash squeeze operation (non-primitive operation)
+    pub fn add_hash_squeeze(&mut self, output_exprs: &[ExprId]) -> NonPrimitiveOpId {
+        let op_id = NonPrimitiveOpId(self.non_primitive_ops.len() as u32);
+        let witness_exprs = output_exprs.to_vec();
+        self.non_primitive_ops
+            .push((op_id, NonPrimitiveOpType::HashSqueeze, witness_exprs));
+
+        op_id
+    }
+
     /// Check whether an op type is enabled on this builder.
     fn is_op_enabled(&self, op: &NonPrimitiveOpType) -> bool {
         self.enabled_ops.contains_key(op)
@@ -572,6 +592,27 @@ where
                         leaf: leaf_widx,
                         index: index_widx,
                         root: root_widx,
+                    });
+                }
+                NonPrimitiveOpType::HashAbsorb(reset) => {
+                    let inputs_widx = witness_exprs
+                        .iter()
+                        .map(|expr| Self::get_witness_id(expr_to_widx, *expr, "HashAbsorb input"))
+                        .collect::<Vec<_>>();
+
+                    lowered_ops.push(NonPrimitiveOp::HashAbsorb {
+                        reset_flag: *reset,
+                        inputs: inputs_widx.into_iter().collect::<Result<Vec<_>, _>>()?,
+                    });
+                }
+                NonPrimitiveOpType::HashSqueeze => {
+                    let outputs_widx = witness_exprs
+                        .iter()
+                        .map(|expr| Self::get_witness_id(expr_to_widx, *expr, "HashSqueeze output"))
+                        .collect::<Vec<_>>();
+
+                    lowered_ops.push(NonPrimitiveOp::HashSqueeze {
+                        outputs: outputs_widx.into_iter().collect::<Result<Vec<_>, _>>()?,
                     });
                 }
                 NonPrimitiveOpType::FriVerify => {
@@ -1000,6 +1041,7 @@ mod tests {
         assert_eq!(circuit.non_primitive_ops.len(), 1);
         match &circuit.non_primitive_ops[0] {
             NonPrimitiveOp::MmcsVerify { .. } => {}
+            _ => panic!("Expected MmcsVerify operation"),
         }
     }
 
