@@ -2,8 +2,8 @@
 
 use alloc::vec;
 use alloc::vec::Vec;
+use core::array;
 use core::marker::PhantomData;
-use core::{array, iter};
 
 use p3_challenger::GrindingChallenger;
 use p3_circuit::CircuitBuilder;
@@ -79,29 +79,23 @@ impl<
 {
     type Input = FriProof<EF, RecMmcs::Input, Witness::Input, InputProof::Input>;
 
-    fn new(
-        circuit: &mut CircuitBuilder<EF>,
-        lens: &mut impl Iterator<Item = usize>,
-        degree_bits: usize,
-    ) -> Self {
+    fn from_non_recursive(circuit: &mut CircuitBuilder<EF>, input: &Self::Input) -> Self {
         // Note that the iterator `lens` is updated by each call to `new`. So we can always pass the same `lens` for all structures.
-        let num_commit_phase_commits = lens.next().unwrap();
+        let num_commit_phase_commits = input.commit_phase_commits.len();
         let mut commit_phase_commits = Vec::with_capacity(num_commit_phase_commits);
-        for _ in 0..num_commit_phase_commits {
-            commit_phase_commits.push(RecMmcs::Commitment::new(circuit, lens, degree_bits));
+        for commitment in input.commit_phase_commits.iter() {
+            commit_phase_commits.push(RecMmcs::Commitment::from_non_recursive(circuit, commitment));
         }
 
-        let num_query_proofs = lens.next().unwrap();
+        let num_query_proofs = input.query_proofs.len();
         let mut query_proofs = Vec::with_capacity(num_query_proofs);
-        for _ in 0..num_query_proofs {
-            query_proofs.push(QueryProofTargets::<F, EF, InputProof, RecMmcs>::new(
-                circuit,
-                lens,
-                degree_bits,
-            ));
+        for query in input.query_proofs.iter() {
+            query_proofs.push(
+                QueryProofTargets::<F, EF, InputProof, RecMmcs>::from_non_recursive(circuit, query),
+            );
         }
 
-        let final_poly_len = lens.next().unwrap();
+        let final_poly_len = input.final_poly.len();
         let mut final_poly = Vec::with_capacity(final_poly_len);
         for _ in 0..final_poly_len {
             final_poly.push(circuit.add_public_input());
@@ -110,7 +104,7 @@ impl<
             commit_phase_commits,
             query_proofs,
             final_poly,
-            pow_witness: Witness::new(circuit, lens, degree_bits),
+            pow_witness: Witness::from_non_recursive(circuit, &input.pow_witness),
         }
     }
 
@@ -140,32 +134,6 @@ impl<
         + self.commit_phase_commits.len() // `beta` challenges for the FRI rounds
         + self.query_proofs.len() // Indices for all query proofs
     }
-
-    fn lens(input: &Self::Input) -> impl Iterator<Item = usize> {
-        let FriProof {
-            commit_phase_commits,
-            query_proofs,
-            final_poly,
-            pow_witness,
-        } = input;
-
-        let mut all_lens = vec![commit_phase_commits.len()];
-        all_lens.extend(
-            commit_phase_commits
-                .iter()
-                .flat_map(|c| RecMmcs::Commitment::lens(c)),
-        );
-        all_lens.push(query_proofs.len());
-        all_lens.extend(
-            query_proofs
-                .iter()
-                .flat_map(|q| QueryProofTargets::<F, EF, InputProof, RecMmcs>::lens(q)),
-        );
-        all_lens.push(final_poly.len());
-        all_lens.extend(Witness::lens(pow_witness));
-
-        all_lens.into_iter()
-    }
 }
 
 /// `Recursive` version of `QueryProof`.
@@ -188,21 +156,17 @@ impl<
 {
     type Input = QueryProof<EF, RecMmcs::Input, InputProof::Input>;
 
-    fn new(
-        circuit: &mut CircuitBuilder<EF>,
-        lens: &mut impl Iterator<Item = usize>,
-        degree_bits: usize,
-    ) -> Self {
+    fn from_non_recursive(circuit: &mut CircuitBuilder<EF>, input: &Self::Input) -> Self {
         // Note that the iterator `lens` is updated by each call to `new`. So we can always pass the same `lens` for all structures.
-        let input_proof = InputProof::new(circuit, lens, degree_bits);
-        let num_commit_phase_openings = lens.next().unwrap();
+        let input_proof = InputProof::from_non_recursive(circuit, &input.input_proof);
+        let num_commit_phase_openings = input.commit_phase_openings.len();
         let mut commit_phase_openings = Vec::with_capacity(num_commit_phase_openings);
-        for _ in 0..num_commit_phase_openings {
-            commit_phase_openings.push(CommitPhaseProofStepTargets::<F, EF, RecMmcs>::new(
-                circuit,
-                lens,
-                degree_bits,
-            ));
+        for commitment in input.commit_phase_openings.iter() {
+            commit_phase_openings.push(
+                CommitPhaseProofStepTargets::<F, EF, RecMmcs>::from_non_recursive(
+                    circuit, commitment,
+                ),
+            );
         }
         Self {
             input_proof,
@@ -229,22 +193,6 @@ impl<
     fn num_challenges(&self) -> usize {
         0
     }
-
-    fn lens(input: &Self::Input) -> impl Iterator<Item = usize> {
-        let QueryProof {
-            input_proof,
-            commit_phase_openings,
-        } = input;
-
-        let mut all_lens = vec![];
-        all_lens.extend(InputProof::lens(input_proof));
-        all_lens.push(commit_phase_openings.len());
-        for opening in commit_phase_openings {
-            all_lens.extend(CommitPhaseProofStepTargets::<F, EF, RecMmcs>::lens(opening));
-        }
-
-        all_lens.into_iter()
-    }
 }
 
 /// `Recursive` version of `CommitPhaseProofStepTargets`.
@@ -265,13 +213,9 @@ impl<F: Field, EF: ExtensionField<F>, RecMmcs: RecursiveExtensionMmcs<F, EF>> Re
     // This is used with an extension field element, since it is part of `FriProof`, not a base field element.
     type Input = CommitPhaseProofStep<EF, RecMmcs::Input>;
 
-    fn new(
-        circuit: &mut CircuitBuilder<EF>,
-        lens: &mut impl Iterator<Item = usize>,
-        degree_bits: usize,
-    ) -> Self {
+    fn from_non_recursive(circuit: &mut CircuitBuilder<EF>, input: &Self::Input) -> Self {
         let sibling_value = circuit.add_public_input();
-        let opening_proof = RecMmcs::Proof::new(circuit, lens, degree_bits);
+        let opening_proof = RecMmcs::Proof::from_non_recursive(circuit, &input.opening_proof);
         Self {
             sibling_value,
             opening_proof,
@@ -293,15 +237,6 @@ impl<F: Field, EF: ExtensionField<F>, RecMmcs: RecursiveExtensionMmcs<F, EF>> Re
     fn num_challenges(&self) -> usize {
         0
     }
-
-    fn lens(input: &Self::Input) -> impl Iterator<Item = usize> {
-        let CommitPhaseProofStep {
-            sibling_value: _,
-            opening_proof,
-        } = input;
-
-        RecMmcs::Proof::lens(opening_proof)
-    }
 }
 
 /// `Recursive` version of `BatchOpening`.
@@ -318,15 +253,11 @@ impl<F: Field, EF: ExtensionField<F>, Inner: RecursiveMmcs<F, EF>> Recursive<EF>
 {
     type Input = BatchOpening<F, Inner::Input>;
 
-    fn new(
-        circuit: &mut CircuitBuilder<EF>,
-        lens: &mut impl Iterator<Item = usize>,
-        degree_bits: usize,
-    ) -> Self {
-        let opened_vals_len = lens.next().unwrap();
+    fn from_non_recursive(circuit: &mut CircuitBuilder<EF>, input: &Self::Input) -> Self {
+        let opened_vals_len = input.opened_values.len();
         let mut opened_values = Vec::with_capacity(opened_vals_len);
-        for _ in 0..opened_vals_len {
-            let num_opened_values = lens.next().unwrap();
+        for input_opened_values in input.opened_values.iter() {
+            let num_opened_values = input_opened_values.len();
             let mut inner_opened_vals = Vec::with_capacity(num_opened_values);
             for _ in 0..num_opened_values {
                 inner_opened_vals.push(circuit.add_public_input());
@@ -334,7 +265,7 @@ impl<F: Field, EF: ExtensionField<F>, Inner: RecursiveMmcs<F, EF>> Recursive<EF>
             opened_values.push(inner_opened_vals);
         }
 
-        let opening_proof = Inner::Proof::new(circuit, lens, degree_bits);
+        let opening_proof = Inner::Proof::from_non_recursive(circuit, &input.opening_proof);
 
         Self {
             opened_values,
@@ -358,19 +289,6 @@ impl<F: Field, EF: ExtensionField<F>, Inner: RecursiveMmcs<F, EF>> Recursive<EF>
     fn num_challenges(&self) -> usize {
         0
     }
-
-    fn lens(input: &Self::Input) -> impl Iterator<Item = usize> {
-        let BatchOpening {
-            opened_values,
-            opening_proof,
-        } = input;
-
-        let mut all_lens = vec![opened_values.len()];
-        all_lens.extend(opened_values.iter().map(|inner| inner.len()));
-        all_lens.extend(Inner::Proof::lens(opening_proof));
-
-        all_lens.into_iter()
-    }
 }
 
 // Now, we define the commitment schemes.
@@ -390,11 +308,7 @@ impl<F: Field, EF: ExtensionField<F>, const DIGEST_ELEMS: usize> Recursive<EF>
 {
     type Input = ValMmcsCommitment<F, DIGEST_ELEMS>;
 
-    fn new(
-        circuit: &mut CircuitBuilder<EF>,
-        _lens: &mut impl Iterator<Item = usize>,
-        _degree_bits: usize,
-    ) -> Self {
+    fn from_non_recursive(circuit: &mut CircuitBuilder<EF>, _input: &Self::Input) -> Self {
         Self {
             hash_targets: array::from_fn(|_| circuit.add_public_input()),
             _phantom: PhantomData,
@@ -407,10 +321,6 @@ impl<F: Field, EF: ExtensionField<F>, const DIGEST_ELEMS: usize> Recursive<EF>
 
     fn num_challenges(&self) -> usize {
         0
-    }
-
-    fn lens(_input: &Self::Input) -> impl Iterator<Item = usize> {
-        iter::empty()
     }
 }
 
@@ -427,12 +337,8 @@ impl<F: Field, EF: ExtensionField<F>, const DIGEST_ELEMS: usize> Recursive<EF>
 {
     type Input = ValMmcsProof<F, DIGEST_ELEMS>;
 
-    fn new(
-        circuit: &mut CircuitBuilder<EF>,
-        lens: &mut impl Iterator<Item = usize>,
-        _degree_bits: usize,
-    ) -> Self {
-        let proof_len = lens.next().unwrap();
+    fn from_non_recursive(circuit: &mut CircuitBuilder<EF>, input: &Self::Input) -> Self {
+        let proof_len = input.len();
         let mut proof = Vec::with_capacity(proof_len);
         for _ in 0..proof_len {
             proof.push(array::from_fn(|_| circuit.add_public_input()));
@@ -454,10 +360,6 @@ impl<F: Field, EF: ExtensionField<F>, const DIGEST_ELEMS: usize> Recursive<EF>
     fn num_challenges(&self) -> usize {
         0
     }
-
-    fn lens(input: &Self::Input) -> impl Iterator<Item = usize> {
-        iter::once(input.len())
-    }
 }
 
 /// In TwoAdicFriPcs, the POW witness is just a base field element.
@@ -469,11 +371,7 @@ pub struct Witness<F> {
 impl<F: Field, EF: ExtensionField<F>> Recursive<EF> for Witness<F> {
     type Input = F;
 
-    fn new(
-        circuit: &mut CircuitBuilder<EF>,
-        _lens: &mut impl Iterator<Item = usize>,
-        _degree_bits: usize,
-    ) -> Self {
+    fn from_non_recursive(circuit: &mut CircuitBuilder<EF>, _input: &Self::Input) -> Self {
         Self {
             witness: circuit.add_public_input(),
             _phantom: PhantomData,
@@ -486,10 +384,6 @@ impl<F: Field, EF: ExtensionField<F>> Recursive<EF> for Witness<F> {
 
     fn num_challenges(&self) -> usize {
         0
-    }
-
-    fn lens(_input: &Self::Input) -> impl Iterator<Item = usize> {
-        iter::empty()
     }
 }
 
@@ -557,15 +451,14 @@ impl<F: Field, EF: ExtensionField<F>, Inner: RecursiveMmcs<F, EF>> Recursive<EF>
 {
     type Input = Vec<BatchOpening<F, Inner::Input>>;
 
-    fn new(
-        circuit: &mut CircuitBuilder<EF>,
-        lens: &mut impl Iterator<Item = usize>,
-        degree_bits: usize,
-    ) -> Self {
-        let num_batch_openings = lens.next().unwrap();
+    fn from_non_recursive(circuit: &mut CircuitBuilder<EF>, input: &Self::Input) -> Self {
+        let num_batch_openings = input.len();
         let mut batch_openings = Vec::with_capacity(num_batch_openings);
-        for _ in 0..num_batch_openings {
-            batch_openings.push(BatchOpeningTargets::new(circuit, lens, degree_bits));
+        for batch_opening in input.iter() {
+            batch_openings.push(BatchOpeningTargets::from_non_recursive(
+                circuit,
+                batch_opening,
+            ));
         }
 
         batch_openings
@@ -582,14 +475,6 @@ impl<F: Field, EF: ExtensionField<F>, Inner: RecursiveMmcs<F, EF>> Recursive<EF>
 
     fn num_challenges(&self) -> usize {
         0
-    }
-
-    fn lens(input: &Self::Input) -> impl Iterator<Item = usize> {
-        let mut all_lens = vec![input.len()];
-        for batch_opening in input {
-            all_lens.extend(BatchOpeningTargets::<F, EF, Inner>::lens(batch_opening));
-        }
-        all_lens.into_iter()
     }
 }
 
