@@ -56,7 +56,7 @@ Once all the nodes have been assigned, and the circuit has been fully optimized,
 
 ## Building recursive AIR constraints
 
-In order to recursively verify an AIR, its constraints need to be added to the circuit and folded together. In Plonky3, we can get an AIR's constraints in symbolic form. Since our primitive chips (see section "Execution IR") encompass the various entries in the symbolic representation, we can simply map each symbolic operation to its circuit counterpart. The `symbolic_to_circuit` function does exactly that for a given symbolic constraint. 
+In order to recursively verify an AIR, its constraints need to be added to the circuit and folded together. In Plonky3, we can get an AIR's constraints in symbolic form. Since our primitive chips (see section [Execution IR](./construction.md#execution-ir)) encompass the various entries in the symbolic representation, we can simply map each symbolic operation to its circuit counterpart. The `symbolic_to_circuit` function does exactly that for a given symbolic constraint. 
 
 We can consider a small example to show how operations are mapped. Given public inputs `a` and `b`, and a constant `c`, we have the following symbolic constraint: `Mul{ a, Sub {b, Const{ c }}}` (which corresponds to: `a * (b - c)`).
 
