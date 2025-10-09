@@ -81,7 +81,7 @@ fn main() -> Result<(), ProverError> {
                     F::ZERO,
                     F::from_u64((i + 1) * 10),
                 ],
-                // Extra siblings at odd levels, but NEVER at the last level
+                // Extra siblings on odd levels, but never on the last level
                 if i % 2 == 0 || i == depth - 1 {
                     None
                 } else {
