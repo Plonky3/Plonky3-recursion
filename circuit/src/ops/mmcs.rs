@@ -25,7 +25,7 @@ pub struct MmcsVerifyConfig {
 impl MmcsVerifyConfig {
     /// Returns the number of inputs (witness elements) received.
     pub const fn input_size(&self) -> usize {
-        // `ext_field_digest_elems`` for the leaf and root and 1 for the index
+        // `ext_field_digest_elems` for the leaf and root and 1 for the index
         2 * self.ext_field_digest_elems + 1
     }
 
@@ -60,13 +60,22 @@ impl MmcsVerifyConfig {
             .collect();
 
         // Ensure the flattened base representation matches the expected compile-time size.
-        flattened.clone().try_into().map_err(|_| {
+        let len = flattened.len();
+        let arr: [F; DIGEST_ELEMS] = flattened.try_into().map_err(|_| {
             CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
                 op: NonPrimitiveOpType::MmcsVerify,
                 expected: DIGEST_ELEMS,
-                got: flattened.len(),
+                got: len,
             }
-        })
+        })?;
+        // Sanity check that runtime config aligns with compile-time expectations.
+        debug_assert!(
+            (!self.is_packing() && DIGEST_ELEMS == self.ext_field_digest_elems)
+                || (self.is_packing()
+                    && DIGEST_ELEMS == self.ext_field_digest_elems * EF::DIMENSION),
+            "Config/base length mismatch (packing or EF::DIMENSION?)",
+        );
+        Ok(arr)
     }
 
     /// Convert a digest represented as base field elements into extension field elements.
@@ -83,11 +92,19 @@ impl MmcsVerifyConfig {
             });
         }
         if self.is_packing() {
+            // Validate divisibility and config alignment with EF::DIMENSION
+            if self.base_field_digest_elems % EF::DIMENSION != 0
+                || self.ext_field_digest_elems * EF::DIMENSION != self.base_field_digest_elems
+            {
+                return Err(CircuitError::InvalidNonPrimitiveOpConfiguration {
+                    op: NonPrimitiveOpType::MmcsVerify,
+                });
+            }
             Ok(digest
                 .chunks(EF::DIMENSION)
                 .map(|v| {
-                    EF::from_basis_coefficients_slice(v)
-                        .expect("chunk size is the extension field dimension")
+                    // Safe due to the checks above
+                    EF::from_basis_coefficients_slice(v).expect("chunk size equals EF::DIMENSION")
                 })
                 .collect())
         } else {
