@@ -576,7 +576,28 @@ where
                 }
                 NonPrimitiveOpType::FriVerify => {
                     todo!() // TODO: Add FRIVerify when it lands
-                } // Add more variants here as needed
+                }
+                NonPrimitiveOpType::HashAbsorb { reset } => {
+                    let inputs_widx = witness_exprs
+                        .iter()
+                        .map(|expr| Self::get_witness_id(expr_to_widx, *expr, "HashAbsorb input"))
+                        .collect::<Result<Vec<_>, _>>()?;
+
+                    lowered_ops.push(NonPrimitiveOp::HashAbsorb {
+                        reset_flag: *reset,
+                        inputs: inputs_widx,
+                    });
+                }
+                NonPrimitiveOpType::HashSqueeze => {
+                    let outputs_widx = witness_exprs
+                        .iter()
+                        .map(|expr| Self::get_witness_id(expr_to_widx, *expr, "HashSqueeze output"))
+                        .collect::<Result<Vec<_>, _>>()?;
+
+                    lowered_ops.push(NonPrimitiveOp::HashSqueeze {
+                        outputs: outputs_widx,
+                    });
+                }
             }
         }
 
@@ -1000,6 +1021,9 @@ mod tests {
         assert_eq!(circuit.non_primitive_ops.len(), 1);
         match &circuit.non_primitive_ops[0] {
             NonPrimitiveOp::MmcsVerify { .. } => {}
+            NonPrimitiveOp::HashAbsorb { .. } | NonPrimitiveOp::HashSqueeze { .. } => {
+                panic!("Expected MmcsVerify op")
+            }
         }
     }
 

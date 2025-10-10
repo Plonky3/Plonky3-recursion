@@ -29,6 +29,8 @@ pub struct Traces<F> {
     pub mul_trace: MulTrace<F>,
     /// Mmcs verification table
     pub mmcs_trace: MmcsTrace<F>,
+    /// Sponge/hash operation table
+    pub sponge_trace: SpongeTrace<F>,
 }
 
 /// Central witness table with preprocessed index column
@@ -137,6 +139,36 @@ pub struct MmcsPrivateData<F> {
 }
 
 type SiblingWithExtra<F> = (Vec<F>, Option<(Vec<F>, Vec<F>)>);
+
+/// Trace for sponge/hash operations.
+///
+/// Each operation represents one sponge interaction (absorb or squeeze).
+#[derive(Debug, Clone, Default)]
+pub struct SpongeTrace<F> {
+    /// All sponge operations in execution order
+    pub operations: Vec<SpongeOp<F>>,
+}
+
+/// A single sponge operation (absorb or squeeze).
+#[derive(Debug, Clone)]
+pub enum SpongeOp<F> {
+    /// Absorb operation - inputs are hashed into sponge state
+    Absorb {
+        /// Whether to reset the sponge state before absorbing
+        reset: bool,
+        /// Input values to absorb (should be length RATE or less)
+        inputs: Vec<F>,
+        /// Witness indices for inputs (for lookups)
+        input_indices: Vec<u32>,
+    },
+    /// Squeeze operation - outputs are extracted from sponge state
+    Squeeze {
+        /// Output values extracted (should be length RATE or less)
+        outputs: Vec<F>,
+        /// Witness indices for outputs (for lookups)
+        output_indices: Vec<u32>,
+    },
+}
 
 impl<F: Field + Clone + Default> MmcsPrivateData<F> {
     /// Computes the private mmcs data for the mmcs path defined by `leaf`, `siblings` and `directions`,
@@ -327,6 +359,9 @@ impl<F: CircuitField> CircuitRunner<F> {
             (NonPrimitiveOp::MmcsVerify { .. }, NonPrimitiveOpPrivateData::MmcsVerify(_)) => {
                 // Type match - good!
             }
+            (NonPrimitiveOp::HashAbsorb { .. }, _) | (NonPrimitiveOp::HashSqueeze { .. }, _) => {
+                panic!("{:?} does not take private data", non_primitive_op);
+            }
         }
 
         self.non_primitive_op_private_data[op_id.0 as usize] = Some(private_data);
@@ -346,6 +381,7 @@ impl<F: CircuitField> CircuitRunner<F> {
         let add_trace = self.generate_add_trace()?;
         let mul_trace = self.generate_mul_trace()?;
         let mmcs_trace = self.generate_mmcs_trace()?;
+        let sponge_trace = self.generate_sponge_trace()?;
 
         Ok(Traces {
             witness_trace,
@@ -354,6 +390,7 @@ impl<F: CircuitField> CircuitRunner<F> {
             add_trace,
             mul_trace,
             mmcs_trace,
+            sponge_trace,
         })
     }
 
@@ -547,8 +584,13 @@ impl<F: CircuitField> CircuitRunner<F> {
         // Process each complex operation by index to avoid borrowing conflicts
         for op_idx in 0..self.circuit.non_primitive_ops.len() {
             // Copy out leaf/root to end immutable borrow immediately
-            let NonPrimitiveOp::MmcsVerify { leaf, index, root } =
-                &self.circuit.non_primitive_ops[op_idx];
+            let op = &self.circuit.non_primitive_ops[op_idx];
+
+            // Only process MmcsVerify operations in this method
+            // HashAbsorb/HashSqueeze are processed in generate_sponge_trace()
+            let NonPrimitiveOp::MmcsVerify { leaf, index, root } = op else {
+                continue;
+            };
 
             if let Some(Some(NonPrimitiveOpPrivateData::MmcsVerify(private_data))) =
                 self.non_primitive_op_private_data.get(op_idx).cloned()
@@ -574,6 +616,61 @@ impl<F: CircuitField> CircuitRunner<F> {
 
         Ok(MmcsTrace { mmcs_paths })
     }
+
+    fn generate_sponge_trace(&mut self) -> Result<SpongeTrace<F>, CircuitError> {
+        let mut operations = Vec::new();
+
+        for op_idx in 0..self.circuit.non_primitive_ops.len() {
+            let op = &self.circuit.non_primitive_ops[op_idx];
+
+            match op {
+                NonPrimitiveOp::HashAbsorb { reset_flag, inputs } => {
+                    // Get the actual values from the witness table
+                    let mut input_values = Vec::new();
+                    for widx in inputs {
+                        let value = self
+                            .witness
+                            .get(widx.0 as usize)
+                            .and_then(|opt| opt.as_ref())
+                            .ok_or(CircuitError::WitnessNotSet { witness_id: *widx })?;
+                        input_values.push(*value);
+                    }
+
+                    let input_indices: Vec<u32> = inputs.iter().map(|w| w.0).collect();
+
+                    operations.push(SpongeOp::Absorb {
+                        reset: *reset_flag,
+                        inputs: input_values,
+                        input_indices,
+                    });
+                }
+                NonPrimitiveOp::HashSqueeze { outputs } => {
+                    // Get the actual values from the witness table
+                    let mut output_values = Vec::new();
+                    for widx in outputs {
+                        let value = self
+                            .witness
+                            .get(widx.0 as usize)
+                            .and_then(|opt| opt.as_ref())
+                            .ok_or(CircuitError::WitnessNotSet { witness_id: *widx })?;
+                        output_values.push(*value);
+                    }
+
+                    let output_indices: Vec<u32> = outputs.iter().map(|w| w.0).collect();
+
+                    operations.push(SpongeOp::Squeeze {
+                        outputs: output_values,
+                        output_indices,
+                    });
+                }
+                NonPrimitiveOp::MmcsVerify { .. } => {
+                    // Skip - already processed in generate_mmcs_trace()
+                }
+            }
+        }
+
+        Ok(SpongeTrace { operations })
+    }
 }
 
 #[cfg(test)]
@@ -587,10 +684,65 @@ mod tests {
     use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
     use p3_symmetric::PseudoCompressionFunction;
 
+    use super::SpongeOp;
     use crate::MmcsPrivateData;
     use crate::builder::CircuitBuilder;
     use crate::op::MmcsVerifyConfig;
+    use crate::ops::HashOps;
     use crate::types::WitnessId;
+
+    #[test]
+    fn test_sponge_trace_generation() {
+        use crate::op::{NonPrimitiveOpConfig, NonPrimitiveOpType};
+
+        let mut builder = CircuitBuilder::<BabyBear>::new();
+
+        // Enable hash operations
+        builder.enable_op(
+            NonPrimitiveOpType::HashAbsorb { reset: true },
+            NonPrimitiveOpConfig::None,
+        );
+        builder.enable_op(
+            NonPrimitiveOpType::HashAbsorb { reset: false },
+            NonPrimitiveOpConfig::None,
+        );
+        builder.enable_op(NonPrimitiveOpType::HashSqueeze, NonPrimitiveOpConfig::None);
+
+        // Create some targets for inputs
+        let input1 = builder.add_const(BabyBear::from_u64(5));
+        let input2 = builder.add_const(BabyBear::from_u64(10));
+        let input3 = builder.add_const(BabyBear::from_u64(15));
+
+        // Add hash absorb operation
+        builder
+            .add_hash_absorb(&[input1, input2, input3], true)
+            .unwrap();
+
+        let circuit = builder.build().unwrap();
+        let runner = circuit.runner();
+
+        let traces = runner.run().unwrap();
+
+        // Verify sponge trace was generated
+        assert_eq!(traces.sponge_trace.operations.len(), 1);
+
+        // Check operation is absorb with correct values
+        match &traces.sponge_trace.operations[0] {
+            SpongeOp::Absorb {
+                reset,
+                inputs,
+                input_indices,
+            } => {
+                assert!(*reset, "Expected reset flag to be true");
+                assert_eq!(inputs.len(), 3);
+                assert_eq!(input_indices.len(), 3);
+                assert_eq!(inputs[0], BabyBear::from_u64(5));
+                assert_eq!(inputs[1], BabyBear::from_u64(10));
+                assert_eq!(inputs[2], BabyBear::from_u64(15));
+            }
+            _ => panic!("Expected absorb operation"),
+        }
+    }
 
     #[test]
     fn test_table_generation_basic() {

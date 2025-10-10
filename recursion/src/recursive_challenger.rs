@@ -71,9 +71,9 @@ pub trait RecursiveChallengerExt<F: Field>: RecursiveChallenger<F> {
 
 /// No-op implementation for `()` type.
 ///
-/// This allows `ChallengeBuilder::new()` (without a challenger) to work with methods
+/// This allows `ChallengeBuilder::with_public_inputs()` to work with methods
 /// that have `RecursiveChallenger` trait bounds. All observations are no-ops,
-/// and sampling returns public inputs.
+/// and sampling returns public inputs. Used for testing or backwards compatibility.
 impl<F: Field> RecursiveChallenger<F> for () {
     fn observe(&mut self, _circuit: &mut CircuitBuilder<F>, _value: Target) {
         // No-op: no challenger to observe with
@@ -82,64 +82,5 @@ impl<F: Field> RecursiveChallenger<F> for () {
     fn sample(&mut self, circuit: &mut CircuitBuilder<F>) -> Target {
         // Fallback to public input when no challenger
         circuit.add_public_input()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use p3_baby_bear::BabyBear;
-    use p3_field::PrimeCharacteristicRing;
-
-    use super::*;
-
-    /// Stub implementation for testing and documentation purposes.
-    ///
-    /// This implementation doesn't perform actual hashing - it just documents
-    /// the interface that a real implementation would provide.
-    ///
-    /// TODO: Remove this once a real Poseidon2-based implementation exists.
-    #[derive(Default)]
-    pub struct StubRecursiveChallenger {
-        /// In a real implementation, this would be the sponge state (e.g., Poseidon2 state)
-        _state: Vec<Target>,
-    }
-
-    impl StubRecursiveChallenger {
-        /// Create a new stub challenger.
-        pub fn new() -> Self {
-            Self { _state: Vec::new() }
-        }
-    }
-
-    impl<F: Field> RecursiveChallenger<F> for StubRecursiveChallenger {
-        fn observe(&mut self, _circuit: &mut CircuitBuilder<F>, _value: Target) {
-            // TODO: In a real implementation:
-            // self.sponge_state = poseidon2_hash(circuit, self.sponge_state, value);
-        }
-
-        fn sample(&mut self, circuit: &mut CircuitBuilder<F>) -> Target {
-            // TODO: In a real implementation:
-            // let challenge = extract_from_sponge(circuit, &mut self.sponge_state);
-            // challenge
-
-            // For now, just return a public input (matching current behavior)
-            circuit.add_public_input()
-        }
-    }
-
-    #[test]
-    fn test_stub_challenger_interface() {
-        let mut circuit = CircuitBuilder::<BabyBear>::new();
-        let mut challenger = StubRecursiveChallenger::new();
-
-        // Test that the interface works
-        let value = circuit.add_const(BabyBear::ONE);
-        challenger.observe(&mut circuit, value);
-
-        let challenge = challenger.sample(&mut circuit);
-        assert!(challenge.0 > 0); // Should have allocated a target
-
-        let challenges = challenger.sample_vec(&mut circuit, 3);
-        assert_eq!(challenges.len(), 3);
     }
 }

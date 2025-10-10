@@ -52,10 +52,14 @@ pub enum Prim<F> {
 /// Non-primitive operation types
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum NonPrimitiveOpType {
-    // Mmcs Verify gate with the argument is the size of the path
+    /// Mmcs Verify gate with the argument is the size of the path
     MmcsVerify,
+    /// FRI verification operation
     FriVerify,
-    // Future: FriVerify, HashAbsorb, etc.
+    /// Hash absorb operation - absorbs field elements into sponge state
+    HashAbsorb { reset: bool },
+    /// Hash squeeze operation - extracts field elements from sponge state
+    HashSqueeze,
 }
 
 /// Non-primitive operation types
@@ -98,6 +102,19 @@ pub enum NonPrimitiveOp {
         index: WitnessId,
         root: MmcsWitnessId,
     },
+
+    /// Hash absorb operation - absorbs a single chunk ofinput field elements into the sponge state.
+    ///
+    /// Public interface (on witness bus):
+    /// - `reset_flag`: Whether to reset the capacity before absorbing
+    /// - `inputs`: The input chunk to be absorbed.
+    HashAbsorb {
+        reset_flag: bool,
+        inputs: Vec<WitnessId>,
+    },
+
+    /// Sponge hash squeeze operation. Produces a single chunk of output.
+    HashSqueeze { outputs: Vec<WitnessId> },
 }
 
 /// Configuration parameters for Mmcs verification operations. When

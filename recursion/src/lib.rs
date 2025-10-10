@@ -6,6 +6,7 @@ extern crate alloc;
 pub type Target = p3_circuit::ExprId;
 
 pub mod challenge_builder;
+pub mod circuit_challenger;
 pub mod circuit_fri_verifier;
 pub mod circuit_verifier;
 pub mod public_inputs;

@@ -7,65 +7,77 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use p3_circuit::CircuitBuilder;
-use p3_field::Field;
+use p3_field::{Field, PrimeCharacteristicRing};
 
 use crate::Target;
+use crate::circuit_challenger::CircuitChallenger;
+
+/// Default sponge rate for the recursive challenger.
+/// TODO: Make this configurable.
+pub const DEFAULT_SPONGE_RATE: usize = 8;
 
 /// Builder for creating challenge targets in the correct Fiat-Shamir order.
 ///
 /// Generic over a challenger type `C` that implements `RecursiveChallenger`.
-/// Use `()` for public-input mode (no observations, just sampling).
+/// By default uses `CircuitChallenger` for proper Fiat-Shamir transformations.
 ///
 /// # Modes
 ///
-/// 1. **Public input mode**: `ChallengeBuilder::new(circuit)` uses `()` challenger
+/// 1. **Default (CircuitChallenger)**: `ChallengeBuilder::new(circuit)`
+///    - Uses `CircuitChallenger<8>` for proper Fiat-Shamir
+///    - Observations hash into sponge state via HashAbsorb
+///    - Sampling extracts from sponge state via HashSqueeze
+///
+/// 2. **Public input mode**: `ChallengeBuilder::with_public_inputs(circuit)`
+///    - Uses `()` as a no-op challenger
 ///    - Observations are no-ops
 ///    - Sampling returns public inputs
+///    - For testing or backwards compatibility
 ///
-/// 2. **Challenger mode**: `ChallengeBuilder::with_challenger(circuit, challenger)`
-///    - Observations hash into challenger state
-///    - Sampling extracts from challenger state
+/// 3. **Custom challenger**: `ChallengeBuilder::with_challenger(circuit, challenger)`
+///    - Use a custom `RecursiveChallenger` implementation
 ///
 /// # Example
 /// ```ignore
-/// // Public input mode (current)
+/// // Default mode (uses CircuitChallenger)
 /// let challenges = ChallengeBuilder::new(circuit)
 ///     .add_alpha_challenge()
 ///     .add_zeta_challenges()
 ///     .build();
 ///
-/// // Challenger mode (future)
-/// let challenger = Poseidon2Challenger::new(...);
-/// let challenges = ChallengeBuilder::with_challenger(circuit, challenger)
-///     .observe_degree_bits(degree_bits, is_zk)
-///     .observe_trace_commitment(&trace)
-///     .observe_public_values(&public_values)
-///     .sample_alpha()
-///     .observe_quotient_chunks(&quotient)
-///     .sample_zeta_and_zeta_next()
+/// // Public input mode (for testing)
+/// let challenges = ChallengeBuilder::with_public_inputs(circuit)
+///     .add_alpha_challenge()
+///     .add_zeta_challenges()
 ///     .build();
 /// ```
-pub struct ChallengeBuilder<'a, F: Field, C = ()> {
+pub struct ChallengeBuilder<
+    'a,
+    F: Field + PrimeCharacteristicRing,
+    C = CircuitChallenger<DEFAULT_SPONGE_RATE>,
+> {
     circuit: &'a mut CircuitBuilder<F>,
     challenger: C,
     challenges: Vec<Target>,
 }
 
-impl<'a, F: Field> ChallengeBuilder<'a, F, ()> {
-    /// Create a new challenge builder in public input mode.
+impl<'a, F: Field + PrimeCharacteristicRing>
+    ChallengeBuilder<'a, F, CircuitChallenger<DEFAULT_SPONGE_RATE>>
+{
+    /// Create a new challenge builder with a `CircuitChallenger`.
     ///
-    /// Uses `()` as a no-op challenger - observations do nothing,
-    /// sampling returns public inputs.
+    /// This is the default mode that performs proper Fiat-Shamir transformations
+    /// using HashAbsorb and HashSqueeze operations.
     pub fn new(circuit: &'a mut CircuitBuilder<F>) -> Self {
         Self {
             circuit,
-            challenger: (),
+            challenger: CircuitChallenger::new(),
             challenges: Vec::new(),
         }
     }
 }
 
-impl<'a, F: Field, C> ChallengeBuilder<'a, F, C>
+impl<'a, F: Field + PrimeCharacteristicRing, C> ChallengeBuilder<'a, F, C>
 where
     C: crate::recursive_challenger::RecursiveChallenger<F>,
 {
@@ -82,33 +94,26 @@ where
     }
 }
 
-impl<'a, F: Field, C> ChallengeBuilder<'a, F, C> {
+impl<'a, F: Field + PrimeCharacteristicRing, C> ChallengeBuilder<'a, F, C> {
     /// Observe degree bits in the Fiat-Shamir transcript.
-    ///
-    /// Hashes the degree information using the challenger.
-    /// For `()` challenger, this is a no-op.
-    pub fn observe_degree_bits(&mut self, degree_bits: usize, is_zk: usize) -> &mut Self
+    pub fn observe_degree_bits(&mut self, degree_bits: usize) -> &mut Self
     where
         C: crate::recursive_challenger::RecursiveChallenger<F>,
     {
-        // TODO: Convert usize to field elements in circuit
-        // let degree_target = self.circuit.add_const(F::from_usize(degree_bits));
-        // let is_zk_target = self.circuit.add_const(F::from_usize(degree_bits - is_zk));
-        // self.challenger.observe(self.circuit, degree_target);
-        // self.challenger.observe(self.circuit, is_zk_target);
-        let _ = (&mut self.challenger, degree_bits, is_zk);
+        let degree_target = self.circuit.add_const(F::from_usize(degree_bits));
+        self.challenger.observe(self.circuit, degree_target);
+
         self
     }
 
     /// Observe trace commitment in the Fiat-Shamir transcript.
     ///
-    /// Hashes the commitment using the challenger.
-    /// For `()` challenger, this is a no-op.
+    /// **TODO**: Currently a no-op. Needs commitment structure to be defined.
     pub fn observe_trace_commitment<Comm>(&mut self, commitment: &Comm) -> &mut Self
     where
         C: crate::recursive_challenger::RecursiveChallenger<F>,
     {
-        // TODO: Hash commitment targets into challenger
+        // TODO: Hash commitment targets into challenger once commitment structure is defined
         // For each target in commitment, call:
         // self.challenger.observe(self.circuit, target);
         let _ = (&mut self.challenger, commitment);
@@ -116,9 +121,6 @@ impl<'a, F: Field, C> ChallengeBuilder<'a, F, C> {
     }
 
     /// Observe public values in the Fiat-Shamir transcript.
-    ///
-    /// Hashes each public value using the challenger.
-    /// For `()` challenger, this is a no-op.
     pub fn observe_public_values(&mut self, public_values: &[Target]) -> &mut Self
     where
         C: crate::recursive_challenger::RecursiveChallenger<F>,
@@ -129,9 +131,8 @@ impl<'a, F: Field, C> ChallengeBuilder<'a, F, C> {
 
     /// Sample the alpha challenge from the challenger.
     ///
-    /// For `()` challenger, returns a public input.
-    /// For real challenger, extracts from sponge state.
-    pub fn sample_alpha(&mut self) -> &mut Self
+    /// Extracts a challenge from the challenger's sponge state.
+    fn sample_alpha(&mut self) -> &mut Self
     where
         C: crate::recursive_challenger::RecursiveChallenger<F>,
     {
@@ -142,26 +143,26 @@ impl<'a, F: Field, C> ChallengeBuilder<'a, F, C> {
 
     /// Add the alpha challenge (used for folding constraints).
     ///
-    /// This is a convenience method that will eventually perform the full observation sequence.
-    ///
-    /// Currently just samples alpha as a public input (observations are no-ops).
+    /// This is a convenience method that samples the alpha challenge.
+    /// Observations of degree_bits, trace_commitment, and public_values should
+    /// be done before calling this method when using a real challenger.
     pub fn add_alpha_challenge(&mut self) -> &mut Self
     where
         C: crate::recursive_challenger::RecursiveChallenger<F>,
     {
-        // TODO: Observe degree_bits, trace_commitment, and public_values.
         self.sample_alpha()
     }
 
     /// Observe quotient chunks commitment in the Fiat-Shamir transcript.
     ///
-    /// Hashes the commitment using the challenger.
-    /// For `()` challenger, this is a no-op.
+    /// Hashes the commitment targets using the challenger.
+    ///
+    /// **TODO**: Currently a no-op. Needs commitment structure to be defined.
     pub fn observe_quotient_chunks<Comm>(&mut self, commitment: &Comm) -> &mut Self
     where
         C: crate::recursive_challenger::RecursiveChallenger<F>,
     {
-        // TODO: Hash commitment targets into challenger
+        // TODO: Hash commitment targets into challenger once commitment structure is defined
         // For each target in commitment, call:
         // self.challenger.observe(self.circuit, target);
         let _ = (&mut self.challenger, commitment);
@@ -170,13 +171,14 @@ impl<'a, F: Field, C> ChallengeBuilder<'a, F, C> {
 
     /// Observe random commitment in the Fiat-Shamir transcript (ZK mode only).
     ///
-    /// Hashes the commitment if present using the challenger.
-    /// For `()` challenger, this is a no-op.
+    /// Hashes the commitment targets if present using the challenger.
+    ///
+    /// **TODO**: Currently a no-op. Needs commitment structure to be defined.
     pub fn observe_random_commitment<Comm>(&mut self, commitment: Option<&Comm>) -> &mut Self
     where
         C: crate::recursive_challenger::RecursiveChallenger<F>,
     {
-        // TODO: Hash commitment targets into challenger if present
+        // TODO: Hash commitment targets into challenger once commitment structure is defined
         // if let Some(commit) = commitment {
         //     for target in commit { self.challenger.observe(self.circuit, target); }
         // }
@@ -186,20 +188,18 @@ impl<'a, F: Field, C> ChallengeBuilder<'a, F, C> {
 
     /// Sample the zeta and zeta_next challenges from the challenger.
     ///
-    /// For `()` challenger, returns public inputs.
-    /// For real challenger:
-    /// - Zeta is sampled from the challenger
-    /// - Zeta_next is computed from zeta (next point in trace domain)
-    pub fn sample_zeta_and_zeta_next(&mut self) -> &mut Self
+    /// - Zeta is sampled from the challenger's sponge state
+    /// - Zeta_next is also sampled (TODO: should be computed from zeta)
+    fn sample_zeta_and_zeta_next(&mut self) -> &mut Self
     where
         C: crate::recursive_challenger::RecursiveChallenger<F>,
     {
         // Sample zeta from challenger
         let zeta = self.challenger.sample(self.circuit);
 
-        // TODO: Compute zeta_next as next point in trace domain
-        // This requires access to the trace domain, which we don't have here
-        // For now, sample zeta_next as well (will need refactoring)
+        // TODO: Compute zeta_next as next point in trace domain (zeta * g)
+        // This requires access to the trace domain generator
+        // For now, sample zeta_next independently
         let zeta_next = self.challenger.sample(self.circuit);
 
         self.challenges.push(zeta);
@@ -207,24 +207,32 @@ impl<'a, F: Field, C> ChallengeBuilder<'a, F, C> {
         self
     }
 
-    /// Add the zeta and zeta_next challenges (out-of-domain evaluation points)
-    /// after observing quotient chunks and random commitment.
+    /// Add the zeta and zeta_next challenges (out-of-domain evaluation points).
+    ///
+    /// This is a convenience method that samples the zeta challenges.
+    /// Observations of quotient_chunks and random_commitment should be done
+    /// before calling this method when using a real challenger.
     pub fn add_zeta_challenges(&mut self) -> &mut Self
     where
         C: crate::recursive_challenger::RecursiveChallenger<F>,
     {
-        // TODO: Observe quotient_chunks and random_commitment
         self.sample_zeta_and_zeta_next()
     }
 
     /// Add PCS-specific challenges (e.g., FRI betas and query indices).
     ///
-    /// The exact number and meaning depends on the PCS implementation.
+    /// Samples the specified number of challenges from the challenger.
+    /// The exact meaning depends on the PCS implementation.
     ///
-    /// TODO: Replace with actual PCS challenger observations.
-    pub fn add_pcs_challenges(&mut self, count: usize) -> &mut Self {
+    /// **TODO**: This is a temporary helper. PCS challenge generation should be
+    /// handled by the PCS implementation directly with proper observations.
+    pub fn add_pcs_challenges(&mut self, count: usize) -> &mut Self
+    where
+        C: crate::recursive_challenger::RecursiveChallenger<F>,
+    {
         for _ in 0..count {
-            self.challenges.push(self.circuit.add_public_input());
+            let challenge = self.challenger.sample(self.circuit);
+            self.challenges.push(challenge);
         }
         self
     }
