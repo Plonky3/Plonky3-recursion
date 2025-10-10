@@ -11,6 +11,7 @@ use p3_field::{Field, PrimeCharacteristicRing};
 use p3_fri::{TwoAdicFriPcs, create_test_fri_params};
 use p3_matrix::dense::RowMajorMatrix;
 use p3_merkle_tree::MerkleTreeMmcs;
+use p3_recursion::public_inputs::{CommitmentOpening, FriVerifierInputs};
 use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
@@ -272,9 +273,6 @@ fn pack_inputs(
     index_bits_all_queries: Vec<Vec<Challenge>>,
     commitments_with_points: CommitmentsWithPoints,
 ) -> Vec<Challenge> {
-    use p3_recursion::public_inputs::{CommitmentOpening, FriVerifierInputs};
-
-    // Convert CommitmentsWithPoints to Vec<CommitmentOpening>
     let commitment_openings = commitments_with_points
         .into_iter()
         .map(|(commitment, mats)| {

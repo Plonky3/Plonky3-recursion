@@ -81,7 +81,6 @@ fn test_fibonacci_verifier() -> Result<(), VerificationError> {
         Witness<Val<MyConfig>>,
     >;
 
-    // ============ PHASE 1: Circuit Building ============
     let mut circuit_builder = CircuitBuilder::new();
 
     // Allocate all targets
@@ -110,7 +109,6 @@ fn test_fibonacci_verifier() -> Result<(), VerificationError> {
     // Build the circuit.
     let circuit = circuit_builder.build()?;
 
-    // ============ PHASE 2: Execution ============
     let mut runner = circuit.runner();
 
     // Generate all the challenge values.

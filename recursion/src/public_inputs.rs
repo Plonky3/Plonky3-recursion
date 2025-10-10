@@ -107,9 +107,6 @@ pub struct CommitmentOpening<F: Field> {
 }
 
 /// Helper for constructing public inputs for FRI-only verification circuits.
-///
-/// This is used in standalone FRI tests where we only verify the FRI proof
-/// without the full STARK AIR constraints.
 pub struct FriVerifierInputs<F: Field> {
     /// Values from FRI proof (commitments, opened values, final poly, etc.)
     pub fri_proof_values: Vec<F>,
@@ -135,21 +132,14 @@ impl<F: Field> FriVerifierInputs<F> {
     pub fn build(self) -> Vec<F> {
         let mut builder = PublicInputBuilder::new();
 
-        // 1. FRI proof values
         builder.add_proof_values(self.fri_proof_values);
-
-        // 2. Alpha challenge
         builder.add_challenge(self.alpha);
-
-        // 3. Beta challenges
         builder.add_challenges(self.betas);
 
-        // 4. Query index bits (pre-decomposed)
         for bits in self.query_index_bits {
             builder.add_query_index_bits(bits);
         }
 
-        // 5. Commitment openings
         for opening in self.commitment_openings {
             builder.add_challenge(opening.commitment);
             for (z, values) in opening.opened_points {
@@ -195,16 +185,10 @@ where
     pub fn build(self) -> Vec<EF> {
         let mut builder = PublicInputBuilder::new();
 
-        // 1. AIR public values (converted to extension field)
         builder.add_proof_values(self.air_public_values.iter().map(|&v| v.into()));
-
-        // 2. Proof values
         builder.add_proof_values(self.proof_values);
-
-        // 3. ALL challenges (including query indices)
         builder.add_challenges(self.challenges.iter().copied());
 
-        // 4. Query index bit decompositions
         // The circuit calls decompose_to_bits on each query index,
         // which creates MAX_QUERY_INDEX_BITS additional public inputs per query
         let num_regular_challenges = self.challenges.len() - self.num_queries;
@@ -275,13 +259,13 @@ pub struct StarkVerifierInputsBuilder<SC, Comm, OpeningProof>
 where
     SC: p3_uni_stark::StarkGenericConfig,
     Comm: crate::recursive_traits::Recursive<
-        SC::Challenge,
-        Input = <SC::Pcs as p3_commit::Pcs<SC::Challenge, SC::Challenger>>::Commitment,
-    >,
+            SC::Challenge,
+            Input = <SC::Pcs as p3_commit::Pcs<SC::Challenge, SC::Challenger>>::Commitment,
+        >,
     OpeningProof: crate::recursive_traits::Recursive<
-        SC::Challenge,
-        Input = <SC::Pcs as p3_commit::Pcs<SC::Challenge, SC::Challenger>>::Proof,
-    >,
+            SC::Challenge,
+            Input = <SC::Pcs as p3_commit::Pcs<SC::Challenge, SC::Challenger>>::Proof,
+        >,
 {
     /// AIR public input targets
     pub air_public_targets: Vec<crate::Target>,
@@ -293,13 +277,13 @@ impl<SC, Comm, OpeningProof> StarkVerifierInputsBuilder<SC, Comm, OpeningProof>
 where
     SC: p3_uni_stark::StarkGenericConfig,
     Comm: crate::recursive_traits::Recursive<
-        SC::Challenge,
-        Input = <SC::Pcs as p3_commit::Pcs<SC::Challenge, SC::Challenger>>::Commitment,
-    >,
+            SC::Challenge,
+            Input = <SC::Pcs as p3_commit::Pcs<SC::Challenge, SC::Challenger>>::Commitment,
+        >,
     OpeningProof: crate::recursive_traits::Recursive<
-        SC::Challenge,
-        Input = <SC::Pcs as p3_commit::Pcs<SC::Challenge, SC::Challenger>>::Proof,
-    >,
+            SC::Challenge,
+            Input = <SC::Pcs as p3_commit::Pcs<SC::Challenge, SC::Challenger>>::Proof,
+        >,
 {
     /// Allocate all targets during circuit building.
     ///
@@ -322,7 +306,8 @@ where
 
         // Allocate proof targets
         let mut lens = crate::recursive_traits::ProofTargets::<SC, Comm, OpeningProof>::lens(proof);
-        let proof_targets = crate::recursive_traits::ProofTargets::new(circuit, &mut lens, proof.degree_bits);
+        let proof_targets =
+            crate::recursive_traits::ProofTargets::new(circuit, &mut lens, proof.degree_bits);
 
         Self {
             air_public_targets,
@@ -349,17 +334,12 @@ where
     ) -> Vec<SC::Challenge>
     where
         p3_uni_stark::Val<SC>: PrimeField64,
-        SC::Challenge: BasedVectorSpace<p3_uni_stark::Val<SC>> 
-            + From<p3_uni_stark::Val<SC>>,
+        SC::Challenge: BasedVectorSpace<p3_uni_stark::Val<SC>> + From<p3_uni_stark::Val<SC>>,
     {
-        let proof_values = crate::recursive_traits::ProofTargets::<SC, Comm, OpeningProof>::get_values(proof);
-        
-        construct_stark_verifier_inputs(
-            air_public_values,
-            &proof_values,
-            challenges,
-            num_queries,
-        )
+        let proof_values =
+            crate::recursive_traits::ProofTargets::<SC, Comm, OpeningProof>::get_values(proof);
+
+        construct_stark_verifier_inputs(air_public_values, &proof_values, challenges, num_queries)
     }
 }
 
