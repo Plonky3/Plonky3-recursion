@@ -219,14 +219,9 @@ impl<
     // TODO: We could also get the recursive struct just from the config.
 
     /// Allocates the necessary `circuit` targets for storing `input`'s public data.
-    fn new(
-        circuit: &mut CircuitBuilder<SC::Challenge>,
-        input: &Self::Input,
-    ) -> Self {
-        let commitments_targets =
-            CommitmentTargets::new(circuit, &input.commitments);
-        let opened_values_targets =
-            OpenedValuesTargets::new(circuit, &input.opened_values);
+    fn new(circuit: &mut CircuitBuilder<SC::Challenge>, input: &Self::Input) -> Self {
+        let commitments_targets = CommitmentTargets::new(circuit, &input.commitments);
+        let opened_values_targets = OpenedValuesTargets::new(circuit, &input.opened_values);
         let opening_proof = OpeningProof::new(circuit, &input.opening_proof);
 
         Self {
@@ -304,10 +299,7 @@ where
 impl<SC: StarkGenericConfig> Recursive<SC::Challenge> for OpenedValuesTargets<SC> {
     type Input = OpenedValues<SC::Challenge>;
 
-    fn new(
-        circuit: &mut CircuitBuilder<SC::Challenge>,
-        input: &Self::Input,
-    ) -> Self {
+    fn new(circuit: &mut CircuitBuilder<SC::Challenge>, input: &Self::Input) -> Self {
         let trace_local_len = input.trace_local.len();
         let mut trace_local_targets = Vec::with_capacity(trace_local_len);
         for _ in 0..trace_local_len {

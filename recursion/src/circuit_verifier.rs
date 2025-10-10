@@ -421,11 +421,7 @@ mod tests {
     impl<F: Field> Recursive<F> for EmptyTarget {
         type Input = ();
 
-        fn new(
-            _circuit: &mut p3_circuit::CircuitBuilder<F>,
-            _input: &Self::Input,
-        ) -> Self {
-        }
+        fn new(_circuit: &mut p3_circuit::CircuitBuilder<F>, _input: &Self::Input) -> Self {}
 
         fn get_values(_input: &Self::Input) -> vec::Vec<F> {
             vec![]

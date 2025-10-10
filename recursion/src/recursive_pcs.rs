@@ -90,9 +90,9 @@ impl<
         let num_query_proofs = input.query_proofs.len();
         let mut query_proofs = Vec::with_capacity(num_query_proofs);
         for query in input.query_proofs.iter() {
-            query_proofs.push(
-                QueryProofTargets::<F, EF, InputProof, RecMmcs>::new(circuit, query),
-            );
+            query_proofs.push(QueryProofTargets::<F, EF, InputProof, RecMmcs>::new(
+                circuit, query,
+            ));
         }
 
         let final_poly_len = input.final_poly.len();
@@ -162,11 +162,9 @@ impl<
         let num_commit_phase_openings = input.commit_phase_openings.len();
         let mut commit_phase_openings = Vec::with_capacity(num_commit_phase_openings);
         for commitment in input.commit_phase_openings.iter() {
-            commit_phase_openings.push(
-                CommitPhaseProofStepTargets::<F, EF, RecMmcs>::new(
-                    circuit, commitment,
-                ),
-            );
+            commit_phase_openings.push(CommitPhaseProofStepTargets::<F, EF, RecMmcs>::new(
+                circuit, commitment,
+            ));
         }
         Self {
             input_proof,
@@ -455,10 +453,7 @@ impl<F: Field, EF: ExtensionField<F>, Inner: RecursiveMmcs<F, EF>> Recursive<EF>
         let num_batch_openings = input.len();
         let mut batch_openings = Vec::with_capacity(num_batch_openings);
         for batch_opening in input.iter() {
-            batch_openings.push(BatchOpeningTargets::new(
-                circuit,
-                batch_opening,
-            ));
+            batch_openings.push(BatchOpeningTargets::new(circuit, batch_opening));
         }
 
         batch_openings

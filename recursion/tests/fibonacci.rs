@@ -91,11 +91,10 @@ fn test_fibonacci_verifier() -> Result<(), VerificationError> {
     >;
 
     // Add the targets for the proof.
-    let proof_targets =
-        ProofTargets::<MyConfig, HashTargets<F, DIGEST_ELEMS>, InnerFri>::new(
-            &mut circuit_builder,
-            &proof,
-        );
+    let proof_targets = ProofTargets::<MyConfig, HashTargets<F, DIGEST_ELEMS>, InnerFri>::new(
+        &mut circuit_builder,
+        &proof,
+    );
 
     let all_proof_values =
         ProofTargets::<MyConfig, HashTargets<F, DIGEST_ELEMS>, InnerFri>::get_values(&proof);
