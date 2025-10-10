@@ -316,8 +316,22 @@ struct FriSetup {
 }
 
 impl FriSetup {
-    fn new(pcs: PCS, perm: Perm<16>, log_blowup: usize, log_final_poly_len: usize, pow_bits: usize, group_sizes: Vec<Vec<u8>>) -> Self {
-        Self { pcs, perm, log_blowup, log_final_poly_len, pow_bits, group_sizes }
+    fn new(
+        pcs: PCS,
+        perm: Perm<16>,
+        log_blowup: usize,
+        log_final_poly_len: usize,
+        pow_bits: usize,
+        group_sizes: Vec<Vec<u8>>,
+    ) -> Self {
+        Self {
+            pcs,
+            perm,
+            log_blowup,
+            log_final_poly_len,
+            pow_bits,
+            group_sizes,
+        }
     }
 }
 
@@ -336,11 +350,25 @@ fn generate_setup(log_final_poly_len: usize, group_sizes: Vec<Vec<u8>>) -> FriSe
     let pow_bits = fri_params.proof_of_work_bits;
     let pcs = PCS::new(dft, val_mmcs, fri_params);
 
-    FriSetup::new(pcs, perm, log_blowup, log_final_poly_len, pow_bits, group_sizes)
+    FriSetup::new(
+        pcs,
+        perm,
+        log_blowup,
+        log_final_poly_len,
+        pow_bits,
+        group_sizes,
+    )
 }
 
 fn run_fri_test(setup: FriSetup, degree_bits: usize) {
-    let FriSetup { pcs, perm, log_blowup, log_final_poly_len, pow_bits, group_sizes } = setup;
+    let FriSetup {
+        pcs,
+        perm,
+        log_blowup,
+        log_final_poly_len,
+        pow_bits,
+        group_sizes,
+    } = setup;
 
     // Produce two proofs with different inputs (same shape), to reuse one circuit
     let result_1 = produce_inputs_multi(
