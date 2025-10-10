@@ -25,7 +25,8 @@ pub struct MmcsTrace<F> {
 pub struct MmcsPathTrace<F> {
     /// Left operand values (current hash). A vector of field elements representing a digest.
     pub left_values: Vec<Vec<F>>,
-    /// Left operand indices.
+    /// Left operand indices. These are the witness indices of the original leaf digest
+    /// used as the left operand; the evolving state is private and not on the witness bus.
     pub left_index: Vec<Vec<u32>>,
     /// Right operand values (sibling hash). A vector of field elements representing a digest
     pub right_values: Vec<Vec<F>>,
@@ -83,7 +84,19 @@ impl<F: Field + Clone + Default> MmcsPrivateData<F> {
                 expected: siblings.len(),
                 got: directions.len(),
             });
-        };
+        }
+        // Enforce configured maximum height to avoid creating unreachable path rows.
+        if siblings.len() > config.max_tree_height {
+            return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
+                op: NonPrimitiveOpType::MmcsVerify,
+                operation_index: 0,
+                expected: alloc::format!(
+                    "path length <= max_tree_height ({})",
+                    config.max_tree_height
+                ),
+                got: alloc::format!("{}", siblings.len()),
+            });
+        }
         // The last sibling can't contain an extra sibling
         if let Some((_, extra_sibling)) = siblings.last()
             && extra_sibling.is_some()
@@ -347,7 +360,12 @@ mod tests {
         };
 
         let compress = MockCompression {};
-        let config = MmcsVerifyConfig::mock_config();
+        // Use a config that supports the path length used in this test.
+        let config = MmcsVerifyConfig {
+            base_field_digest_elems: 1,
+            ext_field_digest_elems: 1,
+            max_tree_height: 3,
+        };
 
         let private_data = MmcsPrivateData::new::<BabyBear, _, 1>(
             &compress,
@@ -359,6 +377,37 @@ mod tests {
         .unwrap();
 
         assert_eq!(private_data, expected_private_data);
+    }
+
+    #[test]
+    fn test_mmcs_path_too_tall_rejected() {
+        // Path length (3) exceeds configured max_tree_height (2)
+        let compress = MockCompression {};
+        let config = MmcsVerifyConfig {
+            base_field_digest_elems: 1,
+            ext_field_digest_elems: 1,
+            max_tree_height: 2,
+        };
+
+        let leaf = [F::from_u64(1)];
+        let siblings = [
+            (vec![F::from_u64(2)], None),
+            (vec![F::from_u64(3)], None),
+            (vec![F::from_u64(4)], None),
+        ];
+        let directions = [false, true, false];
+
+        let res = MmcsPrivateData::new::<BabyBear, _, 1>(
+            &compress,
+            &config,
+            &leaf,
+            &siblings,
+            &directions,
+        );
+        assert!(
+            res.is_err(),
+            "Expected path taller than max_tree_height to be rejected"
+        );
     }
 
     #[test]

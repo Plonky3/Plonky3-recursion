@@ -14,7 +14,7 @@ use crate::types::{ExprId, NonPrimitiveOpId};
 /// is packing digests into extension field elements.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct MmcsVerifyConfig {
-    /// The number of base field elements required for represeting a digest.
+    /// The number of base field elements required for representing a digest.
     pub base_field_digest_elems: usize,
     /// The number of extension field elements required for representing a digest.
     pub ext_field_digest_elems: usize,
@@ -29,7 +29,7 @@ impl MmcsVerifyConfig {
         2 * self.ext_field_digest_elems + 1
     }
 
-    /// Convert a digest represented as base field elements into extension field elements.
+    /// Convert a digest represented as extension field elements into base field elements.
     pub fn ext_to_base<F, EF, const DIGEST_ELEMS: usize>(
         &self,
         digest: &[EF],
@@ -38,7 +38,16 @@ impl MmcsVerifyConfig {
         F: Field,
         EF: ExtensionField<F> + Clone,
     {
-        digest
+        // Ensure the number of extension limbs matches the configuration.
+        if digest.len() != self.ext_field_digest_elems {
+            return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
+                op: NonPrimitiveOpType::MmcsVerify,
+                expected: self.ext_field_digest_elems,
+                got: digest.len(),
+            });
+        }
+
+        let flattened: Vec<F> = digest
             .iter()
             .flat_map(|limb| {
                 if self.is_packing() {
@@ -48,13 +57,16 @@ impl MmcsVerifyConfig {
                 }
             })
             .copied()
-            .collect::<Vec<F>>()
-            .try_into()
-            .map_err(|_| CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
+            .collect();
+
+        // Ensure the flattened base representation matches the expected compile-time size.
+        flattened.clone().try_into().map_err(|_| {
+            CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
                 op: NonPrimitiveOpType::MmcsVerify,
-                expected: self.ext_field_digest_elems,
-                got: digest.len(),
-            })
+                expected: DIGEST_ELEMS,
+                got: flattened.len(),
+            }
+        })
     }
 
     /// Convert a digest represented as base field elements into extension field elements.
@@ -145,7 +157,7 @@ impl MmcsVerifyConfig {
         }
     }
 
-    /// Returns wether digests are packed into extension field elements or not.
+    /// Returns whether digests are packed into extension field elements or not.
     pub const fn is_packing(&self) -> bool {
         self.base_field_digest_elems > self.ext_field_digest_elems
     }
@@ -156,7 +168,7 @@ pub trait MmcsOps<F> {
     /// Add a Mmcs verification constraint (non-primitive operation)
     ///
     /// Non-primitive operations are complex constraints that:
-    /// - Take existing expressions as inputs (leaf_expr, directions_expr, root_expr)
+    /// - Take existing expressions as inputs (leaf_expr, index_expr, root_expr)
     /// - Add verification constraints to the circuit
     /// - Don't produce new ExprIds (unlike primitive ops)
     /// - Are kept separate from primitives to avoid disrupting optimization
