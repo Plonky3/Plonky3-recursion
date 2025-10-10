@@ -8,10 +8,14 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use p3_circuit::CircuitBuilder;
-use p3_field::Field;
+use p3_field::PrimeCharacteristicRing;
+use p3_uni_stark::StarkGenericConfig;
 
 use crate::Target;
-use crate::target_allocator::TargetAllocator;
+use crate::circuit_challenger::CircuitChallenger;
+use crate::circuit_verifier::ObservableCommitment;
+use crate::recursive_challenger::RecursiveChallenger;
+use crate::recursive_traits::{ProofTargets, Recursive};
 
 /// Base STARK challenges (independent of PCS choice).
 ///
@@ -29,24 +33,76 @@ pub struct StarkChallenges {
 }
 
 impl StarkChallenges {
-    /// Allocate base STARK challenge targets.
+    /// Allocate base STARK challenge targets using Fiat-Shamir transform.
     ///
-    /// These challenges are allocated as public inputs. In the native verifier,
-    /// they would be sampled from the challenger after specific observations.
+    /// It will mutate the challenger state.
     ///
-    /// TODO: Integrate with recursive challenger for proper Fiat-Shamir observations.
-    pub fn allocate<F: Field>(circuit: &mut CircuitBuilder<F>) -> Self {
-        let mut alloc = TargetAllocator::new(circuit);
+    /// # Fiat-Shamir Ordering
+    /// 1. Observe domain parameters (degree_bits, log_quotient_degree)
+    /// 2. Observe trace commitment
+    /// 3. Observe public values
+    /// 4. **Sample alpha** (for constraint folding)
+    /// 5. Observe quotient chunks commitment
+    /// 6. Observe random commitment (if ZK mode)
+    /// 7. **Sample zeta** (OOD evaluation point)
+    /// 8. **Sample zeta_next** (next row evaluation point)
+    /// 9. Return challenger for PCS to continue sampling (betas, query indices)
+    pub fn allocate<SC, Comm, OpeningProof>(
+        circuit: &mut CircuitBuilder<SC::Challenge>,
+        challenger: &mut CircuitChallenger,
+        proof_targets: &ProofTargets<SC, Comm, OpeningProof>,
+        public_values: &[Target],
+        log_quotient_degree: usize,
+    ) -> Self
+    where
+        SC: StarkGenericConfig,
+        SC::Challenge: PrimeCharacteristicRing,
+        Comm: Recursive<SC::Challenge> + ObservableCommitment,
+        OpeningProof: Recursive<SC::Challenge>,
+    {
+        // Extract commitment targets from proof
+        let trace_comm_targets = proof_targets
+            .commitments_targets
+            .trace_targets
+            .to_observation_targets();
+        let quotient_comm_targets = proof_targets
+            .commitments_targets
+            .quotient_chunks_targets
+            .to_observation_targets();
+        let random_comm_targets = proof_targets
+            .commitments_targets
+            .random_commit
+            .as_ref()
+            .map(|c| c.to_observation_targets());
 
-        // TODO: Observe degree_bits and degree_bits - is_zk
-        // TODO: Observe trace commitment
-        // TODO: Observe public values
-        let alpha = alloc.alloc("alpha challenge");
+        // Observe domain parameters
+        let degree_bits_target =
+            circuit.add_const(SC::Challenge::from_usize(proof_targets.degree_bits));
+        let log_quotient_degree_target =
+            circuit.add_const(SC::Challenge::from_usize(log_quotient_degree));
+        challenger.observe(circuit, degree_bits_target);
+        challenger.observe(circuit, log_quotient_degree_target);
 
-        // TODO: Observe quotient chunks commitment
-        // TODO: Observe random commitment (if ZK mode)
-        let zeta = alloc.alloc("zeta challenge");
-        let zeta_next = alloc.alloc("zeta_next challenge");
+        // Observe trace commitment
+        challenger.observe_slice(circuit, &trace_comm_targets);
+
+        // Observe public values
+        challenger.observe_slice(circuit, public_values);
+
+        // Sample alpha challenge
+        let alpha = challenger.sample(circuit);
+
+        // Observe quotient chunks commitment
+        challenger.observe_slice(circuit, &quotient_comm_targets);
+
+        // Observe random commitment if in ZK mode
+        if let Some(random_comm) = random_comm_targets {
+            challenger.observe_slice(circuit, &random_comm);
+        }
+
+        // Sample zeta and zeta_next challenges
+        let zeta = challenger.sample(circuit);
+        let zeta_next = challenger.sample(circuit);
 
         Self {
             alpha,
@@ -76,33 +132,19 @@ impl StarkChallenges {
 
 #[cfg(test)]
 mod tests {
-    use p3_baby_bear::BabyBear;
+    use p3_circuit::ExprId;
 
     use super::*;
 
     #[test]
-    fn test_stark_challenges_allocation() {
-        let mut circuit = CircuitBuilder::<BabyBear>::new();
-
-        let challenges = StarkChallenges::allocate(&mut circuit);
-
-        // Verify all challenges are allocated
-        assert!(challenges.alpha.0 > 0);
-        assert!(challenges.zeta.0 > 0);
-        assert!(challenges.zeta_next.0 > 0);
-
-        // Verify they're sequential
-        assert_eq!(challenges.zeta.0, challenges.alpha.0 + 1);
-        assert_eq!(challenges.zeta_next.0, challenges.zeta.0 + 1);
-    }
-
-    #[test]
     fn test_stark_challenges_to_vec() {
-        let mut circuit = CircuitBuilder::<BabyBear>::new();
+        let challenges = StarkChallenges {
+            alpha: ExprId(1),
+            zeta: ExprId(2),
+            zeta_next: ExprId(3),
+        };
 
-        let challenges = StarkChallenges::allocate(&mut circuit);
         let vec = challenges.to_vec();
-
         assert_eq!(vec.len(), 3);
         assert_eq!(vec[0], challenges.alpha);
         assert_eq!(vec[1], challenges.zeta);

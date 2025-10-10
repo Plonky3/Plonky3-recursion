@@ -1,5 +1,6 @@
 use alloc::vec;
 use alloc::vec::Vec;
+use core::marker::PhantomData;
 
 use itertools::{Itertools, zip_eq};
 use p3_circuit::utils::ColumnsTargets;
@@ -11,6 +12,7 @@ use thiserror::Error;
 
 use crate::Target;
 use crate::challenges::StarkChallenges;
+use crate::circuit_challenger::CircuitChallenger;
 use crate::recursive_generation::GenerationError;
 use crate::recursive_pcs::MAX_QUERY_INDEX_BITS;
 use crate::recursive_traits::{
@@ -47,14 +49,31 @@ pub enum VerificationError {
     Generation(#[from] GenerationError),
 }
 
+/// Helper trait to extract commitment targets for challenger observation.
+///
+/// This allows us to observe commitments in the Fiat-Shamir transform without
+/// depending on the actual commitment type.
+pub trait ObservableCommitment {
+    /// Get the target representation of the commitment for challenger observation.
+    fn to_observation_targets(&self) -> Vec<Target>;
+}
+
 // Method to get all the challenge targets.
 fn get_circuit_challenges<
+    A: RecursiveAir<SC::Challenge>,
     SC: StarkGenericConfig,
-    Comm: Recursive<SC::Challenge, Input = <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment>,
+    Comm: Recursive<
+            SC::Challenge,
+            Input = <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment,
+        > + ObservableCommitment,
     InputProof: Recursive<SC::Challenge>,
     OpeningProof: Recursive<SC::Challenge>,
 >(
+    air: &A,
+    config: &SC,
     proof_targets: &ProofTargets<SC, Comm, OpeningProof>,
+    public_values: &[Target],
+    opened_values: &OpenedValuesTargets<SC>,
     circuit: &mut CircuitBuilder<SC::Challenge>,
     pcs_params: &PcsVerifierParams<SC, InputProof, OpeningProof, Comm>,
 ) -> Vec<Target>
@@ -66,12 +85,31 @@ where
             Comm,
             <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain,
         >,
+    SC::Challenge: PrimeCharacteristicRing,
 {
-    // Allocate base STARK challenges (alpha, zeta, zeta_next)
-    let base_challenges = StarkChallenges::allocate(circuit);
+    // Get log quotient degree from AIR parameters
+    let log_quotient_degree = A::get_log_quotient_degree(air, public_values.len(), config.is_zk());
 
-    // Get PCS-specific challenges (e.g., FRI betas and query indices)
-    let pcs_challenges = SC::Pcs::get_challenges_circuit(circuit, proof_targets, pcs_params);
+    let mut challenger = CircuitChallenger::new();
+
+    // Allocate base STARK challenges (alpha, zeta, zeta_next)
+    let base_challenges = StarkChallenges::allocate::<SC, Comm, OpeningProof>(
+        circuit,
+        &mut challenger,
+        proof_targets,
+        public_values,
+        log_quotient_degree,
+    );
+
+    // TODO: Maybe abstract PcsChallenges object into a trait?
+    // Get PCS-specific challenges (FRI alpha, betas, query indices)
+    let pcs_challenges = SC::Pcs::get_challenges_circuit(
+        circuit,
+        &mut challenger,
+        proof_targets,
+        opened_values,
+        pcs_params,
+    );
 
     // Return flat vector: [alpha, zeta, zeta_next, ...pcs_challenges]
     let mut all_challenges = base_challenges.to_vec();
@@ -83,12 +121,14 @@ where
 ///
 /// # Parameters
 /// - `public_values`: The AIR public input values
-/// - `proof_values`: Values extracted from the proof targets
-/// - `challenges`: All challenge values
+/// - `proof_values`: Values extracted from the proof targets  
+/// - `challenges`: All challenge values (alpha, zeta, zeta_next, betas, query indices)
 /// - `num_queries`: Number of FRI query proofs
 ///
 /// # Returns
 /// A vector of field elements ready to be passed to `CircuitRunner::set_public_inputs`
+// TODO: Challenges are sampled inside the circuit but still provided as public inputs until
+// some sponge in the circuit is implemented (Poseidon2?).
 pub fn construct_verifier_public_inputs<F, EF>(
     public_values: &[F],
     proof_values: &[EF],
@@ -149,7 +189,8 @@ pub fn verify_circuit<
     Comm: Recursive<
             SC::Challenge,
             Input = <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment,
-        > + Clone,
+        > + Clone
+        + ObservableCommitment,
     InputProof: Recursive<SC::Challenge>,
     OpeningProof: Recursive<SC::Challenge>,
 >(
@@ -169,7 +210,18 @@ where
             Comm,
             <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain,
         >,
+    SC::Challenge: PrimeCharacteristicRing,
 {
+    use p3_circuit::op::{NonPrimitiveOpConfig, NonPrimitiveOpType};
+
+    // Enable hash operations for CircuitChallenger
+    // Note: These are placeholders until Poseidon2CircuitAir is implemented
+    circuit.enable_op(
+        NonPrimitiveOpType::HashAbsorb { reset: true },
+        NonPrimitiveOpConfig::None,
+    );
+    circuit.enable_op(NonPrimitiveOpType::HashSqueeze, NonPrimitiveOpConfig::None);
+
     let ProofTargets {
         commitments_targets:
             CommitmentTargets {
@@ -206,9 +258,18 @@ where
         .map(|domain| pcs.natural_domain_for_degree(pcs.size(domain) << (config.is_zk())))
         .collect_vec();
 
-    // Challenger is called here. But we don't have the interactions or hash tables yet.
-    let challenge_targets = get_circuit_challenges::<SC, Comm, InputProof, OpeningProof>(
+    let challenge_targets = get_circuit_challenges::<A, SC, Comm, InputProof, OpeningProof>(
+        air,
+        config,
         proof_targets,
+        public_values,
+        &OpenedValuesTargets {
+            trace_local_targets: opened_trace_local_targets.clone(),
+            trace_next_targets: opened_trace_next_targets.clone(),
+            quotient_chunks_targets: opened_quotient_chunks_targets.clone(),
+            random_targets: opened_random.clone(),
+            _phantom: PhantomData,
+        },
         circuit,
         pcs_params,
     );
@@ -388,12 +449,20 @@ mod tests {
     use rand::{Rng, SeedableRng};
 
     use crate::Target;
-    use crate::circuit_verifier::verify_circuit;
+    use crate::circuit_verifier::{ObservableCommitment, verify_circuit};
     use crate::recursive_traits::{
-        ComsWithOpeningsTargets, ProofTargets, Recursive, RecursiveLagrangeSelectors, RecursivePcs,
+        ComsWithOpeningsTargets, OpenedValuesTargets, ProofTargets, Recursive,
+        RecursiveLagrangeSelectors, RecursivePcs,
     };
 
     type DummyCom<F> = Vec<Vec<F>>;
+
+    impl<F: Field> ObservableCommitment for DummyCom<F> {
+        fn to_observation_targets(&self) -> Vec<Target> {
+            // For dummy/trivial commitments, return empty targets
+            vec![]
+        }
+    }
 
     impl<F: Field, EF: ExtensionField<F>> Recursive<EF> for DummyCom<F> {
         type Input = Vec<Vec<F>>;
@@ -408,10 +477,6 @@ mod tests {
 
         fn get_values(input: &Self::Input) -> Vec<EF> {
             input.iter().flatten().map(|v| EF::from(*v)).collect()
-        }
-
-        fn num_challenges(&self) -> usize {
-            0
         }
 
         fn lens(_input: &Self::Input) -> impl Iterator<Item = usize> {
@@ -434,10 +499,6 @@ mod tests {
             vec![]
         }
 
-        fn num_challenges(&self) -> usize {
-            0
-        }
-
         fn lens(_input: &Self::Input) -> impl Iterator<Item = usize> {
             core::iter::empty()
         }
@@ -456,7 +517,9 @@ mod tests {
 
         fn get_challenges_circuit(
             _circuit: &mut CircuitBuilder<<SC as StarkGenericConfig>::Challenge>,
+            _challenger: &mut crate::circuit_challenger::CircuitChallenger,
             _proof_targets: &crate::recursive_traits::ProofTargets<SC, Comm, EmptyTarget>,
+            _opened_values: &OpenedValuesTargets<SC>,
             _params: &Self::VerifierParams,
         ) -> vec::Vec<Target> {
             vec![]

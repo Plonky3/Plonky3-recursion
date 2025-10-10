@@ -13,6 +13,8 @@ use p3_uni_stark::{
 };
 
 use crate::Target;
+use crate::circuit_challenger::CircuitChallenger;
+use crate::recursive_challenger::RecursiveChallenger;
 use crate::target_allocator::TargetAllocator;
 
 /// Structure representing all the targets necessary for an input proof.
@@ -40,7 +42,30 @@ pub struct OpenedValuesTargets<SC: StarkGenericConfig> {
     pub trace_next_targets: Vec<Target>,
     pub quotient_chunks_targets: Vec<Vec<Target>>,
     pub random_targets: Option<Vec<Target>>,
-    _phantom: PhantomData<SC>,
+    pub _phantom: PhantomData<SC>,
+}
+
+impl<SC: StarkGenericConfig> OpenedValuesTargets<SC> {
+    /// Observe all opened values in the Fiat-Shamir transcript.
+    pub fn observe<F: Field>(
+        &self,
+        circuit: &mut CircuitBuilder<F>,
+        challenger: &mut CircuitChallenger,
+    ) {
+        // Observe trace values at zeta and zeta_next
+        challenger.observe_slice(circuit, &self.trace_local_targets);
+        challenger.observe_slice(circuit, &self.trace_next_targets);
+
+        // Observe quotient chunk values
+        for chunk_values in &self.quotient_chunks_targets {
+            challenger.observe_slice(circuit, chunk_values);
+        }
+
+        // Observe random values if in ZK mode
+        if let Some(random_vals) = &self.random_targets {
+            challenger.observe_slice(circuit, random_vals);
+        }
+    }
 }
 
 pub trait Recursive<F: Field> {
@@ -62,19 +87,6 @@ pub trait Recursive<F: Field> {
     }
     /// Returns a vec of field elements representing the elements of the Input. Used to populate public inputs.
     fn get_values(input: &Self::Input) -> Vec<F>;
-
-    /// Returns the number of challenges necessary.
-    /// TODO: Should we move this to Pcs instead?
-    fn num_challenges(&self) -> usize;
-
-    /// Creates new targets for all the necessary challenges.
-    /// TODO: Should we move this to Pcs instead?
-    fn get_challenges(&self, circuit: &mut CircuitBuilder<F>) -> Vec<Target> {
-        let mut alloc = TargetAllocator::new(circuit);
-
-        let num_challenges = self.num_challenges();
-        alloc.alloc_vec(num_challenges, "proof challenges")
-    }
 
     // Temporary method used for testing for now. This should be changed into something more generic which relies as little as possible on the actual proof.
     fn lens(input: &Self::Input) -> impl Iterator<Item = usize>;
@@ -112,9 +124,18 @@ pub trait RecursivePcs<
     type RecursiveProof;
 
     /// Creates new targets for all the challenges necessary when computing the Pcs.
+    ///
+    /// # Parameters
+    /// - `circuit`: Circuit builder
+    /// - `challenger`: Running challenger state
+    /// - `proof_targets`: Proof structure with commitments and opening proof
+    /// - `opened_values`: All opened values at zeta and zeta_next
+    /// - `params`: PCS-specific verifier parameters
     fn get_challenges_circuit(
         circuit: &mut CircuitBuilder<SC::Challenge>,
+        challenger: &mut CircuitChallenger,
         proof_targets: &ProofTargets<SC, Comm, OpeningProof>,
+        opened_values: &OpenedValuesTargets<SC>,
         params: &Self::VerifierParams,
     ) -> Vec<Target>;
 
@@ -252,12 +273,6 @@ impl<
             .collect()
     }
 
-    fn num_challenges(&self) -> usize {
-        self.commitments_targets.num_challenges()
-            + self.opened_values_targets.num_challenges()
-            + self.opening_proof.num_challenges()
-    }
-
     fn lens(input: &Self::Input) -> impl Iterator<Item = usize> {
         let Proof {
             commitments,
@@ -313,10 +328,6 @@ where
             values.extend(Comm::get_values(random));
         }
         values
-    }
-
-    fn num_challenges(&self) -> usize {
-        0
     }
 
     fn lens(input: &Self::Input) -> impl Iterator<Item = usize> {
@@ -397,10 +408,6 @@ impl<SC: StarkGenericConfig> Recursive<SC::Challenge> for OpenedValuesTargets<SC
         }
 
         values
-    }
-
-    fn num_challenges(&self) -> usize {
-        0
     }
 
     fn lens(input: &Self::Input) -> impl Iterator<Item = usize> {

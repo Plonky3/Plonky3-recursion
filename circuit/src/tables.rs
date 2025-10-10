@@ -326,6 +326,9 @@ impl<F: CircuitField> CircuitRunner<F> {
             (NonPrimitiveOp::MmcsVerify { .. }, NonPrimitiveOpPrivateData::MmcsVerify(_)) => {
                 // Type match - good!
             }
+            (NonPrimitiveOp::HashAbsorb { .. }, _) | (NonPrimitiveOp::HashSqueeze { .. }, _) => {
+                // HashAbsorb/HashSqueeze don't use private data
+            }
         }
 
         self.non_primitive_op_private_data[op_id.0 as usize] = Some(private_data);
@@ -547,7 +550,11 @@ impl<F: CircuitField> CircuitRunner<F> {
         for op_idx in 0..self.circuit.non_primitive_ops.len() {
             // Copy out leaf/root to end immutable borrow immediately
             let NonPrimitiveOp::MmcsVerify { leaf, index, root } =
-                &self.circuit.non_primitive_ops[op_idx];
+                &self.circuit.non_primitive_ops[op_idx]
+            else {
+                // Skip non-MmcsVerify operations (e.g., HashAbsorb, HashSqueeze)
+                continue;
+            };
 
             if let Some(Some(NonPrimitiveOpPrivateData::MmcsVerify(private_data))) =
                 self.non_primitive_op_private_data.get(op_idx).cloned()
