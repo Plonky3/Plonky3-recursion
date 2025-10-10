@@ -76,10 +76,14 @@ impl StarkChallenges {
             .map(|c| c.to_observation_targets());
 
         // Observe domain parameters
-        let degree_bits_target =
-            circuit.add_const(SC::Challenge::from_usize(proof_targets.degree_bits));
-        let log_quotient_degree_target =
-            circuit.add_const(SC::Challenge::from_usize(log_quotient_degree));
+        let degree_bits_target = circuit.alloc_const(
+            SC::Challenge::from_usize(proof_targets.degree_bits),
+            "degree bits",
+        );
+        let log_quotient_degree_target = circuit.alloc_const(
+            SC::Challenge::from_usize(log_quotient_degree),
+            "log quotient degree",
+        );
         challenger.observe(circuit, degree_bits_target);
         challenger.observe(circuit, log_quotient_degree_target);
 

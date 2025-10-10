@@ -61,7 +61,7 @@ impl<F: Field> RecursiveChallenger<F> for CircuitChallenger {
     fn sample(&mut self, circuit: &mut CircuitBuilder<F>) -> Target {
         self.flush_absorb(circuit);
 
-        let output = circuit.add_public_input();
+        let output = circuit.alloc_public_input("sampled challenge");
 
         let _ = circuit.add_hash_squeeze(&[output]);
 
