@@ -3,6 +3,7 @@ use alloc::vec::Vec;
 use core::marker::PhantomData;
 
 use itertools::{Itertools, zip_eq};
+use p3_circuit::op::{NonPrimitiveOpConfig, NonPrimitiveOpType};
 use p3_circuit::utils::ColumnsTargets;
 use p3_circuit::{CircuitBuilder, CircuitBuilderError, CircuitError};
 use p3_commit::Pcs;
@@ -68,6 +69,7 @@ fn get_circuit_challenges<
         > + ObservableCommitment,
     InputProof: Recursive<SC::Challenge>,
     OpeningProof: Recursive<SC::Challenge>,
+    const RATE: usize,
 >(
     air: &A,
     config: &SC,
@@ -93,7 +95,7 @@ where
     let mut challenger = CircuitChallenger::new();
 
     // Allocate base STARK challenges (alpha, zeta, zeta_next) using Fiat-Shamir
-    let base_challenges = StarkChallenges::allocate::<SC, Comm, OpeningProof>(
+    let base_challenges = StarkChallenges::allocate::<SC, Comm, OpeningProof, RATE>(
         circuit,
         &mut challenger,
         proof_targets,
@@ -193,6 +195,7 @@ pub fn verify_circuit<
         + ObservableCommitment,
     InputProof: Recursive<SC::Challenge>,
     OpeningProof: Recursive<SC::Challenge>,
+    const RATE: usize,
 >(
     config: &SC,
     air: &A,
@@ -212,8 +215,6 @@ where
         >,
     SC::Challenge: PrimeCharacteristicRing,
 {
-    use p3_circuit::op::{NonPrimitiveOpConfig, NonPrimitiveOpType};
-
     // Enable hash operations for CircuitChallenger
     // Note: These are placeholders until Poseidon2CircuitAir is implemented
     circuit.enable_op(
@@ -258,7 +259,7 @@ where
         .map(|domain| pcs.natural_domain_for_degree(pcs.size(domain) << (config.is_zk())))
         .collect_vec();
 
-    let challenge_targets = get_circuit_challenges::<A, SC, Comm, InputProof, OpeningProof>(
+    let challenge_targets = get_circuit_challenges::<A, SC, Comm, InputProof, OpeningProof, RATE>(
         air,
         config,
         proof_targets,
@@ -449,11 +450,14 @@ mod tests {
     use rand::{Rng, SeedableRng};
 
     use crate::Target;
+    use crate::circuit_challenger::CircuitChallenger;
     use crate::circuit_verifier::{ObservableCommitment, verify_circuit};
     use crate::recursive_traits::{
         ComsWithOpeningsTargets, OpenedValuesTargets, ProofTargets, Recursive,
         RecursiveLagrangeSelectors, RecursivePcs,
     };
+
+    const DEFAULT_CHALLENGER_RATE: usize = 8;
 
     type DummyCom<F> = Vec<Vec<F>>;
 
@@ -515,10 +519,10 @@ mod tests {
         type VerifierParams = ();
         type RecursiveProof = EmptyTarget;
 
-        fn get_challenges_circuit(
+        fn get_challenges_circuit<const RATE: usize>(
             _circuit: &mut CircuitBuilder<<SC as StarkGenericConfig>::Challenge>,
-            _challenger: &mut crate::circuit_challenger::CircuitChallenger,
-            _proof_targets: &crate::recursive_traits::ProofTargets<SC, Comm, EmptyTarget>,
+            _challenger: &mut CircuitChallenger<RATE>,
+            _proof_targets: &ProofTargets<SC, Comm, EmptyTarget>,
             _opened_values: &OpenedValuesTargets<SC>,
             _params: &Self::VerifierParams,
         ) -> vec::Vec<Target> {
@@ -792,7 +796,7 @@ mod tests {
             .copied()
             .collect::<Vec<_>>();
 
-        verify_circuit(
+        verify_circuit::<_, _, _, _, _, DEFAULT_CHALLENGER_RATE>(
             &config,
             &air,
             &mut circuit_builder,

@@ -13,14 +13,14 @@ use crate::Target;
 use crate::recursive_challenger::RecursiveChallenger;
 
 /// Concrete challenger implementation for Fiat-Shamir operations.
-pub struct CircuitChallenger {
+pub struct CircuitChallenger<const RATE: usize> {
     /// Buffer of field elements waiting to be absorbed
     absorb_buffer: Vec<Target>,
     /// Whether the buffer has been flushed (absorbed) since the last observation
     buffer_flushed: bool,
 }
 
-impl CircuitChallenger {
+impl<const RATE: usize> CircuitChallenger<RATE> {
     /// Create a new circuit challenger.
     pub fn new() -> Self {
         Self {
@@ -39,20 +39,23 @@ impl CircuitChallenger {
         // For now, reset on first absorb (when buffer was flushed before)
         let reset = self.buffer_flushed;
 
-        let _ = circuit.add_hash_absorb(&self.absorb_buffer, reset);
+        // TODO: How do we want to handle padding?
+        for chunk in self.absorb_buffer.chunks(RATE) {
+            let _ = circuit.add_hash_absorb(chunk, reset);
+        }
 
         self.absorb_buffer.clear();
         self.buffer_flushed = true;
     }
 }
 
-impl Default for CircuitChallenger {
+impl<const RATE: usize> Default for CircuitChallenger<RATE> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<F: Field> RecursiveChallenger<F> for CircuitChallenger {
+impl<F: Field, const RATE: usize> RecursiveChallenger<F> for CircuitChallenger<RATE> {
     fn observe(&mut self, _circuit: &mut CircuitBuilder<F>, value: Target) {
         self.absorb_buffer.push(value);
         self.buffer_flushed = false;
@@ -67,6 +70,11 @@ impl<F: Field> RecursiveChallenger<F> for CircuitChallenger {
 
         output
     }
+
+    fn clear(&mut self) {
+        self.absorb_buffer.clear();
+        self.buffer_flushed = true;
+    }
 }
 
 #[cfg(test)]
@@ -77,6 +85,8 @@ mod tests {
 
     use super::*;
 
+    const DEFAULT_CHALLENGER_RATE: usize = 8;
+
     #[test]
     fn test_circuit_challenger_observe_sample() {
         let mut circuit = CircuitBuilder::<BabyBear>::new();
@@ -86,7 +96,7 @@ mod tests {
         );
         circuit.enable_op(NonPrimitiveOpType::HashSqueeze, NonPrimitiveOpConfig::None);
 
-        let mut challenger = CircuitChallenger::new();
+        let mut challenger = CircuitChallenger::<DEFAULT_CHALLENGER_RATE>::new();
 
         let val1 = circuit.add_const(BabyBear::ONE);
         let val2 = circuit.add_const(BabyBear::TWO);
@@ -106,7 +116,7 @@ mod tests {
         );
         circuit.enable_op(NonPrimitiveOpType::HashSqueeze, NonPrimitiveOpConfig::None);
 
-        let mut challenger = CircuitChallenger::new();
+        let mut challenger = CircuitChallenger::<DEFAULT_CHALLENGER_RATE>::new();
 
         let challenges = challenger.sample_vec(&mut circuit, 3);
         assert_eq!(challenges.len(), 3);

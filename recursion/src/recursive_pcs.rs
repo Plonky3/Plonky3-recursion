@@ -608,9 +608,9 @@ where
         InputProofTargets<Val<SC>, SC::Challenge, RecursiveInputMmcs>,
     >;
 
-    fn get_challenges_circuit(
+    fn get_challenges_circuit<const RATE: usize>(
         circuit: &mut CircuitBuilder<SC::Challenge>,
-        challenger: &mut CircuitChallenger,
+        challenger: &mut CircuitChallenger<RATE>,
         proof_targets: &ProofTargets<SC, Comm, Self::RecursiveProof>,
         opened_values: &OpenedValuesTargets<SC>,
         _params: &Self::VerifierParams,

@@ -33,6 +33,9 @@ pub trait RecursiveChallenger<F: Field> {
     fn sample_vec(&mut self, circuit: &mut CircuitBuilder<F>, count: usize) -> Vec<Target> {
         (0..count).map(|_| self.sample(circuit)).collect()
     }
+
+    /// Clear the challenger state.
+    fn clear(&mut self);
 }
 
 #[cfg(test)]
@@ -49,6 +52,10 @@ mod tests {
 
         fn sample(&mut self, circuit: &mut CircuitBuilder<F>) -> Target {
             circuit.add_public_input()
+        }
+
+        fn clear(&mut self) {
+            // No-op: no challenger to clear
         }
     }
 
