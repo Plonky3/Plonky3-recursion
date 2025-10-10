@@ -93,7 +93,7 @@ impl MmcsVerifyConfig {
         }
         if self.is_packing() {
             // Validate divisibility and config alignment with EF::DIMENSION
-            if self.base_field_digest_elems % EF::DIMENSION != 0
+            if !self.base_field_digest_elems.is_multiple_of(EF::DIMENSION)
                 || self.ext_field_digest_elems * EF::DIMENSION != self.base_field_digest_elems
             {
                 return Err(CircuitError::InvalidNonPrimitiveOpConfiguration {
