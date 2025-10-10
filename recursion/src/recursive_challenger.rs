@@ -47,9 +47,9 @@ mod tests {
             // No-op: no challenger to observe with
         }
 
-    fn sample(&mut self, circuit: &mut CircuitBuilder<F>) -> Target {
-        circuit.add_public_input()
-    }
+        fn sample(&mut self, circuit: &mut CircuitBuilder<F>) -> Target {
+            circuit.add_public_input()
+        }
     }
 
     #[test]
