@@ -68,7 +68,6 @@ where
         >,
 {
     // Allocate base STARK challenges (alpha, zeta, zeta_next)
-    // Observation TODOs are documented in StarkChallenges::allocate()
     let base_challenges = StarkChallenges::allocate(circuit);
 
     // Get PCS-specific challenges (e.g., FRI betas and query indices)
