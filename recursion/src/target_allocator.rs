@@ -89,9 +89,8 @@ impl<'a, F: Field> TargetAllocator<'a, F> {
     /// Useful for debugging public input ordering issues.
     #[cfg(debug_assertions)]
     pub fn dump_log(&self) {
-        extern crate std;
         for (idx, label) in self.allocation_log.iter().enumerate() {
-            std::eprintln!("PublicInput[{}]: {}", idx, label);
+            tracing::debug!("PublicInput[{}]: {}", idx, label);
         }
     }
 }

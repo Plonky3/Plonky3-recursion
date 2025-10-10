@@ -24,6 +24,7 @@ p3-uni-stark.workspace = true
 itertools.workspace = true
 serde.workspace = true
 thiserror.workspace = true
+tracing.workspace = true
 
 # Local dependencies
 p3-circuit.workspace = true
