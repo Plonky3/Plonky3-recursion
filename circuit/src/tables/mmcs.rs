@@ -84,17 +84,6 @@ impl<F: Field + Clone + Default> MmcsPrivateData<F> {
                 got: directions.len(),
             });
         };
-        if siblings.len() > config.max_tree_height {
-            return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
-                op: NonPrimitiveOpType::MmcsVerify,
-                operation_index: 0,
-                expected: alloc::format!(
-                    "path length <= max_tree_height ({})",
-                    config.max_tree_height
-                ),
-                got: alloc::format!("{}", siblings.len()),
-            });
-        };
         // The last sibling can't contain an extra sibling
         if let Some((_, extra_sibling)) = siblings.last()
             && extra_sibling.is_some()
