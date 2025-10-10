@@ -50,9 +50,6 @@ pub trait Recursive<F: Field> {
     /// TODO: They can actually be deduced from StarkGenericConfig and `degree_bits`.
     fn from_non_recursive(circuit: &mut CircuitBuilder<F>, input: &Self::Input) -> Self;
 
-    // /// Set the the wires of this recursive struct with the data from the nonrecursive type
-    // fn set_wires
-
     /// Returns a vec of field elements representing the private elements of the Input. Used to populate private inputs.
     /// Default implementation returns an empty vec.
     fn get_private_values(_input: &Self::Input) -> Vec<F> {
@@ -221,7 +218,7 @@ impl<
 
     // TODO: We could also get the recursive struct just from the config.
 
-    /// Alloc the targest in `circuit` necessary for storing the data in `input`.
+    /// Allocates the necessary `circuit` targets for storing `input`'s public data.
     fn from_non_recursive(
         circuit: &mut CircuitBuilder<SC::Challenge>,
         input: &Self::Input,
