@@ -2,6 +2,18 @@
 //!
 //! This provides a `RecursiveChallenger` implementation that maintains a sponge state
 //! as circuit targets and uses non-primitive hash operations.
+//!
+//! # Design
+//!
+//! The `CircuitChallenger` acts as a circuit-compatible Fiat-Shamir challenger:
+//! - **Observations**: Values are absorbed into the sponge via `HashAbsorb` operations
+//! - **Sampling**: Challenges are squeezed from the sponge via `HashSqueeze` operations
+//! - **Verification**: The sponge AIR table verifies all operations are correctly computed
+//!
+//! Sampled challenges are provided as public inputs by the prover, and the sponge AIR
+//! constrains them to match what would be squeezed from the sponge state.
+
+// TODO: Enforce sponge ops to be primitive ops? Or included in default?
 
 use alloc::vec::Vec;
 
@@ -36,8 +48,7 @@ use crate::recursive_challenger::RecursiveChallenger;
 /// ```
 pub struct CircuitChallenger<const R: usize> {
     /// Current sponge state (as circuit targets).
-    /// In a real implementation, this would track the full Poseidon2 state.
-    /// For now, it's a placeholder that will be populated when sponge ops are executed.
+    /// The actual state transitions are verified by the sponge AIR.
     pub state: Vec<Target>,
 
     /// Buffer of values waiting to be absorbed.
@@ -103,12 +114,8 @@ impl<F: Field, const R: usize> RecursiveChallenger<F> for CircuitChallenger<R> {
         // Flush any pending absorbs before squeezing
         self.flush_absorb(circuit);
 
-        // Create a target for the output
+        // Allocate a target for the squeezed output
         let output = circuit.add_public_input();
-
-        // Add HashSqueeze operation
-        // TODO: This should actually squeeze from the sponge state maintained by the AIR
-        // For now, we just add the operation for documentation/structure
         let _ = circuit.add_hash_squeeze(&[output]);
 
         output

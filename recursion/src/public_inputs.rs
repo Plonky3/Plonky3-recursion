@@ -55,11 +55,6 @@ impl<F: Field> PublicInputBuilder<F> {
     }
 
     /// Add a query index with automatic bit decomposition.
-    ///
-    /// When the circuit calls `decompose_to_bits`, it creates `MAX_QUERY_INDEX_BITS`
-    /// additional public inputs. This method automatically adds those bits.
-    ///
-    /// Note: Only works when F is a PrimeField64 (required for bit decomposition).
     pub fn add_query_index(&mut self, index: F) -> &mut Self
     where
         F: PrimeField64,
