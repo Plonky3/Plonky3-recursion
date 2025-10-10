@@ -90,15 +90,10 @@ fn test_fibonacci_verifier() -> Result<(), VerificationError> {
         Witness<Val<MyConfig>>,
     >;
 
-    // Determine the lengths of all the vectors within the proof.
-    let mut all_lens =
-        ProofTargets::<MyConfig, HashTargets<F, DIGEST_ELEMS>, InnerFri>::lens(&proof);
-
     // Add the targets for the proof.
     let proof_targets = ProofTargets::<MyConfig, HashTargets<F, DIGEST_ELEMS>, InnerFri>::new(
         &mut circuit_builder,
-        &mut all_lens,
-        proof.degree_bits,
+        &proof,
     );
 
     let all_proof_values =
