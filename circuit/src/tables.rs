@@ -120,6 +120,17 @@ pub struct MmcsPathTrace<F> {
     pub final_index: Vec<u32>,
 }
 
+/// Poseidon2 operation table
+pub struct Poseidon2CircuitRow<F> {
+    /// Inputs to the Poseidon2 permutation
+    pub input_values: Vec<F>,
+    /// Input indices
+    pub input_indices: Vec<u32>,
+    /// Output indices
+    pub output_indices: Vec<u32>,
+}
+pub type Poseidon2CircuitTrace<F> = Vec<Poseidon2CircuitRow<F>>;
+
 /// Private Mmcs path data for Mmcs verification
 ///
 /// This represents the private witness information that the prover needs
