@@ -10,6 +10,7 @@ use p3_uni_stark::StarkGenericConfig;
 use thiserror::Error;
 
 use crate::Target;
+use crate::challenges::StarkChallenges;
 use crate::recursive_generation::GenerationError;
 use crate::recursive_pcs::MAX_QUERY_INDEX_BITS;
 use crate::recursive_traits::{
@@ -66,23 +67,18 @@ where
             <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain,
         >,
 {
-    let mut challenges = vec![];
-    // TODO: Observe degree bits and degree_bits - is_zk.
-    // TODO: Observe local targets.
-    // TODO: Observe public values.
-    // First Fiat-Shamir challenge `alpha`.
-    challenges.push(circuit.add_public_input());
-    // TODO: Observe quotient chunks.
-    // TODO: Observe random commitment if any.
-    // zeta and zeta_next
-    challenges.push(circuit.add_public_input());
-    challenges.push(circuit.add_public_input());
-
+    
+    // Allocate base STARK challenges (alpha, zeta, zeta_next)
+    // Observation TODOs are documented in StarkChallenges::allocate()
+    let base_challenges = StarkChallenges::allocate(circuit);
+    
+    // Get PCS-specific challenges (e.g., FRI betas and query indices)
     let pcs_challenges = SC::Pcs::get_challenges_circuit(circuit, proof_targets, pcs_params);
 
-    challenges.extend(pcs_challenges);
-
-    challenges
+    // Return flat vector: [alpha, zeta, zeta_next, ...pcs_challenges]
+    let mut all_challenges = base_challenges.to_vec();
+    all_challenges.extend(pcs_challenges);
+    all_challenges
 }
 
 /// Constructs the public input values for a STARK verification circuit.
