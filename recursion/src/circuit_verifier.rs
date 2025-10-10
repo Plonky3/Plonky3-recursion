@@ -5,13 +5,13 @@ use itertools::{Itertools, zip_eq};
 use p3_circuit::utils::ColumnsTargets;
 use p3_circuit::{CircuitBuilder, CircuitBuilderError, CircuitError};
 use p3_commit::Pcs;
-use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing, PrimeField64};
+use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
 use p3_uni_stark::StarkGenericConfig;
 use thiserror::Error;
 
 use crate::Target;
+use crate::challenge_builder::BaseStarkChallenges;
 use crate::recursive_generation::GenerationError;
-use crate::recursive_pcs::MAX_QUERY_INDEX_BITS;
 use crate::recursive_traits::{
     CommitmentTargets, OpenedValuesTargets, ProofTargets, Recursive, RecursiveAir, RecursivePcs,
 };
@@ -46,7 +46,13 @@ pub enum VerificationError {
     Generation(#[from] GenerationError),
 }
 
-// Method to get all the challenge targets.
+/// Getter for all the challenge targets.
+///
+/// Returns a structured representation of challenges:
+/// - Base STARK challenges (alpha, zeta, zeta_next) via `BaseStarkChallenges::generate()`
+/// - PCS-specific challenges via `RecursivePcs::get_challenges_circuit()`
+///
+/// Returns flat vector for backward compatibility with existing code.
 fn get_circuit_challenges<
     SC: StarkGenericConfig,
     Comm: Recursive<SC::Challenge, Input = <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment>,
@@ -66,73 +72,16 @@ where
             <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain,
         >,
 {
-    let mut challenges = vec![];
-    // TODO: Observe degree bits and degree_bits - is_zk.
-    // TODO: Observe local targets.
-    // TODO: Observe public values.
-    // First Fiat-Shamir challenge `alpha`.
-    challenges.push(circuit.add_public_input());
-    // TODO: Observe quotient chunks.
-    // TODO: Observe random commitment if any.
-    // zeta and zeta_next
-    challenges.push(circuit.add_public_input());
-    challenges.push(circuit.add_public_input());
+    // Generate base STARK challenges (alpha, zeta, zeta_next)
+    let base_challenges = BaseStarkChallenges::generate(circuit);
 
+    // Get PCS-specific challenges (e.g., FRI betas and query indices)
     let pcs_challenges = SC::Pcs::get_challenges_circuit(circuit, proof_targets, pcs_params);
 
-    challenges.extend(pcs_challenges);
-
-    challenges
-}
-
-/// Constructs the public input values for a STARK verification circuit.
-///
-/// # Parameters
-/// - `public_values`: The AIR public input values
-/// - `proof_values`: Values extracted from the proof targets
-/// - `challenges`: All challenge values
-/// - `num_queries`: Number of FRI query proofs
-///
-/// # Returns
-/// A vector of field elements ready to be passed to `CircuitRunner::set_public_inputs`
-pub fn construct_verifier_public_inputs<F, EF>(
-    public_values: &[F],
-    proof_values: &[EF],
-    challenges: &[EF],
-    num_queries: usize,
-) -> Vec<EF>
-where
-    F: Field + PrimeField64,
-    EF: Field + BasedVectorSpace<F> + From<F>,
-{
-    let num_challenges_before_queries = challenges.len() - num_queries;
-
-    // Start with public values, proof values, and all challenges
-    let mut inputs: Vec<EF> = public_values
-        .iter()
-        .map(|&pv| pv.into())
-        .chain(proof_values.iter().copied())
-        .chain(challenges.iter().copied())
-        .collect();
-
-    // Add bit decompositions for query indices.
-    // The circuit calls decompose_to_bits on each query index,
-    // which creates MAX_QUERY_INDEX_BITS additional public inputs.
-    for &query_index in &challenges[num_challenges_before_queries..] {
-        let coeffs = query_index.as_basis_coefficients_slice();
-        let index_usize = coeffs[0].as_canonical_u64() as usize;
-
-        for k in 0..MAX_QUERY_INDEX_BITS {
-            let bit = if (index_usize >> k) & 1 == 1 {
-                EF::ONE
-            } else {
-                EF::ZERO
-            };
-            inputs.push(bit);
-        }
-    }
-
-    inputs
+    // Return flat vector: [alpha, zeta, zeta_next, ...pcs_challenges]
+    let mut all_challenges = base_challenges.to_vec();
+    all_challenges.extend(pcs_challenges);
+    all_challenges
 }
 
 /// Verifies a STARK proof within a circuit.

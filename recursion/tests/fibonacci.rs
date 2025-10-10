@@ -8,9 +8,8 @@ use p3_field::extension::BinomialExtensionField;
 use p3_field::{Field, PrimeCharacteristicRing};
 use p3_fri::{TwoAdicFriPcs, create_test_fri_params};
 use p3_merkle_tree::MerkleTreeMmcs;
-use p3_recursion::circuit_verifier::{
-    VerificationError, construct_verifier_public_inputs, verify_circuit,
-};
+use p3_recursion::circuit_verifier::{VerificationError, verify_circuit};
+use p3_recursion::public_inputs::construct_stark_verifier_inputs;
 use p3_recursion::recursive_generation::generate_challenges;
 use p3_recursion::recursive_pcs::{
     FriProofTargets, FriVerifierParams, HashTargets, InputProofTargets, RecExtensionValMmcs,
@@ -136,7 +135,7 @@ fn test_fibonacci_verifier() -> Result<(), VerificationError> {
     // Set the public inputs and run the verification circuit.
     let num_queries = proof.opening_proof.query_proofs.len();
     let public_values =
-        construct_verifier_public_inputs(&pis, &all_proof_values, &all_challenges, num_queries);
+        construct_stark_verifier_inputs(&pis, &all_proof_values, &all_challenges, num_queries);
 
     runner
         .set_public_inputs(&public_values)
