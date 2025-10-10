@@ -91,8 +91,29 @@ fn fold_row_chain<EF: Field>(
     folded
 }
 
+/// Evaluate a polynomial at a point `x` using Horner's method.
+/// Given coefficients [c0, c1, c2, ...], compute `p(x) = c0 + x*(c1 + x*(c2 + ...))`.
+fn evaluate_polynomial<EF: Field>(
+    builder: &mut CircuitBuilder<EF>,
+    coefficients: &[Target],
+    point: Target,
+) -> Target {
+    assert!(!coefficients.is_empty(), "we should have at least a constant polynomial");
+    if coefficients.len() == 1 {
+        return coefficients[0];
+    }
+
+    let mut result = coefficients[coefficients.len() - 1];
+    for &coeff in coefficients.iter().rev().skip(1) {
+        result = builder.mul(result, point);
+        result = builder.add(result, coeff);
+    }
+
+    result
+}
+
 /// Arithmetic-only version of Plonky3 `verify_query`:
-/// - Applies the fold chain and enforces equality to the provided final constant value.
+/// - Applies the fold chain and enforces equality to the provided final polynomial evaluation.
 /// - Caller must supply `initial_folded_eval` (the reduced opening at max height).
 fn verify_query<EF: Field>(
     builder: &mut CircuitBuilder<EF>,
@@ -100,10 +121,47 @@ fn verify_query<EF: Field>(
     phases: &[FoldPhaseInputsTarget],
     final_value: Target,
 ) {
-    // TODO: Support higher-degree final polynomial by evaluating it at the query point
-    // using provided coefficients instead of a single constant `final_value`.
     let folded_eval = fold_row_chain(builder, initial_folded_eval, phases);
     builder.connect(folded_eval, final_value);
+}
+
+/// Compute the final query point after all FRI folding rounds.
+/// This is the point at which the final polynomial should be evaluated.
+fn compute_final_query_point<F, EF>(
+    builder: &mut CircuitBuilder<EF>,
+    index_bits: &[Target],
+    log_max_height: usize,
+    num_phases: usize,
+) -> Target
+where
+    F: Field + TwoAdicField,
+    EF: ExtensionField<F>,
+{
+    // Extract the bits that form domain_index (bits [num_phases..log_max_height]) after `num_phases` folds
+    let domain_index_bits: Vec<Target> = index_bits[num_phases..log_max_height]
+        .iter()
+        .copied()
+        .collect();
+    
+    // Pad bits and reverse
+    let mut reversed_bits = vec![builder.add_const(EF::ZERO); num_phases];
+    reversed_bits.extend(domain_index_bits.iter().rev().copied());
+    
+    // Compute g^{reversed_index}
+    let g = F::two_adic_generator(log_max_height);
+    let powers_of_g: Vec<_> = iter::successors(Some(g), |&prev| Some(prev.square()))
+        .take(log_max_height)
+        .map(|p| builder.add_const(EF::from(p)))
+        .collect();
+    
+    let one = builder.add_const(EF::ONE);
+    let mut result = one;
+    for (&bit, &power) in reversed_bits.iter().zip(&powers_of_g) {
+        let multiplier = builder.select(bit, power, one);
+        result = builder.mul(result, multiplier);
+    }
+    
+    result
 }
 
 /// Compute x₀ for phase `i` from the query index bits and a caller-provided power ladder.
@@ -370,7 +428,6 @@ where
 /// - Challenge/indices generation lives in the outer verifier. Keep this
 ///   function purely arithmetic and take `alpha`, `betas`, and
 ///   `index_bits_per_query` as inputs.
-/// - Enforce FRI parameters (final_poly_len, num_queries) as in the native verifier.
 /// - Add recursive MMCS verification for both input openings (`open_input`) and
 ///   per-phase commitments.
 ///
@@ -414,14 +471,25 @@ pub fn verify_fri_circuit<F, EF, RecMmcs, Inner, Witness, Comm>(
 
     // Basic shape checks
     assert!(!betas.is_empty(), "FRI must have at least one fold phase");
+    
+    // Compute the expected final polynomial length from FRI parameters
+    // log_max_height = num_phases + log_final_poly_len + log_blowup
+    // So: log_final_poly_len = log_max_height - num_phases - log_blowup
+    let log_final_poly_len = log_max_height
+        .checked_sub(num_phases)
+        .and_then(|x| x.checked_sub(log_blowup))
+        .expect("Invalid FRI parameters: log_max_height too small");
+    
+    let expected_final_poly_len = 1 << log_final_poly_len;
+    let actual_final_poly_len = fri_proof_targets.final_poly.len();
 
-    // Fail fast if final polynomial is not constant (current circuit assumes len=1)
-    let final_poly_len = fri_proof_targets.final_poly.len();
     assert_eq!(
-        final_poly_len, 1,
-        "This circuit assumes a constant final polynomial (len=1). Got len={final_poly_len}"
+        actual_final_poly_len, expected_final_poly_len,
+        "Final polynomial length mismatch: expected 2^{} = {}, got {}",
+        log_final_poly_len,
+        expected_final_poly_len,
+        actual_final_poly_len
     );
-    let final_value = fri_proof_targets.final_poly[0];
 
     // Precompute two-adic generator ladders for each phase (in circuit field EF).
     //
@@ -512,7 +580,21 @@ pub fn verify_fri_circuit<F, EF, RecMmcs, Inner, Witness, Comm>(
             }
         }
 
-        // Perform the fold chain and connect to the (constant) final polynomial value
+        // Compute the final query point for this query and evaluate the final polynomial
+        let final_query_point = compute_final_query_point::<F, EF>(
+            builder,
+            &index_bits_per_query[q],
+            log_max_height,
+            num_phases,
+        );
+        
+        let final_poly_eval = evaluate_polynomial(
+            builder,
+            &fri_proof_targets.final_poly,
+            final_query_point,
+        );
+
+        // Perform the fold chain and connect to the evaluated final polynomial value
         verify_query_from_index_bits(
             builder,
             initial_folded_eval,
@@ -521,7 +603,7 @@ pub fn verify_fri_circuit<F, EF, RecMmcs, Inner, Witness, Comm>(
             &sibling_values,
             &roll_ins,
             &pows_per_phase,
-            final_value,
+            final_poly_eval,
         );
     }
 }

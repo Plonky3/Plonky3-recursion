@@ -305,8 +305,23 @@ fn pack_inputs(
     v
 }
 
-#[test]
-fn test_circuit_fri_verifier_multi_rounds() {
+/// Holds all the FRI parameters and group sizes to generate test inputs.
+struct FriSetup {
+    pcs: PCS,
+    perm: Perm<16>,
+    log_blowup: usize,
+    log_final_poly_len: usize,
+    pow_bits: usize,
+    group_sizes: Vec<Vec<u8>>,
+}
+
+impl FriSetup {
+    fn new(pcs: PCS, perm: Perm<16>, log_blowup: usize, log_final_poly_len: usize, pow_bits: usize, group_sizes: Vec<Vec<u8>>) -> Self {
+        Self { pcs, perm, log_blowup, log_final_poly_len, pow_bits, group_sizes }
+    }
+}
+
+fn generate_setup(log_final_poly_len: usize, group_sizes: Vec<Vec<u8>>) -> FriSetup {
     // Common setup
     let perm = default_babybear_poseidon2_16();
     let hash = MyHash::new(perm.clone());
@@ -314,17 +329,18 @@ fn test_circuit_fri_verifier_multi_rounds() {
     let val_mmcs = ValMmcs::new(hash, compress);
     let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
     let dft = Dft::<F>::default();
-    // final_poly_len = 0 (constant), log_blowup = 1 in test params
-    let fri_params = create_test_fri_params(challenge_mmcs, 0);
+
+    let fri_params = create_test_fri_params(challenge_mmcs, log_final_poly_len);
     let log_blowup = fri_params.log_blowup;
     let log_final_poly_len = fri_params.log_final_poly_len;
     let pow_bits = fri_params.proof_of_work_bits;
     let pcs = PCS::new(dft, val_mmcs, fri_params);
 
-    // Three "rounds"/batches of inputs, different shapes. Include a degree-0 (height=1)
-    // matrix so the `log_height == log_blowup` reduced-opening constraint is exercised.
-    //   [0, 5, 8, 8, 10], [8, 11], [4, 5, 8]
-    let groups = vec![vec![0u8, 5, 8, 8, 10], vec![8u8, 11], vec![4u8, 5, 8]];
+    FriSetup::new(pcs, perm, log_blowup, log_final_poly_len, pow_bits, group_sizes)
+}
+
+fn run_fri_test(setup: FriSetup, degree_bits: usize) {
+    let FriSetup { pcs, perm, log_blowup, log_final_poly_len, pow_bits, group_sizes } = setup;
 
     // Produce two proofs with different inputs (same shape), to reuse one circuit
     let result_1 = produce_inputs_multi(
@@ -333,7 +349,7 @@ fn test_circuit_fri_verifier_multi_rounds() {
         log_blowup,
         log_final_poly_len,
         pow_bits,
-        &groups,
+        &group_sizes,
         /*seed_base=*/ 0,
     );
 
@@ -343,7 +359,7 @@ fn test_circuit_fri_verifier_multi_rounds() {
         log_blowup,
         log_final_poly_len,
         pow_bits,
-        &groups,
+        &group_sizes,
         /*seed_base=*/ 1,
     );
 
@@ -354,13 +370,22 @@ fn test_circuit_fri_verifier_multi_rounds() {
 
     let num_phases = result_1.num_phases;
     let log_max_height = result_1.log_max_height;
+    let expected_final_poly_len = 1 << log_final_poly_len;
 
     // ——— Build circuit once (using first proof's shape) ———
     let mut builder = CircuitBuilder::<Challenge>::new();
 
     // 1) Allocate FriProofTargets using lens from instance 1
     let mut lens_iter = result_1.fri_lens.clone().into_iter();
-    let fri_targets = FriTargets::new(&mut builder, &mut lens_iter, /*degree_bits unused*/ 0);
+    let fri_targets = FriTargets::new(&mut builder, &mut lens_iter, degree_bits);
+
+    // Verify the final polynomial has the expected length
+    assert_eq!(
+        fri_targets.final_poly.len(),
+        expected_final_poly_len,
+        "Circuit final polynomial should have {} coefficients",
+        expected_final_poly_len
+    );
 
     // 2) Public inputs for α, βs, index bits
     let alpha_t = builder.add_public_input();
@@ -433,4 +458,37 @@ fn test_circuit_fri_verifier_multi_rounds() {
     let mut runner2 = circuit.runner();
     runner2.set_public_inputs(&pub_inputs2).unwrap();
     runner2.run().unwrap();
+}
+
+#[test]
+fn test_circuit_fri_verifier_degree_0_final_poly() {
+    // Three "rounds"/batches of inputs, different shapes. Include a degree-0 (height=1)
+    // matrix so the `log_height == log_blowup` reduced-opening constraint is exercised.
+    //   [0, 5, 8, 8, 10], [8, 11], [4, 5, 8]
+    let groups = vec![vec![0u8, 5, 8, 8, 10], vec![8u8, 11], vec![4u8, 5, 8]];
+
+    let setup = generate_setup(0, groups);
+
+    run_fri_test(setup, 0);
+}
+
+#[test]
+fn test_circuit_fri_verifier_higher_degree_final_poly() {
+    // Use smaller matrices to ensure we actually get a higher-degree final polynomial
+    // For a final polynomial of degree 1, we need `log_max_height` small enough
+    let groups = vec![vec![3u8, 4], vec![5u8]];
+
+    let setup = generate_setup(1, groups);
+
+    run_fri_test(setup, 0);
+}
+
+#[test]
+fn test_circuit_fri_verifier_degree_3_final_poly() {
+    // Small matrices to get higher-degree final polynomial
+    let groups = vec![vec![4u8], vec![5u8]];
+
+    let setup = generate_setup(2, groups);
+
+    run_fri_test(setup, 0);
 }
