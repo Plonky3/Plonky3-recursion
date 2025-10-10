@@ -90,7 +90,7 @@ struct ProduceInputsResult {
     num_phases: usize,
     /// The log base 2 of the size of the largest domain.
     log_max_height: usize,
-    /// The Fri proof
+    /// The FRI proof
     fri_proof: <PCS as Pcs<Challenge, MyChallenger>>::Proof,
 }
 
