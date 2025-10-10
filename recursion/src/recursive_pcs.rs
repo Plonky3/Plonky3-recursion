@@ -18,6 +18,7 @@ use p3_uni_stark::{StarkGenericConfig, Val};
 use serde::{Deserialize, Serialize};
 
 use crate::Target;
+use crate::circuit_challenger::CircuitChallenger;
 use crate::circuit_fri_verifier::verify_fri_circuit;
 use crate::circuit_verifier::ObservableCommitment;
 use crate::recursive_challenger::RecursiveChallenger;
