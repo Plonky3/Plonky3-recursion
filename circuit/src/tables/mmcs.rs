@@ -151,8 +151,8 @@ impl<F: Field + Clone + Default> MmcsPrivateData<F> {
             self.path_siblings.iter(),
             path_directions
         ) {
-             // Add a row to the trace.
-             let mut add_trace_row = |left_v: &Vec<F>, right_v: &Vec<F>, is_extra_flag: bool| {
+            // Add a row to the trace.
+            let mut add_trace_row = |left_v: &Vec<F>, right_v: &Vec<F>, is_extra_flag: bool| {
                 // Current hash becomes left operand
                 trace.left_values.push(left_v.clone());
                 // Points to witness bus
