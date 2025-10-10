@@ -38,7 +38,7 @@ pub struct MmcsPathTrace<F> {
     pub is_extra: Vec<bool>,
     /// Final digest after traversing the path (expected root value).
     pub final_value: Vec<F>,
-    /// Witness indices corresponding to the final digest wires.
+    /// Witness indices corresponding to the final digest.
     pub final_index: Vec<u32>,
 }
 
@@ -138,18 +138,18 @@ impl<F: Field + Clone + Default> MmcsPrivateData<F> {
     }
 
     /// Builds a valid `MmcsVerifyAir` trace from a private Mmcs proof,
-    /// given also the leaf's digest wires and value used in the circuit, and the leaf's index in the tree.
+    /// given the leaf's digest witness IDs and the expected root witness IDs.
     pub fn to_trace(
         &self,
         mmcs_config: &MmcsVerifyConfig,
-        leaf_wires: &[WitnessId],
-        root_wires: &[WitnessId],
+        leaf_wids: &[WitnessId],
+        root_wids: &[WitnessId],
     ) -> Result<MmcsPathTrace<F>, CircuitError> {
         let mut trace = MmcsPathTrace::default();
 
-        // Get the adrresses of the leaf wires
-        let leaf_indices: Vec<u32> = leaf_wires.iter().map(|wid| wid.0).collect();
-        let root_indices: Vec<u32> = root_wires.iter().map(|wid| wid.0).collect();
+        // Get the witness indices for the leaf and root digests
+        let leaf_indices: Vec<u32> = leaf_wids.iter().map(|wid| wid.0).collect();
+        let root_indices: Vec<u32> = root_wids.iter().map(|wid| wid.0).collect();
 
         debug_assert!(self.path_siblings.len() <= mmcs_config.max_tree_height);
         let path_directions =
@@ -252,27 +252,23 @@ pub fn generate_mmcs_trace<F: CircuitField>(
                 });
             }
 
-            // Compute index from private directions and validate against witness value
-            let priv_index_u32: u32 = private_data
+            // Compute index from private directions (as u64) and validate against witness value
+            let priv_index_u64: u64 = private_data
                 .directions
                 .iter()
                 .enumerate()
-                .filter_map(|(i, &b)| if b { Some(1u32 << i) } else { None })
+                .filter_map(|(i, &b)| if b { Some(1u64 << i) } else { None })
                 .sum();
 
             let idx_f = get_witness(*index)?;
-            if idx_f != F::from_u64(priv_index_u32 as u64) {
+            if idx_f != F::from_u64(priv_index_u64) {
                 return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
                     op: NonPrimitiveOpType::MmcsVerify,
                     operation_index: op_idx,
-                    expected: alloc::format!(
-                        "public index value {}",
-                        F::from_u64(priv_index_u32 as u64)
-                    ),
+                    expected: alloc::format!("public index value {}", F::from_u64(priv_index_u64)),
                     got: alloc::format!("{idx_f:?}"),
                 });
             }
-
             let trace = private_data.to_trace(config, leaf, root)?;
             mmcs_paths.push(trace);
         } else {

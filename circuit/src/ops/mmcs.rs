@@ -23,7 +23,7 @@ pub struct MmcsVerifyConfig {
 }
 
 impl MmcsVerifyConfig {
-    /// Returns the number of wires received as input.
+    /// Returns the number of inputs (witness elements) received.
     pub const fn input_size(&self) -> usize {
         // `ext_field_digest_elems`` for the leaf and root and 1 for the index
         2 * self.ext_field_digest_elems + 1
