@@ -13,4 +13,3 @@ pub mod recursive_challenger;
 pub mod recursive_generation;
 pub mod recursive_pcs;
 pub mod recursive_traits;
-pub mod target_allocator;

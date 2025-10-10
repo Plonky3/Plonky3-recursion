@@ -11,7 +11,6 @@ use p3_field::Field;
 
 use crate::Target;
 use crate::recursive_challenger::RecursiveChallenger;
-use crate::target_allocator::TargetAllocator;
 
 /// Concrete challenger implementation for Fiat-Shamir operations.
 pub struct CircuitChallenger {
@@ -62,8 +61,7 @@ impl<F: Field> RecursiveChallenger<F> for CircuitChallenger {
     fn sample(&mut self, circuit: &mut CircuitBuilder<F>) -> Target {
         self.flush_absorb(circuit);
 
-        let mut alloc = TargetAllocator::new(circuit);
-        let output = alloc.alloc("squeezed challenge");
+        let output = circuit.add_public_input();
 
         let _ = circuit.add_hash_squeeze(&[output]);
 

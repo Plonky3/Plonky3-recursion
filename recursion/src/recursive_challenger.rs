@@ -41,17 +41,15 @@ mod tests {
     use p3_field::PrimeCharacteristicRing;
 
     use super::*;
-    use crate::target_allocator::TargetAllocator;
 
     impl<F: Field> RecursiveChallenger<F> for () {
         fn observe(&mut self, _circuit: &mut CircuitBuilder<F>, _value: Target) {
             // No-op: no challenger to observe with
         }
 
-        fn sample(&mut self, circuit: &mut CircuitBuilder<F>) -> Target {
-            let mut alloc = TargetAllocator::new(circuit);
-            alloc.alloc("challenge (public input mode)")
-        }
+    fn sample(&mut self, circuit: &mut CircuitBuilder<F>) -> Target {
+        circuit.add_public_input()
+    }
     }
 
     #[test]
