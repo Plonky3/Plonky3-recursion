@@ -92,7 +92,7 @@ where
 
     let mut challenger = CircuitChallenger::new();
 
-    // Allocate base STARK challenges (alpha, zeta, zeta_next)
+    // Allocate base STARK challenges (alpha, zeta, zeta_next) using Fiat-Shamir
     let base_challenges = StarkChallenges::allocate::<SC, Comm, OpeningProof>(
         circuit,
         &mut challenger,

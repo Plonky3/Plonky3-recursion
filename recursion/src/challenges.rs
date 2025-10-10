@@ -136,6 +136,7 @@ mod tests {
 
     use super::*;
 
+    // Note: Full integration tests with ProofTargets are in circuit_verifier.rs
     #[test]
     fn test_stark_challenges_to_vec() {
         let challenges = StarkChallenges {

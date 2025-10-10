@@ -4,7 +4,7 @@ use std::env;
 /// Public inputs: leaf_hash, leaf_index, expected_root
 /// Private inputs: mmcs path (siblings + directions)
 use p3_baby_bear::BabyBear;
-use p3_circuit::op::MmcsVerifyConfig;
+use p3_circuit::ops::MmcsVerifyConfig;
 use p3_circuit::tables::MmcsPrivateData;
 use p3_circuit::{CircuitBuilder, ExprId, MmcsOps, NonPrimitiveOpPrivateData};
 use p3_circuit_prover::prover::ProverError;
