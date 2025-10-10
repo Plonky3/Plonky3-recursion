@@ -1,3 +1,5 @@
+use alloc::vec::Vec;
+
 use p3_field::PrimeCharacteristicRing;
 
 use crate::builder::{CircuitBuilder, CircuitBuilderError};
@@ -31,14 +33,14 @@ where
     /// Extracts challenge values from the sponge state.
     ///
     /// # Parameters
-    /// - `output_exprs`: Expressions that will receive the squeezed values
+    /// - `num_outputs`: Number of field elements to squeeze
     ///
     /// # Returns
-    /// Operation ID that can be used to set private data if needed
+    /// Tuple of (operation ID, vector of output expression IDs)
     fn add_hash_squeeze(
         &mut self,
-        output_exprs: &[ExprId],
-    ) -> Result<NonPrimitiveOpId, CircuitBuilderError>;
+        num_outputs: usize,
+    ) -> Result<(NonPrimitiveOpId, Vec<ExprId>), CircuitBuilderError>;
 }
 
 impl<F> HashOps<F> for CircuitBuilder<F>
@@ -58,11 +60,21 @@ where
 
     fn add_hash_squeeze(
         &mut self,
-        output_exprs: &[ExprId],
-    ) -> Result<NonPrimitiveOpId, CircuitBuilderError> {
+        num_outputs: usize,
+    ) -> Result<(NonPrimitiveOpId, Vec<ExprId>), CircuitBuilderError> {
         self.ensure_op_enabled(NonPrimitiveOpType::HashSqueeze)?;
 
-        let witness_exprs = output_exprs.to_vec();
-        Ok(self.push_non_primitive_op(NonPrimitiveOpType::HashSqueeze, witness_exprs))
+        // Allocate public inputs for the squeezed outputs
+        // These will be provided by the prover and constrained by the sponge AIR
+        let output_exprs: Vec<ExprId> = (0..num_outputs)
+            .map(|_| self.add_public_input())
+            .collect();
+
+        let op_id = self.push_non_primitive_op(
+            NonPrimitiveOpType::HashSqueeze,
+            output_exprs.clone(),
+        );
+
+        Ok((op_id, output_exprs))
     }
 }

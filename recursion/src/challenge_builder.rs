@@ -378,7 +378,14 @@ mod tests {
 
     #[test]
     fn test_challenge_builder_order() {
+        use p3_circuit::op::{NonPrimitiveOpConfig, NonPrimitiveOpType};
+        
         let mut circuit = CircuitBuilder::<BabyBear>::new();
+        
+        // Enable hash operations for CircuitChallenger
+        circuit.enable_op(NonPrimitiveOpType::HashAbsorb { reset: true }, NonPrimitiveOpConfig::None);
+        circuit.enable_op(NonPrimitiveOpType::HashAbsorb { reset: false }, NonPrimitiveOpConfig::None);
+        circuit.enable_op(NonPrimitiveOpType::HashSqueeze, NonPrimitiveOpConfig::None);
 
         let challenges = ChallengeBuilder::new(&mut circuit)
             .add_alpha_challenge()
@@ -392,7 +399,14 @@ mod tests {
 
     #[test]
     fn test_stark_challenges_roundtrip() {
+        use p3_circuit::op::{NonPrimitiveOpConfig, NonPrimitiveOpType};
+        
         let mut circuit = CircuitBuilder::<BabyBear>::new();
+        
+        // Enable hash operations for CircuitChallenger
+        circuit.enable_op(NonPrimitiveOpType::HashAbsorb { reset: true }, NonPrimitiveOpConfig::None);
+        circuit.enable_op(NonPrimitiveOpType::HashAbsorb { reset: false }, NonPrimitiveOpConfig::None);
+        circuit.enable_op(NonPrimitiveOpType::HashSqueeze, NonPrimitiveOpConfig::None);
 
         let original = ChallengeBuilder::new(&mut circuit)
             .add_alpha_challenge()

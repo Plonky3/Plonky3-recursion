@@ -66,6 +66,12 @@ fn test_fibonacci_verifier() -> Result<(), VerificationError> {
 
     // Initialize the circuit builder.
     let mut circuit_builder = CircuitBuilder::new();
+    
+    // Enable hash operations for CircuitChallenger
+    use p3_circuit::op::{NonPrimitiveOpConfig, NonPrimitiveOpType};
+    circuit_builder.enable_op(NonPrimitiveOpType::HashAbsorb { reset: true }, NonPrimitiveOpConfig::None);
+    circuit_builder.enable_op(NonPrimitiveOpType::HashAbsorb { reset: false }, NonPrimitiveOpConfig::None);
+    circuit_builder.enable_op(NonPrimitiveOpType::HashSqueeze, NonPrimitiveOpConfig::None);
 
     let public_values = (0..pis.len())
         .map(|_| circuit_builder.add_public_input())

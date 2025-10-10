@@ -13,17 +13,9 @@ use crate::Target;
 
 /// Trait for performing Fiat-Shamir transformations within a circuit.
 ///
-/// A recursive challenger maintains a cryptographic sponge state as circuit targets
-/// and provides methods to:
-/// - Observe field elements (hash them into the state)
-/// - Sample challenges (extract field elements from the state)
-///
-/// # Implementation Requirements
-///
-/// Implementations need:
-/// - A cryptographic hash/sponge function available in the circuit (e.g., Poseidon2)
-/// - State management as circuit targets
-/// - Observation and sampling logic matching the native challenger
+/// Via an internal sponge state, it provides methods to:
+/// - Observe field elements
+/// - Sample challenges
 pub trait RecursiveChallenger<F: Field> {
     /// Observe a single field element in the Fiat-Shamir transcript.
     ///

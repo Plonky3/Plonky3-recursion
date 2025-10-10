@@ -114,11 +114,11 @@ impl<F: Field, const R: usize> RecursiveChallenger<F> for CircuitChallenger<R> {
         // Flush any pending absorbs before squeezing
         self.flush_absorb(circuit);
 
-        // Allocate a target for the squeezed output
-        let output = circuit.add_public_input();
-        let _ = circuit.add_hash_squeeze(&[output]);
-
-        output
+        // Squeeze a challenge from the sponge
+        // The output is constrained by the sponge AIR to match the actual squeeze
+        let (_op_id, outputs) = circuit.add_hash_squeeze(1).expect("HashSqueeze should be enabled");
+        
+        outputs[0]
     }
 }
 
@@ -131,7 +131,15 @@ mod tests {
 
     #[test]
     fn test_circuit_challenger_basic() {
+        use p3_circuit::op::{NonPrimitiveOpConfig, NonPrimitiveOpType};
+        
         let mut circuit = CircuitBuilder::<BabyBear>::new();
+        
+        // Enable hash operations
+        circuit.enable_op(NonPrimitiveOpType::HashAbsorb { reset: true }, NonPrimitiveOpConfig::None);
+        circuit.enable_op(NonPrimitiveOpType::HashAbsorb { reset: false }, NonPrimitiveOpConfig::None);
+        circuit.enable_op(NonPrimitiveOpType::HashSqueeze, NonPrimitiveOpConfig::None);
+        
         let mut challenger = CircuitChallenger::<16>::new();
 
         // Observe some values
@@ -148,7 +156,15 @@ mod tests {
 
     #[test]
     fn test_circuit_challenger_buffering() {
+        use p3_circuit::op::{NonPrimitiveOpConfig, NonPrimitiveOpType};
+        
         let mut circuit = CircuitBuilder::<BabyBear>::new();
+        
+        // Enable hash operations
+        circuit.enable_op(NonPrimitiveOpType::HashAbsorb { reset: true }, NonPrimitiveOpConfig::None);
+        circuit.enable_op(NonPrimitiveOpType::HashAbsorb { reset: false }, NonPrimitiveOpConfig::None);
+        circuit.enable_op(NonPrimitiveOpType::HashSqueeze, NonPrimitiveOpConfig::None);
+        
         let mut challenger = CircuitChallenger::<4>::new(); // Rate 4
 
         // Observe 3 values (should buffer, not flush)
