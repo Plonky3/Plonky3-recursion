@@ -39,11 +39,10 @@ use alloc::vec::Vec;
 
 use p3_air::{Air, AirBuilder, BaseAir};
 use p3_circuit::tables::MulTrace;
+use p3_circuit::utils::pad_to_power_of_two;
 use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
-
-use super::utils::pad_to_power_of_two;
 
 /// AIR for proving multiplication operations: lhs * rhs = result.
 /// Parameterised over extension degree `D` and a runtime lane count controlling how many

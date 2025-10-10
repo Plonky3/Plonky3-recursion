@@ -146,7 +146,7 @@ impl MmcsVerifyConfig {
     }
 
     /// Returns wether digests are packed into extension field elements or not.
-    pub fn is_packing(&self) -> bool {
+    pub const fn is_packing(&self) -> bool {
         self.base_field_digest_elems > self.ext_field_digest_elems
     }
 }

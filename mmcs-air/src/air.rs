@@ -7,6 +7,7 @@ use itertools::izip;
 use p3_air::{Air, AirBuilder, BaseAir};
 use p3_circuit::MmcsTrace;
 use p3_circuit::ops::MmcsVerifyConfig;
+use p3_circuit::utils::pad_to_power_of_two;
 use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing, PrimeField};
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
@@ -67,7 +68,7 @@ impl MmcsTableConfig {
 ///   to `max_tree_height` bits.
 /// - `length`: The length of the Mmcs path (i.e., the height of the tree).
 /// - `height_encoding`: One-hot encoding of the current height in the Mmcs path.
-/// - `sibling`: The sibling node at the current height.    
+/// - `sibling`: The sibling node at the current height.
 /// - `state`: The current hash state (the result of hashing the leaf with siblings up to the current height).
 /// - `state_index`: The index of the current in the witness table.
 /// - `is_final`: Whether this is the final row for this Mmcs path (i.e., the one that outputs the root).
@@ -253,7 +254,7 @@ where
 }
 
 impl<F: Field> MmcsVerifyAir<F> {
-    pub fn new(config: MmcsTableConfig) -> Self {
+    pub const fn new(config: MmcsTableConfig) -> Self {
         MmcsVerifyAir {
             config,
             _phantom: PhantomData,
@@ -284,31 +285,39 @@ impl<F: Field> MmcsVerifyAir<F> {
         }
     }
 
-    pub fn index_bits(&self) -> Range<usize> {
+    pub const fn index_bits(&self) -> Range<usize> {
         0..self.config.max_tree_height
     }
-    pub fn length(&self) -> usize {
+
+    pub const fn length(&self) -> usize {
         self.index_bits().end
     }
-    pub fn height_encoding(&self) -> Range<usize> {
+
+    pub const fn height_encoding(&self) -> Range<usize> {
         self.length() + 1..self.length() + 1 + self.config.max_tree_height
     }
-    pub fn sibling(&self) -> Range<usize> {
+
+    pub const fn sibling(&self) -> Range<usize> {
         self.height_encoding().end..self.height_encoding().end + self.config.digest_elems
     }
-    pub fn state(&self) -> Range<usize> {
+
+    pub const fn state(&self) -> Range<usize> {
         self.sibling().end..self.sibling().end + self.config.digest_elems
     }
-    pub fn state_index(&self) -> Range<usize> {
+
+    pub const fn state_index(&self) -> Range<usize> {
         self.state().end..self.state().end + self.config.digest_addresses
     }
-    pub fn is_final(&self) -> usize {
+
+    pub const fn is_final(&self) -> usize {
         self.state_index().end
     }
-    pub fn is_extra(&self) -> usize {
+
+    pub const fn is_extra(&self) -> usize {
         self.is_final() + 1
     }
-    pub fn is_extra_height(&self) -> usize {
+
+    pub const fn is_extra_height(&self) -> usize {
         self.is_extra() + 1
     }
 
@@ -478,26 +487,6 @@ impl<F: Field> MmcsVerifyAir<F> {
         pad_to_power_of_two(&mut values, width, row_count);
 
         RowMajorMatrix::new(values, width)
-    }
-}
-
-/// Helper to pad trace values to power-of-two height with zeroes
-pub fn pad_to_power_of_two<F: Field>(values: &mut Vec<F>, width: usize, original_height: usize) {
-    if original_height == 0 {
-        // Empty trace - just ensure we have at least one row of zeros
-        values.resize(width, F::ZERO);
-        return;
-    }
-
-    let target_height = original_height.next_power_of_two();
-    if target_height == original_height {
-        return; // Already power of two
-    }
-
-    // Repeat the last row to reach target height
-
-    for _ in original_height..target_height {
-        values.extend_from_slice(&vec![F::ZERO; width]);
     }
 }
 

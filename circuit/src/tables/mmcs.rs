@@ -14,7 +14,6 @@ use crate::op::{
 use crate::ops::MmcsVerifyConfig;
 use crate::types::WitnessId;
 
-/// Fake Mmcs verification table (simplified: single field elements)
 #[derive(Debug, Clone)]
 pub struct MmcsTrace<F> {
     /// All the mmcs paths computed in this trace
@@ -152,28 +151,26 @@ impl<F: Field + Clone + Default> MmcsPrivateData<F> {
             self.path_siblings.iter(),
             path_directions
         ) {
-            // Current hash becomes left operand
-            trace.left_values.push(state.clone());
-            // TODO: What is the address of this value?
-            trace.left_index.push(leaf_indices.clone()); // Points to witness bus
-
-            // Sibling becomes right operand (private data - not on witness bus)
-            trace.right_values.push(sibling.clone());
-            trace.right_index.push(0); // Not on witness bus - private data
-
-            trace.path_directions.push(direction);
-            trace.is_extra.push(false);
-
-            // If there's an extra sibling we push another row to the trace
-            if let Some((extra_state, extra_sibling)) = extra {
-                trace.left_values.push(extra_state.to_vec());
+             // Add a row to the trace.
+             let mut add_trace_row = |left_v: &Vec<F>, right_v: &Vec<F>, is_extra_flag: bool| {
+                // Current hash becomes left operand
+                trace.left_values.push(left_v.clone());
+                // Points to witness bus
                 trace.left_index.push(leaf_indices.clone());
-
-                trace.right_values.push(extra_sibling.clone());
-                trace.right_index.push(0); // TODO: This should have an address on the witness table
-
+                // Sibling becomes right operand (private data - not on witness bus)
+                trace.right_values.push(right_v.clone());
+                // Not on witness bus - private data
+                trace.right_index.push(0);
                 trace.path_directions.push(direction);
-                trace.is_extra.push(true);
+                trace.is_extra.push(is_extra_flag);
+            };
+
+            // Add the primary trace row for the current Merkle path step.
+            add_trace_row(state, sibling, false);
+
+            // If there's an extra sibling (due to tree structure), add another trace row.
+            if let Some((extra_state, extra_sibling)) = extra {
+                add_trace_row(extra_state, extra_sibling, true);
             }
         }
         trace.final_value = self.path_states.last().cloned().unwrap_or_default();
