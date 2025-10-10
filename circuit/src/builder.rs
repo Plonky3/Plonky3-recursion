@@ -78,6 +78,10 @@ pub struct CircuitBuilder<F> {
 
     /// Enabled non-primitive operation types with their respective configuration
     enabled_ops: HashMap<NonPrimitiveOpType, NonPrimitiveOpConfig>,
+
+    /// Debug log of public input allocations with labels
+    #[cfg(debug_assertions)]
+    allocation_log: Vec<&'static str>,
 }
 
 /// Errors that can occur during circuit building/lowering.
@@ -143,6 +147,8 @@ where
             non_primitive_ops: Vec::new(),
             const_pool,
             enabled_ops: HashMap::new(), // All non-primitive ops are disabled by default
+            #[cfg(debug_assertions)]
+            allocation_log: Vec::new(),
         }
     }
 
@@ -168,6 +174,25 @@ where
     ///
     /// Cost: 1 row in Public table + 1 row in witness table.
     pub fn add_public_input(&mut self) -> ExprId {
+        self.alloc_public_input("unlabeled")
+    }
+
+    /// Allocate a public input with a descriptive label.
+    ///
+    /// The label is logged in debug builds for easier debugging of public input ordering.
+    ///
+    /// Cost: 1 row in Public table + 1 row in witness table.
+    ///
+    /// # Parameters
+    /// - `label`: Description of what this public input represents
+    ///
+    /// # Returns
+    /// The allocated `ExprId` for this public input
+    #[allow(unused_variables)]
+    pub fn alloc_public_input(&mut self, label: &'static str) -> ExprId {
+        #[cfg(debug_assertions)]
+        self.allocation_log.push(label);
+
         let public_pos = self.public_input_count;
         self.public_input_count += 1;
 
@@ -175,11 +200,50 @@ where
         self.expressions.add_expr(public_expr)
     }
 
+    /// Allocate multiple public inputs with a descriptive label.
+    ///
+    /// # Parameters
+    /// - `count`: Number of public inputs to allocate
+    /// - `label`: Description of what these inputs represent
+    pub fn alloc_public_inputs(&mut self, count: usize, label: &'static str) -> Vec<ExprId> {
+        (0..count).map(|_| self.alloc_public_input(label)).collect()
+    }
+
+    /// Allocate a fixed-size array of public inputs with a descriptive label.
+    pub fn alloc_public_input_array<const N: usize>(&mut self, label: &'static str) -> [ExprId; N] {
+        core::array::from_fn(|_| self.alloc_public_input(label))
+    }
+
+    /// Dump the public input allocation log (debug builds only).
+    ///
+    /// Shows the complete ordering of all public inputs with their labels.
+    #[cfg(debug_assertions)]
+    pub fn dump_allocation_log(&self) {
+        tracing::debug!("=== Public Input Allocation Log ===");
+        for (idx, label) in self.allocation_log.iter().enumerate() {
+            tracing::debug!("  PublicInput[{}]: {}", idx, label);
+        }
+        tracing::debug!("Total public inputs: {}", self.allocation_log.len());
+    }
+
     /// Add a constant to the circuit (deduplicated).
     ///
     /// If this value was previously added, returns the original ExprId.
     /// Cost: 1 row in Const table + 1 row in witness table (only for new constants).
     pub fn add_const(&mut self, val: F) -> ExprId {
+        self.alloc_const(val, "const")
+    }
+
+    /// Allocate a constant with a descriptive label.
+    ///
+    /// Cost: 1 row in Const table + 1 row in witness table (only for new constants).
+    #[allow(unused_variables)]
+    pub fn alloc_const(&mut self, val: F, label: &'static str) -> ExprId {
+        #[cfg(debug_assertions)]
+        if !self.const_pool.contains_key(&val) {
+            self.allocation_log.push(label);
+        }
+
         *self
             .const_pool
             .entry(val)
@@ -190,6 +254,17 @@ where
     ///
     /// Cost: 1 row in Add table + 1 row in witness table.
     pub fn add(&mut self, lhs: ExprId, rhs: ExprId) -> ExprId {
+        self.alloc_add(lhs, rhs, "add")
+    }
+
+    /// Add two expressions with a descriptive label.
+    ///
+    /// Cost: 1 row in Add table + 1 row in witness table.
+    #[allow(unused_variables)]
+    pub fn alloc_add(&mut self, lhs: ExprId, rhs: ExprId, label: &'static str) -> ExprId {
+        #[cfg(debug_assertions)]
+        self.allocation_log.push(label);
+
         let add_expr = Expr::Add { lhs, rhs };
         self.expressions.add_expr(add_expr)
     }
@@ -198,6 +273,17 @@ where
     ///
     /// Cost: 1 row in Add table + 1 row in witness table (encoded as result + rhs = lhs).
     pub fn sub(&mut self, lhs: ExprId, rhs: ExprId) -> ExprId {
+        self.alloc_sub(lhs, rhs, "sub")
+    }
+
+    /// Subtract two expressions with a descriptive label.
+    ///
+    /// Cost: 1 row in Add table + 1 row in witness table.
+    #[allow(unused_variables)]
+    pub fn alloc_sub(&mut self, lhs: ExprId, rhs: ExprId, label: &'static str) -> ExprId {
+        #[cfg(debug_assertions)]
+        self.allocation_log.push(label);
+
         let sub_expr = Expr::Sub { lhs, rhs };
         self.expressions.add_expr(sub_expr)
     }
@@ -206,13 +292,36 @@ where
     ///
     /// Cost: 1 row in Mul table + 1 row in witness table.
     pub fn mul(&mut self, lhs: ExprId, rhs: ExprId) -> ExprId {
+        self.alloc_mul(lhs, rhs, "mul")
+    }
+
+    /// Multiply two expressions with a descriptive label.
+    ///
+    /// Cost: 1 row in Mul table + 1 row in witness table.
+    #[allow(unused_variables)]
+    pub fn alloc_mul(&mut self, lhs: ExprId, rhs: ExprId, label: &'static str) -> ExprId {
+        #[cfg(debug_assertions)]
+        self.allocation_log.push(label);
+
         let mul_expr = Expr::Mul { lhs, rhs };
         self.expressions.add_expr(mul_expr)
     }
-    /// Divide two expressions
+
+    /// Divide two expressions.
     ///
     /// Cost: 1 row in Mul table + 1 row in witness table (encoded as rhs * out = lhs).
     pub fn div(&mut self, lhs: ExprId, rhs: ExprId) -> ExprId {
+        self.alloc_div(lhs, rhs, "div")
+    }
+
+    /// Divide two expressions with a descriptive label.
+    ///
+    /// Cost: 1 row in Mul table + 1 row in witness table.
+    #[allow(unused_variables)]
+    pub fn alloc_div(&mut self, lhs: ExprId, rhs: ExprId, label: &'static str) -> ExprId {
+        #[cfg(debug_assertions)]
+        self.allocation_log.push(label);
+
         let div_expr = Expr::Div { lhs, rhs };
         self.expressions.add_expr(div_expr)
     }
@@ -1559,5 +1668,62 @@ mod tests {
         expected_public_mappings.insert(p1, WitnessId(2));
         expected_public_mappings.insert(p2, WitnessId(3));
         assert_eq!(public_mappings, expected_public_mappings);
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    fn test_allocation_log_operations() {
+        let mut builder = CircuitBuilder::<BabyBear>::new();
+
+        let a = builder.alloc_public_input("input a");
+        let b = builder.alloc_public_input("input b");
+
+        let _sum = builder.alloc_add(a, b, "compute sum");
+        let _product = builder.alloc_mul(a, b, "compute product");
+        let _constant = builder.alloc_const(BabyBear::ONE, "unit constant");
+
+        // Check consolidated log
+        assert_eq!(builder.allocation_log.len(), 5);
+        assert_eq!(builder.allocation_log[0], "input a");
+        assert_eq!(builder.allocation_log[1], "input b");
+        assert_eq!(builder.allocation_log[2], "compute sum");
+        assert_eq!(builder.allocation_log[3], "compute product");
+        assert_eq!(builder.allocation_log[4], "unit constant");
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    fn test_allocation_log_unlabeled() {
+        let mut builder = CircuitBuilder::<BabyBear>::new();
+
+        let a = builder.add_public_input();
+        let b = builder.add_const(BabyBear::TWO);
+        let _sum = builder.add(a, b);
+
+        // Should all be logged with default labels
+        assert_eq!(builder.allocation_log.len(), 3);
+        assert_eq!(builder.allocation_log[0], "unlabeled");
+        assert_eq!(builder.allocation_log[1], "const");
+        assert_eq!(builder.allocation_log[2], "add");
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    fn test_allocation_log_const_deduplication() {
+        let mut builder = CircuitBuilder::<BabyBear>::new();
+
+        // First time: should log
+        let _c1 = builder.alloc_const(BabyBear::ONE, "one");
+        assert_eq!(builder.allocation_log.len(), 1);
+
+        // Second time: deduplicated, should NOT log
+        let _c2 = builder.alloc_const(BabyBear::ONE, "one again");
+        assert_eq!(builder.allocation_log.len(), 1);
+
+        // Different value: should log
+        let _c3 = builder.alloc_const(BabyBear::TWO, "two");
+        assert_eq!(builder.allocation_log.len(), 2);
+        assert_eq!(builder.allocation_log[0], "one");
+        assert_eq!(builder.allocation_log[1], "two");
     }
 }

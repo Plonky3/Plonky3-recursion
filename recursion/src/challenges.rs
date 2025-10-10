@@ -11,7 +11,6 @@ use p3_circuit::CircuitBuilder;
 use p3_field::Field;
 
 use crate::Target;
-use crate::target_allocator::TargetAllocator;
 
 /// Base STARK challenges (independent of PCS choice).
 ///
@@ -36,17 +35,15 @@ impl StarkChallenges {
     ///
     /// TODO: Integrate with recursive challenger for proper Fiat-Shamir observations.
     pub fn allocate<F: Field>(circuit: &mut CircuitBuilder<F>) -> Self {
-        let mut alloc = TargetAllocator::new(circuit);
-
         // TODO: Observe degree_bits and degree_bits - is_zk
         // TODO: Observe trace commitment
         // TODO: Observe public values
-        let alpha = alloc.alloc("alpha challenge");
+        let alpha = circuit.alloc_public_input("alpha challenge");
 
         // TODO: Observe quotient chunks commitment
         // TODO: Observe random commitment (if ZK mode)
-        let zeta = alloc.alloc("zeta challenge");
-        let zeta_next = alloc.alloc("zeta_next challenge");
+        let zeta = circuit.alloc_public_input("zeta challenge");
+        let zeta_next = circuit.alloc_public_input("zeta_next challenge");
 
         Self {
             alpha,

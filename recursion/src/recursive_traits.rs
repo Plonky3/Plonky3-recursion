@@ -13,7 +13,6 @@ use p3_uni_stark::{
 };
 
 use crate::Target;
-use crate::target_allocator::TargetAllocator;
 
 /// Structure representing all the targets necessary for an input proof.
 pub struct ProofTargets<
@@ -70,10 +69,8 @@ pub trait Recursive<F: Field> {
     /// Creates new targets for all the necessary challenges.
     /// TODO: Should we move this to Pcs instead?
     fn get_challenges(&self, circuit: &mut CircuitBuilder<F>) -> Vec<Target> {
-        let mut alloc = TargetAllocator::new(circuit);
-
         let num_challenges = self.num_challenges();
-        alloc.alloc_vec(num_challenges, "proof challenges")
+        circuit.alloc_public_inputs(num_challenges, "proof challenges")
     }
 
     // Temporary method used for testing for now. This should be changed into something more generic which relies as little as possible on the actual proof.
@@ -346,25 +343,25 @@ impl<SC: StarkGenericConfig> Recursive<SC::Challenge> for OpenedValuesTargets<SC
         lens: &mut impl Iterator<Item = usize>,
         _degree_bits: usize,
     ) -> Self {
-        let mut alloc = TargetAllocator::new(circuit);
-
         let trace_local_len = lens.next().unwrap();
-        let trace_local_targets = alloc.alloc_vec(trace_local_len, "trace local values");
+        let trace_local_targets =
+            circuit.alloc_public_inputs(trace_local_len, "trace local values");
 
         let trace_next_len = lens.next().unwrap();
-        let trace_next_targets = alloc.alloc_vec(trace_next_len, "trace next values");
+        let trace_next_targets = circuit.alloc_public_inputs(trace_next_len, "trace next values");
 
         let quotient_chunks_len = lens.next().unwrap();
         let mut quotient_chunks_targets = Vec::with_capacity(quotient_chunks_len);
         for _ in 0..quotient_chunks_len {
             let quotient_chunks_cols_len = lens.next().unwrap();
-            let quotient_col = alloc.alloc_vec(quotient_chunks_cols_len, "quotient chunk columns");
+            let quotient_col =
+                circuit.alloc_public_inputs(quotient_chunks_cols_len, "quotient chunk columns");
             quotient_chunks_targets.push(quotient_col);
         }
 
         let random_len = lens.next().unwrap();
         let random_targets = if random_len > 0 {
-            Some(alloc.alloc_vec(random_len, "random values (ZK mode)"))
+            Some(circuit.alloc_public_inputs(random_len, "random values (ZK mode)"))
         } else {
             None
         };

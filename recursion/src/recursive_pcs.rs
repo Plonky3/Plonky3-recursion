@@ -23,7 +23,6 @@ use crate::recursive_traits::{
     ComsWithOpeningsTargets, Recursive, RecursiveExtensionMmcs, RecursiveLagrangeSelectors,
     RecursiveMmcs, RecursivePcs,
 };
-use crate::target_allocator::TargetAllocator;
 
 /// Maximum number of bits used for query index decomposition in FRI verification circuits.
 ///
@@ -103,8 +102,8 @@ impl<
         }
 
         let final_poly_len = lens.next().unwrap();
-        let mut alloc = TargetAllocator::new(circuit);
-        let final_poly = alloc.alloc_vec(final_poly_len, "FRI final polynomial coefficients");
+        let final_poly =
+            circuit.alloc_public_inputs(final_poly_len, "FRI final polynomial coefficients");
 
         Self {
             commit_phase_commits,
@@ -270,9 +269,7 @@ impl<F: Field, EF: ExtensionField<F>, RecMmcs: RecursiveExtensionMmcs<F, EF>> Re
         lens: &mut impl Iterator<Item = usize>,
         degree_bits: usize,
     ) -> Self {
-        let mut alloc = TargetAllocator::new(circuit);
-
-        let sibling_value = alloc.alloc("FRI commit phase sibling value");
+        let sibling_value = circuit.alloc_public_input("FRI commit phase sibling value");
         let opening_proof = RecMmcs::Proof::new(circuit, lens, degree_bits);
         Self {
             sibling_value,
@@ -325,13 +322,12 @@ impl<F: Field, EF: ExtensionField<F>, Inner: RecursiveMmcs<F, EF>> Recursive<EF>
         lens: &mut impl Iterator<Item = usize>,
         degree_bits: usize,
     ) -> Self {
-        let mut alloc = TargetAllocator::new(circuit);
-
         let opened_vals_len = lens.next().unwrap();
         let mut opened_values = Vec::with_capacity(opened_vals_len);
         for _ in 0..opened_vals_len {
             let num_opened_values = lens.next().unwrap();
-            let inner_opened_vals = alloc.alloc_vec(num_opened_values, "batch opened values");
+            let inner_opened_vals =
+                circuit.alloc_public_inputs(num_opened_values, "batch opened values");
             opened_values.push(inner_opened_vals);
         }
 
@@ -396,10 +392,8 @@ impl<F: Field, EF: ExtensionField<F>, const DIGEST_ELEMS: usize> Recursive<EF>
         _lens: &mut impl Iterator<Item = usize>,
         _degree_bits: usize,
     ) -> Self {
-        let mut alloc = TargetAllocator::new(circuit);
-
         Self {
-            hash_targets: alloc.alloc_array("MMCS commitment digest"),
+            hash_targets: circuit.alloc_public_input_array("MMCS commitment digest"),
             _phantom: PhantomData,
         }
     }
@@ -435,12 +429,10 @@ impl<F: Field, EF: ExtensionField<F>, const DIGEST_ELEMS: usize> Recursive<EF>
         lens: &mut impl Iterator<Item = usize>,
         _degree_bits: usize,
     ) -> Self {
-        let mut alloc = TargetAllocator::new(circuit);
-
         let proof_len = lens.next().unwrap();
         let mut proof = Vec::with_capacity(proof_len);
         for _ in 0..proof_len {
-            proof.push(alloc.alloc_array("Merkle proof hash"));
+            proof.push(circuit.alloc_public_input_array("Merkle proof hash"));
         }
 
         Self {
@@ -479,10 +471,8 @@ impl<F: Field, EF: ExtensionField<F>> Recursive<EF> for Witness<F> {
         _lens: &mut impl Iterator<Item = usize>,
         _degree_bits: usize,
     ) -> Self {
-        let mut alloc = TargetAllocator::new(circuit);
-
         Self {
-            witness: alloc.alloc("FRI proof-of-work witness"),
+            witness: circuit.alloc_public_input("FRI proof-of-work witness"),
             _phantom: PhantomData,
         }
     }
