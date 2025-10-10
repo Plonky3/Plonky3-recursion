@@ -272,37 +272,33 @@ fn pack_inputs(
     index_bits_all_queries: Vec<Vec<Challenge>>,
     commitments_with_points: CommitmentsWithPoints,
 ) -> Vec<Challenge> {
-    let mut v = Vec::new();
+    use p3_recursion::public_inputs::{CommitmentOpening, FriVerifierInputs};
 
-    // (1) FriProofTargets public inputs
-    v.extend(fri_vals);
-
-    // (2) alpha
-    v.push(alpha);
-
-    // (3) betas
-    v.extend(betas);
-
-    // (4) index bits per query (LE), in order
-    for bits in index_bits_all_queries {
-        v.extend(bits);
-    }
-
-    // (5) For each batch: commitment, then z and f(z) for all matrices in that batch
-    for (commit_placeholder, mats) in commitments_with_points {
-        // Commitment for this batch
-        v.push(commit_placeholder);
-
-        // Then all matrices in this batch
-        for (_domain, points_and_values) in mats {
-            for (z, fz) in points_and_values {
-                v.push(z);
-                v.extend(fz);
+    // Convert CommitmentsWithPoints to Vec<CommitmentOpening>
+    let commitment_openings = commitments_with_points
+        .into_iter()
+        .map(|(commitment, mats)| {
+            let mut opened_points = Vec::new();
+            for (_domain, points_and_values) in mats {
+                for (z, fz) in points_and_values {
+                    opened_points.push((z, fz));
+                }
             }
-        }
-    }
+            CommitmentOpening {
+                commitment,
+                opened_points,
+            }
+        })
+        .collect();
 
-    v
+    FriVerifierInputs {
+        fri_proof_values: fri_vals,
+        alpha,
+        betas,
+        query_index_bits: index_bits_all_queries,
+        commitment_openings,
+    }
+    .build()
 }
 
 #[test]
