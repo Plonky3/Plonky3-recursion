@@ -74,7 +74,6 @@ fn make_evals(
 }
 
 /// Holds all the public inputs and challenges required for a recursive FRI verification circuit.
-// #[derive(Debug)]
 struct ProduceInputsResult {
     /// FRI values, ordered to match the structure required by `FriProofTargets`.
     fri_values: Vec<Challenge>,
@@ -351,7 +350,7 @@ fn test_circuit_fri_verifier_multi_rounds() {
     let mut builder = CircuitBuilder::<Challenge>::new();
 
     // 1) Allocate FriProofTargets using instance 1
-    let fri_targets = FriTargets::from_non_recursive(&mut builder, &result_1.fri_proof);
+    let fri_targets = FriTargets::new(&mut builder, &result_1.fri_proof);
 
     // 2) Public inputs for α, βs, index bits
     let alpha_t = builder.add_public_input();

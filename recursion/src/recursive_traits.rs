@@ -48,7 +48,7 @@ pub trait Recursive<F: Field> {
 
     /// Creates a new instance of the recursive type. `lens` corresponds to all the vector lengths necessary to build the structure.
     /// TODO: They can actually be deduced from StarkGenericConfig and `degree_bits`.
-    fn from_non_recursive(circuit: &mut CircuitBuilder<F>, input: &Self::Input) -> Self;
+    fn new(circuit: &mut CircuitBuilder<F>, input: &Self::Input) -> Self;
 
     /// Returns a vec of field elements representing the private elements of the Input. Used to populate private inputs.
     /// Default implementation returns an empty vec.
@@ -219,15 +219,15 @@ impl<
     // TODO: We could also get the recursive struct just from the config.
 
     /// Allocates the necessary `circuit` targets for storing `input`'s public data.
-    fn from_non_recursive(
+    fn new(
         circuit: &mut CircuitBuilder<SC::Challenge>,
         input: &Self::Input,
     ) -> Self {
         let commitments_targets =
-            CommitmentTargets::from_non_recursive(circuit, &input.commitments);
+            CommitmentTargets::new(circuit, &input.commitments);
         let opened_values_targets =
-            OpenedValuesTargets::from_non_recursive(circuit, &input.opened_values);
-        let opening_proof = OpeningProof::from_non_recursive(circuit, &input.opening_proof);
+            OpenedValuesTargets::new(circuit, &input.opened_values);
+        let opening_proof = OpeningProof::new(circuit, &input.opening_proof);
 
         Self {
             commitments_targets,
@@ -265,13 +265,13 @@ where
 {
     type Input = Commitments<Comm::Input>;
 
-    fn from_non_recursive(circuit: &mut CircuitBuilder<F>, input: &Self::Input) -> Self {
-        let trace_targets = Comm::from_non_recursive(circuit, &input.trace);
-        let quotient_chunks_targets = Comm::from_non_recursive(circuit, &input.quotient_chunks);
+    fn new(circuit: &mut CircuitBuilder<F>, input: &Self::Input) -> Self {
+        let trace_targets = Comm::new(circuit, &input.trace);
+        let quotient_chunks_targets = Comm::new(circuit, &input.quotient_chunks);
         let random_commit = input
             .random
             .as_ref()
-            .map(|random| Comm::from_non_recursive(circuit, random));
+            .map(|random| Comm::new(circuit, random));
         Self {
             trace_targets,
             quotient_chunks_targets,
@@ -304,7 +304,7 @@ where
 impl<SC: StarkGenericConfig> Recursive<SC::Challenge> for OpenedValuesTargets<SC> {
     type Input = OpenedValues<SC::Challenge>;
 
-    fn from_non_recursive(
+    fn new(
         circuit: &mut CircuitBuilder<SC::Challenge>,
         input: &Self::Input,
     ) -> Self {

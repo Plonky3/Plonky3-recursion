@@ -404,7 +404,7 @@ mod tests {
     impl<F: Field, EF: ExtensionField<F>> Recursive<EF> for DummyCom<F> {
         type Input = Vec<Vec<F>>;
 
-        fn from_non_recursive(_circuit: &mut CircuitBuilder<EF>, _input: &Self::Input) -> Self {
+        fn new(_circuit: &mut CircuitBuilder<EF>, _input: &Self::Input) -> Self {
             vec![]
         }
 
@@ -421,7 +421,7 @@ mod tests {
     impl<F: Field> Recursive<F> for EmptyTarget {
         type Input = ();
 
-        fn from_non_recursive(
+        fn new(
             _circuit: &mut p3_circuit::CircuitBuilder<F>,
             _input: &Self::Input,
         ) -> Self {
@@ -702,7 +702,7 @@ mod tests {
             StarkConfig<TrivialPcs<Val, Dft>, Challenge, Challenger>,
             DummyCom<Val>,
             EmptyTarget,
-        >::from_non_recursive(&mut circuit_builder, &proof);
+        >::new(&mut circuit_builder, &proof);
 
         let proof_values = ProofTargets::<
             StarkConfig<TrivialPcs<Val, Dft>, Challenge, Challenger>,

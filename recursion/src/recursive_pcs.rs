@@ -79,19 +79,19 @@ impl<
 {
     type Input = FriProof<EF, RecMmcs::Input, Witness::Input, InputProof::Input>;
 
-    fn from_non_recursive(circuit: &mut CircuitBuilder<EF>, input: &Self::Input) -> Self {
+    fn new(circuit: &mut CircuitBuilder<EF>, input: &Self::Input) -> Self {
         // Note that the iterator `lens` is updated by each call to `new`. So we can always pass the same `lens` for all structures.
         let num_commit_phase_commits = input.commit_phase_commits.len();
         let mut commit_phase_commits = Vec::with_capacity(num_commit_phase_commits);
         for commitment in input.commit_phase_commits.iter() {
-            commit_phase_commits.push(RecMmcs::Commitment::from_non_recursive(circuit, commitment));
+            commit_phase_commits.push(RecMmcs::Commitment::new(circuit, commitment));
         }
 
         let num_query_proofs = input.query_proofs.len();
         let mut query_proofs = Vec::with_capacity(num_query_proofs);
         for query in input.query_proofs.iter() {
             query_proofs.push(
-                QueryProofTargets::<F, EF, InputProof, RecMmcs>::from_non_recursive(circuit, query),
+                QueryProofTargets::<F, EF, InputProof, RecMmcs>::new(circuit, query),
             );
         }
 
@@ -104,7 +104,7 @@ impl<
             commit_phase_commits,
             query_proofs,
             final_poly,
-            pow_witness: Witness::from_non_recursive(circuit, &input.pow_witness),
+            pow_witness: Witness::new(circuit, &input.pow_witness),
         }
     }
 
@@ -156,14 +156,14 @@ impl<
 {
     type Input = QueryProof<EF, RecMmcs::Input, InputProof::Input>;
 
-    fn from_non_recursive(circuit: &mut CircuitBuilder<EF>, input: &Self::Input) -> Self {
+    fn new(circuit: &mut CircuitBuilder<EF>, input: &Self::Input) -> Self {
         // Note that the iterator `lens` is updated by each call to `new`. So we can always pass the same `lens` for all structures.
-        let input_proof = InputProof::from_non_recursive(circuit, &input.input_proof);
+        let input_proof = InputProof::new(circuit, &input.input_proof);
         let num_commit_phase_openings = input.commit_phase_openings.len();
         let mut commit_phase_openings = Vec::with_capacity(num_commit_phase_openings);
         for commitment in input.commit_phase_openings.iter() {
             commit_phase_openings.push(
-                CommitPhaseProofStepTargets::<F, EF, RecMmcs>::from_non_recursive(
+                CommitPhaseProofStepTargets::<F, EF, RecMmcs>::new(
                     circuit, commitment,
                 ),
             );
@@ -213,9 +213,9 @@ impl<F: Field, EF: ExtensionField<F>, RecMmcs: RecursiveExtensionMmcs<F, EF>> Re
     // This is used with an extension field element, since it is part of `FriProof`, not a base field element.
     type Input = CommitPhaseProofStep<EF, RecMmcs::Input>;
 
-    fn from_non_recursive(circuit: &mut CircuitBuilder<EF>, input: &Self::Input) -> Self {
+    fn new(circuit: &mut CircuitBuilder<EF>, input: &Self::Input) -> Self {
         let sibling_value = circuit.add_public_input();
-        let opening_proof = RecMmcs::Proof::from_non_recursive(circuit, &input.opening_proof);
+        let opening_proof = RecMmcs::Proof::new(circuit, &input.opening_proof);
         Self {
             sibling_value,
             opening_proof,
@@ -253,7 +253,7 @@ impl<F: Field, EF: ExtensionField<F>, Inner: RecursiveMmcs<F, EF>> Recursive<EF>
 {
     type Input = BatchOpening<F, Inner::Input>;
 
-    fn from_non_recursive(circuit: &mut CircuitBuilder<EF>, input: &Self::Input) -> Self {
+    fn new(circuit: &mut CircuitBuilder<EF>, input: &Self::Input) -> Self {
         let opened_vals_len = input.opened_values.len();
         let mut opened_values = Vec::with_capacity(opened_vals_len);
         for input_opened_values in input.opened_values.iter() {
@@ -265,7 +265,7 @@ impl<F: Field, EF: ExtensionField<F>, Inner: RecursiveMmcs<F, EF>> Recursive<EF>
             opened_values.push(inner_opened_vals);
         }
 
-        let opening_proof = Inner::Proof::from_non_recursive(circuit, &input.opening_proof);
+        let opening_proof = Inner::Proof::new(circuit, &input.opening_proof);
 
         Self {
             opened_values,
@@ -308,7 +308,7 @@ impl<F: Field, EF: ExtensionField<F>, const DIGEST_ELEMS: usize> Recursive<EF>
 {
     type Input = ValMmcsCommitment<F, DIGEST_ELEMS>;
 
-    fn from_non_recursive(circuit: &mut CircuitBuilder<EF>, _input: &Self::Input) -> Self {
+    fn new(circuit: &mut CircuitBuilder<EF>, _input: &Self::Input) -> Self {
         Self {
             hash_targets: array::from_fn(|_| circuit.add_public_input()),
             _phantom: PhantomData,
@@ -337,7 +337,7 @@ impl<F: Field, EF: ExtensionField<F>, const DIGEST_ELEMS: usize> Recursive<EF>
 {
     type Input = ValMmcsProof<F, DIGEST_ELEMS>;
 
-    fn from_non_recursive(circuit: &mut CircuitBuilder<EF>, input: &Self::Input) -> Self {
+    fn new(circuit: &mut CircuitBuilder<EF>, input: &Self::Input) -> Self {
         let proof_len = input.len();
         let mut proof = Vec::with_capacity(proof_len);
         for _ in 0..proof_len {
@@ -371,7 +371,7 @@ pub struct Witness<F> {
 impl<F: Field, EF: ExtensionField<F>> Recursive<EF> for Witness<F> {
     type Input = F;
 
-    fn from_non_recursive(circuit: &mut CircuitBuilder<EF>, _input: &Self::Input) -> Self {
+    fn new(circuit: &mut CircuitBuilder<EF>, _input: &Self::Input) -> Self {
         Self {
             witness: circuit.add_public_input(),
             _phantom: PhantomData,
@@ -451,11 +451,11 @@ impl<F: Field, EF: ExtensionField<F>, Inner: RecursiveMmcs<F, EF>> Recursive<EF>
 {
     type Input = Vec<BatchOpening<F, Inner::Input>>;
 
-    fn from_non_recursive(circuit: &mut CircuitBuilder<EF>, input: &Self::Input) -> Self {
+    fn new(circuit: &mut CircuitBuilder<EF>, input: &Self::Input) -> Self {
         let num_batch_openings = input.len();
         let mut batch_openings = Vec::with_capacity(num_batch_openings);
         for batch_opening in input.iter() {
-            batch_openings.push(BatchOpeningTargets::from_non_recursive(
+            batch_openings.push(BatchOpeningTargets::new(
                 circuit,
                 batch_opening,
             ));
