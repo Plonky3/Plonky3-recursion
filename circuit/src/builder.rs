@@ -7,7 +7,8 @@ use thiserror::Error;
 
 use crate::circuit::Circuit;
 use crate::expr::{Expr, ExpressionGraph};
-use crate::op::{MmcsVerifyConfig, NonPrimitiveOp, NonPrimitiveOpConfig, NonPrimitiveOpType, Prim};
+use crate::op::{NonPrimitiveOp, NonPrimitiveOpConfig, NonPrimitiveOpType, Prim};
+use crate::ops::MmcsVerifyConfig;
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};
 
 /// Sparse disjoint-set "find" with path compression over a HashMap (iterative).

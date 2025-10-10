@@ -6,7 +6,7 @@ use core::ops::Range;
 use itertools::izip;
 use p3_air::{Air, AirBuilder, BaseAir};
 use p3_circuit::MmcsTrace;
-use p3_circuit::op::MmcsVerifyConfig;
+use p3_circuit::ops::MmcsVerifyConfig;
 use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing, PrimeField};
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
@@ -510,7 +510,7 @@ mod test {
     use p3_baby_bear::BabyBear;
     use p3_challenger::{HashChallenger, SerializingChallenger32};
     use p3_circuit::WitnessId;
-    use p3_circuit::op::MmcsVerifyConfig;
+    use p3_circuit::ops::MmcsVerifyConfig;
     use p3_circuit::tables::{MmcsPrivateData, MmcsTrace};
     use p3_commit::ExtensionMmcs;
     use p3_field::extension::BinomialExtensionField;
