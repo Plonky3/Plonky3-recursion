@@ -501,7 +501,7 @@ fn test_circuit_fri_verifier_degree_0_final_poly() {
 }
 
 #[test]
-fn test_circuit_fri_verifier_higher_degree_final_poly() {
+fn test_circuit_fri_verifier_degree_1_final_poly() {
     // Use smaller matrices to ensure we actually get a higher-degree final polynomial
     // For a final polynomial of degree 1, we need `log_max_height` small enough
     let groups = vec![vec![3u8, 4], vec![5u8]];
