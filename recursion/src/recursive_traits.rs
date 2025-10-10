@@ -71,7 +71,7 @@ pub trait Recursive<F: Field> {
     /// TODO: Should we move this to Pcs instead?
     fn get_challenges(&self, circuit: &mut CircuitBuilder<F>) -> Vec<Target> {
         let mut alloc = TargetAllocator::new(circuit);
-        
+
         let num_challenges = self.num_challenges();
         alloc.alloc_vec(num_challenges, "proof challenges")
     }
@@ -347,13 +347,13 @@ impl<SC: StarkGenericConfig> Recursive<SC::Challenge> for OpenedValuesTargets<SC
         _degree_bits: usize,
     ) -> Self {
         let mut alloc = TargetAllocator::new(circuit);
-        
+
         let trace_local_len = lens.next().unwrap();
         let trace_local_targets = alloc.alloc_vec(trace_local_len, "trace local values");
-        
+
         let trace_next_len = lens.next().unwrap();
         let trace_next_targets = alloc.alloc_vec(trace_next_len, "trace next values");
-        
+
         let quotient_chunks_len = lens.next().unwrap();
         let mut quotient_chunks_targets = Vec::with_capacity(quotient_chunks_len);
         for _ in 0..quotient_chunks_len {
@@ -361,11 +361,10 @@ impl<SC: StarkGenericConfig> Recursive<SC::Challenge> for OpenedValuesTargets<SC
             let quotient_col = alloc.alloc_vec(quotient_chunks_cols_len, "quotient chunk columns");
             quotient_chunks_targets.push(quotient_col);
         }
-        
+
         let random_len = lens.next().unwrap();
         let random_targets = if random_len > 0 {
             Some(alloc.alloc_vec(random_len, "random values (ZK mode)"))
-
         } else {
             None
         };

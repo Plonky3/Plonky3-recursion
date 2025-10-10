@@ -10,7 +10,7 @@ use crate::Target;
 /// Wrapper for allocating public input targets.
 ///
 /// Each target allocation contains a associated label for debugging purposes.
-/// 
+///
 /// # Example
 /// ```ignore
 /// let mut alloc = TargetAllocator::new(circuit);
@@ -76,7 +76,7 @@ impl<'a, F: Field> TargetAllocator<'a, F> {
     pub fn count(&self) -> usize {
         #[cfg(debug_assertions)]
         return self.allocation_log.len();
-        
+
         #[cfg(not(debug_assertions))]
         {
             // We don't track allocations count in release mode
@@ -112,7 +112,7 @@ mod tests {
         // Targets are sequential (note: ExprId(0) is reserved for Const(0))
         assert!(t2.0 > t1.0);
         assert_eq!(t2.0, t1.0 + 1);
-        
+
         #[cfg(debug_assertions)]
         assert_eq!(alloc.count(), 2);
     }
@@ -144,4 +144,3 @@ mod tests {
         }
     }
 }
-

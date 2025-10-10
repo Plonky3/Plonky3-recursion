@@ -2,8 +2,8 @@
 
 use alloc::vec;
 use alloc::vec::Vec;
-use core::marker::PhantomData;
 use core::iter;
+use core::marker::PhantomData;
 
 use p3_challenger::GrindingChallenger;
 use p3_circuit::CircuitBuilder;
@@ -105,7 +105,7 @@ impl<
         let final_poly_len = lens.next().unwrap();
         let mut alloc = TargetAllocator::new(circuit);
         let final_poly = alloc.alloc_vec(final_poly_len, "FRI final polynomial coefficients");
-        
+
         Self {
             commit_phase_commits,
             query_proofs,
@@ -271,7 +271,7 @@ impl<F: Field, EF: ExtensionField<F>, RecMmcs: RecursiveExtensionMmcs<F, EF>> Re
         degree_bits: usize,
     ) -> Self {
         let mut alloc = TargetAllocator::new(circuit);
-        
+
         let sibling_value = alloc.alloc("FRI commit phase sibling value");
         let opening_proof = RecMmcs::Proof::new(circuit, lens, degree_bits);
         Self {
@@ -326,7 +326,7 @@ impl<F: Field, EF: ExtensionField<F>, Inner: RecursiveMmcs<F, EF>> Recursive<EF>
         degree_bits: usize,
     ) -> Self {
         let mut alloc = TargetAllocator::new(circuit);
-        
+
         let opened_vals_len = lens.next().unwrap();
         let mut opened_values = Vec::with_capacity(opened_vals_len);
         for _ in 0..opened_vals_len {
@@ -397,7 +397,7 @@ impl<F: Field, EF: ExtensionField<F>, const DIGEST_ELEMS: usize> Recursive<EF>
         _degree_bits: usize,
     ) -> Self {
         let mut alloc = TargetAllocator::new(circuit);
-        
+
         Self {
             hash_targets: alloc.alloc_array("MMCS commitment digest"),
             _phantom: PhantomData,
@@ -436,7 +436,7 @@ impl<F: Field, EF: ExtensionField<F>, const DIGEST_ELEMS: usize> Recursive<EF>
         _degree_bits: usize,
     ) -> Self {
         let mut alloc = TargetAllocator::new(circuit);
-        
+
         let proof_len = lens.next().unwrap();
         let mut proof = Vec::with_capacity(proof_len);
         for _ in 0..proof_len {
@@ -480,7 +480,7 @@ impl<F: Field, EF: ExtensionField<F>> Recursive<EF> for Witness<F> {
         _degree_bits: usize,
     ) -> Self {
         let mut alloc = TargetAllocator::new(circuit);
-        
+
         Self {
             witness: alloc.alloc("FRI proof-of-work witness"),
             _phantom: PhantomData,

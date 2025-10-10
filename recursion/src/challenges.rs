@@ -42,7 +42,7 @@ impl StarkChallenges {
         // TODO: Observe trace commitment
         // TODO: Observe public values
         let alpha = alloc.alloc("alpha challenge");
-        
+
         // TODO: Observe quotient chunks commitment
         // TODO: Observe random commitment (if ZK mode)
         let zeta = alloc.alloc("zeta challenge");
@@ -109,4 +109,3 @@ mod tests {
         assert_eq!(vec[2], challenges.zeta_next);
     }
 }
-
