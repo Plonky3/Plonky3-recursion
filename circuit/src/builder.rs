@@ -10,6 +10,8 @@ use crate::expr::{Expr, ExpressionGraph};
 use crate::op::{NonPrimitiveOp, NonPrimitiveOpConfig, NonPrimitiveOpType, Prim};
 use crate::ops::MmcsVerifyConfig;
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};
+#[cfg(debug_assertions)]
+use crate::{AllocationEntry, AllocationType};
 
 /// Sparse disjoint-set "find" with path compression over a HashMap (iterative).
 /// If `x` is not present, it's its own representative and is not inserted.
@@ -80,9 +82,9 @@ pub struct CircuitBuilder<F> {
     /// Enabled non-primitive operation types with their respective configuration
     enabled_ops: HashMap<NonPrimitiveOpType, NonPrimitiveOpConfig>,
 
-    /// Debug log of public input allocations with labels
+    /// Debug log of all allocations with detailed metadata
     #[cfg(debug_assertions)]
-    allocation_log: Vec<&'static str>,
+    allocation_log: Vec<AllocationEntry>,
 }
 
 /// Errors that can occur during circuit building/lowering.
@@ -191,14 +193,21 @@ where
     /// The allocated `ExprId` for this public input
     #[allow(unused_variables)]
     pub fn alloc_public_input(&mut self, label: &'static str) -> ExprId {
-        #[cfg(debug_assertions)]
-        self.allocation_log.push(label);
-
         let public_pos = self.public_input_count;
         self.public_input_count += 1;
 
         let public_expr = Expr::Public(public_pos);
-        self.expressions.add_expr(public_expr)
+        let expr_id = self.expressions.add_expr(public_expr);
+
+        #[cfg(debug_assertions)]
+        self.allocation_log.push(AllocationEntry {
+            expr_id,
+            alloc_type: AllocationType::Public,
+            label,
+            dependencies: vec![],
+        });
+
+        expr_id
     }
 
     /// Allocate multiple public inputs with a descriptive label.
@@ -215,16 +224,12 @@ where
         core::array::from_fn(|_| self.alloc_public_input(label))
     }
 
-    /// Dump the public input allocation log (debug builds only).
+    /// Dump the allocation log.
     ///
-    /// Shows the complete ordering of all public inputs with their labels.
-    #[cfg(debug_assertions)]
+    /// If debug_assertions are not enabled, this is a no-op.
     pub fn dump_allocation_log(&self) {
-        tracing::debug!("=== Public Input Allocation Log ===");
-        for (idx, label) in self.allocation_log.iter().enumerate() {
-            tracing::debug!("  PublicInput[{}]: {}", idx, label);
-        }
-        tracing::debug!("Total public inputs: {}", self.allocation_log.len());
+        #[cfg(debug_assertions)]
+        crate::alloc_entry::dump_allocation_log(&self.allocation_log);
     }
 
     /// Add a constant to the circuit (deduplicated).
@@ -240,15 +245,17 @@ where
     /// Cost: 1 row in Const table + 1 row in witness table (only for new constants).
     #[allow(unused_variables)]
     pub fn alloc_const(&mut self, val: F, label: &'static str) -> ExprId {
-        #[cfg(debug_assertions)]
-        if !self.const_pool.contains_key(&val) {
-            self.allocation_log.push(label);
-        }
-
-        *self
-            .const_pool
-            .entry(val)
-            .or_insert_with_key(|k| self.expressions.add_expr(Expr::Const(k.clone())))
+        *self.const_pool.entry(val).or_insert_with_key(|k| {
+            let expr_id = self.expressions.add_expr(Expr::Const(k.clone()));
+            #[cfg(debug_assertions)]
+            self.allocation_log.push(AllocationEntry {
+                expr_id,
+                alloc_type: AllocationType::Const,
+                label,
+                dependencies: vec![],
+            });
+            expr_id
+        })
     }
 
     /// Add two expressions.
@@ -263,11 +270,18 @@ where
     /// Cost: 1 row in Add table + 1 row in witness table.
     #[allow(unused_variables)]
     pub fn alloc_add(&mut self, lhs: ExprId, rhs: ExprId, label: &'static str) -> ExprId {
-        #[cfg(debug_assertions)]
-        self.allocation_log.push(label);
-
         let add_expr = Expr::Add { lhs, rhs };
-        self.expressions.add_expr(add_expr)
+        let expr_id = self.expressions.add_expr(add_expr);
+
+        #[cfg(debug_assertions)]
+        self.allocation_log.push(AllocationEntry {
+            expr_id,
+            alloc_type: AllocationType::Add,
+            label,
+            dependencies: vec![lhs, rhs],
+        });
+
+        expr_id
     }
 
     /// Subtract two expressions.
@@ -282,11 +296,18 @@ where
     /// Cost: 1 row in Add table + 1 row in witness table.
     #[allow(unused_variables)]
     pub fn alloc_sub(&mut self, lhs: ExprId, rhs: ExprId, label: &'static str) -> ExprId {
-        #[cfg(debug_assertions)]
-        self.allocation_log.push(label);
-
         let sub_expr = Expr::Sub { lhs, rhs };
-        self.expressions.add_expr(sub_expr)
+        let expr_id = self.expressions.add_expr(sub_expr);
+
+        #[cfg(debug_assertions)]
+        self.allocation_log.push(AllocationEntry {
+            expr_id,
+            alloc_type: AllocationType::Sub,
+            label,
+            dependencies: vec![lhs, rhs],
+        });
+
+        expr_id
     }
 
     /// Multiply two expressions.
@@ -301,11 +322,18 @@ where
     /// Cost: 1 row in Mul table + 1 row in witness table.
     #[allow(unused_variables)]
     pub fn alloc_mul(&mut self, lhs: ExprId, rhs: ExprId, label: &'static str) -> ExprId {
-        #[cfg(debug_assertions)]
-        self.allocation_log.push(label);
-
         let mul_expr = Expr::Mul { lhs, rhs };
-        self.expressions.add_expr(mul_expr)
+        let expr_id = self.expressions.add_expr(mul_expr);
+
+        #[cfg(debug_assertions)]
+        self.allocation_log.push(AllocationEntry {
+            expr_id,
+            alloc_type: AllocationType::Mul,
+            label,
+            dependencies: vec![lhs, rhs],
+        });
+
+        expr_id
     }
 
     /// Divide two expressions.
@@ -320,11 +348,18 @@ where
     /// Cost: 1 row in Mul table + 1 row in witness table.
     #[allow(unused_variables)]
     pub fn alloc_div(&mut self, lhs: ExprId, rhs: ExprId, label: &'static str) -> ExprId {
-        #[cfg(debug_assertions)]
-        self.allocation_log.push(label);
-
         let div_expr = Expr::Div { lhs, rhs };
-        self.expressions.add_expr(div_expr)
+        let expr_id = self.expressions.add_expr(div_expr);
+
+        #[cfg(debug_assertions)]
+        self.allocation_log.push(AllocationEntry {
+            expr_id,
+            alloc_type: AllocationType::Div,
+            label,
+            dependencies: vec![lhs, rhs],
+        });
+
+        expr_id
     }
 
     /// Assert that an expression equals zero by connecting it to Const(0).
@@ -377,12 +412,28 @@ where
     }
 
     /// Helper to push a non-primitive op. Returns op id.
+    #[allow(unused_variables)]
     pub(crate) fn push_non_primitive_op(
         &mut self,
         op_type: NonPrimitiveOpType,
         witness_exprs: Vec<ExprId>,
+        label: &'static str,
     ) -> NonPrimitiveOpId {
         let op_id = NonPrimitiveOpId(self.non_primitive_ops.len() as u32);
+
+        #[cfg(debug_assertions)]
+        {
+            // For non-primitive ops, we don't have a single ExprId, so we use a placeholder
+            // The dependencies are the witness expressions that this op depends on
+            // TODO: Can we find something better than the `op_id`?
+            self.allocation_log.push(AllocationEntry {
+                expr_id: ExprId(op_id.0),
+                alloc_type: AllocationType::NonPrimitiveOp(op_type.clone()),
+                label,
+                dependencies: witness_exprs.clone(),
+            });
+        }
+
         self.non_primitive_ops.push((op_id, op_type, witness_exprs));
         op_id
     }
@@ -1685,11 +1736,31 @@ mod tests {
 
         // Check consolidated log
         assert_eq!(builder.allocation_log.len(), 5);
-        assert_eq!(builder.allocation_log[0], "input a");
-        assert_eq!(builder.allocation_log[1], "input b");
-        assert_eq!(builder.allocation_log[2], "compute sum");
-        assert_eq!(builder.allocation_log[3], "compute product");
-        assert_eq!(builder.allocation_log[4], "unit constant");
+        assert_eq!(builder.allocation_log[0].label, "input a");
+        assert!(matches!(
+            builder.allocation_log[0].alloc_type,
+            AllocationType::Public
+        ));
+        assert_eq!(builder.allocation_log[1].label, "input b");
+        assert!(matches!(
+            builder.allocation_log[1].alloc_type,
+            AllocationType::Public
+        ));
+        assert_eq!(builder.allocation_log[2].label, "compute sum");
+        assert!(matches!(
+            builder.allocation_log[2].alloc_type,
+            AllocationType::Add
+        ));
+        assert_eq!(builder.allocation_log[3].label, "compute product");
+        assert!(matches!(
+            builder.allocation_log[3].alloc_type,
+            AllocationType::Mul
+        ));
+        assert_eq!(builder.allocation_log[4].label, "unit constant");
+        assert!(matches!(
+            builder.allocation_log[4].alloc_type,
+            AllocationType::Const
+        ));
     }
 
     #[test]
@@ -1703,9 +1774,21 @@ mod tests {
 
         // Should all be logged with default labels
         assert_eq!(builder.allocation_log.len(), 3);
-        assert_eq!(builder.allocation_log[0], "unlabeled");
-        assert_eq!(builder.allocation_log[1], "const");
-        assert_eq!(builder.allocation_log[2], "add");
+        assert_eq!(builder.allocation_log[0].label, "unlabeled");
+        assert!(matches!(
+            builder.allocation_log[0].alloc_type,
+            AllocationType::Public
+        ));
+        assert_eq!(builder.allocation_log[1].label, "const");
+        assert!(matches!(
+            builder.allocation_log[1].alloc_type,
+            AllocationType::Const
+        ));
+        assert_eq!(builder.allocation_log[2].label, "add");
+        assert!(matches!(
+            builder.allocation_log[2].alloc_type,
+            AllocationType::Add
+        ));
     }
 
     #[test]
@@ -1724,7 +1807,150 @@ mod tests {
         // Different value: should log
         let _c3 = builder.alloc_const(BabyBear::TWO, "two");
         assert_eq!(builder.allocation_log.len(), 2);
-        assert_eq!(builder.allocation_log[0], "one");
-        assert_eq!(builder.allocation_log[1], "two");
+        assert_eq!(builder.allocation_log[0].label, "one");
+        assert!(matches!(
+            builder.allocation_log[0].alloc_type,
+            AllocationType::Const
+        ));
+        assert_eq!(builder.allocation_log[1].label, "two");
+        assert!(matches!(
+            builder.allocation_log[1].alloc_type,
+            AllocationType::Const
+        ));
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    fn test_allocation_log_with_dependencies() {
+        let mut builder = CircuitBuilder::<BabyBear>::new();
+
+        let a = builder.alloc_public_input("input_a");
+        let b = builder.alloc_public_input("input_b");
+        let sum = builder.alloc_add(a, b, "compute_sum");
+        let product = builder.alloc_mul(a, b, "compute_product");
+        let _final_result = builder.alloc_add(sum, product, "final_result");
+
+        // Verify all entries are logged
+        assert_eq!(builder.allocation_log.len(), 5);
+
+        // Check dependencies are tracked correctly
+        let add_entry = &builder.allocation_log[2]; // First add
+        assert_eq!(add_entry.label, "compute_sum");
+        assert!(matches!(add_entry.alloc_type, AllocationType::Add));
+        assert_eq!(add_entry.dependencies.len(), 2);
+        assert_eq!(add_entry.dependencies[0], a);
+        assert_eq!(add_entry.dependencies[1], b);
+
+        let mul_entry = &builder.allocation_log[3]; // Multiply
+        assert_eq!(mul_entry.label, "compute_product");
+        assert!(matches!(mul_entry.alloc_type, AllocationType::Mul));
+        assert_eq!(mul_entry.dependencies.len(), 2);
+        assert_eq!(mul_entry.dependencies[0], a);
+        assert_eq!(mul_entry.dependencies[1], b);
+
+        let final_entry = &builder.allocation_log[4]; // Final add
+        assert_eq!(final_entry.label, "final_result");
+        assert!(matches!(final_entry.alloc_type, AllocationType::Add));
+        assert_eq!(final_entry.dependencies.len(), 2);
+        assert_eq!(final_entry.dependencies[0], sum);
+        assert_eq!(final_entry.dependencies[1], product);
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    fn test_allocation_log_expr_ids() {
+        let mut builder = CircuitBuilder::<BabyBear>::new();
+
+        let a = builder.alloc_public_input("a");
+        let b = builder.alloc_const(BabyBear::ONE, "one");
+        let c = builder.alloc_add(a, b, "a_plus_one");
+
+        // Check that expr_ids match the returned values
+        assert_eq!(builder.allocation_log[0].expr_id, a);
+        assert_eq!(builder.allocation_log[1].expr_id, b);
+        assert_eq!(builder.allocation_log[2].expr_id, c);
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    fn test_allocation_log_dump_format() {
+        // This test demonstrates the improved allocation log dump format
+        let mut builder = CircuitBuilder::<BabyBear>::new();
+
+        // Create a simple circuit
+        let x = builder.alloc_public_input("x");
+        let y = builder.alloc_public_input("y");
+        let _zero = builder.add_const(BabyBear::ZERO);
+        let _one = builder.add_const(BabyBear::ONE);
+        let two = builder.alloc_const(BabyBear::TWO, "two");
+
+        let sum = builder.alloc_add(x, y, "x_plus_y");
+        let product = builder.alloc_mul(x, y, "x_times_y");
+        let diff = builder.alloc_sub(sum, product, "sum_minus_product");
+        let quotient = builder.alloc_div(diff, two, "result_divided_by_two");
+
+        // Dump the allocation log - this will show:
+        // - All allocations grouped by type
+        // - Automatic component type labeling
+        // - Dependency relationships
+        // - Statistics
+        builder.dump_allocation_log();
+
+        // Verify the log contains all expected entries
+        // Note: BabyBear::ZERO is already in const_pool from initialization, so only 8 new allocations
+        assert_eq!(builder.allocation_log.len(), 8);
+
+        // Verify we can find specific types
+        let public_count = builder
+            .allocation_log
+            .iter()
+            .filter(|e| matches!(e.alloc_type, AllocationType::Public))
+            .count();
+        assert_eq!(public_count, 2);
+
+        let const_count = builder
+            .allocation_log
+            .iter()
+            .filter(|e| matches!(e.alloc_type, AllocationType::Const))
+            .count();
+        // Only ONE and TWO are logged (ZERO is pre-existing in const_pool from builder init)
+        assert_eq!(const_count, 2);
+
+        let add_count = builder
+            .allocation_log
+            .iter()
+            .filter(|e| matches!(e.alloc_type, AllocationType::Add))
+            .count();
+        assert_eq!(add_count, 1);
+
+        let mul_count = builder
+            .allocation_log
+            .iter()
+            .filter(|e| matches!(e.alloc_type, AllocationType::Mul))
+            .count();
+        assert_eq!(mul_count, 1);
+
+        let sub_count = builder
+            .allocation_log
+            .iter()
+            .filter(|e| matches!(e.alloc_type, AllocationType::Sub))
+            .count();
+        assert_eq!(sub_count, 1);
+
+        let div_count = builder
+            .allocation_log
+            .iter()
+            .filter(|e| matches!(e.alloc_type, AllocationType::Div))
+            .count();
+        assert_eq!(div_count, 1);
+
+        // Verify that operations track their dependencies correctly
+        let div_entry = builder
+            .allocation_log
+            .iter()
+            .find(|e| e.expr_id == quotient)
+            .unwrap();
+        assert_eq!(div_entry.dependencies[0], diff);
+        assert_eq!(div_entry.dependencies[1], two);
     }
 }
