@@ -35,12 +35,11 @@ where
     ) -> Result<Vec<ExprId>, CircuitBuilderError> {
         self.ensure_op_enabled(NonPrimitiveOpType::Poseidon2Permutation)?;
 
-        // Allocate output state as public inputs
-        // TODO: Once Poseidon2 trace generation is fully integrated, these can be
-        // witness values constrained by ExtendedPoseidon2Air. For now, they must be
-        // public inputs to be provided during execution.
+        // Allocate output state as virtual witnesses
+        // These will be computed during execution by the Poseidon2 permutation
+        // and constrained by ExtendedPoseidon2Air
         let width = input_state.len();
-        let output_state: Vec<ExprId> = (0..width).map(|_| self.add_public_input()).collect();
+        let output_state: Vec<ExprId> = (0..width).map(|_| self.add_virtual_witness()).collect();
 
         self.push_non_primitive_op(
             NonPrimitiveOpType::Poseidon2Permutation,

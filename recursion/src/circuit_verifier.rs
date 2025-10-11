@@ -145,12 +145,12 @@ where
 {
     let num_challenges_before_queries = challenges.len() - num_queries;
 
-    // Start with public values, proof values, and all challenges
+    // Start with public values and proof values only
+    // Challenges are computed in-circuit via CircuitChallenger, not provided as public inputs
     let mut inputs: Vec<EF> = public_values
         .iter()
         .map(|&pv| pv.into())
         .chain(proof_values.iter().copied())
-        .chain(challenges.iter().copied())
         .collect();
 
     // Add bit decompositions for query indices.
