@@ -82,7 +82,7 @@ pub struct CircuitBuilder<F> {
     /// Enabled non-primitive operation types with their respective configuration
     enabled_ops: HashMap<NonPrimitiveOpType, NonPrimitiveOpConfig>,
 
-    /// Debug log of all allocations with detailed metadata
+    /// Debug log of all allocations
     #[cfg(debug_assertions)]
     allocation_log: Vec<AllocationEntry>,
 }
