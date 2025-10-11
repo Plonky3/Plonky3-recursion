@@ -36,4 +36,5 @@ p3-challenger.workspace = true
 p3-dft.workspace = true
 p3-matrix.workspace = true
 p3-util.workspace = true
+proptest.workspace = true
 rand.workspace = true

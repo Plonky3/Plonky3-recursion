@@ -100,9 +100,40 @@ mod tests {
         let challenges = StarkChallenges::allocate(&mut circuit);
         let vec = challenges.to_vec();
 
+        let StarkChallenges {
+            alpha,
+            zeta,
+            zeta_next,
+        } = challenges;
+
         assert_eq!(vec.len(), 3);
-        assert_eq!(vec[0], challenges.alpha);
-        assert_eq!(vec[1], challenges.zeta);
-        assert_eq!(vec[2], challenges.zeta_next);
+        assert_eq!(vec[0], alpha);
+        assert_eq!(vec[1], zeta);
+        assert_eq!(vec[2], zeta_next);
+    }
+
+    #[test]
+    fn challenges_deterministic() {
+        let mut circuit1 = CircuitBuilder::<BabyBear>::new();
+        let mut circuit2 = CircuitBuilder::<BabyBear>::new();
+
+        let challenges1 = StarkChallenges::allocate(&mut circuit1);
+        let challenges2 = StarkChallenges::allocate(&mut circuit2);
+
+        assert_eq!(challenges1.alpha, challenges2.alpha);
+        assert_eq!(challenges1.zeta, challenges2.zeta);
+        assert_eq!(challenges1.zeta_next, challenges2.zeta_next);
+    }
+
+    #[test]
+    fn to_vec_order_preserved() {
+        let mut circuit = CircuitBuilder::<BabyBear>::new();
+        let challenges = StarkChallenges::allocate(&mut circuit);
+        let vec = challenges.to_vec();
+
+        assert_eq!(vec.len(), 3);
+        assert_eq!(vec[0], challenges.alpha());
+        assert_eq!(vec[1], challenges.zeta());
+        assert_eq!(vec[2], challenges.zeta_next());
     }
 }
