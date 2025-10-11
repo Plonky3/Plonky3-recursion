@@ -61,7 +61,7 @@ impl<F: PrimeCharacteristicRing + Sync, const RATE: usize, const CAPACITY: usize
 impl<AB: AirBuilder, const RATE: usize, const CAPACITY: usize> Air<AB>
     for SpongeAir<AB::F, RATE, CAPACITY>
 {
-    /// Correctness of state transitions is enforced outside the AIR with lookups.
+    /// Sponge construction constraints with lookups to Poseidon2Air for permutations.
     #[inline]
     fn eval(&self, builder: &mut AB) {
         let main = builder.main();
@@ -74,19 +74,37 @@ impl<AB: AirBuilder, const RATE: usize, const CAPACITY: usize> Air<AB>
 
         let _output_mode = AB::Expr::ONE - local.absorb.clone();
 
-        // When resetting the state, we just have to clear the capacity. The rate will be overwritten by the input.
+        // Constraint 1: reset and absorb are boolean flags
+        builder.assert_bool(local.reset.clone());
+        builder.assert_bool(local.absorb.clone());
+
+        // Constraint 2: When resetting, capacity is cleared
+        // (Rate will be overwritten by input during absorb)
         builder
             .when(local.reset.clone())
             .assert_zeros::<CAPACITY, _>(array::from_fn(|i| local.capacity[i].clone()));
 
-        // TODO: Add all lookups:
-        // - If local.absorb = 1:
-        //      * local.rate comes from input lookups.
-        // - If local.absorb = 0:
-        //      * local.rate is sent to output lookups.
-        // - If next.absorb = 0:
-        //      * next.rate = perm(local.state).rate.
-        // - If next.reset = 0:
-        //      * next.capacity = perm(local.state).capacity.
+        // Constraint 3: Lookup to ExtendedPoseidon2Air for permutation correctness
+        //
+        // The permutation is: (local.rate || local.capacity) -> (next.rate || next.capacity)
+        // when not resetting and when a permutation is needed.
+        //
+        // TODO: Add lookup/interaction with ExtendedPoseidon2Air:
+        //   send(
+        //       local.input_addresses,  // Witness indices for inputs
+        //       local.rate ++ local.capacity,  // Input state
+        //       next.rate ++ next.capacity     // Output state (from Poseidon2)
+        //   )
+        //
+        // This lookup ensures:
+        // - Poseidon2Air validates: output = Poseidon2(input)
+        // - Input/output addresses match circuit witness indices
+        // - SpongeAir manages state flow and sponge semantics
+
+        // Constraint 4: Input/output wiring (will be handled via lookups)
+        //
+        // TODO: Add lookups for circuit I/O:
+        // - If local.absorb = 1: lookup circuit inputs at local.input_addresses -> local.rate
+        // - If local.absorb = 0: send local.rate to circuit outputs at local.input_addresses
     }
 }

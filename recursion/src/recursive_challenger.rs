@@ -15,7 +15,10 @@ use crate::Target;
 /// Maintains an internal sponge state as circuit targets and provides methods to:
 /// - Observe field elements
 /// - Sample challenges
-pub trait RecursiveChallenger<F: Field> {
+///
+/// Generic over sponge parameters RATE and CAPACITY to support different
+/// Poseidon2 configurations (e.g., 8+8=16 or 16+8=24).
+pub trait RecursiveChallenger<F: Field, const RATE: usize, const CAPACITY: usize> {
     /// Observe a single field element in the Fiat-Shamir transcript.
     fn observe(&mut self, circuit: &mut CircuitBuilder<F>, value: Target);
 
@@ -45,7 +48,9 @@ mod tests {
 
     use super::*;
 
-    impl<F: Field> RecursiveChallenger<F> for () {
+    impl<F: Field, const RATE: usize, const CAPACITY: usize> RecursiveChallenger<F, RATE, CAPACITY>
+        for ()
+    {
         fn observe(&mut self, _circuit: &mut CircuitBuilder<F>, _value: Target) {
             // No-op: no challenger to observe with
         }
@@ -61,16 +66,28 @@ mod tests {
 
     #[test]
     fn test_noop_challenger() {
+        const RATE: usize = 8;
+        const CAPACITY: usize = 8;
+
         let mut circuit = CircuitBuilder::<BabyBear>::new();
-        let mut challenger = ();
+        let mut challenger: () = ();
 
         let value = circuit.add_const(BabyBear::ONE);
-        challenger.observe(&mut circuit, value);
+        RecursiveChallenger::<BabyBear, RATE, CAPACITY>::observe(
+            &mut challenger,
+            &mut circuit,
+            value,
+        );
 
-        let challenge = challenger.sample(&mut circuit);
+        let challenge =
+            RecursiveChallenger::<BabyBear, RATE, CAPACITY>::sample(&mut challenger, &mut circuit);
         assert!(challenge.0 > 0);
 
-        let challenges = challenger.sample_vec(&mut circuit, 3);
+        let challenges = RecursiveChallenger::<BabyBear, RATE, CAPACITY>::sample_vec(
+            &mut challenger,
+            &mut circuit,
+            3,
+        );
         assert_eq!(challenges.len(), 3);
     }
 }
