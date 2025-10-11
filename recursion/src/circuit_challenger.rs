@@ -106,8 +106,8 @@ impl<const RATE: usize, const CAPACITY: usize, const WIDTH: usize>
                 // Pad remaining rate with zeros if chunk is smaller than RATE
                 if chunk.len() < RATE {
                     let zero = circuit.add_const(F::ZERO);
-                    for i in chunk.len()..RATE {
-                        state[i] = zero;
+                    for val in state.iter_mut().take(RATE).skip(chunk.len()) {
+                        *val = zero;
                     }
                 }
             }
