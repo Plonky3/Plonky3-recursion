@@ -55,6 +55,7 @@ jobs:
         run: |
           cargo run --package p3-circuit-prover --example fibonacci
           cargo run --package p3-circuit-prover --example mmcs_verify
+          RUST_LOG=debug cargo run --package p3-circuit --example allocation_log
 
   check_embedded:
     name: Build embedded

@@ -37,9 +37,9 @@ fn main() {
     let b = builder.alloc_public_input("input_b");
     let c = builder.alloc_public_input("input_c");
 
-    let two = builder.alloc_const(BabyBear::TWO, "constant_2");
+    let two = builder.alloc_const(BabyBear::TWO, "2");
 
-    let _two_bis = builder.alloc_const(BabyBear::TWO, "constant_2"); // should be ignored
+    let _two_bis = builder.alloc_const(BabyBear::TWO, "2 bis"); // should be ignored
 
     let bc = builder.alloc_mul(b, c, "b_times_c");
     let sum = builder.alloc_add(a, bc, "a_plus_bc");

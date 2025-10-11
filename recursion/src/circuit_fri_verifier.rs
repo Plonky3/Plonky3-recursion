@@ -43,11 +43,11 @@ fn fold_row_chain<EF: Field>(
 ) -> Target {
     let mut folded = initial_folded_eval;
 
-    let one = builder.add_const(EF::ONE);
+    let one = builder.alloc_const(EF::ONE, "1");
 
     // Precompute constants as field constants: 2^{-1} and −1/2.
     let two_inv_val = EF::ONE.halve(); // 1/2
-    let neg_half = builder.add_const(EF::NEG_ONE * two_inv_val); // −1/2
+    let neg_half = builder.alloc_const(EF::NEG_ONE * two_inv_val, "−1/2"); // −1/2
 
     for FoldPhaseInputsTarget {
         beta,
@@ -64,27 +64,27 @@ fn fold_row_chain<EF: Field>(
         let e0 = builder.select(sibling_is_right, folded, e_sibling);
 
         // inv = (x1 − x0)^{-1} = (−2x0)^{-1} = (−1/2) / x0
-        let inv = builder.div(neg_half, x0);
+        let inv = builder.alloc_div(neg_half, x0, "inv");
 
         // e1 − e0 = (2b − 1) · (e_sibling − folded)
-        let d = builder.sub(e_sibling, folded);
-        let two_b = builder.add(sibling_is_right, sibling_is_right);
-        let two_b_minus_one = builder.sub(two_b, one);
-        let e1_minus_e0 = builder.mul(two_b_minus_one, d);
+        let d = builder.alloc_sub(e_sibling, folded, "d");
+        let two_b = builder.alloc_add(sibling_is_right, sibling_is_right, "two_b");
+        let two_b_minus_one = builder.alloc_sub(two_b, one, "two_b_minus_one");
+        let e1_minus_e0 = builder.alloc_mul(two_b_minus_one, d, "e1_minus_e0");
 
         // t = (β − x0) * (e1 − e0)
-        let beta_minus_x0 = builder.sub(beta, x0);
-        let t = builder.mul(beta_minus_x0, e1_minus_e0);
+        let beta_minus_x0 = builder.alloc_sub(beta, x0, "beta_minus_x0");
+        let t = builder.alloc_mul(beta_minus_x0, e1_minus_e0, "t");
 
         // folded = e0 + t * inv
-        let t_inv = builder.mul(t, inv);
-        folded = builder.add(e0, t_inv);
+        let t_inv = builder.alloc_mul(t, inv, "t_inv");
+        folded = builder.alloc_add(e0, t_inv, "folded 1");
 
         // Optional roll-in: folded += β² · roll_in
         if let Some(ro) = roll_in {
-            let beta_sq = builder.mul(beta, beta);
-            let add_term = builder.mul(beta_sq, ro);
-            folded = builder.add(folded, add_term);
+            let beta_sq = builder.alloc_mul(beta, beta, "beta_sq");
+            let add_term = builder.alloc_mul(beta_sq, ro, "add_term");
+            folded = builder.alloc_add(folded, add_term, "folded 2");
         }
     }
 
