@@ -42,3 +42,5 @@ p3-merkle-tree.workspace = true
 p3-symmetric.workspace = true
 
 rand.workspace = true
+tracing-forest = { workspace = true, features = ["ansi", "smallvec"] }
+tracing-subscriber = { workspace = true, features = ["std", "env-filter"] }

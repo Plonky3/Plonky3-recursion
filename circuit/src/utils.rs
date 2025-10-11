@@ -110,6 +110,8 @@ pub fn reconstruct_index_from_bits<F: Field>(
     builder: &mut CircuitBuilder<F>,
     bits: &[ExprId],
 ) -> ExprId {
+    builder.push_scope("reconstruct_index_from_bits");
+
     let mut acc = builder.add_const(F::ZERO);
     let mut pow2 = builder.add_const(F::ONE);
     for &b in bits {
@@ -118,6 +120,9 @@ pub fn reconstruct_index_from_bits<F: Field>(
         acc = builder.add(acc, term);
         pow2 = builder.add(pow2, pow2); // *= 2
     }
+
+    builder.pop_scope();
+
     acc
 }
 
@@ -130,6 +135,7 @@ pub fn decompose_to_bits<F: Field, const N_BITS: usize>(
     builder: &mut CircuitBuilder<F>,
     x: ExprId,
 ) -> Vec<ExprId> {
+    builder.push_scope("decompose_to_bits");
     let mut bits = Vec::with_capacity(N_BITS);
 
     // Create bit witness variables
@@ -142,6 +148,8 @@ pub fn decompose_to_bits<F: Field, const N_BITS: usize>(
     // Constrain that the bits reconstruct to the original element
     let reconstructed = reconstruct_index_from_bits(builder, &bits);
     builder.connect(x, reconstructed);
+
+    builder.pop_scope();
 
     bits
 }

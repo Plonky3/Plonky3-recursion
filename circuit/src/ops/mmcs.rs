@@ -186,6 +186,12 @@ where
         witness_exprs.extend(leaf_expr);
         witness_exprs.push(*index_expr);
         witness_exprs.extend(root_expr);
-        Ok(self.push_non_primitive_op(NonPrimitiveOpType::MmcsVerify, witness_exprs))
+        Ok(
+            self.push_non_primitive_op(
+                NonPrimitiveOpType::MmcsVerify,
+                witness_exprs,
+                "mmcs_verify",
+            ),
+        )
     }
 }
