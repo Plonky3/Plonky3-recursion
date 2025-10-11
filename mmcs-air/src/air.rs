@@ -576,18 +576,14 @@ mod test {
             .expect("The size of all digests is DIGEST_ELEMS")
         });
 
-        let indices = [rng.random::<u32>(); NUM_INPUTS];
-
         let trace = MmcsTrace {
             mmcs_paths: private_data
                 .iter()
-                .zip(indices)
-                .map(|(data, index)| {
+                .map(|data| {
                     data.to_trace(
                         &mmcs_config,
                         &[WitnessId(0); DIGEST_ELEMS],
                         &[WitnessId(0); DIGEST_ELEMS],
-                        index,
                     )
                     .unwrap()
                 })
