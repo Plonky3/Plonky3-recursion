@@ -140,16 +140,7 @@ where
         let zero_id = expressions.add_expr(Expr::Const(zero_val.clone()));
 
         let mut const_pool = HashMap::new();
-
-        // Add zero to the const pool by default
         const_pool.insert(zero_val, zero_id);
-        #[cfg(debug_assertions)]
-        let allocation_log = vec![AllocationEntry {
-            expr_id: ExprId(0),
-            alloc_type: AllocationType::Const,
-            label: "zero",
-            dependencies: vec![],
-        }];
 
         Self {
             expressions,
@@ -160,7 +151,7 @@ where
             const_pool,
             enabled_ops: HashMap::new(), // All non-primitive ops are disabled by default
             #[cfg(debug_assertions)]
-            allocation_log,
+            allocation_log: Vec::new(),
         }
     }
 
