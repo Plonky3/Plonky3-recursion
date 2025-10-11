@@ -3,7 +3,10 @@
 //! within the expression graph.
 
 use alloc::format;
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
+
+use hashbrown::HashSet;
 
 use crate::ExprId;
 use crate::op::NonPrimitiveOpType;
@@ -31,19 +34,54 @@ pub struct AllocationEntry {
     pub label: &'static str,
     /// Dependencies (for operations)
     pub dependencies: Vec<ExprId>,
+    /// Scope/sub-circuit this allocation belongs to (if any)
+    pub scope: Option<&'static str>,
 }
 
 /// Dump an allocation log (debug builds only).
 ///
 /// Shows all allocations with their types, labels, and dependencies,
 /// grouped by allocation type.
-#[cfg(debug_assertions)]
 pub(crate) fn dump_allocation_log(allocation_log: &[AllocationEntry]) {
-    use alloc::string::ToString;
-
     tracing::debug!("=== Circuit Allocation Log ===");
     tracing::debug!("Total allocations: {}\n", allocation_log.len());
 
+    let all_scopes = list_scopes(allocation_log);
+
+    for scope in all_scopes {
+        dump_allocation_log_scope(allocation_log, Some(scope));
+    }
+
+    // Dump also allocations that do not fall under a particular scope
+    dump_allocation_log_scope(allocation_log, None);
+}
+
+/// Dump an allocation log filtered by scope (debug builds only).
+///
+/// Shows only allocations within the specified scope, grouped by allocation type.
+pub(crate) fn dump_allocation_log_scope(allocation_log: &[AllocationEntry], scope: Option<&str>) {
+    let filtered: Vec<_> = allocation_log
+        .iter()
+        .filter(|e| e.scope == scope)
+        .cloned()
+        .collect();
+
+    let scope_name = scope.unwrap_or("main");
+
+    if filtered.is_empty() {
+        tracing::debug!("Scope '{}' has no allocations", scope_name);
+        return;
+    }
+
+    tracing::debug!("=== Allocation Log for scope '{}' ===", scope_name);
+    tracing::debug!("Total allocations in scope: {}\n", filtered.len());
+
+    dump_internal_log(&filtered);
+
+    tracing::debug!("=== End Scope Log ===\n");
+}
+
+fn dump_internal_log(allocation_log: &[AllocationEntry]) {
     // Group by type
     let mut publics = Vec::new();
     let mut consts = Vec::new();
@@ -53,7 +91,15 @@ pub(crate) fn dump_allocation_log(allocation_log: &[AllocationEntry]) {
     let mut divs = Vec::new();
     let mut non_primitives = Vec::new();
 
-    for entry in allocation_log.iter() {
+    fn display_label(label: &str) -> String {
+        if label.is_empty() {
+            "".to_string()
+        } else {
+            format!(": {}", label)
+        }
+    }
+
+    for entry in allocation_log {
         match entry.alloc_type {
             AllocationType::Public => publics.push(entry),
             AllocationType::Const => consts.push(entry),
@@ -70,7 +116,7 @@ pub(crate) fn dump_allocation_log(allocation_log: &[AllocationEntry]) {
     if !publics.is_empty() {
         tracing::debug!("--- Public Inputs ({}) ---", publics.len());
         for entry in publics {
-            tracing::debug!("  expr_{} (Public): {}", entry.expr_id.0, entry.label);
+            tracing::debug!("  expr_{} (Public){}", entry.expr_id.0, display_label(entry.label));
         }
         tracing::debug!("");
     }
@@ -78,7 +124,7 @@ pub(crate) fn dump_allocation_log(allocation_log: &[AllocationEntry]) {
     if !consts.is_empty() {
         tracing::debug!("--- Constants ({}) ---", consts.len());
         for entry in consts {
-            tracing::debug!("  expr_{} (Const): {}", entry.expr_id.0, entry.label);
+            tracing::debug!("  expr_{} (Const){}", entry.expr_id.0, display_label(entry.label));
         }
         tracing::debug!("");
     }
@@ -88,14 +134,14 @@ pub(crate) fn dump_allocation_log(allocation_log: &[AllocationEntry]) {
         for entry in adds {
             if entry.dependencies.len() == 2 {
                 tracing::debug!(
-                    "  expr_{} = expr_{} + expr_{}: {}",
+                    "  expr_{} = expr_{} + expr_{}{}",
                     entry.expr_id.0,
                     entry.dependencies[0].0,
                     entry.dependencies[1].0,
-                    entry.label
+                    display_label(entry.label)
                 );
             } else {
-                tracing::debug!("  expr_{} (Add): {}", entry.expr_id.0, entry.label);
+                tracing::debug!("  expr_{} (Add){}", entry.expr_id.0, display_label(entry.label));
             }
         }
         tracing::debug!("");
@@ -106,14 +152,14 @@ pub(crate) fn dump_allocation_log(allocation_log: &[AllocationEntry]) {
         for entry in subs {
             if entry.dependencies.len() == 2 {
                 tracing::debug!(
-                    "  expr_{} = expr_{} - expr_{}: {}",
+                    "  expr_{} = expr_{} - expr_{}{}",
                     entry.expr_id.0,
                     entry.dependencies[0].0,
                     entry.dependencies[1].0,
-                    entry.label
+                    display_label(entry.label)
                 );
             } else {
-                tracing::debug!("  expr_{} (Sub): {}", entry.expr_id.0, entry.label);
+                tracing::debug!("  expr_{} (Sub){}", entry.expr_id.0, display_label(entry.label));
             }
         }
         tracing::debug!("");
@@ -124,14 +170,14 @@ pub(crate) fn dump_allocation_log(allocation_log: &[AllocationEntry]) {
         for entry in muls {
             if entry.dependencies.len() == 2 {
                 tracing::debug!(
-                    "  expr_{} = expr_{} * expr_{}: {}",
+                    "  expr_{} = expr_{} * expr_{}{}",
                     entry.expr_id.0,
                     entry.dependencies[0].0,
                     entry.dependencies[1].0,
-                    entry.label
+                    display_label(entry.label)
                 );
             } else {
-                tracing::debug!("  expr_{} (Mul): {}", entry.expr_id.0, entry.label);
+                tracing::debug!("  expr_{} (Mul){}", entry.expr_id.0, display_label(entry.label));
             }
         }
         tracing::debug!("");
@@ -142,14 +188,14 @@ pub(crate) fn dump_allocation_log(allocation_log: &[AllocationEntry]) {
         for entry in divs {
             if entry.dependencies.len() == 2 {
                 tracing::debug!(
-                    "  expr_{} = expr_{} / expr_{}: {}",
+                    "  expr_{} = expr_{} / expr_{}{}",
                     entry.expr_id.0,
                     entry.dependencies[0].0,
                     entry.dependencies[1].0,
-                    entry.label
+                    display_label(entry.label)
                 );
             } else {
-                tracing::debug!("  expr_{} (Div): {}", entry.expr_id.0, entry.label);
+                tracing::debug!("  expr_{} (Div){}", entry.expr_id.0, display_label(entry.label));
             }
         }
         tracing::debug!("");
@@ -172,17 +218,29 @@ pub(crate) fn dump_allocation_log(allocation_log: &[AllocationEntry]) {
                     .map(|e| format!("expr_{}", e.0).to_string())
                     .collect();
                 tracing::debug!(
-                    "  {} (inputs: [{}]): {}",
+                    "  {} (inputs: [{}]){}",
                     op_name,
                     deps.join(", "),
-                    entry.label
+                    display_label(entry.label)
                 );
             } else {
-                tracing::debug!("  {}: {}", op_name, entry.label);
+                tracing::debug!("  {}{}", op_name, display_label(entry.label));
             }
         }
         tracing::debug!("");
     }
+}
 
-    tracing::debug!("=== End Allocation Log ===");
+/// List all unique scopes present in the allocation log.
+pub(crate) fn list_scopes(allocation_log: &[AllocationEntry]) -> Vec<&'static str> {
+    let mut scopes = HashSet::new();
+    for entry in allocation_log {
+        if let Some(scope) = entry.scope {
+            scopes.insert(scope);
+        }
+    }
+
+    let mut scope_list: Vec<_> = scopes.into_iter().collect();
+    scope_list.sort_unstable();
+    scope_list
 }

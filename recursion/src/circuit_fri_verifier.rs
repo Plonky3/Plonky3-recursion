@@ -41,6 +41,8 @@ fn fold_row_chain<EF: Field>(
     initial_folded_eval: Target,
     phases: &[FoldPhaseInputsTarget],
 ) -> Target {
+    builder.push_scope("fold_row_chain");
+
     let mut folded = initial_folded_eval;
 
     let one = builder.alloc_const(EF::ONE, "1");
@@ -88,6 +90,7 @@ fn fold_row_chain<EF: Field>(
         }
     }
 
+    builder.pop_scope(); // close `fold_row_chain` scope
     folded
 }
 
@@ -98,6 +101,8 @@ fn evaluate_polynomial<EF: Field>(
     coefficients: &[Target],
     point: Target,
 ) -> Target {
+    builder.push_scope("evaluate_polynomial");
+
     assert!(
         !coefficients.is_empty(),
         "we should have at least a constant polynomial"
@@ -112,6 +117,7 @@ fn evaluate_polynomial<EF: Field>(
         result = builder.add(result, coeff);
     }
 
+    builder.pop_scope(); // close `evaluate_polynomial` scope
     result
 }
 
@@ -124,8 +130,10 @@ fn verify_query<EF: Field>(
     phases: &[FoldPhaseInputsTarget],
     final_value: Target,
 ) {
+    builder.push_scope("verify_query");
     let folded_eval = fold_row_chain(builder, initial_folded_eval, phases);
     builder.connect(folded_eval, final_value);
+    builder.pop_scope(); // close `verify_query` scope
 }
 
 /// Compute the final query point after all FRI folding rounds.
@@ -140,6 +148,8 @@ where
     F: Field + TwoAdicField,
     EF: ExtensionField<F>,
 {
+    builder.push_scope("compute_final_query_point");
+
     // Extract the bits that form domain_index (bits [num_phases..log_max_height]) after `num_phases` folds
     let domain_index_bits: Vec<Target> = index_bits[num_phases..log_max_height].to_vec();
 
@@ -161,6 +171,7 @@ where
         result = builder.mul(result, multiplier);
     }
 
+    builder.pop_scope(); // close `compute_final_query_point` scope
     result
 }
 
@@ -178,6 +189,8 @@ fn compute_x0_from_index_bits<EF: Field>(
     phase: usize,
     pows: &[EF],
 ) -> Target {
+    builder.push_scope("compute_x0_from_index_bits");
+
     let one = builder.add_const(EF::ONE);
     let mut res = one;
 
@@ -193,6 +206,8 @@ fn compute_x0_from_index_bits<EF: Field>(
         let gate = builder.add(one, diff_bit);
         res = builder.mul(res, gate);
     }
+
+    builder.pop_scope(); // close `compute_x0_from_index_bits` scope
     res
 }
 
@@ -211,6 +226,8 @@ fn verify_query_from_index_bits<EF: Field>(
     pows_per_phase: &[Vec<EF>],
     final_value: Target,
 ) {
+    builder.push_scope("verify_query_from_index_bits");
+
     let num_phases = betas.len();
     debug_assert_eq!(
         sibling_values.len(),
@@ -245,6 +262,7 @@ fn verify_query_from_index_bits<EF: Field>(
     }
 
     verify_query(builder, initial_folded_eval, &phases_vec, final_value);
+    builder.pop_scope(); // close `verify_query_from_index_bits` scope
 }
 
 /// Compute evaluation point x from domain height and reversed reduced index bits in the circuit field EF.
@@ -258,6 +276,8 @@ where
     F: Field + TwoAdicField,
     EF: ExtensionField<F>,
 {
+    builder.push_scope("compute_evaluation_point");
+
     // Build power-of-two ladder for two-adic generator g: [g, g^2, g^4, ...]
     let g = F::two_adic_generator(log_height);
     let powers_of_g: Vec<_> = iter::successors(Some(g), |&prev| Some(prev.square()))
@@ -274,8 +294,11 @@ where
     }
 
     // Multiply by the coset generator (also lifted to EF) to get x
-    let generator = builder.add_const(EF::from(F::GENERATOR));
-    builder.mul(generator, g_pow_index)
+    let generator = builder.alloc_const(EF::from(F::GENERATOR), "coset_generator");
+    let eval_point = builder.alloc_mul(generator, g_pow_index, "eval_point");
+
+    builder.pop_scope(); // close `compute_evaluation_point` scope
+    eval_point
 }
 
 /// Compute reduced opening for a single matrix in circuit form (EF-field).
@@ -290,6 +313,8 @@ fn compute_single_reduced_opening<EF: Field>(
     alpha: Target,            // Alpha challenge
 ) -> (Target, Target) // (new_alpha_pow, reduced_opening_contrib)
 {
+    builder.push_scope("compute_single_reduced_opening");
+
     let mut reduced_opening = builder.add_const(EF::ZERO);
     let mut current_alpha_pow = alpha_pow;
 
@@ -312,6 +337,7 @@ fn compute_single_reduced_opening<EF: Field>(
         current_alpha_pow = builder.mul(current_alpha_pow, alpha);
     }
 
+    builder.pop_scope(); // close `compute_single_reduced_opening` scope
     (current_alpha_pow, reduced_opening)
 }
 
@@ -333,6 +359,8 @@ where
     F: Field + TwoAdicField,
     EF: ExtensionField<F>,
 {
+    builder.push_scope("open_input");
+
     // TODO(challenger): Indices should be sampled from a RecursiveChallenger, not passed in.
     for &b in index_bits {
         builder.assert_bool(b);
@@ -414,6 +442,8 @@ where
         }
     }
 
+    builder.pop_scope(); // close `open_input` scope
+
     // Into descending (height, ro) list
     reduced_openings
         .into_iter()
@@ -448,6 +478,8 @@ pub fn verify_fri_circuit<F, EF, RecMmcs, Inner, Witness, Comm>(
     Inner: RecursiveMmcs<F, EF>,
     Witness: Recursive<EF>,
 {
+    builder.push_scope("verify_fri");
+
     let num_phases = betas.len();
     let num_queries = fri_proof_targets.query_proofs.len();
     // Sanity: number of betas must match number of commit phases.
@@ -600,5 +632,7 @@ pub fn verify_fri_circuit<F, EF, RecMmcs, Inner, Witness, Comm>(
             &pows_per_phase,
             final_poly_eval,
         );
+
+        builder.pop_scope(); // close `verify_fri` scope
     }
 }
