@@ -193,7 +193,7 @@ pub fn generate_mmcs_trace<F: CircuitField>(
         // Copy out leaf/root to end immutable borrow immediately
         let NonPrimitiveOp::MmcsVerify { leaf, index, root } = &circuit.non_primitive_ops[op_idx]
         else {
-            // Skip non-MMCS operations (e.g., HashAbsorb, HashSqueeze)
+            // Skip non-MMCS operations (e.g., Poseidon2Permutation, HashAbsorb, HashSqueeze)
             continue;
         };
 

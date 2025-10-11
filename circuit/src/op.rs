@@ -52,11 +52,13 @@ pub enum NonPrimitiveOpType {
     // Mmcs Verify gate with the argument is the size of the path
     MmcsVerify,
     FriVerify,
-    /// Hash absorb operation - absorbs field elements into sponge state
+    /// Poseidon2 permutation - applies permutation to state
+    Poseidon2Permutation,
+    /// Hash absorb operation - absorbs field elements into sponge state (LEGACY - unused)
     HashAbsorb {
         reset: bool,
     },
-    /// Hash squeeze operation - extracts field elements from sponge state
+    /// Hash squeeze operation - extracts field elements from sponge state (LEGACY - unused)
     HashSqueeze,
 }
 
@@ -101,20 +103,31 @@ pub enum NonPrimitiveOp {
         root: MmcsWitnessId,
     },
 
-    /// Hash absorb operation - absorbs inputs into sponge state.
+    /// Poseidon2 permutation - applies Poseidon2 permutation to full state.
     ///
     /// Public interface (on witness bus):
-    /// - `inputs`: Field elements to absorb into the sponge
-    /// - `reset_flag`: Whether to reset the sponge state before absorbing
+    /// - `input_state`: Full permutation state (WIDTH elements)
+    /// - `output_state`: Full permutation state after applying Poseidon2 (WIDTH elements)
+    ///
+    /// The ExtendedPoseidon2Air validates: output_state = Poseidon2(input_state)
+    Poseidon2Permutation {
+        input_state: Vec<WitnessId>,
+        output_state: Vec<WitnessId>,
+    },
+
+    /// Hash absorb operation - absorbs inputs into sponge state (LEGACY - unused).
+    ///
+    /// NOTE: This is legacy code. Sponge construction is now handled in-circuit
+    /// via CircuitChallenger managing state as Targets.
     HashAbsorb {
         reset_flag: bool,
         inputs: Vec<WitnessId>,
     },
 
-    /// Hash squeeze operation - extracts outputs from sponge state.
+    /// Hash squeeze operation - extracts outputs from sponge state (LEGACY - unused).
     ///
-    /// Public interface (on witness bus):
-    /// - `outputs`: Field elements extracted from the sponge
+    /// NOTE: This is legacy code. Sponge construction is now handled in-circuit
+    /// via CircuitChallenger managing state as Targets.
     HashSqueeze { outputs: Vec<WitnessId> },
 }
 

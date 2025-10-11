@@ -46,10 +46,10 @@ pub struct OpenedValuesTargets<SC: StarkGenericConfig> {
 
 impl<SC: StarkGenericConfig> OpenedValuesTargets<SC> {
     /// Observe all opened values in the Fiat-Shamir transcript.
-    pub fn observe<F: Field, const RATE: usize>(
+    pub fn observe<F: Field, const RATE: usize, const CAPACITY: usize, const WIDTH: usize>(
         &self,
         circuit: &mut CircuitBuilder<F>,
-        challenger: &mut CircuitChallenger<RATE>,
+        challenger: &mut CircuitChallenger<RATE, CAPACITY, WIDTH>,
     ) {
         // Observe trace values at zeta and zeta_next
         challenger.observe_slice(circuit, &self.trace_local_targets);
@@ -130,9 +130,9 @@ pub trait RecursivePcs<
     /// - `proof_targets`: Proof structure with commitments and opening proof
     /// - `opened_values`: All opened values at zeta and zeta_next
     /// - `params`: PCS-specific verifier parameters
-    fn get_challenges_circuit<const RATE: usize>(
+    fn get_challenges_circuit<const RATE: usize, const CAPACITY: usize, const WIDTH: usize>(
         circuit: &mut CircuitBuilder<SC::Challenge>,
-        challenger: &mut CircuitChallenger<RATE>,
+        challenger: &mut CircuitChallenger<RATE, CAPACITY, WIDTH>,
         proof_targets: &ProofTargets<SC, Comm, OpeningProof>,
         opened_values: &OpenedValuesTargets<SC>,
         params: &Self::VerifierParams,

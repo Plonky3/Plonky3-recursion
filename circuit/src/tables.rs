@@ -8,7 +8,10 @@ use crate::op::{NonPrimitiveOp, NonPrimitiveOpPrivateData, Prim};
 use crate::types::{NonPrimitiveOpId, WitnessId};
 use crate::{CircuitError, CircuitField};
 
+mod hash;
 mod mmcs;
+
+pub use hash::HashTrace;
 pub use mmcs::{MmcsPathTrace, MmcsPrivateData, MmcsTrace};
 
 /// Execution traces for all tables
@@ -26,6 +29,8 @@ pub struct Traces<F> {
     pub mul_trace: MulTrace<F>,
     /// Mmcs verification table
     pub mmcs_trace: MmcsTrace<F>,
+    /// Hash operations table (Poseidon2 sponge)
+    pub hash_trace: HashTrace<F>,
 }
 
 /// Central witness table with preprocessed index column
@@ -157,8 +162,10 @@ impl<F: CircuitField> CircuitRunner<F> {
             (NonPrimitiveOp::MmcsVerify { .. }, NonPrimitiveOpPrivateData::MmcsVerify(_)) => {
                 // Type match - good!
             }
-            (NonPrimitiveOp::HashAbsorb { .. }, _) | (NonPrimitiveOp::HashSqueeze { .. }, _) => {
-                // HashAbsorb/HashSqueeze don't use private data
+            (NonPrimitiveOp::Poseidon2Permutation { .. }, _)
+            | (NonPrimitiveOp::HashAbsorb { .. }, _)
+            | (NonPrimitiveOp::HashSqueeze { .. }, _) => {
+                // These operations don't use private data
             }
         }
 
@@ -179,6 +186,7 @@ impl<F: CircuitField> CircuitRunner<F> {
         let add_trace = self.generate_add_trace()?;
         let mul_trace = self.generate_mul_trace()?;
         let mmcs_trace = self.generate_mmcs_trace()?;
+        let hash_trace = hash::generate_hash_trace(&self.circuit, &self.witness)?;
 
         Ok(Traces {
             witness_trace,
@@ -187,6 +195,7 @@ impl<F: CircuitField> CircuitRunner<F> {
             add_trace,
             mul_trace,
             mmcs_trace,
+            hash_trace,
         })
     }
 

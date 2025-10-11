@@ -47,9 +47,16 @@ impl StarkChallenges {
     /// 7. **Sample zeta** (OOD evaluation point)
     /// 8. **Sample zeta_next** (next row evaluation point)
     /// 9. Return challenger for PCS to continue sampling (betas, query indices)
-    pub fn allocate<SC, Comm, OpeningProof, const RATE: usize>(
+    pub fn allocate<
+        SC,
+        Comm,
+        OpeningProof,
+        const RATE: usize,
+        const CAPACITY: usize,
+        const WIDTH: usize,
+    >(
         circuit: &mut CircuitBuilder<SC::Challenge>,
-        challenger: &mut CircuitChallenger<RATE>,
+        challenger: &mut CircuitChallenger<RATE, CAPACITY, WIDTH>,
         proof_targets: &ProofTargets<SC, Comm, OpeningProof>,
         public_values: &[Target],
         log_quotient_degree: usize,

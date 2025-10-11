@@ -687,6 +687,27 @@ where
                 NonPrimitiveOpType::FriVerify => {
                     todo!() // TODO: Add FRIVerify when it lands
                 }
+                NonPrimitiveOpType::Poseidon2Permutation => {
+                    // Poseidon2 permutation: first half are inputs, second half are outputs
+                    let width = witness_exprs.len() / 2;
+                    let input_state = witness_exprs[..width]
+                        .iter()
+                        .map(|&expr| {
+                            Self::get_witness_id(expr_to_widx, expr, "Poseidon2 input state")
+                        })
+                        .collect::<Result<_, _>>()?;
+                    let output_state = witness_exprs[width..]
+                        .iter()
+                        .map(|&expr| {
+                            Self::get_witness_id(expr_to_widx, expr, "Poseidon2 output state")
+                        })
+                        .collect::<Result<_, _>>()?;
+
+                    lowered_ops.push(NonPrimitiveOp::Poseidon2Permutation {
+                        input_state,
+                        output_state,
+                    });
+                }
                 NonPrimitiveOpType::HashAbsorb { reset } => {
                     let inputs = witness_exprs
                         .iter()
@@ -1129,7 +1150,9 @@ mod tests {
         assert_eq!(circuit.non_primitive_ops.len(), 1);
         match &circuit.non_primitive_ops[0] {
             NonPrimitiveOp::MmcsVerify { .. } => {}
-            NonPrimitiveOp::HashAbsorb { .. } | NonPrimitiveOp::HashSqueeze { .. } => {
+            NonPrimitiveOp::Poseidon2Permutation { .. }
+            | NonPrimitiveOp::HashAbsorb { .. }
+            | NonPrimitiveOp::HashSqueeze { .. } => {
                 panic!("Expected MmcsVerify operation");
             }
         }
