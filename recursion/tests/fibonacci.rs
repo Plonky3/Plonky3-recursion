@@ -8,15 +8,13 @@ use p3_field::extension::BinomialExtensionField;
 use p3_field::{Field, PrimeCharacteristicRing};
 use p3_fri::{TwoAdicFriPcs, create_test_fri_params};
 use p3_merkle_tree::MerkleTreeMmcs;
-use p3_recursion::circuit_verifier::{
-    VerificationError, construct_verifier_public_inputs, verify_circuit,
-};
+use p3_recursion::circuit_verifier::{VerificationError, verify_circuit};
+use p3_recursion::public_inputs::StarkVerifierInputsBuilder;
 use p3_recursion::recursive_generation::generate_challenges;
 use p3_recursion::recursive_pcs::{
     FriProofTargets, FriVerifierParams, HashTargets, InputProofTargets, RecExtensionValMmcs,
     RecValMmcs, Witness,
 };
-use p3_recursion::recursive_traits::{ProofTargets, Recursive};
 use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
 use p3_uni_stark::{StarkConfig, StarkGenericConfig, Val, prove, verify};
 use rand::SeedableRng;
@@ -66,13 +64,6 @@ fn test_fibonacci_verifier() -> Result<(), VerificationError> {
 
     const DIGEST_ELEMS: usize = 8;
 
-    // Initialize the circuit builder.
-    let mut circuit_builder = CircuitBuilder::new();
-
-    let public_values = (0..pis.len())
-        .map(|_| circuit_builder.add_public_input())
-        .collect::<Vec<_>>();
-
     // Type of the `OpeningProof` used in the circuit for a `TwoAdicFriPcs`.
     type InnerFri = FriProofTargets<
         Val<MyConfig>,
@@ -91,28 +82,14 @@ fn test_fibonacci_verifier() -> Result<(), VerificationError> {
         Witness<Val<MyConfig>>,
     >;
 
-    // Determine the lengths of all the vectors within the proof.
-    let mut all_lens =
-        ProofTargets::<MyConfig, HashTargets<F, DIGEST_ELEMS>, InnerFri>::lens(&proof);
+    let mut circuit_builder = CircuitBuilder::new();
 
-    // Add the targets for the proof.
-    let proof_targets = ProofTargets::<MyConfig, HashTargets<F, DIGEST_ELEMS>, InnerFri>::new(
-        &mut circuit_builder,
-        &mut all_lens,
-        proof.degree_bits,
-    );
-
-    let all_proof_values =
-        ProofTargets::<MyConfig, HashTargets<F, DIGEST_ELEMS>, InnerFri>::get_values(&proof);
-
-    // Generate all the challenge values.
-    let all_challenges = generate_challenges(
-        &air,
-        &config,
-        &proof,
-        &pis,
-        Some(&[pow_bits, log_height_max]),
-    )?;
+    // Allocate all targets
+    let verifier_inputs = StarkVerifierInputsBuilder::<
+        MyConfig,
+        HashTargets<F, DIGEST_ELEMS>,
+        InnerFri,
+    >::allocate(&mut circuit_builder, &proof, pis.len());
 
     // Add the verification circuit to the builder.
     verify_circuit::<
@@ -126,22 +103,31 @@ fn test_fibonacci_verifier() -> Result<(), VerificationError> {
         &config,
         &air,
         &mut circuit_builder,
-        &proof_targets,
-        &public_values,
+        &verifier_inputs.proof_targets,
+        &verifier_inputs.air_public_targets,
         &fri_verifier_params,
     )?;
 
     // Build the circuit.
     let circuit = circuit_builder.build()?;
+
     let mut runner = circuit.runner();
 
-    // Set the public inputs and run the verification circuit.
+    // Generate all the challenge values.
+    let all_challenges = generate_challenges(
+        &air,
+        &config,
+        &proof,
+        &pis,
+        Some(&[pow_bits, log_height_max]),
+    )?;
+
+    // Pack values using the same builder
     let num_queries = proof.opening_proof.query_proofs.len();
-    let public_values =
-        construct_verifier_public_inputs(&pis, &all_proof_values, &all_challenges, num_queries);
+    let public_inputs = verifier_inputs.pack_values(&pis, &proof, &all_challenges, num_queries);
 
     runner
-        .set_public_inputs(&public_values)
+        .set_public_inputs(&public_inputs)
         .map_err(VerificationError::Circuit)?;
 
     let _traces = runner.run().map_err(VerificationError::Circuit)?;
