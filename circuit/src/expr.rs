@@ -80,4 +80,104 @@ mod tests {
         assert_eq!(add_id, ExprId(2));
         assert_eq!(graph.get_expr(add_id), &add_expr);
     }
+
+    #[cfg(test)]
+    mod proptests {
+        use proptest::prelude::*;
+
+        use super::*;
+
+        proptest! {
+            #[test]
+            fn expr_get_returns_added(vals in prop::collection::vec(any::<u64>().prop_map(MockExtField), 1..30)) {
+                let mut graph = ExpressionGraph::<MockExtField>::new();
+                let mut ids = Vec::new();
+
+                for val in &vals {
+                    let expr = Expr::Const(val.clone());
+                    let id = graph.add_expr(expr.clone());
+                    ids.push(id);
+                }
+
+                for (id, val) in ids.iter().zip(vals.iter()) {
+                    let retrieved = graph.get_expr(*id);
+                    prop_assert_eq!(retrieved, &Expr::Const(val.clone()), "get should return added expression");
+                }
+            }
+
+            #[test]
+            fn expr_primitive_ops(val1 in any::<u64>().prop_map(MockExtField), val2 in any::<u64>().prop_map(MockExtField)) {
+                let mut graph = ExpressionGraph::<MockExtField>::new();
+
+                let id1 = graph.add_expr(Expr::Const(val1.clone()));
+                let id2 = graph.add_expr(Expr::Const(val2.clone()));
+
+                let add_id = graph.add_expr(Expr::Add { lhs: id1, rhs: id2 });
+                match graph.get_expr(add_id) {
+                    Expr::Add { lhs, rhs } => {
+                        prop_assert_eq!(*lhs, id1);
+                        prop_assert_eq!(*rhs, id2);
+                    }
+                    _ => prop_assert!(false, "expected Add expr"),
+                }
+
+                let sub_id = graph.add_expr(Expr::Sub { lhs: id1, rhs: id2 });
+                match graph.get_expr(sub_id) {
+                    Expr::Sub { lhs, rhs } => {
+                        prop_assert_eq!(*lhs, id1);
+                        prop_assert_eq!(*rhs, id2);
+                    }
+                    _ => prop_assert!(false, "expected Sub expr"),
+                }
+
+                let mul_id = graph.add_expr(Expr::Mul { lhs: id1, rhs: id2 });
+                match graph.get_expr(mul_id) {
+                    Expr::Mul { lhs, rhs } => {
+                        prop_assert_eq!(*lhs, id1);
+                        prop_assert_eq!(*rhs, id2);
+                    }
+                    _ => prop_assert!(false, "expected Mul expr"),
+                }
+
+                let div_id = graph.add_expr(Expr::Div { lhs: id1, rhs: id2 });
+                match graph.get_expr(div_id) {
+                    Expr::Div { lhs, rhs } => {
+                        prop_assert_eq!(*lhs, id1);
+                        prop_assert_eq!(*rhs, id2);
+                    }
+                    _ => prop_assert!(false, "expected Div expr"),
+                }
+            }
+
+            #[test]
+            fn expr_public_positions(positions in prop::collection::vec(0usize..100, 0..20)) {
+                let mut graph = ExpressionGraph::<MockExtField>::new();
+                let mut ids = Vec::new();
+
+                for &pos in &positions {
+                    let id = graph.add_expr(Expr::Public(pos));
+                    ids.push(id);
+                }
+
+                for (&id, &expected_pos) in ids.iter().zip(positions.iter()) {
+                    match graph.get_expr(id) {
+                        Expr::Public(pos) => {
+                            prop_assert_eq!(*pos, expected_pos, "public position should match");
+                        }
+                        _ => prop_assert!(false, "expected Public expr"),
+                    }
+                }
+            }
+
+            #[test]
+            fn expr_equality(val in any::<u64>().prop_map(MockExtField)) {
+                let expr1 = Expr::Const(val.clone());
+                let expr2 = Expr::Const(val.clone());
+                let expr3 = Expr::Const(MockExtField(val.0 + 1));
+
+                prop_assert_eq!(&expr1, &expr2, "same expressions should be equal");
+                prop_assert_ne!(&expr1, &expr3, "different expressions should not be equal");
+            }
+        }
+    }
 }
