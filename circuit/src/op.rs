@@ -52,7 +52,12 @@ pub enum NonPrimitiveOpType {
     // Mmcs Verify gate with the argument is the size of the path
     MmcsVerify,
     FriVerify,
-    // Future: FriVerify, HashAbsorb, etc.
+    /// Hash absorb operation - absorbs field elements into sponge state
+    HashAbsorb {
+        reset: bool,
+    },
+    /// Hash squeeze operation - extracts field elements from sponge state
+    HashSqueeze,
 }
 
 /// Non-primitive operation types
@@ -95,6 +100,22 @@ pub enum NonPrimitiveOp {
         index: WitnessId,
         root: MmcsWitnessId,
     },
+
+    /// Hash absorb operation - absorbs inputs into sponge state.
+    ///
+    /// Public interface (on witness bus):
+    /// - `inputs`: Field elements to absorb into the sponge
+    /// - `reset_flag`: Whether to reset the sponge state before absorbing
+    HashAbsorb {
+        reset_flag: bool,
+        inputs: Vec<WitnessId>,
+    },
+
+    /// Hash squeeze operation - extracts outputs from sponge state.
+    ///
+    /// Public interface (on witness bus):
+    /// - `outputs`: Field elements extracted from the sponge
+    HashSqueeze { outputs: Vec<WitnessId> },
 }
 
 pub type MmcsWitnessId = Vec<WitnessId>;
