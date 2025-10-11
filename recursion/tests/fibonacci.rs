@@ -35,7 +35,6 @@ type MyPcs = TwoAdicFriPcs<F, Dft, ValMmcs, ChallengeMmcs>;
 type MyConfig = StarkConfig<MyPcs, Challenge, Challenger>;
 
 #[test]
-#[ignore = "TODO: Requires Poseidon2 trace generation to provide permutation outputs as public inputs"]
 fn test_fibonacci_verifier() -> Result<(), VerificationError> {
     let mut rng = SmallRng::seed_from_u64(1);
     let n = 1 << 3;

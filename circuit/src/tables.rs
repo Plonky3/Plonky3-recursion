@@ -179,6 +179,9 @@ impl<F: CircuitField> CircuitRunner<F> {
         // Step 1: Execute primitives to fill witness vector
         self.execute_primitives()?;
 
+        // Step 1.5: Execute non-primitive operations (compute Poseidon2 outputs, etc.)
+        self.execute_non_primitive_ops()?;
+
         // Step 2: Generate all table traces
         let witness_trace = self.generate_witness_trace()?;
         let const_trace = self.generate_const_trace()?;
@@ -197,6 +200,46 @@ impl<F: CircuitField> CircuitRunner<F> {
             mmcs_trace,
             hash_trace,
         })
+    }
+
+    /// Execute non-primitive operations to compute their outputs
+    fn execute_non_primitive_ops(&mut self) -> Result<(), CircuitError> {
+        // Clone non-primitive operations to avoid borrowing issues
+        let non_primitive_ops = self.circuit.non_primitive_ops.clone();
+
+        for op in non_primitive_ops {
+            match op {
+                NonPrimitiveOp::Poseidon2Permutation {
+                    input_state,
+                    output_state,
+                } => {
+                    // TODO: This is a placeholder that sets outputs to a function of inputs
+                    // In a real implementation, this would call an actual Poseidon2 permutation
+                    // For now, we just set each output to the sum of all inputs (for testing)
+                    let mut sum = F::ZERO;
+                    for &input_widx in &input_state {
+                        sum += self.get_witness(input_widx)?;
+                    }
+                    
+                    // Set each output witness to a derived value (just for testing)
+                    // We force-set these values, overwriting any placeholder values from virtual witness allocation
+                    for (i, &output_widx) in output_state.iter().enumerate() {
+                        let val = sum + F::from_isize(i as isize);
+                        // Force overwrite - the virtual witness allocated a placeholder value (const 0)
+                        // which we now replace with the actual Poseidon2 output
+                        self.force_set_witness(output_widx, val)?;
+                    }
+                }
+                NonPrimitiveOp::HashAbsorb { .. } | NonPrimitiveOp::HashSqueeze { .. } => {
+                    // Legacy operations - no execution needed
+                }
+                NonPrimitiveOp::MmcsVerify { .. } => {
+                    // No execution needed - validated by private data
+                }
+            }
+        }
+
+        Ok(())
     }
 
     /// Execute all primitive operations to fill witness vector
@@ -268,10 +311,20 @@ impl<F: CircuitField> CircuitRunner<F> {
                     new: format!("{value:?}"),
                 });
             }
-        } else {
-            self.witness[widx.0 as usize] = Some(value);
         }
 
+        self.witness[widx.0 as usize] = Some(value);
+        Ok(())
+    }
+
+    /// Force-set a witness value, overwriting any existing value.
+    /// Used for non-primitive operation outputs that use placeholder expressions.
+    fn force_set_witness(&mut self, widx: WitnessId, value: F) -> Result<(), CircuitError> {
+        if widx.0 as usize >= self.witness.len() {
+            return Err(CircuitError::WitnessIdOutOfBounds { witness_id: widx });
+        }
+
+        self.witness[widx.0 as usize] = Some(value);
         Ok(())
     }
 

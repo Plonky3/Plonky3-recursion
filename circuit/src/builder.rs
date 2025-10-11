@@ -178,6 +178,16 @@ where
         self.alloc_public_input("unlabeled")
     }
 
+    /// Allocate a virtual witness variable (for non-primitive operation outputs).
+    ///
+    /// This creates a placeholder expression that will be assigned a witness ID during
+    /// circuit building, but represents a value computed during execution (not a public input).
+    pub(crate) fn add_virtual_witness(&mut self) -> ExprId {
+        // Create a placeholder constant - this will be overwritten during non-primitive op execution
+        // We use ZERO as a placeholder value
+        self.add_const(F::ZERO)
+    }
+
     /// Allocate a public input with a descriptive label.
     ///
     /// The label is logged in debug builds for easier debugging of public input ordering.
