@@ -183,7 +183,7 @@ where
     ///
     /// Cost: 1 row in Public table + 1 row in witness table.
     pub fn add_public_input(&mut self) -> ExprId {
-        self.alloc_public_input("unlabeled")
+        self.alloc_public_input("")
     }
 
     /// Allocate a public input with a descriptive label.
@@ -1841,19 +1841,19 @@ mod tests {
         let b = builder.add_const(BabyBear::TWO);
         let _sum = builder.add(a, b);
 
-        // Should all be logged with default labels
+        // Should all be logged with no labels
         assert_eq!(builder.allocation_log.len(), 3);
-        assert_eq!(builder.allocation_log[0].label, "unlabeled");
+        assert_eq!(builder.allocation_log[0].label, "");
         assert!(matches!(
             builder.allocation_log[0].alloc_type,
             AllocationType::Public
         ));
-        assert_eq!(builder.allocation_log[1].label, "const");
+        assert_eq!(builder.allocation_log[1].label, "");
         assert!(matches!(
             builder.allocation_log[1].alloc_type,
             AllocationType::Const
         ));
-        assert_eq!(builder.allocation_log[2].label, "add");
+        assert_eq!(builder.allocation_log[2].label, "");
         assert!(matches!(
             builder.allocation_log[2].alloc_type,
             AllocationType::Add

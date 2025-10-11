@@ -54,6 +54,8 @@ pub(crate) fn dump_allocation_log(allocation_log: &[AllocationEntry]) {
 
     // Dump also allocations that do not fall under a particular scope
     dump_allocation_log_scope(allocation_log, None);
+
+    tracing::debug!("=== End Allocation Log ===\n");
 }
 
 /// Dump an allocation log filtered by scope (debug builds only).
@@ -69,7 +71,7 @@ pub(crate) fn dump_allocation_log_scope(allocation_log: &[AllocationEntry], scop
     let scope_name = scope.unwrap_or("main");
 
     if filtered.is_empty() {
-        tracing::debug!("Scope '{}' has no allocations", scope_name);
+        tracing::debug!("\nScope '{}' has no allocations\n", scope_name);
         return;
     }
 
@@ -116,7 +118,11 @@ fn dump_internal_log(allocation_log: &[AllocationEntry]) {
     if !publics.is_empty() {
         tracing::debug!("--- Public Inputs ({}) ---", publics.len());
         for entry in publics {
-            tracing::debug!("  expr_{} (Public){}", entry.expr_id.0, display_label(entry.label));
+            tracing::debug!(
+                "  expr_{} (Public){}",
+                entry.expr_id.0,
+                display_label(entry.label)
+            );
         }
         tracing::debug!("");
     }
@@ -124,7 +130,11 @@ fn dump_internal_log(allocation_log: &[AllocationEntry]) {
     if !consts.is_empty() {
         tracing::debug!("--- Constants ({}) ---", consts.len());
         for entry in consts {
-            tracing::debug!("  expr_{} (Const){}", entry.expr_id.0, display_label(entry.label));
+            tracing::debug!(
+                "  expr_{} (Const){}",
+                entry.expr_id.0,
+                display_label(entry.label)
+            );
         }
         tracing::debug!("");
     }
@@ -141,7 +151,11 @@ fn dump_internal_log(allocation_log: &[AllocationEntry]) {
                     display_label(entry.label)
                 );
             } else {
-                tracing::debug!("  expr_{} (Add){}", entry.expr_id.0, display_label(entry.label));
+                tracing::debug!(
+                    "  expr_{} (Add){}",
+                    entry.expr_id.0,
+                    display_label(entry.label)
+                );
             }
         }
         tracing::debug!("");
@@ -159,7 +173,11 @@ fn dump_internal_log(allocation_log: &[AllocationEntry]) {
                     display_label(entry.label)
                 );
             } else {
-                tracing::debug!("  expr_{} (Sub){}", entry.expr_id.0, display_label(entry.label));
+                tracing::debug!(
+                    "  expr_{} (Sub){}",
+                    entry.expr_id.0,
+                    display_label(entry.label)
+                );
             }
         }
         tracing::debug!("");
@@ -177,7 +195,11 @@ fn dump_internal_log(allocation_log: &[AllocationEntry]) {
                     display_label(entry.label)
                 );
             } else {
-                tracing::debug!("  expr_{} (Mul){}", entry.expr_id.0, display_label(entry.label));
+                tracing::debug!(
+                    "  expr_{} (Mul){}",
+                    entry.expr_id.0,
+                    display_label(entry.label)
+                );
             }
         }
         tracing::debug!("");
@@ -195,7 +217,11 @@ fn dump_internal_log(allocation_log: &[AllocationEntry]) {
                     display_label(entry.label)
                 );
             } else {
-                tracing::debug!("  expr_{} (Div){}", entry.expr_id.0, display_label(entry.label));
+                tracing::debug!(
+                    "  expr_{} (Div){}",
+                    entry.expr_id.0,
+                    display_label(entry.label)
+                );
             }
         }
         tracing::debug!("");
