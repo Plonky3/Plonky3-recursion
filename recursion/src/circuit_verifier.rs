@@ -7,7 +7,7 @@ use p3_circuit::op::{NonPrimitiveOpConfig, NonPrimitiveOpType};
 use p3_circuit::utils::ColumnsTargets;
 use p3_circuit::{CircuitBuilder, CircuitBuilderError, CircuitError};
 use p3_commit::Pcs;
-use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing, PrimeField64};
+use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
 use p3_uni_stark::StarkGenericConfig;
 use thiserror::Error;
 
@@ -15,7 +15,6 @@ use crate::Target;
 use crate::challenges::StarkChallenges;
 use crate::circuit_challenger::CircuitChallenger;
 use crate::recursive_generation::GenerationError;
-use crate::recursive_pcs::MAX_QUERY_INDEX_BITS;
 use crate::recursive_traits::{
     CommitmentTargets, OpenedValuesTargets, ProofTargets, Recursive, RecursiveAir, RecursivePcs,
 };
@@ -117,58 +116,6 @@ where
     let mut all_challenges = base_challenges.to_vec();
     all_challenges.extend(pcs_challenges);
     all_challenges
-}
-
-/// Constructs the public input values for a STARK verification circuit.
-///
-/// # Parameters
-/// - `public_values`: The AIR public input values
-/// - `proof_values`: Values extracted from the proof targets  
-/// - `challenges`: All challenge values (alpha, zeta, zeta_next, betas, query indices)
-/// - `num_queries`: Number of FRI query proofs
-///
-/// # Returns
-/// A vector of field elements ready to be passed to `CircuitRunner::set_public_inputs`
-// TODO: Challenges are sampled inside the circuit but still provided as public inputs until
-// some sponge in the circuit is implemented (Poseidon2?).
-pub fn construct_verifier_public_inputs<F, EF>(
-    public_values: &[F],
-    proof_values: &[EF],
-    challenges: &[EF],
-    num_queries: usize,
-) -> Vec<EF>
-where
-    F: Field + PrimeField64,
-    EF: Field + BasedVectorSpace<F> + From<F>,
-{
-    let num_challenges_before_queries = challenges.len() - num_queries;
-
-    // Start with public values, proof values, and all challenges
-    let mut inputs: Vec<EF> = public_values
-        .iter()
-        .map(|&pv| pv.into())
-        .chain(proof_values.iter().copied())
-        .chain(challenges.iter().copied())
-        .collect();
-
-    // Add bit decompositions for query indices.
-    // The circuit calls decompose_to_bits on each query index,
-    // which creates MAX_QUERY_INDEX_BITS additional public inputs.
-    for &query_index in &challenges[num_challenges_before_queries..] {
-        let coeffs = query_index.as_basis_coefficients_slice();
-        let index_usize = coeffs[0].as_canonical_u64() as usize;
-
-        for k in 0..MAX_QUERY_INDEX_BITS {
-            let bit = if (index_usize >> k) & 1 == 1 {
-                EF::ONE
-            } else {
-                EF::ZERO
-            };
-            inputs.push(bit);
-        }
-    }
-
-    inputs
 }
 
 /// Verifies a STARK proof within a circuit.
