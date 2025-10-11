@@ -360,7 +360,7 @@ fn generate_setup(log_final_poly_len: usize, group_sizes: Vec<Vec<u8>>) -> FriSe
     )
 }
 
-fn run_fri_test(setup: FriSetup, degree_bits: usize) {
+fn run_fri_test(setup: FriSetup) {
     let FriSetup {
         pcs,
         perm,
@@ -405,7 +405,7 @@ fn run_fri_test(setup: FriSetup, degree_bits: usize) {
 
     // 1) Allocate FriProofTargets using lens from instance 1
     let mut lens_iter = result_1.fri_lens.clone().into_iter();
-    let fri_targets = FriTargets::new(&mut builder, &mut lens_iter, degree_bits);
+    let fri_targets = FriTargets::new(&mut builder, &mut lens_iter, /*degree_bits unused*/ 0);
 
     // Verify the final polynomial has the expected length
     assert_eq!(
@@ -497,7 +497,7 @@ fn test_circuit_fri_verifier_degree_0_final_poly() {
 
     let setup = generate_setup(0, groups);
 
-    run_fri_test(setup, 0);
+    run_fri_test(setup);
 }
 
 #[test]
@@ -508,7 +508,7 @@ fn test_circuit_fri_verifier_degree_1_final_poly() {
 
     let setup = generate_setup(1, groups);
 
-    run_fri_test(setup, 0);
+    run_fri_test(setup);
 }
 
 #[test]
@@ -518,5 +518,5 @@ fn test_circuit_fri_verifier_degree_3_final_poly() {
 
     let setup = generate_setup(2, groups);
 
-    run_fri_test(setup, 0);
+    run_fri_test(setup);
 }
