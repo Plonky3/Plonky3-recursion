@@ -6,10 +6,13 @@ use p3_field::PrimeCharacteristicRing;
 use thiserror::Error;
 
 use crate::circuit::Circuit;
-use crate::expr::{Expr, ExpressionGraph};
+use crate::expr::Expr;
 use crate::op::{NonPrimitiveOp, NonPrimitiveOpConfig, NonPrimitiveOpType, Prim};
 use crate::ops::MmcsVerifyConfig;
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};
+
+pub mod expr_builder;
+use expr_builder::ExpressionBuilder;
 
 /// Sparse disjoint-set "find" with path compression over a HashMap (iterative).
 /// If `x` is not present, it's its own representative and is not inserted.
@@ -64,18 +67,14 @@ fn build_connect_dsu(connects: &[(ExprId, ExprId)]) -> HashMap<usize, usize> {
 ///
 /// Call `.build()` to compile into an immutable `Circuit<F>` specification.
 pub struct CircuitBuilder<F> {
-    /// Expression graph for building the DAG
-    expressions: ExpressionGraph<F>,
+    /// Expression builder for managing the expression graph
+    expr_builder: ExpressionBuilder<F>,
     /// Witness index allocator
     witness_alloc: WitnessAllocator,
     /// Track public input positions
     pub public_input_count: usize,
-    /// Equality constraints to enforce at lowering
-    pending_connects: Vec<(ExprId, ExprId)>,
     /// Non-primitive operations (complex constraints that don't produce ExprIds)
     non_primitive_ops: Vec<(NonPrimitiveOpId, NonPrimitiveOpType, Vec<ExprId>)>, // (op_id, op_type, witness_exprs)
-    /// Builder-level constant pool: value -> unique Const ExprId
-    const_pool: HashMap<F, ExprId>,
 
     /// Enabled non-primitive operation types with their respective configuration
     enabled_ops: HashMap<NonPrimitiveOpType, NonPrimitiveOpConfig>,
@@ -131,22 +130,13 @@ where
 {
     /// Create a new circuit builder
     pub fn new() -> Self {
-        let mut expressions = ExpressionGraph::new();
-
-        // Insert Const(0) as the very first node so it has ExprId::ZERO.
-        let zero_val = F::ZERO;
-        let zero_id = expressions.add_expr(Expr::Const(zero_val.clone()));
-
-        let mut const_pool = HashMap::new();
-        const_pool.insert(zero_val, zero_id);
+        let expr_builder = ExpressionBuilder::new();
 
         Self {
-            expressions,
+            expr_builder,
             witness_alloc: WitnessAllocator::new(),
             public_input_count: 0,
-            pending_connects: Vec::new(),
             non_primitive_ops: Vec::new(),
-            const_pool,
             enabled_ops: HashMap::new(), // All non-primitive ops are disabled by default
             #[cfg(debug_assertions)]
             allocation_log: Vec::new(),
@@ -197,8 +187,7 @@ where
         let public_pos = self.public_input_count;
         self.public_input_count += 1;
 
-        let public_expr = Expr::Public(public_pos);
-        self.expressions.add_expr(public_expr)
+        self.expr_builder.add_public_expr(public_pos)
     }
 
     /// Allocate multiple public inputs with a descriptive label.
@@ -241,14 +230,11 @@ where
     #[allow(unused_variables)]
     pub fn alloc_const(&mut self, val: F, label: &'static str) -> ExprId {
         #[cfg(debug_assertions)]
-        if !self.const_pool.contains_key(&val) {
+        if !self.expr_builder.const_pool().contains_key(&val) {
             self.allocation_log.push(label);
         }
 
-        *self
-            .const_pool
-            .entry(val)
-            .or_insert_with_key(|k| self.expressions.add_expr(Expr::Const(k.clone())))
+        self.expr_builder.add_const(val)
     }
 
     /// Add two expressions.
@@ -266,8 +252,7 @@ where
         #[cfg(debug_assertions)]
         self.allocation_log.push(label);
 
-        let add_expr = Expr::Add { lhs, rhs };
-        self.expressions.add_expr(add_expr)
+        self.expr_builder.add(lhs, rhs)
     }
 
     /// Subtract two expressions.
@@ -285,8 +270,7 @@ where
         #[cfg(debug_assertions)]
         self.allocation_log.push(label);
 
-        let sub_expr = Expr::Sub { lhs, rhs };
-        self.expressions.add_expr(sub_expr)
+        self.expr_builder.sub(lhs, rhs)
     }
 
     /// Multiply two expressions.
@@ -304,8 +288,7 @@ where
         #[cfg(debug_assertions)]
         self.allocation_log.push(label);
 
-        let mul_expr = Expr::Mul { lhs, rhs };
-        self.expressions.add_expr(mul_expr)
+        self.expr_builder.mul(lhs, rhs)
     }
 
     /// Divide two expressions.
@@ -323,8 +306,7 @@ where
         #[cfg(debug_assertions)]
         self.allocation_log.push(label);
 
-        let div_expr = Expr::Div { lhs, rhs };
-        self.expressions.add_expr(div_expr)
+        self.expr_builder.div(lhs, rhs)
     }
 
     /// Assert that an expression equals zero by connecting it to Const(0).
@@ -361,9 +343,7 @@ where
     ///
     /// Cost: Free in proving (handled by IR optimization layer via witness slot aliasing).
     pub fn connect(&mut self, a: ExprId, b: ExprId) {
-        if a != b {
-            self.pending_connects.push((a, b));
-        }
+        self.expr_builder.connect(a, b);
     }
 
     /// Exponentiate a base expression to a power of 2 (i.e. base^(2^power_log)), by squaring repeatedly.
@@ -420,7 +400,7 @@ where
         mut self,
     ) -> Result<(Circuit<F>, HashMap<ExprId, WitnessId>), CircuitBuilderError> {
         // Stage 1: Lower expressions to primitives
-        let (primitive_ops, public_rows, expr_to_widx, public_mappings) =
+        let (primitive_ops, public_rows, expr_to_widx, public_mappings, witness_count) =
             self.lower_to_primitives()?;
 
         // Stage 2: Lower non-primitive operations using the expr_to_widx mapping
@@ -430,7 +410,6 @@ where
         let primitive_ops = Self::optimize_primitives(primitive_ops);
 
         // Stage 4: Generate final circuit
-        let witness_count = self.witness_alloc.witness_count();
         let mut circuit = Circuit::new(witness_count);
         circuit.primitive_ops = primitive_ops;
         circuit.non_primitive_ops = lowered_non_primitive_ops;
@@ -472,15 +451,18 @@ where
             Vec<WitnessId>,
             HashMap<ExprId, WitnessId>,
             HashMap<ExprId, WitnessId>,
+            u32, // witness_count
         ),
         CircuitBuilderError,
     > {
+        let (expressions, pending_connects) =
+            core::mem::replace(&mut self.expr_builder, ExpressionBuilder::new()).finish();
+
         // Build DSU over expression IDs to honor connect(a, b)
-        let mut parents: HashMap<usize, usize> = build_connect_dsu(&self.pending_connects);
+        let mut parents: HashMap<usize, usize> = build_connect_dsu(&pending_connects);
 
         // Track nodes that participate in any connect
-        let in_connect: HashSet<usize> = self
-            .pending_connects
+        let in_connect: HashSet<usize> = pending_connects
             .iter()
             .flat_map(|(a, b)| [a.0 as usize, b.0 as usize])
             .collect();
@@ -494,7 +476,7 @@ where
         let mut root_to_widx: HashMap<usize, WitnessId> = HashMap::new();
 
         // Pass A: emit constants (once per Const node; Expr-level dedup ensures one per value)
-        for (expr_idx, expr) in self.expressions.nodes().iter().enumerate() {
+        for (expr_idx, expr) in expressions.nodes().iter().enumerate() {
             if let Expr::Const(val) = expr {
                 let id = ExprId(expr_idx as u32);
                 let w = self.witness_alloc.alloc();
@@ -524,7 +506,7 @@ where
         };
 
         // Pass B: emit public inputs
-        for (expr_idx, expr) in self.expressions.nodes().iter().enumerate() {
+        for (expr_idx, expr) in expressions.nodes().iter().enumerate() {
             if let Expr::Public(pos) = expr {
                 let id = ExprId(expr_idx as u32);
 
@@ -541,7 +523,7 @@ where
         }
 
         // Pass C: emit arithmetic ops in creation order; tie outputs to class slot if connected
-        for (expr_idx, expr) in self.expressions.nodes().iter().enumerate() {
+        for (expr_idx, expr) in expressions.nodes().iter().enumerate() {
             let expr_id = ExprId(expr_idx as u32);
             match expr {
                 Expr::Const(_) | Expr::Public(_) => { /* handled above */ }
@@ -627,7 +609,13 @@ where
             }
         }
 
-        Ok((primitive_ops, public_rows, expr_to_widx, public_mappings))
+        Ok((
+            primitive_ops,
+            public_rows,
+            expr_to_widx,
+            public_mappings,
+            self.witness_alloc.witness_count(),
+        ))
     }
 
     /// Stage 2: Lower non-primitive operations from ExprIds to WitnessId
@@ -1270,7 +1258,7 @@ mod tests {
         let c1 = builder.add_const(BabyBear::from_u64(42));
         let c2 = builder.add_const(BabyBear::from_u64(100));
 
-        let (primitives, public_rows, expr_to_widx, public_mappings) =
+        let (primitives, public_rows, expr_to_widx, public_mappings, _witness_count) =
             builder.lower_to_primitives().unwrap();
 
         // Expected primitives: 3 constants (ZERO, 42, 100)
@@ -1314,7 +1302,7 @@ mod tests {
         let p1 = builder.add_public_input(); // position 0
         let p2 = builder.add_public_input(); // position 1
 
-        let (primitives, public_rows, expr_to_widx, public_mappings) =
+        let (primitives, public_rows, expr_to_widx, public_mappings, _witness_count) =
             builder.lower_to_primitives().unwrap();
 
         // Expected primitives: 1 constant (ZERO) + 2 public inputs
@@ -1361,7 +1349,7 @@ mod tests {
         let y = builder.add_public_input();
         let add_result = builder.add(x, y); // x + y
 
-        let (primitives, public_rows, expr_to_widx, public_mappings) =
+        let (primitives, public_rows, expr_to_widx, public_mappings, _witness_count) =
             builder.lower_to_primitives().unwrap();
 
         // Expected primitives: ZERO + 2 public inputs + 1 add operation
@@ -1415,7 +1403,7 @@ mod tests {
         let y = builder.add_public_input();
         let result = builder.sub(x, y); // x - y = result
 
-        let (primitives, public_rows, expr_to_widx, public_mappings) =
+        let (primitives, public_rows, expr_to_widx, public_mappings, _witness_count) =
             builder.lower_to_primitives().unwrap();
 
         // Expected primitives: ZERO + 2 public inputs + 1 add (encoding subtraction)
@@ -1469,7 +1457,7 @@ mod tests {
         let y = builder.add_public_input();
         let result = builder.div(x, y); // x / y = result
 
-        let (primitives, public_rows, expr_to_widx, public_mappings) =
+        let (primitives, public_rows, expr_to_widx, public_mappings, _witness_count) =
             builder.lower_to_primitives().unwrap();
 
         // Expected primitives: ZERO + 2 public inputs + 1 mul (encoding division)
@@ -1525,7 +1513,7 @@ mod tests {
         // Connect x and y - they should share witness ID
         builder.connect(x, y);
 
-        let (primitives, public_rows, expr_to_widx, public_mappings) =
+        let (primitives, public_rows, expr_to_widx, public_mappings, _witness_count) =
             builder.lower_to_primitives().unwrap();
 
         // Expected primitives: ZERO + 2 public inputs (but sharing WitnessId(1))
@@ -1574,7 +1562,7 @@ mod tests {
         // Connect public input to constant
         builder.connect(x, c);
 
-        let (primitives, public_rows, expr_to_widx, public_mappings) =
+        let (primitives, public_rows, expr_to_widx, public_mappings, _witness_count) =
             builder.lower_to_primitives().unwrap();
 
         // Expected primitives: ZERO + constant 42 + public input (all sharing witness)
@@ -1622,7 +1610,7 @@ mod tests {
         let p2 = builder.add_public_input();
         let add_result = builder.add(p1, p2);
 
-        let (primitives, public_rows, expr_to_widx, public_mappings) =
+        let (primitives, public_rows, expr_to_widx, public_mappings, _witness_count) =
             builder.lower_to_primitives().unwrap();
 
         // Expected primitives in processing order: constants, public inputs, arithmetic ops
