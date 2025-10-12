@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Benchmarks - The Plonky3 recursion book</title>
+        <title>Debugging - The Plonky3 recursion book</title>
 
 
         <!-- Custom HTML head -->
@@ -176,19 +176,65 @@
                 <div id="content" class="content">
                     <main>
                         <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
-<h1 id="benchmarks"><a class="header" href="#benchmarks">Benchmarks</a></h1>
-<p>This section will present empirical performance results for the Plonky3 recursion system,
-including instructions for reproducibility across target machines.</p>
-<p><em>To be filled soon.</em></p>
+<h1 id="debugging"><a class="header" href="#debugging">Debugging</a></h1>
+<p>The <code>CircuitBuilder</code> provides built-in debugging tools to help identify wiring issues and unsatisfied constraints.</p>
+<h2 id="allocation-logging"><a class="header" href="#allocation-logging">Allocation Logging</a></h2>
+<p>The <code>CircuitBuilder</code> supports an allocation logger during circuit building that logs allocations being performed.
+These logs can then be analyzed at runtime and leveraged to detect issues in circuit constructions.</p>
+<h3 id="enabling-debug-logging"><a class="header" href="#enabling-debug-logging">Enabling Debug Logging</a></h3>
+<p>Allocation logging is automatically enabled in debug builds (or moe generally if <code>debug_assertions</code> are enabled).
+Logs can be dumped to <code>stdout</code> when calling <code>builder.dump_allocation_log()</code>, if logging level is set to <code>DEBUG</code> or lower.</p>
+<h3 id="allocation-log-format"><a class="header" href="#allocation-log-format">Allocation Log Format</a></h3>
+<p>By default, the <code>CircuitBuilder</code> automatically logs all allocations with no specific labels.
+One can decide to attach a specific descriptive to ease debugging, like so:</p>
+<pre><code class="language-rust ignore">let mut builder = CircuitBuilder::&lt;F&gt;::new();
+
+// Allocating with custom labels
+let input_a = builder.alloc_public_input("input_a");
+let input_b = builder.alloc_public_input("input_b");
+let input_c = builder.alloc_public_input("input_c");
+
+let b_times_c = builder.alloc_mul(input_b, input_c, "b_times_c");
+let a_plus_bc = builder.alloc_add(input_a, b_times_c, "a_plus_bc");
+let a_minus_bc = builder.alloc_sub(input_a, b_times_c, "a_minus_bc");
+
+// Default allocation
+let x = builder.add_public_input(); // unlabelled
+let y = builder.add(x, z);          // unlabelled</code></pre>
+<p>The <code>CircuitBuilder</code> also allows for nested scoping of allocation logs, so that users can debug
+a specific context within a larger circuit. Scoping can be defined arbitrarily by users as follows:</p>
+<pre><code class="language-rust ignore">fn complex_function(builder: &amp;mut CircuitBuilder) {
+    builder.push_scope("complex function");
+
+    // Do something
+    inner_function(builder); // &lt;- this will create a nested scope within the inner function
+
+    builder.pop_scope();
+}
+
+fn inner_function(builder: &amp;mut CircuitBuilder) {
+    builder.push_scope("inner function");
+
+    // Do something else
+
+    builder.pop_scope();
+}</code></pre>
+<h2 id="debugging-constraints"><a class="header" href="#debugging-constraints">Debugging constraints</a></h2>
+<p>When debugging constraint satisfaction issues, the system relies on Plonky3's internal <code>check_constraints</code>
+feature to evaluate AIR constraints, available in debug mode.
+This ensures that all constraints are properly satisfied before proceeding to the next proving phases.</p>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="debugging.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="extensions.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <i class="fa fa-angle-left"></i>
                             </a>
 
+                            <a rel="next prefetch" href="benchmark.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <i class="fa fa-angle-right"></i>
+                            </a>
 
                         <div style="clear: both"></div>
                     </nav>
@@ -196,10 +242,13 @@ including instructions for reproducibility across target machines.</p>
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="debugging.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="extensions.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <i class="fa fa-angle-left"></i>
                     </a>
 
+                    <a rel="next prefetch" href="benchmark.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <i class="fa fa-angle-right"></i>
+                    </a>
             </nav>
 
         </div>
