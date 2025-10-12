@@ -32,7 +32,7 @@ pub struct AllocationEntry {
     pub alloc_type: AllocationType,
     /// User-provided label (if any)
     pub label: &'static str,
-    /// Dependencies (for operations)
+    /// Dependencies for this entry, i.e. the expressions that this entry depends on.
     pub dependencies: Vec<ExprId>,
     /// Scope/sub-circuit this allocation belongs to (if any)
     pub scope: Option<&'static str>,
