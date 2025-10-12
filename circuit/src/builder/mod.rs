@@ -14,6 +14,9 @@ use crate::types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};
 pub mod expr_builder;
 use expr_builder::ExpressionBuilder;
 
+pub mod public_input_builder;
+use public_input_builder::PublicInputBuilder;
+
 /// Sparse disjoint-set "find" with path compression over a HashMap (iterative).
 /// If `x` is not present, it's its own representative and is not inserted.
 #[inline]
@@ -71,8 +74,8 @@ pub struct CircuitBuilder<F> {
     expr_builder: ExpressionBuilder<F>,
     /// Witness index allocator
     witness_alloc: WitnessAllocator,
-    /// Track public input positions
-    pub public_input_count: usize,
+    /// Public input builder for managing public inputs
+    public_input_builder: PublicInputBuilder<F>,
     /// Non-primitive operations (complex constraints that don't produce ExprIds)
     non_primitive_ops: Vec<(NonPrimitiveOpId, NonPrimitiveOpType, Vec<ExprId>)>, // (op_id, op_type, witness_exprs)
 
@@ -131,11 +134,12 @@ where
     /// Create a new circuit builder
     pub fn new() -> Self {
         let expr_builder = ExpressionBuilder::new();
+        let public_input_builder = PublicInputBuilder::new();
 
         Self {
             expr_builder,
             witness_alloc: WitnessAllocator::new(),
-            public_input_count: 0,
+            public_input_builder,
             non_primitive_ops: Vec::new(),
             enabled_ops: HashMap::new(), // All non-primitive ops are disabled by default
             #[cfg(debug_assertions)]
@@ -184,10 +188,8 @@ where
         #[cfg(debug_assertions)]
         self.allocation_log.push(label);
 
-        let public_pos = self.public_input_count;
-        self.public_input_count += 1;
-
-        self.expr_builder.add_public_expr(public_pos)
+        self.public_input_builder
+            .add_public_input(&mut self.expr_builder)
     }
 
     /// Allocate multiple public inputs with a descriptive label.
@@ -202,6 +204,11 @@ where
     /// Allocate a fixed-size array of public inputs with a descriptive label.
     pub fn alloc_public_input_array<const N: usize>(&mut self, label: &'static str) -> [ExprId; N] {
         core::array::from_fn(|_| self.alloc_public_input(label))
+    }
+
+    /// Get the current number of public inputs.
+    pub fn public_input_count(&self) -> usize {
+        self.public_input_builder.count()
     }
 
     /// Dump the public input allocation log (debug builds only).
@@ -414,7 +421,7 @@ where
         circuit.primitive_ops = primitive_ops;
         circuit.non_primitive_ops = lowered_non_primitive_ops;
         circuit.public_rows = public_rows;
-        circuit.public_flat_len = self.public_input_count;
+        circuit.public_flat_len = self.public_input_count();
         circuit.enabled_ops = self.enabled_ops;
 
         Ok((circuit, public_mappings))
@@ -469,7 +476,7 @@ where
 
         let mut primitive_ops = Vec::new();
         let mut expr_to_widx: HashMap<ExprId, WitnessId> = HashMap::new();
-        let mut public_rows: Vec<WitnessId> = vec![WitnessId(0); self.public_input_count];
+        let mut public_rows: Vec<WitnessId> = vec![WitnessId(0); self.public_input_count()];
         let mut public_mappings = HashMap::new();
 
         // Unified class slot map: DSU root -> chosen out slot
