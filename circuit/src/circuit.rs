@@ -58,14 +58,14 @@ pub struct Circuit<F> {
 }
 
 impl<F> Circuit<F> {
-    pub fn new(witness_count: u32) -> Self {
+    pub fn new(witness_count: u32, primitive_ops: Vec<Prim<F>>, public_rows: Vec<WitnessId>, non_primitive_ops: Vec<NonPrimitiveOp>, enabled_ops: HashMap<NonPrimitiveOpType, NonPrimitiveOpConfig>) -> Self {
         Self {
             witness_count,
-            primitive_ops: Vec::new(),
-            non_primitive_ops: Vec::new(),
-            public_rows: Vec::new(),
-            public_flat_len: 0,
-            enabled_ops: HashMap::new(),
+            primitive_ops,
+            non_primitive_ops,
+            public_flat_len: public_rows.len(),
+            public_rows,
+            enabled_ops,
         }
     }
 }

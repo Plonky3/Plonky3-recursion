@@ -373,13 +373,13 @@ where
         ) = self.lower()?;
 
         // Generate final circuit
-        let mut circuit = Circuit::new(witness_count);
-
-        circuit.primitive_ops = primitive_ops;
-        circuit.non_primitive_ops = lowered_non_primitive_ops;
-        circuit.public_rows = public_rows;
-        circuit.public_flat_len = self.public_input_count();
-        circuit.enabled_ops = self.enabled_ops;
+        let circuit = Circuit::new(
+            witness_count,
+            primitive_ops,
+            public_rows,
+            lowered_non_primitive_ops,
+            self.enabled_ops,
+        );
 
         Ok((circuit, public_mappings))
     }
