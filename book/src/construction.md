@@ -63,39 +63,15 @@ A given row of the represented IR contains an operation and its associated opera
 
 i.e. the operation at index 5 will perform `w[5] <- w[1] * w[4]`.
 
-
-In the IR, we differentiate between *primitive* and *nonprimitive operations*. 
-
-Primitive operations represent the core of the verification computation. They are always available when building a recursive verifier, regardless of the sub-protocols and parameterization. Nonprimitive operations, on the other hand, can be added modularly to optimize instructions tailored to particular use cases. 
-
-The primitive operations are:
-
-- `Constant` -- for constants,
-- `Public` -- for public inputs,
-- `Add` -- for both addition and subtraction,
-- `Mul` -- for both multiplication and division. 
-
-Given only the primitive operations, one should be able to carry out most operations necessary in circuit verification. Primitive operations have the following properties:
-
-- They operate on elements of the `Witness` table, through their `WitnessId` (index within the `Witness` table).
-- The representation can be heavily optimized. For example, every time a constant is added to the IR, we either create a new `WitnessId` or return an already existing one. We could also carry out common subexpression elimination.
-- They are executed in topological order during the circuit evaluation, and they form a directed acyclic graph of dependencies.
-
-But relying only on primitive operations for the entire verification would lead to the introduction of many temporary values in the IR. In turn, this would lead to enlarged `Witness` and primitive tables. To reduce the overall surface area of our AIRs, we can introduce *nonprimitive* specialized chips that carry out specific (nonprimitive) operations. We can offload repeated computations to these nonprimitive chips to optimize the overall proving flow.
-
-These nonprimitive operations use not only `Witness` table elements (including public inputs), but may also require the use of *private data*. For example, when verifying a Merkle path, hash outputs are not stored in the `Witness` table. 
-
 In order to generate the IR, the first step is to create all operations symbolically.
 
 In the symbolic executor, the computation is represented as a graph where nodes are called either `ExprId` (since they represent the index of an expression) or `Target` in the code. Each `Target` can be:
 
 - a constant, 
 - a public input, 
-- the output of a primitive operation. 
+- the output of an operation. 
 
-Nonprimitive operations can use `Target`s, but they do not introduce new ones. 
-
-The computation graph that represents all primitive and nonprimitive operations in the IR is called `Circuit`. 
+The computation graph that represents all operations in the IR is called `Circuit`. 
 
 A `circuit_builder` provides convenient helper functions and macros for representing and defining operations within this graph. See section [Building Circuits](./circuit_building.md#building-circuits) for more details on how to build a circuit.
 
@@ -135,7 +111,19 @@ A chip contains:
 - An AIR that enforces its semantics.
 
 We distinguish two kind of chips: those representing native, i.e. primitive operations, and additional non-primitive ones, defined at runtime, that serve as precompiles to optimize certain operations.
-The recursion machine contains 4 primitive chips: `CONST` / `PUBLIC_INPUT` / `ADD` and `MUL`, with `SUB` and `DIV` being emulated via the `ADD` and `MUL` chips. This library aims at providing a certain
+The recursion machine contains 4 primitive chips: `CONST` / `PUBLIC_INPUT` / `ADD` and `MUL`, with `SUB` and `DIV` being emulated via the `ADD` and `MUL` chips. 
+
+Given only the primitive operations, one should be able to carry out most operations necessary in circuit verification. Primitive operations have the following properties:
+
+- They operate on elements of the `Witness` table, through their `WitnessId` (index within the `Witness` table).
+- The representation can be heavily optimized. For example, every time a constant is added to the IR, we either create a new `WitnessId` or return an already existing one. We could also carry out common subexpression elimination.
+- They are executed in topological order during the circuit evaluation, and they form a directed acyclic graph of dependencies.
+
+But relying only on primitive operations for the entire verification would lead to the introduction of many temporary values in the IR. In turn, this would lead to enlarged `Witness` and primitive tables. To reduce the overall surface area of our AIRs, we can introduce *non-primitive* specialized chips that carry out specific (non-primitive) operations. We can offload repeated computations to these non-primitive chips to optimize the overall proving flow.
+
+These non-primitive operations use not only `Witness` table elements (including public inputs), but may also require the use of *private data*. For example, when verifying a Merkle path, hash outputs are not stored in the `Witness` table. 
+
+This library aims at providing a certain
 number of non-primary chips so that projects can natively inherit from full recursive verifiers, which implies chips for FRI, Merkle paths verification, etc. Specific applications can also build their own
 non-primitive chips and plug them at runtime.
 
