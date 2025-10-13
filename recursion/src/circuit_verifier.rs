@@ -46,9 +46,6 @@ pub enum VerificationError {
 
     #[error("Generation error: {0}")]
     Generation(#[from] GenerationError),
-
-    #[error("Invalid number of Pcs parameters: expected {0}, got {1}")]
-    InvalidPcsParameterCount(usize, usize),
 }
 
 // Method to get all the challenge targets.
