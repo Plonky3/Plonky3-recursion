@@ -6,10 +6,23 @@ use core::ops::Range;
 use itertools::izip;
 use p3_air::{Air, AirBuilder, BaseAir};
 use p3_circuit::MmcsTrace;
-use p3_circuit::op::MmcsVerifyConfig;
+use p3_circuit::ops::MmcsVerifyConfig;
+use p3_circuit::utils::pad_to_power_of_two;
 use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing, PrimeField};
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
+
+pub struct MmcsVerifyCols<'a, T> {
+    pub index_bits: &'a [T],
+    pub length: &'a T,
+    pub height_encoding: &'a [T],
+    pub sibling: &'a [T],
+    pub state: &'a [T],
+    pub state_index: &'a [T],
+    pub is_final: &'a T,
+    pub is_extra: &'a T,
+    pub is_extra_height: &'a T,
+}
 
 /// Configuration for the mmcs table AIR rows.
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,7 +68,7 @@ impl MmcsTableConfig {
 ///   to `max_tree_height` bits.
 /// - `length`: The length of the Mmcs path (i.e., the height of the tree).
 /// - `height_encoding`: One-hot encoding of the current height in the Mmcs path.
-/// - `sibling`: The sibling node at the current height.    
+/// - `sibling`: The sibling node at the current height.
 /// - `state`: The current hash state (the result of hashing the leaf with siblings up to the current height).
 /// - `state_index`: The index of the current in the witness table.
 /// - `is_final`: Whether this is the final row for this Mmcs path (i.e., the one that outputs the root).
@@ -92,26 +105,29 @@ where
             return;
         }
         let main = builder.main();
-        let (local, next) = (
-            main.row_slice(0).expect("The matrix is empty?"),
-            main.row_slice(1).expect("The matrix only has 1 row?"),
-        );
+        let local_row = main.row_slice(0).expect("The matrix is empty?");
+        let next_row = main.row_slice(1).expect("The matrix only has 1 row?");
 
-        let index_bits = &local[self.index_bits()];
-        let next_index_bits = &next[self.index_bits()];
-        let length = &local[self.length()];
-        let next_length = &next[self.length()];
-        let sibling = &local[self.sibling()];
-        let state = &local[self.state()];
-        let height_encoding = &local[self.height_encoding()];
-        let next_height_encoding = &next[self.height_encoding()];
-        let is_final = &local[self.is_final()];
-        let next_is_final = &next[self.is_final()];
-        let is_extra = &local[self.is_extra()];
+        let local = self.get_cols(&local_row);
+        let next = self.get_cols(&next_row);
+
+        let index_bits = local.index_bits;
+        let next_index_bits = next.index_bits;
+        let length = local.length;
+        let next_length = next.length;
+        let sibling = local.sibling;
+        let state = local.state;
+        let height_encoding = local.height_encoding;
+        let next_height_encoding = next.height_encoding;
+        let is_final = local.is_final;
+        let next_is_final = next.is_final;
+        let is_extra = local.is_extra;
+        let next_is_extra = next.is_extra;
 
         builder.assert_bool(is_final.clone());
         builder.assert_bool(next_is_final.clone());
         builder.assert_bool(is_extra.clone());
+        builder.assert_bool(next_is_extra.clone());
 
         // Assert that the height encoding is boolean.
         for height_encoding_bit in height_encoding {
@@ -238,38 +254,70 @@ where
 }
 
 impl<F: Field> MmcsVerifyAir<F> {
-    pub fn new(config: MmcsTableConfig) -> Self {
+    pub const fn new(config: MmcsTableConfig) -> Self {
         MmcsVerifyAir {
             config,
             _phantom: PhantomData,
         }
     }
 
-    pub fn index_bits(&self) -> Range<usize> {
+    pub fn get_cols<'a, T>(&self, row: &'a [T]) -> MmcsVerifyCols<'a, T> {
+        let index_bits_range = self.index_bits();
+        let length_idx = self.length();
+        let height_encoding_range = self.height_encoding();
+        let sibling_range = self.sibling();
+        let state_range = self.state();
+        let state_index_range = self.state_index();
+        let is_final_idx = self.is_final();
+        let is_extra_idx = self.is_extra();
+        let is_extra_height_idx = self.is_extra_height();
+
+        MmcsVerifyCols {
+            index_bits: &row[index_bits_range],
+            length: &row[length_idx],
+            height_encoding: &row[height_encoding_range],
+            sibling: &row[sibling_range],
+            state: &row[state_range],
+            state_index: &row[state_index_range],
+            is_final: &row[is_final_idx],
+            is_extra: &row[is_extra_idx],
+            is_extra_height: &row[is_extra_height_idx],
+        }
+    }
+
+    pub const fn index_bits(&self) -> Range<usize> {
         0..self.config.max_tree_height
     }
-    pub fn length(&self) -> usize {
+
+    pub const fn length(&self) -> usize {
         self.index_bits().end
     }
-    pub fn height_encoding(&self) -> Range<usize> {
+
+    pub const fn height_encoding(&self) -> Range<usize> {
         self.length() + 1..self.length() + 1 + self.config.max_tree_height
     }
-    pub fn sibling(&self) -> Range<usize> {
+
+    pub const fn sibling(&self) -> Range<usize> {
         self.height_encoding().end..self.height_encoding().end + self.config.digest_elems
     }
-    pub fn state(&self) -> Range<usize> {
+
+    pub const fn state(&self) -> Range<usize> {
         self.sibling().end..self.sibling().end + self.config.digest_elems
     }
-    pub fn state_index(&self) -> Range<usize> {
+
+    pub const fn state_index(&self) -> Range<usize> {
         self.state().end..self.state().end + self.config.digest_addresses
     }
-    pub fn is_final(&self) -> usize {
+
+    pub const fn is_final(&self) -> usize {
         self.state_index().end
     }
-    pub fn is_extra(&self) -> usize {
+
+    pub const fn is_extra(&self) -> usize {
         self.is_final() + 1
     }
-    pub fn is_extra_height(&self) -> usize {
+
+    pub const fn is_extra_height(&self) -> usize {
         self.is_extra() + 1
     }
 
@@ -442,26 +490,6 @@ impl<F: Field> MmcsVerifyAir<F> {
     }
 }
 
-/// Helper to pad trace values to power-of-two height with zeroes
-pub fn pad_to_power_of_two<F: Field>(values: &mut Vec<F>, width: usize, original_height: usize) {
-    if original_height == 0 {
-        // Empty trace - just ensure we have at least one row of zeros
-        values.resize(width, F::ZERO);
-        return;
-    }
-
-    let target_height = original_height.next_power_of_two();
-    if target_height == original_height {
-        return; // Already power of two
-    }
-
-    // Repeat the last row to reach target height
-
-    for _ in original_height..target_height {
-        values.extend_from_slice(&vec![F::ZERO; width]);
-    }
-}
-
 #[cfg(test)]
 mod test {
 
@@ -471,7 +499,7 @@ mod test {
     use p3_baby_bear::BabyBear;
     use p3_challenger::{HashChallenger, SerializingChallenger32};
     use p3_circuit::WitnessId;
-    use p3_circuit::op::MmcsVerifyConfig;
+    use p3_circuit::ops::MmcsVerifyConfig;
     use p3_circuit::tables::{MmcsPrivateData, MmcsTrace};
     use p3_commit::ExtensionMmcs;
     use p3_field::extension::BinomialExtensionField;

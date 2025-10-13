@@ -29,11 +29,10 @@ use alloc::vec::Vec;
 
 use p3_air::{Air, AirBuilder, BaseAir};
 use p3_circuit::tables::AddTrace;
+use p3_circuit::utils::pad_to_power_of_two;
 use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
-
-use super::utils::pad_to_power_of_two;
 
 /// AIR for proving addition operations: lhs + rhs = result.
 /// Generic over extension degree `D` (component-wise addition) and a runtime lane count
@@ -64,7 +63,7 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AddAir<F, D> {
         Self::LANE_WIDTH
     }
 
-    pub fn total_width(&self) -> usize {
+    pub const fn total_width(&self) -> usize {
         self.lanes * Self::lane_width()
     }
 

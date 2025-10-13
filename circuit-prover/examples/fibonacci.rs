@@ -4,9 +4,8 @@ use std::env;
 /// Public input: expected_result (F(n))
 use p3_baby_bear::BabyBear;
 use p3_circuit::CircuitBuilder;
-use p3_circuit_prover::config::babybear_config::build_standard_config_babybear;
 use p3_circuit_prover::prover::ProverError;
-use p3_circuit_prover::{MultiTableProver, TablePacking};
+use p3_circuit_prover::{MultiTableProver, TablePacking, config};
 use p3_field::PrimeCharacteristicRing;
 use tracing_forest::ForestLayer;
 use tracing_forest::util::LevelFilter;
@@ -38,11 +37,11 @@ fn main() -> Result<(), ProverError> {
     let mut builder = CircuitBuilder::new();
 
     // Public input: expected F(n)
-    let expected_result = builder.add_public_input();
+    let expected_result = builder.alloc_public_input("expected_result");
 
     // Compute F(n) iteratively
-    let mut a = builder.add_const(F::ZERO); // F(0)
-    let mut b = builder.add_const(F::ONE); // F(1)
+    let mut a = builder.alloc_const(F::ZERO, "F(0)");
+    let mut b = builder.alloc_const(F::ONE, "F(1)");
 
     for _i in 2..=n {
         let next = builder.add(a, b);
@@ -53,6 +52,8 @@ fn main() -> Result<(), ProverError> {
     // Assert computed F(n) equals expected result
     builder.connect(b, expected_result);
 
+    builder.dump_allocation_log();
+
     let circuit = builder.build()?;
     let mut runner = circuit.runner();
 
@@ -61,7 +62,7 @@ fn main() -> Result<(), ProverError> {
     runner.set_public_inputs(&[expected_fib])?;
 
     let traces = runner.run()?;
-    let config = build_standard_config_babybear();
+    let config = config::baby_bear().build();
     let table_packing = TablePacking::from_counts(4, 1);
     let multi_prover = MultiTableProver::new(config).with_table_packing(table_packing);
     let proof = multi_prover.prove_all_tables(&traces)?;
