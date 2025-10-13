@@ -231,12 +231,21 @@ The lookups can be seen as representing the <code>READ</code>/<code>WRITE</code>
 5: Add { a: WitnessId(2), b: WitnessId(0), out: WitnessId(4) }
 </code></pre>
 <p>i.e. operation 4 performs <code>w[4] &lt;- w[1] * w[3]</code>, and operation 5 encodes the subtraction check as an addition <code>w[2] + w[0] = w[4]</code> (verifying <code>37 * x - 111 = 0</code>).</p>
+<p>In order to generate the IR, the first step is to create all operations symbolically.</p>
+<p>In the symbolic executor, the computation is represented as a graph where nodes are called either <code>ExprId</code> (since they represent the index of an expression) or <code>Target</code> in the code. Each <code>Target</code> can be:</p>
+<ul>
+<li>a constant,</li>
+<li>a public input,</li>
+<li>the output of an operation.</li>
+</ul>
+<p>The computation graph that represents all operations in the IR is called <code>Circuit</code>.</p>
+<p>A <code>circuit_builder</code> provides convenient helper functions and macros for representing and defining operations within this graph. See section <a href="./circuit_building.html#building-circuits">Building Circuits</a> for more details on how to build a circuit.</p>
 <h2 id="witness-table"><a class="header" href="#witness-table">Witness Table</a></h2>
 <p>The <code>Witness</code> table can be seen as a central memory bus that stores values shared across all operations. It is represented as pairs <code>(index, value)</code>, where indices are  that will be accessed by
 the different chips via lookups to enforce consistency.</p>
 <ul>
 <li>The index column is <em>preprocessed</em>, or <em>read-after-preprocess</em> (<a href="https://hackmd.io/@aztec-network/plonk-arithmetiization-air">RAP</a>): it is known to both prover and verifier in advance, requiring no online commitment.<sup class="footnote-reference" id="fr-1-1"><a href="#footnote-1">1</a></sup></li>
-<li>The Witness table values are represented as extension field elements directly (where base field elements are padded with 0 on higher coordinates) for addressing efficiency.</li>
+<li>The <code>Witness</code> table values are represented as extension field elements directly (where base field elements are padded with 0 on higher coordinates) for addressing efficiency.</li>
 </ul>
 <p>From the fixed IR of the example above, we can deduce an associated <code>Witness</code> table as follows:</p>
 <pre><code class="language-bash">=== WITNESS TRACE ===
@@ -253,11 +262,20 @@ each operation and the interaction between them, the <code>Witness</code> table 
 <p>A chip contains:</p>
 <ul>
 <li>Local columns for its variables.</li>
-<li>Lookup ports into the witness table.</li>
+<li>Lookup ports into the <code>Witness</code> table.</li>
 <li>An AIR that enforces its semantics.</li>
 </ul>
 <p>We distinguish two kind of chips: those representing native, i.e. primitive operations, and additional non-primitive ones, defined at runtime, that serve as precompiles to optimize certain operations.
-The recursion machine contains 4 primitive chips: <code>CONST</code> / <code>PUBLIC_INPUT</code> / <code>ADD</code> and <code>MUL</code>, with <code>SUB</code> and <code>DIV</code> being emulated via the <code>ADD</code> and <code>MUL</code> chips. This library aims at providing a certain
+The recursion machine contains 4 primitive chips: <code>CONST</code> / <code>PUBLIC_INPUT</code> / <code>ADD</code> and <code>MUL</code>, with <code>SUB</code> and <code>DIV</code> being emulated via the <code>ADD</code> and <code>MUL</code> chips.</p>
+<p>Given only the primitive operations, one should be able to carry out most operations necessary in circuit verification. Primitive operations have the following properties:</p>
+<ul>
+<li>They operate on elements of the <code>Witness</code> table, through their <code>WitnessId</code> (index within the <code>Witness</code> table).</li>
+<li>The representation can be heavily optimized. For example, every time a constant is added to the IR, we either create a new <code>WitnessId</code> or return an already existing one. We could also carry out common subexpression elimination.</li>
+<li>They are executed in topological order during the circuit evaluation, and they form a directed acyclic graph of dependencies.</li>
+</ul>
+<p>But relying only on primitive operations for the entire verification would lead to the introduction of many temporary values in the IR. In turn, this would lead to enlarged <code>Witness</code> and primitive tables. To reduce the overall surface area of our AIRs, we can introduce <em>non-primitive</em> specialized chips that carry out specific (non-primitive) operations. We can offload repeated computations to these non-primitive chips to optimize the overall proving flow.</p>
+<p>These non-primitive operations use not only <code>Witness</code> table elements (including public inputs), but may also require the use of <em>private data</em>. For example, when verifying a Merkle path, hash outputs are not stored in the <code>Witness</code> table.</p>
+<p>This library aims at providing a certain
 number of non-primary chips so that projects can natively inherit from full recursive verifiers, which implies chips for FRI, MMCS path verification, etc. Specific applications can also build their own
 non-primitive chips and plug them at runtime.</p>
 <p>Going back to the previous example, prover and verifier can agree on the following logic for each chip:</p>
