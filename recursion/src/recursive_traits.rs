@@ -214,6 +214,8 @@ where
         alpha: &Target,
         columns: ColumnsTargets,
     ) -> Target {
+        builder.push_scope("eval_folded_circuit");
+
         let symbolic_constraints = get_symbolic_constraints(self, 0, columns.public_values.len());
 
         let mut acc = builder.add_const(F::ZERO);
@@ -222,6 +224,8 @@ where
             let constraints = symbolic_to_circuit(sels.row_selectors, &columns, &s_c, builder);
             acc = builder.add(mul_prev, constraints);
         }
+
+        builder.pop_scope();
 
         acc
     }
