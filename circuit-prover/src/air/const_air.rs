@@ -21,10 +21,9 @@ use alloc::vec::Vec;
 
 use p3_air::{Air, AirBuilder, BaseAir};
 use p3_circuit::tables::ConstTrace;
+use p3_circuit::utils::pad_to_power_of_two;
 use p3_field::{BasedVectorSpace, Field};
 use p3_matrix::dense::RowMajorMatrix;
-
-use super::utils::pad_to_power_of_two;
 
 /// ConstAir: vector-valued constant binding with generic extension degree D.
 ///

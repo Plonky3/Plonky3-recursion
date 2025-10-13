@@ -24,6 +24,7 @@ p3-uni-stark.workspace = true
 itertools.workspace = true
 serde.workspace = true
 thiserror.workspace = true
+tracing.workspace = true
 
 # Local dependencies
 p3-circuit.workspace = true
@@ -36,3 +37,5 @@ p3-dft.workspace = true
 p3-matrix.workspace = true
 p3-util.workspace = true
 rand.workspace = true
+tracing-forest = { workspace = true, features = ["ansi", "smallvec"] }
+tracing-subscriber = { workspace = true, features = ["std", "env-filter"] }

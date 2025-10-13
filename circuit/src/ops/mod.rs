@@ -2,4 +2,4 @@ pub mod fri;
 pub mod mmcs;
 
 pub use fri::FriOps;
-pub use mmcs::MmcsOps;
+pub use mmcs::{MmcsOps, MmcsVerifyConfig};

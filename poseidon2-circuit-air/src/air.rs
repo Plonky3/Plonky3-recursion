@@ -1,10 +1,9 @@
+use core::array;
 use core::borrow::Borrow;
 
 use p3_air::{Air, AirBuilder, BaseAir};
-use p3_circuit::tables::Poseidon2CircuitTrace;
-use p3_field::{PrimeCharacteristicRing, PrimeField};
+use p3_field::PrimeCharacteristicRing;
 use p3_matrix::Matrix;
-use p3_matrix::dense::RowMajorMatrix;
 use p3_poseidon2::GenericPoseidon2LinearLayers;
 use p3_poseidon2_air::{Poseidon2Air, RoundConstants};
 
@@ -15,6 +14,8 @@ use crate::{Poseidon2CircuitCols, num_cols};
 pub struct Poseidon2CircuitAir<
     F: PrimeCharacteristicRing,
     LinearLayers,
+    const RATE: usize,
+    const CAPACITY: usize,
     const WIDTH: usize,
     const SBOX_DEGREE: u64,
     const SBOX_REGISTERS: usize,
@@ -35,6 +36,8 @@ pub struct Poseidon2CircuitAir<
 impl<
     F: PrimeCharacteristicRing,
     LinearLayers,
+    const RATE: usize,
+    const CAPACITY: usize,
     const WIDTH: usize,
     const SBOX_DEGREE: u64,
     const SBOX_REGISTERS: usize,
@@ -44,6 +47,8 @@ impl<
     Poseidon2CircuitAir<
         F,
         LinearLayers,
+        RATE,
+        CAPACITY,
         WIDTH,
         SBOX_DEGREE,
         SBOX_REGISTERS,
@@ -63,6 +68,8 @@ impl<
 impl<
     F: PrimeCharacteristicRing + Sync,
     LinearLayers: Sync,
+    const RATE: usize,
+    const CAPACITY: usize,
     const WIDTH: usize,
     const SBOX_DEGREE: u64,
     const SBOX_REGISTERS: usize,
@@ -72,6 +79,8 @@ impl<
     for Poseidon2CircuitAir<
         F,
         LinearLayers,
+        RATE,
+        CAPACITY,
         WIDTH,
         SBOX_DEGREE,
         SBOX_REGISTERS,
@@ -87,6 +96,8 @@ impl<
 pub(crate) fn eval<
     AB: AirBuilder,
     LinearLayers: GenericPoseidon2LinearLayers<WIDTH>,
+    const RATE: usize,
+    const CAPACITY: usize,
     const WIDTH: usize,
     const SBOX_DEGREE: u64,
     const SBOX_REGISTERS: usize,
@@ -96,6 +107,8 @@ pub(crate) fn eval<
     air: &Poseidon2CircuitAir<
         AB::F,
         LinearLayers,
+        RATE,
+        CAPACITY,
         WIDTH,
         SBOX_DEGREE,
         SBOX_REGISTERS,
@@ -103,7 +116,7 @@ pub(crate) fn eval<
         PARTIAL_ROUNDS,
     >,
     builder: &mut AB,
-    _local: &Poseidon2CircuitCols<
+    local: &Poseidon2CircuitCols<
         AB::Var,
         WIDTH,
         SBOX_DEGREE,
@@ -111,7 +124,7 @@ pub(crate) fn eval<
         HALF_FULL_ROUNDS,
         PARTIAL_ROUNDS,
     >,
-    _next: &Poseidon2CircuitCols<
+    next: &Poseidon2CircuitCols<
         AB::Var,
         WIDTH,
         SBOX_DEGREE,
@@ -122,12 +135,41 @@ pub(crate) fn eval<
 ) {
     air.p3_poseidon2.eval(builder);
 
-    // TODO: Add circuit-specific constraints.
+    // When resetting the state, we just have to clear the capacity. The rate will be overwritten by the input.
+    builder
+        .when(local.reset.clone())
+        .assert_zeros::<CAPACITY, _>(array::from_fn(|i| local.poseidon2.inputs[i + RATE].clone()));
+
+    // If the next row doesn't reset, propagate the capacity.
+    let next_no_reset = AB::Expr::ONE - next.reset.clone();
+    builder
+        .when(next_no_reset)
+        .assert_zeros::<CAPACITY, _>(array::from_fn(|i| {
+            next.poseidon2.inputs[i + RATE].clone()
+                - local.poseidon2.ending_full_rounds[HALF_FULL_ROUNDS - 1].post[i + RATE].clone()
+        }));
+
+    // If the next row is squeezing, then we propagate the entire output state forward.
+    let next_squeeze = AB::Expr::ONE - next.absorb.clone();
+    builder
+        .when(next_squeeze)
+        .assert_zeros::<WIDTH, _>(array::from_fn(|i| {
+            next.poseidon2.inputs[i].clone()
+                - local.poseidon2.ending_full_rounds[HALF_FULL_ROUNDS - 1].post[i].clone()
+        }));
+
+    // TODO: Add all lookups:
+    // - If local.absorb = 1:
+    //      * local.rate comes from input lookups.
+    // - If local.absorb = 0:
+    //      * local.rate is sent to output lookups.
 }
 
 impl<
     AB: AirBuilder,
     LinearLayers: GenericPoseidon2LinearLayers<WIDTH>,
+    const RATE: usize,
+    const CAPACITY: usize,
     const WIDTH: usize,
     const SBOX_DEGREE: u64,
     const SBOX_REGISTERS: usize,
@@ -137,6 +179,8 @@ impl<
     for Poseidon2CircuitAir<
         AB::F,
         LinearLayers,
+        RATE,
+        CAPACITY,
         WIDTH,
         SBOX_DEGREE,
         SBOX_REGISTERS,
@@ -152,23 +196,16 @@ impl<
         let next = main.row_slice(1).expect("The matrix has only one row?");
         let next = (*next).borrow();
 
-        eval::<_, _, WIDTH, SBOX_DEGREE, SBOX_REGISTERS, HALF_FULL_ROUNDS, PARTIAL_ROUNDS>(
-            self, builder, local, next,
-        );
+        eval::<
+            _,
+            _,
+            RATE,
+            CAPACITY,
+            WIDTH,
+            SBOX_DEGREE,
+            SBOX_REGISTERS,
+            HALF_FULL_ROUNDS,
+            PARTIAL_ROUNDS,
+        >(self, builder, local, next);
     }
-}
-
-pub fn trace_to_matrix<
-    F: PrimeField,
-    LinearLayers: GenericPoseidon2LinearLayers<WIDTH>,
-    const WIDTH: usize,
-    const SBOX_DEGREE: u64,
-    const SBOX_REGISTERS: usize,
-    const HALF_FULL_ROUNDS: usize,
-    const PARTIAL_ROUNDS: usize,
->(
-    _trace: &Poseidon2CircuitTrace<F>,
-) -> &RowMajorMatrix<F> {
-    // Todo: Add trace generation
-    todo!()
 }

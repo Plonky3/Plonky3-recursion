@@ -17,6 +17,8 @@ pub struct Poseidon2CircuitCols<
     pub poseidon2:
         Poseidon2Cols<T, WIDTH, SBOX_DEGREE, SBOX_REGISTERS, HALF_FULL_ROUNDS, PARTIAL_ROUNDS>,
 
+    pub reset: T,
+    pub absorb: T,
     pub input_indices: [T; WIDTH],
     pub output_indices: [T; WIDTH],
 }

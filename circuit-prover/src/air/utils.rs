@@ -3,28 +3,6 @@ use alloc::vec::Vec;
 
 use p3_field::Field;
 
-/// Helper to pad trace values to power-of-two height by repeating the last row
-pub fn pad_to_power_of_two<F: Field>(values: &mut Vec<F>, width: usize, original_height: usize) {
-    if original_height == 0 {
-        // Empty trace - just ensure we have at least one row of zeros
-        values.resize(width, F::ZERO);
-        return;
-    }
-
-    let target_height = original_height.next_power_of_two();
-    if target_height == original_height {
-        return; // Already power of two
-    }
-
-    // Repeat the last row to reach target height
-    let last_row_start = (original_height - 1) * width;
-    let last_row: Vec<F> = values[last_row_start..original_height * width].to_vec();
-
-    for _ in original_height..target_height {
-        values.extend_from_slice(&last_row);
-    }
-}
-
 /// Helper to pad witness trace with monotonic index continuation
 pub fn pad_witness_to_power_of_two<F: Field>(
     values: &mut Vec<F>,
@@ -60,62 +38,6 @@ mod tests {
     use p3_field::PrimeCharacteristicRing;
 
     use super::*;
-
-    #[test]
-    fn test_pad_to_power_of_two_basic() {
-        // Test with 3 rows -> should pad to 4
-        let mut values = vec![
-            Val::from_u64(1),
-            Val::from_u64(10), // row 0: [value=1, index=10]
-            Val::from_u64(2),
-            Val::from_u64(11), // row 1: [value=2, index=11]
-            Val::from_u64(3),
-            Val::from_u64(12), // row 2: [value=3, index=12]
-        ];
-        let width = 2;
-        let original_height = 3;
-
-        pad_to_power_of_two(&mut values, width, original_height);
-
-        // Should be padded to 4 rows
-        assert_eq!(values.len(), 4 * width);
-
-        // Original rows should be unchanged
-        assert_eq!(values[0], Val::from_u64(1));
-        assert_eq!(values[1], Val::from_u64(10));
-        assert_eq!(values[2], Val::from_u64(2));
-        assert_eq!(values[3], Val::from_u64(11));
-        assert_eq!(values[4], Val::from_u64(3));
-        assert_eq!(values[5], Val::from_u64(12));
-
-        // Padded row should repeat the last row exactly
-        assert_eq!(values[6], Val::from_u64(3)); // same as row 2
-        assert_eq!(values[7], Val::from_u64(12)); // same as row 2
-    }
-
-    #[test]
-    fn test_pad_to_power_of_two_already_power_of_two() {
-        // Test with 4 rows (already power of two) -> should not change
-        let mut values = vec![
-            Val::from_u64(1),
-            Val::from_u64(2),
-            Val::from_u64(3),
-            Val::from_u64(4),
-            Val::from_u64(5),
-            Val::from_u64(6),
-            Val::from_u64(7),
-            Val::from_u64(8),
-        ];
-        let original = values.clone();
-        let width = 2;
-        let original_height = 4;
-
-        pad_to_power_of_two(&mut values, width, original_height);
-
-        // Should remain unchanged
-        assert_eq!(values, original);
-        assert_eq!(values.len(), 4 * width);
-    }
 
     #[test]
     fn test_pad_witness_to_power_of_two_monotonic_indices() {
