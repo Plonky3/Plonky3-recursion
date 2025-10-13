@@ -1,8 +1,9 @@
 use alloc::vec::Vec;
 
+use hashbrown::HashMap;
 use p3_field::Field;
 
-use crate::op::{NonPrimitiveOp, Prim};
+use crate::op::{NonPrimitiveOp, NonPrimitiveOpConfig, NonPrimitiveOpType, Prim};
 use crate::tables::CircuitRunner;
 use crate::types::WitnessId;
 
@@ -35,7 +36,7 @@ impl<F> CircuitField for F where
 ///
 /// This represents the compiled output of a `CircuitBuilder`. It contains:
 /// - Primitive operations (add, multiply, subtract, constants, public inputs)
-/// - Non-primitive operations (complex operations like Merkle verification)
+/// - Non-primitive operations (complex operations like MMCS verification)
 /// - Public input metadata and witness table structure
 ///
 /// The circuit is static and serializable. Use `.runner()` to create
@@ -52,16 +53,19 @@ pub struct Circuit<F> {
     pub public_rows: Vec<WitnessId>,
     /// Total number of public field elements
     pub public_flat_len: usize,
+    /// Enabled non-primitive operation types with their respective configuration
+    pub enabled_ops: HashMap<NonPrimitiveOpType, NonPrimitiveOpConfig>,
 }
 
 impl<F> Circuit<F> {
-    pub const fn new(witness_count: u32) -> Self {
+    pub fn new(witness_count: u32) -> Self {
         Self {
             witness_count,
             primitive_ops: Vec::new(),
             non_primitive_ops: Vec::new(),
             public_rows: Vec::new(),
             public_flat_len: 0,
+            enabled_ops: HashMap::new(),
         }
     }
 }

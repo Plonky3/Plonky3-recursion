@@ -1,3 +1,4 @@
+use alloc::vec;
 use alloc::vec::Vec;
 
 use p3_field::Field;
@@ -54,7 +55,7 @@ pub fn symbolic_to_circuit<F: Field>(
     } = columns;
 
     let mut get_target =
-        |s: &SymbolicExpression<F>| symbolic_to_circuit::<F>(row_selectors, columns, s, circuit);
+        |s: &SymbolicExpression<F>| symbolic_to_circuit(row_selectors, columns, s, circuit);
 
     match symbolic {
         SymbolicExpression::Constant(c) => circuit.add_const(*c),
@@ -109,6 +110,8 @@ pub fn reconstruct_index_from_bits<F: Field>(
     builder: &mut CircuitBuilder<F>,
     bits: &[ExprId],
 ) -> ExprId {
+    builder.push_scope("reconstruct_index_from_bits");
+
     let mut acc = builder.add_const(F::ZERO);
     let mut pow2 = builder.add_const(F::ONE);
     for &b in bits {
@@ -117,6 +120,9 @@ pub fn reconstruct_index_from_bits<F: Field>(
         acc = builder.add(acc, term);
         pow2 = builder.add(pow2, pow2); // *= 2
     }
+
+    builder.pop_scope();
+
     acc
 }
 
@@ -129,6 +135,7 @@ pub fn decompose_to_bits<F: Field, const N_BITS: usize>(
     builder: &mut CircuitBuilder<F>,
     x: ExprId,
 ) -> Vec<ExprId> {
+    builder.push_scope("decompose_to_bits");
     let mut bits = Vec::with_capacity(N_BITS);
 
     // Create bit witness variables
@@ -142,7 +149,28 @@ pub fn decompose_to_bits<F: Field, const N_BITS: usize>(
     let reconstructed = reconstruct_index_from_bits(builder, &bits);
     builder.connect(x, reconstructed);
 
+    builder.pop_scope();
+
     bits
+}
+
+/// Helper to pad trace values to power-of-two height with zeros
+pub fn pad_to_power_of_two<F: Field>(values: &mut Vec<F>, width: usize, original_height: usize) {
+    if original_height == 0 {
+        // Empty trace - just ensure we have at least one row of zeros
+        values.resize(width, F::ZERO);
+        return;
+    }
+
+    let target_height = original_height.next_power_of_two();
+    if target_height == original_height {
+        return; // Already power of two
+    }
+
+    // Pad with zeroes
+    for _ in original_height..target_height {
+        values.extend_from_slice(&vec![F::ZERO; width]);
+    }
 }
 
 #[cfg(test)]
@@ -255,7 +283,7 @@ mod tests {
         };
 
         // Build a circuit adding public inputs for `sels`, public values, local values and next values.
-        let mut circuit = CircuitBuilder::<Challenge>::new();
+        let mut circuit = CircuitBuilder::new();
         let circuit_sels = [
             circuit.add_public_input(),
             circuit.add_public_input(),
@@ -289,7 +317,7 @@ mod tests {
         };
 
         // Get the circuit for the folded constraints.
-        let sum = symbolic_to_circuit::<Challenge>(
+        let sum = symbolic_to_circuit(
             row_selectors,
             &columns,
             &folded_symbolic_constraints,
@@ -380,5 +408,61 @@ mod tests {
 
         // Also verify that the returned bits have the expected length
         assert_eq!(bits.len(), 3);
+    }
+
+    #[test]
+    fn test_pad_to_power_of_two_basic() {
+        // Test with 3 rows -> should pad to 4
+        let mut values = vec![
+            F::from_u64(1),
+            F::from_u64(10), // row 0: [value=1, index=10]
+            F::from_u64(2),
+            F::from_u64(11), // row 1: [value=2, index=11]
+            F::from_u64(3),
+            F::from_u64(12), // row 2: [value=3, index=12]
+        ];
+        let width = 2;
+        let original_height = 3;
+
+        pad_to_power_of_two(&mut values, width, original_height);
+
+        // Should be padded to 4 rows
+        assert_eq!(values.len(), 4 * width);
+
+        // Original rows should be unchanged
+        assert_eq!(values[0], F::from_u64(1));
+        assert_eq!(values[1], F::from_u64(10));
+        assert_eq!(values[2], F::from_u64(2));
+        assert_eq!(values[3], F::from_u64(11));
+        assert_eq!(values[4], F::from_u64(3));
+        assert_eq!(values[5], F::from_u64(12));
+
+        // Padded row should be zero
+        assert_eq!(values[6], F::ZERO); // same as row 2
+        assert_eq!(values[7], F::ZERO); // same as row 2
+    }
+
+    #[test]
+    fn test_pad_to_power_of_two_already_power_of_two() {
+        // Test with 4 rows (already power of two) -> should not change
+        let mut values = vec![
+            F::from_u64(1),
+            F::from_u64(2),
+            F::from_u64(3),
+            F::from_u64(4),
+            F::from_u64(5),
+            F::from_u64(6),
+            F::from_u64(7),
+            F::from_u64(8),
+        ];
+        let original = values.clone();
+        let width = 2;
+        let original_height = 4;
+
+        pad_to_power_of_two(&mut values, width, original_height);
+
+        // Should remain unchanged
+        assert_eq!(values, original);
+        assert_eq!(values.len(), 4 * width);
     }
 }

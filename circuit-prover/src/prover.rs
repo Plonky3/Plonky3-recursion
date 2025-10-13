@@ -16,12 +16,13 @@ use alloc::vec::Vec;
 use p3_circuit::tables::Traces;
 use p3_circuit::{CircuitBuilderError, CircuitError};
 use p3_field::{BasedVectorSpace, Field};
-use p3_uni_stark::{prove, verify};
+use p3_mmcs_air::air::{MmcsTableConfig, MmcsVerifyAir};
+use p3_uni_stark::{StarkGenericConfig, Val, prove, verify};
 use thiserror::Error;
 use tracing::instrument;
 
-use crate::air::{AddAir, ConstAir, FakeMerkleVerifyAir, MulAir, PublicAir, WitnessAir};
-use crate::config::{ProverConfig, StarkField, StarkPermutation};
+use crate::air::{AddAir, ConstAir, MulAir, PublicAir, WitnessAir};
+use crate::config::StarkField;
 use crate::field_params::ExtractBinomialW;
 
 /// Configuration for packing multiple primitive operations into a single AIR row.
@@ -59,23 +60,14 @@ impl Default for TablePacking {
 }
 
 /// STARK proof type alias for convenience.
-///
-/// - `F`: Base field for values and commitments.
-/// - `P`: Permutation over `F` used by hash/challenger.
-/// - `CD`: Challenge field degree (binomial extension over `F`).
-pub type StarkProof<F, P, const CD: usize> = p3_uni_stark::Proof<ProverConfig<F, P, CD>>;
+pub type StarkProof<SC> = p3_uni_stark::Proof<SC>;
 
 /// Proof and metadata for a single table.
-///
-/// - `F`: Base field.
-/// - `P`: Permutation over `F`.
-/// - `CD`: Challenge field degree.
-pub struct TableProof<F, P, const CD: usize>
+pub struct TableProof<SC>
 where
-    F: StarkField + p3_field::extension::BinomiallyExtendable<CD>,
-    P: StarkPermutation<F>,
+    SC: StarkGenericConfig,
 {
-    pub proof: StarkProof<F, P, CD>,
+    pub proof: StarkProof<SC>,
     /// Number of logical rows (operations) prior to any per-row packing.
     pub rows: usize,
 }
@@ -83,39 +75,36 @@ where
 /// Complete proof bundle containing proofs for all circuit tables.
 ///
 /// Includes metadata for verification, such as:
-/// - `ext_degree`: circuit element extension degree used in traces (may differ from `CD`).
+/// - `ext_degree`: circuit element extension degree used in traces (may differ from challenge degree).
 /// - `w_binomial`: binomial parameter `W` for element-field multiplication, when applicable.
-pub struct MultiTableProof<F, P, const CD: usize>
+pub struct MultiTableProof<SC>
 where
-    F: StarkField + p3_field::extension::BinomiallyExtendable<CD>,
-    P: StarkPermutation<F>,
+    SC: StarkGenericConfig,
 {
-    pub witness: TableProof<F, P, CD>,
-    pub constants: TableProof<F, P, CD>,
-    pub public: TableProof<F, P, CD>,
-    pub add: TableProof<F, P, CD>,
-    pub mul: TableProof<F, P, CD>,
-    pub fake_merkle: TableProof<F, P, CD>,
+    pub witness: TableProof<SC>,
+    pub constants: TableProof<SC>,
+    pub public: TableProof<SC>,
+    pub add: TableProof<SC>,
+    pub mul: TableProof<SC>,
+    pub mmcs: TableProof<SC>,
     /// Packing configuration used when generating the proofs.
     pub table_packing: TablePacking,
     /// Extension field degree: 1 for base field; otherwise the extension degree used.
     pub ext_degree: usize,
     /// Binomial parameter W for extension fields (e.g., x^D = W); None for base fields
-    pub w_binomial: Option<F>,
+    pub w_binomial: Option<Val<SC>>,
 }
 
 /// Multi-table STARK prover for circuit execution traces.
 ///
-/// - `F`: Base field for values/commitments.
-/// - `P`: Permutation over `F` (hash/challenger).
-/// - `CD`: Challenge field degree; traces may use element fields of different degree.
-pub struct MultiTableProver<F, P, const CD: usize>
+/// Generic over `SC: StarkGenericConfig` to support different field configurations.
+pub struct MultiTableProver<SC>
 where
-    F: StarkField + p3_field::extension::BinomiallyExtendable<CD>,
-    P: StarkPermutation<F>,
+    SC: StarkGenericConfig,
 {
-    config: ProverConfig<F, P, CD>,
+    config: SC,
     table_packing: TablePacking,
+    mmcs_config: MmcsTableConfig,
 }
 
 /// Errors that can arise during proving or verification.
@@ -142,15 +131,16 @@ pub enum ProverError {
     VerificationFailed { phase: &'static str },
 }
 
-impl<F, P, const CD: usize> MultiTableProver<F, P, CD>
+impl<SC> MultiTableProver<SC>
 where
-    F: StarkField + p3_field::extension::BinomiallyExtendable<CD>,
-    P: StarkPermutation<F>,
+    SC: StarkGenericConfig,
+    Val<SC>: StarkField,
 {
-    pub fn new(config: ProverConfig<F, P, CD>) -> Self {
+    pub fn new(config: SC) -> Self {
         Self {
             config,
             table_packing: TablePacking::default(),
+            mmcs_config: MmcsTableConfig::default(),
         }
     }
 
@@ -167,6 +157,11 @@ where
         self.table_packing
     }
 
+    pub fn with_mmcs_table(mut self, mmcs_config: MmcsTableConfig) -> Self {
+        self.mmcs_config = mmcs_config;
+        self
+    }
+
     /// Generate proofs for all circuit tables.
     ///
     /// Automatically detects whether to use base field or binomial extension field
@@ -176,9 +171,9 @@ where
     pub fn prove_all_tables<EF>(
         &self,
         traces: &Traces<EF>,
-    ) -> Result<MultiTableProof<F, P, CD>, ProverError>
+    ) -> Result<MultiTableProof<SC>, ProverError>
     where
-        EF: Field + BasedVectorSpace<F> + ExtractBinomialW<F>,
+        EF: Field + BasedVectorSpace<Val<SC>> + ExtractBinomialW<Val<SC>>,
     {
         let pis = vec![];
         let w_opt = EF::extract_w();
@@ -194,7 +189,7 @@ where
 
     /// Verify all proofs in the given proof bundle.
     /// Uses the recorded extension degree and binomial parameter recorded during proving.
-    pub fn verify_all_tables(&self, proof: &MultiTableProof<F, P, CD>) -> Result<(), ProverError> {
+    pub fn verify_all_tables(&self, proof: &MultiTableProof<SC>) -> Result<(), ProverError> {
         let pis = vec![];
 
         let w_opt = proof.w_binomial;
@@ -214,52 +209,49 @@ where
     fn prove_for_degree<EF, const D: usize>(
         &self,
         traces: &Traces<EF>,
-        pis: &Vec<F>,
-        w_binomial: Option<F>,
-    ) -> Result<MultiTableProof<F, P, CD>, ProverError>
+        pis: &Vec<Val<SC>>,
+        w_binomial: Option<Val<SC>>,
+    ) -> Result<MultiTableProof<SC>, ProverError>
     where
-        EF: Field + BasedVectorSpace<F>,
+        EF: Field + BasedVectorSpace<Val<SC>>,
     {
         debug_assert_eq!(D, EF::DIMENSION, "D parameter must match EF::DIMENSION");
         let table_packing = self.table_packing;
         let add_lanes = table_packing.add_lanes();
         let mul_lanes = table_packing.mul_lanes();
         // Witness
-        let witness_matrix = WitnessAir::<F, D>::trace_to_matrix(&traces.witness_trace);
-        let witness_air = WitnessAir::<F, D>::new(traces.witness_trace.values.len());
+        let witness_matrix = WitnessAir::<Val<SC>, D>::trace_to_matrix(&traces.witness_trace);
+        let witness_air = WitnessAir::<Val<SC>, D>::new(traces.witness_trace.values.len());
         let witness_proof = prove(&self.config, &witness_air, witness_matrix, pis);
 
         // Const
-        let const_matrix = ConstAir::<F, D>::trace_to_matrix(&traces.const_trace);
-        let const_air = ConstAir::<F, D>::new(traces.const_trace.values.len());
+        let const_matrix = ConstAir::<Val<SC>, D>::trace_to_matrix(&traces.const_trace);
+        let const_air = ConstAir::<Val<SC>, D>::new(traces.const_trace.values.len());
         let const_proof = prove(&self.config, &const_air, const_matrix, pis);
 
         // Public
-        let public_matrix = PublicAir::<F, D>::trace_to_matrix(&traces.public_trace);
-        let public_air = PublicAir::<F, D>::new(traces.public_trace.values.len());
+        let public_matrix = PublicAir::<Val<SC>, D>::trace_to_matrix(&traces.public_trace);
+        let public_air = PublicAir::<Val<SC>, D>::new(traces.public_trace.values.len());
         let public_proof = prove(&self.config, &public_air, public_matrix, pis);
 
         // Add
-        let add_matrix = AddAir::<F, D>::trace_to_matrix(&traces.add_trace, add_lanes);
-        let add_air = AddAir::<F, D>::new(traces.add_trace.lhs_values.len(), add_lanes);
+        let add_matrix = AddAir::<Val<SC>, D>::trace_to_matrix(&traces.add_trace, add_lanes);
+        let add_air = AddAir::<Val<SC>, D>::new(traces.add_trace.lhs_values.len(), add_lanes);
         let add_proof = prove(&self.config, &add_air, add_matrix, pis);
 
         // Multiplication (uses binomial arithmetic for extension fields)
-        let mul_matrix = MulAir::<F, D>::trace_to_matrix(&traces.mul_trace, mul_lanes);
-        let mul_air: MulAir<F, D> = if D == 1 {
-            MulAir::<F, D>::new(traces.mul_trace.lhs_values.len(), mul_lanes)
+        let mul_matrix = MulAir::<Val<SC>, D>::trace_to_matrix(&traces.mul_trace, mul_lanes);
+        let mul_air: MulAir<Val<SC>, D> = if D == 1 {
+            MulAir::<Val<SC>, D>::new(traces.mul_trace.lhs_values.len(), mul_lanes)
         } else {
             let w = w_binomial.ok_or(ProverError::MissingWForExtension)?;
-            MulAir::<F, D>::new_binomial(traces.mul_trace.lhs_values.len(), mul_lanes, w)
+            MulAir::<Val<SC>, D>::new_binomial(traces.mul_trace.lhs_values.len(), mul_lanes, w)
         };
         let mul_proof = prove(&self.config, &mul_air, mul_matrix, pis);
 
-        // FakeMerkle (always uses base field regardless of traces D)
-        let fake_merkle_matrix =
-            FakeMerkleVerifyAir::<F>::trace_to_matrix(&traces.fake_merkle_trace);
-        let fake_merkle_air =
-            FakeMerkleVerifyAir::<F>::new(traces.fake_merkle_trace.left_values.len());
-        let fake_merkle_proof = prove(&self.config, &fake_merkle_air, fake_merkle_matrix, pis);
+        let mmcs_matrix = MmcsVerifyAir::trace_to_matrix(&self.mmcs_config, &traces.mmcs_trace);
+        let mmcs_air = MmcsVerifyAir::new(self.mmcs_config);
+        let mmcs_proof = prove(&self.config, &mmcs_air, mmcs_matrix, pis);
 
         Ok(MultiTableProof {
             witness: TableProof {
@@ -282,9 +274,14 @@ where
                 proof: mul_proof,
                 rows: traces.mul_trace.lhs_values.len(),
             },
-            fake_merkle: TableProof {
-                proof: fake_merkle_proof,
-                rows: traces.fake_merkle_trace.left_values.len(),
+            mmcs: TableProof {
+                proof: mmcs_proof,
+                rows: traces
+                    .mmcs_trace
+                    .mmcs_paths
+                    .iter()
+                    .map(|path| path.left_values.len() + 1)
+                    .sum(),
             },
             table_packing,
             ext_degree: D,
@@ -295,53 +292,50 @@ where
     /// Verify all tables for a fixed extension degree.
     fn verify_for_degree<const D: usize>(
         &self,
-        proof: &MultiTableProof<F, P, CD>,
-        pis: &Vec<F>,
-        w_binomial: Option<F>,
+        proof: &MultiTableProof<SC>,
+        pis: &Vec<Val<SC>>,
+        w_binomial: Option<Val<SC>>,
     ) -> Result<(), ProverError> {
         let table_packing = proof.table_packing;
         let add_lanes = table_packing.add_lanes();
         let mul_lanes = table_packing.mul_lanes();
         // Witness
-        let witness_air = WitnessAir::<F, D>::new(proof.witness.rows);
+        let witness_air = WitnessAir::<Val<SC>, D>::new(proof.witness.rows);
         verify(&self.config, &witness_air, &proof.witness.proof, pis)
             .map_err(|_| ProverError::VerificationFailed { phase: "witness" })?;
 
         // Const
-        let const_air = ConstAir::<F, D>::new(proof.constants.rows);
+        let const_air = ConstAir::<Val<SC>, D>::new(proof.constants.rows);
         verify(&self.config, &const_air, &proof.constants.proof, pis)
             .map_err(|_| ProverError::VerificationFailed { phase: "const" })?;
 
         // Public
-        let public_air = PublicAir::<F, D>::new(proof.public.rows);
+        let public_air = PublicAir::<Val<SC>, D>::new(proof.public.rows);
         verify(&self.config, &public_air, &proof.public.proof, pis)
             .map_err(|_| ProverError::VerificationFailed { phase: "public" })?;
 
         // Add
-        let add_air = AddAir::<F, D>::new(proof.add.rows, add_lanes);
+        let add_air = AddAir::<Val<SC>, D>::new(proof.add.rows, add_lanes);
         verify(&self.config, &add_air, &proof.add.proof, pis)
             .map_err(|_| ProverError::VerificationFailed { phase: "add" })?;
 
         // Mul
-        let mul_air: MulAir<F, D> = if D == 1 {
-            MulAir::<F, D>::new(proof.mul.rows, mul_lanes)
+        let mul_air: MulAir<Val<SC>, D> = if D == 1 {
+            MulAir::new(proof.mul.rows, mul_lanes)
         } else {
             let w = w_binomial.ok_or(ProverError::MissingWForExtension)?;
-            MulAir::<F, D>::new_binomial(proof.mul.rows, mul_lanes, w)
+            MulAir::new_binomial(proof.mul.rows, mul_lanes, w)
         };
         verify(&self.config, &mul_air, &proof.mul.proof, pis)
             .map_err(|_| ProverError::VerificationFailed { phase: "mul" })?;
 
-        // FakeMerkle
-        let fake_merkle_air = FakeMerkleVerifyAir::<F>::new(proof.fake_merkle.rows);
-        verify(
-            &self.config,
-            &fake_merkle_air,
-            &proof.fake_merkle.proof,
-            pis,
-        )
-        .map_err(|_| ProverError::VerificationFailed {
-            phase: "fake_merkle",
+        // MmcsVerify
+
+        let mmcs_air = MmcsVerifyAir::new(self.mmcs_config);
+        verify(&self.config, &mmcs_air, &proof.mmcs.proof, pis).map_err(|_| {
+            ProverError::VerificationFailed {
+                phase: "mmcs_verify",
+            }
         })?;
 
         Ok(())
@@ -351,16 +345,14 @@ where
 #[cfg(test)]
 mod tests {
     use p3_baby_bear::BabyBear;
-    use p3_circuit::builder::CircuitBuilder;
+    use p3_circuit::CircuitBuilder;
     use p3_field::extension::BinomialExtensionField;
     use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
     use p3_goldilocks::Goldilocks;
     use p3_koala_bear::KoalaBear;
 
     use super::*;
-    use crate::config::babybear_config::build_standard_config_babybear;
-    use crate::config::goldilocks_config::build_standard_config_goldilocks;
-    use crate::config::koalabear_config::build_standard_config_koalabear;
+    use crate::config;
 
     #[test]
     fn test_babybear_prover_base_field() -> Result<(), ProverError> {
@@ -390,10 +382,11 @@ mod tests {
         let x_val = BabyBear::from_u64(7);
         let expected_val = BabyBear::from_u64(13); // 7 + 10 - 3 - 1 = 13
         runner.set_public_inputs(&[x_val, expected_val])?;
+
         let traces = runner.run()?;
 
         // Create BabyBear prover and prove all tables
-        let config = build_standard_config_babybear();
+        let config = config::baby_bear().build();
         let multi_prover = MultiTableProver::new(config);
         let proof = multi_prover.prove_all_tables(&traces)?;
 
@@ -472,7 +465,7 @@ mod tests {
         let traces = runner.run()?;
 
         // Create BabyBear prover for extension field (D=4)
-        let config = build_standard_config_babybear();
+        let config = config::baby_bear().build();
         let multi_prover = MultiTableProver::new(config);
         let proof = multi_prover.prove_all_tables(&traces)?;
 
@@ -516,7 +509,7 @@ mod tests {
         let traces = runner.run()?;
 
         // Create KoalaBear prover
-        let config = build_standard_config_koalabear();
+        let config = config::koala_bear().build();
         let multi_prover = MultiTableProver::new(config);
         let proof = multi_prover.prove_all_tables(&traces)?;
 
@@ -600,7 +593,7 @@ mod tests {
         let traces = runner.run()?;
 
         // Create KoalaBear prover for extension field (D=8)
-        let config = build_standard_config_koalabear();
+        let config = config::koala_bear().build();
         let multi_prover = MultiTableProver::new(config);
         let proof = multi_prover.prove_all_tables(&traces)?;
 
@@ -651,11 +644,10 @@ mod tests {
 
         let expected_val = x_val * y_val + z_val;
         runner.set_public_inputs(&[x_val, y_val, z_val, expected_val])?;
-
         let traces = runner.run()?;
 
         // Build Goldilocks config with challenge degree 2 (Poseidon2)
-        let config = build_standard_config_goldilocks();
+        let config = config::goldilocks().build();
         let multi_prover = MultiTableProver::new(config);
 
         let proof = multi_prover.prove_all_tables(&traces)?;

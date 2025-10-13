@@ -3,6 +3,7 @@ use alloc::string::String;
 use thiserror::Error;
 
 use crate::WitnessId;
+use crate::op::NonPrimitiveOpType;
 
 /// Errors that can occur during circuit execution and trace generation.
 #[derive(Debug, Error)]
@@ -74,5 +75,30 @@ pub enum CircuitError {
         input_witness_id: WitnessId,
         expected: String,
         reconstructed: String,
+    },
+
+    /// Mismatched non-primitive operation configuration
+    #[error("Invalid configuration for operation {op:?}")]
+    InvalidNonPrimitiveOpConfiguration { op: NonPrimitiveOpType },
+
+    /// Incorrect size of private data provided for a non-primitive operation.
+    #[error(
+        "Incorrect size of private data provided for operation {op:?}: expected {expected}, got {got}"
+    )]
+    IncorrectNonPrimitiveOpPrivateDataSize {
+        op: NonPrimitiveOpType,
+        expected: usize,
+        got: usize,
+    },
+
+    /// Non primitive private data is not correct
+    #[error(
+        "Incorrect private data provided for op {op:?} (operation {operation_index}): expected {expected}, got {got}"
+    )]
+    IncorrectNonPrimitiveOpPrivateData {
+        op: NonPrimitiveOpType,
+        operation_index: usize,
+        expected: String,
+        got: String,
     },
 }

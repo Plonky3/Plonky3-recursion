@@ -1,144 +1,322 @@
-//! STARK config, generic over base field `F`, permutation `P`, and challenge degree `CD`.
+//! STARK proving configurations.
 //!
-//! Generics glossary:
-//! - `F`: Base field for values, FFTs and commitments (BabyBear/KoalaBear/Goldilocks).
-//! - `P`: Cryptographic permutation over `F` used by hash/compress and the challenger.
-//! - `CD`: Degree of the binomial extension used for the FRI challenge field.
+//! This module provides STARK configurations for different prime fields.
 //!
-//! Notes:
-//! - `CD` is independent from the circuit element-field degree `D` used by AIRs; the circuit can use
-//!   element fields `EF = BinomialExtensionField<F, D>` while the FRI challenge field is `BinomialExtensionField<F, CD>`.
+//! # Quick Start
 //!
-//! Provides convenience builders for BabyBear, KoalaBear, and Goldilocks.
+//! ```ignore
+//! use p3_circuit_prover::config;
+//!
+//! // Use a preconfigured setup
+//! let config = config::baby_bear()
+//!     .build();
+//! ```
 
-use p3_challenger::DuplexChallenger as Challenger;
+use p3_baby_bear::{BabyBear, Poseidon2BabyBear, default_babybear_poseidon2_16};
+use p3_challenger::DuplexChallenger;
 use p3_commit::ExtensionMmcs;
-use p3_dft::Radix2DitParallel as Dft;
-use p3_field::extension::{BinomialExtensionField, BinomiallyExtendable};
+use p3_dft::Radix2DitParallel;
+use p3_field::extension::BinomialExtensionField;
 use p3_field::{Field, PrimeCharacteristicRing, PrimeField64, TwoAdicField};
-use p3_fri::{TwoAdicFriPcs as Pcs, create_benchmark_fri_params};
+use p3_fri::{TwoAdicFriPcs, create_benchmark_fri_params};
+use p3_goldilocks::{Goldilocks, Poseidon2Goldilocks};
+use p3_koala_bear::{KoalaBear, Poseidon2KoalaBear, default_koalabear_poseidon2_16};
 use p3_merkle_tree::MerkleTreeMmcs;
 use p3_symmetric::{
-    CryptographicPermutation, PaddingFreeSponge as MyHash, TruncatedPermutation as MyCompress,
+    CryptographicPermutation, PaddingFreeSponge, PseudoCompressionFunction, TruncatedPermutation,
 };
 use p3_uni_stark::StarkConfig;
 
-/// Simplified trait alias for STARK-compatible fields.
+/// Compression function arity (number of inputs per compression).
+const COMPRESS_ARITY: usize = 2;
+
+/// A STARK configuration with all cryptographic primitives specified.
+///
+/// ### Type Parameters
+/// - `F`: Base field.
+/// - `PermHash`: Permutation function used for sponge hashing (leaves, transcript absorption).
+/// - `PermCompress`: Permutation function used for Merkle tree compression.
+/// - `HASH_PERM_WIDTH`: Width of the hash permutation state.
+/// - `COMPRESS_PERM_WIDTH`: Width of the compression permutation state.
+/// - `RATE`: Number of field elements absorbed per permutation in sponge mode.
+/// - `OUT`: Number of output elements squeezed per permutation.
+/// - `COMPRESS_CHUNK`: Number of elements per compression chunk in Merkle commitments.
+/// - `CHALLENGE_DEGREE`: Extension field degree.
+pub type Config<
+    F,
+    PermHash,
+    PermCompress,
+    const HASH_PERM_WIDTH: usize,
+    const COMPRESS_PERM_WIDTH: usize,
+    const RATE: usize,
+    const OUT: usize,
+    const COMPRESS_CHUNK: usize,
+    const CHALLENGE_DEGREE: usize,
+> = StarkConfig<
+    TwoAdicFriPcs<
+        F,
+        Radix2DitParallel<F>,
+        MerkleTreeMmcs<
+            F,
+            F,
+            PaddingFreeSponge<PermHash, HASH_PERM_WIDTH, RATE, OUT>,
+            TruncatedPermutation<PermCompress, COMPRESS_ARITY, COMPRESS_CHUNK, COMPRESS_PERM_WIDTH>,
+            COMPRESS_CHUNK,
+        >,
+        ExtensionMmcs<
+            F,
+            BinomialExtensionField<F, CHALLENGE_DEGREE>,
+            MerkleTreeMmcs<
+                F,
+                F,
+                PaddingFreeSponge<PermHash, HASH_PERM_WIDTH, RATE, OUT>,
+                TruncatedPermutation<
+                    PermCompress,
+                    COMPRESS_ARITY,
+                    COMPRESS_CHUNK,
+                    COMPRESS_PERM_WIDTH,
+                >,
+                COMPRESS_CHUNK,
+            >,
+        >,
+    >,
+    BinomialExtensionField<F, CHALLENGE_DEGREE>,
+    DuplexChallenger<F, PermHash, HASH_PERM_WIDTH, RATE>,
+>;
+
+/// Configuration builder for STARK provers.
+pub struct ConfigBuilder<
+    F,
+    PermHash,
+    PermCompress,
+    const HASH_PERM_WIDTH: usize,
+    const COMPRESS_PERM_WIDTH: usize,
+    const RATE: usize,
+    const OUT: usize,
+    const COMPRESS_CHUNK: usize,
+    const CHALLENGE_DEGREE: usize,
+> {
+    perm_hash: PermHash,
+    perm_compress: PermCompress,
+    _phantom: core::marker::PhantomData<F>,
+}
+
+impl<
+    F,
+    PermHash,
+    PermCompress,
+    const HASH_PERM_WIDTH: usize,
+    const COMPRESS_PERM_WIDTH: usize,
+    const RATE: usize,
+    const OUT: usize,
+    const COMPRESS_CHUNK: usize,
+    const CHALLENGE_DEGREE: usize,
+>
+    ConfigBuilder<
+        F,
+        PermHash,
+        PermCompress,
+        HASH_PERM_WIDTH,
+        COMPRESS_PERM_WIDTH,
+        RATE,
+        OUT,
+        COMPRESS_CHUNK,
+        CHALLENGE_DEGREE,
+    >
+where
+    F: Field,
+    PermHash: Clone + CryptographicPermutation<[F; HASH_PERM_WIDTH]>,
+    PermCompress: Clone + CryptographicPermutation<[F; COMPRESS_PERM_WIDTH]>,
+{
+    const fn new(perm_hash: PermHash, perm_compress: PermCompress) -> Self {
+        Self {
+            perm_hash,
+            perm_compress,
+            _phantom: core::marker::PhantomData,
+        }
+    }
+
+    /// Builds the final STARK configuration.
+    pub fn build(
+        self,
+    ) -> Config<
+        F,
+        PermHash,
+        PermCompress,
+        HASH_PERM_WIDTH,
+        COMPRESS_PERM_WIDTH,
+        RATE,
+        OUT,
+        COMPRESS_CHUNK,
+        CHALLENGE_DEGREE,
+    > {
+        type Hash<Perm, const PERM_WIDTH: usize, const RATE: usize, const OUT: usize> =
+            PaddingFreeSponge<Perm, PERM_WIDTH, RATE, OUT>;
+        type Compress<Perm, const PERM_WIDTH: usize, const COMPRESS_CHUNK: usize> =
+            TruncatedPermutation<Perm, COMPRESS_ARITY, COMPRESS_CHUNK, PERM_WIDTH>;
+
+        let hash = Hash::<PermHash, HASH_PERM_WIDTH, RATE, OUT>::new(self.perm_hash.clone());
+        let compress = Compress::<PermCompress, COMPRESS_PERM_WIDTH, COMPRESS_CHUNK>::new(
+            self.perm_compress.clone(),
+        );
+        let val_mmcs = MerkleTreeMmcs::new(hash, compress);
+        let challenge_mmcs = ExtensionMmcs::new(val_mmcs.clone());
+        let dft = Radix2DitParallel::default();
+        let fri_params = create_benchmark_fri_params(challenge_mmcs);
+        let pcs = TwoAdicFriPcs::new(dft, val_mmcs, fri_params);
+        let challenger = DuplexChallenger::new(self.perm_hash);
+
+        StarkConfig::new(pcs, challenger)
+    }
+
+    /// Creates the compression function for this configuration.
+    pub fn compression_function(
+        &self,
+    ) -> TruncatedPermutation<PermCompress, COMPRESS_ARITY, COMPRESS_CHUNK, COMPRESS_PERM_WIDTH>
+    {
+        TruncatedPermutation::new(self.perm_compress.clone())
+    }
+}
+
+/// Creates a standard BabyBear configuration.
+///
+/// BabyBear is a 31-bit prime field (2^31 - 2^27 + 1).
+///
+/// # Parameters
+/// - **Hash permutation width**: 16 (appropriate for 32-bit fields)
+/// - **Compression permutation width**: 16
+/// - **Rate**: 8 (256 bits / 32 bits per element)
+/// - **Output size**: 8 (256 bits / 32 bits per element)
+/// - **Challenge degree**: 4
+///
+/// # Examples
+///
+/// ```ignore
+/// let config = config::baby_bear().build();
+/// let prover = MultiTableProver::new(config);
+/// ```
+#[inline]
+pub fn baby_bear()
+-> ConfigBuilder<BabyBear, Poseidon2BabyBear<16>, Poseidon2BabyBear<16>, 16, 16, 8, 8, 8, 4> {
+    let perm = default_babybear_poseidon2_16();
+    ConfigBuilder::new(perm.clone(), perm)
+}
+
+/// Creates the standard BabyBear compression function.
+///
+/// # Parameters
+/// - **Input arrays**: 2
+/// - **Elements per array**: 8 (256 bits / 32 bits per element)
+/// - **Output size**: 8 BabyBear elements (256 bits)
+#[inline]
+pub fn baby_bear_compression() -> impl PseudoCompressionFunction<[BabyBear; 8], 2> {
+    baby_bear().compression_function()
+}
+
+/// Creates a standard KoalaBear configuration.
+///
+/// KoalaBear is a 31-bit prime field (2^31 - 2^24 + 1).
+///
+/// # Parameters
+/// - **Hash permutation width**: 16 (appropriate for 32-bit fields)
+/// - **Compression permutation width**: 16
+/// - **Rate**: 8 (256 bits / 32 bits per element)
+/// - **Output size**: 8 (256 bits / 32 bits per element)
+/// - **Challenge degree**: 4
+///
+/// # Examples
+///
+/// ```ignore
+/// let config = config::koala_bear().build();
+/// let prover = MultiTableProver::new(config);
+/// ```
+#[inline]
+pub fn koala_bear()
+-> ConfigBuilder<KoalaBear, Poseidon2KoalaBear<16>, Poseidon2KoalaBear<16>, 16, 16, 8, 8, 8, 4> {
+    let perm = default_koalabear_poseidon2_16();
+    ConfigBuilder::new(perm.clone(), perm)
+}
+
+/// Creates the standard KoalaBear compression function.
+///
+/// # Parameters
+/// - **Input arrays**: 2
+/// - **Elements per array**: 8 (256 bits / 32 bits per element)
+/// - **Output size**: 8 KoalaBear elements (256 bits)
+#[inline]
+pub fn koala_bear_compression() -> impl PseudoCompressionFunction<[KoalaBear; 8], 2> {
+    koala_bear().compression_function()
+}
+
+/// Creates a standard Goldilocks configuration.
+///
+/// Goldilocks is a 64-bit prime field (2^64 - 2^32 + 1).
+///
+/// # Parameters
+/// - **Hash permutation width**: 8 (appropriate for 64-bit fields)
+/// - **Compression permutation width**: 8
+/// - **Rate**: 4 (256 bits / 64 bits per element)
+/// - **Output size**: 4 (256 bits / 64 bits per element)
+/// - **Challenge degree**: 2
+///
+/// # Examples
+///
+/// ```ignore
+/// let config = config::goldilocks().build();
+/// let prover = MultiTableProver::new(config);
+/// ```
+#[inline]
+pub fn goldilocks()
+-> ConfigBuilder<Goldilocks, Poseidon2Goldilocks<8>, Poseidon2Goldilocks<8>, 8, 8, 4, 4, 4, 2> {
+    use rand::SeedableRng;
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(1);
+    let perm = p3_goldilocks::Poseidon2Goldilocks::<8>::new_from_rng_128(&mut rng);
+    ConfigBuilder::new(perm.clone(), perm)
+}
+
+/// Creates the standard Goldilocks compression function.
+///
+/// # Parameters
+/// - **Input arrays**: 2
+/// - **Elements per array**: 4 (256 bits / 64 bits per element)
+/// - **Output size**: 4 Goldilocks elements (256 bits)
+#[inline]
+pub fn goldilocks_compression() -> impl PseudoCompressionFunction<[Goldilocks; 4], 2> {
+    goldilocks().compression_function()
+}
+
+/// Type alias for BabyBear STARK configuration.
+pub type BabyBearConfig =
+    Config<BabyBear, Poseidon2BabyBear<16>, Poseidon2BabyBear<16>, 16, 16, 8, 8, 8, 4>;
+
+/// Type alias for KoalaBear STARK configuration.
+pub type KoalaBearConfig =
+    Config<KoalaBear, Poseidon2KoalaBear<16>, Poseidon2KoalaBear<16>, 16, 16, 8, 8, 8, 4>;
+
+/// Type alias for Goldilocks STARK configuration.
+pub type GoldilocksConfig =
+    Config<Goldilocks, Poseidon2Goldilocks<8>, Poseidon2Goldilocks<8>, 8, 8, 4, 4, 4, 2>;
+
+/// Trait bounds for STARK-compatible fields.
 pub trait StarkField: Field + PrimeCharacteristicRing + TwoAdicField + PrimeField64 {}
 
-/// Simplified trait alias for STARK-compatible permutations.
-pub trait StarkPermutation<F: StarkField>:
-    Clone + CryptographicPermutation<[F; 16]> + CryptographicPermutation<[<F as Field>::Packing; 16]>
-{
-}
-
-// Blanket implementations
 impl<F> StarkField for F where F: Field + PrimeCharacteristicRing + TwoAdicField + PrimeField64 {}
-impl<F, P> StarkPermutation<F> for P
-where
-    F: StarkField,
-    P: Clone
-        + CryptographicPermutation<[F; 16]>
-        + CryptographicPermutation<[<F as Field>::Packing; 16]>,
-{
-}
 
-/// FRI challenge field: degree-`CD` binomial extension over base field `F`.
-/// `CD` is independent of the circuit element extension degree used in AIRs; they may differ.
-pub type Challenge<F, const CD: usize> = BinomialExtensionField<F, CD>;
-
-/// Merkle tree MMCS over the base field `F` with permutation `P` (width 16).
-pub type ValMmcs<F, P> = MerkleTreeMmcs<
-    <F as Field>::Packing,
-    <F as Field>::Packing,
-    MyHash<P, 16, 8, 8>,
-    MyCompress<P, 2, 8, 16>,
-    8,
->;
-
-/// MMCS wrapper for the challenge extension of degree `CD`.
-pub type ChallengeMmcs<F, P, const CD: usize> = ExtensionMmcs<F, Challenge<F, CD>, ValMmcs<F, P>>;
-
-/// The complete STARK configuration type.
-///
-/// - `F`: Base field for trace/PCS.
-/// - `P`: Permutation over `F` used by hash/challenger.
-/// - `CD`: Challenge field degree (binomial extension over `F`).
-pub type ProverConfig<F, P, const CD: usize> = StarkConfig<
-    Pcs<F, Dft<F>, ValMmcs<F, P>, ChallengeMmcs<F, P, CD>>,
-    Challenge<F, CD>,
-    Challenger<F, P, 16, 8>,
->;
-
-/// Build a standard STARK configuration for any supported field and permutation.
-/// `CD` here is the challenge extension degree, independent from the circuit element degree.
-/// This creates a FRI-based STARK configuration with:
-/// - Two-adic FRI PCS for polynomial commitments
-/// - Merkle tree MMCS for vector commitments  
-/// - Duplex challenger for Fiat-Shamir
-pub fn build_standard_config_generic<F, P, const CD: usize>(perm: P) -> ProverConfig<F, P, CD>
-where
-    F: StarkField + BinomiallyExtendable<CD>,
-    P: StarkPermutation<F>,
-{
-    let hash = MyHash::<P, 16, 8, 8>::new(perm.clone());
-    let compress = MyCompress::<P, 2, 8, 16>::new(perm.clone());
-    let val_mmcs = ValMmcs::<F, P>::new(hash, compress);
-    let challenge_mmcs = ChallengeMmcs::<F, P, CD>::new(val_mmcs.clone());
-
-    let dft = Dft::<F>::default();
-    let fri_params = create_benchmark_fri_params::<ChallengeMmcs<F, P, CD>>(challenge_mmcs);
-    let pcs = Pcs::<F, _, _, _>::new(dft, val_mmcs, fri_params);
-
-    let challenger = Challenger::<F, P, 16, 8>::new(perm);
-
-    StarkConfig::new(pcs, challenger)
-}
-
-// Field-specific configuration builders
-
-pub mod babybear_config {
-    use p3_baby_bear::{
-        BabyBear as BB, Poseidon2BabyBear as Poseidon2BB, default_babybear_poseidon2_16,
-    };
-
+#[cfg(test)]
+mod tests {
     use super::*;
 
-    pub type BabyBearConfig = ProverConfig<BB, Poseidon2BB<16>, 4>;
-
-    pub fn build_standard_config_babybear() -> BabyBearConfig {
-        let perm = default_babybear_poseidon2_16();
-        build_standard_config_generic::<BB, _, 4>(perm)
+    #[test]
+    fn all_fields_configs_compile() {
+        let _bb: BabyBearConfig = baby_bear().build();
+        let _kb: KoalaBearConfig = koala_bear().build();
+        let _gl: GoldilocksConfig = goldilocks().build();
     }
-}
 
-pub mod koalabear_config {
-    use p3_koala_bear::{
-        KoalaBear as KB, Poseidon2KoalaBear as Poseidon2KB, default_koalabear_poseidon2_16,
-    };
-
-    use super::*;
-
-    pub type KoalaBearConfig = ProverConfig<KB, Poseidon2KB<16>, 4>;
-
-    pub fn build_standard_config_koalabear() -> KoalaBearConfig {
-        let perm = default_koalabear_poseidon2_16();
-        build_standard_config_generic::<KB, _, 4>(perm)
-    }
-}
-
-pub mod goldilocks_config {
-    use p3_goldilocks::{Goldilocks as GL, Poseidon2Goldilocks as Poseidon2GL};
-    use rand::SeedableRng;
-    use rand::rngs::SmallRng;
-
-    use super::*;
-
-    pub type GoldilocksConfig = ProverConfig<GL, Poseidon2GL<16>, 2>;
-
-    pub fn build_standard_config_goldilocks() -> GoldilocksConfig {
-        let mut rng = SmallRng::seed_from_u64(1);
-        let perm = Poseidon2GL::<16>::new_from_rng_128(&mut rng);
-        build_standard_config_generic::<GL, _, 2>(perm)
+    #[test]
+    fn compression_function_works() {
+        let _compress = baby_bear_compression();
+        let _compress = koala_bear_compression();
+        let _compress = goldilocks_compression();
     }
 }

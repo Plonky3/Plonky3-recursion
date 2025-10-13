@@ -4,9 +4,12 @@ use alloc::{format, vec};
 use tracing::instrument;
 
 use crate::circuit::Circuit;
-use crate::op::{NonPrimitiveOpPrivateData, Prim};
+use crate::op::{NonPrimitiveOp, NonPrimitiveOpPrivateData, Prim};
 use crate::types::{NonPrimitiveOpId, WitnessId};
 use crate::{CircuitError, CircuitField};
+
+mod mmcs;
+pub use mmcs::{MmcsPathTrace, MmcsPrivateData, MmcsTrace};
 
 /// Execution traces for all tables
 #[derive(Debug, Clone)]
@@ -21,8 +24,8 @@ pub struct Traces<F> {
     pub add_trace: AddTrace<F>,
     /// Mul operation table
     pub mul_trace: MulTrace<F>,
-    /// Fake Merkle verification table
-    pub fake_merkle_trace: FakeMerkleTrace<F>,
+    /// Mmcs verification table
+    pub mmcs_trace: MmcsTrace<F>,
 }
 
 /// Central witness table with preprocessed index column
@@ -84,25 +87,6 @@ pub struct MulTrace<F> {
     pub result_values: Vec<F>,
     /// Result indices (references witness bus)
     pub result_index: Vec<WitnessId>,
-}
-
-/// Fake Merkle verification table (simplified: single field elements)
-#[derive(Debug, Clone)]
-pub struct FakeMerkleTrace<F> {
-    /// Left operand values (current hash)
-    pub left_values: Vec<F>,
-    /// Left operand indices (references witness bus)
-    pub left_index: Vec<WitnessId>,
-    /// Right operand values (sibling hash)
-    pub right_values: Vec<F>,
-    /// Right operand indices (not on witness bus - private data, so stays u32)
-    pub right_index: Vec<u32>,
-    /// Result values (computed parent hash)
-    pub result_values: Vec<F>,
-    /// Result indices (references witness bus)
-    pub result_index: Vec<WitnessId>,
-    /// Path direction bits (0 = left, 1 = right) - private data
-    pub path_directions: Vec<u32>,
 }
 
 /// Circuit runner that executes circuits and generates execution traces
@@ -170,10 +154,7 @@ impl<F: CircuitField> CircuitRunner<F> {
         // Validate that the private data matches the operation type
         let non_primitive_op = &self.circuit.non_primitive_ops[op_id.0 as usize];
         match (non_primitive_op, &private_data) {
-            (
-                crate::op::NonPrimitiveOp::FakeMerkleVerify { .. },
-                NonPrimitiveOpPrivateData::FakeMerkleVerify(_),
-            ) => {
+            (NonPrimitiveOp::MmcsVerify { .. }, NonPrimitiveOpPrivateData::MmcsVerify(_)) => {
                 // Type match - good!
             }
         }
@@ -194,7 +175,7 @@ impl<F: CircuitField> CircuitRunner<F> {
         let public_trace = self.generate_public_trace()?;
         let add_trace = self.generate_add_trace()?;
         let mul_trace = self.generate_mul_trace()?;
-        let fake_merkle_trace = self.generate_fake_merkle_trace()?;
+        let mmcs_trace = self.generate_mmcs_trace()?;
 
         Ok(Traces {
             witness_trace,
@@ -202,7 +183,7 @@ impl<F: CircuitField> CircuitRunner<F> {
             public_trace,
             add_trace,
             mul_trace,
-            fake_merkle_trace,
+            mmcs_trace,
         })
     }
 
@@ -390,80 +371,13 @@ impl<F: CircuitField> CircuitRunner<F> {
         })
     }
 
-    fn generate_fake_merkle_trace(&mut self) -> Result<FakeMerkleTrace<F>, CircuitError> {
-        let mut left_values = Vec::new();
-        let mut left_index = Vec::new();
-        let mut right_values = Vec::new();
-        let mut right_index = Vec::new();
-        let mut result_values = Vec::new();
-        let mut result_index = Vec::new();
-        let mut path_directions = Vec::new();
-
-        // Process each complex operation by index to avoid borrowing conflicts
-        for op_idx in 0..self.circuit.non_primitive_ops.len() {
-            // Copy out leaf/root to end immutable borrow immediately
-            let (leaf, root) = match &self.circuit.non_primitive_ops[op_idx] {
-                crate::op::NonPrimitiveOp::FakeMerkleVerify { leaf, root } => (*leaf, *root),
-            };
-
-            // Clone private data option to avoid holding a borrow on self
-            if let Some(Some(NonPrimitiveOpPrivateData::FakeMerkleVerify(private_data))) =
-                self.non_primitive_op_private_data.get(op_idx).cloned()
-            {
-                let mut current_hash =
-                    if let Some(val) = self.witness.get(leaf.0 as usize).and_then(|x| x.as_ref()) {
-                        *val
-                    } else {
-                        return Err(CircuitError::NonPrimitiveOpWitnessNotSet {
-                            operation_index: op_idx,
-                        });
-                    };
-
-                // For each step in the Merkle path
-                for (sibling_value, &direction) in private_data
-                    .path_siblings
-                    .iter()
-                    .zip(private_data.path_directions.iter())
-                {
-                    // Current hash becomes left operand
-                    left_values.push(current_hash);
-                    left_index.push(leaf); // Points to witness bus
-
-                    // Sibling becomes right operand (private data - not on witness bus)
-                    right_values.push(*sibling_value);
-                    right_index.push(0); // Not on witness bus - private data
-
-                    // Compute parent hash (simple mock hash: left + right + direction)
-                    let parent_hash =
-                        current_hash + *sibling_value + if direction { F::ONE } else { F::ZERO };
-
-                    result_values.push(parent_hash);
-                    result_index.push(root); // Points to witness bus
-
-                    path_directions.push(if direction { 1 } else { 0 });
-
-                    // Update current hash for next iteration
-                    current_hash = parent_hash;
-                }
-
-                // Root is computed; write back to the witness bus at root index
-                self.set_witness(root, current_hash)?;
-            } else {
-                return Err(CircuitError::NonPrimitiveOpMissingPrivateData {
-                    operation_index: op_idx,
-                });
-            }
-        }
-
-        Ok(FakeMerkleTrace {
-            left_values,
-            left_index,
-            right_values,
-            right_index,
-            result_values,
-            result_index,
-            path_directions,
-        })
+    fn generate_mmcs_trace(&self) -> Result<MmcsTrace<F>, CircuitError> {
+        mmcs::generate_mmcs_trace(
+            &self.circuit,
+            &self.witness,
+            &self.non_primitive_op_private_data,
+            |widx| self.get_witness(widx),
+        )
     }
 }
 
@@ -482,7 +396,7 @@ mod tests {
 
     #[test]
     fn test_table_generation_basic() {
-        let mut builder = CircuitBuilder::<BabyBear>::new();
+        let mut builder = CircuitBuilder::new();
 
         // Simple test: x + 5 = result
         let x = builder.add_public_input();
@@ -514,21 +428,17 @@ mod tests {
     }
 
     #[test]
+    // Proves that we know x such that 37 * x - 111 = 0
     fn test_toy_example_37_times_x_minus_111() {
-        let mut builder = CircuitBuilder::<BabyBear>::new();
+        let mut builder = CircuitBuilder::new();
 
         let x = builder.add_public_input();
         let c37 = builder.add_const(BabyBear::from_u64(37));
         let c111 = builder.add_const(BabyBear::from_u64(111));
-        let c1 = builder.add_const(BabyBear::from_u64(1));
 
         let mul_result = builder.mul(c37, x);
         let sub_result = builder.sub(mul_result, c111);
         builder.assert_zero(sub_result);
-
-        let div_result = builder.div(mul_result, c111);
-        let sub_one = builder.sub(div_result, c1);
-        builder.assert_zero(sub_one);
 
         let circuit = builder.build().unwrap();
         println!("=== CIRCUIT PRIMITIVE OPERATIONS ===");
@@ -608,31 +518,28 @@ mod tests {
         // Verify trace structure
         assert_eq!(traces.witness_trace.index.len(), witness_count as usize);
 
-        // Should have constants: 37, 111, 1 and 0 (for assert_zero)
-        assert!(traces.const_trace.values.len() >= 4);
+        // Should have constants: 0, 37, 111
+        assert_eq!(traces.const_trace.values.len(), 3);
 
         // Should have one public input
         assert_eq!(traces.public_trace.values.len(), 1);
         assert_eq!(traces.public_trace.values[0], BabyBear::from_u64(3));
 
-        // Should have two mul operations (explicit Mul and Div lowering to Mul with inverse)
-        assert_eq!(traces.mul_trace.lhs_values.len(), 2);
+        // Should have one mul operation: 37 * x
+        assert_eq!(traces.mul_trace.lhs_values.len(), 1);
 
-        // Encoded subtractions land in the add table (result + rhs = lhs).
-        assert_eq!(traces.add_trace.lhs_values.len(), 2);
-        assert_eq!(traces.add_trace.lhs_index, vec![WitnessId(2), WitnessId(3)]);
-        assert_eq!(traces.add_trace.rhs_index, vec![WitnessId(0), WitnessId(0)]);
-        assert_eq!(
-            traces.add_trace.result_index,
-            vec![WitnessId(5), WitnessId(6)]
-        );
+        // Encoded subtraction lands in the add table (result + rhs = lhs).
+        assert_eq!(traces.add_trace.lhs_values.len(), 1);
+        assert_eq!(traces.add_trace.lhs_index, vec![WitnessId(2)]);
+        assert_eq!(traces.add_trace.rhs_index, vec![WitnessId(0)]);
+        assert_eq!(traces.add_trace.result_index, vec![WitnessId(4)]);
     }
 
     #[test]
     fn test_extension_field_support() {
         type ExtField = BinomialExtensionField<BabyBear, 4>;
 
-        let mut builder = CircuitBuilder::<ExtField>::new();
+        let mut builder = CircuitBuilder::new();
 
         // Test extension field operations: x + y * z
         let x = builder.add_public_input();

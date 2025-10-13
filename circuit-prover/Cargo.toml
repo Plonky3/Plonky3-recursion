@@ -10,6 +10,7 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
+itertools.workspace = true
 p3-air.workspace = true
 p3-baby-bear.workspace = true
 p3-challenger.workspace = true
@@ -20,13 +21,14 @@ p3-dft.workspace = true
 p3-field.workspace = true
 p3-fri.workspace = true
 p3-goldilocks.workspace = true
+p3-keccak.workspace = true
 p3-koala-bear.workspace = true
 p3-matrix.workspace = true
 p3-maybe-rayon.workspace = true
 p3-merkle-tree.workspace = true
+p3-mmcs-air.workspace = true
 p3-symmetric.workspace = true
 p3-uni-stark.workspace = true
-postcard = { version = "1.0", default-features = false, features = ["alloc"] }
 rand.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
@@ -45,5 +47,5 @@ name = "fibonacci"
 path = "examples/fibonacci.rs"
 
 [[example]]
-name = "fake_merkle_verify"
-path = "examples/fake_merkle_verify.rs"
+name = "mmcs_verify"
+path = "examples/mmcs_verify.rs"

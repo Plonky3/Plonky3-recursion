@@ -70,13 +70,7 @@ pub trait Recursive<F: Field> {
     /// TODO: Should we move this to Pcs instead?
     fn get_challenges(&self, circuit: &mut CircuitBuilder<F>) -> Vec<Target> {
         let num_challenges = self.num_challenges();
-
-        let mut challenges = Vec::with_capacity(num_challenges);
-        for _ in 0..num_challenges {
-            challenges.push(circuit.add_public_input());
-        }
-
-        challenges
+        circuit.alloc_public_inputs(num_challenges, "proof challenges")
     }
 
     // Temporary method used for testing for now. This should be changed into something more generic which relies as little as possible on the actual proof.
@@ -197,6 +191,8 @@ where
         alpha: &Target,
         columns: ColumnsTargets,
     ) -> Target {
+        builder.push_scope("eval_folded_circuit");
+
         let symbolic_constraints = get_symbolic_constraints(self, 0, columns.public_values.len());
 
         let mut acc = builder.add_const(F::ZERO);
@@ -205,6 +201,8 @@ where
             let constraints = symbolic_to_circuit(sels.row_selectors, &columns, &s_c, builder);
             acc = builder.add(mul_prev, constraints);
         }
+
+        builder.pop_scope();
 
         acc
     }
@@ -350,32 +348,24 @@ impl<SC: StarkGenericConfig> Recursive<SC::Challenge> for OpenedValuesTargets<SC
         _degree_bits: usize,
     ) -> Self {
         let trace_local_len = lens.next().unwrap();
-        let mut trace_local_targets = Vec::with_capacity(trace_local_len);
-        for _ in 0..trace_local_len {
-            trace_local_targets.push(circuit.add_public_input());
-        }
+        let trace_local_targets =
+            circuit.alloc_public_inputs(trace_local_len, "trace local values");
+
         let trace_next_len = lens.next().unwrap();
-        let mut trace_next_targets = Vec::with_capacity(trace_next_len);
-        for _ in 0..trace_next_len {
-            trace_next_targets.push(circuit.add_public_input());
-        }
+        let trace_next_targets = circuit.alloc_public_inputs(trace_next_len, "trace next values");
+
         let quotient_chunks_len = lens.next().unwrap();
         let mut quotient_chunks_targets = Vec::with_capacity(quotient_chunks_len);
         for _ in 0..quotient_chunks_len {
             let quotient_chunks_cols_len = lens.next().unwrap();
-            let mut quotient_col = Vec::with_capacity(quotient_chunks_cols_len);
-            for _ in 0..quotient_chunks_cols_len {
-                quotient_col.push(circuit.add_public_input());
-            }
+            let quotient_col =
+                circuit.alloc_public_inputs(quotient_chunks_cols_len, "quotient chunk columns");
             quotient_chunks_targets.push(quotient_col);
         }
+
         let random_len = lens.next().unwrap();
         let random_targets = if random_len > 0 {
-            let mut r = Vec::with_capacity(random_len);
-            for _ in 0..random_len {
-                r.push(circuit.add_public_input());
-            }
-            Some(r)
+            Some(circuit.alloc_public_inputs(random_len, "random values (ZK mode)"))
         } else {
             None
         };

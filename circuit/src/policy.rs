@@ -34,11 +34,9 @@ pub struct RuntimeAllowlist {
 
 impl RuntimeAllowlist {
     pub fn from_slice(ops: &[NonPrimitiveOpType]) -> Self {
-        let mut allowed = HashSet::new();
-        for op in ops {
-            allowed.insert(op.clone());
+        Self {
+            allowed: ops.iter().cloned().collect(),
         }
-        Self { allowed }
     }
 
     pub fn insert(&mut self, op: NonPrimitiveOpType) {

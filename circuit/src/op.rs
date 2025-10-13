@@ -1,6 +1,7 @@
 use alloc::vec::Vec;
 use core::hash::Hash;
 
+use crate::tables::MmcsPrivateData;
 use crate::types::WitnessId;
 
 /// Primitive operations that represent basic field arithmetic
@@ -48,9 +49,17 @@ pub enum Prim<F> {
 /// Non-primitive operation types
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum NonPrimitiveOpType {
-    FakeMerkleVerify,
-    FriVerify, // TODO: unimplemented
-               // Future: FriVerify, HashAbsorb, etc.
+    // Mmcs Verify gate with the argument is the size of the path
+    MmcsVerify,
+    FriVerify,
+    // Future: FriVerify, HashAbsorb, etc.
+}
+
+/// Non-primitive operation types
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum NonPrimitiveOpConfig {
+    MmcsVerifyConfig(crate::ops::MmcsVerifyConfig),
+    None,
 }
 
 /// Non-primitive operations representing complex cryptographic constraints.
@@ -69,21 +78,26 @@ pub enum NonPrimitiveOpType {
 /// 4. Avoid optimization passes breaking complex constraint relationships
 #[derive(Debug, Clone, PartialEq)]
 pub enum NonPrimitiveOp {
-    /// Fake Merkle tree path verification (simplified for testing)
-    ///
-    /// Verifies that a leaf value is contained in a Merkle tree with given root.
-    /// The actual Merkle path verification logic is implemented in a dedicated
+    /// Verifies that a leaf value is contained in a Mmcs with given root.
+    /// The actual Mmcs path verification logic is implemented in a dedicated
     /// AIR table that constrains the relationship between leaf and root.
     ///
     /// Public interface (on witness bus):
     /// - `leaf`: The leaf value being verified (single field element)
-    /// - `root`: The expected Merkle tree root (single field element)
+    /// - `index`: The index of the leaf
+    /// - `root`: The expected Mmcs root (single field element)
     ///
     /// Private data (set via NonPrimitiveOpId):
-    /// - Merkle path siblings and direction bits
-    /// - See `FakeMerklePrivateData` for complete specification
-    FakeMerkleVerify { leaf: WitnessId, root: WitnessId },
+    /// - Mmcs path siblings and direction bits
+    /// - See `MmcsPrivateData` for complete specification
+    MmcsVerify {
+        leaf: MmcsWitnessId,
+        index: WitnessId,
+        root: MmcsWitnessId,
+    },
 }
+
+pub type MmcsWitnessId = Vec<WitnessId>;
 
 /// Private auxiliary data for non-primitive operations
 ///
@@ -94,37 +108,10 @@ pub enum NonPrimitiveOp {
 /// - Is used by AIR tables to generate the appropriate constraints
 #[derive(Debug, Clone, PartialEq)]
 pub enum NonPrimitiveOpPrivateData<F> {
-    /// Private data for fake Merkle verification
+    /// Private data for Mmcs verification
     ///
-    /// Contains the complete Merkle path information needed by the prover
+    /// Contains the complete Mmcs path information needed by the prover
     /// to generate a valid proof. This data is not part of the public
     /// circuit specification.
-    FakeMerkleVerify(FakeMerklePrivateData<F>),
-}
-
-/// Private Merkle path data for fake Merkle verification (simplified)
-///
-/// This represents the private witness information that the prover needs
-/// to demonstrate knowledge of a valid Merkle path from leaf to root.
-/// In a real implementation, this would contain cryptographic hash values
-/// and tree structure information.
-///
-/// Note: This is a simplified "fake" implementation for demonstration.
-/// Production Merkle verification would use proper cryptographic hashes
-/// and handle multi-element hash digests, not single field elements.
-#[derive(Debug, Clone, PartialEq)]
-pub struct FakeMerklePrivateData<F> {
-    /// Sibling hash values along the Merkle path
-    ///
-    /// For each level of the tree (from leaf to root), contains the
-    /// sibling hash needed to compute the parent hash. In a real
-    /// implementation, these would be cryptographic hash outputs.
-    pub path_siblings: Vec<F>,
-
-    /// Direction bits indicating path through the tree
-    ///
-    /// For each level: `false` = current node is left child,
-    /// `true` = current node is right child. Used to determine
-    /// hash input ordering: `hash(current, sibling)` vs `hash(sibling, current)`.
-    pub path_directions: Vec<bool>,
+    MmcsVerify(MmcsPrivateData<F>),
 }

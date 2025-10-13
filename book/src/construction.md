@@ -53,15 +53,12 @@ A given row of the represented IR contains an operation and its associated opera
 0: Const { out: WitnessId(0), val: 0 }
 1: Const { out: WitnessId(1), val: 37 }
 2: Const { out: WitnessId(2), val: 111 }
-3: Const { out: WitnessId(3), val: 1 }
-4: Public { out: WitnessId(4), public_pos: 0 }
-5: Mul { a: WitnessId(1), b: WitnessId(4), out: WitnessId(5) }
-6: Add { a: WitnessId(2), b: WitnessId(0), out: WitnessId(5) }
-7: Mul { a: WitnessId(2), b: WitnessId(6), out: WitnessId(5) }
-8: Add { a: WitnessId(3), b: WitnessId(0), out: WitnessId(6) }
+3: Public { out: WitnessId(3), public_pos: 0 }
+4: Mul { a: WitnessId(1), b: WitnessId(3), out: WitnessId(4) }
+5: Add { a: WitnessId(2), b: WitnessId(0), out: WitnessId(4) }
 ```
 
-i.e. the operation at index 5 will perform `w[5] <- w[1] * w[4]`.
+i.e. operation 4 performs `w[4] <- w[1] * w[3]`, and operation 5 encodes the subtraction check as an addition `w[2] + w[0] = w[4]` (verifying `37 * x - 111 = 0`).
 
 In order to generate the IR, the first step is to create all operations symbolically.
 
@@ -80,7 +77,7 @@ A `circuit_builder` provides convenient helper functions and macros for represen
 The `Witness` table can be seen as a central memory bus that stores values shared across all operations. It is represented as pairs `(index, value)`, where indices are  that will be accessed by 
 the different chips via lookups to enforce consistency.
 
-- The index column is *preprocessed* [@@rap]: it is known to both prover and verifier in advance, requiring no online commitment.[^1]
+- The index column is *preprocessed*, or *read-after-preprocess* ([RAP](https://hackmd.io/@aztec-network/plonk-arithmetiization-air)): it is known to both prover and verifier in advance, requiring no online commitment.[^1]
 - The `Witness` table values are represented as extension field elements directly (where base field elements are padded with 0 on higher coordinates) for addressing efficiency.
 
 From the fixed IR of the example above, we can deduce an associated `Witness` table as follows:
@@ -90,10 +87,8 @@ From the fixed IR of the example above, we can deduce an associated `Witness` ta
 Row 0: WitnessId(w0) = 0
 Row 1: WitnessId(w1) = 37
 Row 2: WitnessId(w2) = 111
-Row 3: WitnessId(w3) = 1
-Row 4: WitnessId(w4) = 3
-Row 5: WitnessId(w5) = 111
-Row 6: WitnessId(w6) = 1
+Row 3: WitnessId(w3) = 3
+Row 4: WitnessId(w4) = 111
 ```
 
 Note that the initial version of the recursion machine, for the sake of simplicity and ease of iteration, contains a `Witness` table. However, because the verifier effectively knows the order of
@@ -102,7 +97,7 @@ each operation and the interaction between them, the `Witness` table can be enti
 
 ## Operation-specific STARK Chips
 
-Each operation family (e.g. addition, multiplication, Merkle path verification, FRI folding) has its own chip.
+Each operation family (e.g. addition, multiplication, MMCS path verification, FRI folding) has its own chip.
 
 A chip contains:
 
@@ -124,7 +119,7 @@ But relying only on primitive operations for the entire verification would lead 
 These non-primitive operations use not only `Witness` table elements (including public inputs), but may also require the use of *private data*. For example, when verifying a Merkle path, hash outputs are not stored in the `Witness` table. 
 
 This library aims at providing a certain
-number of non-primary chips so that projects can natively inherit from full recursive verifiers, which implies chips for FRI, Merkle paths verification, etc. Specific applications can also build their own
+number of non-primary chips so that projects can natively inherit from full recursive verifiers, which implies chips for FRI, MMCS path verification, etc. Specific applications can also build their own
 non-primitive chips and plug them at runtime.
 
 Going back to the previous example, prover and verifier can agree on the following logic for each chip:
@@ -134,18 +129,15 @@ Going back to the previous example, prover and verifier can agree on the followi
 Row 0: WitnessId(w0) = 0
 Row 1: WitnessId(w1) = 37
 Row 2: WitnessId(w2) = 111
-Row 3: WitnessId(w3) = 1
 
 === PUBLIC TRACE ===
-Row 0: WitnessId(w4) = 3
+Row 0: WitnessId(w3) = 3
 
 === MUL TRACE ===
-Row 0: WitnessId(w1) * WitnessId(w4) -> WitnessId(w5) | 37 * 3 -> 111
-Row 1: WitnessId(w2) * WitnessId(w6) -> WitnessId(w5) | 111 * 1 -> 111
+Row 0: WitnessId(w1) * WitnessId(w3) -> WitnessId(w4) | 37 * 3 -> 111
 
 === ADD TRACE ===
-Row 0: WitnessId(w2) + WitnessId(w0) -> WitnessId(w5) | 111 + 0 -> 111
-Row 1: WitnessId(w3) + WitnessId(w0) -> WitnessId(w6) | 1 + 0 -> 1
+Row 0: WitnessId(w2) + WitnessId(w0) -> WitnessId(w4) | 111 + 0 -> 111
 ```
 
 Note that because we started from a known, fixed program that has been lowered to a deterministic IR, we can have the `CONST` chip's table entirely preprocessed
@@ -157,22 +149,19 @@ Note that because we started from a known, fixed program that has been lowered t
 
 All chips interactions are performed via a lookup argument. Enforcing multiset equality between all chip ports and the `Witness` table entries ensures correctness without proving the execution order of the entire IR itself. Lookups can be seen as `READ`/`WRITE` or `RECEIVE`/`SEND` interactions between tables which allow global consistency over local AIRs.
 
-Using the terms `SEND` and `RECEIVE`, we can go back to the previous example and illustrate the interactions between all the chips and the central `Witness` table[^2]:
+Cross-table lookups (CTLs) ensure that **every** chip interaction happens through the Witness table: producers write a `(index, value)` pair into Witness and consumers read the same pair back. No chip talks directly to any other chip; the aggregated LogUp argument enforces multiset equality between the writes and reads.
 
+For the toy example the CTL relations are:[^2]
 
 ```bash
-  0:  0     // RECEIVE from CONST table, SEND to ADD table
-  1: 37     // RECEIVE from CONST table, SEND to MUL table
-  2: 111    // RECEIVE from CONST table, SEND to ADD and MUL tables
-  3:  1     // RECEIVE from CONST table, SEND to ADD table
-  4:  3     // RECEIVE from PublicInput table, SEND to MUL table
-  5: 111    // RECEIVE from ADD and MUL tables
-  6:  1     // RECEIVE from ADD table, SEND to MUL table
+(index 0, value 0)   : CONST → Witness → ADD
+(index 1, value 37)  : CONST → Witness → MUL
+(index 2, value 111) : CONST → Witness → ADD
+(index 3, value 3)   : PUBLIC → Witness → MUL
+(index 4, value 111) : MUL → Witness ← ADD
 ```
 
 
 [^1]: Preprocessed columns / polynomials can be reconstructed manually by the verifier, removing the need for a prover to commit to them and later perform the FRI protocol on them. However, the verifier needs $O(n)$ work when these columns are not structured, as it still needs to interpolate them. To alleviate this, the Plonky3 recursion stack performs *offline* commitment of unstructured preprocessed columns, so that we need only one instance of the FRI protocol to verify all preprocessed columns evaluations. 
 
-[^2]: We can see that both `ADD` and `MUL` tables are *writing* the output of one of their operations at the *same* location of the `Witness` table.
-As the latter can be seen as a *read-only* / *write-once* memory bus, having two identical lookup writes `w5 = 111` to the `Witness` table
-effectively enforces equality on both outputs sharing the same witness location, which translates in our example to `37.3 = 111 = 0 + 111`
+[^2]: The `ADD` and `MUL` tables both issue CTL writes of their outputs to the same Witness row. Because the Witness table is a *read-only* / *write-once* memory bus, the aggregated lookup forces those duplicate writes `w4 = 111` to agree, which is exactly the constraint `37 * 3 = 111 = 0 + 111`.
