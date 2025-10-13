@@ -228,6 +228,16 @@ impl<F: CircuitField> CircuitRunner<F> {
                         self.set_witness(b, b_val)?;
                     }
                 }
+                Prim::NonPrimitiveOp { inputs, outputs, op } => {
+                    let inputs_val = inputs
+                        .iter()
+                        .map(|&widx| self.get_witness(widx))
+                        .collect::<Result<Vec<F>, CircuitError>>()?;
+                    let outputs_val = op.apply(inputs_val);
+                    for (i, val) in outputs_val.iter().enumerate() {
+                        self.set_witness(outputs[i], *val)?;
+                    }
+                }
             }
         }
 

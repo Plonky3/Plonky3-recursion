@@ -1,4 +1,5 @@
 use alloc::vec::Vec;
+use p3_field::Field;
 use core::hash::Hash;
 
 use crate::tables::MmcsPrivateData;
@@ -44,6 +45,13 @@ pub enum Prim<F> {
         b: WitnessId,
         out: WitnessId,
     },
+
+    /// Non-primitive operation: witness[out] = op(witness[inputs])
+    NonPrimitiveOp {
+        inputs: Vec<WitnessId>,
+        outputs: Vec<WitnessId>,
+        op: NonPrimitiveOpType,
+    },
 }
 
 /// Non-primitive operation types
@@ -53,6 +61,12 @@ pub enum NonPrimitiveOpType {
     MmcsVerify,
     FriVerify,
     // Future: FriVerify, HashAbsorb, etc.
+}
+
+impl NonPrimitiveOpType {
+    pub fn apply<F: Field>(&self, _inputs: Vec<F>) -> Vec<F> {
+        todo!();
+    }
 }
 
 /// Non-primitive operation types

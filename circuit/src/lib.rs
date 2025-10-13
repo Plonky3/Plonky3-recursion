@@ -23,7 +23,7 @@ pub use builder::{CircuitBuilder, CircuitBuilderError};
 pub use circuit::{Circuit, CircuitField};
 pub use errors::CircuitError;
 pub use expr::{Expr, ExpressionGraph};
-pub use op::{NonPrimitiveOp, NonPrimitiveOpPrivateData, Prim};
+pub use op::{NonPrimitiveOp, NonPrimitiveOpPrivateData, NonPrimitiveOpType, Prim};
 pub use ops::{FriOps, MmcsOps};
 pub use tables::{CircuitRunner, MmcsPrivateData, MmcsTrace, Traces};
 pub use types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};

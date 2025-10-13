@@ -743,6 +743,27 @@ where
                     });
                     // The output of Div is the b_widx.
                     expr_to_widx.insert(expr_id, b_widx);
+                },
+                Expr::NonPrimitiveOp { inputs, outputs, op } => {
+                    let inputs_widx = inputs.iter().map(|input| {
+                        Self::get_witness_id(
+                            &expr_to_widx,
+                            *input,
+                            &format!("NonPrimitiveOp input for {expr_id:?}"),
+                        )
+                    }).collect::<Result<_, _>>()?;
+                    let outputs_widx = outputs.iter().map(|output| {
+                        Self::get_witness_id(
+                            &expr_to_widx,
+                            *output,
+                            &format!("NonPrimitiveOp output for {expr_id:?}"),
+                        )
+                    }).collect::<Result<_, _>>()?;
+                    primitive_ops.push(Prim::NonPrimitiveOp {
+                        inputs: inputs_widx,
+                        outputs: outputs_widx,
+                        op: op.clone(),
+                    });
                 }
             }
         }
