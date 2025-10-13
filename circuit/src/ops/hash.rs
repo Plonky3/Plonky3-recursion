@@ -42,7 +42,11 @@ where
     ) -> Result<(), CircuitBuilderError> {
         self.ensure_op_enabled(NonPrimitiveOpType::HashAbsorb { reset })?;
 
-        self.push_non_primitive_op(NonPrimitiveOpType::HashAbsorb { reset }, inputs.to_vec());
+        self.push_non_primitive_op(
+            NonPrimitiveOpType::HashAbsorb { reset },
+            inputs.to_vec(),
+            "HashAbsorb",
+        );
 
         Ok(())
     }
@@ -50,7 +54,11 @@ where
     fn add_hash_squeeze(&mut self, outputs: &[ExprId]) -> Result<(), CircuitBuilderError> {
         self.ensure_op_enabled(NonPrimitiveOpType::HashSqueeze)?;
 
-        self.push_non_primitive_op(NonPrimitiveOpType::HashSqueeze, outputs.to_vec());
+        self.push_non_primitive_op(
+            NonPrimitiveOpType::HashSqueeze,
+            outputs.to_vec(),
+            "HashSqueeze",
+        );
 
         Ok(())
     }
