@@ -16,6 +16,12 @@ impl fmt::Display for WitnessId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ExprId(pub u32);
 
+impl fmt::Display for ExprId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "e{}", self.0)
+    }
+}
+
 impl ExprId {
     /// The zero expression ID - always points to Const(0)
     pub const ZERO: ExprId = ExprId(0);

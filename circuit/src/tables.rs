@@ -1,12 +1,13 @@
 use alloc::vec::Vec;
 use alloc::{format, vec};
 
+use hashbrown::HashMap;
 use tracing::instrument;
 
 use crate::circuit::Circuit;
-use crate::op::{NonPrimitiveOp, NonPrimitiveOpPrivateData, Prim};
-use crate::types::{NonPrimitiveOpId, WitnessId};
-use crate::{CircuitError, CircuitField};
+use crate::op::{NonPrimitiveOpPrivateData, Prim};
+use crate::types::{ WitnessId};
+use crate::{CircuitError, CircuitField, ExprId};
 
 mod mmcs;
 pub use mmcs::{MmcsPathTrace, MmcsPrivateData, MmcsTrace};
@@ -102,14 +103,14 @@ pub struct CircuitRunner<F> {
     circuit: Circuit<F>,
     witness: Vec<Option<F>>,
     /// Private data for complex operations (not on witness bus)
-    non_primitive_op_private_data: Vec<Option<NonPrimitiveOpPrivateData<F>>>,
+    non_primitive_op_private_data: HashMap<ExprId, Option<NonPrimitiveOpPrivateData<F>>>,
 }
 
 impl<F: CircuitField> CircuitRunner<F> {
     /// Create a new prover instance
     pub fn new(circuit: Circuit<F>) -> Self {
         let witness = vec![None; circuit.witness_count as usize];
-        let non_primitive_op_private_data = vec![None; circuit.non_primitive_ops.len()];
+        let non_primitive_op_private_data = HashMap::new();
         Self {
             circuit,
             witness,
@@ -140,26 +141,11 @@ impl<F: CircuitField> CircuitRunner<F> {
     /// Set private data for a complex operation
     pub fn set_non_primitive_op_private_data(
         &mut self,
-        op_id: NonPrimitiveOpId,
+        expr_id: ExprId,
         private_data: NonPrimitiveOpPrivateData<F>,
     ) -> Result<(), CircuitError> {
-        // Validate that the op_id exists in the circuit
-        if op_id.0 as usize >= self.circuit.non_primitive_ops.len() {
-            return Err(CircuitError::NonPrimitiveOpIdOutOfRange {
-                op_id: op_id.0,
-                max_ops: self.circuit.non_primitive_ops.len(),
-            });
-        }
-
-        // Validate that the private data matches the operation type
-        let non_primitive_op = &self.circuit.non_primitive_ops[op_id.0 as usize];
-        match (non_primitive_op, &private_data) {
-            (NonPrimitiveOp::MmcsVerify { .. }, NonPrimitiveOpPrivateData::MmcsVerify(_)) => {
-                // Type match - good!
-            }
-        }
-
-        self.non_primitive_op_private_data[op_id.0 as usize] = Some(private_data);
+        self.non_primitive_op_private_data
+            .insert(expr_id, Some(private_data));
         Ok(())
     }
 
@@ -228,7 +214,11 @@ impl<F: CircuitField> CircuitRunner<F> {
                         self.set_witness(b, b_val)?;
                     }
                 }
-                Prim::NonPrimitiveOp { inputs, outputs, op } => {
+                Prim::NonPrimitiveOp {
+                    inputs,
+                    outputs,
+                    op,
+                } => {
                     let inputs_val = inputs
                         .iter()
                         .map(|&widx| self.get_witness(widx))

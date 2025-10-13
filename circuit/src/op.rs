@@ -1,6 +1,7 @@
 use alloc::vec::Vec;
-use p3_field::Field;
 use core::hash::Hash;
+
+use p3_field::Field;
 
 use crate::tables::MmcsPrivateData;
 use crate::types::WitnessId;

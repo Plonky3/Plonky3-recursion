@@ -2,11 +2,12 @@ use alloc::format;
 use alloc::string::ToString;
 use alloc::vec::Vec;
 
+use hashbrown::HashMap;
 use itertools::izip;
 use p3_field::{ExtensionField, Field};
 use p3_symmetric::PseudoCompressionFunction;
 
-use crate::CircuitError;
+use crate::{CircuitError, ExprId};
 use crate::circuit::{Circuit, CircuitField};
 use crate::op::{
     NonPrimitiveOp, NonPrimitiveOpConfig, NonPrimitiveOpPrivateData, NonPrimitiveOpType,
@@ -80,7 +81,7 @@ impl<F: Field + Clone + Default> MmcsPrivateData<F> {
         {
             return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
                 op: NonPrimitiveOpType::MmcsVerify,
-                operation_index: 0, // Unknown at construction time
+                operation_index: ExprId(0), // Unknown at construction time
                 expected: "last sibling should not have extra sibling (None)".to_string(),
                 got: format!("last sibling has extra sibling: {extra_sibling:?}"),
             });
@@ -183,15 +184,16 @@ impl<F: Field + Clone + Default> MmcsPrivateData<F> {
 pub fn generate_mmcs_trace<F: CircuitField>(
     circuit: &Circuit<F>,
     _witness: &[Option<F>],
-    non_primitive_op_private_data: &[Option<NonPrimitiveOpPrivateData<F>>],
+    non_primitive_op_private_data: &HashMap<ExprId, Option<NonPrimitiveOpPrivateData<F>>>,
     get_witness: impl Fn(WitnessId) -> Result<F, CircuitError>,
 ) -> Result<MmcsTrace<F>, CircuitError> {
     let mut mmcs_paths = Vec::new();
 
     // Process each complex operation by index to avoid borrowing conflicts
-    for op_idx in 0..circuit.non_primitive_ops.len() {
+    for (op_idx, op) in &circuit.non_primitive_ops {
         // Copy out leaf/root to end immutable borrow immediately
-        let NonPrimitiveOp::MmcsVerify { leaf, index, root } = &circuit.non_primitive_ops[op_idx];
+        let NonPrimitiveOp::MmcsVerify { leaf, index, root } = op;
+
 
         if let Some(Some(NonPrimitiveOpPrivateData::MmcsVerify(private_data))) =
             non_primitive_op_private_data.get(op_idx).cloned()
@@ -211,13 +213,13 @@ pub fn generate_mmcs_trace<F: CircuitField>(
                 .collect::<Result<_, _>>()?;
             let private_data_leaf = private_data.path_states.first().ok_or(
                 CircuitError::NonPrimitiveOpMissingPrivateData {
-                    operation_index: op_idx,
+                    operation_index: *op_idx,
                 },
             )?;
             if witness_leaf != *private_data_leaf {
                 return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
                     op: NonPrimitiveOpType::MmcsVerify,
-                    operation_index: op_idx,
+                    operation_index: *op_idx,
                     expected: alloc::format!("leaf: {witness_leaf:?}"),
                     got: alloc::format!("leaf: {private_data_leaf:?}"),
                 });
@@ -230,13 +232,13 @@ pub fn generate_mmcs_trace<F: CircuitField>(
                 .collect::<Result<_, _>>()?;
             let computed_root = private_data.path_states.last().ok_or(
                 CircuitError::NonPrimitiveOpMissingPrivateData {
-                    operation_index: op_idx,
+                    operation_index: *op_idx,
                 },
             )?;
             if witness_root != *computed_root {
                 return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
                     op: NonPrimitiveOpType::MmcsVerify,
-                    operation_index: op_idx,
+                    operation_index: *op_idx,
                     expected: alloc::format!("root: {witness_root:?}"),
                     got: alloc::format!("root: {computed_root:?}"),
                 });
@@ -246,7 +248,7 @@ pub fn generate_mmcs_trace<F: CircuitField>(
             mmcs_paths.push(trace);
         } else {
             return Err(CircuitError::NonPrimitiveOpMissingPrivateData {
-                operation_index: op_idx,
+                operation_index: *op_idx,
             });
         }
     }

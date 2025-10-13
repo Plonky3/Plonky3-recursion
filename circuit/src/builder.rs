@@ -75,7 +75,7 @@ pub struct CircuitBuilder<F> {
     /// Equality constraints to enforce at lowering
     pending_connects: Vec<(ExprId, ExprId)>,
     /// Non-primitive operations (complex constraints that don't produce ExprIds)
-    non_primitive_ops: Vec<(NonPrimitiveOpId, NonPrimitiveOpType, Vec<ExprId>)>, // (op_id, op_type, witness_exprs)
+    non_primitive_ops: HashMap<ExprId, (NonPrimitiveOpType, Vec<ExprId>)>, // (op_id, (op_type, witness_exprs))
     /// Builder-level constant pool: value -> unique Const ExprId
     const_pool: HashMap<F, ExprId>,
 
@@ -151,7 +151,7 @@ where
             witness_alloc: WitnessAllocator::new(),
             public_input_count: 0,
             pending_connects: Vec::new(),
-            non_primitive_ops: Vec::new(),
+            non_primitive_ops: HashMap::new(),
             const_pool,
             enabled_ops: HashMap::new(), // All non-primitive ops are disabled by default
             #[cfg(debug_assertions)]
@@ -483,11 +483,23 @@ where
     #[allow(unused_variables)]
     pub(crate) fn push_non_primitive_op(
         &mut self,
-        op_type: NonPrimitiveOpType,
-        witness_exprs: Vec<ExprId>,
+        op: NonPrimitiveOpType,
+        inputs: Vec<ExprId>,
+        outputs: Vec<ExprId>,
         label: &'static str,
-    ) -> NonPrimitiveOpId {
+    ) -> ExprId {
         let op_id = NonPrimitiveOpId(self.non_primitive_ops.len() as u32);
+        let witness_exprs = inputs
+            .iter()
+            .chain(outputs.iter())
+            .cloned()
+            .collect::<Vec<_>>();
+
+        let expr_id = self.expressions.add_expr(Expr::NonPrimitiveOp {
+            inputs,
+            outputs,
+            op: op.clone(),
+        });
 
         #[cfg(debug_assertions)]
         {
@@ -496,15 +508,16 @@ where
             // TODO: Can we find something better than the `op_id`?
             self.allocation_log.push(AllocationEntry {
                 expr_id: ExprId(op_id.0),
-                alloc_type: AllocationType::NonPrimitiveOp(op_type.clone()),
+                alloc_type: AllocationType::NonPrimitiveOp(op.clone()),
                 label,
                 dependencies: witness_exprs.clone(),
                 scope: self.current_scope(),
             });
         }
 
-        self.non_primitive_ops.push((op_id, op_type, witness_exprs));
-        op_id
+        self.non_primitive_ops.insert(expr_id, (op, witness_exprs));
+
+        expr_id
     }
 
     /// Check whether an op type is enabled on this builder.
@@ -551,7 +564,7 @@ where
 
         // Stage 4: Generate final circuit
         let witness_count = self.witness_alloc.witness_count();
-        let mut circuit = Circuit::new(witness_count);
+        let mut circuit = Circuit::new(witness_count, expr_to_widx);
         circuit.primitive_ops = primitive_ops;
         circuit.non_primitive_ops = lowered_non_primitive_ops;
         circuit.public_rows = public_rows;
@@ -743,22 +756,32 @@ where
                     });
                     // The output of Div is the b_widx.
                     expr_to_widx.insert(expr_id, b_widx);
-                },
-                Expr::NonPrimitiveOp { inputs, outputs, op } => {
-                    let inputs_widx = inputs.iter().map(|input| {
-                        Self::get_witness_id(
-                            &expr_to_widx,
-                            *input,
-                            &format!("NonPrimitiveOp input for {expr_id:?}"),
-                        )
-                    }).collect::<Result<_, _>>()?;
-                    let outputs_widx = outputs.iter().map(|output| {
-                        Self::get_witness_id(
-                            &expr_to_widx,
-                            *output,
-                            &format!("NonPrimitiveOp output for {expr_id:?}"),
-                        )
-                    }).collect::<Result<_, _>>()?;
+                }
+                Expr::NonPrimitiveOp {
+                    inputs,
+                    outputs,
+                    op,
+                } => {
+                    let inputs_widx = inputs
+                        .iter()
+                        .map(|input| {
+                            Self::get_witness_id(
+                                &expr_to_widx,
+                                *input,
+                                &format!("NonPrimitiveOp input for {expr_id:?}"),
+                            )
+                        })
+                        .collect::<Result<_, _>>()?;
+                    let outputs_widx = outputs
+                        .iter()
+                        .map(|output| {
+                            Self::get_witness_id(
+                                &expr_to_widx,
+                                *output,
+                                &format!("NonPrimitiveOp output for {expr_id:?}"),
+                            )
+                        })
+                        .collect::<Result<_, _>>()?;
                     primitive_ops.push(Prim::NonPrimitiveOp {
                         inputs: inputs_widx,
                         outputs: outputs_widx,
@@ -775,10 +798,10 @@ where
     fn lower_non_primitive_ops(
         &self,
         expr_to_widx: &HashMap<ExprId, WitnessId>,
-    ) -> Result<Vec<NonPrimitiveOp>, CircuitBuilderError> {
-        let mut lowered_ops = Vec::new();
+    ) -> Result<HashMap<ExprId, NonPrimitiveOp>, CircuitBuilderError> {
+        let mut lowered_ops = HashMap::new();
 
-        for (_op_id, op_type, witness_exprs) in &self.non_primitive_ops {
+        for (op_id, (op_type, witness_exprs)) in &self.non_primitive_ops {
             let config = self.enabled_ops.get(op_type);
             match op_type {
                 NonPrimitiveOpType::MmcsVerify => {
@@ -819,7 +842,7 @@ where
                         })
                         .collect::<Result<_, _>>()?;
 
-                    lowered_ops.push(NonPrimitiveOp::MmcsVerify {
+                    lowered_ops.insert(*op_id, NonPrimitiveOp::MmcsVerify {
                         leaf: leaf_widx,
                         index: index_widx,
                         root: root_widx,
@@ -852,7 +875,7 @@ mod tests {
 
     use super::*;
     use crate::op::NonPrimitiveOpType;
-    use crate::{CircuitError, MmcsOps, NonPrimitiveOp};
+    use crate::{CircuitError, MmcsOps};
 
     #[test]
     fn test_circuit_basic_api() {
@@ -1249,8 +1272,8 @@ mod tests {
 
         let circuit = builder.build().unwrap();
         assert_eq!(circuit.non_primitive_ops.len(), 1);
-        match &circuit.non_primitive_ops[0] {
-            NonPrimitiveOp::MmcsVerify { .. } => {}
+        match &circuit.non_primitive_ops.values().next().unwrap() {
+            NonPrimitiveOp::MmcsVerify { .. } => {},
         }
     }
 

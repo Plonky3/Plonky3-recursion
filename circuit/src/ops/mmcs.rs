@@ -7,7 +7,7 @@ use p3_field::{ExtensionField, Field};
 use crate::CircuitError;
 use crate::builder::{CircuitBuilder, CircuitBuilderError};
 use crate::op::NonPrimitiveOpType;
-use crate::types::{ExprId, NonPrimitiveOpId};
+use crate::types::ExprId;
 
 /// Configuration parameters for Mmcs verification operations. When
 /// `base_field_digest_elems > ext_field_digest_elems`, we say the configuration
@@ -167,7 +167,7 @@ pub trait MmcsOps<F> {
         leaf_expr: &[ExprId],
         index_expr: &ExprId,
         root_expr: &[ExprId],
-    ) -> Result<NonPrimitiveOpId, CircuitBuilderError>;
+    ) -> Result<ExprId, CircuitBuilderError>;
 }
 
 impl<F> MmcsOps<F> for CircuitBuilder<F>
@@ -179,19 +179,18 @@ where
         leaf_expr: &[ExprId],
         index_expr: &ExprId,
         root_expr: &[ExprId],
-    ) -> Result<NonPrimitiveOpId, CircuitBuilderError> {
+    ) -> Result<ExprId, CircuitBuilderError> {
         self.ensure_op_enabled(NonPrimitiveOpType::MmcsVerify)?;
 
-        let mut witness_exprs = vec![];
-        witness_exprs.extend(leaf_expr);
-        witness_exprs.push(*index_expr);
-        witness_exprs.extend(root_expr);
-        Ok(
-            self.push_non_primitive_op(
-                NonPrimitiveOpType::MmcsVerify,
-                witness_exprs,
-                "mmcs_verify",
-            ),
-        )
+        let mut inputs = vec![];
+        inputs.extend(leaf_expr);
+        inputs.push(*index_expr);
+
+        Ok(self.push_non_primitive_op(
+            NonPrimitiveOpType::MmcsVerify,
+            inputs,
+            root_expr.to_vec(),
+            "mmcs_verify",
+        ))
     }
 }
