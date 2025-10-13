@@ -1097,7 +1097,7 @@ mod tests {
                 let circuit = builder.build().unwrap();
 
                 // Only a single witness is allocated, on top of the zero slot.
-                assert_eq!(circuit.witness_count, 2); 
+                assert_eq!(circuit.witness_count, 2);
 
                 let runner = circuit.runner();
 
