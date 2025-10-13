@@ -1,13 +1,48 @@
+//! [`MulAir`] deals with multiplication and division. In the case of division, `a / b = c` is written in the table as `b * c = a`.
+//! The chip handles both base field and extension field operations, as it is parametrized by the extension degree `D`.
+//! The runtime parameter `lanes` also controls the number of operations carried out in a row.
+//! The `w_binomial` parameter is used for binomial extensions (i.e. x^D = W) and is `None` for base field or non-binomial cases.
+//!
+//! /!\ Note that only base field and binomial extensions are currently supported.
+//!
+//! # Columns
+//!
+//! The AIR has `3 * D + 3` columns for each operation:
+//!
+//! - `D` columns for the `left` operand value,
+//! - 1 column for the `left` operand witness index,
+//! - `D` columns for the `right` operand value,
+//! - 1 column for the `right` operand witness index,
+//! - `D` columns for the `output` value,
+//! - 1 column for the `output` witness index.
+//!
+//! # Constraints
+//!
+//! In the base field case (`D == 1`):
+//! - for each triple `(left, right, output)`: `left * right - output`.
+//!
+//! In the binomial extension case (`D > 1`):
+//! - for each triple `(left, right, output)`:
+//!     - perform schoolbook multiplication of the polynomials represented by `left` and `right`,
+//!     - reduce modulo `x^D - W`,
+//!     - ensure the result equals `output`.
+//!
+//! # Global Interactions
+//!
+//! There are three interactions per operation with the witness bus:
+//! - send `(index_left, left)`
+//! - send `(index_right, right)`
+//! - send `(index_output, output)`
+
 #![allow(clippy::needless_range_loop)]
 use alloc::vec::Vec;
 
 use p3_air::{Air, AirBuilder, BaseAir};
 use p3_circuit::tables::MulTrace;
+use p3_circuit::utils::pad_to_power_of_two;
 use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
-
-use super::utils::pad_to_power_of_two;
 
 /// AIR for proving multiplication operations: lhs * rhs = result.
 /// Parameterised over extension degree `D` and a runtime lane count controlling how many

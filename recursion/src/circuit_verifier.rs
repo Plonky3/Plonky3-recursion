@@ -12,10 +12,23 @@ use p3_util::zip_eq::zip_eq;
 use thiserror::Error;
 
 use crate::Target;
+use crate::challenges::StarkChallenges;
 use crate::recursive_generation::GenerationError;
 use crate::recursive_traits::{
     CommitmentTargets, OpenedValuesTargets, ProofTargets, Recursive, RecursiveAir, RecursivePcs,
 };
+
+type PcsVerifierParams<SC, InputProof, OpeningProof, Comm> =
+    <<SC as StarkGenericConfig>::Pcs as RecursivePcs<
+        SC,
+        InputProof,
+        OpeningProof,
+        Comm,
+        <<SC as StarkGenericConfig>::Pcs as Pcs<
+            <SC as StarkGenericConfig>::Challenge,
+            <SC as StarkGenericConfig>::Challenger,
+        >>::Domain,
+    >>::VerifierParams;
 
 #[derive(Debug, Error)]
 pub enum VerificationError {
@@ -47,6 +60,7 @@ fn get_circuit_challenges<
 >(
     proof_targets: &ProofTargets<SC, Comm, OpeningProof>,
     circuit: &mut CircuitBuilder<SC::Challenge>,
+    pcs_params: &PcsVerifierParams<SC, InputProof, OpeningProof, Comm>,
 ) -> Vec<Target>
 where
     SC::Pcs: RecursivePcs<
@@ -57,25 +71,32 @@ where
             <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain,
         >,
 {
-    let mut challenges = vec![];
-    // TODO: Observe degree bits and degree_bits - is_zk.
-    // TODO: Observe local targets.
-    // TODO: Observe public values.
-    // First Fiat-Shamir challenge `alpha`.
-    challenges.push(circuit.add_public_input());
-    // TODO: Observe quotient chunks.
-    // TODO: Observe random commitment if any.
-    // zeta and zeta_next
-    challenges.push(circuit.add_public_input());
-    challenges.push(circuit.add_public_input());
+    // Allocate base STARK challenges (alpha, zeta, zeta_next)
+    let base_challenges = StarkChallenges::allocate(circuit);
 
-    let pcs_challenges = SC::Pcs::get_challenges_circuit(circuit, proof_targets);
+    // Get PCS-specific challenges (e.g., FRI betas and query indices)
+    let pcs_challenges = SC::Pcs::get_challenges_circuit(circuit, proof_targets, pcs_params);
 
-    challenges.extend(pcs_challenges);
-
-    challenges
+    // Return flat vector: [alpha, zeta, zeta_next, ...pcs_challenges]
+    let mut all_challenges = base_challenges.to_vec();
+    all_challenges.extend(pcs_challenges);
+    all_challenges
 }
 
+/// Verifies a STARK proof within a circuit.
+///
+/// This function adds constraints to the circuit builder that verify a STARK proof.
+///
+/// # Parameters
+/// - `config`: STARK configuration including PCS and challenger
+/// - `air`: The Algebraic Intermediate Representation defining the computation
+/// - `circuit`: Circuit builder to add verification constraints to
+/// - `proof_targets`: Recursive representation of the proof
+/// - `public_values`: Public input targets
+/// - `pcs_params`: PCS-specific verifier parameters (e.g. FRI's log blowup / final poly size)
+///
+/// # Returns
+/// `Ok(())` if the circuit was successfully constructed, `Err` otherwise.
 pub fn verify_circuit<
     A,
     SC: StarkGenericConfig,
@@ -91,7 +112,7 @@ pub fn verify_circuit<
     circuit: &mut CircuitBuilder<SC::Challenge>,
     proof_targets: &ProofTargets<SC, Comm, OpeningProof>,
     public_values: &[Target],
-    params: &[usize],
+    pcs_params: &PcsVerifierParams<SC, InputProof, OpeningProof, Comm>,
 ) -> Result<(), VerificationError>
 where
     A: RecursiveAir<SC::Challenge>,
@@ -140,8 +161,11 @@ where
         .collect_vec();
 
     // Challenger is called here. But we don't have the interactions or hash tables yet.
-    let challenge_targets =
-        get_circuit_challenges::<SC, Comm, InputProof, OpeningProof>(proof_targets, circuit);
+    let challenge_targets = get_circuit_challenges::<SC, Comm, InputProof, OpeningProof>(
+        proof_targets,
+        circuit,
+        pcs_params,
+    );
 
     // Check that the random commitments are/are not present depending on the ZK setting.
     // - If ZK is enabled, the prover should have random commitments.
@@ -150,7 +174,7 @@ where
         return Err(VerificationError::RandomizationError);
     }
 
-    // Verify shape.
+    // Validate shape.
     let air_width = A::width(air);
     if opened_trace_local_targets.len() != air_width || opened_trace_next_targets.len() != air_width
     {
@@ -234,7 +258,7 @@ where
         &challenge_targets[3..],
         &coms_to_verify,
         opening_proof,
-        params,
+        pcs_params,
     )?;
 
     let zero = circuit.add_const(SC::Challenge::ZERO);
@@ -248,23 +272,16 @@ where
                 .enumerate()
                 .filter(|(j, _)| *j != i)
                 .fold(one, |total, (_, other_domain)| {
-                    let vp_zeta = vanishing_poly_at_point_circuit::<
-                        SC,
-                        InputProof,
-                        OpeningProof,
-                        Comm,
-                        <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain,
-                    >(config, *other_domain, zeta, circuit);
+                    let vp_zeta =
+                        vanishing_poly_at_point_circuit(config, *other_domain, zeta, circuit);
 
                     let first_point = circuit.add_const(pcs.first_point(domain));
-                    let vp_first_point =
-                        vanishing_poly_at_point_circuit::<
-                            SC,
-                            InputProof,
-                            OpeningProof,
-                            Comm,
-                            <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain,
-                        >(config, *other_domain, first_point, circuit);
+                    let vp_first_point = vanishing_poly_at_point_circuit(
+                        config,
+                        *other_domain,
+                        first_point,
+                        circuit,
+                    );
                     let div = circuit.div(vp_zeta, vp_first_point);
 
                     circuit.mul(total, div)
@@ -424,11 +441,13 @@ mod tests {
         Val<SC>: TwoAdicField,
         Dft: TwoAdicSubgroupDft<Val<SC>>,
     {
+        type VerifierParams = ();
         type RecursiveProof = EmptyTarget;
 
         fn get_challenges_circuit(
             _circuit: &mut CircuitBuilder<<SC as StarkGenericConfig>::Challenge>,
             _proof_targets: &crate::recursive_traits::ProofTargets<SC, Comm, EmptyTarget>,
+            _params: &Self::VerifierParams,
         ) -> vec::Vec<Target> {
             vec![]
         }
@@ -442,7 +461,7 @@ mod tests {
                 TwoAdicMultiplicativeCoset<Val<SC>>,
             >,
             _opening_proof: &EmptyTarget,
-            _params: &[usize],
+            _params: &Self::VerifierParams,
         ) -> Result<(), VerificationError> {
             Ok(())
         }
@@ -682,7 +701,7 @@ mod tests {
         >::lens(&proof);
 
         // Initialize the circuit builder.
-        let mut circuit_builder = CircuitBuilder::<Challenge>::new();
+        let mut circuit_builder = CircuitBuilder::new();
         let proof_targets = ProofTargets::<
             StarkConfig<TrivialPcs<Val, Dft>, Challenge, Challenger>,
             DummyCom<Val>,
@@ -707,7 +726,7 @@ mod tests {
             &mut circuit_builder,
             &proof_targets,
             &[],
-            &[],
+            &(),
         )
         .map_err(|e| format!("{e:?}"))?;
 

@@ -20,13 +20,13 @@ pub enum Expr<F> {
 }
 
 /// Graph for storing expression DAG nodes
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ExpressionGraph<F> {
     nodes: Vec<Expr<F>>,
 }
 
 impl<F> ExpressionGraph<F> {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self { nodes: Vec::new() }
     }
 
@@ -45,12 +45,6 @@ impl<F> ExpressionGraph<F> {
     /// Get all nodes in the graph
     pub fn nodes(&self) -> &[Expr<F>] {
         &self.nodes
-    }
-}
-
-impl<F> Default for ExpressionGraph<F> {
-    fn default() -> Self {
-        Self::new()
     }
 }
 

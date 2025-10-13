@@ -1,13 +1,38 @@
+//! [`AddAir`] deals with addition and subtraction. In the case of subtraction, `a - b = c` is written in the table as `b + c = a`. \
+//! The chip handles both base field and extension field operations, as it is parametrized by the extension degree `D`.
+//! The runtime parameter `lanes` also controls the number of operations carried out in a row.
+//!
+//! # Columns
+//!
+//! The AIR has `3 * D + 3` columns for each operation:
+//!
+//! - `D` columns for the left operand,
+//! - 1 column for `index_left`: the index of the left operand in the witness bus,
+//! - `D` columns for the right operand,
+//! - 1 column for `index_right`: the index of the right operand in the witness bus,
+//! - `D` columns for the output,
+//! - 1 column for `index_output`:  the index of the output in the witness bus.
+//!
+//! # Constraints
+//!
+//! - for each triple `(left, right, output)`: `left[i] + right[i] - output[i]`, for `i` in `0..D`.
+//!
+//! # Global Interactions
+//!
+//! There are three interactions per operation with the witness bus:
+//! - send `(index_left, left)`
+//! - send `(index_right, right)`
+//! - send `(index_output, output)`
+
 #![allow(clippy::needless_range_loop)]
 use alloc::vec::Vec;
 
 use p3_air::{Air, AirBuilder, BaseAir};
 use p3_circuit::tables::AddTrace;
+use p3_circuit::utils::pad_to_power_of_two;
 use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
-
-use super::utils::pad_to_power_of_two;
 
 /// AIR for proving addition operations: lhs + rhs = result.
 /// Generic over extension degree `D` (component-wise addition) and a runtime lane count
@@ -38,7 +63,7 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AddAir<F, D> {
         Self::LANE_WIDTH
     }
 
-    pub fn total_width(&self) -> usize {
+    pub const fn total_width(&self) -> usize {
         self.lanes * Self::lane_width()
     }
 

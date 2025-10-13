@@ -43,13 +43,15 @@ fn fold_row_chain<EF: Field>(
     initial_folded_eval: Target,
     phases: &[FoldPhaseInputsTarget],
 ) -> Target {
+    builder.push_scope("fold_row_chain");
+
     let mut folded = initial_folded_eval;
 
-    let one = builder.add_const(EF::ONE);
+    let one = builder.alloc_const(EF::ONE, "1");
 
     // Precompute constants as field constants: 2^{-1} and −1/2.
     let two_inv_val = EF::ONE.halve(); // 1/2
-    let neg_half = builder.add_const(EF::NEG_ONE * two_inv_val); // −1/2
+    let neg_half = builder.alloc_const(EF::NEG_ONE * two_inv_val, "−1/2"); // −1/2
 
     for FoldPhaseInputsTarget {
         beta,
@@ -66,35 +68,63 @@ fn fold_row_chain<EF: Field>(
         let e0 = builder.select(sibling_is_right, folded, e_sibling);
 
         // inv = (x1 − x0)^{-1} = (−2x0)^{-1} = (−1/2) / x0
-        let inv = builder.div(neg_half, x0);
+        let inv = builder.alloc_div(neg_half, x0, "inv");
 
         // e1 − e0 = (2b − 1) · (e_sibling − folded)
-        let d = builder.sub(e_sibling, folded);
-        let two_b = builder.add(sibling_is_right, sibling_is_right);
-        let two_b_minus_one = builder.sub(two_b, one);
-        let e1_minus_e0 = builder.mul(two_b_minus_one, d);
+        let d = builder.alloc_sub(e_sibling, folded, "d");
+        let two_b = builder.alloc_add(sibling_is_right, sibling_is_right, "two_b");
+        let two_b_minus_one = builder.alloc_sub(two_b, one, "two_b_minus_one");
+        let e1_minus_e0 = builder.alloc_mul(two_b_minus_one, d, "e1_minus_e0");
 
         // t = (β − x0) * (e1 − e0)
-        let beta_minus_x0 = builder.sub(beta, x0);
-        let t = builder.mul(beta_minus_x0, e1_minus_e0);
+        let beta_minus_x0 = builder.alloc_sub(beta, x0, "beta_minus_x0");
+        let t = builder.alloc_mul(beta_minus_x0, e1_minus_e0, "t");
 
         // folded = e0 + t * inv
-        let t_inv = builder.mul(t, inv);
-        folded = builder.add(e0, t_inv);
+        let t_inv = builder.alloc_mul(t, inv, "t_inv");
+        folded = builder.alloc_add(e0, t_inv, "folded 1");
 
         // Optional roll-in: folded += β² · roll_in
         if let Some(ro) = roll_in {
-            let beta_sq = builder.mul(beta, beta);
-            let add_term = builder.mul(beta_sq, ro);
-            folded = builder.add(folded, add_term);
+            let beta_sq = builder.alloc_mul(beta, beta, "beta_sq");
+            let add_term = builder.alloc_mul(beta_sq, ro, "add_term");
+            folded = builder.alloc_add(folded, add_term, "folded 2");
         }
     }
 
+    builder.pop_scope(); // close `fold_row_chain` scope
     folded
 }
 
+/// Evaluate a polynomial at a point `x` using Horner's method.
+/// Given coefficients [c0, c1, c2, ...], compute `p(x) = c0 + x*(c1 + x*(c2 + ...))`.
+fn evaluate_polynomial<EF: Field>(
+    builder: &mut CircuitBuilder<EF>,
+    coefficients: &[Target],
+    point: Target,
+) -> Target {
+    builder.push_scope("evaluate_polynomial");
+
+    assert!(
+        !coefficients.is_empty(),
+        "we should have at least a constant polynomial"
+    );
+    if coefficients.len() == 1 {
+        return coefficients[0];
+    }
+
+    let mut result = coefficients[coefficients.len() - 1];
+    for &coeff in coefficients.iter().rev().skip(1) {
+        result = builder.mul(result, point);
+        result = builder.add(result, coeff);
+    }
+
+    builder.pop_scope(); // close `evaluate_polynomial` scope
+    result
+}
+
 /// Arithmetic-only version of Plonky3 `verify_query`:
-/// - Applies the fold chain and enforces equality to the provided final constant value.
+/// - Applies the fold chain and enforces equality to the provided final polynomial evaluation.
 /// - Caller must supply `initial_folded_eval` (the reduced opening at max height).
 fn verify_query<EF: Field>(
     builder: &mut CircuitBuilder<EF>,
@@ -102,10 +132,49 @@ fn verify_query<EF: Field>(
     phases: &[FoldPhaseInputsTarget],
     final_value: Target,
 ) {
-    // TODO: Support higher-degree final polynomial by evaluating it at the query point
-    // using provided coefficients instead of a single constant `final_value`.
+    builder.push_scope("verify_query");
     let folded_eval = fold_row_chain(builder, initial_folded_eval, phases);
     builder.connect(folded_eval, final_value);
+    builder.pop_scope(); // close `verify_query` scope
+}
+
+/// Compute the final query point after all FRI folding rounds.
+/// This is the point at which the final polynomial should be evaluated.
+fn compute_final_query_point<F, EF>(
+    builder: &mut CircuitBuilder<EF>,
+    index_bits: &[Target],
+    log_max_height: usize,
+    num_phases: usize,
+) -> Target
+where
+    F: Field + TwoAdicField,
+    EF: ExtensionField<F>,
+{
+    builder.push_scope("compute_final_query_point");
+
+    // Extract the bits that form domain_index (bits [num_phases..log_max_height]) after `num_phases` folds
+    let domain_index_bits: Vec<Target> = index_bits[num_phases..log_max_height].to_vec();
+
+    // Pad bits and reverse
+    let mut reversed_bits = vec![builder.add_const(EF::ZERO); num_phases];
+    reversed_bits.extend(domain_index_bits.iter().rev().copied());
+
+    // Compute g^{reversed_index}
+    let g = F::two_adic_generator(log_max_height);
+    let powers_of_g: Vec<_> = iter::successors(Some(g), |&prev| Some(prev.square()))
+        .take(log_max_height)
+        .map(|p| builder.add_const(EF::from(p)))
+        .collect();
+
+    let one = builder.add_const(EF::ONE);
+    let mut result = one;
+    for (&bit, &power) in reversed_bits.iter().zip(&powers_of_g) {
+        let multiplier = builder.select(bit, power, one);
+        result = builder.mul(result, multiplier);
+    }
+
+    builder.pop_scope(); // close `compute_final_query_point` scope
+    result
 }
 
 /// Compute x₀ for phase `i` from the query index bits and a caller-provided power ladder.
@@ -122,6 +191,8 @@ fn compute_x0_from_index_bits<EF: Field>(
     phase: usize,
     pows: &[EF],
 ) -> Target {
+    builder.push_scope("compute_x0_from_index_bits");
+
     let one = builder.add_const(EF::ONE);
     let mut res = one;
 
@@ -137,6 +208,8 @@ fn compute_x0_from_index_bits<EF: Field>(
         let gate = builder.add(one, diff_bit);
         res = builder.mul(res, gate);
     }
+
+    builder.pop_scope(); // close `compute_x0_from_index_bits` scope
     res
 }
 
@@ -155,6 +228,8 @@ fn verify_query_from_index_bits<EF: Field>(
     pows_per_phase: &[Vec<EF>],
     final_value: Target,
 ) {
+    builder.push_scope("verify_query_from_index_bits");
+
     let num_phases = betas.len();
     debug_assert_eq!(
         sibling_values.len(),
@@ -189,6 +264,7 @@ fn verify_query_from_index_bits<EF: Field>(
     }
 
     verify_query(builder, initial_folded_eval, &phases_vec, final_value);
+    builder.pop_scope(); // close `verify_query_from_index_bits` scope
 }
 
 /// Compute evaluation point x from domain height and reversed reduced index bits in the circuit field EF.
@@ -202,6 +278,8 @@ where
     F: Field + TwoAdicField,
     EF: ExtensionField<F>,
 {
+    builder.push_scope("compute_evaluation_point");
+
     // Build power-of-two ladder for two-adic generator g: [g, g^2, g^4, ...]
     let g = F::two_adic_generator(log_height);
     let powers_of_g: Vec<_> = iter::successors(Some(g), |&prev| Some(prev.square()))
@@ -218,8 +296,11 @@ where
     }
 
     // Multiply by the coset generator (also lifted to EF) to get x
-    let generator = builder.add_const(EF::from(F::GENERATOR));
-    builder.mul(generator, g_pow_index)
+    let generator = builder.alloc_const(EF::from(F::GENERATOR), "coset_generator");
+    let eval_point = builder.alloc_mul(generator, g_pow_index, "eval_point");
+
+    builder.pop_scope(); // close `compute_evaluation_point` scope
+    eval_point
 }
 
 /// Compute reduced opening for a single matrix in circuit form (EF-field).
@@ -234,6 +315,8 @@ fn compute_single_reduced_opening<EF: Field>(
     alpha: Target,            // Alpha challenge
 ) -> (Target, Target) // (new_alpha_pow, reduced_opening_contrib)
 {
+    builder.push_scope("compute_single_reduced_opening");
+
     let mut reduced_opening = builder.add_const(EF::ZERO);
     let mut current_alpha_pow = alpha_pow;
 
@@ -256,6 +339,7 @@ fn compute_single_reduced_opening<EF: Field>(
         current_alpha_pow = builder.mul(current_alpha_pow, alpha);
     }
 
+    builder.pop_scope(); // close `compute_single_reduced_opening` scope
     (current_alpha_pow, reduced_opening)
 }
 
@@ -277,6 +361,8 @@ where
     F: Field + TwoAdicField,
     EF: ExtensionField<F>,
 {
+    builder.push_scope("open_input");
+
     // TODO(challenger): Indices should be sampled from a RecursiveChallenger, not passed in.
     for &b in index_bits {
         builder.assert_bool(b);
@@ -358,6 +444,8 @@ where
         }
     }
 
+    builder.pop_scope(); // close `open_input` scope
+
     // Into descending (height, ro) list
     reduced_openings
         .into_iter()
@@ -372,7 +460,6 @@ where
 /// - Challenge/indices generation lives in the outer verifier. Keep this
 ///   function purely arithmetic and take `alpha`, `betas`, and
 ///   `index_bits_per_query` as inputs.
-/// - Enforce FRI parameters (final_poly_len, num_queries) as in the native verifier.
 /// - Add recursive MMCS verification for both input openings (`open_input`) and
 ///   per-phase commitments.
 ///
@@ -394,6 +481,8 @@ where
     Inner: RecursiveMmcs<F, EF>,
     Witness: Recursive<EF>,
 {
+    builder.push_scope("verify_fri");
+
     let num_phases = betas.len();
     let num_queries = fri_proof_targets.query_proofs.len();
     // Sanity: number of betas must match number of commit phases.
@@ -429,19 +518,25 @@ where
         ));
     }
 
-    // Fail fast if final polynomial is not constant (current circuit assumes len=1)
-    let final_poly_len = fri_proof_targets.final_poly.len();
-    if final_poly_len != 1 {
+    // Compute the expected final polynomial length from FRI parameters
+    // log_max_height = num_phases + log_final_poly_len + log_blowup
+    // So: log_final_poly_len = log_max_height - num_phases - log_blowup
+    let log_final_poly_len = log_max_height
+        .checked_sub(num_phases)
+        .and_then(|x| x.checked_sub(log_blowup))
+        .ok_or(VerificationError::InvalidProofShape(
+            "Invalid FRI parameters: log_max_height too small".to_string(),
+        ))?;
+
+    let expected_final_poly_len = 1 << log_final_poly_len;
+    let actual_final_poly_len = fri_proof_targets.final_poly.len();
+
+    if actual_final_poly_len != expected_final_poly_len {
         return Err(VerificationError::InvalidProofShape(format!(
-            "This circuit assumes a constant final polynomial (len=1). Got len={}",
-            final_poly_len
+            "Final polynomial length mismatch: expected 2^{} = {}, got {}",
+            log_final_poly_len, expected_final_poly_len, actual_final_poly_len
         )));
     }
-    let final_value = fri_proof_targets.final_poly[0];
-
-    // TODO: Ensure the number of queries is OK.
-
-    // TODO: Check PoW
 
     // Precompute two-adic generator ladders for each phase (in circuit field EF).
     //
@@ -540,7 +635,18 @@ where
             }
         }
 
-        // Perform the fold chain and connect to the (constant) final polynomial value
+        // Compute the final query point for this query and evaluate the final polynomial
+        let final_query_point = compute_final_query_point::<F, EF>(
+            builder,
+            &index_bits_per_query[q],
+            log_max_height,
+            num_phases,
+        );
+
+        let final_poly_eval =
+            evaluate_polynomial(builder, &fri_proof_targets.final_poly, final_query_point);
+
+        // Perform the fold chain and connect to the evaluated final polynomial value
         verify_query_from_index_bits(
             builder,
             initial_folded_eval,
@@ -549,8 +655,10 @@ where
             &sibling_values,
             &roll_ins,
             &pows_per_phase,
-            final_value,
+            final_poly_eval,
         );
+
+        builder.pop_scope(); // close `verify_fri` scope
     }
 
     Ok(())

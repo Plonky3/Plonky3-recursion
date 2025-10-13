@@ -3,27 +3,59 @@
 use alloc::string::ToString;
 use alloc::vec;
 use alloc::vec::Vec;
+use core::iter;
 use core::marker::PhantomData;
-use core::{array, iter};
 
 use p3_challenger::GrindingChallenger;
 use p3_circuit::CircuitBuilder;
-use p3_circuit::utils::RowSelectorsTargets;
+use p3_circuit::utils::{RowSelectorsTargets, decompose_to_bits};
 use p3_commit::{BatchOpening, ExtensionMmcs, Mmcs, PolynomialSpace};
 use p3_field::coset::TwoAdicMultiplicativeCoset;
 use p3_field::{ExtensionField, Field, PackedValue, PrimeCharacteristicRing, TwoAdicField};
-use p3_fri::{CommitPhaseProofStep, FriProof, QueryProof, TwoAdicFriPcs};
+use p3_fri::{CommitPhaseProofStep, FriParameters, FriProof, QueryProof, TwoAdicFriPcs};
 use p3_merkle_tree::MerkleTreeMmcs;
 use p3_symmetric::{CryptographicHasher, Hash, PseudoCompressionFunction};
 use p3_uni_stark::{StarkGenericConfig, Val};
 use serde::{Deserialize, Serialize};
 
 use crate::Target;
+use crate::circuit_fri_verifier::verify_fri_circuit;
 use crate::circuit_verifier::VerificationError;
 use crate::recursive_traits::{
     ComsWithOpeningsTargets, Recursive, RecursiveExtensionMmcs, RecursiveLagrangeSelectors,
     RecursiveMmcs, RecursivePcs,
 };
+
+/// Maximum number of bits used for query index decomposition in FRI verification circuits.
+///
+/// This is a fixed size to avoid const generic complexity. The circuit decomposes each
+/// query index into this many bits, but only uses the first `log_max_height` bits that
+/// are actually needed.
+///
+/// This value is set to 31 bits because:
+/// - Query indices are sampled as field elements in the base field (BabyBear/KoalaBear)
+/// - BabyBear: p = 2^31 - 2^27 + 1 (31-bit prime)
+/// - KoalaBear: p = 2^31 - 2^24 + 1 (31-bit prime)  
+/// - Field elements fit in 31 bits, so 31 bits is sufficient
+///
+/// For Goldilocks (64-bit field), this would need to be increased, but that's not
+/// currently supported in the recursion circuit.
+pub const MAX_QUERY_INDEX_BITS: usize = 31;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FriVerifierParams {
+    pub log_blowup: usize,
+    pub log_final_poly_len: usize,
+}
+
+impl<M> From<&FriParameters<M>> for FriVerifierParams {
+    fn from(params: &FriParameters<M>) -> Self {
+        Self {
+            log_blowup: params.log_blowup,
+            log_final_poly_len: params.log_final_poly_len,
+        }
+    }
+}
 
 /// `Recursive` version of `FriProof`.
 pub struct FriProofTargets<
@@ -72,10 +104,9 @@ impl<
         }
 
         let final_poly_len = lens.next().unwrap();
-        let mut final_poly = Vec::with_capacity(final_poly_len);
-        for _ in 0..final_poly_len {
-            final_poly.push(circuit.add_public_input());
-        }
+        let final_poly =
+            circuit.alloc_public_inputs(final_poly_len, "FRI final polynomial coefficients");
+
         Self {
             commit_phase_commits,
             query_proofs,
@@ -240,7 +271,7 @@ impl<F: Field, EF: ExtensionField<F>, RecMmcs: RecursiveExtensionMmcs<F, EF>> Re
         lens: &mut impl Iterator<Item = usize>,
         degree_bits: usize,
     ) -> Self {
-        let sibling_value = circuit.add_public_input();
+        let sibling_value = circuit.alloc_public_input("FRI commit phase sibling value");
         let opening_proof = RecMmcs::Proof::new(circuit, lens, degree_bits);
         Self {
             sibling_value,
@@ -297,10 +328,8 @@ impl<F: Field, EF: ExtensionField<F>, Inner: RecursiveMmcs<F, EF>> Recursive<EF>
         let mut opened_values = Vec::with_capacity(opened_vals_len);
         for _ in 0..opened_vals_len {
             let num_opened_values = lens.next().unwrap();
-            let mut inner_opened_vals = Vec::with_capacity(num_opened_values);
-            for _ in 0..num_opened_values {
-                inner_opened_vals.push(circuit.add_public_input());
-            }
+            let inner_opened_vals =
+                circuit.alloc_public_inputs(num_opened_values, "batch opened values");
             opened_values.push(inner_opened_vals);
         }
 
@@ -366,7 +395,7 @@ impl<F: Field, EF: ExtensionField<F>, const DIGEST_ELEMS: usize> Recursive<EF>
         _degree_bits: usize,
     ) -> Self {
         Self {
-            hash_targets: array::from_fn(|_| circuit.add_public_input()),
+            hash_targets: circuit.alloc_public_input_array("MMCS commitment digest"),
             _phantom: PhantomData,
         }
     }
@@ -405,7 +434,7 @@ impl<F: Field, EF: ExtensionField<F>, const DIGEST_ELEMS: usize> Recursive<EF>
         let proof_len = lens.next().unwrap();
         let mut proof = Vec::with_capacity(proof_len);
         for _ in 0..proof_len {
-            proof.push(array::from_fn(|_| circuit.add_public_input()));
+            proof.push(circuit.alloc_public_input_array("Merkle proof hash"));
         }
 
         Self {
@@ -445,7 +474,7 @@ impl<F: Field, EF: ExtensionField<F>> Recursive<EF> for Witness<F> {
         _degree_bits: usize,
     ) -> Self {
         Self {
-            witness: circuit.add_public_input(),
+            witness: circuit.alloc_public_input("FRI proof-of-work witness"),
             _phantom: PhantomData,
         }
     }
@@ -573,11 +602,15 @@ type RecursiveFriProof<SC, RecursiveFriMmcs, RecursiveInputProof> = FriProofTarg
 >;
 
 // Implement `RecursivePcs` for `TwoAdicFriPcs`.
-impl<SC, Dft, Comm, InputMmcs, RecursiveInputProof, InputProof, RecursiveFriMmcs, FriMmcs>
+impl<SC, Dft, Comm, InputMmcs, RecursiveInputMmcs, RecursiveFriMmcs, FriMmcs>
     RecursivePcs<
         SC,
-        RecursiveInputProof,
-        RecursiveFriProof<SC, RecursiveFriMmcs, RecursiveInputProof>,
+        InputProofTargets<Val<SC>, SC::Challenge, RecursiveInputMmcs>,
+        RecursiveFriProof<
+            SC,
+            RecursiveFriMmcs,
+            InputProofTargets<Val<SC>, SC::Challenge, RecursiveInputMmcs>,
+        >,
         Comm,
         TwoAdicMultiplicativeCoset<Val<SC>>,
     > for TwoAdicFriPcs<Val<SC>, Dft, InputMmcs, FriMmcs>
@@ -587,79 +620,79 @@ where
     InputMmcs: Mmcs<Val<SC>>,
     FriMmcs: Mmcs<SC::Challenge>,
     Comm: Recursive<SC::Challenge>,
-    RecursiveInputProof: Recursive<SC::Challenge, Input = InputProof>,
+    RecursiveInputMmcs: RecursiveMmcs<Val<SC>, SC::Challenge, Input = InputMmcs>,
     RecursiveFriMmcs: RecursiveExtensionMmcs<Val<SC>, SC::Challenge, Input = FriMmcs>,
     SC::Challenger: GrindingChallenger,
     SC::Challenger: p3_challenger::CanObserve<FriMmcs::Commitment>,
 {
-    type RecursiveProof = RecursiveFriProof<SC, RecursiveFriMmcs, RecursiveInputProof>;
+    type VerifierParams = FriVerifierParams;
+    type RecursiveProof = RecursiveFriProof<
+        SC,
+        RecursiveFriMmcs,
+        InputProofTargets<Val<SC>, SC::Challenge, RecursiveInputMmcs>,
+    >;
 
     fn get_challenges_circuit(
         circuit: &mut CircuitBuilder<SC::Challenge>,
         proof_targets: &crate::recursive_traits::ProofTargets<SC, Comm, Self::RecursiveProof>,
+        _params: &Self::VerifierParams,
     ) -> Vec<Target> {
         proof_targets.opening_proof.get_challenges(circuit)
     }
 
     fn verify_circuit(
         &self,
-        _circuit: &mut CircuitBuilder<SC::Challenge>,
+        circuit: &mut CircuitBuilder<SC::Challenge>,
         challenges: &[Target],
-        _commitments_with_opening_points: &ComsWithOpeningsTargets<
+        commitments_with_opening_points: &ComsWithOpeningsTargets<
             Comm,
             TwoAdicMultiplicativeCoset<Val<SC>>,
         >,
         opening_proof: &Self::RecursiveProof,
-        // FRI parameters needed: final_poly_len, num_queries
-        fri_params: &[usize],
+        params: &Self::VerifierParams,
     ) -> Result<(), VerificationError> {
-        // TODO
+        let FriVerifierParams {
+            log_blowup,
+            log_final_poly_len,
+        } = *params;
+        // Extract FRI challenges from the challenges slice.
+        // Layout: [alpha, beta_0, ..., beta_{n-1}, query_0, ..., query_{m-1}]
+        // where:
+        //   - alpha: FRI batch combination challenge
+        //   - betas: one challenge per FRI folding round
+        //   - query indices: sampled indices for FRI queries (as field elements)
+        let num_betas = opening_proof.commit_phase_commits.len();
+        let num_queries = opening_proof.query_proofs.len();
 
-        if fri_params.len() != 2 {
-            return Err(VerificationError::InvalidPcsParameterCount(
-                2,
-                fri_params.len(),
-            ));
-        }
-        // Verify the shape of the opening proof.
-        let final_poly_len = fri_params[0];
+        let alpha = challenges[0];
+        let betas = &challenges[1..1 + num_betas];
+        let query_indices = &challenges[1 + num_betas..1 + num_betas + num_queries];
 
-        if opening_proof.final_poly.len() != final_poly_len {
-            return Err(VerificationError::InvalidProofShape(
-                "Incorrect final_poly length".to_string(),
-            ));
-        }
+        // Calculate the maximum height of the FRI proof tree.
+        let log_max_height = num_betas + log_final_poly_len + log_blowup;
 
-        let query_proof_len = fri_params[1];
-        if opening_proof.query_proofs.len() != query_proof_len {
-            return Err(VerificationError::InvalidProofShape(
-                "Incorrect query_proofs length".to_string(),
-            ));
-        }
+        assert!(
+            log_max_height <= MAX_QUERY_INDEX_BITS,
+            "log_max_height {log_max_height} exceeds MAX_QUERY_INDEX_BITS {MAX_QUERY_INDEX_BITS}"
+        );
 
-        if challenges.len()
-            < (
-                1 // for alpha
-        + opening_proof.commit_phase_commits.len() * opening_proof.query_proofs.len()
-                // for beta challenges
-            )
-        {
-            return Err(VerificationError::InvalidProofShape(
-                "Not enough Pcs challenges".to_string(),
-            ));
-        }
+        let index_bits_per_query: Vec<Vec<Target>> = query_indices
+            .iter()
+            .map(|&index_target| {
+                let all_bits = decompose_to_bits::<_, MAX_QUERY_INDEX_BITS>(circuit, index_target);
+                all_bits.into_iter().take(log_max_height).collect()
+            })
+            .collect();
 
-        for query_proof in &opening_proof.query_proofs {
-            if query_proof.commit_phase_openings.len() != opening_proof.commit_phase_commits.len() {
-                return Err(VerificationError::InvalidProofShape(
-                    "Incorrect number of commit_phase_openings".to_string(),
-                ));
-            }
-        }
-
-        // TODO: validate shape in `verify_query` and `open_input`.
-
-        Ok(())
+        verify_fri_circuit(
+            circuit,
+            opening_proof,
+            alpha,
+            betas,
+            &index_bits_per_query,
+            commitments_with_opening_points,
+            log_blowup,
+        )
     }
 
     fn selectors_at_point_circuit(
@@ -669,25 +702,29 @@ where
         point: &Target,
     ) -> RecursiveLagrangeSelectors {
         // Constants that we will need.
-        let shift_inv = circuit.add_const(SC::Challenge::from(domain.shift_inverse()));
-        let one = circuit.add_const(SC::Challenge::from(Val::<SC>::ONE));
-        let subgroup_gen_inv =
-            circuit.add_const(SC::Challenge::from(domain.subgroup_generator().inverse()));
+        let shift_inv =
+            circuit.alloc_const(SC::Challenge::from(domain.shift_inverse()), "shift_inv");
+        let one = circuit.alloc_const(SC::Challenge::from(Val::<SC>::ONE), "1");
+        let subgroup_gen_inv = circuit.alloc_const(
+            SC::Challenge::from(domain.subgroup_generator().inverse()),
+            "subgroup_gen_inv",
+        );
 
         // Unshifted and z_h
-        let unshifted_point = circuit.mul(shift_inv, *point);
+        let unshifted_point = circuit.alloc_mul(shift_inv, *point, "unshifted_point");
         let us_exp = circuit.exp_power_of_2(unshifted_point, domain.log_size());
-        let z_h = circuit.sub(us_exp, one);
+        let z_h = circuit.alloc_sub(us_exp, one, "z_h");
 
         // Denominators
-        let us_minus_one = circuit.sub(unshifted_point, one);
-        let us_minus_gen_inv = circuit.sub(unshifted_point, subgroup_gen_inv);
+        let us_minus_one = circuit.alloc_sub(unshifted_point, one, "us_minus_one");
+        let us_minus_gen_inv =
+            circuit.alloc_sub(unshifted_point, subgroup_gen_inv, "us_minus_gen_inv");
 
         // Selectors
-        let is_first_row = circuit.div(z_h, us_minus_one);
-        let is_last_row = circuit.div(z_h, us_minus_gen_inv);
+        let is_first_row = circuit.alloc_div(z_h, us_minus_one, "is_first_row");
+        let is_last_row = circuit.alloc_div(z_h, us_minus_gen_inv, "is_last_row");
         let is_transition = us_minus_gen_inv;
-        let inv_vanishing = circuit.div(one, z_h);
+        let inv_vanishing = circuit.alloc_div(one, z_h, "inv_vanishing");
 
         let row_selectors = RowSelectorsTargets {
             is_first_row,
