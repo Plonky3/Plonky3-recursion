@@ -157,6 +157,9 @@ impl<F: CircuitField> CircuitRunner<F> {
             (NonPrimitiveOp::MmcsVerify { .. }, NonPrimitiveOpPrivateData::MmcsVerify(_)) => {
                 // Type match - good!
             }
+            (NonPrimitiveOp::HashAbsorb { .. }, _) | (NonPrimitiveOp::HashSqueeze { .. }, _) => {
+                // HashAbsorb/HashSqueeze don't use private data
+            }
         }
 
         self.non_primitive_op_private_data[op_id.0 as usize] = Some(private_data);

@@ -43,3 +43,5 @@ p3-symmetric.workspace = true
 
 proptest.workspace = true
 rand.workspace = true
+tracing-forest = { workspace = true, features = ["ansi", "smallvec"] }
+tracing-subscriber = { workspace = true, features = ["std", "env-filter"] }

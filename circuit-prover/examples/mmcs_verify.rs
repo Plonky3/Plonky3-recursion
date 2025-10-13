@@ -43,16 +43,18 @@ fn main() -> Result<(), ProverError> {
 
     // Public inputs: leaf hash and expected root hash
     let leaf_hash = (0..mmcs_config.ext_field_digest_elems)
-        .map(|_| builder.add_public_input())
+        .map(|_| builder.alloc_public_input("leaf_hash"))
         .collect::<Vec<ExprId>>();
-    let index = builder.add_public_input();
+    let index = builder.alloc_public_input("index");
     let expected_root = (0..mmcs_config.ext_field_digest_elems)
-        .map(|_| builder.add_public_input())
+        .map(|_| builder.alloc_public_input("expected_root"))
         .collect::<Vec<ExprId>>();
     // Add a Mmcs verification operation
     // This declares that leaf_hash and expected_root are connected to witness bus
     // The AIR constraints will verify the Mmcs path is valid
     let mmcs_op_id = builder.add_mmcs_verify(&leaf_hash, &index, &expected_root)?;
+
+    builder.dump_allocation_log();
 
     let circuit = builder.build()?;
     let mut runner = circuit.runner();
