@@ -3,6 +3,7 @@ use core::hash::Hash;
 
 use p3_field::Field;
 
+use crate::ops::MmcsVerifyConfig;
 use crate::tables::MmcsPrivateData;
 use crate::types::WitnessId;
 
@@ -61,19 +62,29 @@ pub enum NonPrimitiveOpType {
     // Mmcs Verify gate with the argument is the size of the path
     MmcsVerify,
     FriVerify,
-    // Future: FriVerify, HashAbsorb, etc.
+    /// Hash absorb operation - absorbs field elements into sponge state
+    HashAbsorb {
+        reset: bool,
+    },
+    /// Hash squeeze operation - extracts field elements from sponge state
+    HashSqueeze,
 }
 
 impl NonPrimitiveOpType {
     pub fn apply<F: Field>(&self, _inputs: Vec<F>) -> Vec<F> {
-        todo!();
+        match self {
+            NonPrimitiveOpType::MmcsVerify => todo!(),
+            NonPrimitiveOpType::FriVerify => todo!(),
+            NonPrimitiveOpType::HashAbsorb { .. } => todo!(),
+            NonPrimitiveOpType::HashSqueeze => todo!(),
+        }
     }
 }
 
 /// Non-primitive operation types
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum NonPrimitiveOpConfig {
-    MmcsVerifyConfig(crate::ops::MmcsVerifyConfig),
+    MmcsVerifyConfig(MmcsVerifyConfig),
     None,
 }
 
@@ -110,6 +121,22 @@ pub enum NonPrimitiveOp {
         index: WitnessId,
         root: MmcsWitnessId,
     },
+
+    /// Hash absorb operation - absorbs inputs into sponge state.
+    ///
+    /// Public interface (on witness bus):
+    /// - `inputs`: Field elements to absorb into the sponge
+    /// - `reset_flag`: Whether to reset the sponge state before absorbing
+    HashAbsorb {
+        reset_flag: bool,
+        inputs: Vec<WitnessId>,
+    },
+
+    /// Hash squeeze operation - extracts outputs from sponge state.
+    ///
+    /// Public interface (on witness bus):
+    /// - `outputs`: Field elements extracted from the sponge
+    HashSqueeze { outputs: Vec<WitnessId> },
 }
 
 pub type MmcsWitnessId = Vec<WitnessId>;

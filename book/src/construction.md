@@ -60,6 +60,17 @@ A given row of the represented IR contains an operation and its associated opera
 
 i.e. operation 4 performs `w[4] <- w[1] * w[3]`, and operation 5 encodes the subtraction check as an addition `w[2] + w[0] = w[4]` (verifying `37 * x - 111 = 0`).
 
+In order to generate the IR, the first step is to create all operations symbolically.
+
+In the symbolic executor, the computation is represented as a graph where nodes are called either `ExprId` (since they represent the index of an expression) or `Target` in the code. Each `Target` can be:
+
+- a constant, 
+- a public input, 
+- the output of an operation. 
+
+The computation graph that represents all operations in the IR is called `Circuit`. 
+
+A `circuit_builder` provides convenient helper functions and macros for representing and defining operations within this graph. See section [Building Circuits](./circuit_building.md#building-circuits) for more details on how to build a circuit.
 
 ## Witness Table
 
@@ -67,7 +78,7 @@ The `Witness` table can be seen as a central memory bus that stores values share
 the different chips via lookups to enforce consistency.
 
 - The index column is *preprocessed*, or *read-after-preprocess* ([RAP](https://hackmd.io/@aztec-network/plonk-arithmetiization-air)): it is known to both prover and verifier in advance, requiring no online commitment.[^1]
-- The Witness table values are represented as extension field elements directly (where base field elements are padded with 0 on higher coordinates) for addressing efficiency.
+- The `Witness` table values are represented as extension field elements directly (where base field elements are padded with 0 on higher coordinates) for addressing efficiency.
 
 From the fixed IR of the example above, we can deduce an associated `Witness` table as follows:
 
@@ -91,11 +102,23 @@ Each operation family (e.g. addition, multiplication, MMCS path verification, FR
 A chip contains:
 
 - Local columns for its variables.
-- Lookup ports into the witness table.
+- Lookup ports into the `Witness` table.
 - An AIR that enforces its semantics.
 
 We distinguish two kind of chips: those representing native, i.e. primitive operations, and additional non-primitive ones, defined at runtime, that serve as precompiles to optimize certain operations.
-The recursion machine contains 4 primitive chips: `CONST` / `PUBLIC_INPUT` / `ADD` and `MUL`, with `SUB` and `DIV` being emulated via the `ADD` and `MUL` chips. This library aims at providing a certain
+The recursion machine contains 4 primitive chips: `CONST` / `PUBLIC_INPUT` / `ADD` and `MUL`, with `SUB` and `DIV` being emulated via the `ADD` and `MUL` chips. 
+
+Given only the primitive operations, one should be able to carry out most operations necessary in circuit verification. Primitive operations have the following properties:
+
+- They operate on elements of the `Witness` table, through their `WitnessId` (index within the `Witness` table).
+- The representation can be heavily optimized. For example, every time a constant is added to the IR, we either create a new `WitnessId` or return an already existing one. We could also carry out common subexpression elimination.
+- They are executed in topological order during the circuit evaluation, and they form a directed acyclic graph of dependencies.
+
+But relying only on primitive operations for the entire verification would lead to the introduction of many temporary values in the IR. In turn, this would lead to enlarged `Witness` and primitive tables. To reduce the overall surface area of our AIRs, we can introduce *non-primitive* specialized chips that carry out specific (non-primitive) operations. We can offload repeated computations to these non-primitive chips to optimize the overall proving flow.
+
+These non-primitive operations use not only `Witness` table elements (including public inputs), but may also require the use of *private data*. For example, when verifying a Merkle path, hash outputs are not stored in the `Witness` table. 
+
+This library aims at providing a certain
 number of non-primary chips so that projects can natively inherit from full recursive verifiers, which implies chips for FRI, MMCS path verification, etc. Specific applications can also build their own
 non-primitive chips and plug them at runtime.
 

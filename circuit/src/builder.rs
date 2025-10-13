@@ -850,6 +850,25 @@ where
                 }
                 NonPrimitiveOpType::FriVerify => {
                     todo!() // TODO: Add FRIVerify when it lands
+                }
+                NonPrimitiveOpType::HashAbsorb { reset } => {
+                    let inputs = witness_exprs
+                        .iter()
+                        .map(|&expr| Self::get_witness_id(expr_to_widx, expr, "HashAbsorb input"))
+                        .collect::<Result<_, _>>()?;
+
+                    lowered_ops.insert(*op_id, NonPrimitiveOp::HashAbsorb {
+                        reset_flag: *reset,
+                        inputs,
+                    });
+                }
+                NonPrimitiveOpType::HashSqueeze => {
+                    let outputs = witness_exprs
+                        .iter()
+                        .map(|&expr| Self::get_witness_id(expr_to_widx, expr, "HashSqueeze output"))
+                        .collect::<Result<_, _>>()?;
+
+                    lowered_ops.insert(*op_id, NonPrimitiveOp::HashSqueeze { outputs });
                 } // Add more variants here as needed
             }
         }
@@ -876,6 +895,260 @@ mod tests {
     use super::*;
     use crate::op::NonPrimitiveOpType;
     use crate::{CircuitError, MmcsOps};
+
+    #[cfg(test)]
+    mod proptests {
+        use proptest::prelude::*;
+
+        use super::*;
+
+        // Strategy for generating valid field elements
+        fn field_element() -> impl Strategy<Value = BabyBear> {
+            any::<u64>().prop_map(BabyBear::from_u64)
+        }
+
+        // Strategy for generating lists of ExprId connect relations
+        fn connections(max_id: u32) -> impl Strategy<Value = Vec<(ExprId, ExprId)>> {
+            prop::collection::vec((0..max_id, 0..max_id), 0..20).prop_map(|pairs| {
+                pairs
+                    .into_iter()
+                    .map(|(a, b)| (ExprId(a), ExprId(b)))
+                    .collect()
+            })
+        }
+
+        proptest! {
+            #[test]
+            fn dsu_find_idempotent(connects in connections(50)) {
+                let mut parents = build_connect_dsu(&connects);
+                let test_ids: Vec<usize> = (0..50).collect();
+
+                for &id in &test_ids {
+                    let root1 = dsu_find(&mut parents, id);
+                    let root2 = dsu_find(&mut parents, id);
+                    prop_assert_eq!(root1, root2, "dsu_find should be idempotent");
+                }
+            }
+
+            #[test]
+            fn dsu_union_transitivity(connects in connections(30)) {
+                let mut parents = build_connect_dsu(&connects);
+
+                // Check transitivity: if a~b and b~c then a~c
+                for (a, b) in &connects {
+                    let ra = dsu_find(&mut parents, a.0 as usize);
+                    let rb = dsu_find(&mut parents, b.0 as usize);
+                    prop_assert_eq!(ra, rb, "connected nodes should have same root");
+                }
+            }
+
+            #[test]
+            fn dsu_union_commutative(a in 0u32..100, b in 0u32..100) {
+                let mut parents1 = HashMap::new();
+                let mut parents2 = HashMap::new();
+
+                dsu_union(&mut parents1, a as usize, b as usize);
+                dsu_union(&mut parents2, b as usize, a as usize);
+
+                let r1a = dsu_find(&mut parents1, a as usize);
+                let r1b = dsu_find(&mut parents1, b as usize);
+                let r2a = dsu_find(&mut parents2, a as usize);
+                let r2b = dsu_find(&mut parents2, b as usize);
+
+                prop_assert_eq!(r1a, r1b, "union should connect a and b");
+                prop_assert_eq!(r2a, r2b, "union should connect b and a");
+            }
+
+            #[test]
+            fn field_add_commutative(a in field_element(), b in field_element()) {
+                let mut builder1 = CircuitBuilder::<BabyBear>::new();
+                let ca = builder1.add_const(a);
+                let cb = builder1.add_const(b);
+                let sum1 = builder1.add(ca, cb);
+
+                let mut builder2 = CircuitBuilder::<BabyBear>::new();
+                let ca2 = builder2.add_const(a);
+                let cb2 = builder2.add_const(b);
+                let sum2 = builder2.add(cb2, ca2);
+
+                let circuit1 = builder1.build().unwrap();
+                let circuit2 = builder2.build().unwrap();
+
+                let  runner1 = circuit1.runner();
+                let  runner2 = circuit2.runner();
+
+                let traces1 = runner1.run().unwrap();
+                let traces2 = runner2.run().unwrap();
+
+                // Get the computed sums
+                prop_assert_eq!(
+                    traces1.witness_trace.values[sum1.0 as usize],
+                    traces2.witness_trace.values[sum2.0 as usize],
+                    "addition should be commutative"
+                );
+            }
+
+            #[test]
+            fn field_mul_commutative(a in field_element(), b in field_element()) {
+                let mut builder1 = CircuitBuilder::<BabyBear>::new();
+                let ca = builder1.add_const(a);
+                let cb = builder1.add_const(b);
+                let prod1 = builder1.mul(ca, cb);
+
+                let mut builder2 = CircuitBuilder::<BabyBear>::new();
+                let ca2 = builder2.add_const(a);
+                let cb2 = builder2.add_const(b);
+                let prod2 = builder2.mul(cb2, ca2);
+
+                let circuit1 = builder1.build().unwrap();
+                let circuit2 = builder2.build().unwrap();
+
+                let  runner1 = circuit1.runner();
+                let  runner2 = circuit2.runner();
+
+                let traces1 = runner1.run().unwrap();
+                let traces2 = runner2.run().unwrap();
+
+                prop_assert_eq!(
+                    traces1.witness_trace.values[prod1.0 as usize],
+                    traces2.witness_trace.values[prod2.0 as usize],
+                    "multiplication should be commutative"
+                );
+            }
+
+            #[test]
+            fn field_add_identity(a in field_element()) {
+                let mut builder = CircuitBuilder::<BabyBear>::new();
+                let ca = builder.add_const(a);
+                let zero = builder.add_const(BabyBear::ZERO);
+                let result = builder.add(ca, zero);
+
+                let circuit = builder.build().unwrap();
+                let  runner = circuit.runner();
+                let traces = runner.run().unwrap();
+
+                prop_assert_eq!(
+                    traces.witness_trace.values[result.0 as usize],
+                    a,
+                    "a + 0 = a"
+                );
+            }
+
+            #[test]
+            fn field_mul_identity(a in field_element()) {
+                let mut builder = CircuitBuilder::<BabyBear>::new();
+                let ca = builder.add_const(a);
+                let one = builder.add_const(BabyBear::ONE);
+                let result = builder.mul(ca, one);
+
+                let circuit = builder.build().unwrap();
+                let  runner = circuit.runner();
+                let traces = runner.run().unwrap();
+
+                prop_assert_eq!(
+                    traces.witness_trace.values[result.0 as usize],
+                    a,
+                    "a * 1 = a"
+                );
+            }
+
+            #[test]
+            fn field_add_sub(a in field_element(), b in field_element()) {
+                let mut builder = CircuitBuilder::<BabyBear>::new();
+                let ca = builder.add_const(a);
+                let cb = builder.add_const(b);
+                let diff = builder.sub(ca, cb);
+                let result = builder.add(diff, cb);
+
+                let circuit = builder.build().unwrap();
+                let  runner = circuit.runner();
+                let traces = runner.run().unwrap();
+
+                prop_assert_eq!(
+                    traces.witness_trace.values[result.0 as usize],
+                    a,
+                    "(a - b) + b = a"
+                );
+            }
+
+            #[test]
+            fn field_mul_div(a in field_element(), b in field_element().prop_filter("b must be non-zero", |&x| x != BabyBear::ZERO)) {
+                let mut builder = CircuitBuilder::<BabyBear>::new();
+                let ca = builder.add_const(a);
+                let cb = builder.add_const(b);
+                let quot = builder.div(ca, cb);
+                let result = builder.mul(quot, cb);
+
+                let circuit = builder.build().unwrap();
+                let  runner = circuit.runner();
+                let traces = runner.run().unwrap();
+
+                prop_assert_eq!(
+                    traces.witness_trace.values[result.0 as usize],
+                    a,
+                    "(a / b) * b = a"
+                );
+            }
+
+            #[test]
+            fn constant_deduplication(a in field_element()) {
+                let mut builder = CircuitBuilder::<BabyBear>::new();
+                let c1 = builder.add_const(a);
+                let c2 = builder.add_const(a);
+                let c3 = builder.add_const(a);
+
+                prop_assert_eq!(c1, c2, "same constant should return same ExprId");
+                prop_assert_eq!(c2, c3, "same constant should return same ExprId");
+            }
+
+            #[test]
+            fn constant_uniqueness(a in field_element(), b in field_element()) {
+                prop_assume!(a != b);
+                let mut builder = CircuitBuilder::<BabyBear>::new();
+                let c1 = builder.add_const(a);
+                let c2 = builder.add_const(b);
+
+                prop_assert_ne!(c1, c2, "different constants should return different ExprIds");
+            }
+
+            #[test]
+            fn public_input_uniqueness(count in 1usize..50) {
+                let mut builder = CircuitBuilder::<BabyBear>::new();
+                let mut inputs = Vec::new();
+
+                for _ in 0..count {
+                    inputs.push(builder.add_public_input());
+                }
+
+                // All ExprIds should be unique
+                let mut seen = HashSet::new();
+                for input in inputs {
+                    prop_assert!(seen.insert(input), "each public input should have unique ExprId");
+                }
+
+                prop_assert_eq!(builder.public_input_count, count, "public input count should match");
+            }
+
+            #[test]
+            fn connect_self_is_noop(count in 1usize..10) {
+                let mut builder = CircuitBuilder::<BabyBear>::new();
+
+                for _ in 0..count {
+                    let input = builder.add_const(BabyBear::ONE);
+                    builder.connect(input, input); // Self-connect
+                }
+
+                let circuit = builder.build().unwrap();
+
+                // Only a single witness is allocated, on top of the zero slot.
+                assert_eq!(circuit.witness_count, 2);
+
+                let runner = circuit.runner();
+
+                runner.run().unwrap();
+            }
+        }
+    }
 
     #[test]
     fn test_circuit_basic_api() {
@@ -1274,6 +1547,9 @@ mod tests {
         assert_eq!(circuit.non_primitive_ops.len(), 1);
         match &circuit.non_primitive_ops.values().next().unwrap() {
             NonPrimitiveOp::MmcsVerify { .. } => {},
+            NonPrimitiveOp::HashAbsorb { .. } | NonPrimitiveOp::HashSqueeze { .. } => {
+                panic!("Expected MmcsVerify operation");
+            }
         }
     }
 

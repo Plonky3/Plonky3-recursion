@@ -372,12 +372,9 @@ impl<F: CircuitField> CircuitRunner<F> {
     }
 
     fn generate_mmcs_trace(&self) -> Result<MmcsTrace<F>, CircuitError> {
-        mmcs::generate_mmcs_trace(
-            &self.circuit,
-            &self.witness,
-            &self.non_primitive_op_private_data,
-            |widx| self.get_witness(widx),
-        )
+        mmcs::generate_mmcs_trace(&self.circuit, &self.non_primitive_op_private_data, |widx| {
+            self.get_witness(widx)
+        })
     }
 }
 
