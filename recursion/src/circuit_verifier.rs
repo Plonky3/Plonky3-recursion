@@ -201,14 +201,14 @@ where
             SC::Challenge::DIMENSION
         )));
     }
-    if let Some(r_comm) = &opened_random {
-        if r_comm.len() != SC::Challenge::DIMENSION {
-            return Err(VerificationError::InvalidProofShape(format!(
-                "Expected opened random values to have length {}, got {}",
-                SC::Challenge::DIMENSION,
-                r_comm.len()
-            )));
-        }
+    if let Some(r_comm) = &opened_random
+        && r_comm.len() != SC::Challenge::DIMENSION
+    {
+        return Err(VerificationError::InvalidProofShape(format!(
+            "Expected opened random values to have length {}, got {}",
+            SC::Challenge::DIMENSION,
+            r_comm.len()
+        )));
     }
 
     let alpha = challenge_targets[0];

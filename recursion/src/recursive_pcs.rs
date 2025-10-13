@@ -1,8 +1,7 @@
 //! In this file, we define all the structures required to have a recursive version of `TwoAdicFriPcs`.
 
-use alloc::string::ToString;
-use alloc::vec;
 use alloc::vec::Vec;
+use alloc::{format, vec};
 use core::iter;
 use core::marker::PhantomData;
 
@@ -136,9 +135,28 @@ impl<
             .collect()
     }
 
+    fn get_challenges(&self, circuit: &mut CircuitBuilder<EF>) -> Vec<Target> {
+        let mut challenges = Vec::with_capacity(self.num_challenges());
+        challenges.extend(
+            circuit.alloc_public_inputs(1 + self.commit_phase_commits.len(), "FRI challenges"),
+        );
+
+        // The output of hashing the PoW witness should be 0. So this checks the PoW.
+        let zero = circuit.add_const(EF::ZERO);
+        let pow_challenge = circuit.alloc_public_input("FRI PoW challenge");
+        circuit.connect(pow_challenge, zero);
+        challenges.push(pow_challenge);
+
+        challenges
+            .extend(circuit.alloc_public_inputs(self.query_proofs.len(), "FRI query indices"));
+
+        challenges
+    }
+
     fn num_challenges(&self) -> usize {
         1 // `alpha`: FRI batch combination challenge
         + self.commit_phase_commits.len() // `beta` challenges for the FRI rounds
+        + 1 // PoW challenge
         + self.query_proofs.len() // Indices for all query proofs
     }
 
@@ -666,15 +684,17 @@ where
 
         let alpha = challenges[0];
         let betas = &challenges[1..1 + num_betas];
-        let query_indices = &challenges[1 + num_betas..1 + num_betas + num_queries];
+        // Between the betas and the query indices, we have the PoW challenge, which we ignore here.
+        let query_indices = &challenges[2 + num_betas..2 + num_betas + num_queries];
 
         // Calculate the maximum height of the FRI proof tree.
         let log_max_height = num_betas + log_final_poly_len + log_blowup;
 
-        assert!(
-            log_max_height <= MAX_QUERY_INDEX_BITS,
-            "log_max_height {log_max_height} exceeds MAX_QUERY_INDEX_BITS {MAX_QUERY_INDEX_BITS}"
-        );
+        if log_max_height > MAX_QUERY_INDEX_BITS {
+            return Err(VerificationError::InvalidProofShape(format!(
+                "log_max_height {log_max_height} exceeds MAX_QUERY_INDEX_BITS {MAX_QUERY_INDEX_BITS}"
+            )));
+        }
 
         let index_bits_per_query: Vec<Vec<Target>> = query_indices
             .iter()

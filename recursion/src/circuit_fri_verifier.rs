@@ -7,6 +7,7 @@ use core::iter;
 use p3_circuit::CircuitBuilder;
 use p3_field::coset::TwoAdicMultiplicativeCoset;
 use p3_field::{ExtensionField, Field, TwoAdicField};
+use p3_util::zip_eq::zip_eq;
 
 use crate::Target;
 use crate::circuit_verifier::VerificationError;
@@ -356,7 +357,7 @@ fn open_input<F, EF, Comm>(
     log_blowup: usize,
     commitments_with_opening_points: &ComsWithOpeningsTargets<Comm, TwoAdicMultiplicativeCoset<F>>,
     batch_opened_values: &[Vec<Vec<Target>>], // Per batch -> per matrix -> per column
-) -> Vec<(usize, Target)>
+) -> Result<Vec<(usize, Target)>, VerificationError>
 where
     F: Field + TwoAdicField,
     EF: ExtensionField<F>,
@@ -377,23 +378,27 @@ where
     let mut reduced_openings = BTreeMap::<usize, (Target, Target)>::new();
 
     // Process each batch
-    for (batch_idx, ((_batch_commit, mats), batch_openings)) in commitments_with_opening_points
-        .iter()
-        .zip(batch_opened_values.iter())
-        .enumerate()
+    for (batch_idx, ((_batch_commit, mats), batch_openings)) in zip_eq(
+        commitments_with_opening_points.iter(),
+        batch_opened_values.iter(),
+        VerificationError::InvalidProofShape(
+            "Opened values and commitments count must match".to_string(),
+        ),
+    )?
+    .enumerate()
     {
         // TODO: Add recursive MMCS verification here for this batch:
         // Verify batch_openings against _batch_commit at the computed reduced_index.
 
-        assert_eq!(
-            mats.len(),
-            batch_openings.len(),
-            "batch {batch_idx}: mats count must match opened_values count"
-        );
-
         // For each matrix in the batch
-        for (mat_idx, ((mat_domain, mat_points_and_values), mat_opening)) in
-            mats.iter().zip(batch_openings.iter()).enumerate()
+        for (mat_idx, ((mat_domain, mat_points_and_values), mat_opening)) in zip_eq(
+            mats.iter(),
+            batch_openings.iter(),
+            VerificationError::InvalidProofShape(format!(
+                "batch {batch_idx}: opened_values and point_values count must match"
+            )),
+        )?
+        .enumerate()
         {
             let log_height = mat_domain.log_size() + log_blowup;
 
@@ -414,11 +419,11 @@ where
 
             // Process each (z, ps_at_z) pair for this matrix
             for (z, ps_at_z) in mat_points_and_values {
-                assert_eq!(
-                    mat_opening.len(),
-                    ps_at_z.len(),
-                    "batch {batch_idx} mat {mat_idx}: opened_values columns must match point_values columns"
-                );
+                if mat_opening.len() != ps_at_z.len() {
+                    return Err(VerificationError::InvalidProofShape(format!(
+                        "batch {batch_idx} mat {mat_idx}: opened_values columns must match point_values columns"
+                    )));
+                }
 
                 let (new_alpha_pow_h, ro_contrib) = compute_single_reduced_opening(
                     builder,
@@ -447,11 +452,11 @@ where
     builder.pop_scope(); // close `open_input` scope
 
     // Into descending (height, ro) list
-    reduced_openings
+    Ok(reduced_openings
         .into_iter()
         .rev()
         .map(|(h, (_ap, ro))| (h, ro))
-        .collect()
+        .collect())
 }
 
 /// Verify FRI arithmetic in-circuit.
@@ -485,7 +490,8 @@ where
 
     let num_phases = betas.len();
     let num_queries = fri_proof_targets.query_proofs.len();
-    // Sanity: number of betas must match number of commit phases.
+
+    // Validate shape.
     if num_phases != fri_proof_targets.commit_phase_commits.len() {
         return Err(VerificationError::InvalidProofShape(format!(
             "betas length must equal number of commit-phase commitments: expected {}, got {}",
@@ -493,6 +499,7 @@ where
             fri_proof_targets.commit_phase_commits.len()
         )));
     }
+
     if num_queries != index_bits_per_query.len() {
         return Err(VerificationError::InvalidProofShape(format!(
             "index_bits_per_query length must equal number of query proofs: expected {}, got {}",
@@ -506,12 +513,11 @@ where
         .iter()
         .any(|v| v.len() != log_max_height)
     {
-        return Err(VerificationError::InvalidProofShape(format!(
-            "all index_bits_per_query entries must have same length"
-        )));
+        return Err(VerificationError::InvalidProofShape(
+            "all index_bits_per_query entries must have same length".to_string(),
+        ));
     }
 
-    // Basic shape checks
     if betas.is_empty() {
         return Err(VerificationError::InvalidProofShape(
             "FRI must have at least one fold phase".to_string(),
@@ -531,6 +537,7 @@ where
     let expected_final_poly_len = 1 << log_final_poly_len;
     let actual_final_poly_len = fri_proof_targets.final_poly.len();
 
+    //  Check the final polynomial length.
     if actual_final_poly_len != expected_final_poly_len {
         return Err(VerificationError::InvalidProofShape(format!(
             "Final polynomial length mismatch: expected 2^{} = {}, got {}",
@@ -577,7 +584,7 @@ where
             log_blowup,
             commitments_with_opening_points,
             &batch_opened_values,
-        );
+        )?;
 
         // Must have the max-height entry at the front
 
