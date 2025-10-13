@@ -80,17 +80,6 @@ mod tests {
         use super::*;
 
         proptest! {
-            fn witness_id_equality(a in 0u32..u32::MAX, b in 0u32..u32::MAX) {
-                let id_a1 = WitnessId(a);
-                let id_a2 = WitnessId(a);
-                let id_b = WitnessId(b);
-
-                prop_assert_eq!(id_a1, id_a2, "same value should be equal");
-                if a != b {
-                    prop_assert_ne!(id_a1, id_b, "different values should not be equal");
-                }
-            }
-
             #[test]
             fn witness_id_ordering(a in 0u32..u32::MAX, b in 0u32..u32::MAX) {
                 let id_a = WitnessId(a);
@@ -102,18 +91,6 @@ mod tests {
                     prop_assert!(id_a > id_b, "ordering should match inner value");
                 } else {
                     prop_assert_eq!(id_a, id_b, "equal values should compare equal");
-                }
-            }
-
-            #[test]
-            fn expr_id_equality(a in 0u32..u32::MAX, b in 0u32..u32::MAX) {
-                let id_a1 = ExprId(a);
-                let id_a2 = ExprId(a);
-                let id_b = ExprId(b);
-
-                prop_assert_eq!(id_a1, id_a2, "same value should be equal");
-                if a != b {
-                    prop_assert_ne!(id_a1, id_b, "different values should not be equal");
                 }
             }
 

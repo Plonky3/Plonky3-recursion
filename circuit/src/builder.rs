@@ -1086,19 +1086,20 @@ mod tests {
             }
 
             #[test]
-            fn connect_self_is_noop(values in prop::collection::vec(field_element(), 1..10)) {
+            fn connect_self_is_noop(count in 1usize..10) {
                 let mut builder = CircuitBuilder::<BabyBear>::new();
-                let mut inputs = Vec::new();
 
-                for _val in &values {
-                    let input = builder.add_public_input();
-                    inputs.push(input);
+                for _ in 0..count {
+                    let input = builder.add_const(BabyBear::ONE);
                     builder.connect(input, input); // Self-connect
                 }
 
                 let circuit = builder.build().unwrap();
-                let mut runner = circuit.runner();
-                runner.set_public_inputs(&values).unwrap();
+
+                // Only a single witness is allocated, on top of the zero slot.
+                assert_eq!(circuit.witness_count, 2); 
+
+                let runner = circuit.runner();
 
                 runner.run().unwrap();
             }
