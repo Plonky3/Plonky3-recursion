@@ -191,7 +191,11 @@ pub fn generate_mmcs_trace<F: CircuitField>(
     // Process each complex operation by index to avoid borrowing conflicts
     for op_idx in 0..circuit.non_primitive_ops.len() {
         // Copy out leaf/root to end immutable borrow immediately
-        let NonPrimitiveOp::MmcsVerify { leaf, index, root } = &circuit.non_primitive_ops[op_idx];
+        let NonPrimitiveOp::MmcsVerify { leaf, index, root } = &circuit.non_primitive_ops[op_idx]
+        else {
+            // Skip non-MMCS operations (e.g., HashAbsorb, HashSqueeze)
+            continue;
+        };
 
         if let Some(Some(NonPrimitiveOpPrivateData::MmcsVerify(private_data))) =
             non_primitive_op_private_data.get(op_idx).cloned()

@@ -247,12 +247,12 @@ where
         }
         // Observe PoW and sample bits.
         let pow_bits = params[0];
+        // Check PoW witness.
         challenger.observe(opening_proof.pow_witness);
         let pow_challenge = challenger.sample_bits(pow_bits);
         if !pow_challenge == 0 {
             return Err(GenerationError::InvalidPowWitness);
         }
-        challenges.push(SC::Challenge::from_usize(pow_challenge));
 
         let log_height_max = params[1];
         let log_global_max_height = opening_proof.commit_phase_commits.len() + log_height_max;
@@ -271,7 +271,7 @@ where
         _extra_params: Option<&[usize]>,
     ) -> Result<usize, GenerationError> {
         let num_challenges =
-            1 + opening_proof.commit_phase_commits.len() + 1 + opening_proof.query_proofs.len();
+            1 + opening_proof.commit_phase_commits.len() + opening_proof.query_proofs.len();
 
         Ok(num_challenges)
     }
