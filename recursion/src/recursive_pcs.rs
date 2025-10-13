@@ -47,6 +47,7 @@ pub const MAX_QUERY_INDEX_BITS: usize = 31;
 pub struct FriVerifierParams {
     pub log_blowup: usize,
     pub log_final_poly_len: usize,
+    pub pow_bits: usize,
 }
 
 impl<M> From<&FriParameters<M>> for FriVerifierParams {
@@ -54,6 +55,7 @@ impl<M> From<&FriParameters<M>> for FriVerifierParams {
         Self {
             log_blowup: params.log_blowup,
             log_final_poly_len: params.log_final_poly_len,
+            pow_bits: params.proof_of_work_bits,
         }
     }
 }
@@ -613,7 +615,7 @@ where
         challenger: &mut CircuitChallenger<RATE>,
         proof_targets: &ProofTargets<SC, Comm, Self::RecursiveProof>,
         opened_values: &OpenedValuesTargets<SC>,
-        _params: &Self::VerifierParams,
+        params: &Self::VerifierParams,
     ) -> Vec<Target> {
         let fri_proof = &proof_targets.opening_proof;
 
@@ -637,7 +639,12 @@ where
         challenger.observe_slice(circuit, &fri_proof.final_poly);
 
         // TODO: Use sample_bits and check that the output is 0.
-        challenger.observe(circuit, proof_targets.opening_proof.pow_witness.witness);
+        challenger.check_witness(
+            circuit,
+            params.pow_bits,
+            fri_proof.pow_witness.witness,
+            Val::<SC>::bits(),
+        );
 
         // Sample query indices
         let num_queries = fri_proof.query_proofs.len();
@@ -669,6 +676,7 @@ where
         let FriVerifierParams {
             log_blowup,
             log_final_poly_len,
+            pow_bits: _,
         } = *params;
         // Extract FRI challenges from the challenges slice.
         // Layout: [alpha, beta_0, ..., beta_{n-1}, query_0, ..., query_{m-1}]
@@ -696,7 +704,7 @@ where
         let index_bits_per_query: Vec<Vec<Target>> = query_indices
             .iter()
             .map(|&index_target| {
-                let all_bits = decompose_to_bits::<_, MAX_QUERY_INDEX_BITS>(circuit, index_target);
+                let all_bits = decompose_to_bits(circuit, index_target, MAX_QUERY_INDEX_BITS);
                 all_bits.into_iter().take(log_max_height).collect()
             })
             .collect();
