@@ -2,6 +2,7 @@ use p3_baby_bear::{BabyBear, Poseidon2BabyBear};
 use p3_challenger::DuplexChallenger;
 use p3_circuit::CircuitBuilder;
 use p3_circuit::test_utils::{FibonacciAir, generate_trace_rows};
+use p3_circuit_prover::{MultiTableProver, config};
 use p3_commit::ExtensionMmcs;
 use p3_dft::Radix2DitParallel;
 use p3_field::extension::BinomialExtensionField;
@@ -130,7 +131,21 @@ fn test_fibonacci_verifier() -> Result<(), VerificationError> {
         .set_public_inputs(&public_inputs)
         .map_err(VerificationError::Circuit)?;
 
-    let _traces = runner.run().map_err(VerificationError::Circuit)?;
+    // Execute the circuit to get traces
+    let traces = runner.run().map_err(VerificationError::Circuit)?;
+
+    // Generate recursive proof
+    let recursive_prover_config = config::baby_bear().build();
+    let recursive_prover = MultiTableProver::new(recursive_prover_config);
+
+    let recursive_proof = recursive_prover
+        .prove_all_tables(&traces)
+        .expect("Failed to prove circuit execution");
+
+    // Verify the recursive proof
+    recursive_prover
+        .verify_all_tables(&recursive_proof)
+        .expect("Failed to verify recursive proof");
 
     Ok(())
 }
