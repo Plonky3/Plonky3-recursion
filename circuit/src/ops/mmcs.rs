@@ -339,7 +339,6 @@ impl<F: Field> NonPrimitiveExecutor<F> for MmcsVerifyExecutor {
             });
         }
 
-        // Validation successful - outputs are already set by user
         Ok(())
     }
 
