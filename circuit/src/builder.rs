@@ -1495,8 +1495,7 @@ mod tests {
 
         let circuit = builder.build().unwrap();
         assert_eq!(circuit.non_primitive_ops.len(), 1);
-        let Op::NonPrimitiveOpWithExecutor { executor, .. } = &circuit.non_primitive_ops[0]
-        else {
+        let Op::NonPrimitiveOpWithExecutor { executor, .. } = &circuit.non_primitive_ops[0] else {
             panic!("Expected NonPrimitiveOpWithExecutor operation")
         };
 

@@ -12,11 +12,11 @@ use crate::tables::MmcsPrivateData;
 use crate::types::{ExprId, WitnessId};
 
 /// Circuit operations.
-/// 
+///
 /// Operations are distinguised as primitive and non-primitive:
-/// 
+///
 /// # Primitive operations
-/// 
+///
 /// Primitive operations that represent basic field arithmetic
 ///
 /// These operations form the core computational primitives after expression lowering.
@@ -27,10 +27,10 @@ use crate::types::{ExprId, WitnessId};
 /// - Form a directed acyclic graph (DAG) of dependencies
 ///
 /// # Non-primitive operations
-/// 
+///
 /// Non-primitive operations may represent complex computations that would require too many,
 /// primitive operations to be expressed equivalently.
-/// 
+///
 /// They can be user-defined and selected at runtime, have private data that does not appear
 /// in the central Witness bus, and are subject to their own optimization passes.
 #[derive(Debug)]
