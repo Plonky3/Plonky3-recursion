@@ -5,12 +5,13 @@
 
 use alloc::boxed::Box;
 use alloc::vec;
+
 use p3_field::{Field, PrimeCharacteristicRing};
 
+use crate::CircuitError;
 use crate::builder::{CircuitBuilder, CircuitBuilderError};
 use crate::op::{ExecutionContext, NonPrimitiveExecutor, NonPrimitiveOpType};
 use crate::types::{ExprId, WitnessId};
-use crate::CircuitError;
 
 /// Hash operations trait for `CircuitBuilder`.
 pub trait HashOps<F: Clone + PrimeCharacteristicRing + Eq + core::hash::Hash> {

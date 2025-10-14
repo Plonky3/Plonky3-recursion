@@ -3,7 +3,7 @@ use alloc::string::String;
 use thiserror::Error;
 
 use crate::op::NonPrimitiveOpType;
-use crate::{ExprId, WitnessId};
+use crate::{CircuitBuilderError, ExprId, WitnessId};
 
 /// Errors that can occur during circuit execution and trace generation.
 #[derive(Debug, Error)]
@@ -105,4 +105,8 @@ pub enum CircuitError {
     /// ExprId not found.
     #[error("ExprId {expr_id} not found")]
     ExprIdNotFound { expr_id: ExprId },
+
+    /// Invalid Circuit
+    #[error("Failed to build circuit: {error}")]
+    InvalidCircuit { error: CircuitBuilderError },
 }

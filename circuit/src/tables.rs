@@ -6,7 +6,7 @@ use tracing::instrument;
 
 use crate::circuit::Circuit;
 use crate::op::{NonPrimitiveOpPrivateData, Prim};
-use crate::types::{ WitnessId};
+use crate::types::WitnessId;
 use crate::{CircuitError, CircuitField, ExprId};
 
 mod mmcs;
@@ -214,17 +214,6 @@ impl<F: CircuitField> CircuitRunner<F> {
                         self.set_witness(b, b_val)?;
                     }
                 }
-                Prim::NonPrimitiveOp {
-                    inputs: _,
-                    outputs: _,
-                    op,
-                } => {
-                    // Deprecated: This variant should not be used anymore.
-                    // All non-primitive operations should use NonPrimitiveOpWithExecutor.
-                    return Err(CircuitError::InvalidNonPrimitiveOpConfiguration { 
-                        op: op.clone() 
-                    });
-                }
                 Prim::NonPrimitiveOpWithExecutor {
                     inputs,
                     outputs,
@@ -232,12 +221,18 @@ impl<F: CircuitField> CircuitRunner<F> {
                     expr_id,
                 } => {
                     use crate::op::ExecutionContext;
-                    
+
                     let mut ctx = ExecutionContext::new(
                         &mut self.witness,
                         &self.non_primitive_op_private_data,
                         &self.circuit.enabled_ops,
                         expr_id,
+                    );
+                    tracing::info!(
+                        "Executing NonPrimitiveOpWithExecutor: inputs: {:?}, outputs: {:?}, executor: {:?}",
+                        inputs,
+                        outputs,
+                        executor
                     );
                     executor.execute(&inputs, &outputs, &mut ctx)?;
                 }
@@ -385,9 +380,7 @@ impl<F: CircuitField> CircuitRunner<F> {
     }
 
     fn generate_mmcs_trace(&self) -> Result<MmcsTrace<F>, CircuitError> {
-        mmcs::generate_mmcs_trace(&self.circuit, &self.non_primitive_op_private_data, |widx| {
-            self.get_witness(widx)
-        })
+        mmcs::generate_mmcs_trace(&self.circuit, &self.non_primitive_op_private_data)
     }
 }
 

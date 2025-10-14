@@ -7,7 +7,10 @@ use p3_field::{ExtensionField, Field};
 
 use crate::CircuitError;
 use crate::builder::{CircuitBuilder, CircuitBuilderError};
-use crate::op::{ExecutionContext, NonPrimitiveExecutor, NonPrimitiveOpConfig, NonPrimitiveOpPrivateData, NonPrimitiveOpType};
+use crate::op::{
+    ExecutionContext, NonPrimitiveExecutor, NonPrimitiveOpConfig, NonPrimitiveOpPrivateData,
+    NonPrimitiveOpType,
+};
 use crate::types::{ExprId, WitnessId};
 
 /// Configuration parameters for Mmcs verification operations. When
@@ -46,6 +49,11 @@ impl MmcsVerifyConfig {
     {
         // Ensure the number of extension limbs matches the configuration.
         if digest.len() != self.ext_field_digest_elems {
+            tracing::error!(
+                "IncorrectNonPrimitiveOpPrivateDataSize ext_to_base: expected: {}, got: {}",
+                self.ext_field_digest_elems,
+                digest.len()
+            );
             return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
                 op: NonPrimitiveOpType::MmcsVerify,
                 expected: self.ext_field_digest_elems,
@@ -68,6 +76,11 @@ impl MmcsVerifyConfig {
         // Ensure the flattened base representation matches the expected compile-time size.
         let len = flattened.len();
         let arr: [F; DIGEST_ELEMS] = flattened.try_into().map_err(|_| {
+            tracing::error!(
+                "IncorrectNonPrimitiveOpPrivateDataSize ext_to_base 2: expected: {}, got: {}",
+                DIGEST_ELEMS,
+                len
+            );
             CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
                 op: NonPrimitiveOpType::MmcsVerify,
                 expected: DIGEST_ELEMS,
@@ -91,6 +104,11 @@ impl MmcsVerifyConfig {
         EF: ExtensionField<F> + Clone,
     {
         if digest.len() != self.base_field_digest_elems {
+            tracing::error!(
+                "IncorrectNonPrimitiveOpPrivateDataSize base_to_ext: expected: {}, got: {}",
+                self.base_field_digest_elems,
+                digest.len()
+            );
             return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
                 op: NonPrimitiveOpType::MmcsVerify,
                 expected: self.base_field_digest_elems,
@@ -258,7 +276,7 @@ impl<F: Field> NonPrimitiveExecutor<F> for MmcsVerifyExecutor {
     fn execute(
         &self,
         inputs: &[WitnessId],
-        _outputs: &[WitnessId],
+        outputs: &[WitnessId],
         ctx: &mut ExecutionContext<F>,
     ) -> Result<(), CircuitError> {
         // Get the configuration
@@ -267,18 +285,21 @@ impl<F: Field> NonPrimitiveExecutor<F> for MmcsVerifyExecutor {
             _ => {
                 return Err(CircuitError::InvalidNonPrimitiveOpConfiguration {
                     op: self.op_type.clone(),
-                })
+                });
             }
         };
 
         // Get private data
-        let private_data = match ctx.get_private_data()? {
-            NonPrimitiveOpPrivateData::MmcsVerify(data) => data,
-        };
+        let NonPrimitiveOpPrivateData::MmcsVerify(private_data) = ctx.get_private_data()?;
 
         // Validate input size matches configuration
         let expected_input_size = config.input_size();
         if inputs.len() != expected_input_size {
+            tracing::error!(
+                "IncorrectNonPrimitiveOpPrivateDataSize execute: expected: {}, got: {}",
+                expected_input_size,
+                inputs.len()
+            );
             return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
                 op: self.op_type.clone(),
                 expected: expected_input_size,
@@ -290,19 +311,18 @@ impl<F: Field> NonPrimitiveExecutor<F> for MmcsVerifyExecutor {
         let ext_digest_elems = config.ext_field_digest_elems;
         let leaf_wids = &inputs[..ext_digest_elems];
         let _index_wid = inputs[ext_digest_elems];
-        let root_wids = &inputs[ext_digest_elems + 1..];
+        let root_wids = &outputs[..ext_digest_elems];
 
         // Validate leaf values match private data
         let witness_leaf: Vec<F> = leaf_wids
             .iter()
             .map(|&wid| ctx.get_witness(wid))
             .collect::<Result<_, _>>()?;
-        let private_data_leaf = private_data
-            .path_states
-            .first()
-            .ok_or(CircuitError::NonPrimitiveOpMissingPrivateData {
+        let private_data_leaf = private_data.path_states.first().ok_or(
+            CircuitError::NonPrimitiveOpMissingPrivateData {
                 operation_index: ctx.operation_id(),
-            })?;
+            },
+        )?;
         if witness_leaf != *private_data_leaf {
             return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
                 op: self.op_type.clone(),
@@ -317,12 +337,11 @@ impl<F: Field> NonPrimitiveExecutor<F> for MmcsVerifyExecutor {
             .iter()
             .map(|&wid| ctx.get_witness(wid))
             .collect::<Result<_, _>>()?;
-        let private_data_root = private_data
-            .path_states
-            .last()
-            .ok_or(CircuitError::NonPrimitiveOpMissingPrivateData {
+        let private_data_root = private_data.path_states.last().ok_or(
+            CircuitError::NonPrimitiveOpMissingPrivateData {
                 operation_index: ctx.operation_id(),
-            })?;
+            },
+        )?;
         if witness_root != *private_data_root {
             return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
                 op: self.op_type.clone(),

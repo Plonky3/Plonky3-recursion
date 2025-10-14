@@ -7,7 +7,7 @@ use thiserror::Error;
 
 use crate::circuit::Circuit;
 use crate::expr::{Expr, ExpressionGraph};
-use crate::op::{NonPrimitiveOp, NonPrimitiveOpConfig, NonPrimitiveOpType, Prim};
+use crate::op::{NonPrimitiveOpConfig, NonPrimitiveOpType, Prim};
 use crate::ops::MmcsVerifyConfig;
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};
 #[cfg(debug_assertions)]
@@ -552,12 +552,9 @@ where
     pub fn build_with_public_mapping(
         mut self,
     ) -> Result<(Circuit<F>, HashMap<ExprId, WitnessId>), CircuitBuilderError> {
-        // Stage 1: Lower expressions to primitives
-        let (primitive_ops, public_rows, expr_to_widx, public_mappings) =
+        // Stage 1: Lower expressions to primitives and extract non-primitive ops
+        let (primitive_ops, non_primitive_ops, public_rows, expr_to_widx, public_mappings) =
             self.lower_to_primitives()?;
-
-        // Stage 2: Lower non-primitive operations using the expr_to_widx mapping
-        let lowered_non_primitive_ops = self.lower_non_primitive_ops(&expr_to_widx)?;
 
         // Stage 3: IR transformations and optimizations
         let primitive_ops = Self::optimize_primitives(primitive_ops);
@@ -566,7 +563,7 @@ where
         let witness_count = self.witness_alloc.witness_count();
         let mut circuit = Circuit::new(witness_count, expr_to_widx);
         circuit.primitive_ops = primitive_ops;
-        circuit.non_primitive_ops = lowered_non_primitive_ops;
+        circuit.non_primitive_ops = non_primitive_ops;
         circuit.public_rows = public_rows;
         circuit.public_flat_len = self.public_input_count;
         circuit.enabled_ops = self.enabled_ops;
@@ -602,6 +599,7 @@ where
     ) -> Result<
         (
             Vec<Prim<F>>,
+            Vec<Prim<F>>, // non-primitive ops
             Vec<WitnessId>,
             HashMap<ExprId, WitnessId>,
             HashMap<ExprId, WitnessId>,
@@ -619,6 +617,7 @@ where
             .collect();
 
         let mut primitive_ops = Vec::new();
+        let mut non_primitive_ops = Vec::new();
         let mut expr_to_widx: HashMap<ExprId, WitnessId> = HashMap::new();
         let mut public_rows: Vec<WitnessId> = vec![WitnessId(0); self.public_input_count];
         let mut public_mappings = HashMap::new();
@@ -631,10 +630,7 @@ where
             if let Expr::Const(val) = expr {
                 let id = ExprId(expr_idx as u32);
                 let w = self.witness_alloc.alloc();
-                primitive_ops.push(Prim::Const {
-                    out: w,
-                    val: val.clone(),
-                });
+                primitive_ops.push(Prim::Const { out: w, val: *val });
                 expr_to_widx.insert(id, w);
 
                 // If this Const participates in a connect class, bind the class to the const slot
@@ -782,119 +778,47 @@ where
                             )
                         })
                         .collect::<Result<_, _>>()?;
-                    
+
                     // Create the appropriate executor based on operation type
-                    let executor: alloc::boxed::Box<dyn crate::op::NonPrimitiveExecutor<F>> = match op {
-                        NonPrimitiveOpType::MmcsVerify => {
-                            alloc::boxed::Box::new(crate::ops::MmcsVerifyExecutor::new())
-                        }
-                        NonPrimitiveOpType::HashAbsorb { reset } => {
-                            alloc::boxed::Box::new(crate::ops::HashAbsorbExecutor::new(*reset))
-                        }
-                        NonPrimitiveOpType::HashSqueeze => {
-                            alloc::boxed::Box::new(crate::ops::HashSqueezeExecutor::new())
-                        }
-                        NonPrimitiveOpType::FriVerify => {
-                            // FRI verification not yet implemented
-                            return Err(CircuitBuilderError::UnsupportedNonPrimitiveOp {
-                                op: op.clone(),
-                            });
-                        }
-                    };
-                    
-                    primitive_ops.push(Prim::NonPrimitiveOpWithExecutor {
+                    let executor: alloc::boxed::Box<dyn crate::op::NonPrimitiveExecutor<F>> =
+                        match op {
+                            NonPrimitiveOpType::MmcsVerify => {
+                                alloc::boxed::Box::new(crate::ops::MmcsVerifyExecutor::new())
+                            }
+                            NonPrimitiveOpType::HashAbsorb { reset } => {
+                                alloc::boxed::Box::new(crate::ops::HashAbsorbExecutor::new(*reset))
+                            }
+                            NonPrimitiveOpType::HashSqueeze => {
+                                alloc::boxed::Box::new(crate::ops::HashSqueezeExecutor::new())
+                            }
+                            NonPrimitiveOpType::FriVerify => {
+                                // FRI verification not yet implemented
+                                return Err(CircuitBuilderError::UnsupportedNonPrimitiveOp {
+                                    op: op.clone(),
+                                });
+                            }
+                        };
+
+                    let prim = Prim::NonPrimitiveOpWithExecutor {
                         inputs: inputs_widx,
                         outputs: outputs_widx,
                         executor,
                         expr_id,
-                    });
+                    };
+
+                    // Separate from primitive ops for faster iteration during runs
+                    non_primitive_ops.push(prim)
                 }
             }
         }
 
-        Ok((primitive_ops, public_rows, expr_to_widx, public_mappings))
-    }
-
-    /// Stage 2: Lower non-primitive operations from ExprIds to WitnessId
-    fn lower_non_primitive_ops(
-        &self,
-        expr_to_widx: &HashMap<ExprId, WitnessId>,
-    ) -> Result<HashMap<ExprId, NonPrimitiveOp>, CircuitBuilderError> {
-        let mut lowered_ops = HashMap::new();
-
-        for (op_id, (op_type, witness_exprs)) in &self.non_primitive_ops {
-            let config = self.enabled_ops.get(op_type);
-            match op_type {
-                NonPrimitiveOpType::MmcsVerify => {
-                    let config = match config {
-                        Some(NonPrimitiveOpConfig::MmcsVerifyConfig(config)) => Ok(config),
-                        _ => Err(CircuitBuilderError::InvalidNonPrimitiveOpConfiguration {
-                            op: op_type.clone(),
-                        }),
-                    }?;
-                    if witness_exprs.len() != config.input_size() + config.output_size() {
-                        return Err(CircuitBuilderError::NonPrimitiveOpArity {
-                            op: "MmcsVerify",
-                            expected: config.input_size(),
-                            got: witness_exprs.len(),
-                        });
-                    }
-                    let leaf_widx: Vec<WitnessId> = (0..config.ext_field_digest_elems)
-                        .map(|i| {
-                            Self::get_witness_id(
-                                expr_to_widx,
-                                witness_exprs[i],
-                                "MmcsVerify leaf input",
-                            )
-                        })
-                        .collect::<Result<_, _>>()?;
-                    let index_widx = Self::get_witness_id(
-                        expr_to_widx,
-                        witness_exprs[config.ext_field_digest_elems],
-                        "MmcsVerify index input",
-                    )?;
-                    let root_widx = (config.ext_field_digest_elems + 1..config.input_size())
-                        .map(|i| {
-                            Self::get_witness_id(
-                                expr_to_widx,
-                                witness_exprs[i],
-                                "MmcsVerify root input",
-                            )
-                        })
-                        .collect::<Result<_, _>>()?;
-
-                    lowered_ops.insert(*op_id, NonPrimitiveOp::MmcsVerify {
-                        leaf: leaf_widx,
-                        index: index_widx,
-                        root: root_widx,
-                    });
-                }
-                NonPrimitiveOpType::FriVerify => {
-                    todo!() // TODO: Add FRIVerify when it lands
-                }
-                NonPrimitiveOpType::HashAbsorb { reset } => {
-                    let inputs = witness_exprs
-                        .iter()
-                        .map(|&expr| Self::get_witness_id(expr_to_widx, expr, "HashAbsorb input"))
-                        .collect::<Result<_, _>>()?;
-
-                    lowered_ops.insert(*op_id, NonPrimitiveOp::HashAbsorb {
-                        reset_flag: *reset,
-                        inputs,
-                    });
-                }
-                NonPrimitiveOpType::HashSqueeze => {
-                    let outputs = witness_exprs
-                        .iter()
-                        .map(|&expr| Self::get_witness_id(expr_to_widx, expr, "HashSqueeze output"))
-                        .collect::<Result<_, _>>()?;
-
-                    lowered_ops.insert(*op_id, NonPrimitiveOp::HashSqueeze { outputs });
-                } // Add more variants here as needed
-            }
-        }
-
-        Ok(lowered_ops)
+        Ok((
+            primitive_ops,
+            non_primitive_ops,
+            public_rows,
+            expr_to_widx,
+            public_mappings,
+        ))
     }
 
     /// Stage 3: IR transformations and optimizations
@@ -1566,9 +1490,14 @@ mod tests {
 
         let circuit = builder.build().unwrap();
         assert_eq!(circuit.non_primitive_ops.len(), 1);
-        match &circuit.non_primitive_ops.values().next().unwrap() {
-            NonPrimitiveOp::MmcsVerify { .. } => {},
-            NonPrimitiveOp::HashAbsorb { .. } | NonPrimitiveOp::HashSqueeze { .. } => {
+        let Prim::NonPrimitiveOpWithExecutor { executor, .. } = &circuit.non_primitive_ops[0]
+        else {
+            panic!("Expected NonPrimitiveOpWithExecutor operation")
+        };
+
+        match *executor.op_type() {
+            NonPrimitiveOpType::MmcsVerify => {}
+            _ => {
                 panic!("Expected MmcsVerify operation");
             }
         }
@@ -1731,7 +1660,7 @@ mod tests {
         let c1 = builder.add_const(BabyBear::from_u64(42));
         let c2 = builder.add_const(BabyBear::from_u64(100));
 
-        let (primitives, public_rows, expr_to_widx, public_mappings) =
+        let (primitives, _non_primitive_ops, public_rows, expr_to_widx, public_mappings) =
             builder.lower_to_primitives().unwrap();
 
         // Expected primitives: 3 constants (ZERO, 42, 100)
@@ -1775,7 +1704,7 @@ mod tests {
         let p1 = builder.add_public_input(); // position 0
         let p2 = builder.add_public_input(); // position 1
 
-        let (primitives, public_rows, expr_to_widx, public_mappings) =
+        let (primitives, _non_primitive_ops, public_rows, expr_to_widx, public_mappings) =
             builder.lower_to_primitives().unwrap();
 
         // Expected primitives: 1 constant (ZERO) + 2 public inputs
@@ -1822,7 +1751,7 @@ mod tests {
         let y = builder.add_public_input();
         let add_result = builder.add(x, y); // x + y
 
-        let (primitives, public_rows, expr_to_widx, public_mappings) =
+        let (primitives, _non_primitive_ops, public_rows, expr_to_widx, public_mappings) =
             builder.lower_to_primitives().unwrap();
 
         // Expected primitives: ZERO + 2 public inputs + 1 add operation
@@ -1876,7 +1805,7 @@ mod tests {
         let y = builder.add_public_input();
         let result = builder.sub(x, y); // x - y = result
 
-        let (primitives, public_rows, expr_to_widx, public_mappings) =
+        let (primitives, _non_primitive_ops, public_rows, expr_to_widx, public_mappings) =
             builder.lower_to_primitives().unwrap();
 
         // Expected primitives: ZERO + 2 public inputs + 1 add (encoding subtraction)
@@ -1930,7 +1859,7 @@ mod tests {
         let y = builder.add_public_input();
         let result = builder.div(x, y); // x / y = result
 
-        let (primitives, public_rows, expr_to_widx, public_mappings) =
+        let (primitives, _non_primitive_ops, public_rows, expr_to_widx, public_mappings) =
             builder.lower_to_primitives().unwrap();
 
         // Expected primitives: ZERO + 2 public inputs + 1 mul (encoding division)
@@ -1986,7 +1915,7 @@ mod tests {
         // Connect x and y - they should share witness ID
         builder.connect(x, y);
 
-        let (primitives, public_rows, expr_to_widx, public_mappings) =
+        let (primitives, _non_primitive_ops, public_rows, expr_to_widx, public_mappings) =
             builder.lower_to_primitives().unwrap();
 
         // Expected primitives: ZERO + 2 public inputs (but sharing WitnessId(1))
@@ -2035,7 +1964,7 @@ mod tests {
         // Connect public input to constant
         builder.connect(x, c);
 
-        let (primitives, public_rows, expr_to_widx, public_mappings) =
+        let (primitives, _non_primitive_ops, public_rows, expr_to_widx, public_mappings) =
             builder.lower_to_primitives().unwrap();
 
         // Expected primitives: ZERO + constant 42 + public input (all sharing witness)
@@ -2083,7 +2012,7 @@ mod tests {
         let p2 = builder.add_public_input();
         let add_result = builder.add(p1, p2);
 
-        let (primitives, public_rows, expr_to_widx, public_mappings) =
+        let (primitives, _non_primitive_ops, public_rows, expr_to_widx, public_mappings) =
             builder.lower_to_primitives().unwrap();
 
         // Expected primitives in processing order: constants, public inputs, arithmetic ops
