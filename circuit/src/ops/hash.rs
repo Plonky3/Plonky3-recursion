@@ -3,12 +3,14 @@
 //! Provides methods for absorbing and squeezing elements using a sponge
 //! construction within the circuit.
 
+use alloc::boxed::Box;
 use alloc::vec;
-use p3_field::PrimeCharacteristicRing;
+use p3_field::{Field, PrimeCharacteristicRing};
 
 use crate::builder::{CircuitBuilder, CircuitBuilderError};
-use crate::op::NonPrimitiveOpType;
-use crate::types::ExprId;
+use crate::op::{ExecutionContext, NonPrimitiveExecutor, NonPrimitiveOpType};
+use crate::types::{ExprId, WitnessId};
+use crate::CircuitError;
 
 /// Hash operations trait for `CircuitBuilder`.
 pub trait HashOps<F: Clone + PrimeCharacteristicRing + Eq + core::hash::Hash> {
@@ -125,5 +127,85 @@ mod tests {
         let result = circuit.add_hash_absorb(&[input], true);
 
         assert!(result.is_err());
+    }
+}
+
+/// Executor for hash absorb operations
+///
+/// TODO: This is a dummy implementation.
+/// Sponge state will be tracked by a dedicated AIR structure in the future.
+#[derive(Debug, Clone)]
+pub struct HashAbsorbExecutor {
+    op_type: NonPrimitiveOpType,
+}
+
+impl HashAbsorbExecutor {
+    /// Create a new hash absorb executor
+    pub fn new(reset: bool) -> Self {
+        Self {
+            op_type: NonPrimitiveOpType::HashAbsorb { reset },
+        }
+    }
+}
+
+impl<F: Field> NonPrimitiveExecutor<F> for HashAbsorbExecutor {
+    fn execute(
+        &self,
+        _inputs: &[WitnessId],
+        _outputs: &[WitnessId],
+        _ctx: &mut ExecutionContext<F>,
+    ) -> Result<(), CircuitError> {
+        Ok(())
+    }
+
+    fn op_type(&self) -> &NonPrimitiveOpType {
+        &self.op_type
+    }
+
+    fn boxed(&self) -> Box<dyn NonPrimitiveExecutor<F>> {
+        Box::new(self.clone())
+    }
+}
+
+/// Executor for hash squeeze operations
+///
+/// TODO: This is a dummy implementation.
+/// Sponge state will be tracked by a dedicated AIR structure in the future.
+#[derive(Debug, Clone)]
+pub struct HashSqueezeExecutor {
+    op_type: NonPrimitiveOpType,
+}
+
+impl HashSqueezeExecutor {
+    /// Create a new hash squeeze executor
+    pub fn new() -> Self {
+        Self {
+            op_type: NonPrimitiveOpType::HashSqueeze,
+        }
+    }
+}
+
+impl Default for HashSqueezeExecutor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<F: Field> NonPrimitiveExecutor<F> for HashSqueezeExecutor {
+    fn execute(
+        &self,
+        _inputs: &[WitnessId],
+        _outputs: &[WitnessId],
+        _ctx: &mut ExecutionContext<F>,
+    ) -> Result<(), CircuitError> {
+        Ok(())
+    }
+
+    fn op_type(&self) -> &NonPrimitiveOpType {
+        &self.op_type
+    }
+
+    fn boxed(&self) -> Box<dyn NonPrimitiveExecutor<F>> {
+        Box::new(self.clone())
     }
 }

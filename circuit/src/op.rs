@@ -1,11 +1,15 @@
+use alloc::boxed::Box;
 use alloc::vec::Vec;
+use core::fmt::Debug;
 use core::hash::Hash;
 
+use hashbrown::HashMap;
 use p3_field::Field;
 
 use crate::ops::MmcsVerifyConfig;
 use crate::tables::MmcsPrivateData;
-use crate::types::WitnessId;
+use crate::types::{ExprId, WitnessId};
+use crate::CircuitError;
 
 /// Primitive operations that represent basic field arithmetic
 ///
@@ -18,7 +22,7 @@ use crate::types::WitnessId;
 ///
 /// Primitive operations are kept separate from complex operations to maintain
 /// clean optimization boundaries and enable aggressive compiler transformations.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug)]
 pub enum Prim<F> {
     /// Load a constant value into the witness table
     ///
@@ -49,11 +53,77 @@ pub enum Prim<F> {
     },
 
     /// Non-primitive operation: witness[out] = op(witness[inputs])
+    /// Deprecated: Use NonPrimitiveOpWithExecutor instead
     NonPrimitiveOp {
         inputs: Vec<WitnessId>,
         outputs: Vec<WitnessId>,
         op: NonPrimitiveOpType,
     },
+
+    /// Non-primitive operation with executor-based dispatch
+    NonPrimitiveOpWithExecutor {
+        inputs: Vec<WitnessId>,
+        outputs: Vec<WitnessId>,
+        executor: Box<dyn NonPrimitiveExecutor<F>>,
+        /// ExprId for error reporting and private data lookup
+        expr_id: ExprId,
+    },
+}
+
+// Custom Clone implementation for Prim
+impl<F: Field + Clone> Clone for Prim<F> {
+    fn clone(&self) -> Self {
+        match self {
+            Prim::Const { out, val } => Prim::Const { out: *out, val: val.clone() },
+            Prim::Public { out, public_pos } => Prim::Public { out: *out, public_pos: *public_pos },
+            Prim::Add { a, b, out } => Prim::Add { a: *a, b: *b, out: *out },
+            Prim::Mul { a, b, out } => Prim::Mul { a: *a, b: *b, out: *out },
+            Prim::NonPrimitiveOp { inputs, outputs, op } => Prim::NonPrimitiveOp {
+                inputs: inputs.clone(),
+                outputs: outputs.clone(),
+                op: op.clone(),
+            },
+            Prim::NonPrimitiveOpWithExecutor { inputs, outputs, executor, expr_id } => {
+                Prim::NonPrimitiveOpWithExecutor {
+                    inputs: inputs.clone(),
+                    outputs: outputs.clone(),
+                    executor: executor.boxed(),
+                    expr_id: *expr_id,
+                }
+            }
+        }
+    }
+}
+
+// Custom PartialEq implementation for Prim
+impl<F: Field + PartialEq> PartialEq for Prim<F> {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Prim::Const { out: o1, val: v1 }, Prim::Const { out: o2, val: v2 }) => {
+                o1 == o2 && v1 == v2
+            }
+            (Prim::Public { out: o1, public_pos: p1 }, Prim::Public { out: o2, public_pos: p2 }) => {
+                o1 == o2 && p1 == p2
+            }
+            (
+                Prim::Add { a: a1, b: b1, out: o1 },
+                Prim::Add { a: a2, b: b2, out: o2 },
+            ) => a1 == a2 && b1 == b2 && o1 == o2,
+            (
+                Prim::Mul { a: a1, b: b1, out: o1 },
+                Prim::Mul { a: a2, b: b2, out: o2 },
+            ) => a1 == a2 && b1 == b2 && o1 == o2,
+            (
+                Prim::NonPrimitiveOp { inputs: i1, outputs: o1, op: op1 },
+                Prim::NonPrimitiveOp { inputs: i2, outputs: o2, op: op2 },
+            ) => i1 == i2 && o1 == o2 && op1 == op2,
+            (
+                Prim::NonPrimitiveOpWithExecutor { inputs: i1, outputs: o1, executor: e1, expr_id: id1 },
+                Prim::NonPrimitiveOpWithExecutor { inputs: i2, outputs: o2, executor: e2, expr_id: id2 },
+            ) => i1 == i2 && o1 == o2 && e1.op_type() == e2.op_type() && id1 == id2,
+            _ => false,
+        }
+    }
 }
 
 /// Non-primitive operation types
@@ -68,17 +138,6 @@ pub enum NonPrimitiveOpType {
     },
     /// Hash squeeze operation - extracts field elements from sponge state
     HashSqueeze,
-}
-
-impl NonPrimitiveOpType {
-    pub fn apply<F: Field>(&self, _inputs: Vec<F>) -> Vec<F> {
-        match self {
-            NonPrimitiveOpType::MmcsVerify => todo!(),
-            NonPrimitiveOpType::FriVerify => todo!(),
-            NonPrimitiveOpType::HashAbsorb { .. } => todo!(),
-            NonPrimitiveOpType::HashSqueeze => todo!(),
-        }
-    }
 }
 
 /// Non-primitive operation types
@@ -156,4 +215,120 @@ pub enum NonPrimitiveOpPrivateData<F> {
     /// to generate a valid proof. This data is not part of the public
     /// circuit specification.
     MmcsVerify(MmcsPrivateData<F>),
+}
+
+/// Execution context providing operations access to witness table, private data, and configs
+///
+/// This context is passed to operation executors to give them access to all necessary
+/// runtime state without exposing internal implementation details.
+pub struct ExecutionContext<'a, F> {
+    /// Mutable reference to witness table for reading/writing values
+    witness: &'a mut [Option<F>],
+    /// Private data map for non-primitive operations
+    non_primitive_op_private_data: &'a HashMap<ExprId, Option<NonPrimitiveOpPrivateData<F>>>,
+    /// Operation configurations
+    enabled_ops: &'a HashMap<NonPrimitiveOpType, NonPrimitiveOpConfig>,
+    /// Current operation's ExprId for error reporting
+    operation_id: ExprId,
+}
+
+impl<'a, F: Field> ExecutionContext<'a, F> {
+    /// Create a new execution context
+    pub fn new(
+        witness: &'a mut [Option<F>],
+        non_primitive_op_private_data: &'a HashMap<ExprId, Option<NonPrimitiveOpPrivateData<F>>>,
+        enabled_ops: &'a HashMap<NonPrimitiveOpType, NonPrimitiveOpConfig>,
+        operation_id: ExprId,
+    ) -> Self {
+        Self {
+            witness,
+            non_primitive_op_private_data,
+            enabled_ops,
+            operation_id,
+        }
+    }
+
+    /// Get witness value at the given index
+    pub fn get_witness(&self, widx: WitnessId) -> Result<F, CircuitError> {
+        self.witness
+            .get(widx.0 as usize)
+            .and_then(|opt| opt.as_ref())
+            .cloned()
+            .ok_or(CircuitError::WitnessNotSet { witness_id: widx })
+    }
+
+    /// Set witness value at the given index
+    pub fn set_witness(&mut self, widx: WitnessId, value: F) -> Result<(), CircuitError> {
+        if widx.0 as usize >= self.witness.len() {
+            return Err(CircuitError::WitnessIdOutOfBounds { witness_id: widx });
+        }
+
+        // Check for conflicting reassignment
+        if let Some(existing_value) = self.witness[widx.0 as usize] {
+            if existing_value != value {
+                return Err(CircuitError::WitnessConflict {
+                    witness_id: widx,
+                    existing: alloc::format!("{existing_value:?}"),
+                    new: alloc::format!("{value:?}"),
+                });
+            }
+        }
+
+        self.witness[widx.0 as usize] = Some(value);
+        Ok(())
+    }
+
+    /// Get private data for the current operation
+    pub fn get_private_data(&self) -> Result<&NonPrimitiveOpPrivateData<F>, CircuitError> {
+        self.non_primitive_op_private_data
+            .get(&self.operation_id)
+            .and_then(|opt| opt.as_ref())
+            .ok_or(CircuitError::NonPrimitiveOpMissingPrivateData {
+                operation_index: self.operation_id,
+            })
+    }
+
+    /// Get operation configuration by type
+    pub fn get_config(&self, op_type: &NonPrimitiveOpType) -> Result<&NonPrimitiveOpConfig, CircuitError> {
+        self.enabled_ops
+            .get(op_type)
+            .ok_or(CircuitError::InvalidNonPrimitiveOpConfiguration { op: op_type.clone() })
+    }
+
+    /// Get the current operation ID
+    pub fn operation_id(&self) -> ExprId {
+        self.operation_id
+    }
+}
+
+/// Trait for executable non-primitive operations
+///
+/// This trait enables dynamic dispatch and allows each operation to control
+/// its own execution logic with full access to the execution context.
+pub trait NonPrimitiveExecutor<F: Field>: Debug {
+    /// Execute the operation with full context access
+    ///
+    /// # Arguments
+    /// * `inputs` - Input witness indices
+    /// * `outputs` - Output witness indices  
+    /// * `ctx` - Execution context with access to witness table, private data, and configs
+    fn execute(
+        &self,
+        inputs: &[WitnessId],
+        outputs: &[WitnessId],
+        ctx: &mut ExecutionContext<F>,
+    ) -> Result<(), CircuitError>;
+
+    /// Get operation type identifier (for config lookup, error reporting)
+    fn op_type(&self) -> &NonPrimitiveOpType;
+
+    /// Clone as trait object
+    fn boxed(&self) -> Box<dyn NonPrimitiveExecutor<F>>;
+}
+
+// Implement Clone for Box<dyn NonPrimitiveExecutor<F>>
+impl<F: Field> Clone for Box<dyn NonPrimitiveExecutor<F>> {
+    fn clone(&self) -> Self {
+        self.boxed()
+    }
 }

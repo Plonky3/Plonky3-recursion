@@ -215,18 +215,31 @@ impl<F: CircuitField> CircuitRunner<F> {
                     }
                 }
                 Prim::NonPrimitiveOp {
-                    inputs,
-                    outputs,
+                    inputs: _,
+                    outputs: _,
                     op,
                 } => {
-                    let inputs_val = inputs
-                        .iter()
-                        .map(|&widx| self.get_witness(widx))
-                        .collect::<Result<Vec<F>, CircuitError>>()?;
-                    let outputs_val = op.apply(inputs_val);
-                    for (i, val) in outputs_val.iter().enumerate() {
-                        self.set_witness(outputs[i], *val)?;
-                    }
+                    // Deprecated: This variant should not be used anymore.
+                    // All non-primitive operations should use NonPrimitiveOpWithExecutor.
+                    return Err(CircuitError::InvalidNonPrimitiveOpConfiguration { 
+                        op: op.clone() 
+                    });
+                }
+                Prim::NonPrimitiveOpWithExecutor {
+                    inputs,
+                    outputs,
+                    executor,
+                    expr_id,
+                } => {
+                    use crate::op::ExecutionContext;
+                    
+                    let mut ctx = ExecutionContext::new(
+                        &mut self.witness,
+                        &self.non_primitive_op_private_data,
+                        &self.circuit.enabled_ops,
+                        expr_id,
+                    );
+                    executor.execute(&inputs, &outputs, &mut ctx)?;
                 }
             }
         }

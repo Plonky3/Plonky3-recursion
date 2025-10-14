@@ -538,7 +538,7 @@ where
 
 impl<F> CircuitBuilder<F>
 where
-    F: Clone + PrimeCharacteristicRing + PartialEq + Eq + core::hash::Hash,
+    F: Clone + PrimeCharacteristicRing + PartialEq + Eq + core::hash::Hash + p3_field::Field,
 {
     /// Build the circuit into a Circuit with separate lowering and IR transformation stages.
     /// Returns an error if lowering fails due to an internal inconsistency.
@@ -782,10 +782,31 @@ where
                             )
                         })
                         .collect::<Result<_, _>>()?;
-                    primitive_ops.push(Prim::NonPrimitiveOp {
+                    
+                    // Create the appropriate executor based on operation type
+                    let executor: alloc::boxed::Box<dyn crate::op::NonPrimitiveExecutor<F>> = match op {
+                        NonPrimitiveOpType::MmcsVerify => {
+                            alloc::boxed::Box::new(crate::ops::MmcsVerifyExecutor::new())
+                        }
+                        NonPrimitiveOpType::HashAbsorb { reset } => {
+                            alloc::boxed::Box::new(crate::ops::HashAbsorbExecutor::new(*reset))
+                        }
+                        NonPrimitiveOpType::HashSqueeze => {
+                            alloc::boxed::Box::new(crate::ops::HashSqueezeExecutor::new())
+                        }
+                        NonPrimitiveOpType::FriVerify => {
+                            // FRI verification not yet implemented
+                            return Err(CircuitBuilderError::UnsupportedNonPrimitiveOp {
+                                op: op.clone(),
+                            });
+                        }
+                    };
+                    
+                    primitive_ops.push(Prim::NonPrimitiveOpWithExecutor {
                         inputs: inputs_widx,
                         outputs: outputs_widx,
-                        op: op.clone(),
+                        executor,
+                        expr_id,
                     });
                 }
             }
@@ -811,7 +832,7 @@ where
                             op: op_type.clone(),
                         }),
                     }?;
-                    if witness_exprs.len() != config.input_size() {
+                    if witness_exprs.len() != config.input_size() + config.output_size() {
                         return Err(CircuitBuilderError::NonPrimitiveOpArity {
                             op: "MmcsVerify",
                             expected: config.input_size(),
