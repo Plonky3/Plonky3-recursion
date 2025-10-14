@@ -11,7 +11,7 @@ use crate::circuit::{Circuit, CircuitField};
 use crate::op::{NonPrimitiveOpConfig, NonPrimitiveOpPrivateData, NonPrimitiveOpType};
 use crate::ops::MmcsVerifyConfig;
 use crate::types::WitnessId;
-use crate::{CircuitError, ExprId, Prim};
+use crate::{CircuitError, ExprId, Op};
 
 #[derive(Debug, Clone)]
 pub struct MmcsTrace<F> {
@@ -78,11 +78,6 @@ impl<F: Field + Clone + Default> MmcsPrivateData<F> {
     {
         // Ensure we have one direction bit per sibling step.
         if siblings.len() != directions.len() {
-            tracing::error!(
-                "IncorrectNonPrimitiveOpPrivateDataSize new: expected: {}, got: {}",
-                siblings.len(),
-                directions.len()
-            );
             return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
                 op: NonPrimitiveOpType::MmcsVerify,
                 expected: siblings.len(),
@@ -222,7 +217,7 @@ pub fn generate_mmcs_trace<F: CircuitField>(
 
     // Process each non-primitive operation
     for op in &circuit.non_primitive_ops {
-        let Prim::NonPrimitiveOpWithExecutor {
+        let Op::NonPrimitiveOpWithExecutor {
             inputs,
             outputs,
             executor,

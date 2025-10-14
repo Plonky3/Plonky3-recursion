@@ -49,11 +49,6 @@ impl MmcsVerifyConfig {
     {
         // Ensure the number of extension limbs matches the configuration.
         if digest.len() != self.ext_field_digest_elems {
-            tracing::error!(
-                "IncorrectNonPrimitiveOpPrivateDataSize ext_to_base: expected: {}, got: {}",
-                self.ext_field_digest_elems,
-                digest.len()
-            );
             return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
                 op: NonPrimitiveOpType::MmcsVerify,
                 expected: self.ext_field_digest_elems,
@@ -76,11 +71,6 @@ impl MmcsVerifyConfig {
         // Ensure the flattened base representation matches the expected compile-time size.
         let len = flattened.len();
         let arr: [F; DIGEST_ELEMS] = flattened.try_into().map_err(|_| {
-            tracing::error!(
-                "IncorrectNonPrimitiveOpPrivateDataSize ext_to_base 2: expected: {}, got: {}",
-                DIGEST_ELEMS,
-                len
-            );
             CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
                 op: NonPrimitiveOpType::MmcsVerify,
                 expected: DIGEST_ELEMS,
@@ -104,11 +94,6 @@ impl MmcsVerifyConfig {
         EF: ExtensionField<F> + Clone,
     {
         if digest.len() != self.base_field_digest_elems {
-            tracing::error!(
-                "IncorrectNonPrimitiveOpPrivateDataSize base_to_ext: expected: {}, got: {}",
-                self.base_field_digest_elems,
-                digest.len()
-            );
             return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
                 op: NonPrimitiveOpType::MmcsVerify,
                 expected: self.base_field_digest_elems,
@@ -233,18 +218,16 @@ where
         index_expr: &ExprId,
         root_expr: &[ExprId],
     ) -> Result<ExprId, CircuitBuilderError> {
-        self.ensure_op_enabled(NonPrimitiveOpType::MmcsVerify)?;
-
         let mut inputs = vec![];
         inputs.extend(leaf_expr);
         inputs.push(*index_expr);
 
-        Ok(self.push_non_primitive_op(
+        self.push_non_primitive_op(
             NonPrimitiveOpType::MmcsVerify,
             inputs,
             root_expr.to_vec(),
             "mmcs_verify",
-        ))
+        )
     }
 }
 
@@ -295,11 +278,6 @@ impl<F: Field> NonPrimitiveExecutor<F> for MmcsVerifyExecutor {
         // Validate input size matches configuration
         let expected_input_size = config.input_size();
         if inputs.len() != expected_input_size {
-            tracing::error!(
-                "IncorrectNonPrimitiveOpPrivateDataSize execute: expected: {}, got: {}",
-                expected_input_size,
-                inputs.len()
-            );
             return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
                 op: self.op_type.clone(),
                 expected: expected_input_size,
@@ -307,10 +285,19 @@ impl<F: Field> NonPrimitiveExecutor<F> for MmcsVerifyExecutor {
             });
         }
 
-        // Extract leaf, index, and root from inputs
+        // Extract leaf, index from inputs; root from outputs
         let ext_digest_elems = config.ext_field_digest_elems;
         let leaf_wids = &inputs[..ext_digest_elems];
         let _index_wid = inputs[ext_digest_elems];
+
+        // Root comes from outputs (the value we're verifying against)
+        if outputs.len() < ext_digest_elems {
+            return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
+                op: self.op_type.clone(),
+                expected: ext_digest_elems,
+                got: outputs.len(),
+            });
+        }
         let root_wids = &outputs[..ext_digest_elems];
 
         // Validate leaf values match private data
@@ -342,6 +329,7 @@ impl<F: Field> NonPrimitiveExecutor<F> for MmcsVerifyExecutor {
                 operation_index: ctx.operation_id(),
             },
         )?;
+
         if witness_root != *private_data_root {
             return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
                 op: self.op_type.clone(),

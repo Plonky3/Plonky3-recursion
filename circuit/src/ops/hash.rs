@@ -25,14 +25,14 @@ pub trait HashOps<F: Clone + PrimeCharacteristicRing + Eq + core::hash::Hash> {
         &mut self,
         inputs: &[ExprId],
         reset: bool,
-    ) -> Result<(), CircuitBuilderError>;
+    ) -> Result<ExprId, CircuitBuilderError>;
 
     /// Squeeze field elements from the sponge state.
     ///
     /// # Arguments
     ///
     /// * `outputs` - The `ExprId`s to store squeezed values in
-    fn add_hash_squeeze(&mut self, outputs: &[ExprId]) -> Result<(), CircuitBuilderError>;
+    fn add_hash_squeeze(&mut self, outputs: &[ExprId]) -> Result<ExprId, CircuitBuilderError>;
 }
 
 impl<F> HashOps<F> for CircuitBuilder<F>
@@ -43,30 +43,22 @@ where
         &mut self,
         inputs: &[ExprId],
         reset: bool,
-    ) -> Result<(), CircuitBuilderError> {
-        self.ensure_op_enabled(NonPrimitiveOpType::HashAbsorb { reset })?;
-
+    ) -> Result<ExprId, CircuitBuilderError> {
         self.push_non_primitive_op(
             NonPrimitiveOpType::HashAbsorb { reset },
             inputs.to_vec(),
             vec![],
             "HashAbsorb",
-        );
-
-        Ok(())
+        )
     }
 
-    fn add_hash_squeeze(&mut self, outputs: &[ExprId]) -> Result<(), CircuitBuilderError> {
-        self.ensure_op_enabled(NonPrimitiveOpType::HashSqueeze)?;
-
+    fn add_hash_squeeze(&mut self, outputs: &[ExprId]) -> Result<ExprId, CircuitBuilderError> {
         self.push_non_primitive_op(
             NonPrimitiveOpType::HashSqueeze,
             vec![],
             outputs.to_vec(),
             "HashSqueeze",
-        );
-
-        Ok(())
+        )
     }
 }
 

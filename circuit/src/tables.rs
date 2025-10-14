@@ -5,7 +5,7 @@ use hashbrown::HashMap;
 use tracing::instrument;
 
 use crate::circuit::Circuit;
-use crate::op::{NonPrimitiveOpPrivateData, Prim};
+use crate::op::{ExecutionContext, NonPrimitiveOpPrivateData, Op};
 use crate::types::WitnessId;
 use crate::{CircuitError, CircuitField, ExprId};
 
@@ -155,6 +155,9 @@ impl<F: CircuitField> CircuitRunner<F> {
         // Step 1: Execute primitives to fill witness vector
         self.execute_primitives()?;
 
+        // Step 1: Execute non-primitives to fill remaining witness vector
+        self.execute_non_primitives()?;
+
         // Step 2: Generate all table traces
         let witness_trace = self.generate_witness_trace()?;
         let const_trace = self.generate_const_trace()?;
@@ -180,16 +183,16 @@ impl<F: CircuitField> CircuitRunner<F> {
 
         for prim in primitive_ops {
             match prim {
-                Prim::Const { out, val } => {
+                Op::Const { out, val } => {
                     self.set_witness(out, val)?;
                 }
-                Prim::Public { out, public_pos: _ } => {
+                Op::Public { out, public_pos: _ } => {
                     // Public inputs should already be set
                     if self.witness[out.0 as usize].is_none() {
                         return Err(CircuitError::PublicInputNotSet { witness_id: out });
                     }
                 }
-                Prim::Add { a, b, out } => {
+                Op::Add { a, b, out } => {
                     let a_val = self.get_witness(a)?;
                     if let Ok(b_val) = self.get_witness(b) {
                         let result = a_val + b_val;
@@ -200,7 +203,7 @@ impl<F: CircuitField> CircuitRunner<F> {
                         self.set_witness(b, b_val)?;
                     }
                 }
-                Prim::Mul { a, b, out } => {
+                Op::Mul { a, b, out } => {
                     // Mul is used to represent either `Mul` or `Div` operations.
                     // We determine which based on which inputs are set.
                     let a_val = self.get_witness(a)?;
@@ -214,29 +217,42 @@ impl<F: CircuitField> CircuitRunner<F> {
                         self.set_witness(b, b_val)?;
                     }
                 }
-                Prim::NonPrimitiveOpWithExecutor {
-                    inputs,
-                    outputs,
-                    executor,
-                    expr_id,
-                } => {
-                    use crate::op::ExecutionContext;
-
-                    let mut ctx = ExecutionContext::new(
-                        &mut self.witness,
-                        &self.non_primitive_op_private_data,
-                        &self.circuit.enabled_ops,
-                        expr_id,
-                    );
-                    tracing::info!(
-                        "Executing NonPrimitiveOpWithExecutor: inputs: {:?}, outputs: {:?}, executor: {:?}",
-                        inputs,
-                        outputs,
-                        executor
-                    );
-                    executor.execute(&inputs, &outputs, &mut ctx)?;
+                Op::NonPrimitiveOpWithExecutor {
+                    inputs: _,
+                    outputs: _,
+                    executor: _,
+                    expr_id: _,
+                } => { // Handled separately }
                 }
             }
+        }
+        Ok(())
+    }
+
+    /// Execute all non-primitive operations to fill remaining witness vector
+    fn execute_non_primitives(&mut self) -> Result<(), CircuitError> {
+        // Clone primitive operations to avoid borrowing issues
+        let non_primitive_ops = self.circuit.non_primitive_ops.clone();
+
+        for op in non_primitive_ops {
+            let Op::NonPrimitiveOpWithExecutor {
+                inputs,
+                outputs,
+                executor,
+                expr_id,
+            } = op
+            else {
+                continue;
+            };
+
+            let mut ctx = ExecutionContext::new(
+                &mut self.witness,
+                &self.non_primitive_op_private_data,
+                &self.circuit.enabled_ops,
+                expr_id,
+            );
+
+            executor.execute(&inputs, &outputs, &mut ctx)?;
         }
 
         Ok(())
@@ -296,7 +312,7 @@ impl<F: CircuitField> CircuitRunner<F> {
 
         // Collect all constants from primitive operations
         for prim in &self.circuit.primitive_ops {
-            if let Prim::Const { out, val } = prim {
+            if let Op::Const { out, val } = prim {
                 index.push(*out);
                 values.push(*val);
             }
@@ -311,7 +327,7 @@ impl<F: CircuitField> CircuitRunner<F> {
 
         // Collect all public inputs from primitive operations
         for prim in &self.circuit.primitive_ops {
-            if let Prim::Public { out, public_pos: _ } = prim {
+            if let Op::Public { out, public_pos: _ } = prim {
                 index.push(*out);
                 let value = self.get_witness(*out)?;
                 values.push(value);
@@ -330,7 +346,7 @@ impl<F: CircuitField> CircuitRunner<F> {
         let mut result_index = Vec::new();
 
         for prim in &self.circuit.primitive_ops {
-            if let Prim::Add { a, b, out } = prim {
+            if let Op::Add { a, b, out } = prim {
                 lhs_values.push(self.get_witness(*a)?);
                 lhs_index.push(*a);
                 rhs_values.push(self.get_witness(*b)?);
@@ -359,7 +375,7 @@ impl<F: CircuitField> CircuitRunner<F> {
         let mut result_index = Vec::new();
 
         for prim in &self.circuit.primitive_ops {
-            if let Prim::Mul { a, b, out } = prim {
+            if let Op::Mul { a, b, out } = prim {
                 lhs_values.push(self.get_witness(*a)?);
                 lhs_index.push(*a);
                 rhs_values.push(self.get_witness(*b)?);

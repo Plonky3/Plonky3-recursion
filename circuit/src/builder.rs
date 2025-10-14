@@ -7,9 +7,9 @@ use thiserror::Error;
 
 use crate::circuit::Circuit;
 use crate::expr::{Expr, ExpressionGraph};
-use crate::op::{NonPrimitiveOpConfig, NonPrimitiveOpType, Prim};
+use crate::op::{NonPrimitiveOpConfig, NonPrimitiveOpType, Op};
 use crate::ops::MmcsVerifyConfig;
-use crate::types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};
+use crate::types::{ExprId, WitnessAllocator, WitnessId};
 #[cfg(debug_assertions)]
 use crate::{AllocationEntry, AllocationType};
 
@@ -74,8 +74,6 @@ pub struct CircuitBuilder<F> {
     pub public_input_count: usize,
     /// Equality constraints to enforce at lowering
     pending_connects: Vec<(ExprId, ExprId)>,
-    /// Non-primitive operations (complex constraints that don't produce ExprIds)
-    non_primitive_ops: HashMap<ExprId, (NonPrimitiveOpType, Vec<ExprId>)>, // (op_id, (op_type, witness_exprs))
     /// Builder-level constant pool: value -> unique Const ExprId
     const_pool: HashMap<F, ExprId>,
 
@@ -151,7 +149,6 @@ where
             witness_alloc: WitnessAllocator::new(),
             public_input_count: 0,
             pending_connects: Vec::new(),
-            non_primitive_ops: HashMap::new(),
             const_pool,
             enabled_ops: HashMap::new(), // All non-primitive ops are disabled by default
             #[cfg(debug_assertions)]
@@ -487,8 +484,9 @@ where
         inputs: Vec<ExprId>,
         outputs: Vec<ExprId>,
         label: &'static str,
-    ) -> ExprId {
-        let op_id = NonPrimitiveOpId(self.non_primitive_ops.len() as u32);
+    ) -> Result<ExprId, CircuitBuilderError> {
+        self.ensure_op_enabled(op.clone())?;
+
         let witness_exprs = inputs
             .iter()
             .chain(outputs.iter())
@@ -503,11 +501,8 @@ where
 
         #[cfg(debug_assertions)]
         {
-            // For non-primitive ops, we don't have a single ExprId, so we use a placeholder
-            // The dependencies are the witness expressions that this op depends on
-            // TODO: Can we find something better than the `op_id`?
             self.allocation_log.push(AllocationEntry {
-                expr_id: ExprId(op_id.0),
+                expr_id,
                 alloc_type: AllocationType::NonPrimitiveOp(op.clone()),
                 label,
                 dependencies: witness_exprs.clone(),
@@ -515,9 +510,7 @@ where
             });
         }
 
-        self.non_primitive_ops.insert(expr_id, (op, witness_exprs));
-
-        expr_id
+        Ok(expr_id)
     }
 
     /// Check whether an op type is enabled on this builder.
@@ -554,10 +547,13 @@ where
     ) -> Result<(Circuit<F>, HashMap<ExprId, WitnessId>), CircuitBuilderError> {
         // Stage 1: Lower expressions to primitives and extract non-primitive ops
         let (primitive_ops, non_primitive_ops, public_rows, expr_to_widx, public_mappings) =
-            self.lower_to_primitives()?;
+            self.lower_expressions()?;
 
-        // Stage 3: IR transformations and optimizations
+        // Stage 2: IR transformations and optimizations for primitive operations
         let primitive_ops = Self::optimize_primitives(primitive_ops);
+
+        // Stage 3: IR transformations and optimizations for non-primitive operations
+        let non_primitive_ops = Self::optimize_non_primitives(non_primitive_ops);
 
         // Stage 4: Generate final circuit
         let witness_count = self.witness_alloc.witness_count();
@@ -586,20 +582,20 @@ where
             })
     }
 
-    /// Stage 1: Lower expressions to primitives (Consts, Publics, then Ops) with DSU-aware class slots
+    /// Stage 1: Lower expressions to primitives (Consts, Publics, then Ops) and non-primitive operations with DSU-aware class slots
     ///
     /// INVARIANT: All ExprIds reference only previously processed expressions.
     /// This is guaranteed because:
     /// - ExprIds are only created by primitive operations (add_*, mul, sub)
-    /// - Non-primitive operations consume ExprIds but don't produce them
+    /// - Non-primitive operations are isolated from primitive operations
     /// - Expression graph construction maintains topological order
     #[allow(clippy::type_complexity)]
-    fn lower_to_primitives(
+    fn lower_expressions(
         &mut self,
     ) -> Result<
         (
-            Vec<Prim<F>>,
-            Vec<Prim<F>>, // non-primitive ops
+            Vec<Op<F>>,
+            Vec<Op<F>>, // non-primitive ops
             Vec<WitnessId>,
             HashMap<ExprId, WitnessId>,
             HashMap<ExprId, WitnessId>,
@@ -630,7 +626,7 @@ where
             if let Expr::Const(val) = expr {
                 let id = ExprId(expr_idx as u32);
                 let w = self.witness_alloc.alloc();
-                primitive_ops.push(Prim::Const { out: w, val: *val });
+                primitive_ops.push(Op::Const { out: w, val: *val });
                 expr_to_widx.insert(id, w);
 
                 // If this Const participates in a connect class, bind the class to the const slot
@@ -659,7 +655,7 @@ where
 
                 let out_widx = alloc_witness_id_for_expr(expr_idx);
 
-                primitive_ops.push(Prim::Public {
+                primitive_ops.push(Op::Public {
                     out: out_widx,
                     public_pos: *pos,
                 });
@@ -686,7 +682,7 @@ where
                         *rhs,
                         &format!("Add rhs for {expr_id:?}"),
                     )?;
-                    primitive_ops.push(Prim::Add {
+                    primitive_ops.push(Op::Add {
                         a: a_widx,
                         b: b_widx,
                         out: out_widx,
@@ -706,7 +702,7 @@ where
                         &format!("Sub rhs for {expr_id:?}"),
                     )?;
                     // Encode lhs - rhs = result as result + rhs = lhs.
-                    primitive_ops.push(Prim::Add {
+                    primitive_ops.push(Op::Add {
                         a: rhs_widx,
                         b: result_widx,
                         out: lhs_widx,
@@ -725,7 +721,7 @@ where
                         *rhs,
                         &format!("Mul rhs for {expr_id:?}"),
                     )?;
-                    primitive_ops.push(Prim::Mul {
+                    primitive_ops.push(Op::Mul {
                         a: a_widx,
                         b: b_widx,
                         out: out_widx,
@@ -745,7 +741,7 @@ where
                         *rhs,
                         &format!("Div rhs for {expr_id:?}"),
                     )?;
-                    primitive_ops.push(Prim::Mul {
+                    primitive_ops.push(Op::Mul {
                         a: a_widx,
                         b: b_widx,
                         out: out_widx,
@@ -799,7 +795,7 @@ where
                             }
                         };
 
-                    let prim = Prim::NonPrimitiveOpWithExecutor {
+                    let prim = Op::NonPrimitiveOpWithExecutor {
                         inputs: inputs_widx,
                         outputs: outputs_widx,
                         executor,
@@ -821,14 +817,23 @@ where
         ))
     }
 
-    /// Stage 3: IR transformations and optimizations
-    fn optimize_primitives(primitive_ops: Vec<Prim<F>>) -> Vec<Prim<F>> {
+    /// Stage 2: IR transformations and optimizations for primitive operations
+    fn optimize_primitives(primitive_ops: Vec<Op<F>>) -> Vec<Op<F>> {
         // Future passes can be added here:
         // - Dead code elimination
         // - Common subexpression elimination
         // - Instruction combining
         // - Constant folding
         primitive_ops
+    }
+
+    /// Stage 3: IR transformations and optimizations for non-primitive operations
+    fn optimize_non_primitives(non_primitive_ops: Vec<Op<F>>) -> Vec<Op<F>> {
+        // Future passes can be added here:
+        // - Dead code elimination
+        // - Common subexpression elimination
+        // - Custom optimization passes
+        non_primitive_ops
     }
 }
 
@@ -1118,42 +1123,42 @@ mod tests {
         // Assert all primitive operations (lowering order: Consts first, then Public, then ops)
         assert_eq!(circuit.primitive_ops.len(), 9);
         match &circuit.primitive_ops[0] {
-            Prim::Const { out, val } => {
+            Op::Const { out, val } => {
                 assert_eq!(out.0, 0);
                 assert_eq!(*val, BabyBear::from_u64(0));
             }
             _ => panic!("Expected Const(0) at op 0"),
         }
         match &circuit.primitive_ops[1] {
-            Prim::Const { out, val } => {
+            Op::Const { out, val } => {
                 assert_eq!(out.0, 1);
                 assert_eq!(*val, BabyBear::from_u64(37));
             }
             _ => panic!("Expected Const(37) at op 1"),
         }
         match &circuit.primitive_ops[2] {
-            Prim::Const { out, val } => {
+            Op::Const { out, val } => {
                 assert_eq!(out.0, 2);
                 assert_eq!(*val, BabyBear::from_u64(111));
             }
             _ => panic!("Expected Const(111) at op 2"),
         }
         match &circuit.primitive_ops[3] {
-            Prim::Const { out, val } => {
+            Op::Const { out, val } => {
                 assert_eq!(out.0, 3);
                 assert_eq!(*val, BabyBear::from_u64(1));
             }
             _ => panic!("Expected Const(1)"),
         }
         match &circuit.primitive_ops[4] {
-            Prim::Public { out, public_pos } => {
+            Op::Public { out, public_pos } => {
                 assert_eq!(out.0, 4);
                 assert_eq!(*public_pos, 0);
             }
             _ => panic!("Expected Public at op 3"),
         }
         match &circuit.primitive_ops[5] {
-            Prim::Mul { a, b, out } => {
+            Op::Mul { a, b, out } => {
                 assert_eq!(a.0, 1);
                 assert_eq!(b.0, 4);
                 assert_eq!(out.0, 5);
@@ -1161,7 +1166,7 @@ mod tests {
             _ => panic!("Expected Mul at op 4"),
         } // w1 * w4 = w5
         match &circuit.primitive_ops[6] {
-            Prim::Add { a, b, out } => {
+            Op::Add { a, b, out } => {
                 assert_eq!(a.0, 2);
                 assert_eq!(b.0, 0);
                 assert_eq!(out.0, 5);
@@ -1169,7 +1174,7 @@ mod tests {
             _ => panic!("Expected Add encoding mul_result - c111"),
         }
         match &circuit.primitive_ops[7] {
-            Prim::Mul { a, b, out } => {
+            Op::Mul { a, b, out } => {
                 assert_eq!(a.0, 2);
                 assert_eq!(b.0, 6);
                 assert_eq!(out.0, 5);
@@ -1177,7 +1182,7 @@ mod tests {
             _ => panic!("Expected Mul"),
         }
         match &circuit.primitive_ops[8] {
-            Prim::Add { a, b, out } => {
+            Op::Add { a, b, out } => {
                 assert_eq!(a.0, 3);
                 assert_eq!(b.0, 0);
                 assert_eq!(out.0, 6);
@@ -1350,7 +1355,7 @@ mod tests {
         let const_count = circuit
             .primitive_ops
             .iter()
-            .filter(|op| matches!(op, Prim::Const { .. }))
+            .filter(|op| matches!(op, Op::Const { .. }))
             .count();
         assert_eq!(const_count, 3); // 0, 42, 43
     }
@@ -1490,7 +1495,7 @@ mod tests {
 
         let circuit = builder.build().unwrap();
         assert_eq!(circuit.non_primitive_ops.len(), 1);
-        let Prim::NonPrimitiveOpWithExecutor { executor, .. } = &circuit.non_primitive_ops[0]
+        let Op::NonPrimitiveOpWithExecutor { executor, .. } = &circuit.non_primitive_ops[0]
         else {
             panic!("Expected NonPrimitiveOpWithExecutor operation")
         };
@@ -1653,7 +1658,7 @@ mod tests {
     }
 
     #[test]
-    fn test_lower_to_primitives_constants() {
+    fn test_lower_expressions_constants() {
         // Test constant lowering creates Const primitive operations
         let mut builder = CircuitBuilder::<BabyBear>::new();
 
@@ -1661,19 +1666,19 @@ mod tests {
         let c2 = builder.add_const(BabyBear::from_u64(100));
 
         let (primitives, _non_primitive_ops, public_rows, expr_to_widx, public_mappings) =
-            builder.lower_to_primitives().unwrap();
+            builder.lower_expressions().unwrap();
 
         // Expected primitives: 3 constants (ZERO, 42, 100)
         let expected_primitives = vec![
-            Prim::Const {
+            Op::Const {
                 out: WitnessId(0),
                 val: BabyBear::ZERO,
             },
-            Prim::Const {
+            Op::Const {
                 out: WitnessId(1),
                 val: BabyBear::from_u64(42),
             },
-            Prim::Const {
+            Op::Const {
                 out: WitnessId(2),
                 val: BabyBear::from_u64(100),
             },
@@ -1697,7 +1702,7 @@ mod tests {
     }
 
     #[test]
-    fn test_lower_to_primitives_public_inputs() {
+    fn test_lower_expressions_public_inputs() {
         // Test public input lowering creates Public primitive operations
         let mut builder = CircuitBuilder::<BabyBear>::new();
 
@@ -1705,19 +1710,19 @@ mod tests {
         let p2 = builder.add_public_input(); // position 1
 
         let (primitives, _non_primitive_ops, public_rows, expr_to_widx, public_mappings) =
-            builder.lower_to_primitives().unwrap();
+            builder.lower_expressions().unwrap();
 
         // Expected primitives: 1 constant (ZERO) + 2 public inputs
         let expected_primitives = vec![
-            Prim::Const {
+            Op::Const {
                 out: WitnessId(0),
                 val: BabyBear::ZERO,
             },
-            Prim::Public {
+            Op::Public {
                 out: WitnessId(1),
                 public_pos: 0,
             },
-            Prim::Public {
+            Op::Public {
                 out: WitnessId(2),
                 public_pos: 1,
             },
@@ -1743,7 +1748,7 @@ mod tests {
     }
 
     #[test]
-    fn test_lower_to_primitives_arithmetic_operations() {
+    fn test_lower_expressions_arithmetic_operations() {
         // Test arithmetic operations create correct primitive operations
         let mut builder = CircuitBuilder::<BabyBear>::new();
 
@@ -1752,23 +1757,23 @@ mod tests {
         let add_result = builder.add(x, y); // x + y
 
         let (primitives, _non_primitive_ops, public_rows, expr_to_widx, public_mappings) =
-            builder.lower_to_primitives().unwrap();
+            builder.lower_expressions().unwrap();
 
         // Expected primitives: ZERO + 2 public inputs + 1 add operation
         let expected_primitives = vec![
-            Prim::Const {
+            Op::Const {
                 out: WitnessId(0),
                 val: BabyBear::ZERO,
             },
-            Prim::Public {
+            Op::Public {
                 out: WitnessId(1),
                 public_pos: 0,
             },
-            Prim::Public {
+            Op::Public {
                 out: WitnessId(2),
                 public_pos: 1,
             },
-            Prim::Add {
+            Op::Add {
                 a: WitnessId(1),
                 b: WitnessId(2),
                 out: WitnessId(3),
@@ -1796,7 +1801,7 @@ mod tests {
     }
 
     #[test]
-    fn test_lower_to_primitives_subtraction_encoding() {
+    fn test_lower_expressions_subtraction_encoding() {
         // Test that subtraction is properly encoded as addition:
         // x - y = result becomes result + y = x
         let mut builder = CircuitBuilder::<BabyBear>::new();
@@ -1806,24 +1811,24 @@ mod tests {
         let result = builder.sub(x, y); // x - y = result
 
         let (primitives, _non_primitive_ops, public_rows, expr_to_widx, public_mappings) =
-            builder.lower_to_primitives().unwrap();
+            builder.lower_expressions().unwrap();
 
         // Expected primitives: ZERO + 2 public inputs + 1 add (encoding subtraction)
         let expected_primitives = vec![
-            Prim::Const {
+            Op::Const {
                 out: WitnessId(0),
                 val: BabyBear::ZERO,
             },
-            Prim::Public {
+            Op::Public {
                 out: WitnessId(1),
                 public_pos: 0,
             },
-            Prim::Public {
+            Op::Public {
                 out: WitnessId(2),
                 public_pos: 1,
             },
             // Sub encoding: result + y = x, so a=y, b=result, out=x
-            Prim::Add {
+            Op::Add {
                 a: WitnessId(2),
                 b: WitnessId(3),
                 out: WitnessId(1),
@@ -1851,7 +1856,7 @@ mod tests {
     }
 
     #[test]
-    fn test_lower_to_primitives_division_encoding() {
+    fn test_lower_expressions_division_encoding() {
         // Test that division is properly encoded as multiplication: x / y = result becomes y * result = x
         let mut builder = CircuitBuilder::<BabyBear>::new();
 
@@ -1860,24 +1865,24 @@ mod tests {
         let result = builder.div(x, y); // x / y = result
 
         let (primitives, _non_primitive_ops, public_rows, expr_to_widx, public_mappings) =
-            builder.lower_to_primitives().unwrap();
+            builder.lower_expressions().unwrap();
 
         // Expected primitives: ZERO + 2 public inputs + 1 mul (encoding division)
         let expected_primitives = vec![
-            Prim::Const {
+            Op::Const {
                 out: WitnessId(0),
                 val: BabyBear::ZERO,
             },
-            Prim::Public {
+            Op::Public {
                 out: WitnessId(1),
                 public_pos: 0,
             },
-            Prim::Public {
+            Op::Public {
                 out: WitnessId(2),
                 public_pos: 1,
             },
             // Div encoding: y * result = x, so a=y, b=result, out=x
-            Prim::Mul {
+            Op::Mul {
                 a: WitnessId(2),
                 b: WitnessId(3),
                 out: WitnessId(1),
@@ -1905,7 +1910,7 @@ mod tests {
     }
 
     #[test]
-    fn test_lower_to_primitives_connections_share_witnesses() {
+    fn test_lower_expressions_connections_share_witnesses() {
         // Test that connected expressions share the same witness ID
         let mut builder = CircuitBuilder::<BabyBear>::new();
 
@@ -1916,19 +1921,19 @@ mod tests {
         builder.connect(x, y);
 
         let (primitives, _non_primitive_ops, public_rows, expr_to_widx, public_mappings) =
-            builder.lower_to_primitives().unwrap();
+            builder.lower_expressions().unwrap();
 
         // Expected primitives: ZERO + 2 public inputs (but sharing WitnessId(1))
         let expected_primitives = vec![
-            Prim::Const {
+            Op::Const {
                 out: WitnessId(0),
                 val: BabyBear::ZERO,
             },
-            Prim::Public {
+            Op::Public {
                 out: WitnessId(1),
                 public_pos: 0,
             },
-            Prim::Public {
+            Op::Public {
                 out: WitnessId(1), // Same witness as x
                 public_pos: 1,
             },
@@ -1954,7 +1959,7 @@ mod tests {
     }
 
     #[test]
-    fn test_lower_to_primitives_constant_connection_binding() {
+    fn test_lower_expressions_constant_connection_binding() {
         // Test that constants bound to connection classes work correctly
         let mut builder = CircuitBuilder::<BabyBear>::new();
 
@@ -1965,19 +1970,19 @@ mod tests {
         builder.connect(x, c);
 
         let (primitives, _non_primitive_ops, public_rows, expr_to_widx, public_mappings) =
-            builder.lower_to_primitives().unwrap();
+            builder.lower_expressions().unwrap();
 
         // Expected primitives: ZERO + constant 42 + public input (all sharing witness)
         let expected_primitives = vec![
-            Prim::Const {
+            Op::Const {
                 out: WitnessId(0),
                 val: BabyBear::ZERO,
             },
-            Prim::Const {
+            Op::Const {
                 out: WitnessId(1), // Constants processed first
                 val: BabyBear::from_u64(42),
             },
-            Prim::Public {
+            Op::Public {
                 out: WitnessId(1), // Shares witness with constant
                 public_pos: 0,
             },
@@ -2002,7 +2007,7 @@ mod tests {
     }
 
     #[test]
-    fn test_lower_to_primitives_witness_allocation_order() {
+    fn test_lower_expressions_witness_allocation_order() {
         // Test that witness IDs are allocated in predictable order
         let mut builder = CircuitBuilder::<BabyBear>::new();
 
@@ -2013,27 +2018,27 @@ mod tests {
         let add_result = builder.add(p1, p2);
 
         let (primitives, _non_primitive_ops, public_rows, expr_to_widx, public_mappings) =
-            builder.lower_to_primitives().unwrap();
+            builder.lower_expressions().unwrap();
 
         // Expected primitives in processing order: constants, public inputs, arithmetic ops
         let expected_primitives = vec![
-            Prim::Const {
+            Op::Const {
                 out: WitnessId(0),
                 val: BabyBear::ZERO,
             },
-            Prim::Const {
+            Op::Const {
                 out: WitnessId(1),
                 val: BabyBear::from_u64(10),
             },
-            Prim::Public {
+            Op::Public {
                 out: WitnessId(2),
                 public_pos: 0,
             },
-            Prim::Public {
+            Op::Public {
                 out: WitnessId(3),
                 public_pos: 1,
             },
-            Prim::Add {
+            Op::Add {
                 a: WitnessId(2),
                 b: WitnessId(3),
                 out: WitnessId(4),

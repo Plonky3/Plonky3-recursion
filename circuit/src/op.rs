@@ -11,6 +11,12 @@ use crate::ops::MmcsVerifyConfig;
 use crate::tables::MmcsPrivateData;
 use crate::types::{ExprId, WitnessId};
 
+/// Circuit operations.
+/// 
+/// Operations are distinguised as primitive and non-primitive:
+/// 
+/// # Primitive operations
+/// 
 /// Primitive operations that represent basic field arithmetic
 ///
 /// These operations form the core computational primitives after expression lowering.
@@ -20,10 +26,15 @@ use crate::types::{ExprId, WitnessId};
 /// - Are executed in topological order during circuit evaluation
 /// - Form a directed acyclic graph (DAG) of dependencies
 ///
-/// Primitive operations are kept separate from complex operations to maintain
-/// clean optimization boundaries and enable aggressive compiler transformations.
+/// # Non-primitive operations
+/// 
+/// Non-primitive operations may represent complex computations that would require too many,
+/// primitive operations to be expressed equivalently.
+/// 
+/// They can be user-defined and selected at runtime, have private data that does not appear
+/// in the central Witness bus, and are subject to their own optimization passes.
 #[derive(Debug)]
-pub enum Prim<F> {
+pub enum Op<F> {
     /// Load a constant value into the witness table
     ///
     /// Sets `witness[out] = val`. Used for literal constants and
@@ -62,34 +73,34 @@ pub enum Prim<F> {
     },
 }
 
-// Custom Clone implementation for Prim
-impl<F: Field + Clone> Clone for Prim<F> {
+// Custom Clone implementation for Op
+impl<F: Field + Clone> Clone for Op<F> {
     fn clone(&self) -> Self {
         match self {
-            Prim::Const { out, val } => Prim::Const {
+            Op::Const { out, val } => Op::Const {
                 out: *out,
                 val: *val,
             },
-            Prim::Public { out, public_pos } => Prim::Public {
+            Op::Public { out, public_pos } => Op::Public {
                 out: *out,
                 public_pos: *public_pos,
             },
-            Prim::Add { a, b, out } => Prim::Add {
+            Op::Add { a, b, out } => Op::Add {
                 a: *a,
                 b: *b,
                 out: *out,
             },
-            Prim::Mul { a, b, out } => Prim::Mul {
+            Op::Mul { a, b, out } => Op::Mul {
                 a: *a,
                 b: *b,
                 out: *out,
             },
-            Prim::NonPrimitiveOpWithExecutor {
+            Op::NonPrimitiveOpWithExecutor {
                 inputs,
                 outputs,
                 executor,
                 expr_id,
-            } => Prim::NonPrimitiveOpWithExecutor {
+            } => Op::NonPrimitiveOpWithExecutor {
                 inputs: inputs.clone(),
                 outputs: outputs.clone(),
                 executor: executor.boxed(),
@@ -99,55 +110,55 @@ impl<F: Field + Clone> Clone for Prim<F> {
     }
 }
 
-// Custom PartialEq implementation for Prim
-impl<F: Field + PartialEq> PartialEq for Prim<F> {
+// Custom PartialEq implementation for Op
+impl<F: Field + PartialEq> PartialEq for Op<F> {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
-            (Prim::Const { out: o1, val: v1 }, Prim::Const { out: o2, val: v2 }) => {
+            (Op::Const { out: o1, val: v1 }, Op::Const { out: o2, val: v2 }) => {
                 o1 == o2 && v1 == v2
             }
             (
-                Prim::Public {
+                Op::Public {
                     out: o1,
                     public_pos: p1,
                 },
-                Prim::Public {
+                Op::Public {
                     out: o2,
                     public_pos: p2,
                 },
             ) => o1 == o2 && p1 == p2,
             (
-                Prim::Add {
+                Op::Add {
                     a: a1,
                     b: b1,
                     out: o1,
                 },
-                Prim::Add {
+                Op::Add {
                     a: a2,
                     b: b2,
                     out: o2,
                 },
             ) => a1 == a2 && b1 == b2 && o1 == o2,
             (
-                Prim::Mul {
+                Op::Mul {
                     a: a1,
                     b: b1,
                     out: o1,
                 },
-                Prim::Mul {
+                Op::Mul {
                     a: a2,
                     b: b2,
                     out: o2,
                 },
             ) => a1 == a2 && b1 == b2 && o1 == o2,
             (
-                Prim::NonPrimitiveOpWithExecutor {
+                Op::NonPrimitiveOpWithExecutor {
                     inputs: i1,
                     outputs: o1,
                     executor: e1,
                     expr_id: id1,
                 },
-                Prim::NonPrimitiveOpWithExecutor {
+                Op::NonPrimitiveOpWithExecutor {
                     inputs: i2,
                     outputs: o2,
                     executor: e2,
