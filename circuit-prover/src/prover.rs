@@ -13,14 +13,13 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
-use p3_circuit::tables::Traces;
+use p3_circuit::tables::{DynTraces, MmcsTrace};
 use p3_circuit::{CircuitBuilderError, CircuitError};
 use p3_field::{BasedVectorSpace, Field};
 use p3_mmcs_air::air::{MmcsTableConfig, MmcsVerifyAir};
 use p3_uni_stark::{StarkGenericConfig, Val, prove, verify};
-use thiserror::Error;
-use tracing::instrument;
 
+// Avoid proc-macro derives to keep lints happy in mismatched toolchains
 use crate::air::{AddAir, ConstAir, MulAir, PublicAir, WitnessAir};
 use crate::config::StarkField;
 use crate::field_params::ExtractBinomialW;
@@ -81,18 +80,35 @@ pub struct MultiTableProof<SC>
 where
     SC: StarkGenericConfig,
 {
+    // Primitive tables
     pub witness: TableProof<SC>,
     pub constants: TableProof<SC>,
     pub public: TableProof<SC>,
     pub add: TableProof<SC>,
     pub mul: TableProof<SC>,
-    pub mmcs: TableProof<SC>,
+
+    /// Dynamic non-primitive table proofs, extensible at runtime.
+    pub non_primitives: Vec<TableProofEntry<SC>>,
+
     /// Packing configuration used when generating the proofs.
     pub table_packing: TablePacking,
     /// Extension field degree: 1 for base field; otherwise the extension degree used.
     pub ext_degree: usize,
     /// Binomial parameter W for extension fields (e.g., x^D = W); None for base fields
     pub w_binomial: Option<Val<SC>>,
+}
+
+/// Dynamic table proof entry for non-primitive tables
+pub struct TableProofEntry<SC>
+where
+    SC: StarkGenericConfig,
+{
+    /// Identifier for the table.
+    pub id: &'static str,
+    /// Proof for the table.
+    pub proof: StarkProof<SC>,
+    /// Number of logical rows (operations) prior to any per-row packing.
+    pub rows: usize,
 }
 
 /// Multi-table STARK prover for circuit execution traces.
@@ -104,31 +120,55 @@ where
 {
     config: SC,
     table_packing: TablePacking,
+    /// MMCS table configuration for optional mmcs verification table
     mmcs_config: MmcsTableConfig,
 }
 
 /// Errors that can arise during proving or verification.
-#[derive(Debug, Error)]
+#[derive(Debug)]
 pub enum ProverError {
-    /// Unsupported extension degree encountered.
-    #[error("unsupported extension degree: {0} (supported: 1,2,4,6,8)")]
     UnsupportedDegree(usize),
-
-    /// Missing binomial parameter W for extension-field multiplication.
-    #[error("missing binomial parameter W for extension-field multiplication")]
     MissingWForExtension,
-
-    /// Circuit execution error.
-    #[error("circuit error: {0}")]
-    Circuit(#[from] CircuitError),
-
-    /// Circuit building/lowering error.
-    #[error("circuit build error: {0}")]
-    Builder(#[from] CircuitBuilderError),
-
-    /// Verification failed for a specific table/phase.
-    #[error("verification failed in {phase}")]
+    Circuit(CircuitError),
+    Builder(CircuitBuilderError),
     VerificationFailed { phase: &'static str },
+}
+
+impl core::fmt::Display for ProverError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            ProverError::UnsupportedDegree(d) => {
+                write!(
+                    f,
+                    "unsupported extension degree: {} (supported: 1,2,4,6,8)",
+                    d
+                )
+            }
+            ProverError::MissingWForExtension => {
+                write!(
+                    f,
+                    "missing binomial parameter W for extension-field multiplication"
+                )
+            }
+            ProverError::Circuit(e) => write!(f, "circuit error: {}", e),
+            ProverError::Builder(e) => write!(f, "circuit build error: {}", e),
+            ProverError::VerificationFailed { phase } => {
+                write!(f, "verification failed in {}", phase)
+            }
+        }
+    }
+}
+
+impl From<CircuitError> for ProverError {
+    fn from(e: CircuitError) -> Self {
+        ProverError::Circuit(e)
+    }
+}
+
+impl From<CircuitBuilderError> for ProverError {
+    fn from(e: CircuitBuilderError) -> Self {
+        ProverError::Builder(e)
+    }
 }
 
 impl<SC> MultiTableProver<SC>
@@ -157,6 +197,7 @@ where
         self.table_packing
     }
 
+    /// Configure MMCS verification table proving
     pub fn with_mmcs_table(mut self, mmcs_config: MmcsTableConfig) -> Self {
         self.mmcs_config = mmcs_config;
         self
@@ -167,10 +208,9 @@ where
     /// Automatically detects whether to use base field or binomial extension field
     /// proving based on the circuit element type `EF`. For extension fields,
     /// the binomial parameter W is automatically extracted.
-    #[instrument(skip_all)]
     pub fn prove_all_tables<EF>(
         &self,
-        traces: &Traces<EF>,
+        traces: &DynTraces<EF>,
     ) -> Result<MultiTableProof<SC>, ProverError>
     where
         EF: Field + BasedVectorSpace<Val<SC>> + ExtractBinomialW<Val<SC>>,
@@ -208,7 +248,7 @@ where
     /// Prove all tables for a fixed extension degree.
     fn prove_for_degree<EF, const D: usize>(
         &self,
-        traces: &Traces<EF>,
+        traces: &DynTraces<EF>,
         pis: &Vec<Val<SC>>,
         w_binomial: Option<Val<SC>>,
     ) -> Result<MultiTableProof<SC>, ProverError>
@@ -249,9 +289,26 @@ where
         };
         let mul_proof = prove(&self.config, &mul_air, mul_matrix, pis);
 
-        let mmcs_matrix = MmcsVerifyAir::trace_to_matrix(&self.mmcs_config, &traces.mmcs_trace);
-        let mmcs_air = MmcsVerifyAir::new(self.mmcs_config);
-        let mmcs_proof = prove(&self.config, &mmcs_air, mmcs_matrix, pis);
+        // Handle all non-primitive tables
+
+        let mut non_primitives = Vec::with_capacity(traces.non_primitive_traces.len());
+        if let Some(trace_any) = traces.non_primitive_traces.get("mmcs_verify")
+            && let Some(mmcs_trace) = trace_any.as_any().downcast_ref::<MmcsTrace<EF>>()
+        {
+            let matrix = MmcsVerifyAir::trace_to_matrix(&self.mmcs_config, mmcs_trace);
+            let air = MmcsVerifyAir::new(self.mmcs_config);
+            let proof = prove(&self.config, &air, matrix, pis);
+            let rows: usize = mmcs_trace
+                .mmcs_paths
+                .iter()
+                .map(|path| path.left_values.len() + 1)
+                .sum();
+            non_primitives.push(TableProofEntry {
+                id: "mmcs_verify",
+                proof,
+                rows,
+            });
+        }
 
         Ok(MultiTableProof {
             witness: TableProof {
@@ -274,15 +331,7 @@ where
                 proof: mul_proof,
                 rows: traces.mul_trace.lhs_values.len(),
             },
-            mmcs: TableProof {
-                proof: mmcs_proof,
-                rows: traces
-                    .mmcs_trace
-                    .mmcs_paths
-                    .iter()
-                    .map(|path| path.left_values.len() + 1)
-                    .sum(),
-            },
+            non_primitives,
             table_packing,
             ext_degree: D,
             w_binomial: if D > 1 { w_binomial } else { None },
@@ -329,14 +378,24 @@ where
         verify(&self.config, &mul_air, &proof.mul.proof, pis)
             .map_err(|_| ProverError::VerificationFailed { phase: "mul" })?;
 
-        // MmcsVerify
-
-        let mmcs_air = MmcsVerifyAir::new(self.mmcs_config);
-        verify(&self.config, &mmcs_air, &proof.mmcs.proof, pis).map_err(|_| {
-            ProverError::VerificationFailed {
-                phase: "mmcs_verify",
+        // Verify dynamic non-primitive tables
+        for entry in &proof.non_primitives {
+            match entry.id {
+                "mmcs_verify" => {
+                    let air = MmcsVerifyAir::new(self.mmcs_config);
+                    verify(&self.config, &air, &entry.proof, pis).map_err(|_| {
+                        ProverError::VerificationFailed {
+                            phase: "mmcs_verify",
+                        }
+                    })?;
+                }
+                _ => {
+                    return Err(ProverError::VerificationFailed {
+                        phase: "unknown_extra",
+                    });
+                }
             }
-        })?;
+        }
 
         Ok(())
     }

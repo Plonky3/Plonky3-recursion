@@ -25,5 +25,7 @@ pub use errors::CircuitError;
 pub use expr::{Expr, ExpressionGraph};
 pub use op::{NonPrimitiveOp, NonPrimitiveOpPrivateData, Prim};
 pub use ops::{FriOps, MmcsOps};
-pub use tables::{CircuitRunner, MmcsPrivateData, MmcsTrace, Traces};
+pub use tables::{
+    AnyTrace, CircuitRunner, DynTraces, MmcsPrivateData, MmcsTrace, TableTraceGenerator,
+};
 pub use types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};

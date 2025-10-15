@@ -1,20 +1,22 @@
+use alloc::boxed::Box;
 use alloc::vec::Vec;
 use alloc::{format, vec};
+use core::fmt::Debug;
 
-use tracing::instrument;
+use hashbrown::HashMap;
 
+// use tracing::instrument;
 use crate::circuit::Circuit;
 use crate::op::{NonPrimitiveOp, NonPrimitiveOpPrivateData, Prim};
 use crate::types::{NonPrimitiveOpId, WitnessId};
 use crate::{CircuitError, CircuitField};
 
-mod mmcs;
-pub use mmcs::{MmcsPathTrace, MmcsPrivateData, MmcsTrace};
+pub mod mmcs;
+pub use mmcs::{MmcsPathTrace, MmcsPrivateData, MmcsTrace, MmcsTraceGenerator};
 
-/// Execution traces for all tables
-#[derive(Debug, Clone)]
-pub struct Traces<F> {
-    /// Witness table (central bus)
+/// Dynamic traces including fixed primitive tables and optional non-primitive tables.
+pub struct DynTraces<F> {
+    /// Witness table
     pub witness_trace: WitnessTrace<F>,
     /// Constant table
     pub const_trace: ConstTrace<F>,
@@ -24,8 +26,61 @@ pub struct Traces<F> {
     pub add_trace: AddTrace<F>,
     /// Mul operation table
     pub mul_trace: MulTrace<F>,
-    /// Mmcs verification table
-    pub mmcs_trace: MmcsTrace<F>,
+
+    /// Map of all dynamically generated non-primitive tables
+    pub non_primitive_traces: HashMap<&'static str, Box<dyn AnyTrace<F>>>,
+}
+
+/// Type-erased trace trait allowing for dynamic dispatch across crates.
+///
+/// This is used for non-primitive traces that are defined dynamically.
+pub trait AnyTrace<F>: core::any::Any + 'static {
+    /// Downcasts to the concrete trace type within prover trace generators.
+    fn as_any(&self) -> &dyn core::any::Any;
+
+    /// Returns the number of logical rows represented by this trace.
+    fn rows(&self) -> usize;
+}
+
+impl<F: 'static> DynTraces<F> {
+    /// Get and downcast a non-primitive trace by id.
+    pub fn get_trace<T: 'static>(&self, id: &'static str) -> Option<&T> {
+        self.non_primitive_traces
+            .get(id)
+            .and_then(|b| b.as_any().downcast_ref::<T>())
+    }
+}
+
+/// Generator interface for non-primitive table traces.
+pub trait TableTraceGenerator<F>: Debug + Send + Sync {
+    /// Identifier used to match within prover trace generators.
+    fn id(&self) -> &'static str;
+
+    /// Whether this table should be present for the given circuit instance.
+    fn is_present(&self, circuit: &Circuit<F>) -> bool;
+
+    /// Generate the trace if present; None means zero rows / skip.
+    fn generate(
+        &self,
+        runner: &mut CircuitRunner<F>,
+    ) -> Result<Option<Box<dyn AnyTrace<F>>>, CircuitError>;
+}
+
+impl<F: CircuitField> CircuitRunner<F> {
+    /// Gets a reference to the underlying circuit.
+    pub(super) fn circuit_ref(&self) -> &Circuit<F> {
+        &self.circuit
+    }
+
+    /// Gets a reference to the non-primitive private data.
+    pub(super) fn non_primitive_data_ref(&self) -> &Vec<Option<NonPrimitiveOpPrivateData<F>>> {
+        &self.non_primitive_op_private_data
+    }
+
+    /// Gets a witness value.
+    pub(super) fn get_witness_value(&self, widx: WitnessId) -> Result<F, CircuitError> {
+        self.get_witness(widx)
+    }
 }
 
 /// Central witness table with preprocessed index column
@@ -167,8 +222,7 @@ impl<F: CircuitField> CircuitRunner<F> {
     }
 
     /// Run the circuit and generate traces
-    #[instrument(skip_all)]
-    pub fn run(mut self) -> Result<Traces<F>, CircuitError> {
+    pub fn run(mut self) -> Result<DynTraces<F>, CircuitError> {
         // Step 1: Execute primitives to fill witness vector
         self.execute_primitives()?;
 
@@ -178,15 +232,33 @@ impl<F: CircuitField> CircuitRunner<F> {
         let public_trace = self.generate_public_trace()?;
         let add_trace = self.generate_add_trace()?;
         let mul_trace = self.generate_mul_trace()?;
-        let mmcs_trace = self.generate_mmcs_trace()?;
 
-        Ok(Traces {
+        // Step 3: Generate non-primitive traces via registered generators
+        let mut non_primitive_traces: hashbrown::HashMap<&'static str, Box<dyn AnyTrace<F>>> =
+            hashbrown::HashMap::new();
+        let generators = self.circuit.non_primitive_generators.clone();
+
+        let present_list = generators
+            .iter()
+            .map(|p| p.is_present(&self.circuit))
+            .collect::<Vec<bool>>();
+
+        for (generator, is_present) in generators.into_iter().zip(present_list.into_iter()) {
+            if is_present {
+                let maybe_trace = generator.generate(&mut self)?;
+                if let Some(trace) = maybe_trace {
+                    non_primitive_traces.insert(generator.id(), trace);
+                }
+            }
+        }
+
+        Ok(DynTraces {
             witness_trace,
             const_trace,
             public_trace,
             add_trace,
             mul_trace,
-            mmcs_trace,
+            non_primitive_traces,
         })
     }
 
@@ -373,26 +445,19 @@ impl<F: CircuitField> CircuitRunner<F> {
             result_index,
         })
     }
-
-    fn generate_mmcs_trace(&self) -> Result<MmcsTrace<F>, CircuitError> {
-        mmcs::generate_mmcs_trace(&self.circuit, &self.non_primitive_op_private_data, |widx| {
-            self.get_witness(widx)
-        })
-    }
 }
 
 #[cfg(test)]
 mod tests {
     extern crate std;
-    use alloc::vec;
     use std::println;
 
     use p3_baby_bear::BabyBear;
     use p3_field::extension::BinomialExtensionField;
     use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
 
+    use super::*;
     use crate::builder::CircuitBuilder;
-    use crate::types::WitnessId;
 
     #[test]
     fn test_table_generation_basic() {

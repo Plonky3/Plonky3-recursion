@@ -12,6 +12,7 @@ use crate::op::{
     NonPrimitiveOp, NonPrimitiveOpConfig, NonPrimitiveOpPrivateData, NonPrimitiveOpType,
 };
 use crate::ops::MmcsVerifyConfig;
+use crate::tables::{AnyTrace, CircuitRunner, TableTraceGenerator};
 use crate::types::WitnessId;
 
 #[derive(Debug, Clone)]
@@ -298,6 +299,51 @@ pub fn generate_mmcs_trace<F: CircuitField>(
     Ok(MmcsTrace { mmcs_paths })
 }
 
+impl<F: CircuitField> AnyTrace<F> for MmcsTrace<F> {
+    fn rows(&self) -> usize {
+        self.mmcs_paths
+            .iter()
+            .map(|p| p.left_values.len() + 1)
+            .sum()
+    }
+
+    fn as_any(&self) -> &dyn core::any::Any {
+        self
+    }
+}
+
+/// Generator for MMCS verification table.
+#[derive(Debug)]
+pub struct MmcsTraceGenerator;
+
+impl<F: CircuitField> TableTraceGenerator<F> for MmcsTraceGenerator {
+    fn id(&self) -> &'static str {
+        "mmcs_verify"
+    }
+
+    fn is_present(&self, circuit: &Circuit<F>) -> bool {
+        circuit
+            .non_primitive_ops
+            .iter()
+            .any(|op| matches!(op, NonPrimitiveOp::MmcsVerify { .. }))
+    }
+
+    fn generate(
+        &self,
+        runner: &mut CircuitRunner<F>,
+    ) -> Result<Option<alloc::boxed::Box<dyn AnyTrace<F>>>, crate::CircuitError> {
+        let trace = super::mmcs::generate_mmcs_trace(
+            runner.circuit_ref(),
+            runner.non_primitive_data_ref(),
+            |w| runner.get_witness_value(w),
+        )?;
+        if trace.mmcs_paths.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(alloc::boxed::Box::new(trace)))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     extern crate std;
@@ -429,11 +475,11 @@ mod tests {
         builder.enable_mmcs(&config);
         let leaf = (0..config.ext_field_digest_elems)
             .map(|_| builder.add_public_input())
-            .collect::<alloc::vec::Vec<_>>();
+            .collect::<Vec<_>>();
         let index = builder.add_public_input();
         let root = (0..config.ext_field_digest_elems)
             .map(|_| builder.add_public_input())
-            .collect::<alloc::vec::Vec<_>>();
+            .collect::<Vec<_>>();
         let mmcs_op_id = builder.add_mmcs_verify(&leaf, &index, &root).unwrap();
         let circuit = builder.build().unwrap();
 
@@ -546,11 +592,11 @@ mod tests {
         builder.enable_mmcs(&config);
         let leaf_exprs = (0..config.ext_field_digest_elems)
             .map(|_| builder.add_public_input())
-            .collect::<alloc::vec::Vec<_>>();
+            .collect::<Vec<_>>();
         let index_expr = builder.add_public_input();
         let root_exprs = (0..config.ext_field_digest_elems)
             .map(|_| builder.add_public_input())
-            .collect::<alloc::vec::Vec<_>>();
+            .collect::<Vec<_>>();
         let mmcs_op_id = builder
             .add_mmcs_verify(&leaf_exprs, &index_expr, &root_exprs)
             .unwrap();
@@ -601,13 +647,14 @@ mod tests {
         let traces = runner.run().unwrap();
 
         // Validate trace fields
-        assert_eq!(traces.mmcs_trace.mmcs_paths.len(), 1);
-        let path = &traces.mmcs_trace.mmcs_paths[0];
+        let mmcs_trace = traces.get_trace::<MmcsTrace<F>>("mmcs_verify").unwrap();
+        assert_eq!(mmcs_trace.mmcs_paths.len(), 1);
+        let path = &mmcs_trace.mmcs_paths[0];
 
         // Expected expansions for directions, is_extra, and right_values
-        let mut expected_dirs = alloc::vec::Vec::new();
-        let mut expected_is_extra = alloc::vec::Vec::new();
-        let mut expected_right_values = alloc::vec::Vec::new();
+        let mut expected_dirs = Vec::new();
+        let mut expected_is_extra = Vec::new();
+        let mut expected_right_values = Vec::new();
         for (i, (sib, extra)) in siblings.iter().enumerate() {
             expected_dirs.push(directions[i]);
             expected_is_extra.push(false);
@@ -632,7 +679,7 @@ mod tests {
         }
 
         // Left values follow private_data path states (with intermediate state on extra row)
-        let mut expected_left_values = alloc::vec::Vec::new();
+        let mut expected_left_values = Vec::new();
         for (i, (_sib, extra)) in siblings.iter().enumerate() {
             expected_left_values.push(private_data.path_states[i].clone());
             if let Some((extra_state, _)) = &private_data.path_siblings[i].1 {

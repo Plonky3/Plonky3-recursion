@@ -31,6 +31,19 @@ impl BuilderConfig {
         );
     }
 
+    /// Enables HashAbsorb operations.
+    pub fn enable_hash_absorb(&mut self, reset: bool) {
+        self.enable_op(
+            NonPrimitiveOpType::HashAbsorb { reset },
+            NonPrimitiveOpConfig::None,
+        );
+    }
+
+    /// Enables HashSqueeze operations.
+    pub fn enable_hash_squeeze(&mut self) {
+        self.enable_op(NonPrimitiveOpType::HashSqueeze, NonPrimitiveOpConfig::None);
+    }
+
     /// Enables FRI verification operations.
     pub fn enable_fri(&mut self) {
         // TODO: Add FRI ops when they land

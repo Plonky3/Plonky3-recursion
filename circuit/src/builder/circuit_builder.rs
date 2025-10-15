@@ -1,3 +1,4 @@
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use hashbrown::HashMap;
@@ -6,9 +7,11 @@ use p3_field::PrimeCharacteristicRing;
 use super::compiler::{ExpressionLowerer, NonPrimitiveLowerer, Optimizer};
 use super::{BuilderConfig, ExpressionBuilder, PublicInputTracker};
 use crate::CircuitBuilderError;
-use crate::circuit::Circuit;
+use crate::circuit::{Circuit, CircuitField};
 use crate::op::NonPrimitiveOpType;
 use crate::ops::MmcsVerifyConfig;
+use crate::tables::TableTraceGenerator;
+use crate::tables::mmcs::MmcsTraceGenerator;
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};
 
 /// Builder for constructing circuits.
@@ -27,6 +30,9 @@ pub struct CircuitBuilder<F> {
 
     /// Builder configuration
     config: BuilderConfig,
+
+    /// Registered generators for non-primitive tables
+    non_primitive_generators: Vec<Arc<dyn TableTraceGenerator<F>>>,
 }
 
 impl<F> Default for CircuitBuilder<F>
@@ -50,6 +56,7 @@ where
             witness_alloc: WitnessAllocator::new(),
             non_primitive_ops: Vec::new(),
             config: BuilderConfig::new(),
+            non_primitive_generators: Vec::new(),
         }
     }
 
@@ -59,13 +66,41 @@ where
     }
 
     /// Enables Mmcs verification operations.
-    pub fn enable_mmcs(&mut self, mmcs_config: &MmcsVerifyConfig) {
+    pub fn enable_mmcs(&mut self, mmcs_config: &MmcsVerifyConfig)
+    where
+        F: CircuitField,
+    {
         self.config.enable_mmcs(mmcs_config);
+
+        // Register MMCS non-primitive trace generator
+        self.register_table_generator(Arc::new(MmcsTraceGenerator));
+    }
+
+    /// Enables HashAbsorb operations.
+    pub fn enable_hash_absorb(&mut self, reset: bool) {
+        self.config.enable_hash_absorb(reset);
+
+        // TODO: Register HashAbsorb non-primitive trace generator when available
+    }
+
+    /// Enables HashSqueeze operations.
+    pub fn enable_hash_squeeze(&mut self) {
+        self.config.enable_hash_squeeze();
+
+        // TODO: Register HashSqueeze non-primitive trace generator when available
+    }
+
+    /// Enables hash operations.
+    pub fn enable_hash(&mut self, reset: bool) {
+        self.enable_hash_absorb(reset);
+        self.enable_hash_squeeze();
     }
 
     /// Enables FRI verification operations.
     pub fn enable_fri(&mut self) {
         self.config.enable_fri();
+
+        // TODO: Register FRI non-primitive trace generator when available
     }
 
     /// Checks whether an op type is enabled on this builder.
@@ -326,14 +361,22 @@ where
         let primitive_ops = optimizer.optimize(primitive_ops);
 
         // Stage 4: Generate final circuit
-        let mut circuit = Circuit::new(witness_count);
-        circuit.primitive_ops = primitive_ops;
-        circuit.non_primitive_ops = lowered_non_primitive_ops;
-        circuit.public_rows = public_rows;
-        circuit.public_flat_len = self.public_tracker.count();
-        circuit.enabled_ops = self.config.into_enabled_ops();
+        let circuit = Circuit {
+            witness_count,
+            primitive_ops,
+            non_primitive_ops: lowered_non_primitive_ops,
+            public_rows,
+            public_flat_len: self.public_tracker.count(),
+            enabled_ops: self.config.into_enabled_ops(),
+            non_primitive_generators: self.non_primitive_generators,
+        };
 
         Ok((circuit, public_mappings))
+    }
+
+    /// Register a non-primitive table generator
+    pub fn register_table_generator(&mut self, generator: Arc<dyn TableTraceGenerator<F>>) {
+        self.non_primitive_generators.push(generator);
     }
 }
 

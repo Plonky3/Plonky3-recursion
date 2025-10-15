@@ -1,10 +1,11 @@
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use hashbrown::HashMap;
 use p3_field::Field;
 
 use crate::op::{NonPrimitiveOp, NonPrimitiveOpConfig, NonPrimitiveOpType, Prim};
-use crate::tables::CircuitRunner;
+use crate::tables::{CircuitRunner, TableTraceGenerator};
 use crate::types::WitnessId;
 
 /// Trait encapsulating the required field operations for circuits
@@ -55,19 +56,8 @@ pub struct Circuit<F> {
     pub public_flat_len: usize,
     /// Enabled non-primitive operation types with their respective configuration
     pub enabled_ops: HashMap<NonPrimitiveOpType, NonPrimitiveOpConfig>,
-}
-
-impl<F> Circuit<F> {
-    pub fn new(witness_count: u32) -> Self {
-        Self {
-            witness_count,
-            primitive_ops: Vec::new(),
-            non_primitive_ops: Vec::new(),
-            public_rows: Vec::new(),
-            public_flat_len: 0,
-            enabled_ops: HashMap::new(),
-        }
-    }
+    /// Registered generators for non-primitive tables
+    pub non_primitive_generators: Vec<Arc<dyn TableTraceGenerator<F>>>,
 }
 
 impl<F: CircuitField> Circuit<F> {
