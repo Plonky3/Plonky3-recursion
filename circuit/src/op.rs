@@ -9,7 +9,7 @@ use p3_field::Field;
 use crate::CircuitError;
 use crate::ops::MmcsVerifyConfig;
 use crate::tables::MmcsPrivateData;
-use crate::types::{ExprId, WitnessId};
+use crate::types::{NonPrimitiveOpId, WitnessId};
 
 /// Circuit operations.
 ///
@@ -68,8 +68,8 @@ pub enum Op<F> {
         inputs: Vec<WitnessId>,
         outputs: Vec<WitnessId>,
         executor: Box<dyn NonPrimitiveExecutor<F>>,
-        /// ExprId for error reporting and private data lookup
-        expr_id: ExprId,
+        /// For private data lookup and error reporting
+        op_id: NonPrimitiveOpId,
     },
 }
 
@@ -99,12 +99,12 @@ impl<F: Field + Clone> Clone for Op<F> {
                 inputs,
                 outputs,
                 executor,
-                expr_id,
+                op_id,
             } => Op::NonPrimitiveOpWithExecutor {
                 inputs: inputs.clone(),
                 outputs: outputs.clone(),
                 executor: executor.boxed(),
-                expr_id: *expr_id,
+                op_id: *op_id,
             },
         }
     }
@@ -156,13 +156,13 @@ impl<F: Field + PartialEq> PartialEq for Op<F> {
                     inputs: i1,
                     outputs: o1,
                     executor: e1,
-                    expr_id: id1,
+                    op_id: id1,
                 },
                 Op::NonPrimitiveOpWithExecutor {
                     inputs: i2,
                     outputs: o2,
                     executor: e2,
-                    expr_id: id2,
+                    op_id: id2,
                 },
             ) => i1 == i2 && o1 == o2 && e1.op_type() == e2.op_type() && id1 == id2,
             _ => false,
@@ -269,20 +269,24 @@ pub struct ExecutionContext<'a, F> {
     /// Mutable reference to witness table for reading/writing values
     witness: &'a mut [Option<F>],
     /// Private data map for non-primitive operations
-    non_primitive_op_private_data: &'a HashMap<ExprId, Option<NonPrimitiveOpPrivateData<F>>>,
+    non_primitive_op_private_data:
+        &'a HashMap<NonPrimitiveOpId, Option<NonPrimitiveOpPrivateData<F>>>,
     /// Operation configurations
     enabled_ops: &'a HashMap<NonPrimitiveOpType, NonPrimitiveOpConfig>,
-    /// Current operation's ExprId for error reporting
-    operation_id: ExprId,
+    /// Current operation's NonPrimitiveOpId for error reporting
+    operation_id: NonPrimitiveOpId,
 }
 
 impl<'a, F: Field> ExecutionContext<'a, F> {
     /// Create a new execution context
     pub fn new(
         witness: &'a mut [Option<F>],
-        non_primitive_op_private_data: &'a HashMap<ExprId, Option<NonPrimitiveOpPrivateData<F>>>,
+        non_primitive_op_private_data: &'a HashMap<
+            NonPrimitiveOpId,
+            Option<NonPrimitiveOpPrivateData<F>>,
+        >,
         enabled_ops: &'a HashMap<NonPrimitiveOpType, NonPrimitiveOpConfig>,
-        operation_id: ExprId,
+        operation_id: NonPrimitiveOpId,
     ) -> Self {
         Self {
             witness,
@@ -345,7 +349,7 @@ impl<'a, F: Field> ExecutionContext<'a, F> {
     }
 
     /// Get the current operation ID
-    pub fn operation_id(&self) -> ExprId {
+    pub fn operation_id(&self) -> NonPrimitiveOpId {
         self.operation_id
     }
 }

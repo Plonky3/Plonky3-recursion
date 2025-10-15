@@ -109,7 +109,7 @@ impl<'a> NonPrimitiveLowerer<'a> {
                         inputs,
                         outputs,
                         executor: alloc::boxed::Box::new(MmcsVerifyExecutor::new()),
-                        expr_id: ExprId(op_id.0),
+                        op_id: *op_id,
                     });
                 }
                 NonPrimitiveOpType::HashAbsorb { reset } => {
@@ -129,7 +129,7 @@ impl<'a> NonPrimitiveLowerer<'a> {
                         inputs,
                         outputs: Vec::new(),
                         executor: alloc::boxed::Box::new(HashAbsorbExecutor::new(*reset)),
-                        expr_id: ExprId(op_id.0),
+                        op_id: *op_id,
                     });
                 }
                 NonPrimitiveOpType::HashSqueeze => {
@@ -149,7 +149,7 @@ impl<'a> NonPrimitiveLowerer<'a> {
                         inputs: Vec::new(),
                         outputs,
                         executor: alloc::boxed::Box::new(HashSqueezeExecutor::new()),
-                        expr_id: ExprId(op_id.0),
+                        op_id: *op_id,
                     });
                 }
                 NonPrimitiveOpType::FriVerify => {
@@ -337,7 +337,7 @@ mod tests {
                     inputs,
                     outputs,
                     executor,
-                    expr_id,
+                    op_id,
                 } => {
                     assert_eq!(executor.op_type(), &NonPrimitiveOpType::MmcsVerify);
                     let base = (i * 3) as u32;
@@ -346,7 +346,7 @@ mod tests {
                     assert_eq!(inputs[1], WitnessId(base + 1));
                     assert_eq!(outputs.len(), 1);
                     assert_eq!(outputs[0], WitnessId(base + 2));
-                    assert_eq!(*expr_id, ExprId(i as u32));
+                    assert_eq!(*op_id, NonPrimitiveOpId(i as u32));
                 }
                 _ => panic!("Expected NonPrimitiveOpWithExecutor(MmcsVerify)"),
             }

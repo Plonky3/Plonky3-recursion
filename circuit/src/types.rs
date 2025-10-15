@@ -31,6 +31,12 @@ impl ExprId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct NonPrimitiveOpId(pub u32);
 
+impl fmt::Display for NonPrimitiveOpId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "id{}", self.0)
+    }
+}
+
 /// Witness allocator for monotonic index assignment
 #[derive(Debug, Clone, Default)]
 pub struct WitnessAllocator {

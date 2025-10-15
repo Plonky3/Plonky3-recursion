@@ -5,13 +5,13 @@ use core::hash::Hash;
 
 use p3_field::{ExtensionField, Field};
 
-use crate::CircuitError;
 use crate::builder::{CircuitBuilder, CircuitBuilderError};
 use crate::op::{
     ExecutionContext, NonPrimitiveExecutor, NonPrimitiveOpConfig, NonPrimitiveOpPrivateData,
     NonPrimitiveOpType,
 };
 use crate::types::{ExprId, WitnessId};
+use crate::{CircuitError, NonPrimitiveOpId};
 
 /// Configuration parameters for Mmcs verification operations. When
 /// `base_field_digest_elems > ext_field_digest_elems`, we say the configuration
@@ -205,7 +205,7 @@ pub trait MmcsOps<F> {
         leaf_expr: &[ExprId],
         index_expr: &ExprId,
         root_expr: &[ExprId],
-    ) -> Result<ExprId, CircuitBuilderError>;
+    ) -> Result<NonPrimitiveOpId, CircuitBuilderError>;
 
     /// Allocate root outputs as witness hints and add MMCS verify that will set-or-verify them.
     fn add_mmcs_verify_allocating_root(
@@ -213,7 +213,7 @@ pub trait MmcsOps<F> {
         leaf_expr: &[ExprId],
         index_expr: &ExprId,
         root_len: usize,
-    ) -> Result<(ExprId, Vec<ExprId>), CircuitBuilderError>;
+    ) -> Result<(NonPrimitiveOpId, Vec<ExprId>), CircuitBuilderError>;
 }
 
 impl<F> MmcsOps<F> for CircuitBuilder<F>
@@ -225,7 +225,7 @@ where
         leaf_expr: &[ExprId],
         index_expr: &ExprId,
         root_expr: &[ExprId],
-    ) -> Result<ExprId, CircuitBuilderError> {
+    ) -> Result<NonPrimitiveOpId, CircuitBuilderError> {
         self.ensure_op_enabled(NonPrimitiveOpType::MmcsVerify)?;
 
         let mut inputs = vec![];
@@ -234,10 +234,7 @@ where
         // Include root exprs as outputs for the non-primitive op lowering to map
         inputs.extend(root_expr);
 
-        Ok(ExprId(
-            self.push_non_primitive_op(NonPrimitiveOpType::MmcsVerify, inputs, "mmcs_verify")
-                .0,
-        ))
+        Ok(self.push_non_primitive_op(NonPrimitiveOpType::MmcsVerify, inputs, "mmcs_verify"))
     }
 
     fn add_mmcs_verify_allocating_root(
@@ -245,7 +242,7 @@ where
         leaf_expr: &[ExprId],
         index_expr: &ExprId,
         root_len: usize,
-    ) -> Result<(ExprId, Vec<ExprId>), CircuitBuilderError> {
+    ) -> Result<(NonPrimitiveOpId, Vec<ExprId>), CircuitBuilderError> {
         self.ensure_op_enabled(NonPrimitiveOpType::MmcsVerify)?;
 
         let root_expr: Vec<ExprId> = self.alloc_witness_hints(root_len, "mmcs_root");
@@ -256,11 +253,10 @@ where
         inputs.push(*index_expr);
         inputs.extend(&root_expr);
 
-        let op_id = self
-            .push_non_primitive_op(NonPrimitiveOpType::MmcsVerify, inputs, "mmcs_verify")
-            .0;
+        let op_id =
+            self.push_non_primitive_op(NonPrimitiveOpType::MmcsVerify, inputs, "mmcs_verify");
 
-        Ok((ExprId(op_id), root_expr))
+        Ok((op_id, root_expr))
     }
 }
 

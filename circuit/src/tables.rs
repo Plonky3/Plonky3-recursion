@@ -6,8 +6,8 @@ use tracing::instrument;
 
 use crate::circuit::Circuit;
 use crate::op::{ExecutionContext, NonPrimitiveOpPrivateData, Op};
-use crate::types::WitnessId;
-use crate::{CircuitError, CircuitField, ExprId};
+use crate::types::{NonPrimitiveOpId, WitnessId};
+use crate::{CircuitError, CircuitField};
 
 mod mmcs;
 pub use mmcs::{MmcsPathTrace, MmcsPrivateData, MmcsTrace};
@@ -103,7 +103,7 @@ pub struct CircuitRunner<F> {
     circuit: Circuit<F>,
     witness: Vec<Option<F>>,
     /// Private data for complex operations (not on witness bus)
-    non_primitive_op_private_data: HashMap<ExprId, Option<NonPrimitiveOpPrivateData<F>>>,
+    non_primitive_op_private_data: HashMap<NonPrimitiveOpId, Option<NonPrimitiveOpPrivateData<F>>>,
 }
 
 impl<F: CircuitField> CircuitRunner<F> {
@@ -141,11 +141,11 @@ impl<F: CircuitField> CircuitRunner<F> {
     /// Set private data for a complex operation
     pub fn set_non_primitive_op_private_data(
         &mut self,
-        expr_id: ExprId,
+        op_id: NonPrimitiveOpId,
         private_data: NonPrimitiveOpPrivateData<F>,
     ) -> Result<(), CircuitError> {
         self.non_primitive_op_private_data
-            .insert(expr_id, Some(private_data));
+            .insert(op_id, Some(private_data));
         Ok(())
     }
 
@@ -217,12 +217,7 @@ impl<F: CircuitField> CircuitRunner<F> {
                         self.set_witness(b, b_val)?;
                     }
                 }
-                Op::NonPrimitiveOpWithExecutor {
-                    inputs: _,
-                    outputs: _,
-                    executor: _,
-                    expr_id: _,
-                } => { // Handled separately }
+                Op::NonPrimitiveOpWithExecutor { .. } => { // Handled separately }
                 }
             }
         }
@@ -239,7 +234,7 @@ impl<F: CircuitField> CircuitRunner<F> {
                 inputs,
                 outputs,
                 executor,
-                expr_id,
+                op_id,
             } = op
             else {
                 continue;
@@ -249,7 +244,7 @@ impl<F: CircuitField> CircuitRunner<F> {
                 &mut self.witness,
                 &self.non_primitive_op_private_data,
                 &self.circuit.enabled_ops,
-                expr_id,
+                op_id,
             );
 
             executor.execute(&inputs, &outputs, &mut ctx)?;

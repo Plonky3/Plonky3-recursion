@@ -10,8 +10,8 @@ use p3_symmetric::PseudoCompressionFunction;
 use crate::circuit::{Circuit, CircuitField};
 use crate::op::{NonPrimitiveOpConfig, NonPrimitiveOpPrivateData, NonPrimitiveOpType};
 use crate::ops::MmcsVerifyConfig;
-use crate::types::WitnessId;
-use crate::{CircuitError, ExprId, Op};
+use crate::types::{NonPrimitiveOpId, WitnessId};
+use crate::{CircuitError, Op};
 
 #[derive(Debug, Clone)]
 pub struct MmcsTrace<F> {
@@ -88,7 +88,7 @@ impl<F: Field + Clone + Default> MmcsPrivateData<F> {
         if siblings.len() > config.max_tree_height {
             return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
                 op: NonPrimitiveOpType::MmcsVerify,
-                operation_index: ExprId(0),
+                operation_index: NonPrimitiveOpId(0),
                 expected: alloc::format!(
                     "path length <= max_tree_height ({})",
                     config.max_tree_height
@@ -102,7 +102,7 @@ impl<F: Field + Clone + Default> MmcsPrivateData<F> {
         {
             return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
                 op: NonPrimitiveOpType::MmcsVerify,
-                operation_index: ExprId(0), // Unknown at construction time
+                operation_index: NonPrimitiveOpId(0), // Unknown at construction time
                 expected: "last sibling should not have extra sibling (None)".to_string(),
                 got: format!("last sibling has extra sibling: {extra_sibling:?}"),
             });
@@ -205,7 +205,7 @@ impl<F: Field + Clone + Default> MmcsPrivateData<F> {
 /// Generate MMCS trace from circuit runner state
 pub fn generate_mmcs_trace<F: CircuitField>(
     circuit: &Circuit<F>,
-    non_primitive_op_private_data: &HashMap<ExprId, Option<NonPrimitiveOpPrivateData<F>>>,
+    non_primitive_op_private_data: &HashMap<NonPrimitiveOpId, Option<NonPrimitiveOpPrivateData<F>>>,
 ) -> Result<MmcsTrace<F>, CircuitError> {
     let mut mmcs_paths = Vec::new();
 
@@ -221,7 +221,7 @@ pub fn generate_mmcs_trace<F: CircuitField>(
             inputs,
             outputs,
             executor,
-            expr_id,
+            op_id,
             ..
         } = op
         else {
@@ -240,11 +240,11 @@ pub fn generate_mmcs_trace<F: CircuitField>(
         // Get private data for this operation
         // Note: Validation already happened in MmcsVerifyExecutor::execute()
         // We just need the private data to build the trace
-        let private_data = match non_primitive_op_private_data.get(expr_id) {
+        let private_data = match non_primitive_op_private_data.get(op_id) {
             Some(Some(NonPrimitiveOpPrivateData::MmcsVerify(data))) => data,
             _ => {
                 return Err(CircuitError::NonPrimitiveOpMissingPrivateData {
-                    operation_index: *expr_id,
+                    operation_index: *op_id,
                 });
             }
         };
