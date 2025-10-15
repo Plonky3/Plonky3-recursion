@@ -116,6 +116,16 @@ where
         self.public_tracker.count()
     }
 
+    /// Allocates a witness hint (uninitialized witness slot set during non-primitive execution).
+    pub fn alloc_witness_hint(&mut self, label: &'static str) -> ExprId {
+        self.expr_builder.add_witness_hint(label)
+    }
+
+    /// Allocates multiple witness hints.
+    pub fn alloc_witness_hints(&mut self, count: usize, label: &'static str) -> Vec<ExprId> {
+        self.expr_builder.add_witness_hints(count, label)
+    }
+
     /// Adds a constant to the circuit (deduplicated).
     ///
     /// If this value was previously added, returns the original ExprId.
@@ -235,6 +245,9 @@ where
     }
 
     /// Pushes a non-primitive op. Returns op id.
+    // TODO: The lowerer needs to map the hinted `ExprId`s to `WitnessId`s, hence
+    // the provided `witness_exprs` must contain the generated outputs.
+    // Would maybe need to change that.
     #[allow(unused_variables)]
     pub(crate) fn push_non_primitive_op(
         &mut self,

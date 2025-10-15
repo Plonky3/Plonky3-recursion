@@ -206,6 +206,14 @@ pub trait MmcsOps<F> {
         index_expr: &ExprId,
         root_expr: &[ExprId],
     ) -> Result<ExprId, CircuitBuilderError>;
+
+    /// Allocate root outputs as witness hints and add MMCS verify that will set-or-verify them.
+    fn add_mmcs_verify_allocating_root(
+        &mut self,
+        leaf_expr: &[ExprId],
+        index_expr: &ExprId,
+        root_len: usize,
+    ) -> Result<(ExprId, Vec<ExprId>), CircuitBuilderError>;
 }
 
 impl<F> MmcsOps<F> for CircuitBuilder<F>
@@ -230,6 +238,29 @@ where
             self.push_non_primitive_op(NonPrimitiveOpType::MmcsVerify, inputs, "mmcs_verify")
                 .0,
         ))
+    }
+
+    fn add_mmcs_verify_allocating_root(
+        &mut self,
+        leaf_expr: &[ExprId],
+        index_expr: &ExprId,
+        root_len: usize,
+    ) -> Result<(ExprId, Vec<ExprId>), CircuitBuilderError> {
+        self.ensure_op_enabled(NonPrimitiveOpType::MmcsVerify)?;
+
+        let root_expr: Vec<ExprId> = self.alloc_witness_hints(root_len, "mmcs_root");
+
+        // Push op with inputs including root exprs (they are outputs conceptually, but part of op spec)
+        let mut inputs = vec![];
+        inputs.extend(leaf_expr);
+        inputs.push(*index_expr);
+        inputs.extend(&root_expr);
+
+        let op_id = self
+            .push_non_primitive_op(NonPrimitiveOpType::MmcsVerify, inputs, "mmcs_verify")
+            .0;
+
+        Ok((ExprId(op_id), root_expr))
     }
 }
 
@@ -321,24 +352,40 @@ impl<F: Field> NonPrimitiveExecutor<F> for MmcsVerifyExecutor {
             });
         }
 
-        // Validate root values match private data
-        let witness_root: Vec<F> = root_wids
-            .iter()
-            .map(|&wid| ctx.get_witness(wid))
-            .collect::<Result<_, _>>()?;
-        let private_data_root = private_data.path_states.last().ok_or(
-            CircuitError::NonPrimitiveOpMissingPrivateData {
+        // Set-or-verify for roots: if unset, set; if set, verify equality.
+        let private_data_root = private_data
+            .path_states
+            .last()
+            .ok_or(CircuitError::NonPrimitiveOpMissingPrivateData {
                 operation_index: ctx.operation_id(),
-            },
-        )?;
+            })?
+            .clone();
 
-        if witness_root != *private_data_root {
-            return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
+        // Ensure lengths match
+        if root_wids.len() != private_data_root.len() {
+            return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
                 op: self.op_type.clone(),
-                operation_index: ctx.operation_id(),
-                expected: alloc::format!("root: {witness_root:?}"),
-                got: alloc::format!("root: {private_data_root:?}"),
+                expected: private_data_root.len(),
+                got: root_wids.len(),
             });
+        }
+
+        for (i, &wid) in root_wids.iter().enumerate() {
+            match ctx.get_witness(wid) {
+                Ok(existing) => {
+                    if existing != private_data_root[i] {
+                        return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
+                            op: self.op_type.clone(),
+                            operation_index: ctx.operation_id(),
+                            expected: alloc::format!("root: {:?}", private_data_root),
+                            got: alloc::format!("root: existing witness value at {:?}", wid),
+                        });
+                    }
+                }
+                Err(_) => {
+                    ctx.set_witness(wid, private_data_root[i])?;
+                }
+            }
         }
 
         Ok(())

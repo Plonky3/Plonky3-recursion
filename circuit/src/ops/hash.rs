@@ -4,6 +4,7 @@
 //! construction within the circuit.
 
 use alloc::boxed::Box;
+use alloc::vec::Vec;
 
 use p3_field::{Field, PrimeCharacteristicRing};
 
@@ -26,12 +27,10 @@ pub trait HashOps<F: Clone + PrimeCharacteristicRing + Eq + core::hash::Hash> {
         reset: bool,
     ) -> Result<ExprId, CircuitBuilderError>;
 
-    /// Squeeze field elements from the sponge state.
+    /// Squeeze field elements from the sponge state, creating outputs.
     ///
-    /// # Arguments
-    ///
-    /// * `outputs` - The `ExprId`s to store squeezed values in
-    fn add_hash_squeeze(&mut self, outputs: &[ExprId]) -> Result<ExprId, CircuitBuilderError>;
+    /// Returns the newly created output `ExprId`s.
+    fn add_hash_squeeze(&mut self, count: usize) -> Result<Vec<ExprId>, CircuitBuilderError>;
 }
 
 impl<F> HashOps<F> for CircuitBuilder<F>
@@ -55,17 +54,18 @@ where
         ))
     }
 
-    fn add_hash_squeeze(&mut self, outputs: &[ExprId]) -> Result<ExprId, CircuitBuilderError> {
+    fn add_hash_squeeze(&mut self, count: usize) -> Result<Vec<ExprId>, CircuitBuilderError> {
         self.ensure_op_enabled(NonPrimitiveOpType::HashSqueeze)?;
 
-        Ok(ExprId(
-            self.push_non_primitive_op(
-                NonPrimitiveOpType::HashSqueeze,
-                outputs.to_vec(),
-                "HashSqueeze",
-            )
-            .0,
-        ))
+        let outputs = self.alloc_witness_hints(count, "hash_squeeze_output");
+
+        let _ = self.push_non_primitive_op(
+            NonPrimitiveOpType::HashSqueeze,
+            outputs.clone(),
+            "HashSqueeze",
+        );
+
+        Ok(outputs)
     }
 }
 
@@ -96,9 +96,7 @@ mod tests {
         let mut circuit = CircuitBuilder::<BabyBear>::new();
         circuit.enable_op(NonPrimitiveOpType::HashSqueeze, NonPrimitiveOpConfig::None);
 
-        let output = circuit.add_public_input();
-
-        circuit.add_hash_squeeze(&[output]).unwrap();
+        let _outputs = circuit.add_hash_squeeze(1).unwrap();
     }
 
     #[test]
@@ -115,8 +113,7 @@ mod tests {
         circuit.add_hash_absorb(&[input], true).unwrap();
 
         // Squeeze
-        let output = circuit.add_public_input();
-        circuit.add_hash_squeeze(&[output]).unwrap();
+        let _outputs = circuit.add_hash_squeeze(1).unwrap();
     }
 
     #[test]

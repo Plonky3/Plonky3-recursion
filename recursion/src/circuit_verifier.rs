@@ -737,6 +737,7 @@ mod tests {
             EmptyTarget,
         >::get_values(&proof);
 
+        // Include challenges as public inputs to match the circuit's expected PI length.
         let pvs = proof_values
             .iter()
             .chain(&challenges)

@@ -122,9 +122,7 @@ impl<'a> NonPrimitiveLowerer<'a> {
 
                     let inputs = witness_exprs
                         .iter()
-                        .map(|&expr| {
-                            get_witness_id(self.expr_to_widx, expr, "HashAbsorb input")
-                        })
+                        .map(|&expr| get_witness_id(self.expr_to_widx, expr, "HashAbsorb input"))
                         .collect::<Result<_, _>>()?;
 
                     lowered_ops.push(Op::NonPrimitiveOpWithExecutor {
@@ -144,9 +142,7 @@ impl<'a> NonPrimitiveLowerer<'a> {
 
                     let outputs = witness_exprs
                         .iter()
-                        .map(|&expr| {
-                            get_witness_id(self.expr_to_widx, expr, "HashSqueeze output")
-                        })
+                        .map(|&expr| get_witness_id(self.expr_to_widx, expr, "HashSqueeze output"))
                         .collect::<Result<_, _>>()?;
 
                     lowered_ops.push(Op::NonPrimitiveOpWithExecutor {

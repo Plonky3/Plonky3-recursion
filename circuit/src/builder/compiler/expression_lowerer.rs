@@ -4,9 +4,9 @@ use alloc::vec::Vec;
 use hashbrown::{HashMap, HashSet};
 use p3_field::PrimeCharacteristicRing;
 
-use crate::builder::compiler::get_witness_id;
 use crate::Op;
 use crate::builder::CircuitBuilderError;
+use crate::builder::compiler::get_witness_id;
 use crate::expr::{Expr, ExpressionGraph};
 use crate::types::{ExprId, WitnessAllocator, WitnessId};
 
@@ -184,6 +184,11 @@ where
             let expr_id = ExprId(expr_idx as u32);
             match expr {
                 Expr::Const(_) | Expr::Public(_) => { /* handled above */ }
+                Expr::Witness => {
+                    // Allocate a fresh witness slot (no primitive op), possibly shared via connect
+                    let out_widx = alloc_witness_id_for_expr(expr_idx);
+                    expr_to_widx.insert(expr_id, out_widx);
+                }
                 Expr::Add { lhs, rhs } => {
                     let out_widx = alloc_witness_id_for_expr(expr_idx);
                     let a_widx = get_witness_id(
@@ -735,8 +740,7 @@ mod tests {
 
         // Test 3: Helper function error propagation
         let expr_map = HashMap::new();
-        let result =
-            get_witness_id(&expr_map, ExprId(77), "test context");
+        let result = get_witness_id(&expr_map, ExprId(77), "test context");
 
         match result {
             Err(CircuitBuilderError::MissingExprMapping { expr_id, context }) => {
