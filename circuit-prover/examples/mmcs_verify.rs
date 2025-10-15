@@ -38,21 +38,34 @@ fn main() -> Result<(), ProverError> {
     let compress = config::baby_bear_compression();
     let mmcs_config = MmcsVerifyConfig::babybear_quartic_extension_default();
 
-    let mut builder = CircuitBuilder::new();
+    let mut builder = CircuitBuilder::<F>::new();
     builder.enable_mmcs(&mmcs_config);
 
     // Public inputs: leaf hash and expected root hash
-    let leaf_hash = (0..mmcs_config.ext_field_digest_elems)
-        .map(|_| builder.alloc_public_input("leaf_hash"))
-        .collect::<Vec<ExprId>>();
-    let index = builder.alloc_public_input("index");
+    // The leaves will contain `mmcs_config.ext_field_digest_elems` wires,
+    // when the leaf index is odd, and an empty vector otherwise. This means
+    // we're proving the opening of an Mmcs to matrices of height 2^depth, 2^(depth -1), ...
+    let leaves: Vec<Vec<ExprId>> = (0..depth)
+        .map(|i| {
+            (0..if (i as usize).is_multiple_of(2) {
+                mmcs_config.ext_field_digest_elems
+            } else {
+                0
+            })
+                .map(|_| builder.alloc_public_input("leaf_hash"))
+                .collect::<Vec<ExprId>>()
+        })
+        .collect();
+    let directions: Vec<ExprId> = (0..depth)
+        .map(|_| builder.alloc_public_input("index"))
+        .collect();
     let expected_root = (0..mmcs_config.ext_field_digest_elems)
         .map(|_| builder.alloc_public_input("expected_root"))
         .collect::<Vec<ExprId>>();
     // Add a Mmcs verification operation
     // This declares that leaf_hash and expected_root are connected to witness bus
     // The AIR constraints will verify the Mmcs path is valid
-    let mmcs_op_id = builder.add_mmcs_verify(&leaf_hash, &index, &expected_root)?;
+    let mmcs_op_id = builder.add_mmcs_verify(&leaves, &directions, &expected_root)?;
 
     builder.dump_allocation_log();
 
@@ -60,19 +73,10 @@ fn main() -> Result<(), ProverError> {
     let mut runner = circuit.runner();
 
     // Set public inputs
-    let leaf_value = [
-        F::ZERO,
-        F::ZERO,
-        F::ZERO,
-        F::ZERO,
-        F::ZERO,
-        F::ZERO,
-        F::ZERO,
-        F::from_u64(42),
-    ]; // Our leaf value
-    let siblings: Vec<(Vec<F>, Option<Vec<F>>)> = (0..depth)
+    //
+    let leaves_value: Vec<Vec<F>> = (0..depth)
         .map(|i| {
-            (
+            if (i as usize).is_multiple_of(2) {
                 vec![
                     F::ZERO,
                     F::ZERO,
@@ -81,47 +85,50 @@ fn main() -> Result<(), ProverError> {
                     F::ZERO,
                     F::ZERO,
                     F::ZERO,
-                    F::from_u64((i + 1) * 10),
-                ],
-                // Extra siblings on odd levels, but never on the last level
-                if i % 2 == 0 || i == depth - 1 {
-                    None
-                } else {
-                    Some(vec![
-                        F::ZERO,
-                        F::ZERO,
-                        F::ZERO,
-                        F::ZERO,
-                        F::ZERO,
-                        F::ZERO,
-                        F::ZERO,
-                        F::from_u64(i + 1),
-                    ])
-                },
-            )
+                    F::from_u64(42),
+                ]
+            } else {
+                vec![]
+            }
         })
-        .collect(); // The siblings, containing extra siblings every other level (except the last)
-    let directions: Vec<bool> = (0..depth).map(|i| i % 2 == 0).collect();
+        .collect(); // Our leaf value
+    let siblings: Vec<Vec<F>> = (0..depth)
+        .map(|i| {
+            vec![
+                F::ZERO,
+                F::ZERO,
+                F::ZERO,
+                F::ZERO,
+                F::ZERO,
+                F::ZERO,
+                F::ZERO,
+                F::from_u64((i + 1) * 10),
+            ]
+        })
+        .collect();
+
     // the index is 0b1010...
-    let index_value = F::from_u64(
-        (0..32)
-            .zip(directions.iter())
-            .filter(|(_, dir)| **dir)
-            .map(|(i, _)| 1 << i)
-            .sum(),
-    );
+    let directions: Vec<bool> = (0..depth).map(|i| i % 2 == 0).collect();
+
     let MmcsPrivateData {
         path_states: intermediate_states,
         ..
-    } = MmcsPrivateData::new(&compress, &mmcs_config, &leaf_value, &siblings, &directions)?;
+    } = MmcsPrivateData::new(
+        &compress,
+        &mmcs_config,
+        &leaves_value,
+        &siblings,
+        &directions,
+    )?;
     let expected_root_value = intermediate_states
         .last()
         .expect("There is always at least the leaf hash")
+        .0
         .clone();
 
     let mut public_inputs = vec![];
-    public_inputs.extend(leaf_value);
-    public_inputs.push(index_value);
+    public_inputs.extend(leaves_value.iter().flatten());
+    public_inputs.extend(directions.iter().map(|dir| F::from_bool(*dir)));
     public_inputs.extend(&expected_root_value);
 
     runner.set_public_inputs(&public_inputs)?;
@@ -131,12 +138,11 @@ fn main() -> Result<(), ProverError> {
         NonPrimitiveOpPrivateData::MmcsVerify(MmcsPrivateData::new(
             &compress,
             &mmcs_config,
-            &leaf_value,
+            &leaves_value,
             &siblings,
             &directions,
         )?),
     )?;
-
     let traces = runner.run()?;
     let multi_prover = MultiTableProver::new(config).with_mmcs_table(mmcs_config.into());
     let proof = multi_prover.prove_all_tables(&traces)?;

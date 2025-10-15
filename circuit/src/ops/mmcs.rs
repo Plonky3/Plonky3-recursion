@@ -1,6 +1,7 @@
 use alloc::vec;
 use alloc::vec::Vec;
 use core::hash::Hash;
+use core::ops::Range;
 
 use p3_field::{ExtensionField, Field};
 
@@ -23,10 +24,25 @@ pub struct MmcsVerifyConfig {
 }
 
 impl MmcsVerifyConfig {
+    /// Returns the range in which valid number of inputs lie. The minimum is 3,
+    /// a single leaf, a vector of directions, and a root, or self.max_tree_height leaves
+    /// and a vector of directions and root.
+    pub const fn number_of_inputs(&self) -> Range<usize> {
+        3..self.max_tree_height + 2 + 1
+    }
+
     /// Returns the number of inputs (witness elements) received.
-    pub const fn input_size(&self) -> usize {
+    pub const fn leaves_size(&self) -> Range<usize> {
         // `ext_field_digest_elems` for the leaf and root and 1 for the index
-        2 * self.ext_field_digest_elems + 1
+        self.directions_size()
+    }
+
+    pub const fn directions_size(&self) -> Range<usize> {
+        1..self.max_tree_height + 1
+    }
+
+    pub const fn root_size(&self) -> usize {
+        self.ext_field_digest_elems
     }
 
     /// Convert a digest represented as extension field elements into base field elements.
@@ -185,7 +201,7 @@ pub trait MmcsOps<F> {
     /// Add a Mmcs verification constraint (non-primitive operation)
     ///
     /// Non-primitive operations are complex constraints that:
-    /// - Take existing expressions as inputs (leaf_expr, index_expr, root_expr)
+    /// - Take existing expressions as inputs (leaves_expr, directions_expr, root_expr)
     /// - Add verification constraints to the circuit
     /// - Don't produce new ExprIds (unlike primitive ops)
     /// - Are kept separate from primitives to avoid disrupting optimization
@@ -193,8 +209,8 @@ pub trait MmcsOps<F> {
     /// Returns an operation ID for setting private data later during execution.
     fn add_mmcs_verify(
         &mut self,
-        leaf_expr: &[ExprId],
-        index_expr: &ExprId,
+        leaves_expr: &[Vec<ExprId>],
+        directions_expr: &[ExprId],
         root_expr: &[ExprId],
     ) -> Result<NonPrimitiveOpId, CircuitBuilderError>;
 }
@@ -205,16 +221,16 @@ where
 {
     fn add_mmcs_verify(
         &mut self,
-        leaf_expr: &[ExprId],
-        index_expr: &ExprId,
+        leaves_expr: &[Vec<ExprId>],
+        directions_expr: &[ExprId],
         root_expr: &[ExprId],
     ) -> Result<NonPrimitiveOpId, CircuitBuilderError> {
         self.ensure_op_enabled(NonPrimitiveOpType::MmcsVerify)?;
 
         let mut witness_exprs = vec![];
-        witness_exprs.extend(leaf_expr);
-        witness_exprs.push(*index_expr);
-        witness_exprs.extend(root_expr);
+        witness_exprs.extend(leaves_expr.to_vec());
+        witness_exprs.push(directions_expr.to_vec());
+        witness_exprs.push(root_expr.to_vec());
         Ok(
             self.push_non_primitive_op(
                 NonPrimitiveOpType::MmcsVerify,
