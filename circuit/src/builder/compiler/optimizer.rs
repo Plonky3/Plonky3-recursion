@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 
-use crate::op::Prim;
+use crate::op::Op;
 
 /// Responsible for performing optimization passes on primitive operations.
 #[derive(Debug, Default)]
@@ -19,7 +19,7 @@ impl Optimizer {
     /// - Common subexpression elimination
     /// - Instruction combining
     /// - Constant folding
-    pub fn optimize<F>(&self, primitive_ops: Vec<Prim<F>>) -> Vec<Prim<F>> {
+    pub fn optimize<F>(&self, primitive_ops: Vec<Op<F>>) -> Vec<Op<F>> {
         // For now, return operations unchanged
         // Future optimization passes will be added here
         primitive_ops
@@ -42,11 +42,11 @@ mod tests {
         let optimizer = Optimizer::new();
 
         let ops = vec![
-            Prim::Const {
+            Op::Const {
                 out: WitnessId(0),
                 val: BabyBear::ZERO,
             },
-            Prim::Add {
+            Op::Add {
                 a: WitnessId(0),
                 b: WitnessId(1),
                 out: WitnessId(2),

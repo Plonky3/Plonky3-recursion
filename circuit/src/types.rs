@@ -16,6 +16,12 @@ impl fmt::Display for WitnessId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ExprId(pub u32);
 
+impl fmt::Display for ExprId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "e{}", self.0)
+    }
+}
+
 impl ExprId {
     /// The zero expression ID - always points to Const(0)
     pub const ZERO: ExprId = ExprId(0);
@@ -24,6 +30,12 @@ impl ExprId {
 /// Handle to a non-primitive operation (for setting private data later)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct NonPrimitiveOpId(pub u32);
+
+impl fmt::Display for NonPrimitiveOpId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "id{}", self.0)
+    }
+}
 
 /// Witness allocator for monotonic index assignment
 #[derive(Debug, Clone, Default)]

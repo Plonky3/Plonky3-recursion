@@ -64,11 +64,12 @@ impl<F: Field, const RATE: usize> RecursiveChallenger<F> for CircuitChallenger<R
     fn sample(&mut self, circuit: &mut CircuitBuilder<F>) -> Target {
         self.flush_absorb(circuit);
 
-        let output = circuit.alloc_public_input("sampled challenge");
+        // TODO: We should be calling `add_hash_squeeze` but we may want to wait
+        // for Poseidon2 to be merged so that we actually generate challenges via hints
+        // and not public inputs.
+        // let output = circuit.add_hash_squeeze(1).expect("Failed to squeeze")[0];
 
-        let _ = circuit.add_hash_squeeze(&[output]);
-
-        output
+        circuit.alloc_public_input("sampled challenge")
     }
 
     fn clear(&mut self) {
