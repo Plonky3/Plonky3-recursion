@@ -98,7 +98,8 @@ where
         expr_id
     }
 
-    /// Adds a witness hint to the graph (allocates a WitnessId during lowering, with no primitive op).
+    /// Adds a witness hint to the graph.
+    /// It will allocate a `WitnessId` during lowering, with no primitive op.
     #[allow(unused_variables)]
     pub fn add_witness_hint(&mut self, label: &'static str) -> ExprId {
         let expr_id = self.graph.add_expr(Expr::Witness);
@@ -106,7 +107,7 @@ where
         #[cfg(debug_assertions)]
         self.allocation_log.push(AllocationEntry {
             expr_id,
-            alloc_type: AllocationType::Public, // Use Public category for visibility; dedicated type optional
+            alloc_type: AllocationType::WitnessHint,
             label,
             dependencies: vec![],
             scope: self.current_scope(),

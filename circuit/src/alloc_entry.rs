@@ -21,6 +21,7 @@ pub enum AllocationType {
     Mul,
     Div,
     NonPrimitiveOp(NonPrimitiveOpType),
+    WitnessHint,
 }
 
 /// Detailed allocation entry for debugging
@@ -92,6 +93,7 @@ fn dump_internal_log(allocation_log: &[AllocationEntry]) {
     let mut muls = Vec::new();
     let mut divs = Vec::new();
     let mut non_primitives = Vec::new();
+    let mut witness_hints = Vec::new();
 
     fn display_label(label: &str) -> String {
         if label.is_empty() {
@@ -110,6 +112,7 @@ fn dump_internal_log(allocation_log: &[AllocationEntry]) {
             AllocationType::Mul => muls.push(entry),
             AllocationType::Div => divs.push(entry),
             AllocationType::NonPrimitiveOp(_) => non_primitives.push(entry),
+            AllocationType::WitnessHint => witness_hints.push(entry),
         }
     }
 
@@ -252,6 +255,14 @@ fn dump_internal_log(allocation_log: &[AllocationEntry]) {
             } else {
                 tracing::debug!("  {}{}", op_name, display_label(entry.label));
             }
+        }
+        tracing::debug!("");
+    }
+
+    if !witness_hints.is_empty() {
+        tracing::debug!("--- Witness Hints ({}) ---", witness_hints.len());
+        for entry in witness_hints {
+            tracing::debug!("  expr_{} (WitnessHint){}", entry.expr_id.0, display_label(entry.label));
         }
         tracing::debug!("");
     }
