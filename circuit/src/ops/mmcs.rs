@@ -218,16 +218,18 @@ where
         index_expr: &ExprId,
         root_expr: &[ExprId],
     ) -> Result<ExprId, CircuitBuilderError> {
+        self.ensure_op_enabled(NonPrimitiveOpType::MmcsVerify)?;
+
         let mut inputs = vec![];
         inputs.extend(leaf_expr);
         inputs.push(*index_expr);
+        // Include root exprs as outputs for the non-primitive op lowering to map
+        inputs.extend(root_expr);
 
-        self.push_non_primitive_op(
-            NonPrimitiveOpType::MmcsVerify,
-            inputs,
-            root_expr.to_vec(),
-            "mmcs_verify",
-        )
+        Ok(ExprId(
+            self.push_non_primitive_op(NonPrimitiveOpType::MmcsVerify, inputs, "mmcs_verify")
+                .0,
+        ))
     }
 }
 

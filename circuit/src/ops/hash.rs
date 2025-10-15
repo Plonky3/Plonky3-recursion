@@ -4,7 +4,6 @@
 //! construction within the circuit.
 
 use alloc::boxed::Box;
-use alloc::vec;
 
 use p3_field::{Field, PrimeCharacteristicRing};
 
@@ -44,21 +43,29 @@ where
         inputs: &[ExprId],
         reset: bool,
     ) -> Result<ExprId, CircuitBuilderError> {
-        self.push_non_primitive_op(
-            NonPrimitiveOpType::HashAbsorb { reset },
-            inputs.to_vec(),
-            vec![],
-            "HashAbsorb",
-        )
+        self.ensure_op_enabled(NonPrimitiveOpType::HashAbsorb { reset })?;
+
+        Ok(ExprId(
+            self.push_non_primitive_op(
+                NonPrimitiveOpType::HashAbsorb { reset },
+                inputs.to_vec(),
+                "HashAbsorb",
+            )
+            .0,
+        ))
     }
 
     fn add_hash_squeeze(&mut self, outputs: &[ExprId]) -> Result<ExprId, CircuitBuilderError> {
-        self.push_non_primitive_op(
-            NonPrimitiveOpType::HashSqueeze,
-            vec![],
-            outputs.to_vec(),
-            "HashSqueeze",
-        )
+        self.ensure_op_enabled(NonPrimitiveOpType::HashSqueeze)?;
+
+        Ok(ExprId(
+            self.push_non_primitive_op(
+                NonPrimitiveOpType::HashSqueeze,
+                outputs.to_vec(),
+                "HashSqueeze",
+            )
+            .0,
+        ))
     }
 }
 
