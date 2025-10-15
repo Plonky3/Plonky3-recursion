@@ -262,7 +262,11 @@ fn dump_internal_log(allocation_log: &[AllocationEntry]) {
     if !witness_hints.is_empty() {
         tracing::debug!("--- Witness Hints ({}) ---", witness_hints.len());
         for entry in witness_hints {
-            tracing::debug!("  expr_{} (WitnessHint){}", entry.expr_id.0, display_label(entry.label));
+            tracing::debug!(
+                "  expr_{} (WitnessHint){}",
+                entry.expr_id.0,
+                display_label(entry.label)
+            );
         }
         tracing::debug!("");
     }
