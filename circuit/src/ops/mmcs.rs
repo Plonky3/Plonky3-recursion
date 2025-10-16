@@ -27,7 +27,7 @@ impl MmcsVerifyConfig {
     /// Returns the range in which valid number of inputs lie. The minimum is 3,
     /// a single leaf, a vector of directions, and a root, or self.max_tree_height leaves
     /// and a vector of directions and root.
-    pub const fn number_of_inputs(&self) -> Range<usize> {
+    pub const fn input_size(&self) -> Range<usize> {
         3..self.max_tree_height + 2 + 1
     }
 

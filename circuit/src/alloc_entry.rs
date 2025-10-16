@@ -97,7 +97,7 @@ fn dump_internal_log(allocation_log: &[AllocationEntry]) {
         if label.is_empty() {
             "".to_string()
         } else {
-            format!(": {}", label)
+            format!(": {label}")
         }
     }
 
@@ -234,7 +234,7 @@ fn dump_internal_log(allocation_log: &[AllocationEntry]) {
         );
         for entry in non_primitives {
             let op_name = match &entry.alloc_type {
-                AllocationType::NonPrimitiveOp(op_type) => format!("{:?}", op_type).to_string(),
+                AllocationType::NonPrimitiveOp(op_type) => format!("{op_type:?}").to_string(),
                 _ => "Unknown".to_string(),
             };
             if !entry.dependencies.is_empty() {
