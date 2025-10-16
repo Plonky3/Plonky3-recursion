@@ -638,7 +638,7 @@ where
         // Observe final polynomial coefficients
         challenger.observe_slice(circuit, &fri_proof.final_poly);
 
-        // TODO: Use sample_bits and check that the output is 0.
+        // Check PoW witness.
         challenger.check_witness(
             circuit,
             params.pow_bits,

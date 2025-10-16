@@ -250,7 +250,7 @@ where
         // Check PoW witness.
         challenger.observe(opening_proof.pow_witness);
 
-        // Sample bits, and add the nonzero bits to the challenges.
+        // Sample a challenge and decompose it into bits. Add the nonzero bits to the challenges.
         let rand_f: Val<SC> = challenger.sample();
         let rand_usize = rand_f.as_canonical_biguint().to_u64_digits()[0] as usize;
         // Get the bits. The total number of bits is the number of bits in a base field element.

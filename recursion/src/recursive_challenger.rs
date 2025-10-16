@@ -35,7 +35,9 @@ pub trait RecursiveChallenger<F: Field> {
         (0..count).map(|_| self.sample(circuit)).collect()
     }
 
-    fn sample_bits(
+    /// Samples a challenge from the current challenger state and decomposes it into `total_num_bits` (public input) bits.
+    /// Returns the first `num_bits` bits.
+    fn sample_public_bits(
         &mut self,
         circuit: &mut CircuitBuilder<F>,
         total_num_bits: usize,
@@ -49,6 +51,7 @@ pub trait RecursiveChallenger<F: Field> {
         bits[..num_bits].to_vec()
     }
 
+    /// Checks a PoW witness.
     fn check_witness(
         &mut self,
         circuit: &mut CircuitBuilder<F>,
@@ -56,9 +59,8 @@ pub trait RecursiveChallenger<F: Field> {
         witness: Target,
         total_num_bits: usize,
     ) {
-        // TODO: Replace `sample_bits` with a specific method that only gets returns the final bits: the first ones are all 0.
         self.observe(circuit, witness);
-        let bits = self.sample_bits(circuit, total_num_bits, witness_bits);
+        let bits = self.sample_public_bits(circuit, total_num_bits, witness_bits);
         for bit in bits {
             circuit.assert_zero(bit);
         }
