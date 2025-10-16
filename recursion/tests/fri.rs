@@ -472,7 +472,8 @@ fn run_fri_test(setup: FriSetup, build_only: bool) {
         &index_bits_t_per_query,
         &commitments_with_opening_points_targets,
         log_blowup,
-    );
+    )
+    .unwrap();
 
     builder.dump_allocation_log();
     let circuit = builder.build().unwrap();

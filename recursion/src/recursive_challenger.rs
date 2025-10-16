@@ -6,6 +6,7 @@
 use alloc::vec::Vec;
 
 use p3_circuit::CircuitBuilder;
+use p3_circuit::utils::decompose_to_bits;
 use p3_field::Field;
 
 use crate::Target;
@@ -32,6 +33,37 @@ pub trait RecursiveChallenger<F: Field> {
     /// Sample multiple challenges.
     fn sample_vec(&mut self, circuit: &mut CircuitBuilder<F>, count: usize) -> Vec<Target> {
         (0..count).map(|_| self.sample(circuit)).collect()
+    }
+
+    /// Samples a challenge from the current challenger state and decomposes it into `total_num_bits` (public input) bits.
+    /// Returns the first `num_bits` bits.
+    fn sample_public_bits(
+        &mut self,
+        circuit: &mut CircuitBuilder<F>,
+        total_num_bits: usize,
+        num_bits: usize,
+    ) -> Vec<Target> {
+        let x = self.sample(circuit);
+        // Adds one public input per bit (there are as many bits as for a field element).
+        // It also checks that the bits are boolean and they are equal to `x`.
+        let bits = decompose_to_bits(circuit, x, total_num_bits);
+
+        bits[..num_bits].to_vec()
+    }
+
+    /// Checks a PoW witness.
+    fn check_witness(
+        &mut self,
+        circuit: &mut CircuitBuilder<F>,
+        witness_bits: usize,
+        witness: Target,
+        total_num_bits: usize,
+    ) {
+        self.observe(circuit, witness);
+        let bits = self.sample_public_bits(circuit, total_num_bits, witness_bits);
+        for bit in bits {
+            circuit.assert_zero(bit);
+        }
     }
 
     /// Clear the challenger state.

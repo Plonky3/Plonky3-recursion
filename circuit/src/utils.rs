@@ -131,15 +131,17 @@ pub fn reconstruct_index_from_bits<F: Field>(
 /// For a given target `x`, this function creates `N_BITS` new boolean targets `b_i`
 /// and adds constraints to enforce that:
 ///     x = Σ b_i · 2^i
-pub fn decompose_to_bits<F: Field, const N_BITS: usize>(
+pub fn decompose_to_bits<F: Field>(
     builder: &mut CircuitBuilder<F>,
     x: ExprId,
+    n_bits: usize,
 ) -> Vec<ExprId> {
     builder.push_scope("decompose_to_bits");
-    let mut bits = Vec::with_capacity(N_BITS);
+
+    let mut bits = Vec::with_capacity(n_bits);
 
     // Create bit witness variables
-    for _ in 0..N_BITS {
+    for _ in 0..n_bits {
         let bit = builder.add_public_input(); // TODO: Should be witness
         builder.assert_bool(bit);
         bits.push(bit);
@@ -383,7 +385,7 @@ mod tests {
         let value = builder.add_const(BabyBear::from_u64(6)); // Binary: 110
 
         // Decompose into 3 bits - this creates its own public inputs for the bits
-        let bits = decompose_to_bits::<BabyBear, 3>(&mut builder, value);
+        let bits = decompose_to_bits::<BabyBear>(&mut builder, value, 3);
 
         // Build and run the circuit
         let circuit = builder.build().expect("Failed to build circuit");
