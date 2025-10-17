@@ -305,9 +305,7 @@ where
             .collect();
 
         // Allocate proof targets
-        let mut lens = crate::recursive_traits::ProofTargets::<SC, Comm, OpeningProof>::lens(proof);
-        let proof_targets =
-            crate::recursive_traits::ProofTargets::new(circuit, &mut lens, proof.degree_bits);
+        let proof_targets = crate::recursive_traits::ProofTargets::new(circuit, proof);
 
         Self {
             air_public_targets,

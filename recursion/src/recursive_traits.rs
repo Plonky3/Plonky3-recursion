@@ -73,11 +73,7 @@ pub trait Recursive<F: Field> {
 
     /// Creates a new instance of the recursive type. `lens` corresponds to all the vector lengths necessary to build the structure.
     /// TODO: They can actually be deduced from StarkGenericConfig and `degree_bits`.
-    fn new(
-        circuit: &mut CircuitBuilder<F>,
-        lens: &mut impl Iterator<Item = usize>,
-        degree_bits: usize,
-    ) -> Self;
+    fn new(circuit: &mut CircuitBuilder<F>, input: &Self::Input) -> Self;
 
     /// Returns a vec of field elements representing the private elements of the Input. Used to populate private inputs.
     /// Default implementation returns an empty vec.
@@ -86,9 +82,6 @@ pub trait Recursive<F: Field> {
     }
     /// Returns a vec of field elements representing the elements of the Input. Used to populate public inputs.
     fn get_values(input: &Self::Input) -> Vec<F>;
-
-    // Temporary method used for testing for now. This should be changed into something more generic which relies as little as possible on the actual proof.
-    fn lens(input: &Self::Input) -> impl Iterator<Item = usize>;
 }
 
 /// Trait representing the `Commitment` and `Proof` of an `Input` with type `Mmcs`.
@@ -244,20 +237,19 @@ impl<
 {
     type Input = Proof<SC>;
 
-    fn new(
-        circuit: &mut CircuitBuilder<SC::Challenge>,
-        lens: &mut impl Iterator<Item = usize>,
-        degree_bits: usize,
-    ) -> Self {
-        let commitments_targets = CommitmentTargets::new(circuit, lens, degree_bits);
-        let opened_values_targets = OpenedValuesTargets::new(circuit, lens, degree_bits);
-        let opening_proof = OpeningProof::new(circuit, lens, degree_bits);
+    // TODO: We could also get the recursive struct just from the config.
+
+    /// Allocates the necessary `circuit` targets for storing `input`'s public data.
+    fn new(circuit: &mut CircuitBuilder<SC::Challenge>, input: &Self::Input) -> Self {
+        let commitments_targets = CommitmentTargets::new(circuit, &input.commitments);
+        let opened_values_targets = OpenedValuesTargets::new(circuit, &input.opened_values);
+        let opening_proof = OpeningProof::new(circuit, &input.opening_proof);
 
         Self {
             commitments_targets,
             opened_values_targets,
             opening_proof,
-            degree_bits,
+            degree_bits: input.degree_bits,
         }
     }
 
@@ -275,19 +267,6 @@ impl<
             .chain(OpeningProof::get_values(opening_proof))
             .collect()
     }
-
-    fn lens(input: &Self::Input) -> impl Iterator<Item = usize> {
-        let Proof {
-            commitments,
-            opened_values,
-            opening_proof,
-            degree_bits: _,
-        } = input;
-
-        CommitmentTargets::<SC::Challenge, Comm>::lens(commitments)
-            .chain(OpenedValuesTargets::<SC>::lens(opened_values))
-            .chain(OpeningProof::lens(opening_proof))
-    }
 }
 
 impl<F: Field, Comm> Recursive<F> for CommitmentTargets<F, Comm>
@@ -296,19 +275,13 @@ where
 {
     type Input = Commitments<Comm::Input>;
 
-    fn new(
-        circuit: &mut CircuitBuilder<F>,
-        lens: &mut impl Iterator<Item = usize>,
-        degree_bits: usize,
-    ) -> Self {
-        let trace_targets = Comm::new(circuit, lens, degree_bits);
-        let quotient_chunks_targets = Comm::new(circuit, lens, degree_bits);
-        let random_commit_len = lens.next().unwrap();
-        let random_commit = if random_commit_len > 0 {
-            Some(Comm::new(circuit, lens, degree_bits))
-        } else {
-            None
-        };
+    fn new(circuit: &mut CircuitBuilder<F>, input: &Self::Input) -> Self {
+        let trace_targets = Comm::new(circuit, &input.trace);
+        let quotient_chunks_targets = Comm::new(circuit, &input.quotient_chunks);
+        let random_commit = input
+            .random
+            .as_ref()
+            .map(|random| Comm::new(circuit, random));
         Self {
             trace_targets,
             quotient_chunks_targets,
@@ -332,56 +305,32 @@ where
         }
         values
     }
-
-    fn lens(input: &Self::Input) -> impl Iterator<Item = usize> {
-        let Commitments {
-            trace,
-            quotient_chunks,
-            random,
-        } = input;
-
-        let mut all_lens = vec![];
-        all_lens.extend(Comm::lens(trace));
-        all_lens.extend(Comm::lens(quotient_chunks));
-        if let Some(random) = random {
-            all_lens.extend(Comm::lens(random));
-        } else {
-            all_lens.push(0);
-        }
-        all_lens.into_iter()
-    }
 }
 
 impl<SC: StarkGenericConfig> Recursive<SC::Challenge> for OpenedValuesTargets<SC> {
     type Input = OpenedValues<SC::Challenge>;
 
-    fn new(
-        circuit: &mut CircuitBuilder<SC::Challenge>,
-        lens: &mut impl Iterator<Item = usize>,
-        _degree_bits: usize,
-    ) -> Self {
-        let trace_local_len = lens.next().unwrap();
+    fn new(circuit: &mut CircuitBuilder<SC::Challenge>, input: &Self::Input) -> Self {
+        let trace_local_len = input.trace_local.len();
         let trace_local_targets =
             circuit.alloc_public_inputs(trace_local_len, "trace local values");
 
-        let trace_next_len = lens.next().unwrap();
+        let trace_next_len = input.trace_next.len();
         let trace_next_targets = circuit.alloc_public_inputs(trace_next_len, "trace next values");
 
-        let quotient_chunks_len = lens.next().unwrap();
+        let quotient_chunks_len = input.quotient_chunks.len();
         let mut quotient_chunks_targets = Vec::with_capacity(quotient_chunks_len);
-        for _ in 0..quotient_chunks_len {
-            let quotient_chunks_cols_len = lens.next().unwrap();
+        for quotient_chunk in input.quotient_chunks.iter() {
+            let quotient_chunks_cols_len = quotient_chunk.len();
             let quotient_col =
                 circuit.alloc_public_inputs(quotient_chunks_cols_len, "quotient chunk columns");
             quotient_chunks_targets.push(quotient_col);
         }
 
-        let random_len = lens.next().unwrap();
-        let random_targets = if random_len > 0 {
-            Some(circuit.alloc_public_inputs(random_len, "random values (ZK mode)"))
-        } else {
-            None
-        };
+        let random_targets = input
+            .random
+            .as_ref()
+            .map(|random| circuit.alloc_public_inputs(random.len(), "random values (ZK mode)"));
 
         Self {
             trace_local_targets,
@@ -411,31 +360,5 @@ impl<SC: StarkGenericConfig> Recursive<SC::Challenge> for OpenedValuesTargets<SC
         }
 
         values
-    }
-
-    fn lens(input: &Self::Input) -> impl Iterator<Item = usize> {
-        let OpenedValues {
-            trace_local,
-            trace_next,
-            quotient_chunks,
-            random,
-        } = input;
-
-        let mut all_lens = vec![];
-        all_lens.push(trace_local.len());
-        all_lens.push(trace_next.len());
-
-        all_lens.push(quotient_chunks.len());
-        for chunk in quotient_chunks {
-            all_lens.push(chunk.len());
-        }
-
-        if let Some(random) = random {
-            all_lens.push(random.len());
-        } else {
-            all_lens.push(0);
-        }
-
-        all_lens.into_iter()
     }
 }
