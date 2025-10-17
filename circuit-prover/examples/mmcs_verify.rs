@@ -47,7 +47,7 @@ fn main() -> Result<(), ProverError> {
     // we're proving the opening of an Mmcs to matrices of height 2^depth, 2^(depth -1), ...
     let leaves: Vec<Vec<ExprId>> = (0..depth)
         .map(|i| {
-            (0..if (i as usize).is_multiple_of(2) {
+            (0..if (i as usize).is_multiple_of(2) && i != depth - 1 {
                 mmcs_config.ext_field_digest_elems
             } else {
                 0
@@ -76,7 +76,7 @@ fn main() -> Result<(), ProverError> {
     //
     let leaves_value: Vec<Vec<F>> = (0..depth)
         .map(|i| {
-            if (i as usize).is_multiple_of(2) {
+            if (i as usize).is_multiple_of(2) && i != depth - 1 {
                 vec![
                     F::ZERO,
                     F::ZERO,

@@ -1,5 +1,7 @@
-use alloc::vec;
+use alloc::string::ToString;
 use alloc::vec::Vec;
+use alloc::{format, vec};
+use core::fmt::Debug;
 use core::iter;
 
 use itertools::izip;
@@ -94,10 +96,29 @@ pub struct MmcsPrivateData<F> {
 }
 
 impl<F: Field + Clone + Default> MmcsPrivateData<F> {
-    /// Computes private data for a Merkle path verification.
+    /// Computes the private data required for MMCS path verification.
     ///
-    /// Takes public inputs and computes all intermediate hash states.
-    /// Uses the compression function to hash at each layer.
+    /// This function takes public inputs and calculates all intermediate hash states
+    /// along the MMCS path.
+    ///
+    /// At each level:
+    /// - The next state is computed using the compression function `compress.compress()`.
+    /// - The order of inputs depends on the `direction`:
+    ///   - If `direction` is `false`, compute the next state as `compress.compress(sibling, state)`.
+    ///   - If `direction` is `true`, compute the next state as `compress.compress(state, sibling)`.
+    ///
+    /// If a leaf exists at the current level:
+    /// - On the first level, the leaf is directly assigned as the current state.
+    /// - On subsequent levels, the next state is obtained by additionally compressing the next state with the leaf.
+    ///
+    /// **Parameters**
+    /// - `compress`: Compression function mapping `[[BF, DIGEST_ELEMS]; 2]` → `[BF, DIGEST_ELEMS]`.
+    /// - `config`: MMCS configuration parameters.
+    /// - `leaves`: A slice of vectors. Each entry is either empty or of size `DIGEST_ELEMS`,
+    ///   indicating whether a leaf is present at that level.
+    /// - `siblings`: A slice containing the sibling node for each level.
+    /// - `directions`: A list of booleans determining the order of inputs to `compress()`
+    ///   at each level.
     pub fn new<BF, C, const DIGEST_ELEMS: usize>(
         compress: &C,
         config: &MmcsVerifyConfig,
@@ -114,7 +135,7 @@ impl<F: Field + Clone + Default> MmcsPrivateData<F> {
         if siblings.len() != directions.len() {
             return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
                 op: NonPrimitiveOpType::MmcsVerify,
-                expected: siblings.len(),
+                expected: siblings.len().to_string(),
                 got: directions.len(),
             });
         }
@@ -138,17 +159,25 @@ impl<F: Field + Clone + Default> MmcsPrivateData<F> {
         };
         let path_states = &mut private_data.path_states;
 
-        // TODO: Add errors
         let mut state = leaves
             .first()
             .expect("There must be at leas to one leaf")
             .clone();
-        if state.len() != config.ext_field_digest_elems {
-            panic!(
-                "The last leaf must be of size {}",
-                config.ext_field_digest_elems
-            )
+
+        // Ensure there's no leaf in the last level
+        if let Some(last) = leaves.last()
+            && !last.is_empty()
+        {
+            return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
+                op: NonPrimitiveOpType::MmcsVerify,
+                expected: "[]".to_string(),
+                got: format!("{:?}", last),
+                operation_index: 0,
+            });
         }
+
+        // In the first iteration the leaf is assigned to the state, consequently
+        // there's no
         // We need an empty leaf to replace the one we already assigned to the state;
         let empty_leaf = vec![];
         for (&dir, sibling, leaf) in izip!(
@@ -181,8 +210,10 @@ impl<F: Field + Clone + Default> MmcsPrivateData<F> {
             };
             state = config.base_to_ext(&compress.compress(input))?;
         }
-        // Append the final state (root). There's no extra state in the last step
+        // Append the final state (root).
         path_states.push((state.to_vec(), None));
+        // Check that there's no extra state in the last step
+
         Ok(private_data)
     }
 
@@ -209,6 +240,19 @@ impl<F: Field + Clone + Default> MmcsPrivateData<F> {
         let root_indices: Vec<u32> = root_wids.iter().map(|wid| wid.0).collect();
 
         debug_assert!(self.path_siblings.len() <= mmcs_config.max_tree_height);
+        debug_assert!(if let Ok(leaf) =
+            leaves
+                .last()
+                .ok_or(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
+                    op: NonPrimitiveOpType::MmcsVerify,
+                    expected: "Non empty".to_string(),
+                    got: leaves.len()
+                }) {
+            leaf.is_empty()
+        } else {
+            false
+        });
+
         // Pad directions in case they start with 0s.
         let path_directions =
             (0..mmcs_config.max_tree_height).map(|i| *self.directions.get(i).unwrap_or(&false));
@@ -248,7 +292,7 @@ impl<F: Field + Clone + Default> MmcsPrivateData<F> {
                 if leaf.len() != mmcs_config.ext_field_digest_elems {
                     return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
                         op: NonPrimitiveOpType::MmcsVerify,
-                        expected: mmcs_config.ext_field_digest_elems,
+                        expected: mmcs_config.ext_field_digest_elems.to_string(),
                         got: leaf.len(),
                     });
                 }
@@ -256,7 +300,7 @@ impl<F: Field + Clone + Default> MmcsPrivateData<F> {
             } else if !leaf.is_empty() {
                 return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
                     op: NonPrimitiveOpType::MmcsVerify,
-                    expected: 0,
+                    expected: 0.to_string(),
                     got: leaf.len(),
                 });
             }

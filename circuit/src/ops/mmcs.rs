@@ -1,3 +1,4 @@
+use alloc::string::ToString;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::hash::Hash;
@@ -58,7 +59,7 @@ impl MmcsVerifyConfig {
         if digest.len() != self.ext_field_digest_elems {
             return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
                 op: NonPrimitiveOpType::MmcsVerify,
-                expected: self.ext_field_digest_elems,
+                expected: self.ext_field_digest_elems.to_string(),
                 got: digest.len(),
             });
         }
@@ -80,7 +81,7 @@ impl MmcsVerifyConfig {
         let arr: [F; DIGEST_ELEMS] = flattened.try_into().map_err(|_| {
             CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
                 op: NonPrimitiveOpType::MmcsVerify,
-                expected: DIGEST_ELEMS,
+                expected: DIGEST_ELEMS.to_string(),
                 got: len,
             }
         })?;
@@ -103,7 +104,7 @@ impl MmcsVerifyConfig {
         if digest.len() != self.base_field_digest_elems {
             return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
                 op: NonPrimitiveOpType::MmcsVerify,
-                expected: self.base_field_digest_elems,
+                expected: self.base_field_digest_elems.to_string(),
                 got: digest.len(),
             });
         }

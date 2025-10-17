@@ -87,7 +87,7 @@ pub enum CircuitError {
     )]
     IncorrectNonPrimitiveOpPrivateDataSize {
         op: NonPrimitiveOpType,
-        expected: usize,
+        expected: String,
         got: usize,
     },
 
