@@ -422,6 +422,10 @@ mod tests {
             vec![]
         }
 
+        fn get_targets(&self) -> Vec<Target> {
+            vec![]
+        }
+
         fn get_values(input: &Self::Input) -> Vec<EF> {
             input.iter().flatten().map(|v| EF::from(*v)).collect()
         }
@@ -432,6 +436,10 @@ mod tests {
         type Input = ();
 
         fn new(_circuit: &mut p3_circuit::CircuitBuilder<F>, _input: &Self::Input) -> Self {}
+
+        fn get_targets(&self) -> vec::Vec<Target> {
+            vec![]
+        }
 
         fn get_values(_input: &Self::Input) -> vec::Vec<F> {
             vec![]

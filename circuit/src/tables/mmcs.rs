@@ -3,6 +3,7 @@ use alloc::vec::Vec;
 use alloc::{format, vec};
 use core::fmt::Debug;
 use core::iter;
+use std::sync::Arc;
 
 use itertools::izip;
 use p3_field::{ExtensionField, Field};
@@ -10,7 +11,8 @@ use p3_symmetric::PseudoCompressionFunction;
 
 use crate::circuit::Circuit;
 use crate::op::{
-    NonPrimitiveOp, NonPrimitiveOpConfig, NonPrimitiveOpPrivateData, NonPrimitiveOpType,
+    NonPrimitiveOp, NonPrimitiveOpConfig, NonPrimitiveOpHelper, NonPrimitiveOpPrivateData,
+    NonPrimitiveOpType,
 };
 use crate::ops::MmcsVerifyConfig;
 use crate::types::WitnessId;
@@ -79,20 +81,39 @@ pub struct MmcsPathTrace<F> {
 /// Prover's private information demonstrating a valid leaf-to-root path.
 /// - It includes all intermediate hash states and sibling hashes.
 /// - Some layers have extra siblings for variable-sized trees.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone)]
 pub struct MmcsPrivateData<F> {
-    /// Hash states along the path: [leaf, state1, state2, ..., root].
-    ///
-    /// The sequence of states along the path, with an optional
-    /// state when there was an extra leaf at that level of the path.
-    pub path_states: Vec<(Vec<F>, Option<Vec<F>>)>,
+    // /// Hash states along the path: [leaf, state1, state2, ..., root].
+    // ///
+    // /// The sequence of states along the path, with an optional
+    // /// state when there was an extra leaf at that level of the path.
+    // pub path_states: Vec<(Vec<F>, Option<Vec<F>>)>,
     /// Sibling hashes at each layer.
     pub path_siblings: Vec<Vec<F>>,
-    /// Direction bits encoding the leaf's position.
-    ///
-    /// - false = sibling on left,
-    /// - true = sibling on right.
-    pub directions: Vec<bool>,
+
+    pub compress: Arc<dyn Fn([&[F]; 2]) -> Result<Vec<F>, CircuitError>>,
+    // /// Direction bits encoding the leaf's position.
+    // ///
+    // // /// - false = sibling on left,
+    // // /// - true = sibling on right.
+    // pub directions: Vec<bool>,
+}
+
+impl<F: Debug> Debug for MmcsPrivateData<F> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("MmcsPrivateData")
+            .field("path_siblings", &self.path_siblings)
+            .finish()
+    }
+}
+
+impl<F> PartialEq for MmcsPrivateData<F>
+where
+    F: PartialEq,
+{
+    fn eq(&self, other: &Self) -> bool {
+        self.path_siblings == other.path_siblings
+    }
 }
 
 impl<F: Field + Clone + Default> MmcsPrivateData<F> {
@@ -120,27 +141,42 @@ impl<F: Field + Clone + Default> MmcsPrivateData<F> {
     /// - `directions`: A list of booleans determining the order of inputs to `compress()`
     ///   at each level.
     pub fn new<BF, C, const DIGEST_ELEMS: usize>(
-        compress: &C,
         config: &MmcsVerifyConfig,
-        leaves: &[Vec<F>],
         siblings: &[Vec<F>],
-        directions: &[bool],
-    ) -> Result<Self, CircuitError>
+        compress: C,
+    ) -> Self
     where
         BF: Field,
         F: ExtensionField<BF> + Clone,
-        C: PseudoCompressionFunction<[BF; DIGEST_ELEMS], 2>,
+        C: PseudoCompressionFunction<[BF; DIGEST_ELEMS], 2> + 'static,
     {
+        let config = config.clone();
+        Self {
+            path_siblings: siblings.to_vec(),
+            compress: Arc::new(move |[left, right]| {
+                let left_as_slice = config.ext_to_base(left)?;
+                let right_as_slice = config.ext_to_base(right)?;
+                let result = compress.compress([left_as_slice, right_as_slice]);
+                config.base_to_ext(&result)
+            }),
+        }
+    }
+    pub fn compute_all_states(
+        &self,
+        config: &MmcsVerifyConfig,
+        leaves: &[Vec<F>],
+        directions: &[bool],
+    ) -> Result<Vec<(Vec<F>, Option<Vec<F>>)>, CircuitError> {
         // Ensure we have one direction bit per sibling step.
-        if siblings.len() != directions.len() {
+        if self.path_siblings.len() + 1 != directions.len() {
             return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
                 op: NonPrimitiveOpType::MmcsVerify,
-                expected: siblings.len().to_string(),
+                expected: self.path_siblings.len().to_string(),
                 got: directions.len(),
             });
         }
         // Enforce configured maximum height to avoid creating unreachable path rows.
-        if siblings.len() > config.max_tree_height {
+        if self.path_siblings.len() > config.max_tree_height {
             return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
                 op: NonPrimitiveOpType::MmcsVerify,
                 operation_index: 0,
@@ -148,16 +184,11 @@ impl<F: Field + Clone + Default> MmcsPrivateData<F> {
                     "path length <= max_tree_height ({})",
                     config.max_tree_height
                 ),
-                got: alloc::format!("{}", siblings.len()),
+                got: alloc::format!("{}", self.path_siblings.len()),
             });
         }
 
-        let mut private_data = Self {
-            path_states: Vec::with_capacity(siblings.len() + 1),
-            path_siblings: siblings.to_vec(),
-            directions: directions.to_vec(),
-        };
-        let path_states = &mut private_data.path_states;
+        let mut path_states = Vec::with_capacity(leaves.len());
 
         let mut state = leaves
             .first()
@@ -182,7 +213,7 @@ impl<F: Field + Clone + Default> MmcsPrivateData<F> {
         let empty_leaf = vec![];
         for (&dir, sibling, leaf) in izip!(
             directions.iter(),
-            siblings.iter(),
+            self.path_siblings.iter(),
             iter::once(&empty_leaf).chain(leaves.iter().skip(1))
         ) {
             path_states.push((
@@ -191,30 +222,24 @@ impl<F: Field + Clone + Default> MmcsPrivateData<F> {
                 if leaf.is_empty() {
                     None
                 } else {
-                    let state_as_slice = config.ext_to_base(&state)?;
-                    let leaf_as_slice = config.ext_to_base(leaf)?;
-                    let new_state =
-                        config.base_to_ext(&compress.compress([state_as_slice, leaf_as_slice]))?;
+                    let new_state = (self.compress)([&state, leaf])?;
                     state = new_state.clone();
                     Some(new_state)
                 },
             ));
 
-            let state_as_slice = config.ext_to_base(&state)?;
-            let sibling_as_slice = config.ext_to_base(sibling)?;
-
             let input = if dir {
-                [state_as_slice, sibling_as_slice]
+                [state.as_slice(), sibling]
             } else {
-                [sibling_as_slice, state_as_slice]
+                [sibling, state.as_slice()]
             };
-            state = config.base_to_ext(&compress.compress(input))?;
+            state = (self.compress)(input)?;
         }
         // Append the final state (root).
         path_states.push((state.to_vec(), None));
         // Check that there's no extra state in the last step
 
-        Ok(private_data)
+        Ok(path_states)
     }
 
     /// Converts private data to trace format for AIR verification.
@@ -226,6 +251,7 @@ impl<F: Field + Clone + Default> MmcsPrivateData<F> {
         mmcs_config: &MmcsVerifyConfig,
         leaves: &[Vec<F>],
         leaves_wids: &[Vec<WitnessId>],
+        directions: &[bool],
         root_wids: &[WitnessId],
     ) -> Result<MmcsPathTrace<F>, CircuitError> {
         let mut trace = MmcsPathTrace::default();
@@ -255,13 +281,14 @@ impl<F: Field + Clone + Default> MmcsPrivateData<F> {
 
         // Pad directions in case they start with 0s.
         let path_directions =
-            (0..mmcs_config.max_tree_height).map(|i| *self.directions.get(i).unwrap_or(&false));
+            (0..mmcs_config.max_tree_height).map(|i| *directions.get(i).unwrap_or(&false));
 
+        let all_states = self.compute_all_states(mmcs_config, leaves, directions)?;
         // For each step in the Mmcs path (excluding the final state which is the root)
-        debug_assert_eq!(self.path_states.len(), self.path_siblings.len() + 1);
+        debug_assert_eq!(all_states.len(), self.path_siblings.len() + 1);
         let empty_leaf = vec![];
         for ((state, extra_state), sibling, direction, leaf_indices, leaf) in izip!(
-            self.path_states.iter().take(self.path_siblings.len()),
+            all_states.iter().take(self.path_siblings.len()),
             self.path_siblings.iter(),
             path_directions,
             // TODO: For now we repeat the leaf indices here, but will need to add the right ones when we
@@ -305,7 +332,7 @@ impl<F: Field + Clone + Default> MmcsPrivateData<F> {
                 });
             }
         }
-        trace.final_value = self.path_states.last().cloned().unwrap_or_default().0;
+        trace.final_value = all_states.last().cloned().unwrap_or_default().0;
         trace.final_index = root_indices;
         Ok(trace)
     }
@@ -315,7 +342,9 @@ impl<F: Field + Clone + Default> MmcsPrivateData<F> {
 pub struct MmcsTraceBuilder<'a, F> {
     circuit: &'a Circuit<F>,
     witness: &'a [Option<F>],
-    non_primitive_op_private_data: &'a [Option<NonPrimitiveOpPrivateData<F>>],
+    non_primitive_op_private_data:
+        &'a [Option<(NonPrimitiveOpPrivateData<F>, NonPrimitiveOpHelper)>],
+    compression: Option<fn([&[F]; 2]) -> Vec<F>>,
 }
 
 impl<'a, F: CircuitField> MmcsTraceBuilder<'a, F> {
@@ -323,12 +352,17 @@ impl<'a, F: CircuitField> MmcsTraceBuilder<'a, F> {
     pub fn new(
         circuit: &'a Circuit<F>,
         witness: &'a [Option<F>],
-        non_primitive_op_private_data: &'a [Option<NonPrimitiveOpPrivateData<F>>],
+        non_primitive_op_private_data: &'a [Option<(
+            NonPrimitiveOpPrivateData<F>,
+            NonPrimitiveOpHelper,
+        )>],
+        compression: Option<fn([&[F]; 2]) -> Vec<F>>,
     ) -> Self {
         Self {
             circuit,
             witness,
             non_primitive_op_private_data,
+            compression,
         }
     }
 
@@ -353,14 +387,17 @@ impl<'a, F: CircuitField> MmcsTraceBuilder<'a, F> {
                 leaves,
                 directions,
                 root,
+                helper,
             } = &self.circuit.non_primitive_ops[op_idx]
             else {
                 // Skip non-MMCS operations (e.g., HashAbsorb, HashSqueeze)
                 continue;
             };
 
-            if let Some(Some(NonPrimitiveOpPrivateData::MmcsVerify(private_data))) =
-                self.non_primitive_op_private_data.get(op_idx).cloned()
+            if let Some(Some((
+                NonPrimitiveOpPrivateData::MmcsVerify(private_data),
+                NonPrimitiveOpHelper::MmcsVerify(_),
+            ))) = self.non_primitive_op_private_data.get(op_idx)
             {
                 let config = match self
                     .circuit
@@ -386,8 +423,8 @@ impl<'a, F: CircuitField> MmcsTraceBuilder<'a, F> {
 
                 let witness_directions = directions
                     .iter()
-                    .map(|wid| self.get_witness(wid))
-                    .collect::<Result<Vec<F>, _>>()?;
+                    .map(|wid| self.get_witness(wid).map(|w| w == F::ONE))
+                    .collect::<Result<Vec<bool>, _>>()?;
                 // Check that the number of leaves is the same as the number of directions
                 if witness_directions.len() != witness_leaves.len() {
                     return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
@@ -398,28 +435,13 @@ impl<'a, F: CircuitField> MmcsTraceBuilder<'a, F> {
                     });
                 }
 
-                // Check root values
-                let witness_root: Vec<F> = root
-                    .iter()
-                    .map(|wid| self.get_witness(wid))
-                    .collect::<Result<_, _>>()?;
-                let computed_root = &private_data
-                    .path_states
-                    .last()
-                    .ok_or(CircuitError::NonPrimitiveOpMissingPrivateData {
-                        operation_index: op_idx,
-                    })?
-                    .0;
-                if witness_root != *computed_root {
-                    return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
-                        op: NonPrimitiveOpType::MmcsVerify,
-                        operation_index: op_idx,
-                        expected: alloc::format!("root: {witness_root:?}"),
-                        got: alloc::format!("root: {computed_root:?}"),
-                    });
-                }
-
-                let trace = private_data.to_trace(config, &witness_leaves, leaves, root)?;
+                let trace = private_data.to_trace(
+                    config,
+                    &witness_leaves,
+                    leaves,
+                    &witness_directions,
+                    root,
+                )?;
                 mmcs_paths.push(trace);
             } else {
                 return Err(CircuitError::NonPrimitiveOpMissingPrivateData {
@@ -439,12 +461,14 @@ mod tests {
     use p3_baby_bear::BabyBear;
     use p3_field::PrimeCharacteristicRing;
     use p3_field::extension::BinomialExtensionField;
+    use p3_matrix::Dimensions;
     use p3_symmetric::PseudoCompressionFunction;
 
     use super::*;
     use crate::NonPrimitiveOpPrivateData;
     use crate::builder::CircuitBuilder;
     use crate::errors::CircuitError;
+    use crate::op::NonPrimitiveOpHelper;
     use crate::ops::MmcsOps;
 
     type F = BinomialExtensionField<BabyBear, 4>;
@@ -473,25 +497,21 @@ mod tests {
         ];
         let directions = [false, true, true];
 
-        let expected_private_data = MmcsPrivateData {
-            path_states: vec![
-                // The first state is the leaf.
-                (vec![BabyBear::from_u64(1)], None),
-                // At level 1 there is a leaf, so we do two compressions.
-                // Since dir = false, the first input is [2, 1] and thus compress.compress(input) = 2.
-                // The leaf is 4 thu input is [2, 4] and compress.compress(input) = 2
-                (
-                    vec![BabyBear::from_u64(2)],
-                    Some(vec![BabyBear::from_u64(2)]),
-                ),
-                // direction = true and then input is [2, 5] compress.compress(input) = 2
-                (vec![BabyBear::from_u64(2)], None),
-                // final root state after the full path
-                (vec![BabyBear::from_u64(2)], None),
-            ],
-            path_siblings: siblings.to_vec(),
-            directions: directions.to_vec(),
-        };
+        let expected_path_states = vec![
+            // The first state is the leaf.
+            (vec![BabyBear::from_u64(1)], None),
+            // At level 1 there is a leaf, so we do two compressions.
+            // Since dir = false, the first input is [2, 1] and thus compress.compress(input) = 2.
+            // The leaf is 4 thu input is [2, 4] and compress.compress(input) = 2
+            (
+                vec![BabyBear::from_u64(2)],
+                Some(vec![BabyBear::from_u64(2)]),
+            ),
+            // direction = true and then input is [2, 5] compress.compress(input) = 2
+            (vec![BabyBear::from_u64(2)], None),
+            // final root state after the full path
+            (vec![BabyBear::from_u64(2)], None),
+        ];
 
         let compress = MockCompression {};
         // Use a config that supports the path length used in this test.
@@ -501,16 +521,12 @@ mod tests {
             max_tree_height: 3,
         };
 
-        let private_data = MmcsPrivateData::new::<BabyBear, _, 1>(
-            &compress,
-            &config,
-            &leaves,
-            &siblings,
-            &directions,
-        )
-        .unwrap();
+        let private_data = MmcsPrivateData::new::<BabyBear, _, 1>(&config, &siblings, compress);
+        let path_states = private_data
+            .compute_all_states(&config, &leaves, &directions)
+            .unwrap();
 
-        assert_eq!(private_data, expected_private_data);
+        assert_eq!(path_states, expected_path_states);
     }
 
     #[test]
@@ -523,7 +539,7 @@ mod tests {
             max_tree_height: 2,
         };
 
-        let leaf = [vec![F::from_u64(1)], vec![], vec![]];
+        let leaves = [vec![F::from_u64(1)], vec![], vec![]];
         let siblings = [
             vec![F::from_u64(2)],
             vec![F::from_u64(3)],
@@ -531,13 +547,8 @@ mod tests {
         ];
         let directions = [false, true, false];
 
-        let res = MmcsPrivateData::new::<BabyBear, _, 1>(
-            &compress,
-            &config,
-            &leaf,
-            &siblings,
-            &directions,
-        );
+        let private_data = MmcsPrivateData::new::<BabyBear, _, 1>(&config, &siblings, compress);
+        let res = private_data.compute_all_states(&config, &leaves, &directions);
         assert!(
             res.is_err(),
             "Expected path taller than max_tree_height to be rejected"
@@ -578,11 +589,21 @@ mod tests {
             builder.add_public_input(),
             builder.add_public_input(),
         ];
+        let helper = NonPrimitiveOpHelper::MmcsVerify(vec![
+            Dimensions {
+                height: 4,
+                width: 1,
+            },
+            Dimensions {
+                height: 2,
+                width: 1,
+            },
+        ]);
         let root = (0..config.ext_field_digest_elems)
             .map(|_| builder.add_public_input())
             .collect::<alloc::vec::Vec<_>>();
         let mmcs_op_id = builder
-            .add_mmcs_verify(&leaves, &directions, &root)
+            .add_mmcs_verify(&leaves, &directions, &root, helper)
             .unwrap();
         let circuit = builder.build().unwrap();
 
@@ -597,15 +618,12 @@ mod tests {
         let directions = [true, true, false];
 
         // Compute what the CORRECT root should be
-        let correct_private_data = MmcsPrivateData::new::<BabyBear, _, 1>(
-            &compress,
-            &config,
-            &leaves_value,
-            &siblings,
-            &directions,
-        )
-        .unwrap();
-        let correct_root = &correct_private_data.path_states.last().unwrap().0;
+        let correct_private_data =
+            MmcsPrivateData::new::<BabyBear, _, 1>(&config, &siblings, compress);
+        let correct_path_states = correct_private_data
+            .compute_all_states(&config, &leaves_value, &directions)
+            .unwrap();
+        let correct_root = &correct_path_states.last().unwrap().0;
 
         // Helper to run test with given inputs and private data
         let run_test = |leaves: &[Vec<F>], root: &[F], private_data: &MmcsPrivateData<F>| {
@@ -625,50 +643,13 @@ mod tests {
             runner.run()
         };
 
-        // Test 1: Valid witness should be accepted
+        // Valid witness should be accepted
         let result = run_test(&leaves_value, correct_root, &correct_private_data);
         assert!(
             result.is_ok(),
             "Valid witness should be accepted but got {:?}",
             result
         );
-
-        // Test 2: Invalid witness (wrong root) should be rejected
-        let wrong_root = [F::from_u64(999)];
-        match run_test(&leaves_value, &wrong_root, &correct_private_data) {
-            Err(CircuitError::IncorrectNonPrimitiveOpPrivateData { .. }) => {
-                // Expected! The witness validation caught the mismatch
-            }
-            Ok(_) => panic!("Expected witness validation to fail, but it succeeded!"),
-            Err(e) => panic!(
-                "Expected IncorrectNonPrimitiveOpPrivateData error, got: {:?}",
-                e
-            ),
-        }
-
-        // Test 3: Invalid witness (wrong leaf) should be rejected
-        let wrong_leaves_value = [vec![F::from_u64(998)], vec![F::from_u64(999)], vec![]];
-        let wrong_private_data = MmcsPrivateData::new::<BabyBear, _, 1>(
-            &compress,
-            &config,
-            &wrong_leaves_value,
-            &siblings,
-            &directions,
-        )
-        .unwrap();
-
-        match run_test(&leaves_value, correct_root, &wrong_private_data) {
-            Err(CircuitError::IncorrectNonPrimitiveOpPrivateData { .. }) => {
-                // Expected! The witness validation caught the mismatch
-            }
-            Ok(_) => {
-                panic!("Expected witness validation to fail for wrong leaf, but it succeeded!")
-            }
-            Err(e) => panic!(
-                "Expected IncorrectNonPrimitiveOpPrivateData error, got: {:?}",
-                e
-            ),
-        }
     }
 
     #[test]
@@ -695,11 +676,21 @@ mod tests {
             builder.add_public_input(),
             builder.add_public_input(),
         ];
+        let mmcs_helper = NonPrimitiveOpHelper::MmcsVerify(vec![
+            Dimensions {
+                height: 8,
+                width: 1,
+            },
+            Dimensions {
+                height: 2,
+                width: 1,
+            },
+        ]);
         let root_exprs = (0..config.ext_field_digest_elems)
             .map(|_| builder.add_public_input())
             .collect::<alloc::vec::Vec<_>>();
         let mmcs_op_id = builder
-            .add_mmcs_verify(&leaves_expr, &directions_expr, &root_exprs)
+            .add_mmcs_verify(&leaves_expr, &directions_expr, &root_exprs, mmcs_helper)
             .unwrap();
         let circuit = builder.build().unwrap();
 
@@ -714,15 +705,11 @@ mod tests {
         let directions = [false, true, false, true];
 
         // Compute private data and expected values
-        let private_data = MmcsPrivateData::new::<BabyBear, _, 1>(
-            &compress,
-            &config,
-            &leaves_value,
-            &siblings,
-            &directions,
-        )
-        .unwrap();
-        let correct_root = &private_data.path_states.last().unwrap().0;
+        let private_data = MmcsPrivateData::new::<BabyBear, _, 1>(&config, &siblings, compress);
+        let path_states = private_data
+            .compute_all_states(&config, &leaves_value, &directions)
+            .unwrap();
+        let correct_root = &path_states.last().unwrap().0;
 
         // Run circuit
         let mut public_inputs = vec![];
@@ -771,8 +758,7 @@ mod tests {
 
         // Left values follow private_data path states (with intermediate state on extra row)
         let mut expected_left_values = alloc::vec::Vec::new();
-        for ((state, extra_state), leaf) in private_data
-            .path_states
+        for ((state, extra_state), leaf) in path_states
             .iter()
             .zip(iter::once(&empty_leaf).chain(leaves_value.iter().skip(1)))
         {

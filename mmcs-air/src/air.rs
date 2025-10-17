@@ -562,26 +562,22 @@ mod test {
                     .collect::<Vec<Vec<Val>>>()
             })
             .collect();
+        let directions: [[bool; HEIGHT]; NUM_INPUTS] =
+            array::from_fn(|i| array::from_fn(|_| rng.random::<bool>()));
+
         let private_data: [MmcsPrivateData<Val>; NUM_INPUTS] = array::from_fn(|i| {
             let path_siblings: Vec<Vec<Val>> = (0..HEIGHT)
                 .map(|_| vec![rng.random::<Val>(); DIGEST_ELEMS])
                 .collect();
-            let directions: [bool; HEIGHT] = array::from_fn(|_| rng.random::<bool>());
-            MmcsPrivateData::new(
-                &compress,
-                &mmcs_config,
-                &leaves[i],
-                &path_siblings,
-                &directions,
-            )
-            .expect("The size of all digests is DIGEST_ELEMS")
+            MmcsPrivateData::new(&mmcs_config, &path_siblings, compress.clone())
         });
 
         let trace = MmcsTrace {
             mmcs_paths: private_data
                 .iter()
                 .zip(leaves)
-                .map(|(data, leaves)| {
+                .zip(directions)
+                .map(|((data, leaves), directions)| {
                     data.to_trace(
                         &mmcs_config,
                         &leaves,
@@ -589,6 +585,7 @@ mod test {
                             .iter()
                             .map(|leaf| leaf.iter().map(|_| WitnessId(0)).collect())
                             .collect::<Vec<Vec<WitnessId>>>(),
+                        &directions,
                         &[WitnessId(0); DIGEST_ELEMS],
                     )
                     .unwrap()

@@ -75,6 +75,9 @@ pub trait Recursive<F: Field> {
     /// TODO: They can actually be deduced from StarkGenericConfig and `degree_bits`.
     fn new(circuit: &mut CircuitBuilder<F>, input: &Self::Input) -> Self;
 
+    /// Returns a vectors of targets with the wires represeting this recurive structure.
+    fn get_targets(&self) -> Vec<Target>;
+
     /// Returns a vec of field elements representing the private elements of the Input. Used to populate private inputs.
     /// Default implementation returns an empty vec.
     fn get_private_values(_input: &Self::Input) -> Vec<F> {
@@ -253,6 +256,14 @@ impl<
         }
     }
 
+    fn get_targets(&self) -> Vec<Target> {
+        let mut wires = vec![];
+        wires.extend(self.commitments_targets.get_targets());
+        wires.extend(self.opened_values_targets.get_targets());
+        wires.extend(self.opening_proof.get_targets());
+        wires
+    }
+
     fn get_values(input: &Self::Input) -> Vec<SC::Challenge> {
         let Proof {
             commitments,
@@ -288,6 +299,16 @@ where
             random_commit,
             _phantom: PhantomData,
         }
+    }
+
+    fn get_targets(&self) -> Vec<Target> {
+        let mut wires = vec![];
+        wires.extend(self.trace_targets.get_targets());
+        wires.extend(self.quotient_chunks_targets.get_targets());
+        if let Some(random_commit) = &self.random_commit {
+            wires.extend(random_commit.get_targets());
+        }
+        wires
     }
 
     fn get_values(input: &Self::Input) -> Vec<F> {
@@ -339,6 +360,19 @@ impl<SC: StarkGenericConfig> Recursive<SC::Challenge> for OpenedValuesTargets<SC
             random_targets,
             _phantom: PhantomData,
         }
+    }
+
+    fn get_targets(&self) -> Vec<Target> {
+        let mut wires = vec![];
+        wires.extend(self.trace_local_targets.iter());
+        wires.extend(self.trace_next_targets.iter());
+        for chunk in &self.quotient_chunks_targets {
+            wires.extend(chunk.iter());
+        }
+        if let Some(random) = &self.random_targets {
+            wires.extend(random.iter());
+        }
+        wires
     }
 
     fn get_values(input: &Self::Input) -> Vec<SC::Challenge> {

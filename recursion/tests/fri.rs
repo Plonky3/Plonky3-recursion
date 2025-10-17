@@ -2,8 +2,9 @@ use p3_baby_bear::{BabyBear as F, Poseidon2BabyBear as Perm, default_babybear_po
 use p3_challenger::{
     CanObserve, CanSampleBits, DuplexChallenger as Challenger, FieldChallenger, GrindingChallenger,
 };
-use p3_circuit::CircuitBuilder;
-use p3_commit::Pcs;
+use p3_circuit::ops::MmcsVerifyConfig;
+use p3_circuit::{CircuitBuilder, MmcsPrivateData, NonPrimitiveOp, NonPrimitiveOpPrivateData};
+use p3_commit::{BatchOpening, Pcs};
 use p3_dft::Radix2DitParallel as Dft;
 use p3_field::coset::TwoAdicMultiplicativeCoset;
 use p3_field::extension::BinomialExtensionField as ExtF;
@@ -12,7 +13,7 @@ use p3_fri::{TwoAdicFriPcs, create_test_fri_params};
 use p3_matrix::dense::RowMajorMatrix;
 use p3_merkle_tree::MerkleTreeMmcs;
 use p3_recursion::public_inputs::{CommitmentOpening, FriVerifierInputs};
-use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
+use p3_symmetric::{Hash, PaddingFreeSponge, TruncatedPermutation};
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
 use tracing_forest::ForestLayer;
@@ -32,7 +33,8 @@ type PCS = TwoAdicFriPcs<F, Dft<F>, ValMmcs, ChallengeMmcs>;
 
 // Recursive target graph pieces
 use p3_recursion::recursive_pcs::{
-    FriProofTargets, InputProofTargets, RecExtensionValMmcs, RecValMmcs, Witness as RecWitness,
+    FriProofTargets, HashTargets, InputProofTargets, RecExtensionValMmcs, RecValMmcs,
+    ValMmcsCommitment, Witness as RecWitness,
 };
 use p3_recursion::recursive_traits::Recursive;
 
@@ -47,8 +49,8 @@ type FriTargets =
     FriProofTargets<F, Challenge, RecExt, InputProofTargets<F, Challenge, RecVal>, RecWitness<F>>;
 
 /// Type alias for commitments with opening points structure
-type CommitmentsWithPoints = Vec<(
-    Challenge,
+type CommitmentsWithPoints<const DIGEST_ELEMS: usize> = Vec<(
+    ValMmcsCommitment<Challenge, DIGEST_ELEMS>,
     Vec<(
         TwoAdicMultiplicativeCoset<F>,
         Vec<(Challenge, Vec<Challenge>)>,
@@ -101,7 +103,7 @@ struct ProduceInputsResult {
     /// The query indices, represented as little-endian bits, for each query.
     index_bits_per_query: Vec<Vec<Challenge>>,
     /// Commitments with opening points structure (per batch)
-    commitments_with_points: CommitmentsWithPoints,
+    commitments_with_points: CommitmentsWithPoints<8>,
     /// The total number of FRI folding phases (rounds).
     num_phases: usize,
     /// The log base 2 of the size of the largest domain.
@@ -248,8 +250,8 @@ fn produce_inputs_multi(
             pv_idx += 1;
         }
         // Use a placeholder value for the commitment (not used in arithmetic verification)
-        let commit_placeholder = Challenge::ZERO;
-        commitments_with_points.push((commit_placeholder, mats_data));
+        let commitment = ValMmcsCommitment::<Challenge, 8>::from([Challenge::ZERO; 8]);
+        commitments_with_points.push((commitment, mats_data));
     }
 
     // —— FriProofTargets values ——
@@ -274,12 +276,12 @@ fn produce_inputs_multi(
 }
 
 /// Linearize public inputs in the exact order allocated by the circuit builder.
-fn pack_inputs(
+fn pack_inputs<const DIGEST_ELEMS: usize>(
     fri_vals: Vec<Challenge>,
     alpha: Challenge,
     betas: Vec<Challenge>,
     index_bits_all_queries: Vec<Vec<Challenge>>,
-    commitments_with_points: CommitmentsWithPoints,
+    commitments_with_points: CommitmentsWithPoints<DIGEST_ELEMS>,
 ) -> Vec<Challenge> {
     let commitment_openings = commitments_with_points
         .into_iter()
@@ -403,6 +405,8 @@ fn run_fri_test(setup: FriSetup, build_only: bool) {
 
     // ——— Build circuit once (using first proof's shape) ———
     let mut builder = CircuitBuilder::<Challenge>::new();
+    let mmcs_config = MmcsVerifyConfig::babybear_quartic_extension_default();
+    builder.enable_mmcs(&mmcs_config);
 
     // 1) Allocate FriProofTargets using instance 1
     let fri_targets = FriTargets::new(&mut builder, &result_1.fri_proof);
@@ -435,9 +439,9 @@ fn run_fri_test(setup: FriSetup, build_only: bool) {
     // 3) Build commitments_with_opening_points targets structure
     // For each batch: allocate commitment target + (domain, Vec<(z_target, [fz_targets])>)
     let mut commitments_with_opening_points_targets = Vec::new();
-    for (_commit_val, mats_data) in &result_1.commitments_with_points {
+    for (commit_val, mats_data) in &result_1.commitments_with_points {
         // Allocate commitment target (placeholder, not used in arithmetic verification)
-        let commit_t = builder.add_public_input();
+        let commit_t = HashTargets::new(&mut builder, &commit_val);
 
         let mut mats_targets = Vec::new();
         for (domain, points_and_values) in mats_data {
@@ -454,7 +458,7 @@ fn run_fri_test(setup: FriSetup, build_only: bool) {
     builder.pop_scope();
 
     // 4) Wire the arithmetic-only FRI verifier
-    verify_fri_circuit::<F, Challenge, RecExt, RecVal, RecWitness<F>, p3_recursion::Target>(
+    verify_fri_circuit::<F, Challenge, RecExt, RecVal, RecWitness<F>, HashTargets<Challenge, 8>>(
         &mut builder,
         &fri_targets,
         alpha_t,
@@ -481,6 +485,42 @@ fn run_fri_test(setup: FriSetup, build_only: bool) {
     );
     let mut runner1 = circuit.clone().runner();
     runner1.set_public_inputs(&pub_inputs1).unwrap();
+
+    let compress = MyCompress::new(perm.clone());
+
+    let mut non_primitive_ops_iter = runner1.all_non_primitive_ops().into_iter();
+    for query in result_1.fri_proof.query_proofs.iter() {
+        // For each batch in the input proof there must be one MmcsVerify op
+        for batch in query.input_proof.iter() {
+            let (op_id, leaves_widx, directions_widx) = match non_primitive_ops_iter.next() {
+                Some((
+                    op_id,
+                    NonPrimitiveOp::MmcsVerify {
+                        leaves, directions, ..
+                    },
+                )) => (op_id, leaves, directions),
+                _ => panic!("Expected MmcsVerify op"),
+            };
+            let siblings = batch
+                .opening_proof
+                .iter()
+                .map(|digest| {
+                    digest
+                        .iter()
+                        .map(|x| Challenge::from(*x))
+                        .collect::<Vec<Challenge>>()
+                })
+                .collect::<Vec<Vec<Challenge>>>();
+
+            let private_data = NonPrimitiveOpPrivateData::MmcsVerify(
+                MmcsPrivateData::new::<F, _, _>(&mmcs_config, &siblings, compress.clone()),
+            );
+            runner1
+                .set_non_primitive_op_private_data(op_id, private_data)
+                .unwrap();
+        }
+    }
+
     runner1.run().unwrap();
 
     // ---- Run instance 2 ----

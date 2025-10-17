@@ -3,11 +3,14 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::iter;
 
+use itertools::Itertools;
 use p3_circuit::CircuitBuilder;
 use p3_field::coset::TwoAdicMultiplicativeCoset;
 use p3_field::{ExtensionField, Field, TwoAdicField};
+use p3_matrix::Dimensions;
 
 use crate::Target;
+use crate::circuit_mmcs_verifier::verify_batch_circuit;
 use crate::recursive_pcs::{FriProofTargets, InputProofTargets};
 use crate::recursive_traits::{
     ComsWithOpeningsTargets, Recursive, RecursiveExtensionMmcs, RecursiveMmcs,
@@ -358,6 +361,7 @@ fn open_input<F, EF, Comm>(
 where
     F: Field + TwoAdicField,
     EF: ExtensionField<F>,
+    Comm: Recursive<EF>,
 {
     builder.push_scope("open_input");
 
@@ -375,13 +379,32 @@ where
     let mut reduced_openings = BTreeMap::<usize, (Target, Target)>::new();
 
     // Process each batch
-    for (batch_idx, ((_batch_commit, mats), batch_openings)) in commitments_with_opening_points
+    for (batch_idx, ((batch_commit, mats), batch_openings)) in commitments_with_opening_points
         .iter()
         .zip(batch_opened_values.iter())
         .enumerate()
     {
         // TODO: Add recursive MMCS verification here for this batch:
         // Verify batch_openings against _batch_commit at the computed reduced_index.
+
+        let batch_heights = mats
+            .iter()
+            .map(|(domain, _)| domain.size() << log_blowup)
+            .collect_vec();
+        let batch_dims = batch_heights
+            .iter()
+            // TODO: MMCS doesn't really need width; we put 0 for now.
+            .map(|&height| Dimensions { width: 0, height })
+            .collect_vec();
+
+        verify_batch_circuit(
+            builder,
+            &batch_commit.get_targets(),
+            &batch_dims,
+            index_bits,
+            batch_openings,
+        )
+        .expect("verify_batch_circuit failed");
 
         assert_eq!(
             mats.len(),
@@ -477,6 +500,7 @@ pub fn verify_fri_circuit<F, EF, RecMmcs, Inner, Witness, Comm>(
     RecMmcs: RecursiveExtensionMmcs<F, EF>,
     Inner: RecursiveMmcs<F, EF>,
     Witness: Recursive<EF>,
+    Comm: Recursive<EF>,
 {
     builder.push_scope("verify_fri");
 

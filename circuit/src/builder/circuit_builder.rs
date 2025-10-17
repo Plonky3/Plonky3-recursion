@@ -7,7 +7,7 @@ use super::compiler::{ExpressionLowerer, NonPrimitiveLowerer, Optimizer};
 use super::{BuilderConfig, ExpressionBuilder, PublicInputTracker};
 use crate::CircuitBuilderError;
 use crate::circuit::Circuit;
-use crate::op::NonPrimitiveOpType;
+use crate::op::{NonPrimitiveOpHelper, NonPrimitiveOpType};
 use crate::ops::MmcsVerifyConfig;
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};
 
@@ -29,8 +29,13 @@ pub struct CircuitBuilder<F> {
     config: BuilderConfig,
 }
 
-/// The non-primitive operation id, type, and the vecotors of the expressions representing its inputs
-pub type NonPrimitiveOperationData = (NonPrimitiveOpId, NonPrimitiveOpType, Vec<Vec<ExprId>>);
+/// The non-primitive operation id, type, helper data, and the vectors of the expressions representing its inputs
+pub type NonPrimitiveOperationData = (
+    NonPrimitiveOpId,
+    NonPrimitiveOpType,
+    NonPrimitiveOpHelper,
+    Vec<Vec<ExprId>>,
+);
 
 impl<F> Default for CircuitBuilder<F>
 where
@@ -76,14 +81,18 @@ where
         self.config.is_op_enabled(op)
     }
 
-    pub(crate) fn ensure_op_enabled(
-        &self,
-        op: NonPrimitiveOpType,
-    ) -> Result<(), CircuitBuilderError> {
+    pub fn ensure_op_enabled(&self, op: NonPrimitiveOpType) -> Result<(), CircuitBuilderError> {
         if !self.is_op_enabled(&op) {
             return Err(CircuitBuilderError::OpNotAllowed { op });
         }
         Ok(())
+    }
+
+    pub fn get_op_config(
+        &self,
+        op: &NonPrimitiveOpType,
+    ) -> Option<&crate::op::NonPrimitiveOpConfig> {
+        self.config.get_op_config(op)
     }
 
     /// Adds a public input to the circuit.
@@ -242,6 +251,7 @@ where
         &mut self,
         op_type: NonPrimitiveOpType,
         witness_exprs: Vec<Vec<ExprId>>,
+        helper_data: NonPrimitiveOpHelper,
         label: &'static str,
     ) -> NonPrimitiveOpId {
         let op_id = NonPrimitiveOpId(self.non_primitive_ops.len() as u32);
@@ -254,7 +264,8 @@ where
             label,
         );
 
-        self.non_primitive_ops.push((op_id, op_type, witness_exprs));
+        self.non_primitive_ops
+            .push((op_id, op_type, helper_data, witness_exprs));
         op_id
     }
 

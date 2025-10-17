@@ -1,6 +1,8 @@
 use alloc::vec::Vec;
 use core::hash::Hash;
 
+use p3_matrix::Dimensions;
+
 use crate::tables::MmcsPrivateData;
 use crate::types::WitnessId;
 
@@ -60,6 +62,29 @@ pub enum NonPrimitiveOpType {
     HashSqueeze,
 }
 
+/// Non-primitive operation helper data. Used to add
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NonPrimitiveOpHelper {
+    MmcsVerify(Vec<Dimensions>),
+    None,
+}
+
+impl Hash for NonPrimitiveOpHelper {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        match self {
+            NonPrimitiveOpHelper::MmcsVerify(dimensions) => {
+                for dim in dimensions {
+                    dim.height.hash(state);
+                    dim.width.hash(state);
+                }
+            }
+            NonPrimitiveOpHelper::None => {
+                0.hash(state);
+            }
+        }
+    }
+}
+
 /// Non-primitive operation types
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum NonPrimitiveOpConfig {
@@ -99,6 +124,7 @@ pub enum NonPrimitiveOp {
         leaves: Vec<Vec<WitnessId>>,
         directions: Vec<WitnessId>,
         root: Vec<WitnessId>,
+        helper: NonPrimitiveOpHelper,
     },
 
     /// Hash absorb operation - absorbs inputs into sponge state.
@@ -109,13 +135,17 @@ pub enum NonPrimitiveOp {
     HashAbsorb {
         reset_flag: bool,
         inputs: Vec<WitnessId>,
+        helper: NonPrimitiveOpHelper,
     },
 
     /// Hash squeeze operation - extracts outputs from sponge state.
     ///
     /// Public interface (on witness bus):
     /// - `outputs`: Field elements extracted from the sponge
-    HashSqueeze { outputs: Vec<WitnessId> },
+    HashSqueeze {
+        outputs: Vec<WitnessId>,
+        helper: NonPrimitiveOpHelper,
+    },
 }
 
 /// Private auxiliary data for non-primitive operations

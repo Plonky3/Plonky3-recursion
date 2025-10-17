@@ -1,14 +1,17 @@
 use alloc::string::ToString;
-use alloc::vec;
 use alloc::vec::Vec;
+use alloc::{format, vec};
+use core::cmp::Reverse;
 use core::hash::Hash;
 use core::ops::Range;
 
+use itertools::Itertools;
 use p3_field::{ExtensionField, Field};
+use p3_matrix::Dimensions;
 
 use crate::CircuitError;
 use crate::builder::{CircuitBuilder, CircuitBuilderError};
-use crate::op::NonPrimitiveOpType;
+use crate::op::{NonPrimitiveOpHelper, NonPrimitiveOpType};
 use crate::types::{ExprId, NonPrimitiveOpId};
 
 /// Configuration parameters for Mmcs verification operations. When
@@ -129,6 +132,62 @@ impl MmcsVerifyConfig {
         }
     }
 
+    /// Given a vector of leaves and dimesions it formats the leaves
+    /// into a vec of size `max_height`, where each entry contains the leaves
+    /// corresponding to that height. Leaves for heights that do not exist
+    /// in the input are empty vectors.
+    pub fn format_leaves<T: Clone>(
+        &self,
+        leaves: &[Vec<T>],
+        dimensions: &[Dimensions],
+        max_height_log: usize,
+    ) -> Result<Vec<Vec<T>>, CircuitError> {
+        if leaves.len() > max_height_log {
+            return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
+                op: NonPrimitiveOpType::MmcsVerify,
+                expected: format!("at most {}", max_height_log),
+                got: leaves.len(),
+            });
+        }
+
+        let mut heights_tallest_first = dimensions
+            .iter()
+            .enumerate()
+            .sorted_by_key(|(_, dims)| Reverse(dims.height))
+            .peekable();
+
+        // Matrix heights that round up to the same power of two must be equal
+        if !heights_tallest_first
+            .clone()
+            .map(|(_, dims)| dims.height)
+            .tuple_windows()
+            .all(|(curr, next)| {
+                curr == next || curr.next_power_of_two() != next.next_power_of_two()
+            })
+        {
+            panic!("Heights that round up to the same power of two must be equal"); //TODO: Add errors
+        }
+
+        let mut formatted_leaves = vec![vec![]; max_height_log];
+        for (curr_height, leaf) in formatted_leaves
+            .iter_mut()
+            .enumerate()
+            .map(|(i, leaf)| (1 << (max_height_log - i - 1), leaf))
+        {
+            // Get the initial height padded to a power of two. As heights_tallest_first is sorted,
+            // the initial height will be the maximum height.
+            // Returns an error if either:
+            //              1. proof.len() != log_max_height
+            //              2. heights_tallest_first is empty.
+            let new_leaf = heights_tallest_first
+                .peeking_take_while(|(_, dims)| dims.height.next_power_of_two() == curr_height)
+                .flat_map(|(i, _)| leaves[i].clone())
+                .collect();
+            *leaf = new_leaf;
+        }
+        Ok(formatted_leaves)
+    }
+
     pub fn mock_config() -> Self {
         Self {
             base_field_digest_elems: 1,
@@ -213,6 +272,7 @@ pub trait MmcsOps<F> {
         leaves_expr: &[Vec<ExprId>],
         directions_expr: &[ExprId],
         root_expr: &[ExprId],
+        helper_data: NonPrimitiveOpHelper,
     ) -> Result<NonPrimitiveOpId, CircuitBuilderError>;
 }
 
@@ -225,6 +285,7 @@ where
         leaves_expr: &[Vec<ExprId>],
         directions_expr: &[ExprId],
         root_expr: &[ExprId],
+        helper_data: NonPrimitiveOpHelper,
     ) -> Result<NonPrimitiveOpId, CircuitBuilderError> {
         self.ensure_op_enabled(NonPrimitiveOpType::MmcsVerify)?;
 
@@ -232,12 +293,11 @@ where
         witness_exprs.extend(leaves_expr.to_vec());
         witness_exprs.push(directions_expr.to_vec());
         witness_exprs.push(root_expr.to_vec());
-        Ok(
-            self.push_non_primitive_op(
-                NonPrimitiveOpType::MmcsVerify,
-                witness_exprs,
-                "mmcs_verify",
-            ),
-        )
+        Ok(self.push_non_primitive_op(
+            NonPrimitiveOpType::MmcsVerify,
+            witness_exprs,
+            helper_data,
+            "mmcs_verify",
+        ))
     }
 }
