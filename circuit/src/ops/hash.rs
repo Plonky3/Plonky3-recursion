@@ -3,6 +3,8 @@
 //! Provides methods for absorbing and squeezing elements using a sponge
 //! construction within the circuit.
 
+use alloc::vec;
+
 use p3_field::PrimeCharacteristicRing;
 
 use crate::builder::{CircuitBuilder, CircuitBuilderError};
@@ -44,7 +46,7 @@ where
 
         self.push_non_primitive_op(
             NonPrimitiveOpType::HashAbsorb { reset },
-            inputs.to_vec(),
+            vec![inputs.to_vec()],
             "HashAbsorb",
         );
 
@@ -56,7 +58,7 @@ where
 
         self.push_non_primitive_op(
             NonPrimitiveOpType::HashSqueeze,
-            outputs.to_vec(),
+            vec![outputs.to_vec()],
             "HashSqueeze",
         );
 

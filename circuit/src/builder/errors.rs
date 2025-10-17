@@ -1,3 +1,5 @@
+use alloc::string::String;
+
 use thiserror::Error;
 
 use crate::ExprId;
@@ -17,7 +19,7 @@ pub enum CircuitBuilderError {
     #[error("{op} expects exactly {expected} witness expressions, got {got}")]
     NonPrimitiveOpArity {
         op: &'static str,
-        expected: usize,
+        expected: String,
         got: usize,
     },
 

@@ -108,7 +108,7 @@ where
             expr_id,
             alloc_type: AllocationType::Add,
             label,
-            dependencies: vec![lhs, rhs],
+            dependencies: vec![vec![lhs], vec![rhs]],
             scope: self.current_scope(),
         });
 
@@ -125,7 +125,7 @@ where
             expr_id,
             alloc_type: AllocationType::Sub,
             label,
-            dependencies: vec![lhs, rhs],
+            dependencies: vec![vec![lhs], vec![rhs]],
             scope: self.current_scope(),
         });
 
@@ -142,7 +142,7 @@ where
             expr_id,
             alloc_type: AllocationType::Mul,
             label,
-            dependencies: vec![lhs, rhs],
+            dependencies: vec![vec![lhs], vec![rhs]],
             scope: self.current_scope(),
         });
 
@@ -159,7 +159,7 @@ where
             expr_id,
             alloc_type: AllocationType::Div,
             label,
-            dependencies: vec![lhs, rhs],
+            dependencies: vec![vec![lhs], vec![rhs]],
             scope: self.current_scope(),
         });
 
@@ -189,7 +189,7 @@ where
         &mut self,
         op_id: crate::types::NonPrimitiveOpId,
         op_type: crate::op::NonPrimitiveOpType,
-        dependencies: Vec<ExprId>,
+        dependencies: Vec<Vec<ExprId>>,
         label: &'static str,
     ) {
         self.allocation_log.push(AllocationEntry {
