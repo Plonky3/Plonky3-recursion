@@ -17,10 +17,13 @@ use p3_uni_stark::{StarkGenericConfig, Val};
 use serde::{Deserialize, Serialize};
 
 use crate::Target;
+use crate::circuit_challenger::CircuitChallenger;
 use crate::circuit_fri_verifier::verify_fri_circuit;
+use crate::circuit_verifier::ObservableCommitment;
+use crate::recursive_challenger::RecursiveChallenger;
 use crate::recursive_traits::{
-    ComsWithOpeningsTargets, Recursive, RecursiveExtensionMmcs, RecursiveLagrangeSelectors,
-    RecursiveMmcs, RecursivePcs,
+    ComsWithOpeningsTargets, OpenedValuesTargets, ProofTargets, Recursive, RecursiveExtensionMmcs,
+    RecursiveLagrangeSelectors, RecursiveMmcs, RecursivePcs,
 };
 
 /// Maximum number of bits used for query index decomposition in FRI verification circuits.
@@ -126,12 +129,6 @@ impl<
             .chain(Witness::get_values(pow_witness))
             .collect()
     }
-
-    fn num_challenges(&self) -> usize {
-        1 // `alpha`: FRI batch combination challenge
-        + self.commit_phase_commits.len() // `beta` challenges for the FRI rounds
-        + self.query_proofs.len() // Indices for all query proofs
-    }
 }
 
 /// `Recursive` version of `QueryProof`.
@@ -185,10 +182,6 @@ impl<
         );
         all_values
     }
-
-    fn num_challenges(&self) -> usize {
-        0
-    }
 }
 
 /// `Recursive` version of `CommitPhaseProofStepTargets`.
@@ -228,10 +221,6 @@ impl<F: Field, EF: ExtensionField<F>, RecMmcs: RecursiveExtensionMmcs<F, EF>> Re
         let mut values = vec![*sibling_value];
         values.extend(RecMmcs::Proof::get_values(opening_proof));
         values
-    }
-
-    fn num_challenges(&self) -> usize {
-        0
     }
 }
 
@@ -279,10 +268,6 @@ impl<F: Field, EF: ExtensionField<F>, Inner: RecursiveMmcs<F, EF>> Recursive<EF>
             .chain(Inner::Proof::get_values(opening_proof))
             .collect()
     }
-
-    fn num_challenges(&self) -> usize {
-        0
-    }
 }
 
 // Now, we define the commitment schemes.
@@ -292,6 +277,14 @@ impl<F: Field, EF: ExtensionField<F>, Inner: RecursiveMmcs<F, EF>> Recursive<EF>
 pub struct HashTargets<F, const DIGEST_ELEMS: usize> {
     pub hash_targets: [Target; DIGEST_ELEMS],
     _phantom: PhantomData<F>,
+}
+
+impl<F, const DIGEST_ELEMS: usize> crate::circuit_verifier::ObservableCommitment
+    for HashTargets<F, DIGEST_ELEMS>
+{
+    fn to_observation_targets(&self) -> Vec<Target> {
+        self.hash_targets.to_vec()
+    }
 }
 
 type ValMmcsCommitment<F, const DIGEST_ELEMS: usize> =
@@ -311,10 +304,6 @@ impl<F: Field, EF: ExtensionField<F>, const DIGEST_ELEMS: usize> Recursive<EF>
 
     fn get_values(input: &Self::Input) -> Vec<EF> {
         input.into_iter().map(|v| EF::from(v)).collect()
-    }
-
-    fn num_challenges(&self) -> usize {
-        0
     }
 }
 
@@ -350,10 +339,6 @@ impl<F: Field, EF: ExtensionField<F>, const DIGEST_ELEMS: usize> Recursive<EF>
             .flat_map(|h| h.iter().map(|v| EF::from(*v)))
             .collect()
     }
-
-    fn num_challenges(&self) -> usize {
-        0
-    }
 }
 
 /// In TwoAdicFriPcs, the POW witness is just a base field element.
@@ -374,10 +359,6 @@ impl<F: Field, EF: ExtensionField<F>> Recursive<EF> for Witness<F> {
 
     fn get_values(input: &Self::Input) -> Vec<EF> {
         vec![EF::from(*input)]
-    }
-
-    fn num_challenges(&self) -> usize {
-        0
     }
 }
 
@@ -463,10 +444,6 @@ impl<F: Field, EF: ExtensionField<F>, Inner: RecursiveMmcs<F, EF>> Recursive<EF>
             })
             .collect()
     }
-
-    fn num_challenges(&self) -> usize {
-        0
-    }
 }
 
 // Recursive type for the `FriProof` of `TwoAdicFriPcs`.
@@ -499,6 +476,7 @@ where
     Comm: Recursive<SC::Challenge>,
     RecursiveInputMmcs: RecursiveMmcs<Val<SC>, SC::Challenge, Input = InputMmcs>,
     RecursiveFriMmcs: RecursiveExtensionMmcs<Val<SC>, SC::Challenge, Input = FriMmcs>,
+    RecursiveFriMmcs::Commitment: crate::circuit_verifier::ObservableCommitment,
     SC::Challenger: GrindingChallenger,
     SC::Challenger: p3_challenger::CanObserve<FriMmcs::Commitment>,
 {
@@ -509,12 +487,48 @@ where
         InputProofTargets<Val<SC>, SC::Challenge, RecursiveInputMmcs>,
     >;
 
-    fn get_challenges_circuit(
+    fn get_challenges_circuit<const RATE: usize>(
         circuit: &mut CircuitBuilder<SC::Challenge>,
-        proof_targets: &crate::recursive_traits::ProofTargets<SC, Comm, Self::RecursiveProof>,
+        challenger: &mut CircuitChallenger<RATE>,
+        proof_targets: &ProofTargets<SC, Comm, Self::RecursiveProof>,
+        opened_values: &OpenedValuesTargets<SC>,
         _params: &Self::VerifierParams,
     ) -> Vec<Target> {
-        proof_targets.opening_proof.get_challenges(circuit)
+        let fri_proof = &proof_targets.opening_proof;
+
+        // Observe all opened values (trace, quotient chunks, random)
+        opened_values.observe(circuit, challenger);
+
+        // Sample FRI alpha (for batch opening reduction)
+        let fri_alpha = challenger.sample(circuit);
+
+        // Sample FRI betas: one per commit phase
+        // For each FRI commitment, observe it and sample beta
+        let mut betas = Vec::with_capacity(fri_proof.commit_phase_commits.len());
+        for commit in &fri_proof.commit_phase_commits {
+            let commit_targets = commit.to_observation_targets();
+            challenger.observe_slice(circuit, &commit_targets);
+            let beta = challenger.sample(circuit);
+            betas.push(beta);
+        }
+
+        // Observe final polynomial coefficients
+        challenger.observe_slice(circuit, &fri_proof.final_poly);
+
+        // Sample query indices
+        let num_queries = fri_proof.query_proofs.len();
+        let mut query_indices = Vec::with_capacity(num_queries);
+        for _ in 0..num_queries {
+            let index = challenger.sample(circuit);
+            query_indices.push(index);
+        }
+
+        // Return challenges in order: [fri_alpha, betas..., query_indices...]
+        let mut challenges = Vec::with_capacity(1 + betas.len() + num_queries);
+        challenges.push(fri_alpha);
+        challenges.extend(betas);
+        challenges.extend(query_indices);
+        challenges
     }
 
     fn verify_circuit(

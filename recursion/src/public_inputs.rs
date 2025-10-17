@@ -391,4 +391,59 @@ mod tests {
             assert_eq!(bit, BabyBear::ZERO);
         }
     }
+
+    #[cfg(test)]
+    mod proptests {
+        use proptest::prelude::*;
+
+        use super::*;
+
+        // Strategy for generating field elements
+        fn field_element() -> impl Strategy<Value = BabyBear> {
+            any::<u32>().prop_map(BabyBear::from_u32)
+        }
+
+        proptest! {
+            #[test]
+            fn build_preserves_order(vals in prop::collection::vec(field_element(), 1..20)) {
+                let mut builder = PublicInputBuilder::<BabyBear>::new();
+                builder.add_proof_values(vals.clone());
+
+                let result = builder.build();
+
+                // Check order
+                prop_assert_eq!(result.len(), vals.len());
+                for (i, &val) in vals.iter().enumerate() {
+                    prop_assert_eq!(result[i], val);
+                }
+            }
+
+            #[test]
+            fn chaining_preserves_order(vals1 in prop::collection::vec(field_element(), 1..10),
+                challenge in field_element(),
+                vals2 in prop::collection::vec(field_element(), 1..10)
+            ) {
+                let mut builder = PublicInputBuilder::<BabyBear>::new();
+
+                builder
+                    .add_proof_values(vals1.clone())
+                    .add_challenge(challenge)
+                    .add_challenges(vals2.clone());
+
+                let result = builder.build();
+
+                let expected_len = vals1.len() + 1 + vals2.len();
+                prop_assert_eq!(result.len(), expected_len);
+
+                // Check order
+                for (i, &val) in vals1.iter().enumerate() {
+                    prop_assert_eq!(result[i], val, "vals1 order");
+                }
+                prop_assert_eq!(result[vals1.len()], challenge, "challenge position");
+                for (i, &val) in vals2.iter().enumerate() {
+                    prop_assert_eq!(result[vals1.len() + 1 + i], val, "vals2 order");
+                }
+            }
+        }
+    }
 }
