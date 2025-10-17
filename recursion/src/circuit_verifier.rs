@@ -418,20 +418,12 @@ mod tests {
     impl<F: Field, EF: ExtensionField<F>> Recursive<EF> for DummyCom<F> {
         type Input = Vec<Vec<F>>;
 
-        fn new(
-            _circuit: &mut CircuitBuilder<EF>,
-            _lens: &mut impl Iterator<Item = usize>,
-            _degree_bits: usize,
-        ) -> Self {
+        fn new(_circuit: &mut CircuitBuilder<EF>, _input: &Self::Input) -> Self {
             vec![]
         }
 
         fn get_values(input: &Self::Input) -> Vec<EF> {
             input.iter().flatten().map(|v| EF::from(*v)).collect()
-        }
-
-        fn lens(_input: &Self::Input) -> impl Iterator<Item = usize> {
-            core::iter::empty()
         }
     }
 
@@ -439,19 +431,10 @@ mod tests {
     impl<F: Field> Recursive<F> for EmptyTarget {
         type Input = ();
 
-        fn new(
-            _circuit: &mut p3_circuit::CircuitBuilder<F>,
-            _lens: &mut impl Iterator<Item = usize>,
-            _degree_bits: usize,
-        ) -> Self {
-        }
+        fn new(_circuit: &mut p3_circuit::CircuitBuilder<F>, _input: &Self::Input) -> Self {}
 
         fn get_values(_input: &Self::Input) -> vec::Vec<F> {
             vec![]
-        }
-
-        fn lens(_input: &Self::Input) -> impl Iterator<Item = usize> {
-            core::iter::empty()
         }
     }
 
@@ -717,19 +700,13 @@ mod tests {
         proof.commitments.quotient_chunks = vec![];
         proof.commitments.trace = vec![];
 
-        let mut all_lens = ProofTargets::<
-            StarkConfig<TrivialPcs<Val, Dft>, Challenge, Challenger>,
-            DummyCom<Val>,
-            EmptyTarget,
-        >::lens(&proof);
-
         // Initialize the circuit builder.
         let mut circuit_builder = CircuitBuilder::new();
         let proof_targets = ProofTargets::<
             StarkConfig<TrivialPcs<Val, Dft>, Challenge, Challenger>,
             DummyCom<Val>,
             EmptyTarget,
-        >::new(&mut circuit_builder, &mut all_lens, proof.degree_bits);
+        >::new(&mut circuit_builder, &proof);
 
         let proof_values = ProofTargets::<
             StarkConfig<TrivialPcs<Val, Dft>, Challenge, Challenger>,

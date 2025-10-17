@@ -91,7 +91,6 @@ fn make_evals(
 }
 
 /// Holds all the public inputs and challenges required for a recursive FRI verification circuit.
-#[derive(Debug)]
 struct ProduceInputsResult {
     /// FRI values, ordered to match the structure required by `FriProofTargets`.
     fri_values: Vec<Challenge>,
@@ -107,8 +106,8 @@ struct ProduceInputsResult {
     num_phases: usize,
     /// The log base 2 of the size of the largest domain.
     log_max_height: usize,
-    /// The shape of the FRI values, indicating the number of values per proof component.
-    fri_lens: Vec<usize>,
+    /// The FRI proof
+    fri_proof: <PCS as Pcs<Challenge, MyChallenger>>::Proof,
 }
 
 /// Produce all public inputs for a recursive FRI verification circuit over **multiple input batches**.
@@ -185,7 +184,7 @@ fn produce_inputs_multi(
         ref query_proofs,
         final_poly,
         pow_witness,
-    } = fri_proof;
+    } = fri_proof.clone();
 
     // Observe all opened evaluation values (same order)
     for values in &point_values_flat {
@@ -253,14 +252,7 @@ fn produce_inputs_multi(
         commitments_with_points.push((commit_placeholder, mats_data));
     }
 
-    // —— FriProofTargets lens + values ——
-    let fri_lens: Vec<usize> = FriTargets::lens(&p3_fri::FriProof {
-        commit_phase_commits: commit_phase_commits.clone(),
-        query_proofs: query_proofs.clone(),
-        final_poly: final_poly.clone(),
-        pow_witness,
-    })
-    .collect();
+    // —— FriProofTargets values ——
 
     let fri_values: Vec<Challenge> = FriTargets::get_values(&p3_fri::FriProof {
         commit_phase_commits,
@@ -277,7 +269,7 @@ fn produce_inputs_multi(
         commitments_with_points,
         num_phases,
         log_max_height,
-        fri_lens,
+        fri_proof,
     }
 }
 
@@ -404,7 +396,6 @@ fn run_fri_test(setup: FriSetup, build_only: bool) {
     // Shape checks (must match so we can reuse one circuit)
     assert_eq!(result_1.num_phases, result_2.num_phases);
     assert_eq!(result_1.log_max_height, result_2.log_max_height);
-    assert_eq!(result_1.fri_lens, result_2.fri_lens);
 
     let num_phases = result_1.num_phases;
     let log_max_height = result_1.log_max_height;
@@ -413,9 +404,8 @@ fn run_fri_test(setup: FriSetup, build_only: bool) {
     // ——— Build circuit once (using first proof's shape) ———
     let mut builder = CircuitBuilder::<Challenge>::new();
 
-    // 1) Allocate FriProofTargets using lens from instance 1
-    let mut lens_iter = result_1.fri_lens.clone().into_iter();
-    let fri_targets = FriTargets::new(&mut builder, &mut lens_iter, /*degree_bits unused*/ 0);
+    // 1) Allocate FriProofTargets using instance 1
+    let fri_targets = FriTargets::new(&mut builder, &result_1.fri_proof);
 
     // Verify the final polynomial has the expected length
     assert_eq!(
