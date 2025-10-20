@@ -5,10 +5,18 @@ use p3_poseidon2_air::Poseidon2Cols;
 /// Columns for a Poseidon2 AIR which computes one permutation per row.
 ///
 /// They extend the P3 columns with some circuit-specific columns.
+///
+/// `reset` (transparent): indicates whether the state is being reset this row.
+/// `absorb_flags` (transparent): for each rate element, indicates if it is being absorbed this row.
+/// At most one flag is set to 1 per row: if `absorb_flags[i]` is 1, then all elements up to the `i`-th
+/// are absorbed; the rest are propagated from the previous row.
+/// `input_indices` (transparent): for each rate element, indicates the index in the witness table for the
+/// memory lookup. It's either received (for an absorb) or sent (for a squeeze).
 #[repr(C)]
 pub struct Poseidon2CircuitCols<
     T,
     const WIDTH: usize,
+    const RATE: usize,
     const SBOX_DEGREE: u64,
     const SBOX_REGISTERS: usize,
     const HALF_FULL_ROUNDS: usize,
@@ -18,13 +26,13 @@ pub struct Poseidon2CircuitCols<
         Poseidon2Cols<T, WIDTH, SBOX_DEGREE, SBOX_REGISTERS, HALF_FULL_ROUNDS, PARTIAL_ROUNDS>,
 
     pub reset: T,
-    pub absorb: T,
-    pub input_indices: [T; WIDTH],
-    pub output_indices: [T; WIDTH],
+    pub absorb_flags: [T; RATE],
+    pub input_indices: [T; RATE],
 }
 
 pub const fn num_cols<
     const WIDTH: usize,
+    const RATE: usize,
     const SBOX_DEGREE: u64,
     const SBOX_REGISTERS: usize,
     const HALF_FULL_ROUNDS: usize,
@@ -34,6 +42,7 @@ pub const fn num_cols<
         Poseidon2CircuitCols<
             u8,
             WIDTH,
+            RATE,
             SBOX_DEGREE,
             SBOX_REGISTERS,
             HALF_FULL_ROUNDS,
@@ -45,6 +54,7 @@ pub const fn num_cols<
 impl<
     T,
     const WIDTH: usize,
+    const RATE: usize,
     const SBOX_DEGREE: u64,
     const SBOX_REGISTERS: usize,
     const HALF_FULL_ROUNDS: usize,
@@ -54,6 +64,7 @@ impl<
         Poseidon2CircuitCols<
             T,
             WIDTH,
+            RATE,
             SBOX_DEGREE,
             SBOX_REGISTERS,
             HALF_FULL_ROUNDS,
@@ -66,6 +77,7 @@ impl<
     ) -> &Poseidon2CircuitCols<
         T,
         WIDTH,
+        RATE,
         SBOX_DEGREE,
         SBOX_REGISTERS,
         HALF_FULL_ROUNDS,
@@ -75,6 +87,7 @@ impl<
             self.align_to::<Poseidon2CircuitCols<
                 T,
                 WIDTH,
+                RATE,
                 SBOX_DEGREE,
                 SBOX_REGISTERS,
                 HALF_FULL_ROUNDS,
@@ -91,6 +104,7 @@ impl<
 impl<
     T,
     const WIDTH: usize,
+    const RATE: usize,
     const SBOX_DEGREE: u64,
     const SBOX_REGISTERS: usize,
     const HALF_FULL_ROUNDS: usize,
@@ -100,6 +114,7 @@ impl<
         Poseidon2CircuitCols<
             T,
             WIDTH,
+            RATE,
             SBOX_DEGREE,
             SBOX_REGISTERS,
             HALF_FULL_ROUNDS,
@@ -112,6 +127,7 @@ impl<
     ) -> &mut Poseidon2CircuitCols<
         T,
         WIDTH,
+        RATE,
         SBOX_DEGREE,
         SBOX_REGISTERS,
         HALF_FULL_ROUNDS,
@@ -121,6 +137,7 @@ impl<
             self.align_to_mut::<Poseidon2CircuitCols<
                 T,
                 WIDTH,
+                RATE,
                 SBOX_DEGREE,
                 SBOX_REGISTERS,
                 HALF_FULL_ROUNDS,
