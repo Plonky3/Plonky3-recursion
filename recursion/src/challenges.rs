@@ -143,16 +143,19 @@ mod tests {
     // Note: Full integration tests with ProofTargets are in circuit_verifier.rs
     #[test]
     fn test_stark_challenges_to_vec() {
+        let alpha = ExprId(1);
+        let zeta = ExprId(2);
+        let zeta_next = ExprId(3);
         let challenges = StarkChallenges {
-            alpha: ExprId(1),
-            zeta: ExprId(2),
-            zeta_next: ExprId(3),
+            alpha,
+            zeta,
+            zeta_next,
         };
 
         let vec = challenges.to_vec();
         assert_eq!(vec.len(), 3);
-        assert_eq!(vec[0], challenges.alpha);
-        assert_eq!(vec[1], challenges.zeta);
-        assert_eq!(vec[2], challenges.zeta_next);
+        assert_eq!(vec[0], alpha);
+        assert_eq!(vec[1], zeta);
+        assert_eq!(vec[2], zeta_next);
     }
 }
