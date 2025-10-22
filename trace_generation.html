@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Circuit building - The Plonky3 recursion book</title>
+        <title>Trace generation - The Plonky3 recursion book</title>
 
 
         <!-- Custom HTML head -->
@@ -176,134 +176,104 @@
                 <div id="content" class="content">
                     <main>
                         <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
-<h1 id="building-circuits"><a class="header" href="#building-circuits">Building Circuits</a></h1>
-<p>This section explains how the <code>CircuitBuilder</code> allows to build a concrete <code>Circuit</code> for a given program.
-We’ll use a simple Fibonacci example throughout this page to ground the ideas behind circuit building:</p>
-<pre><code class="language-rust ignore">let mut builder = CircuitBuilder::&lt;F&gt;::new();
+<h1 id="trace-generation-pipeline"><a class="header" href="#trace-generation-pipeline">Trace Generation Pipeline</a></h1>
+<p>After building a circuit, the next step is execution: running the program with concrete inputs and generating the execution traces needed for proving. This section describes the complete flow from a static <code>Circuit</code> specification to the final <code>Traces</code> structure.</p>
+<h2 id="overview"><a class="header" href="#overview">Overview</a></h2>
+<p>The trace generation pipeline consists of three distinct phases:</p>
+<ol>
+<li><strong>Circuit compilation</strong> — Transform high-level circuit expressions into a fixed intermediate representation.</li>
+<li><strong>Circuit execution</strong> — Populate the witness table by evaluating operations with concrete input values.</li>
+<li><strong>Trace extraction</strong> — Generate operation-specific traces from the populated witness table.</li>
+</ol>
+<p>Each phase has a clear responsibility and produces well-defined outputs that feed into the next stage.</p>
+<h2 id="phase-1-circuit-compilation"><a class="header" href="#phase-1-circuit-compilation">Phase 1: Circuit Compilation</a></h2>
+<p>Circuit compilation happens when calling <code>builder.build()</code>. This phase translates circuit expressions into a deterministic sequence of primitive and non-primitive operations.</p>
+<p>The compilation process is described in detail in the <a href="./circuit_building.html#building-pipeline">Circuit Building</a> section. In summary, it performs three successive passes to lower expressions to primitives, handle non-primitive operations, and optimize the resulting graph.</p>
+<p>The output is a <code>Circuit&lt;F&gt;</code> containing the primitive operations in topological order, non-primitive operation specifications, and witness allocation metadata. This circuit is a static, serializable specification that can be executed multiple times with different inputs.</p>
+<h2 id="phase-2-circuit-execution"><a class="header" href="#phase-2-circuit-execution">Phase 2: Circuit Execution</a></h2>
+<p>Circuit execution happens when calling <code>runner.run()</code>. This phase populates the witness table by evaluating each operation with concrete field element values.</p>
+<p>The runner is initialized with a <code>Circuit&lt;F&gt;</code> and receives:</p>
+<ul>
+<li>Public input values via <code>runner.set_public_inputs()</code></li>
+<li>Private data for non-primitive operations via <code>runner.set_non_primitive_op_private_data()</code></li>
+</ul>
+<p>The runner iterates through primitive operations in topological order, executing each one to populate witness slots. Operations can run in <strong>forward mode</strong> (computing outputs from inputs) or <strong>backward mode</strong> (inferring missing inputs from outputs), allowing bidirectional constraint solving.</p>
+<p>The output is a fully populated witness table where every slot contains a concrete field element. Any unset witness triggers a <code>WitnessNotSet</code> error.</p>
+<h2 id="phase-3-trace-extraction"><a class="header" href="#phase-3-trace-extraction">Phase 3: Trace Extraction</a></h2>
+<p>Trace extraction happens internally within <code>runner.run()</code> after execution completes. This phase delegates to specialized trace builders that transform the populated witness table into operation-specific trace tables.</p>
+<p>Each primitive operation has a dedicated builder that extracts its operations from the IR and produces trace columns:</p>
+<ul>
+<li><strong>WitnessTraceBuilder</strong> — Generates the central <a href="./construction.html#witness-table">witness table</a> with sequential <code>(index, value)</code> pairs</li>
+<li><strong>ConstTraceBuilder</strong> — Extracts constants (both columns preprocessed)</li>
+<li><strong>PublicTraceBuilder</strong> — Extracts public inputs (index preprocessed, values at runtime)</li>
+<li><strong>AddTraceBuilder</strong> — Extracts additions with six columns: <code>(lhs_index, lhs_value, rhs_index, rhs_value, result_index, result_value)</code></li>
+<li><strong>MulTraceBuilder</strong> — Extracts multiplications with the same six-column structure</li>
+</ul>
+<p>Non-primitive operations require custom trace builders. For example, <strong>MmcsTraceBuilder</strong> validates and extracts MMCS path verification traces. Custom trace builders follow the same pattern, operating independently in a single pass to produce isolated trace tables. All index columns are preprocessed since the IR is fixed and known to the verifier.</p>
+<p>The output is a <code>Traces&lt;F&gt;</code> structure containing all execution traces needed by the prover to generate STARK proofs for each <a href="./construction.html#operation-specific-stark-chips">operation-specific chip</a>.</p>
+<h2 id="example-fibonacci-circuit"><a class="header" href="#example-fibonacci-circuit">Example: Fibonacci Circuit</a></h2>
+<p>Consider a simple Fibonacci circuit computing <code>F(5)</code>:</p>
+<pre><code class="language-rust ignore">let mut builder = CircuitBuilder::new();
 
-// Public input: expected F(n)
-let expected_result = builder.add_public_input();
+let expected = builder.add_public_input();
+let mut a = builder.add_const(F::ZERO);
+let mut b = builder.add_const(F::ONE);
 
-// Compute F(n) iteratively
-let mut a = builder.add_const(F::ZERO); // F(0)
-let mut b = builder.add_const(F::ONE);  // F(1)
-
-for _i in 2..=n {
-    let next = builder.add(a, b); // F(N) &lt;- F(N-1) + F(N-2)
+for _ in 2..=5 {
+    let next = builder.add(a, b);
     a = b;
     b = next;
 }
 
-// Assert computed F(n) equals expected result
-builder.connect(b, expected_result);
-
-let circuit = builder.build()?;
-let mut runner = circuit.runner();</code></pre>
-<h2 id="building-pipeline"><a class="header" href="#building-pipeline">Building Pipeline</a></h2>
-<p>In what follows, we call <code>WitnessId</code> what serves as identifier for values in the global Witness storage bus, and
-<code>ExprId</code> position identifiers in the <code>ExpressionGraph</code> (with the hardcoded constant <code>ZERO</code> always stored at position 0).</p>
-<p>Building a circuit works in 4 successive steps:</p>
-<h3 id="stage-1--lower-to-primitives"><a class="header" href="#stage-1--lower-to-primitives">Stage 1 — Lower to primitives</a></h3>
-<p>This stage will go through the <code>ExpressionGraph</code> in successive passes and emit primitive operations.</p>
-<ul>
-<li>
-<p>when going through emitted <code>Const</code> nodes, the builder ensures no identical constants appear in distinct nodes of the circuit, seen as a DAG (Directed Acyclic Graph), by performing witness aliasing, i.e. looking at node equivalence classes. This allows to prune duplicated <code>Const</code> nodes by replacing further references with the single equivalence class representative that will be part of the DAG. This allows to enforce equality constraints are <strong>structurally</strong>, without requiring extra gates.</p>
-</li>
-<li>
-<p>public inputs and arithmetic operations may also reuse pre-allocated slots if connected to some existing node.</p>
-</li>
-</ul>
-<h3 id="stage-2--lower-non-primitives"><a class="header" href="#stage-2--lower-non-primitives">Stage 2 — Lower non-primitives</a></h3>
-<p>This stage translates the <code>ExprId</code> of logged non-primitive operations inputs (from the set of non-primitive operations allowed at runtime) to <code>WitnessId</code>s similarly to Stage 1.</p>
-<h3 id="stage-3--optimize-primitives"><a class="header" href="#stage-3--optimize-primitives">Stage 3 — Optimize primitives</a></h3>
-<p>This stage aims at optimizing the generated circuit by removing or optimizing redundant operations within the graph.
-For instance, if the output of a primitive operation is never used elsewhere in the circuit, its associated node can
-be pruned away from the graph, and the operation removed.</p>
-<p>Once all the nodes have been assigned, and the circuit has been fully optimized, we output it.</p>
-<h2 id="building-recursive-air-constraints"><a class="header" href="#building-recursive-air-constraints">Building recursive AIR constraints</a></h2>
-<p>In order to recursively verify an AIR, its constraints need to be added to the circuit and folded together. In Plonky3, we can get an AIR's constraints in symbolic form. Since our primitive chips (see section <a href="./construction.html#execution-ir">Execution IR</a>) encompass the various entries in the symbolic representation, we can simply map each symbolic operation to its circuit counterpart. The <code>symbolic_to_circuit</code> function does exactly that for a given symbolic constraint.</p>
-<p>We can consider a small example to show how operations are mapped. Given public inputs <code>a</code> and <code>b</code>, and a constant <code>c</code>, we have the following symbolic constraint: <code>Mul{ a, Sub {b, Const{ c }}}</code> (which corresponds to: <code>a * (b - c)</code>).</p>
-<pre><code class="language-rust ignore">// We get the `ExprId` corresponding to Const{ c } by adding a constant to the circuit.
-let x = builder.add_const(c);
-// We use the previously computed `x` to compute the subtraction in the circuit.
-let y = builder.sub(b, x);
-// We use the previously computed `y` to compute the multiplication in the circuit.
-let z = builder.mul(a, y);</code></pre>
-<p><code>z</code> is then the output <code>ExprId</code> of the constraint in the circuit.</p>
-<p>Using this function, we have implemented, for all AIRs, the automatic translation from their set of symbolic constraints to the circuit version of the folded constraints:</p>
-<pre><code class="language-rust ignore">// Transforms an AIR's symbolic constraints into its counterpart circuit version, 
-// and folds all the constraints in the circuit using the challenge `alpha`.
-fn eval_folded_circuit(
-        // The AIR at hand.
-        &amp;self,
-        builder: &amp;mut CircuitBuilder&lt;F&gt;,
-        // Circuit version of Langrange selectors.
-        sels: &amp;RecursiveLagrangeSelectors,
-        // Folding challenge.
-        alpha: &amp;ExprId,
-        // All kind of columns that could be involved in constraints.
-        columns: ColumnsTargets,
-    ) -&gt; Target {
-        // Get all the constraints in symbolic form.
-        let symbolic_constraints = 
-            get_symbolic_constraints(self, 0, columns.public_values.len());
-
-        // Fold all the constraints using the folding challenge.
-        let mut acc = builder.add_const(F::ZERO);
-        for s_c in symbolic_constraints {
-            let mul_prev = builder.mul(acc, *alpha);
-
-            // Get the current constraint in circuit form.
-            let constraints = 
-                symbolic_to_circuit(sels.row_selectors, &amp;columns, &amp;s_c, builder);
-
-            // Fold the current constraint with the previous value.
-            acc = builder.add(mul_prev, constraints);
-        }
-
-        acc
-    }</code></pre>
-<p>This facilitates the integration of <em>any</em> AIR verification into our circuit.</p>
-<h2 id="proving"><a class="header" href="#proving">Proving</a></h2>
-<p>Calling <code>circuit.runner()</code> will return a instance of <code>CircuitRunner</code> allowing to execute the
-represented program and generate associated execution traces needed for proving:</p>
-<pre><code class="language-rust ignore">let mut runner = circuit.runner();
-
-// Set public input
-let expected_fib = compute_fibonacci_classical(n);
-runner.set_public_inputs(&amp;[expected_fib])?;
-
-// Instantiate prover instance
-let config = build_standard_config_koalabear();
-let multi_prover = MultiTableProver::new(config);
-
-// Generate traces
-let traces = runner.run()?;
-
-// Prove the program
-let proof = multi_prover.prove_all_tables(&amp;traces)?;</code></pre>
-<h2 id="key-takeaways"><a class="header" href="#key-takeaways">Key takeaways</a></h2>
-<ul>
-<li>
-<p><strong>“Free” equality constraints:</strong> by leveraging <strong>witness aliasing</strong>, we obtain essentially free equality constraints for the prover, removing the need for additional arithmetic constraints.</p>
-</li>
-<li>
-<p><strong>Deterministic layout:</strong> The ordered primitive lowering combined with equivalence class allocation yields predictable <code>WitnessId</code>s.</p>
-</li>
-<li>
-<p><strong>Minimal primitive set:</strong> With <code>Sub</code>/<code>Div</code> being effectively translated as equivalent <code>Add</code>/<code>Mul</code> operations, the IR stays extremely lean, consisting only of <code>Const</code>, <code>Public</code>, <code>Add</code> and <code>Mul</code>, simplifying the design and implementation details.</p>
-</li>
-</ul>
+builder.connect(b, expected);
+let circuit = builder.build()?;</code></pre>
+<p><strong>Phase 1: Compilation</strong> produces:</p>
+<pre><code class="language-text">primitive_ops: [
+  Const { out: w0, val: 0 },
+  Const { out: w1, val: 1 },
+  Public { out: w2, public_pos: 0 },
+  Add { a: w0, b: w1, out: w3 },  // F(2) = 0 + 1
+  Add { a: w1, b: w3, out: w4 },  // F(3) = 1 + 1
+  Add { a: w3, b: w4, out: w5 },  // F(4) = 1 + 2
+  Add { a: w4, b: w5, out: w2 },  // F(5) = 2 + 3 (connects to expected)
+]
+witness_count: 6
+</code></pre>
+<p><strong>Phase 2: Execution</strong> with <code>runner.set_public_inputs(&amp;[F::from(5)])</code>:</p>
+<pre><code class="language-text">witness[0] = Some(0)
+witness[1] = Some(1)
+witness[2] = Some(5)
+witness[3] = Some(1)
+witness[4] = Some(2)
+witness[5] = Some(3)
+</code></pre>
+<p><strong>Phase 3: Trace Extraction</strong> produces:</p>
+<pre><code class="language-text">const_trace: [(w0, 0), (w1, 1)]
+public_trace: [(w2, 5)]
+add_trace: [
+  (w0, 0, w1, 1, w3, 1),
+  (w1, 1, w3, 1, w4, 2),
+  (w3, 1, w4, 2, w5, 3),
+  (w4, 2, w5, 3, w2, 5),
+]
+mul_trace: []
+</code></pre>
+<p>The witness table acts as the central bus, with each operation table containing <a href="./construction.html#lookups">lookups</a> into it. The aggregated lookup argument enforces that all these lookups are consistent.</p>
+<h2 id="key-properties"><a class="header" href="#key-properties">Key Properties</a></h2>
+<p><strong>Determinism</strong> — Given the same circuit and inputs, trace generation is completely deterministic, ensuring reproducible proofs.</p>
+<p><strong>Separation of concerns</strong> — Each phase has a single responsibility: compilation handles expression lowering, execution populates concrete values, and trace builders format data for proving.</p>
+<p><strong>Builder pattern efficiency</strong> — Trace builders operate in a single pass using only the data they need. No builder depends on another's output, enabling future parallelization.</p>
+<p><strong>Preprocessed columns</strong> — All index columns in operation traces are preprocessed. Since the IR is fixed, the verifier can reconstruct these columns without online commitments, significantly reducing proof size.</p>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="construction.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="circuit_building.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <i class="fa fa-angle-left"></i>
                             </a>
 
-                            <a rel="next prefetch" href="trace_generation.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="extensions.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <i class="fa fa-angle-right"></i>
                             </a>
 
@@ -313,11 +283,11 @@ let proof = multi_prover.prove_all_tables(&amp;traces)?;</code></pre>
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="construction.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="circuit_building.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <i class="fa fa-angle-left"></i>
                     </a>
 
-                    <a rel="next prefetch" href="trace_generation.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="extensions.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <i class="fa fa-angle-right"></i>
                     </a>
             </nav>
