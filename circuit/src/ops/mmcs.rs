@@ -317,7 +317,7 @@ impl<F: Field> NonPrimitiveExecutor<F> for MmcsVerifyExecutor {
         // Extract leaf, index from inputs; root from outputs
         let ext_digest_elems = config.ext_field_digest_elems;
         let leaf_wids = &inputs[..ext_digest_elems];
-        let _index_wid = inputs[ext_digest_elems];
+        let index_wid = inputs[ext_digest_elems];
 
         // Root comes from outputs (the value we're verifying against)
         if outputs.len() < ext_digest_elems {
@@ -345,6 +345,23 @@ impl<F: Field> NonPrimitiveExecutor<F> for MmcsVerifyExecutor {
                 operation_index: ctx.operation_id(),
                 expected: alloc::format!("leaf: {witness_leaf:?}"),
                 got: alloc::format!("leaf: {private_data_leaf:?}"),
+            });
+        }
+
+        // Validate index value matches private directions (as u64)
+        let priv_index_u64: u64 = private_data
+            .directions
+            .iter()
+            .enumerate()
+            .filter_map(|(i, &b)| if b { Some(1u64 << i) } else { None })
+            .sum();
+        let idx_f = ctx.get_witness(index_wid)?;
+        if idx_f != F::from_u64(priv_index_u64) {
+            return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
+                op: self.op_type.clone(),
+                operation_index: ctx.operation_id(),
+                expected: alloc::format!("public index value {}", F::from_u64(priv_index_u64)),
+                got: alloc::format!("{idx_f:?}"),
             });
         }
 

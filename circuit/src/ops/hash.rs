@@ -11,7 +11,7 @@ use p3_field::{Field, PrimeCharacteristicRing};
 use crate::CircuitError;
 use crate::builder::{CircuitBuilder, CircuitBuilderError};
 use crate::op::{ExecutionContext, NonPrimitiveExecutor, NonPrimitiveOpType};
-use crate::types::{ExprId, WitnessId};
+use crate::types::{ExprId, NonPrimitiveOpId, WitnessId};
 
 /// Hash operations trait for `CircuitBuilder`.
 pub trait HashOps<F: Clone + PrimeCharacteristicRing + Eq + core::hash::Hash> {
@@ -25,7 +25,7 @@ pub trait HashOps<F: Clone + PrimeCharacteristicRing + Eq + core::hash::Hash> {
         &mut self,
         inputs: &[ExprId],
         reset: bool,
-    ) -> Result<ExprId, CircuitBuilderError>;
+    ) -> Result<NonPrimitiveOpId, CircuitBuilderError>;
 
     /// Squeeze field elements from the sponge state, creating outputs.
     ///
@@ -41,16 +41,13 @@ where
         &mut self,
         inputs: &[ExprId],
         reset: bool,
-    ) -> Result<ExprId, CircuitBuilderError> {
+    ) -> Result<NonPrimitiveOpId, CircuitBuilderError> {
         self.ensure_op_enabled(NonPrimitiveOpType::HashAbsorb { reset })?;
 
-        Ok(ExprId(
-            self.push_non_primitive_op(
-                NonPrimitiveOpType::HashAbsorb { reset },
-                inputs.to_vec(),
-                "HashAbsorb",
-            )
-            .0,
+        Ok(self.push_non_primitive_op(
+            NonPrimitiveOpType::HashAbsorb { reset },
+            inputs.to_vec(),
+            "HashAbsorb",
         ))
     }
 

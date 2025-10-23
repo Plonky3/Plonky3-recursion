@@ -185,7 +185,7 @@ where
             match expr {
                 Expr::Const(_) | Expr::Public(_) => { /* handled above */ }
                 Expr::Witness => {
-                    // Allocate a fresh witness slot (no primitive op)
+                    // Allocate a fresh witness slot (non-primitive op)
                     // Allows non-primitive operations to set values during execution that
                     // are not part of the central Witness bus.
                     let out_widx = alloc_witness_id_for_expr(expr_idx);

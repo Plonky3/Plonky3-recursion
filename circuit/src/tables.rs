@@ -155,10 +155,10 @@ impl<F: CircuitField> CircuitRunner<F> {
         // Step 1: Execute primitives to fill witness vector
         self.execute_primitives()?;
 
-        // Step 1: Execute non-primitives to fill remaining witness vector
+        // Step 2: Execute non-primitives to fill remaining witness vector
         self.execute_non_primitives()?;
 
-        // Step 2: Generate all table traces
+        // Step 3: Generate all table traces
         let witness_trace = self.generate_witness_trace()?;
         let const_trace = self.generate_const_trace()?;
         let public_trace = self.generate_public_trace()?;
@@ -217,7 +217,8 @@ impl<F: CircuitField> CircuitRunner<F> {
                         self.set_witness(b, b_val)?;
                     }
                 }
-                Op::NonPrimitiveOpWithExecutor { .. } => { // Handled separately }
+                Op::NonPrimitiveOpWithExecutor { .. } => {
+                    // Handled separately in execute_non_primitives
                 }
             }
         }
