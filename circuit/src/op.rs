@@ -269,8 +269,7 @@ pub struct ExecutionContext<'a, F> {
     /// Mutable reference to witness table for reading/writing values
     witness: &'a mut [Option<F>],
     /// Private data map for non-primitive operations
-    non_primitive_op_private_data:
-        &'a HashMap<NonPrimitiveOpId, Option<NonPrimitiveOpPrivateData<F>>>,
+    non_primitive_op_private_data: &'a [Option<NonPrimitiveOpPrivateData<F>>],
     /// Operation configurations
     enabled_ops: &'a HashMap<NonPrimitiveOpType, NonPrimitiveOpConfig>,
     /// Current operation's NonPrimitiveOpId for error reporting
@@ -281,10 +280,7 @@ impl<'a, F: Field> ExecutionContext<'a, F> {
     /// Create a new execution context
     pub fn new(
         witness: &'a mut [Option<F>],
-        non_primitive_op_private_data: &'a HashMap<
-            NonPrimitiveOpId,
-            Option<NonPrimitiveOpPrivateData<F>>,
-        >,
+        non_primitive_op_private_data: &'a [Option<NonPrimitiveOpPrivateData<F>>],
         enabled_ops: &'a HashMap<NonPrimitiveOpType, NonPrimitiveOpConfig>,
         operation_id: NonPrimitiveOpId,
     ) -> Self {
@@ -329,7 +325,7 @@ impl<'a, F: Field> ExecutionContext<'a, F> {
     /// Get private data for the current operation
     pub fn get_private_data(&self) -> Result<&NonPrimitiveOpPrivateData<F>, CircuitError> {
         self.non_primitive_op_private_data
-            .get(&self.operation_id)
+            .get(self.operation_id.0 as usize)
             .and_then(|opt| opt.as_ref())
             .ok_or(CircuitError::NonPrimitiveOpMissingPrivateData {
                 operation_index: self.operation_id,
