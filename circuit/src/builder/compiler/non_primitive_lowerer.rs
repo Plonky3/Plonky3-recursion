@@ -210,7 +210,10 @@ mod tests {
         // Test MmcsVerify with mock config (simplest case: 1 leaf + 1 index + 1 root)
         let mock_config = MmcsVerifyConfig::mock_config();
         assert_eq!(mock_config.ext_field_digest_elems, 1);
-        assert_eq!(mock_config.input_size(), 2 * mock_config.ext_field_digest_elems + 1);
+        assert_eq!(
+            mock_config.input_size(),
+            2 * mock_config.ext_field_digest_elems + 1
+        );
 
         let mut config = BuilderConfig::new();
         config.enable_mmcs(&mock_config);

@@ -71,17 +71,42 @@ impl<F: CircuitField> CircuitRunner<F> {
             });
         }
 
-        // Validate that the private data matches the operation type (if any)
+        // Validate that the private data matches the operation type
         if let Op::NonPrimitiveOpWithExecutor { executor, .. } =
             &self.circuit.non_primitive_ops[op_id.0 as usize]
-            && let (
-                crate::op::NonPrimitiveOpType::MmcsVerify,
-                NonPrimitiveOpPrivateData::MmcsVerify(_),
-            ) = (executor.op_type(), &private_data)
         {
-            // ok
+            match (executor.op_type(), &private_data) {
+                (
+                    crate::op::NonPrimitiveOpType::MmcsVerify,
+                    NonPrimitiveOpPrivateData::MmcsVerify(_),
+                ) => {
+                    // ok
+                }
+                (op_ty, _) => {
+                    // Other ops currently don't expect private data
+                    return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
+                        op: op_ty.clone(),
+                        operation_index: op_id,
+                        expected: format!("no private data"),
+                        got: format!("{private_data:?}"),
+                    });
+                }
+            }
         }
-        // Other ops currently don't expect private data
+
+        // Disallow double-setting private data
+        if self.non_primitive_op_private_data[op_id.0 as usize].is_some() {
+            if let Op::NonPrimitiveOpWithExecutor { executor, .. } =
+                &self.circuit.non_primitive_ops[op_id.0 as usize]
+            {
+                return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
+                    op: executor.op_type().clone(),
+                    operation_index: op_id,
+                    expected: format!("private data not previously set"),
+                    got: format!("already set"),
+                });
+            }
+        }
 
         // Store private data for this operation
         self.non_primitive_op_private_data[op_id.0 as usize] = Some(private_data);
