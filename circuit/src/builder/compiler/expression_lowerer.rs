@@ -270,9 +270,6 @@ where
                     // The output of Div is the b_widx.
                     expr_to_widx.insert(expr_id, b_widx);
                 }
-                Expr::NonPrimitiveOp { .. } => {
-                    // Skip non-primitive operations
-                }
             }
         }
 

@@ -101,6 +101,7 @@ where
     /// Adds a witness hint to the graph.
     /// It will allocate a `WitnessId` during lowering, with no primitive op.
     #[allow(unused_variables)]
+    #[must_use]
     pub fn add_witness_hint(&mut self, label: &'static str) -> ExprId {
         let expr_id = self.graph.add_expr(Expr::Witness);
 
@@ -117,6 +118,7 @@ where
     }
 
     /// Adds multiple witness hints.
+    #[must_use]
     pub fn add_witness_hints(&mut self, count: usize, label: &'static str) -> Vec<ExprId> {
         (0..count).map(|_| self.add_witness_hint(label)).collect()
     }

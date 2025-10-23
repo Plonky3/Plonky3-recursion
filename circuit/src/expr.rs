@@ -1,6 +1,5 @@
 use alloc::vec::Vec;
 
-use crate::NonPrimitiveOpType;
 use crate::types::ExprId;
 
 /// Expression DAG for field operations
@@ -21,13 +20,6 @@ pub enum Expr<F> {
     Mul { lhs: ExprId, rhs: ExprId },
     /// Division of two expressions
     Div { lhs: ExprId, rhs: ExprId },
-
-    /// Non-primitive operation
-    NonPrimitiveOp {
-        inputs: Vec<ExprId>,
-        outputs: Vec<ExprId>,
-        op: NonPrimitiveOpType,
-    },
 }
 
 /// Graph for storing expression DAG nodes

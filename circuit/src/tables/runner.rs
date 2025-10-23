@@ -1,3 +1,4 @@
+use alloc::string::ToString;
 use alloc::vec::Vec;
 use alloc::{format, vec};
 
@@ -87,25 +88,24 @@ impl<F: CircuitField> CircuitRunner<F> {
                     return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
                         op: op_ty.clone(),
                         operation_index: op_id,
-                        expected: format!("no private data"),
-                        got: format!("{private_data:?}"),
+                        expected: "no private data".to_string(),
+                        got: alloc::format!("{private_data:?}"),
                     });
                 }
             }
         }
 
         // Disallow double-setting private data
-        if self.non_primitive_op_private_data[op_id.0 as usize].is_some() {
-            if let Op::NonPrimitiveOpWithExecutor { executor, .. } =
+        if self.non_primitive_op_private_data[op_id.0 as usize].is_some()
+            && let Op::NonPrimitiveOpWithExecutor { executor, .. } =
                 &self.circuit.non_primitive_ops[op_id.0 as usize]
-            {
-                return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
-                    op: executor.op_type().clone(),
-                    operation_index: op_id,
-                    expected: format!("private data not previously set"),
-                    got: format!("already set"),
-                });
-            }
+        {
+            return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
+                op: executor.op_type().clone(),
+                operation_index: op_id,
+                expected: "private data not previously set".to_string(),
+                got: "already set".to_string(),
+            });
         }
 
         // Store private data for this operation
