@@ -568,7 +568,7 @@ where
 
         let alpha = challenges[0];
         let betas = &challenges[1..1 + num_betas];
-        // Between the betas and the query indices, we have the PoW challenge, which we ignore here.
+
         let query_indices = &challenges[1 + num_betas..1 + num_betas + num_queries];
 
         // Calculate the maximum height of the FRI proof tree.
