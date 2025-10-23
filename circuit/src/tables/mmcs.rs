@@ -275,7 +275,7 @@ impl<'a, F: CircuitField> MmcsTraceBuilder<'a, F> {
         for op in &self.circuit.non_primitive_ops {
             let Op::NonPrimitiveOpWithExecutor {
                 inputs,
-                _outputs,
+                outputs: _outputs,
                 executor,
                 op_id,
             } = op
