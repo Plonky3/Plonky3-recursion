@@ -6,11 +6,11 @@ use itertools::izip;
 use p3_field::{ExtensionField, Field};
 use p3_symmetric::PseudoCompressionFunction;
 
+use crate::CircuitError;
 use crate::circuit::{Circuit, CircuitField};
 use crate::op::{NonPrimitiveOpConfig, NonPrimitiveOpPrivateData, NonPrimitiveOpType, Op};
 use crate::ops::MmcsVerifyConfig;
 use crate::types::{NonPrimitiveOpId, WitnessId};
-use crate::CircuitError;
 
 /// MMCS Merkle path verification table.
 ///
@@ -244,7 +244,6 @@ impl<F: Field + Clone + Default> MmcsPrivateData<F> {
 /// Builder for generating MMCS traces.
 pub struct MmcsTraceBuilder<'a, F> {
     circuit: &'a Circuit<F>,
-    witness: &'a [Option<F>],
     non_primitive_op_private_data: &'a [Option<NonPrimitiveOpPrivateData<F>>],
 }
 
@@ -252,10 +251,12 @@ impl<'a, F: CircuitField> MmcsTraceBuilder<'a, F> {
     /// Creates a new MMCS trace builder.
     pub fn new(
         circuit: &'a Circuit<F>,
-        witness: &'a [Option<F>],
         non_primitive_op_private_data: &'a [Option<NonPrimitiveOpPrivateData<F>>],
     ) -> Self {
-        Self { circuit, witness, non_primitive_op_private_data }
+        Self {
+            circuit,
+            non_primitive_op_private_data,
+        }
     }
 
     /// Builds the MMCS trace by scanning non-primitive ops with MMCS executors.
@@ -272,7 +273,13 @@ impl<'a, F: CircuitField> MmcsTraceBuilder<'a, F> {
         };
 
         for op in &self.circuit.non_primitive_ops {
-            let Op::NonPrimitiveOpWithExecutor { inputs, outputs, executor, op_id } = op else {
+            let Op::NonPrimitiveOpWithExecutor {
+                inputs,
+                outputs,
+                executor,
+                op_id,
+            } = op
+            else {
                 continue;
             };
             if executor.op_type() != &NonPrimitiveOpType::MmcsVerify {
@@ -287,9 +294,11 @@ impl<'a, F: CircuitField> MmcsTraceBuilder<'a, F> {
                 .non_primitive_op_private_data
                 .get(op_id.0 as usize)
                 .and_then(|opt| opt.as_ref())
-                .ok_or(CircuitError::NonPrimitiveOpMissingPrivateData { operation_index: *op_id })?;
-            let NonPrimitiveOpPrivateData::MmcsVerify(priv_data) = private_data else {
-                return Err(CircuitError::InvalidNonPrimitiveOpConfiguration { op: NonPrimitiveOpType::MmcsVerify });
+                .ok_or(CircuitError::NonPrimitiveOpMissingPrivateData {
+                    operation_index: *op_id,
+                })?;
+            let priv_data = match private_data {
+                NonPrimitiveOpPrivateData::MmcsVerify(d) => d,
             };
 
             let trace = priv_data.to_trace(config, leaf, root)?;

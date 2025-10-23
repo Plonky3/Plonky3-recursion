@@ -29,9 +29,12 @@ impl<F: CircuitField> CircuitRunner<F> {
     /// Creates circuit runner with empty witness storage.
     pub fn new(circuit: Circuit<F>) -> Self {
         let witness = vec![None; circuit.witness_count as usize];
-        let non_primitive_op_private_data =
-            vec![None; circuit.non_primitive_ops.len()];
-        Self { circuit, witness, non_primitive_op_private_data }
+        let non_primitive_op_private_data = vec![None; circuit.non_primitive_ops.len()];
+        Self {
+            circuit,
+            witness,
+            non_primitive_op_private_data,
+        }
     }
 
     /// Sets public input values into witness table.
@@ -72,7 +75,10 @@ impl<F: CircuitField> CircuitRunner<F> {
         match &self.circuit.non_primitive_ops[op_id.0 as usize] {
             Op::NonPrimitiveOpWithExecutor { executor, .. } => {
                 match (executor.op_type(), &private_data) {
-                    (crate::op::NonPrimitiveOpType::MmcsVerify, NonPrimitiveOpPrivateData::MmcsVerify(_)) => {
+                    (
+                        crate::op::NonPrimitiveOpType::MmcsVerify,
+                        NonPrimitiveOpPrivateData::MmcsVerify(_),
+                    ) => {
                         // ok
                     }
                     // Other ops currently don't expect private data
@@ -103,12 +109,8 @@ impl<F: CircuitField> CircuitRunner<F> {
             PublicTraceBuilder::new(&self.circuit.primitive_ops, &self.witness).build()?;
         let add_trace = AddTraceBuilder::new(&self.circuit.primitive_ops, &self.witness).build()?;
         let mul_trace = MulTraceBuilder::new(&self.circuit.primitive_ops, &self.witness).build()?;
-        let mmcs_trace = MmcsTraceBuilder::new(
-            &self.circuit,
-            &self.witness,
-            &self.non_primitive_op_private_data,
-        )
-        .build()?;
+        let mmcs_trace =
+            MmcsTraceBuilder::new(&self.circuit, &self.non_primitive_op_private_data).build()?;
 
         Ok(Traces {
             witness_trace,
