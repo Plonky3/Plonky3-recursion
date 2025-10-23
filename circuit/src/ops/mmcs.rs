@@ -354,8 +354,8 @@ impl<F: Field> NonPrimitiveExecutor<F> for MmcsVerifyExecutor {
                 return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
                     op: self.op_type.clone(),
                     operation_index: ctx.operation_id(),
-                    expected: alloc::format!("root: {:?}", private_data_root),
-                    got: alloc::format!("root witness at {:?}", wid),
+                    expected: alloc::format!("root: {private_data_root:?}"),
+                    got: alloc::format!("root witness at {wid:?}"),
                 });
             }
         }
