@@ -297,9 +297,7 @@ impl<'a, F: CircuitField> MmcsTraceBuilder<'a, F> {
                 .ok_or(CircuitError::NonPrimitiveOpMissingPrivateData {
                     operation_index: *op_id,
                 })?;
-            let priv_data = match private_data {
-                NonPrimitiveOpPrivateData::MmcsVerify(d) => d,
-            };
+            let NonPrimitiveOpPrivateData::MmcsVerify(priv_data) = private_data;
 
             let trace = priv_data.to_trace(config, leaf, root)?;
             mmcs_paths.push(trace);

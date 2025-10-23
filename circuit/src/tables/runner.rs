@@ -72,20 +72,17 @@ impl<F: CircuitField> CircuitRunner<F> {
         }
 
         // Validate that the private data matches the operation type (if any)
-        match &self.circuit.non_primitive_ops[op_id.0 as usize] {
-            Op::NonPrimitiveOpWithExecutor { executor, .. } => {
-                match (executor.op_type(), &private_data) {
-                    (
-                        crate::op::NonPrimitiveOpType::MmcsVerify,
-                        NonPrimitiveOpPrivateData::MmcsVerify(_),
-                    ) => {
-                        // ok
-                    }
-                    // Other ops currently don't expect private data
-                    _ => {}
-                }
+        if let Op::NonPrimitiveOpWithExecutor { executor, .. } =
+            &self.circuit.non_primitive_ops[op_id.0 as usize]
+        {
+            if let (
+                crate::op::NonPrimitiveOpType::MmcsVerify,
+                NonPrimitiveOpPrivateData::MmcsVerify(_),
+            ) = (executor.op_type(), &private_data)
+            {
+                // ok
             }
-            _ => {}
+            // Other ops currently don't expect private data
         }
 
         // Store private data for this operation

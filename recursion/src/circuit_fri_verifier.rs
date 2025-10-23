@@ -517,8 +517,7 @@ pub fn verify_fri_circuit<F, EF, RecMmcs, Inner, Witness, Comm>(
 
     assert_eq!(
         actual_final_poly_len, expected_final_poly_len,
-        "Final polynomial length mismatch: expected 2^{} = {}, got {}",
-        log_final_poly_len, expected_final_poly_len, actual_final_poly_len
+        "Final polynomial length mismatch: expected 2^{log_final_poly_len} = {expected_final_poly_len}, got {actual_final_poly_len}"
     );
 
     // Precompute two-adic generator ladders for each phase (in circuit field EF).

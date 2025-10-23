@@ -411,8 +411,7 @@ fn run_fri_test(setup: FriSetup, build_only: bool) {
     assert_eq!(
         fri_targets.final_poly.len(),
         expected_final_poly_len,
-        "Circuit final polynomial should have {} coefficients",
-        expected_final_poly_len
+        "Circuit final polynomial should have {expected_final_poly_len} coefficients"
     );
 
     // 2) Public inputs for α, βs, index bits
