@@ -90,24 +90,24 @@ impl<'a> NonPrimitiveLowerer<'a> {
                         "MmcsVerify index input",
                     )?;
 
-                    // Map root outputs
+                    // Map root inputs (assert op; no outputs)
                     let root_widx: Vec<WitnessId> = (ext + 1..expected)
                         .map(|i| {
                             get_witness_id(
                                 self.expr_to_widx,
                                 witness_exprs[i],
-                                "MmcsVerify root output",
+                                "MmcsVerify root input",
                             )
                         })
                         .collect::<Result<_, _>>()?;
 
-                    // Build Op with executor
+                    // Build Op with executor: all in inputs; no outputs
                     let mut inputs = leaf_widx.clone();
                     inputs.push(index_widx);
-                    let outputs = root_widx.clone();
+                    inputs.extend(root_widx);
                     lowered_ops.push(Op::NonPrimitiveOpWithExecutor {
                         inputs,
-                        outputs,
+                        outputs: Vec::new(),
                         executor: alloc::boxed::Box::new(MmcsVerifyExecutor::new()),
                         op_id: *op_id,
                     });
@@ -239,8 +239,8 @@ mod tests {
                 ..
             } => {
                 assert_eq!(executor.op_type(), &NonPrimitiveOpType::MmcsVerify);
-                assert_eq!(inputs, &vec![WitnessId(0), WitnessId(1)]);
-                assert_eq!(outputs, &vec![WitnessId(2)]);
+                assert_eq!(inputs, &vec![WitnessId(0), WitnessId(1), WitnessId(2)]);
+                assert!(outputs.is_empty());
             }
             _ => panic!("Expected NonPrimitiveOpWithExecutor(MmcsVerify)"),
         }
@@ -281,17 +281,16 @@ mod tests {
                 ..
             } => {
                 assert_eq!(executor.op_type(), &NonPrimitiveOpType::MmcsVerify);
-                // Verify leaf witnesses (0..8) + index (8)
-                assert_eq!(inputs.len(), 9);
+                // Verify leaf witnesses (0..8) + index (8) + root (9..16)
+                assert_eq!(inputs.len(), 17);
                 for (i, &wid) in inputs.iter().enumerate().take(8) {
                     assert_eq!(wid, WitnessId(i as u32));
                 }
                 assert_eq!(inputs[8], WitnessId(8));
-                // Verify root witnesses (9..16) as outputs
-                assert_eq!(outputs.len(), 8);
-                for (i, &wid) in outputs.iter().enumerate() {
-                    assert_eq!(wid, WitnessId((9 + i) as u32));
+                for (i, &wid) in inputs.iter().enumerate().skip(9) {
+                    assert_eq!(wid, WitnessId(i as u32));
                 }
+                assert!(outputs.is_empty());
             }
             _ => panic!("Expected NonPrimitiveOpWithExecutor(MmcsVerify)"),
         }
@@ -341,11 +340,11 @@ mod tests {
                 } => {
                     assert_eq!(executor.op_type(), &NonPrimitiveOpType::MmcsVerify);
                     let base = (i * 3) as u32;
-                    assert_eq!(inputs.len(), 2); // leaf (1) + index (1)
+                    assert_eq!(inputs.len(), 3); // leaf (1) + index (1) + root(1)
                     assert_eq!(inputs[0], WitnessId(base));
                     assert_eq!(inputs[1], WitnessId(base + 1));
-                    assert_eq!(outputs.len(), 1);
-                    assert_eq!(outputs[0], WitnessId(base + 2));
+                    assert_eq!(inputs[2], WitnessId(base + 2));
+                    assert!(outputs.is_empty());
                     assert_eq!(*op_id, NonPrimitiveOpId(i as u32));
                 }
                 _ => panic!("Expected NonPrimitiveOpWithExecutor(MmcsVerify)"),

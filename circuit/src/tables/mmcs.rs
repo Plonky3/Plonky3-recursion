@@ -275,7 +275,7 @@ impl<'a, F: CircuitField> MmcsTraceBuilder<'a, F> {
         for op in &self.circuit.non_primitive_ops {
             let Op::NonPrimitiveOpWithExecutor {
                 inputs,
-                outputs,
+                _outputs,
                 executor,
                 op_id,
             } = op
@@ -288,7 +288,7 @@ impl<'a, F: CircuitField> MmcsTraceBuilder<'a, F> {
 
             let ext = config.ext_field_digest_elems;
             let leaf = &inputs[..ext];
-            let root = &outputs[..ext];
+            let root = &inputs[ext + 1..ext + 1 + ext];
 
             let private_data = self
                 .non_primitive_op_private_data
