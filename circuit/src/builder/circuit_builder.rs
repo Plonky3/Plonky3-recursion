@@ -7,7 +7,7 @@ use super::compiler::{ExpressionLowerer, NonPrimitiveLowerer, Optimizer};
 use super::{BuilderConfig, ExpressionBuilder, PublicInputTracker};
 use crate::CircuitBuilderError;
 use crate::circuit::Circuit;
-use crate::op::{NonPrimitiveOpHelper, NonPrimitiveOpType};
+use crate::op::NonPrimitiveOpType;
 use crate::ops::MmcsVerifyConfig;
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};
 
@@ -30,12 +30,7 @@ pub struct CircuitBuilder<F> {
 }
 
 /// The non-primitive operation id, type, helper data, and the vectors of the expressions representing its inputs
-pub type NonPrimitiveOperationData = (
-    NonPrimitiveOpId,
-    NonPrimitiveOpType,
-    NonPrimitiveOpHelper,
-    Vec<Vec<ExprId>>,
-);
+pub type NonPrimitiveOperationData = (NonPrimitiveOpId, NonPrimitiveOpType, Vec<Vec<ExprId>>);
 
 impl<F> Default for CircuitBuilder<F>
 where
@@ -251,7 +246,6 @@ where
         &mut self,
         op_type: NonPrimitiveOpType,
         witness_exprs: Vec<Vec<ExprId>>,
-        helper_data: NonPrimitiveOpHelper,
         label: &'static str,
     ) -> NonPrimitiveOpId {
         let op_id = NonPrimitiveOpId(self.non_primitive_ops.len() as u32);
@@ -264,8 +258,7 @@ where
             label,
         );
 
-        self.non_primitive_ops
-            .push((op_id, op_type, helper_data, witness_exprs));
+        self.non_primitive_ops.push((op_id, op_type, witness_exprs));
         op_id
     }
 

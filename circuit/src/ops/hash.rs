@@ -8,7 +8,7 @@ use alloc::vec;
 use p3_field::PrimeCharacteristicRing;
 
 use crate::builder::{CircuitBuilder, CircuitBuilderError};
-use crate::op::{NonPrimitiveOpHelper, NonPrimitiveOpType};
+use crate::op::NonPrimitiveOpType;
 use crate::types::ExprId;
 
 /// Hash operations trait for `CircuitBuilder`.
@@ -47,7 +47,6 @@ where
         self.push_non_primitive_op(
             NonPrimitiveOpType::HashAbsorb { reset },
             vec![inputs.to_vec()],
-            NonPrimitiveOpHelper::None,
             "HashAbsorb",
         );
 
@@ -60,7 +59,6 @@ where
         self.push_non_primitive_op(
             NonPrimitiveOpType::HashSqueeze,
             vec![outputs.to_vec()],
-            NonPrimitiveOpHelper::None,
             "HashSqueeze",
         );
 

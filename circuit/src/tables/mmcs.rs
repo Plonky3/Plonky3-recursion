@@ -11,8 +11,7 @@ use p3_symmetric::PseudoCompressionFunction;
 
 use crate::circuit::Circuit;
 use crate::op::{
-    NonPrimitiveOp, NonPrimitiveOpConfig, NonPrimitiveOpHelper, NonPrimitiveOpPrivateData,
-    NonPrimitiveOpType,
+    NonPrimitiveOp, NonPrimitiveOpConfig, NonPrimitiveOpPrivateData, NonPrimitiveOpType,
 };
 use crate::ops::MmcsVerifyConfig;
 use crate::types::WitnessId;
@@ -168,7 +167,7 @@ impl<F: Field + Clone + Default> MmcsPrivateData<F> {
         directions: &[bool],
     ) -> Result<Vec<(Vec<F>, Option<Vec<F>>)>, CircuitError> {
         // Ensure we have one direction bit per sibling step.
-        if self.path_siblings.len() + 1 != directions.len() {
+        if self.path_siblings.len() != directions.len() {
             return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
                 op: NonPrimitiveOpType::MmcsVerify,
                 expected: self.path_siblings.len().to_string(),
@@ -342,9 +341,7 @@ impl<F: Field + Clone + Default> MmcsPrivateData<F> {
 pub struct MmcsTraceBuilder<'a, F> {
     circuit: &'a Circuit<F>,
     witness: &'a [Option<F>],
-    non_primitive_op_private_data:
-        &'a [Option<(NonPrimitiveOpPrivateData<F>, NonPrimitiveOpHelper)>],
-    compression: Option<fn([&[F]; 2]) -> Vec<F>>,
+    non_primitive_op_private_data: &'a [Option<NonPrimitiveOpPrivateData<F>>],
 }
 
 impl<'a, F: CircuitField> MmcsTraceBuilder<'a, F> {
@@ -352,17 +349,12 @@ impl<'a, F: CircuitField> MmcsTraceBuilder<'a, F> {
     pub fn new(
         circuit: &'a Circuit<F>,
         witness: &'a [Option<F>],
-        non_primitive_op_private_data: &'a [Option<(
-            NonPrimitiveOpPrivateData<F>,
-            NonPrimitiveOpHelper,
-        )>],
-        compression: Option<fn([&[F]; 2]) -> Vec<F>>,
+        non_primitive_op_private_data: &'a [Option<NonPrimitiveOpPrivateData<F>>],
     ) -> Self {
         Self {
             circuit,
             witness,
             non_primitive_op_private_data,
-            compression,
         }
     }
 
@@ -387,17 +379,14 @@ impl<'a, F: CircuitField> MmcsTraceBuilder<'a, F> {
                 leaves,
                 directions,
                 root,
-                helper,
             } = &self.circuit.non_primitive_ops[op_idx]
             else {
                 // Skip non-MMCS operations (e.g., HashAbsorb, HashSqueeze)
                 continue;
             };
 
-            if let Some(Some((
-                NonPrimitiveOpPrivateData::MmcsVerify(private_data),
-                NonPrimitiveOpHelper::MmcsVerify(_),
-            ))) = self.non_primitive_op_private_data.get(op_idx)
+            if let Some(Some(NonPrimitiveOpPrivateData::MmcsVerify(private_data))) =
+                self.non_primitive_op_private_data.get(op_idx)
             {
                 let config = match self
                     .circuit
@@ -461,14 +450,11 @@ mod tests {
     use p3_baby_bear::BabyBear;
     use p3_field::PrimeCharacteristicRing;
     use p3_field::extension::BinomialExtensionField;
-    use p3_matrix::Dimensions;
     use p3_symmetric::PseudoCompressionFunction;
 
     use super::*;
     use crate::NonPrimitiveOpPrivateData;
     use crate::builder::CircuitBuilder;
-    use crate::errors::CircuitError;
-    use crate::op::NonPrimitiveOpHelper;
     use crate::ops::MmcsOps;
 
     type F = BinomialExtensionField<BabyBear, 4>;
@@ -589,21 +575,11 @@ mod tests {
             builder.add_public_input(),
             builder.add_public_input(),
         ];
-        let helper = NonPrimitiveOpHelper::MmcsVerify(vec![
-            Dimensions {
-                height: 4,
-                width: 1,
-            },
-            Dimensions {
-                height: 2,
-                width: 1,
-            },
-        ]);
         let root = (0..config.ext_field_digest_elems)
             .map(|_| builder.add_public_input())
             .collect::<alloc::vec::Vec<_>>();
         let mmcs_op_id = builder
-            .add_mmcs_verify(&leaves, &directions, &root, helper)
+            .add_mmcs_verify(&leaves, &directions, &root)
             .unwrap();
         let circuit = builder.build().unwrap();
 
@@ -676,21 +652,11 @@ mod tests {
             builder.add_public_input(),
             builder.add_public_input(),
         ];
-        let mmcs_helper = NonPrimitiveOpHelper::MmcsVerify(vec![
-            Dimensions {
-                height: 8,
-                width: 1,
-            },
-            Dimensions {
-                height: 2,
-                width: 1,
-            },
-        ]);
         let root_exprs = (0..config.ext_field_digest_elems)
             .map(|_| builder.add_public_input())
             .collect::<alloc::vec::Vec<_>>();
         let mmcs_op_id = builder
-            .add_mmcs_verify(&leaves_expr, &directions_expr, &root_exprs, mmcs_helper)
+            .add_mmcs_verify(&leaves_expr, &directions_expr, &root_exprs)
             .unwrap();
         let circuit = builder.build().unwrap();
 

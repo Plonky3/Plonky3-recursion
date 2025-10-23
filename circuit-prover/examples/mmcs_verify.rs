@@ -4,7 +4,6 @@ use std::env;
 /// Public inputs: leaf_hash, leaf_index, expected_root
 /// Private inputs: mmcs path (siblings + directions)
 use p3_baby_bear::BabyBear;
-use p3_circuit::op::NonPrimitiveOpHelper;
 use p3_circuit::ops::MmcsVerifyConfig;
 use p3_circuit::tables::MmcsPrivateData;
 use p3_circuit::{CircuitBuilder, ExprId, MmcsOps, NonPrimitiveOpPrivateData};
@@ -12,7 +11,6 @@ use p3_circuit_prover::prover::ProverError;
 use p3_circuit_prover::{MultiTableProver, config};
 use p3_field::PrimeCharacteristicRing;
 use p3_field::extension::BinomialExtensionField;
-use p3_matrix::Dimensions;
 use tracing_forest::ForestLayer;
 use tracing_forest::util::LevelFilter;
 use tracing_subscriber::layer::SubscriberExt;
@@ -64,24 +62,10 @@ fn main() -> Result<(), ProverError> {
     let expected_root = (0..mmcs_config.ext_field_digest_elems)
         .map(|_| builder.alloc_public_input("expected_root"))
         .collect::<Vec<ExprId>>();
-    let mmcs_helper = NonPrimitiveOpHelper::MmcsVerify(
-        (0..depth)
-            .filter_map(|i| {
-                if (i as usize).is_multiple_of(2) && i != depth - 1 {
-                    Some(Dimensions {
-                        height: 1 << (depth - i - 1),
-                        width: 1,
-                    })
-                } else {
-                    None
-                }
-            })
-            .collect(),
-    );
     // Add a Mmcs verification operation
     // This declares that leaf_hash and expected_root are connected to witness bus
     // The AIR constraints will verify the Mmcs path is valid
-    let mmcs_op_id = builder.add_mmcs_verify(&leaves, &directions, &expected_root, mmcs_helper)?;
+    let mmcs_op_id = builder.add_mmcs_verify(&leaves, &directions, &expected_root)?;
 
     builder.dump_allocation_log();
 

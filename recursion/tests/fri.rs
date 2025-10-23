@@ -4,7 +4,7 @@ use p3_challenger::{
 };
 use p3_circuit::ops::MmcsVerifyConfig;
 use p3_circuit::{CircuitBuilder, MmcsPrivateData, NonPrimitiveOp, NonPrimitiveOpPrivateData};
-use p3_commit::{BatchOpening, Pcs};
+use p3_commit::Pcs;
 use p3_dft::Radix2DitParallel as Dft;
 use p3_field::coset::TwoAdicMultiplicativeCoset;
 use p3_field::extension::BinomialExtensionField as ExtF;
@@ -13,7 +13,7 @@ use p3_fri::{TwoAdicFriPcs, create_test_fri_params};
 use p3_matrix::dense::RowMajorMatrix;
 use p3_merkle_tree::MerkleTreeMmcs;
 use p3_recursion::public_inputs::{CommitmentOpening, FriVerifierInputs};
-use p3_symmetric::{Hash, PaddingFreeSponge, TruncatedPermutation};
+use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
 use tracing_forest::ForestLayer;
@@ -492,7 +492,7 @@ fn run_fri_test(setup: FriSetup, build_only: bool) {
     for query in result_1.fri_proof.query_proofs.iter() {
         // For each batch in the input proof there must be one MmcsVerify op
         for batch in query.input_proof.iter() {
-            let (op_id, leaves_widx, directions_widx) = match non_primitive_ops_iter.next() {
+            let (op_id, _, _) = match non_primitive_ops_iter.next() {
                 Some((
                     op_id,
                     NonPrimitiveOp::MmcsVerify {
@@ -533,6 +533,40 @@ fn run_fri_test(setup: FriSetup, build_only: bool) {
     );
     let mut runner2 = circuit.runner();
     runner2.set_public_inputs(&pub_inputs2).unwrap();
+
+    let mut non_primitive_ops_iter = runner2.all_non_primitive_ops().into_iter();
+    for query in result_2.fri_proof.query_proofs.iter() {
+        // For each batch in the input proof there must be one MmcsVerify op
+        for batch in query.input_proof.iter() {
+            let (op_id, _, _) = match non_primitive_ops_iter.next() {
+                Some((
+                    op_id,
+                    NonPrimitiveOp::MmcsVerify {
+                        leaves, directions, ..
+                    },
+                )) => (op_id, leaves, directions),
+                _ => panic!("Expected MmcsVerify op"),
+            };
+            let siblings = batch
+                .opening_proof
+                .iter()
+                .map(|digest| {
+                    digest
+                        .iter()
+                        .map(|x| Challenge::from(*x))
+                        .collect::<Vec<Challenge>>()
+                })
+                .collect::<Vec<Vec<Challenge>>>();
+
+            let private_data = NonPrimitiveOpPrivateData::MmcsVerify(
+                MmcsPrivateData::new::<F, _, _>(&mmcs_config, &siblings, compress.clone()),
+            );
+            runner2
+                .set_non_primitive_op_private_data(op_id, private_data)
+                .unwrap();
+        }
+    }
+
     runner2.run().unwrap();
 }
 

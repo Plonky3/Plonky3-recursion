@@ -3,8 +3,7 @@
 
 use alloc::vec::Vec;
 
-use p3_field::{BasedVectorSpace, ExtensionField, Field, PrimeField64};
-use p3_symmetric::Hash;
+use p3_field::{BasedVectorSpace, Field, PrimeField64};
 
 use crate::recursive_pcs::{MAX_QUERY_INDEX_BITS, ValMmcsCommitment};
 use crate::recursive_traits::Recursive;

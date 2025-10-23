@@ -1,7 +1,6 @@
 use alloc::vec::Vec;
 use alloc::{format, vec};
 
-use p3_symmetric::PseudoCompressionFunction;
 use tracing::instrument;
 
 use super::Traces;
@@ -12,7 +11,7 @@ use super::mul::MulTraceBuilder;
 use super::public::PublicTraceBuilder;
 use super::witness::WitnessTraceBuilder;
 use crate::circuit::Circuit;
-use crate::op::{NonPrimitiveOp, NonPrimitiveOpHelper, NonPrimitiveOpPrivateData, Prim};
+use crate::op::{NonPrimitiveOp, NonPrimitiveOpPrivateData, Prim};
 use crate::types::{NonPrimitiveOpId, WitnessId};
 use crate::{CircuitError, CircuitField};
 
@@ -25,8 +24,7 @@ pub struct CircuitRunner<F> {
     /// Private data for non-primitive operations.
     ///
     /// These data are not on the witness bus.
-    non_primitive_op_private_data:
-        Vec<Option<(NonPrimitiveOpPrivateData<F>, NonPrimitiveOpHelper)>>,
+    non_primitive_op_private_data: Vec<Option<NonPrimitiveOpPrivateData<F>>>,
 }
 
 impl<F: CircuitField> CircuitRunner<F> {
@@ -91,36 +89,23 @@ impl<F: CircuitField> CircuitRunner<F> {
         // Validate that the private data matches the operation type
         let non_primitive_op = &self.circuit.non_primitive_ops[op_id.0 as usize];
         // Get the helper data from the circuit to complement private data.
-        let helper = match (non_primitive_op, &private_data) {
-            (
-                NonPrimitiveOp::MmcsVerify { helper, .. },
-                NonPrimitiveOpPrivateData::MmcsVerify(_),
-            ) => {
+        match (non_primitive_op, &private_data) {
+            (NonPrimitiveOp::MmcsVerify { .. }, NonPrimitiveOpPrivateData::MmcsVerify(_)) => {
                 // Type match - good!
-                helper
             }
-            (NonPrimitiveOp::HashAbsorb { helper, .. }, _)
-            | (NonPrimitiveOp::HashSqueeze { helper, .. }, _) => {
+            (NonPrimitiveOp::HashAbsorb { .. }, _) | (NonPrimitiveOp::HashSqueeze { .. }, _) => {
                 // HashAbsorb/HashSqueeze don't use private data
-                helper
             }
-        }
-        .clone();
+        };
 
         // Store private data for this operation
-        self.non_primitive_op_private_data[op_id.0 as usize] = Some((private_data, helper));
+        self.non_primitive_op_private_data[op_id.0 as usize] = Some(private_data);
         Ok(())
     }
 
     /// Run the circuit and generate traces
     #[instrument(skip_all)]
     pub fn run(mut self) -> Result<Traces<F>, CircuitError> {
-        self.run_with_compression_function(None)
-    }
-    pub fn run_with_compression_function(
-        mut self,
-        compression: Option<fn([&[F]; 2]) -> Vec<F>>,
-    ) -> Result<Traces<F>, CircuitError> {
         // Step 1: Execute primitives to fill witness vector
         self.execute_primitives()?;
 
@@ -135,7 +120,6 @@ impl<F: CircuitField> CircuitRunner<F> {
             &self.circuit,
             &self.witness,
             &self.non_primitive_op_private_data,
-            compression,
         )
         .build()?;
 

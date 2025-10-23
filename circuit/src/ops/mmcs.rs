@@ -11,7 +11,7 @@ use p3_matrix::Dimensions;
 
 use crate::CircuitError;
 use crate::builder::{CircuitBuilder, CircuitBuilderError};
-use crate::op::{NonPrimitiveOpHelper, NonPrimitiveOpType};
+use crate::op::NonPrimitiveOpType;
 use crate::types::{ExprId, NonPrimitiveOpId};
 
 /// Configuration parameters for Mmcs verification operations. When
@@ -172,7 +172,7 @@ impl MmcsVerifyConfig {
         for (curr_height, leaf) in formatted_leaves
             .iter_mut()
             .enumerate()
-            .map(|(i, leaf)| (1 << (max_height_log - i - 1), leaf))
+            .map(|(i, leaf)| (1 << (max_height_log - i), leaf))
         {
             // Get the initial height padded to a power of two. As heights_tallest_first is sorted,
             // the initial height will be the maximum height.
@@ -272,7 +272,6 @@ pub trait MmcsOps<F> {
         leaves_expr: &[Vec<ExprId>],
         directions_expr: &[ExprId],
         root_expr: &[ExprId],
-        helper_data: NonPrimitiveOpHelper,
     ) -> Result<NonPrimitiveOpId, CircuitBuilderError>;
 }
 
@@ -285,7 +284,6 @@ where
         leaves_expr: &[Vec<ExprId>],
         directions_expr: &[ExprId],
         root_expr: &[ExprId],
-        helper_data: NonPrimitiveOpHelper,
     ) -> Result<NonPrimitiveOpId, CircuitBuilderError> {
         self.ensure_op_enabled(NonPrimitiveOpType::MmcsVerify)?;
 
@@ -293,11 +291,12 @@ where
         witness_exprs.extend(leaves_expr.to_vec());
         witness_exprs.push(directions_expr.to_vec());
         witness_exprs.push(root_expr.to_vec());
-        Ok(self.push_non_primitive_op(
-            NonPrimitiveOpType::MmcsVerify,
-            witness_exprs,
-            helper_data,
-            "mmcs_verify",
-        ))
+        Ok(
+            self.push_non_primitive_op(
+                NonPrimitiveOpType::MmcsVerify,
+                witness_exprs,
+                "mmcs_verify",
+            ),
+        )
     }
 }

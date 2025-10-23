@@ -563,9 +563,9 @@ mod test {
             })
             .collect();
         let directions: [[bool; HEIGHT]; NUM_INPUTS] =
-            array::from_fn(|i| array::from_fn(|_| rng.random::<bool>()));
+            array::from_fn(|_| array::from_fn(|_| rng.random::<bool>()));
 
-        let private_data: [MmcsPrivateData<Val>; NUM_INPUTS] = array::from_fn(|i| {
+        let private_data: [MmcsPrivateData<Val>; NUM_INPUTS] = array::from_fn(|_| {
             let path_siblings: Vec<Vec<Val>> = (0..HEIGHT)
                 .map(|_| vec![rng.random::<Val>(); DIGEST_ELEMS])
                 .collect();

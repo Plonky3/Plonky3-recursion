@@ -1,7 +1,8 @@
 use p3_baby_bear::{BabyBear, Poseidon2BabyBear};
 use p3_challenger::DuplexChallenger;
-use p3_circuit::CircuitBuilder;
+use p3_circuit::ops::MmcsVerifyConfig;
 use p3_circuit::test_utils::{FibonacciAir, generate_trace_rows};
+use p3_circuit::{CircuitBuilder, MmcsPrivateData, NonPrimitiveOp, NonPrimitiveOpPrivateData};
 use p3_commit::ExtensionMmcs;
 use p3_dft::Radix2DitParallel;
 use p3_field::extension::BinomialExtensionField;
@@ -53,7 +54,7 @@ fn test_fibonacci_verifier() -> Result<(), VerificationError> {
     let log_height_max = fri_params.log_final_poly_len + fri_params.log_blowup;
     let pow_bits = fri_params.proof_of_work_bits;
     let pcs = MyPcs::new(dft, val_mmcs, fri_params);
-    let challenger = Challenger::new(perm);
+    let challenger = Challenger::new(perm.clone());
 
     let config = MyConfig::new(pcs, challenger);
     let pis = vec![BabyBear::ZERO, BabyBear::ONE, BabyBear::from_u64(x)];
@@ -83,6 +84,8 @@ fn test_fibonacci_verifier() -> Result<(), VerificationError> {
     >;
 
     let mut circuit_builder = CircuitBuilder::new();
+    let mmcs_config = MmcsVerifyConfig::babybear_quartic_extension_default();
+    circuit_builder.enable_mmcs(&mmcs_config);
 
     // Allocate all targets
     let verifier_inputs = StarkVerifierInputsBuilder::<
@@ -129,6 +132,40 @@ fn test_fibonacci_verifier() -> Result<(), VerificationError> {
     runner
         .set_public_inputs(&public_inputs)
         .map_err(VerificationError::Circuit)?;
+
+    // TODO: This block of code should be the implementation of Recursive::set_private_data function.
+    let compress = MyCompress::new(perm.clone());
+    let mut non_primitive_ops_iter = runner.all_non_primitive_ops().into_iter();
+    for query in proof.opening_proof.query_proofs.iter() {
+        // For each batch in the input proof there must be one MmcsVerify op
+        for batch in query.input_proof.iter() {
+            let x = non_primitive_ops_iter.next();
+            let op_id = match x {
+                Some((op_id, y)) => match y {
+                    NonPrimitiveOp::MmcsVerify { .. } => op_id,
+                    _ => panic!("Expected MmcsVerify op"),
+                },
+                _ => panic!("Expected MmcsVerify op"),
+            };
+            let siblings = batch
+                .opening_proof
+                .iter()
+                .map(|digest| {
+                    digest
+                        .iter()
+                        .map(|x| Challenge::from(*x))
+                        .collect::<Vec<Challenge>>()
+                })
+                .collect::<Vec<Vec<Challenge>>>();
+
+            let private_data = NonPrimitiveOpPrivateData::MmcsVerify(
+                MmcsPrivateData::new::<F, _, _>(&mmcs_config, &siblings, compress.clone()),
+            );
+            runner
+                .set_non_primitive_op_private_data(op_id, private_data)
+                .unwrap();
+        }
+    }
 
     let _traces = runner.run().map_err(VerificationError::Circuit)?;
 

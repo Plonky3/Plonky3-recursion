@@ -8,6 +8,7 @@ use p3_circuit::CircuitBuilder;
 use p3_field::coset::TwoAdicMultiplicativeCoset;
 use p3_field::{ExtensionField, Field, TwoAdicField};
 use p3_matrix::Dimensions;
+use p3_util::log2_strict_usize;
 
 use crate::Target;
 use crate::circuit_mmcs_verifier::verify_batch_circuit;
@@ -397,11 +398,20 @@ where
             .map(|&height| Dimensions { width: 0, height })
             .collect_vec();
 
+        // If the maximum height of the batch is smaller than the global max height,
+        // we need to correct the index by right shifting it.
+        // If the batch is empty, we set the index to 0.
+        let reduced_bits = batch_heights
+            .iter()
+            .max()
+            .map(|&h| &index_bits[0..log2_strict_usize(h)])
+            .unwrap();
+
         verify_batch_circuit(
             builder,
             &batch_commit.get_targets(),
             &batch_dims,
-            index_bits,
+            reduced_bits,
             batch_openings,
         )
         .expect("verify_batch_circuit failed");
