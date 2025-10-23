@@ -27,15 +27,15 @@ pub struct MmcsVerifyConfig {
 }
 
 impl MmcsVerifyConfig {
-    /// Returns the number of inputs (witness elements) received.
+    /// Returns the total number of witness elements consumed by the op.
+    /// Layout: leaf (ext) + index (1) + root (ext)
     pub const fn input_size(&self) -> usize {
-        // `ext_field_digest_elems` for the leaf and 1 for the index
-        self.ext_field_digest_elems + 1
+        2 * self.ext_field_digest_elems + 1
     }
 
+    /// MMCS verify is an assert-only op and does not produce outputs.
     pub const fn output_size(&self) -> usize {
-        // `ext_field_digest_elems` for the root
-        self.ext_field_digest_elems
+        0
     }
 
     /// Convert a digest represented as extension field elements into base field elements.
@@ -225,7 +225,7 @@ where
         let mut inputs = vec![];
         inputs.extend(leaf_expr);
         inputs.push(*index_expr);
-        // Include root exprs as outputs for the non-primitive op lowering to map
+        // Include root exprs as inputs for the non-primitive op; they are asserted
         inputs.extend(root_expr);
 
         Ok(self.push_non_primitive_op(NonPrimitiveOpType::MmcsVerify, inputs, "mmcs_verify"))
