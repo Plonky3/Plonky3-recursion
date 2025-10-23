@@ -63,7 +63,7 @@ impl<'a> NonPrimitiveLowerer<'a> {
                     };
 
                     let ext = config.ext_field_digest_elems;
-                    let expected = ext + 1 + ext; // leaf (ext) + index (1) + root (ext)
+                    let expected = config.input_size();
                     if witness_exprs.len() != expected {
                         return Err(CircuitBuilderError::NonPrimitiveOpArity {
                             op: "MmcsVerify",
@@ -102,7 +102,7 @@ impl<'a> NonPrimitiveLowerer<'a> {
                         .collect::<Result<_, _>>()?;
 
                     // Build Op with executor: all in inputs; no outputs
-                    let mut inputs = leaf_widx.clone();
+                    let mut inputs = leaf_widx;
                     inputs.push(index_widx);
                     inputs.extend(root_widx);
                     lowered_ops.push(Op::NonPrimitiveOpWithExecutor {

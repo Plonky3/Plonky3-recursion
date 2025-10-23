@@ -206,8 +206,6 @@ pub trait MmcsOps<F> {
         index_expr: &ExprId,
         root_expr: &[ExprId],
     ) -> Result<NonPrimitiveOpId, CircuitBuilderError>;
-
-    // Deprecated: MMCS is an assert op and does not write outputs.
 }
 
 impl<F> MmcsOps<F> for CircuitBuilder<F>
@@ -230,8 +228,6 @@ where
 
         Ok(self.push_non_primitive_op(NonPrimitiveOpType::MmcsVerify, inputs, "mmcs_verify"))
     }
-
-    // Deprecated: MMCS is an assert op and does not write outputs.
 }
 
 /// Executor for MMCS verification operations

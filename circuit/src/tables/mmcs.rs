@@ -541,27 +541,8 @@ mod tests {
         }
     }
 
-    use tracing_forest::ForestLayer;
-    use tracing_forest::util::LevelFilter;
-    use tracing_subscriber::layer::SubscriberExt;
-    use tracing_subscriber::util::SubscriberInitExt;
-    use tracing_subscriber::{EnvFilter, Registry};
-
-    fn init_logger() {
-        let env_filter = EnvFilter::builder()
-            .with_default_directive(LevelFilter::INFO.into())
-            .from_env_lossy();
-
-        Registry::default()
-            .with(env_filter)
-            .with(ForestLayer::default())
-            .init();
-    }
-
     #[test]
     fn test_mmcs_traces_fields() -> Result<(), CircuitError> {
-        init_logger();
-
         let compress = MockCompression {};
         let config = MmcsVerifyConfig {
             base_field_digest_elems: 1,

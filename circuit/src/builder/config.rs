@@ -1,6 +1,7 @@
 use hashbrown::HashMap;
 
 use crate::op::{NonPrimitiveOpConfig, NonPrimitiveOpType};
+use crate::ops::MmcsVerifyConfig;
 
 /// Configuration for the circuit builder.
 #[derive(Debug, Clone, Default)]
@@ -23,7 +24,7 @@ impl BuilderConfig {
     }
 
     /// Enables MMCS verification operations with the given configuration.
-    pub fn enable_mmcs(&mut self, mmcs_config: &crate::ops::MmcsVerifyConfig) {
+    pub fn enable_mmcs(&mut self, mmcs_config: &MmcsVerifyConfig) {
         self.enable_op(
             NonPrimitiveOpType::MmcsVerify,
             NonPrimitiveOpConfig::MmcsVerifyConfig(mmcs_config.clone()),
@@ -54,7 +55,6 @@ impl BuilderConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ops::MmcsVerifyConfig;
 
     #[test]
     fn test_builder_config_default() {
