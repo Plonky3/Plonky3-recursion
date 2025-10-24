@@ -65,8 +65,8 @@ pub enum Op<F> {
 
     /// Non-primitive operation with executor-based dispatch
     NonPrimitiveOpWithExecutor {
-        inputs: Vec<WitnessId>,
-        outputs: Vec<WitnessId>,
+        inputs: Vec<Vec<WitnessId>>,
+        outputs: Vec<Vec<WitnessId>>,
         executor: Box<dyn NonPrimitiveExecutor<F>>,
         /// For private data lookup and error reporting
         op_id: NonPrimitiveOpId,
@@ -212,17 +212,17 @@ pub enum NonPrimitiveOp {
     /// AIR table that constrains the relationship between leaf and root.
     ///
     /// Public interface (on witness bus):
-    /// - `leaf`: The leaf value being verified (single field element)
-    /// - `index`: The index of the leaf
+    /// - `leaves`: The leaves values being verified. Each one correspond to the hash of a matrix row .
+    /// - `directions`: The directions in the tree taken by the merkle path.
     /// - `root`: The expected Mmcs root (single field element)
     ///
     /// Private data (set via NonPrimitiveOpId):
     /// - Mmcs path siblings and direction bits
     /// - See `MmcsPrivateData` for complete specification
     MmcsVerify {
-        leaf: MmcsWitnessId,
-        index: WitnessId,
-        root: MmcsWitnessId,
+        leaves: Vec<Vec<WitnessId>>,
+        directions: Vec<WitnessId>,
+        root: Vec<WitnessId>,
     },
 
     /// Hash absorb operation - absorbs inputs into sponge state.
@@ -241,8 +241,6 @@ pub enum NonPrimitiveOp {
     /// - `outputs`: Field elements extracted from the sponge
     HashSqueeze { outputs: Vec<WitnessId> },
 }
-
-pub type MmcsWitnessId = Vec<WitnessId>;
 
 /// Private auxiliary data for non-primitive operations
 ///
@@ -363,8 +361,8 @@ pub trait NonPrimitiveExecutor<F: Field>: Debug {
     /// * `ctx` - Execution context with access to witness table, private data, and configs
     fn execute(
         &self,
-        inputs: &[WitnessId],
-        outputs: &[WitnessId],
+        inputs: &[Vec<WitnessId>],
+        outputs: &[Vec<WitnessId>],
         ctx: &mut ExecutionContext<F>,
     ) -> Result<(), CircuitError>;
 
