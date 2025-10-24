@@ -8,13 +8,11 @@ use itertools::izip;
 use p3_field::{ExtensionField, Field};
 use p3_symmetric::PseudoCompressionFunction;
 
-use crate::circuit::Circuit;
-use crate::op::{
-    NonPrimitiveOp, NonPrimitiveOpConfig, NonPrimitiveOpPrivateData, NonPrimitiveOpType,
-};
+use crate::CircuitError;
+use crate::circuit::{Circuit, CircuitField};
+use crate::op::{NonPrimitiveOpConfig, NonPrimitiveOpPrivateData, NonPrimitiveOpType, Op};
 use crate::ops::MmcsVerifyConfig;
-use crate::types::WitnessId;
-use crate::{CircuitError, CircuitField};
+use crate::types::{NonPrimitiveOpId, WitnessId};
 
 /// MMCS Merkle path verification table.
 ///
@@ -143,7 +141,7 @@ impl<F: Field + Clone + Default> MmcsPrivateData<F> {
         if siblings.len() > config.max_tree_height {
             return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
                 op: NonPrimitiveOpType::MmcsVerify,
-                operation_index: 0,
+                operation_index: NonPrimitiveOpId(0),
                 expected: alloc::format!(
                     "path length <= max_tree_height ({})",
                     config.max_tree_height
@@ -151,7 +149,6 @@ impl<F: Field + Clone + Default> MmcsPrivateData<F> {
                 got: alloc::format!("{}", siblings.len()),
             });
         }
-
         let mut private_data = Self {
             path_states: Vec::with_capacity(siblings.len() + 1),
             path_siblings: siblings.to_vec(),
@@ -172,7 +169,7 @@ impl<F: Field + Clone + Default> MmcsPrivateData<F> {
                 op: NonPrimitiveOpType::MmcsVerify,
                 expected: "[]".to_string(),
                 got: format!("{:?}", last),
-                operation_index: 0,
+                operation_index: NonPrimitiveOpId(0), //TODO: What's the index of this op?
             });
         }
 
@@ -337,92 +334,95 @@ impl<'a, F: CircuitField> MmcsTraceBuilder<'a, F> {
             .ok_or(CircuitError::WitnessNotSet { witness_id: *index })
     }
 
-    /// Builds the MMCS trace from non-primitive operations.
-    ///
-    /// Validates that private data matches public witness values
-    /// for leaf, root, and index. Converts private data to trace format.
+    /// Builds the MMCS trace by scanning non-primitive ops with MMCS executors.
     pub fn build(self) -> Result<MmcsTrace<F>, CircuitError> {
         let mut mmcs_paths = Vec::new();
 
-        for op_idx in 0..self.circuit.non_primitive_ops.len() {
-            // Copy out leaf/root to end immutable borrow immediately
-            let NonPrimitiveOp::MmcsVerify {
-                leaves,
-                directions,
-                root,
-            } = &self.circuit.non_primitive_ops[op_idx]
+        let config = match self
+            .circuit
+            .enabled_ops
+            .get(&NonPrimitiveOpType::MmcsVerify)
+        {
+            Some(NonPrimitiveOpConfig::MmcsVerifyConfig(config)) => config,
+            _ => return Ok(MmcsTrace { mmcs_paths }),
+        };
+
+        for op in &self.circuit.non_primitive_ops {
+            let Op::NonPrimitiveOpWithExecutor {
+                inputs,
+                outputs: _outputs,
+                executor,
+                op_id,
+            } = op
             else {
                 // Skip non-MMCS operations (e.g., HashAbsorb, HashSqueeze)
                 continue;
             };
+            if executor.op_type() != &NonPrimitiveOpType::MmcsVerify {
+                continue;
+            }
 
-            if let Some(Some(NonPrimitiveOpPrivateData::MmcsVerify(private_data))) =
-                self.non_primitive_op_private_data.get(op_idx).cloned()
-            {
-                let config = match self
-                    .circuit
-                    .enabled_ops
-                    .get(&NonPrimitiveOpType::MmcsVerify)
-                {
-                    Some(NonPrimitiveOpConfig::MmcsVerifyConfig(config)) => Ok(config),
-                    _ => Err(CircuitError::InvalidNonPrimitiveOpConfiguration {
-                        op: NonPrimitiveOpType::MmcsVerify,
-                    }),
-                }?;
+            let private_data = self
+                .non_primitive_op_private_data
+                .get(op_id.0 as usize)
+                .and_then(|opt| opt.as_ref())
+                .ok_or(CircuitError::NonPrimitiveOpMissingPrivateData {
+                    operation_index: *op_id,
+                })?;
+            let NonPrimitiveOpPrivateData::MmcsVerify(priv_data) = private_data;
 
-                // Validate that the witness data is consistent with public inputs
-                // Check leaf values
-                let witness_leaves: Vec<Vec<F>> = leaves
-                    .iter()
-                    .map(|leaf| {
-                        leaf.iter()
-                            .map(|wid| self.get_witness(wid))
-                            .collect::<Result<Vec<F>, _>>()
-                    })
-                    .collect::<Result<_, _>>()?;
+            let root = &inputs[inputs.len() - 1];
+            let directions = &inputs[inputs.len() - 2];
+            let leaves = &inputs[0..directions.len()];
 
-                let witness_directions = directions
-                    .iter()
-                    .map(|wid| self.get_witness(wid))
-                    .collect::<Result<Vec<F>, _>>()?;
-                // Check that the number of leaves is the same as the number of directions
-                if witness_directions.len() != witness_leaves.len() {
-                    return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
-                        op: NonPrimitiveOpType::MmcsVerify,
-                        operation_index: op_idx,
-                        expected: alloc::format!("{:?}", witness_directions.len()),
-                        got: alloc::format!("{:?}", witness_leaves.len()),
-                    });
-                }
+            // Validate that the witness data is consistent with public inputs
+            // Check leaf values
+            let witness_leaves: Vec<Vec<F>> = leaves
+                .iter()
+                .map(|leaf| {
+                    leaf.iter()
+                        .map(|wid| self.get_witness(wid))
+                        .collect::<Result<Vec<F>, _>>()
+                })
+                .collect::<Result<_, _>>()?;
 
-                // Check root values
-                let witness_root: Vec<F> = root
-                    .iter()
-                    .map(|wid| self.get_witness(wid))
-                    .collect::<Result<_, _>>()?;
-                let computed_root = &private_data
-                    .path_states
-                    .last()
-                    .ok_or(CircuitError::NonPrimitiveOpMissingPrivateData {
-                        operation_index: op_idx,
-                    })?
-                    .0;
-                if witness_root != *computed_root {
-                    return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
-                        op: NonPrimitiveOpType::MmcsVerify,
-                        operation_index: op_idx,
-                        expected: alloc::format!("root: {witness_root:?}"),
-                        got: alloc::format!("root: {computed_root:?}"),
-                    });
-                }
-
-                let trace = private_data.to_trace(config, &witness_leaves, leaves, root)?;
-                mmcs_paths.push(trace);
-            } else {
-                return Err(CircuitError::NonPrimitiveOpMissingPrivateData {
-                    operation_index: op_idx,
+            let witness_directions = directions
+                .iter()
+                .map(|wid| self.get_witness(wid))
+                .collect::<Result<Vec<F>, _>>()?;
+            // Check that the number of leaves is the same as the number of directions
+            if witness_directions.len() != witness_leaves.len() {
+                return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
+                    op: NonPrimitiveOpType::MmcsVerify,
+                    operation_index: *op_id,
+                    expected: alloc::format!("{:?}", witness_directions.len()),
+                    got: alloc::format!("{:?}", witness_leaves.len()),
                 });
             }
+
+            // Check root values
+            let witness_root: Vec<F> = root
+                .iter()
+                .map(|wid| self.get_witness(wid))
+                .collect::<Result<_, _>>()?;
+            let computed_root = &priv_data
+                .path_states
+                .last()
+                .ok_or(CircuitError::NonPrimitiveOpMissingPrivateData {
+                    operation_index: *op_id,
+                })?
+                .0;
+            if witness_root != *computed_root {
+                return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
+                    op: NonPrimitiveOpType::MmcsVerify,
+                    operation_index: *op_id,
+                    expected: alloc::format!("root: {witness_root:?}"),
+                    got: alloc::format!("root: {computed_root:?}"),
+                });
+            }
+
+            let trace = priv_data.to_trace(config, &witness_leaves, leaves, root)?;
+            mmcs_paths.push(trace);
         }
 
         Ok(MmcsTrace { mmcs_paths })
@@ -690,7 +690,10 @@ mod tests {
         let mmcs_op_id = builder
             .add_mmcs_verify(&leaves_expr, &directions_expr, &root_exprs)
             .unwrap();
-        let circuit = builder.build().unwrap();
+        let circuit = builder
+            .build()
+            .map_err(|e| CircuitError::InvalidCircuit { error: e })
+            .unwrap();
 
         // 4 layers; one extra sibling at layer 1; directions 0b1010
         let leaves_value = [vec![F::from_u64(7)], vec![], vec![F::from_u64(25)], vec![]];

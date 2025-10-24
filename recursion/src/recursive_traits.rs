@@ -14,6 +14,7 @@ use p3_uni_stark::{
 
 use crate::Target;
 use crate::circuit_challenger::CircuitChallenger;
+use crate::circuit_verifier::VerificationError;
 use crate::recursive_challenger::RecursiveChallenger;
 
 /// Structure representing all the targets necessary for an input proof.
@@ -139,7 +140,7 @@ pub trait RecursivePcs<
         commitments_with_opening_points: &ComsWithOpeningsTargets<Comm, Domain>,
         opening_proof: &OpeningProof,
         params: &Self::VerifierParams,
-    );
+    ) -> Result<(), VerificationError>;
 
     /// Computes target selectors at `point` in the circuit.
     fn selectors_at_point_circuit(

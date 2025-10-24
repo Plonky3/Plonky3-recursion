@@ -1,15 +1,19 @@
+use alloc::boxed::Box;
 use alloc::string::ToString;
-use alloc::vec;
 use alloc::vec::Vec;
+use alloc::{format, vec};
 use core::hash::Hash;
 use core::ops::Range;
 
 use p3_field::{ExtensionField, Field};
 
-use crate::CircuitError;
 use crate::builder::{CircuitBuilder, CircuitBuilderError};
-use crate::op::NonPrimitiveOpType;
-use crate::types::{ExprId, NonPrimitiveOpId};
+use crate::op::{
+    ExecutionContext, NonPrimitiveExecutor, NonPrimitiveOpConfig, NonPrimitiveOpPrivateData,
+    NonPrimitiveOpType,
+};
+use crate::types::{ExprId, WitnessId};
+use crate::{CircuitError, NonPrimitiveOpId};
 
 /// Configuration parameters for Mmcs verification operations. When
 /// `base_field_digest_elems > ext_field_digest_elems`, we say the configuration
@@ -44,6 +48,11 @@ impl MmcsVerifyConfig {
 
     pub const fn root_size(&self) -> usize {
         self.ext_field_digest_elems
+    }
+
+    /// MMCS verify is an assert-only op and does not produce outputs.
+    pub const fn output_size(&self) -> usize {
+        0
     }
 
     /// Convert a digest represented as extension field elements into base field elements.
@@ -239,5 +248,120 @@ where
                 "mmcs_verify",
             ),
         )
+    }
+}
+
+/// Executor for MMCS verification operations
+///
+/// This executor validates that the private MMCS path data is consistent with
+/// the witness values. It does not compute outputs - they must be provided by the user.
+#[derive(Debug, Clone)]
+pub struct MmcsVerifyExecutor {
+    op_type: NonPrimitiveOpType,
+}
+
+impl MmcsVerifyExecutor {
+    /// Create a new MMCS verify executor
+    pub fn new() -> Self {
+        Self {
+            op_type: NonPrimitiveOpType::MmcsVerify,
+        }
+    }
+}
+
+impl Default for MmcsVerifyExecutor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<F: Field> NonPrimitiveExecutor<F> for MmcsVerifyExecutor {
+    fn execute(
+        &self,
+        inputs: &[Vec<WitnessId>],
+        _outputs: &[Vec<WitnessId>],
+        ctx: &mut ExecutionContext<F>,
+    ) -> Result<(), CircuitError> {
+        // Get the configuration
+        let config = match ctx.get_config(&self.op_type)? {
+            NonPrimitiveOpConfig::MmcsVerifyConfig(cfg) => cfg,
+            _ => {
+                return Err(CircuitError::InvalidNonPrimitiveOpConfiguration {
+                    op: self.op_type.clone(),
+                });
+            }
+        };
+
+        // Get private data
+        let NonPrimitiveOpPrivateData::MmcsVerify(private_data) = ctx.get_private_data()?;
+
+        // Validate input size: leaf(ext) + index(1) + root(ext)
+        if !config.input_size().contains(&inputs.len()) {
+            return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
+                op: self.op_type.clone(),
+                expected: format!("{:?}", config.input_size()),
+                got: inputs.len(),
+            });
+        }
+
+        let root = &inputs[inputs.len() - 1];
+        let directions = &inputs[inputs.len() - 2];
+        let leaves = &inputs[0..directions.len()];
+
+        // Validate that the witness data is consistent with public inputs
+        // Check leaf values
+        let witness_leaves: Vec<Vec<F>> = leaves
+            .iter()
+            .map(|leaf| {
+                leaf.iter()
+                    .map(|&wid| ctx.get_witness(wid))
+                    .collect::<Result<Vec<F>, _>>()
+            })
+            .collect::<Result<_, _>>()?;
+
+        let witness_directions = directions
+            .iter()
+            .map(|&wid| ctx.get_witness(wid))
+            .collect::<Result<Vec<F>, _>>()?;
+        // Check that the number of leaves is the same as the number of directions
+        if witness_directions.len() != witness_leaves.len() {
+            return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
+                op: NonPrimitiveOpType::MmcsVerify,
+                operation_index: ctx.operation_id(), // TODO: What's the operation id of the curre
+                expected: alloc::format!("{:?}", witness_directions.len()),
+                got: alloc::format!("{:?}", witness_leaves.len()),
+            });
+        }
+
+        // Check root values
+        let witness_root: Vec<F> = root
+            .iter()
+            .map(|&wid| ctx.get_witness(wid))
+            .collect::<Result<_, _>>()?;
+        let computed_root = &private_data
+            .path_states
+            .last()
+            .ok_or(CircuitError::NonPrimitiveOpMissingPrivateData {
+                operation_index: ctx.operation_id(),
+            })?
+            .0;
+        if witness_root != *computed_root {
+            return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
+                op: NonPrimitiveOpType::MmcsVerify,
+                operation_index: ctx.operation_id(),
+                expected: alloc::format!("root: {witness_root:?}"),
+                got: alloc::format!("root: {computed_root:?}"),
+            });
+        }
+
+        Ok(())
+    }
+
+    fn op_type(&self) -> &NonPrimitiveOpType {
+        &self.op_type
+    }
+
+    fn boxed(&self) -> Box<dyn NonPrimitiveExecutor<F>> {
+        Box::new(self.clone())
     }
 }

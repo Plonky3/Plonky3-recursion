@@ -6,7 +6,7 @@ use crate::ops::MmcsVerifyConfig;
 /// Configuration for the circuit builder.
 #[derive(Debug, Clone, Default)]
 pub struct BuilderConfig {
-    /// Enabled non-primitive operation types with their respective configuration
+    /// Enabled non-primitive operation types with their respective configuration.
     enabled_ops: HashMap<NonPrimitiveOpType, NonPrimitiveOpConfig>,
 }
 
@@ -19,21 +19,21 @@ impl BuilderConfig {
     }
 
     /// Enables a non-primitive operation type with its configuration.
-    pub fn enable_op(&mut self, op: NonPrimitiveOpType, config: NonPrimitiveOpConfig) {
-        self.enabled_ops.insert(op, config);
+    pub fn enable_op(&mut self, op: NonPrimitiveOpType, cfg: NonPrimitiveOpConfig) {
+        self.enabled_ops.insert(op, cfg);
     }
 
-    /// Enables Mmcs verification operations with the given configuration.
-    pub fn enable_mmcs(&mut self, config: &MmcsVerifyConfig) {
+    /// Enables MMCS verification operations with the given configuration.
+    pub fn enable_mmcs(&mut self, mmcs_config: &MmcsVerifyConfig) {
         self.enable_op(
             NonPrimitiveOpType::MmcsVerify,
-            NonPrimitiveOpConfig::MmcsVerifyConfig(config.clone()),
+            NonPrimitiveOpConfig::MmcsVerifyConfig(mmcs_config.clone()),
         );
     }
 
     /// Enables FRI verification operations.
     pub fn enable_fri(&mut self) {
-        // TODO: Add FRI ops when they land
+        // TODO: Add FRI ops when available.
     }
 
     /// Checks whether an operation type is enabled.
@@ -49,11 +49,6 @@ impl BuilderConfig {
     /// Consumes the config and returns the enabled operations map.
     pub fn into_enabled_ops(self) -> HashMap<NonPrimitiveOpType, NonPrimitiveOpConfig> {
         self.enabled_ops
-    }
-
-    /// Returns a reference to the enabled operations map.
-    pub const fn enabled_ops(&self) -> &HashMap<NonPrimitiveOpType, NonPrimitiveOpConfig> {
-        &self.enabled_ops
     }
 }
 
