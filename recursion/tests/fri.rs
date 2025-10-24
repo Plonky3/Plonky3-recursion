@@ -3,7 +3,7 @@ use p3_challenger::{
     CanObserve, CanSampleBits, DuplexChallenger as Challenger, FieldChallenger, GrindingChallenger,
 };
 use p3_circuit::ops::MmcsVerifyConfig;
-use p3_circuit::{CircuitBuilder, MmcsPrivateData, NonPrimitiveOp, NonPrimitiveOpPrivateData};
+use p3_circuit::{CircuitBuilder, MmcsPrivateData, NonPrimitiveOpPrivateData};
 use p3_commit::Pcs;
 use p3_dft::Radix2DitParallel as Dft;
 use p3_field::coset::TwoAdicMultiplicativeCoset;
@@ -16,11 +16,6 @@ use p3_recursion::public_inputs::{CommitmentOpening, FriVerifierInputs};
 use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
-use tracing_forest::ForestLayer;
-use tracing_forest::util::LevelFilter;
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::{EnvFilter, Registry};
 
 type Challenge = ExtF<F, 4>;
 type MyChallenger = Challenger<F, Perm<16>, 16, 8>;
@@ -56,17 +51,6 @@ type CommitmentsWithPoints<const DIGEST_ELEMS: usize> = Vec<(
         Vec<(Challenge, Vec<Challenge>)>,
     )>,
 )>;
-
-fn init_logger() {
-    let env_filter = EnvFilter::builder()
-        .with_default_directive(LevelFilter::INFO.into())
-        .from_env_lossy();
-
-    Registry::default()
-        .with(env_filter)
-        .with(ForestLayer::default())
-        .init();
-}
 
 /// Helper: build one group's evaluation matrices for a given seed and sizes.
 fn make_evals(
@@ -415,8 +399,7 @@ fn run_fri_test(setup: FriSetup, build_only: bool) {
     assert_eq!(
         fri_targets.final_poly.len(),
         expected_final_poly_len,
-        "Circuit final polynomial should have {} coefficients",
-        expected_final_poly_len
+        "Circuit final polynomial should have {expected_final_poly_len} coefficients"
     );
 
     // 2) Public inputs for α, βs, index bits
@@ -466,7 +449,8 @@ fn run_fri_test(setup: FriSetup, build_only: bool) {
         &index_bits_t_per_query,
         &commitments_with_opening_points_targets,
         log_blowup,
-    );
+    )
+    .unwrap();
 
     builder.dump_allocation_log();
     let circuit = builder.build().unwrap();
@@ -492,13 +476,8 @@ fn run_fri_test(setup: FriSetup, build_only: bool) {
     for query in result_1.fri_proof.query_proofs.iter() {
         // For each batch in the input proof there must be one MmcsVerify op
         for batch in query.input_proof.iter() {
-            let (op_id, _, _) = match non_primitive_ops_iter.next() {
-                Some((
-                    op_id,
-                    NonPrimitiveOp::MmcsVerify {
-                        leaves, directions, ..
-                    },
-                )) => (op_id, leaves, directions),
+            let op_id = match non_primitive_ops_iter.next() {
+                Some((op_id, _)) => op_id,
                 _ => panic!("Expected MmcsVerify op"),
             };
             let siblings = batch
@@ -538,13 +517,8 @@ fn run_fri_test(setup: FriSetup, build_only: bool) {
     for query in result_2.fri_proof.query_proofs.iter() {
         // For each batch in the input proof there must be one MmcsVerify op
         for batch in query.input_proof.iter() {
-            let (op_id, _, _) = match non_primitive_ops_iter.next() {
-                Some((
-                    op_id,
-                    NonPrimitiveOp::MmcsVerify {
-                        leaves, directions, ..
-                    },
-                )) => (op_id, leaves, directions),
+            let op_id = match non_primitive_ops_iter.next() {
+                Some((op_id, _)) => op_id,
                 _ => panic!("Expected MmcsVerify op"),
             };
             let siblings = batch
@@ -605,8 +579,6 @@ fn test_circuit_fri_verifier_degree_3_final_poly() {
 
 #[test]
 fn test_circuit_fri_verifier_scoped_builder() {
-    init_logger();
-
     let groups = vec![vec![0u8, 5, 8, 8, 10], vec![8u8, 11], vec![4u8, 5, 8]];
     let setup = generate_setup(0, groups);
     run_fri_test(setup, true);

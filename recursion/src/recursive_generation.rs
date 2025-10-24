@@ -3,9 +3,9 @@ use alloc::vec::Vec;
 
 use itertools::zip_eq;
 use p3_air::Air;
-use p3_challenger::{CanObserve, CanSampleBits, FieldChallenger, GrindingChallenger};
+use p3_challenger::{CanObserve, CanSample, CanSampleBits, FieldChallenger, GrindingChallenger};
 use p3_commit::{BatchOpening, Mmcs, Pcs, PolynomialSpace};
-use p3_field::{PrimeCharacteristicRing, TwoAdicField};
+use p3_field::{Field, PrimeCharacteristicRing, PrimeField, TwoAdicField};
 use p3_fri::{FriProof, TwoAdicFriPcs};
 use p3_uni_stark::{
     Domain, Proof, StarkGenericConfig, SymbolicAirBuilder, Val, VerifierConstraintFolder,
@@ -193,7 +193,7 @@ impl<SC: StarkGenericConfig, Dft, InputMmcs: Mmcs<Val<SC>>, FriMmcs: Mmcs<SC::Ch
     PcsGeneration<SC, InnerFriProof<SC, InputMmcs, FriMmcs>>
     for TwoAdicFriPcs<Val<SC>, Dft, InputMmcs, FriMmcs>
 where
-    Val<SC>: TwoAdicField,
+    Val<SC>: TwoAdicField + PrimeField,
     SC::Challenger: FieldChallenger<Val<SC>>
         + GrindingChallenger<Witness = Val<SC>>
         + CanObserve<FriMmcs::Commitment>,
@@ -207,7 +207,10 @@ where
         extra_params: Option<&[usize]>,
     ) -> Result<Vec<SC::Challenge>, GenerationError> {
         let num_challenges =
-            1 + opening_proof.commit_phase_commits.len() + opening_proof.query_proofs.len();
+            <Self as PcsGeneration<SC, InnerFriProof<SC, InputMmcs, FriMmcs>>>::num_challenges(
+                opening_proof,
+                None,
+            )?;
         let mut challenges = Vec::with_capacity(num_challenges);
 
         // Observe all openings.
@@ -244,7 +247,25 @@ where
         }
         // Observe PoW and sample bits.
         let pow_bits = params[0];
-        if !challenger.check_witness(pow_bits, opening_proof.pow_witness) {
+        // Check PoW witness.
+        challenger.observe(opening_proof.pow_witness);
+
+        // Sample a challenge and decompose it into bits. Add all bits to the challenges.
+        let rand_f: Val<SC> = challenger.sample();
+        let rand_usize = rand_f.as_canonical_biguint().to_u64_digits()[0] as usize;
+        // Get the bits. The total number of bits is the number of bits in a base field element.
+        let total_num_bits = Val::<SC>::bits();
+        let rand_bits = (0..total_num_bits)
+            .map(|i| SC::Challenge::from_usize((rand_usize >> i) & 1))
+            .collect::<Vec<_>>();
+        // Push the sampled challenge, along with the bits.
+        challenges.push(SC::Challenge::from_usize(rand_usize));
+        challenges.extend(rand_bits);
+
+        // Check that the first bits are all 0.
+        let pow_challenge = rand_usize & ((1 << pow_bits) - 1);
+
+        if pow_challenge != 0 {
             return Err(GenerationError::InvalidPowWitness);
         }
 

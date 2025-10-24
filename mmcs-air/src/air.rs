@@ -571,13 +571,23 @@ mod test {
                 .collect();
             MmcsPrivateData::new(&mmcs_config, &path_siblings, compress.clone())
         });
+        let roots: [Vec<Val>; NUM_INPUTS] = array::from_fn(|i| {
+            private_data[i]
+                .compute_all_states(&mmcs_config, &leaves[i], &directions[i])
+                .unwrap()
+                .last()
+                .unwrap()
+                .0
+                .clone()
+        });
 
         let trace = MmcsTrace {
             mmcs_paths: private_data
                 .iter()
                 .zip(leaves)
                 .zip(directions)
-                .map(|((data, leaves), directions)| {
+                .zip(roots)
+                .map(|(((data, leaves), directions), root)| {
                     data.to_trace(
                         &mmcs_config,
                         &leaves,
@@ -586,6 +596,7 @@ mod test {
                             .map(|leaf| leaf.iter().map(|_| WitnessId(0)).collect())
                             .collect::<Vec<Vec<WitnessId>>>(),
                         &directions,
+                        &root,
                         &[WitnessId(0); DIGEST_ELEMS],
                     )
                     .unwrap()

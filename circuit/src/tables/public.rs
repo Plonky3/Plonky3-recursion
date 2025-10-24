@@ -1,7 +1,7 @@
 use alloc::vec::Vec;
 
 use crate::CircuitError;
-use crate::op::Prim;
+use crate::op::Op;
 use crate::types::WitnessId;
 
 /// Public input table.
@@ -24,13 +24,13 @@ pub struct PublicTrace<F> {
 
 /// Builder for generating public input traces.
 pub struct PublicTraceBuilder<'a, F> {
-    primitive_ops: &'a [Prim<F>],
+    primitive_ops: &'a [Op<F>],
     witness: &'a [Option<F>],
 }
 
 impl<'a, F: Clone> PublicTraceBuilder<'a, F> {
     /// Creates a new public trace builder.
-    pub fn new(primitive_ops: &'a [Prim<F>], witness: &'a [Option<F>]) -> Self {
+    pub fn new(primitive_ops: &'a [Op<F>], witness: &'a [Option<F>]) -> Self {
         Self {
             primitive_ops,
             witness,
@@ -43,7 +43,7 @@ impl<'a, F: Clone> PublicTraceBuilder<'a, F> {
         let mut values = Vec::new();
 
         for prim in self.primitive_ops {
-            if let Prim::Public { out, public_pos: _ } = prim {
+            if let Op::Public { out, public_pos: _ } = prim {
                 index.push(*out);
                 let value = self
                     .witness

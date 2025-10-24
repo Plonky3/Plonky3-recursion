@@ -1,7 +1,7 @@
 //! In this file, we define all the structures required to have a recursive version of `TwoAdicFriPcs`.
 
-use alloc::vec;
 use alloc::vec::Vec;
+use alloc::{format, vec};
 use core::marker::PhantomData;
 
 use p3_challenger::GrindingChallenger;
@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use crate::Target;
 use crate::circuit_challenger::CircuitChallenger;
 use crate::circuit_fri_verifier::verify_fri_circuit;
-use crate::circuit_verifier::ObservableCommitment;
+use crate::circuit_verifier::{ObservableCommitment, VerificationError};
 use crate::recursive_challenger::RecursiveChallenger;
 use crate::recursive_traits::{
     ComsWithOpeningsTargets, OpenedValuesTargets, ProofTargets, Recursive, RecursiveExtensionMmcs,
@@ -46,6 +46,7 @@ pub const MAX_QUERY_INDEX_BITS: usize = 31;
 pub struct FriVerifierParams {
     pub log_blowup: usize,
     pub log_final_poly_len: usize,
+    pub pow_bits: usize,
 }
 
 impl<M> From<&FriParameters<M>> for FriVerifierParams {
@@ -53,6 +54,7 @@ impl<M> From<&FriParameters<M>> for FriVerifierParams {
         Self {
             log_blowup: params.log_blowup,
             log_final_poly_len: params.log_final_poly_len,
+            pow_bits: params.proof_of_work_bits,
         }
     }
 }
@@ -553,7 +555,7 @@ where
         challenger: &mut CircuitChallenger<RATE>,
         proof_targets: &ProofTargets<SC, Comm, Self::RecursiveProof>,
         opened_values: &OpenedValuesTargets<SC>,
-        _params: &Self::VerifierParams,
+        params: &Self::VerifierParams,
     ) -> Vec<Target> {
         let fri_proof = &proof_targets.opening_proof;
 
@@ -575,6 +577,14 @@ where
 
         // Observe final polynomial coefficients
         challenger.observe_slice(circuit, &fri_proof.final_poly);
+
+        // Check PoW witness.
+        challenger.check_witness(
+            circuit,
+            params.pow_bits,
+            fri_proof.pow_witness.witness,
+            Val::<SC>::bits(),
+        );
 
         // Sample query indices
         let num_queries = fri_proof.query_proofs.len();
@@ -602,10 +612,11 @@ where
         >,
         opening_proof: &Self::RecursiveProof,
         params: &Self::VerifierParams,
-    ) {
+    ) -> Result<(), VerificationError> {
         let FriVerifierParams {
             log_blowup,
             log_final_poly_len,
+            pow_bits: _,
         } = *params;
         // Extract FRI challenges from the challenges slice.
         // Layout: [alpha, beta_0, ..., beta_{n-1}, query_0, ..., query_{m-1}]
@@ -618,20 +629,22 @@ where
 
         let alpha = challenges[0];
         let betas = &challenges[1..1 + num_betas];
+
         let query_indices = &challenges[1 + num_betas..1 + num_betas + num_queries];
 
         // Calculate the maximum height of the FRI proof tree.
         let log_max_height = num_betas + log_final_poly_len + log_blowup;
 
-        assert!(
-            log_max_height <= MAX_QUERY_INDEX_BITS,
-            "log_max_height {log_max_height} exceeds MAX_QUERY_INDEX_BITS {MAX_QUERY_INDEX_BITS}"
-        );
+        if log_max_height > MAX_QUERY_INDEX_BITS {
+            return Err(VerificationError::InvalidProofShape(format!(
+                "log_max_height {log_max_height} exceeds MAX_QUERY_INDEX_BITS {MAX_QUERY_INDEX_BITS}"
+            )));
+        }
 
         let index_bits_per_query: Vec<Vec<Target>> = query_indices
             .iter()
             .map(|&index_target| {
-                let all_bits = decompose_to_bits::<_, MAX_QUERY_INDEX_BITS>(circuit, index_target);
+                let all_bits = decompose_to_bits(circuit, index_target, MAX_QUERY_INDEX_BITS);
                 all_bits.into_iter().take(log_max_height).collect()
             })
             .collect();
@@ -644,7 +657,7 @@ where
             &index_bits_per_query,
             commitments_with_opening_points,
             log_blowup,
-        );
+        )
     }
 
     fn selectors_at_point_circuit(

@@ -4,9 +4,10 @@ use alloc::vec::Vec;
 use hashbrown::{HashMap, HashSet};
 use p3_field::PrimeCharacteristicRing;
 
+use crate::Op;
 use crate::builder::CircuitBuilderError;
+use crate::builder::compiler::get_witness_id;
 use crate::expr::{Expr, ExpressionGraph};
-use crate::op::Prim;
 use crate::types::{ExprId, WitnessAllocator, WitnessId};
 
 /// Sparse disjoint-set "find" with path compression over a HashMap (iterative).
@@ -105,7 +106,7 @@ where
         mut self,
     ) -> Result<
         (
-            Vec<Prim<F>>,
+            Vec<Op<F>>,
             Vec<WitnessId>,
             HashMap<ExprId, WitnessId>,
             HashMap<ExprId, WitnessId>,
@@ -136,7 +137,7 @@ where
             if let Expr::Const(val) = expr {
                 let id = ExprId(expr_idx as u32);
                 let w = self.witness_alloc.alloc();
-                primitive_ops.push(Prim::Const {
+                primitive_ops.push(Op::Const {
                     out: w,
                     val: val.clone(),
                 });
@@ -168,7 +169,7 @@ where
 
                 let out_widx = alloc_witness_id_for_expr(expr_idx);
 
-                primitive_ops.push(Prim::Public {
+                primitive_ops.push(Op::Public {
                     out: out_widx,
                     public_pos: *pos,
                 });
@@ -183,19 +184,26 @@ where
             let expr_id = ExprId(expr_idx as u32);
             match expr {
                 Expr::Const(_) | Expr::Public(_) => { /* handled above */ }
+                Expr::Witness => {
+                    // Allocate a fresh witness slot (non-primitive op)
+                    // Allows non-primitive operations to set values during execution that
+                    // are not part of the central Witness bus.
+                    let out_widx = alloc_witness_id_for_expr(expr_idx);
+                    expr_to_widx.insert(expr_id, out_widx);
+                }
                 Expr::Add { lhs, rhs } => {
                     let out_widx = alloc_witness_id_for_expr(expr_idx);
-                    let a_widx = Self::get_witness_id(
+                    let a_widx = get_witness_id(
                         &expr_to_widx,
                         *lhs,
                         &alloc::format!("Add lhs for {expr_id:?}"),
                     )?;
-                    let b_widx = Self::get_witness_id(
+                    let b_widx = get_witness_id(
                         &expr_to_widx,
                         *rhs,
                         &alloc::format!("Add rhs for {expr_id:?}"),
                     )?;
-                    primitive_ops.push(Prim::Add {
+                    primitive_ops.push(Op::Add {
                         a: a_widx,
                         b: b_widx,
                         out: out_widx,
@@ -204,18 +212,18 @@ where
                 }
                 Expr::Sub { lhs, rhs } => {
                     let result_widx = alloc_witness_id_for_expr(expr_idx);
-                    let lhs_widx = Self::get_witness_id(
+                    let lhs_widx = get_witness_id(
                         &expr_to_widx,
                         *lhs,
                         &alloc::format!("Sub lhs for {expr_id:?}"),
                     )?;
-                    let rhs_widx = Self::get_witness_id(
+                    let rhs_widx = get_witness_id(
                         &expr_to_widx,
                         *rhs,
                         &alloc::format!("Sub rhs for {expr_id:?}"),
                     )?;
                     // Encode lhs - rhs = result as result + rhs = lhs.
-                    primitive_ops.push(Prim::Add {
+                    primitive_ops.push(Op::Add {
                         a: rhs_widx,
                         b: result_widx,
                         out: lhs_widx,
@@ -224,17 +232,17 @@ where
                 }
                 Expr::Mul { lhs, rhs } => {
                     let out_widx = alloc_witness_id_for_expr(expr_idx);
-                    let a_widx = Self::get_witness_id(
+                    let a_widx = get_witness_id(
                         &expr_to_widx,
                         *lhs,
                         &alloc::format!("Mul lhs for {expr_id:?}"),
                     )?;
-                    let b_widx = Self::get_witness_id(
+                    let b_widx = get_witness_id(
                         &expr_to_widx,
                         *rhs,
                         &alloc::format!("Mul rhs for {expr_id:?}"),
                     )?;
-                    primitive_ops.push(Prim::Mul {
+                    primitive_ops.push(Op::Mul {
                         a: a_widx,
                         b: b_widx,
                         out: out_widx,
@@ -244,17 +252,17 @@ where
                 Expr::Div { lhs, rhs } => {
                     // lhs / rhs = out  is encoded as rhs * out = lhs
                     let b_widx = alloc_witness_id_for_expr(expr_idx);
-                    let out_widx = Self::get_witness_id(
+                    let out_widx = get_witness_id(
                         &expr_to_widx,
                         *lhs,
                         &alloc::format!("Div lhs for {expr_id:?}"),
                     )?;
-                    let a_widx = Self::get_witness_id(
+                    let a_widx = get_witness_id(
                         &expr_to_widx,
                         *rhs,
                         &alloc::format!("Div rhs for {expr_id:?}"),
                     )?;
-                    primitive_ops.push(Prim::Mul {
+                    primitive_ops.push(Op::Mul {
                         a: a_widx,
                         b: b_widx,
                         out: out_widx,
@@ -273,21 +281,6 @@ where
             public_mappings,
             witness_count,
         ))
-    }
-
-    /// Helper function to get WitnessId with descriptive error messages
-    fn get_witness_id(
-        expr_to_widx: &HashMap<ExprId, WitnessId>,
-        expr_id: ExprId,
-        context: &str,
-    ) -> Result<WitnessId, CircuitBuilderError> {
-        expr_to_widx
-            .get(&expr_id)
-            .copied()
-            .ok_or_else(|| CircuitBuilderError::MissingExprMapping {
-                expr_id,
-                context: context.into(),
-            })
     }
 }
 
@@ -413,28 +406,28 @@ mod tests {
 
         // Constants (Pass A): zero, one, three, seven
         match &prims[0] {
-            Prim::Const { out, val } => {
+            Op::Const { out, val } => {
                 assert_eq!(out.0, 0);
                 assert_eq!(*val, BabyBear::ZERO);
             }
             _ => panic!("Expected Const at position 0"),
         }
         match &prims[1] {
-            Prim::Const { out, val } => {
+            Op::Const { out, val } => {
                 assert_eq!(out.0, 1);
                 assert_eq!(*val, BabyBear::ONE);
             }
             _ => panic!("Expected Const at position 1"),
         }
         match &prims[2] {
-            Prim::Const { out, val } => {
+            Op::Const { out, val } => {
                 assert_eq!(out.0, 2);
                 assert_eq!(*val, BabyBear::from_u64(3));
             }
             _ => panic!("Expected Const at position 2"),
         }
         match &prims[3] {
-            Prim::Const { out, val } => {
+            Op::Const { out, val } => {
                 assert_eq!(out.0, 3);
                 assert_eq!(*val, BabyBear::from_u64(7));
             }
@@ -443,21 +436,21 @@ mod tests {
 
         // Public inputs (Pass B): p0, p1, p2
         match &prims[4] {
-            Prim::Public { out, public_pos } => {
+            Op::Public { out, public_pos } => {
                 assert_eq!(out.0, 4);
                 assert_eq!(*public_pos, 0);
             }
             _ => panic!("Expected Public at position 4"),
         }
         match &prims[5] {
-            Prim::Public { out, public_pos } => {
+            Op::Public { out, public_pos } => {
                 assert_eq!(out.0, 5);
                 assert_eq!(*public_pos, 1);
             }
             _ => panic!("Expected Public at position 5"),
         }
         match &prims[6] {
-            Prim::Public { out, public_pos } => {
+            Op::Public { out, public_pos } => {
                 assert_eq!(out.0, 6);
                 assert_eq!(*public_pos, 2);
             }
@@ -467,7 +460,7 @@ mod tests {
         // Arithmetic operations (Pass C): Add, Mul, Add (encoding Sub), Mul (encoding Div)
         // Add: sum = p0 + p1
         match &prims[7] {
-            Prim::Add { a, b, out } => {
+            Op::Add { a, b, out } => {
                 assert_eq!(*a, WitnessId(4)); // p0
                 assert_eq!(*b, WitnessId(5)); // p1
                 assert_eq!(out.0, 7); // sum
@@ -477,7 +470,7 @@ mod tests {
 
         // Mul: prod = sum * c3
         match &prims[8] {
-            Prim::Mul { a, b, out } => {
+            Op::Mul { a, b, out } => {
                 assert_eq!(*a, WitnessId(7)); // sum
                 assert_eq!(*b, WitnessId(2)); // c_three
                 assert_eq!(out.0, 8); // prod
@@ -487,7 +480,7 @@ mod tests {
 
         // Sub encoded as Add: diff + c7 = prod
         match &prims[9] {
-            Prim::Add { a, b, out } => {
+            Op::Add { a, b, out } => {
                 assert_eq!(*a, WitnessId(3)); // c_seven (rhs)
                 assert_eq!(*b, WitnessId(9)); // diff (result)
                 assert_eq!(*out, WitnessId(8)); // prod (lhs)
@@ -497,7 +490,7 @@ mod tests {
 
         // Div encoded as Mul: p2 * quot = diff
         match &prims[10] {
-            Prim::Mul { a, b, out } => {
+            Op::Mul { a, b, out } => {
                 assert_eq!(*a, WitnessId(6)); // p2 (divisor)
                 assert_eq!(*b, WitnessId(10)); // quot (result)
                 assert_eq!(*out, WitnessId(9)); // diff (dividend)
@@ -582,28 +575,28 @@ mod tests {
 
         // Constants
         match &prims[0] {
-            Prim::Const { out, val } => {
+            Op::Const { out, val } => {
                 assert_eq!(out.0, 0);
                 assert_eq!(*val, BabyBear::ZERO);
             }
             _ => panic!("Expected Const(0) at position 0"),
         }
         match &prims[1] {
-            Prim::Const { out, val } => {
+            Op::Const { out, val } => {
                 assert_eq!(out.0, 1);
                 assert_eq!(*val, BabyBear::ONE);
             }
             _ => panic!("Expected Const(1) at position 1"),
         }
         match &prims[2] {
-            Prim::Const { out, val } => {
+            Op::Const { out, val } => {
                 assert_eq!(out.0, 2); // c42's witness (will be shared with p0)
                 assert_eq!(*val, BabyBear::from_u64(42));
             }
             _ => panic!("Expected Const(42) at position 2"),
         }
         match &prims[3] {
-            Prim::Const { out, val } => {
+            Op::Const { out, val } => {
                 assert_eq!(out.0, 3);
                 assert_eq!(*val, BabyBear::from_u64(99));
             }
@@ -612,35 +605,35 @@ mod tests {
 
         // Public inputs
         match &prims[4] {
-            Prim::Public { out, public_pos } => {
+            Op::Public { out, public_pos } => {
                 assert_eq!(out.0, 2); // Shares witness with c42
                 assert_eq!(*public_pos, 0);
             }
             _ => panic!("Expected Public(0) at position 4"),
         }
         match &prims[5] {
-            Prim::Public { out, public_pos } => {
+            Op::Public { out, public_pos } => {
                 assert_eq!(out.0, 4); // New witness for p1 group
                 assert_eq!(*public_pos, 1);
             }
             _ => panic!("Expected Public(1) at position 5"),
         }
         match &prims[6] {
-            Prim::Public { out, public_pos } => {
+            Op::Public { out, public_pos } => {
                 assert_eq!(out.0, 4); // Shares witness with p1
                 assert_eq!(*public_pos, 2);
             }
             _ => panic!("Expected Public(2) at position 6"),
         }
         match &prims[7] {
-            Prim::Public { out, public_pos } => {
+            Op::Public { out, public_pos } => {
                 assert_eq!(out.0, 4); // Shares witness with p1, p2
                 assert_eq!(*public_pos, 3);
             }
             _ => panic!("Expected Public(3) at position 7"),
         }
         match &prims[8] {
-            Prim::Public { out, public_pos } => {
+            Op::Public { out, public_pos } => {
                 assert_eq!(out.0, 5); // New witness for p4 group
                 assert_eq!(*public_pos, 4);
             }
@@ -649,7 +642,7 @@ mod tests {
 
         // Add operation: sum = p0 + c1
         match &prims[9] {
-            Prim::Add { a, b, out } => {
+            Op::Add { a, b, out } => {
                 assert_eq!(*a, WitnessId(2)); // p0 (shares with c42)
                 assert_eq!(*b, WitnessId(1)); // c1
                 assert_eq!(*out, WitnessId(5)); // sum (shares with p4)
@@ -746,8 +739,7 @@ mod tests {
 
         // Test 3: Helper function error propagation
         let expr_map = HashMap::new();
-        let result =
-            ExpressionLowerer::<BabyBear>::get_witness_id(&expr_map, ExprId(77), "test context");
+        let result = get_witness_id(&expr_map, ExprId(77), "test context");
 
         match result {
             Err(CircuitBuilderError::MissingExprMapping { expr_id, context }) => {
