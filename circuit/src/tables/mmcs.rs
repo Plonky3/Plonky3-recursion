@@ -176,30 +176,14 @@ impl<F: Field + Clone + Default> MmcsPrivateData<F> {
             });
         }
 
-        // In the first iteration the leaf is assigned to the state, consequently
-        // there's no
-        // We need an empty leaf to replace the one we already assigned to the state;
+        // The first element is just the leaf.
+
         let empty_leaf = vec![];
         for (&dir, sibling, leaf) in izip!(
             directions.iter(),
             siblings.iter(),
             iter::once(&empty_leaf).chain(leaves.iter().skip(1))
         ) {
-            path_states.push((
-                state.to_vec(),
-                // If there's a leaf at this depth we need to compute an extra state
-                if leaf.is_empty() {
-                    None
-                } else {
-                    let state_as_slice = config.ext_to_base(&state)?;
-                    let leaf_as_slice = config.ext_to_base(leaf)?;
-                    let new_state =
-                        config.base_to_ext(&compress.compress([state_as_slice, leaf_as_slice]))?;
-                    state = new_state.clone();
-                    Some(new_state)
-                },
-            ));
-
             let state_as_slice = config.ext_to_base(&state)?;
             let sibling_as_slice = config.ext_to_base(sibling)?;
 
@@ -208,11 +192,24 @@ impl<F: Field + Clone + Default> MmcsPrivateData<F> {
             } else {
                 [sibling_as_slice, state_as_slice]
             };
-            state = config.base_to_ext(&compress.compress(input))?;
+            let new_state = config.base_to_ext(&compress.compress(input))?;
+            path_states.push((
+                state.clone(),
+                // If there's a leaf at this depth we need to compute an extra state
+                if leaf.is_empty() {
+                    state = new_state;
+                    None
+                } else {
+                    let state_as_slice = config.ext_to_base(&new_state)?;
+                    let leaf_as_slice = config.ext_to_base(leaf)?;
+                    state =
+                        config.base_to_ext(&compress.compress([state_as_slice, leaf_as_slice]))?;
+                    Some(new_state)
+                },
+            ));
         }
-        // Append the final state (root).
-        path_states.push((state.to_vec(), None));
-        // Check that there's no extra state in the last step
+        // Finally, push the root
+        path_states.push((state.clone(), None));
 
         Ok(private_data)
     }
@@ -436,10 +433,10 @@ impl<'a, F: CircuitField> MmcsTraceBuilder<'a, F> {
 mod tests {
     use alloc::vec;
 
-    use p3_baby_bear::BabyBear;
+    use p3_baby_bear::{BabyBear, Poseidon2BabyBear, default_babybear_poseidon2_16};
     use p3_field::PrimeCharacteristicRing;
     use p3_field::extension::BinomialExtensionField;
-    use p3_symmetric::PseudoCompressionFunction;
+    use p3_symmetric::{PseudoCompressionFunction, TruncatedPermutation};
 
     use super::*;
     use crate::NonPrimitiveOpPrivateData;
@@ -448,16 +445,6 @@ mod tests {
     use crate::ops::MmcsOps;
 
     type F = BinomialExtensionField<BabyBear, 4>;
-
-    #[derive(Clone, Debug)]
-    /// A trivial compression function which compress [a, b] by returning a.
-    struct MockCompression {}
-
-    impl PseudoCompressionFunction<[BabyBear; 1], 2> for MockCompression {
-        fn compress(&self, input: [[BabyBear; 1]; 2]) -> [BabyBear; 1] {
-            input[0]
-        }
-    }
 
     #[test]
     fn test_mmcs_private_data() {
@@ -473,27 +460,34 @@ mod tests {
         ];
         let directions = [false, true, true];
 
+        let perm = default_babybear_poseidon2_16();
+        let compress: TruncatedPermutation<Poseidon2BabyBear<16>, 2, 1, 16> =
+            TruncatedPermutation::new(perm);
+
+        // At level 1 dir = false and state0 = leaf, the first input is [2, 1] and thus compress.compress(input) = state1.
+        let state1 = compress.compress([[BabyBear::from_u64(2)], [BabyBear::from_u64(1)]]);
+        // At level 2 there is an extra leaf, so we do two compressions.
+        // In the first one direction = true then input is [state1, 3] and compress.compress(input) = state2
+        let state2 = compress.compress([state1, [BabyBear::from_u64(3)]]);
+        // In the second compression of level 2 input is [state2, 4] and compress.compress(input) = state3
+        let state3 = compress.compress([state2, [BabyBear::from_u64(4)]]);
+        // direction = true and then input is [state3, 5] compress.compress(input) = state4
+        let state4 = compress.compress([state3, [BabyBear::from_u64(5)]]);
+
         let expected_private_data = MmcsPrivateData {
             path_states: vec![
                 // The first state is the leaf.
                 (vec![BabyBear::from_u64(1)], None),
-                // At level 1 there is a leaf, so we do two compressions.
-                // Since dir = false, the first input is [2, 1] and thus compress.compress(input) = 2.
-                // The leaf is 4 thu input is [2, 4] and compress.compress(input) = 2
-                (
-                    vec![BabyBear::from_u64(2)],
-                    Some(vec![BabyBear::from_u64(2)]),
-                ),
-                // direction = true and then input is [2, 5] compress.compress(input) = 2
-                (vec![BabyBear::from_u64(2)], None),
+                // Here there's an extra leaf
+                (state1.to_vec(), Some(state2.to_vec())),
+                (state3.to_vec(), None),
                 // final root state after the full path
-                (vec![BabyBear::from_u64(2)], None),
+                (state4.to_vec(), None),
             ],
             path_siblings: siblings.to_vec(),
             directions: directions.to_vec(),
         };
 
-        let compress = MockCompression {};
         // Use a config that supports the path length used in this test.
         let config = MmcsVerifyConfig {
             base_field_digest_elems: 1,
@@ -516,10 +510,12 @@ mod tests {
     #[test]
     fn test_mmcs_path_too_tall_rejected() {
         // Path length (3) exceeds configured max_tree_height (2)
-        let compress = MockCompression {};
+        let perm = default_babybear_poseidon2_16();
+        let compress: TruncatedPermutation<Poseidon2BabyBear<16>, 2, 1, 16> =
+            TruncatedPermutation::new(perm);
         let config = MmcsVerifyConfig {
-            base_field_digest_elems: 1,
-            ext_field_digest_elems: 1,
+            base_field_digest_elems: 8,
+            ext_field_digest_elems: 8,
             max_tree_height: 2,
         };
 
@@ -544,20 +540,11 @@ mod tests {
         );
     }
 
-    // We need to add a less simple compression function for the next test.
-    // Otherwise, it will not catch some errors.
-    #[derive(Clone)]
-    struct AddCompression {}
-
-    impl PseudoCompressionFunction<[BabyBear; 1], 2> for AddCompression {
-        fn compress(&self, input: [[BabyBear; 1]; 2]) -> [BabyBear; 1] {
-            [input[0][0] + input[1][0]]
-        }
-    }
-
     #[test]
     fn test_mmcs_witness_validation() {
-        let compress = AddCompression {};
+        let perm = default_babybear_poseidon2_16();
+        let compress: TruncatedPermutation<Poseidon2BabyBear<16>, 2, 1, 16> =
+            TruncatedPermutation::new(perm);
         // Use config with max_tree_height=4 to support 3 layers + 1 extra sibling
         let config = MmcsVerifyConfig {
             base_field_digest_elems: 1,
@@ -673,7 +660,9 @@ mod tests {
 
     #[test]
     fn test_mmcs_traces_fields() {
-        let compress = MockCompression {};
+        let perm = default_babybear_poseidon2_16();
+        let compress: TruncatedPermutation<Poseidon2BabyBear<16>, 2, 1, 16> =
+            TruncatedPermutation::new(perm);
         let config = MmcsVerifyConfig {
             base_field_digest_elems: 1,
             ext_field_digest_elems: 1,
