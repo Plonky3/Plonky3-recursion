@@ -1,15 +1,17 @@
 use alloc::boxed::Box;
-use alloc::vec;
+use alloc::string::ToString;
 use alloc::vec::Vec;
+use alloc::{format, vec};
+use core::cmp::Reverse;
 use core::hash::Hash;
+use core::ops::Range;
 
+use itertools::Itertools;
 use p3_field::{ExtensionField, Field};
+use p3_matrix::Dimensions;
 
 use crate::builder::{CircuitBuilder, CircuitBuilderError};
-use crate::op::{
-    ExecutionContext, NonPrimitiveExecutor, NonPrimitiveOpConfig, NonPrimitiveOpPrivateData,
-    NonPrimitiveOpType,
-};
+use crate::op::{ExecutionContext, NonPrimitiveExecutor, NonPrimitiveOpConfig, NonPrimitiveOpType};
 use crate::types::{ExprId, WitnessId};
 use crate::{CircuitError, NonPrimitiveOpId};
 
@@ -27,10 +29,25 @@ pub struct MmcsVerifyConfig {
 }
 
 impl MmcsVerifyConfig {
-    /// Returns the total number of witness elements consumed by the op.
-    /// Layout: leaf (ext) + index (1) + root (ext)
-    pub const fn input_size(&self) -> usize {
-        2 * self.ext_field_digest_elems + 1
+    /// Returns the range in which valid number of inputs lie. The minimum is 3,
+    /// a single leaf, a vector of directions, and a root, or self.max_tree_height leaves
+    /// and a vector of directions and root.
+    pub const fn input_size(&self) -> Range<usize> {
+        3..self.max_tree_height + 2 + 1
+    }
+
+    /// Returns the number of inputs (witness elements) received.
+    pub const fn leaves_size(&self) -> Range<usize> {
+        // `ext_field_digest_elems` for the leaf and root and 1 for the index
+        self.directions_size()
+    }
+
+    pub const fn directions_size(&self) -> Range<usize> {
+        1..self.max_tree_height + 1
+    }
+
+    pub const fn root_size(&self) -> usize {
+        self.ext_field_digest_elems
     }
 
     /// MMCS verify is an assert-only op and does not produce outputs.
@@ -51,7 +68,7 @@ impl MmcsVerifyConfig {
         if digest.len() != self.ext_field_digest_elems {
             return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
                 op: NonPrimitiveOpType::MmcsVerify,
-                expected: self.ext_field_digest_elems,
+                expected: self.ext_field_digest_elems.to_string(),
                 got: digest.len(),
             });
         }
@@ -73,7 +90,7 @@ impl MmcsVerifyConfig {
         let arr: [F; DIGEST_ELEMS] = flattened.try_into().map_err(|_| {
             CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
                 op: NonPrimitiveOpType::MmcsVerify,
-                expected: DIGEST_ELEMS,
+                expected: DIGEST_ELEMS.to_string(),
                 got: len,
             }
         })?;
@@ -96,7 +113,7 @@ impl MmcsVerifyConfig {
         if digest.len() != self.base_field_digest_elems {
             return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
                 op: NonPrimitiveOpType::MmcsVerify,
-                expected: self.base_field_digest_elems,
+                expected: self.base_field_digest_elems.to_string(),
                 got: digest.len(),
             });
         }
@@ -119,6 +136,62 @@ impl MmcsVerifyConfig {
         } else {
             Ok(digest.iter().map(|&x| EF::from(x)).collect())
         }
+    }
+
+    /// Given a vector of leaves and dimesions it formats the leaves
+    /// into a vec of size `max_height`, where each entry contains the leaves
+    /// corresponding to that height. Leaves for heights that do not exist
+    /// in the input are empty vectors.
+    pub fn format_leaves<T: Clone>(
+        &self,
+        leaves: &[Vec<T>],
+        dimensions: &[Dimensions],
+        max_height_log: usize,
+    ) -> Result<Vec<Vec<T>>, CircuitError> {
+        if leaves.len() > max_height_log {
+            return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
+                op: NonPrimitiveOpType::MmcsVerify,
+                expected: format!("at most {}", max_height_log),
+                got: leaves.len(),
+            });
+        }
+
+        let mut heights_tallest_first = dimensions
+            .iter()
+            .enumerate()
+            .sorted_by_key(|(_, dims)| Reverse(dims.height))
+            .peekable();
+
+        // Matrix heights that round up to the same power of two must be equal
+        if !heights_tallest_first
+            .clone()
+            .map(|(_, dims)| dims.height)
+            .tuple_windows()
+            .all(|(curr, next)| {
+                curr == next || curr.next_power_of_two() != next.next_power_of_two()
+            })
+        {
+            panic!("Heights that round up to the same power of two must be equal"); //TODO: Add errors
+        }
+
+        let mut formatted_leaves = vec![vec![]; max_height_log];
+        for (curr_height, leaf) in formatted_leaves
+            .iter_mut()
+            .enumerate()
+            .map(|(i, leaf)| (1 << (max_height_log - i), leaf))
+        {
+            // Get the initial height padded to a power of two. As heights_tallest_first is sorted,
+            // the initial height will be the maximum height.
+            // Returns an error if either:
+            //              1. proof.len() != log_max_height
+            //              2. heights_tallest_first is empty.
+            let new_leaf = heights_tallest_first
+                .peeking_take_while(|(_, dims)| dims.height.next_power_of_two() == curr_height)
+                .flat_map(|(i, _)| leaves[i].clone())
+                .collect();
+            *leaf = new_leaf;
+        }
+        Ok(formatted_leaves)
     }
 
     pub fn mock_config() -> Self {
@@ -194,7 +267,7 @@ pub trait MmcsOps<F> {
     /// Add a Mmcs verification constraint (non-primitive operation)
     ///
     /// Non-primitive operations are complex constraints that:
-    /// - Take existing expressions as inputs (leaf_expr, index_expr, root_expr)
+    /// - Take existing expressions as inputs (leaves_expr, directions_expr, root_expr)
     /// - Add verification constraints to the circuit
     /// - Don't produce new ExprIds (unlike primitive ops)
     /// - Are kept separate from primitives to avoid disrupting optimization
@@ -202,8 +275,8 @@ pub trait MmcsOps<F> {
     /// Returns an operation ID for setting private data later during execution.
     fn add_mmcs_verify(
         &mut self,
-        leaf_expr: &[ExprId],
-        index_expr: &ExprId,
+        leaves_expr: &[Vec<ExprId>],
+        directions_expr: &[ExprId],
         root_expr: &[ExprId],
     ) -> Result<NonPrimitiveOpId, CircuitBuilderError>;
 }
@@ -214,19 +287,23 @@ where
 {
     fn add_mmcs_verify(
         &mut self,
-        leaf_expr: &[ExprId],
-        index_expr: &ExprId,
+        leaves_expr: &[Vec<ExprId>],
+        directions_expr: &[ExprId],
         root_expr: &[ExprId],
     ) -> Result<NonPrimitiveOpId, CircuitBuilderError> {
         self.ensure_op_enabled(NonPrimitiveOpType::MmcsVerify)?;
 
-        let mut inputs = vec![];
-        inputs.extend(leaf_expr);
-        inputs.push(*index_expr);
-        // Include root exprs as inputs for the non-primitive op; they are asserted
-        inputs.extend(root_expr);
-
-        Ok(self.push_non_primitive_op(NonPrimitiveOpType::MmcsVerify, inputs, "mmcs_verify"))
+        let mut witness_exprs = vec![];
+        witness_exprs.extend(leaves_expr.to_vec());
+        witness_exprs.push(directions_expr.to_vec());
+        witness_exprs.push(root_expr.to_vec());
+        Ok(
+            self.push_non_primitive_op(
+                NonPrimitiveOpType::MmcsVerify,
+                witness_exprs,
+                "mmcs_verify",
+            ),
+        )
     }
 }
 
@@ -257,8 +334,8 @@ impl Default for MmcsVerifyExecutor {
 impl<F: Field> NonPrimitiveExecutor<F> for MmcsVerifyExecutor {
     fn execute(
         &self,
-        inputs: &[WitnessId],
-        _outputs: &[WitnessId],
+        inputs: &[Vec<WitnessId>],
+        _outputs: &[Vec<WitnessId>],
         ctx: &mut ExecutionContext<F>,
     ) -> Result<(), CircuitError> {
         // Get the configuration
@@ -271,89 +348,41 @@ impl<F: Field> NonPrimitiveExecutor<F> for MmcsVerifyExecutor {
             }
         };
 
-        // Get private data
-        let NonPrimitiveOpPrivateData::MmcsVerify(private_data) = ctx.get_private_data()?;
-
         // Validate input size: leaf(ext) + index(1) + root(ext)
-        let ext_digest_elems = config.ext_field_digest_elems;
-        let min_inputs = ext_digest_elems + 1 + ext_digest_elems;
-        if inputs.len() < min_inputs {
+        if !config.input_size().contains(&inputs.len()) {
             return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
                 op: self.op_type.clone(),
-                expected: min_inputs,
+                expected: format!("{:?}", config.input_size()),
                 got: inputs.len(),
             });
         }
 
-        // Extract leaf, index, and root from inputs
-        let leaf_wids = &inputs[..ext_digest_elems];
-        let index_wid = inputs[ext_digest_elems];
-        let root_wids = &inputs[ext_digest_elems + 1..ext_digest_elems + 1 + ext_digest_elems];
+        let directions = &inputs[inputs.len() - 2];
+        let leaves = &inputs[0..directions.len()];
 
-        // Validate leaf values match private data
-        let witness_leaf: Vec<F> = leaf_wids
+        // Validate that the witness data is consistent with public inputs
+        // Check leaf values
+        let witness_leaves: Vec<Vec<F>> = leaves
+            .iter()
+            .map(|leaf| {
+                leaf.iter()
+                    .map(|&wid| ctx.get_witness(wid))
+                    .collect::<Result<Vec<F>, _>>()
+            })
+            .collect::<Result<_, _>>()?;
+
+        let witness_directions = directions
             .iter()
             .map(|&wid| ctx.get_witness(wid))
-            .collect::<Result<_, _>>()?;
-        let private_data_leaf = private_data.path_states.first().ok_or(
-            CircuitError::NonPrimitiveOpMissingPrivateData {
-                operation_index: ctx.operation_id(),
-            },
-        )?;
-        if witness_leaf != *private_data_leaf {
+            .collect::<Result<Vec<F>, _>>()?;
+        // Check that the number of leaves is the same as the number of directions
+        if witness_directions.len() != witness_leaves.len() {
             return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
-                op: self.op_type.clone(),
-                operation_index: ctx.operation_id(),
-                expected: alloc::format!("leaf: {witness_leaf:?}"),
-                got: alloc::format!("leaf: {private_data_leaf:?}"),
+                op: NonPrimitiveOpType::MmcsVerify,
+                operation_index: ctx.operation_id(), // TODO: What's the operation id of the curre
+                expected: alloc::format!("{:?}", witness_directions.len()),
+                got: alloc::format!("{:?}", witness_leaves.len()),
             });
-        }
-
-        // Validate index value matches private directions (as u64)
-        let priv_index_u64: u64 = private_data
-            .directions
-            .iter()
-            .enumerate()
-            .filter_map(|(i, &b)| if b { Some(1u64 << i) } else { None })
-            .sum();
-        let idx_f = ctx.get_witness(index_wid)?;
-        if idx_f != F::from_u64(priv_index_u64) {
-            return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
-                op: self.op_type.clone(),
-                operation_index: ctx.operation_id(),
-                expected: alloc::format!("public index value {}", F::from_u64(priv_index_u64)),
-                got: alloc::format!("{idx_f:?}"),
-            });
-        }
-
-        // Verify roots match exactly (assert op; do not write)
-        let private_data_root = private_data
-            .path_states
-            .last()
-            .ok_or(CircuitError::NonPrimitiveOpMissingPrivateData {
-                operation_index: ctx.operation_id(),
-            })?
-            .clone();
-
-        // Ensure lengths match
-        if root_wids.len() != private_data_root.len() {
-            return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
-                op: self.op_type.clone(),
-                expected: private_data_root.len(),
-                got: root_wids.len(),
-            });
-        }
-
-        for (i, &wid) in root_wids.iter().enumerate() {
-            let existing = ctx.get_witness(wid)?;
-            if existing != private_data_root[i] {
-                return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
-                    op: self.op_type.clone(),
-                    operation_index: ctx.operation_id(),
-                    expected: alloc::format!("root: {private_data_root:?}"),
-                    got: alloc::format!("root witness at {wid:?}"),
-                });
-            }
         }
 
         Ok(())

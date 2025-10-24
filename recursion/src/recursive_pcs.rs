@@ -111,6 +111,19 @@ impl<
         }
     }
 
+    fn get_targets(&self) -> Vec<Target> {
+        let mut wires = vec![];
+        for commit in &self.commit_phase_commits {
+            wires.extend(commit.get_targets());
+        }
+        for query in &self.query_proofs {
+            wires.extend(query.get_targets());
+        }
+        wires.extend(self.final_poly.iter());
+        wires.extend(self.pow_witness.get_targets());
+        wires
+    }
+
     fn get_values(input: &Self::Input) -> Vec<EF> {
         let FriProof {
             commit_phase_commits,
@@ -169,6 +182,15 @@ impl<
         }
     }
 
+    fn get_targets(&self) -> Vec<Target> {
+        let mut wires = vec![];
+        wires.extend(self.input_proof.get_targets());
+        for opening in &self.commit_phase_openings {
+            wires.extend(opening.get_targets());
+        }
+        wires
+    }
+
     fn get_values(input: &Self::Input) -> Vec<EF> {
         let QueryProof {
             input_proof,
@@ -212,6 +234,12 @@ impl<F: Field, EF: ExtensionField<F>, RecMmcs: RecursiveExtensionMmcs<F, EF>> Re
             opening_proof,
             _phantom: PhantomData,
         }
+    }
+
+    fn get_targets(&self) -> Vec<Target> {
+        let mut wires = vec![self.sibling_value];
+        wires.extend(self.opening_proof.get_targets());
+        wires
     }
 
     fn get_values(input: &Self::Input) -> Vec<EF> {
@@ -258,6 +286,15 @@ impl<F: Field, EF: ExtensionField<F>, Inner: RecursiveMmcs<F, EF>> Recursive<EF>
         }
     }
 
+    fn get_targets(&self) -> Vec<Target> {
+        let mut wires = vec![];
+        for inner in &self.opened_values {
+            wires.extend(inner.iter());
+        }
+        wires.extend(self.opening_proof.get_targets());
+        wires
+    }
+
     fn get_values(input: &Self::Input) -> Vec<EF> {
         let BatchOpening {
             opened_values,
@@ -289,7 +326,7 @@ impl<F, const DIGEST_ELEMS: usize> crate::circuit_verifier::ObservableCommitment
     }
 }
 
-type ValMmcsCommitment<F, const DIGEST_ELEMS: usize> =
+pub type ValMmcsCommitment<F, const DIGEST_ELEMS: usize> =
     Hash<<F as PackedValue>::Value, <F as PackedValue>::Value, DIGEST_ELEMS>;
 
 impl<F: Field, EF: ExtensionField<F>, const DIGEST_ELEMS: usize> Recursive<EF>
@@ -302,6 +339,10 @@ impl<F: Field, EF: ExtensionField<F>, const DIGEST_ELEMS: usize> Recursive<EF>
             hash_targets: circuit.alloc_public_input_array("MMCS commitment digest"),
             _phantom: PhantomData,
         }
+    }
+
+    fn get_targets(&self) -> Vec<Target> {
+        self.hash_targets.to_vec()
     }
 
     fn get_values(input: &Self::Input) -> Vec<EF> {
@@ -335,6 +376,14 @@ impl<F: Field, EF: ExtensionField<F>, const DIGEST_ELEMS: usize> Recursive<EF>
         }
     }
 
+    fn get_targets(&self) -> Vec<Target> {
+        self.hash_proof_targets
+            .iter()
+            .flat_map(|h| h.iter())
+            .copied()
+            .collect()
+    }
+
     fn get_values(input: &Self::Input) -> Vec<EF> {
         input
             .iter()
@@ -357,6 +406,10 @@ impl<F: Field, EF: ExtensionField<F>> Recursive<EF> for Witness<F> {
             witness: circuit.alloc_public_input("FRI proof-of-work witness"),
             _phantom: PhantomData,
         }
+    }
+
+    fn get_targets(&self) -> Vec<Target> {
+        vec![self.witness]
     }
 
     fn get_values(input: &Self::Input) -> Vec<EF> {
@@ -436,6 +489,14 @@ impl<F: Field, EF: ExtensionField<F>, Inner: RecursiveMmcs<F, EF>> Recursive<EF>
         }
 
         batch_openings
+    }
+
+    fn get_targets(&self) -> Vec<Target> {
+        let mut wires = vec![];
+        for batch_opening in self {
+            wires.extend(batch_opening.get_targets());
+        }
+        wires
     }
 
     fn get_values(input: &Self::Input) -> Vec<EF> {

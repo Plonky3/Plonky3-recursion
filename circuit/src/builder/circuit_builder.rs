@@ -24,11 +24,14 @@ pub struct CircuitBuilder<F> {
     witness_alloc: WitnessAllocator,
 
     /// Non-primitive operations (complex constraints that don't produce `ExprId`s)
-    non_primitive_ops: Vec<(NonPrimitiveOpId, NonPrimitiveOpType, Vec<ExprId>)>,
+    non_primitive_ops: Vec<NonPrimitiveOperationData>,
 
     /// Builder configuration
     config: BuilderConfig,
 }
+
+/// The non-primitive operation id, type, helper data, and the vectors of the expressions representing its inputs
+pub type NonPrimitiveOperationData = (NonPrimitiveOpId, NonPrimitiveOpType, Vec<Vec<ExprId>>);
 
 impl<F> Default for CircuitBuilder<F>
 where
@@ -74,14 +77,18 @@ where
         self.config.is_op_enabled(op)
     }
 
-    pub(crate) fn ensure_op_enabled(
-        &self,
-        op: NonPrimitiveOpType,
-    ) -> Result<(), CircuitBuilderError> {
+    pub fn ensure_op_enabled(&self, op: NonPrimitiveOpType) -> Result<(), CircuitBuilderError> {
         if !self.is_op_enabled(&op) {
             return Err(CircuitBuilderError::OpNotAllowed { op });
         }
         Ok(())
+    }
+
+    pub fn get_op_config(
+        &self,
+        op: &NonPrimitiveOpType,
+    ) -> Option<&crate::op::NonPrimitiveOpConfig> {
+        self.config.get_op_config(op)
     }
 
     /// Adds a public input to the circuit.
@@ -251,7 +258,7 @@ where
     pub(crate) fn push_non_primitive_op(
         &mut self,
         op_type: NonPrimitiveOpType,
-        witness_exprs: Vec<ExprId>,
+        witness_exprs: Vec<Vec<ExprId>>,
         label: &'static str,
     ) -> NonPrimitiveOpId {
         let op_id = NonPrimitiveOpId(self.non_primitive_ops.len() as u32);

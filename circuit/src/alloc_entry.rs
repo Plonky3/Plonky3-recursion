@@ -34,7 +34,7 @@ pub struct AllocationEntry {
     /// User-provided label (if any)
     pub label: &'static str,
     /// Dependencies for this entry, i.e. the expressions that this entry depends on.
-    pub dependencies: Vec<ExprId>,
+    pub dependencies: Vec<Vec<ExprId>>,
     /// Scope/sub-circuit this allocation belongs to (if any)
     pub scope: Option<&'static str>,
 }
@@ -149,8 +149,8 @@ fn dump_internal_log(allocation_log: &[AllocationEntry]) {
                 tracing::debug!(
                     "  expr_{} = expr_{} + expr_{}{}",
                     entry.expr_id.0,
-                    entry.dependencies[0].0,
-                    entry.dependencies[1].0,
+                    entry.dependencies[0][0].0,
+                    entry.dependencies[1][0].0,
                     display_label(entry.label)
                 );
             } else {
@@ -171,8 +171,8 @@ fn dump_internal_log(allocation_log: &[AllocationEntry]) {
                 tracing::debug!(
                     "  expr_{} = expr_{} - expr_{}{}",
                     entry.expr_id.0,
-                    entry.dependencies[0].0,
-                    entry.dependencies[1].0,
+                    entry.dependencies[0][0].0,
+                    entry.dependencies[1][0].0,
                     display_label(entry.label)
                 );
             } else {
@@ -193,8 +193,8 @@ fn dump_internal_log(allocation_log: &[AllocationEntry]) {
                 tracing::debug!(
                     "  expr_{} = expr_{} * expr_{}{}",
                     entry.expr_id.0,
-                    entry.dependencies[0].0,
-                    entry.dependencies[1].0,
+                    entry.dependencies[0][0].0,
+                    entry.dependencies[1][0].0,
                     display_label(entry.label)
                 );
             } else {
@@ -215,8 +215,8 @@ fn dump_internal_log(allocation_log: &[AllocationEntry]) {
                 tracing::debug!(
                     "  expr_{} = expr_{} / expr_{}{}",
                     entry.expr_id.0,
-                    entry.dependencies[0].0,
-                    entry.dependencies[1].0,
+                    entry.dependencies[0][0].0,
+                    entry.dependencies[1][0].0,
                     display_label(entry.label)
                 );
             } else {
@@ -244,6 +244,7 @@ fn dump_internal_log(allocation_log: &[AllocationEntry]) {
                 let deps: Vec<_> = entry
                     .dependencies
                     .iter()
+                    .flatten()
                     .map(|e| format!("expr_{}", e.0).to_string())
                     .collect();
                 tracing::debug!(

@@ -4,12 +4,16 @@ use alloc::vec::Vec;
 use alloc::{format, vec};
 use core::iter;
 
+use itertools::Itertools;
 use p3_circuit::CircuitBuilder;
 use p3_field::coset::TwoAdicMultiplicativeCoset;
 use p3_field::{ExtensionField, Field, TwoAdicField};
+use p3_matrix::Dimensions;
+use p3_util::log2_strict_usize;
 use p3_util::zip_eq::zip_eq;
 
 use crate::Target;
+use crate::circuit_mmcs_verifier::verify_batch_circuit;
 use crate::circuit_verifier::VerificationError;
 use crate::recursive_pcs::{FriProofTargets, InputProofTargets};
 use crate::recursive_traits::{
@@ -361,6 +365,7 @@ fn open_input<F, EF, Comm>(
 where
     F: Field + TwoAdicField,
     EF: ExtensionField<F>,
+    Comm: Recursive<EF>,
 {
     builder.push_scope("open_input");
 
@@ -378,7 +383,7 @@ where
     let mut reduced_openings = BTreeMap::<usize, (Target, Target)>::new();
 
     // Process each batch
-    for (batch_idx, ((_batch_commit, mats), batch_openings)) in zip_eq(
+    for (batch_idx, ((batch_commit, mats), batch_openings)) in zip_eq(
         commitments_with_opening_points.iter(),
         batch_opened_values.iter(),
         VerificationError::InvalidProofShape(
@@ -389,6 +394,40 @@ where
     {
         // TODO: Add recursive MMCS verification here for this batch:
         // Verify batch_openings against _batch_commit at the computed reduced_index.
+
+        let batch_heights = mats
+            .iter()
+            .map(|(domain, _)| domain.size() << log_blowup)
+            .collect_vec();
+        let batch_dims = batch_heights
+            .iter()
+            // TODO: MMCS doesn't really need width; we put 0 for now.
+            .map(|&height| Dimensions { width: 0, height })
+            .collect_vec();
+
+        // If the maximum height of the batch is smaller than the global max height,
+        // we need to correct the index by right shifting it.
+        // If the batch is empty, we set the index to 0.
+        let reduced_bits = batch_heights
+            .iter()
+            .max()
+            .map(|&h| &index_bits[0..log2_strict_usize(h)])
+            .unwrap();
+
+        verify_batch_circuit(
+            builder,
+            &batch_commit.get_targets(),
+            &batch_dims,
+            reduced_bits,
+            batch_openings,
+        )
+        .expect("verify_batch_circuit failed");
+
+        assert_eq!(
+            mats.len(),
+            batch_openings.len(),
+            "batch {batch_idx}: mats count must match opened_values count"
+        );
 
         // For each matrix in the batch
         for (mat_idx, ((mat_domain, mat_points_and_values), mat_opening)) in zip_eq(
@@ -485,6 +524,7 @@ where
     RecMmcs: RecursiveExtensionMmcs<F, EF>,
     Inner: RecursiveMmcs<F, EF>,
     Witness: Recursive<EF>,
+    Comm: Recursive<EF>,
 {
     builder.push_scope("verify_fri");
 
