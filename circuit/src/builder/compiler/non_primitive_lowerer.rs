@@ -259,12 +259,12 @@ mod tests {
             max_tree_height: 2,
         };
         assert_eq!(mock_config.ext_field_digest_elems, 1);
-        assert_eq!(mock_config.input_size(), (3..4));
+        assert_eq!(mock_config.input_size(), (3..5));
 
         let mut config = BuilderConfig::new();
         config.enable_mmcs(&mock_config);
 
-        let expr_map = create_expr_map(3);
+        let expr_map = create_expr_map(4);
 
         let ops = vec![(
             NonPrimitiveOpId(0),
@@ -296,7 +296,7 @@ mod tests {
                         vec![WitnessId(0)],
                         vec![],
                         vec![WitnessId(1), WitnessId(2)],
-                        vec![WitnessId(2)]
+                        vec![WitnessId(3)]
                     ]
                 );
                 assert!(outputs.is_empty());
@@ -315,13 +315,13 @@ mod tests {
         let mut config = BuilderConfig::new();
         config.enable_mmcs(&babybear_config);
 
-        let expr_map = create_expr_map(17);
+        let expr_map = create_expr_map(26);
 
         let witness_exprs: Vec<Vec<ExprId>> = vec![
-            (0..8).map(|i| ExprId(i as u32)).collect(),  // leaf 1
-            (8..16).map(|i| ExprId(i as u32)).collect(), // leaf 2
-            vec![ExprId(8), ExprId(9)],                  // directions
-            (9..17).map(|i| ExprId(i as u32)).collect(), // root
+            (0..8).map(|i| ExprId(i as u32)).collect(),   // leaf 1
+            (8..16).map(|i| ExprId(i as u32)).collect(),  // leaf 2
+            vec![ExprId(16), ExprId(17)],                 // directions
+            (18..26).map(|i| ExprId(i as u32)).collect(), // root
         ];
         let ops = vec![(
             NonPrimitiveOpId(0),
@@ -350,9 +350,9 @@ mod tests {
                 for (i, &wid) in inputs[1].iter().enumerate() {
                     assert_eq!(wid, WitnessId((i + 8) as u32));
                 }
-                assert_eq!(inputs[2], vec![WitnessId(8), WitnessId(9)]);
-                for (i, &wid) in inputs[2].iter().enumerate() {
-                    assert_eq!(wid, WitnessId((i + 10) as u32));
+                assert_eq!(inputs[2], vec![WitnessId(16), WitnessId(17)]);
+                for (i, &wid) in inputs[3].iter().enumerate() {
+                    assert_eq!(wid, WitnessId((i + 18) as u32));
                 }
                 assert!(outputs.is_empty());
             }
