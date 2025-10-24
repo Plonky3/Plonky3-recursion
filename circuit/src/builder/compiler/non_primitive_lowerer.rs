@@ -1,9 +1,13 @@
 use alloc::vec::Vec;
+use core::hash::Hash;
 
 use hashbrown::HashMap;
+use p3_field::{Field, PrimeCharacteristicRing};
 
+use crate::builder::compiler::get_witness_id;
 use crate::builder::{BuilderConfig, CircuitBuilderError};
-use crate::op::{NonPrimitiveOp, NonPrimitiveOpConfig, NonPrimitiveOpType};
+use crate::op::{NonPrimitiveOpConfig, NonPrimitiveOpType, Op};
+use crate::ops::{HashAbsorbExecutor, HashSqueezeExecutor, MmcsVerifyExecutor};
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessId};
 
 /// Responsible for lowering non-primitive operations from ExprIds to WitnessIds.
@@ -38,32 +42,40 @@ impl<'a> NonPrimitiveLowerer<'a> {
         }
     }
 
-    /// Lowers non-primitive operations to their witness-based forms.
-    pub fn lower(self) -> Result<Vec<NonPrimitiveOp>, CircuitBuilderError> {
-        let mut lowered_ops = Vec::new();
+    /// Lowers non-primitive operations to executable operations with explicit inputs/outputs.
+    pub fn lower<F>(self) -> Result<Vec<Op<F>>, CircuitBuilderError>
+    where
+        F: Field + Clone + PrimeCharacteristicRing + PartialEq + Eq + Hash,
+    {
+        let mut lowered_ops: Vec<Op<F>> = Vec::new();
 
-        for (_op_id, op_type, witness_exprs) in self.non_primitive_ops {
-            let config = self.config.get_op_config(op_type);
+        for (op_id, op_type, witness_exprs) in self.non_primitive_ops {
+            let config_opt = self.config.get_op_config(op_type);
             match op_type {
                 NonPrimitiveOpType::MmcsVerify => {
-                    let config = match config {
-                        Some(NonPrimitiveOpConfig::MmcsVerifyConfig(config)) => Ok(config),
-                        _ => Err(CircuitBuilderError::InvalidNonPrimitiveOpConfiguration {
-                            op: op_type.clone(),
-                        }),
-                    }?;
+                    let config = match config_opt {
+                        Some(NonPrimitiveOpConfig::MmcsVerifyConfig(config)) => config,
+                        _ => {
+                            return Err(CircuitBuilderError::InvalidNonPrimitiveOpConfiguration {
+                                op: op_type.clone(),
+                            });
+                        }
+                    };
 
-                    if witness_exprs.len() != config.input_size() {
+                    let ext = config.ext_field_digest_elems;
+                    let expected = config.input_size();
+                    if witness_exprs.len() != expected {
                         return Err(CircuitBuilderError::NonPrimitiveOpArity {
                             op: "MmcsVerify",
-                            expected: config.input_size(),
+                            expected,
                             got: witness_exprs.len(),
                         });
                     }
 
-                    let leaf_widx: Vec<WitnessId> = (0..config.ext_field_digest_elems)
+                    // Map leaf inputs
+                    let leaf_widx: Vec<WitnessId> = (0..ext)
                         .map(|i| {
-                            Self::get_witness_id(
+                            get_witness_id(
                                 self.expr_to_widx,
                                 witness_exprs[i],
                                 "MmcsVerify leaf input",
@@ -71,15 +83,17 @@ impl<'a> NonPrimitiveLowerer<'a> {
                         })
                         .collect::<Result<_, _>>()?;
 
-                    let index_widx = Self::get_witness_id(
+                    // Map index input
+                    let index_widx = get_witness_id(
                         self.expr_to_widx,
-                        witness_exprs[config.ext_field_digest_elems],
+                        witness_exprs[ext],
                         "MmcsVerify index input",
                     )?;
 
-                    let root_widx = (config.ext_field_digest_elems + 1..config.input_size())
+                    // Map root inputs (assert op; no outputs)
+                    let root_widx: Vec<WitnessId> = (ext + 1..expected)
                         .map(|i| {
-                            Self::get_witness_id(
+                            get_witness_id(
                                 self.expr_to_widx,
                                 witness_exprs[i],
                                 "MmcsVerify root input",
@@ -87,36 +101,56 @@ impl<'a> NonPrimitiveLowerer<'a> {
                         })
                         .collect::<Result<_, _>>()?;
 
-                    lowered_ops.push(NonPrimitiveOp::MmcsVerify {
-                        leaf: leaf_widx,
-                        index: index_widx,
-                        root: root_widx,
+                    // Build Op with executor: all in inputs; no outputs
+                    let mut inputs = leaf_widx;
+                    inputs.push(index_widx);
+                    inputs.extend(root_widx);
+                    lowered_ops.push(Op::NonPrimitiveOpWithExecutor {
+                        inputs,
+                        outputs: Vec::new(),
+                        executor: alloc::boxed::Box::new(MmcsVerifyExecutor::new()),
+                        op_id: *op_id,
                     });
                 }
                 NonPrimitiveOpType::HashAbsorb { reset } => {
-                    // Map inputs from ExprId to WitnessId
+                    // Operation must be enabled
+                    if config_opt.is_none() {
+                        return Err(CircuitBuilderError::InvalidNonPrimitiveOpConfiguration {
+                            op: op_type.clone(),
+                        });
+                    }
+
                     let inputs = witness_exprs
                         .iter()
-                        .map(|&expr| {
-                            Self::get_witness_id(self.expr_to_widx, expr, "HashAbsorb input")
-                        })
+                        .map(|&expr| get_witness_id(self.expr_to_widx, expr, "HashAbsorb input"))
                         .collect::<Result<_, _>>()?;
 
-                    lowered_ops.push(NonPrimitiveOp::HashAbsorb {
-                        reset_flag: *reset,
+                    lowered_ops.push(Op::NonPrimitiveOpWithExecutor {
                         inputs,
+                        outputs: Vec::new(),
+                        executor: alloc::boxed::Box::new(HashAbsorbExecutor::new(*reset)),
+                        op_id: *op_id,
                     });
                 }
                 NonPrimitiveOpType::HashSqueeze => {
-                    // Map outputs from ExprId to WitnessId
+                    // Operation must be enabled
+                    if config_opt.is_none() {
+                        return Err(CircuitBuilderError::InvalidNonPrimitiveOpConfiguration {
+                            op: op_type.clone(),
+                        });
+                    }
+
                     let outputs = witness_exprs
                         .iter()
-                        .map(|&expr| {
-                            Self::get_witness_id(self.expr_to_widx, expr, "HashSqueeze output")
-                        })
+                        .map(|&expr| get_witness_id(self.expr_to_widx, expr, "HashSqueeze output"))
                         .collect::<Result<_, _>>()?;
 
-                    lowered_ops.push(NonPrimitiveOp::HashSqueeze { outputs });
+                    lowered_ops.push(Op::NonPrimitiveOpWithExecutor {
+                        inputs: Vec::new(),
+                        outputs,
+                        executor: alloc::boxed::Box::new(HashSqueezeExecutor::new()),
+                        op_id: *op_id,
+                    });
                 }
                 NonPrimitiveOpType::FriVerify => {
                     todo!() // TODO: Add FRIVerify when it lands
@@ -126,26 +160,13 @@ impl<'a> NonPrimitiveLowerer<'a> {
 
         Ok(lowered_ops)
     }
-
-    /// Helper function to get WitnessId with descriptive error messages
-    fn get_witness_id(
-        expr_to_widx: &HashMap<ExprId, WitnessId>,
-        expr_id: ExprId,
-        context: &str,
-    ) -> Result<WitnessId, CircuitBuilderError> {
-        expr_to_widx
-            .get(&expr_id)
-            .copied()
-            .ok_or_else(|| CircuitBuilderError::MissingExprMapping {
-                expr_id,
-                context: context.into(),
-            })
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use alloc::vec;
+
+    use p3_baby_bear::BabyBear;
 
     use super::*;
     use crate::ops::MmcsVerifyConfig;
@@ -165,7 +186,7 @@ mod tests {
         let config = BuilderConfig::new();
 
         let lowerer = NonPrimitiveLowerer::new(&ops, &expr_map, &config);
-        let result = lowerer.lower().unwrap();
+        let result: Vec<Op<BabyBear>> = lowerer.lower().unwrap();
 
         assert!(result.is_empty());
     }
@@ -179,7 +200,7 @@ mod tests {
         config.enable_mmcs(&MmcsVerifyConfig::mock_config());
 
         let lowerer = NonPrimitiveLowerer::new(&ops, &expr_map, &config);
-        let result = lowerer.lower().unwrap();
+        let result: Vec<Op<BabyBear>> = lowerer.lower().unwrap();
 
         assert!(result.is_empty());
     }
@@ -189,7 +210,10 @@ mod tests {
         // Test MmcsVerify with mock config (simplest case: 1 leaf + 1 index + 1 root)
         let mock_config = MmcsVerifyConfig::mock_config();
         assert_eq!(mock_config.ext_field_digest_elems, 1);
-        assert_eq!(mock_config.input_size(), 3);
+        assert_eq!(
+            mock_config.input_size(),
+            2 * mock_config.ext_field_digest_elems + 1
+        );
 
         let mut config = BuilderConfig::new();
         config.enable_mmcs(&mock_config);
@@ -203,19 +227,22 @@ mod tests {
         )];
 
         let lowerer = NonPrimitiveLowerer::new(&ops, &expr_map, &config);
-        let result = lowerer.lower().unwrap();
+        let result: Vec<Op<BabyBear>> = lowerer.lower().unwrap();
 
         assert_eq!(result.len(), 1);
 
         match &result[0] {
-            NonPrimitiveOp::MmcsVerify { leaf, index, root } => {
-                assert_eq!(leaf.len(), 1);
-                assert_eq!(leaf[0], WitnessId(0));
-                assert_eq!(*index, WitnessId(1));
-                assert_eq!(root.len(), 1);
-                assert_eq!(root[0], WitnessId(2));
+            Op::NonPrimitiveOpWithExecutor {
+                inputs,
+                outputs,
+                executor,
+                ..
+            } => {
+                assert_eq!(executor.op_type(), &NonPrimitiveOpType::MmcsVerify);
+                assert_eq!(inputs, &vec![WitnessId(0), WitnessId(1), WitnessId(2)]);
+                assert!(outputs.is_empty());
             }
-            _ => panic!("Expected MmcsVerify operation"),
+            _ => panic!("Expected NonPrimitiveOpWithExecutor(MmcsVerify)"),
         }
     }
 
@@ -224,7 +251,10 @@ mod tests {
         // Test MmcsVerify with BabyBear config (realistic: 8 leaf + 1 index + 8 root)
         let babybear_config = MmcsVerifyConfig::babybear_default();
         assert_eq!(babybear_config.ext_field_digest_elems, 8);
-        assert_eq!(babybear_config.input_size(), 17);
+        assert_eq!(
+            babybear_config.input_size(),
+            2 * babybear_config.ext_field_digest_elems + 1
+        );
 
         let mut config = BuilderConfig::new();
         config.enable_mmcs(&babybear_config);
@@ -239,28 +269,30 @@ mod tests {
         )];
 
         let lowerer = NonPrimitiveLowerer::new(&ops, &expr_map, &config);
-        let result = lowerer.lower().unwrap();
+        let result: Vec<Op<BabyBear>> = lowerer.lower().unwrap();
 
         assert_eq!(result.len(), 1);
 
         match &result[0] {
-            NonPrimitiveOp::MmcsVerify { leaf, index, root } => {
-                // Verify leaf witnesses (0..8)
-                assert_eq!(leaf.len(), 8);
-                for (i, &leaf_witness) in leaf.iter().enumerate() {
-                    assert_eq!(leaf_witness, WitnessId(i as u32));
+            Op::NonPrimitiveOpWithExecutor {
+                inputs,
+                outputs,
+                executor,
+                ..
+            } => {
+                assert_eq!(executor.op_type(), &NonPrimitiveOpType::MmcsVerify);
+                // Verify leaf witnesses (0..8) + index (8) + root (9..16)
+                assert_eq!(inputs.len(), 17);
+                for (i, &wid) in inputs.iter().enumerate().take(8) {
+                    assert_eq!(wid, WitnessId(i as u32));
                 }
-
-                // Verify index witness (8)
-                assert_eq!(*index, WitnessId(8));
-
-                // Verify root witnesses (9..17)
-                assert_eq!(root.len(), 8);
-                for (i, &root_witness) in root.iter().enumerate() {
-                    assert_eq!(root_witness, WitnessId((9 + i) as u32));
+                assert_eq!(inputs[8], WitnessId(8));
+                for (i, &wid) in inputs.iter().enumerate().skip(9) {
+                    assert_eq!(wid, WitnessId(i as u32));
                 }
+                assert!(outputs.is_empty());
             }
-            _ => panic!("Expected MmcsVerify operation"),
+            _ => panic!("Expected NonPrimitiveOpWithExecutor(MmcsVerify)"),
         }
     }
 
@@ -273,6 +305,7 @@ mod tests {
 
         let expr_map = create_expr_map(9);
 
+        // For mock config ext=1, expected witness_exprs layout per op: [leaf, index, root]
         let ops = vec![
             (
                 NonPrimitiveOpId(0),
@@ -292,22 +325,29 @@ mod tests {
         ];
 
         let lowerer = NonPrimitiveLowerer::new(&ops, &expr_map, &config);
-        let result = lowerer.lower().unwrap();
+        let result: Vec<Op<BabyBear>> = lowerer.lower().unwrap();
 
         assert_eq!(result.len(), 3);
 
         // Verify each operation independently
         for (i, op) in result.iter().enumerate() {
             match op {
-                NonPrimitiveOp::MmcsVerify { leaf, index, root } => {
+                Op::NonPrimitiveOpWithExecutor {
+                    inputs,
+                    outputs,
+                    executor,
+                    op_id,
+                } => {
+                    assert_eq!(executor.op_type(), &NonPrimitiveOpType::MmcsVerify);
                     let base = (i * 3) as u32;
-                    assert_eq!(leaf.len(), 1);
-                    assert_eq!(leaf[0], WitnessId(base));
-                    assert_eq!(*index, WitnessId(base + 1));
-                    assert_eq!(root.len(), 1);
-                    assert_eq!(root[0], WitnessId(base + 2));
+                    assert_eq!(inputs.len(), 3); // leaf (1) + index (1) + root(1)
+                    assert_eq!(inputs[0], WitnessId(base));
+                    assert_eq!(inputs[1], WitnessId(base + 1));
+                    assert_eq!(inputs[2], WitnessId(base + 2));
+                    assert!(outputs.is_empty());
+                    assert_eq!(*op_id, NonPrimitiveOpId(i as u32));
                 }
-                _ => panic!("Expected MmcsVerify operation"),
+                _ => panic!("Expected NonPrimitiveOpWithExecutor(MmcsVerify)"),
             }
         }
     }
@@ -324,7 +364,7 @@ mod tests {
         let config = BuilderConfig::new(); // No MMCS enabled
 
         let lowerer = NonPrimitiveLowerer::new(&ops, &expr_map, &config);
-        let result = lowerer.lower();
+        let result: Result<Vec<Op<BabyBear>>, _> = lowerer.lower();
 
         assert!(result.is_err());
         match result {
@@ -350,7 +390,7 @@ mod tests {
         let expr_map = create_expr_map(3);
 
         let lowerer = NonPrimitiveLowerer::new(&ops, &expr_map, &config);
-        let result = lowerer.lower();
+        let result: Result<Vec<Op<BabyBear>>, _> = lowerer.lower();
 
         assert!(result.is_err());
         match result {
@@ -378,7 +418,7 @@ mod tests {
         let expr_map = create_expr_map(4);
 
         let lowerer = NonPrimitiveLowerer::new(&ops, &expr_map, &config);
-        let result = lowerer.lower();
+        let result: Result<Vec<Op<BabyBear>>, _> = lowerer.lower();
 
         assert!(result.is_err());
         match result {
@@ -406,7 +446,7 @@ mod tests {
         let expr_map = create_expr_map(3);
 
         let lowerer = NonPrimitiveLowerer::new(&ops, &expr_map, &config);
-        let result = lowerer.lower();
+        let result: Result<Vec<Op<BabyBear>>, _> = lowerer.lower();
 
         assert!(result.is_err());
         match result {
@@ -433,7 +473,7 @@ mod tests {
         let expr_map = create_expr_map(3);
 
         let lowerer = NonPrimitiveLowerer::new(&ops, &expr_map, &config);
-        let result = lowerer.lower();
+        let result: Result<Vec<Op<BabyBear>>, _> = lowerer.lower();
 
         assert!(result.is_err());
         match result {
@@ -460,7 +500,7 @@ mod tests {
         let expr_map = create_expr_map(3);
 
         let lowerer = NonPrimitiveLowerer::new(&ops, &expr_map, &config);
-        let result = lowerer.lower();
+        let result: Result<Vec<Op<BabyBear>>, _> = lowerer.lower();
 
         assert!(result.is_err());
         match result {
@@ -476,7 +516,7 @@ mod tests {
     fn test_error_helper_function() {
         // Helper function error propagation
         let expr_map = HashMap::new();
-        let result = NonPrimitiveLowerer::get_witness_id(&expr_map, ExprId(42), "test context");
+        let result = get_witness_id(&expr_map, ExprId(42), "test context");
 
         match result {
             Err(CircuitBuilderError::MissingExprMapping { expr_id, context }) => {

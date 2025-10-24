@@ -1,7 +1,7 @@
 use alloc::vec::Vec;
 
 use crate::CircuitError;
-use crate::op::Prim;
+use crate::op::Op;
 use crate::types::WitnessId;
 
 /// Addition operation table.
@@ -26,13 +26,13 @@ pub struct AddTrace<F> {
 
 /// Builder for generating addition traces.
 pub struct AddTraceBuilder<'a, F> {
-    primitive_ops: &'a [Prim<F>],
+    primitive_ops: &'a [Op<F>],
     witness: &'a [Option<F>],
 }
 
 impl<'a, F: Clone> AddTraceBuilder<'a, F> {
     /// Creates a new addition trace builder.
-    pub fn new(primitive_ops: &'a [Prim<F>], witness: &'a [Option<F>]) -> Self {
+    pub fn new(primitive_ops: &'a [Op<F>], witness: &'a [Option<F>]) -> Self {
         Self {
             primitive_ops,
             witness,
@@ -49,7 +49,7 @@ impl<'a, F: Clone> AddTraceBuilder<'a, F> {
         let mut result_index = Vec::new();
 
         for prim in self.primitive_ops {
-            if let Prim::Add { a, b, out } = prim {
+            if let Op::Add { a, b, out } = prim {
                 let a_val = self
                     .witness
                     .get(a.0 as usize)

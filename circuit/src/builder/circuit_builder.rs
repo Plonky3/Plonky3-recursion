@@ -1,7 +1,8 @@
 use alloc::vec::Vec;
+use core::hash::Hash;
 
 use hashbrown::HashMap;
-use p3_field::PrimeCharacteristicRing;
+use p3_field::{Field, PrimeCharacteristicRing};
 
 use super::compiler::{ExpressionLowerer, NonPrimitiveLowerer, Optimizer};
 use super::{BuilderConfig, ExpressionBuilder, PublicInputTracker};
@@ -113,6 +114,18 @@ where
     /// Returns the current public input count.
     pub fn public_input_count(&self) -> usize {
         self.public_tracker.count()
+    }
+
+    /// Allocates a witness hint (uninitialized witness slot set during non-primitive execution).
+    #[must_use]
+    pub fn alloc_witness_hint(&mut self, label: &'static str) -> ExprId {
+        self.expr_builder.add_witness_hint(label)
+    }
+
+    /// Allocates multiple witness hints.
+    #[must_use]
+    pub fn alloc_witness_hints(&mut self, count: usize, label: &'static str) -> Vec<ExprId> {
+        self.expr_builder.add_witness_hints(count, label)
     }
 
     /// Adds a constant to the circuit (deduplicated).
@@ -292,7 +305,7 @@ where
 
 impl<F> CircuitBuilder<F>
 where
-    F: Clone + PrimeCharacteristicRing + PartialEq + Eq + core::hash::Hash,
+    F: Field + Clone + PrimeCharacteristicRing + PartialEq + Eq + Hash,
 {
     /// Builds the circuit into a Circuit with separate lowering and IR transformation stages.
     /// Returns an error if lowering fails due to an internal inconsistency.
@@ -326,7 +339,7 @@ where
         let primitive_ops = optimizer.optimize(primitive_ops);
 
         // Stage 4: Generate final circuit
-        let mut circuit = Circuit::new(witness_count);
+        let mut circuit = Circuit::new(witness_count, expr_to_widx);
         circuit.primitive_ops = primitive_ops;
         circuit.non_primitive_ops = lowered_non_primitive_ops;
         circuit.public_rows = public_rows;
@@ -471,7 +484,7 @@ mod tests {
         assert!(circuit.enabled_ops.is_empty());
 
         match &circuit.primitive_ops[0] {
-            crate::op::Prim::Const { out, val } => {
+            crate::op::Op::Const { out, val } => {
                 assert_eq!(*out, WitnessId(0));
                 assert_eq!(*val, BabyBear::ZERO);
             }
@@ -494,7 +507,7 @@ mod tests {
         assert_eq!(circuit.primitive_ops.len(), 3);
 
         match &circuit.primitive_ops[0] {
-            crate::op::Prim::Const { out, val } => {
+            crate::op::Op::Const { out, val } => {
                 assert_eq!(*out, WitnessId(0));
                 assert_eq!(*val, BabyBear::ZERO);
             }
@@ -502,7 +515,7 @@ mod tests {
         }
 
         match &circuit.primitive_ops[1] {
-            crate::op::Prim::Public { out, public_pos } => {
+            crate::op::Op::Public { out, public_pos } => {
                 assert_eq!(*out, WitnessId(1));
                 assert_eq!(*public_pos, 0);
             }
@@ -510,7 +523,7 @@ mod tests {
         }
 
         match &circuit.primitive_ops[2] {
-            crate::op::Prim::Public { out, public_pos } => {
+            crate::op::Op::Public { out, public_pos } => {
                 assert_eq!(*out, WitnessId(2));
                 assert_eq!(*public_pos, 1);
             }
@@ -536,7 +549,7 @@ mod tests {
         assert_eq!(circuit.primitive_ops.len(), 3);
 
         match &circuit.primitive_ops[0] {
-            crate::op::Prim::Const { out, val } => {
+            crate::op::Op::Const { out, val } => {
                 assert_eq!(*out, WitnessId(0));
                 assert_eq!(*val, BabyBear::ZERO);
             }
@@ -544,7 +557,7 @@ mod tests {
         }
 
         match &circuit.primitive_ops[1] {
-            crate::op::Prim::Const { out, val } => {
+            crate::op::Op::Const { out, val } => {
                 assert_eq!(*out, WitnessId(1));
                 assert_eq!(*val, BabyBear::from_u64(1));
             }
@@ -552,7 +565,7 @@ mod tests {
         }
 
         match &circuit.primitive_ops[2] {
-            crate::op::Prim::Const { out, val } => {
+            crate::op::Op::Const { out, val } => {
                 assert_eq!(*out, WitnessId(2));
                 assert_eq!(*val, BabyBear::from_u64(2));
             }
@@ -574,7 +587,7 @@ mod tests {
         assert_eq!(circuit.primitive_ops.len(), 4);
 
         match &circuit.primitive_ops[3] {
-            crate::op::Prim::Add { out, a, b } => {
+            crate::op::Op::Add { out, a, b } => {
                 assert_eq!(*out, WitnessId(3));
                 assert_eq!(*a, WitnessId(1));
                 assert_eq!(*b, WitnessId(2));
