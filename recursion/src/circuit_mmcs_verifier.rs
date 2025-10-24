@@ -3,7 +3,7 @@
 use alloc::vec::Vec;
 
 use p3_circuit::op::NonPrimitiveOpType;
-use p3_circuit::{CircuitBuilder, CircuitBuilderError, CircuitRunner, MmcsOps, NonPrimitiveOpId};
+use p3_circuit::{CircuitBuilder, CircuitBuilderError, MmcsOps, NonPrimitiveOpId};
 use p3_field::{ExtensionField, Field, TwoAdicField};
 use p3_matrix::Dimensions;
 
@@ -84,11 +84,11 @@ where
             // TODO: This should be replaced with propoer hashing. In the meantime we pad/truncate
             // the leaf to the correct size.
             let mut row_digest = leaf;
-            if row_digest.len() > 0 && row_digest.len() < mmcs_config.ext_field_digest_elems {
+            if !row_digest.is_empty() && row_digest.len() < mmcs_config.ext_field_digest_elems {
                 row_digest.extend(
                     (0..(mmcs_config.ext_field_digest_elems - row_digest.len()))
                         .map(|_| {
-                            let widx = circuit.add_const(EF::ZERO); widx
+                            circuit.add_const(EF::ZERO)
                         }),
                 );
             } else if row_digest.len() > mmcs_config.ext_field_digest_elems {
@@ -99,5 +99,5 @@ where
         )
         .collect::<Vec<Vec<Target>>>();
 
-    circuit.add_mmcs_verify(&leaves, index_bits, &commitment)
+    circuit.add_mmcs_verify(&leaves, index_bits, commitment)
 }

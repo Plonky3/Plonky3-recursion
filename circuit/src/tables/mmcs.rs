@@ -1,9 +1,9 @@
 use alloc::string::ToString;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use alloc::{format, vec};
 use core::fmt::Debug;
 use core::iter;
-use std::sync::Arc;
 
 use itertools::izip;
 use p3_field::{ExtensionField, Field};
@@ -90,12 +90,22 @@ pub struct MmcsPrivateData<F> {
     /// Sibling hashes at each layer.
     pub path_siblings: Vec<Vec<F>>,
 
-    pub compress: Arc<dyn Fn([&[F]; 2]) -> Result<Vec<F>, CircuitError>>,
+    pub compress: Arc<dyn MmcsPrivatedataCompressionFunction<F>>,
     // /// Direction bits encoding the leaf's position.
     // ///
     // // /// - false = sibling on left,
     // // /// - true = sibling on right.
     // pub directions: Vec<bool>,
+}
+
+pub trait MmcsPrivatedataCompressionFunction<F>:
+    Fn([&[F]; 2]) -> Result<Vec<F>, CircuitError>
+{
+}
+
+impl<F, C: Fn([&[F]; 2]) -> Result<Vec<F>, CircuitError>> MmcsPrivatedataCompressionFunction<F>
+    for C
+{
 }
 
 impl<F: Debug> Debug for MmcsPrivateData<F> {
@@ -114,6 +124,8 @@ where
         self.path_siblings == other.path_siblings
     }
 }
+
+type OneOrTwoStates<F> = (Vec<F>, Option<Vec<F>>);
 
 impl<F: Field + Clone + Default> MmcsPrivateData<F> {
     /// Computes the private data required for MMCS path verification.
@@ -160,12 +172,13 @@ impl<F: Field + Clone + Default> MmcsPrivateData<F> {
             }),
         }
     }
+
     pub fn compute_all_states(
         &self,
         config: &MmcsVerifyConfig,
         leaves: &[Vec<F>],
         directions: &[bool],
-    ) -> Result<Vec<(Vec<F>, Option<Vec<F>>)>, CircuitError> {
+    ) -> Result<Vec<OneOrTwoStates<F>>, CircuitError> {
         // Ensure we have one direction bit per sibling step.
         if self.path_siblings.len() != directions.len() {
             return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {

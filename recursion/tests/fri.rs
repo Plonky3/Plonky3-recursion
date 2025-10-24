@@ -441,7 +441,7 @@ fn run_fri_test(setup: FriSetup, build_only: bool) {
     let mut commitments_with_opening_points_targets = Vec::new();
     for (commit_val, mats_data) in &result_1.commitments_with_points {
         // Allocate commitment target (placeholder, not used in arithmetic verification)
-        let commit_t = HashTargets::new(&mut builder, &commit_val);
+        let commit_t = HashTargets::new(&mut builder, commit_val);
 
         let mut mats_targets = Vec::new();
         for (domain, points_and_values) in mats_data {

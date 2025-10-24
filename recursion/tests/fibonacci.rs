@@ -135,35 +135,49 @@ fn test_fibonacci_verifier() -> Result<(), VerificationError> {
 
     // TODO: This block of code should be the implementation of Recursive::set_private_data function.
     let compress = MyCompress::new(perm.clone());
-    let mut non_primitive_ops_iter = runner.all_non_primitive_ops().into_iter();
+    let mut non_primitive_ops_iter = runner
+        .all_non_primitive_ops()
+        .into_iter()
+        .filter(|(_, op)| matches!(op, NonPrimitiveOp::MmcsVerify { .. }));
+    println!(
+        "non_primitive_ops_iter = {:?}",
+        non_primitive_ops_iter.clone().collect::<Vec<_>>()
+    );
     for query in proof.opening_proof.query_proofs.iter() {
         // For each batch in the input proof there must be one MmcsVerify op
         for batch in query.input_proof.iter() {
             let x = non_primitive_ops_iter.next();
-            let op_id = match x {
+            println!("x = {:?}", x);
+            match x {
                 Some((op_id, y)) => match y {
-                    NonPrimitiveOp::MmcsVerify { .. } => op_id,
-                    _ => panic!("Expected MmcsVerify op"),
+                    NonPrimitiveOp::MmcsVerify { .. } => {
+                        let siblings = batch
+                            .opening_proof
+                            .iter()
+                            .map(|digest| {
+                                digest
+                                    .iter()
+                                    .map(|x| Challenge::from(*x))
+                                    .collect::<Vec<Challenge>>()
+                            })
+                            .collect::<Vec<Vec<Challenge>>>();
+
+                        let private_data =
+                            NonPrimitiveOpPrivateData::MmcsVerify(MmcsPrivateData::new::<F, _, _>(
+                                &mmcs_config,
+                                &siblings,
+                                compress.clone(),
+                            ));
+                        runner
+                            .set_non_primitive_op_private_data(op_id, private_data)
+                            .unwrap();
+                    }
+                    // The rest of non-primitive operations don't have private data
+                    NonPrimitiveOp::HashAbsorb { .. } => (),
+                    NonPrimitiveOp::HashSqueeze { .. } => (),
                 },
                 _ => panic!("Expected MmcsVerify op"),
             };
-            let siblings = batch
-                .opening_proof
-                .iter()
-                .map(|digest| {
-                    digest
-                        .iter()
-                        .map(|x| Challenge::from(*x))
-                        .collect::<Vec<Challenge>>()
-                })
-                .collect::<Vec<Vec<Challenge>>>();
-
-            let private_data = NonPrimitiveOpPrivateData::MmcsVerify(
-                MmcsPrivateData::new::<F, _, _>(&mmcs_config, &siblings, compress.clone()),
-            );
-            runner
-                .set_non_primitive_op_private_data(op_id, private_data)
-                .unwrap();
         }
     }
 
