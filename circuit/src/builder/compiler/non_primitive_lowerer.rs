@@ -74,7 +74,7 @@ impl<'a> NonPrimitiveLowerer<'a> {
                         return Err(CircuitBuilderError::NonPrimitiveOpArity {
                             op: "MmcsVerify",
                             expected: format!("{:?}", config.directions_size()),
-                            got: witness_exprs[1].len(),
+                            got: directions_len,
                         });
                     }
 

@@ -47,7 +47,7 @@ fn main() -> Result<(), ProverError> {
     // we're proving the opening of an Mmcs to matrices of height 2^depth, 2^(depth -1), ...
     let leaves: Vec<Vec<ExprId>> = (0..depth)
         .map(|i| {
-            (0..if (i as usize).is_multiple_of(2) && i != depth - 1 {
+            (0..if i % 2 == 0 && i != depth - 1 {
                 mmcs_config.ext_field_digest_elems
             } else {
                 0
@@ -57,7 +57,7 @@ fn main() -> Result<(), ProverError> {
         })
         .collect();
     let directions: Vec<ExprId> = (0..depth)
-        .map(|_| builder.alloc_public_input("index"))
+        .map(|_| builder.alloc_public_input("directions"))
         .collect();
     let expected_root = (0..mmcs_config.ext_field_digest_elems)
         .map(|_| builder.alloc_public_input("expected_root"))
@@ -76,7 +76,7 @@ fn main() -> Result<(), ProverError> {
     //
     let leaves_value: Vec<Vec<F>> = (0..depth)
         .map(|i| {
-            if (i as usize).is_multiple_of(2) && i != depth - 1 {
+            if i % 2 == 0 && i != depth - 1 {
                 vec![
                     F::ZERO,
                     F::ZERO,

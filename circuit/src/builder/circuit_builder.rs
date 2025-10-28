@@ -30,7 +30,7 @@ pub struct CircuitBuilder<F> {
     config: BuilderConfig,
 }
 
-/// The non-primitive operation id, type, and the vecotors of the expressions representing its inputs
+/// The non-primitive operation id, type, and the vectors of the expressions representing its inputs
 pub type NonPrimitiveOperationData = (NonPrimitiveOpId, NonPrimitiveOpType, Vec<Vec<ExprId>>);
 
 impl<F> Default for CircuitBuilder<F>
