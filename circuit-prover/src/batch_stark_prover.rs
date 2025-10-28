@@ -7,11 +7,14 @@ extern crate alloc;
 
 use alloc::vec;
 use alloc::vec::Vec;
+use alloc::string::String;
+use alloc::format;
 
 use p3_air::{Air, AirBuilder, BaseAir};
 use p3_circuit::tables::Traces;
 use p3_field::{BasedVectorSpace, Field};
 use p3_matrix::dense::RowMajorMatrix;
+use p3_matrix::Matrix;
 use p3_mmcs_air::air::{MmcsTableConfig, MmcsVerifyAir};
 use p3_multi_stark::{MultiProof, StarkGenericConfig as MSGC, StarkInstance, Val as MVal};
 use thiserror::Error;
@@ -23,7 +26,7 @@ use crate::field_params::ExtractBinomialW;
 use crate::prover::TablePacking;
 
 /// Proof bundle and metadata for the unified multi-STARK proof across all circuit tables.
-pub struct MultiStarkTableProof<SC>
+pub struct BatchStarkProof<SC>
 where
     SC: MSGC,
 {
@@ -41,7 +44,7 @@ where
 }
 
 /// New prover that produces a single multi-STARK proof covering all circuit tables.
-pub struct MultiStarkTableProver<SC>
+pub struct BatchStarkProver<SC>
 where
     SC: MSGC,
 {
@@ -58,6 +61,9 @@ pub enum MultiStarkProverError {
 
     #[error("missing binomial parameter W for extension-field multiplication")]
     MissingWForExtension,
+
+    #[error("verification failed: {0}")]
+    Verify(String),
 }
 
 // Enum wrapper to allow heterogeneous table AIRs in a single multi-stark batch.
@@ -70,7 +76,7 @@ enum CircuitTableAir<F: Field, const D: usize> {
     Mmcs(MmcsVerifyAir<F>),
 }
 
-impl<F: Field + Sync, const D: usize> BaseAir<F> for CircuitTableAir<F, D> {
+impl<F: Field, const D: usize> BaseAir<F> for CircuitTableAir<F, D> {
     fn width(&self) -> usize {
         match self {
             Self::Witness(a) => a.width(),
@@ -86,7 +92,7 @@ impl<F: Field + Sync, const D: usize> BaseAir<F> for CircuitTableAir<F, D> {
 impl<AB, const D: usize> Air<AB> for CircuitTableAir<AB::F, D>
 where
     AB: AirBuilder,
-    AB::F: Field + Sync + p3_field::PrimeField + Eq,
+    AB::F: p3_field::PrimeField,
 {
     fn eval(&self, builder: &mut AB) {
         match self {
@@ -100,7 +106,7 @@ where
     }
 }
 
-impl<SC> MultiStarkTableProver<SC>
+impl<SC> BatchStarkProver<SC>
 where
     SC: MSGC,
     MVal<SC>: StarkField,
@@ -123,12 +129,20 @@ where
         self
     }
 
+    pub fn set_table_packing(&mut self, table_packing: TablePacking) {
+        self.table_packing = table_packing;
+    }
+
+    pub const fn table_packing(&self) -> TablePacking {
+        self.table_packing
+    }
+
     /// Generate a unified multi-STARK proof for all circuit tables.
     #[instrument(skip_all)]
     pub fn prove_all_tables<EF>(
         &self,
         traces: &Traces<EF>,
-    ) -> Result<MultiStarkTableProof<SC>, MultiStarkProverError>
+    ) -> Result<BatchStarkProof<SC>, MultiStarkProverError>
     where
         EF: Field + BasedVectorSpace<MVal<SC>> + ExtractBinomialW<MVal<SC>>,
     {
@@ -146,15 +160,15 @@ where
     /// Verify the unified multi-STARK proof against all tables.
     pub fn verify_all_tables(
         &self,
-        proof: &MultiStarkTableProof<SC>,
-    ) -> Result<(), p3_multi_stark::VerificationError<p3_multi_stark::PcsError<SC>>> {
+        proof: &BatchStarkProof<SC>,
+    ) -> Result<(), MultiStarkProverError> {
         match proof.ext_degree {
             1 => self.verify_for_degree::<1>(proof, None),
             2 => self.verify_for_degree::<2>(proof, proof.w_binomial),
             4 => self.verify_for_degree::<4>(proof, proof.w_binomial),
             6 => self.verify_for_degree::<6>(proof, proof.w_binomial),
             8 => self.verify_for_degree::<8>(proof, proof.w_binomial),
-            _ => unreachable!("unsupported degree should be filtered at prove time"),
+            d => Err(MultiStarkProverError::UnsupportedDegree(d)),
         }
     }
 
@@ -162,7 +176,7 @@ where
         &self,
         traces: &Traces<EF>,
         w_binomial: Option<MVal<SC>>,
-    ) -> Result<MultiStarkTableProof<SC>, MultiStarkProverError>
+    ) -> Result<BatchStarkProof<SC>, MultiStarkProverError>
     where
         EF: Field + BasedVectorSpace<MVal<SC>>,
     {
@@ -210,12 +224,7 @@ where
         let mmcs_air = MmcsVerifyAir::<MVal<SC>>::new(self.mmcs_config);
         let mmcs_matrix: RowMajorMatrix<MVal<SC>> =
             MmcsVerifyAir::trace_to_matrix(&self.mmcs_config, &traces.mmcs_trace);
-        let mmcs_rows: usize = traces
-            .mmcs_trace
-            .mmcs_paths
-            .iter()
-            .map(|path| path.left_values.len() + 1)
-            .sum();
+        let mmcs_rows: usize = mmcs_matrix.height();
 
         // Wrap AIRs in enum for heterogenous batching and build instances in fixed order.
         let air_witness = CircuitTableAir::Witness(witness_air);
@@ -260,7 +269,7 @@ where
 
         let proof = p3_multi_stark::prove_multi(&self.config, instances);
 
-        Ok(MultiStarkTableProof {
+        Ok(BatchStarkProof {
             proof,
             table_packing: packing,
             witness_rows,
@@ -276,9 +285,9 @@ where
 
     fn verify_for_degree<const D: usize>(
         &self,
-        proof: &MultiStarkTableProof<SC>,
+        proof: &BatchStarkProof<SC>,
         w_binomial: Option<MVal<SC>>,
-    ) -> Result<(), p3_multi_stark::VerificationError<p3_multi_stark::PcsError<SC>>> {
+    ) -> Result<(), MultiStarkProverError> {
         // Rebuild AIRs in the same order as prove.
         let packing = proof.table_packing;
         let add_lanes = packing.add_lanes();
@@ -292,7 +301,7 @@ where
         let mul_air: CircuitTableAir<MVal<SC>, D> = if D == 1 {
             CircuitTableAir::Mul(MulAir::<MVal<SC>, D>::new(proof.mul_rows, mul_lanes))
         } else {
-            let w = w_binomial.expect("binomial parameter W must be present for D>1");
+            let w = w_binomial.ok_or(MultiStarkProverError::MissingWForExtension)?;
             CircuitTableAir::Mul(MulAir::<MVal<SC>, D>::new_binomial(
                 proof.mul_rows,
                 mul_lanes,
@@ -310,9 +319,10 @@ where
             mmcs_air,
         ];
         // All instances use empty public values in this design.
-        let pvs: Vec<Vec<MVal<SC>>> = vec![vec![], vec![], vec![], vec![], vec![], vec![]];
+        let pvs: Vec<Vec<MVal<SC>>> = vec![Vec::new(); airs.len()];
 
         p3_multi_stark::verify_multi(&self.config, &airs, &proof.proof, &pvs)
+            .map_err(|e| MultiStarkProverError::Verify(format!("{:?}", e)))
     }
 }
 
@@ -357,7 +367,7 @@ mod tests {
         let traces = runner.run().unwrap();
 
         let cfg = config::baby_bear().build();
-        let prover = MultiStarkTableProver::new(cfg);
+        let prover = BatchStarkProver::new(cfg);
         let proof = prover.prove_all_tables(&traces).unwrap();
         assert_eq!(proof.ext_degree, 1);
         assert!(proof.w_binomial.is_none());
@@ -404,7 +414,7 @@ mod tests {
         let traces = runner.run().unwrap();
 
         let cfg = config::baby_bear().build();
-        let prover = MultiStarkTableProver::new(cfg);
+        let prover = BatchStarkProver::new(cfg);
         let proof = prover.prove_all_tables(&traces).unwrap();
         assert_eq!(proof.ext_degree, 4);
         // Ensure W was captured
@@ -442,7 +452,7 @@ mod tests {
         let traces = runner.run().unwrap();
 
         let cfg = config::koala_bear().build();
-        let prover = MultiStarkTableProver::new(cfg);
+        let prover = BatchStarkProver::new(cfg);
         let proof = prover.prove_all_tables(&traces).unwrap();
         assert_eq!(proof.ext_degree, 1);
         assert!(proof.w_binomial.is_none());
@@ -521,7 +531,7 @@ mod tests {
         let traces = runner.run().unwrap();
 
         let cfg = config::koala_bear().build();
-        let prover = MultiStarkTableProver::new(cfg);
+        let prover = BatchStarkProver::new(cfg);
         let proof = prover.prove_all_tables(&traces).unwrap();
         assert_eq!(proof.ext_degree, 8);
         let expected_w = <KBExtField as ExtractBinomialW<KoalaBear>>::extract_w().unwrap();
@@ -569,7 +579,7 @@ mod tests {
         let traces = runner.run().unwrap();
 
         let cfg = config::goldilocks().build();
-        let prover = MultiStarkTableProver::new(cfg);
+        let prover = BatchStarkProver::new(cfg);
         let proof = prover.prove_all_tables(&traces).unwrap();
         assert_eq!(proof.ext_degree, 2);
         let expected_w = <Ext2 as ExtractBinomialW<Goldilocks>>::extract_w().unwrap();

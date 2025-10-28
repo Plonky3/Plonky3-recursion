@@ -40,9 +40,9 @@ extern crate alloc;
 pub mod air;
 pub mod config;
 pub mod field_params;
-pub mod multi_stark_prover;
+pub mod batch_stark_prover;
 pub mod prover;
 
 // Re-export main API
-pub use multi_stark_prover::{MultiStarkTableProof, MultiStarkTableProver};
+pub use batch_stark_prover::{BatchStarkProof, BatchStarkProver};
 pub use prover::{MultiTableProof, MultiTableProver, TablePacking};
