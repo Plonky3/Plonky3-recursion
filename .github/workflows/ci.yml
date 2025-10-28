@@ -97,7 +97,7 @@ jobs:
           # cargo build --verbose --target ${{ env.target }} -p p3-fri-air
           # cargo build --verbose --target ${{ env.target }} -p p3-interpolation-air
           cargo build --verbose --target ${{ env.target }} -p p3-mmcs-air
-          cargo build --verbose --target ${{ env.target }} -p p3-poseidon2-air
+          cargo build --verbose --target ${{ env.target }} -p p3-poseidon2-circuit-air
           cargo build --verbose --target ${{ env.target }} -p p3-symmetric-air
           cargo build --verbose --target ${{ env.target }} -p p3-recursion
 

@@ -1,4 +1,4 @@
-//! And AIR for the Poseidon2 permutation.
+//! An AIR for the Poseidon2 table for recursion. Handles sponge operations and compressions.
 
 #![no_std]
 

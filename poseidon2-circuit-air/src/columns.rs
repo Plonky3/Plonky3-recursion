@@ -6,12 +6,17 @@ use p3_poseidon2_air::Poseidon2Cols;
 ///
 /// They extend the P3 columns with some circuit-specific columns.
 ///
+/// `is_sponge` (transparent): if `1`, this row performs a sponge operation (absorb or squeeze);
+/// otherwise, it performs a compression.
 /// `reset` (transparent): indicates whether the state is being reset this row.
+/// `sponge_reset`: auxiliary column to keep constraint degrees below three.
 /// `absorb_flags` (transparent): for each rate element, indicates if it is being absorbed this row.
 /// At most one flag is set to 1 per row: if `absorb_flags[i]` is 1, then all elements up to the `i`-th
 /// are absorbed; the rest are propagated from the previous row.
-/// `input_indices` (transparent): for each rate element, indicates the index in the witness table for the
-/// memory lookup. It's either received (for an absorb) or sent (for a squeeze).
+/// `input_indices` (transparent): for each input element, indicates the index in the witness table for the
+/// memory lookup. It's either received (for an absorb or a compression) or sent (for a squeeze).
+/// `output_indices` (transparent): for each output element, indicates the index in the witness table for the
+/// memory lookup. Only used by compressions to send the output.
 #[repr(C)]
 pub struct Poseidon2CircuitCols<
     T,
@@ -25,9 +30,12 @@ pub struct Poseidon2CircuitCols<
     pub poseidon2:
         Poseidon2Cols<T, WIDTH, SBOX_DEGREE, SBOX_REGISTERS, HALF_FULL_ROUNDS, PARTIAL_ROUNDS>,
 
+    pub is_sponge: T,
     pub reset: T,
+    pub sponge_reset: T,
     pub absorb_flags: [T; RATE],
-    pub input_indices: [T; RATE],
+    pub input_indices: [T; WIDTH],
+    pub output_indices: [T; RATE],
 }
 
 pub const fn num_cols<

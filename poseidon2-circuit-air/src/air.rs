@@ -156,24 +156,30 @@ pub(crate) fn eval<
 ) {
     air.p3_poseidon2.eval(builder);
 
+    // SPONGE CONSTRAINTS
     let next_no_reset = AB::Expr::ONE - next.reset.clone();
     for i in 0..(CAPACITY * D) {
         // The first row has capacity zeroed.
         builder
+            .when(local.is_sponge.clone())
             .when_first_row()
             .assert_zero(local.poseidon2.inputs[RATE * D + i].clone());
 
         // When resetting the state, we just have to clear the capacity. The rate will be overwritten by the input.
         builder
+            .when(local.is_sponge.clone())
             .when(local.reset.clone())
             .assert_zero(local.poseidon2.inputs[RATE * D + i].clone());
 
         // If the next row doesn't reset, propagate the capacity.
-        builder.when(next_no_reset.clone()).assert_zero(
-            next.poseidon2.inputs[RATE * D + i].clone()
-                - local.poseidon2.ending_full_rounds[HALF_FULL_ROUNDS - 1].post[RATE * D + i]
-                    .clone(),
-        );
+        builder
+            .when(local.is_sponge.clone())
+            .when(next_no_reset.clone())
+            .assert_zero(
+                next.poseidon2.inputs[RATE * D + i].clone()
+                    - local.poseidon2.ending_full_rounds[HALF_FULL_ROUNDS - 1].post[RATE * D + i]
+                        .clone(),
+            );
     }
 
     let mut next_absorb = [AB::Expr::ZERO; RATE];
@@ -187,10 +193,14 @@ pub(crate) fn eval<
     for index in 0..(RATE * D) {
         let i = index / D;
         let j = index % D;
-        builder.when(next_no_absorb[i].clone()).assert_zero(
-            next.poseidon2.inputs[i * D + j].clone()
-                - local.poseidon2.ending_full_rounds[HALF_FULL_ROUNDS - 1].post[i * D + j].clone(),
-        );
+        builder
+            .when(local.is_sponge.clone())
+            .when(next_no_absorb[i].clone())
+            .assert_zero(
+                next.poseidon2.inputs[i * D + j].clone()
+                    - local.poseidon2.ending_full_rounds[HALF_FULL_ROUNDS - 1].post[i * D + j]
+                        .clone(),
+            );
     }
 
     let mut current_absorb = [AB::Expr::ZERO; RATE];
@@ -201,11 +211,15 @@ pub(crate) fn eval<
     }
     let current_no_absorb =
         array::from_fn::<_, RATE, _>(|i| AB::Expr::ONE - current_absorb[i].clone());
+    builder.assert_eq(
+        local.is_sponge.clone() * local.reset.clone(),
+        local.sponge_reset.clone(),
+    );
     // During a reset, the rate elements not being absorbed are zeroed.
     for (i, col) in current_no_absorb.iter().enumerate().take(RATE) {
         let arr = array::from_fn::<_, D, _>(|j| local.poseidon2.inputs[i * D + j].clone().into());
         builder
-            .when(local.reset.clone() * col.clone())
+            .when(local.sponge_reset.clone() * col.clone())
             .assert_zeros(arr);
     }
 
@@ -215,6 +229,11 @@ pub(crate) fn eval<
     //      * local.rate[i] comes from input lookups.
     // - If is_squeeze = 1:
     //      * local.rate is sent to output lookups.
+
+    // COMPRESSION CONSTRAINTS
+    // TODO: Add all lookups:
+    // - local input state comes from input lookups.
+    // - send local output state to output lookups.
 }
 
 impl<
