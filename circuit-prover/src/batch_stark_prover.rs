@@ -1,20 +1,16 @@
-//! Multi-STARK table prover and verifier that unifies all circuit tables
+//! Batch STARK prover and verifier that unifies all circuit tables
 //! into a single multi-proof using `p3-multi-stark`.
-//!
-//! API mirrors `MultiTableProver` with `prove_all_tables` and `verify_all_tables`.
 
 extern crate alloc;
-
+use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
-use alloc::string::String;
-use alloc::format;
 
 use p3_air::{Air, AirBuilder, BaseAir};
 use p3_circuit::tables::Traces;
 use p3_field::{BasedVectorSpace, Field};
-use p3_matrix::dense::RowMajorMatrix;
 use p3_matrix::Matrix;
+use p3_matrix::dense::RowMajorMatrix;
 use p3_mmcs_air::air::{MmcsTableConfig, MmcsVerifyAir};
 use p3_multi_stark::{MultiProof, StarkGenericConfig as MSGC, StarkInstance, Val as MVal};
 use thiserror::Error;
@@ -25,6 +21,49 @@ use crate::config::StarkField;
 use crate::field_params::ExtractBinomialW;
 use crate::prover::TablePacking;
 
+/// Typed index for table row access to prevent mis-indexing bugs.
+#[repr(usize)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Table {
+    Witness = 0,
+    Const = 1,
+    Public = 2,
+    Add = 3,
+    Mul = 4,
+    Mmcs = 5,
+}
+
+/// Number of circuit tables included in the unified multi‑STARK proof.
+pub const NUM_TABLES: usize = Table::Mmcs as usize + 1;
+
+/// Row counts wrapper with type-safe indexing.
+#[derive(Debug, Clone)]
+pub struct RowCounts([usize; NUM_TABLES]);
+
+impl RowCounts {
+    pub const fn new(rows: [usize; NUM_TABLES]) -> Self {
+        Self(rows)
+    }
+
+    #[inline]
+    pub const fn get(&self, t: Table) -> usize {
+        self.0[t as usize]
+    }
+}
+
+impl core::ops::Index<Table> for RowCounts {
+    type Output = usize;
+    fn index(&self, table: Table) -> &Self::Output {
+        &self.0[table as usize]
+    }
+}
+
+impl From<[usize; NUM_TABLES]> for RowCounts {
+    fn from(rows: [usize; NUM_TABLES]) -> Self {
+        Self(rows)
+    }
+}
+
 /// Proof bundle and metadata for the unified multi-STARK proof across all circuit tables.
 pub struct BatchStarkProof<SC>
 where
@@ -33,14 +72,24 @@ where
     pub proof: MultiProof<SC>,
     // Metadata to re-construct AIRs on verifier side.
     pub table_packing: TablePacking,
-    pub witness_rows: usize,
-    pub constants_rows: usize,
-    pub public_rows: usize,
-    pub add_rows: usize,
-    pub mul_rows: usize,
-    pub mmcs_rows: usize,
+    /// Row counts in fixed order: [witness, constants, public, add, mul, mmcs].
+    pub rows: RowCounts,
     pub ext_degree: usize,
     pub w_binomial: Option<MVal<SC>>,
+}
+
+impl<SC> core::fmt::Debug for BatchStarkProof<SC>
+where
+    SC: MSGC,
+{
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("BatchStarkProof")
+            .field("table_packing", &self.table_packing)
+            .field("rows", &self.rows)
+            .field("ext_degree", &self.ext_degree)
+            .field("w_binomial", &self.w_binomial)
+            .finish()
+    }
 }
 
 /// New prover that produces a single multi-STARK proof covering all circuit tables.
@@ -119,12 +168,14 @@ where
         }
     }
 
+    #[must_use]
     pub fn with_table_packing(mut self, table_packing: TablePacking) -> Self {
         self.table_packing = table_packing;
         self
     }
 
-    pub fn with_mmcs_table(mut self, mmcs_config: MmcsTableConfig) -> Self {
+    #[must_use]
+    pub fn with_mmcs_config(mut self, mmcs_config: MmcsTableConfig) -> Self {
         self.mmcs_config = mmcs_config;
         self
     }
@@ -133,6 +184,7 @@ where
         self.table_packing = table_packing;
     }
 
+    #[inline]
     pub const fn table_packing(&self) -> TablePacking {
         self.table_packing
     }
@@ -234,7 +286,9 @@ where
         let air_mul = CircuitTableAir::Mul(mul_air);
         let air_mmcs = CircuitTableAir::Mmcs(mmcs_air);
 
-        let instances: Vec<StarkInstance<'_, SC, CircuitTableAir<MVal<SC>, D>>> = vec![
+        // Pre-size for performance
+        let mut instances = Vec::with_capacity(NUM_TABLES);
+        instances.extend([
             StarkInstance {
                 air: &air_witness,
                 trace: witness_matrix,
@@ -265,19 +319,21 @@ where
                 trace: mmcs_matrix,
                 public_values: vec![],
             },
-        ];
+        ]);
 
         let proof = p3_multi_stark::prove_multi(&self.config, instances);
 
         Ok(BatchStarkProof {
             proof,
             table_packing: packing,
-            witness_rows,
-            constants_rows,
-            public_rows,
-            add_rows,
-            mul_rows,
-            mmcs_rows,
+            rows: RowCounts::new([
+                witness_rows,
+                constants_rows,
+                public_rows,
+                add_rows,
+                mul_rows,
+                mmcs_rows,
+            ]),
             ext_degree: D,
             w_binomial: if D > 1 { w_binomial } else { None },
         })
@@ -293,17 +349,26 @@ where
         let add_lanes = packing.add_lanes();
         let mul_lanes = packing.mul_lanes();
 
+        // Use typed indices for clarity and safety.
         let witness_air =
-            CircuitTableAir::Witness(WitnessAir::<MVal<SC>, D>::new(proof.witness_rows));
-        let const_air = CircuitTableAir::Const(ConstAir::<MVal<SC>, D>::new(proof.constants_rows));
-        let public_air = CircuitTableAir::Public(PublicAir::<MVal<SC>, D>::new(proof.public_rows));
-        let add_air = CircuitTableAir::Add(AddAir::<MVal<SC>, D>::new(proof.add_rows, add_lanes));
+            CircuitTableAir::Witness(WitnessAir::<MVal<SC>, D>::new(proof.rows[Table::Witness]));
+        let const_air =
+            CircuitTableAir::Const(ConstAir::<MVal<SC>, D>::new(proof.rows[Table::Const]));
+        let public_air =
+            CircuitTableAir::Public(PublicAir::<MVal<SC>, D>::new(proof.rows[Table::Public]));
+        let add_air = CircuitTableAir::Add(AddAir::<MVal<SC>, D>::new(
+            proof.rows[Table::Add],
+            add_lanes,
+        ));
         let mul_air: CircuitTableAir<MVal<SC>, D> = if D == 1 {
-            CircuitTableAir::Mul(MulAir::<MVal<SC>, D>::new(proof.mul_rows, mul_lanes))
+            CircuitTableAir::Mul(MulAir::<MVal<SC>, D>::new(
+                proof.rows[Table::Mul],
+                mul_lanes,
+            ))
         } else {
             let w = w_binomial.ok_or(MultiStarkProverError::MissingWForExtension)?;
             CircuitTableAir::Mul(MulAir::<MVal<SC>, D>::new_binomial(
-                proof.mul_rows,
+                proof.rows[Table::Mul],
                 mul_lanes,
                 w,
             ))
@@ -319,10 +384,10 @@ where
             mmcs_air,
         ];
         // All instances use empty public values in this design.
-        let pvs: Vec<Vec<MVal<SC>>> = vec![Vec::new(); airs.len()];
+        let pvs: Vec<Vec<MVal<SC>>> = vec![Vec::new(); NUM_TABLES];
 
         p3_multi_stark::verify_multi(&self.config, &airs, &proof.proof, &pvs)
-            .map_err(|e| MultiStarkProverError::Verify(format!("{:?}", e)))
+            .map_err(|e| MultiStarkProverError::Verify(alloc::format!("{e:?}")))
     }
 }
 

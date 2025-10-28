@@ -38,9 +38,9 @@
 extern crate alloc;
 
 pub mod air;
+pub mod batch_stark_prover;
 pub mod config;
 pub mod field_params;
-pub mod batch_stark_prover;
 pub mod prover;
 
 // Re-export main API
