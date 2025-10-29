@@ -3,7 +3,6 @@ use alloc::vec::Vec;
 use alloc::{format, vec};
 use core::marker::PhantomData;
 
-use itertools::Itertools;
 use p3_circuit::CircuitBuilder;
 use p3_circuit::op::{NonPrimitiveOpConfig, NonPrimitiveOpType};
 use p3_circuit::utils::ColumnsTargets;
@@ -13,7 +12,7 @@ use p3_multi_stark::MultiProof;
 use p3_uni_stark::{OpenedValues, StarkGenericConfig};
 use p3_util::zip_eq::zip_eq;
 
-use super::{ObservableCommitment, VerificationError};
+use super::{ObservableCommitment, VerificationError, recompose_quotient_from_chunks_circuit};
 use crate::Target;
 use crate::challenger::CircuitChallenger;
 use crate::traits::{Recursive, RecursiveAir, RecursiveChallenger, RecursivePcs};
@@ -413,27 +412,20 @@ where
     )?;
 
     // Verify AIR constraints per instance.
-    let zero = circuit.add_const(SC::Challenge::ZERO);
-    let one = circuit.add_const(SC::Challenge::ONE);
-
     for i in 0..n_instances {
         let air = &airs[i];
         let inst = &instances[i];
         let trace_domain = &trace_domains[i];
         let public_vals = &public_values[i];
-        let quotient_degree = quotient_degrees[i];
         let domains = &quotient_domains[i];
 
-        let zps = compute_quotient_chunk_products(circuit, config, domains, zeta, one, pcs);
-
-        if zps.len() != quotient_degree {
-            return Err(VerificationError::InvalidProofShape(
-                "Unexpected number of quotient chunk products".to_string(),
-            ));
-        }
-
-        let quotient =
-            compute_quotient_evaluation::<SC>(circuit, &inst.quotient_chunks, &zps, zero);
+        let quotient = recompose_quotient_from_chunks_circuit::<SC, _, _, _, _>(
+            circuit,
+            domains,
+            &inst.quotient_chunks,
+            zeta,
+            pcs,
+        );
 
         let sels = pcs.selectors_at_point_circuit(circuit, trace_domain, &zeta);
         let columns_targets = ColumnsTargets {
@@ -451,106 +443,4 @@ where
     }
 
     Ok(())
-}
-
-/// Compute the product terms for quotient chunk reconstruction.
-fn compute_quotient_chunk_products<
-    SC: StarkGenericConfig,
-    InputProof: Recursive<SC::Challenge>,
-    OpeningProof: Recursive<SC::Challenge>,
-    Comm: Recursive<SC::Challenge>,
-    Domain: Clone,
->(
-    circuit: &mut CircuitBuilder<SC::Challenge>,
-    config: &SC,
-    quotient_chunks_domains: &[Domain],
-    zeta: Target,
-    one: Target,
-    pcs: &<SC as StarkGenericConfig>::Pcs,
-) -> Vec<Target>
-where
-    <SC as StarkGenericConfig>::Pcs: RecursivePcs<SC, InputProof, OpeningProof, Comm, Domain>,
-{
-    quotient_chunks_domains
-        .iter()
-        .enumerate()
-        .map(|(i, _domain)| {
-            quotient_chunks_domains
-                .iter()
-                .enumerate()
-                .filter(|(j, _)| *j != i)
-                .fold(one, |total, (_, other_domain)| {
-                    let vp_zeta = vanishing_poly_at_point_circuit(
-                        config,
-                        other_domain.clone(),
-                        zeta,
-                        circuit,
-                    );
-
-                    let other_first_point = circuit.add_const(pcs.first_point(other_domain));
-                    let vp_other_first_point = vanishing_poly_at_point_circuit(
-                        config,
-                        other_domain.clone(),
-                        other_first_point,
-                        circuit,
-                    );
-                    let div = circuit.div(vp_zeta, vp_other_first_point);
-
-                    circuit.mul(total, div)
-                })
-        })
-        .collect_vec()
-}
-
-/// Compute the quotient polynomial evaluation from chunks.
-fn compute_quotient_evaluation<SC: StarkGenericConfig>(
-    circuit: &mut CircuitBuilder<SC::Challenge>,
-    opened_quotient_chunks: &[Vec<Target>],
-    zps: &[Target],
-    zero: Target,
-) -> Target
-where
-    SC::Challenge: PrimeCharacteristicRing,
-{
-    opened_quotient_chunks
-        .iter()
-        .enumerate()
-        .fold(zero, |quotient, (i, chunk)| {
-            let zp = zps[i];
-
-            let inner_result = chunk.iter().enumerate().fold(zero, |cur_s, (e_i, c)| {
-                let basis = circuit.add_const(SC::Challenge::ith_basis_element(e_i).unwrap());
-                let inner_mul = circuit.mul(basis, *c);
-                circuit.add(cur_s, inner_mul)
-            });
-
-            let mul = circuit.mul(inner_result, zp);
-            circuit.add(quotient, mul)
-        })
-}
-
-/// Compute the vanishing polynomial Z_H(point) = point^n - 1 at a given point.
-fn vanishing_poly_at_point_circuit<
-    SC: StarkGenericConfig,
-    InputProof: Recursive<SC::Challenge>,
-    OpeningProof: Recursive<SC::Challenge>,
-    Comm: Recursive<SC::Challenge>,
-    Domain,
->(
-    config: &SC,
-    domain: Domain,
-    point: Target,
-    circuit: &mut CircuitBuilder<SC::Challenge>,
-) -> Target
-where
-    <SC as StarkGenericConfig>::Pcs: RecursivePcs<SC, InputProof, OpeningProof, Comm, Domain>,
-{
-    let pcs = config.pcs();
-
-    let inv = circuit.add_const(pcs.first_point(&domain).inverse());
-    let normalized_point = circuit.mul(point, inv);
-
-    let pow = circuit.exp_power_of_2(normalized_point, pcs.log_size(&domain));
-    let one = circuit.add_const(SC::Challenge::ONE);
-    circuit.sub(pow, one)
 }
