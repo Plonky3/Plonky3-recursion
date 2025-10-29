@@ -1,7 +1,6 @@
 //! Batch STARK prover and verifier that unifies all circuit tables
 //! into a single multi-proof using `p3-multi-stark`.
 
-extern crate alloc;
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -21,7 +20,6 @@ use crate::config::StarkField;
 use crate::field_params::ExtractBinomialW;
 use crate::prover::TablePacking;
 
-/// Typed index for table row access to prevent mis-indexing bugs.
 #[repr(usize)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Table {
@@ -37,14 +35,20 @@ pub enum Table {
 pub const NUM_TABLES: usize = Table::Mmcs as usize + 1;
 
 /// Row counts wrapper with type-safe indexing.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RowCounts([usize; NUM_TABLES]);
 
 impl RowCounts {
-    pub const fn new(rows: [usize; NUM_TABLES]) -> Self {
+    /// Creates a new RowCounts with the given row counts for each table.
+    pub fn new(rows: [usize; NUM_TABLES]) -> Self {
+        // Validate that all row counts are non-zero
+        for (i, &count) in rows.iter().enumerate() {
+            assert!(count > 0, "Table {i} has zero rows, which is not supported");
+        }
         Self(rows)
     }
 
+    /// Gets the row count for a specific table.
     #[inline]
     pub const fn get(&self, t: Table) -> usize {
         self.0[t as usize]
@@ -72,10 +76,10 @@ where
     pub proof: MultiProof<SC>,
     // Metadata to re-construct AIRs on verifier side.
     pub table_packing: TablePacking,
-    /// Row counts in fixed order: [witness, constants, public, add, mul, mmcs].
     pub rows: RowCounts,
     pub ext_degree: usize,
     pub w_binomial: Option<MVal<SC>>,
+    pub mmcs_config: MmcsTableConfig,
 }
 
 impl<SC> core::fmt::Debug for BatchStarkProof<SC>
@@ -88,11 +92,12 @@ where
             .field("rows", &self.rows)
             .field("ext_degree", &self.ext_degree)
             .field("w_binomial", &self.w_binomial)
+            .field("mmcs_config", &self.mmcs_config)
             .finish()
     }
 }
 
-/// New prover that produces a single multi-STARK proof covering all circuit tables.
+/// Produces a single multi-STARK proof covering all circuit tables.
 pub struct BatchStarkProver<SC>
 where
     SC: MSGC,
@@ -115,7 +120,10 @@ pub enum MultiStarkProverError {
     Verify(String),
 }
 
-// Enum wrapper to allow heterogeneous table AIRs in a single multi-stark batch.
+/// Enum wrapper to allow heterogeneous table AIRs in a single multi-stark batch.
+///
+/// This enables different AIR types to be collected into a single vector for
+/// multi-STARK proving/verification while maintaining type safety.
 enum CircuitTableAir<F: Field, const D: usize> {
     Witness(WitnessAir<F, D>),
     Const(ConstAir<F, D>),
@@ -180,10 +188,6 @@ where
         self
     }
 
-    pub fn set_table_packing(&mut self, table_packing: TablePacking) {
-        self.table_packing = table_packing;
-    }
-
     #[inline]
     pub const fn table_packing(&self) -> TablePacking {
         self.table_packing
@@ -200,11 +204,11 @@ where
     {
         let w_opt = EF::extract_w();
         match EF::DIMENSION {
-            1 => self.prove_for_degree::<EF, 1>(traces, None),
-            2 => self.prove_for_degree::<EF, 2>(traces, w_opt),
-            4 => self.prove_for_degree::<EF, 4>(traces, w_opt),
-            6 => self.prove_for_degree::<EF, 6>(traces, w_opt),
-            8 => self.prove_for_degree::<EF, 8>(traces, w_opt),
+            1 => self.prove::<EF, 1>(traces, None),
+            2 => self.prove::<EF, 2>(traces, w_opt),
+            4 => self.prove::<EF, 4>(traces, w_opt),
+            6 => self.prove::<EF, 6>(traces, w_opt),
+            8 => self.prove::<EF, 8>(traces, w_opt),
             d => Err(MultiStarkProverError::UnsupportedDegree(d)),
         }
     }
@@ -215,16 +219,21 @@ where
         proof: &BatchStarkProof<SC>,
     ) -> Result<(), MultiStarkProverError> {
         match proof.ext_degree {
-            1 => self.verify_for_degree::<1>(proof, None),
-            2 => self.verify_for_degree::<2>(proof, proof.w_binomial),
-            4 => self.verify_for_degree::<4>(proof, proof.w_binomial),
-            6 => self.verify_for_degree::<6>(proof, proof.w_binomial),
-            8 => self.verify_for_degree::<8>(proof, proof.w_binomial),
+            1 => self.verify::<1>(proof, None),
+            2 => self.verify::<2>(proof, proof.w_binomial),
+            4 => self.verify::<4>(proof, proof.w_binomial),
+            6 => self.verify::<6>(proof, proof.w_binomial),
+            8 => self.verify::<8>(proof, proof.w_binomial),
             d => Err(MultiStarkProverError::UnsupportedDegree(d)),
         }
     }
 
-    fn prove_for_degree<EF, const D: usize>(
+    /// Generate a multi-STARK proof for a specific extension field degree.
+    ///
+    /// This is the core proving logic that handles all circuit tables for a given
+    /// extension field dimension. It constructs AIRs, converts traces to matrices,
+    /// and generates the unified proof.
+    fn prove<EF, const D: usize>(
         &self,
         traces: &Traces<EF>,
         w_binomial: Option<MVal<SC>>,
@@ -244,8 +253,8 @@ where
             WitnessAir::<MVal<SC>, D>::trace_to_matrix(&traces.witness_trace);
 
         // Const
-        let constants_rows = traces.const_trace.values.len();
-        let const_air = ConstAir::<MVal<SC>, D>::new(constants_rows);
+        let const_rows = traces.const_trace.values.len();
+        let const_air = ConstAir::<MVal<SC>, D>::new(const_rows);
         let const_matrix: RowMajorMatrix<MVal<SC>> =
             ConstAir::<MVal<SC>, D>::trace_to_matrix(&traces.const_trace);
 
@@ -278,7 +287,7 @@ where
             MmcsVerifyAir::trace_to_matrix(&self.mmcs_config, &traces.mmcs_trace);
         let mmcs_rows: usize = mmcs_matrix.height();
 
-        // Wrap AIRs in enum for heterogenous batching and build instances in fixed order.
+        // Wrap AIRs in enum for heterogeneous batching and build instances in fixed order.
         let air_witness = CircuitTableAir::Witness(witness_air);
         let air_const = CircuitTableAir::Const(const_air);
         let air_public = CircuitTableAir::Public(public_air);
@@ -328,7 +337,7 @@ where
             table_packing: packing,
             rows: RowCounts::new([
                 witness_rows,
-                constants_rows,
+                const_rows,
                 public_rows,
                 add_rows,
                 mul_rows,
@@ -336,10 +345,16 @@ where
             ]),
             ext_degree: D,
             w_binomial: if D > 1 { w_binomial } else { None },
+            mmcs_config: self.mmcs_config,
         })
     }
 
-    fn verify_for_degree<const D: usize>(
+    /// Verify a multi-STARK proof for a specific extension field degree.
+    ///
+    /// This reconstructs the AIRs from the proof metadata and verifies the proof
+    /// against all circuit tables. The AIRs are reconstructed using the same
+    /// configuration that was used during proof generation.
+    fn verify<const D: usize>(
         &self,
         proof: &BatchStarkProof<SC>,
         w_binomial: Option<MVal<SC>>,
@@ -373,7 +388,7 @@ where
                 w,
             ))
         };
-        let mmcs_air = CircuitTableAir::Mmcs(MmcsVerifyAir::<MVal<SC>>::new(self.mmcs_config));
+        let mmcs_air = CircuitTableAir::Mmcs(MmcsVerifyAir::<MVal<SC>>::new(proof.mmcs_config));
 
         let airs = vec![
             witness_air,
@@ -383,7 +398,7 @@ where
             mul_air,
             mmcs_air,
         ];
-        // All instances use empty public values in this design.
+        // TODO: Handle public values.
         let pvs: Vec<Vec<MVal<SC>>> = vec![Vec::new(); NUM_TABLES];
 
         p3_multi_stark::verify_multi(&self.config, &airs, &proof.proof, &pvs)
