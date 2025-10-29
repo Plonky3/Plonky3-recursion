@@ -142,7 +142,7 @@ impl MmcsVerifyConfig {
     /// into a vec of size `max_height`, where each entry contains the leaves
     /// corresponding to that height. Leaves for heights that do not exist
     /// in the input are empty vectors.
-    pub fn format_leaves<T: Clone>(
+    pub fn format_leaves<T: Clone + alloc::fmt::Debug>(
         &self,
         leaves: &[Vec<T>],
         dimensions: &[Dimensions],
