@@ -17,6 +17,7 @@ p3-commit.workspace = true
 p3-field.workspace = true
 p3-fri.workspace = true
 p3-merkle-tree.workspace = true
+p3-multi-stark.workspace = true
 p3-symmetric.workspace = true
 p3-uni-stark.workspace = true
 p3-util.workspace = true
