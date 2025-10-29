@@ -68,6 +68,10 @@ impl<
         let trace_targets = Comm::new(circuit, &input.commitments.main);
         let quotient_chunks_targets = Comm::new(circuit, &input.commitments.quotient_chunks);
 
+        // Flattened opened values are ordered as:
+        // 1. All `trace_local` rows per instance (instance 0 .. N)
+        // 2. All `trace_next` rows per instance (instance 0 .. N)
+        // 3. Quotient chunks for each instance in commit order
         let mut aggregated_trace_local = Vec::new();
         let mut aggregated_trace_next = Vec::new();
         let mut aggregated_quotient_chunks = Vec::new();
@@ -188,6 +192,7 @@ where
     SC::Challenge: PrimeCharacteristicRing,
     <<SC as StarkGenericConfig>::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain: Clone,
 {
+    debug_assert_eq!(config.is_zk(), 0, "batch/multi recursion assumes non-ZK");
     if SC::Pcs::ZK {
         return Err(VerificationError::InvalidProofShape(
             "ZK mode is not supported for multi-STARK recursion".to_string(),
@@ -335,15 +340,17 @@ where
         .iter()
         .zip(instances.iter())
         .map(|(ext_dom, inst)| {
-            let generator = ext_dom.next_point(SC::Challenge::ONE).ok_or_else(|| {
+            let first_point = pcs.first_point(ext_dom);
+            let next_point = ext_dom.next_point(first_point).ok_or_else(|| {
                 VerificationError::InvalidProofShape(
-                    "Next point unavailable for trace domain".to_string(),
+                    "Trace domain does not provide next point".to_string(),
                 )
             })?;
-            let generator_target = circuit.add_const(generator);
-            let zeta_next = circuit.mul(zeta, generator_target);
+            let generator = next_point * first_point.inverse();
+            let generator_const = circuit.add_const(generator);
+            let zeta_next = circuit.mul(zeta, generator_const);
             Ok((
-                ext_dom.clone(),
+                *ext_dom,
                 vec![
                     (zeta, inst.trace_local.clone()),
                     (zeta_next, inst.trace_next.clone()),
@@ -373,7 +380,7 @@ where
                 "Quotient chunk count mismatch across domains".to_string(),
             ),
         )? {
-            quotient_round.push((domain.clone(), vec![(zeta, values.clone())]));
+            quotient_round.push((*domain, vec![(zeta, values.clone())]));
         }
     }
     coms_to_verify.push((
@@ -382,6 +389,7 @@ where
     ));
 
     // Generate PCS-specific challenges after observing all opened values.
+    opened_values_targets.observe(circuit, &mut challenger);
     let pcs_challenges = SC::Pcs::get_challenges_circuit::<RATE>(
         circuit,
         &mut challenger,
@@ -445,7 +453,7 @@ fn compute_quotient_chunk_products<
     InputProof: Recursive<SC::Challenge>,
     OpeningProof: Recursive<SC::Challenge>,
     Comm: Recursive<SC::Challenge>,
-    Domain: Copy,
+    Domain: Clone,
 >(
     circuit: &mut CircuitBuilder<SC::Challenge>,
     config: &SC,
@@ -466,13 +474,17 @@ where
                 .enumerate()
                 .filter(|(j, _)| *j != i)
                 .fold(one, |total, (_, other_domain)| {
-                    let vp_zeta =
-                        vanishing_poly_at_point_circuit(config, *other_domain, zeta, circuit);
+                    let vp_zeta = vanishing_poly_at_point_circuit(
+                        config,
+                        other_domain.clone(),
+                        zeta,
+                        circuit,
+                    );
 
                     let first_point = circuit.add_const(pcs.first_point(domain));
                     let vp_first_point = vanishing_poly_at_point_circuit(
                         config,
-                        *other_domain,
+                        other_domain.clone(),
                         first_point,
                         circuit,
                     );

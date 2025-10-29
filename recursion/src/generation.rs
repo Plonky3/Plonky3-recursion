@@ -199,6 +199,7 @@ where
     A: Air<SymbolicAirBuilder<Val<SC>>> + for<'a> Air<VerifierConstraintFolder<'a, SC>>,
     SC::Pcs: PcsGeneration<SC, <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Proof>,
 {
+    debug_assert_eq!(config.is_zk(), 0, "batch/multi recursion assumes non-ZK");
     if SC::Pcs::ZK {
         return Err(GenerationError::InvalidProofShape(
             "multi-STARK challenge generation does not support ZK mode",
@@ -280,7 +281,7 @@ where
                     "trace domain lacks next point",
                 ))?;
             Ok((
-                ext_dom.clone(),
+                *ext_dom,
                 vec![
                     (zeta, inst.trace_local.clone()),
                     (zeta_next, inst.trace_next.clone()),
@@ -309,7 +310,7 @@ where
             ));
         }
         for (domain, values) in domains.iter().zip(inst.quotient_chunks.iter()) {
-            quotient_round.push((domain.clone(), vec![(zeta, values.clone())]));
+            quotient_round.push((*domain, vec![(zeta, values.clone())]));
         }
     }
     coms_to_verify.push((commitments.quotient_chunks.clone(), quotient_round));
