@@ -204,9 +204,10 @@ impl<F: Field + Clone + Default> MmcsPrivateData<F> {
             .expect("There must be at leas to one leaf")
             .clone();
 
-        // Ensure there's no leaf in the last level
+        // Ensure there's no leaf in the last level, provided the number of leaves is > 1
         if let Some(last) = leaves.last()
             && !last.is_empty()
+            && leaves.len() > 1
         {
             return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
                 op: NonPrimitiveOpType::MmcsVerify,
@@ -216,20 +217,19 @@ impl<F: Field + Clone + Default> MmcsPrivateData<F> {
             });
         }
 
-        // The first element is just the leaf.
-
         let empty_leaf = vec![];
         for (&dir, sibling, leaf) in izip!(
             directions.iter(),
             self.path_siblings.iter(),
-            iter::once(&empty_leaf).chain(leaves.iter().skip(1))
+            leaves.iter().skip(1).chain(iter::once(&empty_leaf))
         ) {
             let input = if dir {
-                [state.as_slice(), sibling]
-            } else {
                 [sibling, state.as_slice()]
+            } else {
+                [state.as_slice(), sibling]
             };
             let new_state = (self.compress)(input)?;
+
             path_states.push((
                 state.clone(),
                 // If there's a leaf at this depth we need to compute an extra state
@@ -281,7 +281,7 @@ impl<F: Field + Clone + Default> MmcsPrivateData<F> {
                     expected: "Non empty".to_string(),
                     got: leaves.len()
                 }) {
-            leaf.is_empty()
+            leaf.is_empty() || leaves.len() == 1
         } else {
             false
         });
@@ -318,8 +318,8 @@ impl<F: Field + Clone + Default> MmcsPrivateData<F> {
             // TODO: For now we repeat the leaf indices here, but will need to add the right ones when we
             // ass CTLs to connect the Mmcs verify table.
             iter::repeat(leaf_indices),
-            // Skip the first leaf, as it was already assigned to the first state
-            iter::once(&empty_leaf).chain(leaves.iter().skip(1)),
+            // Skip the first leaf, as it was already assigned to the first state, and add an empty leaf at the end
+            leaves.iter().skip(1).chain(iter::once(&empty_leaf)),
         ) {
             // Add a row to the trace.
             let mut add_trace_row = |left_v: &Vec<F>, right_v: &Vec<F>, is_extra_flag: bool| {
@@ -512,21 +512,21 @@ mod tests {
         let compress: TruncatedPermutation<Poseidon2BabyBear<16>, 2, 1, 16> =
             TruncatedPermutation::new(perm);
 
-        // At level 1 dir = false and state0 = leaf, the first input is [2, 1] and thus compress.compress(input) = state1.
-        let state1 = compress.compress([[BabyBear::from_u64(2)], [BabyBear::from_u64(1)]]);
+        // At level 1 dir = false and state0 = leaf, the first input is [1, 2] and thus compress.compress(input) = state1.
+        let state1 = compress.compress([[BabyBear::from_u64(1)], [BabyBear::from_u64(2)]]);
         // At level 2 there is an extra leaf, so we do two compressions.
-        // In the first one direction = true then input is [state1, 3] and compress.compress(input) = state2
-        let state2 = compress.compress([state1, [BabyBear::from_u64(3)]]);
-        // In the second compression of level 2 input is [state2, 4] and compress.compress(input) = state3
-        let state3 = compress.compress([state2, [BabyBear::from_u64(4)]]);
+        // In the forst compression of level 2 input is [state1, 4] and compress.compress(input) = state2
+        let state2 = compress.compress([state1, [BabyBear::from_u64(4)]]);
+        // In the second one direction = true then input is [3, state2] and compress.compress(input) = state3
+        let state3 = compress.compress([[BabyBear::from_u64(3)], state2]);
         // direction = true and then input is [state3, 5] compress.compress(input) = state4
-        let state4 = compress.compress([state3, [BabyBear::from_u64(5)]]);
+        let state4 = compress.compress([[BabyBear::from_u64(5)], state3]);
 
         let expected_path_states = vec![
             // The first state is the leaf.
-            (vec![BabyBear::from_u64(1)], None),
+            (vec![BabyBear::from_u64(1)], Some(state1.to_vec())),
             // Here there's an extra leaf
-            (state1.to_vec(), Some(state2.to_vec())),
+            (state2.to_vec(), None),
             (state3.to_vec(), None),
             // final root state after the full path
             (state4.to_vec(), None),
@@ -735,7 +735,7 @@ mod tests {
         for (dir, sibling, leaf) in izip!(
             directions.iter(),
             siblings.iter(),
-            iter::once(&empty_leaf).chain(leaves_value.iter().skip(1))
+            leaves_value.iter().skip(1).chain(iter::once(&empty_leaf))
         ) {
             expected_dirs.push(*dir);
             expected_is_extra.push(false);
@@ -756,7 +756,7 @@ mod tests {
         let mut expected_left_values = alloc::vec::Vec::new();
         for ((state, extra_state), leaf) in path_states
             .iter()
-            .zip(iter::once(&empty_leaf).chain(leaves_value.iter().skip(1)))
+            .zip(leaves_value.iter().skip(1).chain(iter::once(&empty_leaf)))
         {
             expected_left_values.push(state.clone());
             if let Some(extra_state) = extra_state {
