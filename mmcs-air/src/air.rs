@@ -361,6 +361,7 @@ impl<F: Field> MmcsVerifyAir<F> {
                 let mut row_height = 0;
                 for (left_value, left_index, right_value, is_extra) in izip!(
                     path.left_values.iter(),
+                    // TODO: When there's no leaf the index of right
                     path.left_index.iter(),
                     path.right_values.iter(),
                     path.is_extra.iter()
@@ -494,6 +495,7 @@ impl<F: Field> MmcsVerifyAir<F> {
 mod test {
 
     use alloc::vec;
+    use alloc::vec::Vec;
     use core::array;
 
     use p3_baby_bear::BabyBear;
@@ -547,29 +549,28 @@ mod test {
         let mmcs_config = MmcsVerifyConfig::babybear_default();
         let compress = MockCompression {};
 
-        let leafs = [[rng.random::<Val>(); DIGEST_ELEMS]; NUM_INPUTS];
-        let private_data: [MmcsPrivateData<Val>; NUM_INPUTS] = array::from_fn(|i| {
-            let path_siblings = if i % 2 == 0 {
+        let leaves: Vec<Vec<Vec<Val>>> = (0..NUM_INPUTS)
+            .map(|_| {
                 (0..HEIGHT)
                     .map(|j| {
-                        if j == HEIGHT / 2 {
-                            (
-                                vec![rng.random::<Val>(); DIGEST_ELEMS],
-                                Some(vec![rng.random::<Val>(); DIGEST_ELEMS]),
-                            )
+                        if j == HEIGHT / 2 || j == 0 {
+                            vec![rng.random::<Val>(); DIGEST_ELEMS]
                         } else {
-                            (vec![rng.random::<Val>(); DIGEST_ELEMS], None)
+                            vec![]
                         }
                     })
-                    .collect()
-            } else {
-                vec![(vec![rng.random::<Val>(); DIGEST_ELEMS], None); HEIGHT]
-            };
+                    .collect::<Vec<Vec<Val>>>()
+            })
+            .collect();
+        let private_data: [MmcsPrivateData<Val>; NUM_INPUTS] = array::from_fn(|i| {
+            let path_siblings: Vec<Vec<Val>> = (0..HEIGHT)
+                .map(|_| vec![rng.random::<Val>(); DIGEST_ELEMS])
+                .collect();
             let directions: [bool; HEIGHT] = array::from_fn(|_| rng.random::<bool>());
             MmcsPrivateData::new(
                 &compress,
                 &mmcs_config,
-                &leafs[i],
+                &leaves[i],
                 &path_siblings,
                 &directions,
             )
@@ -579,10 +580,15 @@ mod test {
         let trace = MmcsTrace {
             mmcs_paths: private_data
                 .iter()
-                .map(|data| {
+                .zip(leaves)
+                .map(|(data, leaves)| {
                     data.to_trace(
                         &mmcs_config,
-                        &[WitnessId(0); DIGEST_ELEMS],
+                        &leaves,
+                        &leaves
+                            .iter()
+                            .map(|leaf| leaf.iter().map(|_| WitnessId(0)).collect())
+                            .collect::<Vec<Vec<WitnessId>>>(),
                         &[WitnessId(0); DIGEST_ELEMS],
                     )
                     .unwrap()

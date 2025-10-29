@@ -24,11 +24,14 @@ pub struct CircuitBuilder<F> {
     witness_alloc: WitnessAllocator,
 
     /// Non-primitive operations (complex constraints that don't produce `ExprId`s)
-    non_primitive_ops: Vec<(NonPrimitiveOpId, NonPrimitiveOpType, Vec<ExprId>)>,
+    non_primitive_ops: Vec<NonPrimitiveOperationData>,
 
     /// Builder configuration
     config: BuilderConfig,
 }
+
+/// The non-primitive operation id, type, and the vectors of the expressions representing its inputs
+pub type NonPrimitiveOperationData = (NonPrimitiveOpId, NonPrimitiveOpType, Vec<Vec<ExprId>>);
 
 impl<F> Default for CircuitBuilder<F>
 where
@@ -251,7 +254,7 @@ where
     pub(crate) fn push_non_primitive_op(
         &mut self,
         op_type: NonPrimitiveOpType,
-        witness_exprs: Vec<ExprId>,
+        witness_exprs: Vec<Vec<ExprId>>,
         label: &'static str,
     ) -> NonPrimitiveOpId {
         let op_id = NonPrimitiveOpId(self.non_primitive_ops.len() as u32);
