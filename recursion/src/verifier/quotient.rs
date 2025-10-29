@@ -17,7 +17,6 @@ pub fn recompose_quotient_from_chunks_circuit<
     Domain: Copy,
 >(
     circuit: &mut CircuitBuilder<SC::Challenge>,
-    config: &SC,
     quotient_chunks_domains: &[Domain],
     quotient_chunks: &[Vec<Target>],
     zeta: Target,
@@ -30,8 +29,13 @@ where
     let zero = circuit.add_const(SC::Challenge::ZERO);
     let one = circuit.add_const(SC::Challenge::ONE);
 
-    let zps =
-        compute_quotient_chunk_products(circuit, config, quotient_chunks_domains, zeta, one, pcs);
+    let zps = compute_quotient_chunk_products::<SC, InputProof, OpeningProof, Comm, Domain>(
+        circuit,
+        quotient_chunks_domains,
+        zeta,
+        one,
+        pcs,
+    );
 
     compute_quotient_evaluation::<SC>(circuit, quotient_chunks, &zps, zero)
 }
@@ -47,7 +51,6 @@ fn compute_quotient_chunk_products<
     Domain: Copy,
 >(
     circuit: &mut CircuitBuilder<SC::Challenge>,
-    config: &SC,
     quotient_chunks_domains: &[Domain],
     zeta: Target,
     one: Target,
@@ -65,15 +68,23 @@ where
                 .enumerate()
                 .filter(|(j, _)| *j != i)
                 .fold(one, |total, (_, other_domain)| {
-                    let vp_zeta =
-                        vanishing_poly_at_point_circuit(config, *other_domain, zeta, circuit);
+                    let vp_zeta = vanishing_poly_at_point_circuit::<
+                        SC,
+                        InputProof,
+                        OpeningProof,
+                        Comm,
+                        Domain,
+                    >(pcs, *other_domain, zeta, circuit);
 
                     let first_point = circuit.add_const(pcs.first_point(domain));
-                    let vp_first_point = vanishing_poly_at_point_circuit(
-                        config,
-                        *other_domain,
-                        first_point,
-                        circuit,
+                    let vp_first_point = vanishing_poly_at_point_circuit::<
+                        SC,
+                        InputProof,
+                        OpeningProof,
+                        Comm,
+                        Domain,
+                    >(
+                        pcs, *other_domain, first_point, circuit
                     );
                     let div = circuit.div(vp_zeta, vp_first_point);
 
@@ -116,7 +127,7 @@ where
 /// Compute the vanishing polynomial Z_H(point) = point^n - 1 at a given point.
 ///
 /// # Parameters
-/// - `config`: STARK configuration
+/// - `pcs`: Polynomial commitment scheme for domain metadata
 /// - `domain`: The domain (defines n)
 /// - `point`: The evaluation point
 /// - `circuit`: Circuit builder
@@ -130,7 +141,7 @@ fn vanishing_poly_at_point_circuit<
     Comm: Recursive<SC::Challenge>,
     Domain,
 >(
-    config: &SC,
+    pcs: &<SC as StarkGenericConfig>::Pcs,
     domain: Domain,
     point: Target,
     circuit: &mut CircuitBuilder<SC::Challenge>,
@@ -138,8 +149,6 @@ fn vanishing_poly_at_point_circuit<
 where
     <SC as StarkGenericConfig>::Pcs: RecursivePcs<SC, InputProof, OpeningProof, Comm, Domain>,
 {
-    let pcs = config.pcs();
-
     // Normalize point: point' = point / first_point
     let inv = circuit.add_const(pcs.first_point(&domain).inverse());
     let mul = circuit.mul(point, inv);

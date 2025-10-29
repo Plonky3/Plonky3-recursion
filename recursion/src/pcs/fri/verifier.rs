@@ -538,8 +538,7 @@ where
     //  Check the final polynomial length.
     if actual_final_poly_len != expected_final_poly_len {
         return Err(VerificationError::InvalidProofShape(format!(
-            "Final polynomial length mismatch: expected 2^{} = {}, got {}",
-            log_final_poly_len, expected_final_poly_len, actual_final_poly_len
+            "Final polynomial length mismatch: expected 2^{log_final_poly_len} = {expected_final_poly_len}, got {actual_final_poly_len}"
         )));
     }
 

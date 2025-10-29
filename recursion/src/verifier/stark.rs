@@ -31,6 +31,11 @@ type PcsVerifierParams<SC, InputProof, OpeningProof, Comm> =
         >>::Domain,
     >>::VerifierParams;
 
+type PcsDomain<SC> = <<SC as StarkGenericConfig>::Pcs as Pcs<
+    <SC as StarkGenericConfig>::Challenge,
+    <SC as StarkGenericConfig>::Challenger,
+>>::Domain;
+
 /// Verifies a STARK proof within a circuit.
 ///
 /// This function adds constraints to the circuit builder that verify a STARK proof.
@@ -205,9 +210,14 @@ where
     )?;
 
     // Compute quotient polynomial evaluation from chunks
-    let quotient = recompose_quotient_from_chunks_circuit(
+    let quotient = recompose_quotient_from_chunks_circuit::<
+        SC,
+        InputProof,
+        OpeningProof,
+        Comm,
+        PcsDomain<SC>,
+    >(
         circuit,
-        config,
         &quotient_chunks_domains,
         opened_quotient_chunks_targets,
         zeta,

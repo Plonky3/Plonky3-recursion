@@ -168,7 +168,7 @@ impl<F: Field + Clone + Default> MmcsPrivateData<F> {
             return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
                 op: NonPrimitiveOpType::MmcsVerify,
                 expected: "[]".to_string(),
-                got: format!("{:?}", last),
+                got: format!("{last:?}"),
                 operation_index: NonPrimitiveOpId(0), //TODO: What's the index of this op?
             });
         }
@@ -616,8 +616,7 @@ mod tests {
         let result = run_test(&leaves_value, correct_root, &correct_private_data);
         assert!(
             result.is_ok(),
-            "Valid witness should be accepted but got {:?}",
-            result
+            "Valid witness should be accepted but got {result:?}"
         );
 
         // Test 2: Invalid witness (wrong root) should be rejected
