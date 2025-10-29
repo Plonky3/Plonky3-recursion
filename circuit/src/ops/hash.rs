@@ -4,6 +4,7 @@
 //! construction within the circuit.
 
 use alloc::boxed::Box;
+use alloc::vec;
 use alloc::vec::Vec;
 
 use p3_field::{Field, PrimeCharacteristicRing};
@@ -46,7 +47,7 @@ where
 
         Ok(self.push_non_primitive_op(
             NonPrimitiveOpType::HashAbsorb { reset },
-            inputs.to_vec(),
+            vec![inputs.to_vec()],
             "HashAbsorb",
         ))
     }
@@ -58,7 +59,7 @@ where
 
         let _ = self.push_non_primitive_op(
             NonPrimitiveOpType::HashSqueeze,
-            outputs.clone(),
+            vec![outputs.to_vec()],
             "HashSqueeze",
         );
 
@@ -145,8 +146,8 @@ impl HashAbsorbExecutor {
 impl<F: Field> NonPrimitiveExecutor<F> for HashAbsorbExecutor {
     fn execute(
         &self,
-        _inputs: &[WitnessId],
-        _outputs: &[WitnessId],
+        _inputs: &[Vec<WitnessId>],
+        _outputs: &[Vec<WitnessId>],
         _ctx: &mut ExecutionContext<F>,
     ) -> Result<(), CircuitError> {
         Ok(())
@@ -188,8 +189,8 @@ impl Default for HashSqueezeExecutor {
 impl<F: Field> NonPrimitiveExecutor<F> for HashSqueezeExecutor {
     fn execute(
         &self,
-        _inputs: &[WitnessId],
-        _outputs: &[WitnessId],
+        _inputs: &[Vec<WitnessId>],
+        _outputs: &[Vec<WitnessId>],
         _ctx: &mut ExecutionContext<F>,
     ) -> Result<(), CircuitError> {
         Ok(())

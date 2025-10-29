@@ -1,14 +1,16 @@
+use alloc::format;
 use alloc::vec::Vec;
 use core::hash::Hash;
 
 use hashbrown::HashMap;
 use p3_field::{Field, PrimeCharacteristicRing};
 
+use crate::builder::circuit_builder::NonPrimitiveOperationData;
 use crate::builder::compiler::get_witness_id;
 use crate::builder::{BuilderConfig, CircuitBuilderError};
 use crate::op::{NonPrimitiveOpConfig, NonPrimitiveOpType, Op};
 use crate::ops::{HashAbsorbExecutor, HashSqueezeExecutor, MmcsVerifyExecutor};
-use crate::types::{ExprId, NonPrimitiveOpId, WitnessId};
+use crate::types::{ExprId, WitnessId};
 
 /// Responsible for lowering non-primitive operations from ExprIds to WitnessIds.
 ///
@@ -19,7 +21,7 @@ use crate::types::{ExprId, NonPrimitiveOpId, WitnessId};
 #[derive(Debug)]
 pub struct NonPrimitiveLowerer<'a> {
     /// Non-primitive operations to lower
-    non_primitive_ops: &'a [(NonPrimitiveOpId, NonPrimitiveOpType, Vec<ExprId>)],
+    non_primitive_ops: &'a [NonPrimitiveOperationData],
 
     /// Expression to witness mapping
     expr_to_widx: &'a HashMap<ExprId, WitnessId>,
@@ -31,7 +33,7 @@ pub struct NonPrimitiveLowerer<'a> {
 impl<'a> NonPrimitiveLowerer<'a> {
     /// Creates a new non-primitive lowerer.
     pub const fn new(
-        non_primitive_ops: &'a [(NonPrimitiveOpId, NonPrimitiveOpType, Vec<ExprId>)],
+        non_primitive_ops: &'a [NonPrimitiveOperationData],
         expr_to_widx: &'a HashMap<ExprId, WitnessId>,
         config: &'a BuilderConfig,
     ) -> Self {
@@ -54,57 +56,85 @@ impl<'a> NonPrimitiveLowerer<'a> {
             match op_type {
                 NonPrimitiveOpType::MmcsVerify => {
                     let config = match config_opt {
-                        Some(NonPrimitiveOpConfig::MmcsVerifyConfig(config)) => config,
-                        _ => {
-                            return Err(CircuitBuilderError::InvalidNonPrimitiveOpConfiguration {
-                                op: op_type.clone(),
-                            });
-                        }
-                    };
-
-                    let ext = config.ext_field_digest_elems;
-                    let expected = config.input_size();
-                    if witness_exprs.len() != expected {
+                        Some(NonPrimitiveOpConfig::MmcsVerifyConfig(config)) => Ok(config),
+                        _ => Err(CircuitBuilderError::InvalidNonPrimitiveOpConfiguration {
+                            op: op_type.clone(),
+                        }),
+                    }?;
+                    if !config.input_size().contains(&witness_exprs.len()) {
                         return Err(CircuitBuilderError::NonPrimitiveOpArity {
                             op: "MmcsVerify",
-                            expected,
+                            expected: format!("{:?}", config.input_size()),
                             got: witness_exprs.len(),
                         });
                     }
 
-                    // Map leaf inputs
-                    let leaf_widx: Vec<WitnessId> = (0..ext)
-                        .map(|i| {
-                            get_witness_id(
-                                self.expr_to_widx,
-                                witness_exprs[i],
-                                "MmcsVerify leaf input",
-                            )
+                    let directions_len = witness_exprs[witness_exprs.len() - 2].len();
+                    if !config.directions_size().contains(&directions_len) {
+                        return Err(CircuitBuilderError::NonPrimitiveOpArity {
+                            op: "MmcsVerify",
+                            expected: format!("{:?}", config.directions_size()),
+                            got: directions_len,
+                        });
+                    }
+
+                    // The length must be directions_len + 2: directions_len leaves + direction + root
+                    if witness_exprs.len() != directions_len + 2 {
+                        return Err(CircuitBuilderError::NonPrimitiveOpArity {
+                            op: "MmcsVerify",
+                            expected: format!("{}", directions_len + 2),
+                            got: witness_exprs.len(),
+                        });
+                    }
+
+                    // The leaves are represented as the first witness_exprs.len() - 2 elements
+                    // Each leave should be either a vector of length config.ext_field_digest_elems,
+                    // or an empty vec, meaning that there's no matrix in the Mmcs scheme at that level.
+                    let leaves_expr = &witness_exprs[..directions_len];
+                    if !leaves_expr
+                        .iter()
+                        .all(|leaf| leaf.len() == config.ext_field_digest_elems || leaf.is_empty())
+                    {
+                        return Err(CircuitBuilderError::NonPrimitiveOpArity {
+                            op: "MmcsVerify",
+                            expected: format!("{}", config.ext_field_digest_elems),
+                            got: witness_exprs[0].len(),
+                        });
+                    }
+                    let leaves_widx: Vec<Vec<WitnessId>> = leaves_expr
+                        .iter()
+                        .map(|leaf| {
+                            leaf.iter()
+                                .map(|expr_id| {
+                                    get_witness_id(
+                                        self.expr_to_widx,
+                                        *expr_id,
+                                        "MmcsVerify leaf input",
+                                    )
+                                })
+                                .collect::<Result<Vec<WitnessId>, _>>()
                         })
                         .collect::<Result<_, _>>()?;
 
-                    // Map index input
-                    let index_widx = get_witness_id(
-                        self.expr_to_widx,
-                        witness_exprs[ext],
-                        "MmcsVerify index input",
-                    )?;
+                    // directions are witnesses at position directions_len
+                    let directions_widx = witness_exprs[directions_len]
+                        .iter()
+                        .map(|expr_id| {
+                            get_witness_id(self.expr_to_widx, *expr_id, "MmcsVerify index input")
+                        })
+                        .collect::<Result<_, _>>()?;
 
-                    // Map root inputs (assert op; no outputs)
-                    let root_widx: Vec<WitnessId> = (ext + 1..expected)
-                        .map(|i| {
-                            get_witness_id(
-                                self.expr_to_widx,
-                                witness_exprs[i],
-                                "MmcsVerify root input",
-                            )
+                    let root_widx = witness_exprs[directions_len + 1]
+                        .iter()
+                        .map(|expr_id| {
+                            get_witness_id(self.expr_to_widx, *expr_id, "MmcsVerify root input")
                         })
                         .collect::<Result<_, _>>()?;
 
                     // Build Op with executor: all in inputs; no outputs
-                    let mut inputs = leaf_widx;
-                    inputs.push(index_widx);
-                    inputs.extend(root_widx);
+                    let mut inputs = leaves_widx;
+                    inputs.push(directions_widx);
+                    inputs.push(root_widx);
                     lowered_ops.push(Op::NonPrimitiveOpWithExecutor {
                         inputs,
                         outputs: Vec::new(),
@@ -122,8 +152,15 @@ impl<'a> NonPrimitiveLowerer<'a> {
 
                     let inputs = witness_exprs
                         .iter()
-                        .map(|&expr| get_witness_id(self.expr_to_widx, expr, "HashAbsorb input"))
-                        .collect::<Result<_, _>>()?;
+                        .map(|witness_expr| {
+                            witness_expr
+                                .iter()
+                                .map(|&expr| {
+                                    get_witness_id(self.expr_to_widx, expr, "HashAbsorb input")
+                                })
+                                .collect::<Result<Vec<WitnessId>, _>>()
+                        })
+                        .collect::<Result<Vec<Vec<WitnessId>>, _>>()?;
 
                     lowered_ops.push(Op::NonPrimitiveOpWithExecutor {
                         inputs,
@@ -142,8 +179,15 @@ impl<'a> NonPrimitiveLowerer<'a> {
 
                     let outputs = witness_exprs
                         .iter()
-                        .map(|&expr| get_witness_id(self.expr_to_widx, expr, "HashSqueeze output"))
-                        .collect::<Result<_, _>>()?;
+                        .map(|witness_expr| {
+                            witness_expr
+                                .iter()
+                                .map(|&expr| {
+                                    get_witness_id(self.expr_to_widx, expr, "HashSqueeze output")
+                                })
+                                .collect::<Result<Vec<WitnessId>, _>>()
+                        })
+                        .collect::<Result<Vec<Vec<WitnessId>>, _>>()?;
 
                     lowered_ops.push(Op::NonPrimitiveOpWithExecutor {
                         inputs: Vec::new(),
@@ -169,6 +213,7 @@ mod tests {
     use p3_baby_bear::BabyBear;
 
     use super::*;
+    use crate::NonPrimitiveOpId;
     use crate::ops::MmcsVerifyConfig;
 
     /// Helper to create a simple expression to witness mapping with sequential IDs.
@@ -208,22 +253,28 @@ mod tests {
     #[test]
     fn test_mmcs_verify_mock_config() {
         // Test MmcsVerify with mock config (simplest case: 1 leaf + 1 index + 1 root)
-        let mock_config = MmcsVerifyConfig::mock_config();
+        let mock_config = MmcsVerifyConfig {
+            base_field_digest_elems: 1,
+            ext_field_digest_elems: 1,
+            max_tree_height: 2,
+        };
         assert_eq!(mock_config.ext_field_digest_elems, 1);
-        assert_eq!(
-            mock_config.input_size(),
-            2 * mock_config.ext_field_digest_elems + 1
-        );
+        assert_eq!(mock_config.input_size(), (3..5));
 
         let mut config = BuilderConfig::new();
         config.enable_mmcs(&mock_config);
 
-        let expr_map = create_expr_map(3);
+        let expr_map = create_expr_map(4);
 
         let ops = vec![(
             NonPrimitiveOpId(0),
             NonPrimitiveOpType::MmcsVerify,
-            vec![ExprId(0), ExprId(1), ExprId(2)],
+            vec![
+                vec![ExprId(0)],            // first leaf
+                vec![],                     // second leaf
+                vec![ExprId(1), ExprId(2)], // directions
+                vec![ExprId(3)],            // root
+            ],
         )];
 
         let lowerer = NonPrimitiveLowerer::new(&ops, &expr_map, &config);
@@ -239,7 +290,15 @@ mod tests {
                 ..
             } => {
                 assert_eq!(executor.op_type(), &NonPrimitiveOpType::MmcsVerify);
-                assert_eq!(inputs, &vec![WitnessId(0), WitnessId(1), WitnessId(2)]);
+                assert_eq!(
+                    inputs,
+                    &vec![
+                        vec![WitnessId(0)],
+                        vec![],
+                        vec![WitnessId(1), WitnessId(2)],
+                        vec![WitnessId(3)]
+                    ]
+                );
                 assert!(outputs.is_empty());
             }
             _ => panic!("Expected NonPrimitiveOpWithExecutor(MmcsVerify)"),
@@ -251,17 +310,19 @@ mod tests {
         // Test MmcsVerify with BabyBear config (realistic: 8 leaf + 1 index + 8 root)
         let babybear_config = MmcsVerifyConfig::babybear_default();
         assert_eq!(babybear_config.ext_field_digest_elems, 8);
-        assert_eq!(
-            babybear_config.input_size(),
-            2 * babybear_config.ext_field_digest_elems + 1
-        );
+        assert_eq!(babybear_config.input_size(), 3..35);
 
         let mut config = BuilderConfig::new();
         config.enable_mmcs(&babybear_config);
 
-        let expr_map = create_expr_map(17);
+        let expr_map = create_expr_map(26);
 
-        let witness_exprs: Vec<ExprId> = (0..17).map(|i| ExprId(i as u32)).collect();
+        let witness_exprs: Vec<Vec<ExprId>> = vec![
+            (0..8).map(|i| ExprId(i as u32)).collect(),   // leaf 1
+            (8..16).map(|i| ExprId(i as u32)).collect(),  // leaf 2
+            vec![ExprId(16), ExprId(17)],                 // directions
+            (18..26).map(|i| ExprId(i as u32)).collect(), // root
+        ];
         let ops = vec![(
             NonPrimitiveOpId(0),
             NonPrimitiveOpType::MmcsVerify,
@@ -282,13 +343,16 @@ mod tests {
             } => {
                 assert_eq!(executor.op_type(), &NonPrimitiveOpType::MmcsVerify);
                 // Verify leaf witnesses (0..8) + index (8) + root (9..16)
-                assert_eq!(inputs.len(), 17);
-                for (i, &wid) in inputs.iter().enumerate().take(8) {
+                assert_eq!(inputs.len(), 4);
+                for (i, &wid) in inputs[0].iter().enumerate() {
                     assert_eq!(wid, WitnessId(i as u32));
                 }
-                assert_eq!(inputs[8], WitnessId(8));
-                for (i, &wid) in inputs.iter().enumerate().skip(9) {
-                    assert_eq!(wid, WitnessId(i as u32));
+                for (i, &wid) in inputs[1].iter().enumerate() {
+                    assert_eq!(wid, WitnessId((i + 8) as u32));
+                }
+                assert_eq!(inputs[2], vec![WitnessId(16), WitnessId(17)]);
+                for (i, &wid) in inputs[3].iter().enumerate() {
+                    assert_eq!(wid, WitnessId((i + 18) as u32));
                 }
                 assert!(outputs.is_empty());
             }
@@ -310,17 +374,17 @@ mod tests {
             (
                 NonPrimitiveOpId(0),
                 NonPrimitiveOpType::MmcsVerify,
-                vec![ExprId(0), ExprId(1), ExprId(2)],
+                vec![vec![ExprId(0)], vec![ExprId(1)], vec![ExprId(2)]],
             ),
             (
                 NonPrimitiveOpId(1),
                 NonPrimitiveOpType::MmcsVerify,
-                vec![ExprId(3), ExprId(4), ExprId(5)],
+                vec![vec![ExprId(3)], vec![ExprId(4)], vec![ExprId(5)]],
             ),
             (
                 NonPrimitiveOpId(2),
                 NonPrimitiveOpType::MmcsVerify,
-                vec![ExprId(6), ExprId(7), ExprId(8)],
+                vec![vec![ExprId(6)], vec![ExprId(7)], vec![ExprId(8)]],
             ),
         ];
 
@@ -340,10 +404,10 @@ mod tests {
                 } => {
                     assert_eq!(executor.op_type(), &NonPrimitiveOpType::MmcsVerify);
                     let base = (i * 3) as u32;
-                    assert_eq!(inputs.len(), 3); // leaf (1) + index (1) + root(1)
-                    assert_eq!(inputs[0], WitnessId(base));
-                    assert_eq!(inputs[1], WitnessId(base + 1));
-                    assert_eq!(inputs[2], WitnessId(base + 2));
+                    assert_eq!(inputs.len(), 3); // leaves (1) + index (1) + root(1)
+                    assert_eq!(inputs[0], vec![WitnessId(base)]);
+                    assert_eq!(inputs[1], vec![WitnessId(base + 1)]);
+                    assert_eq!(inputs[2], vec![WitnessId(base + 2)]);
                     assert!(outputs.is_empty());
                     assert_eq!(*op_id, NonPrimitiveOpId(i as u32));
                 }
@@ -358,7 +422,7 @@ mod tests {
         let ops = vec![(
             NonPrimitiveOpId(0),
             NonPrimitiveOpType::MmcsVerify,
-            vec![ExprId(0), ExprId(1), ExprId(2)],
+            vec![vec![ExprId(0)], vec![ExprId(1)], vec![ExprId(2)]],
         )];
         let expr_map = create_expr_map(3);
         let config = BuilderConfig::new(); // No MMCS enabled
@@ -385,7 +449,7 @@ mod tests {
         let ops = vec![(
             NonPrimitiveOpId(0),
             NonPrimitiveOpType::MmcsVerify,
-            vec![ExprId(0), ExprId(1)], // Only 2 inputs, need 3
+            vec![vec![ExprId(0)], vec![ExprId(1)]], // Only 2 inputs, need 3
         )];
         let expr_map = create_expr_map(3);
 
@@ -396,7 +460,7 @@ mod tests {
         match result {
             Err(CircuitBuilderError::NonPrimitiveOpArity { op, expected, got }) => {
                 assert_eq!(op, "MmcsVerify");
-                assert_eq!(expected, 3);
+                assert_eq!(expected, format!("{:?}", 3..4));
                 assert_eq!(got, 2);
             }
             _ => panic!("Expected NonPrimitiveOpArity error"),
@@ -413,7 +477,12 @@ mod tests {
         let ops = vec![(
             NonPrimitiveOpId(0),
             NonPrimitiveOpType::MmcsVerify,
-            vec![ExprId(0), ExprId(1), ExprId(2), ExprId(3)], // 4 inputs, need 3
+            vec![
+                vec![ExprId(0)],
+                vec![ExprId(1)],
+                vec![ExprId(2)],
+                vec![ExprId(3)],
+            ], // 4 inputs, max 3
         )];
         let expr_map = create_expr_map(4);
 
@@ -424,7 +493,7 @@ mod tests {
         match result {
             Err(CircuitBuilderError::NonPrimitiveOpArity { op, expected, got }) => {
                 assert_eq!(op, "MmcsVerify");
-                assert_eq!(expected, 3);
+                assert_eq!(expected, format!("{:?}", 3..4));
                 assert_eq!(got, 4);
             }
             _ => panic!("Expected NonPrimitiveOpArity error"),
@@ -441,7 +510,7 @@ mod tests {
         let ops = vec![(
             NonPrimitiveOpId(0),
             NonPrimitiveOpType::MmcsVerify,
-            vec![ExprId(99), ExprId(1), ExprId(2)], // ExprId(99) not in map
+            vec![vec![ExprId(99)], vec![ExprId(1)], vec![ExprId(2)]], // ExprId(99) not in map
         )];
         let expr_map = create_expr_map(3);
 
@@ -468,7 +537,7 @@ mod tests {
         let ops = vec![(
             NonPrimitiveOpId(0),
             NonPrimitiveOpType::MmcsVerify,
-            vec![ExprId(0), ExprId(88), ExprId(2)], // ExprId(88) not in map
+            vec![vec![ExprId(0)], vec![ExprId(88)], vec![ExprId(2)]], // ExprId(88) not in map
         )];
         let expr_map = create_expr_map(3);
 
@@ -495,7 +564,7 @@ mod tests {
         let ops = vec![(
             NonPrimitiveOpId(0),
             NonPrimitiveOpType::MmcsVerify,
-            vec![ExprId(0), ExprId(1), ExprId(77)], // ExprId(77) not in map
+            vec![vec![ExprId(0)], vec![ExprId(1)], vec![ExprId(77)]], // ExprId(77) not in map
         )];
         let expr_map = create_expr_map(3);
 
