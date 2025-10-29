@@ -193,6 +193,12 @@ where
     <<SC as StarkGenericConfig>::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain: Clone,
 {
     debug_assert_eq!(config.is_zk(), 0, "batch/multi recursion assumes non-ZK");
+    if airs.is_empty() {
+        return Err(VerificationError::InvalidProofShape(
+            "multi-STARK verification requires at least one instance".to_string(),
+        ));
+    }
+
     if SC::Pcs::ZK {
         return Err(VerificationError::InvalidProofShape(
             "ZK mode is not supported for multi-STARK recursion".to_string(),
@@ -468,7 +474,7 @@ where
     quotient_chunks_domains
         .iter()
         .enumerate()
-        .map(|(i, domain)| {
+        .map(|(i, _domain)| {
             quotient_chunks_domains
                 .iter()
                 .enumerate()
@@ -481,14 +487,14 @@ where
                         circuit,
                     );
 
-                    let first_point = circuit.add_const(pcs.first_point(domain));
-                    let vp_first_point = vanishing_poly_at_point_circuit(
+                    let other_first_point = circuit.add_const(pcs.first_point(other_domain));
+                    let vp_other_first_point = vanishing_poly_at_point_circuit(
                         config,
                         other_domain.clone(),
-                        first_point,
+                        other_first_point,
                         circuit,
                     );
-                    let div = circuit.div(vp_zeta, vp_first_point);
+                    let div = circuit.div(vp_zeta, vp_other_first_point);
 
                     circuit.mul(total, div)
                 })

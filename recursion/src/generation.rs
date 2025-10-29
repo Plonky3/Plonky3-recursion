@@ -5,7 +5,7 @@ use itertools::zip_eq;
 use p3_air::Air;
 use p3_challenger::{CanObserve, CanSample, CanSampleBits, FieldChallenger, GrindingChallenger};
 use p3_commit::{BatchOpening, Mmcs, Pcs, PolynomialSpace};
-use p3_field::{Field, PrimeCharacteristicRing, PrimeField, TwoAdicField};
+use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing, PrimeField, TwoAdicField};
 use p3_fri::{FriProof, TwoAdicFriPcs};
 use p3_multi_stark::MultiProof;
 use p3_multi_stark::config::{observe_base_as_ext, observe_instance_binding};
@@ -229,6 +229,18 @@ where
 
     observe_base_as_ext::<SC>(&mut challenger, Val::<SC>::from_usize(n_instances));
 
+    for inst in &opened_values.instances {
+        if inst
+            .quotient_chunks
+            .iter()
+            .any(|c| c.len() != SC::Challenge::DIMENSION)
+        {
+            return Err(GenerationError::InvalidProofShape(
+                "invalid quotient chunk length",
+            ));
+        }
+    }
+
     let mut log_quotient_degrees = Vec::with_capacity(n_instances);
     let mut quotient_degrees = Vec::with_capacity(n_instances);
     for (air, pv) in airs.iter().zip(public_values.iter()) {
@@ -314,6 +326,25 @@ where
         }
     }
     coms_to_verify.push((commitments.quotient_chunks.clone(), quotient_round));
+
+    // Observe opened values in the same flattened order as the recursive circuit.
+    for inst in &opened_values.instances {
+        for &value in &inst.trace_local {
+            challenger.observe_algebra_element(value);
+        }
+    }
+    for inst in &opened_values.instances {
+        for &value in &inst.trace_next {
+            challenger.observe_algebra_element(value);
+        }
+    }
+    for inst in &opened_values.instances {
+        for chunk in &inst.quotient_chunks {
+            for &value in chunk {
+                challenger.observe_algebra_element(value);
+            }
+        }
+    }
 
     let pcs_challenges = pcs.generate_challenges(
         config,
