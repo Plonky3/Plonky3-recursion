@@ -10,6 +10,7 @@ use p3_uni_stark::{Proof, StarkGenericConfig, Val};
 
 use crate::ProofTargets;
 use crate::pcs::MAX_QUERY_INDEX_BITS;
+use crate::pcs::fri::ValMmcsCommitment;
 use crate::traits::Recursive;
 
 /// Builder for constructing public inputs.
@@ -98,15 +99,15 @@ impl<F: Field> PublicInputBuilder<F> {
 
 /// Structure for organizing commitment opening data.
 #[derive(Clone, Debug)]
-pub struct CommitmentOpening<F: Field> {
+pub struct CommitmentOpening<F: Field, const DIGEST_ELEMS: usize> {
     /// The commitment value (placeholder in arithmetic-only verification).
-    pub commitment: F,
+    pub commitment: ValMmcsCommitment<F, DIGEST_ELEMS>,
     /// Opened points: (evaluation point, values at that point).
     pub opened_points: Vec<(F, Vec<F>)>,
 }
 
 /// Helper for constructing public inputs for FRI-only verification circuits.
-pub struct FriVerifierInputs<F: Field> {
+pub struct FriVerifierInputs<F: Field, const DIGEST_ELEMS: usize> {
     /// Values from FRI proof (commitments, opened values, final poly, etc.)
     pub fri_proof_values: Vec<F>,
     /// Alpha challenge for batch combination
@@ -116,10 +117,10 @@ pub struct FriVerifierInputs<F: Field> {
     /// Query index bits (pre-decomposed, little-endian)
     pub query_index_bits: Vec<Vec<F>>,
     /// Commitment openings (batch commitments and their opened values)
-    pub commitment_openings: Vec<CommitmentOpening<F>>,
+    pub commitment_openings: Vec<CommitmentOpening<F, DIGEST_ELEMS>>,
 }
 
-impl<F: Field> FriVerifierInputs<F> {
+impl<F: Field, const DIGEST_ELEMS: usize> FriVerifierInputs<F, DIGEST_ELEMS> {
     /// Build the public input vector in the correct order.
     ///
     /// Order:
@@ -140,7 +141,7 @@ impl<F: Field> FriVerifierInputs<F> {
         }
 
         for opening in self.commitment_openings {
-            builder.add_challenge(opening.commitment);
+            builder.add_challenges(opening.commitment.into_iter());
             for (z, values) in opening.opened_points {
                 builder.add_challenge(z);
                 builder.add_proof_values(values);

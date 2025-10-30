@@ -562,26 +562,32 @@ mod test {
                     .collect::<Vec<Vec<Val>>>()
             })
             .collect();
-        let private_data: [MmcsPrivateData<Val>; NUM_INPUTS] = array::from_fn(|i| {
+        let directions: [[bool; HEIGHT]; NUM_INPUTS] =
+            array::from_fn(|_| array::from_fn(|_| rng.random::<bool>()));
+
+        let private_data: [MmcsPrivateData<Val>; NUM_INPUTS] = array::from_fn(|_| {
             let path_siblings: Vec<Vec<Val>> = (0..HEIGHT)
                 .map(|_| vec![rng.random::<Val>(); DIGEST_ELEMS])
                 .collect();
-            let directions: [bool; HEIGHT] = array::from_fn(|_| rng.random::<bool>());
-            MmcsPrivateData::new(
-                &compress,
-                &mmcs_config,
-                &leaves[i],
-                &path_siblings,
-                &directions,
-            )
-            .expect("The size of all digests is DIGEST_ELEMS")
+            MmcsPrivateData::new(&mmcs_config, &path_siblings, compress.clone())
+        });
+        let roots: [Vec<Val>; NUM_INPUTS] = array::from_fn(|i| {
+            private_data[i]
+                .compute_all_states(&mmcs_config, &leaves[i], &directions[i])
+                .unwrap()
+                .last()
+                .unwrap()
+                .0
+                .clone()
         });
 
         let trace = MmcsTrace {
             mmcs_paths: private_data
                 .iter()
                 .zip(leaves)
-                .map(|(data, leaves)| {
+                .zip(directions)
+                .zip(roots)
+                .map(|(((data, leaves), directions), root)| {
                     data.to_trace(
                         &mmcs_config,
                         &leaves,
@@ -589,6 +595,8 @@ mod test {
                             .iter()
                             .map(|leaf| leaf.iter().map(|_| WitnessId(0)).collect())
                             .collect::<Vec<Vec<WitnessId>>>(),
+                        &directions,
+                        &root,
                         &[WitnessId(0); DIGEST_ELEMS],
                     )
                     .unwrap()

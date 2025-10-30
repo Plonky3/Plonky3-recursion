@@ -58,6 +58,19 @@ impl<F: CircuitField> CircuitRunner<F> {
         Ok(())
     }
 
+    /// Sets private data for all non-primitive operations at once.
+    /// The order in the iterator must match the order in which the
+    /// non-primitive operations were added to the circuit.
+    pub fn all_non_primitive_ops(&self) -> Vec<(NonPrimitiveOpId, Op<F>)> {
+        self.circuit
+            .non_primitive_ops
+            .iter()
+            .cloned()
+            .enumerate()
+            .map(|(i, op)| (NonPrimitiveOpId(i as u32), op))
+            .collect()
+    }
+
     /// Sets private data for a non-primitive operation.
     pub fn set_non_primitive_op_private_data(
         &mut self,
@@ -93,7 +106,7 @@ impl<F: CircuitField> CircuitRunner<F> {
                     });
                 }
             }
-        }
+        };
 
         // Disallow double-setting private data
         if self.non_primitive_op_private_data[op_id.0 as usize].is_some()
@@ -129,7 +142,7 @@ impl<F: CircuitField> CircuitRunner<F> {
             PublicTraceBuilder::new(&self.circuit.primitive_ops, &self.witness).build()?;
         let add_trace = AddTraceBuilder::new(&self.circuit.primitive_ops, &self.witness).build()?;
         let mul_trace = MulTraceBuilder::new(&self.circuit.primitive_ops, &self.witness).build()?;
-        let mmcs_trace = MmcsTraceBuilder::new(
+        let mmcs_trace: crate::MmcsTrace<F> = MmcsTraceBuilder::new(
             &self.circuit,
             &self.witness,
             &self.non_primitive_op_private_data,
@@ -227,7 +240,7 @@ impl<F: CircuitField> CircuitRunner<F> {
     }
 
     /// Gets witness value by ID.
-    fn get_witness(&self, widx: WitnessId) -> Result<F, CircuitError> {
+    pub fn get_witness(&self, widx: WitnessId) -> Result<F, CircuitError> {
         self.witness
             .get(widx.0 as usize)
             .and_then(|opt| opt.as_ref())

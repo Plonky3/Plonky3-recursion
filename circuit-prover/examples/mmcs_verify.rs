@@ -110,16 +110,10 @@ fn main() -> Result<(), ProverError> {
     // the index is 0b1010...
     let directions: Vec<bool> = (0..depth).map(|i| i % 2 == 0).collect();
 
-    let MmcsPrivateData {
-        path_states: intermediate_states,
-        ..
-    } = MmcsPrivateData::new(
-        &compress,
-        &mmcs_config,
-        &leaves_value,
-        &siblings,
-        &directions,
-    )?;
+    let private_data = MmcsPrivateData::new(&mmcs_config, &siblings, compress);
+    let intermediate_states =
+        private_data.compute_all_states(&mmcs_config, &leaves_value, &directions)?;
+
     let expected_root_value = intermediate_states
         .last()
         .expect("There is always at least the leaf hash")
@@ -135,13 +129,7 @@ fn main() -> Result<(), ProverError> {
     // Set private Mmcs path data
     runner.set_non_primitive_op_private_data(
         mmcs_op_id,
-        NonPrimitiveOpPrivateData::MmcsVerify(MmcsPrivateData::new(
-            &compress,
-            &mmcs_config,
-            &leaves_value,
-            &siblings,
-            &directions,
-        )?),
+        NonPrimitiveOpPrivateData::MmcsVerify(private_data),
     )?;
     let traces = runner.run()?;
     let multi_prover = MultiTableProver::new(config).with_mmcs_table(mmcs_config.into());

@@ -120,7 +120,11 @@ impl<'a> NonPrimitiveLowerer<'a> {
                     let directions_widx = witness_exprs[directions_len]
                         .iter()
                         .map(|expr_id| {
-                            get_witness_id(self.expr_to_widx, *expr_id, "MmcsVerify index input")
+                            get_witness_id(
+                                self.expr_to_widx,
+                                *expr_id,
+                                "MmcsVerify directions input",
+                            )
                         })
                         .collect::<Result<_, _>>()?;
 
@@ -307,7 +311,7 @@ mod tests {
 
     #[test]
     fn test_mmcs_verify_babybear_config() {
-        // Test MmcsVerify with BabyBear config (realistic: 8 leaf + 1 index + 8 root)
+        // Test MmcsVerify with BabyBear config (realistic: 8 leaf + 1 directions + 8 root)
         let babybear_config = MmcsVerifyConfig::babybear_default();
         assert_eq!(babybear_config.ext_field_digest_elems, 8);
         assert_eq!(babybear_config.input_size(), 3..35);
@@ -548,7 +552,7 @@ mod tests {
         match result {
             Err(CircuitBuilderError::MissingExprMapping { expr_id, context }) => {
                 assert_eq!(expr_id, ExprId(88));
-                assert!(context.contains("index"));
+                assert!(context.contains("directions"));
             }
             _ => panic!("Expected MissingExprMapping error for index"),
         }

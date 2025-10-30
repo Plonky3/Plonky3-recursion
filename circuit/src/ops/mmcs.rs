@@ -2,16 +2,16 @@ use alloc::boxed::Box;
 use alloc::string::ToString;
 use alloc::vec::Vec;
 use alloc::{format, vec};
+use core::cmp::Reverse;
 use core::hash::Hash;
 use core::ops::Range;
 
+use itertools::Itertools;
 use p3_field::{ExtensionField, Field};
+use p3_matrix::Dimensions;
 
 use crate::builder::{CircuitBuilder, CircuitBuilderError};
-use crate::op::{
-    ExecutionContext, NonPrimitiveExecutor, NonPrimitiveOpConfig, NonPrimitiveOpPrivateData,
-    NonPrimitiveOpType,
-};
+use crate::op::{ExecutionContext, NonPrimitiveExecutor, NonPrimitiveOpConfig, NonPrimitiveOpType};
 use crate::types::{ExprId, WitnessId};
 use crate::{CircuitError, NonPrimitiveOpId};
 
@@ -136,6 +136,62 @@ impl MmcsVerifyConfig {
         } else {
             Ok(digest.iter().map(|&x| EF::from(x)).collect())
         }
+    }
+
+    /// Given a vector of leaves and dimesions it formats the leaves
+    /// into a vec of size `max_height`, where each entry contains the leaves
+    /// corresponding to that height. Leaves for heights that do not exist
+    /// in the input are empty vectors.
+    pub fn format_leaves<T: Clone + alloc::fmt::Debug>(
+        &self,
+        leaves: &[Vec<T>],
+        dimensions: &[Dimensions],
+        max_height_log: usize,
+    ) -> Result<Vec<Vec<T>>, CircuitError> {
+        if leaves.len() > max_height_log {
+            return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
+                op: NonPrimitiveOpType::MmcsVerify,
+                expected: format!("at most {}", max_height_log),
+                got: leaves.len(),
+            });
+        }
+
+        let mut heights_tallest_first = dimensions
+            .iter()
+            .enumerate()
+            .sorted_by_key(|(_, dims)| Reverse(dims.height))
+            .peekable();
+
+        // Matrix heights that round up to the same power of two must be equal
+        if !heights_tallest_first
+            .clone()
+            .map(|(_, dims)| dims.height)
+            .tuple_windows()
+            .all(|(curr, next)| {
+                curr == next || curr.next_power_of_two() != next.next_power_of_two()
+            })
+        {
+            panic!("Heights that round up to the same power of two must be equal"); //TODO: Add errors
+        }
+
+        let mut formatted_leaves = vec![vec![]; max_height_log];
+        for (curr_height, leaf) in formatted_leaves
+            .iter_mut()
+            .enumerate()
+            .map(|(i, leaf)| (1 << (max_height_log - i), leaf))
+        {
+            // Get the initial height padded to a power of two. As heights_tallest_first is sorted,
+            // the initial height will be the maximum height.
+            // Returns an error if either:
+            //              1. proof.len() != log_max_height
+            //              2. heights_tallest_first is empty.
+            let new_leaf = heights_tallest_first
+                .peeking_take_while(|(_, dims)| dims.height.next_power_of_two() == curr_height)
+                .flat_map(|(i, _)| leaves[i].clone())
+                .collect();
+            *leaf = new_leaf;
+        }
+        Ok(formatted_leaves)
     }
 
     pub fn mock_config() -> Self {
@@ -292,9 +348,6 @@ impl<F: Field> NonPrimitiveExecutor<F> for MmcsVerifyExecutor {
             }
         };
 
-        // Get private data
-        let NonPrimitiveOpPrivateData::MmcsVerify(private_data) = ctx.get_private_data()?;
-
         // Validate input size: leaf(ext) + index(1) + root(ext)
         if !config.input_size().contains(&inputs.len()) {
             return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
@@ -304,7 +357,6 @@ impl<F: Field> NonPrimitiveExecutor<F> for MmcsVerifyExecutor {
             });
         }
 
-        let root = &inputs[inputs.len() - 1];
         let directions = &inputs[inputs.len() - 2];
         let leaves = &inputs[0..directions.len()];
 
@@ -330,27 +382,6 @@ impl<F: Field> NonPrimitiveExecutor<F> for MmcsVerifyExecutor {
                 operation_index: ctx.operation_id(), // TODO: What's the operation id of the curre
                 expected: alloc::format!("{:?}", witness_directions.len()),
                 got: alloc::format!("{:?}", witness_leaves.len()),
-            });
-        }
-
-        // Check root values
-        let witness_root: Vec<F> = root
-            .iter()
-            .map(|&wid| ctx.get_witness(wid))
-            .collect::<Result<_, _>>()?;
-        let computed_root = &private_data
-            .path_states
-            .last()
-            .ok_or(CircuitError::NonPrimitiveOpMissingPrivateData {
-                operation_index: ctx.operation_id(),
-            })?
-            .0;
-        if witness_root != *computed_root {
-            return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
-                op: NonPrimitiveOpType::MmcsVerify,
-                operation_index: ctx.operation_id(),
-                expected: alloc::format!("root: {witness_root:?}"),
-                got: alloc::format!("root: {computed_root:?}"),
             });
         }
 

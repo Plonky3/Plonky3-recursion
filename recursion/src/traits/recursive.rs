@@ -4,6 +4,8 @@ use alloc::vec::Vec;
 use p3_circuit::CircuitBuilder;
 use p3_field::Field;
 
+use crate::Target;
+
 /// Trait for converting a non-recursive type into its circuit representation.
 ///
 /// Types implementing this trait can be used in recursive verification circuits.
@@ -41,4 +43,6 @@ pub trait Recursive<F: Field> {
     /// # Parameters
     /// - `input`: The non-recursive input to extract public values from
     fn get_values(input: &Self::Input) -> Vec<F>;
+
+    fn get_targets(&self) -> Vec<Target>;
 }

@@ -8,6 +8,6 @@ pub use params::{FriVerifierParams, MAX_QUERY_INDEX_BITS};
 pub use targets::{
     BatchOpeningTargets, CommitPhaseProofStepTargets, FriProofTargets, HashProofTargets,
     HashTargets, InputProofTargets, QueryProofTargets, RecExtensionValMmcs, RecValMmcs,
-    TwoAdicFriProofTargets, Witness,
+    TwoAdicFriProofTargets, ValMmcsCommitment, Witness,
 };
 pub use verifier::verify_fri_circuit;
