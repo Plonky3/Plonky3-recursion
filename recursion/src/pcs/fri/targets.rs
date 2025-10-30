@@ -437,6 +437,7 @@ where
         InputProofTargets<Val<SC>, SC::Challenge, RecursiveInputMmcs>,
     >;
 
+    /// Caller must observe all opened values before invoking this method.
     fn get_challenges_circuit<const RATE: usize>(
         circuit: &mut CircuitBuilder<SC::Challenge>,
         challenger: &mut CircuitChallenger<RATE>,
@@ -445,9 +446,7 @@ where
         params: &Self::VerifierParams,
     ) -> Vec<Target> {
         let fri_proof = &proof_targets.opening_proof;
-
-        // Observe all opened values (trace, quotient chunks, random)
-        opened_values.observe(circuit, challenger);
+        let _ = opened_values;
 
         // Sample FRI alpha (for batch opening reduction)
         let fri_alpha = challenger.sample(circuit);
