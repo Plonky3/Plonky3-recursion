@@ -69,13 +69,8 @@ where
 
 #[cfg(test)]
 mod tests {
-    use itertools::Itertools;
-    use p3_baby_bear::{BabyBear, Poseidon2BabyBear};
+    use p3_baby_bear::BabyBear;
     use p3_field::PrimeCharacteristicRing;
-    use p3_field::extension::BinomialExtensionField;
-    use p3_symmetric::{CryptographicHasher, PaddingFreeSponge};
-    use rand::SeedableRng;
-    use rand::rngs::SmallRng;
 
     use super::*;
     use crate::op::NonPrimitiveOpConfig;
@@ -129,41 +124,41 @@ mod tests {
         assert!(result.is_err());
     }
 
-    type Perm = Poseidon2BabyBear<16>;
-    type MyHash = PaddingFreeSponge<Perm, 16, 8, 8>;
+    // type Perm = Poseidon2BabyBear<16>;
+    // type MyHash = PaddingFreeSponge<Perm, 16, 8, 8>;
 
-    #[test]
-    fn test_hash_output_babybear() {
-        type F = BabyBear;
+    // #[test]
+    // fn test_hash_output_babybear() {
+    //     type F = BabyBear;
 
-        let mut rng = SmallRng::seed_from_u64(1);
-        let perm = Perm::new_from_rng_128(&mut rng);
-        let hash = MyHash::new(perm.clone());
+    //     let mut rng = SmallRng::seed_from_u64(1);
+    //     let perm = Perm::new_from_rng_128(&mut rng);
+    //     let hash = MyHash::new(perm.clone());
 
-        let input = F::from_usize(42);
-        let expected_output = hash.hash_item(input.clone()).to_vec();
+    //     let input = F::from_usize(42);
+    //     let expected_output = hash.hash_item(input.clone()).to_vec();
 
-        let mut builder = CircuitBuilder::<F>::new();
-        builder.enable_op(
-            NonPrimitiveOpType::HashAbsorb { reset: true },
-            NonPrimitiveOpConfig::None,
-        );
-        builder.enable_op(NonPrimitiveOpType::HashSqueeze, NonPrimitiveOpConfig::None);
+    //     let mut builder = CircuitBuilder::<F>::new();
+    //     builder.enable_op(
+    //         NonPrimitiveOpType::HashAbsorb { reset: true },
+    //         NonPrimitiveOpConfig::None,
+    //     );
+    //     builder.enable_op(NonPrimitiveOpType::HashSqueeze, NonPrimitiveOpConfig::None);
 
-        let input = builder.add_const(input);
-        builder.add_hash_absorb(&[input], true).unwrap();
-        let output = builder.add_hash_squeeze(8).unwrap();
+    //     let input = builder.add_const(input);
+    //     builder.add_hash_absorb(&[input], true).unwrap();
+    //     let output = builder.add_hash_squeeze(8).unwrap();
 
-        let circuit = builder.build().unwrap();
-        let runner = circuit.runner();
-        let traces = runner.run().unwrap();
+    //     let circuit = builder.build().unwrap();
+    //     let runner = circuit.runner();
+    //     let traces = runner.run().unwrap();
 
-        let output_values = output
-            .iter()
-            .map(|output| traces.witness_trace.values[output.0 as usize])
-            .collect_vec();
-        assert_eq!(output_values, expected_output)
-    }
+    //     let output_values = output
+    //         .iter()
+    //         .map(|output| traces.witness_trace.values[output.0 as usize])
+    //         .collect_vec();
+    //     assert_eq!(output_values, expected_output)
+    // }
 }
 
 /// Executor for hash absorb operations

@@ -1,63 +1,28 @@
-//! In this file, we define all the structures required to have a recursive version of `TwoAdicFriPcs`.
-
 use alloc::vec::Vec;
 use alloc::{format, vec};
 use core::marker::PhantomData;
 
-use p3_challenger::GrindingChallenger;
+use p3_challenger::{CanObserve, GrindingChallenger};
 use p3_circuit::CircuitBuilder;
 use p3_circuit::utils::{RowSelectorsTargets, decompose_to_bits};
 use p3_commit::{BatchOpening, ExtensionMmcs, Mmcs, PolynomialSpace};
 use p3_field::coset::TwoAdicMultiplicativeCoset;
 use p3_field::{ExtensionField, Field, PackedValue, PrimeCharacteristicRing, TwoAdicField};
-use p3_fri::{CommitPhaseProofStep, FriParameters, FriProof, QueryProof, TwoAdicFriPcs};
+use p3_fri::{CommitPhaseProofStep, FriProof, QueryProof, TwoAdicFriPcs};
 use p3_merkle_tree::MerkleTreeMmcs;
 use p3_symmetric::{CryptographicHasher, Hash, PseudoCompressionFunction};
 use p3_uni_stark::{StarkGenericConfig, Val};
 use serde::{Deserialize, Serialize};
 
+use super::{FriVerifierParams, MAX_QUERY_INDEX_BITS, verify_fri_circuit};
 use crate::Target;
-use crate::circuit_challenger::CircuitChallenger;
-use crate::circuit_fri_verifier::verify_fri_circuit;
-use crate::circuit_verifier::{ObservableCommitment, VerificationError};
-use crate::recursive_challenger::RecursiveChallenger;
-use crate::recursive_traits::{
-    ComsWithOpeningsTargets, OpenedValuesTargets, ProofTargets, Recursive, RecursiveExtensionMmcs,
-    RecursiveLagrangeSelectors, RecursiveMmcs, RecursivePcs,
+use crate::challenger::CircuitChallenger;
+use crate::traits::{
+    ComsWithOpeningsTargets, Recursive, RecursiveChallenger, RecursiveExtensionMmcs, RecursiveMmcs,
+    RecursivePcs,
 };
-
-/// Maximum number of bits used for query index decomposition in FRI verification circuits.
-///
-/// This is a fixed size to avoid const generic complexity. The circuit decomposes each
-/// query index into this many bits, but only uses the first `log_max_height` bits that
-/// are actually needed.
-///
-/// This value is set to 31 bits because:
-/// - Query indices are sampled as field elements in the base field (BabyBear/KoalaBear)
-/// - BabyBear: p = 2^31 - 2^27 + 1 (31-bit prime)
-/// - KoalaBear: p = 2^31 - 2^24 + 1 (31-bit prime)  
-/// - Field elements fit in 31 bits, so 31 bits is sufficient
-///
-/// For Goldilocks (64-bit field), this would need to be increased, but that's not
-/// currently supported in the recursion circuit.
-pub const MAX_QUERY_INDEX_BITS: usize = 31;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct FriVerifierParams {
-    pub log_blowup: usize,
-    pub log_final_poly_len: usize,
-    pub pow_bits: usize,
-}
-
-impl<M> From<&FriParameters<M>> for FriVerifierParams {
-    fn from(params: &FriParameters<M>) -> Self {
-        Self {
-            log_blowup: params.log_blowup,
-            log_final_poly_len: params.log_final_poly_len,
-            pow_bits: params.proof_of_work_bits,
-        }
-    }
-}
+use crate::types::{OpenedValuesTargets, ProofTargets, RecursiveLagrangeSelectors};
+use crate::verifier::{ObservableCommitment, VerificationError};
 
 /// `Recursive` version of `FriProof`.
 pub struct FriProofTargets<
@@ -84,24 +49,20 @@ impl<
     type Input = FriProof<EF, RecMmcs::Input, Witness::Input, InputProof::Input>;
 
     fn new(circuit: &mut CircuitBuilder<EF>, input: &Self::Input) -> Self {
-        // Note that the iterator `lens` is updated by each call to `new`. So we can always pass the same `lens` for all structures.
-        let num_commit_phase_commits = input.commit_phase_commits.len();
-        let mut commit_phase_commits = Vec::with_capacity(num_commit_phase_commits);
-        for commitment in input.commit_phase_commits.iter() {
-            commit_phase_commits.push(RecMmcs::Commitment::new(circuit, commitment));
-        }
+        let commit_phase_commits = input
+            .commit_phase_commits
+            .iter()
+            .map(|commitment| RecMmcs::Commitment::new(circuit, commitment))
+            .collect();
 
-        let num_query_proofs = input.query_proofs.len();
-        let mut query_proofs = Vec::with_capacity(num_query_proofs);
-        for query in input.query_proofs.iter() {
-            query_proofs.push(QueryProofTargets::<F, EF, InputProof, RecMmcs>::new(
-                circuit, query,
-            ));
-        }
+        let query_proofs = input
+            .query_proofs
+            .iter()
+            .map(|query| QueryProofTargets::new(circuit, query))
+            .collect();
 
-        let final_poly_len = input.final_poly.len();
-        let final_poly =
-            circuit.alloc_public_inputs(final_poly_len, "FRI final polynomial coefficients");
+        let final_poly = circuit
+            .alloc_public_inputs(input.final_poly.len(), "FRI final polynomial coefficients");
 
         Self {
             commit_phase_commits,
@@ -169,13 +130,11 @@ impl<
     fn new(circuit: &mut CircuitBuilder<EF>, input: &Self::Input) -> Self {
         // Note that the iterator `lens` is updated by each call to `new`. So we can always pass the same `lens` for all structures.
         let input_proof = InputProof::new(circuit, &input.input_proof);
-        let num_commit_phase_openings = input.commit_phase_openings.len();
-        let mut commit_phase_openings = Vec::with_capacity(num_commit_phase_openings);
-        for commitment in input.commit_phase_openings.iter() {
-            commit_phase_openings.push(CommitPhaseProofStepTargets::<F, EF, RecMmcs>::new(
-                circuit, commitment,
-            ));
-        }
+        let commit_phase_openings = input
+            .commit_phase_openings
+            .iter()
+            .map(|commitment| CommitPhaseProofStepTargets::new(circuit, commitment))
+            .collect();
         Self {
             input_proof,
             commit_phase_openings,
@@ -192,19 +151,15 @@ impl<
     }
 
     fn get_values(input: &Self::Input) -> Vec<EF> {
-        let QueryProof {
-            input_proof,
-            commit_phase_openings,
-        } = input;
-
-        let mut all_values = vec![];
-        all_values.extend(InputProof::get_values(input_proof));
-        all_values.extend(
-            commit_phase_openings
-                .iter()
-                .flat_map(|o| CommitPhaseProofStepTargets::<F, EF, RecMmcs>::get_values(o)),
-        );
-        all_values
+        InputProof::get_values(&input.input_proof)
+            .into_iter()
+            .chain(
+                input
+                    .commit_phase_openings
+                    .iter()
+                    .flat_map(|o| CommitPhaseProofStepTargets::<_, _, RecMmcs>::get_values(o)),
+            )
+            .collect()
     }
 }
 
@@ -269,14 +224,11 @@ impl<F: Field, EF: ExtensionField<F>, Inner: RecursiveMmcs<F, EF>> Recursive<EF>
     type Input = BatchOpening<F, Inner::Input>;
 
     fn new(circuit: &mut CircuitBuilder<EF>, input: &Self::Input) -> Self {
-        let opened_vals_len = input.opened_values.len();
-        let mut opened_values = Vec::with_capacity(opened_vals_len);
-        for input_opened_values in input.opened_values.iter() {
-            let num_opened_values = input_opened_values.len();
-            let inner_opened_vals =
-                circuit.alloc_public_inputs(num_opened_values, "batch opened values");
-            opened_values.push(inner_opened_vals);
-        }
+        let opened_values = input
+            .opened_values
+            .iter()
+            .map(|values| circuit.alloc_public_inputs(values.len(), "batch opened values"))
+            .collect();
 
         let opening_proof = Inner::Proof::new(circuit, &input.opening_proof);
 
@@ -318,9 +270,7 @@ pub struct HashTargets<F, const DIGEST_ELEMS: usize> {
     _phantom: PhantomData<F>,
 }
 
-impl<F, const DIGEST_ELEMS: usize> crate::circuit_verifier::ObservableCommitment
-    for HashTargets<F, DIGEST_ELEMS>
-{
+impl<F, const DIGEST_ELEMS: usize> ObservableCommitment for HashTargets<F, DIGEST_ELEMS> {
     fn to_observation_targets(&self) -> Vec<Target> {
         self.hash_targets.to_vec()
     }
@@ -474,8 +424,6 @@ pub type InputProofTargets<F, EF, Inner> = Vec<BatchOpeningTargets<F, EF, Inner>
 pub type TwoAdicFriProofTargets<F, EF, RecMmcs, Inner> =
     FriProofTargets<F, EF, RecMmcs, InputProofTargets<F, EF, Inner>, Target>;
 
-pub type InputProof<F, InputMmcs> = Vec<BatchOpening<F, InputMmcs>>;
-
 impl<F: Field, EF: ExtensionField<F>, Inner: RecursiveMmcs<F, EF>> Recursive<EF>
     for InputProofTargets<F, EF, Inner>
 {
@@ -539,9 +487,9 @@ where
     Comm: Recursive<SC::Challenge>,
     RecursiveInputMmcs: RecursiveMmcs<Val<SC>, SC::Challenge, Input = InputMmcs>,
     RecursiveFriMmcs: RecursiveExtensionMmcs<Val<SC>, SC::Challenge, Input = FriMmcs>,
-    RecursiveFriMmcs::Commitment: crate::circuit_verifier::ObservableCommitment,
+    RecursiveFriMmcs::Commitment: ObservableCommitment,
     SC::Challenger: GrindingChallenger,
-    SC::Challenger: p3_challenger::CanObserve<FriMmcs::Commitment>,
+    SC::Challenger: CanObserve<FriMmcs::Commitment>,
 {
     type VerifierParams = FriVerifierParams;
     type RecursiveProof = RecursiveFriProof<
@@ -723,6 +671,6 @@ where
     }
 
     fn first_point(&self, trace_domain: &TwoAdicMultiplicativeCoset<Val<SC>>) -> SC::Challenge {
-        SC::Challenge::from(trace_domain.first_point())
+        trace_domain.first_point().into()
     }
 }

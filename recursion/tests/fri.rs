@@ -12,6 +12,7 @@ use p3_field::{Field, PrimeCharacteristicRing};
 use p3_fri::{TwoAdicFriPcs, create_test_fri_params};
 use p3_matrix::dense::RowMajorMatrix;
 use p3_merkle_tree::MerkleTreeMmcs;
+use p3_recursion::pcs::HashTargets;
 use p3_recursion::public_inputs::{CommitmentOpening, FriVerifierInputs};
 use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
 use rand::SeedableRng;
@@ -27,17 +28,17 @@ type ChallengeMmcs = p3_commit::ExtensionMmcs<F, Challenge, ValMmcs>;
 type PCS = TwoAdicFriPcs<F, Dft<F>, ValMmcs, ChallengeMmcs>;
 
 // Recursive target graph pieces
-use p3_recursion::recursive_pcs::{
-    FriProofTargets, HashTargets, InputProofTargets, RecExtensionValMmcs, RecValMmcs,
-    ValMmcsCommitment, Witness as RecWitness,
+use p3_recursion::Recursive;
+use p3_recursion::pcs::fri::{
+    FriProofTargets, InputProofTargets, RecExtensionValMmcs, RecValMmcs, ValMmcsCommitment,
+    Witness as RecWitness,
 };
-use p3_recursion::recursive_traits::Recursive;
 
 type RecVal = RecValMmcs<F, 8, MyHash, MyCompress>;
 type RecExt = RecExtensionValMmcs<F, Challenge, 8, RecVal>;
 
 // Bring the circuit we're testing.
-use p3_recursion::circuit_fri_verifier::verify_fri_circuit;
+use p3_recursion::pcs::fri::verify_fri_circuit;
 
 /// Alias for FriProofTargets used for lens/value extraction and allocation
 type FriTargets =

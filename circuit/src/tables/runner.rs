@@ -142,7 +142,7 @@ impl<F: CircuitField> CircuitRunner<F> {
             PublicTraceBuilder::new(&self.circuit.primitive_ops, &self.witness).build()?;
         let add_trace = AddTraceBuilder::new(&self.circuit.primitive_ops, &self.witness).build()?;
         let mul_trace = MulTraceBuilder::new(&self.circuit.primitive_ops, &self.witness).build()?;
-        let mmcs_trace: crate::MmcsTrace<F> = MmcsTraceBuilder::new(
+        let mmcs_trace = MmcsTraceBuilder::new(
             &self.circuit,
             &self.witness,
             &self.non_primitive_op_private_data,

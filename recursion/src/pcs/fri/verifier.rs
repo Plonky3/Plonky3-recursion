@@ -12,13 +12,11 @@ use p3_matrix::Dimensions;
 use p3_util::log2_strict_usize;
 use p3_util::zip_eq::zip_eq;
 
+use super::{FriProofTargets, InputProofTargets};
 use crate::Target;
-use crate::circuit_mmcs_verifier::verify_batch_circuit;
-use crate::circuit_verifier::VerificationError;
-use crate::recursive_pcs::{FriProofTargets, InputProofTargets};
-use crate::recursive_traits::{
-    ComsWithOpeningsTargets, Recursive, RecursiveExtensionMmcs, RecursiveMmcs,
-};
+use crate::pcs::verify_batch_circuit;
+use crate::traits::{ComsWithOpeningsTargets, Recursive, RecursiveExtensionMmcs, RecursiveMmcs};
+use crate::verifier::VerificationError;
 
 /// Inputs for one FRI fold phase (matches the values used by the verifier per round).
 #[derive(Clone, Debug)]
