@@ -1,11 +1,20 @@
-use core::array;
+use alloc::string::String;
+use alloc::vec;
+use alloc::vec::Vec;
 use core::borrow::Borrow;
+use core::mem::MaybeUninit;
+use core::{array, num};
 
+use itertools::izip;
 use p3_air::{Air, AirBuilder, BaseAir};
-use p3_field::PrimeCharacteristicRing;
+use p3_circuit::tables::{Poseidon2CircuitRow, Poseidon2CircuitTrace};
+use p3_field::{PrimeCharacteristicRing, PrimeField};
 use p3_matrix::Matrix;
+use p3_matrix::dense::{RowMajorMatrix, RowMajorMatrixViewMut};
 use p3_poseidon2::GenericPoseidon2LinearLayers;
-use p3_poseidon2_air::{Poseidon2Air, RoundConstants};
+use p3_poseidon2_air::{Poseidon2Air, RoundConstants, generate_trace_rows};
+use p3_symmetric::CryptographicPermutation;
+use tracing::info;
 
 use crate::{Poseidon2CircuitCols, num_cols};
 
@@ -42,8 +51,8 @@ pub struct Poseidon2CircuitAir<
 }
 
 impl<
-    F: PrimeCharacteristicRing,
-    LinearLayers,
+    F: PrimeField,
+    LinearLayers: GenericPoseidon2LinearLayers<WIDTH>,
     const D: usize,
     const RATE: usize,
     const CAPACITY: usize,
@@ -70,13 +79,151 @@ impl<
         constants: RoundConstants<F, WIDTH, HALF_FULL_ROUNDS, PARTIAL_ROUNDS>,
     ) -> Self {
         assert!((CAPACITY + RATE) * D == WIDTH);
-        assert!(RATE.is_multiple_of(D));
-        assert!(CAPACITY.is_multiple_of(D));
         assert!(WIDTH.is_multiple_of(D));
 
         Self {
             p3_poseidon2: Poseidon2Air::new(constants),
         }
+    }
+
+    pub fn generate_trace_rows<P: CryptographicPermutation<[F; WIDTH]>>(
+        &self,
+        sponge_ops: Poseidon2CircuitTrace<F>,
+        constants: &RoundConstants<F, WIDTH, HALF_FULL_ROUNDS, PARTIAL_ROUNDS>,
+        extra_capacity_bits: usize,
+        perm: P,
+    ) -> RowMajorMatrix<F> {
+        let n = sponge_ops.len();
+        assert!(
+            n.is_power_of_two(),
+            "Callers expected to pad inputs to a power of two"
+        );
+
+        let num_circuit_cols = 3 + 2 * RATE + WIDTH;
+        // let mut circuit_trace = Vec::with_capacity(n * num_circuit_cols);
+        let mut circuit_trace = vec![F::ZERO; n * num_circuit_cols];
+        let mut circuit_trace = RowMajorMatrixViewMut::new(&mut circuit_trace, num_circuit_cols);
+
+        let mut state = [F::ZERO; WIDTH];
+        let mut inputs = Vec::with_capacity(n);
+        for (i, op) in sponge_ops.iter().enumerate() {
+            info!("i: {i}");
+            let Poseidon2CircuitRow {
+                is_sponge,
+                reset,
+                absorb_flags,
+                input_values,
+                input_indices,
+                output_indices,
+            } = op;
+            info!("hmm");
+
+            let row = circuit_trace.row_mut(i);
+
+            row[0] = if *is_sponge { F::ONE } else { F::ZERO };
+            row[1] = if *reset { F::ONE } else { F::ZERO };
+            row[2] = if *is_sponge && *reset {
+                F::ONE
+            } else {
+                F::ZERO
+            };
+            for j in 0..RATE {
+                row[3 + j] = if absorb_flags[j] { F::ONE } else { F::ZERO };
+            }
+            for j in 0..RATE {
+                row[3 + RATE + j] = F::from_u32(input_indices[j]);
+            }
+            for j in 0..RATE {
+                row[3 + RATE + WIDTH + j] = F::from_u32(output_indices[j]);
+            }
+
+            let mut index_absorb = [false; RATE];
+            for j in 0..RATE {
+                if absorb_flags[j] {
+                    for k in 0..=j {
+                        index_absorb[k] = true;
+                    }
+                }
+            }
+
+            for j in 0..RATE {
+                if index_absorb[j] {
+                    for d in 0..D {
+                        let idx = j * D + d;
+                        state[idx] = input_values[idx];
+                    }
+                }
+            }
+
+            if *reset || !*is_sponge {
+                // Compression or reset: reset capacity
+                for j in 0..(CAPACITY * D) {
+                    state[RATE * D + j] = F::ZERO;
+                }
+
+                inputs.push(state.clone());
+                state = perm.permute(state);
+            }
+        }
+
+        let p2_trace = generate_trace_rows::<
+            F,
+            LinearLayers,
+            WIDTH,
+            SBOX_DEGREE,
+            SBOX_REGISTERS,
+            HALF_FULL_ROUNDS,
+            PARTIAL_ROUNDS,
+        >(inputs, constants, extra_capacity_bits);
+
+        let ncols =
+            num_cols::<WIDTH, RATE, SBOX_DEGREE, SBOX_REGISTERS, HALF_FULL_ROUNDS, PARTIAL_ROUNDS>(
+            );
+
+        info!("ncols: {}", ncols);
+
+        let p2_ncols = p3_poseidon2_air::num_cols::<
+            WIDTH,
+            SBOX_DEGREE,
+            SBOX_REGISTERS,
+            HALF_FULL_ROUNDS,
+            PARTIAL_ROUNDS,
+        >();
+        info!("p2_ncols: {}", p2_ncols);
+
+        let mut vec = Vec::with_capacity((n * ncols) << extra_capacity_bits);
+        let trace = &mut vec.spare_capacity_mut()[..n * ncols];
+        let trace = RowMajorMatrixViewMut::new(trace, ncols);
+
+        let (prefix, perms, suffix) = unsafe {
+            trace.values.align_to_mut::<Poseidon2CircuitCols<
+                MaybeUninit<F>,
+                WIDTH,
+                RATE,
+                SBOX_DEGREE,
+                SBOX_REGISTERS,
+                HALF_FULL_ROUNDS,
+                PARTIAL_ROUNDS,
+            >>()
+        };
+        assert!(prefix.is_empty(), "Alignment should match");
+        assert!(suffix.is_empty(), "Alignment should match");
+        assert_eq!(perms.len(), n);
+
+        for (row, circuit_row, perm_row) in izip!(perms, circuit_trace.rows(), p2_trace.rows()) {
+            let left_part = circuit_row.collect::<Vec<_>>();
+            let right_part = perm_row.collect::<Vec<_>>();
+            // row[..num_circuit_cols].copy_from_slice(&left_part);
+            // row[num_circuit_cols..].copy_from_slice(&right_part);
+        }
+
+        info!("partial trace: {:?}", vec);
+
+        unsafe {
+            vec.set_len(n * ncols);
+        }
+
+        RowMajorMatrix::new(vec, ncols)
     }
 }
 
@@ -296,7 +443,9 @@ mod test {
     use p3_challenger::{HashChallenger, SerializingChallenger32};
     use p3_circuit::WitnessId;
     use p3_circuit::ops::MmcsVerifyConfig;
-    use p3_circuit::tables::{MmcsPrivateData, MmcsTrace};
+    use p3_circuit::tables::{
+        MmcsPrivateData, MmcsTrace, Poseidon2CircuitRow, Poseidon2CircuitTrace,
+    };
     use p3_commit::ExtensionMmcs;
     use p3_field::extension::BinomialExtensionField;
     use p3_fri::{TwoAdicFriPcs, create_benchmark_fri_params};
@@ -307,17 +456,41 @@ mod test {
     use p3_uni_stark::{StarkConfig, prove, verify};
     use rand::rngs::SmallRng;
     use rand::{Rng, SeedableRng};
+    use tracing_forest::ForestLayer;
+    use tracing_forest::util::LevelFilter;
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+    use tracing_subscriber::{EnvFilter, Registry};
 
     use crate::air::Poseidon2CircuitAir;
 
     const WIDTH: usize = 16;
     const D: usize = 4;
-    const RATE: usize = 8;
-    const CAPACITY: usize = 8;
+    const RATE: usize = 2;
+    const CAPACITY: usize = 2;
     const SBOX_DEGREE: u64 = 7;
     const SBOX_REGISTERS: usize = 1;
     const HALF_FULL_ROUNDS: usize = 4;
     const PARTIAL_ROUNDS: usize = 20;
+
+    const P2_NUM_COLS: usize = p3_poseidon2_air::num_cols::<
+        WIDTH,
+        SBOX_DEGREE,
+        SBOX_REGISTERS,
+        HALF_FULL_ROUNDS,
+        PARTIAL_ROUNDS,
+    >();
+
+    fn init_logger() {
+        let env_filter = EnvFilter::builder()
+            .with_default_directive(LevelFilter::INFO.into())
+            .from_env_lossy();
+
+        Registry::default()
+            .with(env_filter)
+            .with(ForestLayer::default())
+            .init();
+    }
 
     #[test]
     fn prove_poseidon2_sponge() -> Result<
@@ -329,6 +502,7 @@ mod test {
             >,
         >,
     > {
+        init_logger();
         type Val = BabyBear;
         type Challenge = BinomialExtensionField<Val, 4>;
 
@@ -375,14 +549,33 @@ mod test {
             SBOX_REGISTERS,
             HALF_FULL_ROUNDS,
             PARTIAL_ROUNDS,
-        > = Poseidon2CircuitAir::new(constants);
+        > = Poseidon2CircuitAir::new(constants.clone());
 
         // Generate random inputs.
         let mut rng = SmallRng::seed_from_u64(1);
 
+        let a: Poseidon2CircuitRow<Val> = Poseidon2CircuitRow {
+            is_sponge: true,
+            reset: true,
+            absorb_flags: vec![false, true],
+            input_values: (0..RATE * D).map(|_| rng.random()).collect(),
+            input_indices: vec![0; RATE],
+            output_indices: vec![0; RATE],
+        };
+
+        let b: Poseidon2CircuitRow<Val> = Poseidon2CircuitRow {
+            is_sponge: true,
+            reset: true,
+            absorb_flags: vec![false, true],
+            input_values: (0..RATE * D).map(|_| rng.random()).collect(),
+            input_indices: vec![0; RATE],
+            output_indices: vec![0; RATE],
+        };
+
         let fri_params = create_benchmark_fri_params(challenge_mmcs);
 
-        let trace = air.generate_trace_rows(NUM_PERMUTATIONS, fri_params.log_blowup);
+        let perm = default_babybear_poseidon2_16();
+        let trace = air.generate_trace_rows(vec![a, b], &constants, fri_params.log_blowup, perm);
 
         type Dft = p3_dft::Radix2Bowers;
         let dft = Dft::default();

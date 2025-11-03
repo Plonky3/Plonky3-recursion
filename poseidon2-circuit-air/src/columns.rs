@@ -36,6 +36,7 @@ pub struct Poseidon2CircuitCols<
     pub absorb_flags: [T; RATE],
     pub input_indices: [T; WIDTH],
     pub output_indices: [T; RATE],
+    pub _padding: [T; 290],
 }
 
 pub const fn num_cols<

@@ -11,6 +11,9 @@ use crate::{CircuitError, CircuitField};
 mod mmcs;
 pub use mmcs::{MmcsPathTrace, MmcsPrivateData, MmcsTrace};
 
+mod poseidon2;
+pub use poseidon2::{Poseidon2CircuitRow, Poseidon2CircuitTrace};
+
 /// Execution traces for all tables
 #[derive(Debug, Clone)]
 pub struct Traces<F> {
