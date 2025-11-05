@@ -40,7 +40,15 @@ pub struct RowCounts([usize; NUM_TABLES]);
 
 impl RowCounts {
     /// Creates a new RowCounts with the given row counts for each table.
-    pub const fn new(rows: [usize; NUM_TABLES]) -> Self { Self(rows) }
+    pub const fn new(rows: [usize; NUM_TABLES]) -> Self {
+        // Validate that all row counts are non-zero
+        let mut i = 0;
+        while i < rows.len() {
+            assert!(rows[i] > 0);
+            i += 1;
+        }
+        Self(rows)
+    }
 
     /// Gets the row count for a specific table.
     #[inline]

@@ -43,6 +43,8 @@ fn test_fibonacci_batch_verifier() {
     let mut a = builder.alloc_const(F::ZERO, "F(0)");
     let mut b = builder.alloc_const(F::ONE, "F(1)");
 
+    // TODO: remove this once we always have non-empty MUL tables
+    builder.mul(a, b);
     for _i in 2..=n {
         let next = builder.add(a, b);
         a = b;
@@ -67,6 +69,56 @@ fn test_fibonacci_batch_verifier() {
     let prover = BatchStarkProver::new(config).with_table_packing(table_packing);
     let proof = prover.prove_all_tables(&traces).unwrap();
     prover.verify_all_tables(&proof).unwrap();
+
+    // let mut circuit_builder = CircuitBuilder::new();
+
+    // // Allocate all targets
+    // let verifier_inputs = BatchStarkVerifierInputsBuilder::<
+    //     MyConfig,
+    //     HashTargets<F, DIGEST_ELEMS>,
+    //     InnerFri,
+    // >::allocate(&mut circuit_builder, &proof, pis.len());
+
+    // // Add the verification circuit to the builder.
+    // verify_batch_stark_circuit::<
+    //     BatchStarkAir,
+    //     MyConfig,
+    //     HashTargets<F, DIGEST_ELEMS>,
+    //     InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>>,
+    //     InnerFri,
+    //     RATE,
+    // >(
+    //     &config,
+    //     &air,
+    //     &mut circuit_builder,
+    //     &verifier_inputs.proof_targets,
+    //     &verifier_inputs.air_public_targets,
+    //     &fri_verifier_params,
+    // )?;
+
+    // // Build the circuit.
+    // let circuit = circuit_builder.build()?;
+
+    // let mut runner = circuit.runner();
+
+    // // Generate all the challenge values.
+    // let all_challenges = generate_challenges(
+    //     &air,
+    //     &config,
+    //     &proof,
+    //     &pis,
+    //     Some(&[pow_bits, log_height_max]),
+    // )?;
+
+    // // Pack values using the same builder
+    // let num_queries = proof.opening_proof.query_proofs.len();
+    // let public_inputs = verifier_inputs.pack_values(&pis, &proof, &all_challenges, num_queries);
+
+    // runner
+    //     .set_public_inputs(&public_inputs)
+    //     .map_err(VerificationError::Circuit)?;
+
+    // let _traces = runner.run().map_err(VerificationError::Circuit)?;
 }
 
 fn compute_fibonacci_classical(n: usize) -> F {
