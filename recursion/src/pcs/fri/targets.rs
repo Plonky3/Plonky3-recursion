@@ -7,7 +7,9 @@ use p3_circuit::CircuitBuilder;
 use p3_circuit::utils::{RowSelectorsTargets, decompose_to_bits};
 use p3_commit::{BatchOpening, ExtensionMmcs, Mmcs, PolynomialSpace};
 use p3_field::coset::TwoAdicMultiplicativeCoset;
-use p3_field::{ExtensionField, Field, PackedValue, PrimeCharacteristicRing, TwoAdicField};
+use p3_field::{
+    ExtensionField, Field, PackedValue, PrimeCharacteristicRing, PrimeField64, TwoAdicField,
+};
 use p3_fri::{CommitPhaseProofStep, FriProof, QueryProof, TwoAdicFriPcs};
 use p3_merkle_tree::MerkleTreeMmcs;
 use p3_symmetric::{CryptographicHasher, Hash, PseudoCompressionFunction};
@@ -429,6 +431,7 @@ where
     RecursiveFriMmcs::Commitment: ObservableCommitment,
     SC::Challenger: GrindingChallenger,
     SC::Challenger: CanObserve<FriMmcs::Commitment>,
+    Val<SC>: PrimeField64,
 {
     type VerifierParams = FriVerifierParams;
     type RecursiveProof = RecursiveFriProof<
@@ -531,7 +534,8 @@ where
         let index_bits_per_query: Vec<Vec<Target>> = query_indices
             .iter()
             .map(|&index_target| {
-                let all_bits = decompose_to_bits(circuit, index_target, MAX_QUERY_INDEX_BITS);
+                let all_bits =
+                    decompose_to_bits(circuit, index_target, MAX_QUERY_INDEX_BITS).unwrap();
                 all_bits.into_iter().take(log_max_height).collect()
             })
             .collect();

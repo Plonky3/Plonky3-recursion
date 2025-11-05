@@ -23,6 +23,10 @@ pub enum CircuitBuilderError {
         got: usize,
     },
 
+    /// Unconstrained op received an unexpected number of input expressions.
+    #[error("Expects exactly {expected} witness expressions, got {got}")]
+    UnconstrainedeOpArity { expected: String, got: usize },
+
     /// Non-primitive operation rejected by the active policy/profile.
     #[error("Operation {op:?} is not allowed by the current profile")]
     OpNotAllowed { op: NonPrimitiveOpType },

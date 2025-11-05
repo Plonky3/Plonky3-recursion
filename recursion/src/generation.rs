@@ -245,29 +245,15 @@ where
         if params.len() != 2 {
             return Err(GenerationError::InvalidParameterCount(params.len(), 2));
         }
-        // Observe PoW and sample bits.
-        let pow_bits = params[0];
+
         // Check PoW witness.
         challenger.observe(opening_proof.pow_witness);
 
-        // Sample a challenge and decompose it into bits. Add all bits to the challenges.
+        // Sample a challenge H(transcript||pow_witness). Later the circuit
+        // checks that the challenge start wiht enough 0s.
         let rand_f: Val<SC> = challenger.sample();
         let rand_usize = rand_f.as_canonical_biguint().to_u64_digits()[0] as usize;
-        // Get the bits. The total number of bits is the number of bits in a base field element.
-        let total_num_bits = Val::<SC>::bits();
-        let rand_bits = (0..total_num_bits)
-            .map(|i| SC::Challenge::from_usize((rand_usize >> i) & 1))
-            .collect::<Vec<_>>();
-        // Push the sampled challenge, along with the bits.
         challenges.push(SC::Challenge::from_usize(rand_usize));
-        challenges.extend(rand_bits);
-
-        // Check that the first bits are all 0.
-        let pow_challenge = rand_usize & ((1 << pow_bits) - 1);
-
-        if pow_challenge != 0 {
-            return Err(GenerationError::InvalidPowWitness);
-        }
 
         let log_height_max = params[1];
         let log_global_max_height = opening_proof.commit_phase_commits.len() + log_height_max;

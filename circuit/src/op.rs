@@ -6,10 +6,10 @@ use core::hash::Hash;
 use hashbrown::HashMap;
 use p3_field::Field;
 
-use crate::CircuitError;
 use crate::ops::MmcsVerifyConfig;
 use crate::tables::MmcsPrivateData;
 use crate::types::{NonPrimitiveOpId, WitnessId};
+use crate::{CircuitError, ExprId};
 
 /// Circuit operations.
 ///
@@ -63,6 +63,16 @@ pub enum Op<F> {
         out: WitnessId,
     },
 
+    /// Load unconstrained values into the witness table
+    ///
+    /// Sets `witness[output]` for each `output` in `outputs`, to aribitrary values
+    /// defined by `filler`
+    Unconstrained {
+        inputs: Vec<WitnessId>,
+        outputs: Vec<WitnessId>,
+        filler: Box<dyn WitnessFiller<F>>,
+    },
+
     /// Non-primitive operation with executor-based dispatch
     NonPrimitiveOpWithExecutor {
         inputs: Vec<Vec<WitnessId>>,
@@ -94,6 +104,15 @@ impl<F: Field + Clone> Clone for Op<F> {
                 a: *a,
                 b: *b,
                 out: *out,
+            },
+            Op::Unconstrained {
+                inputs,
+                outputs,
+                filler,
+            } => Op::Unconstrained {
+                inputs: inputs.clone(),
+                outputs: outputs.clone(),
+                filler: filler.boxed(),
             },
             Op::NonPrimitiveOpWithExecutor {
                 inputs,
@@ -375,6 +394,27 @@ pub trait NonPrimitiveExecutor<F: Field>: Debug {
 
 // Implement Clone for Box<dyn NonPrimitiveExecutor<F>>
 impl<F: Field> Clone for Box<dyn NonPrimitiveExecutor<F>> {
+    fn clone(&self) -> Self {
+        self.boxed()
+    }
+}
+
+/// A trait for defining how unconstrained data is set.
+pub trait WitnessFiller<F>: Debug {
+    /// Return the `ExprId` of the inputs
+    fn inputs(&self) -> &[ExprId];
+    /// Returns number of outputs filled by this filler
+    fn n_outputs(&self) -> usize;
+    /// Compute the output given the inputs
+    /// # Arguments
+    /// * `inputs` - Input witness
+    fn compute_outputs(&self, inputs_val: Vec<F>) -> Result<Vec<F>, CircuitError>;
+
+    /// Clone as trait object
+    fn boxed(&self) -> Box<dyn WitnessFiller<F>>;
+}
+
+impl<F> Clone for Box<dyn WitnessFiller<F>> {
     fn clone(&self) -> Self {
         self.boxed()
     }

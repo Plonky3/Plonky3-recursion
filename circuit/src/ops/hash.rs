@@ -55,7 +55,7 @@ where
     fn add_hash_squeeze(&mut self, count: usize) -> Result<Vec<ExprId>, CircuitBuilderError> {
         self.ensure_op_enabled(NonPrimitiveOpType::HashSqueeze)?;
 
-        let outputs = self.alloc_witness_hints(count, "hash_squeeze_output");
+        let outputs = self.alloc_witness_hints_no_filler(count, "hash_squeeze_output");
 
         let _ = self.push_non_primitive_op(
             NonPrimitiveOpType::HashSqueeze,

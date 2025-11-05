@@ -2,6 +2,7 @@ use alloc::string::ToString;
 use alloc::vec::Vec;
 use alloc::{format, vec};
 
+use p3_util::zip_eq::zip_eq;
 use tracing::instrument;
 
 use super::Traces;
@@ -189,6 +190,28 @@ impl<F: CircuitField> CircuitRunner<F> {
                         self.set_witness(b, b_val)?;
                     }
                 }
+                Op::Unconstrained {
+                    inputs,
+                    outputs,
+                    filler,
+                } => {
+                    let inputs_val = inputs
+                        .iter()
+                        .map(|&input| self.get_witness(input))
+                        .collect::<Result<Vec<F>, _>>()?;
+                    let outputs_val = filler.compute_outputs(inputs_val)?;
+
+                    for (&output, &output_val) in zip_eq(
+                        outputs.iter(),
+                        outputs_val.iter(),
+                        CircuitError::UnconstrainedInputLengthMismatch {
+                            expected: outputs.len(),
+                            got: outputs_val.len(),
+                        },
+                    )? {
+                        self.set_witness(output, output_val)?
+                    }
+                }
                 Op::NonPrimitiveOpWithExecutor { .. } => {
                     // Handled separately in execute_non_primitives
                 }
@@ -261,15 +284,19 @@ impl<F: CircuitField> CircuitRunner<F> {
 #[cfg(test)]
 mod tests {
     extern crate std;
+    use alloc::boxed::Box;
     use alloc::vec;
+    use alloc::vec::Vec;
     use std::println;
 
     use p3_baby_bear::BabyBear;
     use p3_field::extension::BinomialExtensionField;
-    use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
+    use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
 
     use crate::builder::CircuitBuilder;
+    use crate::op::WitnessFiller;
     use crate::types::WitnessId;
+    use crate::{CircuitError, ExprId};
 
     #[test]
     fn test_table_generation_basic() {
@@ -401,6 +428,152 @@ mod tests {
         // Should have one public input
         assert_eq!(traces.public_trace.values.len(), 1);
         assert_eq!(traces.public_trace.values[0], BabyBear::from_u64(3));
+
+        // Should have one mul operation: 37 * x
+        assert_eq!(traces.mul_trace.lhs_values.len(), 1);
+
+        // Encoded subtraction lands in the add table (result + rhs = lhs).
+        assert_eq!(traces.add_trace.lhs_values.len(), 1);
+        assert_eq!(traces.add_trace.lhs_index, vec![WitnessId(2)]);
+        assert_eq!(traces.add_trace.rhs_index, vec![WitnessId(0)]);
+        assert_eq!(traces.add_trace.result_index, vec![WitnessId(4)]);
+    }
+
+    #[derive(Debug, Clone)]
+    /// Witness filler for finding x in a*x - b = 0
+    struct TheSolutionWitnessFiller {
+        inputs: Vec<ExprId>,
+    }
+
+    impl TheSolutionWitnessFiller {
+        pub fn new(a: ExprId, b: ExprId) -> Self {
+            Self { inputs: vec![a, b] }
+        }
+    }
+
+    impl<F: Field> WitnessFiller<F> for TheSolutionWitnessFiller {
+        fn inputs(&self) -> &[ExprId] {
+            &self.inputs
+        }
+
+        fn n_outputs(&self) -> usize {
+            1
+        }
+
+        fn compute_outputs(&self, inputs_val: Vec<F>) -> Result<Vec<F>, crate::CircuitError> {
+            if inputs_val.len() != self.inputs.len() {
+                Err(crate::CircuitError::UnconstrainedInputLengthMismatch {
+                    expected: self.inputs.len(),
+                    got: inputs_val.len(),
+                })
+            } else {
+                let a = inputs_val[0];
+                let b = inputs_val[1];
+                let inv_a = a.try_inverse().ok_or(CircuitError::DivisionByZero)?;
+                let x = b * inv_a;
+                Ok(vec![x])
+            }
+        }
+
+        fn boxed(&self) -> Box<dyn WitnessFiller<F>> {
+            Box::new(self.clone())
+        }
+    }
+
+    #[test]
+    // Proves that we know x such that 37 * x - 111 = 0
+    fn test_toy_example_37_times_x_minus_111_with_witness_hint() {
+        let mut builder = CircuitBuilder::new();
+
+        let c37 = builder.add_const(BabyBear::from_u64(37));
+        let c111 = builder.add_const(BabyBear::from_u64(111));
+        let filler = TheSolutionWitnessFiller::new(c37, c111);
+        let x = builder.alloc_witness_hints(filler, "x")[0];
+
+        let mul_result = builder.mul(c37, x);
+        let sub_result = builder.sub(mul_result, c111);
+        builder.assert_zero(sub_result);
+
+        let circuit = builder.build().unwrap();
+        println!("=== CIRCUIT PRIMITIVE OPERATIONS ===");
+        for (i, prim) in circuit.primitive_ops.iter().enumerate() {
+            println!("{i}: {prim:?}");
+        }
+
+        let witness_count = circuit.witness_count;
+        let runner = circuit.runner();
+
+        let traces = runner.run().unwrap();
+
+        println!("\n=== WITNESS TRACE ===");
+        for (i, (idx, val)) in traces
+            .witness_trace
+            .index
+            .iter()
+            .zip(traces.witness_trace.values.iter())
+            .enumerate()
+        {
+            println!("Row {i}: WitnessId({idx}) = {val:?}");
+        }
+
+        println!("\n=== CONST TRACE ===");
+        for (i, (idx, val)) in traces
+            .const_trace
+            .index
+            .iter()
+            .zip(traces.const_trace.values.iter())
+            .enumerate()
+        {
+            println!("Row {i}: WitnessId({idx}) = {val:?}");
+        }
+
+        println!("\n=== PUBLIC TRACE ===");
+        for (i, (idx, val)) in traces
+            .public_trace
+            .index
+            .iter()
+            .zip(traces.public_trace.values.iter())
+            .enumerate()
+        {
+            println!("Row {i}: WitnessId({idx}) = {val:?}");
+        }
+
+        println!("\n=== MUL TRACE ===");
+        for i in 0..traces.mul_trace.lhs_values.len() {
+            println!(
+                "Row {}: WitnessId({}) * WitnessId({}) -> WitnessId({}) | {:?} * {:?} -> {:?}",
+                i,
+                traces.mul_trace.lhs_index[i],
+                traces.mul_trace.rhs_index[i],
+                traces.mul_trace.result_index[i],
+                traces.mul_trace.lhs_values[i],
+                traces.mul_trace.rhs_values[i],
+                traces.mul_trace.result_values[i]
+            );
+        }
+
+        println!("\n=== ADD TRACE ===");
+        for i in 0..traces.add_trace.lhs_values.len() {
+            println!(
+                "Row {}: WitnessId({}) + WitnessId({}) -> WitnessId({}) | {:?} + {:?} -> {:?}",
+                i,
+                traces.add_trace.lhs_index[i],
+                traces.add_trace.rhs_index[i],
+                traces.add_trace.result_index[i],
+                traces.add_trace.lhs_values[i],
+                traces.add_trace.rhs_values[i],
+                traces.add_trace.result_values[i]
+            );
+        }
+
+        // Verify trace structure
+        assert_eq!(traces.witness_trace.index.len(), witness_count as usize);
+
+        // Should have constants: 0, 37, 111
+        assert_eq!(traces.const_trace.values.len(), 3);
+
+        // Should have no public input
+        assert!(traces.public_trace.values.is_empty());
 
         // Should have one mul operation: 37 * x
         assert_eq!(traces.mul_trace.lhs_values.len(), 1);

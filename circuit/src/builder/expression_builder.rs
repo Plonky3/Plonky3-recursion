@@ -1,11 +1,15 @@
+use alloc::boxed::Box;
 #[cfg(debug_assertions)]
 use alloc::vec;
 use alloc::vec::Vec;
 
 use hashbrown::HashMap;
+use itertools::Itertools;
 use p3_field::PrimeCharacteristicRing;
 
+use crate::builder::compiler::HintsWithFiller;
 use crate::expr::{Expr, ExpressionGraph};
+use crate::op::WitnessFiller;
 use crate::types::ExprId;
 #[cfg(debug_assertions)]
 use crate::{AllocationEntry, AllocationType};
@@ -21,6 +25,9 @@ pub struct ExpressionBuilder<F> {
 
     /// Equality constraints to enforce at lowering
     pending_connects: Vec<(ExprId, ExprId)>,
+
+    /// The witness hints together with theit witness fillers
+    witness_hitns_with_fillers: Vec<(Vec<ExprId>, Box<dyn WitnessFiller<F>>)>,
 
     /// Debug log of all allocations
     #[cfg(debug_assertions)]
@@ -50,6 +57,7 @@ where
             graph,
             const_pool,
             pending_connects: Vec::new(),
+            witness_hitns_with_fillers: Vec::new(),
             #[cfg(debug_assertions)]
             allocation_log: Vec::new(),
             #[cfg(debug_assertions)]
@@ -100,6 +108,7 @@ where
 
     /// Adds a witness hint to the graph.
     /// It will allocate a `WitnessId` during lowering, with no primitive op.
+    /// TODO: Make this function private.
     #[allow(unused_variables)]
     #[must_use]
     pub fn add_witness_hint(&mut self, label: &'static str) -> ExprId {
@@ -117,10 +126,22 @@ where
         expr_id
     }
 
-    /// Adds multiple witness hints.
+    /// Adds a witness hint to the graph.
+    /// It will allocate a `WitnessId` during lowering, with no primitive op.
+    #[allow(unused_variables)]
     #[must_use]
-    pub fn add_witness_hints(&mut self, count: usize, label: &'static str) -> Vec<ExprId> {
-        (0..count).map(|_| self.add_witness_hint(label)).collect()
+    pub fn add_witness_hints<W: 'static + WitnessFiller<F>>(
+        &mut self,
+        filler: W,
+        label: &'static str,
+    ) -> Vec<ExprId> {
+        let n_outputs = filler.n_outputs();
+        let expr_ids = (0..n_outputs)
+            .map(|_| self.graph.add_expr(Expr::Witness))
+            .collect_vec();
+        self.witness_hitns_with_fillers
+            .push((expr_ids.clone(), Box::new(filler)));
+        expr_ids
     }
 
     /// Adds an addition expression to the graph.
@@ -208,6 +229,11 @@ where
         &self.pending_connects
     }
 
+    /// Returns a reference to the witness hints with fillers.
+    pub fn witness_hints_with_fillers(&self) -> &[HintsWithFiller<F>] {
+        &self.witness_hitns_with_fillers
+    }
+
     /// Logs a non-primitive operation allocation.
     #[cfg(debug_assertions)]
     pub fn log_non_primitive_op(
@@ -285,6 +311,7 @@ where
 #[cfg(test)]
 mod tests {
     use p3_baby_bear::BabyBear;
+    use p3_field::Field;
 
     use super::*;
 
@@ -527,6 +554,55 @@ mod tests {
         }
     }
 
+    #[derive(Debug, Clone)]
+    struct IdentityFiller {
+        inputs: Vec<ExprId>,
+        n_outputs: usize,
+    }
+
+    impl IdentityFiller {
+        pub fn new(inputs: Vec<ExprId>) -> Self {
+            Self {
+                n_outputs: inputs.len(),
+                inputs,
+            }
+        }
+    }
+
+    impl<F: Field> WitnessFiller<F> for IdentityFiller {
+        fn inputs(&self) -> &[ExprId] {
+            &self.inputs
+        }
+
+        fn n_outputs(&self) -> usize {
+            self.n_outputs
+        }
+
+        fn compute_outputs(&self, inputs_val: Vec<F>) -> Result<Vec<F>, crate::CircuitError> {
+            Ok(inputs_val)
+        }
+
+        fn boxed(&self) -> Box<dyn WitnessFiller<F>> {
+            Box::new(self.clone())
+        }
+    }
+    #[test]
+    fn test_build_with_witness_hint() {
+        let mut builder = ExpressionBuilder::<BabyBear>::new();
+        let a = builder.add_const(BabyBear::ZERO, "a");
+        let b = builder.add_const(BabyBear::ONE, "b");
+        let id_filler = IdentityFiller::new(vec![a, b]);
+        let c = builder.add_witness_hints(id_filler, "c");
+        assert_eq!(c.len(), 2);
+
+        assert_eq!(builder.graph().nodes().len(), 4);
+
+        match (&builder.graph().nodes()[2], &builder.graph().nodes()[3]) {
+            (Expr::Witness, Expr::Witness) => (),
+            _ => panic!("Expected Witness operation"),
+        }
+    }
+
     #[test]
     fn test_nested_operations() {
         // Test nested operations: (a + b) * (c - d)
@@ -534,8 +610,11 @@ mod tests {
 
         let a = builder.add_const(BabyBear::from_u64(1), "a");
         let b = builder.add_const(BabyBear::from_u64(2), "b");
-        let c = builder.add_const(BabyBear::from_u64(3), "c");
-        let d = builder.add_const(BabyBear::from_u64(4), "d");
+
+        let id_filler = IdentityFiller::new(vec![a, b]);
+        let cd = builder.add_witness_hints(id_filler, "cd");
+        let c = cd[0];
+        let d = cd[1];
 
         let sum = builder.add_add(a, b, "sum");
         let diff = builder.add_sub(c, d, "diff");

@@ -4,7 +4,7 @@ use alloc::vec::Vec;
 
 use p3_circuit::CircuitBuilder;
 use p3_circuit::utils::decompose_to_bits;
-use p3_field::Field;
+use p3_field::{ExtensionField, Field, PrimeField64};
 
 use crate::Target;
 
@@ -82,16 +82,19 @@ pub trait RecursiveChallenger<F: Field> {
     ///
     /// # Returns
     /// Vector of the first `num_bits` bits as targets (each in {0, 1})
-    fn sample_public_bits(
+    fn sample_public_bits<BF: PrimeField64>(
         &mut self,
         circuit: &mut CircuitBuilder<F>,
         total_num_bits: usize,
         num_bits: usize,
-    ) -> Vec<Target> {
+    ) -> Vec<Target>
+    where
+        F: ExtensionField<BF>,
+    {
         let x = self.sample(circuit);
 
         // Decompose to bits (adds public inputs for each bit and verifies they reconstruct x)
-        let bits = decompose_to_bits(circuit, x, total_num_bits);
+        let bits = decompose_to_bits(circuit, x, total_num_bits).unwrap();
 
         bits[..num_bits].to_vec()
     }
@@ -106,13 +109,15 @@ pub trait RecursiveChallenger<F: Field> {
     /// - `witness_bits`: Number of leading bits that must be zero
     /// - `witness`: The proof-of-work witness target
     /// - `total_num_bits`: Total number of bits to decompose
-    fn check_witness(
+    fn check_witness<BF: PrimeField64>(
         &mut self,
         circuit: &mut CircuitBuilder<F>,
         witness_bits: usize,
         witness: Target,
         total_num_bits: usize,
-    ) {
+    ) where
+        F: ExtensionField<BF>,
+    {
         self.observe(circuit, witness);
         let bits = self.sample_public_bits(circuit, total_num_bits, witness_bits);
 

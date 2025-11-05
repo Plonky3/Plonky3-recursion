@@ -110,4 +110,7 @@ pub enum CircuitError {
     /// Invalid Circuit
     #[error("Failed to build circuit: {error}")]
     InvalidCircuit { error: CircuitBuilderError },
+
+    #[error("Unconstrained input length mismatch: expected {expected}, got {got}")]
+    UnconstrainedInputLengthMismatch { expected: usize, got: usize },
 }
