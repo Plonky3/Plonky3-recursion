@@ -1,4 +1,5 @@
 use p3_baby_bear::{BabyBear, Poseidon2BabyBear};
+use p3_batch_stark::{StarkInstance, prove_batch, verify_batch};
 use p3_challenger::DuplexChallenger;
 use p3_circuit::CircuitBuilder;
 use p3_circuit::test_utils::{FibonacciAir, generate_trace_rows};
@@ -8,7 +9,6 @@ use p3_field::extension::BinomialExtensionField;
 use p3_field::{Field, PrimeCharacteristicRing};
 use p3_fri::{TwoAdicFriPcs, create_test_fri_params};
 use p3_merkle_tree::MerkleTreeMmcs;
-use p3_batch_stark::{StarkInstance, prove_batch, verify_batch};
 use p3_recursion::pcs::fri::{
     FriProofTargets, FriVerifierParams, HashTargets, InputProofTargets, RecExtensionValMmcs,
     RecValMmcs, Witness,

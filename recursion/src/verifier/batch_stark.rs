@@ -3,12 +3,12 @@ use alloc::vec::Vec;
 use alloc::{format, vec};
 use core::marker::PhantomData;
 
+use p3_batch_stark::BatchProof;
 use p3_circuit::CircuitBuilder;
 use p3_circuit::op::{NonPrimitiveOpConfig, NonPrimitiveOpType};
 use p3_circuit::utils::ColumnsTargets;
 use p3_commit::{Pcs, PolynomialSpace};
 use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
-use p3_batch_stark::BatchProof;
 use p3_uni_stark::{OpenedValues, StarkGenericConfig};
 use p3_util::zip_eq::zip_eq;
 
@@ -31,7 +31,7 @@ type PcsVerifierParams<SC, InputProof, OpeningProof, Comm> =
         >>::Domain,
     >>::VerifierParams;
 
-/// Opened values for a single STARK instance within the multi-proof.
+/// Opened values for a single STARK instance within the batch-proof.
 #[derive(Clone)]
 pub struct InstanceOpenedValuesTargets<SC: StarkGenericConfig> {
     pub trace_local: Vec<Target>,
@@ -40,7 +40,7 @@ pub struct InstanceOpenedValuesTargets<SC: StarkGenericConfig> {
     _phantom: PhantomData<SC>,
 }
 
-/// Recursive targets for a multi-STARK proof.
+/// Recursive targets for a batch-STARK proof.
 ///
 /// The `flattened` field stores the aggregated commitments, opened values, and opening proof in the
 /// same layout expected by single-instance PCS logic. The `instances` field retains per-instance
@@ -159,7 +159,7 @@ impl<
     }
 }
 
-/// Verify a multi-STARK proof inside a recursive circuit.
+/// Verify a batch-STARK proof inside a recursive circuit.
 pub fn verify_batch_circuit<
     A,
     SC: StarkGenericConfig,
@@ -191,16 +191,16 @@ where
     SC::Challenge: PrimeCharacteristicRing,
     <<SC as StarkGenericConfig>::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain: Clone,
 {
-    debug_assert_eq!(config.is_zk(), 0, "batch/multi recursion assumes non-ZK");
+    debug_assert_eq!(config.is_zk(), 0, "batch recursion assumes non-ZK");
     if airs.is_empty() {
         return Err(VerificationError::InvalidProofShape(
-            "multi-STARK verification requires at least one instance".to_string(),
+            "batch-STARK verification requires at least one instance".to_string(),
         ));
     }
 
     if SC::Pcs::ZK {
         return Err(VerificationError::InvalidProofShape(
-            "ZK mode is not supported for multi-STARK recursion".to_string(),
+            "ZK mode is not supported for batch-STARK recursion".to_string(),
         ));
     }
 
@@ -231,7 +231,7 @@ where
 
     if commitments_targets.random_commit.is_some() {
         return Err(VerificationError::InvalidProofShape(
-            "Multi-STARK verifier does not support random commitments".to_string(),
+            "Batch-STARK verifier does not support random commitments".to_string(),
         ));
     }
 
@@ -277,7 +277,7 @@ where
         quotient_degrees.push(quotient_degree);
     }
 
-    // Challenger initialisation mirrors the native multi-STARK verifier transcript.
+    // Challenger initialisation mirrors the native batch-STARK verifier transcript.
     let mut challenger = CircuitChallenger::<RATE>::new();
     let inst_count_target = circuit.alloc_const(
         SC::Challenge::from_usize(n_instances),

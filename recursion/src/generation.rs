@@ -3,12 +3,12 @@ use alloc::vec::Vec;
 
 use itertools::zip_eq;
 use p3_air::Air;
+use p3_batch_stark::BatchProof;
+use p3_batch_stark::config::{observe_base_as_ext, observe_instance_binding};
 use p3_challenger::{CanObserve, CanSample, CanSampleBits, FieldChallenger, GrindingChallenger};
 use p3_commit::{BatchOpening, Mmcs, Pcs, PolynomialSpace};
 use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing, PrimeField, TwoAdicField};
 use p3_fri::{FriProof, TwoAdicFriPcs};
-use p3_batch_stark::BatchProof;
-use p3_batch_stark::config::{observe_base_as_ext, observe_instance_binding};
 use p3_uni_stark::{
     Domain, Proof, StarkGenericConfig, SymbolicAirBuilder, Val, VerifierConstraintFolder,
     get_log_quotient_degree,
@@ -187,7 +187,7 @@ where
     Ok(challenges)
 }
 
-/// Generates the challenges used in the verification of a multi-STARK proof.
+/// Generates the challenges used in the verification of a batch-STARK proof.
 pub fn generate_batch_challenges<SC: StarkGenericConfig, A>(
     airs: &[A],
     config: &SC,
@@ -199,10 +199,10 @@ where
     A: Air<SymbolicAirBuilder<Val<SC>>> + for<'a> Air<VerifierConstraintFolder<'a, SC>>,
     SC::Pcs: PcsGeneration<SC, <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Proof>,
 {
-    debug_assert_eq!(config.is_zk(), 0, "batch/multi recursion assumes non-ZK");
+    debug_assert_eq!(config.is_zk(), 0, "batch recursion assumes non-ZK");
     if SC::Pcs::ZK {
         return Err(GenerationError::InvalidProofShape(
-            "multi-STARK challenge generation does not support ZK mode",
+            "batch-STARK challenge generation does not support ZK mode",
         ));
     }
 

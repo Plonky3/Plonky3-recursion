@@ -3,10 +3,10 @@
 
 use alloc::vec::Vec;
 
+use p3_batch_stark::BatchProof;
 use p3_circuit::CircuitBuilder;
 use p3_commit::Pcs;
 use p3_field::{BasedVectorSpace, Field, PrimeField64};
-use p3_batch_stark::BatchProof;
 use p3_uni_stark::{Proof, StarkGenericConfig, Val};
 
 use crate::ProofTargets;
