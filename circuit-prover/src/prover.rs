@@ -312,8 +312,7 @@ where
             2 => {
                 type EF2<F> = BinomialExtensionField<F, 2>;
 
-                let t: &Traces<EF2<Val<SC>>> =
-                    unsafe { &*(traces as *const _ as *const Traces<EF2<Val<SC>>>) };
+                let t: &Traces<EF2<Val<SC>>> = unsafe { crate::prover::transmute_traces(traces) };
                 for p in &self.non_primitive_provers {
                     if let Some(entry) = p.prove_d2(&self.config, table_packing, t, pis) {
                         non_primitives.push(entry);
@@ -323,8 +322,7 @@ where
             4 => {
                 type EF4<F> = BinomialExtensionField<F, 4>;
 
-                let t: &Traces<EF4<Val<SC>>> =
-                    unsafe { &*(traces as *const _ as *const Traces<EF4<Val<SC>>>) };
+                let t: &Traces<EF4<Val<SC>>> = unsafe { crate::prover::transmute_traces(traces) };
                 for p in &self.non_primitive_provers {
                     if let Some(entry) = p.prove_d4(&self.config, table_packing, t, pis) {
                         non_primitives.push(entry);
@@ -334,8 +332,7 @@ where
             6 => {
                 type EF6<F> = BinomialExtensionField<F, 6>;
 
-                let t: &Traces<EF6<Val<SC>>> =
-                    unsafe { &*(traces as *const _ as *const Traces<EF6<Val<SC>>>) };
+                let t: &Traces<EF6<Val<SC>>> = unsafe { crate::prover::transmute_traces(traces) };
                 for p in &self.non_primitive_provers {
                     if let Some(entry) = p.prove_d6(&self.config, table_packing, t, pis) {
                         non_primitives.push(entry);
@@ -345,8 +342,7 @@ where
             8 => {
                 type EF8<F> = BinomialExtensionField<F, 8>;
 
-                let t: &Traces<EF8<Val<SC>>> =
-                    unsafe { &*(traces as *const _ as *const Traces<EF8<Val<SC>>>) };
+                let t: &Traces<EF8<Val<SC>>> = unsafe { crate::prover::transmute_traces(traces) };
                 for p in &self.non_primitive_provers {
                     if let Some(entry) = p.prove_d8(&self.config, table_packing, t, pis) {
                         non_primitives.push(entry);
@@ -513,6 +509,11 @@ where
     ) -> Result<(), ProverError>;
 }
 
+#[inline(always)]
+unsafe fn transmute_traces<FromEF, ToEF>(t: &Traces<FromEF>) -> &Traces<ToEF> {
+    unsafe { &*(t as *const _ as *const Traces<ToEF>) }
+}
+
 #[macro_export]
 /// Macro to implement the `TableProver` trait for a given base prover.
 ///
@@ -568,9 +569,8 @@ macro_rules! impl_table_prover_degrees_from_base {
             >,
             pis: &alloc::vec::Vec<p3_uni_stark::Val<SC>>,
         ) -> Option<$crate::prover::TableProofEntry<SC>> {
-            let t: &p3_circuit::tables::Traces<p3_uni_stark::Val<SC>> = unsafe {
-                &*(traces as *const _ as *const p3_circuit::tables::Traces<p3_uni_stark::Val<SC>>)
-            };
+            let t: &p3_circuit::tables::Traces<p3_uni_stark::Val<SC>> =
+                unsafe { $crate::prover::transmute_traces(traces) };
             self.$base::<SC>(cfg, packing, t, pis)
         }
 
@@ -583,9 +583,8 @@ macro_rules! impl_table_prover_degrees_from_base {
             >,
             pis: &alloc::vec::Vec<p3_uni_stark::Val<SC>>,
         ) -> Option<$crate::prover::TableProofEntry<SC>> {
-            let t: &p3_circuit::tables::Traces<p3_uni_stark::Val<SC>> = unsafe {
-                &*(traces as *const _ as *const p3_circuit::tables::Traces<p3_uni_stark::Val<SC>>)
-            };
+            let t: &p3_circuit::tables::Traces<p3_uni_stark::Val<SC>> =
+                unsafe { $crate::prover::transmute_traces(traces) };
             self.$base::<SC>(cfg, packing, t, pis)
         }
 
@@ -598,9 +597,8 @@ macro_rules! impl_table_prover_degrees_from_base {
             >,
             pis: &alloc::vec::Vec<p3_uni_stark::Val<SC>>,
         ) -> Option<$crate::prover::TableProofEntry<SC>> {
-            let t: &p3_circuit::tables::Traces<p3_uni_stark::Val<SC>> = unsafe {
-                &*(traces as *const _ as *const p3_circuit::tables::Traces<p3_uni_stark::Val<SC>>)
-            };
+            let t: &p3_circuit::tables::Traces<p3_uni_stark::Val<SC>> =
+                unsafe { $crate::prover::transmute_traces(traces) };
             self.$base::<SC>(cfg, packing, t, pis)
         }
 
@@ -613,9 +611,8 @@ macro_rules! impl_table_prover_degrees_from_base {
             >,
             pis: &alloc::vec::Vec<p3_uni_stark::Val<SC>>,
         ) -> Option<$crate::prover::TableProofEntry<SC>> {
-            let t: &p3_circuit::tables::Traces<p3_uni_stark::Val<SC>> = unsafe {
-                &*(traces as *const _ as *const p3_circuit::tables::Traces<p3_uni_stark::Val<SC>>)
-            };
+            let t: &p3_circuit::tables::Traces<p3_uni_stark::Val<SC>> =
+                unsafe { $crate::prover::transmute_traces(traces) };
             self.$base::<SC>(cfg, packing, t, pis)
         }
     };
