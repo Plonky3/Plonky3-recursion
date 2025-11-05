@@ -28,7 +28,6 @@ pub struct CircuitBuilder<F> {
 
     /// Builder configuration
     config: BuilderConfig,
-
     // Generators registry removed; main branch uses trace builders
 }
 
@@ -375,8 +374,6 @@ where
 
         Ok((circuit, public_mappings))
     }
-
-    
 }
 
 #[cfg(test)]

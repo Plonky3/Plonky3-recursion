@@ -2,7 +2,6 @@ use alloc::string::ToString;
 use alloc::vec::Vec;
 use alloc::{format, vec};
 
-
 use super::Traces;
 use super::add::AddTraceBuilder;
 use super::constant::ConstTraceBuilder;
