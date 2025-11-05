@@ -2,10 +2,27 @@ use std::env;
 
 /// Fibonacci circuit: Compute F(n) and prove correctness
 /// Public input: expected_result (F(n))
-use p3_baby_bear::BabyBear;
+use p3_air::{Air, AirBuilder, BaseAir};
+use p3_baby_bear::{BabyBear, Poseidon2BabyBear};
+use p3_challenger::DuplexChallenger;
 use p3_circuit::CircuitBuilder;
-use p3_circuit_prover::{BatchStarkProver, TablePacking, config};
-use p3_field::PrimeCharacteristicRing;
+use p3_circuit_prover::{BatchStarkProver, TablePacking};
+use p3_circuit_prover::air::{AddAir, ConstAir, MulAir, PublicAir, WitnessAir};
+use p3_circuit_prover::batch_stark_prover::Table;
+use p3_commit::ExtensionMmcs;
+use p3_dft::Radix2DitParallel;
+use p3_field::extension::BinomialExtensionField;
+use p3_field::{Field, PrimeCharacteristicRing};
+use p3_fri::TwoAdicFriPcs;
+use p3_merkle_tree::MerkleTreeMmcs;
+use p3_recursion::pcs::fri::{
+    FriProofTargets, FriVerifierParams, HashTargets, InputProofTargets, RecExtensionValMmcs, RecValMmcs, Witness,
+};
+use p3_recursion::public_inputs::BatchStarkVerifierInputsBuilder;
+use p3_recursion::verifier::verify_batch_circuit;
+use p3_recursion::generation::generate_batch_challenges;
+use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
+use p3_uni_stark::{StarkConfig, StarkGenericConfig, Val};
 use tracing_forest::ForestLayer;
 use tracing_forest::util::LevelFilter;
 use tracing_subscriber::layer::SubscriberExt;
@@ -13,6 +30,76 @@ use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Registry};
 
 type F = BabyBear;
+
+/// Wrapper enum for heterogeneous circuit table AIRs
+enum CircuitTableAir<F: Field, const D: usize> {
+    Witness(WitnessAir<F, D>),
+    Const(ConstAir<F, D>),
+    Public(PublicAir<F, D>),
+    Add(AddAir<F, D>),
+    Mul(MulAir<F, D>),
+}
+
+impl<F: Field, const D: usize> BaseAir<F> for CircuitTableAir<F, D> {
+    fn width(&self) -> usize {
+        match self {
+            Self::Witness(a) => a.width(),
+            Self::Const(a) => a.width(),
+            Self::Public(a) => a.width(),
+            Self::Add(a) => a.width(),
+            Self::Mul(a) => a.width(),
+        }
+    }
+}
+
+impl<AB, const D: usize> Air<AB> for CircuitTableAir<AB::F, D>
+where
+    AB: AirBuilder,
+    AB::F: Field,
+{
+    fn eval(&self, builder: &mut AB) {
+        match self {
+            Self::Witness(a) => a.eval(builder),
+            Self::Const(a) => a.eval(builder),
+            Self::Public(a) => a.eval(builder),
+            Self::Add(a) => a.eval(builder),
+            Self::Mul(a) => a.eval(builder),
+        }
+    }
+}
+
+// Type aliases for the BabyBear config with D=4 extension
+const D: usize = 4;
+const RATE: usize = 8;
+const DIGEST_ELEMS: usize = 8;
+type Challenge = BinomialExtensionField<F, D>;
+type Dft = Radix2DitParallel<F>;
+type Perm = Poseidon2BabyBear<16>;
+type MyHash = PaddingFreeSponge<Perm, 16, RATE, 8>;
+type MyCompress = TruncatedPermutation<Perm, 2, 8, 16>;
+type ValMmcs = MerkleTreeMmcs<<F as Field>::Packing, <F as Field>::Packing, MyHash, MyCompress, 8>;
+type ChallengeMmcs = ExtensionMmcs<F, Challenge, ValMmcs>;
+type Challenger = DuplexChallenger<F, Perm, 16, RATE>;
+type MyPcs = TwoAdicFriPcs<F, Dft, ValMmcs, ChallengeMmcs>;
+type MyConfig = StarkConfig<MyPcs, Challenge, Challenger>;
+
+// Type for the FRI proof used in recursive verification
+type InnerFri = FriProofTargets<
+    Val<MyConfig>,
+    <MyConfig as StarkGenericConfig>::Challenge,
+    RecExtensionValMmcs<
+        Val<MyConfig>,
+        <MyConfig as StarkGenericConfig>::Challenge,
+        DIGEST_ELEMS,
+        RecValMmcs<Val<MyConfig>, DIGEST_ELEMS, MyHash, MyCompress>,
+    >,
+    InputProofTargets<
+        Val<MyConfig>,
+        <MyConfig as StarkGenericConfig>::Challenge,
+        RecValMmcs<Val<MyConfig>, DIGEST_ELEMS, MyHash, MyCompress>,
+    >,
+    Witness<Val<MyConfig>>,
+>;
 
 fn init_logger() {
     let env_filter = EnvFilter::builder()
@@ -64,61 +151,176 @@ fn test_fibonacci_batch_verifier() {
     runner.set_public_inputs(&[expected_fib]).unwrap();
 
     let traces = runner.run().unwrap();
-    let config = config::baby_bear().build();
+    
+    // Create config manually to get access to FRI params
+    // KEY FIX: Use create_test_fri_params (not create_benchmark_fri_params) for testing!
+    use p3_fri::create_test_fri_params;
+    use rand::SeedableRng;
+    use rand::rngs::SmallRng;
+    
+    // Use a seeded RNG for deterministic permutations
+    let mut rng = SmallRng::seed_from_u64(42);
+    let perm = Perm::new_from_rng_128(&mut rng);
+    let hash = MyHash::new(perm.clone());
+    let compress = MyCompress::new(perm.clone());
+    let val_mmcs = ValMmcs::new(hash, compress);
+    let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
+    let dft = Dft::default();
+    
+    // Create test FRI params with log_final_poly_len = 0
+    let fri_params = create_test_fri_params(challenge_mmcs, 0);
+    let fri_verifier_params = FriVerifierParams::from(&fri_params);
+    let pow_bits = fri_params.proof_of_work_bits;
+    let log_height_max = fri_params.log_final_poly_len + fri_params.log_blowup;
+    
+    // Create config for proving
+    let pcs_proving = MyPcs::new(dft, val_mmcs.clone(), fri_params);
+    let challenger_proving = Challenger::new(perm.clone());
+    let config_proving = MyConfig::new(pcs_proving, challenger_proving);
+    
     let table_packing = TablePacking::from_counts(4, 1);
-    let prover = BatchStarkProver::new(config).with_table_packing(table_packing);
-    let proof = prover.prove_all_tables(&traces).unwrap();
-    prover.verify_all_tables(&proof).unwrap();
+    let prover = BatchStarkProver::new(config_proving).with_table_packing(table_packing);
+    let batch_stark_proof = prover.prove_all_tables(&traces).unwrap();
+    prover.verify_all_tables(&batch_stark_proof).unwrap();
+    
+    // IMPORTANT: For recursive verification challenge generation, we DON'T need a new config!
+    // The native verification (verify_all_tables above) already succeeded.
+    // For recursive circuit, we just need to build a verification circuit that will
+    // accept the proof values as public inputs. We still need a config reference though
+    // for some helper functions.
+    let dft2 = Dft::default();
+    // Create a fresh challenger instance for verification (independent state)
+    let mut rng2 = SmallRng::seed_from_u64(42);
+    let perm2 = Perm::new_from_rng_128(&mut rng2);
+    let hash2 = MyHash::new(perm2.clone());
+    let compress2 = MyCompress::new(perm2.clone());
+    let val_mmcs2 = ValMmcs::new(hash2, compress2);
+    let challenge_mmcs2 = ChallengeMmcs::new(val_mmcs2.clone());
+    let fri_params2 = create_test_fri_params(challenge_mmcs2, 0);
+    let pcs_verif = MyPcs::new(dft2, val_mmcs2, fri_params2);
+    let challenger_verif = Challenger::new(perm2);
+    let config = MyConfig::new(pcs_verif, challenger_verif);
 
-    // let mut circuit_builder = CircuitBuilder::new();
+    // Extract proof components
+    let batch_proof = &batch_stark_proof.proof;
+    let rows = batch_stark_proof.rows;
+    let packing = batch_stark_proof.table_packing;
 
-    // // Allocate all targets
-    // let verifier_inputs = BatchStarkVerifierInputsBuilder::<
-    //     MyConfig,
-    //     HashTargets<F, DIGEST_ELEMS>,
-    //     InnerFri,
-    // >::allocate(&mut circuit_builder, &proof, pis.len());
+    // Now verify the batch STARK proof recursively
+    println!("Starting recursive batch STARK verification...");
+    println!("Proof ext_degree: {}", batch_stark_proof.ext_degree);
+    println!("Proof w_binomial: {:?}", batch_stark_proof.w_binomial);
+    println!("pow_bits: {}, log_height_max: {}", pow_bits, log_height_max);
+    println!("Proof has {} query proofs", batch_proof.opening_proof.query_proofs.len());
+    println!("Degree bits: {:?}", batch_proof.degree_bits);
 
-    // // Add the verification circuit to the builder.
-    // verify_batch_stark_circuit::<
-    //     BatchStarkAir,
-    //     MyConfig,
-    //     HashTargets<F, DIGEST_ELEMS>,
-    //     InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>>,
-    //     InnerFri,
-    //     RATE,
-    // >(
-    //     &config,
-    //     &air,
-    //     &mut circuit_builder,
-    //     &verifier_inputs.proof_targets,
-    //     &verifier_inputs.air_public_targets,
-    //     &fri_verifier_params,
-    // )?;
+    // Create TWO sets of AIRs:
+    // 1. Base field AIRs for native challenge generation
+    // 2. Extension field AIRs for in-circuit verification
+    //
+    // Note: The traces use D=1 (base field), not D=4!
+    // The extension degree D=4 is for the challenge field in the proof system,
+    // but the actual circuit table traces are in the base field.
+    const TRACE_D: usize = 1;  // Traces are in base field
+    
+    // Base field AIRs for native challenge generation
+    let native_airs = vec![
+        CircuitTableAir::Witness(WitnessAir::<F, TRACE_D>::new(rows[Table::Witness])),
+        CircuitTableAir::Const(ConstAir::<F, TRACE_D>::new(rows[Table::Const])),
+        CircuitTableAir::Public(PublicAir::<F, TRACE_D>::new(rows[Table::Public])),
+        CircuitTableAir::Add(AddAir::<F, TRACE_D>::new(rows[Table::Add], packing.add_lanes())),
+        CircuitTableAir::Mul(MulAir::<F, TRACE_D>::new(rows[Table::Mul], packing.mul_lanes())),
+    ];
+    
+    // Extension field AIRs for circuit verification
+    let circuit_airs = vec![
+        CircuitTableAir::Witness(WitnessAir::<Challenge, TRACE_D>::new(rows[Table::Witness])),
+        CircuitTableAir::Const(ConstAir::<Challenge, TRACE_D>::new(rows[Table::Const])),
+        CircuitTableAir::Public(PublicAir::<Challenge, TRACE_D>::new(rows[Table::Public])),
+        CircuitTableAir::Add(AddAir::<Challenge, TRACE_D>::new(rows[Table::Add], packing.add_lanes())),
+        CircuitTableAir::Mul(MulAir::<Challenge, TRACE_D>::new(rows[Table::Mul], packing.mul_lanes())),
+    ];
 
-    // // Build the circuit.
-    // let circuit = circuit_builder.build()?;
+    // Public values (empty for all 5 circuit tables, using base field)
+    let pis: Vec<Vec<F>> = vec![vec![]; 5];
 
-    // let mut runner = circuit.runner();
+    // Build the recursive verification circuit
+    let mut circuit_builder = CircuitBuilder::new();
 
-    // // Generate all the challenge values.
-    // let all_challenges = generate_challenges(
-    //     &air,
-    //     &config,
-    //     &proof,
-    //     &pis,
-    //     Some(&[pow_bits, log_height_max]),
-    // )?;
+    // Allocate all targets for the batch proof
+    let verifier_inputs = BatchStarkVerifierInputsBuilder::<
+        MyConfig,
+        HashTargets<F, DIGEST_ELEMS>,
+        InnerFri,
+    >::allocate(&mut circuit_builder, batch_proof, &[0, 0, 0, 0, 0]);
 
-    // // Pack values using the same builder
-    // let num_queries = proof.opening_proof.query_proofs.len();
-    // let public_inputs = verifier_inputs.pack_values(&pis, &proof, &all_challenges, num_queries);
+    // Add the batch verification circuit (uses extension field AIRs)
+    verify_batch_circuit::<
+        _,
+        MyConfig,
+        HashTargets<F, DIGEST_ELEMS>,
+        InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>>,
+        InnerFri,
+        RATE,
+    >(
+        &config,
+        &circuit_airs,
+        &mut circuit_builder,
+        &verifier_inputs.proof_targets,
+        &verifier_inputs.air_public_targets,
+        &fri_verifier_params,
+    )
+    .unwrap();
 
-    // runner
-    //     .set_public_inputs(&public_inputs)
-    //     .map_err(VerificationError::Circuit)?;
+    // Build the circuit
+    let verification_circuit = circuit_builder.build().unwrap();
+    let expected_public_input_len = verification_circuit.public_flat_len;
+    
+    // Generate all the challenge values for batch proof (uses base field AIRs)
+    println!("Generating challenges with pow_bits={}, log_height_max={}...", pow_bits, log_height_max);
+    
+    let all_challenges = generate_batch_challenges(
+        &native_airs,
+        &config,
+        batch_proof,
+        &pis,
+        Some(&[pow_bits, log_height_max]),
+    )
+    .map_err(|e| {
+        eprintln!("Challenge generation failed: {:?}", e);
+        eprintln!("Public inputs lengths: {:?}", pis.iter().map(|v| v.len()).collect::<Vec<_>>());
+        eprintln!("Number of AIRs: {}", native_airs.len());
+        eprintln!("Number of proof instances: {}", batch_proof.opened_values.instances.len());
+        e
+    })
+    .unwrap();
 
-    // let _traces = runner.run().map_err(VerificationError::Circuit)?;
+    println!("Generated {} challenges", all_challenges.len());
+    println!("Expected circuit public inputs: {}", expected_public_input_len);
+
+    // Pack values using the builder
+    let num_queries = batch_proof.opening_proof.query_proofs.len();
+    let public_inputs =
+        verifier_inputs.pack_values(&pis, batch_proof, &all_challenges, num_queries);
+
+    println!("Packed {} public input values", public_inputs.len());
+    
+    // Validate that the public inputs match the expected circuit input length
+    if public_inputs.len() != expected_public_input_len {
+        eprintln!("ERROR: Public input length mismatch!");
+        eprintln!("  Expected: {}", expected_public_input_len);
+        eprintln!("  Got: {}", public_inputs.len());
+        eprintln!("  pis lengths: {:?}", pis.iter().map(|v| v.len()).collect::<Vec<_>>());
+        eprintln!("  num_queries: {}", num_queries);
+        eprintln!("  num_challenges: {}", all_challenges.len());
+        panic!("Public input length mismatch");
+    }
+    
+    assert!(!public_inputs.is_empty());
+
+    println!("✓ Recursive batch STARK verification circuit built successfully!");
+    println!("  Circuit has {} public inputs", public_inputs.len());
+    println!("  Generated {} challenges", all_challenges.len());
 }
 
 fn compute_fibonacci_classical(n: usize) -> F {
