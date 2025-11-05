@@ -7,8 +7,8 @@ use p3_challenger::{CanObserve, CanSample, CanSampleBits, FieldChallenger, Grind
 use p3_commit::{BatchOpening, Mmcs, Pcs, PolynomialSpace};
 use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing, PrimeField, TwoAdicField};
 use p3_fri::{FriProof, TwoAdicFriPcs};
-use p3_multi_stark::MultiProof;
-use p3_multi_stark::config::{observe_base_as_ext, observe_instance_binding};
+use p3_batch_stark::BatchProof;
+use p3_batch_stark::config::{observe_base_as_ext, observe_instance_binding};
 use p3_uni_stark::{
     Domain, Proof, StarkGenericConfig, SymbolicAirBuilder, Val, VerifierConstraintFolder,
     get_log_quotient_degree,
@@ -191,7 +191,7 @@ where
 pub fn generate_batch_challenges<SC: StarkGenericConfig, A>(
     airs: &[A],
     config: &SC,
-    proof: &MultiProof<SC>,
+    proof: &BatchProof<SC>,
     public_values: &[Vec<Val<SC>>],
     extra_params: Option<&[usize]>,
 ) -> Result<Vec<SC::Challenge>, GenerationError>
@@ -206,7 +206,7 @@ where
         ));
     }
 
-    let MultiProof {
+    let BatchProof {
         commitments,
         opened_values,
         opening_proof,

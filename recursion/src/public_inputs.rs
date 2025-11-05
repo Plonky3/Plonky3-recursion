@@ -6,7 +6,7 @@ use alloc::vec::Vec;
 use p3_circuit::CircuitBuilder;
 use p3_commit::Pcs;
 use p3_field::{BasedVectorSpace, Field, PrimeField64};
-use p3_multi_stark::MultiProof;
+use p3_batch_stark::BatchProof;
 use p3_uni_stark::{Proof, StarkGenericConfig, Val};
 
 use crate::ProofTargets;
@@ -405,7 +405,7 @@ where
     /// Allocate all targets during circuit building.
     pub fn allocate(
         circuit: &mut CircuitBuilder<SC::Challenge>,
-        proof: &MultiProof<SC>,
+        proof: &BatchProof<SC>,
         air_public_counts: &[usize],
     ) -> Self {
         assert_eq!(
@@ -431,7 +431,7 @@ where
     pub fn pack_values(
         &self,
         air_public_values: &[Vec<Val<SC>>],
-        proof: &MultiProof<SC>,
+        proof: &BatchProof<SC>,
         challenges: &[SC::Challenge],
         num_queries: usize,
     ) -> Vec<SC::Challenge>

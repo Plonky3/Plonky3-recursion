@@ -8,7 +8,7 @@ use p3_circuit::op::{NonPrimitiveOpConfig, NonPrimitiveOpType};
 use p3_circuit::utils::ColumnsTargets;
 use p3_commit::{Pcs, PolynomialSpace};
 use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
-use p3_multi_stark::MultiProof;
+use p3_batch_stark::BatchProof;
 use p3_uni_stark::{OpenedValues, StarkGenericConfig};
 use p3_util::zip_eq::zip_eq;
 
@@ -61,7 +61,7 @@ impl<
     OpeningProof: Recursive<SC::Challenge, Input = <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Proof>,
 > Recursive<SC::Challenge> for BatchProofTargets<SC, Comm, OpeningProof>
 {
-    type Input = MultiProof<SC>;
+    type Input = BatchProof<SC>;
 
     fn new(circuit: &mut CircuitBuilder<SC::Challenge>, input: &Self::Input) -> Self {
         let trace_targets = Comm::new(circuit, &input.commitments.main);

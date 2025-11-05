@@ -8,7 +8,7 @@ use p3_field::extension::BinomialExtensionField;
 use p3_field::{Field, PrimeCharacteristicRing};
 use p3_fri::{TwoAdicFriPcs, create_test_fri_params};
 use p3_merkle_tree::MerkleTreeMmcs;
-use p3_multi_stark::{StarkInstance, prove_multi, verify_multi};
+use p3_batch_stark::{StarkInstance, prove_batch, verify_batch};
 use p3_recursion::pcs::fri::{
     FriProofTargets, FriVerifierParams, HashTargets, InputProofTargets, RecExtensionValMmcs,
     RecValMmcs, Witness,
@@ -91,8 +91,8 @@ fn test_fibonacci_batch_stark_prover_builds() -> Result<(), VerificationError> {
         },
     ];
 
-    let proof = prove_multi(&config, instances);
-    verify_multi(&config, airs.as_slice(), &proof, &pis).unwrap();
+    let proof = prove_batch(&config, instances);
+    verify_batch(&config, airs.as_slice(), &proof, &pis).unwrap();
 
     const DIGEST_ELEMS: usize = 8;
     type InnerFri = FriProofTargets<
