@@ -9,7 +9,6 @@ use p3_air::{Air, AirBuilder, BaseAir};
 use p3_batch_stark::{BatchProof, StarkGenericConfig as MSGC, StarkInstance, Val as MVal};
 use p3_circuit::tables::Traces;
 use p3_field::{BasedVectorSpace, Field};
-use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
 use thiserror::Error;
 use tracing::instrument;
@@ -315,13 +314,7 @@ where
         Ok(BatchStarkProof {
             proof,
             table_packing: packing,
-            rows: RowCounts::new([
-                witness_rows,
-                const_rows,
-                public_rows,
-                add_rows,
-                mul_rows,
-            ]),
+            rows: RowCounts::new([witness_rows, const_rows, public_rows, add_rows, mul_rows]),
             ext_degree: D,
             w_binomial: if D > 1 { w_binomial } else { None },
         })
@@ -366,13 +359,7 @@ where
                 w,
             ))
         };
-        let airs = vec![
-            witness_air,
-            const_air,
-            public_air,
-            add_air,
-            mul_air,
-        ];
+        let airs = vec![witness_air, const_air, public_air, add_air, mul_air];
         // TODO: Handle public values.
         let pvs: Vec<Vec<MVal<SC>>> = vec![Vec::new(); NUM_TABLES];
 

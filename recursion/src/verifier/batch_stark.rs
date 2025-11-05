@@ -393,8 +393,6 @@ where
         quotient_round,
     ));
 
-    // Generate PCS-specific challenges after observing all opened values.
-    opened_values_targets.observe(circuit, &mut challenger);
     let pcs_challenges = SC::Pcs::get_challenges_circuit::<RATE>(
         circuit,
         &mut challenger,

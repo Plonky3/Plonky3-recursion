@@ -6,21 +6,22 @@ use p3_air::{Air, AirBuilder, BaseAir};
 use p3_baby_bear::{BabyBear, Poseidon2BabyBear};
 use p3_challenger::DuplexChallenger;
 use p3_circuit::CircuitBuilder;
-use p3_circuit_prover::{BatchStarkProver, TablePacking};
 use p3_circuit_prover::air::{AddAir, ConstAir, MulAir, PublicAir, WitnessAir};
 use p3_circuit_prover::batch_stark_prover::Table;
+use p3_circuit_prover::{BatchStarkProver, TablePacking};
 use p3_commit::ExtensionMmcs;
 use p3_dft::Radix2DitParallel;
 use p3_field::extension::BinomialExtensionField;
 use p3_field::{Field, PrimeCharacteristicRing};
 use p3_fri::TwoAdicFriPcs;
 use p3_merkle_tree::MerkleTreeMmcs;
+use p3_recursion::generation::generate_batch_challenges;
 use p3_recursion::pcs::fri::{
-    FriProofTargets, FriVerifierParams, HashTargets, InputProofTargets, RecExtensionValMmcs, RecValMmcs, Witness,
+    FriProofTargets, FriVerifierParams, HashTargets, InputProofTargets, RecExtensionValMmcs,
+    RecValMmcs, Witness,
 };
 use p3_recursion::public_inputs::BatchStarkVerifierInputsBuilder;
 use p3_recursion::verifier::verify_batch_circuit;
-use p3_recursion::generation::generate_batch_challenges;
 use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
 use p3_uni_stark::{StarkConfig, StarkGenericConfig, Val};
 use tracing_forest::ForestLayer;
@@ -151,13 +152,13 @@ fn test_fibonacci_batch_verifier() {
     runner.set_public_inputs(&[expected_fib]).unwrap();
 
     let traces = runner.run().unwrap();
-    
+
     // Create config manually to get access to FRI params
     // KEY FIX: Use create_test_fri_params (not create_benchmark_fri_params) for testing!
     use p3_fri::create_test_fri_params;
     use rand::SeedableRng;
     use rand::rngs::SmallRng;
-    
+
     // Use a seeded RNG for deterministic permutations
     let mut rng = SmallRng::seed_from_u64(42);
     let perm = Perm::new_from_rng_128(&mut rng);
@@ -166,23 +167,23 @@ fn test_fibonacci_batch_verifier() {
     let val_mmcs = ValMmcs::new(hash, compress);
     let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
     let dft = Dft::default();
-    
+
     // Create test FRI params with log_final_poly_len = 0
     let fri_params = create_test_fri_params(challenge_mmcs, 0);
     let fri_verifier_params = FriVerifierParams::from(&fri_params);
     let pow_bits = fri_params.proof_of_work_bits;
     let log_height_max = fri_params.log_final_poly_len + fri_params.log_blowup;
-    
+
     // Create config for proving
     let pcs_proving = MyPcs::new(dft, val_mmcs.clone(), fri_params);
     let challenger_proving = Challenger::new(perm.clone());
     let config_proving = MyConfig::new(pcs_proving, challenger_proving);
-    
+
     let table_packing = TablePacking::from_counts(4, 1);
     let prover = BatchStarkProver::new(config_proving).with_table_packing(table_packing);
     let batch_stark_proof = prover.prove_all_tables(&traces).unwrap();
     prover.verify_all_tables(&batch_stark_proof).unwrap();
-    
+
     // IMPORTANT: For recursive verification challenge generation, we DON'T need a new config!
     // The native verification (verify_all_tables above) already succeeded.
     // For recursive circuit, we just need to build a verification circuit that will
@@ -211,7 +212,10 @@ fn test_fibonacci_batch_verifier() {
     println!("Proof ext_degree: {}", batch_stark_proof.ext_degree);
     println!("Proof w_binomial: {:?}", batch_stark_proof.w_binomial);
     println!("pow_bits: {}, log_height_max: {}", pow_bits, log_height_max);
-    println!("Proof has {} query proofs", batch_proof.opening_proof.query_proofs.len());
+    println!(
+        "Proof has {} query proofs",
+        batch_proof.opening_proof.query_proofs.len()
+    );
     println!("Degree bits: {:?}", batch_proof.degree_bits);
 
     // Create TWO sets of AIRs:
@@ -221,24 +225,36 @@ fn test_fibonacci_batch_verifier() {
     // Note: The traces use D=1 (base field), not D=4!
     // The extension degree D=4 is for the challenge field in the proof system,
     // but the actual circuit table traces are in the base field.
-    const TRACE_D: usize = 1;  // Traces are in base field
-    
+    const TRACE_D: usize = 1; // Traces are in base field
+
     // Base field AIRs for native challenge generation
     let native_airs = vec![
         CircuitTableAir::Witness(WitnessAir::<F, TRACE_D>::new(rows[Table::Witness])),
         CircuitTableAir::Const(ConstAir::<F, TRACE_D>::new(rows[Table::Const])),
         CircuitTableAir::Public(PublicAir::<F, TRACE_D>::new(rows[Table::Public])),
-        CircuitTableAir::Add(AddAir::<F, TRACE_D>::new(rows[Table::Add], packing.add_lanes())),
-        CircuitTableAir::Mul(MulAir::<F, TRACE_D>::new(rows[Table::Mul], packing.mul_lanes())),
+        CircuitTableAir::Add(AddAir::<F, TRACE_D>::new(
+            rows[Table::Add],
+            packing.add_lanes(),
+        )),
+        CircuitTableAir::Mul(MulAir::<F, TRACE_D>::new(
+            rows[Table::Mul],
+            packing.mul_lanes(),
+        )),
     ];
-    
+
     // Extension field AIRs for circuit verification
     let circuit_airs = vec![
         CircuitTableAir::Witness(WitnessAir::<Challenge, TRACE_D>::new(rows[Table::Witness])),
         CircuitTableAir::Const(ConstAir::<Challenge, TRACE_D>::new(rows[Table::Const])),
         CircuitTableAir::Public(PublicAir::<Challenge, TRACE_D>::new(rows[Table::Public])),
-        CircuitTableAir::Add(AddAir::<Challenge, TRACE_D>::new(rows[Table::Add], packing.add_lanes())),
-        CircuitTableAir::Mul(MulAir::<Challenge, TRACE_D>::new(rows[Table::Mul], packing.mul_lanes())),
+        CircuitTableAir::Add(AddAir::<Challenge, TRACE_D>::new(
+            rows[Table::Add],
+            packing.add_lanes(),
+        )),
+        CircuitTableAir::Mul(MulAir::<Challenge, TRACE_D>::new(
+            rows[Table::Mul],
+            packing.mul_lanes(),
+        )),
     ];
 
     // Public values (empty for all 5 circuit tables, using base field)
@@ -275,10 +291,13 @@ fn test_fibonacci_batch_verifier() {
     // Build the circuit
     let verification_circuit = circuit_builder.build().unwrap();
     let expected_public_input_len = verification_circuit.public_flat_len;
-    
+
     // Generate all the challenge values for batch proof (uses base field AIRs)
-    println!("Generating challenges with pow_bits={}, log_height_max={}...", pow_bits, log_height_max);
-    
+    println!(
+        "Generating challenges with pow_bits={}, log_height_max={}...",
+        pow_bits, log_height_max
+    );
+
     let all_challenges = generate_batch_challenges(
         &native_airs,
         &config,
@@ -288,15 +307,24 @@ fn test_fibonacci_batch_verifier() {
     )
     .map_err(|e| {
         eprintln!("Challenge generation failed: {:?}", e);
-        eprintln!("Public inputs lengths: {:?}", pis.iter().map(|v| v.len()).collect::<Vec<_>>());
+        eprintln!(
+            "Public inputs lengths: {:?}",
+            pis.iter().map(|v| v.len()).collect::<Vec<_>>()
+        );
         eprintln!("Number of AIRs: {}", native_airs.len());
-        eprintln!("Number of proof instances: {}", batch_proof.opened_values.instances.len());
+        eprintln!(
+            "Number of proof instances: {}",
+            batch_proof.opened_values.instances.len()
+        );
         e
     })
     .unwrap();
 
     println!("Generated {} challenges", all_challenges.len());
-    println!("Expected circuit public inputs: {}", expected_public_input_len);
+    println!(
+        "Expected circuit public inputs: {}",
+        expected_public_input_len
+    );
 
     // Pack values using the builder
     let num_queries = batch_proof.opening_proof.query_proofs.len();
@@ -304,18 +332,21 @@ fn test_fibonacci_batch_verifier() {
         verifier_inputs.pack_values(&pis, batch_proof, &all_challenges, num_queries);
 
     println!("Packed {} public input values", public_inputs.len());
-    
+
     // Validate that the public inputs match the expected circuit input length
     if public_inputs.len() != expected_public_input_len {
         eprintln!("ERROR: Public input length mismatch!");
         eprintln!("  Expected: {}", expected_public_input_len);
         eprintln!("  Got: {}", public_inputs.len());
-        eprintln!("  pis lengths: {:?}", pis.iter().map(|v| v.len()).collect::<Vec<_>>());
+        eprintln!(
+            "  pis lengths: {:?}",
+            pis.iter().map(|v| v.len()).collect::<Vec<_>>()
+        );
         eprintln!("  num_queries: {}", num_queries);
         eprintln!("  num_challenges: {}", all_challenges.len());
         panic!("Public input length mismatch");
     }
-    
+
     assert!(!public_inputs.is_empty());
 
     println!("✓ Recursive batch STARK verification circuit built successfully!");

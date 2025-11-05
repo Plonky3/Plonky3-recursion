@@ -146,19 +146,16 @@ fn test_fibonacci_batch_stark_prover_builds() -> Result<(), VerificationError> {
         Some(&[pow_bits, log_height_max]),
     )?;
     let num_queries = proof.opening_proof.query_proofs.len();
+
     let public_inputs = verifier_inputs.pack_values(&pis, &proof, &challenges, num_queries);
 
     assert_eq!(public_inputs.len(), circuit.public_flat_len);
     assert!(!public_inputs.is_empty());
 
     // Actually RUN the circuit to verify it executes correctly
-    println!("Running recursive verification circuit...");
     let mut runner = circuit.runner();
     runner.set_public_inputs(&public_inputs)?;
-    let traces = runner.run()?;
-    println!("✓ Circuit executed successfully!");
-    println!("  Witness trace rows: {}", traces.witness_trace.index.len());
-    println!("  Public trace rows: {}", traces.public_trace.index.len());
+    let _traces = runner.run()?;
 
     Ok(())
 }

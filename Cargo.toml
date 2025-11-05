@@ -26,24 +26,24 @@ categories = ["cryptography::cryptocurrencies"]
 [workspace.dependencies]
 
 # Plonky3 dependencies - shared across all crates
-p3-air = { git = "https://github.com/Plonky3/Plonky3" }
-p3-baby-bear = { git = "https://github.com/Plonky3/Plonky3" }
-p3-batch-stark = { git = "https://github.com/Plonky3/Plonky3" }
-p3-challenger = { git = "https://github.com/Plonky3/Plonky3" }
-p3-circle = { git = "https://github.com/Plonky3/Plonky3" }
-p3-commit = { git = "https://github.com/Plonky3/Plonky3" }
-p3-dft = { git = "https://github.com/Plonky3/Plonky3" }
-p3-field = { git = "https://github.com/Plonky3/Plonky3" }
-p3-fri = { git = "https://github.com/Plonky3/Plonky3" }
-p3-goldilocks = { git = "https://github.com/Plonky3/Plonky3" }
-p3-keccak = { git = "https://github.com/Plonky3/Plonky3" }
-p3-koala-bear = { git = "https://github.com/Plonky3/Plonky3" }
-p3-matrix = { git = "https://github.com/Plonky3/Plonky3" }
-p3-maybe-rayon = { git = "https://github.com/Plonky3/Plonky3" }
-p3-merkle-tree = { git = "https://github.com/Plonky3/Plonky3" }
-p3-symmetric = { git = "https://github.com/Plonky3/Plonky3" }
-p3-uni-stark = { git = "https://github.com/Plonky3/Plonky3" }
-p3-util = { git = "https://github.com/Plonky3/Plonky3" }
+p3-air = { path = "../Plonky3/air" }
+p3-baby-bear = { path = "../Plonky3/baby-bear" }
+p3-batch-stark = { path = "../Plonky3/batch-stark" }
+p3-challenger = { path = "../Plonky3/challenger" }
+p3-circle = { path = "../Plonky3/circle" }
+p3-commit = { path = "../Plonky3/commit" }
+p3-dft = { path = "../Plonky3/dft" }
+p3-field = { path = "../Plonky3/field" }
+p3-fri = { path = "../Plonky3/fri" }
+p3-goldilocks = { path = "../Plonky3/goldilocks" }
+p3-keccak = { path = "../Plonky3/keccak" }
+p3-koala-bear = { path = "../Plonky3/koala-bear" }
+p3-matrix = { path = "../Plonky3/matrix" }
+p3-maybe-rayon = { path = "../Plonky3/maybe-rayon" }
+p3-merkle-tree = { path = "../Plonky3/merkle-tree" }
+p3-symmetric = { path = "../Plonky3/symmetric" }
+p3-uni-stark = { path = "../Plonky3/uni-stark" }
+p3-util = { path = "../Plonky3/util" }
 
 # Other common dependencies
 itertools = { version = "0.14.0", default-features = false, features = [

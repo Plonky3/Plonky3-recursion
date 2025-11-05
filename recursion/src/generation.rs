@@ -327,25 +327,6 @@ where
     }
     coms_to_verify.push((commitments.quotient_chunks.clone(), quotient_round));
 
-    // Observe opened values in the same flattened order as the recursive circuit.
-    for inst in &opened_values.instances {
-        for &value in &inst.trace_local {
-            challenger.observe_algebra_element(value);
-        }
-    }
-    for inst in &opened_values.instances {
-        for &value in &inst.trace_next {
-            challenger.observe_algebra_element(value);
-        }
-    }
-    for inst in &opened_values.instances {
-        for chunk in &inst.quotient_chunks {
-            for &value in chunk {
-                challenger.observe_algebra_element(value);
-            }
-        }
-    }
-
     let pcs_challenges = pcs.generate_challenges(
         config,
         &mut challenger,

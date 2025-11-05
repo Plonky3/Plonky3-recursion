@@ -446,7 +446,8 @@ where
         params: &Self::VerifierParams,
     ) -> Vec<Target> {
         let fri_proof = &proof_targets.opening_proof;
-        let _ = opened_values;
+
+        opened_values.observe(circuit, challenger);
 
         // Sample FRI alpha (for batch opening reduction)
         let fri_alpha = challenger.sample(circuit);
