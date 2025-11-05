@@ -28,6 +28,7 @@ categories = ["cryptography::cryptocurrencies"]
 # Plonky3 dependencies - shared across all crates
 p3-air = { git = "https://github.com/Plonky3/Plonky3" }
 p3-baby-bear = { git = "https://github.com/Plonky3/Plonky3" }
+p3-batch-stark = { git = "https://github.com/Plonky3/Plonky3" }
 p3-challenger = { git = "https://github.com/Plonky3/Plonky3" }
 p3-circle = { git = "https://github.com/Plonky3/Plonky3" }
 p3-commit = { git = "https://github.com/Plonky3/Plonky3" }

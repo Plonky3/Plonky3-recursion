@@ -12,10 +12,7 @@ use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
 use p3_uni_stark::StarkGenericConfig;
 use p3_util::zip_eq::zip_eq;
 
-use super::{
-    ObservableCommitment, VerificationError, compute_quotient_chunk_products_circuit,
-    compute_quotient_evaluation_circuit,
-};
+use super::{ObservableCommitment, VerificationError, recompose_quotient_from_chunks_circuit};
 use crate::Target;
 use crate::challenger::CircuitChallenger;
 use crate::traits::{Recursive, RecursiveAir, RecursivePcs};
@@ -33,6 +30,11 @@ type PcsVerifierParams<SC, InputProof, OpeningProof, Comm> =
             <SC as StarkGenericConfig>::Challenger,
         >>::Domain,
     >>::VerifierParams;
+
+type PcsDomain<SC> = <<SC as StarkGenericConfig>::Pcs as Pcs<
+    <SC as StarkGenericConfig>::Challenge,
+    <SC as StarkGenericConfig>::Challenger,
+>>::Domain;
 
 /// Verifies a STARK proof within a circuit.
 ///
@@ -208,22 +210,18 @@ where
     )?;
 
     // Compute quotient polynomial evaluation from chunks
-    let zero = circuit.add_const(SC::Challenge::ZERO);
-    let one = circuit.add_const(SC::Challenge::ONE);
-
-    let zps = compute_quotient_chunk_products_circuit::<
+    let quotient = recompose_quotient_from_chunks_circuit::<
         SC,
         InputProof,
         OpeningProof,
         Comm,
-        <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain,
-    >(circuit, &quotient_chunks_domains, zeta, one, pcs);
-
-    let quotient = compute_quotient_evaluation_circuit::<SC>(
+        PcsDomain<SC>,
+    >(
         circuit,
+        &quotient_chunks_domains,
         opened_quotient_chunks_targets,
-        &zps,
-        zero,
+        zeta,
+        pcs,
     );
 
     // Evaluate AIR constraints at out-of-domain point
