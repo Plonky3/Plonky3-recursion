@@ -21,7 +21,6 @@ use p3_mmcs_air::air::{MmcsTableConfig, MmcsVerifyAir};
 use p3_uni_stark::{StarkGenericConfig, Val, prove, verify};
 use p3_field::extension::BinomialExtensionField;
 
-// Avoid proc-macro derives to keep lints happy in mismatched toolchains
 use crate::air::{AddAir, ConstAir, MulAir, PublicAir, WitnessAir};
 use crate::config::StarkField;
 use crate::field_params::ExtractBinomialW;
@@ -183,10 +182,10 @@ where
         self.table_packing
     }
 
-    /// Register MMCS verification table plugin
+    /// Register MMCS verification plugin
     pub fn with_mmcs_table(mut self, mmcs_config: MmcsTableConfig) -> Self {
         let plugin = Box::new(MmcsProver { config: mmcs_config });
-        self.non_primitive_provers.push(plugin);
+        self.register_prover(plugin);
         self
     }
 
@@ -399,7 +398,7 @@ where
     }
 }
 
-/// Table prover plugin trait (object-safe)
+/// Table prover plugin trait, used to prove and verify non-primitive tables.
 pub trait TableProver<SC>: Send + Sync
 where
     SC: StarkGenericConfig,

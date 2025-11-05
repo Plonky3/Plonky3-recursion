@@ -429,8 +429,6 @@ impl<'a, F: CircuitField> MmcsTraceBuilder<'a, F> {
     }
 }
 
-// Dynamic plugin traits removed on main branch. Runtime proving plugins live in circuit-prover.
-
 #[cfg(test)]
 mod tests {
     use alloc::vec;
