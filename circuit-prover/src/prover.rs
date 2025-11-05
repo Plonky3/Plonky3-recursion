@@ -12,8 +12,9 @@
 
 use alloc::vec;
 use alloc::vec::Vec;
+use alloc::boxed::Box;
 
-use p3_circuit::tables::{DynTraces, MmcsTrace};
+use p3_circuit::tables::{DynTraces, DynTracesView, MmcsTrace};
 use p3_circuit::{CircuitBuilderError, CircuitError};
 use p3_field::{BasedVectorSpace, Field};
 use p3_mmcs_air::air::{MmcsTableConfig, MmcsVerifyAir};
@@ -23,6 +24,7 @@ use p3_uni_stark::{StarkGenericConfig, Val, prove, verify};
 use crate::air::{AddAir, ConstAir, MulAir, PublicAir, WitnessAir};
 use crate::config::StarkField;
 use crate::field_params::ExtractBinomialW;
+use p3_field::extension::BinomialExtensionField;
 
 /// Configuration for packing multiple primitive operations into a single AIR row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -120,8 +122,8 @@ where
 {
     config: SC,
     table_packing: TablePacking,
-    /// MMCS table configuration for optional mmcs verification table
-    mmcs_config: MmcsTableConfig,
+    /// Registered non-primitive provers.
+    non_primitive_provers: Vec<Box<dyn TableProver<SC>>>,
 }
 
 /// Errors that can arise during proving or verification.
@@ -180,7 +182,7 @@ where
         Self {
             config,
             table_packing: TablePacking::default(),
-            mmcs_config: MmcsTableConfig::default(),
+            non_primitive_provers: Vec::new(),
         }
     }
 
@@ -197,10 +199,16 @@ where
         self.table_packing
     }
 
-    /// Configure MMCS verification table proving
+    /// Register MMCS verification table plugin
     pub fn with_mmcs_table(mut self, mmcs_config: MmcsTableConfig) -> Self {
-        self.mmcs_config = mmcs_config;
+        let plugin = Box::new(MmcsProver { config: mmcs_config });
+        self.non_primitive_provers.push(plugin);
         self
+    }
+
+    /// Register a non-primitive prover
+    pub fn register_prover(&mut self, plugin: Box<dyn TableProver<SC>>) {
+        self.non_primitive_provers.push(plugin);
     }
 
     /// Generate proofs for all circuit tables.
@@ -289,25 +297,13 @@ where
         };
         let mul_proof = prove(&self.config, &mul_air, mul_matrix, pis);
 
-        // Handle all non-primitive tables
-
+        // Handle all registered non-primitive tables dynamically
         let mut non_primitives = Vec::with_capacity(traces.non_primitive_traces.len());
-        if let Some(trace_any) = traces.non_primitive_traces.get("mmcs_verify")
-            && let Some(mmcs_trace) = trace_any.as_any().downcast_ref::<MmcsTrace<EF>>()
-        {
-            let matrix = MmcsVerifyAir::trace_to_matrix(&self.mmcs_config, mmcs_trace);
-            let air = MmcsVerifyAir::new(self.mmcs_config);
-            let proof = prove(&self.config, &air, matrix, pis);
-            let rows: usize = mmcs_trace
-                .mmcs_paths
-                .iter()
-                .map(|path| path.left_values.len() + 1)
-                .sum();
-            non_primitives.push(TableProofEntry {
-                id: "mmcs_verify",
-                proof,
-                rows,
-            });
+        let view: DynTracesView<'_> = traces.view(D);
+        for plugin in &self.non_primitive_provers {
+            if let Some(entry) = TableProver::prove_dyn(&**plugin, &self.config, D, table_packing, w_binomial, &view, pis)? {
+                non_primitives.push(entry);
+            }
         }
 
         Ok(MultiTableProof {
@@ -380,24 +376,142 @@ where
 
         // Verify dynamic non-primitive tables
         for entry in &proof.non_primitives {
-            match entry.id {
-                "mmcs_verify" => {
-                    let air = MmcsVerifyAir::new(self.mmcs_config);
-                    verify(&self.config, &air, &entry.proof, pis).map_err(|_| {
-                        ProverError::VerificationFailed {
-                            phase: "mmcs_verify",
-                        }
-                    })?;
-                }
-                _ => {
-                    return Err(ProverError::VerificationFailed {
-                        phase: "unknown_extra",
-                    });
-                }
-            }
+            let plugin = self
+                .non_primitive_provers
+                .iter()
+                .find(|p| TableProver::id(&***p) == entry.id)
+                .ok_or(ProverError::VerificationFailed { phase: "unknown_non_primitive" })?;
+            TableProver::verify_dyn(&**plugin, &self.config, D, proof.table_packing, entry, w_binomial, pis)?;
         }
 
         Ok(())
+    }
+}
+
+/// Table prover plugin trait (object-safe)
+pub trait TableProver<SC>: Send + Sync
+where
+    SC: StarkGenericConfig,
+{
+    fn id(&self) -> &'static str;
+    fn prove_dyn(
+        &self,
+        cfg: &SC,
+        degree: usize,
+        packing: TablePacking,
+        w_binomial: Option<Val<SC>>,
+        traces: &DynTracesView<'_>,
+        pis: &Vec<Val<SC>>,
+    ) -> Result<Option<TableProofEntry<SC>>, ProverError>;
+    fn verify_dyn(
+        &self,
+        cfg: &SC,
+        degree: usize,
+        packing: TablePacking,
+        entry: &TableProofEntry<SC>,
+        w_binomial: Option<Val<SC>>,
+        pis: &Vec<Val<SC>>,
+    ) -> Result<(), ProverError>;
+}
+
+/// MMCS prover plugin
+pub struct MmcsProver {
+    pub config: MmcsTableConfig,
+}
+
+impl<SC> TableProver<SC> for MmcsProver
+where
+    SC: StarkGenericConfig,
+    Val<SC>: StarkField,
+{
+    fn id(&self) -> &'static str { "mmcs_verify" }
+
+    fn prove_dyn(
+        &self,
+        cfg: &SC,
+        degree: usize,
+        _packing: TablePacking,
+        _w_binomial: Option<Val<SC>>,
+        traces: &DynTracesView<'_>,
+        pis: &Vec<Val<SC>>,
+    ) -> Result<Option<TableProofEntry<SC>>, ProverError> {
+        match degree {
+            1 => {
+                if let Some(any) = traces.get_any(self.id()) {
+                    if let Some(t) = any.downcast_ref::<MmcsTrace<Val<SC>>>() {
+                        let rows: usize = t.mmcs_paths.iter().map(|p| p.left_values.len() + 1).sum();
+                        let matrix = MmcsVerifyAir::trace_to_matrix(&self.config, t);
+                        let air = MmcsVerifyAir::new(self.config);
+                        let proof = prove(cfg, &air, matrix, pis);
+                        return Ok(Some(TableProofEntry { id: self.id(), proof, rows }));
+                    }
+                }
+                Ok(None)
+            }
+            2 => {
+                if let Some(any) = traces.get_any(self.id()) {
+                    if let Some(t) = any.downcast_ref::<MmcsTrace<BinomialExtensionField<Val<SC>, 2>>>() {
+                        let rows: usize = t.mmcs_paths.iter().map(|p| p.left_values.len() + 1).sum();
+                        let matrix = MmcsVerifyAir::trace_to_matrix(&self.config, t);
+                        let air = MmcsVerifyAir::new(self.config);
+                        let proof = prove(cfg, &air, matrix, pis);
+                        return Ok(Some(TableProofEntry { id: self.id(), proof, rows }));
+                    }
+                }
+                Ok(None)
+            }
+            4 => {
+                if let Some(any) = traces.get_any(self.id()) {
+                    if let Some(t) = any.downcast_ref::<MmcsTrace<BinomialExtensionField<Val<SC>, 4>>>() {
+                        let rows: usize = t.mmcs_paths.iter().map(|p| p.left_values.len() + 1).sum();
+                        let matrix = MmcsVerifyAir::trace_to_matrix(&self.config, t);
+                        let air = MmcsVerifyAir::new(self.config);
+                        let proof = prove(cfg, &air, matrix, pis);
+                        return Ok(Some(TableProofEntry { id: self.id(), proof, rows }));
+                    }
+                }
+                Ok(None)
+            }
+            6 => {
+                if let Some(any) = traces.get_any(self.id()) {
+                    if let Some(t) = any.downcast_ref::<MmcsTrace<BinomialExtensionField<Val<SC>, 6>>>() {
+                        let rows: usize = t.mmcs_paths.iter().map(|p| p.left_values.len() + 1).sum();
+                        let matrix = MmcsVerifyAir::trace_to_matrix(&self.config, t);
+                        let air = MmcsVerifyAir::new(self.config);
+                        let proof = prove(cfg, &air, matrix, pis);
+                        return Ok(Some(TableProofEntry { id: self.id(), proof, rows }));
+                    }
+                }
+                Ok(None)
+            }
+            8 => {
+                if let Some(any) = traces.get_any(self.id()) {
+                    if let Some(t) = any.downcast_ref::<MmcsTrace<BinomialExtensionField<Val<SC>, 8>>>() {
+                        let rows: usize = t.mmcs_paths.iter().map(|p| p.left_values.len() + 1).sum();
+                        let matrix = MmcsVerifyAir::trace_to_matrix(&self.config, t);
+                        let air = MmcsVerifyAir::new(self.config);
+                        let proof = prove(cfg, &air, matrix, pis);
+                        return Ok(Some(TableProofEntry { id: self.id(), proof, rows }));
+                    }
+                }
+                Ok(None)
+            }
+            d => Err(ProverError::UnsupportedDegree(d)),
+        }
+    }
+
+    fn verify_dyn(
+        &self,
+        cfg: &SC,
+        _degree: usize,
+        _packing: TablePacking,
+        entry: &TableProofEntry<SC>,
+        _w_binomial: Option<Val<SC>>,
+        pis: &Vec<Val<SC>>,
+    ) -> Result<(), ProverError> {
+        let air = MmcsVerifyAir::new(self.config);
+        verify(cfg, &air, &entry.proof, pis)
+            .map_err(|_| ProverError::VerificationFailed { phase: self.id() })
     }
 }
 

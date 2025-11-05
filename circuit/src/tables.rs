@@ -49,6 +49,42 @@ impl<F: 'static> DynTraces<F> {
             .get(id)
             .and_then(|b| b.as_any().downcast_ref::<T>())
     }
+
+    /// Return a concrete view to access dynamic generators.
+    pub fn view(&self, ext_degree: usize) -> DynTracesView<'_> {
+        // Transmute the map of Box<dyn AnyTrace<F>> to Box<dyn Any> view.
+        // Safe for read-only access as AnyTrace: Any + 'static.
+        fn coerce_map<'a, F: 'static>(
+            m: &'a HashMap<&'static str, Box<dyn AnyTrace<F>>>,
+        ) -> &'a HashMap<&'static str, Box<dyn core::any::Any>> {
+            // Safety: dyn AnyTrace<F>: Any + 'static, vtable differs but we do not write.
+            unsafe {
+                core::mem::transmute::<
+                    &HashMap<&'static str, Box<dyn AnyTrace<F>>>,
+                    &HashMap<&'static str, Box<dyn core::any::Any>>,
+                >(m)
+            }
+        }
+        DynTracesView {
+            ext_degree,
+            get: coerce_map(&self.non_primitive_traces),
+        }
+    }
+}
+
+/// Convenience wrapper for dynamic dispatch of non-primitive trace generators.
+pub struct DynTracesView<'a> {
+    ext_degree: usize,
+    get: &'a HashMap<&'static str, Box<dyn core::any::Any>>, // downcast via AnyTrace::as_any()
+}
+
+impl<'a> DynTracesView<'a> {
+    pub fn ext_degree(&self) -> usize {
+        self.ext_degree
+    }
+    pub fn get_any(&self, id: &'static str) -> Option<&'a dyn core::any::Any> {
+        self.get.get(id).map(|b| b.as_ref())
+    }
 }
 
 /// Generator interface for non-primitive table traces.

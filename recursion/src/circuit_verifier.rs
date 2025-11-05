@@ -9,7 +9,7 @@ use p3_circuit::{CircuitBuilder, CircuitBuilderError, CircuitError};
 use p3_commit::Pcs;
 use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
 use p3_uni_stark::StarkGenericConfig;
-use thiserror::Error;
+// use thiserror::Error;
 
 use crate::Target;
 use crate::challenges::StarkChallenges;
@@ -31,23 +31,30 @@ type PcsVerifierParams<SC, InputProof, OpeningProof, Comm> =
         >>::Domain,
     >>::VerifierParams;
 
-#[derive(Debug, Error)]
+#[derive(Debug)]
 pub enum VerificationError {
-    #[error("Invalid proof shape")]
     InvalidProofShape,
-
-    #[error("Missing random opened values for existing random commitment")]
     RandomizationError,
-
-    #[error("Circuit error: {0}")]
-    Circuit(#[from] CircuitError),
-
-    #[error("Circuit builder error: {0}")]
-    CircuitBuilder(#[from] CircuitBuilderError),
-
-    #[error("Generation error: {0}")]
-    Generation(#[from] GenerationError),
+    Circuit(CircuitError),
+    CircuitBuilder(CircuitBuilderError),
+    Generation(GenerationError),
 }
+
+impl core::fmt::Display for VerificationError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            VerificationError::InvalidProofShape => write!(f, "Invalid proof shape"),
+            VerificationError::RandomizationError => write!(f, "Missing random opened values for existing random commitment"),
+            VerificationError::Circuit(e) => write!(f, "Circuit error: {}", e),
+            VerificationError::CircuitBuilder(e) => write!(f, "Circuit builder error: {}", e),
+            VerificationError::Generation(e) => write!(f, "Generation error: {}", e),
+        }
+    }
+}
+
+impl From<CircuitError> for VerificationError { fn from(e: CircuitError) -> Self { VerificationError::Circuit(e) } }
+impl From<CircuitBuilderError> for VerificationError { fn from(e: CircuitBuilderError) -> Self { VerificationError::CircuitBuilder(e) } }
+impl From<GenerationError> for VerificationError { fn from(e: GenerationError) -> Self { VerificationError::Generation(e) } }
 
 /// Helper trait to extract commitment targets for challenger observation.
 ///
