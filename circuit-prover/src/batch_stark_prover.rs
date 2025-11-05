@@ -11,7 +11,6 @@ use p3_circuit::tables::Traces;
 use p3_field::{BasedVectorSpace, Field};
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
-use p3_mmcs_air::air::{MmcsTableConfig, MmcsVerifyAir};
 use thiserror::Error;
 use tracing::instrument;
 
@@ -28,11 +27,10 @@ pub enum Table {
     Public = 2,
     Add = 3,
     Mul = 4,
-    Mmcs = 5,
 }
 
 /// Number of circuit tables included in the unified batch STARK proof.
-pub const NUM_TABLES: usize = Table::Mmcs as usize + 1;
+pub const NUM_TABLES: usize = Table::Mul as usize + 1;
 
 /// Row counts wrapper with type-safe indexing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,8 +83,6 @@ where
     pub ext_degree: usize,
     /// The binomial coefficient `W` for extension field multiplication, if `ext_degree > 1`.
     pub w_binomial: Option<MVal<SC>>,
-    /// The configuration for the MMCS table.
-    pub mmcs_config: MmcsTableConfig,
 }
 
 impl<SC> core::fmt::Debug for BatchStarkProof<SC>
@@ -99,7 +95,6 @@ where
             .field("rows", &self.rows)
             .field("ext_degree", &self.ext_degree)
             .field("w_binomial", &self.w_binomial)
-            .field("mmcs_config", &self.mmcs_config)
             .finish()
     }
 }
@@ -111,7 +106,6 @@ where
 {
     config: SC,
     table_packing: TablePacking,
-    mmcs_config: MmcsTableConfig,
 }
 
 /// Errors for the batch STARK table prover.
@@ -137,7 +131,6 @@ enum CircuitTableAir<F: Field, const D: usize> {
     Public(PublicAir<F, D>),
     Add(AddAir<F, D>),
     Mul(MulAir<F, D>),
-    Mmcs(MmcsVerifyAir<F>),
 }
 
 impl<F: Field, const D: usize> BaseAir<F> for CircuitTableAir<F, D> {
@@ -148,7 +141,6 @@ impl<F: Field, const D: usize> BaseAir<F> for CircuitTableAir<F, D> {
             Self::Public(a) => a.width(),
             Self::Add(a) => a.width(),
             Self::Mul(a) => a.width(),
-            Self::Mmcs(a) => a.width(),
         }
     }
 }
@@ -165,7 +157,6 @@ where
             Self::Public(a) => a.eval(builder),
             Self::Add(a) => a.eval(builder),
             Self::Mul(a) => a.eval(builder),
-            Self::Mmcs(a) => a.eval(builder),
         }
     }
 }
@@ -179,19 +170,12 @@ where
         Self {
             config,
             table_packing: TablePacking::default(),
-            mmcs_config: MmcsTableConfig::default(),
         }
     }
 
     #[must_use]
     pub fn with_table_packing(mut self, table_packing: TablePacking) -> Self {
         self.table_packing = table_packing;
-        self
-    }
-
-    #[must_use]
-    pub fn with_mmcs_config(mut self, mmcs_config: MmcsTableConfig) -> Self {
-        self.mmcs_config = mmcs_config;
         self
     }
 
@@ -289,19 +273,12 @@ where
         let mul_matrix: RowMajorMatrix<MVal<SC>> =
             MulAir::<MVal<SC>, D>::trace_to_matrix(&traces.mul_trace, mul_lanes);
 
-        // Mmcs
-        let mmcs_air = MmcsVerifyAir::<MVal<SC>>::new(self.mmcs_config);
-        let mmcs_matrix: RowMajorMatrix<MVal<SC>> =
-            MmcsVerifyAir::trace_to_matrix(&self.mmcs_config, &traces.mmcs_trace);
-        let mmcs_rows: usize = mmcs_matrix.height();
-
         // Wrap AIRs in enum for heterogeneous batching and build instances in fixed order.
         let air_witness = CircuitTableAir::Witness(witness_air);
         let air_const = CircuitTableAir::Const(const_air);
         let air_public = CircuitTableAir::Public(public_air);
         let air_add = CircuitTableAir::Add(add_air);
         let air_mul = CircuitTableAir::Mul(mul_air);
-        let air_mmcs = CircuitTableAir::Mmcs(mmcs_air);
 
         // Pre-size for performance
         let mut instances = Vec::with_capacity(NUM_TABLES);
@@ -331,11 +308,6 @@ where
                 trace: mul_matrix,
                 public_values: vec![],
             },
-            StarkInstance {
-                air: &air_mmcs,
-                trace: mmcs_matrix,
-                public_values: vec![],
-            },
         ]);
 
         let proof = p3_batch_stark::prove_batch(&self.config, instances);
@@ -349,11 +321,9 @@ where
                 public_rows,
                 add_rows,
                 mul_rows,
-                mmcs_rows,
             ]),
             ext_degree: D,
             w_binomial: if D > 1 { w_binomial } else { None },
-            mmcs_config: self.mmcs_config,
         })
     }
 
@@ -396,15 +366,12 @@ where
                 w,
             ))
         };
-        let mmcs_air = CircuitTableAir::Mmcs(MmcsVerifyAir::<MVal<SC>>::new(proof.mmcs_config));
-
         let airs = vec![
             witness_air,
             const_air,
             public_air,
             add_air,
             mul_air,
-            mmcs_air,
         ];
         // TODO: Handle public values.
         let pvs: Vec<Vec<MVal<SC>>> = vec![Vec::new(); NUM_TABLES];
