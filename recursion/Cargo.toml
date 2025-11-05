@@ -42,3 +42,4 @@ proptest.workspace = true
 rand.workspace = true
 tracing-forest = { workspace = true, features = ["ansi", "smallvec"] }
 tracing-subscriber = { workspace = true, features = ["std", "env-filter"] }
+p3-circuit-prover.workspace = true
