@@ -98,6 +98,31 @@ where
         expr_id
     }
 
+    /// Adds a witness hint to the graph.
+    /// It will allocate a `WitnessId` during lowering, with no primitive op.
+    #[allow(unused_variables)]
+    #[must_use]
+    pub fn add_witness_hint(&mut self, label: &'static str) -> ExprId {
+        let expr_id = self.graph.add_expr(Expr::Witness);
+
+        #[cfg(debug_assertions)]
+        self.allocation_log.push(AllocationEntry {
+            expr_id,
+            alloc_type: AllocationType::WitnessHint,
+            label,
+            dependencies: vec![],
+            scope: self.current_scope(),
+        });
+
+        expr_id
+    }
+
+    /// Adds multiple witness hints.
+    #[must_use]
+    pub fn add_witness_hints(&mut self, count: usize, label: &'static str) -> Vec<ExprId> {
+        (0..count).map(|_| self.add_witness_hint(label)).collect()
+    }
+
     /// Adds an addition expression to the graph.
     #[allow(unused_variables)]
     pub fn add_add(&mut self, lhs: ExprId, rhs: ExprId, label: &'static str) -> ExprId {
@@ -108,7 +133,7 @@ where
             expr_id,
             alloc_type: AllocationType::Add,
             label,
-            dependencies: vec![lhs, rhs],
+            dependencies: vec![vec![lhs], vec![rhs]],
             scope: self.current_scope(),
         });
 
@@ -125,7 +150,7 @@ where
             expr_id,
             alloc_type: AllocationType::Sub,
             label,
-            dependencies: vec![lhs, rhs],
+            dependencies: vec![vec![lhs], vec![rhs]],
             scope: self.current_scope(),
         });
 
@@ -142,7 +167,7 @@ where
             expr_id,
             alloc_type: AllocationType::Mul,
             label,
-            dependencies: vec![lhs, rhs],
+            dependencies: vec![vec![lhs], vec![rhs]],
             scope: self.current_scope(),
         });
 
@@ -159,7 +184,7 @@ where
             expr_id,
             alloc_type: AllocationType::Div,
             label,
-            dependencies: vec![lhs, rhs],
+            dependencies: vec![vec![lhs], vec![rhs]],
             scope: self.current_scope(),
         });
 
@@ -189,7 +214,7 @@ where
         &mut self,
         op_id: crate::types::NonPrimitiveOpId,
         op_type: crate::op::NonPrimitiveOpType,
-        dependencies: Vec<ExprId>,
+        dependencies: Vec<Vec<ExprId>>,
         label: &'static str,
     ) {
         self.allocation_log.push(AllocationEntry {

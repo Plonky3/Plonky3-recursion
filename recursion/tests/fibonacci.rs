@@ -8,13 +8,12 @@ use p3_field::extension::BinomialExtensionField;
 use p3_field::{Field, PrimeCharacteristicRing};
 use p3_fri::{TwoAdicFriPcs, create_test_fri_params};
 use p3_merkle_tree::MerkleTreeMmcs;
-use p3_recursion::circuit_verifier::{VerificationError, verify_circuit};
-use p3_recursion::public_inputs::StarkVerifierInputsBuilder;
-use p3_recursion::recursive_generation::generate_challenges;
-use p3_recursion::recursive_pcs::{
+use p3_recursion::pcs::fri::{
     FriProofTargets, FriVerifierParams, HashTargets, InputProofTargets, RecExtensionValMmcs,
     RecValMmcs, Witness,
 };
+use p3_recursion::public_inputs::StarkVerifierInputsBuilder;
+use p3_recursion::{VerificationError, generate_challenges, verify_circuit};
 use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
 use p3_uni_stark::{StarkConfig, StarkGenericConfig, Val, prove, verify};
 use rand::SeedableRng;

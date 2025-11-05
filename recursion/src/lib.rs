@@ -1,16 +1,31 @@
+//! Recursive proof verification for Plonky3 STARKs.
+
 #![no_std]
 
 extern crate alloc;
 
-// Canonical circuit target type used across recursive components.
-pub type Target = p3_circuit::ExprId;
-
-pub mod challenges;
-pub mod circuit_challenger;
-pub mod circuit_fri_verifier;
-pub mod circuit_verifier;
+pub mod challenger;
+pub mod generation;
+pub mod pcs;
+pub mod prelude;
 pub mod public_inputs;
-pub mod recursive_challenger;
-pub mod recursive_generation;
-pub mod recursive_pcs;
-pub mod recursive_traits;
+pub mod traits;
+pub mod types;
+pub mod verifier;
+
+pub use challenger::CircuitChallenger;
+pub use generation::{GenerationError, PcsGeneration, generate_challenges};
+pub use pcs::fri::{FriVerifierParams, MAX_QUERY_INDEX_BITS};
+pub use public_inputs::{
+    CommitmentOpening, FriVerifierInputs, PublicInputBuilder, StarkVerifierInputs,
+    StarkVerifierInputsBuilder, construct_stark_verifier_inputs,
+};
+pub use traits::{
+    Recursive, RecursiveAir, RecursiveChallenger, RecursiveExtensionMmcs, RecursiveMmcs,
+    RecursivePcs,
+};
+pub use types::{
+    CommitmentTargets, OpenedValuesTargets, ProofTargets, RecursiveLagrangeSelectors,
+    StarkChallenges, Target,
+};
+pub use verifier::{ObservableCommitment, VerificationError, verify_circuit};

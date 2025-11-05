@@ -21,6 +21,7 @@ pub enum AllocationType {
     Mul,
     Div,
     NonPrimitiveOp(NonPrimitiveOpType),
+    WitnessHint,
 }
 
 /// Detailed allocation entry for debugging
@@ -33,7 +34,7 @@ pub struct AllocationEntry {
     /// User-provided label (if any)
     pub label: &'static str,
     /// Dependencies for this entry, i.e. the expressions that this entry depends on.
-    pub dependencies: Vec<ExprId>,
+    pub dependencies: Vec<Vec<ExprId>>,
     /// Scope/sub-circuit this allocation belongs to (if any)
     pub scope: Option<&'static str>,
 }
@@ -92,6 +93,7 @@ fn dump_internal_log(allocation_log: &[AllocationEntry]) {
     let mut muls = Vec::new();
     let mut divs = Vec::new();
     let mut non_primitives = Vec::new();
+    let mut witness_hints = Vec::new();
 
     fn display_label(label: &str) -> String {
         if label.is_empty() {
@@ -110,6 +112,7 @@ fn dump_internal_log(allocation_log: &[AllocationEntry]) {
             AllocationType::Mul => muls.push(entry),
             AllocationType::Div => divs.push(entry),
             AllocationType::NonPrimitiveOp(_) => non_primitives.push(entry),
+            AllocationType::WitnessHint => witness_hints.push(entry),
         }
     }
 
@@ -146,8 +149,8 @@ fn dump_internal_log(allocation_log: &[AllocationEntry]) {
                 tracing::debug!(
                     "  expr_{} = expr_{} + expr_{}{}",
                     entry.expr_id.0,
-                    entry.dependencies[0].0,
-                    entry.dependencies[1].0,
+                    entry.dependencies[0][0].0,
+                    entry.dependencies[1][0].0,
                     display_label(entry.label)
                 );
             } else {
@@ -168,8 +171,8 @@ fn dump_internal_log(allocation_log: &[AllocationEntry]) {
                 tracing::debug!(
                     "  expr_{} = expr_{} - expr_{}{}",
                     entry.expr_id.0,
-                    entry.dependencies[0].0,
-                    entry.dependencies[1].0,
+                    entry.dependencies[0][0].0,
+                    entry.dependencies[1][0].0,
                     display_label(entry.label)
                 );
             } else {
@@ -190,8 +193,8 @@ fn dump_internal_log(allocation_log: &[AllocationEntry]) {
                 tracing::debug!(
                     "  expr_{} = expr_{} * expr_{}{}",
                     entry.expr_id.0,
-                    entry.dependencies[0].0,
-                    entry.dependencies[1].0,
+                    entry.dependencies[0][0].0,
+                    entry.dependencies[1][0].0,
                     display_label(entry.label)
                 );
             } else {
@@ -212,8 +215,8 @@ fn dump_internal_log(allocation_log: &[AllocationEntry]) {
                 tracing::debug!(
                     "  expr_{} = expr_{} / expr_{}{}",
                     entry.expr_id.0,
-                    entry.dependencies[0].0,
-                    entry.dependencies[1].0,
+                    entry.dependencies[0][0].0,
+                    entry.dependencies[1][0].0,
                     display_label(entry.label)
                 );
             } else {
@@ -241,6 +244,7 @@ fn dump_internal_log(allocation_log: &[AllocationEntry]) {
                 let deps: Vec<_> = entry
                     .dependencies
                     .iter()
+                    .flatten()
                     .map(|e| format!("expr_{}", e.0).to_string())
                     .collect();
                 tracing::debug!(
@@ -252,6 +256,18 @@ fn dump_internal_log(allocation_log: &[AllocationEntry]) {
             } else {
                 tracing::debug!("  {}{}", op_name, display_label(entry.label));
             }
+        }
+        tracing::debug!("");
+    }
+
+    if !witness_hints.is_empty() {
+        tracing::debug!("--- Witness Hints ({}) ---", witness_hints.len());
+        for entry in witness_hints {
+            tracing::debug!(
+                "  expr_{} (WitnessHint){}",
+                entry.expr_id.0,
+                display_label(entry.label)
+            );
         }
         tracing::debug!("");
     }

@@ -1,8 +1,4 @@
 //! Challenge target structures for STARK verification circuits.
-//!
-//! This module provides structured allocation of challenge targets,
-//! encapsulating the Fiat-Shamir ordering and making challenge generation
-//! more maintainable.
 
 use alloc::vec;
 use alloc::vec::Vec;
@@ -12,16 +8,11 @@ use p3_field::PrimeCharacteristicRing;
 use p3_uni_stark::StarkGenericConfig;
 
 use crate::Target;
-use crate::circuit_challenger::CircuitChallenger;
-use crate::circuit_verifier::ObservableCommitment;
-use crate::recursive_challenger::RecursiveChallenger;
-use crate::recursive_traits::{ProofTargets, Recursive};
+use crate::traits::{Recursive, RecursiveChallenger};
+use crate::types::ProofTargets;
+use crate::verifier::ObservableCommitment;
 
 /// Base STARK challenges (independent of PCS choice).
-///
-/// These are the fundamental challenges needed for any STARK verification:
-/// - Alpha: for folding constraint polynomials
-/// - Zeta, Zeta_next: for out-of-domain evaluation
 #[derive(Debug, Clone)]
 pub struct StarkChallenges {
     /// Alpha: challenge for folding all constraint polynomials
@@ -35,21 +26,29 @@ pub struct StarkChallenges {
 impl StarkChallenges {
     /// Allocate base STARK challenge targets using Fiat-Shamir transform.
     ///
-    /// It will mutate the challenger state.
-    ///
-    /// # Fiat-Shamir Ordering
-    /// 1. Observe domain parameters (degree_bits, log_quotient_degree)
+    /// This method follows the standard STARK protocol ordering:
+    /// 1. Observe domain parameters
     /// 2. Observe trace commitment
     /// 3. Observe public values
-    /// 4. **Sample alpha** (for constraint folding)
-    /// 5. Observe quotient chunks commitment
-    /// 6. Observe random commitment (if ZK mode)
-    /// 7. **Sample zeta** (OOD evaluation point)
-    /// 8. **Sample zeta_next** (next row evaluation point)
-    /// 9. Return challenger for PCS to continue sampling (betas, query indices)
-    pub fn allocate<SC, Comm, OpeningProof, const RATE: usize>(
+    /// 4. Sample alpha
+    /// 5. Observe quotient commitment
+    /// 6. Observe random commitment (if ZK)
+    /// 7. Sample zeta and zeta_next
+    ///
+    /// The challenger state is mutated and can be used for further PCS challenge sampling.
+    ///
+    /// # Parameters
+    /// - `circuit`: Circuit builder
+    /// - `challenger`: Fiat-Shamir challenger (will be mutated)
+    /// - `proof_targets`: Proof structure with commitments
+    /// - `public_values`: AIR public input values
+    /// - `log_quotient_degree`: Log₂ of the quotient polynomial degree
+    ///
+    /// # Returns
+    /// The three base STARK challenges
+    pub fn allocate<SC, Comm, OpeningProof>(
         circuit: &mut CircuitBuilder<SC::Challenge>,
-        challenger: &mut CircuitChallenger<RATE>,
+        challenger: &mut impl RecursiveChallenger<SC::Challenge>,
         proof_targets: &ProofTargets<SC, Comm, OpeningProof>,
         public_values: &[Target],
         log_quotient_degree: usize,
@@ -120,16 +119,18 @@ impl StarkChallenges {
         vec![self.alpha, self.zeta, self.zeta_next]
     }
 
-    /// Get individual challenge targets.
-    pub fn alpha(&self) -> Target {
+    /// Get the alpha challenge (for constraint folding).
+    pub const fn alpha(&self) -> Target {
         self.alpha
     }
 
-    pub fn zeta(&self) -> Target {
+    /// Get the zeta challenge (OOD evaluation point).
+    pub const fn zeta(&self) -> Target {
         self.zeta
     }
 
-    pub fn zeta_next(&self) -> Target {
+    /// Get the zeta_next challenge (next row evaluation point).
+    pub const fn zeta_next(&self) -> Target {
         self.zeta_next
     }
 }
@@ -140,7 +141,6 @@ mod tests {
 
     use super::*;
 
-    // Note: Full integration tests with ProofTargets are in circuit_verifier.rs
     #[test]
     fn test_stark_challenges_to_vec() {
         let alpha = ExprId(1);

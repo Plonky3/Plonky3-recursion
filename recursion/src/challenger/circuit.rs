@@ -1,7 +1,4 @@
 //! Circuit-based challenger implementation.
-//!
-//! This module provides a concrete implementation of `RecursiveChallenger`
-//! that uses the non-primitive `HashAbsorb` / `HashSqueeze` operations within the circuit.
 
 use alloc::vec::Vec;
 
@@ -10,9 +7,9 @@ use p3_circuit::ops::HashOps;
 use p3_field::Field;
 
 use crate::Target;
-use crate::recursive_challenger::RecursiveChallenger;
+use crate::traits::RecursiveChallenger;
 
-/// Concrete challenger implementation for Fiat-Shamir operations.
+/// Concrete challenger implementation for Fiat-Shamir operations in circuits.
 pub struct CircuitChallenger<const RATE: usize> {
     /// Buffer of field elements waiting to be absorbed
     absorb_buffer: Vec<Target>,
@@ -21,8 +18,8 @@ pub struct CircuitChallenger<const RATE: usize> {
 }
 
 impl<const RATE: usize> CircuitChallenger<RATE> {
-    /// Create a new circuit challenger.
-    pub fn new() -> Self {
+    /// Create a new circuit challenger with empty state.
+    pub const fn new() -> Self {
         Self {
             absorb_buffer: Vec::new(),
             buffer_flushed: true,
@@ -40,6 +37,7 @@ impl<const RATE: usize> CircuitChallenger<RATE> {
         let reset = self.buffer_flushed;
 
         // TODO: How do we want to handle padding?
+        // Process buffer in chunks of RATE
         for chunk in self.absorb_buffer.chunks(RATE) {
             let _ = circuit.add_hash_absorb(chunk, reset);
         }
@@ -62,13 +60,15 @@ impl<F: Field, const RATE: usize> RecursiveChallenger<F> for CircuitChallenger<R
     }
 
     fn sample(&mut self, circuit: &mut CircuitBuilder<F>) -> Target {
+        // Flush any pending observations
         self.flush_absorb(circuit);
 
-        let output = circuit.alloc_public_input("sampled challenge");
+        // TODO: We should be calling `add_hash_squeeze` but we may want to wait
+        // for Poseidon2 to be merged so that we actually generate challenges via hints
+        // and not public inputs.
+        // let output = circuit.add_hash_squeeze(1).expect("Failed to squeeze")[0];
 
-        let _ = circuit.add_hash_squeeze(&[output]);
-
-        output
+        circuit.alloc_public_input("sampled challenge")
     }
 
     fn clear(&mut self) {
@@ -120,5 +120,22 @@ mod tests {
 
         let challenges = challenger.sample_vec(&mut circuit, 3);
         assert_eq!(challenges.len(), 3);
+    }
+
+    #[test]
+    fn test_circuit_challenger_clear() {
+        let mut circuit = CircuitBuilder::<BabyBear>::new();
+        let mut challenger = CircuitChallenger::<DEFAULT_CHALLENGER_RATE>::new();
+
+        let val = circuit.add_const(BabyBear::ONE);
+        RecursiveChallenger::<BabyBear>::observe(&mut challenger, &mut circuit, val);
+
+        assert!(!challenger.buffer_flushed);
+        assert_eq!(challenger.absorb_buffer.len(), 1);
+
+        RecursiveChallenger::<BabyBear>::clear(&mut challenger);
+
+        assert!(challenger.buffer_flushed);
+        assert!(challenger.absorb_buffer.is_empty());
     }
 }

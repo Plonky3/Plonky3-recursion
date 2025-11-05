@@ -3,10 +3,14 @@
 
 use alloc::vec::Vec;
 
+use p3_circuit::CircuitBuilder;
+use p3_commit::Pcs;
 use p3_field::{BasedVectorSpace, Field, PrimeField64};
+use p3_uni_stark::{Proof, StarkGenericConfig, Val};
 
-use crate::recursive_pcs::MAX_QUERY_INDEX_BITS;
-use crate::recursive_traits::Recursive;
+use crate::ProofTargets;
+use crate::pcs::MAX_QUERY_INDEX_BITS;
+use crate::traits::Recursive;
 
 /// Builder for constructing public inputs.
 ///
@@ -21,13 +25,14 @@ use crate::recursive_traits::Recursive;
 ///     .add_challenges(betas)
 ///     .build();
 /// ```
+#[derive(Default)]
 pub struct PublicInputBuilder<F: Field> {
     inputs: Vec<F>,
 }
 
 impl<F: Field> PublicInputBuilder<F> {
     /// Create a new empty builder.
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self { inputs: Vec::new() }
     }
 
@@ -76,24 +81,18 @@ impl<F: Field> PublicInputBuilder<F> {
     }
 
     /// Get the current number of inputs.
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.inputs.len()
     }
 
     /// Check if the builder is empty.
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.inputs.is_empty()
     }
 
     /// Build and return the final input vector.
     pub fn build(self) -> Vec<F> {
         self.inputs
-    }
-}
-
-impl<F: Field> Default for PublicInputBuilder<F> {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -257,33 +256,29 @@ where
 /// ```
 pub struct StarkVerifierInputsBuilder<SC, Comm, OpeningProof>
 where
-    SC: p3_uni_stark::StarkGenericConfig,
-    Comm: crate::recursive_traits::Recursive<
+    SC: StarkGenericConfig,
+    Comm: Recursive<
             SC::Challenge,
-            Input = <SC::Pcs as p3_commit::Pcs<SC::Challenge, SC::Challenger>>::Commitment,
+            Input = <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment,
         >,
-    OpeningProof: crate::recursive_traits::Recursive<
-            SC::Challenge,
-            Input = <SC::Pcs as p3_commit::Pcs<SC::Challenge, SC::Challenger>>::Proof,
-        >,
+    OpeningProof:
+        Recursive<SC::Challenge, Input = <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Proof>,
 {
     /// AIR public input targets
     pub air_public_targets: Vec<crate::Target>,
     /// Allocated proof structure targets
-    pub proof_targets: crate::recursive_traits::ProofTargets<SC, Comm, OpeningProof>,
+    pub proof_targets: ProofTargets<SC, Comm, OpeningProof>,
 }
 
 impl<SC, Comm, OpeningProof> StarkVerifierInputsBuilder<SC, Comm, OpeningProof>
 where
-    SC: p3_uni_stark::StarkGenericConfig,
-    Comm: crate::recursive_traits::Recursive<
+    SC: StarkGenericConfig,
+    Comm: Recursive<
             SC::Challenge,
-            Input = <SC::Pcs as p3_commit::Pcs<SC::Challenge, SC::Challenger>>::Commitment,
+            Input = <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment,
         >,
-    OpeningProof: crate::recursive_traits::Recursive<
-            SC::Challenge,
-            Input = <SC::Pcs as p3_commit::Pcs<SC::Challenge, SC::Challenger>>::Proof,
-        >,
+    OpeningProof:
+        Recursive<SC::Challenge, Input = <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Proof>,
 {
     /// Allocate all targets during circuit building.
     ///
@@ -295,8 +290,8 @@ where
     /// # Returns
     /// A builder with allocated targets that can later pack values
     pub fn allocate(
-        circuit: &mut p3_circuit::CircuitBuilder<SC::Challenge>,
-        proof: &p3_uni_stark::Proof<SC>,
+        circuit: &mut CircuitBuilder<SC::Challenge>,
+        proof: &Proof<SC>,
         num_air_public_inputs: usize,
     ) -> Self {
         // Allocate air public inputs
@@ -305,9 +300,7 @@ where
             .collect();
 
         // Allocate proof targets
-        let mut lens = crate::recursive_traits::ProofTargets::<SC, Comm, OpeningProof>::lens(proof);
-        let proof_targets =
-            crate::recursive_traits::ProofTargets::new(circuit, &mut lens, proof.degree_bits);
+        let proof_targets = ProofTargets::new(circuit, proof);
 
         Self {
             air_public_targets,
@@ -327,17 +320,16 @@ where
     /// Public inputs ready to be set
     pub fn pack_values(
         &self,
-        air_public_values: &[p3_uni_stark::Val<SC>],
-        proof: &p3_uni_stark::Proof<SC>,
+        air_public_values: &[Val<SC>],
+        proof: &Proof<SC>,
         challenges: &[SC::Challenge],
         num_queries: usize,
     ) -> Vec<SC::Challenge>
     where
-        p3_uni_stark::Val<SC>: PrimeField64,
-        SC::Challenge: BasedVectorSpace<p3_uni_stark::Val<SC>> + From<p3_uni_stark::Val<SC>>,
+        Val<SC>: PrimeField64,
+        SC::Challenge: BasedVectorSpace<Val<SC>> + From<Val<SC>>,
     {
-        let proof_values =
-            crate::recursive_traits::ProofTargets::<SC, Comm, OpeningProof>::get_values(proof);
+        let proof_values = ProofTargets::<SC, Comm, OpeningProof>::get_values(proof);
 
         construct_stark_verifier_inputs(air_public_values, &proof_values, challenges, num_queries)
     }
