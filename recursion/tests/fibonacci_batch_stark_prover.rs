@@ -151,9 +151,6 @@ fn test_fibonacci_batch_verifier() {
 
     // Create test FRI params with log_final_poly_len = 0
     let fri_params = create_test_fri_params(challenge_mmcs, 0);
-    let fri_verifier_params = FriVerifierParams::from(&fri_params);
-    let pow_bits = fri_params.proof_of_work_bits;
-    let log_height_max = fri_params.log_final_poly_len + fri_params.log_blowup;
 
     // Create config for proving
     let pcs_proving = MyPcs::new(dft, val_mmcs.clone(), fri_params);
@@ -179,6 +176,9 @@ fn test_fibonacci_batch_verifier() {
     let val_mmcs2 = ValMmcs::new(hash2, compress2);
     let challenge_mmcs2 = ChallengeMmcs::new(val_mmcs2.clone());
     let fri_params2 = create_test_fri_params(challenge_mmcs2, 0);
+    let fri_verifier_params = FriVerifierParams::from(&fri_params2);
+    let pow_bits = fri_params2.proof_of_work_bits;
+    let log_height_max = fri_params2.log_final_poly_len + fri_params2.log_blowup;
     let pcs_verif = MyPcs::new(dft2, val_mmcs2, fri_params2);
     let challenger_verif = Challenger::new(perm2);
     let config = MyConfig::new(pcs_verif, challenger_verif);

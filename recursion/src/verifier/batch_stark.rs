@@ -13,7 +13,6 @@ use p3_circuit_prover::batch_stark_prover::{RowCounts, Table};
 use p3_commit::{Pcs, PolynomialSpace};
 use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
 use p3_uni_stark::StarkGenericConfig;
-use p3_util::zip_eq::zip_eq;
 
 use super::{ObservableCommitment, VerificationError, recompose_quotient_from_chunks_circuit};
 use crate::Target;
@@ -131,8 +130,8 @@ where
         )),
     ];
 
-    // Public values are empty for all circuit tables
-    let air_public_counts = [0usize; 5];
+    // TODO: public values are empty for all circuit tables for now.
+    let air_public_counts = vec![0usize; proof.proof.opened_values.instances.len()];
     let verifier_inputs = crate::public_inputs::BatchStarkVerifierInputsBuilder::<
         SC,
         Comm,
@@ -497,13 +496,12 @@ where
 
     let mut quotient_round = Vec::new();
     for (domains, inst) in quotient_domains.iter().zip(instances.iter()) {
-        for (domain, values) in zip_eq(
-            domains.iter(),
-            inst.quotient_chunks.iter(),
-            VerificationError::InvalidProofShape(
+        if domains.len() != inst.quotient_chunks.len() {
+            return Err(VerificationError::InvalidProofShape(
                 "Quotient chunk count mismatch across domains".to_string(),
-            ),
-        )? {
+            ));
+        }
+        for (domain, values) in domains.iter().zip(inst.quotient_chunks.iter()) {
             quotient_round.push((*domain, vec![(zeta, values.clone())]));
         }
     }
