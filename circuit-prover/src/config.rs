@@ -193,7 +193,7 @@ where
 ///
 /// ```ignore
 /// let config = config::baby_bear().build();
-/// let prover = MultiTableProver::new(config);
+/// let prover = BatchStarkProver::new(config);
 /// ```
 #[inline]
 pub fn baby_bear()
@@ -228,7 +228,7 @@ pub fn baby_bear_compression() -> impl PseudoCompressionFunction<[BabyBear; 8], 
 ///
 /// ```ignore
 /// let config = config::koala_bear().build();
-/// let prover = MultiTableProver::new(config);
+/// let prover = BatchStarkProver::new(config);
 /// ```
 #[inline]
 pub fn koala_bear()
@@ -263,7 +263,7 @@ pub fn koala_bear_compression() -> impl PseudoCompressionFunction<[KoalaBear; 8]
 ///
 /// ```ignore
 /// let config = config::goldilocks().build();
-/// let prover = MultiTableProver::new(config);
+/// let prover = BatchStarkProver::new(config);
 /// ```
 #[inline]
 pub fn goldilocks()

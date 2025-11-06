@@ -16,7 +16,40 @@ use tracing::instrument;
 use crate::air::{AddAir, ConstAir, MulAir, PublicAir, WitnessAir};
 use crate::config::StarkField;
 use crate::field_params::ExtractBinomialW;
-use crate::prover::TablePacking;
+
+// Packing configuration for Add/Mul tables.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TablePacking {
+    add_lanes: usize,
+    mul_lanes: usize,
+}
+
+impl TablePacking {
+    pub fn new(add_lanes: usize, mul_lanes: usize) -> Self {
+        Self {
+            add_lanes: add_lanes.max(1),
+            mul_lanes: mul_lanes.max(1),
+        }
+    }
+
+    pub fn from_counts(add_lanes: usize, mul_lanes: usize) -> Self {
+        Self::new(add_lanes, mul_lanes)
+    }
+
+    pub const fn add_lanes(self) -> usize {
+        self.add_lanes
+    }
+
+    pub const fn mul_lanes(self) -> usize {
+        self.mul_lanes
+    }
+}
+
+impl Default for TablePacking {
+    fn default() -> Self {
+        Self::new(1, 1)
+    }
+}
 
 #[repr(usize)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
