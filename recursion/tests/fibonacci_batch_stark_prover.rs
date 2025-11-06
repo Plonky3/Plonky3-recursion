@@ -162,13 +162,8 @@ fn test_fibonacci_batch_verifier() {
     let batch_stark_proof = prover.prove_all_tables(&traces).unwrap();
     prover.verify_all_tables(&batch_stark_proof).unwrap();
 
-    // IMPORTANT: For recursive verification challenge generation, we DON'T need a new config!
-    // The native verification (verify_all_tables above) already succeeded.
-    // For recursive circuit, we just need to build a verification circuit that will
-    // accept the proof values as public inputs. We still need a config reference though
-    // for some helper functions.
+    // Now verify the batch STARK proof recursively
     let dft2 = Dft::default();
-    // Create a fresh challenger instance for verification (independent state)
     let mut rng2 = SmallRng::seed_from_u64(42);
     let perm2 = Perm::new_from_rng_128(&mut rng2);
     let hash2 = MyHash::new(perm2.clone());
@@ -188,16 +183,7 @@ fn test_fibonacci_batch_verifier() {
     let rows = batch_stark_proof.rows;
     let packing = batch_stark_proof.table_packing;
 
-    // Now verify the batch STARK proof recursively
-
-    // Create TWO sets of AIRs:
-    // 1. Base field AIRs for native challenge generation
-    // 2. Extension field AIRs for in-circuit verification
-    //
-    // Note: The traces use D=1 (base field), not D=4!
-    // The extension degree D=4 is for the challenge field in the proof system,
-    // but the actual circuit table traces are in the base field.
-    const TRACE_D: usize = 1; // Traces are in base field
+    const TRACE_D: usize = 1; // Proof traces are in base field
 
     // Base field AIRs for native challenge generation
     let native_airs = vec![
@@ -227,6 +213,7 @@ fn test_fibonacci_batch_verifier() {
         InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>>,
         InnerFri,
         RATE,
+        TRACE_D,
     >(
         &config,
         &mut circuit_builder,

@@ -85,6 +85,7 @@ pub fn verify_p3_recursion_proof_circuit<
     InputProof: Recursive<SC::Challenge>,
     OpeningProof: Recursive<SC::Challenge, Input = <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Proof>,
     const RATE: usize,
+    const TRACE_D: usize,
 >(
     config: &SC,
     circuit: &mut CircuitBuilder<SC::Challenge>,
@@ -105,8 +106,7 @@ where
     SC::Challenge: PrimeCharacteristicRing,
     <<SC as StarkGenericConfig>::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain: Clone,
 {
-    // Rebuild circuit AIRs using base-field trace (TRACE_D = 1) and extension field values inside circuit.
-    const TRACE_D: usize = 1;
+    assert_eq!(proof.ext_degree, TRACE_D, "trace extension degree mismatch");
     let rows: RowCounts = proof.rows;
     let packing = proof.table_packing;
     let add_lanes = packing.add_lanes();
