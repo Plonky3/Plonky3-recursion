@@ -1,7 +1,3 @@
-use std::env;
-
-/// Fibonacci circuit: Compute F(n) and prove correctness
-/// Public input: expected_result (F(n))
 use p3_air::{Air, AirBuilder, BaseAir};
 use p3_baby_bear::{BabyBear, Poseidon2BabyBear};
 use p3_challenger::DuplexChallenger;
@@ -13,7 +9,7 @@ use p3_commit::ExtensionMmcs;
 use p3_dft::Radix2DitParallel;
 use p3_field::extension::BinomialExtensionField;
 use p3_field::{Field, PrimeCharacteristicRing};
-use p3_fri::TwoAdicFriPcs;
+use p3_fri::{TwoAdicFriPcs, create_test_fri_params};
 use p3_merkle_tree::MerkleTreeMmcs;
 use p3_recursion::generation::generate_batch_challenges;
 use p3_recursion::pcs::fri::{
@@ -23,6 +19,8 @@ use p3_recursion::pcs::fri::{
 use p3_recursion::verifier::verify_p3_recursion_proof_circuit;
 use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
 use p3_uni_stark::{StarkConfig, StarkGenericConfig, Val};
+use rand::SeedableRng;
+use rand::rngs::SmallRng;
 
 type F = BabyBear;
 
@@ -98,10 +96,7 @@ type InnerFri = FriProofTargets<
 
 #[test]
 fn test_fibonacci_batch_verifier() {
-    let n = env::args()
-        .nth(1)
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(100);
+    let n: usize = 100;
 
     let mut builder = CircuitBuilder::new();
 
@@ -133,12 +128,6 @@ fn test_fibonacci_batch_verifier() {
     runner.set_public_inputs(&[expected_fib]).unwrap();
 
     let traces = runner.run().unwrap();
-
-    // Create config manually to get access to FRI params
-    // KEY FIX: Use create_test_fri_params (not create_benchmark_fri_params) for testing!
-    use p3_fri::create_test_fri_params;
-    use rand::SeedableRng;
-    use rand::rngs::SmallRng;
 
     // Use a seeded RNG for deterministic permutations
     let mut rng = SmallRng::seed_from_u64(42);
