@@ -195,7 +195,8 @@ where
             .nodes()
             .iter()
             .enumerate()
-            .filter_map(|(expr_idx, expr)| matches!(expr, Expr::Witness).then(|| expr_idx))
+            .filter(|(_, expr)| matches!(expr, Expr::Witness))
+            .map(|(expr_idx, _)| expr_idx)
         {
             let expr_id = ExprId(expr_idx as u32);
             let out_widx = alloc_witness_id_for_expr(expr_idx);
