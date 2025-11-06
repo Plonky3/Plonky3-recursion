@@ -190,12 +190,12 @@ where
         }
 
         // Pass C: collect witness hints and emit `Unconstrained` operatios
-        for (expr_idx, _) in self
+        for expr_idx in self
             .graph
             .nodes()
             .iter()
             .enumerate()
-            .filter(|(_, expr)| matches!(expr, Expr::Witness))
+            .filter_map(|(expr_idx, expr)| matches!(expr, Expr::Witness).then(|| expr_idx))
         {
             let expr_id = ExprId(expr_idx as u32);
             let out_widx = alloc_witness_id_for_expr(expr_idx);
