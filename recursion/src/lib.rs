@@ -5,7 +5,6 @@
 extern crate alloc;
 
 pub mod challenger;
-pub mod debug_utils;
 pub mod generation;
 pub mod pcs;
 pub mod prelude;
