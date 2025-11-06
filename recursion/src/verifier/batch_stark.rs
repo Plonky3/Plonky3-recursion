@@ -3,10 +3,13 @@ use alloc::vec::Vec;
 use alloc::{format, vec};
 use core::marker::PhantomData;
 
+use p3_air::{Air as P3Air, AirBuilder as P3AirBuilder, BaseAir as P3BaseAir};
 use p3_batch_stark::BatchProof;
 use p3_circuit::CircuitBuilder;
 use p3_circuit::op::{NonPrimitiveOpConfig, NonPrimitiveOpType};
 use p3_circuit::utils::ColumnsTargets;
+use p3_circuit_prover::air::{AddAir, ConstAir, MulAir, PublicAir, WitnessAir};
+use p3_circuit_prover::batch_stark_prover::{RowCounts, Table};
 use p3_commit::{Pcs, PolynomialSpace};
 use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
 use p3_uni_stark::StarkGenericConfig;
@@ -19,7 +22,7 @@ use crate::traits::{Recursive, RecursiveAir, RecursiveChallenger, RecursivePcs};
 use crate::types::{CommitmentTargets, OpenedValuesTargets, ProofTargets};
 
 /// Type alias for PCS verifier parameters.
-type PcsVerifierParams<SC, InputProof, OpeningProof, Comm> =
+pub type PcsVerifierParams<SC, InputProof, OpeningProof, Comm> =
     <<SC as StarkGenericConfig>::Pcs as RecursivePcs<
         SC,
         InputProof,
@@ -30,6 +33,130 @@ type PcsVerifierParams<SC, InputProof, OpeningProof, Comm> =
             <SC as StarkGenericConfig>::Challenger,
         >>::Domain,
     >>::VerifierParams;
+
+/// Wrapper enum for heterogeneous circuit table AIRs used by circuit-prover tables.
+pub enum CircuitTablesAir<F: Field, const D: usize> {
+    Witness(WitnessAir<F, D>),
+    Const(ConstAir<F, D>),
+    Public(PublicAir<F, D>),
+    Add(AddAir<F, D>),
+    Mul(MulAir<F, D>),
+}
+
+impl<F: Field, const D: usize> P3BaseAir<F> for CircuitTablesAir<F, D> {
+    fn width(&self) -> usize {
+        match self {
+            Self::Witness(a) => P3BaseAir::width(a),
+            Self::Const(a) => P3BaseAir::width(a),
+            Self::Public(a) => P3BaseAir::width(a),
+            Self::Add(a) => P3BaseAir::width(a),
+            Self::Mul(a) => P3BaseAir::width(a),
+        }
+    }
+}
+
+impl<AB, const D: usize> P3Air<AB> for CircuitTablesAir<AB::F, D>
+where
+    AB: P3AirBuilder,
+    AB::F: Field,
+{
+    fn eval(&self, builder: &mut AB) {
+        match self {
+            Self::Witness(a) => a.eval(builder),
+            Self::Const(a) => a.eval(builder),
+            Self::Public(a) => a.eval(builder),
+            Self::Add(a) => a.eval(builder),
+            Self::Mul(a) => a.eval(builder),
+        }
+    }
+}
+
+/// Build and attach a recursive verifier circuit for a circuit-prover BatchStarkProof.
+///
+/// This reconstructs the circuit table AIRs from the proof metadata (rows + packing) so callers
+/// don't need to pass `circuit_airs` explicitly. Returns the allocated input builder to pack
+/// public inputs afterwards.
+pub fn verify_p3_recursion_proof_circuit<
+    SC: StarkGenericConfig,
+    Comm: Recursive<
+            SC::Challenge,
+            Input = <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment,
+        > + Clone
+        + ObservableCommitment,
+    InputProof: Recursive<SC::Challenge>,
+    OpeningProof: Recursive<SC::Challenge, Input = <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Proof>,
+    const RATE: usize,
+>(
+    config: &SC,
+    circuit: &mut CircuitBuilder<SC::Challenge>,
+    proof: &p3_circuit_prover::batch_stark_prover::BatchStarkProof<SC>,
+    pcs_params: &PcsVerifierParams<SC, InputProof, OpeningProof, Comm>,
+) -> Result<
+    crate::public_inputs::BatchStarkVerifierInputsBuilder<SC, Comm, OpeningProof>,
+    VerificationError,
+>
+where
+    <SC as StarkGenericConfig>::Pcs: RecursivePcs<
+            SC,
+            InputProof,
+            OpeningProof,
+            Comm,
+            <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain,
+        >,
+    SC::Challenge: PrimeCharacteristicRing,
+    <<SC as StarkGenericConfig>::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain: Clone,
+{
+    // Rebuild circuit AIRs using base-field trace (TRACE_D = 1) and extension field values inside circuit.
+    const TRACE_D: usize = 1;
+    let rows: RowCounts = proof.rows;
+    let packing = proof.table_packing;
+    let add_lanes = packing.add_lanes();
+    let mul_lanes = packing.mul_lanes();
+
+    let circuit_airs = vec![
+        CircuitTablesAir::Witness(WitnessAir::<SC::Challenge, TRACE_D>::new(
+            rows[Table::Witness],
+        )),
+        CircuitTablesAir::Const(ConstAir::<SC::Challenge, TRACE_D>::new(rows[Table::Const])),
+        CircuitTablesAir::Public(PublicAir::<SC::Challenge, TRACE_D>::new(
+            rows[Table::Public],
+        )),
+        CircuitTablesAir::Add(AddAir::<SC::Challenge, TRACE_D>::new(
+            rows[Table::Add],
+            add_lanes,
+        )),
+        CircuitTablesAir::Mul(MulAir::<SC::Challenge, TRACE_D>::new(
+            rows[Table::Mul],
+            mul_lanes,
+        )),
+    ];
+
+    // Public values are empty for all circuit tables
+    let air_public_counts = [0usize; 5];
+    let verifier_inputs = crate::public_inputs::BatchStarkVerifierInputsBuilder::<
+        SC,
+        Comm,
+        OpeningProof,
+    >::allocate(circuit, &proof.proof, &air_public_counts);
+
+    verify_batch_circuit::<
+        CircuitTablesAir<SC::Challenge, TRACE_D>,
+        SC,
+        Comm,
+        InputProof,
+        OpeningProof,
+        RATE,
+    >(
+        config,
+        &circuit_airs,
+        circuit,
+        &verifier_inputs.proof_targets,
+        &verifier_inputs.air_public_targets,
+        pcs_params,
+    )?;
+
+    Ok(verifier_inputs)
+}
 
 /// Opened values for a single STARK instance within the batch-proof.
 #[derive(Clone)]

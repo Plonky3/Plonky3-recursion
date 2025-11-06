@@ -85,7 +85,7 @@ pub fn debug_assert_equal<F: Field>(
 pub fn make_ef_from_u32<F: Field>(val: u32) -> F {
     let mut result = F::ZERO;
     for _ in 0..val {
-        result = result + F::ONE;
+        result += F::ONE;
     }
     result
 }
@@ -111,7 +111,7 @@ pub fn make_ef_from_first_coeff<F: Field>(first_coeff: u32) -> F {
 
     while val > 0 {
         if val & 1 == 1 {
-            result = result + power;
+            result += power;
         }
         power = power + power; // double
         val >>= 1;
@@ -149,7 +149,7 @@ where
 
         while v > 0 {
             if v & 1 == 1 {
-                coeff = coeff + power;
+                coeff += power;
             }
             power = power + power;
             v >>= 1;

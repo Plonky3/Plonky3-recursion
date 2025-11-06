@@ -21,6 +21,7 @@ p3-merkle-tree.workspace = true
 p3-symmetric.workspace = true
 p3-uni-stark.workspace = true
 p3-util.workspace = true
+p3-circuit-prover.workspace = true
 
 # Other dependencies
 itertools.workspace = true
@@ -42,4 +43,3 @@ proptest.workspace = true
 rand.workspace = true
 tracing-forest = { workspace = true, features = ["ansi", "smallvec"] }
 tracing-subscriber = { workspace = true, features = ["std", "env-filter"] }
-p3-circuit-prover.workspace = true

@@ -20,8 +20,7 @@ use p3_recursion::pcs::fri::{
     FriProofTargets, FriVerifierParams, HashTargets, InputProofTargets, RecExtensionValMmcs,
     RecValMmcs, Witness,
 };
-use p3_recursion::public_inputs::BatchStarkVerifierInputsBuilder;
-use p3_recursion::verifier::verify_batch_circuit;
+use p3_recursion::verifier::verify_p3_recursion_proof_circuit;
 use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
 use p3_uni_stark::{StarkConfig, StarkGenericConfig, Val};
 
@@ -34,27 +33,6 @@ enum CircuitTableAir<F: Field, const D: usize> {
     Public(PublicAir<F, D>),
     Add(AddAir<F, D>),
     Mul(MulAir<F, D>),
-}
-
-/// Helper: build the extension-field AIRs used by the recursive verifier
-/// from the circuit-prover proof metadata (row counts + packing).
-fn build_circuit_airs_for_verifier<const TRACE_D: usize>(
-    rows: p3_circuit_prover::batch_stark_prover::RowCounts,
-    packing: TablePacking,
-) -> Vec<CircuitTableAir<Challenge, TRACE_D>> {
-    vec![
-        CircuitTableAir::Witness(WitnessAir::<Challenge, TRACE_D>::new(rows[Table::Witness])),
-        CircuitTableAir::Const(ConstAir::<Challenge, TRACE_D>::new(rows[Table::Const])),
-        CircuitTableAir::Public(PublicAir::<Challenge, TRACE_D>::new(rows[Table::Public])),
-        CircuitTableAir::Add(AddAir::<Challenge, TRACE_D>::new(
-            rows[Table::Add],
-            packing.add_lanes(),
-        )),
-        CircuitTableAir::Mul(MulAir::<Challenge, TRACE_D>::new(
-            rows[Table::Mul],
-            packing.mul_lanes(),
-        )),
-    ]
 }
 
 impl<F: Field, const D: usize> BaseAir<F> for CircuitTableAir<F, D> {
@@ -120,7 +98,6 @@ type InnerFri = FriProofTargets<
 
 #[test]
 fn test_fibonacci_batch_verifier() {
-
     let n = env::args()
         .nth(1)
         .and_then(|s| s.parse().ok())
@@ -237,25 +214,14 @@ fn test_fibonacci_batch_verifier() {
         )),
     ];
 
-    // Extension field AIRs for circuit verification
-    let circuit_airs = build_circuit_airs_for_verifier::<TRACE_D>(rows, packing);
-
     // Public values (empty for all 5 circuit tables, using base field)
     let pis: Vec<Vec<F>> = vec![vec![]; 5];
 
     // Build the recursive verification circuit
     let mut circuit_builder = CircuitBuilder::new();
 
-    // Allocate all targets for the batch proof
-    let verifier_inputs = BatchStarkVerifierInputsBuilder::<
-        MyConfig,
-        HashTargets<F, DIGEST_ELEMS>,
-        InnerFri,
-    >::allocate(&mut circuit_builder, batch_proof, &[0, 0, 0, 0, 0]);
-
-    // Add the batch verification circuit (uses extension field AIRs)
-    verify_batch_circuit::<
-        _,
+    // Attach verifier without manually building circuit_airs
+    let verifier_inputs = verify_p3_recursion_proof_circuit::<
         MyConfig,
         HashTargets<F, DIGEST_ELEMS>,
         InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>>,
@@ -263,10 +229,8 @@ fn test_fibonacci_batch_verifier() {
         RATE,
     >(
         &config,
-        &circuit_airs,
         &mut circuit_builder,
-        &verifier_inputs.proof_targets,
-        &verifier_inputs.air_public_targets,
+        &batch_stark_proof,
         &fri_verifier_params,
     )
     .unwrap();
