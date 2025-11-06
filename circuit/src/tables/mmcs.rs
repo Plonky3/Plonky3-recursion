@@ -3,6 +3,7 @@ use alloc::vec::Vec;
 use alloc::{format, vec};
 use core::fmt::Debug;
 use core::iter;
+use core::result::Result;
 
 use itertools::izip;
 use p3_field::{ExtensionField, Field};
