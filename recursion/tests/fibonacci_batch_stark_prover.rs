@@ -24,11 +24,6 @@ use p3_recursion::public_inputs::BatchStarkVerifierInputsBuilder;
 use p3_recursion::verifier::verify_batch_circuit;
 use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
 use p3_uni_stark::{StarkConfig, StarkGenericConfig, Val};
-use tracing_forest::ForestLayer;
-use tracing_forest::util::LevelFilter;
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::{EnvFilter, Registry};
 
 type F = BabyBear;
 
@@ -39,6 +34,27 @@ enum CircuitTableAir<F: Field, const D: usize> {
     Public(PublicAir<F, D>),
     Add(AddAir<F, D>),
     Mul(MulAir<F, D>),
+}
+
+/// Helper: build the extension-field AIRs used by the recursive verifier
+/// from the circuit-prover proof metadata (row counts + packing).
+fn build_circuit_airs_for_verifier<const TRACE_D: usize>(
+    rows: p3_circuit_prover::batch_stark_prover::RowCounts,
+    packing: TablePacking,
+) -> Vec<CircuitTableAir<Challenge, TRACE_D>> {
+    vec![
+        CircuitTableAir::Witness(WitnessAir::<Challenge, TRACE_D>::new(rows[Table::Witness])),
+        CircuitTableAir::Const(ConstAir::<Challenge, TRACE_D>::new(rows[Table::Const])),
+        CircuitTableAir::Public(PublicAir::<Challenge, TRACE_D>::new(rows[Table::Public])),
+        CircuitTableAir::Add(AddAir::<Challenge, TRACE_D>::new(
+            rows[Table::Add],
+            packing.add_lanes(),
+        )),
+        CircuitTableAir::Mul(MulAir::<Challenge, TRACE_D>::new(
+            rows[Table::Mul],
+            packing.mul_lanes(),
+        )),
+    ]
 }
 
 impl<F: Field, const D: usize> BaseAir<F> for CircuitTableAir<F, D> {
@@ -102,20 +118,8 @@ type InnerFri = FriProofTargets<
     Witness<Val<MyConfig>>,
 >;
 
-fn init_logger() {
-    let env_filter = EnvFilter::builder()
-        .with_default_directive(LevelFilter::INFO.into())
-        .from_env_lossy();
-
-    Registry::default()
-        .with(env_filter)
-        .with(ForestLayer::default())
-        .init();
-}
-
 #[test]
 fn test_fibonacci_batch_verifier() {
-    init_logger();
 
     let n = env::args()
         .nth(1)
@@ -208,15 +212,6 @@ fn test_fibonacci_batch_verifier() {
     let packing = batch_stark_proof.table_packing;
 
     // Now verify the batch STARK proof recursively
-    println!("Starting recursive batch STARK verification...");
-    println!("Proof ext_degree: {}", batch_stark_proof.ext_degree);
-    println!("Proof w_binomial: {:?}", batch_stark_proof.w_binomial);
-    println!("pow_bits: {}, log_height_max: {}", pow_bits, log_height_max);
-    println!(
-        "Proof has {} query proofs",
-        batch_proof.opening_proof.query_proofs.len()
-    );
-    println!("Degree bits: {:?}", batch_proof.degree_bits);
 
     // Create TWO sets of AIRs:
     // 1. Base field AIRs for native challenge generation
@@ -243,19 +238,7 @@ fn test_fibonacci_batch_verifier() {
     ];
 
     // Extension field AIRs for circuit verification
-    let circuit_airs = vec![
-        CircuitTableAir::Witness(WitnessAir::<Challenge, TRACE_D>::new(rows[Table::Witness])),
-        CircuitTableAir::Const(ConstAir::<Challenge, TRACE_D>::new(rows[Table::Const])),
-        CircuitTableAir::Public(PublicAir::<Challenge, TRACE_D>::new(rows[Table::Public])),
-        CircuitTableAir::Add(AddAir::<Challenge, TRACE_D>::new(
-            rows[Table::Add],
-            packing.add_lanes(),
-        )),
-        CircuitTableAir::Mul(MulAir::<Challenge, TRACE_D>::new(
-            rows[Table::Mul],
-            packing.mul_lanes(),
-        )),
-    ];
+    let circuit_airs = build_circuit_airs_for_verifier::<TRACE_D>(rows, packing);
 
     // Public values (empty for all 5 circuit tables, using base field)
     let pis: Vec<Vec<F>> = vec![vec![]; 5];
@@ -293,11 +276,6 @@ fn test_fibonacci_batch_verifier() {
     let expected_public_input_len = verification_circuit.public_flat_len;
 
     // Generate all the challenge values for batch proof (uses base field AIRs)
-    println!(
-        "Generating challenges with pow_bits={}, log_height_max={}...",
-        pow_bits, log_height_max
-    );
-
     let all_challenges = generate_batch_challenges(
         &native_airs,
         &config,
@@ -305,53 +283,15 @@ fn test_fibonacci_batch_verifier() {
         &pis,
         Some(&[pow_bits, log_height_max]),
     )
-    .map_err(|e| {
-        eprintln!("Challenge generation failed: {:?}", e);
-        eprintln!(
-            "Public inputs lengths: {:?}",
-            pis.iter().map(|v| v.len()).collect::<Vec<_>>()
-        );
-        eprintln!("Number of AIRs: {}", native_airs.len());
-        eprintln!(
-            "Number of proof instances: {}",
-            batch_proof.opened_values.instances.len()
-        );
-        e
-    })
     .unwrap();
-
-    println!("Generated {} challenges", all_challenges.len());
-    println!(
-        "Expected circuit public inputs: {}",
-        expected_public_input_len
-    );
 
     // Pack values using the builder
     let num_queries = batch_proof.opening_proof.query_proofs.len();
     let public_inputs =
         verifier_inputs.pack_values(&pis, batch_proof, &all_challenges, num_queries);
 
-    println!("Packed {} public input values", public_inputs.len());
-
-    // Validate that the public inputs match the expected circuit input length
-    if public_inputs.len() != expected_public_input_len {
-        eprintln!("ERROR: Public input length mismatch!");
-        eprintln!("  Expected: {}", expected_public_input_len);
-        eprintln!("  Got: {}", public_inputs.len());
-        eprintln!(
-            "  pis lengths: {:?}",
-            pis.iter().map(|v| v.len()).collect::<Vec<_>>()
-        );
-        eprintln!("  num_queries: {}", num_queries);
-        eprintln!("  num_challenges: {}", all_challenges.len());
-        panic!("Public input length mismatch");
-    }
-
+    assert_eq!(public_inputs.len(), expected_public_input_len);
     assert!(!public_inputs.is_empty());
-
-    println!("✓ Recursive batch STARK verification circuit built successfully!");
-    println!("  Circuit has {} public inputs", public_inputs.len());
-    println!("  Generated {} challenges", all_challenges.len());
 
     // Actually run the circuit to ensure constraints are satisfiable
     let mut runner = verification_circuit.runner();
