@@ -21,7 +21,8 @@ use p3_poseidon2_air::Poseidon2Cols;
 pub struct Poseidon2CircuitCols<
     T,
     const WIDTH: usize,
-    const RATE: usize,
+    const WIDTH_EXT: usize,
+    const RATE_EXT: usize,
     const SBOX_DEGREE: u64,
     const SBOX_REGISTERS: usize,
     const HALF_FULL_ROUNDS: usize,
@@ -33,15 +34,15 @@ pub struct Poseidon2CircuitCols<
     pub is_sponge: T,
     pub reset: T,
     pub sponge_reset: T,
-    pub absorb_flags: [T; RATE],
-    pub input_indices: [T; WIDTH],
-    pub output_indices: [T; RATE],
-    pub _padding: [T; 290],
+    pub absorb_flags: [T; RATE_EXT],
+    pub input_indices: [T; WIDTH_EXT],
+    pub output_indices: [T; RATE_EXT],
 }
 
 pub const fn num_cols<
     const WIDTH: usize,
-    const RATE: usize,
+    const WIDTH_EXT: usize,
+    const RATE_EXT: usize,
     const SBOX_DEGREE: u64,
     const SBOX_REGISTERS: usize,
     const HALF_FULL_ROUNDS: usize,
@@ -51,7 +52,8 @@ pub const fn num_cols<
         Poseidon2CircuitCols<
             u8,
             WIDTH,
-            RATE,
+            WIDTH_EXT,
+            RATE_EXT,
             SBOX_DEGREE,
             SBOX_REGISTERS,
             HALF_FULL_ROUNDS,
@@ -63,7 +65,8 @@ pub const fn num_cols<
 impl<
     T,
     const WIDTH: usize,
-    const RATE: usize,
+    const WIDTH_EXT: usize,
+    const RATE_EXT: usize,
     const SBOX_DEGREE: u64,
     const SBOX_REGISTERS: usize,
     const HALF_FULL_ROUNDS: usize,
@@ -73,7 +76,8 @@ impl<
         Poseidon2CircuitCols<
             T,
             WIDTH,
-            RATE,
+            WIDTH_EXT,
+            RATE_EXT,
             SBOX_DEGREE,
             SBOX_REGISTERS,
             HALF_FULL_ROUNDS,
@@ -86,7 +90,8 @@ impl<
     ) -> &Poseidon2CircuitCols<
         T,
         WIDTH,
-        RATE,
+        WIDTH_EXT,
+        RATE_EXT,
         SBOX_DEGREE,
         SBOX_REGISTERS,
         HALF_FULL_ROUNDS,
@@ -96,7 +101,8 @@ impl<
             self.align_to::<Poseidon2CircuitCols<
                 T,
                 WIDTH,
-                RATE,
+                WIDTH_EXT,
+                RATE_EXT,
                 SBOX_DEGREE,
                 SBOX_REGISTERS,
                 HALF_FULL_ROUNDS,
@@ -113,7 +119,8 @@ impl<
 impl<
     T,
     const WIDTH: usize,
-    const RATE: usize,
+    const WIDTH_EXT: usize,
+    const RATE_EXT: usize,
     const SBOX_DEGREE: u64,
     const SBOX_REGISTERS: usize,
     const HALF_FULL_ROUNDS: usize,
@@ -123,7 +130,8 @@ impl<
         Poseidon2CircuitCols<
             T,
             WIDTH,
-            RATE,
+            WIDTH_EXT,
+            RATE_EXT,
             SBOX_DEGREE,
             SBOX_REGISTERS,
             HALF_FULL_ROUNDS,
@@ -136,7 +144,8 @@ impl<
     ) -> &mut Poseidon2CircuitCols<
         T,
         WIDTH,
-        RATE,
+        WIDTH_EXT,
+        RATE_EXT,
         SBOX_DEGREE,
         SBOX_REGISTERS,
         HALF_FULL_ROUNDS,
@@ -146,7 +155,8 @@ impl<
             self.align_to_mut::<Poseidon2CircuitCols<
                 T,
                 WIDTH,
-                RATE,
+                WIDTH_EXT,
+                RATE_EXT,
                 SBOX_DEGREE,
                 SBOX_REGISTERS,
                 HALF_FULL_ROUNDS,

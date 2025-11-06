@@ -1,11 +1,8 @@
-use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
+use core::array;
 use core::borrow::Borrow;
-use core::mem::MaybeUninit;
-use core::{array, num};
 
-use itertools::izip;
 use p3_air::{Air, AirBuilder, BaseAir};
 use p3_circuit::tables::{Poseidon2CircuitRow, Poseidon2CircuitTrace};
 use p3_field::{PrimeCharacteristicRing, PrimeField};
@@ -14,8 +11,8 @@ use p3_matrix::dense::{RowMajorMatrix, RowMajorMatrixViewMut};
 use p3_poseidon2::GenericPoseidon2LinearLayers;
 use p3_poseidon2_air::{Poseidon2Air, RoundConstants, generate_trace_rows};
 use p3_symmetric::CryptographicPermutation;
-use tracing::info;
 
+use crate::sub_builder::SubAirBuilder;
 use crate::{Poseidon2CircuitCols, num_cols};
 
 /// Extends the Poseidon2 AIR with recursion circuit-specific columns and constraints.
@@ -31,9 +28,10 @@ pub struct Poseidon2CircuitAir<
     F: PrimeCharacteristicRing,
     LinearLayers,
     const D: usize,
-    const RATE: usize,
-    const CAPACITY: usize,
     const WIDTH: usize,
+    const WIDTH_EXT: usize,
+    const RATE_EXT: usize,
+    const CAPACITY_EXT: usize,
     const SBOX_DEGREE: u64,
     const SBOX_REGISTERS: usize,
     const HALF_FULL_ROUNDS: usize,
@@ -54,9 +52,10 @@ impl<
     F: PrimeField,
     LinearLayers: GenericPoseidon2LinearLayers<WIDTH>,
     const D: usize,
-    const RATE: usize,
-    const CAPACITY: usize,
     const WIDTH: usize,
+    const WIDTH_EXT: usize,
+    const RATE_EXT: usize,
+    const CAPACITY_EXT: usize,
     const SBOX_DEGREE: u64,
     const SBOX_REGISTERS: usize,
     const HALF_FULL_ROUNDS: usize,
@@ -66,9 +65,10 @@ impl<
         F,
         LinearLayers,
         D,
-        RATE,
-        CAPACITY,
         WIDTH,
+        WIDTH_EXT,
+        RATE_EXT,
+        CAPACITY_EXT,
         SBOX_DEGREE,
         SBOX_REGISTERS,
         HALF_FULL_ROUNDS,
@@ -78,8 +78,8 @@ impl<
     pub const fn new(
         constants: RoundConstants<F, WIDTH, HALF_FULL_ROUNDS, PARTIAL_ROUNDS>,
     ) -> Self {
-        assert!((CAPACITY + RATE) * D == WIDTH);
-        assert!(WIDTH.is_multiple_of(D));
+        assert!(CAPACITY_EXT + RATE_EXT == WIDTH_EXT);
+        assert!(WIDTH_EXT * D == WIDTH);
 
         Self {
             p3_poseidon2: Poseidon2Air::new(constants),
@@ -99,15 +99,13 @@ impl<
             "Callers expected to pad inputs to a power of two"
         );
 
-        let num_circuit_cols = 3 + 2 * RATE + WIDTH;
-        // let mut circuit_trace = Vec::with_capacity(n * num_circuit_cols);
+        let num_circuit_cols = 3 + 2 * RATE_EXT + WIDTH_EXT;
         let mut circuit_trace = vec![F::ZERO; n * num_circuit_cols];
         let mut circuit_trace = RowMajorMatrixViewMut::new(&mut circuit_trace, num_circuit_cols);
 
         let mut state = [F::ZERO; WIDTH];
         let mut inputs = Vec::with_capacity(n);
         for (i, op) in sponge_ops.iter().enumerate() {
-            info!("i: {i}");
             let Poseidon2CircuitRow {
                 is_sponge,
                 reset,
@@ -116,7 +114,6 @@ impl<
                 input_indices,
                 output_indices,
             } = op;
-            info!("hmm");
 
             let row = circuit_trace.row_mut(i);
 
@@ -127,18 +124,18 @@ impl<
             } else {
                 F::ZERO
             };
-            for j in 0..RATE {
+            for j in 0..RATE_EXT {
                 row[3 + j] = if absorb_flags[j] { F::ONE } else { F::ZERO };
             }
-            for j in 0..RATE {
-                row[3 + RATE + j] = F::from_u32(input_indices[j]);
+            for j in 0..RATE_EXT {
+                row[3 + RATE_EXT + j] = F::from_u32(input_indices[j]);
             }
-            for j in 0..RATE {
-                row[3 + RATE + WIDTH + j] = F::from_u32(output_indices[j]);
+            for j in 0..RATE_EXT {
+                row[3 + RATE_EXT + WIDTH_EXT + j] = F::from_u32(output_indices[j]);
             }
 
-            let mut index_absorb = [false; RATE];
-            for j in 0..RATE {
+            let mut index_absorb = [false; RATE_EXT];
+            for j in 0..RATE_EXT {
                 if absorb_flags[j] {
                     for k in 0..=j {
                         index_absorb[k] = true;
@@ -146,24 +143,32 @@ impl<
                 }
             }
 
-            for j in 0..RATE {
+            for j in 0..RATE_EXT {
                 if index_absorb[j] {
                     for d in 0..D {
                         let idx = j * D + d;
                         state[idx] = input_values[idx];
+                    }
+                } else {
+                    if *reset {
+                        // During a reset, non-absorbed rate elements are zeroed.
+                        for d in 0..D {
+                            let idx = j * D + d;
+                            state[idx] = F::ZERO;
+                        }
                     }
                 }
             }
 
             if *reset || !*is_sponge {
                 // Compression or reset: reset capacity
-                for j in 0..(CAPACITY * D) {
-                    state[RATE * D + j] = F::ZERO;
+                for j in 0..(CAPACITY_EXT * D) {
+                    state[RATE_EXT * D + j] = F::ZERO;
                 }
-
-                inputs.push(state.clone());
-                state = perm.permute(state);
             }
+
+            inputs.push(state.clone());
+            state = perm.permute(state);
         }
 
         let p2_trace = generate_trace_rows::<
@@ -176,11 +181,7 @@ impl<
             PARTIAL_ROUNDS,
         >(inputs, constants, extra_capacity_bits);
 
-        let ncols =
-            num_cols::<WIDTH, RATE, SBOX_DEGREE, SBOX_REGISTERS, HALF_FULL_ROUNDS, PARTIAL_ROUNDS>(
-            );
-
-        info!("ncols: {}", ncols);
+        let ncols = self.width();
 
         let p2_ncols = p3_poseidon2_air::num_cols::<
             WIDTH,
@@ -189,35 +190,24 @@ impl<
             HALF_FULL_ROUNDS,
             PARTIAL_ROUNDS,
         >();
-        info!("p2_ncols: {}", p2_ncols);
 
-        let mut vec = Vec::with_capacity((n * ncols) << extra_capacity_bits);
-        let trace = &mut vec.spare_capacity_mut()[..n * ncols];
-        let trace = RowMajorMatrixViewMut::new(trace, ncols);
+        let mut vec = vec![F::ZERO; n * ncols];
 
-        let (prefix, perms, suffix) = unsafe {
-            trace.values.align_to_mut::<Poseidon2CircuitCols<
-                MaybeUninit<F>,
-                WIDTH,
-                RATE,
-                SBOX_DEGREE,
-                SBOX_REGISTERS,
-                HALF_FULL_ROUNDS,
-                PARTIAL_ROUNDS,
-            >>()
-        };
-        assert!(prefix.is_empty(), "Alignment should match");
-        assert!(suffix.is_empty(), "Alignment should match");
-        assert_eq!(perms.len(), n);
-
-        for (row, circuit_row, perm_row) in izip!(perms, circuit_trace.rows(), p2_trace.rows()) {
-            let left_part = circuit_row.collect::<Vec<_>>();
-            let right_part = perm_row.collect::<Vec<_>>();
-            // row[..num_circuit_cols].copy_from_slice(&left_part);
-            // row[num_circuit_cols..].copy_from_slice(&right_part);
+        for i in 0..n {
+            let row = &mut vec[(i * ncols)..((i + 1) * ncols)];
+            let left_part = p2_trace
+                .row(i)
+                .expect("Missing row {i}?")
+                .into_iter()
+                .collect::<Vec<_>>();
+            let right_part = circuit_trace
+                .row(i)
+                .expect("Missing row {i}?")
+                .into_iter()
+                .collect::<Vec<_>>();
+            row[..p2_ncols].copy_from_slice(&left_part);
+            row[p2_ncols..].copy_from_slice(&right_part);
         }
-
-        info!("partial trace: {:?}", vec);
 
         unsafe {
             vec.set_len(n * ncols);
@@ -231,9 +221,10 @@ impl<
     F: PrimeCharacteristicRing + Sync,
     LinearLayers: Sync,
     const D: usize,
-    const RATE: usize,
-    const CAPACITY: usize,
     const WIDTH: usize,
+    const WIDTH_EXT: usize,
+    const RATE_EXT: usize,
+    const CAPACITY_EXT: usize,
     const SBOX_DEGREE: u64,
     const SBOX_REGISTERS: usize,
     const HALF_FULL_ROUNDS: usize,
@@ -243,9 +234,10 @@ impl<
         F,
         LinearLayers,
         D,
-        RATE,
-        CAPACITY,
         WIDTH,
+        WIDTH_EXT,
+        RATE_EXT,
+        CAPACITY_EXT,
         SBOX_DEGREE,
         SBOX_REGISTERS,
         HALF_FULL_ROUNDS,
@@ -253,7 +245,15 @@ impl<
     >
 {
     fn width(&self) -> usize {
-        num_cols::<WIDTH, RATE, SBOX_DEGREE, SBOX_REGISTERS, HALF_FULL_ROUNDS, PARTIAL_ROUNDS>()
+        num_cols::<
+            WIDTH,
+            WIDTH_EXT,
+            RATE_EXT,
+            SBOX_DEGREE,
+            SBOX_REGISTERS,
+            HALF_FULL_ROUNDS,
+            PARTIAL_ROUNDS,
+        >()
     }
 }
 
@@ -261,9 +261,10 @@ pub(crate) fn eval<
     AB: AirBuilder,
     LinearLayers: GenericPoseidon2LinearLayers<WIDTH>,
     const D: usize,
-    const RATE: usize,
-    const CAPACITY: usize,
     const WIDTH: usize,
+    const WIDTH_EXT: usize,
+    const RATE_EXT: usize,
+    const CAPACITY_EXT: usize,
     const SBOX_DEGREE: u64,
     const SBOX_REGISTERS: usize,
     const HALF_FULL_ROUNDS: usize,
@@ -273,9 +274,10 @@ pub(crate) fn eval<
         AB::F,
         LinearLayers,
         D,
-        RATE,
-        CAPACITY,
         WIDTH,
+        WIDTH_EXT,
+        RATE_EXT,
+        CAPACITY_EXT,
         SBOX_DEGREE,
         SBOX_REGISTERS,
         HALF_FULL_ROUNDS,
@@ -285,7 +287,8 @@ pub(crate) fn eval<
     local: &Poseidon2CircuitCols<
         AB::Var,
         WIDTH,
-        RATE,
+        WIDTH_EXT,
+        RATE_EXT,
         SBOX_DEGREE,
         SBOX_REGISTERS,
         HALF_FULL_ROUNDS,
@@ -294,55 +297,61 @@ pub(crate) fn eval<
     next: &Poseidon2CircuitCols<
         AB::Var,
         WIDTH,
-        RATE,
+        WIDTH_EXT,
+        RATE_EXT,
         SBOX_DEGREE,
         SBOX_REGISTERS,
         HALF_FULL_ROUNDS,
         PARTIAL_ROUNDS,
     >,
 ) {
-    air.p3_poseidon2.eval(builder);
-
     // SPONGE CONSTRAINTS
     let next_no_reset = AB::Expr::ONE - next.reset.clone();
-    for i in 0..(CAPACITY * D) {
+    for i in 0..(CAPACITY_EXT * D) {
         // The first row has capacity zeroed.
         builder
             .when(local.is_sponge.clone())
             .when_first_row()
-            .assert_zero(local.poseidon2.inputs[RATE * D + i].clone());
+            .assert_zero(local.poseidon2.inputs[RATE_EXT * D + i].clone());
 
         // When resetting the state, we just have to clear the capacity. The rate will be overwritten by the input.
         builder
             .when(local.is_sponge.clone())
             .when(local.reset.clone())
-            .assert_zero(local.poseidon2.inputs[RATE * D + i].clone());
+            .assert_zero(local.poseidon2.inputs[RATE_EXT * D + i].clone());
 
         // If the next row doesn't reset, propagate the capacity.
         builder
-            .when(local.is_sponge.clone())
+            .when_transition()
+            .when(next.is_sponge.clone())
             .when(next_no_reset.clone())
             .assert_zero(
-                next.poseidon2.inputs[RATE * D + i].clone()
-                    - local.poseidon2.ending_full_rounds[HALF_FULL_ROUNDS - 1].post[RATE * D + i]
+                next.poseidon2.inputs[RATE_EXT * D + i].clone()
+                    - local.poseidon2.ending_full_rounds[HALF_FULL_ROUNDS - 1].post
+                        [RATE_EXT * D + i]
                         .clone(),
             );
     }
 
-    let mut next_absorb = [AB::Expr::ZERO; RATE];
-    for i in 0..RATE {
-        for col in next_absorb.iter_mut().take(RATE).skip(i) {
+    let mut next_absorb = [AB::Expr::ZERO; RATE_EXT];
+    for i in 0..RATE_EXT {
+        for col in next_absorb.iter_mut().take(i + 1) {
             *col += next.absorb_flags[i].clone();
         }
     }
-    let next_no_absorb = array::from_fn::<_, RATE, _>(|i| AB::Expr::ONE - next_absorb[i].clone());
-    // In the next row, each rate element not being absorbed comes from the current row.
-    for index in 0..(RATE * D) {
+    let next_no_absorb =
+        array::from_fn::<_, RATE_EXT, _>(|i| AB::Expr::ONE - next_absorb[i].clone());
+    // In the next row, each rate element not being absorbed is either:
+    // - zeroed if the next row is a reset (handled elsewhere);
+    // - copied from the current row if the next row is not a reset.
+    // We omit the `is_sponge` check because in a compression all absorb flags are set.
+    for index in 0..(RATE_EXT * D) {
         let i = index / D;
         let j = index % D;
         builder
-            .when(local.is_sponge.clone())
+            .when_transition()
             .when(next_no_absorb[i].clone())
+            .when(next_no_reset.clone())
             .assert_zero(
                 next.poseidon2.inputs[i * D + j].clone()
                     - local.poseidon2.ending_full_rounds[HALF_FULL_ROUNDS - 1].post[i * D + j]
@@ -350,27 +359,27 @@ pub(crate) fn eval<
             );
     }
 
-    let mut current_absorb = [AB::Expr::ZERO; RATE];
-    for i in 0..RATE {
-        for col in current_absorb.iter_mut().take(RATE).skip(i) {
+    let mut current_absorb = [AB::Expr::ZERO; RATE_EXT];
+    for i in 0..RATE_EXT {
+        for col in current_absorb.iter_mut().take(i + 1) {
             *col += local.absorb_flags[i].clone();
         }
     }
     let current_no_absorb =
-        array::from_fn::<_, RATE, _>(|i| AB::Expr::ONE - current_absorb[i].clone());
+        array::from_fn::<_, RATE_EXT, _>(|i| AB::Expr::ONE - current_absorb[i].clone());
     builder.assert_eq(
         local.is_sponge.clone() * local.reset.clone(),
         local.sponge_reset.clone(),
     );
     // During a reset, the rate elements not being absorbed are zeroed.
-    for (i, col) in current_no_absorb.iter().enumerate().take(RATE) {
+    for (i, col) in current_no_absorb.iter().enumerate() {
         let arr = array::from_fn::<_, D, _>(|j| local.poseidon2.inputs[i * D + j].clone().into());
         builder
             .when(local.sponge_reset.clone() * col.clone())
             .assert_zeros(arr);
     }
 
-    let _is_squeeze = AB::Expr::ONE - current_absorb[0].clone();
+    // let _is_squeeze = AB::Expr::ONE - current_absorb[0].clone();
     // TODO: Add all lookups:
     // - If current_absorb[i] = 1:
     //      * local.rate[i] comes from input lookups.
@@ -381,15 +390,40 @@ pub(crate) fn eval<
     // TODO: Add all lookups:
     // - local input state comes from input lookups.
     // - send local output state to output lookups.
+
+    let p3_poseidon2_num_cols = p3_poseidon2_air::num_cols::<
+        WIDTH,
+        SBOX_DEGREE,
+        SBOX_REGISTERS,
+        HALF_FULL_ROUNDS,
+        PARTIAL_ROUNDS,
+    >();
+    let mut sub_builder = SubAirBuilder::<
+        AB,
+        Poseidon2Air<
+            AB::F,
+            LinearLayers,
+            WIDTH,
+            SBOX_DEGREE,
+            SBOX_REGISTERS,
+            HALF_FULL_ROUNDS,
+            PARTIAL_ROUNDS,
+        >,
+        AB::Var,
+    >::new(builder, 0..p3_poseidon2_num_cols);
+
+    // Eval the Plonky3 Poseidon2 air.
+    air.p3_poseidon2.eval(&mut sub_builder);
 }
 
 impl<
     AB: AirBuilder,
     LinearLayers: GenericPoseidon2LinearLayers<WIDTH>,
     const D: usize,
-    const RATE: usize,
-    const CAPACITY: usize,
     const WIDTH: usize,
+    const WIDTH_EXT: usize,
+    const RATE_EXT: usize,
+    const CAPACITY_EXT: usize,
     const SBOX_DEGREE: u64,
     const SBOX_REGISTERS: usize,
     const HALF_FULL_ROUNDS: usize,
@@ -399,9 +433,10 @@ impl<
         AB::F,
         LinearLayers,
         D,
-        RATE,
-        CAPACITY,
         WIDTH,
+        WIDTH_EXT,
+        RATE_EXT,
+        CAPACITY_EXT,
         SBOX_DEGREE,
         SBOX_REGISTERS,
         HALF_FULL_ROUNDS,
@@ -420,9 +455,10 @@ impl<
             _,
             _,
             D,
-            RATE,
-            CAPACITY,
             WIDTH,
+            WIDTH_EXT,
+            RATE_EXT,
+            CAPACITY_EXT,
             SBOX_DEGREE,
             SBOX_REGISTERS,
             HALF_FULL_ROUNDS,
@@ -435,22 +471,19 @@ impl<
 mod test {
 
     use alloc::vec;
-    use core::array;
 
     use p3_baby_bear::{
-        BabyBear, GenericPoseidon2LinearLayersBabyBear, default_babybear_poseidon2_16,
+        BabyBear, GenericPoseidon2LinearLayersBabyBear, Poseidon2ExternalLayerBabyBear,
+        Poseidon2InternalLayerBabyBear,
     };
     use p3_challenger::{HashChallenger, SerializingChallenger32};
-    use p3_circuit::WitnessId;
-    use p3_circuit::ops::MmcsVerifyConfig;
-    use p3_circuit::tables::{
-        MmcsPrivateData, MmcsTrace, Poseidon2CircuitRow, Poseidon2CircuitTrace,
-    };
+    use p3_circuit::tables::Poseidon2CircuitRow;
     use p3_commit::ExtensionMmcs;
     use p3_field::extension::BinomialExtensionField;
     use p3_fri::{TwoAdicFriPcs, create_benchmark_fri_params};
     use p3_keccak::{Keccak256Hash, KeccakF};
-    use p3_merkle_tree::{MerkleTreeHidingMmcs, MerkleTreeMmcs};
+    use p3_merkle_tree::MerkleTreeHidingMmcs;
+    use p3_poseidon2::{ExternalLayerConstants, Poseidon2};
     use p3_poseidon2_air::RoundConstants;
     use p3_symmetric::{CompressionFunctionFromHasher, PaddingFreeSponge, SerializingHasher};
     use p3_uni_stark::{StarkConfig, prove, verify};
@@ -464,22 +497,15 @@ mod test {
 
     use crate::air::Poseidon2CircuitAir;
 
-    const WIDTH: usize = 16;
     const D: usize = 4;
-    const RATE: usize = 2;
-    const CAPACITY: usize = 2;
+    const WIDTH: usize = 16;
+    const WIDTH_EXT: usize = 4;
+    const RATE_EXT: usize = 2;
+    const CAPACITY_EXT: usize = 2;
     const SBOX_DEGREE: u64 = 7;
     const SBOX_REGISTERS: usize = 1;
     const HALF_FULL_ROUNDS: usize = 4;
     const PARTIAL_ROUNDS: usize = 20;
-
-    const P2_NUM_COLS: usize = p3_poseidon2_air::num_cols::<
-        WIDTH,
-        SBOX_DEGREE,
-        SBOX_REGISTERS,
-        HALF_FULL_ROUNDS,
-        PARTIAL_ROUNDS,
-    >();
 
     fn init_logger() {
         let env_filter = EnvFilter::builder()
@@ -529,8 +555,7 @@ mod test {
             4,
         >;
         let mut rng = SmallRng::seed_from_u64(1);
-        let constants = RoundConstants::from_rng(&mut rng);
-        let val_mmcs = ValMmcs::new(field_hash, compress, rng);
+        let val_mmcs = ValMmcs::new(field_hash, compress, rng.clone());
 
         type ChallengeMmcs = ExtensionMmcs<Val, Challenge, ValMmcs>;
         let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
@@ -538,13 +563,40 @@ mod test {
         type Challenger = SerializingChallenger32<Val, HashChallenger<u8, ByteHash, 32>>;
         let challenger = Challenger::from_hasher(vec![], byte_hash);
 
+        let fri_params = create_benchmark_fri_params(challenge_mmcs);
+
+        let beginning_full_constants = rng.random();
+        let partial_constants = rng.random();
+        let ending_full_constants = rng.random();
+
+        let constants = RoundConstants::new(
+            beginning_full_constants,
+            partial_constants,
+            ending_full_constants,
+        );
+
+        let perm = Poseidon2::<
+            Val,
+            Poseidon2ExternalLayerBabyBear<WIDTH>,
+            Poseidon2InternalLayerBabyBear<WIDTH>,
+            WIDTH,
+            SBOX_DEGREE,
+        >::new(
+            ExternalLayerConstants::new(
+                beginning_full_constants.to_vec(),
+                ending_full_constants.to_vec(),
+            ),
+            partial_constants.to_vec(),
+        );
+
         let air: Poseidon2CircuitAir<
             Val,
             GenericPoseidon2LinearLayersBabyBear,
             D,
-            RATE,
-            CAPACITY,
             WIDTH,
+            WIDTH_EXT,
+            RATE_EXT,
+            CAPACITY_EXT,
             SBOX_DEGREE,
             SBOX_REGISTERS,
             HALF_FULL_ROUNDS,
@@ -554,28 +606,61 @@ mod test {
         // Generate random inputs.
         let mut rng = SmallRng::seed_from_u64(1);
 
-        let a: Poseidon2CircuitRow<Val> = Poseidon2CircuitRow {
+        // Absorb
+        let sponge_a: Poseidon2CircuitRow<Val> = Poseidon2CircuitRow {
             is_sponge: true,
             reset: true,
             absorb_flags: vec![false, true],
-            input_values: (0..RATE * D).map(|_| rng.random()).collect(),
-            input_indices: vec![0; RATE],
-            output_indices: vec![0; RATE],
+            input_values: (0..RATE_EXT * D).map(|_| rng.random()).collect(),
+            input_indices: vec![0; RATE_EXT],
+            output_indices: vec![0; RATE_EXT],
         };
 
-        let b: Poseidon2CircuitRow<Val> = Poseidon2CircuitRow {
+        // Absorb
+        let sponge_b: Poseidon2CircuitRow<Val> = Poseidon2CircuitRow {
+            is_sponge: true,
+            reset: false,
+            absorb_flags: vec![false, true],
+            input_values: (0..RATE_EXT * D).map(|_| rng.random()).collect(),
+            input_indices: vec![0; RATE_EXT],
+            output_indices: vec![0; RATE_EXT],
+        };
+
+        // Squeeze
+        let sponge_c: Poseidon2CircuitRow<Val> = Poseidon2CircuitRow {
+            is_sponge: true,
+            reset: false,
+            absorb_flags: vec![false, false],
+            input_values: vec![Val::new(0); RATE_EXT * D],
+            input_indices: vec![0; RATE_EXT],
+            output_indices: vec![0; RATE_EXT],
+        };
+
+        // Absorb one element with reset
+        let sponge_d: Poseidon2CircuitRow<Val> = Poseidon2CircuitRow {
             is_sponge: true,
             reset: true,
-            absorb_flags: vec![false, true],
-            input_values: (0..RATE * D).map(|_| rng.random()).collect(),
-            input_indices: vec![0; RATE],
-            output_indices: vec![0; RATE],
+            absorb_flags: vec![true, false],
+            input_values: vec![
+                Val::new(42),
+                Val::new(43),
+                Val::new(44),
+                Val::new(45),
+                Val::new(0),
+                Val::new(0),
+                Val::new(0),
+                Val::new(0),
+            ],
+            input_indices: vec![0; RATE_EXT],
+            output_indices: vec![0; RATE_EXT],
         };
 
-        let fri_params = create_benchmark_fri_params(challenge_mmcs);
-
-        let perm = default_babybear_poseidon2_16();
-        let trace = air.generate_trace_rows(vec![a, b], &constants, fri_params.log_blowup, perm);
+        let trace = air.generate_trace_rows(
+            vec![sponge_a, sponge_b, sponge_c, sponge_d],
+            &constants,
+            fri_params.log_blowup,
+            perm,
+        );
 
         type Dft = p3_dft::Radix2Bowers;
         let dft = Dft::default();
