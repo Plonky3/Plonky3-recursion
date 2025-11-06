@@ -135,27 +135,25 @@ impl<
             }
 
             let mut index_absorb = [false; RATE_EXT];
-            for j in 0..RATE_EXT {
-                if absorb_flags[j] {
-                    for k in 0..=j {
-                        index_absorb[k] = true;
+            for (j, flag) in absorb_flags.iter().enumerate() {
+                if *flag {
+                    for absorb in index_absorb.iter_mut().take(j + 1) {
+                        *absorb = true;
                     }
                 }
             }
 
-            for j in 0..RATE_EXT {
-                if index_absorb[j] {
+            for (j, absorb) in index_absorb.iter_mut().enumerate() {
+                if *absorb {
                     for d in 0..D {
                         let idx = j * D + d;
                         state[idx] = input_values[idx];
                     }
-                } else {
-                    if *reset {
-                        // During a reset, non-absorbed rate elements are zeroed.
-                        for d in 0..D {
-                            let idx = j * D + d;
-                            state[idx] = F::ZERO;
-                        }
+                } else if *reset {
+                    // During a reset, non-absorbed rate elements are zeroed.
+                    for d in 0..D {
+                        let idx = j * D + d;
+                        state[idx] = F::ZERO;
                     }
                 }
             }
@@ -167,7 +165,7 @@ impl<
                 }
             }
 
-            inputs.push(state.clone());
+            inputs.push(state);
             state = perm.permute(state);
         }
 
@@ -379,7 +377,7 @@ pub(crate) fn eval<
             .assert_zeros(arr);
     }
 
-    // let _is_squeeze = AB::Expr::ONE - current_absorb[0].clone();
+    let _is_squeeze = AB::Expr::ONE - current_absorb[0].clone();
     // TODO: Add all lookups:
     // - If current_absorb[i] = 1:
     //      * local.rate[i] comes from input lookups.
