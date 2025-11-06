@@ -731,9 +731,8 @@ mod tests {
         let traces = runner.run().unwrap();
 
         // Validate trace fields
-        let mmcs_trace = &traces.mmcs_trace;
-        assert_eq!(mmcs_trace.mmcs_paths.len(), 1);
-        let path = &mmcs_trace.mmcs_paths[0];
+        assert_eq!(traces.mmcs_trace.mmcs_paths.len(), 1);
+        let path = &traces.mmcs_trace.mmcs_paths[0];
 
         // Expected expansions for directions, is_extra, and right_values
         let mut expected_dirs = alloc::vec::Vec::new();

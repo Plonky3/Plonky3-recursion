@@ -28,7 +28,6 @@ pub struct CircuitBuilder<F> {
 
     /// Builder configuration
     config: BuilderConfig,
-    // Generators registry removed; main branch uses trace builders
 }
 
 /// The non-primitive operation id, type, and the vectors of the expressions representing its inputs
@@ -71,15 +70,11 @@ where
     /// Enables HashAbsorb operations.
     pub fn enable_hash_absorb(&mut self, reset: bool) {
         self.config.enable_hash_absorb(reset);
-
-        // TODO: Register HashAbsorb non-primitive trace generator when available
     }
 
     /// Enables HashSqueeze operations.
     pub fn enable_hash_squeeze(&mut self) {
         self.config.enable_hash_squeeze();
-
-        // TODO: Register HashSqueeze non-primitive trace generator when available
     }
 
     /// Enables hash operations.
@@ -91,8 +86,6 @@ where
     /// Enables FRI verification operations.
     pub fn enable_fri(&mut self) {
         self.config.enable_fri();
-
-        // TODO: Register FRI non-primitive trace generator when available
     }
 
     /// Checks whether an op type is enabled on this builder.

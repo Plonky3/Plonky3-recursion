@@ -280,8 +280,7 @@ where
         let mut non_primitives = Vec::new();
         match D {
             1 => {
-                let t: &Traces<Val<SC>> =
-                    unsafe { &*(traces as *const _ as *const Traces<Val<SC>>) };
+                let t: &Traces<Val<SC>> = unsafe { transmute_traces(traces) };
                 for p in &self.non_primitive_provers {
                     if let Some(entry) = p.prove_d1(&self.config, table_packing, t, pis) {
                         non_primitives.push(entry);
@@ -291,7 +290,7 @@ where
             2 => {
                 type EF2<F> = BinomialExtensionField<F, 2>;
 
-                let t: &Traces<EF2<Val<SC>>> = unsafe { crate::prover::transmute_traces(traces) };
+                let t: &Traces<EF2<Val<SC>>> = unsafe { transmute_traces(traces) };
                 for p in &self.non_primitive_provers {
                     if let Some(entry) = p.prove_d2(&self.config, table_packing, t, pis) {
                         non_primitives.push(entry);
@@ -301,7 +300,7 @@ where
             4 => {
                 type EF4<F> = BinomialExtensionField<F, 4>;
 
-                let t: &Traces<EF4<Val<SC>>> = unsafe { crate::prover::transmute_traces(traces) };
+                let t: &Traces<EF4<Val<SC>>> = unsafe { transmute_traces(traces) };
                 for p in &self.non_primitive_provers {
                     if let Some(entry) = p.prove_d4(&self.config, table_packing, t, pis) {
                         non_primitives.push(entry);
@@ -311,7 +310,7 @@ where
             6 => {
                 type EF6<F> = BinomialExtensionField<F, 6>;
 
-                let t: &Traces<EF6<Val<SC>>> = unsafe { crate::prover::transmute_traces(traces) };
+                let t: &Traces<EF6<Val<SC>>> = unsafe { transmute_traces(traces) };
                 for p in &self.non_primitive_provers {
                     if let Some(entry) = p.prove_d6(&self.config, table_packing, t, pis) {
                         non_primitives.push(entry);
@@ -321,7 +320,7 @@ where
             8 => {
                 type EF8<F> = BinomialExtensionField<F, 8>;
 
-                let t: &Traces<EF8<Val<SC>>> = unsafe { crate::prover::transmute_traces(traces) };
+                let t: &Traces<EF8<Val<SC>>> = unsafe { transmute_traces(traces) };
                 for p in &self.non_primitive_provers {
                     if let Some(entry) = p.prove_d8(&self.config, table_packing, t, pis) {
                         non_primitives.push(entry);
