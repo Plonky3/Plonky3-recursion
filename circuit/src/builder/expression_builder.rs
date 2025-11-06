@@ -9,7 +9,7 @@ use p3_field::PrimeCharacteristicRing;
 
 use crate::builder::compiler::HintsWithFiller;
 use crate::expr::{Expr, ExpressionGraph};
-use crate::op::WitnessFiller;
+use crate::op::WitnessHintFiller;
 use crate::types::ExprId;
 #[cfg(debug_assertions)]
 use crate::{AllocationEntry, AllocationType};
@@ -27,7 +27,7 @@ pub struct ExpressionBuilder<F> {
     pending_connects: Vec<(ExprId, ExprId)>,
 
     /// The witness hints together with theit witness fillers
-    witness_hitns_with_fillers: Vec<(Vec<ExprId>, Box<dyn WitnessFiller<F>>)>,
+    hints_with_fillers: Vec<(Vec<ExprId>, Box<dyn WitnessHintFiller<F>>)>,
 
     /// Debug log of all allocations
     #[cfg(debug_assertions)]
@@ -57,7 +57,7 @@ where
             graph,
             const_pool,
             pending_connects: Vec::new(),
-            witness_hitns_with_fillers: Vec::new(),
+            hints_with_fillers: Vec::new(),
             #[cfg(debug_assertions)]
             allocation_log: Vec::new(),
             #[cfg(debug_assertions)]
@@ -126,11 +126,12 @@ where
         expr_id
     }
 
-    /// Adds a witness hint to the graph.
-    /// It will allocate a `WitnessId` during lowering, with no primitive op.
+    /// Adds `filler.n_outputs()` witness hints to the graph.
+    /// During circuit evaluation, the `filler` will derive the concrete
+    /// witness values for these hints.
     #[allow(unused_variables)]
     #[must_use]
-    pub fn add_witness_hints<W: 'static + WitnessFiller<F>>(
+    pub fn add_witness_hints<W: 'static + WitnessHintFiller<F>>(
         &mut self,
         filler: W,
         label: &'static str,
@@ -139,7 +140,7 @@ where
         let expr_ids = (0..n_outputs)
             .map(|_| self.graph.add_expr(Expr::Witness))
             .collect_vec();
-        self.witness_hitns_with_fillers
+        self.hints_with_fillers
             .push((expr_ids.clone(), Box::new(filler)));
         expr_ids
     }
@@ -230,8 +231,8 @@ where
     }
 
     /// Returns a reference to the witness hints with fillers.
-    pub fn witness_hints_with_fillers(&self) -> &[HintsWithFiller<F>] {
-        &self.witness_hitns_with_fillers
+    pub fn hints_with_fillers(&self) -> &[HintsWithFiller<F>] {
+        &self.hints_with_fillers
     }
 
     /// Logs a non-primitive operation allocation.
@@ -555,12 +556,12 @@ mod tests {
     }
 
     #[derive(Debug, Clone)]
-    struct IdentityFiller {
+    struct IdentityHint {
         inputs: Vec<ExprId>,
         n_outputs: usize,
     }
 
-    impl IdentityFiller {
+    impl IdentityHint {
         pub fn new(inputs: Vec<ExprId>) -> Self {
             Self {
                 n_outputs: inputs.len(),
@@ -569,7 +570,7 @@ mod tests {
         }
     }
 
-    impl<F: Field> WitnessFiller<F> for IdentityFiller {
+    impl<F: Field> WitnessHintFiller<F> for IdentityHint {
         fn inputs(&self) -> &[ExprId] {
             &self.inputs
         }
@@ -581,18 +582,14 @@ mod tests {
         fn compute_outputs(&self, inputs_val: Vec<F>) -> Result<Vec<F>, crate::CircuitError> {
             Ok(inputs_val)
         }
-
-        fn boxed(&self) -> Box<dyn WitnessFiller<F>> {
-            Box::new(self.clone())
-        }
     }
     #[test]
     fn test_build_with_witness_hint() {
         let mut builder = ExpressionBuilder::<BabyBear>::new();
         let a = builder.add_const(BabyBear::ZERO, "a");
         let b = builder.add_const(BabyBear::ONE, "b");
-        let id_filler = IdentityFiller::new(vec![a, b]);
-        let c = builder.add_witness_hints(id_filler, "c");
+        let id_hint = IdentityHint::new(vec![a, b]);
+        let c = builder.add_witness_hints(id_hint, "c");
         assert_eq!(c.len(), 2);
 
         assert_eq!(builder.graph().nodes().len(), 4);
@@ -610,11 +607,8 @@ mod tests {
 
         let a = builder.add_const(BabyBear::from_u64(1), "a");
         let b = builder.add_const(BabyBear::from_u64(2), "b");
-
-        let id_filler = IdentityFiller::new(vec![a, b]);
-        let cd = builder.add_witness_hints(id_filler, "cd");
-        let c = cd[0];
-        let d = cd[1];
+        let c = builder.add_const(BabyBear::from_u64(3), "c");
+        let d = builder.add_const(BabyBear::from_u64(4), "d");
 
         let sum = builder.add_add(a, b, "sum");
         let diff = builder.add_sub(c, d, "diff");

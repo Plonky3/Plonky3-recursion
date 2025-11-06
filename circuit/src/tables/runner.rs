@@ -204,7 +204,7 @@ impl<F: CircuitField> CircuitRunner<F> {
                     for (&output, &output_val) in zip_eq(
                         outputs.iter(),
                         outputs_val.iter(),
-                        CircuitError::UnconstrainedInputLengthMismatch {
+                        CircuitError::UnconstrainedOpInputLengthMismatch {
                             expected: outputs.len(),
                             got: outputs_val.len(),
                         },
@@ -284,7 +284,6 @@ impl<F: CircuitField> CircuitRunner<F> {
 #[cfg(test)]
 mod tests {
     extern crate std;
-    use alloc::boxed::Box;
     use alloc::vec;
     use alloc::vec::Vec;
     use std::println;
@@ -294,7 +293,7 @@ mod tests {
     use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
 
     use crate::builder::CircuitBuilder;
-    use crate::op::WitnessFiller;
+    use crate::op::WitnessHintFiller;
     use crate::types::WitnessId;
     use crate::{CircuitError, ExprId};
 
@@ -440,18 +439,18 @@ mod tests {
     }
 
     #[derive(Debug, Clone)]
-    /// Witness filler for finding x in a*x - b = 0
-    struct TheSolutionWitnessFiller {
+    /// The hint deined by x in an equation a*x - b = 0
+    struct X {
         inputs: Vec<ExprId>,
     }
 
-    impl TheSolutionWitnessFiller {
+    impl X {
         pub fn new(a: ExprId, b: ExprId) -> Self {
             Self { inputs: vec![a, b] }
         }
     }
 
-    impl<F: Field> WitnessFiller<F> for TheSolutionWitnessFiller {
+    impl<F: Field> WitnessHintFiller<F> for X {
         fn inputs(&self) -> &[ExprId] {
             &self.inputs
         }
@@ -462,7 +461,7 @@ mod tests {
 
         fn compute_outputs(&self, inputs_val: Vec<F>) -> Result<Vec<F>, crate::CircuitError> {
             if inputs_val.len() != self.inputs.len() {
-                Err(crate::CircuitError::UnconstrainedInputLengthMismatch {
+                Err(crate::CircuitError::UnconstrainedOpInputLengthMismatch {
                     expected: self.inputs.len(),
                     got: inputs_val.len(),
                 })
@@ -474,10 +473,6 @@ mod tests {
                 Ok(vec![x])
             }
         }
-
-        fn boxed(&self) -> Box<dyn WitnessFiller<F>> {
-            Box::new(self.clone())
-        }
     }
 
     #[test]
@@ -487,8 +482,8 @@ mod tests {
 
         let c37 = builder.add_const(BabyBear::from_u64(37));
         let c111 = builder.add_const(BabyBear::from_u64(111));
-        let filler = TheSolutionWitnessFiller::new(c37, c111);
-        let x = builder.alloc_witness_hints(filler, "x")[0];
+        let x_hint = X::new(c37, c111);
+        let x = builder.alloc_witness_hints(x_hint, "x")[0];
 
         let mul_result = builder.mul(c37, x);
         let sub_result = builder.sub(mul_result, c111);

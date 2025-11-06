@@ -5,7 +5,7 @@ use itertools::zip_eq;
 use p3_air::Air;
 use p3_challenger::{CanObserve, CanSample, CanSampleBits, FieldChallenger, GrindingChallenger};
 use p3_commit::{BatchOpening, Mmcs, Pcs, PolynomialSpace};
-use p3_field::{Field, PrimeCharacteristicRing, PrimeField, TwoAdicField};
+use p3_field::{PrimeCharacteristicRing, PrimeField, TwoAdicField};
 use p3_fri::{FriProof, TwoAdicFriPcs};
 use p3_uni_stark::{
     Domain, Proof, StarkGenericConfig, SymbolicAirBuilder, Val, VerifierConstraintFolder,
@@ -249,8 +249,8 @@ where
         // Check PoW witness.
         challenger.observe(opening_proof.pow_witness);
 
-        // Sample a challenge H(transcript||pow_witness). Later the circuit
-        // checks that the challenge start wiht enough 0s.
+        // Sample a challenge as H(transcript || pow_witness). The circuit later
+        // verifies that the challenge begins with the required number of leading zeros.
         let rand_f: Val<SC> = challenger.sample();
         let rand_usize = rand_f.as_canonical_biguint().to_u64_digits()[0] as usize;
         challenges.push(SC::Challenge::from_usize(rand_usize));

@@ -1,4 +1,3 @@
-use alloc::boxed::Box;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::marker::PhantomData;
@@ -6,7 +5,7 @@ use core::marker::PhantomData;
 use p3_field::{ExtensionField, Field, PrimeField64};
 use p3_uni_stark::{Entry, SymbolicExpression};
 
-use crate::op::WitnessFiller;
+use crate::op::WitnessHintFiller;
 use crate::{CircuitBuilder, CircuitError, ExprId};
 
 /// Identifiers for special row selector flags in the circuit.
@@ -136,16 +135,16 @@ pub fn reconstruct_index_from_bits<F: Field>(
 /// For a given input `input`, fills `n_bits` witness hints with `b_i`
 /// such that that:
 ///     input = Σ b_i · 2^i
-struct DecomposeToBitsFiller<BF: PrimeField64> {
+struct BinaryDecompositionHint<BF: PrimeField64> {
     inputs: Vec<ExprId>,
     n_bits: usize,
     _phantom: PhantomData<BF>,
 }
 
-impl<BF: PrimeField64> DecomposeToBitsFiller<BF> {
+impl<BF: PrimeField64> BinaryDecompositionHint<BF> {
     pub fn new(input: ExprId, n_bits: usize) -> Result<Self, CircuitError> {
         if n_bits > 64 {
-            return Err(CircuitError::UnconstrainedInputLengthMismatch {
+            return Err(CircuitError::UnconstrainedOpInputLengthMismatch {
                 expected: 64,
                 got: n_bits,
             });
@@ -158,7 +157,7 @@ impl<BF: PrimeField64> DecomposeToBitsFiller<BF> {
     }
 }
 
-impl<BF: PrimeField64, F: ExtensionField<BF>> WitnessFiller<F> for DecomposeToBitsFiller<BF> {
+impl<BF: PrimeField64, F: ExtensionField<BF>> WitnessHintFiller<F> for BinaryDecompositionHint<BF> {
     fn inputs(&self) -> &[ExprId] {
         &self.inputs
     }
@@ -169,7 +168,7 @@ impl<BF: PrimeField64, F: ExtensionField<BF>> WitnessFiller<F> for DecomposeToBi
 
     fn compute_outputs(&self, inputs_val: Vec<F>) -> Result<Vec<F>, CircuitError> {
         if inputs_val.len() != 1 {
-            return Err(crate::CircuitError::UnconstrainedInputLengthMismatch {
+            return Err(crate::CircuitError::UnconstrainedOpInputLengthMismatch {
                 expected: 1,
                 got: inputs_val.len(),
             });
@@ -179,10 +178,6 @@ impl<BF: PrimeField64, F: ExtensionField<BF>> WitnessFiller<F> for DecomposeToBi
             .map(|i| F::from_bool(val >> i & 1 == 1))
             .collect();
         Ok(bits)
-    }
-
-    fn boxed(&self) -> alloc::boxed::Box<dyn WitnessFiller<F>> {
-        Box::new(self.clone())
     }
 }
 
@@ -199,19 +194,8 @@ pub fn decompose_to_bits<F: ExtensionField<BF>, BF: PrimeField64>(
     builder.push_scope("decompose_to_bits");
 
     // Create bit witness variables
-    let filler = DecomposeToBitsFiller::new(x, n_bits)?;
-    let bits = builder.alloc_witness_hints(filler, "decompose_to_bits");
-
-    println!("nbits = {n_bits}");
-
-    // let mut bits = Vec::with_capacity(n_bits);
-
-    // // Create bit witness variables
-    // for _ in 0..n_bits {
-    //     let bit = builder.add_public_input(); // TODO: Should be witness
-    //     builder.assert_bool(bit);
-    //     bits.push(bit);
-    // }
+    let binary_decomposition_hint = BinaryDecompositionHint::new(x, n_bits)?;
+    let bits = builder.alloc_witness_hints(binary_decomposition_hint, "decompose_to_bits");
 
     // Constrain that the bits reconstruct to the original element
     let reconstructed = reconstruct_index_from_bits(builder, &bits);

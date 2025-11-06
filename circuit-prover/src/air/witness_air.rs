@@ -72,7 +72,7 @@ impl<F: Field, const D: usize> WitnessAir<F, D> {
                 "Extension field degree mismatch for witness value"
             );
             values.extend_from_slice(coeffs);
-            values.push(F::from_u64(trace.index[i].0 as u64));
+            values.push(F::from_u32(trace.index[i].0));
         }
 
         // Pad to power of two with monotonic index continuation
@@ -110,7 +110,7 @@ where
             let nxt = main.row_slice(1).expect("has next row");
             let idx_cur = cur[D].clone();
             let idx_next = nxt[D].clone();
-            b.assert_zero(idx_next - idx_cur - AB::Expr::from(AB::F::ONE));
+            b.assert_zero(idx_next - idx_cur - AB::Expr::ONE);
         }
     }
 }

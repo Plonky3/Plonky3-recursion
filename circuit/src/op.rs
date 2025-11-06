@@ -65,12 +65,12 @@ pub enum Op<F> {
 
     /// Load unconstrained values into the witness table
     ///
-    /// Sets `witness[output]` for each `output` in `outputs`, to aribitrary values
+    /// Sets `witness[output]`, for each `output` in `outputs`, to aribitrary values
     /// defined by `filler`
     Unconstrained {
         inputs: Vec<WitnessId>,
         outputs: Vec<WitnessId>,
-        filler: Box<dyn WitnessFiller<F>>,
+        filler: Box<dyn WitnessHintFiller<F>>,
     },
 
     /// Non-primitive operation with executor-based dispatch
@@ -112,7 +112,7 @@ impl<F: Field + Clone> Clone for Op<F> {
             } => Op::Unconstrained {
                 inputs: inputs.clone(),
                 outputs: outputs.clone(),
-                filler: filler.boxed(),
+                filler: filler.clone(),
             },
             Op::NonPrimitiveOpWithExecutor {
                 inputs,
@@ -399,8 +399,8 @@ impl<F: Field> Clone for Box<dyn NonPrimitiveExecutor<F>> {
     }
 }
 
-/// A trait for defining how unconstrained data is set.
-pub trait WitnessFiller<F>: Debug {
+/// A trait for defining how unconstrained data (hints) is set.
+pub trait WitnessHintFiller<F>: Debug + WitnessFillerClone<F> {
     /// Return the `ExprId` of the inputs
     fn inputs(&self) -> &[ExprId];
     /// Returns number of outputs filled by this filler
@@ -409,13 +409,24 @@ pub trait WitnessFiller<F>: Debug {
     /// # Arguments
     /// * `inputs` - Input witness
     fn compute_outputs(&self, inputs_val: Vec<F>) -> Result<Vec<F>, CircuitError>;
-
-    /// Clone as trait object
-    fn boxed(&self) -> Box<dyn WitnessFiller<F>>;
 }
 
-impl<F> Clone for Box<dyn WitnessFiller<F>> {
+impl<F> Clone for Box<dyn WitnessHintFiller<F>> {
     fn clone(&self) -> Self {
-        self.boxed()
+        self.clone_box()
+    }
+}
+
+// Object-safe "clone into Box" helper
+pub trait WitnessFillerClone<F> {
+    fn clone_box(&self) -> Box<dyn WitnessHintFiller<F>>;
+}
+
+impl<F, T> WitnessFillerClone<F> for T
+where
+    T: WitnessHintFiller<F> + Clone + 'static,
+{
+    fn clone_box(&self) -> Box<dyn WitnessHintFiller<F>> {
+        Box::new(self.clone())
     }
 }

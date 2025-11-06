@@ -1,6 +1,6 @@
 //! Recursive proof verification for Plonky3 STARKs.
 
-// #![no_std]
+#![no_std]
 
 extern crate alloc;
 

@@ -9,9 +9,8 @@ pub enum Expr<F> {
     Const(F),
     /// Public input at declaration position
     Public(usize),
-    /// Witness hints - allocates a WitnessId without adding a primitive op
-    /// The value will be set to an arbitrary value based on the values
-    /// of inputs.
+    /// Witness hints - allocates a WitnessId storing
+    /// a non-deterministic hint.
     Witness,
     /// Addition of two expressions
     Add { lhs: ExprId, rhs: ExprId },

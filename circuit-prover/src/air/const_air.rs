@@ -69,7 +69,7 @@ impl<F: Field, const D: usize> ConstAir<F, D> {
                 "extension degree mismatch for ConstTrace value"
             );
             values.extend_from_slice(coeffs);
-            values.push(F::from_u64(trace.index[i].0 as u64));
+            values.push(F::from_u32(trace.index[i].0));
         }
 
         // Pad to power of two by repeating last row
