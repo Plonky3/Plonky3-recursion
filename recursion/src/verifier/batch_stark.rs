@@ -135,27 +135,19 @@ impl<
             random: None,
         };
 
-        let mut trace_local = Vec::new();
-        let mut trace_next = Vec::new();
-        let mut quotient_chunks = Vec::new();
+        let mut values = CommitmentTargets::<SC::Challenge, Comm>::get_values(&commitments);
+
+        // Opened values, preserving per-instance allocation order.
         for inst in &input.opened_values.instances {
-            trace_local.extend(&inst.trace_local);
-            trace_next.extend(&inst.trace_next);
-            quotient_chunks.extend(inst.quotient_chunks.iter().cloned());
+            values.extend(inst.trace_local.iter().copied());
+            values.extend(inst.trace_next.iter().copied());
+            for chunk in &inst.quotient_chunks {
+                values.extend(chunk.iter().copied());
+            }
         }
 
-        let opened_values = OpenedValues {
-            trace_local,
-            trace_next,
-            quotient_chunks,
-            random: None,
-        };
-
-        CommitmentTargets::<SC::Challenge, Comm>::get_values(&commitments)
-            .into_iter()
-            .chain(OpenedValuesTargets::<SC>::get_values(&opened_values))
-            .chain(OpeningProof::get_values(&input.opening_proof))
-            .collect()
+        values.extend(OpeningProof::get_values(&input.opening_proof));
+        values
     }
 }
 
