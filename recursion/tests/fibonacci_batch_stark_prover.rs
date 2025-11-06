@@ -352,6 +352,11 @@ fn test_fibonacci_batch_verifier() {
     println!("✓ Recursive batch STARK verification circuit built successfully!");
     println!("  Circuit has {} public inputs", public_inputs.len());
     println!("  Generated {} challenges", all_challenges.len());
+
+    // Actually run the circuit to ensure constraints are satisfiable
+    let mut runner = verification_circuit.runner();
+    runner.set_public_inputs(&public_inputs).unwrap();
+    let _traces = runner.run().unwrap();
 }
 
 fn compute_fibonacci_classical(n: usize) -> F {

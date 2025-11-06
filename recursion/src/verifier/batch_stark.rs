@@ -9,7 +9,7 @@ use p3_circuit::op::{NonPrimitiveOpConfig, NonPrimitiveOpType};
 use p3_circuit::utils::ColumnsTargets;
 use p3_commit::{Pcs, PolynomialSpace};
 use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
-use p3_uni_stark::{OpenedValues, StarkGenericConfig};
+use p3_uni_stark::StarkGenericConfig;
 use p3_util::zip_eq::zip_eq;
 
 use super::{ObservableCommitment, VerificationError, recompose_quotient_from_chunks_circuit};
