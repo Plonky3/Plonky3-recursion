@@ -6,7 +6,6 @@ use core::marker::PhantomData;
 use p3_air::{Air as P3Air, AirBuilder as P3AirBuilder, BaseAir as P3BaseAir};
 use p3_batch_stark::BatchProof;
 use p3_circuit::CircuitBuilder;
-use p3_circuit::op::{NonPrimitiveOpConfig, NonPrimitiveOpType};
 use p3_circuit::utils::ColumnsTargets;
 use p3_circuit_prover::air::{AddAir, ConstAir, MulAir, PublicAir, WitnessAir};
 use p3_circuit_prover::batch_stark_prover::{RowCounts, Table};
@@ -15,10 +14,10 @@ use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
 use p3_uni_stark::StarkGenericConfig;
 
 use super::{ObservableCommitment, VerificationError, recompose_quotient_from_chunks_circuit};
-use crate::Target;
 use crate::challenger::CircuitChallenger;
 use crate::traits::{Recursive, RecursiveAir, RecursiveChallenger, RecursivePcs};
 use crate::types::{CommitmentTargets, OpenedValuesTargets, ProofTargets};
+use crate::{BatchStarkVerifierInputsBuilder, Target};
 
 /// Type alias for PCS verifier parameters.
 pub type PcsVerifierParams<SC, InputProof, OpeningProof, Comm> =
@@ -91,10 +90,7 @@ pub fn verify_p3_recursion_proof_circuit<
     circuit: &mut CircuitBuilder<SC::Challenge>,
     proof: &p3_circuit_prover::batch_stark_prover::BatchStarkProof<SC>,
     pcs_params: &PcsVerifierParams<SC, InputProof, OpeningProof, Comm>,
-) -> Result<
-    crate::public_inputs::BatchStarkVerifierInputsBuilder<SC, Comm, OpeningProof>,
-    VerificationError,
->
+) -> Result<BatchStarkVerifierInputsBuilder<SC, Comm, OpeningProof>, VerificationError>
 where
     <SC as StarkGenericConfig>::Pcs: RecursivePcs<
             SC,
@@ -132,11 +128,11 @@ where
 
     // TODO: public values are empty for all circuit tables for now.
     let air_public_counts = vec![0usize; proof.proof.opened_values.instances.len()];
-    let verifier_inputs = crate::public_inputs::BatchStarkVerifierInputsBuilder::<
-        SC,
-        Comm,
-        OpeningProof,
-    >::allocate(circuit, &proof.proof, &air_public_counts);
+    let verifier_inputs = BatchStarkVerifierInputsBuilder::<SC, Comm, OpeningProof>::allocate(
+        circuit,
+        &proof.proof,
+        &air_public_counts,
+    );
 
     verify_batch_circuit::<
         CircuitTablesAir<SC::Challenge, TRACE_D>,
@@ -244,6 +240,10 @@ impl<
             },
             opened_values_targets,
             opening_proof: OpeningProof::new(circuit, &input.opening_proof),
+            // Placeholder value: degree_bits is not used from the flattened ProofTargets in batch verification.
+            // The actual per-instance degree bits are stored in BatchProofTargets.degree_bits (Vec<usize>)
+            // and used directly by the verifier. The flattened structure is only used for PCS verification
+            // which doesn't access this field.
             degree_bits: 0,
         };
 
@@ -309,25 +309,13 @@ where
     SC::Challenge: PrimeCharacteristicRing,
     <<SC as StarkGenericConfig>::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain: Clone,
 {
+    //TODO: Add support for ZK mode.
     debug_assert_eq!(config.is_zk(), 0, "batch recursion assumes non-ZK");
     if airs.is_empty() {
         return Err(VerificationError::InvalidProofShape(
             "batch-STARK verification requires at least one instance".to_string(),
         ));
     }
-
-    if SC::Pcs::ZK {
-        return Err(VerificationError::InvalidProofShape(
-            "ZK mode is not supported for batch-STARK recursion".to_string(),
-        ));
-    }
-
-    // Enable hash operations for CircuitChallenger
-    circuit.enable_op(
-        NonPrimitiveOpType::HashAbsorb { reset: true },
-        NonPrimitiveOpConfig::None,
-    );
-    circuit.enable_op(NonPrimitiveOpType::HashSqueeze, NonPrimitiveOpConfig::None);
 
     if airs.len() != proof_targets.instances.len()
         || airs.len() != public_values.len()

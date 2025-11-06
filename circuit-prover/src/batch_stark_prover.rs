@@ -28,6 +28,7 @@ pub enum Table {
     Mul = 4,
 }
 
+// TODO(Robin): Remove with dynamic dispatch
 /// Number of circuit tables included in the unified batch STARK proof.
 pub const NUM_TABLES: usize = Table::Mul as usize + 1;
 
