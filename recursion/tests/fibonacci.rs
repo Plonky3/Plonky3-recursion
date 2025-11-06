@@ -8,13 +8,12 @@ use p3_field::extension::BinomialExtensionField;
 use p3_field::{Field, PrimeCharacteristicRing};
 use p3_fri::{TwoAdicFriPcs, create_test_fri_params};
 use p3_merkle_tree::MerkleTreeMmcs;
-use p3_recursion::circuit_verifier::{VerificationError, verify_circuit};
-use p3_recursion::public_inputs::StarkVerifierInputsBuilder;
-use p3_recursion::recursive_generation::generate_challenges;
-use p3_recursion::recursive_pcs::{
+use p3_recursion::pcs::fri::{
     FriProofTargets, FriVerifierParams, HashTargets, InputProofTargets, RecExtensionValMmcs,
     RecValMmcs, Witness,
 };
+use p3_recursion::public_inputs::StarkVerifierInputsBuilder;
+use p3_recursion::{VerificationError, generate_challenges, verify_circuit};
 use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
 use p3_uni_stark::{StarkConfig, StarkGenericConfig, Val, prove, verify};
 use rand::SeedableRng;
@@ -22,14 +21,15 @@ use rand::rngs::SmallRng;
 
 type F = BabyBear;
 const D: usize = 4;
+const RATE: usize = 8;
 type Challenge = BinomialExtensionField<F, D>;
 type Dft = Radix2DitParallel<F>;
 type Perm = Poseidon2BabyBear<16>;
-type MyHash = PaddingFreeSponge<Perm, 16, 8, 8>;
+type MyHash = PaddingFreeSponge<Perm, 16, RATE, 8>;
 type MyCompress = TruncatedPermutation<Perm, 2, 8, 16>;
 type ValMmcs = MerkleTreeMmcs<<F as Field>::Packing, <F as Field>::Packing, MyHash, MyCompress, 8>;
 type ChallengeMmcs = ExtensionMmcs<F, Challenge, ValMmcs>;
-type Challenger = DuplexChallenger<F, Perm, 16, 8>;
+type Challenger = DuplexChallenger<F, Perm, 16, RATE>;
 type MyPcs = TwoAdicFriPcs<F, Dft, ValMmcs, ChallengeMmcs>;
 type MyConfig = StarkConfig<MyPcs, Challenge, Challenger>;
 
@@ -97,6 +97,7 @@ fn test_fibonacci_verifier() -> Result<(), VerificationError> {
         HashTargets<F, DIGEST_ELEMS>,
         InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>>,
         InnerFri,
+        RATE,
     >(
         &config,
         &air,

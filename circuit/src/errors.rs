@@ -2,8 +2,9 @@ use alloc::string::String;
 
 use thiserror::Error;
 
-use crate::WitnessId;
 use crate::op::NonPrimitiveOpType;
+use crate::types::NonPrimitiveOpId;
+use crate::{CircuitBuilderError, ExprId, WitnessId};
 
 /// Errors that can occur during circuit execution and trace generation.
 #[derive(Debug, Error)]
@@ -48,11 +49,11 @@ pub enum CircuitError {
 
     /// Non-primitive op attempted to read a witness value that was not set.
     #[error("Witness value not set for non-primitive operation {operation_index}")]
-    NonPrimitiveOpWitnessNotSet { operation_index: usize },
+    NonPrimitiveOpWitnessNotSet { operation_index: NonPrimitiveOpId },
 
     /// Missing private data for a non-primitive operation.
     #[error("Missing private data for non-primitive operation {operation_index}")]
-    NonPrimitiveOpMissingPrivateData { operation_index: usize },
+    NonPrimitiveOpMissingPrivateData { operation_index: NonPrimitiveOpId },
 
     /// Division by zero encountered.
     #[error("Division by zero encountered")]
@@ -87,7 +88,7 @@ pub enum CircuitError {
     )]
     IncorrectNonPrimitiveOpPrivateDataSize {
         op: NonPrimitiveOpType,
-        expected: usize,
+        expected: String,
         got: usize,
     },
 
@@ -97,8 +98,16 @@ pub enum CircuitError {
     )]
     IncorrectNonPrimitiveOpPrivateData {
         op: NonPrimitiveOpType,
-        operation_index: usize,
+        operation_index: NonPrimitiveOpId,
         expected: String,
         got: String,
     },
+
+    /// ExprId not found.
+    #[error("ExprId {expr_id} not found")]
+    ExprIdNotFound { expr_id: ExprId },
+
+    /// Invalid Circuit
+    #[error("Failed to build circuit: {error}")]
+    InvalidCircuit { error: CircuitBuilderError },
 }

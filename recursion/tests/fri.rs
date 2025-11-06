@@ -15,11 +15,6 @@ use p3_recursion::public_inputs::{CommitmentOpening, FriVerifierInputs};
 use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
-use tracing_forest::ForestLayer;
-use tracing_forest::util::LevelFilter;
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::{EnvFilter, Registry};
 
 type Challenge = ExtF<F, 4>;
 type MyChallenger = Challenger<F, Perm<16>, 16, 8>;
@@ -31,16 +26,16 @@ type ChallengeMmcs = p3_commit::ExtensionMmcs<F, Challenge, ValMmcs>;
 type PCS = TwoAdicFriPcs<F, Dft<F>, ValMmcs, ChallengeMmcs>;
 
 // Recursive target graph pieces
-use p3_recursion::recursive_pcs::{
+use p3_recursion::Recursive;
+use p3_recursion::pcs::fri::{
     FriProofTargets, InputProofTargets, RecExtensionValMmcs, RecValMmcs, Witness as RecWitness,
 };
-use p3_recursion::recursive_traits::Recursive;
 
 type RecVal = RecValMmcs<F, 8, MyHash, MyCompress>;
 type RecExt = RecExtensionValMmcs<F, Challenge, 8, RecVal>;
 
 // Bring the circuit we're testing.
-use p3_recursion::circuit_fri_verifier::verify_fri_circuit;
+use p3_recursion::pcs::fri::verify_fri_circuit;
 
 /// Alias for FriProofTargets used for lens/value extraction and allocation
 type FriTargets =
@@ -54,17 +49,6 @@ type CommitmentsWithPoints = Vec<(
         Vec<(Challenge, Vec<Challenge>)>,
     )>,
 )>;
-
-fn init_logger() {
-    let env_filter = EnvFilter::builder()
-        .with_default_directive(LevelFilter::INFO.into())
-        .from_env_lossy();
-
-    Registry::default()
-        .with(env_filter)
-        .with(ForestLayer::default())
-        .init();
-}
 
 /// Helper: build one group's evaluation matrices for a given seed and sizes.
 fn make_evals(
@@ -91,7 +75,6 @@ fn make_evals(
 }
 
 /// Holds all the public inputs and challenges required for a recursive FRI verification circuit.
-#[derive(Debug)]
 struct ProduceInputsResult {
     /// FRI values, ordered to match the structure required by `FriProofTargets`.
     fri_values: Vec<Challenge>,
@@ -107,8 +90,8 @@ struct ProduceInputsResult {
     num_phases: usize,
     /// The log base 2 of the size of the largest domain.
     log_max_height: usize,
-    /// The shape of the FRI values, indicating the number of values per proof component.
-    fri_lens: Vec<usize>,
+    /// The FRI proof
+    fri_proof: <PCS as Pcs<Challenge, MyChallenger>>::Proof,
 }
 
 /// Produce all public inputs for a recursive FRI verification circuit over **multiple input batches**.
@@ -185,7 +168,7 @@ fn produce_inputs_multi(
         ref query_proofs,
         final_poly,
         pow_witness,
-    } = fri_proof;
+    } = fri_proof.clone();
 
     // Observe all opened evaluation values (same order)
     for values in &point_values_flat {
@@ -253,14 +236,7 @@ fn produce_inputs_multi(
         commitments_with_points.push((commit_placeholder, mats_data));
     }
 
-    // —— FriProofTargets lens + values ——
-    let fri_lens: Vec<usize> = FriTargets::lens(&p3_fri::FriProof {
-        commit_phase_commits: commit_phase_commits.clone(),
-        query_proofs: query_proofs.clone(),
-        final_poly: final_poly.clone(),
-        pow_witness,
-    })
-    .collect();
+    // —— FriProofTargets values ——
 
     let fri_values: Vec<Challenge> = FriTargets::get_values(&p3_fri::FriProof {
         commit_phase_commits,
@@ -277,7 +253,7 @@ fn produce_inputs_multi(
         commitments_with_points,
         num_phases,
         log_max_height,
-        fri_lens,
+        fri_proof,
     }
 }
 
@@ -404,7 +380,6 @@ fn run_fri_test(setup: FriSetup, build_only: bool) {
     // Shape checks (must match so we can reuse one circuit)
     assert_eq!(result_1.num_phases, result_2.num_phases);
     assert_eq!(result_1.log_max_height, result_2.log_max_height);
-    assert_eq!(result_1.fri_lens, result_2.fri_lens);
 
     let num_phases = result_1.num_phases;
     let log_max_height = result_1.log_max_height;
@@ -413,16 +388,14 @@ fn run_fri_test(setup: FriSetup, build_only: bool) {
     // ——— Build circuit once (using first proof's shape) ———
     let mut builder = CircuitBuilder::<Challenge>::new();
 
-    // 1) Allocate FriProofTargets using lens from instance 1
-    let mut lens_iter = result_1.fri_lens.clone().into_iter();
-    let fri_targets = FriTargets::new(&mut builder, &mut lens_iter, /*degree_bits unused*/ 0);
+    // 1) Allocate FriProofTargets using instance 1
+    let fri_targets = FriTargets::new(&mut builder, &result_1.fri_proof);
 
     // Verify the final polynomial has the expected length
     assert_eq!(
         fri_targets.final_poly.len(),
         expected_final_poly_len,
-        "Circuit final polynomial should have {} coefficients",
-        expected_final_poly_len
+        "Circuit final polynomial should have {expected_final_poly_len} coefficients"
     );
 
     // 2) Public inputs for α, βs, index bits
@@ -472,7 +445,8 @@ fn run_fri_test(setup: FriSetup, build_only: bool) {
         &index_bits_t_per_query,
         &commitments_with_opening_points_targets,
         log_blowup,
-    );
+    )
+    .unwrap();
 
     builder.dump_allocation_log();
     let circuit = builder.build().unwrap();
@@ -541,8 +515,6 @@ fn test_circuit_fri_verifier_degree_3_final_poly() {
 
 #[test]
 fn test_circuit_fri_verifier_scoped_builder() {
-    init_logger();
-
     let groups = vec![vec![0u8, 5, 8, 8, 10], vec![8u8, 11], vec![4u8, 5, 8]];
     let setup = generate_setup(0, groups);
     run_fri_test(setup, true);

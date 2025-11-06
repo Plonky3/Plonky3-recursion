@@ -29,6 +29,7 @@ categories = ["cryptography::cryptocurrencies"]
 # Plonky3 dependencies - shared across all crates
 p3-air = { git = "https://github.com/Plonky3/Plonky3" }
 p3-baby-bear = { git = "https://github.com/Plonky3/Plonky3" }
+p3-batch-stark = { git = "https://github.com/Plonky3/Plonky3" }
 p3-challenger = { git = "https://github.com/Plonky3/Plonky3" }
 p3-circle = { git = "https://github.com/Plonky3/Plonky3" }
 p3-commit = { git = "https://github.com/Plonky3/Plonky3" }
@@ -51,6 +52,7 @@ p3-util = { git = "https://github.com/Plonky3/Plonky3" }
 itertools = { version = "0.14.0", default-features = false, features = [
     "use_alloc",
 ] }
+proptest = { version = "1.5", default-features = true }
 rand = { version = "0.9.2", default-features = false, features = ["small_rng"] }
 serde = { version = "1.0", default-features = false, features = [
     "derive",
