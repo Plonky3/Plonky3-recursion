@@ -291,7 +291,6 @@ where
     );
 
     // Get PCS-specific challenges (FRI betas, query indices, etc.)
-    opened_values.observe(circuit, &mut challenger);
     let pcs_challenges = SC::Pcs::get_challenges_circuit::<RATE>(
         circuit,
         &mut challenger,

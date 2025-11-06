@@ -14,6 +14,7 @@ categories.workspace = true
 p3-air.workspace = true
 p3-batch-stark.workspace = true
 p3-challenger.workspace = true
+p3-circuit-prover.workspace = true
 p3-commit.workspace = true
 p3-field.workspace = true
 p3-fri.workspace = true
@@ -21,7 +22,6 @@ p3-merkle-tree.workspace = true
 p3-symmetric.workspace = true
 p3-uni-stark.workspace = true
 p3-util.workspace = true
-p3-circuit-prover.workspace = true
 
 # Other dependencies
 itertools.workspace = true

@@ -437,7 +437,7 @@ where
         InputProofTargets<Val<SC>, SC::Challenge, RecursiveInputMmcs>,
     >;
 
-    /// Caller must observe all opened values before invoking this method.
+    /// Observes all opened values and derives PCS-specific challenges.
     fn get_challenges_circuit<const RATE: usize>(
         circuit: &mut CircuitBuilder<SC::Challenge>,
         challenger: &mut CircuitChallenger<RATE>,
