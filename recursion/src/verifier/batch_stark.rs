@@ -32,6 +32,7 @@ pub type PcsVerifierParams<SC, InputProof, OpeningProof, Comm> =
         >>::Domain,
     >>::VerifierParams;
 
+// TODO(Robin): Remove with dynamic dispatch
 /// Wrapper enum for heterogeneous circuit table AIRs used by circuit-prover tables.
 pub enum CircuitTablesAir<F: Field, const D: usize> {
     Witness(WitnessAir<F, D>),
