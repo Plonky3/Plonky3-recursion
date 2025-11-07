@@ -10,7 +10,7 @@ use p3_circuit::{CircuitBuilder, ExprId, MmcsOps, NonPrimitiveOpPrivateData};
 use p3_circuit_prover::prover::ProverError;
 use p3_circuit_prover::{MultiTableProver, config};
 use p3_field::PrimeCharacteristicRing;
-use p3_field::extension::BinomialExtensionField;
+use p3_field::extension::{BinomialExtensionField, BinomiallyExtendable};
 use tracing_forest::ForestLayer;
 use tracing_forest::util::LevelFilter;
 use tracing_subscriber::layer::SubscriberExt;
@@ -145,7 +145,8 @@ fn main() -> Result<(), ProverError> {
     )?;
     let traces = runner.run()?;
     let multi_prover = MultiTableProver::new(config).with_mmcs_table(mmcs_config.into());
-    let proof = multi_prover.prove_all_tables(&traces)?;
+    let proof = multi_prover
+        .prove_all_tables_extension(&traces, <BabyBear as BinomiallyExtendable<4>>::W)?;
     multi_prover.verify_all_tables(&proof)?;
 
     Ok(())

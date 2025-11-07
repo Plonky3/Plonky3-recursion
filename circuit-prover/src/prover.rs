@@ -23,7 +23,6 @@ use tracing::instrument;
 
 use crate::air::{AddAir, ConstAir, MulAir, PublicAir, WitnessAir};
 use crate::config::StarkField;
-use crate::field_params::ExtractBinomialW;
 
 /// Configuration for packing multiple primitive operations into a single AIR row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -162,28 +161,44 @@ where
         self
     }
 
-    /// Generate proofs for all circuit tables.
+    /// Generate proofs for all circuit tables (base field only).
     ///
-    /// Automatically detects whether to use base field or binomial extension field
-    /// proving based on the circuit element type `EF`. For extension fields,
-    /// the binomial parameter W is automatically extracted.
+    /// For extension fields, use `prove_all_tables_extension()`.
     #[instrument(skip_all)]
     pub fn prove_all_tables<EF>(
         &self,
         traces: &Traces<EF>,
     ) -> Result<MultiTableProof<SC>, ProverError>
     where
-        EF: Field + BasedVectorSpace<Val<SC>> + ExtractBinomialW<Val<SC>>,
+        EF: Field + BasedVectorSpace<Val<SC>>,
     {
         let pis = vec![];
-        let w_opt = EF::extract_w();
         match EF::DIMENSION {
             1 => self.prove_for_degree::<EF, 1>(traces, &pis, None),
-            2 => self.prove_for_degree::<EF, 2>(traces, &pis, w_opt),
-            4 => self.prove_for_degree::<EF, 4>(traces, &pis, w_opt),
-            6 => self.prove_for_degree::<EF, 6>(traces, &pis, w_opt),
-            8 => self.prove_for_degree::<EF, 8>(traces, &pis, w_opt),
-            d => Err(ProverError::UnsupportedDegree(d)),
+            _ => Err(ProverError::MissingWForExtension),
+        }
+    }
+
+    /// Generate proofs for all circuit tables with explicit binomial parameter W.
+    ///
+    /// The caller must provide the binomial parameter W for extension fields.
+    /// For base fields (D=1), use `prove_all_tables()` instead.
+    #[instrument(skip_all)]
+    pub fn prove_all_tables_extension<EF>(
+        &self,
+        traces: &Traces<EF>,
+        w: Val<SC>,
+    ) -> Result<MultiTableProof<SC>, ProverError>
+    where
+        EF: Field + BasedVectorSpace<Val<SC>>,
+    {
+        let pis = vec![];
+        match EF::DIMENSION {
+            2 => self.prove_for_degree::<EF, 2>(traces, &pis, Some(w)),
+            4 => self.prove_for_degree::<EF, 4>(traces, &pis, Some(w)),
+            6 => self.prove_for_degree::<EF, 6>(traces, &pis, Some(w)),
+            8 => self.prove_for_degree::<EF, 8>(traces, &pis, Some(w)),
+            _ => Err(ProverError::UnsupportedDegree(EF::DIMENSION)),
         }
     }
 
@@ -346,7 +361,7 @@ where
 mod tests {
     use p3_baby_bear::BabyBear;
     use p3_circuit::CircuitBuilder;
-    use p3_field::extension::BinomialExtensionField;
+    use p3_field::extension::{BinomialExtensionField, BinomiallyExtendable};
     use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
     use p3_goldilocks::Goldilocks;
     use p3_koala_bear::KoalaBear;
@@ -467,13 +482,15 @@ mod tests {
         // Create BabyBear prover for extension field (D=4)
         let config = config::baby_bear().build();
         let multi_prover = MultiTableProver::new(config);
-        let proof = multi_prover.prove_all_tables(&traces)?;
+        let proof = multi_prover
+            .prove_all_tables_extension(&traces, <BabyBear as BinomiallyExtendable<4>>::W)?;
 
         // Verify proof has correct extension degree and W parameter
         assert_eq!(proof.ext_degree, 4);
-        // Derive W via trait to avoid hardcoding constants
-        let expected_w = <ExtField as ExtractBinomialW<BabyBear>>::extract_w().unwrap();
-        assert_eq!(proof.w_binomial, Some(expected_w));
+        assert_eq!(
+            proof.w_binomial,
+            Some(<BabyBear as BinomiallyExtendable<4>>::W)
+        );
 
         multi_prover.verify_all_tables(&proof)?;
         Ok(())
@@ -595,12 +612,15 @@ mod tests {
         // Create KoalaBear prover for extension field (D=8)
         let config = config::koala_bear().build();
         let multi_prover = MultiTableProver::new(config);
-        let proof = multi_prover.prove_all_tables(&traces)?;
+        let proof = multi_prover
+            .prove_all_tables_extension(&traces, <KoalaBear as BinomiallyExtendable<8>>::W)?;
 
         // Verify proof has correct extension degree and W parameter for KoalaBear (D=8)
         assert_eq!(proof.ext_degree, 8);
-        let expected_w_kb = <KBExtField as ExtractBinomialW<KoalaBear>>::extract_w().unwrap();
-        assert_eq!(proof.w_binomial, Some(expected_w_kb));
+        assert_eq!(
+            proof.w_binomial,
+            Some(<KoalaBear as BinomiallyExtendable<8>>::W)
+        );
 
         multi_prover.verify_all_tables(&proof)?;
         Ok(())
@@ -650,12 +670,15 @@ mod tests {
         let config = config::goldilocks().build();
         let multi_prover = MultiTableProver::new(config);
 
-        let proof = multi_prover.prove_all_tables(&traces)?;
+        let proof = multi_prover
+            .prove_all_tables_extension(&traces, <Goldilocks as BinomiallyExtendable<2>>::W)?;
 
         // Check extension metadata and verify
         assert_eq!(proof.ext_degree, 2);
-        let expected_w = <ExtField as ExtractBinomialW<Goldilocks>>::extract_w().unwrap();
-        assert_eq!(proof.w_binomial, Some(expected_w));
+        assert_eq!(
+            proof.w_binomial,
+            Some(<Goldilocks as BinomiallyExtendable<2>>::W)
+        );
 
         multi_prover.verify_all_tables(&proof)?;
         Ok(())
