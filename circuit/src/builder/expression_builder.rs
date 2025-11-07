@@ -111,10 +111,7 @@ where
     #[allow(unused_variables)]
     #[must_use]
     pub fn add_witness_hint(&mut self, label: &'static str) -> ExprId {
-        let expr_id = self.graph.add_expr(Expr::Witness {
-            last_hint: false,
-            has_filler: false,
-        });
+        let expr_id = self.graph.add_expr(Expr::Witness { last_hint: true });
 
         #[cfg(debug_assertions)]
         self.allocation_log.push(AllocationEntry {
@@ -143,7 +140,6 @@ where
             .map(|i| {
                 self.graph.add_expr(Expr::Witness {
                     last_hint: i == n_outputs - 1,
-                    has_filler: true,
                 })
             })
             .collect_vec();
@@ -601,16 +597,7 @@ mod tests {
         assert_eq!(builder.graph().nodes().len(), 4);
 
         match (&builder.graph().nodes()[2], &builder.graph().nodes()[3]) {
-            (
-                Expr::Witness {
-                    last_hint: false,
-                    has_filler: true,
-                },
-                Expr::Witness {
-                    last_hint: true,
-                    has_filler: true,
-                },
-            ) => (),
+            (Expr::Witness { last_hint: false }, Expr::Witness { last_hint: true }) => (),
             _ => panic!("Expected Witness operation"),
         }
     }

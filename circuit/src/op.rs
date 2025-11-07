@@ -1,4 +1,5 @@
 use alloc::boxed::Box;
+use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt::Debug;
 use core::hash::Hash;
@@ -414,6 +415,29 @@ pub trait WitnessHintFiller<F>: Debug + WitnessFillerClone<F> {
 impl<F> Clone for Box<dyn WitnessHintFiller<F>> {
     fn clone(&self) -> Self {
         self.clone_box()
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct DefaultHint {}
+
+impl DefaultHint {
+    pub fn boxed_default<F: Default>() -> Box<dyn WitnessHintFiller<F>> {
+        Box::new(Self::default())
+    }
+}
+
+impl<F: Default> WitnessHintFiller<F> for DefaultHint {
+    fn inputs(&self) -> &[ExprId] {
+        &[]
+    }
+
+    fn n_outputs(&self) -> usize {
+        1
+    }
+
+    fn compute_outputs(&self, _inputs_val: Vec<F>) -> Result<Vec<F>, CircuitError> {
+        Ok(vec![F::default()])
     }
 }
 

@@ -10,7 +10,7 @@ use crate::Op;
 use crate::builder::CircuitBuilderError;
 use crate::builder::compiler::get_witness_id;
 use crate::expr::{Expr, ExpressionGraph};
-use crate::op::WitnessHintFiller;
+use crate::op::{DefaultHint, WitnessHintFiller};
 use crate::types::{ExprId, WitnessAllocator, WitnessId};
 
 /// Sparse disjoint-set "find" with path compression over a HashMap (iterative).
@@ -189,29 +189,18 @@ where
 
         // Pass C: emit arithmetic ops in creation order; tie outputs to class slot if connected
         let mut hints_sequence = vec![];
-        let mut hints_wit_fillers_iter = self.hints_with_fillers.iter();
+        let mut fillers_iter = self.hints_with_fillers.iter().cloned();
         for (expr_idx, expr) in self.graph.nodes().iter().enumerate() {
             let expr_id = ExprId(expr_idx as u32);
             match expr {
                 Expr::Const(_) | Expr::Public(_) => { /* handled above */ }
-                Expr::Witness {
-                    has_filler: false, ..
-                } => {
-                    let expr_id = ExprId(expr_idx as u32);
-                    let out_widx = alloc_witness_id_for_expr(expr_idx);
-                    expr_to_widx.insert(expr_id, out_widx);
-                    hints_sequence.push(out_widx);
-                }
-                Expr::Witness {
-                    last_hint,
-                    has_filler: true,
-                } => {
+                Expr::Witness { last_hint } => {
                     let expr_id = ExprId(expr_idx as u32);
                     let out_widx = alloc_witness_id_for_expr(expr_idx);
                     expr_to_widx.insert(expr_id, out_widx);
                     hints_sequence.push(out_widx);
                     if *last_hint {
-                        let filler = hints_wit_fillers_iter.next().expect("Hints with fillers can be only created with `alloc_witness_hints`, which in turn must have add a filler");
+                        let filler = fillers_iter.next().unwrap_or(DefaultHint::boxed_default());
                         let inputs = filler
                             .inputs()
                             .iter()
@@ -228,7 +217,7 @@ where
                         primitive_ops.push(Op::Unconstrained {
                             inputs,
                             outputs: hints_sequence,
-                            filler: filler.clone(),
+                            filler,
                         });
                         hints_sequence = vec![];
                     }
