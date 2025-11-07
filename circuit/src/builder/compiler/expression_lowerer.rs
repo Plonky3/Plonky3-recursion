@@ -74,13 +74,11 @@ pub struct ExpressionLowerer<'a, F> {
     public_input_count: usize,
 
     /// The hint witnesses with their respective filler
-    hints_with_fillers: &'a [HintsWithFiller<F>],
+    hints_with_fillers: &'a [Box<dyn WitnessHintFiller<F>>],
 
     /// Witness allocator
     witness_alloc: WitnessAllocator,
 }
-
-pub type HintsWithFiller<F> = (Vec<ExprId>, Box<dyn WitnessHintFiller<F>>);
 
 impl<'a, F> ExpressionLowerer<'a, F>
 where
@@ -91,7 +89,7 @@ where
         graph: &'a ExpressionGraph<F>,
         pending_connects: &'a [(ExprId, ExprId)],
         public_input_count: usize,
-        hints_with_fillers: &'a [HintsWithFiller<F>],
+        hints_with_fillers: &'a [Box<dyn WitnessHintFiller<F>>],
         witness_alloc: WitnessAllocator,
     ) -> Self {
         Self {
@@ -189,58 +187,52 @@ where
             }
         }
 
-        // Pass C: collect witness hints and emit `Unconstrained` operatios
-        for expr_idx in self
-            .graph
-            .nodes()
-            .iter()
-            .enumerate()
-            .filter(|(_, expr)| matches!(expr, Expr::Witness))
-            .map(|(expr_idx, _)| expr_idx)
-        {
-            let expr_id = ExprId(expr_idx as u32);
-            let out_widx = alloc_witness_id_for_expr(expr_idx);
-            expr_to_widx.insert(expr_id, out_widx);
-        }
-        for (witness_hints, filler) in self.hints_with_fillers.iter() {
-            let inputs = filler
-                .inputs()
-                .iter()
-                .map(|expr_id| {
-                    expr_to_widx
-                        .get(expr_id)
-                        .ok_or(CircuitBuilderError::MissingExprMapping {
-                            expr_id: *expr_id,
-                            context: "Unconstrained op".to_string(),
-                        })
-                        .copied()
-                })
-                .collect::<Result<Vec<WitnessId>, _>>()?;
-            let outputs = witness_hints
-                .iter()
-                .map(|expr_id| {
-                    expr_to_widx
-                        .get(expr_id)
-                        .ok_or(CircuitBuilderError::MissingExprMapping {
-                            expr_id: *expr_id,
-                            context: "Unconstrained op".to_string(),
-                        })
-                        .copied()
-                })
-                .collect::<Result<Vec<WitnessId>, _>>()?;
-            primitive_ops.push(Op::Unconstrained {
-                inputs,
-                outputs,
-                filler: filler.clone(),
-            })
-        }
-
-        // Pass D: emit arithmetic ops in creation order; tie outputs to class slot if connected
+        // Pass C: emit arithmetic ops in creation order; tie outputs to class slot if connected
+        let mut hints_sequence = vec![];
+        let mut hints_wit_fillers_iter = self.hints_with_fillers.iter();
         for (expr_idx, expr) in self.graph.nodes().iter().enumerate() {
             let expr_id = ExprId(expr_idx as u32);
             match expr {
-                Expr::Const(_) | Expr::Public(_) | Expr::Witness => { /* handled above */ }
-
+                Expr::Const(_) | Expr::Public(_) => { /* handled above */ }
+                Expr::Witness {
+                    has_filler: false, ..
+                } => {
+                    let expr_id = ExprId(expr_idx as u32);
+                    let out_widx = alloc_witness_id_for_expr(expr_idx);
+                    expr_to_widx.insert(expr_id, out_widx);
+                    hints_sequence.push(out_widx);
+                }
+                Expr::Witness {
+                    last_hint,
+                    has_filler: true,
+                } => {
+                    let expr_id = ExprId(expr_idx as u32);
+                    let out_widx = alloc_witness_id_for_expr(expr_idx);
+                    expr_to_widx.insert(expr_id, out_widx);
+                    hints_sequence.push(out_widx);
+                    if *last_hint {
+                        let filler = hints_wit_fillers_iter.next().expect("Hints with fillers can be only created with `alloc_witness_hints`, which in turn must have add a filler");
+                        let inputs = filler
+                            .inputs()
+                            .iter()
+                            .map(|expr_id| {
+                                expr_to_widx
+                                    .get(expr_id)
+                                    .ok_or(CircuitBuilderError::MissingExprMapping {
+                                        expr_id: *expr_id,
+                                        context: "Unconstrained op".to_string(),
+                                    })
+                                    .copied()
+                            })
+                            .collect::<Result<Vec<WitnessId>, _>>()?;
+                        primitive_ops.push(Op::Unconstrained {
+                            inputs,
+                            outputs: hints_sequence,
+                            filler: filler.clone(),
+                        });
+                        hints_sequence = vec![];
+                    }
+                }
                 Expr::Add { lhs, rhs } => {
                     let out_widx = alloc_witness_id_for_expr(expr_idx);
                     let a_widx = get_witness_id(

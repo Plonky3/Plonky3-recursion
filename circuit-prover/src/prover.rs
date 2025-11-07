@@ -11,7 +11,6 @@
 //! detection of the binomial parameter `W` for extension-field multiplication.
 
 use alloc::vec;
-use alloc::vec::Vec;
 
 use p3_circuit::tables::Traces;
 use p3_circuit::{CircuitBuilderError, CircuitError};
@@ -209,7 +208,7 @@ where
     fn prove_for_degree<EF, const D: usize>(
         &self,
         traces: &Traces<EF>,
-        pis: &Vec<Val<SC>>,
+        pis: &[Val<SC>],
         w_binomial: Option<Val<SC>>,
     ) -> Result<MultiTableProof<SC>, ProverError>
     where
@@ -293,7 +292,7 @@ where
     fn verify_for_degree<const D: usize>(
         &self,
         proof: &MultiTableProof<SC>,
-        pis: &Vec<Val<SC>>,
+        pis: &[Val<SC>],
         w_binomial: Option<Val<SC>>,
     ) -> Result<(), ProverError> {
         let table_packing = proof.table_packing;

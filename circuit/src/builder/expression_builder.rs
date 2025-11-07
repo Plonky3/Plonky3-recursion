@@ -7,7 +7,6 @@ use hashbrown::HashMap;
 use itertools::Itertools;
 use p3_field::PrimeCharacteristicRing;
 
-use crate::builder::compiler::HintsWithFiller;
 use crate::expr::{Expr, ExpressionGraph};
 use crate::op::WitnessHintFiller;
 use crate::types::ExprId;
@@ -27,7 +26,7 @@ pub struct ExpressionBuilder<F> {
     pending_connects: Vec<(ExprId, ExprId)>,
 
     /// The witness hints together with theit witness fillers
-    hints_with_fillers: Vec<(Vec<ExprId>, Box<dyn WitnessHintFiller<F>>)>,
+    hints_with_fillers: Vec<Box<dyn WitnessHintFiller<F>>>,
 
     /// Debug log of all allocations
     #[cfg(debug_assertions)]
@@ -112,7 +111,10 @@ where
     #[allow(unused_variables)]
     #[must_use]
     pub fn add_witness_hint(&mut self, label: &'static str) -> ExprId {
-        let expr_id = self.graph.add_expr(Expr::Witness);
+        let expr_id = self.graph.add_expr(Expr::Witness {
+            last_hint: false,
+            has_filler: false,
+        });
 
         #[cfg(debug_assertions)]
         self.allocation_log.push(AllocationEntry {
@@ -138,10 +140,14 @@ where
     ) -> Vec<ExprId> {
         let n_outputs = filler.n_outputs();
         let expr_ids = (0..n_outputs)
-            .map(|_| self.graph.add_expr(Expr::Witness))
+            .map(|i| {
+                self.graph.add_expr(Expr::Witness {
+                    last_hint: i == n_outputs - 1,
+                    has_filler: true,
+                })
+            })
             .collect_vec();
-        self.hints_with_fillers
-            .push((expr_ids.clone(), Box::new(filler)));
+        self.hints_with_fillers.push(Box::new(filler));
         expr_ids
     }
 
@@ -231,7 +237,7 @@ where
     }
 
     /// Returns a reference to the witness hints with fillers.
-    pub fn hints_with_fillers(&self) -> &[HintsWithFiller<F>] {
+    pub fn hints_with_fillers(&self) -> &[Box<dyn WitnessHintFiller<F>>] {
         &self.hints_with_fillers
     }
 
@@ -595,7 +601,16 @@ mod tests {
         assert_eq!(builder.graph().nodes().len(), 4);
 
         match (&builder.graph().nodes()[2], &builder.graph().nodes()[3]) {
-            (Expr::Witness, Expr::Witness) => (),
+            (
+                Expr::Witness {
+                    last_hint: false,
+                    has_filler: true,
+                },
+                Expr::Witness {
+                    last_hint: true,
+                    has_filler: true,
+                },
+            ) => (),
             _ => panic!("Expected Witness operation"),
         }
     }

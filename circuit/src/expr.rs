@@ -10,8 +10,13 @@ pub enum Expr<F> {
     /// Public input at declaration position
     Public(usize),
     /// Witness hints - allocates a WitnessId storing
-    /// a non-deterministic hint.
-    Witness,
+    /// a non-deterministic hint. The boolean indicates
+    /// wether this is the last witness in a sequence of hint.
+    /// A sequence of hints is one generated from a single filler.
+    /// TODO: The extra bool indicates whether this witness
+    /// has an associted filler. We should get rid of this
+    /// when all witness have an associated filler.
+    Witness { last_hint: bool, has_filler: bool },
     /// Addition of two expressions
     Add { lhs: ExprId, rhs: ExprId },
     /// Subtraction of two expressions
