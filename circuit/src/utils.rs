@@ -4,6 +4,7 @@ use core::marker::PhantomData;
 
 use p3_field::{ExtensionField, Field, PrimeField64};
 use p3_uni_stark::{Entry, SymbolicExpression};
+use p3_util::log2_ceil_u64;
 
 use crate::op::WitnessHintFiller;
 use crate::{CircuitBuilder, CircuitError, ExprId};
@@ -167,16 +168,11 @@ impl<BF: PrimeField64, F: ExtensionField<BF>> WitnessHintFiller<F> for BinaryDec
     }
 
     fn compute_outputs(&self, inputs_val: Vec<F>) -> Result<Vec<F>, CircuitError> {
-        if inputs_val.len() != 1 {
-            return Err(CircuitError::UnconstrainedOpInputLengthMismatch {
-                expected: 1,
-                got: inputs_val.len(),
-            });
-        }
         let val: u64 = inputs_val[0].as_basis_coefficients_slice()[0].as_canonical_u64();
         let bits = (0..self.n_bits)
             .map(|i| F::from_bool(val >> i & 1 == 1))
             .collect();
+        debug_assert!(self.n_bits as u64 >= log2_ceil_u64(val));
         Ok(bits)
     }
 }

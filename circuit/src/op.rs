@@ -419,25 +419,27 @@ impl<F> Clone for Box<dyn WitnessHintFiller<F>> {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct DefaultHint {}
+pub struct DefaultHint {
+    pub n_outputs: usize,
+}
 
 impl DefaultHint {
-    pub fn boxed_default<F: Default>() -> Box<dyn WitnessHintFiller<F>> {
+    pub fn boxed_default<F: Default + Clone>() -> Box<dyn WitnessHintFiller<F>> {
         Box::new(Self::default())
     }
 }
 
-impl<F: Default> WitnessHintFiller<F> for DefaultHint {
+impl<F: Default + Clone> WitnessHintFiller<F> for DefaultHint {
     fn inputs(&self) -> &[ExprId] {
         &[]
     }
 
     fn n_outputs(&self) -> usize {
-        1
+        self.n_outputs
     }
 
     fn compute_outputs(&self, _inputs_val: Vec<F>) -> Result<Vec<F>, CircuitError> {
-        Ok(vec![F::default()])
+        Ok(vec![F::default(); self.n_outputs])
     }
 }
 

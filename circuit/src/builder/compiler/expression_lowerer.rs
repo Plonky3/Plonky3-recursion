@@ -10,7 +10,7 @@ use crate::Op;
 use crate::builder::CircuitBuilderError;
 use crate::builder::compiler::get_witness_id;
 use crate::expr::{Expr, ExpressionGraph};
-use crate::op::{DefaultHint, WitnessHintFiller};
+use crate::op::WitnessHintFiller;
 use crate::types::{ExprId, WitnessAllocator, WitnessId};
 
 /// Sparse disjoint-set "find" with path compression over a HashMap (iterative).
@@ -187,7 +187,7 @@ where
             }
         }
 
-        // Pass C: emit arithmetic ops in creation order; tie outputs to class slot if connected
+        // Pass C: emit arithmetic and unconstrained ops in creation order; tie outputs to class slot if connected
         let mut hints_sequence = vec![];
         let mut fillers_iter = self.hints_with_fillers.iter().cloned();
         for (expr_idx, expr) in self.graph.nodes().iter().enumerate() {
@@ -200,7 +200,9 @@ where
                     expr_to_widx.insert(expr_id, out_widx);
                     hints_sequence.push(out_widx);
                     if *last_hint {
-                        let filler = fillers_iter.next().unwrap_or(DefaultHint::boxed_default());
+                        let filler = fillers_iter.next().expect(
+                            "By construction, every sequence of witness must haver one filler",
+                        );
                         let inputs = filler
                             .inputs()
                             .iter()

@@ -10,7 +10,7 @@ use super::{BuilderConfig, ExpressionBuilder};
 use crate::CircuitBuilderError;
 use crate::builder::public_input_tracker::PublicInputTracker;
 use crate::circuit::Circuit;
-use crate::op::{NonPrimitiveOpType, WitnessHintFiller};
+use crate::op::{DefaultHint, NonPrimitiveOpType, WitnessHintFiller};
 use crate::ops::MmcsVerifyConfig;
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};
 
@@ -140,9 +140,8 @@ where
         count: usize,
         label: &'static str,
     ) -> Vec<ExprId> {
-        (0..count)
-            .map(|_| self.expr_builder.add_witness_hint(label))
-            .collect()
+        self.expr_builder
+            .add_witness_hints(DefaultHint { n_outputs: count }, label)
     }
 
     /// Adds a constant to the circuit (deduplicated).
@@ -437,7 +436,6 @@ where
 #[cfg(test)]
 mod tests {
     use alloc::vec;
-    use alloc::vec::Vec;
 
     use p3_baby_bear::BabyBear;
     use p3_field::PrimeCharacteristicRing;
@@ -713,39 +711,12 @@ mod tests {
         assert_eq!(circuit.primitive_ops.len(), 2);
     }
 
-    #[derive(Debug, Clone)]
-    struct ConstantHint<const C: usize> {
-        inputs: Vec<ExprId>,
-    }
-
-    impl<const C: usize> ConstantHint<C> {
-        pub fn new(input: ExprId) -> Self {
-            Self {
-                inputs: vec![input],
-            }
-        }
-    }
-
-    impl<F: Field, const C: usize> WitnessHintFiller<F> for ConstantHint<C> {
-        fn inputs(&self) -> &[ExprId] {
-            &self.inputs
-        }
-
-        fn n_outputs(&self) -> usize {
-            1
-        }
-
-        fn compute_outputs(&self, _inputs_val: Vec<F>) -> Result<Vec<F>, crate::CircuitError> {
-            Ok(vec![F::from_usize(C)])
-        }
-    }
     #[test]
     fn test_build_with_witness_hint() {
         let mut builder = CircuitBuilder::<BabyBear>::new();
-        let a = builder.add_const(BabyBear::ZERO);
-        let mock_filler = ConstantHint::<1>::new(a);
-        let b = builder.alloc_witness_hints(mock_filler, "a");
-        assert_eq!(b.len(), 1);
+        let default_hint = DefaultHint { n_outputs: 1 };
+        let a = builder.alloc_witness_hints(default_hint, "a");
+        assert_eq!(a.len(), 1);
         let circuit = builder
             .build()
             .expect("Circuit with operations should build");
@@ -757,7 +728,7 @@ mod tests {
             crate::op::Op::Unconstrained {
                 inputs, outputs, ..
             } => {
-                assert_eq!(*inputs, vec![WitnessId(0)]);
+                assert_eq!(*inputs, vec![]);
                 assert_eq!(*outputs, vec![WitnessId(1)]);
             }
             _ => panic!("Expected Unconstrained at index 0"),
