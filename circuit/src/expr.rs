@@ -9,10 +9,10 @@ pub enum Expr<F> {
     Const(F),
     /// Public input at declaration position
     Public(usize),
-    /// Witness hints - allocates a WitnessId storing
-    /// a non-deterministic hint. The boolean indicates
-    /// wether this is the last witness in a sequence of hint.
-    /// A sequence of hints is one generated from a single filler.
+    /// Witness hints — allocates a `WitnessId` representing a
+    /// non-deterministic hint. The boolean flag indicates whether
+    /// this is the last witness in a sequence of related hints,
+    /// where each sequence is produced through a shared generation process.
     Witness { last_hint: bool },
     /// Addition of two expressions
     Add { lhs: ExprId, rhs: ExprId },
