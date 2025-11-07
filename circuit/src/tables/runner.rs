@@ -444,13 +444,13 @@ mod tests {
         inputs: Vec<ExprId>,
     }
 
-    impl X {
+    impl XHint {
         pub fn new(a: ExprId, b: ExprId) -> Self {
             Self { inputs: vec![a, b] }
         }
     }
 
-    impl<F: Field> WitnessHintFiller<F> for X {
+    impl<F: Field> WitnessHintFiller<F> for XHint {
         fn inputs(&self) -> &[ExprId] {
             &self.inputs
         }
@@ -482,7 +482,7 @@ mod tests {
 
         let c37 = builder.add_const(BabyBear::from_u64(37));
         let c111 = builder.add_const(BabyBear::from_u64(111));
-        let x_hint = X::new(c37, c111);
+        let x_hint = XHint::new(c37, c111);
         let x = builder.alloc_witness_hints(x_hint, "x")[0];
 
         let mul_result = builder.mul(c37, x);

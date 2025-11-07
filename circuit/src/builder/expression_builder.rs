@@ -317,6 +317,7 @@ mod tests {
     use p3_field::Field;
 
     use super::*;
+    use crate::CircuitError;
 
     #[test]
     fn test_new_builder_has_zero_constant() {
