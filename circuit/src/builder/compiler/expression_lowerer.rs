@@ -74,7 +74,7 @@ pub struct ExpressionLowerer<'a, F> {
     public_input_count: usize,
 
     /// The hint witnesses with their respective filler
-    hints_with_fillers: &'a [Box<dyn WitnessHintFiller<F>>],
+    hints_fillers: &'a [Box<dyn WitnessHintFiller<F>>],
 
     /// Witness allocator
     witness_alloc: WitnessAllocator,
@@ -89,14 +89,14 @@ where
         graph: &'a ExpressionGraph<F>,
         pending_connects: &'a [(ExprId, ExprId)],
         public_input_count: usize,
-        hints_with_fillers: &'a [Box<dyn WitnessHintFiller<F>>],
+        hints_fillers: &'a [Box<dyn WitnessHintFiller<F>>],
         witness_alloc: WitnessAllocator,
     ) -> Self {
         Self {
             graph,
             pending_connects,
             public_input_count,
-            hints_with_fillers,
+            hints_fillers,
             witness_alloc,
         }
     }
@@ -189,7 +189,7 @@ where
 
         // Pass C: emit arithmetic and unconstrained ops in creation order; tie outputs to class slot if connected
         let mut hints_sequence = vec![];
-        let mut fillers_iter = self.hints_with_fillers.iter().cloned();
+        let mut fillers_iter = self.hints_fillers.iter().cloned();
         for (expr_idx, expr) in self.graph.nodes().iter().enumerate() {
             let expr_id = ExprId(expr_idx as u32);
             match expr {
@@ -427,10 +427,10 @@ mod tests {
         let quot = graph.add_expr(Expr::Div { lhs: diff, rhs: p2 });
 
         let connects = vec![];
-        let hints_with_fillers = vec![];
+        let hints_fillers = vec![];
         let alloc = WitnessAllocator::new();
 
-        let lowerer = ExpressionLowerer::new(&graph, &connects, 3, &hints_with_fillers, alloc);
+        let lowerer = ExpressionLowerer::new(&graph, &connects, 3, &hints_fillers, alloc);
         let (prims, public_rows, expr_map, public_map, witness_count) = lowerer.lower().unwrap();
 
         // Verify Primitives
@@ -597,10 +597,10 @@ mod tests {
         // Group B: p1 ~ p2 ~ p3 (transitive)
         // Group C: sum ~ p4 (operation result shared)
         let connects = vec![(c_42, p0), (p1, p2), (p2, p3), (sum, p4)];
-        let hints_with_fillers = vec![];
+        let hints_fillers = vec![];
         let alloc = WitnessAllocator::new();
 
-        let lowerer = ExpressionLowerer::new(&graph, &connects, 5, &hints_with_fillers, alloc);
+        let lowerer = ExpressionLowerer::new(&graph, &connects, 5, &hints_fillers, alloc);
         let (prims, public_rows, expr_map, public_map, witness_count) = lowerer.lower().unwrap();
 
         // Verify Primitives
@@ -738,9 +738,9 @@ mod tests {
         });
 
         let connects = vec![];
-        let hints_with_fillers = vec![];
+        let hints_fillers = vec![];
         let alloc = WitnessAllocator::new();
-        let lowerer = ExpressionLowerer::new(&graph, &connects, 0, &hints_with_fillers, alloc);
+        let lowerer = ExpressionLowerer::new(&graph, &connects, 0, &hints_fillers, alloc);
         let result = lowerer.lower();
 
         assert!(result.is_err());
@@ -760,9 +760,9 @@ mod tests {
         });
 
         let connects = vec![];
-        let hints_with_fillers = vec![];
+        let hints_fillers = vec![];
         let alloc = WitnessAllocator::new();
-        let lowerer = ExpressionLowerer::new(&graph, &connects, 0, &hints_with_fillers, alloc);
+        let lowerer = ExpressionLowerer::new(&graph, &connects, 0, &hints_fillers, alloc);
         let result = lowerer.lower();
 
         assert!(result.is_err());
