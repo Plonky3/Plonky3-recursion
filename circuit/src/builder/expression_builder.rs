@@ -581,10 +581,11 @@ mod tests {
             self.n_outputs
         }
 
-        fn compute_outputs(&self, inputs_val: Vec<F>) -> Result<Vec<F>, crate::CircuitError> {
+        fn compute_outputs(&self, inputs_val: Vec<F>) -> Result<Vec<F>, CircuitError> {
             Ok(inputs_val)
         }
     }
+
     #[test]
     fn test_build_with_witness_hint() {
         let mut builder = ExpressionBuilder::<BabyBear>::new();

@@ -439,8 +439,8 @@ mod tests {
     }
 
     #[derive(Debug, Clone)]
-    /// The hint deined by x in an equation a*x - b = 0
-    struct X {
+    /// The hint defined by x in an equation a*x - b = 0
+    struct XHint {
         inputs: Vec<ExprId>,
     }
 

@@ -66,7 +66,7 @@ pub enum Op<F> {
 
     /// Load unconstrained values into the witness table
     ///
-    /// Sets `witness[output]`, for each `output` in `outputs`, to aribitrary values
+    /// Sets `witness[output]`, for each `output` in `outputs`, to arbitrary values
     /// defined by `filler`
     Unconstrained {
         inputs: Vec<WitnessId>,

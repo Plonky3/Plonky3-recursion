@@ -121,7 +121,7 @@ where
         self.public_tracker.count()
     }
 
-    /// Allocates multiple witness. Witness hints are placeholders for values that will later be provided by a
+    /// Allocates multiple witnesses. Witness hints are placeholders for values that will later be provided by a
     /// `filler`.
     #[must_use]
     pub fn alloc_witness_hints<W: 'static + WitnessHintFiller<F>>(

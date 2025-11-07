@@ -168,7 +168,7 @@ impl<BF: PrimeField64, F: ExtensionField<BF>> WitnessHintFiller<F> for BinaryDec
 
     fn compute_outputs(&self, inputs_val: Vec<F>) -> Result<Vec<F>, CircuitError> {
         if inputs_val.len() != 1 {
-            return Err(crate::CircuitError::UnconstrainedOpInputLengthMismatch {
+            return Err(CircuitError::UnconstrainedOpInputLengthMismatch {
                 expected: 1,
                 got: inputs_val.len(),
             });
