@@ -640,9 +640,9 @@ mod test {
         type MyConfig = StarkConfig<Pcs, Challenge, Challenger>;
         let config = MyConfig::new(pcs, challenger);
 
-        let proof = prove(&config, &air, trace, &vec![]);
+        let proof = prove(&config, &air, trace, &[]);
 
         // Verify the proof.
-        verify(&config, &air, &proof, &vec![])
+        verify(&config, &air, &proof,&[])
     }
 }
