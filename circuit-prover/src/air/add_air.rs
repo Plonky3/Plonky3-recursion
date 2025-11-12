@@ -1,31 +1,72 @@
-//! [`AddAir`] deals with addition and subtraction. In the case of subtraction, `a - b = c` is written in the table as `b + c = a`. \
-//! The chip handles both base field and extension field operations, as it is parametrized by the extension degree `D`.
-//! The runtime parameter `lanes` also controls the number of operations carried out in a row.
+//! [`AddAir`] defines the AIR for proving addition and subtraction over both base and extension fields.
 //!
-//! # Columns
+//! Conceptually, each row of the trace encodes one or more addition constraints of the form
 //!
-//! The AIR has `3 * D + 3` columns for each operation:
+//!     lhs + rhs = result
 //!
-//! - `D` columns for the left operand,
-//! - 1 column for `index_left`: the index of the left operand in the witness bus,
-//! - `D` columns for the right operand,
-//! - 1 column for `index_right`: the index of the right operand in the witness bus,
-//! - `D` columns for the output,
-//! - 1 column for `index_output`:  the index of the output in the witness bus.
+//! When the circuit wants to prove a subtraction, it is expressed as an addition by rewriting
+//!
+//!     a - b = c
+//!
+//! as
+//!
+//!     b + c = a
+//!
+//! so that subtraction is handled uniformly as an addition gate in the AIR.
+//!
+//! The AIR is generic over an extension degree `D`. Each operand and result is treated as
+//! an element of an extension field of degree `D` over the base field. Internally, this is
+//! represented as `D` base-field coordinates (basis coefficients), and the addition is
+//! checked component-wise. The runtime parameter `lanes` controls how many independent
+//! additions are packed side-by-side in a single row of the trace.
+//!
+//! # Column layout
+//!
+//! For each logical operation (lane) we allocate `3 * D + 3` base-field columns. These are
+//! grouped as:
+//!
+//! - `D` columns for the left operand (lhs) basis coefficients,
+//! - `1` column for `index_left`: the witness-bus index of the lhs operand,
+//! - `D` columns for the right operand (rhs) basis coefficients,
+//! - `1` column for `index_right`: the witness-bus index of the rhs operand,
+//! - `D` columns for the result operand basis coefficients,
+//! - `1` column for `index_output`: the witness-bus index of the result.
+//!
+//! In other words, for a single lane the layout is:
+//!
+//!     [lhs[0..D), lhs_index, rhs[0..D), rhs_index, result[0..D), result_index]
+//!
+//! A single row can pack several of these lanes side-by-side, so the full row layout is
+//! this pattern repeated `lanes` times.
 //!
 //! # Constraints
 //!
-//! - for each triple `(left, right, output)`: `left[i] + right[i] - output[i]`, for `i` in `0..D`.
+//! Let `left[i]`, `right[i]`, and `output[i]` denote the `i`-th basis coordinate of the
+//! left, right and result extension field elements respectively. For each operation and
+//! each coordinate `i` in `0..D`, the AIR enforces the linear constraint
 //!
-//! # Global Interactions
+//! \begin{equation}
+//! left[i] + right[i] - output[i] = 0.
+//! \end{equation}
 //!
-//! There are three interactions per operation with the witness bus:
-//! - send `(index_left, left)`
+//! Since extension addition is coordinate-wise, these constraints are sufficient to show
+//! that the full extension elements satisfy
+//!
+//! \begin{equation}
+//! left + right = output.
+//! \end{equation}
+//!
+//! # Global interactions
+//!
+//! Each operation (lane) has three interactions with the global witness bus:
+//!
+//! - send `(index_left,  left)`
 //! - send `(index_right, right)`
-//! - send `(index_output, output)`
-
-#![allow(clippy::needless_range_loop)]
-use alloc::vec::Vec;
+//! - send `(index_output, result)`
+//!
+//! The AIR defined here focuses on the algebraic relation between the operands. The
+//! correctness of the indices with respect to the global witness bus is enforced by the
+//! bus interaction logic elsewhere in the system.
 
 use p3_air::{Air, AirBuilder, BaseAir};
 use p3_circuit::tables::AddTrace;
@@ -34,22 +75,34 @@ use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
 
-/// AIR for proving addition operations: lhs + rhs = result.
-/// Generic over extension degree `D` (component-wise addition) and a runtime lane count
-/// that controls how many additions are packed side-by-side in a single row.
+/// AIR for proving addition gates of the form `lhs + rhs = result`.
+///
+/// The type is generic over:
+///
+/// - `F`: the base field,
+/// - `D`: the degree of the extension field; each operand is represented by `D` coordinates.
+///
+/// At runtime, a `lanes` parameter specifies how many addition gates are packed into each
+/// trace row.
 #[derive(Debug, Clone)]
 pub struct AddAir<F, const D: usize = 1> {
-    /// Number of logical addition operations in the trace.
+    /// Total number of logical addition operations (gates) in the trace.
     pub num_ops: usize,
-    /// Number of lanes (operations) packed per row.
+    /// Number of independent addition gates packed per trace row.
+    ///
+    /// The last row is padded if the number of operations is not a multiple of this value.
     pub lanes: usize,
+    /// Marker tying this AIR to its base field.
     _phantom: core::marker::PhantomData<F>,
 }
 
 impl<F: Field + PrimeCharacteristicRing, const D: usize> AddAir<F, D> {
-    /// Number of base-field columns contributed by a single lane.
-    pub const LANE_WIDTH: usize = 3 * D + 3;
-
+    /// Construct a new `AddAir` instance.
+    ///
+    /// - `num_ops`: total number of addition operations to be proven,
+    /// - `lanes`: how many operations are packed side-by-side in each row.
+    ///
+    /// Panics if `lanes == 0` because we always need at least one lane per row.
     pub const fn new(num_ops: usize, lanes: usize) -> Self {
         assert!(lanes > 0, "lane count must be non-zero");
         Self {
@@ -59,72 +112,143 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AddAir<F, D> {
         }
     }
 
+    /// Number of base-field columns occupied by a single lane.
+    ///
+    /// Each lane stores:
+    /// - `3 * D` coordinates (for `lhs`, `rhs`, and `result`),
+    /// - `3` indices (one for each operand).
+    ///
+    /// The total width of a single row is `3 * D + 3`
     pub const fn lane_width() -> usize {
-        Self::LANE_WIDTH
+        3 * D + 3
     }
 
+    /// Total number of columns in the main trace for this AIR instance.
     pub const fn total_width(&self) -> usize {
         self.lanes * Self::lane_width()
     }
 
-    /// Convert `AddTrace` to a row-major matrix, packing `lanes` additions per row.
-    /// Resulting layout per row:
-    /// `[lhs[D], lhs_idx, rhs[D], rhs_idx, result[D], result_idx]` repeated `lanes` times.
+    /// Convert an `AddTrace` into a `RowMajorMatrix` suitable for the STARK prover.
+    ///
+    /// This function is responsible for:
+    ///
+    /// 1. Taking the logical operations from the `AddTrace`:
+    ///    - `lhs_values`, `rhs_values`, `result_values` (extension elements),
+    ///    - `lhs_index`, `rhs_index`, `result_index` (witness-bus indices),
+    /// 2. Decomposing each extension element into its `D` basis coordinates,
+    /// 3. Packing `lanes` operations side-by-side in each row,
+    /// 4. Padding the trace to have a power-of-two number of rows for FFT-friendly
+    ///    execution by the STARK prover.
+    ///
+    /// The resulting matrix has:
+    ///
+    /// - width `= lanes * LANE_WIDTH`,
+    /// - height equal to the number of rows after packing and padding.
+    ///
+    /// The layout within a row is:
+    ///
+    ///     [lhs[D], lhs_idx, rhs[D], rhs_idx, result[D], result_idx] repeated `lanes` times.
     pub fn trace_to_matrix<ExtF: BasedVectorSpace<F>>(
         trace: &AddTrace<ExtF>,
         lanes: usize,
     ) -> RowMajorMatrix<F> {
+        // Lanes must be strictly positive.
+        //
+        // Zero lanes would make it impossible to construct a row.
         assert!(lanes > 0, "lane count must be non-zero");
 
+        // Per-lane width in base-field columns.
         let lane_width = Self::lane_width();
+        // Total width of each row once all lanes are packed.
         let width = lane_width * lanes;
+        // Number of logical operations we need to pack into the trace.
         let op_count = trace.lhs_values.len();
+        // Number of rows needed to hold `op_count` operations when each row carries `lanes` of them.
         let row_count = op_count.div_ceil(lanes);
 
-        let mut values = Vec::with_capacity(width * row_count.max(1));
+        // Pre-allocate the entire trace as a flat vector in row-major order.
+        //
+        // We start with `row_count` rows, each of width `width`, and fill it with zeros.
+        // This automatically provides a clean padding for any unused lanes in the final row.
+        let mut values = F::zero_vec(width * row_count.max(1));
 
-        for row in 0..row_count {
-            for lane in 0..lanes {
-                let op_idx = row * lanes + lane;
-                if op_idx < op_count {
-                    // LHS limbs + index
-                    let lhs_coeffs = trace.lhs_values[op_idx].as_basis_coefficients_slice();
-                    assert_eq!(
-                        lhs_coeffs.len(),
-                        D,
-                        "Extension field degree mismatch for lhs",
-                    );
-                    values.extend_from_slice(lhs_coeffs);
-                    values.push(F::from_u64(trace.lhs_index[op_idx].0 as u64));
+        // Iterate over all operations in lockstep across the trace arrays.
+        for (op_idx, (((((lhs_val, lhs_idx), rhs_val), rhs_idx), res_val), res_idx)) in trace
+            .lhs_values
+            .iter()
+            .zip(trace.lhs_index.iter())
+            .zip(trace.rhs_values.iter())
+            .zip(trace.rhs_index.iter())
+            .zip(trace.result_values.iter())
+            .zip(trace.result_index.iter())
+            .enumerate()
+        {
+            // Determine the target row index.
+            let row = op_idx / lanes;
+            // Determine which lane within that row this operation occupies.
+            let lane = op_idx % lanes;
 
-                    // RHS limbs + index
-                    let rhs_coeffs = trace.rhs_values[op_idx].as_basis_coefficients_slice();
-                    assert_eq!(
-                        rhs_coeffs.len(),
-                        D,
-                        "Extension field degree mismatch for rhs",
-                    );
-                    values.extend_from_slice(rhs_coeffs);
-                    values.push(F::from_u64(trace.rhs_index[op_idx].0 as u64));
+            // Compute the starting column index (cursor) for this lane within the flat vector.
+            //
+            // Row-major layout means:
+            //   row_offset = row * width,
+            //   lane_offset = lane * lane_width.
+            let mut cursor = (row * width) + (lane * lane_width);
 
-                    // Result limbs + index
-                    let result_coeffs = trace.result_values[op_idx].as_basis_coefficients_slice();
-                    assert_eq!(
-                        result_coeffs.len(),
-                        D,
-                        "Extension field degree mismatch for result",
-                    );
-                    values.extend_from_slice(result_coeffs);
-                    values.push(F::from_u64(trace.result_index[op_idx].0 as u64));
-                } else {
-                    // Filler lane: append zeros for unused slot to keep the row width uniform.
-                    values.resize(values.len() + lane_width, F::ZERO);
-                }
-            }
+            // Write LHS coordinates and LHS witness index.
+            //
+            // Extract the basis coefficients of the lhs extension element.
+            let lhs_coeffs = lhs_val.as_basis_coefficients_slice();
+            // Sanity check: the extension degree must match the generic parameter `D`.
+            assert_eq!(
+                lhs_coeffs.len(),
+                D,
+                "Extension field degree mismatch for lhs"
+            );
+            // Copy the `D` lhs coordinates into the trace row.
+            values[cursor..cursor + D].copy_from_slice(lhs_coeffs);
+            cursor += D;
+            // Store the lhs witness-bus index as a base-field element.
+            values[cursor] = F::from_u32(lhs_idx.0);
+            cursor += 1;
+
+            // Write RHS coordinates and RHS witness index.
+            //
+            // Extract the basis coefficients of the rhs extension element.
+            let rhs_coeffs = rhs_val.as_basis_coefficients_slice();
+            // Sanity check: the extension degree must match the generic parameter `D`.
+            assert_eq!(
+                rhs_coeffs.len(),
+                D,
+                "Extension field degree mismatch for rhs"
+            );
+            // Copy the `D` rhs coordinates into the trace row.
+            values[cursor..cursor + D].copy_from_slice(rhs_coeffs);
+            cursor += D;
+            // Store the rhs witness-bus index as a base-field element.
+            values[cursor] = F::from_u32(rhs_idx.0);
+            cursor += 1;
+
+            // Write result coordinates and result witness index.
+            //
+            // Extract the basis coefficients of the result extension element.
+            let res_coeffs = res_val.as_basis_coefficients_slice();
+            debug_assert_eq!(
+                res_coeffs.len(),
+                D,
+                "Extension field degree mismatch for result"
+            );
+            // Copy the `D` result coordinates into the trace row.
+            values[cursor..cursor + D].copy_from_slice(res_coeffs);
+            cursor += D;
+            // Store the result witness-bus index as a base-field element.
+            values[cursor] = F::from_u32(res_idx.0);
         }
 
+        // Pad the matrix to a power-of-two height.
         pad_to_power_of_two(&mut values, width, row_count);
 
+        // Build the row-major matrix with the computed width.
         RowMajorMatrix::new(values, width)
     }
 }
@@ -140,26 +264,51 @@ where
     AB::F: Field,
 {
     fn eval(&self, builder: &mut AB) {
+        // Access the main trace view from the builder.
         let main = builder.main();
 
+        // Make sure that the matrix width matches what this AIR expects.
         debug_assert_eq!(main.width(), self.total_width(), "column width mismatch");
 
+        // Get the evaluation at evaluation point `zeta`
         let local = main.row_slice(0).expect("matrix must be non-empty");
-        let local = &*local;
         let lane_width = Self::lane_width();
 
-        for lane in 0..self.lanes {
-            let mut cursor = lane * lane_width;
-            let lhs_slice = &local[cursor..cursor + D];
-            cursor += D + 1; // Skip lhs index
-            let rhs_slice = &local[cursor..cursor + D];
-            cursor += D + 1; // Skip rhs index
-            let result_slice = &local[cursor..cursor + D];
+        // Iterate over the row in fixed-size chunks, each chunk describing one lane:
+        //
+        // [lhs[0..D), lhs_idx, rhs[0..D), rhs_idx, result[0..D), result_idx]
+        for lane_data in local.chunks_exact(lane_width) {
+            // First, split off the lhs block and its index:
+            //
+            //   lhs_and_idx = [lhs[0..D), lhs_idx]
+            //   rest        = [rhs[0..D), rhs_idx, result[0..D), result_idx]
+            let (lhs_and_idx, rest) = lane_data.split_at(D + 1);
+            // Next, split the remaining data into:
+            //
+            //   rhs_and_idx    = [rhs[0..D), rhs_idx]
+            //   result_and_idx = [result[0..D), result_idx]
+            let (rhs_and_idx, result_and_idx) = rest.split_at(D + 1);
 
-            for i in 0..D {
-                builder.assert_zero(
-                    lhs_slice[i].clone() + rhs_slice[i].clone() - result_slice[i].clone(),
-                );
+            // Extract just the coordinate slices for the three operands.
+            //
+            // NOTE: Indices reside at position [D] in each `*_and_idx` slice.
+            // They are not used in constraints, but are checked by the bus interaction logic.
+            let lhs_slice = &lhs_and_idx[..D];
+            let rhs_slice = &rhs_and_idx[..D];
+            let result_slice = &result_and_idx[..D];
+
+            // Enforce coordinate-wise addition for each basis coordinate `i` in `0..D`.
+            //
+            // For each `i`, we add the constraint:
+            //
+            //     lhs_slice[i] + rhs_slice[i] - result_slice[i] = 0.
+            for ((lhs, rhs), result) in lhs_slice
+                .iter()
+                .zip(rhs_slice.iter())
+                .zip(result_slice.iter())
+            {
+                // Push a single linear constraint into the builder.
+                builder.assert_zero(lhs.clone() + rhs.clone() - result.clone());
             }
         }
     }
@@ -168,6 +317,7 @@ where
 #[cfg(test)]
 mod tests {
     use alloc::vec;
+    use alloc::vec::Vec;
 
     use p3_baby_bear::BabyBear as Val;
     use p3_circuit::WitnessId;

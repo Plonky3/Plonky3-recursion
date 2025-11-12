@@ -643,6 +643,6 @@ mod test {
         let proof = prove(&config, &air, trace, &[]);
 
         // Verify the proof.
-        verify(&config, &air, &proof,&[])
+        verify(&config, &air, &proof, &[])
     }
 }

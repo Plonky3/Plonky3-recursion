@@ -1,18 +1,17 @@
 //! Batch STARK prover and verifier that unifies all circuit tables
 //! into a single batched STARK proof using `p3-batch-stark`.
 
+use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
 use p3_air::{Air, BaseAir};
-use p3_batch_stark::{BatchProof, StarkGenericConfig, StarkInstance};
+use p3_batch_stark::{BatchProof, StarkGenericConfig, StarkInstance, Val};
 use p3_circuit::tables::Traces;
 use p3_field::{BasedVectorSpace, Field, PrimeField};
 use p3_matrix::dense::RowMajorMatrix;
-use p3_uni_stark::{
-    ProverConstraintFolder, SymbolicAirBuilder, Val, VerifierConstraintFolder,
-};
+use p3_uni_stark::{ProverConstraintFolder, SymbolicAirBuilder, VerifierConstraintFolder};
 use thiserror::Error;
 use tracing::instrument;
 
@@ -238,13 +237,13 @@ where
     }
 
     /// Register a dynamic non-primitive table prover.
-    pub fn register_table_prover(&mut self, prover: alloc::boxed::Box<dyn TableProver<SC>>) {
+    pub fn register_table_prover(&mut self, prover: Box<dyn TableProver<SC>>) {
         self.non_primitive_provers.push(prover);
     }
 
     /// Builder-style registration for a dynamic non-primitive table prover.
     #[must_use]
-    pub fn with_table_prover(mut self, prover: alloc::boxed::Box<dyn TableProver<SC>>) -> Self {
+    pub fn with_table_prover(mut self, prover: Box<dyn TableProver<SC>>) -> Self {
         self.register_table_prover(prover);
         self
     }
@@ -261,9 +260,7 @@ where
         traces: &Traces<EF>,
     ) -> Result<BatchStarkProof<SC>, BatchStarkProverError>
     where
-        EF: Field
-            + BasedVectorSpace<Val<SC>>
-            + ExtractBinomialW<Val<SC>>,
+        EF: Field + BasedVectorSpace<Val<SC>> + ExtractBinomialW<Val<SC>>,
     {
         let w_opt = EF::extract_w();
         match EF::DIMENSION {
@@ -346,6 +343,7 @@ where
             MulAir::<Val<SC>, D>::trace_to_matrix(&traces.mul_trace, mul_lanes);
 
         // We first handle all non-primitive tables dynamically, which will then be batched alongside primitive ones.
+
         let mut dynamic_instances: Vec<BatchTableInstance<SC>> = Vec::new();
         if D == 1 {
             let t: &Traces<Val<SC>> = unsafe { transmute_traces(traces) };
@@ -478,12 +476,15 @@ where
         let add_lanes = packing.add_lanes();
         let mul_lanes = packing.mul_lanes();
 
-        let witness_air =
-            CircuitTableAir::Witness(WitnessAir::<Val<SC>, D>::new(proof.rows[PrimitiveTable::Witness]));
-        let const_air =
-            CircuitTableAir::Const(ConstAir::<Val<SC>, D>::new(proof.rows[PrimitiveTable::Const]));
-        let public_air =
-            CircuitTableAir::Public(PublicAir::<Val<SC>, D>::new(proof.rows[PrimitiveTable::Public]));
+        let witness_air = CircuitTableAir::Witness(WitnessAir::<Val<SC>, D>::new(
+            proof.rows[PrimitiveTable::Witness],
+        ));
+        let const_air = CircuitTableAir::Const(ConstAir::<Val<SC>, D>::new(
+            proof.rows[PrimitiveTable::Const],
+        ));
+        let public_air = CircuitTableAir::Public(PublicAir::<Val<SC>, D>::new(
+            proof.rows[PrimitiveTable::Public],
+        ));
         let add_air = CircuitTableAir::Add(AddAir::<Val<SC>, D>::new(
             proof.rows[PrimitiveTable::Add],
             add_lanes,
@@ -502,6 +503,7 @@ where
             ))
         };
         let mut airs = vec![witness_air, const_air, public_air, add_air, mul_air];
+        // TODO: Handle public values.
         let mut pvs: Vec<Vec<Val<SC>>> = vec![Vec::new(); NUM_PRIMITIVE_TABLES];
 
         for entry in &proof.non_primitives {
@@ -520,7 +522,7 @@ where
                 })?;
             let air = plugin
                 .batch_air_from_manifest(&self.config, D, entry)
-                .map_err( BatchStarkProverError::Verify)?;
+                .map_err(BatchStarkProverError::Verify)?;
             airs.push(CircuitTableAir::Dynamic(air));
             pvs.push(entry.public_values.clone());
         }

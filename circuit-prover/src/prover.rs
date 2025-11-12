@@ -12,7 +12,6 @@
 
 use alloc::boxed::Box;
 use alloc::string::String;
-use alloc::vec;
 use alloc::vec::Vec;
 
 use p3_air::{Air, BaseAir};
@@ -272,7 +271,7 @@ where
     where
         EF: Field + BasedVectorSpace<Val<SC>> + ExtractBinomialW<Val<SC>>,
     {
-        let pis = vec![];
+        let pis = [];
         let w_opt = EF::extract_w();
         match EF::DIMENSION {
             1 => self.prove_for_degree::<EF, 1>(traces, &pis, None),
@@ -287,7 +286,7 @@ where
     /// Verify all proofs in the given proof bundle.
     /// Uses the recorded extension degree and binomial parameter recorded during proving.
     pub fn verify_all_tables(&self, proof: &MultiTableProof<SC>) -> Result<(), ProverError> {
-        let pis = vec![];
+        let pis = [];
 
         let w_opt = proof.w_binomial;
         match proof.ext_degree {
@@ -306,7 +305,7 @@ where
     fn prove_for_degree<EF, const D: usize>(
         &self,
         traces: &Traces<EF>,
-        pis: &Vec<Val<SC>>,
+        pis: &[Val<SC>],
         w_binomial: Option<Val<SC>>,
     ) -> Result<MultiTableProof<SC>, ProverError>
     where
@@ -432,7 +431,7 @@ where
     fn verify_for_degree<const D: usize>(
         &self,
         proof: &MultiTableProof<SC>,
-        pis: &Vec<Val<SC>>,
+        pis: &[Val<SC>],
         w_binomial: Option<Val<SC>>,
     ) -> Result<(), ProverError> {
         let table_packing = proof.table_packing;
@@ -509,7 +508,7 @@ where
         cfg: &SC,
         packing: TablePacking,
         traces: &Traces<Val<SC>>,
-        pis: &Vec<Val<SC>>,
+        pis: &[Val<SC>],
     ) -> Option<TableProofEntry<SC>>;
 
     /// Prove a non-primitive table in the extension field of degree 2.
@@ -518,7 +517,7 @@ where
         cfg: &SC,
         packing: TablePacking,
         traces: &Traces<BinomialExtensionField<Val<SC>, 2>>,
-        pis: &Vec<Val<SC>>,
+        pis: &[Val<SC>],
     ) -> Option<TableProofEntry<SC>>;
 
     /// Prove a non-primitive table in the extension field of degree 4.
@@ -527,7 +526,7 @@ where
         cfg: &SC,
         packing: TablePacking,
         traces: &Traces<BinomialExtensionField<Val<SC>, 4>>,
-        pis: &Vec<Val<SC>>,
+        pis: &[Val<SC>],
     ) -> Option<TableProofEntry<SC>>;
 
     /// Prove a non-primitive table in the extension field of degree 6.
@@ -536,7 +535,7 @@ where
         cfg: &SC,
         packing: TablePacking,
         traces: &Traces<BinomialExtensionField<Val<SC>, 6>>,
-        pis: &Vec<Val<SC>>,
+        pis: &[Val<SC>],
     ) -> Option<TableProofEntry<SC>>;
 
     /// Prove a non-primitive table in the extension field of degree 8.
@@ -545,7 +544,7 @@ where
         cfg: &SC,
         packing: TablePacking,
         traces: &Traces<BinomialExtensionField<Val<SC>, 8>>,
-        pis: &Vec<Val<SC>>,
+        pis: &[Val<SC>],
     ) -> Option<TableProofEntry<SC>>;
 
     /// Produce a batched table instance for base-field traces.
@@ -604,7 +603,7 @@ where
         packing: TablePacking,
         entry: &TableProofEntry<SC>,
         w_binomial: Option<Val<SC>>,
-        pis: &Vec<Val<SC>>,
+        pis: &[Val<SC>],
     ) -> Result<(), ProverError>;
 }
 
@@ -624,7 +623,7 @@ pub(crate) unsafe fn transmute_traces<FromEF, ToEF>(t: &Traces<FromEF>) -> &Trac
 /// pub struct MyProver { pub config: MyConfig }
 ///
 /// impl MyProver {
-///     fn prove_base(&self, cfg: &SC, packing: TablePacking, traces: &Traces<Val<SC>>, pis: &Vec<Val<SC>>) -> Option<TableProofEntry<SC>> {
+///     fn prove_base(&self, cfg: &SC, packing: TablePacking, traces: &Traces<Val<SC>>, pis: &[Val<SC>]) -> Option<TableProofEntry<SC>> {
 ///         Some(TableProofEntry { id: "my_prover", proof: prove(cfg, &air, matrix, pis), rows: traces.values.len() })
 ///     }
 /// }
@@ -642,7 +641,7 @@ pub(crate) unsafe fn transmute_traces<FromEF, ToEF>(t: &Traces<FromEF>) -> &Trac
 ///         packing: TablePacking,
 ///         entry: &TableProofEntry<SC>,
 ///         w_binomial: Option<Val<SC>>,
-///         pis: &Vec<Val<SC>>,
+///         pis: &[Val<SC>],
 ///     ) -> Result<(), ProverError> { Ok(()) }
 /// }
 ///
@@ -654,7 +653,7 @@ macro_rules! impl_table_prover_degrees_from_base {
             cfg: &SC,
             packing: $crate::prover::TablePacking,
             traces: &p3_circuit::tables::Traces<p3_uni_stark::Val<SC>>,
-            pis: &alloc::vec::Vec<p3_uni_stark::Val<SC>>,
+            pis: &[p3_uni_stark::Val<SC>],
         ) -> Option<$crate::prover::TableProofEntry<SC>> {
             self.$base::<SC>(cfg, packing, traces, pis)
         }
@@ -666,7 +665,7 @@ macro_rules! impl_table_prover_degrees_from_base {
             traces: &p3_circuit::tables::Traces<
                 p3_field::extension::BinomialExtensionField<p3_uni_stark::Val<SC>, 2>,
             >,
-            pis: &alloc::vec::Vec<p3_uni_stark::Val<SC>>,
+            pis: &[p3_uni_stark::Val<SC>],
         ) -> Option<$crate::prover::TableProofEntry<SC>> {
             let t: &p3_circuit::tables::Traces<p3_uni_stark::Val<SC>> =
                 unsafe { $crate::prover::transmute_traces(traces) };
@@ -680,7 +679,7 @@ macro_rules! impl_table_prover_degrees_from_base {
             traces: &p3_circuit::tables::Traces<
                 p3_field::extension::BinomialExtensionField<p3_uni_stark::Val<SC>, 4>,
             >,
-            pis: &alloc::vec::Vec<p3_uni_stark::Val<SC>>,
+            pis: &[p3_uni_stark::Val<SC>],
         ) -> Option<$crate::prover::TableProofEntry<SC>> {
             let t: &p3_circuit::tables::Traces<p3_uni_stark::Val<SC>> =
                 unsafe { $crate::prover::transmute_traces(traces) };
@@ -694,7 +693,7 @@ macro_rules! impl_table_prover_degrees_from_base {
             traces: &p3_circuit::tables::Traces<
                 p3_field::extension::BinomialExtensionField<p3_uni_stark::Val<SC>, 6>,
             >,
-            pis: &alloc::vec::Vec<p3_uni_stark::Val<SC>>,
+            pis: &[p3_uni_stark::Val<SC>],
         ) -> Option<$crate::prover::TableProofEntry<SC>> {
             let t: &p3_circuit::tables::Traces<p3_uni_stark::Val<SC>> =
                 unsafe { $crate::prover::transmute_traces(traces) };
@@ -708,7 +707,7 @@ macro_rules! impl_table_prover_degrees_from_base {
             traces: &p3_circuit::tables::Traces<
                 p3_field::extension::BinomialExtensionField<p3_uni_stark::Val<SC>, 8>,
             >,
-            pis: &alloc::vec::Vec<p3_uni_stark::Val<SC>>,
+            pis: &[p3_uni_stark::Val<SC>],
         ) -> Option<$crate::prover::TableProofEntry<SC>> {
             let t: &p3_circuit::tables::Traces<p3_uni_stark::Val<SC>> =
                 unsafe { $crate::prover::transmute_traces(traces) };
@@ -909,7 +908,7 @@ where
         _packing: TablePacking,
         entry: &TableProofEntry<SC>,
         _w_binomial: Option<Val<SC>>,
-        pis: &Vec<Val<SC>>,
+        pis: &[Val<SC>],
     ) -> Result<(), ProverError> {
         let air = MmcsVerifyAir::new(self.config);
         verify(cfg, &air, &entry.proof, pis).map_err(|_| ProverError::VerificationFailed {

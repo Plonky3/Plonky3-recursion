@@ -3,6 +3,7 @@
 
 use alloc::vec::Vec;
 
+use p3_batch_stark::BatchProof;
 use p3_circuit::CircuitBuilder;
 use p3_commit::Pcs;
 use p3_field::{BasedVectorSpace, Field, PrimeField64};
@@ -11,6 +12,7 @@ use p3_uni_stark::{Proof, StarkGenericConfig, Val};
 use crate::ProofTargets;
 use crate::pcs::MAX_QUERY_INDEX_BITS;
 use crate::traits::Recursive;
+use crate::verifier::BatchProofTargets;
 
 /// Builder for constructing public inputs.
 ///
@@ -239,6 +241,44 @@ where
     .build()
 }
 
+/// Constructs the public input values for a multi-instance STARK verification circuit.
+pub fn construct_batch_stark_verifier_inputs<F, EF>(
+    air_public_values: &[Vec<F>],
+    proof_values: &[EF],
+    challenges: &[EF],
+    num_queries: usize,
+) -> Vec<EF>
+where
+    F: Field + PrimeField64,
+    EF: Field + BasedVectorSpace<F> + From<F>,
+{
+    let mut builder = PublicInputBuilder::new();
+
+    for instance_pv in air_public_values {
+        builder.add_proof_values(instance_pv.iter().map(|&v| v.into()));
+    }
+
+    builder.add_proof_values(proof_values.iter().copied());
+    builder.add_challenges(challenges.iter().copied());
+
+    let num_regular_challenges = challenges.len().saturating_sub(num_queries);
+    for &query_index in &challenges[num_regular_challenges..] {
+        let coeffs = query_index.as_basis_coefficients_slice();
+        let index_usize = coeffs[0].as_canonical_u64() as usize;
+
+        for k in 0..MAX_QUERY_INDEX_BITS {
+            let bit: EF = if (index_usize >> k) & 1 == 1 {
+                EF::ONE
+            } else {
+                EF::ZERO
+            };
+            builder.add_challenge(bit);
+        }
+    }
+
+    builder.build()
+}
+
 /// Builder that handles both target allocation during circuit creation and value packing during execution.
 ///
 /// # Example
@@ -332,6 +372,81 @@ where
         let proof_values = ProofTargets::<SC, Comm, OpeningProof>::get_values(proof);
 
         construct_stark_verifier_inputs(air_public_values, &proof_values, challenges, num_queries)
+    }
+}
+
+/// Builder for multi-instance STARK verification circuits.
+pub struct BatchStarkVerifierInputsBuilder<SC, Comm, OpeningProof>
+where
+    SC: StarkGenericConfig,
+    Comm: Recursive<
+            SC::Challenge,
+            Input = <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment,
+        >,
+    OpeningProof:
+        Recursive<SC::Challenge, Input = <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Proof>,
+{
+    /// AIR public input targets per instance.
+    pub air_public_targets: Vec<Vec<crate::Target>>,
+    /// Allocated proof structure targets.
+    pub proof_targets: BatchProofTargets<SC, Comm, OpeningProof>,
+}
+
+impl<SC, Comm, OpeningProof> BatchStarkVerifierInputsBuilder<SC, Comm, OpeningProof>
+where
+    SC: StarkGenericConfig,
+    Comm: Recursive<
+            SC::Challenge,
+            Input = <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment,
+        >,
+    OpeningProof:
+        Recursive<SC::Challenge, Input = <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Proof>,
+{
+    /// Allocate all targets during circuit building.
+    pub fn allocate(
+        circuit: &mut CircuitBuilder<SC::Challenge>,
+        proof: &BatchProof<SC>,
+        air_public_counts: &[usize],
+    ) -> Self {
+        assert_eq!(
+            air_public_counts.len(),
+            proof.opened_values.instances.len(),
+            "public input count must match number of instances"
+        );
+
+        let air_public_targets = air_public_counts
+            .iter()
+            .map(|&count| (0..count).map(|_| circuit.add_public_input()).collect())
+            .collect();
+
+        let proof_targets = BatchProofTargets::new(circuit, proof);
+
+        Self {
+            air_public_targets,
+            proof_targets,
+        }
+    }
+
+    /// Pack actual values in the same order as allocated targets.
+    pub fn pack_values(
+        &self,
+        air_public_values: &[Vec<Val<SC>>],
+        proof: &BatchProof<SC>,
+        challenges: &[SC::Challenge],
+        num_queries: usize,
+    ) -> Vec<SC::Challenge>
+    where
+        Val<SC>: PrimeField64,
+        SC::Challenge: BasedVectorSpace<Val<SC>> + From<Val<SC>>,
+    {
+        let proof_values = BatchProofTargets::<SC, Comm, OpeningProof>::get_values(proof);
+
+        construct_batch_stark_verifier_inputs(
+            air_public_values,
+            &proof_values,
+            challenges,
+            num_queries,
+        )
     }
 }
 
