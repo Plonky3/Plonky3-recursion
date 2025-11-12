@@ -107,8 +107,6 @@ fn test_fibonacci_batch_verifier() {
     let mut a = builder.alloc_const(F::ZERO, "F(0)");
     let mut b = builder.alloc_const(F::ONE, "F(1)");
 
-    // TODO: remove this once we always have non-empty MUL tables
-    builder.mul(a, b);
     for _i in 2..=n {
         let next = builder.add(a, b);
         a = b;
