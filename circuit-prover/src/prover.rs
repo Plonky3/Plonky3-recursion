@@ -1,36 +1,19 @@
-//! Multi-table prover and verifier for STARK proofs.
-//!
-//! Generic roles and degrees:
-//! - F: Prover/verifier base field (BabyBear/KoalaBear/Goldilocks). All PCS/FRI arithmetic runs over `F`.
-//! - P: Cryptographic permutation over `F` used by the hash/compress functions and challenger.
-//! - EF: Element field used in circuit traces. Either the base field `F` or a binomial extension `BinomialExtensionField<F, D>`.
-//! - D: Element-field extension degree. Must equal `EF::DIMENSION` and is used by AIRs like `WitnessAir<F, D>` to expand EF values into D base limbs.
-//! - CD: Challenge field degree for FRI (independent of `D`). The challenger/PCS use `BinomialExtensionField<F, CD>`.
-//!
-//! Supports base fields (D=1) and binomial extension fields (D>1), with automatic
-//! detection of the binomial parameter `W` for extension-field multiplication.
+//! Dynamic non-primitive table plugins for the batch prover.
 
 use alloc::boxed::Box;
+use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
 use p3_air::{Air, BaseAir};
-use p3_batch_stark::Val as MVal;
+use p3_batch_stark::{StarkGenericConfig, Val as BatchVal};
 use p3_circuit::tables::Traces;
-use p3_circuit::{CircuitBuilderError, CircuitError};
 use p3_field::extension::BinomialExtensionField;
-use p3_field::{BasedVectorSpace, Field};
 use p3_matrix::dense::RowMajorMatrix;
 use p3_mmcs_air::air::{MmcsTableConfig, MmcsVerifyAir};
-use p3_uni_stark::{
-    ProverConstraintFolder, StarkGenericConfig, SymbolicAirBuilder, Val, VerifierConstraintFolder,
-    prove, verify,
-};
-use thiserror::Error;
+use p3_uni_stark::{ProverConstraintFolder, SymbolicAirBuilder, VerifierConstraintFolder};
 
-use crate::air::{AddAir, ConstAir, MulAir, PublicAir, WitnessAir};
 use crate::config::StarkField;
-use crate::field_params::ExtractBinomialW;
 
 /// Configuration for packing multiple primitive operations into a single AIR row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,59 +49,6 @@ impl Default for TablePacking {
     }
 }
 
-/// STARK proof type alias for convenience.
-pub type StarkProof<SC> = p3_uni_stark::Proof<SC>;
-
-/// Proof and metadata for a single table.
-pub struct TableProof<SC>
-where
-    SC: StarkGenericConfig,
-{
-    pub proof: StarkProof<SC>,
-    /// Number of logical rows (operations) prior to any per-row packing.
-    pub rows: usize,
-}
-
-/// Complete proof bundle containing proofs for all circuit tables.
-///
-/// Includes metadata for verification, such as:
-/// - `ext_degree`: circuit element extension degree used in traces (may differ from challenge degree).
-/// - `w_binomial`: binomial parameter `W` for element-field multiplication, when applicable.
-pub struct MultiTableProof<SC>
-where
-    SC: StarkGenericConfig,
-{
-    // Primitive tables
-    pub witness: TableProof<SC>,
-    pub constants: TableProof<SC>,
-    pub public: TableProof<SC>,
-    pub add: TableProof<SC>,
-    pub mul: TableProof<SC>,
-
-    /// Dynamic non-primitive table proofs, extensible at runtime.
-    pub non_primitives: Vec<TableProofEntry<SC>>,
-
-    /// Packing configuration used when generating the proofs.
-    pub table_packing: TablePacking,
-    /// Extension field degree: 1 for base field; otherwise the extension degree used.
-    pub ext_degree: usize,
-    /// Binomial parameter W for extension fields (e.g., x^D = W); None for base fields
-    pub w_binomial: Option<Val<SC>>,
-}
-
-/// Dynamic table proof entry for non-primitive tables
-pub struct TableProofEntry<SC>
-where
-    SC: StarkGenericConfig,
-{
-    /// Identifier for the table.
-    pub id: &'static str,
-    /// Proof for the table.
-    pub proof: StarkProof<SC>,
-    /// Number of logical rows (operations) prior to any per-row packing.
-    pub rows: usize,
-}
-
 /// Manifest entry describing a dynamically dispatched non-primitive table inside a batch proof.
 pub struct NonPrimitiveManifestEntry<SC>
 where
@@ -129,7 +59,7 @@ where
     /// Number of logical rows produced for this table.
     pub rows: usize,
     /// Public values exposed by this table (if any).
-    pub public_values: Vec<MVal<SC>>,
+    pub public_values: Vec<BatchVal<SC>>,
     /// Opaque plugin-specific data required to rebuild AIRs during verification.
     pub data: Vec<u8>,
 }
@@ -161,10 +91,10 @@ where
     SC: StarkGenericConfig,
 {
     fn width(&self) -> usize;
-    fn preprocessed_trace(&self) -> Option<RowMajorMatrix<MVal<SC>>> {
+    fn preprocessed_trace(&self) -> Option<RowMajorMatrix<BatchVal<SC>>> {
         None
     }
-    fn eval_symbolic(&self, builder: &mut SymbolicAirBuilder<MVal<SC>>);
+    fn eval_symbolic(&self, builder: &mut SymbolicAirBuilder<BatchVal<SC>>);
     fn eval_prover(&self, builder: &mut ProverConstraintFolder<'_, SC>);
     fn eval_verifier(&self, builder: &mut VerifierConstraintFolder<'_, SC>);
 }
@@ -176,435 +106,10 @@ where
 {
     pub id: &'static str,
     pub air: DynamicAirEntry<SC>,
-    pub trace: RowMajorMatrix<MVal<SC>>,
-    pub public_values: Vec<MVal<SC>>,
+    pub trace: RowMajorMatrix<BatchVal<SC>>,
+    pub public_values: Vec<BatchVal<SC>>,
     pub rows: usize,
     pub data: Vec<u8>,
-}
-
-/// Multi-table STARK prover for circuit execution traces.
-///
-/// Generic over `SC: StarkGenericConfig` to support different field configurations.
-pub struct MultiTableProver<SC>
-where
-    SC: StarkGenericConfig + 'static,
-{
-    config: SC,
-    table_packing: TablePacking,
-    /// Registered non-primitive provers.
-    non_primitive_provers: Vec<Box<dyn TableProver<SC>>>,
-}
-
-/// Errors that can arise during proving or verification.
-#[derive(Debug, Error)]
-pub enum ProverError {
-    /// Unsupported extension degree encountered.
-    #[error("unsupported extension degree: {0} (supported: 1,2,4,6,8)")]
-    UnsupportedDegree(usize),
-
-    /// Missing binomial parameter W for extension-field multiplication.
-    #[error("missing binomial parameter W for extension-field multiplication")]
-    MissingWForExtension,
-
-    /// Circuit execution error.
-    #[error("circuit error: {0}")]
-    Circuit(#[from] CircuitError),
-
-    /// Circuit building/lowering error.
-    #[error("circuit build error: {0}")]
-    Builder(#[from] CircuitBuilderError),
-
-    /// Verification failed for a specific table/phase.
-    #[error("verification failed in {phase}")]
-    VerificationFailed { phase: &'static str },
-}
-
-impl<SC> MultiTableProver<SC>
-where
-    SC: StarkGenericConfig + 'static,
-    Val<SC>: StarkField,
-{
-    pub fn new(config: SC) -> Self {
-        Self {
-            config,
-            table_packing: TablePacking::default(),
-            non_primitive_provers: Vec::new(),
-        }
-    }
-
-    pub fn with_table_packing(mut self, table_packing: TablePacking) -> Self {
-        self.table_packing = table_packing;
-        self
-    }
-
-    pub fn set_table_packing(&mut self, table_packing: TablePacking) {
-        self.table_packing = table_packing;
-    }
-
-    pub const fn table_packing(&self) -> TablePacking {
-        self.table_packing
-    }
-
-    /// Register MMCS verification plugin
-    pub fn with_mmcs_table(mut self, mmcs_config: MmcsTableConfig) -> Self {
-        let plugin = Box::new(MmcsProver {
-            config: mmcs_config,
-        });
-        self.register_prover(plugin);
-        self
-    }
-
-    /// Register a non-primitive prover
-    pub fn register_prover(&mut self, plugin: Box<dyn TableProver<SC>>) {
-        self.non_primitive_provers.push(plugin);
-    }
-
-    /// Generate proofs for all circuit tables.
-    ///
-    /// Automatically detects whether to use base field or binomial extension field
-    /// proving based on the circuit element type `EF`. For extension fields,
-    /// the binomial parameter W is automatically extracted.
-    pub fn prove_all_tables<EF>(
-        &self,
-        traces: &Traces<EF>,
-    ) -> Result<MultiTableProof<SC>, ProverError>
-    where
-        EF: Field + BasedVectorSpace<Val<SC>> + ExtractBinomialW<Val<SC>>,
-    {
-        let pis = [];
-        let w_opt = EF::extract_w();
-        match EF::DIMENSION {
-            1 => self.prove_for_degree::<EF, 1>(traces, &pis, None),
-            2 => self.prove_for_degree::<EF, 2>(traces, &pis, w_opt),
-            4 => self.prove_for_degree::<EF, 4>(traces, &pis, w_opt),
-            6 => self.prove_for_degree::<EF, 6>(traces, &pis, w_opt),
-            8 => self.prove_for_degree::<EF, 8>(traces, &pis, w_opt),
-            d => Err(ProverError::UnsupportedDegree(d)),
-        }
-    }
-
-    /// Verify all proofs in the given proof bundle.
-    /// Uses the recorded extension degree and binomial parameter recorded during proving.
-    pub fn verify_all_tables(&self, proof: &MultiTableProof<SC>) -> Result<(), ProverError> {
-        let pis = [];
-
-        let w_opt = proof.w_binomial;
-        match proof.ext_degree {
-            1 => self.verify_for_degree::<1>(proof, &pis, None),
-            2 => self.verify_for_degree::<2>(proof, &pis, w_opt),
-            4 => self.verify_for_degree::<4>(proof, &pis, w_opt),
-            6 => self.verify_for_degree::<6>(proof, &pis, w_opt),
-            8 => self.verify_for_degree::<8>(proof, &pis, w_opt),
-            d => Err(ProverError::UnsupportedDegree(d)),
-        }
-    }
-
-    // Internal implementation methods
-
-    /// Prove all tables for a fixed extension degree.
-    fn prove_for_degree<EF, const D: usize>(
-        &self,
-        traces: &Traces<EF>,
-        pis: &[Val<SC>],
-        w_binomial: Option<Val<SC>>,
-    ) -> Result<MultiTableProof<SC>, ProverError>
-    where
-        EF: Field + BasedVectorSpace<Val<SC>>,
-    {
-        debug_assert_eq!(D, EF::DIMENSION, "D parameter must match EF::DIMENSION");
-        let table_packing = self.table_packing;
-        let add_lanes = table_packing.add_lanes();
-        let mul_lanes = table_packing.mul_lanes();
-        // Witness
-        let witness_matrix = WitnessAir::<Val<SC>, D>::trace_to_matrix(&traces.witness_trace);
-        let witness_air = WitnessAir::<Val<SC>, D>::new(traces.witness_trace.values.len());
-        let witness_proof = prove(&self.config, &witness_air, witness_matrix, pis);
-
-        // Const
-        let const_matrix = ConstAir::<Val<SC>, D>::trace_to_matrix(&traces.const_trace);
-        let const_air = ConstAir::<Val<SC>, D>::new(traces.const_trace.values.len());
-        let const_proof = prove(&self.config, &const_air, const_matrix, pis);
-
-        // Public
-        let public_matrix = PublicAir::<Val<SC>, D>::trace_to_matrix(&traces.public_trace);
-        let public_air = PublicAir::<Val<SC>, D>::new(traces.public_trace.values.len());
-        let public_proof = prove(&self.config, &public_air, public_matrix, pis);
-
-        // Add
-        let add_matrix = AddAir::<Val<SC>, D>::trace_to_matrix(&traces.add_trace, add_lanes);
-        let add_air = AddAir::<Val<SC>, D>::new(traces.add_trace.lhs_values.len(), add_lanes);
-        let add_proof = prove(&self.config, &add_air, add_matrix, pis);
-
-        // Multiplication (uses binomial arithmetic for extension fields)
-        let mul_matrix = MulAir::<Val<SC>, D>::trace_to_matrix(&traces.mul_trace, mul_lanes);
-        let mul_air: MulAir<Val<SC>, D> = if D == 1 {
-            MulAir::<Val<SC>, D>::new(traces.mul_trace.lhs_values.len(), mul_lanes)
-        } else {
-            let w = w_binomial.ok_or(ProverError::MissingWForExtension)?;
-            MulAir::<Val<SC>, D>::new_binomial(traces.mul_trace.lhs_values.len(), mul_lanes, w)
-        };
-        let mul_proof = prove(&self.config, &mul_air, mul_matrix, pis);
-
-        // Handle all registered non-primitive tables dynamically
-        let mut non_primitives = Vec::new();
-        match D {
-            1 => {
-                let t: &Traces<Val<SC>> = unsafe { transmute_traces(traces) };
-                for p in &self.non_primitive_provers {
-                    if let Some(entry) = p.prove_d1(&self.config, table_packing, t, pis) {
-                        non_primitives.push(entry);
-                    }
-                }
-            }
-            2 => {
-                type EF2<F> = BinomialExtensionField<F, 2>;
-
-                let t: &Traces<EF2<Val<SC>>> = unsafe { transmute_traces(traces) };
-                for p in &self.non_primitive_provers {
-                    if let Some(entry) = p.prove_d2(&self.config, table_packing, t, pis) {
-                        non_primitives.push(entry);
-                    }
-                }
-            }
-            4 => {
-                type EF4<F> = BinomialExtensionField<F, 4>;
-
-                let t: &Traces<EF4<Val<SC>>> = unsafe { transmute_traces(traces) };
-                for p in &self.non_primitive_provers {
-                    if let Some(entry) = p.prove_d4(&self.config, table_packing, t, pis) {
-                        non_primitives.push(entry);
-                    }
-                }
-            }
-            6 => {
-                type EF6<F> = BinomialExtensionField<F, 6>;
-
-                let t: &Traces<EF6<Val<SC>>> = unsafe { transmute_traces(traces) };
-                for p in &self.non_primitive_provers {
-                    if let Some(entry) = p.prove_d6(&self.config, table_packing, t, pis) {
-                        non_primitives.push(entry);
-                    }
-                }
-            }
-            8 => {
-                type EF8<F> = BinomialExtensionField<F, 8>;
-
-                let t: &Traces<EF8<Val<SC>>> = unsafe { transmute_traces(traces) };
-                for p in &self.non_primitive_provers {
-                    if let Some(entry) = p.prove_d8(&self.config, table_packing, t, pis) {
-                        non_primitives.push(entry);
-                    }
-                }
-            }
-            _ => unreachable!(),
-        }
-
-        Ok(MultiTableProof {
-            witness: TableProof {
-                proof: witness_proof,
-                rows: traces.witness_trace.values.len(),
-            },
-            constants: TableProof {
-                proof: const_proof,
-                rows: traces.const_trace.values.len(),
-            },
-            public: TableProof {
-                proof: public_proof,
-                rows: traces.public_trace.values.len(),
-            },
-            add: TableProof {
-                proof: add_proof,
-                rows: traces.add_trace.lhs_values.len(),
-            },
-            mul: TableProof {
-                proof: mul_proof,
-                rows: traces.mul_trace.lhs_values.len(),
-            },
-            non_primitives,
-            table_packing,
-            ext_degree: D,
-            w_binomial: if D > 1 { w_binomial } else { None },
-        })
-    }
-
-    /// Verify all tables for a fixed extension degree.
-    fn verify_for_degree<const D: usize>(
-        &self,
-        proof: &MultiTableProof<SC>,
-        pis: &[Val<SC>],
-        w_binomial: Option<Val<SC>>,
-    ) -> Result<(), ProverError> {
-        let table_packing = proof.table_packing;
-        let add_lanes = table_packing.add_lanes();
-        let mul_lanes = table_packing.mul_lanes();
-        // Witness
-        let witness_air = WitnessAir::<Val<SC>, D>::new(proof.witness.rows);
-        verify(&self.config, &witness_air, &proof.witness.proof, pis)
-            .map_err(|_| ProverError::VerificationFailed { phase: "witness" })?;
-
-        // Const
-        let const_air = ConstAir::<Val<SC>, D>::new(proof.constants.rows);
-        verify(&self.config, &const_air, &proof.constants.proof, pis)
-            .map_err(|_| ProverError::VerificationFailed { phase: "const" })?;
-
-        // Public
-        let public_air = PublicAir::<Val<SC>, D>::new(proof.public.rows);
-        verify(&self.config, &public_air, &proof.public.proof, pis)
-            .map_err(|_| ProverError::VerificationFailed { phase: "public" })?;
-
-        // Add
-        let add_air = AddAir::<Val<SC>, D>::new(proof.add.rows, add_lanes);
-        verify(&self.config, &add_air, &proof.add.proof, pis)
-            .map_err(|_| ProverError::VerificationFailed { phase: "add" })?;
-
-        // Mul
-        let mul_air: MulAir<Val<SC>, D> = if D == 1 {
-            MulAir::new(proof.mul.rows, mul_lanes)
-        } else {
-            let w = w_binomial.ok_or(ProverError::MissingWForExtension)?;
-            MulAir::new_binomial(proof.mul.rows, mul_lanes, w)
-        };
-        verify(&self.config, &mul_air, &proof.mul.proof, pis)
-            .map_err(|_| ProverError::VerificationFailed { phase: "mul" })?;
-
-        // Verify non-primitive tables
-        for entry in &proof.non_primitives {
-            let plugin = self
-                .non_primitive_provers
-                .iter()
-                .find(|p| {
-                    let tp = p.as_ref();
-                    TableProver::id(tp) == entry.id
-                })
-                .ok_or(ProverError::VerificationFailed {
-                    phase: "unknown_non_primitive",
-                })?;
-            plugin.verify(&self.config, D, proof.table_packing, entry, w_binomial, pis)?;
-        }
-
-        Ok(())
-    }
-}
-
-#[allow(clippy::ptr_arg)] // Plonky3 treats `pis` as `&Vec<_>`.
-/// Table prover plugin trait, used to prove and verify non-primitive tables.
-///
-/// Because of some limitations of object-safety, we need to split all instances
-/// of the generic `prove` method into extension-degree-specific `prove_dN` methods.
-///
-/// Users wishing to implement a new non-primitive table prover can implement this trait
-/// and use the `impl_table_prover_degrees_from_base!` macro to automatically derive
-/// the extension-degree-specific `prove_dN` methods.
-pub trait TableProver<SC>: Send + Sync
-where
-    SC: StarkGenericConfig + 'static,
-{
-    /// Identifier for this prover.
-    fn id(&self) -> &'static str;
-
-    /// Prove a non-primitive table in the base field.
-    fn prove_d1(
-        &self,
-        cfg: &SC,
-        packing: TablePacking,
-        traces: &Traces<Val<SC>>,
-        pis: &[Val<SC>],
-    ) -> Option<TableProofEntry<SC>>;
-
-    /// Prove a non-primitive table in the extension field of degree 2.
-    fn prove_d2(
-        &self,
-        cfg: &SC,
-        packing: TablePacking,
-        traces: &Traces<BinomialExtensionField<Val<SC>, 2>>,
-        pis: &[Val<SC>],
-    ) -> Option<TableProofEntry<SC>>;
-
-    /// Prove a non-primitive table in the extension field of degree 4.
-    fn prove_d4(
-        &self,
-        cfg: &SC,
-        packing: TablePacking,
-        traces: &Traces<BinomialExtensionField<Val<SC>, 4>>,
-        pis: &[Val<SC>],
-    ) -> Option<TableProofEntry<SC>>;
-
-    /// Prove a non-primitive table in the extension field of degree 6.
-    fn prove_d6(
-        &self,
-        cfg: &SC,
-        packing: TablePacking,
-        traces: &Traces<BinomialExtensionField<Val<SC>, 6>>,
-        pis: &[Val<SC>],
-    ) -> Option<TableProofEntry<SC>>;
-
-    /// Prove a non-primitive table in the extension field of degree 8.
-    fn prove_d8(
-        &self,
-        cfg: &SC,
-        packing: TablePacking,
-        traces: &Traces<BinomialExtensionField<Val<SC>, 8>>,
-        pis: &[Val<SC>],
-    ) -> Option<TableProofEntry<SC>>;
-
-    /// Produce a batched table instance for base-field traces.
-    fn batch_instance_d1(
-        &self,
-        _cfg: &SC,
-        _packing: TablePacking,
-        _traces: &Traces<Val<SC>>,
-    ) -> Option<BatchTableInstance<SC>>;
-
-    /// Produce a batched table instance for degree-2 extension traces.
-    fn batch_instance_d2(
-        &self,
-        _cfg: &SC,
-        _packing: TablePacking,
-        _traces: &Traces<BinomialExtensionField<Val<SC>, 2>>,
-    ) -> Option<BatchTableInstance<SC>>;
-
-    /// Produce a batched table instance for degree-4 extension traces.
-    fn batch_instance_d4(
-        &self,
-        _cfg: &SC,
-        _packing: TablePacking,
-        _traces: &Traces<BinomialExtensionField<Val<SC>, 4>>,
-    ) -> Option<BatchTableInstance<SC>>;
-
-    /// Produce a batched table instance for degree-6 extension traces.
-    fn batch_instance_d6(
-        &self,
-        _cfg: &SC,
-        _packing: TablePacking,
-        _traces: &Traces<BinomialExtensionField<Val<SC>, 6>>,
-    ) -> Option<BatchTableInstance<SC>>;
-
-    /// Produce a batched table instance for degree-8 extension traces.
-    fn batch_instance_d8(
-        &self,
-        _cfg: &SC,
-        _packing: TablePacking,
-        _traces: &Traces<BinomialExtensionField<Val<SC>, 8>>,
-    ) -> Option<BatchTableInstance<SC>>;
-
-    /// Rebuild the AIR for verification from the recorded manifest entry.
-    fn batch_air_from_manifest(
-        &self,
-        _cfg: &SC,
-        _degree: usize,
-        _manifest: &NonPrimitiveManifestEntry<SC>,
-    ) -> Result<DynamicAirEntry<SC>, String>;
-
-    /// Verify a non-primitive table.
-    fn verify(
-        &self,
-        cfg: &SC,
-        degree: usize,
-        packing: TablePacking,
-        entry: &TableProofEntry<SC>,
-        w_binomial: Option<Val<SC>>,
-        pis: &[Val<SC>],
-    ) -> Result<(), ProverError>;
 }
 
 #[inline(always)]
@@ -612,108 +117,76 @@ pub(crate) unsafe fn transmute_traces<FromEF, ToEF>(t: &Traces<FromEF>) -> &Trac
     unsafe { &*(t as *const _ as *const Traces<ToEF>) }
 }
 
-#[macro_export]
-/// Macro to implement the `TableProver` trait for a given base prover.
-///
-/// It will derive all the `prove_dN` methods for proving in extension fields of degree N.
-///
-/// # Examples
-///
-/// ```ignore
-/// pub struct MyProver { pub config: MyConfig }
-///
-/// impl MyProver {
-///     fn prove_base(&self, cfg: &SC, packing: TablePacking, traces: &Traces<Val<SC>>, pis: &[Val<SC>]) -> Option<TableProofEntry<SC>> {
-///         Some(TableProofEntry { id: "my_prover", proof: prove(cfg, &air, matrix, pis), rows: traces.values.len() })
-///     }
-/// }
-///
-/// impl TableProver<SC> for MyProver {
-///     fn id(&self) -> &'static str { "my_prover" }
-///
-///     // Derive all extension-degree-specific prove methods from the base prove method.
-///     impl_table_prover_degrees_from_base!(MyProver, prove_base);
-///
-///     fn verify(
-///         &self,
-///         cfg: &SC,
-///         degree: usize,
-///         packing: TablePacking,
-///         entry: &TableProofEntry<SC>,
-///         w_binomial: Option<Val<SC>>,
-///         pis: &[Val<SC>],
-///     ) -> Result<(), ProverError> { Ok(()) }
-/// }
-///
-/// ```
-macro_rules! impl_table_prover_degrees_from_base {
-    ($base:ident) => {
-        fn prove_d1(
-            &self,
-            cfg: &SC,
-            packing: $crate::prover::TablePacking,
-            traces: &p3_circuit::tables::Traces<p3_uni_stark::Val<SC>>,
-            pis: &[p3_uni_stark::Val<SC>],
-        ) -> Option<$crate::prover::TableProofEntry<SC>> {
-            self.$base::<SC>(cfg, packing, traces, pis)
-        }
+/// Trait implemented by all non-primitive table plugins used by the batch prover.
+pub trait TableProver<SC>: Send + Sync
+where
+    SC: StarkGenericConfig + 'static,
+{
+    /// Identifier for this prover.
+    fn id(&self) -> &'static str;
 
-        fn prove_d2(
-            &self,
-            cfg: &SC,
-            packing: $crate::prover::TablePacking,
-            traces: &p3_circuit::tables::Traces<
-                p3_field::extension::BinomialExtensionField<p3_uni_stark::Val<SC>, 2>,
-            >,
-            pis: &[p3_uni_stark::Val<SC>],
-        ) -> Option<$crate::prover::TableProofEntry<SC>> {
-            let t: &p3_circuit::tables::Traces<p3_uni_stark::Val<SC>> =
-                unsafe { $crate::prover::transmute_traces(traces) };
-            self.$base::<SC>(cfg, packing, t, pis)
-        }
+    /// Produce a batched table instance for base-field traces.
+    fn batch_instance_d1(
+        &self,
+        _cfg: &SC,
+        _packing: TablePacking,
+        _traces: &Traces<BatchVal<SC>>,
+    ) -> Option<BatchTableInstance<SC>> {
+        None
+    }
 
-        fn prove_d4(
-            &self,
-            cfg: &SC,
-            packing: $crate::prover::TablePacking,
-            traces: &p3_circuit::tables::Traces<
-                p3_field::extension::BinomialExtensionField<p3_uni_stark::Val<SC>, 4>,
-            >,
-            pis: &[p3_uni_stark::Val<SC>],
-        ) -> Option<$crate::prover::TableProofEntry<SC>> {
-            let t: &p3_circuit::tables::Traces<p3_uni_stark::Val<SC>> =
-                unsafe { $crate::prover::transmute_traces(traces) };
-            self.$base::<SC>(cfg, packing, t, pis)
-        }
+    /// Produce a batched table instance for degree-2 extension traces.
+    fn batch_instance_d2(
+        &self,
+        _cfg: &SC,
+        _packing: TablePacking,
+        _traces: &Traces<BinomialExtensionField<BatchVal<SC>, 2>>,
+    ) -> Option<BatchTableInstance<SC>> {
+        None
+    }
 
-        fn prove_d6(
-            &self,
-            cfg: &SC,
-            packing: $crate::prover::TablePacking,
-            traces: &p3_circuit::tables::Traces<
-                p3_field::extension::BinomialExtensionField<p3_uni_stark::Val<SC>, 6>,
-            >,
-            pis: &[p3_uni_stark::Val<SC>],
-        ) -> Option<$crate::prover::TableProofEntry<SC>> {
-            let t: &p3_circuit::tables::Traces<p3_uni_stark::Val<SC>> =
-                unsafe { $crate::prover::transmute_traces(traces) };
-            self.$base::<SC>(cfg, packing, t, pis)
-        }
+    /// Produce a batched table instance for degree-4 extension traces.
+    fn batch_instance_d4(
+        &self,
+        _cfg: &SC,
+        _packing: TablePacking,
+        _traces: &Traces<BinomialExtensionField<BatchVal<SC>, 4>>,
+    ) -> Option<BatchTableInstance<SC>> {
+        None
+    }
 
-        fn prove_d8(
-            &self,
-            cfg: &SC,
-            packing: $crate::prover::TablePacking,
-            traces: &p3_circuit::tables::Traces<
-                p3_field::extension::BinomialExtensionField<p3_uni_stark::Val<SC>, 8>,
-            >,
-            pis: &[p3_uni_stark::Val<SC>],
-        ) -> Option<$crate::prover::TableProofEntry<SC>> {
-            let t: &p3_circuit::tables::Traces<p3_uni_stark::Val<SC>> =
-                unsafe { $crate::prover::transmute_traces(traces) };
-            self.$base::<SC>(cfg, packing, t, pis)
-        }
-    };
+    /// Produce a batched table instance for degree-6 extension traces.
+    fn batch_instance_d6(
+        &self,
+        _cfg: &SC,
+        _packing: TablePacking,
+        _traces: &Traces<BinomialExtensionField<BatchVal<SC>, 6>>,
+    ) -> Option<BatchTableInstance<SC>> {
+        None
+    }
+
+    /// Produce a batched table instance for degree-8 extension traces.
+    fn batch_instance_d8(
+        &self,
+        _cfg: &SC,
+        _packing: TablePacking,
+        _traces: &Traces<BinomialExtensionField<BatchVal<SC>, 8>>,
+    ) -> Option<BatchTableInstance<SC>> {
+        None
+    }
+
+    /// Rebuild the AIR for verification from the recorded manifest entry.
+    fn batch_air_from_manifest(
+        &self,
+        _cfg: &SC,
+        _degree: usize,
+        _manifest: &NonPrimitiveManifestEntry<SC>,
+    ) -> Result<DynamicAirEntry<SC>, String> {
+        Err(format!(
+            "plugin {} does not support batch dispatch",
+            self.id()
+        ))
+    }
 }
 
 #[macro_export]
@@ -723,7 +196,7 @@ macro_rules! impl_batch_table_instances_from_base {
             &self,
             cfg: &SC,
             packing: $crate::prover::TablePacking,
-            traces: &p3_circuit::tables::Traces<p3_uni_stark::Val<SC>>,
+            traces: &p3_circuit::tables::Traces<p3_batch_stark::Val<SC>>,
         ) -> Option<$crate::prover::BatchTableInstance<SC>> {
             self.$base::<SC>(cfg, packing, traces)
         }
@@ -733,10 +206,10 @@ macro_rules! impl_batch_table_instances_from_base {
             cfg: &SC,
             packing: $crate::prover::TablePacking,
             traces: &p3_circuit::tables::Traces<
-                p3_field::extension::BinomialExtensionField<p3_uni_stark::Val<SC>, 2>,
+                p3_field::extension::BinomialExtensionField<p3_batch_stark::Val<SC>, 2>,
             >,
         ) -> Option<$crate::prover::BatchTableInstance<SC>> {
-            let t: &p3_circuit::tables::Traces<p3_uni_stark::Val<SC>> =
+            let t: &p3_circuit::tables::Traces<p3_batch_stark::Val<SC>> =
                 unsafe { $crate::prover::transmute_traces(traces) };
             self.$base::<SC>(cfg, packing, t)
         }
@@ -746,10 +219,10 @@ macro_rules! impl_batch_table_instances_from_base {
             cfg: &SC,
             packing: $crate::prover::TablePacking,
             traces: &p3_circuit::tables::Traces<
-                p3_field::extension::BinomialExtensionField<p3_uni_stark::Val<SC>, 4>,
+                p3_field::extension::BinomialExtensionField<p3_batch_stark::Val<SC>, 4>,
             >,
         ) -> Option<$crate::prover::BatchTableInstance<SC>> {
-            let t: &p3_circuit::tables::Traces<p3_uni_stark::Val<SC>> =
+            let t: &p3_circuit::tables::Traces<p3_batch_stark::Val<SC>> =
                 unsafe { $crate::prover::transmute_traces(traces) };
             self.$base::<SC>(cfg, packing, t)
         }
@@ -759,10 +232,10 @@ macro_rules! impl_batch_table_instances_from_base {
             cfg: &SC,
             packing: $crate::prover::TablePacking,
             traces: &p3_circuit::tables::Traces<
-                p3_field::extension::BinomialExtensionField<p3_uni_stark::Val<SC>, 6>,
+                p3_field::extension::BinomialExtensionField<p3_batch_stark::Val<SC>, 6>,
             >,
         ) -> Option<$crate::prover::BatchTableInstance<SC>> {
-            let t: &p3_circuit::tables::Traces<p3_uni_stark::Val<SC>> =
+            let t: &p3_circuit::tables::Traces<p3_batch_stark::Val<SC>> =
                 unsafe { $crate::prover::transmute_traces(traces) };
             self.$base::<SC>(cfg, packing, t)
         }
@@ -772,17 +245,17 @@ macro_rules! impl_batch_table_instances_from_base {
             cfg: &SC,
             packing: $crate::prover::TablePacking,
             traces: &p3_circuit::tables::Traces<
-                p3_field::extension::BinomialExtensionField<p3_uni_stark::Val<SC>, 8>,
+                p3_field::extension::BinomialExtensionField<p3_batch_stark::Val<SC>, 8>,
             >,
         ) -> Option<$crate::prover::BatchTableInstance<SC>> {
-            let t: &p3_circuit::tables::Traces<p3_uni_stark::Val<SC>> =
+            let t: &p3_circuit::tables::Traces<p3_batch_stark::Val<SC>> =
                 unsafe { $crate::prover::transmute_traces(traces) };
             self.$base::<SC>(cfg, packing, t)
         }
     };
 }
 
-/// MMCS prover plugin
+/// MMCS prover plugin.
 pub struct MmcsProver {
     pub config: MmcsTableConfig,
 }
@@ -791,24 +264,23 @@ struct MmcsBatchAir<SC>
 where
     SC: StarkGenericConfig,
 {
-    air: MmcsVerifyAir<Val<SC>>,
+    air: MmcsVerifyAir<BatchVal<SC>>,
 }
 
 impl<SC> BatchAir<SC> for MmcsBatchAir<SC>
 where
     SC: StarkGenericConfig,
-    Val<SC>: StarkField,
+    BatchVal<SC>: StarkField,
 {
     fn width(&self) -> usize {
         self.air.width()
     }
 
-    fn preprocessed_trace(&self) -> Option<RowMajorMatrix<Val<SC>>> {
-        // SAFETY: `Val<SC>` and `MVal<SC>` are the same base field type.
+    fn preprocessed_trace(&self) -> Option<RowMajorMatrix<BatchVal<SC>>> {
         self.air.preprocessed_trace()
     }
 
-    fn eval_symbolic(&self, builder: &mut SymbolicAirBuilder<MVal<SC>>) {
+    fn eval_symbolic(&self, builder: &mut SymbolicAirBuilder<BatchVal<SC>>) {
         self.air.eval(builder);
     }
 
@@ -822,47 +294,25 @@ where
 }
 
 impl MmcsProver {
-    fn prove_base<SC>(
-        &self,
-        cfg: &SC,
-        _packing: TablePacking,
-        traces: &Traces<Val<SC>>,
-        pis: &[Val<SC>],
-    ) -> Option<TableProofEntry<SC>>
-    where
-        SC: StarkGenericConfig,
-        Val<SC>: StarkField,
-    {
-        let t = &traces.mmcs_trace;
-        if t.mmcs_paths.is_empty() {
-            return None;
-        }
-        let rows: usize = t.mmcs_paths.iter().map(|p| p.left_values.len() + 1).sum();
-        let matrix = MmcsVerifyAir::trace_to_matrix(&self.config, t);
-        let air = MmcsVerifyAir::new(self.config);
-        let proof = prove(cfg, &air, matrix, pis);
-        Some(TableProofEntry {
-            id: "mmcs_verify",
-            proof,
-            rows,
-        })
-    }
-
     fn batch_instance_base<SC>(
         &self,
         _cfg: &SC,
         _packing: TablePacking,
-        traces: &Traces<Val<SC>>,
+        traces: &Traces<BatchVal<SC>>,
     ) -> Option<BatchTableInstance<SC>>
     where
         SC: StarkGenericConfig + 'static,
-        Val<SC>: StarkField,
+        BatchVal<SC>: StarkField,
     {
         let t = &traces.mmcs_trace;
         if t.mmcs_paths.is_empty() {
             return None;
         }
-        let rows: usize = t.mmcs_paths.iter().map(|p| p.left_values.len() + 1).sum();
+        let rows: usize = t
+            .mmcs_paths
+            .iter()
+            .map(|path| path.left_values.len() + 1)
+            .sum();
         let matrix = MmcsVerifyAir::trace_to_matrix(&self.config, t);
         let air = DynamicAirEntry::new(Box::new(MmcsBatchAir::<SC> {
             air: MmcsVerifyAir::new(self.config),
@@ -881,13 +331,12 @@ impl MmcsProver {
 impl<SC> TableProver<SC> for MmcsProver
 where
     SC: StarkGenericConfig + 'static,
-    Val<SC>: StarkField,
+    BatchVal<SC>: StarkField,
 {
     fn id(&self) -> &'static str {
         "mmcs_verify"
     }
 
-    impl_table_prover_degrees_from_base!(prove_base);
     impl_batch_table_instances_from_base!(batch_instance_base);
 
     fn batch_air_from_manifest(
@@ -899,340 +348,5 @@ where
         Ok(DynamicAirEntry::new(Box::new(MmcsBatchAir::<SC> {
             air: MmcsVerifyAir::new(self.config),
         })))
-    }
-
-    fn verify(
-        &self,
-        cfg: &SC,
-        _degree: usize,
-        _packing: TablePacking,
-        entry: &TableProofEntry<SC>,
-        _w_binomial: Option<Val<SC>>,
-        pis: &[Val<SC>],
-    ) -> Result<(), ProverError> {
-        let air = MmcsVerifyAir::new(self.config);
-        verify(cfg, &air, &entry.proof, pis).map_err(|_| ProverError::VerificationFailed {
-            phase: <MmcsProver as TableProver<SC>>::id(self),
-        })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use p3_baby_bear::BabyBear;
-    use p3_circuit::CircuitBuilder;
-    use p3_field::extension::BinomialExtensionField;
-    use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
-    use p3_goldilocks::Goldilocks;
-    use p3_koala_bear::KoalaBear;
-
-    use super::*;
-    use crate::config;
-
-    #[test]
-    fn test_babybear_prover_base_field() -> Result<(), ProverError> {
-        let mut builder = CircuitBuilder::<BabyBear>::new();
-
-        // Create circuit: x + 5 * 2 - 3 + (-1) = expected_result, then assert result == expected
-        let x = builder.add_public_input();
-        let expected_result = builder.add_public_input(); // Add expected result as public input
-        let c5 = builder.add_const(BabyBear::from_u64(5));
-        let c2 = builder.add_const(BabyBear::from_u64(2));
-        let c3 = builder.add_const(BabyBear::from_u64(3));
-        let neg_one = builder.add_const(BabyBear::NEG_ONE); // Field boundary test
-
-        let mul_result = builder.mul(c5, c2); // 5 * 2 = 10
-        let add_result = builder.add(x, mul_result); // x + 10
-        let sub_result = builder.sub(add_result, c3); // (x + 10) - 3
-        let final_result = builder.add(sub_result, neg_one); // + (-1) for boundary
-
-        // Constrain: final_result - expected_result == 0
-        let diff = builder.sub(final_result, expected_result);
-        builder.assert_zero(diff);
-
-        let circuit = builder.build()?;
-        let mut runner = circuit.runner();
-
-        // Set public inputs: x = 7, expected = 7 + 10 - 3 + (-1) = 13
-        let x_val = BabyBear::from_u64(7);
-        let expected_val = BabyBear::from_u64(13); // 7 + 10 - 3 - 1 = 13
-        runner.set_public_inputs(&[x_val, expected_val])?;
-
-        let traces = runner.run()?;
-
-        // Create BabyBear prover and prove all tables
-        let config = config::baby_bear().build();
-        let multi_prover = MultiTableProver::new(config);
-        let proof = multi_prover.prove_all_tables(&traces)?;
-
-        // Verify all proofs
-        multi_prover.verify_all_tables(&proof)?;
-        Ok(())
-    }
-
-    #[test]
-    fn test_babybear_prover_extension_field_d4() -> Result<(), ProverError> {
-        type ExtField = BinomialExtensionField<BabyBear, 4>;
-        let mut builder = CircuitBuilder::<ExtField>::new();
-
-        // Create circuit: x * y + z - w = expected_result, then assert result == expected
-        let x = builder.add_public_input();
-        let y = builder.add_public_input();
-        let z = builder.add_public_input();
-        let expected_result = builder.add_public_input(); // Add expected result as public input
-        let w = builder.add_const(
-            ExtField::from_basis_coefficients_slice(&[
-                BabyBear::NEG_ONE, // -1 boundary test
-                BabyBear::ZERO,
-                BabyBear::ONE,
-                BabyBear::TWO,
-            ])
-            .unwrap(),
-        );
-
-        let xy = builder.mul(x, y); // Extension field multiplication
-        let add_result = builder.add(xy, z);
-        let sub_result = builder.sub(add_result, w);
-
-        // Constrain: sub_result - expected_result == 0
-        let diff = builder.sub(sub_result, expected_result);
-        builder.assert_zero(diff);
-
-        let circuit = builder.build()?;
-        let mut runner = circuit.runner();
-
-        // Set public inputs with all non-zero coefficients
-        let x_val = ExtField::from_basis_coefficients_slice(&[
-            BabyBear::from_u64(2),
-            BabyBear::from_u64(3),
-            BabyBear::from_u64(5),
-            BabyBear::from_u64(7),
-        ])
-        .unwrap();
-        let y_val = ExtField::from_basis_coefficients_slice(&[
-            BabyBear::from_u64(11),
-            BabyBear::from_u64(13),
-            BabyBear::from_u64(17),
-            BabyBear::from_u64(19),
-        ])
-        .unwrap();
-        let z_val = ExtField::from_basis_coefficients_slice(&[
-            BabyBear::from_u64(23),
-            BabyBear::from_u64(29),
-            BabyBear::from_u64(31),
-            BabyBear::from_u64(37),
-        ])
-        .unwrap();
-        let w_val = ExtField::from_basis_coefficients_slice(&[
-            BabyBear::NEG_ONE,
-            BabyBear::ZERO,
-            BabyBear::ONE,
-            BabyBear::TWO,
-        ])
-        .unwrap();
-
-        // Compute expected result: x * y + z - w
-        let xy_expected = x_val * y_val;
-        let add_expected = xy_expected + z_val;
-        let expected_val = add_expected - w_val;
-
-        runner.set_public_inputs(&[x_val, y_val, z_val, expected_val])?;
-        let traces = runner.run()?;
-
-        // Create BabyBear prover for extension field (D=4)
-        let config = config::baby_bear().build();
-        let multi_prover = MultiTableProver::new(config);
-        let proof = multi_prover.prove_all_tables(&traces)?;
-
-        // Verify proof has correct extension degree and W parameter
-        assert_eq!(proof.ext_degree, 4);
-        // Derive W via trait to avoid hardcoding constants
-        let expected_w = <ExtField as ExtractBinomialW<BabyBear>>::extract_w().unwrap();
-        assert_eq!(proof.w_binomial, Some(expected_w));
-
-        multi_prover.verify_all_tables(&proof)?;
-        Ok(())
-    }
-
-    #[test]
-    fn test_koalabear_prover_base_field() -> Result<(), ProverError> {
-        let mut builder = CircuitBuilder::<KoalaBear>::new();
-
-        // Create circuit: a * b + c - d = expected_result, then assert result == expected
-        let a = builder.add_public_input();
-        let b = builder.add_public_input();
-        let expected_result = builder.add_public_input(); // Add expected result as public input
-        let c = builder.add_const(KoalaBear::from_u64(100));
-        let d = builder.add_const(KoalaBear::NEG_ONE); // Boundary test
-
-        let ab = builder.mul(a, b);
-        let add_result = builder.add(ab, c);
-        let final_result = builder.sub(add_result, d);
-
-        // Constrain: final_result - expected_result == 0
-        let diff = builder.sub(final_result, expected_result);
-        builder.assert_zero(diff);
-
-        let circuit = builder.build()?;
-        let mut runner = circuit.runner();
-
-        // Set public inputs: a=42, b=13, expected = 42*13 + 100 - (-1) = 546 + 100 + 1 = 647
-        let a_val = KoalaBear::from_u64(42);
-        let b_val = KoalaBear::from_u64(13);
-        let expected_val = KoalaBear::from_u64(647); // 42*13 + 100 - (-1) = 647
-        runner.set_public_inputs(&[a_val, b_val, expected_val])?;
-        let traces = runner.run()?;
-
-        // Create KoalaBear prover
-        let config = config::koala_bear().build();
-        let multi_prover = MultiTableProver::new(config);
-        let proof = multi_prover.prove_all_tables(&traces)?;
-
-        multi_prover.verify_all_tables(&proof)?;
-        Ok(())
-    }
-
-    #[test]
-    fn test_koalabear_prover_extension_field_d8() -> Result<(), ProverError> {
-        type KBExtField = BinomialExtensionField<KoalaBear, 8>;
-        let mut builder = CircuitBuilder::<KBExtField>::new();
-
-        // Create circuit: x * y * z = expected_result, then assert result == expected
-        let x = builder.add_public_input();
-        let y = builder.add_public_input();
-        let expected_result = builder.add_public_input(); // Add expected result as public input
-        let z = builder.add_const(
-            KBExtField::from_basis_coefficients_slice(&[
-                KoalaBear::from_u64(1),
-                KoalaBear::NEG_ONE, // Mix: 1 and -1
-                KoalaBear::from_u64(2),
-                KoalaBear::from_u64(3),
-                KoalaBear::from_u64(4),
-                KoalaBear::from_u64(5),
-                KoalaBear::from_u64(6),
-                KoalaBear::from_u64(7),
-            ])
-            .unwrap(),
-        );
-
-        let xy = builder.mul(x, y); // First extension multiplication
-        let xyz = builder.mul(xy, z); // Second extension multiplication
-
-        // Constrain: xyz - expected_result == 0
-        let diff = builder.sub(xyz, expected_result);
-        builder.assert_zero(diff);
-
-        let circuit = builder.build()?;
-        let mut runner = circuit.runner();
-
-        // Set public inputs with diverse coefficients
-        let x_val = KBExtField::from_basis_coefficients_slice(&[
-            KoalaBear::from_u64(4),
-            KoalaBear::from_u64(6),
-            KoalaBear::from_u64(8),
-            KoalaBear::from_u64(10),
-            KoalaBear::from_u64(12),
-            KoalaBear::from_u64(14),
-            KoalaBear::from_u64(16),
-            KoalaBear::from_u64(18),
-        ])
-        .unwrap();
-        let y_val = KBExtField::from_basis_coefficients_slice(&[
-            KoalaBear::from_u64(12),
-            KoalaBear::from_u64(14),
-            KoalaBear::from_u64(16),
-            KoalaBear::from_u64(18),
-            KoalaBear::from_u64(20),
-            KoalaBear::from_u64(22),
-            KoalaBear::from_u64(24),
-            KoalaBear::from_u64(26),
-        ])
-        .unwrap();
-        let z_val = KBExtField::from_basis_coefficients_slice(&[
-            KoalaBear::from_u64(1),
-            KoalaBear::NEG_ONE,
-            KoalaBear::from_u64(2),
-            KoalaBear::from_u64(3),
-            KoalaBear::from_u64(4),
-            KoalaBear::from_u64(5),
-            KoalaBear::from_u64(6),
-            KoalaBear::from_u64(7),
-        ])
-        .unwrap();
-
-        // Compute expected result: x * y * z
-        let xy_expected = x_val * y_val;
-        let expected_val = xy_expected * z_val;
-
-        runner.set_public_inputs(&[x_val, y_val, expected_val])?;
-        let traces = runner.run()?;
-
-        // Create KoalaBear prover for extension field (D=8)
-        let config = config::koala_bear().build();
-        let multi_prover = MultiTableProver::new(config);
-        let proof = multi_prover.prove_all_tables(&traces)?;
-
-        // Verify proof has correct extension degree and W parameter for KoalaBear (D=8)
-        assert_eq!(proof.ext_degree, 8);
-        let expected_w_kb = <KBExtField as ExtractBinomialW<KoalaBear>>::extract_w().unwrap();
-        assert_eq!(proof.w_binomial, Some(expected_w_kb));
-
-        multi_prover.verify_all_tables(&proof)?;
-        Ok(())
-    }
-
-    #[test]
-    fn test_goldilocks_prover_extension_field_d2() -> Result<(), ProverError> {
-        type ExtField = BinomialExtensionField<Goldilocks, 2>;
-        let mut builder = CircuitBuilder::<ExtField>::new();
-
-        // Simple circuit over D=2: x * y + z = expected
-        let x = builder.add_public_input();
-        let y = builder.add_public_input();
-        let z = builder.add_public_input();
-        let expected_result = builder.add_public_input();
-
-        let xy = builder.mul(x, y);
-        let res = builder.add(xy, z);
-
-        let diff = builder.sub(res, expected_result);
-        builder.assert_zero(diff);
-
-        let circuit = builder.build()?;
-        let mut runner = circuit.runner();
-
-        let x_val = ExtField::from_basis_coefficients_slice(&[
-            Goldilocks::from_u64(3),
-            Goldilocks::NEG_ONE,
-        ])
-        .unwrap();
-        let y_val = ExtField::from_basis_coefficients_slice(&[
-            Goldilocks::from_u64(7),
-            Goldilocks::from_u64(11),
-        ])
-        .unwrap();
-        let z_val = ExtField::from_basis_coefficients_slice(&[
-            Goldilocks::from_u64(13),
-            Goldilocks::from_u64(17),
-        ])
-        .unwrap();
-
-        let expected_val = x_val * y_val + z_val;
-        runner.set_public_inputs(&[x_val, y_val, z_val, expected_val])?;
-        let traces = runner.run()?;
-
-        // Build Goldilocks config with challenge degree 2 (Poseidon2)
-        let config = config::goldilocks().build();
-        let multi_prover = MultiTableProver::new(config);
-
-        let proof = multi_prover.prove_all_tables(&traces)?;
-
-        // Check extension metadata and verify
-        assert_eq!(proof.ext_degree, 2);
-        let expected_w = <ExtField as ExtractBinomialW<Goldilocks>>::extract_w().unwrap();
-        assert_eq!(proof.w_binomial, Some(expected_w));
-
-        multi_prover.verify_all_tables(&proof)?;
-        Ok(())
     }
 }

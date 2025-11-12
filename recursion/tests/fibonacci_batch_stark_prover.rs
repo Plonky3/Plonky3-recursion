@@ -107,8 +107,6 @@ fn test_fibonacci_batch_verifier() {
     let mut a = builder.alloc_const(F::ZERO, "F(0)");
     let mut b = builder.alloc_const(F::ONE, "F(1)");
 
-    // TODO: remove this once we always have non-empty MUL tables
-    builder.mul(a, b);
     for _i in 2..=n {
         let next = builder.add(a, b);
         a = b;
@@ -146,7 +144,7 @@ fn test_fibonacci_batch_verifier() {
     let challenger_proving = Challenger::new(perm.clone());
     let config_proving = MyConfig::new(pcs_proving, challenger_proving);
 
-    let table_packing = TablePacking::from_counts(4, 1);
+    let table_packing = TablePacking::new(4, 1);
     let prover = BatchStarkProver::new(config_proving).with_table_packing(table_packing);
     let batch_stark_proof = prover.prove_all_tables(&traces).unwrap();
     prover.verify_all_tables(&batch_stark_proof).unwrap();

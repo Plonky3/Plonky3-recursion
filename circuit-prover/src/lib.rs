@@ -8,7 +8,7 @@
 //! - `CD`: FRI challenge field degree, independent of `D`.
 //!
 //! - Build a field-specific config via `config::{babybear_config, koalabear_config, goldilocks_config}`.
-//! - Create a `MultiTableProver` from that config.
+//! - Create a `BatchStarkProver` from that config.
 //! - Generate traces from a `p3_circuit::Circuit` runner and prove/verify.
 //!
 //! Example (BabyBear):
@@ -17,7 +17,7 @@
 //! use p3_baby_bear::BabyBear;
 //! use p3_circuit::builder::CircuitBuilder;
 //! use p3_circuit_prover::config::babybear_config::build_standard_config_babybear;
-//! use p3_circuit_prover::MultiTableProver;
+//! use p3_circuit_prover::BatchStarkProver;
 //!
 //! let mut builder = CircuitBuilder::<BabyBear>::new();
 //! let x = builder.add_public_input();
@@ -29,7 +29,7 @@
 //! runner.set_public_inputs(&[BabyBear::from_u64(1), BabyBear::from_u64(2)]).unwrap();
 //! let traces = runner.run().unwrap();
 //! let cfg = build_standard_config_babybear();
-//! let prover = MultiTableProver::new(cfg);
+//! let prover = BatchStarkProver::new(cfg);
 //! let proof = prover.prove_all_tables(&traces).unwrap();
 //! prover.verify_all_tables(&proof).unwrap();
 //! ```
@@ -45,4 +45,6 @@ pub mod prover;
 
 // Re-export main API
 pub use batch_stark_prover::{BatchStarkProof, BatchStarkProver};
-pub use prover::{MultiTableProof, MultiTableProver, TablePacking};
+pub use prover::{
+    BatchTableInstance, DynamicAirEntry, NonPrimitiveManifestEntry, TablePacking, TableProver,
+};
