@@ -70,7 +70,7 @@ where
     }
 }
 
-/// Build and attach a recursive verifier circuit for a circuit-prover BatchStarkProof.
+/// Build and attach a recursive verifier circuit for a circuit-prover [`BatchStarkProof`].
 ///
 /// This reconstructs the circuit table AIRs from the proof metadata (rows + packing) so callers
 /// don't need to pass `circuit_airs` explicitly. Returns the allocated input builder to pack
