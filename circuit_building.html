@@ -275,13 +275,13 @@ runner.set_public_inputs(&amp;[expected_fib])?;
 
 // Instantiate prover instance
 let config = build_standard_config_koalabear();
-let multi_prover = MultiTableProver::new(config);
+let prover = BatchStarkProver::new(config);
 
 // Generate traces
 let traces = runner.run()?;
 
 // Prove the program
-let proof = multi_prover.prove_all_tables(&amp;traces)?;</code></pre>
+let proof = prover.prove_all_tables(&amp;traces)?;</code></pre>
 <h2 id="key-takeaways"><a class="header" href="#key-takeaways">Key takeaways</a></h2>
 <ul>
 <li>
