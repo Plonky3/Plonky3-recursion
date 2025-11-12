@@ -56,6 +56,11 @@ impl Default for TablePacking {
 }
 
 /// Metadata describing a non-primitive table inside a batch proof.
+///
+/// Every non-primitive dynamic plugin produces exactly one `NonPrimitiveTableEntry`
+/// per batch instance. The entry is stored inside a `BatchStarkProof` and later provided
+/// back to the plugin during verification through
+/// [`TableProver::batch_air_from_table_entry`].
 pub struct NonPrimitiveTableEntry<SC>
 where
     SC: StarkGenericConfig,
@@ -66,11 +71,14 @@ where
     pub rows: usize,
     /// Public values exposed by this table (if any).
     pub public_values: Vec<Val<SC>>,
-    /// Opaque plugin-specific data required to rebuild AIRs during verification.
-    pub data: Vec<u8>,
 }
 
 /// Type-erased AIR implementation for dynamically registered non-primitive tables.
+///
+/// This allows the batch prover to mix primitive AIRs with plugin AIRs in a single heterogeneous
+/// batch.
+/// Internally,`DynamicAirEntry` wraps the boxed plugin AIR and exposes a shared accessor
+/// so that both prover and verifier can operate without knowing the concrete underlying type.
 pub struct DynamicAirEntry<SC>
 where
     SC: StarkGenericConfig,
@@ -91,7 +99,8 @@ where
     }
 }
 
-/// Trait describing the behaviour of a dynamically dispatched AIR used in batched proofs.
+/// Simple super trait of [`Air`] describing the behaviour of a non-primitive
+/// dynamically dispatched AIR used in batched proofs.
 pub trait BatchAir<SC>:
     BaseAir<Val<SC>>
     + Air<SymbolicAirBuilder<Val<SC>>>
@@ -104,17 +113,25 @@ where
 {
 }
 
-/// Pre-packaged data for inserting a dynamic table instance into the batched prover.
+/// Data needed to insert a dynamic table instance into the batched prover.
+///
+/// A `BatchTableInstance` bundles everything the batch prover needs from a
+/// non-primitive table plugin: the AIR, its populated trace matrix, any
+/// public values it exposes, and the number of rows it produces.
 pub struct BatchTableInstance<SC>
 where
     SC: StarkGenericConfig,
 {
+    /// Plugin identifier (it should match `TableProver::id`).
     pub id: &'static str,
+    /// The AIR implementation for this table.
     pub air: DynamicAirEntry<SC>,
+    /// The populated trace matrix for this table.
     pub trace: RowMajorMatrix<Val<SC>>,
+    /// Public values exposed by this table.
     pub public_values: Vec<Val<SC>>,
+    /// Number of rows produced for this table.
     pub rows: usize,
-    pub data: Vec<u8>,
 }
 
 #[inline(always)]
@@ -123,6 +140,18 @@ pub(crate) unsafe fn transmute_traces<FromEF, ToEF>(t: &Traces<FromEF>) -> &Trac
 }
 
 /// Trait implemented by all non-primitive table plugins used by the batch prover.
+///
+/// Implementors would typically delegate to an existing AIR type, define a base case
+/// for base-field traces, and then use the [`impl_table_prover_batch_instances_from_base!`]
+/// macro to generate the degree-specific implementations.
+///
+/// ```ignore
+/// impl<SC> TableProver<SC> for MyPlugin {
+///     fn id(&self) -> &'static str { "my_plugin" }
+///
+///     impl_table_prover_batch_instances_from_base!(batch_instance_base);
+/// }
+/// ```
 pub trait TableProver<SC>: Send + Sync
 where
     SC: StarkGenericConfig + 'static,
@@ -179,6 +208,31 @@ where
     ) -> Result<DynamicAirEntry<SC>, String>;
 }
 
+/// Convenience macro for deriving all degree-specific helpers from a single base
+/// implementation.
+///
+/// Plugins usually implement a single `batch_instance_base` method that operates on
+/// base-field traces. This macro reuses that method to provide the `batch_instance_d*`
+/// variants by casting higher-degree traces back to the base field.
+///
+/// Users can invoke it inside their `TableProver` impl:
+///
+/// ```ignore
+/// impl<SC> TableProver<SC> for MyPlugin {
+///     fn id(&self) -> &'static str { "my_plugin" }
+///
+///     impl_table_prover_batch_instances_from_base!(batch_instance_base);
+///
+///     fn batch_air_from_table_entry(
+///         &self,
+///         config: &SC,
+///         degree: usize,
+///         table_entry: &NonPrimitiveTableEntry<SC>,
+///     ) -> Result<DynamicAirEntry<SC>, String> {
+///         Ok(DynamicAirEntry::new(Box::new(MyPluginAir::<Val<SC>>::new(config))))
+///     }
+/// }
+/// ```
 #[macro_export]
 macro_rules! impl_table_prover_batch_instances_from_base {
     ($base:ident) => {
@@ -252,7 +306,7 @@ where
 {
 }
 
-/// MMCS prover plugin.
+/// MMCS prover plugin
 pub struct MmcsProver {
     pub config: MmcsTableConfig,
 }
@@ -279,13 +333,13 @@ impl MmcsProver {
             .sum();
         let matrix = MmcsVerifyAir::trace_to_matrix(&self.config, t);
         let air = DynamicAirEntry::new(Box::new(MmcsVerifyAir::<Val<SC>>::new(self.config)));
+
         Some(BatchTableInstance {
             id: "mmcs_verify",
             air,
             trace: matrix,
             public_values: Vec::new(),
             rows,
-            data: Vec::new(),
         })
     }
 }
@@ -544,16 +598,9 @@ where
         self
     }
 
-    /// Register the built-in MMCS verification table.
+    /// Register the non-primitive MMCS prover plugin.
     pub fn register_mmcs_table(&mut self, config: MmcsTableConfig) {
         self.register_table_prover(Box::new(MmcsProver { config }));
-    }
-
-    /// Builder-style registration helper for MMCS.
-    #[must_use]
-    pub fn with_mmcs_table(mut self, config: MmcsTableConfig) -> Self {
-        self.register_mmcs_table(config);
-        self
     }
 
     #[inline]
@@ -732,7 +779,6 @@ where
                 trace,
                 public_values,
                 rows,
-                data,
             } = instance;
             air_storage.push(CircuitTableAir::Dynamic(air));
             trace_storage.push(trace);
@@ -741,7 +787,6 @@ where
                 id,
                 rows,
                 public_values,
-                data,
             });
         }
 
