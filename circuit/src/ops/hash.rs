@@ -3,6 +3,8 @@
 //! Provides methods for absorbing and squeezing elements using a sponge
 //! construction within the circuit.
 
+use core::hash::Hash;
+
 use alloc::boxed::Box;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -15,7 +17,7 @@ use crate::op::{ExecutionContext, NonPrimitiveExecutor, NonPrimitiveOpType};
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessId};
 
 /// Hash operations trait for `CircuitBuilder`.
-pub trait HashOps<F: Clone + PrimeCharacteristicRing + Eq + core::hash::Hash> {
+pub trait HashOps<F: Clone + PrimeCharacteristicRing + Eq + Hash> {
     /// Absorb field elements into the sponge state.
     ///
     /// # Arguments
@@ -36,7 +38,7 @@ pub trait HashOps<F: Clone + PrimeCharacteristicRing + Eq + core::hash::Hash> {
 
 impl<F> HashOps<F> for CircuitBuilder<F>
 where
-    F: Clone + PrimeCharacteristicRing + Eq + core::hash::Hash,
+    F: Clone + PrimeCharacteristicRing + Eq + Hash,
 {
     fn add_hash_absorb(
         &mut self,

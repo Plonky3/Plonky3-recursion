@@ -68,6 +68,8 @@
 //! correctness of the indices with respect to the global witness bus is enforced by the
 //! bus interaction logic elsewhere in the system.
 
+use core::marker::PhantomData;
+
 use p3_air::{Air, AirBuilder, BaseAir};
 use p3_circuit::tables::AddTrace;
 use p3_circuit::utils::pad_to_power_of_two;
@@ -93,7 +95,7 @@ pub struct AddAir<F, const D: usize = 1> {
     /// The last row is padded if the number of operations is not a multiple of this value.
     pub lanes: usize,
     /// Marker tying this AIR to its base field.
-    _phantom: core::marker::PhantomData<F>,
+    _phantom: PhantomData<F>,
 }
 
 impl<F: Field + PrimeCharacteristicRing, const D: usize> AddAir<F, D> {
@@ -108,7 +110,7 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AddAir<F, D> {
         Self {
             num_ops,
             lanes,
-            _phantom: core::marker::PhantomData,
+            _phantom: PhantomData,
         }
     }
 
@@ -316,18 +318,15 @@ where
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use alloc::vec;
     use alloc::vec::Vec;
 
     use p3_baby_bear::BabyBear as Val;
     use p3_circuit::WitnessId;
-    use p3_circuit::tables::AddTrace;
-    use p3_field::BasedVectorSpace;
     use p3_field::extension::BinomialExtensionField;
-    use p3_matrix::dense::RowMajorMatrix;
     use p3_uni_stark::{prove, verify};
 
-    use super::*;
     use crate::air::test_utils::build_test_config;
 
     #[test]

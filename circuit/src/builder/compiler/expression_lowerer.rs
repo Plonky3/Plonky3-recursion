@@ -1,4 +1,4 @@
-use alloc::vec;
+use alloc::{format, vec};
 use alloc::vec::Vec;
 
 use hashbrown::{HashMap, HashSet};
@@ -196,12 +196,12 @@ where
                     let a_widx = get_witness_id(
                         &expr_to_widx,
                         *lhs,
-                        &alloc::format!("Add lhs for {expr_id:?}"),
+                        &format!("Add lhs for {expr_id:?}"),
                     )?;
                     let b_widx = get_witness_id(
                         &expr_to_widx,
                         *rhs,
-                        &alloc::format!("Add rhs for {expr_id:?}"),
+                        &format!("Add rhs for {expr_id:?}"),
                     )?;
                     primitive_ops.push(Op::Add {
                         a: a_widx,
@@ -215,12 +215,12 @@ where
                     let lhs_widx = get_witness_id(
                         &expr_to_widx,
                         *lhs,
-                        &alloc::format!("Sub lhs for {expr_id:?}"),
+                        &format!("Sub lhs for {expr_id:?}"),
                     )?;
                     let rhs_widx = get_witness_id(
                         &expr_to_widx,
                         *rhs,
-                        &alloc::format!("Sub rhs for {expr_id:?}"),
+                        &format!("Sub rhs for {expr_id:?}"),
                     )?;
                     // Encode lhs - rhs = result as result + rhs = lhs.
                     primitive_ops.push(Op::Add {
@@ -235,12 +235,12 @@ where
                     let a_widx = get_witness_id(
                         &expr_to_widx,
                         *lhs,
-                        &alloc::format!("Mul lhs for {expr_id:?}"),
+                        &format!("Mul lhs for {expr_id:?}"),
                     )?;
                     let b_widx = get_witness_id(
                         &expr_to_widx,
                         *rhs,
-                        &alloc::format!("Mul rhs for {expr_id:?}"),
+                        &format!("Mul rhs for {expr_id:?}"),
                     )?;
                     primitive_ops.push(Op::Mul {
                         a: a_widx,
@@ -255,12 +255,12 @@ where
                     let out_widx = get_witness_id(
                         &expr_to_widx,
                         *lhs,
-                        &alloc::format!("Div lhs for {expr_id:?}"),
+                        &format!("Div lhs for {expr_id:?}"),
                     )?;
                     let a_widx = get_witness_id(
                         &expr_to_widx,
                         *rhs,
-                        &alloc::format!("Div rhs for {expr_id:?}"),
+                        &format!("Div rhs for {expr_id:?}"),
                     )?;
                     primitive_ops.push(Op::Mul {
                         a: a_widx,
@@ -286,12 +286,9 @@ where
 
 #[cfg(test)]
 mod tests {
-    use alloc::vec;
+    use super::*;
 
     use p3_baby_bear::BabyBear;
-    use p3_field::PrimeCharacteristicRing;
-
-    use super::*;
 
     /// Helper to create an expression graph with a zero constant pre-allocated.
     fn create_graph_with_zero() -> ExpressionGraph<BabyBear> {

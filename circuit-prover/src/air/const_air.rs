@@ -17,6 +17,8 @@
 //! - send (index, value)
 
 #![allow(clippy::needless_range_loop)]
+use core::marker::PhantomData;
+
 use alloc::vec::Vec;
 
 use p3_air::{Air, AirBuilder, BaseAir};
@@ -37,14 +39,14 @@ use p3_matrix::dense::RowMajorMatrix;
 #[derive(Debug, Clone)]
 pub struct ConstAir<F, const D: usize = 1> {
     pub height: usize,
-    _phantom: core::marker::PhantomData<F>,
+    _phantom: PhantomData<F>,
 }
 
 impl<F: Field, const D: usize> ConstAir<F, D> {
     pub const fn new(height: usize) -> Self {
         Self {
             height,
-            _phantom: core::marker::PhantomData,
+            _phantom: PhantomData,
         }
     }
 

@@ -12,7 +12,7 @@ pub enum CircuitBuilderError {
     #[error("Expression {expr_id:?} not found in witness mapping: {context}")]
     MissingExprMapping {
         expr_id: ExprId,
-        context: alloc::string::String,
+        context: String,
     },
 
     /// Non-primitive op received an unexpected number of input expressions.

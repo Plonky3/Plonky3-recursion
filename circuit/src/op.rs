@@ -1,4 +1,5 @@
 use alloc::boxed::Box;
+use alloc::format;
 use alloc::vec::Vec;
 use core::fmt::Debug;
 use core::hash::Hash;
@@ -311,8 +312,8 @@ impl<'a, F: Field> ExecutionContext<'a, F> {
         {
             return Err(CircuitError::WitnessConflict {
                 witness_id: widx,
-                existing: alloc::format!("{existing_value:?}"),
-                new: alloc::format!("{value:?}"),
+                existing: format!("{existing_value:?}"),
+                new: format!("{value:?}"),
             });
         }
 

@@ -1,3 +1,6 @@
+use core::fmt::Debug;
+use core::ops::{Add, Mul, Sub};
+
 use alloc::vec::Vec;
 
 use hashbrown::HashMap;
@@ -11,11 +14,11 @@ use crate::types::{ExprId, WitnessId};
 pub trait CircuitField:
     Clone
     + Default
-    + core::ops::Add<Output = Self>
-    + core::ops::Sub<Output = Self>
-    + core::ops::Mul<Output = Self>
+    + Add<Output = Self>
+    + Sub<Output = Self>
+    + Mul<Output = Self>
     + PartialEq
-    + core::fmt::Debug
+    + Debug
     + Field
 {
 }
@@ -23,11 +26,11 @@ pub trait CircuitField:
 impl<F> CircuitField for F where
     F: Clone
         + Default
-        + core::ops::Add<Output = F>
-        + core::ops::Sub<Output = F>
-        + core::ops::Mul<Output = F>
+        + Add<Output = F>
+        + Sub<Output = F>
+        + Mul<Output = F>
         + PartialEq
-        + core::fmt::Debug
+        + Debug
         + Field
 {
 }

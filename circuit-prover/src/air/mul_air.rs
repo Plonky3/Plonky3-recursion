@@ -35,6 +35,8 @@
 //! - send `(index_output, output)`
 
 #![allow(clippy::needless_range_loop)]
+use core::marker::PhantomData;
+
 use alloc::vec::Vec;
 
 use p3_air::{Air, AirBuilder, BaseAir};
@@ -66,7 +68,7 @@ pub struct MulAir<F, const D: usize = 1> {
     pub lanes: usize,
     /// For binomial extensions x^D = W over a polynomial basis; None for non-binomial / base cases.
     pub w_binomial: Option<F>,
-    _phantom: core::marker::PhantomData<F>,
+    _phantom: PhantomData<F>,
 }
 
 impl<F: Field + PrimeCharacteristicRing, const D: usize> MulAir<F, D> {
@@ -77,7 +79,7 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> MulAir<F, D> {
             num_ops,
             lanes,
             w_binomial: None,
-            _phantom: core::marker::PhantomData,
+            _phantom: PhantomData,
         }
     }
 
@@ -90,7 +92,7 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> MulAir<F, D> {
             num_ops,
             lanes,
             w_binomial: Some(w),
-            _phantom: core::marker::PhantomData,
+            _phantom: PhantomData,
         }
     }
 
@@ -225,17 +227,14 @@ where
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use alloc::vec;
 
     use p3_baby_bear::BabyBear as Val;
     use p3_circuit::WitnessId;
-    use p3_circuit::tables::MulTrace;
     use p3_field::extension::BinomialExtensionField;
-    use p3_field::{BasedVectorSpace, Field};
-    use p3_matrix::dense::RowMajorMatrix;
     use p3_uni_stark::{prove, verify};
 
-    use super::*;
     use crate::air::test_utils::build_test_config;
 
     #[test]
