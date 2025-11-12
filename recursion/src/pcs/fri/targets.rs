@@ -3,8 +3,8 @@ use alloc::{format, vec};
 use core::marker::PhantomData;
 
 use p3_challenger::{CanObserve, GrindingChallenger};
-use p3_circuit::CircuitBuilder;
 use p3_circuit::utils::{RowSelectorsTargets, decompose_to_bits};
+use p3_circuit::{CircuitBuilder, CircuitError};
 use p3_commit::{BatchOpening, ExtensionMmcs, Mmcs, PolynomialSpace};
 use p3_field::coset::TwoAdicMultiplicativeCoset;
 use p3_field::{
@@ -446,7 +446,7 @@ where
         proof_targets: &ProofTargets<SC, Comm, Self::RecursiveProof>,
         opened_values: &OpenedValuesTargets<SC>,
         params: &Self::VerifierParams,
-    ) -> Vec<Target> {
+    ) -> Result<Vec<Target>, CircuitError> {
         let fri_proof = &proof_targets.opening_proof;
 
         // Observe all opened values (trace, quotient chunks, random)
@@ -474,7 +474,7 @@ where
             params.pow_bits,
             fri_proof.pow_witness.witness,
             Val::<SC>::bits(),
-        );
+        )?;
 
         // Sample query indices
         let num_queries = fri_proof.query_proofs.len();
@@ -489,7 +489,7 @@ where
         challenges.push(fri_alpha);
         challenges.extend(betas);
         challenges.extend(query_indices);
-        challenges
+        Ok(challenges)
     }
 
     fn verify_circuit(
@@ -534,11 +534,15 @@ where
         let index_bits_per_query: Vec<Vec<Target>> = query_indices
             .iter()
             .map(|&index_target| {
-                let all_bits =
-                    decompose_to_bits(circuit, index_target, MAX_QUERY_INDEX_BITS).unwrap();
-                all_bits.into_iter().take(log_max_height).collect()
+                let all_bits = decompose_to_bits(circuit, index_target, MAX_QUERY_INDEX_BITS);
+                all_bits.map(|all_bits| {
+                    all_bits
+                        .into_iter()
+                        .take(log_max_height)
+                        .collect::<Vec<_>>()
+                })
             })
-            .collect();
+            .collect::<Result<_, _>>()?;
 
         verify_fri_circuit(
             circuit,

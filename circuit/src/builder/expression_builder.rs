@@ -26,7 +26,7 @@ pub struct ExpressionBuilder<F> {
     pending_connects: Vec<(ExprId, ExprId)>,
 
     /// The witness hints together with theit witness fillers
-    hints_with_fillers: Vec<Box<dyn WitnessHintFiller<F>>>,
+    hints_fillers: Vec<Box<dyn WitnessHintFiller<F>>>,
 
     /// Debug log of all allocations
     #[cfg(debug_assertions)]
@@ -56,7 +56,7 @@ where
             graph,
             const_pool,
             pending_connects: Vec::new(),
-            hints_with_fillers: Vec::new(),
+            hints_fillers: Vec::new(),
             #[cfg(debug_assertions)]
             allocation_log: Vec::new(),
             #[cfg(debug_assertions)]
@@ -143,7 +143,7 @@ where
                 })
             })
             .collect_vec();
-        self.hints_with_fillers.push(Box::new(filler));
+        self.hints_fillers.push(Box::new(filler));
         expr_ids
     }
 
@@ -233,8 +233,8 @@ where
     }
 
     /// Returns a reference to the witness hints with fillers.
-    pub fn hints_with_fillers(&self) -> &[Box<dyn WitnessHintFiller<F>>] {
-        &self.hints_with_fillers
+    pub fn hints_fillers(&self) -> &[Box<dyn WitnessHintFiller<F>>] {
+        &self.hints_fillers
     }
 
     /// Logs a non-primitive operation allocation.

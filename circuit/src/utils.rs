@@ -193,6 +193,10 @@ pub fn decompose_to_bits<F: ExtensionField<BF>, BF: PrimeField64>(
     let binary_decomposition_hint = BinaryDecompositionHint::new(x, n_bits)?;
     let bits = builder.alloc_witness_hints(binary_decomposition_hint, "decompose_to_bits");
 
+    for &bit in bits.iter() {
+        builder.assert_bool(bit);
+    }
+
     // Constrain that the bits reconstruct to the original element
     let reconstructed = reconstruct_index_from_bits(builder, &bits);
     builder.connect(x, reconstructed);

@@ -406,7 +406,7 @@ where
             self.expr_builder.graph(),
             self.expr_builder.pending_connects(),
             self.public_tracker.count(),
-            self.expr_builder.hints_with_fillers(),
+            self.expr_builder.hints_fillers(),
             self.witness_alloc,
         );
         let (primitive_ops, public_rows, expr_to_widx, public_mappings, witness_count) =

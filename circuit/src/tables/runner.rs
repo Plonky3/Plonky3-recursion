@@ -570,6 +570,10 @@ mod tests {
         // Should have no public input
         assert!(traces.public_trace.values.is_empty());
 
+        // Should store the value of the hint (3) at `WitnessId(3)``
+        assert_eq!(traces.witness_trace.index[3], WitnessId(3));
+        assert_eq!(traces.witness_trace.values[3], BabyBear::from_usize(3));
+
         // Should have one mul operation: 37 * x
         assert_eq!(traces.mul_trace.lhs_values.len(), 1);
 

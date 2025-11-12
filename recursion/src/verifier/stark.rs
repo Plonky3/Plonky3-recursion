@@ -4,9 +4,9 @@ use alloc::{format, vec};
 use core::marker::PhantomData;
 
 use itertools::Itertools;
-use p3_circuit::CircuitBuilder;
 use p3_circuit::op::{NonPrimitiveOpConfig, NonPrimitiveOpType};
 use p3_circuit::utils::ColumnsTargets;
+use p3_circuit::{CircuitBuilder, CircuitError};
 use p3_commit::Pcs;
 use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
 use p3_uni_stark::StarkGenericConfig;
@@ -140,7 +140,7 @@ where
         },
         circuit,
         pcs_params,
-    );
+    )?;
 
     // Validate ZK randomization consistency
     if (opened_random.is_some() != SC::Pcs::ZK) || (random_commit.is_some() != SC::Pcs::ZK) {
@@ -266,7 +266,7 @@ fn get_circuit_challenges<
     opened_values: &OpenedValuesTargets<SC>,
     circuit: &mut CircuitBuilder<SC::Challenge>,
     pcs_params: &PcsVerifierParams<SC, InputProof, OpeningProof, Comm>,
-) -> Vec<Target>
+) -> Result<Vec<Target>, CircuitError>
 where
     SC::Pcs: RecursivePcs<
             SC,
@@ -297,12 +297,12 @@ where
         proof_targets,
         opened_values,
         pcs_params,
-    );
+    )?;
 
     // Return flat vector: [alpha, zeta, zeta_next, ...pcs_challenges]
     let mut all_challenges = base_challenges.to_vec();
     all_challenges.extend(pcs_challenges);
-    all_challenges
+    Ok(all_challenges)
 }
 
 /// Validate the shape of the proof (dimensions, lengths).
