@@ -16,7 +16,6 @@
 //! There is one interaction with the witness bus:
 //! - send (index, value)
 
-#![allow(clippy::needless_range_loop)]
 use alloc::vec::Vec;
 use core::marker::PhantomData;
 

@@ -20,7 +20,6 @@
 //! Since this AIR serves as a witness bus, where the other chips read values from, it has interactions with all the other AIRs.
 //! The AIR *receives* (meaning with positive multiplicities) interactions of the form (i, v) where i is the index of the value in the witness bus and v is the value itself.
 
-#![allow(clippy::needless_range_loop)]
 use alloc::vec::Vec;
 use core::marker::PhantomData;
 
