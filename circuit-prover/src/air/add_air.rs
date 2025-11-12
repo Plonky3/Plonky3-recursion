@@ -53,16 +53,16 @@
 //! left, right and result extension field elements respectively. For each operation and
 //! each coordinate `i` in `0..D`, the AIR enforces the linear constraint
 //!
-//! \begin{equation}
+//! $$
 //! left[i] + right[i] - output[i] = 0.
-//! \end{equation}
+//! $$
 //!
 //! Since extension addition is coordinate-wise, these constraints are sufficient to show
 //! that the full extension elements satisfy
 //!
-//! \begin{equation}
+//! $$
 //! left + right = output.
-//! \end{equation}
+//! $$
 //!
 //! # Global interactions
 //!
