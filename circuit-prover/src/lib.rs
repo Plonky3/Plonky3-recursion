@@ -41,10 +41,9 @@ pub mod air;
 pub mod batch_stark_prover;
 pub mod config;
 pub mod field_params;
-pub mod prover;
 
 // Re-export main API
-pub use batch_stark_prover::{BatchStarkProof, BatchStarkProver};
-pub use prover::{
-    BatchTableInstance, DynamicAirEntry, NonPrimitiveManifestEntry, TablePacking, TableProver,
+pub use batch_stark_prover::{
+    BatchStarkProof, BatchStarkProver, BatchTableInstance, DynamicAirEntry, MmcsProver,
+    NonPrimitiveTableEntry, TablePacking, TableProver,
 };

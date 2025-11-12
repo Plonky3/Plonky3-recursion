@@ -3,14 +3,16 @@
 
 use alloc::boxed::Box;
 use alloc::string::String;
-use alloc::vec;
 use alloc::vec::Vec;
+use alloc::{format, vec};
 
 use p3_air::{Air, BaseAir};
 use p3_batch_stark::{BatchProof, StarkGenericConfig, StarkInstance, Val};
 use p3_circuit::tables::Traces;
+use p3_field::extension::BinomialExtensionField;
 use p3_field::{BasedVectorSpace, Field, PrimeField};
 use p3_matrix::dense::RowMajorMatrix;
+use p3_mmcs_air::air::{MmcsTableConfig, MmcsVerifyAir};
 use p3_uni_stark::{ProverConstraintFolder, SymbolicAirBuilder, VerifierConstraintFolder};
 use thiserror::Error;
 use tracing::instrument;
@@ -18,10 +20,298 @@ use tracing::instrument;
 use crate::air::{AddAir, ConstAir, MulAir, PublicAir, WitnessAir};
 use crate::config::StarkField;
 use crate::field_params::ExtractBinomialW;
-use crate::prover::{
-    BatchTableInstance, DynamicAirEntry, NonPrimitiveManifestEntry, TablePacking, TableProver,
-    transmute_traces,
-};
+
+/// Configuration for packing multiple primitive operations into a single AIR row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TablePacking {
+    add_lanes: usize,
+    mul_lanes: usize,
+}
+
+impl TablePacking {
+    pub fn new(add_lanes: usize, mul_lanes: usize) -> Self {
+        Self {
+            add_lanes: add_lanes.max(1),
+            mul_lanes: mul_lanes.max(1),
+        }
+    }
+
+    pub fn from_counts(add_lanes: usize, mul_lanes: usize) -> Self {
+        Self::new(add_lanes, mul_lanes)
+    }
+
+    pub const fn add_lanes(self) -> usize {
+        self.add_lanes
+    }
+
+    pub const fn mul_lanes(self) -> usize {
+        self.mul_lanes
+    }
+}
+
+impl Default for TablePacking {
+    fn default() -> Self {
+        Self::new(1, 1)
+    }
+}
+
+/// Metadata describing a non-primitive table inside a batch proof.
+pub struct NonPrimitiveTableEntry<SC>
+where
+    SC: StarkGenericConfig,
+{
+    /// Plugin identifier (it should match `TableProver::id`).
+    pub id: &'static str,
+    /// Number of logical rows produced for this table.
+    pub rows: usize,
+    /// Public values exposed by this table (if any).
+    pub public_values: Vec<Val<SC>>,
+    /// Opaque plugin-specific data required to rebuild AIRs during verification.
+    pub data: Vec<u8>,
+}
+
+/// Type-erased AIR implementation for dynamically registered non-primitive tables.
+pub struct DynamicAirEntry<SC>
+where
+    SC: StarkGenericConfig,
+{
+    air: Box<dyn BatchAir<SC>>,
+}
+
+impl<SC> DynamicAirEntry<SC>
+where
+    SC: StarkGenericConfig,
+{
+    pub fn new(inner: Box<dyn BatchAir<SC>>) -> Self {
+        Self { air: inner }
+    }
+
+    pub fn air(&self) -> &dyn BatchAir<SC> {
+        &*self.air
+    }
+}
+
+/// Trait describing the behaviour of a dynamically dispatched AIR used in batched proofs.
+pub trait BatchAir<SC>:
+    BaseAir<Val<SC>>
+    + Air<SymbolicAirBuilder<Val<SC>>>
+    + for<'a> Air<ProverConstraintFolder<'a, SC>>
+    + for<'a> Air<VerifierConstraintFolder<'a, SC>>
+    + Send
+    + Sync
+where
+    SC: StarkGenericConfig,
+{
+}
+
+/// Pre-packaged data for inserting a dynamic table instance into the batched prover.
+pub struct BatchTableInstance<SC>
+where
+    SC: StarkGenericConfig,
+{
+    pub id: &'static str,
+    pub air: DynamicAirEntry<SC>,
+    pub trace: RowMajorMatrix<Val<SC>>,
+    pub public_values: Vec<Val<SC>>,
+    pub rows: usize,
+    pub data: Vec<u8>,
+}
+
+#[inline(always)]
+pub(crate) unsafe fn transmute_traces<FromEF, ToEF>(t: &Traces<FromEF>) -> &Traces<ToEF> {
+    unsafe { &*(t as *const _ as *const Traces<ToEF>) }
+}
+
+/// Trait implemented by all non-primitive table plugins used by the batch prover.
+pub trait TableProver<SC>: Send + Sync
+where
+    SC: StarkGenericConfig + 'static,
+{
+    /// Identifier for this prover.
+    fn id(&self) -> &'static str;
+
+    /// Produce a batched table instance for base-field traces.
+    fn batch_instance_d1(
+        &self,
+        config: &SC,
+        packing: TablePacking,
+        traces: &Traces<Val<SC>>,
+    ) -> Option<BatchTableInstance<SC>>;
+
+    /// Produce a batched table instance for degree-2 extension traces.
+    fn batch_instance_d2(
+        &self,
+        config: &SC,
+        packing: TablePacking,
+        traces: &Traces<BinomialExtensionField<Val<SC>, 2>>,
+    ) -> Option<BatchTableInstance<SC>>;
+
+    /// Produce a batched table instance for degree-4 extension traces.
+    fn batch_instance_d4(
+        &self,
+        config: &SC,
+        packing: TablePacking,
+        traces: &Traces<BinomialExtensionField<Val<SC>, 4>>,
+    ) -> Option<BatchTableInstance<SC>>;
+
+    /// Produce a batched table instance for degree-6 extension traces.
+    fn batch_instance_d6(
+        &self,
+        config: &SC,
+        packing: TablePacking,
+        traces: &Traces<BinomialExtensionField<Val<SC>, 6>>,
+    ) -> Option<BatchTableInstance<SC>>;
+
+    /// Produce a batched table instance for degree-8 extension traces.
+    fn batch_instance_d8(
+        &self,
+        config: &SC,
+        packing: TablePacking,
+        traces: &Traces<BinomialExtensionField<Val<SC>, 8>>,
+    ) -> Option<BatchTableInstance<SC>>;
+
+    /// Rebuild the AIR for verification from the recorded non-primitive table entry.
+    fn batch_air_from_table_entry(
+        &self,
+        config: &SC,
+        degree: usize,
+        table_entry: &NonPrimitiveTableEntry<SC>,
+    ) -> Result<DynamicAirEntry<SC>, String>;
+}
+
+#[macro_export]
+macro_rules! impl_table_prover_batch_instances_from_base {
+    ($base:ident) => {
+        fn batch_instance_d1(
+            &self,
+            config: &SC,
+            packing: TablePacking,
+            traces: &p3_circuit::tables::Traces<p3_batch_stark::Val<SC>>,
+        ) -> Option<BatchTableInstance<SC>> {
+            self.$base::<SC>(config, packing, traces)
+        }
+
+        fn batch_instance_d2(
+            &self,
+            config: &SC,
+            packing: TablePacking,
+            traces: &p3_circuit::tables::Traces<
+                p3_field::extension::BinomialExtensionField<p3_batch_stark::Val<SC>, 2>,
+            >,
+        ) -> Option<BatchTableInstance<SC>> {
+            let t: &p3_circuit::tables::Traces<p3_batch_stark::Val<SC>> =
+                unsafe { transmute_traces(traces) };
+            self.$base::<SC>(config, packing, t)
+        }
+
+        fn batch_instance_d4(
+            &self,
+            config: &SC,
+            packing: TablePacking,
+            traces: &p3_circuit::tables::Traces<
+                p3_field::extension::BinomialExtensionField<p3_batch_stark::Val<SC>, 4>,
+            >,
+        ) -> Option<BatchTableInstance<SC>> {
+            let t: &p3_circuit::tables::Traces<p3_batch_stark::Val<SC>> =
+                unsafe { transmute_traces(traces) };
+            self.$base::<SC>(config, packing, t)
+        }
+
+        fn batch_instance_d6(
+            &self,
+            config: &SC,
+            packing: TablePacking,
+            traces: &p3_circuit::tables::Traces<
+                p3_field::extension::BinomialExtensionField<p3_batch_stark::Val<SC>, 6>,
+            >,
+        ) -> Option<BatchTableInstance<SC>> {
+            let t: &p3_circuit::tables::Traces<p3_batch_stark::Val<SC>> =
+                unsafe { transmute_traces(traces) };
+            self.$base::<SC>(config, packing, t)
+        }
+
+        fn batch_instance_d8(
+            &self,
+            config: &SC,
+            packing: TablePacking,
+            traces: &p3_circuit::tables::Traces<
+                p3_field::extension::BinomialExtensionField<p3_batch_stark::Val<SC>, 8>,
+            >,
+        ) -> Option<BatchTableInstance<SC>> {
+            let t: &p3_circuit::tables::Traces<p3_batch_stark::Val<SC>> =
+                unsafe { transmute_traces(traces) };
+            self.$base::<SC>(config, packing, t)
+        }
+    };
+}
+
+impl<SC> BatchAir<SC> for MmcsVerifyAir<Val<SC>>
+where
+    SC: StarkGenericConfig,
+    Val<SC>: StarkField,
+{
+}
+
+/// MMCS prover plugin.
+pub struct MmcsProver {
+    pub config: MmcsTableConfig,
+}
+
+impl MmcsProver {
+    fn batch_instance_base<SC>(
+        &self,
+        _config: &SC,
+        _packing: TablePacking,
+        traces: &Traces<Val<SC>>,
+    ) -> Option<BatchTableInstance<SC>>
+    where
+        SC: StarkGenericConfig + 'static,
+        Val<SC>: StarkField,
+    {
+        let t = &traces.mmcs_trace;
+        if t.mmcs_paths.is_empty() {
+            return None;
+        }
+        let rows: usize = t
+            .mmcs_paths
+            .iter()
+            .map(|path| path.left_values.len() + 1)
+            .sum();
+        let matrix = MmcsVerifyAir::trace_to_matrix(&self.config, t);
+        let air = DynamicAirEntry::new(Box::new(MmcsVerifyAir::<Val<SC>>::new(self.config)));
+        Some(BatchTableInstance {
+            id: "mmcs_verify",
+            air,
+            trace: matrix,
+            public_values: Vec::new(),
+            rows,
+            data: Vec::new(),
+        })
+    }
+}
+
+impl<SC> TableProver<SC> for MmcsProver
+where
+    SC: StarkGenericConfig + 'static,
+    Val<SC>: StarkField,
+{
+    fn id(&self) -> &'static str {
+        "mmcs_verify"
+    }
+
+    impl_table_prover_batch_instances_from_base!(batch_instance_base);
+
+    fn batch_air_from_table_entry(
+        &self,
+        _config: &SC,
+        _degree: usize,
+        _table_entry: &NonPrimitiveTableEntry<SC>,
+    ) -> Result<DynamicAirEntry<SC>, String> {
+        Ok(DynamicAirEntry::new(Box::new(
+            MmcsVerifyAir::<Val<SC>>::new(self.config),
+        )))
+    }
+}
 
 #[repr(usize)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -81,8 +371,8 @@ where
     pub ext_degree: usize,
     /// The binomial coefficient `W` for extension field multiplication, if `ext_degree > 1`.
     pub w_binomial: Option<Val<SC>>,
-    /// Manifest describing dynamically batched non-primitive tables.
-    pub non_primitives: Vec<NonPrimitiveManifestEntry<SC>>,
+    /// Manifest describing batched non-primitive tables defined at runtime.
+    pub non_primitives: Vec<NonPrimitiveTableEntry<SC>>,
 }
 
 impl<SC> core::fmt::Debug for BatchStarkProof<SC>
@@ -107,7 +397,7 @@ where
     config: SC,
     table_packing: TablePacking,
     /// Registered dynamic non-primitive table provers.
-    non_primitive_provers: Vec<alloc::boxed::Box<dyn TableProver<SC>>>,
+    non_primitive_provers: Vec<Box<dyn TableProver<SC>>>,
 }
 
 /// Errors for the batch STARK table prover.
@@ -150,7 +440,7 @@ where
             Self::Public(a) => a.width(),
             Self::Add(a) => a.width(),
             Self::Mul(a) => a.width(),
-            Self::Dynamic(a) => a.air().width(),
+            Self::Dynamic(a) => <dyn BatchAir<SC> as BaseAir<Val<SC>>>::width(a.air()),
         }
     }
 
@@ -161,7 +451,7 @@ where
             Self::Public(a) => a.preprocessed_trace(),
             Self::Add(a) => a.preprocessed_trace(),
             Self::Mul(a) => a.preprocessed_trace(),
-            Self::Dynamic(a) => a.air().preprocessed_trace(),
+            Self::Dynamic(a) => <dyn BatchAir<SC> as BaseAir<Val<SC>>>::preprocessed_trace(a.air()),
         }
     }
 }
@@ -178,7 +468,9 @@ where
             Self::Public(a) => a.eval(builder),
             Self::Add(a) => a.eval(builder),
             Self::Mul(a) => a.eval(builder),
-            Self::Dynamic(a) => a.air().eval_symbolic(builder),
+            Self::Dynamic(a) => {
+                <dyn BatchAir<SC> as Air<SymbolicAirBuilder<Val<SC>>>>::eval(a.air(), builder)
+            }
         }
     }
 }
@@ -195,7 +487,9 @@ where
             Self::Public(a) => a.eval(builder),
             Self::Add(a) => a.eval(builder),
             Self::Mul(a) => a.eval(builder),
-            Self::Dynamic(a) => a.air().eval_prover(builder),
+            Self::Dynamic(a) => {
+                <dyn BatchAir<SC> as Air<ProverConstraintFolder<'a, SC>>>::eval(a.air(), builder)
+            }
         }
     }
 }
@@ -212,7 +506,9 @@ where
             Self::Public(a) => a.eval(builder),
             Self::Add(a) => a.eval(builder),
             Self::Mul(a) => a.eval(builder),
-            Self::Dynamic(a) => a.air().eval_verifier(builder),
+            Self::Dynamic(a) => {
+                <dyn BatchAir<SC> as Air<VerifierConstraintFolder<'a, SC>>>::eval(a.air(), builder)
+            }
         }
     }
 }
@@ -245,6 +541,18 @@ where
     #[must_use]
     pub fn with_table_prover(mut self, prover: Box<dyn TableProver<SC>>) -> Self {
         self.register_table_prover(prover);
+        self
+    }
+
+    /// Register the built-in MMCS verification table.
+    pub fn register_mmcs_table(&mut self, config: MmcsTableConfig) {
+        self.register_table_prover(Box::new(MmcsProver { config }));
+    }
+
+    /// Builder-style registration helper for MMCS.
+    #[must_use]
+    pub fn with_mmcs_table(mut self, config: MmcsTableConfig) -> Self {
+        self.register_mmcs_table(config);
         self
     }
 
@@ -353,7 +661,7 @@ where
                 }
             }
         } else if D == 2 {
-            type EF2<F> = p3_field::extension::BinomialExtensionField<F, 2>;
+            type EF2<F> = BinomialExtensionField<F, 2>;
             let t: &Traces<EF2<Val<SC>>> = unsafe { transmute_traces(traces) };
             for p in &self.non_primitive_provers {
                 if let Some(instance) = p.batch_instance_d2(&self.config, packing, t) {
@@ -361,7 +669,7 @@ where
                 }
             }
         } else if D == 4 {
-            type EF4<F> = p3_field::extension::BinomialExtensionField<F, 4>;
+            type EF4<F> = BinomialExtensionField<F, 4>;
             let t: &Traces<EF4<Val<SC>>> = unsafe { transmute_traces(traces) };
             for p in &self.non_primitive_provers {
                 if let Some(instance) = p.batch_instance_d4(&self.config, packing, t) {
@@ -369,7 +677,7 @@ where
                 }
             }
         } else if D == 6 {
-            type EF6<F> = p3_field::extension::BinomialExtensionField<F, 6>;
+            type EF6<F> = BinomialExtensionField<F, 6>;
             let t: &Traces<EF6<Val<SC>>> = unsafe { transmute_traces(traces) };
             for p in &self.non_primitive_provers {
                 if let Some(instance) = p.batch_instance_d6(&self.config, packing, t) {
@@ -377,7 +685,7 @@ where
                 }
             }
         } else if D == 8 {
-            type EF8<F> = p3_field::extension::BinomialExtensionField<F, 8>;
+            type EF8<F> = BinomialExtensionField<F, 8>;
             let t: &Traces<EF8<Val<SC>>> = unsafe { transmute_traces(traces) };
             for p in &self.non_primitive_provers {
                 if let Some(instance) = p.batch_instance_d8(&self.config, packing, t) {
@@ -387,16 +695,15 @@ where
         }
 
         // Wrap AIRs in enum for heterogeneous batching and build instances in fixed order.
+        // TODO: Support public values for tables
         let mut air_storage: Vec<CircuitTableAir<SC, D>> =
             Vec::with_capacity(NUM_PRIMITIVE_TABLES + dynamic_instances.len());
         let mut trace_storage: Vec<RowMajorMatrix<Val<SC>>> =
             Vec::with_capacity(NUM_PRIMITIVE_TABLES + dynamic_instances.len());
         let mut public_storage: Vec<Vec<Val<SC>>> =
             Vec::with_capacity(NUM_PRIMITIVE_TABLES + dynamic_instances.len());
-        let mut manifest: Vec<NonPrimitiveManifestEntry<SC>> =
+        let mut non_primitives: Vec<NonPrimitiveTableEntry<SC>> =
             Vec::with_capacity(dynamic_instances.len());
-
-        // TODO: Support public values for tables
 
         air_storage.push(CircuitTableAir::Witness(witness_air));
         trace_storage.push(witness_matrix);
@@ -430,7 +737,7 @@ where
             air_storage.push(CircuitTableAir::Dynamic(air));
             trace_storage.push(trace);
             public_storage.push(public_values.clone());
-            manifest.push(NonPrimitiveManifestEntry {
+            non_primitives.push(NonPrimitiveTableEntry {
                 id,
                 rows,
                 public_values,
@@ -457,7 +764,7 @@ where
             rows: RowCounts::new([witness_rows, const_rows, public_rows, add_rows, mul_rows]),
             ext_degree: D,
             w_binomial: if D > 1 { w_binomial } else { None },
-            non_primitives: manifest,
+            non_primitives,
         })
     }
 
@@ -515,20 +822,20 @@ where
                     TableProver::id(tp) == entry.id
                 })
                 .ok_or_else(|| {
-                    BatchStarkProverError::Verify(alloc::format!(
+                    BatchStarkProverError::Verify(format!(
                         "unknown non-primitive plugin: {}",
                         entry.id
                     ))
                 })?;
             let air = plugin
-                .batch_air_from_manifest(&self.config, D, entry)
+                .batch_air_from_table_entry(&self.config, D, entry)
                 .map_err(BatchStarkProverError::Verify)?;
             airs.push(CircuitTableAir::Dynamic(air));
             pvs.push(entry.public_values.clone());
         }
 
         p3_batch_stark::verify_batch(&self.config, &airs, &proof.proof, &pvs)
-            .map_err(|e| BatchStarkProverError::Verify(alloc::format!("{e:?}")))
+            .map_err(|e| BatchStarkProverError::Verify(format!("{e:?}")))
     }
 }
 
