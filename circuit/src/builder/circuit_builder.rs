@@ -422,11 +422,12 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use alloc::vec;
 
     use p3_baby_bear::BabyBear;
     use proptest::prelude::*;
+
+    use super::*;
 
     #[test]
     fn test_new_builder_initialization() {

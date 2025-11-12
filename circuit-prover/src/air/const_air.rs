@@ -17,9 +17,8 @@
 //! - send (index, value)
 
 #![allow(clippy::needless_range_loop)]
-use core::marker::PhantomData;
-
 use alloc::vec::Vec;
+use core::marker::PhantomData;
 
 use p3_air::{Air, AirBuilder, BaseAir};
 use p3_circuit::tables::ConstTrace;

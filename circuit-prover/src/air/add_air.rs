@@ -328,7 +328,6 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use alloc::vec;
     use alloc::vec::Vec;
 
@@ -337,6 +336,7 @@ mod tests {
     use p3_field::extension::BinomialExtensionField;
     use p3_uni_stark::{prove, verify};
 
+    use super::*;
     use crate::air::test_utils::build_test_config;
 
     #[test]

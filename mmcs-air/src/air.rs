@@ -493,7 +493,6 @@ impl<F: Field> MmcsVerifyAir<F> {
 
 #[cfg(test)]
 mod test {
-    use super::*;
     use core::array;
 
     use p3_baby_bear::BabyBear;
@@ -512,6 +511,8 @@ mod test {
     use p3_uni_stark::{StarkConfig, prove, verify};
     use rand::rngs::SmallRng;
     use rand::{Rng, SeedableRng};
+
+    use super::*;
 
     #[derive(Clone)]
     struct MockCompression {}

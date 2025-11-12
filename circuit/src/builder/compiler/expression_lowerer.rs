@@ -1,5 +1,5 @@
-use alloc::{format, vec};
 use alloc::vec::Vec;
+use alloc::{format, vec};
 
 use hashbrown::{HashMap, HashSet};
 use p3_field::PrimeCharacteristicRing;
@@ -193,16 +193,10 @@ where
                 }
                 Expr::Add { lhs, rhs } => {
                     let out_widx = alloc_witness_id_for_expr(expr_idx);
-                    let a_widx = get_witness_id(
-                        &expr_to_widx,
-                        *lhs,
-                        &format!("Add lhs for {expr_id:?}"),
-                    )?;
-                    let b_widx = get_witness_id(
-                        &expr_to_widx,
-                        *rhs,
-                        &format!("Add rhs for {expr_id:?}"),
-                    )?;
+                    let a_widx =
+                        get_witness_id(&expr_to_widx, *lhs, &format!("Add lhs for {expr_id:?}"))?;
+                    let b_widx =
+                        get_witness_id(&expr_to_widx, *rhs, &format!("Add rhs for {expr_id:?}"))?;
                     primitive_ops.push(Op::Add {
                         a: a_widx,
                         b: b_widx,
@@ -212,16 +206,10 @@ where
                 }
                 Expr::Sub { lhs, rhs } => {
                     let result_widx = alloc_witness_id_for_expr(expr_idx);
-                    let lhs_widx = get_witness_id(
-                        &expr_to_widx,
-                        *lhs,
-                        &format!("Sub lhs for {expr_id:?}"),
-                    )?;
-                    let rhs_widx = get_witness_id(
-                        &expr_to_widx,
-                        *rhs,
-                        &format!("Sub rhs for {expr_id:?}"),
-                    )?;
+                    let lhs_widx =
+                        get_witness_id(&expr_to_widx, *lhs, &format!("Sub lhs for {expr_id:?}"))?;
+                    let rhs_widx =
+                        get_witness_id(&expr_to_widx, *rhs, &format!("Sub rhs for {expr_id:?}"))?;
                     // Encode lhs - rhs = result as result + rhs = lhs.
                     primitive_ops.push(Op::Add {
                         a: rhs_widx,
@@ -232,16 +220,10 @@ where
                 }
                 Expr::Mul { lhs, rhs } => {
                     let out_widx = alloc_witness_id_for_expr(expr_idx);
-                    let a_widx = get_witness_id(
-                        &expr_to_widx,
-                        *lhs,
-                        &format!("Mul lhs for {expr_id:?}"),
-                    )?;
-                    let b_widx = get_witness_id(
-                        &expr_to_widx,
-                        *rhs,
-                        &format!("Mul rhs for {expr_id:?}"),
-                    )?;
+                    let a_widx =
+                        get_witness_id(&expr_to_widx, *lhs, &format!("Mul lhs for {expr_id:?}"))?;
+                    let b_widx =
+                        get_witness_id(&expr_to_widx, *rhs, &format!("Mul rhs for {expr_id:?}"))?;
                     primitive_ops.push(Op::Mul {
                         a: a_widx,
                         b: b_widx,
@@ -252,16 +234,10 @@ where
                 Expr::Div { lhs, rhs } => {
                     // lhs / rhs = out  is encoded as rhs * out = lhs
                     let b_widx = alloc_witness_id_for_expr(expr_idx);
-                    let out_widx = get_witness_id(
-                        &expr_to_widx,
-                        *lhs,
-                        &format!("Div lhs for {expr_id:?}"),
-                    )?;
-                    let a_widx = get_witness_id(
-                        &expr_to_widx,
-                        *rhs,
-                        &format!("Div rhs for {expr_id:?}"),
-                    )?;
+                    let out_widx =
+                        get_witness_id(&expr_to_widx, *lhs, &format!("Div lhs for {expr_id:?}"))?;
+                    let a_widx =
+                        get_witness_id(&expr_to_widx, *rhs, &format!("Div rhs for {expr_id:?}"))?;
                     primitive_ops.push(Op::Mul {
                         a: a_widx,
                         b: b_widx,
@@ -286,9 +262,9 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     use p3_baby_bear::BabyBear;
+
+    use super::*;
 
     /// Helper to create an expression graph with a zero constant pre-allocated.
     fn create_graph_with_zero() -> ExpressionGraph<BabyBear> {

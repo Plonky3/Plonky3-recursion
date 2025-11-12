@@ -35,9 +35,8 @@
 //! - send `(index_output, output)`
 
 #![allow(clippy::needless_range_loop)]
-use core::marker::PhantomData;
-
 use alloc::vec::Vec;
+use core::marker::PhantomData;
 
 use p3_air::{Air, AirBuilder, BaseAir};
 use p3_circuit::tables::MulTrace;
@@ -227,7 +226,6 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use alloc::vec;
 
     use p3_baby_bear::BabyBear as Val;
@@ -235,6 +233,7 @@ mod tests {
     use p3_field::extension::BinomialExtensionField;
     use p3_uni_stark::{prove, verify};
 
+    use super::*;
     use crate::air::test_utils::build_test_config;
 
     #[test]

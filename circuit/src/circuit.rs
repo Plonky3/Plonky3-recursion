@@ -1,7 +1,6 @@
+use alloc::vec::Vec;
 use core::fmt::Debug;
 use core::ops::{Add, Mul, Sub};
-
-use alloc::vec::Vec;
 
 use hashbrown::HashMap;
 use p3_field::Field;

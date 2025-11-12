@@ -1,8 +1,7 @@
-use core::hash::Hash;
-
 #[cfg(debug_assertions)]
 use alloc::vec;
 use alloc::vec::Vec;
+use core::hash::Hash;
 
 use hashbrown::HashMap;
 use p3_field::PrimeCharacteristicRing;

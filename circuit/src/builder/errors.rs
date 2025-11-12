@@ -10,10 +10,7 @@ use crate::op::NonPrimitiveOpType;
 pub enum CircuitBuilderError {
     /// Expression not found in the witness mapping during lowering.
     #[error("Expression {expr_id:?} not found in witness mapping: {context}")]
-    MissingExprMapping {
-        expr_id: ExprId,
-        context: String,
-    },
+    MissingExprMapping { expr_id: ExprId, context: String },
 
     /// Non-primitive op received an unexpected number of input expressions.
     #[error("{op} expects exactly {expected} witness expressions, got {got}")]

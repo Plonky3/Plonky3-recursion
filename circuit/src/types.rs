@@ -61,8 +61,9 @@ impl WitnessAllocator {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use alloc::format;
+
+    use super::*;
 
     #[test]
     fn test_witness_id_display() {

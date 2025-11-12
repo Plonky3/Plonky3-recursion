@@ -177,7 +177,6 @@ pub fn pad_to_power_of_two<F: Field>(values: &mut Vec<F>, width: usize, original
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use p3_air::{Air, BaseAir};
     use p3_baby_bear::{BabyBear, Poseidon2BabyBear};
     use p3_challenger::DuplexChallenger;
@@ -195,6 +194,8 @@ mod tests {
     };
     use rand::rngs::SmallRng;
     use rand::{RngCore, SeedableRng};
+
+    use super::*;
 
     type F = BabyBear;
     const D: usize = 4;

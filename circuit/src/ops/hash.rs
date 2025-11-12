@@ -3,11 +3,10 @@
 //! Provides methods for absorbing and squeezing elements using a sponge
 //! construction within the circuit.
 
-use core::hash::Hash;
-
 use alloc::boxed::Box;
 use alloc::vec;
 use alloc::vec::Vec;
+use core::hash::Hash;
 
 use p3_field::{Field, PrimeCharacteristicRing};
 
