@@ -25,11 +25,10 @@ p3-uni-stark.workspace = true
 # Other common dependencies
 hashbrown = "0.16.0"
 itertools.workspace = true
-num_enum = "0.7.5"
 rand.workspace = true
 serde.workspace = true
-strum = "0.26"
-strum_macros = "0.26"
+strum = { version = "0.27.2", default-features = false }
+strum_macros = "0.27.2"
 thiserror.workspace = true
 tracing.workspace = true
 
