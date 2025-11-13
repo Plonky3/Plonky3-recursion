@@ -51,10 +51,12 @@ jobs:
       - name: Test
         run: cargo test --verbose --all-targets
 
+      - name: Test documentation
+        run: cargo test --verbose --doc
+
       - name: Run examples
         run: |
           cargo run --package p3-circuit-prover --example fibonacci
-          cargo run --package p3-circuit-prover --example mmcs_verify
       
       - name: Run allocation_log example with debug logging
         env:

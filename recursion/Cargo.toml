@@ -12,7 +12,9 @@ categories.workspace = true
 [dependencies]
 # Plonky3 dependencies
 p3-air.workspace = true
+p3-batch-stark.workspace = true
 p3-challenger.workspace = true
+p3-circuit-prover.workspace = true
 p3-commit.workspace = true
 p3-field.workspace = true
 p3-fri.workspace = true

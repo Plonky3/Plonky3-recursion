@@ -12,6 +12,8 @@
 //!     .build();
 //! ```
 
+use core::marker::PhantomData;
+
 use p3_baby_bear::{BabyBear, Poseidon2BabyBear, default_babybear_poseidon2_16};
 use p3_challenger::DuplexChallenger;
 use p3_commit::ExtensionMmcs;
@@ -98,7 +100,7 @@ pub struct ConfigBuilder<
 > {
     perm_hash: PermHash,
     perm_compress: PermCompress,
-    _phantom: core::marker::PhantomData<F>,
+    _phantom: PhantomData<F>,
 }
 
 impl<
@@ -132,7 +134,7 @@ where
         Self {
             perm_hash,
             perm_compress,
-            _phantom: core::marker::PhantomData,
+            _phantom: PhantomData,
         }
     }
 
@@ -193,7 +195,7 @@ where
 ///
 /// ```ignore
 /// let config = config::baby_bear().build();
-/// let prover = MultiTableProver::new(config);
+/// let prover = BatchStarkProver::new(config);
 /// ```
 #[inline]
 pub fn baby_bear()
@@ -228,7 +230,7 @@ pub fn baby_bear_compression() -> impl PseudoCompressionFunction<[BabyBear; 8], 
 ///
 /// ```ignore
 /// let config = config::koala_bear().build();
-/// let prover = MultiTableProver::new(config);
+/// let prover = BatchStarkProver::new(config);
 /// ```
 #[inline]
 pub fn koala_bear()
@@ -263,7 +265,7 @@ pub fn koala_bear_compression() -> impl PseudoCompressionFunction<[KoalaBear; 8]
 ///
 /// ```ignore
 /// let config = config::goldilocks().build();
-/// let prover = MultiTableProver::new(config);
+/// let prover = BatchStarkProver::new(config);
 /// ```
 #[inline]
 pub fn goldilocks()

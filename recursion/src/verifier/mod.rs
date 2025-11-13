@@ -1,10 +1,15 @@
 //! STARK verification within recursive circuits.
 
+mod batch_stark;
 mod errors;
 mod observable;
 mod quotient;
 mod stark;
 
+pub use batch_stark::{
+    BatchProofTargets, CircuitTablesAir, InstanceOpenedValuesTargets, PcsVerifierParams,
+    verify_batch_circuit, verify_p3_recursion_proof_circuit,
+};
 pub use errors::VerificationError;
 pub use observable::ObservableCommitment;
 pub use quotient::recompose_quotient_from_chunks_circuit;

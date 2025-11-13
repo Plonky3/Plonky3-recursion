@@ -10,7 +10,6 @@ use p3_circuit::utils::ColumnsTargets;
 use p3_commit::Pcs;
 use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
 use p3_uni_stark::StarkGenericConfig;
-use p3_util::zip_eq::zip_eq;
 
 use super::{ObservableCommitment, VerificationError, recompose_quotient_from_chunks_circuit};
 use crate::Target;
@@ -188,15 +187,19 @@ where
         (
             quotient_chunks_targets.clone(),
             // Check the commitment on the randomized domains
-            zip_eq(
-                randomized_quotient_chunks_domains.iter(),
-                opened_quotient_chunks_targets,
-                VerificationError::InvalidProofShape(
-                    "Randomized quotient chunks length mismatch".to_string(),
-                ),
-            )?
-            .map(|(domain, values)| (*domain, vec![(zeta, values.clone())]))
-            .collect_vec(),
+            {
+                if randomized_quotient_chunks_domains.len() != opened_quotient_chunks_targets.len()
+                {
+                    return Err(VerificationError::InvalidProofShape(
+                        "Randomized quotient chunks length mismatch".to_string(),
+                    ));
+                }
+                randomized_quotient_chunks_domains
+                    .iter()
+                    .zip(opened_quotient_chunks_targets)
+                    .map(|(domain, values)| (*domain, vec![(zeta, values.clone())]))
+                    .collect_vec()
+            },
         ),
     ]);
 
