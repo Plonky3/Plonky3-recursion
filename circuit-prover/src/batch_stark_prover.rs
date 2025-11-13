@@ -135,6 +135,10 @@ where
 }
 
 #[inline(always)]
+/// # Safety
+///
+/// Caller must ensure that both `Traces<FromEF>` and `Traces<ToEF>` share an
+/// identical in-memory representation.
 pub(crate) unsafe fn transmute_traces<FromEF, ToEF>(t: &Traces<FromEF>) -> &Traces<ToEF> {
     unsafe { &*(t as *const _ as *const Traces<ToEF>) }
 }
@@ -387,6 +391,12 @@ pub struct RowCounts([usize; NUM_PRIMITIVE_TABLES]);
 impl RowCounts {
     /// Creates a new RowCounts with the given row counts for each table.
     pub const fn new(rows: [usize; NUM_PRIMITIVE_TABLES]) -> Self {
+        // Validate that all row counts are non-zero
+        let mut i = 0;
+        while i < rows.len() {
+            assert!(rows[i] > 0);
+            i += 1;
+        }
         Self(rows)
     }
 
