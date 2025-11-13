@@ -437,6 +437,7 @@ where
         InputProofTargets<Val<SC>, SC::Challenge, RecursiveInputMmcs>,
     >;
 
+    /// Observes all opened values and derives PCS-specific challenges.
     fn get_challenges_circuit<const RATE: usize>(
         circuit: &mut CircuitBuilder<SC::Challenge>,
         challenger: &mut CircuitChallenger<RATE>,
@@ -446,7 +447,6 @@ where
     ) -> Vec<Target> {
         let fri_proof = &proof_targets.opening_proof;
 
-        // Observe all opened values (trace, quotient chunks, random)
         opened_values.observe(circuit, challenger);
 
         // Sample FRI alpha (for batch opening reduction)

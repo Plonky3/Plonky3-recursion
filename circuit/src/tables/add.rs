@@ -1,4 +1,5 @@
 use alloc::vec::Vec;
+
 use p3_field::Field;
 
 use crate::CircuitError;
@@ -31,7 +32,7 @@ pub struct AddTraceBuilder<'a, F> {
     witness: &'a [Option<F>],
 }
 
-impl<'a, F: Field + Clone> AddTraceBuilder<'a, F> {
+impl<'a, F: Clone + Field> AddTraceBuilder<'a, F> {
     /// Creates a new addition trace builder.
     pub fn new(primitive_ops: &'a [Op<F>], witness: &'a [Option<F>]) -> Self {
         Self {
@@ -77,6 +78,16 @@ impl<'a, F: Field + Clone> AddTraceBuilder<'a, F> {
                 result_values.push(out_val);
                 result_index.push(*out);
             }
+        }
+
+        // If trace is empty, add a dummy row: 0 + 0 = 0
+        if lhs_values.is_empty() {
+            lhs_values.push(F::ZERO);
+            lhs_index.push(WitnessId(0));
+            rhs_values.push(F::ZERO);
+            rhs_index.push(WitnessId(0));
+            result_values.push(F::ZERO);
+            result_index.push(WitnessId(0));
         }
 
         Ok(AddTrace {

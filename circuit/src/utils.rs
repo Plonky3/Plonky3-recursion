@@ -177,15 +177,11 @@ pub fn pad_to_power_of_two<F: Field>(values: &mut Vec<F>, width: usize, original
 
 #[cfg(test)]
 mod tests {
-    use alloc::vec;
-    use alloc::vec::Vec;
-
     use p3_air::{Air, BaseAir};
     use p3_baby_bear::{BabyBear, Poseidon2BabyBear};
     use p3_challenger::DuplexChallenger;
     use p3_commit::ExtensionMmcs;
     use p3_dft::Radix2DitParallel;
-    use p3_field::Field;
     use p3_field::extension::BinomialExtensionField;
     use p3_field::integers::QuotientMap;
     use p3_fri::TwoAdicFriPcs;
@@ -259,6 +255,7 @@ mod tests {
         // Fold the constraints using random values for the trace and selectors.
         let mut folder: VerifierConstraintFolder<'_, MyConfig> = VerifierConstraintFolder {
             main,
+            preprocessed: None,
             public_values: &pis,
             is_first_row: sels[0],
             is_last_row: sels[1],

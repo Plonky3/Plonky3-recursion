@@ -1,11 +1,11 @@
 use std::env;
+use std::error::Error;
 
 /// Fibonacci circuit: Compute F(n) and prove correctness
 /// Public input: expected_result (F(n))
 use p3_baby_bear::BabyBear;
 use p3_circuit::CircuitBuilder;
-use p3_circuit_prover::prover::ProverError;
-use p3_circuit_prover::{MultiTableProver, TablePacking, config};
+use p3_circuit_prover::{BatchStarkProver, TablePacking, config};
 use p3_field::PrimeCharacteristicRing;
 use tracing_forest::ForestLayer;
 use tracing_forest::util::LevelFilter;
@@ -26,7 +26,7 @@ fn init_logger() {
         .init();
 }
 
-fn main() -> Result<(), ProverError> {
+fn main() -> Result<(), Box<dyn Error>> {
     init_logger();
 
     let n = env::args()
@@ -63,10 +63,11 @@ fn main() -> Result<(), ProverError> {
 
     let traces = runner.run()?;
     let config = config::baby_bear().build();
-    let table_packing = TablePacking::from_counts(4, 1);
-    let multi_prover = MultiTableProver::new(config).with_table_packing(table_packing);
-    let proof = multi_prover.prove_all_tables(&traces)?;
-    multi_prover.verify_all_tables(&proof)
+    let table_packing = TablePacking::new(4, 1);
+    let prover = BatchStarkProver::new(config).with_table_packing(table_packing);
+    let proof = prover.prove_all_tables(&traces)?;
+    prover.verify_all_tables(&proof)?;
+    Ok(())
 }
 
 fn compute_fibonacci_classical(n: usize) -> F {

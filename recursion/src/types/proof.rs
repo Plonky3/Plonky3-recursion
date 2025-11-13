@@ -203,6 +203,8 @@ impl<SC: StarkGenericConfig> Recursive<SC::Challenge> for OpenedValuesTargets<SC
         let OpenedValues {
             trace_local,
             trace_next,
+            preprocessed_local,
+            preprocessed_next,
             quotient_chunks,
             random,
         } = input;
@@ -210,6 +212,12 @@ impl<SC: StarkGenericConfig> Recursive<SC::Challenge> for OpenedValuesTargets<SC
         let mut values = vec![];
         values.extend(trace_local);
         values.extend(trace_next);
+        if let Some(preprocessed_local) = preprocessed_local {
+            values.extend(preprocessed_local);
+        }
+        if let Some(preprocessed_next) = preprocessed_next {
+            values.extend(preprocessed_next);
+        }
         for chunk in quotient_chunks {
             values.extend(chunk);
         }

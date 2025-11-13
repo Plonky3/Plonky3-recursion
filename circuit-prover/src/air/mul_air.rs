@@ -36,6 +36,7 @@
 
 #![allow(clippy::needless_range_loop)]
 use alloc::vec::Vec;
+use core::marker::PhantomData;
 
 use p3_air::{Air, AirBuilder, BaseAir};
 use p3_circuit::tables::MulTrace;
@@ -66,13 +67,10 @@ pub struct MulAir<F, const D: usize = 1> {
     pub lanes: usize,
     /// For binomial extensions x^D = W over a polynomial basis; None for non-binomial / base cases.
     pub w_binomial: Option<F>,
-    _phantom: core::marker::PhantomData<F>,
+    _phantom: PhantomData<F>,
 }
 
 impl<F: Field + PrimeCharacteristicRing, const D: usize> MulAir<F, D> {
-    /// Number of base-field columns contributed by a single multiplication lane.
-    pub const LANE_WIDTH: usize = 3 * D + 3;
-
     /// Constructor for base-field or non-binomial cases (`D == 1`).
     pub const fn new(num_ops: usize, lanes: usize) -> Self {
         assert!(lanes > 0, "lane count must be non-zero");
@@ -80,7 +78,7 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> MulAir<F, D> {
             num_ops,
             lanes,
             w_binomial: None,
-            _phantom: core::marker::PhantomData,
+            _phantom: PhantomData,
         }
     }
 
@@ -93,12 +91,13 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> MulAir<F, D> {
             num_ops,
             lanes,
             w_binomial: Some(w),
-            _phantom: core::marker::PhantomData,
+            _phantom: PhantomData,
         }
     }
 
+    /// Number of base-field columns contributed by a single multiplication lane.
     pub const fn lane_width() -> usize {
-        Self::LANE_WIDTH
+        3 * D + 3
     }
 
     pub fn total_width(&self) -> usize {
@@ -128,13 +127,13 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> MulAir<F, D> {
                     let lhs_coeffs = trace.lhs_values[op_idx].as_basis_coefficients_slice();
                     assert_eq!(lhs_coeffs.len(), D, "Extension degree mismatch for lhs");
                     values.extend_from_slice(lhs_coeffs);
-                    values.push(F::from_u64(trace.lhs_index[op_idx].0 as u64));
+                    values.push(F::from_u32(trace.lhs_index[op_idx].0));
 
                     // RHS limbs + index
                     let rhs_coeffs = trace.rhs_values[op_idx].as_basis_coefficients_slice();
                     assert_eq!(rhs_coeffs.len(), D, "Extension degree mismatch for rhs");
                     values.extend_from_slice(rhs_coeffs);
-                    values.push(F::from_u64(trace.rhs_index[op_idx].0 as u64));
+                    values.push(F::from_u32(trace.rhs_index[op_idx].0));
 
                     // Result limbs + index
                     let result_coeffs = trace.result_values[op_idx].as_basis_coefficients_slice();
@@ -144,7 +143,7 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> MulAir<F, D> {
                         "Extension degree mismatch for result",
                     );
                     values.extend_from_slice(result_coeffs);
-                    values.push(F::from_u64(trace.result_index[op_idx].0 as u64));
+                    values.push(F::from_u32(trace.result_index[op_idx].0));
                 } else {
                     // Filler lane: append zeros for unused slot to keep the row width uniform.
                     values.resize(values.len() + lane_width, F::ZERO);
@@ -231,10 +230,7 @@ mod tests {
 
     use p3_baby_bear::BabyBear as Val;
     use p3_circuit::WitnessId;
-    use p3_circuit::tables::MulTrace;
     use p3_field::extension::BinomialExtensionField;
-    use p3_field::{BasedVectorSpace, Field};
-    use p3_matrix::dense::RowMajorMatrix;
     use p3_uni_stark::{prove, verify};
 
     use super::*;
