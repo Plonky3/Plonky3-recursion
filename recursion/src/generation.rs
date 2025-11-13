@@ -76,44 +76,6 @@ pub trait PcsGeneration<SC: StarkGenericConfig, OpeningProof> {
     ) -> Result<usize, GenerationError>;
 }
 
-/// TODO: Replace this with the original method when available.
-#[allow(clippy::type_complexity)]
-fn process_preprocessed_trace<SC, A>(
-    air: &A,
-    pcs: &SC::Pcs,
-    trace_domain: <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain,
-    is_zk: usize,
-) -> Result<
-    (
-        usize,
-        Option<<SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment>,
-    ),
-    GenerationError,
->
-where
-    SC: StarkGenericConfig,
-    A: for<'a> Air<VerifierConstraintFolder<'a, SC>>,
-{
-    // If verifier asked for preprocessed trace, then proof should have it
-    let preprocessed = air.preprocessed_trace();
-    let preprocessed_width = preprocessed.as_ref().map(|m| m.width).unwrap_or(0);
-
-    if preprocessed_width > 0 {
-        assert_eq!(is_zk, 0); // TODO: preprocessed columns not supported in zk mode
-        let height = preprocessed.as_ref().unwrap().values.len() / preprocessed_width;
-        assert_eq!(
-            height,
-            trace_domain.size(),
-            "Verifier's preprocessed trace height must be equal to trace domain size"
-        );
-        let (preprocessed_commit, _) = debug_span!("process preprocessed trace")
-            .in_scope(|| pcs.commit([(trace_domain, preprocessed.unwrap())]));
-        Ok((preprocessed_width, Some(preprocessed_commit)))
-    } else {
-        Ok((preprocessed_width, None))
-    }
-}
-
 // TODO: This could be used on the Plonky3 side as well.
 /// Generates the challenges used in the verification of a STARK proof.
 pub fn generate_challenges<SC: StarkGenericConfig, A>(
@@ -134,10 +96,17 @@ where
         degree_bits,
     } = proof;
 
+    let preprocessed = air.preprocessed_trace();
+    let preprocessed_width = preprocessed.as_ref().map(|m| m.width).unwrap_or(0);
+
     let degree = 1 << degree_bits;
     let pcs = config.pcs();
-    let log_quotient_degree =
-        get_log_quotient_degree::<Val<SC>, A>(air, 0, public_values.len(), config.is_zk());
+    let log_quotient_degree = get_log_quotient_degree::<Val<SC>, A>(
+        air,
+        preprocessed_width,
+        public_values.len(),
+        config.is_zk(),
+    );
     let quotient_degree = 1 << (log_quotient_degree + config.is_zk());
 
     let trace_domain = pcs.natural_domain_for_degree(degree);
@@ -151,8 +120,20 @@ where
         .map(|domain| pcs.natural_domain_for_degree(domain.size() << (config.is_zk())))
         .collect::<Vec<_>>();
 
-    let (preprocessed_width, preprocessed_commit) =
-        process_preprocessed_trace(air, pcs, trace_domain, config.is_zk())?;
+    let preprocessed_commit = if preprocessed_width > 0 {
+        assert_eq!(config.is_zk(), 0); // TODO: preprocessed columns not supported in zk mode
+        let height = preprocessed.as_ref().unwrap().values.len() / preprocessed_width;
+        assert_eq!(
+            height,
+            trace_domain.size(),
+            "Verifier's preprocessed trace height must be equal to trace domain size"
+        );
+        let (preprocessed_commit, _) = debug_span!("process preprocessed trace")
+            .in_scope(|| pcs.commit([(trace_domain, preprocessed.unwrap())]));
+        Some(preprocessed_commit)
+    } else {
+        None
+    };
 
     let num_challenges = 3 // alpha, zeta and zeta_next
      + SC::Pcs::num_challenges(opening_proof, extra_params)?;
@@ -219,6 +200,20 @@ where
             .collect::<Vec<_>>(),
         ),
     ]);
+
+    // Add preprocessed commitment verification if present
+    if preprocessed_width > 0 {
+        coms_to_verify.push((
+            preprocessed_commit.unwrap(),
+            vec![(
+                trace_domain,
+                vec![
+                    (zeta, opened_values.preprocessed_local.clone().unwrap()),
+                    (zeta_next, opened_values.preprocessed_next.clone().unwrap()),
+                ],
+            )],
+        ));
+    }
 
     let pcs_challenges = pcs.generate_challenges(
         config,

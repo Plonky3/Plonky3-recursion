@@ -1,4 +1,3 @@
-use alloc::vec;
 use alloc::vec::Vec;
 use core::hash::Hash;
 
@@ -9,7 +8,7 @@ use p3_field::{Field, PrimeCharacteristicRing};
 use super::compiler::{ExpressionLowerer, NonPrimitiveLowerer, Optimizer};
 use super::{BuilderConfig, ExpressionBuilder, PublicInputTracker};
 use crate::CircuitBuilderError;
-use crate::circuit::{Circuit, MultiplePackingConfigs};
+use crate::circuit::Circuit;
 use crate::op::NonPrimitiveOpType;
 use crate::ops::MmcsVerifyConfig;
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};
@@ -380,10 +379,7 @@ where
 {
     /// Builds the circuit into a Circuit with separate lowering and IR transformation stages.
     /// Returns an error if lowering fails due to an internal inconsistency.
-    pub fn build(
-        self,
-    ) -> Result<(Circuit<F>, Vec<Vec<p3_matrix::dense::RowMajorMatrix<F>>>), CircuitBuilderError>
-    {
+    pub fn build(self) -> Result<(Circuit<F>, Vec<Vec<F>>), CircuitBuilderError> {
         let (circuit, preprocessed, _) = self.build_with_public_mapping()?;
         Ok((circuit, preprocessed))
     }
@@ -392,14 +388,7 @@ where
     #[allow(clippy::type_complexity)]
     pub fn build_with_public_mapping(
         self,
-    ) -> Result<
-        (
-            Circuit<F>,
-            Vec<Vec<p3_matrix::dense::RowMajorMatrix<F>>>,
-            HashMap<ExprId, WitnessId>,
-        ),
-        CircuitBuilderError,
-    > {
+    ) -> Result<(Circuit<F>, Vec<Vec<F>>, HashMap<ExprId, WitnessId>), CircuitBuilderError> {
         // Stage 1: Lower expressions to primitives
         let lowerer = ExpressionLowerer::new(
             self.expr_builder.graph(),
@@ -427,12 +416,8 @@ where
         circuit.public_flat_len = self.public_tracker.count();
         circuit.enabled_ops = self.config.into_enabled_ops();
 
-        // Step 5: Generate preprocessed columns for multiple packing configurations.
-        let configs = MultiplePackingConfigs {
-            num_add_lanes: vec![1, 2], // Placeholder; replace with actual config as needed
-            num_mul_lanes: vec![1, 2], // Placeholder; replace with actual config as needed
-        };
-        let preprocessed = circuit.generate_preprocessed_columns(&configs)?;
+        // Step 5: Generate preprocessed values for all ops except non-primitive ops.
+        let preprocessed = circuit.generate_preprocessed_columns()?;
 
         Ok((circuit, preprocessed, public_mappings))
     }

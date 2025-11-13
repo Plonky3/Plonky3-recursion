@@ -3,10 +3,10 @@ use alloc::format;
 use alloc::vec::Vec;
 use core::fmt::Debug;
 use core::hash::Hash;
-use strum_macros::EnumCount;
 
 use hashbrown::HashMap;
 use p3_field::Field;
+use strum_macros::EnumCount;
 
 use crate::CircuitError;
 use crate::ops::MmcsVerifyConfig;
@@ -77,19 +77,21 @@ pub enum Op<F> {
 
 #[derive(EnumCount)]
 pub enum PrimitiveOpType {
-    Const = 0,
-    Public = 1,
-    Add = 2,
-    Mul = 3,
+    Witness = 0,
+    Const = 1,
+    Public = 2,
+    Add = 3,
+    Mul = 4,
 }
 
 impl From<usize> for PrimitiveOpType {
     fn from(value: usize) -> Self {
         match value {
-            0 => PrimitiveOpType::Const,
-            1 => PrimitiveOpType::Public,
-            2 => PrimitiveOpType::Add,
-            3 => PrimitiveOpType::Mul,
+            0 => PrimitiveOpType::Witness,
+            1 => PrimitiveOpType::Const,
+            2 => PrimitiveOpType::Public,
+            3 => PrimitiveOpType::Add,
+            4 => PrimitiveOpType::Mul,
             _ => panic!("Invalid PrimitiveOpType value: {}", value),
         }
     }
@@ -99,10 +101,11 @@ impl PrimitiveOpType {
     /// Get the number of columns in the preprocessed table for this operation
     pub fn get_prep_width(&self) -> usize {
         match self {
-            PrimitiveOpType::Const => 2,  // out, val
-            PrimitiveOpType::Public => 2, // out, public_pos
-            PrimitiveOpType::Add => 3,    // a, b, out
-            PrimitiveOpType::Mul => 3,    // a, b, out
+            PrimitiveOpType::Witness => 1, // index
+            PrimitiveOpType::Const => 2,   // index, val
+            PrimitiveOpType::Public => 1,  // index
+            PrimitiveOpType::Add => 3,     // index_a, index_b, index_out
+            PrimitiveOpType::Mul => 3,     // index_a, index_b, index_out
         }
     }
 }

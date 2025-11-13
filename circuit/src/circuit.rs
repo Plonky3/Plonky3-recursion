@@ -5,7 +5,6 @@ use core::ops::{Add, Mul, Sub};
 
 use hashbrown::HashMap;
 use p3_field::Field;
-use p3_matrix::dense::RowMajorMatrix;
 use strum::EnumCount;
 
 use crate::op::{NonPrimitiveOpConfig, NonPrimitiveOpType, Op, PrimitiveOpType};
@@ -35,12 +34,6 @@ impl<F> CircuitField for F where
         + Debug
         + Field
 {
-}
-
-#[derive(Debug, Clone)]
-pub struct MultiplePackingConfigs {
-    pub num_add_lanes: Vec<usize>,
-    pub num_mul_lanes: Vec<usize>,
 }
 
 /// Static circuit specification containing constraint system and metadata
@@ -96,81 +89,58 @@ impl<F: Field> Circuit<F> {
         }
     }
 
-    /// Generates the preprocessed columns for all traces
+    /// Generates the preprocessed values for all ops except non-primitive ops.
+    ///
+    /// The preprocessed values for `Witness` are deduced from the other ops:
+    /// they correspond to 0..`n` where `n` is the largest witness index used in the circuit.
     pub fn generate_preprocessed_columns(
         &mut self,
-        configs: &MultiplePackingConfigs,
-    ) -> Result<Vec<Vec<RowMajorMatrix<F>>>, crate::CircuitBuilderError> {
+    ) -> Result<Vec<Vec<F>>, crate::CircuitBuilderError> {
         let n = PrimitiveOpType::COUNT; // Exclude non-primitive ops
         let mut preprocessed = vec![vec![]; n];
+
+        let mut max_idx = 0;
         for prim in &self.primitive_ops {
-            if let Op::Const { out, val } = prim {
-                let table_idx = PrimitiveOpType::Const as usize;
-                preprocessed[table_idx].extend(&[F::from_u32(out.0), *val]);
-            }
-            if let Op::Add { a, b, out } = prim {
-                let table_idx = PrimitiveOpType::Add as usize;
-                preprocessed[table_idx].extend(&[
-                    F::from_u32(a.0),
-                    F::from_u32(b.0),
-                    F::from_u32(out.0),
-                ]);
-            }
-            if let Op::Mul { a, b, out } = prim {
-                let table_idx = PrimitiveOpType::Mul as usize;
-                preprocessed[table_idx].extend(&[
-                    F::from_u32(a.0),
-                    F::from_u32(b.0),
-                    F::from_u32(out.0),
-                ]);
+            match prim {
+                Op::Const { out, val } => {
+                    let table_idx = PrimitiveOpType::Const as usize;
+                    preprocessed[table_idx].extend(&[F::from_u32(out.0), *val]);
+                    max_idx = max_idx.max(out.0);
+                }
+                Op::Public { out, .. } => {
+                    let table_idx = PrimitiveOpType::Public as usize;
+                    preprocessed[table_idx].extend(&[F::from_u32(out.0)]);
+                    max_idx = max_idx.max(out.0);
+                }
+                Op::Add { a, b, out } => {
+                    let table_idx = PrimitiveOpType::Add as usize;
+                    preprocessed[table_idx].extend(&[
+                        F::from_u32(a.0),
+                        F::from_u32(b.0),
+                        F::from_u32(out.0),
+                    ]);
+                    max_idx = max_idx.max(a.0).max(b.0).max(out.0);
+                }
+                Op::Mul { a, b, out } => {
+                    let table_idx = PrimitiveOpType::Mul as usize;
+                    preprocessed[table_idx].extend(&[
+                        F::from_u32(a.0),
+                        F::from_u32(b.0),
+                        F::from_u32(out.0),
+                    ]);
+                    max_idx = max_idx.max(a.0).max(b.0).max(out.0);
+                }
+                Op::NonPrimitiveOpWithExecutor { .. } => panic!(
+                    "preprocessed values are not yet implemented for non primitivie operations."
+                ),
             }
         }
 
-        let mats = preprocessed
-            .iter()
-            .enumerate()
-            .map(|(i, col)| {
-                if i == PrimitiveOpType::Add as usize {
-                    configs
-                        .num_add_lanes
-                        .iter()
-                        .map(|&num_lanes| {
-                            let table = PrimitiveOpType::try_from(i).unwrap();
+        // Now, we can generate the values for `Witness` using `max_idx`.
+        let table_idx = PrimitiveOpType::Witness as usize;
+        preprocessed[table_idx].extend((0..=max_idx).map(|i| F::from_u32(i)));
 
-                            // Pad to a multiple of the width.
-                            let width = table.get_prep_width() * num_lanes;
-                            let to_pad = (width - (col.len() % width)) % width;
-                            let mut padded_col = col.clone();
-                            padded_col
-                                .extend((0..to_pad).map(|_| F::default()).collect::<Vec<_>>());
-                            RowMajorMatrix::new(padded_col, table.get_prep_width() * num_lanes)
-                        })
-                        .collect::<Vec<_>>()
-                } else if i == PrimitiveOpType::Mul as usize {
-                    configs
-                        .num_mul_lanes
-                        .iter()
-                        .map(|&num_lanes| {
-                            let table = PrimitiveOpType::try_from(i).unwrap();
-
-                            // Pad to a multiple of the width.
-                            let width = table.get_prep_width() * num_lanes;
-                            let to_pad = (width - (col.len() % width)) % width;
-                            let mut padded_col = col.clone();
-                            padded_col
-                                .extend((0..to_pad).map(|_| F::default()).collect::<Vec<_>>());
-
-                            RowMajorMatrix::new(padded_col, table.get_prep_width() * num_lanes)
-                        })
-                        .collect::<Vec<_>>()
-                } else {
-                    let table = PrimitiveOpType::try_from(i).unwrap();
-                    vec![RowMajorMatrix::new(col.clone(), table.get_prep_width())]
-                }
-            })
-            .collect::<Vec<_>>();
-
-        Ok(mats)
+        Ok(preprocessed)
     }
 }
 

@@ -81,8 +81,10 @@ where
     ) -> Target {
         builder.push_scope("eval_folded_circuit");
 
+        let num_preprocessed = columns.local_prep_values.len();
         // Get symbolic constraints from the AIR
-        let symbolic_constraints = get_symbolic_constraints(self, 0, columns.public_values.len());
+        let symbolic_constraints =
+            get_symbolic_constraints(self, num_preprocessed, columns.public_values.len());
 
         // Fold all constraints: result = c₀ + α·c₁ + α²·c₂ + ...
         let mut acc = builder.add_const(F::ZERO);
@@ -91,7 +93,6 @@ where
             let constraints = symbolic_to_circuit(sels.row_selectors, &columns, &s_c, builder);
             acc = builder.add(mul_prev, constraints);
         }
-
         builder.pop_scope();
         acc
     }

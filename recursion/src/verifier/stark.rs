@@ -138,7 +138,6 @@ where
         proof_targets,
         public_values,
         preprocessed_width,
-        &opened_values_targets,
         circuit,
         pcs_params,
     );
@@ -151,13 +150,8 @@ where
     // Validate proof shape
     validate_proof_shape::<A, SC>(
         air,
-        opened_trace_local_targets,
-        opened_trace_next_targets,
-        opt_opened_preprocessed_local_targets,
-        opt_opened_preprocessed_next_targets,
+        opened_values_targets,
         preprocessed_width,
-        opened_quotient_chunks_targets,
-        opened_random,
         quotient_degree,
     )?;
 
@@ -293,7 +287,6 @@ fn get_circuit_challenges<
     proof_targets: &ProofTargets<SC, Comm, OpeningProof>,
     public_values: &[Target],
     preprocessed_width: usize,
-    opened_values: &OpenedValuesTargets<SC>,
     circuit: &mut CircuitBuilder<SC::Challenge>,
     pcs_params: &PcsVerifierParams<SC, InputProof, OpeningProof, Comm>,
 ) -> Vec<Target>
@@ -326,7 +319,7 @@ where
         circuit,
         &mut challenger,
         proof_targets,
-        opened_values,
+        &proof_targets.opened_values_targets,
         pcs_params,
     );
 
@@ -339,13 +332,8 @@ where
 /// Validate the shape of the proof (dimensions, lengths).
 fn validate_proof_shape<A, SC: StarkGenericConfig>(
     air: &A,
-    opened_trace_local: &[Target],
-    opened_trace_next: &[Target],
-    opened_prep_local: &Option<Vec<Target>>,
-    opened_prep_next: &Option<Vec<Target>>,
+    opened_values: &OpenedValuesTargets<SC>,
     preprocessed_width: usize,
-    opened_quotient_chunks: &[Vec<Target>],
-    opened_random: &Option<Vec<Target>>,
     quotient_degree: usize,
 ) -> Result<(), VerificationError>
 where
@@ -353,6 +341,16 @@ where
     SC::Challenge: PrimeCharacteristicRing,
 {
     let air_width = A::width(air);
+
+    let OpenedValuesTargets {
+        trace_local_targets: opened_trace_local,
+        trace_next_targets: opened_trace_next,
+        preprocessed_local_targets: opened_prep_local,
+        preprocessed_next_targets: opened_prep_next,
+        quotient_chunks_targets: opened_quotient_chunks,
+        random_targets: opened_random,
+        ..
+    } = opened_values;
 
     if opened_trace_local.len() != air_width || opened_trace_next.len() != air_width {
         return Err(VerificationError::InvalidProofShape(format!(
