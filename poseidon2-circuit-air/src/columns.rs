@@ -20,17 +20,11 @@ use p3_poseidon2_air::Poseidon2Cols;
 #[repr(C)]
 pub struct Poseidon2CircuitCols<
     T,
-    const WIDTH: usize,
     const WIDTH_EXT: usize,
     const RATE_EXT: usize,
-    const SBOX_DEGREE: u64,
-    const SBOX_REGISTERS: usize,
-    const HALF_FULL_ROUNDS: usize,
-    const PARTIAL_ROUNDS: usize,
+    P: PermutationColumns<T>,
 > {
-    pub poseidon2:
-        Poseidon2Cols<T, WIDTH, SBOX_DEGREE, SBOX_REGISTERS, HALF_FULL_ROUNDS, PARTIAL_ROUNDS>,
-
+    pub poseidon2: P,
     pub is_sponge: T,
     pub reset: T,
     pub sponge_reset: T,
@@ -39,76 +33,31 @@ pub struct Poseidon2CircuitCols<
     pub output_indices: [T; RATE_EXT],
 }
 
-pub const fn num_cols<
-    const WIDTH: usize,
-    const WIDTH_EXT: usize,
-    const RATE_EXT: usize,
-    const SBOX_DEGREE: u64,
-    const SBOX_REGISTERS: usize,
-    const HALF_FULL_ROUNDS: usize,
-    const PARTIAL_ROUNDS: usize,
->() -> usize {
-    size_of::<
-        Poseidon2CircuitCols<
-            u8,
-            WIDTH,
-            WIDTH_EXT,
-            RATE_EXT,
-            SBOX_DEGREE,
-            SBOX_REGISTERS,
-            HALF_FULL_ROUNDS,
-            PARTIAL_ROUNDS,
-        >,
-    >()
-}
+pub trait PermutationColumns<T> {}
 
 impl<
     T,
     const WIDTH: usize,
-    const WIDTH_EXT: usize,
-    const RATE_EXT: usize,
     const SBOX_DEGREE: u64,
     const SBOX_REGISTERS: usize,
     const HALF_FULL_ROUNDS: usize,
     const PARTIAL_ROUNDS: usize,
->
-    Borrow<
-        Poseidon2CircuitCols<
-            T,
-            WIDTH,
-            WIDTH_EXT,
-            RATE_EXT,
-            SBOX_DEGREE,
-            SBOX_REGISTERS,
-            HALF_FULL_ROUNDS,
-            PARTIAL_ROUNDS,
-        >,
-    > for [T]
+> PermutationColumns<T>
+    for Poseidon2Cols<T, WIDTH, SBOX_DEGREE, SBOX_REGISTERS, HALF_FULL_ROUNDS, PARTIAL_ROUNDS>
 {
-    fn borrow(
-        &self,
-    ) -> &Poseidon2CircuitCols<
-        T,
-        WIDTH,
-        WIDTH_EXT,
-        RATE_EXT,
-        SBOX_DEGREE,
-        SBOX_REGISTERS,
-        HALF_FULL_ROUNDS,
-        PARTIAL_ROUNDS,
-    > {
-        let (prefix, shorts, suffix) = unsafe {
-            self.align_to::<Poseidon2CircuitCols<
-                T,
-                WIDTH,
-                WIDTH_EXT,
-                RATE_EXT,
-                SBOX_DEGREE,
-                SBOX_REGISTERS,
-                HALF_FULL_ROUNDS,
-                PARTIAL_ROUNDS,
-            >>()
-        };
+}
+
+pub const fn num_cols<const WIDTH_EXT: usize, const RATE_EXT: usize, P: PermutationColumns<u8>>()
+-> usize {
+    size_of::<Poseidon2CircuitCols<u8, WIDTH_EXT, RATE_EXT, P>>()
+}
+
+impl<T, const WIDTH_EXT: usize, const RATE_EXT: usize, P: PermutationColumns<T>>
+    Borrow<Poseidon2CircuitCols<T, WIDTH_EXT, RATE_EXT, P>> for [T]
+{
+    fn borrow(&self) -> &Poseidon2CircuitCols<T, WIDTH_EXT, RATE_EXT, P> {
+        let (prefix, shorts, suffix) =
+            unsafe { self.align_to::<Poseidon2CircuitCols<T, WIDTH_EXT, RATE_EXT, P>>() };
         debug_assert!(prefix.is_empty(), "Alignment should match");
         debug_assert!(suffix.is_empty(), "Alignment should match");
         debug_assert_eq!(shorts.len(), 1);
@@ -116,53 +65,12 @@ impl<
     }
 }
 
-impl<
-    T,
-    const WIDTH: usize,
-    const WIDTH_EXT: usize,
-    const RATE_EXT: usize,
-    const SBOX_DEGREE: u64,
-    const SBOX_REGISTERS: usize,
-    const HALF_FULL_ROUNDS: usize,
-    const PARTIAL_ROUNDS: usize,
->
-    BorrowMut<
-        Poseidon2CircuitCols<
-            T,
-            WIDTH,
-            WIDTH_EXT,
-            RATE_EXT,
-            SBOX_DEGREE,
-            SBOX_REGISTERS,
-            HALF_FULL_ROUNDS,
-            PARTIAL_ROUNDS,
-        >,
-    > for [T]
+impl<T, const WIDTH_EXT: usize, const RATE_EXT: usize, P: PermutationColumns<T>>
+    BorrowMut<Poseidon2CircuitCols<T, WIDTH_EXT, RATE_EXT, P>> for [T]
 {
-    fn borrow_mut(
-        &mut self,
-    ) -> &mut Poseidon2CircuitCols<
-        T,
-        WIDTH,
-        WIDTH_EXT,
-        RATE_EXT,
-        SBOX_DEGREE,
-        SBOX_REGISTERS,
-        HALF_FULL_ROUNDS,
-        PARTIAL_ROUNDS,
-    > {
-        let (prefix, shorts, suffix) = unsafe {
-            self.align_to_mut::<Poseidon2CircuitCols<
-                T,
-                WIDTH,
-                WIDTH_EXT,
-                RATE_EXT,
-                SBOX_DEGREE,
-                SBOX_REGISTERS,
-                HALF_FULL_ROUNDS,
-                PARTIAL_ROUNDS,
-            >>()
-        };
+    fn borrow_mut(&mut self) -> &mut Poseidon2CircuitCols<T, WIDTH_EXT, RATE_EXT, P> {
+        let (prefix, shorts, suffix) =
+            unsafe { self.align_to_mut::<Poseidon2CircuitCols<T, WIDTH_EXT, RATE_EXT, P>>() };
         debug_assert!(prefix.is_empty(), "Alignment should match");
         debug_assert!(suffix.is_empty(), "Alignment should match");
         debug_assert_eq!(shorts.len(), 1);

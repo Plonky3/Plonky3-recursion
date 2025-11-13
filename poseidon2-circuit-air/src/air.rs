@@ -9,7 +9,7 @@ use p3_field::{PrimeCharacteristicRing, PrimeField};
 use p3_matrix::Matrix;
 use p3_matrix::dense::{RowMajorMatrix, RowMajorMatrixViewMut};
 use p3_poseidon2::GenericPoseidon2LinearLayers;
-use p3_poseidon2_air::{Poseidon2Air, RoundConstants, generate_trace_rows};
+use p3_poseidon2_air::{Poseidon2Air, Poseidon2Cols, RoundConstants, generate_trace_rows};
 use p3_symmetric::CryptographicPermutation;
 
 use crate::sub_builder::SubAirBuilder;
@@ -103,6 +103,7 @@ impl<
         let mut circuit_trace = vec![F::ZERO; n * num_circuit_cols];
         let mut circuit_trace = RowMajorMatrixViewMut::new(&mut circuit_trace, num_circuit_cols);
 
+        // TODO: Put trace generation circuit-side.
         let mut state = [F::ZERO; WIDTH];
         let mut inputs = Vec::with_capacity(n);
         for (i, op) in sponge_ops.iter().enumerate() {
@@ -169,6 +170,7 @@ impl<
             state = perm.permute(state);
         }
 
+        // TODO: Avoid copying whole trace later.
         let p2_trace = generate_trace_rows::<
             F,
             LinearLayers,
@@ -244,13 +246,9 @@ impl<
 {
     fn width(&self) -> usize {
         num_cols::<
-            WIDTH,
             WIDTH_EXT,
             RATE_EXT,
-            SBOX_DEGREE,
-            SBOX_REGISTERS,
-            HALF_FULL_ROUNDS,
-            PARTIAL_ROUNDS,
+            Poseidon2Cols<u8, WIDTH, SBOX_DEGREE, SBOX_REGISTERS, HALF_FULL_ROUNDS, PARTIAL_ROUNDS>,
         >()
     }
 }
@@ -284,23 +282,29 @@ pub(crate) fn eval<
     builder: &mut AB,
     local: &Poseidon2CircuitCols<
         AB::Var,
-        WIDTH,
         WIDTH_EXT,
         RATE_EXT,
-        SBOX_DEGREE,
-        SBOX_REGISTERS,
-        HALF_FULL_ROUNDS,
-        PARTIAL_ROUNDS,
+        Poseidon2Cols<
+            AB::Var,
+            WIDTH,
+            SBOX_DEGREE,
+            SBOX_REGISTERS,
+            HALF_FULL_ROUNDS,
+            PARTIAL_ROUNDS,
+        >,
     >,
     next: &Poseidon2CircuitCols<
         AB::Var,
-        WIDTH,
         WIDTH_EXT,
         RATE_EXT,
-        SBOX_DEGREE,
-        SBOX_REGISTERS,
-        HALF_FULL_ROUNDS,
-        PARTIAL_ROUNDS,
+        Poseidon2Cols<
+            AB::Var,
+            WIDTH,
+            SBOX_DEGREE,
+            SBOX_REGISTERS,
+            HALF_FULL_ROUNDS,
+            PARTIAL_ROUNDS,
+        >,
     >,
 ) {
     // SPONGE CONSTRAINTS

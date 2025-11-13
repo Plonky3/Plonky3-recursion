@@ -7,7 +7,7 @@ use core::ops::{Deref, Range};
 use p3_air::{Air, AirBuilder};
 use p3_matrix::Matrix;
 
-/// A submatrix of a matrix.  The matrix will contain a subset of the columns of `self.inner`.
+/// A submatrix of a matrix. The matrix will contain a subset of the columns of `self.inner`.
 pub struct SubMatrixRowSlices<M: Matrix<T>, T: Send + Sync + Clone> {
     inner: M,
     column_range: Range<usize>,
