@@ -51,6 +51,10 @@ pub struct OpenedValuesTargets<SC: StarkGenericConfig> {
     pub trace_local_targets: Vec<Target>,
     /// Trace values at point zeta * g (next row)
     pub trace_next_targets: Vec<Target>,
+    /// Optional preprocessed values at point zeta
+    pub preprocessed_local_targets: Option<Vec<Target>>,
+    /// Optional preprocessed values at point zeta * g (next row)
+    pub preprocessed_next_targets: Option<Vec<Target>>,
     /// Quotient chunk values at zeta
     pub quotient_chunks_targets: Vec<Vec<Target>>,
     /// Optional random polynomial values (ZK mode)
@@ -176,6 +180,15 @@ impl<SC: StarkGenericConfig> Recursive<SC::Challenge> for OpenedValuesTargets<SC
         let trace_next_len = input.trace_next.len();
         let trace_next_targets = circuit.alloc_public_inputs(trace_next_len, "trace next values");
 
+        let preprocessed_local_targets = input
+            .preprocessed_local
+            .as_ref()
+            .map(|prep| circuit.alloc_public_inputs(prep.len(), "local preprocessed values"));
+        let preprocessed_next_targets = input
+            .preprocessed_next
+            .as_ref()
+            .map(|prep| circuit.alloc_public_inputs(prep.len(), "local preprocessed values"));
+
         let quotient_chunks_len = input.quotient_chunks.len();
         let mut quotient_chunks_targets = Vec::with_capacity(quotient_chunks_len);
         for quotient_chunk in input.quotient_chunks.iter() {
@@ -193,6 +206,8 @@ impl<SC: StarkGenericConfig> Recursive<SC::Challenge> for OpenedValuesTargets<SC
         Self {
             trace_local_targets,
             trace_next_targets,
+            preprocessed_local_targets,
+            preprocessed_next_targets,
             quotient_chunks_targets,
             random_targets,
             _phantom: PhantomData,

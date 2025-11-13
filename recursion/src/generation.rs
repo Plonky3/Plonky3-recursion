@@ -14,6 +14,7 @@ use p3_uni_stark::{
     get_log_quotient_degree,
 };
 use thiserror::Error;
+use tracing::debug_span;
 
 #[derive(Debug, Error)]
 pub enum GenerationError {
@@ -75,6 +76,44 @@ pub trait PcsGeneration<SC: StarkGenericConfig, OpeningProof> {
     ) -> Result<usize, GenerationError>;
 }
 
+/// TODO: Replace this with the original method when available.
+#[allow(clippy::type_complexity)]
+fn process_preprocessed_trace<SC, A>(
+    air: &A,
+    pcs: &SC::Pcs,
+    trace_domain: <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain,
+    is_zk: usize,
+) -> Result<
+    (
+        usize,
+        Option<<SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment>,
+    ),
+    GenerationError,
+>
+where
+    SC: StarkGenericConfig,
+    A: for<'a> Air<VerifierConstraintFolder<'a, SC>>,
+{
+    // If verifier asked for preprocessed trace, then proof should have it
+    let preprocessed = air.preprocessed_trace();
+    let preprocessed_width = preprocessed.as_ref().map(|m| m.width).unwrap_or(0);
+
+    if preprocessed_width > 0 {
+        assert_eq!(is_zk, 0); // TODO: preprocessed columns not supported in zk mode
+        let height = preprocessed.as_ref().unwrap().values.len() / preprocessed_width;
+        assert_eq!(
+            height,
+            trace_domain.size(),
+            "Verifier's preprocessed trace height must be equal to trace domain size"
+        );
+        let (preprocessed_commit, _) = debug_span!("process preprocessed trace")
+            .in_scope(|| pcs.commit([(trace_domain, preprocessed.unwrap())]));
+        Ok((preprocessed_width, Some(preprocessed_commit)))
+    } else {
+        Ok((preprocessed_width, None))
+    }
+}
+
 // TODO: This could be used on the Plonky3 side as well.
 /// Generates the challenges used in the verification of a STARK proof.
 pub fn generate_challenges<SC: StarkGenericConfig, A>(
@@ -112,6 +151,9 @@ where
         .map(|domain| pcs.natural_domain_for_degree(domain.size() << (config.is_zk())))
         .collect::<Vec<_>>();
 
+    let (preprocessed_width, preprocessed_commit) =
+        process_preprocessed_trace(air, pcs, trace_domain, config.is_zk())?;
+
     let num_challenges = 3 // alpha, zeta and zeta_next
      + SC::Pcs::num_challenges(opening_proof, extra_params)?;
 
@@ -122,7 +164,11 @@ where
     challenger.observe(Val::<SC>::from_usize(*degree_bits));
     challenger.observe(Val::<SC>::from_usize(*degree_bits - config.is_zk()));
 
+    challenger.observe(Val::<SC>::from_usize(preprocessed_width));
     challenger.observe(commitments.trace.clone());
+    if preprocessed_width > 0 {
+        challenger.observe(preprocessed_commit.as_ref().unwrap().clone());
+    }
     challenger.observe_slice(public_values);
 
     // Get the first Fiat-Shamir challenge which will be used to combine all constraint polynomials into a single polynomial.

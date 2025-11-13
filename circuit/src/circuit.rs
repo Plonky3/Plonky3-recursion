@@ -136,7 +136,14 @@ impl<F: Field> Circuit<F> {
                         .iter()
                         .map(|&num_lanes| {
                             let table = PrimitiveOpType::try_from(i).unwrap();
-                            RowMajorMatrix::new(col.clone(), table.get_prep_width() * num_lanes)
+
+                            // Pad to a multiple of the width.
+                            let width = table.get_prep_width() * num_lanes;
+                            let to_pad = (width - (col.len() % width)) % width;
+                            let mut padded_col = col.clone();
+                            padded_col
+                                .extend((0..to_pad).map(|_| F::default()).collect::<Vec<_>>());
+                            RowMajorMatrix::new(padded_col, table.get_prep_width() * num_lanes)
                         })
                         .collect::<Vec<_>>()
                 } else if i == PrimitiveOpType::Mul as usize {
@@ -145,7 +152,15 @@ impl<F: Field> Circuit<F> {
                         .iter()
                         .map(|&num_lanes| {
                             let table = PrimitiveOpType::try_from(i).unwrap();
-                            RowMajorMatrix::new(col.clone(), table.get_prep_width() * num_lanes)
+
+                            // Pad to a multiple of the width.
+                            let width = table.get_prep_width() * num_lanes;
+                            let to_pad = (width - (col.len() % width)) % width;
+                            let mut padded_col = col.clone();
+                            padded_col
+                                .extend((0..to_pad).map(|_| F::default()).collect::<Vec<_>>());
+
+                            RowMajorMatrix::new(padded_col, table.get_prep_width() * num_lanes)
                         })
                         .collect::<Vec<_>>()
                 } else {

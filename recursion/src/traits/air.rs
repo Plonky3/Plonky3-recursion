@@ -56,7 +56,12 @@ pub trait RecursiveAir<F: Field> {
     ///
     /// # Returns
     /// Log₂ of the quotient degree
-    fn get_log_quotient_degree(&self, num_public_values: usize, is_zk: usize) -> usize;
+    fn get_log_quotient_degree(
+        &self,
+        preprocessed_width: usize,
+        num_public_values: usize,
+        is_zk: usize,
+    ) -> usize;
 }
 
 impl<F: Field, A> RecursiveAir<F> for A
@@ -91,7 +96,12 @@ where
         acc
     }
 
-    fn get_log_quotient_degree(&self, num_public_values: usize, is_zk: usize) -> usize {
-        get_log_quotient_degree(self, 0, num_public_values, is_zk)
+    fn get_log_quotient_degree(
+        &self,
+        preprocessed_width: usize,
+        num_public_values: usize,
+        is_zk: usize,
+    ) -> usize {
+        get_log_quotient_degree(self, preprocessed_width, num_public_values, is_zk)
     }
 }

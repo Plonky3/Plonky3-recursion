@@ -1,7 +1,6 @@
 use alloc::string::ToString;
 use alloc::vec::Vec;
 use alloc::{format, vec};
-use core::marker::PhantomData;
 
 use itertools::Itertools;
 use p3_circuit::CircuitBuilder;
@@ -66,6 +65,7 @@ pub fn verify_circuit<
     circuit: &mut CircuitBuilder<SC::Challenge>,
     proof_targets: &ProofTargets<SC, Comm, OpeningProof>,
     public_values: &[Target],
+    preprocessed_commit: &Option<Comm>,
     pcs_params: &PcsVerifierParams<SC, InputProof, OpeningProof, Comm>,
 ) -> Result<(), VerificationError>
 where
@@ -95,20 +95,27 @@ where
                 random_commit,
                 ..
             },
-        opened_values_targets:
-            OpenedValuesTargets {
-                trace_local_targets: opened_trace_local_targets,
-                trace_next_targets: opened_trace_next_targets,
-                quotient_chunks_targets: opened_quotient_chunks_targets,
-                random_targets: opened_random,
-                ..
-            },
+        opened_values_targets,
         opening_proof,
         degree_bits,
     } = proof_targets;
 
+    let OpenedValuesTargets {
+        trace_local_targets: opened_trace_local_targets,
+        trace_next_targets: opened_trace_next_targets,
+        preprocessed_local_targets: opt_opened_preprocessed_local_targets,
+        preprocessed_next_targets: opt_opened_preprocessed_next_targets,
+        quotient_chunks_targets: opened_quotient_chunks_targets,
+        random_targets: opened_random,
+        ..
+    } = opened_values_targets;
+
     let degree = 1 << degree_bits;
-    let log_quotient_degree = A::get_log_quotient_degree(air, public_values.len(), config.is_zk());
+    let preprocessed_width = opt_opened_preprocessed_local_targets
+        .as_ref()
+        .map_or(0, |p| p.len());
+    let log_quotient_degree =
+        A::get_log_quotient_degree(air, preprocessed_width, public_values.len(), config.is_zk());
     let quotient_degree = 1 << (log_quotient_degree + config.is_zk());
 
     let pcs = config.pcs();
@@ -130,13 +137,8 @@ where
         config,
         proof_targets,
         public_values,
-        &OpenedValuesTargets {
-            trace_local_targets: opened_trace_local_targets.clone(),
-            trace_next_targets: opened_trace_next_targets.clone(),
-            quotient_chunks_targets: opened_quotient_chunks_targets.clone(),
-            random_targets: opened_random.clone(),
-            _phantom: PhantomData,
-        },
+        preprocessed_width,
+        &opened_values_targets,
         circuit,
         pcs_params,
     );
@@ -151,6 +153,9 @@ where
         air,
         opened_trace_local_targets,
         opened_trace_next_targets,
+        opt_opened_preprocessed_local_targets,
+        opt_opened_preprocessed_next_targets,
+        preprocessed_width,
         opened_quotient_chunks_targets,
         opened_random,
         quotient_degree,
@@ -203,6 +208,23 @@ where
         ),
     ]);
 
+    // Add preprocessed commitment verification if present
+    if preprocessed_width > 0 {
+        coms_to_verify.push((
+            preprocessed_commit.clone().unwrap(),
+            vec![(
+                trace_domain,
+                vec![
+                    (zeta, opt_opened_preprocessed_local_targets.clone().unwrap()),
+                    (
+                        zeta_next,
+                        opt_opened_preprocessed_next_targets.clone().unwrap(),
+                    ),
+                ],
+            )],
+        ));
+    }
+
     // Verify polynomial openings using PCS
     pcs.verify_circuit(
         circuit,
@@ -232,8 +254,12 @@ where
     let columns_targets = ColumnsTargets {
         challenges: &[],
         public_values,
-        local_prep_values: &[],
-        next_prep_values: &[],
+        local_prep_values: opt_opened_preprocessed_local_targets
+            .as_ref()
+            .map_or(&[], |p| p),
+        next_prep_values: opt_opened_preprocessed_next_targets
+            .as_ref()
+            .map_or(&[], |p| p),
         local_values: opened_trace_local_targets,
         next_values: opened_trace_next_targets,
     };
@@ -266,6 +292,7 @@ fn get_circuit_challenges<
     config: &SC,
     proof_targets: &ProofTargets<SC, Comm, OpeningProof>,
     public_values: &[Target],
+    preprocessed_width: usize,
     opened_values: &OpenedValuesTargets<SC>,
     circuit: &mut CircuitBuilder<SC::Challenge>,
     pcs_params: &PcsVerifierParams<SC, InputProof, OpeningProof, Comm>,
@@ -280,7 +307,8 @@ where
         >,
     SC::Challenge: PrimeCharacteristicRing,
 {
-    let log_quotient_degree = A::get_log_quotient_degree(air, public_values.len(), config.is_zk());
+    let log_quotient_degree =
+        A::get_log_quotient_degree(air, preprocessed_width, public_values.len(), config.is_zk());
 
     let mut challenger = CircuitChallenger::<RATE>::new();
 
@@ -313,6 +341,9 @@ fn validate_proof_shape<A, SC: StarkGenericConfig>(
     air: &A,
     opened_trace_local: &[Target],
     opened_trace_next: &[Target],
+    opened_prep_local: &Option<Vec<Target>>,
+    opened_prep_next: &Option<Vec<Target>>,
+    preprocessed_width: usize,
     opened_quotient_chunks: &[Vec<Target>],
     opened_random: &Option<Vec<Target>>,
     quotient_degree: usize,
@@ -329,6 +360,16 @@ where
             air_width,
             opened_trace_local.len(),
             opened_trace_next.len()
+        )));
+    }
+
+    let preprocessed_local_len = opened_prep_local.as_ref().map_or(0, |v| v.len());
+    let preprocessed_next_len = opened_prep_next.as_ref().map_or(0, |v| v.len());
+    if preprocessed_width != preprocessed_local_len || preprocessed_width != preprocessed_next_len {
+        // Verifier expects preprocessed trace while proof does not have it, or vice versa
+        return Err(VerificationError::InvalidProofShape(format!(
+            "Expected preprocessed width {} but local has length {} and next has length {}",
+            preprocessed_width, preprocessed_local_len, preprocessed_next_len
         )));
     }
 

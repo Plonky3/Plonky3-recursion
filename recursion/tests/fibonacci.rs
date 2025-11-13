@@ -104,6 +104,7 @@ fn test_fibonacci_verifier() -> Result<(), VerificationError> {
         &mut circuit_builder,
         &verifier_inputs.proof_targets,
         &verifier_inputs.air_public_targets,
+        &None,
         &fri_verifier_params,
     )?;
 
