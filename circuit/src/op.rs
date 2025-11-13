@@ -2,6 +2,7 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::fmt::Debug;
 use core::hash::Hash;
+use strum_macros::EnumCount;
 
 use hashbrown::HashMap;
 use p3_field::Field;
@@ -33,7 +34,7 @@ use crate::types::{NonPrimitiveOpId, WitnessId};
 ///
 /// They can be user-defined and selected at runtime, have private data that does not appear
 /// in the central Witness bus, and are subject to their own optimization passes.
-#[derive(Debug)]
+#[derive(Debug, EnumCount)]
 pub enum Op<F> {
     /// Load a constant value into the witness table
     ///
@@ -71,6 +72,38 @@ pub enum Op<F> {
         /// For private data lookup and error reporting
         op_id: NonPrimitiveOpId,
     },
+}
+
+#[derive(EnumCount)]
+pub enum PrimitiveOpType {
+    Const = 0,
+    Public = 1,
+    Add = 2,
+    Mul = 3,
+}
+
+impl From<usize> for PrimitiveOpType {
+    fn from(value: usize) -> Self {
+        match value {
+            0 => PrimitiveOpType::Const,
+            1 => PrimitiveOpType::Public,
+            2 => PrimitiveOpType::Add,
+            3 => PrimitiveOpType::Mul,
+            _ => panic!("Invalid PrimitiveOpType value: {}", value),
+        }
+    }
+}
+
+impl PrimitiveOpType {
+    /// Get the number of columns in the preprocessed table for this operation
+    pub fn get_prep_width(&self) -> usize {
+        match self {
+            PrimitiveOpType::Const => 2,  // out, val
+            PrimitiveOpType::Public => 2, // out, public_pos
+            PrimitiveOpType::Add => 3,    // a, b, out
+            PrimitiveOpType::Mul => 3,    // a, b, out
+        }
+    }
 }
 
 // Custom Clone implementation for Op

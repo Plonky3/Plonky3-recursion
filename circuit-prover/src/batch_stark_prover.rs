@@ -446,7 +446,7 @@ mod tests {
         let diff = builder.sub(final_result, expected);
         builder.assert_zero(diff);
 
-        let circuit = builder.build().unwrap();
+        let (circuit, _) = builder.build().unwrap();
         let mut runner = circuit.runner();
 
         let x_val = BabyBear::from_u64(7);
@@ -474,7 +474,7 @@ mod tests {
         let res = builder.add(xy, z);
         let diff = builder.sub(res, expected);
         builder.assert_zero(diff);
-        let circuit = builder.build().unwrap();
+        let (circuit, _) = builder.build().unwrap();
         let mut runner = circuit.runner();
         let xv = Ext4::from_basis_coefficients_slice(&[
             BabyBear::from_u64(2),
@@ -528,7 +528,7 @@ mod tests {
         let diff = builder.sub(final_res, expected);
         builder.assert_zero(diff);
 
-        let circuit = builder.build().unwrap();
+        let (circuit, _) = builder.build().unwrap();
         let mut runner = circuit.runner();
 
         let a_val = KoalaBear::from_u64(42);
@@ -575,7 +575,7 @@ mod tests {
         let diff = builder.sub(xyz, expected);
         builder.assert_zero(diff);
 
-        let circuit = builder.build().unwrap();
+        let (circuit, _) = builder.build().unwrap();
         let mut runner = circuit.runner();
 
         let x_val = KBExtField::from_basis_coefficients_slice(&[
@@ -643,7 +643,7 @@ mod tests {
         let diff = builder.sub(res, expected);
         builder.assert_zero(diff);
 
-        let circuit = builder.build().unwrap();
+        let (circuit, _) = builder.build().unwrap();
         let mut runner = circuit.runner();
 
         let x_val =

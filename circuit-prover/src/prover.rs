@@ -375,7 +375,7 @@ mod tests {
         let diff = builder.sub(final_result, expected_result);
         builder.assert_zero(diff);
 
-        let circuit = builder.build()?;
+        let (circuit, _) = builder.build()?;
         let mut runner = circuit.runner();
 
         // Set public inputs: x = 7, expected = 7 + 10 - 3 + (-1) = 13
@@ -423,7 +423,7 @@ mod tests {
         let diff = builder.sub(sub_result, expected_result);
         builder.assert_zero(diff);
 
-        let circuit = builder.build()?;
+        let (circuit, _) = builder.build()?;
         let mut runner = circuit.runner();
 
         // Set public inputs with all non-zero coefficients
@@ -498,7 +498,7 @@ mod tests {
         let diff = builder.sub(final_result, expected_result);
         builder.assert_zero(diff);
 
-        let circuit = builder.build()?;
+        let (circuit, _) = builder.build()?;
         let mut runner = circuit.runner();
 
         // Set public inputs: a=42, b=13, expected = 42*13 + 100 - (-1) = 546 + 100 + 1 = 647
@@ -547,7 +547,7 @@ mod tests {
         let diff = builder.sub(xyz, expected_result);
         builder.assert_zero(diff);
 
-        let circuit = builder.build()?;
+        let (circuit, _) = builder.build()?;
         let mut runner = circuit.runner();
 
         // Set public inputs with diverse coefficients
@@ -623,7 +623,7 @@ mod tests {
         let diff = builder.sub(res, expected_result);
         builder.assert_zero(diff);
 
-        let circuit = builder.build()?;
+        let (circuit, _) = builder.build()?;
         let mut runner = circuit.runner();
 
         let x_val = ExtField::from_basis_coefficients_slice(&[

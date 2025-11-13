@@ -1,4 +1,5 @@
 use alloc::vec::Vec;
+use p3_field::Field;
 
 use crate::CircuitError;
 use crate::op::Op;
@@ -30,7 +31,7 @@ pub struct AddTraceBuilder<'a, F> {
     witness: &'a [Option<F>],
 }
 
-impl<'a, F: Clone> AddTraceBuilder<'a, F> {
+impl<'a, F: Field + Clone> AddTraceBuilder<'a, F> {
     /// Creates a new addition trace builder.
     pub fn new(primitive_ops: &'a [Op<F>], witness: &'a [Option<F>]) -> Self {
         Self {

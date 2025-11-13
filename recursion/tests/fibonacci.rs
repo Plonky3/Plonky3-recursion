@@ -108,7 +108,7 @@ fn test_fibonacci_verifier() -> Result<(), VerificationError> {
     )?;
 
     // Build the circuit.
-    let circuit = circuit_builder.build()?;
+    let (circuit, _) = circuit_builder.build()?;
 
     let mut runner = circuit.runner();
 

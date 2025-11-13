@@ -280,7 +280,7 @@ mod tests {
         let c5 = builder.add_const(BabyBear::from_u64(5));
         let _result = builder.add(x, c5);
 
-        let circuit = builder.build().unwrap();
+        let (circuit, _) = builder.build().unwrap();
         let mut runner = circuit.runner();
 
         // Set public input: x = 3
@@ -317,7 +317,7 @@ mod tests {
         let sub_result = builder.sub(mul_result, c111);
         builder.assert_zero(sub_result);
 
-        let circuit = builder.build().unwrap();
+        let (circuit, _) = builder.build().unwrap();
         println!("=== CIRCUIT PRIMITIVE OPERATIONS ===");
         for (i, prim) in circuit.primitive_ops.iter().enumerate() {
             println!("{i}: {prim:?}");
@@ -426,7 +426,7 @@ mod tests {
         let yz = builder.mul(y, z);
         let _result = builder.add(x, yz);
 
-        let circuit = builder.build().unwrap();
+        let (circuit, _) = builder.build().unwrap();
         let mut runner = circuit.runner();
 
         // Set public inputs to genuine extension field values with ALL non-zero coefficients
