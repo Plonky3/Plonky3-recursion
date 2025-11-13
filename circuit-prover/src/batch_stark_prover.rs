@@ -140,6 +140,9 @@ where
 /// Caller must ensure that both `Traces<FromEF>` and `Traces<ToEF>` share an
 /// identical in-memory representation.
 pub(crate) unsafe fn transmute_traces<FromEF, ToEF>(t: &Traces<FromEF>) -> &Traces<ToEF> {
+    debug_assert_eq!(core::mem::size_of::<Traces<FromEF>>(), core::mem::size_of::<Traces<ToEF>>());
+    debug_assert_eq!(core::mem::align_of::<Traces<FromEF>>(), core::mem::align_of::<Traces<ToEF>>());
+
     unsafe { &*(t as *const _ as *const Traces<ToEF>) }
 }
 
