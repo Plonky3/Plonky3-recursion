@@ -78,8 +78,10 @@ impl<
     pub const fn new(
         constants: RoundConstants<F, WIDTH, HALF_FULL_ROUNDS, PARTIAL_ROUNDS>,
     ) -> Self {
-        assert!(CAPACITY_EXT + RATE_EXT == WIDTH_EXT);
-        assert!(WIDTH_EXT * D == WIDTH);
+        const {
+            assert!(CAPACITY_EXT + RATE_EXT == WIDTH_EXT);
+            assert!(WIDTH_EXT * D == WIDTH);
+        }
 
         Self {
             p3_poseidon2: Poseidon2Air::new(constants),
@@ -118,15 +120,11 @@ impl<
 
             let row = circuit_trace.row_mut(i);
 
-            row[0] = if *is_sponge { F::ONE } else { F::ZERO };
-            row[1] = if *reset { F::ONE } else { F::ZERO };
-            row[2] = if *is_sponge && *reset {
-                F::ONE
-            } else {
-                F::ZERO
-            };
+            row[0] = F::from_bool(*is_sponge);
+            row[1] = F::from_bool(*reset);
+            row[2] = F::from_bool(*is_sponge && *reset);
             for j in 0..RATE_EXT {
-                row[3 + j] = if absorb_flags[j] { F::ONE } else { F::ZERO };
+                row[3 + j] = F::from_bool(absorb_flags[j]);
             }
             for j in 0..RATE_EXT {
                 row[3 + RATE_EXT + j] = F::from_u32(input_indices[j]);
@@ -170,7 +168,6 @@ impl<
             state = perm.permute(state);
         }
 
-        // TODO: Avoid copying whole trace later.
         let p2_trace = generate_trace_rows::<
             F,
             LinearLayers,
@@ -191,26 +188,19 @@ impl<
             PARTIAL_ROUNDS,
         >();
 
+        debug_assert_eq!(ncols, num_circuit_cols + p2_ncols);
+
         let mut vec = vec![F::ZERO; n * ncols];
 
-        for i in 0..n {
-            let row = &mut vec[(i * ncols)..((i + 1) * ncols)];
-            let left_part = p2_trace
-                .row(i)
-                .expect("Missing row {i}?")
-                .into_iter()
-                .collect::<Vec<_>>();
-            let right_part = circuit_trace
-                .row(i)
-                .expect("Missing row {i}?")
-                .into_iter()
-                .collect::<Vec<_>>();
-            row[..p2_ncols].copy_from_slice(&left_part);
-            row[p2_ncols..].copy_from_slice(&right_part);
-        }
+        let circuit_trace_view = circuit_trace.as_view();
 
-        unsafe {
-            vec.set_len(n * ncols);
+        for ((row, left_part), right_part) in vec
+            .chunks_exact_mut(ncols)
+            .zip(p2_trace.row_slices())
+            .zip(circuit_trace_view.row_slices())
+        {
+            row[..p2_ncols].copy_from_slice(left_part);
+            row[p2_ncols..].copy_from_slice(right_part);
         }
 
         RowMajorMatrix::new(vec, ncols)
@@ -253,7 +243,7 @@ impl<
     }
 }
 
-pub(crate) fn eval<
+fn eval<
     AB: AirBuilder,
     LinearLayers: GenericPoseidon2LinearLayers<WIDTH>,
     const D: usize,
@@ -471,54 +461,26 @@ impl<
 
 #[cfg(test)]
 mod test {
-
-    use alloc::vec;
-
-    use p3_baby_bear::{
-        BabyBear, GenericPoseidon2LinearLayersBabyBear, Poseidon2ExternalLayerBabyBear,
-        Poseidon2InternalLayerBabyBear,
-    };
+    use p3_baby_bear::{BabyBear, Poseidon2BabyBear};
     use p3_challenger::{HashChallenger, SerializingChallenger32};
-    use p3_circuit::tables::Poseidon2CircuitRow;
     use p3_commit::ExtensionMmcs;
     use p3_field::extension::BinomialExtensionField;
     use p3_fri::{TwoAdicFriPcs, create_benchmark_fri_params};
     use p3_keccak::{Keccak256Hash, KeccakF};
     use p3_merkle_tree::MerkleTreeHidingMmcs;
-    use p3_poseidon2::{ExternalLayerConstants, Poseidon2};
+    use p3_poseidon2::ExternalLayerConstants;
     use p3_poseidon2_air::RoundConstants;
     use p3_symmetric::{CompressionFunctionFromHasher, PaddingFreeSponge, SerializingHasher};
     use p3_uni_stark::{StarkConfig, prove, verify};
     use rand::rngs::SmallRng;
     use rand::{Rng, SeedableRng};
-    use tracing_forest::ForestLayer;
-    use tracing_forest::util::LevelFilter;
-    use tracing_subscriber::layer::SubscriberExt;
-    use tracing_subscriber::util::SubscriberInitExt;
-    use tracing_subscriber::{EnvFilter, Registry};
 
-    use crate::air::Poseidon2CircuitAir;
+    use super::*;
+    use crate::Poseidon2CircuitAirBabyBearD4Width16;
 
     const D: usize = 4;
     const WIDTH: usize = 16;
-    const WIDTH_EXT: usize = 4;
     const RATE_EXT: usize = 2;
-    const CAPACITY_EXT: usize = 2;
-    const SBOX_DEGREE: u64 = 7;
-    const SBOX_REGISTERS: usize = 1;
-    const HALF_FULL_ROUNDS: usize = 4;
-    const PARTIAL_ROUNDS: usize = 20;
-
-    fn init_logger() {
-        let env_filter = EnvFilter::builder()
-            .with_default_directive(LevelFilter::INFO.into())
-            .from_env_lossy();
-
-        Registry::default()
-            .with(env_filter)
-            .with(ForestLayer::default())
-            .init();
-    }
 
     #[test]
     fn prove_poseidon2_sponge() -> Result<
@@ -530,7 +492,6 @@ mod test {
             >,
         >,
     > {
-        init_logger();
         type Val = BabyBear;
         type Challenge = BinomialExtensionField<Val, 4>;
 
@@ -577,13 +538,7 @@ mod test {
             ending_full_constants,
         );
 
-        let perm = Poseidon2::<
-            Val,
-            Poseidon2ExternalLayerBabyBear<WIDTH>,
-            Poseidon2InternalLayerBabyBear<WIDTH>,
-            WIDTH,
-            SBOX_DEGREE,
-        >::new(
+        let perm = Poseidon2BabyBear::<WIDTH>::new(
             ExternalLayerConstants::new(
                 beginning_full_constants.to_vec(),
                 ending_full_constants.to_vec(),
@@ -591,19 +546,7 @@ mod test {
             partial_constants.to_vec(),
         );
 
-        let air: Poseidon2CircuitAir<
-            Val,
-            GenericPoseidon2LinearLayersBabyBear,
-            D,
-            WIDTH,
-            WIDTH_EXT,
-            RATE_EXT,
-            CAPACITY_EXT,
-            SBOX_DEGREE,
-            SBOX_REGISTERS,
-            HALF_FULL_ROUNDS,
-            PARTIAL_ROUNDS,
-        > = Poseidon2CircuitAir::new(constants.clone());
+        let air = Poseidon2CircuitAirBabyBearD4Width16::new(constants.clone());
 
         // Generate random inputs.
         let mut rng = SmallRng::seed_from_u64(1);

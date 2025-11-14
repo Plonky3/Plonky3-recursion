@@ -4,7 +4,7 @@
 use alloc::vec::Vec;
 use core::ops::{Deref, Range};
 
-use p3_air::{Air, AirBuilder};
+use p3_air::{AirBuilder, BaseAir};
 use p3_matrix::Matrix;
 
 /// A submatrix of a matrix. The matrix will contain a subset of the columns of `self.inner`.
@@ -59,13 +59,13 @@ impl<M: Matrix<T>, T: Send + Sync + Clone> Matrix<T> for SubMatrixRowSlices<M, T
 /// A builder used to eval a sub-air.  This will handle enforcing constraints for a subset of a
 /// trace matrix.  E.g. if a particular air needs to be enforced for a subset of the columns of
 /// the trace, then the [`SubAirBuilder`] can be used.
-pub struct SubAirBuilder<'a, AB: AirBuilder, SubAir: Air<AB>, T> {
+pub struct SubAirBuilder<'a, AB: AirBuilder, SubAir: BaseAir<AB::F>, T> {
     inner: &'a mut AB,
     column_range: Range<usize>,
     _phantom: core::marker::PhantomData<(SubAir, T)>,
 }
 
-impl<'a, AB: AirBuilder, SubAir: Air<AB>, T> SubAirBuilder<'a, AB, SubAir, T> {
+impl<'a, AB: AirBuilder, SubAir: BaseAir<AB::F>, T> SubAirBuilder<'a, AB, SubAir, T> {
     /// Creates a new [`SubAirBuilder`].
     #[must_use]
     pub fn new(inner: &'a mut AB, column_range: Range<usize>) -> Self {
@@ -78,7 +78,7 @@ impl<'a, AB: AirBuilder, SubAir: Air<AB>, T> SubAirBuilder<'a, AB, SubAir, T> {
 }
 
 /// Implement `AirBuilder` for `SubAirBuilder`.
-impl<AB: AirBuilder, SubAir: Air<AB>, F> AirBuilder for SubAirBuilder<'_, AB, SubAir, F> {
+impl<AB: AirBuilder, SubAir: BaseAir<AB::F>, F> AirBuilder for SubAirBuilder<'_, AB, SubAir, F> {
     type F = AB::F;
     type Expr = AB::Expr;
     type Var = AB::Var;
