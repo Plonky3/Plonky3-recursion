@@ -118,15 +118,11 @@ impl<
 
             let row = circuit_trace.row_mut(i);
 
-            row[0] = if *is_sponge { F::ONE } else { F::ZERO };
-            row[1] = if *reset { F::ONE } else { F::ZERO };
-            row[2] = if *is_sponge && *reset {
-                F::ONE
-            } else {
-                F::ZERO
-            };
+            row[0] = F::from_bool(*is_sponge);
+            row[1] = F::from_bool(*reset);
+            row[2] = F::from_bool(*is_sponge && *reset);
             for j in 0..RATE_EXT {
-                row[3 + j] = if absorb_flags[j] { F::ONE } else { F::ZERO };
+                row[3 + j] = F::from_bool(absorb_flags[j]);
             }
             for j in 0..RATE_EXT {
                 row[3 + RATE_EXT + j] = F::from_u32(input_indices[j]);
