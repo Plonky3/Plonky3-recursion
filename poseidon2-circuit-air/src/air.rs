@@ -243,7 +243,7 @@ impl<
     }
 }
 
-pub(crate) fn eval<
+fn eval<
     AB: AirBuilder,
     LinearLayers: GenericPoseidon2LinearLayers<WIDTH>,
     const D: usize,
