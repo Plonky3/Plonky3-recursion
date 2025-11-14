@@ -78,8 +78,10 @@ impl<
     pub const fn new(
         constants: RoundConstants<F, WIDTH, HALF_FULL_ROUNDS, PARTIAL_ROUNDS>,
     ) -> Self {
-        assert!(CAPACITY_EXT + RATE_EXT == WIDTH_EXT);
-        assert!(WIDTH_EXT * D == WIDTH);
+        const {
+            assert!(CAPACITY_EXT + RATE_EXT == WIDTH_EXT);
+            assert!(WIDTH_EXT * D == WIDTH);
+        }
 
         Self {
             p3_poseidon2: Poseidon2Air::new(constants),
@@ -185,6 +187,8 @@ impl<
             HALF_FULL_ROUNDS,
             PARTIAL_ROUNDS,
         >();
+
+        debug_assert_eq!(ncols, num_circuit_cols + p2_ncols);
 
         let mut vec = vec![F::ZERO; n * ncols];
 
