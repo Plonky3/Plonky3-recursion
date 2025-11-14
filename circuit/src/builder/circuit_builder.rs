@@ -135,7 +135,7 @@ where
     /// Allocates multiple witness hints without saying how they should be filled
     /// TODO: Remove this function
     #[must_use]
-    pub fn alloc_witness_hints_no_filler(
+    pub fn alloc_witness_hints_default_filler(
         &mut self,
         count: usize,
         label: &'static str,
