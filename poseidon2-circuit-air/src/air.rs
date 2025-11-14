@@ -461,33 +461,21 @@ impl<
 
 #[cfg(test)]
 mod test {
-
-    use alloc::vec;
-
-    use p3_baby_bear::{
-        BabyBear, GenericPoseidon2LinearLayersBabyBear, Poseidon2ExternalLayerBabyBear,
-        Poseidon2InternalLayerBabyBear,
-    };
+    use p3_baby_bear::{BabyBear, GenericPoseidon2LinearLayersBabyBear, Poseidon2BabyBear};
     use p3_challenger::{HashChallenger, SerializingChallenger32};
-    use p3_circuit::tables::Poseidon2CircuitRow;
     use p3_commit::ExtensionMmcs;
     use p3_field::extension::BinomialExtensionField;
     use p3_fri::{TwoAdicFriPcs, create_benchmark_fri_params};
     use p3_keccak::{Keccak256Hash, KeccakF};
     use p3_merkle_tree::MerkleTreeHidingMmcs;
-    use p3_poseidon2::{ExternalLayerConstants, Poseidon2};
+    use p3_poseidon2::ExternalLayerConstants;
     use p3_poseidon2_air::RoundConstants;
     use p3_symmetric::{CompressionFunctionFromHasher, PaddingFreeSponge, SerializingHasher};
     use p3_uni_stark::{StarkConfig, prove, verify};
     use rand::rngs::SmallRng;
     use rand::{Rng, SeedableRng};
-    use tracing_forest::ForestLayer;
-    use tracing_forest::util::LevelFilter;
-    use tracing_subscriber::layer::SubscriberExt;
-    use tracing_subscriber::util::SubscriberInitExt;
-    use tracing_subscriber::{EnvFilter, Registry};
 
-    use crate::air::Poseidon2CircuitAir;
+    use super::*;
 
     const D: usize = 4;
     const WIDTH: usize = 16;
@@ -499,17 +487,6 @@ mod test {
     const HALF_FULL_ROUNDS: usize = 4;
     const PARTIAL_ROUNDS: usize = 20;
 
-    fn init_logger() {
-        let env_filter = EnvFilter::builder()
-            .with_default_directive(LevelFilter::INFO.into())
-            .from_env_lossy();
-
-        Registry::default()
-            .with(env_filter)
-            .with(ForestLayer::default())
-            .init();
-    }
-
     #[test]
     fn prove_poseidon2_sponge() -> Result<
         (),
@@ -520,7 +497,6 @@ mod test {
             >,
         >,
     > {
-        init_logger();
         type Val = BabyBear;
         type Challenge = BinomialExtensionField<Val, 4>;
 
@@ -567,13 +543,7 @@ mod test {
             ending_full_constants,
         );
 
-        let perm = Poseidon2::<
-            Val,
-            Poseidon2ExternalLayerBabyBear<WIDTH>,
-            Poseidon2InternalLayerBabyBear<WIDTH>,
-            WIDTH,
-            SBOX_DEGREE,
-        >::new(
+        let perm = Poseidon2BabyBear::<WIDTH>::new(
             ExternalLayerConstants::new(
                 beginning_full_constants.to_vec(),
                 ending_full_constants.to_vec(),
