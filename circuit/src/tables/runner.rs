@@ -90,7 +90,7 @@ impl<F: CircuitField> CircuitRunner<F> {
                         op: op_ty.clone(),
                         operation_index: op_id,
                         expected: "no private data".to_string(),
-                        got: alloc::format!("{private_data:?}"),
+                        got: format!("{private_data:?}"),
                     });
                 }
             }
@@ -283,19 +283,19 @@ impl<F: CircuitField> CircuitRunner<F> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     extern crate std;
-    use alloc::vec;
-    use alloc::vec::Vec;
     use std::println;
 
     use p3_baby_bear::BabyBear;
     use p3_field::extension::BinomialExtensionField;
     use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
 
+    use crate::ExprId;
     use crate::builder::CircuitBuilder;
     use crate::op::WitnessHintFiller;
     use crate::types::WitnessId;
-    use crate::{CircuitError, ExprId};
 
     #[test]
     fn test_table_generation_basic() {

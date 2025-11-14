@@ -12,6 +12,8 @@
 //!     .build();
 //! ```
 
+use core::marker::PhantomData;
+
 use p3_baby_bear::{BabyBear, Poseidon2BabyBear, default_babybear_poseidon2_16};
 use p3_challenger::DuplexChallenger;
 use p3_commit::ExtensionMmcs;
@@ -98,7 +100,7 @@ pub struct ConfigBuilder<
 > {
     perm_hash: PermHash,
     perm_compress: PermCompress,
-    _phantom: core::marker::PhantomData<F>,
+    _phantom: PhantomData<F>,
 }
 
 impl<
@@ -132,7 +134,7 @@ where
         Self {
             perm_hash,
             perm_compress,
-            _phantom: core::marker::PhantomData,
+            _phantom: PhantomData,
         }
     }
 

@@ -493,16 +493,12 @@ impl<F: Field> MmcsVerifyAir<F> {
 
 #[cfg(test)]
 mod test {
-
-    use alloc::vec;
-    use alloc::vec::Vec;
     use core::array;
 
     use p3_baby_bear::BabyBear;
     use p3_challenger::{HashChallenger, SerializingChallenger32};
     use p3_circuit::WitnessId;
-    use p3_circuit::ops::MmcsVerifyConfig;
-    use p3_circuit::tables::{MmcsPrivateData, MmcsTrace};
+    use p3_circuit::tables::MmcsPrivateData;
     use p3_commit::ExtensionMmcs;
     use p3_field::extension::BinomialExtensionField;
     use p3_fri::{TwoAdicFriPcs, create_benchmark_fri_params};
@@ -516,7 +512,7 @@ mod test {
     use rand::rngs::SmallRng;
     use rand::{Rng, SeedableRng};
 
-    use crate::air::MmcsVerifyAir;
+    use super::*;
 
     #[derive(Clone)]
     struct MockCompression {}

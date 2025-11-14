@@ -9,6 +9,10 @@ homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+# Display math equations properly in documentation
+[package.metadata.docs.rs]
+rustdoc-args = ["--html-in-header", ".cargo/katex-header.html"]
+
 [dependencies]
 itertools.workspace = true
 p3-air.workspace = true

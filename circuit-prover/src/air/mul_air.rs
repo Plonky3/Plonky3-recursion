@@ -1,41 +1,90 @@
-//! [`MulAir`] deals with multiplication and division. In the case of division, `a / b = c` is written in the table as `b * c = a`.
-//! The chip handles both base field and extension field operations, as it is parametrized by the extension degree `D`.
-//! The runtime parameter `lanes` also controls the number of operations carried out in a row.
-//! The `w_binomial` parameter is used for binomial extensions (i.e. x^D = W) and is `None` for base field or non-binomial cases.
+//! [`MulAir`] defines the AIR for proving multiplication and division over both base and extension fields.
 //!
-//! /!\ Note that only base field and binomial extensions are currently supported.
+//! Conceptually, each row of the trace encodes one or more multiplication constraints of the form
+//! $$
+//!     lhs * rhs = result
+//! $$
 //!
-//! # Columns
+//! When the circuit wants to prove a division, it is expressed as a multiplication by rewriting
+//! $$
+//!     a / b = c
+//! $$
 //!
-//! The AIR has `3 * D + 3` columns for each operation:
+//! as
+//! $$
+//!     b * c = a
+//! $$
 //!
-//! - `D` columns for the `left` operand value,
-//! - 1 column for the `left` operand witness index,
-//! - `D` columns for the `right` operand value,
-//! - 1 column for the `right` operand witness index,
-//! - `D` columns for the `output` value,
-//! - 1 column for the `output` witness index.
+//! so that division is handled uniformly as a multiplication gate in the AIR.
+//!
+//! The AIR is generic over an extension degree `D`. Each operand and result is treated as
+//! an element of an extension field of degree `D` over the base field. Internally, this is
+//! represented as `D` base-field coordinates (basis coefficients).
+//!
+//! The runtime parameter `lanes` controls how many independent multiplications are packed
+//! side-by-side in a single row of the trace.
+//!
+//! # Column layout
+//!
+//! For each logical operation (lane) we allocate `3 * D + 3` base-field columns. These are
+//! grouped as:
+//!
+//! - `D` columns for the left operand (lhs) basis coefficients,
+//! - `1` column for `index_left`: the witness-bus index of the lhs operand,
+//! - `D` columns for the right operand (rhs) basis coefficients,
+//! - `1` column for `index_right`: the witness-bus index of the rhs operand,
+//! - `D` columns for the result operand basis coefficients,
+//! - `1` column for `index_output`: the witness-bus index of the result.
+//!
+//! In other words, for a single lane the layout is:
+//!
+//! ```text
+//!     [lhs[0..D), lhs_index, rhs[0..D), rhs_index, result[0..D), result_index]
+//! ```
+//!
+//! A single row can pack several of these lanes side-by-side, so the full row layout is
+//! this pattern repeated `lanes` times.
 //!
 //! # Constraints
 //!
-//! In the base field case (`D == 1`):
-//! - for each triple `(left, right, output)`: `left * right - output`.
+//! ## Base Field (D=1)
 //!
-//! In the binomial extension case (`D > 1`):
-//! - for each triple `(left, right, output)`:
-//!     - perform schoolbook multiplication of the polynomials represented by `left` and `right`,
-//!     - reduce modulo `x^D - W`,
-//!     - ensure the result equals `output`.
+//! Let `left`, `right`, and `output` be the single base-field coordinates. The AIR
+//! enforces the constraint:
 //!
-//! # Global Interactions
+//! $$
+//! left \cdot right - output = 0.
+//! $$
 //!
-//! There are three interactions per operation with the witness bus:
-//! - send `(index_left, left)`
+//! ## Binomial Extension (D > 1)
+//!
+//! This AIR currently supports binomial extensions using a polynomial basis $\{1, x, \dots, x^{D-1}\}$
+//! where the field is defined by $x^D = W$ for some $W \in F$.
+//!
+//! - $L(x) = \sum_{i=0}^{D-1} left[i] x^i$
+//! - $R(x) = \sum_{i=0}^{D-1} right[i] x^i$
+//! - $O(x) = \sum_{i=0}^{D-1} output[i] x^i$
+//!
+//! The AIR enforces the polynomial identity:
+//!
+//! $$
+//! L(x) \cdot R(x) \equiv O(x) \pmod{x^D - W}
+//! $$
+//!
+//! # Global interactions
+//!
+//! Each operation (lane) has three interactions with the global witness bus:
+//!
+//! - send `(index_left,  left)`
 //! - send `(index_right, right)`
-//! - send `(index_output, output)`
+//! - send `(index_output, result)`
+//!
+//! The AIR defined here focuses on the algebraic relation between the operands. The
+//! correctness of the indices with respect to the global witness bus is enforced by the
+//! bus interaction logic elsewhere in the system.
 
-#![allow(clippy::needless_range_loop)]
-use alloc::vec::Vec;
+use alloc::vec;
+use core::marker::PhantomData;
 
 use p3_air::{Air, AirBuilder, BaseAir};
 use p3_circuit::tables::MulTrace;
@@ -45,14 +94,15 @@ use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
 
 /// AIR for proving multiplication operations: lhs * rhs = result.
+///
 /// Parameterised over extension degree `D` and a runtime lane count controlling how many
 /// multiplications are packed side-by-side in each row.
 ///
 /// Column layout (main trace):
-///   For D == 1 (base field):
+///   - For D == 1 (base field):
 ///     [lhs_value, lhs_index, rhs_value, rhs_index, result_value, result_index]  (width = 6)
 ///
-///   For D > 1 (extension, using a basis of size D):
+///   - For D > 1 (extension, using a basis of size D):
 ///     [lhs[0..D-1], lhs_index, rhs[0..D-1], rhs_index, result[0..D-1], result_index] (width = 3*D + 3)
 ///
 /// If `w_binomial` is `Some(W)`, we assume a polynomial basis {1, x, ..., x^(D-1)}
@@ -60,98 +110,190 @@ use p3_matrix::dense::RowMajorMatrix;
 /// schoolbook convolution with the reduction x^k = W * x^(k-D) for k >= D.
 #[derive(Debug, Clone)]
 pub struct MulAir<F, const D: usize = 1> {
-    /// Number of logical multiplication operations in the trace.
+    /// Total number of logical multiplication operations (gates) in the trace.
     pub num_ops: usize,
-    /// Number of lanes (operations) packed per row.
+    /// Number of independent multiplication gates packed per trace row.
+    ///
+    /// The last row is padded if the number of operations is not a multiple of this value.
     pub lanes: usize,
-    /// For binomial extensions x^D = W over a polynomial basis; None for non-binomial / base cases.
+    /// For binomial extensions $x^D = W$ over a polynomial basis.
+    ///
+    /// This should be:
+    /// - `Some(W)` if `D > 1`,
+    /// - `None` if `D == 1`.
     pub w_binomial: Option<F>,
-    _phantom: core::marker::PhantomData<F>,
+    /// Marker tying this AIR to its base field.
+    _phantom: PhantomData<F>,
 }
 
 impl<F: Field + PrimeCharacteristicRing, const D: usize> MulAir<F, D> {
-    /// Constructor for base-field or non-binomial cases (`D == 1`).
+    /// Construct a new `MulAir` for base-field operations (D=1).
+    ///
+    /// Panics if `lanes == 0` or `D > 1`.
     pub const fn new(num_ops: usize, lanes: usize) -> Self {
         assert!(lanes > 0, "lane count must be non-zero");
+        assert!(D == 1, "Use new_binomial for D > 1");
         Self {
             num_ops,
             lanes,
             w_binomial: None,
-            _phantom: core::marker::PhantomData,
+            _phantom: PhantomData,
         }
     }
 
-    /// Constructor for binomial polynomial-basis extensions x^D = W.
-    /// Works for any D >= 2 (for D==1 this is meaningless).
-    pub fn new_binomial(num_ops: usize, lanes: usize, w: F) -> Self {
+    /// Construct a new `MulAir` for binomial extension-field operations ($x^D = W$, D > 1).
+    ///
+    /// Panics if `lanes == 0` or if `D < 2`.
+    pub const fn new_binomial(num_ops: usize, lanes: usize, w: F) -> Self {
         assert!(lanes > 0, "lane count must be non-zero");
         assert!(D >= 2, "Binomial constructor requires D >= 2");
         Self {
             num_ops,
             lanes,
             w_binomial: Some(w),
-            _phantom: core::marker::PhantomData,
+            _phantom: PhantomData,
         }
     }
 
-    /// Number of base-field columns contributed by a single multiplication lane.
+    /// Number of base-field columns occupied by a single lane.
+    ///
+    /// Each lane stores:
+    /// - `3 * D` coordinates (for `lhs`, `rhs`, and `result`),
+    /// - `3` indices (one for each operand).
+    ///
+    /// The total width of a single row is `3 * D + 3`
     pub const fn lane_width() -> usize {
         3 * D + 3
     }
 
-    pub fn total_width(&self) -> usize {
+    /// Total number of columns in the main trace for this AIR instance.
+    pub const fn total_width(&self) -> usize {
         self.lanes * Self::lane_width()
     }
 
-    /// Convert `MulTrace` to a row-major matrix, packing `lanes` multiplications per row.
-    /// Layout per lane mirrors the addition table: `[lhs[D], lhs_idx, rhs[D], rhs_idx, result[D], result_idx]`.
+    /// Convert a `MulTrace` into a `RowMajorMatrix` suitable for the STARK prover.
+    ///
+    /// This function is responsible for:
+    ///
+    /// 1. Taking the logical operations from the `MulTrace`:
+    ///    - `lhs_values`, `rhs_values`, `result_values` (extension elements),
+    ///    - `lhs_index`, `rhs_index`, `result_index` (witness-bus indices),
+    /// 2. Decomposing each extension element into its `D` basis coordinates,
+    /// 3. Packing `lanes` operations side-by-side in each row,
+    /// 4. Padding the trace to have a power-of-two number of rows for FFT-friendly
+    ///    execution by the STARK prover.
+    ///
+    /// The resulting matrix has:
+    ///
+    /// - width = lanes * `LANE_WIDTH`,
+    /// - height equal to the number of rows after packing and padding.
+    ///
+    /// The layout within a row is:
+    ///
+    /// ```text
+    ///     [lhs[0..D), lhs_index, rhs[0..D), rhs_index, result[0..D), result_index] repeated `lanes` times.
+    /// ```
     pub fn trace_to_matrix<ExtF: BasedVectorSpace<F>>(
         trace: &MulTrace<ExtF>,
         lanes: usize,
     ) -> RowMajorMatrix<F> {
+        // Lanes must be strictly positive.
+        //
+        // Zero lanes would make it impossible to construct a row.
         assert!(lanes > 0, "lane count must be non-zero");
 
+        // Per-lane width in base-field columns.
         let lane_width = Self::lane_width();
+        // Total width of each row once all lanes are packed.
         let width = lane_width * lanes;
+        // Number of logical operations we need to pack into the trace.
         let op_count = trace.lhs_values.len();
+        // Number of rows needed to hold `op_count` operations.
         let row_count = op_count.div_ceil(lanes);
 
-        let mut values = Vec::with_capacity(width * row_count.max(1));
+        // Pre-allocate the entire trace as a flat vector in row-major order.
+        //
+        // We start with `row_count` rows, each of width `width`, and fill it with zeros.
+        // This automatically provides a clean padding for any unused lanes in the final row.
+        let mut values = F::zero_vec(width * row_count.max(1));
 
-        for row in 0..row_count {
-            for lane in 0..lanes {
-                let op_idx = row * lanes + lane;
-                if op_idx < op_count {
-                    // LHS limbs + index
-                    let lhs_coeffs = trace.lhs_values[op_idx].as_basis_coefficients_slice();
-                    assert_eq!(lhs_coeffs.len(), D, "Extension degree mismatch for lhs");
-                    values.extend_from_slice(lhs_coeffs);
-                    values.push(F::from_u32(trace.lhs_index[op_idx].0));
+        // Iterate over all operations in lockstep across the trace arrays.
+        for (op_idx, (((((lhs_val, lhs_idx), rhs_val), rhs_idx), res_val), res_idx)) in trace
+            .lhs_values
+            .iter()
+            .zip(trace.lhs_index.iter())
+            .zip(trace.rhs_values.iter())
+            .zip(trace.rhs_index.iter())
+            .zip(trace.result_values.iter())
+            .zip(trace.result_index.iter())
+            .enumerate()
+        {
+            // Determine the target row index.
+            let row = op_idx / lanes;
+            // Determine which lane within that row this operation occupies.
+            let lane = op_idx % lanes;
 
-                    // RHS limbs + index
-                    let rhs_coeffs = trace.rhs_values[op_idx].as_basis_coefficients_slice();
-                    assert_eq!(rhs_coeffs.len(), D, "Extension degree mismatch for rhs");
-                    values.extend_from_slice(rhs_coeffs);
-                    values.push(F::from_u32(trace.rhs_index[op_idx].0));
+            // Compute the starting column index (cursor) for this lane within the flat vector.
+            //
+            // Row-major layout means:
+            //   row_offset = row * width,
+            //   lane_offset = lane * lane_width.
+            let mut cursor = (row * width) + (lane * lane_width);
 
-                    // Result limbs + index
-                    let result_coeffs = trace.result_values[op_idx].as_basis_coefficients_slice();
-                    assert_eq!(
-                        result_coeffs.len(),
-                        D,
-                        "Extension degree mismatch for result",
-                    );
-                    values.extend_from_slice(result_coeffs);
-                    values.push(F::from_u32(trace.result_index[op_idx].0));
-                } else {
-                    // Filler lane: append zeros for unused slot to keep the row width uniform.
-                    values.resize(values.len() + lane_width, F::ZERO);
-                }
-            }
+            // Write LHS coordinates and LHS witness index.
+            //
+            // Extract the basis coefficients of the lhs extension element.
+            let lhs_coeffs = lhs_val.as_basis_coefficients_slice();
+            // Sanity check: the extension degree must match the generic parameter `D`.
+            assert_eq!(
+                lhs_coeffs.len(),
+                D,
+                "Extension field degree mismatch for lhs"
+            );
+            // Copy the `D` lhs coordinates into the trace row.
+            values[cursor..cursor + D].copy_from_slice(lhs_coeffs);
+            cursor += D;
+            // Store the lhs witness-bus index as a base-field element.
+            values[cursor] = F::from_u32(lhs_idx.0);
+            cursor += 1;
+
+            // Write RHS coordinates and RHS witness index.
+            //
+            // Extract the basis coefficients of the rhs extension element.
+            let rhs_coeffs = rhs_val.as_basis_coefficients_slice();
+            // Sanity check: the extension degree must match the generic parameter `D`.
+            assert_eq!(
+                rhs_coeffs.len(),
+                D,
+                "Extension field degree mismatch for rhs"
+            );
+            // Copy the `D` rhs coordinates into the trace row.
+            values[cursor..cursor + D].copy_from_slice(rhs_coeffs);
+            cursor += D;
+            // Store the rhs witness-bus index as a base-field element.
+            values[cursor] = F::from_u32(rhs_idx.0);
+            cursor += 1;
+
+            // Write result coordinates and result witness index.
+            //
+            // Extract the basis coefficients of the result extension element.
+            let res_coeffs = res_val.as_basis_coefficients_slice();
+            debug_assert_eq!(
+                res_coeffs.len(),
+                D,
+                "Extension field degree mismatch for result"
+            );
+            // Copy the `D` result coordinates into the trace row.
+            values[cursor..cursor + D].copy_from_slice(res_coeffs);
+            cursor += D;
+            // Store the result witness-bus index as a base-field element.
+            values[cursor] = F::from_u32(res_idx.0);
         }
 
+        // Pad the matrix to a power-of-two height.
         pad_to_power_of_two(&mut values, width, row_count);
 
+        // Build the row-major matrix with the computed width.
         RowMajorMatrix::new(values, width)
     }
 }
@@ -167,57 +309,140 @@ where
     AB::F: Field,
 {
     fn eval(&self, builder: &mut AB) {
+        // Access the main trace view from the builder.
         let main = builder.main();
 
+        // Make sure that the matrix width matches what this AIR expects.
         debug_assert_eq!(main.width(), self.total_width(), "column width mismatch");
 
+        // Get the evaluation at evaluation point `zeta`
         let local = main.row_slice(0).expect("matrix must be non-empty");
-        let local = &*local;
         let lane_width = Self::lane_width();
 
+        // Specialized Path for D=1 (Base Field)
         if D == 1 {
-            for lane in 0..self.lanes {
-                let mut cursor = lane * lane_width;
-                let lhs_value = local[cursor].clone();
-                cursor += 2; // skip lhs limb and index
-                let rhs_value = local[cursor].clone();
-                cursor += 2; // skip rhs limb and index
-                let out_value = local[cursor].clone();
+            // For D=1, lane_width is 6.
+            // Layout: [lhs, lhs_idx, rhs, rhs_idx, result, result_idx]
+            debug_assert_eq!(lane_width, 6);
+
+            for lane_data in local.chunks_exact(lane_width) {
+                let lhs_value = lane_data[0].clone();
+                // lane_data[1] is lhs_idx
+                let rhs_value = lane_data[2].clone();
+                // lane_data[3] is rhs_idx
+                let out_value = lane_data[4].clone();
+                // lane_data[5] is result_idx
+
+                // Enforce: lhs * rhs - result = 0
                 builder.assert_zero(lhs_value * rhs_value - out_value);
             }
-            return;
-        }
+        } else {
+            // Specialized Path for D > 1 (Extension Field)
 
-        let w = self
-            .w_binomial
-            .as_ref()
-            .map(|w| AB::Expr::from(*w))
-            .expect("MulAir with D>1 requires binomial parameter W for wrap-around");
+            // For D > 1, we must have the binomial parameter W.
+            //
+            // We can 'expect' it once, outside the loop.
+            let w = self
+                .w_binomial
+                .as_ref()
+                .map(|w| AB::Expr::from(*w))
+                .expect("MulAir with D>1 requires binomial parameter W");
 
-        for lane in 0..self.lanes {
-            let mut cursor = lane * lane_width;
-            let lhs_slice = &local[cursor..cursor + D];
-            cursor += D + 1;
-            let rhs_slice = &local[cursor..cursor + D];
-            cursor += D + 1;
-            let result_slice = &local[cursor..cursor + D];
+            for lane_data in local.chunks_exact(lane_width) {
+                // Data Extraction
+                //
+                // We are proving a polynomial multiplication:
+                //   L(x) * R(x) = O(x)  (mod x^D - W)
+                //
+                // L(x) = lhs[0] + lhs[1]x + ... + lhs[D-1]x^(D-1)
+                // R(x) = rhs[0] + rhs[1]x + ... + rhs[D-1]x^(D-1)
+                // O(x) = result[0] + result[1]x + ... + result[D-1]x^(D-1)
+                //
+                // Here, we extract the slices of coefficients for L(x), R(x), and O(x).
 
-            let mut acc: Vec<AB::Expr> = (0..D).map(|_| AB::Expr::ZERO).collect();
+                // Split off the lhs block and its index:
+                //   lhs_and_idx = [lhs[0..D), lhs_idx]
+                //   rest        = [rhs[0..D), rhs_idx, result[0..D), result_idx]
+                let (lhs_and_idx, rest) = lane_data.split_at(D + 1);
 
-            for i in 0..D {
-                for j in 0..D {
-                    let term = lhs_slice[i].clone() * rhs_slice[j].clone();
-                    let k = i + j;
-                    if k < D {
-                        acc[k] = acc[k].clone() + term;
-                    } else {
-                        acc[k - D] = acc[k - D].clone() + w.clone() * term;
+                // Split the remaining data:
+                //   rhs_and_idx    = [rhs[0..D), rhs_idx]
+                //   result_and_idx = [result[0..D), result_idx]
+                let (rhs_and_idx, result_and_idx) = rest.split_at(D + 1);
+
+                // Extract just the coordinate slices
+                let lhs_slice = &lhs_and_idx[..D];
+                let rhs_slice = &rhs_and_idx[..D];
+                let result_slice = &result_and_idx[..D];
+
+                // Compute the Product C(x) = L(x) * R(x) (mod x^D - W)
+                //
+                // Accumulator for the coefficients of the reduced product polynomial.
+                let mut acc = vec![AB::Expr::ZERO; D];
+
+                // We perform "schoolbook" multiplication term-by-term.
+                //
+                // We reduce each term *immediately* using the rule $x^D = W$.
+                for (i, lhs) in lhs_slice.iter().enumerate().take(D) {
+                    // This is the i-th term of L(x): lhs[i] * x^i
+                    for (j, rhs) in rhs_slice.iter().enumerate().take(D) {
+                        // This is the j-th term of R(x): rhs[j] * x^j
+
+                        // Multiplying them gives: (lhs[i] * rhs[j]) * x^(i+j)
+                        let term = lhs.clone() * rhs.clone();
+                        let k = i + j;
+
+                        // Now, we reduce the $x^k$ term and add its coefficient
+                        // (which is 'term') to the correct spot in 'acc'.
+                        if k < D {
+                            // Case 1: k < D
+                            //
+                            // The degree 'k' is already in the valid range [0, D-1].
+                            // No reduction is needed.
+                            // The term is: term * x^k
+                            // We add 'term' to the k-th coefficient in our accumulator.
+                            //
+                            // Math: acc[k] = acc[k] + term
+                            acc[k] += term;
+                        } else {
+                            // Case 2: k >= D
+                            //
+                            // The degree 'k' is "out of bounds" and must be reduced.
+                            // We use the rule: $x^D = W$
+                            //
+                            // We can rewrite $x^k$ as:
+                            //   $x^k = x^{k-D} * x^D$
+                            //
+                            // Substituting the rule gives:
+                            //   $x^k = x^{k-D} * W$
+                            //
+                            // So our full term (term * x^k) becomes:
+                            //   term * (W * x^{k-D})
+                            //
+                            // This is a new term of degree (k-D), with a new
+                            // coefficient of (term * W).
+                            //
+                            // Math: acc[k-D] = acc[k-D] + (term * W)
+                            acc[k - D] += w.clone() * term;
+                        }
                     }
                 }
-            }
 
-            for k in 0..D {
-                builder.assert_zero(result_slice[k].clone() - acc[k].clone());
+                // Enforce the Constraint
+                //
+                // At this point, 'acc' holds the coefficients of the correctly
+                // computed product C(x).
+                //
+                // 'result_slice' holds the coefficients of the polynomial O(x)
+                // provided by the prover (the witness).
+                //
+                // We must assert that they are equal, coefficient by coefficient.
+                //
+                // Enforces: C(x) = O(x)
+                for k in 0..D {
+                    // result_slice[k] - acc[k] = 0
+                    builder.assert_zero(result_slice[k].clone() - acc[k].clone());
+                }
             }
         }
     }
@@ -226,13 +451,11 @@ where
 #[cfg(test)]
 mod tests {
     use alloc::vec;
+    use alloc::vec::Vec;
 
     use p3_baby_bear::BabyBear as Val;
     use p3_circuit::WitnessId;
-    use p3_circuit::tables::MulTrace;
     use p3_field::extension::BinomialExtensionField;
-    use p3_field::{BasedVectorSpace, Field};
-    use p3_matrix::dense::RowMajorMatrix;
     use p3_uni_stark::{prove, verify};
 
     use super::*;

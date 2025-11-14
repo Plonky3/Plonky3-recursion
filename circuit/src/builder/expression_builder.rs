@@ -2,6 +2,7 @@ use alloc::boxed::Box;
 #[cfg(debug_assertions)]
 use alloc::vec;
 use alloc::vec::Vec;
+use core::hash::Hash;
 
 use hashbrown::HashMap;
 use itertools::Itertools;
@@ -39,7 +40,7 @@ pub struct ExpressionBuilder<F> {
 
 impl<F> ExpressionBuilder<F>
 where
-    F: Clone + PrimeCharacteristicRing + Eq + core::hash::Hash,
+    F: Clone + PrimeCharacteristicRing + Eq + Hash,
 {
     /// Creates a new expression builder with zero constant pre-allocated.
     pub fn new() -> Self {
@@ -304,7 +305,7 @@ where
 
 impl<F> Default for ExpressionBuilder<F>
 where
-    F: Clone + PrimeCharacteristicRing + Eq + core::hash::Hash,
+    F: Clone + PrimeCharacteristicRing + Eq + Hash,
 {
     fn default() -> Self {
         Self::new()
@@ -313,6 +314,8 @@ where
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec;
+
     use p3_baby_bear::BabyBear;
     use p3_field::Field;
 
