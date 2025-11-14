@@ -111,6 +111,10 @@ pub enum CircuitError {
     #[error("Failed to build circuit: {error}")]
     InvalidCircuit { error: CircuitBuilderError },
 
-    #[error("Unconstrained operation input length mismatch: expected {expected}, got {got}")]
-    UnconstrainedOpInputLengthMismatch { expected: usize, got: usize },
+    #[error("Unconstrained operation input length mismatch: expected {op} {expected}, got {got}")]
+    UnconstrainedOpInputLengthMismatch {
+        op: String,
+        expected: usize,
+        got: usize,
+    },
 }

@@ -205,6 +205,7 @@ impl<F: CircuitField> CircuitRunner<F> {
                         outputs.iter(),
                         outputs_val.iter(),
                         CircuitError::UnconstrainedOpInputLengthMismatch {
+                            op: "equal to".to_string(),
                             expected: outputs.len(),
                             got: outputs_val.len(),
                         },
@@ -418,6 +419,7 @@ mod tests {
         fn compute_outputs(&self, inputs_val: Vec<F>) -> Result<Vec<F>, crate::CircuitError> {
             if inputs_val.len() != self.inputs.len() {
                 Err(crate::CircuitError::UnconstrainedOpInputLengthMismatch {
+                    op: "equal to".to_string(),
                     expected: self.inputs.len(),
                     got: inputs_val.len(),
                 })

@@ -1,3 +1,4 @@
+use alloc::string::ToString;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::marker::PhantomData;
@@ -146,6 +147,7 @@ impl<BF: PrimeField64> BinaryDecompositionHint<BF> {
     pub fn new(input: ExprId, n_bits: usize) -> Result<Self, CircuitError> {
         if n_bits > 64 {
             return Err(CircuitError::UnconstrainedOpInputLengthMismatch {
+                op: "less than or equal to".to_string(),
                 expected: 64,
                 got: n_bits,
             });
