@@ -269,7 +269,6 @@ mod tests {
     use p3_field::extension::BinomialExtensionField;
     use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
 
-    use super::*;
     use crate::builder::CircuitBuilder;
 
     #[test]
