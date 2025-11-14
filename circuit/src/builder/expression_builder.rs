@@ -112,7 +112,29 @@ where
     #[allow(unused_variables)]
     #[must_use]
     pub fn add_witness_hint(&mut self, label: &'static str) -> ExprId {
-        let expr_id = self.graph.add_expr(Expr::Witness { last_hint: true });
+        let expr_id = self.graph.add_expr(Expr::Witness { is_last_hint: true });
+
+        #[cfg(debug_assertions)]
+        self.allocation_log.push(AllocationEntry {
+            expr_id,
+            alloc_type: AllocationType::WitnessHint,
+            label,
+            dependencies: vec![],
+            scope: self.current_scope(),
+        });
+
+        expr_id
+    }
+
+    #[allow(unused_variables)]
+    /// Adds a witness hint that belongs to a sequence of witness hints constructed
+    /// from the same filler, indicating wether is the last hint in the sequence.
+    pub fn add_witness_hint_in_sequence(
+        &mut self,
+        is_last_hint: bool,
+        label: &'static str,
+    ) -> ExprId {
+        let expr_id = self.graph.add_expr(Expr::Witness { is_last_hint });
 
         #[cfg(debug_assertions)]
         self.allocation_log.push(AllocationEntry {
@@ -138,11 +160,7 @@ where
     ) -> Vec<ExprId> {
         let n_outputs = filler.n_outputs();
         let expr_ids = (0..n_outputs)
-            .map(|i| {
-                self.graph.add_expr(Expr::Witness {
-                    last_hint: i == n_outputs - 1,
-                })
-            })
+            .map(|i| self.add_witness_hint_in_sequence(i == n_outputs - 1, label))
             .collect_vec();
         self.hints_fillers.push(Box::new(filler));
         expr_ids
@@ -602,7 +620,12 @@ mod tests {
         assert_eq!(builder.graph().nodes().len(), 4);
 
         match (&builder.graph().nodes()[2], &builder.graph().nodes()[3]) {
-            (Expr::Witness { last_hint: false }, Expr::Witness { last_hint: true }) => (),
+            (
+                Expr::Witness {
+                    is_last_hint: false,
+                },
+                Expr::Witness { is_last_hint: true },
+            ) => (),
             _ => panic!("Expected Witness operation"),
         }
     }

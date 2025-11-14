@@ -291,6 +291,11 @@ mod tests {
     use p3_baby_bear::BabyBear;
     use p3_field::extension::BinomialExtensionField;
     use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
+    use tracing_forest::ForestLayer;
+    use tracing_forest::util::LevelFilter;
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+    use tracing_subscriber::{EnvFilter, Registry};
 
     use crate::ExprId;
     use crate::builder::CircuitBuilder;
@@ -330,9 +335,21 @@ mod tests {
         assert!(!traces.add_trace.lhs_values.is_empty());
     }
 
+    fn init_logger() {
+        let env_filter = EnvFilter::builder()
+            .with_default_directive(LevelFilter::INFO.into())
+            .from_env_lossy();
+
+        Registry::default()
+            .with(env_filter)
+            .with(ForestLayer::default())
+            .init();
+    }
+
     #[test]
     // Proves that we know x such that 37 * x - 111 = 0
     fn test_toy_example_37_times_x_minus_111() {
+        init_logger();
         let mut builder = CircuitBuilder::new();
 
         let x = builder.add_public_input();
@@ -343,11 +360,9 @@ mod tests {
         let sub_result = builder.sub(mul_result, c111);
         builder.assert_zero(sub_result);
 
+        builder.dump_allocation_log();
+
         let circuit = builder.build().unwrap();
-        println!("=== CIRCUIT PRIMITIVE OPERATIONS ===");
-        for (i, prim) in circuit.primitive_ops.iter().enumerate() {
-            println!("{i}: {prim:?}");
-        }
 
         let witness_count = circuit.witness_count;
         let mut runner = circuit.runner();
@@ -357,66 +372,7 @@ mod tests {
 
         let traces = runner.run().unwrap();
 
-        println!("\n=== WITNESS TRACE ===");
-        for (i, (idx, val)) in traces
-            .witness_trace
-            .index
-            .iter()
-            .zip(traces.witness_trace.values.iter())
-            .enumerate()
-        {
-            println!("Row {i}: WitnessId({idx}) = {val:?}");
-        }
-
-        println!("\n=== CONST TRACE ===");
-        for (i, (idx, val)) in traces
-            .const_trace
-            .index
-            .iter()
-            .zip(traces.const_trace.values.iter())
-            .enumerate()
-        {
-            println!("Row {i}: WitnessId({idx}) = {val:?}");
-        }
-
-        println!("\n=== PUBLIC TRACE ===");
-        for (i, (idx, val)) in traces
-            .public_trace
-            .index
-            .iter()
-            .zip(traces.public_trace.values.iter())
-            .enumerate()
-        {
-            println!("Row {i}: WitnessId({idx}) = {val:?}");
-        }
-
-        println!("\n=== MUL TRACE ===");
-        for i in 0..traces.mul_trace.lhs_values.len() {
-            println!(
-                "Row {}: WitnessId({}) * WitnessId({}) -> WitnessId({}) | {:?} * {:?} -> {:?}",
-                i,
-                traces.mul_trace.lhs_index[i],
-                traces.mul_trace.rhs_index[i],
-                traces.mul_trace.result_index[i],
-                traces.mul_trace.lhs_values[i],
-                traces.mul_trace.rhs_values[i],
-                traces.mul_trace.result_values[i]
-            );
-        }
-
-        println!("\n=== ADD TRACE ===");
-        for i in 0..traces.add_trace.lhs_values.len() {
-            println!(
-                "Row {}: WitnessId({}) + WitnessId({}) -> WitnessId({}) | {:?} + {:?} -> {:?}",
-                i,
-                traces.add_trace.lhs_index[i],
-                traces.add_trace.rhs_index[i],
-                traces.add_trace.result_index[i],
-                traces.add_trace.lhs_values[i],
-                traces.add_trace.rhs_values[i],
-                traces.add_trace.result_values[i]
-            );
-        }
+        traces.dum_traces_log();
 
         // Verify trace structure
         assert_eq!(traces.witness_trace.index.len(), witness_count as usize);
