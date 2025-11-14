@@ -35,7 +35,7 @@ use crate::types::{NonPrimitiveOpId, WitnessId};
 ///
 /// They can be user-defined and selected at runtime, have private data that does not appear
 /// in the central Witness bus, and are subject to their own optimization passes.
-#[derive(Debug, EnumCount)]
+#[derive(Debug)]
 pub enum Op<F> {
     /// Load a constant value into the witness table
     ///

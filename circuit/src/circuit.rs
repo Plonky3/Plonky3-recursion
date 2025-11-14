@@ -131,7 +131,7 @@ impl<F: Field> Circuit<F> {
                     max_idx = max_idx.max(a.0).max(b.0).max(out.0);
                 }
                 Op::NonPrimitiveOpWithExecutor { .. } => panic!(
-                    "preprocessed values are not yet implemented for non primitivie operations."
+                    "preprocessed values are not yet implemented for non primitive operations."
                 ),
             }
         }

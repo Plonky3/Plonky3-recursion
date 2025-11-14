@@ -122,14 +122,18 @@ where
 
     let preprocessed_commit = if preprocessed_width > 0 {
         assert_eq!(config.is_zk(), 0); // TODO: preprocessed columns not supported in zk mode
-        let height = preprocessed.as_ref().unwrap().values.len() / preprocessed_width;
-        assert_eq!(
-            height,
-            trace_domain.size(),
-            "Verifier's preprocessed trace height must be equal to trace domain size"
-        );
+
+        let prep = preprocessed.expect("If the width is > 0, then the commit exists.");
+        let height = prep.values.len() / preprocessed_width;
+
+        if height != trace_domain.size() {
+            return Err(GenerationError::InvalidProofShape(
+                "Verifier's preprocessed trace height must be equal to trace domain size",
+            ));
+        }
+
         let (preprocessed_commit, _) = debug_span!("process preprocessed trace")
-            .in_scope(|| pcs.commit([(trace_domain, preprocessed.unwrap())]));
+            .in_scope(|| pcs.commit([(trace_domain, prep)]));
         Some(preprocessed_commit)
     } else {
         None
@@ -148,7 +152,12 @@ where
     challenger.observe(Val::<SC>::from_usize(preprocessed_width));
     challenger.observe(commitments.trace.clone());
     if preprocessed_width > 0 {
-        challenger.observe(preprocessed_commit.as_ref().unwrap().clone());
+        challenger.observe(
+            preprocessed_commit
+                .as_ref()
+                .expect("If the width is > 0, then the commit exists.")
+                .clone(),
+        );
     }
     challenger.observe_slice(public_values);
 
@@ -203,13 +212,30 @@ where
 
     // Add preprocessed commitment verification if present
     if preprocessed_width > 0 {
+        // If preprocessed_width > 0, then preprocessed opened values must be present.
+        let opened_prep_local =
+            &opened_values
+                .preprocessed_local
+                .clone()
+                .ok_or(GenerationError::InvalidProofShape(
+                    "Missing preprocessed local opened values",
+                ))?;
+
+        let opened_prep_next =
+            &opened_values
+                .preprocessed_next
+                .clone()
+                .ok_or(GenerationError::InvalidProofShape(
+                    "Missing preprocessed next opened values",
+                ))?;
+
         coms_to_verify.push((
             preprocessed_commit.unwrap(),
             vec![(
                 trace_domain,
                 vec![
-                    (zeta, opened_values.preprocessed_local.clone().unwrap()),
-                    (zeta_next, opened_values.preprocessed_next.clone().unwrap()),
+                    (zeta, opened_prep_local.clone()),
+                    (zeta_next, opened_prep_next.clone()),
                 ],
             )],
         ));

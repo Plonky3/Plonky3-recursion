@@ -7,6 +7,7 @@ use alloc::vec::Vec;
 
 use p3_air::{Air, AirBuilder, BaseAir};
 use p3_batch_stark::{BatchProof, StarkGenericConfig as MSGC, StarkInstance, Val as MVal};
+use p3_circuit::op::PrimitiveOpType;
 use p3_circuit::tables::Traces;
 use p3_field::{BasedVectorSpace, Field};
 use p3_matrix::dense::RowMajorMatrix;
@@ -47,15 +48,7 @@ impl Default for TablePacking {
     }
 }
 
-#[repr(usize)]
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum Table {
-    Witness = 0,
-    Const = 1,
-    Public = 2,
-    Add = 3,
-    Mul = 4,
-}
+pub type Table = PrimitiveOpType;
 
 // TODO(Robin): Remove with dynamic dispatch
 /// Number of circuit tables included in the unified batch STARK proof.

@@ -1,6 +1,6 @@
 //! Execution trace tables for zkVM circuit operations.
 
-pub mod add;
+mod add;
 mod constant;
 mod mmcs;
 mod mul;

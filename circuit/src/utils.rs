@@ -334,10 +334,10 @@ mod tests {
             all_public_values.push(trace_next[i]);
         }
 
-        let (runner, _) = circuit.build().unwrap();
-        let mut runner = runner.runner();
-        runner.set_public_inputs(&all_public_values).unwrap();
-        let _ = runner.run()?;
+        let (builder, _) = circuit.build().unwrap();
+        let mut builder = builder.runner();
+        builder.set_public_inputs(&all_public_values).unwrap();
+        let _ = builder.run()?;
 
         Ok(())
     }

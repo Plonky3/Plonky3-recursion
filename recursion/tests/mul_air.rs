@@ -40,7 +40,7 @@ type MyPcs = TwoAdicFriPcs<F, Dft, ValMmcs, ChallengeMmcs>;
 type MyConfig = StarkConfig<MyPcs, Challenge, Challenger>;
 
 /// Number of repetitions of the multiplication constraint (must be < 255 to fit in u8)
-const REPETITIONS: usize = 1;
+const REPETITIONS: usize = 20;
 
 /// Total trace width: 3 columns per repetition (a, b, c)
 const MAIN_TRACE_WIDTH: usize = REPETITIONS; // For c values

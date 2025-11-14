@@ -205,7 +205,9 @@ where
     // Add preprocessed commitment verification if present
     if preprocessed_width > 0 {
         coms_to_verify.push((
-            preprocessed_commit.clone().unwrap(),
+            preprocessed_commit
+                .clone()
+                .expect("We checked in validate_proof_shape that the commit exists"),
             vec![(
                 trace_domain,
                 vec![
