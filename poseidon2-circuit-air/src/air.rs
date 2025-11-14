@@ -170,7 +170,6 @@ impl<
             state = perm.permute(state);
         }
 
-        // TODO: Avoid copying whole trace later.
         let p2_trace = generate_trace_rows::<
             F,
             LinearLayers,
@@ -193,24 +192,15 @@ impl<
 
         let mut vec = vec![F::ZERO; n * ncols];
 
-        for i in 0..n {
-            let row = &mut vec[(i * ncols)..((i + 1) * ncols)];
-            let left_part = p2_trace
-                .row(i)
-                .expect("Missing row {i}?")
-                .into_iter()
-                .collect::<Vec<_>>();
-            let right_part = circuit_trace
-                .row(i)
-                .expect("Missing row {i}?")
-                .into_iter()
-                .collect::<Vec<_>>();
-            row[..p2_ncols].copy_from_slice(&left_part);
-            row[p2_ncols..].copy_from_slice(&right_part);
-        }
+        let circuit_trace_view = circuit_trace.as_view();
 
-        unsafe {
-            vec.set_len(n * ncols);
+        for ((row, left_part), right_part) in vec
+            .chunks_exact_mut(ncols)
+            .zip(p2_trace.row_slices())
+            .zip(circuit_trace_view.row_slices())
+        {
+            row[..p2_ncols].copy_from_slice(left_part);
+            row[p2_ncols..].copy_from_slice(right_part);
         }
 
         RowMajorMatrix::new(vec, ncols)
