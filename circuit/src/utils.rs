@@ -134,7 +134,7 @@ pub fn reconstruct_index_from_bits<F: Field>(
 /// fill witness hints with the binary decomposition.
 ///
 /// For a given input `input`, fills `n_bits` witness hints with `b_i`
-/// such that that:
+/// such that:
 ///     input = Σ b_i · 2^i
 struct BinaryDecompositionHint<BF: PrimeField64> {
     inputs: Vec<ExprId>,

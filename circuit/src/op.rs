@@ -67,7 +67,7 @@ pub enum Op<F> {
     /// Load unconstrained values into the witness table
     ///
     /// Sets `witness[output]`, for each `output` in `outputs`, to arbitrary values
-    /// defined by `filler`
+    /// defined by `filler`.
     Unconstrained {
         inputs: Vec<WitnessId>,
         outputs: Vec<WitnessId>,
@@ -404,7 +404,7 @@ impl<F: Field> Clone for Box<dyn NonPrimitiveExecutor<F>> {
 pub trait WitnessHintFiller<F>: Debug + WitnessFillerClone<F> {
     /// Return the `ExprId` of the inputs
     fn inputs(&self) -> &[ExprId];
-    /// Returns number of outputs filled by this filler
+    /// Return number of outputs filled by this filler
     fn n_outputs(&self) -> usize;
     /// Compute the output given the inputs
     /// # Arguments

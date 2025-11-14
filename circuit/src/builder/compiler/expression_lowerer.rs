@@ -170,7 +170,7 @@ where
             }
         };
 
-        // Pass B: emit public inputs and process witness hints
+        // Pass B: emit public inputs
         for (expr_idx, expr) in self.graph.nodes().iter().enumerate() {
             if let Expr::Public(pos) = expr {
                 let id = ExprId(expr_idx as u32);
