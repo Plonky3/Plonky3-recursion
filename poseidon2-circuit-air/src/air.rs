@@ -457,7 +457,7 @@ impl<
 
 #[cfg(test)]
 mod test {
-    use p3_baby_bear::{BabyBear, GenericPoseidon2LinearLayersBabyBear, Poseidon2BabyBear};
+    use p3_baby_bear::{BabyBear, Poseidon2BabyBear};
     use p3_challenger::{HashChallenger, SerializingChallenger32};
     use p3_commit::ExtensionMmcs;
     use p3_field::extension::BinomialExtensionField;
@@ -472,16 +472,11 @@ mod test {
     use rand::{Rng, SeedableRng};
 
     use super::*;
+    use crate::Poseidon2CircuitAirBabyBearD4Width16;
 
     const D: usize = 4;
     const WIDTH: usize = 16;
-    const WIDTH_EXT: usize = 4;
     const RATE_EXT: usize = 2;
-    const CAPACITY_EXT: usize = 2;
-    const SBOX_DEGREE: u64 = 7;
-    const SBOX_REGISTERS: usize = 1;
-    const HALF_FULL_ROUNDS: usize = 4;
-    const PARTIAL_ROUNDS: usize = 20;
 
     #[test]
     fn prove_poseidon2_sponge() -> Result<
@@ -547,19 +542,7 @@ mod test {
             partial_constants.to_vec(),
         );
 
-        let air: Poseidon2CircuitAir<
-            Val,
-            GenericPoseidon2LinearLayersBabyBear,
-            D,
-            WIDTH,
-            WIDTH_EXT,
-            RATE_EXT,
-            CAPACITY_EXT,
-            SBOX_DEGREE,
-            SBOX_REGISTERS,
-            HALF_FULL_ROUNDS,
-            PARTIAL_ROUNDS,
-        > = Poseidon2CircuitAir::new(constants.clone());
+        let air = Poseidon2CircuitAirBabyBearD4Width16::new(constants.clone());
 
         // Generate random inputs.
         let mut rng = SmallRng::seed_from_u64(1);
