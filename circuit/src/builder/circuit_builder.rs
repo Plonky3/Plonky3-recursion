@@ -68,6 +68,22 @@ where
         self.config.enable_mmcs(mmcs_config);
     }
 
+    /// Enables HashAbsorb operations.
+    pub fn enable_hash_absorb(&mut self, reset: bool) {
+        self.config.enable_hash_absorb(reset);
+    }
+
+    /// Enables HashSqueeze operations.
+    pub fn enable_hash_squeeze(&mut self) {
+        self.config.enable_hash_squeeze();
+    }
+
+    /// Enables hash operations.
+    pub fn enable_hash(&mut self, reset: bool) {
+        self.enable_hash_absorb(reset);
+        self.enable_hash_squeeze();
+    }
+
     /// Enables FRI verification operations.
     pub fn enable_fri(&mut self) {
         self.config.enable_fri();
