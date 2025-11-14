@@ -36,7 +36,7 @@ pub type NonPrimitiveOperationData = (NonPrimitiveOpId, NonPrimitiveOpType, Vec<
 
 impl<F> Default for CircuitBuilder<F>
 where
-    F: Clone + PrimeCharacteristicRing + Eq + core::hash::Hash,
+    F: Clone + PrimeCharacteristicRing + Eq + Hash,
 {
     fn default() -> Self {
         Self::new()
@@ -45,7 +45,7 @@ where
 
 impl<F> CircuitBuilder<F>
 where
-    F: Clone + PrimeCharacteristicRing + Eq + core::hash::Hash,
+    F: Clone + PrimeCharacteristicRing + Eq + Hash,
 {
     /// Creates a new circuit builder.
     pub fn new() -> Self {
@@ -439,10 +439,8 @@ where
 #[cfg(test)]
 mod tests {
     use alloc::vec;
-    use alloc::vec::Vec;
 
     use p3_baby_bear::BabyBear;
-    use p3_field::PrimeCharacteristicRing;
     use proptest::prelude::*;
 
     use super::*;

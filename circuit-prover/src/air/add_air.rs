@@ -2,15 +2,21 @@
 //!
 //! Conceptually, each row of the trace encodes one or more addition constraints of the form
 //!
-//!     lhs + rhs = result
+//! ```text
+//! lhs + rhs = result
+//! ```
 //!
 //! When the circuit wants to prove a subtraction, it is expressed as an addition by rewriting
 //!
-//!     a - b = c
+//! ```text
+//! a - b = c
+//! ```
 //!
 //! as
 //!
-//!     b + c = a
+//! ```text
+//! b + c = a
+//! ```
 //!
 //! so that subtraction is handled uniformly as an addition gate in the AIR.
 //!
@@ -34,7 +40,9 @@
 //!
 //! In other words, for a single lane the layout is:
 //!
-//!     [lhs[0..D), lhs_index, rhs[0..D), rhs_index, result[0..D), result_index]
+//! ```text
+//! [lhs[0..D), lhs_index, rhs[0..D), rhs_index, result[0..D), result_index]
+//! ```
 //!
 //! A single row can pack several of these lanes side-by-side, so the full row layout is
 //! this pattern repeated `lanes` times.
@@ -45,16 +53,16 @@
 //! left, right and result extension field elements respectively. For each operation and
 //! each coordinate `i` in `0..D`, the AIR enforces the linear constraint
 //!
-//! \begin{equation}
+//! $$
 //! left[i] + right[i] - output[i] = 0.
-//! \end{equation}
+//! $$
 //!
 //! Since extension addition is coordinate-wise, these constraints are sufficient to show
 //! that the full extension elements satisfy
 //!
-//! \begin{equation}
+//! $$
 //! left + right = output.
-//! \end{equation}
+//! $$
 //!
 //! # Global interactions
 //!
@@ -67,6 +75,8 @@
 //! The AIR defined here focuses on the algebraic relation between the operands. The
 //! correctness of the indices with respect to the global witness bus is enforced by the
 //! bus interaction logic elsewhere in the system.
+
+use core::marker::PhantomData;
 
 use p3_air::{Air, AirBuilder, BaseAir};
 use p3_circuit::tables::AddTrace;
@@ -93,7 +103,7 @@ pub struct AddAir<F, const D: usize = 1> {
     /// The last row is padded if the number of operations is not a multiple of this value.
     pub lanes: usize,
     /// Marker tying this AIR to its base field.
-    _phantom: core::marker::PhantomData<F>,
+    _phantom: PhantomData<F>,
 }
 
 impl<F: Field + PrimeCharacteristicRing, const D: usize> AddAir<F, D> {
@@ -108,7 +118,7 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AddAir<F, D> {
         Self {
             num_ops,
             lanes,
-            _phantom: core::marker::PhantomData,
+            _phantom: PhantomData,
         }
     }
 
@@ -147,7 +157,9 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AddAir<F, D> {
     ///
     /// The layout within a row is:
     ///
-    ///     [lhs[D], lhs_idx, rhs[D], rhs_idx, result[D], result_idx] repeated `lanes` times.
+    /// ```text
+    /// [lhs[D], lhs_idx, rhs[D], rhs_idx, result[D], result_idx] repeated `lanes` times.
+    /// ```
     pub fn trace_to_matrix<ExtF: BasedVectorSpace<F>>(
         trace: &AddTrace<ExtF>,
         lanes: usize,
@@ -321,10 +333,7 @@ mod tests {
 
     use p3_baby_bear::BabyBear as Val;
     use p3_circuit::WitnessId;
-    use p3_circuit::tables::AddTrace;
-    use p3_field::BasedVectorSpace;
     use p3_field::extension::BinomialExtensionField;
-    use p3_matrix::dense::RowMajorMatrix;
     use p3_uni_stark::{prove, verify};
 
     use super::*;

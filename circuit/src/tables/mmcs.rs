@@ -142,11 +142,11 @@ impl<F: Field + Clone + Default> MmcsPrivateData<F> {
             return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
                 op: NonPrimitiveOpType::MmcsVerify,
                 operation_index: NonPrimitiveOpId(0),
-                expected: alloc::format!(
+                expected: format!(
                     "path length <= max_tree_height ({})",
                     config.max_tree_height
                 ),
-                got: alloc::format!("{}", siblings.len()),
+                got: format!("{}", siblings.len()),
             });
         }
         let mut private_data = Self {
@@ -395,8 +395,8 @@ impl<'a, F: CircuitField> MmcsTraceBuilder<'a, F> {
                 return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
                     op: NonPrimitiveOpType::MmcsVerify,
                     operation_index: *op_id,
-                    expected: alloc::format!("{:?}", witness_directions.len()),
-                    got: alloc::format!("{:?}", witness_leaves.len()),
+                    expected: format!("{:?}", witness_directions.len()),
+                    got: format!("{:?}", witness_leaves.len()),
                 });
             }
 
@@ -416,8 +416,8 @@ impl<'a, F: CircuitField> MmcsTraceBuilder<'a, F> {
                 return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
                     op: NonPrimitiveOpType::MmcsVerify,
                     operation_index: *op_id,
-                    expected: alloc::format!("root: {witness_root:?}"),
-                    got: alloc::format!("root: {computed_root:?}"),
+                    expected: format!("root: {witness_root:?}"),
+                    got: format!("root: {computed_root:?}"),
                 });
             }
 
@@ -436,12 +436,10 @@ mod tests {
     use p3_baby_bear::{BabyBear, Poseidon2BabyBear, default_babybear_poseidon2_16};
     use p3_field::PrimeCharacteristicRing;
     use p3_field::extension::BinomialExtensionField;
-    use p3_symmetric::{PseudoCompressionFunction, TruncatedPermutation};
+    use p3_symmetric::TruncatedPermutation;
 
     use super::*;
-    use crate::NonPrimitiveOpPrivateData;
     use crate::builder::CircuitBuilder;
-    use crate::errors::CircuitError;
     use crate::ops::MmcsOps;
 
     type F = BinomialExtensionField<BabyBear, 4>;
@@ -567,7 +565,7 @@ mod tests {
         ];
         let root = (0..config.ext_field_digest_elems)
             .map(|_| builder.add_public_input())
-            .collect::<alloc::vec::Vec<_>>();
+            .collect::<Vec<_>>();
         let mmcs_op_id = builder
             .add_mmcs_verify(&leaves, &directions, &root)
             .unwrap();
@@ -735,9 +733,9 @@ mod tests {
         let path = &traces.mmcs_trace.mmcs_paths[0];
 
         // Expected expansions for directions, is_extra, and right_values
-        let mut expected_dirs = alloc::vec::Vec::new();
-        let mut expected_is_extra = alloc::vec::Vec::new();
-        let mut expected_right_values = alloc::vec::Vec::new();
+        let mut expected_dirs = Vec::new();
+        let mut expected_is_extra = Vec::new();
+        let mut expected_right_values = Vec::new();
         // We skip the first leaf replacing it by an empty vec.
         let empty_leaf = vec![];
         for (dir, sibling, leaf) in izip!(
@@ -761,7 +759,7 @@ mod tests {
         assert!(path.right_index.iter().all(|&x| x == 0));
 
         // Left values follow private_data path states (with intermediate state on extra row)
-        let mut expected_left_values = alloc::vec::Vec::new();
+        let mut expected_left_values = Vec::new();
         for ((state, extra_state), leaf) in private_data
             .path_states
             .iter()

@@ -20,8 +20,8 @@
 //! Since this AIR serves as a witness bus, where the other chips read values from, it has interactions with all the other AIRs.
 //! The AIR *receives* (meaning with positive multiplicities) interactions of the form (i, v) where i is the index of the value in the witness bus and v is the value itself.
 
-#![allow(clippy::needless_range_loop)]
 use alloc::vec::Vec;
+use core::marker::PhantomData;
 
 use p3_air::{Air, AirBuilder, BaseAir};
 use p3_circuit::tables::WitnessTrace;
@@ -39,14 +39,14 @@ use super::utils::pad_witness_to_power_of_two;
 #[derive(Debug, Clone)]
 pub struct WitnessAir<F, const D: usize = 1> {
     pub height: usize,
-    _phantom: core::marker::PhantomData<F>,
+    _phantom: PhantomData<F>,
 }
 
 impl<F: Field, const D: usize> WitnessAir<F, D> {
     pub const fn new(height: usize) -> Self {
         Self {
             height,
-            _phantom: core::marker::PhantomData,
+            _phantom: PhantomData,
         }
     }
 
@@ -121,8 +121,7 @@ mod tests {
 
     use p3_baby_bear::BabyBear as Val;
     use p3_circuit::WitnessId;
-    use p3_field::PrimeCharacteristicRing;
-    use p3_matrix::Matrix;
+    use p3_field::extension::BinomialExtensionField;
     use p3_uni_stark::{prove, verify};
 
     use super::*;
@@ -153,9 +152,6 @@ mod tests {
 
     #[test]
     fn test_witness_air_extension_field() {
-        use p3_field::BasedVectorSpace;
-        use p3_field::extension::BinomialExtensionField;
-
         type Ext4 = BinomialExtensionField<Val, 4>;
 
         let a = Ext4::from_basis_coefficients_slice(&[

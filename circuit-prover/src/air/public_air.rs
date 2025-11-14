@@ -16,8 +16,8 @@
 //! There is one interaction with the witness bus:
 //! - send (index, value)
 
-#![allow(clippy::needless_range_loop)]
 use alloc::vec::Vec;
+use core::marker::PhantomData;
 
 use p3_air::{Air, AirBuilder, BaseAir};
 use p3_circuit::tables::PublicTrace;
@@ -30,14 +30,14 @@ use p3_matrix::dense::RowMajorMatrix;
 #[derive(Debug, Clone)]
 pub struct PublicAir<F, const D: usize = 1> {
     pub height: usize,
-    _phantom: core::marker::PhantomData<F>,
+    _phantom: PhantomData<F>,
 }
 
 impl<F: Field, const D: usize> PublicAir<F, D> {
     pub const fn new(height: usize) -> Self {
         Self {
             height,
-            _phantom: core::marker::PhantomData,
+            _phantom: PhantomData,
         }
     }
 

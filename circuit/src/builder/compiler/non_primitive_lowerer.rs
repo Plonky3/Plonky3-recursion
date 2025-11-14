@@ -1,3 +1,4 @@
+use alloc::boxed::Box;
 use alloc::format;
 use alloc::vec::Vec;
 use core::hash::Hash;
@@ -138,7 +139,7 @@ impl<'a> NonPrimitiveLowerer<'a> {
                     lowered_ops.push(Op::NonPrimitiveOpWithExecutor {
                         inputs,
                         outputs: Vec::new(),
-                        executor: alloc::boxed::Box::new(MmcsVerifyExecutor::new()),
+                        executor: Box::new(MmcsVerifyExecutor::new()),
                         op_id: *op_id,
                     });
                 }
@@ -165,7 +166,7 @@ impl<'a> NonPrimitiveLowerer<'a> {
                     lowered_ops.push(Op::NonPrimitiveOpWithExecutor {
                         inputs,
                         outputs: Vec::new(),
-                        executor: alloc::boxed::Box::new(HashAbsorbExecutor::new(*reset)),
+                        executor: Box::new(HashAbsorbExecutor::new(*reset)),
                         op_id: *op_id,
                     });
                 }
@@ -192,7 +193,7 @@ impl<'a> NonPrimitiveLowerer<'a> {
                     lowered_ops.push(Op::NonPrimitiveOpWithExecutor {
                         inputs: Vec::new(),
                         outputs,
-                        executor: alloc::boxed::Box::new(HashSqueezeExecutor::new()),
+                        executor: Box::new(HashSqueezeExecutor::new()),
                         op_id: *op_id,
                     });
                 }

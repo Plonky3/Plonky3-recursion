@@ -227,7 +227,7 @@ pub trait MmcsOps<F> {
 
 impl<F> MmcsOps<F> for CircuitBuilder<F>
 where
-    F: Clone + p3_field::PrimeCharacteristicRing + Eq + core::hash::Hash,
+    F: Clone + p3_field::PrimeCharacteristicRing + Eq + Hash,
 {
     fn add_mmcs_verify(
         &mut self,
@@ -328,8 +328,8 @@ impl<F: Field> NonPrimitiveExecutor<F> for MmcsVerifyExecutor {
             return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
                 op: NonPrimitiveOpType::MmcsVerify,
                 operation_index: ctx.operation_id(), // TODO: What's the operation id of the curre
-                expected: alloc::format!("{:?}", witness_directions.len()),
-                got: alloc::format!("{:?}", witness_leaves.len()),
+                expected: format!("{:?}", witness_directions.len()),
+                got: format!("{:?}", witness_leaves.len()),
             });
         }
 
@@ -349,8 +349,8 @@ impl<F: Field> NonPrimitiveExecutor<F> for MmcsVerifyExecutor {
             return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
                 op: NonPrimitiveOpType::MmcsVerify,
                 operation_index: ctx.operation_id(),
-                expected: alloc::format!("root: {witness_root:?}"),
-                got: alloc::format!("root: {computed_root:?}"),
+                expected: format!("root: {witness_root:?}"),
+                got: format!("root: {computed_root:?}"),
             });
         }
 

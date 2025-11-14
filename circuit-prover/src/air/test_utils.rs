@@ -1,4 +1,5 @@
 #![allow(clippy::type_complexity)]
+
 use p3_baby_bear::{BabyBear as Val, Poseidon2BabyBear as Perm};
 use p3_challenger::DuplexChallenger as Challenger;
 use p3_commit::ExtensionMmcs;

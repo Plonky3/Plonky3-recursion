@@ -89,7 +89,7 @@ impl<F: CircuitField> CircuitRunner<F> {
                         op: op_ty.clone(),
                         operation_index: op_id,
                         expected: "no private data".to_string(),
-                        got: alloc::format!("{private_data:?}"),
+                        got: format!("{private_data:?}"),
                     });
                 }
             }
@@ -260,6 +260,8 @@ impl<F: CircuitField> CircuitRunner<F> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     extern crate std;
     use std::println;
 
