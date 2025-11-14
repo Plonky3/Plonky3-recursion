@@ -88,7 +88,7 @@ fn test_fibonacci_verifier() -> Result<(), VerificationError> {
         MyConfig,
         HashTargets<F, DIGEST_ELEMS>,
         InnerFri,
-    >::allocate(&mut circuit_builder, &proof, pis.len());
+    >::allocate(&mut circuit_builder, &proof, None, pis.len());
 
     // Add the verification circuit to the builder.
     verify_circuit::<
@@ -104,11 +104,12 @@ fn test_fibonacci_verifier() -> Result<(), VerificationError> {
         &mut circuit_builder,
         &verifier_inputs.proof_targets,
         &verifier_inputs.air_public_targets,
+        &None,
         &fri_verifier_params,
     )?;
 
     // Build the circuit.
-    let circuit = circuit_builder.build()?;
+    let (circuit, _) = circuit_builder.build()?;
 
     let mut runner = circuit.runner();
 
@@ -123,7 +124,8 @@ fn test_fibonacci_verifier() -> Result<(), VerificationError> {
 
     // Pack values using the same builder
     let num_queries = proof.opening_proof.query_proofs.len();
-    let public_inputs = verifier_inputs.pack_values(&pis, &proof, &all_challenges, num_queries);
+    let public_inputs =
+        verifier_inputs.pack_values(&pis, &proof, &None, &all_challenges, num_queries);
 
     runner
         .set_public_inputs(&public_inputs)

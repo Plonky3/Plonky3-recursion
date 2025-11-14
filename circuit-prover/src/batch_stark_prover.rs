@@ -7,6 +7,7 @@ use alloc::vec::Vec;
 
 use p3_air::{Air, AirBuilder, BaseAir};
 use p3_batch_stark::{BatchProof, StarkGenericConfig as MSGC, StarkInstance, Val as MVal};
+use p3_circuit::op::PrimitiveOpType;
 use p3_circuit::tables::Traces;
 use p3_field::{BasedVectorSpace, Field};
 use p3_matrix::dense::RowMajorMatrix;
@@ -47,15 +48,7 @@ impl Default for TablePacking {
     }
 }
 
-#[repr(usize)]
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum Table {
-    Witness = 0,
-    Const = 1,
-    Public = 2,
-    Add = 3,
-    Mul = 4,
-}
+pub type Table = PrimitiveOpType;
 
 // TODO(Robin): Remove with dynamic dispatch
 /// Number of circuit tables included in the unified batch STARK proof.
@@ -430,7 +423,7 @@ mod tests {
         let diff = builder.sub(final_result, expected);
         builder.assert_zero(diff);
 
-        let circuit = builder.build().unwrap();
+        let (circuit, _) = builder.build().unwrap();
         let mut runner = circuit.runner();
 
         let x_val = BabyBear::from_u64(7);
@@ -458,7 +451,7 @@ mod tests {
         let res = builder.add(xy, z);
         let diff = builder.sub(res, expected);
         builder.assert_zero(diff);
-        let circuit = builder.build().unwrap();
+        let (circuit, _) = builder.build().unwrap();
         let mut runner = circuit.runner();
         let xv = Ext4::from_basis_coefficients_slice(&[
             BabyBear::from_u64(2),
@@ -512,7 +505,7 @@ mod tests {
         let diff = builder.sub(final_res, expected);
         builder.assert_zero(diff);
 
-        let circuit = builder.build().unwrap();
+        let (circuit, _) = builder.build().unwrap();
         let mut runner = circuit.runner();
 
         let a_val = KoalaBear::from_u64(42);
@@ -559,7 +552,7 @@ mod tests {
         let diff = builder.sub(xyz, expected);
         builder.assert_zero(diff);
 
-        let circuit = builder.build().unwrap();
+        let (circuit, _) = builder.build().unwrap();
         let mut runner = circuit.runner();
 
         let x_val = KBExtField::from_basis_coefficients_slice(&[
@@ -627,7 +620,7 @@ mod tests {
         let diff = builder.sub(res, expected);
         builder.assert_zero(diff);
 
-        let circuit = builder.build().unwrap();
+        let (circuit, _) = builder.build().unwrap();
         let mut runner = circuit.runner();
 
         let x_val =

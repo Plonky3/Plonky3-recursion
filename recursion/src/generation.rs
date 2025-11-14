@@ -14,6 +14,7 @@ use p3_uni_stark::{
     get_log_quotient_degree,
 };
 use thiserror::Error;
+use tracing::debug_span;
 
 #[derive(Debug, Error)]
 pub enum GenerationError {
@@ -95,10 +96,17 @@ where
         degree_bits,
     } = proof;
 
+    let preprocessed = air.preprocessed_trace();
+    let preprocessed_width = preprocessed.as_ref().map(|m| m.width).unwrap_or(0);
+
     let degree = 1 << degree_bits;
     let pcs = config.pcs();
-    let log_quotient_degree =
-        get_log_quotient_degree::<Val<SC>, A>(air, 0, public_values.len(), config.is_zk());
+    let log_quotient_degree = get_log_quotient_degree::<Val<SC>, A>(
+        air,
+        preprocessed_width,
+        public_values.len(),
+        config.is_zk(),
+    );
     let quotient_degree = 1 << (log_quotient_degree + config.is_zk());
 
     let trace_domain = pcs.natural_domain_for_degree(degree);
@@ -112,6 +120,25 @@ where
         .map(|domain| pcs.natural_domain_for_degree(domain.size() << (config.is_zk())))
         .collect::<Vec<_>>();
 
+    let preprocessed_commit = if preprocessed_width > 0 {
+        assert_eq!(config.is_zk(), 0); // TODO: preprocessed columns not supported in zk mode
+
+        let prep = preprocessed.expect("If the width is > 0, then the commit exists.");
+        let height = prep.values.len() / preprocessed_width;
+
+        if height != trace_domain.size() {
+            return Err(GenerationError::InvalidProofShape(
+                "Verifier's preprocessed trace height must be equal to trace domain size",
+            ));
+        }
+
+        let (preprocessed_commit, _) = debug_span!("process preprocessed trace")
+            .in_scope(|| pcs.commit([(trace_domain, prep)]));
+        Some(preprocessed_commit)
+    } else {
+        None
+    };
+
     let num_challenges = 3 // alpha, zeta and zeta_next
      + SC::Pcs::num_challenges(opening_proof, extra_params)?;
 
@@ -122,7 +149,16 @@ where
     challenger.observe(Val::<SC>::from_usize(*degree_bits));
     challenger.observe(Val::<SC>::from_usize(*degree_bits - config.is_zk()));
 
+    challenger.observe(Val::<SC>::from_usize(preprocessed_width));
     challenger.observe(commitments.trace.clone());
+    if preprocessed_width > 0 {
+        challenger.observe(
+            preprocessed_commit
+                .as_ref()
+                .expect("If the width is > 0, then the commit exists.")
+                .clone(),
+        );
+    }
     challenger.observe_slice(public_values);
 
     // Get the first Fiat-Shamir challenge which will be used to combine all constraint polynomials into a single polynomial.
@@ -173,6 +209,37 @@ where
             .collect::<Vec<_>>(),
         ),
     ]);
+
+    // Add preprocessed commitment verification if present
+    if preprocessed_width > 0 {
+        // If preprocessed_width > 0, then preprocessed opened values must be present.
+        let opened_prep_local =
+            &opened_values
+                .preprocessed_local
+                .clone()
+                .ok_or(GenerationError::InvalidProofShape(
+                    "Missing preprocessed local opened values",
+                ))?;
+
+        let opened_prep_next =
+            &opened_values
+                .preprocessed_next
+                .clone()
+                .ok_or(GenerationError::InvalidProofShape(
+                    "Missing preprocessed next opened values",
+                ))?;
+
+        coms_to_verify.push((
+            preprocessed_commit.unwrap(),
+            vec![(
+                trace_domain,
+                vec![
+                    (zeta, opened_prep_local.clone()),
+                    (zeta_next, opened_prep_next.clone()),
+                ],
+            )],
+        ));
+    }
 
     let pcs_challenges = pcs.generate_challenges(
         config,

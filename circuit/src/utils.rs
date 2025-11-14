@@ -255,6 +255,7 @@ mod tests {
         // Fold the constraints using random values for the trace and selectors.
         let mut folder: VerifierConstraintFolder<'_, MyConfig> = VerifierConstraintFolder {
             main,
+            preprocessed: None,
             public_values: &pis,
             is_first_row: sels[0],
             is_last_row: sels[1],
@@ -333,10 +334,10 @@ mod tests {
             all_public_values.push(trace_next[i]);
         }
 
-        let runner = circuit.build().unwrap();
-        let mut runner = runner.runner();
-        runner.set_public_inputs(&all_public_values).unwrap();
-        let _ = runner.run()?;
+        let (builder, _) = circuit.build().unwrap();
+        let mut builder = builder.runner();
+        builder.set_public_inputs(&all_public_values).unwrap();
+        let _ = builder.run()?;
 
         Ok(())
     }
@@ -358,7 +359,7 @@ mod tests {
         builder.connect(result, output);
 
         // Build and run the circuit
-        let circuit = builder.build().expect("Failed to build circuit");
+        let (circuit, _) = builder.build().expect("Failed to build circuit");
         let mut runner = circuit.runner();
 
         // Set public inputs: the expected result value 5
@@ -384,7 +385,7 @@ mod tests {
         let bits = decompose_to_bits::<BabyBear>(&mut builder, value, 3);
 
         // Build and run the circuit
-        let circuit = builder.build().expect("Failed to build circuit");
+        let (circuit, _) = builder.build().expect("Failed to build circuit");
         let mut runner = circuit.runner();
 
         // Set public inputs: expected bit decomposition of 6 (binary: 110) in little-endian
