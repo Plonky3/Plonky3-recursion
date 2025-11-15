@@ -6,10 +6,11 @@ use itertools::zip_eq;
 use p3_field::{Field, PrimeCharacteristicRing};
 
 use super::compiler::{ExpressionLowerer, NonPrimitiveLowerer, Optimizer};
-use super::{BuilderConfig, ExpressionBuilder, PublicInputTracker};
+use super::{BuilderConfig, ExpressionBuilder};
 use crate::CircuitBuilderError;
+use crate::builder::public_input_tracker::PublicInputTracker;
 use crate::circuit::Circuit;
-use crate::op::NonPrimitiveOpType;
+use crate::op::{DefaultHint, NonPrimitiveOpType, WitnessHintsFiller};
 use crate::ops::MmcsVerifyConfig;
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};
 
@@ -120,16 +121,29 @@ where
         self.public_tracker.count()
     }
 
-    /// Allocates a witness hint (uninitialized witness slot set during non-primitive execution).
+    /// Allocates a sequence of witness hints.  
+    /// Each hint is a placeholder whose values will later be provided by the given `filler`.
     #[must_use]
-    pub fn alloc_witness_hint(&mut self, label: &'static str) -> ExprId {
-        self.expr_builder.add_witness_hint(label)
+    pub fn alloc_witness_hints<W: 'static + WitnessHintsFiller<F>>(
+        &mut self,
+        filler: W,
+        label: &'static str,
+    ) -> Vec<ExprId> {
+        self.expr_builder.add_witness_hints(filler, label)
     }
 
-    /// Allocates multiple witness hints.
+    /// Allocates a sequence of witness hints using the default filler.  
+    /// This is equivalent to calling `alloc_witness_hints` with `DefaultHint`,  
+    /// but is kept only for compatibility and should be removed.
+    /// TODO: Remove this function.
     #[must_use]
-    pub fn alloc_witness_hints(&mut self, count: usize, label: &'static str) -> Vec<ExprId> {
-        self.expr_builder.add_witness_hints(count, label)
+    pub fn alloc_witness_hints_default_filler(
+        &mut self,
+        count: usize,
+        label: &'static str,
+    ) -> Vec<ExprId> {
+        self.expr_builder
+            .add_witness_hints(DefaultHint { n_outputs: count }, label)
     }
 
     /// Adds a constant to the circuit (deduplicated).
@@ -394,6 +408,7 @@ where
             self.expr_builder.graph(),
             self.expr_builder.pending_connects(),
             self.public_tracker.count(),
+            self.expr_builder.hints_fillers(),
             self.witness_alloc,
         );
         let (primitive_ops, public_rows, expr_to_widx, public_mappings, witness_count) =
@@ -425,7 +440,6 @@ mod tests {
     use alloc::vec;
 
     use p3_baby_bear::BabyBear;
-    use proptest::prelude::*;
 
     use super::*;
 
@@ -697,6 +711,41 @@ mod tests {
         assert_eq!(circuit.witness_count, 2);
         assert_eq!(circuit.primitive_ops.len(), 2);
     }
+
+    #[test]
+    fn test_build_with_witness_hint() {
+        let mut builder = CircuitBuilder::<BabyBear>::new();
+        let default_hint = DefaultHint { n_outputs: 1 };
+        let a = builder.alloc_witness_hints(default_hint, "a");
+        assert_eq!(a.len(), 1);
+        let circuit = builder
+            .build()
+            .expect("Circuit with operations should build");
+
+        assert_eq!(circuit.witness_count, 2);
+        assert_eq!(circuit.primitive_ops.len(), 2);
+
+        match &circuit.primitive_ops[1] {
+            crate::op::Op::Unconstrained {
+                inputs, outputs, ..
+            } => {
+                assert_eq!(*inputs, vec![]);
+                assert_eq!(*outputs, vec![WitnessId(1)]);
+            }
+            _ => panic!("Expected Unconstrained at index 0"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod proptests {
+    use alloc::vec;
+
+    use p3_baby_bear::BabyBear;
+    use p3_field::PrimeCharacteristicRing;
+    use proptest::prelude::*;
+
+    use super::*;
 
     // Strategy for generating valid field elements
     fn field_element() -> impl Strategy<Value = BabyBear> {

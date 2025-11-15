@@ -1,16 +1,16 @@
 use alloc::boxed::Box;
-use alloc::format;
 use alloc::vec::Vec;
+use alloc::{format, vec};
 use core::fmt::Debug;
 use core::hash::Hash;
 
 use hashbrown::HashMap;
 use p3_field::Field;
 
-use crate::CircuitError;
 use crate::ops::MmcsVerifyConfig;
 use crate::tables::MmcsPrivateData;
 use crate::types::{NonPrimitiveOpId, WitnessId};
+use crate::{CircuitError, ExprId};
 
 /// Circuit operations.
 ///
@@ -64,6 +64,16 @@ pub enum Op<F> {
         out: WitnessId,
     },
 
+    /// Load unconstrained values into the witness table
+    ///
+    /// Sets `witness[output]`, for each `output` in `outputs`, to arbitrary values
+    /// defined by `filler`.
+    Unconstrained {
+        inputs: Vec<WitnessId>,
+        outputs: Vec<WitnessId>,
+        filler: Box<dyn WitnessHintsFiller<F>>,
+    },
+
     /// Non-primitive operation with executor-based dispatch
     NonPrimitiveOpWithExecutor {
         inputs: Vec<Vec<WitnessId>>,
@@ -95,6 +105,15 @@ impl<F: Field + Clone> Clone for Op<F> {
                 a: *a,
                 b: *b,
                 out: *out,
+            },
+            Op::Unconstrained {
+                inputs,
+                outputs,
+                filler,
+            } => Op::Unconstrained {
+                inputs: inputs.clone(),
+                outputs: outputs.clone(),
+                filler: filler.clone(),
             },
             Op::NonPrimitiveOpWithExecutor {
                 inputs,
@@ -378,5 +397,62 @@ pub trait NonPrimitiveExecutor<F: Field>: Debug {
 impl<F: Field> Clone for Box<dyn NonPrimitiveExecutor<F>> {
     fn clone(&self) -> Self {
         self.boxed()
+    }
+}
+
+/// A trait for defining how unconstrained data (hints) is set.
+pub trait WitnessHintsFiller<F>: Debug + WitnessFillerClone<F> {
+    /// Return the `ExprId` of the inputs
+    fn inputs(&self) -> &[ExprId];
+    /// Return number of outputs filled by this filler
+    fn n_outputs(&self) -> usize;
+    /// Compute the output given the inputs
+    /// # Arguments
+    /// * `inputs` - Input witness
+    fn compute_outputs(&self, inputs_val: Vec<F>) -> Result<Vec<F>, CircuitError>;
+}
+
+impl<F> Clone for Box<dyn WitnessHintsFiller<F>> {
+    fn clone(&self) -> Self {
+        self.clone_box()
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct DefaultHint {
+    pub n_outputs: usize,
+}
+
+impl DefaultHint {
+    pub fn boxed_default<F: Default + Clone>() -> Box<dyn WitnessHintsFiller<F>> {
+        Box::new(Self::default())
+    }
+}
+
+impl<F: Default + Clone> WitnessHintsFiller<F> for DefaultHint {
+    fn inputs(&self) -> &[ExprId] {
+        &[]
+    }
+
+    fn n_outputs(&self) -> usize {
+        self.n_outputs
+    }
+
+    fn compute_outputs(&self, _inputs_val: Vec<F>) -> Result<Vec<F>, CircuitError> {
+        Ok(vec![F::default(); self.n_outputs])
+    }
+}
+
+// Object-safe "clone into Box" helper
+pub trait WitnessFillerClone<F> {
+    fn clone_box(&self) -> Box<dyn WitnessHintsFiller<F>>;
+}
+
+impl<F, T> WitnessFillerClone<F> for T
+where
+    T: WitnessHintsFiller<F> + Clone + 'static,
+{
+    fn clone_box(&self) -> Box<dyn WitnessHintsFiller<F>> {
+        Box::new(self.clone())
     }
 }

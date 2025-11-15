@@ -224,9 +224,7 @@ fn test_fibonacci_batch_verifier() {
     .unwrap();
 
     // Pack values using the builder
-    let num_queries = batch_proof.opening_proof.query_proofs.len();
-    let public_inputs =
-        verifier_inputs.pack_values(&pis, batch_proof, &all_challenges, num_queries);
+    let public_inputs = verifier_inputs.pack_values(&pis, batch_proof, &all_challenges);
 
     assert_eq!(public_inputs.len(), expected_public_input_len);
     assert!(!public_inputs.is_empty());
