@@ -10,7 +10,7 @@ use super::{BuilderConfig, ExpressionBuilder};
 use crate::CircuitBuilderError;
 use crate::builder::public_input_tracker::PublicInputTracker;
 use crate::circuit::Circuit;
-use crate::op::{DefaultHint, NonPrimitiveOpType, WitnessHintFiller};
+use crate::op::{DefaultHint, NonPrimitiveOpType, WitnessHintsFiller};
 use crate::ops::MmcsVerifyConfig;
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};
 
@@ -121,10 +121,10 @@ where
         self.public_tracker.count()
     }
 
-    /// Allocates multiple witnesses. Witness hints are placeholders for values that will later be provided by a
-    /// `filler`.
+    /// Allocates a sequence of witness hints.  
+    /// Each hint is a placeholder whose values will later be provided by the given `filler`.
     #[must_use]
-    pub fn alloc_witness_hints<W: 'static + WitnessHintFiller<F>>(
+    pub fn alloc_witness_hints<W: 'static + WitnessHintsFiller<F>>(
         &mut self,
         filler: W,
         label: &'static str,
@@ -132,8 +132,10 @@ where
         self.expr_builder.add_witness_hints(filler, label)
     }
 
-    /// Allocates multiple witness hints without saying how they should be filled
-    /// TODO: Remove this function
+    /// Allocates a sequence of witness hints using the default filler.  
+    /// This is equivalent to calling `alloc_witness_hints` with `DefaultHint`,  
+    /// but is kept only for compatibility and should be removed.
+    /// TODO: Remove this function.
     #[must_use]
     pub fn alloc_witness_hints_default_filler(
         &mut self,

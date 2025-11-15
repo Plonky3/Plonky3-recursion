@@ -6,7 +6,7 @@ use p3_field::{ExtensionField, Field, PrimeField64};
 use p3_uni_stark::{Entry, SymbolicExpression};
 use p3_util::log2_ceil_u64;
 
-use crate::op::WitnessHintFiller;
+use crate::op::WitnessHintsFiller;
 use crate::{CircuitBuilder, CircuitError, ExprId};
 
 /// Identifiers for special row selector flags in the circuit.
@@ -158,7 +158,9 @@ impl<BF: PrimeField64> BinaryDecompositionHint<BF> {
     }
 }
 
-impl<BF: PrimeField64, F: ExtensionField<BF>> WitnessHintFiller<F> for BinaryDecompositionHint<BF> {
+impl<BF: PrimeField64, F: ExtensionField<BF>> WitnessHintsFiller<F>
+    for BinaryDecompositionHint<BF>
+{
     fn inputs(&self) -> &[ExprId] {
         &self.inputs
     }

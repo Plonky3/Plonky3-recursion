@@ -9,7 +9,7 @@ use itertools::Itertools;
 use p3_field::PrimeCharacteristicRing;
 
 use crate::expr::{Expr, ExpressionGraph};
-use crate::op::WitnessHintFiller;
+use crate::op::WitnessHintsFiller;
 use crate::types::ExprId;
 #[cfg(debug_assertions)]
 use crate::{AllocationEntry, AllocationType};
@@ -26,8 +26,9 @@ pub struct ExpressionBuilder<F> {
     /// Equality constraints to enforce at lowering
     pending_connects: Vec<(ExprId, ExprId)>,
 
-    /// The witness hints together with theit witness fillers
-    hints_fillers: Vec<Box<dyn WitnessHintFiller<F>>>,
+    /// The fillers corresponding to the witness hints sequences.
+    /// The order of fillers must match the order in which the witness hints sequences were allocated.
+    hints_fillers: Vec<Box<dyn WitnessHintsFiller<F>>>,
 
     /// Debug log of all allocations
     #[cfg(debug_assertions)]
@@ -106,26 +107,6 @@ where
         expr_id
     }
 
-    /// Adds a witness hint to the graph.
-    /// It will allocate a `WitnessId` during lowering, with no primitive op.
-    /// TODO: Make this function private.
-    #[allow(unused_variables)]
-    #[must_use]
-    pub fn add_witness_hint(&mut self, label: &'static str) -> ExprId {
-        let expr_id = self.graph.add_expr(Expr::Witness { is_last_hint: true });
-
-        #[cfg(debug_assertions)]
-        self.allocation_log.push(AllocationEntry {
-            expr_id,
-            alloc_type: AllocationType::WitnessHint,
-            label,
-            dependencies: vec![],
-            scope: self.current_scope(),
-        });
-
-        expr_id
-    }
-
     #[allow(unused_variables)]
     /// Adds a witness hint that belongs to a sequence of witness hints constructed
     /// from the same filler, indicating wether is the last hint in the sequence.
@@ -153,7 +134,7 @@ where
     /// witness values for these hints.
     #[allow(unused_variables)]
     #[must_use]
-    pub fn add_witness_hints<W: 'static + WitnessHintFiller<F>>(
+    pub fn add_witness_hints<W: 'static + WitnessHintsFiller<F>>(
         &mut self,
         filler: W,
         label: &'static str,
@@ -251,8 +232,8 @@ where
         &self.pending_connects
     }
 
-    /// Returns a reference to the witness hints with fillers.
-    pub fn hints_fillers(&self) -> &[Box<dyn WitnessHintFiller<F>>] {
+    /// Returns a reference to the hints fillers.
+    pub fn hints_fillers(&self) -> &[Box<dyn WitnessHintsFiller<F>>] {
         &self.hints_fillers
     }
 
@@ -593,7 +574,7 @@ mod tests {
         }
     }
 
-    impl<F: Field> WitnessHintFiller<F> for IdentityHint {
+    impl<F: Field> WitnessHintsFiller<F> for IdentityHint {
         fn inputs(&self) -> &[ExprId] {
             &self.inputs
         }

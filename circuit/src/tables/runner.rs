@@ -287,7 +287,6 @@ mod tests {
     use super::*;
 
     extern crate std;
-    use std::println;
 
     use p3_baby_bear::BabyBear;
     use p3_field::extension::BinomialExtensionField;
@@ -300,7 +299,7 @@ mod tests {
 
     use crate::ExprId;
     use crate::builder::CircuitBuilder;
-    use crate::op::WitnessHintFiller;
+    use crate::op::WitnessHintsFiller;
     use crate::types::WitnessId;
 
     #[test]
@@ -407,7 +406,7 @@ mod tests {
         }
     }
 
-    impl<F: Field> WitnessHintFiller<F> for XHint {
+    impl<F: Field> WitnessHintsFiller<F> for XHint {
         fn inputs(&self) -> &[ExprId] {
             &self.inputs
         }
@@ -448,10 +447,6 @@ mod tests {
         builder.assert_zero(sub_result);
 
         let circuit = builder.build().unwrap();
-        println!("=== CIRCUIT PRIMITIVE OPERATIONS ===");
-        for (i, prim) in circuit.primitive_ops.iter().enumerate() {
-            println!("{i}: {prim:?}");
-        }
 
         let witness_count = circuit.witness_count;
         let runner = circuit.runner();

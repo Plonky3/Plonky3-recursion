@@ -33,11 +33,11 @@ pub enum CircuitBuilderError {
     #[error("Invalid configuration for operation {op:?}")]
     InvalidNonPrimitiveOpConfiguration { op: NonPrimitiveOpType },
 
-    /// A sequence of expressions of type Witness are missing its filler.
+    /// A sequence of expressions of type Witness is missing its filler.
     #[error("Missing hint filler for expression {sequence:?}")]
     MissingWitnessFiller { sequence: Vec<WitnessId> },
 
-    /// A sequence of witness hints has no end or is missing the filler.
+    /// A sequence of witness hints has no end.
     #[error("Witness hint without last hint {sequence:?}.")]
     MalformedWitnessHitnsSequence { sequence: Vec<WitnessId> },
 

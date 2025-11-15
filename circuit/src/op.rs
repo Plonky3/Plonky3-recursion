@@ -71,7 +71,7 @@ pub enum Op<F> {
     Unconstrained {
         inputs: Vec<WitnessId>,
         outputs: Vec<WitnessId>,
-        filler: Box<dyn WitnessHintFiller<F>>,
+        filler: Box<dyn WitnessHintsFiller<F>>,
     },
 
     /// Non-primitive operation with executor-based dispatch
@@ -401,7 +401,7 @@ impl<F: Field> Clone for Box<dyn NonPrimitiveExecutor<F>> {
 }
 
 /// A trait for defining how unconstrained data (hints) is set.
-pub trait WitnessHintFiller<F>: Debug + WitnessFillerClone<F> {
+pub trait WitnessHintsFiller<F>: Debug + WitnessFillerClone<F> {
     /// Return the `ExprId` of the inputs
     fn inputs(&self) -> &[ExprId];
     /// Return number of outputs filled by this filler
@@ -412,7 +412,7 @@ pub trait WitnessHintFiller<F>: Debug + WitnessFillerClone<F> {
     fn compute_outputs(&self, inputs_val: Vec<F>) -> Result<Vec<F>, CircuitError>;
 }
 
-impl<F> Clone for Box<dyn WitnessHintFiller<F>> {
+impl<F> Clone for Box<dyn WitnessHintsFiller<F>> {
     fn clone(&self) -> Self {
         self.clone_box()
     }
@@ -424,12 +424,12 @@ pub struct DefaultHint {
 }
 
 impl DefaultHint {
-    pub fn boxed_default<F: Default + Clone>() -> Box<dyn WitnessHintFiller<F>> {
+    pub fn boxed_default<F: Default + Clone>() -> Box<dyn WitnessHintsFiller<F>> {
         Box::new(Self::default())
     }
 }
 
-impl<F: Default + Clone> WitnessHintFiller<F> for DefaultHint {
+impl<F: Default + Clone> WitnessHintsFiller<F> for DefaultHint {
     fn inputs(&self) -> &[ExprId] {
         &[]
     }
@@ -445,14 +445,14 @@ impl<F: Default + Clone> WitnessHintFiller<F> for DefaultHint {
 
 // Object-safe "clone into Box" helper
 pub trait WitnessFillerClone<F> {
-    fn clone_box(&self) -> Box<dyn WitnessHintFiller<F>>;
+    fn clone_box(&self) -> Box<dyn WitnessHintsFiller<F>>;
 }
 
 impl<F, T> WitnessFillerClone<F> for T
 where
-    T: WitnessHintFiller<F> + Clone + 'static,
+    T: WitnessHintsFiller<F> + Clone + 'static,
 {
-    fn clone_box(&self) -> Box<dyn WitnessHintFiller<F>> {
+    fn clone_box(&self) -> Box<dyn WitnessHintsFiller<F>> {
         Box::new(self.clone())
     }
 }

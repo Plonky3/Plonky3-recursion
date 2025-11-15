@@ -10,7 +10,7 @@ use crate::Op;
 use crate::builder::CircuitBuilderError;
 use crate::builder::compiler::get_witness_id;
 use crate::expr::{Expr, ExpressionGraph};
-use crate::op::WitnessHintFiller;
+use crate::op::WitnessHintsFiller;
 use crate::types::{ExprId, WitnessAllocator, WitnessId};
 
 /// Sparse disjoint-set "find" with path compression over a HashMap (iterative).
@@ -73,8 +73,9 @@ pub struct ExpressionLowerer<'a, F> {
     /// Number of public inputs
     public_input_count: usize,
 
-    /// The hint witnesses with their respective filler
-    hints_fillers: &'a [Box<dyn WitnessHintFiller<F>>],
+    /// The fillers corresponding to the witness hints sequences.
+    /// The order of fillers must match the order in which the witness hints sequences were allocated.
+    hints_fillers: &'a [Box<dyn WitnessHintsFiller<F>>],
 
     /// Witness allocator
     witness_alloc: WitnessAllocator,
@@ -89,7 +90,7 @@ where
         graph: &'a ExpressionGraph<F>,
         pending_connects: &'a [(ExprId, ExprId)],
         public_input_count: usize,
-        hints_fillers: &'a [Box<dyn WitnessHintFiller<F>>],
+        hints_fillers: &'a [Box<dyn WitnessHintsFiller<F>>],
         witness_alloc: WitnessAllocator,
     ) -> Self {
         Self {
