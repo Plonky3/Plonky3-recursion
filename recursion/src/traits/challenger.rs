@@ -72,8 +72,7 @@ pub trait RecursiveChallenger<F: Field> {
     ///
     /// This is useful for sampling query indices in FRI or other bit-based challenges.
     /// The challenge is first sampled as a field element, then decomposed into
-    /// `total_num_bits` bits (added as public inputs), and the first `num_bits`
-    /// are returned.
+    /// `total_num_bits` bits, and the first `num_bits` are returned.
     ///
     /// # Parameters
     /// - `circuit`: Circuit builder for creating operations
@@ -93,7 +92,7 @@ pub trait RecursiveChallenger<F: Field> {
     {
         let x = self.sample(circuit);
 
-        // Decompose to bits (adds public inputs for each bit and verifies they reconstruct x)
+        // Decompose to bits and verifies they reconstruct x
         let bits = decompose_to_bits(circuit, x, total_num_bits)?;
 
         Ok(bits[..num_bits].to_vec())

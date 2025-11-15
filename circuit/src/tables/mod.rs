@@ -38,7 +38,7 @@ pub struct Traces<F> {
 
 #[cfg(debug_assertions)]
 impl<F: alloc::fmt::Debug> Traces<F> {
-    pub fn dum_traces_log(&self) {
+    pub fn dump_traces_log(&self) {
         tracing::debug!("\n=== WITNESS TRACE ===");
         for (i, (idx, val)) in self
             .witness_trace

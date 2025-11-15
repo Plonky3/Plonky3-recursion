@@ -373,7 +373,7 @@ mod tests {
 
         let traces = runner.run().unwrap();
 
-        traces.dum_traces_log();
+        traces.dump_traces_log();
 
         // Verify trace structure
         assert_eq!(traces.witness_trace.index.len(), witness_count as usize);
@@ -458,66 +458,7 @@ mod tests {
 
         let traces = runner.run().unwrap();
 
-        println!("\n=== WITNESS TRACE ===");
-        for (i, (idx, val)) in traces
-            .witness_trace
-            .index
-            .iter()
-            .zip(traces.witness_trace.values.iter())
-            .enumerate()
-        {
-            println!("Row {i}: WitnessId({idx}) = {val:?}");
-        }
-
-        println!("\n=== CONST TRACE ===");
-        for (i, (idx, val)) in traces
-            .const_trace
-            .index
-            .iter()
-            .zip(traces.const_trace.values.iter())
-            .enumerate()
-        {
-            println!("Row {i}: WitnessId({idx}) = {val:?}");
-        }
-
-        println!("\n=== PUBLIC TRACE ===");
-        for (i, (idx, val)) in traces
-            .public_trace
-            .index
-            .iter()
-            .zip(traces.public_trace.values.iter())
-            .enumerate()
-        {
-            println!("Row {i}: WitnessId({idx}) = {val:?}");
-        }
-
-        println!("\n=== MUL TRACE ===");
-        for i in 0..traces.mul_trace.lhs_values.len() {
-            println!(
-                "Row {}: WitnessId({}) * WitnessId({}) -> WitnessId({}) | {:?} * {:?} -> {:?}",
-                i,
-                traces.mul_trace.lhs_index[i],
-                traces.mul_trace.rhs_index[i],
-                traces.mul_trace.result_index[i],
-                traces.mul_trace.lhs_values[i],
-                traces.mul_trace.rhs_values[i],
-                traces.mul_trace.result_values[i]
-            );
-        }
-
-        println!("\n=== ADD TRACE ===");
-        for i in 0..traces.add_trace.lhs_values.len() {
-            println!(
-                "Row {}: WitnessId({}) + WitnessId({}) -> WitnessId({}) | {:?} + {:?} -> {:?}",
-                i,
-                traces.add_trace.lhs_index[i],
-                traces.add_trace.rhs_index[i],
-                traces.add_trace.result_index[i],
-                traces.add_trace.lhs_values[i],
-                traces.add_trace.rhs_values[i],
-                traces.add_trace.result_values[i]
-            );
-        }
+        traces.dump_traces_log();
 
         // Verify trace structure
         assert_eq!(traces.witness_trace.index.len(), witness_count as usize);

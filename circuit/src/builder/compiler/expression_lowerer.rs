@@ -200,9 +200,16 @@ where
                     expr_to_widx.insert(expr_id, out_widx);
                     hints_sequence.push(out_widx);
                     if *is_last_hint {
-                        let filler = fillers_iter.next().expect(
-                            "By construction, every sequence of witness must haver one filler",
-                        );
+                        // Since new hints can only be added through `alloc_witness_hints` or `alloc_witness_hints_default_filler`,
+                        // there will always be exactly one filler for each sequence of expressions of the form
+                        // `Witness{false}, ..., Witness{false}, Witness{true}`.
+                        // Therefore, this error can only occur if the expression lowerer is not being used
+                        // with the circuit builder as intended.
+                        let filler = fillers_iter.next().ok_or(
+                            CircuitBuilderError::MissingWitnessFiller {
+                                sequence: hints_sequence.clone(),
+                            },
+                        )?;
                         let inputs = filler
                             .inputs()
                             .iter()
@@ -280,6 +287,16 @@ where
                     expr_to_widx.insert(expr_id, b_widx);
                 }
             }
+        }
+
+        if !hints_sequence.is_empty() {
+            return Err(CircuitBuilderError::MalformedWitnessHitnsSequence {
+                sequence: hints_sequence,
+            });
+        }
+
+        if fillers_iter.next().is_some() {
+            return Err(CircuitBuilderError::UnmatchetWitnessFiller {});
         }
 
         let witness_count = self.witness_alloc.witness_count();
