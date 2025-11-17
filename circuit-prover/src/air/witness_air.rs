@@ -1,4 +1,4 @@
-//! [`WitnessAir`] defines the AIR for the global witness bus used by every other circuit table.
+//! [`WitnessAir`] defines the AIR for the global witness bus used by all other circuit tables.
 //!
 //! Each logical witness element is stored once in this table together with its witness index.
 //! The generic parameter `D` allows the AIR to handle values from an extension field of degree
@@ -28,12 +28,12 @@
 //!
 //!  - In the first row, lane 0: `index = 0`.
 //!  - Within a row: for every adjacent pair of lanes, `index_next - index_current - 1 = 0`.
-//!  - Across rows: the first lane of row `r + 1` must equal the last lane of row `r` plus 1.
+//!  - Across rows: the index in the first lane of row `r + 1` must equal that of the last lane of row `r` plus 1.
 //!
 //! # Global Interactions
 //!
-//! This table acts as the canonical bus that other chips read from. Every other circuit table
-//! registers receive interactions of the form `(index, value)`, guaranteeing that they fetch
+//! This table acts as the canonical bus that other chips read from. The registers of all the other circuit 
+//! tables receive interactions of the form `(index, value)`, guaranteeing that they fetch
 //! a value consistent with the witness bus maintained by this AIR.
 
 use core::marker::PhantomData;
@@ -50,7 +50,7 @@ use p3_matrix::dense::RowMajorMatrix;
 /// Constraints:
 ///  - first index (lane 0, row 0) equals 0.
 ///  - indices increase by 1 between consecutive lanes.
-///  - last lane of row *r* plus 1 equals first lane of row *r + 1*.
+///  - index of last lane of row *r* plus 1 equals index of first lane of row *r + 1*.
 #[derive(Debug, Clone)]
 pub struct WitnessAir<F, const D: usize = 1> {
     /// Total number of logical witness entries (before packing into lanes).
