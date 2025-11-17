@@ -8,6 +8,7 @@ use alloc::{format, vec};
 
 use p3_air::{Air, BaseAir};
 use p3_batch_stark::{BatchProof, StarkGenericConfig, StarkInstance, Val};
+use p3_circuit::op::PrimitiveOpType;
 use p3_circuit::ops::MmcsVerifyConfig;
 use p3_circuit::tables::{MmcsTrace, Traces};
 use p3_field::extension::BinomialExtensionField;
@@ -379,15 +380,7 @@ where
     }
 }
 
-#[repr(usize)]
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum PrimitiveTable {
-    Witness = 0,
-    Const = 1,
-    Public = 2,
-    Add = 3,
-    Mul = 4,
-}
+pub type PrimitiveTable = PrimitiveOpType;
 
 /// Number of primitive circuit tables included in the unified batch STARK proof.
 pub const NUM_PRIMITIVE_TABLES: usize = PrimitiveTable::Mul as usize + 1;
@@ -949,7 +942,7 @@ mod tests {
         let diff = builder.sub(final_result, expected);
         builder.assert_zero(diff);
 
-        let circuit = builder.build().unwrap();
+        let (circuit, _) = builder.build().unwrap();
         let mut runner = circuit.runner();
 
         let x_val = BabyBear::from_u64(7);
@@ -977,7 +970,7 @@ mod tests {
         let res = builder.add(xy, z);
         let diff = builder.sub(res, expected);
         builder.assert_zero(diff);
-        let circuit = builder.build().unwrap();
+        let (circuit, _) = builder.build().unwrap();
         let mut runner = circuit.runner();
         let xv = Ext4::from_basis_coefficients_slice(&[
             BabyBear::from_u64(2),
@@ -1031,7 +1024,7 @@ mod tests {
         let diff = builder.sub(final_res, expected);
         builder.assert_zero(diff);
 
-        let circuit = builder.build().unwrap();
+        let (circuit, _) = builder.build().unwrap();
         let mut runner = circuit.runner();
 
         let a_val = KoalaBear::from_u64(42);
@@ -1078,7 +1071,7 @@ mod tests {
         let diff = builder.sub(xyz, expected);
         builder.assert_zero(diff);
 
-        let circuit = builder.build().unwrap();
+        let (circuit, _) = builder.build().unwrap();
         let mut runner = circuit.runner();
 
         let x_val = KBExtField::from_basis_coefficients_slice(&[
@@ -1146,7 +1139,7 @@ mod tests {
         let diff = builder.sub(res, expected);
         builder.assert_zero(diff);
 
-        let circuit = builder.build().unwrap();
+        let (circuit, _) = builder.build().unwrap();
         let mut runner = circuit.runner();
 
         let x_val =
@@ -1210,7 +1203,7 @@ mod tests {
             .add_mmcs_verify(&leaves_expr, &directions_expr, &expected_root_expr)
             .expect("mmcs op");
 
-        let circuit = builder.build().unwrap();
+        let (circuit, _) = builder.build().unwrap();
         let mut runner = circuit.runner();
 
         let leaves_value: Vec<Vec<F>> = (0..depth)
