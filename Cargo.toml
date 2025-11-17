@@ -26,24 +26,24 @@ categories = ["cryptography::cryptocurrencies"]
 [workspace.dependencies]
 
 # Plonky3 dependencies - shared across all crates
-p3-air = { git = "https://github.com/Plonky3/Plonky3", rev = "f6041122" }
-p3-baby-bear = { git = "https://github.com/Plonky3/Plonky3", rev = "f6041122" }
-p3-batch-stark = { git = "https://github.com/Plonky3/Plonky3", rev = "f6041122" }
-p3-challenger = { git = "https://github.com/Plonky3/Plonky3", rev = "f6041122" }
-p3-circle = { git = "https://github.com/Plonky3/Plonky3", rev = "f6041122" }
-p3-commit = { git = "https://github.com/Plonky3/Plonky3", rev = "f6041122" }
-p3-dft = { git = "https://github.com/Plonky3/Plonky3", rev = "f6041122" }
-p3-field = { git = "https://github.com/Plonky3/Plonky3", rev = "f6041122" }
-p3-fri = { git = "https://github.com/Plonky3/Plonky3", rev = "f6041122" }
-p3-goldilocks = { git = "https://github.com/Plonky3/Plonky3", rev = "f6041122" }
-p3-keccak = { git = "https://github.com/Plonky3/Plonky3", rev = "f6041122" }
-p3-koala-bear = { git = "https://github.com/Plonky3/Plonky3", rev = "f6041122" }
-p3-matrix = { git = "https://github.com/Plonky3/Plonky3", rev = "f6041122" }
-p3-maybe-rayon = { git = "https://github.com/Plonky3/Plonky3", rev = "f6041122" }
-p3-merkle-tree = { git = "https://github.com/Plonky3/Plonky3", rev = "f6041122" }
-p3-symmetric = { git = "https://github.com/Plonky3/Plonky3", rev = "f6041122" }
-p3-uni-stark = { git = "https://github.com/Plonky3/Plonky3", rev = "f6041122" }
-p3-util = { git = "https://github.com/Plonky3/Plonky3", rev = "f6041122" }
+p3-air = { git = "https://github.com/Plonky3/Plonky3", rev = "5132bc78" }
+p3-baby-bear = { git = "https://github.com/Plonky3/Plonky3", rev = "5132bc78" }
+p3-batch-stark = { git = "https://github.com/Plonky3/Plonky3", rev = "5132bc78" }
+p3-challenger = { git = "https://github.com/Plonky3/Plonky3", rev = "5132bc78" }
+p3-circle = { git = "https://github.com/Plonky3/Plonky3", rev = "5132bc78" }
+p3-commit = { git = "https://github.com/Plonky3/Plonky3", rev = "5132bc78" }
+p3-dft = { git = "https://github.com/Plonky3/Plonky3", rev = "5132bc78" }
+p3-field = { git = "https://github.com/Plonky3/Plonky3", rev = "5132bc78" }
+p3-fri = { git = "https://github.com/Plonky3/Plonky3", rev = "5132bc78" }
+p3-goldilocks = { git = "https://github.com/Plonky3/Plonky3", rev = "5132bc78" }
+p3-keccak = { git = "https://github.com/Plonky3/Plonky3", rev = "5132bc78" }
+p3-koala-bear = { git = "https://github.com/Plonky3/Plonky3", rev = "5132bc78" }
+p3-matrix = { git = "https://github.com/Plonky3/Plonky3", rev = "5132bc78" }
+p3-maybe-rayon = { git = "https://github.com/Plonky3/Plonky3", rev = "5132bc78" }
+p3-merkle-tree = { git = "https://github.com/Plonky3/Plonky3", rev = "5132bc78" }
+p3-symmetric = { git = "https://github.com/Plonky3/Plonky3", rev = "5132bc78" }
+p3-uni-stark = { git = "https://github.com/Plonky3/Plonky3", rev = "5132bc78" }
+p3-util = { git = "https://github.com/Plonky3/Plonky3", rev = "5132bc78" }
 
 # Other common dependencies
 itertools = { version = "0.14.0", default-features = false, features = [

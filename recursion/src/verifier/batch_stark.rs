@@ -231,6 +231,8 @@ impl<
         let opened_values_targets = OpenedValuesTargets {
             trace_local_targets: aggregated_trace_local,
             trace_next_targets: aggregated_trace_next,
+            preprocessed_local_targets: None, // Preprocessed values are not supported yet for batch proofs in Plonky3
+            preprocessed_next_targets: None, // Preprocessed values are not supported yet for batch proofs in Plonky3
             quotient_chunks_targets: aggregated_quotient_chunks,
             random_targets: None,
             _phantom: PhantomData,
@@ -362,7 +364,7 @@ where
             )));
         }
 
-        let log_qd = A::get_log_quotient_degree(air, public_vals.len(), config.is_zk());
+        let log_qd = A::get_log_quotient_degree(air, 0, public_vals.len(), config.is_zk());
         let quotient_degree = 1 << (log_qd + config.is_zk());
 
         if instance.quotient_chunks.len() != quotient_degree {

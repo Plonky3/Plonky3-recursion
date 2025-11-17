@@ -68,7 +68,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     builder.dump_allocation_log();
 
-    let circuit = builder.build()?;
+    let (circuit, _) = builder.build()?;
     let mut runner = circuit.runner();
 
     // Set public inputs

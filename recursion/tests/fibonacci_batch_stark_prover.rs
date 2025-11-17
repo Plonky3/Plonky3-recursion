@@ -118,7 +118,7 @@ fn test_fibonacci_batch_verifier() {
 
     builder.dump_allocation_log();
 
-    let circuit = builder.build().unwrap();
+    let (circuit, _) = builder.build().unwrap();
     let mut runner = circuit.runner();
 
     // Set public input
@@ -213,7 +213,7 @@ fn test_fibonacci_batch_verifier() {
     .unwrap();
 
     // Build the circuit
-    let verification_circuit = circuit_builder.build().unwrap();
+    let (verification_circuit, _) = circuit_builder.build().unwrap();
     let expected_public_input_len = verification_circuit.public_flat_len;
 
     // Generate all the challenge values for batch proof (uses base field AIRs)
