@@ -2,25 +2,28 @@
 //! storing all witness indices and associated values used within the verifier circuit.
 //! The generic parameter `D` allows the AIR to handle values from an extension field of degree `D` over the base field.
 //!
-//! # Columns
+//! # Column layout
 //!
-//! [`WitnessAir`] has `D + 1` columns:
+//! For each witness element, we allocate `D + 1` base-field columns. These are
+//! grouped as:
 //!
 //! - 1 column for the index of the element,
 //! - `D` columns to store the value, where `D` is the degree extension of the used field compared to the current field
 //!
-//! Each row in the table increments the index by 1, starting from 0 (and so the index column is the range from 0 to `height - 1`).
+//! A single row can pack several of these lanes side-by-side, so the full row layout is
+//! this pattern repeated `lanes` times. Indices increase by one from lane to lane, and continue sequentially
+//! across rows.
 //!
 //!  # Constraints
-//!  - in the first row: ensure that `index = 0`.
-//!  - for transitions: `index_next - index_current - 1`.
+//!  - in the first row, lane 0: ensure that `index = 0`.
+//!  - for transitions, between consecutive lanes in the same row: `index_next - index_current - 1`.
+//!  - for transitions, between the last lane of a row and the first lane of the next row: `index_next - index_current - 1`.
 //!
 //! # Global Interactions
 //!
 //! Since this AIR serves as a witness bus, where the other chips read values from, it has interactions with all the other AIRs.
 //! The AIR *receives* (meaning with positive multiplicities) interactions of the form (i, v) where i is the index of the value in the witness bus and v is the value itself.
 
-use alloc::vec::Vec;
 use core::marker::PhantomData;
 
 use p3_air::{Air, AirBuilder, BaseAir};
@@ -29,54 +32,116 @@ use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
 
-use super::utils::pad_witness_to_power_of_two;
-
 /// WitnessAir: enforces preprocessed index column monotonicity.
-/// Layout per row: [value[0..D-1], index]
+/// Layout per row: `[value[0..D), index]` repeated `lanes` times.
+///
 /// Constraints:
-///  - index[0] = 0
-///  - for all i>0: index[i] = index[i-1] + 1
+///  - first index (lane 0, row 0) equals 0.
+///  - indices increase by 1 between consecutive lanes.
+///  - last lane of row *r* plus 1 equals first lane of row *r + 1*.
 #[derive(Debug, Clone)]
 pub struct WitnessAir<F, const D: usize = 1> {
-    pub height: usize,
+    /// Total number of logical witness entries (before packing into lanes).
+    pub num_witnesses: usize,
+    /// Number of witness entries packed side-by-side in every row.
+    pub lanes: usize,
     _phantom: PhantomData<F>,
 }
 
 impl<F: Field, const D: usize> WitnessAir<F, D> {
-    pub const fn new(height: usize) -> Self {
+    pub const fn new(num_witnesses: usize, lanes: usize) -> Self {
+        assert!(lanes > 0, "lane count must be non-zero");
+
         Self {
-            height,
+            num_witnesses,
+            lanes,
             _phantom: PhantomData,
         }
     }
 
-    /// Convert WitnessTrace to RowMajorMatrix for proving with generic extension degree D
-    /// Layout: [value[0..D-1], index]
+    #[inline]
+    pub const fn lane_width() -> usize {
+        D + 1
+    }
+
+    #[inline]
+    pub const fn total_width(&self) -> usize {
+        self.lanes * Self::lane_width()
+    }
+
+    /// Convert WitnessTrace to RowMajorMatrix for proving with generic extension degree D.
+    /// Layout: `[value[0..D), index]` repeated `lanes` times per row.
     pub fn trace_to_matrix<ExtF: BasedVectorSpace<F>>(
         trace: &WitnessTrace<ExtF>,
+        lanes: usize,
     ) -> RowMajorMatrix<F> {
-        let height = trace.values.len();
+        assert!(lanes > 0, "lane count must be non-zero");
+
+        let witness_count = trace.values.len();
         assert_eq!(
-            height,
+            witness_count,
             trace.index.len(),
             "WitnessTrace column length mismatch"
         );
-        let width = D + 1;
+        assert!(
+            witness_count > 0,
+            "WitnessTrace must contain at least one witness entry"
+        );
 
-        let mut values = Vec::with_capacity(height * width);
-        for i in 0..height {
-            let coeffs = trace.values[i].as_basis_coefficients_slice();
-            assert_eq!(
-                coeffs.len(),
-                D,
-                "Extension field degree mismatch for witness value"
-            );
-            values.extend_from_slice(coeffs);
-            values.push(F::from_u32(trace.index[i].0));
+        let lane_width = Self::lane_width();
+        let width = lane_width * lanes;
+        let logical_rows = witness_count.div_ceil(lanes).max(1);
+        let padded_rows = logical_rows.next_power_of_two();
+        let total_slots = padded_rows * lanes;
+
+        let mut values = F::zero_vec(width * padded_rows);
+
+        // Prepare last value coefficients for padding lanes/rows.
+        let last_coeffs = trace
+            .values
+            .last()
+            .expect("non-empty trace")
+            .as_basis_coefficients_slice();
+        assert_eq!(
+            last_coeffs.len(),
+            D,
+            "Extension field degree mismatch for witness value"
+        );
+        let last_coeffs = last_coeffs.to_vec();
+
+        let mut next_virtual_index = trace
+            .index
+            .last()
+            .expect("non-empty trace")
+            .0
+            .checked_add(1)
+            .expect("witness index overflow");
+
+        for slot in 0..total_slots {
+            let row = slot / lanes;
+            let lane = slot % lanes;
+            let mut cursor = row * width + lane * lane_width;
+
+            if slot < witness_count {
+                let coeffs = trace.values[slot].as_basis_coefficients_slice();
+                assert_eq!(
+                    coeffs.len(),
+                    D,
+                    "Extension field degree mismatch for witness value"
+                );
+                values[cursor..cursor + D].copy_from_slice(coeffs);
+                cursor += D;
+                values[cursor] = F::from_u32(trace.index[slot].0);
+            } else {
+                // padding: copy last value coefficients and increment virtual index
+                values[cursor..cursor + D].copy_from_slice(&last_coeffs);
+                cursor += D;
+                values[cursor] = F::from_u32(next_virtual_index);
+                next_virtual_index = next_virtual_index
+                    .checked_add(1)
+                    .expect("witness index overflow");
+            }
         }
-
-        // Pad to power of two with monotonic index continuation
-        pad_witness_to_power_of_two(&mut values, width, height);
 
         RowMajorMatrix::new(values, width)
     }
@@ -84,7 +149,7 @@ impl<F: Field, const D: usize> WitnessAir<F, D> {
 
 impl<F: Field, const D: usize> BaseAir<F> for WitnessAir<F, D> {
     fn width(&self) -> usize {
-        D + 1
+        self.total_width()
     }
 }
 
@@ -93,24 +158,47 @@ where
     AB::F: Field,
 {
     fn eval(&self, builder: &mut AB) {
+        let lane_width = Self::lane_width();
+        let lane_index_offset = lane_width - 1;
+        let lanes = self.lanes;
+
         // First row: index == 0
         {
             let main = builder.main();
             let local = main.row_slice(0).expect("non-empty");
-            let index0 = local[D].clone();
+            let index0 = local[lane_index_offset].clone();
             builder.when_first_row().assert_zero(index0);
         }
 
-        // Transitions: next_index - cur_index - 1 == 0
-        // Use builder scoping to avoid borrow conflicts
+        // Enforce sequential indices within each row (lanes) and across rows.
         {
             let mut b = builder.when_transition();
             let main = b.main();
             let cur = main.row_slice(0).expect("non-empty");
             let nxt = main.row_slice(1).expect("has next row");
-            let idx_cur = cur[D].clone();
-            let idx_next = nxt[D].clone();
-            b.assert_zero(idx_next - idx_cur - AB::Expr::ONE);
+            let mut prev_idx = cur[lane_index_offset].clone();
+            for lane in 1..lanes {
+                let idx = cur[lane * lane_width + lane_index_offset].clone();
+                // between consecutive lanes in the same row: index_next - index_current - 1
+                b.assert_zero(idx.clone() - prev_idx.clone() - AB::Expr::ONE);
+                prev_idx = idx;
+            }
+            let next_first_idx = nxt[lane_index_offset].clone();
+            // between the last lane of a row and the first lane of the next row: index_next - index_current - 1
+            b.assert_zero(next_first_idx - prev_idx - AB::Expr::ONE);
+        }
+
+        if self.lanes > 1 {
+            let mut b = builder.when_last_row();
+            let main = b.main();
+            let last = main.row_slice(0).expect("non-empty");
+            let mut prev_idx = last[lane_index_offset].clone();
+            for lane in 1..lanes {
+                let idx = last[lane * lane_width + lane_index_offset].clone();
+                // between consecutive lanes in the same row: index_next - index_current - 1
+                b.assert_zero(idx.clone() - prev_idx.clone() - AB::Expr::ONE);
+                prev_idx = idx;
+            }
         }
     }
 }
@@ -118,6 +206,7 @@ where
 #[cfg(test)]
 mod tests {
     use alloc::vec;
+    use alloc::vec::Vec;
 
     use p3_baby_bear::BabyBear as Val;
     use p3_circuit::WitnessId;
@@ -138,12 +227,12 @@ mod tests {
             values,
             index: indices,
         };
-        let matrix = WitnessAir::<Val, 1>::trace_to_matrix(&trace);
+        let matrix = WitnessAir::<Val, 1>::trace_to_matrix(&trace, 1);
         assert_eq!(matrix.height(), n);
         assert_eq!(matrix.width(), 2);
 
         let config = build_test_config();
-        let air = WitnessAir::<Val, 1>::new(n);
+        let air = WitnessAir::<Val, 1>::new(n, 1);
         let pis: Vec<Val> = vec![];
 
         let proof = prove(&config, &air, matrix, &pis);
@@ -177,7 +266,7 @@ mod tests {
             values,
             index: indices,
         };
-        let matrix = WitnessAir::<Val, 4>::trace_to_matrix(&trace);
+        let matrix = WitnessAir::<Val, 4>::trace_to_matrix(&trace, 1);
 
         // Verify dimensions: D + 1 = 4 + 1 = 5 columns
         assert_eq!(matrix.width(), 5);
@@ -192,7 +281,7 @@ mod tests {
         }
 
         let config = build_test_config();
-        let air = WitnessAir::<Val, 4>::new(2);
+        let air = WitnessAir::<Val, 4>::new(2, 1);
         let pis: Vec<Val> = vec![];
 
         let proof = prove(&config, &air, matrix, &pis);
@@ -208,7 +297,7 @@ mod tests {
             values,
             index: indices,
         };
-        let matrix = WitnessAir::<Val, 1>::trace_to_matrix(&trace);
+        let matrix = WitnessAir::<Val, 1>::trace_to_matrix(&trace, 1);
 
         // Should be padded to power of two
         assert!(matrix.height().is_power_of_two());
@@ -222,7 +311,7 @@ mod tests {
         }
 
         let config = build_test_config();
-        let air = WitnessAir::<Val, 1>::new(1);
+        let air = WitnessAir::<Val, 1>::new(1, 1);
         let pis: Vec<Val> = vec![];
 
         let proof = prove(&config, &air, matrix, &pis);
@@ -239,7 +328,7 @@ mod tests {
             values,
             index: indices,
         };
-        let matrix = WitnessAir::<Val, 1>::trace_to_matrix(&trace);
+        let matrix = WitnessAir::<Val, 1>::trace_to_matrix(&trace, 1);
 
         // Should be padded to next power of two (4)
         assert_eq!(matrix.height(), 4);
@@ -260,10 +349,63 @@ mod tests {
         }
 
         let config = build_test_config();
-        let air = WitnessAir::<Val, 1>::new(3);
+        let air = WitnessAir::<Val, 1>::new(3, 1);
         let pis: Vec<Val> = vec![];
 
         let proof = prove(&config, &air, matrix, &pis);
         verify(&config, &air, &proof, &pis).expect("Padding verification failed");
+    }
+
+    #[test]
+    fn witness_air_multi_lane_packs_sequential_indices() {
+        let values: Vec<Val> = vec![
+            Val::from_u64(10),
+            Val::from_u64(20),
+            Val::from_u64(30),
+            Val::from_u64(40),
+            Val::from_u64(50),
+        ];
+        let indices: Vec<WitnessId> = (0..values.len() as u32).map(WitnessId).collect();
+        let trace = WitnessTrace {
+            values: values.clone(),
+            index: indices,
+        };
+
+        let lanes = 2;
+        let matrix = WitnessAir::<Val, 1>::trace_to_matrix(&trace, lanes);
+
+        // Width doubles because each row now contains two lanes.
+        assert_eq!(matrix.width(), lanes * WitnessAir::<Val, 1>::lane_width());
+        // 5 witnesses -> ceil(5 / 2) = 3 logical rows -> padded to 4.
+        assert_eq!(matrix.height(), 4);
+
+        // Row 0 holds witnesses 0 and 1.
+        let row0 = matrix.row_slice(0).unwrap();
+        assert_eq!(row0[0], values[0]);
+        assert_eq!(row0[1], Val::from_u64(0));
+        assert_eq!(row0[2], values[1]);
+        assert_eq!(row0[3], Val::from_u64(1));
+
+        // Row 1 holds witnesses 2 and 3.
+        let row1 = matrix.row_slice(1).unwrap();
+        assert_eq!(row1[0], values[2]);
+        assert_eq!(row1[1], Val::from_u64(2));
+        assert_eq!(row1[2], values[3]);
+        assert_eq!(row1[3], Val::from_u64(3));
+
+        // Row 2 holds witness 4 and a virtual filler lane continuing the sequence.
+        let row2 = matrix.row_slice(2).unwrap();
+        assert_eq!(row2[0], values[4]);
+        assert_eq!(row2[1], Val::from_u64(4));
+        assert_eq!(row2[2], values[4]);
+        assert_eq!(row2[3], Val::from_u64(5));
+
+        // Row 3 is padding; indices continue monotonically.
+        let row3 = matrix.row_slice(3).unwrap();
+        assert_eq!(row3[1], Val::from_u64(6));
+        assert_eq!(row3[3], Val::from_u64(7));
+
+        let air = WitnessAir::<Val, 1>::new(values.len(), lanes);
+        assert_eq!(air.total_width(), matrix.width());
     }
 }

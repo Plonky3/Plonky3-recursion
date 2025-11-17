@@ -144,7 +144,7 @@ fn test_fibonacci_batch_verifier() {
     let challenger_proving = Challenger::new(perm.clone());
     let config_proving = MyConfig::new(pcs_proving, challenger_proving);
 
-    let table_packing = TablePacking::new(4, 1);
+    let table_packing = TablePacking::new(1, 4, 1);
     let prover = BatchStarkProver::new(config_proving).with_table_packing(table_packing);
     let batch_stark_proof = prover.prove_all_tables(&traces).unwrap();
     prover.verify_all_tables(&batch_stark_proof).unwrap();
@@ -174,7 +174,10 @@ fn test_fibonacci_batch_verifier() {
 
     // Base field AIRs for native challenge generation
     let native_airs = vec![
-        CircuitTableAir::Witness(WitnessAir::<F, TRACE_D>::new(rows[Table::Witness])),
+        CircuitTableAir::Witness(WitnessAir::<F, TRACE_D>::new(
+            rows[Table::Witness],
+            table_packing.witness_lanes(),
+        )),
         CircuitTableAir::Const(ConstAir::<F, TRACE_D>::new(rows[Table::Const])),
         CircuitTableAir::Public(PublicAir::<F, TRACE_D>::new(rows[Table::Public])),
         CircuitTableAir::Add(AddAir::<F, TRACE_D>::new(

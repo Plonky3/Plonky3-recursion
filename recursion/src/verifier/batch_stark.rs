@@ -106,12 +106,14 @@ where
     assert_eq!(proof.ext_degree, TRACE_D, "trace extension degree mismatch");
     let rows: RowCounts = proof.rows;
     let packing = proof.table_packing;
+    let witness_lanes = packing.witness_lanes();
     let add_lanes = packing.add_lanes();
     let mul_lanes = packing.mul_lanes();
 
     let circuit_airs = vec![
         CircuitTablesAir::Witness(WitnessAir::<SC::Challenge, TRACE_D>::new(
             rows[Table::Witness],
+            witness_lanes,
         )),
         CircuitTablesAir::Const(ConstAir::<SC::Challenge, TRACE_D>::new(rows[Table::Const])),
         CircuitTablesAir::Public(PublicAir::<SC::Challenge, TRACE_D>::new(
