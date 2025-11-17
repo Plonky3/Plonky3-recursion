@@ -1,16 +1,17 @@
+use alloc::boxed::Box;
 use alloc::string::ToString;
 use alloc::vec::Vec;
 use alloc::{format, vec};
 
+use hashbrown::HashMap;
 use tracing::instrument;
 
-use super::Traces;
 use super::add::AddTraceBuilder;
 use super::constant::ConstTraceBuilder;
-use super::mmcs::MmcsTraceBuilder;
 use super::mul::MulTraceBuilder;
 use super::public::PublicTraceBuilder;
 use super::witness::WitnessTraceBuilder;
+use super::{NonPrimitiveTrace, Traces};
 use crate::circuit::Circuit;
 use crate::op::{ExecutionContext, NonPrimitiveOpPrivateData, Op};
 use crate::types::{NonPrimitiveOpId, WitnessId};
@@ -129,12 +130,19 @@ impl<F: CircuitField> CircuitRunner<F> {
             PublicTraceBuilder::new(&self.circuit.primitive_ops, &self.witness).build()?;
         let add_trace = AddTraceBuilder::new(&self.circuit.primitive_ops, &self.witness).build()?;
         let mul_trace = MulTraceBuilder::new(&self.circuit.primitive_ops, &self.witness).build()?;
-        let mmcs_trace = MmcsTraceBuilder::new(
-            &self.circuit,
-            &self.witness,
-            &self.non_primitive_op_private_data,
-        )
-        .build()?;
+
+        let mut non_primitive_traces: HashMap<&'static str, Box<dyn NonPrimitiveTrace<F>>> =
+            HashMap::new();
+        for generator in self.circuit.non_primitive_trace_generators.values() {
+            if let Some(trace) = generator(
+                &self.circuit,
+                &self.witness,
+                &self.non_primitive_op_private_data,
+            )? {
+                let id = trace.id();
+                non_primitive_traces.insert(id, trace);
+            }
+        }
 
         Ok(Traces {
             witness_trace,
@@ -142,7 +150,7 @@ impl<F: CircuitField> CircuitRunner<F> {
             public_trace,
             add_trace,
             mul_trace,
-            mmcs_trace,
+            non_primitive_traces,
         })
     }
 
