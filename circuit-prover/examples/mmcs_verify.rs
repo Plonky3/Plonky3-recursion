@@ -36,7 +36,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = config::baby_bear().build();
     let compress = config::baby_bear_compression();
     let mmcs_config = MmcsVerifyConfig::babybear_quartic_extension_default();
-    let mmcs_table_config = mmcs_config.clone().into();
 
     let mut builder = CircuitBuilder::<F>::new();
     builder.enable_mmcs(&mmcs_config);
@@ -145,7 +144,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     let traces = runner.run()?;
     let mut batch_prover = BatchStarkProver::new(config);
-    batch_prover.register_mmcs_table(mmcs_table_config);
+    batch_prover.register_mmcs_table(mmcs_config.clone());
     let proof = batch_prover.prove_all_tables(&traces)?;
     batch_prover.verify_all_tables(&proof)?;
 

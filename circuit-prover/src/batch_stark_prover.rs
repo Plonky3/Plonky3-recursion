@@ -8,7 +8,8 @@ use alloc::{format, vec};
 
 use p3_air::{Air, BaseAir};
 use p3_batch_stark::{BatchProof, StarkGenericConfig, StarkInstance, Val};
-use p3_circuit::tables::Traces;
+use p3_circuit::ops::MmcsVerifyConfig;
+use p3_circuit::tables::{MmcsTrace, Traces};
 use p3_field::extension::BinomialExtensionField;
 use p3_field::{BasedVectorSpace, Field, PrimeField};
 use p3_matrix::dense::RowMajorMatrix;
@@ -335,15 +336,13 @@ impl MmcsProver {
         SC: StarkGenericConfig + 'static,
         Val<SC>: StarkField,
     {
-        let t = &traces.mmcs_trace;
-        if t.mmcs_paths.is_empty() {
+        let t = traces
+            .non_primitive_trace::<MmcsTrace<Val<SC>>>("mmcs_verify")
+            .filter(|trace| !trace.mmcs_paths.is_empty())?;
+        let rows = t.total_rows();
+        if rows == 0 {
             return None;
         }
-        let rows: usize = t
-            .mmcs_paths
-            .iter()
-            .map(|path| path.left_values.len() + 1)
-            .sum();
         let matrix = MmcsVerifyAir::trace_to_matrix(&self.config, t);
         let air = DynamicAirEntry::new(Box::new(MmcsVerifyAir::<Val<SC>>::new(self.config)));
 
@@ -484,6 +483,9 @@ pub enum BatchStarkProverError {
 
     #[error("verification failed: {0}")]
     Verify(String),
+
+    #[error("missing table prover for non-primitive table `{0}`")]
+    MissingTableProver(&'static str),
 }
 
 /// Enum wrapper to allow heterogeneous table AIRs in a single batch STARK aggregation.
@@ -618,8 +620,10 @@ where
     }
 
     /// Register the non-primitive MMCS prover plugin.
-    pub fn register_mmcs_table(&mut self, config: MmcsTableConfig) {
-        self.register_table_prover(Box::new(MmcsProver { config }));
+    pub fn register_mmcs_table(&mut self, config: MmcsVerifyConfig) {
+        self.register_table_prover(Box::new(MmcsProver {
+            config: MmcsTableConfig::from(config),
+        }));
     }
 
     #[inline]
@@ -673,7 +677,7 @@ where
         w_binomial: Option<Val<SC>>,
     ) -> Result<BatchStarkProof<SC>, BatchStarkProverError>
     where
-        EF: Field + BasedVectorSpace<Val<SC>> + BasedVectorSpace<Val<SC>>,
+        EF: Field + BasedVectorSpace<Val<SC>>,
     {
         // TODO: Consider parallelizing AIR construction and trace-to-matrix conversions.
         // Build matrices and AIRs per table.
@@ -717,6 +721,15 @@ where
             MulAir::<Val<SC>, D>::trace_to_matrix(&traces.mul_trace, mul_lanes);
 
         // We first handle all non-primitive tables dynamically, which will then be batched alongside primitive ones.
+        // Each trace must have a corresponding registered prover for it to be provable.
+        for (&id, trace) in &traces.non_primitive_traces {
+            if trace.rows() == 0 {
+                continue;
+            }
+            if !self.non_primitive_provers.iter().any(|p| p.id() == id) {
+                return Err(BatchStarkProverError::MissingTableProver(id));
+            }
+        }
 
         let mut dynamic_instances: Vec<BatchTableInstance<SC>> = Vec::new();
         if D == 1 {
@@ -907,8 +920,9 @@ where
 mod tests {
     use p3_baby_bear::BabyBear;
     use p3_circuit::builder::CircuitBuilder;
+    use p3_circuit::tables::MmcsPrivateData;
+    use p3_circuit::{MmcsOps, NonPrimitiveOpPrivateData};
     use p3_field::PrimeCharacteristicRing;
-    use p3_field::extension::BinomialExtensionField;
     use p3_goldilocks::Goldilocks;
     use p3_koala_bear::KoalaBear;
 
@@ -1162,5 +1176,101 @@ mod tests {
         let expected_w = <Ext2 as ExtractBinomialW<Goldilocks>>::extract_w().unwrap();
         assert_eq!(proof.w_binomial, Some(expected_w));
         prover.verify_all_tables(&proof).unwrap();
+    }
+
+    #[test]
+    fn prove_fails_without_mmcs_table_prover() {
+        type F = BinomialExtensionField<BabyBear, 4>;
+        let mmcs_config = MmcsVerifyConfig::babybear_quartic_extension_default();
+        let compress = config::baby_bear_compression();
+
+        let depth = 3;
+        let mut builder = CircuitBuilder::<F>::new();
+        builder.enable_mmcs(&mmcs_config);
+
+        let leaves_expr: Vec<Vec<_>> = (0..depth)
+            .map(|i| {
+                (0..if i % 2 == 0 && i != depth - 1 {
+                    mmcs_config.ext_field_digest_elems
+                } else {
+                    0
+                })
+                    .map(|_| builder.alloc_public_input("leaf_hash"))
+                    .collect()
+            })
+            .collect();
+        let directions_expr: Vec<_> = (0..depth)
+            .map(|_| builder.alloc_public_input("direction"))
+            .collect();
+        let expected_root_expr: Vec<_> = (0..mmcs_config.ext_field_digest_elems)
+            .map(|_| builder.alloc_public_input("expected_root"))
+            .collect();
+
+        let mmcs_op_id = builder
+            .add_mmcs_verify(&leaves_expr, &directions_expr, &expected_root_expr)
+            .expect("mmcs op");
+
+        let circuit = builder.build().unwrap();
+        let mut runner = circuit.runner();
+
+        let leaves_value: Vec<Vec<F>> = (0..depth)
+            .map(|i| {
+                if i % 2 == 0 && i != depth - 1 {
+                    (0..mmcs_config.ext_field_digest_elems)
+                        .map(|j| F::from_u64(((i + 1) * (j + 1)) as u64))
+                        .collect()
+                } else {
+                    Vec::new()
+                }
+            })
+            .collect();
+        let siblings: Vec<Vec<F>> = (0..depth)
+            .map(|i| {
+                (0..mmcs_config.ext_field_digest_elems)
+                    .map(|j| F::from_u64(((i + 2) * (j + 3)) as u64))
+                    .collect()
+            })
+            .collect();
+        let directions: Vec<bool> = (0..depth).map(|i| i % 2 == 0).collect();
+
+        let private_data = MmcsPrivateData::new(
+            &compress,
+            &mmcs_config,
+            &leaves_value,
+            &siblings,
+            &directions,
+        )
+        .expect("mmcs private data");
+        let expected_root_value = private_data
+            .path_states
+            .last()
+            .expect("final state")
+            .0
+            .clone();
+
+        let mut public_inputs = Vec::new();
+        for leaf in &leaves_value {
+            public_inputs.extend(leaf);
+        }
+        public_inputs.extend(directions.iter().map(|&dir| F::from_bool(dir)));
+        public_inputs.extend(&expected_root_value);
+
+        runner.set_public_inputs(&public_inputs).unwrap();
+        runner
+            .set_non_primitive_op_private_data(
+                mmcs_op_id,
+                NonPrimitiveOpPrivateData::MmcsVerify(private_data.clone()),
+            )
+            .unwrap();
+
+        let traces = runner.run().unwrap();
+
+        let cfg = config::baby_bear().build();
+        let prover = BatchStarkProver::new(cfg);
+        let result = prover.prove_all_tables(&traces);
+        assert!(matches!(
+            result,
+            Err(BatchStarkProverError::MissingTableProver("mmcs_verify"))
+        ));
     }
 }
