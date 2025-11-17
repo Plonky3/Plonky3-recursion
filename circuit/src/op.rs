@@ -3,12 +3,15 @@ use alloc::vec::Vec;
 use alloc::{format, vec};
 use core::fmt::Debug;
 use core::hash::Hash;
+use core::marker::PhantomData;
 
 use hashbrown::HashMap;
 use p3_field::Field;
+use p3_symmetric::Permutation;
 use strum_macros::EnumCount;
 
 use crate::ops::MmcsVerifyConfig;
+use crate::ops::hash::{CircuitPermutation, HashConfig};
 use crate::tables::MmcsPrivateData;
 use crate::types::{NonPrimitiveOpId, WitnessId};
 use crate::{CircuitError, ExprId};
@@ -244,6 +247,7 @@ pub enum NonPrimitiveOpType {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum NonPrimitiveOpConfig {
     MmcsVerifyConfig(MmcsVerifyConfig),
+    HashConfig(HashConfig),
     None,
 }
 
@@ -326,6 +330,10 @@ pub struct ExecutionContext<'a, F> {
     non_primitive_op_private_data: &'a [Option<NonPrimitiveOpPrivateData<F>>],
     /// Operation configurations
     enabled_ops: &'a HashMap<NonPrimitiveOpType, NonPrimitiveOpConfig>,
+    /// State for hashing operations
+    hashing_state: &'a mut [F],
+    /// Permutation instance for hashing operations
+    permutation: &'a Option<Box<dyn CircuitPermutation<F>>>,
     /// Current operation's NonPrimitiveOpId for error reporting
     operation_id: NonPrimitiveOpId,
 }
@@ -336,14 +344,32 @@ impl<'a, F: Field> ExecutionContext<'a, F> {
         witness: &'a mut [Option<F>],
         non_primitive_op_private_data: &'a [Option<NonPrimitiveOpPrivateData<F>>],
         enabled_ops: &'a HashMap<NonPrimitiveOpType, NonPrimitiveOpConfig>,
+        hashing_state: &'a mut [F],
+        permutation: &'a Option<Box<dyn CircuitPermutation<F>>>,
         operation_id: NonPrimitiveOpId,
     ) -> Self {
         Self {
             witness,
             non_primitive_op_private_data,
             enabled_ops,
+            hashing_state,
+            permutation,
             operation_id,
         }
+    }
+
+    /// Permute the current hashing state
+    pub fn permute_hashing_state(&mut self) -> Result<Vec<F>, CircuitError> {
+        let new_state = self
+            .permutation
+            .as_ref()
+            .ok_or(CircuitError::InvalidNonPrimitiveOpConfiguration {
+                op: NonPrimitiveOpType::HashAbsorb { reset: false },
+            })?
+            .permute(self.hashing_state);
+        self.hashing_state.copy_from_slice(&new_state);
+
+        Ok(new_state)
     }
 
     /// Get witness value at the given index
@@ -445,7 +471,11 @@ pub trait WitnessHintsFiller<F>: Debug + WitnessFillerClone<F> {
     /// Compute the output given the inputs
     /// # Arguments
     /// * `inputs` - Input witness
-    fn compute_outputs(&self, inputs_val: Vec<F>) -> Result<Vec<F>, CircuitError>;
+    fn compute_outputs(
+        &self,
+        inputs_val: Vec<F>,
+        ctx: &mut ExecutionContext<F>,
+    ) -> Result<Vec<F>, CircuitError>;
 }
 
 impl<F> Clone for Box<dyn WitnessHintsFiller<F>> {
@@ -474,8 +504,37 @@ impl<F: Default + Clone> WitnessHintsFiller<F> for DefaultHint {
         self.n_outputs
     }
 
-    fn compute_outputs(&self, _inputs_val: Vec<F>) -> Result<Vec<F>, CircuitError> {
+    fn compute_outputs(
+        &self,
+        _inputs_val: Vec<F>,
+        _ctx: &mut ExecutionContext<F>,
+    ) -> Result<Vec<F>, CircuitError> {
         Ok(vec![F::default(); self.n_outputs])
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct HashHint<F> {
+    _phantom: PhantomData<F>,
+}
+
+impl<F: Field> WitnessHintsFiller<F> for HashHint<F> {
+    fn inputs(&self) -> &[ExprId] {
+        &[]
+    }
+
+    fn n_outputs(&self) -> usize {
+        4 // Example fixed output size
+    }
+
+    fn compute_outputs(
+        &self,
+        _inputs_val: Vec<F>,
+        ctx: &mut ExecutionContext<F>,
+    ) -> Result<Vec<F>, CircuitError> {
+        let mut new_state = ctx.permute_hashing_state()?;
+        new_state.truncate(self.n_outputs());
+        Ok(new_state)
     }
 }
 

@@ -10,13 +10,44 @@ use core::hash::Hash;
 
 use p3_field::{Field, PrimeCharacteristicRing};
 
-use crate::CircuitError;
 use crate::builder::{CircuitBuilder, CircuitBuilderError};
-use crate::op::{ExecutionContext, NonPrimitiveExecutor, NonPrimitiveOpType};
+use crate::op::{ExecutionContext, NonPrimitiveExecutor, NonPrimitiveOpConfig, NonPrimitiveOpType};
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessId};
+use crate::{CircuitError, circuit};
+
+pub trait CircuitPermutation<F> {
+    fn permute(&self, input: &[F]) -> Vec<F>;
+}
+
+/// Configuration parameters for hash operations.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct HashConfig {
+    /// Rate (number of elements absorbed/squeezed per operation)
+    pub rate: usize,
+}
+
+pub struct CircuitChallenger {
+    reset: bool,
+    buffer: Vec<ExprId>,
+}
 
 /// Hash operations trait for `CircuitBuilder`.
 pub trait HashOps<F: Clone + PrimeCharacteristicRing + Eq + Hash> {
+    /// Absorb field elements into the sponge state.
+    /// Does not produce any operations until a squeeze is performed.
+    fn sponge_absorb(
+        &mut self,
+        inputs: &[ExprId],
+        circuit_challenger: &mut CircuitChallenger,
+        reset: bool,
+    ) -> Result<(), CircuitBuilderError>;
+
+    /// Squeeze field elements from the sponge state, creating outputs.
+    fn sponge_squeeze(
+        &mut self,
+        circuit_challenger: &mut CircuitChallenger,
+    ) -> Result<Vec<ExprId>, CircuitBuilderError>;
+
     /// Absorb field elements into the sponge state.
     ///
     /// # Arguments
@@ -29,16 +60,65 @@ pub trait HashOps<F: Clone + PrimeCharacteristicRing + Eq + Hash> {
         reset: bool,
     ) -> Result<NonPrimitiveOpId, CircuitBuilderError>;
 
-    /// Squeeze field elements from the sponge state, creating outputs.
+    /// Squeeze `RATE` elements from the sponge state, creating outputs.
     ///
     /// Returns the newly created output `ExprId`s.
-    fn add_hash_squeeze(&mut self, count: usize) -> Result<Vec<ExprId>, CircuitBuilderError>;
+    fn add_hash_squeeze(&mut self, rate: usize) -> Result<Vec<ExprId>, CircuitBuilderError>;
 }
 
 impl<F> HashOps<F> for CircuitBuilder<F>
 where
     F: Clone + PrimeCharacteristicRing + Eq + Hash,
 {
+    fn sponge_absorb(
+        &mut self,
+        inputs: &[ExprId],
+        circuit_challenger: &mut CircuitChallenger,
+        reset: bool,
+    ) -> Result<(), CircuitBuilderError> {
+        if reset {
+            circuit_challenger.buffer.clear();
+            circuit_challenger.reset = true;
+        }
+        circuit_challenger.buffer.extend_from_slice(inputs);
+        Ok(())
+    }
+
+    fn sponge_squeeze(
+        &mut self,
+        circuit_challenger: &mut CircuitChallenger,
+    ) -> Result<Vec<ExprId>, CircuitBuilderError> {
+        let hash_config = if let Some(config) = self
+            .config()
+            .get_op_config(&NonPrimitiveOpType::HashSqueeze)
+        {
+            if let NonPrimitiveOpConfig::HashConfig(hash_config) = config {
+                hash_config
+            } else {
+                return Err(CircuitBuilderError::InvalidNonPrimitiveOpConfiguration {
+                    op: NonPrimitiveOpType::HashSqueeze,
+                });
+            }
+        } else {
+            return Err(CircuitBuilderError::OpNotAllowed {
+                op: NonPrimitiveOpType::HashSqueeze,
+            });
+        };
+
+        let rate = hash_config.rate;
+
+        // Consume all buffered inputs
+        let chunks = circuit_challenger.buffer.chunks(rate).collect::<Vec<_>>();
+        for chunk in chunks {
+            // The last chunk might not be complete, but we do not pad inputs.
+            self.add_hash_absorb(chunk, circuit_challenger.reset)?;
+            circuit_challenger.reset = false;
+        }
+
+        let outputs = self.add_hash_squeeze(rate)?;
+        Ok(outputs)
+    }
+
     fn add_hash_absorb(
         &mut self,
         inputs: &[ExprId],
@@ -53,10 +133,11 @@ where
         ))
     }
 
-    fn add_hash_squeeze(&mut self, count: usize) -> Result<Vec<ExprId>, CircuitBuilderError> {
+    fn add_hash_squeeze(&mut self, rate: usize) -> Result<Vec<ExprId>, CircuitBuilderError> {
         self.ensure_op_enabled(NonPrimitiveOpType::HashSqueeze)?;
 
-        let outputs = self.alloc_witness_hints_default_filler(count, "hash_squeeze_output");
+        // let filler =
+        let outputs = self.alloc_witness_hints_default_filler(rate, "hash_squeeze_output");
 
         let _ = self.push_non_primitive_op(
             NonPrimitiveOpType::HashSqueeze,
