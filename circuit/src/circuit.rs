@@ -6,7 +6,7 @@ use hashbrown::HashMap;
 use p3_field::Field;
 
 use crate::op::{NonPrimitiveOpConfig, NonPrimitiveOpType, Op};
-use crate::tables::CircuitRunner;
+use crate::tables::{CircuitRunner, TraceGeneratorFn};
 use crate::types::{ExprId, WitnessId};
 
 /// Trait encapsulating the required field operations for circuits
@@ -58,6 +58,8 @@ pub struct Circuit<F> {
     /// Enabled non-primitive operation types with their respective configuration
     pub enabled_ops: HashMap<NonPrimitiveOpType, NonPrimitiveOpConfig>,
     pub expr_to_widx: HashMap<ExprId, WitnessId>,
+    /// Registered non-primitive trace generators.
+    pub non_primitive_trace_generators: HashMap<NonPrimitiveOpType, TraceGeneratorFn<F>>,
 }
 
 impl<F: Field + Clone> Clone for Circuit<F> {
@@ -70,6 +72,7 @@ impl<F: Field + Clone> Clone for Circuit<F> {
             public_flat_len: self.public_flat_len,
             enabled_ops: self.enabled_ops.clone(),
             expr_to_widx: self.expr_to_widx.clone(),
+            non_primitive_trace_generators: self.non_primitive_trace_generators.clone(),
         }
     }
 }
@@ -84,6 +87,7 @@ impl<F> Circuit<F> {
             public_flat_len: 0,
             enabled_ops: HashMap::new(),
             expr_to_widx,
+            non_primitive_trace_generators: HashMap::new(),
         }
     }
 }

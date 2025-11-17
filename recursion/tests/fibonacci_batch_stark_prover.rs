@@ -3,7 +3,7 @@ use p3_baby_bear::{BabyBear, Poseidon2BabyBear};
 use p3_challenger::DuplexChallenger;
 use p3_circuit::CircuitBuilder;
 use p3_circuit_prover::air::{AddAir, ConstAir, MulAir, PublicAir, WitnessAir};
-use p3_circuit_prover::batch_stark_prover::Table;
+use p3_circuit_prover::batch_stark_prover::PrimitiveTable;
 use p3_circuit_prover::{BatchStarkProver, TablePacking};
 use p3_commit::ExtensionMmcs;
 use p3_dft::Radix2DitParallel;
@@ -174,15 +174,15 @@ fn test_fibonacci_batch_verifier() {
 
     // Base field AIRs for native challenge generation
     let native_airs = vec![
-        CircuitTableAir::Witness(WitnessAir::<F, TRACE_D>::new(rows[Table::Witness])),
-        CircuitTableAir::Const(ConstAir::<F, TRACE_D>::new(rows[Table::Const])),
-        CircuitTableAir::Public(PublicAir::<F, TRACE_D>::new(rows[Table::Public])),
+        CircuitTableAir::Witness(WitnessAir::<F, TRACE_D>::new(rows[PrimitiveTable::Witness])),
+        CircuitTableAir::Const(ConstAir::<F, TRACE_D>::new(rows[PrimitiveTable::Const])),
+        CircuitTableAir::Public(PublicAir::<F, TRACE_D>::new(rows[PrimitiveTable::Public])),
         CircuitTableAir::Add(AddAir::<F, TRACE_D>::new(
-            rows[Table::Add],
+            rows[PrimitiveTable::Add],
             packing.add_lanes(),
         )),
         CircuitTableAir::Mul(MulAir::<F, TRACE_D>::new(
-            rows[Table::Mul],
+            rows[PrimitiveTable::Mul],
             packing.mul_lanes(),
         )),
     ];

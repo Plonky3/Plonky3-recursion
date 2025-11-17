@@ -8,7 +8,7 @@ use p3_batch_stark::BatchProof;
 use p3_circuit::CircuitBuilder;
 use p3_circuit::utils::ColumnsTargets;
 use p3_circuit_prover::air::{AddAir, ConstAir, MulAir, PublicAir, WitnessAir};
-use p3_circuit_prover::batch_stark_prover::{RowCounts, Table};
+use p3_circuit_prover::batch_stark_prover::{PrimitiveTable, RowCounts};
 use p3_commit::{Pcs, PolynomialSpace};
 use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
 use p3_uni_stark::StarkGenericConfig;
@@ -111,18 +111,20 @@ where
 
     let circuit_airs = vec![
         CircuitTablesAir::Witness(WitnessAir::<SC::Challenge, TRACE_D>::new(
-            rows[Table::Witness],
+            rows[PrimitiveTable::Witness],
         )),
-        CircuitTablesAir::Const(ConstAir::<SC::Challenge, TRACE_D>::new(rows[Table::Const])),
+        CircuitTablesAir::Const(ConstAir::<SC::Challenge, TRACE_D>::new(
+            rows[PrimitiveTable::Const],
+        )),
         CircuitTablesAir::Public(PublicAir::<SC::Challenge, TRACE_D>::new(
-            rows[Table::Public],
+            rows[PrimitiveTable::Public],
         )),
         CircuitTablesAir::Add(AddAir::<SC::Challenge, TRACE_D>::new(
-            rows[Table::Add],
+            rows[PrimitiveTable::Add],
             add_lanes,
         )),
         CircuitTablesAir::Mul(MulAir::<SC::Challenge, TRACE_D>::new(
-            rows[Table::Mul],
+            rows[PrimitiveTable::Mul],
             mul_lanes,
         )),
     ];

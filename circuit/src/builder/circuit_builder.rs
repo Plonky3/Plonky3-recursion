@@ -6,13 +6,13 @@ use itertools::zip_eq;
 use p3_field::{Field, PrimeCharacteristicRing};
 
 use super::compiler::{ExpressionLowerer, NonPrimitiveLowerer, Optimizer};
-use super::{BuilderConfig, ExpressionBuilder};
-use crate::CircuitBuilderError;
-use crate::builder::public_input_tracker::PublicInputTracker;
+use super::{BuilderConfig, ExpressionBuilder, PublicInputTracker};
 use crate::circuit::Circuit;
 use crate::op::{DefaultHint, NonPrimitiveOpType, WitnessHintsFiller};
 use crate::ops::MmcsVerifyConfig;
+use crate::tables::{TraceGeneratorFn, generate_mmcs_trace};
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};
+use crate::{CircuitBuilderError, CircuitField};
 
 /// Builder for constructing circuits.
 pub struct CircuitBuilder<F> {
@@ -30,6 +30,9 @@ pub struct CircuitBuilder<F> {
 
     /// Builder configuration
     config: BuilderConfig,
+
+    /// Registered non-primitive trace generators.
+    non_primitive_trace_generators: HashMap<NonPrimitiveOpType, TraceGeneratorFn<F>>,
 }
 
 /// The non-primitive operation id, type, and the vectors of the expressions representing its inputs
@@ -56,6 +59,7 @@ where
             witness_alloc: WitnessAllocator::new(),
             non_primitive_ops: Vec::new(),
             config: BuilderConfig::new(),
+            non_primitive_trace_generators: HashMap::new(),
         }
     }
 
@@ -65,8 +69,29 @@ where
     }
 
     /// Enables Mmcs verification operations.
-    pub fn enable_mmcs(&mut self, mmcs_config: &MmcsVerifyConfig) {
+    pub fn enable_mmcs(&mut self, mmcs_config: &MmcsVerifyConfig)
+    where
+        F: CircuitField,
+    {
         self.config.enable_mmcs(mmcs_config);
+        self.non_primitive_trace_generators
+            .insert(NonPrimitiveOpType::MmcsVerify, generate_mmcs_trace::<F>);
+    }
+
+    /// Enables HashAbsorb operations.
+    pub fn enable_hash_absorb(&mut self, reset: bool) {
+        self.config.enable_hash_absorb(reset);
+    }
+
+    /// Enables HashSqueeze operations.
+    pub fn enable_hash_squeeze(&mut self) {
+        self.config.enable_hash_squeeze();
+    }
+
+    /// Enables hash operations.
+    pub fn enable_hash(&mut self, reset: bool) {
+        self.enable_hash_absorb(reset);
+        self.enable_hash_squeeze();
     }
 
     /// Enables FRI verification operations.
@@ -430,6 +455,7 @@ where
         circuit.public_rows = public_rows;
         circuit.public_flat_len = self.public_tracker.count();
         circuit.enabled_ops = self.config.into_enabled_ops();
+        circuit.non_primitive_trace_generators = self.non_primitive_trace_generators;
 
         Ok((circuit, public_mappings))
     }

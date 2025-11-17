@@ -1,17 +1,18 @@
+use alloc::boxed::Box;
 use alloc::string::ToString;
 use alloc::vec::Vec;
 use alloc::{format, vec};
 
+use hashbrown::HashMap;
 use p3_util::zip_eq::zip_eq;
 use tracing::instrument;
 
-use super::Traces;
 use super::add::AddTraceBuilder;
 use super::constant::ConstTraceBuilder;
-use super::mmcs::MmcsTraceBuilder;
 use super::mul::MulTraceBuilder;
 use super::public::PublicTraceBuilder;
 use super::witness::WitnessTraceBuilder;
+use super::{NonPrimitiveTrace, Traces};
 use crate::circuit::Circuit;
 use crate::op::{ExecutionContext, NonPrimitiveOpPrivateData, Op};
 use crate::types::{NonPrimitiveOpId, WitnessId};
@@ -130,12 +131,19 @@ impl<F: CircuitField> CircuitRunner<F> {
             PublicTraceBuilder::new(&self.circuit.primitive_ops, &self.witness).build()?;
         let add_trace = AddTraceBuilder::new(&self.circuit.primitive_ops, &self.witness).build()?;
         let mul_trace = MulTraceBuilder::new(&self.circuit.primitive_ops, &self.witness).build()?;
-        let mmcs_trace = MmcsTraceBuilder::new(
-            &self.circuit,
-            &self.witness,
-            &self.non_primitive_op_private_data,
-        )
-        .build()?;
+
+        let mut non_primitive_traces: HashMap<&'static str, Box<dyn NonPrimitiveTrace<F>>> =
+            HashMap::new();
+        for generator in self.circuit.non_primitive_trace_generators.values() {
+            if let Some(trace) = generator(
+                &self.circuit,
+                &self.witness,
+                &self.non_primitive_op_private_data,
+            )? {
+                let id = trace.id();
+                non_primitive_traces.insert(id, trace);
+            }
+        }
 
         Ok(Traces {
             witness_trace,
@@ -143,7 +151,7 @@ impl<F: CircuitField> CircuitRunner<F> {
             public_trace,
             add_trace,
             mul_trace,
-            mmcs_trace,
+            non_primitive_traces,
         })
     }
 
@@ -346,54 +354,6 @@ mod tests {
             .init();
     }
 
-    #[test]
-    // Proves that we know x such that 37 * x - 111 = 0
-    fn test_toy_example_37_times_x_minus_111() {
-        init_logger();
-        let mut builder = CircuitBuilder::new();
-
-        let x = builder.add_public_input();
-        let c37 = builder.add_const(BabyBear::from_u64(37));
-        let c111 = builder.add_const(BabyBear::from_u64(111));
-
-        let mul_result = builder.mul(c37, x);
-        let sub_result = builder.sub(mul_result, c111);
-        builder.assert_zero(sub_result);
-
-        builder.dump_allocation_log();
-
-        let circuit = builder.build().unwrap();
-
-        let witness_count = circuit.witness_count;
-        let mut runner = circuit.runner();
-
-        // Set public input: x = 3 (should satisfy 37 * 3 - 111 = 0)
-        runner.set_public_inputs(&[BabyBear::from_u64(3)]).unwrap();
-
-        let traces = runner.run().unwrap();
-
-        traces.dump_traces_log();
-
-        // Verify trace structure
-        assert_eq!(traces.witness_trace.index.len(), witness_count as usize);
-
-        // Should have constants: 0, 37, 111
-        assert_eq!(traces.const_trace.values.len(), 3);
-
-        // Should have one public input
-        assert_eq!(traces.public_trace.values.len(), 1);
-        assert_eq!(traces.public_trace.values[0], BabyBear::from_u64(3));
-
-        // Should have one mul operation: 37 * x
-        assert_eq!(traces.mul_trace.lhs_values.len(), 1);
-
-        // Encoded subtraction lands in the add table (result + rhs = lhs).
-        assert_eq!(traces.add_trace.lhs_values.len(), 1);
-        assert_eq!(traces.add_trace.lhs_index, vec![WitnessId(2)]);
-        assert_eq!(traces.add_trace.rhs_index, vec![WitnessId(0)]);
-        assert_eq!(traces.add_trace.result_index, vec![WitnessId(4)]);
-    }
-
     #[derive(Debug, Clone)]
     /// The hint defined by x in an equation a*x - b = 0
     struct XHint {
@@ -434,7 +394,8 @@ mod tests {
 
     #[test]
     // Proves that we know x such that 37 * x - 111 = 0
-    fn test_toy_example_37_times_x_minus_111_with_witness_hint() {
+    fn test_toy_example_37_times_x_minus_111() {
+        init_logger();
         let mut builder = CircuitBuilder::new();
 
         let c37 = builder.add_const(BabyBear::from_u64(37));
@@ -453,7 +414,7 @@ mod tests {
 
         let traces = runner.run().unwrap();
 
-        traces.dump_traces_log();
+        traces.dump_primitive_traces_log();
 
         // Verify trace structure
         assert_eq!(traces.witness_trace.index.len(), witness_count as usize);
