@@ -32,7 +32,7 @@
 //!
 //! # Global Interactions
 //!
-//! This table acts as the canonical bus that other chips read from. The registers of all the other circuit 
+//! This table acts as the canonical bus that other chips read from. The registers of all the other circuit
 //! tables receive interactions of the form `(index, value)`, guaranteeing that they fetch
 //! a value consistent with the witness bus maintained by this AIR.
 
