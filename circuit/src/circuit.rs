@@ -136,9 +136,6 @@ impl<F: Field> Circuit<F> {
                     max_idx = max_idx.max(a.0).max(b.0).max(out.0);
                 }
                 Op::Unconstrained { outputs, .. } => {
-                    let table_idx = PrimitiveOpType::Witness as usize;
-                    preprocessed[table_idx]
-                        .extend(outputs.iter().map(|output| F::from_u32(output.0)));
                     max_idx = iter::once(max_idx)
                         .chain(outputs.iter().map(|&output| output.0))
                         .max()
