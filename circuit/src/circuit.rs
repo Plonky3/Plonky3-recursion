@@ -1,6 +1,7 @@
 use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt::Debug;
+use core::iter;
 use core::ops::{Add, Mul, Sub};
 
 use hashbrown::HashMap;
@@ -133,6 +134,15 @@ impl<F: Field> Circuit<F> {
                         F::from_u32(out.0),
                     ]);
                     max_idx = max_idx.max(a.0).max(b.0).max(out.0);
+                }
+                Op::Unconstrained { outputs, .. } => {
+                    let table_idx = PrimitiveOpType::Witness as usize;
+                    preprocessed[table_idx]
+                        .extend(outputs.iter().map(|output| F::from_u32(output.0)));
+                    max_idx = iter::once(max_idx)
+                        .chain(outputs.iter().map(|&output| output.0))
+                        .max()
+                        .unwrap_or(max_idx);
                 }
                 Op::NonPrimitiveOpWithExecutor { .. } => panic!(
                     "preprocessed values are not yet implemented for non primitive operations."
