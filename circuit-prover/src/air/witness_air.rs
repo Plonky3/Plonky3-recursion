@@ -1,28 +1,40 @@
-//! [`WitnessAir`] is the central AIR in our construction of a recursive verifier. It represents the **global witness bus**,
-//! storing all witness indices and associated values used within the verifier circuit.
-//! The generic parameter `D` allows the AIR to handle values from an extension field of degree `D` over the base field.
+//! [`WitnessAir`] defines the AIR for the global witness bus used by every other circuit table.
+//!
+//! Each logical witness element is stored once in this table together with its witness index.
+//! The generic parameter `D` allows the AIR to handle values from an extension field of degree
+//! `D` over the base field, while the runtime parameter `lanes` controls how many witness
+//! elements are packed side-by-side in every row of the trace.
 //!
 //! # Column layout
 //!
-//! For each witness element, we allocate `D + 1` base-field columns. These are
-//! grouped as:
+//! For each witness element (lane) we allocate `D + 1` base-field columns. These are grouped as:
 //!
 //! - 1 column for the index of the element,
 //! - `D` columns to store the value, where `D` is the degree extension of the used field compared to the current field
 //!
 //! A single row can pack several of these lanes side-by-side, so the full row layout is
-//! this pattern repeated `lanes` times. Indices increase by one from lane to lane, and continue sequentially
-//! across rows.
+//! this pattern repeated `lanes` times:
 //!
-//!  # Constraints
-//!  - in the first row, lane 0: ensure that `index = 0`.
-//!  - for transitions, between consecutive lanes in the same row: `index_next - index_current - 1`.
-//!  - for transitions, between the last lane of a row and the first lane of the next row: `index_next - index_current - 1`.
+//! ```text
+//!     [value[0..D), index] repeated `lanes` times.
+//! ```
+//!
+//! The logical ordering of witnesses matches the physical ordering of lanes: lane `ℓ + 1`
+//! always stores the witness with index `index_lane_ℓ + 1`, and the first lane of the next row
+//! continues the same sequence. When the final row is not completely filled, unused lanes are
+//! padded by repeating the last witness value and extending the index sequence.
+//!
+//! # Constraints
+//!
+//!  - In the first row, lane 0: `index = 0`.
+//!  - Within a row: for every adjacent pair of lanes, `index_next - index_current - 1 = 0`.
+//!  - Across rows: the first lane of row `r + 1` must equal the last lane of row `r` plus 1.
 //!
 //! # Global Interactions
 //!
-//! Since this AIR serves as a witness bus, where the other chips read values from, it has interactions with all the other AIRs.
-//! The AIR *receives* (meaning with positive multiplicities) interactions of the form (i, v) where i is the index of the value in the witness bus and v is the value itself.
+//! This table acts as the canonical bus that other chips read from. Every other circuit table
+//! registers receive interactions of the form `(index, value)`, guaranteeing that they fetch
+//! a value consistent with the witness bus maintained by this AIR.
 
 use core::marker::PhantomData;
 
@@ -32,7 +44,7 @@ use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
 
-/// WitnessAir: enforces preprocessed index column monotonicity.
+/// AIR enforcing a monotonically increasing witness index column for the global bus.
 /// Layout per row: `[value[0..D), index]` repeated `lanes` times.
 ///
 /// Constraints:
@@ -49,6 +61,10 @@ pub struct WitnessAir<F, const D: usize = 1> {
 }
 
 impl<F: Field, const D: usize> WitnessAir<F, D> {
+    /// Construct a new `WitnessAir`.
+    ///
+    /// - `num_witnesses`: total number of logical witness entries.
+    /// - `lanes`: how many witness entries are packed side-by-side in each trace row.
     pub const fn new(num_witnesses: usize, lanes: usize) -> Self {
         assert!(lanes > 0, "lane count must be non-zero");
 
@@ -69,8 +85,24 @@ impl<F: Field, const D: usize> WitnessAir<F, D> {
         self.lanes * Self::lane_width()
     }
 
-    /// Convert WitnessTrace to RowMajorMatrix for proving with generic extension degree D.
-    /// Layout: `[value[0..D), index]` repeated `lanes` times per row.
+    /// Convert a [`WitnessTrace`] into a [`RowMajorMatrix`] suitable for the STARK prover.
+    ///
+    /// This function is responsible for:
+    ///
+    /// 1. Decomposing each witness value into its `D` base-field coordinates,
+    /// 2. Packing `lanes` witnesses side-by-side per row, maintaining the natural witness order,
+    /// 3. Padding the trace to have a power-of-two number of rows for FFT-friendly
+    ///    execution by the STARK prover.
+    ///
+    /// The resulting matrix has:
+    ///
+    /// - width `= lanes * LANE_WIDTH`,
+    /// - height equal to the number of rows after packing and padding.
+    ///
+    /// The layout within a row is:
+    ///
+    /// ```text
+    ///     [value[0..D), index] repeated `lanes` times.
     pub fn trace_to_matrix<ExtF: BasedVectorSpace<F>>(
         trace: &WitnessTrace<ExtF>,
         lanes: usize,
