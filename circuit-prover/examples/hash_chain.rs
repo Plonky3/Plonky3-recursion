@@ -107,7 +107,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     let traces = runner.run()?;
 
     // Extract actual computed values from the witness trace
-    // Since squeeze_outputs are connected to public_inputs, they share the same witness slots
     let mut actual_outputs = Vec::new();
     for squeeze_output_expr in &squeeze_outputs {
         let witness_id = expr_to_widx.get(squeeze_output_expr).ok_or_else(|| {
@@ -117,7 +116,6 @@ fn main() -> Result<(), Box<dyn Error>> {
             )
         })?;
 
-        // Find the value in the witness trace
         let value = traces
             .witness_trace
             .index
@@ -159,15 +157,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         );
     }
 
-    println!(
-        "Successfully verified hash chain of length {} with {} squeeze outputs",
-        chain_length,
-        expected_outputs.len()
-    );
-
-    println!("Expected outputs: {:?}", expected_outputs);
-    println!("Actual outputs:   {:?}", actual_outputs);
-
     // Prove and verify the circuit
     let stark_config = config::baby_bear().build();
     let table_packing = TablePacking::new(4, 4, 1);
@@ -176,7 +165,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     let proof = prover.prove_all_tables(&traces)?;
     prover.verify_all_tables(&proof)?;
 
-    println!("Successfully proved and verified Poseidon2 hash chain!");
+    println!(
+        "Successfully proved and verified Poseidon2 hash chain of length {}!",
+        chain_length
+    );
 
     Ok(())
 }
