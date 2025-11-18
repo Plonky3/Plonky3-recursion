@@ -17,10 +17,6 @@ create-missing = true
 
 [preprocessor.katex]
 
-[preprocessor.bib]
-bibliography = "bibliography.bib"
-link-citations = true
-
 [preprocessor.mermaid]
 command = "mdbook-mermaid"
 
