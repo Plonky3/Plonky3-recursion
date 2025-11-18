@@ -119,68 +119,70 @@ where
     }
 }
 
-#[cfg(debug_assertions)]
 impl<F: alloc::fmt::Debug> Traces<F> {
     pub fn dump_primitive_traces_log(&self) {
-        tracing::debug!("\n=== WITNESS TRACE ===");
-        for (i, (idx, val)) in self
-            .witness_trace
-            .index
-            .iter()
-            .zip(self.witness_trace.values.iter())
-            .enumerate()
+        #[cfg(debug_assertions)]
         {
-            tracing::debug!("Row {i}: WitnessId({idx}) = {val:?}");
-        }
+            tracing::debug!("\n=== WITNESS TRACE ===");
+            for (i, (idx, val)) in self
+                .witness_trace
+                .index
+                .iter()
+                .zip(self.witness_trace.values.iter())
+                .enumerate()
+            {
+                tracing::debug!("Row {i}: WitnessId({idx}) = {val:?}");
+            }
 
-        tracing::debug!("\n=== CONST TRACE ===");
-        for (i, (idx, val)) in self
-            .const_trace
-            .index
-            .iter()
-            .zip(self.const_trace.values.iter())
-            .enumerate()
-        {
-            tracing::debug!("Row {i}: WitnessId({idx}) = {val:?}");
-        }
+            tracing::debug!("\n=== CONST TRACE ===");
+            for (i, (idx, val)) in self
+                .const_trace
+                .index
+                .iter()
+                .zip(self.const_trace.values.iter())
+                .enumerate()
+            {
+                tracing::debug!("Row {i}: WitnessId({idx}) = {val:?}");
+            }
 
-        tracing::debug!("\n=== PUBLIC TRACE ===");
-        for (i, (idx, val)) in self
-            .public_trace
-            .index
-            .iter()
-            .zip(self.public_trace.values.iter())
-            .enumerate()
-        {
-            tracing::debug!("Row {i}: WitnessId({idx}) = {val:?}");
-        }
+            tracing::debug!("\n=== PUBLIC TRACE ===");
+            for (i, (idx, val)) in self
+                .public_trace
+                .index
+                .iter()
+                .zip(self.public_trace.values.iter())
+                .enumerate()
+            {
+                tracing::debug!("Row {i}: WitnessId({idx}) = {val:?}");
+            }
 
-        tracing::debug!("\n=== MUL TRACE ===");
-        for i in 0..self.mul_trace.lhs_values.len() {
-            tracing::debug!(
-                "Row {}: WitnessId({}) * WitnessId({}) -> WitnessId({}) | {:?} * {:?} -> {:?}",
-                i,
-                self.mul_trace.lhs_index[i],
-                self.mul_trace.rhs_index[i],
-                self.mul_trace.result_index[i],
-                self.mul_trace.lhs_values[i],
-                self.mul_trace.rhs_values[i],
-                self.mul_trace.result_values[i]
-            );
-        }
+            tracing::debug!("\n=== MUL TRACE ===");
+            for i in 0..self.mul_trace.lhs_values.len() {
+                tracing::debug!(
+                    "Row {}: WitnessId({}) * WitnessId({}) -> WitnessId({}) | {:?} * {:?} -> {:?}",
+                    i,
+                    self.mul_trace.lhs_index[i],
+                    self.mul_trace.rhs_index[i],
+                    self.mul_trace.result_index[i],
+                    self.mul_trace.lhs_values[i],
+                    self.mul_trace.rhs_values[i],
+                    self.mul_trace.result_values[i]
+                );
+            }
 
-        tracing::debug!("\n=== ADD TRACE ===");
-        for i in 0..self.add_trace.lhs_values.len() {
-            tracing::debug!(
-                "Row {}: WitnessId({}) + WitnessId({}) -> WitnessId({}) | {:?} + {:?} -> {:?}",
-                i,
-                self.add_trace.lhs_index[i],
-                self.add_trace.rhs_index[i],
-                self.add_trace.result_index[i],
-                self.add_trace.lhs_values[i],
-                self.add_trace.rhs_values[i],
-                self.add_trace.result_values[i]
-            );
+            tracing::debug!("\n=== ADD TRACE ===");
+            for i in 0..self.add_trace.lhs_values.len() {
+                tracing::debug!(
+                    "Row {}: WitnessId({}) + WitnessId({}) -> WitnessId({}) | {:?} + {:?} -> {:?}",
+                    i,
+                    self.add_trace.lhs_index[i],
+                    self.add_trace.rhs_index[i],
+                    self.add_trace.result_index[i],
+                    self.add_trace.lhs_values[i],
+                    self.add_trace.rhs_values[i],
+                    self.add_trace.result_values[i]
+                );
+            }
         }
     }
 }
