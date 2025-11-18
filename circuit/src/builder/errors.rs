@@ -39,7 +39,7 @@ pub enum CircuitBuilderError {
 
     /// A sequence of witness hints has no end.
     #[error("Witness hint without last hint {sequence:?}.")]
-    MalformedWitnessHitnsSequence { sequence: Vec<WitnessId> },
+    MalformedWitnessHintsSequence { sequence: Vec<WitnessId> },
 
     /// Witness filler without any hints sequence.
     #[error("Witness filler is missing a witness hints sequence")]

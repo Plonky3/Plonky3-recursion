@@ -6,7 +6,7 @@ use core::hash::Hash;
 use core::marker::PhantomData;
 
 use hashbrown::HashMap;
-use p3_field::Field;
+use p3_field::{Field, PrimeCharacteristicRing};
 use p3_symmetric::Permutation;
 use strum_macros::EnumCount;
 
@@ -240,7 +240,9 @@ pub enum NonPrimitiveOpType {
         reset: bool,
     },
     /// Hash squeeze operation - extracts field elements from sponge state
-    HashSqueeze,
+    HashSqueeze {
+        reset: bool,
+    },
 }
 
 /// Non-primitive operation types
@@ -299,7 +301,10 @@ pub enum NonPrimitiveOp {
     ///
     /// Public interface (on witness bus):
     /// - `outputs`: Field elements extracted from the sponge
-    HashSqueeze { outputs: Vec<WitnessId> },
+    HashSqueeze {
+        inputs: Vec<WitnessId>,
+        outputs: Vec<WitnessId>,
+    },
 }
 
 /// Private auxiliary data for non-primitive operations
@@ -338,7 +343,7 @@ pub struct ExecutionContext<'a, F> {
     operation_id: NonPrimitiveOpId,
 }
 
-impl<'a, F: Field> ExecutionContext<'a, F> {
+impl<'a, F: PrimeCharacteristicRing + Eq + Clone> ExecutionContext<'a, F> {
     /// Create a new execution context
     pub fn new(
         witness: &'a mut [Option<F>],
@@ -367,7 +372,7 @@ impl<'a, F: Field> ExecutionContext<'a, F> {
                 op: NonPrimitiveOpType::HashAbsorb { reset: false },
             })?
             .permute(self.hashing_state);
-        self.hashing_state.copy_from_slice(&new_state);
+        self.hashing_state.clone_from_slice(&new_state);
 
         Ok(new_state)
     }
@@ -388,8 +393,8 @@ impl<'a, F: Field> ExecutionContext<'a, F> {
         }
 
         // Check for conflicting reassignment
-        if let Some(existing_value) = self.witness[widx.0 as usize]
-            && existing_value != value
+        if let Some(existing_value) = &self.witness[widx.0 as usize]
+            && *existing_value != value
         {
             return Err(CircuitError::WitnessConflict {
                 witness_id: widx,
@@ -514,17 +519,45 @@ impl<F: Default + Clone> WitnessHintsFiller<F> for DefaultHint {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct HashHint<F> {
-    _phantom: PhantomData<F>,
+pub struct HashHint {
+    inputs: Vec<ExprId>,
+    n_outputs: usize,
 }
 
-impl<F: Field> WitnessHintsFiller<F> for HashHint<F> {
-    fn inputs(&self) -> &[ExprId] {
-        &[]
+impl HashHint {
+    pub fn new(inputs: &[ExprId], rate: usize) -> Self {
+        Self {
+            inputs: inputs.to_vec(),
+            n_outputs: rate,
+        }
     }
 
+    // fn absorb(
+    //     &self,
+    //     inputs: &[F],
+    //     ctx: &mut ExecutionContext<F>,
+    //     reset: bool,
+    // ) -> Result<(), CircuitError> {
+    //     let rate = self.n_outputs;
+    //     let state = &mut ctx.hashing_state;
+    //     state[..inputs.len()].copy_from_slice(inputs);
+    //     if reset {
+    //         state[rate..].fill(F::ZERO);
+    //     }
+    //     ctx.permute_hashing_state()?;
+
+    //     Ok(())
+    // }
+}
+
+impl<F: PrimeCharacteristicRing + Eq + Clone> WitnessHintsFiller<F> for HashHint {
+    fn inputs(&self) -> &[ExprId] {
+        &self.inputs
+    }
+
+    // Rate of the sponge, and size of the squeezed output
     fn n_outputs(&self) -> usize {
-        4 // Example fixed output size
+        4
     }
 
     fn compute_outputs(
@@ -533,7 +566,7 @@ impl<F: Field> WitnessHintsFiller<F> for HashHint<F> {
         ctx: &mut ExecutionContext<F>,
     ) -> Result<Vec<F>, CircuitError> {
         let mut new_state = ctx.permute_hashing_state()?;
-        new_state.truncate(self.n_outputs());
+        new_state.truncate(self.n_outputs);
         Ok(new_state)
     }
 }

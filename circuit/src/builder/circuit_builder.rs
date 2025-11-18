@@ -10,6 +10,7 @@ use super::{BuilderConfig, ExpressionBuilder, PublicInputTracker};
 use crate::circuit::Circuit;
 use crate::op::{DefaultHint, NonPrimitiveOpType, WitnessHintsFiller};
 use crate::ops::MmcsVerifyConfig;
+use crate::ops::hash::HashConfig;
 use crate::tables::{TraceGeneratorFn, generate_mmcs_trace};
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};
 use crate::{CircuitBuilderError, CircuitField};
@@ -83,20 +84,9 @@ where
             .insert(NonPrimitiveOpType::MmcsVerify, generate_mmcs_trace::<F>);
     }
 
-    /// Enables HashAbsorb operations.
-    pub fn enable_hash_absorb(&mut self, reset: bool) {
-        self.config.enable_hash_absorb(reset);
-    }
-
     /// Enables HashSqueeze operations.
-    pub fn enable_hash_squeeze(&mut self) {
-        self.config.enable_hash_squeeze();
-    }
-
-    /// Enables hash operations.
-    pub fn enable_hash(&mut self, reset: bool) {
-        self.enable_hash_absorb(reset);
-        self.enable_hash_squeeze();
+    pub fn enable_hash_squeeze(&mut self, hash_config: &HashConfig) {
+        self.config.enable_hash_squeeze(hash_config);
     }
 
     /// Enables FRI verification operations.
