@@ -3,7 +3,7 @@ use p3_baby_bear::{BabyBear, Poseidon2BabyBear};
 use p3_challenger::DuplexChallenger;
 use p3_circuit::CircuitBuilder;
 use p3_circuit_prover::air::{AddAir, ConstAir, MulAir, PublicAir, WitnessAir};
-use p3_circuit_prover::batch_stark_prover::Table;
+use p3_circuit_prover::batch_stark_prover::PrimitiveTable;
 use p3_circuit_prover::{BatchStarkProver, TablePacking};
 use p3_commit::ExtensionMmcs;
 use p3_dft::Radix2DitParallel;
@@ -118,7 +118,7 @@ fn test_fibonacci_batch_verifier() {
 
     builder.dump_allocation_log();
 
-    let circuit = builder.build().unwrap();
+    let (circuit, _) = builder.build().unwrap();
     let mut runner = circuit.runner();
 
     // Set public input
@@ -144,7 +144,7 @@ fn test_fibonacci_batch_verifier() {
     let challenger_proving = Challenger::new(perm.clone());
     let config_proving = MyConfig::new(pcs_proving, challenger_proving);
 
-    let table_packing = TablePacking::new(4, 1);
+    let table_packing = TablePacking::new(1, 4, 1);
     let prover = BatchStarkProver::new(config_proving).with_table_packing(table_packing);
     let batch_stark_proof = prover.prove_all_tables(&traces).unwrap();
     prover.verify_all_tables(&batch_stark_proof).unwrap();
@@ -174,15 +174,18 @@ fn test_fibonacci_batch_verifier() {
 
     // Base field AIRs for native challenge generation
     let native_airs = vec![
-        CircuitTableAir::Witness(WitnessAir::<F, TRACE_D>::new(rows[Table::Witness])),
-        CircuitTableAir::Const(ConstAir::<F, TRACE_D>::new(rows[Table::Const])),
-        CircuitTableAir::Public(PublicAir::<F, TRACE_D>::new(rows[Table::Public])),
+        CircuitTableAir::Witness(WitnessAir::<F, TRACE_D>::new(
+            rows[PrimitiveTable::Witness],
+            packing.witness_lanes(),
+        )),
+        CircuitTableAir::Const(ConstAir::<F, TRACE_D>::new(rows[PrimitiveTable::Const])),
+        CircuitTableAir::Public(PublicAir::<F, TRACE_D>::new(rows[PrimitiveTable::Public])),
         CircuitTableAir::Add(AddAir::<F, TRACE_D>::new(
-            rows[Table::Add],
+            rows[PrimitiveTable::Add],
             packing.add_lanes(),
         )),
         CircuitTableAir::Mul(MulAir::<F, TRACE_D>::new(
-            rows[Table::Mul],
+            rows[PrimitiveTable::Mul],
             packing.mul_lanes(),
         )),
     ];
@@ -210,7 +213,7 @@ fn test_fibonacci_batch_verifier() {
     .unwrap();
 
     // Build the circuit
-    let verification_circuit = circuit_builder.build().unwrap();
+    let (verification_circuit, _) = circuit_builder.build().unwrap();
     let expected_public_input_len = verification_circuit.public_flat_len;
 
     // Generate all the challenge values for batch proof (uses base field AIRs)
@@ -224,9 +227,7 @@ fn test_fibonacci_batch_verifier() {
     .unwrap();
 
     // Pack values using the builder
-    let num_queries = batch_proof.opening_proof.query_proofs.len();
-    let public_inputs =
-        verifier_inputs.pack_values(&pis, batch_proof, &all_challenges, num_queries);
+    let public_inputs = verifier_inputs.pack_values(&pis, batch_proof, &all_challenges);
 
     assert_eq!(public_inputs.len(), expected_public_input_len);
     assert!(!public_inputs.is_empty());

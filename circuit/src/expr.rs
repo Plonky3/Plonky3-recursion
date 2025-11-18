@@ -9,9 +9,11 @@ pub enum Expr<F> {
     Const(F),
     /// Public input at declaration position
     Public(usize),
-    /// Witness hint - allocates a WitnessId without adding a primitive op
-    /// The value will be set during non-primitive execution (set-or-verify semantics)
-    Witness,
+    /// Witness hints — allocates a `WitnessId` representing a
+    /// non-deterministic hint. The boolean flag indicates whether
+    /// this is the last witness in a sequence of related hints,
+    /// where each sequence is produced through a shared generation process.
+    Witness { is_last_hint: bool },
     /// Addition of two expressions
     Add { lhs: ExprId, rhs: ExprId },
     /// Subtraction of two expressions

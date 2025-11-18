@@ -449,7 +449,7 @@ fn run_fri_test(setup: FriSetup, build_only: bool) {
     .unwrap();
 
     builder.dump_allocation_log();
-    let circuit = builder.build().unwrap();
+    let (circuit, _) = builder.build().unwrap();
 
     if build_only {
         return;

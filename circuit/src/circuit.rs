@@ -1,12 +1,15 @@
+use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt::Debug;
+use core::iter;
 use core::ops::{Add, Mul, Sub};
 
 use hashbrown::HashMap;
 use p3_field::Field;
+use strum::EnumCount;
 
-use crate::op::{NonPrimitiveOpConfig, NonPrimitiveOpType, Op};
-use crate::tables::CircuitRunner;
+use crate::op::{NonPrimitiveOpConfig, NonPrimitiveOpType, Op, PrimitiveOpType};
+use crate::tables::{CircuitRunner, TraceGeneratorFn};
 use crate::types::{ExprId, WitnessId};
 
 /// Trait encapsulating the required field operations for circuits
@@ -58,6 +61,8 @@ pub struct Circuit<F> {
     /// Enabled non-primitive operation types with their respective configuration
     pub enabled_ops: HashMap<NonPrimitiveOpType, NonPrimitiveOpConfig>,
     pub expr_to_widx: HashMap<ExprId, WitnessId>,
+    /// Registered non-primitive trace generators.
+    pub non_primitive_trace_generators: HashMap<NonPrimitiveOpType, TraceGeneratorFn<F>>,
 }
 
 impl<F: Field + Clone> Clone for Circuit<F> {
@@ -70,11 +75,12 @@ impl<F: Field + Clone> Clone for Circuit<F> {
             public_flat_len: self.public_flat_len,
             enabled_ops: self.enabled_ops.clone(),
             expr_to_widx: self.expr_to_widx.clone(),
+            non_primitive_trace_generators: self.non_primitive_trace_generators.clone(),
         }
     }
 }
 
-impl<F> Circuit<F> {
+impl<F: Field> Circuit<F> {
     pub fn new(witness_count: u32, expr_to_widx: HashMap<ExprId, WitnessId>) -> Self {
         Self {
             witness_count,
@@ -84,7 +90,68 @@ impl<F> Circuit<F> {
             public_flat_len: 0,
             enabled_ops: HashMap::new(),
             expr_to_widx,
+            non_primitive_trace_generators: HashMap::new(),
         }
+    }
+
+    /// Generates the preprocessed values for all ops except non-primitive ops.
+    ///
+    /// The preprocessed values for `Witness` are deduced from the other ops:
+    /// they correspond to 0..`n` where `n` is the largest witness index used in the circuit.
+    pub fn generate_preprocessed_columns(
+        &mut self,
+    ) -> Result<Vec<Vec<F>>, crate::CircuitBuilderError> {
+        let n = PrimitiveOpType::COUNT; // Exclude non-primitive ops
+        let mut preprocessed = vec![vec![]; n];
+
+        let mut max_idx = 0;
+        for prim in &self.primitive_ops {
+            match prim {
+                Op::Const { out, val } => {
+                    let table_idx = PrimitiveOpType::Const as usize;
+                    preprocessed[table_idx].extend(&[F::from_u32(out.0), *val]);
+                    max_idx = max_idx.max(out.0);
+                }
+                Op::Public { out, .. } => {
+                    let table_idx = PrimitiveOpType::Public as usize;
+                    preprocessed[table_idx].extend(&[F::from_u32(out.0)]);
+                    max_idx = max_idx.max(out.0);
+                }
+                Op::Add { a, b, out } => {
+                    let table_idx = PrimitiveOpType::Add as usize;
+                    preprocessed[table_idx].extend(&[
+                        F::from_u32(a.0),
+                        F::from_u32(b.0),
+                        F::from_u32(out.0),
+                    ]);
+                    max_idx = max_idx.max(a.0).max(b.0).max(out.0);
+                }
+                Op::Mul { a, b, out } => {
+                    let table_idx = PrimitiveOpType::Mul as usize;
+                    preprocessed[table_idx].extend(&[
+                        F::from_u32(a.0),
+                        F::from_u32(b.0),
+                        F::from_u32(out.0),
+                    ]);
+                    max_idx = max_idx.max(a.0).max(b.0).max(out.0);
+                }
+                Op::Unconstrained { outputs, .. } => {
+                    max_idx = iter::once(max_idx)
+                        .chain(outputs.iter().map(|&output| output.0))
+                        .max()
+                        .unwrap_or(max_idx);
+                }
+                Op::NonPrimitiveOpWithExecutor { .. } => panic!(
+                    "preprocessed values are not yet implemented for non primitive operations."
+                ),
+            }
+        }
+
+        // Now, we can generate the values for `Witness` using `max_idx`.
+        let table_idx = PrimitiveOpType::Witness as usize;
+        preprocessed[table_idx].extend((0..=max_idx).map(|i| F::from_u32(i)));
+
+        Ok(preprocessed)
     }
 }
 

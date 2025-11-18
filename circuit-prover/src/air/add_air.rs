@@ -3,19 +3,19 @@
 //! Conceptually, each row of the trace encodes one or more addition constraints of the form
 //!
 //! ```text
-//! lhs + rhs = result
+//!     lhs + rhs = result
 //! ```
 //!
 //! When the circuit wants to prove a subtraction, it is expressed as an addition by rewriting
 //!
 //! ```text
-//! a - b = c
+//!     a - b = c
 //! ```
 //!
 //! as
 //!
 //! ```text
-//! b + c = a
+//!     b + c = a
 //! ```
 //!
 //! so that subtraction is handled uniformly as an addition gate in the AIR.
@@ -41,7 +41,7 @@
 //! In other words, for a single lane the layout is:
 //!
 //! ```text
-//! [lhs[0..D), lhs_index, rhs[0..D), rhs_index, result[0..D), result_index]
+//!     [lhs[0..D), lhs_index, rhs[0..D), rhs_index, result[0..D), result_index]
 //! ```
 //!
 //! A single row can pack several of these lanes side-by-side, so the full row layout is
@@ -158,7 +158,7 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AddAir<F, D> {
     /// The layout within a row is:
     ///
     /// ```text
-    /// [lhs[D], lhs_idx, rhs[D], rhs_idx, result[D], result_idx] repeated `lanes` times.
+    ///     [lhs[D], lhs_idx, rhs[D], rhs_idx, result[D], result_idx] repeated `lanes` times.
     /// ```
     pub fn trace_to_matrix<ExtF: BasedVectorSpace<F>>(
         trace: &AddTrace<ExtF>,
