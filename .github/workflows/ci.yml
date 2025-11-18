@@ -60,6 +60,8 @@ jobs:
       - name: Run examples
         run: |
           cargo run --package p3-circuit-prover --example fibonacci
+          cargo run --package p3-circuit-prover --example hash_chain
+          cargo run --package p3-circuit-prover --example mmcs_verify
       
       - name: Run allocation_log example with debug logging
         env:
