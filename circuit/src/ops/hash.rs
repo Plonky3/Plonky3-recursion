@@ -12,7 +12,7 @@ use p3_field::{Field, PrimeCharacteristicRing};
 
 use crate::CircuitError;
 use crate::builder::{CircuitBuilder, CircuitBuilderError};
-use crate::op::{ExecutionContext, NonPrimitiveExecutor, NonPrimitiveOpType};
+use crate::op::{ExecutionContext, NonPrimitiveExecutor, NonPrimitiveOpType, WitnessHintsFiller};
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessId};
 
 /// Hash operations trait for `CircuitBuilder`.
@@ -33,6 +33,14 @@ pub trait HashOps<F: Clone + PrimeCharacteristicRing + Eq + Hash> {
     ///
     /// Returns the newly created output `ExprId`s.
     fn add_hash_squeeze(&mut self, count: usize) -> Result<Vec<ExprId>, CircuitBuilderError>;
+    
+    /// Add hash squeeze operation with custom hint filler.
+    /// This allows providing precomputed values for the squeeze outputs.
+    fn add_hash_squeeze_with_filler<W: 'static + WitnessHintsFiller<F>>(
+        &mut self,
+        filler: W,
+        label: &'static str,
+    ) -> Result<Vec<ExprId>, CircuitBuilderError>;
 }
 
 impl<F> HashOps<F> for CircuitBuilder<F>
@@ -57,6 +65,24 @@ where
         self.ensure_op_enabled(NonPrimitiveOpType::HashSqueeze)?;
 
         let outputs = self.alloc_witness_hints_default_filler(count, "hash_squeeze_output");
+
+        let _ = self.push_non_primitive_op(
+            NonPrimitiveOpType::HashSqueeze,
+            vec![outputs.to_vec()],
+            "HashSqueeze",
+        );
+
+        Ok(outputs)
+    }
+
+    fn add_hash_squeeze_with_filler<W: 'static + WitnessHintsFiller<F>>(
+        &mut self,
+        filler: W,
+        label: &'static str,
+    ) -> Result<Vec<ExprId>, CircuitBuilderError> {
+        self.ensure_op_enabled(NonPrimitiveOpType::HashSqueeze)?;
+
+        let outputs = self.alloc_witness_hints(filler, label);
 
         let _ = self.push_non_primitive_op(
             NonPrimitiveOpType::HashSqueeze,
