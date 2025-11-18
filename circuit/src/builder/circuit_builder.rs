@@ -10,7 +10,7 @@ use super::{BuilderConfig, ExpressionBuilder, PublicInputTracker};
 use crate::circuit::Circuit;
 use crate::op::{DefaultHint, NonPrimitiveOpType, WitnessHintsFiller};
 use crate::ops::MmcsVerifyConfig;
-use crate::tables::{TraceGeneratorFn, generate_mmcs_trace};
+use crate::tables::{TraceGeneratorFn, generate_mmcs_trace, generate_poseidon2_trace};
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};
 use crate::{CircuitBuilderError, CircuitField};
 
@@ -89,9 +89,19 @@ where
     }
 
     /// Enables hash operations.
-    pub fn enable_hash(&mut self, reset: bool) {
+    pub fn enable_hash(&mut self, reset: bool)
+    where
+        F: CircuitField,
+    {
         self.enable_hash_absorb(reset);
         self.enable_hash_squeeze();
+        // Register Poseidon2 trace generator for hash operations
+        // We register it for both HashAbsorb and HashSqueeze, but the generator
+        // will handle both operation types
+        self.non_primitive_trace_generators
+            .insert(NonPrimitiveOpType::HashAbsorb { reset }, generate_poseidon2_trace::<F>);
+        self.non_primitive_trace_generators
+            .insert(NonPrimitiveOpType::HashSqueeze, generate_poseidon2_trace::<F>);
     }
 
     /// Enables FRI verification operations.

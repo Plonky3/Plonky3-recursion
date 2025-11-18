@@ -10,11 +10,16 @@ use p3_air::{Air, BaseAir};
 use p3_batch_stark::{BatchProof, StarkGenericConfig, StarkInstance, Val};
 use p3_circuit::op::PrimitiveOpType;
 use p3_circuit::ops::MmcsVerifyConfig;
-use p3_circuit::tables::{MmcsTrace, Traces};
+use p3_circuit::tables::{MmcsTrace, Poseidon2Trace, Traces};
 use p3_field::extension::BinomialExtensionField;
 use p3_field::{BasedVectorSpace, Field, PrimeField};
 use p3_matrix::dense::RowMajorMatrix;
 use p3_mmcs_air::air::{MmcsTableConfig, MmcsVerifyAir};
+use p3_circuit::tables::Poseidon2CircuitTrace;
+use p3_poseidon2::GenericPoseidon2LinearLayers;
+use p3_poseidon2_circuit_air::{Poseidon2CircuitAir, Poseidon2CircuitAirBabyBearD4Width16, Poseidon2CircuitAirKoalaBearD4Width16};
+use p3_poseidon2_air::RoundConstants;
+use p3_symmetric::CryptographicPermutation;
 use p3_uni_stark::{ProverConstraintFolder, SymbolicAirBuilder, VerifierConstraintFolder};
 use thiserror::Error;
 use tracing::instrument;
@@ -351,6 +356,7 @@ impl MmcsProver {
             return None;
         }
         let matrix = MmcsVerifyAir::trace_to_matrix(&self.config, t);
+        // MmcsVerifyAir is generic over the field type, so it works directly with Val<SC>
         let air = DynamicAirEntry::new(Box::new(MmcsVerifyAir::<Val<SC>>::new(self.config)));
 
         Some(BatchTableInstance {
@@ -383,6 +389,285 @@ where
         Ok(DynamicAirEntry::new(Box::new(
             MmcsVerifyAir::<Val<SC>>::new(self.config),
         )))
+    }
+}
+
+// Implement BatchAir directly for Poseidon2CircuitAir when the field type matches Val<SC>
+// This works because Poseidon2CircuitAir<F, ...> implements:
+// - BaseAir<F>
+// - Air<AB> where AB::F = F
+// So when F = Val<SC>, it naturally implements BatchAir<SC>
+impl<
+    SC,
+    LinearLayers,
+    const D: usize,
+    const WIDTH: usize,
+    const WIDTH_EXT: usize,
+    const RATE_EXT: usize,
+    const CAPACITY_EXT: usize,
+    const SBOX_DEGREE: u64,
+    const SBOX_REGISTERS: usize,
+    const HALF_FULL_ROUNDS: usize,
+    const PARTIAL_ROUNDS: usize,
+> BatchAir<SC>
+    for p3_poseidon2_circuit_air::Poseidon2CircuitAir<
+        Val<SC>,
+        LinearLayers,
+        D,
+        WIDTH,
+        WIDTH_EXT,
+        RATE_EXT,
+        CAPACITY_EXT,
+        SBOX_DEGREE,
+        SBOX_REGISTERS,
+        HALF_FULL_ROUNDS,
+        PARTIAL_ROUNDS,
+    >
+where
+    SC: StarkGenericConfig,
+    Val<SC>: StarkField,
+    LinearLayers: GenericPoseidon2LinearLayers<WIDTH> + Send + Sync,
+{
+}
+
+/// Trait to abstract over field-specific Poseidon2 configurations
+/// This allows Poseidon2Prover to work with both BabyBear and KoalaBear
+pub(crate) trait Poseidon2Config<F: StarkField> {
+    type LinearLayers: GenericPoseidon2LinearLayers<16> + Sync + Send;
+    type Perm: CryptographicPermutation<[F; 16]> + Clone;
+    
+    const HALF_FULL_ROUNDS: usize;
+    const PARTIAL_ROUNDS: usize;
+    
+    fn default_perm() -> Self::Perm;
+    fn default_constants_713() -> RoundConstants<F, 16, 4, 13>;
+    fn default_constants_320() -> RoundConstants<F, 16, 4, 20>;
+    fn create_air_713(constants: RoundConstants<F, 16, 4, 13>) -> Poseidon2CircuitAir<F, Self::LinearLayers, 4, 16, 4, 2, 2, 7, 1, 4, 13>;
+    fn create_air_320(constants: RoundConstants<F, 16, 4, 20>) -> Poseidon2CircuitAir<F, Self::LinearLayers, 4, 16, 4, 2, 2, 3, 0, 4, 20>;
+}
+
+impl Poseidon2Config<p3_baby_bear::BabyBear> for p3_baby_bear::BabyBear {
+    type LinearLayers = p3_baby_bear::GenericPoseidon2LinearLayersBabyBear;
+    type Perm = p3_baby_bear::Poseidon2BabyBear<16>;
+    
+    const HALF_FULL_ROUNDS: usize = 4;
+    const PARTIAL_ROUNDS: usize = 13;
+    
+    fn default_perm() -> Self::Perm {
+        p3_baby_bear::default_babybear_poseidon2_16()
+    }
+    
+    fn default_constants_713() -> RoundConstants<p3_baby_bear::BabyBear, 16, 4, 13> {
+        use p3_baby_bear::{BABYBEAR_RC16_EXTERNAL_FINAL, BABYBEAR_RC16_EXTERNAL_INITIAL, BABYBEAR_RC16_INTERNAL};
+        RoundConstants::new(
+            BABYBEAR_RC16_EXTERNAL_INITIAL,
+            BABYBEAR_RC16_INTERNAL,
+            BABYBEAR_RC16_EXTERNAL_FINAL,
+        )
+    }
+    
+    fn default_constants_320() -> RoundConstants<p3_baby_bear::BabyBear, 16, 4, 20> {
+        unreachable!("BabyBear uses 4/13 configuration")
+    }
+    
+    fn create_air_713(constants: RoundConstants<p3_baby_bear::BabyBear, 16, 4, 13>) 
+        -> Poseidon2CircuitAir<p3_baby_bear::BabyBear, Self::LinearLayers, 4, 16, 4, 2, 2, 7, 1, 4, 13> {
+        Poseidon2CircuitAirBabyBearD4Width16::new(constants)
+    }
+    
+    fn create_air_320(_constants: RoundConstants<p3_baby_bear::BabyBear, 16, 4, 20>) 
+        -> Poseidon2CircuitAir<p3_baby_bear::BabyBear, Self::LinearLayers, 4, 16, 4, 2, 2, 3, 0, 4, 20> {
+        unreachable!("BabyBear uses 4/13 configuration")
+    }
+}
+
+impl Poseidon2Config<p3_koala_bear::KoalaBear> for p3_koala_bear::KoalaBear {
+    type LinearLayers = p3_koala_bear::GenericPoseidon2LinearLayersKoalaBear;
+    type Perm = p3_koala_bear::Poseidon2KoalaBear<16>;
+    
+    const HALF_FULL_ROUNDS: usize = 4;
+    const PARTIAL_ROUNDS: usize = 20;
+    
+    fn default_perm() -> Self::Perm {
+        p3_koala_bear::default_koalabear_poseidon2_16()
+    }
+    
+    fn default_constants_713() -> RoundConstants<p3_koala_bear::KoalaBear, 16, 4, 13> {
+        unreachable!("KoalaBear uses 4/20 configuration")
+    }
+    
+    fn default_constants_320() -> RoundConstants<p3_koala_bear::KoalaBear, 16, 4, 20> {
+        use p3_koala_bear::{KOALABEAR_RC16_EXTERNAL_FINAL, KOALABEAR_RC16_EXTERNAL_INITIAL, KOALABEAR_RC16_INTERNAL};
+        RoundConstants::new(
+            KOALABEAR_RC16_EXTERNAL_INITIAL,
+            KOALABEAR_RC16_INTERNAL,
+            KOALABEAR_RC16_EXTERNAL_FINAL,
+        )
+    }
+    
+    fn create_air_713(_constants: RoundConstants<p3_koala_bear::KoalaBear, 16, 4, 13>) 
+        -> Poseidon2CircuitAir<p3_koala_bear::KoalaBear, Self::LinearLayers, 4, 16, 4, 2, 2, 7, 1, 4, 13> {
+        unreachable!("KoalaBear uses 4/20 configuration")
+    }
+    
+    fn create_air_320(constants: RoundConstants<p3_koala_bear::KoalaBear, 16, 4, 20>) 
+        -> Poseidon2CircuitAir<p3_koala_bear::KoalaBear, Self::LinearLayers, 4, 16, 4, 2, 2, 3, 0, 4, 20> {
+        Poseidon2CircuitAirKoalaBearD4Width16::new(constants)
+    }
+}
+
+/// Poseidon2 prover plugin - generic over field type
+/// The constants are stored as a type-erased value and recreated when needed
+pub struct Poseidon2Prover<F: StarkField> 
+where
+    F: Poseidon2Config<F>,
+{
+    // Marker to track the field type
+    _phantom: core::marker::PhantomData<F>,
+}
+
+impl<F: StarkField> Poseidon2Prover<F>
+where
+    F: Poseidon2Config<F>,
+{
+    pub fn new() -> Self {
+        Self {
+            _phantom: core::marker::PhantomData,
+        }
+    }
+    
+
+    fn batch_instance_base<SC>(
+        &self,
+        _config: &SC,
+        _packing: TablePacking,
+        traces: &Traces<Val<SC>>,
+    ) -> Option<BatchTableInstance<SC>>
+    where
+        SC: StarkGenericConfig + 'static,
+        Val<SC>: StarkField + Poseidon2Config<Val<SC>> + PrimeField,
+    {
+        let t = traces
+            .non_primitive_trace::<Poseidon2Trace<Val<SC>>>("poseidon2")
+            .filter(|trace| !trace.operations.is_empty())?;
+        let rows = t.total_rows();
+        if rows == 0 {
+            return None;
+        }
+
+        // Pad to power of two (required by generate_trace_rows)
+        let padded_rows = rows.next_power_of_two();
+        let mut padded_ops = t.operations.clone();
+        while padded_ops.len() < padded_rows {
+            // Add dummy operation for padding
+            padded_ops.push(p3_circuit::tables::Poseidon2CircuitRow {
+                is_sponge: false,
+                reset: false,
+                absorb_flags: vec![],
+                input_values: vec![],
+                input_indices: vec![],
+                output_indices: vec![],
+            });
+        }
+
+        // Create AIR instance and generate trace matrix
+        // Dispatch based on field type at runtime
+        let hf = <Val<SC> as Poseidon2Config<Val<SC>>>::HALF_FULL_ROUNDS;
+        let pr = <Val<SC> as Poseidon2Config<Val<SC>>>::PARTIAL_ROUNDS;
+        
+        // Use a macro to generate code for each configuration
+        // This avoids const generic issues by using runtime dispatch
+        let (air, matrix) = if hf == 4 && pr == 13 {
+            Self::create_poseidon2_713::<SC>(&padded_ops, padded_rows)
+        } else if hf == 4 && pr == 20 {
+            Self::create_poseidon2_320::<SC>(&padded_ops, padded_rows)
+        } else {
+            panic!("Unsupported Poseidon2 configuration: HF={}, PR={}", hf, pr);
+        };
+        
+        let air_entry = DynamicAirEntry::new(air);
+
+        Some(BatchTableInstance {
+            id: "poseidon2",
+            air: air_entry,
+            trace: matrix,
+            public_values: Vec::new(),
+            rows: padded_rows,
+        })
+    }
+    
+    /// Create Poseidon2 AIR for 4/13 configuration (BabyBear)
+    fn create_poseidon2_713<SC>(
+        ops: &Poseidon2CircuitTrace<Val<SC>>,
+        _padded_rows: usize,
+    ) -> (Box<dyn BatchAir<SC>>, RowMajorMatrix<Val<SC>>)
+    where
+        SC: StarkGenericConfig + 'static,
+        Val<SC>: StarkField + Poseidon2Config<Val<SC>> + PrimeField,
+    {
+        // Use actual constants from the default permutation configuration
+        let constants = <Val<SC> as Poseidon2Config<Val<SC>>>::default_constants_713();
+        
+        let perm = <Val<SC> as Poseidon2Config<Val<SC>>>::default_perm();
+        let air = <Val<SC> as Poseidon2Config<Val<SC>>>::create_air_713(constants.clone());
+        let matrix = air.generate_trace_rows(ops.clone(), &constants, 0, perm);
+        
+        (Box::new(air), matrix)
+    }
+    
+    /// Create Poseidon2 AIR for 4/20 configuration (KoalaBear)
+    fn create_poseidon2_320<SC>(
+        ops: &Poseidon2CircuitTrace<Val<SC>>,
+        _padded_rows: usize,
+    ) -> (Box<dyn BatchAir<SC>>, RowMajorMatrix<Val<SC>>)
+    where
+        SC: StarkGenericConfig + 'static,
+        Val<SC>: StarkField + Poseidon2Config<Val<SC>> + PrimeField,
+    {
+        // Use actual constants from the default permutation configuration
+        let constants = <Val<SC> as Poseidon2Config<Val<SC>>>::default_constants_320();
+        
+        let perm = <Val<SC> as Poseidon2Config<Val<SC>>>::default_perm();
+        let air = <Val<SC> as Poseidon2Config<Val<SC>>>::create_air_320(constants.clone());
+        let matrix = air.generate_trace_rows(ops.clone(), &constants, 0, perm);
+        
+        (Box::new(air), matrix)
+    }
+}
+
+impl<SC, F> TableProver<SC> for Poseidon2Prover<F>
+where
+    SC: StarkGenericConfig + 'static,
+    F: StarkField + Poseidon2Config<F>,
+    Val<SC>: StarkField + Poseidon2Config<Val<SC>> + PrimeField,
+{
+    fn id(&self) -> &'static str {
+        "poseidon2"
+    }
+
+    impl_table_prover_batch_instances_from_base!(batch_instance_base);
+
+    fn batch_air_from_table_entry(
+        &self,
+        _config: &SC,
+        _degree: usize,
+        _table_entry: &NonPrimitiveTableEntry<SC>,
+    ) -> Result<DynamicAirEntry<SC>, String> {
+        // Create the AIR using the configuration for Val<SC>
+        let hf = <Val<SC> as Poseidon2Config<Val<SC>>>::HALF_FULL_ROUNDS;
+        let pr = <Val<SC> as Poseidon2Config<Val<SC>>>::PARTIAL_ROUNDS;
+        
+        let air: Box<dyn BatchAir<SC>> = if hf == 4 && pr == 13 {
+            let (air, _) = Self::create_poseidon2_713::<SC>(&vec![], 0);
+            air
+        } else if hf == 4 && pr == 20 {
+            let (air, _) = Self::create_poseidon2_320::<SC>(&vec![], 0);
+            air
+        } else {
+            return Err(format!("Unsupported Poseidon2 configuration: HF={}, PR={}", hf, pr));
+        };
+        
+        Ok(DynamicAirEntry::new(air))
     }
 }
 
@@ -623,6 +908,18 @@ where
         self.register_table_prover(Box::new(MmcsProver {
             config: MmcsTableConfig::from(config),
         }));
+    }
+
+    /// Register the non-primitive Poseidon2 prover plugin.
+    /// 
+    /// This works with both BabyBear and KoalaBear configurations (D=4, WIDTH=16).
+    /// The prover automatically detects the field type from Val<SC> and uses the
+    /// appropriate Poseidon2 configuration.
+    pub fn register_poseidon2_table(&mut self)
+    where
+        Val<SC>: Poseidon2Config<Val<SC>>,
+    {
+        self.register_table_prover(Box::new(Poseidon2Prover::<Val<SC>>::new()));
     }
 
     #[inline]

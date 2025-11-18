@@ -1,5 +1,7 @@
 use alloc::boxed::Box;
 use alloc::format;
+use alloc::string::ToString;
+use alloc::vec;
 use alloc::vec::Vec;
 use core::hash::Hash;
 
@@ -151,6 +153,11 @@ impl<'a> NonPrimitiveLowerer<'a> {
                         });
                     }
 
+                    // For HashAbsorb:
+                    // - inputs[0] = data to absorb
+                    // - inputs[1] = previous state capacity (if reset=false)
+                    // - outputs[0] = new state capacity (if we had outputs)
+                    // But outputs are handled separately via hints, so we only process inputs here
                     let inputs = witness_exprs
                         .iter()
                         .map(|witness_expr| {
@@ -163,6 +170,8 @@ impl<'a> NonPrimitiveLowerer<'a> {
                         })
                         .collect::<Result<Vec<Vec<WitnessId>>, _>>()?;
 
+                    // State outputs are handled as hints, so we don't need to add them here
+                    // The executor will fill them during execution
                     lowered_ops.push(Op::NonPrimitiveOpWithExecutor {
                         inputs,
                         outputs: Vec::new(),
@@ -178,21 +187,34 @@ impl<'a> NonPrimitiveLowerer<'a> {
                         });
                     }
 
-                    let outputs = witness_exprs
-                        .iter()
-                        .map(|witness_expr| {
-                            witness_expr
-                                .iter()
-                                .map(|&expr| {
-                                    get_witness_id(self.expr_to_widx, expr, "HashSqueeze output")
-                                })
-                                .collect::<Result<Vec<WitnessId>, _>>()
-                        })
-                        .collect::<Result<Vec<Vec<WitnessId>>, _>>()?;
+                    // For HashSqueeze:
+                    // - inputs[0] = state capacity (added as hint in add_hash_squeeze)
+                    // - outputs[0] = squeezed values + new state capacity
+                    // We need to split outputs: first part is squeezed values, rest is new state
+                    // But for now, we'll handle state inputs separately
+                    // The first witness_expr contains both squeezed outputs and new state
+                    if witness_exprs.is_empty() {
+                        return Err(CircuitBuilderError::NonPrimitiveOpArity {
+                            op: "HashSqueeze",
+                            expected: "at least 1 output vector".to_string(),
+                            got: 0,
+                        });
+                    }
 
+                    // All outputs (squeezed values + new state) are in witness_exprs[0]
+                    // The executor will split them appropriately
+                    let outputs = witness_exprs[0]
+                        .iter()
+                        .map(|&expr| {
+                            get_witness_id(self.expr_to_widx, expr, "HashSqueeze output")
+                        })
+                        .collect::<Result<Vec<WitnessId>, _>>()?;
+
+                    // State input is handled separately - it's allocated as a hint
+                    // but we need to pass it as input. For now, we'll handle this in the executor
                     lowered_ops.push(Op::NonPrimitiveOpWithExecutor {
-                        inputs: Vec::new(),
-                        outputs,
+                        inputs: Vec::new(), // State input will be handled by executor via hints
+                        outputs: vec![outputs],
                         executor: Box::new(HashSqueezeExecutor::new()),
                         op_id: *op_id,
                     });

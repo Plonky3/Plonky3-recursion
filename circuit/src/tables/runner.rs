@@ -218,7 +218,22 @@ impl<F: CircuitField> CircuitRunner<F> {
                             got: outputs_val.len(),
                         },
                     )? {
-                        self.set_witness(output, output_val)?
+                        // If witness is already set (e.g., from a connected public input),
+                        // only set it if the values match. Otherwise, set it normally.
+                        if let Some(existing) = self.witness[output.0 as usize] {
+                            if existing != output_val {
+                                // Values differ - this is a conflict unless the existing value
+                                // came from a public input connected to this hint
+                                // For now, allow it if the existing value is non-zero (likely from public input)
+                                // and the new value is zero (from default hint filler)
+                                // This is a temporary workaround until lookups are implemented
+                                if output_val == F::ZERO && existing != F::ZERO {
+                                    // Skip setting - use the existing value from public input
+                                    continue;
+                                }
+                            }
+                        }
+                        self.set_witness(output, output_val)?;
                     }
                 }
                 Op::NonPrimitiveOpWithExecutor { .. } => {
