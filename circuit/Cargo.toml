@@ -21,12 +21,15 @@ p3-koala-bear.workspace = true
 p3-matrix.workspace = true
 p3-symmetric.workspace = true
 p3-uni-stark.workspace = true
-rand.workspace = true
+p3-util.workspace = true
 
 # Other common dependencies
 hashbrown = "0.16.0"
 itertools.workspace = true
+rand.workspace = true
 serde.workspace = true
+strum = { version = "0.27.2", default-features = false }
+strum_macros = "0.27.2"
 thiserror.workspace = true
 tracing.workspace = true
 

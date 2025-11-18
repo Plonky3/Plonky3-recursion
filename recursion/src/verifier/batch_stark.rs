@@ -8,7 +8,7 @@ use p3_batch_stark::BatchProof;
 use p3_circuit::CircuitBuilder;
 use p3_circuit::utils::ColumnsTargets;
 use p3_circuit_prover::air::{AddAir, ConstAir, MulAir, PublicAir, WitnessAir};
-use p3_circuit_prover::batch_stark_prover::{RowCounts, Table};
+use p3_circuit_prover::batch_stark_prover::{PrimitiveTable, RowCounts};
 use p3_commit::{Pcs, PolynomialSpace};
 use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
 use p3_uni_stark::StarkGenericConfig;
@@ -106,23 +106,27 @@ where
     assert_eq!(proof.ext_degree, TRACE_D, "trace extension degree mismatch");
     let rows: RowCounts = proof.rows;
     let packing = proof.table_packing;
+    let witness_lanes = packing.witness_lanes();
     let add_lanes = packing.add_lanes();
     let mul_lanes = packing.mul_lanes();
 
     let circuit_airs = vec![
         CircuitTablesAir::Witness(WitnessAir::<SC::Challenge, TRACE_D>::new(
-            rows[Table::Witness],
+            rows[PrimitiveTable::Witness],
+            witness_lanes,
         )),
-        CircuitTablesAir::Const(ConstAir::<SC::Challenge, TRACE_D>::new(rows[Table::Const])),
+        CircuitTablesAir::Const(ConstAir::<SC::Challenge, TRACE_D>::new(
+            rows[PrimitiveTable::Const],
+        )),
         CircuitTablesAir::Public(PublicAir::<SC::Challenge, TRACE_D>::new(
-            rows[Table::Public],
+            rows[PrimitiveTable::Public],
         )),
         CircuitTablesAir::Add(AddAir::<SC::Challenge, TRACE_D>::new(
-            rows[Table::Add],
+            rows[PrimitiveTable::Add],
             add_lanes,
         )),
         CircuitTablesAir::Mul(MulAir::<SC::Challenge, TRACE_D>::new(
-            rows[Table::Mul],
+            rows[PrimitiveTable::Mul],
             mul_lanes,
         )),
     ];
@@ -227,6 +231,8 @@ impl<
         let opened_values_targets = OpenedValuesTargets {
             trace_local_targets: aggregated_trace_local,
             trace_next_targets: aggregated_trace_next,
+            preprocessed_local_targets: None, // Preprocessed values are not supported yet for batch proofs in Plonky3
+            preprocessed_next_targets: None, // Preprocessed values are not supported yet for batch proofs in Plonky3
             quotient_chunks_targets: aggregated_quotient_chunks,
             random_targets: None,
             _phantom: PhantomData,
@@ -358,7 +364,7 @@ where
             )));
         }
 
-        let log_qd = A::get_log_quotient_degree(air, public_vals.len(), config.is_zk());
+        let log_qd = A::get_log_quotient_degree(air, 0, public_vals.len(), config.is_zk());
         let quotient_degree = 1 << (log_qd + config.is_zk());
 
         if instance.quotient_chunks.len() != quotient_degree {
@@ -505,7 +511,7 @@ where
         flattened,
         opened_values_targets,
         pcs_params,
-    );
+    )?;
 
     pcs.verify_circuit(
         circuit,

@@ -1,6 +1,8 @@
+use alloc::boxed::Box;
 use alloc::string::ToString;
 use alloc::vec::Vec;
 use alloc::{format, vec};
+use core::any::Any;
 use core::fmt::Debug;
 use core::iter;
 
@@ -8,6 +10,7 @@ use itertools::izip;
 use p3_field::{ExtensionField, Field};
 use p3_symmetric::PseudoCompressionFunction;
 
+use super::NonPrimitiveTrace;
 use crate::CircuitError;
 use crate::circuit::{Circuit, CircuitField};
 use crate::op::{NonPrimitiveOpConfig, NonPrimitiveOpPrivateData, NonPrimitiveOpType, Op};
@@ -24,6 +27,29 @@ pub struct MmcsTrace<F> {
     ///
     /// Each entry is one complete leaf-to-root verification.
     pub mmcs_paths: Vec<MmcsPathTrace<F>>,
+}
+
+impl<F> MmcsTrace<F> {
+    pub fn total_rows(&self) -> usize {
+        self.mmcs_paths
+            .iter()
+            .map(|path| path.left_values.len() + 1)
+            .sum()
+    }
+}
+
+/// Generate the MMCS trace if the operation is present in the circuit.
+pub fn generate_mmcs_trace<F: CircuitField>(
+    circuit: &Circuit<F>,
+    witness: &[Option<F>],
+    non_primitive_data: &[Option<NonPrimitiveOpPrivateData<F>>],
+) -> Result<Option<Box<dyn NonPrimitiveTrace<F>>>, CircuitError> {
+    let trace = MmcsTraceBuilder::new(circuit, witness, non_primitive_data).build()?;
+    if trace.total_rows() == 0 {
+        Ok(None)
+    } else {
+        Ok(Some(Box::new(trace)))
+    }
 }
 
 /// Single Merkle path verification trace.
@@ -305,6 +331,27 @@ impl<F: Field + Clone + Default> MmcsPrivateData<F> {
     }
 }
 
+impl<F> NonPrimitiveTrace<F> for MmcsTrace<F>
+where
+    F: Clone + Send + Sync + 'static,
+{
+    fn id(&self) -> &'static str {
+        "mmcs_verify"
+    }
+
+    fn rows(&self) -> usize {
+        self.total_rows()
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn boxed_clone(&self) -> Box<dyn NonPrimitiveTrace<F>> {
+        Box::new(self.clone()) as Box<dyn NonPrimitiveTrace<F>>
+    }
+}
+
 /// Builder for generating MMCS traces.
 pub struct MmcsTraceBuilder<'a, F> {
     circuit: &'a Circuit<F>,
@@ -569,7 +616,7 @@ mod tests {
         let mmcs_op_id = builder
             .add_mmcs_verify(&leaves, &directions, &root)
             .unwrap();
-        let circuit = builder.build().unwrap();
+        let (circuit, _) = builder.build().unwrap();
 
         // Create test data with 3 layers, varying directions, and one extra sibling
         let leaves_value = [vec![F::from_u64(42)], vec![F::from_u64(25)], vec![]];
@@ -687,7 +734,7 @@ mod tests {
         let mmcs_op_id = builder
             .add_mmcs_verify(&leaves_expr, &directions_expr, &root_exprs)
             .unwrap();
-        let circuit = builder
+        let (circuit, _) = builder
             .build()
             .map_err(|e| CircuitError::InvalidCircuit { error: e })
             .unwrap();
@@ -727,10 +774,13 @@ mod tests {
             )
             .unwrap();
         let traces = runner.run().unwrap();
+        let mmcs_trace = traces
+            .non_primitive_trace::<MmcsTrace<F>>("mmcs_verify")
+            .expect("mmcs trace present");
 
         // Validate trace fields
-        assert_eq!(traces.mmcs_trace.mmcs_paths.len(), 1);
-        let path = &traces.mmcs_trace.mmcs_paths[0];
+        assert_eq!(mmcs_trace.mmcs_paths.len(), 1);
+        let path = &mmcs_trace.mmcs_paths[0];
 
         // Expected expansions for directions, is_extra, and right_values
         let mut expected_dirs = Vec::new();

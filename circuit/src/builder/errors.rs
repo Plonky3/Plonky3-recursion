@@ -1,9 +1,10 @@
 use alloc::string::String;
+use alloc::vec::Vec;
 
 use thiserror::Error;
 
-use crate::ExprId;
 use crate::op::NonPrimitiveOpType;
+use crate::{ExprId, WitnessId};
 
 /// Errors that can occur during circuit building/lowering.
 #[derive(Debug, Error)]
@@ -31,4 +32,16 @@ pub enum CircuitBuilderError {
     /// Mismatched non-primitive operation configuration
     #[error("Invalid configuration for operation {op:?}")]
     InvalidNonPrimitiveOpConfiguration { op: NonPrimitiveOpType },
+
+    /// A sequence of expressions of type Witness is missing its filler.
+    #[error("Missing hint filler for expression {sequence:?}")]
+    MissingWitnessFiller { sequence: Vec<WitnessId> },
+
+    /// A sequence of witness hints has no end.
+    #[error("Witness hint without last hint {sequence:?}.")]
+    MalformedWitnessHitnsSequence { sequence: Vec<WitnessId> },
+
+    /// Witness filler without any hints sequence.
+    #[error("Witness filler is missing a witness hints sequence")]
+    UnmatchetWitnessFiller {},
 }

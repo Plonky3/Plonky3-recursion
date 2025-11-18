@@ -110,4 +110,16 @@ pub enum CircuitError {
     /// Invalid Circuit
     #[error("Failed to build circuit: {error}")]
     InvalidCircuit { error: CircuitBuilderError },
+
+    /// Unconstrained operation is given an incorrect number of inputs.
+    #[error("Unconstrained operation input length mismatch: expected {op} {expected}, got {got}")]
+    UnconstrainedOpInputLengthMismatch {
+        op: String,
+        expected: usize,
+        got: usize,
+    },
+
+    /// Requested bit length exceeds the maximum allowed for binary decomposition.
+    #[error("Too many bits for binary decomposition: expected at most {expected}, got {n_bits}")]
+    BinaryDecompositionTooManyBits { expected: usize, n_bits: usize },
 }

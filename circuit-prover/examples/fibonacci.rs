@@ -54,7 +54,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     builder.dump_allocation_log();
 
-    let circuit = builder.build()?;
+    let (circuit, _) = builder.build()?;
     let mut runner = circuit.runner();
 
     // Set public input
@@ -63,7 +63,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let traces = runner.run()?;
     let config = config::baby_bear().build();
-    let table_packing = TablePacking::new(4, 1);
+    let table_packing = TablePacking::new(4, 4, 1);
     let prover = BatchStarkProver::new(config).with_table_packing(table_packing);
     let proof = prover.prove_all_tables(&traces)?;
     prover.verify_all_tables(&proof)?;

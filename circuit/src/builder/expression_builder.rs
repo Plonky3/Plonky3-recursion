@@ -1,12 +1,15 @@
+use alloc::boxed::Box;
 #[cfg(debug_assertions)]
 use alloc::vec;
 use alloc::vec::Vec;
 use core::hash::Hash;
 
 use hashbrown::HashMap;
+use itertools::Itertools;
 use p3_field::PrimeCharacteristicRing;
 
 use crate::expr::{Expr, ExpressionGraph};
+use crate::op::WitnessHintsFiller;
 use crate::types::ExprId;
 #[cfg(debug_assertions)]
 use crate::{AllocationEntry, AllocationType};
@@ -22,6 +25,10 @@ pub struct ExpressionBuilder<F> {
 
     /// Equality constraints to enforce at lowering
     pending_connects: Vec<(ExprId, ExprId)>,
+
+    /// The fillers corresponding to the witness hints sequences.
+    /// The order of fillers must match the order in which the witness hints sequences were allocated.
+    hints_fillers: Vec<Box<dyn WitnessHintsFiller<F>>>,
 
     /// Debug log of all allocations
     #[cfg(debug_assertions)]
@@ -51,6 +58,7 @@ where
             graph,
             const_pool,
             pending_connects: Vec::new(),
+            hints_fillers: Vec::new(),
             #[cfg(debug_assertions)]
             allocation_log: Vec::new(),
             #[cfg(debug_assertions)]
@@ -99,12 +107,15 @@ where
         expr_id
     }
 
-    /// Adds a witness hint to the graph.
-    /// It will allocate a `WitnessId` during lowering, with no primitive op.
     #[allow(unused_variables)]
-    #[must_use]
-    pub fn add_witness_hint(&mut self, label: &'static str) -> ExprId {
-        let expr_id = self.graph.add_expr(Expr::Witness);
+    /// Adds a witness hint that belongs to a sequence of witness hints constructed
+    /// from the same filler, indicating wether is the last hint in the sequence.
+    pub fn add_witness_hint_in_sequence(
+        &mut self,
+        is_last_hint: bool,
+        label: &'static str,
+    ) -> ExprId {
+        let expr_id = self.graph.add_expr(Expr::Witness { is_last_hint });
 
         #[cfg(debug_assertions)]
         self.allocation_log.push(AllocationEntry {
@@ -118,10 +129,22 @@ where
         expr_id
     }
 
-    /// Adds multiple witness hints.
+    /// Adds `filler.n_outputs()` witness hints to the graph.
+    /// During circuit evaluation, the `filler` will derive the concrete
+    /// witness values for these hints.
+    #[allow(unused_variables)]
     #[must_use]
-    pub fn add_witness_hints(&mut self, count: usize, label: &'static str) -> Vec<ExprId> {
-        (0..count).map(|_| self.add_witness_hint(label)).collect()
+    pub fn add_witness_hints<W: 'static + WitnessHintsFiller<F>>(
+        &mut self,
+        filler: W,
+        label: &'static str,
+    ) -> Vec<ExprId> {
+        let n_outputs = filler.n_outputs();
+        let expr_ids = (0..n_outputs)
+            .map(|i| self.add_witness_hint_in_sequence(i == n_outputs - 1, label))
+            .collect_vec();
+        self.hints_fillers.push(Box::new(filler));
+        expr_ids
     }
 
     /// Adds an addition expression to the graph.
@@ -209,6 +232,11 @@ where
         &self.pending_connects
     }
 
+    /// Returns a reference to the hints fillers.
+    pub fn hints_fillers(&self) -> &[Box<dyn WitnessHintsFiller<F>>] {
+        &self.hints_fillers
+    }
+
     /// Logs a non-primitive operation allocation.
     #[cfg(debug_assertions)]
     pub fn log_non_primitive_op(
@@ -285,9 +313,13 @@ where
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec;
+
     use p3_baby_bear::BabyBear;
+    use p3_field::Field;
 
     use super::*;
+    use crate::CircuitError;
 
     #[test]
     fn test_new_builder_has_zero_constant() {
@@ -525,6 +557,57 @@ mod tests {
                 assert_eq!(*rhs, b);
             }
             _ => panic!("Expected Div operation"),
+        }
+    }
+
+    #[derive(Debug, Clone)]
+    struct IdentityHint {
+        inputs: Vec<ExprId>,
+        n_outputs: usize,
+    }
+
+    impl IdentityHint {
+        pub fn new(inputs: Vec<ExprId>) -> Self {
+            Self {
+                n_outputs: inputs.len(),
+                inputs,
+            }
+        }
+    }
+
+    impl<F: Field> WitnessHintsFiller<F> for IdentityHint {
+        fn inputs(&self) -> &[ExprId] {
+            &self.inputs
+        }
+
+        fn n_outputs(&self) -> usize {
+            self.n_outputs
+        }
+
+        fn compute_outputs(&self, inputs_val: Vec<F>) -> Result<Vec<F>, CircuitError> {
+            Ok(inputs_val)
+        }
+    }
+
+    #[test]
+    fn test_build_with_witness_hint() {
+        let mut builder = ExpressionBuilder::<BabyBear>::new();
+        let a = builder.add_const(BabyBear::ZERO, "a");
+        let b = builder.add_const(BabyBear::ONE, "b");
+        let id_hint = IdentityHint::new(vec![a, b]);
+        let c = builder.add_witness_hints(id_hint, "c");
+        assert_eq!(c.len(), 2);
+
+        assert_eq!(builder.graph().nodes().len(), 4);
+
+        match (&builder.graph().nodes()[2], &builder.graph().nodes()[3]) {
+            (
+                Expr::Witness {
+                    is_last_hint: false,
+                },
+                Expr::Witness { is_last_hint: true },
+            ) => (),
+            _ => panic!("Expected Witness operation"),
         }
     }
 

@@ -1,3 +1,5 @@
+use alloc::boxed::Box;
+use alloc::string::ToString;
 use alloc::vec::Vec;
 use alloc::{format, vec};
 
@@ -8,6 +10,7 @@ use crate::Op;
 use crate::builder::CircuitBuilderError;
 use crate::builder::compiler::get_witness_id;
 use crate::expr::{Expr, ExpressionGraph};
+use crate::op::WitnessHintsFiller;
 use crate::types::{ExprId, WitnessAllocator, WitnessId};
 
 /// Sparse disjoint-set "find" with path compression over a HashMap (iterative).
@@ -70,6 +73,10 @@ pub struct ExpressionLowerer<'a, F> {
     /// Number of public inputs
     public_input_count: usize,
 
+    /// The fillers corresponding to the witness hints sequences.
+    /// The order of fillers must match the order in which the witness hints sequences were allocated.
+    hints_fillers: &'a [Box<dyn WitnessHintsFiller<F>>],
+
     /// Witness allocator
     witness_alloc: WitnessAllocator,
 }
@@ -83,12 +90,14 @@ where
         graph: &'a ExpressionGraph<F>,
         pending_connects: &'a [(ExprId, ExprId)],
         public_input_count: usize,
+        hints_fillers: &'a [Box<dyn WitnessHintsFiller<F>>],
         witness_alloc: WitnessAllocator,
     ) -> Self {
         Self {
             graph,
             pending_connects,
             public_input_count,
+            hints_fillers,
             witness_alloc,
         }
     }
@@ -179,17 +188,49 @@ where
             }
         }
 
-        // Pass C: emit arithmetic ops in creation order; tie outputs to class slot if connected
+        // Pass C: emit arithmetic and unconstrained ops in creation order; tie outputs to class slot if connected
+        let mut hints_sequence = vec![];
+        let mut fillers_iter = self.hints_fillers.iter().cloned();
         for (expr_idx, expr) in self.graph.nodes().iter().enumerate() {
             let expr_id = ExprId(expr_idx as u32);
             match expr {
                 Expr::Const(_) | Expr::Public(_) => { /* handled above */ }
-                Expr::Witness => {
-                    // Allocate a fresh witness slot (non-primitive op)
-                    // Allows non-primitive operations to set values during execution that
-                    // are not part of the central Witness bus.
+                Expr::Witness { is_last_hint } => {
+                    let expr_id = ExprId(expr_idx as u32);
                     let out_widx = alloc_witness_id_for_expr(expr_idx);
                     expr_to_widx.insert(expr_id, out_widx);
+                    hints_sequence.push(out_widx);
+                    if *is_last_hint {
+                        // Since new hints can only be added through `alloc_witness_hints` or `alloc_witness_hints_default_filler`,
+                        // there will always be exactly one filler for each sequence of expressions of the form
+                        // `Witness{false}, ..., Witness{false}, Witness{true}`.
+                        // Therefore, this error can only occur if the expression lowerer is not being used
+                        // with the circuit builder as intended.
+                        let filler = fillers_iter.next().ok_or(
+                            CircuitBuilderError::MissingWitnessFiller {
+                                sequence: hints_sequence.clone(),
+                            },
+                        )?;
+                        let inputs = filler
+                            .inputs()
+                            .iter()
+                            .map(|expr_id| {
+                                expr_to_widx
+                                    .get(expr_id)
+                                    .ok_or(CircuitBuilderError::MissingExprMapping {
+                                        expr_id: *expr_id,
+                                        context: "Unconstrained op".to_string(),
+                                    })
+                                    .copied()
+                            })
+                            .collect::<Result<Vec<WitnessId>, _>>()?;
+                        primitive_ops.push(Op::Unconstrained {
+                            inputs,
+                            outputs: hints_sequence,
+                            filler,
+                        });
+                        hints_sequence = vec![];
+                    }
                 }
                 Expr::Add { lhs, rhs } => {
                     let out_widx = alloc_witness_id_for_expr(expr_idx);
@@ -247,6 +288,16 @@ where
                     expr_to_widx.insert(expr_id, b_widx);
                 }
             }
+        }
+
+        if !hints_sequence.is_empty() {
+            return Err(CircuitBuilderError::MalformedWitnessHitnsSequence {
+                sequence: hints_sequence,
+            });
+        }
+
+        if fillers_iter.next().is_some() {
+            return Err(CircuitBuilderError::UnmatchetWitnessFiller {});
         }
 
         let witness_count = self.witness_alloc.witness_count();
@@ -367,9 +418,10 @@ mod tests {
         let quot = graph.add_expr(Expr::Div { lhs: diff, rhs: p2 });
 
         let connects = vec![];
+        let hints_fillers = vec![];
         let alloc = WitnessAllocator::new();
 
-        let lowerer = ExpressionLowerer::new(&graph, &connects, 3, alloc);
+        let lowerer = ExpressionLowerer::new(&graph, &connects, 3, &hints_fillers, alloc);
         let (prims, public_rows, expr_map, public_map, witness_count) = lowerer.lower().unwrap();
 
         // Verify Primitives
@@ -536,9 +588,10 @@ mod tests {
         // Group B: p1 ~ p2 ~ p3 (transitive)
         // Group C: sum ~ p4 (operation result shared)
         let connects = vec![(c_42, p0), (p1, p2), (p2, p3), (sum, p4)];
+        let hints_fillers = vec![];
         let alloc = WitnessAllocator::new();
 
-        let lowerer = ExpressionLowerer::new(&graph, &connects, 5, alloc);
+        let lowerer = ExpressionLowerer::new(&graph, &connects, 5, &hints_fillers, alloc);
         let (prims, public_rows, expr_map, public_map, witness_count) = lowerer.lower().unwrap();
 
         // Verify Primitives
@@ -676,8 +729,9 @@ mod tests {
         });
 
         let connects = vec![];
+        let hints_fillers = vec![];
         let alloc = WitnessAllocator::new();
-        let lowerer = ExpressionLowerer::new(&graph, &connects, 0, alloc);
+        let lowerer = ExpressionLowerer::new(&graph, &connects, 0, &hints_fillers, alloc);
         let result = lowerer.lower();
 
         assert!(result.is_err());
@@ -697,8 +751,9 @@ mod tests {
         });
 
         let connects = vec![];
+        let hints_fillers = vec![];
         let alloc = WitnessAllocator::new();
-        let lowerer = ExpressionLowerer::new(&graph, &connects, 0, alloc);
+        let lowerer = ExpressionLowerer::new(&graph, &connects, 0, &hints_fillers, alloc);
         let result = lowerer.lower();
 
         assert!(result.is_err());

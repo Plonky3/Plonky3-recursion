@@ -1,6 +1,7 @@
 //! This module provides type-safe builders and helper functions
 //! for constructing public inputs for recursive verification circuits.
 
+use alloc::vec;
 use alloc::vec::Vec;
 
 use p3_batch_stark::BatchProof;
@@ -165,6 +166,8 @@ where
     pub air_public_values: Vec<F>,
     /// Values extracted from the proof via `Recursive::get_values`
     pub proof_values: Vec<EF>,
+    /// Values extracted from the preprocessed commitment (if any)
+    pub preprocessed: Vec<EF>,
     /// All challenges (including query indices at the end)
     pub challenges: Vec<EF>,
     /// Number of FRI query proofs
@@ -182,31 +185,13 @@ where
     /// 1. AIR public values
     /// 2. Proof values
     /// 3. All challenges (alpha, zeta, zeta_next, betas, query indices)
-    /// 4. Query index bit decompositions (MAX_QUERY_INDEX_BITS per query)
     pub fn build(self) -> Vec<EF> {
         let mut builder = PublicInputBuilder::new();
 
         builder.add_proof_values(self.air_public_values.iter().map(|&v| v.into()));
         builder.add_proof_values(self.proof_values);
+        builder.add_proof_values(self.preprocessed);
         builder.add_challenges(self.challenges.iter().copied());
-
-        // The circuit calls decompose_to_bits on each query index,
-        // which creates MAX_QUERY_INDEX_BITS additional public inputs per query
-        let num_regular_challenges = self.challenges.len() - self.num_queries;
-        for &query_index in &self.challenges[num_regular_challenges..] {
-            let coeffs = query_index.as_basis_coefficients_slice();
-            let index_usize = coeffs[0].as_canonical_u64() as usize;
-
-            // Add bit decomposition (MAX_QUERY_INDEX_BITS public inputs)
-            for k in 0..MAX_QUERY_INDEX_BITS {
-                let bit: EF = if (index_usize >> k) & 1 == 1 {
-                    EF::ONE
-                } else {
-                    EF::ZERO
-                };
-                builder.add_challenge(bit);
-            }
-        }
 
         builder.build()
     }
@@ -225,6 +210,7 @@ where
 pub fn construct_stark_verifier_inputs<F, EF>(
     air_public_values: &[F],
     proof_values: &[EF],
+    preprocessed: &[EF],
     challenges: &[EF],
     num_queries: usize,
 ) -> Vec<EF>
@@ -235,6 +221,7 @@ where
     StarkVerifierInputs {
         air_public_values: air_public_values.to_vec(),
         proof_values: proof_values.to_vec(),
+        preprocessed: preprocessed.to_vec(),
         challenges: challenges.to_vec(),
         num_queries,
     }
@@ -246,7 +233,6 @@ pub fn construct_batch_stark_verifier_inputs<F, EF>(
     air_public_values: &[Vec<F>],
     proof_values: &[EF],
     challenges: &[EF],
-    num_queries: usize,
 ) -> Vec<EF>
 where
     F: Field + PrimeField64,
@@ -260,21 +246,6 @@ where
 
     builder.add_proof_values(proof_values.iter().copied());
     builder.add_challenges(challenges.iter().copied());
-
-    let num_regular_challenges = challenges.len().saturating_sub(num_queries);
-    for &query_index in &challenges[num_regular_challenges..] {
-        let coeffs = query_index.as_basis_coefficients_slice();
-        let index_usize = coeffs[0].as_canonical_u64() as usize;
-
-        for k in 0..MAX_QUERY_INDEX_BITS {
-            let bit: EF = if (index_usize >> k) & 1 == 1 {
-                EF::ONE
-            } else {
-                EF::ZERO
-            };
-            builder.add_challenge(bit);
-        }
-    }
 
     builder.build()
 }
@@ -308,7 +279,14 @@ where
     pub air_public_targets: Vec<crate::Target>,
     /// Allocated proof structure targets
     pub proof_targets: ProofTargets<SC, Comm, OpeningProof>,
+    /// Allocated preprocessed commitment targets (if any)
+    pub preprocessed_commit: Option<Comm>,
 }
+
+type Com<SC> = <<SC as StarkGenericConfig>::Pcs as Pcs<
+    <SC as StarkGenericConfig>::Challenge,
+    <SC as StarkGenericConfig>::Challenger,
+>>::Commitment;
 
 impl<SC, Comm, OpeningProof> StarkVerifierInputsBuilder<SC, Comm, OpeningProof>
 where
@@ -332,6 +310,7 @@ where
     pub fn allocate(
         circuit: &mut CircuitBuilder<SC::Challenge>,
         proof: &Proof<SC>,
+        preprocessed_commit: Option<Com<SC>>,
         num_air_public_inputs: usize,
     ) -> Self {
         // Allocate air public inputs
@@ -342,9 +321,15 @@ where
         // Allocate proof targets
         let proof_targets = ProofTargets::new(circuit, proof);
 
+        // Allocate preprocessed commitment targets (if any)
+        let preprocessed_commit = preprocessed_commit
+            .as_ref()
+            .map(|prep_comm| Comm::new(circuit, prep_comm));
+
         Self {
             air_public_targets,
             proof_targets,
+            preprocessed_commit,
         }
     }
 
@@ -362,6 +347,7 @@ where
         &self,
         air_public_values: &[Val<SC>],
         proof: &Proof<SC>,
+        preprocessed_commit: &Option<Com<SC>>,
         challenges: &[SC::Challenge],
         num_queries: usize,
     ) -> Vec<SC::Challenge>
@@ -371,7 +357,19 @@ where
     {
         let proof_values = ProofTargets::<SC, Comm, OpeningProof>::get_values(proof);
 
-        construct_stark_verifier_inputs(air_public_values, &proof_values, challenges, num_queries)
+        let preprocessed = if let Some(prep_comm) = preprocessed_commit {
+            Comm::get_values(prep_comm)
+        } else {
+            vec![]
+        };
+
+        construct_stark_verifier_inputs(
+            air_public_values,
+            &proof_values,
+            &preprocessed,
+            challenges,
+            num_queries,
+        )
     }
 }
 
@@ -433,7 +431,6 @@ where
         air_public_values: &[Vec<Val<SC>>],
         proof: &BatchProof<SC>,
         challenges: &[SC::Challenge],
-        num_queries: usize,
     ) -> Vec<SC::Challenge>
     where
         Val<SC>: PrimeField64,
@@ -441,12 +438,7 @@ where
     {
         let proof_values = BatchProofTargets::<SC, Comm, OpeningProof>::get_values(proof);
 
-        construct_batch_stark_verifier_inputs(
-            air_public_values,
-            &proof_values,
-            challenges,
-            num_queries,
-        )
+        construct_batch_stark_verifier_inputs(air_public_values, &proof_values, challenges)
     }
 }
 

@@ -3,11 +3,13 @@ use alloc::{format, vec};
 use core::marker::PhantomData;
 
 use p3_challenger::{CanObserve, GrindingChallenger};
-use p3_circuit::CircuitBuilder;
 use p3_circuit::utils::{RowSelectorsTargets, decompose_to_bits};
+use p3_circuit::{CircuitBuilder, CircuitError};
 use p3_commit::{BatchOpening, ExtensionMmcs, Mmcs, PolynomialSpace};
 use p3_field::coset::TwoAdicMultiplicativeCoset;
-use p3_field::{ExtensionField, Field, PackedValue, PrimeCharacteristicRing, TwoAdicField};
+use p3_field::{
+    ExtensionField, Field, PackedValue, PrimeCharacteristicRing, PrimeField64, TwoAdicField,
+};
 use p3_fri::{CommitPhaseProofStep, FriProof, QueryProof, TwoAdicFriPcs};
 use p3_merkle_tree::MerkleTreeMmcs;
 use p3_symmetric::{CryptographicHasher, Hash, PseudoCompressionFunction};
@@ -429,6 +431,7 @@ where
     RecursiveFriMmcs::Commitment: ObservableCommitment,
     SC::Challenger: GrindingChallenger,
     SC::Challenger: CanObserve<FriMmcs::Commitment>,
+    Val<SC>: PrimeField64,
 {
     type VerifierParams = FriVerifierParams;
     type RecursiveProof = RecursiveFriProof<
@@ -444,7 +447,7 @@ where
         proof_targets: &ProofTargets<SC, Comm, Self::RecursiveProof>,
         opened_values: &OpenedValuesTargets<SC>,
         params: &Self::VerifierParams,
-    ) -> Vec<Target> {
+    ) -> Result<Vec<Target>, CircuitError> {
         let fri_proof = &proof_targets.opening_proof;
 
         opened_values.observe(circuit, challenger);
@@ -471,7 +474,7 @@ where
             params.pow_bits,
             fri_proof.pow_witness.witness,
             Val::<SC>::bits(),
-        );
+        )?;
 
         // Sample query indices
         let num_queries = fri_proof.query_proofs.len();
@@ -486,7 +489,7 @@ where
         challenges.push(fri_alpha);
         challenges.extend(betas);
         challenges.extend(query_indices);
-        challenges
+        Ok(challenges)
     }
 
     fn verify_circuit(
@@ -532,9 +535,14 @@ where
             .iter()
             .map(|&index_target| {
                 let all_bits = decompose_to_bits(circuit, index_target, MAX_QUERY_INDEX_BITS);
-                all_bits.into_iter().take(log_max_height).collect()
+                all_bits.map(|all_bits| {
+                    all_bits
+                        .into_iter()
+                        .take(log_max_height)
+                        .collect::<Vec<_>>()
+                })
             })
-            .collect();
+            .collect::<Result<_, _>>()?;
 
         verify_fri_circuit(
             circuit,

@@ -2,9 +2,9 @@
 
 use alloc::vec::Vec;
 
-use p3_circuit::CircuitBuilder;
 use p3_circuit::utils::decompose_to_bits;
-use p3_field::Field;
+use p3_circuit::{CircuitBuilder, CircuitError};
+use p3_field::{ExtensionField, Field, PrimeField64};
 
 use crate::Target;
 
@@ -72,8 +72,7 @@ pub trait RecursiveChallenger<F: Field> {
     ///
     /// This is useful for sampling query indices in FRI or other bit-based challenges.
     /// The challenge is first sampled as a field element, then decomposed into
-    /// `total_num_bits` bits (added as public inputs), and the first `num_bits`
-    /// are returned.
+    /// `total_num_bits` bits, and the first `num_bits` are returned.
     ///
     /// # Parameters
     /// - `circuit`: Circuit builder for creating operations
@@ -82,18 +81,21 @@ pub trait RecursiveChallenger<F: Field> {
     ///
     /// # Returns
     /// Vector of the first `num_bits` bits as targets (each in {0, 1})
-    fn sample_public_bits(
+    fn sample_public_bits<BF: PrimeField64>(
         &mut self,
         circuit: &mut CircuitBuilder<F>,
         total_num_bits: usize,
         num_bits: usize,
-    ) -> Vec<Target> {
+    ) -> Result<Vec<Target>, CircuitError>
+    where
+        F: ExtensionField<BF>,
+    {
         let x = self.sample(circuit);
 
-        // Decompose to bits (adds public inputs for each bit and verifies they reconstruct x)
-        let bits = decompose_to_bits(circuit, x, total_num_bits);
+        // Decompose to bits and verifies they reconstruct x
+        let bits = decompose_to_bits(circuit, x, total_num_bits)?;
 
-        bits[..num_bits].to_vec()
+        Ok(bits[..num_bits].to_vec())
     }
 
     /// Verify a proof-of-work witness.
@@ -106,20 +108,25 @@ pub trait RecursiveChallenger<F: Field> {
     /// - `witness_bits`: Number of leading bits that must be zero
     /// - `witness`: The proof-of-work witness target
     /// - `total_num_bits`: Total number of bits to decompose
-    fn check_witness(
+    fn check_witness<BF: PrimeField64>(
         &mut self,
         circuit: &mut CircuitBuilder<F>,
         witness_bits: usize,
         witness: Target,
         total_num_bits: usize,
-    ) {
+    ) -> Result<(), CircuitError>
+    where
+        F: ExtensionField<BF>,
+    {
         self.observe(circuit, witness);
-        let bits = self.sample_public_bits(circuit, total_num_bits, witness_bits);
+        let bits = self.sample_public_bits(circuit, total_num_bits, witness_bits)?;
 
         // All bits must be zero for valid PoW
         for bit in bits {
             circuit.assert_zero(bit);
         }
+
+        Ok(())
     }
 
     /// Clear the challenger state.
