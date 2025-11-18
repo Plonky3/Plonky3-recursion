@@ -105,7 +105,6 @@ impl<
         let mut circuit_trace = vec![F::ZERO; n * num_circuit_cols];
         let mut circuit_trace = RowMajorMatrixViewMut::new(&mut circuit_trace, num_circuit_cols);
 
-        // TODO: Put trace generation circuit-side.
         let mut state = [F::ZERO; WIDTH];
         let mut inputs = Vec::with_capacity(n);
         for (i, op) in sponge_ops.iter().enumerate() {
