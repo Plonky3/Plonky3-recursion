@@ -5,13 +5,13 @@ use std::error::Error;
 /// The circuit absorbs multiple inputs sequentially and squeezes outputs,
 /// enforcing that the in-circuit hash matches the native computation.
 use p3_baby_bear::{BabyBear, default_babybear_poseidon2_16};
-use p3_circuit::op::{WitnessHintsFiller};
+use p3_circuit::op::WitnessHintsFiller;
 use p3_circuit::ops::HashOps;
 use p3_circuit::tables::generate_poseidon2_trace;
 use p3_circuit::{CircuitBuilder, CircuitError, ExprId};
-use p3_poseidon2_circuit_air::BabyBearD4Width16;
-// use p3_circuit_prover::{BatchStarkProver, TablePacking, config}; // TODO: Uncomment when Poseidon2Prover is implemented
+use p3_circuit_prover::{BatchStarkProver, Poseidon2Config, TablePacking, config};
 use p3_field::PrimeCharacteristicRing;
+use p3_poseidon2_circuit_air::BabyBearD4Width16;
 use p3_symmetric::Permutation;
 use tracing_forest::ForestLayer;
 use tracing_forest::util::LevelFilter;
@@ -70,8 +70,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     builder.enable_hash(true, generate_poseidon2_trace::<F, BabyBearD4Width16>);
     builder.enable_hash_absorb(false); // Enable reset=false variant for stateful operations
 
-    // TODO: Connect with public inputs once Poseidon2Prover is implemented
-
     // First absorb (reset=true)
     let mut inputs: Vec<ExprId> = Vec::new();
     for i in 0..2 {
@@ -94,15 +92,16 @@ fn main() -> Result<(), Box<dyn Error>> {
     let precomputed_hint = PrecomputedHashOutputs {
         outputs: expected_outputs.clone(),
     };
-    let squeeze_outputs = builder.add_hash_squeeze_with_filler(precomputed_hint, "hash_squeeze_output")?;
+    let squeeze_outputs =
+        builder.add_hash_squeeze_with_filler(precomputed_hint, "hash_squeeze_output")?;
 
     builder.dump_allocation_log();
 
     let (circuit, _) = builder.build()?;
-    
+
     // Clone expr_to_widx before consuming circuit
     let expr_to_widx = circuit.expr_to_widx.clone();
-    
+
     let runner = circuit.runner();
 
     let traces = runner.run()?;
@@ -111,15 +110,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Since squeeze_outputs are connected to public_inputs, they share the same witness slots
     let mut actual_outputs = Vec::new();
     for squeeze_output_expr in &squeeze_outputs {
-        let witness_id = expr_to_widx
-            .get(squeeze_output_expr)
-            .ok_or_else(|| {
-                format!(
-                    "Could not find witness ID for squeeze output ExprId({})",
-                    squeeze_output_expr.0
-                )
-            })?;
-        
+        let witness_id = expr_to_widx.get(squeeze_output_expr).ok_or_else(|| {
+            format!(
+                "Could not find witness ID for squeeze output ExprId({})",
+                squeeze_output_expr.0
+            )
+        })?;
+
         // Find the value in the witness trace
         let value = traces
             .witness_trace
@@ -133,7 +130,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     witness_id.0
                 )
             })?;
-        
+
         actual_outputs.push(*value);
     }
 
@@ -142,7 +139,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         expected_outputs.len(),
         "Number of actual outputs should match expected outputs"
     );
-    for (i, (actual, expected)) in actual_outputs.iter().zip(expected_outputs.iter()).enumerate() {
+    for (i, (actual, expected)) in actual_outputs
+        .iter()
+        .zip(expected_outputs.iter())
+        .enumerate()
+    {
         assert_eq!(
             actual, expected,
             "Squeeze output {} should equal expected output {}",
@@ -166,14 +167,16 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     println!("Expected outputs: {:?}", expected_outputs);
     println!("Actual outputs:   {:?}", actual_outputs);
-    
-    // TODO: Finish implementing Poseidon2Prover
-    // let config = config::baby_bear().build();
-    // let table_packing = TablePacking::new(4, 4, 1);
-    // let mut prover = BatchStarkProver::new(config).with_table_packing(table_packing);
-    // prover.register_poseidon2_table();
-    // let proof = prover.prove_all_tables(&traces)?;
-    // prover.verify_all_tables(&proof)?;
+
+    // Prove and verify the circuit
+    let stark_config = config::baby_bear().build();
+    let table_packing = TablePacking::new(4, 4, 1);
+    let mut prover = BatchStarkProver::new(stark_config).with_table_packing(table_packing);
+    prover.register_poseidon2_table(Poseidon2Config::baby_bear_d4_width16());
+    let proof = prover.prove_all_tables(&traces)?;
+    prover.verify_all_tables(&proof)?;
+
+    println!("Successfully proved and verified Poseidon2 hash chain!");
 
     Ok(())
 }
@@ -200,8 +203,8 @@ fn compute_hash_chain_native(chain_length: usize) -> Vec<F> {
     state[0] = F::from_u64(1);
     state[1] = F::from_u64(2);
     // Zero out remaining rate elements (for reset)
-    for j in 2..RATE {
-        state[j] = F::ZERO;
+    for elem in state.iter_mut().take(RATE).skip(2) {
+        *elem = F::ZERO;
     }
     state = perm.permute(state);
 

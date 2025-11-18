@@ -33,7 +33,7 @@ pub trait HashOps<F: Clone + PrimeCharacteristicRing + Eq + Hash> {
     ///
     /// Returns the newly created output `ExprId`s.
     fn add_hash_squeeze(&mut self, count: usize) -> Result<Vec<ExprId>, CircuitBuilderError>;
-    
+
     /// Add hash squeeze operation with custom hint filler.
     /// This allows providing precomputed values for the squeeze outputs.
     fn add_hash_squeeze_with_filler<W: 'static + WitnessHintsFiller<F>>(

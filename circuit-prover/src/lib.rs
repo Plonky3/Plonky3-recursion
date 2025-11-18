@@ -45,5 +45,5 @@ pub mod field_params;
 // Re-export main API
 pub use batch_stark_prover::{
     BatchStarkProof, BatchStarkProver, BatchTableInstance, DynamicAirEntry, MmcsProver,
-    NonPrimitiveTableEntry, TablePacking, TableProver,
+    NonPrimitiveTableEntry, Poseidon2Config, Poseidon2Prover, TablePacking, TableProver,
 };
