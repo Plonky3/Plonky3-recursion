@@ -89,9 +89,21 @@ where
     }
 
     /// Enables hash operations.
-    pub fn enable_hash(&mut self, reset: bool) {
+    ///
+    /// # Arguments
+    /// * `reset` - Whether to reset the hash state before absorbing
+    /// * `trace_generator` - The function to generate the trace for the hash operations (for instance Poseidon2).
+    pub fn enable_hash(&mut self, reset: bool, trace_generator: TraceGeneratorFn<F>)
+    where
+        F: CircuitField,
+    {
         self.enable_hash_absorb(reset);
         self.enable_hash_squeeze();
+
+        self.non_primitive_trace_generators
+            .insert(NonPrimitiveOpType::HashAbsorb { reset }, trace_generator);
+        self.non_primitive_trace_generators
+            .insert(NonPrimitiveOpType::HashSqueeze, trace_generator);
     }
 
     /// Enables FRI verification operations.
