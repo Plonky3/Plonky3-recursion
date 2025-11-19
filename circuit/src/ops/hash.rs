@@ -127,7 +127,7 @@ where
 
         let _ = self.push_non_primitive_op(
             NonPrimitiveOpType::HashCompress,
-            vec![left.to_vec(), right.to_vec()],
+            vec![left.to_vec(), right.to_vec(), outputs.to_vec()],
             "HashCompress",
         );
 
