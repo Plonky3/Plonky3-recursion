@@ -1,11 +1,18 @@
 //! [`ConstAir`] stores constants either in the base field or the extension field (of extension degree `D`).
 //!
-//!  # Columns
+//! # Column layout
 //!
-//! The AIR has `D + 1` columns:
+//! The AIR is generic over an extension degree `D`.
+//! For each constant entry, we allocate `D + 1` base-field columns.
 //!
-//! - 1 column for the index of the constant within the witness table,
-//! - `D` columns for the constant value.
+//! - `D` columns for the constant value (basis coefficients),
+//! - `1` column for the `index`: the witness-bus index of the constant.
+//!
+//! The layout for a single row is:
+//!
+//! ```text
+//!     [value[0], value[1], ..., value[D-1], index]
+//! ```
 //!
 //! # Constraints
 //!
@@ -13,7 +20,8 @@
 //!
 //! # Global Interactions
 //!
-//! There is one interaction with the witness bus:
+//! There is one interaction with the global witness bus:
+//!
 //! - send (index, value)
 
 use alloc::vec::Vec;
@@ -36,11 +44,16 @@ use p3_matrix::dense::RowMajorMatrix;
 /// - index: Preprocessed WitnessId that this constant binds to
 #[derive(Debug, Clone)]
 pub struct ConstAir<F, const D: usize = 1> {
+    /// Total number of constants defined in this trace.
     pub height: usize,
+    /// Marker tying this AIR to its base field.
     _phantom: PhantomData<F>,
 }
 
 impl<F: Field, const D: usize> ConstAir<F, D> {
+    /// Construct a new `ConstAir` instance.
+    ///
+    /// - `height`: The number of constant values to be exposed.
     pub const fn new(height: usize) -> Self {
         Self {
             height,
@@ -48,7 +61,13 @@ impl<F: Field, const D: usize> ConstAir<F, D> {
         }
     }
 
-    /// Flatten a ConstTrace over an extension into a base-field matrix with D limbs + index.
+    /// Convert a `ConstTrace` into a `RowMajorMatrix` suitable for the STARK prover.
+    ///
+    /// This function is responsible for:
+    ///
+    /// 1. Decomposing each extension element in the trace into `D` basis coordinates.
+    /// 2. Placing the witness index in the final column.
+    /// 3. Padding the trace to have a power-of-two number of rows.
     pub fn trace_to_matrix<ExtF: BasedVectorSpace<F>>(
         trace: &ConstTrace<ExtF>,
     ) -> RowMajorMatrix<F> {
@@ -56,19 +75,24 @@ impl<F: Field, const D: usize> ConstAir<F, D> {
         assert_eq!(
             height,
             trace.index.len(),
-            "ConstTrace column length mismatch"
+            "ConstTrace column length mismatch: values vs indices"
         );
         let width = D + 1;
 
         let mut values = Vec::with_capacity(height * width);
+
+        // Iterate over values and indices, populating the flat vector.
         for i in 0..height {
+            // Extract basis coefficients.
             let coeffs = trace.values[i].as_basis_coefficients_slice();
             assert_eq!(
                 coeffs.len(),
                 D,
                 "extension degree mismatch for ConstTrace value"
             );
+            // Copy coefficients into the first D columns.
             values.extend_from_slice(coeffs);
+            // Write the witness index into the last column.
             values.push(F::from_u32(trace.index[i].0));
         }
 

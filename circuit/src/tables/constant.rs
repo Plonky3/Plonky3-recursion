@@ -26,7 +26,7 @@ pub struct ConstTraceBuilder<'a, F> {
 
 impl<'a, F: Clone> ConstTraceBuilder<'a, F> {
     /// Creates a new constant trace builder.
-    pub fn new(primitive_ops: &'a [Op<F>]) -> Self {
+    pub const fn new(primitive_ops: &'a [Op<F>]) -> Self {
         Self { primitive_ops }
     }
 

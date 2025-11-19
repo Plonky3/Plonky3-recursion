@@ -25,7 +25,7 @@ jobs:
         with:
           command: install
           args: mdbook --version 0.4.52
-
+      
       - name: Install katex preprocessor
         uses: actions-rs/cargo@v1
         with:
