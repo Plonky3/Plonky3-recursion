@@ -79,13 +79,26 @@ where
     }
 
     /// Enables HashAbsorb operations.
-    pub fn enable_hash_absorb(&mut self, reset: bool) {
+    ///
+    /// # Arguments
+    /// * `reset` - Whether to reset the hash state before absorbing
+    /// * `trace_generator` - The function to generate the trace for the hash operations (for instance Poseidon2).
+    pub fn enable_hash_absorb(&mut self, reset: bool, trace_generator: TraceGeneratorFn<F>) {
         self.config.enable_hash_absorb(reset);
+
+        self.non_primitive_trace_generators
+            .insert(NonPrimitiveOpType::HashAbsorb { reset }, trace_generator);
     }
 
     /// Enables HashSqueeze operations.
-    pub fn enable_hash_squeeze(&mut self) {
+    ///
+    /// # Arguments
+    /// * `trace_generator` - The function to generate the trace for the hash operations (for instance Poseidon2).
+    pub fn enable_hash_squeeze(&mut self, trace_generator: TraceGeneratorFn<F>) {
         self.config.enable_hash_squeeze();
+
+        self.non_primitive_trace_generators
+            .insert(NonPrimitiveOpType::HashSqueeze, trace_generator);
     }
 
     /// Enables hash operations.
@@ -97,13 +110,8 @@ where
     where
         F: CircuitField,
     {
-        self.enable_hash_absorb(reset);
-        self.enable_hash_squeeze();
-
-        self.non_primitive_trace_generators
-            .insert(NonPrimitiveOpType::HashAbsorb { reset }, trace_generator);
-        self.non_primitive_trace_generators
-            .insert(NonPrimitiveOpType::HashSqueeze, trace_generator);
+        self.enable_hash_absorb(reset, trace_generator);
+        self.enable_hash_squeeze(trace_generator);
     }
 
     /// Enables FRI verification operations.

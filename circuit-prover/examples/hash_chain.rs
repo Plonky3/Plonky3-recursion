@@ -22,8 +22,6 @@ use tracing_subscriber::{EnvFilter, Registry};
 type F = BabyBear;
 
 /// Custom hint filler that provides precomputed hash outputs.
-/// This allows us to fill squeeze output hints with the expected values
-/// computed natively, enabling verification without public inputs.
 #[derive(Debug, Clone)]
 struct PrecomputedHashOutputs {
     outputs: Vec<F>,
@@ -60,15 +58,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Parse hash chain length from command line (default: 3)
     let chain_length = env::args().nth(1).and_then(|s| s.parse().ok()).unwrap_or(3);
 
-    // Compute expected hash output natively
     let expected_outputs = compute_hash_chain_native(chain_length);
 
-    // Build circuit
     let mut builder = CircuitBuilder::new();
 
     // Enable hash operations with BabyBear D=4, WIDTH=16 configuration
     builder.enable_hash(true, generate_poseidon2_trace::<F, BabyBearD4Width16>);
-    builder.enable_hash_absorb(false); // Enable reset=false variant for stateful operations
+    builder.enable_hash_absorb(false, generate_poseidon2_trace::<F, BabyBearD4Width16>); // Enable reset=false variant for stateful operations
 
     // First absorb (reset=true)
     let mut inputs: Vec<ExprId> = Vec::new();
