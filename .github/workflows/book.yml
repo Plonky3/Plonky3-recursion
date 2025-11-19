@@ -30,7 +30,7 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: install
-          args: mdbook-katex mdbook-mermaid
+          args: mdbook-katex --version 0.9.4 mdbook-mermaid --version 0.16.0
 
       - name: Initialize mermaid preprocessor
         run: mdbook-mermaid install book
