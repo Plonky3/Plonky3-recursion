@@ -5,11 +5,12 @@ use std::env;
 /// Private inputs: mmcs path (siblings + directions)
 use p3_baby_bear::BabyBear;
 use p3_circuit::ops::MmcsVerifyConfig;
-use p3_circuit::tables::MmcsPrivateData;
+use p3_circuit::tables::{MmcsPrivateData, generate_poseidon2_trace};
 use p3_circuit::{CircuitBuilder, ExprId, MmcsOps, NonPrimitiveOpPrivateData};
-use p3_circuit_prover::{BatchStarkProver, config};
+use p3_circuit_prover::{BatchStarkProver, Poseidon2Config, config};
 use p3_field::PrimeCharacteristicRing;
 use p3_field::extension::BinomialExtensionField;
+use p3_poseidon2_circuit_air::BabyBearD4Width16;
 use tracing_forest::ForestLayer;
 use tracing_forest::util::LevelFilter;
 use tracing_subscriber::layer::SubscriberExt;
@@ -39,6 +40,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut builder = CircuitBuilder::<F>::new();
     builder.enable_mmcs(&mmcs_config);
+    builder.enable_hash(true, generate_poseidon2_trace::<F, BabyBearD4Width16>);
 
     // Public inputs: leaf hash and expected root hash
     // The leaves will contain `mmcs_config.ext_field_digest_elems` wires,
@@ -145,6 +147,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let traces = runner.run()?;
     let mut batch_prover = BatchStarkProver::new(config);
     batch_prover.register_mmcs_table(mmcs_config.clone());
+    batch_prover.register_poseidon2_table(Poseidon2Config::baby_bear_d4_width16());
     let proof = batch_prover.prove_all_tables(&traces)?;
     batch_prover.verify_all_tables(&proof)?;
 

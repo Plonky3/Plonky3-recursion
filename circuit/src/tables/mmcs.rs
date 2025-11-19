@@ -27,6 +27,11 @@ pub struct MmcsTrace<F> {
     ///
     /// Each entry is one complete leaf-to-root verification.
     pub mmcs_paths: Vec<MmcsPathTrace<F>>,
+    /// HashCompress operations created from MMCS compressions.
+    ///
+    /// These operations will be picked up by the Poseidon2 trace generator
+    /// to reuse the Poseidon2 table for MMCS compressions.
+    pub hash_compress_ops: Vec<(Vec<F>, Vec<F>, Vec<F>)>, // (left, right, output)
 }
 
 impl<F> MmcsTrace<F> {
@@ -35,6 +40,12 @@ impl<F> MmcsTrace<F> {
             .iter()
             .map(|path| path.left_values.len() + 1)
             .sum()
+    }
+
+    /// Get HashCompress operations created from MMCS compressions.
+    /// These can be used by the Poseidon2 trace generator.
+    pub fn hash_compress_ops(&self) -> &[(Vec<F>, Vec<F>, Vec<F>)] {
+        &self.hash_compress_ops
     }
 }
 
@@ -384,6 +395,7 @@ impl<'a, F: CircuitField> MmcsTraceBuilder<'a, F> {
     /// Builds the MMCS trace by scanning non-primitive ops with MMCS executors.
     pub fn build(self) -> Result<MmcsTrace<F>, CircuitError> {
         let mut mmcs_paths = Vec::new();
+        let mut hash_compress_ops = Vec::new();
 
         let config = match self
             .circuit
@@ -391,7 +403,12 @@ impl<'a, F: CircuitField> MmcsTraceBuilder<'a, F> {
             .get(&NonPrimitiveOpType::MmcsVerify)
         {
             Some(NonPrimitiveOpConfig::MmcsVerifyConfig(config)) => config,
-            _ => return Ok(MmcsTrace { mmcs_paths }),
+            _ => {
+                return Ok(MmcsTrace {
+                    mmcs_paths,
+                    hash_compress_ops: Vec::new(),
+                });
+            }
         };
 
         for op in &self.circuit.non_primitive_ops {
@@ -416,7 +433,10 @@ impl<'a, F: CircuitField> MmcsTraceBuilder<'a, F> {
                 .ok_or(CircuitError::NonPrimitiveOpMissingPrivateData {
                     operation_index: *op_id,
                 })?;
-            let NonPrimitiveOpPrivateData::MmcsVerify(priv_data) = private_data;
+            let NonPrimitiveOpPrivateData::MmcsVerify(priv_data) = private_data else {
+                // Skip non-MMCS private data (e.g., HashCompress)
+                continue;
+            };
 
             let root = &inputs[inputs.len() - 1];
             let directions = &inputs[inputs.len() - 2];
@@ -470,9 +490,75 @@ impl<'a, F: CircuitField> MmcsTraceBuilder<'a, F> {
 
             let trace = priv_data.to_trace(config, &witness_leaves, leaves, root)?;
             mmcs_paths.push(trace);
+
+            // Extract HashCompress operations from MMCS private data
+            // Each compression step in the MMCS path corresponds to a HashCompress operation
+            // TODO: support other base field digest elements
+            if config.base_field_digest_elems == 8 {
+                let empty_leaf = vec![];
+                let path_directions = (0..config.max_tree_height)
+                    .map(|i| *priv_data.directions.get(i).unwrap_or(&false));
+
+                for ((state, extra_state), sibling, direction, leaf) in izip!(
+                    priv_data
+                        .path_states
+                        .iter()
+                        .take(priv_data.path_siblings.len()),
+                    priv_data.path_siblings.iter(),
+                    path_directions,
+                    iter::once(&empty_leaf).chain(witness_leaves.iter().skip(1)),
+                ) {
+                    // Convert extension field values to base field for compression
+                    let state_base_arr = config.ext_to_base::<F, _, 8>(state)?;
+                    let sibling_base_arr = config.ext_to_base::<F, _, 8>(sibling)?;
+                    let state_base: Vec<F> = state_base_arr.to_vec();
+                    let sibling_base: Vec<F> = sibling_base_arr.to_vec();
+
+                    // Determine compression inputs based on direction
+                    let (left, right) = if direction {
+                        (state_base, sibling_base)
+                    } else {
+                        (sibling_base, state_base)
+                    };
+
+                    // Compute output (next state) - find the next state in path_states
+                    let state_idx = priv_data
+                        .path_states
+                        .iter()
+                        .position(|(s, _)| s == state)
+                        .ok_or(CircuitError::NonPrimitiveOpMissingPrivateData {
+                            operation_index: *op_id,
+                        })?;
+
+                    if let Some((next_state, _)) = priv_data.path_states.get(state_idx + 1) {
+                        let output_arr = config.ext_to_base::<F, _, 8>(next_state)?;
+                        let output: Vec<F> = output_arr.to_vec();
+                        hash_compress_ops.push((left, right, output));
+                    }
+
+                    // If there's an extra state, add another compression
+                    if let Some(extra_state) = extra_state
+                        && !leaf.is_empty()
+                    {
+                        let extra_state_base_arr = config.ext_to_base::<F, _, 8>(extra_state)?;
+                        let leaf_base_arr = config.ext_to_base::<F, _, 8>(leaf)?;
+                        let extra_state_base: Vec<F> = extra_state_base_arr.to_vec();
+                        let leaf_base: Vec<F> = leaf_base_arr.to_vec();
+                        // The final state after compressing with the leaf
+                        if let Some((final_state, _)) = priv_data.path_states.get(state_idx + 1) {
+                            let final_output_arr = config.ext_to_base::<F, _, 8>(final_state)?;
+                            let final_output: Vec<F> = final_output_arr.to_vec();
+                            hash_compress_ops.push((extra_state_base, leaf_base, final_output));
+                        }
+                    }
+                }
+            }
         }
 
-        Ok(MmcsTrace { mmcs_paths })
+        Ok(MmcsTrace {
+            mmcs_paths,
+            hash_compress_ops,
+        })
     }
 }
 
@@ -828,5 +914,206 @@ mod tests {
         // Final value and final indices width
         assert_eq!(path.final_value, *correct_root);
         assert_eq!(path.final_index.len(), config.ext_field_digest_elems);
+    }
+
+    #[test]
+    fn test_mmcs_poseidon2_integration() {
+        use p3_baby_bear::{BabyBear, default_babybear_poseidon2_16};
+        use p3_field::extension::BinomialExtensionField;
+        use p3_symmetric::TruncatedPermutation;
+
+        use crate::builder::CircuitBuilder;
+        use crate::tables::{Poseidon2Params, Poseidon2Trace, generate_poseidon2_trace};
+
+        type F = BinomialExtensionField<BabyBear, 4>;
+
+        // Copied from poseidon2-circuit-air/src/public_types.rs
+        pub struct BabyBearD4Width16;
+        impl Poseidon2Params for BabyBearD4Width16 {
+            const D: usize = 4;
+            const WIDTH: usize = 16;
+            const RATE_EXT: usize = 2;
+            const CAPACITY_EXT: usize = 2;
+            const SBOX_DEGREE: u64 = 7;
+            const SBOX_REGISTERS: usize = 1;
+            const HALF_FULL_ROUNDS: usize = 4;
+            const PARTIAL_ROUNDS: usize = 13;
+        }
+
+        let perm = default_babybear_poseidon2_16();
+        let compress: TruncatedPermutation<p3_baby_bear::Poseidon2BabyBear<16>, 2, 8, 16> =
+            TruncatedPermutation::new(perm);
+
+        let config = MmcsVerifyConfig {
+            base_field_digest_elems: 8,
+            ext_field_digest_elems: 8,
+            max_tree_height: 4,
+        };
+
+        let mut builder = CircuitBuilder::<F>::new();
+        builder.enable_mmcs(&config);
+        builder.enable_hash(true, generate_poseidon2_trace::<F, BabyBearD4Width16>);
+
+        // Create leaves with base_field_digest_elems=8 elements each
+        let leaves_expr = [
+            (0..config.base_field_digest_elems)
+                .map(|_| builder.add_public_input())
+                .collect(),
+            vec![],
+            (0..config.base_field_digest_elems)
+                .map(|_| builder.add_public_input())
+                .collect(),
+            vec![],
+        ];
+        let directions_expr = [
+            builder.add_public_input(),
+            builder.add_public_input(),
+            builder.add_public_input(),
+            builder.add_public_input(),
+        ];
+        let root_exprs = (0..config.ext_field_digest_elems)
+            .map(|_| builder.add_public_input())
+            .collect::<Vec<_>>();
+        let mmcs_op_id = builder
+            .add_mmcs_verify(&leaves_expr, &directions_expr, &root_exprs)
+            .unwrap();
+
+        let (circuit, _) = builder
+            .build()
+            .map_err(|e| CircuitError::InvalidCircuit { error: e })
+            .unwrap();
+
+        let leaves_value = [
+            vec![
+                F::ZERO,
+                F::ZERO,
+                F::ZERO,
+                F::ZERO,
+                F::ZERO,
+                F::ZERO,
+                F::ZERO,
+                F::from_u64(7),
+            ],
+            vec![],
+            vec![
+                F::ZERO,
+                F::ZERO,
+                F::ZERO,
+                F::ZERO,
+                F::ZERO,
+                F::ZERO,
+                F::ZERO,
+                F::from_u64(25),
+            ],
+            vec![],
+        ];
+        let siblings = [
+            vec![
+                F::ZERO,
+                F::ZERO,
+                F::ZERO,
+                F::ZERO,
+                F::ZERO,
+                F::ZERO,
+                F::ZERO,
+                F::from_u64(10),
+            ],
+            vec![
+                F::ZERO,
+                F::ZERO,
+                F::ZERO,
+                F::ZERO,
+                F::ZERO,
+                F::ZERO,
+                F::ZERO,
+                F::from_u64(20),
+            ],
+            vec![
+                F::ZERO,
+                F::ZERO,
+                F::ZERO,
+                F::ZERO,
+                F::ZERO,
+                F::ZERO,
+                F::ZERO,
+                F::from_u64(30),
+            ],
+            vec![
+                F::ZERO,
+                F::ZERO,
+                F::ZERO,
+                F::ZERO,
+                F::ZERO,
+                F::ZERO,
+                F::ZERO,
+                F::from_u64(40),
+            ],
+        ];
+        let directions = [false, true, false, true];
+
+        // Compute private data
+        let private_data = MmcsPrivateData::new::<BabyBear, _, 8>(
+            &compress,
+            &config,
+            &leaves_value,
+            &siblings,
+            &directions,
+        )
+        .unwrap();
+        let correct_root = &private_data.path_states.last().unwrap().0;
+
+        // Run circuit
+        let mut public_inputs = vec![];
+        public_inputs.extend(leaves_value.iter().flatten());
+        public_inputs.extend(directions.iter().map(|dir| F::from_bool(*dir)));
+        public_inputs.extend(correct_root.iter().copied());
+
+        let mut runner = circuit.runner();
+        runner.set_public_inputs(&public_inputs).unwrap();
+        runner
+            .set_non_primitive_op_private_data(
+                mmcs_op_id,
+                NonPrimitiveOpPrivateData::MmcsVerify(private_data.clone()),
+            )
+            .unwrap();
+
+        let traces = runner.run().unwrap();
+
+        // Verify MMCS trace contains HashCompress operations
+        let mmcs_trace = traces
+            .non_primitive_trace::<MmcsTrace<F>>("mmcs_verify")
+            .expect("mmcs trace present");
+
+        // Verify Poseidon2 trace contains the HashCompress operations from MMCS
+        let poseidon2_trace = traces
+            .non_primitive_trace::<Poseidon2Trace<F>>("poseidon2")
+            .expect("poseidon2 trace present");
+
+        let compress_ops: Vec<_> = poseidon2_trace
+            .operations
+            .iter()
+            .filter(|op| !op.is_sponge)
+            .collect();
+
+        assert!(
+            compress_ops.len() >= mmcs_trace.hash_compress_ops().len(),
+            "Poseidon2 trace should contain at least {} compression operations (got {})",
+            mmcs_trace.hash_compress_ops().len(),
+            compress_ops.len()
+        );
+
+        // Verify compression operations have correct format
+        for op in &compress_ops {
+            assert!(
+                !op.is_sponge,
+                "Compression operations should have is_sponge=false"
+            );
+            assert!(!op.reset, "Compression operations should have reset=false");
+            // All absorb flags should be set for compression
+            assert!(
+                op.absorb_flags.iter().all(|&flag| flag),
+                "All absorb flags should be set for compression"
+            );
+        }
     }
 }

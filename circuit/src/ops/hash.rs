@@ -4,8 +4,9 @@
 //! construction within the circuit.
 
 use alloc::boxed::Box;
-use alloc::vec;
+use alloc::string::ToString;
 use alloc::vec::Vec;
+use alloc::{format, vec};
 use core::hash::Hash;
 
 use p3_field::{Field, PrimeCharacteristicRing};
@@ -40,6 +41,14 @@ pub trait HashOps<F: Clone + PrimeCharacteristicRing + Eq + Hash> {
         &mut self,
         filler: W,
         label: &'static str,
+    ) -> Result<Vec<ExprId>, CircuitBuilderError>;
+
+    /// Compress two inputs into one output using Poseidon2.
+    /// Returns the output `ExprId`s.
+    fn add_hash_compress(
+        &mut self,
+        left: &[ExprId],
+        right: &[ExprId],
     ) -> Result<Vec<ExprId>, CircuitBuilderError>;
 }
 
@@ -88,6 +97,38 @@ where
             NonPrimitiveOpType::HashSqueeze,
             vec![outputs.to_vec()],
             "HashSqueeze",
+        );
+
+        Ok(outputs)
+    }
+
+    fn add_hash_compress(
+        &mut self,
+        left: &[ExprId],
+        right: &[ExprId],
+    ) -> Result<Vec<ExprId>, CircuitBuilderError> {
+        self.ensure_op_enabled(NonPrimitiveOpType::HashCompress)?;
+
+        // Validate input sizes match
+        if left.len() != right.len() {
+            return Err(CircuitBuilderError::NonPrimitiveOpArity {
+                op: "HashCompress",
+                expected: format!(
+                    "left and right inputs must have same size (got left={}, right={})",
+                    left.len(),
+                    right.len()
+                ),
+                got: 0,
+            });
+        }
+
+        // Allocate output hints
+        let outputs = self.alloc_witness_hints_default_filler(left.len(), "hash_compress_output");
+
+        let _ = self.push_non_primitive_op(
+            NonPrimitiveOpType::HashCompress,
+            vec![left.to_vec(), right.to_vec()],
+            "HashCompress",
         );
 
         Ok(outputs)
@@ -220,6 +261,80 @@ impl<F: Field> NonPrimitiveExecutor<F> for HashSqueezeExecutor {
         _outputs: &[Vec<WitnessId>],
         _ctx: &mut ExecutionContext<F>,
     ) -> Result<(), CircuitError> {
+        Ok(())
+    }
+
+    fn op_type(&self) -> &NonPrimitiveOpType {
+        &self.op_type
+    }
+
+    fn boxed(&self) -> Box<dyn NonPrimitiveExecutor<F>> {
+        Box::new(self.clone())
+    }
+}
+
+/// Executor for hash compress operations
+///
+/// Compresses two inputs into one output using Poseidon2.
+/// Used for MMCS Merkle tree compression.
+#[derive(Debug, Clone)]
+pub struct HashCompressExecutor {
+    op_type: NonPrimitiveOpType,
+}
+
+impl HashCompressExecutor {
+    /// Create a new hash compress executor
+    pub fn new() -> Self {
+        Self {
+            op_type: NonPrimitiveOpType::HashCompress,
+        }
+    }
+}
+
+impl Default for HashCompressExecutor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<F: Field> NonPrimitiveExecutor<F> for HashCompressExecutor {
+    fn execute(
+        &self,
+        inputs: &[Vec<WitnessId>],
+        outputs: &[Vec<WitnessId>],
+        _ctx: &mut ExecutionContext<F>,
+    ) -> Result<(), CircuitError> {
+        // Validate inputs and outputs
+        if inputs.len() < 2 {
+            return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
+                op: self.op_type.clone(),
+                expected: "at least 2 input vectors (left and right)".to_string(),
+                got: inputs.len(),
+            });
+        }
+        if outputs.is_empty() {
+            return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
+                op: self.op_type.clone(),
+                expected: "at least 1 output vector".to_string(),
+                got: outputs.len(),
+            });
+        }
+
+        let left_size = inputs[0].len();
+        let right_size = inputs[1].len();
+        let output_size = outputs[0].len();
+
+        if left_size != right_size || left_size != output_size {
+            return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
+                op: self.op_type.clone(),
+                expected: format!(
+                    "all vectors should have same size (got left={}, right={}, output={})",
+                    left_size, right_size, output_size
+                ),
+                got: 0,
+            });
+        }
+
         Ok(())
     }
 

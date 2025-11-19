@@ -101,6 +101,14 @@ where
             .insert(NonPrimitiveOpType::HashSqueeze, trace_generator);
     }
 
+    /// Enables HashCompress operations.
+    pub fn enable_hash_compress(&mut self, trace_generator: TraceGeneratorFn<F>) {
+        self.config.enable_hash_compress();
+
+        self.non_primitive_trace_generators
+            .insert(NonPrimitiveOpType::HashCompress, trace_generator);
+    }
+
     /// Enables hash operations.
     ///
     /// # Arguments
@@ -112,6 +120,7 @@ where
     {
         self.enable_hash_absorb(reset, trace_generator);
         self.enable_hash_squeeze(trace_generator);
+        self.enable_hash_compress(trace_generator);
     }
 
     /// Enables FRI verification operations.
