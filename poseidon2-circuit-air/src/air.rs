@@ -193,6 +193,7 @@ impl<
 
         let circuit_trace_view = circuit_trace.as_view();
 
+        // TODO: Remove Poseidon2 air copy, possibly by making `generate_trace_rows_for_perm` public on P3 side
         for ((row, left_part), right_part) in vec
             .chunks_exact_mut(ncols)
             .zip(p2_trace.row_slices())
@@ -370,7 +371,6 @@ fn eval<
             .assert_zeros(arr);
     }
 
-    let _is_squeeze = AB::Expr::ONE - current_absorb[0].clone();
     // TODO: Add all lookups:
     // - If current_absorb[i] = 1:
     //      * local.rate[i] comes from input lookups.
