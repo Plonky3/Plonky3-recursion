@@ -238,6 +238,8 @@ pub enum NonPrimitiveOpType {
     },
     /// Hash squeeze operation - extracts field elements from sponge state
     HashSqueeze,
+    /// Hash compress operation - compresses two inputs into one output (for MMCS)
+    HashCompress,
 }
 
 /// Non-primitive operation types
@@ -313,6 +315,19 @@ pub enum NonPrimitiveOpPrivateData<F> {
     /// to generate a valid proof. This data is not part of the public
     /// circuit specification.
     MmcsVerify(MmcsPrivateData<F>),
+
+    /// Private data for HashCompress operations
+    ///
+    /// Contains the left and right inputs for compression operations.
+    /// Used by MMCS to create compression operations that will be verified by Poseidon2 AIR.
+    HashCompress {
+        /// Left input values
+        left: Vec<F>,
+        /// Right input values
+        right: Vec<F>,
+        /// Output values (computed result)
+        output: Vec<F>,
+    },
 }
 
 /// Execution context providing operations access to witness table, private data, and configs

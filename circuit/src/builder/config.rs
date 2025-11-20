@@ -44,6 +44,11 @@ impl BuilderConfig {
         self.enable_op(NonPrimitiveOpType::HashSqueeze, NonPrimitiveOpConfig::None);
     }
 
+    /// Enables HashCompress operations.
+    pub fn enable_hash_compress(&mut self) {
+        self.enable_op(NonPrimitiveOpType::HashCompress, NonPrimitiveOpConfig::None);
+    }
+
     /// Enables FRI verification operations.
     pub fn enable_fri(&mut self) {
         // TODO: Add FRI ops when available.

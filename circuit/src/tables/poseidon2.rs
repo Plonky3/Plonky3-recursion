@@ -1,7 +1,7 @@
 use alloc::boxed::Box;
 use alloc::string::ToString;
-use alloc::vec;
 use alloc::vec::Vec;
+use alloc::{format, vec};
 use core::any::Any;
 use core::fmt::Debug;
 
@@ -234,6 +234,108 @@ impl<'a, F: CircuitField, Config: Poseidon2Params> Poseidon2TraceBuilder<'a, F, 
                     // TODO: When lookups are implemented, connect the output indices to the input
                     // indices of the next operation.
                 }
+                NonPrimitiveOpType::HashCompress => {
+                    // For HashCompress, inputs[0] = left input, inputs[1] = right input
+                    // outputs[0] = compressed output
+                    let left_wids = inputs.first().ok_or(
+                        CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
+                            op: executor.op_type().clone(),
+                            expected: "at least 1 input vector (left)".to_string(),
+                            got: inputs.len(),
+                        },
+                    )?;
+
+                    let right_wids = inputs.get(1).ok_or(
+                        CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
+                            op: executor.op_type().clone(),
+                            expected: "at least 2 input vectors (left and right)".to_string(),
+                            got: inputs.len(),
+                        },
+                    )?;
+
+                    let left_values: Vec<F> = left_wids
+                        .iter()
+                        .map(|wid| self.get_witness(wid))
+                        .collect::<Result<Vec<F>, _>>()?;
+
+                    let right_values: Vec<F> = right_wids
+                        .iter()
+                        .map(|wid| self.get_witness(wid))
+                        .collect::<Result<Vec<F>, _>>()?;
+
+                    // Validate input sizes match
+                    if left_values.len() != right_values.len() {
+                        return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
+                            op: executor.op_type().clone(),
+                            expected: format!(
+                                "left and right inputs must have same size (got left={}, right={})",
+                                left_values.len(),
+                                right_values.len()
+                            ),
+                            got: 0,
+                        });
+                    }
+
+                    let compress_chunk_size = left_values.len();
+                    let width = Config::WIDTH;
+
+                    // Pad inputs to `compress_chunk_size` if needed
+                    let mut padded_left = left_values.clone();
+                    let mut padded_right = right_values.clone();
+                    while padded_left.len() < compress_chunk_size {
+                        padded_left.push(F::ZERO);
+                    }
+                    while padded_right.len() < compress_chunk_size {
+                        padded_right.push(F::ZERO);
+                    }
+                    padded_left.truncate(compress_chunk_size);
+                    padded_right.truncate(compress_chunk_size);
+
+                    // Combine left and right into input_values for compression
+                    let mut input_values = Vec::with_capacity(width);
+                    input_values.extend_from_slice(&padded_left);
+                    input_values.extend_from_slice(&padded_right);
+                    while input_values.len() < width {
+                        input_values.push(F::ZERO);
+                    }
+                    input_values.truncate(width);
+
+                    // For compression, all absorb flags should be set
+                    let absorb_flags = vec![true; rate_ext];
+
+                    // Collect input indices
+                    let mut input_indices: Vec<u32> = left_wids.iter().map(|wid| wid.0).collect();
+                    input_indices.extend(right_wids.iter().map(|wid| wid.0));
+                    while input_indices.len() < rate_ext {
+                        input_indices.push(0);
+                    }
+                    input_indices.truncate(rate_ext);
+
+                    // Collect output indices
+                    let output_wids = outputs.first().ok_or(
+                        CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
+                            op: executor.op_type().clone(),
+                            expected: "at least 1 output vector".to_string(),
+                            got: outputs.len(),
+                        },
+                    )?;
+
+                    let mut output_indices: Vec<u32> =
+                        output_wids.iter().map(|wid| wid.0).collect();
+                    while output_indices.len() < rate_ext {
+                        output_indices.push(0);
+                    }
+                    output_indices.truncate(rate_ext);
+
+                    operations.push(Poseidon2CircuitRow {
+                        is_sponge: false, // Compression, not sponge
+                        reset: false,     // No reset for compression
+                        absorb_flags,
+                        input_values,
+                        input_indices,
+                        output_indices,
+                    });
+                }
                 NonPrimitiveOpType::HashSqueeze => {
                     // For HashSqueeze, outputs[0] contains squeezed values + new state capacity
                     let output_wids = outputs.first().ok_or(
@@ -291,6 +393,8 @@ impl<'a, F: CircuitField, Config: Poseidon2Params> Poseidon2TraceBuilder<'a, F, 
     }
 }
 
+type CompressionOp<F> = (Vec<F>, Vec<F>, Vec<F>);
+
 /// Generate the Poseidon2 trace with a specific configuration.
 ///
 /// # Type Parameters
@@ -309,8 +413,66 @@ pub fn generate_poseidon2_trace<F: CircuitField, Config: Poseidon2Params>(
     witness: &[Option<F>],
     non_primitive_data: &[Option<NonPrimitiveOpPrivateData<F>>],
 ) -> Result<Option<Box<dyn NonPrimitiveTrace<F>>>, CircuitError> {
-    let trace =
+    // Generate MMCS trace to extract HashCompress operations if any
+    // TODO: this is kinda ugly, maybe we can get the runner to pass MMCS trace directly if existing?
+    let mmcs_trace_opt = crate::tables::generate_mmcs_trace(circuit, witness, non_primitive_data)?;
+
+    let hash_compress_ops: Option<Vec<CompressionOp<F>>> =
+        mmcs_trace_opt.as_ref().and_then(|trace| {
+            trace
+                .as_any()
+                .downcast_ref::<crate::tables::MmcsTrace<F>>()
+                .map(|mmcs_trace| mmcs_trace.hash_compress_ops().to_vec())
+        });
+
+    let mut trace =
         Poseidon2TraceBuilder::<F, Config>::new(circuit, witness, non_primitive_data).build()?;
+
+    // Add HashCompress operations from MMCS trace
+    if let Some(hash_compress_ops) = hash_compress_ops {
+        let rate_ext = Config::RATE_EXT;
+        let width = Config::WIDTH;
+
+        for (left, right, output) in hash_compress_ops {
+            // Combine left and right into input_values for compression
+            let mut input_values = Vec::with_capacity(width);
+            input_values.extend_from_slice(&left);
+            input_values.extend_from_slice(&right);
+
+            while input_values.len() < width {
+                input_values.push(F::ZERO);
+            }
+            input_values.truncate(width);
+
+            // For compression, all absorb flags should be set
+            let absorb_flags = vec![true; rate_ext];
+
+            let mut input_indices = Vec::new();
+            input_indices.extend((0..left.len()).map(|_| 0u32));
+            input_indices.extend((0..right.len()).map(|_| 0u32));
+            while input_indices.len() < rate_ext {
+                input_indices.push(0);
+            }
+            input_indices.truncate(rate_ext);
+
+            let mut output_indices = Vec::new();
+            output_indices.extend((0..output.len()).map(|_| 0u32));
+            while output_indices.len() < rate_ext {
+                output_indices.push(0);
+            }
+            output_indices.truncate(rate_ext);
+
+            trace.operations.push(Poseidon2CircuitRow {
+                is_sponge: false, // Compression, not sponge
+                reset: false,     // No reset for compression
+                absorb_flags,
+                input_values,
+                input_indices,
+                output_indices,
+            });
+        }
+    }
+
     if trace.total_rows() == 0 {
         Ok(None)
     } else {

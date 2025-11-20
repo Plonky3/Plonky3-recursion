@@ -1,6 +1,7 @@
 use alloc::boxed::Box;
-use alloc::format;
+use alloc::string::ToString;
 use alloc::vec::Vec;
+use alloc::{format, vec};
 use core::hash::Hash;
 
 use hashbrown::HashMap;
@@ -10,7 +11,9 @@ use crate::builder::circuit_builder::NonPrimitiveOperationData;
 use crate::builder::compiler::get_witness_id;
 use crate::builder::{BuilderConfig, CircuitBuilderError};
 use crate::op::{NonPrimitiveOpConfig, NonPrimitiveOpType, Op};
-use crate::ops::{HashAbsorbExecutor, HashSqueezeExecutor, MmcsVerifyExecutor};
+use crate::ops::{
+    HashAbsorbExecutor, HashCompressExecutor, HashSqueezeExecutor, MmcsVerifyExecutor,
+};
 use crate::types::{ExprId, WitnessId};
 
 /// Responsible for lowering non-primitive operations from ExprIds to WitnessIds.
@@ -194,6 +197,62 @@ impl<'a> NonPrimitiveLowerer<'a> {
                         inputs: Vec::new(),
                         outputs,
                         executor: Box::new(HashSqueezeExecutor::new()),
+                        op_id: *op_id,
+                    });
+                }
+                NonPrimitiveOpType::HashCompress => {
+                    // Operation must be enabled
+                    if config_opt.is_none() {
+                        return Err(CircuitBuilderError::InvalidNonPrimitiveOpConfiguration {
+                            op: op_type.clone(),
+                        });
+                    }
+
+                    if witness_exprs.len() < 2 {
+                        return Err(CircuitBuilderError::NonPrimitiveOpArity {
+                            op: "HashCompress",
+                            expected: "at least 2 input vectors (left and right)".to_string(),
+                            got: witness_exprs.len(),
+                        });
+                    }
+
+                    let left_inputs = witness_exprs[0]
+                        .iter()
+                        .map(|&expr| {
+                            get_witness_id(self.expr_to_widx, expr, "HashCompress left input")
+                        })
+                        .collect::<Result<Vec<WitnessId>, _>>()?;
+
+                    let right_inputs = witness_exprs[1]
+                        .iter()
+                        .map(|&expr| {
+                            get_witness_id(self.expr_to_widx, expr, "HashCompress right input")
+                        })
+                        .collect::<Result<Vec<WitnessId>, _>>()?;
+
+                    let inputs = vec![left_inputs, right_inputs];
+
+                    // Outputs are in witness_exprs[2] if present, otherwise allocated as hints
+                    let outputs = if witness_exprs.len() > 2 {
+                        witness_exprs[2]
+                            .iter()
+                            .map(|&expr| {
+                                get_witness_id(self.expr_to_widx, expr, "HashCompress output")
+                            })
+                            .collect::<Result<Vec<WitnessId>, _>>()?
+                    } else {
+                        // Outputs allocated as hints
+                        vec![]
+                    };
+
+                    lowered_ops.push(Op::NonPrimitiveOpWithExecutor {
+                        inputs,
+                        outputs: if outputs.is_empty() {
+                            Vec::new()
+                        } else {
+                            vec![outputs]
+                        },
+                        executor: Box::new(HashCompressExecutor::new()),
                         op_id: *op_id,
                     });
                 }

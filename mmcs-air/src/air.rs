@@ -590,6 +590,7 @@ mod test {
                     .unwrap()
                 })
                 .collect(),
+            hash_compress_ops: Vec::new(),
         };
 
         // Create the AIR.
