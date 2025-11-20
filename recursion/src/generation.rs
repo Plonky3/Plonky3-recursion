@@ -4,7 +4,7 @@ use alloc::vec::Vec;
 use itertools::zip_eq;
 use p3_air::Air;
 use p3_batch_stark::BatchProof;
-use p3_batch_stark::config::{observe_base_as_ext, observe_instance_binding};
+use p3_batch_stark::config::observe_instance_binding;
 use p3_challenger::{CanObserve, CanSample, CanSampleBits, FieldChallenger, GrindingChallenger};
 use p3_commit::{BatchOpening, Mmcs, Pcs, PolynomialSpace};
 use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing, PrimeField, TwoAdicField};
@@ -294,7 +294,7 @@ where
     let pcs = config.pcs();
     let mut challenger = config.initialise_challenger();
 
-    observe_base_as_ext::<SC>(&mut challenger, Val::<SC>::from_usize(n_instances));
+    challenger.observe_base_as_algebra_element::<SC::Challenge>(Val::<SC>::from_usize(n_instances));
 
     for inst in &opened_values.instances {
         if inst

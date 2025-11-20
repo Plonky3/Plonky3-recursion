@@ -110,4 +110,8 @@ pub enum CircuitError {
     /// Invalid Circuit
     #[error("Failed to build circuit: {error}")]
     InvalidCircuit { error: CircuitBuilderError },
+
+    /// Invalid preprocessed values
+    #[error("Preprocessed values should be base field elements")]
+    InvalidPreprocessedValues,
 }

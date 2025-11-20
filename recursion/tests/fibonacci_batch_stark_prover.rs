@@ -1,9 +1,11 @@
-use p3_air::{Air, AirBuilder, BaseAir};
+use p3_air::{Air, BaseAir, PairBuilder};
 use p3_baby_bear::{BabyBear, Poseidon2BabyBear};
+use p3_batch_stark::CommonData;
 use p3_challenger::DuplexChallenger;
 use p3_circuit::CircuitBuilder;
 use p3_circuit_prover::air::{AddAir, ConstAir, MulAir, PublicAir, WitnessAir};
 use p3_circuit_prover::batch_stark_prover::PrimitiveTable;
+use p3_circuit_prover::common::get_airs_and_degrees_with_prep;
 use p3_circuit_prover::{BatchStarkProver, TablePacking};
 use p3_commit::ExtensionMmcs;
 use p3_dft::Radix2DitParallel;
@@ -47,7 +49,7 @@ impl<F: Field, const D: usize> BaseAir<F> for CircuitTableAir<F, D> {
 
 impl<AB, const D: usize> Air<AB> for CircuitTableAir<AB::F, D>
 where
-    AB: AirBuilder,
+    AB: PairBuilder,
     AB::F: Field,
 {
     fn eval(&self, builder: &mut AB) {
@@ -118,7 +120,11 @@ fn test_fibonacci_batch_verifier() {
 
     builder.dump_allocation_log();
 
-    let (circuit, _) = builder.build().unwrap();
+    let table_packing = TablePacking::new(1, 4, 1);
+
+    let circuit = builder.build().unwrap();
+    let airs_degrees = get_airs_and_degrees_with_prep::<_, _, 1>(&circuit, table_packing).unwrap();
+    let (airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
     let mut runner = circuit.runner();
 
     // Set public input
@@ -144,10 +150,14 @@ fn test_fibonacci_batch_verifier() {
     let challenger_proving = Challenger::new(perm.clone());
     let config_proving = MyConfig::new(pcs_proving, challenger_proving);
 
-    let table_packing = TablePacking::new(1, 4, 1);
+    // Create common data for proving and verifying.
+    let common = CommonData::from_airs_and_degrees(&config_proving, &airs, &degrees);
+
     let prover = BatchStarkProver::new(config_proving).with_table_packing(table_packing);
-    let batch_stark_proof = prover.prove_all_tables(&traces).unwrap();
-    prover.verify_all_tables(&batch_stark_proof).unwrap();
+    let batch_stark_proof = prover.prove_all_tables(&traces, &common).unwrap();
+    prover
+        .verify_all_tables(&batch_stark_proof, &common)
+        .unwrap();
 
     // Now verify the batch STARK proof recursively
     let dft2 = Dft::default();
@@ -213,7 +223,7 @@ fn test_fibonacci_batch_verifier() {
     .unwrap();
 
     // Build the circuit
-    let (verification_circuit, _) = circuit_builder.build().unwrap();
+    let verification_circuit = circuit_builder.build().unwrap();
     let expected_public_input_len = verification_circuit.public_flat_len;
 
     // Generate all the challenge values for batch proof (uses base field AIRs)

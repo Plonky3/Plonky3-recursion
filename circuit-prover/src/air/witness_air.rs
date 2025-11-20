@@ -38,7 +38,8 @@
 
 use core::marker::PhantomData;
 
-use p3_air::{Air, AirBuilder, BaseAir};
+use alloc::vec::Vec;
+use p3_air::{Air, AirBuilder, BaseAir, PairBuilder};
 use p3_circuit::tables::WitnessTrace;
 use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
 use p3_matrix::Matrix;
@@ -77,7 +78,7 @@ impl<F: Field, const D: usize> WitnessAir<F, D> {
 
     #[inline]
     pub const fn lane_width() -> usize {
-        D + 1
+        D
     }
 
     #[inline]
@@ -152,7 +153,7 @@ impl<F: Field, const D: usize> WitnessAir<F, D> {
         for slot in 0..total_slots {
             let row = slot / lanes;
             let lane = slot % lanes;
-            let mut cursor = row * width + lane * lane_width;
+            let cursor = row * width + lane * lane_width;
 
             if slot < witness_count {
                 let coeffs = trace.values[slot].as_basis_coefficients_slice();
@@ -162,13 +163,9 @@ impl<F: Field, const D: usize> WitnessAir<F, D> {
                     "Extension field degree mismatch for witness value"
                 );
                 values[cursor..cursor + D].copy_from_slice(coeffs);
-                cursor += D;
-                values[cursor] = F::from_u32(trace.index[slot].0);
             } else {
                 // padding: copy last value coefficients and increment virtual index
                 values[cursor..cursor + D].copy_from_slice(&last_coeffs);
-                cursor += D;
-                values[cursor] = F::from_u32(next_virtual_index);
                 next_virtual_index = next_virtual_index
                     .checked_add(1)
                     .expect("witness index overflow");
@@ -183,50 +180,60 @@ impl<F: Field, const D: usize> BaseAir<F> for WitnessAir<F, D> {
     fn width(&self) -> usize {
         self.total_width()
     }
+
+    fn preprocessed_trace(&self) -> Option<RowMajorMatrix<F>> {
+        let height = (self.num_witnesses.div_ceil(self.lanes)).next_power_of_two() * self.lanes;
+        let all_vals = (0..height)
+            .map(|i| F::from_u32(i as u32))
+            .collect::<Vec<_>>();
+
+        Some(RowMajorMatrix::new(all_vals, self.lanes)) // single preprocessed column for
+    }
 }
 
-impl<AB: AirBuilder, const D: usize> Air<AB> for WitnessAir<AB::F, D>
+impl<AB: PairBuilder, const D: usize> Air<AB> for WitnessAir<AB::F, D>
 where
     AB::F: Field,
 {
     fn eval(&self, builder: &mut AB) {
-        let lane_width = Self::lane_width();
-        let lane_index_offset = lane_width - 1;
         let lanes = self.lanes;
 
         // First row: index == 0
         {
-            let main = builder.main();
-            let local = main.row_slice(0).expect("non-empty");
-            let index0 = local[lane_index_offset].clone();
+            let preprocessed = builder.preprocessed();
+            let local_prep = preprocessed
+                .row_slice(0)
+                .expect("Preprocessed matrix should be non-empty");
+            let index0 = local_prep[0].clone();
             builder.when_first_row().assert_zero(index0);
         }
 
         // Enforce sequential indices within each row (lanes) and across rows.
         {
             let mut b = builder.when_transition();
-            let main = b.main();
-            let cur = main.row_slice(0).expect("non-empty");
-            let nxt = main.row_slice(1).expect("has next row");
-            let mut prev_idx = cur[lane_index_offset].clone();
+            let preprocessed = b.preprocessed();
+            let cur_prep = preprocessed.row_slice(0).expect("non-empty");
+
+            let nxt_prep = preprocessed.row_slice(1).expect("has next row");
+            let mut prev_idx = cur_prep[0].clone();
             for lane in 1..lanes {
-                let idx = cur[lane * lane_width + lane_index_offset].clone();
+                let idx = cur_prep[lane].clone();
                 // between consecutive lanes in the same row: index_next - index_current - 1
                 b.assert_zero(idx.clone() - prev_idx.clone() - AB::Expr::ONE);
                 prev_idx = idx;
             }
-            let next_first_idx = nxt[lane_index_offset].clone();
+            let next_first_idx = nxt_prep[0].clone();
             // between the last lane of a row and the first lane of the next row: index_next - index_current - 1
             b.assert_zero(next_first_idx - prev_idx - AB::Expr::ONE);
         }
 
         if self.lanes > 1 {
             let mut b = builder.when_last_row();
-            let main = b.main();
-            let last = main.row_slice(0).expect("non-empty");
-            let mut prev_idx = last[lane_index_offset].clone();
+            let preprocessed = b.preprocessed();
+            let last_prep = preprocessed.row_slice(0).expect("non-empty");
+            let mut prev_idx = last_prep[0].clone();
             for lane in 1..lanes {
-                let idx = last[lane * lane_width + lane_index_offset].clone();
+                let idx = last_prep[lane].clone();
                 // between consecutive lanes in the same row: index_next - index_current - 1
                 b.assert_zero(idx.clone() - prev_idx.clone() - AB::Expr::ONE);
                 prev_idx = idx;
@@ -243,7 +250,8 @@ mod tests {
     use p3_baby_bear::BabyBear as Val;
     use p3_circuit::WitnessId;
     use p3_field::extension::BinomialExtensionField;
-    use p3_uni_stark::{prove, verify};
+    use p3_uni_stark::{prove_with_preprocessed, setup_preprocessed, verify_with_preprocessed};
+    use p3_util::log2_ceil_usize;
 
     use super::*;
     use crate::air::test_utils::build_test_config;
@@ -261,14 +269,17 @@ mod tests {
         };
         let matrix = WitnessAir::<Val, 1>::trace_to_matrix(&trace, 1);
         assert_eq!(matrix.height(), n);
-        assert_eq!(matrix.width(), 2);
+        assert_eq!(matrix.width(), 1);
 
         let config = build_test_config();
         let air = WitnessAir::<Val, 1>::new(n, 1);
+        let (prover_data, verifier_data) =
+            setup_preprocessed(&config, &air, log2_ceil_usize(matrix.height())).unwrap();
         let pis: Vec<Val> = vec![];
 
-        let proof = prove(&config, &air, matrix, &pis);
-        verify(&config, &air, &proof, &pis).expect("verification failed");
+        let proof = prove_with_preprocessed(&config, &air, matrix, &pis, Some(&prover_data));
+        verify_with_preprocessed(&config, &air, &proof, &pis, Some(&verifier_data))
+            .expect("verification failed");
     }
 
     #[test]
@@ -300,8 +311,8 @@ mod tests {
         };
         let matrix = WitnessAir::<Val, 4>::trace_to_matrix(&trace, 1);
 
-        // Verify dimensions: D + 1 = 4 + 1 = 5 columns
-        assert_eq!(matrix.width(), 5);
+        // Verify dimensions: D = 4 columns
+        assert_eq!(matrix.width(), 4);
         assert_eq!(matrix.height(), 2);
 
         // Check first row layout: [a_coeffs[0..3], index]
@@ -309,15 +320,25 @@ mod tests {
             let row0 = matrix.row_slice(0).unwrap();
             let a_coeffs = a.as_basis_coefficients_slice();
             assert_eq!(&row0[0..4], a_coeffs);
-            assert_eq!(row0[4], Val::from_u64(0)); // index
         }
 
         let config = build_test_config();
         let air = WitnessAir::<Val, 4>::new(2, 1);
+        let (prover_data, verifier_data) =
+            setup_preprocessed(&config, &air, log2_ceil_usize(matrix.height())).unwrap();
+
+        let prep_matrix = air.preprocessed_trace().unwrap();
+        assert_eq!(prep_matrix.height(), 2);
+        let row = prep_matrix.row_slice(0).unwrap();
+        assert_eq!(row[0], Val::from_u64(0)); // index
+        let row = prep_matrix.row_slice(1).unwrap();
+        assert_eq!(row[0], Val::from_u64(1)); // index
+
         let pis: Vec<Val> = vec![];
 
-        let proof = prove(&config, &air, matrix, &pis);
-        verify(&config, &air, &proof, &pis).expect("Extension field verification failed");
+        let proof = prove_with_preprocessed(&config, &air, matrix, &pis, Some(&prover_data));
+        verify_with_preprocessed(&config, &air, &proof, &pis, Some(&verifier_data))
+            .expect("Extension field verification failed");
     }
 
     #[test]
@@ -333,21 +354,31 @@ mod tests {
 
         // Should be padded to power of two
         assert!(matrix.height().is_power_of_two());
-        assert_eq!(matrix.width(), 2);
+        assert_eq!(matrix.width(), 1);
 
         // Check the single element
         {
             let row0 = matrix.row_slice(0).unwrap();
             assert_eq!(row0[0], Val::from_u64(42)); // value
-            assert_eq!(row0[1], Val::from_u64(0)); // index = 0
         }
 
         let config = build_test_config();
         let air = WitnessAir::<Val, 1>::new(1, 1);
+        let (prover_data, verifier_data) =
+            setup_preprocessed(&config, &air, log2_ceil_usize(matrix.height())).unwrap();
+
+        let prep_matrix = air.preprocessed_trace().unwrap();
+        assert_eq!(prep_matrix.height(), matrix.height());
+        for i in 0..matrix.height() {
+            let row = prep_matrix.row_slice(i).unwrap();
+            assert_eq!(row[0], Val::from_u64(i as u64)); // index
+        }
+
         let pis: Vec<Val> = vec![];
 
-        let proof = prove(&config, &air, matrix, &pis);
-        verify(&config, &air, &proof, &pis).expect("Single element verification failed");
+        let proof = prove_with_preprocessed(&config, &air, matrix, &pis, Some(&prover_data));
+        verify_with_preprocessed(&config, &air, &proof, &pis, Some(&verifier_data))
+            .expect("Single element verification failed");
     }
 
     #[test]
@@ -370,22 +401,30 @@ mod tests {
         for i in 0..n {
             let row = matrix.row_slice(i).unwrap();
             assert_eq!(row[0], Val::from_u64((i + 1) as u64)); // value
-            assert_eq!(row[1], Val::from_u64(i as u64)); // index
         }
 
         // Padded row should continue monotonic sequence
         {
             let last_row = matrix.row_slice(3).unwrap();
             assert_eq!(last_row[0], Val::from_u64(3)); // last value repeated
-            assert_eq!(last_row[1], Val::from_u64(3)); // index continues: 2 + 1 = 3
         }
 
         let config = build_test_config();
         let air = WitnessAir::<Val, 1>::new(3, 1);
+        let (prover_data, verifier_data) =
+            setup_preprocessed(&config, &air, log2_ceil_usize(matrix.height())).unwrap();
+
+        let prep_matrix = air.preprocessed_trace().unwrap();
+        assert_eq!(prep_matrix.height(), matrix.height());
+        for i in 0..matrix.height() {
+            let row = prep_matrix.row_slice(i).unwrap();
+            assert_eq!(row[0], Val::from_u64(i as u64)); // index
+        }
         let pis: Vec<Val> = vec![];
 
-        let proof = prove(&config, &air, matrix, &pis);
-        verify(&config, &air, &proof, &pis).expect("Padding verification failed");
+        let proof = prove_with_preprocessed(&config, &air, matrix, &pis, Some(&prover_data));
+        verify_with_preprocessed(&config, &air, &proof, &pis, Some(&verifier_data))
+            .expect("Padding verification failed");
     }
 
     #[test]
@@ -414,30 +453,29 @@ mod tests {
         // Row 0 holds witnesses 0 and 1.
         let row0 = matrix.row_slice(0).unwrap();
         assert_eq!(row0[0], values[0]);
-        assert_eq!(row0[1], Val::from_u64(0));
-        assert_eq!(row0[2], values[1]);
-        assert_eq!(row0[3], Val::from_u64(1));
+        assert_eq!(row0[1], values[1]);
 
         // Row 1 holds witnesses 2 and 3.
         let row1 = matrix.row_slice(1).unwrap();
         assert_eq!(row1[0], values[2]);
-        assert_eq!(row1[1], Val::from_u64(2));
-        assert_eq!(row1[2], values[3]);
-        assert_eq!(row1[3], Val::from_u64(3));
+        assert_eq!(row1[1], values[3]);
 
         // Row 2 holds witness 4 and a virtual filler lane continuing the sequence.
         let row2 = matrix.row_slice(2).unwrap();
         assert_eq!(row2[0], values[4]);
-        assert_eq!(row2[1], Val::from_u64(4));
-        assert_eq!(row2[2], values[4]);
-        assert_eq!(row2[3], Val::from_u64(5));
-
-        // Row 3 is padding; indices continue monotonically.
-        let row3 = matrix.row_slice(3).unwrap();
-        assert_eq!(row3[1], Val::from_u64(6));
-        assert_eq!(row3[3], Val::from_u64(7));
+        assert_eq!(row2[1], values[4]);
 
         let air = WitnessAir::<Val, 1>::new(values.len(), lanes);
+        let prep_matrix = air.preprocessed_trace().unwrap();
+        assert_eq!(prep_matrix.height(), matrix.height());
+
+        for i in 0..matrix.height() {
+            let row = prep_matrix.row_slice(i).unwrap();
+            for j in 0..lanes {
+                assert_eq!(row[j], Val::from_u64((i * lanes + j) as u64)); // index
+            }
+        }
+
         assert_eq!(air.total_width(), matrix.width());
     }
 }

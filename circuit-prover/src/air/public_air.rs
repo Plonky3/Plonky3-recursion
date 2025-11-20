@@ -2,10 +2,10 @@
 //!
 //! # Columns:
 //!
-//! The AIR has `D + 1` columns:
+//! The AIR has a total of `D + 1` columns:
 //!
-//! - `D` columns for the constant value,
-//! - 1 column for the index of the constant within the witness table.
+//! - `D` main columns for the constant value,
+//! - 1 preprocessed column for the index of the constant within the witness table.
 //!
 //! # Constraints
 //!
@@ -29,7 +29,10 @@ use p3_matrix::dense::RowMajorMatrix;
 /// Layout per row: [value[0..D-1], index] → width = D + 1
 #[derive(Debug, Clone)]
 pub struct PublicAir<F, const D: usize = 1> {
+    /// Height of the trace, i.e., number of public inputs.
     pub height: usize,
+    /// Preprocessed witness indices for the public inputs.
+    pub preprocessed: Vec<F>,
     _phantom: PhantomData<F>,
 }
 
@@ -37,6 +40,15 @@ impl<F: Field, const D: usize> PublicAir<F, D> {
     pub const fn new(height: usize) -> Self {
         Self {
             height,
+            preprocessed: Vec::new(),
+            _phantom: PhantomData,
+        }
+    }
+
+    pub const fn new_with_preprocessed(height: usize, preprocessed: Vec<F>) -> Self {
+        Self {
+            height,
+            preprocessed,
             _phantom: PhantomData,
         }
     }
@@ -51,7 +63,7 @@ impl<F: Field, const D: usize> PublicAir<F, D> {
             trace.index.len(),
             "PublicTrace column length mismatch"
         );
-        let width = D + 1;
+        let width = D;
 
         let mut values = Vec::with_capacity(height * width);
         for i in 0..height {
@@ -62,7 +74,6 @@ impl<F: Field, const D: usize> PublicAir<F, D> {
                 "extension degree mismatch for PublicTrace value"
             );
             values.extend_from_slice(coeffs);
-            values.push(F::from_u32(trace.index[i].0));
         }
 
         // Pad to power of two by repeating last row
@@ -70,11 +81,29 @@ impl<F: Field, const D: usize> PublicAir<F, D> {
 
         RowMajorMatrix::new(values, width)
     }
+
+    pub fn prep_from_trace<ExtF: BasedVectorSpace<F>>(trace: &PublicTrace<ExtF>) -> Vec<F> {
+        trace
+            .index
+            .iter()
+            .map(|widx| F::from_u64(widx.0 as u64))
+            .collect()
+    }
 }
 
 impl<F: Field, const D: usize> BaseAir<F> for PublicAir<F, D> {
     fn width(&self) -> usize {
-        D + 1
+        D
+    }
+
+    fn preprocessed_trace(&self) -> Option<RowMajorMatrix<F>> {
+        let mut prep_values = self.preprocessed.clone();
+        pad_to_power_of_two(&mut prep_values, 1, self.height);
+
+        Some(RowMajorMatrix::new(
+            prep_values,
+            1, // single preprocessed column for indices
+        ))
     }
 }
 
@@ -96,7 +125,8 @@ mod tests {
     use p3_field::PrimeCharacteristicRing;
     use p3_field::extension::BinomialExtensionField;
     use p3_matrix::Matrix;
-    use p3_uni_stark::{prove, verify};
+    use p3_uni_stark::{prove_with_preprocessed, setup_preprocessed, verify_with_preprocessed};
+    use p3_util::log2_ceil_usize;
 
     use super::*;
     use crate::air::test_utils::build_test_config;
@@ -110,20 +140,26 @@ mod tests {
         let values: Vec<F> = (1..=n as u64).map(F::from_u64).collect();
         let indices: Vec<WitnessId> = (0..n as u32).map(WitnessId).collect();
 
+        // Get preprocessed index values.
+        let prep_values = indices
+            .iter()
+            .map(|idx| F::from_u64(idx.0 as u64))
+            .collect::<Vec<_>>();
+
         let trace = PublicTrace {
             values,
             index: indices,
         };
+
         let matrix = PublicAir::<F, 1>::trace_to_matrix(&trace);
 
         // Verify matrix dimensions
-        assert_eq!(matrix.width(), 2); // D + 1 = 1 + 1 = 2
+        assert_eq!(matrix.width(), 1); // D = 1
 
         // Check first row (scope the borrow)
         {
             let row0 = matrix.row_slice(0).unwrap();
             assert_eq!(row0[0], F::from_u64(1)); // value
-            assert_eq!(row0[1], F::from_u64(0)); // index
         }
 
         // Check last original row (scope the borrow)
@@ -131,15 +167,24 @@ mod tests {
             let last_original_row = n - 1;
             let row_last = matrix.row_slice(last_original_row).unwrap();
             assert_eq!(row_last[0], F::from_u64(n as u64)); // value
-            assert_eq!(row_last[1], F::from_u64(last_original_row as u64)); // index
         }
 
         let config = build_test_config();
-        let air = PublicAir::<F, 1>::new(n);
+        let air = PublicAir::<F, 1>::new_with_preprocessed(n, prep_values);
+        let (prover_data, verifier_data) =
+            setup_preprocessed(&config, &air, log2_ceil_usize(matrix.height())).unwrap();
+
+        let prep = air.preprocessed_trace().unwrap();
+        let row0 = prep.row_slice(0).unwrap();
+        let last_row = prep.row_slice(n - 1).unwrap();
+        assert_eq!(row0[0], F::from_u64(0)); // first index
+        assert_eq!(last_row[0], F::from_u64((n - 1) as u64)); // last index
+
         let pis: Vec<F> = vec![];
 
-        let proof = prove(&config, &air, matrix, &pis);
-        verify(&config, &air, &proof, &pis).expect("PublicAir base field verification failed");
+        let proof = prove_with_preprocessed(&config, &air, matrix, &pis, Some(&prover_data));
+        verify_with_preprocessed(&config, &air, &proof, &pis, Some(&verifier_data))
+            .expect("PublicAir base field verification failed");
     }
 
     #[test]
@@ -162,6 +207,10 @@ mod tests {
 
         let values = vec![a, b];
         let indices = vec![WitnessId(10), WitnessId(20)];
+        let prep_values = indices
+            .iter()
+            .map(|idx| F::from_u64(idx.0 as u64))
+            .collect();
 
         let trace = PublicTrace {
             values,
@@ -170,14 +219,13 @@ mod tests {
         let matrix = PublicAir::<F, 4>::trace_to_matrix(&trace);
 
         // Verify matrix dimensions
-        assert_eq!(matrix.width(), 5); // D + 1 = 4 + 1 = 5
+        assert_eq!(matrix.width(), 4); // D = 4
 
         // Check first row - extension field coefficients (scope the borrow)
         {
             let row0 = matrix.row_slice(0).unwrap();
             let a_coeffs = a.as_basis_coefficients_slice();
             assert_eq!(&row0[0..4], a_coeffs);
-            assert_eq!(row0[4], F::from_u64(10)); // index
         }
 
         // Check second row (scope the borrow)
@@ -185,15 +233,24 @@ mod tests {
             let row1 = matrix.row_slice(1).unwrap();
             let b_coeffs = b.as_basis_coefficients_slice();
             assert_eq!(&row1[0..4], b_coeffs);
-            assert_eq!(row1[4], F::from_u64(20)); // index
         }
 
         let config = build_test_config();
-        let air = PublicAir::<F, 4>::new(2);
+        let air = PublicAir::<F, 4>::new_with_preprocessed(2, prep_values);
+        let (prover_data, verifier_data) =
+            setup_preprocessed(&config, &air, log2_ceil_usize(matrix.height())).unwrap();
+
+        let prep = air.preprocessed_trace().unwrap();
+        let row0 = prep.row_slice(0).unwrap();
+        let last_row = prep.row_slice(1).unwrap();
+        assert_eq!(row0[0], F::from_u64(10)); // first index
+        assert_eq!(last_row[0], F::from_u64(20)); // last index
+
         let pis: Vec<F> = vec![];
 
-        let proof = prove(&config, &air, matrix, &pis);
-        verify(&config, &air, &proof, &pis).expect("PublicAir extension field verification failed");
+        let proof = prove_with_preprocessed(&config, &air, matrix, &pis, Some(&prover_data));
+        verify_with_preprocessed(&config, &air, &proof, &pis, Some(&verifier_data))
+            .expect("PublicAir extension field verification failed");
     }
 
     #[test]
