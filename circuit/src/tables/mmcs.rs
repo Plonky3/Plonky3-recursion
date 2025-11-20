@@ -402,7 +402,7 @@ impl<'a, F: CircuitField> MmcsTraceBuilder<'a, F> {
                 op_id,
             } = op
             else {
-                // Skip non-MMCS operations (e.g., HashAbsorb, HashSqueeze)
+                // Skip non-MMCS operations (e.g. HashSqueeze)
                 continue;
             };
             if executor.op_type() != &NonPrimitiveOpType::MmcsVerify {

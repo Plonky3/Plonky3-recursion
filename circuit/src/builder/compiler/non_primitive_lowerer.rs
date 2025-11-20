@@ -10,7 +10,7 @@ use crate::builder::circuit_builder::NonPrimitiveOperationData;
 use crate::builder::compiler::get_witness_id;
 use crate::builder::{BuilderConfig, CircuitBuilderError};
 use crate::op::{NonPrimitiveOpConfig, NonPrimitiveOpType, Op};
-use crate::ops::{HashAbsorbExecutor, HashSqueezeExecutor, MmcsVerifyExecutor};
+use crate::ops::{HashSqueezeExecutor, MmcsVerifyExecutor};
 use crate::types::{ExprId, WitnessId};
 
 /// Responsible for lowering non-primitive operations from ExprIds to WitnessIds.
@@ -143,34 +143,7 @@ impl<'a> NonPrimitiveLowerer<'a> {
                         op_id: *op_id,
                     });
                 }
-                NonPrimitiveOpType::HashAbsorb { reset } => {
-                    // Operation must be enabled
-                    if config_opt.is_none() {
-                        return Err(CircuitBuilderError::InvalidNonPrimitiveOpConfiguration {
-                            op: op_type.clone(),
-                        });
-                    }
-
-                    let inputs = witness_exprs
-                        .iter()
-                        .map(|witness_expr| {
-                            witness_expr
-                                .iter()
-                                .map(|&expr| {
-                                    get_witness_id(self.expr_to_widx, expr, "HashAbsorb input")
-                                })
-                                .collect::<Result<Vec<WitnessId>, _>>()
-                        })
-                        .collect::<Result<Vec<Vec<WitnessId>>, _>>()?;
-
-                    lowered_ops.push(Op::NonPrimitiveOpWithExecutor {
-                        inputs,
-                        outputs: Vec::new(),
-                        executor: Box::new(HashAbsorbExecutor::new(*reset)),
-                        op_id: *op_id,
-                    });
-                }
-                NonPrimitiveOpType::HashSqueeze => {
+                NonPrimitiveOpType::HashSqueeze { reset } => {
                     // Operation must be enabled
                     if config_opt.is_none() {
                         return Err(CircuitBuilderError::InvalidNonPrimitiveOpConfiguration {
@@ -193,7 +166,7 @@ impl<'a> NonPrimitiveLowerer<'a> {
                     lowered_ops.push(Op::NonPrimitiveOpWithExecutor {
                         inputs: Vec::new(),
                         outputs,
-                        executor: Box::new(HashSqueezeExecutor::new()),
+                        executor: Box::new(HashSqueezeExecutor::new(*reset)),
                         op_id: *op_id,
                     });
                 }

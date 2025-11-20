@@ -10,6 +10,7 @@ use super::{BuilderConfig, ExpressionBuilder, PublicInputTracker};
 use crate::circuit::Circuit;
 use crate::op::{DefaultHint, NonPrimitiveOpType, WitnessHintsFiller};
 use crate::ops::MmcsVerifyConfig;
+use crate::ops::hash::HashConfig;
 use crate::tables::{TraceGeneratorFn, generate_mmcs_trace};
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};
 use crate::{CircuitBuilderError, CircuitField};
@@ -63,6 +64,11 @@ where
         }
     }
 
+    /// Returns an immutable reference to the config.
+    pub fn config(&self) -> &BuilderConfig {
+        &self.config
+    }
+
     /// Enables a non-primitive operation type on this builder.
     pub fn enable_op(&mut self, op: NonPrimitiveOpType, cfg: crate::op::NonPrimitiveOpConfig) {
         self.config.enable_op(op, cfg);
@@ -78,40 +84,25 @@ where
             .insert(NonPrimitiveOpType::MmcsVerify, generate_mmcs_trace::<F>);
     }
 
-    /// Enables HashAbsorb operations.
-    ///
-    /// # Arguments
-    /// * `reset` - Whether to reset the hash state before absorbing
-    /// * `trace_generator` - The function to generate the trace for the hash operations (for instance Poseidon2).
-    pub fn enable_hash_absorb(&mut self, reset: bool, trace_generator: TraceGeneratorFn<F>) {
-        self.config.enable_hash_absorb(reset);
-
-        self.non_primitive_trace_generators
-            .insert(NonPrimitiveOpType::HashAbsorb { reset }, trace_generator);
-    }
-
     /// Enables HashSqueeze operations.
     ///
     /// # Arguments
     /// * `trace_generator` - The function to generate the trace for the hash operations (for instance Poseidon2).
-    pub fn enable_hash_squeeze(&mut self, trace_generator: TraceGeneratorFn<F>) {
-        self.config.enable_hash_squeeze();
+    pub fn enable_hash_squeeze(
+        &mut self,
+        hash_config: &HashConfig,
+        trace_generator: TraceGeneratorFn<F>,
+    ) {
+        self.config.enable_hash_squeeze(hash_config);
 
-        self.non_primitive_trace_generators
-            .insert(NonPrimitiveOpType::HashSqueeze, trace_generator);
-    }
-
-    /// Enables hash operations.
-    ///
-    /// # Arguments
-    /// * `reset` - Whether to reset the hash state before absorbing
-    /// * `trace_generator` - The function to generate the trace for the hash operations (for instance Poseidon2).
-    pub fn enable_hash(&mut self, reset: bool, trace_generator: TraceGeneratorFn<F>)
-    where
-        F: CircuitField,
-    {
-        self.enable_hash_absorb(reset, trace_generator);
-        self.enable_hash_squeeze(trace_generator);
+        self.non_primitive_trace_generators.insert(
+            NonPrimitiveOpType::HashSqueeze { reset: true },
+            trace_generator,
+        );
+        self.non_primitive_trace_generators.insert(
+            NonPrimitiveOpType::HashSqueeze { reset: false },
+            trace_generator,
+        );
     }
 
     /// Enables FRI verification operations.

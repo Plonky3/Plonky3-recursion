@@ -320,6 +320,7 @@ mod tests {
 
     use super::*;
     use crate::CircuitError;
+    use crate::op::ExecutionContext;
 
     #[test]
     fn test_new_builder_has_zero_constant() {
@@ -584,7 +585,11 @@ mod tests {
             self.n_outputs
         }
 
-        fn compute_outputs(&self, inputs_val: Vec<F>) -> Result<Vec<F>, CircuitError> {
+        fn compute_outputs(
+            &self,
+            inputs_val: Vec<F>,
+            _ctx: &mut ExecutionContext<F>,
+        ) -> Result<Vec<F>, CircuitError> {
             Ok(inputs_val)
         }
     }

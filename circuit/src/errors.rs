@@ -1,4 +1,5 @@
 use alloc::string::String;
+use alloc::vec::Vec;
 
 use thiserror::Error;
 
@@ -35,12 +36,13 @@ pub enum CircuitError {
 
     /// Witness conflict: trying to reassign to a different value.
     #[error(
-        "Witness conflict: WitnessId({witness_id}) already set to {existing}, cannot reassign to {new}"
+        "Witness conflict: WitnessId({witness_id}) already set to {existing}, cannot reassign to {new}; corresponding ExprIds: {expr_ids:?}"
     )]
     WitnessConflict {
         witness_id: WitnessId,
         existing: String,
         new: String,
+        expr_ids: Vec<ExprId>,
     },
 
     /// Witness not set for an index during trace generation.

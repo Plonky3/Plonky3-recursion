@@ -1,5 +1,4 @@
 use alloc::boxed::Box;
-use alloc::string::ToString;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::any::Any;
@@ -154,127 +153,16 @@ impl<'a, F: CircuitField, Config: Poseidon2Params> Poseidon2TraceBuilder<'a, F, 
             };
 
             match executor.op_type() {
-                NonPrimitiveOpType::HashAbsorb { reset } => {
-                    // For HashAbsorb, inputs[0] contains the input values
-                    // inputs[1] may contain previous state capacity (if reset=false)
-                    let input_wids = inputs.first().ok_or(
-                        CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
-                            op: executor.op_type().clone(),
-                            expected: "at least 1 input vector".to_string(),
-                            got: inputs.len(),
-                        },
-                    )?;
-
-                    let input_values: Vec<F> = input_wids
-                        .iter()
-                        .map(|wid| self.get_witness(wid))
-                        .collect::<Result<Vec<F>, _>>()?;
-
-                    // Read previous state if not resetting
-                    if !*reset {
-                        if let Some(prev_state_wids) = inputs.get(1) {
-                            // Read previous state from hints
-                            let prev_state: Vec<F> = prev_state_wids
-                                .iter()
-                                .map(|wid| self.get_witness(wid))
-                                .collect::<Result<Vec<F>, _>>()?;
-                            current_state_capacity = Some(prev_state);
-                        } else if let Some(state) = current_state_capacity.clone() {
-                            // Use maintained state
-                            current_state_capacity = Some(state);
-                        } else {
-                            // No previous state, start with zeros
-                            current_state_capacity = Some(vec![F::ZERO; capacity_size]);
-                        }
-                    } else {
-                        // Reset: clear state
-                        current_state_capacity = Some(vec![F::ZERO; capacity_size]);
-                    }
-
-                    // Pad input_values to RATE_EXT * D elements (the AIR expects this many)
-                    // The actual inputs are at the beginning, rest are padded with zeros
-                    let mut padded_input_values = input_values.clone();
-                    let expected_input_size = rate_ext * d;
-                    while padded_input_values.len() < expected_input_size {
-                        padded_input_values.push(F::ZERO);
-                    }
-                    padded_input_values.truncate(expected_input_size);
-
-                    // Determine absorb flags based on input size
-                    // At most one flag should be set: if absorb_flags[i] is true, all elements up to i-th are absorbed
-                    let mut absorb_flags = vec![false; rate_ext];
-                    if !input_values.is_empty() {
-                        // Calculate which rate element index the last input belongs to
-                        // Rate element index = (input_count - 1) / D
-                        let last_rate_element_idx = (input_values.len() - 1) / d;
-                        // Clamp to valid range
-                        let last_rate_element_idx = last_rate_element_idx.min(rate_ext - 1);
-                        absorb_flags[last_rate_element_idx] = true;
-                    }
-
-                    // Collect input indices and pad to RATE_EXT elements
-                    let mut input_indices: Vec<u32> = input_wids.iter().map(|wid| wid.0).collect();
-                    while input_indices.len() < rate_ext {
-                        input_indices.push(0);
-                    }
-                    input_indices.truncate(rate_ext);
-
-                    // For absorb, we need RATE_EXT output indices (padded with zeros)
-                    let output_indices = vec![0u32; rate_ext];
-
-                    operations.push(Poseidon2CircuitRow {
-                        is_sponge: true,
-                        reset: *reset,
-                        absorb_flags,
-                        input_values: padded_input_values,
-                        input_indices,
-                        output_indices,
-                    });
-
-                    // TODO: When lookups are implemented, connect the output indices to the input
-                    // indices of the next operation.
-                }
-                NonPrimitiveOpType::HashSqueeze => {
-                    // For HashSqueeze, outputs[0] contains squeezed values + new state capacity
-                    let output_wids = outputs.first().ok_or(
-                        CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
-                            op: executor.op_type().clone(),
-                            expected: "at least 1 output vector".to_string(),
-                            got: outputs.len(),
-                        },
-                    )?;
-
-                    // Validate outputs are set (values will be verified by AIR constraints)
-                    let _output_values: Vec<F> = output_wids
-                        .iter()
-                        .map(|wid| self.get_witness(wid))
-                        .collect::<Result<Vec<F>, _>>()?;
-
-                    // Use current state for this squeeze operation
-                    if current_state_capacity.is_none() {
-                        current_state_capacity = Some(vec![F::ZERO; capacity_size]);
-                    }
-
-                    // Collect output indices and pad to RATE_EXT elements
-                    let mut output_indices: Vec<u32> =
-                        output_wids.iter().map(|wid| wid.0).collect();
-                    while output_indices.len() < rate_ext {
-                        output_indices.push(0);
-                    }
-                    // Truncate if we have more than RATE_EXT outputs
-                    // TODO: remove?
-                    output_indices.truncate(rate_ext);
-
-                    // For squeeze, we need RATE_EXT input indices
-                    let input_indices = vec![0u32; rate_ext];
+                NonPrimitiveOpType::HashSqueeze { reset } => {
+                    // TODO: Build trace correctly
 
                     operations.push(Poseidon2CircuitRow {
                         is_sponge: true,
                         reset: false,
                         absorb_flags: vec![false; rate_ext], // No absorb during squeeze
                         input_values: vec![],                // No inputs for squeeze
-                        input_indices,
-                        output_indices,
+                        input_indices: vec![],
+                        output_indices: vec![],
                     });
 
                     // TODO: When lookups are implemented, connect the output indices to the input

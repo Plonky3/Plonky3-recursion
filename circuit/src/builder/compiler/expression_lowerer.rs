@@ -291,7 +291,7 @@ where
         }
 
         if !hints_sequence.is_empty() {
-            return Err(CircuitBuilderError::MalformedWitnessHitnsSequence {
+            return Err(CircuitBuilderError::MalformedWitnessHintsSequence {
                 sequence: hints_sequence,
             });
         }
