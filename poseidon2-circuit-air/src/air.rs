@@ -298,14 +298,13 @@ fn eval<
     >,
 ) {
     // SPONGE CONSTRAINTS
+    // The first row is a reset.
+    builder
+        .when_first_row()
+        .when(local.is_sponge.clone())
+        .assert_eq(local.reset.clone(), AB::Expr::ONE);
     let next_no_reset = AB::Expr::ONE - next.reset.clone();
     for i in 0..(CAPACITY_EXT * D) {
-        // The first row has capacity zeroed.
-        builder
-            .when(local.is_sponge.clone())
-            .when_first_row()
-            .assert_zero(local.poseidon2.inputs[RATE_EXT * D + i].clone());
-
         // When resetting the state, we just have to clear the capacity. The rate will be overwritten by the input.
         builder
             .when(local.is_sponge.clone())
@@ -373,9 +372,9 @@ fn eval<
 
     // TODO: Add all lookups:
     // - If current_absorb[i] = 1:
-    //      * local.rate[i] comes from input lookups.
-    // - If is_squeeze = 1:
-    //      * local.rate is sent to output lookups.
+    //      * local.input.rate[i] comes from input lookups.
+    // - If local.send_out = 1:
+    //      * local.output.rate is sent to output lookups.
 
     // COMPRESSION CONSTRAINTS
     // TODO: Add all lookups:
