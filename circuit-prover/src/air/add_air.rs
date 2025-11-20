@@ -78,7 +78,9 @@
 
 use core::marker::PhantomData;
 
-use p3_air::{Air, AirBuilder, BaseAir};
+use alloc::vec;
+use alloc::vec::Vec;
+use p3_air::{Air, BaseAir, PairBuilder};
 use p3_circuit::tables::AddTrace;
 use p3_circuit::utils::pad_to_power_of_two;
 use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
@@ -102,6 +104,10 @@ pub struct AddAir<F, const D: usize = 1> {
     ///
     /// The last row is padded if the number of operations is not a multiple of this value.
     pub lanes: usize,
+    /// Preprocessed values. They are used for generating the common data,
+    /// as well as by the prover, to compute the constraint polynomial.
+    /// Preprocessed values correspond to the indices of the inputs and outpurs withing the `Witness`.
+    pub preprocessed: Vec<F>,
     /// Marker tying this AIR to its base field.
     _phantom: PhantomData<F>,
 }
@@ -118,6 +124,23 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AddAir<F, D> {
         Self {
             num_ops,
             lanes,
+            preprocessed: Vec::new(),
+            _phantom: PhantomData,
+        }
+    }
+
+    /// Construct a new `AddAir` instance.
+    ///
+    /// - `num_ops`: total number of addition operations to be proven,
+    /// - `lanes`: how many operations are packed side-by-side in each row.
+    ///
+    /// Panics if `lanes == 0` because we always need at least one lane per row.
+    pub const fn new_with_preprocessed(num_ops: usize, lanes: usize, preprocessed: Vec<F>) -> Self {
+        assert!(lanes > 0, "lane count must be non-zero");
+        Self {
+            num_ops,
+            lanes,
+            preprocessed,
             _phantom: PhantomData,
         }
     }
@@ -130,12 +153,26 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AddAir<F, D> {
     ///
     /// The total width of a single row is `3 * D + 3`
     pub const fn lane_width() -> usize {
-        3 * D + 3
+        3 * D
     }
 
     /// Total number of columns in the main trace for this AIR instance.
     pub const fn total_width(&self) -> usize {
         self.lanes * Self::lane_width()
+    }
+
+    /// Number of preprocessed base-field columns occupied by a single lane.
+    ///
+    /// Each lane stores 3 indices (one for each operand)
+    pub const fn prep_lane_width() -> usize {
+        3
+    }
+
+    /// Number of preprocessed columns for this AIR instance.
+    ///
+    /// Each lane stores 3 indices (one for each operand)
+    pub const fn prep_width(&self) -> usize {
+        self.lanes * Self::prep_lane_width()
     }
 
     /// Convert an `AddTrace` into a `RowMajorMatrix` suitable for the STARK prover.
@@ -185,14 +222,11 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AddAir<F, D> {
         let mut values = F::zero_vec(width * row_count.max(1));
 
         // Iterate over all operations in lockstep across the trace arrays.
-        for (op_idx, (((((lhs_val, lhs_idx), rhs_val), rhs_idx), res_val), res_idx)) in trace
+        for (op_idx, ((lhs_val, rhs_val), res_val)) in trace
             .lhs_values
             .iter()
-            .zip(trace.lhs_index.iter())
             .zip(trace.rhs_values.iter())
-            .zip(trace.rhs_index.iter())
             .zip(trace.result_values.iter())
-            .zip(trace.result_index.iter())
             .enumerate()
         {
             // Determine the target row index.
@@ -220,9 +254,6 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AddAir<F, D> {
             // Copy the `D` lhs coordinates into the trace row.
             values[cursor..cursor + D].copy_from_slice(lhs_coeffs);
             cursor += D;
-            // Store the lhs witness-bus index as a base-field element.
-            values[cursor] = F::from_u32(lhs_idx.0);
-            cursor += 1;
 
             // Write RHS coordinates and RHS witness index.
             //
@@ -237,9 +268,6 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AddAir<F, D> {
             // Copy the `D` rhs coordinates into the trace row.
             values[cursor..cursor + D].copy_from_slice(rhs_coeffs);
             cursor += D;
-            // Store the rhs witness-bus index as a base-field element.
-            values[cursor] = F::from_u32(rhs_idx.0);
-            cursor += 1;
 
             // Write result coordinates and result witness index.
             //
@@ -252,9 +280,6 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AddAir<F, D> {
             );
             // Copy the `D` result coordinates into the trace row.
             values[cursor..cursor + D].copy_from_slice(res_coeffs);
-            cursor += D;
-            // Store the result witness-bus index as a base-field element.
-            values[cursor] = F::from_u32(res_idx.0);
         }
 
         // Pad the matrix to a power-of-two height.
@@ -263,15 +288,55 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AddAir<F, D> {
         // Build the row-major matrix with the computed width.
         RowMajorMatrix::new(values, width)
     }
+
+    pub fn prep_from_trace<ExtF: BasedVectorSpace<F>>(
+        trace: &AddTrace<ExtF>,
+        lanes: usize,
+    ) -> Vec<F> {
+        let total_len = trace.lhs_index.len() * Self::prep_lane_width() * lanes;
+        let mut prep_values = Vec::with_capacity(total_len);
+        for (lhs_idx, rhs_idx, res_idx) in trace
+            .lhs_index
+            .iter()
+            .zip(trace.rhs_index.iter())
+            .zip(trace.result_index.iter())
+            .map(|((l, r), o)| (l, r, o))
+        {
+            prep_values.extend(&[
+                F::from_u32(lhs_idx.0),
+                F::from_u32(rhs_idx.0),
+                F::from_u32(res_idx.0),
+            ]);
+        }
+
+        prep_values
+    }
 }
 
 impl<F: Field, const D: usize> BaseAir<F> for AddAir<F, D> {
     fn width(&self) -> usize {
         self.total_width()
     }
+
+    fn preprocessed_trace(&self) -> Option<RowMajorMatrix<F>> {
+        // At this point, the preprocessed trace should be set.
+        let original_height = self.num_ops.div_ceil(self.lanes);
+
+        if original_height > 0 {
+            assert!(!self.preprocessed.is_empty());
+        }
+        let mut prep_values = self.preprocessed.clone();
+        let padding_len = self.prep_width() - prep_values.len() % self.prep_width();
+        if padding_len != self.prep_width() {
+            prep_values.extend(vec![F::ZERO; padding_len]);
+        }
+        pad_to_power_of_two(&mut prep_values, self.prep_width(), original_height);
+
+        Some(RowMajorMatrix::new(prep_values, self.prep_width()))
+    }
 }
 
-impl<AB: AirBuilder, const D: usize> Air<AB> for AddAir<AB::F, D>
+impl<AB: PairBuilder, const D: usize> Air<AB> for AddAir<AB::F, D>
 where
     AB::F: Field,
 {
@@ -294,20 +359,12 @@ where
             //
             //   lhs_and_idx = [lhs[0..D), lhs_idx]
             //   rest        = [rhs[0..D), rhs_idx, result[0..D), result_idx]
-            let (lhs_and_idx, rest) = lane_data.split_at(D + 1);
+            let (lhs_slice, rest) = lane_data.split_at(D);
             // Next, split the remaining data into:
             //
             //   rhs_and_idx    = [rhs[0..D), rhs_idx]
             //   result_and_idx = [result[0..D), result_idx]
-            let (rhs_and_idx, result_and_idx) = rest.split_at(D + 1);
-
-            // Extract just the coordinate slices for the three operands.
-            //
-            // NOTE: Indices reside at position [D] in each `*_and_idx` slice.
-            // They are not used in constraints, but are checked by the bus interaction logic.
-            let lhs_slice = &lhs_and_idx[..D];
-            let rhs_slice = &rhs_and_idx[..D];
-            let result_slice = &result_and_idx[..D];
+            let (rhs_slice, result_slice) = rest.split_at(D);
 
             // Enforce coordinate-wise addition for each basis coordinate `i` in `0..D`.
             //
@@ -334,7 +391,8 @@ mod tests {
     use p3_baby_bear::BabyBear as Val;
     use p3_circuit::WitnessId;
     use p3_field::extension::BinomialExtensionField;
-    use p3_uni_stark::{prove, verify};
+    use p3_uni_stark::{prove_with_preprocessed, setup_preprocessed, verify_with_preprocessed};
+    use p3_util::log2_ceil_usize;
 
     use super::*;
     use crate::air::test_utils::build_test_config;
@@ -349,6 +407,20 @@ mod tests {
         let rhs_index = vec![WitnessId(2); n];
         let result_index = vec![WitnessId(3); n];
 
+        // Get preprocessed index values.
+        let mut prep_values = Vec::with_capacity(n * 3);
+        lhs_index
+            .iter()
+            .zip(rhs_index.iter())
+            .zip(result_index.iter())
+            .for_each(|((lhs_idx, rhs_idx), result_idx)| {
+                prep_values.extend(&[
+                    Val::from_u32(lhs_idx.0),
+                    Val::from_u32(rhs_idx.0),
+                    Val::from_u32(result_idx.0),
+                ])
+            });
+
         let trace = AddTrace {
             lhs_values,
             lhs_index,
@@ -359,14 +431,17 @@ mod tests {
         };
 
         let matrix: RowMajorMatrix<Val> = AddAir::<Val, 1>::trace_to_matrix(&trace, 1);
-        assert_eq!(matrix.width(), 6);
+        assert_eq!(matrix.width(), 3);
 
         let config = build_test_config();
         let pis: Vec<Val> = vec![];
 
-        let air = AddAir::<Val, 1>::new(n, 1);
-        let proof = prove(&config, &air, matrix, &pis);
-        verify(&config, &air, &proof, &pis).expect("verification failed");
+        let air = AddAir::<Val, 1>::new_with_preprocessed(n, 1, prep_values);
+        let (prover_data, verifier_data) =
+            setup_preprocessed(&config, &air, log2_ceil_usize(matrix.height())).unwrap();
+        let proof = prove_with_preprocessed(&config, &air, matrix, &pis, Some(&prover_data));
+        verify_with_preprocessed(&config, &air, &proof, &pis, Some(&verifier_data))
+            .expect("verification failed");
     }
 
     #[test]
@@ -407,6 +482,20 @@ mod tests {
         let rhs_index = vec![WitnessId(2); n];
         let result_index = vec![WitnessId(3); n];
 
+        // Get preprocessed index values.
+        let mut prep_values = Vec::with_capacity(n * 3);
+        lhs_index
+            .iter()
+            .zip(rhs_index.iter())
+            .zip(result_index.iter())
+            .for_each(|((lhs_idx, rhs_idx), result_idx)| {
+                prep_values.extend(&[
+                    Val::from_u32(lhs_idx.0),
+                    Val::from_u32(rhs_idx.0),
+                    Val::from_u32(result_idx.0),
+                ])
+            });
+
         let trace = AddTrace {
             lhs_values,
             lhs_index,
@@ -423,9 +512,12 @@ mod tests {
         let config = build_test_config();
         let pis: Vec<Val> = vec![];
 
-        let air = AddAir::<Val, 4>::new(n, 1);
-        let proof = prove(&config, &air, matrix, &pis);
-        verify(&config, &air, &proof, &pis).expect("extension field verification failed");
+        let air = AddAir::<Val, 4>::new_with_preprocessed(n, 1, prep_values);
+        let (prover_data, verifier_data) =
+            setup_preprocessed(&config, &air, log2_ceil_usize(matrix.height())).unwrap();
+        let proof = prove_with_preprocessed(&config, &air, matrix, &pis, Some(&prover_data));
+        verify_with_preprocessed(&config, &air, &proof, &pis, Some(&verifier_data))
+            .expect("extension field verification failed");
     }
 
     #[test]

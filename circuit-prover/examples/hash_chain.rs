@@ -5,10 +5,12 @@ use std::error::Error;
 /// The circuit absorbs multiple inputs sequentially and squeezes outputs,
 /// enforcing that the in-circuit hash matches the native computation.
 use p3_baby_bear::{BabyBear, default_babybear_poseidon2_16};
+use p3_batch_stark::CommonData;
 use p3_circuit::op::WitnessHintsFiller;
 use p3_circuit::ops::HashOps;
 use p3_circuit::tables::generate_poseidon2_trace;
 use p3_circuit::{CircuitBuilder, CircuitError, ExprId};
+use p3_circuit_prover::common::get_airs_and_degrees_with_prep;
 use p3_circuit_prover::{BatchStarkProver, Poseidon2Config, TablePacking, config};
 use p3_field::PrimeCharacteristicRing;
 use p3_poseidon2_circuit_air::BabyBearD4Width16;
@@ -93,10 +95,14 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     builder.dump_allocation_log();
 
-    let (circuit, _) = builder.build()?;
+    let circuit = builder.build()?;
 
     // Clone expr_to_widx before consuming circuit
     let expr_to_widx = circuit.expr_to_widx.clone();
+
+    let table_packing = TablePacking::new(4, 4, 1);
+
+    let airs_degrees = get_airs_and_degrees_with_prep::<_, _, 1>(&circuit, table_packing).unwrap();
 
     let runner = circuit.runner();
 
@@ -155,11 +161,13 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Prove and verify the circuit
     let stark_config = config::baby_bear().build();
-    let table_packing = TablePacking::new(4, 4, 1);
+
+    let (airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
+    let common = CommonData::from_airs_and_degrees(&stark_config, &airs, &degrees);
     let mut prover = BatchStarkProver::new(stark_config).with_table_packing(table_packing);
     prover.register_poseidon2_table(Poseidon2Config::baby_bear_d4_width16());
-    let proof = prover.prove_all_tables(&traces)?;
-    prover.verify_all_tables(&proof)?;
+    let proof = prover.prove_all_tables(&traces, &common)?;
+    prover.verify_all_tables(&proof, &common)?;
 
     println!(
         "Successfully proved and verified Poseidon2 hash chain of length {}!",

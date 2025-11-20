@@ -31,6 +31,7 @@ use thiserror::Error;
 use tracing::instrument;
 
 use crate::air::{AddAir, ConstAir, MulAir, PublicAir, WitnessAir};
+use crate::common::CircuitTableAir;
 use crate::config::StarkField;
 use crate::field_params::ExtractBinomialW;
 
@@ -894,22 +895,6 @@ pub enum BatchStarkProverError {
     MissingTableProver(&'static str),
 }
 
-/// Enum wrapper to allow heterogeneous table AIRs in a single batch STARK aggregation.
-///
-/// This enables different AIR types to be collected into a single vector for
-/// batch STARK proving/verification while maintaining type safety.
-enum CircuitTableAir<SC, const D: usize>
-where
-    SC: StarkGenericConfig,
-{
-    Witness(WitnessAir<Val<SC>, D>),
-    Const(ConstAir<Val<SC>, D>),
-    Public(PublicAir<Val<SC>, D>),
-    Add(AddAir<Val<SC>, D>),
-    Mul(MulAir<Val<SC>, D>),
-    Dynamic(DynamicAirEntry<SC>),
-}
-
 impl<SC, const D: usize> BaseAir<Val<SC>> for CircuitTableAir<SC, D>
 where
     SC: StarkGenericConfig,
@@ -1050,17 +1035,18 @@ where
     pub fn prove_all_tables<EF>(
         &self,
         traces: &Traces<EF>,
+        common: &CommonData<SC>,
     ) -> Result<BatchStarkProof<SC>, BatchStarkProverError>
     where
         EF: Field + BasedVectorSpace<Val<SC>> + ExtractBinomialW<Val<SC>>,
     {
         let w_opt = EF::extract_w();
         match EF::DIMENSION {
-            1 => self.prove::<EF, 1>(traces, None),
-            2 => self.prove::<EF, 2>(traces, w_opt),
-            4 => self.prove::<EF, 4>(traces, w_opt),
-            6 => self.prove::<EF, 6>(traces, w_opt),
-            8 => self.prove::<EF, 8>(traces, w_opt),
+            1 => self.prove::<EF, 1>(traces, None, common),
+            2 => self.prove::<EF, 2>(traces, w_opt, common),
+            4 => self.prove::<EF, 4>(traces, w_opt, common),
+            6 => self.prove::<EF, 6>(traces, w_opt, common),
+            8 => self.prove::<EF, 8>(traces, w_opt, common),
             d => Err(BatchStarkProverError::UnsupportedDegree(d)),
         }
     }
@@ -1069,13 +1055,14 @@ where
     pub fn verify_all_tables(
         &self,
         proof: &BatchStarkProof<SC>,
+        common: &CommonData<SC>,
     ) -> Result<(), BatchStarkProverError> {
         match proof.ext_degree {
-            1 => self.verify::<1>(proof, None),
-            2 => self.verify::<2>(proof, proof.w_binomial),
-            4 => self.verify::<4>(proof, proof.w_binomial),
-            6 => self.verify::<6>(proof, proof.w_binomial),
-            8 => self.verify::<8>(proof, proof.w_binomial),
+            1 => self.verify::<1>(proof, None, common),
+            2 => self.verify::<2>(proof, proof.w_binomial, common),
+            4 => self.verify::<4>(proof, proof.w_binomial, common),
+            6 => self.verify::<6>(proof, proof.w_binomial, common),
+            8 => self.verify::<8>(proof, proof.w_binomial, common),
             d => Err(BatchStarkProverError::UnsupportedDegree(d)),
         }
     }
@@ -1089,6 +1076,7 @@ where
         &self,
         traces: &Traces<EF>,
         w_binomial: Option<Val<SC>>,
+        common: &CommonData<SC>,
     ) -> Result<BatchStarkProof<SC>, BatchStarkProverError>
     where
         EF: Field + BasedVectorSpace<Val<SC>>,
@@ -1108,29 +1096,33 @@ where
 
         // Const
         let const_rows = traces.const_trace.values.len();
-        let const_air = ConstAir::<Val<SC>, D>::new(const_rows);
+        let const_prep = ConstAir::<Val<SC>, D>::prep_from_trace(&traces.const_trace);
+        let const_air = ConstAir::<Val<SC>, D>::new_with_preprocessed(const_rows, const_prep);
         let const_matrix: RowMajorMatrix<Val<SC>> =
             ConstAir::<Val<SC>, D>::trace_to_matrix(&traces.const_trace);
 
         // Public
         let public_rows = traces.public_trace.values.len();
-        let public_air = PublicAir::<Val<SC>, D>::new(public_rows);
+        let public_prep = PublicAir::<Val<SC>, D>::prep_from_trace(&traces.public_trace);
+        let public_air = PublicAir::<Val<SC>, D>::new_with_preprocessed(public_rows, public_prep);
         let public_matrix: RowMajorMatrix<Val<SC>> =
             PublicAir::<Val<SC>, D>::trace_to_matrix(&traces.public_trace);
 
         // Add
         let add_rows = traces.add_trace.lhs_values.len();
-        let add_air = AddAir::<Val<SC>, D>::new(add_rows, add_lanes);
+        let add_prep = AddAir::<Val<SC>, D>::prep_from_trace(&traces.add_trace, add_lanes);
+        let add_air = AddAir::<Val<SC>, D>::new_with_preprocessed(add_rows, add_lanes, add_prep);
         let add_matrix: RowMajorMatrix<Val<SC>> =
             AddAir::<Val<SC>, D>::trace_to_matrix(&traces.add_trace, add_lanes);
 
         // Mul
         let mul_rows = traces.mul_trace.lhs_values.len();
+        let mul_prep = MulAir::<Val<SC>, D>::prep_from_trace(&traces.mul_trace, mul_lanes);
         let mul_air: MulAir<Val<SC>, D> = if D == 1 {
-            MulAir::<Val<SC>, D>::new(mul_rows, mul_lanes)
+            MulAir::<Val<SC>, D>::new_with_preprocessed(mul_rows, mul_lanes, mul_prep)
         } else {
             let w = w_binomial.ok_or(BatchStarkProverError::MissingWForExtension)?;
-            MulAir::<Val<SC>, D>::new_binomial(mul_rows, mul_lanes, w)
+            MulAir::<Val<SC>, D>::new_binomial_with_preprocessed(mul_rows, mul_lanes, w, mul_prep)
         };
         let mul_matrix: RowMajorMatrix<Val<SC>> =
             MulAir::<Val<SC>, D>::trace_to_matrix(&traces.mul_trace, mul_lanes);
@@ -1248,10 +1240,7 @@ where
             })
             .collect();
 
-        let num_instances = instances.len();
-        // TODO: Retrieve common data.
-        let proof =
-            p3_batch_stark::prove_batch(&self.config, instances, &CommonData::empty(num_instances));
+        let proof = p3_batch_stark::prove_batch(&self.config, instances, common);
 
         // Ensure all primitive table row counts are at least 1
         // RowCounts::new requires non-zero counts, so pad zeros to 1
@@ -1286,6 +1275,7 @@ where
         &self,
         proof: &BatchStarkProof<SC>,
         w_binomial: Option<Val<SC>>,
+        common: &CommonData<SC>,
     ) -> Result<(), BatchStarkProverError> {
         // Rebuild AIRs in the same order as prove.
         let packing = proof.table_packing;
@@ -1345,16 +1335,8 @@ where
             pvs.push(entry.public_values.clone());
         }
 
-        let num_instances = airs.len();
-        // TODO: Take common data as input.
-        p3_batch_stark::verify_batch(
-            &self.config,
-            &airs,
-            &proof.proof,
-            &pvs,
-            &CommonData::empty(num_instances),
-        )
-        .map_err(|e| BatchStarkProverError::Verify(format!("{e:?}")))
+        p3_batch_stark::verify_batch(&self.config, &airs, &proof.proof, &pvs, common)
+            .map_err(|e| BatchStarkProverError::Verify(format!("{e:?}")))
     }
 }
 
@@ -1369,11 +1351,13 @@ mod tests {
     use p3_koala_bear::KoalaBear;
 
     use super::*;
+    use crate::common::get_airs_and_degrees_with_prep;
     use crate::config;
 
     #[test]
     fn test_babybear_batch_stark_base_field() {
         let mut builder = CircuitBuilder::<BabyBear>::new();
+        let cfg = config::baby_bear().build();
 
         // x + 5*2 - 3 + (-1) == expected
         let x = builder.add_public_input();
@@ -1391,25 +1375,32 @@ mod tests {
         let diff = builder.sub(final_result, expected);
         builder.assert_zero(diff);
 
-        let (circuit, _) = builder.build().unwrap();
+        let circuit = builder.build().unwrap();
+        let airs_degrees =
+            get_airs_and_degrees_with_prep::<_, _, 1>(&circuit, TablePacking::default()).unwrap();
+        let (airs, log_degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
+
         let mut runner = circuit.runner();
 
         let x_val = BabyBear::from_u64(7);
         let expected_val = BabyBear::from_u64(13); // 7 + 10 - 3 - 1 = 13
         runner.set_public_inputs(&[x_val, expected_val]).unwrap();
         let traces = runner.run().unwrap();
+        let common = CommonData::from_airs_and_degrees(&cfg, &airs, &log_degrees);
 
-        let cfg = config::baby_bear().build();
         let prover = BatchStarkProver::new(cfg);
-        let proof = prover.prove_all_tables(&traces).unwrap();
+
+        let proof = prover.prove_all_tables(&traces, &common).unwrap();
         assert_eq!(proof.ext_degree, 1);
         assert!(proof.w_binomial.is_none());
-        prover.verify_all_tables(&proof).unwrap();
+
+        assert!(prover.verify_all_tables(&proof, &common).is_ok());
     }
 
     #[test]
     fn test_extension_field_batch_stark() {
-        type Ext4 = BinomialExtensionField<BabyBear, 4>;
+        const D: usize = 4;
+        type Ext4 = BinomialExtensionField<BabyBear, D>;
         let mut builder = CircuitBuilder::<Ext4>::new();
         let x = builder.add_public_input();
         let y = builder.add_public_input();
@@ -1419,7 +1410,11 @@ mod tests {
         let res = builder.add(xy, z);
         let diff = builder.sub(res, expected);
         builder.assert_zero(diff);
-        let (circuit, _) = builder.build().unwrap();
+        let circuit = builder.build().unwrap();
+        let airs_degrees =
+            get_airs_and_degrees_with_prep::<_, _, D>(&circuit, TablePacking::default()).unwrap();
+        let (airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
+
         let mut runner = circuit.runner();
         let xv = Ext4::from_basis_coefficients_slice(&[
             BabyBear::from_u64(2),
@@ -1447,13 +1442,14 @@ mod tests {
         let traces = runner.run().unwrap();
 
         let cfg = config::baby_bear().build();
+        let common = CommonData::from_airs_and_degrees(&cfg, &airs, &degrees);
         let prover = BatchStarkProver::new(cfg);
-        let proof = prover.prove_all_tables(&traces).unwrap();
+        let proof = prover.prove_all_tables(&traces, &common).unwrap();
         assert_eq!(proof.ext_degree, 4);
         // Ensure W was captured
         let expected_w = <Ext4 as ExtractBinomialW<BabyBear>>::extract_w().unwrap();
         assert_eq!(proof.w_binomial, Some(expected_w));
-        prover.verify_all_tables(&proof).unwrap();
+        prover.verify_all_tables(&proof, &common).unwrap();
     }
 
     #[test]
@@ -1473,7 +1469,10 @@ mod tests {
         let diff = builder.sub(final_res, expected);
         builder.assert_zero(diff);
 
-        let (circuit, _) = builder.build().unwrap();
+        let circuit = builder.build().unwrap();
+        let airs_degrees =
+            get_airs_and_degrees_with_prep::<_, _, 1>(&circuit, TablePacking::default()).unwrap();
+        let (airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
         let mut runner = circuit.runner();
 
         let a_val = KoalaBear::from_u64(42);
@@ -1485,16 +1484,18 @@ mod tests {
         let traces = runner.run().unwrap();
 
         let cfg = config::koala_bear().build();
+        let common = CommonData::from_airs_and_degrees(&cfg, &airs, &degrees);
         let prover = BatchStarkProver::new(cfg);
-        let proof = prover.prove_all_tables(&traces).unwrap();
+        let proof = prover.prove_all_tables(&traces, &common).unwrap();
         assert_eq!(proof.ext_degree, 1);
         assert!(proof.w_binomial.is_none());
-        prover.verify_all_tables(&proof).unwrap();
+        prover.verify_all_tables(&proof, &common).unwrap();
     }
 
     #[test]
     fn test_koalabear_batch_stark_extension_field_d8() {
-        type KBExtField = BinomialExtensionField<KoalaBear, 8>;
+        const D: usize = 8;
+        type KBExtField = BinomialExtensionField<KoalaBear, D>;
         let mut builder = CircuitBuilder::<KBExtField>::new();
 
         // x * y * z == expected
@@ -1520,7 +1521,10 @@ mod tests {
         let diff = builder.sub(xyz, expected);
         builder.assert_zero(diff);
 
-        let (circuit, _) = builder.build().unwrap();
+        let circuit = builder.build().unwrap();
+        let airs_degrees =
+            get_airs_and_degrees_with_prep::<_, _, D>(&circuit, TablePacking::default()).unwrap();
+        let (airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
         let mut runner = circuit.runner();
 
         let x_val = KBExtField::from_basis_coefficients_slice(&[
@@ -1564,17 +1568,19 @@ mod tests {
         let traces = runner.run().unwrap();
 
         let cfg = config::koala_bear().build();
+        let common = CommonData::from_airs_and_degrees(&cfg, &airs, &degrees);
         let prover = BatchStarkProver::new(cfg);
-        let proof = prover.prove_all_tables(&traces).unwrap();
+        let proof = prover.prove_all_tables(&traces, &common).unwrap();
         assert_eq!(proof.ext_degree, 8);
         let expected_w = <KBExtField as ExtractBinomialW<KoalaBear>>::extract_w().unwrap();
         assert_eq!(proof.w_binomial, Some(expected_w));
-        prover.verify_all_tables(&proof).unwrap();
+        prover.verify_all_tables(&proof, &common).unwrap();
     }
 
     #[test]
     fn test_goldilocks_batch_stark_extension_field_d2() {
-        type Ext2 = BinomialExtensionField<Goldilocks, 2>;
+        const D: usize = 2;
+        type Ext2 = BinomialExtensionField<Goldilocks, D>;
         let mut builder = CircuitBuilder::<Ext2>::new();
 
         // x * y + z == expected
@@ -1588,7 +1594,10 @@ mod tests {
         let diff = builder.sub(res, expected);
         builder.assert_zero(diff);
 
-        let (circuit, _) = builder.build().unwrap();
+        let circuit = builder.build().unwrap();
+        let airs_degrees =
+            get_airs_and_degrees_with_prep::<_, _, D>(&circuit, TablePacking::default()).unwrap();
+        let (airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
         let mut runner = circuit.runner();
 
         let x_val =
@@ -1612,17 +1621,19 @@ mod tests {
         let traces = runner.run().unwrap();
 
         let cfg = config::goldilocks().build();
+        let common = CommonData::from_airs_and_degrees(&cfg, &airs, &degrees);
         let prover = BatchStarkProver::new(cfg);
-        let proof = prover.prove_all_tables(&traces).unwrap();
+        let proof = prover.prove_all_tables(&traces, &common).unwrap();
         assert_eq!(proof.ext_degree, 2);
         let expected_w = <Ext2 as ExtractBinomialW<Goldilocks>>::extract_w().unwrap();
         assert_eq!(proof.w_binomial, Some(expected_w));
-        prover.verify_all_tables(&proof).unwrap();
+        prover.verify_all_tables(&proof, &common).unwrap();
     }
 
     #[test]
     fn prove_fails_without_mmcs_table_prover() {
-        type F = BinomialExtensionField<BabyBear, 4>;
+        const D: usize = 4;
+        type F = BinomialExtensionField<BabyBear, D>;
         let mmcs_config = MmcsVerifyConfig::babybear_quartic_extension_default();
         let compress = config::baby_bear_compression();
 
@@ -1652,7 +1663,11 @@ mod tests {
             .add_mmcs_verify(&leaves_expr, &directions_expr, &expected_root_expr)
             .expect("mmcs op");
 
-        let (circuit, _) = builder.build().unwrap();
+        let circuit = builder.build().unwrap();
+        let airs_degrees =
+            get_airs_and_degrees_with_prep::<_, _, D>(&circuit, TablePacking::default()).unwrap();
+        let (airs, log_degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
+
         let mut runner = circuit.runner();
 
         let leaves_value: Vec<Vec<F>> = (0..depth)
@@ -1708,8 +1723,9 @@ mod tests {
         let traces = runner.run().unwrap();
 
         let cfg = config::baby_bear().build();
+        let common = CommonData::from_airs_and_degrees(&cfg, &airs, &log_degrees);
         let prover = BatchStarkProver::new(cfg);
-        let result = prover.prove_all_tables(&traces);
+        let result = prover.prove_all_tables(&traces, &common);
         assert!(matches!(
             result,
             Err(BatchStarkProverError::MissingTableProver("mmcs_verify"))

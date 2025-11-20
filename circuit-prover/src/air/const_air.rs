@@ -46,6 +46,8 @@ use p3_matrix::dense::RowMajorMatrix;
 pub struct ConstAir<F, const D: usize = 1> {
     /// Total number of constants defined in this trace.
     pub height: usize,
+    /// Preprocessed values, corresponding to the indices in the trace.
+    pub preprocessed: Vec<F>,
     /// Marker tying this AIR to its base field.
     _phantom: PhantomData<F>,
 }
@@ -57,6 +59,15 @@ impl<F: Field, const D: usize> ConstAir<F, D> {
     pub const fn new(height: usize) -> Self {
         Self {
             height,
+            preprocessed: Vec::new(),
+            _phantom: PhantomData,
+        }
+    }
+
+    pub const fn new_with_preprocessed(height: usize, preprocessed: Vec<F>) -> Self {
+        Self {
+            height,
+            preprocessed,
             _phantom: PhantomData,
         }
     }
@@ -66,8 +77,7 @@ impl<F: Field, const D: usize> ConstAir<F, D> {
     /// This function is responsible for:
     ///
     /// 1. Decomposing each extension element in the trace into `D` basis coordinates.
-    /// 2. Placing the witness index in the final column.
-    /// 3. Padding the trace to have a power-of-two number of rows.
+    /// 2. Padding the trace to have a power-of-two number of rows.
     pub fn trace_to_matrix<ExtF: BasedVectorSpace<F>>(
         trace: &ConstTrace<ExtF>,
     ) -> RowMajorMatrix<F> {
@@ -77,7 +87,7 @@ impl<F: Field, const D: usize> ConstAir<F, D> {
             trace.index.len(),
             "ConstTrace column length mismatch: values vs indices"
         );
-        let width = D + 1;
+        let width = D;
 
         let mut values = Vec::with_capacity(height * width);
 
@@ -92,8 +102,6 @@ impl<F: Field, const D: usize> ConstAir<F, D> {
             );
             // Copy coefficients into the first D columns.
             values.extend_from_slice(coeffs);
-            // Write the witness index into the last column.
-            values.push(F::from_u32(trace.index[i].0));
         }
 
         // Pad to power of two by repeating last row
@@ -101,11 +109,29 @@ impl<F: Field, const D: usize> ConstAir<F, D> {
 
         RowMajorMatrix::new(values, width)
     }
+
+    pub fn prep_from_trace<ExtF: BasedVectorSpace<F>>(trace: &ConstTrace<ExtF>) -> Vec<F> {
+        trace
+            .index
+            .iter()
+            .map(|widx| F::from_u64(widx.0 as u64))
+            .collect()
+    }
 }
 
 impl<F: Field, const D: usize> BaseAir<F> for ConstAir<F, D> {
     fn width(&self) -> usize {
-        D + 1
+        D
+    }
+
+    fn preprocessed_trace(&self) -> Option<RowMajorMatrix<F>> {
+        let mut prep_values = self.preprocessed.clone();
+        pad_to_power_of_two(&mut prep_values, 1, self.preprocessed.len());
+
+        Some(RowMajorMatrix::new(
+            prep_values,
+            1, // single preprocessed column for indices
+        ))
     }
 }
 
@@ -127,7 +153,8 @@ mod tests {
     use p3_field::PrimeCharacteristicRing;
     use p3_field::extension::BinomialExtensionField;
     use p3_matrix::Matrix;
-    use p3_uni_stark::{prove, verify};
+    use p3_uni_stark::{prove_with_preprocessed, setup_preprocessed, verify_with_preprocessed};
+    use p3_util::log2_ceil_usize;
 
     use super::*;
     use crate::air::test_utils::build_test_config;
@@ -146,9 +173,16 @@ mod tests {
         ];
         // Witness IDs these constants bind to
         let const_indices = vec![WitnessId(1), WitnessId(3), WitnessId(4)];
+        let num_const_indices = const_indices.len();
+
+        let prep_values = const_indices
+            .clone()
+            .iter()
+            .map(|idx| F::from_u64(idx.0 as u64))
+            .collect::<Vec<_>>();
 
         let trace = ConstTrace {
-            index: const_indices,
+            index: const_indices.clone(),
             values: const_values,
         };
 
@@ -158,7 +192,7 @@ mod tests {
         // Verify matrix dimensions
         //
         // D + 1 = 1 + 1 = 2 (value + index)
-        assert_eq!(matrix.width(), 2);
+        assert_eq!(matrix.width(), 1);
 
         // Height should be next power of two >= 3
         let height = matrix.height();
@@ -169,24 +203,32 @@ mod tests {
 
         // First row: value=37, index=1
         assert_eq!(data[0], F::from_u64(37));
-        assert_eq!(data[1], F::from_u64(1));
 
         // Second row: value=111, index=3
-        assert_eq!(data[2], F::from_u64(111));
-        assert_eq!(data[3], F::from_u64(3));
+        assert_eq!(data[1], F::from_u64(111));
 
         // Third row: value=0, index=4
-        assert_eq!(data[4], F::from_u64(0));
-        assert_eq!(data[5], F::from_u64(4));
+        assert_eq!(data[2], F::from_u64(0));
 
         // Test that we can prove and verify (should succeed since no constraints)
         let config = build_test_config();
         // No public inputs for CONST chip
         let pis: Vec<F> = vec![];
 
-        let air = ConstAir::<F, 1>::new(height);
-        let proof = prove(&config, &air, matrix, &pis);
-        verify(&config, &air, &proof, &pis).expect("CONST chip verification failed");
+        let air = ConstAir::<F, 1>::new_with_preprocessed(height, prep_values);
+
+        let prep_matrix = air.preprocessed_trace().unwrap();
+
+        for i in 0..num_const_indices {
+            let row = prep_matrix.row_slice(i).unwrap();
+            assert_eq!(row[0], F::from_u32(const_indices[i].0));
+        }
+
+        let (prover_data, verifier_data) =
+            setup_preprocessed(&config, &air, log2_ceil_usize(height)).unwrap();
+        let proof = prove_with_preprocessed(&config, &air, matrix, &pis, Some(&prover_data));
+        verify_with_preprocessed(&config, &air, &proof, &pis, Some(&verifier_data))
+            .expect("CONST chip verification failed");
     }
 
     #[test]
@@ -210,6 +252,10 @@ mod tests {
 
         let const_values = vec![const1, const2];
         let const_indices = vec![WitnessId(10), WitnessId(20)];
+        let prep_values = const_indices
+            .iter()
+            .map(|idx| F::from_u64(idx.0 as u64))
+            .collect::<Vec<_>>();
 
         let trace = ConstTrace {
             index: const_indices,
@@ -219,33 +265,39 @@ mod tests {
         // Convert to matrix for D=4 extension field
         let matrix: RowMajorMatrix<F> = ConstAir::<F, 4>::trace_to_matrix(&trace);
 
-        // Verify matrix dimensions: D + 1 = 4 + 1 = 5 (4 value coefficients + 1 index)
-        assert_eq!(matrix.width(), 5);
+        // Verify matrix dimensions: D = 4 (4 value coefficients)
+        assert_eq!(matrix.width(), 4);
         let height = matrix.height();
         assert_eq!(height, 2);
 
         let data = &matrix.values;
 
-        // First row: [a0, a1, a2, a3, index] = [1, 2, 3, 4, 10]
+        // First row: [a0, a1, a2, a3] = [1, 2, 3, 4]
         assert_eq!(data[0], F::from_u64(1));
         assert_eq!(data[1], F::from_u64(2));
         assert_eq!(data[2], F::from_u64(3));
         assert_eq!(data[3], F::from_u64(4));
-        assert_eq!(data[4], F::from_u64(10));
 
-        // Second row: [b0, b1, b2, b3, index] = [5, 6, 7, 8, 20]
-        assert_eq!(data[5], F::from_u64(5));
-        assert_eq!(data[6], F::from_u64(6));
-        assert_eq!(data[7], F::from_u64(7));
-        assert_eq!(data[8], F::from_u64(8));
-        assert_eq!(data[9], F::from_u64(20));
+        // Second row: [b0, b1, b2, b3] = [5, 6, 7, 8]
+        assert_eq!(data[4], F::from_u64(5));
+        assert_eq!(data[5], F::from_u64(6));
+        assert_eq!(data[6], F::from_u64(7));
+        assert_eq!(data[7], F::from_u64(8));
 
         // Test proving and verification for extension field
         let config = build_test_config();
         let pis: Vec<F> = vec![];
 
-        let air = ConstAir::<F, 4>::new(height);
-        let proof = prove(&config, &air, matrix, &pis);
-        verify(&config, &air, &proof, &pis).expect("Extension field CONST verification failed");
+        let air = ConstAir::<F, 4>::new_with_preprocessed(height, prep_values);
+        let prep_matrix = air.preprocessed_trace().unwrap();
+        let row0 = prep_matrix.row_slice(0).unwrap();
+        assert_eq!(row0[0], F::from_u64(10));
+        let last_row = prep_matrix.row_slice(height - 1).unwrap();
+        assert_eq!(last_row[0], F::from_u64(20));
+        let (prover_data, verifier_data) =
+            setup_preprocessed(&config, &air, log2_ceil_usize(height)).unwrap();
+        let proof = prove_with_preprocessed(&config, &air, matrix, &pis, Some(&prover_data));
+        verify_with_preprocessed(&config, &air, &proof, &pis, Some(&verifier_data))
+            .expect("Extension field CONST verification failed");
     }
 }

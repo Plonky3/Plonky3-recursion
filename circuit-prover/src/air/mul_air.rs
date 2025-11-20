@@ -84,6 +84,7 @@
 //! bus interaction logic elsewhere in the system.
 
 use alloc::vec;
+use alloc::vec::Vec;
 use core::marker::PhantomData;
 
 use p3_air::{Air, AirBuilder, BaseAir};
@@ -122,6 +123,10 @@ pub struct MulAir<F, const D: usize = 1> {
     /// - `Some(W)` if `D > 1`,
     /// - `None` if `D == 1`.
     pub w_binomial: Option<F>,
+    /// Preprocessed values. They are used for generating the common data,
+    /// as well as by the prover, to compute the constraint polynomial.
+    /// Preprocessed values correspond to the indices of the inputs and outpurs withing the `Witness`.
+    pub preprocessed: Vec<F>,
     /// Marker tying this AIR to its base field.
     _phantom: PhantomData<F>,
 }
@@ -137,6 +142,22 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> MulAir<F, D> {
             num_ops,
             lanes,
             w_binomial: None,
+            preprocessed: Vec::new(),
+            _phantom: PhantomData,
+        }
+    }
+
+    /// Construct a new `MulAir` for base-field operations (D=1).
+    ///
+    /// Panics if `lanes == 0` or `D > 1`.
+    pub const fn new_with_preprocessed(num_ops: usize, lanes: usize, preprocessed: Vec<F>) -> Self {
+        assert!(lanes > 0, "lane count must be non-zero");
+        assert!(D == 1, "Use new_binomial for D > 1");
+        Self {
+            num_ops,
+            lanes,
+            w_binomial: None,
+            preprocessed,
             _phantom: PhantomData,
         }
     }
@@ -151,6 +172,27 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> MulAir<F, D> {
             num_ops,
             lanes,
             w_binomial: Some(w),
+            preprocessed: Vec::new(),
+            _phantom: PhantomData,
+        }
+    }
+
+    /// Construct a new `MulAir` for binomial extension-field operations ($x^D = W$, D > 1).
+    ///
+    /// Panics if `lanes == 0` or if `D < 2`.
+    pub const fn new_binomial_with_preprocessed(
+        num_ops: usize,
+        lanes: usize,
+        w: F,
+        preprocessed: Vec<F>,
+    ) -> Self {
+        assert!(lanes > 0, "lane count must be non-zero");
+        assert!(D >= 2, "Binomial constructor requires D >= 2");
+        Self {
+            num_ops,
+            lanes,
+            w_binomial: Some(w),
+            preprocessed,
             _phantom: PhantomData,
         }
     }
@@ -163,12 +205,26 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> MulAir<F, D> {
     ///
     /// The total width of a single row is `3 * D + 3`
     pub const fn lane_width() -> usize {
-        3 * D + 3
+        3 * D
     }
 
     /// Total number of columns in the main trace for this AIR instance.
     pub const fn total_width(&self) -> usize {
         self.lanes * Self::lane_width()
+    }
+
+    /// Number of preprocessed base-field columns occupied by a single lane.
+    ///
+    /// Each lane stores 3 indices (one for each operand)
+    pub const fn prep_lane_width() -> usize {
+        3
+    }
+
+    /// Number of preprocessed columns for this AIR instance.
+    ///
+    /// Each lane stores 3 indices (one for each operand)
+    pub const fn prep_width(&self) -> usize {
+        self.lanes * Self::prep_lane_width()
     }
 
     /// Convert a `MulTrace` into a `RowMajorMatrix` suitable for the STARK prover.
@@ -218,14 +274,11 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> MulAir<F, D> {
         let mut values = F::zero_vec(width * row_count.max(1));
 
         // Iterate over all operations in lockstep across the trace arrays.
-        for (op_idx, (((((lhs_val, lhs_idx), rhs_val), rhs_idx), res_val), res_idx)) in trace
+        for (op_idx, ((lhs_val, rhs_val), res_val)) in trace
             .lhs_values
             .iter()
-            .zip(trace.lhs_index.iter())
             .zip(trace.rhs_values.iter())
-            .zip(trace.rhs_index.iter())
             .zip(trace.result_values.iter())
-            .zip(trace.result_index.iter())
             .enumerate()
         {
             // Determine the target row index.
@@ -253,9 +306,6 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> MulAir<F, D> {
             // Copy the `D` lhs coordinates into the trace row.
             values[cursor..cursor + D].copy_from_slice(lhs_coeffs);
             cursor += D;
-            // Store the lhs witness-bus index as a base-field element.
-            values[cursor] = F::from_u32(lhs_idx.0);
-            cursor += 1;
 
             // Write RHS coordinates and RHS witness index.
             //
@@ -270,9 +320,6 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> MulAir<F, D> {
             // Copy the `D` rhs coordinates into the trace row.
             values[cursor..cursor + D].copy_from_slice(rhs_coeffs);
             cursor += D;
-            // Store the rhs witness-bus index as a base-field element.
-            values[cursor] = F::from_u32(rhs_idx.0);
-            cursor += 1;
 
             // Write result coordinates and result witness index.
             //
@@ -285,9 +332,6 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> MulAir<F, D> {
             );
             // Copy the `D` result coordinates into the trace row.
             values[cursor..cursor + D].copy_from_slice(res_coeffs);
-            cursor += D;
-            // Store the result witness-bus index as a base-field element.
-            values[cursor] = F::from_u32(res_idx.0);
         }
 
         // Pad the matrix to a power-of-two height.
@@ -296,11 +340,46 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> MulAir<F, D> {
         // Build the row-major matrix with the computed width.
         RowMajorMatrix::new(values, width)
     }
+
+    pub fn prep_from_trace<ExtF: BasedVectorSpace<F>>(
+        trace: &MulTrace<ExtF>,
+        lanes: usize,
+    ) -> Vec<F> {
+        let total_prep_len = trace.lhs_values.len() * Self::prep_lane_width() * lanes;
+        let mut prep = Vec::with_capacity(total_prep_len);
+        trace
+            .lhs_index
+            .iter()
+            .zip(trace.rhs_index.clone())
+            .zip(trace.result_index.clone())
+            .for_each(|((lhs_idx, rhs_idx), res_idx)| {
+                prep.extend(&[
+                    F::from_u64(lhs_idx.0 as u64),
+                    F::from_u64(rhs_idx.0 as u64),
+                    F::from_u64(res_idx.0 as u64),
+                ])
+            });
+
+        prep
+    }
 }
 
 impl<F: Field, const D: usize> BaseAir<F> for MulAir<F, D> {
     fn width(&self) -> usize {
         self.total_width()
+    }
+
+    fn preprocessed_trace(&self) -> Option<RowMajorMatrix<F>> {
+        let original_height = self.num_ops.div_ceil(self.lanes);
+
+        let mut prep_values = self.preprocessed.clone();
+        let padding_len = self.prep_width() - prep_values.len() % self.prep_width();
+        if padding_len != self.prep_width() {
+            prep_values.extend(vec![F::ZERO; padding_len]);
+        }
+        pad_to_power_of_two(&mut prep_values, self.prep_width(), original_height);
+
+        Some(RowMajorMatrix::new(prep_values, self.prep_width()))
     }
 }
 
@@ -321,16 +400,16 @@ where
 
         // Specialized Path for D=1 (Base Field)
         if D == 1 {
-            // For D=1, lane_width is 6.
+            // For D=1, lane_width is 3.
             // Layout: [lhs, lhs_idx, rhs, rhs_idx, result, result_idx]
-            debug_assert_eq!(lane_width, 6);
+            debug_assert_eq!(lane_width, 3);
 
             for lane_data in local.chunks_exact(lane_width) {
                 let lhs_value = lane_data[0].clone();
                 // lane_data[1] is lhs_idx
-                let rhs_value = lane_data[2].clone();
+                let rhs_value = lane_data[1].clone();
                 // lane_data[3] is rhs_idx
-                let out_value = lane_data[4].clone();
+                let out_value = lane_data[2].clone();
                 // lane_data[5] is result_idx
 
                 // Enforce: lhs * rhs - result = 0
@@ -363,17 +442,12 @@ where
                 // Split off the lhs block and its index:
                 //   lhs_and_idx = [lhs[0..D), lhs_idx]
                 //   rest        = [rhs[0..D), rhs_idx, result[0..D), result_idx]
-                let (lhs_and_idx, rest) = lane_data.split_at(D + 1);
+                let (lhs_slice, rest) = lane_data.split_at(D);
 
                 // Split the remaining data:
                 //   rhs_and_idx    = [rhs[0..D), rhs_idx]
                 //   result_and_idx = [result[0..D), result_idx]
-                let (rhs_and_idx, result_and_idx) = rest.split_at(D + 1);
-
-                // Extract just the coordinate slices
-                let lhs_slice = &lhs_and_idx[..D];
-                let rhs_slice = &rhs_and_idx[..D];
-                let result_slice = &result_and_idx[..D];
+                let (rhs_slice, result_slice) = rest.split_at(D);
 
                 // Compute the Product C(x) = L(x) * R(x) (mod x^D - W)
                 //
@@ -456,7 +530,8 @@ mod tests {
     use p3_baby_bear::BabyBear as Val;
     use p3_circuit::WitnessId;
     use p3_field::extension::BinomialExtensionField;
-    use p3_uni_stark::{prove, verify};
+    use p3_uni_stark::{prove_with_preprocessed, setup_preprocessed, verify_with_preprocessed};
+    use p3_util::log2_ceil_usize;
 
     use super::*;
     use crate::air::test_utils::build_test_config;
@@ -470,7 +545,18 @@ mod tests {
         let lhs_index = vec![WitnessId(1); n];
         let rhs_index = vec![WitnessId(2); n];
         let result_index = vec![WitnessId(3); n];
-
+        let mut prep_values = Vec::with_capacity(n * 3);
+        lhs_index
+            .iter()
+            .zip(rhs_index.iter())
+            .zip(result_index.iter())
+            .for_each(|((lhs_idx, rhs_idx), result_idx)| {
+                prep_values.extend(&[
+                    Val::from_u32(lhs_idx.0),
+                    Val::from_u32(rhs_idx.0),
+                    Val::from_u32(result_idx.0),
+                ])
+            });
         let trace = MulTrace {
             lhs_values,
             lhs_index,
@@ -486,9 +572,12 @@ mod tests {
         let config = build_test_config();
         let pis: Vec<Val> = vec![];
 
-        let air = MulAir::<Val, 1>::new(n, 1);
-        let proof = prove(&config, &air, matrix, &pis);
-        verify(&config, &air, &proof, &pis).expect("verification failed");
+        let air = MulAir::<Val, 1>::new_with_preprocessed(n, 1, prep_values);
+        let (prover_data, verifier_data) =
+            setup_preprocessed(&config, &air, log2_ceil_usize(matrix.height())).unwrap();
+        let proof = prove_with_preprocessed(&config, &air, matrix, &pis, Some(&prover_data));
+        verify_with_preprocessed(&config, &air, &proof, &pis, Some(&verifier_data))
+            .expect("verification failed");
     }
 
     #[test]
@@ -537,6 +626,20 @@ mod tests {
         let rhs_index = vec![WitnessId(2); n];
         let result_index = vec![WitnessId(3); n];
 
+        // Get preprocessed index values.
+        let mut prep_values = Vec::with_capacity(n * 3);
+        lhs_index
+            .iter()
+            .zip(rhs_index.iter())
+            .zip(result_index.iter())
+            .for_each(|((lhs_idx, rhs_idx), result_idx)| {
+                prep_values.extend(&[
+                    Val::from_u32(lhs_idx.0),
+                    Val::from_u32(rhs_idx.0),
+                    Val::from_u32(result_idx.0),
+                ])
+            });
+
         let trace = MulTrace {
             lhs_values,
             lhs_index,
@@ -553,9 +656,12 @@ mod tests {
         let config = build_test_config();
         let pis: Vec<Val> = vec![];
 
-        let air = MulAir::<Val, 4>::new_binomial(n, 1, w);
-        let proof = prove(&config, &air, matrix, &pis);
-        verify(&config, &air, &proof, &pis).expect("extension field verification failed");
+        let air = MulAir::<Val, 4>::new_binomial_with_preprocessed(n, 1, w, prep_values);
+        let (prover_data, verifier_data) =
+            setup_preprocessed(&config, &air, log2_ceil_usize(matrix.height())).unwrap();
+        let proof = prove_with_preprocessed(&config, &air, matrix, &pis, Some(&prover_data));
+        verify_with_preprocessed(&config, &air, &proof, &pis, Some(&verifier_data))
+            .expect("extension field verification failed");
     }
 
     #[test]

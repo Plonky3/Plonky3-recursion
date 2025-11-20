@@ -4,10 +4,12 @@ use std::env;
 /// Public inputs: leaf_hash, leaf_index, expected_root
 /// Private inputs: mmcs path (siblings + directions)
 use p3_baby_bear::BabyBear;
+use p3_batch_stark::CommonData;
 use p3_circuit::ops::MmcsVerifyConfig;
 use p3_circuit::tables::MmcsPrivateData;
 use p3_circuit::{CircuitBuilder, ExprId, MmcsOps, NonPrimitiveOpPrivateData};
-use p3_circuit_prover::{BatchStarkProver, config};
+use p3_circuit_prover::common::get_airs_and_degrees_with_prep;
+use p3_circuit_prover::{BatchStarkProver, TablePacking, config};
 use p3_field::PrimeCharacteristicRing;
 use p3_field::extension::BinomialExtensionField;
 use tracing_forest::ForestLayer;
@@ -15,8 +17,8 @@ use tracing_forest::util::LevelFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Registry};
-
-type F = BinomialExtensionField<BabyBear, 4>;
+const D: usize = 4;
+type F = BinomialExtensionField<BabyBear, D>;
 
 fn init_logger() {
     let env_filter = EnvFilter::builder()
@@ -68,7 +70,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     builder.dump_allocation_log();
 
-    let (circuit, _) = builder.build()?;
+    let circuit = builder.build()?;
+    let airs_degrees =
+        get_airs_and_degrees_with_prep::<_, _, D>(&circuit, TablePacking::default()).unwrap();
+    let (airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
     let mut runner = circuit.runner();
 
     // Set public inputs
@@ -143,10 +148,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )?),
     )?;
     let traces = runner.run()?;
+    let common = CommonData::from_airs_and_degrees(&config, &airs, &degrees);
     let mut batch_prover = BatchStarkProver::new(config);
     batch_prover.register_mmcs_table(mmcs_config.clone());
-    let proof = batch_prover.prove_all_tables(&traces)?;
-    batch_prover.verify_all_tables(&proof)?;
+    let proof = batch_prover.prove_all_tables(&traces, &common)?;
+    batch_prover.verify_all_tables(&proof, &common)?;
 
     Ok(())
 }

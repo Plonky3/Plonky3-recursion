@@ -36,7 +36,9 @@ p3-poseidon2-air.workspace = true
 p3-poseidon2-circuit-air.workspace = true
 p3-symmetric.workspace = true
 p3-uni-stark.workspace = true
+p3-util.workspace = true
 rand.workspace = true
+strum.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 

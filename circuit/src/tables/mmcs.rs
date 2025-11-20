@@ -614,7 +614,7 @@ mod tests {
         let mmcs_op_id = builder
             .add_mmcs_verify(&leaves, &directions, &root)
             .unwrap();
-        let (circuit, _) = builder.build().unwrap();
+        let circuit = builder.build().unwrap();
 
         // Create test data with 3 layers, varying directions, and one extra sibling
         let leaves_value = [vec![F::from_u64(42)], vec![F::from_u64(25)], vec![]];
@@ -732,7 +732,7 @@ mod tests {
         let mmcs_op_id = builder
             .add_mmcs_verify(&leaves_expr, &directions_expr, &root_exprs)
             .unwrap();
-        let (circuit, _) = builder
+        let circuit = builder
             .build()
             .map_err(|e| CircuitError::InvalidCircuit { error: e })
             .unwrap();

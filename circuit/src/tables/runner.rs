@@ -319,7 +319,7 @@ mod tests {
         let c5 = builder.add_const(BabyBear::from_u64(5));
         let _result = builder.add(x, c5);
 
-        let (circuit, _) = builder.build().unwrap();
+        let circuit = builder.build().unwrap();
         let mut runner = circuit.runner();
 
         // Set public input: x = 3
@@ -407,7 +407,7 @@ mod tests {
         let sub_result = builder.sub(mul_result, c111);
         builder.assert_zero(sub_result);
 
-        let (circuit, _) = builder.build().unwrap();
+        let circuit = builder.build().unwrap();
 
         let witness_count = circuit.witness_count;
         let runner = circuit.runner();
@@ -453,7 +453,7 @@ mod tests {
         let yz = builder.mul(y, z);
         let _result = builder.add(x, yz);
 
-        let (circuit, _) = builder.build().unwrap();
+        let circuit = builder.build().unwrap();
         let mut runner = circuit.runner();
 
         // Set public inputs to genuine extension field values with ALL non-zero coefficients

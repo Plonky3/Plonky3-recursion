@@ -122,4 +122,8 @@ pub enum CircuitError {
     /// Requested bit length exceeds the maximum allowed for binary decomposition.
     #[error("Too many bits for binary decomposition: expected at most {expected}, got {n_bits}")]
     BinaryDecompositionTooManyBits { expected: usize, n_bits: usize },
+
+    /// Invalid preprocessed values
+    #[error("Preprocessed values should be base field elements")]
+    InvalidPreprocessedValues,
 }
