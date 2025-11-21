@@ -154,7 +154,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let stark_config = config::baby_bear().build();
     let table_packing = TablePacking::new(4, 4, 1);
     let mut prover = BatchStarkProver::new(stark_config).with_table_packing(table_packing);
-    prover.register_poseidon2_table(Poseidon2Config::baby_bear_d4_width16());
+    prover.register_poseidon2_table(Poseidon2Config::baby_bear_d1_width16());
     let proof = prover.prove_all_tables(&traces)?;
     prover.verify_all_tables(&proof)?;
 

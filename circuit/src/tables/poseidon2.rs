@@ -1,14 +1,16 @@
 use alloc::boxed::Box;
+use alloc::string::ToString;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::any::Any;
 use core::fmt::Debug;
 
 use super::NonPrimitiveTrace;
-use crate::CircuitError;
 use crate::circuit::{Circuit, CircuitField};
-use crate::op::{NonPrimitiveOpPrivateData, NonPrimitiveOpType, Op};
+use crate::op::{NonPrimitiveOpConfig, NonPrimitiveOpPrivateData, NonPrimitiveOpType, Op};
+use crate::ops::hash::HashConfig;
 use crate::types::WitnessId;
+use crate::{CircuitError, circuit};
 
 /// Trait to provide Poseidon2 configuration parameters for a field type.
 ///
@@ -132,14 +134,21 @@ impl<'a, F: CircuitField, Config: Poseidon2Params> Poseidon2TraceBuilder<'a, F, 
     /// Builds the Poseidon2 trace by scanning non-primitive ops with hash executors.
     /// Also maintains state and fills state hints for stateful operations.
     pub fn build(self) -> Result<Poseidon2Trace<F>, CircuitError> {
-        let mut operations = Vec::new();
+        let mut rows = Vec::new();
 
-        // Get Poseidon2 parameters from config type
-        let capacity_size = Config::CAPACITY_SIZE;
-        let rate_ext = Config::RATE_EXT;
-        let d = Config::D;
-
-        let mut current_state_capacity: Option<Vec<F>> = None;
+        let rate = if let &NonPrimitiveOpConfig::HashConfig(HashConfig { rate }) = self
+            .circuit
+            .enabled_ops
+            .get(&NonPrimitiveOpType::HashSqueeze { reset: true })
+            .ok_or(CircuitError::InvalidNonPrimitiveOpConfiguration {
+                op: NonPrimitiveOpType::HashSqueeze { reset: true },
+            })? {
+            rate
+        } else {
+            return Err(CircuitError::InvalidNonPrimitiveOpConfiguration {
+                op: NonPrimitiveOpType::HashSqueeze { reset: true },
+            });
+        };
 
         for op in &self.circuit.non_primitive_ops {
             let Op::NonPrimitiveOpWithExecutor {
@@ -154,19 +163,58 @@ impl<'a, F: CircuitField, Config: Poseidon2Params> Poseidon2TraceBuilder<'a, F, 
 
             match executor.op_type() {
                 NonPrimitiveOpType::HashSqueeze { reset } => {
-                    // TODO: Build trace correctly
+                    if inputs.len() != 1 {
+                        return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
+                            op: executor.op_type().clone(),
+                            expected: "Op inputs must have one element".to_string(),
+                            got: inputs.len(),
+                        });
+                    }
 
-                    operations.push(Poseidon2CircuitRow {
-                        is_sponge: true,
-                        reset: false,
-                        absorb_flags: vec![false; rate_ext], // No absorb during squeeze
-                        input_values: vec![],                // No inputs for squeeze
-                        input_indices: vec![],
-                        output_indices: vec![],
-                    });
+                    if outputs.len() != 1 {
+                        return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
+                            op: executor.op_type().clone(),
+                            expected: "Op outputs must have one element".to_string(),
+                            got: outputs.len(),
+                        });
+                    }
 
-                    // TODO: When lookups are implemented, connect the output indices to the input
-                    // indices of the next operation.
+                    let input_chunks = inputs[0].chunks(rate).collect::<Vec<&[WitnessId]>>();
+                    let n_chunks = input_chunks.len();
+
+                    for (i, row_input_wids) in input_chunks.iter().enumerate() {
+                        // For each chunk, create a Poseidon2CircuitRow
+                        let nb_row_inputs = row_input_wids.len();
+                        let row_input_values = row_input_wids
+                            .iter()
+                            .map(|widx| self.get_witness(widx))
+                            .collect::<Result<Vec<F>, CircuitError>>()?;
+                        let row_input_indices = row_input_wids
+                            .iter()
+                            .map(|widx| widx.0)
+                            .collect::<Vec<u32>>();
+
+                        let row_output_indices = if i == n_chunks - 1 {
+                            outputs[0].iter().map(|widx| widx.0).collect::<Vec<u32>>()
+                        } else {
+                            // For intermediate rows, we can use dummy output indices
+                            vec![]
+                        };
+
+                        let mut absorb_flags = vec![false; rate];
+                        for i in 0..nb_row_inputs {
+                            absorb_flags[i] = true;
+                        }
+
+                        rows.push(Poseidon2CircuitRow {
+                            is_sponge: true,
+                            reset: *reset,
+                            absorb_flags,
+                            input_values: row_input_values,
+                            input_indices: row_input_indices,
+                            output_indices: row_output_indices,
+                        });
+                    }
                 }
                 _ => {
                     // Skip other operation types
@@ -175,7 +223,7 @@ impl<'a, F: CircuitField, Config: Poseidon2Params> Poseidon2TraceBuilder<'a, F, 
             }
         }
 
-        Ok(Poseidon2Trace { operations })
+        Ok(Poseidon2Trace { operations: rows })
     }
 }
 

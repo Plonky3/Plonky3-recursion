@@ -101,7 +101,7 @@ impl<
             "Callers expected to pad inputs to a power of two"
         );
 
-        let num_circuit_cols = 3 + 2 * RATE_EXT + WIDTH_EXT;
+        let num_circuit_cols = 4 + 2 * RATE_EXT + WIDTH_EXT;
         let mut circuit_trace = vec![F::ZERO; n * num_circuit_cols];
         let mut circuit_trace = RowMajorMatrixViewMut::new(&mut circuit_trace, num_circuit_cols);
 
@@ -126,10 +126,18 @@ impl<
                 row[3 + j] = F::from_bool(absorb_flags[j]);
             }
             for j in 0..RATE_EXT {
-                row[3 + RATE_EXT + j] = F::from_u32(input_indices[j]);
+                if j < input_indices.len() {
+                    row[3 + RATE_EXT + j] = F::from_u32(input_indices[j]);
+                } else {
+                    row[3 + RATE_EXT + j] = F::ZERO;
+                }
             }
             for j in 0..RATE_EXT {
-                row[3 + RATE_EXT + WIDTH_EXT + j] = F::from_u32(output_indices[j]);
+                if j < output_indices.len() {
+                    row[3 + RATE_EXT + WIDTH_EXT + j] = F::from_u32(output_indices[j]);
+                } else {
+                    row[3 + RATE_EXT + WIDTH_EXT + j] = F::ZERO;
+                }
             }
 
             let mut index_absorb = [false; RATE_EXT];

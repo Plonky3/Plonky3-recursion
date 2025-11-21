@@ -1,6 +1,6 @@
 use alloc::boxed::Box;
-use alloc::format;
 use alloc::vec::Vec;
+use alloc::{format, vec};
 use core::hash::Hash;
 
 use hashbrown::HashMap;
@@ -151,21 +151,27 @@ impl<'a> NonPrimitiveLowerer<'a> {
                         });
                     }
 
-                    let outputs = witness_exprs
+                    if witness_exprs.len() != 2 {
+                        return Err(CircuitBuilderError::NonPrimitiveOpArity {
+                            op: "HashSqueeze",
+                            expected: format!("{}", 2),
+                            got: witness_exprs.len(),
+                        });
+                    }
+
+                    let inputs = witness_exprs[0]
                         .iter()
-                        .map(|witness_expr| {
-                            witness_expr
-                                .iter()
-                                .map(|&expr| {
-                                    get_witness_id(self.expr_to_widx, expr, "HashSqueeze output")
-                                })
-                                .collect::<Result<Vec<WitnessId>, _>>()
-                        })
-                        .collect::<Result<Vec<Vec<WitnessId>>, _>>()?;
+                        .map(|&expr| get_witness_id(self.expr_to_widx, expr, "HashSqueeze input"))
+                        .collect::<Result<Vec<WitnessId>, _>>()?;
+
+                    let outputs = witness_exprs[1]
+                        .iter()
+                        .map(|&expr| get_witness_id(self.expr_to_widx, expr, "HashSqueeze input"))
+                        .collect::<Result<Vec<WitnessId>, _>>()?;
 
                     lowered_ops.push(Op::NonPrimitiveOpWithExecutor {
-                        inputs: Vec::new(),
-                        outputs,
+                        inputs: vec![inputs],
+                        outputs: vec![outputs],
                         executor: Box::new(HashSqueezeExecutor::new(*reset)),
                         op_id: *op_id,
                     });
