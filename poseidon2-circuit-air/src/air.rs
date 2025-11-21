@@ -155,12 +155,22 @@ impl<
             }
 
             // Apply chaining rules (spec section 5: Chaining Rules).
+            // NOTE: For rows with new_start = false:
+            // - In sponge mode (merkle_path = 0), the Poseidon input state is *entirely*
+            //   taken from the previous row's output; `input_values` are unused for chained limbs.
+            // - In Merkle mode (merkle_path = 1), only limbs 0-1 are chained; limbs 2-3
+            //   come from `input_values`. This matches the Poseidon Perm Table spec.
+            // - If in_ctl[i] = 1, that limb is NOT chained and comes from CTL/witness instead.
+            //   The AIR constraints will enforce this (chaining is gated by 1 - in_ctl[i]).
             let mut state = padded_inputs;
             if i > 0 && !*new_start {
                 if *merkle_path {
                     // Merkle-path mode (section 5.3): chain based on previous row's mmcs_bit
+                    // Only chain limbs 0-1 if in_ctl[0/1] = 0 (handled by AIR constraints)
                     if let Some(prev_out) = prev_output {
                         let prev_bit = sponge_ops[i - 1].mmcs_bit;
+                        // For trace generation, we chain unconditionally here.
+                        // The AIR will enforce that chaining only applies when in_ctl = 0.
                         if prev_bit {
                             // Case B: mmcs_bit = 1 (right = previous hash)
                             // in_{r+1}[0] = out_r[2], in_{r+1}[1] = out_r[3]
@@ -176,6 +186,8 @@ impl<
                     }
                 } else {
                     // Normal sponge mode (section 5.2): in_{r+1}[i] = out_r[i] for i = 0..3
+                    // For trace generation, we chain unconditionally here.
+                    // The AIR will enforce that chaining only applies when in_ctl = 0.
                     if let Some(prev_out) = prev_output {
                         state = prev_out;
                     }
@@ -188,7 +200,9 @@ impl<
                 // Section 6.1: mmcs_index_sum_{r+1} = mmcs_index_sum_r * 2 + mmcs_bit_r
                 prev_mmcs_index_sum + prev_mmcs_index_sum + F::from_bool(sponge_ops[i - 1].mmcs_bit)
             } else {
-                // Section 6.2: Reset behavior - unconstrained (use value from row)
+                // Section 6.2: Reset / non-Merkle behavior.
+                // The AIR does not constrain mmcs_index_sum on these rows;
+                // we simply use the value stored in the op.
                 *mmcs_index_sum
             };
             prev_mmcs_index_sum = acc;
@@ -339,18 +353,8 @@ fn eval<
         >,
     >,
 ) {
-    builder.assert_bool(local.new_start.clone());
-    builder.assert_bool(next.new_start.clone());
-    builder.assert_bool(local.merkle_path.clone());
-    builder.assert_bool(next.merkle_path.clone());
-    builder.assert_bool(local.mmcs_bit.clone());
-    builder.assert_bool(next.mmcs_bit.clone());
-    for flag in local.in_ctl.iter() {
-        builder.assert_bool(flag.clone());
-    }
-    for flag in local.out_ctl.iter() {
-        builder.assert_bool(flag.clone());
-    }
+    // Control flags (new_start, merkle_path, mmcs_bit, in_ctl, out_ctl) are preprocessed columns,
+    // so they are known to the verifier and don't need bool assertions.
 
     let continue_chain = AB::Expr::ONE - next.new_start.clone();
     let next_merkle = next.merkle_path.clone();
@@ -362,12 +366,19 @@ fn eval<
     // Normal chaining (section 5.2: Normal Sponge Mode).
     // If new_start_{r+1} = 0 and merkle_path_{r+1} = 0:
     //   in_{r+1}[i] = out_r[i] for i = 0..3
-    for idx in 0..WIDTH {
-        builder
-            .when_transition()
-            .when(continue_chain.clone())
-            .when(next_not_merkle.clone())
-            .assert_zero(next_in[idx].clone() - local_out[idx].clone());
+    // BUT: If in_ctl[i] = 1, CTL overrides chaining (limb is not chained).
+    // Chaining only applies when in_ctl[limb] = 0.
+    for limb in 0..POSEIDON_LIMBS {
+        for d in 0..D {
+            let idx = limb * D + d;
+            let gate = continue_chain.clone()
+                * next_not_merkle.clone()
+                * (AB::Expr::ONE - next.in_ctl[limb].clone());
+            builder
+                .when_transition()
+                .when(gate)
+                .assert_zero(next_in[idx].clone() - local_out[idx].clone());
+        }
     }
 
     // Merkle-path chaining (section 5.3: Merkle Path Mode).
@@ -375,34 +386,56 @@ fn eval<
     //   - If mmcs_bit_r = 0 (left = previous hash): in_{r+1}[0] = out_r[0], in_{r+1}[1] = out_r[1]
     //   - If mmcs_bit_r = 1 (right = previous hash): in_{r+1}[0] = out_r[2], in_{r+1}[1] = out_r[3]
     //   - in_{r+1}[2], in_{r+1}[3] are free/private
+    // BUT: If in_ctl[i] = 1, CTL overrides chaining (limb is not chained).
+    // Chaining only applies when in_ctl[limb] = 0.
     let is_left = AB::Expr::ONE - prev_bit.clone();
-    for limb_offset in 0..D {
-        builder
-            .when_transition()
-            .when(continue_chain.clone())
-            .when(next_merkle.clone())
-            .when(is_left.clone())
-            .assert_zero(next_in[limb_offset].clone() - local_out[limb_offset].clone());
-        builder
-            .when_transition()
-            .when(continue_chain.clone())
-            .when(next_merkle.clone())
-            .when(is_left.clone())
-            .assert_zero(next_in[D + limb_offset].clone() - local_out[D + limb_offset].clone());
 
+    // Limb 0: chain from out_r[0] (left) or out_r[2] (right), unless in_ctl[0] = 1
+    for d in 0..D {
+        // Left case: in_{r+1}[0] = out_r[0]
+        let gate_left_0 = continue_chain.clone()
+            * next_merkle.clone()
+            * is_left.clone()
+            * (AB::Expr::ONE - next.in_ctl[0].clone());
         builder
             .when_transition()
-            .when(continue_chain.clone())
-            .when(next_merkle.clone())
-            .when(prev_bit.clone())
-            .assert_zero(next_in[limb_offset].clone() - local_out[2 * D + limb_offset].clone());
+            .when(gate_left_0)
+            .assert_zero(next_in[d].clone() - local_out[d].clone());
+
+        // Right case: in_{r+1}[0] = out_r[2]
+        let gate_right_0 = continue_chain.clone()
+            * next_merkle.clone()
+            * prev_bit.clone()
+            * (AB::Expr::ONE - next.in_ctl[0].clone());
         builder
             .when_transition()
-            .when(continue_chain.clone())
-            .when(next_merkle.clone())
-            .when(prev_bit.clone())
-            .assert_zero(next_in[D + limb_offset].clone() - local_out[3 * D + limb_offset].clone());
+            .when(gate_right_0)
+            .assert_zero(next_in[d].clone() - local_out[2 * D + d].clone());
     }
+
+    // Limb 1: chain from out_r[1] (left) or out_r[3] (right), unless in_ctl[1] = 1
+    for d in 0..D {
+        // Left case: in_{r+1}[1] = out_r[1]
+        let gate_left_1 = continue_chain.clone()
+            * next_merkle.clone()
+            * is_left.clone()
+            * (AB::Expr::ONE - next.in_ctl[1].clone());
+        builder
+            .when_transition()
+            .when(gate_left_1)
+            .assert_zero(next_in[D + d].clone() - local_out[D + d].clone());
+
+        // Right case: in_{r+1}[1] = out_r[3]
+        let gate_right_1 = continue_chain.clone()
+            * next_merkle.clone()
+            * prev_bit.clone()
+            * (AB::Expr::ONE - next.in_ctl[1].clone());
+        builder
+            .when_transition()
+            .when(gate_right_1)
+            .assert_zero(next_in[D + d].clone() - local_out[3 * D + d].clone());
+    }
+    // Limbs 2-3 are free/private in Merkle mode (never chained)
 
     // MMCS accumulator update (section 6.1: Recurrence).
     // If merkle_path_{r+1} = 1 and new_start_{r+1} = 0:
@@ -442,6 +475,12 @@ fn eval<
     // out[0..3] = Poseidon2(in[0..3])
     // This holds regardless of merkle_path, new_start, CTL flags, chaining, or MMCS accumulator.
     air.p3_poseidon2.eval(&mut sub_builder);
+
+    // TODO (spec sections 3.1, 3.2, 3.3): CTL lookups
+    // - If in_ctl[i] = 1: enforce next.poseidon2.inputs[limb i] = witness[in_idx[i]]
+    // - If out_ctl[i] = 1: enforce local.poseidon2.outputs[limb i] = witness[out_idx[i]]
+    // - If mmcs_index_sum_idx is used: expose mmcs_index_sum via CTL
+    // These will be implemented when CTL lookup infrastructure is available.
 }
 
 impl<
