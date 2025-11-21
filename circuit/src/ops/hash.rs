@@ -52,18 +52,18 @@ where
     ) -> Result<Vec<ExprId>, CircuitBuilderError> {
         let hash_config = if let Some(config) = self
             .config()
-            .get_op_config(&NonPrimitiveOpType::HashSqueeze { reset: reset })
+            .get_op_config(&NonPrimitiveOpType::HashSqueeze { reset })
         {
             if let NonPrimitiveOpConfig::HashConfig(hash_config) = config {
                 hash_config
             } else {
                 return Err(CircuitBuilderError::InvalidNonPrimitiveOpConfiguration {
-                    op: NonPrimitiveOpType::HashSqueeze { reset: reset },
+                    op: NonPrimitiveOpType::HashSqueeze { reset },
                 });
             }
         } else {
             return Err(CircuitBuilderError::OpNotAllowed {
-                op: NonPrimitiveOpType::HashSqueeze { reset: reset },
+                op: NonPrimitiveOpType::HashSqueeze { reset },
             });
         };
 

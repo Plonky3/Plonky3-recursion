@@ -6,7 +6,6 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use alloc::{format, vec};
 use core::mem::transmute;
-use core::panic;
 
 use p3_air::{Air, AirBuilder, BaseAir};
 use p3_baby_bear::{BabyBear, default_babybear_poseidon2_16, default_babybear_poseidon2_24};

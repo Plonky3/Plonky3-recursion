@@ -6,11 +6,11 @@ use core::any::Any;
 use core::fmt::Debug;
 
 use super::NonPrimitiveTrace;
+use crate::CircuitError;
 use crate::circuit::{Circuit, CircuitField};
 use crate::op::{NonPrimitiveOpConfig, NonPrimitiveOpPrivateData, NonPrimitiveOpType, Op};
 use crate::ops::hash::HashConfig;
 use crate::types::WitnessId;
-use crate::{CircuitError, circuit};
 
 /// Trait to provide Poseidon2 configuration parameters for a field type.
 ///
@@ -202,8 +202,8 @@ impl<'a, F: CircuitField, Config: Poseidon2Params> Poseidon2TraceBuilder<'a, F, 
                         };
 
                         let mut absorb_flags = vec![false; rate];
-                        for i in 0..nb_row_inputs {
-                            absorb_flags[i] = true;
+                        if nb_row_inputs > 0 {
+                            absorb_flags[nb_row_inputs - 1] = true;
                         }
 
                         rows.push(Poseidon2CircuitRow {

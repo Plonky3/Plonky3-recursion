@@ -371,7 +371,7 @@ impl<'a, F: PrimeCharacteristicRing + Eq + Clone> ExecutionContext<'a, F> {
     }
 
     // TODO: Should we keep this method for ExecutionContext?
-    /// Set witness value at the given index
+    // /// Set witness value at the given index
     // pub fn set_witness(&mut self, widx: WitnessId, value: F) -> Result<(), CircuitError> {
     //     if widx.0 as usize >= self.witness.len() {
     //         return Err(CircuitError::WitnessIdOutOfBounds { witness_id: widx });

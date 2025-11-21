@@ -122,21 +122,25 @@ impl<
             row[0] = F::from_bool(*is_sponge);
             row[1] = F::from_bool(*reset);
             row[2] = F::from_bool(*is_sponge && *reset);
+            row[3] = F::from_bool(output_indices.is_empty());
+
+            let flag_offset = 4;
+
             for j in 0..RATE_EXT {
-                row[3 + j] = F::from_bool(absorb_flags[j]);
+                row[flag_offset + j] = F::from_bool(absorb_flags[j]);
             }
             for j in 0..RATE_EXT {
                 if j < input_indices.len() {
-                    row[3 + RATE_EXT + j] = F::from_u32(input_indices[j]);
+                    row[flag_offset + RATE_EXT + j] = F::from_u32(input_indices[j]);
                 } else {
-                    row[3 + RATE_EXT + j] = F::ZERO;
+                    row[flag_offset + RATE_EXT + j] = F::ZERO;
                 }
             }
             for j in 0..RATE_EXT {
                 if j < output_indices.len() {
-                    row[3 + RATE_EXT + WIDTH_EXT + j] = F::from_u32(output_indices[j]);
+                    row[flag_offset + RATE_EXT + WIDTH_EXT + j] = F::from_u32(output_indices[j]);
                 } else {
-                    row[3 + RATE_EXT + WIDTH_EXT + j] = F::ZERO;
+                    row[flag_offset + RATE_EXT + WIDTH_EXT + j] = F::ZERO;
                 }
             }
 
