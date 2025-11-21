@@ -1,7 +1,7 @@
-use alloc::vec;
 use alloc::vec::Vec;
 use core::array;
 use core::borrow::Borrow;
+use core::mem::MaybeUninit;
 
 use p3_air::{Air, AirBuilder, BaseAir};
 use p3_circuit::tables::{Poseidon2CircuitRow, Poseidon2CircuitTrace};
@@ -9,7 +9,7 @@ use p3_field::{PrimeCharacteristicRing, PrimeField};
 use p3_matrix::Matrix;
 use p3_matrix::dense::{RowMajorMatrix, RowMajorMatrixViewMut};
 use p3_poseidon2::GenericPoseidon2LinearLayers;
-use p3_poseidon2_air::{Poseidon2Air, Poseidon2Cols, RoundConstants, generate_trace_rows};
+use p3_poseidon2_air::{Poseidon2Air, Poseidon2Cols, RoundConstants, generate_trace_rows_for_perm};
 use p3_symmetric::CryptographicPermutation;
 
 use crate::sub_builder::SubAirBuilder;
@@ -102,11 +102,20 @@ impl<
         );
 
         let num_circuit_cols = 3 + 2 * RATE_EXT + WIDTH_EXT;
-        let mut circuit_trace = vec![F::ZERO; n * num_circuit_cols];
-        let mut circuit_trace = RowMajorMatrixViewMut::new(&mut circuit_trace, num_circuit_cols);
+        let num_permutation_cols = p3_poseidon2_air::num_cols::<
+            WIDTH,
+            SBOX_DEGREE,
+            SBOX_REGISTERS,
+            HALF_FULL_ROUNDS,
+            PARTIAL_ROUNDS,
+        >();
+        let mut vec = Vec::with_capacity(
+            n * (num_circuit_cols + (num_permutation_cols << extra_capacity_bits)),
+        );
+        let trace = &mut vec.spare_capacity_mut()[..n * (num_circuit_cols + num_permutation_cols)];
+        let mut trace = RowMajorMatrixViewMut::new(trace, num_circuit_cols + num_permutation_cols);
 
         let mut state = [F::ZERO; WIDTH];
-        let mut inputs = Vec::with_capacity(n);
         for (i, op) in sponge_ops.iter().enumerate() {
             let Poseidon2CircuitRow {
                 is_sponge,
@@ -117,19 +126,20 @@ impl<
                 output_indices,
             } = op;
 
-            let row = circuit_trace.row_mut(i);
+            let row = trace.row_mut(i);
+            let (permutation_row, row) = row.split_at_mut(num_permutation_cols);
 
-            row[0] = F::from_bool(*is_sponge);
-            row[1] = F::from_bool(*reset);
-            row[2] = F::from_bool(*is_sponge && *reset);
+            row[0].write(F::from_bool(*is_sponge));
+            row[1].write(F::from_bool(*reset));
+            row[2].write(F::from_bool(*is_sponge && *reset));
             for j in 0..RATE_EXT {
-                row[3 + j] = F::from_bool(absorb_flags[j]);
+                row[3 + j].write(F::from_bool(absorb_flags[j]));
             }
             for j in 0..RATE_EXT {
-                row[3 + RATE_EXT + j] = F::from_u32(input_indices[j]);
+                row[3 + RATE_EXT + j].write(F::from_u32(input_indices[j]));
             }
             for j in 0..RATE_EXT {
-                row[3 + RATE_EXT + WIDTH_EXT + j] = F::from_u32(output_indices[j]);
+                row[3 + RATE_EXT + WIDTH_EXT + j].write(F::from_u32(output_indices[j]));
             }
 
             let mut index_absorb = [false; RATE_EXT];
@@ -163,47 +173,40 @@ impl<
                 }
             }
 
-            inputs.push(state);
+            // Cast the permutation row into `Poseidon2Cols`.
+            let (prefix, permutation, suffix) = unsafe {
+                permutation_row[0..num_permutation_cols].align_to_mut::<Poseidon2Cols<
+                    MaybeUninit<F>,
+                    WIDTH,
+                    SBOX_DEGREE,
+                    SBOX_REGISTERS,
+                    HALF_FULL_ROUNDS,
+                    PARTIAL_ROUNDS,
+                >>()
+            };
+            assert!(prefix.is_empty(), "Alignment should match");
+            assert!(suffix.is_empty(), "Alignment should match");
+            assert_eq!(permutation.len(), 1);
+            let permutation = &mut permutation[0];
+
+            generate_trace_rows_for_perm::<
+                F,
+                LinearLayers,
+                WIDTH,
+                SBOX_DEGREE,
+                SBOX_REGISTERS,
+                HALF_FULL_ROUNDS,
+                PARTIAL_ROUNDS,
+            >(permutation, state, constants);
+
             state = perm.permute(state);
         }
 
-        let p2_trace = generate_trace_rows::<
-            F,
-            LinearLayers,
-            WIDTH,
-            SBOX_DEGREE,
-            SBOX_REGISTERS,
-            HALF_FULL_ROUNDS,
-            PARTIAL_ROUNDS,
-        >(inputs, constants, extra_capacity_bits);
-
-        let ncols = self.width();
-
-        let p2_ncols = p3_poseidon2_air::num_cols::<
-            WIDTH,
-            SBOX_DEGREE,
-            SBOX_REGISTERS,
-            HALF_FULL_ROUNDS,
-            PARTIAL_ROUNDS,
-        >();
-
-        debug_assert_eq!(ncols, num_circuit_cols + p2_ncols);
-
-        let mut vec = vec![F::ZERO; n * ncols];
-
-        let circuit_trace_view = circuit_trace.as_view();
-
-        // TODO: Remove Poseidon2 air copy, possibly by making `generate_trace_rows_for_perm` public on P3 side
-        for ((row, left_part), right_part) in vec
-            .chunks_exact_mut(ncols)
-            .zip(p2_trace.row_slices())
-            .zip(circuit_trace_view.row_slices())
-        {
-            row[..p2_ncols].copy_from_slice(left_part);
-            row[p2_ncols..].copy_from_slice(right_part);
+        unsafe {
+            vec.set_len(n * (num_circuit_cols + num_permutation_cols));
         }
 
-        RowMajorMatrix::new(vec, ncols)
+        RowMajorMatrix::new(vec, num_circuit_cols + num_permutation_cols)
     }
 }
 
@@ -460,6 +463,8 @@ impl<
 
 #[cfg(test)]
 mod test {
+    use alloc::vec;
+
     use p3_baby_bear::{BabyBear, Poseidon2BabyBear};
     use p3_challenger::{HashChallenger, SerializingChallenger32};
     use p3_commit::ExtensionMmcs;
