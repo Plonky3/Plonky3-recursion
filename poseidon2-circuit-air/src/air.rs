@@ -1,6 +1,5 @@
 use alloc::vec;
 use alloc::vec::Vec;
-use core::array;
 use core::borrow::Borrow;
 
 use p3_air::{Air, AirBuilder, BaseAir};
@@ -12,6 +11,7 @@ use p3_poseidon2::GenericPoseidon2LinearLayers;
 use p3_poseidon2_air::{Poseidon2Air, Poseidon2Cols, RoundConstants, generate_trace_rows};
 use p3_symmetric::CryptographicPermutation;
 
+use crate::columns::{POSEIDON_LIMBS, POSEIDON_PUBLIC_OUTPUT_LIMBS};
 use crate::sub_builder::SubAirBuilder;
 use crate::{Poseidon2CircuitCols, num_cols};
 
@@ -101,70 +101,104 @@ impl<
             "Callers expected to pad inputs to a power of two"
         );
 
-        let num_circuit_cols = 3 + 2 * RATE_EXT + WIDTH_EXT;
+        let p2_ncols = p3_poseidon2_air::num_cols::<
+            WIDTH,
+            SBOX_DEGREE,
+            SBOX_REGISTERS,
+            HALF_FULL_ROUNDS,
+            PARTIAL_ROUNDS,
+        >();
+        let ncols = self.width();
+        let num_circuit_cols = ncols - p2_ncols;
+
         let mut circuit_trace = vec![F::ZERO; n * num_circuit_cols];
         let mut circuit_trace = RowMajorMatrixViewMut::new(&mut circuit_trace, num_circuit_cols);
 
-        let mut state = [F::ZERO; WIDTH];
         let mut inputs = Vec::with_capacity(n);
+        let mut prev_output: Option<[F; WIDTH]> = None;
+        let mut prev_mmcs_index_sum = F::ZERO;
+
         for (i, op) in sponge_ops.iter().enumerate() {
             let Poseidon2CircuitRow {
-                is_sponge,
-                reset,
-                absorb_flags,
+                new_start,
+                merkle_path,
+                mmcs_bit,
+                mmcs_index_sum,
                 input_values,
+                in_ctl,
                 input_indices,
+                out_ctl,
                 output_indices,
+                mmcs_index_sum_idx,
             } = op;
+
+            let mut padded_inputs = [F::ZERO; WIDTH];
+            for (dst, src) in padded_inputs
+                .iter_mut()
+                .zip(
+                    input_values
+                        .iter()
+                        .copied()
+                        .chain(core::iter::repeat(F::ZERO)),
+                )
+                .take(WIDTH)
+            {
+                *dst = src;
+            }
+
+            let mut state = padded_inputs;
+            if i > 0 && !*new_start {
+                if *merkle_path {
+                    if let Some(prev_out) = prev_output {
+                        let prev_bit = sponge_ops[i - 1].mmcs_bit;
+                        if prev_bit {
+                            state[0..D].copy_from_slice(&prev_out[2 * D..3 * D]);
+                            state[D..2 * D].copy_from_slice(&prev_out[3 * D..4 * D]);
+                        } else {
+                            state[0..D].copy_from_slice(&prev_out[0..D]);
+                            state[D..2 * D].copy_from_slice(&prev_out[D..2 * D]);
+                        }
+                    }
+                } else if let Some(prev_out) = prev_output {
+                    state = prev_out;
+                }
+            }
+
+            let acc = if i > 0 && *merkle_path && !*new_start {
+                prev_mmcs_index_sum + prev_mmcs_index_sum + F::from_bool(sponge_ops[i - 1].mmcs_bit)
+            } else {
+                *mmcs_index_sum
+            };
+            prev_mmcs_index_sum = acc;
 
             let row = circuit_trace.row_mut(i);
 
-            row[0] = F::from_bool(*is_sponge);
-            row[1] = F::from_bool(*reset);
-            row[2] = F::from_bool(*is_sponge && *reset);
-            for j in 0..RATE_EXT {
-                row[3 + j] = F::from_bool(absorb_flags[j]);
-            }
-            for j in 0..RATE_EXT {
-                row[3 + RATE_EXT + j] = F::from_u32(input_indices[j]);
-            }
-            for j in 0..RATE_EXT {
-                row[3 + RATE_EXT + WIDTH_EXT + j] = F::from_u32(output_indices[j]);
-            }
+            row[0] = F::from_bool(*new_start);
+            row[1] = F::from_bool(*merkle_path);
+            row[2] = F::from_bool(*mmcs_bit);
+            row[3] = acc;
 
-            let mut index_absorb = [false; RATE_EXT];
-            for (j, flag) in absorb_flags.iter().enumerate() {
-                if *flag {
-                    for absorb in index_absorb.iter_mut().take(j + 1) {
-                        *absorb = true;
-                    }
-                }
+            let mut offset = 4;
+            for j in 0..POSEIDON_LIMBS {
+                row[offset + j] = F::from_bool(in_ctl[j]);
             }
-
-            for (j, absorb) in index_absorb.iter_mut().enumerate() {
-                if *absorb {
-                    for d in 0..D {
-                        let idx = j * D + d;
-                        state[idx] = input_values[idx];
-                    }
-                } else if *reset {
-                    // During a reset, non-absorbed rate elements are zeroed.
-                    for d in 0..D {
-                        let idx = j * D + d;
-                        state[idx] = F::ZERO;
-                    }
-                }
+            offset += POSEIDON_LIMBS;
+            for j in 0..POSEIDON_LIMBS {
+                row[offset + j] = F::from_u32(input_indices[j]);
             }
-
-            if *reset || !*is_sponge {
-                // Compression or reset: reset capacity
-                for j in 0..(CAPACITY_EXT * D) {
-                    state[RATE_EXT * D + j] = F::ZERO;
-                }
+            offset += POSEIDON_LIMBS;
+            for j in 0..POSEIDON_PUBLIC_OUTPUT_LIMBS {
+                row[offset + j] = F::from_bool(out_ctl[j]);
             }
+            offset += POSEIDON_PUBLIC_OUTPUT_LIMBS;
+            for j in 0..POSEIDON_PUBLIC_OUTPUT_LIMBS {
+                row[offset + j] = F::from_u32(output_indices[j]);
+            }
+            offset += POSEIDON_PUBLIC_OUTPUT_LIMBS;
+            row[offset] = F::from_u32(*mmcs_index_sum_idx);
 
             inputs.push(state);
-            state = perm.permute(state);
+            prev_output = Some(perm.permute(state));
         }
 
         let p2_trace = generate_trace_rows::<
@@ -178,14 +212,6 @@ impl<
         >(inputs, constants, extra_capacity_bits);
 
         let ncols = self.width();
-
-        let p2_ncols = p3_poseidon2_air::num_cols::<
-            WIDTH,
-            SBOX_DEGREE,
-            SBOX_REGISTERS,
-            HALF_FULL_ROUNDS,
-            PARTIAL_ROUNDS,
-        >();
 
         debug_assert_eq!(ncols, num_circuit_cols + p2_ncols);
 
@@ -236,8 +262,6 @@ impl<
 {
     fn width(&self) -> usize {
         num_cols::<
-            WIDTH_EXT,
-            RATE_EXT,
             Poseidon2Cols<u8, WIDTH, SBOX_DEGREE, SBOX_REGISTERS, HALF_FULL_ROUNDS, PARTIAL_ROUNDS>,
         >()
     }
@@ -272,8 +296,6 @@ fn eval<
     builder: &mut AB,
     local: &Poseidon2CircuitCols<
         AB::Var,
-        WIDTH_EXT,
-        RATE_EXT,
         Poseidon2Cols<
             AB::Var,
             WIDTH,
@@ -285,8 +307,6 @@ fn eval<
     >,
     next: &Poseidon2CircuitCols<
         AB::Var,
-        WIDTH_EXT,
-        RATE_EXT,
         Poseidon2Cols<
             AB::Var,
             WIDTH,
@@ -297,90 +317,75 @@ fn eval<
         >,
     >,
 ) {
-    // SPONGE CONSTRAINTS
-    let next_no_reset = AB::Expr::ONE - next.reset.clone();
-    for i in 0..(CAPACITY_EXT * D) {
-        // The first row has capacity zeroed.
-        builder
-            .when(local.is_sponge.clone())
-            .when_first_row()
-            .assert_zero(local.poseidon2.inputs[RATE_EXT * D + i].clone());
-
-        // When resetting the state, we just have to clear the capacity. The rate will be overwritten by the input.
-        builder
-            .when(local.is_sponge.clone())
-            .when(local.reset.clone())
-            .assert_zero(local.poseidon2.inputs[RATE_EXT * D + i].clone());
-
-        // If the next row doesn't reset, propagate the capacity.
-        builder
-            .when_transition()
-            .when(next.is_sponge.clone())
-            .when(next_no_reset.clone())
-            .assert_zero(
-                next.poseidon2.inputs[RATE_EXT * D + i].clone()
-                    - local.poseidon2.ending_full_rounds[HALF_FULL_ROUNDS - 1].post
-                        [RATE_EXT * D + i]
-                        .clone(),
-            );
+    builder.assert_bool(local.new_start.clone());
+    builder.assert_bool(next.new_start.clone());
+    builder.assert_bool(local.merkle_path.clone());
+    builder.assert_bool(next.merkle_path.clone());
+    builder.assert_bool(local.mmcs_bit.clone());
+    builder.assert_bool(next.mmcs_bit.clone());
+    for flag in local.in_ctl.iter() {
+        builder.assert_bool(flag.clone());
+    }
+    for flag in local.out_ctl.iter() {
+        builder.assert_bool(flag.clone());
     }
 
-    let mut next_absorb = [AB::Expr::ZERO; RATE_EXT];
-    for i in 0..RATE_EXT {
-        for col in next_absorb.iter_mut().take(i + 1) {
-            *col += next.absorb_flags[i].clone();
-        }
-    }
-    let next_no_absorb =
-        array::from_fn::<_, RATE_EXT, _>(|i| AB::Expr::ONE - next_absorb[i].clone());
-    // In the next row, each rate element not being absorbed is either:
-    // - zeroed if the next row is a reset (handled elsewhere);
-    // - copied from the current row if the next row is not a reset.
-    // We omit the `is_sponge` check because in a compression all absorb flags are set.
-    for index in 0..(RATE_EXT * D) {
-        let i = index / D;
-        let j = index % D;
+    let continue_chain = AB::Expr::ONE - next.new_start.clone();
+    let next_merkle = next.merkle_path.clone();
+    let next_not_merkle = AB::Expr::ONE - next_merkle.clone();
+    let prev_bit = local.mmcs_bit.clone();
+    let local_out = &local.poseidon2.ending_full_rounds[HALF_FULL_ROUNDS - 1].post;
+    let next_in = &next.poseidon2.inputs;
+
+    // Normal chaining.
+    for idx in 0..WIDTH {
         builder
             .when_transition()
-            .when(next_no_absorb[i].clone())
-            .when(next_no_reset.clone())
-            .assert_zero(
-                next.poseidon2.inputs[i * D + j].clone()
-                    - local.poseidon2.ending_full_rounds[HALF_FULL_ROUNDS - 1].post[i * D + j]
-                        .clone(),
-            );
+            .when(continue_chain.clone())
+            .when(next_not_merkle.clone())
+            .assert_zero(next_in[idx].clone() - local_out[idx].clone());
     }
 
-    let mut current_absorb = [AB::Expr::ZERO; RATE_EXT];
-    for i in 0..RATE_EXT {
-        for col in current_absorb.iter_mut().take(i + 1) {
-            *col += local.absorb_flags[i].clone();
-        }
-    }
-    let current_no_absorb =
-        array::from_fn::<_, RATE_EXT, _>(|i| AB::Expr::ONE - current_absorb[i].clone());
-    builder.assert_eq(
-        local.is_sponge.clone() * local.reset.clone(),
-        local.sponge_reset.clone(),
-    );
-    // During a reset, the rate elements not being absorbed are zeroed.
-    for (i, col) in current_no_absorb.iter().enumerate() {
-        let arr = array::from_fn::<_, D, _>(|j| local.poseidon2.inputs[i * D + j].clone().into());
+    // Merkle-path chaining for limbs 0 and 1.
+    let is_left = AB::Expr::ONE - prev_bit.clone();
+    for limb_offset in 0..D {
         builder
-            .when(local.sponge_reset.clone() * col.clone())
-            .assert_zeros(arr);
+            .when_transition()
+            .when(continue_chain.clone())
+            .when(next_merkle.clone())
+            .when(is_left.clone())
+            .assert_zero(next_in[limb_offset].clone() - local_out[limb_offset].clone());
+        builder
+            .when_transition()
+            .when(continue_chain.clone())
+            .when(next_merkle.clone())
+            .when(is_left.clone())
+            .assert_zero(next_in[D + limb_offset].clone() - local_out[D + limb_offset].clone());
+
+        builder
+            .when_transition()
+            .when(continue_chain.clone())
+            .when(next_merkle.clone())
+            .when(prev_bit.clone())
+            .assert_zero(next_in[limb_offset].clone() - local_out[2 * D + limb_offset].clone());
+        builder
+            .when_transition()
+            .when(continue_chain.clone())
+            .when(next_merkle.clone())
+            .when(prev_bit.clone())
+            .assert_zero(next_in[D + limb_offset].clone() - local_out[3 * D + limb_offset].clone());
     }
 
-    // TODO: Add all lookups:
-    // - If current_absorb[i] = 1:
-    //      * local.rate[i] comes from input lookups.
-    // - If is_squeeze = 1:
-    //      * local.rate is sent to output lookups.
-
-    // COMPRESSION CONSTRAINTS
-    // TODO: Add all lookups:
-    // - local input state comes from input lookups.
-    // - send local output state to output lookups.
+    // MMCS accumulator update.
+    let two = AB::Expr::ONE + AB::Expr::ONE;
+    builder
+        .when_transition()
+        .when(continue_chain.clone())
+        .when(next_merkle.clone())
+        .assert_zero(
+            next.mmcs_index_sum.clone()
+                - (local.mmcs_index_sum.clone() * two + local.mmcs_bit.clone()),
+        );
 
     let p3_poseidon2_num_cols = p3_poseidon2_air::num_cols::<
         WIDTH,
@@ -476,10 +481,9 @@ mod test {
 
     use super::*;
     use crate::Poseidon2CircuitAirBabyBearD4Width16;
+    use crate::columns::{POSEIDON_LIMBS, POSEIDON_PUBLIC_OUTPUT_LIMBS};
 
-    const D: usize = 4;
     const WIDTH: usize = 16;
-    const RATE_EXT: usize = 2;
 
     #[test]
     fn prove_poseidon2_sponge() -> Result<
@@ -525,7 +529,8 @@ mod test {
         type Challenger = SerializingChallenger32<Val, HashChallenger<u8, ByteHash, 32>>;
         let challenger = Challenger::from_hasher(vec![], byte_hash);
 
-        let fri_params = create_benchmark_fri_params(challenge_mmcs);
+        let mut fri_params = create_benchmark_fri_params(challenge_mmcs);
+        fri_params.log_blowup = 4;
 
         let beginning_full_constants = rng.random();
         let partial_constants = rng.random();
@@ -550,61 +555,83 @@ mod test {
         // Generate random inputs.
         let mut rng = SmallRng::seed_from_u64(1);
 
-        // Absorb
+        let first_state: Vec<Val> = (0..WIDTH).map(|_| rng.random()).collect();
+        let zero_state = vec![Val::ZERO; WIDTH];
+
         let sponge_a: Poseidon2CircuitRow<Val> = Poseidon2CircuitRow {
-            is_sponge: true,
-            reset: true,
-            absorb_flags: vec![false, true],
-            input_values: (0..RATE_EXT * D).map(|_| rng.random()).collect(),
-            input_indices: vec![0; RATE_EXT],
-            output_indices: vec![0; RATE_EXT],
+            new_start: true,
+            merkle_path: false,
+            mmcs_bit: false,
+            mmcs_index_sum: Val::ZERO,
+            input_values: first_state,
+            in_ctl: [false; POSEIDON_LIMBS],
+            input_indices: [0; POSEIDON_LIMBS],
+            out_ctl: [false; POSEIDON_PUBLIC_OUTPUT_LIMBS],
+            output_indices: [0; POSEIDON_PUBLIC_OUTPUT_LIMBS],
+            mmcs_index_sum_idx: 0,
         };
 
-        // Absorb
         let sponge_b: Poseidon2CircuitRow<Val> = Poseidon2CircuitRow {
-            is_sponge: true,
-            reset: false,
-            absorb_flags: vec![false, true],
-            input_values: (0..RATE_EXT * D).map(|_| rng.random()).collect(),
-            input_indices: vec![0; RATE_EXT],
-            output_indices: vec![0; RATE_EXT],
+            new_start: false,
+            merkle_path: false,
+            mmcs_bit: true,
+            mmcs_index_sum: Val::ZERO,
+            input_values: zero_state.clone(),
+            in_ctl: [false; POSEIDON_LIMBS],
+            input_indices: [0; POSEIDON_LIMBS],
+            out_ctl: [false; POSEIDON_PUBLIC_OUTPUT_LIMBS],
+            output_indices: [0; POSEIDON_PUBLIC_OUTPUT_LIMBS],
+            mmcs_index_sum_idx: 0,
         };
 
-        // Squeeze
         let sponge_c: Poseidon2CircuitRow<Val> = Poseidon2CircuitRow {
-            is_sponge: true,
-            reset: false,
-            absorb_flags: vec![false, false],
-            input_values: vec![Val::new(0); RATE_EXT * D],
-            input_indices: vec![0; RATE_EXT],
-            output_indices: vec![0; RATE_EXT],
+            new_start: false,
+            merkle_path: true,
+            mmcs_bit: false,
+            mmcs_index_sum: Val::ZERO,
+            input_values: zero_state.clone(),
+            in_ctl: [false; POSEIDON_LIMBS],
+            input_indices: [0; POSEIDON_LIMBS],
+            out_ctl: [false; POSEIDON_PUBLIC_OUTPUT_LIMBS],
+            output_indices: [0; POSEIDON_PUBLIC_OUTPUT_LIMBS],
+            mmcs_index_sum_idx: 0,
         };
 
-        // Absorb one element with reset
         let sponge_d: Poseidon2CircuitRow<Val> = Poseidon2CircuitRow {
-            is_sponge: true,
-            reset: true,
-            absorb_flags: vec![true, false],
-            input_values: vec![
-                Val::new(42),
-                Val::new(43),
-                Val::new(44),
-                Val::new(45),
-                Val::new(0),
-                Val::new(0),
-                Val::new(0),
-                Val::new(0),
-            ],
-            input_indices: vec![0; RATE_EXT],
-            output_indices: vec![0; RATE_EXT],
+            new_start: false,
+            merkle_path: false,
+            mmcs_bit: false,
+            mmcs_index_sum: Val::ZERO,
+            input_values: zero_state,
+            in_ctl: [false; POSEIDON_LIMBS],
+            input_indices: [0; POSEIDON_LIMBS],
+            out_ctl: [false; POSEIDON_PUBLIC_OUTPUT_LIMBS],
+            output_indices: [0; POSEIDON_PUBLIC_OUTPUT_LIMBS],
+            mmcs_index_sum_idx: 0,
         };
 
-        let trace = air.generate_trace_rows(
-            vec![sponge_a, sponge_b, sponge_c, sponge_d],
-            &constants,
-            fri_params.log_blowup,
-            perm,
-        );
+        let mut rows = vec![sponge_a, sponge_b, sponge_c, sponge_d];
+        let target_rows = 32;
+        if rows.len() < target_rows {
+            let filler = rows
+                .last()
+                .cloned()
+                .unwrap_or_else(|| Poseidon2CircuitRow {
+                    new_start: true,
+                    merkle_path: false,
+                    mmcs_bit: false,
+                    mmcs_index_sum: Val::ZERO,
+                    input_values: vec![Val::ZERO; WIDTH],
+                    in_ctl: [false; POSEIDON_LIMBS],
+                    input_indices: [0; POSEIDON_LIMBS],
+                    out_ctl: [false; POSEIDON_PUBLIC_OUTPUT_LIMBS],
+                    output_indices: [0; POSEIDON_PUBLIC_OUTPUT_LIMBS],
+                    mmcs_index_sum_idx: 0,
+                });
+            rows.resize(target_rows, filler);
+        }
+
+        let trace = air.generate_trace_rows(rows, &constants, fri_params.log_blowup, perm);
 
         type Dft = p3_dft::Radix2Bowers;
         let dft = Dft::default();

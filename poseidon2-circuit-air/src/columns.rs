@@ -1,36 +1,26 @@
 use core::borrow::{Borrow, BorrowMut};
+use core::mem::size_of;
 
 use p3_poseidon2_air::Poseidon2Cols;
 
+pub const POSEIDON_LIMBS: usize = 4;
+pub const POSEIDON_PUBLIC_OUTPUT_LIMBS: usize = 2;
+
 /// Columns for a Poseidon2 AIR which computes one permutation per row.
 ///
-/// They extend the P3 columns with some circuit-specific columns.
-///
-/// `is_sponge` (transparent): if `1`, this row performs a sponge operation (absorb or squeeze);
-/// otherwise, it performs a compression.
-/// `reset` (transparent): indicates whether the state is being reset this row.
-/// `sponge_reset`: auxiliary column to keep constraint degrees below three.
-/// `absorb_flags` (transparent): for each rate element, indicates if it is being absorbed this row.
-/// At most one flag is set to 1 per row: if `absorb_flags[i]` is 1, then all elements up to the `i`-th
-/// are absorbed; the rest are propagated from the previous row.
-/// `input_indices` (transparent): for each input element, indicates the index in the witness table for the
-/// memory lookup. It's either received (for an absorb or a compression) or sent (for a squeeze).
-/// `output_indices` (transparent): for each output element, indicates the index in the witness table for the
-/// memory lookup. Only used by compressions to send the output.
+/// They extend the P3 columns with chaining metadata and CTL exposure indices.
 #[repr(C)]
-pub struct Poseidon2CircuitCols<
-    T,
-    const WIDTH_EXT: usize,
-    const RATE_EXT: usize,
-    P: PermutationColumns<T>,
-> {
+pub struct Poseidon2CircuitCols<T, P: PermutationColumns<T>> {
     pub poseidon2: P,
-    pub is_sponge: T,
-    pub reset: T,
-    pub sponge_reset: T,
-    pub absorb_flags: [T; RATE_EXT],
-    pub input_indices: [T; WIDTH_EXT],
-    pub output_indices: [T; RATE_EXT],
+    pub new_start: T,
+    pub merkle_path: T,
+    pub mmcs_bit: T,
+    pub mmcs_index_sum: T,
+    pub in_ctl: [T; POSEIDON_LIMBS],
+    pub in_idx: [T; POSEIDON_LIMBS],
+    pub out_ctl: [T; POSEIDON_PUBLIC_OUTPUT_LIMBS],
+    pub out_idx: [T; POSEIDON_PUBLIC_OUTPUT_LIMBS],
+    pub mmcs_index_sum_idx: T,
 }
 
 pub trait PermutationColumns<T> {}
@@ -47,17 +37,13 @@ impl<
 {
 }
 
-pub const fn num_cols<const WIDTH_EXT: usize, const RATE_EXT: usize, P: PermutationColumns<u8>>()
--> usize {
-    size_of::<Poseidon2CircuitCols<u8, WIDTH_EXT, RATE_EXT, P>>()
+pub const fn num_cols<P: PermutationColumns<u8>>() -> usize {
+    size_of::<Poseidon2CircuitCols<u8, P>>()
 }
 
-impl<T, const WIDTH_EXT: usize, const RATE_EXT: usize, P: PermutationColumns<T>>
-    Borrow<Poseidon2CircuitCols<T, WIDTH_EXT, RATE_EXT, P>> for [T]
-{
-    fn borrow(&self) -> &Poseidon2CircuitCols<T, WIDTH_EXT, RATE_EXT, P> {
-        let (prefix, shorts, suffix) =
-            unsafe { self.align_to::<Poseidon2CircuitCols<T, WIDTH_EXT, RATE_EXT, P>>() };
+impl<T, P: PermutationColumns<T>> Borrow<Poseidon2CircuitCols<T, P>> for [T] {
+    fn borrow(&self) -> &Poseidon2CircuitCols<T, P> {
+        let (prefix, shorts, suffix) = unsafe { self.align_to::<Poseidon2CircuitCols<T, P>>() };
         debug_assert!(prefix.is_empty(), "Alignment should match");
         debug_assert!(suffix.is_empty(), "Alignment should match");
         debug_assert_eq!(shorts.len(), 1);
@@ -65,12 +51,9 @@ impl<T, const WIDTH_EXT: usize, const RATE_EXT: usize, P: PermutationColumns<T>>
     }
 }
 
-impl<T, const WIDTH_EXT: usize, const RATE_EXT: usize, P: PermutationColumns<T>>
-    BorrowMut<Poseidon2CircuitCols<T, WIDTH_EXT, RATE_EXT, P>> for [T]
-{
-    fn borrow_mut(&mut self) -> &mut Poseidon2CircuitCols<T, WIDTH_EXT, RATE_EXT, P> {
-        let (prefix, shorts, suffix) =
-            unsafe { self.align_to_mut::<Poseidon2CircuitCols<T, WIDTH_EXT, RATE_EXT, P>>() };
+impl<T, P: PermutationColumns<T>> BorrowMut<Poseidon2CircuitCols<T, P>> for [T] {
+    fn borrow_mut(&mut self) -> &mut Poseidon2CircuitCols<T, P> {
+        let (prefix, shorts, suffix) = unsafe { self.align_to_mut::<Poseidon2CircuitCols<T, P>>() };
         debug_assert!(prefix.is_empty(), "Alignment should match");
         debug_assert!(suffix.is_empty(), "Alignment should match");
         debug_assert_eq!(shorts.len(), 1);
