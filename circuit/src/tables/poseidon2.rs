@@ -56,36 +56,26 @@ pub trait Poseidon2Params {
 #[derive(Debug, Clone)]
 pub struct Poseidon2CircuitRow<F> {
     /// Control: If 1, row begins a new independent Poseidon chain.
-    /// See spec section 2.2: new_start, and section 5.1: Reset / Independent Row.
     pub new_start: bool,
     /// Control: 0 → normal sponge/Challenger mode, 1 → Merkle-path mode.
-    /// See spec section 2.2: merkle_path, and section 5: Chaining Rules.
     pub merkle_path: bool,
     /// Control: Direction bit for Merkle left/right hashing (only meaningful when merkle_path = 1).
-    /// See spec section 2.2: mmcs_bit, and section 5.3: Merkle Path Mode.
     pub mmcs_bit: bool,
     /// Value: Optional MMCS accumulator (base field, encodes a u32-like integer).
-    /// See spec section 2.1: mmcs_index_sum, and section 6: MMCS Index Accumulator.
     pub mmcs_index_sum: F,
     /// Inputs to the Poseidon2 permutation (flattened state, length = WIDTH).
     /// Represents in[0..3] - 4 extension limbs (input digest).
-    /// See spec section 2.1: in[0..3].
     pub input_values: Vec<F>,
     /// Input exposure flags: for each limb i, if 1, in[i] must match witness lookup at input_indices[i].
-    /// See spec section 2.2: in_ctl[0..3], and section 3.1: Inputs.
     pub in_ctl: [bool; 4],
     /// Input exposure indices: index into the witness table for each limb.
-    /// See spec section 2.2: in_idx[0..3].
     pub input_indices: [u32; 4],
     /// Output exposure flags: for limbs 0-1 only, if 1, out[i] must match witness lookup at output_indices[i].
-    /// See spec section 2.2: out_ctl[0..1], and section 3.2: Outputs.
     /// Note: limbs 2-3 are never publicly exposed (always private).
     pub out_ctl: [bool; 2],
     /// Output exposure indices: index into the witness table for limbs 0-1.
-    /// See spec section 2.2: out_idx[0..1].
     pub output_indices: [u32; 2],
     /// MMCS index exposure: index for CTL exposure of mmcs_index_sum.
-    /// See spec section 2.2: mmcs_index_sum_idx, and section 3.3: MMCS index exposure.
     pub mmcs_index_sum_idx: u32,
 }
 pub type Poseidon2CircuitTrace<F> = Vec<Poseidon2CircuitRow<F>>;

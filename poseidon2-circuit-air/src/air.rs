@@ -21,9 +21,9 @@ use crate::{Poseidon2CircuitCols, num_cols};
 /// See: https://github.com/Plonky3/Plonky3-recursion/discussions/186
 ///
 /// The AIR enforces:
-/// - Poseidon permutation constraint: out[0..3] = Poseidon2(in[0..3]) (section 4)
-/// - Chaining rules for normal sponge and Merkle-path modes (section 5)
-/// - MMCS index accumulator updates (section 6)
+/// - Poseidon permutation constraint: out[0..3] = Poseidon2(in[0..3])
+/// - Chaining rules for normal sponge and Merkle-path modes
+/// - MMCS index accumulator updates
 ///
 /// Assumes the field size is at least 16 bits.
 ///
@@ -154,7 +154,7 @@ impl<
                 *dst = src;
             }
 
-            // Apply chaining rules (spec section 5: Chaining Rules).
+            // Apply chaining rules.
             // NOTE: For rows with new_start = false:
             // - In sponge mode (merkle_path = 0), the Poseidon input state is *entirely*
             //   taken from the previous row's output; `input_values` are unused for chained limbs.
@@ -165,7 +165,7 @@ impl<
             let mut state = padded_inputs;
             if i > 0 && !*new_start {
                 if *merkle_path {
-                    // Merkle-path mode (section 5.3): chain based on previous row's mmcs_bit
+                    // Merkle-path mode: chain based on previous row's mmcs_bit
                     // Only chain limbs 0-1 if in_ctl[0/1] = 0 (handled by AIR constraints)
                     if let Some(prev_out) = prev_output {
                         let prev_bit = sponge_ops[i - 1].mmcs_bit;
@@ -185,7 +185,7 @@ impl<
                         // in_{r+1}[2], in_{r+1}[3] remain free/private (from padded_inputs)
                     }
                 } else {
-                    // Normal sponge mode (section 5.2): in_{r+1}[i] = out_r[i] for i = 0..3
+                    // Normal sponge mode: in_{r+1}[i] = out_r[i] for i = 0..3
                     // For trace generation, we chain unconditionally here.
                     // The AIR will enforce that chaining only applies when in_ctl = 0.
                     if let Some(prev_out) = prev_output {
@@ -193,14 +193,14 @@ impl<
                     }
                 }
             }
-            // If new_start = 1 (section 5.1): no chaining, input determined solely by CTL
+            // If new_start = 1: no chaining, input determined solely by CTL
 
-            // Update MMCS index accumulator (spec section 6: MMCS Index Accumulator)
+            // Update MMCS index accumulator
             let acc = if i > 0 && *merkle_path && !*new_start {
-                // Section 6.1: mmcs_index_sum_{r+1} = mmcs_index_sum_r * 2 + mmcs_bit_r
+                // mmcs_index_sum_{r+1} = mmcs_index_sum_r * 2 + mmcs_bit_r
                 prev_mmcs_index_sum + prev_mmcs_index_sum + F::from_bool(sponge_ops[i - 1].mmcs_bit)
             } else {
-                // Section 6.2: Reset / non-Merkle behavior.
+                // Reset / non-Merkle behavior.
                 // The AIR does not constrain mmcs_index_sum on these rows;
                 // we simply use the value stored in the op.
                 *mmcs_index_sum
@@ -363,7 +363,7 @@ fn eval<
     let local_out = &local.poseidon2.ending_full_rounds[HALF_FULL_ROUNDS - 1].post;
     let next_in = &next.poseidon2.inputs;
 
-    // Normal chaining (section 5.2: Normal Sponge Mode).
+    // Normal chaining.
     // If new_start_{r+1} = 0 and merkle_path_{r+1} = 0:
     //   in_{r+1}[i] = out_r[i] for i = 0..3
     // BUT: If in_ctl[i] = 1, CTL overrides chaining (limb is not chained).
@@ -381,7 +381,7 @@ fn eval<
         }
     }
 
-    // Merkle-path chaining (section 5.3: Merkle Path Mode).
+    // Merkle-path chaining.
     // If new_start_{r+1} = 0 and merkle_path_{r+1} = 1:
     //   - If mmcs_bit_r = 0 (left = previous hash): in_{r+1}[0] = out_r[0], in_{r+1}[1] = out_r[1]
     //   - If mmcs_bit_r = 1 (right = previous hash): in_{r+1}[0] = out_r[2], in_{r+1}[1] = out_r[3]
@@ -437,7 +437,7 @@ fn eval<
     }
     // Limbs 2-3 are free/private in Merkle mode (never chained)
 
-    // MMCS accumulator update (section 6.1: Recurrence).
+    // MMCS accumulator update.
     // If merkle_path_{r+1} = 1 and new_start_{r+1} = 0:
     //   mmcs_index_sum_{r+1} = mmcs_index_sum_r * 2 + mmcs_bit_r
     let two = AB::Expr::ONE + AB::Expr::ONE;
@@ -471,12 +471,12 @@ fn eval<
         AB::Var,
     >::new(builder, 0..p3_poseidon2_num_cols);
 
-    // Enforce Poseidon permutation constraint (spec section 4):
+    // Enforce Poseidon permutation constraint:
     // out[0..3] = Poseidon2(in[0..3])
     // This holds regardless of merkle_path, new_start, CTL flags, chaining, or MMCS accumulator.
     air.p3_poseidon2.eval(&mut sub_builder);
 
-    // TODO (spec sections 3.1, 3.2, 3.3): CTL lookups
+    // TODO: CTL lookups
     // - If in_ctl[i] = 1: enforce next.poseidon2.inputs[limb i] = witness[in_idx[i]]
     // - If out_ctl[i] = 1: enforce local.poseidon2.outputs[limb i] = witness[out_idx[i]]
     // - If mmcs_index_sum_idx is used: expose mmcs_index_sum via CTL
