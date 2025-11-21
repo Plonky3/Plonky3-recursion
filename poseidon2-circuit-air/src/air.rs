@@ -16,13 +16,21 @@ use crate::sub_builder::SubAirBuilder;
 use crate::{Poseidon2CircuitCols, num_cols};
 
 /// Extends the Poseidon2 AIR with recursion circuit-specific columns and constraints.
+///
+/// This implements the Poseidon Permutation Table specification.
+/// See: https://github.com/Plonky3/Plonky3-recursion/discussions/186
+///
+/// The AIR enforces:
+/// - Poseidon permutation constraint: out[0..3] = Poseidon2(in[0..3]) (section 4)
+/// - Chaining rules for normal sponge and Merkle-path modes (section 5)
+/// - MMCS index accumulator updates (section 6)
+///
 /// Assumes the field size is at least 16 bits.
 ///
 /// SPECIFIC ASSUMPTIONS:
 /// - Memory elements from the witness table are extension elements of degree D.
 /// - RATE and CAPACITY are the number of extension elements in the rate/capacity.
 /// - WIDTH is the number of field elements in the state, i.e., (RATE + CAPACITY) * D.
-/// - `reset` can only be set during an absorb.
 #[derive(Debug)]
 pub struct Poseidon2CircuitAir<
     F: PrimeCharacteristicRing,
@@ -146,27 +154,41 @@ impl<
                 *dst = src;
             }
 
+            // Apply chaining rules (spec section 5: Chaining Rules).
             let mut state = padded_inputs;
             if i > 0 && !*new_start {
                 if *merkle_path {
+                    // Merkle-path mode (section 5.3): chain based on previous row's mmcs_bit
                     if let Some(prev_out) = prev_output {
                         let prev_bit = sponge_ops[i - 1].mmcs_bit;
                         if prev_bit {
+                            // Case B: mmcs_bit = 1 (right = previous hash)
+                            // in_{r+1}[0] = out_r[2], in_{r+1}[1] = out_r[3]
                             state[0..D].copy_from_slice(&prev_out[2 * D..3 * D]);
                             state[D..2 * D].copy_from_slice(&prev_out[3 * D..4 * D]);
                         } else {
+                            // Case A: mmcs_bit = 0 (left = previous hash)
+                            // in_{r+1}[0] = out_r[0], in_{r+1}[1] = out_r[1]
                             state[0..D].copy_from_slice(&prev_out[0..D]);
                             state[D..2 * D].copy_from_slice(&prev_out[D..2 * D]);
                         }
+                        // in_{r+1}[2], in_{r+1}[3] remain free/private (from padded_inputs)
                     }
-                } else if let Some(prev_out) = prev_output {
-                    state = prev_out;
+                } else {
+                    // Normal sponge mode (section 5.2): in_{r+1}[i] = out_r[i] for i = 0..3
+                    if let Some(prev_out) = prev_output {
+                        state = prev_out;
+                    }
                 }
             }
+            // If new_start = 1 (section 5.1): no chaining, input determined solely by CTL
 
+            // Update MMCS index accumulator (spec section 6: MMCS Index Accumulator)
             let acc = if i > 0 && *merkle_path && !*new_start {
+                // Section 6.1: mmcs_index_sum_{r+1} = mmcs_index_sum_r * 2 + mmcs_bit_r
                 prev_mmcs_index_sum + prev_mmcs_index_sum + F::from_bool(sponge_ops[i - 1].mmcs_bit)
             } else {
+                // Section 6.2: Reset behavior - unconstrained (use value from row)
                 *mmcs_index_sum
             };
             prev_mmcs_index_sum = acc;
@@ -337,7 +359,9 @@ fn eval<
     let local_out = &local.poseidon2.ending_full_rounds[HALF_FULL_ROUNDS - 1].post;
     let next_in = &next.poseidon2.inputs;
 
-    // Normal chaining.
+    // Normal chaining (section 5.2: Normal Sponge Mode).
+    // If new_start_{r+1} = 0 and merkle_path_{r+1} = 0:
+    //   in_{r+1}[i] = out_r[i] for i = 0..3
     for idx in 0..WIDTH {
         builder
             .when_transition()
@@ -346,7 +370,11 @@ fn eval<
             .assert_zero(next_in[idx].clone() - local_out[idx].clone());
     }
 
-    // Merkle-path chaining for limbs 0 and 1.
+    // Merkle-path chaining (section 5.3: Merkle Path Mode).
+    // If new_start_{r+1} = 0 and merkle_path_{r+1} = 1:
+    //   - If mmcs_bit_r = 0 (left = previous hash): in_{r+1}[0] = out_r[0], in_{r+1}[1] = out_r[1]
+    //   - If mmcs_bit_r = 1 (right = previous hash): in_{r+1}[0] = out_r[2], in_{r+1}[1] = out_r[3]
+    //   - in_{r+1}[2], in_{r+1}[3] are free/private
     let is_left = AB::Expr::ONE - prev_bit.clone();
     for limb_offset in 0..D {
         builder
@@ -376,7 +404,9 @@ fn eval<
             .assert_zero(next_in[D + limb_offset].clone() - local_out[3 * D + limb_offset].clone());
     }
 
-    // MMCS accumulator update.
+    // MMCS accumulator update (section 6.1: Recurrence).
+    // If merkle_path_{r+1} = 1 and new_start_{r+1} = 0:
+    //   mmcs_index_sum_{r+1} = mmcs_index_sum_r * 2 + mmcs_bit_r
     let two = AB::Expr::ONE + AB::Expr::ONE;
     builder
         .when_transition()
@@ -408,7 +438,9 @@ fn eval<
         AB::Var,
     >::new(builder, 0..p3_poseidon2_num_cols);
 
-    // Eval the Plonky3 Poseidon2 air.
+    // Enforce Poseidon permutation constraint (spec section 4):
+    // out[0..3] = Poseidon2(in[0..3])
+    // This holds regardless of merkle_path, new_start, CTL flags, chaining, or MMCS accumulator.
     air.p3_poseidon2.eval(&mut sub_builder);
 }
 
@@ -613,21 +645,18 @@ mod test {
         let mut rows = vec![sponge_a, sponge_b, sponge_c, sponge_d];
         let target_rows = 32;
         if rows.len() < target_rows {
-            let filler = rows
-                .last()
-                .cloned()
-                .unwrap_or_else(|| Poseidon2CircuitRow {
-                    new_start: true,
-                    merkle_path: false,
-                    mmcs_bit: false,
-                    mmcs_index_sum: Val::ZERO,
-                    input_values: vec![Val::ZERO; WIDTH],
-                    in_ctl: [false; POSEIDON_LIMBS],
-                    input_indices: [0; POSEIDON_LIMBS],
-                    out_ctl: [false; POSEIDON_PUBLIC_OUTPUT_LIMBS],
-                    output_indices: [0; POSEIDON_PUBLIC_OUTPUT_LIMBS],
-                    mmcs_index_sum_idx: 0,
-                });
+            let filler = rows.last().cloned().unwrap_or_else(|| Poseidon2CircuitRow {
+                new_start: true,
+                merkle_path: false,
+                mmcs_bit: false,
+                mmcs_index_sum: Val::ZERO,
+                input_values: vec![Val::ZERO; WIDTH],
+                in_ctl: [false; POSEIDON_LIMBS],
+                input_indices: [0; POSEIDON_LIMBS],
+                out_ctl: [false; POSEIDON_PUBLIC_OUTPUT_LIMBS],
+                output_indices: [0; POSEIDON_PUBLIC_OUTPUT_LIMBS],
+                mmcs_index_sum_idx: 0,
+            });
             rows.resize(target_rows, filler);
         }
 
