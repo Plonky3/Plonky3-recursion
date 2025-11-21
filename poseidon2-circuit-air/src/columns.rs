@@ -28,6 +28,7 @@ pub struct Poseidon2CircuitCols<
     pub is_sponge: T,
     pub reset: T,
     pub sponge_reset: T,
+    pub send_out: T,
     pub absorb_flags: [T; RATE_EXT],
     pub input_indices: [T; WIDTH_EXT],
     pub output_indices: [T; RATE_EXT],

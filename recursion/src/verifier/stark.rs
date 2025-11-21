@@ -82,10 +82,9 @@ where
     // Enable hash operations for CircuitChallenger
     // Note: These are placeholders until Poseidon2CircuitAir is implemented
     circuit.enable_op(
-        NonPrimitiveOpType::HashAbsorb { reset: true },
+        NonPrimitiveOpType::HashSqueeze { reset: true },
         NonPrimitiveOpConfig::None,
     );
-    circuit.enable_op(NonPrimitiveOpType::HashSqueeze, NonPrimitiveOpConfig::None);
 
     let ProofTargets {
         commitments_targets:

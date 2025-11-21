@@ -1,6 +1,6 @@
 use alloc::boxed::Box;
-use alloc::format;
 use alloc::vec::Vec;
+use alloc::{format, vec};
 use core::hash::Hash;
 
 use hashbrown::HashMap;
@@ -10,7 +10,7 @@ use crate::builder::circuit_builder::NonPrimitiveOperationData;
 use crate::builder::compiler::get_witness_id;
 use crate::builder::{BuilderConfig, CircuitBuilderError};
 use crate::op::{NonPrimitiveOpConfig, NonPrimitiveOpType, Op};
-use crate::ops::{HashAbsorbExecutor, HashSqueezeExecutor, MmcsVerifyExecutor};
+use crate::ops::{HashSqueezeExecutor, MmcsVerifyExecutor};
 use crate::types::{ExprId, WitnessId};
 
 /// Responsible for lowering non-primitive operations from ExprIds to WitnessIds.
@@ -143,7 +143,7 @@ impl<'a> NonPrimitiveLowerer<'a> {
                         op_id: *op_id,
                     });
                 }
-                NonPrimitiveOpType::HashAbsorb { reset } => {
+                NonPrimitiveOpType::HashSqueeze { reset } => {
                     // Operation must be enabled
                     if config_opt.is_none() {
                         return Err(CircuitBuilderError::InvalidNonPrimitiveOpConfiguration {
@@ -151,49 +151,28 @@ impl<'a> NonPrimitiveLowerer<'a> {
                         });
                     }
 
-                    let inputs = witness_exprs
-                        .iter()
-                        .map(|witness_expr| {
-                            witness_expr
-                                .iter()
-                                .map(|&expr| {
-                                    get_witness_id(self.expr_to_widx, expr, "HashAbsorb input")
-                                })
-                                .collect::<Result<Vec<WitnessId>, _>>()
-                        })
-                        .collect::<Result<Vec<Vec<WitnessId>>, _>>()?;
-
-                    lowered_ops.push(Op::NonPrimitiveOpWithExecutor {
-                        inputs,
-                        outputs: Vec::new(),
-                        executor: Box::new(HashAbsorbExecutor::new(*reset)),
-                        op_id: *op_id,
-                    });
-                }
-                NonPrimitiveOpType::HashSqueeze => {
-                    // Operation must be enabled
-                    if config_opt.is_none() {
-                        return Err(CircuitBuilderError::InvalidNonPrimitiveOpConfiguration {
-                            op: op_type.clone(),
+                    if witness_exprs.len() != 2 {
+                        return Err(CircuitBuilderError::NonPrimitiveOpArity {
+                            op: "HashSqueeze",
+                            expected: format!("{}", 2),
+                            got: witness_exprs.len(),
                         });
                     }
 
-                    let outputs = witness_exprs
+                    let inputs = witness_exprs[0]
                         .iter()
-                        .map(|witness_expr| {
-                            witness_expr
-                                .iter()
-                                .map(|&expr| {
-                                    get_witness_id(self.expr_to_widx, expr, "HashSqueeze output")
-                                })
-                                .collect::<Result<Vec<WitnessId>, _>>()
-                        })
-                        .collect::<Result<Vec<Vec<WitnessId>>, _>>()?;
+                        .map(|&expr| get_witness_id(self.expr_to_widx, expr, "HashSqueeze input"))
+                        .collect::<Result<Vec<WitnessId>, _>>()?;
+
+                    let outputs = witness_exprs[1]
+                        .iter()
+                        .map(|&expr| get_witness_id(self.expr_to_widx, expr, "HashSqueeze input"))
+                        .collect::<Result<Vec<WitnessId>, _>>()?;
 
                     lowered_ops.push(Op::NonPrimitiveOpWithExecutor {
-                        inputs: Vec::new(),
-                        outputs,
-                        executor: Box::new(HashSqueezeExecutor::new()),
+                        inputs: vec![inputs],
+                        outputs: vec![outputs],
+                        executor: Box::new(HashSqueezeExecutor::new(*reset)),
                         op_id: *op_id,
                     });
                 }
