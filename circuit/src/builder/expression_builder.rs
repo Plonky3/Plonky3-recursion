@@ -107,7 +107,6 @@ where
         expr_id
     }
 
-    #[allow(unused_variables)]
     /// Adds a witness hint that belongs to a sequence of witness hints constructed
     /// from the same filler, indicating wether is the last hint in the sequence.
     pub fn add_witness_hint_in_sequence(
@@ -334,8 +333,9 @@ mod tests {
         }
 
         // Const pool should contain zero
-        assert_eq!(builder.const_pool.len(), 1);
-        assert!(builder.const_pool.contains_key(&BabyBear::ZERO));
+        let mut expected_const_pool = HashMap::new();
+        expected_const_pool.insert(BabyBear::ZERO, ExprId::ZERO);
+        assert_eq!(builder.const_pool, expected_const_pool);
 
         // No pending connections
         assert!(builder.pending_connects.is_empty());
