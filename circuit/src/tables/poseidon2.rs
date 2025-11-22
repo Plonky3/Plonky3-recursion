@@ -43,21 +43,40 @@ pub trait Poseidon2Params {
     const WIDTH_EXT: usize = Self::RATE_EXT + Self::CAPACITY_EXT;
 }
 
-/// Poseidon2 operation table
+/// Poseidon2 operation table row.
+///
+/// This implements the Poseidon Permutation Table specification.
+/// See: https://github.com/Plonky3/Plonky3-recursion/discussions/186
+///
+/// The table has one row per Poseidon call, implementing:
+/// - Standard chaining (Challenger-style sponge use)
+/// - Merkle-path chaining (MMCS directional hashing)
+/// - Selective limb exposure to the witness via CTL
+/// - Optional MMCS index accumulator
 #[derive(Debug, Clone)]
 pub struct Poseidon2CircuitRow<F> {
-    /// Poseidon2 operation type
-    pub is_sponge: bool,
-    /// Reset flag
-    pub reset: bool,
-    /// Absorb flags
-    pub absorb_flags: Vec<bool>,
-    /// Inputs to the Poseidon2 permutation
+    /// Control: If 1, row begins a new independent Poseidon chain.
+    pub new_start: bool,
+    /// Control: 0 → normal sponge/Challenger mode, 1 → Merkle-path mode.
+    pub merkle_path: bool,
+    /// Control: Direction bit for Merkle left/right hashing (only meaningful when merkle_path = 1).
+    pub mmcs_bit: bool,
+    /// Value: Optional MMCS accumulator (base field, encodes a u32-like integer).
+    pub mmcs_index_sum: F,
+    /// Inputs to the Poseidon2 permutation (flattened state, length = WIDTH).
+    /// Represents in[0..3] - 4 extension limbs (input digest).
     pub input_values: Vec<F>,
-    /// Input indices
-    pub input_indices: Vec<u32>,
-    /// Output indices
-    pub output_indices: Vec<u32>,
+    /// Input exposure flags: for each limb i, if 1, in[i] must match witness lookup at input_indices[i].
+    pub in_ctl: [bool; 4],
+    /// Input exposure indices: index into the witness table for each limb.
+    pub input_indices: [u32; 4],
+    /// Output exposure flags: for limbs 0-1 only, if 1, out[i] must match witness lookup at output_indices[i].
+    /// Note: limbs 2-3 are never publicly exposed (always private).
+    pub out_ctl: [bool; 2],
+    /// Output exposure indices: index into the witness table for limbs 0-1.
+    pub output_indices: [u32; 2],
+    /// MMCS index exposure: index for CTL exposure of mmcs_index_sum.
+    pub mmcs_index_sum_idx: u32,
 }
 pub type Poseidon2CircuitTrace<F> = Vec<Poseidon2CircuitRow<F>>;
 
@@ -65,6 +84,8 @@ pub type Poseidon2CircuitTrace<F> = Vec<Poseidon2CircuitRow<F>>;
 #[derive(Debug, Clone)]
 pub struct Poseidon2Trace<F> {
     /// All Poseidon2 operations (sponge and compress) in this trace.
+    /// TODO: Replace sponge ops with perm ops - remove HashAbsorb/HashSqueeze operations
+    /// and replace them with permutation operations in trace generation and table.
     pub operations: Poseidon2CircuitTrace<F>,
 }
 
@@ -132,15 +153,13 @@ impl<'a, F: CircuitField, Config: Poseidon2Params> Poseidon2TraceBuilder<'a, F, 
 
     /// Builds the Poseidon2 trace by scanning non-primitive ops with hash executors.
     /// Also maintains state and fills state hints for stateful operations.
+    /// TODO: Replace sponge ops with perm ops - remove HashAbsorb/HashSqueeze operations
+    /// and replace them with permutation operations in trace generation and table.
     pub fn build(self) -> Result<Poseidon2Trace<F>, CircuitError> {
         let mut operations = Vec::new();
 
-        // Get Poseidon2 parameters from config type
-        let capacity_size = Config::CAPACITY_SIZE;
-        let rate_ext = Config::RATE_EXT;
+        let width = Config::WIDTH;
         let d = Config::D;
-
-        let mut current_state_capacity: Option<Vec<F>> = None;
 
         for op in &self.circuit.non_primitive_ops {
             let Op::NonPrimitiveOpWithExecutor {
@@ -155,8 +174,6 @@ impl<'a, F: CircuitField, Config: Poseidon2Params> Poseidon2TraceBuilder<'a, F, 
 
             match executor.op_type() {
                 NonPrimitiveOpType::HashAbsorb { reset } => {
-                    // For HashAbsorb, inputs[0] contains the input values
-                    // inputs[1] may contain previous state capacity (if reset=false)
                     let input_wids = inputs.first().ok_or(
                         CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
                             op: executor.op_type().clone(),
@@ -170,69 +187,30 @@ impl<'a, F: CircuitField, Config: Poseidon2Params> Poseidon2TraceBuilder<'a, F, 
                         .map(|wid| self.get_witness(wid))
                         .collect::<Result<Vec<F>, _>>()?;
 
-                    // Read previous state if not resetting
-                    if !*reset {
-                        if let Some(prev_state_wids) = inputs.get(1) {
-                            // Read previous state from hints
-                            let prev_state: Vec<F> = prev_state_wids
-                                .iter()
-                                .map(|wid| self.get_witness(wid))
-                                .collect::<Result<Vec<F>, _>>()?;
-                            current_state_capacity = Some(prev_state);
-                        } else if let Some(state) = current_state_capacity.clone() {
-                            // Use maintained state
-                            current_state_capacity = Some(state);
-                        } else {
-                            // No previous state, start with zeros
-                            current_state_capacity = Some(vec![F::ZERO; capacity_size]);
+                    let mut padded_inputs = input_values.clone();
+                    padded_inputs.resize(width, F::ZERO);
+
+                    let mut in_ctl = [false; 4];
+                    let mut in_idx = [0u32; 4];
+                    for (limb, chunk) in input_wids.chunks(d).take(4).enumerate() {
+                        if let Some(first) = chunk.first() {
+                            in_ctl[limb] = true;
+                            in_idx[limb] = first.0;
                         }
-                    } else {
-                        // Reset: clear state
-                        current_state_capacity = Some(vec![F::ZERO; capacity_size]);
                     }
-
-                    // Pad input_values to RATE_EXT * D elements (the AIR expects this many)
-                    // The actual inputs are at the beginning, rest are padded with zeros
-                    let mut padded_input_values = input_values.clone();
-                    let expected_input_size = rate_ext * d;
-                    while padded_input_values.len() < expected_input_size {
-                        padded_input_values.push(F::ZERO);
-                    }
-                    padded_input_values.truncate(expected_input_size);
-
-                    // Determine absorb flags based on input size
-                    // At most one flag should be set: if absorb_flags[i] is true, all elements up to i-th are absorbed
-                    let mut absorb_flags = vec![false; rate_ext];
-                    if !input_values.is_empty() {
-                        // Calculate which rate element index the last input belongs to
-                        // Rate element index = (input_count - 1) / D
-                        let last_rate_element_idx = (input_values.len() - 1) / d;
-                        // Clamp to valid range
-                        let last_rate_element_idx = last_rate_element_idx.min(rate_ext - 1);
-                        absorb_flags[last_rate_element_idx] = true;
-                    }
-
-                    // Collect input indices and pad to RATE_EXT elements
-                    let mut input_indices: Vec<u32> = input_wids.iter().map(|wid| wid.0).collect();
-                    while input_indices.len() < rate_ext {
-                        input_indices.push(0);
-                    }
-                    input_indices.truncate(rate_ext);
-
-                    // For absorb, we need RATE_EXT output indices (padded with zeros)
-                    let output_indices = vec![0u32; rate_ext];
 
                     operations.push(Poseidon2CircuitRow {
-                        is_sponge: true,
-                        reset: *reset,
-                        absorb_flags,
-                        input_values: padded_input_values,
-                        input_indices,
-                        output_indices,
+                        new_start: *reset,
+                        merkle_path: false,
+                        mmcs_bit: false,
+                        mmcs_index_sum: F::ZERO,
+                        input_values: padded_inputs,
+                        in_ctl,
+                        input_indices: in_idx,
+                        out_ctl: [false; 2],
+                        output_indices: [0; 2],
+                        mmcs_index_sum_idx: 0,
                     });
-
-                    // TODO: When lookups are implemented, connect the output indices to the input
-                    // indices of the next operation.
                 }
                 NonPrimitiveOpType::HashSqueeze => {
                     // For HashSqueeze, outputs[0] contains squeezed values + new state capacity
@@ -250,35 +228,27 @@ impl<'a, F: CircuitField, Config: Poseidon2Params> Poseidon2TraceBuilder<'a, F, 
                         .map(|wid| self.get_witness(wid))
                         .collect::<Result<Vec<F>, _>>()?;
 
-                    // Use current state for this squeeze operation
-                    if current_state_capacity.is_none() {
-                        current_state_capacity = Some(vec![F::ZERO; capacity_size]);
+                    let mut out_ctl = [false; 2];
+                    let mut out_idx = [0u32; 2];
+                    for (limb, chunk) in output_wids.chunks(d).take(2).enumerate() {
+                        if let Some(first) = chunk.first() {
+                            out_ctl[limb] = true;
+                            out_idx[limb] = first.0;
+                        }
                     }
-
-                    // Collect output indices and pad to RATE_EXT elements
-                    let mut output_indices: Vec<u32> =
-                        output_wids.iter().map(|wid| wid.0).collect();
-                    while output_indices.len() < rate_ext {
-                        output_indices.push(0);
-                    }
-                    // Truncate if we have more than RATE_EXT outputs
-                    // TODO: remove?
-                    output_indices.truncate(rate_ext);
-
-                    // For squeeze, we need RATE_EXT input indices
-                    let input_indices = vec![0u32; rate_ext];
 
                     operations.push(Poseidon2CircuitRow {
-                        is_sponge: true,
-                        reset: false,
-                        absorb_flags: vec![false; rate_ext], // No absorb during squeeze
-                        input_values: vec![],                // No inputs for squeeze
-                        input_indices,
-                        output_indices,
+                        new_start: false,
+                        merkle_path: false,
+                        mmcs_bit: false,
+                        mmcs_index_sum: F::ZERO,
+                        input_values: vec![F::ZERO; width],
+                        in_ctl: [false; 4],
+                        input_indices: [0; 4],
+                        out_ctl,
+                        output_indices: out_idx,
+                        mmcs_index_sum_idx: 0,
                     });
-
-                    // TODO: When lookups are implemented, connect the output indices to the input
-                    // indices of the next operation.
                 }
                 _ => {
                     // Skip other operation types

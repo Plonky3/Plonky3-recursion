@@ -577,12 +577,16 @@ impl Poseidon2Prover {
                     .last()
                     .cloned()
                     .unwrap_or_else(|| Poseidon2CircuitRow {
-                        is_sponge: true,
-                        reset: false,
-                        absorb_flags: vec![false; RATE_EXT],
-                        input_values: Vec::new(),
-                        input_indices: Vec::new(),
-                        output_indices: Vec::new(),
+                        new_start: true,
+                        merkle_path: false,
+                        mmcs_bit: false,
+                        mmcs_index_sum: Val::<SC>::ZERO,
+                        input_values: vec![Val::<SC>::ZERO; WIDTH],
+                        in_ctl: [false; 4],
+                        input_indices: [0; 4],
+                        out_ctl: [false; 2],
+                        output_indices: [0; 2],
+                        mmcs_index_sum_idx: 0,
                     }),
             );
         }
