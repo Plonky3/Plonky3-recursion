@@ -96,6 +96,8 @@ impl<
         }
     }
 
+    // TODO: Replace sponge_ops with perm_ops - remove HashAbsorb/HashSqueeze operations
+    // and replace them with permutation operations in trace generation and table.
     pub fn generate_trace_rows<P: CryptographicPermutation<[F; WIDTH]>>(
         &self,
         sponge_ops: Poseidon2CircuitTrace<F>,
@@ -207,6 +209,12 @@ impl<
             };
             prev_mmcs_index_sum = acc;
 
+            let normal_chain_sel: [bool; POSEIDON_LIMBS] =
+                core::array::from_fn(|j| (!*new_start) && (!*merkle_path) && (!in_ctl[j]));
+            let merkle_chain_sel: [bool; POSEIDON_PUBLIC_OUTPUT_LIMBS] =
+                core::array::from_fn(|j| (!*new_start) && *merkle_path && (!in_ctl[j]));
+            let mmcs_update_sel = (!*new_start) && *merkle_path;
+
             let row = circuit_trace.row_mut(i);
 
             row[0] = F::from_bool(*new_start);
@@ -215,6 +223,16 @@ impl<
             row[3] = acc;
 
             let mut offset = 4;
+            for j in 0..POSEIDON_LIMBS {
+                row[offset + j] = F::from_bool(normal_chain_sel[j]);
+            }
+            offset += POSEIDON_LIMBS;
+            for j in 0..POSEIDON_PUBLIC_OUTPUT_LIMBS {
+                row[offset + j] = F::from_bool(merkle_chain_sel[j]);
+            }
+            offset += POSEIDON_PUBLIC_OUTPUT_LIMBS;
+            row[offset] = F::from_bool(mmcs_update_sel);
+            offset += 1;
             for j in 0..POSEIDON_LIMBS {
                 row[offset + j] = F::from_bool(in_ctl[j]);
             }
@@ -353,12 +371,11 @@ fn eval<
         >,
     >,
 ) {
-    // Control flags (new_start, merkle_path, mmcs_bit, in_ctl, out_ctl) are preprocessed columns,
+    // Control flags (new_start, merkle_path, in_ctl, out_ctl) are preprocessed columns,
     // so they are known to the verifier and don't need bool assertions.
+    // Note: mmcs_bit is a value column (not transparent) because it's used in constraints
+    // with the value column mmcs_index_sum.
 
-    let continue_chain = AB::Expr::ONE - next.new_start.clone();
-    let next_merkle = next.merkle_path.clone();
-    let next_not_merkle = AB::Expr::ONE - next_merkle.clone();
     let prev_bit = local.mmcs_bit.clone();
     let local_out = &local.poseidon2.ending_full_rounds[HALF_FULL_ROUNDS - 1].post;
     let next_in = &next.poseidon2.inputs;
@@ -371,9 +388,7 @@ fn eval<
     for limb in 0..POSEIDON_LIMBS {
         for d in 0..D {
             let idx = limb * D + d;
-            let gate = continue_chain.clone()
-                * next_not_merkle.clone()
-                * (AB::Expr::ONE - next.in_ctl[limb].clone());
+            let gate = next.normal_chain_sel[limb].clone();
             builder
                 .when_transition()
                 .when(gate)
@@ -393,20 +408,14 @@ fn eval<
     // Limb 0: chain from out_r[0] (left) or out_r[2] (right), unless in_ctl[0] = 1
     for d in 0..D {
         // Left case: in_{r+1}[0] = out_r[0]
-        let gate_left_0 = continue_chain.clone()
-            * next_merkle.clone()
-            * is_left.clone()
-            * (AB::Expr::ONE - next.in_ctl[0].clone());
+        let gate_left_0 = next.merkle_chain_sel[0].clone() * is_left.clone();
         builder
             .when_transition()
             .when(gate_left_0)
             .assert_zero(next_in[d].clone() - local_out[d].clone());
 
         // Right case: in_{r+1}[0] = out_r[2]
-        let gate_right_0 = continue_chain.clone()
-            * next_merkle.clone()
-            * prev_bit.clone()
-            * (AB::Expr::ONE - next.in_ctl[0].clone());
+        let gate_right_0 = next.merkle_chain_sel[0].clone() * prev_bit.clone();
         builder
             .when_transition()
             .when(gate_right_0)
@@ -416,20 +425,14 @@ fn eval<
     // Limb 1: chain from out_r[1] (left) or out_r[3] (right), unless in_ctl[1] = 1
     for d in 0..D {
         // Left case: in_{r+1}[1] = out_r[1]
-        let gate_left_1 = continue_chain.clone()
-            * next_merkle.clone()
-            * is_left.clone()
-            * (AB::Expr::ONE - next.in_ctl[1].clone());
+        let gate_left_1 = next.merkle_chain_sel[1].clone() * is_left.clone();
         builder
             .when_transition()
             .when(gate_left_1)
             .assert_zero(next_in[D + d].clone() - local_out[D + d].clone());
 
         // Right case: in_{r+1}[1] = out_r[3]
-        let gate_right_1 = continue_chain.clone()
-            * next_merkle.clone()
-            * prev_bit.clone()
-            * (AB::Expr::ONE - next.in_ctl[1].clone());
+        let gate_right_1 = next.merkle_chain_sel[1].clone() * prev_bit.clone();
         builder
             .when_transition()
             .when(gate_right_1)
@@ -443,8 +446,7 @@ fn eval<
     let two = AB::Expr::ONE + AB::Expr::ONE;
     builder
         .when_transition()
-        .when(continue_chain.clone())
-        .when(next_merkle.clone())
+        .when(next.mmcs_update_sel.clone())
         .assert_zero(
             next.mmcs_index_sum.clone()
                 - (local.mmcs_index_sum.clone() * two + local.mmcs_bit.clone()),

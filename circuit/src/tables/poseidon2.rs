@@ -84,6 +84,8 @@ pub type Poseidon2CircuitTrace<F> = Vec<Poseidon2CircuitRow<F>>;
 #[derive(Debug, Clone)]
 pub struct Poseidon2Trace<F> {
     /// All Poseidon2 operations (sponge and compress) in this trace.
+    /// TODO: Replace sponge ops with perm ops - remove HashAbsorb/HashSqueeze operations
+    /// and replace them with permutation operations in trace generation and table.
     pub operations: Poseidon2CircuitTrace<F>,
 }
 
@@ -151,6 +153,8 @@ impl<'a, F: CircuitField, Config: Poseidon2Params> Poseidon2TraceBuilder<'a, F, 
 
     /// Builds the Poseidon2 trace by scanning non-primitive ops with hash executors.
     /// Also maintains state and fills state hints for stateful operations.
+    /// TODO: Replace sponge ops with perm ops - remove HashAbsorb/HashSqueeze operations
+    /// and replace them with permutation operations in trace generation and table.
     pub fn build(self) -> Result<Poseidon2Trace<F>, CircuitError> {
         let mut operations = Vec::new();
 

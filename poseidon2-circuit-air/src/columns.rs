@@ -18,46 +18,54 @@ pub const POSEIDON_PUBLIC_OUTPUT_LIMBS: usize = 2;
 /// - Optional MMCS index accumulator
 ///
 /// Column layout (per spec section 2):
-/// - Value columns: `poseidon2` (contains in[0..3] and out[0..3]), `mmcs_index_sum`
-/// - Transparent columns: `new_start`, `merkle_path`, `mmcs_bit`, CTL flags and indices
+/// - Value columns: `poseidon2` (contains in[0..3] and out[0..3]), `mmcs_index_sum`, `mmcs_bit`
+/// - Transparent columns: `new_start`, `merkle_path`, CTL flags and indices
+/// - Selector columns (not in spec): `normal_chain_sel`, `merkle_chain_sel`, `mmcs_update_sel`
+///   These are precomputed to reduce constraint degree to 3.
 #[repr(C)]
 pub struct Poseidon2CircuitCols<T, P: PermutationColumns<T>> {
     /// The p3 Poseidon2 columns containing the permutation state.
     /// Contains in[0..3] (4 extension limbs input) and out[0..3] (4 extension limbs output).
-    /// See spec section 2.1: Value Columns.
     pub poseidon2: P,
 
     /// Control: If 1, row begins a new independent Poseidon chain.
-    /// See spec section 2.2: new_start.
     pub new_start: T,
     /// Control: 0 → normal sponge/Challenger mode, 1 → Merkle-path mode.
-    /// See spec section 2.2: merkle_path.
     pub merkle_path: T,
-    /// Control: Direction bit for Merkle left/right hashing (only meaningful when merkle_path = 1).
-    /// See spec section 2.2: mmcs_bit.
+    /// Value: Direction bit for Merkle left/right hashing (only meaningful when merkle_path = 1).
+    /// This is a value column (not transparent) because it's used in constraints with mmcs_index_sum.
     pub mmcs_bit: T,
 
     /// Value column: Optional MMCS accumulator (base field, encodes a u32-like integer).
-    /// See spec section 2.1: mmcs_index_sum, and section 6: MMCS Index Accumulator.
     pub mmcs_index_sum: T,
 
+    /// Selector: enables normal chaining for a limb when the previous row's output should fill it.
+    /// Computed as (1 - new_start) * (1 - merkle_path) * (1 - in_ctl[i]).
+    /// NOTE: This column is not in the spec but is added to reduce constraint degree to 3.
+    pub normal_chain_sel: [T; POSEIDON_LIMBS],
+
+    /// Selector: enables Merkle chaining for limbs 0-1 when the previous row's output should fill them.
+    /// Computed as (1 - new_start) * merkle_path * (1 - in_ctl[i]) for i in {0,1}.
+    /// NOTE: This column is not in the spec but is added to reduce constraint degree to 3.
+    pub merkle_chain_sel: [T; POSEIDON_PUBLIC_OUTPUT_LIMBS],
+
+    /// Selector: enables MMCS accumulator updates when chaining in Merkle mode.
+    /// Computed as (1 - new_start) * merkle_path.
+    /// NOTE: This column is not in the spec but is added to reduce constraint degree to 3.
+    pub mmcs_update_sel: T,
+
     /// Input exposure flags: for each limb i, if 1, in[i] must match witness lookup at in_idx[i].
-    /// See spec section 2.2: in_ctl[0..3], and section 3.1: Inputs.
     pub in_ctl: [T; POSEIDON_LIMBS],
     /// Input exposure indices: index into the witness table for each limb.
-    /// See spec section 2.2: in_idx[0..3].
     pub in_idx: [T; POSEIDON_LIMBS],
 
     /// Output exposure flags: for limbs 0-1 only, if 1, out[i] must match witness lookup at out_idx[i].
-    /// See spec section 2.2: out_ctl[0..1], and section 3.2: Outputs.
     /// Note: limbs 2-3 are never publicly exposed (always private).
     pub out_ctl: [T; POSEIDON_PUBLIC_OUTPUT_LIMBS],
     /// Output exposure indices: index into the witness table for limbs 0-1.
-    /// See spec section 2.2: out_idx[0..1].
     pub out_idx: [T; POSEIDON_PUBLIC_OUTPUT_LIMBS],
 
     /// MMCS index exposure: index for CTL exposure of mmcs_index_sum.
-    /// See spec section 2.2: mmcs_index_sum_idx, and section 3.3: MMCS index exposure.
     pub mmcs_index_sum_idx: T,
 }
 
