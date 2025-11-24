@@ -22,7 +22,7 @@ jobs:
           - os: macos-latest
           - os: windows-latest
     runs-on: ${{ matrix.os }}
-    if: "! contains(toJSON(github.event.commits.*.message), '[skip-ci]')"
+    if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[skip-ci]') }}
 
     steps:
       - uses: actions/checkout@v4
@@ -71,7 +71,7 @@ jobs:
   check_embedded:
     name: Build embedded
     runs-on: ubuntu-latest
-    if: "! contains(toJSON(github.event.commits.*.message), '[skip-ci]')"
+    if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[skip-ci]') }}
 
     env:
       target: thumbv7em-none-eabi
@@ -111,7 +111,7 @@ jobs:
   lint:
     name: Formatting and Clippy
     runs-on: ubuntu-latest
-    if: "! contains(toJSON(github.event.commits.*.message), '[skip-ci]')"
+    if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[skip-ci]') }}
 
     steps:
       - uses: actions/checkout@v4
