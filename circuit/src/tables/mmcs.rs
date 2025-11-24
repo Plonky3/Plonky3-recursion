@@ -361,7 +361,7 @@ pub struct MmcsTraceBuilder<'a, F> {
 
 impl<'a, F: CircuitField> MmcsTraceBuilder<'a, F> {
     /// Creates a new MMCS trace builder.
-    pub fn new(
+    pub const fn new(
         circuit: &'a Circuit<F>,
         witness: &'a [Option<F>],
         non_primitive_op_private_data: &'a [Option<NonPrimitiveOpPrivateData<F>>],
@@ -820,7 +820,7 @@ mod tests {
                 assert!(!leaf.is_empty()); // Ensure that there was a leaf for producing the extra state
                 expected_left_values.push(extra_state.clone());
             } else {
-                assert!(leaf.is_empty()); // No extra state means there was no leaf at this level. 
+                assert!(leaf.is_empty()); // No extra state means there was no leaf at this level.
             }
         }
         assert_eq!(path.left_values, expected_left_values);
