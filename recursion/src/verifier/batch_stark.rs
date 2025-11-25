@@ -222,24 +222,20 @@ impl<
                 circuit.alloc_public_inputs(inst.trace_next.len(), "trace next values");
             aggregated_trace_next.extend(trace_next.iter().copied());
 
-            let preprocessed_local = if let Some(prep_local_vals) = &inst.preprocessed_local {
+            let preprocessed_local = inst.preprocessed_local.as_ref().map(|prep_local_vals| {
                 let prep_local =
                     circuit.alloc_public_inputs(prep_local_vals.len(), "preprocessed local values");
                 aggregated_prep_local.extend(prep_local.iter().copied());
 
-                Some(prep_local)
-            } else {
-                None
-            };
-            let preprocessed_next = if let Some(prep_next_vals) = &inst.preprocessed_next {
+                prep_local
+            });
+            let preprocessed_next = inst.preprocessed_next.as_ref().map(|prep_next_vals| {
                 let prep_next =
                     circuit.alloc_public_inputs(prep_next_vals.len(), "preprocessed next values");
                 aggregated_prep_next.extend(prep_next.iter().copied());
 
-                Some(prep_next)
-            } else {
-                None
-            };
+                prep_next
+            });
 
             let mut quotient_chunks = Vec::with_capacity(inst.quotient_chunks.len());
             for chunk in &inst.quotient_chunks {
@@ -596,27 +592,27 @@ where
             }
 
             let inst = &instances[inst_idx];
-            let local =
-                inst.preprocessed_local
-                    .as_ref()
-                    .ok_or(VerificationError::InvalidProofShape(
-                        "Missing preprocessed local columns".to_string(),
-                    ))?;
-            let next =
-                inst.preprocessed_next
-                    .as_ref()
-                    .ok_or(VerificationError::InvalidProofShape(
-                        "Missing preprocessed next columns".to_string(),
-                    ))?;
+            let local = inst.preprocessed_local.as_ref().ok_or_else(|| {
+                VerificationError::InvalidProofShape(
+                    "Missing preprocessed local columns".to_string(),
+                )
+            })?;
+            let next = inst.preprocessed_next.as_ref().ok_or_else(|| {
+                VerificationError::InvalidProofShape(
+                    "Missing preprocessed next columns".to_string(),
+                )
+            })?;
             // Validate that the preprocessed data's base degree matches what we expect.
             let ext_db = degree_bits[inst_idx];
             let expected_base_db = ext_db - config.is_zk();
 
-            let meta = global.instances.instances[inst_idx].as_ref().ok_or(
-                VerificationError::InvalidProofShape(
-                    "Missing preprocessed instance metadata".to_string(),
-                ),
-            )?;
+            let meta = global.instances.instances[inst_idx]
+                .as_ref()
+                .ok_or_else(|| {
+                    VerificationError::InvalidProofShape(
+                        "Missing preprocessed instance metadata".to_string(),
+                    )
+                })?;
             if meta.matrix_index != matrix_index || meta.degree_bits != expected_base_db {
                 return Err(VerificationError::InvalidProofShape(
                     "Preprocessed instance metadata mismatch".to_string(),
