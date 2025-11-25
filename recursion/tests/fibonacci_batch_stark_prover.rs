@@ -1,5 +1,6 @@
 use p3_air::{Air, AirBuilder, BaseAir};
 use p3_baby_bear::{BabyBear, Poseidon2BabyBear};
+use p3_batch_stark::CommonData;
 use p3_challenger::DuplexChallenger;
 use p3_circuit::CircuitBuilder;
 use p3_circuit_prover::air::{AddAir, ConstAir, MulAir, PublicAir, WitnessAir};
@@ -192,10 +193,12 @@ fn test_fibonacci_batch_verifier() {
 
     // Public values (empty for all 5 circuit tables, using base field)
     let pis: Vec<Vec<F>> = vec![vec![]; 5];
+    println!("HERE");
 
     // Build the recursive verification circuit
     let mut circuit_builder = CircuitBuilder::new();
 
+    let common_data = CommonData::empty(native_airs.len());
     // Attach verifier without manually building circuit_airs
     let verifier_inputs = verify_p3_recursion_proof_circuit::<
         MyConfig,
@@ -209,6 +212,7 @@ fn test_fibonacci_batch_verifier() {
         &mut circuit_builder,
         &batch_stark_proof,
         &fri_verifier_params,
+        &common_data,
     )
     .unwrap();
 
@@ -216,6 +220,7 @@ fn test_fibonacci_batch_verifier() {
     let (verification_circuit, _) = circuit_builder.build().unwrap();
     let expected_public_input_len = verification_circuit.public_flat_len;
 
+    let common_data = CommonData { preprocessed: None };
     // Generate all the challenge values for batch proof (uses base field AIRs)
     let all_challenges = generate_batch_challenges(
         &native_airs,
@@ -223,11 +228,13 @@ fn test_fibonacci_batch_verifier() {
         batch_proof,
         &pis,
         Some(&[pow_bits, log_height_max]),
+        &common_data,
     )
     .unwrap();
 
     // Pack values using the builder
-    let public_inputs = verifier_inputs.pack_values(&pis, batch_proof, &all_challenges);
+    let public_inputs =
+        verifier_inputs.pack_values(&pis, batch_proof, &common_data, &all_challenges);
 
     assert_eq!(public_inputs.len(), expected_public_input_len);
     assert!(!public_inputs.is_empty());

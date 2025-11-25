@@ -9,7 +9,7 @@ use core::mem::transmute;
 
 use p3_air::{Air, AirBuilder, BaseAir};
 use p3_baby_bear::{BabyBear, default_babybear_poseidon2_16, default_babybear_poseidon2_24};
-use p3_batch_stark::{BatchProof, StarkGenericConfig, StarkInstance, Val};
+use p3_batch_stark::{BatchProof, CommonData, StarkGenericConfig, StarkInstance, Val};
 use p3_circuit::op::PrimitiveOpType;
 use p3_circuit::ops::MmcsVerifyConfig;
 use p3_circuit::tables::{
@@ -1248,7 +1248,10 @@ where
             })
             .collect();
 
-        let proof = p3_batch_stark::prove_batch(&self.config, instances);
+        let num_instances = instances.len();
+        // TODO: Retrieve common data.
+        let proof =
+            p3_batch_stark::prove_batch(&self.config, instances, &CommonData::empty(num_instances));
 
         // Ensure all primitive table row counts are at least 1
         // RowCounts::new requires non-zero counts, so pad zeros to 1
@@ -1342,8 +1345,16 @@ where
             pvs.push(entry.public_values.clone());
         }
 
-        p3_batch_stark::verify_batch(&self.config, &airs, &proof.proof, &pvs)
-            .map_err(|e| BatchStarkProverError::Verify(format!("{e:?}")))
+        let num_instances = airs.len();
+        // TODO: Take common data as input.
+        p3_batch_stark::verify_batch(
+            &self.config,
+            &airs,
+            &proof.proof,
+            &pvs,
+            &CommonData::empty(num_instances),
+        )
+        .map_err(|e| BatchStarkProverError::Verify(format!("{e:?}")))
     }
 }
 
