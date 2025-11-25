@@ -266,12 +266,12 @@ impl<
                 None
             } else {
                 Some(aggregated_prep_local)
-            }, // Preprocessed values are not supported yet for batch proofs in Plonky3
+            },
             preprocessed_next_targets: if aggregated_prep_next.is_empty() {
                 None
             } else {
                 Some(aggregated_prep_next)
-            }, // Preprocessed values are not supported yet for batch proofs in Plonky3
+            },
             quotient_chunks_targets: aggregated_quotient_chunks,
             random_targets: None,
             _phantom: PhantomData,

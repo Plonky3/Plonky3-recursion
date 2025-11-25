@@ -81,6 +81,8 @@ pub struct PreprocessedInstanceMetas {
 
 /// Per-instance metadata for a preprocessed trace that lives inside a
 /// global preprocessed commitment.
+///
+/// TODO: we can reuse Plonky3's existing PreprocessedInstanceMeta if we derive `Clone` from it.
 #[derive(Clone)]
 pub struct PreprocessedInstanceMeta {
     /// Index of this instance's preprocessed matrix inside the global PCS
