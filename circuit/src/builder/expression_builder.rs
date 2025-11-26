@@ -1,3 +1,11 @@
+//! Expression graph construction and constant pooling.
+//!
+//! The [`ExpressionBuilder`] is the layer for building arithmetic circuits.
+//!
+//! It manages a directed acyclic graph (DAG) of expressions where
+//! - nodes represent field operations,
+//! - edges represent dependencies between expressions.
+
 use alloc::boxed::Box;
 #[cfg(debug_assertions)]
 use alloc::vec;
@@ -5,7 +13,6 @@ use alloc::vec::Vec;
 use core::hash::Hash;
 
 use hashbrown::HashMap;
-use itertools::Itertools;
 use p3_field::PrimeCharacteristicRing;
 
 use crate::expr::{Expr, ExpressionGraph};
@@ -14,27 +21,71 @@ use crate::types::ExprId;
 #[cfg(debug_assertions)]
 use crate::{AllocationEntry, AllocationType};
 
-/// Manages expression graph construction and constant pooling.
+/// Manages expression graph construction, constant pooling, and debug instrumentation.
+///
+/// The expression builder provides a high-level interface for constructing arithmetic
+/// circuits as directed acyclic graphs (DAGs).
+///
+/// Each node in the graph represents a field operation or a special value
+/// (constant, public input, witness hint).
 #[derive(Debug)]
 pub struct ExpressionBuilder<F> {
-    /// The underlying expression graph
+    /// The underlying expression graph storage.
+    ///
+    /// This graph holds all expression nodes in a flat vector, indexed by [`ExprId`].
+    ///
+    /// The graph is append-only: once an expression is added, it never moves or gets
+    /// removed, ensuring stable handles.
     graph: ExpressionGraph<F>,
 
-    /// Builder-level constant pool: value -> unique Const ExprId
+    /// Constant deduplication pool.
+    ///
+    /// Maps field values to their unique [`ExprId`] in the graph.
+    ///
+    /// When a constant is requested via [`add_const`](Self::add_const), this pool is checked first.
+    ///
+    /// If the value exists, the cached ID is returned immediately, avoiding duplicate nodes.
     const_pool: HashMap<F, ExprId>,
 
-    /// Equality constraints to enforce at lowering
+    /// Pending equality constraints.
+    ///
+    /// Each entry `(a, b)` represents a constraint that expressions `a` and `b` must
+    /// evaluate to the same value. These constraints are resolved during the lowering
+    /// phase using Union-Find (DSU) to merge witness slots.
+    ///
+    /// Self-connections `(a, a)` are filtered out to avoid unnecessary work.
     pending_connects: Vec<(ExprId, ExprId)>,
 
-    /// The fillers corresponding to the witness hints sequences.
-    /// The order of fillers must match the order in which the witness hints sequences were allocated.
+    /// Witness hint fillers for computing unconstrained values.
+    ///
+    /// Each filler corresponds to a sequence of witness hints added via
+    /// [`add_witness_hints`](Self::add_witness_hints). The order in this vector
+    /// matches the order of hint sequences in the graph.
+    ///
+    /// During circuit execution, fillers compute concrete witness values from
+    /// their input expressions.
     hints_fillers: Vec<Box<dyn WitnessHintsFiller<F>>>,
 
-    /// Debug log of all allocations
+    /// Complete allocation history for debugging.
+    ///
+    /// Tracks every expression added to the graph, including metadata:
+    /// - Allocation type (Const, Add, Mul, etc.)
+    /// - Human-readable label
+    /// - Expression dependencies
+    /// - Scope context
+    ///
+    /// **Only present in debug builds.**
     #[cfg(debug_assertions)]
     allocation_log: Vec<AllocationEntry>,
 
-    /// Stack of active scopes for organizing allocations
+    /// Hierarchical scope stack for organizing allocations.
+    ///
+    /// Users can push/pop named scopes to organize the allocation log into logical
+    /// groups (e.g., "fibonacci_step", "mmcs_verify", etc.).
+    ///
+    /// The current scope is attached to each allocation.
+    ///
+    /// **Only present in debug builds.**
     #[cfg(debug_assertions)]
     scope_stack: Vec<&'static str>,
 }
@@ -44,15 +95,28 @@ where
     F: Clone + PrimeCharacteristicRing + Eq + Hash,
 {
     /// Creates a new expression builder with zero constant pre-allocated.
+    ///
+    /// The zero constant is always the first node in the graph, accessible via
+    /// [`ExprId::ZERO`].
+    ///
+    /// # Postconditions
+    ///
+    /// After construction:
+    /// - The graph contains exactly one node: `Expr::Const(F::ZERO)`
+    /// - The constant pool contains one entry: `F::ZERO → ExprId::ZERO`
+    /// - All other collections (pending_connects, hints_fillers) are empty
     pub fn new() -> Self {
+        // Initialize an empty expression graph.
         let mut graph = ExpressionGraph::new();
 
-        // Insert Const(0) as the very first node so it has ExprId::ZERO
+        // Pre-allocate the zero constant as the first node.
+        //
+        // This ensures ExprId::ZERO (which is ExprId(0)) always refers to zero.
         let zero_val = F::ZERO;
         let zero_id = graph.add_expr(Expr::Const(zero_val.clone()));
 
-        let mut const_pool = HashMap::new();
-        const_pool.insert(zero_val, zero_id);
+        // Pre-populate the constant pool with zero.
+        let const_pool = [(zero_val, zero_id)].into();
 
         Self {
             graph,
@@ -66,178 +130,437 @@ where
         }
     }
 
-    /// Adds a constant to the expression graph (deduplicated).
+    /// Adds a constant to the expression graph with automatic deduplication.
     ///
-    /// If this value was previously added, returns the original ExprId.
-    #[allow(unused_variables)]
+    /// If this constant value was previously added, returns the existing [`ExprId`]
+    /// handle instead of creating a duplicate node. This ensures the graph contains
+    /// at most one node per unique constant value.
+    ///
+    /// # Arguments
+    ///
+    /// - `val`: The constant field value to add
+    /// - `label`: Human-readable label for debug logging
+    ///
+    /// # Returns
+    ///
+    /// An [`ExprId`] handle to the constant. If `val` was seen before, returns the
+    /// cached ID. Otherwise, creates a new node and returns its ID.
+    ///
+    /// # Debug Behavior
+    ///
+    /// In debug builds, logs the allocation to the allocation log with:
+    /// - Type: `AllocationType::Const`
+    /// - Label: the provided label
+    /// - Dependencies: empty (constants have no dependencies)
+    /// - Scope: the current scope from the scope stack
+    ///
+    /// **Important**: Only new allocations are logged. Returning a cached constant
+    /// does not create a new log entry.
     pub fn add_const(&mut self, val: F, label: &'static str) -> ExprId {
+        // Check if this constant already exists in the pool.
+        if let Some(&cached_id) = self.const_pool.get(&val) {
+            // Found a cached entry. Return it immediately without allocating.
+            return cached_id;
+        }
+
+        // This is a new constant. Add it to the expression graph.
+        let expr_id = self.graph.add_expr(Expr::Const(val.clone()));
+
+        // Insert into the constant pool for future lookups.
+        self.const_pool.insert(val, expr_id);
+
+        // Log the allocation in debug builds only.
+        //
+        // In release builds, this entire call compiles to nothing.
         #[cfg(debug_assertions)]
-        let current_scope = self.current_scope();
-
-        *self.const_pool.entry(val).or_insert_with_key(|k| {
-            let expr_id = self.graph.add_expr(Expr::Const(k.clone()));
-
-            #[cfg(debug_assertions)]
-            self.allocation_log.push(AllocationEntry {
-                expr_id,
-                alloc_type: AllocationType::Const,
-                label,
-                dependencies: vec![],
-                scope: current_scope,
-            });
-
-            expr_id
-        })
-    }
-
-    /// Adds a public input expression to the graph.
-    #[allow(unused_variables)]
-    pub fn add_public(&mut self, pos: usize, label: &'static str) -> ExprId {
-        let expr_id = self.graph.add_expr(Expr::Public(pos));
-
-        #[cfg(debug_assertions)]
-        self.allocation_log.push(AllocationEntry {
-            expr_id,
-            alloc_type: AllocationType::Public,
-            label,
-            dependencies: vec![],
-            scope: self.current_scope(),
-        });
+        self.log_alloc(expr_id, label, || (AllocationType::Const, vec![]));
+        #[cfg(not(debug_assertions))]
+        self.log_alloc(expr_id, label, || ());
 
         expr_id
     }
 
-    #[allow(unused_variables)]
-    /// Adds a witness hint that belongs to a sequence of witness hints constructed
-    /// from the same filler, indicating wether is the last hint in the sequence.
+    /// Adds a public input expression to the graph.
+    ///
+    /// Public inputs are values known to both the prover and verifier. They are
+    /// identified by their position in the public input vector.
+    ///
+    /// **Important**: Unlike constants, public inputs are **not** deduplicated. Each
+    /// call creates a new expression node, even if the position is the same. This is
+    /// intentional: multiple references to the same public input are treated as
+    /// independent expressions that happen to read from the same source.
+    ///
+    /// # Arguments
+    ///
+    /// - `pos`: Zero-based index into the public input vector
+    /// - `label`: Human-readable label for debug logging
+    ///
+    /// # Returns
+    ///
+    /// A new [`ExprId`] handle to the public input expression.
+    pub fn add_public(&mut self, pos: usize, label: &'static str) -> ExprId {
+        // Create a new Public expression node in the graph.
+        //
+        // The `pos` field indicates which public input slot this expression reads from.
+        let expr_id = self.graph.add_expr(Expr::Public(pos));
+
+        // Log the allocation in debug builds.
+        //
+        // Public inputs have no dependencies (they are leaf nodes in the expression DAG).
+        #[cfg(debug_assertions)]
+        self.log_alloc(expr_id, label, || (AllocationType::Public, vec![]));
+        #[cfg(not(debug_assertions))]
+        self.log_alloc(expr_id, label, || ());
+
+        expr_id
+    }
+
+    /// Adds a single witness hint to a sequence of hints.
+    ///
+    /// Witness hints represent unconstrained prover values. They are organized in
+    /// sequences where each hint knows whether it is the last in its sequence via
+    /// the `is_last_hint` flag.
+    ///
+    /// # Arguments
+    ///
+    /// - `is_last_hint`: Whether this hint concludes its sequence
+    /// - `label`: Human-readable label for debug logging
+    ///
+    /// # Returns
+    ///
+    /// An [`ExprId`] handle to the witness hint expression.
+    ///
+    /// # Sequencing Invariant
+    ///
+    /// Hints within a sequence must be added consecutively, and exactly one hint
+    /// in each sequence must have `is_last_hint: true`. This allows the execution
+    /// engine to match hints with their corresponding fillers.
     pub fn add_witness_hint_in_sequence(
         &mut self,
         is_last_hint: bool,
         label: &'static str,
     ) -> ExprId {
+        // Create a new Witness expression node.
+        //
+        // The `is_last_hint` flag is stored in the node so the execution engine
+        // can identify sequence boundaries without external metadata.
         let expr_id = self.graph.add_expr(Expr::Witness { is_last_hint });
 
+        // Log the allocation in debug builds.
+        //
+        // Witness hints are leaf nodes with no dependencies.
         #[cfg(debug_assertions)]
-        self.allocation_log.push(AllocationEntry {
-            expr_id,
-            alloc_type: AllocationType::WitnessHint,
-            label,
-            dependencies: vec![],
-            scope: self.current_scope(),
-        });
+        self.log_alloc(expr_id, label, || (AllocationType::WitnessHint, vec![]));
+        #[cfg(not(debug_assertions))]
+        self.log_alloc(expr_id, label, || ());
 
         expr_id
     }
 
-    /// Adds `filler.n_outputs()` witness hints to the graph.
-    /// During circuit evaluation, the `filler` will derive the concrete
-    /// witness values for these hints.
-    #[allow(unused_variables)]
+    /// Adds a sequence of witness hints with an associated filler.
+    ///
+    /// This is the primary method for adding unconstrained witness values to the circuit.
+    /// The filler object computes concrete witness values during circuit execution based
+    /// on its input expressions.
+    ///
+    /// # Arguments
+    ///
+    /// - `filler`: A witness hint filler implementing [`WitnessHintsFiller<F>`]
+    /// - `label`: Human-readable label for debug logging
+    ///
+    /// # Returns
+    ///
+    /// A vector of [`ExprId`] handles, one for each output of the filler.
+    ///
+    /// # Filler Registration
+    ///
+    /// The filler is stored in the `hints_fillers` vector in the order it was added.
+    /// During circuit execution, fillers are invoked in this order to compute witness
+    /// values.
     #[must_use]
     pub fn add_witness_hints<W: 'static + WitnessHintsFiller<F>>(
         &mut self,
         filler: W,
         label: &'static str,
     ) -> Vec<ExprId> {
+        // Query the number of outputs this filler will produce.
         let n_outputs = filler.n_outputs();
-        let expr_ids = (0..n_outputs)
-            .map(|i| self.add_witness_hint_in_sequence(i == n_outputs - 1, label))
-            .collect_vec();
+
+        // Pre-allocate the vector with exact capacity.
+        //
+        // This is possible since we know the exact size upfront.
+        let mut expr_ids = Vec::with_capacity(n_outputs);
+
+        // Add each hint in sequence.
+        //
+        // The last hint (i == n_outputs - 1) is marked with `is_last_hint: true`.
+        for i in 0..n_outputs {
+            expr_ids.push(self.add_witness_hint_in_sequence(i == n_outputs - 1, label));
+        }
+
+        // Register the filler for later use during execution.
+        //
+        // The order of fillers in this vector must match the order of hint sequences
+        // in the graph.
         self.hints_fillers.push(Box::new(filler));
+
         expr_ids
     }
 
     /// Adds an addition expression to the graph.
-    #[allow(unused_variables)]
+    ///
+    /// Represents the field addition operation: `result = lhs + rhs`.
+    ///
+    /// # Arguments
+    ///
+    /// - `lhs`: Left operand expression
+    /// - `rhs`: Right operand expression
+    /// - `label`: Human-readable label for debug logging
+    ///
+    /// # Returns
+    ///
+    /// An [`ExprId`] handle to the addition expression.
     pub fn add_add(&mut self, lhs: ExprId, rhs: ExprId, label: &'static str) -> ExprId {
-        let expr_id = self.graph.add_expr(Expr::Add { lhs, rhs });
-
-        #[cfg(debug_assertions)]
-        self.allocation_log.push(AllocationEntry {
-            expr_id,
-            alloc_type: AllocationType::Add,
+        self.add_bin_op(
+            Expr::Add { lhs, rhs },
             label,
-            dependencies: vec![vec![lhs], vec![rhs]],
-            scope: self.current_scope(),
-        });
-
-        expr_id
+            #[cfg(debug_assertions)]
+            AllocationType::Add,
+            lhs,
+            rhs,
+        )
     }
 
     /// Adds a subtraction expression to the graph.
-    #[allow(unused_variables)]
+    ///
+    /// Represents the field subtraction operation: `result = lhs - rhs`.
+    ///
+    /// **Note**: During lowering, subtraction is encoded as addition:
+    /// `lhs - rhs = result` becomes `result + rhs = lhs` in the Add table.
+    ///
+    /// # Arguments
+    ///
+    /// - `lhs`: Left operand (minuend)
+    /// - `rhs`: Right operand (subtrahend)
+    /// - `label`: Human-readable label for debug logging
+    ///
+    /// # Returns
+    ///
+    /// An [`ExprId`] handle to the subtraction expression.
     pub fn add_sub(&mut self, lhs: ExprId, rhs: ExprId, label: &'static str) -> ExprId {
-        let expr_id = self.graph.add_expr(Expr::Sub { lhs, rhs });
-
-        #[cfg(debug_assertions)]
-        self.allocation_log.push(AllocationEntry {
-            expr_id,
-            alloc_type: AllocationType::Sub,
+        self.add_bin_op(
+            Expr::Sub { lhs, rhs },
             label,
-            dependencies: vec![vec![lhs], vec![rhs]],
-            scope: self.current_scope(),
-        });
-
-        expr_id
+            #[cfg(debug_assertions)]
+            AllocationType::Sub,
+            lhs,
+            rhs,
+        )
     }
 
     /// Adds a multiplication expression to the graph.
-    #[allow(unused_variables)]
+    ///
+    /// Represents the field multiplication operation: `result = lhs * rhs`.
+    ///
+    /// # Arguments
+    ///
+    /// - `lhs`: Left operand
+    /// - `rhs`: Right operand
+    /// - `label`: Human-readable label for debug logging
+    ///
+    /// # Returns
+    ///
+    /// An [`ExprId`] handle to the multiplication expression.
     pub fn add_mul(&mut self, lhs: ExprId, rhs: ExprId, label: &'static str) -> ExprId {
-        let expr_id = self.graph.add_expr(Expr::Mul { lhs, rhs });
-
-        #[cfg(debug_assertions)]
-        self.allocation_log.push(AllocationEntry {
-            expr_id,
-            alloc_type: AllocationType::Mul,
+        self.add_bin_op(
+            Expr::Mul { lhs, rhs },
             label,
-            dependencies: vec![vec![lhs], vec![rhs]],
-            scope: self.current_scope(),
-        });
-
-        expr_id
+            #[cfg(debug_assertions)]
+            AllocationType::Mul,
+            lhs,
+            rhs,
+        )
     }
 
     /// Adds a division expression to the graph.
-    #[allow(unused_variables)]
+    ///
+    /// Represents the field division operation: `result = lhs / rhs`.
+    ///
+    /// **Note**: During lowering, division is encoded as multiplication:
+    /// `lhs / rhs = result` becomes `result * rhs = lhs` in the Mul table.
+    ///
+    /// # Arguments
+    ///
+    /// - `lhs`: Left operand (dividend)
+    /// - `rhs`: Right operand (divisor, must be non-zero)
+    /// - `label`: Human-readable label for debug logging
+    ///
+    /// # Returns
+    ///
+    /// An [`ExprId`] handle to the division expression.
     pub fn add_div(&mut self, lhs: ExprId, rhs: ExprId, label: &'static str) -> ExprId {
-        let expr_id = self.graph.add_expr(Expr::Div { lhs, rhs });
-
-        #[cfg(debug_assertions)]
-        self.allocation_log.push(AllocationEntry {
-            expr_id,
-            alloc_type: AllocationType::Div,
+        self.add_bin_op(
+            Expr::Div { lhs, rhs },
             label,
-            dependencies: vec![vec![lhs], vec![rhs]],
-            scope: self.current_scope(),
-        });
+            #[cfg(debug_assertions)]
+            AllocationType::Div,
+            lhs,
+            rhs,
+        )
+    }
+
+    /// Internal helper for adding binary operations.
+    ///
+    /// # Arguments
+    ///
+    /// - `expr`: The binary expression variant to add (Add/Sub/Mul/Div)
+    /// - `label`: Human-readable label for debug logging
+    /// - `alloc_type`: Allocation type for debug logging (only exists in debug builds)
+    /// - `lhs`: Left operand dependency
+    /// - `rhs`: Right operand dependency
+    ///
+    /// # Returns
+    ///
+    /// An [`ExprId`] handle to the newly created expression.
+    #[inline(always)]
+    #[allow(unused_variables)]
+    fn add_bin_op(
+        &mut self,
+        expr: Expr<F>,
+        label: &'static str,
+        #[cfg(debug_assertions)] alloc_type: AllocationType,
+        lhs: ExprId,
+        rhs: ExprId,
+    ) -> ExprId {
+        // Add the expression to the graph.
+        let expr_id = self.graph.add_expr(expr);
+
+        // Log the allocation with dependencies.
+        //
+        // Binary operations have two dependencies: one for lhs, one for rhs.
+        #[cfg(debug_assertions)]
+        self.log_alloc(expr_id, label, || (alloc_type, vec![vec![lhs], vec![rhs]]));
+        #[cfg(not(debug_assertions))]
+        self.log_alloc(expr_id, label, || ());
 
         expr_id
     }
 
-    /// Connects two expressions, enforcing equality.
+    /// Enforces equality between two expressions.
+    ///
+    /// Adds a pending constraint that expressions `a` and `b` must evaluate to
+    /// the same value. During the lowering phase, these constraints are resolved
+    /// using Union-Find (DSU) to merge the witness slots for `a` and `b`.
+    ///
+    /// # Arguments
+    ///
+    /// - `a`: First expression
+    /// - `b`: Second expression
+    ///
+    /// # Self-Connection Optimization
+    ///
+    /// If `a == b` (same expression), this is a no-op. No constraint is added
+    /// because an expression is trivially equal to itself.
+    ///
+    /// # Constraint Resolution
+    ///
+    /// Constraints are not resolved immediately. They are stored in the
+    /// `pending_connects` vector and processed during circuit compilation.
     pub fn connect(&mut self, a: ExprId, b: ExprId) {
+        // Skip self-connections as they are trivially satisfied.
         if a != b {
             self.pending_connects.push((a, b));
         }
     }
 
-    /// Returns a reference to the expression graph.
+    /// Returns an immutable reference to the underlying expression graph.
+    ///
+    /// The graph provides access to all expression nodes and their relationships.
+    ///
+    /// # Returns
+    ///
+    /// A reference to the [`ExpressionGraph`] containing all expressions.
+    #[inline]
     pub const fn graph(&self) -> &ExpressionGraph<F> {
         &self.graph
     }
 
-    /// Returns a reference to pending connections.
+    /// Returns a slice of pending equality constraints.
+    ///
+    /// Each constraint `(a, b)` represents an assertion that expressions `a` and `b`
+    /// must evaluate to the same value.
+    ///
+    /// # Returns
+    ///
+    /// A slice of `(ExprId, ExprId)` pairs representing pending connections.
+    #[inline]
     pub fn pending_connects(&self) -> &[(ExprId, ExprId)] {
         &self.pending_connects
     }
 
-    /// Returns a reference to the hints fillers.
+    /// Returns a slice of registered witness hint fillers.
+    ///
+    /// Fillers are stored in the order they were added via [`add_witness_hints`](Self::add_witness_hints).
+    ///
+    /// # Returns
+    ///
+    /// A slice of boxed [`WitnessHintsFiller`] trait objects.
+    #[inline]
     pub fn hints_fillers(&self) -> &[Box<dyn WitnessHintsFiller<F>>] {
         &self.hints_fillers
     }
 
-    /// Logs a non-primitive operation allocation.
+    /// Centralized logging helper for debug builds.
+    ///
+    /// # Arguments
+    ///
+    /// - `id`: The expression ID being logged
+    /// - `label`: Human-readable label
+    /// - `info_fn`: Closure that produces allocation metadata **only when needed**
+    #[cfg(debug_assertions)]
+    #[inline(always)]
+    fn log_alloc<Info>(&mut self, id: ExprId, label: &'static str, info_fn: Info)
+    where
+        Info: FnOnce() -> (AllocationType, Vec<Vec<ExprId>>),
+    {
+        // Execute the closure to get allocation metadata.
+        let (alloc_type, dependencies) = info_fn();
+
+        // Capture the current scope from the stack.
+        let scope = self.scope_stack.last().copied();
+
+        // Add an entry to the allocation log.
+        self.allocation_log.push(AllocationEntry {
+            expr_id: id,
+            alloc_type,
+            label,
+            dependencies,
+            scope,
+        });
+    }
+
+    /// No-op logging helper for release builds.
+    #[cfg(not(debug_assertions))]
+    #[inline(always)]
+    #[allow(clippy::needless_pass_by_ref_mut)]
+    fn log_alloc<Info>(&mut self, _id: ExprId, _label: &'static str, _info_fn: Info)
+    where
+        Info: FnOnce(),
+    {
+        // Intentionally empty - compiles to nothing in release builds.
+    }
+
+    /// Logs a non-primitive operation allocation (debug builds only).
+    ///
+    /// Non-primitive operations (MMCS, FRI, Poseidon2, etc.) are not part of the
+    /// standard expression types but need to be tracked in the allocation log.
+    ///
+    /// # Arguments
+    ///
+    /// - `op_id`: The non-primitive operation ID
+    /// - `op_type`: The type of operation (e.g., `NonPrimitiveOpType::MmcsVerify`)
+    /// - `dependencies`: Expression dependencies for this operation
+    /// - `label`: Human-readable label
     #[cfg(debug_assertions)]
     pub fn log_non_primitive_op(
         &mut self,
@@ -246,50 +569,99 @@ where
         dependencies: Vec<Vec<ExprId>>,
         label: &'static str,
     ) {
+        // Capture the current scope.
+        let scope = self.scope_stack.last().copied();
+
+        // Add to allocation log.
+        //
+        // Non-primitive operations are stored with a special allocation type
+        // that includes the operation variant.
         self.allocation_log.push(AllocationEntry {
             expr_id: ExprId(op_id.0),
             alloc_type: AllocationType::NonPrimitiveOp(op_type),
             label,
             dependencies,
-            scope: self.current_scope(),
+            scope,
         });
     }
 
-    /// Pushes a new scope onto the scope stack.
-    #[cfg(debug_assertions)]
+    /// Pushes a new scope onto the scope stack (debug builds only).
+    ///
+    /// Scopes provide hierarchical organization for the allocation log. Subsequent
+    /// allocations will be tagged with this scope until it is popped.
+    ///
+    /// # Arguments
+    ///
+    /// - `scope`: Human-readable scope name
+    #[allow(unused_variables)]
+    #[allow(clippy::missing_const_for_fn)]
     pub fn push_scope(&mut self, scope: &'static str) {
+        #[cfg(debug_assertions)]
         self.scope_stack.push(scope);
     }
 
-    /// Pops the current scope from the scope stack.
-    #[cfg(debug_assertions)]
+    /// Pops the current scope from the scope stack (debug builds only).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the scope stack is empty (mismatched push/pop).
+    #[allow(clippy::missing_const_for_fn)]
     pub fn pop_scope(&mut self) {
+        #[cfg(debug_assertions)]
         self.scope_stack.pop();
     }
 
-    /// Gets the current scope (if any).
+    /// Returns the current scope (debug builds only).
+    ///
+    /// Returns the name of the most recently pushed scope, or `None` if no scope is active.
+    ///
+    /// # Returns
+    ///
+    /// - `Some(&'static str)` - The name of the current scope
+    /// - `None` - No active scope
     #[cfg(debug_assertions)]
-    fn current_scope(&self) -> Option<&'static str> {
+    pub fn current_scope(&self) -> Option<&'static str> {
         self.scope_stack.last().copied()
     }
 
-    /// Returns a reference to the allocation log.
+    /// Returns a reference to the allocation log (debug builds only).
+    ///
+    /// Provides read-only access to all allocation entries recorded during circuit
+    /// construction. Useful for testing and verifying allocation behavior.
+    ///
+    /// # Returns
+    ///
+    /// A slice of [`AllocationEntry`] containing all recorded allocations.
     #[cfg(debug_assertions)]
     pub fn allocation_log(&self) -> &[AllocationEntry] {
         &self.allocation_log
     }
 
-    /// Dump the allocation log.
+    /// Dumps the allocation log to stdout (debug builds only).
     ///
-    /// If debug_assertions are not enabled, this is a no-op.
+    /// Prints a formatted view of all allocations, including their types, labels,
+    /// dependencies, and scopes. Useful for debugging circuit construction.
+    ///
+    /// # Output
+    ///
+    /// In debug builds, outputs a detailed allocation report. In release builds,
+    /// this method does nothing.
+    #[allow(clippy::missing_const_for_fn)]
     pub fn dump_allocation_log(&self) {
         #[cfg(debug_assertions)]
         crate::alloc_entry::dump_allocation_log(&self.allocation_log);
     }
 
-    /// List all unique scopes in the allocation log.
+    /// Lists all unique scopes in the allocation log.
     ///
-    /// Returns an empty vector if debug_assertions are not enabled.
+    /// Returns a vector of scope names that appear in the allocation log,
+    /// with duplicates removed.
+    ///
+    /// # Returns
+    ///
+    /// - **Debug builds**: Vector of unique scope names
+    /// - **Release builds**: Empty vector (no scopes tracked)
+    #[allow(clippy::missing_const_for_fn)]
     pub fn list_scopes(&self) -> Vec<&'static str> {
         #[cfg(debug_assertions)]
         {
@@ -335,8 +707,9 @@ mod tests {
         }
 
         // Const pool should contain zero
-        assert_eq!(builder.const_pool.len(), 1);
-        assert!(builder.const_pool.contains_key(&BabyBear::ZERO));
+        let mut expected_const_pool = HashMap::new();
+        expected_const_pool.insert(BabyBear::ZERO, ExprId::ZERO);
+        assert_eq!(builder.const_pool, expected_const_pool);
 
         // No pending connections
         assert!(builder.pending_connects.is_empty());

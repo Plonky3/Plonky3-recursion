@@ -212,19 +212,17 @@ impl<F: CircuitField> CircuitRunner<F> {
                         .collect::<Result<Vec<F>, _>>()?;
 
                     // Retrieve current state for the filler if applicable
-                    let state = if let Some(state_id) = filler.state_id() {
-                        filler_state.get(&state_id)
-                    } else {
-                        None
-                    };
+                    let state = filler
+                        .state_id()
+                        .and_then(|state_id| filler_state.get(&state_id));
 
                     let (outputs_val, next_state) = filler.compute_outputs(inputs_val, state)?;
 
                     // Update the filler state if applicable
-                    if let Some(state_id) = filler.state_id() {
-                        if let Some(state) = next_state {
-                            filler_state.insert(state_id, state);
-                        }
+                    if let Some(state_id) = filler.state_id()
+                        && let Some(state) = next_state
+                    {
+                        filler_state.insert(state_id, state);
                     }
 
                     for (&output, &output_val) in zip_eq(
@@ -236,7 +234,7 @@ impl<F: CircuitField> CircuitRunner<F> {
                             got: outputs_val.len(),
                         },
                     )? {
-                        self.set_witness(output, output_val)?
+                        self.set_witness(output, output_val)?;
                     }
                 }
                 Op::NonPrimitiveOpWithExecutor { .. } => {

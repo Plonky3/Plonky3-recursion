@@ -207,18 +207,18 @@ where
                         // `Witness{false}, ..., Witness{false}, Witness{true}`.
                         // Therefore, this error can only occur if the expression lowerer is not being used
                         // with the circuit builder as intended.
-                        let filler = fillers_iter.next().ok_or(
+                        let filler = fillers_iter.next().ok_or_else(|| {
                             CircuitBuilderError::MissingWitnessFiller {
                                 sequence: hints_sequence.clone(),
-                            },
-                        )?;
+                            }
+                        })?;
                         let inputs = filler
                             .inputs()
                             .iter()
                             .map(|expr_id| {
                                 expr_to_widx
                                     .get(expr_id)
-                                    .ok_or(CircuitBuilderError::MissingExprMapping {
+                                    .ok_or_else(|| CircuitBuilderError::MissingExprMapping {
                                         expr_id: *expr_id,
                                         context: "Unconstrained op".to_string(),
                                     })

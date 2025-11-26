@@ -149,7 +149,7 @@ mod tests {
 
         let trace = ConstTrace {
             index: const_indices,
-            values: const_values.clone(),
+            values: const_values,
         };
 
         // Convert to matrix using the ConstAir

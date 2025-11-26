@@ -302,7 +302,7 @@ struct FriSetup {
 }
 
 impl FriSetup {
-    fn new(
+    const fn new(
         pcs: PCS,
         perm: Perm<16>,
         log_blowup: usize,

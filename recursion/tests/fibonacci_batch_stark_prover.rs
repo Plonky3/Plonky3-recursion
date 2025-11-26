@@ -140,8 +140,8 @@ fn test_fibonacci_batch_verifier() {
     let fri_params = create_test_fri_params(challenge_mmcs, 0);
 
     // Create config for proving
-    let pcs_proving = MyPcs::new(dft, val_mmcs.clone(), fri_params);
-    let challenger_proving = Challenger::new(perm.clone());
+    let pcs_proving = MyPcs::new(dft, val_mmcs, fri_params);
+    let challenger_proving = Challenger::new(perm);
     let config_proving = MyConfig::new(pcs_proving, challenger_proving);
 
     let table_packing = TablePacking::new(1, 4, 1);

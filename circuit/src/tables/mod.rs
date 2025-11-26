@@ -125,6 +125,7 @@ where
 }
 
 impl<F: alloc::fmt::Debug> Traces<F> {
+    #[allow(clippy::missing_const_for_fn)]
     pub fn dump_primitive_traces_log(&self) {
         #[cfg(debug_assertions)]
         {

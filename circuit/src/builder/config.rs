@@ -45,7 +45,7 @@ impl BuilderConfig {
     }
 
     /// Enables FRI verification operations.
-    pub fn enable_fri(&mut self) {
+    pub const fn enable_fri(&mut self) {
         // TODO: Add FRI ops when available.
     }
 

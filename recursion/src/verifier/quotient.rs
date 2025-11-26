@@ -131,17 +131,17 @@ fn vanishing_poly_at_point_native<
     Domain,
 >(
     pcs: &SC::Pcs,
-    domain: Domain,
+    domain: &Domain,
     point: SC::Challenge,
 ) -> SC::Challenge
 where
     SC::Pcs: RecursivePcs<SC, InputProof, OpeningProof, Comm, Domain>,
 {
     // Normalize: compute point/g where g is the coset generator
-    let normalized = point * pcs.first_point(&domain).inverse();
+    let normalized = point * pcs.first_point(domain).inverse();
 
     // Exponentiate: compute (point/g)^n where n = 2^(log_size)
-    let power = normalized.exp_power_of_2(pcs.log_size(&domain));
+    let power = normalized.exp_power_of_2(pcs.log_size(domain));
 
     // Subtract: Z_H(point) = (point/g)^n - 1
     power - SC::Challenge::ONE
@@ -198,7 +198,7 @@ where
     let vp_zeta_values = quotient_chunks_domains
         .iter()
         .map(|&domain| {
-            vanishing_poly_at_point_circuit::<SC, _, _, _, _>(pcs, domain, zeta, circuit)
+            vanishing_poly_at_point_circuit::<SC, _, _, _, _>(pcs, &domain, zeta, circuit)
         })
         .collect_vec();
 
@@ -232,7 +232,7 @@ where
                             OpeningProof,
                             Comm,
                             Domain,
-                        >(pcs, domain_j, fp_i)
+                        >(pcs, &domain_j, fp_i)
                     })
         })
         .collect_vec();
@@ -375,7 +375,7 @@ fn vanishing_poly_at_point_circuit<
     Domain,
 >(
     pcs: &SC::Pcs,
-    domain: Domain,
+    domain: &Domain,
     point: Target,
     circuit: &mut CircuitBuilder<SC::Challenge>,
 ) -> Target
@@ -385,13 +385,13 @@ where
     // Normalize: compute point/g where g is the coset generator
     //
     // Cost: 1 multiplication constraint
-    let inv = circuit.add_const(pcs.first_point(&domain).inverse());
+    let inv = circuit.add_const(pcs.first_point(domain).inverse());
     let mul = circuit.mul(point, inv);
 
     // Exponentiate: compute (point/g)^n where n = 2^(log_size)
     //
     // Cost: log_2(n) squaring constraints
-    let exp = circuit.exp_power_of_2(mul, pcs.log_size(&domain));
+    let exp = circuit.exp_power_of_2(mul, pcs.log_size(domain));
 
     // Subtract: Z_H(point) = (point/g)^n - 1
     //

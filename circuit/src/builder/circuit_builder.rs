@@ -65,7 +65,7 @@ where
     }
 
     /// Returns an immutable reference to the config.
-    pub fn config(&self) -> &BuilderConfig {
+    pub const fn config(&self) -> &BuilderConfig {
         &self.config
     }
 
@@ -106,7 +106,7 @@ where
     }
 
     /// Enables FRI verification operations.
-    pub fn enable_fri(&mut self) {
+    pub const fn enable_fri(&mut self) {
         self.config.enable_fri();
     }
 
@@ -153,7 +153,7 @@ where
     }
 
     /// Returns the current public input count.
-    pub fn public_input_count(&self) -> usize {
+    pub const fn public_input_count(&self) -> usize {
         self.public_tracker.count()
     }
 
@@ -395,6 +395,7 @@ where
     ///
     /// If debug_assertions are not enabled, this is a no-op.
     #[allow(unused_variables)]
+    #[allow(clippy::missing_const_for_fn)]
     pub fn push_scope(&mut self, scope: &'static str) {
         #[cfg(debug_assertions)]
         self.expr_builder.push_scope(scope);
@@ -403,6 +404,7 @@ where
     /// Pops the current scope from the scope stack.
     ///
     /// If debug_assertions are not enabled, this is a no-op.
+    #[allow(clippy::missing_const_for_fn)]
     pub fn pop_scope(&mut self) {
         #[cfg(debug_assertions)]
         self.expr_builder.pop_scope();
@@ -411,6 +413,7 @@ where
     /// Dumps the allocation log.
     ///
     /// If debug_assertions are not enabled, this is a no-op.
+    #[allow(clippy::missing_const_for_fn)]
     pub fn dump_allocation_log(&self) {
         self.expr_builder.dump_allocation_log();
     }
@@ -418,6 +421,7 @@ where
     /// Lists all unique scopes in the allocation log.
     ///
     /// Returns an empty vector if debug_assertions are not enabled.
+    #[allow(clippy::missing_const_for_fn)]
     pub fn list_scopes(&self) -> Vec<&'static str> {
         self.expr_builder.list_scopes()
     }

@@ -205,7 +205,7 @@ where
                 randomized_quotient_chunks_domains.iter(),
                 opened_values.quotient_chunks.clone(),
             )
-            .map(|(domain, values)| (*domain, vec![(zeta, values.clone())]))
+            .map(|(domain, values)| (*domain, vec![(zeta, values)]))
             .collect::<Vec<_>>(),
         ),
     ]);

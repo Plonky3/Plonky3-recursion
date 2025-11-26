@@ -1,7 +1,6 @@
 //! This module provides type-safe builders and helper functions
 //! for constructing public inputs for recursive verification circuits.
 
-use alloc::vec;
 use alloc::vec::Vec;
 
 use p3_batch_stark::BatchProof;
@@ -310,7 +309,7 @@ where
     pub fn allocate(
         circuit: &mut CircuitBuilder<SC::Challenge>,
         proof: &Proof<SC>,
-        preprocessed_commit: Option<Com<SC>>,
+        preprocessed_commit: Option<&Com<SC>>,
         num_air_public_inputs: usize,
     ) -> Self {
         // Allocate air public inputs
@@ -357,11 +356,9 @@ where
     {
         let proof_values = ProofTargets::<SC, Comm, OpeningProof>::get_values(proof);
 
-        let preprocessed = if let Some(prep_comm) = preprocessed_commit {
-            Comm::get_values(prep_comm)
-        } else {
-            vec![]
-        };
+        let preprocessed = preprocessed_commit
+            .as_ref()
+            .map_or_else(Vec::new, |prep_comm| Comm::get_values(prep_comm));
 
         construct_stark_verifier_inputs(
             air_public_values,

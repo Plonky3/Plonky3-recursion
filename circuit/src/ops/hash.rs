@@ -94,11 +94,6 @@ mod tests {
     use p3_baby_bear::{BabyBear, default_babybear_poseidon2_16};
     use p3_field::PrimeCharacteristicRing;
     use p3_symmetric::{CryptographicHasher, PaddingFreeSponge};
-    use tracing_forest::ForestLayer;
-    use tracing_forest::util::LevelFilter;
-    use tracing_subscriber::layer::SubscriberExt;
-    use tracing_subscriber::util::SubscriberInitExt;
-    use tracing_subscriber::{EnvFilter, Registry};
 
     use super::*;
     use crate::tables::{Poseidon2Params, generate_poseidon2_trace};
@@ -116,21 +111,8 @@ mod tests {
         const PARTIAL_ROUNDS: usize = 13;
     }
 
-    fn init_logger() {
-        let env_filter = EnvFilter::builder()
-            .with_default_directive(LevelFilter::INFO.into())
-            .from_env_lossy();
-
-        Registry::default()
-            .with(env_filter)
-            .with(ForestLayer::default())
-            .init();
-    }
-
     #[test]
     fn test_hash_squeeze() {
-        init_logger();
-
         let mut builder = CircuitBuilder::<BabyBear>::new();
         builder.enable_hash_squeeze(
             &HashConfig { rate: 8 },
@@ -156,14 +138,12 @@ mod tests {
 
         for (i, &value) in expected_value.iter().enumerate() {
             // The first 2 values are the constants 0, always present, and 1.
-            assert_eq!(value, traces.witness_trace.values[2 + i])
+            assert_eq!(value, traces.witness_trace.values[2 + i]);
         }
     }
 
     #[test]
     fn test_hash_squeeze_with_state() {
-        init_logger();
-
         let mut builder = CircuitBuilder::<BabyBear>::new();
         builder.enable_hash_squeeze(
             &HashConfig { rate: 8 },
@@ -189,13 +169,9 @@ mod tests {
         // Squeeze again without resetting the state
         let _ = builder.add_hash_squeeze(&input, permutation.clone(), false);
 
-        builder.dump_allocation_log();
-
         let circuit = builder.build().unwrap().0;
         let runner = circuit.runner();
         let traces = runner.run().unwrap();
-
-        traces.dump_primitive_traces_log();
 
         let hasher = PaddingFreeSponge::<_, 16, 8, 8>::new(permutation);
         let input = [
@@ -229,23 +205,20 @@ mod tests {
         let expected_first_digest = hasher.hash_slice(&input);
         let expected_second_digest = hasher.hash_slice(&repeated_input);
 
-        tracing::debug!("exepcted_first_diges = {:?}", expected_first_digest);
-        tracing::debug!("expected_second_digest = {:?}", expected_second_digest);
-
         // Verify first digest
         for (i, &value) in expected_second_digest.iter().enumerate() {
             // The first two witnesses are constants 0 and 1.
-            assert_eq!(value, traces.witness_trace.values[2 + i])
+            assert_eq!(value, traces.witness_trace.values[2 + i]);
         }
 
         // Verify second digest
         for (i, &value) in expected_first_digest.iter().enumerate() {
-            assert_eq!(value, traces.witness_trace.values[10 + i])
+            assert_eq!(value, traces.witness_trace.values[10 + i]);
         }
 
         // Verify third digest
         for (i, &value) in expected_second_digest.iter().enumerate() {
-            assert_eq!(value, traces.witness_trace.values[18 + i])
+            assert_eq!(value, traces.witness_trace.values[18 + i]);
         }
     }
 
@@ -270,7 +243,7 @@ pub struct HashSqueezeExecutor {
 
 impl HashSqueezeExecutor {
     /// Create a new hash squeeze executor
-    pub fn new(reset: bool) -> Self {
+    pub const fn new(reset: bool) -> Self {
         Self {
             op_type: NonPrimitiveOpType::HashSqueeze { reset },
         }
@@ -288,7 +261,7 @@ impl<F: Field> NonPrimitiveExecutor<F> for HashSqueezeExecutor {
         &self,
         _inputs: &[Vec<WitnessId>],
         _outputs: &[Vec<WitnessId>],
-        _ctx: &mut ExecutionContext<F>,
+        _ctx: &mut ExecutionContext<'_, F>,
     ) -> Result<(), CircuitError> {
         Ok(())
     }

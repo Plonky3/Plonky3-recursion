@@ -45,3 +45,102 @@ impl<'a, F: Clone> ConstTraceBuilder<'a, F> {
         Ok(ConstTrace { index, values })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec;
+
+    use p3_baby_bear::BabyBear;
+    use p3_field::PrimeCharacteristicRing;
+
+    use super::*;
+
+    type F = BabyBear;
+
+    #[test]
+    fn test_single_constant() {
+        // Create a single constant operation that loads a value into witness
+        let val = F::from_u64(42);
+        let out = WitnessId(0);
+
+        let ops = vec![Op::Const { out, val }];
+
+        // Build the trace using the builder pattern
+        let builder = ConstTraceBuilder::new(&ops);
+        let trace = builder.build().expect("Failed to build trace");
+
+        // Verify the trace contains exactly one constant
+        assert_eq!(trace.index.len(), 1, "Should have one constant operation");
+        assert_eq!(trace.values.len(), 1, "Should have one constant value");
+
+        // Verify the constant is correctly recorded
+        assert_eq!(trace.index[0], out);
+        assert_eq!(trace.values[0], val);
+    }
+
+    #[test]
+    fn test_multiple_constants() {
+        // Create multiple constant operations with different values
+        let val1 = F::from_u64(10);
+        let out1 = WitnessId(0);
+
+        let val2 = F::from_u64(20);
+        let out2 = WitnessId(1);
+
+        let val3 = F::from_u64(30);
+        let out3 = WitnessId(2);
+
+        let ops = vec![
+            Op::Const {
+                out: out1,
+                val: val1,
+            },
+            Op::Const {
+                out: out2,
+                val: val2,
+            },
+            Op::Const {
+                out: out3,
+                val: val3,
+            },
+        ];
+
+        // Build the trace
+        let builder = ConstTraceBuilder::new(&ops);
+        let trace = builder.build().expect("Failed to build trace");
+
+        // Verify we have exactly three constants
+        assert_eq!(
+            trace.index.len(),
+            3,
+            "Should have three constant operations"
+        );
+        assert_eq!(trace.values.len(), 3, "Should have three constant values");
+
+        // Verify first constant
+        assert_eq!(trace.index[0], out1);
+        assert_eq!(trace.values[0], val1);
+
+        // Verify second constant
+        assert_eq!(trace.index[1], out2);
+        assert_eq!(trace.values[1], val2);
+
+        // Verify third constant
+        assert_eq!(trace.index[2], out3);
+        assert_eq!(trace.values[2], val3);
+    }
+
+    #[test]
+    fn test_empty_operations() {
+        // Provide an empty operations list
+        let ops: Vec<Op<F>> = vec![];
+
+        // Build the trace
+        let builder = ConstTraceBuilder::new(&ops);
+        let trace = builder.build().expect("Failed to build trace");
+
+        // Verify the trace is empty
+        assert_eq!(trace.index.len(), 0, "Should have no constants");
+        assert_eq!(trace.values.len(), 0, "Should have no values");
+    }
+}

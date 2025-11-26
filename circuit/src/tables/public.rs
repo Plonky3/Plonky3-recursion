@@ -30,7 +30,7 @@ pub struct PublicTraceBuilder<'a, F> {
 
 impl<'a, F: Clone> PublicTraceBuilder<'a, F> {
     /// Creates a new public trace builder.
-    pub fn new(primitive_ops: &'a [Op<F>], witness: &'a [Option<F>]) -> Self {
+    pub const fn new(primitive_ops: &'a [Op<F>], witness: &'a [Option<F>]) -> Self {
         Self {
             primitive_ops,
             witness,

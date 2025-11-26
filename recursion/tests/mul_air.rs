@@ -235,7 +235,7 @@ fn test_mul_verifier_circuit() -> Result<(), VerificationError> {
         StarkVerifierInputsBuilder::<MyConfig, HashTargets<F, DIGEST_ELEMS>, InnerFri>::allocate(
             &mut circuit_builder,
             &proof,
-            Some(preprocessed_commit),
+            Some(&preprocessed_commit),
             pis.len(),
         );
 

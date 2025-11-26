@@ -90,10 +90,10 @@ impl<
 
     pub fn generate_trace_rows<P: CryptographicPermutation<[F; WIDTH]>>(
         &self,
-        sponge_ops: Poseidon2CircuitTrace<F>,
+        sponge_ops: &Poseidon2CircuitTrace<F>,
         constants: &RoundConstants<F, WIDTH, HALF_FULL_ROUNDS, PARTIAL_ROUNDS>,
         extra_capacity_bits: usize,
-        perm: P,
+        perm: &P,
     ) -> RowMajorMatrix<F> {
         let n = sponge_ops.len();
         assert!(
@@ -611,10 +611,10 @@ mod test {
         };
 
         let trace = air.generate_trace_rows(
-            vec![sponge_a, sponge_b, sponge_c, sponge_d],
+            &vec![sponge_a, sponge_b, sponge_c, sponge_d],
             &constants,
             fri_params.log_blowup,
-            perm,
+            &perm,
         );
 
         type Dft = p3_dft::Radix2Bowers;

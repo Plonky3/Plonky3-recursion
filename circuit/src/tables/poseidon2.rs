@@ -74,7 +74,7 @@ unsafe impl<F: Send + Sync> Send for Poseidon2Trace<F> {}
 unsafe impl<F: Send + Sync> Sync for Poseidon2Trace<F> {}
 
 impl<F> Poseidon2Trace<F> {
-    pub fn total_rows(&self) -> usize {
+    pub const fn total_rows(&self) -> usize {
         self.operations.len()
     }
 }
@@ -93,8 +93,7 @@ impl<F: Clone + Send + Sync + 'static> NonPrimitiveTrace<F> for Poseidon2Trace<F
     }
 
     fn boxed_clone(&self) -> Box<dyn NonPrimitiveTrace<F>> {
-        let cloned: Poseidon2Trace<F> = self.clone();
-        Box::new(cloned) as Box<dyn NonPrimitiveTrace<F>>
+        Box::new(self.clone())
     }
 }
 
@@ -110,7 +109,7 @@ pub struct Poseidon2TraceBuilder<'a, F, Config: Poseidon2Params> {
 
 impl<'a, F: CircuitField, Config: Poseidon2Params> Poseidon2TraceBuilder<'a, F, Config> {
     /// Creates a new Poseidon2 trace builder.
-    pub fn new(
+    pub const fn new(
         circuit: &'a Circuit<F>,
         witness: &'a [Option<F>],
         non_primitive_op_private_data: &'a [Option<NonPrimitiveOpPrivateData<F>>],
