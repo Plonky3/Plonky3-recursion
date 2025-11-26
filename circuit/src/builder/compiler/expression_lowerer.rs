@@ -191,7 +191,6 @@ where
         // Pass C: emit arithmetic and unconstrained ops in creation order; tie outputs to class slot if connected
         let mut hints_sequence = vec![];
         let mut fillers_iter = self.hints_fillers.iter().cloned();
-        tracing::debug!("fillers_iter length: {}", self.hints_fillers.len());
         for (expr_idx, expr) in self.graph.nodes().iter().enumerate() {
             let expr_id = ExprId(expr_idx as u32);
             match expr {

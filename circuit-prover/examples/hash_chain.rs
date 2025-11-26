@@ -80,9 +80,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Clone expr_to_widx before consuming circuit
     let expr_to_widx = circuit.expr_to_widx.clone();
 
-    // let perm = default_babybear_poseidon2_16();
-    // let circuit_perm = MyPerm(perm);
-
     let runner = circuit.runner();
 
     let traces = runner.run()?;
