@@ -125,7 +125,7 @@ pub struct MulAir<F, const D: usize = 1> {
     pub w_binomial: Option<F>,
     /// Preprocessed values. They are used for generating the common data,
     /// as well as by the prover, to compute the constraint polynomial.
-    /// Preprocessed values correspond to the indices of the inputs and outpurs withing the `Witness`.
+    /// Preprocessed values correspond to the indices of the inputs and outputs within the `Witness`.
     pub preprocessed: Vec<F>,
     /// Marker tying this AIR to its base field.
     _phantom: PhantomData<F>,
