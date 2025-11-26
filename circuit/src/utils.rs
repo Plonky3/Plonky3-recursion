@@ -6,7 +6,7 @@ use p3_field::{ExtensionField, Field, PrimeField64};
 use p3_uni_stark::{Entry, SymbolicExpression};
 use p3_util::log2_ceil_u64;
 
-use crate::op::{ExecutionContext, WitnessHintsFiller};
+use crate::op::{HintsOutputAndNextState, WitnessHintsFiller};
 use crate::{CircuitBuilder, CircuitError, ExprId};
 
 /// Identifiers for special row selector flags in the circuit.
@@ -172,14 +172,14 @@ impl<BF: PrimeField64, F: ExtensionField<BF>> WitnessHintsFiller<F>
     fn compute_outputs(
         &self,
         inputs_val: Vec<F>,
-        _ctx: &mut ExecutionContext<F>,
-    ) -> Result<Vec<F>, CircuitError> {
+        _state: Option<&Vec<F>>,
+    ) -> Result<HintsOutputAndNextState<F>, CircuitError> {
         let val: u64 = inputs_val[0].as_basis_coefficients_slice()[0].as_canonical_u64();
         let bits = (0..self.n_bits)
             .map(|i| F::from_bool(val >> i & 1 == 1))
             .collect();
         debug_assert!(self.n_bits as u64 >= log2_ceil_u64(val));
-        Ok(bits)
+        Ok((bits, None))
     }
 }
 

@@ -15,7 +15,6 @@ use super::witness::WitnessTraceBuilder;
 use super::{NonPrimitiveTrace, Traces};
 use crate::circuit::Circuit;
 use crate::op::{ExecutionContext, NonPrimitiveOpPrivateData, Op};
-use crate::ops::hash::CircuitPermutation;
 use crate::types::{NonPrimitiveOpId, WitnessId};
 use crate::{CircuitError, CircuitField};
 
@@ -27,10 +26,6 @@ pub struct CircuitRunner<F> {
     witness: Vec<Option<F>>,
     /// Private data for non-primitive operations (not on witness bus)
     non_primitive_op_private_data: Vec<Option<NonPrimitiveOpPrivateData<F>>>,
-    /// State for hashing ops
-    hashing_state: Vec<F>,
-    /// The permutation used by all circuit hash operations.
-    perm: Option<Box<dyn CircuitPermutation<F>>>,
 }
 
 impl<F: CircuitField> CircuitRunner<F> {
@@ -42,21 +37,7 @@ impl<F: CircuitField> CircuitRunner<F> {
             circuit,
             witness,
             non_primitive_op_private_data,
-            hashing_state: Vec::new(),
-            perm: None,
         }
-    }
-
-    /// Creates a circuit with a permutation.
-    pub fn new_with_permutation(
-        circuit: Circuit<F>,
-        perm: Box<dyn CircuitPermutation<F>>,
-        width: usize,
-    ) -> Self {
-        let mut runner = Self::new(circuit);
-        runner.perm = Some(perm);
-        runner.hashing_state = vec![F::ZERO; width];
-        runner
     }
 
     /// Sets public input values into witness table.
@@ -181,6 +162,9 @@ impl<F: CircuitField> CircuitRunner<F> {
         // Clone primitive operations to avoid borrowing issues
         let primitive_ops = self.circuit.primitive_ops.clone();
 
+        // State for hint fillers
+        let filler_state = &mut HashMap::new();
+
         for prim in primitive_ops {
             match prim {
                 Op::Const { out, val } => {
@@ -227,16 +211,21 @@ impl<F: CircuitField> CircuitRunner<F> {
                         .map(|&input| self.get_witness(input))
                         .collect::<Result<Vec<F>, _>>()?;
 
-                    let mut ctx = ExecutionContext::new(
-                        &mut self.witness,
-                        &self.non_primitive_op_private_data,
-                        &self.circuit.enabled_ops,
-                        &mut self.hashing_state,
-                        &self.perm,
-                        NonPrimitiveOpId(0), // Todo: Get correct ID
-                    );
+                    // Retrieve current state for the filler if applicable
+                    let state = if let Some(state_id) = filler.state_id() {
+                        filler_state.get(&state_id)
+                    } else {
+                        None
+                    };
 
-                    let outputs_val = filler.compute_outputs(inputs_val, &mut ctx)?;
+                    let (outputs_val, next_state) = filler.compute_outputs(inputs_val, state)?;
+
+                    // Update the filler state if applicable
+                    if let Some(state_id) = filler.state_id() {
+                        if let Some(state) = next_state {
+                            filler_state.insert(state_id, state);
+                        }
+                    }
 
                     for (&output, &output_val) in zip_eq(
                         outputs.iter(),
@@ -278,8 +267,6 @@ impl<F: CircuitField> CircuitRunner<F> {
                 &mut self.witness,
                 &self.non_primitive_op_private_data,
                 &self.circuit.enabled_ops,
-                &mut self.hashing_state,
-                &self.perm,
                 op_id,
             );
 
@@ -352,7 +339,7 @@ mod tests {
 
     use crate::ExprId;
     use crate::builder::CircuitBuilder;
-    use crate::op::WitnessHintsFiller;
+    use crate::op::{HintsOutputAndNextState, WitnessHintsFiller};
     use crate::types::WitnessId;
 
     #[test]
@@ -423,8 +410,8 @@ mod tests {
         fn compute_outputs(
             &self,
             inputs_val: Vec<F>,
-            _ctx: &mut ExecutionContext<F>,
-        ) -> Result<Vec<F>, crate::CircuitError> {
+            _state: Option<&Vec<F>>,
+        ) -> Result<HintsOutputAndNextState<F>, crate::CircuitError> {
             if inputs_val.len() != self.inputs.len() {
                 Err(crate::CircuitError::UnconstrainedOpInputLengthMismatch {
                     op: "equal to".to_string(),
@@ -436,7 +423,7 @@ mod tests {
                 let b = inputs_val[1];
                 let inv_a = a.try_inverse().ok_or(CircuitError::DivisionByZero)?;
                 let x = b * inv_a;
-                Ok(vec![x])
+                Ok((vec![x], None))
             }
         }
     }

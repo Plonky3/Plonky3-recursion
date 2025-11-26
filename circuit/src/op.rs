@@ -1,15 +1,19 @@
 use alloc::boxed::Box;
-use alloc::vec;
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
+use alloc::{format, vec};
 use core::fmt::Debug;
 use core::hash::Hash;
+use core::marker::PhantomData;
 
 use hashbrown::HashMap;
-use p3_field::{Field, PrimeCharacteristicRing};
+use itertools::Itertools;
+use p3_field::{ExtensionField, Field, PrimeCharacteristicRing};
+use p3_symmetric::CryptographicPermutation;
 use strum_macros::EnumCount;
 
 use crate::ops::MmcsVerifyConfig;
-use crate::ops::hash::{CircuitPermutation, HashConfig};
+use crate::ops::hash::HashConfig;
 use crate::tables::MmcsPrivateData;
 use crate::types::{NonPrimitiveOpId, WitnessId};
 use crate::{CircuitError, ExprId};
@@ -319,10 +323,6 @@ pub struct ExecutionContext<'a, F> {
     non_primitive_op_private_data: &'a [Option<NonPrimitiveOpPrivateData<F>>],
     /// Operation configurations
     enabled_ops: &'a HashMap<NonPrimitiveOpType, NonPrimitiveOpConfig>,
-    /// State for hashing operations
-    hashing_state: &'a mut [F],
-    /// Permutation instance for hashing operations
-    permutation: &'a Option<Box<dyn CircuitPermutation<F>>>,
     /// Current operation's NonPrimitiveOpId for error reporting
     operation_id: NonPrimitiveOpId,
 }
@@ -333,32 +333,14 @@ impl<'a, F: PrimeCharacteristicRing + Eq + Clone> ExecutionContext<'a, F> {
         witness: &'a mut [Option<F>],
         non_primitive_op_private_data: &'a [Option<NonPrimitiveOpPrivateData<F>>],
         enabled_ops: &'a HashMap<NonPrimitiveOpType, NonPrimitiveOpConfig>,
-        hashing_state: &'a mut [F],
-        permutation: &'a Option<Box<dyn CircuitPermutation<F>>>,
         operation_id: NonPrimitiveOpId,
     ) -> Self {
         Self {
             witness,
             non_primitive_op_private_data,
             enabled_ops,
-            hashing_state,
-            permutation,
             operation_id,
         }
-    }
-
-    /// Permute the current hashing state
-    pub fn permute_hashing_state(&mut self) -> Result<Vec<F>, CircuitError> {
-        let new_state = self
-            .permutation
-            .as_ref()
-            .ok_or(CircuitError::InvalidNonPrimitiveOpConfiguration {
-                op: NonPrimitiveOpType::HashSqueeze { reset: false },
-            })?
-            .permute(self.hashing_state);
-        self.hashing_state.clone_from_slice(&new_state);
-
-        Ok(new_state)
     }
 
     /// Get witness value at the given index
@@ -452,20 +434,28 @@ impl<F: Field> Clone for Box<dyn NonPrimitiveExecutor<F>> {
     }
 }
 
+/// The output of a hint filler is composed of the vector of hints values and and optional next state.
+pub type HintsOutputAndNextState<F> = (Vec<F>, Option<Vec<F>>);
+
 /// A trait for defining how unconstrained data (hints) is set.
 pub trait WitnessHintsFiller<F>: Debug + WitnessFillerClone<F> {
+    /// The state identifier for stateful fillers
+    fn state_id(&self) -> Option<String> {
+        None
+    }
     /// Return the `ExprId` of the inputs
     fn inputs(&self) -> &[ExprId];
     /// Return number of outputs filled by this filler
     fn n_outputs(&self) -> usize;
-    /// Compute the output given the inputs
+    /// Compute the output and next state given the inputs and current state.
     /// # Arguments
     /// * `inputs` - Input witness
+    /// * `state` - Optional current state for stateful fillers
     fn compute_outputs(
         &self,
         inputs_val: Vec<F>,
-        ctx: &mut ExecutionContext<F>,
-    ) -> Result<Vec<F>, CircuitError>;
+        state: Option<&Vec<F>>,
+    ) -> Result<HintsOutputAndNextState<F>, CircuitError>;
 }
 
 impl<F> Clone for Box<dyn WitnessHintsFiller<F>> {
@@ -497,59 +487,96 @@ impl<F: Default + Clone> WitnessHintsFiller<F> for DefaultHint {
     fn compute_outputs(
         &self,
         _inputs_val: Vec<F>,
-        _ctx: &mut ExecutionContext<F>,
-    ) -> Result<Vec<F>, CircuitError> {
-        Ok(vec![F::default(); self.n_outputs])
+        _state: Option<&Vec<F>>,
+    ) -> Result<HintsOutputAndNextState<F>, CircuitError> {
+        Ok((vec![F::default(); self.n_outputs], None))
     }
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct HashSqueezeHint {
+pub struct HashSqueezeHint<T: Default + Clone, P: CryptographicPermutation<T>> {
     inputs: Vec<ExprId>,
-    n_outputs: usize,
+    rate: usize,
+    permutation: P,
     reset: bool,
+    _phantom: PhantomData<T>,
 }
 
-impl HashSqueezeHint {
-    pub fn new(inputs: &[ExprId], rate: usize, reset: bool) -> Self {
+impl<T: Default + Clone, P: CryptographicPermutation<T>> HashSqueezeHint<T, P> {
+    pub fn new(inputs: &[ExprId], rate: usize, permutation: P, reset: bool) -> Self {
         Self {
-            reset,
             inputs: inputs.to_vec(),
-            n_outputs: rate,
+            rate,
+            permutation,
+            reset,
+            _phantom: PhantomData,
         }
     }
 }
 
-impl<F: PrimeCharacteristicRing + Eq + Clone> WitnessHintsFiller<F> for HashSqueezeHint {
+impl<BF, F, P, const WIDTH: usize> WitnessHintsFiller<F> for HashSqueezeHint<[BF; WIDTH], P>
+where
+    [BF; WIDTH]: Default,
+    F: ExtensionField<BF> + Eq + Clone + 'static,
+    BF: Field,
+    P: CryptographicPermutation<[BF; WIDTH]> + Debug + 'static,
+{
+    fn state_id(&self) -> Option<String> {
+        Some(format!("HashSqueezeHint_{:?}", self.permutation))
+    }
+
     fn inputs(&self) -> &[ExprId] {
         &self.inputs
     }
 
     // Rate of the sponge, and size of the squeezed output
     fn n_outputs(&self) -> usize {
-        self.n_outputs
+        self.rate
     }
 
     fn compute_outputs(
         &self,
         inputs_val: Vec<F>,
-        ctx: &mut ExecutionContext<F>,
-    ) -> Result<Vec<F>, CircuitError> {
-        let rate = self.n_outputs;
+        state: Option<&Vec<F>>,
+    ) -> Result<HintsOutputAndNextState<F>, CircuitError> {
+        let rate = self.rate;
 
-        if self.reset {
-            ctx.hashing_state.fill(F::ZERO);
+        let inputs_flat = inputs_val
+            .iter()
+            // TODO: Should we pack?
+            .flat_map(|input| input.as_basis_coefficients_slice()[0..1].to_vec());
+        let mut state = if self.reset {
+            vec![BF::ZERO; WIDTH]
+        } else {
+            state
+                .map(|state| {
+                    state
+                        .iter()
+                        .flat_map(|s| s.as_basis_coefficients_slice()[0..1].to_vec())
+                        .collect::<Vec<BF>>()
+                })
+                .unwrap_or(vec![BF::ZERO; WIDTH])
+        };
+        let state_len = state.len();
+        for chunk in &inputs_flat.chunks(rate) {
+            for (i, v) in chunk.enumerate() {
+                state[i] = v;
+            }
+            state = self
+                .permutation
+                .permute(state.try_into().map_err(|_| {
+                    CircuitError::UnconstrainedOpInputLengthMismatch {
+                        op: "WitnessHintFiller".to_string(),
+                        expected: WIDTH,
+                        got: state_len,
+                    }
+                })?)
+                .to_vec();
         }
 
-        let chunks = inputs_val.chunks(rate);
-        for chunk in chunks {
-            ctx.hashing_state[..chunk.len()].clone_from_slice(chunk);
-            let _ = ctx.permute_hashing_state()?;
-        }
-
-        let mut new_state = ctx.hashing_state.to_vec();
-        new_state.truncate(self.n_outputs);
-        Ok(new_state)
+        let state: Vec<F> = state.iter().map(|x| F::from(*x)).collect();
+        let output = state[..self.rate].to_vec();
+        Ok((output, Some(state)))
     }
 }
 

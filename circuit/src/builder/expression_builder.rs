@@ -320,7 +320,7 @@ mod tests {
 
     use super::*;
     use crate::CircuitError;
-    use crate::op::ExecutionContext;
+    use crate::op::HintsOutputAndNextState;
 
     #[test]
     fn test_new_builder_has_zero_constant() {
@@ -588,9 +588,9 @@ mod tests {
         fn compute_outputs(
             &self,
             inputs_val: Vec<F>,
-            _ctx: &mut ExecutionContext<F>,
-        ) -> Result<Vec<F>, CircuitError> {
-            Ok(inputs_val)
+            _state: Option<&Vec<F>>,
+        ) -> Result<HintsOutputAndNextState<F>, CircuitError> {
+            Ok((inputs_val, None))
         }
     }
 

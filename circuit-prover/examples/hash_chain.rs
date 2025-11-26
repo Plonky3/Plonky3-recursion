@@ -4,9 +4,9 @@ use std::error::Error;
 /// Hash chain circuit: Prove correctness of a Poseidon2 hash chain
 /// The circuit absorbs multiple inputs sequentially and squeezes outputs,
 /// enforcing that the in-circuit hash matches the native computation.
-use p3_baby_bear::{BabyBear, Poseidon2BabyBear, default_babybear_poseidon2_16};
+use p3_baby_bear::{BabyBear, default_babybear_poseidon2_16};
 use p3_circuit::ops::HashOps;
-use p3_circuit::ops::hash::{CircuitPermutation, HashConfig};
+use p3_circuit::ops::hash::HashConfig;
 use p3_circuit::tables::generate_poseidon2_trace;
 use p3_circuit::{CircuitBuilder, ExprId};
 use p3_circuit_prover::{BatchStarkProver, Poseidon2Config, TablePacking, config};
@@ -21,8 +21,6 @@ use tracing_subscriber::{EnvFilter, Registry};
 
 type F = BabyBear;
 const BASE_RATE: usize = 8;
-const BASE_WIDTH: usize = 16;
-type Perm = Poseidon2BabyBear<BASE_WIDTH>;
 
 fn init_logger() {
     let env_filter = EnvFilter::builder()
@@ -35,19 +33,6 @@ fn init_logger() {
         .init();
 }
 
-struct MyPerm(Perm);
-
-impl CircuitPermutation<F> for MyPerm {
-    fn permute(&self, input: &[F]) -> Vec<F> {
-        let input_array = input.try_into().expect("invalid state length");
-        self.0.permute(input_array).to_vec()
-    }
-
-    fn width(&self) -> usize {
-        BASE_WIDTH
-    }
-}
-
 fn main() -> Result<(), Box<dyn Error>> {
     init_logger();
 
@@ -56,7 +41,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let expected_outputs = compute_hash_chain_native(chain_length);
 
-    let mut builder = CircuitBuilder::new();
+    let mut builder = CircuitBuilder::<BabyBear>::new();
 
     // Enable hash operations with BabyBear D=4, WIDTH=16 configuration
     let hash_config = HashConfig { rate: BASE_RATE };
@@ -72,7 +57,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         inputs.push(input);
     }
     println!("Absorbing first inputs: {:?}", inputs);
-    builder.add_hash_squeeze(&inputs, true)?;
+
+    let permutation = default_babybear_poseidon2_16();
+    builder.add_hash_squeeze(&inputs, permutation.clone(), true)?;
 
     let mut final_output = Vec::new();
     // Following absorbs (reset=false)
@@ -82,7 +69,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             let input = builder.alloc_const(F::from_u64((step * 2 + i + 1) as u64), "hash_input");
             inputs.push(input);
         }
-        final_output = builder.add_hash_squeeze(&inputs, false)?;
+        final_output = builder.add_hash_squeeze(&inputs, permutation.clone(), false)?;
     }
 
     // Squeeze outputs
