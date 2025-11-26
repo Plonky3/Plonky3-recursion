@@ -195,7 +195,7 @@ where
             let expr_id = ExprId(expr_idx as u32);
             match expr {
                 Expr::Const(_) | Expr::Public(_) => { /* handled above */ }
-                Expr::Witness { is_last_hint } => {
+                Expr::Hint { is_last_hint } => {
                     let expr_id = ExprId(expr_idx as u32);
                     let out_widx = alloc_witness_id_for_expr(expr_idx);
                     expr_to_widx.insert(expr_id, out_widx);
