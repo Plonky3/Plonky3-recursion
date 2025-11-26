@@ -15,7 +15,7 @@ use crate::CircuitError;
 use crate::builder::{CircuitBuilder, CircuitBuilderError};
 use crate::op::{
     ExecutionContext, HashSqueezeHint, NonPrimitiveExecutor, NonPrimitiveOpConfig,
-    NonPrimitiveOpType, WitnessHintsFiller,
+    NonPrimitiveOpType,
 };
 use crate::types::{ExprId, WitnessId};
 
