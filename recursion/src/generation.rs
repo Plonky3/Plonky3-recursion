@@ -3,8 +3,8 @@ use alloc::vec::Vec;
 
 use itertools::zip_eq;
 use p3_air::Air;
-use p3_batch_stark::BatchProof;
-use p3_batch_stark::config::{observe_base_as_ext, observe_instance_binding};
+use p3_batch_stark::config::observe_instance_binding;
+use p3_batch_stark::{BatchProof, CommonData};
 use p3_challenger::{CanObserve, CanSample, CanSampleBits, FieldChallenger, GrindingChallenger};
 use p3_commit::{BatchOpening, Mmcs, Pcs, PolynomialSpace};
 use p3_field::{BasedVectorSpace, PrimeCharacteristicRing, PrimeField, TwoAdicField};
@@ -261,6 +261,7 @@ pub fn generate_batch_challenges<SC: StarkGenericConfig, A>(
     proof: &BatchProof<SC>,
     public_values: &[Vec<Val<SC>>],
     extra_params: Option<&[usize]>,
+    common_data: &CommonData<SC>,
 ) -> Result<Vec<SC::Challenge>, GenerationError>
 where
     A: Air<SymbolicAirBuilder<Val<SC>>> + for<'a> Air<VerifierConstraintFolder<'a, SC>>,
@@ -294,7 +295,7 @@ where
     let pcs = config.pcs();
     let mut challenger = config.initialise_challenger();
 
-    observe_base_as_ext::<SC>(&mut challenger, Val::<SC>::from_usize(n_instances));
+    challenger.observe_base_as_algebra_element::<SC::Challenge>(Val::<SC>::from_usize(n_instances));
 
     for inst in &opened_values.instances {
         if inst
@@ -308,10 +309,18 @@ where
         }
     }
 
+    let mut preprocessed_widths = Vec::with_capacity(airs.len());
     let mut log_quotient_degrees = Vec::with_capacity(n_instances);
     let mut quotient_degrees = Vec::with_capacity(n_instances);
-    for (air, pv) in airs.iter().zip(public_values.iter()) {
-        let log_qd = get_log_quotient_degree::<Val<SC>, A>(air, 0, pv.len(), config.is_zk());
+    for (i, (air, pv)) in airs.iter().zip(public_values.iter()).enumerate() {
+        let pre_w = common_data
+            .preprocessed
+            .as_ref()
+            .and_then(|g| g.instances[i].as_ref().map(|m| m.width))
+            .unwrap_or(0);
+        preprocessed_widths.push(pre_w);
+
+        let log_qd = get_log_quotient_degree::<Val<SC>, A>(air, pre_w, pv.len(), config.is_zk());
         let quotient_degree = 1 << (log_qd + config.is_zk());
         log_quotient_degrees.push(log_qd);
         quotient_degrees.push(quotient_degree);
@@ -325,6 +334,7 @@ where
                 .ok_or(GenerationError::InvalidProofShape(
                     "extended degree smaller than zk adjustment",
                 ))?;
+
         observe_instance_binding::<SC>(
             &mut challenger,
             ext_db,
@@ -338,6 +348,13 @@ where
     for pv in public_values {
         challenger.observe_slice(pv);
     }
+    for pre_w in &preprocessed_widths {
+        challenger.observe_base_as_algebra_element::<SC::Challenge>(Val::<SC>::from_usize(*pre_w));
+    }
+    if let Some(global) = &common_data.preprocessed {
+        challenger.observe(global.commitment.clone());
+    }
+
     let alpha = challenger.sample_algebra_element();
 
     challenger.observe(commitments.quotient_chunks.clone());
@@ -393,6 +410,62 @@ where
         }
     }
     coms_to_verify.push((commitments.quotient_chunks.clone(), quotient_round));
+
+    if let Some(global) = &common_data.preprocessed {
+        let mut pre_round = Vec::with_capacity(global.matrix_to_instance.len());
+
+        for (matrix_index, &inst_idx) in global.matrix_to_instance.iter().enumerate() {
+            let pre_w = preprocessed_widths[inst_idx];
+            if pre_w == 0 {
+                return Err(GenerationError::InvalidProofShape(
+                    "preprocessed width is zero but commitment exists",
+                ));
+            }
+
+            let inst = &opened_values.instances[inst_idx];
+            let local =
+                inst.preprocessed_local
+                    .as_ref()
+                    .ok_or(GenerationError::InvalidProofShape(
+                        "preprocessed local values should exist",
+                    ))?;
+            let next =
+                inst.preprocessed_next
+                    .as_ref()
+                    .ok_or(GenerationError::InvalidProofShape(
+                        "preprocessed next values should exist",
+                    ))?;
+
+            // Validate that the preprocessed data's base degree matches what we expect.
+            let ext_db = degree_bits[inst_idx];
+            let expected_base_db = ext_db - config.is_zk();
+
+            let meta =
+                global.instances[inst_idx]
+                    .as_ref()
+                    .ok_or(GenerationError::InvalidProofShape(
+                        "Missing preprocessed instance metadata",
+                    ))?;
+            if meta.matrix_index != matrix_index || meta.degree_bits != expected_base_db {
+                return Err(GenerationError::InvalidProofShape(
+                    "Preprocessed instance metadata mismatch",
+                ));
+            }
+
+            let base_db = meta.degree_bits;
+            let pre_domain = pcs.natural_domain_for_degree(1 << base_db);
+            let zeta_next_i = ext_trace_domains[inst_idx].next_point(zeta).ok_or(
+                GenerationError::InvalidProofShape("Preprocessed domain lacks next point"),
+            )?;
+
+            pre_round.push((
+                pre_domain,
+                vec![(zeta, local.clone()), (zeta_next_i, next.clone())],
+            ));
+        }
+
+        coms_to_verify.push((global.commitment.clone(), pre_round));
+    }
 
     let pcs_challenges = pcs.generate_challenges(
         config,

@@ -172,11 +172,6 @@ mod tests {
     use p3_baby_bear::{BabyBear, default_babybear_poseidon2_16};
     use p3_field::PrimeCharacteristicRing;
     use p3_symmetric::{CryptographicHasher, PaddingFreeSponge};
-    use tracing_forest::ForestLayer;
-    use tracing_forest::util::LevelFilter;
-    use tracing_subscriber::layer::SubscriberExt;
-    use tracing_subscriber::util::SubscriberInitExt;
-    use tracing_subscriber::{EnvFilter, Registry};
 
     use super::*;
     use crate::tables::{Poseidon2Params, generate_poseidon2_trace};

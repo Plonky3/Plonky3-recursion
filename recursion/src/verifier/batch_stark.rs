@@ -4,7 +4,7 @@ use alloc::{format, vec};
 use core::marker::PhantomData;
 
 use p3_air::{Air as P3Air, AirBuilder as P3AirBuilder, BaseAir as P3BaseAir};
-use p3_batch_stark::BatchProof;
+use p3_batch_stark::{BatchProof, CommonData};
 use p3_circuit::CircuitBuilder;
 use p3_circuit::utils::ColumnsTargets;
 use p3_circuit_prover::air::{AddAir, ConstAir, MulAir, PublicAir, WitnessAir};
@@ -16,7 +16,9 @@ use p3_uni_stark::StarkGenericConfig;
 use super::{ObservableCommitment, VerificationError, recompose_quotient_from_chunks_circuit};
 use crate::challenger::CircuitChallenger;
 use crate::traits::{Recursive, RecursiveAir, RecursiveChallenger, RecursivePcs};
-use crate::types::{CommitmentTargets, OpenedValuesTargets, ProofTargets};
+use crate::types::{
+    CommitmentTargets, OpenedValuesTargets, PreprocessedVerifierDataTargets, ProofTargets,
+};
 use crate::{BatchStarkVerifierInputsBuilder, Target};
 
 /// Type alias for PCS verifier parameters.
@@ -91,6 +93,7 @@ pub fn verify_p3_recursion_proof_circuit<
     circuit: &mut CircuitBuilder<SC::Challenge>,
     proof: &p3_circuit_prover::batch_stark_prover::BatchStarkProof<SC>,
     pcs_params: &PcsVerifierParams<SC, InputProof, OpeningProof, Comm>,
+    common_data: &CommonData<SC>,
 ) -> Result<BatchStarkVerifierInputsBuilder<SC, Comm, OpeningProof>, VerificationError>
 where
     <SC as StarkGenericConfig>::Pcs: RecursivePcs<
@@ -136,8 +139,11 @@ where
     let verifier_inputs = BatchStarkVerifierInputsBuilder::<SC, Comm, OpeningProof>::allocate(
         circuit,
         &proof.proof,
+        common_data,
         &air_public_counts,
     );
+
+    let preprocessed = &verifier_inputs.preprocessed;
 
     verify_batch_circuit::<
         CircuitTablesAir<SC::Challenge, TRACE_D>,
@@ -153,6 +159,7 @@ where
         &verifier_inputs.proof_targets,
         &verifier_inputs.air_public_targets,
         pcs_params,
+        preprocessed,
     )?;
 
     Ok(verifier_inputs)
@@ -163,6 +170,8 @@ where
 pub struct InstanceOpenedValuesTargets<SC: StarkGenericConfig> {
     pub trace_local: Vec<Target>,
     pub trace_next: Vec<Target>,
+    pub preprocessed_local: Option<Vec<Target>>,
+    pub preprocessed_next: Option<Vec<Target>>,
     pub quotient_chunks: Vec<Vec<Target>>,
     _phantom: PhantomData<SC>,
 }
@@ -200,7 +209,10 @@ impl<
         // 3. Quotient chunks for each instance in commit order
         let mut aggregated_trace_local = Vec::new();
         let mut aggregated_trace_next = Vec::new();
+        let mut aggregated_prep_local = Vec::new();
+        let mut aggregated_prep_next = Vec::new();
         let mut aggregated_quotient_chunks = Vec::new();
+
         let mut instances = Vec::with_capacity(input.opened_values.instances.len());
 
         for inst in &input.opened_values.instances {
@@ -211,6 +223,21 @@ impl<
             let trace_next =
                 circuit.alloc_public_inputs(inst.trace_next.len(), "trace next values");
             aggregated_trace_next.extend(trace_next.iter().copied());
+
+            let preprocessed_local = inst.preprocessed_local.as_ref().map(|prep_local_vals| {
+                let prep_local =
+                    circuit.alloc_public_inputs(prep_local_vals.len(), "preprocessed local values");
+                aggregated_prep_local.extend(prep_local.iter().copied());
+
+                prep_local
+            });
+            let preprocessed_next = inst.preprocessed_next.as_ref().map(|prep_next_vals| {
+                let prep_next =
+                    circuit.alloc_public_inputs(prep_next_vals.len(), "preprocessed next values");
+                aggregated_prep_next.extend(prep_next.iter().copied());
+
+                prep_next
+            });
 
             let mut quotient_chunks = Vec::with_capacity(inst.quotient_chunks.len());
             for chunk in &inst.quotient_chunks {
@@ -223,6 +250,8 @@ impl<
             instances.push(InstanceOpenedValuesTargets {
                 trace_local,
                 trace_next,
+                preprocessed_local,
+                preprocessed_next,
                 quotient_chunks,
                 _phantom: PhantomData,
             });
@@ -231,8 +260,16 @@ impl<
         let opened_values_targets = OpenedValuesTargets {
             trace_local_targets: aggregated_trace_local,
             trace_next_targets: aggregated_trace_next,
-            preprocessed_local_targets: None, // Preprocessed values are not supported yet for batch proofs in Plonky3
-            preprocessed_next_targets: None, // Preprocessed values are not supported yet for batch proofs in Plonky3
+            preprocessed_local_targets: if aggregated_prep_local.is_empty() {
+                None
+            } else {
+                Some(aggregated_prep_local)
+            },
+            preprocessed_next_targets: if aggregated_prep_next.is_empty() {
+                None
+            } else {
+                Some(aggregated_prep_next)
+            },
             quotient_chunks_targets: aggregated_quotient_chunks,
             random_targets: None,
             _phantom: PhantomData,
@@ -274,6 +311,12 @@ impl<
         for inst in &input.opened_values.instances {
             values.extend(inst.trace_local.iter().copied());
             values.extend(inst.trace_next.iter().copied());
+            if let Some(prep_local) = &inst.preprocessed_local {
+                values.extend(prep_local.iter().copied());
+            }
+            if let Some(prep_next) = &inst.preprocessed_next {
+                values.extend(prep_next.iter().copied());
+            }
             for chunk in &inst.quotient_chunks {
                 values.extend(chunk.iter().copied());
             }
@@ -303,6 +346,7 @@ pub fn verify_batch_circuit<
     proof_targets: &BatchProofTargets<SC, Comm, OpeningProof>,
     public_values: &[Vec<Target>],
     pcs_params: &PcsVerifierParams<SC, InputProof, OpeningProof, Comm>,
+    common: &PreprocessedVerifierDataTargets<SC, Comm>,
 ) -> Result<(), VerificationError>
 where
     A: RecursiveAir<SC::Challenge>,
@@ -350,10 +394,31 @@ where
 
     let n_instances = airs.len();
 
-    // Pre-compute per-instance quotient degrees and validate proof shape.
+    // Pre-compute per-instance quotient degrees and preprocessed widths, and validate proof shape.
+    let mut preprocessed_widths = Vec::with_capacity(airs.len());
     let mut log_quotient_degrees = Vec::with_capacity(n_instances);
     let mut quotient_degrees = Vec::with_capacity(n_instances);
-    for ((air, instance), public_vals) in airs.iter().zip(instances.iter()).zip(public_values) {
+    for (i, ((air, instance), public_vals)) in airs
+        .iter()
+        .zip(instances.iter())
+        .zip(public_values)
+        .enumerate()
+    {
+        let pre_w = common
+            .preprocessed
+            .as_ref()
+            .and_then(|g| g.instances.instances[i].as_ref().map(|m| m.width))
+            .unwrap_or(0);
+        preprocessed_widths.push(pre_w);
+
+        let local_prep_len = instance.preprocessed_local.as_ref().map_or(0, |v| v.len());
+        let next_prep_len = instance.preprocessed_next.as_ref().map_or(0, |v| v.len());
+        if local_prep_len != pre_w || next_prep_len != pre_w {
+            return Err(VerificationError::InvalidProofShape(format!(
+                "Instance has incorrect preprocessed width: expected {}, got {} / {}",
+                pre_w, local_prep_len, next_prep_len
+            )));
+        }
         let air_width = A::width(air);
         if instance.trace_local.len() != air_width || instance.trace_next.len() != air_width {
             return Err(VerificationError::InvalidProofShape(format!(
@@ -364,7 +429,7 @@ where
             )));
         }
 
-        let log_qd = A::get_log_quotient_degree(air, 0, public_vals.len(), config.is_zk());
+        let log_qd = A::get_log_quotient_degree(air, pre_w, public_vals.len(), config.is_zk());
         let quotient_degree = 1 << (log_qd + config.is_zk());
 
         if instance.quotient_chunks.len() != quotient_degree {
@@ -432,6 +497,18 @@ where
     for pv in public_values {
         challenger.observe_slice(circuit, pv);
     }
+
+    // Observe preprocessed widths for each instance. If a global
+    // preprocessed commitment exists, observe it once.
+    for &pre_w in preprocessed_widths.iter() {
+        let pre_w_target =
+            circuit.alloc_const(SC::Challenge::from_usize(pre_w), "preprocessed width");
+        challenger.observe(circuit, pre_w_target);
+    }
+    if let Some(global) = &common.preprocessed {
+        challenger.observe_slice(circuit, &global.commitment.to_observation_targets());
+    }
+
     let alpha = challenger.sample(circuit);
 
     challenger.observe_slice(
@@ -505,6 +582,66 @@ where
         quotient_round,
     ));
 
+    if let Some(global) = &common.preprocessed {
+        let mut pre_round = Vec::with_capacity(global.matrix_to_instance.len());
+
+        for (matrix_index, &inst_idx) in global.matrix_to_instance.iter().enumerate() {
+            let pre_w = preprocessed_widths[inst_idx];
+            if pre_w == 0 {
+                return Err(VerificationError::InvalidProofShape(
+                    "Instance has preprocessed columns with zero width".to_string(),
+                ));
+            }
+
+            let inst = &instances[inst_idx];
+            let local = inst.preprocessed_local.as_ref().ok_or_else(|| {
+                VerificationError::InvalidProofShape(
+                    "Missing preprocessed local columns".to_string(),
+                )
+            })?;
+            let next = inst.preprocessed_next.as_ref().ok_or_else(|| {
+                VerificationError::InvalidProofShape(
+                    "Missing preprocessed next columns".to_string(),
+                )
+            })?;
+            // Validate that the preprocessed data's base degree matches what we expect.
+            let ext_db = degree_bits[inst_idx];
+            let expected_base_db = ext_db - config.is_zk();
+
+            let meta = global.instances.instances[inst_idx]
+                .as_ref()
+                .ok_or_else(|| {
+                    VerificationError::InvalidProofShape(
+                        "Missing preprocessed instance metadata".to_string(),
+                    )
+                })?;
+            if meta.matrix_index != matrix_index || meta.degree_bits != expected_base_db {
+                return Err(VerificationError::InvalidProofShape(
+                    "Preprocessed instance metadata mismatch".to_string(),
+                ));
+            }
+
+            let ext_dom = &ext_trace_domains[inst_idx];
+
+            let first_point = pcs.first_point(ext_dom);
+            let next_point = ext_dom.next_point(first_point).ok_or_else(|| {
+                VerificationError::InvalidProofShape(
+                    "Trace domain does not provide next point".to_string(),
+                )
+            })?;
+            let generator = next_point * first_point.inverse();
+            let generator_const = circuit.add_const(generator);
+            let zeta_next = circuit.mul(zeta, generator_const);
+
+            pre_round.push((
+                *ext_dom,
+                vec![(zeta, local.clone()), (zeta_next, next.clone())],
+            ));
+        }
+
+        coms_to_verify.push((global.commitment.clone(), pre_round));
+    }
+
     let pcs_challenges = SC::Pcs::get_challenges_circuit::<RATE>(
         circuit,
         &mut challenger,
@@ -537,12 +674,21 @@ where
             pcs,
         );
 
+        let local_prep_values = match inst.preprocessed_local.as_ref() {
+            Some(v) => v.as_slice(),
+            None => &[],
+        };
+        let next_prep_values = match inst.preprocessed_next.as_ref() {
+            Some(v) => v.as_slice(),
+            None => &[],
+        };
+
         let sels = pcs.selectors_at_point_circuit(circuit, trace_domain, &zeta);
         let columns_targets = ColumnsTargets {
             challenges: &[],
             public_values: public_vals,
-            local_prep_values: &[],
-            next_prep_values: &[],
+            local_prep_values,
+            next_prep_values,
             local_values: &inst.trace_local,
             next_values: &inst.trace_next,
         };

@@ -244,7 +244,7 @@ where
         //
         // The `is_last_hint` flag is stored in the node so the execution engine
         // can identify sequence boundaries without external metadata.
-        let expr_id = self.graph.add_expr(Expr::Witness { is_last_hint });
+        let expr_id = self.graph.add_expr(Expr::Hint { is_last_hint });
 
         // Log the allocation in debug builds.
         //
@@ -980,10 +980,10 @@ mod tests {
 
         match (&builder.graph().nodes()[2], &builder.graph().nodes()[3]) {
             (
-                Expr::Witness {
+                Expr::Hint {
                     is_last_hint: false,
                 },
-                Expr::Witness { is_last_hint: true },
+                Expr::Hint { is_last_hint: true },
             ) => (),
             _ => panic!("Expected Witness operation"),
         }
