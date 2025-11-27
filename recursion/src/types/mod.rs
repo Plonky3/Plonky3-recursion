@@ -5,7 +5,9 @@ mod proof;
 mod selectors;
 
 pub use challenges::StarkChallenges;
-pub use proof::{CommitmentTargets, OpenedValuesTargets, PreprocessedVerifierDataTargets, ProofTargets};
+pub use proof::{
+    CommitmentTargets, OpenedValuesTargets, PreprocessedVerifierDataTargets, ProofTargets,
+};
 pub use selectors::RecursiveLagrangeSelectors;
 
 /// Canonical circuit target type used across recursive components.
