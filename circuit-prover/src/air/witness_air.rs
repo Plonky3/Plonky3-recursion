@@ -36,9 +36,9 @@
 //! tables receive interactions of the form `(index, value)`, guaranteeing that they fetch
 //! a value consistent with the witness bus maintained by this AIR.
 
+use alloc::vec::Vec;
 use core::marker::PhantomData;
 
-use alloc::vec::Vec;
 use p3_air::{Air, AirBuilder, BaseAir, PairBuilder};
 use p3_circuit::tables::WitnessTrace;
 use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};

@@ -76,10 +76,10 @@
 //! correctness of the indices with respect to the global witness bus is enforced by the
 //! bus interaction logic elsewhere in the system.
 
-use core::marker::PhantomData;
-
 use alloc::vec;
 use alloc::vec::Vec;
+use core::marker::PhantomData;
+
 use p3_air::{Air, BaseAir, PairBuilder};
 use p3_circuit::tables::AddTrace;
 use p3_circuit::utils::pad_to_power_of_two;
@@ -418,7 +418,7 @@ mod tests {
                     Val::from_u32(lhs_idx.0),
                     Val::from_u32(rhs_idx.0),
                     Val::from_u32(result_idx.0),
-                ])
+                ]);
             });
 
         let trace = AddTrace {
@@ -493,7 +493,7 @@ mod tests {
                     Val::from_u32(lhs_idx.0),
                     Val::from_u32(rhs_idx.0),
                     Val::from_u32(result_idx.0),
-                ])
+                ]);
             });
 
         let trace = AddTrace {

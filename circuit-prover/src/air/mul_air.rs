@@ -357,7 +357,7 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> MulAir<F, D> {
                     F::from_u64(lhs_idx.0 as u64),
                     F::from_u64(rhs_idx.0 as u64),
                     F::from_u64(res_idx.0 as u64),
-                ])
+                ]);
             });
 
         prep
@@ -555,7 +555,7 @@ mod tests {
                     Val::from_u32(lhs_idx.0),
                     Val::from_u32(rhs_idx.0),
                     Val::from_u32(result_idx.0),
-                ])
+                ]);
             });
         let trace = MulTrace {
             lhs_values,
@@ -637,7 +637,7 @@ mod tests {
                     Val::from_u32(lhs_idx.0),
                     Val::from_u32(rhs_idx.0),
                     Val::from_u32(result_idx.0),
-                ])
+                ]);
             });
 
         let trace = MulTrace {

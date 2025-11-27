@@ -1,21 +1,16 @@
+use alloc::vec::Vec;
 use core::array;
 
-use crate::DynamicAirEntry;
-use crate::TablePacking;
-use crate::air::AddAir;
-use crate::air::MulAir;
-use crate::air::PublicAir;
-use crate::air::{ConstAir, WitnessAir};
-use crate::field_params::ExtractBinomialW;
-use alloc::vec::Vec;
-use p3_circuit::Circuit;
-use p3_circuit::CircuitError;
 use p3_circuit::op::PrimitiveOpType;
+use p3_circuit::{Circuit, CircuitError};
 use p3_field::ExtensionField;
-use p3_uni_stark::StarkGenericConfig;
-use p3_uni_stark::Val;
+use p3_uni_stark::{StarkGenericConfig, Val};
 use p3_util::log2_ceil_usize;
 use strum::EnumCount;
+
+use crate::air::{AddAir, ConstAir, MulAir, PublicAir, WitnessAir};
+use crate::field_params::ExtractBinomialW;
+use crate::{DynamicAirEntry, TablePacking};
 
 /// Enum wrapper to allow heterogeneous table AIRs in a single batch STARK aggregation.
 ///
@@ -66,7 +61,7 @@ pub fn get_airs_and_degrees_with_prep<
                 table_preps[idx] = (
                     CircuitTableAir::Add(add_air),
                     log2_ceil_usize(num_ops / packing.add_lanes()),
-                )
+                );
             }
             PrimitiveOpType::Mul => {
                 let num_ops = prep.len() / MulAir::<Val<SC>, D>::prep_lane_width();
@@ -84,17 +79,17 @@ pub fn get_airs_and_degrees_with_prep<
                 table_preps[idx] = (
                     CircuitTableAir::Mul(mul_air),
                     log2_ceil_usize(num_ops / packing.mul_lanes()),
-                )
+                );
             }
             PrimitiveOpType::Public => {
                 let height = prep.len();
                 let public_air = PublicAir::new_with_preprocessed(height, prep.clone());
-                table_preps[idx] = (CircuitTableAir::Public(public_air), log2_ceil_usize(height))
+                table_preps[idx] = (CircuitTableAir::Public(public_air), log2_ceil_usize(height));
             }
             PrimitiveOpType::Const => {
                 let height = prep.len();
                 let const_air = ConstAir::new_with_preprocessed(height, prep.clone());
-                table_preps[idx] = (CircuitTableAir::Const(const_air), log2_ceil_usize(height))
+                table_preps[idx] = (CircuitTableAir::Const(const_air), log2_ceil_usize(height));
             }
             PrimitiveOpType::Witness => {
                 let num_witnesses = prep.len();
@@ -102,7 +97,7 @@ pub fn get_airs_and_degrees_with_prep<
                 table_preps[idx] = (
                     CircuitTableAir::Witness(witness_air),
                     log2_ceil_usize(num_witnesses / packing.witness_lanes()),
-                )
+                );
             }
         }
     });

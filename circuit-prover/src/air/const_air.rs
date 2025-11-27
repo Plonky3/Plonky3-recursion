@@ -173,10 +173,8 @@ mod tests {
         ];
         // Witness IDs these constants bind to
         let const_indices = vec![WitnessId(1), WitnessId(3), WitnessId(4)];
-        let num_const_indices = const_indices.len();
 
         let prep_values = const_indices
-            .clone()
             .iter()
             .map(|idx| F::from_u64(idx.0 as u64))
             .collect::<Vec<_>>();
@@ -219,10 +217,10 @@ mod tests {
 
         let prep_matrix = air.preprocessed_trace().unwrap();
 
-        for i in 0..num_const_indices {
+        const_indices.iter().enumerate().for_each(|(i, const_idx)| {
             let row = prep_matrix.row_slice(i).unwrap();
-            assert_eq!(row[0], F::from_u32(const_indices[i].0));
-        }
+            assert_eq!(row[0], F::from_u32(const_idx.0));
+        });
 
         let (prover_data, verifier_data) =
             setup_preprocessed(&config, &air, log2_ceil_usize(height)).unwrap();
