@@ -12,7 +12,7 @@ use p3_uni_stark::{Proof, StarkGenericConfig, Val};
 use crate::pcs::MAX_QUERY_INDEX_BITS;
 use crate::traits::Recursive;
 use crate::verifier::BatchProofTargets;
-use crate::{PrepVerifierDataTargets, ProofTargets};
+use crate::{PreprocessedVerifierDataTargets, ProofTargets};
 
 /// Builder for constructing public inputs.
 ///
@@ -388,7 +388,7 @@ where
     /// Allocated proof structure targets.
     pub proof_targets: BatchProofTargets<SC, Comm, OpeningProof>,
     /// Allocated preprocessed commitment targets (if any).
-    pub preprocessed: PrepVerifierDataTargets<SC, Comm>,
+    pub preprocessed: PreprocessedVerifierDataTargets<SC, Comm>,
 }
 
 impl<SC, Comm, OpeningProof> BatchStarkVerifierInputsBuilder<SC, Comm, OpeningProof>
@@ -421,7 +421,7 @@ where
 
         let proof_targets = BatchProofTargets::new(circuit, proof);
 
-        let preprocessed = PrepVerifierDataTargets::<SC, Comm>::new(circuit, common_data);
+        let preprocessed = PreprocessedVerifierDataTargets::<SC, Comm>::new(circuit, common_data);
 
         Self {
             air_public_targets,
@@ -442,7 +442,7 @@ where
         Val<SC>: PrimeField64,
         SC::Challenge: BasedVectorSpace<Val<SC>> + From<Val<SC>>,
     {
-        let common_data = PrepVerifierDataTargets::<SC, Comm>::get_values(common);
+        let common_data = PreprocessedVerifierDataTargets::<SC, Comm>::get_values(common);
         let proof_values = BatchProofTargets::<SC, Comm, OpeningProof>::get_values(proof);
 
         construct_batch_stark_verifier_inputs(

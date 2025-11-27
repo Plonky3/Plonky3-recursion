@@ -28,7 +28,7 @@ pub use traits::{
     RecursivePcs,
 };
 pub use types::{
-    CommitmentTargets, OpenedValuesTargets, PrepVerifierDataTargets, ProofTargets,
+    CommitmentTargets, OpenedValuesTargets, PreprocessedVerifierDataTargets, ProofTargets,
     RecursiveLagrangeSelectors, StarkChallenges, Target,
 };
 pub use verifier::{

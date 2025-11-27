@@ -16,7 +16,9 @@ use p3_uni_stark::StarkGenericConfig;
 use super::{ObservableCommitment, VerificationError, recompose_quotient_from_chunks_circuit};
 use crate::challenger::CircuitChallenger;
 use crate::traits::{Recursive, RecursiveAir, RecursiveChallenger, RecursivePcs};
-use crate::types::{CommitmentTargets, OpenedValuesTargets, PrepVerifierDataTargets, ProofTargets};
+use crate::types::{
+    CommitmentTargets, OpenedValuesTargets, PreprocessedVerifierDataTargets, ProofTargets,
+};
 use crate::{BatchStarkVerifierInputsBuilder, Target};
 
 /// Type alias for PCS verifier parameters.
@@ -344,7 +346,7 @@ pub fn verify_batch_circuit<
     proof_targets: &BatchProofTargets<SC, Comm, OpeningProof>,
     public_values: &[Vec<Target>],
     pcs_params: &PcsVerifierParams<SC, InputProof, OpeningProof, Comm>,
-    common: &PrepVerifierDataTargets<SC, Comm>,
+    common: &PreprocessedVerifierDataTargets<SC, Comm>,
 ) -> Result<(), VerificationError>
 where
     A: RecursiveAir<SC::Challenge>,

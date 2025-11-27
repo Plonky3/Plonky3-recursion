@@ -81,13 +81,14 @@ pub struct PreprocessedInstanceMetas {
 }
 
 /// Structure which holds the optional targets and metadata necessary for handling preprocessed data in the verification circuit.
-pub struct PrepVerifierDataTargets<SC, Comm> {
+pub struct PreprocessedVerifierDataTargets<SC, Comm> {
     /// If at least one of the instances uses preprocessed columns, holds the global preprocessed targets.
     pub preprocessed: Option<GlobalPreprocessedTargets<Comm>>,
     pub _phantom: PhantomData<SC>,
 }
 
-impl<SC: StarkGenericConfig, Comm> Recursive<SC::Challenge> for PrepVerifierDataTargets<SC, Comm>
+impl<SC: StarkGenericConfig, Comm> Recursive<SC::Challenge>
+    for PreprocessedVerifierDataTargets<SC, Comm>
 where
     Comm: Recursive<
             SC::Challenge,
