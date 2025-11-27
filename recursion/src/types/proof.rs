@@ -3,9 +3,9 @@
 use alloc::vec;
 use alloc::vec::Vec;
 use core::marker::PhantomData;
-use p3_batch_stark::common::PreprocessedInstanceMeta;
 
 use p3_batch_stark::CommonData;
+use p3_batch_stark::common::PreprocessedInstanceMeta;
 use p3_circuit::CircuitBuilder;
 use p3_commit::Pcs;
 use p3_field::Field;
