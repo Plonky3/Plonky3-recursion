@@ -581,7 +581,7 @@ where
     ));
 
     if let Some(global) = &common.preprocessed {
-        let mut pre_round = Vec::new();
+        let mut pre_round = Vec::with_capacity(global.matrix_to_instance.len());
 
         for (matrix_index, &inst_idx) in global.matrix_to_instance.iter().enumerate() {
             let pre_w = preprocessed_widths[inst_idx];

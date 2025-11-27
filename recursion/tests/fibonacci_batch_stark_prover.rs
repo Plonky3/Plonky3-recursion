@@ -193,7 +193,6 @@ fn test_fibonacci_batch_verifier() {
 
     // Public values (empty for all 5 circuit tables, using base field)
     let pis: Vec<Vec<F>> = vec![vec![]; 5];
-    println!("HERE");
 
     // Build the recursive verification circuit
     let mut circuit_builder = CircuitBuilder::new();
