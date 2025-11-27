@@ -3,6 +3,7 @@
 use alloc::vec;
 use alloc::vec::Vec;
 use core::marker::PhantomData;
+use p3_batch_stark::common::PreprocessedInstanceMeta;
 
 use p3_batch_stark::CommonData;
 use p3_circuit::CircuitBuilder;
@@ -79,24 +80,6 @@ pub struct PreprocessedInstanceMetas {
     pub instances: Vec<Option<PreprocessedInstanceMeta>>,
 }
 
-/// Per-instance metadata for a preprocessed trace that lives inside a
-/// global preprocessed commitment.
-///
-/// TODO: we can reuse Plonky3's existing PreprocessedInstanceMeta if we derive `Clone` from it.
-#[derive(Clone)]
-pub struct PreprocessedInstanceMeta {
-    /// Index of this instance's preprocessed matrix inside the global PCS
-    /// commitment / prover data.
-    pub matrix_index: usize,
-    /// Width (number of columns) of the preprocessed trace.
-    pub width: usize,
-    /// Log2 of the base trace degree for this instance's preprocessed trace.
-    ///
-    /// This matches the log2 of the main trace degree (without ZK padding)
-    /// for that instance.
-    pub degree_bits: usize,
-}
-
 /// Structure which holds the optional targets and metadata necessary for handling preprocessed data in the verification circuit.
 pub struct PrepVerifierDataTargets<SC, Comm> {
     /// If at least one of the instances uses preprocessed columns, holds the global preprocessed targets.
@@ -120,17 +103,7 @@ where
             .map(|prep| GlobalPreprocessedTargets {
                 commitment: Comm::new(circuit, &prep.commitment),
                 instances: PreprocessedInstanceMetas {
-                    instances: prep
-                        .instances
-                        .iter()
-                        .map(|inst| {
-                            inst.as_ref().map(|i| PreprocessedInstanceMeta {
-                                matrix_index: i.matrix_index,
-                                width: i.width,
-                                degree_bits: i.degree_bits,
-                            })
-                        })
-                        .collect(),
+                    instances: prep.instances.clone(),
                 },
                 matrix_to_instance: prep.matrix_to_instance.clone(),
             });
