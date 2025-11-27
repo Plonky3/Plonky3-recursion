@@ -94,6 +94,14 @@ pub enum CircuitError {
         got: usize,
     },
 
+    /// Incorrect input size provided for a non-primitive operation.
+    #[error("Incorrect input size provided for operation {op:?}: expected {expected}, got {got}")]
+    IncorrectNonPrimitiveOpInputSize {
+        op: NonPrimitiveOpType,
+        expected: String,
+        got: usize,
+    },
+
     /// Non primitive private data is not correct
     #[error(
         "Incorrect private data provided for op {op:?} (operation {operation_index}): expected {expected}, got {got}"

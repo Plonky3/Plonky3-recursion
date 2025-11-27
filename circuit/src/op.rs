@@ -1,15 +1,12 @@
 use alloc::boxed::Box;
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::vec::Vec;
 use alloc::{format, vec};
 use core::fmt::Debug;
 use core::hash::Hash;
-use core::marker::PhantomData;
 
 use hashbrown::HashMap;
-use itertools::Itertools;
-use p3_field::{ExtensionField, Field, PrimeCharacteristicRing};
-use p3_symmetric::CryptographicPermutation;
+use p3_field::{Field, PrimeCharacteristicRing};
 use strum_macros::EnumCount;
 
 use crate::ops::MmcsVerifyConfig;
@@ -246,9 +243,9 @@ pub enum NonPrimitiveOpType {
 
 /// Non-primitive operation types
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum NonPrimitiveOpConfig {
+pub enum NonPrimitiveOpConfig<F> {
     MmcsVerifyConfig(MmcsVerifyConfig),
-    HashConfig(HashConfig),
+    HashConfig(HashConfig<F>),
     None,
 }
 
@@ -323,7 +320,7 @@ pub struct ExecutionContext<'a, F> {
     /// Private data map for non-primitive operations
     non_primitive_op_private_data: &'a [Option<NonPrimitiveOpPrivateData<F>>],
     /// Operation configurations
-    enabled_ops: &'a HashMap<NonPrimitiveOpType, NonPrimitiveOpConfig>,
+    enabled_ops: &'a HashMap<NonPrimitiveOpType, NonPrimitiveOpConfig<F>>,
     /// Current operation's NonPrimitiveOpId for error reporting
     operation_id: NonPrimitiveOpId,
 }
@@ -333,7 +330,7 @@ impl<'a, F: PrimeCharacteristicRing + Eq + Clone> ExecutionContext<'a, F> {
     pub const fn new(
         witness: &'a mut [Option<F>],
         non_primitive_op_private_data: &'a [Option<NonPrimitiveOpPrivateData<F>>],
-        enabled_ops: &'a HashMap<NonPrimitiveOpType, NonPrimitiveOpConfig>,
+        enabled_ops: &'a HashMap<NonPrimitiveOpType, NonPrimitiveOpConfig<F>>,
         operation_id: NonPrimitiveOpId,
     ) -> Self {
         Self {
@@ -389,7 +386,7 @@ impl<'a, F: PrimeCharacteristicRing + Eq + Clone> ExecutionContext<'a, F> {
     pub fn get_config(
         &self,
         op_type: &NonPrimitiveOpType,
-    ) -> Result<&NonPrimitiveOpConfig, CircuitError> {
+    ) -> Result<&NonPrimitiveOpConfig<F>, CircuitError> {
         self.enabled_ops.get(op_type).ok_or_else(|| {
             CircuitError::InvalidNonPrimitiveOpConfiguration {
                 op: op_type.clone(),
@@ -495,35 +492,32 @@ impl<F: Default + Clone> WitnessHintsFiller<F> for DefaultHint {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct HashSqueezeHint<T: Default + Clone, P: CryptographicPermutation<T>> {
+pub struct HashSqueezeHint<F: Field> {
+    state_id: Option<String>,
     inputs: Vec<ExprId>,
-    rate: usize,
-    permutation: P,
+    config: HashConfig<F>,
     reset: bool,
-    _phantom: PhantomData<T>,
 }
 
-impl<T: Default + Clone, P: CryptographicPermutation<T>> HashSqueezeHint<T, P> {
-    pub fn new(inputs: &[ExprId], rate: usize, permutation: P, reset: bool) -> Self {
+impl<F: Field> HashSqueezeHint<F> {
+    pub const fn new(
+        state_id: String,
+        inputs: Vec<ExprId>,
+        config: HashConfig<F>,
+        reset: bool,
+    ) -> Self {
         Self {
-            inputs: inputs.to_vec(),
-            rate,
-            permutation,
+            state_id: Some(state_id),
+            inputs,
+            config,
             reset,
-            _phantom: PhantomData,
         }
     }
 }
 
-impl<BF, F, P, const WIDTH: usize> WitnessHintsFiller<F> for HashSqueezeHint<[BF; WIDTH], P>
-where
-    [BF; WIDTH]: Default,
-    F: ExtensionField<BF> + Eq + Clone + 'static,
-    BF: Field,
-    P: CryptographicPermutation<[BF; WIDTH]> + Debug + 'static,
-{
+impl<F: Field> WitnessHintsFiller<F> for HashSqueezeHint<F> {
     fn state_id(&self) -> Option<String> {
-        Some(format!("HashSqueezeHint_{:?}", self.permutation))
+        self.state_id.clone()
     }
 
     fn inputs(&self) -> &[ExprId] {
@@ -532,51 +526,34 @@ where
 
     // Rate of the sponge, and size of the squeezed output
     fn n_outputs(&self) -> usize {
-        self.rate
+        self.config.rate
     }
 
     fn compute_outputs(
         &self,
-        inputs_val: Vec<F>,
+        mut inputs_val: Vec<F>,
         state: Option<&Vec<F>>,
     ) -> Result<HintsOutputAndNextState<F>, CircuitError> {
-        let rate = self.rate;
-
-        let inputs_flat = inputs_val
-            .iter()
-            // TODO: Should we pack?
-            .flat_map(|input| input.as_basis_coefficients_slice()[0..1].to_vec());
         let mut state = if self.reset {
-            vec![BF::ZERO; WIDTH]
+            vec![F::ZERO; self.config.width]
         } else {
             state
-                .map(|state| {
-                    state
-                        .iter()
-                        .flat_map(|s| s.as_basis_coefficients_slice()[0..1].to_vec())
-                        .collect::<Vec<BF>>()
-                })
-                .unwrap_or_else(|| vec![BF::ZERO; WIDTH])
+                .cloned()
+                .unwrap_or_else(|| vec![F::ZERO; self.config.width])
         };
-        let state_len = state.len();
-        for chunk in &inputs_flat.chunks(rate) {
-            for (i, v) in chunk.enumerate() {
-                state[i] = v;
-            }
-            state = self
-                .permutation
-                .permute(state.try_into().map_err(|_| {
-                    CircuitError::UnconstrainedOpInputLengthMismatch {
-                        op: "WitnessHintFiller".to_string(),
-                        expected: WIDTH,
-                        got: state_len,
-                    }
-                })?)
-                .to_vec();
+
+        // Pad inputs if necessary
+        if !inputs_val.len().is_multiple_of(self.config.rate) {
+            let pad_len = self.config.rate - (inputs_val.len() % self.config.rate);
+            inputs_val.extend(vec![F::ZERO; pad_len]);
         }
 
-        let state: Vec<F> = state.iter().map(|x| F::from(*x)).collect();
-        let output = state[..self.rate].to_vec();
+        for chunk in inputs_val.chunks(self.config.rate) {
+            state[..self.config.rate].copy_from_slice(chunk);
+            state = (self.config.permutation)(&state)?;
+        }
+
+        let output = state[..self.config.rate].to_vec();
         Ok((output, Some(state)))
     }
 }

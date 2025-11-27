@@ -30,7 +30,7 @@ pub struct CircuitBuilder<F> {
     non_primitive_ops: Vec<NonPrimitiveOperationData>,
 
     /// Builder configuration
-    config: BuilderConfig,
+    config: BuilderConfig<F>,
 
     /// Registered non-primitive trace generators.
     non_primitive_trace_generators: HashMap<NonPrimitiveOpType, TraceGeneratorFn<F>>,
@@ -65,12 +65,12 @@ where
     }
 
     /// Returns an immutable reference to the config.
-    pub const fn config(&self) -> &BuilderConfig {
+    pub const fn config(&self) -> &BuilderConfig<F> {
         &self.config
     }
 
     /// Enables a non-primitive operation type on this builder.
-    pub fn enable_op(&mut self, op: NonPrimitiveOpType, cfg: crate::op::NonPrimitiveOpConfig) {
+    pub fn enable_op(&mut self, op: NonPrimitiveOpType, cfg: crate::op::NonPrimitiveOpConfig<F>) {
         self.config.enable_op(op, cfg);
     }
 
@@ -90,7 +90,7 @@ where
     /// * `trace_generator` - The function to generate the trace for the hash operations (for instance Poseidon2).
     pub fn enable_hash_squeeze(
         &mut self,
-        hash_config: &HashConfig,
+        hash_config: &HashConfig<F>,
         trace_generator: TraceGeneratorFn<F>,
     ) {
         self.config.enable_hash_squeeze(hash_config);

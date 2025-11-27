@@ -44,7 +44,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut builder = CircuitBuilder::<BabyBear>::new();
 
     // Enable hash operations with BabyBear D=4, WIDTH=16 configuration
-    let hash_config = HashConfig { rate: BASE_RATE };
+    let hash_config = HashConfig::babybear_poseidon2_16(BASE_RATE);
     builder.enable_hash_squeeze(
         &hash_config,
         generate_poseidon2_trace::<F, BabyBearD4Width16>,
@@ -58,8 +58,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     println!("Absorbing first inputs: {:?}", inputs);
 
-    let permutation = default_babybear_poseidon2_16();
-    builder.add_hash_squeeze(&inputs, permutation.clone(), true)?;
+    builder.add_hash_squeeze("poseidon2_16", &inputs, true)?;
 
     let mut final_output = Vec::new();
     // Following absorbs (reset=false)
@@ -69,7 +68,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             let input = builder.alloc_const(F::from_u64((step * 2 + i + 1) as u64), "hash_input");
             inputs.push(input);
         }
-        final_output = builder.add_hash_squeeze(&inputs, permutation.clone(), false)?;
+        final_output = builder.add_hash_squeeze("poseidon2_16", &inputs, false)?;
     }
 
     // Squeeze outputs

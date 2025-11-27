@@ -104,9 +104,7 @@ mod tests {
     fn test_circuit_challenger_observe_sample() {
         let mut circuit = CircuitBuilder::<BabyBear>::new();
         circuit.enable_hash_squeeze(
-            &HashConfig {
-                rate: DEFAULT_CHALLENGER_RATE,
-            },
+            &HashConfig::babybear_poseidon2_16(DEFAULT_CHALLENGER_RATE),
             generate_poseidon2_trace::<BabyBear, DummyParams>,
         );
 
@@ -125,12 +123,9 @@ mod tests {
     fn test_circuit_challenger_sample_vec() {
         let mut circuit = CircuitBuilder::<BabyBear>::new();
         circuit.enable_hash_squeeze(
-            &HashConfig {
-                rate: DEFAULT_CHALLENGER_RATE,
-            },
+            &HashConfig::babybear_poseidon2_16(DEFAULT_CHALLENGER_RATE),
             generate_poseidon2_trace::<BabyBear, DummyParams>,
         );
-
         let mut challenger = CircuitChallenger::<DEFAULT_CHALLENGER_RATE>::new();
 
         let challenges = challenger.sample_vec(&mut circuit, 3);

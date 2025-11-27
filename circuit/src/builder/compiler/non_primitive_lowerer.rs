@@ -20,7 +20,7 @@ use crate::types::{ExprId, WitnessId};
 /// - Validating operation configurations
 /// - Checking operation arity requirements
 #[derive(Debug)]
-pub struct NonPrimitiveLowerer<'a> {
+pub struct NonPrimitiveLowerer<'a, F> {
     /// Non-primitive operations to lower
     non_primitive_ops: &'a [NonPrimitiveOperationData],
 
@@ -28,15 +28,15 @@ pub struct NonPrimitiveLowerer<'a> {
     expr_to_widx: &'a HashMap<ExprId, WitnessId>,
 
     /// Builder configuration with enabled operations
-    config: &'a BuilderConfig,
+    config: &'a BuilderConfig<F>,
 }
 
-impl<'a> NonPrimitiveLowerer<'a> {
+impl<'a, F> NonPrimitiveLowerer<'a, F> {
     /// Creates a new non-primitive lowerer.
     pub const fn new(
         non_primitive_ops: &'a [NonPrimitiveOperationData],
         expr_to_widx: &'a HashMap<ExprId, WitnessId>,
-        config: &'a BuilderConfig,
+        config: &'a BuilderConfig<F>,
     ) -> Self {
         Self {
             non_primitive_ops,
@@ -46,7 +46,7 @@ impl<'a> NonPrimitiveLowerer<'a> {
     }
 
     /// Lowers non-primitive operations to executable operations with explicit inputs/outputs.
-    pub fn lower<F>(self) -> Result<Vec<Op<F>>, CircuitBuilderError>
+    pub fn lower(self) -> Result<Vec<Op<F>>, CircuitBuilderError>
     where
         F: Field + Clone + PrimeCharacteristicRing + PartialEq + Eq + Hash,
     {

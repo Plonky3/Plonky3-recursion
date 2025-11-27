@@ -135,7 +135,7 @@ impl<'a, F: CircuitField, Config: Poseidon2Params> Poseidon2TraceBuilder<'a, F, 
     pub fn build(self) -> Result<Poseidon2Trace<F>, CircuitError> {
         let mut rows = Vec::new();
 
-        let rate = if let &NonPrimitiveOpConfig::HashConfig(HashConfig { rate }) = self
+        let rate = if let NonPrimitiveOpConfig::HashConfig(HashConfig { rate, .. }) = self
             .circuit
             .enabled_ops
             .get(&NonPrimitiveOpType::HashSqueeze { reset: true })
@@ -178,7 +178,7 @@ impl<'a, F: CircuitField, Config: Poseidon2Params> Poseidon2TraceBuilder<'a, F, 
                         });
                     }
 
-                    let input_chunks = inputs[0].chunks(rate).collect::<Vec<&[WitnessId]>>();
+                    let input_chunks = inputs[0].chunks(*rate).collect::<Vec<&[WitnessId]>>();
                     let n_chunks = input_chunks.len();
 
                     for (i, row_input_wids) in input_chunks.iter().enumerate() {
@@ -200,7 +200,7 @@ impl<'a, F: CircuitField, Config: Poseidon2Params> Poseidon2TraceBuilder<'a, F, 
                             vec![]
                         };
 
-                        let mut absorb_flags = vec![false; rate];
+                        let mut absorb_flags = vec![false; *rate];
                         if nb_row_inputs > 0 {
                             absorb_flags[nb_row_inputs - 1] = true;
                         }
