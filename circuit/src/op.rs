@@ -531,7 +531,7 @@ impl<F: Field> WitnessHintsFiller<F> for HashSqueezeHint<F> {
 
     fn compute_outputs(
         &self,
-        mut inputs_val: Vec<F>,
+        inputs_val: Vec<F>,
         state: Option<&Vec<F>>,
     ) -> Result<HintsOutputAndNextState<F>, CircuitError> {
         let mut state = if self.reset {
@@ -542,14 +542,8 @@ impl<F: Field> WitnessHintsFiller<F> for HashSqueezeHint<F> {
                 .unwrap_or_else(|| vec![F::ZERO; self.config.width])
         };
 
-        // Pad inputs if necessary
-        if !inputs_val.len().is_multiple_of(self.config.rate) {
-            let pad_len = self.config.rate - (inputs_val.len() % self.config.rate);
-            inputs_val.extend(vec![F::ZERO; pad_len]);
-        }
-
         for chunk in inputs_val.chunks(self.config.rate) {
-            state[..self.config.rate].copy_from_slice(chunk);
+            state[..chunk.len()].copy_from_slice(chunk);
             state = (self.config.permutation)(&state)?;
         }
 
