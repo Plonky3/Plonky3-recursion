@@ -412,7 +412,7 @@ where
     coms_to_verify.push((commitments.quotient_chunks.clone(), quotient_round));
 
     if let Some(global) = &common_data.preprocessed {
-        let mut pre_round = Vec::new();
+        let mut pre_round = Vec::with_capacity(global.matrix_to_instance.len());
 
         for (matrix_index, &inst_idx) in global.matrix_to_instance.iter().enumerate() {
             let pre_w = preprocessed_widths[inst_idx];
