@@ -1,10 +1,13 @@
 use p3_baby_bear::{BabyBear, Poseidon2BabyBear};
 use p3_challenger::DuplexChallenger;
 use p3_circuit::ops::MmcsVerifyConfig;
+use p3_circuit::ops::hash::HashConfig;
+use p3_circuit::tables::{Poseidon2Params, generate_poseidon2_trace};
 use p3_circuit::test_utils::{FibonacciAir, generate_trace_rows};
 use p3_circuit::{
     CircuitBuilder, MmcsPrivateData, NonPrimitiveOpPrivateData, NonPrimitiveOpType, Op,
 };
+use p3_circuit_prover::Poseidon2Config;
 use p3_commit::ExtensionMmcs;
 use p3_dft::Radix2DitParallel;
 use p3_field::extension::BinomialExtensionField;
@@ -21,6 +24,11 @@ use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
 use p3_uni_stark::{StarkConfig, StarkGenericConfig, Val, prove, verify};
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
+use tracing_forest::ForestLayer;
+use tracing_forest::util::LevelFilter;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::{EnvFilter, Registry};
 
 type F = BabyBear;
 const D: usize = 4;
@@ -36,8 +44,33 @@ type Challenger = DuplexChallenger<F, Perm, 16, RATE>;
 type MyPcs = TwoAdicFriPcs<F, Dft, ValMmcs, ChallengeMmcs>;
 type MyConfig = StarkConfig<MyPcs, Challenge, Challenger>;
 
+struct P2Params;
+
+impl Poseidon2Params for P2Params {
+    const D: usize = 4;
+    const WIDTH: usize = 16;
+    const RATE_EXT: usize = 2;
+    const CAPACITY_EXT: usize = 2;
+    const SBOX_DEGREE: u64 = 7;
+    const SBOX_REGISTERS: usize = 1;
+    const HALF_FULL_ROUNDS: usize = 4;
+    const PARTIAL_ROUNDS: usize = 13;
+}
+
+fn init_logger() {
+    let env_filter = EnvFilter::builder()
+        .with_default_directive(LevelFilter::INFO.into())
+        .from_env_lossy();
+
+    Registry::default()
+        .with(env_filter)
+        .with(ForestLayer::default())
+        .init();
+}
+
 #[test]
 fn test_fibonacci_verifier() -> Result<(), VerificationError> {
+    init_logger();
     let mut rng = SmallRng::seed_from_u64(1);
     let n = 1 << 3;
     let x = 21;
@@ -84,16 +117,21 @@ fn test_fibonacci_verifier() -> Result<(), VerificationError> {
         Witness<Val<MyConfig>>,
     >;
 
-    let mut circuit_builder = CircuitBuilder::new();
+    let mut circuit_builder = CircuitBuilder::<<MyConfig as StarkGenericConfig>::Challenge>::new();
     let mmcs_config = MmcsVerifyConfig::babybear_quartic_extension_default();
     circuit_builder.enable_mmcs(&mmcs_config);
+    let hash_config = HashConfig::babybear_poseidon2_16(8);
+    circuit_builder.enable_hash_squeeze(
+        &hash_config,
+        generate_poseidon2_trace::<<MyConfig as StarkGenericConfig>::Challenge, P2Params>,
+    );
 
     // Allocate all targets
     let verifier_inputs = StarkVerifierInputsBuilder::<
         MyConfig,
         HashTargets<F, DIGEST_ELEMS>,
         InnerFri,
-    >::allocate(&mut circuit_builder, &proof, pis.len());
+    >::allocate(&mut circuit_builder, &proof, None, pis.len());
 
     // Add the verification circuit to the builder.
     verify_circuit::<
@@ -109,11 +147,12 @@ fn test_fibonacci_verifier() -> Result<(), VerificationError> {
         &mut circuit_builder,
         &verifier_inputs.proof_targets,
         &verifier_inputs.air_public_targets,
+        &None,
         &fri_verifier_params,
     )?;
 
     // Build the circuit.
-    let circuit = circuit_builder.build()?;
+    let (circuit, _) = circuit_builder.build()?;
 
     let mut runner = circuit.runner();
 
@@ -128,14 +167,15 @@ fn test_fibonacci_verifier() -> Result<(), VerificationError> {
 
     // Pack values using the same builder
     let num_queries = proof.opening_proof.query_proofs.len();
-    let public_inputs = verifier_inputs.pack_values(&pis, &proof, &all_challenges, num_queries);
+    let public_inputs =
+        verifier_inputs.pack_values(&pis, &proof, &None, &all_challenges, num_queries);
 
     runner
         .set_public_inputs(&public_inputs)
         .map_err(VerificationError::Circuit)?;
 
     // TODO: This block of code should be the implementation of Recursive::set_private_data function.
-    let compress = MyCompress::new(perm.clone());
+    let compress = MyCompress::new(perm);
     let mut non_primitive_ops_iter =
         runner
             .all_non_primitive_ops()

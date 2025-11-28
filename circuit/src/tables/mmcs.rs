@@ -1,7 +1,9 @@
+use alloc::boxed::Box;
 use alloc::string::ToString;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use alloc::{format, vec};
+use core::any::Any;
 use core::fmt::Debug;
 use core::iter;
 
@@ -9,6 +11,7 @@ use itertools::izip;
 use p3_field::{ExtensionField, Field};
 use p3_symmetric::PseudoCompressionFunction;
 
+use super::NonPrimitiveTrace;
 use crate::CircuitError;
 use crate::circuit::{Circuit, CircuitField};
 use crate::op::{NonPrimitiveOpConfig, NonPrimitiveOpPrivateData, NonPrimitiveOpType, Op};
@@ -25,6 +28,29 @@ pub struct MmcsTrace<F> {
     ///
     /// Each entry is one complete leaf-to-root verification.
     pub mmcs_paths: Vec<MmcsPathTrace<F>>,
+}
+
+impl<F> MmcsTrace<F> {
+    pub fn total_rows(&self) -> usize {
+        self.mmcs_paths
+            .iter()
+            .map(|path| path.left_values.len() + 1)
+            .sum()
+    }
+}
+
+/// Generate the MMCS trace if the operation is present in the circuit.
+pub fn generate_mmcs_trace<F: CircuitField>(
+    circuit: &Circuit<F>,
+    witness: &[Option<F>],
+    non_primitive_data: &[Option<NonPrimitiveOpPrivateData<F>>],
+) -> Result<Option<Box<dyn NonPrimitiveTrace<F>>>, CircuitError> {
+    let trace = MmcsTraceBuilder::new(circuit, witness, non_primitive_data).build()?;
+    if trace.total_rows() == 0 {
+        Ok(None)
+    } else {
+        Ok(Some(Box::new(trace)))
+    }
 }
 
 /// Single Merkle path verification trace.
@@ -123,6 +149,8 @@ where
     }
 }
 
+impl<F> Eq for MmcsPrivateData<F> where F: Eq {}
+
 type OneOrTwoStates<F> = (Vec<F>, Option<Vec<F>>);
 
 impl<F: Field + Clone + Default> MmcsPrivateData<F> {
@@ -190,7 +218,7 @@ impl<F: Field + Clone + Default> MmcsPrivateData<F> {
             return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
                 op: NonPrimitiveOpType::MmcsVerify,
                 operation_index: NonPrimitiveOpId(0),
-                expected: alloc::format!(
+                expected: format!(
                     "path length <= max_tree_height ({})",
                     config.max_tree_height
                 ),
@@ -212,7 +240,7 @@ impl<F: Field + Clone + Default> MmcsPrivateData<F> {
             return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
                 op: NonPrimitiveOpType::MmcsVerify,
                 expected: "[]".to_string(),
-                got: format!("{:?}", last),
+                got: format!("{last:?}"),
                 operation_index: NonPrimitiveOpId(0), //TODO: What's the index of this op?
             });
         }
@@ -243,7 +271,7 @@ impl<F: Field + Clone + Default> MmcsPrivateData<F> {
             ));
         }
         // Finally, push the root
-        path_states.push((state.clone(), None));
+        path_states.push((state, None));
 
         Ok(path_states)
     }
@@ -273,18 +301,16 @@ impl<F: Field + Clone + Default> MmcsPrivateData<F> {
         let root_indices: Vec<u32> = root_wids.iter().map(|wid| wid.0).collect();
 
         debug_assert!(self.path_siblings.len() <= mmcs_config.max_tree_height);
-        debug_assert!(if let Ok(leaf) =
+        debug_assert!(
             leaves
                 .last()
-                .ok_or(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
+                .ok_or_else(|| CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
                     op: NonPrimitiveOpType::MmcsVerify,
                     expected: "Non empty".to_string(),
                     got: leaves.len()
-                }) {
-            leaf.is_empty() || leaves.len() == 1
-        } else {
-            false
-        });
+                })
+                .is_ok_and(|leaf| leaf.is_empty() || leaves.len() == 1)
+        );
 
         // Pad directions in case they start with 0s.
         let path_directions =
@@ -362,6 +388,27 @@ impl<F: Field + Clone + Default> MmcsPrivateData<F> {
     }
 }
 
+impl<F> NonPrimitiveTrace<F> for MmcsTrace<F>
+where
+    F: Clone + Send + Sync + 'static,
+{
+    fn id(&self) -> &'static str {
+        "mmcs_verify"
+    }
+
+    fn rows(&self) -> usize {
+        self.total_rows()
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn boxed_clone(&self) -> Box<dyn NonPrimitiveTrace<F>> {
+        Box::new(self.clone()) as Box<dyn NonPrimitiveTrace<F>>
+    }
+}
+
 /// Builder for generating MMCS traces.
 pub struct MmcsTraceBuilder<'a, F> {
     circuit: &'a Circuit<F>,
@@ -371,7 +418,7 @@ pub struct MmcsTraceBuilder<'a, F> {
 
 impl<'a, F: CircuitField> MmcsTraceBuilder<'a, F> {
     /// Creates a new MMCS trace builder.
-    pub fn new(
+    pub const fn new(
         circuit: &'a Circuit<F>,
         witness: &'a [Option<F>],
         non_primitive_op_private_data: &'a [Option<NonPrimitiveOpPrivateData<F>>],
@@ -412,7 +459,7 @@ impl<'a, F: CircuitField> MmcsTraceBuilder<'a, F> {
                 op_id,
             } = op
             else {
-                // Skip non-MMCS operations (e.g., HashAbsorb, HashSqueeze)
+                // Skip non-MMCS operations (e.g. HashSqueeze)
                 continue;
             };
             if executor.op_type() != &NonPrimitiveOpType::MmcsVerify {
@@ -452,8 +499,8 @@ impl<'a, F: CircuitField> MmcsTraceBuilder<'a, F> {
                 return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
                     op: NonPrimitiveOpType::MmcsVerify,
                     operation_index: *op_id,
-                    expected: alloc::format!("{:?}", witness_directions.len()),
-                    got: alloc::format!("{:?}", witness_leaves.len()),
+                    expected: format!("{:?}", witness_directions.len()),
+                    got: format!("{:?}", witness_leaves.len()),
                 });
             }
 
@@ -485,10 +532,9 @@ mod tests {
     use p3_baby_bear::{BabyBear, Poseidon2BabyBear, default_babybear_poseidon2_16};
     use p3_field::PrimeCharacteristicRing;
     use p3_field::extension::BinomialExtensionField;
-    use p3_symmetric::{PseudoCompressionFunction, TruncatedPermutation};
+    use p3_symmetric::TruncatedPermutation;
 
     use super::*;
-    use crate::NonPrimitiveOpPrivateData;
     use crate::builder::CircuitBuilder;
     use crate::ops::MmcsOps;
 
@@ -602,11 +648,11 @@ mod tests {
         ];
         let root = (0..config.ext_field_digest_elems)
             .map(|_| builder.add_public_input())
-            .collect::<alloc::vec::Vec<_>>();
+            .collect::<Vec<_>>();
         let mmcs_op_id = builder
             .add_mmcs_verify(&leaves, &directions, &root)
             .unwrap();
-        let circuit = builder.build().unwrap();
+        let (circuit, _) = builder.build().unwrap();
 
         // Create test data with 3 layers, varying directions, and one extra sibling
         let leaves_value = [vec![F::from_u64(42)], vec![F::from_u64(25)], vec![]];
@@ -648,8 +694,7 @@ mod tests {
         let result = run_test(&leaves_value, correct_root, &correct_private_data);
         assert!(
             result.is_ok(),
-            "Valid witness should be accepted but got {:?}",
-            result
+            "Valid witness should be accepted but got {result:?}"
         );
     }
 
@@ -681,11 +726,11 @@ mod tests {
         ];
         let root_exprs = (0..config.ext_field_digest_elems)
             .map(|_| builder.add_public_input())
-            .collect::<alloc::vec::Vec<_>>();
+            .collect::<Vec<_>>();
         let mmcs_op_id = builder
             .add_mmcs_verify(&leaves_expr, &directions_expr, &root_exprs)
             .unwrap();
-        let circuit = builder
+        let (circuit, _) = builder
             .build()
             .map_err(|e| CircuitError::InvalidCircuit { error: e })
             .unwrap();
@@ -717,19 +762,22 @@ mod tests {
         runner
             .set_non_primitive_op_private_data(
                 mmcs_op_id,
-                NonPrimitiveOpPrivateData::MmcsVerify(private_data.clone()),
+                NonPrimitiveOpPrivateData::MmcsVerify(private_data),
             )
             .unwrap();
         let traces = runner.run().unwrap();
+        let mmcs_trace = traces
+            .non_primitive_trace::<MmcsTrace<F>>("mmcs_verify")
+            .expect("mmcs trace present");
 
         // Validate trace fields
-        assert_eq!(traces.mmcs_trace.mmcs_paths.len(), 1);
-        let path = &traces.mmcs_trace.mmcs_paths[0];
+        assert_eq!(mmcs_trace.mmcs_paths.len(), 1);
+        let path = &mmcs_trace.mmcs_paths[0];
 
         // Expected expansions for directions, is_extra, and right_values
-        let mut expected_dirs = alloc::vec::Vec::new();
-        let mut expected_is_extra = alloc::vec::Vec::new();
-        let mut expected_right_values = alloc::vec::Vec::new();
+        let mut expected_dirs = Vec::new();
+        let mut expected_is_extra = Vec::new();
+        let mut expected_right_values = Vec::new();
         // We skip the first leaf replacing it by an empty vec.
         let empty_leaf = vec![];
         for (dir, sibling, leaf) in izip!(
@@ -763,7 +811,7 @@ mod tests {
                 assert!(!leaf.is_empty()); // Ensure that there was a leaf for producing the extra state
                 expected_left_values.push(extra_state.clone());
             } else {
-                assert!(leaf.is_empty()); // No extra state means there was no leaf at this level. 
+                assert!(leaf.is_empty()); // No extra state means there was no leaf at this level.
             }
         }
         assert_eq!(path.left_values, expected_left_values);

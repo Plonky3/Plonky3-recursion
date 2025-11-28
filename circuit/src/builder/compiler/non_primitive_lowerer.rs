@@ -1,5 +1,6 @@
-use alloc::format;
+use alloc::boxed::Box;
 use alloc::vec::Vec;
+use alloc::{format, vec};
 use core::hash::Hash;
 
 use hashbrown::HashMap;
@@ -9,7 +10,7 @@ use crate::builder::circuit_builder::NonPrimitiveOperationData;
 use crate::builder::compiler::get_witness_id;
 use crate::builder::{BuilderConfig, CircuitBuilderError};
 use crate::op::{NonPrimitiveOpConfig, NonPrimitiveOpType, Op};
-use crate::ops::{HashAbsorbExecutor, HashSqueezeExecutor, MmcsVerifyExecutor};
+use crate::ops::{HashSqueezeExecutor, MmcsVerifyExecutor};
 use crate::types::{ExprId, WitnessId};
 
 /// Responsible for lowering non-primitive operations from ExprIds to WitnessIds.
@@ -19,7 +20,7 @@ use crate::types::{ExprId, WitnessId};
 /// - Validating operation configurations
 /// - Checking operation arity requirements
 #[derive(Debug)]
-pub struct NonPrimitiveLowerer<'a> {
+pub struct NonPrimitiveLowerer<'a, F> {
     /// Non-primitive operations to lower
     non_primitive_ops: &'a [NonPrimitiveOperationData],
 
@@ -27,15 +28,15 @@ pub struct NonPrimitiveLowerer<'a> {
     expr_to_widx: &'a HashMap<ExprId, WitnessId>,
 
     /// Builder configuration with enabled operations
-    config: &'a BuilderConfig,
+    config: &'a BuilderConfig<F>,
 }
 
-impl<'a> NonPrimitiveLowerer<'a> {
+impl<'a, F> NonPrimitiveLowerer<'a, F> {
     /// Creates a new non-primitive lowerer.
     pub const fn new(
         non_primitive_ops: &'a [NonPrimitiveOperationData],
         expr_to_widx: &'a HashMap<ExprId, WitnessId>,
-        config: &'a BuilderConfig,
+        config: &'a BuilderConfig<F>,
     ) -> Self {
         Self {
             non_primitive_ops,
@@ -45,7 +46,7 @@ impl<'a> NonPrimitiveLowerer<'a> {
     }
 
     /// Lowers non-primitive operations to executable operations with explicit inputs/outputs.
-    pub fn lower<F>(self) -> Result<Vec<Op<F>>, CircuitBuilderError>
+    pub fn lower(self) -> Result<Vec<Op<F>>, CircuitBuilderError>
     where
         F: Field + Clone + PrimeCharacteristicRing + PartialEq + Eq + Hash,
     {
@@ -142,11 +143,11 @@ impl<'a> NonPrimitiveLowerer<'a> {
                     lowered_ops.push(Op::NonPrimitiveOpWithExecutor {
                         inputs,
                         outputs: Vec::new(),
-                        executor: alloc::boxed::Box::new(MmcsVerifyExecutor::new()),
+                        executor: Box::new(MmcsVerifyExecutor::new()),
                         op_id: *op_id,
                     });
                 }
-                NonPrimitiveOpType::HashAbsorb { reset } => {
+                NonPrimitiveOpType::HashSqueeze { reset } => {
                     // Operation must be enabled
                     if config_opt.is_none() {
                         return Err(CircuitBuilderError::InvalidNonPrimitiveOpConfiguration {
@@ -154,49 +155,28 @@ impl<'a> NonPrimitiveLowerer<'a> {
                         });
                     }
 
-                    let inputs = witness_exprs
-                        .iter()
-                        .map(|witness_expr| {
-                            witness_expr
-                                .iter()
-                                .map(|&expr| {
-                                    get_witness_id(self.expr_to_widx, expr, "HashAbsorb input")
-                                })
-                                .collect::<Result<Vec<WitnessId>, _>>()
-                        })
-                        .collect::<Result<Vec<Vec<WitnessId>>, _>>()?;
-
-                    lowered_ops.push(Op::NonPrimitiveOpWithExecutor {
-                        inputs,
-                        outputs: Vec::new(),
-                        executor: alloc::boxed::Box::new(HashAbsorbExecutor::new(*reset)),
-                        op_id: *op_id,
-                    });
-                }
-                NonPrimitiveOpType::HashSqueeze => {
-                    // Operation must be enabled
-                    if config_opt.is_none() {
-                        return Err(CircuitBuilderError::InvalidNonPrimitiveOpConfiguration {
-                            op: op_type.clone(),
+                    if witness_exprs.len() != 2 {
+                        return Err(CircuitBuilderError::NonPrimitiveOpArity {
+                            op: "HashSqueeze",
+                            expected: format!("{}", 2),
+                            got: witness_exprs.len(),
                         });
                     }
 
-                    let outputs = witness_exprs
+                    let inputs = witness_exprs[0]
                         .iter()
-                        .map(|witness_expr| {
-                            witness_expr
-                                .iter()
-                                .map(|&expr| {
-                                    get_witness_id(self.expr_to_widx, expr, "HashSqueeze output")
-                                })
-                                .collect::<Result<Vec<WitnessId>, _>>()
-                        })
-                        .collect::<Result<Vec<Vec<WitnessId>>, _>>()?;
+                        .map(|&expr| get_witness_id(self.expr_to_widx, expr, "HashSqueeze input"))
+                        .collect::<Result<Vec<WitnessId>, _>>()?;
+
+                    let outputs = witness_exprs[1]
+                        .iter()
+                        .map(|&expr| get_witness_id(self.expr_to_widx, expr, "HashSqueeze input"))
+                        .collect::<Result<Vec<WitnessId>, _>>()?;
 
                     lowered_ops.push(Op::NonPrimitiveOpWithExecutor {
-                        inputs: Vec::new(),
-                        outputs,
-                        executor: alloc::boxed::Box::new(HashSqueezeExecutor::new()),
+                        inputs: vec![inputs],
+                        outputs: vec![outputs],
+                        executor: Box::new(HashSqueezeExecutor::new(*reset)),
                         op_id: *op_id,
                     });
                 }

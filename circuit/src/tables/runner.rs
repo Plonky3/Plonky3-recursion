@@ -1,16 +1,18 @@
+use alloc::boxed::Box;
 use alloc::string::ToString;
 use alloc::vec::Vec;
 use alloc::{format, vec};
 
+use hashbrown::HashMap;
+use p3_util::zip_eq::zip_eq;
 use tracing::instrument;
 
-use super::Traces;
 use super::add::AddTraceBuilder;
 use super::constant::ConstTraceBuilder;
-use super::mmcs::MmcsTraceBuilder;
 use super::mul::MulTraceBuilder;
 use super::public::PublicTraceBuilder;
 use super::witness::WitnessTraceBuilder;
+use super::{NonPrimitiveTrace, Traces};
 use crate::circuit::Circuit;
 use crate::op::{ExecutionContext, NonPrimitiveOpPrivateData, Op};
 use crate::types::{NonPrimitiveOpId, WitnessId};
@@ -102,7 +104,7 @@ impl<F: CircuitField> CircuitRunner<F> {
                         op: op_ty.clone(),
                         operation_index: op_id,
                         expected: "no private data".to_string(),
-                        got: alloc::format!("{private_data:?}"),
+                        got: format!("{private_data:?}"),
                     });
                 }
             }
@@ -142,12 +144,19 @@ impl<F: CircuitField> CircuitRunner<F> {
             PublicTraceBuilder::new(&self.circuit.primitive_ops, &self.witness).build()?;
         let add_trace = AddTraceBuilder::new(&self.circuit.primitive_ops, &self.witness).build()?;
         let mul_trace = MulTraceBuilder::new(&self.circuit.primitive_ops, &self.witness).build()?;
-        let mmcs_trace: crate::MmcsTrace<F> = MmcsTraceBuilder::new(
-            &self.circuit,
-            &self.witness,
-            &self.non_primitive_op_private_data,
-        )
-        .build()?;
+
+        let mut non_primitive_traces: HashMap<&'static str, Box<dyn NonPrimitiveTrace<F>>> =
+            HashMap::new();
+        for generator in self.circuit.non_primitive_trace_generators.values() {
+            if let Some(trace) = generator(
+                &self.circuit,
+                &self.witness,
+                &self.non_primitive_op_private_data,
+            )? {
+                let id = trace.id();
+                non_primitive_traces.insert(id, trace);
+            }
+        }
 
         Ok(Traces {
             witness_trace,
@@ -155,7 +164,7 @@ impl<F: CircuitField> CircuitRunner<F> {
             public_trace,
             add_trace,
             mul_trace,
-            mmcs_trace,
+            non_primitive_traces,
         })
     }
 
@@ -165,6 +174,9 @@ impl<F: CircuitField> CircuitRunner<F> {
     fn execute_primitives(&mut self) -> Result<(), CircuitError> {
         // Clone primitive operations to avoid borrowing issues
         let primitive_ops = self.circuit.primitive_ops.clone();
+
+        // State for hint fillers
+        let filler_state = &mut HashMap::new();
 
         for prim in primitive_ops {
             match prim {
@@ -200,6 +212,42 @@ impl<F: CircuitField> CircuitRunner<F> {
                         let a_inv = a_val.try_inverse().ok_or(CircuitError::DivisionByZero)?;
                         let b_val = result_val * a_inv;
                         self.set_witness(b, b_val)?;
+                    }
+                }
+                Op::Unconstrained {
+                    inputs,
+                    outputs,
+                    filler,
+                } => {
+                    let inputs_val = inputs
+                        .iter()
+                        .map(|&input| self.get_witness(input))
+                        .collect::<Result<Vec<F>, _>>()?;
+
+                    // Retrieve current state for the filler if applicable
+                    let state = filler
+                        .state_id()
+                        .and_then(|state_id| filler_state.get(&state_id));
+
+                    let (outputs_val, next_state) = filler.compute_outputs(inputs_val, state)?;
+
+                    // Update the filler state if applicable
+                    if let Some(state_id) = filler.state_id()
+                        && let Some(state) = next_state
+                    {
+                        filler_state.insert(state_id, state);
+                    }
+
+                    for (&output, &output_val) in zip_eq(
+                        outputs.iter(),
+                        outputs_val.iter(),
+                        CircuitError::UnconstrainedOpInputLengthMismatch {
+                            op: "equal to".to_string(),
+                            expected: outputs.len(),
+                            got: outputs_val.len(),
+                        },
+                    )? {
+                        self.set_witness(output, output_val)?;
                     }
                 }
                 Op::NonPrimitiveOpWithExecutor { .. } => {
@@ -257,10 +305,24 @@ impl<F: CircuitField> CircuitRunner<F> {
         // Check for conflicting reassignment
         if let Some(existing_value) = self.witness[widx.0 as usize] {
             if existing_value != value {
+                let expr_ids = self
+                    .circuit
+                    .expr_to_widx
+                    .iter()
+                    .filter_map(|(expr_id, &witness_id)| {
+                        if witness_id == widx {
+                            Some(expr_id)
+                        } else {
+                            None
+                        }
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>();
                 return Err(CircuitError::WitnessConflict {
                     witness_id: widx,
                     existing: format!("{existing_value:?}"),
                     new: format!("{value:?}"),
+                    expr_ids,
                 });
             }
         } else {
@@ -273,15 +335,22 @@ impl<F: CircuitField> CircuitRunner<F> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     extern crate std;
-    use alloc::vec;
-    use std::println;
 
     use p3_baby_bear::BabyBear;
     use p3_field::extension::BinomialExtensionField;
-    use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
+    use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
+    use tracing_forest::ForestLayer;
+    use tracing_forest::util::LevelFilter;
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+    use tracing_subscriber::{EnvFilter, Registry};
 
+    use crate::ExprId;
     use crate::builder::CircuitBuilder;
+    use crate::op::{HintsOutputAndNextState, WitnessHintsFiller};
     use crate::types::WitnessId;
 
     #[test]
@@ -293,7 +362,7 @@ mod tests {
         let c5 = builder.add_const(BabyBear::from_u64(5));
         let _result = builder.add(x, c5);
 
-        let circuit = builder.build().unwrap();
+        let (circuit, _) = builder.build().unwrap();
         let mut runner = circuit.runner();
 
         // Set public input: x = 3
@@ -317,93 +386,82 @@ mod tests {
         assert!(!traces.add_trace.lhs_values.is_empty());
     }
 
+    fn init_logger() {
+        let env_filter = EnvFilter::builder()
+            .with_default_directive(LevelFilter::INFO.into())
+            .from_env_lossy();
+
+        Registry::default()
+            .with(env_filter)
+            .with(ForestLayer::default())
+            .init();
+    }
+
+    #[derive(Debug, Clone)]
+    /// The hint defined by x in an equation a*x - b = 0
+    struct XHint {
+        inputs: Vec<ExprId>,
+    }
+
+    impl XHint {
+        pub fn new(a: ExprId, b: ExprId) -> Self {
+            Self { inputs: vec![a, b] }
+        }
+    }
+
+    impl<F: Field> WitnessHintsFiller<F> for XHint {
+        fn inputs(&self) -> &[ExprId] {
+            &self.inputs
+        }
+
+        fn n_outputs(&self) -> usize {
+            1
+        }
+
+        fn compute_outputs(
+            &self,
+            inputs_val: Vec<F>,
+            _state: Option<&Vec<F>>,
+        ) -> Result<HintsOutputAndNextState<F>, crate::CircuitError> {
+            if inputs_val.len() != self.inputs.len() {
+                Err(crate::CircuitError::UnconstrainedOpInputLengthMismatch {
+                    op: "equal to".to_string(),
+                    expected: self.inputs.len(),
+                    got: inputs_val.len(),
+                })
+            } else {
+                let a = inputs_val[0];
+                let b = inputs_val[1];
+                let inv_a = a.try_inverse().ok_or(CircuitError::DivisionByZero)?;
+                let x = b * inv_a;
+                Ok((vec![x], None))
+            }
+        }
+    }
+
     #[test]
     // Proves that we know x such that 37 * x - 111 = 0
     fn test_toy_example_37_times_x_minus_111() {
+        init_logger();
         let mut builder = CircuitBuilder::new();
 
-        let x = builder.add_public_input();
         let c37 = builder.add_const(BabyBear::from_u64(37));
         let c111 = builder.add_const(BabyBear::from_u64(111));
+        let x_hint = XHint::new(c37, c111);
+        let x = builder.alloc_witness_hints(x_hint, "x")[0];
 
         let mul_result = builder.mul(c37, x);
         let sub_result = builder.sub(mul_result, c111);
         builder.assert_zero(sub_result);
 
-        let circuit = builder.build().unwrap();
-        println!("=== CIRCUIT PRIMITIVE OPERATIONS ===");
-        for (i, prim) in circuit.primitive_ops.iter().enumerate() {
-            println!("{i}: {prim:?}");
-        }
+        let (circuit, _) = builder.build().unwrap();
 
         let witness_count = circuit.witness_count;
-        let mut runner = circuit.runner();
-
-        // Set public input: x = 3 (should satisfy 37 * 3 - 111 = 0)
-        runner.set_public_inputs(&[BabyBear::from_u64(3)]).unwrap();
+        let runner = circuit.runner();
 
         let traces = runner.run().unwrap();
 
-        println!("\n=== WITNESS TRACE ===");
-        for (i, (idx, val)) in traces
-            .witness_trace
-            .index
-            .iter()
-            .zip(traces.witness_trace.values.iter())
-            .enumerate()
-        {
-            println!("Row {i}: WitnessId({idx}) = {val:?}");
-        }
-
-        println!("\n=== CONST TRACE ===");
-        for (i, (idx, val)) in traces
-            .const_trace
-            .index
-            .iter()
-            .zip(traces.const_trace.values.iter())
-            .enumerate()
-        {
-            println!("Row {i}: WitnessId({idx}) = {val:?}");
-        }
-
-        println!("\n=== PUBLIC TRACE ===");
-        for (i, (idx, val)) in traces
-            .public_trace
-            .index
-            .iter()
-            .zip(traces.public_trace.values.iter())
-            .enumerate()
-        {
-            println!("Row {i}: WitnessId({idx}) = {val:?}");
-        }
-
-        println!("\n=== MUL TRACE ===");
-        for i in 0..traces.mul_trace.lhs_values.len() {
-            println!(
-                "Row {}: WitnessId({}) * WitnessId({}) -> WitnessId({}) | {:?} * {:?} -> {:?}",
-                i,
-                traces.mul_trace.lhs_index[i],
-                traces.mul_trace.rhs_index[i],
-                traces.mul_trace.result_index[i],
-                traces.mul_trace.lhs_values[i],
-                traces.mul_trace.rhs_values[i],
-                traces.mul_trace.result_values[i]
-            );
-        }
-
-        println!("\n=== ADD TRACE ===");
-        for i in 0..traces.add_trace.lhs_values.len() {
-            println!(
-                "Row {}: WitnessId({}) + WitnessId({}) -> WitnessId({}) | {:?} + {:?} -> {:?}",
-                i,
-                traces.add_trace.lhs_index[i],
-                traces.add_trace.rhs_index[i],
-                traces.add_trace.result_index[i],
-                traces.add_trace.lhs_values[i],
-                traces.add_trace.rhs_values[i],
-                traces.add_trace.result_values[i]
-            );
-        }
+        traces.dump_primitive_traces_log();
 
         // Verify trace structure
         assert_eq!(traces.witness_trace.index.len(), witness_count as usize);
@@ -411,9 +469,12 @@ mod tests {
         // Should have constants: 0, 37, 111
         assert_eq!(traces.const_trace.values.len(), 3);
 
-        // Should have one public input
-        assert_eq!(traces.public_trace.values.len(), 1);
-        assert_eq!(traces.public_trace.values[0], BabyBear::from_u64(3));
+        // Should have no public input
+        assert!(traces.public_trace.values.is_empty());
+
+        // Should store the value of the hint (3) at `WitnessId(3)``
+        assert_eq!(traces.witness_trace.index[3], WitnessId(3));
+        assert_eq!(traces.witness_trace.values[3], BabyBear::from_usize(3));
 
         // Should have one mul operation: 37 * x
         assert_eq!(traces.mul_trace.lhs_values.len(), 1);
@@ -439,7 +500,7 @@ mod tests {
         let yz = builder.mul(y, z);
         let _result = builder.add(x, yz);
 
-        let circuit = builder.build().unwrap();
+        let (circuit, _) = builder.build().unwrap();
         let mut runner = circuit.runner();
 
         // Set public inputs to genuine extension field values with ALL non-zero coefficients

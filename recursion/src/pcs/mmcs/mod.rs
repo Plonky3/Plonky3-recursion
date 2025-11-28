@@ -3,6 +3,7 @@
 use alloc::vec::Vec;
 
 use p3_circuit::op::NonPrimitiveOpType;
+use p3_circuit::ops::HashOps;
 use p3_circuit::{CircuitBuilder, CircuitBuilderError, MmcsOps, NonPrimitiveOpId};
 use p3_field::{ExtensionField, Field, TwoAdicField};
 use p3_matrix::Dimensions;
@@ -72,7 +73,8 @@ where
                 // TODO: I this the error we want?
                 op: NonPrimitiveOpType::MmcsVerify,
             },
-        )?
+        )?;
+    let leaves = leaves
         .into_iter()
         .map(
             |leaf| // Get the initial height padded to a power of two. As heights_tallest_first is sorted,
@@ -83,21 +85,14 @@ where
         {
             // TODO: This should be replaced with propoer hashing. In the meantime we pad/truncate
             // the leaf to the correct size.
-            let mut row_digest = leaf;
-            if !row_digest.is_empty() && row_digest.len() < mmcs_config.ext_field_digest_elems {
-                row_digest.extend(
-                    (0..(mmcs_config.ext_field_digest_elems - row_digest.len()))
-                        .map(|_| {
-                            circuit.add_const(EF::ZERO)
-                        }),
-                );
-            } else if row_digest.len() > mmcs_config.ext_field_digest_elems {
-                row_digest = row_digest[0..mmcs_config.ext_field_digest_elems].to_vec()
+            if leaf.len() > 1 {
+                circuit.add_hash_squeeze("mmcs_verify", &leaf, true)
+            } else {
+                Ok(leaf)
             }
-            row_digest
         },
         )
-        .collect::<Vec<Vec<Target>>>();
+        .collect::<Result<Vec<Vec<Target>>, _>>()?;
 
     circuit.add_mmcs_verify(&leaves, index_bits, commitment)
 }
@@ -188,7 +183,7 @@ mod test {
             let mmcs_verify_op = builder
                 .add_mmcs_verify(&openings, &directions_expr, &root)
                 .unwrap();
-            let circuit = builder.build().unwrap();
+            let circuit = builder.build().unwrap().0;
             let mut runner = circuit.runner();
 
             let directions = (0..path_depth)
@@ -382,7 +377,7 @@ mod test {
         let mmcs_verify_op = builder
             .add_mmcs_verify(&openings, &directions_expr, &root)
             .unwrap();
-        let circuit = builder.build().unwrap();
+        let circuit = builder.build().unwrap().0;
         let mut runner = circuit.runner();
 
         let directions = (0..path_depth)
@@ -402,8 +397,7 @@ mod test {
             .map(|digest| digest.map(EF::from).to_vec())
             .collect_vec();
 
-        let private_data =
-            MmcsPrivateData::new::<F, _, _>(&mmcs_config, &siblings, compress.clone());
+        let private_data = MmcsPrivateData::new::<F, _, _>(&mmcs_config, &siblings, compress);
 
         runner
             .set_non_primitive_op_private_data(

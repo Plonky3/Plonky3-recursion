@@ -1,18 +1,16 @@
 use alloc::string::ToString;
 use alloc::vec::Vec;
 use alloc::{format, vec};
-use core::marker::PhantomData;
 
 use itertools::Itertools;
-use p3_circuit::CircuitBuilder;
 use p3_circuit::op::{NonPrimitiveOpConfig, NonPrimitiveOpType};
 use p3_circuit::utils::ColumnsTargets;
+use p3_circuit::{CircuitBuilder, CircuitError};
 use p3_commit::Pcs;
-use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
+use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
 use p3_uni_stark::StarkGenericConfig;
-use p3_util::zip_eq::zip_eq;
 
-use super::{ObservableCommitment, VerificationError};
+use super::{ObservableCommitment, VerificationError, recompose_quotient_from_chunks_circuit};
 use crate::Target;
 use crate::challenger::CircuitChallenger;
 use crate::traits::{Recursive, RecursiveAir, RecursivePcs};
@@ -30,6 +28,11 @@ type PcsVerifierParams<SC, InputProof, OpeningProof, Comm> =
             <SC as StarkGenericConfig>::Challenger,
         >>::Domain,
     >>::VerifierParams;
+
+type PcsDomain<SC> = <<SC as StarkGenericConfig>::Pcs as Pcs<
+    <SC as StarkGenericConfig>::Challenge,
+    <SC as StarkGenericConfig>::Challenger,
+>>::Domain;
 
 /// Verifies a STARK proof within a circuit.
 ///
@@ -62,6 +65,7 @@ pub fn verify_circuit<
     circuit: &mut CircuitBuilder<SC::Challenge>,
     proof_targets: &ProofTargets<SC, Comm, OpeningProof>,
     public_values: &[Target],
+    preprocessed_commit: &Option<Comm>,
     pcs_params: &PcsVerifierParams<SC, InputProof, OpeningProof, Comm>,
 ) -> Result<(), VerificationError>
 where
@@ -75,14 +79,6 @@ where
         >,
     SC::Challenge: PrimeCharacteristicRing,
 {
-    // Enable hash operations for CircuitChallenger
-    // Note: These are placeholders until Poseidon2CircuitAir is implemented
-    circuit.enable_op(
-        NonPrimitiveOpType::HashAbsorb { reset: true },
-        NonPrimitiveOpConfig::None,
-    );
-    circuit.enable_op(NonPrimitiveOpType::HashSqueeze, NonPrimitiveOpConfig::None);
-
     let ProofTargets {
         commitments_targets:
             CommitmentTargets {
@@ -91,20 +87,27 @@ where
                 random_commit,
                 ..
             },
-        opened_values_targets:
-            OpenedValuesTargets {
-                trace_local_targets: opened_trace_local_targets,
-                trace_next_targets: opened_trace_next_targets,
-                quotient_chunks_targets: opened_quotient_chunks_targets,
-                random_targets: opened_random,
-                ..
-            },
+        opened_values_targets,
         opening_proof,
         degree_bits,
     } = proof_targets;
 
+    let OpenedValuesTargets {
+        trace_local_targets: opened_trace_local_targets,
+        trace_next_targets: opened_trace_next_targets,
+        preprocessed_local_targets: opt_opened_preprocessed_local_targets,
+        preprocessed_next_targets: opt_opened_preprocessed_next_targets,
+        quotient_chunks_targets: opened_quotient_chunks_targets,
+        random_targets: opened_random,
+        ..
+    } = opened_values_targets;
+
     let degree = 1 << degree_bits;
-    let log_quotient_degree = A::get_log_quotient_degree(air, public_values.len(), config.is_zk());
+    let preprocessed_width = opt_opened_preprocessed_local_targets
+        .as_ref()
+        .map_or(0, |p| p.len());
+    let log_quotient_degree =
+        A::get_log_quotient_degree(air, preprocessed_width, public_values.len(), config.is_zk());
     let quotient_degree = 1 << (log_quotient_degree + config.is_zk());
 
     let pcs = config.pcs();
@@ -126,16 +129,10 @@ where
         config,
         proof_targets,
         public_values,
-        &OpenedValuesTargets {
-            trace_local_targets: opened_trace_local_targets.clone(),
-            trace_next_targets: opened_trace_next_targets.clone(),
-            quotient_chunks_targets: opened_quotient_chunks_targets.clone(),
-            random_targets: opened_random.clone(),
-            _phantom: PhantomData,
-        },
+        preprocessed_width,
         circuit,
         pcs_params,
-    );
+    )?;
 
     // Validate ZK randomization consistency
     if (opened_random.is_some() != SC::Pcs::ZK) || (random_commit.is_some() != SC::Pcs::ZK) {
@@ -145,10 +142,8 @@ where
     // Validate proof shape
     validate_proof_shape::<A, SC>(
         air,
-        opened_trace_local_targets,
-        opened_trace_next_targets,
-        opened_quotient_chunks_targets,
-        opened_random,
+        opened_values_targets,
+        preprocessed_width,
         quotient_degree,
     )?;
 
@@ -183,17 +178,40 @@ where
         (
             quotient_chunks_targets.clone(),
             // Check the commitment on the randomized domains
-            zip_eq(
-                randomized_quotient_chunks_domains.iter(),
-                opened_quotient_chunks_targets,
-                VerificationError::InvalidProofShape(
-                    "Randomized quotient chunks length mismatch".to_string(),
-                ),
-            )?
-            .map(|(domain, values)| (*domain, vec![(zeta, values.clone())]))
-            .collect_vec(),
+            {
+                if randomized_quotient_chunks_domains.len() != opened_quotient_chunks_targets.len()
+                {
+                    return Err(VerificationError::InvalidProofShape(
+                        "Randomized quotient chunks length mismatch".to_string(),
+                    ));
+                }
+                randomized_quotient_chunks_domains
+                    .iter()
+                    .zip(opened_quotient_chunks_targets)
+                    .map(|(domain, values)| (*domain, vec![(zeta, values.clone())]))
+                    .collect_vec()
+            },
         ),
     ]);
+
+    // Add preprocessed commitment verification if present
+    if preprocessed_width > 0 {
+        coms_to_verify.push((
+            preprocessed_commit
+                .clone()
+                .expect("We checked in validate_proof_shape that the commit exists"),
+            vec![(
+                trace_domain,
+                vec![
+                    (zeta, opt_opened_preprocessed_local_targets.clone().unwrap()),
+                    (
+                        zeta_next,
+                        opt_opened_preprocessed_next_targets.clone().unwrap(),
+                    ),
+                ],
+            )],
+        ));
+    }
 
     // Verify polynomial openings using PCS
     pcs.verify_circuit(
@@ -205,22 +223,31 @@ where
     )?;
 
     // Compute quotient polynomial evaluation from chunks
-    let zero = circuit.add_const(SC::Challenge::ZERO);
-    let one = circuit.add_const(SC::Challenge::ONE);
-
-    let zps =
-        compute_quotient_chunk_products(circuit, config, &quotient_chunks_domains, zeta, one, pcs);
-
-    let quotient =
-        compute_quotient_evaluation::<SC>(circuit, opened_quotient_chunks_targets, &zps, zero);
+    let quotient = recompose_quotient_from_chunks_circuit::<
+        SC,
+        InputProof,
+        OpeningProof,
+        Comm,
+        PcsDomain<SC>,
+    >(
+        circuit,
+        &quotient_chunks_domains,
+        opened_quotient_chunks_targets,
+        zeta,
+        pcs,
+    );
 
     // Evaluate AIR constraints at out-of-domain point
     let sels = pcs.selectors_at_point_circuit(circuit, &init_trace_domain, &zeta);
     let columns_targets = ColumnsTargets {
         challenges: &[],
         public_values,
-        local_prep_values: &[],
-        next_prep_values: &[],
+        local_prep_values: opt_opened_preprocessed_local_targets
+            .as_ref()
+            .map_or(&[], |p| p),
+        next_prep_values: opt_opened_preprocessed_next_targets
+            .as_ref()
+            .map_or(&[], |p| p),
         local_values: opened_trace_local_targets,
         next_values: opened_trace_next_targets,
     };
@@ -253,10 +280,10 @@ fn get_circuit_challenges<
     config: &SC,
     proof_targets: &ProofTargets<SC, Comm, OpeningProof>,
     public_values: &[Target],
-    opened_values: &OpenedValuesTargets<SC>,
+    preprocessed_width: usize,
     circuit: &mut CircuitBuilder<SC::Challenge>,
     pcs_params: &PcsVerifierParams<SC, InputProof, OpeningProof, Comm>,
-) -> Vec<Target>
+) -> Result<Vec<Target>, CircuitError>
 where
     SC::Pcs: RecursivePcs<
             SC,
@@ -267,7 +294,8 @@ where
         >,
     SC::Challenge: PrimeCharacteristicRing,
 {
-    let log_quotient_degree = A::get_log_quotient_degree(air, public_values.len(), config.is_zk());
+    let log_quotient_degree =
+        A::get_log_quotient_degree(air, preprocessed_width, public_values.len(), config.is_zk());
 
     let mut challenger = CircuitChallenger::<RATE>::new();
 
@@ -285,23 +313,21 @@ where
         circuit,
         &mut challenger,
         proof_targets,
-        opened_values,
+        &proof_targets.opened_values_targets,
         pcs_params,
-    );
+    )?;
 
     // Return flat vector: [alpha, zeta, zeta_next, ...pcs_challenges]
     let mut all_challenges = base_challenges.to_vec();
     all_challenges.extend(pcs_challenges);
-    all_challenges
+    Ok(all_challenges)
 }
 
 /// Validate the shape of the proof (dimensions, lengths).
 fn validate_proof_shape<A, SC: StarkGenericConfig>(
     air: &A,
-    opened_trace_local: &[Target],
-    opened_trace_next: &[Target],
-    opened_quotient_chunks: &[Vec<Target>],
-    opened_random: &Option<Vec<Target>>,
+    opened_values: &OpenedValuesTargets<SC>,
+    preprocessed_width: usize,
     quotient_degree: usize,
 ) -> Result<(), VerificationError>
 where
@@ -310,12 +336,32 @@ where
 {
     let air_width = A::width(air);
 
+    let OpenedValuesTargets {
+        trace_local_targets: opened_trace_local,
+        trace_next_targets: opened_trace_next,
+        preprocessed_local_targets: opened_prep_local,
+        preprocessed_next_targets: opened_prep_next,
+        quotient_chunks_targets: opened_quotient_chunks,
+        random_targets: opened_random,
+        ..
+    } = opened_values;
+
     if opened_trace_local.len() != air_width || opened_trace_next.len() != air_width {
         return Err(VerificationError::InvalidProofShape(format!(
             "Expected opened_trace_local and opened_trace_next to have length {}, got {} and {}",
             air_width,
             opened_trace_local.len(),
             opened_trace_next.len()
+        )));
+    }
+
+    let preprocessed_local_len = opened_prep_local.as_ref().map_or(0, |v| v.len());
+    let preprocessed_next_len = opened_prep_next.as_ref().map_or(0, |v| v.len());
+    if preprocessed_width != preprocessed_local_len || preprocessed_width != preprocessed_next_len {
+        // Verifier expects preprocessed trace while proof does not have it, or vice versa
+        return Err(VerificationError::InvalidProofShape(format!(
+            "Expected preprocessed width {} but local has length {} and next has length {}",
+            preprocessed_width, preprocessed_local_len, preprocessed_next_len
         )));
     }
 
@@ -348,120 +394,4 @@ where
     }
 
     Ok(())
-}
-
-/// Compute the product terms for quotient chunk reconstruction.
-///
-/// For each chunk i, computes: ∏_{j≠i} (Z_{domain_j}(zeta) / Z_{domain_j}(first_point_i))
-fn compute_quotient_chunk_products<
-    SC: StarkGenericConfig,
-    InputProof: Recursive<SC::Challenge>,
-    OpeningProof: Recursive<SC::Challenge>,
-    Comm: Recursive<SC::Challenge>,
-    Domain: Copy,
->(
-    circuit: &mut CircuitBuilder<SC::Challenge>,
-    config: &SC,
-    quotient_chunks_domains: &[Domain],
-    zeta: Target,
-    one: Target,
-    pcs: &<SC as StarkGenericConfig>::Pcs,
-) -> Vec<Target>
-where
-    <SC as StarkGenericConfig>::Pcs: RecursivePcs<SC, InputProof, OpeningProof, Comm, Domain>,
-{
-    quotient_chunks_domains
-        .iter()
-        .enumerate()
-        .map(|(i, domain)| {
-            quotient_chunks_domains
-                .iter()
-                .enumerate()
-                .filter(|(j, _)| *j != i)
-                .fold(one, |total, (_, other_domain)| {
-                    let vp_zeta =
-                        vanishing_poly_at_point_circuit(config, *other_domain, zeta, circuit);
-
-                    let first_point = circuit.add_const(pcs.first_point(domain));
-                    let vp_first_point = vanishing_poly_at_point_circuit(
-                        config,
-                        *other_domain,
-                        first_point,
-                        circuit,
-                    );
-                    let div = circuit.div(vp_zeta, vp_first_point);
-
-                    circuit.mul(total, div)
-                })
-        })
-        .collect_vec()
-}
-
-/// Compute the quotient polynomial evaluation from chunks.
-///
-/// quotient(zeta) = ∑_i (∑_j e_j · chunk_i[j]) · zps[i]
-fn compute_quotient_evaluation<SC: StarkGenericConfig>(
-    circuit: &mut CircuitBuilder<SC::Challenge>,
-    opened_quotient_chunks: &[Vec<Target>],
-    zps: &[Target],
-    zero: Target,
-) -> Target
-where
-    SC::Challenge: PrimeCharacteristicRing,
-{
-    opened_quotient_chunks
-        .iter()
-        .enumerate()
-        .fold(zero, |quotient, (i, chunk)| {
-            let zp = zps[i];
-
-            // Sum chunk elements weighted by basis elements: ∑_j e_j · chunk[j]
-            let inner_result = chunk.iter().enumerate().fold(zero, |cur_s, (e_i, c)| {
-                let e_i_target = circuit.add_const(SC::Challenge::ith_basis_element(e_i).unwrap());
-                let inner_mul = circuit.mul(e_i_target, *c);
-                circuit.add(cur_s, inner_mul)
-            });
-
-            let mul = circuit.mul(inner_result, zp);
-            circuit.add(quotient, mul)
-        })
-}
-
-/// Compute the vanishing polynomial Z_H(point) = point^n - 1 at a given point.
-///
-/// # Parameters
-/// - `config`: STARK configuration
-/// - `domain`: The domain (defines n)
-/// - `point`: The evaluation point
-/// - `circuit`: Circuit builder
-///
-/// # Returns
-/// Target representing Z_H(point)
-fn vanishing_poly_at_point_circuit<
-    SC: StarkGenericConfig,
-    InputProof: Recursive<SC::Challenge>,
-    OpeningProof: Recursive<SC::Challenge>,
-    Comm: Recursive<SC::Challenge>,
-    Domain,
->(
-    config: &SC,
-    domain: Domain,
-    point: Target,
-    circuit: &mut CircuitBuilder<SC::Challenge>,
-) -> Target
-where
-    <SC as StarkGenericConfig>::Pcs: RecursivePcs<SC, InputProof, OpeningProof, Comm, Domain>,
-{
-    let pcs = config.pcs();
-
-    // Normalize point: point' = point / first_point
-    let inv = circuit.add_const(pcs.first_point(&domain).inverse());
-    let mul = circuit.mul(point, inv);
-
-    // Compute (point')^n
-    let exp = circuit.exp_power_of_2(mul, pcs.log_size(&domain));
-
-    // Return (point')^n - 1
-    let one = circuit.add_const(SC::Challenge::ONE);
-    circuit.sub(exp, one)
 }

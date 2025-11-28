@@ -1,0 +1,360 @@
+use p3_air::{Air, BaseAir, PairBuilder};
+use p3_batch_stark::{CommonData, StarkInstance, prove_batch, verify_batch};
+use p3_circuit::CircuitBuilder;
+use p3_field::Field;
+use p3_fri::create_test_fri_params;
+use p3_matrix::Matrix;
+use p3_matrix::dense::RowMajorMatrix;
+use p3_recursion::pcs::HashTargets;
+use p3_recursion::{
+    BatchStarkVerifierInputsBuilder, FriVerifierParams, VerificationError,
+    generate_batch_challenges, verify_batch_circuit,
+};
+use rand::SeedableRng;
+use rand::distr::{Distribution, StandardUniform};
+use rand::rngs::SmallRng;
+
+use crate::common::{
+    ChallengeMmcs, Challenger, DIGEST_ELEMS, Dft, F, InnerFri, MulAir, MyCompress, MyConfig,
+    MyHash, MyPcs, Perm, RATE, ValMmcs,
+};
+
+mod common;
+
+/// Enum to hold different AIR types for batch verification
+#[derive(Clone, Copy)]
+enum MixedAir {
+    Mul(MulAir),               // has preprocessed columns
+    Add(AddAirNoPreprocessed), // doesn't have any preprocessed columns
+    Sub(SubAirPartialPreprocessed),
+}
+
+impl<Val: Field> BaseAir<Val> for MixedAir
+where
+    StandardUniform: Distribution<Val>,
+{
+    fn width(&self) -> usize {
+        match self {
+            Self::Mul(air) => BaseAir::<Val>::width(air),
+            Self::Add(air) => BaseAir::<Val>::width(air),
+            Self::Sub(air) => BaseAir::<Val>::width(air),
+        }
+    }
+
+    fn preprocessed_trace(&self) -> Option<RowMajorMatrix<Val>> {
+        match self {
+            Self::Mul(air) => BaseAir::<Val>::preprocessed_trace(air),
+            Self::Add(air) => BaseAir::<Val>::preprocessed_trace(air),
+            Self::Sub(air) => BaseAir::<Val>::preprocessed_trace(air),
+        }
+    }
+}
+
+impl<AB: PairBuilder> Air<AB> for MixedAir
+where
+    AB::F: Field,
+    StandardUniform: Distribution<AB::F>,
+{
+    fn eval(&self, builder: &mut AB) {
+        match self {
+            Self::Mul(air) => Air::<AB>::eval(air, builder),
+            Self::Add(air) => Air::<AB>::eval(air, builder),
+            Self::Sub(air) => Air::<AB>::eval(air, builder),
+        }
+    }
+}
+
+/// AIR that doesn't have preprocessed columns - simple addition of two values
+#[derive(Clone, Copy)]
+pub struct AddAirNoPreprocessed {
+    rows: usize,
+}
+
+impl Default for AddAirNoPreprocessed {
+    fn default() -> Self {
+        Self { rows: 1 << 3 }
+    }
+}
+
+impl AddAirNoPreprocessed {
+    pub fn random_valid_trace<Val: Field>(&self, valid: bool) -> RowMajorMatrix<Val>
+    where
+        StandardUniform: Distribution<Val>,
+    {
+        let width = 3; // [a, b, c] columns
+        let mut main_trace_values = Val::zero_vec(self.rows * width);
+
+        for row in 0..self.rows {
+            let base_idx = row * width;
+            let a = Val::from_usize(row);
+            let b = Val::from_usize(row + 1);
+            main_trace_values[base_idx] = a;
+            main_trace_values[base_idx + 1] = b;
+
+            // c = a + b
+            main_trace_values[base_idx + 2] = if valid {
+                a + b
+            } else {
+                a + b + Val::ONE // Make invalid
+            };
+        }
+
+        RowMajorMatrix::new(main_trace_values, width)
+    }
+}
+
+impl<Val: Field> BaseAir<Val> for AddAirNoPreprocessed
+where
+    StandardUniform: Distribution<Val>,
+{
+    fn width(&self) -> usize {
+        3 // [a, b, c]
+    }
+
+    fn preprocessed_trace(&self) -> Option<RowMajorMatrix<Val>> {
+        None // No preprocessed columns
+    }
+}
+
+impl<AB: PairBuilder> Air<AB> for AddAirNoPreprocessed
+where
+    AB::F: Field,
+    StandardUniform: Distribution<AB::F>,
+{
+    fn eval(&self, builder: &mut AB) {
+        let main = builder.main();
+        let main_local = main.row_slice(0).expect("Matrix is empty?");
+
+        let a = main_local[0].clone();
+        let b = main_local[1].clone();
+        let c = main_local[2].clone();
+
+        // Constraint: a + b = c
+        builder.assert_zero(a + b - c);
+    }
+}
+
+/// AIR that has some preprocessed columns - subtraction with one preprocessed constant
+#[derive(Clone, Copy)]
+pub struct SubAirPartialPreprocessed {
+    rows: usize,
+}
+
+impl Default for SubAirPartialPreprocessed {
+    fn default() -> Self {
+        Self { rows: 1 << 3 }
+    }
+}
+
+impl SubAirPartialPreprocessed {
+    pub fn random_valid_trace<Val: Field>(
+        &self,
+        valid: bool,
+    ) -> (RowMajorMatrix<Val>, RowMajorMatrix<Val>)
+    where
+        StandardUniform: Distribution<Val>,
+    {
+        let main_width = 2; // [a, result] columns
+        let prep_width = 1; // [constant] column
+
+        let mut main_trace_values = Val::zero_vec(self.rows * main_width);
+        let mut prep_trace_values = Val::zero_vec(self.rows * prep_width);
+
+        for row in 0..self.rows {
+            let main_base_idx = row * main_width;
+            let prep_base_idx = row * prep_width;
+
+            let a = Val::from_usize(row + 10);
+            let constant = Val::from_usize(5); // Preprocessed constant
+
+            main_trace_values[main_base_idx] = a;
+            prep_trace_values[prep_base_idx] = constant;
+
+            // result = a - constant
+            main_trace_values[main_base_idx + 1] = if valid {
+                a - constant
+            } else {
+                a - constant + Val::ONE // Make invalid
+            };
+        }
+
+        (
+            RowMajorMatrix::new(main_trace_values, main_width),
+            RowMajorMatrix::new(prep_trace_values, prep_width),
+        )
+    }
+}
+
+impl<Val: Field> BaseAir<Val> for SubAirPartialPreprocessed
+where
+    StandardUniform: Distribution<Val>,
+{
+    fn width(&self) -> usize {
+        2 // [a, result]
+    }
+
+    fn preprocessed_trace(&self) -> Option<RowMajorMatrix<Val>> {
+        Some(self.random_valid_trace(true).1)
+    }
+}
+
+impl<AB: PairBuilder> Air<AB> for SubAirPartialPreprocessed
+where
+    AB::F: Field,
+    StandardUniform: Distribution<AB::F>,
+{
+    fn eval(&self, builder: &mut AB) {
+        let main = builder.main();
+        let main_local = main.row_slice(0).expect("Matrix is empty?");
+
+        let preprocessed = builder.preprocessed();
+        let preprocessed_local = preprocessed
+            .row_slice(0)
+            .expect("Preprocessed matrix is empty?");
+
+        let a = main_local[0].clone();
+        let result = main_local[1].clone();
+        let constant = preprocessed_local[0].clone();
+
+        // Constraint: a - constant = result
+        builder.assert_zero(a - constant - result);
+    }
+}
+
+#[test]
+fn test_batch_verifier_with_mixed_preprocessed() -> Result<(), VerificationError> {
+    let mut rng = SmallRng::seed_from_u64(42);
+    let n = 1 << 3;
+
+    let perm = Perm::new_from_rng_128(&mut rng);
+    let hash = MyHash::new(perm.clone());
+    let compress = MyCompress::new(perm.clone());
+    let val_mmcs = ValMmcs::new(hash, compress);
+    let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
+    let dft = Dft::default();
+
+    let log_final_poly_len = 0;
+    let fri_params = create_test_fri_params(challenge_mmcs, log_final_poly_len);
+    let fri_verifier_params = FriVerifierParams::from(&fri_params);
+    let log_height_max = fri_params.log_final_poly_len + fri_params.log_blowup;
+    let pow_bits = fri_params.proof_of_work_bits;
+    let pcs = MyPcs::new(dft, val_mmcs, fri_params);
+    let challenger = Challenger::new(perm);
+
+    let config = MyConfig::new(pcs, challenger);
+
+    // Create three different AIRs with different preprocessed column configurations
+    let air1 = MulAir { degree: 2, rows: n }; // Has preprocessed columns
+    let air2 = AddAirNoPreprocessed { rows: n }; // No preprocessed columns  
+    let air3 = SubAirPartialPreprocessed { rows: n }; // Some preprocessed columns
+
+    // Generate valid traces for each AIR
+    let trace1 = air1.random_valid_trace(true).0;
+    let trace2 = air2.random_valid_trace(true);
+    let trace3 = air3.random_valid_trace(true).0;
+
+    // Each AIR has empty public inputs for this test
+    let pvs = [vec![], vec![], vec![]];
+
+    // Create MixedAir instances for batch proving
+    let mixed_air1 = MixedAir::Mul(air1);
+    let mixed_air2 = MixedAir::Add(air2);
+    let mixed_air3 = MixedAir::Sub(air3);
+
+    // Create StarkInstances for batch proving
+    let instances = vec![
+        StarkInstance {
+            air: &mixed_air1,
+            trace: trace1,
+            public_values: pvs[0].clone(),
+        },
+        StarkInstance {
+            air: &mixed_air2,
+            trace: trace2,
+            public_values: pvs[1].clone(),
+        },
+        StarkInstance {
+            air: &mixed_air3,
+            trace: trace3,
+            public_values: pvs[2].clone(),
+        },
+    ];
+
+    let airs = [mixed_air1, mixed_air2, mixed_air3];
+
+    // Generate common data and batch proof
+    let common_data = CommonData::from_instances(&config, &instances);
+    let batch_proof = prove_batch(&config, instances, &common_data);
+    verify_batch(&config, &airs, &batch_proof, &pvs, &common_data).unwrap();
+
+    // Create AIRs vector for verification circuit
+    let airs = vec![mixed_air1, mixed_air2, mixed_air3];
+
+    // The first and last AIRs have preprocessed columns, the second does not
+    assert!(BaseAir::<F>::preprocessed_trace(&airs[0]).is_some());
+    assert!(BaseAir::<F>::preprocessed_trace(&airs[1]).is_none());
+    assert!(BaseAir::<F>::preprocessed_trace(&airs[2]).is_some());
+
+    let mut circuit_builder = CircuitBuilder::new();
+
+    // Allocate batch verifier inputs
+    let air_public_counts = vec![0usize; batch_proof.opened_values.instances.len()];
+    let verifier_inputs = BatchStarkVerifierInputsBuilder::<
+        MyConfig,
+        HashTargets<F, DIGEST_ELEMS>,
+        InnerFri,
+    >::allocate(
+        &mut circuit_builder,
+        &batch_proof,
+        &common_data,
+        &air_public_counts,
+    );
+
+    // Create PCS verifier params from FRI verifier params
+    let pcs_verifier_params = fri_verifier_params;
+
+    // Add the batch verification circuit to the builder for the following AIRs:
+    // 1. MulAir (has preprocessed columns)
+    // 2. AddAirNoPreprocessed (no preprocessed columns)
+    // 3. SubAirPartialPreprocessed (some preprocessed columns)
+    verify_batch_circuit::<_, _, _, _, _, RATE>(
+        &config,
+        &airs,
+        &mut circuit_builder,
+        &verifier_inputs.proof_targets,
+        &verifier_inputs.air_public_targets,
+        &pcs_verifier_params,
+        &verifier_inputs.preprocessed,
+    )?;
+
+    // Build the circuit
+    let (circuit, _) = circuit_builder.build()?;
+
+    let mut runner = circuit.runner();
+
+    // Generate all the challenge values for batch proof
+    let all_challenges = generate_batch_challenges(
+        &airs,
+        &config,
+        &batch_proof,
+        &pvs,
+        Some(&[pow_bits, log_height_max]),
+        &common_data,
+    )?;
+
+    // Pack values using the batch builder
+    let public_inputs = verifier_inputs.pack_values(
+        &pvs, // public inputs for each AIR
+        &batch_proof,
+        &common_data,
+        &all_challenges,
+    );
+
+    runner
+        .set_public_inputs(&public_inputs)
+        .map_err(VerificationError::Circuit)?;
+
+    let _traces = runner.run().map_err(VerificationError::Circuit)?;
+
+    Ok(())
+}

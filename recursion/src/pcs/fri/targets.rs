@@ -3,11 +3,13 @@ use alloc::{format, vec};
 use core::marker::PhantomData;
 
 use p3_challenger::{CanObserve, GrindingChallenger};
-use p3_circuit::CircuitBuilder;
 use p3_circuit::utils::{RowSelectorsTargets, decompose_to_bits};
+use p3_circuit::{CircuitBuilder, CircuitError};
 use p3_commit::{BatchOpening, ExtensionMmcs, Mmcs, PolynomialSpace};
 use p3_field::coset::TwoAdicMultiplicativeCoset;
-use p3_field::{ExtensionField, Field, PackedValue, PrimeCharacteristicRing, TwoAdicField};
+use p3_field::{
+    ExtensionField, Field, PackedValue, PrimeCharacteristicRing, PrimeField64, TwoAdicField,
+};
 use p3_fri::{CommitPhaseProofStep, FriProof, QueryProof, TwoAdicFriPcs};
 use p3_merkle_tree::MerkleTreeMmcs;
 use p3_symmetric::{CryptographicHasher, Hash, PseudoCompressionFunction};
@@ -431,7 +433,7 @@ impl<F: Field, EF: ExtensionField<F>, Inner: RecursiveMmcs<F, EF>> Recursive<EF>
 
     fn new(circuit: &mut CircuitBuilder<EF>, input: &Self::Input) -> Self {
         let num_batch_openings = input.len();
-        let mut batch_openings = Vec::with_capacity(num_batch_openings);
+        let mut batch_openings = Self::with_capacity(num_batch_openings);
         for batch_opening in input.iter() {
             batch_openings.push(BatchOpeningTargets::new(circuit, batch_opening));
         }
@@ -481,15 +483,14 @@ impl<SC, Dft, Comm, InputMmcs, RecursiveInputMmcs, RecursiveFriMmcs, FriMmcs>
     > for TwoAdicFriPcs<Val<SC>, Dft, InputMmcs, FriMmcs>
 where
     SC: StarkGenericConfig,
-    Val<SC>: TwoAdicField,
+    Val<SC>: TwoAdicField + PrimeField64,
     InputMmcs: Mmcs<Val<SC>>,
     FriMmcs: Mmcs<SC::Challenge>,
     Comm: Recursive<SC::Challenge>,
     RecursiveInputMmcs: RecursiveMmcs<Val<SC>, SC::Challenge, Input = InputMmcs>,
     RecursiveFriMmcs: RecursiveExtensionMmcs<Val<SC>, SC::Challenge, Input = FriMmcs>,
     RecursiveFriMmcs::Commitment: ObservableCommitment,
-    SC::Challenger: GrindingChallenger,
-    SC::Challenger: CanObserve<FriMmcs::Commitment>,
+    SC::Challenger: GrindingChallenger + CanObserve<FriMmcs::Commitment>,
 {
     type VerifierParams = FriVerifierParams;
     type RecursiveProof = RecursiveFriProof<
@@ -498,16 +499,16 @@ where
         InputProofTargets<Val<SC>, SC::Challenge, RecursiveInputMmcs>,
     >;
 
+    /// Observes all opened values and derives PCS-specific challenges.
     fn get_challenges_circuit<const RATE: usize>(
         circuit: &mut CircuitBuilder<SC::Challenge>,
         challenger: &mut CircuitChallenger<RATE>,
         proof_targets: &ProofTargets<SC, Comm, Self::RecursiveProof>,
         opened_values: &OpenedValuesTargets<SC>,
         params: &Self::VerifierParams,
-    ) -> Vec<Target> {
+    ) -> Result<Vec<Target>, CircuitError> {
         let fri_proof = &proof_targets.opening_proof;
 
-        // Observe all opened values (trace, quotient chunks, random)
         opened_values.observe(circuit, challenger);
 
         // Sample FRI alpha (for batch opening reduction)
@@ -532,7 +533,7 @@ where
             params.pow_bits,
             fri_proof.pow_witness.witness,
             Val::<SC>::bits(),
-        );
+        )?;
 
         // Sample query indices
         let num_queries = fri_proof.query_proofs.len();
@@ -547,7 +548,7 @@ where
         challenges.push(fri_alpha);
         challenges.extend(betas);
         challenges.extend(query_indices);
-        challenges
+        Ok(challenges)
     }
 
     fn verify_circuit(
@@ -593,9 +594,14 @@ where
             .iter()
             .map(|&index_target| {
                 let all_bits = decompose_to_bits(circuit, index_target, MAX_QUERY_INDEX_BITS);
-                all_bits.into_iter().take(log_max_height).collect()
+                all_bits.map(|all_bits| {
+                    all_bits
+                        .into_iter()
+                        .take(log_max_height)
+                        .collect::<Vec<_>>()
+                })
             })
-            .collect();
+            .collect::<Result<_, _>>()?;
 
         verify_fri_circuit(
             circuit,

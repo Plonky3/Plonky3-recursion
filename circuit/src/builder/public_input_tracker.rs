@@ -14,7 +14,7 @@ impl PublicInputTracker {
     /// Allocates the next public input position.
     ///
     /// Returns the position of the newly allocated public input.
-    pub fn alloc(&mut self) -> usize {
+    pub const fn alloc(&mut self) -> usize {
         let pos = self.count;
         self.count += 1;
         pos

@@ -1,4 +1,5 @@
 use alloc::string::String;
+use alloc::vec::Vec;
 
 use thiserror::Error;
 
@@ -35,12 +36,13 @@ pub enum CircuitError {
 
     /// Witness conflict: trying to reassign to a different value.
     #[error(
-        "Witness conflict: WitnessId({witness_id}) already set to {existing}, cannot reassign to {new}"
+        "Witness conflict: WitnessId({witness_id}) already set to {existing}, cannot reassign to {new}; corresponding ExprIds: {expr_ids:?}"
     )]
     WitnessConflict {
         witness_id: WitnessId,
         existing: String,
         new: String,
+        expr_ids: Vec<ExprId>,
     },
 
     /// Witness not set for an index during trace generation.
@@ -92,6 +94,14 @@ pub enum CircuitError {
         got: usize,
     },
 
+    /// Incorrect input size provided for a non-primitive operation.
+    #[error("Incorrect input size provided for operation {op:?}: expected {expected}, got {got}")]
+    IncorrectNonPrimitiveOpInputSize {
+        op: NonPrimitiveOpType,
+        expected: String,
+        got: usize,
+    },
+
     /// Non primitive private data is not correct
     #[error(
         "Incorrect private data provided for op {op:?} (operation {operation_index}): expected {expected}, got {got}"
@@ -110,4 +120,16 @@ pub enum CircuitError {
     /// Invalid Circuit
     #[error("Failed to build circuit: {error}")]
     InvalidCircuit { error: CircuitBuilderError },
+
+    /// Unconstrained operation is given an incorrect number of inputs.
+    #[error("Unconstrained operation input length mismatch: expected {op} {expected}, got {got}")]
+    UnconstrainedOpInputLengthMismatch {
+        op: String,
+        expected: usize,
+        got: usize,
+    },
+
+    /// Requested bit length exceeds the maximum allowed for binary decomposition.
+    #[error("Too many bits for binary decomposition: expected at most {expected}, got {n_bits}")]
+    BinaryDecompositionTooManyBits { expected: usize, n_bits: usize },
 }

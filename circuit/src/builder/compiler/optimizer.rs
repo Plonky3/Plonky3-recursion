@@ -19,7 +19,7 @@ impl Optimizer {
     /// - Common subexpression elimination
     /// - Instruction combining
     /// - Constant folding
-    pub fn optimize<F>(&self, primitive_ops: Vec<Op<F>>) -> Vec<Op<F>> {
+    pub const fn optimize<F>(&self, primitive_ops: Vec<Op<F>>) -> Vec<Op<F>> {
         // For now, return operations unchanged
         // Future optimization passes will be added here
         primitive_ops

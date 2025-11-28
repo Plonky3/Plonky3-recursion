@@ -4,6 +4,8 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::marker::PhantomData;
 
+use p3_batch_stark::CommonData;
+use p3_batch_stark::common::PreprocessedInstanceMeta;
 use p3_circuit::CircuitBuilder;
 use p3_commit::Pcs;
 use p3_field::Field;
@@ -51,11 +53,83 @@ pub struct OpenedValuesTargets<SC: StarkGenericConfig> {
     pub trace_local_targets: Vec<Target>,
     /// Trace values at point zeta * g (next row)
     pub trace_next_targets: Vec<Target>,
+    /// Optional preprocessed values at point zeta
+    pub preprocessed_local_targets: Option<Vec<Target>>,
+    /// Optional preprocessed values at point zeta * g (next row)
+    pub preprocessed_next_targets: Option<Vec<Target>>,
     /// Quotient chunk values at zeta
     pub quotient_chunks_targets: Vec<Vec<Target>>,
     /// Optional random polynomial values (ZK mode)
     pub random_targets: Option<Vec<Target>>,
     pub _phantom: PhantomData<SC>,
+}
+
+/// Structure which holds the targets and metadata for existing global preprocessed data.
+pub struct GlobalPreprocessedTargets<Comm> {
+    /// Global commitment targets for all preprocessed columns, over all instances.
+    pub commitment: Comm,
+    /// Per-instance metadata for preprocessed traces.
+    pub instances: PreprocessedInstanceMetas,
+    /// Mapping from preprocessed matrix index to the corresponding instance index.
+    pub matrix_to_instance: Vec<usize>,
+}
+
+/// Structure which holds per-instance metadata for preprocessed traces
+pub struct PreprocessedInstanceMetas {
+    /// Vector of optional per-instance metadata
+    pub instances: Vec<Option<PreprocessedInstanceMeta>>,
+}
+
+/// Structure which holds the optional targets and metadata necessary for handling preprocessed data in the verification circuit.
+pub struct PreprocessedVerifierDataTargets<SC, Comm> {
+    /// If at least one of the instances uses preprocessed columns, holds the global preprocessed targets.
+    pub preprocessed: Option<GlobalPreprocessedTargets<Comm>>,
+    pub _phantom: PhantomData<SC>,
+}
+
+impl<SC: StarkGenericConfig, Comm> Recursive<SC::Challenge>
+    for PreprocessedVerifierDataTargets<SC, Comm>
+where
+    Comm: Recursive<
+            SC::Challenge,
+            Input = <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment,
+        >,
+{
+    type Input = CommonData<SC>;
+
+    fn new(circuit: &mut CircuitBuilder<SC::Challenge>, input: &Self::Input) -> Self {
+        let preprocessed = input
+            .preprocessed
+            .as_ref()
+            .map(|prep| GlobalPreprocessedTargets {
+                commitment: Comm::new(circuit, &prep.commitment),
+                instances: PreprocessedInstanceMetas {
+                    instances: prep.instances.clone(),
+                },
+                matrix_to_instance: prep.matrix_to_instance.clone(),
+            });
+
+        Self {
+            preprocessed,
+            _phantom: PhantomData,
+        }
+    }
+
+    fn get_targets(&self) -> Vec<Target> {
+        let mut targets = vec![];
+        if let Some(preprocessed) = &self.preprocessed {
+            targets.extend(preprocessed.commitment.get_targets());
+        }
+        targets
+    }
+
+    fn get_values(input: &Self::Input) -> Vec<SC::Challenge> {
+        let mut values = vec![];
+        if let Some(prep) = &input.preprocessed {
+            values.extend(Comm::get_values(&prep.commitment));
+        }
+        values
+    }
 }
 
 impl<SC: StarkGenericConfig> OpenedValuesTargets<SC> {
@@ -192,6 +266,15 @@ impl<SC: StarkGenericConfig> Recursive<SC::Challenge> for OpenedValuesTargets<SC
         let trace_next_len = input.trace_next.len();
         let trace_next_targets = circuit.alloc_public_inputs(trace_next_len, "trace next values");
 
+        let preprocessed_local_targets = input
+            .preprocessed_local
+            .as_ref()
+            .map(|prep| circuit.alloc_public_inputs(prep.len(), "local preprocessed values"));
+        let preprocessed_next_targets = input
+            .preprocessed_next
+            .as_ref()
+            .map(|prep| circuit.alloc_public_inputs(prep.len(), "local preprocessed values"));
+
         let quotient_chunks_len = input.quotient_chunks.len();
         let mut quotient_chunks_targets = Vec::with_capacity(quotient_chunks_len);
         for quotient_chunk in input.quotient_chunks.iter() {
@@ -209,6 +292,8 @@ impl<SC: StarkGenericConfig> Recursive<SC::Challenge> for OpenedValuesTargets<SC
         Self {
             trace_local_targets,
             trace_next_targets,
+            preprocessed_local_targets,
+            preprocessed_next_targets,
             quotient_chunks_targets,
             random_targets,
             _phantom: PhantomData,
@@ -219,6 +304,8 @@ impl<SC: StarkGenericConfig> Recursive<SC::Challenge> for OpenedValuesTargets<SC
         let OpenedValues {
             trace_local,
             trace_next,
+            preprocessed_local,
+            preprocessed_next,
             quotient_chunks,
             random,
         } = input;
@@ -226,6 +313,12 @@ impl<SC: StarkGenericConfig> Recursive<SC::Challenge> for OpenedValuesTargets<SC
         let mut values = vec![];
         values.extend(trace_local);
         values.extend(trace_next);
+        if let Some(preprocessed_local) = preprocessed_local {
+            values.extend(preprocessed_local);
+        }
+        if let Some(preprocessed_next) = preprocessed_next {
+            values.extend(preprocessed_next);
+        }
         for chunk in quotient_chunks {
             values.extend(chunk);
         }

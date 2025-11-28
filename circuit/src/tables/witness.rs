@@ -29,7 +29,7 @@ pub struct WitnessTraceBuilder<'a, F> {
 
 impl<'a, F: Clone> WitnessTraceBuilder<'a, F> {
     /// Creates a new witness trace builder.
-    pub fn new(witness: &'a [Option<F>]) -> Self {
+    pub const fn new(witness: &'a [Option<F>]) -> Self {
         Self { witness }
     }
 

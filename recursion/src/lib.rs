@@ -14,18 +14,24 @@ pub mod types;
 pub mod verifier;
 
 pub use challenger::CircuitChallenger;
-pub use generation::{GenerationError, PcsGeneration, generate_challenges};
+pub use generation::{
+    GenerationError, PcsGeneration, generate_batch_challenges, generate_challenges,
+};
 pub use pcs::fri::{FriVerifierParams, MAX_QUERY_INDEX_BITS};
 pub use public_inputs::{
-    CommitmentOpening, FriVerifierInputs, PublicInputBuilder, StarkVerifierInputs,
-    StarkVerifierInputsBuilder, construct_stark_verifier_inputs,
+    BatchStarkVerifierInputsBuilder, CommitmentOpening, FriVerifierInputs, PublicInputBuilder,
+    StarkVerifierInputs, StarkVerifierInputsBuilder, construct_batch_stark_verifier_inputs,
+    construct_stark_verifier_inputs,
 };
 pub use traits::{
     Recursive, RecursiveAir, RecursiveChallenger, RecursiveExtensionMmcs, RecursiveMmcs,
     RecursivePcs,
 };
 pub use types::{
-    CommitmentTargets, OpenedValuesTargets, ProofTargets, RecursiveLagrangeSelectors,
-    StarkChallenges, Target,
+    CommitmentTargets, OpenedValuesTargets, PreprocessedVerifierDataTargets, ProofTargets,
+    RecursiveLagrangeSelectors, StarkChallenges, Target,
 };
-pub use verifier::{ObservableCommitment, VerificationError, verify_circuit};
+pub use verifier::{
+    BatchProofTargets, ObservableCommitment, VerificationError, verify_batch_circuit,
+    verify_circuit,
+};

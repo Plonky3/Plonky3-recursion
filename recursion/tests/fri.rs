@@ -305,7 +305,7 @@ struct FriSetup {
 }
 
 impl FriSetup {
-    fn new(
+    const fn new(
         pcs: PCS,
         perm: Perm<16>,
         log_blowup: usize,
@@ -454,7 +454,7 @@ fn run_fri_test(setup: FriSetup, build_only: bool) {
     .unwrap();
 
     builder.dump_allocation_log();
-    let circuit = builder.build().unwrap();
+    let (circuit, _) = builder.build().unwrap();
 
     if build_only {
         return;
@@ -471,7 +471,7 @@ fn run_fri_test(setup: FriSetup, build_only: bool) {
     let mut runner1 = circuit.clone().runner();
     runner1.set_public_inputs(&pub_inputs1).unwrap();
 
-    let compress = MyCompress::new(perm.clone());
+    let compress = MyCompress::new(perm);
 
     let mut non_primitive_ops_iter = runner1.all_non_primitive_ops().into_iter();
     for query in result_1.fri_proof.query_proofs.iter() {

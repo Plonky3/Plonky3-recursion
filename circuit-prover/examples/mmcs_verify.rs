@@ -7,8 +7,7 @@ use p3_baby_bear::BabyBear;
 use p3_circuit::ops::MmcsVerifyConfig;
 use p3_circuit::tables::MmcsPrivateData;
 use p3_circuit::{CircuitBuilder, ExprId, MmcsOps, NonPrimitiveOpPrivateData};
-use p3_circuit_prover::prover::ProverError;
-use p3_circuit_prover::{MultiTableProver, config};
+use p3_circuit_prover::{BatchStarkProver, config};
 use p3_field::PrimeCharacteristicRing;
 use p3_field::extension::BinomialExtensionField;
 use tracing_forest::ForestLayer;
@@ -30,7 +29,7 @@ fn init_logger() {
         .init();
 }
 
-fn main() -> Result<(), ProverError> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     init_logger();
 
     let depth = env::args().nth(1).and_then(|s| s.parse().ok()).unwrap_or(3);
@@ -69,7 +68,7 @@ fn main() -> Result<(), ProverError> {
 
     builder.dump_allocation_log();
 
-    let circuit = builder.build()?;
+    let (circuit, _) = builder.build()?;
     let mut runner = circuit.runner();
 
     // Set public inputs
@@ -132,9 +131,10 @@ fn main() -> Result<(), ProverError> {
         NonPrimitiveOpPrivateData::MmcsVerify(private_data),
     )?;
     let traces = runner.run()?;
-    let multi_prover = MultiTableProver::new(config).with_mmcs_table(mmcs_config.into());
-    let proof = multi_prover.prove_all_tables(&traces)?;
-    multi_prover.verify_all_tables(&proof)?;
+    let mut batch_prover = BatchStarkProver::new(config);
+    batch_prover.register_mmcs_table(mmcs_config.clone());
+    let proof = batch_prover.prove_all_tables(&traces)?;
+    batch_prover.verify_all_tables(&proof)?;
 
     Ok(())
 }

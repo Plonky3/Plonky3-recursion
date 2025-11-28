@@ -452,7 +452,7 @@ where
             // Initialize / fetch per-height (alpha_pow, ro)
             let (alpha_pow_h, ro_h) = reduced_openings
                 .entry(log_height)
-                .or_insert((builder.add_const(EF::ONE), builder.add_const(EF::ZERO)));
+                .or_insert_with(|| (builder.add_const(EF::ONE), builder.add_const(EF::ZERO)));
 
             // Process each (z, ps_at_z) pair for this matrix
             for (z, ps_at_z) in mat_points_and_values {
@@ -568,9 +568,11 @@ where
     let log_final_poly_len = log_max_height
         .checked_sub(num_phases)
         .and_then(|x| x.checked_sub(log_blowup))
-        .ok_or(VerificationError::InvalidProofShape(
-            "Invalid FRI parameters: log_max_height too small".to_string(),
-        ))?;
+        .ok_or_else(|| {
+            VerificationError::InvalidProofShape(
+                "Invalid FRI parameters: log_max_height too small".to_string(),
+            )
+        })?;
 
     let expected_final_poly_len = 1 << log_final_poly_len;
     let actual_final_poly_len = fri_proof_targets.final_poly.len();
@@ -578,8 +580,7 @@ where
     //  Check the final polynomial length.
     if actual_final_poly_len != expected_final_poly_len {
         return Err(VerificationError::InvalidProofShape(format!(
-            "Final polynomial length mismatch: expected 2^{} = {}, got {}",
-            log_final_poly_len, expected_final_poly_len, actual_final_poly_len
+            "Final polynomial length mismatch: expected 2^{log_final_poly_len} = {expected_final_poly_len}, got {actual_final_poly_len}"
         )));
     }
 

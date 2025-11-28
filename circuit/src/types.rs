@@ -24,7 +24,7 @@ impl fmt::Display for ExprId {
 
 impl ExprId {
     /// The zero expression ID - always points to Const(0)
-    pub const ZERO: ExprId = ExprId(0);
+    pub const ZERO: Self = Self(0);
 }
 
 /// Handle to a non-primitive operation (for setting private data later)
