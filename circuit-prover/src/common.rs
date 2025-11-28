@@ -55,16 +55,18 @@ pub fn get_airs_and_degrees_with_prep<
         let table = PrimitiveOpType::from(idx);
         match table {
             PrimitiveOpType::Add => {
-                let num_ops = prep.len() / AddAir::<Val<SC>, D>::prep_lane_width();
+                assert!(prep.len() % AddAir::<Val<SC>, D>::prep_lane_width() == 0);
+                let num_ops = prep.len().div_ceil(AddAir::<Val<SC>, D>::prep_lane_width());
                 let add_air =
                     AddAir::new_with_preprocessed(num_ops, packing.add_lanes(), prep.clone());
                 table_preps[idx] = (
                     CircuitTableAir::Add(add_air),
-                    log2_ceil_usize(num_ops / packing.add_lanes()),
+                    log2_ceil_usize(num_ops.div_ceil(packing.add_lanes())),
                 );
             }
             PrimitiveOpType::Mul => {
-                let num_ops = prep.len() / MulAir::<Val<SC>, D>::prep_lane_width();
+                assert!(prep.len() % AddAir::<Val<SC>, D>::prep_lane_width() == 0);
+                let num_ops = prep.len().div_ceil(MulAir::<Val<SC>, D>::prep_lane_width());
                 let mul_air = if D == 1 {
                     MulAir::new_with_preprocessed(num_ops, packing.mul_lanes(), prep.clone())
                 } else {
@@ -78,7 +80,7 @@ pub fn get_airs_and_degrees_with_prep<
                 };
                 table_preps[idx] = (
                     CircuitTableAir::Mul(mul_air),
-                    log2_ceil_usize(num_ops / packing.mul_lanes()),
+                    log2_ceil_usize(num_ops.div_ceil(packing.mul_lanes())),
                 );
             }
             PrimitiveOpType::Public => {
@@ -96,7 +98,7 @@ pub fn get_airs_and_degrees_with_prep<
                 let witness_air = WitnessAir::new(num_witnesses, packing.witness_lanes());
                 table_preps[idx] = (
                     CircuitTableAir::Witness(witness_air),
-                    log2_ceil_usize(num_witnesses / packing.witness_lanes()),
+                    log2_ceil_usize(num_witnesses.div_ceil(packing.witness_lanes())),
                 );
             }
         }

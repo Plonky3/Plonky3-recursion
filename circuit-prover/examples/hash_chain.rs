@@ -163,7 +163,17 @@ fn main() -> Result<(), Box<dyn Error>> {
     let stark_config = config::baby_bear().build();
 
     let (airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
-    let common = CommonData::from_airs_and_degrees(&stark_config, &airs, &degrees);
+    let mut common = CommonData::from_airs_and_degrees(&stark_config, &airs, &degrees);
+
+    // Since preprocessed data is not yet supported for non-primitive operations,
+    // we need to extend common data with `None` values for all non-primitive operations that are included in the proof.
+    for (_, trace) in &traces.non_primitive_traces {
+        if trace.rows() != 0
+            && let Some(p) = common.preprocessed.as_mut()
+        {
+            p.instances.push(None);
+        }
+    }
     let mut prover = BatchStarkProver::new(stark_config).with_table_packing(table_packing);
     prover.register_poseidon2_table(Poseidon2Config::baby_bear_d4_width16());
     let proof = prover.prove_all_tables(&traces, &common)?;
