@@ -26,21 +26,24 @@
 //!
 //! # Column layout
 //!
-//! For each logical operation (lane) we allocate `3 * D + 3` base-field columns. These are
+//! For each logical operation (lane) we allocate `3 * D` base-field columns. These are
 //! grouped as:
 //!
 //! - `D` columns for the left operand (lhs) basis coefficients,
-//! - `1` column for `index_left`: the witness-bus index of the lhs operand,
 //! - `D` columns for the right operand (rhs) basis coefficients,
-//! - `1` column for `index_right`: the witness-bus index of the rhs operand,
 //! - `D` columns for the result operand basis coefficients,
-//! - `1` column for `index_output`: the witness-bus index of the result.
 //!
 //! In other words, for a single lane the layout is:
 //!
 //! ```text
-//!     [lhs[0..D), lhs_index, rhs[0..D), rhs_index, result[0..D), result_index]
+//!     [lhs[0..D), rhs[0..D), result[0..D)]
 //! ```
+//!
+//! We also allocate `3` preprocessed base-field columns:
+//!
+//! - 1 column for the lhs operand index within the `Witness` table,
+//! - 1 column for the rhs operand index,
+//! - 1 column for the result operand index,
 //!
 //! A single row can pack several of these lanes side-by-side, so the full row layout is
 //! this pattern repeated `lanes` times.
@@ -101,10 +104,13 @@ use p3_matrix::dense::RowMajorMatrix;
 ///
 /// Column layout (main trace):
 ///   - For D == 1 (base field):
-///     [lhs_value, lhs_index, rhs_value, rhs_index, result_value, result_index]  (width = 6)
+///     [lhs_value, rhs_value, result_value]  (width = 6)
 ///
 ///   - For D > 1 (extension, using a basis of size D):
-///     [lhs[0..D-1], lhs_index, rhs[0..D-1], rhs_index, result[0..D-1], result_index] (width = 3*D + 3)
+///     [lhs[0..D-1], rhs[0..D-1], result[0..D-1]] (width = 3*D)
+///
+///   - Preprocessed columns:
+///     [lhs_index, rhs_index, result_index] (width = 3)
 ///
 /// If `w_binomial` is `Some(W)`, we assume a polynomial basis {1, x, ..., x^(D-1)}
 /// for the binomial extension defined by x^D = W. Constraints are generated via
@@ -123,9 +129,12 @@ pub struct MulAir<F, const D: usize = 1> {
     /// - `Some(W)` if `D > 1`,
     /// - `None` if `D == 1`.
     pub w_binomial: Option<F>,
-    /// Preprocessed values. They are used for generating the common data,
+    /// Flattened values of the preprocessed columns. They are used for generating the common data,
     /// as well as by the prover, to compute the constraint polynomial.
-    /// Preprocessed values correspond to the indices of the inputs and outputs within the `Witness`.
+    ///
+    /// Note that the verifier does not need those values.
+    /// When providing instances to the verifier, this field can be left empty.
+    /// Preprocessed values correspond to the indices of the inputs and outputs within the `Witness` table.
     pub preprocessed: Vec<F>,
     /// Marker tying this AIR to its base field.
     _phantom: PhantomData<F>,
@@ -201,9 +210,8 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> MulAir<F, D> {
     ///
     /// Each lane stores:
     /// - `3 * D` coordinates (for `lhs`, `rhs`, and `result`),
-    /// - `3` indices (one for each operand).
     ///
-    /// The total width of a single row is `3 * D + 3`
+    /// The total width of a single row is `3 * D`
     pub const fn lane_width() -> usize {
         3 * D
     }
@@ -216,15 +224,15 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> MulAir<F, D> {
     /// Number of preprocessed base-field columns occupied by a single lane.
     ///
     /// Each lane stores 3 indices (one for each operand)
-    pub const fn prep_lane_width() -> usize {
+    pub const fn preprocessed_lane_width() -> usize {
         3
     }
 
     /// Number of preprocessed columns for this AIR instance.
     ///
     /// Each lane stores 3 indices (one for each operand)
-    pub const fn prep_width(&self) -> usize {
-        self.lanes * Self::prep_lane_width()
+    pub const fn preprocessed_width(&self) -> usize {
+        self.lanes * Self::preprocessed_lane_width()
     }
 
     /// Convert a `MulTrace` into a `RowMajorMatrix` suitable for the STARK prover.
@@ -341,26 +349,27 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> MulAir<F, D> {
         RowMajorMatrix::new(values, width)
     }
 
-    pub fn prep_from_trace<ExtF: BasedVectorSpace<F>>(
+    pub fn trace_to_preprocessed<ExtF: BasedVectorSpace<F>>(
         trace: &MulTrace<ExtF>,
         lanes: usize,
     ) -> Vec<F> {
-        let total_prep_len = trace.lhs_values.len() * Self::prep_lane_width() * lanes;
-        let mut prep = Vec::with_capacity(total_prep_len);
+        let total_preprocessed_len =
+            trace.lhs_values.len() * Self::preprocessed_lane_width() * lanes;
+        let mut preprocessed = Vec::with_capacity(total_preprocessed_len);
         trace
             .lhs_index
             .iter()
             .zip(trace.rhs_index.clone())
             .zip(trace.result_index.clone())
             .for_each(|((lhs_idx, rhs_idx), res_idx)| {
-                prep.extend(&[
+                preprocessed.extend(&[
                     F::from_u64(lhs_idx.0 as u64),
                     F::from_u64(rhs_idx.0 as u64),
                     F::from_u64(res_idx.0 as u64),
                 ]);
             });
 
-        prep
+        preprocessed
     }
 }
 
@@ -372,14 +381,21 @@ impl<F: Field, const D: usize> BaseAir<F> for MulAir<F, D> {
     fn preprocessed_trace(&self) -> Option<RowMajorMatrix<F>> {
         let original_height = self.num_ops.div_ceil(self.lanes);
 
-        let mut prep_values = self.preprocessed.clone();
-        let padding_len = self.prep_width() - prep_values.len() % self.prep_width();
-        if padding_len != self.prep_width() {
-            prep_values.extend(vec![F::ZERO; padding_len]);
+        let mut preprocessed_values = self.preprocessed.clone();
+        let padding_len =
+            self.preprocessed_width() - preprocessed_values.len() % self.preprocessed_width();
+        if padding_len != self.preprocessed_width() {
+            preprocessed_values.extend(vec![F::ZERO; padding_len]);
         }
-        pad_to_power_of_two(&mut prep_values, self.prep_width(), original_height);
-
-        Some(RowMajorMatrix::new(prep_values, self.prep_width()))
+        pad_to_power_of_two(
+            &mut preprocessed_values,
+            self.preprocessed_width(),
+            original_height,
+        );
+        Some(RowMajorMatrix::new(
+            preprocessed_values,
+            self.preprocessed_width(),
+        ))
     }
 }
 
@@ -545,13 +561,13 @@ mod tests {
         let lhs_index = vec![WitnessId(1); n];
         let rhs_index = vec![WitnessId(2); n];
         let result_index = vec![WitnessId(3); n];
-        let mut prep_values = Vec::with_capacity(n * 3);
+        let mut preprocessed_values = Vec::with_capacity(n * 3);
         lhs_index
             .iter()
             .zip(rhs_index.iter())
             .zip(result_index.iter())
             .for_each(|((lhs_idx, rhs_idx), result_idx)| {
-                prep_values.extend(&[
+                preprocessed_values.extend(&[
                     Val::from_u32(lhs_idx.0),
                     Val::from_u32(rhs_idx.0),
                     Val::from_u32(result_idx.0),
@@ -572,7 +588,7 @@ mod tests {
         let config = build_test_config();
         let pis: Vec<Val> = vec![];
 
-        let air = MulAir::<Val, 1>::new_with_preprocessed(n, 1, prep_values);
+        let air = MulAir::<Val, 1>::new_with_preprocessed(n, 1, preprocessed_values);
         let (prover_data, verifier_data) =
             setup_preprocessed(&config, &air, log2_ceil_usize(matrix.height())).unwrap();
         let proof = prove_with_preprocessed(&config, &air, matrix, &pis, Some(&prover_data));
@@ -627,13 +643,13 @@ mod tests {
         let result_index = vec![WitnessId(3); n];
 
         // Get preprocessed index values.
-        let mut prep_values = Vec::with_capacity(n * 3);
+        let mut preprocessed_values = Vec::with_capacity(n * 3);
         lhs_index
             .iter()
             .zip(rhs_index.iter())
             .zip(result_index.iter())
             .for_each(|((lhs_idx, rhs_idx), result_idx)| {
-                prep_values.extend(&[
+                preprocessed_values.extend(&[
                     Val::from_u32(lhs_idx.0),
                     Val::from_u32(rhs_idx.0),
                     Val::from_u32(result_idx.0),
@@ -656,7 +672,7 @@ mod tests {
         let config = build_test_config();
         let pis: Vec<Val> = vec![];
 
-        let air = MulAir::<Val, 4>::new_binomial_with_preprocessed(n, 1, w, prep_values);
+        let air = MulAir::<Val, 4>::new_binomial_with_preprocessed(n, 1, w, preprocessed_values);
         let (prover_data, verifier_data) =
             setup_preprocessed(&config, &air, log2_ceil_usize(matrix.height())).unwrap();
         let proof = prove_with_preprocessed(&config, &air, matrix, &pis, Some(&prover_data));

@@ -82,7 +82,7 @@ impl<F: Field, const D: usize> PublicAir<F, D> {
         RowMajorMatrix::new(values, width)
     }
 
-    pub fn prep_from_trace<ExtF: BasedVectorSpace<F>>(trace: &PublicTrace<ExtF>) -> Vec<F> {
+    pub fn trace_to_preprocessed<ExtF: BasedVectorSpace<F>>(trace: &PublicTrace<ExtF>) -> Vec<F> {
         trace
             .index
             .iter()
@@ -97,11 +97,11 @@ impl<F: Field, const D: usize> BaseAir<F> for PublicAir<F, D> {
     }
 
     fn preprocessed_trace(&self) -> Option<RowMajorMatrix<F>> {
-        let mut prep_values = self.preprocessed.clone();
-        pad_to_power_of_two(&mut prep_values, 1, self.height);
+        let mut preprocessed_values = self.preprocessed.clone();
+        pad_to_power_of_two(&mut preprocessed_values, 1, self.height);
 
         Some(RowMajorMatrix::new(
-            prep_values,
+            preprocessed_values,
             1, // single preprocessed column for indices
         ))
     }
@@ -141,7 +141,7 @@ mod tests {
         let indices: Vec<WitnessId> = (0..n as u32).map(WitnessId).collect();
 
         // Get preprocessed index values.
-        let prep_values = indices
+        let preprocessed_values = indices
             .iter()
             .map(|idx| F::from_u64(idx.0 as u64))
             .collect::<Vec<_>>();
@@ -170,7 +170,7 @@ mod tests {
         }
 
         let config = build_test_config();
-        let air = PublicAir::<F, 1>::new_with_preprocessed(n, prep_values);
+        let air = PublicAir::<F, 1>::new_with_preprocessed(n, preprocessed_values);
         let (prover_data, verifier_data) =
             setup_preprocessed(&config, &air, log2_ceil_usize(matrix.height())).unwrap();
 
@@ -207,7 +207,7 @@ mod tests {
 
         let values = vec![a, b];
         let indices = vec![WitnessId(10), WitnessId(20)];
-        let prep_values = indices
+        let preprocessed_values = indices
             .iter()
             .map(|idx| F::from_u64(idx.0 as u64))
             .collect();
@@ -236,7 +236,7 @@ mod tests {
         }
 
         let config = build_test_config();
-        let air = PublicAir::<F, 4>::new_with_preprocessed(2, prep_values);
+        let air = PublicAir::<F, 4>::new_with_preprocessed(2, preprocessed_values);
         let (prover_data, verifier_data) =
             setup_preprocessed(&config, &air, log2_ceil_usize(matrix.height())).unwrap();
 

@@ -327,11 +327,11 @@ mod tests {
         let (prover_data, verifier_data) =
             setup_preprocessed(&config, &air, log2_ceil_usize(matrix.height())).unwrap();
 
-        let prep_matrix = air.preprocessed_trace().unwrap();
-        assert_eq!(prep_matrix.height(), 2);
-        let row = prep_matrix.row_slice(0).unwrap();
+        let preprocessed_matrix = air.preprocessed_trace().unwrap();
+        assert_eq!(preprocessed_matrix.height(), 2);
+        let row = preprocessed_matrix.row_slice(0).unwrap();
         assert_eq!(row[0], Val::from_u64(0)); // index
-        let row = prep_matrix.row_slice(1).unwrap();
+        let row = preprocessed_matrix.row_slice(1).unwrap();
         assert_eq!(row[0], Val::from_u64(1)); // index
 
         let pis: Vec<Val> = vec![];
@@ -367,10 +367,10 @@ mod tests {
         let (prover_data, verifier_data) =
             setup_preprocessed(&config, &air, log2_ceil_usize(matrix.height())).unwrap();
 
-        let prep_matrix = air.preprocessed_trace().unwrap();
-        assert_eq!(prep_matrix.height(), matrix.height());
+        let preprocessed_matrix = air.preprocessed_trace().unwrap();
+        assert_eq!(preprocessed_matrix.height(), matrix.height());
         for i in 0..matrix.height() {
-            let row = prep_matrix.row_slice(i).unwrap();
+            let row = preprocessed_matrix.row_slice(i).unwrap();
             assert_eq!(row[0], Val::from_u64(i as u64)); // index
         }
 
@@ -414,10 +414,10 @@ mod tests {
         let (prover_data, verifier_data) =
             setup_preprocessed(&config, &air, log2_ceil_usize(matrix.height())).unwrap();
 
-        let prep_matrix = air.preprocessed_trace().unwrap();
-        assert_eq!(prep_matrix.height(), matrix.height());
+        let preprocessed_matrix = air.preprocessed_trace().unwrap();
+        assert_eq!(preprocessed_matrix.height(), matrix.height());
         for i in 0..matrix.height() {
-            let row = prep_matrix.row_slice(i).unwrap();
+            let row = preprocessed_matrix.row_slice(i).unwrap();
             assert_eq!(row[0], Val::from_u64(i as u64)); // index
         }
         let pis: Vec<Val> = vec![];
@@ -466,11 +466,11 @@ mod tests {
         assert_eq!(row2[1], values[4]);
 
         let air = WitnessAir::<Val, 1>::new(values.len(), lanes);
-        let prep_matrix = air.preprocessed_trace().unwrap();
-        assert_eq!(prep_matrix.height(), matrix.height());
+        let preprocessed_matrix = air.preprocessed_trace().unwrap();
+        assert_eq!(preprocessed_matrix.height(), matrix.height());
 
         for i in 0..matrix.height() {
-            let row = prep_matrix.row_slice(i).unwrap();
+            let row = preprocessed_matrix.row_slice(i).unwrap();
             for j in 0..lanes {
                 assert_eq!(row[j], Val::from_u64((i * lanes + j) as u64)); // index
             }

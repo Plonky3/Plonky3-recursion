@@ -110,7 +110,7 @@ impl<F: Field, const D: usize> ConstAir<F, D> {
         RowMajorMatrix::new(values, width)
     }
 
-    pub fn prep_from_trace<ExtF: BasedVectorSpace<F>>(trace: &ConstTrace<ExtF>) -> Vec<F> {
+    pub fn trace_to_preprocessed<ExtF: BasedVectorSpace<F>>(trace: &ConstTrace<ExtF>) -> Vec<F> {
         trace
             .index
             .iter()
@@ -125,11 +125,11 @@ impl<F: Field, const D: usize> BaseAir<F> for ConstAir<F, D> {
     }
 
     fn preprocessed_trace(&self) -> Option<RowMajorMatrix<F>> {
-        let mut prep_values = self.preprocessed.clone();
-        pad_to_power_of_two(&mut prep_values, 1, self.preprocessed.len());
+        let mut preprocessed_values = self.preprocessed.clone();
+        pad_to_power_of_two(&mut preprocessed_values, 1, self.preprocessed.len());
 
         Some(RowMajorMatrix::new(
-            prep_values,
+            preprocessed_values,
             1, // single preprocessed column for indices
         ))
     }
@@ -174,7 +174,7 @@ mod tests {
         // Witness IDs these constants bind to
         let const_indices = vec![WitnessId(1), WitnessId(3), WitnessId(4)];
 
-        let prep_values = const_indices
+        let preprocessed_values = const_indices
             .iter()
             .map(|idx| F::from_u64(idx.0 as u64))
             .collect::<Vec<_>>();
@@ -213,12 +213,12 @@ mod tests {
         // No public inputs for CONST chip
         let pis: Vec<F> = vec![];
 
-        let air = ConstAir::<F, 1>::new_with_preprocessed(height, prep_values);
+        let air = ConstAir::<F, 1>::new_with_preprocessed(height, preprocessed_values);
 
-        let prep_matrix = air.preprocessed_trace().unwrap();
+        let preprocessed_matrix = air.preprocessed_trace().unwrap();
 
         const_indices.iter().enumerate().for_each(|(i, const_idx)| {
-            let row = prep_matrix.row_slice(i).unwrap();
+            let row = preprocessed_matrix.row_slice(i).unwrap();
             assert_eq!(row[0], F::from_u32(const_idx.0));
         });
 
@@ -250,7 +250,7 @@ mod tests {
 
         let const_values = vec![const1, const2];
         let const_indices = vec![WitnessId(10), WitnessId(20)];
-        let prep_values = const_indices
+        let preprocessed_values = const_indices
             .iter()
             .map(|idx| F::from_u64(idx.0 as u64))
             .collect::<Vec<_>>();
@@ -286,11 +286,11 @@ mod tests {
         let config = build_test_config();
         let pis: Vec<F> = vec![];
 
-        let air = ConstAir::<F, 4>::new_with_preprocessed(height, prep_values);
-        let prep_matrix = air.preprocessed_trace().unwrap();
-        let row0 = prep_matrix.row_slice(0).unwrap();
+        let air = ConstAir::<F, 4>::new_with_preprocessed(height, preprocessed_values);
+        let preprocessed_matrix = air.preprocessed_trace().unwrap();
+        let row0 = preprocessed_matrix.row_slice(0).unwrap();
         assert_eq!(row0[0], F::from_u64(10));
-        let last_row = prep_matrix.row_slice(height - 1).unwrap();
+        let last_row = preprocessed_matrix.row_slice(height - 1).unwrap();
         assert_eq!(last_row[0], F::from_u64(20));
         let (prover_data, verifier_data) =
             setup_preprocessed(&config, &air, log2_ceil_usize(height)).unwrap();

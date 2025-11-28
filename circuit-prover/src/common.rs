@@ -55,8 +55,10 @@ pub fn get_airs_and_degrees_with_prep<
         let table = PrimitiveOpType::from(idx);
         match table {
             PrimitiveOpType::Add => {
-                assert!(prep.len() % AddAir::<Val<SC>, D>::prep_lane_width() == 0);
-                let num_ops = prep.len().div_ceil(AddAir::<Val<SC>, D>::prep_lane_width());
+                assert!(prep.len() % AddAir::<Val<SC>, D>::preprocessed_lane_width() == 0);
+                let num_ops = prep
+                    .len()
+                    .div_ceil(AddAir::<Val<SC>, D>::preprocessed_lane_width());
                 let add_air =
                     AddAir::new_with_preprocessed(num_ops, packing.add_lanes(), prep.clone());
                 table_preps[idx] = (
@@ -65,8 +67,10 @@ pub fn get_airs_and_degrees_with_prep<
                 );
             }
             PrimitiveOpType::Mul => {
-                assert!(prep.len() % AddAir::<Val<SC>, D>::prep_lane_width() == 0);
-                let num_ops = prep.len().div_ceil(MulAir::<Val<SC>, D>::prep_lane_width());
+                assert!(prep.len() % AddAir::<Val<SC>, D>::preprocessed_lane_width() == 0);
+                let num_ops = prep
+                    .len()
+                    .div_ceil(MulAir::<Val<SC>, D>::preprocessed_lane_width());
                 let mul_air = if D == 1 {
                     MulAir::new_with_preprocessed(num_ops, packing.mul_lanes(), prep.clone())
                 } else {

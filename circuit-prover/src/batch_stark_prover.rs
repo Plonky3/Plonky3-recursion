@@ -1096,28 +1096,28 @@ where
 
         // Const
         let const_rows = traces.const_trace.values.len();
-        let const_prep = ConstAir::<Val<SC>, D>::prep_from_trace(&traces.const_trace);
+        let const_prep = ConstAir::<Val<SC>, D>::trace_to_preprocessed(&traces.const_trace);
         let const_air = ConstAir::<Val<SC>, D>::new_with_preprocessed(const_rows, const_prep);
         let const_matrix: RowMajorMatrix<Val<SC>> =
             ConstAir::<Val<SC>, D>::trace_to_matrix(&traces.const_trace);
 
         // Public
         let public_rows = traces.public_trace.values.len();
-        let public_prep = PublicAir::<Val<SC>, D>::prep_from_trace(&traces.public_trace);
+        let public_prep = PublicAir::<Val<SC>, D>::trace_to_preprocessed(&traces.public_trace);
         let public_air = PublicAir::<Val<SC>, D>::new_with_preprocessed(public_rows, public_prep);
         let public_matrix: RowMajorMatrix<Val<SC>> =
             PublicAir::<Val<SC>, D>::trace_to_matrix(&traces.public_trace);
 
         // Add
         let add_rows = traces.add_trace.lhs_values.len();
-        let add_prep = AddAir::<Val<SC>, D>::prep_from_trace(&traces.add_trace, add_lanes);
+        let add_prep = AddAir::<Val<SC>, D>::trace_to_preprocessed(&traces.add_trace, add_lanes);
         let add_air = AddAir::<Val<SC>, D>::new_with_preprocessed(add_rows, add_lanes, add_prep);
         let add_matrix: RowMajorMatrix<Val<SC>> =
             AddAir::<Val<SC>, D>::trace_to_matrix(&traces.add_trace, add_lanes);
 
         // Mul
         let mul_rows = traces.mul_trace.lhs_values.len();
-        let mul_prep = MulAir::<Val<SC>, D>::prep_from_trace(&traces.mul_trace, mul_lanes);
+        let mul_prep = MulAir::<Val<SC>, D>::trace_to_preprocessed(&traces.mul_trace, mul_lanes);
         let mul_air: MulAir<Val<SC>, D> = if D == 1 {
             MulAir::<Val<SC>, D>::new_with_preprocessed(mul_rows, mul_lanes, mul_prep)
         } else {
