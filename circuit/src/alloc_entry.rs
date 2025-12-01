@@ -245,7 +245,7 @@ fn dump_internal_log(allocation_log: &[AllocationEntry]) {
                     .dependencies
                     .iter()
                     .flatten()
-                    .map(|e| format!("expr_{}", e.0).to_string())
+                    .map(|e| format!("expr_{}", e.0))
                     .collect();
                 tracing::debug!(
                     "  {} (inputs: [{}]){}",

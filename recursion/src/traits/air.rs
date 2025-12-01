@@ -39,7 +39,7 @@ pub trait RecursiveAir<F: Field> {
         builder: &mut CircuitBuilder<F>,
         sels: &RecursiveLagrangeSelectors,
         alpha: &Target,
-        columns: ColumnsTargets,
+        columns: ColumnsTargets<'_>,
     ) -> Target;
 
     /// Compute the log of the quotient polynomial degree.
@@ -77,7 +77,7 @@ where
         builder: &mut CircuitBuilder<F>,
         sels: &RecursiveLagrangeSelectors,
         alpha: &Target,
-        columns: ColumnsTargets,
+        columns: ColumnsTargets<'_>,
     ) -> Target {
         builder.push_scope("eval_folded_circuit");
 

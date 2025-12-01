@@ -1,19 +1,18 @@
 //! This module provides type-safe builders and helper functions
 //! for constructing public inputs for recursive verification circuits.
 
-use alloc::vec;
 use alloc::vec::Vec;
 
-use p3_batch_stark::BatchProof;
+use p3_batch_stark::{BatchProof, CommonData};
 use p3_circuit::CircuitBuilder;
 use p3_commit::Pcs;
 use p3_field::{BasedVectorSpace, Field, PrimeField64};
 use p3_uni_stark::{Proof, StarkGenericConfig, Val};
 
-use crate::ProofTargets;
 use crate::pcs::MAX_QUERY_INDEX_BITS;
 use crate::traits::Recursive;
 use crate::verifier::BatchProofTargets;
+use crate::{PreprocessedVerifierDataTargets, ProofTargets};
 
 /// Builder for constructing public inputs.
 ///
@@ -232,6 +231,7 @@ where
 pub fn construct_batch_stark_verifier_inputs<F, EF>(
     air_public_values: &[Vec<F>],
     proof_values: &[EF],
+    preprocessed: &[EF],
     challenges: &[EF],
 ) -> Vec<EF>
 where
@@ -245,6 +245,7 @@ where
     }
 
     builder.add_proof_values(proof_values.iter().copied());
+    builder.add_proof_values(preprocessed.iter().copied());
     builder.add_challenges(challenges.iter().copied());
 
     builder.build()
@@ -310,7 +311,7 @@ where
     pub fn allocate(
         circuit: &mut CircuitBuilder<SC::Challenge>,
         proof: &Proof<SC>,
-        preprocessed_commit: Option<Com<SC>>,
+        preprocessed_commit: Option<&Com<SC>>,
         num_air_public_inputs: usize,
     ) -> Self {
         // Allocate air public inputs
@@ -357,11 +358,9 @@ where
     {
         let proof_values = ProofTargets::<SC, Comm, OpeningProof>::get_values(proof);
 
-        let preprocessed = if let Some(prep_comm) = preprocessed_commit {
-            Comm::get_values(prep_comm)
-        } else {
-            vec![]
-        };
+        let preprocessed = preprocessed_commit
+            .as_ref()
+            .map_or_else(Vec::new, |prep_comm| Comm::get_values(prep_comm));
 
         construct_stark_verifier_inputs(
             air_public_values,
@@ -388,6 +387,8 @@ where
     pub air_public_targets: Vec<Vec<crate::Target>>,
     /// Allocated proof structure targets.
     pub proof_targets: BatchProofTargets<SC, Comm, OpeningProof>,
+    /// Allocated preprocessed commitment targets (if any).
+    pub preprocessed: PreprocessedVerifierDataTargets<SC, Comm>,
 }
 
 impl<SC, Comm, OpeningProof> BatchStarkVerifierInputsBuilder<SC, Comm, OpeningProof>
@@ -404,6 +405,7 @@ where
     pub fn allocate(
         circuit: &mut CircuitBuilder<SC::Challenge>,
         proof: &BatchProof<SC>,
+        common_data: &CommonData<SC>,
         air_public_counts: &[usize],
     ) -> Self {
         assert_eq!(
@@ -419,9 +421,12 @@ where
 
         let proof_targets = BatchProofTargets::new(circuit, proof);
 
+        let preprocessed = PreprocessedVerifierDataTargets::<SC, Comm>::new(circuit, common_data);
+
         Self {
             air_public_targets,
             proof_targets,
+            preprocessed,
         }
     }
 
@@ -430,15 +435,22 @@ where
         &self,
         air_public_values: &[Vec<Val<SC>>],
         proof: &BatchProof<SC>,
+        common: &CommonData<SC>,
         challenges: &[SC::Challenge],
     ) -> Vec<SC::Challenge>
     where
         Val<SC>: PrimeField64,
         SC::Challenge: BasedVectorSpace<Val<SC>> + From<Val<SC>>,
     {
+        let common_data = PreprocessedVerifierDataTargets::<SC, Comm>::get_values(common);
         let proof_values = BatchProofTargets::<SC, Comm, OpeningProof>::get_values(proof);
 
-        construct_batch_stark_verifier_inputs(air_public_values, &proof_values, challenges)
+        construct_batch_stark_verifier_inputs(
+            air_public_values,
+            &proof_values,
+            &common_data,
+            challenges,
+        )
     }
 }
 

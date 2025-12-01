@@ -4,6 +4,8 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::marker::PhantomData;
 
+use p3_batch_stark::CommonData;
+use p3_batch_stark::common::PreprocessedInstanceMeta;
 use p3_circuit::CircuitBuilder;
 use p3_commit::Pcs;
 use p3_field::Field;
@@ -60,6 +62,66 @@ pub struct OpenedValuesTargets<SC: StarkGenericConfig> {
     /// Optional random polynomial values (ZK mode)
     pub random_targets: Option<Vec<Target>>,
     pub _phantom: PhantomData<SC>,
+}
+
+/// Structure which holds the targets and metadata for existing global preprocessed data.
+pub struct GlobalPreprocessedTargets<Comm> {
+    /// Global commitment targets for all preprocessed columns, over all instances.
+    pub commitment: Comm,
+    /// Per-instance metadata for preprocessed traces.
+    pub instances: PreprocessedInstanceMetas,
+    /// Mapping from preprocessed matrix index to the corresponding instance index.
+    pub matrix_to_instance: Vec<usize>,
+}
+
+/// Structure which holds per-instance metadata for preprocessed traces
+pub struct PreprocessedInstanceMetas {
+    /// Vector of optional per-instance metadata
+    pub instances: Vec<Option<PreprocessedInstanceMeta>>,
+}
+
+/// Structure which holds the optional targets and metadata necessary for handling preprocessed data in the verification circuit.
+pub struct PreprocessedVerifierDataTargets<SC, Comm> {
+    /// If at least one of the instances uses preprocessed columns, holds the global preprocessed targets.
+    pub preprocessed: Option<GlobalPreprocessedTargets<Comm>>,
+    pub _phantom: PhantomData<SC>,
+}
+
+impl<SC: StarkGenericConfig, Comm> Recursive<SC::Challenge>
+    for PreprocessedVerifierDataTargets<SC, Comm>
+where
+    Comm: Recursive<
+            SC::Challenge,
+            Input = <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment,
+        >,
+{
+    type Input = CommonData<SC>;
+
+    fn new(circuit: &mut CircuitBuilder<SC::Challenge>, input: &Self::Input) -> Self {
+        let preprocessed = input
+            .preprocessed
+            .as_ref()
+            .map(|prep| GlobalPreprocessedTargets {
+                commitment: Comm::new(circuit, &prep.commitment),
+                instances: PreprocessedInstanceMetas {
+                    instances: prep.instances.clone(),
+                },
+                matrix_to_instance: prep.matrix_to_instance.clone(),
+            });
+
+        Self {
+            preprocessed,
+            _phantom: PhantomData,
+        }
+    }
+
+    fn get_values(input: &Self::Input) -> Vec<SC::Challenge> {
+        let mut values = vec![];
+        if let Some(prep) = &input.preprocessed {
+            values.extend(Comm::get_values(&prep.commitment));
+        }
+        values
+    }
 }
 
 impl<SC: StarkGenericConfig> OpenedValuesTargets<SC> {

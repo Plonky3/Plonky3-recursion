@@ -43,7 +43,7 @@ pub struct Poseidon2CircuitCols<
     pub mmcs_index_sum: T,
 
     /// Selector: enables normal chaining for a limb when the previous row's output should fill it.
-    /// Computed as (1 - new_start) * (1 - merkle_path) * (1 - in_ctl[i]).
+    /// Computed as (1 - new_start) * (1 - merkle_path) * (1 - in_ctl[i]) for i in {0,..., POSEIDON_LIMBS - 1}.
     /// NOTE: This column is not in the spec but is added to reduce constraint degree to 3.
     pub normal_chain_sel: [T; WIDTH_EXT],
 

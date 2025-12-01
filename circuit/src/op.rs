@@ -94,14 +94,15 @@ pub enum PrimitiveOpType {
     Mul = 4,
 }
 
+#[allow(clippy::fallible_impl_from)]
 impl From<usize> for PrimitiveOpType {
     fn from(value: usize) -> Self {
         match value {
-            0 => PrimitiveOpType::Witness,
-            1 => PrimitiveOpType::Const,
-            2 => PrimitiveOpType::Public,
-            3 => PrimitiveOpType::Add,
-            4 => PrimitiveOpType::Mul,
+            0 => Self::Witness,
+            1 => Self::Const,
+            2 => Self::Public,
+            3 => Self::Add,
+            4 => Self::Mul,
             _ => panic!("Invalid PrimitiveOpType value: {}", value),
         }
     }
@@ -109,13 +110,13 @@ impl From<usize> for PrimitiveOpType {
 
 impl PrimitiveOpType {
     /// Get the number of columns in the preprocessed table for this operation
-    pub fn get_prep_width(&self) -> usize {
+    pub const fn get_prep_width(&self) -> usize {
         match self {
-            PrimitiveOpType::Witness => 1, // index
-            PrimitiveOpType::Const => 2,   // index, val
-            PrimitiveOpType::Public => 1,  // index
-            PrimitiveOpType::Add => 3,     // index_a, index_b, index_out
-            PrimitiveOpType::Mul => 3,     // index_a, index_b, index_out
+            Self::Witness => 1, // index
+            Self::Const => 2,   // index, val
+            Self::Public => 1,  // index
+            Self::Add => 3,     // index_a, index_b, index_out
+            Self::Mul => 3,     // index_a, index_b, index_out
         }
     }
 }
@@ -124,39 +125,39 @@ impl PrimitiveOpType {
 impl<F: Field + Clone> Clone for Op<F> {
     fn clone(&self) -> Self {
         match self {
-            Op::Const { out, val } => Op::Const {
+            Self::Const { out, val } => Self::Const {
                 out: *out,
                 val: *val,
             },
-            Op::Public { out, public_pos } => Op::Public {
+            Self::Public { out, public_pos } => Self::Public {
                 out: *out,
                 public_pos: *public_pos,
             },
-            Op::Add { a, b, out } => Op::Add {
+            Self::Add { a, b, out } => Self::Add {
                 a: *a,
                 b: *b,
                 out: *out,
             },
-            Op::Mul { a, b, out } => Op::Mul {
+            Self::Mul { a, b, out } => Self::Mul {
                 a: *a,
                 b: *b,
                 out: *out,
             },
-            Op::Unconstrained {
+            Self::Unconstrained {
                 inputs,
                 outputs,
                 filler,
-            } => Op::Unconstrained {
+            } => Self::Unconstrained {
                 inputs: inputs.clone(),
                 outputs: outputs.clone(),
                 filler: filler.clone(),
             },
-            Op::NonPrimitiveOpWithExecutor {
+            Self::NonPrimitiveOpWithExecutor {
                 inputs,
                 outputs,
                 executor,
                 op_id,
-            } => Op::NonPrimitiveOpWithExecutor {
+            } => Self::NonPrimitiveOpWithExecutor {
                 inputs: inputs.clone(),
                 outputs: outputs.clone(),
                 executor: executor.boxed(),
@@ -170,51 +171,51 @@ impl<F: Field + Clone> Clone for Op<F> {
 impl<F: Field + PartialEq> PartialEq for Op<F> {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
-            (Op::Const { out: o1, val: v1 }, Op::Const { out: o2, val: v2 }) => {
+            (Self::Const { out: o1, val: v1 }, Self::Const { out: o2, val: v2 }) => {
                 o1 == o2 && v1 == v2
             }
             (
-                Op::Public {
+                Self::Public {
                     out: o1,
                     public_pos: p1,
                 },
-                Op::Public {
+                Self::Public {
                     out: o2,
                     public_pos: p2,
                 },
             ) => o1 == o2 && p1 == p2,
             (
-                Op::Add {
+                Self::Add {
                     a: a1,
                     b: b1,
                     out: o1,
                 },
-                Op::Add {
+                Self::Add {
                     a: a2,
                     b: b2,
                     out: o2,
                 },
             ) => a1 == a2 && b1 == b2 && o1 == o2,
             (
-                Op::Mul {
+                Self::Mul {
                     a: a1,
                     b: b1,
                     out: o1,
                 },
-                Op::Mul {
+                Self::Mul {
                     a: a2,
                     b: b2,
                     out: o2,
                 },
             ) => a1 == a2 && b1 == b2 && o1 == o2,
             (
-                Op::NonPrimitiveOpWithExecutor {
+                Self::NonPrimitiveOpWithExecutor {
                     inputs: i1,
                     outputs: o1,
                     executor: e1,
                     op_id: id1,
                 },
-                Op::NonPrimitiveOpWithExecutor {
+                Self::NonPrimitiveOpWithExecutor {
                     inputs: i2,
                     outputs: o2,
                     executor: e2,
@@ -229,7 +230,7 @@ impl<F: Field + PartialEq> PartialEq for Op<F> {
 /// Non-primitive operation types
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum NonPrimitiveOpType {
-    // Mmcs Verify gate with the argument is the size of the path
+    /// Mmcs Verify gate with the argument is the size of the path
     MmcsVerify,
     FriVerify,
     /// Hash absorb operation - absorbs field elements into sponge state
@@ -261,7 +262,7 @@ pub enum NonPrimitiveOpConfig {
 /// 2. Allow specialized constraint systems for each operation type
 /// 3. Enable parallel development of different cryptographic primitives
 /// 4. Avoid optimization passes breaking complex constraint relationships
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NonPrimitiveOp {
     /// Verifies that a leaf value is contained in a Mmcs with given root.
     /// The actual Mmcs path verification logic is implemented in a dedicated
@@ -305,7 +306,7 @@ pub enum NonPrimitiveOp {
 /// - Is set during circuit execution via `NonPrimitiveOpId`
 /// - Contains sensitive information like cryptographic witnesses
 /// - Is used by AIR tables to generate the appropriate constraints
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NonPrimitiveOpPrivateData<F> {
     /// Private data for Mmcs verification
     ///
@@ -332,7 +333,7 @@ pub struct ExecutionContext<'a, F> {
 
 impl<'a, F: Field> ExecutionContext<'a, F> {
     /// Create a new execution context
-    pub fn new(
+    pub const fn new(
         witness: &'a mut [Option<F>],
         non_primitive_op_private_data: &'a [Option<NonPrimitiveOpPrivateData<F>>],
         enabled_ops: &'a HashMap<NonPrimitiveOpType, NonPrimitiveOpConfig>,
@@ -391,15 +392,15 @@ impl<'a, F: Field> ExecutionContext<'a, F> {
         &self,
         op_type: &NonPrimitiveOpType,
     ) -> Result<&NonPrimitiveOpConfig, CircuitError> {
-        self.enabled_ops
-            .get(op_type)
-            .ok_or(CircuitError::InvalidNonPrimitiveOpConfiguration {
+        self.enabled_ops.get(op_type).ok_or_else(|| {
+            CircuitError::InvalidNonPrimitiveOpConfiguration {
                 op: op_type.clone(),
-            })
+            }
+        })
     }
 
     /// Get the current operation ID
-    pub fn operation_id(&self) -> NonPrimitiveOpId {
+    pub const fn operation_id(&self) -> NonPrimitiveOpId {
         self.operation_id
     }
 }
@@ -413,13 +414,13 @@ pub trait NonPrimitiveExecutor<F: Field>: Debug {
     ///
     /// # Arguments
     /// * `inputs` - Input witness indices
-    /// * `outputs` - Output witness indices  
+    /// * `outputs` - Output witness indices
     /// * `ctx` - Execution context with access to witness table, private data, and configs
     fn execute(
         &self,
         inputs: &[Vec<WitnessId>],
         outputs: &[Vec<WitnessId>],
-        ctx: &mut ExecutionContext<F>,
+        ctx: &mut ExecutionContext<'_, F>,
     ) -> Result<(), CircuitError>;
 
     /// Get operation type identifier (for config lookup, error reporting)
@@ -490,5 +491,510 @@ where
 {
     fn clone_box(&self) -> Box<dyn WitnessHintsFiller<F>> {
         Box::new(self.clone())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec;
+
+    use p3_baby_bear::BabyBear;
+    use p3_field::PrimeCharacteristicRing;
+
+    use super::*;
+
+    type F = BabyBear;
+
+    #[test]
+    fn test_op_partial_eq_different_variants() {
+        // Create operations of completely different types
+        let const_op = Op::Const {
+            out: WitnessId(0),
+            val: F::from_u64(5),
+        };
+
+        let add_op = Op::Add {
+            a: WitnessId(0),
+            b: WitnessId(1),
+            out: WitnessId(2),
+        };
+
+        // Operations of different variants should never be equal
+        assert_ne!(const_op, add_op);
+    }
+
+    #[test]
+    fn test_op_partial_eq_same_variant_different_values() {
+        // Create two addition operations with different witness indices
+        let add_op1: Op<F> = Op::Add {
+            a: WitnessId(0),
+            b: WitnessId(1),
+            out: WitnessId(2),
+        };
+
+        let add_op2: Op<F> = Op::Add {
+            a: WitnessId(3),
+            b: WitnessId(4),
+            out: WitnessId(5),
+        };
+
+        // Same variant but different values should not be equal
+        assert_ne!(add_op1, add_op2);
+    }
+
+    #[test]
+    fn test_op_partial_eq_add_same_values() {
+        // Create two identical addition operations
+        let a = WitnessId(0);
+        let b = WitnessId(1);
+        let out = WitnessId(2);
+
+        let add_op1: Op<F> = Op::Add { a, b, out };
+        let add_op2: Op<F> = Op::Add { a, b, out };
+
+        // Identical operations should be equal
+        assert_eq!(add_op1, add_op2);
+    }
+
+    #[test]
+    fn test_op_partial_eq_const_different_values() {
+        // Create two constant operations with different values
+        let out = WitnessId(0);
+        let val1 = F::from_u64(10);
+        let val2 = F::from_u64(20);
+
+        let const_op1: Op<F> = Op::Const { out, val: val1 };
+        let const_op2: Op<F> = Op::Const { out, val: val2 };
+
+        // Same output but different values should not be equal
+        assert_ne!(const_op1, const_op2);
+    }
+
+    #[test]
+    fn test_op_partial_eq_const_different_outputs() {
+        // Create two constant operations with same value but different outputs
+        let val = F::from_u64(42);
+        let out1 = WitnessId(0);
+        let out2 = WitnessId(1);
+
+        let const_op1: Op<F> = Op::Const { out: out1, val };
+        let const_op2: Op<F> = Op::Const { out: out2, val };
+
+        // Same value but different outputs should not be equal
+        assert_ne!(const_op1, const_op2);
+    }
+
+    #[test]
+    fn test_op_partial_eq_const_same_values() {
+        // Create two identical constant operations
+        let out = WitnessId(0);
+        let val = F::from_u64(99);
+
+        let const_op1: Op<F> = Op::Const { out, val };
+        let const_op2: Op<F> = Op::Const { out, val };
+
+        // Identical constant operations should be equal
+        assert_eq!(const_op1, const_op2);
+    }
+
+    #[test]
+    fn test_op_partial_eq_public_different_positions() {
+        // Create two public input operations with different positions
+        let out = WitnessId(0);
+        let pos1 = 0;
+        let pos2 = 1;
+
+        let public_op1: Op<F> = Op::Public {
+            out,
+            public_pos: pos1,
+        };
+        let public_op2: Op<F> = Op::Public {
+            out,
+            public_pos: pos2,
+        };
+
+        // Same output but different positions should not be equal
+        assert_ne!(public_op1, public_op2);
+    }
+
+    #[test]
+    fn test_op_partial_eq_public_same_values() {
+        // Create two identical public input operations
+        let out = WitnessId(5);
+        let public_pos = 3;
+
+        let public_op1: Op<F> = Op::Public { out, public_pos };
+        let public_op2: Op<F> = Op::Public { out, public_pos };
+
+        // Identical public operations should be equal
+        assert_eq!(public_op1, public_op2);
+    }
+
+    #[test]
+    fn test_op_partial_eq_mul_different_values() {
+        // Create two multiplication operations with different witness indices
+        let mul_op1: Op<F> = Op::Mul {
+            a: WitnessId(0),
+            b: WitnessId(1),
+            out: WitnessId(2),
+        };
+
+        let mul_op2: Op<F> = Op::Mul {
+            a: WitnessId(10),
+            b: WitnessId(11),
+            out: WitnessId(12),
+        };
+
+        // Different witness indices should not be equal
+        assert_ne!(mul_op1, mul_op2);
+    }
+
+    #[test]
+    fn test_op_partial_eq_mul_same_values() {
+        // Create two identical multiplication operations
+        let a = WitnessId(7);
+        let b = WitnessId(8);
+        let out = WitnessId(9);
+
+        let mul_op1: Op<F> = Op::Mul { a, b, out };
+        let mul_op2: Op<F> = Op::Mul { a, b, out };
+
+        // Identical multiplication operations should be equal
+        assert_eq!(mul_op1, mul_op2);
+    }
+
+    #[test]
+    fn test_op_partial_eq_add_partial_match() {
+        // Create two addition operations where only some fields match
+        let add_op1: Op<F> = Op::Add {
+            a: WitnessId(0),
+            b: WitnessId(1),
+            out: WitnessId(2),
+        };
+
+        let add_op2: Op<F> = Op::Add {
+            a: WitnessId(0),
+            b: WitnessId(1),
+            out: WitnessId(99), // Different output
+        };
+
+        // Partial match is not enough for equality
+        assert_ne!(add_op1, add_op2);
+    }
+
+    #[test]
+    fn test_primitive_op_type_from_usize() {
+        // Convert integer indices to operation types
+        let witness_type = PrimitiveOpType::from(0);
+        let const_type = PrimitiveOpType::from(1);
+        let public_type = PrimitiveOpType::from(2);
+        let add_type = PrimitiveOpType::from(3);
+        let mul_type = PrimitiveOpType::from(4);
+
+        // Verify each type has the correct preprocessing width
+        assert_eq!(witness_type.get_prep_width(), 1);
+        assert_eq!(const_type.get_prep_width(), 2);
+        assert_eq!(public_type.get_prep_width(), 1);
+        assert_eq!(add_type.get_prep_width(), 3);
+        assert_eq!(mul_type.get_prep_width(), 3);
+    }
+
+    #[test]
+    #[should_panic(expected = "Invalid PrimitiveOpType value")]
+    fn test_primitive_op_type_invalid_conversion() {
+        // Attempt to convert an invalid index to an operation type
+        //
+        // This should panic
+        let _ = PrimitiveOpType::from(999);
+    }
+
+    #[test]
+    fn test_execution_context_get_witness() {
+        // Create a witness table with known test values
+        let val = F::from_u64(42);
+        let mut witness = vec![Some(val), Some(F::from_u64(100))];
+        let private_data = vec![];
+        let configs = HashMap::new();
+        let op_id = NonPrimitiveOpId(0);
+
+        // Create an execution context for operations to access the witness
+        let ctx = ExecutionContext::new(&mut witness, &private_data, &configs, op_id);
+
+        // Read a value from the witness table
+        let result = ctx.get_witness(WitnessId(0));
+
+        // Verify the read operation succeeded and returned the correct value
+        assert_eq!(result.unwrap(), val);
+    }
+
+    #[test]
+    fn test_execution_context_get_witness_unset() {
+        // Create a witness table where some values are not yet set
+        let mut witness = vec![None, Some(F::from_u64(100))];
+        let private_data = vec![];
+        let configs = HashMap::new();
+        let op_id = NonPrimitiveOpId(0);
+
+        // Create execution context
+        let ctx = ExecutionContext::new(&mut witness, &private_data, &configs, op_id);
+
+        // Attempt to read a value that hasn't been set yet
+        let result = ctx.get_witness(WitnessId(0));
+
+        // Reading unset values should produce an error
+        assert!(result.is_err());
+        match result {
+            Err(CircuitError::WitnessNotSet { witness_id }) => {
+                assert_eq!(witness_id, WitnessId(0));
+            }
+            _ => panic!("Expected WitnessNotSet error"),
+        }
+    }
+
+    #[test]
+    fn test_execution_context_set_witness() {
+        // Create an empty witness table to be populated
+        let mut witness = vec![None, None];
+        let private_data = vec![];
+        let configs = HashMap::new();
+        let op_id = NonPrimitiveOpId(0);
+
+        // Create execution context with mutable access to witness
+        let mut ctx = ExecutionContext::new(&mut witness, &private_data, &configs, op_id);
+
+        // Write a computed value into the witness table
+        let val = F::from_u64(99);
+        let result = ctx.set_witness(WitnessId(0), val);
+
+        // Verify the write operation succeeded
+        assert!(result.is_ok());
+
+        // Verify the value was actually written to the witness table
+        assert_eq!(witness[0], Some(val));
+    }
+
+    #[test]
+    fn test_execution_context_set_witness_conflict() {
+        // Create a witness table with an existing value
+        let existing_val = F::from_u64(50);
+        let mut witness = vec![Some(existing_val)];
+        let private_data = vec![];
+        let configs = HashMap::new();
+        let op_id = NonPrimitiveOpId(0);
+
+        // Create execution context
+        let mut ctx = ExecutionContext::new(&mut witness, &private_data, &configs, op_id);
+
+        // Attempt to write a different value to the same slot
+        //
+        // This represents a conflicting constraint in the circuit
+        let new_val = F::from_u64(99);
+        let result = ctx.set_witness(WitnessId(0), new_val);
+
+        // Conflicting writes must be detected and reported as errors
+        assert!(result.is_err());
+        match result {
+            Err(CircuitError::WitnessConflict { witness_id, .. }) => {
+                assert_eq!(witness_id, WitnessId(0));
+            }
+            _ => panic!("Expected WitnessConflict error"),
+        }
+    }
+
+    #[test]
+    fn test_execution_context_set_witness_idempotent() {
+        // Create a witness table with an existing value
+        let val = F::from_u64(50);
+        let mut witness = vec![Some(val)];
+        let private_data = vec![];
+        let configs = HashMap::new();
+        let op_id = NonPrimitiveOpId(0);
+
+        // Create execution context
+        let mut ctx = ExecutionContext::new(&mut witness, &private_data, &configs, op_id);
+
+        // Write the same value again to the same slot
+        //
+        // This is allowed and represents consistent constraints
+        let result = ctx.set_witness(WitnessId(0), val);
+
+        // Idempotent writes should succeed without error
+        assert!(result.is_ok());
+        assert_eq!(witness[0], Some(val));
+    }
+
+    #[test]
+    fn test_execution_context_set_witness_out_of_bounds() {
+        // Create a small witness table with limited capacity
+        let mut witness = vec![None];
+        let private_data = vec![];
+        let configs = HashMap::new();
+        let op_id = NonPrimitiveOpId(0);
+
+        // Create execution context
+        let mut ctx = ExecutionContext::new(&mut witness, &private_data, &configs, op_id);
+
+        // Attempt to write to an index beyond the table bounds
+        let result = ctx.set_witness(WitnessId(10), F::from_u64(1));
+
+        // Out of bounds writes must be caught to prevent memory corruption
+        assert!(result.is_err());
+        match result {
+            Err(CircuitError::WitnessIdOutOfBounds { witness_id }) => {
+                assert_eq!(witness_id, WitnessId(10));
+            }
+            _ => panic!("Expected WitnessIdOutOfBounds error"),
+        }
+    }
+
+    #[test]
+    fn test_execution_context_get_private_data() {
+        // Create private auxiliary data for a verification operation
+        let mmcs_data: MmcsPrivateData<F> = MmcsPrivateData {
+            path_states: vec![],
+            path_siblings: vec![],
+            directions: vec![],
+        };
+        let private_data = vec![Some(NonPrimitiveOpPrivateData::MmcsVerify(
+            mmcs_data.clone(),
+        ))];
+
+        // Create execution context with access to private data
+        let mut witness = vec![];
+        let configs = HashMap::new();
+        let op_id = NonPrimitiveOpId(0);
+        let ctx = ExecutionContext::new(&mut witness, &private_data, &configs, op_id);
+
+        // Operations can access their private data through the context
+        let result = ctx.get_private_data();
+
+        // Verify private data access succeeded
+        assert_eq!(
+            *result.unwrap(),
+            NonPrimitiveOpPrivateData::MmcsVerify(mmcs_data)
+        );
+    }
+
+    #[test]
+    fn test_execution_context_get_private_data_missing() {
+        // Create an execution context without private data
+        let private_data = vec![];
+        let mut witness = vec![];
+        let configs = HashMap::new();
+        let op_id = NonPrimitiveOpId(0);
+
+        // Create execution context
+        let ctx: ExecutionContext<'_, F> =
+            ExecutionContext::new(&mut witness, &private_data, &configs, op_id);
+
+        // Attempt to access private data that wasn't provided
+        let result = ctx.get_private_data();
+
+        // Missing private data should be reported as an error
+        assert!(result.is_err());
+        match result {
+            Err(CircuitError::NonPrimitiveOpMissingPrivateData { operation_index }) => {
+                assert_eq!(operation_index, op_id);
+            }
+            _ => panic!("Expected NonPrimitiveOpMissingPrivateData error"),
+        }
+    }
+
+    #[test]
+    fn test_execution_context_get_config() {
+        // Create a configuration map for operation parameters
+        let mut configs = HashMap::new();
+        let op_type = NonPrimitiveOpType::HashAbsorb { reset: false };
+        configs.insert(op_type.clone(), NonPrimitiveOpConfig::None);
+
+        // Create execution context with configurations
+        let mut witness = vec![];
+        let private_data = vec![];
+        let op_id = NonPrimitiveOpId(0);
+        let ctx: ExecutionContext<'_, F> =
+            ExecutionContext::new(&mut witness, &private_data, &configs, op_id);
+
+        // Operations can query their configuration at runtime
+        let result = ctx.get_config(&op_type);
+
+        // Verify configuration lookup succeeded
+        assert_eq!(*result.unwrap(), NonPrimitiveOpConfig::None);
+    }
+
+    #[test]
+    fn test_execution_context_get_config_missing() {
+        // Create an empty configuration map
+        let configs = HashMap::new();
+        let mut witness = vec![];
+        let private_data = vec![];
+        let op_id = NonPrimitiveOpId(0);
+
+        // Create execution context
+        let ctx: ExecutionContext<'_, F> =
+            ExecutionContext::new(&mut witness, &private_data, &configs, op_id);
+
+        // Attempt to access a configuration that wasn't registered
+        let op_type = NonPrimitiveOpType::HashAbsorb { reset: false };
+        let result = ctx.get_config(&op_type);
+
+        // Missing configurations indicate setup errors
+        assert!(result.is_err());
+        match result {
+            Err(CircuitError::InvalidNonPrimitiveOpConfiguration { op }) => {
+                assert_eq!(op, op_type);
+            }
+            _ => panic!("Expected InvalidNonPrimitiveOpConfiguration error"),
+        }
+    }
+
+    #[test]
+    fn test_default_hint_compute_outputs() {
+        // Create a default hint that produces multiple outputs
+        let hint = DefaultHint { n_outputs: 3 };
+
+        // Compute default values for all outputs
+        let result = hint.compute_outputs(vec![]);
+
+        // Verify the correct number of default-initialized values
+        let outputs: Vec<F> = result.unwrap();
+        assert_eq!(outputs.len(), 3);
+        assert_eq!(outputs[0], F::default());
+        assert_eq!(outputs[1], F::default());
+        assert_eq!(outputs[2], F::default());
+    }
+
+    #[test]
+    fn test_non_primitive_op_type_equality() {
+        // Create various operation type instances
+        let hash_absorb1 = NonPrimitiveOpType::HashAbsorb { reset: true };
+        let hash_absorb2 = NonPrimitiveOpType::HashAbsorb { reset: true };
+        let hash_absorb3 = NonPrimitiveOpType::HashAbsorb { reset: false };
+        let hash_squeeze = NonPrimitiveOpType::HashSqueeze;
+
+        // Verify equality for identical types
+        assert_eq!(hash_absorb1, hash_absorb2);
+
+        // Verify inequality when parameters differ
+        assert_ne!(hash_absorb1, hash_absorb3);
+
+        // Verify inequality for completely different types
+        assert_ne!(hash_absorb1, hash_squeeze);
+    }
+
+    #[test]
+    fn test_execution_context_operation_id() {
+        // Create execution context with a specific operation identifier
+        let mut witness = vec![];
+        let private_data = vec![];
+        let configs = HashMap::new();
+        let expected_id = NonPrimitiveOpId(42);
+        let ctx: ExecutionContext<'_, F> =
+            ExecutionContext::new(&mut witness, &private_data, &configs, expected_id);
+
+        // Retrieve the operation ID from the context
+        let retrieved_id = ctx.operation_id();
+
+        // Verify the ID is correctly preserved
+        assert_eq!(retrieved_id, expected_id);
     }
 }

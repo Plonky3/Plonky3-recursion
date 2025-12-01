@@ -1,14 +1,15 @@
-use alloc::vec;
 use alloc::vec::Vec;
 use core::borrow::Borrow;
+use core::mem::MaybeUninit;
 
 use p3_air::{Air, AirBuilder, BaseAir};
 use p3_circuit::tables::{Poseidon2CircuitRow, Poseidon2CircuitTrace};
 use p3_field::{PrimeCharacteristicRing, PrimeField};
 use p3_matrix::Matrix;
-use p3_matrix::dense::{RowMajorMatrix, RowMajorMatrixViewMut};
+use p3_matrix::dense::RowMajorMatrix;
+use p3_maybe_rayon::prelude::*;
 use p3_poseidon2::GenericPoseidon2LinearLayers;
-use p3_poseidon2_air::{Poseidon2Air, Poseidon2Cols, RoundConstants, generate_trace_rows};
+use p3_poseidon2_air::{Poseidon2Air, Poseidon2Cols, RoundConstants, generate_trace_rows_for_perm};
 use p3_symmetric::CryptographicPermutation;
 
 use crate::sub_builder::SubAirBuilder;
@@ -102,10 +103,10 @@ impl<
     // and replace them with permutation operations in trace generation and table.
     pub fn generate_trace_rows<P: CryptographicPermutation<[F; WIDTH]>>(
         &self,
-        sponge_ops: Poseidon2CircuitTrace<F, WIDTH_EXT, RATE_EXT, DIGEST_EXT>,
+        sponge_ops: &Poseidon2CircuitTrace<F, WIDTH_EXT, RATE_EXT, DIGEST_EXT>,
         constants: &RoundConstants<F, WIDTH, HALF_FULL_ROUNDS, PARTIAL_ROUNDS>,
         extra_capacity_bits: usize,
-        perm: P,
+        perm: &P,
     ) -> RowMajorMatrix<F> {
         let n = sponge_ops.len();
         assert!(
@@ -121,16 +122,26 @@ impl<
             PARTIAL_ROUNDS,
         >();
         let ncols = self.width();
-        let num_circuit_cols = ncols - p2_ncols;
+        let circuit_ncols = ncols - p2_ncols;
 
-        let mut circuit_trace = vec![F::ZERO; n * num_circuit_cols];
-        let mut circuit_trace = RowMajorMatrixViewMut::new(&mut circuit_trace, num_circuit_cols);
+        // We allocate the final vector immediately with uninitialized memory.
+        //
+        // The extra capacity bits only enlarges the Poseidon2 columns, not the circuit columns.
+        let mut trace_vec: Vec<F> =
+            Vec::with_capacity(n * ((p2_ncols << extra_capacity_bits) + circuit_ncols));
+        let trace_slice = trace_vec.spare_capacity_mut();
 
+        // We need a lightweight vector to store the state inputs for the parallel pass.
+        //
+        // This is much smaller than the full trace (WIDTH vs NUM_COLS).
         let mut inputs = Vec::with_capacity(n);
         let mut prev_output: Option<[F; WIDTH]> = None;
         let mut prev_mmcs_index_sum = F::ZERO;
 
-        for (i, op) in sponge_ops.iter().enumerate() {
+        // Split slice into rows
+        let rows = trace_slice[..n * ncols].chunks_exact_mut(ncols);
+
+        for (op, row) in sponge_ops.iter().zip(rows) {
             let Poseidon2CircuitRow {
                 new_start,
                 merkle_path,
@@ -167,6 +178,7 @@ impl<
             // - If in_ctl[i] = 1, that limb is NOT chained and comes from CTL/witness instead.
             //   The AIR constraints will enforce this (chaining is gated by 1 - in_ctl[i]).
             let mut state = padded_inputs;
+            let i = inputs.len();
             if i > 0 && !*new_start {
                 if *merkle_path {
                     // Merkle-path mode: chain based on previous row's mmcs_bit
@@ -229,75 +241,94 @@ impl<
                 core::array::from_fn(|j| (!*new_start) && *merkle_path && (!in_ctl[j]));
             let mmcs_update_sel = (!*new_start) && *merkle_path;
 
-            let row = circuit_trace.row_mut(i);
+            let (_p2_part, circuit_part) = row.split_at_mut(p2_ncols);
 
-            row[0] = F::from_bool(*new_start);
-            row[1] = F::from_bool(*merkle_path);
-            row[2] = F::from_bool(*mmcs_bit);
-            row[3] = acc;
+            circuit_part[0].write(F::from_bool(*new_start));
+            circuit_part[1].write(F::from_bool(*merkle_path));
+            circuit_part[2].write(F::from_bool(*mmcs_bit));
+            circuit_part[3].write(acc);
 
             let mut offset = 4;
             for j in 0..WIDTH_EXT {
-                row[offset + j] = F::from_bool(normal_chain_sel[j]);
+                circuit_part[offset + j].write(F::from_bool(normal_chain_sel[j]));
             }
             offset += WIDTH_EXT;
             for j in 0..RATE_EXT {
-                row[offset + j] = F::from_bool(merkle_chain_sel[j]);
+                circuit_part[offset + j].write(F::from_bool(merkle_chain_sel[j]));
             }
             offset += RATE_EXT;
-            row[offset] = F::from_bool(mmcs_update_sel);
+            circuit_part[offset].write(F::from_bool(mmcs_update_sel));
             offset += 1;
             for j in 0..WIDTH_EXT {
-                row[offset + j] = F::from_bool(in_ctl[j]);
+                circuit_part[offset + j].write(F::from_bool(in_ctl[j]));
             }
             offset += WIDTH_EXT;
             for j in 0..WIDTH_EXT {
-                row[offset + j] = F::from_u32(input_indices[j]);
+                circuit_part[offset + j].write(F::from_u32(input_indices[j]));
             }
             offset += WIDTH_EXT;
             for j in 0..DIGEST_EXT {
-                row[offset + j] = F::from_bool(out_ctl[j]);
+                circuit_part[offset + j].write(F::from_bool(out_ctl[j]));
             }
             offset += DIGEST_EXT;
             for j in 0..DIGEST_EXT {
-                row[offset + j] = F::from_u32(output_indices[j]);
+                circuit_part[offset + j].write(F::from_u32(output_indices[j]));
             }
             offset += DIGEST_EXT;
-            row[offset] = F::from_u32(*mmcs_index_sum_idx);
+            circuit_part[offset].write(F::from_u32(*mmcs_index_sum_idx));
 
+            // Save the state to be used as input for the heavy Poseidon trace generation
             inputs.push(state);
             prev_output = Some(perm.permute(state));
         }
 
-        let p2_trace = generate_trace_rows::<
-            F,
-            LinearLayers,
-            WIDTH,
-            SBOX_DEGREE,
-            SBOX_REGISTERS,
-            HALF_FULL_ROUNDS,
-            PARTIAL_ROUNDS,
-        >(inputs, constants, extra_capacity_bits);
+        // Poseidon trace generation
+        //
+        // Now that we have the inputs, we can generate the expensive Poseidon columns in parallel.
 
-        let ncols = self.width();
+        trace_slice[..n * ncols]
+            .par_chunks_exact_mut(ncols)
+            .zip(inputs.into_par_iter())
+            .for_each(|(row, input)| {
+                let (p2_part, _circuit_part) = row.split_at_mut(p2_ncols);
 
-        debug_assert_eq!(ncols, num_circuit_cols + p2_ncols);
+                // Align the raw field elements to the Poseidon2Cols struct
+                let (prefix, p2_cols, suffix) = unsafe {
+                    p2_part.align_to_mut::<Poseidon2Cols<
+                        MaybeUninit<F>,
+                        WIDTH,
+                        SBOX_DEGREE,
+                        SBOX_REGISTERS,
+                        HALF_FULL_ROUNDS,
+                        PARTIAL_ROUNDS,
+                    >>()
+                };
 
-        let mut vec = vec![F::ZERO; n * ncols];
+                // Sanity checks to ensure memory layout is what we expect
+                debug_assert!(prefix.is_empty(), "Alignment mismatch");
+                debug_assert!(suffix.is_empty(), "Alignment mismatch");
+                debug_assert_eq!(p2_cols.len(), 1);
 
-        let circuit_trace_view = circuit_trace.as_view();
+                // Generate the heavy trace
+                generate_trace_rows_for_perm::<
+                    F,
+                    LinearLayers,
+                    WIDTH,
+                    SBOX_DEGREE,
+                    SBOX_REGISTERS,
+                    HALF_FULL_ROUNDS,
+                    PARTIAL_ROUNDS,
+                >(&mut p2_cols[0], input, constants);
+            });
 
-        // TODO: Remove Poseidon2 air copy, possibly by making `generate_trace_rows_for_perm` public on P3 side
-        for ((row, left_part), right_part) in vec
-            .chunks_exact_mut(ncols)
-            .zip(p2_trace.row_slices())
-            .zip(circuit_trace_view.row_slices())
-        {
-            row[..p2_ncols].copy_from_slice(left_part);
-            row[p2_ncols..].copy_from_slice(right_part);
+        // SAFETY: We have written to all columns in the slice [0..n*ncols].
+        // 1. Circuit columns were written in the sequential loop.
+        // 2. Poseidon columns were written in the parallel loop.
+        unsafe {
+            trace_vec.set_len(n * ncols);
         }
 
-        RowMajorMatrix::new(vec, ncols)
+        RowMajorMatrix::new(trace_vec, ncols)
     }
 }
 
@@ -556,6 +587,8 @@ impl<
 
 #[cfg(test)]
 mod test {
+    use alloc::vec;
+
     use p3_baby_bear::{BabyBear, Poseidon2BabyBear};
     use p3_challenger::{HashChallenger, SerializingChallenger32};
     use p3_circuit::tables::Poseidon2Params;
@@ -727,7 +760,7 @@ mod test {
             rows.resize(target_rows, filler);
         }
 
-        let trace = air.generate_trace_rows(rows, &constants, fri_params.log_blowup, perm);
+        let trace = air.generate_trace_rows(&rows, &constants, fri_params.log_blowup, &perm);
 
         type Dft = p3_dft::Radix2Bowers;
         let dft = Dft::default();

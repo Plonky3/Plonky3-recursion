@@ -218,7 +218,7 @@ impl<F: CircuitField> CircuitRunner<F> {
                             got: outputs_val.len(),
                         },
                     )? {
-                        self.set_witness(output, output_val)?
+                        self.set_witness(output, output_val)?;
                     }
                 }
                 Op::NonPrimitiveOpWithExecutor { .. } => {

@@ -9,7 +9,7 @@ use core::mem::transmute;
 
 use p3_air::{Air, AirBuilder, BaseAir};
 use p3_baby_bear::{BabyBear, default_babybear_poseidon2_16, default_babybear_poseidon2_24};
-use p3_batch_stark::{BatchProof, StarkGenericConfig, StarkInstance, Val};
+use p3_batch_stark::{BatchProof, CommonData, StarkGenericConfig, StarkInstance, Val};
 use p3_circuit::op::PrimitiveOpType;
 use p3_circuit::ops::MmcsVerifyConfig;
 use p3_circuit::tables::{
@@ -489,7 +489,7 @@ unsafe impl Sync for Poseidon2Prover {}
 
 impl Poseidon2Prover {
     /// Create a new Poseidon2Prover with the given configuration
-    pub fn new(config: Poseidon2Config) -> Self {
+    pub const fn new(config: Poseidon2Config) -> Self {
         Self { config }
     }
 
@@ -613,14 +613,13 @@ impl Poseidon2Prover {
                 constants,
             } => {
                 let air = Poseidon2CircuitAirBabyBearD4Width16::new(constants.clone());
-                let perm_clone = permutation.clone();
                 let ops_babybear: Poseidon2CircuitTrace<
                     BabyBear,
                     { BabyBearD4Width16::WIDTH_EXT },
                     { BabyBearD4Width16::RATE_EXT },
                     { BabyBearD4Width16::DIGEST_EXT },
                 > = unsafe { transmute(ops_converted) };
-                let matrix_f = air.generate_trace_rows(ops_babybear, constants, 0, perm_clone);
+                let matrix_f = air.generate_trace_rows(&ops_babybear, constants, 0, permutation);
                 let matrix: RowMajorMatrix<Val<SC>> = unsafe { transmute(matrix_f) };
                 (
                     Poseidon2AirWrapper {
@@ -635,14 +634,13 @@ impl Poseidon2Prover {
                 constants,
             } => {
                 let air = Poseidon2CircuitAirBabyBearD4Width24::new(constants.clone());
-                let perm_clone = permutation.clone();
                 let ops_babybear: Poseidon2CircuitTrace<
                     BabyBear,
                     { BabyBearD4Width24::WIDTH_EXT },
                     { BabyBearD4Width24::RATE_EXT },
                     { BabyBearD4Width24::DIGEST_EXT },
                 > = unsafe { transmute(ops_converted) };
-                let matrix_f = air.generate_trace_rows(ops_babybear, constants, 0, perm_clone);
+                let matrix_f = air.generate_trace_rows(&ops_babybear, constants, 0, permutation);
                 let matrix: RowMajorMatrix<Val<SC>> = unsafe { transmute(matrix_f) };
                 (
                     Poseidon2AirWrapper {
@@ -657,14 +655,13 @@ impl Poseidon2Prover {
                 constants,
             } => {
                 let air = Poseidon2CircuitAirKoalaBearD4Width16::new(constants.clone());
-                let perm_clone = permutation.clone();
                 let ops_koalabear: Poseidon2CircuitTrace<
                     KoalaBear,
                     { KoalaBearD4Width16::WIDTH_EXT },
                     { KoalaBearD4Width16::RATE_EXT },
                     { KoalaBearD4Width16::DIGEST_EXT },
                 > = unsafe { transmute(ops_converted) };
-                let matrix_f = air.generate_trace_rows(ops_koalabear, constants, 0, perm_clone);
+                let matrix_f = air.generate_trace_rows(&ops_koalabear, constants, 0, permutation);
                 let matrix: RowMajorMatrix<Val<SC>> = unsafe { transmute(matrix_f) };
                 (
                     Poseidon2AirWrapper {
@@ -679,14 +676,13 @@ impl Poseidon2Prover {
                 constants,
             } => {
                 let air = Poseidon2CircuitAirKoalaBearD4Width24::new(constants.clone());
-                let perm_clone = permutation.clone();
                 let ops_koalabear: Poseidon2CircuitTrace<
                     KoalaBear,
                     { KoalaBearD4Width24::WIDTH_EXT },
                     { KoalaBearD4Width24::RATE_EXT },
                     { KoalaBearD4Width24::DIGEST_EXT },
                 > = unsafe { core::mem::transmute(ops_converted) };
-                let matrix_f = air.generate_trace_rows(ops_koalabear, constants, 0, perm_clone);
+                let matrix_f = air.generate_trace_rows(&ops_koalabear, constants, 0, permutation);
                 let matrix: RowMajorMatrix<Val<SC>> = unsafe { core::mem::transmute(matrix_f) };
                 (
                     Poseidon2AirWrapper {
@@ -983,7 +979,7 @@ where
             Self::Add(a) => a.eval(builder),
             Self::Mul(a) => a.eval(builder),
             Self::Dynamic(a) => {
-                <dyn BatchAir<SC> as Air<SymbolicAirBuilder<Val<SC>>>>::eval(a.air(), builder)
+                <dyn BatchAir<SC> as Air<SymbolicAirBuilder<Val<SC>>>>::eval(a.air(), builder);
             }
         }
     }
@@ -1002,7 +998,7 @@ where
             Self::Add(a) => a.eval(builder),
             Self::Mul(a) => a.eval(builder),
             Self::Dynamic(a) => {
-                <dyn BatchAir<SC> as Air<ProverConstraintFolder<'a, SC>>>::eval(a.air(), builder)
+                <dyn BatchAir<SC> as Air<ProverConstraintFolder<'a, SC>>>::eval(a.air(), builder);
             }
         }
     }
@@ -1021,7 +1017,7 @@ where
             Self::Add(a) => a.eval(builder),
             Self::Mul(a) => a.eval(builder),
             Self::Dynamic(a) => {
-                <dyn BatchAir<SC> as Air<VerifierConstraintFolder<'a, SC>>>::eval(a.air(), builder)
+                <dyn BatchAir<SC> as Air<VerifierConstraintFolder<'a, SC>>>::eval(a.air(), builder);
             }
         }
     }
@@ -1041,7 +1037,7 @@ where
     }
 
     #[must_use]
-    pub fn with_table_packing(mut self, table_packing: TablePacking) -> Self {
+    pub const fn with_table_packing(mut self, table_packing: TablePacking) -> Self {
         self.table_packing = table_packing;
         self
     }
@@ -1281,7 +1277,10 @@ where
             })
             .collect();
 
-        let proof = p3_batch_stark::prove_batch(&self.config, instances);
+        let num_instances = instances.len();
+        // TODO: Retrieve common data.
+        let proof =
+            p3_batch_stark::prove_batch(&self.config, instances, &CommonData::empty(num_instances));
 
         // Ensure all primitive table row counts are at least 1
         // RowCounts::new requires non-zero counts, so pad zeros to 1
@@ -1375,8 +1374,16 @@ where
             pvs.push(entry.public_values.clone());
         }
 
-        p3_batch_stark::verify_batch(&self.config, &airs, &proof.proof, &pvs)
-            .map_err(|e| BatchStarkProverError::Verify(format!("{e:?}")))
+        let num_instances = airs.len();
+        // TODO: Take common data as input.
+        p3_batch_stark::verify_batch(
+            &self.config,
+            &airs,
+            &proof.proof,
+            &pvs,
+            &CommonData::empty(num_instances),
+        )
+        .map_err(|e| BatchStarkProverError::Verify(format!("{e:?}")))
     }
 }
 
@@ -1723,7 +1730,7 @@ mod tests {
         runner
             .set_non_primitive_op_private_data(
                 mmcs_op_id,
-                NonPrimitiveOpPrivateData::MmcsVerify(private_data.clone()),
+                NonPrimitiveOpPrivateData::MmcsVerify(private_data),
             )
             .unwrap();
 
