@@ -158,10 +158,10 @@ impl<
 
             // Apply chaining rules.
             // NOTE: For rows with new_start = false:
-            // - In sponge mode (merkle_path = 0), the Poseidon input state is *entirely*
-            //   taken from the previous row's output; `input_values` are unused for chained limbs.
-            // - In Merkle mode (merkle_path = 1), only limbs 0-1 are chained; limbs 2-3
-            //   come from `input_values`. This matches the Poseidon Perm Table spec.
+            // - Sponge mode (merkle_path = 0): all limbs come from the previous output unless
+            //   a limb is exposed via in_ctl, in which case the provided input overrides it.
+            // - Merkle mode (merkle_path = 1): limbs 0-1 are chained from the previous output
+            //   (left/right selected by mmcs_bit); limbs 2-3 come from the provided inputs.
             // - If in_ctl[i] = 1, that limb is NOT chained and comes from CTL/witness instead.
             //   The AIR constraints will enforce this (chaining is gated by 1 - in_ctl[i]).
             let mut state = padded_inputs;

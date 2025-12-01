@@ -40,12 +40,12 @@ pub struct Poseidon2CircuitCols<T, P: PermutationColumns<T>> {
     pub mmcs_index_sum: T,
 
     /// Selector: enables normal chaining for a limb when the previous row's output should fill it.
-    /// Computed as (1 - new_start) * (1 - merkle_path) * (1 - in_ctl[i]).
+    /// Computed as (1 - new_start) * (1 - merkle_path) * (1 - in_ctl[i]) for i in {0,..., POSEIDON_LIMBS - 1}.
     /// NOTE: This column is not in the spec but is added to reduce constraint degree to 3.
     pub normal_chain_sel: [T; POSEIDON_LIMBS],
 
     /// Selector: enables Merkle chaining for limbs 0-1 when the previous row's output should fill them.
-    /// Computed as (1 - new_start) * merkle_path * (1 - in_ctl[i]) for i in {0,1}.
+    /// Computed as (1 - new_start) * merkle_path * (1 - in_ctl[i]) for i in {0, ..., POSEIDON_PUBLIC_OUTPUT_LIMBS - 1}.
     /// NOTE: This column is not in the spec but is added to reduce constraint degree to 3.
     pub merkle_chain_sel: [T; POSEIDON_PUBLIC_OUTPUT_LIMBS],
 
