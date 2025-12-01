@@ -49,7 +49,7 @@ impl From<MmcsVerifyConfig> for MmcsTableConfig {
 }
 
 impl MmcsTableConfig {
-    pub fn width(&self) -> usize {
+    pub const fn width(&self) -> usize {
         self.max_tree_height // index_bits
         + 1 // length
         + self.max_tree_height // height_encoding
@@ -81,10 +81,9 @@ where
     _phantom: PhantomData<F>,
 }
 
-impl<F: Field> BaseAir<F> for MmcsVerifyAir<F>
+impl<F> BaseAir<F> for MmcsVerifyAir<F>
 where
-    F: Field,
-    F: Eq,
+    F: Field + Eq,
 {
     fn width(&self) -> usize {
         self.config.width()
@@ -93,8 +92,7 @@ where
 
 impl<AB: AirBuilder> Air<AB> for MmcsVerifyAir<AB::F>
 where
-    AB::F: PrimeField,
-    AB::F: Eq,
+    AB::F: PrimeField + Eq,
 {
     #[inline]
     fn eval(&self, builder: &mut AB) {
@@ -255,7 +253,7 @@ where
 
 impl<F: Field> MmcsVerifyAir<F> {
     pub const fn new(config: MmcsTableConfig) -> Self {
-        MmcsVerifyAir {
+        Self {
             config,
             _phantom: PhantomData,
         }

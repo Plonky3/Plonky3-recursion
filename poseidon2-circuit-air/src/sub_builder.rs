@@ -68,7 +68,7 @@ pub struct SubAirBuilder<'a, AB: AirBuilder, SubAir: BaseAir<AB::F>, T> {
 impl<'a, AB: AirBuilder, SubAir: BaseAir<AB::F>, T> SubAirBuilder<'a, AB, SubAir, T> {
     /// Creates a new [`SubAirBuilder`].
     #[must_use]
-    pub fn new(inner: &'a mut AB, column_range: Range<usize>) -> Self {
+    pub const fn new(inner: &'a mut AB, column_range: Range<usize>) -> Self {
         Self {
             inner,
             column_range,

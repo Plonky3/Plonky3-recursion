@@ -94,7 +94,7 @@ unsafe impl<F: Send + Sync> Send for Poseidon2Trace<F> {}
 unsafe impl<F: Send + Sync> Sync for Poseidon2Trace<F> {}
 
 impl<F> Poseidon2Trace<F> {
-    pub fn total_rows(&self) -> usize {
+    pub const fn total_rows(&self) -> usize {
         self.operations.len()
     }
 }
@@ -113,8 +113,7 @@ impl<F: Clone + Send + Sync + 'static> NonPrimitiveTrace<F> for Poseidon2Trace<F
     }
 
     fn boxed_clone(&self) -> Box<dyn NonPrimitiveTrace<F>> {
-        let cloned: Poseidon2Trace<F> = self.clone();
-        Box::new(cloned) as Box<dyn NonPrimitiveTrace<F>>
+        Box::new(self.clone())
     }
 }
 
@@ -130,7 +129,7 @@ pub struct Poseidon2TraceBuilder<'a, F, Config: Poseidon2Params> {
 
 impl<'a, F: CircuitField, Config: Poseidon2Params> Poseidon2TraceBuilder<'a, F, Config> {
     /// Creates a new Poseidon2 trace builder.
-    pub fn new(
+    pub const fn new(
         circuit: &'a Circuit<F>,
         witness: &'a [Option<F>],
         non_primitive_op_private_data: &'a [Option<NonPrimitiveOpPrivateData<F>>],
@@ -174,13 +173,15 @@ impl<'a, F: CircuitField, Config: Poseidon2Params> Poseidon2TraceBuilder<'a, F, 
 
             match executor.op_type() {
                 NonPrimitiveOpType::HashAbsorb { reset } => {
-                    let input_wids = inputs.first().ok_or(
+                    // For HashAbsorb, inputs[0] contains the input values
+                    // inputs[1] may contain previous state capacity (if reset=false)
+                    let input_wids = inputs.first().ok_or_else(|| {
                         CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
                             op: executor.op_type().clone(),
                             expected: "at least 1 input vector".to_string(),
                             got: inputs.len(),
-                        },
-                    )?;
+                        }
+                    })?;
 
                     let input_values: Vec<F> = input_wids
                         .iter()
@@ -214,13 +215,13 @@ impl<'a, F: CircuitField, Config: Poseidon2Params> Poseidon2TraceBuilder<'a, F, 
                 }
                 NonPrimitiveOpType::HashSqueeze => {
                     // For HashSqueeze, outputs[0] contains squeezed values + new state capacity
-                    let output_wids = outputs.first().ok_or(
+                    let output_wids = outputs.first().ok_or_else(|| {
                         CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
                             op: executor.op_type().clone(),
                             expected: "at least 1 output vector".to_string(),
                             got: outputs.len(),
-                        },
-                    )?;
+                        }
+                    })?;
 
                     // Validate outputs are set (values will be verified by AIR constraints)
                     let _output_values: Vec<F> = output_wids

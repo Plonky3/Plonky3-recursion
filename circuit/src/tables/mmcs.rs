@@ -103,7 +103,7 @@ pub struct MmcsPathTrace<F> {
 /// Prover's private information demonstrating a valid leaf-to-root path.
 /// - It includes all intermediate hash states and sibling hashes.
 /// - Some layers have extra siblings for variable-sized trees.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MmcsPrivateData<F> {
     /// Hash states along the path: [leaf, state1, state2, ..., root].
     ///
@@ -232,7 +232,7 @@ impl<F: Field + Clone + Default> MmcsPrivateData<F> {
             ));
         }
         // Finally, push the root
-        path_states.push((state.clone(), None));
+        path_states.push((state, None));
 
         Ok(private_data)
     }
@@ -260,18 +260,16 @@ impl<F: Field + Clone + Default> MmcsPrivateData<F> {
         let root_indices: Vec<u32> = root_wids.iter().map(|wid| wid.0).collect();
 
         debug_assert!(self.path_siblings.len() <= mmcs_config.max_tree_height);
-        debug_assert!(if let Ok(leaf) =
+        debug_assert!(
             leaves
                 .last()
-                .ok_or(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
+                .ok_or_else(|| CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
                     op: NonPrimitiveOpType::MmcsVerify,
                     expected: "Non empty".to_string(),
                     got: leaves.len()
-                }) {
-            leaf.is_empty()
-        } else {
-            false
-        });
+                })
+                .is_ok_and(|leaf| leaf.is_empty())
+        );
 
         // Pad directions in case they start with 0s.
         let path_directions =
@@ -361,7 +359,7 @@ pub struct MmcsTraceBuilder<'a, F> {
 
 impl<'a, F: CircuitField> MmcsTraceBuilder<'a, F> {
     /// Creates a new MMCS trace builder.
-    pub fn new(
+    pub const fn new(
         circuit: &'a Circuit<F>,
         witness: &'a [Option<F>],
         non_primitive_op_private_data: &'a [Option<NonPrimitiveOpPrivateData<F>>],
@@ -820,7 +818,7 @@ mod tests {
                 assert!(!leaf.is_empty()); // Ensure that there was a leaf for producing the extra state
                 expected_left_values.push(extra_state.clone());
             } else {
-                assert!(leaf.is_empty()); // No extra state means there was no leaf at this level. 
+                assert!(leaf.is_empty()); // No extra state means there was no leaf at this level.
             }
         }
         assert_eq!(path.left_values, expected_left_values);

@@ -163,7 +163,7 @@ pub struct HashAbsorbExecutor {
 
 impl HashAbsorbExecutor {
     /// Create a new hash absorb executor
-    pub fn new(reset: bool) -> Self {
+    pub const fn new(reset: bool) -> Self {
         Self {
             op_type: NonPrimitiveOpType::HashAbsorb { reset },
         }
@@ -175,7 +175,7 @@ impl<F: Field> NonPrimitiveExecutor<F> for HashAbsorbExecutor {
         &self,
         _inputs: &[Vec<WitnessId>],
         _outputs: &[Vec<WitnessId>],
-        _ctx: &mut ExecutionContext<F>,
+        _ctx: &mut ExecutionContext<'_, F>,
     ) -> Result<(), CircuitError> {
         Ok(())
     }
@@ -200,7 +200,7 @@ pub struct HashSqueezeExecutor {
 
 impl HashSqueezeExecutor {
     /// Create a new hash squeeze executor
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             op_type: NonPrimitiveOpType::HashSqueeze,
         }
@@ -218,7 +218,7 @@ impl<F: Field> NonPrimitiveExecutor<F> for HashSqueezeExecutor {
         &self,
         _inputs: &[Vec<WitnessId>],
         _outputs: &[Vec<WitnessId>],
-        _ctx: &mut ExecutionContext<F>,
+        _ctx: &mut ExecutionContext<'_, F>,
     ) -> Result<(), CircuitError> {
         Ok(())
     }

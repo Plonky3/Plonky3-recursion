@@ -138,7 +138,7 @@ impl MmcsVerifyConfig {
         }
     }
 
-    pub fn mock_config() -> Self {
+    pub const fn mock_config() -> Self {
         Self {
             base_field_digest_elems: 1,
             ext_field_digest_elems: 1,
@@ -146,7 +146,7 @@ impl MmcsVerifyConfig {
         }
     }
 
-    pub fn babybear_default() -> Self {
+    pub const fn babybear_default() -> Self {
         Self {
             base_field_digest_elems: 8,
             ext_field_digest_elems: 8,
@@ -155,7 +155,7 @@ impl MmcsVerifyConfig {
     }
 
     // TODO: For now we are not considering packed inputs for BabyBear.
-    pub fn babybear_quartic_extension_default() -> Self {
+    pub const fn babybear_quartic_extension_default() -> Self {
         let packing = false;
         Self {
             base_field_digest_elems: 8,
@@ -164,7 +164,7 @@ impl MmcsVerifyConfig {
         }
     }
 
-    pub fn koalabear_default() -> Self {
+    pub const fn koalabear_default() -> Self {
         Self {
             base_field_digest_elems: 8,
             ext_field_digest_elems: 8,
@@ -173,7 +173,7 @@ impl MmcsVerifyConfig {
     }
 
     // TODO: For now we are not considering packed inputs for KoalaBear.
-    pub fn koalabear_quartic_extension_default() -> Self {
+    pub const fn koalabear_quartic_extension_default() -> Self {
         let packing = false;
         Self {
             base_field_digest_elems: 8,
@@ -182,7 +182,7 @@ impl MmcsVerifyConfig {
         }
     }
 
-    pub fn goldilocks_default() -> Self {
+    pub const fn goldilocks_default() -> Self {
         Self {
             base_field_digest_elems: 4,
             ext_field_digest_elems: 4,
@@ -191,7 +191,7 @@ impl MmcsVerifyConfig {
     }
 
     // TODO: For now we are not considering packed inputs for Goldilocks.
-    pub fn goldilocks_quadratic_extension_default() -> Self {
+    pub const fn goldilocks_quadratic_extension_default() -> Self {
         let packing = false;
         Self {
             base_field_digest_elems: 4,
@@ -262,7 +262,7 @@ pub struct MmcsVerifyExecutor {
 
 impl MmcsVerifyExecutor {
     /// Create a new MMCS verify executor
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             op_type: NonPrimitiveOpType::MmcsVerify,
         }
@@ -280,7 +280,7 @@ impl<F: Field> NonPrimitiveExecutor<F> for MmcsVerifyExecutor {
         &self,
         inputs: &[Vec<WitnessId>],
         _outputs: &[Vec<WitnessId>],
-        ctx: &mut ExecutionContext<F>,
+        ctx: &mut ExecutionContext<'_, F>,
     ) -> Result<(), CircuitError> {
         // Get the configuration
         let config = match ctx.get_config(&self.op_type)? {
@@ -341,7 +341,7 @@ impl<F: Field> NonPrimitiveExecutor<F> for MmcsVerifyExecutor {
         let computed_root = &private_data
             .path_states
             .last()
-            .ok_or(CircuitError::NonPrimitiveOpMissingPrivateData {
+            .ok_or_else(|| CircuitError::NonPrimitiveOpMissingPrivateData {
                 operation_index: ctx.operation_id(),
             })?
             .0;

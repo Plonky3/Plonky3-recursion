@@ -380,7 +380,7 @@ impl<F: Field, EF: ExtensionField<F>, Inner: RecursiveMmcs<F, EF>> Recursive<EF>
 
     fn new(circuit: &mut CircuitBuilder<EF>, input: &Self::Input) -> Self {
         let num_batch_openings = input.len();
-        let mut batch_openings = Vec::with_capacity(num_batch_openings);
+        let mut batch_openings = Self::with_capacity(num_batch_openings);
         for batch_opening in input.iter() {
             batch_openings.push(BatchOpeningTargets::new(circuit, batch_opening));
         }
@@ -422,16 +422,14 @@ impl<SC, Dft, Comm, InputMmcs, RecursiveInputMmcs, RecursiveFriMmcs, FriMmcs>
     > for TwoAdicFriPcs<Val<SC>, Dft, InputMmcs, FriMmcs>
 where
     SC: StarkGenericConfig,
-    Val<SC>: TwoAdicField,
+    Val<SC>: TwoAdicField + PrimeField64,
     InputMmcs: Mmcs<Val<SC>>,
     FriMmcs: Mmcs<SC::Challenge>,
     Comm: Recursive<SC::Challenge>,
     RecursiveInputMmcs: RecursiveMmcs<Val<SC>, SC::Challenge, Input = InputMmcs>,
     RecursiveFriMmcs: RecursiveExtensionMmcs<Val<SC>, SC::Challenge, Input = FriMmcs>,
     RecursiveFriMmcs::Commitment: ObservableCommitment,
-    SC::Challenger: GrindingChallenger,
-    SC::Challenger: CanObserve<FriMmcs::Commitment>,
-    Val<SC>: PrimeField64,
+    SC::Challenger: GrindingChallenger + CanObserve<FriMmcs::Commitment>,
 {
     type VerifierParams = FriVerifierParams;
     type RecursiveProof = RecursiveFriProof<

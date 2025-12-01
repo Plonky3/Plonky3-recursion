@@ -13,7 +13,7 @@ pub enum Expr<F> {
     /// non-deterministic hint. The boolean flag indicates whether
     /// this is the last witness in a sequence of related hints,
     /// where each sequence is produced through a shared generation process.
-    Witness { is_last_hint: bool },
+    Hint { is_last_hint: bool },
     /// Addition of two expressions
     Add { lhs: ExprId, rhs: ExprId },
     /// Subtraction of two expressions
@@ -114,8 +114,8 @@ mod tests {
             fn expr_primitive_ops(val1 in any::<u64>().prop_map(MockExtField), val2 in any::<u64>().prop_map(MockExtField)) {
                 let mut graph = ExpressionGraph::<MockExtField>::new();
 
-                let id1 = graph.add_expr(Expr::Const(val1.clone()));
-                let id2 = graph.add_expr(Expr::Const(val2.clone()));
+                let id1 = graph.add_expr(Expr::Const(val1));
+                let id2 = graph.add_expr(Expr::Const(val2));
 
                 let add_id = graph.add_expr(Expr::Add { lhs: id1, rhs: id2 });
                 match graph.get_expr(add_id) {
