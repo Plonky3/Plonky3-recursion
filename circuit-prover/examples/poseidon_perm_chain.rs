@@ -1,7 +1,7 @@
 use std::env;
 use std::error::Error;
 
-/// Poseidon permutation chain example using the new PoseidonPerm op.
+/// Poseidon permutation chain example using the PoseidonPerm op.
 ///
 /// Builds a chain of Poseidon permutations, exposes the initial inputs and the
 /// final output limbs via CTL, and proves the trace.

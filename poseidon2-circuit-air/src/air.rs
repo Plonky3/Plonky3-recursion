@@ -97,8 +97,6 @@ impl<
         }
     }
 
-    // TODO: Replace sponge_ops with perm_ops - remove HashAbsorb/HashSqueeze operations
-    // and replace them with permutation operations in trace generation and table.
     pub fn generate_trace_rows<P: CryptographicPermutation<[F; WIDTH]>>(
         &self,
         sponge_ops: &Poseidon2CircuitTrace<F>,
