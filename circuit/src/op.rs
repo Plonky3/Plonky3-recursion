@@ -253,8 +253,7 @@ pub enum NonPrimitiveOpConfig {
 /// 2. Allow specialized constraint systems for each operation type
 /// 3. Enable parallel development of different cryptographic primitives
 /// 4. Avoid optimization passes breaking complex constraint relationships
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum NonPrimitiveOp {}
+
 
 /// Private auxiliary data for non-primitive operations
 ///
