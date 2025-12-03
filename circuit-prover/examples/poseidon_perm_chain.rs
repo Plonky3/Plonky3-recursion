@@ -48,10 +48,10 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Build an initial state of 4 extension limbs with distinct coefficients.
     let mut ext_limbs = [Ext4::ZERO; 4];
-    for limb in 0..4 {
+    for (limb, ext_limb) in ext_limbs.iter_mut().enumerate() {
         let coeffs: [Base; LIMB_SIZE] =
             core::array::from_fn(|j| Base::from_u64((limb * LIMB_SIZE + j + 1) as u64));
-        ext_limbs[limb] = Ext4::from_basis_coefficients_slice(&coeffs).unwrap();
+        *ext_limb = Ext4::from_basis_coefficients_slice(&coeffs).unwrap();
     }
 
     // Compute native permutation chain over the base field (flattened coefficients).
@@ -170,10 +170,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let proof = prover.prove_all_tables(&traces, &common)?;
     prover.verify_all_tables(&proof, &common)?;
 
-    println!(
-        "Successfully proved and verified Poseidon perm chain of length {}!",
-        chain_length
-    );
+    println!("Successfully proved and verified Poseidon perm chain of length {chain_length}!");
 
     Ok(())
 }
