@@ -62,6 +62,7 @@ jobs:
           cargo run --package p3-circuit-prover --example fibonacci
           cargo run --package p3-circuit-prover --example mmcs_verify
           cargo run --package p3-circuit-prover --example poseidon_perm_chain
+          cargo run --package p3-circuit-prover --example poseidon_perm_merkle
           
       - name: Run allocation_log example with debug logging
         env:

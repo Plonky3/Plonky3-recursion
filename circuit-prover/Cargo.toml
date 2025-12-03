@@ -65,3 +65,7 @@ path = "examples/mmcs_verify.rs"
 [[example]]
 name = "poseidon_perm_chain"
 path = "examples/poseidon_perm_chain.rs"
+
+[[example]]
+name = "poseidon_perm_merkle"
+path = "examples/poseidon_perm_merkle.rs"
