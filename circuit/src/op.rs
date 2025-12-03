@@ -548,6 +548,8 @@ impl<F: Field> WitnessHintsFiller<F> for HashSqueezeHint<F> {
         }
 
         let output = state[..self.config.rate].to_vec();
+        tracing::debug!("inputs_val = {:?}", inputs_val);
+        tracing::debug!("hash = {:?}", output);
         Ok((output, Some(state)))
     }
 }

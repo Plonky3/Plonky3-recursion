@@ -39,25 +39,29 @@ where
         panic!("Wrong batch size"); // TODO: Add errors
     }
 
-    // Ensure MMCS is enabled and get the configuration if so.
-    let mmcs_config =
-        if let Some(op_config) = circuit.get_op_config(&NonPrimitiveOpType::MmcsVerify) {
-            let mmcs_config = match op_config {
-                p3_circuit::op::NonPrimitiveOpConfig::MmcsVerifyConfig(cfg) => cfg,
-                _ => panic!("Expected MmcsVerifyConfig"), // TODO: Add errors
-            };
+    tracing::debug!("commitment targets = {:?}", commitment);
 
-            // Check that the number of digest limbs matches the configuration.
-            let digest_elems = mmcs_config.ext_field_digest_elems;
-            if commitment.len() != digest_elems {
-                panic!("Incorrect commitment size"); // TODO: Add errors
-            }
-            mmcs_config.clone()
-        } else {
-            return Err(CircuitBuilderError::OpNotAllowed {
-                op: NonPrimitiveOpType::MmcsVerify,
-            });
+    // Ensure MMCS is enabled and get the configuration if so.
+    let mmcs_config = if let Some(op_config) = circuit
+        .config()
+        .get_op_config(&NonPrimitiveOpType::MmcsVerify)
+    {
+        let mmcs_config = match op_config {
+            p3_circuit::op::NonPrimitiveOpConfig::MmcsVerifyConfig(cfg) => cfg,
+            _ => panic!("Expected MmcsVerifyConfig"), // TODO: Add errors
         };
+
+        // Check that the number of digest limbs matches the configuration.
+        let digest_elems = mmcs_config.ext_field_digest_elems;
+        if commitment.len() != digest_elems {
+            panic!("Incorrect commitment size"); // TODO: Add errors
+        }
+        mmcs_config.clone()
+    } else {
+        return Err(CircuitBuilderError::OpNotAllowed {
+            op: NonPrimitiveOpType::MmcsVerify,
+        });
+    };
 
     // TODO: Disabled for now since TwoAdicFriPcs and CirclePcs currently pass 0 for width.
     // for (dims, opened_vals) in zip_eq(dimensions.iter(), opened_values) {
@@ -66,7 +70,10 @@ where
     //     }
     // }
 
-    let leaves = mmcs_config
+    tracing::debug!("opened values addr = {:?}", opened_values);
+    tracing::debug!("dimensions = {:?}", dimensions);
+
+    let formatted_op_vals = mmcs_config
         .format_leaves(opened_values, dimensions, index_bits.len())
         .map_err(
             |_| CircuitBuilderError::InvalidNonPrimitiveOpConfiguration {
@@ -74,27 +81,22 @@ where
                 op: NonPrimitiveOpType::MmcsVerify,
             },
         )?;
-    let leaves = leaves
+    tracing::debug!("formatted_op_vals = {:?}", formatted_op_vals);
+
+    // Hash the opened values keeping the format.
+    let op_vals_digests = formatted_op_vals
         .into_iter()
-        .map(
-            |leaf| // Get the initial height padded to a power of two. As heights_tallest_first is sorted,
-        // the initial height will be the maximum height.
-        // Returns an error if either:
-        //              1. proof.len() != log_max_height
-        //              2. heights_tallest_first is empty.
-        {
-            // TODO: This should be replaced with propoer hashing. In the meantime we pad/truncate
-            // the leaf to the correct size.
-            if leaf.len() > 1 {
+        .map(|leaf| {
+            tracing::debug!("opening (recursive) = {:?}", leaf);
+            if !leaf.is_empty() {
                 circuit.add_hash_squeeze("mmcs_verify", &leaf, true)
             } else {
                 Ok(leaf)
             }
-        },
-        )
+        })
         .collect::<Result<Vec<Vec<Target>>, _>>()?;
 
-    circuit.add_mmcs_verify(&leaves, index_bits, commitment)
+    circuit.add_mmcs_verify(&op_vals_digests, index_bits, commitment)
 }
 
 #[cfg(test)]
@@ -104,8 +106,10 @@ mod test {
     use core::cmp::Reverse;
 
     use itertools::Itertools;
-    use p3_baby_bear::{BabyBear, Poseidon2BabyBear};
-    use p3_circuit::ops::MmcsVerifyConfig;
+    use p3_baby_bear::{BabyBear, Poseidon2BabyBear, default_babybear_poseidon2_16};
+    use p3_circuit::ops::hash::HashConfig;
+    use p3_circuit::ops::{HashOps, MmcsVerifyConfig};
+    use p3_circuit::tables::{Poseidon2Params, generate_poseidon2_trace};
     use p3_circuit::{
         CircuitBuilder, CircuitError, MmcsOps, MmcsPrivateData, NonPrimitiveOpId,
         NonPrimitiveOpType,
@@ -113,13 +117,20 @@ mod test {
     use p3_commit::Mmcs;
     use p3_field::extension::BinomialExtensionField;
     use p3_field::{Field, PrimeCharacteristicRing};
-    use p3_matrix::dense::RowMajorMatrix;
+    use p3_matrix::dense::{DenseMatrix, RowMajorMatrix};
     use p3_matrix::{Dimensions, Matrix};
     use p3_merkle_tree::MerkleTreeMmcs;
     use p3_symmetric::{CryptographicHasher, PaddingFreeSponge, TruncatedPermutation};
     use p3_util::log2_ceil_usize;
     use rand::SeedableRng;
     use rand::rngs::SmallRng;
+    use tracing_forest::ForestLayer;
+    use tracing_forest::util::LevelFilter;
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+    use tracing_subscriber::{EnvFilter, Registry};
+
+    use crate::pcs::verify_batch_circuit;
 
     type F = BabyBear;
     type EF = BinomialExtensionField<F, 4>;
@@ -130,14 +141,26 @@ mod test {
     type MyMmcs =
         MerkleTreeMmcs<<F as Field>::Packing, <F as Field>::Packing, MyHash, MyCompress, 8>;
 
+    struct DummyParams;
+
+    impl Poseidon2Params for DummyParams {
+        const D: usize = 4;
+        const WIDTH: usize = 16;
+        const RATE_EXT: usize = 2;
+        const CAPACITY_EXT: usize = 2;
+        const SBOX_DEGREE: u64 = 7;
+        const SBOX_REGISTERS: usize = 1;
+        const HALF_FULL_ROUNDS: usize = 4;
+        const PARTIAL_ROUNDS: usize = 13;
+    }
+
     fn test_all_openings(mats: Vec<RowMajorMatrix<F>>) {
-        let mut rng = SmallRng::seed_from_u64(1);
-        let perm = Perm::new_from_rng_128(&mut rng);
+        let perm = default_babybear_poseidon2_16();
         let hash = MyHash::new(perm.clone());
         let compress = MyCompress::new(perm);
         let mmcs = MyMmcs::new(hash.clone(), compress.clone());
 
-        let dimensions = mats.iter().map(|mat| mat.dimensions()).collect_vec();
+        let dimensions = mats.iter().map(DenseMatrix::dimensions).collect_vec();
 
         let mut heights_tallest_first = dimensions
             .iter()
@@ -152,37 +175,50 @@ mod test {
         let path_depth = log2_ceil_usize(max_height);
         for index in 0..max_height {
             let mut builder = CircuitBuilder::<EF>::new();
+            let hash_config = HashConfig::babybear_poseidon2_16(8);
             let mmcs_config = MmcsVerifyConfig::babybear_quartic_extension_default();
+            builder.enable_hash_squeeze(&hash_config, generate_poseidon2_trace::<EF, DummyParams>);
             builder.enable_mmcs(&mmcs_config);
 
             let batch_opening = mmcs.open_batch(index, &prover_data);
+
+            tracing::debug!("batch_opening = {:?}", batch_opening.opened_values);
+
             let leaves_hashes = batch_opening
                 .opened_values
                 .iter()
                 .map(|mat_leaves| hash.hash_slice(mat_leaves))
                 .collect_vec();
+            tracing::debug!("leaves_hashes: {:?}", leaves_hashes);
 
             mmcs.verify_batch(&commit, &dimensions, index, (&batch_opening).into())
                 .unwrap();
 
-            let openings = leaves_hashes
+            let openings = batch_opening
+                .opened_values
                 .iter()
-                .map(|mat_hash| {
-                    mat_hash
+                .map(|opening| {
+                    opening
                         .iter()
                         .map(|_| builder.add_public_input())
                         .collect_vec()
                 })
                 .collect_vec();
-            let openings = mmcs_config
-                .format_leaves(&openings, &dimensions, path_depth)
-                .unwrap();
+
             let directions_expr = builder.alloc_public_inputs(path_depth, "directions");
             let root = builder.alloc_public_inputs(mmcs_config.ext_field_digest_elems, "root");
 
-            let mmcs_verify_op = builder
-                .add_mmcs_verify(&openings, &directions_expr, &root)
-                .unwrap();
+            let mmcs_verify_op = verify_batch_circuit::<F, EF>(
+                &mut builder,
+                &root,
+                &dimensions,
+                &directions_expr,
+                &openings,
+            )
+            .unwrap();
+
+            builder.dump_allocation_log();
+
             let circuit = builder.build().unwrap().0;
             let mut runner = circuit.runner();
 
@@ -191,7 +227,12 @@ mod test {
                 .collect_vec();
 
             let mut public_inputs = vec![];
-            public_inputs.extend(leaves_hashes.iter().flat_map(|digest| digest.map(EF::from)));
+            public_inputs.extend(
+                batch_opening
+                    .opened_values
+                    .iter()
+                    .flat_map(|openings| openings.iter().map(|x| EF::from(*x)).collect_vec()),
+            );
             public_inputs.extend(directions.iter());
             public_inputs.extend(commit.into_iter().map(EF::from));
 
@@ -215,12 +256,26 @@ mod test {
 
             // Whe the we run the runner and the MMCS trace is generated, it will be checked that
             // the root computed by the MmcsVerify gate matches that given as input.
-            let _ = runner.run().unwrap();
+            let traces = runner.run().unwrap();
+
+            traces.dump_primitive_traces_log();
         }
+    }
+
+    fn init_logger() {
+        let env_filter = EnvFilter::builder()
+            .with_default_directive(LevelFilter::INFO.into())
+            .from_env_lossy();
+
+        Registry::default()
+            .with(env_filter)
+            .with(ForestLayer::default())
+            .init();
     }
 
     #[test]
     fn commit_single_1x8() {
+        init_logger();
         // v = [0, 1, 2, 3, 4, 5, 6, 7]
         let v = vec![
             F::from_u32(0),

@@ -213,6 +213,27 @@ impl<F: Field + Clone + Default> MmcsPrivateData<F> {
                 got: directions.len(),
             });
         }
+        tracing::debug!(
+            "index = {:?}",
+            directions
+                .iter()
+                .enumerate()
+                .filter_map(|(i, &dir)| if dir { Some(1 << i) } else { None })
+                .sum::<usize>()
+        );
+        tracing::debug!(
+            "other index = {:?}",
+            directions
+                .iter()
+                .rev()
+                .enumerate()
+                .filter_map(|(i, &dir)| if dir { Some(1 << i) } else { None })
+                .sum::<usize>()
+        );
+        tracing::debug!(
+            "bin = {:?}",
+            directions.iter().map(|&b| b as usize).collect::<Vec<_>>()
+        );
         // Enforce configured maximum height to avoid creating unreachable path rows.
         if self.path_siblings.len() > config.max_tree_height {
             return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
@@ -256,6 +277,16 @@ impl<F: Field + Clone + Default> MmcsPrivateData<F> {
             } else {
                 [state.as_slice(), sibling]
             };
+            tracing::debug!("state = {:?}", state);
+            tracing::debug!("sibling = {:?}", sibling);
+            tracing::debug!(
+                "hash true = {:?}",
+                (self.compress)([sibling, state.as_slice()])
+            );
+            tracing::debug!(
+                "hash false = {:?}",
+                (self.compress)([state.as_slice(), sibling])
+            );
             let new_state = (self.compress)(input)?;
 
             path_states.push((
@@ -265,6 +296,7 @@ impl<F: Field + Clone + Default> MmcsPrivateData<F> {
                     state = new_state;
                     None
                 } else {
+                    tracing::debug!("interm. state = {:?}", new_state);
                     state = (self.compress)([&new_state, leaf])?;
                     Some(new_state)
                 },
@@ -317,6 +349,7 @@ impl<F: Field + Clone + Default> MmcsPrivateData<F> {
             (0..mmcs_config.max_tree_height).map(|i| *directions.get(i).unwrap_or(&false));
 
         let all_states = self.compute_all_states(mmcs_config, leaves, directions)?;
+        tracing::debug!("all states = {:?}", all_states);
 
         let computed_root = &all_states
             .last()
@@ -412,7 +445,7 @@ where
 /// Builder for generating MMCS traces.
 pub struct MmcsTraceBuilder<'a, F> {
     circuit: &'a Circuit<F>,
-    witness: &'a [Option<F>],
+    pub witness: &'a [Option<F>],
     non_primitive_op_private_data: &'a [Option<NonPrimitiveOpPrivateData<F>>],
 }
 
@@ -509,6 +542,14 @@ impl<'a, F: CircuitField> MmcsTraceBuilder<'a, F> {
                 .iter()
                 .map(|wid| self.get_witness(wid))
                 .collect::<Result<_, _>>()?;
+
+            tracing::debug!(
+                "witness = {:#?}",
+                self.witness.iter().enumerate().collect::<Vec<_>>()
+            );
+            tracing::debug!("root = {:?}", root);
+            tracing::debug!("witness root = {:?}", witness_root);
+            tracing::debug!("witness leaves = {:?}", witness_leaves);
 
             let trace = priv_data.to_trace(
                 config,

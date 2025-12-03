@@ -219,6 +219,7 @@ impl<F: CircuitField> CircuitRunner<F> {
                     outputs,
                     filler,
                 } => {
+                    tracing::debug!("unconstrained inputs = {:?}", inputs);
                     let inputs_val = inputs
                         .iter()
                         .map(|&input| self.get_witness(input))

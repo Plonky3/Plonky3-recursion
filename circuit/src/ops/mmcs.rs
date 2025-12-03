@@ -148,7 +148,7 @@ impl MmcsVerifyConfig {
         dimensions: &[Dimensions],
         max_height_log: usize,
     ) -> Result<Vec<Vec<T>>, CircuitError> {
-        if leaves.len() > max_height_log {
+        if leaves.len() > 1 << max_height_log {
             return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
                 op: NonPrimitiveOpType::MmcsVerify,
                 expected: format!("at most {}", max_height_log),
@@ -297,6 +297,8 @@ where
         witness_exprs.extend(leaves_expr.to_vec());
         witness_exprs.push(directions_expr.to_vec());
         witness_exprs.push(root_expr.to_vec());
+
+        tracing::debug!("witness expr = {:?}", witness_exprs);
         Ok(
             self.push_non_primitive_op(
                 NonPrimitiveOpType::MmcsVerify,

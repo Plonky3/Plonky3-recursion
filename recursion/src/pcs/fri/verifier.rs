@@ -390,9 +390,6 @@ where
     )?
     .enumerate()
     {
-        // TODO: Add recursive MMCS verification here for this batch:
-        // Verify batch_openings against _batch_commit at the computed reduced_index.
-
         let batch_heights = mats
             .iter()
             .map(|(domain, _)| domain.size() << log_blowup)
@@ -404,13 +401,16 @@ where
             .collect_vec();
 
         // If the maximum height of the batch is smaller than the global max height,
-        // we need to correct the index by right shifting it.
+        // we need to correct the index by right shifting it. Given that the index bits
+        // are little endian, we do so by removing the leftmost bits.
         // If the batch is empty, we set the index to 0.
         let reduced_bits = batch_heights
             .iter()
             .max()
-            .map(|&h| &index_bits[0..log2_strict_usize(h)])
+            .map(|&h| &index_bits[index_bits.len() - log2_strict_usize(h)..])
             .unwrap();
+
+        tracing::debug!("get targets = {:?}", batch_commit.get_targets());
 
         verify_batch_circuit(
             builder,

@@ -266,7 +266,7 @@ impl<F: Field, EF: ExtensionField<F>, Inner: RecursiveMmcs<F, EF>> Recursive<EF>
 // Now, we define the commitment schemes.
 
 /// `HashTargets` corresponds to a commitment in the form of hashes with `DIGEST_ELEMS` digest elements.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct HashTargets<F, const DIGEST_ELEMS: usize> {
     pub hash_targets: [Target; DIGEST_ELEMS],
     _phantom: PhantomData<F>,
@@ -329,6 +329,7 @@ impl<F: Field, EF: ExtensionField<F>, const DIGEST_ELEMS: usize> Recursive<EF>
     }
 
     fn get_targets(&self) -> Vec<Target> {
+        tracing::debug!("hash proof targets = {:?}", self.hash_proof_targets);
         self.hash_proof_targets
             .iter()
             .flat_map(|h| h.iter())

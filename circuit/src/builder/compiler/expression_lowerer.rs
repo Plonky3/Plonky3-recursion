@@ -224,6 +224,7 @@ where
                                     .copied()
                             })
                             .collect::<Result<Vec<WitnessId>, _>>()?;
+                        tracing::debug!("pushing inputs unconstr: {:?}", inputs);
                         primitive_ops.push(Op::Unconstrained {
                             inputs,
                             outputs: hints_sequence,
