@@ -3,7 +3,7 @@
 use alloc::vec::Vec;
 
 use p3_circuit::CircuitBuilder;
-use p3_circuit::ops::HashOps;
+// TODO: Replace with Poseidon perm once integrated.
 use p3_field::Field;
 
 use crate::Target;
@@ -27,21 +27,12 @@ impl<const RATE: usize> CircuitChallenger<RATE> {
     }
 
     /// Flush the absorb buffer, performing the actual hash absorb operation.
-    fn flush_absorb<F: Field>(&mut self, circuit: &mut CircuitBuilder<F>) {
+    fn flush_absorb<F: Field>(&mut self, _circuit: &mut CircuitBuilder<F>) {
         if self.buffer_flushed || self.absorb_buffer.is_empty() {
             return;
         }
 
-        // TODO: Determine when to reset the sponge state?
-        // For now, reset on first absorb (when buffer was flushed before)
-        let reset = self.buffer_flushed;
-
-        // TODO: How do we want to handle padding?
-        // Process buffer in chunks of RATE
-        for chunk in self.absorb_buffer.chunks(RATE) {
-            let _ = circuit.add_hash_absorb(chunk, reset);
-        }
-
+        // Hash absorb removed; placeholder until Poseidon perm is wired.
         self.absorb_buffer.clear();
         self.buffer_flushed = true;
     }
@@ -63,11 +54,7 @@ impl<F: Field, const RATE: usize> RecursiveChallenger<F> for CircuitChallenger<R
         // Flush any pending observations
         self.flush_absorb(circuit);
 
-        // TODO: We should be calling `add_hash_squeeze` but we may want to wait
-        // for Poseidon2 to be merged so that we actually generate challenges via hints
-        // and not public inputs.
-        // let output = circuit.add_hash_squeeze(1).expect("Failed to squeeze")[0];
-
+        // TODO: replace with Poseidon perm squeeze; for now, sample as public input.
         circuit.alloc_public_input("sampled challenge")
     }
 
@@ -80,7 +67,6 @@ impl<F: Field, const RATE: usize> RecursiveChallenger<F> for CircuitChallenger<R
 #[cfg(test)]
 mod tests {
     use p3_baby_bear::BabyBear;
-    use p3_circuit::op::{NonPrimitiveOpConfig, NonPrimitiveOpType};
     use p3_field::PrimeCharacteristicRing;
 
     use super::*;
@@ -90,12 +76,6 @@ mod tests {
     #[test]
     fn test_circuit_challenger_observe_sample() {
         let mut circuit = CircuitBuilder::<BabyBear>::new();
-        circuit.enable_op(
-            NonPrimitiveOpType::HashAbsorb { reset: true },
-            NonPrimitiveOpConfig::None,
-        );
-        circuit.enable_op(NonPrimitiveOpType::HashSqueeze, NonPrimitiveOpConfig::None);
-
         let mut challenger = CircuitChallenger::<DEFAULT_CHALLENGER_RATE>::new();
 
         let val1 = circuit.add_const(BabyBear::ONE);
@@ -110,12 +90,6 @@ mod tests {
     #[test]
     fn test_circuit_challenger_sample_vec() {
         let mut circuit = CircuitBuilder::<BabyBear>::new();
-        circuit.enable_op(
-            NonPrimitiveOpType::HashAbsorb { reset: true },
-            NonPrimitiveOpConfig::None,
-        );
-        circuit.enable_op(NonPrimitiveOpType::HashSqueeze, NonPrimitiveOpConfig::None);
-
         let mut challenger = CircuitChallenger::<DEFAULT_CHALLENGER_RATE>::new();
 
         let challenges = challenger.sample_vec(&mut circuit, 3);

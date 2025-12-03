@@ -94,15 +94,14 @@ where
         );
 
         self.config.enable_poseidon_perm();
-        self.non_primitive_trace_generators
-            .insert(
-                NonPrimitiveOpType::PoseidonPerm {
-                    new_start: false,
-                    merkle_path: false,
-                    mmcs_bit: false,
-                },
-                trace_generator,
-            );
+        self.non_primitive_trace_generators.insert(
+            NonPrimitiveOpType::PoseidonPerm {
+                new_start: false,
+                merkle_path: false,
+                mmcs_bit: false,
+            },
+            trace_generator,
+        );
     }
 
     /// Enables FRI verification operations.

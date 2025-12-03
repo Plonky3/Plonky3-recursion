@@ -12,8 +12,8 @@ use p3_circuit::tables::generate_poseidon2_trace;
 use p3_circuit::{CircuitBuilder, ExprId};
 use p3_circuit_prover::common::get_airs_and_degrees_with_prep;
 use p3_circuit_prover::{BatchStarkProver, Poseidon2Config, TablePacking, config};
-use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
 use p3_field::extension::BinomialExtensionField;
+use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
 use p3_poseidon2_circuit_air::BabyBearD4Width16;
 use p3_symmetric::Permutation;
 use tracing_forest::ForestLayer;
@@ -43,18 +43,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     init_logger();
 
     // Parse chain length from CLI (default: 3 permutations)
-    let chain_length: usize = env::args()
-        .nth(1)
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(3);
+    let chain_length: usize = env::args().nth(1).and_then(|s| s.parse().ok()).unwrap_or(3);
     assert!(chain_length >= 1, "chain length must be at least 1");
 
     // Build an initial state of 4 extension limbs with distinct coefficients.
     let mut ext_limbs = [Ext4::ZERO; 4];
     for limb in 0..4 {
-        let coeffs: [Base; LIMB_SIZE] = core::array::from_fn(|j| {
-            Base::from_u64((limb * LIMB_SIZE + j + 1) as u64)
-        });
+        let coeffs: [Base; LIMB_SIZE] =
+            core::array::from_fn(|j| Base::from_u64((limb * LIMB_SIZE + j + 1) as u64));
         ext_limbs[limb] = Ext4::from_basis_coefficients_slice(&coeffs).unwrap();
     }
 
@@ -71,10 +67,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     let final_limbs_ext = collect_ext_limbs(&final_state);
 
     let mut builder = CircuitBuilder::<Ext4>::new();
-    builder.enable_poseidon_perm::<BabyBearD4Width16>(generate_poseidon2_trace::<
-        Ext4,
-        BabyBearD4Width16,
-    >);
+    builder.enable_poseidon_perm::<BabyBearD4Width16>(
+        generate_poseidon2_trace::<Ext4, BabyBearD4Width16>,
+    );
 
     // Allocate initial input limbs (exposed via CTL on the first row).
     let mut first_inputs_expr: Vec<ExprId> = Vec::with_capacity(4);

@@ -1,19 +1,17 @@
 use alloc::boxed::Box;
-use alloc::format;
 use alloc::string::ToString;
-use alloc::vec;
 use alloc::vec::Vec;
+use alloc::{format, vec};
 use core::any::Any;
 use core::fmt::Debug;
+
+use p3_field::{ExtensionField, PrimeCharacteristicRing, PrimeField};
 
 use super::NonPrimitiveTrace;
 use crate::CircuitError;
 use crate::circuit::{Circuit, CircuitField};
 use crate::op::{NonPrimitiveOpPrivateData, NonPrimitiveOpType, Op};
 use crate::types::WitnessId;
-use p3_field::ExtensionField;
-use p3_field::PrimeCharacteristicRing;
-use p3_field::PrimeField;
 
 /// Trait to provide Poseidon2 configuration parameters for a field type.
 ///
@@ -168,7 +166,7 @@ where
         for op in &self.circuit.non_primitive_ops {
             let Op::NonPrimitiveOpWithExecutor {
                 inputs,
-                outputs,
+                outputs: _,
                 executor,
                 op_id,
             } = op
@@ -234,13 +232,11 @@ where
                                 }
                             }
                             other => {
-                                return Err(
-                                    CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
-                                        op: executor.op_type().clone(),
-                                        expected: format!("0, 1, or {d} elements per limb"),
-                                        got: other,
-                                    },
-                                );
+                                return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
+                                    op: executor.op_type().clone(),
+                                    expected: format!("0, 1, or {d} elements per limb"),
+                                    got: other,
+                                });
                             }
                         }
                     }

@@ -678,11 +678,14 @@ mod tests {
                 outputs,
                 ..
             } => {
-                assert_eq!(executor.op_type(), &NonPrimitiveOpType::PoseidonPerm {
-                    new_start: true,
-                    merkle_path: false,
-                    mmcs_bit: false,
-                });
+                assert_eq!(
+                    executor.op_type(),
+                    &NonPrimitiveOpType::PoseidonPerm {
+                        new_start: true,
+                        merkle_path: false,
+                        mmcs_bit: false,
+                    }
+                );
                 assert!(outputs.is_empty());
                 assert_eq!(inputs.len(), 7);
                 // in0

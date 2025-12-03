@@ -3,7 +3,6 @@ use alloc::vec::Vec;
 use alloc::{format, vec};
 
 use itertools::Itertools;
-use p3_circuit::op::{NonPrimitiveOpConfig, NonPrimitiveOpType};
 use p3_circuit::utils::ColumnsTargets;
 use p3_circuit::{CircuitBuilder, CircuitError};
 use p3_commit::Pcs;
@@ -79,14 +78,6 @@ where
         >,
     SC::Challenge: PrimeCharacteristicRing,
 {
-    // Enable hash operations for CircuitChallenger
-    // Note: These are placeholders until Poseidon2CircuitAir is implemented
-    circuit.enable_op(
-        NonPrimitiveOpType::HashAbsorb { reset: true },
-        NonPrimitiveOpConfig::None,
-    );
-    circuit.enable_op(NonPrimitiveOpType::HashSqueeze, NonPrimitiveOpConfig::None);
-
     let ProofTargets {
         commitments_targets:
             CommitmentTargets {

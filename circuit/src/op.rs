@@ -282,7 +282,6 @@ pub enum NonPrimitiveOp {
         directions: Vec<WitnessId>,
         root: Vec<WitnessId>,
     },
-
 }
 
 /// Private auxiliary data for non-primitive operations

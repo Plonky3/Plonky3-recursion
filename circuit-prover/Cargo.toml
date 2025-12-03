@@ -57,3 +57,11 @@ workspace = true
 [[example]]
 name = "fibonacci"
 path = "examples/fibonacci.rs"
+
+[[example]]
+name = "mmcs_verify"
+path = "examples/mmcs_verify.rs"
+
+[[example]]
+name = "poseidon_perm_chain"
+path = "examples/poseidon_perm_chain.rs"

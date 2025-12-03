@@ -15,8 +15,8 @@ use p3_circuit::ops::MmcsVerifyConfig;
 use p3_circuit::tables::{
     MmcsTrace, Poseidon2CircuitRow, Poseidon2CircuitTrace, Poseidon2Trace, Traces,
 };
-use p3_field::extension::BinomialExtensionField;
-use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing, PrimeField};
+use p3_field::extension::{BinomialExtensionField, BinomiallyExtendable};
+use p3_field::{BasedVectorSpace, ExtensionField, Field, PrimeCharacteristicRing, PrimeField};
 use p3_koala_bear::{KoalaBear, default_koalabear_poseidon2_16, default_koalabear_poseidon2_24};
 use p3_matrix::dense::RowMajorMatrix;
 use p3_mmcs_air::air::{MmcsTableConfig, MmcsVerifyAir};
@@ -493,15 +493,16 @@ impl Poseidon2Prover {
         Self { config }
     }
 
-    fn batch_instance_base<SC>(
+    fn batch_instance_from_traces<SC, CF>(
         &self,
         _config: &SC,
         _packing: TablePacking,
-        traces: &Traces<Val<SC>>,
+        traces: &Traces<CF>,
     ) -> Option<BatchTableInstance<SC>>
     where
         SC: StarkGenericConfig + 'static + Send + Sync,
         Val<SC>: StarkField,
+        CF: Field + ExtensionField<Val<SC>>,
     {
         let t = traces.non_primitive_trace::<Poseidon2Trace<Val<SC>>>("poseidon2")?;
 
@@ -683,13 +684,74 @@ impl Poseidon2Prover {
 impl<SC> TableProver<SC> for Poseidon2Prover
 where
     SC: StarkGenericConfig + 'static + Send + Sync,
-    Val<SC>: StarkField,
+    Val<SC>: StarkField + BinomiallyExtendable<4>,
 {
     fn id(&self) -> &'static str {
         "poseidon2"
     }
 
-    impl_table_prover_batch_instances_from_base!(batch_instance_base);
+    fn batch_instance_d1(
+        &self,
+        config: &SC,
+        packing: TablePacking,
+        traces: &Traces<Val<SC>>,
+    ) -> Option<BatchTableInstance<SC>> {
+        self.batch_instance_from_traces::<SC, Val<SC>>(config, packing, traces)
+    }
+
+    fn batch_instance_d2(
+        &self,
+        config: &SC,
+        packing: TablePacking,
+        traces: &Traces<BinomialExtensionField<Val<SC>, 2>>,
+    ) -> Option<BatchTableInstance<SC>> {
+        // Not supported for Poseidon2 table; extension circuits use D=4.
+        let _ = (config, packing, traces);
+        None
+    }
+
+    fn batch_instance_d4(
+        &self,
+        config: &SC,
+        packing: TablePacking,
+        traces: &Traces<BinomialExtensionField<Val<SC>, 4>>,
+    ) -> Option<BatchTableInstance<SC>> {
+        fn helper<SC>(
+            me: &Poseidon2Prover,
+            config: &SC,
+            packing: TablePacking,
+            traces: &Traces<BinomialExtensionField<Val<SC>, 4>>,
+        ) -> Option<BatchTableInstance<SC>>
+        where
+            SC: StarkGenericConfig + 'static + Send + Sync,
+            Val<SC>: StarkField + BinomiallyExtendable<4>,
+        {
+            me.batch_instance_from_traces::<SC, BinomialExtensionField<Val<SC>, 4>>(
+                config, packing, traces,
+            )
+        }
+        helper(self, config, packing, traces)
+    }
+
+    fn batch_instance_d6(
+        &self,
+        config: &SC,
+        packing: TablePacking,
+        traces: &Traces<BinomialExtensionField<Val<SC>, 6>>,
+    ) -> Option<BatchTableInstance<SC>> {
+        let _ = (config, packing, traces);
+        None
+    }
+
+    fn batch_instance_d8(
+        &self,
+        config: &SC,
+        packing: TablePacking,
+        traces: &Traces<BinomialExtensionField<Val<SC>, 8>>,
+    ) -> Option<BatchTableInstance<SC>> {
+        let _ = (config, packing, traces);
+        None
+    }
 
     fn batch_air_from_table_entry(
         &self,
@@ -1025,6 +1087,7 @@ where
     pub fn register_poseidon2_table(&mut self, config: Poseidon2Config)
     where
         SC: Send + Sync,
+        Val<SC>: BinomiallyExtendable<4>,
     {
         self.register_table_prover(Box::new(Poseidon2Prover::new(config)));
     }
