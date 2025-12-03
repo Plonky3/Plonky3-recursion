@@ -88,9 +88,7 @@ pub type Poseidon2CircuitTrace<F> = Vec<Poseidon2CircuitRow<F>>;
 /// Poseidon2 trace for all hash operations in the circuit.
 #[derive(Debug, Clone)]
 pub struct Poseidon2Trace<F> {
-    /// All Poseidon2 operations (sponge and compress) in this trace.
-    /// TODO: Replace sponge ops with perm ops - remove HashAbsorb/HashSqueeze operations
-    /// and replace them with permutation operations in trace generation and table.
+    /// All Poseidon2 operations (permutation rows) in this trace.
     pub operations: Poseidon2CircuitTrace<F>,
 }
 
@@ -161,8 +159,6 @@ where
 
     /// Builds the Poseidon2 trace by scanning non-primitive ops with hash executors.
     /// Also maintains state and fills state hints for stateful operations.
-    /// TODO: Replace sponge ops with perm ops - remove HashAbsorb/HashSqueeze operations
-    /// and replace them with permutation operations in trace generation and table.
     pub fn build(self) -> Result<Poseidon2Trace<Config::BaseField>, CircuitError> {
         let mut operations = Vec::new();
 
@@ -181,101 +177,6 @@ where
             };
 
             match executor.op_type() {
-                NonPrimitiveOpType::HashAbsorb { reset } => {
-                    // For HashAbsorb, inputs[0] contains the input values
-                    // inputs[1] may contain previous state capacity (if reset=false)
-                    let input_wids = inputs.first().ok_or_else(|| {
-                        CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
-                            op: executor.op_type().clone(),
-                            expected: "at least 1 input vector".to_string(),
-                            got: inputs.len(),
-                        }
-                    })?;
-
-                    let input_values: Vec<Config::BaseField> = input_wids
-                        .iter()
-                        .map(|wid| {
-                            let val = self.get_witness(wid)?;
-                            val.as_base().ok_or(CircuitError::IncorrectNonPrimitiveOpPrivateData {
-                                op: executor.op_type().clone(),
-                                operation_index: *op_id,
-                                expected: "base field input".to_string(),
-                                got: "extension value".to_string(),
-                            })
-                        })
-                        .collect::<Result<Vec<Config::BaseField>, _>>()?;
-
-                    let mut padded_inputs = input_values.clone();
-                    padded_inputs.resize(width, Config::BaseField::ZERO);
-
-                    let mut in_ctl = [false; 4];
-                    let mut in_idx = [0u32; 4];
-                    for (limb, chunk) in input_wids.chunks(d).take(4).enumerate() {
-                        if let Some(first) = chunk.first() {
-                            in_ctl[limb] = true;
-                            in_idx[limb] = first.0;
-                        }
-                    }
-
-                    operations.push(Poseidon2CircuitRow {
-                        new_start: *reset,
-                        merkle_path: false,
-                        mmcs_bit: false,
-                        mmcs_index_sum: Config::BaseField::ZERO,
-                        input_values: padded_inputs,
-                        in_ctl,
-                        input_indices: in_idx,
-                        out_ctl: [false; 2],
-                        output_indices: [0; 2],
-                        mmcs_index_sum_idx: 0,
-                    });
-                }
-                NonPrimitiveOpType::HashSqueeze => {
-                    // For HashSqueeze, outputs[0] contains squeezed values + new state capacity
-                    let output_wids = outputs.first().ok_or_else(|| {
-                        CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
-                            op: executor.op_type().clone(),
-                            expected: "at least 1 output vector".to_string(),
-                            got: outputs.len(),
-                        }
-                    })?;
-
-                    // Validate outputs are set (values will be verified by AIR constraints)
-                    let _output_values: Vec<Config::BaseField> = output_wids
-                        .iter()
-                        .map(|wid| {
-                            let val = self.get_witness(wid)?;
-                            val.as_base().ok_or(CircuitError::IncorrectNonPrimitiveOpPrivateData {
-                                op: executor.op_type().clone(),
-                                operation_index: *op_id,
-                                expected: "base field output".to_string(),
-                                got: "extension value".to_string(),
-                            })
-                        })
-                        .collect::<Result<Vec<Config::BaseField>, _>>()?;
-
-                    let mut out_ctl = [false; 2];
-                    let mut out_idx = [0u32; 2];
-                    for (limb, chunk) in output_wids.chunks(d).take(2).enumerate() {
-                        if let Some(first) = chunk.first() {
-                            out_ctl[limb] = true;
-                            out_idx[limb] = first.0;
-                        }
-                    }
-
-                    operations.push(Poseidon2CircuitRow {
-                        new_start: false,
-                        merkle_path: false,
-                        mmcs_bit: false,
-                        mmcs_index_sum: Config::BaseField::ZERO,
-                        input_values: vec![Config::BaseField::ZERO; width],
-                        in_ctl: [false; 4],
-                        input_indices: [0; 4],
-                        out_ctl,
-                        output_indices: out_idx,
-                        mmcs_index_sum_idx: 0,
-                    });
-                }
                 NonPrimitiveOpType::PoseidonPerm {
                     new_start,
                     merkle_path,

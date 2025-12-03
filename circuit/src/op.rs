@@ -233,12 +233,6 @@ pub enum NonPrimitiveOpType {
     /// Mmcs Verify gate with the argument is the size of the path
     MmcsVerify,
     FriVerify,
-    /// Hash absorb operation - absorbs field elements into sponge state
-    HashAbsorb {
-        reset: bool,
-    },
-    /// Hash squeeze operation - extracts field elements from sponge state
-    HashSqueeze,
     /// Poseidon permutation operation (one Poseidon call / table row).
     /// Flags are per-row controls (transparent columns in the AIR).
     PoseidonPerm {
@@ -289,21 +283,6 @@ pub enum NonPrimitiveOp {
         root: Vec<WitnessId>,
     },
 
-    /// Hash absorb operation - absorbs inputs into sponge state.
-    ///
-    /// Public interface (on witness bus):
-    /// - `inputs`: Field elements to absorb into the sponge
-    /// - `reset_flag`: Whether to reset the sponge state before absorbing
-    HashAbsorb {
-        reset_flag: bool,
-        inputs: Vec<WitnessId>,
-    },
-
-    /// Hash squeeze operation - extracts outputs from sponge state.
-    ///
-    /// Public interface (on witness bus):
-    /// - `outputs`: Field elements extracted from the sponge
-    HashSqueeze { outputs: Vec<WitnessId> },
 }
 
 /// Private auxiliary data for non-primitive operations
@@ -911,7 +890,11 @@ mod tests {
     fn test_execution_context_get_config() {
         // Create a configuration map for operation parameters
         let mut configs = HashMap::new();
-        let op_type = NonPrimitiveOpType::HashAbsorb { reset: false };
+        let op_type = NonPrimitiveOpType::PoseidonPerm {
+            new_start: false,
+            merkle_path: false,
+            mmcs_bit: false,
+        };
         configs.insert(op_type.clone(), NonPrimitiveOpConfig::None);
 
         // Create execution context with configurations
@@ -941,7 +924,11 @@ mod tests {
             ExecutionContext::new(&mut witness, &private_data, &configs, op_id);
 
         // Attempt to access a configuration that wasn't registered
-        let op_type = NonPrimitiveOpType::HashAbsorb { reset: false };
+        let op_type = NonPrimitiveOpType::PoseidonPerm {
+            new_start: false,
+            merkle_path: false,
+            mmcs_bit: false,
+        };
         let result = ctx.get_config(&op_type);
 
         // Missing configurations indicate setup errors
@@ -972,20 +959,23 @@ mod tests {
 
     #[test]
     fn test_non_primitive_op_type_equality() {
-        // Create various operation type instances
-        let hash_absorb1 = NonPrimitiveOpType::HashAbsorb { reset: true };
-        let hash_absorb2 = NonPrimitiveOpType::HashAbsorb { reset: true };
-        let hash_absorb3 = NonPrimitiveOpType::HashAbsorb { reset: false };
-        let hash_squeeze = NonPrimitiveOpType::HashSqueeze;
-
-        // Verify equality for identical types
-        assert_eq!(hash_absorb1, hash_absorb2);
-
-        // Verify inequality when parameters differ
-        assert_ne!(hash_absorb1, hash_absorb3);
-
-        // Verify inequality for completely different types
-        assert_ne!(hash_absorb1, hash_squeeze);
+        let a = NonPrimitiveOpType::PoseidonPerm {
+            new_start: true,
+            merkle_path: false,
+            mmcs_bit: false,
+        };
+        let b = NonPrimitiveOpType::PoseidonPerm {
+            new_start: true,
+            merkle_path: false,
+            mmcs_bit: false,
+        };
+        let c = NonPrimitiveOpType::PoseidonPerm {
+            new_start: false,
+            merkle_path: false,
+            mmcs_bit: false,
+        };
+        assert_eq!(a, b);
+        assert_ne!(a, c);
     }
 
     #[test]

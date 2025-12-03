@@ -31,19 +31,6 @@ impl BuilderConfig {
         );
     }
 
-    /// Enables HashAbsorb operations.
-    pub fn enable_hash_absorb(&mut self, reset: bool) {
-        self.enable_op(
-            NonPrimitiveOpType::HashAbsorb { reset },
-            NonPrimitiveOpConfig::None,
-        );
-    }
-
-    /// Enables HashSqueeze operations.
-    pub fn enable_hash_squeeze(&mut self) {
-        self.enable_op(NonPrimitiveOpType::HashSqueeze, NonPrimitiveOpConfig::None);
-    }
-
     /// Enables Poseidon permutation operations (D=4 only).
     ///
     /// Inserts all combinations of the transparent flags (new_start, merkle_path, mmcs_bit)
