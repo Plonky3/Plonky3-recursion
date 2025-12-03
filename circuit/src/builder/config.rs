@@ -101,9 +101,14 @@ mod tests {
         let mmcs_config = MmcsVerifyConfig::mock_config();
 
         config.enable_mmcs(&mmcs_config);
-        config.enable_op(NonPrimitiveOpType::HashSqueeze, NonPrimitiveOpConfig::None);
+        config.enable_poseidon_perm();
 
         assert!(config.is_op_enabled(&NonPrimitiveOpType::MmcsVerify));
-        assert!(config.is_op_enabled(&NonPrimitiveOpType::HashSqueeze));
+        // Poseidon perm flags should be populated
+        assert!(config.is_op_enabled(&NonPrimitiveOpType::PoseidonPerm {
+            new_start: false,
+            merkle_path: false,
+            mmcs_bit: false,
+        }));
     }
 }
