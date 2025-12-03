@@ -103,7 +103,6 @@ where
             NonPrimitiveOpType::HashSqueeze { reset: false },
             trace_generator,
         );
-        tracing::debug!("configs : {:#?}", self.config);
     }
 
     /// Enables FRI verification operations.

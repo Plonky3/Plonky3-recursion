@@ -412,6 +412,8 @@ where
             .map(|&h| &index_bits[0..log2_strict_usize(h)])
             .unwrap();
 
+        tracing::debug!("get targets = {:?}", batch_commit.get_targets());
+
         verify_batch_circuit(
             builder,
             &batch_commit.get_targets(),

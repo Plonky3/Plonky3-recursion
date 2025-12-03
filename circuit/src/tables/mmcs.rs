@@ -412,7 +412,7 @@ where
 /// Builder for generating MMCS traces.
 pub struct MmcsTraceBuilder<'a, F> {
     circuit: &'a Circuit<F>,
-    witness: &'a [Option<F>],
+    pub witness: &'a [Option<F>],
     non_primitive_op_private_data: &'a [Option<NonPrimitiveOpPrivateData<F>>],
 }
 
@@ -509,6 +509,12 @@ impl<'a, F: CircuitField> MmcsTraceBuilder<'a, F> {
                 .iter()
                 .map(|wid| self.get_witness(wid))
                 .collect::<Result<_, _>>()?;
+
+            tracing::debug!(
+                "witness = {:#?}",
+                self.witness.iter().enumerate().collect::<Vec<_>>()
+            );
+            tracing::debug!("root = {:?}", root);
 
             let trace = priv_data.to_trace(
                 config,
