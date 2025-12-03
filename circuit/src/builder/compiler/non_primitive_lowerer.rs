@@ -1,5 +1,6 @@
 use alloc::boxed::Box;
 use alloc::format;
+use alloc::string::ToString;
 use alloc::vec::Vec;
 use core::hash::Hash;
 
@@ -10,7 +11,9 @@ use crate::builder::circuit_builder::NonPrimitiveOperationData;
 use crate::builder::compiler::get_witness_id;
 use crate::builder::{BuilderConfig, CircuitBuilderError};
 use crate::op::{NonPrimitiveOpConfig, NonPrimitiveOpType, Op};
-use crate::ops::{HashAbsorbExecutor, HashSqueezeExecutor, MmcsVerifyExecutor};
+use crate::ops::{
+    HashAbsorbExecutor, HashSqueezeExecutor, MmcsVerifyExecutor, PoseidonPermExecutor,
+};
 use crate::types::{ExprId, WitnessId};
 
 /// Responsible for lowering non-primitive operations from ExprIds to WitnessIds.
@@ -194,6 +197,102 @@ impl<'a> NonPrimitiveLowerer<'a> {
                         inputs: Vec::new(),
                         outputs,
                         executor: Box::new(HashSqueezeExecutor::new()),
+                        op_id: *op_id,
+                    });
+                }
+                NonPrimitiveOpType::PoseidonPerm {
+                    new_start,
+                    merkle_path,
+                    mmcs_bit,
+                } => {
+                    // Operation must be enabled
+                    if config_opt.is_none() {
+                        return Err(CircuitBuilderError::InvalidNonPrimitiveOpConfiguration {
+                            op: op_type.clone(),
+                        });
+                    }
+
+                    // Expected layout: [in0, in1, in2, in3, out0, out1, mmcs_index_sum]
+                    if witness_exprs.len() != 7 {
+                        return Err(CircuitBuilderError::NonPrimitiveOpArity {
+                            op: "PoseidonPerm",
+                            expected: "7 (in0..3, out0..1, mmcs_index_sum)".to_string(),
+                            got: witness_exprs.len(),
+                        });
+                    }
+
+                    let mut inputs_widx: Vec<Vec<WitnessId>> = Vec::with_capacity(7);
+                    // Inputs
+                    for (i, limb_exprs) in witness_exprs.iter().take(4).enumerate() {
+                        if !(limb_exprs.is_empty() || limb_exprs.len() == 1) {
+                            return Err(CircuitBuilderError::NonPrimitiveOpArity {
+                                op: "PoseidonPerm",
+                                expected: "0 or 1 extension element per input limb".to_string(),
+                                got: limb_exprs.len(),
+                            });
+                        }
+                        let limb_widx = limb_exprs
+                            .iter()
+                            .map(|&expr| {
+                                get_witness_id(
+                                    self.expr_to_widx,
+                                    expr,
+                                    &format!("PoseidonPerm input limb {}", i),
+                                )
+                            })
+                            .collect::<Result<Vec<WitnessId>, _>>()?;
+                        inputs_widx.push(limb_widx);
+                    }
+                    // Outputs
+                    for (i, limb_exprs) in witness_exprs.iter().skip(4).take(2).enumerate() {
+                        if !(limb_exprs.is_empty() || limb_exprs.len() == 1) {
+                            return Err(CircuitBuilderError::NonPrimitiveOpArity {
+                                op: "PoseidonPerm",
+                                expected: "0 or 1 extension element per output limb".to_string(),
+                                got: limb_exprs.len(),
+                            });
+                        }
+                        let limb_widx = limb_exprs
+                            .iter()
+                            .map(|&expr| {
+                                get_witness_id(
+                                    self.expr_to_widx,
+                                    expr,
+                                    &format!("PoseidonPerm output limb {}", i),
+                                )
+                            })
+                            .collect::<Result<Vec<WitnessId>, _>>()?;
+                        inputs_widx.push(limb_widx);
+                    }
+                    // mmcs_index_sum (0 or 1 element)
+                    let mmcs_exprs = &witness_exprs[6];
+                    if !(mmcs_exprs.is_empty() || mmcs_exprs.len() == 1) {
+                        return Err(CircuitBuilderError::NonPrimitiveOpArity {
+                            op: "PoseidonPerm",
+                            expected: "0 or 1 element for mmcs_index_sum".to_string(),
+                            got: mmcs_exprs.len(),
+                        });
+                    }
+                    let mmcs_widx = mmcs_exprs
+                        .iter()
+                        .map(|&expr| {
+                            get_witness_id(
+                                self.expr_to_widx,
+                                expr,
+                                "PoseidonPerm mmcs_index_sum input",
+                            )
+                        })
+                        .collect::<Result<Vec<WitnessId>, _>>()?;
+                    inputs_widx.push(mmcs_widx);
+
+                    lowered_ops.push(Op::NonPrimitiveOpWithExecutor {
+                        inputs: inputs_widx,
+                        outputs: Vec::new(),
+                        executor: Box::new(PoseidonPermExecutor::new(
+                            *new_start,
+                            *merkle_path,
+                            *mmcs_bit,
+                        )),
                         op_id: *op_id,
                     });
                 }
@@ -594,6 +693,62 @@ mod tests {
                 assert_eq!(context, "test context");
             }
             _ => panic!("Expected MissingExprMapping error from get_witness_id"),
+        }
+    }
+
+    #[test]
+    fn test_poseidon_perm_lowering() {
+        let mut config = BuilderConfig::new();
+        config.enable_poseidon_perm();
+
+        // Layout: in0..3 (1 elem each), out0..1 (empty), mmcs_index_sum (1 elem)
+        let witness_exprs = vec![
+            vec![ExprId(0)],
+            vec![ExprId(1)],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![ExprId(2)],
+        ];
+
+        let ops = vec![(
+            NonPrimitiveOpId(0),
+            NonPrimitiveOpType::PoseidonPerm {
+                new_start: true,
+                merkle_path: false,
+                mmcs_bit: false,
+            },
+            witness_exprs,
+        )];
+        let expr_map = create_expr_map(10);
+
+        let lowerer = NonPrimitiveLowerer::new(&ops, &expr_map, &config);
+        let result: Vec<Op<BabyBear>> = lowerer.lower().unwrap();
+        assert_eq!(result.len(), 1);
+
+        match &result[0] {
+            Op::NonPrimitiveOpWithExecutor {
+                inputs,
+                executor,
+                outputs,
+                ..
+            } => {
+                assert_eq!(executor.op_type(), &NonPrimitiveOpType::PoseidonPerm {
+                    new_start: true,
+                    merkle_path: false,
+                    mmcs_bit: false,
+                });
+                assert!(outputs.is_empty());
+                assert_eq!(inputs.len(), 7);
+                // in0
+                assert_eq!(inputs[0], vec![WitnessId(0)]);
+                // in1
+                assert_eq!(inputs[1], vec![WitnessId(1)]);
+                // mmcs_index_sum
+                assert_eq!(inputs[6], vec![WitnessId(2)]);
+            }
+            _ => panic!("Expected PoseidonPerm op"),
         }
     }
 }

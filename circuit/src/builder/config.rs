@@ -44,6 +44,27 @@ impl BuilderConfig {
         self.enable_op(NonPrimitiveOpType::HashSqueeze, NonPrimitiveOpConfig::None);
     }
 
+    /// Enables Poseidon permutation operations (D=4 only).
+    ///
+    /// Inserts all combinations of the transparent flags (new_start, merkle_path, mmcs_bit)
+    /// so that per-row control bits are accepted.
+    pub fn enable_poseidon_perm(&mut self) {
+        for &new_start in &[false, true] {
+            for &merkle_path in &[false, true] {
+                for &mmcs_bit in &[false, true] {
+                    self.enable_op(
+                        NonPrimitiveOpType::PoseidonPerm {
+                            new_start,
+                            merkle_path,
+                            mmcs_bit,
+                        },
+                        NonPrimitiveOpConfig::None,
+                    );
+                }
+            }
+        }
+    }
+
     /// Enables FRI verification operations.
     pub const fn enable_fri(&mut self) {
         // TODO: Add FRI ops when available.

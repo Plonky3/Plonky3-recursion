@@ -239,6 +239,13 @@ pub enum NonPrimitiveOpType {
     },
     /// Hash squeeze operation - extracts field elements from sponge state
     HashSqueeze,
+    /// Poseidon permutation operation (one Poseidon call / table row).
+    /// Flags are per-row controls (transparent columns in the AIR).
+    PoseidonPerm {
+        new_start: bool,
+        merkle_path: bool,
+        mmcs_bit: bool,
+    },
 }
 
 /// Non-primitive operation types

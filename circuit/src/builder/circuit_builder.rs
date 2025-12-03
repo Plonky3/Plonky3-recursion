@@ -10,7 +10,7 @@ use super::{BuilderConfig, ExpressionBuilder, PublicInputTracker};
 use crate::circuit::Circuit;
 use crate::op::{DefaultHint, NonPrimitiveOpType, WitnessHintsFiller};
 use crate::ops::MmcsVerifyConfig;
-use crate::tables::{TraceGeneratorFn, generate_mmcs_trace};
+use crate::tables::{Poseidon2Params, TraceGeneratorFn, generate_mmcs_trace};
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};
 use crate::{CircuitBuilderError, CircuitField};
 
@@ -112,6 +112,33 @@ where
     {
         self.enable_hash_absorb(reset, trace_generator);
         self.enable_hash_squeeze(trace_generator);
+    }
+
+    /// Enables Poseidon permutation operations (one perm per table row).
+    ///
+    /// The current implementation only supports extension degree D=4.
+    pub fn enable_poseidon_perm<Config: Poseidon2Params>(
+        &mut self,
+        trace_generator: TraceGeneratorFn<F>,
+    ) where
+        F: CircuitField,
+    {
+        // Hard gate on D=4 to avoid silently accepting incompatible configs.
+        assert!(
+            Config::D == 4,
+            "Poseidon perm op only supports extension degree D=4"
+        );
+
+        self.config.enable_poseidon_perm();
+        self.non_primitive_trace_generators
+            .insert(
+                NonPrimitiveOpType::PoseidonPerm {
+                    new_start: false,
+                    merkle_path: false,
+                    mmcs_bit: false,
+                },
+                trace_generator,
+            );
     }
 
     /// Enables FRI verification operations.
