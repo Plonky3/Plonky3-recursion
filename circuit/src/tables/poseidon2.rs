@@ -11,6 +11,7 @@ use super::NonPrimitiveTrace;
 use crate::CircuitError;
 use crate::circuit::{Circuit, CircuitField};
 use crate::op::{NonPrimitiveOpPrivateData, NonPrimitiveOpType, Op};
+use crate::ops::poseidon_perm::PoseidonPermExecutor;
 use crate::types::WitnessId;
 
 /// Trait to provide Poseidon2 configuration parameters for a field type.
@@ -174,121 +175,141 @@ where
                 continue;
             };
 
-            match executor.op_type() {
-                NonPrimitiveOpType::PoseidonPerm {
-                    new_start,
-                    merkle_path,
-                    mmcs_bit,
-                } => {
-                    // Expected layout: [in0, in1, in2, in3, out0, out1, mmcs_index_sum]
-                    if inputs.len() != 7 {
-                        return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
-                            op: executor.op_type().clone(),
-                            expected: "7 input vectors".to_string(),
-                            got: inputs.len(),
-                        });
-                    }
+            if executor.op_type() == &NonPrimitiveOpType::PoseidonPerm {
+                let Some(exec) = executor.as_any().downcast_ref::<PoseidonPermExecutor>() else {
+                    return Err(CircuitError::InvalidNonPrimitiveOpConfiguration {
+                        op: executor.op_type().clone(),
+                    });
+                };
+                let (new_start, merkle_path) = (exec.new_start, exec.merkle_path);
+                // Expected layout: [in0, in1, in2, in3, out0, out1, mmcs_index_sum, mmcs_bit]
+                if inputs.len() != 8 {
+                    return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
+                        op: executor.op_type().clone(),
+                        expected: "8 input vectors".to_string(),
+                        got: inputs.len(),
+                    });
+                }
 
-                    let mut padded_inputs = vec![Config::BaseField::ZERO; width];
-                    let mut in_ctl = [false; 4];
-                    let mut in_idx = [0u32; 4];
-                    for limb in 0..4 {
-                        let chunk = &inputs[limb];
-                        match chunk.len() {
-                            0 => {}
-                            1 => {
-                                let val = self.get_witness(&chunk[0])?;
-                                let coeffs = val.as_basis_coefficients_slice();
-                                if coeffs.len() != d {
-                                    return Err(
-                                        CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
-                                            op: executor.op_type().clone(),
-                                            expected: d.to_string(),
-                                            got: coeffs.len(),
-                                        },
-                                    );
-                                }
-                                in_ctl[limb] = true;
-                                in_idx[limb] = chunk[0].0;
-                                padded_inputs[limb * d..(limb + 1) * d].copy_from_slice(coeffs);
-                            }
-                            len if len == d => {
-                                in_ctl[limb] = true;
-                                in_idx[limb] = chunk[0].0;
-                                for (dst, &wid) in padded_inputs[limb * d..(limb + 1) * d]
-                                    .iter_mut()
-                                    .zip(chunk.iter())
-                                {
-                                    let val = self.get_witness(&wid)?;
-                                    let base = val.as_base().ok_or_else(|| {
-                                        CircuitError::IncorrectNonPrimitiveOpPrivateData {
-                                            op: executor.op_type().clone(),
-                                            operation_index: *op_id,
-                                            expected: "base field limb component".to_string(),
-                                            got: "extension value".to_string(),
-                                        }
-                                    })?;
-                                    *dst = base;
-                                }
-                            }
-                            other => {
+                let mut padded_inputs = vec![Config::BaseField::ZERO; width];
+                let mut in_ctl = [false; 4];
+                let mut in_idx = [0u32; 4];
+                for limb in 0..4 {
+                    let chunk = &inputs[limb];
+                    match chunk.len() {
+                        0 => {}
+                        1 => {
+                            let val = self.get_witness(&chunk[0])?;
+                            let coeffs = val.as_basis_coefficients_slice();
+                            if coeffs.len() != d {
                                 return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
                                     op: executor.op_type().clone(),
-                                    expected: format!("0, 1, or {d} elements per limb"),
-                                    got: other,
+                                    expected: d.to_string(),
+                                    got: coeffs.len(),
                                 });
                             }
+                            in_ctl[limb] = true;
+                            in_idx[limb] = chunk[0].0;
+                            padded_inputs[limb * d..(limb + 1) * d].copy_from_slice(coeffs);
                         }
-                    }
-
-                    let mut out_ctl = [false; 2];
-                    let mut out_idx = [0u32; 2];
-                    for (offset, limb) in (4..6).enumerate() {
-                        let chunk = &inputs[limb];
-                        if chunk.len() == d || chunk.len() == 1 {
-                            out_ctl[offset] = true;
-                            out_idx[offset] = chunk[0].0;
-                        } else if !chunk.is_empty() {
+                        len if len == d => {
+                            in_ctl[limb] = true;
+                            in_idx[limb] = chunk[0].0;
+                            for (dst, &wid) in padded_inputs[limb * d..(limb + 1) * d]
+                                .iter_mut()
+                                .zip(chunk.iter())
+                            {
+                                let val = self.get_witness(&wid)?;
+                                let base = val.as_base().ok_or_else(|| {
+                                    CircuitError::IncorrectNonPrimitiveOpPrivateData {
+                                        op: executor.op_type().clone(),
+                                        operation_index: *op_id,
+                                        expected: "base field limb component".to_string(),
+                                        got: "extension value".to_string(),
+                                    }
+                                })?;
+                                *dst = base;
+                            }
+                        }
+                        other => {
                             return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
                                 op: executor.op_type().clone(),
-                                expected: format!("0, 1, or {d} elements per output limb"),
-                                got: chunk.len(),
+                                expected: format!("0, 1, or {d} elements per limb"),
+                                got: other,
                             });
                         }
                     }
+                }
 
-                    let (mmcs_index_sum, mmcs_index_sum_idx) = if inputs[6].len() == 1 {
-                        let val = self.get_witness(&inputs[6][0])?;
-                        let base = val.as_base().ok_or_else(|| {
-                            CircuitError::IncorrectNonPrimitiveOpPrivateData {
+                let mut out_ctl = [false; 2];
+                let mut out_idx = [0u32; 2];
+                for (offset, limb) in (4..6).enumerate() {
+                    let chunk = &inputs[limb];
+                    if chunk.len() == d || chunk.len() == 1 {
+                        out_ctl[offset] = true;
+                        out_idx[offset] = chunk[0].0;
+                    } else if !chunk.is_empty() {
+                        return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
+                            op: executor.op_type().clone(),
+                            expected: format!("0, 1, or {d} elements per output limb"),
+                            got: chunk.len(),
+                        });
+                    }
+                }
+
+                let (mmcs_index_sum, mmcs_index_sum_idx) = if inputs[6].len() == 1 {
+                    let val = self.get_witness(&inputs[6][0])?;
+                    let base = val.as_base().ok_or_else(|| {
+                        CircuitError::IncorrectNonPrimitiveOpPrivateData {
+                            op: executor.op_type().clone(),
+                            operation_index: *op_id,
+                            expected: "base field mmcs_index_sum".to_string(),
+                            got: "extension value".to_string(),
+                        }
+                    })?;
+                    (base, inputs[6][0].0)
+                } else {
+                    (Config::BaseField::ZERO, 0)
+                };
+                let mmcs_bit = if inputs[7].len() == 1 {
+                    let val = self.get_witness(&inputs[7][0])?;
+                    let base = val.as_base().ok_or_else(|| {
+                        CircuitError::IncorrectNonPrimitiveOpPrivateData {
+                            op: executor.op_type().clone(),
+                            operation_index: *op_id,
+                            expected: "base field mmcs_bit".to_string(),
+                            got: "extension value".to_string(),
+                        }
+                    })?;
+                    match base {
+                        x if x == Config::BaseField::ZERO => false,
+                        x if x == Config::BaseField::ONE => true,
+                        other => {
+                            return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
                                 op: executor.op_type().clone(),
                                 operation_index: *op_id,
-                                expected: "base field mmcs_index_sum".to_string(),
-                                got: "extension value".to_string(),
-                            }
-                        })?;
-                        (base, inputs[6][0].0)
-                    } else {
-                        (Config::BaseField::ZERO, 0)
-                    };
+                                expected: "boolean mmcs_bit (0 or 1)".to_string(),
+                                got: format!("{other:?}"),
+                            });
+                        }
+                    }
+                } else {
+                    false
+                };
 
-                    operations.push(Poseidon2CircuitRow {
-                        new_start: *new_start,
-                        merkle_path: *merkle_path,
-                        mmcs_bit: *mmcs_bit,
-                        mmcs_index_sum,
-                        input_values: padded_inputs,
-                        in_ctl,
-                        input_indices: in_idx,
-                        out_ctl,
-                        output_indices: out_idx,
-                        mmcs_index_sum_idx,
-                    });
-                }
-                _ => {
-                    // Skip other operation types
-                    continue;
-                }
+                operations.push(Poseidon2CircuitRow {
+                    new_start,
+                    merkle_path,
+                    mmcs_bit,
+                    mmcs_index_sum,
+                    input_values: padded_inputs,
+                    in_ctl,
+                    input_indices: in_idx,
+                    out_ctl,
+                    output_indices: out_idx,
+                    mmcs_index_sum_idx,
+                });
+                continue;
             }
         }
 

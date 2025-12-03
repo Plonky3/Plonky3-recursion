@@ -7,7 +7,7 @@ use core::hash::Hash;
 use hashbrown::HashMap;
 use p3_field::{Field, PrimeCharacteristicRing};
 
-use crate::builder::circuit_builder::NonPrimitiveOperationData;
+use crate::builder::circuit_builder::{NonPrimitiveOpParams, NonPrimitiveOperationData};
 use crate::builder::compiler::get_witness_id;
 use crate::builder::{BuilderConfig, CircuitBuilderError};
 use crate::op::{NonPrimitiveOpConfig, NonPrimitiveOpType, Op};
@@ -53,7 +53,12 @@ impl<'a> NonPrimitiveLowerer<'a> {
     {
         let mut lowered_ops: Vec<Op<F>> = Vec::new();
 
-        for (op_id, op_type, witness_exprs) in self.non_primitive_ops {
+        for data in self.non_primitive_ops {
+            let op_id = data.op_id;
+            let op_type = &data.op_type;
+            let witness_exprs = &data.witness_exprs;
+            let params = &data.params;
+
             let config_opt = self.config.get_op_config(op_type);
             match op_type {
                 NonPrimitiveOpType::MmcsVerify => {
@@ -141,14 +146,20 @@ impl<'a> NonPrimitiveLowerer<'a> {
                         inputs,
                         outputs: Vec::new(),
                         executor: Box::new(MmcsVerifyExecutor::new()),
-                        op_id: *op_id,
+                        op_id,
                     });
                 }
-                NonPrimitiveOpType::PoseidonPerm {
-                    new_start,
-                    merkle_path,
-                    mmcs_bit,
-                } => {
+                NonPrimitiveOpType::PoseidonPerm => {
+                    let (new_start, merkle_path) = match params.as_ref().ok_or_else(|| {
+                        CircuitBuilderError::InvalidNonPrimitiveOpConfiguration {
+                            op: op_type.clone(),
+                        }
+                    })? {
+                        NonPrimitiveOpParams::PoseidonPerm {
+                            new_start,
+                            merkle_path,
+                        } => (*new_start, *merkle_path),
+                    };
                     // Operation must be enabled
                     if config_opt.is_none() {
                         return Err(CircuitBuilderError::InvalidNonPrimitiveOpConfiguration {
@@ -156,16 +167,16 @@ impl<'a> NonPrimitiveLowerer<'a> {
                         });
                     }
 
-                    // Expected layout: [in0, in1, in2, in3, out0, out1, mmcs_index_sum]
-                    if witness_exprs.len() != 7 {
+                    // Expected layout: [in0, in1, in2, in3, out0, out1, mmcs_index_sum, mmcs_bit]
+                    if witness_exprs.len() != 8 {
                         return Err(CircuitBuilderError::NonPrimitiveOpArity {
                             op: "PoseidonPerm",
-                            expected: "7 (in0..3, out0..1, mmcs_index_sum)".to_string(),
+                            expected: "8 (in0..3, out0..1, mmcs_index_sum, mmcs_bit)".to_string(),
                             got: witness_exprs.len(),
                         });
                     }
 
-                    let mut inputs_widx: Vec<Vec<WitnessId>> = Vec::with_capacity(7);
+                    let mut inputs_widx: Vec<Vec<WitnessId>> = Vec::with_capacity(8);
                     // Inputs
                     for (i, limb_exprs) in witness_exprs.iter().take(4).enumerate() {
                         if !(limb_exprs.is_empty() || limb_exprs.len() == 1) {
@@ -228,16 +239,28 @@ impl<'a> NonPrimitiveLowerer<'a> {
                         })
                         .collect::<Result<Vec<WitnessId>, _>>()?;
                     inputs_widx.push(mmcs_widx);
+                    // mmcs_bit (0 or 1 element)
+                    let mmcs_bit_exprs = &witness_exprs[7];
+                    if !(mmcs_bit_exprs.is_empty() || mmcs_bit_exprs.len() == 1) {
+                        return Err(CircuitBuilderError::NonPrimitiveOpArity {
+                            op: "PoseidonPerm",
+                            expected: "0 or 1 element for mmcs_bit".to_string(),
+                            got: mmcs_bit_exprs.len(),
+                        });
+                    }
+                    let mmcs_bit_widx = mmcs_bit_exprs
+                        .iter()
+                        .map(|&expr| {
+                            get_witness_id(self.expr_to_widx, expr, "PoseidonPerm mmcs_bit input")
+                        })
+                        .collect::<Result<Vec<WitnessId>, _>>()?;
+                    inputs_widx.push(mmcs_bit_widx);
 
                     lowered_ops.push(Op::NonPrimitiveOpWithExecutor {
                         inputs: inputs_widx,
                         outputs: Vec::new(),
-                        executor: Box::new(PoseidonPermExecutor::new(
-                            *new_start,
-                            *merkle_path,
-                            *mmcs_bit,
-                        )),
-                        op_id: *op_id,
+                        executor: Box::new(PoseidonPermExecutor::new(new_start, merkle_path)),
+                        op_id,
                     });
                 }
             }
@@ -307,16 +330,17 @@ mod tests {
 
         let expr_map = create_expr_map(4);
 
-        let ops = vec![(
-            NonPrimitiveOpId(0),
-            NonPrimitiveOpType::MmcsVerify,
-            vec![
+        let ops = vec![NonPrimitiveOperationData {
+            op_id: NonPrimitiveOpId(0),
+            op_type: NonPrimitiveOpType::MmcsVerify,
+            witness_exprs: vec![
                 vec![ExprId(0)],            // first leaf
                 vec![],                     // second leaf
                 vec![ExprId(1), ExprId(2)], // directions
                 vec![ExprId(3)],            // root
             ],
-        )];
+            params: None,
+        }];
 
         let lowerer = NonPrimitiveLowerer::new(&ops, &expr_map, &config);
         let result: Vec<Op<BabyBear>> = lowerer.lower().unwrap();
@@ -364,11 +388,12 @@ mod tests {
             vec![ExprId(16), ExprId(17)],                 // directions
             (18..26).map(|i| ExprId(i as u32)).collect(), // root
         ];
-        let ops = vec![(
-            NonPrimitiveOpId(0),
-            NonPrimitiveOpType::MmcsVerify,
+        let ops = vec![NonPrimitiveOperationData {
+            op_id: NonPrimitiveOpId(0),
+            op_type: NonPrimitiveOpType::MmcsVerify,
             witness_exprs,
-        )];
+            params: None,
+        }];
 
         let lowerer = NonPrimitiveLowerer::new(&ops, &expr_map, &config);
         let result: Vec<Op<BabyBear>> = lowerer.lower().unwrap();
@@ -412,21 +437,24 @@ mod tests {
 
         // For mock config ext=1, expected witness_exprs layout per op: [leaf, index, root]
         let ops = vec![
-            (
-                NonPrimitiveOpId(0),
-                NonPrimitiveOpType::MmcsVerify,
-                vec![vec![ExprId(0)], vec![ExprId(1)], vec![ExprId(2)]],
-            ),
-            (
-                NonPrimitiveOpId(1),
-                NonPrimitiveOpType::MmcsVerify,
-                vec![vec![ExprId(3)], vec![ExprId(4)], vec![ExprId(5)]],
-            ),
-            (
-                NonPrimitiveOpId(2),
-                NonPrimitiveOpType::MmcsVerify,
-                vec![vec![ExprId(6)], vec![ExprId(7)], vec![ExprId(8)]],
-            ),
+            NonPrimitiveOperationData {
+                op_id: NonPrimitiveOpId(0),
+                op_type: NonPrimitiveOpType::MmcsVerify,
+                witness_exprs: vec![vec![ExprId(0)], vec![ExprId(1)], vec![ExprId(2)]],
+                params: None,
+            },
+            NonPrimitiveOperationData {
+                op_id: NonPrimitiveOpId(1),
+                op_type: NonPrimitiveOpType::MmcsVerify,
+                witness_exprs: vec![vec![ExprId(3)], vec![ExprId(4)], vec![ExprId(5)]],
+                params: None,
+            },
+            NonPrimitiveOperationData {
+                op_id: NonPrimitiveOpId(2),
+                op_type: NonPrimitiveOpType::MmcsVerify,
+                witness_exprs: vec![vec![ExprId(6)], vec![ExprId(7)], vec![ExprId(8)]],
+                params: None,
+            },
         ];
 
         let lowerer = NonPrimitiveLowerer::new(&ops, &expr_map, &config);
@@ -460,11 +488,12 @@ mod tests {
     #[test]
     fn test_error_operation_not_enabled() {
         // Operation not enabled (missing config)
-        let ops = vec![(
-            NonPrimitiveOpId(0),
-            NonPrimitiveOpType::MmcsVerify,
-            vec![vec![ExprId(0)], vec![ExprId(1)], vec![ExprId(2)]],
-        )];
+        let ops = vec![NonPrimitiveOperationData {
+            op_id: NonPrimitiveOpId(0),
+            op_type: NonPrimitiveOpType::MmcsVerify,
+            witness_exprs: vec![vec![ExprId(0)], vec![ExprId(1)], vec![ExprId(2)]],
+            params: None,
+        }];
         let expr_map = create_expr_map(3);
         let config = BuilderConfig::new(); // No MMCS enabled
 
@@ -487,11 +516,12 @@ mod tests {
         let mut config = BuilderConfig::new();
         config.enable_mmcs(&mock_config);
 
-        let ops = vec![(
-            NonPrimitiveOpId(0),
-            NonPrimitiveOpType::MmcsVerify,
-            vec![vec![ExprId(0)], vec![ExprId(1)]], // Only 2 inputs, need 3
-        )];
+        let ops = vec![NonPrimitiveOperationData {
+            op_id: NonPrimitiveOpId(0),
+            op_type: NonPrimitiveOpType::MmcsVerify,
+            witness_exprs: vec![vec![ExprId(0)], vec![ExprId(1)]], // Only 2 inputs, need 3
+            params: None,
+        }];
         let expr_map = create_expr_map(3);
 
         let lowerer = NonPrimitiveLowerer::new(&ops, &expr_map, &config);
@@ -515,16 +545,17 @@ mod tests {
         let mut config = BuilderConfig::new();
         config.enable_mmcs(&mock_config);
 
-        let ops = vec![(
-            NonPrimitiveOpId(0),
-            NonPrimitiveOpType::MmcsVerify,
-            vec![
+        let ops = vec![NonPrimitiveOperationData {
+            op_id: NonPrimitiveOpId(0),
+            op_type: NonPrimitiveOpType::MmcsVerify,
+            witness_exprs: vec![
                 vec![ExprId(0)],
                 vec![ExprId(1)],
                 vec![ExprId(2)],
                 vec![ExprId(3)],
             ], // 4 inputs, max 3
-        )];
+            params: None,
+        }];
         let expr_map = create_expr_map(4);
 
         let lowerer = NonPrimitiveLowerer::new(&ops, &expr_map, &config);
@@ -548,11 +579,12 @@ mod tests {
         let mut config = BuilderConfig::new();
         config.enable_mmcs(&mock_config);
 
-        let ops = vec![(
-            NonPrimitiveOpId(0),
-            NonPrimitiveOpType::MmcsVerify,
-            vec![vec![ExprId(99)], vec![ExprId(1)], vec![ExprId(2)]], // ExprId(99) not in map
-        )];
+        let ops = vec![NonPrimitiveOperationData {
+            op_id: NonPrimitiveOpId(0),
+            op_type: NonPrimitiveOpType::MmcsVerify,
+            witness_exprs: vec![vec![ExprId(99)], vec![ExprId(1)], vec![ExprId(2)]], // ExprId(99) not in map
+            params: None,
+        }];
         let expr_map = create_expr_map(3);
 
         let lowerer = NonPrimitiveLowerer::new(&ops, &expr_map, &config);
@@ -575,11 +607,12 @@ mod tests {
         let mut config = BuilderConfig::new();
         config.enable_mmcs(&mock_config);
 
-        let ops = vec![(
-            NonPrimitiveOpId(0),
-            NonPrimitiveOpType::MmcsVerify,
-            vec![vec![ExprId(0)], vec![ExprId(88)], vec![ExprId(2)]], // ExprId(88) not in map
-        )];
+        let ops = vec![NonPrimitiveOperationData {
+            op_id: NonPrimitiveOpId(0),
+            op_type: NonPrimitiveOpType::MmcsVerify,
+            witness_exprs: vec![vec![ExprId(0)], vec![ExprId(88)], vec![ExprId(2)]], // ExprId(88) not in map
+            params: None,
+        }];
         let expr_map = create_expr_map(3);
 
         let lowerer = NonPrimitiveLowerer::new(&ops, &expr_map, &config);
@@ -602,11 +635,12 @@ mod tests {
         let mut config = BuilderConfig::new();
         config.enable_mmcs(&mock_config);
 
-        let ops = vec![(
-            NonPrimitiveOpId(0),
-            NonPrimitiveOpType::MmcsVerify,
-            vec![vec![ExprId(0)], vec![ExprId(1)], vec![ExprId(77)]], // ExprId(77) not in map
-        )];
+        let ops = vec![NonPrimitiveOperationData {
+            op_id: NonPrimitiveOpId(0),
+            op_type: NonPrimitiveOpType::MmcsVerify,
+            witness_exprs: vec![vec![ExprId(0)], vec![ExprId(1)], vec![ExprId(77)]], // ExprId(77) not in map
+            params: None,
+        }];
         let expr_map = create_expr_map(3);
 
         let lowerer = NonPrimitiveLowerer::new(&ops, &expr_map, &config);
@@ -642,7 +676,7 @@ mod tests {
         let mut config = BuilderConfig::new();
         config.enable_poseidon_perm();
 
-        // Layout: in0..3 (1 elem each), out0..1 (empty), mmcs_index_sum (1 elem)
+        // Layout: in0..3 (1 elem each), out0..1 (empty), mmcs_index_sum (1 elem), mmcs_bit (1 elem)
         let witness_exprs = vec![
             vec![ExprId(0)],
             vec![ExprId(1)],
@@ -651,17 +685,18 @@ mod tests {
             vec![],
             vec![],
             vec![ExprId(2)],
+            vec![ExprId(3)],
         ];
 
-        let ops = vec![(
-            NonPrimitiveOpId(0),
-            NonPrimitiveOpType::PoseidonPerm {
+        let ops = vec![NonPrimitiveOperationData {
+            op_id: NonPrimitiveOpId(0),
+            op_type: NonPrimitiveOpType::PoseidonPerm,
+            witness_exprs,
+            params: Some(NonPrimitiveOpParams::PoseidonPerm {
                 new_start: true,
                 merkle_path: false,
-                mmcs_bit: false,
-            },
-            witness_exprs,
-        )];
+            }),
+        }];
         let expr_map = create_expr_map(10);
 
         let lowerer = NonPrimitiveLowerer::new(&ops, &expr_map, &config);
@@ -675,22 +710,17 @@ mod tests {
                 outputs,
                 ..
             } => {
-                assert_eq!(
-                    executor.op_type(),
-                    &NonPrimitiveOpType::PoseidonPerm {
-                        new_start: true,
-                        merkle_path: false,
-                        mmcs_bit: false,
-                    }
-                );
+                assert_eq!(executor.op_type(), &NonPrimitiveOpType::PoseidonPerm);
                 assert!(outputs.is_empty());
-                assert_eq!(inputs.len(), 7);
+                assert_eq!(inputs.len(), 8);
                 // in0
                 assert_eq!(inputs[0], vec![WitnessId(0)]);
                 // in1
                 assert_eq!(inputs[1], vec![WitnessId(1)]);
                 // mmcs_index_sum
                 assert_eq!(inputs[6], vec![WitnessId(2)]);
+                // mmcs_bit
+                assert_eq!(inputs[7], vec![WitnessId(3)]);
             }
             _ => panic!("Expected PoseidonPerm op"),
         }

@@ -35,8 +35,21 @@ pub struct CircuitBuilder<F> {
     non_primitive_trace_generators: HashMap<NonPrimitiveOpType, TraceGeneratorFn<F>>,
 }
 
-/// The non-primitive operation id, type, and the vectors of the expressions representing its inputs
-pub type NonPrimitiveOperationData = (NonPrimitiveOpId, NonPrimitiveOpType, Vec<Vec<ExprId>>);
+/// Per-op extra parameters that are not encoded in the op type.
+#[derive(Debug, Clone)]
+pub enum NonPrimitiveOpParams {
+    PoseidonPerm { new_start: bool, merkle_path: bool },
+}
+
+/// The non-primitive operation id, type, the vectors of the expressions representing its inputs,
+/// and any per-op parameters.
+#[derive(Debug, Clone)]
+pub struct NonPrimitiveOperationData {
+    pub op_id: NonPrimitiveOpId,
+    pub op_type: NonPrimitiveOpType,
+    pub witness_exprs: Vec<Vec<ExprId>>,
+    pub params: Option<NonPrimitiveOpParams>,
+}
 
 impl<F> Default for CircuitBuilder<F>
 where
@@ -94,20 +107,8 @@ where
         );
 
         self.config.enable_poseidon_perm();
-        for &new_start in &[false, true] {
-            for &merkle_path in &[false, true] {
-                for &mmcs_bit in &[false, true] {
-                    self.non_primitive_trace_generators.insert(
-                        NonPrimitiveOpType::PoseidonPerm {
-                            new_start,
-                            merkle_path,
-                            mmcs_bit,
-                        },
-                        trace_generator,
-                    );
-                }
-            }
-        }
+        self.non_primitive_trace_generators
+            .insert(NonPrimitiveOpType::PoseidonPerm, trace_generator);
     }
 
     /// Checks whether an op type is enabled on this builder.
@@ -372,6 +373,7 @@ where
         &mut self,
         op_type: NonPrimitiveOpType,
         witness_exprs: Vec<Vec<ExprId>>,
+        params: Option<NonPrimitiveOpParams>,
         label: &'static str,
     ) -> NonPrimitiveOpId {
         let op_id = NonPrimitiveOpId(self.non_primitive_ops.len() as u32);
@@ -384,7 +386,12 @@ where
             label,
         );
 
-        self.non_primitive_ops.push((op_id, op_type, witness_exprs));
+        self.non_primitive_ops.push(NonPrimitiveOperationData {
+            op_id,
+            op_type,
+            witness_exprs,
+            params,
+        });
         op_id
     }
 

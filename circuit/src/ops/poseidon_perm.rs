@@ -8,7 +8,7 @@ use alloc::vec::Vec;
 use p3_field::{Field, PrimeCharacteristicRing};
 
 use crate::CircuitError;
-use crate::builder::CircuitBuilder;
+use crate::builder::{CircuitBuilder, NonPrimitiveOpParams};
 use crate::op::{ExecutionContext, NonPrimitiveExecutor, NonPrimitiveOpType};
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessId};
 
@@ -16,7 +16,8 @@ use crate::types::{ExprId, NonPrimitiveOpId, WitnessId};
 pub struct PoseidonPermCall {
     pub new_start: bool,
     pub merkle_path: bool,
-    pub mmcs_bit: bool,
+    /// Optional mmcs direction bit input (base field, boolean). If None, defaults to 0/private.
+    pub mmcs_bit: Option<ExprId>,
     /// Optional CTL exposure for each input limb (one extension element).
     /// If `None`, the limb is considered private/unexposed (in_ctl = 0).
     pub inputs: [Option<ExprId>; 4],
@@ -33,7 +34,7 @@ impl Default for PoseidonPermCall {
         Self {
             new_start: false,
             merkle_path: false,
-            mmcs_bit: false,
+            mmcs_bit: None,
             inputs: [None, None, None, None],
             outputs: [None, None],
             mmcs_index_sum: None,
@@ -46,7 +47,7 @@ pub trait PoseidonPermOps<F: Clone + PrimeCharacteristicRing + Eq> {
     ///
     /// - `new_start`: if true, this row starts a new chain (no chaining from previous row).
     /// - `merkle_path`: if true, Merkle chaining semantics apply for limbs 0–1.
-    /// - `mmcs_bit`: Merkle direction bit for this row (used when `merkle_path` is true).
+    /// - `mmcs_bit`: Merkle direction bit witness for this row (used when `merkle_path` is true).
     /// - `inputs`: optional CTL exposure per limb (extension element, length 4 if provided).
     /// - `outputs`: optional CTL exposure for limbs 0–1 (extension element, length 4 if provided).
     /// - `mmcs_index_sum`: optional exposure of the MMCS index accumulator (base field element).
@@ -64,16 +65,12 @@ where
         &mut self,
         call: PoseidonPermCall,
     ) -> Result<NonPrimitiveOpId, crate::CircuitBuilderError> {
-        let op_type = NonPrimitiveOpType::PoseidonPerm {
-            new_start: call.new_start,
-            merkle_path: call.merkle_path,
-            mmcs_bit: call.mmcs_bit,
-        };
+        let op_type = NonPrimitiveOpType::PoseidonPerm;
         self.ensure_op_enabled(op_type.clone())?;
 
         // Build witness_exprs layout:
-        // [in0, in1, in2, in3, out0, out1, mmcs_index_sum]
-        let mut witness_exprs: Vec<Vec<ExprId>> = Vec::with_capacity(7);
+        // [in0, in1, in2, in3, out0, out1, mmcs_index_sum, mmcs_bit]
+        let mut witness_exprs: Vec<Vec<ExprId>> = Vec::with_capacity(8);
 
         for limb in call.inputs.iter() {
             if let Some(val) = limb {
@@ -96,8 +93,22 @@ where
         } else {
             witness_exprs.push(Vec::new());
         }
+        // mmcs_bit
+        if let Some(bit) = call.mmcs_bit {
+            witness_exprs.push(vec![bit]);
+        } else {
+            witness_exprs.push(Vec::new());
+        }
 
-        Ok(self.push_non_primitive_op(op_type, witness_exprs, "poseidon_perm"))
+        Ok(self.push_non_primitive_op(
+            op_type,
+            witness_exprs,
+            Some(NonPrimitiveOpParams::PoseidonPerm {
+                new_start: call.new_start,
+                merkle_path: call.merkle_path,
+            }),
+            "poseidon_perm",
+        ))
     }
 }
 
@@ -107,16 +118,16 @@ where
 #[derive(Debug, Clone)]
 pub struct PoseidonPermExecutor {
     op_type: NonPrimitiveOpType,
+    pub new_start: bool,
+    pub merkle_path: bool,
 }
 
 impl PoseidonPermExecutor {
-    pub const fn new(new_start: bool, merkle_path: bool, mmcs_bit: bool) -> Self {
+    pub const fn new(new_start: bool, merkle_path: bool) -> Self {
         Self {
-            op_type: NonPrimitiveOpType::PoseidonPerm {
-                new_start,
-                merkle_path,
-                mmcs_bit,
-            },
+            op_type: NonPrimitiveOpType::PoseidonPerm,
+            new_start,
+            merkle_path,
         }
     }
 }
@@ -133,6 +144,10 @@ impl<F: Field> NonPrimitiveExecutor<F> for PoseidonPermExecutor {
 
     fn op_type(&self) -> &NonPrimitiveOpType {
         &self.op_type
+    }
+
+    fn as_any(&self) -> &dyn core::any::Any {
+        self
     }
 
     fn boxed(&self) -> Box<dyn NonPrimitiveExecutor<F>> {

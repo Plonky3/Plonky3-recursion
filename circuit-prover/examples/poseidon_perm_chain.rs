@@ -87,6 +87,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     for row in 0..chain_length {
         let is_first = row == 0;
         let is_last = row + 1 == chain_length;
+        let mmcs_bit_zero = builder.alloc_const(Ext4::ZERO, "mmcs_bit_zero");
 
         let mut inputs: [Option<ExprId>; 4] = [None, None, None, None];
         if is_first {
@@ -104,7 +105,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         builder.add_poseidon_perm(PoseidonPermCall {
             new_start: is_first,
             merkle_path: false,
-            mmcs_bit: false,
+            mmcs_bit: Some(mmcs_bit_zero),
             inputs,
             outputs,
             mmcs_index_sum: None,

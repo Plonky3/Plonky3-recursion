@@ -233,12 +233,7 @@ pub enum NonPrimitiveOpType {
     /// Mmcs Verify gate with the argument is the size of the path
     MmcsVerify,
     /// Poseidon permutation operation (one Poseidon call / table row).
-    /// Flags are per-row controls (transparent columns in the AIR).
-    PoseidonPerm {
-        new_start: bool,
-        merkle_path: bool,
-        mmcs_bit: bool,
-    },
+    PoseidonPerm,
 }
 
 /// Non-primitive operation types
@@ -409,6 +404,9 @@ pub trait NonPrimitiveExecutor<F: Field>: Debug {
 
     /// Get operation type identifier (for config lookup, error reporting)
     fn op_type(&self) -> &NonPrimitiveOpType;
+
+    /// Allow downcasting to concrete executor types
+    fn as_any(&self) -> &dyn core::any::Any;
 
     /// Clone as trait object
     fn boxed(&self) -> Box<dyn NonPrimitiveExecutor<F>>;
@@ -888,11 +886,7 @@ mod tests {
     fn test_execution_context_get_config() {
         // Create a configuration map for operation parameters
         let mut configs = HashMap::new();
-        let op_type = NonPrimitiveOpType::PoseidonPerm {
-            new_start: false,
-            merkle_path: false,
-            mmcs_bit: false,
-        };
+        let op_type = NonPrimitiveOpType::PoseidonPerm;
         configs.insert(op_type.clone(), NonPrimitiveOpConfig::None);
 
         // Create execution context with configurations
@@ -922,11 +916,7 @@ mod tests {
             ExecutionContext::new(&mut witness, &private_data, &configs, op_id);
 
         // Attempt to access a configuration that wasn't registered
-        let op_type = NonPrimitiveOpType::PoseidonPerm {
-            new_start: false,
-            merkle_path: false,
-            mmcs_bit: false,
-        };
+        let op_type = NonPrimitiveOpType::PoseidonPerm;
         let result = ctx.get_config(&op_type);
 
         // Missing configurations indicate setup errors
@@ -957,21 +947,9 @@ mod tests {
 
     #[test]
     fn test_non_primitive_op_type_equality() {
-        let a = NonPrimitiveOpType::PoseidonPerm {
-            new_start: true,
-            merkle_path: false,
-            mmcs_bit: false,
-        };
-        let b = NonPrimitiveOpType::PoseidonPerm {
-            new_start: true,
-            merkle_path: false,
-            mmcs_bit: false,
-        };
-        let c = NonPrimitiveOpType::PoseidonPerm {
-            new_start: false,
-            merkle_path: false,
-            mmcs_bit: false,
-        };
+        let a = NonPrimitiveOpType::PoseidonPerm;
+        let b = NonPrimitiveOpType::PoseidonPerm;
+        let c = NonPrimitiveOpType::MmcsVerify;
         assert_eq!(a, b);
         assert_ne!(a, c);
     }

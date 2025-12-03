@@ -105,6 +105,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     );
 
     // Row 0: expose all inputs
+    let mmcs_bit_row0 = builder.alloc_const(Ext4::from_prime_subfield(Base::ZERO), "mmcs_bit_row0");
     let inputs_row0: [ExprId; 4] = [
         builder.alloc_const(row0_state[0], "leaf0"),
         builder.alloc_const(row0_state[1], "leaf1"),
@@ -115,7 +116,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     builder.add_poseidon_perm(p3_circuit::ops::PoseidonPermCall {
         new_start: true,
         merkle_path: true,
-        mmcs_bit: false,
+        mmcs_bit: Some(mmcs_bit_row0),
         inputs: inputs_row0.map(Some),
         outputs: [None, None],
         mmcs_index_sum: None,
@@ -135,10 +136,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         "mmcs_index_sum",
     );
 
+    let mmcs_bit_row1 = builder.alloc_const(Ext4::from_prime_subfield(Base::ONE), "mmcs_bit_row1");
     builder.add_poseidon_perm(p3_circuit::ops::PoseidonPermCall {
         new_start: false,
         merkle_path: true,
-        mmcs_bit: true,
+        mmcs_bit: Some(mmcs_bit_row1),
         inputs: sibling1_inputs,
         outputs: [Some(out0), Some(out1)],
         mmcs_index_sum: Some(mmcs_idx_sum_expr),
