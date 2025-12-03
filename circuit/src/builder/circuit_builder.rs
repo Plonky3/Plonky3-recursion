@@ -104,11 +104,6 @@ where
         );
     }
 
-    /// Enables FRI verification operations.
-    pub const fn enable_fri(&mut self) {
-        self.config.enable_fri();
-    }
-
     /// Checks whether an op type is enabled on this builder.
     fn is_op_enabled(&self, op: &NonPrimitiveOpType) -> bool {
         self.config.is_op_enabled(op)
@@ -156,7 +151,7 @@ where
         self.public_tracker.count()
     }
 
-    /// Allocates a sequence of witness hints.  
+    /// Allocates a sequence of witness hints.
     /// Each hint is a placeholder whose values will later be provided by the given `filler`.
     #[must_use]
     pub fn alloc_witness_hints<W: 'static + WitnessHintsFiller<F>>(
@@ -167,8 +162,8 @@ where
         self.expr_builder.add_witness_hints(filler, label)
     }
 
-    /// Allocates a sequence of witness hints using the default filler.  
-    /// This is equivalent to calling `alloc_witness_hints` with `DefaultHint`,  
+    /// Allocates a sequence of witness hints using the default filler.
+    /// This is equivalent to calling `alloc_witness_hints` with `DefaultHint`,
     /// but is kept only for compatibility and should be removed.
     /// TODO: Remove this function.
     #[must_use]

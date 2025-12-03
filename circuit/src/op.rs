@@ -232,7 +232,6 @@ impl<F: Field + PartialEq> PartialEq for Op<F> {
 pub enum NonPrimitiveOpType {
     /// Mmcs Verify gate with the argument is the size of the path
     MmcsVerify,
-    FriVerify,
     /// Poseidon permutation operation (one Poseidon call / table row).
     /// Flags are per-row controls (transparent columns in the AIR).
     PoseidonPerm {
