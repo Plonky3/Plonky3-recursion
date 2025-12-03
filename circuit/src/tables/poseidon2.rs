@@ -220,14 +220,14 @@ where
                                     .zip(chunk.iter())
                                 {
                                     let val = self.get_witness(&wid)?;
-                                    let base = val.as_base().ok_or(
+                                    let base = val.as_base().ok_or_else(|| {
                                         CircuitError::IncorrectNonPrimitiveOpPrivateData {
                                             op: executor.op_type().clone(),
                                             operation_index: *op_id,
                                             expected: "base field limb component".to_string(),
                                             got: "extension value".to_string(),
-                                        },
-                                    )?;
+                                        }
+                                    })?;
                                     *dst = base;
                                 }
                             }
@@ -259,14 +259,14 @@ where
 
                     let (mmcs_index_sum, mmcs_index_sum_idx) = if inputs[6].len() == 1 {
                         let val = self.get_witness(&inputs[6][0])?;
-                        let base = val.as_base().ok_or(
+                        let base = val.as_base().ok_or_else(|| {
                             CircuitError::IncorrectNonPrimitiveOpPrivateData {
                                 op: executor.op_type().clone(),
                                 operation_index: *op_id,
                                 expected: "base field mmcs_index_sum".to_string(),
                                 got: "extension value".to_string(),
-                            },
-                        )?;
+                            }
+                        })?;
                         (base, inputs[6][0].0)
                     } else {
                         (Config::BaseField::ZERO, 0)

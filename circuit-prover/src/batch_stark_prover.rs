@@ -716,21 +716,9 @@ where
         packing: TablePacking,
         traces: &Traces<BinomialExtensionField<Val<SC>, 4>>,
     ) -> Option<BatchTableInstance<SC>> {
-        fn helper<SC>(
-            me: &Poseidon2Prover,
-            config: &SC,
-            packing: TablePacking,
-            traces: &Traces<BinomialExtensionField<Val<SC>, 4>>,
-        ) -> Option<BatchTableInstance<SC>>
-        where
-            SC: StarkGenericConfig + 'static + Send + Sync,
-            Val<SC>: StarkField + BinomiallyExtendable<4>,
-        {
-            me.batch_instance_from_traces::<SC, BinomialExtensionField<Val<SC>, 4>>(
-                config, packing, traces,
-            )
-        }
-        helper(self, config, packing, traces)
+        self.batch_instance_from_traces::<SC, BinomialExtensionField<Val<SC>, 4>>(
+            config, packing, traces,
+        )
     }
 
     fn batch_instance_d6(

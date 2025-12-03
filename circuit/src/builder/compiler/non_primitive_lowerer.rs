@@ -181,7 +181,7 @@ impl<'a> NonPrimitiveLowerer<'a> {
                                 get_witness_id(
                                     self.expr_to_widx,
                                     expr,
-                                    &format!("PoseidonPerm input limb {}", i),
+                                    &format!("PoseidonPerm input limb {i}"),
                                 )
                             })
                             .collect::<Result<Vec<WitnessId>, _>>()?;
@@ -202,7 +202,7 @@ impl<'a> NonPrimitiveLowerer<'a> {
                                 get_witness_id(
                                     self.expr_to_widx,
                                     expr,
-                                    &format!("PoseidonPerm output limb {}", i),
+                                    &format!("PoseidonPerm output limb {i}"),
                                 )
                             })
                             .collect::<Result<Vec<WitnessId>, _>>()?;

@@ -424,11 +424,9 @@ fn eval<
     let local_out = &local.poseidon2.ending_full_rounds[HALF_FULL_ROUNDS - 1].post;
     let next_in = &next.poseidon2.inputs;
 
-    // mmcs_bit should be boolean when used.
-    // Enforce booleanity of mmcs_bit on the next row.
-    builder
-        .when_transition()
-        .assert_zero(next.mmcs_bit.clone() * (next.mmcs_bit.clone() - AB::Expr::ONE));
+    // mmcs_bit should always be boolean.
+    builder.assert_bool(next.mmcs_bit.clone());
+    builder.assert_bool(local.mmcs_bit.clone());
 
     // Normal chaining.
     // If new_start_{r+1} = 0 and merkle_path_{r+1} = 0:

@@ -110,7 +110,7 @@ pub struct PoseidonPermExecutor {
 }
 
 impl PoseidonPermExecutor {
-    pub fn new(new_start: bool, merkle_path: bool, mmcs_bit: bool) -> Self {
+    pub const fn new(new_start: bool, merkle_path: bool, mmcs_bit: bool) -> Self {
         Self {
             op_type: NonPrimitiveOpType::PoseidonPerm {
                 new_start,

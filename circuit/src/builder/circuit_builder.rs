@@ -94,14 +94,20 @@ where
         );
 
         self.config.enable_poseidon_perm();
-        self.non_primitive_trace_generators.insert(
-            NonPrimitiveOpType::PoseidonPerm {
-                new_start: false,
-                merkle_path: false,
-                mmcs_bit: false,
-            },
-            trace_generator,
-        );
+        for &new_start in &[false, true] {
+            for &merkle_path in &[false, true] {
+                for &mmcs_bit in &[false, true] {
+                    self.non_primitive_trace_generators.insert(
+                        NonPrimitiveOpType::PoseidonPerm {
+                            new_start,
+                            merkle_path,
+                            mmcs_bit,
+                        },
+                        trace_generator,
+                    );
+                }
+            }
+        }
     }
 
     /// Checks whether an op type is enabled on this builder.

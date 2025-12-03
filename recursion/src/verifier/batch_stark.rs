@@ -415,8 +415,7 @@ where
         let next_prep_len = instance.preprocessed_next.as_ref().map_or(0, |v| v.len());
         if local_prep_len != pre_w || next_prep_len != pre_w {
             return Err(VerificationError::InvalidProofShape(format!(
-                "Instance has incorrect preprocessed width: expected {}, got {} / {}",
-                pre_w, local_prep_len, next_prep_len
+                "Instance has incorrect preprocessed width: expected {pre_w}, got {local_prep_len} / {next_prep_len}"
             )));
         }
         let air_width = A::width(air);

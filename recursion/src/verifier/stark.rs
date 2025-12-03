@@ -367,8 +367,7 @@ where
     if preprocessed_width != preprocessed_local_len || preprocessed_width != preprocessed_next_len {
         // Verifier expects preprocessed trace while proof does not have it, or vice versa
         return Err(VerificationError::InvalidProofShape(format!(
-            "Expected preprocessed width {} but local has length {} and next has length {}",
-            preprocessed_width, preprocessed_local_len, preprocessed_next_len
+            "Expected preprocessed width {preprocessed_width} but local has length {preprocessed_local_len} and next has length {preprocessed_next_len}"
         )));
     }
 
