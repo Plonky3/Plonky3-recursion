@@ -13,7 +13,6 @@ use crate::op::NonPrimitiveOpPrivateData;
 
 mod add;
 mod constant;
-mod mmcs;
 mod mul;
 mod poseidon2;
 mod public;
@@ -22,7 +21,6 @@ mod witness;
 
 pub use add::AddTrace;
 pub use constant::ConstTrace;
-pub use mmcs::{MmcsPathTrace, MmcsPrivateData, MmcsTrace, generate_mmcs_trace};
 pub use mul::MulTrace;
 pub use poseidon2::{
     Poseidon2CircuitRow, Poseidon2CircuitTrace, Poseidon2Params, Poseidon2Trace,

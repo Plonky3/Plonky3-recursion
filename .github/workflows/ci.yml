@@ -60,7 +60,6 @@ jobs:
       - name: Run examples
         run: |
           cargo run --package p3-circuit-prover --example fibonacci
-          cargo run --package p3-circuit-prover --example mmcs_verify
           cargo run --package p3-circuit-prover --example poseidon_perm_chain
           cargo run --package p3-circuit-prover --example poseidon_perm_merkle
           
@@ -104,7 +103,7 @@ jobs:
           # cargo build --verbose --target ${{ env.target }} -p p3-field-air
           # cargo build --verbose --target ${{ env.target }} -p p3-fri-air
           # cargo build --verbose --target ${{ env.target }} -p p3-interpolation-air
-          cargo build --verbose --target ${{ env.target }} -p p3-mmcs-air
+          # cargo build --verbose --target ${{ env.target }} -p p3-mmcs-air
           cargo build --verbose --target ${{ env.target }} -p p3-poseidon2-circuit-air
           cargo build --verbose --target ${{ env.target }} -p p3-symmetric-air
           cargo build --verbose --target ${{ env.target }} -p p3-recursion

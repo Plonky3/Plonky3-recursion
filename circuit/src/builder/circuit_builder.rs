@@ -9,8 +9,7 @@ use super::compiler::{ExpressionLowerer, NonPrimitiveLowerer, Optimizer};
 use super::{BuilderConfig, ExpressionBuilder, PublicInputTracker};
 use crate::circuit::Circuit;
 use crate::op::{DefaultHint, NonPrimitiveOpType, WitnessHintsFiller};
-use crate::ops::MmcsVerifyConfig;
-use crate::tables::{Poseidon2Params, TraceGeneratorFn, generate_mmcs_trace};
+use crate::tables::{Poseidon2Params, TraceGeneratorFn};
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};
 use crate::{CircuitBuilderError, CircuitField};
 
@@ -79,16 +78,6 @@ where
     /// Enables a non-primitive operation type on this builder.
     pub fn enable_op(&mut self, op: NonPrimitiveOpType, cfg: crate::op::NonPrimitiveOpConfig) {
         self.config.enable_op(op, cfg);
-    }
-
-    /// Enables Mmcs verification operations.
-    pub fn enable_mmcs(&mut self, mmcs_config: &MmcsVerifyConfig)
-    where
-        F: CircuitField,
-    {
-        self.config.enable_mmcs(mmcs_config);
-        self.non_primitive_trace_generators
-            .insert(NonPrimitiveOpType::MmcsVerify, generate_mmcs_trace::<F>);
     }
 
     /// Enables Poseidon permutation operations (one perm per table row).
@@ -562,28 +551,6 @@ mod tests {
         let _result = builder.select(b, t, s);
         // Should create: t_minus_s, scaled, and result
         assert_eq!(builder.public_input_count(), 1);
-    }
-
-    #[test]
-    fn test_ensure_op_enabled_success() {
-        let mut builder = CircuitBuilder::<BabyBear>::new();
-        let config = MmcsVerifyConfig::mock_config();
-        builder.enable_mmcs(&config);
-        let result = builder.ensure_op_enabled(NonPrimitiveOpType::MmcsVerify);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_ensure_op_enabled_failure() {
-        let builder = CircuitBuilder::<BabyBear>::new();
-        let result = builder.ensure_op_enabled(NonPrimitiveOpType::MmcsVerify);
-        assert!(result.is_err());
-        match result {
-            Err(CircuitBuilderError::OpNotAllowed { op }) => {
-                assert_eq!(op, NonPrimitiveOpType::MmcsVerify);
-            }
-            _ => panic!("Expected OpNotAllowed error"),
-        }
     }
 
     #[test]

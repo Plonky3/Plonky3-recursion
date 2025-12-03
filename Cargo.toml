@@ -8,7 +8,6 @@ members = [
     "field-air",
     "fri-air",
     "interpolation-air",
-    "mmcs-air",
     "poseidon2-circuit-air",
     "recursion",
     "symmetric-air",
@@ -97,7 +96,6 @@ p3-circuit-prover = { path = "circuit-prover", version = "0.1.0" }
 p3-field-air = { path = "field-air", version = "0.1.0" }
 p3-fri-air = { path = "fri-air", version = "0.1.0" }
 p3-interpolation-air = { path = "interpolation-air", version = "0.1.0" }
-p3-mmcs-air = { path = "mmcs-air", version = "0.1.0" }
 p3-poseidon2-circuit-air = { path = "poseidon2-circuit-air", version = "0.1.0" }
 p3-recursion = { path = "recursion", version = "0.1.0" }
 p3-symmetric-air = { path = "symmetric-air", version = "0.1.0" }

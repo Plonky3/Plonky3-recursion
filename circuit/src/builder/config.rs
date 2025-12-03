@@ -1,7 +1,6 @@
 use hashbrown::HashMap;
 
 use crate::op::{NonPrimitiveOpConfig, NonPrimitiveOpType};
-use crate::ops::MmcsVerifyConfig;
 
 /// Configuration for the circuit builder.
 #[derive(Debug, Clone, Default)]
@@ -21,14 +20,6 @@ impl BuilderConfig {
     /// Enables a non-primitive operation type with its configuration.
     pub fn enable_op(&mut self, op: NonPrimitiveOpType, cfg: NonPrimitiveOpConfig) {
         self.enabled_ops.insert(op, cfg);
-    }
-
-    /// Enables MMCS verification operations with the given configuration.
-    pub fn enable_mmcs(&mut self, mmcs_config: &MmcsVerifyConfig) {
-        self.enable_op(
-            NonPrimitiveOpType::MmcsVerify,
-            NonPrimitiveOpConfig::MmcsVerifyConfig(mmcs_config.clone()),
-        );
     }
 
     /// Enables Poseidon permutation operations (D=4 only).
@@ -59,35 +50,15 @@ mod tests {
     #[test]
     fn test_builder_config_default() {
         let config = BuilderConfig::default();
-        assert!(!config.is_op_enabled(&NonPrimitiveOpType::MmcsVerify));
-    }
-
-    #[test]
-    fn test_builder_config_enable_mmcs() {
-        let mut config = BuilderConfig::new();
-        let mmcs_config = MmcsVerifyConfig::mock_config();
-
-        assert!(!config.is_op_enabled(&NonPrimitiveOpType::MmcsVerify));
-
-        config.enable_mmcs(&mmcs_config);
-
-        assert!(config.is_op_enabled(&NonPrimitiveOpType::MmcsVerify));
-        assert!(
-            config
-                .get_op_config(&NonPrimitiveOpType::MmcsVerify)
-                .is_some()
-        );
+        assert!(!config.is_op_enabled(&NonPrimitiveOpType::PoseidonPerm));
     }
 
     #[test]
     fn test_builder_config_multiple_ops() {
         let mut config = BuilderConfig::new();
-        let mmcs_config = MmcsVerifyConfig::mock_config();
 
-        config.enable_mmcs(&mmcs_config);
         config.enable_poseidon_perm();
 
-        assert!(config.is_op_enabled(&NonPrimitiveOpType::MmcsVerify));
         assert!(config.is_op_enabled(&NonPrimitiveOpType::PoseidonPerm));
     }
 }
