@@ -14,6 +14,12 @@ use crate::op::{NonPrimitiveOpPrivateData, NonPrimitiveOpType, Op};
 use crate::ops::poseidon_perm::PoseidonPermExecutor;
 use crate::types::WitnessId;
 
+/// Private data for Poseidon permutation (e.g. pre-image).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PoseidonPermPrivateData<F> {
+    pub input_values: Vec<F>,
+}
+
 /// Trait to provide Poseidon2 configuration parameters for a field type.
 ///
 /// This allows the trace generator and AIR to work with different Poseidon2 configurations
@@ -191,7 +197,30 @@ where
                     });
                 }
 
-                let mut padded_inputs = vec![Config::BaseField::ZERO; width];
+                // Initialize padded_inputs.
+                // If private data is available, use it as the default.
+                // Otherwise start with zero.
+                let mut padded_inputs =
+                    if let Some(Some(NonPrimitiveOpPrivateData::PoseidonPerm(private_data))) =
+                        self.non_primitive_op_private_data.get(op_id.0 as usize)
+                    {
+                        let num_limbs = width / d;
+                        if private_data.input_values.len() != num_limbs {
+                            return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
+                                op: executor.op_type().clone(),
+                                expected: num_limbs.to_string(),
+                                got: private_data.input_values.len(),
+                            });
+                        }
+                        let mut flattened = Vec::with_capacity(width);
+                        for limb in &private_data.input_values {
+                            flattened.extend_from_slice(limb.as_basis_coefficients_slice());
+                        }
+                        flattened
+                    } else {
+                        vec![Config::BaseField::ZERO; width]
+                    };
+
                 let mut in_ctl = [false; 4];
                 let mut in_idx = [0u32; 4];
                 for limb in 0..4 {

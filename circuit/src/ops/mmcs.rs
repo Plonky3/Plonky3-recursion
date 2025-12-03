@@ -292,7 +292,17 @@ impl<F: Field> NonPrimitiveExecutor<F> for MmcsVerifyExecutor {
         };
 
         // Get private data
-        let NonPrimitiveOpPrivateData::MmcsVerify(private_data) = ctx.get_private_data()?;
+        let private_data = match ctx.get_private_data()? {
+            NonPrimitiveOpPrivateData::MmcsVerify(data) => data,
+            _ => {
+                return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
+                    op: self.op_type.clone(),
+                    operation_index: ctx.operation_id(),
+                    expected: "MmcsVerify private data".to_string(),
+                    got: "other private data".to_string(),
+                });
+            }
+        };
 
         // Validate input size: leaf(ext) + index(1) + root(ext)
         if !config.input_size().contains(&inputs.len()) {

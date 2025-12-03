@@ -9,7 +9,7 @@ use p3_field::Field;
 use strum_macros::EnumCount;
 
 use crate::ops::MmcsVerifyConfig;
-use crate::tables::MmcsPrivateData;
+use crate::tables::{MmcsPrivateData, PoseidonPermPrivateData};
 use crate::types::{NonPrimitiveOpId, WitnessId};
 use crate::{CircuitError, ExprId};
 
@@ -293,6 +293,7 @@ pub enum NonPrimitiveOpPrivateData<F> {
     /// to generate a valid proof. This data is not part of the public
     /// circuit specification.
     MmcsVerify(MmcsPrivateData<F>),
+    PoseidonPerm(PoseidonPermPrivateData<F>),
 }
 
 /// Execution context providing operations access to witness table, private data, and configs

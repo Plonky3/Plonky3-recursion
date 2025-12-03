@@ -414,7 +414,14 @@ impl<'a, F: CircuitField> MmcsTraceBuilder<'a, F> {
                 .ok_or(CircuitError::NonPrimitiveOpMissingPrivateData {
                     operation_index: *op_id,
                 })?;
-            let NonPrimitiveOpPrivateData::MmcsVerify(priv_data) = private_data;
+            let NonPrimitiveOpPrivateData::MmcsVerify(priv_data) = private_data else {
+                return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
+                    op: executor.op_type().clone(),
+                    operation_index: *op_id,
+                    expected: "MmcsVerify private data".to_string(),
+                    got: "other private data".to_string(),
+                });
+            };
 
             let root = &inputs[inputs.len() - 1];
             let directions = &inputs[inputs.len() - 2];

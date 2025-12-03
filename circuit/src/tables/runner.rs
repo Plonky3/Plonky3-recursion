@@ -85,6 +85,12 @@ impl<F: CircuitField> CircuitRunner<F> {
                 ) => {
                     // ok
                 }
+                (
+                    crate::op::NonPrimitiveOpType::PoseidonPerm,
+                    NonPrimitiveOpPrivateData::PoseidonPerm(_),
+                ) => {
+                    // ok
+                }
                 (op_ty, _) => {
                     // Other ops currently don't expect private data
                     return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
