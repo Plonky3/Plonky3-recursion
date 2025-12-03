@@ -444,47 +444,49 @@ fn eval<
 
     // Merkle-path chaining.
     // If new_start_{r+1} = 0 and merkle_path_{r+1} = 1:
-    //   - If mmcs_bit_r = 0 (left = previous hash): in_{r+1}[0] = out_r[0], in_{r+1}[1] = out_r[1]
-    //   - If mmcs_bit_r = 1 (right = previous hash): in_{r+1}[0] = out_r[2], in_{r+1}[1] = out_r[3]
-    //   - in_{r+1}[2], in_{r+1}[3] are free/private
+    //   - If mmcs_bit_r = 0 (left = previous hash): in_{r+1}[0] = out_r[0], in_{r+1}[1] = out_r[1].
+    //     Limbs 2-3 are free/private.
+    //   - If mmcs_bit_r = 1 (right = previous hash): in_{r+1}[2] = out_r[0], in_{r+1}[3] = out_r[1].
+    //     Limbs 0-1 are free/private.
     // BUT: If in_ctl[i] = 1, CTL overrides chaining (limb is not chained).
     // Chaining only applies when in_ctl[limb] = 0.
     let is_left = AB::Expr::ONE - next_bit.clone();
 
-    // Limb 0: chain from out_r[0] (left) or out_r[2] (right), unless in_ctl[0] = 1
+    // Limb 0: chain from out_r[0] (left), unless in_ctl[0] = 1. Not chained if Right.
     for d in 0..D {
-        // Left case: in_{r+1}[0] = out_r[0]
         let gate_left_0 = next.merkle_chain_sel[0].clone() * is_left.clone();
         builder
             .when_transition()
             .when(gate_left_0)
             .assert_zero(next_in[d].clone() - local_out[d].clone());
-
-        // Right case: in_{r+1}[0] = out_r[2]
-        let gate_right_0 = next.merkle_chain_sel[0].clone() * next_bit.clone();
-        builder
-            .when_transition()
-            .when(gate_right_0)
-            .assert_zero(next_in[d].clone() - local_out[2 * D + d].clone());
     }
 
-    // Limb 1: chain from out_r[1] (left) or out_r[3] (right), unless in_ctl[1] = 1
+    // Limb 1: chain from out_r[1] (left), unless in_ctl[1] = 1. Not chained if Right.
     for d in 0..D {
-        // Left case: in_{r+1}[1] = out_r[1]
         let gate_left_1 = next.merkle_chain_sel[1].clone() * is_left.clone();
         builder
             .when_transition()
             .when(gate_left_1)
             .assert_zero(next_in[D + d].clone() - local_out[D + d].clone());
+    }
 
-        // Right case: in_{r+1}[1] = out_r[3]
-        let gate_right_1 = next.merkle_chain_sel[1].clone() * next_bit.clone();
+    // Limb 2: chain from out_r[0] (right), unless in_ctl[2] = 1. Not chained if Left.
+    for d in 0..D {
+        let gate_right_2 = next.merkle_chain_sel[2].clone() * next_bit.clone();
         builder
             .when_transition()
-            .when(gate_right_1)
-            .assert_zero(next_in[D + d].clone() - local_out[3 * D + d].clone());
+            .when(gate_right_2)
+            .assert_zero(next_in[2 * D + d].clone() - local_out[d].clone());
     }
-    // Limbs 2-3 are free/private in Merkle mode (never chained)
+
+    // Limb 3: chain from out_r[1] (right), unless in_ctl[3] = 1. Not chained if Left.
+    for d in 0..D {
+        let gate_right_3 = next.merkle_chain_sel[3].clone() * next_bit.clone();
+        builder
+            .when_transition()
+            .when(gate_right_3)
+            .assert_zero(next_in[3 * D + d].clone() - local_out[D + d].clone());
+    }
 
     // MMCS accumulator update.
     // If merkle_path_{r+1} = 1 and new_start_{r+1} = 0:

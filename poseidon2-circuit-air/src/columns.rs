@@ -47,7 +47,7 @@ pub struct Poseidon2CircuitCols<T, P: PermutationColumns<T>> {
     /// Selector: enables Merkle chaining for limbs 0-1 when the previous row's output should fill them.
     /// Computed as (1 - new_start) * merkle_path * (1 - in_ctl[i]) for i in {0, ..., POSEIDON_PUBLIC_OUTPUT_LIMBS - 1}.
     /// NOTE: This column is not in the spec but is added to reduce constraint degree to 3.
-    pub merkle_chain_sel: [T; POSEIDON_PUBLIC_OUTPUT_LIMBS],
+    pub merkle_chain_sel: [T; POSEIDON_LIMBS],
 
     /// Selector: enables MMCS accumulator updates when chaining in Merkle mode.
     /// Computed as (1 - new_start) * merkle_path.
