@@ -18,12 +18,23 @@ const LIMB_SIZE: usize = 4;
 const WIDTH: usize = 16;
 
 fn main() -> Result<(), Box<dyn Error>> {
-    // Two-row Merkle path example:
-    // Row 0: hashes leaf || sibling0 (merkle_path = true, new_start = true)
+    // Three-row Merkle path example (2 levels):
+    // Row 0: hashes leaf || sibling0 (merkle_path = true, new_start = true, mmcs_bit = 0)
     // Row 1: merkle_path = true, new_start = false, mmcs_bit = 1 (previous hash becomes right child),
-    //        limbs 2-3 take sibling1 as private inputs, limbs 0-1 are chained from previous output.
+    //        limbs 0-1 get prev_out limbs 2-3; limbs 2-3 take sibling1 as private inputs.
+    // Row 2: merkle_path = true, new_start = false, mmcs_bit = 0 (previous hash becomes left child),
+    //        limbs 0-1 get prev_out limbs 0-1; limbs 2-3 take sibling2 as private inputs.
     //
-    // We expose final digest limbs 0-1 and the mmcs_index_sum (should be 1).
+    // Tree shape (limb ranges = base-field coeff slices of Ext4):
+    //          root (row2 out)
+    //         /                 \
+    //   row2 left (row1 out)   sibling2 [25..32]
+    //      /          \
+    // sibling1 [17..24]  row0 out
+    //                     /     \
+    //               leaf [1..8]  sibling0 [9..16]
+    //
+    // We expose final digest limbs 0-1 as public inputs and the mmcs_index_sum (should be binary 010 = 2).
 
     let perm = default_babybear_poseidon2_16();
 
@@ -71,32 +82,51 @@ fn main() -> Result<(), Box<dyn Error>> {
         Base::from_u64(24),
     ])
     .expect("extension from coeffs");
+    let sibling2_limb2 = Ext4::from_basis_coefficients_slice(&[
+        Base::from_u64(25),
+        Base::from_u64(26),
+        Base::from_u64(27),
+        Base::from_u64(28),
+    ])
+    .expect("extension from coeffs");
+    let sibling2_limb3 = Ext4::from_basis_coefficients_slice(&[
+        Base::from_u64(29),
+        Base::from_u64(30),
+        Base::from_u64(31),
+        Base::from_u64(32),
+    ])
+    .expect("extension from coeffs");
 
     // Native row 0 permutation: hash(leaf limbs, sibling0 limbs)
     let row0_state = [leaf_limb0, leaf_limb1, sibling0_limb2, sibling0_limb3];
     let row0_state_base = flatten_ext_limbs(&row0_state);
     let row0_out_base = perm.permute(row0_state_base);
-    let _row0_out_limbs = collect_ext_limbs(&row0_out_base);
 
     // Row 1 chaining: mmcs_bit = 1, so previous hash becomes right child (limbs 0-1 get prev_out[2..4])
     // limbs 2-3 are sibling1 supplied privately.
     let mut row1_state_base = [Base::ZERO; WIDTH];
     // limbs 0-1 from row0 output limbs 2-3
-    row1_state_base[0..LIMB_SIZE].copy_from_slice(&row0_out_base[2 * LIMB_SIZE..3 * LIMB_SIZE]);
-    row1_state_base[LIMB_SIZE..2 * LIMB_SIZE]
-        .copy_from_slice(&row0_out_base[3 * LIMB_SIZE..4 * LIMB_SIZE]);
+    row1_state_base[0..2 * LIMB_SIZE].copy_from_slice(&row0_out_base[2 * LIMB_SIZE..4 * LIMB_SIZE]);
     // limbs 2-3 from sibling1
     let sibling1_flat =
         flatten_ext_limbs(&[sibling1_limb2, sibling1_limb3, Ext4::ZERO, Ext4::ZERO]);
-    row1_state_base[2 * LIMB_SIZE..3 * LIMB_SIZE].copy_from_slice(&sibling1_flat[0..LIMB_SIZE]);
-    row1_state_base[3 * LIMB_SIZE..4 * LIMB_SIZE]
-        .copy_from_slice(&sibling1_flat[LIMB_SIZE..2 * LIMB_SIZE]);
+    row1_state_base[2 * LIMB_SIZE..4 * LIMB_SIZE].copy_from_slice(&sibling1_flat[0..2 * LIMB_SIZE]);
 
     let row1_out_base = perm.permute(row1_state_base);
-    let row1_out_limbs = collect_ext_limbs(&row1_out_base);
 
-    // mmcs_index_sum should be 1 (starting from 0, bit=1 on row1)
-    let mmcs_index_sum_row1 = Base::ONE;
+    // Row 2 chaining: mmcs_bit = 0, so previous hash becomes left child (limbs 0-1 get prev_out[0..2])
+    // limbs 2-3 are sibling2 supplied privately.
+    let mut row2_state_base = [Base::ZERO; WIDTH];
+    row2_state_base[0..2 * LIMB_SIZE].copy_from_slice(&row1_out_base[0..2 * LIMB_SIZE]);
+    let sibling2_flat =
+        flatten_ext_limbs(&[sibling2_limb2, sibling2_limb3, Ext4::ZERO, Ext4::ZERO]);
+    row2_state_base[2 * LIMB_SIZE..4 * LIMB_SIZE].copy_from_slice(&sibling2_flat[0..2 * LIMB_SIZE]);
+
+    let row2_out_base = perm.permute(row2_state_base);
+    let row2_out_limbs = collect_ext_limbs(&row2_out_base);
+
+    // mmcs_index_sum should be 2 (bits: row1=1, row2=0)
+    let mmcs_index_sum_row2 = Base::from_u64(2);
 
     // Build circuit
     let mut builder = CircuitBuilder::<Ext4>::new();
@@ -129,12 +159,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         Some(builder.alloc_const(sibling1_limb2, "sibling1_2")),
         Some(builder.alloc_const(sibling1_limb3, "sibling1_3")),
     ];
-    let out0 = builder.alloc_const(row1_out_limbs[0], "root_limb0");
-    let out1 = builder.alloc_const(row1_out_limbs[1], "root_limb1");
-    let mmcs_idx_sum_expr = builder.alloc_const(
-        Ext4::from_prime_subfield(mmcs_index_sum_row1),
-        "mmcs_index_sum",
-    );
+    // Public root limbs
+    let out0 = builder.add_public_input();
+    let out1 = builder.add_public_input();
+    let mmcs_idx_sum_expr = builder.add_public_input();
 
     let mmcs_bit_row1 = builder.alloc_const(Ext4::from_prime_subfield(Base::ONE), "mmcs_bit_row1");
     builder.add_poseidon_perm(p3_circuit::ops::PoseidonPermCall {
@@ -142,6 +170,23 @@ fn main() -> Result<(), Box<dyn Error>> {
         merkle_path: true,
         mmcs_bit: Some(mmcs_bit_row1),
         inputs: sibling1_inputs,
+        outputs: [None, None],
+        mmcs_index_sum: None,
+    })?;
+
+    // Row 2: merkle left
+    let mmcs_bit_row2 = builder.alloc_const(Ext4::from_prime_subfield(Base::ZERO), "mmcs_bit_row2");
+    let sibling2_inputs: [Option<ExprId>; 4] = [
+        None,
+        None,
+        Some(builder.alloc_const(sibling2_limb2, "sibling2_2")),
+        Some(builder.alloc_const(sibling2_limb3, "sibling2_3")),
+    ];
+    builder.add_poseidon_perm(p3_circuit::ops::PoseidonPermCall {
+        new_start: false,
+        merkle_path: true,
+        mmcs_bit: Some(mmcs_bit_row2),
+        inputs: sibling2_inputs,
         outputs: [Some(out0), Some(out1)],
         mmcs_index_sum: Some(mmcs_idx_sum_expr),
     })?;
@@ -151,14 +196,19 @@ fn main() -> Result<(), Box<dyn Error>> {
     let airs_degrees = get_airs_and_degrees_with_prep::<_, _, 1>(&circuit, table_packing)?;
     let (airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
 
-    let runner = circuit.runner();
+    let mut runner = circuit.runner();
+    runner.set_public_inputs(&[
+        row2_out_limbs[0],
+        row2_out_limbs[1],
+        Ext4::from_prime_subfield(mmcs_index_sum_row2),
+    ])?;
     let traces = runner.run()?;
 
     // Check Poseidon trace rows and mmcs_index_sum exposure
     let poseidon_trace = traces
         .non_primitive_trace::<p3_circuit::tables::Poseidon2Trace<Base>>("poseidon2")
         .expect("poseidon2 trace missing");
-    assert_eq!(poseidon_trace.total_rows(), 2, "expected two perm rows");
+    assert_eq!(poseidon_trace.total_rows(), 3, "expected three perm rows");
 
     let stark_config = config::baby_bear().build();
     let mut common = CommonData::from_airs_and_degrees(&stark_config, &airs, &degrees);
