@@ -254,7 +254,6 @@ pub enum NonPrimitiveOpConfig {
 /// 3. Enable parallel development of different cryptographic primitives
 /// 4. Avoid optimization passes breaking complex constraint relationships
 
-
 /// Private auxiliary data for non-primitive operations
 ///
 /// This data is NOT part of the witness table but provides additional
