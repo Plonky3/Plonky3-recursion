@@ -578,7 +578,7 @@ impl Poseidon2Prover {
 
         // Pad to power of two
         let padded_rows = rows.next_power_of_two();
-        let mut padded_ops = t.operations.clone();
+        let mut padded_ops = t.operations;
         while padded_ops.len() < padded_rows {
             padded_ops.push(
                 padded_ops

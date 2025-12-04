@@ -607,10 +607,8 @@ mod test {
     use rand::{Rng, SeedableRng};
 
     use super::*;
-    use crate::Poseidon2CircuitAirBabyBearD4Width16;
-    use crate::public_types::BabyBearD4Width16;
-    use crate::Poseidon2CircuitAirBabyBearD4Width24;
-    use crate::public_types::BabyBearD4Width24;
+    use crate::public_types::{BabyBearD4Width16, BabyBearD4Width24};
+    use crate::{Poseidon2CircuitAirBabyBearD4Width16, Poseidon2CircuitAirBabyBearD4Width24};
 
     const WIDTH: usize = 16;
     const WIDTH_EXT: usize = BabyBearD4Width16::WIDTH_EXT;

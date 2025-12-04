@@ -116,7 +116,7 @@ unsafe impl<F: Send + Sync, const WIDTH_EXT: usize, const RATE_EXT: usize, const
 impl<F, const WIDTH_EXT: usize, const RATE_EXT: usize, const DIGEST_EXT: usize>
     Poseidon2Trace<F, WIDTH_EXT, RATE_EXT, DIGEST_EXT>
 {
-    pub fn total_rows(&self) -> usize {
+    pub const fn total_rows(&self) -> usize {
         self.operations.len()
     }
 }
@@ -141,7 +141,7 @@ impl<
     }
 
     fn boxed_clone(&self) -> Box<dyn NonPrimitiveTrace<F>> {
-        let cloned: Poseidon2Trace<F, WIDTH_EXT, RATE_EXT, DIGEST_EXT> = self.clone();
+        let cloned = self.clone();
         Box::new(cloned) as Box<dyn NonPrimitiveTrace<F>>
     }
 }
@@ -343,11 +343,11 @@ pub struct Poseidon2TraceDyn<F> {
 }
 
 impl<F> Poseidon2TraceDyn<F> {
-    pub fn new(operations: Vec<Poseidon2CircuitRowDyn<F>>) -> Self {
+    pub const fn new(operations: Vec<Poseidon2CircuitRowDyn<F>>) -> Self {
         Self { operations }
     }
 
-    pub fn total_rows(&self) -> usize {
+    pub const fn total_rows(&self) -> usize {
         self.operations.len()
     }
 
