@@ -11,8 +11,8 @@ use p3_maybe_rayon::prelude::*;
 use p3_poseidon2::GenericPoseidon2LinearLayers;
 use p3_poseidon2_air::{Poseidon2Air, Poseidon2Cols, RoundConstants, generate_trace_rows_for_perm};
 use p3_symmetric::CryptographicPermutation;
+use p3_uni_stark::SubAirBuilder;
 
-use crate::sub_builder::SubAirBuilder;
 use crate::{Poseidon2CircuitCols, num_cols};
 
 /// Extends the Poseidon2 AIR with recursion circuit-specific columns and constraints.

@@ -3,7 +3,7 @@ use alloc::vec::Vec;
 use alloc::{format, vec};
 use core::marker::PhantomData;
 
-use p3_air::{Air as P3Air, AirBuilder as P3AirBuilder, BaseAir as P3BaseAir};
+use p3_air::{Air as P3Air, BaseAir as P3BaseAir, PairBuilder};
 use p3_batch_stark::{BatchProof, CommonData};
 use p3_circuit::CircuitBuilder;
 use p3_circuit::utils::ColumnsTargets;
@@ -58,7 +58,7 @@ impl<F: Field, const D: usize> P3BaseAir<F> for CircuitTablesAir<F, D> {
 
 impl<AB, const D: usize> P3Air<AB> for CircuitTablesAir<AB::F, D>
 where
-    AB: P3AirBuilder,
+    AB: PairBuilder,
     AB::F: Field,
 {
     fn eval(&self, builder: &mut AB) {
@@ -429,7 +429,7 @@ where
             )));
         }
 
-        let log_qd = A::get_log_quotient_degree(air, pre_w, public_vals.len(), config.is_zk());
+        let log_qd = A::get_log_num_quotient_chunks(air, pre_w, public_vals.len(), config.is_zk());
         let quotient_degree = 1 << (log_qd + config.is_zk());
 
         if instance.quotient_chunks.len() != quotient_degree {

@@ -39,6 +39,7 @@ extern crate alloc;
 
 pub mod air;
 pub mod batch_stark_prover;
+pub mod common;
 pub mod config;
 pub mod field_params;
 

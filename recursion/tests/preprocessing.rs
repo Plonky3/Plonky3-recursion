@@ -328,7 +328,7 @@ fn test_batch_verifier_with_mixed_preprocessed() -> Result<(), VerificationError
     )?;
 
     // Build the circuit
-    let (circuit, _) = circuit_builder.build()?;
+    let circuit = circuit_builder.build()?;
 
     let mut runner = circuit.runner();
 

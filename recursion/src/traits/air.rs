@@ -4,7 +4,7 @@ use p3_air::Air;
 use p3_circuit::CircuitBuilder;
 use p3_circuit::utils::{ColumnsTargets, symbolic_to_circuit};
 use p3_field::Field;
-use p3_uni_stark::{SymbolicAirBuilder, get_log_quotient_degree, get_symbolic_constraints};
+use p3_uni_stark::{SymbolicAirBuilder, get_log_num_quotient_chunks, get_symbolic_constraints};
 
 use crate::Target;
 use crate::types::RecursiveLagrangeSelectors;
@@ -55,8 +55,8 @@ pub trait RecursiveAir<F: Field> {
     /// - `is_zk`: Whether ZK mode is enabled (0 or 1)
     ///
     /// # Returns
-    /// Log₂ of the quotient degree
-    fn get_log_quotient_degree(
+    /// Log₂ of the number of quotient chunks
+    fn get_log_num_quotient_chunks(
         &self,
         preprocessed_width: usize,
         num_public_values: usize,
@@ -97,12 +97,12 @@ where
         acc
     }
 
-    fn get_log_quotient_degree(
+    fn get_log_num_quotient_chunks(
         &self,
         preprocessed_width: usize,
         num_public_values: usize,
         is_zk: usize,
     ) -> usize {
-        get_log_quotient_degree(self, preprocessed_width, num_public_values, is_zk)
+        get_log_num_quotient_chunks(self, preprocessed_width, num_public_values, is_zk)
     }
 }

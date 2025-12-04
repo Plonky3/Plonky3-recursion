@@ -197,9 +197,6 @@ impl<'a> NonPrimitiveLowerer<'a> {
                         op_id: *op_id,
                     });
                 }
-                NonPrimitiveOpType::FriVerify => {
-                    todo!() // TODO: Add FRIVerify when it lands
-                }
             }
         }
 

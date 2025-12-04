@@ -126,4 +126,8 @@ pub enum CircuitError {
     /// Invalid trace data during conversion.
     #[error("Invalid trace data: array size mismatch")]
     InvalidTraceData,
+
+    /// Invalid preprocessed values
+    #[error("Preprocessed values should be base field elements")]
+    InvalidPreprocessedValues,
 }

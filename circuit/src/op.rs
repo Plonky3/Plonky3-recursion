@@ -232,11 +232,8 @@ impl<F: Field + PartialEq> PartialEq for Op<F> {
 pub enum NonPrimitiveOpType {
     /// Mmcs Verify gate with the argument is the size of the path
     MmcsVerify,
-    FriVerify,
     /// Hash absorb operation - absorbs field elements into sponge state
-    HashAbsorb {
-        reset: bool,
-    },
+    HashAbsorb { reset: bool },
     /// Hash squeeze operation - extracts field elements from sponge state
     HashSqueeze,
 }
