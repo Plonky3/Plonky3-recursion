@@ -7,7 +7,6 @@ extern crate alloc;
 mod air;
 mod columns;
 mod public_types;
-mod sub_builder;
 
 pub use air::*;
 pub use columns::*;

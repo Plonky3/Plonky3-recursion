@@ -1,37 +1,72 @@
 use core::borrow::{Borrow, BorrowMut};
+use core::mem::size_of;
 
 use p3_poseidon2_air::Poseidon2Cols;
 
+pub const POSEIDON_LIMBS: usize = 4;
+pub const POSEIDON_PUBLIC_OUTPUT_LIMBS: usize = 2;
+
 /// Columns for a Poseidon2 AIR which computes one permutation per row.
 ///
-/// They extend the P3 columns with some circuit-specific columns.
+/// This implements the Poseidon Permutation Table specification.
+/// See: https://github.com/Plonky3/Plonky3-recursion/discussions/186
 ///
-/// `is_sponge` (transparent): if `1`, this row performs a sponge operation (absorb or squeeze);
-/// otherwise, it performs a compression.
-/// `reset` (transparent): indicates whether the state is being reset this row.
-/// `sponge_reset`: auxiliary column to keep constraint degrees below three.
-/// `absorb_flags` (transparent): for each rate element, indicates if it is being absorbed this row.
-/// At most one flag is set to 1 per row: if `absorb_flags[i]` is 1, then all elements up to the `i`-th
-/// are absorbed; the rest are propagated from the previous row.
-/// `input_indices` (transparent): for each input element, indicates the index in the witness table for the
-/// memory lookup. It's either received (for an absorb or a compression) or sent (for a squeeze).
-/// `output_indices` (transparent): for each output element, indicates the index in the witness table for the
-/// memory lookup. Only used by compressions to send the output.
+/// The table implements a 4-limb Poseidon2 permutation supporting:
+/// - Standard chaining (Challenger-style sponge use)
+/// - Merkle-path chaining (MMCS directional hashing)
+/// - Selective limb exposure to the witness via CTL
+/// - Optional MMCS index accumulator
+///
+/// Column layout (per spec section 2):
+/// - Value columns: `poseidon2` (contains in[0..3] and out[0..3]), `mmcs_index_sum`, `mmcs_bit`
+/// - Transparent columns: `new_start`, `merkle_path`, CTL flags and indices
+/// - Selector columns (not in spec): `normal_chain_sel`, `merkle_chain_sel`, `mmcs_update_sel`
+///   These are precomputed to reduce constraint degree to 3.
 #[repr(C)]
-pub struct Poseidon2CircuitCols<
-    T,
-    const WIDTH_EXT: usize,
-    const RATE_EXT: usize,
-    P: PermutationColumns<T>,
-> {
+pub struct Poseidon2CircuitCols<T, P: PermutationColumns<T>> {
+    /// The p3 Poseidon2 columns containing the permutation state.
+    /// Contains in[0..3] (4 extension limbs input) and out[0..3] (4 extension limbs output).
     pub poseidon2: P,
-    pub is_sponge: T,
-    pub reset: T,
-    pub sponge_reset: T,
-    pub send_out: T,
-    pub absorb_flags: [T; RATE_EXT],
-    pub input_indices: [T; WIDTH_EXT],
-    pub output_indices: [T; RATE_EXT],
+
+    /// Control: If 1, row begins a new independent Poseidon chain.
+    pub new_start: T,
+    /// Control: 0 → normal sponge/Challenger mode, 1 → Merkle-path mode.
+    pub merkle_path: T,
+    /// Value: Direction bit for Merkle left/right hashing (only meaningful when merkle_path = 1).
+    /// This is a value column (not transparent) because it's used in constraints with mmcs_index_sum.
+    pub mmcs_bit: T,
+
+    /// Value column: Optional MMCS accumulator (base field, encodes a u32-like integer).
+    pub mmcs_index_sum: T,
+
+    /// Selector: enables normal chaining for a limb when the previous row's output should fill it.
+    /// Computed as (1 - new_start) * (1 - merkle_path) * (1 - in_ctl[i]) for i in {0,..., POSEIDON_LIMBS - 1}.
+    /// NOTE: This column is not in the spec but is added to reduce constraint degree to 3.
+    pub normal_chain_sel: [T; POSEIDON_LIMBS],
+
+    /// Selector: enables Merkle chaining for limbs 0-1 when the previous row's output should fill them.
+    /// Computed as (1 - new_start) * merkle_path * (1 - in_ctl[i]) for i in {0, ..., POSEIDON_PUBLIC_OUTPUT_LIMBS - 1}.
+    /// NOTE: This column is not in the spec but is added to reduce constraint degree to 3.
+    pub merkle_chain_sel: [T; POSEIDON_PUBLIC_OUTPUT_LIMBS],
+
+    /// Selector: enables MMCS accumulator updates when chaining in Merkle mode.
+    /// Computed as (1 - new_start) * merkle_path.
+    /// NOTE: This column is not in the spec but is added to reduce constraint degree to 3.
+    pub mmcs_update_sel: T,
+
+    /// Input exposure flags: for each limb i, if 1, in[i] must match witness lookup at in_idx[i].
+    pub in_ctl: [T; POSEIDON_LIMBS],
+    /// Input exposure indices: index into the witness table for each limb.
+    pub in_idx: [T; POSEIDON_LIMBS],
+
+    /// Output exposure flags: for limbs 0-1 only, if 1, out[i] must match witness lookup at out_idx[i].
+    /// Note: limbs 2-3 are never publicly exposed (always private).
+    pub out_ctl: [T; POSEIDON_PUBLIC_OUTPUT_LIMBS],
+    /// Output exposure indices: index into the witness table for limbs 0-1.
+    pub out_idx: [T; POSEIDON_PUBLIC_OUTPUT_LIMBS],
+
+    /// MMCS index exposure: index for CTL exposure of mmcs_index_sum.
+    pub mmcs_index_sum_idx: T,
 }
 
 pub trait PermutationColumns<T> {}
@@ -48,17 +83,13 @@ impl<
 {
 }
 
-pub const fn num_cols<const WIDTH_EXT: usize, const RATE_EXT: usize, P: PermutationColumns<u8>>()
--> usize {
-    size_of::<Poseidon2CircuitCols<u8, WIDTH_EXT, RATE_EXT, P>>()
+pub const fn num_cols<P: PermutationColumns<u8>>() -> usize {
+    size_of::<Poseidon2CircuitCols<u8, P>>()
 }
 
-impl<T, const WIDTH_EXT: usize, const RATE_EXT: usize, P: PermutationColumns<T>>
-    Borrow<Poseidon2CircuitCols<T, WIDTH_EXT, RATE_EXT, P>> for [T]
-{
-    fn borrow(&self) -> &Poseidon2CircuitCols<T, WIDTH_EXT, RATE_EXT, P> {
-        let (prefix, shorts, suffix) =
-            unsafe { self.align_to::<Poseidon2CircuitCols<T, WIDTH_EXT, RATE_EXT, P>>() };
+impl<T, P: PermutationColumns<T>> Borrow<Poseidon2CircuitCols<T, P>> for [T] {
+    fn borrow(&self) -> &Poseidon2CircuitCols<T, P> {
+        let (prefix, shorts, suffix) = unsafe { self.align_to::<Poseidon2CircuitCols<T, P>>() };
         debug_assert!(prefix.is_empty(), "Alignment should match");
         debug_assert!(suffix.is_empty(), "Alignment should match");
         debug_assert_eq!(shorts.len(), 1);
@@ -66,12 +97,9 @@ impl<T, const WIDTH_EXT: usize, const RATE_EXT: usize, P: PermutationColumns<T>>
     }
 }
 
-impl<T, const WIDTH_EXT: usize, const RATE_EXT: usize, P: PermutationColumns<T>>
-    BorrowMut<Poseidon2CircuitCols<T, WIDTH_EXT, RATE_EXT, P>> for [T]
-{
-    fn borrow_mut(&mut self) -> &mut Poseidon2CircuitCols<T, WIDTH_EXT, RATE_EXT, P> {
-        let (prefix, shorts, suffix) =
-            unsafe { self.align_to_mut::<Poseidon2CircuitCols<T, WIDTH_EXT, RATE_EXT, P>>() };
+impl<T, P: PermutationColumns<T>> BorrowMut<Poseidon2CircuitCols<T, P>> for [T] {
+    fn borrow_mut(&mut self) -> &mut Poseidon2CircuitCols<T, P> {
+        let (prefix, shorts, suffix) = unsafe { self.align_to_mut::<Poseidon2CircuitCols<T, P>>() };
         debug_assert!(prefix.is_empty(), "Alignment should match");
         debug_assert!(suffix.is_empty(), "Alignment should match");
         debug_assert_eq!(shorts.len(), 1);

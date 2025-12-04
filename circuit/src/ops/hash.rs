@@ -200,7 +200,7 @@ mod tests {
             .add_hash_squeeze("poseidon2_16", &[input], true)
             .unwrap();
 
-        let circuit = builder.build().unwrap().0;
+        let circuit = builder.build().unwrap();
 
         let runner = circuit.runner();
         let traces = runner.run().unwrap();
@@ -238,7 +238,7 @@ mod tests {
         // Squeeze again without resetting the state
         let _ = builder.add_hash_squeeze("poseidon2_16", &input, false);
 
-        let circuit = builder.build().unwrap().0;
+        let circuit = builder.build().unwrap();
         let runner = circuit.runner();
         let traces = runner.run().unwrap();
 

@@ -113,8 +113,12 @@ where
     let preprocessed_width = opt_opened_preprocessed_local_targets
         .as_ref()
         .map_or(0, |p| p.len());
-    let log_quotient_degree =
-        A::get_log_quotient_degree(air, preprocessed_width, public_values.len(), config.is_zk());
+    let log_quotient_degree = A::get_log_num_quotient_chunks(
+        air,
+        preprocessed_width,
+        public_values.len(),
+        config.is_zk(),
+    );
     let quotient_degree = 1 << (log_quotient_degree + config.is_zk());
 
     let pcs = config.pcs();
@@ -301,8 +305,12 @@ where
         >,
     SC::Challenge: PrimeCharacteristicRing,
 {
-    let log_quotient_degree =
-        A::get_log_quotient_degree(air, preprocessed_width, public_values.len(), config.is_zk());
+    let log_quotient_degree = A::get_log_num_quotient_chunks(
+        air,
+        preprocessed_width,
+        public_values.len(),
+        config.is_zk(),
+    );
 
     let mut challenger = CircuitChallenger::<RATE>::new();
 

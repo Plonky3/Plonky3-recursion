@@ -11,7 +11,7 @@ use p3_field::{BasedVectorSpace, PrimeCharacteristicRing, PrimeField, TwoAdicFie
 use p3_fri::{FriProof, TwoAdicFriPcs};
 use p3_uni_stark::{
     Domain, Proof, StarkGenericConfig, SymbolicAirBuilder, Val, VerifierConstraintFolder,
-    get_log_quotient_degree,
+    get_log_num_quotient_chunks,
 };
 use thiserror::Error;
 use tracing::debug_span;
@@ -101,7 +101,7 @@ where
 
     let degree = 1 << degree_bits;
     let pcs = config.pcs();
-    let log_quotient_degree = get_log_quotient_degree::<Val<SC>, A>(
+    let log_quotient_degree = get_log_num_quotient_chunks::<Val<SC>, A>(
         air,
         preprocessed_width,
         public_values.len(),
@@ -320,7 +320,8 @@ where
             .unwrap_or(0);
         preprocessed_widths.push(pre_w);
 
-        let log_qd = get_log_quotient_degree::<Val<SC>, A>(air, pre_w, pv.len(), config.is_zk());
+        let log_qd =
+            get_log_num_quotient_chunks::<Val<SC>, A>(air, pre_w, pv.len(), config.is_zk());
         let quotient_degree = 1 << (log_qd + config.is_zk());
         log_quotient_degrees.push(log_qd);
         quotient_degrees.push(quotient_degree);

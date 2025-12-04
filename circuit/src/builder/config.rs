@@ -44,11 +44,6 @@ impl<F> BuilderConfig<F> {
         );
     }
 
-    /// Enables FRI verification operations.
-    pub const fn enable_fri(&mut self) {
-        // TODO: Add FRI ops when available.
-    }
-
     /// Checks whether an operation type is enabled.
     pub fn is_op_enabled(&self, op: &NonPrimitiveOpType) -> bool {
         self.enabled_ops.contains_key(op)
@@ -75,7 +70,6 @@ mod tests {
     fn test_builder_config_default() {
         let config = BuilderConfig::<BabyBear>::default();
         assert!(!config.is_op_enabled(&NonPrimitiveOpType::MmcsVerify));
-        assert!(!config.is_op_enabled(&NonPrimitiveOpType::FriVerify));
     }
 
     #[test]
@@ -101,9 +95,12 @@ mod tests {
         let mmcs_config = MmcsVerifyConfig::mock_config();
 
         config.enable_mmcs(&mmcs_config);
-        config.enable_op(NonPrimitiveOpType::FriVerify, NonPrimitiveOpConfig::None);
+        config.enable_op(
+            NonPrimitiveOpType::HashSqueeze { reset: false },
+            NonPrimitiveOpConfig::None,
+        );
 
         assert!(config.is_op_enabled(&NonPrimitiveOpType::MmcsVerify));
-        assert!(config.is_op_enabled(&NonPrimitiveOpType::FriVerify));
+        assert!(config.is_op_enabled(&NonPrimitiveOpType::HashSqueeze { reset: false }));
     }
 }

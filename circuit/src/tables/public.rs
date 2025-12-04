@@ -58,3 +58,115 @@ impl<'a, F: Clone> PublicTraceBuilder<'a, F> {
         Ok(PublicTrace { index, values })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec;
+
+    use p3_baby_bear::BabyBear;
+    use p3_field::PrimeCharacteristicRing;
+
+    use super::*;
+
+    type F = BabyBear;
+
+    #[test]
+    fn test_single_public_input() {
+        // Create a single public input operation that reads from witness
+        let out = WitnessId(0);
+        let val = F::from_u64(42);
+
+        let ops = vec![Op::Public { out, public_pos: 0 }];
+
+        // Prepare the witness table with the public input value
+        let witness = vec![Some(val)];
+
+        // Build the trace using the builder pattern
+        let builder = PublicTraceBuilder::new(&ops, &witness);
+        let trace = builder.build().expect("Failed to build trace");
+
+        // Verify the trace contains exactly one public input
+        assert_eq!(trace.index.len(), 1, "Should have one public input");
+        assert_eq!(trace.values.len(), 1, "Should have one public value");
+
+        // Verify the public input is correctly recorded
+        assert_eq!(trace.index[0], out);
+        assert_eq!(trace.values[0], val);
+    }
+
+    #[test]
+    fn test_multiple_public_inputs() {
+        // Create multiple public input operations with non-contiguous witness indices
+        let out1 = WitnessId(0);
+        let out2 = WitnessId(2);
+
+        let val1 = F::from_u64(10);
+        let val2 = F::from_u64(30);
+
+        let ops = vec![
+            Op::Public {
+                out: out1,
+                public_pos: 0,
+            },
+            Op::Public {
+                out: out2,
+                public_pos: 1,
+            },
+        ];
+
+        // Prepare witness table with gaps (index 1 is unused)
+        let witness = vec![Some(val1), None, Some(val2)];
+
+        // Build the trace
+        let builder = PublicTraceBuilder::new(&ops, &witness);
+        let trace = builder.build().expect("Failed to build trace");
+
+        // Verify we have exactly two public inputs
+        assert_eq!(trace.index.len(), 2, "Should have two public inputs");
+        assert_eq!(trace.values.len(), 2, "Should have two public values");
+
+        // Verify first public input
+        assert_eq!(trace.index[0], out1);
+        assert_eq!(trace.values[0], val1);
+
+        // Verify second public input
+        assert_eq!(trace.index[1], out2);
+        assert_eq!(trace.values[1], val2);
+    }
+
+    #[test]
+    fn test_empty_operations() {
+        // Provide an empty operations list
+        let ops: Vec<Op<F>> = vec![];
+        let witness: Vec<Option<F>> = vec![];
+
+        // Build the trace
+        let builder = PublicTraceBuilder::new(&ops, &witness);
+        let trace = builder.build().expect("Failed to build trace");
+
+        // Verify the trace is empty
+        assert_eq!(trace.index.len(), 0, "Should have no public inputs");
+        assert_eq!(trace.values.len(), 0, "Should have no values");
+    }
+
+    #[test]
+    fn test_witness_not_set_error() {
+        // Create a public input operation referencing an unset witness slot
+        let out = WitnessId(0);
+        let ops = vec![Op::Public { out, public_pos: 0 }];
+
+        // Witness table has the slot but value is None (not yet set)
+        let witness: Vec<Option<F>> = vec![None];
+
+        // Attempt to build the trace
+        let builder = PublicTraceBuilder::new(&ops, &witness);
+        let result = builder.build();
+
+        // Verify the build fails with the expected error
+        assert!(result.is_err(), "Should fail when witness is not set");
+        assert!(matches!(
+            result,
+            Err(CircuitError::WitnessNotSet { witness_id }) if witness_id == out
+        ));
+    }
+}

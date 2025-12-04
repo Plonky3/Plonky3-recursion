@@ -28,8 +28,8 @@ hashbrown = "0.16.0"
 itertools.workspace = true
 rand.workspace = true
 serde.workspace = true
-strum = { version = "0.27.2", default-features = false }
-strum_macros = "0.27.2"
+strum.workspace = true
+strum_macros.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 

@@ -98,18 +98,16 @@ impl<F: Field> Circuit<F> {
     ///
     /// The preprocessed values for `Witness` are deduced from the other ops:
     /// they correspond to 0..`n` where `n` is the largest witness index used in the circuit.
-    pub fn generate_preprocessed_columns(
-        &mut self,
-    ) -> Result<Vec<Vec<F>>, crate::CircuitBuilderError> {
+    pub fn generate_preprocessed_columns(&self) -> Result<Vec<Vec<F>>, crate::CircuitError> {
         let n = PrimitiveOpType::COUNT; // Exclude non-primitive ops
         let mut preprocessed = vec![vec![]; n];
 
         let mut max_idx = 0;
         for prim in &self.primitive_ops {
             match prim {
-                Op::Const { out, val } => {
+                Op::Const { out, .. } => {
                     let table_idx = PrimitiveOpType::Const as usize;
-                    preprocessed[table_idx].extend(&[F::from_u32(out.0), *val]);
+                    preprocessed[table_idx].extend(&[F::from_u32(out.0)]);
                     max_idx = max_idx.max(out.0);
                 }
                 Op::Public { out, .. } => {
