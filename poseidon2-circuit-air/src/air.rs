@@ -189,19 +189,33 @@ impl<
                         // The AIR will enforce that chaining only applies when in_ctl = 0.
                         if prev_bit {
                             // Case B: mmcs_bit = 1 (right = previous hash)
-                            // Chain from capacity limbs: in_{r+1}[0..CAPACITY_EXT-1] = out_r[RATE_EXT..RATE_EXT+CAPACITY_EXT-1]
-                            for limb in 0..CAPACITY_EXT {
-                                let src_start = (RATE_EXT + limb) * D;
-                                let src_end = src_start + D;
-                                let dst_start = limb * D;
-                                let dst_end = dst_start + D;
-                                state[dst_start..dst_end]
-                                    .copy_from_slice(&prev_out[src_start..src_end]);
+                            // If RATE_EXT >= 2*DIGEST_EXT, chain from second half of rate section
+                            // Otherwise, fall back to capacity limbs and fill up the whole state
+                            if RATE_EXT >= 2 * DIGEST_EXT {
+                                // Chain from second half of rate: in_{r+1}[0..DIGEST_EXT-1] = out_r[DIGEST_EXT..2*DIGEST_EXT-1]
+                                for limb in 0..DIGEST_EXT {
+                                    let src_start = (DIGEST_EXT + limb) * D;
+                                    let src_end = src_start + D;
+                                    let dst_start = limb * D;
+                                    let dst_end = dst_start + D;
+                                    state[dst_start..dst_end]
+                                        .copy_from_slice(&prev_out[src_start..src_end]);
+                                }
+                            } else {
+                                // Fall back to capacity limbs: in_{r+1}[0..CAPACITY_EXT-1] = out_r[RATE_EXT..RATE_EXT+CAPACITY_EXT-1]
+                                for limb in 0..CAPACITY_EXT {
+                                    let src_start = (RATE_EXT + limb) * D;
+                                    let src_end = src_start + D;
+                                    let dst_start = limb * D;
+                                    let dst_end = dst_start + D;
+                                    state[dst_start..dst_end]
+                                        .copy_from_slice(&prev_out[src_start..src_end]);
+                                }
                             }
                         } else {
                             // Case A: mmcs_bit = 0 (left = previous hash)
-                            // Chain from rate limbs: in_{r+1}[0..RATE_EXT-1] = out_r[0..RATE_EXT-1]
-                            for limb in 0..RATE_EXT {
+                            // Chain from first DIGEST_EXT limbs of rate: in_{r+1}[0..DIGEST_EXT-1] = out_r[0..DIGEST_EXT-1]
+                            for limb in 0..DIGEST_EXT {
                                 let src_start = limb * D;
                                 let src_end = src_start + D;
                                 let dst_start = limb * D;
@@ -456,15 +470,17 @@ fn eval<
 
     // Merkle-path chaining.
     // If new_start_{r+1} = 0 and merkle_path_{r+1} = 1:
-    //   - If mmcs_bit_r = 0 (left = previous hash): in_{r+1}[0..RATE_EXT-1] = out_r[0..RATE_EXT-1]
-    //   - If mmcs_bit_r = 1 (right = previous hash): in_{r+1}[0..CAPACITY_EXT-1] = out_r[RATE_EXT..RATE_EXT+CAPACITY_EXT-1]
+    //   - If mmcs_bit_r = 0 (left = previous hash): in_{r+1}[0..DIGEST_EXT-1] = out_r[0..DIGEST_EXT-1]
+    //   - If mmcs_bit_r = 1 (right = previous hash):
+    //     * If RATE_EXT >= 2*DIGEST_EXT: in_{r+1}[0..DIGEST_EXT-1] = out_r[DIGEST_EXT..2*DIGEST_EXT-1]
+    //     * Otherwise: in_{r+1}[0..CAPACITY_EXT-1] = out_r[RATE_EXT..RATE_EXT+CAPACITY_EXT-1]
     //   - Capacity limbs are free/private
     // BUT: If in_ctl[i] = 1, CTL overrides chaining (limb is not chained).
     // Chaining only applies when in_ctl[limb] = 0.
     let is_left = AB::Expr::ONE - prev_bit.clone();
 
-    // Chain rate limbs (0..RATE_EXT-1) based on mmcs_bit
-    for limb in 0..RATE_EXT {
+    // Chain DIGEST_EXT limbs based on mmcs_bit
+    for limb in 0..DIGEST_EXT {
         for d in 0..D {
             let idx = limb * D + d;
 
@@ -475,8 +491,17 @@ fn eval<
                 .when(gate_left)
                 .assert_zero(next_in[idx].clone() - local_out[idx].clone());
 
-            // Right case: in_{r+1}[limb] = out_r[RATE_EXT + limb]
-            if limb < CAPACITY_EXT {
+            // Right case: chain from second half of rate if possible, otherwise from capacity
+            if RATE_EXT >= 2 * DIGEST_EXT {
+                // Chain from second half of rate: in_{r+1}[limb] = out_r[DIGEST_EXT + limb]
+                let gate_right = next.merkle_chain_sel[limb].clone() * prev_bit.clone();
+                let right_idx = (DIGEST_EXT + limb) * D + d;
+                builder
+                    .when_transition()
+                    .when(gate_right)
+                    .assert_zero(next_in[idx].clone() - local_out[right_idx].clone());
+            } else if limb < CAPACITY_EXT {
+                // Fall back to capacity limbs: in_{r+1}[limb] = out_r[RATE_EXT + limb]
                 let gate_right = next.merkle_chain_sel[limb].clone() * prev_bit.clone();
                 let right_idx = (RATE_EXT + limb) * D + d;
                 builder
