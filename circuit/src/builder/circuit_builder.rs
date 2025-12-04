@@ -10,8 +10,7 @@ use super::{BuilderConfig, ExpressionBuilder, PublicInputTracker};
 use crate::circuit::Circuit;
 use crate::op::{DefaultHint, NonPrimitiveOpType, WitnessHintsFiller};
 use crate::ops::MmcsVerifyConfig;
-use crate::ops::hash::HashConfig;
-use crate::tables::{TraceGeneratorFn, generate_mmcs_trace};
+use crate::tables::{Poseidon2Params, TraceGeneratorFn, generate_mmcs_trace};
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};
 use crate::{CircuitBuilderError, CircuitField};
 
@@ -30,14 +29,27 @@ pub struct CircuitBuilder<F> {
     non_primitive_ops: Vec<NonPrimitiveOperationData>,
 
     /// Builder configuration
-    config: BuilderConfig<F>,
+    config: BuilderConfig,
 
     /// Registered non-primitive trace generators.
     non_primitive_trace_generators: HashMap<NonPrimitiveOpType, TraceGeneratorFn<F>>,
 }
 
-/// The non-primitive operation id, type, and the vectors of the expressions representing its inputs
-pub type NonPrimitiveOperationData = (NonPrimitiveOpId, NonPrimitiveOpType, Vec<Vec<ExprId>>);
+/// Per-op extra parameters that are not encoded in the op type.
+#[derive(Debug, Clone)]
+pub enum NonPrimitiveOpParams {
+    PoseidonPerm { new_start: bool, merkle_path: bool },
+}
+
+/// The non-primitive operation id, type, the vectors of the expressions representing its inputs,
+/// and any per-op parameters.
+#[derive(Debug, Clone)]
+pub struct NonPrimitiveOperationData {
+    pub op_id: NonPrimitiveOpId,
+    pub op_type: NonPrimitiveOpType,
+    pub witness_exprs: Vec<Vec<ExprId>>,
+    pub params: Option<NonPrimitiveOpParams>,
+}
 
 impl<F> Default for CircuitBuilder<F>
 where
@@ -65,12 +77,12 @@ where
     }
 
     /// Returns an immutable reference to the config.
-    pub const fn config(&self) -> &BuilderConfig<F> {
+    pub const fn config(&self) -> &BuilderConfig {
         &self.config
     }
 
     /// Enables a non-primitive operation type on this builder.
-    pub fn enable_op(&mut self, op: NonPrimitiveOpType, cfg: crate::op::NonPrimitiveOpConfig<F>) {
+    pub fn enable_op(&mut self, op: NonPrimitiveOpType, cfg: crate::op::NonPrimitiveOpConfig) {
         self.config.enable_op(op, cfg);
     }
 
@@ -84,25 +96,24 @@ where
             .insert(NonPrimitiveOpType::MmcsVerify, generate_mmcs_trace::<F>);
     }
 
-    /// Enables HashSqueeze operations.
+    /// Enables Poseidon permutation operations (one perm per table row).
     ///
-    /// # Arguments
-    /// * `trace_generator` - The function to generate the trace for the hash operations (for instance Poseidon2).
-    pub fn enable_hash_squeeze(
+    /// The current implementation only supports extension degree D=4.
+    pub fn enable_poseidon_perm<Config: Poseidon2Params>(
         &mut self,
-        hash_config: &HashConfig<F>,
         trace_generator: TraceGeneratorFn<F>,
-    ) {
-        self.config.enable_hash_squeeze(hash_config);
+    ) where
+        F: CircuitField,
+    {
+        // Hard gate on D=4 to avoid silently accepting incompatible configs.
+        assert!(
+            Config::D == 4,
+            "Poseidon perm op only supports extension degree D=4"
+        );
 
-        self.non_primitive_trace_generators.insert(
-            NonPrimitiveOpType::HashSqueeze { reset: true },
-            trace_generator,
-        );
-        self.non_primitive_trace_generators.insert(
-            NonPrimitiveOpType::HashSqueeze { reset: false },
-            trace_generator,
-        );
+        self.config.enable_poseidon_perm();
+        self.non_primitive_trace_generators
+            .insert(NonPrimitiveOpType::PoseidonPerm, trace_generator);
     }
 
     /// Checks whether an op type is enabled on this builder.
@@ -367,6 +378,7 @@ where
         &mut self,
         op_type: NonPrimitiveOpType,
         witness_exprs: Vec<Vec<ExprId>>,
+        params: Option<NonPrimitiveOpParams>,
         label: &'static str,
     ) -> NonPrimitiveOpId {
         let op_id = NonPrimitiveOpId(self.non_primitive_ops.len() as u32);
@@ -379,7 +391,12 @@ where
             label,
         );
 
-        self.non_primitive_ops.push((op_id, op_type, witness_exprs));
+        self.non_primitive_ops.push(NonPrimitiveOperationData {
+            op_id,
+            op_type,
+            witness_exprs,
+            params,
+        });
         op_id
     }
 

@@ -49,7 +49,7 @@ pub fn get_airs_and_degrees_with_prep<
         .collect::<Result<Vec<_>, CircuitError>>()?;
 
     let default_air = WitnessAir::new(1, 1);
-    let mut table_preps: [(CircuitTableAir<_, _>, usize); PrimitiveOpType::COUNT] =
+    let mut table_preps: [(CircuitTableAir<SC, D>, usize); PrimitiveOpType::COUNT] =
         array::from_fn(|_| (CircuitTableAir::Witness(default_air.clone()), 1));
     base_prep.iter().enumerate().for_each(|(idx, prep)| {
         let table = PrimitiveOpType::from(idx);

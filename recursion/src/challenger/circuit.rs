@@ -3,6 +3,7 @@
 use alloc::vec::Vec;
 
 use p3_circuit::CircuitBuilder;
+// TODO: Replace with Poseidon perm once integrated.
 use p3_field::Field;
 
 use crate::Target;
@@ -31,16 +32,7 @@ impl<const RATE: usize> CircuitChallenger<RATE> {
             return;
         }
 
-        // TODO: Determine when to reset the sponge state?
-        // For now, reset on first absorb (when buffer was flushed before)
-        let _reset = self.buffer_flushed;
-
-        // TODO: How do we want to handle padding?
-        // Process buffer in chunks of RATE
-        // for chunk in self.absorb_buffer.chunks(RATE) {
-        //     let _ = circuit.add_hash_absorb(chunk, reset);
-        // }
-
+        // Hash absorb removed; placeholder until Poseidon perm is wired.
         self.absorb_buffer.clear();
         self.buffer_flushed = true;
     }
@@ -62,11 +54,7 @@ impl<F: Field, const RATE: usize> RecursiveChallenger<F> for CircuitChallenger<R
         // Flush any pending observations
         self.flush_absorb(circuit);
 
-        // TODO: We should be calling `add_hash_squeeze` but we may want to wait
-        // for Poseidon2 to be merged so that we actually generate challenges via hints
-        // and not public inputs.
-        // let output = circuit.add_hash_squeeze(1).expect("Failed to squeeze")[0];
-
+        // TODO: replace with Poseidon perm squeeze; for now, sample as public input.
         circuit.alloc_public_input("sampled challenge")
     }
 
@@ -79,35 +67,15 @@ impl<F: Field, const RATE: usize> RecursiveChallenger<F> for CircuitChallenger<R
 #[cfg(test)]
 mod tests {
     use p3_baby_bear::BabyBear;
-    use p3_circuit::ops::hash::HashConfig;
-    use p3_circuit::tables::{Poseidon2Params, generate_poseidon2_trace};
     use p3_field::PrimeCharacteristicRing;
 
     use super::*;
 
     const DEFAULT_CHALLENGER_RATE: usize = 8;
 
-    struct DummyParams;
-
-    impl Poseidon2Params for DummyParams {
-        const D: usize = 4;
-        const WIDTH: usize = 16;
-        const RATE_EXT: usize = 2;
-        const CAPACITY_EXT: usize = 2;
-        const SBOX_DEGREE: u64 = 7;
-        const SBOX_REGISTERS: usize = 1;
-        const HALF_FULL_ROUNDS: usize = 4;
-        const PARTIAL_ROUNDS: usize = 13;
-    }
-
     #[test]
     fn test_circuit_challenger_observe_sample() {
         let mut circuit = CircuitBuilder::<BabyBear>::new();
-        circuit.enable_hash_squeeze(
-            &HashConfig::babybear_poseidon2_16(DEFAULT_CHALLENGER_RATE),
-            generate_poseidon2_trace::<BabyBear, DummyParams>,
-        );
-
         let mut challenger = CircuitChallenger::<DEFAULT_CHALLENGER_RATE>::new();
 
         let val1 = circuit.add_const(BabyBear::ONE);
@@ -122,10 +90,6 @@ mod tests {
     #[test]
     fn test_circuit_challenger_sample_vec() {
         let mut circuit = CircuitBuilder::<BabyBear>::new();
-        circuit.enable_hash_squeeze(
-            &HashConfig::babybear_poseidon2_16(DEFAULT_CHALLENGER_RATE),
-            generate_poseidon2_trace::<BabyBear, DummyParams>,
-        );
         let mut challenger = CircuitChallenger::<DEFAULT_CHALLENGER_RATE>::new();
 
         let challenges = challenger.sample_vec(&mut circuit, 3);

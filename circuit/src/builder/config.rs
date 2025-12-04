@@ -2,16 +2,15 @@ use hashbrown::HashMap;
 
 use crate::op::{NonPrimitiveOpConfig, NonPrimitiveOpType};
 use crate::ops::MmcsVerifyConfig;
-use crate::ops::hash::HashConfig;
 
 /// Configuration for the circuit builder.
 #[derive(Debug, Clone, Default)]
-pub struct BuilderConfig<F> {
+pub struct BuilderConfig {
     /// Enabled non-primitive operation types with their respective configuration.
-    enabled_ops: HashMap<NonPrimitiveOpType, NonPrimitiveOpConfig<F>>,
+    enabled_ops: HashMap<NonPrimitiveOpType, NonPrimitiveOpConfig>,
 }
 
-impl<F> BuilderConfig<F> {
+impl BuilderConfig {
     /// Creates a new builder configuration.
     pub fn new() -> Self {
         Self {
@@ -20,7 +19,7 @@ impl<F> BuilderConfig<F> {
     }
 
     /// Enables a non-primitive operation type with its configuration.
-    pub fn enable_op(&mut self, op: NonPrimitiveOpType, cfg: NonPrimitiveOpConfig<F>) {
+    pub fn enable_op(&mut self, op: NonPrimitiveOpType, cfg: NonPrimitiveOpConfig) {
         self.enabled_ops.insert(op, cfg);
     }
 
@@ -32,16 +31,9 @@ impl<F> BuilderConfig<F> {
         );
     }
 
-    /// Enables HashSqueeze operations.
-    pub fn enable_hash_squeeze(&mut self, hash_config: &HashConfig<F>) {
-        self.enable_op(
-            NonPrimitiveOpType::HashSqueeze { reset: true },
-            NonPrimitiveOpConfig::HashConfig(hash_config.clone()),
-        );
-        self.enable_op(
-            NonPrimitiveOpType::HashSqueeze { reset: false },
-            NonPrimitiveOpConfig::HashConfig(hash_config.clone()),
-        );
+    /// Enables Poseidon permutation operations (D=4 only).
+    pub fn enable_poseidon_perm(&mut self) {
+        self.enable_op(NonPrimitiveOpType::PoseidonPerm, NonPrimitiveOpConfig::None);
     }
 
     /// Checks whether an operation type is enabled.
@@ -50,31 +42,30 @@ impl<F> BuilderConfig<F> {
     }
 
     /// Gets the configuration for an operation type, if enabled.
-    pub fn get_op_config(&self, op: &NonPrimitiveOpType) -> Option<&NonPrimitiveOpConfig<F>> {
+    pub fn get_op_config(&self, op: &NonPrimitiveOpType) -> Option<&NonPrimitiveOpConfig> {
         self.enabled_ops.get(op)
     }
 
     /// Consumes the config and returns the enabled operations map.
-    pub fn into_enabled_ops(self) -> HashMap<NonPrimitiveOpType, NonPrimitiveOpConfig<F>> {
+    pub fn into_enabled_ops(self) -> HashMap<NonPrimitiveOpType, NonPrimitiveOpConfig> {
         self.enabled_ops
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use p3_baby_bear::BabyBear;
 
     use super::*;
 
     #[test]
     fn test_builder_config_default() {
-        let config = BuilderConfig::<BabyBear>::default();
+        let config = BuilderConfig::default();
         assert!(!config.is_op_enabled(&NonPrimitiveOpType::MmcsVerify));
     }
 
     #[test]
     fn test_builder_config_enable_mmcs() {
-        let mut config = BuilderConfig::<BabyBear>::new();
+        let mut config = BuilderConfig::new();
         let mmcs_config = MmcsVerifyConfig::mock_config();
 
         assert!(!config.is_op_enabled(&NonPrimitiveOpType::MmcsVerify));
@@ -91,16 +82,13 @@ mod tests {
 
     #[test]
     fn test_builder_config_multiple_ops() {
-        let mut config = BuilderConfig::<BabyBear>::new();
+        let mut config = BuilderConfig::new();
         let mmcs_config = MmcsVerifyConfig::mock_config();
 
         config.enable_mmcs(&mmcs_config);
-        config.enable_op(
-            NonPrimitiveOpType::HashSqueeze { reset: false },
-            NonPrimitiveOpConfig::None,
-        );
+        config.enable_poseidon_perm();
 
         assert!(config.is_op_enabled(&NonPrimitiveOpType::MmcsVerify));
-        assert!(config.is_op_enabled(&NonPrimitiveOpType::HashSqueeze { reset: false }));
+        assert!(config.is_op_enabled(&NonPrimitiveOpType::PoseidonPerm));
     }
 }

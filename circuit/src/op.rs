@@ -10,7 +10,7 @@ use p3_field::{Field, PrimeCharacteristicRing};
 use strum_macros::EnumCount;
 
 use crate::ops::MmcsVerifyConfig;
-use crate::ops::hash::HashConfig;
+use crate::ops::poseidon_perm::HashConfig;
 use crate::tables::MmcsPrivateData;
 use crate::types::{NonPrimitiveOpId, WitnessId};
 use crate::{CircuitError, ExprId};
@@ -234,15 +234,14 @@ impl<F: Field + PartialEq> PartialEq for Op<F> {
 pub enum NonPrimitiveOpType {
     /// Mmcs Verify gate with the argument is the size of the path
     MmcsVerify,
-    /// Hash absorb operation - absorbs field elements into sponge state
-    HashSqueeze { reset: bool },
+    /// Poseidon permutation operation (one Poseidon call / table row).
+    PoseidonPerm,
 }
 
 /// Non-primitive operation types
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum NonPrimitiveOpConfig<F> {
+pub enum NonPrimitiveOpConfig {
     MmcsVerifyConfig(MmcsVerifyConfig),
-    HashConfig(HashConfig<F>),
     None,
 }
 
@@ -279,15 +278,6 @@ pub enum NonPrimitiveOp {
         directions: Vec<WitnessId>,
         root: Vec<WitnessId>,
     },
-
-    /// Hash squeeze operation - extracts outputs from sponge state.
-    ///
-    /// Public interface (on witness bus):
-    /// - `outputs`: Field elements extracted from the sponge
-    HashSqueeze {
-        inputs: Vec<WitnessId>,
-        outputs: Vec<WitnessId>,
-    },
 }
 
 /// Private auxiliary data for non-primitive operations
@@ -317,7 +307,7 @@ pub struct ExecutionContext<'a, F> {
     /// Private data map for non-primitive operations
     non_primitive_op_private_data: &'a [Option<NonPrimitiveOpPrivateData<F>>],
     /// Operation configurations
-    enabled_ops: &'a HashMap<NonPrimitiveOpType, NonPrimitiveOpConfig<F>>,
+    enabled_ops: &'a HashMap<NonPrimitiveOpType, NonPrimitiveOpConfig>,
     /// Current operation's NonPrimitiveOpId for error reporting
     operation_id: NonPrimitiveOpId,
 }
@@ -327,7 +317,7 @@ impl<'a, F: PrimeCharacteristicRing + Eq + Clone> ExecutionContext<'a, F> {
     pub const fn new(
         witness: &'a mut [Option<F>],
         non_primitive_op_private_data: &'a [Option<NonPrimitiveOpPrivateData<F>>],
-        enabled_ops: &'a HashMap<NonPrimitiveOpType, NonPrimitiveOpConfig<F>>,
+        enabled_ops: &'a HashMap<NonPrimitiveOpType, NonPrimitiveOpConfig>,
         operation_id: NonPrimitiveOpId,
     ) -> Self {
         Self {
@@ -383,7 +373,7 @@ impl<'a, F: PrimeCharacteristicRing + Eq + Clone> ExecutionContext<'a, F> {
     pub fn get_config(
         &self,
         op_type: &NonPrimitiveOpType,
-    ) -> Result<&NonPrimitiveOpConfig<F>, CircuitError> {
+    ) -> Result<&NonPrimitiveOpConfig, CircuitError> {
         self.enabled_ops.get(op_type).ok_or_else(|| {
             CircuitError::InvalidNonPrimitiveOpConfiguration {
                 op: op_type.clone(),
@@ -417,6 +407,9 @@ pub trait NonPrimitiveExecutor<F: Field>: Debug {
 
     /// Get operation type identifier (for config lookup, error reporting)
     fn op_type(&self) -> &NonPrimitiveOpType;
+
+    /// Allow downcasting to concrete executor types
+    fn as_any(&self) -> &dyn core::any::Any;
 
     /// Clone as trait object
     fn boxed(&self) -> Box<dyn NonPrimitiveExecutor<F>>;
@@ -973,7 +966,7 @@ mod tests {
     fn test_execution_context_get_config() {
         // Create a configuration map for operation parameters
         let mut configs = HashMap::new();
-        let op_type = NonPrimitiveOpType::HashSqueeze { reset: false };
+        let op_type = NonPrimitiveOpType::PoseidonPerm;
         configs.insert(op_type.clone(), NonPrimitiveOpConfig::None);
 
         // Create execution context with configurations
@@ -1003,7 +996,7 @@ mod tests {
             ExecutionContext::new(&mut witness, &private_data, &configs, op_id);
 
         // Attempt to access a configuration that wasn't registered
-        let op_type = NonPrimitiveOpType::HashSqueeze { reset: false };
+        let op_type = NonPrimitiveOpType::PoseidonPerm;
         let result = ctx.get_config(&op_type);
 
         // Missing configurations indicate setup errors
@@ -1035,20 +1028,11 @@ mod tests {
 
     #[test]
     fn test_non_primitive_op_type_equality() {
-        // Create various operation type instances
-        let hash_squeeze1 = NonPrimitiveOpType::HashSqueeze { reset: true };
-        let hash_squeeze2 = NonPrimitiveOpType::HashSqueeze { reset: true };
-        let hash_squeeze3 = NonPrimitiveOpType::HashSqueeze { reset: false };
-        let mmcs_verify = NonPrimitiveOpType::MmcsVerify;
-
-        // Verify equality for identical types
-        assert_eq!(hash_squeeze1, hash_squeeze2);
-
-        // Verify inequality when parameters differ
-        assert_ne!(hash_squeeze1, hash_squeeze3);
-
-        // Verify inequality for completely different types
-        assert_ne!(hash_squeeze1, mmcs_verify);
+        let a = NonPrimitiveOpType::PoseidonPerm;
+        let b = NonPrimitiveOpType::PoseidonPerm;
+        let c = NonPrimitiveOpType::MmcsVerify;
+        assert_eq!(a, b);
+        assert_ne!(a, c);
     }
 
     #[test]

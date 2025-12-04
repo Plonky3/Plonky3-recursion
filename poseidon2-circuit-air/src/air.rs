@@ -97,8 +97,6 @@ impl<
         }
     }
 
-    // TODO: Replace sponge_ops with perm_ops - remove HashAbsorb/HashSqueeze operations
-    // and replace them with permutation operations in trace generation and table.
     pub fn generate_trace_rows<P: CryptographicPermutation<[F; WIDTH]>>(
         &self,
         sponge_ops: &Poseidon2CircuitTrace<F>,
@@ -182,28 +180,41 @@ impl<
                     // Merkle-path mode: chain based on previous row's mmcs_bit
                     // Only chain limbs 0-1 if in_ctl[0/1] = 0 (handled by AIR constraints)
                     if let Some(prev_out) = prev_output {
-                        let prev_bit = sponge_ops[i - 1].mmcs_bit;
-                        // For trace generation, we chain unconditionally here.
-                        // The AIR will enforce that chaining only applies when in_ctl = 0.
-                        if prev_bit {
-                            // Case B: mmcs_bit = 1 (right = previous hash)
-                            // in_{r+1}[0] = out_r[2], in_{r+1}[1] = out_r[3]
-                            state[0..D].copy_from_slice(&prev_out[2 * D..3 * D]);
-                            state[D..2 * D].copy_from_slice(&prev_out[3 * D..4 * D]);
-                        } else {
-                            // Case A: mmcs_bit = 0 (left = previous hash)
-                            // in_{r+1}[0] = out_r[0], in_{r+1}[1] = out_r[1]
-                            state[0..D].copy_from_slice(&prev_out[0..D]);
-                            state[D..2 * D].copy_from_slice(&prev_out[D..2 * D]);
+                        let cur_bit = *mmcs_bit;
+                        if !in_ctl[0] {
+                            if cur_bit {
+                                // Case B: mmcs_bit = 1 (right = previous hash)
+                                // in_{r}[0] = out_{r-1}[2]
+                                state[0..D].copy_from_slice(&prev_out[2 * D..3 * D]);
+                            } else {
+                                // Case A: mmcs_bit = 0 (left = previous hash)
+                                // in_{r}[0] = out_{r-1}[0]
+                                state[0..D].copy_from_slice(&prev_out[0..D]);
+                            }
                         }
-                        // in_{r+1}[2], in_{r+1}[3] remain free/private (from padded_inputs)
+                        if !in_ctl[1] {
+                            if cur_bit {
+                                // in_{r}[1] = out_{r-1}[3]
+                                state[D..2 * D].copy_from_slice(&prev_out[3 * D..4 * D]);
+                            } else {
+                                // in_{r}[1] = out_{r-1}[1]
+                                state[D..2 * D].copy_from_slice(&prev_out[D..2 * D]);
+                            }
+                        }
+                        // in_{r}[2], in_{r}[3] remain free/private (from padded_inputs)
                     }
                 } else {
                     // Normal sponge mode: in_{r+1}[i] = out_r[i] for i = 0..3
-                    // For trace generation, we chain unconditionally here.
-                    // The AIR will enforce that chaining only applies when in_ctl = 0.
                     if let Some(prev_out) = prev_output {
-                        state = prev_out;
+                        state
+                            .chunks_exact_mut(D)
+                            .zip(prev_out.chunks_exact(D))
+                            .zip(in_ctl.iter())
+                            .for_each(|((dst, src), ctl)| {
+                                if !*ctl {
+                                    dst.copy_from_slice(src);
+                                }
+                            });
                     }
                 }
             }
@@ -212,7 +223,7 @@ impl<
             // Update MMCS index accumulator
             let acc = if i > 0 && *merkle_path && !*new_start {
                 // mmcs_index_sum_{r+1} = mmcs_index_sum_r * 2 + mmcs_bit_r
-                prev_mmcs_index_sum + prev_mmcs_index_sum + F::from_bool(sponge_ops[i - 1].mmcs_bit)
+                prev_mmcs_index_sum + prev_mmcs_index_sum + F::from_bool(*mmcs_bit)
             } else {
                 // Reset / non-Merkle behavior.
                 // The AIR does not constrain mmcs_index_sum on these rows;
@@ -407,9 +418,13 @@ fn eval<
     // Note: mmcs_bit is a value column (not transparent) because it's used in constraints
     // with the value column mmcs_index_sum.
 
-    let prev_bit = local.mmcs_bit.clone();
+    let next_bit = next.mmcs_bit.clone();
     let local_out = &local.poseidon2.ending_full_rounds[HALF_FULL_ROUNDS - 1].post;
     let next_in = &next.poseidon2.inputs;
+
+    // mmcs_bit should always be boolean.
+    builder.assert_bool(next.mmcs_bit.clone());
+    builder.assert_bool(local.mmcs_bit.clone());
 
     // Normal chaining.
     // If new_start_{r+1} = 0 and merkle_path_{r+1} = 0:
@@ -434,7 +449,7 @@ fn eval<
     //   - in_{r+1}[2], in_{r+1}[3] are free/private
     // BUT: If in_ctl[i] = 1, CTL overrides chaining (limb is not chained).
     // Chaining only applies when in_ctl[limb] = 0.
-    let is_left = AB::Expr::ONE - prev_bit.clone();
+    let is_left = AB::Expr::ONE - next_bit.clone();
 
     // Limb 0: chain from out_r[0] (left) or out_r[2] (right), unless in_ctl[0] = 1
     for d in 0..D {
@@ -446,7 +461,7 @@ fn eval<
             .assert_zero(next_in[d].clone() - local_out[d].clone());
 
         // Right case: in_{r+1}[0] = out_r[2]
-        let gate_right_0 = next.merkle_chain_sel[0].clone() * prev_bit.clone();
+        let gate_right_0 = next.merkle_chain_sel[0].clone() * next_bit.clone();
         builder
             .when_transition()
             .when(gate_right_0)
@@ -463,7 +478,7 @@ fn eval<
             .assert_zero(next_in[D + d].clone() - local_out[D + d].clone());
 
         // Right case: in_{r+1}[1] = out_r[3]
-        let gate_right_1 = next.merkle_chain_sel[1].clone() * prev_bit.clone();
+        let gate_right_1 = next.merkle_chain_sel[1].clone() * next_bit.clone();
         builder
             .when_transition()
             .when(gate_right_1)
@@ -480,7 +495,7 @@ fn eval<
         .when(next.mmcs_update_sel.clone())
         .assert_zero(
             next.mmcs_index_sum.clone()
-                - (local.mmcs_index_sum.clone() * two + local.mmcs_bit.clone()),
+                - (local.mmcs_index_sum.clone() * two + next.mmcs_bit.clone()),
         );
 
     let p3_poseidon2_num_cols = p3_poseidon2_air::num_cols::<

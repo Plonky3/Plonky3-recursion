@@ -241,13 +241,12 @@ where
         witness_exprs.extend(leaves_expr.to_vec());
         witness_exprs.push(directions_expr.to_vec());
         witness_exprs.push(root_expr.to_vec());
-        Ok(
-            self.push_non_primitive_op(
-                NonPrimitiveOpType::MmcsVerify,
-                witness_exprs,
-                "mmcs_verify",
-            ),
-        )
+        Ok(self.push_non_primitive_op(
+            NonPrimitiveOpType::MmcsVerify,
+            witness_exprs,
+            None,
+            "mmcs_verify",
+        ))
     }
 }
 
@@ -359,6 +358,10 @@ impl<F: Field> NonPrimitiveExecutor<F> for MmcsVerifyExecutor {
 
     fn op_type(&self) -> &NonPrimitiveOpType {
         &self.op_type
+    }
+
+    fn as_any(&self) -> &dyn core::any::Any {
+        self
     }
 
     fn boxed(&self) -> Box<dyn NonPrimitiveExecutor<F>> {

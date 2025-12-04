@@ -6,8 +6,7 @@ use std::error::Error;
 /// enforcing that the in-circuit hash matches the native computation.
 use p3_baby_bear::{BabyBear, default_babybear_poseidon2_16};
 use p3_batch_stark::CommonData;
-use p3_circuit::ops::HashOps;
-use p3_circuit::ops::hash::HashConfig;
+use p3_circuit::ops::poseidon_perm::{HashConfig, add_hash_squeeze};
 use p3_circuit::tables::generate_poseidon2_trace;
 use p3_circuit::{CircuitBuilder, ExprId};
 use p3_circuit_prover::common::get_airs_and_degrees_with_prep;
@@ -47,9 +46,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Enable hash operations with BabyBear D=4, WIDTH=16 configuration
     let hash_config = HashConfig::babybear_poseidon2_16(BASE_RATE);
-    builder.enable_hash_squeeze(
-        &hash_config,
-        generate_poseidon2_trace::<F, BabyBearD4Width16>,
+    builder.enable_poseidon_perm::<BabyBearD4Width16>(
+        generate_poseidon2_trace::<BabyBear, BabyBearD4Width16>,
     );
 
     // First absorb (reset=true)
@@ -60,7 +58,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     println!("Absorbing first inputs: {:?}", inputs);
 
-    builder.add_hash_squeeze("poseidon2_16", &inputs, true)?;
+    add_hash_squeeze(&mut builder, &hash_config, "poseidon2_16", &inputs, true)?;
 
     let mut final_output = Vec::new();
     // Following absorbs (reset=false)
@@ -70,7 +68,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             let input = builder.alloc_const(F::from_u64((step * 2 + i + 1) as u64), "hash_input");
             inputs.push(input);
         }
-        final_output = builder.add_hash_squeeze("poseidon2_16", &inputs, false)?;
+        final_output =
+            add_hash_squeeze(&mut builder, &hash_config, "poseidon2_16", &inputs, false)?;
     }
 
     // Squeeze outputs
