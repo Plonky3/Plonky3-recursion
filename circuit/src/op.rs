@@ -1,15 +1,13 @@
 use alloc::boxed::Box;
-use alloc::string::String;
 use alloc::vec::Vec;
 use alloc::{format, vec};
 use core::fmt::Debug;
 use core::hash::Hash;
 
 use hashbrown::HashMap;
-use p3_field::{Field, PrimeCharacteristicRing};
+use p3_field::Field;
 use strum_macros::EnumCount;
 
-use crate::ops::poseidon_perm::HashConfig;
 use crate::tables::PoseidonPermPrivateData;
 use crate::types::{NonPrimitiveOpId, WitnessId};
 use crate::{CircuitError, ExprId};
@@ -283,7 +281,7 @@ pub struct ExecutionContext<'a, F> {
     operation_id: NonPrimitiveOpId,
 }
 
-impl<'a, F: PrimeCharacteristicRing + Eq + Clone> ExecutionContext<'a, F> {
+impl<'a, F: Field> ExecutionContext<'a, F> {
     /// Create a new execution context
     pub const fn new(
         witness: &'a mut [Option<F>],
@@ -315,14 +313,13 @@ impl<'a, F: PrimeCharacteristicRing + Eq + Clone> ExecutionContext<'a, F> {
         }
 
         // Check for conflicting reassignment
-        if let Some(existing_value) = &self.witness[widx.0 as usize]
-            && *existing_value != value
+        if let Some(existing_value) = self.witness[widx.0 as usize]
+            && existing_value != value
         {
             return Err(CircuitError::WitnessConflict {
                 witness_id: widx,
                 existing: format!("{existing_value:?}"),
                 new: format!("{value:?}"),
-                expr_ids: vec![], // TODO: Could be filled with expression IDs if tracked
             });
         }
 
@@ -393,28 +390,16 @@ impl<F: Field> Clone for Box<dyn NonPrimitiveExecutor<F>> {
     }
 }
 
-/// The output of a hint filler is composed of the vector of hints values and and optional next state.
-pub type HintsOutputAndNextState<F> = (Vec<F>, Option<Vec<F>>);
-
 /// A trait for defining how unconstrained data (hints) is set.
 pub trait WitnessHintsFiller<F>: Debug + WitnessFillerClone<F> {
-    /// The state identifier for stateful fillers
-    fn state_id(&self) -> Option<String> {
-        None
-    }
     /// Return the `ExprId` of the inputs
     fn inputs(&self) -> &[ExprId];
     /// Return number of outputs filled by this filler
     fn n_outputs(&self) -> usize;
-    /// Compute the output and next state given the inputs and current state.
+    /// Compute the output given the inputs
     /// # Arguments
     /// * `inputs` - Input witness
-    /// * `state` - Optional current state for stateful fillers
-    fn compute_outputs(
-        &self,
-        inputs_val: Vec<F>,
-        state: Option<&Vec<F>>,
-    ) -> Result<HintsOutputAndNextState<F>, CircuitError>;
+    fn compute_outputs(&self, inputs_val: Vec<F>) -> Result<Vec<F>, CircuitError>;
 }
 
 impl<F> Clone for Box<dyn WitnessHintsFiller<F>> {
@@ -443,73 +428,8 @@ impl<F: Default + Clone> WitnessHintsFiller<F> for DefaultHint {
         self.n_outputs
     }
 
-    fn compute_outputs(
-        &self,
-        _inputs_val: Vec<F>,
-        _state: Option<&Vec<F>>,
-    ) -> Result<HintsOutputAndNextState<F>, CircuitError> {
-        Ok((vec![F::default(); self.n_outputs], None))
-    }
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct HashSqueezeHint<F: Field> {
-    state_id: Option<String>,
-    inputs: Vec<ExprId>,
-    config: HashConfig<F>,
-    reset: bool,
-}
-
-impl<F: Field> HashSqueezeHint<F> {
-    pub const fn new(
-        state_id: String,
-        inputs: Vec<ExprId>,
-        config: HashConfig<F>,
-        reset: bool,
-    ) -> Self {
-        Self {
-            state_id: Some(state_id),
-            inputs,
-            config,
-            reset,
-        }
-    }
-}
-
-impl<F: Field> WitnessHintsFiller<F> for HashSqueezeHint<F> {
-    fn state_id(&self) -> Option<String> {
-        self.state_id.clone()
-    }
-
-    fn inputs(&self) -> &[ExprId] {
-        &self.inputs
-    }
-
-    // Rate of the sponge, and size of the squeezed output
-    fn n_outputs(&self) -> usize {
-        self.config.rate
-    }
-
-    fn compute_outputs(
-        &self,
-        inputs_val: Vec<F>,
-        state: Option<&Vec<F>>,
-    ) -> Result<HintsOutputAndNextState<F>, CircuitError> {
-        let mut state = if self.reset {
-            vec![F::ZERO; self.config.width]
-        } else {
-            state
-                .cloned()
-                .unwrap_or_else(|| vec![F::ZERO; self.config.width])
-        };
-
-        for chunk in inputs_val.chunks(self.config.rate) {
-            state[..chunk.len()].copy_from_slice(chunk);
-            state = (self.config.permutation)(&state)?;
-        }
-
-        let output = state[..self.config.rate].to_vec();
-        Ok((output, Some(state)))
+    fn compute_outputs(&self, _inputs_val: Vec<F>) -> Result<Vec<F>, CircuitError> {
+        Ok(vec![F::default(); self.n_outputs])
     }
 }
 
@@ -984,15 +904,14 @@ mod tests {
         let hint = DefaultHint { n_outputs: 3 };
 
         // Compute default values for all outputs
-        let result = hint.compute_outputs(vec![], None);
+        let result = hint.compute_outputs(vec![]);
 
         // Verify the correct number of default-initialized values
-        let (outputs, state): (Vec<F>, Option<Vec<F>>) = result.unwrap();
+        let outputs: Vec<F> = result.unwrap();
         assert_eq!(outputs.len(), 3);
         assert_eq!(outputs[0], F::default());
         assert_eq!(outputs[1], F::default());
         assert_eq!(outputs[2], F::default());
-        assert_eq!(state, None);
     }
 
     #[test]

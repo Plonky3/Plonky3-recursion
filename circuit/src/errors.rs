@@ -1,5 +1,4 @@
 use alloc::string::String;
-use alloc::vec::Vec;
 
 use thiserror::Error;
 
@@ -36,13 +35,12 @@ pub enum CircuitError {
 
     /// Witness conflict: trying to reassign to a different value.
     #[error(
-        "Witness conflict: WitnessId({witness_id}) already set to {existing}, cannot reassign to {new}; corresponding ExprIds: {expr_ids:?}"
+        "Witness conflict: WitnessId({witness_id}) already set to {existing}, cannot reassign to {new}"
     )]
     WitnessConflict {
         witness_id: WitnessId,
         existing: String,
         new: String,
-        expr_ids: Vec<ExprId>,
     },
 
     /// Witness not set for an index during trace generation.
@@ -89,14 +87,6 @@ pub enum CircuitError {
         "Incorrect size of private data provided for operation {op:?}: expected {expected}, got {got}"
     )]
     IncorrectNonPrimitiveOpPrivateDataSize {
-        op: NonPrimitiveOpType,
-        expected: String,
-        got: usize,
-    },
-
-    /// Incorrect input size provided for a non-primitive operation.
-    #[error("Incorrect input size provided for operation {op:?}: expected {expected}, got {got}")]
-    IncorrectNonPrimitiveOpInputSize {
         op: NonPrimitiveOpType,
         expected: String,
         got: usize,

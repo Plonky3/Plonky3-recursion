@@ -200,6 +200,33 @@ where
                     });
                 }
 
+                // We need to use the mmcs bit for knowing where to put the private data.
+                let mmcs_bit = if inputs[7].len() == 1 {
+                    let val = self.get_witness(&inputs[7][0])?;
+                    let base = val.as_base().ok_or_else(|| {
+                        CircuitError::IncorrectNonPrimitiveOpPrivateData {
+                            op: executor.op_type().clone(),
+                            operation_index: *op_id,
+                            expected: "base field mmcs_bit".to_string(),
+                            got: "extension value".to_string(),
+                        }
+                    })?;
+                    match base {
+                        x if x == Config::BaseField::ZERO => false,
+                        x if x == Config::BaseField::ONE => true,
+                        other => {
+                            return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
+                                op: executor.op_type().clone(),
+                                operation_index: *op_id,
+                                expected: "boolean mmcs_bit (0 or 1)".to_string(),
+                                got: format!("{other:?}"),
+                            });
+                        }
+                    }
+                } else {
+                    false
+                };
+
                 // Initialize padded_inputs.
                 // If private data is available, use it as the default.
                 // Otherwise start with zero.
@@ -207,7 +234,7 @@ where
                     if let Some(Some(NonPrimitiveOpPrivateData::PoseidonPerm(private_data))) =
                         self.non_primitive_op_private_data.get(op_id.0 as usize)
                     {
-                        let num_limbs = width / d;
+                        let num_limbs = width / (2 * d);
                         if private_data.input_values.len() != num_limbs {
                             return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
                                 op: executor.op_type().clone(),
@@ -215,9 +242,15 @@ where
                                 got: private_data.input_values.len(),
                             });
                         }
-                        let mut flattened = Vec::with_capacity(width);
-                        for limb in &private_data.input_values {
-                            flattened.extend_from_slice(limb.as_basis_coefficients_slice());
+                        let mut flattened =
+                            vec![<Config as Poseidon2Params>::BaseField::ZERO; width];
+                        for (i, limb) in private_data.input_values.iter().enumerate() {
+                            flattened[if !mmcs_bit {
+                                i * d..(i + 1) * d
+                            } else {
+                                i * d + width / (2 * d)..(i + 1) * d + width / (2 * d)
+                            }]
+                            .copy_from_slice(limb.as_basis_coefficients_slice());
                         }
                         flattened
                     } else {
@@ -308,31 +341,6 @@ where
                     (base, inputs[6][0].0)
                 } else {
                     (Config::BaseField::ZERO, 0)
-                };
-                let mmcs_bit = if inputs[7].len() == 1 {
-                    let val = self.get_witness(&inputs[7][0])?;
-                    let base = val.as_base().ok_or_else(|| {
-                        CircuitError::IncorrectNonPrimitiveOpPrivateData {
-                            op: executor.op_type().clone(),
-                            operation_index: *op_id,
-                            expected: "base field mmcs_bit".to_string(),
-                            got: "extension value".to_string(),
-                        }
-                    })?;
-                    match base {
-                        x if x == Config::BaseField::ZERO => false,
-                        x if x == Config::BaseField::ONE => true,
-                        other => {
-                            return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
-                                op: executor.op_type().clone(),
-                                operation_index: *op_id,
-                                expected: "boolean mmcs_bit (0 or 1)".to_string(),
-                                got: format!("{other:?}"),
-                            });
-                        }
-                    }
-                } else {
-                    false
                 };
 
                 operations.push(Poseidon2CircuitRow {

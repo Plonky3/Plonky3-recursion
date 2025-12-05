@@ -75,11 +75,6 @@ where
         }
     }
 
-    /// Returns an immutable reference to the config.
-    pub const fn config(&self) -> &BuilderConfig {
-        &self.config
-    }
-
     /// Enables a non-primitive operation type on this builder.
     pub fn enable_op(&mut self, op: NonPrimitiveOpType, cfg: crate::op::NonPrimitiveOpConfig) {
         self.config.enable_op(op, cfg);

@@ -153,9 +153,6 @@ impl<F: CircuitField> CircuitRunner<F> {
         // Clone primitive operations to avoid borrowing issues
         let primitive_ops = self.circuit.primitive_ops.clone();
 
-        // State for hint fillers
-        let filler_state = &mut HashMap::new();
-
         for prim in primitive_ops {
             match prim {
                 Op::Const { out, val } => {
@@ -201,20 +198,7 @@ impl<F: CircuitField> CircuitRunner<F> {
                         .iter()
                         .map(|&input| self.get_witness(input))
                         .collect::<Result<Vec<F>, _>>()?;
-
-                    // Retrieve current state for the filler if applicable
-                    let state = filler
-                        .state_id()
-                        .and_then(|state_id| filler_state.get(&state_id));
-
-                    let (outputs_val, next_state) = filler.compute_outputs(inputs_val, state)?;
-
-                    // Update the filler state if applicable
-                    if let Some(state_id) = filler.state_id()
-                        && let Some(state) = next_state
-                    {
-                        filler_state.insert(state_id, state);
-                    }
+                    let outputs_val = filler.compute_outputs(inputs_val)?;
 
                     for (&output, &output_val) in zip_eq(
                         outputs.iter(),
@@ -283,24 +267,10 @@ impl<F: CircuitField> CircuitRunner<F> {
         // Check for conflicting reassignment
         if let Some(existing_value) = self.witness[widx.0 as usize] {
             if existing_value != value {
-                let expr_ids = self
-                    .circuit
-                    .expr_to_widx
-                    .iter()
-                    .filter_map(|(expr_id, &witness_id)| {
-                        if witness_id == widx {
-                            Some(expr_id)
-                        } else {
-                            None
-                        }
-                    })
-                    .cloned()
-                    .collect::<Vec<_>>();
                 return Err(CircuitError::WitnessConflict {
                     witness_id: widx,
                     existing: format!("{existing_value:?}"),
                     new: format!("{value:?}"),
-                    expr_ids,
                 });
             }
         } else {
@@ -328,7 +298,7 @@ mod tests {
 
     use crate::ExprId;
     use crate::builder::CircuitBuilder;
-    use crate::op::{HintsOutputAndNextState, WitnessHintsFiller};
+    use crate::op::WitnessHintsFiller;
     use crate::types::WitnessId;
 
     #[test]
@@ -396,11 +366,7 @@ mod tests {
             1
         }
 
-        fn compute_outputs(
-            &self,
-            inputs_val: Vec<F>,
-            _state: Option<&Vec<F>>,
-        ) -> Result<HintsOutputAndNextState<F>, crate::CircuitError> {
+        fn compute_outputs(&self, inputs_val: Vec<F>) -> Result<Vec<F>, crate::CircuitError> {
             if inputs_val.len() != self.inputs.len() {
                 Err(crate::CircuitError::UnconstrainedOpInputLengthMismatch {
                     op: "equal to".to_string(),
@@ -412,7 +378,7 @@ mod tests {
                 let b = inputs_val[1];
                 let inv_a = a.try_inverse().ok_or(CircuitError::DivisionByZero)?;
                 let x = b * inv_a;
-                Ok((vec![x], None))
+                Ok(vec![x])
             }
         }
     }
