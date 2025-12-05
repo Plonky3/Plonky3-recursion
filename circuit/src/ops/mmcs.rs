@@ -2,18 +2,19 @@ use alloc::boxed::Box;
 use alloc::string::ToString;
 use alloc::vec::Vec;
 use alloc::{format, vec};
+use core::cmp::Reverse;
 use core::hash::Hash;
 use core::ops::Range;
 
+use itertools::Itertools;
 use p3_field::{ExtensionField, Field};
+use p3_matrix::Dimensions;
 
 use crate::builder::{CircuitBuilder, CircuitBuilderError};
-use crate::op::{
-    ExecutionContext, NonPrimitiveExecutor, NonPrimitiveOpConfig, NonPrimitiveOpPrivateData,
-    NonPrimitiveOpType,
-};
+use crate::op::{ExecutionContext, NonPrimitiveExecutor, NonPrimitiveOpConfig, NonPrimitiveOpType};
+use crate::ops::PoseidonPermCall;
 use crate::types::{ExprId, WitnessId};
-use crate::{CircuitError, NonPrimitiveOpId};
+use crate::{CircuitError, NonPrimitiveOpId, PoseidonPermOps};
 
 /// Configuration parameters for Mmcs verification operations. When
 /// `base_field_digest_elems > ext_field_digest_elems`, we say the configuration
@@ -67,7 +68,7 @@ impl MmcsVerifyConfig {
         // Ensure the number of extension limbs matches the configuration.
         if digest.len() != self.ext_field_digest_elems {
             return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
-                op: NonPrimitiveOpType::MmcsVerify,
+                op: NonPrimitiveOpType::PoseidonPerm,
                 expected: self.ext_field_digest_elems.to_string(),
                 got: digest.len(),
             });
@@ -89,7 +90,7 @@ impl MmcsVerifyConfig {
         let len = flattened.len();
         let arr: [F; DIGEST_ELEMS] = flattened.try_into().map_err(|_| {
             CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
-                op: NonPrimitiveOpType::MmcsVerify,
+                op: NonPrimitiveOpType::PoseidonPerm,
                 expected: DIGEST_ELEMS.to_string(),
                 got: len,
             }
@@ -112,7 +113,7 @@ impl MmcsVerifyConfig {
     {
         if digest.len() != self.base_field_digest_elems {
             return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
-                op: NonPrimitiveOpType::MmcsVerify,
+                op: NonPrimitiveOpType::PoseidonPerm,
                 expected: self.base_field_digest_elems.to_string(),
                 got: digest.len(),
             });
@@ -123,7 +124,7 @@ impl MmcsVerifyConfig {
                 || self.ext_field_digest_elems * EF::DIMENSION != self.base_field_digest_elems
             {
                 return Err(CircuitError::InvalidNonPrimitiveOpConfiguration {
-                    op: NonPrimitiveOpType::MmcsVerify,
+                    op: NonPrimitiveOpType::PoseidonPerm,
                 });
             }
             Ok(digest
@@ -136,6 +137,62 @@ impl MmcsVerifyConfig {
         } else {
             Ok(digest.iter().map(|&x| EF::from(x)).collect())
         }
+    }
+
+    /// Given a vector of leaves and dimesions it formats the leaves
+    /// into a vec of size `max_height`, where each entry contains the leaves
+    /// corresponding to that height. Leaves for heights that do not exist
+    /// in the input are empty vectors.
+    pub fn format_leaves<T: Clone + alloc::fmt::Debug>(
+        &self,
+        leaves: &[Vec<T>],
+        dimensions: &[Dimensions],
+        max_height_log: usize,
+    ) -> Result<Vec<Vec<T>>, CircuitError> {
+        if leaves.len() > 1 << max_height_log {
+            return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
+                op: NonPrimitiveOpType::PoseidonPerm,
+                expected: format!("at most {}", max_height_log),
+                got: leaves.len(),
+            });
+        }
+
+        let mut heights_tallest_first = dimensions
+            .iter()
+            .enumerate()
+            .sorted_by_key(|(_, dims)| Reverse(dims.height))
+            .peekable();
+
+        // Matrix heights that round up to the same power of two must be equal
+        if !heights_tallest_first
+            .clone()
+            .map(|(_, dims)| dims.height)
+            .tuple_windows()
+            .all(|(curr, next)| {
+                curr == next || curr.next_power_of_two() != next.next_power_of_two()
+            })
+        {
+            panic!("Heights that round up to the same power of two must be equal"); //TODO: Add errors
+        }
+
+        let mut formatted_leaves = vec![vec![]; max_height_log];
+        for (curr_height, leaf) in formatted_leaves
+            .iter_mut()
+            .enumerate()
+            .map(|(i, leaf)| (1 << (max_height_log - i), leaf))
+        {
+            // Get the initial height padded to a power of two. As heights_tallest_first is sorted,
+            // the initial height will be the maximum height.
+            // Returns an error if either:
+            //              1. proof.len() != log_max_height
+            //              2. heights_tallest_first is empty.
+            let new_leaf = heights_tallest_first
+                .peeking_take_while(|(_, dims)| dims.height.next_power_of_two() == curr_height)
+                .flat_map(|(i, _)| leaves[i].clone())
+                .collect();
+            *leaf = new_leaf;
+        }
+        Ok(formatted_leaves)
     }
 
     pub const fn mock_config() -> Self {
@@ -206,165 +263,60 @@ impl MmcsVerifyConfig {
     }
 }
 
-/// Extension trait for Mmcs-related non-primitive ops.
-pub trait MmcsOps<F> {
-    /// Add a Mmcs verification constraint (non-primitive operation)
-    ///
-    /// Non-primitive operations are complex constraints that:
-    /// - Take existing expressions as inputs (leaves_expr, directions_expr, root_expr)
-    /// - Add verification constraints to the circuit
-    /// - Don't produce new ExprIds (unlike primitive ops)
-    /// - Are kept separate from primitives to avoid disrupting optimization
-    ///
-    /// Returns an operation ID for setting private data later during execution.
-    fn add_mmcs_verify(
-        &mut self,
-        leaves_expr: &[Vec<ExprId>],
-        directions_expr: &[ExprId],
-        root_expr: &[ExprId],
-    ) -> Result<NonPrimitiveOpId, CircuitBuilderError>;
+pub fn add_mmcs_verify<F: Field>(
+    builder: &mut CircuitBuilder<F>,
+    config: &MmcsVerifyConfig,
+    leaves_expr: &[Vec<ExprId>],
+    directions_expr: &[ExprId],
+    root_expr: &[ExprId],
+) -> Result<(), CircuitBuilderError> {
+    for (i, (row_digest, direction)) in leaves_expr.iter().zip(directions_expr).enumerate() {
+        let is_first = i == 0;
+        let is_last = i == directions_expr.len() - 1;
+        let _ = builder.add_poseidon_perm(PoseidonPermCall {
+            new_start: if is_first { reset } else { false },
+            merkle_path: false,
+            mmcs_bit: None,
+            inputs: input
+                .iter()
+                .cloned()
+                .map(Some)
+                .chain(iter::repeat(None))
+                .take(4)
+                .collect::<Vec<_>>()
+                .try_into()
+                .expect("We have already taken 4 elements"),
+            outputs: if is_last {
+                outputs
+                    .iter()
+                    .cloned()
+                    .map(Some)
+                    .chain(iter::repeat(None))
+                    .take(2)
+                    .collect::<Vec<_>>()
+                    .try_into()
+                    .expect("We have already taken 2 elements")
+            } else {
+                [None, None]
+            },
+            mmcs_index_sum: None,
+        })?;
+    }
+    Ok(())
 }
+// builder.ensure_op_enabled(NonPrimitiveOpType::PoseidonPerm)?;
 
-impl<F> MmcsOps<F> for CircuitBuilder<F>
-where
-    F: Clone + p3_field::PrimeCharacteristicRing + Eq + Hash,
-{
-    fn add_mmcs_verify(
-        &mut self,
-        leaves_expr: &[Vec<ExprId>],
-        directions_expr: &[ExprId],
-        root_expr: &[ExprId],
-    ) -> Result<NonPrimitiveOpId, CircuitBuilderError> {
-        self.ensure_op_enabled(NonPrimitiveOpType::MmcsVerify)?;
+// let mut witness_exprs = vec![];
+// witness_exprs.extend(leaves_expr.to_vec());
+// witness_exprs.push(directions_expr.to_vec());
+// witness_exprs.push(root_expr.to_vec());
 
-        let mut witness_exprs = vec![];
-        witness_exprs.extend(leaves_expr.to_vec());
-        witness_exprs.push(directions_expr.to_vec());
-        witness_exprs.push(root_expr.to_vec());
-        Ok(self.push_non_primitive_op(
-            NonPrimitiveOpType::MmcsVerify,
-            witness_exprs,
-            None,
-            "mmcs_verify",
-        ))
-    }
-}
-
-/// Executor for MMCS verification operations
-///
-/// This executor validates that the private MMCS path data is consistent with
-/// the witness values. It does not compute outputs - they must be provided by the user.
-#[derive(Debug, Clone)]
-pub struct MmcsVerifyExecutor {
-    op_type: NonPrimitiveOpType,
-}
-
-impl MmcsVerifyExecutor {
-    /// Create a new MMCS verify executor
-    pub const fn new() -> Self {
-        Self {
-            op_type: NonPrimitiveOpType::MmcsVerify,
-        }
-    }
-}
-
-impl Default for MmcsVerifyExecutor {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<F: Field> NonPrimitiveExecutor<F> for MmcsVerifyExecutor {
-    fn execute(
-        &self,
-        inputs: &[Vec<WitnessId>],
-        _outputs: &[Vec<WitnessId>],
-        ctx: &mut ExecutionContext<'_, F>,
-    ) -> Result<(), CircuitError> {
-        // Get the configuration
-        let config = match ctx.get_config(&self.op_type)? {
-            NonPrimitiveOpConfig::MmcsVerifyConfig(cfg) => cfg,
-            _ => {
-                return Err(CircuitError::InvalidNonPrimitiveOpConfiguration {
-                    op: self.op_type.clone(),
-                });
-            }
-        };
-
-        // Get private data
-        let NonPrimitiveOpPrivateData::MmcsVerify(private_data) = ctx.get_private_data()?;
-
-        // Validate input size: leaf(ext) + index(1) + root(ext)
-        if !config.input_size().contains(&inputs.len()) {
-            return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
-                op: self.op_type.clone(),
-                expected: format!("{:?}", config.input_size()),
-                got: inputs.len(),
-            });
-        }
-
-        let root = &inputs[inputs.len() - 1];
-        let directions = &inputs[inputs.len() - 2];
-        let leaves = &inputs[0..directions.len()];
-
-        // Validate that the witness data is consistent with public inputs
-        // Check leaf values
-        let witness_leaves: Vec<Vec<F>> = leaves
-            .iter()
-            .map(|leaf| {
-                leaf.iter()
-                    .map(|&wid| ctx.get_witness(wid))
-                    .collect::<Result<Vec<F>, _>>()
-            })
-            .collect::<Result<_, _>>()?;
-
-        let witness_directions = directions
-            .iter()
-            .map(|&wid| ctx.get_witness(wid))
-            .collect::<Result<Vec<F>, _>>()?;
-        // Check that the number of leaves is the same as the number of directions
-        if witness_directions.len() != witness_leaves.len() {
-            return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
-                op: NonPrimitiveOpType::MmcsVerify,
-                operation_index: ctx.operation_id(), // TODO: What's the operation id of the curre
-                expected: format!("{:?}", witness_directions.len()),
-                got: format!("{:?}", witness_leaves.len()),
-            });
-        }
-
-        // Check root values
-        let witness_root: Vec<F> = root
-            .iter()
-            .map(|&wid| ctx.get_witness(wid))
-            .collect::<Result<_, _>>()?;
-        let computed_root = &private_data
-            .path_states
-            .last()
-            .ok_or_else(|| CircuitError::NonPrimitiveOpMissingPrivateData {
-                operation_index: ctx.operation_id(),
-            })?
-            .0;
-        if witness_root != *computed_root {
-            return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
-                op: NonPrimitiveOpType::MmcsVerify,
-                operation_index: ctx.operation_id(),
-                expected: format!("root: {witness_root:?}"),
-                got: format!("root: {computed_root:?}"),
-            });
-        }
-
-        Ok(())
-    }
-
-    fn op_type(&self) -> &NonPrimitiveOpType {
-        &self.op_type
-    }
-
-    fn as_any(&self) -> &dyn core::any::Any {
-        self
-    }
-
-    fn boxed(&self) -> Box<dyn NonPrimitiveExecutor<F>> {
-        Box::new(self.clone())
-    }
-}
+// tracing::debug!("witness expr = {:?}", witness_exprs);
+// Ok(
+//     self.push_non_primitive_op(
+//         NonPrimitiveOpType::PoseidonPerm,
+//         witness_exprs,
+//         "mmcs_verify",
+//     ),
+// )
+// }
