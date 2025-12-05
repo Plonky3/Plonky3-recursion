@@ -257,21 +257,19 @@ impl<F> HashConfig<F> {
                         expected: 4.to_string(),
                         got: input.len(),
                     })?;
-                let bf_output = permutation.permute(bf_input);
-                let output = bf_output
+                let output = permutation.permute(bf_input);
+                output
                     .chunks(F::DIMENSION)
                     .map(|coeffs| {
-                        F::from_basis_coefficients_slice(coeffs).ok_or(
+                        F::from_basis_coefficients_slice(coeffs).ok_or_else(|| {
                             CircuitError::IncorrectNonPrimitiveOpInputSize {
                                 op: NonPrimitiveOpType::PoseidonPerm,
                                 expected: F::DIMENSION.to_string(),
                                 got: coeffs.len(),
-                            },
-                        )
+                            }
+                        })
                     })
-                    .collect::<Result<Vec<F>, CircuitError>>();
-
-                output
+                    .collect::<Result<Vec<F>, CircuitError>>()
             }),
         }
     }
