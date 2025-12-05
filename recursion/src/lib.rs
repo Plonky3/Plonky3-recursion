@@ -21,7 +21,6 @@ pub use pcs::fri::{FriVerifierParams, MAX_QUERY_INDEX_BITS};
 pub use public_inputs::{
     BatchStarkVerifierInputsBuilder, CommitmentOpening, FriVerifierInputs, PublicInputBuilder,
     StarkVerifierInputs, StarkVerifierInputsBuilder, construct_batch_stark_verifier_inputs,
-    construct_stark_verifier_inputs,
 };
 pub use traits::{
     Recursive, RecursiveAir, RecursiveChallenger, RecursiveExtensionMmcs, RecursiveMmcs,

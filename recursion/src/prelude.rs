@@ -15,7 +15,7 @@ pub use crate::generation::{GenerationError, PcsGeneration, generate_challenges}
 pub use crate::pcs::fri::{FriVerifierParams, MAX_QUERY_INDEX_BITS};
 pub use crate::public_inputs::{
     CommitmentOpening, FriVerifierInputs, PublicInputBuilder, StarkVerifierInputs,
-    StarkVerifierInputsBuilder, construct_stark_verifier_inputs,
+    StarkVerifierInputsBuilder,
 };
 pub use crate::traits::{
     ComsWithOpeningsTargets, Recursive, RecursiveAir, RecursiveChallenger, RecursiveExtensionMmcs,
