@@ -716,6 +716,7 @@ where
         packing: TablePacking,
         traces: &Traces<BinomialExtensionField<Val<SC>, 6>>,
     ) -> Option<BatchTableInstance<SC>> {
+        // Not supported for Poseidon2 table; extension circuits use D=4.
         let _ = (config, packing, traces);
         None
     }
@@ -726,6 +727,7 @@ where
         packing: TablePacking,
         traces: &Traces<BinomialExtensionField<Val<SC>, 8>>,
     ) -> Option<BatchTableInstance<SC>> {
+        // Not supported for Poseidon2 table; extension circuits use D=4.
         let _ = (config, packing, traces);
         None
     }
