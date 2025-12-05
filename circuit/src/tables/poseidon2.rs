@@ -126,6 +126,9 @@ impl<TraceF: Clone + Send + Sync + 'static, CF> NonPrimitiveTrace<CF> for Poseid
 }
 
 /// Builder for generating Poseidon2 traces.
+///
+/// The builder handles the conversion from the circuit's extension field (`CF`) to the
+/// base field (`Config::BaseField`) required by the Poseidon permutation.
 pub struct Poseidon2TraceBuilder<'a, CF, Config: Poseidon2Params> {
     circuit: &'a Circuit<CF>,
     witness: &'a [Option<CF>],
@@ -226,7 +229,10 @@ where
                 for limb in 0..4 {
                     let chunk = &inputs[limb];
                     match chunk.len() {
+                        // Case 1: No input provided for this limb. It remains zero-padded.
                         0 => {}
+                        // Case 2: Input provided as a single WitnessId, representing an extension field element.
+                        // We convert this extension element to its `d` base field coefficients.
                         1 => {
                             let val = self.get_witness(&chunk[0])?;
                             let coeffs = val.as_basis_coefficients_slice();
@@ -241,6 +247,8 @@ where
                             in_idx[limb] = chunk[0].0;
                             padded_inputs[limb * d..(limb + 1) * d].copy_from_slice(coeffs);
                         }
+                        // Case 3: Input provided as `d` WitnessIds, representing base field elements.
+                        // The extension element is already "flattened" into its base field components.
                         len if len == d => {
                             in_ctl[limb] = true;
                             in_idx[limb] = chunk[0].0;
@@ -260,6 +268,7 @@ where
                                 *dst = base;
                             }
                         }
+                        // Case 4: Invalid input length.
                         other => {
                             return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
                                 op: executor.op_type().clone(),
