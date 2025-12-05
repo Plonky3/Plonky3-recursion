@@ -212,6 +212,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let stark_config = config::baby_bear().build();
     let mut common = CommonData::from_airs_and_degrees(&stark_config, &airs, &degrees);
+
+    // TODO: Pad preprocessed instances for non-primitive tables (same workaround as other examples).
     for (_, trace) in &traces.non_primitive_traces {
         if trace.rows() != 0
             && let Some(p) = common.preprocessed.as_mut()

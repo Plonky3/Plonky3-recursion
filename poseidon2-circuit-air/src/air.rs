@@ -423,7 +423,6 @@ fn eval<
     let next_in = &next.poseidon2.inputs;
 
     // mmcs_bit should always be boolean.
-    builder.assert_bool(next.mmcs_bit.clone());
     builder.assert_bool(local.mmcs_bit.clone());
 
     // Normal chaining.
@@ -444,8 +443,8 @@ fn eval<
 
     // Merkle-path chaining.
     // If new_start_{r+1} = 0 and merkle_path_{r+1} = 1:
-    //   - If mmcs_bit_r = 0 (left = previous hash): in_{r+1}[0] = out_r[0], in_{r+1}[1] = out_r[1]
-    //   - If mmcs_bit_r = 1 (right = previous hash): in_{r+1}[0] = out_r[2], in_{r+1}[1] = out_r[3]
+    //   - If mmcs_bit_{r+1} = 0 (left = previous hash): in_{r+1}[0] = out_r[0], in_{r+1}[1] = out_r[1]
+    //   - If mmcs_bit_{r+1} = 1 (right = previous hash): in_{r+1}[0] = out_r[2], in_{r+1}[1] = out_r[3]
     //   - in_{r+1}[2], in_{r+1}[3] are free/private
     // BUT: If in_ctl[i] = 1, CTL overrides chaining (limb is not chained).
     // Chaining only applies when in_ctl[limb] = 0.
@@ -488,7 +487,7 @@ fn eval<
 
     // MMCS accumulator update.
     // If merkle_path_{r+1} = 1 and new_start_{r+1} = 0:
-    //   mmcs_index_sum_{r+1} = mmcs_index_sum_r * 2 + mmcs_bit_r
+    //   mmcs_index_sum_{r+1} = mmcs_index_sum_r * 2 + mmcs_bit_{r+1}
     let two = AB::Expr::ONE + AB::Expr::ONE;
     builder
         .when_transition()
