@@ -245,20 +245,33 @@ impl<F> HashConfig<F> {
         let permutation = default_babybear_poseidon2_16();
         Self {
             rate,
-            width: 16,
+            width: 4,
             permutation: Arc::new(move |input: &[F]| {
-                let input = input
+                let bf_input = input
                     .iter()
-                    .flat_map(|e| e.as_basis_coefficients_slice()[0..1].to_vec())
+                    .flat_map(|e| e.as_basis_coefficients_slice().to_vec())
                     .collect::<Vec<BabyBear>>()
                     .try_into()
                     .map_err(|_| CircuitError::IncorrectNonPrimitiveOpInputSize {
                         op: NonPrimitiveOpType::PoseidonPerm,
-                        expected: 16.to_string(),
+                        expected: 4.to_string(),
                         got: input.len(),
                     })?;
-                let output = permutation.permute(input);
-                Ok(output.iter().map(|e| F::from(*e)).collect::<Vec<F>>())
+                let bf_output = permutation.permute(bf_input);
+                let output = bf_output
+                    .chunks(F::DIMENSION)
+                    .map(|coeffs| {
+                        F::from_basis_coefficients_slice(coeffs).ok_or(
+                            CircuitError::IncorrectNonPrimitiveOpInputSize {
+                                op: NonPrimitiveOpType::PoseidonPerm,
+                                expected: F::DIMENSION.to_string(),
+                                got: coeffs.len(),
+                            },
+                        )
+                    })
+                    .collect::<Result<Vec<F>, CircuitError>>();
+
+                output
             }),
         }
     }

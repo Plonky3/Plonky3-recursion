@@ -9,9 +9,8 @@ use hashbrown::HashMap;
 use p3_field::{Field, PrimeCharacteristicRing};
 use strum_macros::EnumCount;
 
-use crate::ops::MmcsVerifyConfig;
 use crate::ops::poseidon_perm::HashConfig;
-use crate::tables::MmcsPrivateData;
+use crate::tables::PoseidonPermPrivateData;
 use crate::types::{NonPrimitiveOpId, WitnessId};
 use crate::{CircuitError, ExprId};
 
@@ -232,8 +231,6 @@ impl<F: Field + PartialEq> PartialEq for Op<F> {
 /// Non-primitive operation types
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum NonPrimitiveOpType {
-    /// Mmcs Verify gate with the argument is the size of the path
-    MmcsVerify,
     /// Poseidon permutation operation (one Poseidon call / table row).
     PoseidonPerm,
 }
@@ -241,7 +238,6 @@ pub enum NonPrimitiveOpType {
 /// Non-primitive operation types
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum NonPrimitiveOpConfig {
-    MmcsVerifyConfig(MmcsVerifyConfig),
     None,
 }
 
@@ -259,27 +255,7 @@ pub enum NonPrimitiveOpConfig {
 /// 2. Allow specialized constraint systems for each operation type
 /// 3. Enable parallel development of different cryptographic primitives
 /// 4. Avoid optimization passes breaking complex constraint relationships
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum NonPrimitiveOp {
-    /// Verifies that a leaf value is contained in a Mmcs with given root.
-    /// The actual Mmcs path verification logic is implemented in a dedicated
-    /// AIR table that constrains the relationship between leaf and root.
-    ///
-    /// Public interface (on witness bus):
-    /// - `leaves`: The leaves values being verified. Each one correspond to the hash of a matrix row .
-    /// - `directions`: The directions in the tree taken by the merkle path.
-    /// - `root`: The expected Mmcs root (single field element)
-    ///
-    /// Private data (set via NonPrimitiveOpId):
-    /// - Mmcs path siblings and direction bits
-    /// - See `MmcsPrivateData` for complete specification
-    MmcsVerify {
-        leaves: Vec<Vec<WitnessId>>,
-        directions: Vec<WitnessId>,
-        root: Vec<WitnessId>,
-    },
-}
-
+///
 /// Private auxiliary data for non-primitive operations
 ///
 /// This data is NOT part of the witness table but provides additional
@@ -289,12 +265,7 @@ pub enum NonPrimitiveOp {
 /// - Is used by AIR tables to generate the appropriate constraints
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NonPrimitiveOpPrivateData<F> {
-    /// Private data for Mmcs verification
-    ///
-    /// Contains the complete Mmcs path information needed by the prover
-    /// to generate a valid proof. This data is not part of the public
-    /// circuit specification.
-    MmcsVerify(MmcsPrivateData<F>),
+    PoseidonPerm(PoseidonPermPrivateData<F>),
 }
 
 /// Execution context providing operations access to witness table, private data, and configs
@@ -912,13 +883,11 @@ mod tests {
     #[test]
     fn test_execution_context_get_private_data() {
         // Create private auxiliary data for a verification operation
-        let mmcs_data: MmcsPrivateData<F> = MmcsPrivateData {
-            path_states: vec![],
-            path_siblings: vec![],
-            directions: vec![],
+        let poseidon_data: PoseidonPermPrivateData<F> = PoseidonPermPrivateData {
+            input_values: vec![],
         };
-        let private_data = vec![Some(NonPrimitiveOpPrivateData::MmcsVerify(
-            mmcs_data.clone(),
+        let private_data = vec![Some(NonPrimitiveOpPrivateData::PoseidonPerm(
+            poseidon_data.clone(),
         ))];
 
         // Create execution context with access to private data
@@ -933,7 +902,7 @@ mod tests {
         // Verify private data access succeeded
         assert_eq!(
             *result.unwrap(),
-            NonPrimitiveOpPrivateData::MmcsVerify(mmcs_data)
+            NonPrimitiveOpPrivateData::PoseidonPerm(poseidon_data)
         );
     }
 
@@ -1024,15 +993,6 @@ mod tests {
         assert_eq!(outputs[1], F::default());
         assert_eq!(outputs[2], F::default());
         assert_eq!(state, None);
-    }
-
-    #[test]
-    fn test_non_primitive_op_type_equality() {
-        let a = NonPrimitiveOpType::PoseidonPerm;
-        let b = NonPrimitiveOpType::PoseidonPerm;
-        let c = NonPrimitiveOpType::MmcsVerify;
-        assert_eq!(a, b);
-        assert_ne!(a, c);
     }
 
     #[test]

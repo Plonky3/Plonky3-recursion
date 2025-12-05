@@ -366,45 +366,6 @@ where
     }
 }
 
-/// Constructs public inputs for a single-instance STARK verification circuit.
-///
-/// This function:
-/// - converts the provided slices into owned vectors,
-/// - builds a structured [`StarkVerifierInputs`] value,
-/// - flattens it into the canonical public input order.
-///
-/// # Parameters
-/// - `air_public_values`: AIR public input values in the base field.
-/// - `proof_values`: Values extracted from the proof.
-/// - `preprocessed`: Values from any preprocessed commitment.
-/// - `challenges`: All challenge values.
-/// - `num_queries`: Number of FRI queries (used for documentation only).
-///
-/// # Returns
-/// A vector of extension field elements ready to be passed to the circuit
-/// that consumes public inputs.
-pub fn construct_stark_verifier_inputs<F, EF>(
-    air_public_values: &[F],
-    proof_values: &[EF],
-    preprocessed: &[EF],
-    challenges: &[EF],
-    num_queries: usize,
-) -> Vec<EF>
-where
-    F: Field + PrimeField64,
-    EF: Field + BasedVectorSpace<F> + From<F>,
-{
-    // Delegate to the structured builder for consistent ordering.
-    StarkVerifierInputs {
-        air_public_values: air_public_values.to_vec(),
-        proof_values: proof_values.to_vec(),
-        preprocessed: preprocessed.to_vec(),
-        challenges: challenges.to_vec(),
-        num_queries,
-    }
-    .build()
-}
-
 /// Constructs public inputs for a batch (multi-instance) STARK verification circuit.
 ///
 /// Batch verification proves several AIR instances at once.
@@ -603,13 +564,14 @@ where
             .map_or_else(Vec::new, |prep_comm| Comm::get_values(prep_comm));
 
         // Combine all components into a single public input vector.
-        construct_stark_verifier_inputs(
-            air_public_values,
-            &proof_values,
-            &preprocessed,
-            challenges,
+        StarkVerifierInputs {
+            air_public_values: air_public_values.to_vec(),
+            proof_values: proof_values.to_vec(),
+            preprocessed: preprocessed.to_vec(),
+            challenges: challenges.to_vec(),
             num_queries,
-        )
+        }
+        .build()
     }
 }
 
