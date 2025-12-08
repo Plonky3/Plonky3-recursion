@@ -8,8 +8,7 @@ use hashbrown::HashMap;
 use p3_field::Field;
 use strum_macros::EnumCount;
 
-use crate::ops::MmcsVerifyConfig;
-use crate::tables::MmcsPrivateData;
+use crate::tables::PoseidonPermPrivateData;
 use crate::types::{NonPrimitiveOpId, WitnessId};
 use crate::{CircuitError, ExprId};
 
@@ -230,18 +229,13 @@ impl<F: Field + PartialEq> PartialEq for Op<F> {
 /// Non-primitive operation types
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum NonPrimitiveOpType {
-    /// Mmcs Verify gate with the argument is the size of the path
-    MmcsVerify,
-    /// Hash absorb operation - absorbs field elements into sponge state
-    HashAbsorb { reset: bool },
-    /// Hash squeeze operation - extracts field elements from sponge state
-    HashSqueeze,
+    /// Poseidon permutation operation (one Poseidon call / table row).
+    PoseidonPerm,
 }
 
 /// Non-primitive operation types
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum NonPrimitiveOpConfig {
-    MmcsVerifyConfig(MmcsVerifyConfig),
     None,
 }
 
@@ -259,43 +253,7 @@ pub enum NonPrimitiveOpConfig {
 /// 2. Allow specialized constraint systems for each operation type
 /// 3. Enable parallel development of different cryptographic primitives
 /// 4. Avoid optimization passes breaking complex constraint relationships
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum NonPrimitiveOp {
-    /// Verifies that a leaf value is contained in a Mmcs with given root.
-    /// The actual Mmcs path verification logic is implemented in a dedicated
-    /// AIR table that constrains the relationship between leaf and root.
-    ///
-    /// Public interface (on witness bus):
-    /// - `leaves`: The leaves values being verified. Each one correspond to the hash of a matrix row .
-    /// - `directions`: The directions in the tree taken by the merkle path.
-    /// - `root`: The expected Mmcs root (single field element)
-    ///
-    /// Private data (set via NonPrimitiveOpId):
-    /// - Mmcs path siblings and direction bits
-    /// - See `MmcsPrivateData` for complete specification
-    MmcsVerify {
-        leaves: Vec<Vec<WitnessId>>,
-        directions: Vec<WitnessId>,
-        root: Vec<WitnessId>,
-    },
-
-    /// Hash absorb operation - absorbs inputs into sponge state.
-    ///
-    /// Public interface (on witness bus):
-    /// - `inputs`: Field elements to absorb into the sponge
-    /// - `reset_flag`: Whether to reset the sponge state before absorbing
-    HashAbsorb {
-        reset_flag: bool,
-        inputs: Vec<WitnessId>,
-    },
-
-    /// Hash squeeze operation - extracts outputs from sponge state.
-    ///
-    /// Public interface (on witness bus):
-    /// - `outputs`: Field elements extracted from the sponge
-    HashSqueeze { outputs: Vec<WitnessId> },
-}
-
+///
 /// Private auxiliary data for non-primitive operations
 ///
 /// This data is NOT part of the witness table but provides additional
@@ -305,12 +263,7 @@ pub enum NonPrimitiveOp {
 /// - Is used by AIR tables to generate the appropriate constraints
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NonPrimitiveOpPrivateData<F> {
-    /// Private data for Mmcs verification
-    ///
-    /// Contains the complete Mmcs path information needed by the prover
-    /// to generate a valid proof. This data is not part of the public
-    /// circuit specification.
-    MmcsVerify(MmcsPrivateData<F>),
+    PoseidonPerm(PoseidonPermPrivateData<F>),
 }
 
 /// Execution context providing operations access to witness table, private data, and configs
@@ -422,6 +375,9 @@ pub trait NonPrimitiveExecutor<F: Field>: Debug {
 
     /// Get operation type identifier (for config lookup, error reporting)
     fn op_type(&self) -> &NonPrimitiveOpType;
+
+    /// Allow downcasting to concrete executor types
+    fn as_any(&self) -> &dyn core::any::Any;
 
     /// Clone as trait object
     fn boxed(&self) -> Box<dyn NonPrimitiveExecutor<F>>;
@@ -847,13 +803,11 @@ mod tests {
     #[test]
     fn test_execution_context_get_private_data() {
         // Create private auxiliary data for a verification operation
-        let mmcs_data: MmcsPrivateData<F> = MmcsPrivateData {
-            path_states: vec![],
-            path_siblings: vec![],
-            directions: vec![],
+        let poseidon_data: PoseidonPermPrivateData<F> = PoseidonPermPrivateData {
+            input_values: vec![],
         };
-        let private_data = vec![Some(NonPrimitiveOpPrivateData::MmcsVerify(
-            mmcs_data.clone(),
+        let private_data = vec![Some(NonPrimitiveOpPrivateData::PoseidonPerm(
+            poseidon_data.clone(),
         ))];
 
         // Create execution context with access to private data
@@ -868,7 +822,7 @@ mod tests {
         // Verify private data access succeeded
         assert_eq!(
             *result.unwrap(),
-            NonPrimitiveOpPrivateData::MmcsVerify(mmcs_data)
+            NonPrimitiveOpPrivateData::PoseidonPerm(poseidon_data)
         );
     }
 
@@ -901,7 +855,7 @@ mod tests {
     fn test_execution_context_get_config() {
         // Create a configuration map for operation parameters
         let mut configs = HashMap::new();
-        let op_type = NonPrimitiveOpType::HashAbsorb { reset: false };
+        let op_type = NonPrimitiveOpType::PoseidonPerm;
         configs.insert(op_type.clone(), NonPrimitiveOpConfig::None);
 
         // Create execution context with configurations
@@ -931,7 +885,7 @@ mod tests {
             ExecutionContext::new(&mut witness, &private_data, &configs, op_id);
 
         // Attempt to access a configuration that wasn't registered
-        let op_type = NonPrimitiveOpType::HashAbsorb { reset: false };
+        let op_type = NonPrimitiveOpType::PoseidonPerm;
         let result = ctx.get_config(&op_type);
 
         // Missing configurations indicate setup errors
@@ -958,24 +912,6 @@ mod tests {
         assert_eq!(outputs[0], F::default());
         assert_eq!(outputs[1], F::default());
         assert_eq!(outputs[2], F::default());
-    }
-
-    #[test]
-    fn test_non_primitive_op_type_equality() {
-        // Create various operation type instances
-        let hash_absorb1 = NonPrimitiveOpType::HashAbsorb { reset: true };
-        let hash_absorb2 = NonPrimitiveOpType::HashAbsorb { reset: true };
-        let hash_absorb3 = NonPrimitiveOpType::HashAbsorb { reset: false };
-        let hash_squeeze = NonPrimitiveOpType::HashSqueeze;
-
-        // Verify equality for identical types
-        assert_eq!(hash_absorb1, hash_absorb2);
-
-        // Verify inequality when parameters differ
-        assert_ne!(hash_absorb1, hash_absorb3);
-
-        // Verify inequality for completely different types
-        assert_ne!(hash_absorb1, hash_squeeze);
     }
 
     #[test]

@@ -42,6 +42,7 @@ p3-dft.workspace = true
 p3-fri.workspace = true
 p3-matrix.workspace = true
 p3-merkle-tree.workspace = true
+p3-poseidon2-circuit-air.workspace = true
 p3-symmetric.workspace = true
 
 proptest.workspace = true

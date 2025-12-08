@@ -3,7 +3,6 @@ use alloc::vec::Vec;
 use alloc::{format, vec};
 
 use itertools::Itertools;
-use p3_circuit::op::{NonPrimitiveOpConfig, NonPrimitiveOpType};
 use p3_circuit::utils::ColumnsTargets;
 use p3_circuit::{CircuitBuilder, CircuitError};
 use p3_commit::Pcs;
@@ -79,14 +78,6 @@ where
         >,
     SC::Challenge: PrimeCharacteristicRing,
 {
-    // Enable hash operations for CircuitChallenger
-    // Note: These are placeholders until Poseidon2CircuitAir is implemented
-    circuit.enable_op(
-        NonPrimitiveOpType::HashAbsorb { reset: true },
-        NonPrimitiveOpConfig::None,
-    );
-    circuit.enable_op(NonPrimitiveOpType::HashSqueeze, NonPrimitiveOpConfig::None);
-
     let ProofTargets {
         commitments_targets:
             CommitmentTargets {
@@ -376,8 +367,7 @@ where
     if preprocessed_width != preprocessed_local_len || preprocessed_width != preprocessed_next_len {
         // Verifier expects preprocessed trace while proof does not have it, or vice versa
         return Err(VerificationError::InvalidProofShape(format!(
-            "Expected preprocessed width {} but local has length {} and next has length {}",
-            preprocessed_width, preprocessed_local_len, preprocessed_next_len
+            "Expected preprocessed width {preprocessed_width} but local has length {preprocessed_local_len} and next has length {preprocessed_next_len}"
         )));
     }
 

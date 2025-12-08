@@ -99,8 +99,6 @@ impl<
         }
     }
 
-    // TODO: Replace sponge_ops with perm_ops - remove HashAbsorb/HashSqueeze operations
-    // and replace them with permutation operations in trace generation and table.
     pub fn generate_trace_rows<P: CryptographicPermutation<[F; WIDTH]>>(
         &self,
         sponge_ops: &Poseidon2CircuitTrace<F, WIDTH_EXT, RATE_EXT, DIGEST_EXT>,
@@ -190,38 +188,44 @@ impl<
                         if prev_bit {
                             // Case B: mmcs_bit = 1 (right = previous hash)
                             // If RATE_EXT >= 2*DIGEST_EXT, chain from second half of rate section
-                            // Otherwise, fall back to capacity limbs and fill up the whole state
+                            // Otherwise, fall back to capacity limbs
                             if RATE_EXT >= 2 * DIGEST_EXT {
                                 // Chain from second half of rate: in_{r+1}[0..DIGEST_EXT-1] = out_r[DIGEST_EXT..2*DIGEST_EXT-1]
-                                for limb in 0..DIGEST_EXT {
-                                    let src_start = (DIGEST_EXT + limb) * D;
-                                    let src_end = src_start + D;
-                                    let dst_start = limb * D;
-                                    let dst_end = dst_start + D;
-                                    state[dst_start..dst_end]
-                                        .copy_from_slice(&prev_out[src_start..src_end]);
+                                for (limb, ctl) in in_ctl.iter().enumerate().take(DIGEST_EXT) {
+                                    if !*ctl {
+                                        let src_start = (DIGEST_EXT + limb) * D;
+                                        let src_end = src_start + D;
+                                        let dst_start = limb * D;
+                                        let dst_end = dst_start + D;
+                                        state[dst_start..dst_end]
+                                            .copy_from_slice(&prev_out[src_start..src_end]);
+                                    }
                                 }
                             } else {
                                 // Fall back to capacity limbs: in_{r+1}[0..CAPACITY_EXT-1] = out_r[RATE_EXT..RATE_EXT+CAPACITY_EXT-1]
-                                for limb in 0..CAPACITY_EXT {
-                                    let src_start = (RATE_EXT + limb) * D;
-                                    let src_end = src_start + D;
-                                    let dst_start = limb * D;
-                                    let dst_end = dst_start + D;
-                                    state[dst_start..dst_end]
-                                        .copy_from_slice(&prev_out[src_start..src_end]);
+                                for (limb, ctl) in in_ctl.iter().enumerate().take(CAPACITY_EXT) {
+                                    if !*ctl {
+                                        let src_start = (RATE_EXT + limb) * D;
+                                        let src_end = src_start + D;
+                                        let dst_start = limb * D;
+                                        let dst_end = dst_start + D;
+                                        state[dst_start..dst_end]
+                                            .copy_from_slice(&prev_out[src_start..src_end]);
+                                    }
                                 }
                             }
                         } else {
                             // Case A: mmcs_bit = 0 (left = previous hash)
                             // Chain from first DIGEST_EXT limbs of rate: in_{r+1}[0..DIGEST_EXT-1] = out_r[0..DIGEST_EXT-1]
-                            for limb in 0..DIGEST_EXT {
-                                let src_start = limb * D;
-                                let src_end = src_start + D;
-                                let dst_start = limb * D;
-                                let dst_end = dst_start + D;
-                                state[dst_start..dst_end]
-                                    .copy_from_slice(&prev_out[src_start..src_end]);
+                            for (limb, ctl) in in_ctl.iter().enumerate().take(DIGEST_EXT) {
+                                if !*ctl {
+                                    let src_start = limb * D;
+                                    let src_end = src_start + D;
+                                    let dst_start = limb * D;
+                                    let dst_end = dst_start + D;
+                                    state[dst_start..dst_end]
+                                        .copy_from_slice(&prev_out[src_start..src_end]);
+                                }
                             }
                         }
                         // Capacity limbs remain free/private (from padded_inputs)
@@ -231,7 +235,15 @@ impl<
                     // For trace generation, we chain unconditionally here.
                     // The AIR will enforce that chaining only applies when in_ctl = 0.
                     if let Some(prev_out) = prev_output {
-                        state = prev_out;
+                        state
+                            .chunks_exact_mut(D)
+                            .zip(prev_out.chunks_exact(D))
+                            .zip(in_ctl.iter())
+                            .for_each(|((dst, src), ctl)| {
+                                if !*ctl {
+                                    dst.copy_from_slice(src);
+                                }
+                            });
                     }
                 }
             }
@@ -448,9 +460,11 @@ fn eval<
     // Note: mmcs_bit is a value column (not transparent) because it's used in constraints
     // with the value column mmcs_index_sum.
 
-    let prev_bit = local.mmcs_bit.clone();
     let local_out = &local.poseidon2.ending_full_rounds[HALF_FULL_ROUNDS - 1].post;
     let next_in = &next.poseidon2.inputs;
+
+    // mmcs_bit should always be boolean.
+    builder.assert_bool(local.mmcs_bit.clone());
 
     // Normal chaining.
     // If new_start_{r+1} = 0 and merkle_path_{r+1} = 0:
@@ -477,9 +491,10 @@ fn eval<
     //   - Capacity limbs are free/private
     // BUT: If in_ctl[i] = 1, CTL overrides chaining (limb is not chained).
     // Chaining only applies when in_ctl[limb] = 0.
+    let prev_bit = local.mmcs_bit.clone();
     let is_left = AB::Expr::ONE - prev_bit.clone();
 
-    // Chain DIGEST_EXT limbs based on mmcs_bit
+    // Chain DIGEST_EXT limbs based on mmcs_bit from previous row
     for limb in 0..DIGEST_EXT {
         for d in 0..D {
             let idx = limb * D + d;

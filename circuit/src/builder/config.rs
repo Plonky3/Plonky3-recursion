@@ -1,7 +1,6 @@
 use hashbrown::HashMap;
 
 use crate::op::{NonPrimitiveOpConfig, NonPrimitiveOpType};
-use crate::ops::MmcsVerifyConfig;
 
 /// Configuration for the circuit builder.
 #[derive(Debug, Clone, Default)]
@@ -23,25 +22,9 @@ impl BuilderConfig {
         self.enabled_ops.insert(op, cfg);
     }
 
-    /// Enables MMCS verification operations with the given configuration.
-    pub fn enable_mmcs(&mut self, mmcs_config: &MmcsVerifyConfig) {
-        self.enable_op(
-            NonPrimitiveOpType::MmcsVerify,
-            NonPrimitiveOpConfig::MmcsVerifyConfig(mmcs_config.clone()),
-        );
-    }
-
-    /// Enables HashAbsorb operations.
-    pub fn enable_hash_absorb(&mut self, reset: bool) {
-        self.enable_op(
-            NonPrimitiveOpType::HashAbsorb { reset },
-            NonPrimitiveOpConfig::None,
-        );
-    }
-
-    /// Enables HashSqueeze operations.
-    pub fn enable_hash_squeeze(&mut self) {
-        self.enable_op(NonPrimitiveOpType::HashSqueeze, NonPrimitiveOpConfig::None);
+    /// Enables Poseidon permutation operations (D=4 only).
+    pub fn enable_poseidon_perm(&mut self) {
+        self.enable_op(NonPrimitiveOpType::PoseidonPerm, NonPrimitiveOpConfig::None);
     }
 
     /// Checks whether an operation type is enabled.
@@ -67,35 +50,15 @@ mod tests {
     #[test]
     fn test_builder_config_default() {
         let config = BuilderConfig::default();
-        assert!(!config.is_op_enabled(&NonPrimitiveOpType::MmcsVerify));
-    }
-
-    #[test]
-    fn test_builder_config_enable_mmcs() {
-        let mut config = BuilderConfig::new();
-        let mmcs_config = MmcsVerifyConfig::mock_config();
-
-        assert!(!config.is_op_enabled(&NonPrimitiveOpType::MmcsVerify));
-
-        config.enable_mmcs(&mmcs_config);
-
-        assert!(config.is_op_enabled(&NonPrimitiveOpType::MmcsVerify));
-        assert!(
-            config
-                .get_op_config(&NonPrimitiveOpType::MmcsVerify)
-                .is_some()
-        );
+        assert!(!config.is_op_enabled(&NonPrimitiveOpType::PoseidonPerm));
     }
 
     #[test]
     fn test_builder_config_multiple_ops() {
         let mut config = BuilderConfig::new();
-        let mmcs_config = MmcsVerifyConfig::mock_config();
 
-        config.enable_mmcs(&mmcs_config);
-        config.enable_op(NonPrimitiveOpType::HashSqueeze, NonPrimitiveOpConfig::None);
+        config.enable_poseidon_perm();
 
-        assert!(config.is_op_enabled(&NonPrimitiveOpType::MmcsVerify));
-        assert!(config.is_op_enabled(&NonPrimitiveOpType::HashSqueeze));
+        assert!(config.is_op_enabled(&NonPrimitiveOpType::PoseidonPerm));
     }
 }

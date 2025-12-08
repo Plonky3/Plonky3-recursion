@@ -13,6 +13,7 @@ use crate::Poseidon2CircuitAir;
 pub struct BabyBearD4Width16;
 
 impl Poseidon2Params for BabyBearD4Width16 {
+    type BaseField = BabyBear;
     const D: usize = 4;
     const WIDTH: usize = 16;
     const RATE_EXT: usize = 2;
@@ -28,6 +29,7 @@ impl Poseidon2Params for BabyBearD4Width16 {
 pub struct BabyBearD4Width24;
 
 impl Poseidon2Params for BabyBearD4Width24 {
+    type BaseField = BabyBear;
     const D: usize = 4;
     const WIDTH: usize = 24;
     const RATE_EXT: usize = 4;
@@ -43,6 +45,7 @@ impl Poseidon2Params for BabyBearD4Width24 {
 pub struct KoalaBearD4Width16;
 
 impl Poseidon2Params for KoalaBearD4Width16 {
+    type BaseField = KoalaBear;
     const D: usize = 4;
     const WIDTH: usize = 16;
     const RATE_EXT: usize = 2;
@@ -58,6 +61,7 @@ impl Poseidon2Params for KoalaBearD4Width16 {
 pub struct KoalaBearD4Width24;
 
 impl Poseidon2Params for KoalaBearD4Width24 {
+    type BaseField = KoalaBear;
     const D: usize = 4;
     const WIDTH: usize = 24;
     const RATE_EXT: usize = 4;

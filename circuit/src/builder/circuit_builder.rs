@@ -9,8 +9,7 @@ use super::compiler::{ExpressionLowerer, NonPrimitiveLowerer, Optimizer};
 use super::{BuilderConfig, ExpressionBuilder, PublicInputTracker};
 use crate::circuit::Circuit;
 use crate::op::{DefaultHint, NonPrimitiveOpType, WitnessHintsFiller};
-use crate::ops::MmcsVerifyConfig;
-use crate::tables::{TraceGeneratorFn, generate_mmcs_trace};
+use crate::tables::{Poseidon2Params, TraceGeneratorFn};
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};
 use crate::{CircuitBuilderError, CircuitField};
 
@@ -35,8 +34,21 @@ pub struct CircuitBuilder<F> {
     non_primitive_trace_generators: HashMap<NonPrimitiveOpType, TraceGeneratorFn<F>>,
 }
 
-/// The non-primitive operation id, type, and the vectors of the expressions representing its inputs
-pub type NonPrimitiveOperationData = (NonPrimitiveOpId, NonPrimitiveOpType, Vec<Vec<ExprId>>);
+/// Per-op extra parameters that are not encoded in the op type.
+#[derive(Debug, Clone)]
+pub enum NonPrimitiveOpParams {
+    PoseidonPerm { new_start: bool, merkle_path: bool },
+}
+
+/// The non-primitive operation id, type, the vectors of the expressions representing its inputs,
+/// and any per-op parameters.
+#[derive(Debug, Clone)]
+pub struct NonPrimitiveOperationData {
+    pub op_id: NonPrimitiveOpId,
+    pub op_type: NonPrimitiveOpType,
+    pub witness_exprs: Vec<Vec<ExprId>>,
+    pub params: Option<NonPrimitiveOpParams>,
+}
 
 impl<F> Default for CircuitBuilder<F>
 where
@@ -68,50 +80,24 @@ where
         self.config.enable_op(op, cfg);
     }
 
-    /// Enables Mmcs verification operations.
-    pub fn enable_mmcs(&mut self, mmcs_config: &MmcsVerifyConfig)
-    where
+    /// Enables Poseidon permutation operations (one perm per table row).
+    ///
+    /// The current implementation only supports extension degree D=4.
+    pub fn enable_poseidon_perm<Config: Poseidon2Params>(
+        &mut self,
+        trace_generator: TraceGeneratorFn<F>,
+    ) where
         F: CircuitField,
     {
-        self.config.enable_mmcs(mmcs_config);
+        // Hard gate on D=4 to avoid silently accepting incompatible configs.
+        assert!(
+            Config::D == 4,
+            "Poseidon perm op only supports extension degree D=4"
+        );
+
+        self.config.enable_poseidon_perm();
         self.non_primitive_trace_generators
-            .insert(NonPrimitiveOpType::MmcsVerify, generate_mmcs_trace::<F>);
-    }
-
-    /// Enables HashAbsorb operations.
-    ///
-    /// # Arguments
-    /// * `reset` - Whether to reset the hash state before absorbing
-    /// * `trace_generator` - The function to generate the trace for the hash operations (for instance Poseidon2).
-    pub fn enable_hash_absorb(&mut self, reset: bool, trace_generator: TraceGeneratorFn<F>) {
-        self.config.enable_hash_absorb(reset);
-
-        self.non_primitive_trace_generators
-            .insert(NonPrimitiveOpType::HashAbsorb { reset }, trace_generator);
-    }
-
-    /// Enables HashSqueeze operations.
-    ///
-    /// # Arguments
-    /// * `trace_generator` - The function to generate the trace for the hash operations (for instance Poseidon2).
-    pub fn enable_hash_squeeze(&mut self, trace_generator: TraceGeneratorFn<F>) {
-        self.config.enable_hash_squeeze();
-
-        self.non_primitive_trace_generators
-            .insert(NonPrimitiveOpType::HashSqueeze, trace_generator);
-    }
-
-    /// Enables hash operations.
-    ///
-    /// # Arguments
-    /// * `reset` - Whether to reset the hash state before absorbing
-    /// * `trace_generator` - The function to generate the trace for the hash operations (for instance Poseidon2).
-    pub fn enable_hash(&mut self, reset: bool, trace_generator: TraceGeneratorFn<F>)
-    where
-        F: CircuitField,
-    {
-        self.enable_hash_absorb(reset, trace_generator);
-        self.enable_hash_squeeze(trace_generator);
+            .insert(NonPrimitiveOpType::PoseidonPerm, trace_generator);
     }
 
     /// Checks whether an op type is enabled on this builder.
@@ -376,6 +362,7 @@ where
         &mut self,
         op_type: NonPrimitiveOpType,
         witness_exprs: Vec<Vec<ExprId>>,
+        params: Option<NonPrimitiveOpParams>,
         label: &'static str,
     ) -> NonPrimitiveOpId {
         let op_id = NonPrimitiveOpId(self.non_primitive_ops.len() as u32);
@@ -388,7 +375,12 @@ where
             label,
         );
 
-        self.non_primitive_ops.push((op_id, op_type, witness_exprs));
+        self.non_primitive_ops.push(NonPrimitiveOperationData {
+            op_id,
+            op_type,
+            witness_exprs,
+            params,
+        });
         op_id
     }
 
@@ -559,28 +551,6 @@ mod tests {
         let _result = builder.select(b, t, s);
         // Should create: t_minus_s, scaled, and result
         assert_eq!(builder.public_input_count(), 1);
-    }
-
-    #[test]
-    fn test_ensure_op_enabled_success() {
-        let mut builder = CircuitBuilder::<BabyBear>::new();
-        let config = MmcsVerifyConfig::mock_config();
-        builder.enable_mmcs(&config);
-        let result = builder.ensure_op_enabled(NonPrimitiveOpType::MmcsVerify);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_ensure_op_enabled_failure() {
-        let builder = CircuitBuilder::<BabyBear>::new();
-        let result = builder.ensure_op_enabled(NonPrimitiveOpType::MmcsVerify);
-        assert!(result.is_err());
-        match result {
-            Err(CircuitBuilderError::OpNotAllowed { op }) => {
-                assert_eq!(op, NonPrimitiveOpType::MmcsVerify);
-            }
-            _ => panic!("Expected OpNotAllowed error"),
-        }
     }
 
     #[test]

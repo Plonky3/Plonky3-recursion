@@ -80,19 +80,10 @@ impl<F: CircuitField> CircuitRunner<F> {
         {
             match (executor.op_type(), &private_data) {
                 (
-                    crate::op::NonPrimitiveOpType::MmcsVerify,
-                    NonPrimitiveOpPrivateData::MmcsVerify(_),
+                    crate::op::NonPrimitiveOpType::PoseidonPerm,
+                    NonPrimitiveOpPrivateData::PoseidonPerm(_),
                 ) => {
                     // ok
-                }
-                (op_ty, _) => {
-                    // Other ops currently don't expect private data
-                    return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
-                        op: op_ty.clone(),
-                        operation_index: op_id,
-                        expected: "no private data".to_string(),
-                        got: format!("{private_data:?}"),
-                    });
                 }
             }
         }
