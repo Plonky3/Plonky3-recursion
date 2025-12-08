@@ -138,21 +138,21 @@ impl MmcsVerifyConfig {
         }
     }
 
-    /// Given a vector of leaves and dimesions it formats the leaves
-    /// into a vec of size `max_height`, where each entry contains the leaves
-    /// corresponding to that height. Leaves for heights that do not exist
+    /// Given a vector with the openings and dimesions it formats the openings
+    /// into a vec of size `max_height`, where each entry contains the openings
+    /// corresponding to that height. Openigns for for heights that do not exist
     /// in the input are empty vectors.
-    pub fn format_leaves<T: Clone + alloc::fmt::Debug>(
+    pub fn format_openings<T: Clone + alloc::fmt::Debug>(
         &self,
-        leaves: &[Vec<T>],
+        openings: &[Vec<T>],
         dimensions: &[Dimensions],
         max_height_log: usize,
     ) -> Result<Vec<Vec<T>>, CircuitError> {
-        if leaves.len() > 1 << max_height_log {
+        if openings.len() > 1 << max_height_log {
             return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
                 op: NonPrimitiveOpType::PoseidonPerm,
                 expected: format!("at most {}", max_height_log),
-                got: leaves.len(),
+                got: openings.len(),
             });
         }
 
@@ -174,8 +174,8 @@ impl MmcsVerifyConfig {
             panic!("Heights that round up to the same power of two must be equal"); //TODO: Add errors
         }
 
-        let mut formatted_leaves = vec![vec![]; max_height_log];
-        for (curr_height, leaf) in formatted_leaves
+        let mut formatted_openings = vec![vec![]; max_height_log];
+        for (curr_height, opening) in formatted_openings
             .iter_mut()
             .enumerate()
             .map(|(i, leaf)| (1 << (max_height_log - i), leaf))
@@ -185,13 +185,13 @@ impl MmcsVerifyConfig {
             // Returns an error if either:
             //              1. proof.len() != log_max_height
             //              2. heights_tallest_first is empty.
-            let new_leaf = heights_tallest_first
+            let new_opening = heights_tallest_first
                 .peeking_take_while(|(_, dims)| dims.height.next_power_of_two() == curr_height)
-                .flat_map(|(i, _)| leaves[i].clone())
+                .flat_map(|(i, _)| openings[i].clone())
                 .collect();
-            *leaf = new_leaf;
+            *opening = new_opening;
         }
-        Ok(formatted_leaves)
+        Ok(formatted_openings)
     }
 
     pub const fn mock_config() -> Self {
@@ -303,19 +303,3 @@ pub fn add_mmcs_verify<F: Field>(
     }
     Ok(op_ids)
 }
-// builder.ensure_op_enabled(NonPrimitiveOpType::PoseidonPerm)?;
-
-// let mut witness_exprs = vec![];
-// witness_exprs.extend(leaves_expr.to_vec());
-// witness_exprs.push(directions_expr.to_vec());
-// witness_exprs.push(root_expr.to_vec());
-
-// tracing::debug!("witness expr = {:?}", witness_exprs);
-// Ok(
-//     self.push_non_primitive_op(
-//         NonPrimitiveOpType::PoseidonPerm,
-//         witness_exprs,
-//         "mmcs_verify",
-//     ),
-// )
-// }

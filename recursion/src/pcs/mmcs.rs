@@ -1,5 +1,3 @@
-// TODO:  This is here becasue mmcs in TwoAdicFriPcs is pub(crate).
-
 use alloc::vec::Vec;
 
 use p3_circuit::op::NonPrimitiveOpType;
@@ -11,19 +9,19 @@ use p3_matrix::Dimensions;
 
 use crate::Target;
 
-/// Recursive verison of `verify_circuit_batch`. Adds a ircuit that verifies an opened batch of rows with respect to a given commitment.
+/// Recursive verison of `MerkleTreeMmcs::verify_batch`. Adds a circuit that verifies an opened batch of rows with respect to a given commitment.
 ///
 /// - `circuit`: The circuit builder to which we add the verify_batch circuit
 /// - `commit`: The merkle root of the tree.
 /// - `dimensions`: A vector of the dimensions of the matrices committed to.
-/// - `directions`: The binary decomposition of the index of a leaf in the tree.
+/// - `directions`: The little-endian binary decomposition of the index of a leaf in the tree.
 /// - `opened_values`: A vector of matrix rows. Assume that the tallest matrix committed
 ///   to has height `2^n >= M_tall.height() > 2^{n - 1}` and the `j`th matrix has height
 ///   `2^m >= Mj.height() > 2^{m - 1}`. Then `j`'th value of opened values must be the row `Mj[index >> (m - n)]`.
 /// - `proof`: A vector of sibling nodes. The `i`th element should be the node at level `i`
 ///   with index `(index << i) ^ 1`.
 ///
-/// Returns the list of permutations operations used in the mmcs verification, otherwise returns an error.
+/// Returns the list of permutations operations requiring private data, otherwise returns an error.
 pub fn verify_batch_circuit<F, EF>(
     circuit: &mut CircuitBuilder<EF>,
     mmcs_config: &MmcsVerifyConfig,
@@ -42,8 +40,6 @@ where
         panic!("Wrong batch size"); // TODO: Add errors
     }
 
-    tracing::debug!("commitment targets = {:?}", commitment);
-
     // TODO: Disabled for now since TwoAdicFriPcs and CirclePcs currently pass 0 for width.
     // for (dims, opened_vals) in zip_eq(dimensions.iter(), opened_values) {
     //     if opened_vals.len() != dims.width {
@@ -51,24 +47,19 @@ where
     //     }
     // }
 
-    tracing::debug!("opened values addr = {:?}", opened_values);
-    tracing::debug!("dimensions = {:?}", dimensions);
-
     let formatted_op_vals = mmcs_config
-        .format_leaves(opened_values, dimensions, index_bits.len())
+        .format_openings(opened_values, dimensions, index_bits.len())
         .map_err(
             |_| CircuitBuilderError::InvalidNonPrimitiveOpConfiguration {
                 // TODO: I this the error we want?
                 op: NonPrimitiveOpType::PoseidonPerm,
             },
         )?;
-    tracing::debug!("formatted_op_vals = {:?}", formatted_op_vals);
 
-    // Hash the opened values keeping the format.
+    // Hash the opened values while keeping the format.
     let op_vals_digests = formatted_op_vals
         .into_iter()
         .map(|leaf| {
-            tracing::debug!("opening (recursive) = {:?}", leaf);
             if !leaf.is_empty() {
                 add_hash_squeeze(circuit, hash_config, "mmcs_verify", &leaf, true)
             } else {
@@ -91,10 +82,7 @@ mod test {
     use p3_circuit::ops::mmcs::{MmcsVerifyConfig, add_mmcs_verify};
     use p3_circuit::ops::poseidon_perm::HashConfig;
     use p3_circuit::tables::{PoseidonPermPrivateData, generate_poseidon2_trace};
-    use p3_circuit::{
-        CircuitBuilder, CircuitError, NonPrimitiveOpId, NonPrimitiveOpPrivateData,
-        NonPrimitiveOpType,
-    };
+    use p3_circuit::{CircuitBuilder, NonPrimitiveOpPrivateData};
     use p3_commit::Mmcs;
     use p3_field::extension::BinomialExtensionField;
     use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
@@ -127,7 +115,7 @@ mod test {
         let perm = default_babybear_poseidon2_16();
         let hash = MyHash::new(perm.clone());
         let compress = MyCompress::new(perm);
-        let mmcs = MyMmcs::new(hash.clone(), compress);
+        let mmcs = MyMmcs::new(hash, compress);
 
         let dimensions = mats.iter().map(DenseMatrix::dimensions).collect_vec();
 
@@ -151,16 +139,6 @@ mod test {
             );
 
             let batch_opening = mmcs.open_batch(index, &prover_data);
-
-            tracing::debug!("batch_opening = {:?}", batch_opening.opened_values);
-
-            let leaves_hashes = batch_opening
-                .opened_values
-                .iter()
-                .map(|mat_leaves| hash.hash_slice(mat_leaves))
-                .collect_vec();
-            tracing::debug!("leaves_hashes: {:?}", leaves_hashes);
-
             mmcs.verify_batch(&commit, &dimensions, index, (&batch_opening).into())
                 .unwrap();
 
@@ -343,146 +321,137 @@ mod test {
         test_all_openings(vec![input_2, input_1]);
     }
 
-    //TODO: This test won't fail as long as the root is never computed
-    // #[test]
-    // fn verify_tampered_proof_fails() {
-    //     let mut rng = SmallRng::seed_from_u64(1);
-    //     let perm = Perm::new_from_rng_128(&mut rng);
-    //     let hash = MyHash::new(perm.clone());
-    //     let compress = MyCompress::new(perm);
-    //     let mmcs = MyMmcs::new(hash.clone(), compress);
+    //TODO: This test won't fail as long as we don't enforce lookups
+    #[test]
+    fn verify_tampered_proof_fails() {
+        let mut rng = SmallRng::seed_from_u64(1);
+        let perm = Perm::new_from_rng_128(&mut rng);
+        let hash = MyHash::new(perm.clone());
+        let compress = MyCompress::new(perm);
+        let mmcs = MyMmcs::new(hash.clone(), compress);
 
-    //     // 4 8x1 matrixes, 4 8x2 matrixes
-    //     let mut mats = (0..4)
-    //         .map(|_| RowMajorMatrix::<F>::rand(&mut rng, 8, 1))
-    //         .collect_vec();
-    //     let large_mat_dims = (0..4).map(|_| Dimensions {
-    //         height: 8,
-    //         width: 1,
-    //     });
-    //     mats.extend((0..4).map(|_| RowMajorMatrix::<F>::rand(&mut rng, 8, 2)));
-    //     let small_mat_dims = (0..4).map(|_| Dimensions {
-    //         height: 8,
-    //         width: 2,
-    //     });
-    //     let dimensions = &large_mat_dims.chain(small_mat_dims).collect_vec();
+        // 4 8x1 matrixes, 4 8x2 matrixes
+        let mut mats = (0..4)
+            .map(|_| RowMajorMatrix::<F>::rand(&mut rng, 8, 1))
+            .collect_vec();
+        let large_mat_dims = (0..4).map(|_| Dimensions {
+            height: 8,
+            width: 1,
+        });
+        mats.extend((0..4).map(|_| RowMajorMatrix::<F>::rand(&mut rng, 8, 2)));
+        let small_mat_dims = (0..4).map(|_| Dimensions {
+            height: 8,
+            width: 2,
+        });
+        let dimensions = &large_mat_dims.chain(small_mat_dims).collect_vec();
 
-    //     let (commit, prover_data) = mmcs.commit(mats);
+        let (commit, prover_data) = mmcs.commit(mats);
 
-    //     let mut builder = CircuitBuilder::<CF>::new();
-    //     let mmcs_config = MmcsVerifyConfig::babybear_quartic_extension_default();
-    //     builder.enable_poseidon_perm::<BabyBearD4Width16>(
-    //         generate_poseidon2_trace::<CF, BabyBearD4Width16>,
-    //     );
+        let mut builder = CircuitBuilder::<CF>::new();
+        let mmcs_config = MmcsVerifyConfig::babybear_quartic_extension_default();
+        builder.enable_poseidon_perm::<BabyBearD4Width16>(
+            generate_poseidon2_trace::<CF, BabyBearD4Width16>,
+        );
 
-    //     // open the 3rd row of each matrix, mess with proof, and verify
-    //     let index = 3;
-    //     let path_depth = 3;
-    //     let mut batch_opening = mmcs.open_batch(index, &prover_data);
-    //     batch_opening.opening_proof[0][0] += F::ONE;
+        // open the 3rd row of each matrix, mess with proof, and verify
+        let index = 3;
+        let path_depth = 3;
+        let mut batch_opening = mmcs.open_batch(index, &prover_data);
+        batch_opening.opening_proof[0][0] += F::ONE;
 
-    //     let leaves_hashes = batch_opening
-    //         .opened_values
-    //         .iter()
-    //         .zip(dimensions)
-    //         .chunk_by(|(_, dimensions)| dimensions.height)
-    //         .into_iter()
-    //         .map(|(_, group)| hash.hash_iter(group.flat_map(|(x, _)| x.clone())))
-    //         .collect_vec();
-    //     let dimensions = dimensions
-    //         .iter()
-    //         .chunk_by(|dimensions| dimensions.height)
-    //         .into_iter()
-    //         .map(|(height, _)| Dimensions { width: 0, height })
-    //         .collect_vec();
+        let openings_digests = batch_opening
+            .opened_values
+            .iter()
+            .zip(dimensions)
+            .chunk_by(|(_, dimensions)| dimensions.height)
+            .into_iter()
+            .map(|(_, group)| hash.hash_iter(group.flat_map(|(x, _)| x.clone())))
+            .collect_vec();
+        let dimensions = dimensions
+            .iter()
+            .chunk_by(|dimensions| dimensions.height)
+            .into_iter()
+            .map(|(height, _)| Dimensions { width: 0, height })
+            .collect_vec();
 
-    //     let openings = leaves_hashes
-    //         .iter()
-    //         .map(|mat_hash| {
-    //             mat_hash
-    //                 .iter()
-    //                 .map(|_| builder.add_public_input())
-    //                 .collect_vec()
-    //         })
-    //         .collect_vec();
-    //     let openings = mmcs_config
-    //         .format_leaves(&openings, &dimensions, path_depth)
-    //         .unwrap();
-    //     let directions_expr = builder.alloc_public_inputs(path_depth, "directions");
-    //     let root = builder.alloc_public_inputs(mmcs_config.ext_field_digest_elems, "root");
+        let openings = openings_digests
+            .iter()
+            .map(|mat_hash| {
+                mat_hash
+                    .iter()
+                    .map(|_| builder.add_public_input())
+                    .collect_vec()
+            })
+            .collect_vec();
+        let openings = mmcs_config
+            .format_openings(&openings, &dimensions, path_depth)
+            .unwrap();
+        let directions_expr = builder.alloc_public_inputs(path_depth, "directions");
+        let root = builder.alloc_public_inputs(mmcs_config.ext_field_digest_elems, "root");
 
-    //     let permutation_mmcs_ops =
-    //         add_mmcs_verify(&mut builder, &openings, &directions_expr, &root).unwrap();
-    //     let circuit = builder.build().unwrap();
-    //     let mut runner = circuit.runner();
+        let permutation_mmcs_ops =
+            add_mmcs_verify(&mut builder, &openings, &directions_expr, &root).unwrap();
+        let circuit = builder.build().unwrap();
+        let mut runner = circuit.runner();
 
-    //     let directions = (0..path_depth)
-    //         .map(|k| CF::from_bool(index >> k & 1 == 1))
-    //         .collect_vec();
+        let directions = (0..path_depth)
+            .map(|k| CF::from_bool(index >> k & 1 == 1))
+            .collect_vec();
 
-    //     let mut public_inputs = vec![];
-    //     public_inputs.extend(leaves_hashes.iter().flat_map(|digest| digest.map(CF::from)));
-    //     public_inputs.extend(directions.iter());
-    //     public_inputs.extend(commit.into_iter().map(CF::from));
+        let mut public_inputs = vec![];
+        public_inputs.extend(
+            openings_digests
+                .iter()
+                .flat_map(|digest| digest.map(CF::from)),
+        );
+        public_inputs.extend(directions.iter());
+        public_inputs.extend(commit.into_iter().map(CF::from));
 
-    //     runner.set_public_inputs(&public_inputs).unwrap();
+        runner.set_public_inputs(&public_inputs).unwrap();
 
-    //     let siblings = batch_opening
-    //         .opening_proof
-    //         .iter()
-    //         .map(|digest| {
-    //             digest
-    //                 .chunks(4)
-    //                 .map(CF::from_basis_coefficients_slice)
-    //                 .collect::<Option<Vec<_>>>()
-    //                 .unwrap()
-    //         })
-    //         .collect_vec();
+        let siblings = batch_opening
+            .opening_proof
+            .iter()
+            .map(|digest| {
+                digest
+                    .chunks(4)
+                    .map(CF::from_basis_coefficients_slice)
+                    .collect::<Option<Vec<_>>>()
+                    .unwrap()
+            })
+            .collect_vec();
 
-    //     for (&op_id, sibling) in permutation_mmcs_ops.iter().zip(siblings) {
-    //         runner
-    //             .set_non_primitive_op_private_data(
-    //                 op_id,
-    //                 NonPrimitiveOpPrivateData::PoseidonPerm(PoseidonPermPrivateData {
-    //                     input_values: sibling,
-    //                 }),
-    //             )
-    //             .unwrap();
-    //     }
+        for (&op_id, sibling) in permutation_mmcs_ops.iter().zip(siblings) {
+            runner
+                .set_non_primitive_op_private_data(
+                    op_id,
+                    NonPrimitiveOpPrivateData::PoseidonPerm(PoseidonPermPrivateData {
+                        input_values: sibling,
+                    }),
+                )
+                .unwrap();
+        }
 
-    //     // Whe the we run the runner and the MMCS trace is generated, it will be checked that
-    //     // the root computed by the MmcsVerify gate matches that given as input.
-    //     let result = runner.run();
-    //     let root = commit.into_iter().map(CF::from).collect_vec();
-    //     match result {
-    //         Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
-    //             op: NonPrimitiveOpType::PoseidonPerm,
-    //             operation_index: NonPrimitiveOpId(0),
-    //             expected,
-    //             ..
-    //         }) => {
-    //             if expected == alloc::format!("root: {:?}", root) {
-    //             } else {
-    //                 panic!("The test was suppose to fail with a root mismatch!")
-    //             }
-    //         }
-    //         _ => panic!("The test was suppose to fail with a root mismatch!"),
-    //     }
-    // }
-
-    // TODO: This test is failing because mmcs.open_batch panics when opening a matrix of size 560 at position 70.
-    // #[test]
-    // fn size_gaps() {
-    //     let mut rng = SmallRng::seed_from_u64(1);
-    //     // mat with 1000 rows, 8 columns
-    //     let mut mats = vec![RowMajorMatrix::<F>::rand(&mut rng, 1000, 8)];
-
-    //     // mat with 70 rows, 8 columns
-    //     mats.push(RowMajorMatrix::<F>::rand(&mut rng, 70, 8));
-
-    //     // mat with 8 rows, 8 columns
-    //     mats.push(RowMajorMatrix::<F>::rand(&mut rng, 8, 8));
-
-    //     test_all_openings(mats);
-    // }
+        // Whe the we run the runner and the MMCS trace is generated, it will be checked that
+        // the root computed by the MmcsVerify gate matches that given as input.
+        let result = runner.run();
+        result
+            .expect("TODO: This test is supposed to fail, but it won't until we enforce lookups.");
+        // TODO: Uncomnent the following code
+        // let root = commit.into_iter().map(CF::from).collect_vec();
+        // match result {
+        //     Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
+        //         op: NonPrimitiveOpType::PoseidonPerm,
+        //         operation_index: NonPrimitiveOpId(0),
+        //         expected,
+        //         ..
+        //     }) => {
+        //         if expected == alloc::format!("root: {:?}", root) {
+        //         } else {
+        //             panic!("The test was suppose to fail with a root mismatch!")
+        //         }
+        //     }
+        //     _ => panic!("The test was suppose to fail with a root mismatch!"),
+        // }
+    }
 }
