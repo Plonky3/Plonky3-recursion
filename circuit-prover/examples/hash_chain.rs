@@ -23,7 +23,6 @@ use tracing_subscriber::{EnvFilter, Registry};
 
 type F = BabyBear;
 type CF = BinomialExtensionField<F, 4>;
-const BASE_RATE: usize = 2;
 
 fn init_logger() {
     let env_filter = EnvFilter::builder()
@@ -47,7 +46,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut builder = CircuitBuilder::<CF>::new();
 
     // Enable hash operations with BabyBear D=4, WIDTH=16 configuration
-    let hash_config = HashConfig::babybear_poseidon2_16(BASE_RATE);
+    let hash_config = HashConfig::babybear_poseidon2_16();
     builder.enable_poseidon_perm::<BabyBearD4Width16>(
         generate_poseidon2_trace::<CF, BabyBearD4Width16>,
     );

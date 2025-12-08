@@ -12,6 +12,7 @@ use p3_uni_stark::StarkGenericConfig;
 use super::{ObservableCommitment, VerificationError, recompose_quotient_from_chunks_circuit};
 use crate::Target;
 use crate::challenger::CircuitChallenger;
+use crate::pcs::mmcs::MerkleTreeMmcsConfig;
 use crate::traits::{Recursive, RecursiveAir, RecursivePcs};
 use crate::types::{CommitmentTargets, OpenedValuesTargets, ProofTargets, StarkChallenges};
 
@@ -47,6 +48,7 @@ type PcsDomain<SC> = <<SC as StarkGenericConfig>::Pcs as Pcs<
 ///
 /// # Returns
 /// `Ok(())` if the circuit was successfully constructed, `Err` otherwise.
+#[allow(clippy::too_many_arguments)]
 pub fn verify_circuit<
     A,
     SC: StarkGenericConfig,
@@ -60,6 +62,8 @@ pub fn verify_circuit<
     const RATE: usize,
 >(
     config: &SC,
+    // TODO: Get rid of this parameter
+    mmcs_config: &MerkleTreeMmcsConfig<SC::Challenge>,
     air: &A,
     circuit: &mut CircuitBuilder<SC::Challenge>,
     proof_targets: &ProofTargets<SC, Comm, OpeningProof>,
@@ -219,6 +223,7 @@ where
     // Verify polynomial openings using PCS
     pcs.verify_circuit(
         circuit,
+        mmcs_config,
         &challenge_targets[3..], // PCS challenges (after alpha, zeta, zeta_next)
         &coms_to_verify,
         opening_proof,

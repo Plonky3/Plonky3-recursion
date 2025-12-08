@@ -110,14 +110,18 @@ where
         self.config.is_op_enabled(op)
     }
 
-    pub(crate) fn ensure_op_enabled(
-        &self,
-        op: NonPrimitiveOpType,
-    ) -> Result<(), CircuitBuilderError> {
+    pub fn ensure_op_enabled(&self, op: NonPrimitiveOpType) -> Result<(), CircuitBuilderError> {
         if !self.is_op_enabled(&op) {
             return Err(CircuitBuilderError::OpNotAllowed { op });
         }
         Ok(())
+    }
+
+    pub fn get_op_config(
+        &self,
+        op: &NonPrimitiveOpType,
+    ) -> Option<&crate::op::NonPrimitiveOpConfig> {
+        self.config.get_op_config(op)
     }
 
     /// Adds a public input to the circuit.

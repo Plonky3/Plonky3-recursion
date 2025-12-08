@@ -15,6 +15,7 @@ use p3_uni_stark::StarkGenericConfig;
 
 use super::{ObservableCommitment, VerificationError, recompose_quotient_from_chunks_circuit};
 use crate::challenger::CircuitChallenger;
+use crate::pcs::mmcs::MerkleTreeMmcsConfig;
 use crate::traits::{Recursive, RecursiveAir, RecursiveChallenger, RecursivePcs};
 use crate::types::{
     CommitmentTargets, OpenedValuesTargets, PreprocessedVerifierDataTargets, ProofTargets,
@@ -90,6 +91,8 @@ pub fn verify_p3_recursion_proof_circuit<
     const TRACE_D: usize,
 >(
     config: &SC,
+    // TODO:  Get rid of this parameter.
+    mmcs_config: &MerkleTreeMmcsConfig<<SC as StarkGenericConfig>::Challenge>,
     circuit: &mut CircuitBuilder<SC::Challenge>,
     proof: &p3_circuit_prover::batch_stark_prover::BatchStarkProof<SC>,
     pcs_params: &PcsVerifierParams<SC, InputProof, OpeningProof, Comm>,
@@ -154,6 +157,7 @@ where
         RATE,
     >(
         config,
+        mmcs_config,
         &circuit_airs,
         circuit,
         &verifier_inputs.proof_targets,
@@ -298,6 +302,15 @@ impl<
         }
     }
 
+    fn get_targets(&self) -> Vec<Target> {
+        let mut targets = CommitmentTargets::<SC::Challenge, Comm>::get_targets(
+            &self.flattened.commitments_targets,
+        );
+        targets.extend(self.flattened.opened_values_targets.get_targets());
+        targets.extend(OpeningProof::get_targets(&self.flattened.opening_proof));
+        targets
+    }
+
     fn get_values(input: &Self::Input) -> Vec<SC::Challenge> {
         let commitments = p3_uni_stark::Commitments {
             trace: input.commitments.main.clone(),
@@ -328,6 +341,7 @@ impl<
 }
 
 /// Verify a batch-STARK proof inside a recursive circuit.
+#[allow(clippy::too_many_arguments)]
 pub fn verify_batch_circuit<
     A,
     SC: StarkGenericConfig,
@@ -341,6 +355,8 @@ pub fn verify_batch_circuit<
     const RATE: usize,
 >(
     config: &SC,
+    // TODO: Get rid of this parameter.s
+    mmcs_config: &MerkleTreeMmcsConfig<SC::Challenge>,
     airs: &[A],
     circuit: &mut CircuitBuilder<SC::Challenge>,
     proof_targets: &BatchProofTargets<SC, Comm, OpeningProof>,
@@ -651,6 +667,7 @@ where
 
     pcs.verify_circuit(
         circuit,
+        mmcs_config,
         &pcs_challenges,
         &coms_to_verify,
         opening_proof,

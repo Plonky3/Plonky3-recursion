@@ -1,11 +1,16 @@
 use p3_air::{Air, BaseAir, PairBuilder};
 use p3_batch_stark::{CommonData, StarkInstance, prove_batch, verify_batch};
 use p3_circuit::CircuitBuilder;
+use p3_circuit::ops::mmcs::MmcsVerifyConfig;
+use p3_circuit::ops::poseidon_perm::HashConfig;
+use p3_circuit::tables::generate_poseidon2_trace;
 use p3_field::Field;
 use p3_fri::create_test_fri_params;
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
+use p3_poseidon2_circuit_air::BabyBearD4Width16;
 use p3_recursion::pcs::HashTargets;
+use p3_recursion::pcs::mmcs::MerkleTreeMmcsConfig;
 use p3_recursion::{
     BatchStarkVerifierInputsBuilder, FriVerifierParams, VerificationError,
     generate_batch_challenges, verify_batch_circuit,
@@ -296,6 +301,9 @@ fn test_batch_verifier_with_mixed_preprocessed() -> Result<(), VerificationError
     assert!(BaseAir::<F>::preprocessed_trace(&airs[2]).is_some());
 
     let mut circuit_builder = CircuitBuilder::new();
+    circuit_builder.enable_poseidon_perm::<BabyBearD4Width16>(
+        generate_poseidon2_trace::<_, BabyBearD4Width16>,
+    );
 
     // Allocate batch verifier inputs
     let air_public_counts = vec![0usize; batch_proof.opened_values.instances.len()];
@@ -313,12 +321,20 @@ fn test_batch_verifier_with_mixed_preprocessed() -> Result<(), VerificationError
     // Create PCS verifier params from FRI verifier params
     let pcs_verifier_params = fri_verifier_params;
 
+    let hash_config = HashConfig::babybear_poseidon2_16();
+    let mmcs_verify_config = MmcsVerifyConfig::babybear_quartic_extension_default();
+    let mmcs_config = MerkleTreeMmcsConfig {
+        hash_config,
+        mmcs_verify_config,
+    };
+
     // Add the batch verification circuit to the builder for the following AIRs:
     // 1. MulAir (has preprocessed columns)
     // 2. AddAirNoPreprocessed (no preprocessed columns)
     // 3. SubAirPartialPreprocessed (some preprocessed columns)
     verify_batch_circuit::<_, _, _, _, _, RATE>(
         &config,
+        &mmcs_config,
         &airs,
         &mut circuit_builder,
         &verifier_inputs.proof_targets,

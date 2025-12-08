@@ -10,6 +10,7 @@ use p3_field::{BasedVectorSpace, Field, PrimeField64};
 use p3_uni_stark::{Proof, StarkGenericConfig, Val};
 
 use crate::pcs::MAX_QUERY_INDEX_BITS;
+use crate::pcs::fri::ValMmcsCommitment;
 use crate::traits::Recursive;
 use crate::verifier::BatchProofTargets;
 use crate::{PreprocessedVerifierDataTargets, ProofTargets};
@@ -192,21 +193,16 @@ impl<F: Field> PublicInputBuilder<F> {
 /// An opening provides evidence that the committed polynomial evaluates to
 /// specific values at specific points.
 #[derive(Clone, Debug)]
-pub struct CommitmentOpening<F: Field> {
-    /// The commitment value in the field representation used by the circuit.
-    pub commitment: F,
-
-    /// Opened evaluation points and their corresponding values.
-    ///
-    /// Each entry is a pair `(z, v)` where:
-    /// - `z` is an evaluation point,
-    /// - `v` is the vector of polynomial values at `z`.
+pub struct CommitmentOpening<F: Field, const DIGEST_ELEMS: usize> {
+    /// The commitment value (placeholder in arithmetic-only verification).
+    pub commitment: ValMmcsCommitment<F, DIGEST_ELEMS>,
+    /// Opened points: (evaluation point, values at that point).
     pub opened_points: Vec<(F, Vec<F>)>,
 }
 
-/// Helper structure for constructing public inputs for FRI-only circuits.
-pub struct FriVerifierInputs<F: Field> {
-    /// Field values extracted from the FRI proof.
+/// Helper for constructing public inputs for FRI-only verification circuits.
+pub struct FriVerifierInputs<F: Field, const DIGEST_ELEMS: usize> {
+    /// Values from FRI proof (commitments, opened values, final poly, etc.)
     pub fri_proof_values: Vec<F>,
 
     /// The batching challenge α used to combine multiple polynomials.
@@ -233,13 +229,12 @@ pub struct FriVerifierInputs<F: Field> {
     /// - has length `MAX_QUERY_INDEX_BITS`,
     /// - encodes one query index as bits 0 or 1.
     pub query_index_bits: Vec<Vec<F>>,
-
-    /// Commitment openings for all committed polynomials involved in FRI.
-    pub commitment_openings: Vec<CommitmentOpening<F>>,
+    /// Commitment openings (batch commitments and their opened values)
+    pub commitment_openings: Vec<CommitmentOpening<F, DIGEST_ELEMS>>,
 }
 
-impl<F: Field> FriVerifierInputs<F> {
-    /// Flattens all FRI-related data into a single public input vector.
+impl<F: Field, const DIGEST_ELEMS: usize> FriVerifierInputs<F, DIGEST_ELEMS> {
+    /// Build the public input vector in the correct order.
     ///
     /// # Canonical input order
     /// 1. FRI proof values,
@@ -278,7 +273,7 @@ impl<F: Field> FriVerifierInputs<F> {
         // 5. Add commitment openings in a fixed layout.
         for opening in self.commitment_openings {
             // First add the commitment value itself.
-            builder.add_challenge(opening.commitment);
+            builder.add_challenges(opening.commitment.into_iter());
 
             // Then, for each opened point, add (z, values at z).
             for (z, values) in opening.opened_points {

@@ -66,7 +66,9 @@ impl<F> HashConfig<F> {
                         expected: 16.to_string(),
                         got: input.len(),
                     })?;
+                tracing::debug!("permutation input = {:?}", input);
                 let output = permutation.permute(input);
+                tracing::debug!("permutation output = {:?}", output);
                 Ok(output.iter().map(|e| F::from(*e)).collect::<Vec<F>>())
             }),
         }
@@ -171,7 +173,13 @@ where
 mod tests {
     use p3_baby_bear::{BabyBear, default_babybear_poseidon2_16};
     use p3_field::PrimeCharacteristicRing;
+    use p3_field::extension::BinomialExtensionField;
     use p3_symmetric::{CryptographicHasher, PaddingFreeSponge};
+    use tracing_forest::ForestLayer;
+    use tracing_forest::util::LevelFilter;
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+    use tracing_subscriber::{EnvFilter, Registry};
 
     use super::*;
     use crate::tables::{Poseidon2Params, generate_poseidon2_trace};
@@ -189,13 +197,25 @@ mod tests {
         const PARTIAL_ROUNDS: usize = 13;
     }
 
+    fn init_logger() {
+        let env_filter = EnvFilter::builder()
+            .with_default_directive(LevelFilter::INFO.into())
+            .from_env_lossy();
+
+        Registry::default()
+            .with(env_filter)
+            .with(ForestLayer::default())
+            .init();
+    }
+
     #[test]
     fn test_hash_squeeze() {
+        init_logger();
         let mut builder = CircuitBuilder::<BabyBear>::new();
         let config = HashConfig::babybear_poseidon2_16(8);
         builder.enable_hash_squeeze(&config, generate_poseidon2_trace::<BabyBear, DummyParams>);
 
-        let input = builder.add_const(BabyBear::ONE);
+        let input = builder.add_const(BabyBear::ZERO);
         let _ = builder
             .add_hash_squeeze("poseidon2_16", &[input], true)
             .unwrap();
@@ -206,11 +226,13 @@ mod tests {
         let traces = runner.run().unwrap();
 
         let hasher = PaddingFreeSponge::<_, 16, 8, 8>::new(default_babybear_poseidon2_16());
-        let expected_value = hasher.hash_item(BabyBear::ONE);
+        let expected_value = hasher.hash_item(BabyBear::ZERO);
+
+        tracing::debug!("expected_value = {:?}", expected_value);
 
         for (i, &value) in expected_value.iter().enumerate() {
             // The first 2 values are the constants 0, always present, and 1.
-            assert_eq!(value, traces.witness_trace.values[2 + i]);
+            assert_eq!(value, traces.witness_trace.values[1 + i]);
         }
     }
 

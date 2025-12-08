@@ -1,9 +1,14 @@
 //! Test for recursive STARK verification with a multiplication AIR.
 
 use p3_circuit::CircuitBuilder;
+use p3_circuit::ops::mmcs::MmcsVerifyConfig;
+use p3_circuit::ops::poseidon_perm::HashConfig;
+use p3_circuit::tables::generate_poseidon2_trace;
 use p3_fri::create_test_fri_params;
 use p3_matrix::Matrix;
+use p3_poseidon2_circuit_air::BabyBearD4Width16;
 use p3_recursion::pcs::fri::{FriVerifierParams, HashTargets};
+use p3_recursion::pcs::mmcs::MerkleTreeMmcsConfig;
 use p3_recursion::public_inputs::StarkVerifierInputsBuilder;
 use p3_recursion::{VerificationError, generate_challenges, verify_circuit};
 use p3_uni_stark::{prove_with_preprocessed, setup_preprocessed, verify_with_preprocessed};
@@ -61,6 +66,9 @@ fn test_mul_verifier_circuit() -> Result<(), VerificationError> {
     );
 
     let mut circuit_builder = CircuitBuilder::new();
+    circuit_builder.enable_poseidon_perm::<BabyBearD4Width16>(
+        generate_poseidon2_trace::<_, BabyBearD4Width16>,
+    );
 
     // Allocate all targets
     let verifier_inputs =
@@ -71,9 +79,17 @@ fn test_mul_verifier_circuit() -> Result<(), VerificationError> {
             pis.len(),
         );
 
+    let hash_config = HashConfig::babybear_poseidon2_16();
+    let mmcs_verify_config = MmcsVerifyConfig::babybear_quartic_extension_default();
+    let mmcs_config = MerkleTreeMmcsConfig {
+        hash_config,
+        mmcs_verify_config,
+    };
+
     // Add the verification circuit to the builder
     verify_circuit::<_, _, _, _, _, RATE>(
         &config,
+        &mmcs_config,
         &air,
         &mut circuit_builder,
         &verifier_inputs.proof_targets,

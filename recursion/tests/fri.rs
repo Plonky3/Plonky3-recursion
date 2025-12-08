@@ -2,15 +2,21 @@ use p3_baby_bear::{BabyBear as F, Poseidon2BabyBear as Perm, default_babybear_po
 use p3_challenger::{
     CanObserve, CanSampleBits, DuplexChallenger as Challenger, FieldChallenger, GrindingChallenger,
 };
-use p3_circuit::CircuitBuilder;
+use p3_circuit::ops::mmcs::MmcsVerifyConfig;
+use p3_circuit::ops::poseidon_perm::HashConfig;
+use p3_circuit::tables::{PoseidonPermPrivateData, generate_poseidon2_trace};
+use p3_circuit::{CircuitBuilder, NonPrimitiveOpPrivateData, NonPrimitiveOpType, Op};
 use p3_commit::Pcs;
 use p3_dft::Radix2DitParallel as Dft;
 use p3_field::coset::TwoAdicMultiplicativeCoset;
 use p3_field::extension::BinomialExtensionField as ExtF;
-use p3_field::{Field, PrimeCharacteristicRing};
-use p3_fri::{TwoAdicFriPcs, create_test_fri_params};
+use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
+use p3_fri::{CommitPhaseProofStep, TwoAdicFriPcs, create_test_fri_params};
 use p3_matrix::dense::RowMajorMatrix;
 use p3_merkle_tree::MerkleTreeMmcs;
+use p3_poseidon2_circuit_air::BabyBearD4Width16;
+use p3_recursion::pcs::HashTargets;
+use p3_recursion::pcs::mmcs::MerkleTreeMmcsConfig;
 use p3_recursion::public_inputs::{CommitmentOpening, FriVerifierInputs};
 use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
 use rand::SeedableRng;
@@ -28,7 +34,8 @@ type PCS = TwoAdicFriPcs<F, Dft<F>, ValMmcs, ChallengeMmcs>;
 // Recursive target graph pieces
 use p3_recursion::Recursive;
 use p3_recursion::pcs::fri::{
-    FriProofTargets, InputProofTargets, RecExtensionValMmcs, RecValMmcs, Witness as RecWitness,
+    FriProofTargets, InputProofTargets, RecExtensionValMmcs, RecValMmcs, ValMmcsCommitment,
+    Witness as RecWitness,
 };
 
 type RecVal = RecValMmcs<F, 8, MyHash, MyCompress>;
@@ -42,8 +49,8 @@ type FriTargets =
     FriProofTargets<F, Challenge, RecExt, InputProofTargets<F, Challenge, RecVal>, RecWitness<F>>;
 
 /// Type alias for commitments with opening points structure
-type CommitmentsWithPoints = Vec<(
-    Challenge,
+type CommitmentsWithPoints<const DIGEST_ELEMS: usize> = Vec<(
+    ValMmcsCommitment<Challenge, DIGEST_ELEMS>,
     Vec<(
         TwoAdicMultiplicativeCoset<F>,
         Vec<(Challenge, Vec<Challenge>)>,
@@ -85,7 +92,7 @@ struct ProduceInputsResult {
     /// The query indices, represented as little-endian bits, for each query.
     index_bits_per_query: Vec<Vec<Challenge>>,
     /// Commitments with opening points structure (per batch)
-    commitments_with_points: CommitmentsWithPoints,
+    commitments_with_points: CommitmentsWithPoints<2>,
     /// The total number of FRI folding phases (rounds).
     num_phases: usize,
     /// The log base 2 of the size of the largest domain.
@@ -201,7 +208,8 @@ fn produce_inputs_multi(
     let num_queries = query_proofs.len();
     let mut indices: Vec<usize> = Vec::with_capacity(num_queries);
     for _ in 0..num_queries {
-        indices.push(v_challenger.sample_bits(log_max_height));
+        let index = v_challenger.sample_bits(log_max_height);
+        indices.push(index);
     }
 
     // Index bits per query (LE)
@@ -222,7 +230,7 @@ fn produce_inputs_multi(
     // For each batch: (commitment_placeholder, Vec<(domain, Vec<(z, [f(z)])>)>)
     let mut commitments_with_points = Vec::new();
     let mut pv_idx = 0;
-    for sizes in group_sizes.iter() {
+    for (sizes, (commitment, _)) in group_sizes.iter().zip(commitments_and_data.iter()) {
         let mut mats_data = Vec::new();
         for &log_size in sizes {
             let domain = TwoAdicMultiplicativeCoset::new(F::GENERATOR, log_size as usize)
@@ -232,8 +240,12 @@ fn produce_inputs_multi(
             pv_idx += 1;
         }
         // Use a placeholder value for the commitment (not used in arithmetic verification)
-        let commit_placeholder = Challenge::ZERO;
-        commitments_with_points.push((commit_placeholder, mats_data));
+        let commitment = [
+            Challenge::from_basis_coefficients_slice(&commitment.as_ref()[..4]).unwrap(),
+            Challenge::from_basis_coefficients_slice(&commitment.as_ref()[4..]).unwrap(),
+        ]
+        .into();
+        commitments_with_points.push((commitment, mats_data));
     }
 
     // —— FriProofTargets values ——
@@ -258,12 +270,12 @@ fn produce_inputs_multi(
 }
 
 /// Linearize public inputs in the exact order allocated by the circuit builder.
-fn pack_inputs(
+fn pack_inputs<const DIGEST_ELEMS: usize>(
     fri_vals: Vec<Challenge>,
     alpha: Challenge,
     betas: Vec<Challenge>,
     index_bits_all_queries: Vec<Vec<Challenge>>,
-    commitments_with_points: CommitmentsWithPoints,
+    commitments_with_points: CommitmentsWithPoints<DIGEST_ELEMS>,
 ) -> Vec<Challenge> {
     let commitment_openings = commitments_with_points
         .into_iter()
@@ -387,6 +399,15 @@ fn run_fri_test(setup: FriSetup, build_only: bool) {
 
     // ——— Build circuit once (using first proof's shape) ———
     let mut builder = CircuitBuilder::<Challenge>::new();
+    builder.enable_poseidon_perm::<BabyBearD4Width16>(
+        generate_poseidon2_trace::<Challenge, BabyBearD4Width16>,
+    );
+    let hash_config = HashConfig::babybear_poseidon2_16();
+    let mmcs_verify_config = MmcsVerifyConfig::babybear_quartic_extension_default();
+    let mmcs_config = MerkleTreeMmcsConfig {
+        hash_config,
+        mmcs_verify_config,
+    };
 
     // 1) Allocate FriProofTargets using instance 1
     let fri_targets = FriTargets::new(&mut builder, &result_1.fri_proof);
@@ -418,9 +439,9 @@ fn run_fri_test(setup: FriSetup, build_only: bool) {
     // 3) Build commitments_with_opening_points targets structure
     // For each batch: allocate commitment target + (domain, Vec<(z_target, [fz_targets])>)
     let mut commitments_with_opening_points_targets = Vec::new();
-    for (_commit_val, mats_data) in &result_1.commitments_with_points {
+    for (commit_val, mats_data) in &result_1.commitments_with_points {
         // Allocate commitment target (placeholder, not used in arithmetic verification)
-        let commit_t = builder.add_public_input();
+        let commit_t = HashTargets::new(&mut builder, commit_val);
 
         let mut mats_targets = Vec::new();
         for (domain, points_and_values) in mats_data {
@@ -437,8 +458,9 @@ fn run_fri_test(setup: FriSetup, build_only: bool) {
     builder.pop_scope();
 
     // 4) Wire the arithmetic-only FRI verifier
-    verify_fri_circuit::<F, Challenge, RecExt, RecVal, RecWitness<F>, p3_recursion::Target>(
+    verify_fri_circuit::<F, Challenge, RecExt, RecVal, RecWitness<F>, HashTargets<Challenge, 2>>(
         &mut builder,
+        &mmcs_config,
         &fri_targets,
         alpha_t,
         &betas_t,
@@ -465,6 +487,67 @@ fn run_fri_test(setup: FriSetup, build_only: bool) {
     );
     let mut runner1 = circuit.clone().runner();
     runner1.set_public_inputs(&pub_inputs1).unwrap();
+
+    let mut non_primitive_ops_iter =
+        runner1
+            .all_non_primitive_ops()
+            .into_iter()
+            .filter(|(_, non_primitive_op)| {
+                if let Op::NonPrimitiveOpWithExecutor { executor, .. } = non_primitive_op {
+                    match executor.op_type() {
+                        NonPrimitiveOpType::PoseidonPerm => true,
+                    }
+                } else {
+                    false
+                }
+            });
+    for query in result_1.fri_proof.query_proofs.iter() {
+        // For each batch in the input proof there must be one MmcsVerify op
+        for batch in query.input_proof.iter() {
+            let siblings = batch.opening_proof.iter().map(|digest| {
+                vec![
+                    Challenge::from_basis_coefficients_slice(&digest[..4]).unwrap(),
+                    Challenge::from_basis_coefficients_slice(&digest[4..]).unwrap(),
+                ]
+            });
+            for sibling in siblings {
+                let op_id = match non_primitive_ops_iter.next() {
+                    Some((op_id, _)) => op_id,
+                    _ => panic!("Expected MmcsVerify op"),
+                };
+                let private_data =
+                    NonPrimitiveOpPrivateData::PoseidonPerm(PoseidonPermPrivateData {
+                        input_values: sibling,
+                    });
+                runner1
+                    .set_non_primitive_op_private_data(op_id, private_data)
+                    .unwrap();
+            }
+        }
+
+        for CommitPhaseProofStep { opening_proof, .. } in &query.commit_phase_openings {
+            let siblings = opening_proof.iter().map(|digest| {
+                vec![
+                    Challenge::from_basis_coefficients_slice(&digest[..4]).unwrap(),
+                    Challenge::from_basis_coefficients_slice(&digest[4..]).unwrap(),
+                ]
+            });
+            for sibling in siblings {
+                let op_id = match non_primitive_ops_iter.next() {
+                    Some((op_id, _)) => op_id,
+                    _ => panic!("Expected MmcsVerify op"),
+                };
+                let private_data =
+                    NonPrimitiveOpPrivateData::PoseidonPerm(PoseidonPermPrivateData {
+                        input_values: sibling,
+                    });
+                runner1
+                    .set_non_primitive_op_private_data(op_id, private_data)
+                    .unwrap();
+            }
+        }
+    }
+
     runner1.run().unwrap();
 
     // ---- Run instance 2 ----
@@ -477,6 +560,67 @@ fn run_fri_test(setup: FriSetup, build_only: bool) {
     );
     let mut runner2 = circuit.runner();
     runner2.set_public_inputs(&pub_inputs2).unwrap();
+
+    let mut non_primitive_ops_iter =
+        runner2
+            .all_non_primitive_ops()
+            .into_iter()
+            .filter(|(_, non_primitive_op)| {
+                if let Op::NonPrimitiveOpWithExecutor { executor, .. } = non_primitive_op {
+                    match executor.op_type() {
+                        NonPrimitiveOpType::PoseidonPerm => true,
+                    }
+                } else {
+                    false
+                }
+            });
+    for query in result_2.fri_proof.query_proofs.iter() {
+        // For each batch in the input proof there must be one MmcsVerify op
+        for batch in query.input_proof.iter() {
+            let siblings = batch.opening_proof.iter().map(|digest| {
+                vec![
+                    Challenge::from_basis_coefficients_slice(&digest[..4]).unwrap(),
+                    Challenge::from_basis_coefficients_slice(&digest[4..]).unwrap(),
+                ]
+            });
+            for sibling in siblings {
+                let op_id = match non_primitive_ops_iter.next() {
+                    Some((op_id, _)) => op_id,
+                    _ => panic!("Expected MmcsVerify op"),
+                };
+                let private_data =
+                    NonPrimitiveOpPrivateData::PoseidonPerm(PoseidonPermPrivateData {
+                        input_values: sibling,
+                    });
+                runner2
+                    .set_non_primitive_op_private_data(op_id, private_data)
+                    .unwrap();
+            }
+        }
+
+        for CommitPhaseProofStep { opening_proof, .. } in &query.commit_phase_openings {
+            let siblings = opening_proof.iter().map(|digest| {
+                vec![
+                    Challenge::from_basis_coefficients_slice(&digest[..4]).unwrap(),
+                    Challenge::from_basis_coefficients_slice(&digest[4..]).unwrap(),
+                ]
+            });
+            for sibling in siblings {
+                let op_id = match non_primitive_ops_iter.next() {
+                    Some((op_id, _)) => op_id,
+                    _ => panic!("Expected MmcsVerify op"),
+                };
+                let private_data =
+                    NonPrimitiveOpPrivateData::PoseidonPerm(PoseidonPermPrivateData {
+                        input_values: sibling,
+                    });
+                runner2
+                    .set_non_primitive_op_private_data(op_id, private_data)
+                    .unwrap();
+            }
+        }
+    }
+
     runner2.run().unwrap();
 }
 
@@ -484,8 +628,8 @@ fn run_fri_test(setup: FriSetup, build_only: bool) {
 fn test_circuit_fri_verifier_degree_0_final_poly() {
     // Three "rounds"/batches of inputs, different shapes. Include a degree-0 (height=1)
     // matrix so the `log_height == log_blowup` reduced-opening constraint is exercised.
-    //   [0, 5, 8, 8, 10], [8, 11], [4, 5, 8]
-    let groups = vec![vec![0u8, 5, 8, 8, 10], vec![8u8, 11], vec![4u8, 5, 8]];
+    //   [0, 5, 7, 8, 10], [8, 11], [4, 5, 8]
+    let groups = vec![vec![0u8, 5, 7, 8, 10], vec![8u8, 11], vec![4u8, 5, 8]];
 
     let setup = generate_setup(0, groups);
 
@@ -511,11 +655,4 @@ fn test_circuit_fri_verifier_degree_3_final_poly() {
     let setup = generate_setup(2, groups);
 
     run_fri_test(setup, false);
-}
-
-#[test]
-fn test_circuit_fri_verifier_scoped_builder() {
-    let groups = vec![vec![0u8, 5, 8, 8, 10], vec![8u8, 11], vec![4u8, 5, 8]];
-    let setup = generate_setup(0, groups);
-    run_fri_test(setup, true);
 }

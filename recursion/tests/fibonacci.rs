@@ -1,6 +1,9 @@
 use p3_baby_bear::{BabyBear, Poseidon2BabyBear};
 use p3_challenger::DuplexChallenger;
 use p3_circuit::CircuitBuilder;
+use p3_circuit::ops::mmcs::MmcsVerifyConfig;
+use p3_circuit::ops::poseidon_perm::HashConfig;
+use p3_circuit::tables::generate_poseidon2_trace;
 use p3_circuit::test_utils::{FibonacciAir, generate_trace_rows};
 use p3_commit::ExtensionMmcs;
 use p3_dft::Radix2DitParallel;
@@ -8,10 +11,12 @@ use p3_field::extension::BinomialExtensionField;
 use p3_field::{Field, PrimeCharacteristicRing};
 use p3_fri::{TwoAdicFriPcs, create_test_fri_params};
 use p3_merkle_tree::MerkleTreeMmcs;
+use p3_poseidon2_circuit_air::BabyBearD4Width16;
 use p3_recursion::pcs::fri::{
     FriProofTargets, FriVerifierParams, HashTargets, InputProofTargets, RecExtensionValMmcs,
     RecValMmcs, Witness,
 };
+use p3_recursion::pcs::mmcs::MerkleTreeMmcsConfig;
 use p3_recursion::public_inputs::StarkVerifierInputsBuilder;
 use p3_recursion::{VerificationError, generate_challenges, verify_circuit};
 use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
@@ -82,6 +87,9 @@ fn test_fibonacci_verifier() -> Result<(), VerificationError> {
     >;
 
     let mut circuit_builder = CircuitBuilder::new();
+    circuit_builder.enable_poseidon_perm::<BabyBearD4Width16>(
+        generate_poseidon2_trace::<<MyConfig as StarkGenericConfig>::Challenge, BabyBearD4Width16>,
+    );
 
     // Allocate all targets
     let verifier_inputs = StarkVerifierInputsBuilder::<
@@ -89,6 +97,13 @@ fn test_fibonacci_verifier() -> Result<(), VerificationError> {
         HashTargets<F, DIGEST_ELEMS>,
         InnerFri,
     >::allocate(&mut circuit_builder, &proof, None, pis.len());
+
+    let hash_config = HashConfig::babybear_poseidon2_16();
+    let mmcs_verify_config = MmcsVerifyConfig::babybear_quartic_extension_default();
+    let mmcs_config = MerkleTreeMmcsConfig {
+        hash_config,
+        mmcs_verify_config,
+    };
 
     // Add the verification circuit to the builder.
     verify_circuit::<
@@ -100,6 +115,7 @@ fn test_fibonacci_verifier() -> Result<(), VerificationError> {
         RATE,
     >(
         &config,
+        &mmcs_config,
         &air,
         &mut circuit_builder,
         &verifier_inputs.proof_targets,

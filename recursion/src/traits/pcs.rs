@@ -7,6 +7,7 @@ use p3_uni_stark::StarkGenericConfig;
 
 use super::Recursive;
 use crate::Target;
+use crate::pcs::mmcs::MerkleTreeMmcsConfig;
 use crate::types::{OpenedValuesTargets, ProofTargets, RecursiveLagrangeSelectors};
 use crate::verifier::VerificationError;
 
@@ -78,6 +79,8 @@ pub trait RecursivePcs<
     fn verify_circuit(
         &self,
         circuit: &mut CircuitBuilder<SC::Challenge>,
+        // TODO: Get rid of this parameter and use self.mmcs instead.
+        mmcs_config: &MerkleTreeMmcsConfig<SC::Challenge>,
         challenges: &[Target],
         commitments_with_opening_points: &ComsWithOpeningsTargets<Comm, Domain>,
         opening_proof: &OpeningProof,

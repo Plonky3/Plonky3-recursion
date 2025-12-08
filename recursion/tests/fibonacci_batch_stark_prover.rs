@@ -3,6 +3,9 @@ use p3_baby_bear::{BabyBear, Poseidon2BabyBear};
 use p3_batch_stark::CommonData;
 use p3_challenger::DuplexChallenger;
 use p3_circuit::CircuitBuilder;
+use p3_circuit::ops::mmcs::MmcsVerifyConfig;
+use p3_circuit::ops::poseidon_perm::HashConfig;
+use p3_circuit::tables::generate_poseidon2_trace;
 use p3_circuit_prover::air::{AddAir, ConstAir, MulAir, PublicAir, WitnessAir};
 use p3_circuit_prover::batch_stark_prover::PrimitiveTable;
 use p3_circuit_prover::common::get_airs_and_degrees_with_prep;
@@ -13,16 +16,23 @@ use p3_field::extension::BinomialExtensionField;
 use p3_field::{Field, PrimeCharacteristicRing};
 use p3_fri::{TwoAdicFriPcs, create_test_fri_params};
 use p3_merkle_tree::MerkleTreeMmcs;
+use p3_poseidon2_circuit_air::BabyBearD4Width16;
 use p3_recursion::generation::generate_batch_challenges;
 use p3_recursion::pcs::fri::{
     FriProofTargets, FriVerifierParams, HashTargets, InputProofTargets, RecExtensionValMmcs,
     RecValMmcs, Witness,
 };
+use p3_recursion::pcs::mmcs::MerkleTreeMmcsConfig;
 use p3_recursion::verifier::verify_p3_recursion_proof_circuit;
 use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
 use p3_uni_stark::{StarkConfig, StarkGenericConfig, Val};
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
+use tracing_forest::ForestLayer;
+use tracing_forest::util::LevelFilter;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::{EnvFilter, Registry};
 
 type F = BabyBear;
 
@@ -96,11 +106,26 @@ type InnerFri = FriProofTargets<
     Witness<Val<MyConfig>>,
 >;
 
+fn init_logger() {
+    let env_filter = EnvFilter::builder()
+        .with_default_directive(LevelFilter::INFO.into())
+        .from_env_lossy();
+
+    Registry::default()
+        .with(env_filter)
+        .with(ForestLayer::default())
+        .init();
+}
+
 #[test]
 fn test_fibonacci_batch_verifier() {
+    init_logger();
     let n: usize = 100;
 
     let mut builder = CircuitBuilder::new();
+    builder.enable_poseidon_perm::<BabyBearD4Width16>(
+        generate_poseidon2_trace::<_, BabyBearD4Width16>,
+    );
 
     // Public input: expected F(n)
     let expected_result = builder.alloc_public_input("expected_result");
@@ -205,6 +230,16 @@ fn test_fibonacci_batch_verifier() {
 
     // Build the recursive verification circuit
     let mut circuit_builder = CircuitBuilder::new();
+    circuit_builder.enable_poseidon_perm::<BabyBearD4Width16>(
+        generate_poseidon2_trace::<_, BabyBearD4Width16>,
+    );
+
+    let hash_config = HashConfig::babybear_poseidon2_16();
+    let mmcs_verify_config = MmcsVerifyConfig::babybear_quartic_extension_default();
+    let mmcs_config = MerkleTreeMmcsConfig {
+        hash_config,
+        mmcs_verify_config,
+    };
 
     // Attach verifier without manually building circuit_airs
     let verifier_inputs = verify_p3_recursion_proof_circuit::<
@@ -216,6 +251,7 @@ fn test_fibonacci_batch_verifier() {
         TRACE_D,
     >(
         &config,
+        &mmcs_config,
         &mut circuit_builder,
         &batch_stark_proof,
         &fri_verifier_params,

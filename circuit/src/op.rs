@@ -487,7 +487,7 @@ impl<F: Field> WitnessHintsFiller<F> for HashSqueezeHint<F> {
 
     // Rate of the sponge, and size of the squeezed output
     fn n_outputs(&self) -> usize {
-        self.config.rate
+        self.config.ext_rate
     }
 
     fn compute_outputs(
@@ -496,19 +496,19 @@ impl<F: Field> WitnessHintsFiller<F> for HashSqueezeHint<F> {
         state: Option<&Vec<F>>,
     ) -> Result<HintsOutputAndNextState<F>, CircuitError> {
         let mut state = if self.reset {
-            vec![F::ZERO; self.config.width]
+            vec![F::ZERO; self.config.ext_width]
         } else {
             state
                 .cloned()
-                .unwrap_or_else(|| vec![F::ZERO; self.config.width])
+                .unwrap_or_else(|| vec![F::ZERO; self.config.ext_width])
         };
 
-        for chunk in inputs_val.chunks(self.config.rate) {
+        for chunk in inputs_val.chunks(self.config.ext_rate) {
             state[..chunk.len()].copy_from_slice(chunk);
             state = (self.config.permutation)(&state)?;
         }
 
-        let output = state[..self.config.rate].to_vec();
+        let output = state[..self.config.ext_rate].to_vec();
         Ok((output, Some(state)))
     }
 }

@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use super::{FriVerifierParams, MAX_QUERY_INDEX_BITS, verify_fri_circuit};
 use crate::Target;
 use crate::challenger::CircuitChallenger;
+use crate::pcs::mmcs::MerkleTreeMmcsConfig;
 use crate::traits::{
     ComsWithOpeningsTargets, Recursive, RecursiveChallenger, RecursiveExtensionMmcs, RecursiveMmcs,
     RecursivePcs,
@@ -72,6 +73,19 @@ impl<
             final_poly,
             pow_witness: Witness::new(circuit, &input.pow_witness),
         }
+    }
+
+    fn get_targets(&self) -> Vec<Target> {
+        let mut wires = vec![];
+        for commit in &self.commit_phase_commits {
+            wires.extend(commit.get_targets());
+        }
+        for query in &self.query_proofs {
+            wires.extend(query.get_targets());
+        }
+        wires.extend(self.final_poly.iter());
+        wires.extend(self.pow_witness.get_targets());
+        wires
     }
 
     fn get_values(input: &Self::Input) -> Vec<EF> {
@@ -130,6 +144,15 @@ impl<
         }
     }
 
+    fn get_targets(&self) -> Vec<Target> {
+        let mut wires = vec![];
+        wires.extend(self.input_proof.get_targets());
+        for opening in &self.commit_phase_openings {
+            wires.extend(opening.get_targets());
+        }
+        wires
+    }
+
     fn get_values(input: &Self::Input) -> Vec<EF> {
         InputProof::get_values(&input.input_proof)
             .into_iter()
@@ -169,6 +192,12 @@ impl<F: Field, EF: ExtensionField<F>, RecMmcs: RecursiveExtensionMmcs<F, EF>> Re
             opening_proof,
             _phantom: PhantomData,
         }
+    }
+
+    fn get_targets(&self) -> Vec<Target> {
+        let mut wires = vec![self.sibling_value];
+        wires.extend(self.opening_proof.get_targets());
+        wires
     }
 
     fn get_values(input: &Self::Input) -> Vec<EF> {
@@ -212,6 +241,15 @@ impl<F: Field, EF: ExtensionField<F>, Inner: RecursiveMmcs<F, EF>> Recursive<EF>
         }
     }
 
+    fn get_targets(&self) -> Vec<Target> {
+        let mut wires = vec![];
+        for inner in &self.opened_values {
+            wires.extend(inner.iter());
+        }
+        wires.extend(self.opening_proof.get_targets());
+        wires
+    }
+
     fn get_values(input: &Self::Input) -> Vec<EF> {
         let BatchOpening {
             opened_values,
@@ -229,7 +267,7 @@ impl<F: Field, EF: ExtensionField<F>, Inner: RecursiveMmcs<F, EF>> Recursive<EF>
 // Now, we define the commitment schemes.
 
 /// `HashTargets` corresponds to a commitment in the form of hashes with `DIGEST_ELEMS` digest elements.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct HashTargets<F, const DIGEST_ELEMS: usize> {
     pub hash_targets: [Target; DIGEST_ELEMS],
     _phantom: PhantomData<F>,
@@ -241,7 +279,7 @@ impl<F, const DIGEST_ELEMS: usize> ObservableCommitment for HashTargets<F, DIGES
     }
 }
 
-type ValMmcsCommitment<F, const DIGEST_ELEMS: usize> =
+pub type ValMmcsCommitment<F, const DIGEST_ELEMS: usize> =
     Hash<<F as PackedValue>::Value, <F as PackedValue>::Value, DIGEST_ELEMS>;
 
 impl<F: Field, EF: ExtensionField<F>, const DIGEST_ELEMS: usize> Recursive<EF>
@@ -254,6 +292,10 @@ impl<F: Field, EF: ExtensionField<F>, const DIGEST_ELEMS: usize> Recursive<EF>
             hash_targets: circuit.alloc_public_input_array("MMCS commitment digest"),
             _phantom: PhantomData,
         }
+    }
+
+    fn get_targets(&self) -> Vec<Target> {
+        self.hash_targets.to_vec()
     }
 
     fn get_values(input: &Self::Input) -> Vec<EF> {
@@ -287,6 +329,14 @@ impl<F: Field, EF: ExtensionField<F>, const DIGEST_ELEMS: usize> Recursive<EF>
         }
     }
 
+    fn get_targets(&self) -> Vec<Target> {
+        self.hash_proof_targets
+            .iter()
+            .flat_map(|h| h.iter())
+            .copied()
+            .collect()
+    }
+
     fn get_values(input: &Self::Input) -> Vec<EF> {
         input
             .iter()
@@ -309,6 +359,10 @@ impl<F: Field, EF: ExtensionField<F>> Recursive<EF> for Witness<F> {
             witness: circuit.alloc_public_input("FRI proof-of-work witness"),
             _phantom: PhantomData,
         }
+    }
+
+    fn get_targets(&self) -> Vec<Target> {
+        vec![self.witness]
     }
 
     fn get_values(input: &Self::Input) -> Vec<EF> {
@@ -386,6 +440,14 @@ impl<F: Field, EF: ExtensionField<F>, Inner: RecursiveMmcs<F, EF>> Recursive<EF>
         }
 
         batch_openings
+    }
+
+    fn get_targets(&self) -> Vec<Target> {
+        let mut wires = vec![];
+        for batch_opening in self {
+            wires.extend(batch_opening.get_targets());
+        }
+        wires
     }
 
     fn get_values(input: &Self::Input) -> Vec<EF> {
@@ -493,6 +555,8 @@ where
     fn verify_circuit(
         &self,
         circuit: &mut CircuitBuilder<SC::Challenge>,
+        // TODO: Get rid of this parameter and use self.mmcs.
+        mmcs_config: &MerkleTreeMmcsConfig<SC::Challenge>,
         challenges: &[Target],
         commitments_with_opening_points: &ComsWithOpeningsTargets<
             Comm,
@@ -544,6 +608,7 @@ where
 
         verify_fri_circuit(
             circuit,
+            mmcs_config,
             opening_proof,
             alpha,
             betas,

@@ -4,13 +4,18 @@ use alloc::vec::Vec;
 use alloc::{format, vec};
 use core::iter;
 
-use p3_circuit::CircuitBuilder;
+use itertools::Itertools;
+use p3_circuit::{CircuitBuilder, ExprId};
 use p3_field::coset::TwoAdicMultiplicativeCoset;
 use p3_field::{ExtensionField, Field, TwoAdicField};
+use p3_matrix::Dimensions;
+use p3_util::log2_strict_usize;
 use p3_util::zip_eq::zip_eq;
 
 use super::{FriProofTargets, InputProofTargets};
 use crate::Target;
+use crate::pcs::mmcs::MerkleTreeMmcsConfig;
+use crate::pcs::{CommitPhaseProofStepTargets, verify_batch_circuit};
 use crate::traits::{ComsWithOpeningsTargets, Recursive, RecursiveExtensionMmcs, RecursiveMmcs};
 use crate::verifier::VerificationError;
 
@@ -26,73 +31,60 @@ pub struct FoldPhaseInputsTarget {
     /// Boolean {0,1}. Equals 1 iff sibling occupies evals[1] (the "right" slot).
     /// In Plonky3 this is 1 − (domain_index & 1) at this phase.
     pub sibling_is_right: Target,
+    /// A commitment to the FRI evaluations on the current domain.
+    pub commitment: Vec<Target>,
     /// Optional reduced opening to roll in at this height (added as β² · roll_in).
     pub roll_in: Option<Target>,
 }
 
 /// Perform the arity-2 FRI fold chain with optional roll-ins.
-/// Starts from the initial reduced opening at max height; returns the final folded value.
+/// Starts from some initial reduced opening at height <= max height; returns the next folded value.
 /// All arithmetic is over the circuit field `EF`.
 ///
 /// Interpolation per phase:
 ///   folded ← e0 + (β − x0)·(e1 − e0)·(x1 − x0)^{-1}, with x1 = −x0
 ///           = e0 + (β − x0)·(e1 − e0)·(−1/2)·x0^{-1}
-fn fold_row_chain<EF: Field>(
+fn fold_row<EF: Field>(
     builder: &mut CircuitBuilder<EF>,
-    initial_folded_eval: Target,
-    phases: &[FoldPhaseInputsTarget],
-) -> Target {
-    builder.push_scope("fold_row_chain");
-
-    let mut folded = initial_folded_eval;
-
-    let one = builder.alloc_const(EF::ONE, "1");
-
-    // Precompute constants as field constants: 2^{-1} and −1/2.
-    let two_inv_val = EF::ONE.halve(); // 1/2
-    let neg_half = builder.alloc_const(EF::NEG_ONE * two_inv_val, "−1/2"); // −1/2
-
-    for FoldPhaseInputsTarget {
+    folded: &mut ExprId,
+    one: ExprId,
+    neg_half: ExprId,
+    phase_input: &FoldPhaseInputsTarget,
+) {
+    let &FoldPhaseInputsTarget {
         beta,
         x0,
         e_sibling,
         sibling_is_right,
         roll_in,
-    } in phases.iter().cloned()
-    {
-        // TODO: Add recursive MMCS batch verification for this commit phase:
-        // Verify the sibling value against the commitment at the parent index.
+        ..
+    } = phase_input;
+    // e0 = select(bit, folded, e_sibling)
+    let e0 = builder.select(sibling_is_right, *folded, e_sibling);
 
-        // e0 = select(bit, folded, e_sibling)
-        let e0 = builder.select(sibling_is_right, folded, e_sibling);
+    // inv = (x1 − x0)^{-1} = (−2x0)^{-1} = (−1/2) / x0
+    let inv = builder.alloc_div(neg_half, x0, "inv");
 
-        // inv = (x1 − x0)^{-1} = (−2x0)^{-1} = (−1/2) / x0
-        let inv = builder.alloc_div(neg_half, x0, "inv");
+    // e1 − e0 = (2b − 1) · (e_sibling − folded)
+    let d = builder.alloc_sub(e_sibling, *folded, "d");
+    let two_b = builder.alloc_add(sibling_is_right, sibling_is_right, "two_b");
+    let two_b_minus_one = builder.alloc_sub(two_b, one, "two_b_minus_one");
+    let e1_minus_e0 = builder.alloc_mul(two_b_minus_one, d, "e1_minus_e0");
 
-        // e1 − e0 = (2b − 1) · (e_sibling − folded)
-        let d = builder.alloc_sub(e_sibling, folded, "d");
-        let two_b = builder.alloc_add(sibling_is_right, sibling_is_right, "two_b");
-        let two_b_minus_one = builder.alloc_sub(two_b, one, "two_b_minus_one");
-        let e1_minus_e0 = builder.alloc_mul(two_b_minus_one, d, "e1_minus_e0");
+    // t = (β − x0) * (e1 − e0)
+    let beta_minus_x0 = builder.alloc_sub(beta, x0, "beta_minus_x0");
+    let t = builder.alloc_mul(beta_minus_x0, e1_minus_e0, "t");
 
-        // t = (β − x0) * (e1 − e0)
-        let beta_minus_x0 = builder.alloc_sub(beta, x0, "beta_minus_x0");
-        let t = builder.alloc_mul(beta_minus_x0, e1_minus_e0, "t");
+    // folded = e0 + t * inv
+    let t_inv = builder.alloc_mul(t, inv, "t_inv");
+    *folded = builder.alloc_add(e0, t_inv, "folded 1");
 
-        // folded = e0 + t * inv
-        let t_inv = builder.alloc_mul(t, inv, "t_inv");
-        folded = builder.alloc_add(e0, t_inv, "folded 1");
-
-        // Optional roll-in: folded += β² · roll_in
-        if let Some(ro) = roll_in {
-            let beta_sq = builder.alloc_mul(beta, beta, "beta_sq");
-            let add_term = builder.alloc_mul(beta_sq, ro, "add_term");
-            folded = builder.alloc_add(folded, add_term, "folded 2");
-        }
+    // Optional roll-in: folded += β² · roll_in
+    if let Some(ro) = roll_in {
+        let beta_sq = builder.alloc_mul(beta, beta, "beta_sq");
+        let add_term = builder.alloc_mul(beta_sq, ro, "add_term");
+        *folded = builder.alloc_add(*folded, add_term, "folded 2");
     }
-
-    builder.pop_scope(); // close `fold_row_chain` scope
-    folded
 }
 
 /// Evaluate a polynomial at a point `x` using Horner's method.
@@ -125,14 +117,67 @@ fn evaluate_polynomial<EF: Field>(
 /// Arithmetic-only version of Plonky3 `verify_query`:
 /// - Applies the fold chain and enforces equality to the provided final polynomial evaluation.
 /// - Caller must supply `initial_folded_eval` (the reduced opening at max height).
+#[allow(clippy::too_many_arguments)]
 fn verify_query<EF: Field>(
     builder: &mut CircuitBuilder<EF>,
+    mmcs_config: &MerkleTreeMmcsConfig<EF>,
     initial_folded_eval: Target,
+    index_bits: &[Target],
     phases: &[FoldPhaseInputsTarget],
     final_value: Target,
+    log_global_max_height: usize,
+    log_final_height: usize,
 ) {
     builder.push_scope("verify_query");
-    let folded_eval = fold_row_chain(builder, initial_folded_eval, phases);
+
+    let mut folded_eval = initial_folded_eval;
+    let mut index_bits = index_bits;
+
+    let one = builder.alloc_const(EF::ONE, "1");
+
+    // Precompute constants as field constants: 2^{-1} and −1/2.
+    let two_inv_val = EF::ONE.halve(); // 1/2
+    let neg_half = builder.alloc_const(EF::NEG_ONE * two_inv_val, "−1/2"); // −1/2
+
+    for (log_folded_height, phase_input) in (log_final_height..log_global_max_height)
+        .rev()
+        .zip(phases.iter().cloned())
+    {
+        let FoldPhaseInputsTarget {
+            e_sibling,
+            commitment,
+            sibling_is_right,
+            ..
+        } = &phase_input;
+
+        // sibling_is_right = 1 − (index_bit[i])
+        let not_sibling_is_right = index_bits[0];
+
+        let evals = vec![
+            builder.select(*sibling_is_right, folded_eval, *e_sibling),
+            builder.select(not_sibling_is_right, folded_eval, *e_sibling),
+        ];
+
+        let dimensions = &[Dimensions {
+            width: 2,
+            height: 1 << log_folded_height,
+        }];
+
+        // Replace index with the index of the parent FRI node.
+        index_bits = &index_bits[1..];
+
+        let _ = verify_batch_circuit(
+            builder,
+            mmcs_config,
+            commitment,
+            dimensions,
+            index_bits,
+            &[evals],
+        );
+
+        fold_row(builder, &mut folded_eval, one, neg_half, &phase_input);
+    }
+
     builder.connect(folded_eval, final_value);
     builder.pop_scope(); // close `verify_query` scope
 }
@@ -219,19 +264,22 @@ fn compute_x0_from_index_bits<EF: Field>(
 #[allow(clippy::too_many_arguments)]
 fn verify_query_from_index_bits<EF: Field>(
     builder: &mut CircuitBuilder<EF>,
+    mmcs_config: &MerkleTreeMmcsConfig<EF>,
     initial_folded_eval: Target,
     index_bits: &[Target],
     betas: &[Target],
-    sibling_values: &[Target],
+    siblings_with_comms_and_proofs: &[(Target, Vec<Target>, Vec<Target>)],
     roll_ins: &[Option<Target>],
     pows_per_phase: &[Vec<EF>],
     final_value: Target,
+    log_global_max_height: usize,
+    log_final_height: usize,
 ) {
     builder.push_scope("verify_query_from_index_bits");
 
     let num_phases = betas.len();
     debug_assert_eq!(
-        sibling_values.len(),
+        siblings_with_comms_and_proofs.len(),
         num_phases,
         "sibling_values len mismatch"
     );
@@ -253,16 +301,28 @@ fn verify_query_from_index_bits<EF: Field>(
         let raw_bit = index_bits[i];
         let sibling_is_right = builder.sub(one, raw_bit);
 
+        let (sibling, commitment, ..) = &siblings_with_comms_and_proofs[i];
+
         phases_vec.push(FoldPhaseInputsTarget {
             beta: betas[i],
             x0,
-            e_sibling: sibling_values[i],
+            e_sibling: *sibling,
             sibling_is_right,
             roll_in: roll_ins[i],
+            commitment: commitment.clone(),
         });
     }
 
-    verify_query(builder, initial_folded_eval, &phases_vec, final_value);
+    verify_query(
+        builder,
+        mmcs_config,
+        initial_folded_eval,
+        index_bits,
+        &phases_vec,
+        final_value,
+        log_global_max_height,
+        log_final_height,
+    );
     builder.pop_scope(); // close `verify_query_from_index_bits` scope
 }
 
@@ -349,6 +409,7 @@ fn compute_single_reduced_opening<EF: Field>(
 #[allow(clippy::too_many_arguments)]
 fn open_input<F, EF, Comm>(
     builder: &mut CircuitBuilder<EF>,
+    mmcs_config: &MerkleTreeMmcsConfig<EF>,
     log_global_max_height: usize,
     index_bits: &[Target],
     alpha: Target,
@@ -359,6 +420,7 @@ fn open_input<F, EF, Comm>(
 where
     F: Field + TwoAdicField,
     EF: ExtensionField<F>,
+    Comm: Recursive<EF>,
 {
     builder.push_scope("open_input");
 
@@ -376,7 +438,7 @@ where
     let mut reduced_openings = BTreeMap::<usize, (Target, Target)>::new();
 
     // Process each batch
-    for (batch_idx, ((_batch_commit, mats), batch_openings)) in zip_eq(
+    for (batch_idx, ((batch_commit, mats), batch_openings)) in zip_eq(
         commitments_with_opening_points.iter(),
         batch_opened_values.iter(),
         VerificationError::InvalidProofShape(
@@ -385,8 +447,40 @@ where
     )?
     .enumerate()
     {
-        // TODO: Add recursive MMCS verification here for this batch:
-        // Verify batch_openings against _batch_commit at the computed reduced_index.
+        let batch_heights = mats
+            .iter()
+            .map(|(domain, _)| domain.size() << log_blowup)
+            .collect_vec();
+        let batch_dims = batch_heights
+            .iter()
+            // TODO: MMCS doesn't really need width; we put 0 for now.
+            .map(|&height| Dimensions { width: 0, height })
+            .collect_vec();
+
+        // If the maximum height of the batch is smaller than the global max height,
+        // we need to correct the index by right shifting it. Given that the index bits
+        // are little endian, we do so by removing the leftmost bits.
+        // If the batch is empty, we set the index to 0.
+        let reduced_bits = batch_heights
+            .iter()
+            .max()
+            .map(|&h| &index_bits[index_bits.len() - log2_strict_usize(h)..])
+            .unwrap();
+
+        verify_batch_circuit(
+            builder,
+            mmcs_config,
+            &batch_commit.get_targets(),
+            &batch_dims,
+            reduced_bits,
+            batch_openings,
+        )?;
+
+        assert_eq!(
+            mats.len(),
+            batch_openings.len(),
+            "batch {batch_idx}: mats count must match opened_values count"
+        );
 
         // For each matrix in the batch
         for (mat_idx, ((mat_domain, mat_points_and_values), mat_opening)) in zip_eq(
@@ -470,6 +564,8 @@ where
 #[allow(clippy::too_many_arguments)]
 pub fn verify_fri_circuit<F, EF, RecMmcs, Inner, Witness, Comm>(
     builder: &mut CircuitBuilder<EF>,
+    // TODO: Get rid of the config.
+    mmcs_config: &MerkleTreeMmcsConfig<EF>,
     fri_proof_targets: &FriProofTargets<F, EF, RecMmcs, InputProofTargets<F, EF, Inner>, Witness>,
     alpha: Target,
     betas: &[Target],
@@ -483,6 +579,7 @@ where
     RecMmcs: RecursiveExtensionMmcs<F, EF>,
     Inner: RecursiveMmcs<F, EF>,
     Witness: Recursive<EF>,
+    Comm: Recursive<EF>,
 {
     builder.push_scope("verify_fri");
 
@@ -577,6 +674,7 @@ where
         // Arithmetic `open_input` to get (height, ro) descending
         let reduced_by_height = open_input::<F, EF, Comm>(
             builder,
+            mmcs_config,
             log_max_height,
             &index_bits_per_query[q],
             alpha,
@@ -600,20 +698,36 @@ where
         }
         let initial_folded_eval = reduced_by_height[0].1;
 
-        // Sibling values for this query (one per phase)
-        let sibling_values: Vec<Target> = query_proof
-            .commit_phase_openings
-            .iter()
-            .map(|opening| opening.sibling_value)
-            .collect();
-
-        if sibling_values.len() != num_phases {
+        // Sibling values and proofs for this query math the numebr of phases.
+        if query_proof.commit_phase_openings.len() != num_phases {
             return Err(VerificationError::InvalidProofShape(format!(
                 "sibling_values must match number of betas/phases: expected {}, got {}",
                 num_phases,
-                sibling_values.len()
+                query_proof.commit_phase_openings.len()
             )));
         }
+
+        let commit_phase_openings_targets: Vec<(Target, Vec<Target>, Vec<Target>)> = query_proof
+            .commit_phase_openings
+            .iter()
+            .zip(fri_proof_targets.commit_phase_commits.iter())
+            .map(
+                |(
+                    CommitPhaseProofStepTargets {
+                        sibling_value,
+                        opening_proof,
+                        ..
+                    },
+                    commitment,
+                )| {
+                    (
+                        *sibling_value,
+                        opening_proof.get_targets(),
+                        commitment.get_targets(),
+                    )
+                },
+            )
+            .collect();
 
         // Build height-aligned roll-ins for each phase (desc heights -> phases)
         let mut roll_ins: Vec<Option<Target>> = vec![None; num_phases];
@@ -651,17 +765,23 @@ where
 
         let final_poly_eval =
             evaluate_polynomial(builder, &fri_proof_targets.final_poly, final_query_point);
+        let log_global_max_height =
+            fri_proof_targets.commit_phase_commits.len() + log_blowup + log_final_poly_len;
+        let log_final_height = log_blowup + log_final_poly_len;
 
         // Perform the fold chain and connect to the evaluated final polynomial value
         verify_query_from_index_bits(
             builder,
+            mmcs_config,
             initial_folded_eval,
             &index_bits_per_query[q],
             betas,
-            &sibling_values,
+            &commit_phase_openings_targets,
             &roll_ins,
             &pows_per_phase,
             final_poly_eval,
+            log_global_max_height,
+            log_final_height,
         );
 
         builder.pop_scope(); // close `verify_fri` scope

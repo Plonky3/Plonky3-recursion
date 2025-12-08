@@ -217,8 +217,12 @@ impl<F: Field> NonPrimitiveExecutor<F> for PoseidonPermExecutor {
 pub struct HashConfig<F> {
     /// Rate (number of elements absorbed/squeezed per operation)
     pub rate: usize,
+    /// Rate in terms of extension field elements.
+    pub ext_rate: usize,
     /// Width of the permutation
     pub width: usize,
+    /// Width in number of extension field elements
+    pub ext_width: usize,
     /// The permutation function used in this configuration
     pub permutation: Arc<PermutationFn<F>>,
 }
@@ -229,7 +233,9 @@ impl<F> Clone for HashConfig<F> {
     fn clone(&self) -> Self {
         Self {
             rate: self.rate,
+            ext_rate: self.ext_rate,
             width: self.width,
+            ext_width: self.ext_width,
             permutation: Arc::clone(&self.permutation),
         }
     }
@@ -237,15 +243,17 @@ impl<F> Clone for HashConfig<F> {
 
 impl<F> HashConfig<F> {
     /// New hash configuration using Babybear and poseidon2 permutation.
-    pub fn babybear_poseidon2_16(rate: usize) -> Self
+    pub fn babybear_poseidon2_16() -> Self
     where
         F: ExtensionField<BabyBear>,
     {
         use p3_baby_bear::default_babybear_poseidon2_16;
         let permutation = default_babybear_poseidon2_16();
         Self {
-            rate,
-            width: 4,
+            rate: 8,
+            ext_rate: 2,
+            width: 16,
+            ext_width: 4,
             permutation: Arc::new(move |input: &[F]| {
                 let bf_input = input
                     .iter()
@@ -254,7 +262,7 @@ impl<F> HashConfig<F> {
                     .try_into()
                     .map_err(|_| CircuitError::IncorrectNonPrimitiveOpInputSize {
                         op: NonPrimitiveOpType::PoseidonPerm,
-                        expected: 4.to_string(),
+                        expected: 16.to_string(),
                         got: input.len(),
                     })?;
                 let output = permutation.permute(bf_input);
@@ -305,7 +313,9 @@ impl<F: Clone> Default for HashConfig<F> {
     fn default() -> Self {
         Self {
             rate: 0,
+            ext_rate: 0,
             width: 0,
+            ext_width: 0,
             // Default permutation: identity over the slice (clones elements)
             permutation: Arc::new(|_| Ok(vec![])),
         }

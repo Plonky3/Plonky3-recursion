@@ -115,6 +115,14 @@ where
         }
     }
 
+    fn get_targets(&self) -> Vec<Target> {
+        let mut targets = vec![];
+        if let Some(preprocessed) = &self.preprocessed {
+            targets.extend(preprocessed.commitment.get_targets());
+        }
+        targets
+    }
+
     fn get_values(input: &Self::Input) -> Vec<SC::Challenge> {
         let mut values = vec![];
         if let Some(prep) = &input.preprocessed {
@@ -190,6 +198,13 @@ impl<
             .chain(OpeningProof::get_values(opening_proof))
             .collect()
     }
+
+    fn get_targets(&self) -> Vec<Target> {
+        let mut targets = self.commitments_targets.get_targets();
+        targets.extend(self.opened_values_targets.get_targets());
+        targets.extend(self.opening_proof.get_targets());
+        targets
+    }
 }
 
 impl<F: Field, Comm> Recursive<F> for CommitmentTargets<F, Comm>
@@ -228,6 +243,15 @@ where
             values.extend(Comm::get_values(random));
         }
         values
+    }
+
+    fn get_targets(&self) -> Vec<Target> {
+        let mut targets = self.trace_targets.get_targets();
+        targets.extend(self.quotient_chunks_targets.get_targets());
+        if let Some(random_commit) = self.random_commit.as_ref() {
+            targets.extend(random_commit.get_targets());
+        }
+        targets
     }
 }
 
@@ -303,5 +327,15 @@ impl<SC: StarkGenericConfig> Recursive<SC::Challenge> for OpenedValuesTargets<SC
         }
 
         values
+    }
+
+    fn get_targets(&self) -> Vec<Target> {
+        let mut targets = self.trace_local_targets.clone();
+        targets.extend(self.trace_next_targets.clone());
+        targets.extend(self.quotient_chunks_targets.iter().flatten());
+        if let Some(random_target) = self.random_targets.as_ref() {
+            targets.extend(random_target);
+        }
+        targets
     }
 }

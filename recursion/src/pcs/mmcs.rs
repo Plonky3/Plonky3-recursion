@@ -4,10 +4,17 @@ use p3_circuit::op::NonPrimitiveOpType;
 use p3_circuit::ops::mmcs::{MmcsVerifyConfig, add_mmcs_verify};
 use p3_circuit::ops::poseidon_perm::{HashConfig, add_hash_squeeze};
 use p3_circuit::{CircuitBuilder, CircuitBuilderError, NonPrimitiveOpId};
-use p3_field::{ExtensionField, Field, TwoAdicField};
+use p3_field::{ExtensionField, Field};
 use p3_matrix::Dimensions;
 
 use crate::Target;
+
+// TODO: We should get rid of this an get the config directly from the Mmcs.
+/// The configuration of a MerkleTreeMmcs
+pub struct MerkleTreeMmcsConfig<EF> {
+    pub hash_config: HashConfig<EF>,
+    pub mmcs_verify_config: MmcsVerifyConfig,
+}
 
 /// Recursive verison of `MerkleTreeMmcs::verify_batch`. Adds a circuit that verifies an opened batch of rows with respect to a given commitment.
 ///
@@ -18,21 +25,18 @@ use crate::Target;
 /// - `opened_values`: A vector of matrix rows. Assume that the tallest matrix committed
 ///   to has height `2^n >= M_tall.height() > 2^{n - 1}` and the `j`th matrix has height
 ///   `2^m >= Mj.height() > 2^{m - 1}`. Then `j`'th value of opened values must be the row `Mj[index >> (m - n)]`.
-/// - `proof`: A vector of sibling nodes. The `i`th element should be the node at level `i`
-///   with index `(index << i) ^ 1`.
 ///
 /// Returns the list of permutations operations requiring private data, otherwise returns an error.
 pub fn verify_batch_circuit<F, EF>(
     circuit: &mut CircuitBuilder<EF>,
-    mmcs_config: &MmcsVerifyConfig,
-    hash_config: &HashConfig<EF>,
+    mmcs_config: &MerkleTreeMmcsConfig<EF>,
     commitment: &[Target],
     dimensions: &[Dimensions],
     index_bits: &[Target],
     opened_values: &[Vec<Target>],
 ) -> Result<Vec<NonPrimitiveOpId>, CircuitBuilderError>
 where
-    F: Field + TwoAdicField,
+    F: Field,
     EF: ExtensionField<F>,
 {
     // Check that the openings have the correct shape.
@@ -48,6 +52,7 @@ where
     // }
 
     let formatted_op_vals = mmcs_config
+        .mmcs_verify_config
         .format_openings(opened_values, dimensions, index_bits.len())
         .map_err(
             |_| CircuitBuilderError::InvalidNonPrimitiveOpConfiguration {
@@ -61,7 +66,13 @@ where
         .into_iter()
         .map(|leaf| {
             if !leaf.is_empty() {
-                add_hash_squeeze(circuit, hash_config, "mmcs_verify", &leaf, true)
+                add_hash_squeeze(
+                    circuit,
+                    &mmcs_config.hash_config,
+                    "mmcs_verify",
+                    &leaf,
+                    true,
+                )
             } else {
                 Ok(leaf)
             }
@@ -100,6 +111,7 @@ mod test {
     use tracing_subscriber::util::SubscriberInitExt;
     use tracing_subscriber::{EnvFilter, Registry};
 
+    use crate::pcs::mmcs::MerkleTreeMmcsConfig;
     use crate::pcs::verify_batch_circuit;
 
     type F = BabyBear;
@@ -132,8 +144,12 @@ mod test {
         let path_depth = log2_ceil_usize(max_height);
         for index in 0..max_height {
             let mut builder = CircuitBuilder::<CF>::new();
-            let hash_config = HashConfig::babybear_poseidon2_16(4);
-            let mmcs_config = MmcsVerifyConfig::babybear_quartic_extension_default();
+            let hash_config = HashConfig::babybear_poseidon2_16();
+            let mmcs_verify_config = MmcsVerifyConfig::babybear_quartic_extension_default();
+            let mmcs_config = MerkleTreeMmcsConfig {
+                hash_config,
+                mmcs_verify_config,
+            };
             builder.enable_poseidon_perm::<BabyBearD4Width16>(
                 generate_poseidon2_trace::<CF, BabyBearD4Width16>,
             );
@@ -154,12 +170,14 @@ mod test {
                 .collect_vec();
 
             let directions_expr = builder.alloc_public_inputs(path_depth, "directions");
-            let root = builder.alloc_public_inputs(mmcs_config.ext_field_digest_elems, "root");
+            let root = builder.alloc_public_inputs(
+                mmcs_config.mmcs_verify_config.ext_field_digest_elems,
+                "root",
+            );
 
             let permutation_mmcs_ops = verify_batch_circuit::<F, CF>(
                 &mut builder,
                 &mmcs_config,
-                &hash_config,
                 &root,
                 &dimensions,
                 &directions_expr,
