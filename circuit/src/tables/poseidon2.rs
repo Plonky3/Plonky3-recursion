@@ -36,6 +36,8 @@ pub trait Poseidon2Params {
     const RATE_EXT: usize;
     /// Capacity in extension elements
     const CAPACITY_EXT: usize;
+    /// Digest size in extension elements (number of extension elements output by squeeze)
+    const DIGEST_EXT: usize;
     /// Capacity size in base field elements = CAPACITY_EXT * D
     const CAPACITY_SIZE: usize = Self::CAPACITY_EXT * Self::D;
 
@@ -64,7 +66,12 @@ pub trait Poseidon2Params {
 /// - Selective limb exposure to the witness via CTL
 /// - Optional MMCS index accumulator
 #[derive(Debug, Clone)]
-pub struct Poseidon2CircuitRow<F> {
+pub struct Poseidon2CircuitRow<
+    F,
+    const WIDTH_EXT: usize,
+    const RATE_EXT: usize,
+    const DIGEST_EXT: usize,
+> {
     /// Control: If 1, row begins a new independent Poseidon chain.
     pub new_start: bool,
     /// Control: 0 → normal sponge/Challenger mode, 1 → Merkle-path mode.
@@ -74,40 +81,61 @@ pub struct Poseidon2CircuitRow<F> {
     /// Value: Optional MMCS accumulator (base field, encodes a u32-like integer).
     pub mmcs_index_sum: F,
     /// Inputs to the Poseidon2 permutation (flattened state, length = WIDTH).
-    /// Represents in[0..3] - 4 extension limbs (input digest).
+    /// Represents in[0..WIDTH_EXT-1] - WIDTH_EXT extension limbs (input digest).
     pub input_values: Vec<F>,
     /// Input exposure flags: for each limb i, if 1, in[i] must match witness lookup at input_indices[i].
-    pub in_ctl: [bool; 4],
+    pub in_ctl: [bool; WIDTH_EXT],
     /// Input exposure indices: index into the witness table for each limb.
-    pub input_indices: [u32; 4],
-    /// Output exposure flags: for limbs 0-1 only, if 1, out[i] must match witness lookup at output_indices[i].
-    /// Note: limbs 2-3 are never publicly exposed (always private).
-    pub out_ctl: [bool; 2],
-    /// Output exposure indices: index into the witness table for limbs 0-1.
-    pub output_indices: [u32; 2],
+    pub input_indices: [u32; WIDTH_EXT],
+    /// Output exposure flags: for digest limbs only, if 1, out[i] must match witness lookup at output_indices[i].
+    /// Note: capacity limbs are never publicly exposed (always private).
+    pub out_ctl: [bool; DIGEST_EXT],
+    /// Output exposure indices: index into the witness table for digest limbs.
+    pub output_indices: [u32; DIGEST_EXT],
     /// MMCS index exposure: index for CTL exposure of mmcs_index_sum.
     pub mmcs_index_sum_idx: u32,
 }
-pub type Poseidon2CircuitTrace<F> = Vec<Poseidon2CircuitRow<F>>;
+
+pub type Poseidon2CircuitTrace<
+    F,
+    const WIDTH_EXT: usize,
+    const RATE_EXT: usize,
+    const DIGEST_EXT: usize,
+> = Vec<Poseidon2CircuitRow<F, WIDTH_EXT, RATE_EXT, DIGEST_EXT>>;
 
 /// Poseidon2 trace for all hash operations in the circuit.
 #[derive(Debug, Clone)]
-pub struct Poseidon2Trace<F> {
-    /// All Poseidon2 operations (permutation rows) in this trace.
-    pub operations: Poseidon2CircuitTrace<F>,
+pub struct Poseidon2Trace<F, const WIDTH_EXT: usize, const RATE_EXT: usize, const DIGEST_EXT: usize>
+{
+    /// All Poseidon2 operations (sponge and compress) in this trace.
+    pub operations: Poseidon2CircuitTrace<F, WIDTH_EXT, RATE_EXT, DIGEST_EXT>,
 }
 
 // Needed for NonPrimitiveTrace<F>
-unsafe impl<F: Send + Sync> Send for Poseidon2Trace<F> {}
-unsafe impl<F: Send + Sync> Sync for Poseidon2Trace<F> {}
+unsafe impl<F: Send + Sync, const WIDTH_EXT: usize, const RATE_EXT: usize, const DIGEST_EXT: usize>
+    Send for Poseidon2Trace<F, WIDTH_EXT, RATE_EXT, DIGEST_EXT>
+{
+}
+unsafe impl<F: Send + Sync, const WIDTH_EXT: usize, const RATE_EXT: usize, const DIGEST_EXT: usize>
+    Sync for Poseidon2Trace<F, WIDTH_EXT, RATE_EXT, DIGEST_EXT>
+{
+}
 
-impl<F> Poseidon2Trace<F> {
+impl<F, const WIDTH_EXT: usize, const RATE_EXT: usize, const DIGEST_EXT: usize>
+    Poseidon2Trace<F, WIDTH_EXT, RATE_EXT, DIGEST_EXT>
+{
     pub const fn total_rows(&self) -> usize {
         self.operations.len()
     }
 }
 
-impl<TraceF: Clone + Send + Sync + 'static, CF> NonPrimitiveTrace<CF> for Poseidon2Trace<TraceF> {
+impl<
+    F: Clone + Send + Sync + 'static,
+    const WIDTH_EXT: usize,
+    const RATE_EXT: usize,
+    const DIGEST_EXT: usize,
+> NonPrimitiveTrace<F> for Poseidon2Trace<F, WIDTH_EXT, RATE_EXT, DIGEST_EXT>
+{
     fn id(&self) -> &'static str {
         "poseidon2"
     }
@@ -120,8 +148,9 @@ impl<TraceF: Clone + Send + Sync + 'static, CF> NonPrimitiveTrace<CF> for Poseid
         self
     }
 
-    fn boxed_clone(&self) -> Box<dyn NonPrimitiveTrace<CF>> {
-        Box::new(self.clone())
+    fn boxed_clone(&self) -> Box<dyn NonPrimitiveTrace<F>> {
+        let cloned = self.clone();
+        Box::new(cloned) as Box<dyn NonPrimitiveTrace<F>>
     }
 }
 
@@ -165,13 +194,18 @@ where
             .ok_or(CircuitError::WitnessNotSet { witness_id: *index })
     }
 
-    /// Builds the Poseidon2 trace by scanning non-primitive ops with hash executors.
-    /// Also maintains state and fills state hints for stateful operations.
-    pub fn build(self) -> Result<Poseidon2Trace<Config::BaseField>, CircuitError> {
+    /// Builds operations
+    // This is done without const generics, because it's easier to match on the op type.
+    // It will be converted back to a const-generic version in batch_stark_prover.
+    fn build_operations(
+        self,
+    ) -> Result<Vec<Poseidon2CircuitRowDyn<Config::BaseField>>, CircuitError> {
         let mut operations = Vec::new();
 
         let width = Config::WIDTH;
         let d = Config::D;
+        let width_ext = Config::WIDTH_EXT;
+        let digest_ext = Config::DIGEST_EXT;
 
         for op in &self.circuit.non_primitive_ops {
             let Op::NonPrimitiveOpWithExecutor {
@@ -224,15 +258,12 @@ where
                         vec![Config::BaseField::ZERO; width]
                     };
 
-                let mut in_ctl = [false; 4];
-                let mut in_idx = [0u32; 4];
-                for limb in 0..4 {
+                let mut in_ctl = vec![false; width_ext];
+                let mut in_idx = vec![0u32; width_ext];
+                for limb in 0..width_ext {
                     let chunk = &inputs[limb];
                     match chunk.len() {
-                        // Case 1: No input provided for this limb. It remains zero-padded.
                         0 => {}
-                        // Case 2: Input provided as a single WitnessId, representing an extension field element.
-                        // We convert this extension element to its `d` base field coefficients.
                         1 => {
                             let val = self.get_witness(&chunk[0])?;
                             let coeffs = val.as_basis_coefficients_slice();
@@ -247,8 +278,6 @@ where
                             in_idx[limb] = chunk[0].0;
                             padded_inputs[limb * d..(limb + 1) * d].copy_from_slice(coeffs);
                         }
-                        // Case 3: Input provided as `d` WitnessIds, representing base field elements.
-                        // The extension element is already "flattened" into its base field components.
                         len if len == d => {
                             in_ctl[limb] = true;
                             in_idx[limb] = chunk[0].0;
@@ -268,7 +297,6 @@ where
                                 *dst = base;
                             }
                         }
-                        // Case 4: Invalid input length.
                         other => {
                             return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
                                 op: executor.op_type().clone(),
@@ -279,9 +307,9 @@ where
                     }
                 }
 
-                let mut out_ctl = [false; 2];
-                let mut out_idx = [0u32; 2];
-                for (offset, limb) in (4..6).enumerate() {
+                let mut out_ctl = vec![false; digest_ext];
+                let mut out_idx = vec![0u32; digest_ext];
+                for (offset, limb) in (width_ext..width_ext + digest_ext).enumerate() {
                     let chunk = &inputs[limb];
                     if chunk.len() == d || chunk.len() == 1 {
                         out_ctl[offset] = true;
@@ -295,22 +323,25 @@ where
                     }
                 }
 
-                let (mmcs_index_sum, mmcs_index_sum_idx) = if inputs[6].len() == 1 {
-                    let val = self.get_witness(&inputs[6][0])?;
-                    let base = val.as_base().ok_or_else(|| {
-                        CircuitError::IncorrectNonPrimitiveOpPrivateData {
-                            op: executor.op_type().clone(),
-                            operation_index: *op_id,
-                            expected: "base field mmcs_index_sum".to_string(),
-                            got: "extension value".to_string(),
-                        }
-                    })?;
-                    (base, inputs[6][0].0)
-                } else {
-                    (Config::BaseField::ZERO, 0)
-                };
-                let mmcs_bit = if inputs[7].len() == 1 {
-                    let val = self.get_witness(&inputs[7][0])?;
+                let (mmcs_index_sum, mmcs_index_sum_idx) =
+                    if inputs[width_ext + digest_ext].len() == 1 {
+                        let val = self.get_witness(&inputs[width_ext + digest_ext][0])?;
+                        let base = val.as_base().ok_or_else(|| {
+                            CircuitError::IncorrectNonPrimitiveOpPrivateData {
+                                op: executor.op_type().clone(),
+                                operation_index: *op_id,
+                                expected: "base field mmcs_index_sum".to_string(),
+                                got: "extension value".to_string(),
+                            }
+                        })?;
+                        (base, inputs[width_ext + digest_ext][0].0)
+                    } else {
+                        (Config::BaseField::ZERO, 0)
+                    };
+                let mmcs_bit = if inputs.len() > width_ext + digest_ext + 1
+                    && inputs[width_ext + digest_ext + 1].len() == 1
+                {
+                    let val = self.get_witness(&inputs[width_ext + digest_ext + 1][0])?;
                     let base = val.as_base().ok_or_else(|| {
                         CircuitError::IncorrectNonPrimitiveOpPrivateData {
                             op: executor.op_type().clone(),
@@ -335,7 +366,7 @@ where
                     false
                 };
 
-                operations.push(Poseidon2CircuitRow {
+                operations.push(Poseidon2CircuitRowDyn {
                     new_start,
                     merkle_path,
                     mmcs_bit,
@@ -351,7 +382,7 @@ where
             }
         }
 
-        Ok(Poseidon2Trace { operations })
+        Ok(operations)
     }
 }
 
@@ -376,11 +407,152 @@ pub fn generate_poseidon2_trace<
     witness: &[Option<F>],
     non_primitive_data: &[Option<NonPrimitiveOpPrivateData<F>>],
 ) -> Result<Option<Box<dyn NonPrimitiveTrace<F>>>, CircuitError> {
-    let trace =
-        Poseidon2TraceBuilder::<F, Config>::new(circuit, witness, non_primitive_data).build()?;
-    if trace.total_rows() == 0 {
+    let builder = Poseidon2TraceBuilder::<F, Config>::new(circuit, witness, non_primitive_data);
+
+    let operations = builder.build_operations()?;
+    if operations.is_empty() {
         Ok(None)
     } else {
-        Ok(Some(Box::new(trace)))
+        // Convert base field operations to circuit field operations
+        // Since F: ExtensionField<Config::BaseField>, we can embed base field values
+        let operations_cf: Vec<Poseidon2CircuitRowDyn<F>> = operations
+            .into_iter()
+            .map(|row| {
+                // Convert base field values to circuit field values by embedding
+                // Base field values are embedded as extension field elements
+                // Since F: ExtensionField<Config::BaseField>, we can embed base field values
+                let input_values: Vec<F> = row
+                    .input_values
+                    .into_iter()
+                    .map(|v| {
+                        // For extension fields, base field values are embedded as (v, 0, 0, ...)
+                        let mut coeffs = vec![Config::BaseField::ZERO; Config::D];
+                        coeffs[0] = v;
+                        F::from_basis_coefficients_slice(&coeffs)
+                            .expect("Failed to embed base field value")
+                    })
+                    .collect();
+                Poseidon2CircuitRowDyn {
+                    new_start: row.new_start,
+                    merkle_path: row.merkle_path,
+                    mmcs_bit: row.mmcs_bit,
+                    mmcs_index_sum: {
+                        let mut coeffs = vec![Config::BaseField::ZERO; Config::D];
+                        coeffs[0] = row.mmcs_index_sum;
+                        F::from_basis_coefficients_slice(&coeffs)
+                            .expect("Failed to embed base field value")
+                    },
+                    input_values,
+                    in_ctl: row.in_ctl,
+                    input_indices: row.input_indices,
+                    out_ctl: row.out_ctl,
+                    output_indices: row.output_indices,
+                    mmcs_index_sum_idx: row.mmcs_index_sum_idx,
+                }
+            })
+            .collect();
+        Ok(Some(Box::new(Poseidon2TraceDyn::new(operations_cf))))
+    }
+}
+
+/// Non-generic version of [`Poseidon2CircuitRow`], to be used for trait objects.
+//This is used as an intermediate step, but the const-generic version
+// is used in the AIR and by the batch_stark_prover.
+#[derive(Clone)]
+pub struct Poseidon2CircuitRowDyn<F> {
+    pub new_start: bool,
+    pub merkle_path: bool,
+    pub mmcs_bit: bool,
+    pub mmcs_index_sum: F,
+    pub input_values: Vec<F>,
+    pub in_ctl: Vec<bool>,
+    pub input_indices: Vec<u32>,
+    pub out_ctl: Vec<bool>,
+    pub output_indices: Vec<u32>,
+    pub mmcs_index_sum_idx: u32,
+}
+
+/// Non-generic version of Poseidon2Trace (for trait objects).
+pub struct Poseidon2TraceDyn<F> {
+    pub operations: Vec<Poseidon2CircuitRowDyn<F>>,
+}
+
+impl<F> Poseidon2TraceDyn<F> {
+    pub const fn new(operations: Vec<Poseidon2CircuitRowDyn<F>>) -> Self {
+        Self { operations }
+    }
+
+    pub const fn total_rows(&self) -> usize {
+        self.operations.len()
+    }
+
+    pub fn to_const_generic<
+        const WIDTH_EXT: usize,
+        const RATE_EXT: usize,
+        const DIGEST_EXT: usize,
+    >(
+        &self,
+    ) -> Result<Poseidon2Trace<F, WIDTH_EXT, RATE_EXT, DIGEST_EXT>, CircuitError>
+    where
+        F: Clone,
+    {
+        let operations: Result<Vec<_>, _> = self
+            .operations
+            .iter()
+            .map(|row| {
+                Ok(Poseidon2CircuitRow {
+                    new_start: row.new_start,
+                    merkle_path: row.merkle_path,
+                    mmcs_bit: row.mmcs_bit,
+                    mmcs_index_sum: row.mmcs_index_sum.clone(),
+                    input_values: row.input_values.clone(),
+                    in_ctl: row
+                        .in_ctl
+                        .clone()
+                        .try_into()
+                        .map_err(|_| CircuitError::InvalidTraceData)?,
+                    input_indices: row
+                        .input_indices
+                        .clone()
+                        .try_into()
+                        .map_err(|_| CircuitError::InvalidTraceData)?,
+                    out_ctl: row
+                        .out_ctl
+                        .clone()
+                        .try_into()
+                        .map_err(|_| CircuitError::InvalidTraceData)?,
+                    output_indices: row
+                        .output_indices
+                        .clone()
+                        .try_into()
+                        .map_err(|_| CircuitError::InvalidTraceData)?,
+                    mmcs_index_sum_idx: row.mmcs_index_sum_idx,
+                })
+            })
+            .collect();
+
+        Ok(Poseidon2Trace::<F, WIDTH_EXT, RATE_EXT, DIGEST_EXT> {
+            operations: operations?,
+        })
+    }
+}
+
+impl<F: Clone + Send + Sync + 'static> NonPrimitiveTrace<F> for Poseidon2TraceDyn<F> {
+    fn id(&self) -> &'static str {
+        "poseidon2"
+    }
+
+    fn rows(&self) -> usize {
+        self.operations.len()
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn boxed_clone(&self) -> Box<dyn NonPrimitiveTrace<F>> {
+        Box::new(Self {
+            operations: self.operations.clone(),
+        })
     }
 }

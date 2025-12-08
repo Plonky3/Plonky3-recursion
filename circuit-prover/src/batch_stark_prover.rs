@@ -11,13 +11,17 @@ use p3_air::{Air, AirBuilder, BaseAir};
 use p3_baby_bear::{BabyBear, default_babybear_poseidon2_16, default_babybear_poseidon2_24};
 use p3_batch_stark::{BatchProof, CommonData, StarkGenericConfig, StarkInstance, Val};
 use p3_circuit::op::PrimitiveOpType;
-use p3_circuit::tables::{Poseidon2CircuitRow, Poseidon2CircuitTrace, Poseidon2Trace, Traces};
+use p3_circuit::tables::{
+    Poseidon2CircuitRow, Poseidon2CircuitRowDyn, Poseidon2CircuitTrace, Poseidon2Params,
+    Poseidon2Trace, Poseidon2TraceDyn, Traces,
+};
 use p3_field::extension::{BinomialExtensionField, BinomiallyExtendable};
 use p3_field::{BasedVectorSpace, ExtensionField, Field, PrimeCharacteristicRing, PrimeField};
 use p3_koala_bear::{KoalaBear, default_koalabear_poseidon2_16, default_koalabear_poseidon2_24};
 use p3_matrix::dense::RowMajorMatrix;
 use p3_poseidon2_air::RoundConstants;
 use p3_poseidon2_circuit_air::{
+    BabyBearD4Width16, BabyBearD4Width24, KoalaBearD4Width16, KoalaBearD4Width24,
     Poseidon2CircuitAirBabyBearD4Width16, Poseidon2CircuitAirBabyBearD4Width24,
     Poseidon2CircuitAirKoalaBearD4Width16, Poseidon2CircuitAirKoalaBearD4Width24,
 };
@@ -493,44 +497,82 @@ impl Poseidon2Prover {
         Val<SC>: StarkField,
         CF: Field + ExtensionField<Val<SC>>,
     {
-        let t = traces.non_primitive_trace::<Poseidon2Trace<Val<SC>>>("poseidon2")?;
+        // Get the trace - it's stored over the circuit field CF
+        let t_cf = traces.non_primitive_trace::<Poseidon2Trace<CF>>("poseidon2")?;
 
-        let rows = t.total_rows();
+        let rows = t_cf.total_rows();
         if rows == 0 {
             return None;
         }
+
+        // Convert trace from circuit field to base field
+        // Extract base field coefficients from extension field values
+        let t: Poseidon2Trace<Val<SC>> = {
+            let operations: Vec<_> = t_cf
+                .operations
+                .iter()
+                .map(|row| {
+                    // Extract base field coefficients (first coefficient of extension field)
+                    let input_values: Vec<Val<SC>> = row
+                        .input_values
+                        .iter()
+                        .map(|v| {
+                            let coeffs = v.as_basis_coefficients_slice();
+                            coeffs[0] // First coefficient is the base field value
+                        })
+                        .collect();
+                    let mmcs_index_sum = {
+                        let coeffs = row.mmcs_index_sum.as_basis_coefficients_slice();
+                        coeffs[0]
+                    };
+                    Poseidon2CircuitRowDyn {
+                        new_start: row.new_start,
+                        merkle_path: row.merkle_path,
+                        mmcs_bit: row.mmcs_bit,
+                        mmcs_index_sum,
+                        input_values,
+                        in_ctl: row.in_ctl.clone(),
+                        input_indices: row.input_indices.clone(),
+                        out_ctl: row.out_ctl.clone(),
+                        output_indices: row.output_indices.clone(),
+                        mmcs_index_sum_idx: row.mmcs_index_sum_idx,
+                    }
+                })
+                .collect();
+            Poseidon2TraceDyn::new(operations)
+        };
 
         // Pad to power of two and generate trace matrix based on configuration
         match &self.config {
             Poseidon2Config::BabyBearD4Width16 {
                 permutation,
                 constants,
-            } => self.batch_instance_base_impl::<SC, p3_baby_bear::BabyBear, _, 16, 4, 13, 2>(
-                t,
+            } => self.batch_instance_base_impl::<SC, p3_baby_bear::BabyBear, _, { BabyBearD4Width16::WIDTH }, { BabyBearD4Width16::HALF_FULL_ROUNDS }, { BabyBearD4Width16::PARTIAL_ROUNDS }, { BabyBearD4Width16::WIDTH_EXT }, { BabyBearD4Width16::RATE_EXT }, { BabyBearD4Width16::DIGEST_EXT }>(
+                &t,
                 permutation,
                 constants,
             ),
             Poseidon2Config::BabyBearD4Width24 {
                 permutation,
                 constants,
-            } => self.batch_instance_base_impl::<SC, p3_baby_bear::BabyBear, _, 24, 4, 21, 4>(
-                t,
+            } => self.batch_instance_base_impl::<SC, p3_baby_bear::BabyBear, _, { BabyBearD4Width24::WIDTH }, { BabyBearD4Width24::HALF_FULL_ROUNDS }, { BabyBearD4Width24::PARTIAL_ROUNDS }, { BabyBearD4Width24::WIDTH_EXT }, { BabyBearD4Width24::RATE_EXT }, { BabyBearD4Width24::DIGEST_EXT }>(
+                &t,
                 permutation,
                 constants,
             ),
             Poseidon2Config::KoalaBearD4Width16 {
                 permutation,
                 constants,
-            } => self.batch_instance_base_impl::<SC, p3_koala_bear::KoalaBear, _, 16, 4, 20, 2>(
-                t,
+            } => self.batch_instance_base_impl::<SC, p3_koala_bear::KoalaBear, _, { KoalaBearD4Width16::WIDTH }, { KoalaBearD4Width16::HALF_FULL_ROUNDS }, { KoalaBearD4Width16::PARTIAL_ROUNDS }, { KoalaBearD4Width16::WIDTH_EXT }, { KoalaBearD4Width16::RATE_EXT }, { KoalaBearD4Width16::DIGEST_EXT }>(
+                &t,
                 permutation,
                 constants,
             ),
             Poseidon2Config::KoalaBearD4Width24 {
                 permutation,
                 constants,
-            } => self.batch_instance_base_impl::<SC, p3_koala_bear::KoalaBear, _, 24, 4, 23, 4>(
-                t,
+            } => self.batch_instance_base_impl::<SC, p3_koala_bear::KoalaBear, _, { KoalaBearD4Width24::WIDTH }, { KoalaBearD4Width24::HALF_FULL_ROUNDS }, { KoalaBearD4Width24::PARTIAL_ROUNDS }, { KoalaBearD4Width24::WIDTH_EXT }, { KoalaBearD4Width24::RATE_EXT }, { KoalaBearD4Width24::DIGEST_EXT }>(
+                &t,
                 permutation,
                 constants,
             ),
@@ -544,7 +586,9 @@ impl Poseidon2Prover {
         const WIDTH: usize,
         const HALF_FULL_ROUNDS: usize,
         const PARTIAL_ROUNDS: usize,
+        const WIDTH_EXT: usize,
         const RATE_EXT: usize,
+        const DIGEST_EXT: usize,
     >(
         &self,
         t: &Poseidon2Trace<Val<SC>>,
@@ -557,11 +601,15 @@ impl Poseidon2Prover {
         P: CryptographicPermutation<[F; WIDTH]> + Clone,
         Val<SC>: StarkField,
     {
+        // Convert to const-generic trace
+        let t = t
+            .to_const_generic::<WIDTH_EXT, RATE_EXT, DIGEST_EXT>()
+            .ok()?;
         let rows = t.total_rows();
 
         // Pad to power of two
         let padded_rows = rows.next_power_of_two();
-        let mut padded_ops = t.operations.clone();
+        let mut padded_ops = t.operations;
         while padded_ops.len() < padded_rows {
             padded_ops.push(
                 padded_ops
@@ -573,10 +621,10 @@ impl Poseidon2Prover {
                         mmcs_bit: false,
                         mmcs_index_sum: Val::<SC>::ZERO,
                         input_values: vec![Val::<SC>::ZERO; WIDTH],
-                        in_ctl: [false; 4],
-                        input_indices: [0; 4],
-                        out_ctl: [false; 2],
-                        output_indices: [0; 2],
+                        in_ctl: [false; WIDTH_EXT],
+                        input_indices: [0; WIDTH_EXT],
+                        out_ctl: [false; DIGEST_EXT],
+                        output_indices: [0; DIGEST_EXT],
                         mmcs_index_sum_idx: 0,
                     }),
             );
@@ -585,7 +633,8 @@ impl Poseidon2Prover {
         // Convert trace from Val<SC> to F using unsafe transmute
         // This is safe when Val<SC> and F have the same size and layout
         // For BabyBear/KoalaBear configs, Val<SC> should be BabyBear/KoalaBear
-        let ops_converted: Poseidon2CircuitTrace<F> = unsafe { transmute(padded_ops) };
+        let ops_converted: Poseidon2CircuitTrace<F, WIDTH_EXT, RATE_EXT, DIGEST_EXT> =
+            unsafe { transmute(padded_ops) };
 
         // Create an AIR instance based on the configuration
         // This is a bit verbose but we can't get over const generics
@@ -595,8 +644,12 @@ impl Poseidon2Prover {
                 constants,
             } => {
                 let air = Poseidon2CircuitAirBabyBearD4Width16::new(constants.clone());
-                let ops_babybear: Poseidon2CircuitTrace<BabyBear> =
-                    unsafe { transmute(ops_converted) };
+                let ops_babybear: Poseidon2CircuitTrace<
+                    BabyBear,
+                    { BabyBearD4Width16::WIDTH_EXT },
+                    { BabyBearD4Width16::RATE_EXT },
+                    { BabyBearD4Width16::DIGEST_EXT },
+                > = unsafe { transmute(ops_converted) };
                 let matrix_f = air.generate_trace_rows(&ops_babybear, constants, 0, permutation);
                 let matrix: RowMajorMatrix<Val<SC>> = unsafe { transmute(matrix_f) };
                 (
@@ -612,8 +665,12 @@ impl Poseidon2Prover {
                 constants,
             } => {
                 let air = Poseidon2CircuitAirBabyBearD4Width24::new(constants.clone());
-                let ops_babybear: Poseidon2CircuitTrace<BabyBear> =
-                    unsafe { transmute(ops_converted) };
+                let ops_babybear: Poseidon2CircuitTrace<
+                    BabyBear,
+                    { BabyBearD4Width24::WIDTH_EXT },
+                    { BabyBearD4Width24::RATE_EXT },
+                    { BabyBearD4Width24::DIGEST_EXT },
+                > = unsafe { transmute(ops_converted) };
                 let matrix_f = air.generate_trace_rows(&ops_babybear, constants, 0, permutation);
                 let matrix: RowMajorMatrix<Val<SC>> = unsafe { transmute(matrix_f) };
                 (
@@ -629,8 +686,12 @@ impl Poseidon2Prover {
                 constants,
             } => {
                 let air = Poseidon2CircuitAirKoalaBearD4Width16::new(constants.clone());
-                let ops_koalabear: Poseidon2CircuitTrace<KoalaBear> =
-                    unsafe { transmute(ops_converted) };
+                let ops_koalabear: Poseidon2CircuitTrace<
+                    KoalaBear,
+                    { KoalaBearD4Width16::WIDTH_EXT },
+                    { KoalaBearD4Width16::RATE_EXT },
+                    { KoalaBearD4Width16::DIGEST_EXT },
+                > = unsafe { transmute(ops_converted) };
                 let matrix_f = air.generate_trace_rows(&ops_koalabear, constants, 0, permutation);
                 let matrix: RowMajorMatrix<Val<SC>> = unsafe { transmute(matrix_f) };
                 (
@@ -646,8 +707,12 @@ impl Poseidon2Prover {
                 constants,
             } => {
                 let air = Poseidon2CircuitAirKoalaBearD4Width24::new(constants.clone());
-                let ops_koalabear: p3_circuit::tables::Poseidon2CircuitTrace<KoalaBear> =
-                    unsafe { core::mem::transmute(ops_converted) };
+                let ops_koalabear: Poseidon2CircuitTrace<
+                    KoalaBear,
+                    { KoalaBearD4Width24::WIDTH_EXT },
+                    { KoalaBearD4Width24::RATE_EXT },
+                    { KoalaBearD4Width24::DIGEST_EXT },
+                > = unsafe { core::mem::transmute(ops_converted) };
                 let matrix_f = air.generate_trace_rows(&ops_koalabear, constants, 0, permutation);
                 let matrix: RowMajorMatrix<Val<SC>> = unsafe { core::mem::transmute(matrix_f) };
                 (
