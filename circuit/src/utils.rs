@@ -1,13 +1,10 @@
 use alloc::vec;
 use alloc::vec::Vec;
-use core::marker::PhantomData;
 
-use p3_field::{ExtensionField, Field, PrimeField64};
+use p3_field::Field;
 use p3_uni_stark::{Entry, SymbolicExpression};
-use p3_util::log2_ceil_u64;
 
-use crate::op::WitnessHintsFiller;
-use crate::{CircuitBuilder, CircuitError, ExprId};
+use crate::{CircuitBuilder, ExprId};
 
 /// Identifiers for special row selector flags in the circuit.
 #[derive(Clone, Copy, Debug)]
@@ -105,107 +102,6 @@ pub fn symbolic_to_circuit<F: Field>(
             }
         }
     }
-}
-
-/// Reconstruct an integer (as a field element) from little-endian bits:
-///   index = Σ b_i · 2^i
-pub fn reconstruct_index_from_bits<F: Field>(
-    builder: &mut CircuitBuilder<F>,
-    bits: &[ExprId],
-) -> ExprId {
-    builder.push_scope("reconstruct_index_from_bits");
-
-    let mut acc = builder.add_const(F::ZERO);
-    let mut pow2 = builder.add_const(F::ONE);
-    for &b in bits {
-        builder.assert_bool(b);
-        let term = builder.mul(b, pow2);
-        acc = builder.add(acc, term);
-        pow2 = builder.add(pow2, pow2); // *= 2
-    }
-
-    builder.pop_scope();
-
-    acc
-}
-
-#[derive(Debug, Clone)]
-/// Given a field element as input, decompose it into its little-endian bits and
-/// fill witness hints with the binary decomposition.
-///
-/// For a given input `input`, fills `n_bits` witness hints with `b_i`
-/// such that:
-///     input = Σ b_i · 2^i
-struct BinaryDecompositionHint<BF: PrimeField64> {
-    inputs: Vec<ExprId>,
-    n_bits: usize,
-    _phantom: PhantomData<BF>,
-}
-
-impl<BF: PrimeField64> BinaryDecompositionHint<BF> {
-    pub fn new(input: ExprId, n_bits: usize) -> Result<Self, CircuitError> {
-        if n_bits > 64 {
-            return Err(CircuitError::BinaryDecompositionTooManyBits {
-                expected: 64,
-                n_bits,
-            });
-        }
-        Ok(Self {
-            inputs: vec![input],
-            n_bits,
-            _phantom: PhantomData,
-        })
-    }
-}
-
-impl<BF: PrimeField64, F: ExtensionField<BF>> WitnessHintsFiller<F>
-    for BinaryDecompositionHint<BF>
-{
-    fn inputs(&self) -> &[ExprId] {
-        &self.inputs
-    }
-
-    fn n_outputs(&self) -> usize {
-        self.n_bits
-    }
-
-    fn compute_outputs(&self, inputs_val: Vec<F>) -> Result<Vec<F>, CircuitError> {
-        let val: u64 = inputs_val[0].as_basis_coefficients_slice()[0].as_canonical_u64();
-        let bits = (0..self.n_bits)
-            .map(|i| F::from_bool(val >> i & 1 == 1))
-            .collect();
-        debug_assert!(self.n_bits as u64 >= log2_ceil_u64(val));
-        Ok(bits)
-    }
-}
-
-/// Decompose a field element into its little-endian bits.
-///
-/// For a given target `x`, this function creates `N_BITS` new boolean targets `b_i`
-/// and adds constraints to enforce that:
-///     x = Σ b_i · 2^i
-pub fn decompose_to_bits<F: ExtensionField<BF>, BF: PrimeField64>(
-    builder: &mut CircuitBuilder<F>,
-    x: ExprId,
-    n_bits: usize,
-) -> Result<Vec<ExprId>, CircuitError> {
-    builder.push_scope("decompose_to_bits");
-
-    // Create bit witness variables
-    let binary_decomposition_hint = BinaryDecompositionHint::new(x, n_bits)?;
-    let bits = builder.alloc_witness_hints(binary_decomposition_hint, "decompose_to_bits");
-
-    for &bit in bits.iter() {
-        builder.assert_bool(bit);
-    }
-
-    // Constrain that the bits reconstruct to the original element
-    let reconstructed = reconstruct_index_from_bits(builder, &bits);
-    builder.connect(x, reconstructed);
-
-    builder.pop_scope();
-
-    Ok(bits)
 }
 
 /// Helper to pad trace values to power-of-two height with zeros
@@ -392,63 +288,6 @@ mod tests {
         let _ = builder.run()?;
 
         Ok(())
-    }
-
-    #[test]
-    fn test_reconstruct_index_from_bits() {
-        let mut builder = CircuitBuilder::<BabyBear>::new();
-
-        // Test reconstructing the value 5 (binary: 101)
-        let bit0 = builder.add_const(BabyBear::ONE); // 1
-        let bit1 = builder.add_const(BabyBear::ZERO); // 0
-        let bit2 = builder.add_const(BabyBear::ONE); // 1
-
-        let bits = vec![bit0, bit1, bit2];
-        let result = reconstruct_index_from_bits(&mut builder, &bits);
-
-        // Connect result to a public input so we can verify its value
-        let output = builder.add_public_input();
-        builder.connect(result, output);
-
-        // Build and run the circuit
-        let circuit = builder.build().expect("Failed to build circuit");
-        let mut runner = circuit.runner();
-
-        // Set public inputs: the expected result value 5
-        let expected_result = BabyBear::from_u64(5); // 1*1 + 0*2 + 1*4 = 5
-        runner
-            .set_public_inputs(&[expected_result])
-            .expect("Failed to set public inputs");
-
-        let traces = runner.run().expect("Failed to run circuit");
-
-        // Just verify the calculation is correct - reconstruct gives us 5
-        assert_eq!(traces.public_trace.values[0], BabyBear::from_u64(5));
-    }
-
-    #[test]
-    fn test_decompose_to_bits() {
-        let mut builder = CircuitBuilder::<BabyBear>::new();
-
-        // Create a target representing the value we want to decompose
-        let value = builder.add_const(BabyBear::from_u64(6)); // Binary: 110
-
-        // Decompose into 3 bits - this creates its own public inputs for the bits
-        let bits = decompose_to_bits::<BabyBear, _>(&mut builder, value, 3).unwrap();
-
-        // Build and run the circuit
-        let circuit = builder.build().expect("Failed to build circuit");
-        let runner = circuit.runner();
-
-        let traces = runner.run().expect("Failed to run circuit");
-
-        // Verify the bits are correctly decomposed - 6 = [0,1,1] in little-endian
-        assert_eq!(traces.witness_trace.values[3], BabyBear::ZERO); // bit 0
-        assert_eq!(traces.witness_trace.values[4], BabyBear::ONE); // bit 1
-        assert_eq!(traces.witness_trace.values[5], BabyBear::ONE); // bit 2
-
-        // Also verify that the returned bits have the expected length
-        assert_eq!(bits.len(), 3);
     }
 
     #[test]

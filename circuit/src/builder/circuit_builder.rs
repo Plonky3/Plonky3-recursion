@@ -1,9 +1,12 @@
+use alloc::vec;
 use alloc::vec::Vec;
 use core::hash::Hash;
+use core::marker::PhantomData;
 
 use hashbrown::HashMap;
 use itertools::zip_eq;
-use p3_field::{Field, PrimeCharacteristicRing};
+use p3_field::{ExtensionField, Field, PrimeCharacteristicRing, PrimeField64};
+use p3_util::log2_ceil_u64;
 
 use super::compiler::{ExpressionLowerer, NonPrimitiveLowerer, Optimizer};
 use super::{BuilderConfig, ExpressionBuilder, PublicInputTracker};
@@ -11,7 +14,7 @@ use crate::circuit::Circuit;
 use crate::op::{DefaultHint, NonPrimitiveOpType, WitnessHintsFiller};
 use crate::tables::{Poseidon2Params, TraceGeneratorFn};
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};
-use crate::{CircuitBuilderError, CircuitField};
+use crate::{CircuitBuilderError, CircuitError, CircuitField};
 
 /// Builder for constructing circuits.
 pub struct CircuitBuilder<F> {
@@ -425,7 +428,7 @@ where
 
 impl<F> CircuitBuilder<F>
 where
-    F: Field + Clone + PrimeCharacteristicRing + PartialEq + Eq + Hash,
+    F: Field + Clone + PartialEq + Eq + Hash,
 {
     /// Builds the circuit into a Circuit with separate lowering and IR transformation stages.
     /// Returns an error if lowering fails due to an internal inconsistency.
@@ -469,6 +472,153 @@ where
         circuit.non_primitive_trace_generators = self.non_primitive_trace_generators;
 
         Ok((circuit, public_mappings))
+    }
+
+    /// Decomposes a field element into its little-endian binary representation.
+    ///
+    /// Given a target `x`, creates `n_bits` boolean witness targets representing
+    /// the binary decomposition, and constrains them to reconstruct `x`.
+    ///
+    /// # Parameters
+    /// - `x`: The field element to decompose.
+    /// - `n_bits`: Number of bits in the decomposition (must be ≤ 64).
+    ///
+    /// # Returns
+    /// A vector of `n_bits` boolean [`ExprId`]s
+    /// ```text
+    ///     [b_0, b_1, ..., b_{n-1}]
+    /// ```
+    /// such that:
+    /// ```text
+    ///     x = b_0·2^0 + b_1·2^1 + b_2·2^2 + ... + b_{n-1}·2^{n-1}.
+    /// ```
+    ///
+    /// # Errors
+    /// Returns [`CircuitError::BinaryDecompositionTooManyBits`] if `n_bits > 64`.
+    ///
+    /// # Cost
+    /// `n_bits` witness hints + `n_bits` boolean constraints + reconstruction constraints.
+    pub fn decompose_to_bits<BF>(
+        &mut self,
+        x: ExprId,
+        n_bits: usize,
+    ) -> Result<Vec<ExprId>, CircuitError>
+    where
+        F: ExtensionField<BF>,
+        BF: PrimeField64,
+    {
+        self.push_scope("decompose_to_bits");
+
+        // Allocate witness hints that will be filled with the binary decomposition at runtime.
+        let hint = BinaryDecompositionHint::<BF>::new(x, n_bits)?;
+        let bits = self.alloc_witness_hints(hint, "decompose_to_bits");
+
+        // Constrain that the bits reconstruct to the original value.
+        let reconstructed = self.reconstruct_index_from_bits(&bits);
+        self.connect(x, reconstructed);
+
+        self.pop_scope();
+        Ok(bits)
+    }
+
+    /// Reconstructs an integer from its little-endian binary representation.
+    ///
+    /// Computes `index = Σ b_i · 2^i` for bits `[b_0, b_1, ..., b_{n-1}]`.
+    ///
+    /// # Parameters
+    /// - `bits`: Slice of boolean `ExprId`s in little-endian order.
+    ///
+    /// # Returns
+    /// An `ExprId` representing the reconstructed integer value.
+    ///
+    /// # Cost
+    /// `n` boolean constraints + `n` multiplications + `n` additions, where `n = bits.len()`.
+    pub fn reconstruct_index_from_bits(&mut self, bits: &[ExprId]) -> ExprId {
+        self.push_scope("reconstruct_index_from_bits");
+
+        // Accumulator for the running sum.
+        let mut acc = self.add_const(F::ZERO);
+        // Current power of 2 (starts at 2^0 = 1).
+        let mut pow2 = self.add_const(F::ONE);
+
+        for &b in bits {
+            // Ensure each bit is boolean.
+            self.assert_bool(b);
+            // Add b_i · 2^i to the accumulator.
+            let term = self.mul(b, pow2);
+            acc = self.add(acc, term);
+            // Double the power: 2^i → 2^{i+1}.
+            pow2 = self.add(pow2, pow2);
+        }
+
+        self.pop_scope();
+        acc
+    }
+}
+
+/// Witness hint filler for binary decomposition of a field element.
+///
+/// At runtime:
+/// - It extracts the canonical `u64` representation of the input field element,
+/// - It fills the witness with its little-endian binary decomposition.
+#[derive(Debug, Clone)]
+struct BinaryDecompositionHint<BF: PrimeField64> {
+    /// The single input expression to decompose.
+    inputs: Vec<ExprId>,
+    /// Number of bits in the decomposition.
+    n_bits: usize,
+    /// Phantom data for the base field type.
+    _phantom: PhantomData<BF>,
+}
+
+impl<BF: PrimeField64> BinaryDecompositionHint<BF> {
+    /// Creates a new binary decomposition hint.
+    ///
+    /// # Parameters
+    /// - `input`: The expression to decompose.
+    /// - `n_bits`: Number of output bits (must be ≤ 64).
+    ///
+    /// # Errors
+    /// Returns an error if `n_bits > 64` since we extract a `u64` value.
+    fn new(input: ExprId, n_bits: usize) -> Result<Self, CircuitError> {
+        if n_bits > 64 {
+            return Err(CircuitError::BinaryDecompositionTooManyBits {
+                expected: 64,
+                n_bits,
+            });
+        }
+        Ok(Self {
+            inputs: vec![input],
+            n_bits,
+            _phantom: PhantomData,
+        })
+    }
+}
+
+impl<BF: PrimeField64, F: ExtensionField<BF>> WitnessHintsFiller<F>
+    for BinaryDecompositionHint<BF>
+{
+    fn inputs(&self) -> &[ExprId] {
+        &self.inputs
+    }
+
+    fn n_outputs(&self) -> usize {
+        self.n_bits
+    }
+
+    fn compute_outputs(&self, inputs_val: Vec<F>) -> Result<Vec<F>, CircuitError> {
+        // Extract the base field coefficient and convert to canonical u64.
+        let val = inputs_val[0].as_basis_coefficients_slice()[0].as_canonical_u64();
+
+        // Extract each bit: (val >> i) & 1 gives the i-th bit.
+        let bits = (0..self.n_bits)
+            .map(|i| F::from_bool(val >> i & 1 == 1))
+            .collect();
+
+        // Sanity check: ensure we have enough bits to represent the value.
+        debug_assert!(self.n_bits as u64 >= log2_ceil_u64(val));
+
+        Ok(bits)
     }
 }
 
@@ -1169,5 +1319,59 @@ mod proptests {
                 expected
             );
         }
+    }
+
+    #[test]
+    fn test_reconstruct_index_from_bits() {
+        let mut builder = CircuitBuilder::<BabyBear>::new();
+
+        // Test reconstructing the value 5 (binary: 101)
+        let bit0 = builder.add_const(BabyBear::ONE); // 1
+        let bit1 = builder.add_const(BabyBear::ZERO); // 0
+        let bit2 = builder.add_const(BabyBear::ONE); // 1
+
+        let bits = vec![bit0, bit1, bit2];
+        let result = builder.reconstruct_index_from_bits(&bits);
+
+        // Connect result to a public input so we can verify its value
+        let output = builder.add_public_input();
+        builder.connect(result, output);
+
+        // Build and run the circuit
+        let circuit = builder.build().expect("Failed to build circuit");
+        let mut runner = circuit.runner();
+
+        // Set public inputs: the expected result value 5
+        let expected_result = BabyBear::from_u64(5); // 1*1 + 0*2 + 1*4 = 5
+        runner
+            .set_public_inputs(&[expected_result])
+            .expect("Failed to set public inputs");
+
+        let traces = runner.run().expect("Failed to run circuit");
+
+        // Just verify the calculation is correct - reconstruct gives us 5
+        assert_eq!(traces.public_trace.values[0], BabyBear::from_u64(5));
+    }
+
+    #[test]
+    fn test_decompose_to_bits() {
+        let mut builder = CircuitBuilder::<BabyBear>::new();
+
+        // Create a target representing the value we want to decompose
+        let value = builder.add_const(BabyBear::from_u64(6)); // Binary: 110
+
+        // Decompose into 3 bits - this creates its own public inputs for the bits
+        let bits = builder.decompose_to_bits::<BabyBear>(value, 3).unwrap();
+
+        // Build and run the circuit
+        let circuit = builder.build().expect("Failed to build circuit");
+        let runner = circuit.runner();
+        let traces = runner.run().expect("Failed to run circuit");
+
+        // Verify the bits are correctly decomposed - 6 = [0,1,1] in little-endian
+        assert_eq!(traces.witness_trace.values[3], BabyBear::ZERO); // bit 0
+        assert_eq!(traces.witness_trace.values[4], BabyBear::ONE); // bit 1
+        assert_eq!(traces.witness_trace.values[5], BabyBear::ONE); // bit 2
+        assert_eq!(bits.len(), 3);
     }
 }
