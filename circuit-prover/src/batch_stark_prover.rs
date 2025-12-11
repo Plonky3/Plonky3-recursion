@@ -481,11 +481,17 @@ where
     Val<SC>: StarkField,
 {
     fn add_lookup_columns(&mut self) -> Vec<usize> {
-        todo!()
+        // The actual evaluation is handled by the concrete AIR type
+        // This wrapper is just for type erasure
+        // TODO: Delegate to the actual AIR if we can store it
+        vec![]
     }
 
     fn get_lookups(&mut self) -> Vec<p3_lookup::lookup_traits::Lookup<<AB>::F>> {
-        todo!()
+        // The actual evaluation is handled by the concrete AIR type
+        // This wrapper is just for type erasure
+        // TODO: Delegate to the actual AIR if we can store it
+        vec![]
     }
 }
 

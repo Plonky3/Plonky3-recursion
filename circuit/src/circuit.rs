@@ -102,11 +102,14 @@ impl<F: Field> Circuit<F> {
     ///
     /// | Index | Operation | Column Layout                             | Width (per op) |
     /// |-------|-----------|-------------------------------------------|----------------|
-    /// | 0     | Witness   | `[idx_0, idx_1, ..., idx_max]`            | 1              |
+    /// | 0     | Witness   | `[idx_0, mul_0, idx_1, mul_1, ...]`       | 2              |
     /// | 1     | Const     | `[out_0, out_1, ...]`                     | 1              |
     /// | 2     | Public    | `[out_0, out_1, ...]`                     | 1              |
     /// | 3     | Add       | `[a_0, b_0, out_0, a_1, b_1, out_1, ...]` | 3              |
     /// | 4     | Mul       | `[a_0, b_0, out_0, a_1, b_1, out_1, ...]` | 3              |
+    ///
+    /// Note that `mul_i` in the Witness table preprocessed column indicates how many times
+    /// each witness index appears in the circuit.
     pub fn generate_preprocessed_columns(&self) -> Result<Vec<Vec<F>>, CircuitError> {
         // Allocate one empty vector per primitive operation type (Witness, Const, Public, Add, Mul).
         let mut preprocessed = vec![vec![]; PrimitiveOpType::COUNT];
