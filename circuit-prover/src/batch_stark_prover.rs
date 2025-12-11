@@ -6,6 +6,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use alloc::{format, vec};
 use core::mem::transmute;
+use p3_lookup::folder::{ProverConstraintFolderWithLookups, VerifierConstraintFolderWithLookups};
 use p3_lookup::lookup_traits::{AirLookupHandler, Lookup};
 
 use p3_air::{
@@ -29,6 +30,7 @@ use p3_uni_stark::{ProverConstraintFolder, SymbolicAirBuilder, VerifierConstrain
 use thiserror::Error;
 use tracing::instrument;
 
+use crate::air::utils::AirLookupHandlerDyn;
 use crate::air::{AddAir, ConstAir, MulAir, PublicAir, WitnessAir};
 use crate::common::CircuitTableAir;
 use crate::config::StarkField;
@@ -116,6 +118,10 @@ where
     pub fn air(&self) -> &dyn BatchAir<SC> {
         &*self.air
     }
+
+    pub fn air_mut(&mut self) -> &mut dyn BatchAir<SC> {
+        &mut *self.air
+    }
 }
 
 /// Simple super trait of [`Air`] describing the behaviour of a non-primitive
@@ -125,6 +131,9 @@ pub trait BatchAir<SC>:
     + Air<SymbolicAirBuilder<Val<SC>>>
     + for<'a> Air<ProverConstraintFolder<'a, SC>>
     + for<'a> Air<VerifierConstraintFolder<'a, SC>>
+    + AirLookupHandlerDyn<SymbolicAirBuilder<Val<SC>>>
+    + for<'a> AirLookupHandlerDyn<ProverConstraintFolderWithLookups<'a, SC>>
+    + for<'a> AirLookupHandlerDyn<VerifierConstraintFolderWithLookups<'a, SC>>
     + Send
     + Sync
 where
@@ -1001,7 +1010,11 @@ where
             }
             Self::Add(a) => AirLookupHandler::<SymbolicAirBuilder<Val<SC>>>::add_lookup_columns(a),
             Self::Mul(a) => AirLookupHandler::<SymbolicAirBuilder<Val<SC>>>::add_lookup_columns(a),
-            Self::Dynamic(_a) => vec![], // TODO
+            Self::Dynamic(a) => {
+                AirLookupHandlerDyn::<SymbolicAirBuilder<Val<SC>>>::add_lookup_columns_dyn(
+                    a.air_mut(),
+                )
+            }
         }
     }
 
@@ -1012,7 +1025,9 @@ where
             Self::Public(a) => AirLookupHandler::<SymbolicAirBuilder<Val<SC>>>::get_lookups(a),
             Self::Add(a) => AirLookupHandler::<SymbolicAirBuilder<Val<SC>>>::get_lookups(a),
             Self::Mul(a) => AirLookupHandler::<SymbolicAirBuilder<Val<SC>>>::get_lookups(a),
-            Self::Dynamic(_a) => vec![], // TODO
+            Self::Dynamic(a) => {
+                AirLookupHandlerDyn::<SymbolicAirBuilder<Val<SC>>>::get_lookups_dyn(a.air_mut())
+            }
         }
     }
 }
