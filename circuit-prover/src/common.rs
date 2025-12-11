@@ -99,7 +99,11 @@ pub fn get_airs_and_degrees_with_prep<
             }
             PrimitiveOpType::Witness => {
                 let num_witnesses = prep.len();
-                let witness_air = WitnessAir::new(num_witnesses, packing.witness_lanes());
+                let witness_air = WitnessAir::new_with_preprocessed(
+                    num_witnesses,
+                    packing.witness_lanes(),
+                    prep.clone(),
+                );
                 table_preps[idx] = (
                     CircuitTableAir::Witness(witness_air),
                     log2_ceil_usize(num_witnesses.div_ceil(packing.witness_lanes())),

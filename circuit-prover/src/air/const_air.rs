@@ -25,13 +25,21 @@
 //! - send (index, value)
 
 use alloc::vec::Vec;
+use alloc::{string::ToString, vec};
 use core::marker::PhantomData;
+use p3_field::PrimeCharacteristicRing;
+use p3_lookup::lookup_traits::{AirLookupHandler, Direction, Kind, Lookup};
+use p3_uni_stark::{SymbolicAirBuilder, SymbolicExpression};
 
-use p3_air::{Air, AirBuilder, BaseAir};
+use p3_air::{
+    Air, AirBuilder, AirBuilderWithPublicValues, BaseAir, PairBuilder, PermutationAirBuilder,
+};
 use p3_circuit::tables::ConstTrace;
 use p3_circuit::utils::pad_to_power_of_two;
 use p3_field::{BasedVectorSpace, Field};
-use p3_matrix::dense::RowMajorMatrix;
+use p3_matrix::{Matrix, dense::RowMajorMatrix};
+
+use crate::air::utils::get_index_lookups;
 
 /// ConstAir: vector-valued constant binding with generic extension degree D.
 ///
@@ -141,6 +149,51 @@ where
 {
     fn eval(&self, _builder: &mut AB) {
         // No constraints for constants in Stage 1
+    }
+}
+
+impl<AB: PermutationAirBuilder + PairBuilder + AirBuilderWithPublicValues, const D: usize>
+    AirLookupHandler<AB> for ConstAir<AB::F, D>
+where
+    AB::F: Field,
+{
+    fn add_lookup_columns(&mut self) -> Vec<usize> {
+        // There is only one lookup to register in this AIR.
+        vec![0]
+    }
+
+    fn get_lookups(&mut self) -> Vec<Lookup<<AB>::F>> {
+        // Create symbolic air builder to access symbolic variables
+        let symbolic_air_builder =
+            SymbolicAirBuilder::<AB::F>::new(1, BaseAir::<AB::F>::width(self), 0, 1, 0);
+
+        let symbolic_main = symbolic_air_builder.main();
+        let symbolic_main_local = symbolic_main.row_slice(0).unwrap();
+
+        let preprocessed = symbolic_air_builder.preprocessed();
+        let preprocessed_local = preprocessed.row_slice(0).unwrap();
+
+        // TODO: Change this to track the multiplicity of the lookup properly.
+        let multiplicity = SymbolicExpression::Constant(AB::F::ONE);
+
+        let lookup_inps = get_index_lookups::<AB, D>(
+            0,
+            0,
+            1,
+            &[multiplicity],
+            &symbolic_main_local,
+            &preprocessed_local,
+            Direction::Send,
+        );
+
+        assert!(lookup_inps.len() == 1);
+        let lookup = AirLookupHandler::<AB>::register_lookup(
+            self,
+            Kind::Global("WitnessChecks".to_string()),
+            &lookup_inps[0],
+        );
+
+        vec![lookup]
     }
 }
 

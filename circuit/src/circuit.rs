@@ -1,7 +1,6 @@
 use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt::Debug;
-use core::iter;
 use core::ops::{Add, Mul, Sub};
 
 use hashbrown::HashMap;
@@ -112,10 +111,7 @@ impl<F: Field> Circuit<F> {
         // Allocate one empty vector per primitive operation type (Witness, Const, Public, Add, Mul).
         let mut preprocessed = vec![vec![]; PrimitiveOpType::COUNT];
 
-        // Track the maximum witness index to determine the Witness table size.
-        let mut max_idx = 0;
-
-        // Process each primitive operation, extracting its witness indices.
+        let witness_table_idx = PrimitiveOpType::Witness as usize;
         for prim in &self.primitive_ops {
             match prim {
                 // Const: stores a constant value at witness[out].
@@ -123,14 +119,26 @@ impl<F: Field> Circuit<F> {
                 Op::Const { out, .. } => {
                     let table_idx = PrimitiveOpType::Const as usize;
                     preprocessed[table_idx].extend(&[F::from_u32(out.0)]);
-                    max_idx = max_idx.max(out.0);
+
+                    // Since the values in `PublicAir` are looked up in `WitnessAir`,
+                    // we need to take the values into account in `WitnessAir`s preprocessed multiplicities.
+                    if out.0 >= preprocessed[witness_table_idx].len() as u32 {
+                        preprocessed[witness_table_idx].resize(out.0 as usize + 1, F::from_u32(0));
+                    }
+                    preprocessed[witness_table_idx][out.0 as usize] += F::ONE;
                 }
                 // Public: loads a public input into witness[out].
                 // Preprocessed data: the output witness index.
                 Op::Public { out, .. } => {
                     let table_idx = PrimitiveOpType::Public as usize;
                     preprocessed[table_idx].extend(&[F::from_u32(out.0)]);
-                    max_idx = max_idx.max(out.0);
+
+                    // Since the values in `PublicAir` are looked up in `WitnessAir`,
+                    // we need to take the values into account in `WitnessAir`s preprocessed multiplicities.
+                    if out.0 >= preprocessed[witness_table_idx].len() as u32 {
+                        preprocessed[witness_table_idx].resize(out.0 as usize + 1, F::from_u32(0));
+                    }
+                    preprocessed[witness_table_idx][out.0 as usize] += F::ONE;
                 }
                 // Add: computes witness[out] = witness[a] + witness[b].
                 // Preprocessed data: input indices a, b and output index out.
@@ -141,8 +149,17 @@ impl<F: Field> Circuit<F> {
                         F::from_u32(b.0),
                         F::from_u32(out.0),
                     ]);
-                    max_idx = max_idx.max(a.0).max(b.0).max(out.0);
+
+                    // We need to update the multiplicities for `a`, `b`, and `out` in `WitnessAir`.
+                    for &widx in &[a.0, b.0, out.0] {
+                        if widx >= preprocessed[witness_table_idx].len() as u32 {
+                            preprocessed[witness_table_idx]
+                                .resize(widx as usize + 1, F::from_u32(0));
+                        }
+                        preprocessed[witness_table_idx][widx as usize] += F::ONE;
+                    }
                 }
+
                 // Mul: computes witness[out] = witness[a] * witness[b].
                 // Preprocessed data: input indices a, b and output index out.
                 Op::Mul { a, b, out } => {
@@ -152,28 +169,34 @@ impl<F: Field> Circuit<F> {
                         F::from_u32(b.0),
                         F::from_u32(out.0),
                     ]);
-                    max_idx = max_idx.max(a.0).max(b.0).max(out.0);
+
+                    // We need to update the multiplicities for `a`, `b`, and `out` in `WitnessAir`.
+                    for &widx in &[a.0, b.0, out.0] {
+                        if widx >= preprocessed[witness_table_idx].len() as u32 {
+                            preprocessed[witness_table_idx]
+                                .resize(widx as usize + 1, F::from_u32(0));
+                        }
+                        preprocessed[witness_table_idx][widx as usize] += F::ONE;
+                    }
                 }
                 // Unconstrained: sets arbitrary witness values via hints.
                 // No preprocessed column data, but outputs affect max_idx.
                 Op::Unconstrained { outputs, .. } => {
-                    max_idx = iter::once(max_idx)
-                        .chain(outputs.iter().map(|&output| output.0))
-                        .max()
-                        .unwrap_or(max_idx);
+                    // We need to update the multiplicities for all `outputs` in `WitnessAir`.
+                    for out in outputs {
+                        let out_idx = out.0;
+                        if out_idx >= preprocessed[witness_table_idx].len() as u32 {
+                            preprocessed[witness_table_idx]
+                                .resize(out_idx as usize + 1, F::from_u32(0));
+                        }
+                        preprocessed[witness_table_idx][out_idx as usize] += F::ONE;
+                    }
                 }
-                // Non-primitive ops should not appear in primitive_ops.
                 Op::NonPrimitiveOpWithExecutor { .. } => panic!(
                     "preprocessed values are not yet implemented for non primitive operations."
                 ),
             }
         }
-
-        // Generate the Witness table's preprocessed column: sequential indices from 0 to max_idx.
-        //
-        // This enables the AIR to verify that all witness lookups reference valid slots.
-        let table_idx = PrimitiveOpType::Witness as usize;
-        preprocessed[table_idx].extend((0..=max_idx).map(|i| F::from_u32(i)));
 
         Ok(preprocessed)
     }

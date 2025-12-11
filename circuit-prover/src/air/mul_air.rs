@@ -86,16 +86,23 @@
 //! correctness of the indices with respect to the global witness bus is enforced by the
 //! bus interaction logic elsewhere in the system.
 
+use alloc::string::ToString;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::marker::PhantomData;
+use p3_lookup::lookup_traits::{AirLookupHandler, Direction, Kind, Lookup};
+use p3_uni_stark::{SymbolicAirBuilder, SymbolicExpression};
 
-use p3_air::{Air, AirBuilder, BaseAir};
+use p3_air::{
+    Air, AirBuilder, AirBuilderWithPublicValues, BaseAir, PairBuilder, PermutationAirBuilder,
+};
 use p3_circuit::tables::MulTrace;
 use p3_circuit::utils::pad_to_power_of_two;
 use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
+
+use crate::air::utils::get_index_lookups;
 
 /// AIR for proving multiplication operations: lhs * rhs = result.
 ///
@@ -136,6 +143,8 @@ pub struct MulAir<F, const D: usize = 1> {
     /// When providing instances to the verifier, this field can be left empty.
     /// Preprocessed values correspond to the indices of the inputs and outputs within the `Witness` table.
     pub preprocessed: Vec<F>,
+    /// Number of lookup columns registered so far.
+    pub num_lookup_columns: usize,
     /// Marker tying this AIR to its base field.
     _phantom: PhantomData<F>,
 }
@@ -152,6 +161,7 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> MulAir<F, D> {
             lanes,
             w_binomial: None,
             preprocessed: Vec::new(),
+            num_lookup_columns: 0,
             _phantom: PhantomData,
         }
     }
@@ -167,6 +177,7 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> MulAir<F, D> {
             lanes,
             w_binomial: None,
             preprocessed,
+            num_lookup_columns: 0,
             _phantom: PhantomData,
         }
     }
@@ -182,6 +193,7 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> MulAir<F, D> {
             lanes,
             w_binomial: Some(w),
             preprocessed: Vec::new(),
+            num_lookup_columns: 0,
             _phantom: PhantomData,
         }
     }
@@ -202,6 +214,7 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> MulAir<F, D> {
             lanes,
             w_binomial: Some(w),
             preprocessed,
+            num_lookup_columns: 0,
             _phantom: PhantomData,
         }
     }
@@ -370,6 +383,64 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> MulAir<F, D> {
             });
 
         preprocessed
+    }
+}
+
+impl<AB: PermutationAirBuilder + PairBuilder + AirBuilderWithPublicValues, const D: usize>
+    AirLookupHandler<AB> for MulAir<AB::F, D>
+{
+    fn add_lookup_columns(&mut self) -> Vec<usize> {
+        let new_idx = self.num_lookup_columns;
+        self.num_lookup_columns += 1;
+        vec![new_idx]
+    }
+
+    fn get_lookups(&mut self) -> Vec<Lookup<<AB>::F>> {
+        let mut lookups = Vec::new();
+        self.num_lookup_columns = 0;
+        let preprocessed_width = self.preprocessed_width();
+
+        // Create symbolic air builder to access symbolic variables
+        let symbolic_air_builder = SymbolicAirBuilder::<AB::F>::new(
+            preprocessed_width,
+            BaseAir::<AB::F>::width(self),
+            0,
+            0,
+            0,
+        );
+
+        let symbolic_main = symbolic_air_builder.main();
+        let symbolic_main_local = symbolic_main.row_slice(0).unwrap();
+
+        let preprocessed = symbolic_air_builder.preprocessed();
+        let preprocessed_local = preprocessed.row_slice(0).unwrap();
+
+        // We use the same multiplicity for all lookups.
+        let multiplicity = SymbolicExpression::Constant(AB::F::ONE);
+        let multiplicities = vec![multiplicity; 3];
+
+        for lane in 0..self.lanes {
+            let lane_offset = lane * Self::lane_width();
+            let preprocessed_lane_offset = lane * Self::preprocessed_lane_width();
+
+            let lane_lookup_inputs = get_index_lookups::<AB, D>(
+                lane_offset,
+                preprocessed_lane_offset,
+                3,
+                &multiplicities,
+                &symbolic_main_local,
+                &preprocessed_local,
+                Direction::Send,
+            );
+            lookups.extend(lane_lookup_inputs.into_iter().map(|inps| {
+                AirLookupHandler::<AB>::register_lookup(
+                    self,
+                    Kind::Global("WitnessChecks".to_string()),
+                    &inps,
+                )
+            }));
+        }
+        lookups
     }
 }
 
