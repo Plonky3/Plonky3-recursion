@@ -281,7 +281,6 @@ mod tests {
             .chunks(4)
             .zip(intermediate_digest)
         {
-            // The first two witnesses are constants 0 and 1.
             let expected =
                 circuit_builder.add_const(CF::from_basis_coefficients_slice(chunk).unwrap());
             circuit_builder.connect(expected, value);
@@ -297,7 +296,6 @@ mod tests {
         for ((chunk, value), another_value) in
             expected_digest.chunks(4).zip(digest).zip(another_digest)
         {
-            // The first two witnesses are constants 0 and 1.
             let expected =
                 circuit_builder.add_const(CF::from_basis_coefficients_slice(chunk).unwrap());
             circuit_builder.connect(expected, value);
