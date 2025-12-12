@@ -1,4 +1,17 @@
 //! Poseidon permutation non-primitive operation (one Poseidon call per row).
+//!
+//! This operation is designed to support both standard hashing and specific logic required for
+//! Merkle path verification within a circuit. Its features include:
+//!
+//! - **Hashing**: Performs a standard Poseidon permutation.
+//! - **Chaining**: Can start a new hash computation or continue from the output of the previous row
+//!   (controlled by `new_start`).
+//! - **Merkle Path Verification**: When `merkle_path` is enabled, it supports logic for verifying
+//!   a path up a Merkle tree. This involves conditionally arranging inputs (sibling vs. computed hash)
+//!   based on a direction bit (`mmcs_bit`).
+//! - **Index Accumulation**: Supports accumulating path indices (`mmcs_index_sum`) to verify the
+//!   leaf's position in the tree.
+//!
 //! Only supports extension degree D=4 for now.
 
 use alloc::boxed::Box;
@@ -14,7 +27,9 @@ use crate::types::{ExprId, NonPrimitiveOpId, WitnessId};
 
 /// User-facing arguments for adding a Poseidon perm row.
 pub struct PoseidonPermCall {
+    /// Flag indicating whether a new chain is started.
     pub new_start: bool,
+    /// Flag indicating whether we are verifying a Merkle path
     pub merkle_path: bool,
     /// Optional mmcs direction bit input (base field, boolean). If None, defaults to 0/private.
     pub mmcs_bit: Option<ExprId>,
@@ -111,6 +126,7 @@ where
         ))
     }
 }
+
 /// Executor for Poseidon perm operations.
 ///
 /// This currently does not mutate the witness; the AIR enforces correctness.
