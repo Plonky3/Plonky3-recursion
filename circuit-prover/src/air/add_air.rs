@@ -83,16 +83,17 @@ use alloc::string::ToString;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::marker::PhantomData;
-use p3_air::AirBuilder;
-use p3_lookup::lookup_traits::{AirLookupHandler, Direction, Kind, Lookup};
-use p3_uni_stark::{SymbolicAirBuilder, SymbolicExpression};
 
-use p3_air::{Air, AirBuilderWithPublicValues, BaseAir, PairBuilder, PermutationAirBuilder};
+use p3_air::{
+    Air, AirBuilder, AirBuilderWithPublicValues, BaseAir, PairBuilder, PermutationAirBuilder,
+};
 use p3_circuit::tables::AddTrace;
 use p3_circuit::utils::pad_to_power_of_two;
 use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
+use p3_lookup::lookup_traits::{AirLookupHandler, Direction, Kind, Lookup};
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
+use p3_uni_stark::{SymbolicAirBuilder, SymbolicExpression};
 
 use crate::air::utils::get_index_lookups;
 

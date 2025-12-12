@@ -373,6 +373,14 @@ pub trait NonPrimitiveExecutor<F: Field>: Debug {
         ctx: &mut ExecutionContext<'_, F>,
     ) -> Result<(), CircuitError>;
 
+    /// Update the preprocessed columns for this operation, as well as for `Witness` table.
+    fn preprocessing(
+        &self,
+        inputs: &[Vec<WitnessId>],
+        outputs: &[Vec<WitnessId>],
+        preprocessed_tables: &mut Vec<Vec<F>>,
+    );
+
     /// Get operation type identifier (for config lookup, error reporting)
     fn op_type(&self) -> &NonPrimitiveOpType;
 

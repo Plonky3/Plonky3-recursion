@@ -6,8 +6,6 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use alloc::{format, vec};
 use core::mem::transmute;
-use p3_lookup::folder::{ProverConstraintFolderWithLookups, VerifierConstraintFolderWithLookups};
-use p3_lookup::lookup_traits::{AirLookupHandler, Lookup};
 
 use p3_air::{
     Air, AirBuilder, AirBuilderWithPublicValues, BaseAir, PairBuilder, PermutationAirBuilder,
@@ -19,6 +17,8 @@ use p3_circuit::tables::{Poseidon2CircuitRow, Poseidon2CircuitTrace, Poseidon2Tr
 use p3_field::extension::{BinomialExtensionField, BinomiallyExtendable};
 use p3_field::{BasedVectorSpace, ExtensionField, Field, PrimeCharacteristicRing, PrimeField};
 use p3_koala_bear::{KoalaBear, default_koalabear_poseidon2_16, default_koalabear_poseidon2_24};
+use p3_lookup::folder::{ProverConstraintFolderWithLookups, VerifierConstraintFolderWithLookups};
+use p3_lookup::lookup_traits::{AirLookupHandler, Lookup};
 use p3_matrix::dense::RowMajorMatrix;
 use p3_poseidon2_air::RoundConstants;
 use p3_poseidon2_circuit_air::{

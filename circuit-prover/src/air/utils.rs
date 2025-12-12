@@ -1,11 +1,11 @@
+use alloc::vec::Vec;
 use core::iter;
 
-use alloc::vec::Vec;
 use itertools::Itertools;
-use p3_air::{Air, AirBuilder};
-use p3_air::{AirBuilderWithPublicValues, PairBuilder, PermutationAirBuilder};
-use p3_lookup::lookup_traits::{AirLookupHandler, Lookup, LookupData, LookupGadget};
-use p3_lookup::lookup_traits::{Direction, LookupInput};
+use p3_air::{Air, AirBuilder, AirBuilderWithPublicValues, PairBuilder, PermutationAirBuilder};
+use p3_lookup::lookup_traits::{
+    AirLookupHandler, Direction, Lookup, LookupData, LookupGadget, LookupInput,
+};
 use p3_uni_stark::{SymbolicExpression, SymbolicVariable};
 
 pub fn get_index_lookups<

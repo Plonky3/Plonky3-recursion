@@ -44,16 +44,16 @@ use alloc::string::ToString;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::marker::PhantomData;
-use p3_lookup::lookup_traits::{AirLookupHandler, Direction, Kind, Lookup};
-use p3_uni_stark::{SymbolicAirBuilder, SymbolicExpression};
 
 use p3_air::{
     Air, AirBuilder, AirBuilderWithPublicValues, BaseAir, PairBuilder, PermutationAirBuilder,
 };
 use p3_circuit::tables::WitnessTrace;
 use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
+use p3_lookup::lookup_traits::{AirLookupHandler, Direction, Kind, Lookup};
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
+use p3_uni_stark::{SymbolicAirBuilder, SymbolicExpression};
 
 use crate::air::utils::get_index_lookups;
 
@@ -342,6 +342,7 @@ impl<AB: PermutationAirBuilder + PairBuilder + AirBuilderWithPublicValues, const
             let preprocessed_lane_offset = lane * Self::preprocessed_lane_width();
 
             // There is only 1 lookup per lane: the witness index and its value.
+            // The multiplicity is stored in the second preprocessed column of the lane.
 
             let multiplicities =
                 SymbolicExpression::from(preprocessed_local[preprocessed_lane_offset + 1]);

@@ -114,6 +114,8 @@ impl<F: Field> Circuit<F> {
         // Allocate one empty vector per primitive operation type (Witness, Const, Public, Add, Mul).
         let mut preprocessed = vec![vec![]; PrimitiveOpType::COUNT];
 
+        // We know that the Witness table has at least one entry for index 0 (multiplicity 0 at the start).
+        preprocessed[PrimitiveOpType::Witness as usize].push(F::ZERO);
         let witness_table_idx = PrimitiveOpType::Witness as usize;
         for prim in &self.primitive_ops {
             match prim {
@@ -185,19 +187,24 @@ impl<F: Field> Circuit<F> {
                 // Unconstrained: sets arbitrary witness values via hints.
                 // No preprocessed column data, but outputs affect max_idx.
                 Op::Unconstrained { outputs, .. } => {
-                    // We need to update the multiplicities for all `outputs` in `WitnessAir`.
+                    // We need to update the multiplicities for all `outputs` in `WitnessAir`. Since these are only hints, they are not recorded in any other table yet.
                     for out in outputs {
                         let out_idx = out.0;
                         if out_idx >= preprocessed[witness_table_idx].len() as u32 {
                             preprocessed[witness_table_idx]
                                 .resize(out_idx as usize + 1, F::from_u32(0));
                         }
-                        preprocessed[witness_table_idx][out_idx as usize] += F::ONE;
                     }
                 }
-                Op::NonPrimitiveOpWithExecutor { .. } => panic!(
-                    "preprocessed values are not yet implemented for non primitive operations."
-                ),
+                Op::NonPrimitiveOpWithExecutor {
+                    inputs,
+                    outputs,
+                    executor,
+                    ..
+                } => {
+                    // Delegate preprocessing to the non-primitive operation.
+                    executor.preprocessing(inputs, outputs, &mut preprocessed);
+                }
             }
         }
 
@@ -250,9 +257,9 @@ mod tests {
     fn test_mixed_operations() {
         // Test covering various operation types and behaviors:
         // - Each operation type populates its correct column
-        // - max_idx is the global maximum across all operations
+        // - Multiplicities in Witness table are accurate
         // - Column data preserves operation order
-        // - Unconstrained affects max_idx but produces no column data
+        // - Unconstrained affects the Witness table preprocessing but produces no column data
         let ops = vec![
             Op::Const {
                 out: WitnessId(0),
@@ -323,9 +330,21 @@ mod tests {
             vec![F::from_u32(4), F::from_u32(2), F::from_u32(5)]
         );
 
-        // Witness column: 0..=10 (Unconstrained output is the max)
-        let expected_witness: Vec<F> = (0..=10).map(F::from_u32).collect();
-        assert_eq!(result[PrimitiveOpType::Witness as usize], expected_witness);
+        // We should have the following multiplicities in the Witness table, for indices 0 to 10:
+        // 2, 2, 3, 2, 2, 1, 0, 0, 0, 0, 0
+        let mut expected_multiplicities = vec![
+            F::from_u16(2),
+            F::from_u16(2),
+            F::from_u16(3),
+            F::from_u16(2),
+            F::from_u16(2),
+            F::from_u16(1),
+        ];
+        expected_multiplicities.extend(vec![F::ZERO; 5]); // Indices
+        assert_eq!(
+            result[PrimitiveOpType::Witness as usize],
+            expected_multiplicities
+        );
     }
 
     #[test]
@@ -340,7 +359,16 @@ mod tests {
         let circuit = make_circuit(ops);
         let result = circuit.generate_preprocessed_columns().unwrap();
 
-        let expected_witness: Vec<F> = (0..=15).map(F::from_u32).collect();
+        // Elements 0, 15 and 5 have multiplicity 1; others 0.
+        let expected_witness: Vec<F> = (0..=15)
+            .map(|i| {
+                if i == 0 || i == 5 || i == 15 {
+                    F::ONE
+                } else {
+                    F::ZERO
+                }
+            })
+            .collect();
         assert_eq!(result[PrimitiveOpType::Witness as usize], expected_witness);
     }
 }

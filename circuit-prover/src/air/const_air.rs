@@ -24,20 +24,21 @@
 //!
 //! - send (index, value)
 
+use alloc::string::ToString;
+use alloc::vec;
 use alloc::vec::Vec;
-use alloc::{string::ToString, vec};
 use core::marker::PhantomData;
-use p3_field::PrimeCharacteristicRing;
-use p3_lookup::lookup_traits::{AirLookupHandler, Direction, Kind, Lookup};
-use p3_uni_stark::{SymbolicAirBuilder, SymbolicExpression};
 
 use p3_air::{
     Air, AirBuilder, AirBuilderWithPublicValues, BaseAir, PairBuilder, PermutationAirBuilder,
 };
 use p3_circuit::tables::ConstTrace;
 use p3_circuit::utils::pad_to_power_of_two;
-use p3_field::{BasedVectorSpace, Field};
-use p3_matrix::{Matrix, dense::RowMajorMatrix};
+use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
+use p3_lookup::lookup_traits::{AirLookupHandler, Direction, Kind, Lookup};
+use p3_matrix::Matrix;
+use p3_matrix::dense::RowMajorMatrix;
+use p3_uni_stark::{SymbolicAirBuilder, SymbolicExpression};
 
 use crate::air::utils::get_index_lookups;
 
@@ -173,7 +174,6 @@ where
         let preprocessed = symbolic_air_builder.preprocessed();
         let preprocessed_local = preprocessed.row_slice(0).unwrap();
 
-        // TODO: Change this to track the multiplicity of the lookup properly.
         let multiplicity = SymbolicExpression::Constant(AB::F::ONE);
 
         let lookup_inps = get_index_lookups::<AB, D>(

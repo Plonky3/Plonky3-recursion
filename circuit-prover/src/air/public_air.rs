@@ -16,20 +16,21 @@
 //! There is one interaction with the witness bus:
 //! - send (index, value)
 
+use alloc::string::ToString;
+use alloc::vec;
 use alloc::vec::Vec;
-use alloc::{string::ToString, vec};
 use core::marker::PhantomData;
-use p3_field::PrimeCharacteristicRing;
-use p3_lookup::lookup_traits::{AirLookupHandler, Direction, Kind, Lookup};
-use p3_uni_stark::{SymbolicAirBuilder, SymbolicExpression};
 
 use p3_air::{
     Air, AirBuilder, AirBuilderWithPublicValues, BaseAir, PairBuilder, PermutationAirBuilder,
 };
 use p3_circuit::tables::PublicTrace;
 use p3_circuit::utils::pad_to_power_of_two;
-use p3_field::{BasedVectorSpace, Field};
-use p3_matrix::{Matrix, dense::RowMajorMatrix};
+use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
+use p3_lookup::lookup_traits::{AirLookupHandler, Direction, Kind, Lookup};
+use p3_matrix::Matrix;
+use p3_matrix::dense::RowMajorMatrix;
+use p3_uni_stark::{SymbolicAirBuilder, SymbolicExpression};
 
 use crate::air::utils::get_index_lookups;
 
@@ -145,16 +146,6 @@ where
         let preprocessed = symbolic_air_builder.preprocessed();
         let preprocessed_local = preprocessed.row_slice(0).unwrap();
 
-        // let idx = SymbolicExpression::from(preprocessed_local[0].clone());
-        // let values = (0..D)
-        //     .map(|i| SymbolicExpression::from(symbolic_main_local[i]))
-        //     .collect::<Vec<_>>();
-
-        // let inps = iter::once(idx)
-        //     .chain(values.into_iter())
-        //     .collect::<Vec<_>>();
-
-        // TODO: Change this to track the multiplicity of the lookup properly.
         let multiplicity = SymbolicExpression::Constant(AB::F::ONE);
 
         let lookup_inps = get_index_lookups::<AB, D>(
