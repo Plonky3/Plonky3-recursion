@@ -1,26 +1,18 @@
-//! Module defining hash operations for circuit builder.
-//!
-//! Provides methods for absorbing and squeezing elements using a sponge
-//! construction within the circuit.
-
-use alloc::boxed::Box;
 use alloc::string::ToString;
 use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
-use core::hash::Hash;
+use core::iter;
 
 use p3_baby_bear::BabyBear;
-use p3_field::{ExtensionField, Field, PrimeCharacteristicRing};
+use p3_field::{ExtensionField, Field};
 use p3_symmetric::Permutation;
 
-use crate::CircuitError;
-use crate::builder::{CircuitBuilder, CircuitBuilderError};
-use crate::op::{
-    ExecutionContext, HashSqueezeHint, NonPrimitiveExecutor, NonPrimitiveOpConfig,
-    NonPrimitiveOpType,
+use crate::op::HashSqueezeHint;
+use crate::ops::PoseidonPermCall;
+use crate::{
+    CircuitBuilder, CircuitBuilderError, CircuitError, ExprId, NonPrimitiveOpType, PoseidonPermOps,
 };
-use crate::types::{ExprId, WitnessId};
 
 /// Configuration parameters for hash operations.
 pub struct HashConfig<F> {
@@ -46,28 +38,39 @@ impl<F> Clone for HashConfig<F> {
 
 impl<F> HashConfig<F> {
     /// New hash configuration using Babybear and poseidon2 permutation.
-    pub fn babybear_poseidon2_16(rate: usize) -> Self
+    pub fn babybear_poseidon2_16() -> Self
     where
         F: ExtensionField<BabyBear>,
     {
         use p3_baby_bear::default_babybear_poseidon2_16;
         let permutation = default_babybear_poseidon2_16();
         Self {
-            rate,
-            width: 16,
+            rate: 2,
+            width: 4,
             permutation: Arc::new(move |input: &[F]| {
-                let input = input
+                let bf_input = input
                     .iter()
-                    .flat_map(|e| e.as_basis_coefficients_slice()[0..1].to_vec())
+                    .flat_map(|e| e.as_basis_coefficients_slice().to_vec())
                     .collect::<Vec<BabyBear>>()
                     .try_into()
                     .map_err(|_| CircuitError::IncorrectNonPrimitiveOpInputSize {
-                        op: NonPrimitiveOpType::HashSqueeze { reset: false },
-                        expected: 16.to_string(),
+                        op: NonPrimitiveOpType::PoseidonPerm,
+                        expected: 4.to_string(),
                         got: input.len(),
                     })?;
-                let output = permutation.permute(input);
-                Ok(output.iter().map(|e| F::from(*e)).collect::<Vec<F>>())
+                let output = permutation.permute(bf_input);
+                output
+                    .chunks(F::DIMENSION)
+                    .map(|coeffs| {
+                        F::from_basis_coefficients_slice(coeffs).ok_or_else(|| {
+                            CircuitError::IncorrectNonPrimitiveOpInputSize {
+                                op: NonPrimitiveOpType::PoseidonPerm,
+                                expected: F::DIMENSION.to_string(),
+                                got: coeffs.len(),
+                            }
+                        })
+                    })
+                    .collect::<Result<Vec<F>, CircuitError>>()
             }),
         }
     }
@@ -92,7 +95,7 @@ impl<F> PartialEq for HashConfig<F> {
 
 impl<F> Eq for HashConfig<F> {}
 
-impl<F> Hash for HashConfig<F> {
+impl<F> core::hash::Hash for HashConfig<F> {
     fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
         // Same idea: hash only rate
         self.rate.hash(state);
@@ -110,75 +113,76 @@ impl<F: Clone> Default for HashConfig<F> {
     }
 }
 
-/// Hash operations trait for `CircuitBuilder`.
-pub trait HashOps<F: Clone + PrimeCharacteristicRing + Eq + Hash> {
-    /// Consumes all buffered inputs and squeeze `RATE` field elements from the sponge state, creating outputs.
-    /// If `reset` is set to `true`, the sponge state is reset before absorbing inputs.
-    fn add_hash_squeeze(
-        &mut self,
-        state_id: &str,
-        inputs: &[ExprId],
-        reset: bool,
-    ) -> Result<Vec<ExprId>, CircuitBuilderError>;
-}
+pub fn add_hash_squeeze<F: Field>(
+    builder: &mut CircuitBuilder<F>,
+    hash_config: &HashConfig<F>,
+    state_id: &str,
+    inputs: &[ExprId],
+    reset: bool,
+) -> Result<Vec<ExprId>, CircuitBuilderError> {
+    let filler = HashSqueezeHint::new(
+        state_id.to_string(),
+        inputs.to_vec(),
+        hash_config.clone(),
+        reset,
+    );
+    let outputs = builder.alloc_witness_hints(filler, "hash squeeze");
 
-impl<F: Field> HashOps<F> for CircuitBuilder<F>
-where
-    F: Clone + PrimeCharacteristicRing + Eq + Hash + 'static,
-{
-    fn add_hash_squeeze(
-        &mut self,
-        state_id: &str,
-        inputs: &[ExprId],
-        reset: bool,
-    ) -> Result<Vec<ExprId>, CircuitBuilderError> {
-        let hash_config = if let Some(config) = self
-            .config()
-            .get_op_config(&NonPrimitiveOpType::HashSqueeze { reset })
-        {
-            if let NonPrimitiveOpConfig::HashConfig(hash_config) = config {
-                hash_config
+    let chunks = inputs.chunks(4);
+    let last_idx = chunks.len() - 1;
+    for (i, input) in chunks.enumerate() {
+        let is_first = i == 0;
+        let is_last = i == last_idx;
+        let _ = builder.add_poseidon_perm(PoseidonPermCall {
+            new_start: if is_first { reset } else { false },
+            merkle_path: false,
+            mmcs_bit: None,
+            inputs: input
+                .iter()
+                .cloned()
+                .map(Some)
+                .chain(iter::repeat(None))
+                .take(4)
+                .collect::<Vec<_>>()
+                .try_into()
+                .expect("We have already taken 4 elements"),
+            outputs: if is_last {
+                outputs
+                    .iter()
+                    .cloned()
+                    .map(Some)
+                    .chain(iter::repeat(None))
+                    .take(2)
+                    .collect::<Vec<_>>()
+                    .try_into()
+                    .expect("We have already taken 2 elements")
             } else {
-                return Err(CircuitBuilderError::InvalidNonPrimitiveOpConfiguration {
-                    op: NonPrimitiveOpType::HashSqueeze { reset },
-                });
-            }
-        } else {
-            return Err(CircuitBuilderError::OpNotAllowed {
-                op: NonPrimitiveOpType::HashSqueeze { reset },
-            });
-        };
-
-        let filler = HashSqueezeHint::new(
-            state_id.to_string(),
-            inputs.to_vec(),
-            hash_config.clone(),
-            reset,
-        );
-        let outputs = self.alloc_witness_hints(filler, "hash squeeze");
-
-        let _ = self.push_non_primitive_op(
-            NonPrimitiveOpType::HashSqueeze { reset },
-            vec![inputs.to_vec(), outputs.clone()],
-            "hash squeeze",
-        );
-
-        Ok(outputs)
+                [None, None]
+            },
+            mmcs_index_sum: None,
+        })?;
     }
+
+    Ok(outputs)
 }
 
 #[cfg(test)]
 mod tests {
-    use p3_baby_bear::{BabyBear, default_babybear_poseidon2_16};
-    use p3_field::PrimeCharacteristicRing;
+    use alloc::vec;
+    use alloc::vec::Vec;
+
+    use p3_baby_bear::{BabyBear, Poseidon2BabyBear, default_babybear_poseidon2_16};
+    use p3_field::extension::BinomialExtensionField;
+    use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
+    use p3_poseidon2_circuit_air::BabyBearD4Width16;
     use p3_symmetric::{CryptographicHasher, PaddingFreeSponge};
 
-    use super::*;
+    use crate::CircuitBuilder;
+    use crate::ops::hash::{HashConfig, add_hash_squeeze};
     use crate::tables::{Poseidon2Params, generate_poseidon2_trace};
 
-    struct DummyParams;
-
-    impl Poseidon2Params for DummyParams {
+    impl Poseidon2Params for BabyBearD4Width16 {
+        type BaseField = BabyBear;
         const D: usize = 4;
         const WIDTH: usize = 16;
         const RATE_EXT: usize = 2;
@@ -190,155 +194,117 @@ mod tests {
     }
 
     #[test]
-    fn test_hash_squeeze() {
-        let mut builder = CircuitBuilder::<BabyBear>::new();
-        let config = HashConfig::babybear_poseidon2_16(8);
-        builder.enable_hash_squeeze(&config, generate_poseidon2_trace::<BabyBear, DummyParams>);
+    fn test_add_hash_squeeze() {
+        type F = BabyBear;
+        type CF = BinomialExtensionField<BabyBear, 4>;
 
-        let input = builder.add_const(BabyBear::ONE);
-        let _ = builder
-            .add_hash_squeeze("poseidon2_16", &[input], true)
-            .unwrap();
+        let mut circuit_builder = CircuitBuilder::<CF>::new();
+        circuit_builder.enable_poseidon_perm::<BabyBearD4Width16>(
+            generate_poseidon2_trace::<CF, BabyBearD4Width16>,
+        );
 
-        let circuit = builder.build().unwrap();
+        let inputs = vec![
+            circuit_builder.add_const(CF::ZERO),
+            circuit_builder.add_const(CF::ONE),
+        ];
 
-        let runner = circuit.runner();
-        let traces = runner.run().unwrap();
+        let hash_config = HashConfig::babybear_poseidon2_16();
+        let digest =
+            add_hash_squeeze(&mut circuit_builder, &hash_config, "state_0", &inputs, true).unwrap();
 
-        let hasher = PaddingFreeSponge::<_, 16, 8, 8>::new(default_babybear_poseidon2_16());
-        let expected_value = hasher.hash_item(BabyBear::ONE);
+        // Add a constant wires with the expected results.
+        let permutation = default_babybear_poseidon2_16();
+        let hasher = PaddingFreeSponge::<Poseidon2BabyBear<16>, 16, 8, 8>::new(permutation);
 
-        for (i, &value) in expected_value.iter().enumerate() {
-            // The first 2 values are the constants 0, always present, and 1.
-            assert_eq!(value, traces.witness_trace.values[2 + i]);
+        let expected_digest: [F; 8] = hasher.hash_iter_slices([
+            CF::ZERO.as_basis_coefficients_slice(),
+            CF::ONE.as_basis_coefficients_slice(),
+        ]);
+        let expected_digest: Vec<_> = expected_digest
+            .chunks(4)
+            .map(|chunk| {
+                circuit_builder.add_const(CF::from_basis_coefficients_slice(chunk).unwrap())
+            })
+            .collect();
+
+        for (&val, expected_val) in digest.iter().zip(expected_digest) {
+            circuit_builder.connect(val, expected_val);
         }
+
+        let circuit = circuit_builder.build().unwrap();
+        circuit.runner().run().unwrap();
     }
 
     #[test]
     fn test_hash_squeeze_with_state() {
-        let mut builder = CircuitBuilder::<BabyBear>::new();
-        let config = HashConfig::babybear_poseidon2_16(8);
-        builder.enable_hash_squeeze(&config, generate_poseidon2_trace::<BabyBear, DummyParams>);
-        let zero = builder.add_const(BabyBear::ZERO);
-        let one = builder.add_const(BabyBear::ONE);
-        let input = [zero, zero, zero, zero, zero, zero, zero, one];
-        let repeated_input = [
-            zero, zero, zero, zero, zero, zero, zero, one, zero, zero, zero, zero, zero, zero,
-            zero, one,
-        ];
+        type F = BabyBear;
+        type CF = BinomialExtensionField<BabyBear, 4>;
+
+        let mut circuit_builder = CircuitBuilder::<CF>::new();
+        circuit_builder.enable_poseidon_perm::<BabyBearD4Width16>(
+            generate_poseidon2_trace::<CF, BabyBearD4Width16>,
+        );
+
+        let zero = circuit_builder.add_const(CF::ZERO);
+        let one = circuit_builder.add_const(CF::ONE);
+        let input = [zero, one];
+        let repeated_input = [zero, one, zero, one];
+
+        let hash_config = HashConfig::babybear_poseidon2_16();
 
         // Compute the digest with a single squeeze
-        let _ = builder.add_hash_squeeze("poseidon2_16", &repeated_input, true);
+        let digest = add_hash_squeeze(
+            &mut circuit_builder,
+            &hash_config,
+            "state_0",
+            &repeated_input,
+            true,
+        )
+        .unwrap();
 
         // Now compute the same output with two calls to squeeze, without reseting the state
         // in the second one.
-        let _ = builder
-            .add_hash_squeeze("poseidon2_16", &input, true)
-            .unwrap();
+        let intermediate_digest =
+            add_hash_squeeze(&mut circuit_builder, &hash_config, "state_0", &input, true).unwrap();
         // Squeeze again without resetting the state
-        let _ = builder.add_hash_squeeze("poseidon2_16", &input, false);
-
-        let circuit = builder.build().unwrap();
-        let runner = circuit.runner();
-        let traces = runner.run().unwrap();
+        let another_digest =
+            add_hash_squeeze(&mut circuit_builder, &hash_config, "state_0", &input, false).unwrap();
 
         let hasher = PaddingFreeSponge::<_, 16, 8, 8>::new(default_babybear_poseidon2_16());
-        let input = [
-            BabyBear::ZERO,
-            BabyBear::ZERO,
-            BabyBear::ZERO,
-            BabyBear::ZERO,
-            BabyBear::ZERO,
-            BabyBear::ZERO,
-            BabyBear::ZERO,
-            BabyBear::ONE,
-        ];
-        let repeated_input = [
-            BabyBear::ZERO,
-            BabyBear::ZERO,
-            BabyBear::ZERO,
-            BabyBear::ZERO,
-            BabyBear::ZERO,
-            BabyBear::ZERO,
-            BabyBear::ZERO,
-            BabyBear::ONE,
-            BabyBear::ZERO,
-            BabyBear::ZERO,
-            BabyBear::ZERO,
-            BabyBear::ZERO,
-            BabyBear::ZERO,
-            BabyBear::ZERO,
-            BabyBear::ZERO,
-            BabyBear::ONE,
-        ];
-        let expected_first_digest = hasher.hash_slice(&input);
-        let expected_second_digest = hasher.hash_slice(&repeated_input);
 
-        // Verify first digest
-        for (i, &value) in expected_second_digest.iter().enumerate() {
+        // Verify intermediate digest
+        let expected_intermediate_digest: [F; 8] = hasher.hash_iter_slices([
+            CF::ZERO.as_basis_coefficients_slice(),
+            CF::ONE.as_basis_coefficients_slice(),
+        ]);
+        for (chunk, value) in expected_intermediate_digest
+            .chunks(4)
+            .zip(intermediate_digest)
+        {
             // The first two witnesses are constants 0 and 1.
-            assert_eq!(value, traces.witness_trace.values[2 + i]);
+            let expected =
+                circuit_builder.add_const(CF::from_basis_coefficients_slice(chunk).unwrap());
+            circuit_builder.connect(expected, value);
         }
 
-        // Verify second digest
-        for (i, &value) in expected_first_digest.iter().enumerate() {
-            assert_eq!(value, traces.witness_trace.values[10 + i]);
+        // Verify the two sets of wires computing the digest
+        let expected_digest: [F; 8] = hasher.hash_iter_slices([
+            CF::ZERO.as_basis_coefficients_slice(),
+            CF::ONE.as_basis_coefficients_slice(),
+            CF::ZERO.as_basis_coefficients_slice(),
+            CF::ONE.as_basis_coefficients_slice(),
+        ]);
+        for ((chunk, value), another_value) in
+            expected_digest.chunks(4).zip(digest).zip(another_digest)
+        {
+            // The first two witnesses are constants 0 and 1.
+            let expected =
+                circuit_builder.add_const(CF::from_basis_coefficients_slice(chunk).unwrap());
+            circuit_builder.connect(expected, value);
+            circuit_builder.connect(expected, another_value);
         }
 
-        // Verify third digest
-        for (i, &value) in expected_second_digest.iter().enumerate() {
-            assert_eq!(value, traces.witness_trace.values[18 + i]);
-        }
-    }
-
-    #[test]
-    fn test_hash_squeeze_not_enabled() {
-        let mut circuit = CircuitBuilder::<BabyBear>::new();
-        let input = circuit.add_const(BabyBear::ONE);
-        let result = circuit.add_hash_squeeze("poseidon2_16", &[input], true);
-        assert!(result.is_err());
-    }
-}
-
-/// Executor for hash squeeze operations
-///
-/// TODO: This is a dummy implementation.
-/// Sponge state will be tracked by a dedicated AIR structure in the future.
-#[derive(Debug, Clone)]
-pub struct HashSqueezeExecutor {
-    op_type: NonPrimitiveOpType,
-}
-
-impl HashSqueezeExecutor {
-    /// Create a new hash squeeze executor
-    pub const fn new(reset: bool) -> Self {
-        Self {
-            op_type: NonPrimitiveOpType::HashSqueeze { reset },
-        }
-    }
-}
-
-impl Default for HashSqueezeExecutor {
-    fn default() -> Self {
-        Self::new(true)
-    }
-}
-
-impl<F: Field> NonPrimitiveExecutor<F> for HashSqueezeExecutor {
-    fn execute(
-        &self,
-        _inputs: &[Vec<WitnessId>],
-        _outputs: &[Vec<WitnessId>],
-        _ctx: &mut ExecutionContext<'_, F>,
-    ) -> Result<(), CircuitError> {
-        Ok(())
-    }
-
-    fn op_type(&self) -> &NonPrimitiveOpType {
-        &self.op_type
-    }
-
-    fn boxed(&self) -> Box<dyn NonPrimitiveExecutor<F>> {
-        Box::new(self.clone())
+        let circuit = circuit_builder.build().unwrap();
+        circuit.runner().run().unwrap();
     }
 }

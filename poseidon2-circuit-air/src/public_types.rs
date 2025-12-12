@@ -10,20 +10,6 @@ use p3_koala_bear::{GenericPoseidon2LinearLayersKoalaBear, KoalaBear};
 use crate::Poseidon2CircuitAir;
 
 /// Poseidon2 configuration for BabyBear with D=4, WIDTH=16.
-pub struct BabyBearD1Width16;
-
-impl Poseidon2Params for BabyBearD1Width16 {
-    type BaseField = BabyBear;
-    const D: usize = 1;
-    const WIDTH: usize = 16;
-    const RATE_EXT: usize = 8;
-    const CAPACITY_EXT: usize = 8;
-    const SBOX_DEGREE: u64 = 7;
-    const SBOX_REGISTERS: usize = 1;
-    const HALF_FULL_ROUNDS: usize = 4;
-    const PARTIAL_ROUNDS: usize = 13;
-}
-/// Poseidon2 configuration for BabyBear with D=4, WIDTH=16.
 pub struct BabyBearD4Width16;
 
 impl Poseidon2Params for BabyBearD4Width16 {
@@ -82,22 +68,6 @@ impl Poseidon2Params for KoalaBearD4Width24 {
     const HALF_FULL_ROUNDS: usize = 4;
     const PARTIAL_ROUNDS: usize = 23;
 }
-
-/// BabyBear Poseidon2 circuit AIR with D=1, WIDTH=16.
-/// Uses constants from `BabyBearD4Width16` configuration.
-pub type Poseidon2CircuitAirBabyBearD1Width16 = Poseidon2CircuitAir<
-    BabyBear,
-    GenericPoseidon2LinearLayersBabyBear,
-    { BabyBearD1Width16::D },
-    { BabyBearD1Width16::WIDTH },
-    { BabyBearD1Width16::WIDTH_EXT },
-    { BabyBearD1Width16::RATE_EXT },
-    { BabyBearD1Width16::CAPACITY_EXT },
-    { BabyBearD1Width16::SBOX_DEGREE },
-    { BabyBearD1Width16::SBOX_REGISTERS },
-    { BabyBearD1Width16::HALF_FULL_ROUNDS },
-    { BabyBearD1Width16::PARTIAL_ROUNDS },
->;
 
 /// BabyBear Poseidon2 circuit AIR with D=4, WIDTH=16.
 /// Uses constants from `BabyBearD4Width16` configuration.

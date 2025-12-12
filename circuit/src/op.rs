@@ -9,7 +9,7 @@ use hashbrown::HashMap;
 use p3_field::{Field, PrimeCharacteristicRing};
 use strum_macros::EnumCount;
 
-use crate::ops::poseidon_perm::HashConfig;
+use crate::ops::hash::HashConfig;
 use crate::tables::PoseidonPermPrivateData;
 use crate::types::{NonPrimitiveOpId, WitnessId};
 use crate::{CircuitError, ExprId};

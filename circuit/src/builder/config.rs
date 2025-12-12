@@ -45,7 +45,6 @@ impl BuilderConfig {
 
 #[cfg(test)]
 mod tests {
-
     use super::*;
 
     #[test]
