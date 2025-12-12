@@ -248,7 +248,7 @@ where
                             flattened[if !mmcs_bit {
                                 i * d..(i + 1) * d
                             } else {
-                                i * d + width / (2 * d)..(i + 1) * d + width / (2 * d)
+                                i * d + width / 2..(i + 1) * d + width / 2
                             }]
                             .copy_from_slice(limb.as_basis_coefficients_slice());
                         }
@@ -390,5 +390,38 @@ pub fn generate_poseidon2_trace<
         Ok(None)
     } else {
         Ok(Some(Box::new(trace)))
+    }
+}
+
+#[cfg(test)]
+pub mod tests {
+    use p3_baby_bear::BabyBear;
+    use p3_field::extension::BinomialExtensionField;
+
+    use crate::CircuitBuilder;
+    use crate::tables::{Poseidon2Params, generate_poseidon2_trace};
+
+    struct DummyParams;
+
+    impl Poseidon2Params for DummyParams {
+        type BaseField = BabyBear;
+        const D: usize = 4;
+        const WIDTH: usize = 16;
+        const RATE_EXT: usize = 2;
+        const CAPACITY_EXT: usize = 2;
+        const SBOX_DEGREE: u64 = 7;
+        const SBOX_REGISTERS: usize = 1;
+        const HALF_FULL_ROUNDS: usize = 4;
+        const PARTIAL_ROUNDS: usize = 13;
+    }
+
+    #[test]
+    fn test_poseidon2_private_data() {
+        type F = BabyBear;
+        type CF = BinomialExtensionField<F, 4>;
+
+        let mut circuit_builder = CircuitBuilder::<CF>::new();
+        circuit_builder
+            .enable_poseidon_perm::<DummyParams>(generate_poseidon2_trace::<CF, DummyParams>);
     }
 }
