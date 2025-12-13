@@ -15,6 +15,7 @@
 //! Only supports extension degree D=4 for now.
 
 use alloc::boxed::Box;
+use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -22,7 +23,9 @@ use p3_field::{Field, PrimeCharacteristicRing};
 
 use crate::CircuitError;
 use crate::builder::{CircuitBuilder, NonPrimitiveOpParams};
-use crate::op::{ExecutionContext, NonPrimitiveExecutor, NonPrimitiveOpType};
+use crate::op::{
+    ExecutionContext, NonPrimitiveExecutor, NonPrimitiveOpPrivateData, NonPrimitiveOpType,
+};
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessId};
 
 /// User-facing arguments for adding a Poseidon perm row.
@@ -127,33 +130,108 @@ where
     }
 }
 
+/// Type alias for the shared execute function stored in the executor
+pub type SharedPermExecuteFn<F> = Arc<dyn Fn(&[F; 4]) -> [F; 4] + Send + Sync>;
+
 /// Executor for Poseidon perm operations.
 ///
-/// This currently does not mutate the witness; the AIR enforces correctness.
-#[derive(Debug, Clone)]
-pub struct PoseidonPermExecutor {
+/// This executor computes the Poseidon permutation outputs during `runner.run()`
+/// and writes them to the witness table, enabling outputs to be used as inputs
+/// to subsequent operations.
+pub struct PoseidonPermExecutor<F> {
     op_type: NonPrimitiveOpType,
     pub new_start: bool,
     pub merkle_path: bool,
+    /// Execution function for computing outputs during runner.run()
+    execute_fn: SharedPermExecuteFn<F>,
 }
 
-impl PoseidonPermExecutor {
-    pub const fn new(new_start: bool, merkle_path: bool) -> Self {
+impl<F> Clone for PoseidonPermExecutor<F> {
+    fn clone(&self) -> Self {
         Self {
-            op_type: NonPrimitiveOpType::PoseidonPerm,
-            new_start,
-            merkle_path,
+            op_type: self.op_type.clone(),
+            new_start: self.new_start,
+            merkle_path: self.merkle_path,
+            execute_fn: self.execute_fn.clone(),
         }
     }
 }
 
-impl<F: Field> NonPrimitiveExecutor<F> for PoseidonPermExecutor {
+impl<F> core::fmt::Debug for PoseidonPermExecutor<F> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("PoseidonPermExecutor")
+            .field("op_type", &self.op_type)
+            .field("new_start", &self.new_start)
+            .field("merkle_path", &self.merkle_path)
+            .field("execute_fn", &"<fn>")
+            .finish()
+    }
+}
+
+impl<F> PoseidonPermExecutor<F> {
+    /// Create a new executor with execution support
+    pub fn new(new_start: bool, merkle_path: bool, execute_fn: SharedPermExecuteFn<F>) -> Self {
+        Self {
+            op_type: NonPrimitiveOpType::PoseidonPerm,
+            new_start,
+            merkle_path,
+            execute_fn,
+        }
+    }
+}
+
+impl<F: Field> NonPrimitiveExecutor<F> for PoseidonPermExecutor<F> {
     fn execute(
         &self,
-        _inputs: &[Vec<WitnessId>],
+        inputs: &[Vec<WitnessId>],
         _outputs: &[Vec<WitnessId>],
-        _ctx: &mut ExecutionContext<'_, F>,
+        ctx: &mut ExecutionContext<'_, F>,
     ) -> Result<(), CircuitError> {
+        // Layout: [in0, in1, in2, in3, out0, out1, mmcs_index_sum, mmcs_bit]
+        if inputs.len() < 6 {
+            return Ok(()); // Invalid layout, skip execution
+        }
+
+        // Build input state from witness values, private data, and/or chained outputs
+        let mut input_limbs: [F; 4] = [F::ZERO; 4];
+
+        // For chained operations (new_start=false), use the previous output
+        if !self.new_start {
+            if let Some(prev_output) = ctx.last_poseidon_output() {
+                input_limbs = *prev_output;
+            }
+        }
+
+        // Try to get inputs from private data (can override chained values)
+        if let Ok(NonPrimitiveOpPrivateData::PoseidonPerm(perm_data)) = ctx.get_private_data() {
+            for (i, limb) in perm_data.input_values.iter().enumerate().take(4) {
+                input_limbs[i] = *limb;
+            }
+        }
+
+        // Override with witness values where explicitly provided (CTL exposure)
+        for (i, limb_wids) in inputs.iter().take(4).enumerate() {
+            if limb_wids.len() == 1 {
+                if let Ok(val) = ctx.get_witness(limb_wids[0]) {
+                    input_limbs[i] = val;
+                }
+            }
+        }
+
+        // Execute the permutation
+        let output_limbs = (self.execute_fn)(&input_limbs);
+
+        // Store output for chaining to next operation
+        ctx.set_last_poseidon_output(output_limbs);
+
+        // Write output values to witness where output slots are specified
+        // inputs[4] = out0, inputs[5] = out1
+        for (i, output_wids) in inputs.iter().skip(4).take(2).enumerate() {
+            if output_wids.len() == 1 {
+                ctx.set_witness_force(output_wids[0], output_limbs[i])?;
+            }
+        }
+
         Ok(())
     }
 

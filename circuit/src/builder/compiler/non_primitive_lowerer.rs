@@ -12,6 +12,7 @@ use crate::builder::compiler::get_witness_id;
 use crate::builder::{BuilderConfig, CircuitBuilderError};
 use crate::op::{NonPrimitiveOpType, Op};
 use crate::ops::PoseidonPermExecutor;
+use crate::ops::poseidon_perm::SharedPermExecuteFn;
 use crate::types::{ExprId, WitnessId};
 
 /// Responsible for lowering non-primitive operations from ExprIds to WitnessIds.
@@ -20,8 +21,7 @@ use crate::types::{ExprId, WitnessId};
 /// - Converting high-level non-primitive operation references to witness-based operations
 /// - Validating operation configurations
 /// - Checking operation arity requirements
-#[derive(Debug)]
-pub struct NonPrimitiveLowerer<'a> {
+pub struct NonPrimitiveLowerer<'a, F> {
     /// Non-primitive operations to lower
     non_primitive_ops: &'a [NonPrimitiveOperationData],
 
@@ -30,26 +30,31 @@ pub struct NonPrimitiveLowerer<'a> {
 
     /// Builder configuration with enabled operations
     config: &'a BuilderConfig,
+
+    /// Poseidon permutation execution function (required when PoseidonPerm ops are used)
+    poseidon_perm_execute_fn: Option<SharedPermExecuteFn<F>>,
 }
 
-impl<'a> NonPrimitiveLowerer<'a> {
+impl<'a, F> NonPrimitiveLowerer<'a, F> {
     /// Creates a new non-primitive lowerer.
-    pub const fn new(
+    pub fn new(
         non_primitive_ops: &'a [NonPrimitiveOperationData],
         expr_to_widx: &'a HashMap<ExprId, WitnessId>,
         config: &'a BuilderConfig,
+        poseidon_perm_execute_fn: Option<SharedPermExecuteFn<F>>,
     ) -> Self {
         Self {
             non_primitive_ops,
             expr_to_widx,
             config,
+            poseidon_perm_execute_fn,
         }
     }
 
     /// Lowers non-primitive operations to executable operations with explicit inputs/outputs.
-    pub fn lower<F>(self) -> Result<Vec<Op<F>>, CircuitBuilderError>
+    pub fn lower(self) -> Result<Vec<Op<F>>, CircuitBuilderError>
     where
-        F: Field + Clone + PrimeCharacteristicRing + PartialEq + Eq + Hash,
+        F: Field + Clone + PrimeCharacteristicRing + PartialEq + Eq + Hash + 'static,
     {
         let mut lowered_ops: Vec<Op<F>> = Vec::new();
 
@@ -168,10 +173,20 @@ impl<'a> NonPrimitiveLowerer<'a> {
                         .collect::<Result<Vec<WitnessId>, _>>()?;
                     inputs_widx.push(mmcs_bit_widx);
 
+                    let exec_fn = self.poseidon_perm_execute_fn.as_ref().ok_or_else(|| {
+                        CircuitBuilderError::InvalidNonPrimitiveOpConfiguration {
+                            op: op_type.clone(),
+                        }
+                    })?;
+
                     lowered_ops.push(Op::NonPrimitiveOpWithExecutor {
                         inputs: inputs_widx,
                         outputs: Vec::new(),
-                        executor: Box::new(PoseidonPermExecutor::new(new_start, merkle_path)),
+                        executor: Box::new(PoseidonPermExecutor::new(
+                            new_start,
+                            merkle_path,
+                            exec_fn.clone(),
+                        )),
                         op_id,
                     });
                 }
@@ -205,7 +220,8 @@ mod tests {
         let expr_map = HashMap::new();
         let config = BuilderConfig::new();
 
-        let lowerer = NonPrimitiveLowerer::new(&ops, &expr_map, &config);
+        let lowerer: NonPrimitiveLowerer<'_, BabyBear> =
+            NonPrimitiveLowerer::new(&ops, &expr_map, &config, None);
         let result: Vec<Op<BabyBear>> = lowerer.lower().unwrap();
 
         assert!(result.is_empty());
@@ -228,6 +244,8 @@ mod tests {
 
     #[test]
     fn test_poseidon_perm_lowering() {
+        use alloc::sync::Arc;
+
         let mut config = BuilderConfig::new();
         config.enable_poseidon_perm();
 
@@ -254,7 +272,11 @@ mod tests {
         }];
         let expr_map = create_expr_map(10);
 
-        let lowerer = NonPrimitiveLowerer::new(&ops, &expr_map, &config);
+        // Create a simple identity execute function for testing
+        let execute_fn: SharedPermExecuteFn<BabyBear> = Arc::new(|input| *input);
+
+        let lowerer: NonPrimitiveLowerer<'_, BabyBear> =
+            NonPrimitiveLowerer::new(&ops, &expr_map, &config, Some(execute_fn));
         let result: Vec<Op<BabyBear>> = lowerer.lower().unwrap();
         assert_eq!(result.len(), 1);
 

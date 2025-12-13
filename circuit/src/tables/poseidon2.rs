@@ -185,7 +185,8 @@ where
             };
 
             if executor.op_type() == &NonPrimitiveOpType::PoseidonPerm {
-                let Some(exec) = executor.as_any().downcast_ref::<PoseidonPermExecutor>() else {
+                let Some(exec) = executor.as_any().downcast_ref::<PoseidonPermExecutor<CF>>()
+                else {
                     return Err(CircuitError::InvalidNonPrimitiveOpConfiguration {
                         op: executor.op_type().clone(),
                     });

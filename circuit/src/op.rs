@@ -279,21 +279,25 @@ pub struct ExecutionContext<'a, F> {
     enabled_ops: &'a HashMap<NonPrimitiveOpType, NonPrimitiveOpConfig>,
     /// Current operation's NonPrimitiveOpId for error reporting
     operation_id: NonPrimitiveOpId,
+    /// Last Poseidon permutation output (for chaining)
+    last_poseidon_output: &'a mut Option<[F; 4]>,
 }
 
 impl<'a, F: Field> ExecutionContext<'a, F> {
     /// Create a new execution context
-    pub const fn new(
+    pub fn new(
         witness: &'a mut [Option<F>],
         non_primitive_op_private_data: &'a [Option<NonPrimitiveOpPrivateData<F>>],
         enabled_ops: &'a HashMap<NonPrimitiveOpType, NonPrimitiveOpConfig>,
         operation_id: NonPrimitiveOpId,
+        last_poseidon_output: &'a mut Option<[F; 4]>,
     ) -> Self {
         Self {
             witness,
             non_primitive_op_private_data,
             enabled_ops,
             operation_id,
+            last_poseidon_output,
         }
     }
 
@@ -327,6 +331,15 @@ impl<'a, F: Field> ExecutionContext<'a, F> {
         Ok(())
     }
 
+    /// Set witness value at the given index (forced overwrite, no conflict checking)
+    pub fn set_witness_force(&mut self, widx: WitnessId, value: F) -> Result<(), CircuitError> {
+        if widx.0 as usize >= self.witness.len() {
+            return Err(CircuitError::WitnessIdOutOfBounds { witness_id: widx });
+        }
+        self.witness[widx.0 as usize] = Some(value);
+        Ok(())
+    }
+
     /// Get private data for the current operation
     pub fn get_private_data(&self) -> Result<&NonPrimitiveOpPrivateData<F>, CircuitError> {
         self.non_primitive_op_private_data
@@ -352,6 +365,16 @@ impl<'a, F: Field> ExecutionContext<'a, F> {
     /// Get the current operation ID
     pub const fn operation_id(&self) -> NonPrimitiveOpId {
         self.operation_id
+    }
+
+    /// Get the last Poseidon permutation output (for chaining)
+    pub fn last_poseidon_output(&self) -> Option<&[F; 4]> {
+        self.last_poseidon_output.as_ref()
+    }
+
+    /// Set the last Poseidon permutation output (for chaining)
+    pub fn set_last_poseidon_output(&mut self, output: [F; 4]) {
+        *self.last_poseidon_output = Some(output);
     }
 }
 
@@ -669,9 +692,16 @@ mod tests {
         let private_data = vec![];
         let configs = HashMap::new();
         let op_id = NonPrimitiveOpId(0);
+        let mut last_poseidon_output = None;
 
         // Create an execution context for operations to access the witness
-        let ctx = ExecutionContext::new(&mut witness, &private_data, &configs, op_id);
+        let ctx = ExecutionContext::new(
+            &mut witness,
+            &private_data,
+            &configs,
+            op_id,
+            &mut last_poseidon_output,
+        );
 
         // Read a value from the witness table
         let result = ctx.get_witness(WitnessId(0));
@@ -687,9 +717,16 @@ mod tests {
         let private_data = vec![];
         let configs = HashMap::new();
         let op_id = NonPrimitiveOpId(0);
+        let mut last_poseidon_output = None;
 
         // Create execution context
-        let ctx = ExecutionContext::new(&mut witness, &private_data, &configs, op_id);
+        let ctx = ExecutionContext::new(
+            &mut witness,
+            &private_data,
+            &configs,
+            op_id,
+            &mut last_poseidon_output,
+        );
 
         // Attempt to read a value that hasn't been set yet
         let result = ctx.get_witness(WitnessId(0));
@@ -711,9 +748,16 @@ mod tests {
         let private_data = vec![];
         let configs = HashMap::new();
         let op_id = NonPrimitiveOpId(0);
+        let mut last_poseidon_output = None;
 
         // Create execution context with mutable access to witness
-        let mut ctx = ExecutionContext::new(&mut witness, &private_data, &configs, op_id);
+        let mut ctx = ExecutionContext::new(
+            &mut witness,
+            &private_data,
+            &configs,
+            op_id,
+            &mut last_poseidon_output,
+        );
 
         // Write a computed value into the witness table
         let val = F::from_u64(99);
@@ -734,9 +778,16 @@ mod tests {
         let private_data = vec![];
         let configs = HashMap::new();
         let op_id = NonPrimitiveOpId(0);
+        let mut last_poseidon_output = None;
 
         // Create execution context
-        let mut ctx = ExecutionContext::new(&mut witness, &private_data, &configs, op_id);
+        let mut ctx = ExecutionContext::new(
+            &mut witness,
+            &private_data,
+            &configs,
+            op_id,
+            &mut last_poseidon_output,
+        );
 
         // Attempt to write a different value to the same slot
         //
@@ -762,9 +813,16 @@ mod tests {
         let private_data = vec![];
         let configs = HashMap::new();
         let op_id = NonPrimitiveOpId(0);
+        let mut last_poseidon_output = None;
 
         // Create execution context
-        let mut ctx = ExecutionContext::new(&mut witness, &private_data, &configs, op_id);
+        let mut ctx = ExecutionContext::new(
+            &mut witness,
+            &private_data,
+            &configs,
+            op_id,
+            &mut last_poseidon_output,
+        );
 
         // Write the same value again to the same slot
         //
@@ -783,9 +841,16 @@ mod tests {
         let private_data = vec![];
         let configs = HashMap::new();
         let op_id = NonPrimitiveOpId(0);
+        let mut last_poseidon_output = None;
 
         // Create execution context
-        let mut ctx = ExecutionContext::new(&mut witness, &private_data, &configs, op_id);
+        let mut ctx = ExecutionContext::new(
+            &mut witness,
+            &private_data,
+            &configs,
+            op_id,
+            &mut last_poseidon_output,
+        );
 
         // Attempt to write to an index beyond the table bounds
         let result = ctx.set_witness(WitnessId(10), F::from_u64(1));
@@ -814,7 +879,14 @@ mod tests {
         let mut witness = vec![];
         let configs = HashMap::new();
         let op_id = NonPrimitiveOpId(0);
-        let ctx = ExecutionContext::new(&mut witness, &private_data, &configs, op_id);
+        let mut last_poseidon_output = None;
+        let ctx = ExecutionContext::new(
+            &mut witness,
+            &private_data,
+            &configs,
+            op_id,
+            &mut last_poseidon_output,
+        );
 
         // Operations can access their private data through the context
         let result = ctx.get_private_data();
@@ -833,10 +905,16 @@ mod tests {
         let mut witness = vec![];
         let configs = HashMap::new();
         let op_id = NonPrimitiveOpId(0);
+        let mut last_poseidon_output = None;
 
         // Create execution context
-        let ctx: ExecutionContext<'_, F> =
-            ExecutionContext::new(&mut witness, &private_data, &configs, op_id);
+        let ctx: ExecutionContext<'_, F> = ExecutionContext::new(
+            &mut witness,
+            &private_data,
+            &configs,
+            op_id,
+            &mut last_poseidon_output,
+        );
 
         // Attempt to access private data that wasn't provided
         let result = ctx.get_private_data();
@@ -862,8 +940,14 @@ mod tests {
         let mut witness = vec![];
         let private_data = vec![];
         let op_id = NonPrimitiveOpId(0);
-        let ctx: ExecutionContext<'_, F> =
-            ExecutionContext::new(&mut witness, &private_data, &configs, op_id);
+        let mut last_poseidon_output = None;
+        let ctx: ExecutionContext<'_, F> = ExecutionContext::new(
+            &mut witness,
+            &private_data,
+            &configs,
+            op_id,
+            &mut last_poseidon_output,
+        );
 
         // Operations can query their configuration at runtime
         let result = ctx.get_config(&op_type);
@@ -879,10 +963,16 @@ mod tests {
         let mut witness = vec![];
         let private_data = vec![];
         let op_id = NonPrimitiveOpId(0);
+        let mut last_poseidon_output = None;
 
         // Create execution context
-        let ctx: ExecutionContext<'_, F> =
-            ExecutionContext::new(&mut witness, &private_data, &configs, op_id);
+        let ctx: ExecutionContext<'_, F> = ExecutionContext::new(
+            &mut witness,
+            &private_data,
+            &configs,
+            op_id,
+            &mut last_poseidon_output,
+        );
 
         // Attempt to access a configuration that wasn't registered
         let op_type = NonPrimitiveOpType::PoseidonPerm;
@@ -921,8 +1011,14 @@ mod tests {
         let private_data = vec![];
         let configs = HashMap::new();
         let expected_id = NonPrimitiveOpId(42);
-        let ctx: ExecutionContext<'_, F> =
-            ExecutionContext::new(&mut witness, &private_data, &configs, expected_id);
+        let mut last_poseidon_output = None;
+        let ctx: ExecutionContext<'_, F> = ExecutionContext::new(
+            &mut witness,
+            &private_data,
+            &configs,
+            expected_id,
+            &mut last_poseidon_output,
+        );
 
         // Retrieve the operation ID from the context
         let retrieved_id = ctx.operation_id();
