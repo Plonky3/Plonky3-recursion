@@ -191,7 +191,8 @@ where
                         op: executor.op_type().clone(),
                     });
                 };
-                let (new_start, merkle_path) = (exec.new_start, exec.merkle_path);
+                // Convert input_mode to legacy flags for compatibility with trace builder
+                let (new_start, merkle_path, _) = exec.input_mode().to_flags();
                 // Expected layout: inputs = [in0, in1, in2, in3, mmcs_index_sum, mmcs_bit] (6 vectors)
                 //                  outputs = [out0, out1] (2 vectors)
                 if inputs.len() != 6 {

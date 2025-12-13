@@ -146,8 +146,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     ];
 
     builder.add_poseidon_perm(p3_circuit::ops::PoseidonPermCall {
-        new_start: true,
-        merkle_path: true,
+        input_mode: p3_circuit::ops::PoseidonInputMode::NewChain,
         mmcs_bit: Some(mmcs_bit_row0),
         inputs: inputs_row0.map(Some),
         outputs: [None, None],
@@ -166,8 +165,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let mmcs_bit_row1 = builder.alloc_const(Ext4::from_prime_subfield(Base::ONE), "mmcs_bit_row1");
     let row1_op_id = builder.add_poseidon_perm(p3_circuit::ops::PoseidonPermCall {
-        new_start: false,
-        merkle_path: true,
+        input_mode: p3_circuit::ops::PoseidonInputMode::MerklePath,
         mmcs_bit: Some(mmcs_bit_row1),
         inputs: sibling1_inputs,
         outputs: [None, None],
@@ -181,8 +179,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         None, // Private
     ];
     let row2_op_id = builder.add_poseidon_perm(p3_circuit::ops::PoseidonPermCall {
-        new_start: false,
-        merkle_path: true,
+        input_mode: p3_circuit::ops::PoseidonInputMode::MerklePath,
         mmcs_bit: Some(mmcs_bit_row2),
         inputs: sibling2_inputs,
         outputs: [Some(out0), Some(out1)],

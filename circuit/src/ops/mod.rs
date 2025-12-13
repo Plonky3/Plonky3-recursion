@@ -1,3 +1,5 @@
 pub mod poseidon_perm;
 
-pub use poseidon_perm::{PoseidonPermCall, PoseidonPermExecutor, PoseidonPermOps};
+pub use poseidon_perm::{
+    PermComputer, PoseidonInputMode, PoseidonPermCall, PoseidonPermExecutor, PoseidonPermOps,
+};

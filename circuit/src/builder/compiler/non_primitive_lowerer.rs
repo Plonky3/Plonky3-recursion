@@ -1,6 +1,7 @@
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::ToString;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::hash::Hash;
 
@@ -94,6 +95,7 @@ impl<'a, F> NonPrimitiveLowerer<'a, F> {
                         }
                     })?;
 
+                    // Get the execution function from config and wrap it as a PermComputer
                     let exec_fn = match config {
                         crate::op::NonPrimitiveOpConfig::PoseidonPerm(cfg) => cfg.exec.clone(),
                         _ => {
@@ -102,6 +104,13 @@ impl<'a, F> NonPrimitiveLowerer<'a, F> {
                             });
                         }
                     };
+
+                    // Convert legacy flags to explicit input mode
+                    let input_mode = crate::ops::poseidon_perm::PoseidonInputMode::from_flags(
+                        new_start,
+                        merkle_path,
+                        false, // mmcs_bit will be determined at runtime
+                    );
 
                     let mut inputs_widx: Vec<Vec<WitnessId>> = Vec::with_capacity(6);
                     // Inputs: [in0, in1, in2, in3]
@@ -185,14 +194,16 @@ impl<'a, F> NonPrimitiveLowerer<'a, F> {
                         outputs_widx.push(limb_widx);
                     }
 
+                    // Wrap the execution function as a PermComputer
+                    use crate::ops::poseidon_perm::PermComputerWrapper;
+                    let computer: Arc<
+                        dyn crate::ops::poseidon_perm::PermComputer<F> + Send + Sync,
+                    > = Arc::new(PermComputerWrapper(exec_fn));
+
                     lowered_ops.push(Op::NonPrimitiveOpWithExecutor {
                         inputs: inputs_widx,
                         outputs: outputs_widx,
-                        executor: Box::new(PoseidonPermExecutor::new(
-                            new_start,
-                            merkle_path,
-                            exec_fn,
-                        )),
+                        executor: Box::new(PoseidonPermExecutor::new(input_mode, computer)),
                         op_id,
                     });
                 }

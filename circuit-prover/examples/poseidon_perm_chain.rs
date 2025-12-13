@@ -94,8 +94,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
 
         builder.add_poseidon_perm(PoseidonPermCall {
-            new_start: is_first,
-            merkle_path: false,
+            input_mode: if is_first {
+                p3_circuit::ops::PoseidonInputMode::NewChain
+            } else {
+                p3_circuit::ops::PoseidonInputMode::SpongeChain
+            },
             mmcs_bit: Some(mmcs_bit_zero),
             inputs,
             outputs,
