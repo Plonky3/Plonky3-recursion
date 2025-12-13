@@ -196,10 +196,10 @@ impl<F: Field> NonPrimitiveExecutor<F> for PoseidonPermExecutor<F> {
         let mut input_limbs: [F; 4] = [F::ZERO; 4];
 
         // For chained operations (new_start=false), use the previous output
-        if !self.new_start {
-            if let Some(prev_output) = ctx.last_poseidon_output() {
-                input_limbs = *prev_output;
-            }
+        if !self.new_start
+            && let Some(prev_output) = ctx.last_poseidon_output()
+        {
+            input_limbs = *prev_output;
         }
 
         // Try to get inputs from private data (can override chained values)
@@ -211,10 +211,10 @@ impl<F: Field> NonPrimitiveExecutor<F> for PoseidonPermExecutor<F> {
 
         // Override with witness values where explicitly provided (CTL exposure)
         for (i, limb_wids) in inputs.iter().take(4).enumerate() {
-            if limb_wids.len() == 1 {
-                if let Ok(val) = ctx.get_witness(limb_wids[0]) {
-                    input_limbs[i] = val;
-                }
+            if limb_wids.len() == 1
+                && let Ok(val) = ctx.get_witness(limb_wids[0])
+            {
+                input_limbs[i] = val;
             }
         }
 

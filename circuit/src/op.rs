@@ -285,7 +285,7 @@ pub struct ExecutionContext<'a, F> {
 
 impl<'a, F: Field> ExecutionContext<'a, F> {
     /// Create a new execution context
-    pub fn new(
+    pub const fn new(
         witness: &'a mut [Option<F>],
         non_primitive_op_private_data: &'a [Option<NonPrimitiveOpPrivateData<F>>],
         enabled_ops: &'a HashMap<NonPrimitiveOpType, NonPrimitiveOpConfig>,
@@ -368,12 +368,12 @@ impl<'a, F: Field> ExecutionContext<'a, F> {
     }
 
     /// Get the last Poseidon permutation output (for chaining)
-    pub fn last_poseidon_output(&self) -> Option<&[F; 4]> {
+    pub const fn last_poseidon_output(&self) -> Option<&[F; 4]> {
         self.last_poseidon_output.as_ref()
     }
 
     /// Set the last Poseidon permutation output (for chaining)
-    pub fn set_last_poseidon_output(&mut self, output: [F; 4]) {
+    pub const fn set_last_poseidon_output(&mut self, output: [F; 4]) {
         *self.last_poseidon_output = Some(output);
     }
 }
