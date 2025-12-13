@@ -202,11 +202,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     ])?;
 
     // Set private inputs for Row 1
-    // Row 1: mmcs_bit = 1 (Right Child). Chaining into 2-3.
-    // Private input (Sibling) goes to 0-1.
+    // Row 1: mmcs_bit = 1 (Right Child). Limbs 0-1 are chained from prev_out[2-3].
+    // Private input (Sibling) goes to 2-3.
     let mut row1_private_inputs = [Ext4::ZERO; 4];
-    row1_private_inputs[0] = sibling1_limb2; // Sibling at 0
-    row1_private_inputs[1] = sibling1_limb3; // Sibling at 1
+    row1_private_inputs[2] = sibling1_limb2; // Sibling at 2
+    row1_private_inputs[3] = sibling1_limb3; // Sibling at 3
 
     runner.set_non_primitive_op_private_data(
         row1_op_id,

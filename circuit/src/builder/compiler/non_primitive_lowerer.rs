@@ -12,7 +12,6 @@ use crate::builder::compiler::get_witness_id;
 use crate::builder::{BuilderConfig, CircuitBuilderError};
 use crate::op::{NonPrimitiveOpType, Op};
 use crate::ops::PoseidonPermExecutor;
-use crate::ops::poseidon_perm::SharedPermExecuteFn;
 use crate::types::{ExprId, WitnessId};
 
 /// Responsible for lowering non-primitive operations from ExprIds to WitnessIds.
@@ -29,10 +28,7 @@ pub struct NonPrimitiveLowerer<'a, F> {
     expr_to_widx: &'a HashMap<ExprId, WitnessId>,
 
     /// Builder configuration with enabled operations
-    config: &'a BuilderConfig,
-
-    /// Poseidon permutation execution function (required when PoseidonPerm ops are used)
-    poseidon_perm_execute_fn: Option<SharedPermExecuteFn<F>>,
+    config: &'a BuilderConfig<F>,
 }
 
 impl<'a, F> NonPrimitiveLowerer<'a, F> {
@@ -40,14 +36,12 @@ impl<'a, F> NonPrimitiveLowerer<'a, F> {
     pub fn new(
         non_primitive_ops: &'a [NonPrimitiveOperationData],
         expr_to_widx: &'a HashMap<ExprId, WitnessId>,
-        config: &'a BuilderConfig,
-        poseidon_perm_execute_fn: Option<SharedPermExecuteFn<F>>,
+        config: &'a BuilderConfig<F>,
     ) -> Self {
         Self {
             non_primitive_ops,
             expr_to_widx,
             config,
-            poseidon_perm_execute_fn,
         }
     }
 
@@ -93,8 +87,24 @@ impl<'a, F> NonPrimitiveLowerer<'a, F> {
                         });
                     }
 
-                    let mut inputs_widx: Vec<Vec<WitnessId>> = Vec::with_capacity(8);
-                    // Inputs
+                    // Get the config to extract the execution function
+                    let config = config_opt.ok_or_else(|| {
+                        CircuitBuilderError::InvalidNonPrimitiveOpConfiguration {
+                            op: op_type.clone(),
+                        }
+                    })?;
+
+                    let exec_fn = match config {
+                        crate::op::NonPrimitiveOpConfig::PoseidonPerm(cfg) => cfg.exec.clone(),
+                        _ => {
+                            return Err(CircuitBuilderError::InvalidNonPrimitiveOpConfiguration {
+                                op: op_type.clone(),
+                            });
+                        }
+                    };
+
+                    let mut inputs_widx: Vec<Vec<WitnessId>> = Vec::with_capacity(6);
+                    // Inputs: [in0, in1, in2, in3]
                     for (i, limb_exprs) in witness_exprs.iter().take(4).enumerate() {
                         if !(limb_exprs.is_empty() || limb_exprs.len() == 1) {
                             return Err(CircuitBuilderError::NonPrimitiveOpArity {
@@ -110,27 +120,6 @@ impl<'a, F> NonPrimitiveLowerer<'a, F> {
                                     self.expr_to_widx,
                                     expr,
                                     &format!("PoseidonPerm input limb {i}"),
-                                )
-                            })
-                            .collect::<Result<Vec<WitnessId>, _>>()?;
-                        inputs_widx.push(limb_widx);
-                    }
-                    // Outputs
-                    for (i, limb_exprs) in witness_exprs.iter().skip(4).take(2).enumerate() {
-                        if !(limb_exprs.is_empty() || limb_exprs.len() == 1) {
-                            return Err(CircuitBuilderError::NonPrimitiveOpArity {
-                                op: "PoseidonPerm",
-                                expected: "0 or 1 extension element per output limb".to_string(),
-                                got: limb_exprs.len(),
-                            });
-                        }
-                        let limb_widx = limb_exprs
-                            .iter()
-                            .map(|&expr| {
-                                get_witness_id(
-                                    self.expr_to_widx,
-                                    expr,
-                                    &format!("PoseidonPerm output limb {i}"),
                                 )
                             })
                             .collect::<Result<Vec<WitnessId>, _>>()?;
@@ -173,19 +162,36 @@ impl<'a, F> NonPrimitiveLowerer<'a, F> {
                         .collect::<Result<Vec<WitnessId>, _>>()?;
                     inputs_widx.push(mmcs_bit_widx);
 
-                    let exec_fn = self.poseidon_perm_execute_fn.as_ref().ok_or_else(|| {
-                        CircuitBuilderError::InvalidNonPrimitiveOpConfiguration {
-                            op: op_type.clone(),
+                    // Outputs: [out0, out1]
+                    let mut outputs_widx: Vec<Vec<WitnessId>> = Vec::with_capacity(2);
+                    for (i, limb_exprs) in witness_exprs.iter().skip(4).take(2).enumerate() {
+                        if !(limb_exprs.is_empty() || limb_exprs.len() == 1) {
+                            return Err(CircuitBuilderError::NonPrimitiveOpArity {
+                                op: "PoseidonPerm",
+                                expected: "0 or 1 extension element per output limb".to_string(),
+                                got: limb_exprs.len(),
+                            });
                         }
-                    })?;
+                        let limb_widx = limb_exprs
+                            .iter()
+                            .map(|&expr| {
+                                get_witness_id(
+                                    self.expr_to_widx,
+                                    expr,
+                                    &format!("PoseidonPerm output limb {i}"),
+                                )
+                            })
+                            .collect::<Result<Vec<WitnessId>, _>>()?;
+                        outputs_widx.push(limb_widx);
+                    }
 
                     lowered_ops.push(Op::NonPrimitiveOpWithExecutor {
                         inputs: inputs_widx,
-                        outputs: Vec::new(),
+                        outputs: outputs_widx,
                         executor: Box::new(PoseidonPermExecutor::new(
                             new_start,
                             merkle_path,
-                            exec_fn.clone(),
+                            exec_fn,
                         )),
                         op_id,
                     });
@@ -221,7 +227,7 @@ mod tests {
         let config = BuilderConfig::new();
 
         let lowerer: NonPrimitiveLowerer<'_, BabyBear> =
-            NonPrimitiveLowerer::new(&ops, &expr_map, &config, None);
+            NonPrimitiveLowerer::new(&ops, &expr_map, &config);
         let result: Vec<Op<BabyBear>> = lowerer.lower().unwrap();
 
         assert!(result.is_empty());
@@ -244,10 +250,7 @@ mod tests {
 
     #[test]
     fn test_poseidon_perm_lowering() {
-        use alloc::sync::Arc;
-
-        let mut config = BuilderConfig::new();
-        config.enable_poseidon_perm();
+        let mut config: BuilderConfig<BabyBear> = BuilderConfig::new();
 
         // Layout: in0..3 (1 elem each), out0..1 (empty), mmcs_index_sum (1 elem), mmcs_bit (1 elem)
         let witness_exprs = vec![
@@ -273,10 +276,17 @@ mod tests {
         let expr_map = create_expr_map(10);
 
         // Create a simple identity execute function for testing
-        let execute_fn: SharedPermExecuteFn<BabyBear> = Arc::new(|input| *input);
+        let execute_fn = alloc::sync::Arc::new(|input: &[BabyBear; 4]| *input);
+        let poseidon_config =
+            crate::op::NonPrimitiveOpConfig::PoseidonPerm(crate::op::PoseidonPermConfig::<
+                BabyBear,
+            > {
+                exec: execute_fn,
+            });
+        config.enable_op(crate::op::NonPrimitiveOpType::PoseidonPerm, poseidon_config);
 
         let lowerer: NonPrimitiveLowerer<'_, BabyBear> =
-            NonPrimitiveLowerer::new(&ops, &expr_map, &config, Some(execute_fn));
+            NonPrimitiveLowerer::new(&ops, &expr_map, &config);
         let result: Vec<Op<BabyBear>> = lowerer.lower().unwrap();
         assert_eq!(result.len(), 1);
 
@@ -288,16 +298,16 @@ mod tests {
                 ..
             } => {
                 assert_eq!(executor.op_type(), &NonPrimitiveOpType::PoseidonPerm);
-                assert!(outputs.is_empty());
-                assert_eq!(inputs.len(), 8);
+                assert_eq!(outputs.len(), 2);
+                assert_eq!(inputs.len(), 6);
                 // in0
                 assert_eq!(inputs[0], vec![WitnessId(0)]);
                 // in1
                 assert_eq!(inputs[1], vec![WitnessId(1)]);
-                // mmcs_index_sum
-                assert_eq!(inputs[6], vec![WitnessId(2)]);
-                // mmcs_bit
-                assert_eq!(inputs[7], vec![WitnessId(3)]);
+                // mmcs_index_sum (at index 4)
+                assert_eq!(inputs[4], vec![WitnessId(2)]);
+                // mmcs_bit (at index 5)
+                assert_eq!(inputs[5], vec![WitnessId(3)]);
             }
             _ => panic!("Expected PoseidonPerm op"),
         }

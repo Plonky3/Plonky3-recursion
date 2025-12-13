@@ -184,32 +184,75 @@ impl<F: Field> NonPrimitiveExecutor<F> for PoseidonPermExecutor<F> {
     fn execute(
         &self,
         inputs: &[Vec<WitnessId>],
-        _outputs: &[Vec<WitnessId>],
+        outputs: &[Vec<WitnessId>],
         ctx: &mut ExecutionContext<'_, F>,
     ) -> Result<(), CircuitError> {
-        // Layout: [in0, in1, in2, in3, out0, out1, mmcs_index_sum, mmcs_bit]
-        if inputs.len() < 6 {
+        // Layout: inputs = [in0, in1, in2, in3, mmcs_index_sum, mmcs_bit]
+        //         outputs = [out0, out1]
+        if inputs.len() < 4 {
             return Ok(()); // Invalid layout, skip execution
         }
 
-        // Build input state from witness values, private data, and/or chained outputs
+        // Build input state: start with private data (if available), then apply chaining, then CTL
+        // This matches the trace builder's semantics: private data is the initial state
         let mut input_limbs: [F; 4] = [F::ZERO; 4];
 
-        // For chained operations (new_start=false), use the previous output
-        if !self.new_start
-            && let Some(prev_output) = ctx.last_poseidon_output()
-        {
-            input_limbs = *prev_output;
-        }
-
-        // Try to get inputs from private data (can override chained values)
+        // Step 1: Initialize from private data (if available)
         if let Ok(NonPrimitiveOpPrivateData::PoseidonPerm(perm_data)) = ctx.get_private_data() {
             for (i, limb) in perm_data.input_values.iter().enumerate().take(4) {
                 input_limbs[i] = *limb;
             }
         }
 
+        // Step 2: For chained operations (new_start=false), apply chaining rules
+        // Chaining only applies to limbs that are ZERO (not set by private data)
+        // This matches the AIR: chaining is gated by (1 - in_ctl[i]), and private data doesn't set in_ctl
+        if !self.new_start {
+            if let Some(prev_output) = ctx.get_last_poseidon_output() {
+                if self.merkle_path {
+                    // Merkle-path mode: chain based on mmcs_bit
+                    // Get mmcs_bit from inputs[5] if provided
+                    let mmcs_bit = if inputs.len() > 5 && inputs[5].len() == 1 {
+                        if let Ok(bit_val) = ctx.get_witness(inputs[5][0]) {
+                            bit_val != F::ZERO
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    };
+
+                    // Only chain limbs that are ZERO (not set by private data)
+                    if mmcs_bit {
+                        // mmcs_bit = 1 (right): chain limbs 0-1 from prev_out[2-3] if not set
+                        if input_limbs[0] == F::ZERO {
+                            input_limbs[0] = prev_output[2];
+                        }
+                        if input_limbs[1] == F::ZERO {
+                            input_limbs[1] = prev_output[3];
+                        }
+                    } else {
+                        // mmcs_bit = 0 (left): chain limbs 0-1 from prev_out[0-1] if not set
+                        if input_limbs[0] == F::ZERO {
+                            input_limbs[0] = prev_output[0];
+                        }
+                        if input_limbs[1] == F::ZERO {
+                            input_limbs[1] = prev_output[1];
+                        }
+                    }
+                } else {
+                    // Normal sponge mode: chain all 4 limbs if not set by private data
+                    for i in 0..4 {
+                        if input_limbs[i] == F::ZERO {
+                            input_limbs[i] = prev_output[i];
+                        }
+                    }
+                }
+            }
+        }
+
         // Override with witness values where explicitly provided (CTL exposure)
+        // CTL always overrides chaining and private data
         for (i, limb_wids) in inputs.iter().take(4).enumerate() {
             if limb_wids.len() == 1
                 && let Ok(val) = ctx.get_witness(limb_wids[0])
@@ -225,10 +268,10 @@ impl<F: Field> NonPrimitiveExecutor<F> for PoseidonPermExecutor<F> {
         ctx.set_last_poseidon_output(output_limbs);
 
         // Write output values to witness where output slots are specified
-        // inputs[4] = out0, inputs[5] = out1
-        for (i, output_wids) in inputs.iter().skip(4).take(2).enumerate() {
+        // Use set_if_unset_or_equal to allow overwriting ZERO (from default hints) and matching values (for public inputs)
+        for (i, output_wids) in outputs.iter().take(2).enumerate() {
             if output_wids.len() == 1 {
-                ctx.set_witness_force(output_wids[0], output_limbs[i])?;
+                ctx.set_if_unset_or_equal(output_wids[0], output_limbs[i])?;
             }
         }
 

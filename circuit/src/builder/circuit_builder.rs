@@ -1,4 +1,3 @@
-use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::hash::Hash;
@@ -16,9 +15,6 @@ use crate::tables::{Poseidon2Params, TraceGeneratorFn};
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};
 use crate::{CircuitBuilderError, CircuitField};
 
-/// Type alias for the closure stored in the builder
-type StoredPermExecuteFn<F> = Box<dyn Fn(&[F; 4]) -> [F; 4] + Send + Sync>;
-
 /// Builder for constructing circuits.
 pub struct CircuitBuilder<F> {
     /// Expression graph builder
@@ -34,13 +30,10 @@ pub struct CircuitBuilder<F> {
     non_primitive_ops: Vec<NonPrimitiveOperationData>,
 
     /// Builder configuration
-    config: BuilderConfig,
+    config: BuilderConfig<F>,
 
     /// Registered non-primitive trace generators.
     non_primitive_trace_generators: HashMap<NonPrimitiveOpType, TraceGeneratorFn<F>>,
-
-    /// Optional Poseidon permutation execution function (passed to executors during lowering).
-    poseidon_perm_execute_fn: Option<StoredPermExecuteFn<F>>,
 }
 
 /// Per-op extra parameters that are not encoded in the op type.
@@ -81,12 +74,11 @@ where
             non_primitive_ops: Vec::new(),
             config: BuilderConfig::new(),
             non_primitive_trace_generators: HashMap::new(),
-            poseidon_perm_execute_fn: None,
         }
     }
 
     /// Enables a non-primitive operation type on this builder.
-    pub fn enable_op(&mut self, op: NonPrimitiveOpType, cfg: crate::op::NonPrimitiveOpConfig) {
+    pub fn enable_op(&mut self, op: NonPrimitiveOpType, cfg: crate::op::NonPrimitiveOpConfig<F>) {
         self.config.enable_op(op, cfg);
     }
 
@@ -113,12 +105,11 @@ where
             "Poseidon perm only supports D=4, WIDTH=16"
         );
 
-        self.config.enable_poseidon_perm();
         self.non_primitive_trace_generators
             .insert(NonPrimitiveOpType::PoseidonPerm, trace_generator);
 
         // Create the execute function that converts between extension and base field
-        let execute_fn: StoredPermExecuteFn<F> = Box::new(move |input_limbs: &[F; 4]| {
+        let execute_fn = Arc::new(move |input_limbs: &[F; 4]| {
             // Convert 4 extension limbs to 16 base field elements
             let mut base_state = [Config::BaseField::ZERO; 16];
             for (i, limb) in input_limbs.iter().enumerate() {
@@ -139,7 +130,12 @@ where
             output_limbs
         });
 
-        self.poseidon_perm_execute_fn = Some(execute_fn);
+        let config =
+            crate::op::NonPrimitiveOpConfig::PoseidonPerm(crate::op::PoseidonPermConfig::<F> {
+                exec: execute_fn,
+            });
+        self.config
+            .enable_op(NonPrimitiveOpType::PoseidonPerm, config);
     }
 
     /// Checks whether an op type is enabled on this builder.
@@ -493,16 +489,8 @@ where
             lowerer.lower()?;
 
         // Stage 2: Lower non-primitive operations using the expr_to_widx mapping
-        // Convert Box to Arc for sharing with executors
-        let perm_execute_arc = self
-            .poseidon_perm_execute_fn
-            .map(|boxed| -> Arc<dyn Fn(&[F; 4]) -> [F; 4] + Send + Sync> { Arc::from(boxed) });
-        let non_primitive_lowerer = NonPrimitiveLowerer::new(
-            &self.non_primitive_ops,
-            &expr_to_widx,
-            &self.config,
-            perm_execute_arc,
-        );
+        let non_primitive_lowerer =
+            NonPrimitiveLowerer::new(&self.non_primitive_ops, &expr_to_widx, &self.config);
         let lowered_non_primitive_ops = non_primitive_lowerer.lower()?;
 
         // Stage 3: IR transformations and optimizations

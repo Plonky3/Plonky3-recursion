@@ -233,10 +233,50 @@ pub enum NonPrimitiveOpType {
     PoseidonPerm,
 }
 
+use alloc::sync::Arc;
+
 /// Non-primitive operation types
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum NonPrimitiveOpConfig {
+#[derive(Clone)]
+pub enum NonPrimitiveOpConfig<F> {
     None,
+    PoseidonPerm(PoseidonPermConfig<F>),
+}
+
+/// Configuration for Poseidon permutation operations
+#[derive(Clone)]
+pub struct PoseidonPermConfig<F> {
+    /// Execution function for computing permutation outputs
+    pub exec: Arc<dyn Fn(&[F; 4]) -> [F; 4] + Send + Sync>,
+}
+
+impl<F> core::fmt::Debug for NonPrimitiveOpConfig<F> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::None => write!(f, "None"),
+            Self::PoseidonPerm(_) => write!(f, "PoseidonPerm(<fn>)"),
+        }
+    }
+}
+
+impl<F> PartialEq for NonPrimitiveOpConfig<F> {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::None, Self::None) => true,
+            (Self::PoseidonPerm(_), Self::PoseidonPerm(_)) => true,
+            _ => false,
+        }
+    }
+}
+
+impl<F> Eq for NonPrimitiveOpConfig<F> {}
+
+impl<F> core::hash::Hash for NonPrimitiveOpConfig<F> {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        match self {
+            Self::None => 0u8.hash(state),
+            Self::PoseidonPerm(_) => 1u8.hash(state),
+        }
+    }
 }
 
 /// Non-primitive operations representing complex cryptographic constraints.
@@ -276,19 +316,19 @@ pub struct ExecutionContext<'a, F> {
     /// Private data map for non-primitive operations
     non_primitive_op_private_data: &'a [Option<NonPrimitiveOpPrivateData<F>>],
     /// Operation configurations
-    enabled_ops: &'a HashMap<NonPrimitiveOpType, NonPrimitiveOpConfig>,
+    enabled_ops: &'a HashMap<NonPrimitiveOpType, NonPrimitiveOpConfig<F>>,
     /// Current operation's NonPrimitiveOpId for error reporting
     operation_id: NonPrimitiveOpId,
-    /// Last Poseidon permutation output (for chaining)
+    /// Last Poseidon output for chaining (only one operation type needs state currently)
     last_poseidon_output: &'a mut Option<[F; 4]>,
 }
 
 impl<'a, F: Field> ExecutionContext<'a, F> {
     /// Create a new execution context
-    pub const fn new(
+    pub fn new(
         witness: &'a mut [Option<F>],
         non_primitive_op_private_data: &'a [Option<NonPrimitiveOpPrivateData<F>>],
-        enabled_ops: &'a HashMap<NonPrimitiveOpType, NonPrimitiveOpConfig>,
+        enabled_ops: &'a HashMap<NonPrimitiveOpType, NonPrimitiveOpConfig<F>>,
         operation_id: NonPrimitiveOpId,
         last_poseidon_output: &'a mut Option<[F; 4]>,
     ) -> Self {
@@ -331,13 +371,40 @@ impl<'a, F: Field> ExecutionContext<'a, F> {
         Ok(())
     }
 
-    /// Set witness value at the given index (forced overwrite, no conflict checking)
-    pub fn set_witness_force(&mut self, widx: WitnessId, value: F) -> Result<(), CircuitError> {
+    /// Set witness value if unset or if it equals the provided value.
+    /// Also allows overwriting if the existing value is ZERO (treating ZERO as "unset").
+    pub fn set_if_unset_or_equal(&mut self, widx: WitnessId, value: F) -> Result<(), CircuitError> {
         if widx.0 as usize >= self.witness.len() {
             return Err(CircuitError::WitnessIdOutOfBounds { witness_id: widx });
         }
-        self.witness[widx.0 as usize] = Some(value);
-        Ok(())
+
+        match &self.witness[widx.0 as usize] {
+            None => {
+                self.witness[widx.0 as usize] = Some(value);
+                Ok(())
+            }
+            Some(existing) if *existing == value => Ok(()),
+            Some(existing) if *existing == F::ZERO => {
+                // Allow overwriting ZERO (from default hints) with actual computed value
+                self.witness[widx.0 as usize] = Some(value);
+                Ok(())
+            }
+            Some(existing) => Err(CircuitError::WitnessConflict {
+                witness_id: widx,
+                existing: format!("{existing:?}"),
+                new: format!("{value:?}"),
+            }),
+        }
+    }
+
+    /// Get last Poseidon output (for chaining)
+    pub fn get_last_poseidon_output(&self) -> Option<[F; 4]> {
+        *self.last_poseidon_output
+    }
+
+    /// Set last Poseidon output (for chaining)
+    pub fn set_last_poseidon_output(&mut self, value: [F; 4]) {
+        *self.last_poseidon_output = Some(value);
     }
 
     /// Get private data for the current operation
@@ -354,7 +421,7 @@ impl<'a, F: Field> ExecutionContext<'a, F> {
     pub fn get_config(
         &self,
         op_type: &NonPrimitiveOpType,
-    ) -> Result<&NonPrimitiveOpConfig, CircuitError> {
+    ) -> Result<&NonPrimitiveOpConfig<F>, CircuitError> {
         self.enabled_ops.get(op_type).ok_or_else(|| {
             CircuitError::InvalidNonPrimitiveOpConfiguration {
                 op: op_type.clone(),
@@ -365,16 +432,6 @@ impl<'a, F: Field> ExecutionContext<'a, F> {
     /// Get the current operation ID
     pub const fn operation_id(&self) -> NonPrimitiveOpId {
         self.operation_id
-    }
-
-    /// Get the last Poseidon permutation output (for chaining)
-    pub const fn last_poseidon_output(&self) -> Option<&[F; 4]> {
-        self.last_poseidon_output.as_ref()
-    }
-
-    /// Set the last Poseidon permutation output (for chaining)
-    pub const fn set_last_poseidon_output(&mut self, output: [F; 4]) {
-        *self.last_poseidon_output = Some(output);
     }
 }
 
@@ -934,7 +991,7 @@ mod tests {
         // Create a configuration map for operation parameters
         let mut configs = HashMap::new();
         let op_type = NonPrimitiveOpType::PoseidonPerm;
-        configs.insert(op_type.clone(), NonPrimitiveOpConfig::None);
+        configs.insert(op_type.clone(), NonPrimitiveOpConfig::<F>::None);
 
         // Create execution context with configurations
         let mut witness = vec![];
@@ -953,7 +1010,10 @@ mod tests {
         let result = ctx.get_config(&op_type);
 
         // Verify configuration lookup succeeded
-        assert_eq!(*result.unwrap(), NonPrimitiveOpConfig::None);
+        match result.unwrap() {
+            NonPrimitiveOpConfig::None => {}
+            _ => panic!("Expected None config"),
+        }
     }
 
     #[test]
