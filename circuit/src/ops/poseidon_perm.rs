@@ -19,10 +19,11 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use p3_field::{Field, PrimeCharacteristicRing};
+use strum::EnumCount;
 
 use crate::CircuitError;
 use crate::builder::{CircuitBuilder, NonPrimitiveOpParams};
-use crate::op::{ExecutionContext, NonPrimitiveExecutor, NonPrimitiveOpType};
+use crate::op::{ExecutionContext, NonPrimitiveExecutor, NonPrimitiveOpType, PrimitiveOpType};
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessId};
 
 /// User-facing arguments for adding a Poseidon perm row.
@@ -163,6 +164,55 @@ impl<F: Field> NonPrimitiveExecutor<F> for PoseidonPermExecutor {
 
     fn as_any(&self) -> &dyn core::any::Any {
         self
+    }
+
+    fn preprocessing(
+        &self,
+        inputs: &[Vec<WitnessId>],
+        outputs: &[Vec<WitnessId>],
+        preprocessed_tables: &mut Vec<Vec<F>>,
+    ) {
+        // We need to populate in_ctl and out_ctl for this operation.
+        let idx = PrimitiveOpType::COUNT + self.op_type.clone() as usize;
+        if preprocessed_tables.len() <= idx {
+            preprocessed_tables.resize(idx + 1, vec![]);
+        }
+
+        // The inputs are of the shape:
+        // inputs[0..3], outputs[0..1], mmcs_index_sum, mmcs_bit
+        // The shape of one preprocessed row is:
+        // [in_idx0, in_ctl_0, in_idx1, in1_ctl, ..., out_idx0, out_ctl_0, out_idx1, out_ctl_1, mmcs_index_sum_ctl]
+
+        // First, let's add the input indices and `in_ctl` values.
+        for inp in &inputs[0..4] {
+            if inp.is_empty() {
+                // Private input
+                preprocessed_tables[idx].push(F::ZERO); // in_idx
+                preprocessed_tables[idx].push(F::ZERO); // in_ctl
+            } else {
+                // Exposed input
+                preprocessed_tables[idx].push(F::from_u32(inp[0].0)); // in_idx
+                preprocessed_tables[idx].push(F::ONE); // in_ctl
+            }
+        }
+
+        for out in inputs[4..6].iter() {
+            if out.is_empty() {
+                // Private output
+                preprocessed_tables[idx].push(F::ZERO); // out_idx
+                preprocessed_tables[idx].push(F::ZERO); // out_ctl
+            } else {
+                // Exposed output
+                preprocessed_tables[idx].push(F::from_u32(out[0].0)); // out_idx
+                preprocessed_tables[idx].push(F::ONE); // out_ctl
+            }
+        }
+        // mmcs_index_sum
+        if outputs[6].is_empty() {
+            preprocessed_tables[idx].push(F::ZERO); // mmcs_index_sum_ctl
+        } else {
+            preprocessed_tables[idx].push(F::ONE); // mmcs_index_sum_ctl
+        }
     }
 
     fn boxed(&self) -> Box<dyn NonPrimitiveExecutor<F>> {

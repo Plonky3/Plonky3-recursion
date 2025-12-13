@@ -4,7 +4,7 @@ use core::mem::MaybeUninit;
 
 use p3_air::{Air, AirBuilder, BaseAir};
 use p3_circuit::tables::{Poseidon2CircuitRow, Poseidon2CircuitTrace};
-use p3_field::{PrimeCharacteristicRing, PrimeField};
+use p3_field::{Field, PrimeCharacteristicRing, PrimeField};
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_maybe_rayon::prelude::*;
@@ -55,6 +55,12 @@ pub struct Poseidon2CircuitAir<
         HALF_FULL_ROUNDS,
         PARTIAL_ROUNDS,
     >,
+    preprocessed: Vec<F>,
+}
+
+pub const fn poseidon_preprocessed_width() -> usize {
+    // Witness index and `in_ctl` for all input limbs, witness index and `out_ctl` for all output limbs, `mmcs_index_sum_ctl`
+    2 * POSEIDON_LIMBS + 2 * POSEIDON_PUBLIC_OUTPUT_LIMBS + 1
 }
 
 impl<
@@ -94,7 +100,28 @@ impl<
 
         Self {
             p3_poseidon2: Poseidon2Air::new(constants),
+            preprocessed: Vec::new(),
         }
+    }
+
+    pub const fn new_with_preprocessed(
+        constants: RoundConstants<F, WIDTH, HALF_FULL_ROUNDS, PARTIAL_ROUNDS>,
+        preprocessed: Vec<F>,
+    ) -> Self {
+        const {
+            assert!(CAPACITY_EXT + RATE_EXT == WIDTH_EXT);
+            assert!(WIDTH_EXT * D == WIDTH);
+        }
+
+        Self {
+            p3_poseidon2: Poseidon2Air::new(constants),
+            preprocessed,
+        }
+    }
+
+    pub const fn preprocessed_width() -> usize {
+        // Witness index and `in_ctl` for all input limbs, witness index and `out_ctl` for all output limbs, `mmcs_index_sum_ctl`
+        poseidon_preprocessed_width()
     }
 
     pub fn generate_trace_rows<P: CryptographicPermutation<[F; WIDTH]>>(
@@ -327,8 +354,8 @@ impl<
 }
 
 impl<
-    F: PrimeCharacteristicRing + Sync,
-    LinearLayers: Sync,
+    F: PrimeField + Sync,
+    LinearLayers: GenericPoseidon2LinearLayers<WIDTH> + Sync,
     const D: usize,
     const WIDTH: usize,
     const WIDTH_EXT: usize,
@@ -358,6 +385,67 @@ impl<
             Poseidon2Cols<u8, WIDTH, SBOX_DEGREE, SBOX_REGISTERS, HALF_FULL_ROUNDS, PARTIAL_ROUNDS>,
         >()
     }
+
+    fn preprocessed_trace(&self) -> Option<RowMajorMatrix<F>> {
+        debug_assert!(
+            self.preprocessed.len() % Self::preprocessed_width() == 0,
+            "Preprocessed trace length is not a multiple of preprocessed width"
+        );
+
+        println!("Preprocessed {:?} values", self.preprocessed);
+        let padded_height = self
+            .preprocessed
+            .len()
+            .div_ceil(Self::preprocessed_width())
+            .next_power_of_two()
+            * Self::preprocessed_width();
+        let mut preprocessed = self.preprocessed.clone();
+        preprocessed.resize(padded_height, F::ZERO);
+
+        println!(
+            "Preprocessed trace height: {}",
+            padded_height / Self::preprocessed_width()
+        );
+        Some(RowMajorMatrix::new(
+            preprocessed,
+            Self::preprocessed_width(),
+        ))
+    }
+}
+
+pub fn extract_preprocessed_from_operations<F: Field, OF: Field>(
+    operations: &[Poseidon2CircuitRow<OF>],
+) -> Vec<F> {
+    let mut preprocessed = Vec::with_capacity(operations.len() * poseidon_preprocessed_width());
+
+    for operation in operations {
+        let Poseidon2CircuitRow {
+            in_ctl,
+            input_indices,
+            out_ctl,
+            output_indices,
+            mmcs_index_sum_idx,
+            ..
+        } = operation;
+
+        // One row of preprocessed values is of the form:
+        // [input_indoces[0], in_ctl[0], ..., output_indices[1], out_ctl[1], output_indices[2], out_ctl[2], mmcs_index_sum_idx]
+        in_ctl
+            .iter()
+            .zip(input_indices.iter())
+            .for_each(|(ctl, idx)| {
+                preprocessed.extend(&[F::from_u32(*idx), F::from_bool(*ctl)]);
+            });
+        out_ctl
+            .iter()
+            .zip(output_indices.iter())
+            .for_each(|(ctl, idx)| {
+                preprocessed.extend(&[F::from_u32(*idx), F::from_bool(*ctl)]);
+            });
+        preprocessed.push(F::from_u64(*mmcs_index_sum_idx as u64));
+    }
+
+    preprocessed
 }
 
 fn eval<
@@ -557,6 +645,8 @@ impl<
         HALF_FULL_ROUNDS,
         PARTIAL_ROUNDS,
     >
+where
+    AB::F: PrimeField,
 {
     #[inline]
     fn eval(&self, builder: &mut AB) {
@@ -596,7 +686,9 @@ mod test {
     use p3_poseidon2::ExternalLayerConstants;
     use p3_poseidon2_air::RoundConstants;
     use p3_symmetric::{CompressionFunctionFromHasher, PaddingFreeSponge, SerializingHasher};
-    use p3_uni_stark::{StarkConfig, prove, verify};
+    use p3_uni_stark::{
+        StarkConfig, prove_with_preprocessed, setup_preprocessed, verify_with_preprocessed,
+    };
     use rand::rngs::SmallRng;
     use rand::{Rng, SeedableRng};
 
@@ -671,8 +763,6 @@ mod test {
             partial_constants.to_vec(),
         );
 
-        let air = Poseidon2CircuitAirBabyBearD4Width16::new(constants.clone());
-
         // Generate random inputs.
         let mut rng = SmallRng::seed_from_u64(1);
 
@@ -732,7 +822,8 @@ mod test {
         };
 
         let mut rows = vec![sponge_a, sponge_b, sponge_c, sponge_d];
-        let target_rows = 32;
+        let degree_bits = 5;
+        let target_rows = 1 << degree_bits;
         if rows.len() < target_rows {
             let filler = rows.last().cloned().unwrap_or_else(|| Poseidon2CircuitRow {
                 new_start: true,
@@ -749,6 +840,12 @@ mod test {
             rows.resize(target_rows, filler);
         }
 
+        let preprocessed = extract_preprocessed_from_operations::<Val, Val>(&rows);
+        let air = Poseidon2CircuitAirBabyBearD4Width16::new_with_preprocessed(
+            constants.clone(),
+            preprocessed,
+        );
+
         let trace = air.generate_trace_rows(&rows, &constants, fri_params.log_blowup, &perm);
 
         type Dft = p3_dft::Radix2Bowers;
@@ -760,8 +857,11 @@ mod test {
         type MyConfig = StarkConfig<Pcs, Challenge, Challenger>;
         let config = MyConfig::new(pcs, challenger);
 
-        let proof = prove(&config, &air, trace, &[]);
+        let (preprocessed_prover, preprocessed_verifier) =
+            setup_preprocessed(&config, &air, degree_bits).unzip();
+        let proof =
+            prove_with_preprocessed(&config, &air, trace, &[], preprocessed_prover.as_ref());
 
-        verify(&config, &air, &proof, &[])
+        verify_with_preprocessed(&config, &air, &proof, &[], preprocessed_verifier.as_ref())
     }
 }

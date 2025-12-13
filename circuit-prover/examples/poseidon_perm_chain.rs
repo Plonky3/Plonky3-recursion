@@ -116,7 +116,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     let expr_to_widx = circuit.expr_to_widx.clone();
 
     let table_packing = TablePacking::new(1, 1, 1);
-    let airs_degrees = get_airs_and_degrees_with_prep::<_, _, 1>(&circuit, table_packing).unwrap();
+    let poseidon_config = Poseidon2Config::baby_bear_d4_width16();
+    let airs_degrees =
+        get_airs_and_degrees_with_prep::<_, _, 1>(&circuit, table_packing, Some(&poseidon_config))
+            .unwrap();
 
     let runner = circuit.runner();
     let traces = runner.run()?;
@@ -155,19 +158,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     let stark_config = config::baby_bear().build();
 
     let (airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
-    let mut common = CommonData::from_airs_and_degrees(&stark_config, &airs, &degrees);
-
-    // TODO: Pad preprocessed instances for non-primitive tables (same workaround as other examples).
-    for (_, trace) in &traces.non_primitive_traces {
-        if trace.rows() != 0
-            && let Some(p) = common.preprocessed.as_mut()
-        {
-            p.instances.push(None);
-        }
-    }
+    let common = CommonData::from_airs_and_degrees(&stark_config, &airs, &degrees);
 
     let mut prover = BatchStarkProver::new(stark_config).with_table_packing(table_packing);
-    prover.register_poseidon2_table(Poseidon2Config::baby_bear_d4_width16());
+    prover.register_poseidon2_table(poseidon_config);
     let proof = prover.prove_all_tables(&traces, &common)?;
     prover.verify_all_tables(&proof, &common)?;
 

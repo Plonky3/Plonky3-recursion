@@ -163,9 +163,12 @@ impl<F: Field> Circuit<F> {
                         .unwrap_or(max_idx);
                 }
                 // Non-primitive ops should not appear in primitive_ops.
-                Op::NonPrimitiveOpWithExecutor { .. } => panic!(
-                    "preprocessed values are not yet implemented for non primitive operations."
-                ),
+                Op::NonPrimitiveOpWithExecutor {
+                    inputs,
+                    outputs,
+                    executor,
+                    ..
+                } => executor.preprocessing(inputs, outputs, &mut preprocessed),
             }
         }
 
