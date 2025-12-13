@@ -54,21 +54,13 @@ fn main() -> Result<(), Box<dyn Error>> {
         *ext_limb = Ext4::from_basis_coefficients_slice(&coeffs).unwrap();
     }
 
-    // Compute native permutation chain over the base field (flattened coefficients).
+    // Get the permutation - outputs will be computed during runner.run()
     let perm = default_babybear_poseidon2_16();
-    let mut states_base = Vec::with_capacity(chain_length + 1);
-    let mut state_base = flatten_ext_limbs(&ext_limbs);
-    states_base.push(state_base);
-    for _ in 0..chain_length {
-        state_base = perm.permute(state_base);
-        states_base.push(state_base);
-    }
-    let final_state = states_base.last().copied().unwrap();
-    let final_limbs_ext = collect_ext_limbs(&final_state);
 
     let mut builder = CircuitBuilder::<Ext4>::new();
-    builder.enable_poseidon_perm::<BabyBearD4Width16>(
+    builder.enable_poseidon_perm::<BabyBearD4Width16, _>(
         generate_poseidon2_trace::<Ext4, BabyBearD4Width16>,
+        perm.clone(),
     );
 
     // Allocate initial input limbs (exposed via CTL on the first row).
@@ -77,11 +69,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         first_inputs_expr.push(builder.alloc_const(val, "poseidon_perm_input"));
     }
 
-    // Allocate expected outputs for limbs 0 and 1 of the final row (for CTL exposure).
-    let mut final_output_exprs: Vec<ExprId> = Vec::with_capacity(2);
-    for limb in final_limbs_ext.iter().take(2) {
-        final_output_exprs.push(builder.alloc_const(*limb, "poseidon_perm_output"));
-    }
+    // Allocate output witnesses - values will be computed during execution!
+    // No pre-computation needed; the executor chains and computes outputs.
+    let final_output_exprs: Vec<ExprId> =
+        builder.alloc_witness_hints_default_filler(2, "poseidon_perm_output");
 
     // Add permutation rows.
     for row in 0..chain_length {
@@ -103,8 +94,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
 
         builder.add_poseidon_perm(PoseidonPermCall {
-            new_start: is_first,
-            merkle_path: false,
+            input_mode: if is_first {
+                p3_circuit::ops::PoseidonInputMode::NewChain
+            } else {
+                p3_circuit::ops::PoseidonInputMode::SpongeChain
+            },
             mmcs_bit: Some(mmcs_bit_zero),
             inputs,
             outputs,
@@ -121,7 +115,15 @@ fn main() -> Result<(), Box<dyn Error>> {
     let runner = circuit.runner();
     let traces = runner.run()?;
 
-    // Sanity-check exposed outputs against the native computation.
+    // Verify outputs were computed by the executor (not pre-computed).
+    // Compute expected values natively for comparison.
+    let mut state_base = flatten_ext_limbs(&ext_limbs);
+    for _ in 0..chain_length {
+        state_base = perm.permute(state_base);
+    }
+    let expected_limbs_ext = collect_ext_limbs(&state_base);
+
+    // Sanity-check that executor-computed outputs match native computation.
     let mut observed_outputs = Vec::with_capacity(2);
     for out_expr in &final_output_exprs {
         let witness_id = expr_to_widx
@@ -139,8 +141,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     assert_eq!(
         observed_outputs,
-        final_limbs_ext[..2],
-        "final exposed limbs must match native Poseidon permutation output"
+        expected_limbs_ext[..2],
+        "executor-computed outputs must match native Poseidon permutation"
     );
 
     assert!(

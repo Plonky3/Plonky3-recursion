@@ -49,6 +49,14 @@ pub type TraceGeneratorFn<F> = fn(
     non_primitive_data: &[Option<NonPrimitiveOpPrivateData<F>>],
 ) -> Result<Option<Box<dyn NonPrimitiveTrace<F>>>, CircuitError>;
 
+/// Type-erased function for executing a Poseidon permutation.
+///
+/// Takes 4 extension field limbs as input (the full state for D=4, WIDTH=16),
+/// applies the Poseidon permutation, and returns 4 output extension limbs.
+///
+/// The function handles conversion between extension and base field internally.
+pub type PoseidonPermExecuteFn<F> = Box<dyn Fn(&[F; 4]) -> [F; 4] + Send + Sync>;
+
 /// Execution traces for all tables.
 ///
 /// This structure holds the complete execution trace of a circuit,

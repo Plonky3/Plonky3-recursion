@@ -1,9 +1,11 @@
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::hash::Hash;
 
 use hashbrown::HashMap;
 use itertools::zip_eq;
-use p3_field::{Field, PrimeCharacteristicRing};
+use p3_field::{BasedVectorSpace, ExtensionField, Field, PrimeCharacteristicRing};
+use p3_symmetric::Permutation;
 
 use super::compiler::{ExpressionLowerer, NonPrimitiveLowerer, Optimizer};
 use super::{BuilderConfig, ExpressionBuilder, PublicInputTracker};
@@ -28,7 +30,7 @@ pub struct CircuitBuilder<F> {
     non_primitive_ops: Vec<NonPrimitiveOperationData>,
 
     /// Builder configuration
-    config: BuilderConfig,
+    config: BuilderConfig<F>,
 
     /// Registered non-primitive trace generators.
     non_primitive_trace_generators: HashMap<NonPrimitiveOpType, TraceGeneratorFn<F>>,
@@ -76,28 +78,64 @@ where
     }
 
     /// Enables a non-primitive operation type on this builder.
-    pub fn enable_op(&mut self, op: NonPrimitiveOpType, cfg: crate::op::NonPrimitiveOpConfig) {
+    pub fn enable_op(&mut self, op: NonPrimitiveOpType, cfg: crate::op::NonPrimitiveOpConfig<F>) {
         self.config.enable_op(op, cfg);
     }
 
     /// Enables Poseidon permutation operations (one perm per table row).
     ///
-    /// The current implementation only supports extension degree D=4.
-    pub fn enable_poseidon_perm<Config: Poseidon2Params>(
-        &mut self,
-        trace_generator: TraceGeneratorFn<F>,
-    ) where
-        F: CircuitField,
+    /// The current implementation only supports extension degree D=4 and WIDTH=16.
+    ///
+    /// # Type Parameters
+    /// - `Config`: Poseidon2 configuration (e.g., `BabyBearD4Width16`)
+    /// - `P`: The permutation type
+    ///
+    /// # Arguments
+    /// - `trace_generator`: Function to generate the Poseidon trace
+    /// - `perm`: The actual Poseidon permutation to use for execution
+    pub fn enable_poseidon_perm<Config, P>(&mut self, trace_generator: TraceGeneratorFn<F>, perm: P)
+    where
+        F: CircuitField + ExtensionField<Config::BaseField> + BasedVectorSpace<Config::BaseField>,
+        Config: Poseidon2Params,
+        P: Permutation<[Config::BaseField; 16]> + Clone + Send + Sync + 'static,
     {
-        // Hard gate on D=4 to avoid silently accepting incompatible configs.
+        // Hard gate on D=4 and WIDTH=16 to match the permutation signature
         assert!(
-            Config::D == 4,
-            "Poseidon perm op only supports extension degree D=4"
+            Config::D == 4 && Config::WIDTH == 16,
+            "Poseidon perm only supports D=4, WIDTH=16"
         );
 
-        self.config.enable_poseidon_perm();
         self.non_primitive_trace_generators
             .insert(NonPrimitiveOpType::PoseidonPerm, trace_generator);
+
+        // Create the execute function that converts between extension and base field
+        let execute_fn = Arc::new(move |input_limbs: &[F; 4]| {
+            // Convert 4 extension limbs to 16 base field elements
+            let mut base_state = [Config::BaseField::ZERO; 16];
+            for (i, limb) in input_limbs.iter().enumerate() {
+                let coeffs = limb.as_basis_coefficients_slice();
+                base_state[i * 4..(i + 1) * 4].copy_from_slice(coeffs);
+            }
+
+            // Apply the permutation
+            let output_base = perm.permute(base_state);
+
+            // Convert back to 4 extension limbs
+            let mut output_limbs = [F::ZERO; 4];
+            for i in 0..4 {
+                let chunk = &output_base[i * 4..(i + 1) * 4];
+                output_limbs[i] =
+                    F::from_basis_coefficients_slice(chunk).expect("valid basis coefficients");
+            }
+            output_limbs
+        });
+
+        let config =
+            crate::op::NonPrimitiveOpConfig::PoseidonPerm(crate::op::PoseidonPermConfig::<F> {
+                exec: execute_fn,
+            });
+        self.config
+            .enable_op(NonPrimitiveOpType::PoseidonPerm, config);
     }
 
     /// Checks whether an op type is enabled on this builder.

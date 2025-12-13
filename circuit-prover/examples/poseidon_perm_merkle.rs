@@ -131,8 +131,9 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Build circuit
     let mut builder = CircuitBuilder::<Ext4>::new();
-    builder.enable_poseidon_perm::<BabyBearD4Width16>(
+    builder.enable_poseidon_perm::<BabyBearD4Width16, _>(
         generate_poseidon2_trace::<Ext4, BabyBearD4Width16>,
+        perm,
     );
 
     // Row 0: expose all inputs
@@ -145,8 +146,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     ];
 
     builder.add_poseidon_perm(p3_circuit::ops::PoseidonPermCall {
-        new_start: true,
-        merkle_path: true,
+        input_mode: p3_circuit::ops::PoseidonInputMode::NewChain,
         mmcs_bit: Some(mmcs_bit_row0),
         inputs: inputs_row0.map(Some),
         outputs: [None, None],
@@ -165,8 +165,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let mmcs_bit_row1 = builder.alloc_const(Ext4::from_prime_subfield(Base::ONE), "mmcs_bit_row1");
     let row1_op_id = builder.add_poseidon_perm(p3_circuit::ops::PoseidonPermCall {
-        new_start: false,
-        merkle_path: true,
+        input_mode: p3_circuit::ops::PoseidonInputMode::MerklePath,
         mmcs_bit: Some(mmcs_bit_row1),
         inputs: sibling1_inputs,
         outputs: [None, None],
@@ -180,8 +179,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         None, // Private
     ];
     let row2_op_id = builder.add_poseidon_perm(p3_circuit::ops::PoseidonPermCall {
-        new_start: false,
-        merkle_path: true,
+        input_mode: p3_circuit::ops::PoseidonInputMode::MerklePath,
         mmcs_bit: Some(mmcs_bit_row2),
         inputs: sibling2_inputs,
         outputs: [Some(out0), Some(out1)],
@@ -201,11 +199,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     ])?;
 
     // Set private inputs for Row 1
-    // Row 1: mmcs_bit = 1 (Right Child). Chaining into 2-3.
-    // Private input (Sibling) goes to 0-1.
+    // Row 1: mmcs_bit = 1 (Right Child). Limbs 0-1 are chained from prev_out[2-3].
+    // Private input (Sibling) goes to 2-3.
     let mut row1_private_inputs = [Ext4::ZERO; 4];
-    row1_private_inputs[0] = sibling1_limb2; // Sibling at 0
-    row1_private_inputs[1] = sibling1_limb3; // Sibling at 1
+    row1_private_inputs[2] = sibling1_limb2; // Sibling at 2
+    row1_private_inputs[3] = sibling1_limb3; // Sibling at 3
 
     runner.set_non_primitive_op_private_data(
         row1_op_id,

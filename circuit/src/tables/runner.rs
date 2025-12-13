@@ -225,6 +225,9 @@ impl<F: CircuitField> CircuitRunner<F> {
         // Clone primitive operations to avoid borrowing issues
         let non_primitive_ops = self.circuit.non_primitive_ops.clone();
 
+        // Last Poseidon output for chaining (only one operation type needs state currently)
+        let mut last_poseidon_output: Option<[F; 4]> = None;
+
         for op in non_primitive_ops {
             let Op::NonPrimitiveOpWithExecutor {
                 inputs,
@@ -241,6 +244,7 @@ impl<F: CircuitField> CircuitRunner<F> {
                 &self.non_primitive_op_private_data,
                 &self.circuit.enabled_ops,
                 op_id,
+                &mut last_poseidon_output,
             );
 
             executor.execute(&inputs, &outputs, &mut ctx)?;

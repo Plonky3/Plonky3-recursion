@@ -176,7 +176,7 @@ where
         for op in &self.circuit.non_primitive_ops {
             let Op::NonPrimitiveOpWithExecutor {
                 inputs,
-                outputs: _,
+                outputs,
                 executor,
                 op_id,
             } = op
@@ -185,18 +185,28 @@ where
             };
 
             if executor.op_type() == &NonPrimitiveOpType::PoseidonPerm {
-                let Some(exec) = executor.as_any().downcast_ref::<PoseidonPermExecutor>() else {
+                let Some(exec) = executor.as_any().downcast_ref::<PoseidonPermExecutor<CF>>()
+                else {
                     return Err(CircuitError::InvalidNonPrimitiveOpConfiguration {
                         op: executor.op_type().clone(),
                     });
                 };
-                let (new_start, merkle_path) = (exec.new_start, exec.merkle_path);
-                // Expected layout: [in0, in1, in2, in3, out0, out1, mmcs_index_sum, mmcs_bit]
-                if inputs.len() != 8 {
+                // Convert input_mode to legacy flags for compatibility with trace builder
+                let (new_start, merkle_path, _) = exec.input_mode().to_flags();
+                // Expected layout: inputs = [in0, in1, in2, in3, mmcs_index_sum, mmcs_bit] (6 vectors)
+                //                  outputs = [out0, out1] (2 vectors)
+                if inputs.len() != 6 {
                     return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
                         op: executor.op_type().clone(),
-                        expected: "8 input vectors".to_string(),
+                        expected: "6 input vectors".to_string(),
                         got: inputs.len(),
+                    });
+                }
+                if outputs.len() != 2 {
+                    return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
+                        op: executor.op_type().clone(),
+                        expected: "2 output vectors".to_string(),
+                        got: outputs.len(),
                     });
                 }
 
@@ -281,8 +291,7 @@ where
 
                 let mut out_ctl = [false; 2];
                 let mut out_idx = [0u32; 2];
-                for (offset, limb) in (4..6).enumerate() {
-                    let chunk = &inputs[limb];
+                for (offset, chunk) in outputs.iter().take(2).enumerate() {
                     if chunk.len() == d || chunk.len() == 1 {
                         out_ctl[offset] = true;
                         out_idx[offset] = chunk[0].0;
@@ -295,8 +304,8 @@ where
                     }
                 }
 
-                let (mmcs_index_sum, mmcs_index_sum_idx) = if inputs[6].len() == 1 {
-                    let val = self.get_witness(&inputs[6][0])?;
+                let (mmcs_index_sum, mmcs_index_sum_idx) = if inputs[4].len() == 1 {
+                    let val = self.get_witness(&inputs[4][0])?;
                     let base = val.as_base().ok_or_else(|| {
                         CircuitError::IncorrectNonPrimitiveOpPrivateData {
                             op: executor.op_type().clone(),
@@ -305,12 +314,12 @@ where
                             got: "extension value".to_string(),
                         }
                     })?;
-                    (base, inputs[6][0].0)
+                    (base, inputs[4][0].0)
                 } else {
                     (Config::BaseField::ZERO, 0)
                 };
-                let mmcs_bit = if inputs[7].len() == 1 {
-                    let val = self.get_witness(&inputs[7][0])?;
+                let mmcs_bit = if inputs[5].len() == 1 {
+                    let val = self.get_witness(&inputs[5][0])?;
                     let base = val.as_base().ok_or_else(|| {
                         CircuitError::IncorrectNonPrimitiveOpPrivateData {
                             op: executor.op_type().clone(),
