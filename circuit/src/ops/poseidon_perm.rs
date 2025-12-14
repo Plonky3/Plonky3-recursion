@@ -176,26 +176,22 @@ impl<F: Field> NonPrimitiveExecutor<F> for PoseidonPermExecutor {
 
         // Get private data if available
         let private_data = ctx.get_private_data().ok();
-        let private_inputs: Option<&[F]> = private_data.and_then(|pd| match pd {
-            NonPrimitiveOpPrivateData::PoseidonPerm(data) => Some(data.input_values.as_slice()),
+        let private_inputs: Option<&[F]> = private_data.map(|pd| match pd {
+            NonPrimitiveOpPrivateData::PoseidonPerm(data) => data.input_values.as_slice(),
         });
 
         // Get mmcs_bit if provided (default to false if absent)
         let mmcs_bit = if inputs.len() > 7 && inputs[7].len() == 1 {
             let wid = inputs[7][0];
-            match ctx.get_witness(wid) {
-                Ok(val) => val == F::ONE,
-                Err(_) => false, // If unset, default to 0
-            }
+            ctx.get_witness(wid).is_ok_and(|val| val == F::ONE)
         } else {
             false
         };
 
         // Resolve input limbs
         let mut resolved_inputs = [F::ZERO; 4];
-        for limb in 0..4 {
-            resolved_inputs[limb] =
-                self.resolve_input_limb(limb, inputs, private_inputs, ctx, mmcs_bit)?;
+        for (limb, resolved) in resolved_inputs.iter_mut().enumerate() {
+            *resolved = self.resolve_input_limb(limb, inputs, private_inputs, ctx, mmcs_bit)?;
         }
 
         // Execute the permutation
@@ -291,10 +287,10 @@ impl PoseidonPermExecutor {
         }
 
         // 3. Check private data as fallback
-        if let Some(private) = private_inputs {
-            if limb < private.len() {
-                return Ok(private[limb]);
-            }
+        if let Some(private) = private_inputs
+            && limb < private.len()
+        {
+            return Ok(private[limb]);
         }
 
         // 4. Missing input error

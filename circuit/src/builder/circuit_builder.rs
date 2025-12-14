@@ -109,7 +109,7 @@ where
         // 1. Converts [F;4] extension limbs to [Base;16] using basis coefficients
         // 2. Calls perm.permute([Base;16])
         // 3. Converts output [Base;16] back to [F;4]
-        let exec: Arc<dyn Fn(&[F; 4]) -> [F; 4] + Send + Sync> = Arc::new(move |input: &[F; 4]| {
+        let exec: crate::op::PoseidonPermExec<F> = Arc::new(move |input: &[F; 4]| {
             // Convert 4 extension elements to 16 base elements
             let mut base_input = [Config::BaseField::ZERO; 16];
             for (i, ext_elem) in input.iter().enumerate() {

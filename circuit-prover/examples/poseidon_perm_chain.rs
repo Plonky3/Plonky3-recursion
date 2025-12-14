@@ -69,7 +69,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut builder = CircuitBuilder::<Ext4>::new();
     builder.enable_poseidon_perm::<BabyBearD4Width16, _>(
         generate_poseidon2_trace::<Ext4, BabyBearD4Width16>,
-        perm.clone(),
+        perm,
     );
 
     // Allocate initial input limbs (exposed via CTL on the first row).

@@ -234,6 +234,11 @@ pub enum NonPrimitiveOpType {
     PoseidonPerm,
 }
 
+/// Type alias for the Poseidon permutation execution closure.
+///
+/// The closure takes 4 extension field limbs and returns 4 output limbs.
+pub type PoseidonPermExec<F> = Arc<dyn Fn(&[F; 4]) -> [F; 4] + Send + Sync>;
+
 /// Configuration for Poseidon permutation operations.
 ///
 /// Contains an execution closure that computes the Poseidon permutation.
@@ -241,7 +246,7 @@ pub enum NonPrimitiveOpType {
 pub struct PoseidonPermConfig<F> {
     /// Execution closure: converts [F;4] extension limbs to [Base;16],
     /// runs the permutation, and converts back to [F;4].
-    pub exec: Arc<dyn Fn(&[F; 4]) -> [F; 4] + Send + Sync>,
+    pub exec: PoseidonPermExec<F>,
 }
 
 impl<F> Clone for PoseidonPermConfig<F> {
@@ -353,7 +358,7 @@ pub struct ExecutionContext<'a, F> {
 
 impl<'a, F: Field> ExecutionContext<'a, F> {
     /// Create a new execution context
-    pub fn new(
+    pub const fn new(
         witness: &'a mut [Option<F>],
         non_primitive_op_private_data: &'a [Option<NonPrimitiveOpPrivateData<F>>],
         enabled_ops: &'a HashMap<NonPrimitiveOpType, NonPrimitiveOpConfig<F>>,
@@ -429,14 +434,14 @@ impl<'a, F: Field> ExecutionContext<'a, F> {
     /// Get the last Poseidon permutation output for chaining.
     ///
     /// Returns `None` if no Poseidon permutation has been executed yet.
-    pub fn last_poseidon(&self) -> Option<[F; 4]> {
+    pub const fn last_poseidon(&self) -> Option<[F; 4]> {
         *self.last_poseidon
     }
 
     /// Set the last Poseidon permutation output for chaining.
     ///
     /// This should be called after each Poseidon permutation execution.
-    pub fn set_last_poseidon(&mut self, output: [F; 4]) {
+    pub const fn set_last_poseidon(&mut self, output: [F; 4]) {
         *self.last_poseidon = Some(output);
     }
 }
