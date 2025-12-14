@@ -176,7 +176,7 @@ where
         for op in &self.circuit.non_primitive_ops {
             let Op::NonPrimitiveOpWithExecutor {
                 inputs,
-                outputs: _,
+                outputs,
                 executor,
                 op_id,
             } = op
@@ -191,12 +191,20 @@ where
                     });
                 };
                 let (new_start, merkle_path) = (exec.new_start, exec.merkle_path);
-                // Expected layout: [in0, in1, in2, in3, out0, out1, mmcs_index_sum, mmcs_bit]
-                if inputs.len() != 8 {
+                // Expected input layout: [in0, in1, in2, in3, mmcs_index_sum, mmcs_bit]
+                if inputs.len() != 6 {
                     return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
                         op: executor.op_type().clone(),
-                        expected: "8 input vectors".to_string(),
+                        expected: "6 input vectors".to_string(),
                         got: inputs.len(),
+                    });
+                }
+                // Expected output layout: [out0, out1]
+                if outputs.len() != 2 {
+                    return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
+                        op: executor.op_type().clone(),
+                        expected: "2 output vectors".to_string(),
+                        got: outputs.len(),
                     });
                 }
 
@@ -281,8 +289,7 @@ where
 
                 let mut out_ctl = [false; 2];
                 let mut out_idx = [0u32; 2];
-                for (offset, limb) in (4..6).enumerate() {
-                    let chunk = &inputs[limb];
+                for (offset, chunk) in outputs.iter().enumerate() {
                     if chunk.len() == d || chunk.len() == 1 {
                         out_ctl[offset] = true;
                         out_idx[offset] = chunk[0].0;
@@ -295,8 +302,9 @@ where
                     }
                 }
 
-                let (mmcs_index_sum, mmcs_index_sum_idx) = if inputs[6].len() == 1 {
-                    let val = self.get_witness(&inputs[6][0])?;
+                // mmcs_index_sum is at inputs[4]
+                let (mmcs_index_sum, mmcs_index_sum_idx) = if inputs[4].len() == 1 {
+                    let val = self.get_witness(&inputs[4][0])?;
                     let base = val.as_base().ok_or_else(|| {
                         CircuitError::IncorrectNonPrimitiveOpPrivateData {
                             op: executor.op_type().clone(),
@@ -305,12 +313,13 @@ where
                             got: "extension value".to_string(),
                         }
                     })?;
-                    (base, inputs[6][0].0)
+                    (base, inputs[4][0].0)
                 } else {
                     (Config::BaseField::ZERO, 0)
                 };
-                let mmcs_bit = if inputs[7].len() == 1 {
-                    let val = self.get_witness(&inputs[7][0])?;
+                // mmcs_bit is at inputs[5]
+                let mmcs_bit = if inputs[5].len() == 1 {
+                    let val = self.get_witness(&inputs[5][0])?;
                     let base = val.as_base().ok_or_else(|| {
                         CircuitError::IncorrectNonPrimitiveOpPrivateData {
                             op: executor.op_type().clone(),

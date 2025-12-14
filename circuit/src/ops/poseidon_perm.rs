@@ -86,41 +86,44 @@ where
         let op_type = NonPrimitiveOpType::PoseidonPerm;
         self.ensure_op_enabled(op_type.clone())?;
 
-        // Build witness_exprs layout:
-        // [in0, in1, in2, in3, out0, out1, mmcs_index_sum, mmcs_bit]
-        let mut witness_exprs: Vec<Vec<ExprId>> = Vec::with_capacity(8);
+        // Build input_exprs layout: [in0, in1, in2, in3, mmcs_index_sum, mmcs_bit]
+        let mut input_exprs: Vec<Vec<ExprId>> = Vec::with_capacity(6);
 
         for limb in call.inputs.iter() {
             if let Some(val) = limb {
-                witness_exprs.push(vec![*val]);
+                input_exprs.push(vec![*val]);
             } else {
-                witness_exprs.push(Vec::new());
-            }
-        }
-
-        for out in call.outputs.iter() {
-            if let Some(val) = out {
-                witness_exprs.push(vec![*val]);
-            } else {
-                witness_exprs.push(Vec::new());
+                input_exprs.push(Vec::new());
             }
         }
 
         if let Some(idx_sum) = call.mmcs_index_sum {
-            witness_exprs.push(vec![idx_sum]);
+            input_exprs.push(vec![idx_sum]);
         } else {
-            witness_exprs.push(Vec::new());
+            input_exprs.push(Vec::new());
         }
-        // mmcs_bit
+
         if let Some(bit) = call.mmcs_bit {
-            witness_exprs.push(vec![bit]);
+            input_exprs.push(vec![bit]);
         } else {
-            witness_exprs.push(Vec::new());
+            input_exprs.push(Vec::new());
+        }
+
+        // Build output_exprs layout: [out0, out1]
+        let mut output_exprs: Vec<Vec<ExprId>> = Vec::with_capacity(2);
+
+        for out in call.outputs.iter() {
+            if let Some(val) = out {
+                output_exprs.push(vec![*val]);
+            } else {
+                output_exprs.push(Vec::new());
+            }
         }
 
         Ok(self.push_non_primitive_op(
             op_type,
-            witness_exprs,
+            input_exprs,
+            output_exprs,
             Some(NonPrimitiveOpParams::PoseidonPerm {
                 new_start: call.new_start,
                 merkle_path: call.merkle_path,
@@ -154,14 +157,11 @@ impl<F: Field> NonPrimitiveExecutor<F> for PoseidonPermExecutor {
     fn execute(
         &self,
         inputs: &[Vec<WitnessId>],
-        _outputs: &[Vec<WitnessId>],
+        outputs: &[Vec<WitnessId>],
         ctx: &mut ExecutionContext<'_, F>,
     ) -> Result<(), CircuitError> {
-        // Layout: [in0, in1, in2, in3, out0, out1, mmcs_index_sum, mmcs_bit]
-        // inputs[0..4]: input limbs (CTL exposure)
-        // inputs[4..6]: output limbs 0-1 (CTL exposure for outputs)
-        // inputs[6]: mmcs_index_sum
-        // inputs[7]: mmcs_bit
+        // Input layout: [in0, in1, in2, in3, mmcs_index_sum, mmcs_bit]
+        // Output layout: [out0, out1]
 
         // Get the exec closure from config
         let config = ctx.get_config(&self.op_type)?;
@@ -181,8 +181,9 @@ impl<F: Field> NonPrimitiveExecutor<F> for PoseidonPermExecutor {
         });
 
         // Get mmcs_bit if provided (default to false if absent)
-        let mmcs_bit = if inputs.len() > 7 && inputs[7].len() == 1 {
-            let wid = inputs[7][0];
+        // mmcs_bit is at inputs[5]
+        let mmcs_bit = if inputs.len() > 5 && inputs[5].len() == 1 {
+            let wid = inputs[5][0];
             ctx.get_witness(wid).is_ok_and(|val| val == F::ONE)
         } else {
             false
@@ -201,10 +202,9 @@ impl<F: Field> NonPrimitiveExecutor<F> for PoseidonPermExecutor {
         ctx.set_last_poseidon(output);
 
         // Write outputs to witness if CTL exposure is requested
-        // outputs[0] corresponds to inputs[4], outputs[1] corresponds to inputs[5]
-        for (out_idx, input_slot) in [4, 5].iter().enumerate() {
-            if inputs.len() > *input_slot && inputs[*input_slot].len() == 1 {
-                let wid = inputs[*input_slot][0];
+        for (out_idx, out_slot) in outputs.iter().enumerate() {
+            if out_slot.len() == 1 {
+                let wid = out_slot[0];
                 ctx.set_witness(wid, output[out_idx])?;
             }
         }

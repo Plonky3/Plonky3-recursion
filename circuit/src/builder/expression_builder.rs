@@ -307,6 +307,46 @@ where
         expr_ids
     }
 
+    /// Allocates a single unset witness expression.
+    ///
+    /// The witness slot starts as `None` and must be written by an executor
+    /// during non-primitive operation execution. No hint filler is associated.
+    ///
+    /// # Arguments
+    ///
+    /// - `label`: Human-readable label for debug logging
+    ///
+    /// # Returns
+    ///
+    /// An [`ExprId`] handle to the unset witness expression.
+    pub fn add_unset_witness(&mut self, label: &'static str) -> ExprId {
+        let expr_id = self.graph.add_expr(Expr::UnsetWitness);
+
+        #[cfg(debug_assertions)]
+        self.log_alloc(expr_id, label, || (AllocationType::WitnessHint, vec![]));
+        #[cfg(not(debug_assertions))]
+        self.log_alloc(expr_id, label, || ());
+
+        expr_id
+    }
+
+    /// Allocates multiple unset witness expressions.
+    ///
+    /// Each witness slot starts as `None` and must be written by an executor
+    /// during non-primitive operation execution. No hint fillers are associated.
+    ///
+    /// # Arguments
+    ///
+    /// - `count`: Number of unset witnesses to allocate
+    /// - `label`: Human-readable label for debug logging
+    ///
+    /// # Returns
+    ///
+    /// A vector of [`ExprId`] handles to the unset witness expressions.
+    pub fn add_unset_witnesses(&mut self, count: usize, label: &'static str) -> Vec<ExprId> {
+        (0..count).map(|_| self.add_unset_witness(label)).collect()
+    }
+
     /// Adds an addition expression to the graph.
     ///
     /// Represents the field addition operation: `result = lhs + rhs`.

@@ -56,7 +56,8 @@ impl<'a, F> NonPrimitiveLowerer<'a, F> {
         for data in self.non_primitive_ops {
             let op_id = data.op_id;
             let op_type = &data.op_type;
-            let witness_exprs = &data.witness_exprs;
+            let input_exprs = &data.input_exprs;
+            let output_exprs = &data.output_exprs;
             let params = &data.params;
 
             let config_opt = self.config.get_op_config(op_type);
@@ -79,18 +80,28 @@ impl<'a, F> NonPrimitiveLowerer<'a, F> {
                         });
                     }
 
-                    // Expected layout: [in0, in1, in2, in3, out0, out1, mmcs_index_sum, mmcs_bit]
-                    if witness_exprs.len() != 8 {
+                    // Expected input layout: [in0, in1, in2, in3, mmcs_index_sum, mmcs_bit]
+                    if input_exprs.len() != 6 {
                         return Err(CircuitBuilderError::NonPrimitiveOpArity {
                             op: "PoseidonPerm",
-                            expected: "8 (in0..3, out0..1, mmcs_index_sum, mmcs_bit)".to_string(),
-                            got: witness_exprs.len(),
+                            expected: "6 inputs (in0..3, mmcs_index_sum, mmcs_bit)".to_string(),
+                            got: input_exprs.len(),
                         });
                     }
 
-                    let mut inputs_widx: Vec<Vec<WitnessId>> = Vec::with_capacity(8);
-                    // Inputs
-                    for (i, limb_exprs) in witness_exprs.iter().take(4).enumerate() {
+                    // Expected output layout: [out0, out1]
+                    if output_exprs.len() != 2 {
+                        return Err(CircuitBuilderError::NonPrimitiveOpArity {
+                            op: "PoseidonPerm",
+                            expected: "2 outputs (out0, out1)".to_string(),
+                            got: output_exprs.len(),
+                        });
+                    }
+
+                    let mut inputs_widx: Vec<Vec<WitnessId>> = Vec::with_capacity(6);
+
+                    // Input limbs 0-3
+                    for (i, limb_exprs) in input_exprs.iter().take(4).enumerate() {
                         if !(limb_exprs.is_empty() || limb_exprs.len() == 1) {
                             return Err(CircuitBuilderError::NonPrimitiveOpArity {
                                 op: "PoseidonPerm",
@@ -110,29 +121,9 @@ impl<'a, F> NonPrimitiveLowerer<'a, F> {
                             .collect::<Result<Vec<WitnessId>, _>>()?;
                         inputs_widx.push(limb_widx);
                     }
-                    // Outputs
-                    for (i, limb_exprs) in witness_exprs.iter().skip(4).take(2).enumerate() {
-                        if !(limb_exprs.is_empty() || limb_exprs.len() == 1) {
-                            return Err(CircuitBuilderError::NonPrimitiveOpArity {
-                                op: "PoseidonPerm",
-                                expected: "0 or 1 extension element per output limb".to_string(),
-                                got: limb_exprs.len(),
-                            });
-                        }
-                        let limb_widx = limb_exprs
-                            .iter()
-                            .map(|&expr| {
-                                get_witness_id(
-                                    self.expr_to_widx,
-                                    expr,
-                                    &format!("PoseidonPerm output limb {i}"),
-                                )
-                            })
-                            .collect::<Result<Vec<WitnessId>, _>>()?;
-                        inputs_widx.push(limb_widx);
-                    }
+
                     // mmcs_index_sum (0 or 1 element)
-                    let mmcs_exprs = &witness_exprs[6];
+                    let mmcs_exprs = &input_exprs[4];
                     if !(mmcs_exprs.is_empty() || mmcs_exprs.len() == 1) {
                         return Err(CircuitBuilderError::NonPrimitiveOpArity {
                             op: "PoseidonPerm",
@@ -151,8 +142,9 @@ impl<'a, F> NonPrimitiveLowerer<'a, F> {
                         })
                         .collect::<Result<Vec<WitnessId>, _>>()?;
                     inputs_widx.push(mmcs_widx);
+
                     // mmcs_bit (0 or 1 element)
-                    let mmcs_bit_exprs = &witness_exprs[7];
+                    let mmcs_bit_exprs = &input_exprs[5];
                     if !(mmcs_bit_exprs.is_empty() || mmcs_bit_exprs.len() == 1) {
                         return Err(CircuitBuilderError::NonPrimitiveOpArity {
                             op: "PoseidonPerm",
@@ -168,9 +160,32 @@ impl<'a, F> NonPrimitiveLowerer<'a, F> {
                         .collect::<Result<Vec<WitnessId>, _>>()?;
                     inputs_widx.push(mmcs_bit_widx);
 
+                    // Output limbs 0-1
+                    let mut outputs_widx: Vec<Vec<WitnessId>> = Vec::with_capacity(2);
+                    for (i, limb_exprs) in output_exprs.iter().enumerate() {
+                        if !(limb_exprs.is_empty() || limb_exprs.len() == 1) {
+                            return Err(CircuitBuilderError::NonPrimitiveOpArity {
+                                op: "PoseidonPerm",
+                                expected: "0 or 1 extension element per output limb".to_string(),
+                                got: limb_exprs.len(),
+                            });
+                        }
+                        let limb_widx = limb_exprs
+                            .iter()
+                            .map(|&expr| {
+                                get_witness_id(
+                                    self.expr_to_widx,
+                                    expr,
+                                    &format!("PoseidonPerm output limb {i}"),
+                                )
+                            })
+                            .collect::<Result<Vec<WitnessId>, _>>()?;
+                        outputs_widx.push(limb_widx);
+                    }
+
                     lowered_ops.push(Op::NonPrimitiveOpWithExecutor {
                         inputs: inputs_widx,
-                        outputs: Vec::new(),
+                        outputs: outputs_widx,
                         executor: Box::new(PoseidonPermExecutor::new(new_start, merkle_path)),
                         op_id,
                     });
@@ -234,22 +249,24 @@ mod tests {
         let mut config = BuilderConfig::<F>::new();
         config.enable_op(NonPrimitiveOpType::PoseidonPerm, NonPrimitiveOpConfig::None);
 
-        // Layout: in0..3 (1 elem each), out0..1 (empty), mmcs_index_sum (1 elem), mmcs_bit (1 elem)
-        let witness_exprs = vec![
+        // Input layout: [in0, in1, in2, in3, mmcs_index_sum, mmcs_bit]
+        let input_exprs = vec![
             vec![ExprId(0)],
             vec![ExprId(1)],
-            vec![],
-            vec![],
             vec![],
             vec![],
             vec![ExprId(2)],
             vec![ExprId(3)],
         ];
 
+        // Output layout: [out0, out1]
+        let output_exprs = vec![vec![ExprId(4)], vec![]];
+
         let ops = vec![NonPrimitiveOperationData {
             op_id: NonPrimitiveOpId(0),
             op_type: NonPrimitiveOpType::PoseidonPerm,
-            witness_exprs,
+            input_exprs,
+            output_exprs,
             params: Some(NonPrimitiveOpParams::PoseidonPerm {
                 new_start: true,
                 merkle_path: false,
@@ -269,16 +286,16 @@ mod tests {
                 ..
             } => {
                 assert_eq!(executor.op_type(), &NonPrimitiveOpType::PoseidonPerm);
-                assert!(outputs.is_empty());
-                assert_eq!(inputs.len(), 8);
-                // in0
-                assert_eq!(inputs[0], vec![WitnessId(0)]);
-                // in1
-                assert_eq!(inputs[1], vec![WitnessId(1)]);
-                // mmcs_index_sum
-                assert_eq!(inputs[6], vec![WitnessId(2)]);
-                // mmcs_bit
-                assert_eq!(inputs[7], vec![WitnessId(3)]);
+                // Check inputs: 6 slots
+                assert_eq!(inputs.len(), 6);
+                assert_eq!(inputs[0], vec![WitnessId(0)]); // in0
+                assert_eq!(inputs[1], vec![WitnessId(1)]); // in1
+                assert_eq!(inputs[4], vec![WitnessId(2)]); // mmcs_index_sum
+                assert_eq!(inputs[5], vec![WitnessId(3)]); // mmcs_bit
+                // Check outputs: 2 slots
+                assert_eq!(outputs.len(), 2);
+                assert_eq!(outputs[0], vec![WitnessId(4)]); // out0
+                assert!(outputs[1].is_empty()); // out1 (empty)
             }
             _ => panic!("Expected PoseidonPerm op"),
         }

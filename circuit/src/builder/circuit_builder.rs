@@ -42,13 +42,16 @@ pub enum NonPrimitiveOpParams {
     PoseidonPerm { new_start: bool, merkle_path: bool },
 }
 
-/// The non-primitive operation id, type, the vectors of the expressions representing its inputs,
-/// and any per-op parameters.
+/// The non-primitive operation id, type, the vectors of the expressions representing its inputs
+/// and outputs, and any per-op parameters.
 #[derive(Debug, Clone)]
 pub struct NonPrimitiveOperationData {
     pub op_id: NonPrimitiveOpId,
     pub op_type: NonPrimitiveOpType,
-    pub witness_exprs: Vec<Vec<ExprId>>,
+    /// Input expressions (e.g., for PoseidonPerm: [in0, in1, in2, in3, mmcs_index_sum, mmcs_bit])
+    pub input_exprs: Vec<Vec<ExprId>>,
+    /// Output expressions (e.g., for PoseidonPerm: [out0, out1])
+    pub output_exprs: Vec<Vec<ExprId>>,
     pub params: Option<NonPrimitiveOpParams>,
 }
 
@@ -208,6 +211,43 @@ where
     ) -> Vec<ExprId> {
         self.expr_builder
             .add_witness_hints(DefaultHint { n_outputs: count }, label)
+    }
+
+    /// Allocates a single unset witness expression.
+    ///
+    /// The witness slot starts as `None` and must be written by an executor
+    /// during non-primitive operation execution. Use this for outputs of
+    /// non-primitive operations like Poseidon permutations.
+    ///
+    /// # Arguments
+    ///
+    /// - `label`: Human-readable label for debug logging
+    ///
+    /// # Returns
+    ///
+    /// An [`ExprId`] handle to the unset witness expression.
+    #[must_use]
+    pub fn alloc_witness_unset(&mut self, label: &'static str) -> ExprId {
+        self.expr_builder.add_unset_witness(label)
+    }
+
+    /// Allocates multiple unset witness expressions.
+    ///
+    /// Each witness slot starts as `None` and must be written by an executor
+    /// during non-primitive operation execution. Use this for outputs of
+    /// non-primitive operations like Poseidon permutations.
+    ///
+    /// # Arguments
+    ///
+    /// - `count`: Number of unset witnesses to allocate
+    /// - `label`: Human-readable label for debug logging
+    ///
+    /// # Returns
+    ///
+    /// A vector of [`ExprId`] handles to the unset witness expressions.
+    #[must_use]
+    pub fn alloc_witnesses_unset(&mut self, count: usize, label: &'static str) -> Vec<ExprId> {
+        self.expr_builder.add_unset_witnesses(count, label)
     }
 
     /// Adds a constant to the circuit (deduplicated).
@@ -399,24 +439,22 @@ where
     pub(crate) fn push_non_primitive_op(
         &mut self,
         op_type: NonPrimitiveOpType,
-        witness_exprs: Vec<Vec<ExprId>>,
+        input_exprs: Vec<Vec<ExprId>>,
+        output_exprs: Vec<Vec<ExprId>>,
         params: Option<NonPrimitiveOpParams>,
         label: &'static str,
     ) -> NonPrimitiveOpId {
         let op_id = NonPrimitiveOpId(self.non_primitive_ops.len() as u32);
 
         #[cfg(debug_assertions)]
-        self.expr_builder.log_non_primitive_op(
-            op_id,
-            op_type.clone(),
-            witness_exprs.clone(),
-            label,
-        );
+        self.expr_builder
+            .log_non_primitive_op(op_id, op_type.clone(), input_exprs.clone(), label);
 
         self.non_primitive_ops.push(NonPrimitiveOperationData {
             op_id,
             op_type,
-            witness_exprs,
+            input_exprs,
+            output_exprs,
             params,
         });
         op_id
