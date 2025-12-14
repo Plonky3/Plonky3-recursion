@@ -1,14 +1,16 @@
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::hash::Hash;
 
 use hashbrown::HashMap;
 use itertools::zip_eq;
-use p3_field::{Field, PrimeCharacteristicRing};
+use p3_field::{ExtensionField, Field, PrimeCharacteristicRing};
+use p3_symmetric::Permutation;
 
 use super::compiler::{ExpressionLowerer, NonPrimitiveLowerer, Optimizer};
 use super::{BuilderConfig, ExpressionBuilder, PublicInputTracker};
 use crate::circuit::Circuit;
-use crate::op::{DefaultHint, NonPrimitiveOpType, WitnessHintsFiller};
+use crate::op::{DefaultHint, NonPrimitiveOpType, PoseidonPermConfig, WitnessHintsFiller};
 use crate::tables::{Poseidon2Params, TraceGeneratorFn};
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};
 use crate::{CircuitBuilderError, CircuitField};
@@ -28,7 +30,7 @@ pub struct CircuitBuilder<F> {
     non_primitive_ops: Vec<NonPrimitiveOperationData>,
 
     /// Builder configuration
-    config: BuilderConfig,
+    config: BuilderConfig<F>,
 
     /// Registered non-primitive trace generators.
     non_primitive_trace_generators: HashMap<NonPrimitiveOpType, TraceGeneratorFn<F>>,
@@ -76,26 +78,62 @@ where
     }
 
     /// Enables a non-primitive operation type on this builder.
-    pub fn enable_op(&mut self, op: NonPrimitiveOpType, cfg: crate::op::NonPrimitiveOpConfig) {
+    pub fn enable_op(&mut self, op: NonPrimitiveOpType, cfg: crate::op::NonPrimitiveOpConfig<F>) {
         self.config.enable_op(op, cfg);
     }
 
     /// Enables Poseidon permutation operations (one perm per table row).
     ///
-    /// The current implementation only supports extension degree D=4.
-    pub fn enable_poseidon_perm<Config: Poseidon2Params>(
-        &mut self,
-        trace_generator: TraceGeneratorFn<F>,
-    ) where
-        F: CircuitField,
+    /// The current implementation only supports extension degree D=4 and WIDTH=16.
+    ///
+    /// # Arguments
+    /// * `trace_generator` - Function to generate Poseidon trace from circuit and witness
+    /// * `perm` - The Poseidon permutation to use for execution
+    pub fn enable_poseidon_perm<Config, P>(&mut self, trace_generator: TraceGeneratorFn<F>, perm: P)
+    where
+        Config: Poseidon2Params,
+        F: CircuitField + ExtensionField<Config::BaseField>,
+        P: Permutation<[Config::BaseField; 16]> + Clone + Send + Sync + 'static,
     {
-        // Hard gate on D=4 to avoid silently accepting incompatible configs.
+        // Hard gate on D=4 and WIDTH=16 to avoid silently accepting incompatible configs.
         assert!(
             Config::D == 4,
             "Poseidon perm op only supports extension degree D=4"
         );
+        assert!(
+            Config::WIDTH == 16,
+            "Poseidon perm op only supports WIDTH=16"
+        );
 
-        self.config.enable_poseidon_perm();
+        // Build exec closure that:
+        // 1. Converts [F;4] extension limbs to [Base;16] using basis coefficients
+        // 2. Calls perm.permute([Base;16])
+        // 3. Converts output [Base;16] back to [F;4]
+        let exec: Arc<dyn Fn(&[F; 4]) -> [F; 4] + Send + Sync> = Arc::new(move |input: &[F; 4]| {
+            // Convert 4 extension elements to 16 base elements
+            let mut base_input = [Config::BaseField::ZERO; 16];
+            for (i, ext_elem) in input.iter().enumerate() {
+                let coeffs = ext_elem.as_basis_coefficients_slice();
+                base_input[i * 4..(i + 1) * 4].copy_from_slice(coeffs);
+            }
+
+            // Apply permutation
+            let base_output = perm.permute(base_input);
+
+            // Convert 16 base elements back to 4 extension elements
+            let mut output = [F::ZERO; 4];
+            for i in 0..4 {
+                let coeffs = &base_output[i * 4..(i + 1) * 4];
+                output[i] = F::from_basis_coefficients_slice(coeffs)
+                    .expect("basis coefficients should be valid");
+            }
+            output
+        });
+
+        self.config.enable_op(
+            NonPrimitiveOpType::PoseidonPerm,
+            crate::op::NonPrimitiveOpConfig::PoseidonPerm(PoseidonPermConfig { exec }),
+        );
         self.non_primitive_trace_generators
             .insert(NonPrimitiveOpType::PoseidonPerm, trace_generator);
     }

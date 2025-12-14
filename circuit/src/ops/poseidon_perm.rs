@@ -22,7 +22,10 @@ use p3_field::{Field, PrimeCharacteristicRing};
 
 use crate::CircuitError;
 use crate::builder::{CircuitBuilder, NonPrimitiveOpParams};
-use crate::op::{ExecutionContext, NonPrimitiveExecutor, NonPrimitiveOpType};
+use crate::op::{
+    ExecutionContext, NonPrimitiveExecutor, NonPrimitiveOpConfig, NonPrimitiveOpPrivateData,
+    NonPrimitiveOpType,
+};
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessId};
 
 /// User-facing arguments for adding a Poseidon perm row.
@@ -150,10 +153,66 @@ impl PoseidonPermExecutor {
 impl<F: Field> NonPrimitiveExecutor<F> for PoseidonPermExecutor {
     fn execute(
         &self,
-        _inputs: &[Vec<WitnessId>],
+        inputs: &[Vec<WitnessId>],
         _outputs: &[Vec<WitnessId>],
-        _ctx: &mut ExecutionContext<'_, F>,
+        ctx: &mut ExecutionContext<'_, F>,
     ) -> Result<(), CircuitError> {
+        // Layout: [in0, in1, in2, in3, out0, out1, mmcs_index_sum, mmcs_bit]
+        // inputs[0..4]: input limbs (CTL exposure)
+        // inputs[4..6]: output limbs 0-1 (CTL exposure for outputs)
+        // inputs[6]: mmcs_index_sum
+        // inputs[7]: mmcs_bit
+
+        // Get the exec closure from config
+        let config = ctx.get_config(&self.op_type)?;
+        let exec = match config {
+            NonPrimitiveOpConfig::PoseidonPerm(cfg) => &cfg.exec,
+            NonPrimitiveOpConfig::None => {
+                return Err(CircuitError::InvalidNonPrimitiveOpConfiguration {
+                    op: self.op_type.clone(),
+                });
+            }
+        };
+
+        // Get private data if available
+        let private_data = ctx.get_private_data().ok();
+        let private_inputs: Option<&[F]> = private_data.and_then(|pd| match pd {
+            NonPrimitiveOpPrivateData::PoseidonPerm(data) => Some(data.input_values.as_slice()),
+        });
+
+        // Get mmcs_bit if provided (default to false if absent)
+        let mmcs_bit = if inputs.len() > 7 && inputs[7].len() == 1 {
+            let wid = inputs[7][0];
+            match ctx.get_witness(wid) {
+                Ok(val) => val == F::ONE,
+                Err(_) => false, // If unset, default to 0
+            }
+        } else {
+            false
+        };
+
+        // Resolve input limbs
+        let mut resolved_inputs = [F::ZERO; 4];
+        for limb in 0..4 {
+            resolved_inputs[limb] =
+                self.resolve_input_limb(limb, inputs, private_inputs, ctx, mmcs_bit)?;
+        }
+
+        // Execute the permutation
+        let output = exec(&resolved_inputs);
+
+        // Update chaining state
+        ctx.set_last_poseidon(output);
+
+        // Write outputs to witness if CTL exposure is requested
+        // outputs[0] corresponds to inputs[4], outputs[1] corresponds to inputs[5]
+        for (out_idx, input_slot) in [4, 5].iter().enumerate() {
+            if inputs.len() > *input_slot && inputs[*input_slot].len() == 1 {
+                let wid = inputs[*input_slot][0];
+                ctx.set_witness(wid, output[out_idx])?;
+            }
+        }
+
         Ok(())
     }
 
@@ -167,5 +226,88 @@ impl<F: Field> NonPrimitiveExecutor<F> for PoseidonPermExecutor {
 
     fn boxed(&self) -> Box<dyn NonPrimitiveExecutor<F>> {
         Box::new(self.clone())
+    }
+}
+
+impl PoseidonPermExecutor {
+    /// Resolve input limb value using precedence rules:
+    /// 1. CTL (witness) if provided and set
+    /// 2. Chaining from previous permutation (if new_start=false)
+    ///    - Normal mode: all 4 limbs from chaining
+    ///    - Merkle mode: only limbs 0-1 from chaining, limbs 2-3 from private/CTL
+    /// 3. Private data as fallback
+    fn resolve_input_limb<F: Field>(
+        &self,
+        limb: usize,
+        inputs: &[Vec<WitnessId>],
+        private_inputs: Option<&[F]>,
+        ctx: &ExecutionContext<'_, F>,
+        mmcs_bit: bool,
+    ) -> Result<F, CircuitError> {
+        // 1. Check CTL (witness) first - highest priority
+        if inputs.len() > limb && inputs[limb].len() == 1 {
+            let wid = inputs[limb][0];
+            if let Ok(val) = ctx.get_witness(wid) {
+                return Ok(val);
+            }
+        }
+
+        // 2. Check chaining from previous permutation (if new_start=false)
+        if !self.new_start {
+            let prev = ctx.last_poseidon().ok_or_else(|| {
+                CircuitError::PoseidonChainMissingPreviousState {
+                    operation_index: ctx.operation_id(),
+                }
+            })?;
+
+            if !self.merkle_path {
+                // Normal chaining: all 4 limbs come from previous output
+                return Ok(prev[limb]);
+            } else {
+                // Merkle path chaining:
+                // - limbs 0-1 come from prev[0-1] (if bit=0) or prev[2-3] (if bit=1)
+                // - limbs 2-3 MUST come from private data or CTL
+                match limb {
+                    0 => {
+                        if !mmcs_bit {
+                            return Ok(prev[0]);
+                        } else {
+                            return Ok(prev[2]);
+                        }
+                    }
+                    1 => {
+                        if !mmcs_bit {
+                            return Ok(prev[1]);
+                        } else {
+                            return Ok(prev[3]);
+                        }
+                    }
+                    2 | 3 => {
+                        // limbs 2-3 need private data or CTL - continue to check private data below
+                    }
+                    _ => unreachable!(),
+                }
+            }
+        }
+
+        // 3. Check private data as fallback
+        if let Some(private) = private_inputs {
+            if limb < private.len() {
+                return Ok(private[limb]);
+            }
+        }
+
+        // 4. Missing input error
+        if self.merkle_path && !self.new_start && (limb == 2 || limb == 3) {
+            Err(CircuitError::PoseidonMerkleMissingSiblingInput {
+                operation_index: ctx.operation_id(),
+                limb,
+            })
+        } else {
+            Err(CircuitError::PoseidonMissingInput {
+                operation_index: ctx.operation_id(),
+                limb,
+            })
+        }
     }
 }

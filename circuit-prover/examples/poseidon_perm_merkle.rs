@@ -131,8 +131,9 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Build circuit
     let mut builder = CircuitBuilder::<Ext4>::new();
-    builder.enable_poseidon_perm::<BabyBearD4Width16>(
+    builder.enable_poseidon_perm::<BabyBearD4Width16, _>(
         generate_poseidon2_trace::<Ext4, BabyBearD4Width16>,
+        perm.clone(),
     );
 
     // Row 0: expose all inputs
@@ -201,11 +202,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     ])?;
 
     // Set private inputs for Row 1
-    // Row 1: mmcs_bit = 1 (Right Child). Chaining into 2-3.
-    // Private input (Sibling) goes to 0-1.
+    // Row 1: mmcs_bit = 1 (Right Child). Previous hash chains to limbs 0-1.
+    // Sibling goes to limbs 2-3.
     let mut row1_private_inputs = [Ext4::ZERO; 4];
-    row1_private_inputs[0] = sibling1_limb2; // Sibling at 0
-    row1_private_inputs[1] = sibling1_limb3; // Sibling at 1
+    row1_private_inputs[2] = sibling1_limb2; // Sibling at 2
+    row1_private_inputs[3] = sibling1_limb3; // Sibling at 3
 
     runner.set_non_primitive_op_private_data(
         row1_op_id,
@@ -215,8 +216,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     )?;
 
     // Set private inputs for Row 2
-    // Row 2: mmcs_bit = 0 (Left Child). Chaining into 0-1.
-    // Private input (Sibling) goes to 2-3.
+    // Row 2: mmcs_bit = 0 (Left Child). Previous hash chains to limbs 0-1.
+    // Sibling goes to limbs 2-3.
     let mut row2_private_inputs = [Ext4::ZERO; 4];
     row2_private_inputs[2] = sibling2_limb2; // Sibling at 2
     row2_private_inputs[3] = sibling2_limb3; // Sibling at 3

@@ -21,7 +21,7 @@ use crate::types::{ExprId, WitnessId};
 /// - Validating operation configurations
 /// - Checking operation arity requirements
 #[derive(Debug)]
-pub struct NonPrimitiveLowerer<'a> {
+pub struct NonPrimitiveLowerer<'a, F> {
     /// Non-primitive operations to lower
     non_primitive_ops: &'a [NonPrimitiveOperationData],
 
@@ -29,15 +29,15 @@ pub struct NonPrimitiveLowerer<'a> {
     expr_to_widx: &'a HashMap<ExprId, WitnessId>,
 
     /// Builder configuration with enabled operations
-    config: &'a BuilderConfig,
+    config: &'a BuilderConfig<F>,
 }
 
-impl<'a> NonPrimitiveLowerer<'a> {
+impl<'a, F> NonPrimitiveLowerer<'a, F> {
     /// Creates a new non-primitive lowerer.
     pub const fn new(
         non_primitive_ops: &'a [NonPrimitiveOperationData],
         expr_to_widx: &'a HashMap<ExprId, WitnessId>,
-        config: &'a BuilderConfig,
+        config: &'a BuilderConfig<F>,
     ) -> Self {
         Self {
             non_primitive_ops,
@@ -47,7 +47,7 @@ impl<'a> NonPrimitiveLowerer<'a> {
     }
 
     /// Lowers non-primitive operations to executable operations with explicit inputs/outputs.
-    pub fn lower<F>(self) -> Result<Vec<Op<F>>, CircuitBuilderError>
+    pub fn lower(self) -> Result<Vec<Op<F>>, CircuitBuilderError>
     where
         F: Field + Clone + PrimeCharacteristicRing + PartialEq + Eq + Hash,
     {
@@ -190,6 +190,9 @@ mod tests {
 
     use super::*;
     use crate::NonPrimitiveOpId;
+    use crate::op::NonPrimitiveOpConfig;
+
+    type F = BabyBear;
 
     /// Helper to create a simple expression to witness mapping with sequential IDs.
     fn create_expr_map(count: usize) -> HashMap<ExprId, WitnessId> {
@@ -203,10 +206,10 @@ mod tests {
         // Empty operations list should produce empty result
         let ops = vec![];
         let expr_map = HashMap::new();
-        let config = BuilderConfig::new();
+        let config = BuilderConfig::<F>::new();
 
         let lowerer = NonPrimitiveLowerer::new(&ops, &expr_map, &config);
-        let result: Vec<Op<BabyBear>> = lowerer.lower().unwrap();
+        let result: Vec<Op<F>> = lowerer.lower().unwrap();
 
         assert!(result.is_empty());
     }
@@ -228,8 +231,8 @@ mod tests {
 
     #[test]
     fn test_poseidon_perm_lowering() {
-        let mut config = BuilderConfig::new();
-        config.enable_poseidon_perm();
+        let mut config = BuilderConfig::<F>::new();
+        config.enable_op(NonPrimitiveOpType::PoseidonPerm, NonPrimitiveOpConfig::None);
 
         // Layout: in0..3 (1 elem each), out0..1 (empty), mmcs_index_sum (1 elem), mmcs_bit (1 elem)
         let witness_exprs = vec![
@@ -255,7 +258,7 @@ mod tests {
         let expr_map = create_expr_map(10);
 
         let lowerer = NonPrimitiveLowerer::new(&ops, &expr_map, &config);
-        let result: Vec<Op<BabyBear>> = lowerer.lower().unwrap();
+        let result: Vec<Op<F>> = lowerer.lower().unwrap();
         assert_eq!(result.len(), 1);
 
         match &result[0] {

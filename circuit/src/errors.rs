@@ -126,4 +126,28 @@ pub enum CircuitError {
     /// Invalid preprocessed values
     #[error("Preprocessed values should be base field elements")]
     InvalidPreprocessedValues,
+
+    /// Poseidon chaining requires previous state but none was available.
+    #[error(
+        "Poseidon chain missing previous state for operation {operation_index} (new_start=false but no previous permutation)"
+    )]
+    PoseidonChainMissingPreviousState { operation_index: NonPrimitiveOpId },
+
+    /// Poseidon merkle path mode requires sibling input for limbs 2-3.
+    #[error(
+        "Poseidon merkle path missing sibling input for operation {operation_index}, limb {limb}"
+    )]
+    PoseidonMerkleMissingSiblingInput {
+        operation_index: NonPrimitiveOpId,
+        limb: usize,
+    },
+
+    /// Poseidon operation is missing required input limb.
+    #[error(
+        "Poseidon operation {operation_index} missing input for limb {limb} (new_start=true requires all inputs)"
+    )]
+    PoseidonMissingInput {
+        operation_index: NonPrimitiveOpId,
+        limb: usize,
+    },
 }
