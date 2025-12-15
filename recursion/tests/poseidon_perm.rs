@@ -69,7 +69,7 @@ fn test_poseidon_perm_verifier() -> Result<(), VerificationError> {
     let log_height_max = fri_params.log_final_poly_len + fri_params.log_blowup;
     let pow_bits = fri_params.proof_of_work_bits;
     let pcs = MyPcs::new(dft, val_mmcs, fri_params);
-    let challenger = Challenger::new(perm.clone());
+    let challenger = Challenger::new(perm);
     let config = MyConfig::new(pcs, challenger);
 
     let air = Poseidon2CircuitAirBabyBearD4Width16::new(constants.clone());

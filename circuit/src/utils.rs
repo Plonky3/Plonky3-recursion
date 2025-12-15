@@ -2,18 +2,18 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::marker::PhantomData;
 
+use hashbrown::HashMap;
 use p3_field::{ExtensionField, Field, PrimeField64};
 use p3_uni_stark::{Entry, SymbolicExpression};
 use p3_util::log2_ceil_u64;
-
-use crate::op::WitnessHintsFiller;
-use crate::{CircuitBuilder, CircuitError, ExprId};
-
 use tracing_forest::ForestLayer;
 use tracing_forest::util::LevelFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Registry};
+
+use crate::op::WitnessHintsFiller;
+use crate::{CircuitBuilder, CircuitError, ExprId};
 
 /// Initializes a global logger with default parameters.
 pub fn init_logger() {
@@ -55,19 +55,23 @@ pub struct ColumnsTargets<'a> {
 /// Given symbolic constraints, adds the corresponding recursive circuit to `circuit`.
 /// The `public_values`, `local_prep_values`, `next_prep_values`, `local_values`, and `next_values`
 /// are assumed to be in the same order as those used to create the symbolic expressions.
+// Recursive approaches blowup quickly, so this takes an iterative DAG approach with
+// some caching of `SymbolicExpression` nodes.
 pub fn symbolic_to_circuit<F: Field>(
     row_selectors: RowSelectorsTargets,
     columns: &ColumnsTargets<'_>,
     symbolic: &SymbolicExpression<F>,
     circuit: &mut CircuitBuilder<F>,
 ) -> ExprId {
-    use hashbrown::HashMap;
-
+    /// Used when iterating through the DAG of expressions
+    /// - `Eval` is used when visiting a node
+    /// - `Build` is used to combine entries for a given `Op`
     enum Work<'a, F: Field> {
         Eval(&'a SymbolicExpression<F>),
         Build(*const SymbolicExpression<F>, Op, usize),
     }
 
+    /// Arithmetic ops applied when building parent nodes
     #[derive(Copy, Clone)]
     enum Op {
         Add,
@@ -81,6 +85,7 @@ pub fn symbolic_to_circuit<F: Field>(
         is_last_row,
         is_transition,
     } = row_selectors;
+
     let ColumnsTargets {
         challenges,
         public_values,
@@ -91,8 +96,8 @@ pub fn symbolic_to_circuit<F: Field>(
     } = columns;
 
     let mut cache: HashMap<*const SymbolicExpression<F>, ExprId> = HashMap::new();
-    let mut tasks: Vec<Work<'_, F>> = vec![Work::Eval(symbolic)];
-    let mut stack: Vec<ExprId> = Vec::new();
+    let mut tasks = vec![Work::Eval(symbolic)];
+    let mut stack = Vec::new();
 
     while let Some(work) = tasks.pop() {
         match work {
@@ -109,14 +114,17 @@ pub fn symbolic_to_circuit<F: Field>(
                         stack.push(id);
                     }
                     SymbolicExpression::Variable(v) => {
-                        let get_val = |offset: usize,
-                                       index: usize,
-                                       local_vals: &[ExprId],
-                                       next_vals: &[ExprId]| match offset {
-                            0 => local_vals[index],
-                            1 => next_vals[index],
-                            _ => panic!("Cannot have expressions involving more than two rows."),
-                        };
+                        let get_val =
+                            |offset: usize,
+                             index: usize,
+                             local_vals: &[ExprId],
+                             next_vals: &[ExprId]| match offset {
+                                0 => local_vals[index],
+                                1 => next_vals[index],
+                                _ => {
+                                    panic!("Cannot have expressions involving more than two rows.")
+                                }
+                            };
                         let id = match v.entry {
                             Entry::Preprocessed { offset } => {
                                 get_val(offset, v.index, local_prep_values, next_prep_values)

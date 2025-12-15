@@ -1,7 +1,7 @@
 use p3_air::{Air, BaseAir};
 use p3_baby_bear::{BabyBear, Poseidon2BabyBear};
 use p3_challenger::DuplexChallenger;
-use p3_circuit::utils::{ColumnsTargets, RowSelectorsTargets, symbolic_to_circuit};
+use p3_circuit::utils::{ColumnsTargets, RowSelectorsTargets};
 use p3_circuit::{CircuitBuilder, CircuitError};
 use p3_circuit_prover::air::{AddAir, ConstAir, MulAir, PublicAir, WitnessAir};
 use p3_commit::ExtensionMmcs;
@@ -14,9 +14,9 @@ use p3_merkle_tree::MerkleTreeMmcs;
 use p3_poseidon2_air::RoundConstants;
 use p3_poseidon2_circuit_air::Poseidon2CircuitAirBabyBearD4Width16;
 use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
-use p3_uni_stark::{
-    SymbolicAirBuilder, SymbolicExpression, VerifierConstraintFolder, get_symbolic_constraints,
-};
+use p3_recursion::traits::RecursiveAir;
+use p3_recursion::types::RecursiveLagrangeSelectors;
+use p3_uni_stark::{SymbolicAirBuilder, VerifierConstraintFolder};
 use rand::rngs::SmallRng;
 use rand::{Rng, RngCore, SeedableRng};
 
@@ -27,8 +27,7 @@ type Dft = Radix2DitParallel<F>;
 type Perm = Poseidon2BabyBear<16>;
 type MyHash = PaddingFreeSponge<Perm, 16, RATE, 8>;
 type MyCompress = TruncatedPermutation<Perm, 2, 8, 16>;
-type ValMmcs =
-    MerkleTreeMmcs<<F as Field>::Packing, <F as Field>::Packing, MyHash, MyCompress, 8>;
+type ValMmcs = MerkleTreeMmcs<<F as Field>::Packing, <F as Field>::Packing, MyHash, MyCompress, 8>;
 type ChallengeMmcs = ExtensionMmcs<F, F, ValMmcs>;
 type Challenger = DuplexChallenger<F, Perm, 16, RATE>;
 type MyPcs = TwoAdicFriPcs<F, Dft, ValMmcs, ChallengeMmcs>;
@@ -42,10 +41,11 @@ fn run_recursive<A>(
 ) -> Result<(), CircuitError>
 where
     A: BaseAir<F>
+        + RecursiveAir<F>
         + Air<SymbolicAirBuilder<F>>
         + for<'a> Air<VerifierConstraintFolder<'a, MyConfig>>,
 {
-    let width = air.width();
+    let width = RecursiveAir::width(air);
 
     let mut trace_local: Vec<F> = (0..width).map(|_| rng.random()).collect();
     let mut trace_next: Vec<F> = (0..width).map(|_| rng.random()).collect();
@@ -57,9 +57,6 @@ where
     let selectors: [F; 3] = [rng.random(), rng.random(), rng.random()];
     let alpha: F = rng.random();
 
-    let symbolic_constraints = get_symbolic_constraints(air, preprocessed_width, num_public_values);
-
-    // Native folded value using the verifier folder (avoids deep recursion).
     let main = VerticalPair::new(
         RowMajorMatrixView::new_row(&trace_local),
         RowMajorMatrixView::new_row(&trace_next),
@@ -84,11 +81,6 @@ where
     };
     air.eval(&mut folder);
     let folded_value = folder.accumulator;
-
-    let mut folded_expr = SymbolicExpression::<F>::Constant(F::ZERO);
-    for sym in symbolic_constraints.iter() {
-        folded_expr = SymbolicExpression::Constant(alpha) * folded_expr + sym.clone();
-    }
 
     let mut builder = CircuitBuilder::<F>::new();
     let selector_targets = [
@@ -124,7 +116,12 @@ where
         next_values: &next_targets,
     };
 
-    let sum = symbolic_to_circuit(row_selectors, &columns, &folded_expr, &mut builder);
+    let alpha_t = builder.add_const(alpha);
+    let sels = RecursiveLagrangeSelectors {
+        row_selectors,
+        inv_vanishing: builder.add_const(F::ONE),
+    };
+    let sum = air.eval_folded_circuit(&mut builder, &sels, &alpha_t, columns);
     let const_target = builder.add_const(folded_value);
     builder.connect(const_target, sum);
 
@@ -136,7 +133,6 @@ where
     all_public_inputs.append(&mut trace_local);
     all_public_inputs.append(&mut trace_next);
 
-    tracing::info!("Building circuit...");
     let circuit = builder
         .build()
         .map_err(|e| CircuitError::InvalidCircuit { error: e })?;

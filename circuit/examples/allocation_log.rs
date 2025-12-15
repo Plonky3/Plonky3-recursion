@@ -4,7 +4,8 @@
 //! that enables debug_assertions, and with `RUST_LOG=DEBUG` for tracing.
 
 use p3_baby_bear::BabyBear;
-use p3_circuit::{CircuitBuilder, utils::init_logger};
+use p3_circuit::CircuitBuilder;
+use p3_circuit::utils::init_logger;
 use p3_field::PrimeCharacteristicRing;
 
 fn main() {
