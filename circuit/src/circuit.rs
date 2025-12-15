@@ -8,6 +8,7 @@ use hashbrown::HashMap;
 use p3_field::Field;
 use strum::EnumCount;
 
+use crate::CircuitError;
 use crate::op::{NonPrimitiveOpConfig, NonPrimitiveOpType, Op, PrimitiveOpType};
 use crate::tables::{CircuitRunner, TraceGeneratorFn};
 use crate::types::{ExprId, WitnessId};
@@ -60,6 +61,7 @@ pub struct Circuit<F> {
     pub public_flat_len: usize,
     /// Enabled non-primitive operation types with their respective configuration
     pub enabled_ops: HashMap<NonPrimitiveOpType, NonPrimitiveOpConfig>,
+    /// Expression to witness index map
     pub expr_to_widx: HashMap<ExprId, WitnessId>,
     /// Registered non-primitive trace generators.
     pub non_primitive_trace_generators: HashMap<NonPrimitiveOpType, TraceGeneratorFn<F>>,
@@ -81,6 +83,7 @@ impl<F: Field + Clone> Clone for Circuit<F> {
 }
 
 impl<F: Field> Circuit<F> {
+    /// Create a new circuit with the given witness count and expression to witness index map.
     pub fn new(witness_count: u32, expr_to_widx: HashMap<ExprId, WitnessId>) -> Self {
         Self {
             witness_count,
@@ -94,27 +97,43 @@ impl<F: Field> Circuit<F> {
         }
     }
 
-    /// Generates the preprocessed values for all ops except non-primitive ops.
+    /// Generates preprocessed columns for all primitive operation types.
     ///
-    /// The preprocessed values for `Witness` are deduced from the other ops:
-    /// they correspond to 0..`n` where `n` is the largest witness index used in the circuit.
-    pub fn generate_preprocessed_columns(&self) -> Result<Vec<Vec<F>>, crate::CircuitError> {
-        let n = PrimitiveOpType::COUNT; // Exclude non-primitive ops
-        let mut preprocessed = vec![vec![]; n];
+    /// Returns a `Vec<Vec<F>>` with one entry per [`PrimitiveOpType`]:
+    ///
+    /// | Index | Operation | Column Layout                             | Width (per op) |
+    /// |-------|-----------|-------------------------------------------|----------------|
+    /// | 0     | Witness   | `[idx_0, idx_1, ..., idx_max]`            | 1              |
+    /// | 1     | Const     | `[out_0, out_1, ...]`                     | 1              |
+    /// | 2     | Public    | `[out_0, out_1, ...]`                     | 1              |
+    /// | 3     | Add       | `[a_0, b_0, out_0, a_1, b_1, out_1, ...]` | 3              |
+    /// | 4     | Mul       | `[a_0, b_0, out_0, a_1, b_1, out_1, ...]` | 3              |
+    pub fn generate_preprocessed_columns(&self) -> Result<Vec<Vec<F>>, CircuitError> {
+        // Allocate one empty vector per primitive operation type (Witness, Const, Public, Add, Mul).
+        let mut preprocessed = vec![vec![]; PrimitiveOpType::COUNT];
 
+        // Track the maximum witness index to determine the Witness table size.
         let mut max_idx = 0;
+
+        // Process each primitive operation, extracting its witness indices.
         for prim in &self.primitive_ops {
             match prim {
+                // Const: stores a constant value at witness[out].
+                // Preprocessed data: the output witness index.
                 Op::Const { out, .. } => {
                     let table_idx = PrimitiveOpType::Const as usize;
                     preprocessed[table_idx].extend(&[F::from_u32(out.0)]);
                     max_idx = max_idx.max(out.0);
                 }
+                // Public: loads a public input into witness[out].
+                // Preprocessed data: the output witness index.
                 Op::Public { out, .. } => {
                     let table_idx = PrimitiveOpType::Public as usize;
                     preprocessed[table_idx].extend(&[F::from_u32(out.0)]);
                     max_idx = max_idx.max(out.0);
                 }
+                // Add: computes witness[out] = witness[a] + witness[b].
+                // Preprocessed data: input indices a, b and output index out.
                 Op::Add { a, b, out } => {
                     let table_idx = PrimitiveOpType::Add as usize;
                     preprocessed[table_idx].extend(&[
@@ -124,6 +143,8 @@ impl<F: Field> Circuit<F> {
                     ]);
                     max_idx = max_idx.max(a.0).max(b.0).max(out.0);
                 }
+                // Mul: computes witness[out] = witness[a] * witness[b].
+                // Preprocessed data: input indices a, b and output index out.
                 Op::Mul { a, b, out } => {
                     let table_idx = PrimitiveOpType::Mul as usize;
                     preprocessed[table_idx].extend(&[
@@ -133,19 +154,24 @@ impl<F: Field> Circuit<F> {
                     ]);
                     max_idx = max_idx.max(a.0).max(b.0).max(out.0);
                 }
+                // Unconstrained: sets arbitrary witness values via hints.
+                // No preprocessed column data, but outputs affect max_idx.
                 Op::Unconstrained { outputs, .. } => {
                     max_idx = iter::once(max_idx)
                         .chain(outputs.iter().map(|&output| output.0))
                         .max()
                         .unwrap_or(max_idx);
                 }
+                // Non-primitive ops should not appear in primitive_ops.
                 Op::NonPrimitiveOpWithExecutor { .. } => panic!(
                     "preprocessed values are not yet implemented for non primitive operations."
                 ),
             }
         }
 
-        // Now, we can generate the values for `Witness` using `max_idx`.
+        // Generate the Witness table's preprocessed column: sequential indices from 0 to max_idx.
+        //
+        // This enables the AIR to verify that all witness lookups reference valid slots.
         let table_idx = PrimitiveOpType::Witness as usize;
         preprocessed[table_idx].extend((0..=max_idx).map(|i| F::from_u32(i)));
 
@@ -157,5 +183,138 @@ impl<F: CircuitField> Circuit<F> {
     /// Create a circuit runner for execution and trace generation
     pub fn runner(self) -> CircuitRunner<F> {
         CircuitRunner::new(self)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec;
+
+    use hashbrown::HashMap;
+    use p3_baby_bear::BabyBear;
+    use p3_field::PrimeCharacteristicRing;
+    use strum::EnumCount;
+
+    use super::*;
+    use crate::op::{DefaultHint, PrimitiveOpType};
+    use crate::types::WitnessId;
+
+    type F = BabyBear;
+
+    fn make_circuit(ops: Vec<Op<F>>) -> Circuit<F> {
+        let mut circuit = Circuit::new(0, HashMap::new());
+        circuit.primitive_ops = ops;
+        circuit
+    }
+
+    #[test]
+    fn test_empty_circuit() {
+        let circuit: Circuit<F> = make_circuit(vec![]);
+        let result = circuit.generate_preprocessed_columns().unwrap();
+
+        assert_eq!(result.len(), PrimitiveOpType::COUNT);
+        assert_eq!(result[PrimitiveOpType::Witness as usize], vec![F::ZERO]);
+        assert!(result[PrimitiveOpType::Const as usize].is_empty());
+        assert!(result[PrimitiveOpType::Public as usize].is_empty());
+        assert!(result[PrimitiveOpType::Add as usize].is_empty());
+        assert!(result[PrimitiveOpType::Mul as usize].is_empty());
+    }
+
+    #[test]
+    fn test_mixed_operations() {
+        // Test covering various operation types and behaviors:
+        // - Each operation type populates its correct column
+        // - max_idx is the global maximum across all operations
+        // - Column data preserves operation order
+        // - Unconstrained affects max_idx but produces no column data
+        let ops = vec![
+            Op::Const {
+                out: WitnessId(0),
+                val: F::from_u64(100),
+            },
+            Op::Public {
+                out: WitnessId(1),
+                public_pos: 0,
+            },
+            Op::Const {
+                out: WitnessId(2),
+                val: F::from_u64(200),
+            },
+            Op::Add {
+                a: WitnessId(0),
+                b: WitnessId(1),
+                out: WitnessId(3),
+            },
+            Op::Add {
+                a: WitnessId(3),
+                b: WitnessId(2),
+                out: WitnessId(4),
+            },
+            Op::Mul {
+                a: WitnessId(4),
+                b: WitnessId(2),
+                out: WitnessId(5),
+            },
+            // Unconstrained with highest index determines witness table size
+            Op::Unconstrained {
+                inputs: vec![],
+                outputs: vec![WitnessId(10)],
+                filler: DefaultHint::boxed_default(),
+            },
+        ];
+
+        let circuit = make_circuit(ops);
+        let result = circuit.generate_preprocessed_columns().unwrap();
+
+        // Const column: output indices in order
+        assert_eq!(
+            result[PrimitiveOpType::Const as usize],
+            vec![F::ZERO, F::from_u32(2)]
+        );
+
+        // Public column: output index
+        assert_eq!(
+            result[PrimitiveOpType::Public as usize],
+            vec![F::from_u32(1)]
+        );
+
+        // Add column: (a, b, out) triplets concatenated
+        assert_eq!(
+            result[PrimitiveOpType::Add as usize],
+            vec![
+                F::ZERO,
+                F::from_u32(1),
+                F::from_u32(3),
+                F::from_u32(3),
+                F::from_u32(2),
+                F::from_u32(4)
+            ]
+        );
+
+        // Mul column: (a, b, out) triplet
+        assert_eq!(
+            result[PrimitiveOpType::Mul as usize],
+            vec![F::from_u32(4), F::from_u32(2), F::from_u32(5)]
+        );
+
+        // Witness column: 0..=10 (Unconstrained output is the max)
+        let expected_witness: Vec<F> = (0..=10).map(F::from_u32).collect();
+        assert_eq!(result[PrimitiveOpType::Witness as usize], expected_witness);
+    }
+
+    #[test]
+    fn test_input_indices_contribute_to_max_idx() {
+        // Ensures input indices that exceed outputs are tracked for witness table size
+        let ops = vec![Op::Add {
+            a: WitnessId(0),
+            b: WitnessId(15), // Highest index is an input, not output
+            out: WitnessId(5),
+        }];
+
+        let circuit = make_circuit(ops);
+        let result = circuit.generate_preprocessed_columns().unwrap();
+
+        let expected_witness: Vec<F> = (0..=15).map(F::from_u32).collect();
+        assert_eq!(result[PrimitiveOpType::Witness as usize], expected_witness);
     }
 }
