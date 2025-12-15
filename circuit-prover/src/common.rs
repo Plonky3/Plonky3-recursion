@@ -115,6 +115,8 @@ pub fn get_airs_and_degrees_with_prep<
                 );
             }
         }
+
+        // TODO: Handle preprocessing for non-primitive tables as well.
     });
 
     Ok(table_preps)

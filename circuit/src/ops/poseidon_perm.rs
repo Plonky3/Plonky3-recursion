@@ -166,7 +166,9 @@ impl<F: Field> NonPrimitiveExecutor<F> for PoseidonPermExecutor {
         // Update the `Witness` table preprocessing by incrementing the multiplicity of all values read from the `Witness` table.
         // Whenever an input or output is present, it means it is exposed in the `Permutation` table, and its multiplicity should therefore be incremented.
         let witness_table_idx = PrimitiveOpType::Witness as usize;
-        for inp in inputs {
+        // The last input is `mmcs_bit_idx`, which is not a preprocessed column.
+        let last_input = inputs.len() - 1;
+        for inp in inputs[..last_input].iter() {
             for witness_id in inp {
                 let idx = witness_id.0 as usize;
                 if idx >= preprocessed_tables[witness_table_idx].len() {

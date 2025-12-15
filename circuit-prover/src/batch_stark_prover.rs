@@ -1566,7 +1566,7 @@ mod tests {
                 CircuitTableAir::Dynamic(_dynamic_air) => {
                     assert!(
                         lookups.is_empty(),
-                        "Lookups in dynamic tables not supported yet"
+                        "There is no dynamic table in this test, so no lookups expected"
                     );
                 }
             }
