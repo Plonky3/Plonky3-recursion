@@ -709,14 +709,17 @@ impl<
 
         // If next.new_start = 1 and local.merkle_path = 1, then mmcs_index_sum is exposed via CTL.
         let multiplicity = next.new_start * local.merkle_path;
-        let mmcs_index_sum_lookup = [
+
+        let mut mmcs_index_sum_lookup = vec![
             SymbolicExpression::from(local.mmcs_index_sum_idx),
             SymbolicExpression::from(local.mmcs_index_sum),
-            // Since `mmcs_index_sum` is a single field element (not an extension), its other limbs are zero.
-            SymbolicExpression::Constant(AB::F::ZERO),
-            SymbolicExpression::Constant(AB::F::ZERO),
-            SymbolicExpression::Constant(AB::F::ZERO),
         ];
+        // Extend `mmcs_index_sum` to D elements with zeros.
+        mmcs_index_sum_lookup.extend(iter::repeat_n(
+            SymbolicExpression::Constant(AB::F::ZERO),
+            D - 1,
+        ));
+
         let lookup_mmcs = (
             mmcs_index_sum_lookup.to_vec(),
             multiplicity,

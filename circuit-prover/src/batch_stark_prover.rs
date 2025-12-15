@@ -1491,7 +1491,7 @@ mod tests {
             expected_multiplicities
                 .iter()
                 .enumerate()
-                .flat_map(|(i, m)| vec![BabyBear::from_usize(i), *m])
+                .flat_map(|(i, m)| vec![*m, BabyBear::from_usize(i)])
                 .collect::<Vec<_>>(),
             2 * TablePacking::default().witness_lanes(),
         );

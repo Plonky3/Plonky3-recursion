@@ -34,11 +34,11 @@ use p3_air::{
 };
 use p3_circuit::tables::ConstTrace;
 use p3_circuit::utils::pad_to_power_of_two;
-use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
+use p3_field::{BasedVectorSpace, Field};
 use p3_lookup::lookup_traits::{AirLookupHandler, Direction, Kind, Lookup};
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
-use p3_uni_stark::{SymbolicAirBuilder, SymbolicExpression};
+use p3_uni_stark::SymbolicAirBuilder;
 
 use crate::air::utils::get_index_lookups;
 
@@ -81,6 +81,10 @@ impl<F: Field, const D: usize> ConstAir<F, D> {
         }
     }
 
+    /// Number of preprocessed columns: multiplicity + index
+    pub const fn preprocessed_width() -> usize {
+        2 // One column for multiplicity, one for index
+    }
     /// Convert a `ConstTrace` into a `RowMajorMatrix` suitable for the STARK prover.
     ///
     /// This function is responsible for:
@@ -134,12 +138,16 @@ impl<F: Field, const D: usize> BaseAir<F> for ConstAir<F, D> {
     }
 
     fn preprocessed_trace(&self) -> Option<RowMajorMatrix<F>> {
-        let mut preprocessed_values = self.preprocessed.clone();
-        pad_to_power_of_two(&mut preprocessed_values, 1, self.preprocessed.len());
+        let mut preprocessed_values = self
+            .preprocessed
+            .iter()
+            .flat_map(|v| [F::ONE, *v])
+            .collect::<Vec<F>>();
+        pad_to_power_of_two(&mut preprocessed_values, 2, self.preprocessed.len());
 
         Some(RowMajorMatrix::new(
             preprocessed_values,
-            1, // single preprocessed column for indices
+            2, // Two columns: one for the multiplicity (0 for padding, 1 otherwise), one for the index
         ))
     }
 }
@@ -165,8 +173,13 @@ where
 
     fn get_lookups(&mut self) -> Vec<Lookup<<AB>::F>> {
         // Create symbolic air builder to access symbolic variables
-        let symbolic_air_builder =
-            SymbolicAirBuilder::<AB::F>::new(1, BaseAir::<AB::F>::width(self), 0, 1, 0);
+        let symbolic_air_builder = SymbolicAirBuilder::<AB::F>::new(
+            Self::preprocessed_width(),
+            BaseAir::<AB::F>::width(self),
+            0,
+            1,
+            0,
+        );
 
         let symbolic_main = symbolic_air_builder.main();
         let symbolic_main_local = symbolic_main.row_slice(0).unwrap();
@@ -174,13 +187,10 @@ where
         let preprocessed = symbolic_air_builder.preprocessed();
         let preprocessed_local = preprocessed.row_slice(0).unwrap();
 
-        let multiplicity = SymbolicExpression::Constant(AB::F::ONE);
-
         let lookup_inps = get_index_lookups::<AB, D>(
             0,
             0,
             1,
-            &[multiplicity],
             &symbolic_main_local,
             &preprocessed_local,
             Direction::Send,
@@ -269,11 +279,20 @@ mod tests {
         let air = ConstAir::<F, 1>::new_with_preprocessed(height, preprocessed_values);
 
         let preprocessed_matrix = air.preprocessed_trace().unwrap();
+        assert_eq!(preprocessed_matrix.height(), height);
 
+        // Assert the preprocessed values were properly created.
         const_indices.iter().enumerate().for_each(|(i, const_idx)| {
             let row = preprocessed_matrix.row_slice(i).unwrap();
-            assert_eq!(row[0], F::from_u32(const_idx.0));
+            // The multiplicity should be 1 for all active rows.
+            assert_eq!(row[0], F::ONE);
+            // Check the witness index.
+            assert_eq!(row[1], F::from_u32(const_idx.0));
         });
+        // Check the padding row
+        let last_row = preprocessed_matrix.row_slice(height - 1).unwrap();
+        assert_eq!(last_row[0], F::ZERO);
+        assert_eq!(last_row[1], F::ZERO);
 
         let (prover_data, verifier_data) =
             setup_preprocessed(&config, &air, log2_ceil_usize(height)).unwrap();
@@ -342,9 +361,15 @@ mod tests {
         let air = ConstAir::<F, 4>::new_with_preprocessed(height, preprocessed_values);
         let preprocessed_matrix = air.preprocessed_trace().unwrap();
         let row0 = preprocessed_matrix.row_slice(0).unwrap();
-        assert_eq!(row0[0], F::from_u64(10));
+        // Assert that the multipliticy is 1 since the furst row is active
+        assert_eq!(row0[0], F::ONE);
+        // Assert that the witness index is correct.
+        assert_eq!(row0[1], F::from_u64(10));
         let last_row = preprocessed_matrix.row_slice(height - 1).unwrap();
-        assert_eq!(last_row[0], F::from_u64(20));
+        // Assert that the multipliticy is 1 since the furst row is active
+        assert_eq!(last_row[0], F::ONE);
+        // Assert that the witness index is correct.
+        assert_eq!(last_row[1], F::from_u64(20));
         let (prover_data, verifier_data) =
             setup_preprocessed(&config, &air, log2_ceil_usize(height)).unwrap();
         let proof = prove_with_preprocessed(&config, &air, matrix, &pis, Some(&prover_data));

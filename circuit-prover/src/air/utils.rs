@@ -15,7 +15,6 @@ pub fn get_index_lookups<
     main_start: usize,
     preprocessed_start: usize,
     num_lookups: usize,
-    multiplicities: &[SymbolicExpression<AB::F>],
     main: &[SymbolicVariable<<AB as AirBuilder>::F>],
     preprocessed: &[SymbolicVariable<<AB as AirBuilder>::F>],
     direction: Direction,
@@ -27,13 +26,15 @@ pub fn get_index_lookups<
         .map(|chunk| {
             chunk
                 .map(|i| {
-                    let idx = SymbolicExpression::from(preprocessed[preprocessed_start + i]);
+                    let idx = SymbolicExpression::from(preprocessed[1 + preprocessed_start + i]);
+
+                    let multiplicity = SymbolicExpression::from(preprocessed[preprocessed_start]);
 
                     let values =
                         (0..D).map(|j| SymbolicExpression::from(main[main_start + i * D + j]));
                     let inps = iter::once(idx).chain(values).collect::<Vec<_>>();
 
-                    (inps, multiplicities[i].clone(), direction)
+                    (inps, multiplicity, direction)
                 })
                 .collect::<Vec<_>>()
         })
