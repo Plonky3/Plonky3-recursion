@@ -9,6 +9,24 @@ use p3_util::log2_ceil_u64;
 use crate::op::WitnessHintsFiller;
 use crate::{CircuitBuilder, CircuitError, ExprId};
 
+use tracing_forest::ForestLayer;
+use tracing_forest::util::LevelFilter;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::{EnvFilter, Registry};
+
+/// Initializes a global logger with default parameters.
+pub fn init_logger() {
+    let env_filter = EnvFilter::builder()
+        .with_default_directive(LevelFilter::INFO.into())
+        .from_env_lossy();
+
+    Registry::default()
+        .with(env_filter)
+        .with(ForestLayer::default())
+        .init();
+}
+
 /// Identifiers for special row selector flags in the circuit.
 #[derive(Clone, Copy, Debug)]
 pub struct RowSelectorsTargets {
@@ -43,6 +61,21 @@ pub fn symbolic_to_circuit<F: Field>(
     symbolic: &SymbolicExpression<F>,
     circuit: &mut CircuitBuilder<F>,
 ) -> ExprId {
+    use hashbrown::HashMap;
+
+    enum Work<'a, F: Field> {
+        Eval(&'a SymbolicExpression<F>),
+        Build(*const SymbolicExpression<F>, Op, usize),
+    }
+
+    #[derive(Copy, Clone)]
+    enum Op {
+        Add,
+        Sub,
+        Mul,
+        Neg,
+    }
+
     let RowSelectorsTargets {
         is_first_row,
         is_last_row,
@@ -57,54 +90,94 @@ pub fn symbolic_to_circuit<F: Field>(
         next_values,
     } = columns;
 
-    let mut get_target =
-        |s: &SymbolicExpression<F>| symbolic_to_circuit(row_selectors, columns, s, circuit);
+    let mut cache: HashMap<*const SymbolicExpression<F>, ExprId> = HashMap::new();
+    let mut tasks: Vec<Work<'_, F>> = vec![Work::Eval(symbolic)];
+    let mut stack: Vec<ExprId> = Vec::new();
 
-    match symbolic {
-        SymbolicExpression::Constant(c) => circuit.add_const(*c),
-        SymbolicExpression::Variable(v) => {
-            let get_val =
-                |offset: usize, index: usize, local_vals: &[ExprId], next_vals: &[ExprId]| {
-                    match offset {
-                        0 => local_vals[index],
-                        1 => next_vals[index],
-                        _ => panic!("Cannot have expressions involving more than two rows."),
+    while let Some(work) = tasks.pop() {
+        match work {
+            Work::Eval(expr) => {
+                let key = expr as *const _;
+                if let Some(&cached) = cache.get(&key) {
+                    stack.push(cached);
+                    continue;
+                }
+                match expr {
+                    SymbolicExpression::Constant(c) => {
+                        let id = circuit.add_const(*c);
+                        cache.insert(key, id);
+                        stack.push(id);
+                    }
+                    SymbolicExpression::Variable(v) => {
+                        let get_val = |offset: usize,
+                                       index: usize,
+                                       local_vals: &[ExprId],
+                                       next_vals: &[ExprId]| match offset {
+                            0 => local_vals[index],
+                            1 => next_vals[index],
+                            _ => panic!("Cannot have expressions involving more than two rows."),
+                        };
+                        let id = match v.entry {
+                            Entry::Preprocessed { offset } => {
+                                get_val(offset, v.index, local_prep_values, next_prep_values)
+                            }
+                            Entry::Main { offset } => {
+                                get_val(offset, v.index, local_values, next_values)
+                            }
+                            Entry::Public => public_values[v.index],
+                            Entry::Challenge => challenges[v.index],
+                            _ => unimplemented!(),
+                        };
+                        cache.insert(key, id);
+                        stack.push(id);
+                    }
+                    SymbolicExpression::IsFirstRow => stack.push(is_first_row),
+                    SymbolicExpression::IsLastRow => stack.push(is_last_row),
+                    SymbolicExpression::IsTransition => stack.push(is_transition),
+                    SymbolicExpression::Neg { x, .. } => {
+                        tasks.push(Work::Build(key, Op::Neg, 1));
+                        tasks.push(Work::Eval(x));
+                    }
+                    SymbolicExpression::Add { x, y, .. } => {
+                        tasks.push(Work::Build(key, Op::Add, 2));
+                        tasks.push(Work::Eval(y));
+                        tasks.push(Work::Eval(x));
+                    }
+                    SymbolicExpression::Sub { x, y, .. } => {
+                        tasks.push(Work::Build(key, Op::Sub, 2));
+                        tasks.push(Work::Eval(y));
+                        tasks.push(Work::Eval(x));
+                    }
+                    SymbolicExpression::Mul { x, y, .. } => {
+                        tasks.push(Work::Build(key, Op::Mul, 2));
+                        tasks.push(Work::Eval(y));
+                        tasks.push(Work::Eval(x));
+                    }
+                }
+            }
+            Work::Build(key, op, arity) => {
+                let rhs = stack.pop().expect("rhs");
+                let lhs = if arity == 2 {
+                    stack.pop().expect("lhs")
+                } else {
+                    rhs // placeholder; for Neg we overwrite below
+                };
+                let id = match op {
+                    Op::Add => circuit.add(lhs, rhs),
+                    Op::Sub => circuit.sub(lhs, rhs),
+                    Op::Mul => circuit.mul(lhs, rhs),
+                    Op::Neg => {
+                        let zero = circuit.add_const(F::ZERO);
+                        circuit.sub(zero, rhs)
                     }
                 };
-
-            match v.entry {
-                Entry::Preprocessed { offset } => {
-                    get_val(offset, v.index, local_prep_values, next_prep_values)
-                }
-                Entry::Main { offset } => get_val(offset, v.index, local_values, next_values),
-                Entry::Public => public_values[v.index],
-                Entry::Challenge => challenges[v.index],
-                _ => unimplemented!(),
-            }
-        }
-        SymbolicExpression::IsFirstRow => is_first_row,
-        SymbolicExpression::IsLastRow => is_last_row,
-        SymbolicExpression::IsTransition => is_transition,
-        SymbolicExpression::Neg { x, .. } => {
-            let x_target = get_target(x);
-            let zero = circuit.add_const(F::ZERO);
-
-            circuit.sub(zero, x_target)
-        }
-        SymbolicExpression::Add { x, y, .. }
-        | SymbolicExpression::Sub { x, y, .. }
-        | SymbolicExpression::Mul { x, y, .. } => {
-            let x_target = get_target(x);
-            let y_target = get_target(y);
-
-            match symbolic {
-                SymbolicExpression::Add { .. } => circuit.add(x_target, y_target),
-                SymbolicExpression::Mul { .. } => circuit.mul(x_target, y_target),
-                SymbolicExpression::Sub { .. } => circuit.sub(x_target, y_target),
-                _ => unreachable!(),
+                cache.insert(key, id);
+                stack.push(id);
             }
         }
     }
+
+    stack.pop().expect("final target")
 }
 
 /// Reconstruct an integer (as a field element) from little-endian bits:

@@ -4,24 +4,8 @@
 //! that enables debug_assertions, and with `RUST_LOG=DEBUG` for tracing.
 
 use p3_baby_bear::BabyBear;
-use p3_circuit::CircuitBuilder;
+use p3_circuit::{CircuitBuilder, utils::init_logger};
 use p3_field::PrimeCharacteristicRing;
-use tracing_forest::ForestLayer;
-use tracing_forest::util::LevelFilter;
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::{EnvFilter, Registry};
-
-fn init_logger() {
-    let env_filter = EnvFilter::builder()
-        .with_default_directive(LevelFilter::INFO.into())
-        .from_env_lossy();
-
-    Registry::default()
-        .with(env_filter)
-        .with(ForestLayer::default())
-        .init();
-}
 
 fn main() {
     init_logger();

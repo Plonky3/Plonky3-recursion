@@ -6,27 +6,12 @@ use std::error::Error;
 use p3_baby_bear::BabyBear;
 use p3_batch_stark::CommonData;
 use p3_circuit::CircuitBuilder;
+use p3_circuit::utils::init_logger;
 use p3_circuit_prover::common::get_airs_and_degrees_with_prep;
 use p3_circuit_prover::{BatchStarkProver, TablePacking, config};
 use p3_field::PrimeCharacteristicRing;
-use tracing_forest::ForestLayer;
-use tracing_forest::util::LevelFilter;
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::{EnvFilter, Registry};
 
 type F = BabyBear;
-
-fn init_logger() {
-    let env_filter = EnvFilter::builder()
-        .with_default_directive(LevelFilter::INFO.into())
-        .from_env_lossy();
-
-    Registry::default()
-        .with(env_filter)
-        .with(ForestLayer::default())
-        .init();
-}
 
 fn main() -> Result<(), Box<dyn Error>> {
     init_logger();
