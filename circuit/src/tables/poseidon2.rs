@@ -193,7 +193,7 @@ where
                 let (new_start, merkle_path) = (exec.new_start, exec.merkle_path);
                 // Expected input layout: [in0, in1, in2, in3, mmcs_index_sum, mmcs_bit]
                 if inputs.len() != 6 {
-                    return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
+                    return Err(CircuitError::NonPrimitiveOpLayoutMismatch {
                         op: executor.op_type().clone(),
                         expected: "6 input vectors".to_string(),
                         got: inputs.len(),
@@ -201,7 +201,7 @@ where
                 }
                 // Expected output layout: [out0, out1]
                 if outputs.len() != 2 {
-                    return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
+                    return Err(CircuitError::NonPrimitiveOpLayoutMismatch {
                         op: executor.op_type().clone(),
                         expected: "2 output vectors".to_string(),
                         got: outputs.len(),

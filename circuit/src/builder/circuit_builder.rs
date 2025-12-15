@@ -117,6 +117,11 @@ where
             let mut base_input = [Config::BaseField::ZERO; 16];
             for (i, ext_elem) in input.iter().enumerate() {
                 let coeffs = ext_elem.as_basis_coefficients_slice();
+                debug_assert_eq!(
+                    coeffs.len(),
+                    4,
+                    "Extension field should have D=4 basis coefficients"
+                );
                 base_input[i * 4..(i + 1) * 4].copy_from_slice(coeffs);
             }
 
@@ -447,8 +452,13 @@ where
         let op_id = NonPrimitiveOpId(self.non_primitive_ops.len() as u32);
 
         #[cfg(debug_assertions)]
-        self.expr_builder
-            .log_non_primitive_op(op_id, op_type.clone(), input_exprs.clone(), label);
+        self.expr_builder.log_non_primitive_op(
+            op_id,
+            op_type.clone(),
+            input_exprs.clone(),
+            output_exprs.clone(),
+            label,
+        );
 
         self.non_primitive_ops.push(NonPrimitiveOperationData {
             op_id,

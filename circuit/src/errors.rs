@@ -82,6 +82,16 @@ pub enum CircuitError {
     #[error("Invalid configuration for operation {op:?}")]
     InvalidNonPrimitiveOpConfiguration { op: NonPrimitiveOpType },
 
+    /// Non-primitive operation has incorrect input/output layout.
+    #[error(
+        "Incorrect layout for operation {op:?}: expected {expected}, got {got}"
+    )]
+    NonPrimitiveOpLayoutMismatch {
+        op: NonPrimitiveOpType,
+        expected: String,
+        got: usize,
+    },
+
     /// Incorrect size of private data provided for a non-primitive operation.
     #[error(
         "Incorrect size of private data provided for operation {op:?}: expected {expected}, got {got}"

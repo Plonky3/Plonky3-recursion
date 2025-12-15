@@ -323,7 +323,7 @@ where
         let expr_id = self.graph.add_expr(Expr::UnsetWitness);
 
         #[cfg(debug_assertions)]
-        self.log_alloc(expr_id, label, || (AllocationType::WitnessHint, vec![]));
+        self.log_alloc(expr_id, label, || (AllocationType::UnsetWitness, vec![]));
         #[cfg(not(debug_assertions))]
         self.log_alloc(expr_id, label, || ());
 
@@ -599,18 +599,25 @@ where
     ///
     /// - `op_id`: The non-primitive operation ID
     /// - `op_type`: The type of operation (e.g., `NonPrimitiveOpType::MmcsVerify`)
-    /// - `dependencies`: Expression dependencies for this operation
+    /// - `input_deps`: Input expression dependencies for this operation
+    /// - `output_deps`: Output expression dependencies for this operation
     /// - `label`: Human-readable label
     #[cfg(debug_assertions)]
     pub fn log_non_primitive_op(
         &mut self,
         op_id: crate::types::NonPrimitiveOpId,
         op_type: crate::op::NonPrimitiveOpType,
-        dependencies: Vec<Vec<ExprId>>,
+        input_deps: Vec<Vec<ExprId>>,
+        output_deps: Vec<Vec<ExprId>>,
         label: &'static str,
     ) {
         // Capture the current scope.
         let scope = self.scope_stack.last().copied();
+
+        // Combine inputs and outputs for dependency tracking.
+        // Use a separator to distinguish inputs from outputs in the log.
+        let mut dependencies = input_deps;
+        dependencies.extend(output_deps);
 
         // Add to allocation log.
         //
