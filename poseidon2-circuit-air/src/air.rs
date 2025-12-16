@@ -120,7 +120,6 @@ impl<
     }
 
     pub const fn preprocessed_width() -> usize {
-        // Witness index and `in_ctl` for all input limbs, witness index and `out_ctl` for all output limbs, `mmcs_index_sum_ctl`
         poseidon_preprocessed_width()
     }
 
