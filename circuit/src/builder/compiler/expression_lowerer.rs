@@ -13,7 +13,7 @@ use crate::builder::{BuilderConfig, CircuitBuilderError};
 use crate::expr::{Expr, ExpressionGraph};
 use crate::op::{NonPrimitiveOpType, Op, WitnessHintsFiller};
 use crate::ops::PoseidonPermExecutor;
-use crate::types::{ExprId, WitnessAllocator, WitnessId};
+use crate::types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};
 
 /// Sparse disjoint-set "find" with path compression over a HashMap (iterative).
 /// If `x` is not present, it's its own representative and is not inserted.
@@ -286,6 +286,27 @@ where
         for outputs in op_id_to_output_exprs.values_mut() {
             outputs.sort_by_key(|(output_idx, _, _)| *output_idx);
         }
+        for (&op_id_u32, outputs) in &op_id_to_output_exprs {
+            // Enforce a simple invariant: output indices are a contiguous 0..N-1 range with no
+            // duplicates. This avoids silent mis-wiring due to gaps or repeated indices.
+            for (pos, (output_idx, _, _)) in outputs.iter().enumerate() {
+                if pos > 0 && outputs[pos - 1].0 == *output_idx {
+                    return Err(CircuitBuilderError::MalformedNonPrimitiveOutputs {
+                        op_id: NonPrimitiveOpId(op_id_u32),
+                        details: format!("duplicate output_idx {output_idx}"),
+                    });
+                }
+                if *output_idx != pos as u32 {
+                    return Err(CircuitBuilderError::MalformedNonPrimitiveOutputs {
+                        op_id: NonPrimitiveOpId(op_id_u32),
+                        details: format!(
+                            "expected output_idx {expected}, got {output_idx}",
+                            expected = pos as u32
+                        ),
+                    });
+                }
+            }
+        }
 
         // Build DSU over expression IDs to honor connect(a, b)
         let mut parents = build_connect_dsu(self.pending_connects);
@@ -492,6 +513,13 @@ where
         }
 
         // Ensure non-primitive ops with no outputs are still emitted.
+        //
+        // Invariant: output-less non-primitive ops must not produce witness values that are later
+        // consumed by other ops. If an op produces values that are used downstream, those values
+        // should be represented as `Expr::NonPrimitiveOutput` nodes so the lowerer can place the op
+        // correctly in the execution order.
+        //
+        // TODO: Introduce an explicit "anchor" Expr to place effectful output-less ops.
         for data in self.non_primitive_ops {
             if emitted_non_primitive_ops.insert(data.op_id.0) {
                 let outputs = op_id_to_output_exprs

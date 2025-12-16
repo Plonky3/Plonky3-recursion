@@ -26,6 +26,13 @@ pub enum CircuitBuilderError {
     #[error("Non-primitive operation id {op_id:?} not found")]
     MissingNonPrimitiveOp { op_id: NonPrimitiveOpId },
 
+    /// Non-primitive output indices for an op are malformed (duplicates or gaps).
+    #[error("Non-primitive output indices malformed for op {op_id:?}: {details}")]
+    MalformedNonPrimitiveOutputs {
+        op_id: NonPrimitiveOpId,
+        details: String,
+    },
+
     /// Non-primitive operation rejected by the active policy/profile.
     #[error("Operation {op:?} is not allowed by the current profile")]
     OpNotAllowed { op: NonPrimitiveOpType },

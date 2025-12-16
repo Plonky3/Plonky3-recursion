@@ -153,6 +153,8 @@ where
 /// Executor for Poseidon perm operations.
 ///
 /// This currently does not mutate the witness; the AIR enforces correctness.
+// TODO: When implementing the Poseidon perm executor, write computed outputs into the witness
+// using `outputs` and update trace builders to consume `Op::NonPrimitiveOpWithExecutor.outputs`.
 #[derive(Debug, Clone)]
 pub struct PoseidonPermExecutor {
     op_type: NonPrimitiveOpType,

@@ -47,8 +47,16 @@ impl<F: CircuitField> CircuitRunner<F> {
             if let Op::NonPrimitiveOpWithExecutor { op_id, .. } = op
                 && let Some(slot) = non_primitive_op_index_by_id.get_mut(op_id.0 as usize)
             {
-                // Keep the first occurrence if duplicates exist.
-                slot.get_or_insert(idx);
+                #[cfg(debug_assertions)]
+                debug_assert!(
+                    slot.is_none(),
+                    "duplicate NonPrimitiveOpId({}) in circuit.ops",
+                    op_id.0
+                );
+                // Keep the first occurrence if duplicates exist (release builds).
+                if slot.is_none() {
+                    *slot = Some(idx);
+                }
             }
         }
 
