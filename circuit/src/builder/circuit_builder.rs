@@ -5,7 +5,7 @@ use hashbrown::HashMap;
 use itertools::zip_eq;
 use p3_field::{Field, PrimeCharacteristicRing};
 
-use super::compiler::{ExpressionLowerer, NonPrimitiveLowerer, Optimizer};
+use super::compiler::{ExpressionLowerer, Optimizer};
 use super::{BuilderConfig, ExpressionBuilder, PublicInputTracker};
 use crate::circuit::Circuit;
 use crate::op::{DefaultHint, NonPrimitiveOpType, WitnessHintsFiller};
@@ -384,6 +384,28 @@ where
         op_id
     }
 
+    /// Pushes a non-primitive op and returns expressions representing its outputs.
+    ///
+    /// Each returned `ExprId` is an `Expr::NonPrimitiveOutput { op_id, output_idx }` node,
+    /// allowing downstream expressions to depend on the non-primitive op in the DAG.
+    pub(crate) fn push_non_primitive_op_with_outputs(
+        &mut self,
+        op_type: NonPrimitiveOpType,
+        witness_exprs: Vec<Vec<ExprId>>,
+        params: Option<NonPrimitiveOpParams>,
+        n_outputs: usize,
+        label: &'static str,
+    ) -> (NonPrimitiveOpId, Vec<ExprId>) {
+        let op_id = self.push_non_primitive_op(op_type, witness_exprs, params, label);
+        let outputs = (0..n_outputs)
+            .map(|i| {
+                self.expr_builder
+                    .add_non_primitive_output(op_id, i as u32, label)
+            })
+            .collect();
+        (op_id, outputs)
+    }
+
     /// Pushes a new scope onto the scope stack.
     ///
     /// All subsequent allocations will be tagged with this scope until
@@ -439,30 +461,25 @@ where
     pub fn build_with_public_mapping(
         self,
     ) -> Result<(Circuit<F>, HashMap<ExprId, WitnessId>), CircuitBuilderError> {
-        // Stage 1: Lower expressions to primitives
+        // Stage 1: Lower expressions and non-primitives into a single op list
         let lowerer = ExpressionLowerer::new(
             self.expr_builder.graph(),
+            &self.non_primitive_ops,
+            &self.config,
             self.expr_builder.pending_connects(),
             self.public_tracker.count(),
             self.expr_builder.hints_fillers(),
             self.witness_alloc,
         );
-        let (primitive_ops, public_rows, expr_to_widx, public_mappings, witness_count) =
-            lowerer.lower()?;
+        let (ops, public_rows, expr_to_widx, public_mappings, witness_count) = lowerer.lower()?;
 
-        // Stage 2: Lower non-primitive operations using the expr_to_widx mapping
-        let non_primitive_lowerer =
-            NonPrimitiveLowerer::new(&self.non_primitive_ops, &expr_to_widx, &self.config);
-        let lowered_non_primitive_ops = non_primitive_lowerer.lower()?;
-
-        // Stage 3: IR transformations and optimizations
+        // Stage 2: IR transformations and optimizations
         let optimizer = Optimizer::new();
-        let primitive_ops = optimizer.optimize(primitive_ops);
+        let ops = optimizer.optimize(ops);
 
-        // Stage 4: Generate final circuit
+        // Stage 3: Generate final circuit
         let mut circuit = Circuit::new(witness_count, expr_to_widx);
-        circuit.primitive_ops = primitive_ops;
-        circuit.non_primitive_ops = lowered_non_primitive_ops;
+        circuit.ops = ops;
         circuit.public_rows = public_rows;
         circuit.public_flat_len = self.public_tracker.count();
         circuit.enabled_ops = self.config.into_enabled_ops();
@@ -580,12 +597,11 @@ mod tests {
 
         assert_eq!(circuit.public_flat_len, 0);
         assert_eq!(circuit.witness_count, 1);
-        assert_eq!(circuit.primitive_ops.len(), 1);
-        assert!(circuit.non_primitive_ops.is_empty());
+        assert_eq!(circuit.ops.len(), 1);
         assert!(circuit.public_rows.is_empty());
         assert!(circuit.enabled_ops.is_empty());
 
-        match &circuit.primitive_ops[0] {
+        match &circuit.ops[0] {
             crate::op::Op::Const { out, val } => {
                 assert_eq!(*out, WitnessId(0));
                 assert_eq!(*val, BabyBear::ZERO);
@@ -606,9 +622,9 @@ mod tests {
         assert_eq!(circuit.public_flat_len, 2);
         assert_eq!(circuit.public_rows.len(), 2);
         assert_eq!(circuit.witness_count, 3);
-        assert_eq!(circuit.primitive_ops.len(), 3);
+        assert_eq!(circuit.ops.len(), 3);
 
-        match &circuit.primitive_ops[0] {
+        match &circuit.ops[0] {
             crate::op::Op::Const { out, val } => {
                 assert_eq!(*out, WitnessId(0));
                 assert_eq!(*val, BabyBear::ZERO);
@@ -616,7 +632,7 @@ mod tests {
             _ => panic!("Expected Const at index 0"),
         }
 
-        match &circuit.primitive_ops[1] {
+        match &circuit.ops[1] {
             crate::op::Op::Public { out, public_pos } => {
                 assert_eq!(*out, WitnessId(1));
                 assert_eq!(*public_pos, 0);
@@ -624,7 +640,7 @@ mod tests {
             _ => panic!("Expected Public at index 1"),
         }
 
-        match &circuit.primitive_ops[2] {
+        match &circuit.ops[2] {
             crate::op::Op::Public { out, public_pos } => {
                 assert_eq!(*out, WitnessId(2));
                 assert_eq!(*public_pos, 1);
@@ -648,9 +664,9 @@ mod tests {
         assert_eq!(circuit.public_flat_len, 0);
         assert!(circuit.public_rows.is_empty());
         assert_eq!(circuit.witness_count, 3);
-        assert_eq!(circuit.primitive_ops.len(), 3);
+        assert_eq!(circuit.ops.len(), 3);
 
-        match &circuit.primitive_ops[0] {
+        match &circuit.ops[0] {
             crate::op::Op::Const { out, val } => {
                 assert_eq!(*out, WitnessId(0));
                 assert_eq!(*val, BabyBear::ZERO);
@@ -658,7 +674,7 @@ mod tests {
             _ => panic!("Expected Const at index 0"),
         }
 
-        match &circuit.primitive_ops[1] {
+        match &circuit.ops[1] {
             crate::op::Op::Const { out, val } => {
                 assert_eq!(*out, WitnessId(1));
                 assert_eq!(*val, BabyBear::from_u64(1));
@@ -666,7 +682,7 @@ mod tests {
             _ => panic!("Expected Const at index 1"),
         }
 
-        match &circuit.primitive_ops[2] {
+        match &circuit.ops[2] {
             crate::op::Op::Const { out, val } => {
                 assert_eq!(*out, WitnessId(2));
                 assert_eq!(*val, BabyBear::from_u64(2));
@@ -686,9 +702,9 @@ mod tests {
             .expect("Circuit with operations should build");
 
         assert_eq!(circuit.witness_count, 4);
-        assert_eq!(circuit.primitive_ops.len(), 4);
+        assert_eq!(circuit.ops.len(), 4);
 
-        match &circuit.primitive_ops[3] {
+        match &circuit.ops[3] {
             crate::op::Op::Add { out, a, b } => {
                 assert_eq!(*out, WitnessId(3));
                 assert_eq!(*a, WitnessId(1));
@@ -724,7 +740,7 @@ mod tests {
             .expect("Circuit with constraints should build");
 
         assert_eq!(circuit.witness_count, 2);
-        assert_eq!(circuit.primitive_ops.len(), 2);
+        assert_eq!(circuit.ops.len(), 2);
     }
 
     #[test]
@@ -738,9 +754,9 @@ mod tests {
             .expect("Circuit with operations should build");
 
         assert_eq!(circuit.witness_count, 2);
-        assert_eq!(circuit.primitive_ops.len(), 2);
+        assert_eq!(circuit.ops.len(), 2);
 
-        match &circuit.primitive_ops[1] {
+        match &circuit.ops[1] {
             crate::op::Op::Unconstrained {
                 inputs, outputs, ..
             } => {

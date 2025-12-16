@@ -17,7 +17,7 @@ use p3_field::PrimeCharacteristicRing;
 
 use crate::expr::{Expr, ExpressionGraph};
 use crate::op::WitnessHintsFiller;
-use crate::types::ExprId;
+use crate::types::{ExprId, NonPrimitiveOpId};
 #[cfg(debug_assertions)]
 use crate::{AllocationEntry, AllocationType};
 
@@ -407,6 +407,30 @@ where
             lhs,
             rhs,
         )
+    }
+
+    /// Adds a non-primitive output expression to the graph.
+    ///
+    /// This expression represents a value produced by a non-primitive operation,
+    /// and enables primitive expressions to depend on non-primitive outputs.
+    pub fn add_non_primitive_output(
+        &mut self,
+        op_id: NonPrimitiveOpId,
+        output_idx: u32,
+        label: &'static str,
+    ) -> ExprId {
+        let expr_id = self
+            .graph
+            .add_expr(Expr::NonPrimitiveOutput { op_id, output_idx });
+
+        #[cfg(debug_assertions)]
+        self.log_alloc(expr_id, label, || {
+            (AllocationType::NonPrimitiveOutput, vec![])
+        });
+        #[cfg(not(debug_assertions))]
+        self.log_alloc(expr_id, label, || ());
+
+        expr_id
     }
 
     /// Internal helper for adding binary operations.

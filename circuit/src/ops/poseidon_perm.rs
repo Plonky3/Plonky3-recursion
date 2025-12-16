@@ -20,10 +20,10 @@ use alloc::vec::Vec;
 
 use p3_field::{Field, PrimeCharacteristicRing};
 
-use crate::CircuitError;
 use crate::builder::{CircuitBuilder, NonPrimitiveOpParams};
 use crate::op::{ExecutionContext, NonPrimitiveExecutor, NonPrimitiveOpType};
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessId};
+use crate::{CircuitBuilderError, CircuitError};
 
 /// User-facing arguments for adding a Poseidon perm row.
 pub struct PoseidonPermCall {
@@ -70,6 +70,16 @@ pub trait PoseidonPermOps<F: Clone + PrimeCharacteristicRing + Eq> {
         &mut self,
         call: PoseidonPermCall,
     ) -> Result<NonPrimitiveOpId, crate::CircuitBuilderError>;
+
+    /// Add a Poseidon perm row and return expressions representing its outputs.
+    ///
+    /// The returned expressions are `Expr::NonPrimitiveOutput` nodes, which can be used
+    /// as inputs to later operations and will cause the lowerer to emit the Poseidon op
+    /// in the correct execution order.
+    fn add_poseidon_perm_with_outputs(
+        &mut self,
+        call: PoseidonPermCall,
+    ) -> Result<(NonPrimitiveOpId, [ExprId; 2]), CircuitBuilderError>;
 }
 
 impl<F> PoseidonPermOps<F> for CircuitBuilder<F>
@@ -80,6 +90,14 @@ where
         &mut self,
         call: PoseidonPermCall,
     ) -> Result<NonPrimitiveOpId, crate::CircuitBuilderError> {
+        let (op_id, _outputs) = self.add_poseidon_perm_with_outputs(call)?;
+        Ok(op_id)
+    }
+
+    fn add_poseidon_perm_with_outputs(
+        &mut self,
+        call: PoseidonPermCall,
+    ) -> Result<(NonPrimitiveOpId, [ExprId; 2]), CircuitBuilderError> {
         let op_type = NonPrimitiveOpType::PoseidonPerm;
         self.ensure_op_enabled(op_type.clone())?;
 
@@ -115,15 +133,20 @@ where
             witness_exprs.push(Vec::new());
         }
 
-        Ok(self.push_non_primitive_op(
+        let (op_id, outputs) = self.push_non_primitive_op_with_outputs(
             op_type,
             witness_exprs,
             Some(NonPrimitiveOpParams::PoseidonPerm {
                 new_start: call.new_start,
                 merkle_path: call.merkle_path,
             }),
+            2,
             "poseidon_perm",
-        ))
+        );
+        let outputs: [ExprId; 2] = outputs
+            .try_into()
+            .expect("push_non_primitive_op_with_outputs returned wrong output length");
+        Ok((op_id, outputs))
     }
 }
 

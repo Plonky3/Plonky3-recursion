@@ -173,7 +173,7 @@ where
         let width = Config::WIDTH;
         let d = Config::D;
 
-        for op in &self.circuit.non_primitive_ops {
+        for op in &self.circuit.ops {
             let Op::NonPrimitiveOpWithExecutor {
                 inputs,
                 outputs: _,

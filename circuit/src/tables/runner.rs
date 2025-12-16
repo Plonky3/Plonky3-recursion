@@ -26,17 +26,38 @@ pub struct CircuitRunner<F> {
     witness: Vec<Option<F>>,
     /// Private data for non-primitive operations (not on witness bus)
     non_primitive_op_private_data: Vec<Option<NonPrimitiveOpPrivateData<F>>>,
+    /// Map from NonPrimitiveOpId -> index in `circuit.ops` for type checks.
+    non_primitive_op_index_by_id: Vec<Option<usize>>,
 }
 
 impl<F: CircuitField> CircuitRunner<F> {
     /// Creates circuit runner with empty witness storage.
     pub fn new(circuit: Circuit<F>) -> Self {
         let witness = vec![None; circuit.witness_count as usize];
-        let non_primitive_op_private_data = vec![None; circuit.non_primitive_ops.len()];
+        let mut max_op_id: Option<u32> = None;
+        for op in &circuit.ops {
+            if let Op::NonPrimitiveOpWithExecutor { op_id, .. } = op {
+                max_op_id = Some(max_op_id.map_or(op_id.0, |cur| cur.max(op_id.0)));
+            }
+        }
+        let non_primitive_op_count = max_op_id.map_or(0, |m| m as usize + 1);
+
+        let mut non_primitive_op_index_by_id = vec![None; non_primitive_op_count];
+        for (idx, op) in circuit.ops.iter().enumerate() {
+            if let Op::NonPrimitiveOpWithExecutor { op_id, .. } = op
+                && let Some(slot) = non_primitive_op_index_by_id.get_mut(op_id.0 as usize)
+            {
+                // Keep the first occurrence if duplicates exist.
+                slot.get_or_insert(idx);
+            }
+        }
+
+        let non_primitive_op_private_data = vec![None; non_primitive_op_count];
         Self {
             circuit,
             witness,
             non_primitive_op_private_data,
+            non_primitive_op_index_by_id,
         }
     }
 
@@ -66,33 +87,46 @@ impl<F: CircuitField> CircuitRunner<F> {
         op_id: NonPrimitiveOpId,
         private_data: NonPrimitiveOpPrivateData<F>,
     ) -> Result<(), CircuitError> {
-        // Validate that the op_id exists in the circuit
-        if op_id.0 as usize >= self.circuit.non_primitive_ops.len() {
+        // Validate that the op_id exists in the circuit.
+        if op_id.0 as usize >= self.non_primitive_op_private_data.len()
+            || self
+                .non_primitive_op_index_by_id
+                .get(op_id.0 as usize)
+                .and_then(|x| *x)
+                .is_none()
+        {
             return Err(CircuitError::NonPrimitiveOpIdOutOfRange {
                 op_id: op_id.0,
-                max_ops: self.circuit.non_primitive_ops.len(),
+                max_ops: self.non_primitive_op_private_data.len(),
             });
         }
 
         // Validate that the private data matches the operation type
-        if let Op::NonPrimitiveOpWithExecutor { executor, .. } =
-            &self.circuit.non_primitive_ops[op_id.0 as usize]
-        {
-            match (executor.op_type(), &private_data) {
-                (
-                    crate::op::NonPrimitiveOpType::PoseidonPerm,
-                    NonPrimitiveOpPrivateData::PoseidonPerm(_),
-                ) => {
-                    // ok
-                }
+        let op_idx = self
+            .non_primitive_op_index_by_id
+            .get(op_id.0 as usize)
+            .and_then(|x| *x)
+            .ok_or(CircuitError::NonPrimitiveOpIdOutOfRange {
+                op_id: op_id.0,
+                max_ops: self.non_primitive_op_private_data.len(),
+            })?;
+        let Op::NonPrimitiveOpWithExecutor { executor, .. } = &self.circuit.ops[op_idx] else {
+            return Err(CircuitError::NonPrimitiveOpIdOutOfRange {
+                op_id: op_id.0,
+                max_ops: self.non_primitive_op_private_data.len(),
+            });
+        };
+        match (executor.op_type(), &private_data) {
+            (
+                crate::op::NonPrimitiveOpType::PoseidonPerm,
+                NonPrimitiveOpPrivateData::PoseidonPerm(_),
+            ) => {
+                // ok
             }
         }
 
         // Disallow double-setting private data
-        if self.non_primitive_op_private_data[op_id.0 as usize].is_some()
-            && let Op::NonPrimitiveOpWithExecutor { executor, .. } =
-                &self.circuit.non_primitive_ops[op_id.0 as usize]
-        {
+        if self.non_primitive_op_private_data[op_id.0 as usize].is_some() {
             return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
                 op: executor.op_type().clone(),
                 operation_index: op_id,
@@ -109,19 +143,14 @@ impl<F: CircuitField> CircuitRunner<F> {
     /// Run the circuit and generate traces
     #[instrument(skip_all)]
     pub fn run(mut self) -> Result<Traces<F>, CircuitError> {
-        // Step 1: Execute primitives to fill witness vector
-        self.execute_primitives()?;
+        self.execute_all()?;
 
-        // Step 2: Execute non-primitives to fill remaining witness vector
-        self.execute_non_primitives()?;
-
-        // Step 3: Delegate to trace builders for each table
+        // Delegate to trace builders for each table
         let witness_trace = WitnessTraceBuilder::new(&self.witness).build()?;
-        let const_trace = ConstTraceBuilder::new(&self.circuit.primitive_ops).build()?;
-        let public_trace =
-            PublicTraceBuilder::new(&self.circuit.primitive_ops, &self.witness).build()?;
-        let add_trace = AddTraceBuilder::new(&self.circuit.primitive_ops, &self.witness).build()?;
-        let mul_trace = MulTraceBuilder::new(&self.circuit.primitive_ops, &self.witness).build()?;
+        let const_trace = ConstTraceBuilder::new(&self.circuit.ops).build()?;
+        let public_trace = PublicTraceBuilder::new(&self.circuit.ops, &self.witness).build()?;
+        let add_trace = AddTraceBuilder::new(&self.circuit.ops, &self.witness).build()?;
+        let mul_trace = MulTraceBuilder::new(&self.circuit.ops, &self.witness).build()?;
 
         let mut non_primitive_traces: HashMap<&'static str, Box<dyn NonPrimitiveTrace<F>>> =
             HashMap::new();
@@ -146,15 +175,16 @@ impl<F: CircuitField> CircuitRunner<F> {
         })
     }
 
-    /// Executes primitive operations to populate witness table.
+    /// Executes the full circuit operation list to populate witness table.
     ///
-    /// Operations run forward or backward depending on known operands.
-    fn execute_primitives(&mut self) -> Result<(), CircuitError> {
-        // Clone primitive operations to avoid borrowing issues
-        let primitive_ops = self.circuit.primitive_ops.clone();
+    /// The circuit is already lowered into a valid execution order, so this function
+    /// can blindly execute from index 0 to end.
+    fn execute_all(&mut self) -> Result<(), CircuitError> {
+        // Clone ops to avoid borrowing issues.
+        let ops = self.circuit.ops.clone();
 
-        for prim in primitive_ops {
-            match prim {
+        for op in ops {
+            match op {
                 Op::Const { out, val } => {
                     self.set_witness(out, val)?;
                 }
@@ -212,40 +242,23 @@ impl<F: CircuitField> CircuitRunner<F> {
                         self.set_witness(output, output_val)?;
                     }
                 }
-                Op::NonPrimitiveOpWithExecutor { .. } => {
-                    // Handled separately in execute_non_primitives
+                Op::NonPrimitiveOpWithExecutor {
+                    inputs,
+                    outputs,
+                    executor,
+                    op_id,
+                } => {
+                    let mut ctx = ExecutionContext::new(
+                        &mut self.witness,
+                        &self.non_primitive_op_private_data,
+                        &self.circuit.enabled_ops,
+                        op_id,
+                    );
+
+                    executor.execute(&inputs, &outputs, &mut ctx)?;
                 }
             }
         }
-        Ok(())
-    }
-
-    /// Execute all non-primitive operations to fill remaining witness vector
-    fn execute_non_primitives(&mut self) -> Result<(), CircuitError> {
-        // Clone primitive operations to avoid borrowing issues
-        let non_primitive_ops = self.circuit.non_primitive_ops.clone();
-
-        for op in non_primitive_ops {
-            let Op::NonPrimitiveOpWithExecutor {
-                inputs,
-                outputs,
-                executor,
-                op_id,
-            } = op
-            else {
-                continue;
-            };
-
-            let mut ctx = ExecutionContext::new(
-                &mut self.witness,
-                &self.non_primitive_op_private_data,
-                &self.circuit.enabled_ops,
-                op_id,
-            );
-
-            executor.execute(&inputs, &outputs, &mut ctx)?;
-        }
-
         Ok(())
     }
 

@@ -4,6 +4,7 @@ use alloc::vec::Vec;
 use thiserror::Error;
 
 use crate::op::NonPrimitiveOpType;
+use crate::types::NonPrimitiveOpId;
 use crate::{ExprId, WitnessId};
 
 /// Errors that can occur during circuit building/lowering.
@@ -20,6 +21,10 @@ pub enum CircuitBuilderError {
         expected: String,
         got: usize,
     },
+
+    /// Non-primitive operation referenced by id was not found.
+    #[error("Non-primitive operation id {op_id:?} not found")]
+    MissingNonPrimitiveOp { op_id: NonPrimitiveOpId },
 
     /// Non-primitive operation rejected by the active policy/profile.
     #[error("Operation {op:?} is not allowed by the current profile")]
