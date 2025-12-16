@@ -13,9 +13,9 @@ use p3_matrix::stack::VerticalPair;
 use p3_merkle_tree::MerkleTreeMmcs;
 use p3_poseidon2_air::RoundConstants;
 use p3_poseidon2_circuit_air::Poseidon2CircuitAirBabyBearD4Width16;
-use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
 use p3_recursion::traits::RecursiveAir;
 use p3_recursion::types::RecursiveLagrangeSelectors;
+use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
 use p3_uni_stark::{SymbolicAirBuilder, VerifierConstraintFolder};
 use rand::rngs::SmallRng;
 use rand::{Rng, RngCore, SeedableRng};
@@ -133,9 +133,7 @@ where
     all_public_inputs.append(&mut trace_local);
     all_public_inputs.append(&mut trace_next);
 
-    let circuit = builder
-        .build()
-        .map_err(|e| CircuitError::InvalidCircuit { error: e })?;
+    let circuit = builder.build()?;
     let mut runner = circuit.runner();
     runner.set_public_inputs(&all_public_inputs)?;
     runner.run()?;
@@ -160,8 +158,8 @@ fn primitive_airs_symbolic_to_circuit() -> Result<(), CircuitError> {
     let public_air = PublicAir::<F, 1>::new_with_preprocessed(1, vec![F::from_u64(4)]);
     run_recursive(&public_air, 1, 1, &mut rng)?;
 
-    let witness_air = WitnessAir::<F, 1>::new_with_preprocessed(1, 1, vec![F::ONE]);
-    run_recursive(&witness_air, witness_air.preprocessed_width(), 0, &mut rng)?;
+    let witness_air = WitnessAir::<F, 1>::new(1, 1);
+    run_recursive(&witness_air, 0, 0, &mut rng)?;
 
     Ok(())
 }
