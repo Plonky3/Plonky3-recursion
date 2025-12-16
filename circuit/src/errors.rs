@@ -83,9 +83,7 @@ pub enum CircuitError {
     InvalidNonPrimitiveOpConfiguration { op: NonPrimitiveOpType },
 
     /// Non-primitive operation has incorrect input/output layout.
-    #[error(
-        "Incorrect layout for operation {op:?}: expected {expected}, got {got}"
-    )]
+    #[error("Incorrect layout for operation {op:?}: expected {expected}, got {got}")]
     NonPrimitiveOpLayoutMismatch {
         op: NonPrimitiveOpType,
         expected: String,

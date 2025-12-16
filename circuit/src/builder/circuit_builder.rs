@@ -1024,14 +1024,7 @@ mod tests {
         // Provide minimal valid-ish witnesses.
         let z = builder.add_const(Ext4::ZERO);
         // Input layout: [in0, in1, in2, in3, mmcs_index_sum, mmcs_bit]
-        let input_exprs = vec![
-            vec![z],
-            vec![z],
-            vec![z],
-            vec![z],
-            vec![],
-            vec![],
-        ];
+        let input_exprs = vec![vec![z], vec![z], vec![z], vec![z], vec![], vec![]];
         // Output layout: [out0, out1]
         let output_exprs = vec![vec![], vec![]];
 
