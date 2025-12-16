@@ -143,10 +143,11 @@ where
                             non_primitive_configs.ok_or(CircuitError::InvalidPreprocessedValues)?;
 
                         // Ensure that a Poseidon2 config is provided.
-                        let poseidon2_config =
-                            configs.into_iter().find_map(|config| match config {
-                                NonPrimitiveConfig::Poseidon2(cfg) => Some(cfg),
-                            });
+                        // We only have one type of non-primitive op for now, but we might add more later. The find_map allows for that.
+                        #[allow(clippy::unnecessary_find_map)]
+                        let poseidon2_config = configs.iter().find_map(|config| match config {
+                            NonPrimitiveConfig::Poseidon2(cfg) => Some(cfg),
+                        });
 
                         // Get the Poseidon2 permutation air based on the Poseidon2 configuration.
                         let config =
