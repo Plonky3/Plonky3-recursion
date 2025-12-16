@@ -3,7 +3,6 @@ mod common;
 use p3_baby_bear::{BabyBear as F, Poseidon2BabyBear};
 use p3_circuit::CircuitBuilder;
 use p3_circuit::tables::Poseidon2CircuitRow;
-use p3_circuit::utils::init_logger;
 use p3_commit::ExtensionMmcs;
 use p3_field::PrimeCharacteristicRing;
 use p3_fri::{TwoAdicFriPcs, create_test_fri_params};
@@ -19,6 +18,23 @@ use p3_recursion::{VerificationError, generate_challenges, verify_circuit};
 use p3_uni_stark::{StarkConfig, StarkGenericConfig, prove, verify};
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
+use tracing_forest::ForestLayer;
+use tracing_forest::util::LevelFilter;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::{EnvFilter, Registry};
+
+/// Initializes a global logger with default parameters.
+pub fn init_logger() {
+    let env_filter = EnvFilter::builder()
+        .with_default_directive(LevelFilter::INFO.into())
+        .from_env_lossy();
+
+    Registry::default()
+        .with(env_filter)
+        .with(ForestLayer::default())
+        .init();
+}
 
 use crate::common::baby_bear_params::*;
 

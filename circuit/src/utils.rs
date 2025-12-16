@@ -6,26 +6,9 @@ use hashbrown::HashMap;
 use p3_field::{ExtensionField, Field, PrimeField64};
 use p3_uni_stark::{Entry, SymbolicExpression};
 use p3_util::log2_ceil_u64;
-use tracing_forest::ForestLayer;
-use tracing_forest::util::LevelFilter;
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::{EnvFilter, Registry};
 
 use crate::op::WitnessHintsFiller;
 use crate::{CircuitBuilder, CircuitError, ExprId};
-
-/// Initializes a global logger with default parameters.
-pub fn init_logger() {
-    let env_filter = EnvFilter::builder()
-        .with_default_directive(LevelFilter::INFO.into())
-        .from_env_lossy();
-
-    Registry::default()
-        .with(env_filter)
-        .with(ForestLayer::default())
-        .init();
-}
 
 /// Identifiers for special row selector flags in the circuit.
 #[derive(Clone, Copy, Debug)]

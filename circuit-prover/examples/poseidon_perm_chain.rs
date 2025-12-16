@@ -9,7 +9,6 @@ use p3_baby_bear::{BabyBear, default_babybear_poseidon2_16};
 use p3_batch_stark::CommonData;
 use p3_circuit::ops::{PoseidonPermCall, PoseidonPermOps};
 use p3_circuit::tables::generate_poseidon2_trace;
-use p3_circuit::utils::init_logger;
 use p3_circuit::{CircuitBuilder, ExprId};
 use p3_circuit_prover::common::get_airs_and_degrees_with_prep;
 use p3_circuit_prover::{BatchStarkProver, Poseidon2Config, TablePacking, config};
@@ -17,6 +16,23 @@ use p3_field::extension::BinomialExtensionField;
 use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
 use p3_poseidon2_circuit_air::BabyBearD4Width16;
 use p3_symmetric::Permutation;
+use tracing_forest::ForestLayer;
+use tracing_forest::util::LevelFilter;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::{EnvFilter, Registry};
+
+/// Initializes a global logger with default parameters.
+pub fn init_logger() {
+    let env_filter = EnvFilter::builder()
+        .with_default_directive(LevelFilter::INFO.into())
+        .from_env_lossy();
+
+    Registry::default()
+        .with(env_filter)
+        .with(ForestLayer::default())
+        .init();
+}
 
 type Base = BabyBear;
 type Ext4 = BinomialExtensionField<Base, 4>;

@@ -290,12 +290,28 @@ mod tests {
     use p3_baby_bear::BabyBear;
     use p3_field::extension::BinomialExtensionField;
     use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
+    use tracing_forest::ForestLayer;
+    use tracing_forest::util::LevelFilter;
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+    use tracing_subscriber::{EnvFilter, Registry};
 
     use crate::ExprId;
     use crate::builder::CircuitBuilder;
     use crate::op::WitnessHintsFiller;
     use crate::types::WitnessId;
-    use crate::utils::init_logger;
+
+    /// Initializes a global logger with default parameters.
+    pub fn init_logger() {
+        let env_filter = EnvFilter::builder()
+            .with_default_directive(LevelFilter::INFO.into())
+            .from_env_lossy();
+
+        Registry::default()
+            .with(env_filter)
+            .with(ForestLayer::default())
+            .init();
+    }
 
     #[test]
     fn test_table_generation_basic() {

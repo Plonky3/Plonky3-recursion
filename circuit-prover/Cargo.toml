@@ -44,6 +44,8 @@ tracing.workspace = true
 [dev-dependencies]
 postcard = { version = "1.0", default-features = false, features = ["alloc"] }
 rand.workspace = true
+tracing-forest = { workspace = true, features = ["ansi", "smallvec"] }
+tracing-subscriber = { workspace = true, features = ["std", "env-filter"] }
 
 [features]
 parallel = ["p3-maybe-rayon/parallel"]

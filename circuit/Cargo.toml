@@ -33,7 +33,6 @@ strum_macros.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 tracing-forest.workspace = true
-tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [dev-dependencies]
 p3-air.workspace = true
