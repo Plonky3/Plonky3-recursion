@@ -7,9 +7,9 @@ use core::hash::Hash;
 use hashbrown::{HashMap, HashSet};
 use p3_field::{Field, PrimeCharacteristicRing};
 
+use crate::builder::CircuitBuilderError;
 use crate::builder::circuit_builder::{NonPrimitiveOpParams, NonPrimitiveOperationData};
 use crate::builder::compiler::get_witness_id;
-use crate::builder::{BuilderConfig, CircuitBuilderError};
 use crate::expr::{Expr, ExpressionGraph};
 use crate::op::{NonPrimitiveOpType, Op, WitnessHintsFiller};
 use crate::ops::PoseidonPermExecutor;
@@ -72,9 +72,6 @@ pub struct ExpressionLowerer<'a, F> {
     /// Non-primitive operations to lower (referenced by `Expr::NonPrimitiveOutput`)
     non_primitive_ops: &'a [NonPrimitiveOperationData],
 
-    /// Builder configuration with enabled operations
-    config: &'a BuilderConfig,
-
     /// Pending connections between expressions
     pending_connects: &'a [(ExprId, ExprId)],
 
@@ -97,7 +94,6 @@ where
     pub const fn new(
         graph: &'a ExpressionGraph<F>,
         non_primitive_ops: &'a [NonPrimitiveOperationData],
-        config: &'a BuilderConfig,
         pending_connects: &'a [(ExprId, ExprId)],
         public_input_count: usize,
         hints_fillers: &'a [Box<dyn WitnessHintsFiller<F>>],
@@ -106,7 +102,6 @@ where
         Self {
             graph,
             non_primitive_ops,
-            config,
             pending_connects,
             public_input_count,
             hints_fillers,
@@ -116,7 +111,6 @@ where
 
     fn emit_non_primitive_op<AllocFn>(
         data: &NonPrimitiveOperationData,
-        config: &BuilderConfig,
         output_exprs: &[(u32, usize, ExprId)],
         expr_to_widx: &mut HashMap<ExprId, WitnessId>,
         alloc_witness_id_for_expr: &mut AllocFn,
@@ -125,8 +119,6 @@ where
     where
         AllocFn: FnMut(usize) -> WitnessId,
     {
-        let config_opt = config.get_op_config(&data.op_type);
-
         let mut outputs_widx: Vec<Vec<WitnessId>> = Vec::with_capacity(output_exprs.len());
         for (_output_idx, expr_idx, expr_id) in output_exprs {
             let widx = *expr_to_widx
@@ -147,12 +139,6 @@ where
                         merkle_path,
                     } => (*new_start, *merkle_path),
                 };
-
-                if config_opt.is_none() {
-                    return Err(CircuitBuilderError::InvalidNonPrimitiveOpConfiguration {
-                        op: data.op_type.clone(),
-                    });
-                }
 
                 // Expected layout: [in0, in1, in2, in3, out0, out1, mmcs_index_sum, mmcs_bit]
                 if data.witness_exprs.len() != 8 {
@@ -486,7 +472,6 @@ where
                             .unwrap_or(&[]);
                         Self::emit_non_primitive_op(
                             data,
-                            self.config,
                             outputs,
                             &mut expr_to_widx,
                             &mut alloc_witness_id_for_expr,
@@ -528,7 +513,6 @@ where
                     .unwrap_or(&[]);
                 Self::emit_non_primitive_op(
                     data,
-                    self.config,
                     outputs,
                     &mut expr_to_widx,
                     &mut alloc_witness_id_for_expr,
@@ -658,9 +642,7 @@ mod tests {
         let hints_fillers = vec![];
         let alloc = WitnessAllocator::new();
 
-        let config = BuilderConfig::new();
-        let lowerer =
-            ExpressionLowerer::new(&graph, &[], &config, &connects, 3, &hints_fillers, alloc);
+        let lowerer = ExpressionLowerer::new(&graph, &[], &connects, 3, &hints_fillers, alloc);
         let (prims, public_rows, expr_map, public_map, witness_count) = lowerer.lower().unwrap();
 
         // Verify Primitives
@@ -830,9 +812,7 @@ mod tests {
         let hints_fillers = vec![];
         let alloc = WitnessAllocator::new();
 
-        let config = BuilderConfig::new();
-        let lowerer =
-            ExpressionLowerer::new(&graph, &[], &config, &connects, 5, &hints_fillers, alloc);
+        let lowerer = ExpressionLowerer::new(&graph, &[], &connects, 5, &hints_fillers, alloc);
         let (prims, public_rows, expr_map, public_map, witness_count) = lowerer.lower().unwrap();
 
         // Verify Primitives
@@ -972,9 +952,7 @@ mod tests {
         let connects = vec![];
         let hints_fillers = vec![];
         let alloc = WitnessAllocator::new();
-        let config = BuilderConfig::new();
-        let lowerer =
-            ExpressionLowerer::new(&graph, &[], &config, &connects, 0, &hints_fillers, alloc);
+        let lowerer = ExpressionLowerer::new(&graph, &[], &connects, 0, &hints_fillers, alloc);
         let result = lowerer.lower();
 
         assert!(result.is_err());
@@ -996,9 +974,7 @@ mod tests {
         let connects = vec![];
         let hints_fillers = vec![];
         let alloc = WitnessAllocator::new();
-        let config = BuilderConfig::new();
-        let lowerer =
-            ExpressionLowerer::new(&graph, &[], &config, &connects, 0, &hints_fillers, alloc);
+        let lowerer = ExpressionLowerer::new(&graph, &[], &connects, 0, &hints_fillers, alloc);
         let result = lowerer.lower();
 
         assert!(result.is_err());

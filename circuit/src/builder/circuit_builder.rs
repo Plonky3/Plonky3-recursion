@@ -466,10 +466,12 @@ where
         self,
     ) -> Result<(Circuit<F>, HashMap<ExprId, WitnessId>), CircuitBuilderError> {
         // Stage 1: Lower expressions and non-primitives into a single op list
+        for data in &self.non_primitive_ops {
+            self.ensure_op_enabled(data.op_type.clone())?;
+        }
         let lowerer = ExpressionLowerer::new(
             self.expr_builder.graph(),
             &self.non_primitive_ops,
-            &self.config,
             self.expr_builder.pending_connects(),
             self.public_tracker.count(),
             self.expr_builder.hints_fillers(),
