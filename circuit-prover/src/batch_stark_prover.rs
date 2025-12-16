@@ -671,6 +671,7 @@ impl Poseidon2Prover {
                 let matrix_f = air.generate_trace_rows(&ops_babybear, constants, 0, permutation);
                 let matrix: RowMajorMatrix<Val<SC>> = unsafe { transmute(matrix_f) };
                 (
+                    // Preprocessed values are already stored in the AIR, so we don't need to pass them again in the wrapper.
                     Poseidon2AirWrapper {
                         width: air.width(),
                         preprocessed: Vec::new(),
@@ -694,6 +695,7 @@ impl Poseidon2Prover {
                 let matrix_f = air.generate_trace_rows(&ops_babybear, constants, 0, permutation);
                 let matrix: RowMajorMatrix<Val<SC>> = unsafe { transmute(matrix_f) };
                 (
+                    // Preprocessed values are already stored in the AIR, so we don't need to pass them again in the wrapper.
                     Poseidon2AirWrapper {
                         width: air.width(),
                         preprocessed: Vec::new(),
@@ -717,6 +719,7 @@ impl Poseidon2Prover {
                 let matrix_f = air.generate_trace_rows(&ops_koalabear, constants, 0, permutation);
                 let matrix: RowMajorMatrix<Val<SC>> = unsafe { transmute(matrix_f) };
                 (
+                    // Preprocessed values are already stored in the AIR, so we don't need to pass them again in the wrapper.
                     Poseidon2AirWrapper {
                         width: air.width(),
                         preprocessed: Vec::new(),
@@ -740,6 +743,7 @@ impl Poseidon2Prover {
                 let matrix_f = air.generate_trace_rows(&ops_koalabear, constants, 0, permutation);
                 let matrix: RowMajorMatrix<Val<SC>> = unsafe { core::mem::transmute(matrix_f) };
                 (
+                    // Preprocessed values are already stored in the AIR, so we don't need to pass them again in the wrapper.
                     Poseidon2AirWrapper {
                         width: air.width(),
                         preprocessed: Vec::new(),

@@ -379,7 +379,7 @@ pub trait NonPrimitiveExecutor<F: Field>: Debug {
     /// Allow downcasting to concrete executor types
     fn as_any(&self) -> &dyn core::any::Any;
 
-    /// Update the preprocessed columns for this operation, as well as for `Witness` table.
+    /// Update the preprocessed columns with the values added by this operation.
     fn preprocessing(
         &self,
         inputs: &[Vec<WitnessId>],

@@ -59,7 +59,7 @@ pub struct Poseidon2CircuitAir<
 }
 
 pub const fn poseidon_preprocessed_width() -> usize {
-    // Witness index and `in_ctl` for all input limbs, witness index and `out_ctl` for all output limbs, `mmcs_index_sum_ctl`
+    // Witness index, `in_ctl`, `normal_chain_sel` and `merkle_chain_sel` for all input limbs, witness index and `out_ctl` for all output limbs, `mmcs_index_sum_ctl`, `new_start` and `merkle_path`.
     4 * POSEIDON_LIMBS + 2 * POSEIDON_PUBLIC_OUTPUT_LIMBS + 3
 }
 
