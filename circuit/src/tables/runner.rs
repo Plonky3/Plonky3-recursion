@@ -301,6 +301,18 @@ mod tests {
     use crate::op::WitnessHintsFiller;
     use crate::types::WitnessId;
 
+    /// Initializes a global logger with default parameters.
+    fn init_logger() {
+        let env_filter = EnvFilter::builder()
+            .with_default_directive(LevelFilter::INFO.into())
+            .from_env_lossy();
+
+        Registry::default()
+            .with(env_filter)
+            .with(ForestLayer::default())
+            .init();
+    }
+
     #[test]
     fn test_table_generation_basic() {
         let mut builder = CircuitBuilder::new();
@@ -332,17 +344,6 @@ mod tests {
 
         // Check that we have add trace entries
         assert!(!traces.add_trace.lhs_values.is_empty());
-    }
-
-    fn init_logger() {
-        let env_filter = EnvFilter::builder()
-            .with_default_directive(LevelFilter::INFO.into())
-            .from_env_lossy();
-
-        Registry::default()
-            .with(env_filter)
-            .with(ForestLayer::default())
-            .init();
     }
 
     #[derive(Debug, Clone)]
@@ -387,6 +388,7 @@ mod tests {
     // Proves that we know x such that 37 * x - 111 = 0
     fn test_toy_example_37_times_x_minus_111() {
         init_logger();
+
         let mut builder = CircuitBuilder::new();
 
         let c37 = builder.add_const(BabyBear::from_u64(37));
