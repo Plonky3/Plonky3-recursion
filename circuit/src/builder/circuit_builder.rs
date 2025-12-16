@@ -485,13 +485,14 @@ where
     pub(crate) fn push_non_primitive_op_with_outputs(
         &mut self,
         op_type: NonPrimitiveOpType,
-        witness_exprs: Vec<Vec<ExprId>>,
+        input_exprs: Vec<Vec<ExprId>>,
+        output_exprs: Vec<Vec<ExprId>>,
         params: Option<NonPrimitiveOpParams>,
         n_outputs: usize,
         label: &'static str,
     ) -> (NonPrimitiveOpId, Vec<ExprId>) {
         let (op_id, call_expr_id) =
-            self.push_non_primitive_op(op_type, witness_exprs, params, label);
+            self.push_non_primitive_op(op_type, input_exprs, output_exprs, params, label);
         let outputs = (0..n_outputs)
             .map(|i| {
                 self.expr_builder
@@ -1022,14 +1023,22 @@ mod tests {
 
         // Provide minimal valid-ish witnesses.
         let z = builder.add_const(Ext4::ZERO);
-        let witness_exprs = vec![vec![z]; 4] // in0..3
-            .into_iter()
-            .chain([vec![], vec![], vec![], vec![]]) // out0..1, mmcs_index_sum, mmcs_bit (optional)
-            .collect::<Vec<_>>();
+        // Input layout: [in0, in1, in2, in3, mmcs_index_sum, mmcs_bit]
+        let input_exprs = vec![
+            vec![z],
+            vec![z],
+            vec![z],
+            vec![z],
+            vec![],
+            vec![],
+        ];
+        // Output layout: [out0, out1]
+        let output_exprs = vec![vec![], vec![]];
 
         let (op_id, outputs) = builder.push_non_primitive_op_with_outputs(
             NonPrimitiveOpType::PoseidonPerm,
-            witness_exprs,
+            input_exprs,
+            output_exprs,
             Some(NonPrimitiveOpParams::PoseidonPerm {
                 new_start: true,
                 merkle_path: false,
