@@ -433,6 +433,29 @@ where
         expr_id
     }
 
+    /// Adds a non-primitive call anchor expression to the graph.
+    ///
+    /// This expression has no witness value, but provides an explicit point in the expression DAG
+    /// for the lowerer to emit the non-primitive op in the correct execution order.
+    pub fn add_non_primitive_call(
+        &mut self,
+        op_id: NonPrimitiveOpId,
+        op_type: crate::op::NonPrimitiveOpType,
+        dependencies: Vec<Vec<ExprId>>,
+        label: &'static str,
+    ) -> ExprId {
+        let expr_id = self.graph.add_expr(Expr::NonPrimitiveCall { op_id });
+
+        #[cfg(debug_assertions)]
+        self.log_alloc(expr_id, label, || {
+            (AllocationType::NonPrimitiveOp(op_type), dependencies)
+        });
+        #[cfg(not(debug_assertions))]
+        self.log_alloc(expr_id, label, || ());
+
+        expr_id
+    }
+
     /// Internal helper for adding binary operations.
     ///
     /// # Arguments

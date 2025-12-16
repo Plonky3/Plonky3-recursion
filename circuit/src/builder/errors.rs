@@ -33,6 +33,11 @@ pub enum CircuitBuilderError {
         details: String,
     },
 
+    /// Non-primitive operation exists in the builder but was never anchored in the expression DAG,
+    /// so the lowerer cannot place it in a well-defined execution order.
+    #[error("Non-primitive operation {op_id:?} is not anchored in the expression DAG")]
+    UnanchoredNonPrimitiveOp { op_id: NonPrimitiveOpId },
+
     /// Non-primitive operation rejected by the active policy/profile.
     #[error("Operation {op:?} is not allowed by the current profile")]
     OpNotAllowed { op: NonPrimitiveOpType },

@@ -367,8 +367,7 @@ where
     ) -> NonPrimitiveOpId {
         let op_id = NonPrimitiveOpId(self.non_primitive_ops.len() as u32);
 
-        #[cfg(debug_assertions)]
-        self.expr_builder.log_non_primitive_op(
+        self.expr_builder.add_non_primitive_call(
             op_id,
             op_type.clone(),
             witness_exprs.clone(),

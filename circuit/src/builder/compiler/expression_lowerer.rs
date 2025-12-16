@@ -457,6 +457,25 @@ where
                     // The output of Div is the b_widx.
                     expr_to_widx.insert(expr_id, b_widx);
                 }
+                Expr::NonPrimitiveCall { op_id } => {
+                    if emitted_non_primitive_ops.insert(op_id.0) {
+                        let data = self
+                            .non_primitive_ops
+                            .get(op_id.0 as usize)
+                            .ok_or(CircuitBuilderError::MissingNonPrimitiveOp { op_id: *op_id })?;
+                        let outputs = op_id_to_output_exprs
+                            .get(&op_id.0)
+                            .map(Vec::as_slice)
+                            .unwrap_or(&[]);
+                        Self::emit_non_primitive_op(
+                            data,
+                            outputs,
+                            &mut expr_to_widx,
+                            &mut alloc_witness_id_for_expr,
+                            &mut ops,
+                        )?;
+                    }
+                }
                 Expr::NonPrimitiveOutput {
                     op_id,
                     output_idx: _,
@@ -497,27 +516,13 @@ where
             return Err(CircuitBuilderError::UnmatchetWitnessFiller {});
         }
 
-        // Ensure non-primitive ops with no outputs are still emitted.
-        //
-        // Invariant: output-less non-primitive ops must not produce witness values that are later
-        // consumed by other ops. If an op produces values that are used downstream, those values
-        // should be represented as `Expr::NonPrimitiveOutput` nodes so the lowerer can place the op
-        // correctly in the execution order.
-        //
-        // TODO: Introduce an explicit "anchor" Expr to place effectful output-less ops.
-        for data in self.non_primitive_ops {
-            if emitted_non_primitive_ops.insert(data.op_id.0) {
-                let outputs = op_id_to_output_exprs
-                    .get(&data.op_id.0)
-                    .map(Vec::as_slice)
-                    .unwrap_or(&[]);
-                Self::emit_non_primitive_op(
-                    data,
-                    outputs,
-                    &mut expr_to_widx,
-                    &mut alloc_witness_id_for_expr,
-                    &mut ops,
-                )?;
+        if emitted_non_primitive_ops.len() != self.non_primitive_ops.len() {
+            for data in self.non_primitive_ops {
+                if !emitted_non_primitive_ops.contains(&data.op_id.0) {
+                    return Err(CircuitBuilderError::UnanchoredNonPrimitiveOp {
+                        op_id: data.op_id,
+                    });
+                }
             }
         }
 

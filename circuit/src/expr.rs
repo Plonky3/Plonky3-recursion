@@ -22,6 +22,11 @@ pub enum Expr<F> {
     Mul { lhs: ExprId, rhs: ExprId },
     /// Division of two expressions
     Div { lhs: ExprId, rhs: ExprId },
+    /// Anchor node for a non-primitive operation in the expression DAG.
+    ///
+    /// This node has no witness value itself, but it fixes the relative execution order
+    /// of non-primitive ops w.r.t. other expressions during lowering.
+    NonPrimitiveCall { op_id: NonPrimitiveOpId },
     /// Output of a non-primitive operation.
     ///
     /// This node represents a value produced by a non-primitive op identified by `op_id`.
