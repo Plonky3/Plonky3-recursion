@@ -120,7 +120,7 @@ where
                 0 => {
                     debug_assert!(idx < table_preps.len());
                     let config = poseidon2_config
-                        .ok_or_else(|| CircuitError::InvalidPreprocessedValues)
+                        .ok_or(CircuitError::InvalidPreprocessedValues)
                         .unwrap();
 
                     let poseidon_prover = Poseidon2Prover::new(config.clone());

@@ -367,7 +367,9 @@ impl<
 
     fn preprocessed_trace(&self) -> Option<RowMajorMatrix<F>> {
         debug_assert!(
-            self.preprocessed.len() % Self::preprocessed_width() == 0,
+            self.preprocessed
+                .len()
+                .is_multiple_of(Self::preprocessed_width()),
             "Preprocessed trace length is not a multiple of preprocessed width"
         );
 

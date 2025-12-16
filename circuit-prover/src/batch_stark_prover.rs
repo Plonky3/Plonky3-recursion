@@ -531,7 +531,7 @@ impl Poseidon2Prover {
         }
     }
 
-    pub fn preprocessed_width_from_config(&self) -> usize {
+    pub const fn preprocessed_width_from_config(&self) -> usize {
         match &self.config {
             Poseidon2Config::BabyBearD4Width16 { .. } => {
                 Poseidon2CircuitAirBabyBearD4Width16::preprocessed_width()
