@@ -130,6 +130,6 @@ pub enum CircuitError {
 
 impl From<CircuitBuilderError> for CircuitError {
     fn from(error: CircuitBuilderError) -> Self {
-        CircuitError::InvalidCircuit { error }
+        Self::InvalidCircuit { error }
     }
 }
