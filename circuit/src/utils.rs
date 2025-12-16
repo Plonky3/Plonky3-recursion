@@ -68,6 +68,9 @@ pub fn symbolic_to_circuit<F: Field>(
     /// - `Build` is used to combine entries for a given `Op`
     enum Work<'a, F: Field> {
         Eval(&'a SymbolicExpression<F>),
+        // Store a raw pointer instead of a reference because this removes lifetime handling
+        // and its clear that we never dereference the node.
+        // It binds the expression to the Op and its arity, so we can reuse the same node for different ops.
         Build(*const SymbolicExpression<F>, Op, usize),
     }
 
