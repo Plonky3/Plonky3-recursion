@@ -28,6 +28,27 @@ where
     Dynamic(DynamicAirEntry<SC>),
 }
 
+impl<SC, const D: usize> alloc::fmt::Debug for CircuitTableAir<SC, D>
+where
+    SC: StarkGenericConfig,
+    WitnessAir<Val<SC>, D>: alloc::fmt::Debug,
+    ConstAir<Val<SC>, D>: alloc::fmt::Debug,
+    PublicAir<Val<SC>, D>: alloc::fmt::Debug,
+    AddAir<Val<SC>, D>: alloc::fmt::Debug,
+    MulAir<Val<SC>, D>: alloc::fmt::Debug,
+{
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> alloc::fmt::Result {
+        match self {
+            CircuitTableAir::Witness(inner) => f.debug_tuple("Witness").field(inner).finish(),
+            CircuitTableAir::Const(inner) => f.debug_tuple("Const").field(inner).finish(),
+            CircuitTableAir::Public(inner) => f.debug_tuple("Public").field(inner).finish(),
+            CircuitTableAir::Add(inner) => f.debug_tuple("Add").field(inner).finish(),
+            CircuitTableAir::Mul(inner) => f.debug_tuple("Mul").field(inner).finish(),
+            CircuitTableAir::Dynamic(_) => f.write_str("Dynamic"),
+        }
+    }
+}
+
 pub fn get_airs_and_degrees_with_prep<
     SC: StarkGenericConfig,
     ExtF: ExtensionField<Val<SC>> + ExtractBinomialW<Val<SC>>,

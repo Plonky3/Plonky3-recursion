@@ -200,33 +200,6 @@ where
                     });
                 }
 
-                // We need to use the mmcs bit for knowing where to put the private data.
-                let mmcs_bit = if inputs[7].len() == 1 {
-                    let val = self.get_witness(&inputs[7][0])?;
-                    let base = val.as_base().ok_or_else(|| {
-                        CircuitError::IncorrectNonPrimitiveOpPrivateData {
-                            op: executor.op_type().clone(),
-                            operation_index: *op_id,
-                            expected: "base field mmcs_bit".to_string(),
-                            got: "extension value".to_string(),
-                        }
-                    })?;
-                    match base {
-                        x if x == Config::BaseField::ZERO => false,
-                        x if x == Config::BaseField::ONE => true,
-                        other => {
-                            return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
-                                op: executor.op_type().clone(),
-                                operation_index: *op_id,
-                                expected: "boolean mmcs_bit (0 or 1)".to_string(),
-                                got: format!("{other:?}"),
-                            });
-                        }
-                    }
-                } else {
-                    false
-                };
-
                 // Initialize padded_inputs.
                 // If private data is available, use it as the default.
                 // Otherwise start with zero.
@@ -242,15 +215,12 @@ where
                                 got: private_data.input_values.len(),
                             });
                         }
-                        let mut flattened =
+                        let mut flattened: Vec<<Config as Poseidon2Params>::BaseField> =
                             vec![<Config as Poseidon2Params>::BaseField::ZERO; width];
+                        // Private data always use the rightmost inputs
                         for (i, limb) in private_data.input_values.iter().enumerate() {
-                            flattened[if !mmcs_bit {
-                                i * d..(i + 1) * d
-                            } else {
-                                i * d + width / 2..(i + 1) * d + width / 2
-                            }]
-                            .copy_from_slice(limb.as_basis_coefficients_slice());
+                            flattened[i * d + width / 2..(i + 1) * d + width / 2]
+                                .copy_from_slice(limb.as_basis_coefficients_slice());
                         }
                         flattened
                     } else {
@@ -342,6 +312,31 @@ where
                 } else {
                     (Config::BaseField::ZERO, 0)
                 };
+                let mmcs_bit = if inputs[7].len() == 1 {
+                    let val = self.get_witness(&inputs[7][0])?;
+                    let base = val.as_base().ok_or_else(|| {
+                        CircuitError::IncorrectNonPrimitiveOpPrivateData {
+                            op: executor.op_type().clone(),
+                            operation_index: *op_id,
+                            expected: "base field mmcs_bit".to_string(),
+                            got: "extension value".to_string(),
+                        }
+                    })?;
+                    match base {
+                        x if x == Config::BaseField::ZERO => false,
+                        x if x == Config::BaseField::ONE => true,
+                        other => {
+                            return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
+                                op: executor.op_type().clone(),
+                                operation_index: *op_id,
+                                expected: "boolean mmcs_bit (0 or 1)".to_string(),
+                                got: format!("{other:?}"),
+                            });
+                        }
+                    }
+                } else {
+                    false
+                };
 
                 operations.push(Poseidon2CircuitRow {
                     new_start,
@@ -395,25 +390,18 @@ pub fn generate_poseidon2_trace<
 
 #[cfg(test)]
 pub mod tests {
+    use alloc::vec;
+
     use p3_baby_bear::BabyBear;
+    use p3_batch_stark::CommonData;
+    use p3_circuit::ops::PoseidonPermCall;
+    use p3_circuit::tables::{Poseidon2Trace, PoseidonPermPrivateData, generate_poseidon2_trace};
+    use p3_circuit::{Circuit, CircuitBuilder, NonPrimitiveOpPrivateData, PoseidonPermOps};
+    use p3_circuit_prover::common::get_airs_and_degrees_with_prep;
+    use p3_circuit_prover::{BatchStarkProver, Poseidon2Config, TablePacking, config};
+    use p3_field::PrimeCharacteristicRing;
     use p3_field::extension::BinomialExtensionField;
-
-    use crate::CircuitBuilder;
-    use crate::tables::{Poseidon2Params, generate_poseidon2_trace};
-
-    struct DummyParams;
-
-    impl Poseidon2Params for DummyParams {
-        type BaseField = BabyBear;
-        const D: usize = 4;
-        const WIDTH: usize = 16;
-        const RATE_EXT: usize = 2;
-        const CAPACITY_EXT: usize = 2;
-        const SBOX_DEGREE: u64 = 7;
-        const SBOX_REGISTERS: usize = 1;
-        const HALF_FULL_ROUNDS: usize = 4;
-        const PARTIAL_ROUNDS: usize = 13;
-    }
+    use p3_poseidon2_circuit_air::BabyBearD4Width16;
 
     #[test]
     fn test_poseidon2_private_data() {
@@ -421,7 +409,71 @@ pub mod tests {
         type CF = BinomialExtensionField<F, 4>;
 
         let mut circuit_builder = CircuitBuilder::<CF>::new();
-        circuit_builder
-            .enable_poseidon_perm::<DummyParams>(generate_poseidon2_trace::<CF, DummyParams>);
+        circuit_builder.enable_poseidon_perm::<BabyBearD4Width16>(
+            generate_poseidon2_trace::<CF, BabyBearD4Width16>,
+        );
+
+        let bit = circuit_builder.add_const(CF::ONE);
+        let one = circuit_builder.add_const(CF::ONE);
+        let two = circuit_builder.add_const(CF::TWO);
+
+        let op_id = circuit_builder
+            .add_poseidon_perm(PoseidonPermCall {
+                new_start: true,
+                merkle_path: true,
+                mmcs_bit: Some(bit),
+                inputs: [Some(one), Some(two), None, None],
+                outputs: [None, None],
+                mmcs_index_sum: None,
+            })
+            .unwrap();
+
+        let circuit: Circuit<CF> = circuit_builder.build().unwrap();
+        let table_packing = TablePacking::new(4, 4, 1);
+
+        let airs_degrees =
+            get_airs_and_degrees_with_prep::<_, _, 1>(&circuit, table_packing).unwrap();
+        println!("airs degrees = {:?}", airs_degrees.len());
+        let (airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
+
+        let mut runner = circuit.runner();
+
+        runner
+            .set_non_primitive_op_private_data(
+                op_id,
+                NonPrimitiveOpPrivateData::PoseidonPerm(PoseidonPermPrivateData {
+                    input_values: vec![CF::from_u8(3), CF::from_u8(4)],
+                }),
+            )
+            .unwrap();
+
+        let traces = runner.run().unwrap();
+        println!(
+            "keys = {:?}",
+            traces
+                .clone()
+                .non_primitive_traces
+                .into_keys()
+                .collect::<Vec<_>>()
+        );
+        let poseidon2_trace: Option<&Poseidon2Trace<F>> = traces.non_primitive_trace("poseidon2");
+        println!("p2 trace = {:?}", poseidon2_trace);
+        // let _ = traces.non_primitive_traces.get("poseidon2").unwrap();
+        let config = config::baby_bear().build();
+        let mut common = CommonData::from_airs_and_degrees(&config, &airs, &degrees);
+
+        // TODO: Pad preprocessed instances for non-primitive tables (same workaround as other examples).
+        for (_, trace) in &traces.non_primitive_traces {
+            if trace.rows() != 0
+                && let Some(p) = common.preprocessed.as_mut()
+            {
+                p.instances.push(None);
+            }
+        }
+
+        let mut prover = BatchStarkProver::new(config).with_table_packing(table_packing);
+        prover.register_poseidon2_table(Poseidon2Config::baby_bear_d4_width16());
+        let proof = prover.prove_all_tables(&traces, &common).unwrap();
+        prover.verify_all_tables(&proof, &common).unwrap();
     }
 }

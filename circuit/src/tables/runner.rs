@@ -283,10 +283,6 @@ impl<F: CircuitField> CircuitRunner<F> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
-    extern crate std;
-
     use p3_baby_bear::BabyBear;
     use p3_field::extension::BinomialExtensionField;
     use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
@@ -296,6 +292,7 @@ mod tests {
     use tracing_subscriber::util::SubscriberInitExt;
     use tracing_subscriber::{EnvFilter, Registry};
 
+    use super::*;
     use crate::ExprId;
     use crate::builder::CircuitBuilder;
     use crate::op::WitnessHintsFiller;
