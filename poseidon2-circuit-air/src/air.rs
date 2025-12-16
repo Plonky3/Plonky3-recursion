@@ -236,7 +236,6 @@ impl<
                 core::array::from_fn(|j| (!*new_start) && (!*merkle_path) && (!in_ctl[j]));
             let merkle_chain_sel: [bool; POSEIDON_PUBLIC_OUTPUT_LIMBS] =
                 core::array::from_fn(|j| (!*new_start) && *merkle_path && (!in_ctl[j]));
-            let mmcs_update_sel = (!*new_start) && *merkle_path;
 
             let (_p2_part, circuit_part) = row.split_at_mut(p2_ncols);
 
@@ -254,8 +253,6 @@ impl<
                 circuit_part[offset + j].write(F::from_bool(merkle_chain_sel[j]));
             }
             offset += POSEIDON_PUBLIC_OUTPUT_LIMBS;
-            circuit_part[offset].write(F::from_bool(mmcs_update_sel));
-            offset += 1;
             for j in 0..POSEIDON_LIMBS {
                 circuit_part[offset + j].write(F::from_bool(in_ctl[j]));
             }
@@ -491,9 +488,11 @@ fn eval<
     // If merkle_path_{r+1} = 1 and new_start_{r+1} = 0:
     //   mmcs_index_sum_{r+1} = mmcs_index_sum_r * 2 + mmcs_bit_{r+1}
     let two = AB::Expr::ONE + AB::Expr::ONE;
+    let not_next_new_start = AB::Expr::ONE - next.new_start.clone();
     builder
         .when_transition()
-        .when(next.mmcs_update_sel.clone())
+        .when(not_next_new_start)
+        .when(next.merkle_path.clone())
         .assert_zero(
             next.mmcs_index_sum.clone()
                 - (local.mmcs_index_sum.clone() * two + next.mmcs_bit.clone()),

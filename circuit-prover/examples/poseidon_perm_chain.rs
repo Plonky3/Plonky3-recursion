@@ -22,12 +22,7 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Registry};
 
-type Base = BabyBear;
-type Ext4 = BinomialExtensionField<Base, 4>;
-
-const WIDTH: usize = 16;
-const LIMB_SIZE: usize = 4; // D=4
-
+/// Initializes a global logger with default parameters.
 fn init_logger() {
     let env_filter = EnvFilter::builder()
         .with_default_directive(LevelFilter::INFO.into())
@@ -38,6 +33,12 @@ fn init_logger() {
         .with(ForestLayer::default())
         .init();
 }
+
+type Base = BabyBear;
+type Ext4 = BinomialExtensionField<Base, 4>;
+
+const WIDTH: usize = 16;
+const LIMB_SIZE: usize = 4; // D=4
 
 fn main() -> Result<(), Box<dyn Error>> {
     init_logger();

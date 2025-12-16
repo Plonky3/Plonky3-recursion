@@ -161,3 +161,9 @@ pub enum CircuitError {
         limb: usize,
     },
 }
+
+impl From<CircuitBuilderError> for CircuitError {
+    fn from(error: CircuitBuilderError) -> Self {
+        Self::InvalidCircuit { error }
+    }
+}

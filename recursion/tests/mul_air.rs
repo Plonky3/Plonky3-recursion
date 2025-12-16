@@ -1,5 +1,7 @@
 //! Test for recursive STARK verification with a multiplication AIR.
 
+mod common;
+
 use p3_circuit::CircuitBuilder;
 use p3_fri::create_test_fri_params;
 use p3_matrix::Matrix;
@@ -11,12 +13,11 @@ use p3_util::log2_ceil_usize;
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
 
-use crate::common::{
-    ChallengeMmcs, Challenger, DIGEST_ELEMS, Dft, F, InnerFri, MulAir, MyCompress, MyConfig,
-    MyHash, MyPcs, Perm, RATE, ValMmcs,
+use crate::common::MulAir;
+use crate::common::baby_bear_params::{
+    ChallengeMmcs, Challenger, DIGEST_ELEMS, Dft, F, InnerFri, MyCompress, MyConfig, MyHash, MyPcs,
+    Perm, RATE, ValMmcs,
 };
-
-mod common;
 
 #[test]
 fn test_mul_verifier_circuit() -> Result<(), VerificationError> {

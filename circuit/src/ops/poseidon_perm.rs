@@ -120,7 +120,7 @@ where
             }
         }
 
-        Ok(self.push_non_primitive_op(
+        let (op_id, _call_expr_id) = self.push_non_primitive_op(
             op_type,
             input_exprs,
             output_exprs,
@@ -129,13 +129,16 @@ where
                 merkle_path: call.merkle_path,
             }),
             "poseidon_perm",
-        ))
+        );
+        Ok(op_id)
     }
 }
 
 /// Executor for Poseidon perm operations.
 ///
 /// This currently does not mutate the witness; the AIR enforces correctness.
+// TODO: When implementing the Poseidon perm executor, write computed outputs into the witness
+// using `outputs` and update trace builders to consume `Op::NonPrimitiveOpWithExecutor.outputs`.
 #[derive(Debug, Clone)]
 pub struct PoseidonPermExecutor {
     op_type: NonPrimitiveOpType,
