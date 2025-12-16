@@ -28,6 +28,13 @@ where
     Dynamic(DynamicAirEntry<SC>),
 }
 
+/// Non-primitive operation configurations.
+///
+/// This enables the preprocessing of preprocessing data depending on the non-primitive configurations.
+pub enum NonPrimitiveConfig {
+    Poseidon2(Poseidon2Config),
+}
+
 pub fn get_airs_and_degrees_with_prep<
     SC: StarkGenericConfig + 'static + Send + Sync,
     ExtF: ExtensionField<Val<SC>> + ExtractBinomialW<Val<SC>>,
@@ -35,7 +42,7 @@ pub fn get_airs_and_degrees_with_prep<
 >(
     circuit: &Circuit<ExtF>,
     packing: TablePacking,
-    poseidon2_config: Option<&Poseidon2Config>,
+    non_primitive_configs: Option<&[NonPrimitiveConfig]>,
 ) -> Result<Vec<(CircuitTableAir<SC, D>, usize)>, CircuitError>
 where
     Val<SC>: StarkField,
@@ -56,90 +63,114 @@ where
     let mut table_preps = (0..base_prep.len())
         .map(|_| (CircuitTableAir::Witness(default_air.clone()), 1))
         .collect::<Vec<_>>();
-    base_prep.iter().enumerate().for_each(|(idx, prep)| {
-        if idx < PrimitiveOpType::COUNT {
-            let table = PrimitiveOpType::from(idx);
-            match table {
-                PrimitiveOpType::Add => {
-                    assert!(prep.len() % AddAir::<Val<SC>, D>::preprocessed_lane_width() == 0);
-                    let num_ops = prep
-                        .len()
-                        .div_ceil(AddAir::<Val<SC>, D>::preprocessed_lane_width());
-                    let add_air =
-                        AddAir::new_with_preprocessed(num_ops, packing.add_lanes(), prep.clone());
-                    table_preps[idx] = (
-                        CircuitTableAir::Add(add_air),
-                        log2_ceil_usize(num_ops.div_ceil(packing.add_lanes())),
-                    );
-                }
-                PrimitiveOpType::Mul => {
-                    assert!(prep.len() % AddAir::<Val<SC>, D>::preprocessed_lane_width() == 0);
-                    let num_ops = prep
-                        .len()
-                        .div_ceil(MulAir::<Val<SC>, D>::preprocessed_lane_width());
-                    let mul_air = if D == 1 {
-                        MulAir::new_with_preprocessed(num_ops, packing.mul_lanes(), prep.clone())
-                    } else {
-                        let w = w_binomial.unwrap();
-                        MulAir::new_binomial_with_preprocessed(
+    base_prep
+        .iter()
+        .enumerate()
+        .try_for_each(|(idx, prep)| -> Result<(), CircuitError> {
+            if idx < PrimitiveOpType::COUNT {
+                let table = PrimitiveOpType::from(idx);
+                match table {
+                    PrimitiveOpType::Add => {
+                        assert!(prep.len() % AddAir::<Val<SC>, D>::preprocessed_lane_width() == 0);
+                        let num_ops = prep
+                            .len()
+                            .div_ceil(AddAir::<Val<SC>, D>::preprocessed_lane_width());
+                        let add_air = AddAir::new_with_preprocessed(
                             num_ops,
-                            packing.mul_lanes(),
-                            w,
+                            packing.add_lanes(),
                             prep.clone(),
-                        )
-                    };
-                    table_preps[idx] = (
-                        CircuitTableAir::Mul(mul_air),
-                        log2_ceil_usize(num_ops.div_ceil(packing.mul_lanes())),
-                    );
+                        );
+                        table_preps[idx] = (
+                            CircuitTableAir::Add(add_air),
+                            log2_ceil_usize(num_ops.div_ceil(packing.add_lanes())),
+                        );
+                    }
+                    PrimitiveOpType::Mul => {
+                        assert!(prep.len() % AddAir::<Val<SC>, D>::preprocessed_lane_width() == 0);
+                        let num_ops = prep
+                            .len()
+                            .div_ceil(MulAir::<Val<SC>, D>::preprocessed_lane_width());
+                        let mul_air = if D == 1 {
+                            MulAir::new_with_preprocessed(
+                                num_ops,
+                                packing.mul_lanes(),
+                                prep.clone(),
+                            )
+                        } else {
+                            let w = w_binomial.unwrap();
+                            MulAir::new_binomial_with_preprocessed(
+                                num_ops,
+                                packing.mul_lanes(),
+                                w,
+                                prep.clone(),
+                            )
+                        };
+                        table_preps[idx] = (
+                            CircuitTableAir::Mul(mul_air),
+                            log2_ceil_usize(num_ops.div_ceil(packing.mul_lanes())),
+                        );
+                    }
+                    PrimitiveOpType::Public => {
+                        let height = prep.len();
+                        let public_air = PublicAir::new_with_preprocessed(height, prep.clone());
+                        table_preps[idx] =
+                            (CircuitTableAir::Public(public_air), log2_ceil_usize(height));
+                    }
+                    PrimitiveOpType::Const => {
+                        let height = prep.len();
+                        let const_air = ConstAir::new_with_preprocessed(height, prep.clone());
+                        table_preps[idx] =
+                            (CircuitTableAir::Const(const_air), log2_ceil_usize(height));
+                    }
+                    PrimitiveOpType::Witness => {
+                        let num_witnesses = prep.len();
+                        let witness_air = WitnessAir::new(num_witnesses, packing.witness_lanes());
+                        table_preps[idx] = (
+                            CircuitTableAir::Witness(witness_air),
+                            log2_ceil_usize(num_witnesses.div_ceil(packing.witness_lanes())),
+                        );
+                    }
                 }
-                PrimitiveOpType::Public => {
-                    let height = prep.len();
-                    let public_air = PublicAir::new_with_preprocessed(height, prep.clone());
-                    table_preps[idx] =
-                        (CircuitTableAir::Public(public_air), log2_ceil_usize(height));
-                }
-                PrimitiveOpType::Const => {
-                    let height = prep.len();
-                    let const_air = ConstAir::new_with_preprocessed(height, prep.clone());
-                    table_preps[idx] = (CircuitTableAir::Const(const_air), log2_ceil_usize(height));
-                }
-                PrimitiveOpType::Witness => {
-                    let num_witnesses = prep.len();
-                    let witness_air = WitnessAir::new(num_witnesses, packing.witness_lanes());
-                    table_preps[idx] = (
-                        CircuitTableAir::Witness(witness_air),
-                        log2_ceil_usize(num_witnesses.div_ceil(packing.witness_lanes())),
-                    );
+
+                Ok(())
+            } else {
+                let primitive_idx = idx - PrimitiveOpType::COUNT;
+
+                match primitive_idx {
+                    0 => {
+                        debug_assert!(idx < table_preps.len());
+                        let configs =
+                            non_primitive_configs.ok_or(CircuitError::InvalidPreprocessedValues)?;
+
+                        // Ensure that a Poseidon2 config is provided.
+                        let poseidon2_config =
+                            configs.into_iter().find_map(|config| match config {
+                                NonPrimitiveConfig::Poseidon2(cfg) => Some(cfg),
+                            });
+
+                        // Get the Poseidon2 permutation air based on the Poseidon2 configuration.
+                        let config =
+                            poseidon2_config.ok_or(CircuitError::InvalidPreprocessedValues)?;
+
+                        let poseidon_prover = Poseidon2Prover::new(config.clone());
+                        let width = poseidon_prover.preprocessed_width_from_config();
+                        let poseidon_wrapper =
+                            poseidon_prover.wrapper_from_config_with_preprocessed(prep.clone());
+
+                        let poseidon_wrapper_air: CircuitTableAir<SC, D> =
+                            CircuitTableAir::Dynamic(poseidon_wrapper);
+
+                        table_preps[idx] = (
+                            poseidon_wrapper_air,
+                            log2_ceil_usize(prep.len().div_ceil(width)),
+                        );
+
+                        Ok(())
+                    }
+                    _ => panic!("Unknow primitive operation at index {}", primitive_idx),
                 }
             }
-        } else {
-            let primitive_idx = idx - PrimitiveOpType::COUNT;
-
-            match primitive_idx {
-                0 => {
-                    debug_assert!(idx < table_preps.len());
-                    let config = poseidon2_config
-                        .ok_or(CircuitError::InvalidPreprocessedValues)
-                        .unwrap();
-
-                    let poseidon_prover = Poseidon2Prover::new(config.clone());
-                    let width = poseidon_prover.preprocessed_width_from_config();
-                    let poseidon_wrapper =
-                        poseidon_prover.wrapper_from_config_with_preprocessed(prep.clone());
-
-                    let poseidon_wrapper_air: CircuitTableAir<SC, D> =
-                        CircuitTableAir::Dynamic(poseidon_wrapper);
-
-                    table_preps[idx] = (
-                        poseidon_wrapper_air,
-                        log2_ceil_usize(prep.len().div_ceil(width)),
-                    );
-                }
-                _ => panic!("Unknow primitive operation at index {}", primitive_idx),
-            }
-        }
-    });
+        })?;
 
     Ok(table_preps)
 }
