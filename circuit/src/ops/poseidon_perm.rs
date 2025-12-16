@@ -178,13 +178,13 @@ impl<F: Field> NonPrimitiveExecutor<F> for PoseidonPermExecutor {
             preprocessed_tables.resize(idx + 1, vec![]);
         }
 
-        // The inputs are of the shape:
+        // The inputs have shape:
         // inputs[0..3], outputs[0..1], mmcs_index_sum, mmcs_bit
         // The shape of one preprocessed row is:
-        // [in_idx0, in_ctl_0, in_idx1, in1_ctl, ..., out_idx0, out_ctl_0, out_idx1, out_ctl_1, mmcs_index_sum_ctl]
+        // [in_idx0, in_ctl_0, normal_chain_sel[0], merkle_chain_sel[0], in_idx1, in1_ctl, normal_chain_sel[1], merkle_chain_sel[1], ..., out_idx0, out_ctl_0, out_idx1, out_ctl_1, mmcs_index_sum_ctl_idx, new_start, merkle_path]
 
         // First, let's add the input indices and `in_ctl` values.
-        for inp in &inputs[0..4] {
+        for (limb_idx, inp) in inputs[0..4].iter().enumerate() {
             if inp.is_empty() {
                 // Private input
                 preprocessed_tables[idx].push(F::ZERO); // in_idx
@@ -194,6 +194,22 @@ impl<F: Field> NonPrimitiveExecutor<F> for PoseidonPermExecutor {
                 preprocessed_tables[idx].push(F::from_u32(inp[0].0)); // in_idx
                 preprocessed_tables[idx].push(F::ONE); // in_ctl
             }
+            let normal_chain_sel =
+                if !self.new_start && !self.merkle_path && inputs[limb_idx].is_empty() {
+                    F::ONE
+                } else {
+                    F::ZERO
+                };
+
+            preprocessed_tables[idx].push(normal_chain_sel);
+
+            let merkle_chain_sel =
+                if !self.new_start && self.merkle_path && inputs[limb_idx].is_empty() {
+                    F::ONE
+                } else {
+                    F::ZERO
+                };
+            preprocessed_tables[idx].push(merkle_chain_sel);
         }
 
         for out in inputs[4..6].iter() {
@@ -213,6 +229,10 @@ impl<F: Field> NonPrimitiveExecutor<F> for PoseidonPermExecutor {
         } else {
             preprocessed_tables[idx].push(F::ONE); // mmcs_index_sum_ctl
         }
+
+        // We need to insert `new_start` and `merkle_path` as well.
+        preprocessed_tables[idx].push(if self.new_start { F::ONE } else { F::ZERO });
+        preprocessed_tables[idx].push(if self.merkle_path { F::ONE } else { F::ZERO });
     }
 
     fn boxed(&self) -> Box<dyn NonPrimitiveExecutor<F>> {

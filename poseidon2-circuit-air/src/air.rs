@@ -2,7 +2,7 @@ use alloc::vec::Vec;
 use core::borrow::Borrow;
 use core::mem::MaybeUninit;
 
-use p3_air::{Air, AirBuilder, BaseAir};
+use p3_air::{Air, AirBuilder, BaseAir, PairBuilder};
 use p3_circuit::tables::{Poseidon2CircuitRow, Poseidon2CircuitTrace};
 use p3_field::{Field, PrimeCharacteristicRing, PrimeField};
 use p3_matrix::Matrix;
@@ -60,7 +60,7 @@ pub struct Poseidon2CircuitAir<
 
 pub const fn poseidon_preprocessed_width() -> usize {
     // Witness index and `in_ctl` for all input limbs, witness index and `out_ctl` for all output limbs, `mmcs_index_sum_ctl`
-    2 * POSEIDON_LIMBS + 2 * POSEIDON_PUBLIC_OUTPUT_LIMBS + 1
+    4 * POSEIDON_LIMBS + 2 * POSEIDON_PUBLIC_OUTPUT_LIMBS + 3
 }
 
 impl<
@@ -256,26 +256,10 @@ impl<
             };
             prev_mmcs_index_sum = acc;
 
-            let normal_chain_sel: [bool; POSEIDON_LIMBS] =
-                core::array::from_fn(|j| (!*new_start) && (!*merkle_path) && (!in_ctl[j]));
-            let merkle_chain_sel: [bool; POSEIDON_PUBLIC_OUTPUT_LIMBS] =
-                core::array::from_fn(|j| (!*new_start) && *merkle_path && (!in_ctl[j]));
-
             let (_p2_part, circuit_part) = row.split_at_mut(p2_ncols);
 
-            circuit_part[0].write(F::from_bool(*new_start));
-            circuit_part[1].write(F::from_bool(*merkle_path));
-            circuit_part[2].write(F::from_bool(*mmcs_bit));
-            circuit_part[3].write(acc);
-
-            let mut offset = 4;
-            for j in 0..POSEIDON_LIMBS {
-                circuit_part[offset + j].write(F::from_bool(normal_chain_sel[j]));
-            }
-            offset += POSEIDON_LIMBS;
-            for j in 0..POSEIDON_PUBLIC_OUTPUT_LIMBS {
-                circuit_part[offset + j].write(F::from_bool(merkle_chain_sel[j]));
-            }
+            circuit_part[0].write(F::from_bool(*mmcs_bit));
+            circuit_part[1].write(acc);
 
             // Save the state to be used as input for the heavy Poseidon trace generation
             inputs.push(state);
@@ -370,7 +354,9 @@ impl<
             self.preprocessed
                 .len()
                 .is_multiple_of(Self::preprocessed_width()),
-            "Preprocessed trace length is not a multiple of preprocessed width"
+            "Preprocessed trace length is not a multiple of preprocessed width. Expected multiple of {}, got {}",
+            Self::preprocessed_width(),
+            self.preprocessed.len(),
         );
 
         let padded_height = self
@@ -401,16 +387,32 @@ pub fn extract_preprocessed_from_operations<F: Field, OF: Field>(
             out_ctl,
             output_indices,
             mmcs_index_sum_idx,
+            new_start,
+            merkle_path,
             ..
         } = operation;
 
         // One row of preprocessed values is of the form:
-        // [input_indoces[0], in_ctl[0], ..., output_indices[1], out_ctl[1], output_indices[2], out_ctl[2], mmcs_index_sum_idx]
+        // [input_indices[0], in_ctl[0], normal_chain_sel[0], merkle_chain_sel[0], ..., output_indices[1], out_ctl[1], output_indices[2], out_ctl[2], mmcs_index_sum_idx, new_start, merkle_path]
         in_ctl
             .iter()
             .zip(input_indices.iter())
             .for_each(|(ctl, idx)| {
                 preprocessed.extend(&[F::from_u32(*idx), F::from_bool(*ctl)]);
+                let normal_chain_sel = if !*new_start && !*merkle_path && !ctl {
+                    F::ONE
+                } else {
+                    F::ZERO
+                };
+
+                preprocessed.push(normal_chain_sel);
+
+                let merkle_chain_sel = if !new_start && *merkle_path && !ctl {
+                    F::ONE
+                } else {
+                    F::ZERO
+                };
+                preprocessed.push(merkle_chain_sel);
             });
         out_ctl
             .iter()
@@ -419,13 +421,15 @@ pub fn extract_preprocessed_from_operations<F: Field, OF: Field>(
                 preprocessed.extend(&[F::from_u32(*idx), F::from_bool(*ctl)]);
             });
         preprocessed.push(F::from_u64(*mmcs_index_sum_idx as u64));
+        preprocessed.push(F::from_bool(*new_start));
+        preprocessed.push(F::from_bool(*merkle_path));
     }
 
     preprocessed
 }
 
 fn eval<
-    AB: AirBuilder,
+    AB: PairBuilder,
     LinearLayers: GenericPoseidon2LinearLayers<WIDTH>,
     const D: usize,
     const WIDTH: usize,
@@ -473,6 +477,7 @@ fn eval<
             PARTIAL_ROUNDS,
         >,
     >,
+    next_preprocessed: &[AB::Var],
 ) {
     // Control flags (new_start, merkle_path, in_ctl, out_ctl) are preprocessed columns,
     // so they are known to the verifier and don't need bool assertions.
@@ -486,6 +491,15 @@ fn eval<
     // mmcs_bit should always be boolean.
     builder.assert_bool(local.mmcs_bit.clone());
 
+    // Preprocessing layout:
+    // [in_idx[0], in_ctl[0], normal_chain_sel[0], merkle_chain_sel[0], ..., in_idx[3], in_ctl[3], normal_chain_sel[3], merkle_chain_sel[3],
+    //  out_idx[0], out_ctl[0], out_idx[1], out_ctl[1], mmcs_index_sum_ctl_idx, new_start, merkle_path]
+    // The following corresponds to the size of the data related to one input limb (in_idx[i], in_ctl[i], normal_chain_sel[i], merkle_chain_sel[i]).
+    let preprocessing_limb_data_size = 4;
+    let normal_chain_idx = 2;
+    let merkle_chain_idx = 3;
+    let new_start_idx = 4 * POSEIDON_LIMBS + 2 * POSEIDON_PUBLIC_OUTPUT_LIMBS + 1;
+    let merkle_path_idx = new_start_idx + 1;
     // Normal chaining.
     // If new_start_{r+1} = 0 and merkle_path_{r+1} = 0:
     //   in_{r+1}[i] = out_r[i] for i = 0..3
@@ -494,7 +508,8 @@ fn eval<
     for limb in 0..POSEIDON_LIMBS {
         for d in 0..D {
             let idx = limb * D + d;
-            let gate = next.normal_chain_sel[limb].clone();
+            let gate =
+                next_preprocessed[preprocessing_limb_data_size * limb + normal_chain_idx].clone();
             builder
                 .when_transition()
                 .when(gate)
@@ -514,7 +529,7 @@ fn eval<
 
     // Limb 0: chain from out_r[0] (left), unless in_ctl[0] = 1. Not chained if Right.
     for d in 0..D {
-        let gate_left_0 = next.merkle_chain_sel[0].clone() * is_left.clone();
+        let gate_left_0 = next_preprocessed[merkle_chain_idx].clone() * is_left.clone();
         builder
             .when_transition()
             .when(gate_left_0)
@@ -523,7 +538,9 @@ fn eval<
 
     // Limb 1: chain from out_r[1] (left), unless in_ctl[1] = 1. Not chained if Right.
     for d in 0..D {
-        let gate_left_1 = next.merkle_chain_sel[1].clone() * is_left.clone();
+        let gate_left_1 = next_preprocessed[preprocessing_limb_data_size + merkle_chain_idx]
+            .clone()
+            * is_left.clone();
         builder
             .when_transition()
             .when(gate_left_1)
@@ -532,7 +549,9 @@ fn eval<
 
     // Limb 2: chain from out_r[0] (right), unless in_ctl[2] = 1. Not chained if Left.
     for d in 0..D {
-        let gate_right_2 = next.merkle_chain_sel[2].clone() * next_bit.clone();
+        let gate_right_2 = next_preprocessed[preprocessing_limb_data_size * 2 + merkle_chain_idx]
+            .clone()
+            * next_bit.clone();
         builder
             .when_transition()
             .when(gate_right_2)
@@ -541,7 +560,9 @@ fn eval<
 
     // Limb 3: chain from out_r[1] (right), unless in_ctl[3] = 1. Not chained if Left.
     for d in 0..D {
-        let gate_right_3 = next.merkle_chain_sel[3].clone() * next_bit.clone();
+        let gate_right_3 = next_preprocessed[preprocessing_limb_data_size * 3 + merkle_chain_idx]
+            .clone()
+            * next_bit.clone();
         builder
             .when_transition()
             .when(gate_right_3)
@@ -552,11 +573,11 @@ fn eval<
     // If merkle_path_{r+1} = 1 and new_start_{r+1} = 0:
     //   mmcs_index_sum_{r+1} = mmcs_index_sum_r * 2 + mmcs_bit_{r+1}
     let two = AB::Expr::ONE + AB::Expr::ONE;
-    let not_next_new_start = AB::Expr::ONE - next.new_start.clone();
+    let not_next_new_start = AB::Expr::ONE - next_preprocessed[new_start_idx].clone();
     builder
         .when_transition()
         .when(not_next_new_start)
-        .when(next.merkle_path.clone())
+        .when(next_preprocessed[merkle_path_idx].clone())
         .assert_zero(
             next.mmcs_index_sum.clone()
                 - (local.mmcs_index_sum.clone() * two + next.mmcs_bit.clone()),
@@ -596,7 +617,7 @@ fn eval<
 }
 
 impl<
-    AB: AirBuilder,
+    AB: PairBuilder,
     LinearLayers: GenericPoseidon2LinearLayers<WIDTH>,
     const D: usize,
     const WIDTH: usize,
@@ -632,6 +653,12 @@ where
         let next = main.row_slice(1).expect("The matrix has only one row?");
         let next = (*next).borrow();
 
+        let preprocessed = builder.preprocessed();
+        let next_preprocessed = preprocessed
+            .row_slice(1)
+            .expect("The preprocessed matrix has only one row?");
+        let next_preprocessed = (*next_preprocessed).borrow();
+
         eval::<
             _,
             _,
@@ -644,7 +671,7 @@ where
             SBOX_REGISTERS,
             HALF_FULL_ROUNDS,
             PARTIAL_ROUNDS,
-        >(self, builder, local, next);
+        >(self, builder, local, next, next_preprocessed);
     }
 }
 
