@@ -16,7 +16,7 @@ use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Registry};
 
 /// Initializes a global logger with default parameters.
-pub fn init_logger() {
+fn init_logger() {
     let env_filter = EnvFilter::builder()
         .with_default_directive(LevelFilter::INFO.into())
         .from_env_lossy();

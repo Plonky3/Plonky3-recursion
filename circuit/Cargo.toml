@@ -32,7 +32,6 @@ strum.workspace = true
 strum_macros.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
-tracing-forest.workspace = true
 
 [dev-dependencies]
 p3-air.workspace = true
