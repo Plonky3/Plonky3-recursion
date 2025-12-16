@@ -776,63 +776,83 @@ mod tests {
     #[test]
     fn test_non_primitive_outputs_ordering_and_dedup() {
         type Ext4 = BinomialExtensionField<BabyBear, 4>;
-    
+
         let mut builder = CircuitBuilder::<Ext4>::new();
         builder.enable_op(NonPrimitiveOpType::PoseidonPerm, NonPrimitiveOpConfig::None);
-    
+
         // Provide minimal valid-ish witnesses.
         let z = builder.add_const(Ext4::ZERO);
-        let witness_exprs = vec![vec![z]; 4]  // in0..3
+        let witness_exprs = vec![vec![z]; 4] // in0..3
             .into_iter()
             .chain([vec![], vec![], vec![], vec![]]) // out0..1, mmcs_index_sum, mmcs_bit (optional)
             .collect::<Vec<_>>();
-    
+
         let (op_id, outputs) = builder.push_non_primitive_op_with_outputs(
             NonPrimitiveOpType::PoseidonPerm,
             witness_exprs,
-            Some(NonPrimitiveOpParams::PoseidonPerm { new_start: true, merkle_path: false }),
+            Some(NonPrimitiveOpParams::PoseidonPerm {
+                new_start: true,
+                merkle_path: false,
+            }),
             2,
             "poseidon_perm_with_outputs",
         );
-    
+
         let one = builder.add_const(Ext4::ONE);
         let sum0 = builder.add(outputs[0], one);
         let sum1 = builder.add(outputs[1], one);
-    
+
         let circuit = builder.build().unwrap();
-    
+
         // Non-primitive op emitted exactly once.
-        let non_prims: Vec<_> = circuit.ops.iter().enumerate().filter_map(|(i, op)| {
-            match op {
-                crate::op::Op::NonPrimitiveOpWithExecutor { op_id: oid, .. } if *oid == op_id => Some(i),
+        let non_prims: Vec<_> = circuit
+            .ops
+            .iter()
+            .enumerate()
+            .filter_map(|(i, op)| match op {
+                crate::op::Op::NonPrimitiveOpWithExecutor { op_id: oid, .. } if *oid == op_id => {
+                    Some(i)
+                }
                 _ => None,
-            }
-        }).collect();
+            })
+            .collect();
         assert_eq!(non_prims.len(), 1);
         let non_prim_pos = non_prims[0];
-    
+
         // Exact Add matches (order of a/b may swap).
         let w_out0 = circuit.expr_to_widx[&outputs[0]];
         let w_out1 = circuit.expr_to_widx[&outputs[1]];
-        let w_one  = circuit.expr_to_widx[&one];
+        let w_one = circuit.expr_to_widx[&one];
         let w_sum0 = circuit.expr_to_widx[&sum0];
         let w_sum1 = circuit.expr_to_widx[&sum1];
-    
-        let add0_pos = circuit.ops.iter().position(|op| match op {
-            crate::op::Op::Add { a, b, out } =>
-                *out == w_sum0 && ((*a == w_out0 && *b == w_one) || (*a == w_one && *b == w_out0)),
-            _ => false,
-        }).unwrap();
-    
-        let add1_pos = circuit.ops.iter().position(|op| match op {
-            crate::op::Op::Add { a, b, out } =>
-                *out == w_sum1 && ((*a == w_out1 && *b == w_one) || (*a == w_one && *b == w_out1)),
-            _ => false,
-        }).unwrap();
-    
+
+        let add0_pos = circuit
+            .ops
+            .iter()
+            .position(|op| match op {
+                crate::op::Op::Add { a, b, out } => {
+                    *out == w_sum0
+                        && ((*a == w_out0 && *b == w_one) || (*a == w_one && *b == w_out0))
+                }
+                _ => false,
+            })
+            .unwrap();
+
+        let add1_pos = circuit
+            .ops
+            .iter()
+            .position(|op| match op {
+                crate::op::Op::Add { a, b, out } => {
+                    *out == w_sum1
+                        && ((*a == w_out1 && *b == w_one) || (*a == w_one && *b == w_out1))
+                }
+                _ => false,
+            })
+            .unwrap();
+
         assert!(non_prim_pos < add0_pos);
         assert!(non_prim_pos < add1_pos);
-    }    
+    }
 }
 
 #[cfg(test)]
