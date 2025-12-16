@@ -388,6 +388,10 @@ where
     ///
     /// Each returned `ExprId` is an `Expr::NonPrimitiveOutput { op_id, output_idx }` node,
     /// allowing downstream expressions to depend on the non-primitive op in the DAG.
+    ///
+    /// TODO: Use this for ops which materialize outputs into the witness (e.g. once Poseidon perm
+    /// execution writes outputs), so downstream expressions can depend on them.
+    #[allow(dead_code)]
     pub(crate) fn push_non_primitive_op_with_outputs(
         &mut self,
         op_type: NonPrimitiveOpType,

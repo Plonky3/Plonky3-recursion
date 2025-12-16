@@ -158,7 +158,7 @@ impl<F: Field> Circuit<F> {
                         .max()
                         .unwrap_or(max_idx);
                 }
-                // Non-primitive ops do not contribute to primitive preprocessed columns.
+                // TODO: Add preprocessed columns for non-primitive tables.
                 Op::NonPrimitiveOpWithExecutor { .. } => {}
             }
         }
