@@ -115,7 +115,7 @@ where
             witness_exprs.push(Vec::new());
         }
 
-        Ok(self.push_non_primitive_op(
+        let (op_id, _call_expr_id) = self.push_non_primitive_op(
             op_type,
             witness_exprs,
             Some(NonPrimitiveOpParams::PoseidonPerm {
@@ -123,7 +123,8 @@ where
                 merkle_path: call.merkle_path,
             }),
             "poseidon_perm",
-        ))
+        );
+        Ok(op_id)
     }
 }
 

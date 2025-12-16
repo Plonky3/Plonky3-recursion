@@ -356,7 +356,7 @@ where
         res
     }
 
-    /// Pushes a non-primitive op. Returns op id.
+    /// Pushes a non-primitive op. Returns (op_id, call_expr_id).
     #[allow(unused_variables)]
     pub(crate) fn push_non_primitive_op(
         &mut self,
@@ -364,13 +364,16 @@ where
         witness_exprs: Vec<Vec<ExprId>>,
         params: Option<NonPrimitiveOpParams>,
         label: &'static str,
-    ) -> NonPrimitiveOpId {
+    ) -> (NonPrimitiveOpId, ExprId) {
         let op_id = NonPrimitiveOpId(self.non_primitive_ops.len() as u32);
 
-        self.expr_builder.add_non_primitive_call(
+        // Flatten witness_exprs into a single Vec<ExprId> for DAG dependencies
+        let flattened_inputs: Vec<ExprId> = witness_exprs.iter().flatten().copied().collect();
+
+        let call_expr_id = self.expr_builder.add_non_primitive_call(
             op_id,
             op_type.clone(),
-            witness_exprs.clone(),
+            flattened_inputs,
             label,
         );
 
@@ -380,13 +383,13 @@ where
             witness_exprs,
             params,
         });
-        op_id
+        (op_id, call_expr_id)
     }
 
     /// Pushes a non-primitive op and returns expressions representing its outputs.
     ///
-    /// Each returned `ExprId` is an `Expr::NonPrimitiveOutput { op_id, output_idx }` node,
-    /// allowing downstream expressions to depend on the non-primitive op in the DAG.
+    /// Each returned `ExprId` is an `Expr::NonPrimitiveOutput { call, output_idx }` node,
+    /// where `call` points to the `NonPrimitiveCall` node, making the DAG dependency explicit.
     ///
     /// TODO: Use this for ops which materialize outputs into the witness (e.g. once Poseidon perm
     /// execution writes outputs), so downstream expressions can depend on them.
@@ -399,11 +402,12 @@ where
         n_outputs: usize,
         label: &'static str,
     ) -> (NonPrimitiveOpId, Vec<ExprId>) {
-        let op_id = self.push_non_primitive_op(op_type, witness_exprs, params, label);
+        let (op_id, call_expr_id) =
+            self.push_non_primitive_op(op_type, witness_exprs, params, label);
         let outputs = (0..n_outputs)
             .map(|i| {
                 self.expr_builder
-                    .add_non_primitive_output(op_id, i as u32, label)
+                    .add_non_primitive_output(call_expr_id, i as u32, label)
             })
             .collect();
         (op_id, outputs)
