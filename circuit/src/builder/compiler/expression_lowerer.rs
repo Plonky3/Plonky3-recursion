@@ -213,7 +213,15 @@ where
                     .collect::<Result<Vec<WitnessId>, _>>()?;
                 inputs_widx.push(mmcs_bit_widx);
 
+
+
                 // Output CTL exposures (0 or 1 element each)
+                // We combine witnesses from:
+                // 1. Explicit CTL expressions (data.output_exprs)
+                // 2. Graph output nodes (output_exprs)
+                let mut poseidon_outputs: Vec<Vec<WitnessId>> = vec![Vec::new(); 2];
+
+                // 1. From explicit CTL expressions
                 for (i, limb_exprs) in data.output_exprs.iter().enumerate() {
                     if !(limb_exprs.is_empty() || limb_exprs.len() == 1) {
                         return Err(CircuitBuilderError::NonPrimitiveOpArity {
@@ -222,22 +230,32 @@ where
                             got: limb_exprs.len(),
                         });
                     }
-                    let limb_widx = limb_exprs
-                        .iter()
-                        .map(|&expr| {
-                            get_witness_id(
-                                expr_to_widx,
-                                expr,
-                                &format!("PoseidonPerm output limb {i}"),
-                            )
-                        })
-                        .collect::<Result<Vec<WitnessId>, _>>()?;
-                    inputs_widx.push(limb_widx);
+                    if let Some(&expr) = limb_exprs.first() {
+                        let w = get_witness_id(
+                            expr_to_widx,
+                            expr,
+                            &format!("PoseidonPerm output limb {i}"),
+                        )?;
+                        poseidon_outputs[i].push(w);
+                    }
+                }
+
+                // 2. From graph output nodes
+                for (idx, expr_id) in output_exprs {
+                    let i = *idx as usize;
+                    if i < 2 {
+                        // The witness was already allocated at the start of emit_non_primitive_op
+                        if let Some(&w) = expr_to_widx.get(expr_id) {
+                            if !poseidon_outputs[i].contains(&w) {
+                                poseidon_outputs[i].push(w);
+                            }
+                        }
+                    }
                 }
 
                 ops.push(Op::NonPrimitiveOpWithExecutor {
                     inputs: inputs_widx,
-                    outputs: outputs_widx, // Use the output witnesses we allocated at start of fn
+                    outputs: poseidon_outputs,
                     executor: Box::new(PoseidonPermExecutor::new(new_start, merkle_path)),
                     op_id: data.op_id,
                 });
