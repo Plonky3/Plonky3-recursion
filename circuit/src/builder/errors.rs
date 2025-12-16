@@ -60,5 +60,5 @@ pub enum CircuitBuilderError {
 
     /// Witness filler without any hints sequence.
     #[error("Witness filler is missing a witness hints sequence")]
-    UnmatchetWitnessFiller {},
+    UnmatchedWitnessFiller {},
 }

@@ -513,7 +513,7 @@ where
         }
 
         if fillers_iter.next().is_some() {
-            return Err(CircuitBuilderError::UnmatchetWitnessFiller {});
+            return Err(CircuitBuilderError::UnmatchedWitnessFiller {});
         }
 
         if emitted_non_primitive_ops.len() != self.non_primitive_ops.len() {
