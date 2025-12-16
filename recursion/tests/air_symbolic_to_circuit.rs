@@ -1,37 +1,28 @@
+mod common;
+
 use p3_air::{Air, BaseAir};
-use p3_baby_bear::{BabyBear, Poseidon2BabyBear};
-use p3_challenger::DuplexChallenger;
 use p3_circuit::utils::{ColumnsTargets, RowSelectorsTargets};
 use p3_circuit::{CircuitBuilder, CircuitError};
 use p3_circuit_prover::air::{AddAir, ConstAir, MulAir, PublicAir, WitnessAir};
 use p3_commit::ExtensionMmcs;
-use p3_dft::Radix2DitParallel;
-use p3_field::{Field, PrimeCharacteristicRing};
+use p3_field::PrimeCharacteristicRing;
 use p3_fri::TwoAdicFriPcs;
 use p3_matrix::dense::RowMajorMatrixView;
 use p3_matrix::stack::VerticalPair;
-use p3_merkle_tree::MerkleTreeMmcs;
 use p3_poseidon2_air::RoundConstants;
 use p3_poseidon2_circuit_air::Poseidon2CircuitAirBabyBearD4Width16;
 use p3_recursion::traits::RecursiveAir;
 use p3_recursion::types::RecursiveLagrangeSelectors;
-use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
-use p3_uni_stark::{SymbolicAirBuilder, VerifierConstraintFolder};
+use p3_uni_stark::{StarkConfig, SymbolicAirBuilder, VerifierConstraintFolder};
 use rand::rngs::SmallRng;
 use rand::{Rng, RngCore, SeedableRng};
 
-type F = BabyBear;
+use crate::common::baby_bear_params::*;
 
-const RATE: usize = 8;
-type Dft = Radix2DitParallel<F>;
-type Perm = Poseidon2BabyBear<16>;
-type MyHash = PaddingFreeSponge<Perm, 16, RATE, 8>;
-type MyCompress = TruncatedPermutation<Perm, 2, 8, 16>;
-type ValMmcs = MerkleTreeMmcs<<F as Field>::Packing, <F as Field>::Packing, MyHash, MyCompress, 8>;
-type ChallengeMmcs = ExtensionMmcs<F, F, ValMmcs>;
-type Challenger = DuplexChallenger<F, Perm, 16, RATE>;
+type Challenge = F;
+type ChallengeMmcs = ExtensionMmcs<F, Challenge, ValMmcs>;
 type MyPcs = TwoAdicFriPcs<F, Dft, ValMmcs, ChallengeMmcs>;
-type MyConfig = p3_uni_stark::StarkConfig<MyPcs, F, Challenger>;
+type MyConfig = StarkConfig<MyPcs, Challenge, Challenger>;
 
 fn run_recursive<A>(
     air: &A,
@@ -159,7 +150,7 @@ fn primitive_airs_symbolic_to_circuit() -> Result<(), CircuitError> {
     run_recursive(&public_air, 1, 1, &mut rng)?;
 
     let witness_air = WitnessAir::<F, 1>::new(1, 1);
-    run_recursive(&witness_air, 0, 0, &mut rng)?;
+    run_recursive(&witness_air, 1, 0, &mut rng)?;
 
     Ok(())
 }
