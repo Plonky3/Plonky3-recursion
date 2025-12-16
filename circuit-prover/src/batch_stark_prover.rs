@@ -531,6 +531,23 @@ impl Poseidon2Prover {
         }
     }
 
+    pub fn preprocessed_width_from_config(&self) -> usize {
+        match &self.config {
+            Poseidon2Config::BabyBearD4Width16 { .. } => {
+                Poseidon2CircuitAirBabyBearD4Width16::preprocessed_width()
+            }
+            Poseidon2Config::BabyBearD4Width24 { .. } => {
+                Poseidon2CircuitAirBabyBearD4Width24::preprocessed_width()
+            }
+            Poseidon2Config::KoalaBearD4Width16 { .. } => {
+                Poseidon2CircuitAirKoalaBearD4Width16::preprocessed_width()
+            }
+            Poseidon2Config::KoalaBearD4Width24 { .. } => {
+                Poseidon2CircuitAirKoalaBearD4Width24::preprocessed_width()
+            }
+        }
+    }
+
     fn batch_instance_from_traces<SC, CF>(
         &self,
         _config: &SC,
@@ -645,7 +662,6 @@ impl Poseidon2Prover {
             } => {
                 let preprocessed =
                     extract_preprocessed_from_operations::<BabyBear, Val<SC>>(&t.operations);
-                println!("Preprocessed length: {}", preprocessed.len());
                 let air = Poseidon2CircuitAirBabyBearD4Width16::new_with_preprocessed(
                     constants.clone(),
                     preprocessed,

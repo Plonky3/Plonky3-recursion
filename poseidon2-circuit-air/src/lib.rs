@@ -1,6 +1,6 @@
 //! An AIR for the Poseidon2 table for recursion. Handles sponge operations and compressions.
 
-// #![no_std]
+#![no_std]
 
 extern crate alloc;
 

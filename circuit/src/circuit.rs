@@ -1,8 +1,8 @@
 use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt::Debug;
-use core::iter;
 use core::ops::{Add, Mul, Sub};
+use core::{iter, panic};
 
 use hashbrown::HashMap;
 use p3_field::Field;
@@ -163,12 +163,22 @@ impl<F: Field> Circuit<F> {
                         .unwrap_or(max_idx);
                 }
                 // Non-primitive ops should not appear in primitive_ops.
+                Op::NonPrimitiveOpWithExecutor { executor, .. } => panic!(
+                    "Unexpected non-primitive op {:?} in primitive_ops",
+                    executor.op_type()
+                ),
+            }
+        }
+
+        for nop in &self.non_primitive_ops {
+            match nop {
                 Op::NonPrimitiveOpWithExecutor {
+                    executor,
                     inputs,
                     outputs,
-                    executor,
                     ..
                 } => executor.preprocessing(inputs, outputs, &mut preprocessed),
+                _ => panic!("Unexpected primitive op {:?} in non_primitive_ops", nop),
             }
         }
 

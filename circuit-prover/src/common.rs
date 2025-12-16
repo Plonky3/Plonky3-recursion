@@ -124,7 +124,7 @@ where
                         .unwrap();
 
                     let poseidon_prover = Poseidon2Prover::new(config.clone());
-                    let width = poseidon_prover.width_from_config();
+                    let width = poseidon_prover.preprocessed_width_from_config();
                     let poseidon_wrapper =
                         poseidon_prover.wrapper_from_config_with_preprocessed(prep.clone());
 

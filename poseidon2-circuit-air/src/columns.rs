@@ -48,20 +48,6 @@ pub struct Poseidon2CircuitCols<T, P: PermutationColumns<T>> {
     /// Computed as (1 - new_start) * merkle_path * (1 - in_ctl[i]) for i in {0, ..., POSEIDON_PUBLIC_OUTPUT_LIMBS - 1}.
     /// NOTE: This column is not in the spec but is added to reduce constraint degree to 3.
     pub merkle_chain_sel: [T; POSEIDON_LIMBS],
-
-    /// Input exposure flags: for each limb i, if 1, in[i] must match witness lookup at in_idx[i].
-    pub in_ctl: [T; POSEIDON_LIMBS],
-    /// Input exposure indices: index into the witness table for each limb.
-    pub in_idx: [T; POSEIDON_LIMBS],
-
-    /// Output exposure flags: for limbs 0-1 only, if 1, out[i] must match witness lookup at out_idx[i].
-    /// Note: limbs 2-3 are never publicly exposed (always private).
-    pub out_ctl: [T; POSEIDON_PUBLIC_OUTPUT_LIMBS],
-    /// Output exposure indices: index into the witness table for limbs 0-1.
-    pub out_idx: [T; POSEIDON_PUBLIC_OUTPUT_LIMBS],
-
-    /// MMCS index exposure: index for CTL exposure of mmcs_index_sum.
-    pub mmcs_index_sum_idx: T,
 }
 
 pub trait PermutationColumns<T> {}

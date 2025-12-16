@@ -169,7 +169,7 @@ impl<F: Field> NonPrimitiveExecutor<F> for PoseidonPermExecutor {
     fn preprocessing(
         &self,
         inputs: &[Vec<WitnessId>],
-        outputs: &[Vec<WitnessId>],
+        _outputs: &[Vec<WitnessId>],
         preprocessed_tables: &mut Vec<Vec<F>>,
     ) {
         // We need to populate in_ctl and out_ctl for this operation.
@@ -208,7 +208,7 @@ impl<F: Field> NonPrimitiveExecutor<F> for PoseidonPermExecutor {
             }
         }
         // mmcs_index_sum
-        if outputs[6].is_empty() {
+        if inputs[6].is_empty() {
             preprocessed_tables[idx].push(F::ZERO); // mmcs_index_sum_ctl
         } else {
             preprocessed_tables[idx].push(F::ONE); // mmcs_index_sum_ctl

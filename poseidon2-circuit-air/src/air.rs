@@ -172,10 +172,7 @@ impl<
                 mmcs_index_sum,
                 input_values,
                 in_ctl,
-                input_indices,
-                out_ctl,
-                output_indices,
-                mmcs_index_sum_idx,
+                ..
             } = op;
 
             let mut padded_inputs = [F::ZERO; WIDTH];
@@ -279,24 +276,6 @@ impl<
             for j in 0..POSEIDON_PUBLIC_OUTPUT_LIMBS {
                 circuit_part[offset + j].write(F::from_bool(merkle_chain_sel[j]));
             }
-            offset += POSEIDON_PUBLIC_OUTPUT_LIMBS;
-            for j in 0..POSEIDON_LIMBS {
-                circuit_part[offset + j].write(F::from_bool(in_ctl[j]));
-            }
-            offset += POSEIDON_LIMBS;
-            for j in 0..POSEIDON_LIMBS {
-                circuit_part[offset + j].write(F::from_u32(input_indices[j]));
-            }
-            offset += POSEIDON_LIMBS;
-            for j in 0..POSEIDON_PUBLIC_OUTPUT_LIMBS {
-                circuit_part[offset + j].write(F::from_bool(out_ctl[j]));
-            }
-            offset += POSEIDON_PUBLIC_OUTPUT_LIMBS;
-            for j in 0..POSEIDON_PUBLIC_OUTPUT_LIMBS {
-                circuit_part[offset + j].write(F::from_u32(output_indices[j]));
-            }
-            offset += POSEIDON_PUBLIC_OUTPUT_LIMBS;
-            circuit_part[offset].write(F::from_u32(*mmcs_index_sum_idx));
 
             // Save the state to be used as input for the heavy Poseidon trace generation
             inputs.push(state);
@@ -392,7 +371,6 @@ impl<
             "Preprocessed trace length is not a multiple of preprocessed width"
         );
 
-        println!("Preprocessed {:?} values", self.preprocessed);
         let padded_height = self
             .preprocessed
             .len()
@@ -402,10 +380,6 @@ impl<
         let mut preprocessed = self.preprocessed.clone();
         preprocessed.resize(padded_height, F::ZERO);
 
-        println!(
-            "Preprocessed trace height: {}",
-            padded_height / Self::preprocessed_width()
-        );
         Some(RowMajorMatrix::new(
             preprocessed,
             Self::preprocessed_width(),
