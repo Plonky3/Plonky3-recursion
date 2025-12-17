@@ -479,9 +479,9 @@ where
     /// Each returned `ExprId` is an `Expr::NonPrimitiveOutput { call, output_idx }` node,
     /// where `call` points to the `NonPrimitiveCall` node, making the DAG dependency explicit.
     ///
-    /// TODO: Use this for ops which materialize outputs into the witness (e.g. once Poseidon perm
-    /// execution writes outputs), so downstream expressions can depend on them.
-    #[allow(dead_code)]
+    /// Used by ops that materialize outputs into the witness (e.g., Poseidon perm execution
+    /// writes outputs), so downstream expressions can depend on them.
+    #[allow(dead_code)] // Used in tests
     pub(crate) fn push_non_primitive_op_with_outputs(
         &mut self,
         op_type: NonPrimitiveOpType,

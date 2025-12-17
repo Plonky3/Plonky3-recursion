@@ -111,7 +111,7 @@ where
 
     fn emit_non_primitive_op<AllocFn>(
         data: &NonPrimitiveOperationData,
-        _output_exprs: &[(u32, ExprId)],
+        output_exprs: &[(u32, ExprId)],
         expr_to_widx: &mut HashMap<ExprId, WitnessId>,
         alloc_witness_id_for_expr: &mut AllocFn,
         ops: &mut Vec<Op<F>>,
@@ -119,7 +119,7 @@ where
     where
         AllocFn: FnMut(usize) -> WitnessId,
     {
-        for (_output_idx, expr_id) in _output_exprs {
+        for (_output_idx, expr_id) in output_exprs {
             expr_to_widx
                 .entry(*expr_id)
                 .or_insert_with(|| alloc_witness_id_for_expr(expr_id.0 as usize));
@@ -544,7 +544,7 @@ where
         }
 
         if !hints_sequence.is_empty() {
-            return Err(CircuitBuilderError::MalformedWitnessHitnsSequence {
+            return Err(CircuitBuilderError::MalformedWitnessHintsSequence {
                 sequence: hints_sequence,
             });
         }

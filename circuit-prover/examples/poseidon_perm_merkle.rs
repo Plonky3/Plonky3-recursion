@@ -175,10 +175,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         })?;
 
     // Row 1: chain limbs 0-1, provide sibling1 in limbs 2-3, expose output limbs 0-1 and mmcs_index_sum.
-    let sibling1_inputs: [Option<ExprId>; 4] = [
-        None, None, None, // Private
-        None, // Private
-    ];
+    // All inputs are private (chained from row 0 or provided via private data)
+    let sibling1_inputs: [Option<ExprId>; 4] = [None, None, None, None];
     // Public root limbs
     let out0 = builder.add_public_input();
     let out1 = builder.add_public_input();
@@ -195,12 +193,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             mmcs_index_sum: None,
         })?;
 
-    // Row 2: merkle left
+    // Row 2: merkle left - all inputs private (chained from row 1 or provided via private data)
     let mmcs_bit_row2 = builder.alloc_const(Ext4::from_prime_subfield(Base::ZERO), "mmcs_bit_row2");
-    let sibling2_inputs: [Option<ExprId>; 4] = [
-        None, None, None, // Private
-        None, // Private
-    ];
+    let sibling2_inputs: [Option<ExprId>; 4] = [None, None, None, None];
     let (row2_op_id, row2_outputs) =
         builder.add_poseidon_perm(p3_circuit::ops::PoseidonPermCall {
             new_start: false,

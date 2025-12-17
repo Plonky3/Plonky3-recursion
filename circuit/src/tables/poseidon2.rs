@@ -132,7 +132,6 @@ impl<TraceF: Clone + Send + Sync + 'static, CF> NonPrimitiveTrace<CF> for Poseid
 pub struct Poseidon2TraceBuilder<'a, CF, Config: Poseidon2Params> {
     circuit: &'a Circuit<CF>,
     witness: &'a [Option<CF>],
-    #[allow(dead_code)] // TODO: Will be used when filling the state with hints
     non_primitive_op_private_data: &'a [Option<NonPrimitiveOpPrivateData<CF>>],
 
     phantom: core::marker::PhantomData<Config>,

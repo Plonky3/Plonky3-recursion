@@ -7,13 +7,14 @@ use std::error::Error;
 /// final output limbs via CTL, and proves the trace.
 use p3_baby_bear::{BabyBear, default_babybear_poseidon2_16};
 use p3_batch_stark::CommonData;
+use p3_circuit::op::WitnessHintsFiller;
 use p3_circuit::ops::{PoseidonPermCall, PoseidonPermOps};
 use p3_circuit::tables::generate_poseidon2_trace;
-use p3_circuit::{CircuitBuilder, ExprId};
+use p3_circuit::{CircuitBuilder, CircuitError, ExprId};
 use p3_circuit_prover::common::get_airs_and_degrees_with_prep;
 use p3_circuit_prover::{BatchStarkProver, Poseidon2Config, TablePacking, config};
 use p3_field::extension::BinomialExtensionField;
-use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
+use p3_field::{BasedVectorSpace, PrimeCharacteristicRing, PrimeField64};
 use p3_poseidon2_circuit_air::BabyBearD4Width16;
 use p3_symmetric::Permutation;
 use tracing_forest::ForestLayer;
@@ -87,11 +88,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     // Add permutation rows.
+    let mmcs_bit_zero = builder.alloc_const(Ext4::ZERO, "mmcs_bit_zero");
     let mut observed_output_exprs: [Option<ExprId>; 2] = [None, None];
     for row in 0..chain_length {
         let is_first = row == 0;
         let is_last = row + 1 == chain_length;
-        let mmcs_bit_zero = builder.alloc_const(Ext4::ZERO, "mmcs_bit_zero");
 
         let mut inputs: [Option<ExprId>; 4] = [None, None, None, None];
         if is_first {
@@ -117,6 +118,86 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     }
 
+    // -------------------------------------------------------------------------
+    // Demonstrate that Poseidon outputs can flow into other primitive ops.
+    //
+    // This simulates how the FRI verifier samples query indices:
+    //   1. Sample a field element from Poseidon output
+    //   2. Use decompose_to_bits to extract bits for index sampling
+    //   3. Sum bits and reconstruct index, verify against expected values
+    //
+    // Note: decompose_to_bits works on base field elements. For extension elements,
+    // we first extract the base (degree-0) coefficient using a witness hint.
+    // -------------------------------------------------------------------------
+    let out0 = observed_output_exprs[0].ok_or("missing out0 expr")?;
+
+    // Native computation: extract the first base coefficient of final_limbs_ext[0]
+    let out0_base_coeff: Base = final_limbs_ext[0].as_basis_coefficients_slice()[0];
+    let out0_canonical = out0_base_coeff.as_canonical_u64();
+
+    // Simulate FRI query index sampling with log_max_height bits
+    // In real FRI, this would be: challenger.sample_bits(log_global_max_height)
+    // Note: We use 31 bits (full BabyBear field width) because decompose_to_bits
+    // constrains the original value to equal the reconstruction from bits.
+    // For extracting only lower bits, a different approach would be needed.
+    let log_max_height = 31; // Full BabyBear field width
+    let expected_index = (out0_canonical as usize) & ((1 << log_max_height) - 1);
+
+    // Compute expected popcount
+    let expected_bit_sum = (expected_index as u64).count_ones() as u64;
+
+    // In the circuit: first extract the base coefficient from out0 using a witness hint.
+    // This demonstrates that Poseidon outputs can flow through hints into decompose_bits.
+    let out0_base_hints =
+        builder.alloc_witness_hints(ExtractBaseCoeffHint { input: out0 }, "out0_base_coeff");
+    let out0_base_expr = out0_base_hints[0];
+
+    // Demonstrate arithmetic composability: out0 + out1
+    let out1 = observed_output_exprs[1].ok_or("missing out1 expr")?;
+    let sum_outputs = builder.add(out0, out1);
+    let expected_sum = final_limbs_ext[0] + final_limbs_ext[1];
+    let expected_sum_expr = builder.alloc_const(expected_sum, "expected_sum_outputs");
+    builder.connect(sum_outputs, expected_sum_expr);
+
+    // Demonstrate arithmetic composability: out0 * out1
+    let product_outputs = builder.mul(out0, out1);
+    let expected_product = final_limbs_ext[0] * final_limbs_ext[1];
+    let expected_product_expr = builder.alloc_const(expected_product, "expected_product_outputs");
+    builder.connect(product_outputs, expected_product_expr);
+
+    // Now decompose the base coefficient to bits (simulating sample_bits)
+    let bits = builder.decompose_to_bits::<Base>(out0_base_expr, log_max_height)?;
+
+    // Sum all bits (popcount) - demonstrates bits flowing into arithmetic ops
+    let mut bit_sum = builder.add_const(Ext4::ZERO);
+    for &bit in &bits {
+        bit_sum = builder.add(bit_sum, bit);
+    }
+
+    // Verify the bit sum matches expected popcount
+    let expected_bit_sum_expr = builder.alloc_const(
+        Ext4::from_prime_subfield(Base::from_u64(expected_bit_sum)),
+        "expected_bit_sum",
+    );
+    builder.connect(bit_sum, expected_bit_sum_expr);
+
+    // Reconstruct the index from bits and verify it matches expected_index
+    // This completes the simulation of sample_bits: extract lower n bits
+    let reconstructed_index = builder.reconstruct_index_from_bits(&bits);
+    let expected_index_expr = builder.alloc_const(
+        Ext4::from_prime_subfield(Base::from_u64(expected_index as u64)),
+        "expected_fri_query_index",
+    );
+    builder.connect(reconstructed_index, expected_index_expr);
+
+    println!(
+        "FRI query index simulation: out0_base={}, index={} (log_max_height={}), popcount={}",
+        out0_canonical, expected_index, log_max_height, expected_bit_sum
+    );
+    println!(
+        "Arithmetic composability: out0+out1 and out0*out1 verified against native computation"
+    );
+
     let circuit = builder.build()?;
     let expr_to_widx = circuit.expr_to_widx.clone();
 
@@ -127,10 +208,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     let traces = runner.run()?;
 
     // Sanity-check exposed outputs against the native computation.
-    let out0_expr = observed_output_exprs[0].ok_or("missing out0 expr")?;
-    let out1_expr = observed_output_exprs[1].ok_or("missing out1 expr")?;
+    // Note: out0 and out1 were already extracted above for arithmetic composability demo.
     let mut observed_outputs = Vec::with_capacity(2);
-    for out_expr in &[out0_expr, out1_expr] {
+    for out_expr in &[out0, out1] {
         let witness_id = expr_to_widx
             .get(out_expr)
             .ok_or("missing witness id for output expr")?;
@@ -199,4 +279,31 @@ fn collect_ext_limbs(state: &[Base; WIDTH]) -> [Ext4; 4] {
         limbs[i] = Ext4::from_basis_coefficients_slice(chunk).unwrap();
     }
     limbs
+}
+
+/// Witness hint that extracts the first (base) coefficient from an extension field element.
+///
+/// This is useful for operations like `sample_bits` that work on base field elements
+/// but receive extension field inputs from Poseidon outputs.
+#[derive(Clone, Debug)]
+struct ExtractBaseCoeffHint {
+    /// The input expression (extension field element)
+    input: ExprId,
+}
+
+impl WitnessHintsFiller<Ext4> for ExtractBaseCoeffHint {
+    fn inputs(&self) -> &[ExprId] {
+        core::slice::from_ref(&self.input)
+    }
+
+    fn n_outputs(&self) -> usize {
+        1
+    }
+
+    fn compute_outputs(&self, inputs_val: Vec<Ext4>) -> Result<Vec<Ext4>, CircuitError> {
+        // Extract the first basis coefficient (base field element) and lift back to extension
+        let ext_val = inputs_val[0];
+        let base_coeff: Base = ext_val.as_basis_coefficients_slice()[0];
+        Ok(vec![Ext4::from_prime_subfield(base_coeff)])
+    }
 }
