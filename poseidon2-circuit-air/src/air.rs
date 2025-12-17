@@ -179,13 +179,13 @@ impl<
             let i = inputs.len();
             if i > 0 && !*new_start {
                 if *merkle_path {
-                    // Merkle-path mode: chain based on previous row's mmcs_bit
+                    // Merkle-path mode: chain based on this row's mmcs_bit
                     // Only chain rate limbs (0..RATE_EXT-1) if in_ctl[i] = 0 (handled by AIR constraints)
                     if let Some(prev_out) = prev_output {
-                        let prev_bit = sponge_ops[i - 1].mmcs_bit;
+                        let cur_bit = *mmcs_bit;
                         // For trace generation, we chain unconditionally here.
                         // The AIR will enforce that chaining only applies when in_ctl = 0.
-                        if prev_bit {
+                        if cur_bit {
                             // Case B: mmcs_bit = 1 (right = previous hash)
                             // If RATE_EXT >= 2*DIGEST_EXT, chain from second half of rate section
                             // Otherwise, fall back to capacity limbs
@@ -251,8 +251,8 @@ impl<
 
             // Update MMCS index accumulator
             let acc = if i > 0 && *merkle_path && !*new_start {
-                // mmcs_index_sum_{r+1} = mmcs_index_sum_r * 2 + mmcs_bit_r
-                prev_mmcs_index_sum + prev_mmcs_index_sum + F::from_bool(sponge_ops[i - 1].mmcs_bit)
+                // mmcs_index_sum_r = mmcs_index_sum_{r-1} * 2 + mmcs_bit_r
+                prev_mmcs_index_sum + prev_mmcs_index_sum + F::from_bool(*mmcs_bit)
             } else {
                 // Reset / non-Merkle behavior.
                 // The AIR does not constrain mmcs_index_sum on these rows;
@@ -265,7 +265,6 @@ impl<
                 core::array::from_fn(|j| (!*new_start) && (!*merkle_path) && (!in_ctl[j]));
             let merkle_chain_sel: [bool; RATE_EXT] =
                 core::array::from_fn(|j| (!*new_start) && *merkle_path && (!in_ctl[j]));
-            let mmcs_update_sel = (!*new_start) && *merkle_path;
 
             let (_p2_part, circuit_part) = row.split_at_mut(p2_ncols);
 
@@ -283,8 +282,6 @@ impl<
                 circuit_part[offset + j].write(F::from_bool(merkle_chain_sel[j]));
             }
             offset += RATE_EXT;
-            circuit_part[offset].write(F::from_bool(mmcs_update_sel));
-            offset += 1;
             for j in 0..WIDTH_EXT {
                 circuit_part[offset + j].write(F::from_bool(in_ctl[j]));
             }
@@ -491,8 +488,8 @@ fn eval<
     //   - Capacity limbs are free/private
     // BUT: If in_ctl[i] = 1, CTL overrides chaining (limb is not chained).
     // Chaining only applies when in_ctl[limb] = 0.
-    let prev_bit = local.mmcs_bit.clone();
-    let is_left = AB::Expr::ONE - prev_bit.clone();
+    let next_bit = next.mmcs_bit.clone();
+    let is_left = AB::Expr::ONE - next_bit.clone();
 
     // Chain DIGEST_EXT limbs based on mmcs_bit from previous row
     for limb in 0..DIGEST_EXT {
@@ -509,7 +506,7 @@ fn eval<
             // Right case: chain from second half of rate if possible, otherwise from capacity
             if RATE_EXT >= 2 * DIGEST_EXT {
                 // Chain from second half of rate: in_{r+1}[limb] = out_r[DIGEST_EXT + limb]
-                let gate_right = next.merkle_chain_sel[limb].clone() * prev_bit.clone();
+                let gate_right = next.merkle_chain_sel[limb].clone() * next_bit.clone();
                 let right_idx = (DIGEST_EXT + limb) * D + d;
                 builder
                     .when_transition()
@@ -517,7 +514,7 @@ fn eval<
                     .assert_zero(next_in[idx].clone() - local_out[right_idx].clone());
             } else if limb < CAPACITY_EXT {
                 // Fall back to capacity limbs: in_{r+1}[limb] = out_r[RATE_EXT + limb]
-                let gate_right = next.merkle_chain_sel[limb].clone() * prev_bit.clone();
+                let gate_right = next.merkle_chain_sel[limb].clone() * next_bit.clone();
                 let right_idx = (RATE_EXT + limb) * D + d;
                 builder
                     .when_transition()
@@ -530,14 +527,16 @@ fn eval<
 
     // MMCS accumulator update.
     // If merkle_path_{r+1} = 1 and new_start_{r+1} = 0:
-    //   mmcs_index_sum_{r+1} = mmcs_index_sum_r * 2 + mmcs_bit_r
+    //   mmcs_index_sum_{r+1} = mmcs_index_sum_r * 2 + mmcs_bit_{r+1}
     let two = AB::Expr::ONE + AB::Expr::ONE;
+    let not_next_new_start = AB::Expr::ONE - next.new_start.clone();
     builder
         .when_transition()
-        .when(next.mmcs_update_sel.clone())
+        .when(not_next_new_start)
+        .when(next.merkle_path.clone())
         .assert_zero(
             next.mmcs_index_sum.clone()
-                - (local.mmcs_index_sum.clone() * two + local.mmcs_bit.clone()),
+                - (local.mmcs_index_sum.clone() * two + next.mmcs_bit.clone()),
         );
 
     let p3_poseidon2_num_cols = p3_poseidon2_air::num_cols::<

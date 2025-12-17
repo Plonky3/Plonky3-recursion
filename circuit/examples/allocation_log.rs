@@ -12,6 +12,7 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Registry};
 
+/// Initializes a global logger with default parameters.
 fn init_logger() {
     let env_filter = EnvFilter::builder()
         .with_default_directive(LevelFilter::INFO.into())

@@ -207,7 +207,7 @@ where
         let width_ext = Config::WIDTH_EXT;
         let digest_ext = Config::DIGEST_EXT;
 
-        for op in &self.circuit.non_primitive_ops {
+        for op in &self.circuit.ops {
             let Op::NonPrimitiveOpWithExecutor {
                 inputs,
                 outputs: _,
@@ -219,6 +219,8 @@ where
             };
 
             if executor.op_type() == &NonPrimitiveOpType::PoseidonPerm {
+                // TODO: Switch Poseidon trace building to use `outputs` once Poseidon perm execution
+                // materializes outputs in the witness (and stop encoding outputs via `inputs[4..]`).
                 let Some(exec) = executor.as_any().downcast_ref::<PoseidonPermExecutor>() else {
                     return Err(CircuitError::InvalidNonPrimitiveOpConfiguration {
                         op: executor.op_type().clone(),
@@ -496,10 +498,10 @@ impl<F> Poseidon2TraceDyn<F> {
     where
         F: Clone,
     {
-        let operations: Result<Vec<_>, _> = self
+        let operations: Result<Vec<_>, CircuitError> = self
             .operations
             .iter()
-            .map(|row| {
+            .map(|row| -> Result<_, CircuitError> {
                 Ok(Poseidon2CircuitRow {
                     new_start: row.new_start,
                     merkle_path: row.merkle_path,

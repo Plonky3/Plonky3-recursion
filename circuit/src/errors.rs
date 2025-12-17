@@ -131,3 +131,9 @@ pub enum CircuitError {
     #[error("Preprocessed values should be base field elements")]
     InvalidPreprocessedValues,
 }
+
+impl From<CircuitBuilderError> for CircuitError {
+    fn from(error: CircuitBuilderError) -> Self {
+        Self::InvalidCircuit { error }
+    }
+}

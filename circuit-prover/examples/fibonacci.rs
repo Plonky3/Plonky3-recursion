@@ -15,8 +15,7 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Registry};
 
-type F = BabyBear;
-
+/// Initializes a global logger with default parameters.
 fn init_logger() {
     let env_filter = EnvFilter::builder()
         .with_default_directive(LevelFilter::INFO.into())
@@ -27,6 +26,8 @@ fn init_logger() {
         .with(ForestLayer::default())
         .init();
 }
+
+type F = BabyBear;
 
 fn main() -> Result<(), Box<dyn Error>> {
     init_logger();
