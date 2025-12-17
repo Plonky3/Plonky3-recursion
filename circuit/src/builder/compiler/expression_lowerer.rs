@@ -111,7 +111,7 @@ where
 
     fn emit_non_primitive_op<AllocFn>(
         data: &NonPrimitiveOperationData,
-        output_exprs: &[(u32, ExprId)],
+        _output_exprs: &[(u32, ExprId)],
         expr_to_widx: &mut HashMap<ExprId, WitnessId>,
         alloc_witness_id_for_expr: &mut AllocFn,
         ops: &mut Vec<Op<F>>,
@@ -119,12 +119,10 @@ where
     where
         AllocFn: FnMut(usize) -> WitnessId,
     {
-        let mut outputs_widx: Vec<Vec<WitnessId>> = Vec::with_capacity(output_exprs.len());
-        for (_output_idx, expr_id) in output_exprs {
-            let widx = *expr_to_widx
+        for (_output_idx, expr_id) in _output_exprs {
+            expr_to_widx
                 .entry(*expr_id)
                 .or_insert_with(|| alloc_witness_id_for_expr(expr_id.0 as usize));
-            outputs_widx.push(vec![widx]);
         }
 
         match &data.op_type {
@@ -213,15 +211,12 @@ where
                     .collect::<Result<Vec<WitnessId>, _>>()?;
                 inputs_widx.push(mmcs_bit_widx);
 
-
-
-                // Output CTL exposures (0 or 1 element each)
-                // We combine witnesses from:
-                // 1. Explicit CTL expressions (data.output_exprs)
-                // 2. Graph output nodes (output_exprs)
-                let mut poseidon_outputs: Vec<Vec<WitnessId>> = vec![Vec::new(); 2];
-
-                // 1. From explicit CTL expressions
+                // Output CTL exposures (0 or 1 element each).
+                //
+                // For PoseidonPerm we take outputs exclusively from `data.output_exprs` to avoid
+                // generating multiple witness ids per output limb (which breaks both execution and
+                // trace building).
+                let mut poseidon_outputs: Vec<Vec<WitnessId>> = Vec::with_capacity(2);
                 for (i, limb_exprs) in data.output_exprs.iter().enumerate() {
                     if !(limb_exprs.is_empty() || limb_exprs.len() == 1) {
                         return Err(CircuitBuilderError::NonPrimitiveOpArity {
@@ -236,20 +231,9 @@ where
                             expr,
                             &format!("PoseidonPerm output limb {i}"),
                         )?;
-                        poseidon_outputs[i].push(w);
-                    }
-                }
-
-                // 2. From graph output nodes
-                for (idx, expr_id) in output_exprs {
-                    let i = *idx as usize;
-                    if i < 2 {
-                        // The witness was already allocated at the start of emit_non_primitive_op
-                        if let Some(&w) = expr_to_widx.get(expr_id) {
-                            if !poseidon_outputs[i].contains(&w) {
-                                poseidon_outputs[i].push(w);
-                            }
-                        }
+                        poseidon_outputs.push(vec![w]);
+                    } else {
+                        poseidon_outputs.push(Vec::new());
                     }
                 }
 

@@ -164,14 +164,15 @@ fn main() -> Result<(), Box<dyn Error>> {
         builder.alloc_const(row0_state[3], "sibling0_3"),
     ];
 
-    builder.add_poseidon_perm(p3_circuit::ops::PoseidonPermCall {
-        new_start: true,
-        merkle_path: true,
-        mmcs_bit: Some(mmcs_bit_row0),
-        inputs: inputs_row0.map(Some),
-        outputs: [None, None],
-        mmcs_index_sum: None,
-    })?;
+    let (_row0_op_id, _row0_outputs) =
+        builder.add_poseidon_perm(p3_circuit::ops::PoseidonPermCall {
+            new_start: true,
+            merkle_path: true,
+            mmcs_bit: Some(mmcs_bit_row0),
+            inputs: inputs_row0.map(Some),
+            out_ctl: [false, false],
+            mmcs_index_sum: None,
+        })?;
 
     // Row 1: chain limbs 0-1, provide sibling1 in limbs 2-3, expose output limbs 0-1 and mmcs_index_sum.
     let sibling1_inputs: [Option<ExprId>; 4] = [
@@ -184,14 +185,15 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mmcs_idx_sum_expr = builder.add_public_input();
 
     let mmcs_bit_row1 = builder.alloc_const(Ext4::from_prime_subfield(Base::ONE), "mmcs_bit_row1");
-    let row1_op_id = builder.add_poseidon_perm(p3_circuit::ops::PoseidonPermCall {
-        new_start: false,
-        merkle_path: true,
-        mmcs_bit: Some(mmcs_bit_row1),
-        inputs: sibling1_inputs,
-        outputs: [None, None],
-        mmcs_index_sum: None,
-    })?;
+    let (row1_op_id, _row1_outputs) =
+        builder.add_poseidon_perm(p3_circuit::ops::PoseidonPermCall {
+            new_start: false,
+            merkle_path: true,
+            mmcs_bit: Some(mmcs_bit_row1),
+            inputs: sibling1_inputs,
+            out_ctl: [false, false],
+            mmcs_index_sum: None,
+        })?;
 
     // Row 2: merkle left
     let mmcs_bit_row2 = builder.alloc_const(Ext4::from_prime_subfield(Base::ZERO), "mmcs_bit_row2");
@@ -199,14 +201,19 @@ fn main() -> Result<(), Box<dyn Error>> {
         None, None, None, // Private
         None, // Private
     ];
-    let row2_op_id = builder.add_poseidon_perm(p3_circuit::ops::PoseidonPermCall {
-        new_start: false,
-        merkle_path: true,
-        mmcs_bit: Some(mmcs_bit_row2),
-        inputs: sibling2_inputs,
-        outputs: [Some(out0), Some(out1)],
-        mmcs_index_sum: Some(mmcs_idx_sum_expr),
-    })?;
+    let (row2_op_id, row2_outputs) =
+        builder.add_poseidon_perm(p3_circuit::ops::PoseidonPermCall {
+            new_start: false,
+            merkle_path: true,
+            mmcs_bit: Some(mmcs_bit_row2),
+            inputs: sibling2_inputs,
+            out_ctl: [true, true],
+            mmcs_index_sum: Some(mmcs_idx_sum_expr),
+        })?;
+    let row2_out0 = row2_outputs[0].ok_or("missing row2 out0")?;
+    let row2_out1 = row2_outputs[1].ok_or("missing row2 out1")?;
+    builder.connect(row2_out0, out0);
+    builder.connect(row2_out1, out1);
 
     let circuit = builder.build()?;
     let table_packing = TablePacking::new(4, 4, 1);

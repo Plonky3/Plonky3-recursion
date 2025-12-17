@@ -15,8 +15,9 @@
 //! Only supports extension degree D=4 for now.
 
 use alloc::boxed::Box;
-use alloc::vec;
+use alloc::string::ToString;
 use alloc::vec::Vec;
+use alloc::{format, vec};
 
 use p3_field::{Field, PrimeCharacteristicRing};
 
@@ -39,9 +40,11 @@ pub struct PoseidonPermCall {
     /// Optional CTL exposure for each input limb (one extension element).
     /// If `None`, the limb is considered private/unexposed (in_ctl = 0).
     pub inputs: [Option<ExprId>; 4],
-    /// Optional CTL exposure for output limbs 0 and 1 (one extension element).
-    /// Limbs 2–3 are never exposed.
-    pub outputs: [Option<ExprId>; 2],
+    /// Output exposure flags for limbs 0 and 1.
+    ///
+    /// When `out_ctl[i]` is true, this call allocates an output witness expression for limb `i`
+    /// (returned from `add_poseidon_perm`) and exposes it via CTL. Limbs 2–3 are never exposed.
+    pub out_ctl: [bool; 2],
     /// Optional MMCS index accumulator value to expose.
     pub mmcs_index_sum: Option<ExprId>,
 }
@@ -54,7 +57,7 @@ impl Default for PoseidonPermCall {
             merkle_path: false,
             mmcs_bit: None,
             inputs: [None, None, None, None],
-            outputs: [None, None],
+            out_ctl: [false, false],
             mmcs_index_sum: None,
         }
     }
@@ -67,12 +70,12 @@ pub trait PoseidonPermOps<F: Clone + PrimeCharacteristicRing + Eq> {
     /// - `merkle_path`: if true, Merkle chaining semantics apply for limbs 0–1.
     /// - `mmcs_bit`: Merkle direction bit witness for this row (used when `merkle_path` is true).
     /// - `inputs`: optional CTL exposure per limb (extension element, length 4 if provided).
-    /// - `outputs`: optional CTL exposure for limbs 0–1 (extension element, length 4 if provided).
+    /// - `out_ctl`: whether to allocate/expose output limbs 0–1 via CTL.
     /// - `mmcs_index_sum`: optional exposure of the MMCS index accumulator (base field element).
     fn add_poseidon_perm(
         &mut self,
         call: PoseidonPermCall,
-    ) -> Result<NonPrimitiveOpId, crate::CircuitBuilderError>;
+    ) -> Result<(NonPrimitiveOpId, [Option<ExprId>; 2]), crate::CircuitBuilderError>;
 }
 
 impl<F> PoseidonPermOps<F> for CircuitBuilder<F>
@@ -82,9 +85,22 @@ where
     fn add_poseidon_perm(
         &mut self,
         call: PoseidonPermCall,
-    ) -> Result<NonPrimitiveOpId, crate::CircuitBuilderError> {
+    ) -> Result<(NonPrimitiveOpId, [Option<ExprId>; 2]), crate::CircuitBuilderError> {
         let op_type = NonPrimitiveOpType::PoseidonPerm;
         self.ensure_op_enabled(op_type.clone())?;
+
+        let output_0 = call
+            .out_ctl
+            .first()
+            .copied()
+            .unwrap_or(false)
+            .then(|| self.alloc_witness_unset("poseidon_perm_out0"));
+        let output_1 = call
+            .out_ctl
+            .get(1)
+            .copied()
+            .unwrap_or(false)
+            .then(|| self.alloc_witness_unset("poseidon_perm_out1"));
 
         // Build input_exprs layout: [in0, in1, in2, in3, mmcs_index_sum, mmcs_bit]
         let mut input_exprs: Vec<Vec<ExprId>> = Vec::with_capacity(6);
@@ -110,15 +126,10 @@ where
         }
 
         // Build output_exprs layout: [out0, out1]
-        let mut output_exprs: Vec<Vec<ExprId>> = Vec::with_capacity(2);
-
-        for out in call.outputs.iter() {
-            if let Some(val) = out {
-                output_exprs.push(vec![*val]);
-            } else {
-                output_exprs.push(Vec::new());
-            }
-        }
+        let output_exprs: Vec<Vec<ExprId>> = vec![
+            output_0.map_or_else(Vec::new, |e| vec![e]),
+            output_1.map_or_else(Vec::new, |e| vec![e]),
+        ];
 
         let (op_id, _call_expr_id) = self.push_non_primitive_op(
             op_type,
@@ -130,15 +141,12 @@ where
             }),
             "poseidon_perm",
         );
-        Ok(op_id)
+        Ok((op_id, [output_0, output_1]))
     }
 }
 
 /// Executor for Poseidon perm operations.
 ///
-/// This currently does not mutate the witness; the AIR enforces correctness.
-// TODO: When implementing the Poseidon perm executor, write computed outputs into the witness
-// using `outputs` and update trace builders to consume `Op::NonPrimitiveOpWithExecutor.outputs`.
 #[derive(Debug, Clone)]
 pub struct PoseidonPermExecutor {
     op_type: NonPrimitiveOpType,
@@ -165,6 +173,20 @@ impl<F: Field> NonPrimitiveExecutor<F> for PoseidonPermExecutor {
     ) -> Result<(), CircuitError> {
         // Input layout: [in0, in1, in2, in3, mmcs_index_sum, mmcs_bit]
         // Output layout: [out0, out1]
+        if inputs.len() != 6 {
+            return Err(CircuitError::NonPrimitiveOpLayoutMismatch {
+                op: self.op_type.clone(),
+                expected: "6 input vectors".to_string(),
+                got: inputs.len(),
+            });
+        }
+        if outputs.len() != 2 {
+            return Err(CircuitError::NonPrimitiveOpLayoutMismatch {
+                op: self.op_type.clone(),
+                expected: "2 output vectors".to_string(),
+                got: outputs.len(),
+            });
+        }
 
         // Get the exec closure from config
         let config = ctx.get_config(&self.op_type)?;
@@ -185,9 +207,21 @@ impl<F: Field> NonPrimitiveExecutor<F> for PoseidonPermExecutor {
 
         // Get mmcs_bit if provided (default to false if absent)
         // mmcs_bit is at inputs[5]
-        let mmcs_bit = if inputs.len() > 5 && inputs[5].len() == 1 {
+        let mmcs_bit = if inputs[5].len() == 1 {
             let wid = inputs[5][0];
-            ctx.get_witness(wid).is_ok_and(|val| val == F::ONE)
+            let val = ctx.get_witness(wid)?;
+            if val == F::ZERO {
+                false
+            } else if val == F::ONE {
+                true
+            } else {
+                return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
+                    op: self.op_type.clone(),
+                    operation_index: ctx.operation_id(),
+                    expected: "boolean mmcs_bit (0 or 1)".to_string(),
+                    got: format!("{val:?}"),
+                });
+            }
         } else {
             false
         };
@@ -209,6 +243,12 @@ impl<F: Field> NonPrimitiveExecutor<F> for PoseidonPermExecutor {
             if out_slot.len() == 1 {
                 let wid = out_slot[0];
                 ctx.set_witness(wid, output[out_idx])?;
+            } else if !out_slot.is_empty() {
+                return Err(CircuitError::NonPrimitiveOpLayoutMismatch {
+                    op: self.op_type.clone(),
+                    expected: "0 or 1 witness per output limb".to_string(),
+                    got: out_slot.len(),
+                });
             }
         }
 

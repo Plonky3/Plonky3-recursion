@@ -79,13 +79,15 @@ fn main() -> Result<(), Box<dyn Error>> {
         first_inputs_expr.push(builder.alloc_const(val, "poseidon_perm_input"));
     }
 
-    // Allocate expected outputs for limbs 0 and 1 of the final row (for CTL exposure).
-    let mut final_output_exprs: Vec<ExprId> = Vec::with_capacity(2);
+    // Allocate expected outputs for limbs 0 and 1 of the final row (for checking).
+    let mut expected_final_output_exprs: Vec<ExprId> = Vec::with_capacity(2);
     for limb in final_limbs_ext.iter().take(2) {
-        final_output_exprs.push(builder.alloc_const(*limb, "poseidon_perm_output"));
+        expected_final_output_exprs
+            .push(builder.alloc_const(*limb, "poseidon_perm_expected_output"));
     }
 
     // Add permutation rows.
+    let mut observed_output_exprs: [Option<ExprId>; 2] = [None, None];
     for row in 0..chain_length {
         let is_first = row == 0;
         let is_last = row + 1 == chain_length;
@@ -98,20 +100,21 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
         }
 
-        let mut outputs: [Option<ExprId>; 2] = [None, None];
-        if is_last {
-            outputs[0] = Some(final_output_exprs[0]);
-            outputs[1] = Some(final_output_exprs[1]);
-        }
-
-        builder.add_poseidon_perm(PoseidonPermCall {
+        let (_op_id, outputs) = builder.add_poseidon_perm(PoseidonPermCall {
             new_start: is_first,
             merkle_path: false,
             mmcs_bit: Some(mmcs_bit_zero),
             inputs,
-            outputs,
+            out_ctl: [is_last, is_last],
             mmcs_index_sum: None,
         })?;
+        if is_last {
+            observed_output_exprs = outputs;
+            let out0 = outputs[0].ok_or("missing out0 expr")?;
+            let out1 = outputs[1].ok_or("missing out1 expr")?;
+            builder.connect(out0, expected_final_output_exprs[0]);
+            builder.connect(out1, expected_final_output_exprs[1]);
+        }
     }
 
     let circuit = builder.build()?;
@@ -124,8 +127,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     let traces = runner.run()?;
 
     // Sanity-check exposed outputs against the native computation.
+    let out0_expr = observed_output_exprs[0].ok_or("missing out0 expr")?;
+    let out1_expr = observed_output_exprs[1].ok_or("missing out1 expr")?;
     let mut observed_outputs = Vec::with_capacity(2);
-    for out_expr in &final_output_exprs {
+    for out_expr in &[out0_expr, out1_expr] {
         let witness_id = expr_to_widx
             .get(out_expr)
             .ok_or("missing witness id for output expr")?;
