@@ -629,7 +629,9 @@ where
 /// - It extracts the canonical `u64` representation of the input field element,
 /// - It fills the witness with its little-endian binary decomposition.
 struct BinaryDecompositionHint<BF: PrimeField64> {
+    /// Number of bits in the decomposition.
     n_bits: usize,
+    /// Phantom data for the base field type.
     _phantom: PhantomData<BF>,
 }
 
