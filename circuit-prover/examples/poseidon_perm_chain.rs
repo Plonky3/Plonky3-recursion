@@ -6,17 +6,16 @@ use std::error::Error;
 ///
 /// Builds a chain of Poseidon permutations, verifies the final output against a native
 /// computation, and demonstrates how Poseidon outputs can compose with other primitive
-/// ops (addition, multiplication, bit decomposition).
+/// ops (addition and multiplication).
 use p3_baby_bear::{BabyBear, default_babybear_poseidon2_16};
 use p3_batch_stark::CommonData;
-use p3_circuit::op::WitnessHintsFiller;
 use p3_circuit::ops::{PoseidonPermCall, PoseidonPermOps};
 use p3_circuit::tables::generate_poseidon2_trace;
-use p3_circuit::{CircuitBuilder, CircuitError, ExprId};
+use p3_circuit::{CircuitBuilder, ExprId};
 use p3_circuit_prover::common::get_airs_and_degrees_with_prep;
 use p3_circuit_prover::{BatchStarkProver, Poseidon2Config, TablePacking, config};
 use p3_field::extension::BinomialExtensionField;
-use p3_field::{BasedVectorSpace, PrimeCharacteristicRing, PrimeField64};
+use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
 use p3_poseidon2_circuit_air::BabyBearD4Width16;
 use p3_symmetric::Permutation;
 use tracing_forest::ForestLayer;
@@ -120,57 +119,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     let out0 = last_outputs[0].ok_or("missing out0 expr")?;
     let out1 = last_outputs[1].ok_or("missing out1 expr")?;
 
-    // -------------------------------------------------------------------------
-    // Demonstrate that Poseidon outputs can flow into other primitive ops.
-    //
-    // We simulate FRI-style "sample_bits" by:
-    //   1) extracting base coefficients of an Ext4 element via witness hints,
-    //   2) reconstructing the Ext4 element from those coefficients in-circuit,
-    //   3) constraining the reconstruction to equal the Poseidon output,
-    //   4) decomposing the base coefficient to bits and doing arithmetic on bits.
-    // -------------------------------------------------------------------------
-
-    // Native: extract the first base coefficient of final_limbs_ext[0]
-    let out0_base_coeff: Base = final_limbs_ext[0].as_basis_coefficients_slice()[0];
-    let out0_canonical = out0_base_coeff.as_canonical_u64();
-
-    // We use 31 bits (full BabyBear width) because decompose_to_bits constrains the value
-    // to equal the reconstruction from its bits.
-    let log_max_height = 31;
-    let expected_index = (out0_canonical as usize) & ((1usize << log_max_height) - 1);
-    let expected_bit_sum = (expected_index as u64).count_ones() as u64;
-
-    // In the circuit: extract *all* base coefficients from out0.
-    let out0_coeffs =
-        builder.alloc_witness_hints(ExtractAllCoeffsHint { input: out0 }, "out0_coeffs");
-    let out0_c0 = out0_coeffs[0];
-    let out0_c1 = out0_coeffs[1];
-    let out0_c2 = out0_coeffs[2];
-    let out0_c3 = out0_coeffs[3];
-
-    // Reconstruct out0 from coefficients and constrain it equals the Poseidon output.
-    let ext_basis: [Ext4; 4] = core::array::from_fn(|i| {
-        let coeffs: [Base; 4] =
-            core::array::from_fn(|j| if i == j { Base::ONE } else { Base::ZERO });
-        Ext4::from_basis_coefficients_slice(&coeffs).unwrap()
-    });
-
-    let basis_exprs: [ExprId; 4] =
-        core::array::from_fn(|i| builder.alloc_const(ext_basis[i], "ext_basis"));
-
-    let mut reconstructed_out0 = builder.add_const(Ext4::ZERO);
-    for (coeff, basis) in [out0_c0, out0_c1, out0_c2, out0_c3]
-        .into_iter()
-        .zip(basis_exprs)
-    {
-        let product = builder.mul(coeff, basis);
-        reconstructed_out0 = builder.add(reconstructed_out0, product);
-    }
-    builder.connect(reconstructed_out0, out0);
-
-    // Now it is sound to treat out0_c0 as "the base coefficient" used for bit sampling.
-    let bits = builder.decompose_to_bits::<Base>(out0_c0, log_max_height)?;
-
     // Demonstrate arithmetic composability: out0 + out1
     let sum_outputs = builder.add(out0, out1);
     let expected_sum = final_limbs_ext[0] + final_limbs_ext[1];
@@ -182,26 +130,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     let expected_product = final_limbs_ext[0] * final_limbs_ext[1];
     let expected_product_expr = builder.alloc_const(expected_product, "expected_product_outputs");
     builder.connect(product_outputs, expected_product_expr);
-
-    // Sum all bits (popcount).
-    let mut bit_sum = builder.add_const(Ext4::ZERO);
-    for &bit in &bits {
-        bit_sum = builder.add(bit_sum, bit);
-    }
-
-    let expected_bit_sum_expr = builder.alloc_const(
-        Ext4::from_prime_subfield(Base::from_u64(expected_bit_sum)),
-        "expected_bit_sum",
-    );
-    builder.connect(bit_sum, expected_bit_sum_expr);
-
-    // Reconstruct the index from bits and verify it matches expected_index.
-    let reconstructed_index = builder.reconstruct_index_from_bits(&bits);
-    let expected_index_expr = builder.alloc_const(
-        Ext4::from_prime_subfield(Base::from_u64(expected_index as u64)),
-        "expected_fri_query_index",
-    );
-    builder.connect(reconstructed_index, expected_index_expr);
 
     // Build + run.
     let circuit = builder.build()?;
@@ -294,37 +222,4 @@ fn collect_ext_limbs(state: &[Base; WIDTH]) -> [Ext4; 4] {
         limbs[i] = Ext4::from_basis_coefficients_slice(chunk).unwrap();
     }
     limbs
-}
-
-/// Witness hint that extracts *all* basis coefficients from an extension field element,
-/// returning them as prime-subfield elements embedded in Ext4.
-///
-/// This is useful for operations like `sample_bits` that work on base field elements
-/// but receive extension field inputs from Poseidon outputs.
-///
-/// IMPORTANT: to be sound, the circuit must reconstruct the extension element from
-/// these coefficients and constrain it equals the original input (done in main()).
-#[derive(Clone, Debug)]
-struct ExtractAllCoeffsHint {
-    input: ExprId,
-}
-
-impl WitnessHintsFiller<Ext4> for ExtractAllCoeffsHint {
-    fn inputs(&self) -> &[ExprId] {
-        core::slice::from_ref(&self.input)
-    }
-
-    fn n_outputs(&self) -> usize {
-        4
-    }
-
-    fn compute_outputs(&self, inputs_val: Vec<Ext4>) -> Result<Vec<Ext4>, CircuitError> {
-        let ext_val = inputs_val[0];
-        let coeffs = ext_val.as_basis_coefficients_slice();
-        Ok(coeffs
-            .iter()
-            .copied()
-            .map(Ext4::from_prime_subfield)
-            .collect())
-    }
 }
