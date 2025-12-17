@@ -474,34 +474,6 @@ where
         (op_id, call_expr_id)
     }
 
-    /// Pushes a non-primitive op and returns expressions representing its outputs.
-    ///
-    /// Each returned `ExprId` is an `Expr::NonPrimitiveOutput { call, output_idx }` node,
-    /// where `call` points to the `NonPrimitiveCall` node, making the DAG dependency explicit.
-    ///
-    /// Used by ops that materialize outputs into the witness (e.g., Poseidon perm execution
-    /// writes outputs), so downstream expressions can depend on them.
-    #[allow(dead_code)] // Used in tests
-    pub(crate) fn push_non_primitive_op_with_outputs(
-        &mut self,
-        op_type: NonPrimitiveOpType,
-        input_exprs: Vec<Vec<ExprId>>,
-        output_exprs: Vec<Vec<ExprId>>,
-        params: Option<NonPrimitiveOpParams>,
-        n_outputs: usize,
-        label: &'static str,
-    ) -> (NonPrimitiveOpId, Vec<ExprId>) {
-        let (op_id, call_expr_id) =
-            self.push_non_primitive_op(op_type, input_exprs, output_exprs, params, label);
-        let outputs = (0..n_outputs)
-            .map(|i| {
-                self.expr_builder
-                    .add_non_primitive_output(call_expr_id, i as u32, label)
-            })
-            .collect();
-        (op_id, outputs)
-    }
-
     /// Pushes a new scope onto the scope stack.
     ///
     /// All subsequent allocations will be tagged with this scope until
@@ -1016,33 +988,32 @@ mod tests {
 
     #[test]
     fn test_non_primitive_outputs_ordering_and_dedup() {
+        use crate::ops::{PoseidonPermCall, PoseidonPermOps};
+
         type Ext4 = BinomialExtensionField<BabyBear, 4>;
 
         let mut builder = CircuitBuilder::<Ext4>::new();
         builder.enable_op(NonPrimitiveOpType::PoseidonPerm, NonPrimitiveOpConfig::None);
 
-        // Provide minimal valid-ish witnesses.
+        // Use add_poseidon_perm with out_ctl to expose outputs
         let z = builder.add_const(Ext4::ZERO);
-        // Input layout: [in0, in1, in2, in3, mmcs_index_sum, mmcs_bit]
-        let input_exprs = vec![vec![z], vec![z], vec![z], vec![z], vec![], vec![]];
-        // Output layout: [out0, out1]
-        let output_exprs = vec![vec![], vec![]];
-
-        let (op_id, outputs) = builder.push_non_primitive_op_with_outputs(
-            NonPrimitiveOpType::PoseidonPerm,
-            input_exprs,
-            output_exprs,
-            Some(NonPrimitiveOpParams::PoseidonPerm {
+        let (op_id, outputs) = builder
+            .add_poseidon_perm(PoseidonPermCall {
                 new_start: true,
                 merkle_path: false,
-            }),
-            2,
-            "poseidon_perm_with_outputs",
-        );
+                mmcs_bit: Some(z),
+                inputs: [Some(z), Some(z), Some(z), Some(z)],
+                out_ctl: [true, true],
+                mmcs_index_sum: None,
+            })
+            .unwrap();
+
+        let out0 = outputs[0].unwrap();
+        let out1 = outputs[1].unwrap();
 
         let one = builder.add_const(Ext4::ONE);
-        let sum0 = builder.add(outputs[0], one);
-        let sum1 = builder.add(outputs[1], one);
+        let sum0 = builder.add(out0, one);
+        let sum1 = builder.add(out1, one);
 
         let circuit = builder.build().unwrap();
 
@@ -1062,8 +1033,8 @@ mod tests {
         let non_prim_pos = non_prims[0];
 
         // Exact Add matches (order of a/b may swap).
-        let w_out0 = circuit.expr_to_widx[&outputs[0]];
-        let w_out1 = circuit.expr_to_widx[&outputs[1]];
+        let w_out0 = circuit.expr_to_widx[&out0];
+        let w_out1 = circuit.expr_to_widx[&out1];
         let w_one = circuit.expr_to_widx[&one];
         let w_sum0 = circuit.expr_to_widx[&sum0];
         let w_sum1 = circuit.expr_to_widx[&sum1];
