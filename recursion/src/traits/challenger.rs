@@ -2,7 +2,6 @@
 
 use alloc::vec::Vec;
 
-use p3_circuit::utils::decompose_to_bits;
 use p3_circuit::{CircuitBuilder, CircuitBuilderError};
 use p3_field::{ExtensionField, Field, PrimeField64};
 
@@ -93,7 +92,7 @@ pub trait RecursiveChallenger<F: Field> {
         let x = self.sample(circuit);
 
         // Decompose to bits and verifies they reconstruct x
-        let bits = decompose_to_bits(circuit, x, total_num_bits)?;
+        let bits = circuit.decompose_to_bits::<BF>(x, total_num_bits)?;
 
         Ok(bits[..num_bits].to_vec())
     }

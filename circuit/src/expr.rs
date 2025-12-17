@@ -21,15 +21,25 @@ pub enum Expr<F> {
     ///
     /// This node has no witness value itself, but it fixes the relative execution order
     /// of non-primitive ops w.r.t. other expressions during lowering.
-    NonPrimitiveCall { op_id: NonPrimitiveOpId },
+    ///
+    /// The `inputs` field contains all input expressions (flattened from witness_exprs),
+    /// making dependencies explicit in the DAG structure. This enables proper topological
+    /// analysis and ensures the lowerer emits ops after their inputs are available.
+    ///
+    /// For stateful ops (e.g., Poseidon perm chaining with `in_ctl=false`), `inputs` may
+    /// be empty since chained values flow internally and are not materialized in the
+    /// witness table. Execution order for such ops is determined by their position in
+    /// the ops list during lowering.
+    NonPrimitiveCall {
+        op_id: NonPrimitiveOpId,
+        inputs: Vec<ExprId>,
+    },
     /// Output of a non-primitive operation.
     ///
-    /// This node represents a value produced by a non-primitive op identified by `op_id`.
-    /// `output_idx` selects which output of that op this expression refers to.
-    NonPrimitiveOutput {
-        op_id: NonPrimitiveOpId,
-        output_idx: u32,
-    },
+    /// This node represents a value produced by a non-primitive op. The `call` field
+    /// points to the `NonPrimitiveCall` expression node, making the dependency explicit
+    /// in the DAG structure. `output_idx` selects which output of that op this refers to.
+    NonPrimitiveOutput { call: ExprId, output_idx: u32 },
 }
 
 /// Graph for storing expression DAG nodes

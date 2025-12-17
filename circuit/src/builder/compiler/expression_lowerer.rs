@@ -105,7 +105,7 @@ where
 
     fn emit_non_primitive_op<AllocFn>(
         data: &NonPrimitiveOperationData<F>,
-        output_exprs: &[(u32, usize, ExprId)],
+        output_exprs: &[(u32, ExprId)],
         expr_to_widx: &mut HashMap<ExprId, WitnessId>,
         alloc_witness_id_for_expr: &mut AllocFn,
         ops: &mut Vec<Op<F>>,
@@ -114,10 +114,10 @@ where
         AllocFn: FnMut(usize) -> WitnessId,
     {
         let mut outputs_widx: Vec<Vec<WitnessId>> = Vec::with_capacity(output_exprs.len());
-        for (_output_idx, expr_idx, expr_id) in output_exprs {
+        for (_output_idx, expr_id) in output_exprs {
             let widx = *expr_to_widx
                 .entry(*expr_id)
-                .or_insert_with(|| alloc_witness_id_for_expr(*expr_idx));
+                .or_insert_with(|| alloc_witness_id_for_expr(expr_id.0 as usize));
             outputs_widx.push(vec![widx]);
         }
 
@@ -131,7 +131,7 @@ where
                     NonPrimitiveOpParams::PoseidonPerm {
                         new_start,
                         merkle_path,
-                    } => (new_start, merkle_path),
+                    } => (*new_start, *merkle_path),
                     _ => {
                         return Err(CircuitBuilderError::InvalidNonPrimitiveOpConfiguration {
                             op: NonPrimitiveOpType::PoseidonPerm,
@@ -226,7 +226,7 @@ where
                 ops.push(Op::NonPrimitiveOpWithExecutor {
                     inputs: inputs_widx,
                     outputs: outputs_widx,
-                    executor: Box::new(PoseidonPermExecutor::new(*new_start, *merkle_path)),
+                    executor: Box::new(PoseidonPermExecutor::new(new_start, merkle_path)),
                     op_id: data.op_id,
                 });
             }
@@ -262,10 +262,10 @@ where
                         .collect::<Result<_, _>>()?,
                 ];
                 let mut outputs: Vec<Vec<WitnessId>> = Vec::with_capacity(output_exprs.len());
-                for (_output_idx, expr_idx, expr_id) in output_exprs {
+                for (_output_idx, expr_idx) in output_exprs {
                     let widx = *expr_to_widx
-                        .entry(*expr_id)
-                        .or_insert_with(|| alloc_witness_id_for_expr(*expr_idx));
+                        .entry(*expr_idx)
+                        .or_insert_with(|| alloc_witness_id_for_expr(expr_idx.0 as usize));
                     outputs.push(vec![widx]);
                 }
                 ops.push(Op::NonPrimitiveOpWithExecutor {
@@ -280,10 +280,10 @@ where
         Ok(())
     }
 
-    /// Lowers the expression graph to primitive operations.
+    /// Lowers the expression graph to operations.
     ///
     /// Returns:
-    /// - Vector of primitive operations
+    /// - Vector of operations
     /// - Vector mapping public input positions to witness IDs
     /// - HashMap mapping expression IDs to witness IDs
     /// - HashMap mapping public input expression IDs to witness IDs
@@ -303,23 +303,30 @@ where
     > {
         // Precompute mapping from op_id -> output expression nodes, to allow emitting an op once
         // while still producing witness ids for all of its outputs.
-        let mut op_id_to_output_exprs: HashMap<u32, Vec<(u32, usize, ExprId)>> = HashMap::new();
+        let mut op_id_to_output_exprs: HashMap<u32, Vec<(u32, ExprId)>> = HashMap::new();
         for (expr_idx, expr) in self.graph.nodes().iter().enumerate() {
-            if let Expr::NonPrimitiveOutput { op_id, output_idx } = expr {
-                op_id_to_output_exprs.entry(op_id.0).or_default().push((
-                    *output_idx,
-                    expr_idx,
-                    ExprId(expr_idx as u32),
-                ));
+            if let Expr::NonPrimitiveOutput { call, output_idx } = expr {
+                // Look up the call expression to get the op_id
+                let Expr::NonPrimitiveCall { op_id, .. } = self.graph.get_expr(*call) else {
+                    return Err(CircuitBuilderError::MissingExprMapping {
+                        expr_id: *call,
+                        context: "NonPrimitiveOutput.call must reference a NonPrimitiveCall"
+                            .to_string(),
+                    });
+                };
+                op_id_to_output_exprs
+                    .entry(op_id.0)
+                    .or_default()
+                    .push((*output_idx, ExprId(expr_idx as u32)));
             }
         }
         for outputs in op_id_to_output_exprs.values_mut() {
-            outputs.sort_by_key(|(output_idx, _, _)| *output_idx);
+            outputs.sort_by_key(|(output_idx, _)| *output_idx);
         }
         for (&op_id_u32, outputs) in &op_id_to_output_exprs {
             // Enforce a simple invariant: output indices are a contiguous 0..N-1 range with no
             // duplicates. This avoids silent mis-wiring due to gaps or repeated indices.
-            for (pos, (output_idx, _, _)) in outputs.iter().enumerate() {
+            for (pos, (output_idx, _)) in outputs.iter().enumerate() {
                 if pos > 0 && outputs[pos - 1].0 == *output_idx {
                     return Err(CircuitBuilderError::MalformedNonPrimitiveOutputs {
                         op_id: NonPrimitiveOpId(op_id_u32),
@@ -462,7 +469,9 @@ where
                     // The output of Div is the b_widx.
                     expr_to_widx.insert(expr_id, b_widx);
                 }
-                Expr::NonPrimitiveCall { op_id } => {
+                Expr::NonPrimitiveCall { op_id, inputs: _ } => {
+                    // The `inputs` field encodes DAG dependencies for ordering purposes.
+                    // Actual input data is read from NonPrimitiveOperationData.
                     if emitted_non_primitive_ops.insert(op_id.0) {
                         let data = self
                             .non_primitive_ops
@@ -482,9 +491,18 @@ where
                     }
                 }
                 Expr::NonPrimitiveOutput {
-                    op_id,
+                    call,
                     output_idx: _,
                 } => {
+                    // Look up the call expression to get the op_id
+                    let Expr::NonPrimitiveCall { op_id, .. } = self.graph.get_expr(*call) else {
+                        return Err(CircuitBuilderError::MissingExprMapping {
+                            expr_id: *call,
+                            context: "NonPrimitiveOutput.call must reference a NonPrimitiveCall"
+                                .to_string(),
+                        });
+                    };
+
                     if emitted_non_primitive_ops.insert(op_id.0) {
                         let data = self
                             .non_primitive_ops

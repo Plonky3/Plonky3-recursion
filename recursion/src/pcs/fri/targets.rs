@@ -3,7 +3,7 @@ use alloc::{format, vec};
 use core::marker::PhantomData;
 
 use p3_challenger::{CanObserve, GrindingChallenger};
-use p3_circuit::utils::{RowSelectorsTargets, decompose_to_bits};
+use p3_circuit::utils::RowSelectorsTargets;
 use p3_circuit::{CircuitBuilder, CircuitBuilderError};
 use p3_commit::{BatchOpening, ExtensionMmcs, Mmcs, PolynomialSpace};
 use p3_field::coset::TwoAdicMultiplicativeCoset;
@@ -532,7 +532,8 @@ where
         let index_bits_per_query: Vec<Vec<Target>> = query_indices
             .iter()
             .map(|&index_target| {
-                let all_bits = decompose_to_bits(circuit, index_target, MAX_QUERY_INDEX_BITS);
+                let all_bits =
+                    circuit.decompose_to_bits::<Val<SC>>(index_target, MAX_QUERY_INDEX_BITS);
                 all_bits.map(|all_bits| {
                     all_bits
                         .into_iter()

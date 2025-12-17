@@ -296,9 +296,21 @@ mod tests {
     use tracing_subscriber::{EnvFilter, Registry};
 
     use crate::NonPrimitiveOpType;
-    use crate::builder::{CircuitBuilder, NonPrimitiveOpParams};
+    use crate::builder::CircuitBuilder;
     use crate::op::NonPrimitiveExecutor;
     use crate::types::WitnessId;
+
+    /// Initializes a global logger with default parameters.
+    fn init_logger() {
+        let env_filter = EnvFilter::builder()
+            .with_default_directive(LevelFilter::INFO.into())
+            .from_env_lossy();
+
+        Registry::default()
+            .with(env_filter)
+            .with(ForestLayer::default())
+            .init();
+    }
 
     #[test]
     fn test_table_generation_basic() {
@@ -331,17 +343,6 @@ mod tests {
 
         // Check that we have add trace entries
         assert!(!traces.add_trace.lhs_values.is_empty());
-    }
-
-    fn init_logger() {
-        let env_filter = EnvFilter::builder()
-            .with_default_directive(LevelFilter::INFO.into())
-            .from_env_lossy();
-
-        Registry::default()
-            .with(env_filter)
-            .with(ForestLayer::default())
-            .init();
     }
 
     #[derive(Debug, Clone)]
@@ -386,6 +387,7 @@ mod tests {
     // Proves that we know x such that 37 * x - 111 = 0
     fn test_toy_example_37_times_x_minus_111() {
         init_logger();
+
         let mut builder = CircuitBuilder::new();
         builder.enable_unconstrained_ops();
 
@@ -393,15 +395,7 @@ mod tests {
         let c111 = builder.add_const(BabyBear::from_u64(111));
         let x_hint = XHint::new();
         let x = builder
-            .push_non_primitive_op_with_outputs(
-                NonPrimitiveOpType::Unconstrained,
-                vec![vec![c37, c111]],
-                Some(NonPrimitiveOpParams::Unconstrained {
-                    executor: Box::new(x_hint),
-                }),
-                1,
-                "x",
-            )
+            .push_unconstrained_op(vec![vec![c37, c111]], 1, x_hint, "x")
             .1[0];
 
         let mul_result = builder.mul(c37, x);

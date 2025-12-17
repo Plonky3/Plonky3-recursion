@@ -306,21 +306,22 @@ where
 
     /// Adds a non-primitive output expression to the graph.
     ///
-    /// This expression represents a value produced by a non-primitive operation,
-    /// and enables primitive expressions to depend on non-primitive outputs.
+    /// This expression represents a value produced by a non-primitive operation.
+    /// The `call` parameter is the `ExprId` of the `NonPrimitiveCall` node, making
+    /// the dependency explicit in the DAG structure.
     pub fn add_non_primitive_output(
         &mut self,
-        op_id: NonPrimitiveOpId,
+        call: ExprId,
         output_idx: u32,
         label: &'static str,
     ) -> ExprId {
         let expr_id = self
             .graph
-            .add_expr(Expr::NonPrimitiveOutput { op_id, output_idx });
+            .add_expr(Expr::NonPrimitiveOutput { call, output_idx });
 
         #[cfg(debug_assertions)]
         self.log_alloc(expr_id, label, || {
-            (AllocationType::NonPrimitiveOutput, vec![])
+            (AllocationType::NonPrimitiveOutput, vec![vec![call]])
         });
         #[cfg(not(debug_assertions))]
         self.log_alloc(expr_id, label, || ());
@@ -332,14 +333,23 @@ where
     ///
     /// This expression has no witness value, but provides an explicit point in the expression DAG
     /// for the lowerer to emit the non-primitive op in the correct execution order.
+    ///
+    /// The `inputs` parameter contains all input expressions (flattened), making dependencies
+    /// explicit in the DAG structure. For stateful ops with chaining (e.g., `in_ctl=false`),
+    /// `inputs` may be empty since chained values are not in the witness table.
     pub fn add_non_primitive_call(
         &mut self,
         op_id: NonPrimitiveOpId,
         op_type: crate::op::NonPrimitiveOpType,
-        dependencies: Vec<Vec<ExprId>>,
+        inputs: Vec<ExprId>,
         label: &'static str,
     ) -> ExprId {
-        let expr_id = self.graph.add_expr(Expr::NonPrimitiveCall { op_id });
+        #[cfg(debug_assertions)]
+        let dependencies: Vec<Vec<ExprId>> = inputs.iter().map(|&id| vec![id]).collect();
+
+        let expr_id = self
+            .graph
+            .add_expr(Expr::NonPrimitiveCall { op_id, inputs });
 
         #[cfg(debug_assertions)]
         self.log_alloc(expr_id, label, || {

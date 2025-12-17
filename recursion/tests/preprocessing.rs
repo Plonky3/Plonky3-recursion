@@ -1,3 +1,5 @@
+mod common;
+
 use p3_air::{Air, BaseAir, PairBuilder};
 use p3_batch_stark::{CommonData, StarkInstance, prove_batch, verify_batch};
 use p3_circuit::CircuitBuilder;
@@ -14,12 +16,11 @@ use rand::SeedableRng;
 use rand::distr::{Distribution, StandardUniform};
 use rand::rngs::SmallRng;
 
-use crate::common::{
-    ChallengeMmcs, Challenger, DIGEST_ELEMS, Dft, F, InnerFri, MulAir, MyCompress, MyConfig,
-    MyHash, MyPcs, Perm, RATE, ValMmcs,
+use crate::common::MulAir;
+use crate::common::baby_bear_params::{
+    ChallengeMmcs, Challenger, DIGEST_ELEMS, Dft, F, InnerFri, MyCompress, MyConfig, MyHash, MyPcs,
+    Perm, RATE, ValMmcs,
 };
-
-mod common;
 
 /// Enum to hold different AIR types for batch verification
 #[derive(Clone, Copy)]
