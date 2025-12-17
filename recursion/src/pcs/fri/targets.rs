@@ -4,7 +4,7 @@ use core::marker::PhantomData;
 
 use p3_challenger::{CanObserve, GrindingChallenger};
 use p3_circuit::utils::{RowSelectorsTargets, decompose_to_bits};
-use p3_circuit::{CircuitBuilder, CircuitError};
+use p3_circuit::{CircuitBuilder, CircuitBuilderError};
 use p3_commit::{BatchOpening, ExtensionMmcs, Mmcs, PolynomialSpace};
 use p3_field::coset::TwoAdicMultiplicativeCoset;
 use p3_field::{
@@ -445,7 +445,7 @@ where
         proof_targets: &ProofTargets<SC, Comm, Self::RecursiveProof>,
         opened_values: &OpenedValuesTargets<SC>,
         params: &Self::VerifierParams,
-    ) -> Result<Vec<Target>, CircuitError> {
+    ) -> Result<Vec<Target>, CircuitBuilderError> {
         let fri_proof = &proof_targets.opening_proof;
 
         opened_values.observe(circuit, challenger);

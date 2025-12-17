@@ -72,7 +72,7 @@ pub trait PoseidonPermOps<F: Clone + PrimeCharacteristicRing + Eq> {
     ) -> Result<NonPrimitiveOpId, crate::CircuitBuilderError>;
 }
 
-impl<F> PoseidonPermOps<F> for CircuitBuilder<F>
+impl<F: Field> PoseidonPermOps<F> for CircuitBuilder<F>
 where
     F: Clone + PrimeCharacteristicRing + Eq + core::hash::Hash,
 {

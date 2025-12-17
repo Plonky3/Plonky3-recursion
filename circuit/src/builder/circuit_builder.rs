@@ -1,3 +1,4 @@
+use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::hash::Hash;
 
@@ -8,13 +9,13 @@ use p3_field::{Field, PrimeCharacteristicRing};
 use super::compiler::{ExpressionLowerer, Optimizer};
 use super::{BuilderConfig, ExpressionBuilder, PublicInputTracker};
 use crate::circuit::Circuit;
-use crate::op::{DefaultHint, NonPrimitiveOpType, WitnessHintsFiller};
+use crate::op::{NonPrimitiveExecutor, NonPrimitiveOpType};
 use crate::tables::{Poseidon2Params, TraceGeneratorFn};
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};
 use crate::{CircuitBuilderError, CircuitField};
 
 /// Builder for constructing circuits.
-pub struct CircuitBuilder<F> {
+pub struct CircuitBuilder<F: Field> {
     /// Expression graph builder
     expr_builder: ExpressionBuilder<F>,
 
@@ -25,7 +26,7 @@ pub struct CircuitBuilder<F> {
     witness_alloc: WitnessAllocator,
 
     /// Non-primitive operations (complex constraints that don't produce `ExprId`s)
-    non_primitive_ops: Vec<NonPrimitiveOperationData>,
+    non_primitive_ops: Vec<NonPrimitiveOperationData<F>>,
 
     /// Builder configuration
     config: BuilderConfig,
@@ -35,22 +36,45 @@ pub struct CircuitBuilder<F> {
 }
 
 /// Per-op extra parameters that are not encoded in the op type.
-#[derive(Debug, Clone)]
-pub enum NonPrimitiveOpParams {
-    PoseidonPerm { new_start: bool, merkle_path: bool },
+#[derive(Debug)]
+pub enum NonPrimitiveOpParams<F> {
+    PoseidonPerm {
+        new_start: bool,
+        merkle_path: bool,
+    },
+    Unconstrained {
+        executor: Box<dyn NonPrimitiveExecutor<F>>,
+    },
+}
+
+impl<F: Field> Clone for NonPrimitiveOpParams<F> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::PoseidonPerm {
+                new_start,
+                merkle_path,
+            } => Self::PoseidonPerm {
+                new_start: *new_start,
+                merkle_path: *merkle_path,
+            },
+            Self::Unconstrained { executor } => Self::Unconstrained {
+                executor: executor.boxed(),
+            },
+        }
+    }
 }
 
 /// The non-primitive operation id, type, the vectors of the expressions representing its inputs,
 /// and any per-op parameters.
 #[derive(Debug, Clone)]
-pub struct NonPrimitiveOperationData {
+pub struct NonPrimitiveOperationData<F: Field> {
     pub op_id: NonPrimitiveOpId,
     pub op_type: NonPrimitiveOpType,
     pub witness_exprs: Vec<Vec<ExprId>>,
-    pub params: Option<NonPrimitiveOpParams>,
+    pub params: Option<NonPrimitiveOpParams<F>>,
 }
 
-impl<F> Default for CircuitBuilder<F>
+impl<F: Field> Default for CircuitBuilder<F>
 where
     F: Clone + PrimeCharacteristicRing + Eq + Hash,
 {
@@ -59,7 +83,7 @@ where
     }
 }
 
-impl<F> CircuitBuilder<F>
+impl<F: Field> CircuitBuilder<F>
 where
     F: Clone + PrimeCharacteristicRing + Eq + Hash,
 {
@@ -98,6 +122,14 @@ where
         self.config.enable_poseidon_perm();
         self.non_primitive_trace_generators
             .insert(NonPrimitiveOpType::PoseidonPerm, trace_generator);
+    }
+
+    /// Enables unconstrained operations. Necessary for adding non-deterministic hints.
+    pub fn enable_unconstrained_ops(&mut self)
+    where
+        F: CircuitField,
+    {
+        self.config.enable_unconstrained_ops();
     }
 
     /// Checks whether an op type is enabled on this builder.
@@ -145,31 +177,6 @@ where
     /// Returns the current public input count.
     pub const fn public_input_count(&self) -> usize {
         self.public_tracker.count()
-    }
-
-    /// Allocates a sequence of witness hints.
-    /// Each hint is a placeholder whose values will later be provided by the given `filler`.
-    #[must_use]
-    pub fn alloc_witness_hints<W: 'static + WitnessHintsFiller<F>>(
-        &mut self,
-        filler: W,
-        label: &'static str,
-    ) -> Vec<ExprId> {
-        self.expr_builder.add_witness_hints(filler, label)
-    }
-
-    /// Allocates a sequence of witness hints using the default filler.
-    /// This is equivalent to calling `alloc_witness_hints` with `DefaultHint`,
-    /// but is kept only for compatibility and should be removed.
-    /// TODO: Remove this function.
-    #[must_use]
-    pub fn alloc_witness_hints_default_filler(
-        &mut self,
-        count: usize,
-        label: &'static str,
-    ) -> Vec<ExprId> {
-        self.expr_builder
-            .add_witness_hints(DefaultHint { n_outputs: count }, label)
     }
 
     /// Adds a constant to the circuit (deduplicated).
@@ -362,7 +369,7 @@ where
         &mut self,
         op_type: NonPrimitiveOpType,
         witness_exprs: Vec<Vec<ExprId>>,
-        params: Option<NonPrimitiveOpParams>,
+        params: Option<NonPrimitiveOpParams<F>>,
         label: &'static str,
     ) -> NonPrimitiveOpId {
         let op_id = NonPrimitiveOpId(self.non_primitive_ops.len() as u32);
@@ -395,7 +402,7 @@ where
         &mut self,
         op_type: NonPrimitiveOpType,
         witness_exprs: Vec<Vec<ExprId>>,
-        params: Option<NonPrimitiveOpParams>,
+        params: Option<NonPrimitiveOpParams<F>>,
         n_outputs: usize,
         label: &'static str,
     ) -> (NonPrimitiveOpId, Vec<ExprId>) {
@@ -473,7 +480,6 @@ where
             &self.non_primitive_ops,
             self.expr_builder.pending_connects(),
             self.public_tracker.count(),
-            self.expr_builder.hints_fillers(),
             self.witness_alloc,
         );
         let (ops, public_rows, expr_to_widx, public_mappings, witness_count) = lowerer.lower()?;
@@ -748,30 +754,6 @@ mod tests {
 
         assert_eq!(circuit.witness_count, 2);
         assert_eq!(circuit.ops.len(), 2);
-    }
-
-    #[test]
-    fn test_build_with_witness_hint() {
-        let mut builder = CircuitBuilder::<BabyBear>::new();
-        let default_hint = DefaultHint { n_outputs: 1 };
-        let a = builder.alloc_witness_hints(default_hint, "a");
-        assert_eq!(a.len(), 1);
-        let circuit = builder
-            .build()
-            .expect("Circuit with operations should build");
-
-        assert_eq!(circuit.witness_count, 2);
-        assert_eq!(circuit.ops.len(), 2);
-
-        match &circuit.ops[1] {
-            crate::op::Op::Unconstrained {
-                inputs, outputs, ..
-            } => {
-                assert_eq!(*inputs, vec![]);
-                assert_eq!(*outputs, vec![WitnessId(1)]);
-            }
-            _ => panic!("Expected Unconstrained at index 0"),
-        }
     }
 
     #[test]

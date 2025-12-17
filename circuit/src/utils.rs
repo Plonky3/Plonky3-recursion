@@ -1,3 +1,5 @@
+use alloc::boxed::Box;
+use alloc::string::ToString;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::marker::PhantomData;
@@ -6,8 +8,9 @@ use p3_field::{ExtensionField, Field, PrimeField64};
 use p3_uni_stark::{Entry, SymbolicExpression};
 use p3_util::log2_ceil_u64;
 
-use crate::op::WitnessHintsFiller;
-use crate::{CircuitBuilder, CircuitError, ExprId};
+use crate::builder::NonPrimitiveOpParams;
+use crate::op::NonPrimitiveExecutor;
+use crate::{CircuitBuilder, CircuitBuilderError, CircuitError, ExprId, NonPrimitiveOpType};
 
 /// Identifiers for special row selector flags in the circuit.
 #[derive(Clone, Copy, Debug)]
@@ -137,46 +140,98 @@ pub fn reconstruct_index_from_bits<F: Field>(
 /// such that:
 ///     input = Σ b_i · 2^i
 struct BinaryDecompositionHint<BF: PrimeField64> {
-    inputs: Vec<ExprId>,
     n_bits: usize,
     _phantom: PhantomData<BF>,
 }
 
 impl<BF: PrimeField64> BinaryDecompositionHint<BF> {
-    pub fn new(input: ExprId, n_bits: usize) -> Result<Self, CircuitError> {
+    pub const fn new(n_bits: usize) -> Result<Self, CircuitBuilderError> {
         if n_bits > 64 {
-            return Err(CircuitError::BinaryDecompositionTooManyBits {
+            return Err(CircuitBuilderError::BinaryDecompositionTooManyBits {
                 expected: 64,
                 n_bits,
             });
         }
         Ok(Self {
-            inputs: vec![input],
             n_bits,
             _phantom: PhantomData,
         })
     }
 }
 
-impl<BF: PrimeField64, F: ExtensionField<BF>> WitnessHintsFiller<F>
+impl<BF: PrimeField64, F: ExtensionField<BF>> NonPrimitiveExecutor<F>
     for BinaryDecompositionHint<BF>
 {
-    fn inputs(&self) -> &[ExprId] {
-        &self.inputs
-    }
+    fn execute(
+        &self,
+        inputs: &[Vec<crate::WitnessId>],
+        outputs: &[Vec<crate::WitnessId>],
+        ctx: &mut crate::op::ExecutionContext<'_, F>,
+    ) -> Result<(), CircuitError> {
+        if inputs.len() != 1 || inputs[0].len() != 1 {
+            return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
+                op: NonPrimitiveOpType::Unconstrained,
+                expected: 1.to_string(),
+                got: inputs.len(),
+            });
+        }
+        if outputs.len() != self.n_bits {
+            return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
+                op: NonPrimitiveOpType::Unconstrained,
+                expected: self.n_bits.to_string(),
+                got: outputs.len(),
+            });
+        }
+        outputs.iter().try_for_each(|out| {
+            if out.len() != 1 {
+                Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
+                    op: NonPrimitiveOpType::Unconstrained,
+                    expected: 1.to_string(),
+                    got: inputs.len(),
+                })
+            } else {
+                Ok(())
+            }
+        })?;
 
-    fn n_outputs(&self) -> usize {
-        self.n_bits
-    }
-
-    fn compute_outputs(&self, inputs_val: Vec<F>) -> Result<Vec<F>, CircuitError> {
-        let val: u64 = inputs_val[0].as_basis_coefficients_slice()[0].as_canonical_u64();
-        let bits = (0..self.n_bits)
-            .map(|i| F::from_bool(val >> i & 1 == 1))
-            .collect();
+        let val =
+            ctx.get_witness(inputs[0][0])?.as_basis_coefficients_slice()[0].as_canonical_u64();
+        let bits = (0..self.n_bits).map(|i| F::from_bool(val >> i & 1 == 1));
         debug_assert!(self.n_bits as u64 >= log2_ceil_u64(val));
-        Ok(bits)
+
+        for (out, bit) in outputs.iter().zip(bits) {
+            ctx.set_witness(out[0], bit)?;
+        }
+        Ok(())
     }
+
+    fn op_type(&self) -> &crate::NonPrimitiveOpType {
+        &crate::NonPrimitiveOpType::Unconstrained
+    }
+
+    fn as_any(&self) -> &dyn core::any::Any {
+        self
+    }
+
+    fn boxed(&self) -> alloc::boxed::Box<dyn NonPrimitiveExecutor<F>> {
+        Box::new(self.clone())
+    }
+    // fn inputs(&self) -> &[ExprId] {
+    //     &self.inputs
+    // }
+
+    // fn n_outputs(&self) -> usize {
+    //     self.n_bits
+    // }
+
+    // fn compute_outputs(&self, inputs_val: Vec<F>) -> Result<Vec<F>, CircuitError> {
+    //     let val: u64 = inputs_val[0].as_basis_coefficients_slice()[0].as_canonical_u64();
+    //     let bits = (0..self.n_bits)
+    //         .map(|i| F::from_bool(val >> i & 1 == 1))
+    //         .collect();
+    //     debug_assert!(self.n_bits as u64 >= log2_ceil_u64(val));
+    //     Ok(bits)
+    // }
 }
 
 /// Decompose a field element into its little-endian bits.
@@ -188,12 +243,21 @@ pub fn decompose_to_bits<F: ExtensionField<BF>, BF: PrimeField64>(
     builder: &mut CircuitBuilder<F>,
     x: ExprId,
     n_bits: usize,
-) -> Result<Vec<ExprId>, CircuitError> {
+) -> Result<Vec<ExprId>, CircuitBuilderError> {
     builder.push_scope("decompose_to_bits");
+    builder.ensure_op_enabled(NonPrimitiveOpType::Unconstrained)?;
 
     // Create bit witness variables
-    let binary_decomposition_hint = BinaryDecompositionHint::new(x, n_bits)?;
-    let bits = builder.alloc_witness_hints(binary_decomposition_hint, "decompose_to_bits");
+    let binary_decomposition_hint = BinaryDecompositionHint::new(n_bits)?;
+    let (_, bits) = builder.push_non_primitive_op_with_outputs(
+        NonPrimitiveOpType::Unconstrained,
+        vec![vec![x]],
+        Some(NonPrimitiveOpParams::Unconstrained {
+            executor: Box::new(binary_decomposition_hint),
+        }),
+        n_bits,
+        "decompose_to_bits",
+    );
 
     for &bit in bits.iter() {
         builder.assert_bool(bit);
@@ -429,6 +493,7 @@ mod tests {
     #[test]
     fn test_decompose_to_bits() {
         let mut builder = CircuitBuilder::<BabyBear>::new();
+        builder.enable_unconstrained_ops();
 
         // Create a target representing the value we want to decompose
         let value = builder.add_const(BabyBear::from_u64(6)); // Binary: 110

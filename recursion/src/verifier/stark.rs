@@ -4,7 +4,7 @@ use alloc::{format, vec};
 
 use itertools::Itertools;
 use p3_circuit::utils::ColumnsTargets;
-use p3_circuit::{CircuitBuilder, CircuitError};
+use p3_circuit::{CircuitBuilder, CircuitBuilderError};
 use p3_commit::Pcs;
 use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
 use p3_uni_stark::StarkGenericConfig;
@@ -286,7 +286,7 @@ fn get_circuit_challenges<
     preprocessed_width: usize,
     circuit: &mut CircuitBuilder<SC::Challenge>,
     pcs_params: &PcsVerifierParams<SC, InputProof, OpeningProof, Comm>,
-) -> Result<Vec<Target>, CircuitError>
+) -> Result<Vec<Target>, CircuitBuilderError>
 where
     SC::Pcs: RecursivePcs<
             SC,

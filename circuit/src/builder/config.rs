@@ -27,6 +27,14 @@ impl BuilderConfig {
         self.enable_op(NonPrimitiveOpType::PoseidonPerm, NonPrimitiveOpConfig::None);
     }
 
+    /// Enables unconstrained operations. Necessary for adding non-deterministic hints.
+    pub fn enable_unconstrained_ops(&mut self) {
+        self.enable_op(
+            NonPrimitiveOpType::Unconstrained,
+            NonPrimitiveOpConfig::None,
+        );
+    }
+
     /// Checks whether an operation type is enabled.
     pub fn is_op_enabled(&self, op: &NonPrimitiveOpType) -> bool {
         self.enabled_ops.contains_key(op)

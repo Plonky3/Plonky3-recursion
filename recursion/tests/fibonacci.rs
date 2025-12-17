@@ -82,6 +82,7 @@ fn test_fibonacci_verifier() -> Result<(), VerificationError> {
     >;
 
     let mut circuit_builder = CircuitBuilder::new();
+    circuit_builder.enable_unconstrained_ops();
 
     // Allocate all targets
     let verifier_inputs = StarkVerifierInputsBuilder::<

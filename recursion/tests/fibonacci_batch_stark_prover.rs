@@ -101,6 +101,7 @@ fn test_fibonacci_batch_verifier() {
     let n: usize = 100;
 
     let mut builder = CircuitBuilder::new();
+    builder.enable_unconstrained_ops();
 
     // Public input: expected F(n)
     let expected_result = builder.alloc_public_input("expected_result");
@@ -205,6 +206,7 @@ fn test_fibonacci_batch_verifier() {
 
     // Build the recursive verification circuit
     let mut circuit_builder = CircuitBuilder::new();
+    circuit_builder.enable_unconstrained_ops();
 
     // Attach verifier without manually building circuit_airs
     let verifier_inputs = verify_p3_recursion_proof_circuit::<

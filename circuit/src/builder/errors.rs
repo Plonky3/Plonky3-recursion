@@ -61,4 +61,8 @@ pub enum CircuitBuilderError {
     /// Witness filler without any hints sequence.
     #[error("Witness filler is missing a witness hints sequence")]
     UnmatchedWitnessFiller {},
+
+    /// Requested bit length exceeds the maximum allowed for binary decomposition.
+    #[error("Too many bits for binary decomposition: expected at most {expected}, got {n_bits}")]
+    BinaryDecompositionTooManyBits { expected: usize, n_bits: usize },
 }

@@ -1,6 +1,6 @@
 use alloc::boxed::Box;
+use alloc::format;
 use alloc::vec::Vec;
-use alloc::{format, vec};
 use core::fmt::Debug;
 use core::hash::Hash;
 
@@ -8,9 +8,9 @@ use hashbrown::HashMap;
 use p3_field::Field;
 use strum_macros::EnumCount;
 
+use crate::CircuitError;
 use crate::tables::PoseidonPermPrivateData;
 use crate::types::{NonPrimitiveOpId, WitnessId};
-use crate::{CircuitError, ExprId};
 
 /// Circuit operations.
 ///
@@ -62,16 +62,6 @@ pub enum Op<F> {
         a: WitnessId,
         b: WitnessId,
         out: WitnessId,
-    },
-
-    /// Load unconstrained values into the witness table
-    ///
-    /// Sets `witness[output]`, for each `output` in `outputs`, to arbitrary values
-    /// defined by `filler`.
-    Unconstrained {
-        inputs: Vec<WitnessId>,
-        outputs: Vec<WitnessId>,
-        filler: Box<dyn WitnessHintsFiller<F>>,
     },
 
     /// Non-primitive operation with executor-based dispatch
@@ -141,15 +131,6 @@ impl<F: Field + Clone> Clone for Op<F> {
                 a: *a,
                 b: *b,
                 out: *out,
-            },
-            Self::Unconstrained {
-                inputs,
-                outputs,
-                filler,
-            } => Self::Unconstrained {
-                inputs: inputs.clone(),
-                outputs: outputs.clone(),
-                filler: filler.clone(),
             },
             Self::NonPrimitiveOpWithExecutor {
                 inputs,
@@ -231,6 +212,8 @@ impl<F: Field + PartialEq> PartialEq for Op<F> {
 pub enum NonPrimitiveOpType {
     /// Poseidon permutation operation (one Poseidon call / table row).
     PoseidonPerm,
+    /// Unconstrained operation, used to set outputs to non-deterministic advices.
+    Unconstrained,
 }
 
 /// Non-primitive operation types
@@ -387,63 +370,6 @@ pub trait NonPrimitiveExecutor<F: Field>: Debug {
 impl<F: Field> Clone for Box<dyn NonPrimitiveExecutor<F>> {
     fn clone(&self) -> Self {
         self.boxed()
-    }
-}
-
-/// A trait for defining how unconstrained data (hints) is set.
-pub trait WitnessHintsFiller<F>: Debug + WitnessFillerClone<F> {
-    /// Return the `ExprId` of the inputs
-    fn inputs(&self) -> &[ExprId];
-    /// Return number of outputs filled by this filler
-    fn n_outputs(&self) -> usize;
-    /// Compute the output given the inputs
-    /// # Arguments
-    /// * `inputs` - Input witness
-    fn compute_outputs(&self, inputs_val: Vec<F>) -> Result<Vec<F>, CircuitError>;
-}
-
-impl<F> Clone for Box<dyn WitnessHintsFiller<F>> {
-    fn clone(&self) -> Self {
-        self.clone_box()
-    }
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct DefaultHint {
-    pub n_outputs: usize,
-}
-
-impl DefaultHint {
-    pub fn boxed_default<F: Default + Clone>() -> Box<dyn WitnessHintsFiller<F>> {
-        Box::new(Self::default())
-    }
-}
-
-impl<F: Default + Clone> WitnessHintsFiller<F> for DefaultHint {
-    fn inputs(&self) -> &[ExprId] {
-        &[]
-    }
-
-    fn n_outputs(&self) -> usize {
-        self.n_outputs
-    }
-
-    fn compute_outputs(&self, _inputs_val: Vec<F>) -> Result<Vec<F>, CircuitError> {
-        Ok(vec![F::default(); self.n_outputs])
-    }
-}
-
-// Object-safe "clone into Box" helper
-pub trait WitnessFillerClone<F> {
-    fn clone_box(&self) -> Box<dyn WitnessHintsFiller<F>>;
-}
-
-impl<F, T> WitnessFillerClone<F> for T
-where
-    T: WitnessHintsFiller<F> + Clone + 'static,
-{
-    fn clone_box(&self) -> Box<dyn WitnessHintsFiller<F>> {
-        Box::new(self.clone())
     }
 }
 
@@ -896,22 +822,6 @@ mod tests {
             }
             _ => panic!("Expected InvalidNonPrimitiveOpConfiguration error"),
         }
-    }
-
-    #[test]
-    fn test_default_hint_compute_outputs() {
-        // Create a default hint that produces multiple outputs
-        let hint = DefaultHint { n_outputs: 3 };
-
-        // Compute default values for all outputs
-        let result = hint.compute_outputs(vec![]);
-
-        // Verify the correct number of default-initialized values
-        let outputs: Vec<F> = result.unwrap();
-        assert_eq!(outputs.len(), 3);
-        assert_eq!(outputs[0], F::default());
-        assert_eq!(outputs[1], F::default());
-        assert_eq!(outputs[2], F::default());
     }
 
     #[test]

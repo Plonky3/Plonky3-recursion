@@ -1,7 +1,6 @@
 use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt::Debug;
-use core::iter;
 use core::ops::{Add, Mul, Sub};
 
 use hashbrown::HashMap;
@@ -150,14 +149,6 @@ impl<F: Field> Circuit<F> {
                     ]);
                     max_idx = max_idx.max(a.0).max(b.0).max(out.0);
                 }
-                // Unconstrained: sets arbitrary witness values via hints.
-                // No preprocessed column data, but outputs affect max_idx.
-                Op::Unconstrained { outputs, .. } => {
-                    max_idx = iter::once(max_idx)
-                        .chain(outputs.iter().map(|&output| output.0))
-                        .max()
-                        .unwrap_or(max_idx);
-                }
                 // TODO: Add preprocessed columns for non-primitive tables.
                 Op::NonPrimitiveOpWithExecutor { .. } => {}
             }
@@ -190,7 +181,7 @@ mod tests {
     use strum::EnumCount;
 
     use super::*;
-    use crate::op::{DefaultHint, PrimitiveOpType};
+    use crate::op::PrimitiveOpType;
     use crate::types::WitnessId;
 
     type F = BabyBear;
@@ -249,12 +240,6 @@ mod tests {
                 b: WitnessId(2),
                 out: WitnessId(5),
             },
-            // Unconstrained with highest index determines witness table size
-            Op::Unconstrained {
-                inputs: vec![],
-                outputs: vec![WitnessId(10)],
-                filler: DefaultHint::boxed_default(),
-            },
         ];
 
         let circuit = make_circuit(ops);
@@ -292,7 +277,7 @@ mod tests {
         );
 
         // Witness column: 0..=10 (Unconstrained output is the max)
-        let expected_witness: Vec<F> = (0..=10).map(F::from_u32).collect();
+        let expected_witness: Vec<F> = (0..=5).map(F::from_u32).collect();
         assert_eq!(result[PrimitiveOpType::Witness as usize], expected_witness);
     }
 
