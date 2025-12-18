@@ -89,19 +89,6 @@ where
         let op_type = NonPrimitiveOpType::PoseidonPerm;
         self.ensure_op_enabled(op_type.clone())?;
 
-        let output_0 = call
-            .out_ctl
-            .first()
-            .copied()
-            .unwrap_or(false)
-            .then(|| self.alloc_witness_unset("poseidon_perm_out0"));
-        let output_1 = call
-            .out_ctl
-            .get(1)
-            .copied()
-            .unwrap_or(false)
-            .then(|| self.alloc_witness_unset("poseidon_perm_out1"));
-
         // Build input_exprs layout: [in0, in1, in2, in3, mmcs_index_sum, mmcs_bit]
         let mut input_exprs: Vec<Vec<ExprId>> = Vec::with_capacity(6);
 
@@ -125,23 +112,23 @@ where
             input_exprs.push(Vec::new());
         }
 
-        // Build output_exprs layout: [out0, out1]
-        let output_exprs: Vec<Vec<ExprId>> = vec![
-            output_0.map_or_else(Vec::new, |e| vec![e]),
-            output_1.map_or_else(Vec::new, |e| vec![e]),
-        ];
+        let output_0 = call.out_ctl.first().copied().unwrap_or(false);
+        let output_1 = call.out_ctl.get(1).copied().unwrap_or(false);
 
-        let (op_id, _call_expr_id) = self.push_non_primitive_op(
+        let (op_id, _call_expr_id, outputs) = self.push_non_primitive_op_with_outputs(
             op_type,
             input_exprs,
-            output_exprs,
+            vec![
+                output_0.then_some("poseidon_perm_out0"),
+                output_1.then_some("poseidon_perm_out1"),
+            ],
             Some(NonPrimitiveOpParams::PoseidonPerm {
                 new_start: call.new_start,
                 merkle_path: call.merkle_path,
             }),
             "poseidon_perm",
         );
-        Ok((op_id, [output_0, output_1]))
+        Ok((op_id, [outputs[0], outputs[1]]))
     }
 }
 

@@ -442,27 +442,40 @@ where
         res
     }
 
-    /// Pushes a non-primitive op. Returns (op_id, call_expr_id).
-    #[allow(unused_variables)]
-    pub(crate) fn push_non_primitive_op(
+    /// Pushes a non-primitive op and creates optional output nodes tied to the call.
+    ///
+    /// `output_labels` must have length equal to the op's output arity; each `Some(label)`
+    /// creates an `Expr::NonPrimitiveOutput { call, output_idx }` node for that output index.
+    /// The returned `Vec<Option<ExprId>>` is aligned with `output_labels`.
+    pub(crate) fn push_non_primitive_op_with_outputs(
         &mut self,
         op_type: NonPrimitiveOpType,
         input_exprs: Vec<Vec<ExprId>>,
-        output_exprs: Vec<Vec<ExprId>>,
+        output_labels: Vec<Option<&'static str>>,
         params: Option<NonPrimitiveOpParams>,
         label: &'static str,
-    ) -> (NonPrimitiveOpId, ExprId) {
+    ) -> (NonPrimitiveOpId, ExprId, Vec<Option<ExprId>>) {
         let op_id = NonPrimitiveOpId(self.non_primitive_ops.len() as u32);
 
-        // Flatten input_exprs into a single Vec<ExprId> for DAG dependencies
         let flattened_inputs: Vec<ExprId> = input_exprs.iter().flatten().copied().collect();
-
         let call_expr_id = self.expr_builder.add_non_primitive_call(
             op_id,
             op_type.clone(),
             flattened_inputs,
             label,
         );
+
+        let mut output_exprs: Vec<Vec<ExprId>> = vec![Vec::new(); output_labels.len()];
+        let mut outputs: Vec<Option<ExprId>> = vec![None; output_labels.len()];
+        for (i, maybe_label) in output_labels.into_iter().enumerate() {
+            if let Some(out_label) = maybe_label {
+                let out_expr_id =
+                    self.expr_builder
+                        .add_non_primitive_output(call_expr_id, i as u32, out_label);
+                output_exprs[i] = vec![out_expr_id];
+                outputs[i] = Some(out_expr_id);
+            }
+        }
 
         self.non_primitive_ops.push(NonPrimitiveOperationData {
             op_id,
@@ -471,7 +484,8 @@ where
             output_exprs,
             params,
         });
-        (op_id, call_expr_id)
+
+        (op_id, call_expr_id, outputs)
     }
 
     /// Pushes a new scope onto the scope stack.
@@ -995,7 +1009,7 @@ mod tests {
         let mut builder = CircuitBuilder::<Ext4>::new();
         builder.enable_op(NonPrimitiveOpType::PoseidonPerm, NonPrimitiveOpConfig::None);
 
-        // Use add_poseidon_perm with out_ctl to expose outputs
+        // Use add_poseidon_perm with out_ctl to expose outputs.
         let z = builder.add_const(Ext4::ZERO);
         let (op_id, outputs) = builder
             .add_poseidon_perm(PoseidonPermCall {
