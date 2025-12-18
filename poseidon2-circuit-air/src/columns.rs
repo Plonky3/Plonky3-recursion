@@ -20,7 +20,7 @@ pub const POSEIDON_PUBLIC_OUTPUT_LIMBS: usize = 2;
 /// Column layout (per spec section 2):
 /// - Value columns: `poseidon2` (contains in[0..3] and out[0..3]), `mmcs_index_sum`, `mmcs_bit`
 /// - Transparent columns: `new_start`, `merkle_path`, CTL flags and indices
-/// - Selector columns (not in spec): `normal_chain_sel`, `merkle_chain_sel`, `mmcs_update_sel`
+/// - Selector columns (not in spec): `normal_chain_sel`, `merkle_chain_sel`
 ///   These are precomputed to reduce constraint degree to 3.
 #[repr(C)]
 pub struct Poseidon2CircuitCols<T, P: PermutationColumns<T>> {
@@ -48,11 +48,6 @@ pub struct Poseidon2CircuitCols<T, P: PermutationColumns<T>> {
     /// Computed as (1 - new_start) * merkle_path * (1 - in_ctl[i]) for i in {0, ..., POSEIDON_PUBLIC_OUTPUT_LIMBS - 1}.
     /// NOTE: This column is not in the spec but is added to reduce constraint degree to 3.
     pub merkle_chain_sel: [T; POSEIDON_LIMBS],
-
-    /// Selector: enables MMCS accumulator updates when chaining in Merkle mode.
-    /// Computed as (1 - new_start) * merkle_path.
-    /// NOTE: This column is not in the spec but is added to reduce constraint degree to 3.
-    pub mmcs_update_sel: T,
 
     /// Input exposure flags: for each limb i, if 1, in[i] must match witness lookup at in_idx[i].
     pub in_ctl: [T; POSEIDON_LIMBS],

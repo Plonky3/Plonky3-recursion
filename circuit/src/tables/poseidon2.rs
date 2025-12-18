@@ -173,7 +173,7 @@ where
         let width = Config::WIDTH;
         let d = Config::D;
 
-        for op in &self.circuit.non_primitive_ops {
+        for op in &self.circuit.ops {
             let Op::NonPrimitiveOpWithExecutor {
                 inputs,
                 outputs: _,
@@ -185,6 +185,8 @@ where
             };
 
             if executor.op_type() == &NonPrimitiveOpType::PoseidonPerm {
+                // TODO: Switch Poseidon trace building to use `outputs` once Poseidon perm execution
+                // materializes outputs in the witness (and stop encoding outputs via `inputs[4..]`).
                 let Some(exec) = executor.as_any().downcast_ref::<PoseidonPermExecutor>() else {
                     return Err(CircuitError::InvalidNonPrimitiveOpConfiguration {
                         op: executor.op_type().clone(),

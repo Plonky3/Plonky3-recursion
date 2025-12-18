@@ -1,30 +1,21 @@
+mod common;
+
 use p3_air::{Air, BaseAir, PairBuilder};
-use p3_baby_bear::{BabyBear, Poseidon2BabyBear};
 use p3_batch_stark::CommonData;
-use p3_challenger::DuplexChallenger;
 use p3_circuit::CircuitBuilder;
 use p3_circuit_prover::air::{AddAir, ConstAir, MulAir, PublicAir, WitnessAir};
 use p3_circuit_prover::batch_stark_prover::PrimitiveTable;
 use p3_circuit_prover::common::get_airs_and_degrees_with_prep;
 use p3_circuit_prover::{BatchStarkProver, TablePacking};
-use p3_commit::ExtensionMmcs;
-use p3_dft::Radix2DitParallel;
-use p3_field::extension::BinomialExtensionField;
 use p3_field::{Field, PrimeCharacteristicRing};
-use p3_fri::{TwoAdicFriPcs, create_test_fri_params};
-use p3_merkle_tree::MerkleTreeMmcs;
+use p3_fri::create_test_fri_params;
 use p3_recursion::generation::generate_batch_challenges;
-use p3_recursion::pcs::fri::{
-    FriProofTargets, FriVerifierParams, HashTargets, InputProofTargets, RecExtensionValMmcs,
-    RecValMmcs, Witness,
-};
+use p3_recursion::pcs::fri::{FriVerifierParams, HashTargets, InputProofTargets, RecValMmcs};
 use p3_recursion::verifier::verify_p3_recursion_proof_circuit;
-use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
-use p3_uni_stark::{StarkConfig, StarkGenericConfig, Val};
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
 
-type F = BabyBear;
+use crate::common::baby_bear_params::*;
 
 /// Wrapper enum for heterogeneous circuit table AIRs
 enum CircuitTableAir<F: Field, const D: usize> {
@@ -62,39 +53,6 @@ where
         }
     }
 }
-
-// Type aliases for the BabyBear config with D=4 extension
-const D: usize = 4;
-const RATE: usize = 8;
-const DIGEST_ELEMS: usize = 8;
-type Challenge = BinomialExtensionField<F, D>;
-type Dft = Radix2DitParallel<F>;
-type Perm = Poseidon2BabyBear<16>;
-type MyHash = PaddingFreeSponge<Perm, 16, RATE, 8>;
-type MyCompress = TruncatedPermutation<Perm, 2, 8, 16>;
-type ValMmcs = MerkleTreeMmcs<<F as Field>::Packing, <F as Field>::Packing, MyHash, MyCompress, 8>;
-type ChallengeMmcs = ExtensionMmcs<F, Challenge, ValMmcs>;
-type Challenger = DuplexChallenger<F, Perm, 16, RATE>;
-type MyPcs = TwoAdicFriPcs<F, Dft, ValMmcs, ChallengeMmcs>;
-type MyConfig = StarkConfig<MyPcs, Challenge, Challenger>;
-
-// Type for the FRI proof used in recursive verification
-type InnerFri = FriProofTargets<
-    Val<MyConfig>,
-    <MyConfig as StarkGenericConfig>::Challenge,
-    RecExtensionValMmcs<
-        Val<MyConfig>,
-        <MyConfig as StarkGenericConfig>::Challenge,
-        DIGEST_ELEMS,
-        RecValMmcs<Val<MyConfig>, DIGEST_ELEMS, MyHash, MyCompress>,
-    >,
-    InputProofTargets<
-        Val<MyConfig>,
-        <MyConfig as StarkGenericConfig>::Challenge,
-        RecValMmcs<Val<MyConfig>, DIGEST_ELEMS, MyHash, MyCompress>,
-    >,
-    Witness<Val<MyConfig>>,
->;
 
 #[test]
 fn test_fibonacci_batch_verifier() {

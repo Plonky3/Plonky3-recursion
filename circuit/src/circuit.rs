@@ -50,10 +50,8 @@ impl<F> CircuitField for F where
 pub struct Circuit<F> {
     /// Number of witness table rows
     pub witness_count: u32,
-    /// Primitive operations in topological order
-    pub primitive_ops: Vec<Op<F>>,
-    /// Non-primitive operations
-    pub non_primitive_ops: Vec<Op<F>>,
+    /// Operations in execution order (primitive + non-primitive).
+    pub ops: Vec<Op<F>>,
     /// Public input witness indices
     pub public_rows: Vec<WitnessId>,
     /// Total number of public field elements
@@ -70,8 +68,7 @@ impl<F: Field + Clone> Clone for Circuit<F> {
     fn clone(&self) -> Self {
         Self {
             witness_count: self.witness_count,
-            primitive_ops: self.primitive_ops.clone(),
-            non_primitive_ops: self.non_primitive_ops.clone(),
+            ops: self.ops.clone(),
             public_rows: self.public_rows.clone(),
             public_flat_len: self.public_flat_len,
             enabled_ops: self.enabled_ops.clone(),
@@ -86,8 +83,7 @@ impl<F: Field> Circuit<F> {
     pub fn new(witness_count: u32, expr_to_widx: HashMap<ExprId, WitnessId>) -> Self {
         Self {
             witness_count,
-            primitive_ops: Vec::new(),
-            non_primitive_ops: Vec::new(),
+            ops: Vec::new(),
             public_rows: Vec::new(),
             public_flat_len: 0,
             enabled_ops: HashMap::new(),
@@ -119,8 +115,10 @@ impl<F: Field> Circuit<F> {
         // We know that the Witness table has at least one entry for index 0 (multiplicity 0 at the start).
         preprocessed[PrimitiveOpType::Witness as usize].push(F::ZERO);
         let witness_table_idx = PrimitiveOpType::Witness as usize;
-        for prim in &self.primitive_ops {
-            match prim {
+
+        // Process each primitive operation, extracting its witness indices.
+        for op in &self.ops {
+            match op {
                 // Const: stores a constant value at witness[out].
                 // Preprocessed data: the output witness index.
                 Op::Const { out, .. } => {
@@ -193,15 +191,14 @@ impl<F: Field> Circuit<F> {
                     for out in outputs {
                         let out_idx = out.0;
                         if out_idx >= preprocessed[witness_table_idx].len() as u32 {
-                            preprocessed[witness_table_idx]
-                                .resize(out_idx as usize + 1, F::from_u32(0));
+                            preprocessed[witness_table_idx].resize(out_idx as usize + 1, F::ZERO);
                         }
                     }
                 }
                 Op::NonPrimitiveOpWithExecutor {
+                    executor,
                     inputs,
                     outputs,
-                    executor,
                     ..
                 } => {
                     // Delegate preprocessing to the non-primitive operation.
@@ -238,7 +235,7 @@ mod tests {
 
     fn make_circuit(ops: Vec<Op<F>>) -> Circuit<F> {
         let mut circuit = Circuit::new(0, HashMap::new());
-        circuit.primitive_ops = ops;
+        circuit.ops = ops;
         circuit
     }
 
