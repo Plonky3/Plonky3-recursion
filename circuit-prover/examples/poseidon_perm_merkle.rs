@@ -225,7 +225,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         row1_op_id,
         NonPrimitiveOpPrivateData::PoseidonPerm(PoseidonPermPrivateData {
             // The first two values will be overwritten by row 1 input
-            input_values: vec![sibling1_limb2, sibling1_limb3],
+            input_values: vec![Ext4::ZERO, Ext4::ZERO, sibling1_limb2, sibling1_limb3],
         }),
     )?;
 
