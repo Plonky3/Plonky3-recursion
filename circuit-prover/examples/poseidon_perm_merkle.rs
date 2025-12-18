@@ -41,7 +41,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Three-row Merkle path example (2 levels):
     // Row 0: hashes leaf || sibling0 (merkle_path = true, new_start = true, mmcs_bit = 0)
     // Row 1: merkle_path = true, new_start = false, mmcs_bit = 1 (previous hash becomes right child),
-    //        limbs 0-1 get prev_out limbs 2-3; limbs 2-3 take sibling1 as private inputs.
+    //        limbs 2-3 get prev_out limbs 0-1; limbs 0-1 take sibling1 as private inputs.
     // Row 2: merkle_path = true, new_start = false, mmcs_bit = 0 (previous hash becomes left child),
     //        limbs 0-1 get prev_out limbs 0-1; limbs 2-3 take sibling2 as private inputs.
     //
@@ -122,15 +122,15 @@ fn main() -> Result<(), Box<dyn Error>> {
     let row0_state_base = flatten_ext_limbs(&row0_state);
     let row0_out_base = perm.permute(row0_state_base);
 
-    // Row 1 chaining: mmcs_bit = 1, so previous hash becomes right child (limbs 0-1 get prev_out[2..4])
-    // limbs 2-3 from sibling1
+    // Row 1 chaining: mmcs_bit = 1, so previous hash becomes right child.
+    // Previous digest (out[0..1]) chains into limbs 2-3; sibling1 provides limbs 0-1.
     let mut row1_state_base = [Base::ZERO; WIDTH];
-    // limbs 0-1 from row0 output limbs 2-3
-    row1_state_base[0..2 * LIMB_SIZE].copy_from_slice(&row0_out_base[2 * LIMB_SIZE..4 * LIMB_SIZE]);
-    // limbs 2-3 from sibling1
+    // limbs 0-1 from sibling1
     let sibling1_flat =
         flatten_ext_limbs(&[sibling1_limb2, sibling1_limb3, Ext4::ZERO, Ext4::ZERO]);
-    row1_state_base[2 * LIMB_SIZE..4 * LIMB_SIZE].copy_from_slice(&sibling1_flat[0..2 * LIMB_SIZE]);
+    row1_state_base[0..2 * LIMB_SIZE].copy_from_slice(&sibling1_flat[0..2 * LIMB_SIZE]);
+    // limbs 2-3 from row0 output limbs 0-1
+    row1_state_base[2 * LIMB_SIZE..4 * LIMB_SIZE].copy_from_slice(&row0_out_base[0..2 * LIMB_SIZE]);
 
     let row1_out_base = perm.permute(row1_state_base);
 
@@ -223,11 +223,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     ])?;
 
     // Set private inputs for Row 1
-    // Row 1: mmcs_bit = 1 (Right Child). Previous hash chains to limbs 0-1.
-    // Sibling goes to limbs 2-3.
+    // Row 1: mmcs_bit = 1 (Right Child). Previous digest chains to limbs 2-3.
+    // Sibling goes to limbs 0-1.
     let mut row1_private_inputs = [Ext4::ZERO; 4];
-    row1_private_inputs[2] = sibling1_limb2; // Sibling at 2
-    row1_private_inputs[3] = sibling1_limb3; // Sibling at 3
+    row1_private_inputs[0] = sibling1_limb2; // Sibling at 0
+    row1_private_inputs[1] = sibling1_limb3; // Sibling at 1
 
     runner.set_non_primitive_op_private_data(
         row1_op_id,
@@ -237,7 +237,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     )?;
 
     // Set private inputs for Row 2
-    // Row 2: mmcs_bit = 0 (Left Child). Previous hash chains to limbs 0-1.
+    // Row 2: mmcs_bit = 0 (Left Child). Previous digest chains to limbs 0-1.
     // Sibling goes to limbs 2-3.
     let mut row2_private_inputs = [Ext4::ZERO; 4];
     row2_private_inputs[2] = sibling2_limb2; // Sibling at 2

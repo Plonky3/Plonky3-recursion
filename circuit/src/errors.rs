@@ -141,7 +141,7 @@ pub enum CircuitError {
     )]
     PoseidonChainMissingPreviousState { operation_index: NonPrimitiveOpId },
 
-    /// Poseidon merkle path mode requires sibling input for limbs 2-3.
+    /// Poseidon merkle path mode requires a sibling input limb (which limbs are required depends on `mmcs_bit`).
     #[error(
         "Poseidon merkle path missing sibling input for operation {operation_index}, limb {limb}"
     )]

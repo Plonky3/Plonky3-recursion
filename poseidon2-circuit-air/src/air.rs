@@ -186,31 +186,26 @@ impl<
             let i = inputs.len();
             if i > 0 && !*new_start {
                 if *merkle_path {
-                    // Merkle-path mode: chain based on previous row's mmcs_bit
-                    // Only chain limbs 0-1 if in_ctl[0/1] = 0 (handled by AIR constraints)
+                    // Merkle-path mode: the previous digest is always the previous row's out[0..1].
+                    // `mmcs_bit` selects whether that digest is the left (0) or right (1) child:
+                    // - bit=0: chain into limbs 0..1
+                    // - bit=1: chain into limbs 2..3
                     if let Some(prev_out) = prev_output {
-                        let cur_bit = *mmcs_bit;
-                        if !in_ctl[0] {
-                            if cur_bit {
-                                // Case B: mmcs_bit = 1 (right = previous hash)
-                                // in_{r}[0] = out_{r-1}[2]
-                                state[0..D].copy_from_slice(&prev_out[2 * D..3 * D]);
-                            } else {
-                                // Case A: mmcs_bit = 0 (left = previous hash)
-                                // in_{r}[0] = out_{r-1}[0]
+                        if !*mmcs_bit {
+                            if !in_ctl[0] {
                                 state[0..D].copy_from_slice(&prev_out[0..D]);
                             }
-                        }
-                        if !in_ctl[1] {
-                            if cur_bit {
-                                // in_{r}[1] = out_{r-1}[3]
-                                state[D..2 * D].copy_from_slice(&prev_out[3 * D..4 * D]);
-                            } else {
-                                // in_{r}[1] = out_{r-1}[1]
+                            if !in_ctl[1] {
                                 state[D..2 * D].copy_from_slice(&prev_out[D..2 * D]);
                             }
+                        } else {
+                            if !in_ctl[2] {
+                                state[2 * D..3 * D].copy_from_slice(&prev_out[0..D]);
+                            }
+                            if !in_ctl[3] {
+                                state[3 * D..4 * D].copy_from_slice(&prev_out[D..2 * D]);
+                            }
                         }
-                        // in_{r}[2], in_{r}[3] remain free/private (from padded_inputs)
                     }
                 } else {
                     // Normal sponge mode: in_{r+1}[i] = out_r[i] for i = 0..3
@@ -243,7 +238,7 @@ impl<
 
             let normal_chain_sel: [bool; POSEIDON_LIMBS] =
                 core::array::from_fn(|j| (!*new_start) && (!*merkle_path) && (!in_ctl[j]));
-            let merkle_chain_sel: [bool; POSEIDON_PUBLIC_OUTPUT_LIMBS] =
+            let merkle_chain_sel: [bool; POSEIDON_LIMBS] =
                 core::array::from_fn(|j| (!*new_start) && *merkle_path && (!in_ctl[j]));
 
             let (_p2_part, circuit_part) = row.split_at_mut(p2_ncols);
@@ -258,10 +253,10 @@ impl<
                 circuit_part[offset + j].write(F::from_bool(normal_chain_sel[j]));
             }
             offset += POSEIDON_LIMBS;
-            for j in 0..POSEIDON_PUBLIC_OUTPUT_LIMBS {
+            for j in 0..POSEIDON_LIMBS {
                 circuit_part[offset + j].write(F::from_bool(merkle_chain_sel[j]));
             }
-            offset += POSEIDON_PUBLIC_OUTPUT_LIMBS;
+            offset += POSEIDON_LIMBS;
             for j in 0..POSEIDON_LIMBS {
                 circuit_part[offset + j].write(F::from_bool(in_ctl[j]));
             }

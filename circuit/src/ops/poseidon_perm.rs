@@ -88,6 +88,9 @@ where
     ) -> Result<(NonPrimitiveOpId, [Option<ExprId>; 2]), crate::CircuitBuilderError> {
         let op_type = NonPrimitiveOpType::PoseidonPerm;
         self.ensure_op_enabled(op_type.clone())?;
+        if call.merkle_path && call.mmcs_bit.is_none() {
+            return Err(crate::CircuitBuilderError::PoseidonMerkleMissingMmcsBit);
+        }
 
         // Build input_exprs layout: [in0, in1, in2, in3, mmcs_index_sum, mmcs_bit]
         let mut input_exprs: Vec<Vec<ExprId>> = Vec::with_capacity(6);
@@ -209,6 +212,13 @@ impl<F: Field> NonPrimitiveExecutor<F> for PoseidonPermExecutor {
                     got: format!("{val:?}"),
                 });
             }
+        } else if self.merkle_path {
+            return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
+                op: self.op_type.clone(),
+                operation_index: ctx.operation_id(),
+                expected: "mmcs_bit must be provided when merkle_path=true".to_string(),
+                got: "missing mmcs_bit".to_string(),
+            });
         } else {
             false
         };
@@ -325,27 +335,16 @@ impl PoseidonPermExecutor {
                 return Ok(prev[limb]);
             } else {
                 // Merkle path chaining:
-                // - limbs 0-1 come from prev[0-1] (if bit=0) or prev[2-3] (if bit=1)
-                // - limbs 2-3 MUST come from private data or CTL
-                match limb {
-                    0 => {
-                        if !mmcs_bit {
-                            return Ok(prev[0]);
-                        } else {
-                            return Ok(prev[2]);
-                        }
-                    }
-                    1 => {
-                        if !mmcs_bit {
-                            return Ok(prev[1]);
-                        } else {
-                            return Ok(prev[3]);
-                        }
-                    }
-                    2 | 3 => {
-                        // limbs 2-3 need private data or CTL - continue to check private data below
-                    }
-                    _ => unreachable!(),
+                // - The previous digest is always prev[0..1] (the "public" output limbs).
+                // - `mmcs_bit` decides whether the previous digest is the left (bit=0) or right (bit=1) child:
+                //   - bit=0: chain prev[0..1] into limbs 0..1; sibling must be provided in limbs 2..3.
+                //   - bit=1: chain prev[0..1] into limbs 2..3; sibling must be provided in limbs 0..1.
+                match (mmcs_bit, limb) {
+                    (false, 0) => return Ok(prev[0]),
+                    (false, 1) => return Ok(prev[1]),
+                    (true, 2) => return Ok(prev[0]),
+                    (true, 3) => return Ok(prev[1]),
+                    _ => { /* fall through to private data */ }
                 }
             }
         }
@@ -358,16 +357,18 @@ impl PoseidonPermExecutor {
         }
 
         // 4. Missing input error
-        if self.merkle_path && !self.new_start && (limb == 2 || limb == 3) {
-            Err(CircuitError::PoseidonMerkleMissingSiblingInput {
-                operation_index: ctx.operation_id(),
-                limb,
-            })
-        } else {
-            Err(CircuitError::PoseidonMissingInput {
-                operation_index: ctx.operation_id(),
-                limb,
-            })
+        if self.merkle_path && !self.new_start {
+            let is_required_sibling = matches!((mmcs_bit, limb), (false, 2 | 3) | (true, 0 | 1));
+            if is_required_sibling {
+                return Err(CircuitError::PoseidonMerkleMissingSiblingInput {
+                    operation_index: ctx.operation_id(),
+                    limb,
+                });
+            }
         }
+        Err(CircuitError::PoseidonMissingInput {
+            operation_index: ctx.operation_id(),
+            limb,
+        })
     }
 }
