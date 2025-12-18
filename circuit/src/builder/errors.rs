@@ -4,6 +4,7 @@ use alloc::vec::Vec;
 use thiserror::Error;
 
 use crate::op::NonPrimitiveOpType;
+use crate::types::NonPrimitiveOpId;
 use crate::{ExprId, WitnessId};
 
 /// Errors that can occur during circuit building/lowering.
@@ -20,6 +21,22 @@ pub enum CircuitBuilderError {
         expected: String,
         got: usize,
     },
+
+    /// Non-primitive operation referenced by id was not found.
+    #[error("Non-primitive operation id {op_id:?} not found")]
+    MissingNonPrimitiveOp { op_id: NonPrimitiveOpId },
+
+    /// Non-primitive output indices for an op are malformed (duplicates or gaps).
+    #[error("Non-primitive output indices malformed for op {op_id:?}: {details}")]
+    MalformedNonPrimitiveOutputs {
+        op_id: NonPrimitiveOpId,
+        details: String,
+    },
+
+    /// Non-primitive operation exists in the builder but was never anchored in the expression DAG,
+    /// so the lowerer cannot place it in a well-defined execution order.
+    #[error("Non-primitive operation {op_id:?} is not anchored in the expression DAG")]
+    UnanchoredNonPrimitiveOp { op_id: NonPrimitiveOpId },
 
     /// Non-primitive operation rejected by the active policy/profile.
     #[error("Operation {op:?} is not allowed by the current profile")]
@@ -43,5 +60,5 @@ pub enum CircuitBuilderError {
 
     /// Witness filler without any hints sequence.
     #[error("Witness filler is missing a witness hints sequence")]
-    UnmatchetWitnessFiller {},
+    UnmatchedWitnessFiller {},
 }

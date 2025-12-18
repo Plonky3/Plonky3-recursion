@@ -8,7 +8,7 @@ use itertools::zip_eq;
 use p3_field::{ExtensionField, Field, PrimeCharacteristicRing, PrimeField64};
 use p3_util::log2_ceil_u64;
 
-use super::compiler::{ExpressionLowerer, NonPrimitiveLowerer, Optimizer};
+use super::compiler::{ExpressionLowerer, Optimizer};
 use super::{BuilderConfig, ExpressionBuilder, PublicInputTracker};
 use crate::circuit::Circuit;
 use crate::op::{DefaultHint, NonPrimitiveOpType, WitnessHintsFiller};
@@ -359,7 +359,7 @@ where
         res
     }
 
-    /// Pushes a non-primitive op. Returns op id.
+    /// Pushes a non-primitive op. Returns (op_id, call_expr_id).
     #[allow(unused_variables)]
     pub(crate) fn push_non_primitive_op(
         &mut self,
@@ -367,14 +367,16 @@ where
         witness_exprs: Vec<Vec<ExprId>>,
         params: Option<NonPrimitiveOpParams>,
         label: &'static str,
-    ) -> NonPrimitiveOpId {
+    ) -> (NonPrimitiveOpId, ExprId) {
         let op_id = NonPrimitiveOpId(self.non_primitive_ops.len() as u32);
 
-        #[cfg(debug_assertions)]
-        self.expr_builder.log_non_primitive_op(
+        // Flatten witness_exprs into a single Vec<ExprId> for DAG dependencies
+        let flattened_inputs: Vec<ExprId> = witness_exprs.iter().flatten().copied().collect();
+
+        let call_expr_id = self.expr_builder.add_non_primitive_call(
             op_id,
             op_type.clone(),
-            witness_exprs.clone(),
+            flattened_inputs,
             label,
         );
 
@@ -384,7 +386,34 @@ where
             witness_exprs,
             params,
         });
-        op_id
+        (op_id, call_expr_id)
+    }
+
+    /// Pushes a non-primitive op and returns expressions representing its outputs.
+    ///
+    /// Each returned `ExprId` is an `Expr::NonPrimitiveOutput { call, output_idx }` node,
+    /// where `call` points to the `NonPrimitiveCall` node, making the DAG dependency explicit.
+    ///
+    /// TODO: Use this for ops which materialize outputs into the witness (e.g. once Poseidon perm
+    /// execution writes outputs), so downstream expressions can depend on them.
+    #[allow(dead_code)]
+    pub(crate) fn push_non_primitive_op_with_outputs(
+        &mut self,
+        op_type: NonPrimitiveOpType,
+        witness_exprs: Vec<Vec<ExprId>>,
+        params: Option<NonPrimitiveOpParams>,
+        n_outputs: usize,
+        label: &'static str,
+    ) -> (NonPrimitiveOpId, Vec<ExprId>) {
+        let (op_id, call_expr_id) =
+            self.push_non_primitive_op(op_type, witness_exprs, params, label);
+        let outputs = (0..n_outputs)
+            .map(|i| {
+                self.expr_builder
+                    .add_non_primitive_output(call_expr_id, i as u32, label)
+            })
+            .collect();
+        (op_id, outputs)
     }
 
     /// Pushes a new scope onto the scope stack.
@@ -442,30 +471,27 @@ where
     pub fn build_with_public_mapping(
         self,
     ) -> Result<(Circuit<F>, HashMap<ExprId, WitnessId>), CircuitBuilderError> {
-        // Stage 1: Lower expressions to primitives
+        // Stage 1: Lower expressions and non-primitives into a single op list
+        for data in &self.non_primitive_ops {
+            self.ensure_op_enabled(data.op_type.clone())?;
+        }
         let lowerer = ExpressionLowerer::new(
             self.expr_builder.graph(),
+            &self.non_primitive_ops,
             self.expr_builder.pending_connects(),
             self.public_tracker.count(),
             self.expr_builder.hints_fillers(),
             self.witness_alloc,
         );
-        let (primitive_ops, public_rows, expr_to_widx, public_mappings, witness_count) =
-            lowerer.lower()?;
+        let (ops, public_rows, expr_to_widx, public_mappings, witness_count) = lowerer.lower()?;
 
-        // Stage 2: Lower non-primitive operations using the expr_to_widx mapping
-        let non_primitive_lowerer =
-            NonPrimitiveLowerer::new(&self.non_primitive_ops, &expr_to_widx, &self.config);
-        let lowered_non_primitive_ops = non_primitive_lowerer.lower()?;
-
-        // Stage 3: IR transformations and optimizations
+        // Stage 2: IR transformations and optimizations
         let optimizer = Optimizer::new();
-        let primitive_ops = optimizer.optimize(primitive_ops);
+        let ops = optimizer.optimize(ops);
 
-        // Stage 4: Generate final circuit
+        // Stage 3: Generate final circuit
         let mut circuit = Circuit::new(witness_count, expr_to_widx);
-        circuit.primitive_ops = primitive_ops;
-        circuit.non_primitive_ops = lowered_non_primitive_ops;
+        circuit.ops = ops;
         circuit.public_rows = public_rows;
         circuit.public_flat_len = self.public_tracker.count();
         circuit.enabled_ops = self.config.into_enabled_ops();
@@ -627,8 +653,10 @@ mod tests {
     use alloc::vec;
 
     use p3_baby_bear::BabyBear;
+    use p3_field::extension::BinomialExtensionField;
 
     use super::*;
+    use crate::op::NonPrimitiveOpConfig;
 
     #[test]
     fn test_new_builder_initialization() {
@@ -730,12 +758,11 @@ mod tests {
 
         assert_eq!(circuit.public_flat_len, 0);
         assert_eq!(circuit.witness_count, 1);
-        assert_eq!(circuit.primitive_ops.len(), 1);
-        assert!(circuit.non_primitive_ops.is_empty());
+        assert_eq!(circuit.ops.len(), 1);
         assert!(circuit.public_rows.is_empty());
         assert!(circuit.enabled_ops.is_empty());
 
-        match &circuit.primitive_ops[0] {
+        match &circuit.ops[0] {
             crate::op::Op::Const { out, val } => {
                 assert_eq!(*out, WitnessId(0));
                 assert_eq!(*val, BabyBear::ZERO);
@@ -756,9 +783,9 @@ mod tests {
         assert_eq!(circuit.public_flat_len, 2);
         assert_eq!(circuit.public_rows.len(), 2);
         assert_eq!(circuit.witness_count, 3);
-        assert_eq!(circuit.primitive_ops.len(), 3);
+        assert_eq!(circuit.ops.len(), 3);
 
-        match &circuit.primitive_ops[0] {
+        match &circuit.ops[0] {
             crate::op::Op::Const { out, val } => {
                 assert_eq!(*out, WitnessId(0));
                 assert_eq!(*val, BabyBear::ZERO);
@@ -766,7 +793,7 @@ mod tests {
             _ => panic!("Expected Const at index 0"),
         }
 
-        match &circuit.primitive_ops[1] {
+        match &circuit.ops[1] {
             crate::op::Op::Public { out, public_pos } => {
                 assert_eq!(*out, WitnessId(1));
                 assert_eq!(*public_pos, 0);
@@ -774,7 +801,7 @@ mod tests {
             _ => panic!("Expected Public at index 1"),
         }
 
-        match &circuit.primitive_ops[2] {
+        match &circuit.ops[2] {
             crate::op::Op::Public { out, public_pos } => {
                 assert_eq!(*out, WitnessId(2));
                 assert_eq!(*public_pos, 1);
@@ -798,9 +825,9 @@ mod tests {
         assert_eq!(circuit.public_flat_len, 0);
         assert!(circuit.public_rows.is_empty());
         assert_eq!(circuit.witness_count, 3);
-        assert_eq!(circuit.primitive_ops.len(), 3);
+        assert_eq!(circuit.ops.len(), 3);
 
-        match &circuit.primitive_ops[0] {
+        match &circuit.ops[0] {
             crate::op::Op::Const { out, val } => {
                 assert_eq!(*out, WitnessId(0));
                 assert_eq!(*val, BabyBear::ZERO);
@@ -808,7 +835,7 @@ mod tests {
             _ => panic!("Expected Const at index 0"),
         }
 
-        match &circuit.primitive_ops[1] {
+        match &circuit.ops[1] {
             crate::op::Op::Const { out, val } => {
                 assert_eq!(*out, WitnessId(1));
                 assert_eq!(*val, BabyBear::from_u64(1));
@@ -816,7 +843,7 @@ mod tests {
             _ => panic!("Expected Const at index 1"),
         }
 
-        match &circuit.primitive_ops[2] {
+        match &circuit.ops[2] {
             crate::op::Op::Const { out, val } => {
                 assert_eq!(*out, WitnessId(2));
                 assert_eq!(*val, BabyBear::from_u64(2));
@@ -836,9 +863,9 @@ mod tests {
             .expect("Circuit with operations should build");
 
         assert_eq!(circuit.witness_count, 4);
-        assert_eq!(circuit.primitive_ops.len(), 4);
+        assert_eq!(circuit.ops.len(), 4);
 
-        match &circuit.primitive_ops[3] {
+        match &circuit.ops[3] {
             crate::op::Op::Add { out, a, b } => {
                 assert_eq!(*out, WitnessId(3));
                 assert_eq!(*a, WitnessId(1));
@@ -874,7 +901,7 @@ mod tests {
             .expect("Circuit with constraints should build");
 
         assert_eq!(circuit.witness_count, 2);
-        assert_eq!(circuit.primitive_ops.len(), 2);
+        assert_eq!(circuit.ops.len(), 2);
     }
 
     #[test]
@@ -888,9 +915,9 @@ mod tests {
             .expect("Circuit with operations should build");
 
         assert_eq!(circuit.witness_count, 2);
-        assert_eq!(circuit.primitive_ops.len(), 2);
+        assert_eq!(circuit.ops.len(), 2);
 
-        match &circuit.primitive_ops[1] {
+        match &circuit.ops[1] {
             crate::op::Op::Unconstrained {
                 inputs, outputs, ..
             } => {
@@ -899,6 +926,87 @@ mod tests {
             }
             _ => panic!("Expected Unconstrained at index 0"),
         }
+    }
+
+    #[test]
+    fn test_non_primitive_outputs_ordering_and_dedup() {
+        type Ext4 = BinomialExtensionField<BabyBear, 4>;
+
+        let mut builder = CircuitBuilder::<Ext4>::new();
+        builder.enable_op(NonPrimitiveOpType::PoseidonPerm, NonPrimitiveOpConfig::None);
+
+        // Provide minimal valid-ish witnesses.
+        let z = builder.add_const(Ext4::ZERO);
+        let witness_exprs = vec![vec![z]; 4] // in0..3
+            .into_iter()
+            .chain([vec![], vec![], vec![], vec![]]) // out0..1, mmcs_index_sum, mmcs_bit (optional)
+            .collect::<Vec<_>>();
+
+        let (op_id, outputs) = builder.push_non_primitive_op_with_outputs(
+            NonPrimitiveOpType::PoseidonPerm,
+            witness_exprs,
+            Some(NonPrimitiveOpParams::PoseidonPerm {
+                new_start: true,
+                merkle_path: false,
+            }),
+            2,
+            "poseidon_perm_with_outputs",
+        );
+
+        let one = builder.add_const(Ext4::ONE);
+        let sum0 = builder.add(outputs[0], one);
+        let sum1 = builder.add(outputs[1], one);
+
+        let circuit = builder.build().unwrap();
+
+        // Non-primitive op emitted exactly once.
+        let non_prims: Vec<_> = circuit
+            .ops
+            .iter()
+            .enumerate()
+            .filter_map(|(i, op)| match op {
+                crate::op::Op::NonPrimitiveOpWithExecutor { op_id: oid, .. } if *oid == op_id => {
+                    Some(i)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(non_prims.len(), 1);
+        let non_prim_pos = non_prims[0];
+
+        // Exact Add matches (order of a/b may swap).
+        let w_out0 = circuit.expr_to_widx[&outputs[0]];
+        let w_out1 = circuit.expr_to_widx[&outputs[1]];
+        let w_one = circuit.expr_to_widx[&one];
+        let w_sum0 = circuit.expr_to_widx[&sum0];
+        let w_sum1 = circuit.expr_to_widx[&sum1];
+
+        let add0_pos = circuit
+            .ops
+            .iter()
+            .position(|op| match op {
+                crate::op::Op::Add { a, b, out } => {
+                    *out == w_sum0
+                        && ((*a == w_out0 && *b == w_one) || (*a == w_one && *b == w_out0))
+                }
+                _ => false,
+            })
+            .unwrap();
+
+        let add1_pos = circuit
+            .ops
+            .iter()
+            .position(|op| match op {
+                crate::op::Op::Add { a, b, out } => {
+                    *out == w_sum1
+                        && ((*a == w_out1 && *b == w_one) || (*a == w_one && *b == w_out1))
+                }
+                _ => false,
+            })
+            .unwrap();
+
+        assert!(non_prim_pos < add0_pos);
+        assert!(non_prim_pos < add1_pos);
     }
 }
 

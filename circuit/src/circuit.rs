@@ -1,8 +1,8 @@
 use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt::Debug;
+use core::iter;
 use core::ops::{Add, Mul, Sub};
-use core::{iter, panic};
 
 use hashbrown::HashMap;
 use p3_field::Field;
@@ -51,10 +51,8 @@ impl<F> CircuitField for F where
 pub struct Circuit<F> {
     /// Number of witness table rows
     pub witness_count: u32,
-    /// Primitive operations in topological order
-    pub primitive_ops: Vec<Op<F>>,
-    /// Non-primitive operations
-    pub non_primitive_ops: Vec<Op<F>>,
+    /// Operations in execution order (primitive + non-primitive).
+    pub ops: Vec<Op<F>>,
     /// Public input witness indices
     pub public_rows: Vec<WitnessId>,
     /// Total number of public field elements
@@ -71,8 +69,7 @@ impl<F: Field + Clone> Clone for Circuit<F> {
     fn clone(&self) -> Self {
         Self {
             witness_count: self.witness_count,
-            primitive_ops: self.primitive_ops.clone(),
-            non_primitive_ops: self.non_primitive_ops.clone(),
+            ops: self.ops.clone(),
             public_rows: self.public_rows.clone(),
             public_flat_len: self.public_flat_len,
             enabled_ops: self.enabled_ops.clone(),
@@ -87,8 +84,7 @@ impl<F: Field> Circuit<F> {
     pub fn new(witness_count: u32, expr_to_widx: HashMap<ExprId, WitnessId>) -> Self {
         Self {
             witness_count,
-            primitive_ops: Vec::new(),
-            non_primitive_ops: Vec::new(),
+            ops: Vec::new(),
             public_rows: Vec::new(),
             public_flat_len: 0,
             enabled_ops: HashMap::new(),
@@ -116,8 +112,8 @@ impl<F: Field> Circuit<F> {
         let mut max_idx = 0;
 
         // Process each primitive operation, extracting its witness indices.
-        for prim in &self.primitive_ops {
-            match prim {
+        for op in &self.ops {
+            match op {
                 // Const: stores a constant value at witness[out].
                 // Preprocessed data: the output witness index.
                 Op::Const { out, .. } => {
@@ -162,23 +158,12 @@ impl<F: Field> Circuit<F> {
                         .max()
                         .unwrap_or(max_idx);
                 }
-                // Non-primitive ops should not appear in primitive_ops.
-                Op::NonPrimitiveOpWithExecutor { executor, .. } => panic!(
-                    "Unexpected non-primitive op {:?} in primitive_ops",
-                    executor.op_type()
-                ),
-            }
-        }
-
-        for op in &self.non_primitive_ops {
-            match op {
                 Op::NonPrimitiveOpWithExecutor {
                     executor,
                     inputs,
                     outputs,
                     ..
                 } => executor.preprocess(inputs, outputs, &mut preprocessed),
-                _ => panic!("Unexpected primitive op {:?} in non_primitive_ops", op),
             }
         }
 
@@ -216,7 +201,7 @@ mod tests {
 
     fn make_circuit(ops: Vec<Op<F>>) -> Circuit<F> {
         let mut circuit = Circuit::new(0, HashMap::new());
-        circuit.primitive_ops = ops;
+        circuit.ops = ops;
         circuit
     }
 
