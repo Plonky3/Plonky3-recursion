@@ -71,10 +71,13 @@ where
                 let table = PrimitiveOpType::from(idx);
                 match table {
                     PrimitiveOpType::Add => {
-                        assert!(prep.len() % AddAir::<Val<SC>, D>::preprocessed_lane_width() == 0);
-                        let num_ops = prep
-                            .len()
-                            .div_ceil(AddAir::<Val<SC>, D>::preprocessed_lane_width());
+                        // The `- 1` comes from the fact that the first preprocessing column is the multiplicity,
+                        // which we do not need to compute here for `Add`.
+                        let lane_without_multiplicities =
+                            AddAir::<Val<SC>, D>::preprocessed_lane_width() - 1;
+                        assert!(prep.len() % lane_without_multiplicities == 0);
+
+                        let num_ops = prep.len().div_ceil(lane_without_multiplicities);
                         let add_air = AddAir::new_with_preprocessed(
                             num_ops,
                             packing.add_lanes(),
@@ -86,10 +89,12 @@ where
                         );
                     }
                     PrimitiveOpType::Mul => {
-                        assert!(prep.len() % AddAir::<Val<SC>, D>::preprocessed_lane_width() == 0);
-                        let num_ops = prep
-                            .len()
-                            .div_ceil(MulAir::<Val<SC>, D>::preprocessed_lane_width());
+                        // The `- 1` comes from the fact that the first preprocessing column is the multiplicity,
+                        // which we do not need to compute here for `Mul`.
+                        let lane_without_multiplicities =
+                            MulAir::<Val<SC>, D>::preprocessed_lane_width() - 1;
+                        assert!(prep.len() % lane_without_multiplicities == 0);
+                        let num_ops = prep.len().div_ceil(lane_without_multiplicities);
                         let mul_air = if D == 1 {
                             MulAir::new_with_preprocessed(
                                 num_ops,
@@ -124,7 +129,11 @@ where
                     }
                     PrimitiveOpType::Witness => {
                         let num_witnesses = prep.len();
-                        let witness_air = WitnessAir::new(num_witnesses, packing.witness_lanes());
+                        let witness_air = WitnessAir::new_with_preprocessed(
+                            num_witnesses,
+                            packing.witness_lanes(),
+                            prep.clone(),
+                        );
                         table_preps[idx] = (
                             CircuitTableAir::Witness(witness_air),
                             log2_ceil_usize(num_witnesses.div_ceil(packing.witness_lanes())),
@@ -168,7 +177,7 @@ where
 
                         Ok(())
                     }
-                    _ => panic!("Unknow primitive operation at index {}", primitive_idx),
+                    _ => panic!("Unknown primitive operation at index {}", primitive_idx),
                 }
             }
         })?;

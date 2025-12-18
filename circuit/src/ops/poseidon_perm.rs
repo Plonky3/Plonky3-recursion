@@ -161,6 +161,40 @@ impl<F: Field> NonPrimitiveExecutor<F> for PoseidonPermExecutor {
         Ok(())
     }
 
+    fn preprocessing(
+        &self,
+        inputs: &[Vec<WitnessId>],
+        outputs: &[Vec<WitnessId>],
+        preprocessed_tables: &mut Vec<Vec<F>>,
+    ) {
+        // Update the `Witness` table preprocessing by incrementing the multiplicity of all values read from the `Witness` table.
+        // Whenever an input or output is present, it means it is exposed in the `Permutation` table, and its multiplicity should therefore be incremented.
+        let witness_table_idx = PrimitiveOpType::Witness as usize;
+        // The last input is `mmcs_bit_idx`, which is not a preprocessed column.
+        let last_input = inputs.len() - 1;
+        for inp in inputs[..last_input].iter() {
+            for witness_id in inp {
+                let idx = witness_id.0 as usize;
+                if idx >= preprocessed_tables[witness_table_idx].len() {
+                    preprocessed_tables[witness_table_idx].resize(idx + 1, F::from_u32(0));
+                }
+                preprocessed_tables[witness_table_idx][idx] += F::ONE;
+            }
+        }
+
+        for out in outputs {
+            for witness_id in out {
+                let idx = witness_id.0 as usize;
+                if idx >= preprocessed_tables[witness_table_idx].len() {
+                    preprocessed_tables[witness_table_idx].resize(idx + 1, F::from_u32(0));
+                }
+                preprocessed_tables[witness_table_idx][idx] += F::ONE;
+            }
+        }
+
+        // TODO: Update preprocessing columns for the Permutation table as well.
+    }
+
     fn op_type(&self) -> &NonPrimitiveOpType {
         &self.op_type
     }

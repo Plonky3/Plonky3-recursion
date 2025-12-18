@@ -7,7 +7,9 @@ use alloc::vec::Vec;
 use alloc::{format, vec};
 use core::mem::transmute;
 
-use p3_air::{Air, AirBuilder, BaseAir};
+use p3_air::{
+    Air, AirBuilder, AirBuilderWithPublicValues, BaseAir, PairBuilder, PermutationAirBuilder,
+};
 use p3_baby_bear::{BabyBear, default_babybear_poseidon2_16, default_babybear_poseidon2_24};
 use p3_batch_stark::{BatchProof, CommonData, StarkGenericConfig, StarkInstance, Val};
 use p3_circuit::op::PrimitiveOpType;
@@ -15,6 +17,8 @@ use p3_circuit::tables::{Poseidon2CircuitRow, Poseidon2CircuitTrace, Poseidon2Tr
 use p3_field::extension::{BinomialExtensionField, BinomiallyExtendable};
 use p3_field::{BasedVectorSpace, ExtensionField, Field, PrimeCharacteristicRing, PrimeField};
 use p3_koala_bear::{KoalaBear, default_koalabear_poseidon2_16, default_koalabear_poseidon2_24};
+use p3_lookup::folder::{ProverConstraintFolderWithLookups, VerifierConstraintFolderWithLookups};
+use p3_lookup::lookup_traits::{AirLookupHandler, Lookup};
 use p3_matrix::dense::RowMajorMatrix;
 use p3_poseidon2_air::RoundConstants;
 use p3_poseidon2_circuit_air::{
@@ -27,6 +31,7 @@ use p3_uni_stark::{ProverConstraintFolder, SymbolicAirBuilder, VerifierConstrain
 use thiserror::Error;
 use tracing::instrument;
 
+use crate::air::utils::AirLookupHandlerDyn;
 use crate::air::{AddAir, ConstAir, MulAir, PublicAir, WitnessAir};
 use crate::common::CircuitTableAir;
 use crate::config::StarkField;
@@ -114,6 +119,10 @@ where
     pub fn air(&self) -> &dyn BatchAir<SC> {
         &*self.air
     }
+
+    pub fn air_mut(&mut self) -> &mut dyn BatchAir<SC> {
+        &mut *self.air
+    }
 }
 
 /// Simple super trait of [`Air`] describing the behaviour of a non-primitive
@@ -123,6 +132,9 @@ pub trait BatchAir<SC>:
     + Air<SymbolicAirBuilder<Val<SC>>>
     + for<'a> Air<ProverConstraintFolder<'a, SC>>
     + for<'a> Air<VerifierConstraintFolder<'a, SC>>
+    + AirLookupHandlerDyn<SymbolicAirBuilder<Val<SC>>>
+    + for<'a> AirLookupHandlerDyn<ProverConstraintFolderWithLookups<'a, SC>>
+    + for<'a> AirLookupHandlerDyn<VerifierConstraintFolderWithLookups<'a, SC>>
     + Send
     + Sync
 where
@@ -474,6 +486,27 @@ where
         // The actual evaluation is handled by the concrete AIR type
         // This wrapper is just for type erasure
         // TODO: Delegate to the actual AIR if we can store it
+    }
+}
+
+impl<SC, AB> AirLookupHandler<AB> for Poseidon2AirWrapper<SC>
+where
+    SC: StarkGenericConfig + Send + Sync,
+    AB: PairBuilder + AirBuilder<F = Val<SC>> + PermutationAirBuilder + AirBuilderWithPublicValues,
+    Val<SC>: StarkField,
+{
+    fn add_lookup_columns(&mut self) -> Vec<usize> {
+        // The actual evaluation is handled by the concrete AIR type
+        // This wrapper is just for type erasure
+        // TODO: Delegate to the actual AIR if we can store it
+        vec![]
+    }
+
+    fn get_lookups(&mut self) -> Vec<p3_lookup::lookup_traits::Lookup<<AB>::F>> {
+        // The actual evaluation is handled by the concrete AIR type
+        // This wrapper is just for type erasure
+        // TODO: Delegate to the actual AIR if we can store it
+        vec![]
     }
 }
 
@@ -1013,11 +1046,11 @@ where
 {
     fn eval(&self, builder: &mut SymbolicAirBuilder<Val<SC>>) {
         match self {
-            Self::Witness(a) => a.eval(builder),
-            Self::Const(a) => a.eval(builder),
-            Self::Public(a) => a.eval(builder),
-            Self::Add(a) => a.eval(builder),
-            Self::Mul(a) => a.eval(builder),
+            Self::Witness(a) => Air::<SymbolicAirBuilder<Val<SC>>>::eval(a, builder),
+            Self::Const(a) => Air::<SymbolicAirBuilder<Val<SC>>>::eval(a, builder),
+            Self::Public(a) => Air::<SymbolicAirBuilder<Val<SC>>>::eval(a, builder),
+            Self::Add(a) => Air::<SymbolicAirBuilder<Val<SC>>>::eval(a, builder),
+            Self::Mul(a) => Air::<SymbolicAirBuilder<Val<SC>>>::eval(a, builder),
             Self::Dynamic(a) => {
                 <dyn BatchAir<SC> as Air<SymbolicAirBuilder<Val<SC>>>>::eval(a.air(), builder);
             }
@@ -1032,11 +1065,11 @@ where
 {
     fn eval(&self, builder: &mut ProverConstraintFolder<'a, SC>) {
         match self {
-            Self::Witness(a) => a.eval(builder),
-            Self::Const(a) => a.eval(builder),
-            Self::Public(a) => a.eval(builder),
-            Self::Add(a) => a.eval(builder),
-            Self::Mul(a) => a.eval(builder),
+            Self::Witness(a) => Air::<ProverConstraintFolder<'a, SC>>::eval(a, builder),
+            Self::Const(a) => Air::<ProverConstraintFolder<'a, SC>>::eval(a, builder),
+            Self::Public(a) => Air::<ProverConstraintFolder<'a, SC>>::eval(a, builder),
+            Self::Add(a) => Air::<ProverConstraintFolder<'a, SC>>::eval(a, builder),
+            Self::Mul(a) => Air::<ProverConstraintFolder<'a, SC>>::eval(a, builder),
             Self::Dynamic(a) => {
                 <dyn BatchAir<SC> as Air<ProverConstraintFolder<'a, SC>>>::eval(a.air(), builder);
             }
@@ -1051,13 +1084,53 @@ where
 {
     fn eval(&self, builder: &mut VerifierConstraintFolder<'a, SC>) {
         match self {
-            Self::Witness(a) => a.eval(builder),
-            Self::Const(a) => a.eval(builder),
-            Self::Public(a) => a.eval(builder),
-            Self::Add(a) => a.eval(builder),
-            Self::Mul(a) => a.eval(builder),
+            Self::Witness(a) => Air::<VerifierConstraintFolder<'a, SC>>::eval(a, builder),
+            Self::Const(a) => Air::<VerifierConstraintFolder<'a, SC>>::eval(a, builder),
+            Self::Public(a) => Air::<VerifierConstraintFolder<'a, SC>>::eval(a, builder),
+            Self::Add(a) => Air::<VerifierConstraintFolder<'a, SC>>::eval(a, builder),
+            Self::Mul(a) => Air::<VerifierConstraintFolder<'a, SC>>::eval(a, builder),
             Self::Dynamic(a) => {
                 <dyn BatchAir<SC> as Air<VerifierConstraintFolder<'a, SC>>>::eval(a.air(), builder);
+            }
+        }
+    }
+}
+
+impl<SC, const D: usize> AirLookupHandler<SymbolicAirBuilder<Val<SC>>> for CircuitTableAir<SC, D>
+where
+    SC: StarkGenericConfig,
+    Val<SC>: PrimeField,
+{
+    fn add_lookup_columns(&mut self) -> Vec<usize> {
+        match self {
+            Self::Witness(a) => {
+                AirLookupHandler::<SymbolicAirBuilder<Val<SC>>>::add_lookup_columns(a)
+            }
+            Self::Const(a) => {
+                AirLookupHandler::<SymbolicAirBuilder<Val<SC>>>::add_lookup_columns(a)
+            }
+            Self::Public(a) => {
+                AirLookupHandler::<SymbolicAirBuilder<Val<SC>>>::add_lookup_columns(a)
+            }
+            Self::Add(a) => AirLookupHandler::<SymbolicAirBuilder<Val<SC>>>::add_lookup_columns(a),
+            Self::Mul(a) => AirLookupHandler::<SymbolicAirBuilder<Val<SC>>>::add_lookup_columns(a),
+            Self::Dynamic(a) => {
+                AirLookupHandlerDyn::<SymbolicAirBuilder<Val<SC>>>::add_lookup_columns_dyn(
+                    a.air_mut(),
+                )
+            }
+        }
+    }
+
+    fn get_lookups(&mut self) -> Vec<Lookup<Val<SC>>> {
+        match self {
+            Self::Witness(a) => AirLookupHandler::<SymbolicAirBuilder<Val<SC>>>::get_lookups(a),
+            Self::Const(a) => AirLookupHandler::<SymbolicAirBuilder<Val<SC>>>::get_lookups(a),
+            Self::Public(a) => AirLookupHandler::<SymbolicAirBuilder<Val<SC>>>::get_lookups(a),
+            Self::Add(a) => AirLookupHandler::<SymbolicAirBuilder<Val<SC>>>::get_lookups(a),
+            Self::Mul(a) => AirLookupHandler::<SymbolicAirBuilder<Val<SC>>>::get_lookups(a),
+            Self::Dynamic(a) => {
+                AirLookupHandlerDyn::<SymbolicAirBuilder<Val<SC>>>::get_lookups_dyn(a.air_mut())
             }
         }
     }
@@ -1475,6 +1548,131 @@ mod tests {
     }
 
     #[test]
+    fn test_table_lookups() {
+        let mut builder = CircuitBuilder::<BabyBear>::new();
+        let cfg = config::baby_bear().build();
+
+        // x + 5*2 - 3 + (-1) == expected
+        let x = builder.add_public_input();
+        let expected = builder.add_public_input();
+        let c5 = builder.add_const(BabyBear::from_u64(5));
+        let c2 = builder.add_const(BabyBear::from_u64(2));
+        let c3 = builder.add_const(BabyBear::from_u64(3));
+        let neg_one = builder.add_const(BabyBear::NEG_ONE);
+
+        let mul_result = builder.mul(c5, c2); // 10
+        let add_result = builder.add(x, mul_result); // x + 10
+        let sub_result = builder.sub(add_result, c3); // x + 7
+        let final_result = builder.add(sub_result, neg_one); // x + 6
+
+        let diff = builder.sub(final_result, expected);
+        builder.assert_zero(diff);
+
+        let circuit = builder.build().unwrap();
+        let default_packing = TablePacking::default();
+        let airs_degrees =
+            get_airs_and_degrees_with_prep::<_, _, 1>(&circuit, default_packing, None).unwrap();
+        let (mut airs, log_degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
+
+        // Check that the multiplicities of `WitnessAir` are computed correctly.
+        // We can count the number of times the witness addresses appear in the various tables. We get:
+        let mut expected_multiplicities = vec![BabyBear::from_u64(2); 11];
+        // Pad multiplicities.
+        let total_witness_length = (expected_multiplicities
+            .len()
+            .div_ceil(default_packing.witness_lanes()))
+        .next_power_of_two()
+            * default_packing.witness_lanes();
+        expected_multiplicities.resize(total_witness_length, BabyBear::ZERO);
+
+        // Get expected preprocessed trace for `WitnessAir`.
+        let expected_preprocessed_trace = RowMajorMatrix::new(
+            expected_multiplicities
+                .iter()
+                .enumerate()
+                .flat_map(|(i, m)| vec![*m, BabyBear::from_usize(i)])
+                .collect::<Vec<_>>(),
+            2 * TablePacking::default().witness_lanes(),
+        );
+        assert_eq!(
+            airs[0]
+                .preprocessed_trace()
+                .expect("Witness table should have preprocessed trace"),
+            expected_preprocessed_trace,
+            "witness_multiplicities {:?} expected {:?}",
+            airs[0].preprocessed_trace(),
+            expected_preprocessed_trace,
+        );
+
+        let mut runner = circuit.runner();
+
+        let x_val = BabyBear::from_u64(7);
+        let expected_val = BabyBear::from_u64(13); // 7 + 10 - 3 - 1 = 13
+        runner.set_public_inputs(&[x_val, expected_val]).unwrap();
+        let traces = runner.run().unwrap();
+        let common = CommonData::from_airs_and_degrees(&cfg, &airs, &log_degrees);
+
+        let prover = BatchStarkProver::new(cfg);
+
+        let proof = prover.prove_all_tables(&traces, &common).unwrap();
+        assert_eq!(proof.ext_degree, 1);
+        assert!(proof.w_binomial.is_none());
+
+        assert!(prover.verify_all_tables(&proof, &common).is_ok());
+
+        // Check that the generated lookups are correct and consistent across tables.
+        for air in airs.iter_mut() {
+            let lookups = air.get_lookups();
+
+            match air {
+                CircuitTableAir::Witness(_) => {
+                    assert_eq!(
+                        lookups.len(),
+                        default_packing.witness_lanes(),
+                        "Witness table should have {} lookups, found {}",
+                        default_packing.witness_lanes(),
+                        lookups.len()
+                    );
+                }
+                CircuitTableAir::Const(_) => {
+                    assert_eq!(lookups.len(), 1, "Const table should have one lookup");
+                }
+                CircuitTableAir::Public(_) => {
+                    assert_eq!(lookups.len(), 1, "Public table should have one lookup");
+                }
+                CircuitTableAir::Add(_) => {
+                    let expected_num_lookups = default_packing.add_lanes()
+                        * AddAir::<BabyBear, 1>::lane_width().div_ceil(2);
+                    assert_eq!(
+                        lookups.len(),
+                        expected_num_lookups,
+                        "Add table should have {} lookups, found {}",
+                        expected_num_lookups,
+                        lookups.len()
+                    );
+                }
+                CircuitTableAir::Mul(_) => {
+                    let expected_num_lookups = default_packing.mul_lanes()
+                        * MulAir::<BabyBear, 1>::lane_width().div_ceil(2);
+                    assert_eq!(
+                        lookups.len(),
+                        expected_num_lookups,
+                        "Mul table should have {} lookups, found {}",
+                        expected_num_lookups,
+                        lookups.len()
+                    );
+                }
+                CircuitTableAir::Dynamic(_dynamic_air) => {
+                    assert!(
+                        lookups.is_empty(),
+                        "There is no dynamic table in this test, so no lookups expected"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn test_extension_field_batch_stark() {
         const D: usize = 4;
         type Ext4 = BinomialExtensionField<BabyBear, D>;
@@ -1528,6 +1726,149 @@ mod tests {
         let expected_w = <Ext4 as ExtractBinomialW<BabyBear>>::extract_w().unwrap();
         assert_eq!(proof.w_binomial, Some(expected_w));
         prover.verify_all_tables(&proof, &common).unwrap();
+    }
+
+    #[test]
+    fn test_extension_field_table_lookups() {
+        const D: usize = 4;
+        type Ext4 = BinomialExtensionField<BabyBear, D>;
+        let mut builder = CircuitBuilder::<Ext4>::new();
+
+        let x = builder.add_public_input();
+        let y = builder.add_public_input();
+        let z = builder.add_public_input();
+        let expected = builder.add_public_input();
+        let xy = builder.mul(x, y);
+        let res = builder.add(xy, z);
+        let diff = builder.sub(res, expected);
+        builder.assert_zero(diff);
+
+        let circuit = builder.build().unwrap();
+        let default_packing = TablePacking::default();
+        let airs_degrees =
+            get_airs_and_degrees_with_prep::<_, _, 1>(&circuit, default_packing, None).unwrap();
+        let (mut airs, log_degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
+
+        // Check that the multiplicities of `WitnessAir` are computed correctly.
+        // We can count the number of times the witness addresses appear in the various tables. We get:
+        let mut expected_multiplicities = vec![BabyBear::from_u64(2); 7];
+        // Pad multiplicities.
+        let total_witness_length = (expected_multiplicities
+            .len()
+            .div_ceil(default_packing.witness_lanes()))
+        .next_power_of_two()
+            * default_packing.witness_lanes();
+        expected_multiplicities.resize(total_witness_length, BabyBear::ZERO);
+
+        // Get expected preprocessed trace for `WitnessAir`.
+        let expected_preprocessed_trace = RowMajorMatrix::new(
+            expected_multiplicities
+                .iter()
+                .enumerate()
+                .flat_map(|(i, m)| vec![*m, BabyBear::from_usize(i)])
+                .collect::<Vec<_>>(),
+            2 * TablePacking::default().witness_lanes(),
+        );
+        assert_eq!(
+            airs[0]
+                .preprocessed_trace()
+                .expect("Witness table should have preprocessed trace"),
+            expected_preprocessed_trace,
+            "witness_multiplicities {:?} expected {:?}",
+            airs[0].preprocessed_trace(),
+            expected_preprocessed_trace,
+        );
+
+        let mut runner = circuit.runner();
+
+        let xv = Ext4::from_basis_coefficients_slice(&[
+            BabyBear::from_u64(2),
+            BabyBear::from_u64(3),
+            BabyBear::from_u64(5),
+            BabyBear::from_u64(7),
+        ])
+        .unwrap();
+        let yv = Ext4::from_basis_coefficients_slice(&[
+            BabyBear::from_u64(11),
+            BabyBear::from_u64(13),
+            BabyBear::from_u64(17),
+            BabyBear::from_u64(19),
+        ])
+        .unwrap();
+        let zv = Ext4::from_basis_coefficients_slice(&[
+            BabyBear::from_u64(23),
+            BabyBear::from_u64(29),
+            BabyBear::from_u64(31),
+            BabyBear::from_u64(37),
+        ])
+        .unwrap();
+        let expected_v = xv * yv + zv;
+        runner.set_public_inputs(&[xv, yv, zv, expected_v]).unwrap();
+        let traces = runner.run().unwrap();
+
+        let cfg = config::baby_bear().build();
+        let common = CommonData::from_airs_and_degrees(&cfg, &airs, &log_degrees);
+
+        let prover = BatchStarkProver::new(cfg);
+
+        let proof = prover.prove_all_tables(&traces, &common).unwrap();
+        assert_eq!(proof.ext_degree, 4);
+        // Ensure W was captured
+        let expected_w = <Ext4 as ExtractBinomialW<BabyBear>>::extract_w().unwrap();
+        assert_eq!(proof.w_binomial, Some(expected_w));
+
+        assert!(prover.verify_all_tables(&proof, &common).is_ok());
+
+        // Check that the generated lookups are correct and consistent across tables.
+        for air in airs.iter_mut() {
+            let lookups = air.get_lookups();
+
+            match air {
+                CircuitTableAir::Witness(_) => {
+                    assert_eq!(
+                        lookups.len(),
+                        default_packing.witness_lanes(),
+                        "Witness table should have {} lookups, found {}",
+                        default_packing.witness_lanes(),
+                        lookups.len()
+                    );
+                }
+                CircuitTableAir::Const(_) => {
+                    assert_eq!(lookups.len(), 1, "Const table should have one lookup");
+                }
+                CircuitTableAir::Public(_) => {
+                    assert_eq!(lookups.len(), 1, "Public table should have one lookup");
+                }
+                CircuitTableAir::Add(_) => {
+                    let expected_num_lookups = default_packing.add_lanes()
+                        * AddAir::<BabyBear, 1>::lane_width().div_ceil(2);
+                    assert_eq!(
+                        lookups.len(),
+                        expected_num_lookups,
+                        "Add table should have {} lookups, found {}",
+                        expected_num_lookups,
+                        lookups.len()
+                    );
+                }
+                CircuitTableAir::Mul(_) => {
+                    let expected_num_lookups = default_packing.mul_lanes()
+                        * MulAir::<BabyBear, 1>::lane_width().div_ceil(2);
+                    assert_eq!(
+                        lookups.len(),
+                        expected_num_lookups,
+                        "Mul table should have {} lookups, found {}",
+                        expected_num_lookups,
+                        lookups.len()
+                    );
+                }
+                CircuitTableAir::Dynamic(_dynamic_air) => {
+                    assert!(
+                        lookups.is_empty(),
+                        "There is no dynamic table in this test, so no lookups expected"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

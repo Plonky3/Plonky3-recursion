@@ -1,17 +1,23 @@
+use alloc::string::ToString;
+use alloc::vec;
 use alloc::vec::Vec;
 use core::borrow::Borrow;
+use core::iter;
 use core::mem::MaybeUninit;
 
-use p3_air::{Air, AirBuilder, BaseAir, PairBuilder};
+use p3_air::{
+    Air, AirBuilder, AirBuilderWithPublicValues, BaseAir, PairBuilder, PermutationAirBuilder,
+};
 use p3_circuit::tables::{Poseidon2CircuitRow, Poseidon2CircuitTrace};
 use p3_field::{Field, PrimeCharacteristicRing, PrimeField};
+use p3_lookup::lookup_traits::{AirLookupHandler, Direction, Kind, Lookup};
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_maybe_rayon::prelude::*;
 use p3_poseidon2::GenericPoseidon2LinearLayers;
 use p3_poseidon2_air::{Poseidon2Air, Poseidon2Cols, RoundConstants, generate_trace_rows_for_perm};
 use p3_symmetric::CryptographicPermutation;
-use p3_uni_stark::SubAirBuilder;
+use p3_uni_stark::{SubAirBuilder, SymbolicAirBuilder, SymbolicExpression, SymbolicVariable};
 
 use crate::columns::{POSEIDON_LIMBS, POSEIDON_PUBLIC_OUTPUT_LIMBS};
 use crate::{Poseidon2CircuitCols, num_cols};
@@ -55,6 +61,9 @@ pub struct Poseidon2CircuitAir<
         HALF_FULL_ROUNDS,
         PARTIAL_ROUNDS,
     >,
+    /// Current number of lookup columns registered.
+    pub num_lookup_cols: usize,
+    /// Preprocessed values for the AIR. These values are only needed by the prover. During verification, the `Vec` can be empty.
     preprocessed: Vec<F>,
 }
 
@@ -100,6 +109,7 @@ impl<
 
         Self {
             p3_poseidon2: Poseidon2Air::new(constants),
+            num_lookup_cols: 0,
             preprocessed: Vec::new(),
         }
     }
@@ -115,6 +125,7 @@ impl<
 
         Self {
             p3_poseidon2: Poseidon2Air::new(constants),
+            num_lookup_cols: 0,
             preprocessed,
         }
     }
@@ -607,12 +618,6 @@ fn eval<
     // out[0..3] = Poseidon2(in[0..3])
     // This holds regardless of merkle_path, new_start, CTL flags, chaining, or MMCS accumulator.
     air.p3_poseidon2.eval(&mut sub_builder);
-
-    // TODO: CTL lookups
-    // - If in_ctl[i] = 1: enforce next.poseidon2.inputs[limb i] = witness[in_idx[i]]
-    // - If out_ctl[i] = 1: enforce local.poseidon2.outputs[limb i] = witness[out_idx[i]]
-    // - If mmcs_index_sum_idx is used: expose mmcs_index_sum via CTL
-    // These will be implemented when CTL lookup infrastructure is available.
 }
 
 impl<
@@ -671,6 +676,187 @@ where
             HALF_FULL_ROUNDS,
             PARTIAL_ROUNDS,
         >(self, builder, local, next, next_preprocessed);
+    }
+}
+
+impl<
+    AB: PermutationAirBuilder + PairBuilder + AirBuilderWithPublicValues,
+    LinearLayers: GenericPoseidon2LinearLayers<WIDTH>,
+    const D: usize,
+    const WIDTH: usize,
+    const WIDTH_EXT: usize,
+    const RATE_EXT: usize,
+    const CAPACITY_EXT: usize,
+    const SBOX_DEGREE: u64,
+    const SBOX_REGISTERS: usize,
+    const HALF_FULL_ROUNDS: usize,
+    const PARTIAL_ROUNDS: usize,
+> AirLookupHandler<AB>
+    for Poseidon2CircuitAir<
+        AB::F,
+        LinearLayers,
+        D,
+        WIDTH,
+        WIDTH_EXT,
+        RATE_EXT,
+        CAPACITY_EXT,
+        SBOX_DEGREE,
+        SBOX_REGISTERS,
+        HALF_FULL_ROUNDS,
+        PARTIAL_ROUNDS,
+    >
+where
+    AB::F: PrimeField,
+{
+    fn add_lookup_columns(&mut self) -> Vec<usize> {
+        let lookup_column_idx = self.num_lookup_cols;
+        self.num_lookup_cols += 1;
+        vec![lookup_column_idx]
+    }
+
+    fn get_lookups(&mut self) -> Vec<Lookup<<AB>::F>> {
+        let symbolic_air_builder = SymbolicAirBuilder::<AB::F>::new(
+            0, // TODO: update the permutation width when implemented.
+            BaseAir::<AB::F>::width(self),
+            0,
+            0, // Here, we do not need the permutation trace
+            0,
+        );
+        let symbolic_main = symbolic_air_builder.main();
+        let symbolic_main_local = symbolic_main.row_slice(0).expect("The matrix is empty?");
+        let symbolic_main_next = symbolic_main
+            .row_slice(1)
+            .expect("The matrix has only one row?");
+
+        let local: &Poseidon2CircuitCols<
+            SymbolicVariable<AB::F>,
+            Poseidon2Cols<
+                SymbolicVariable<AB::F>,
+                WIDTH,
+                SBOX_DEGREE,
+                SBOX_REGISTERS,
+                HALF_FULL_ROUNDS,
+                PARTIAL_ROUNDS,
+            >,
+        > = (*symbolic_main_local).borrow();
+
+        let next: &Poseidon2CircuitCols<
+            SymbolicVariable<AB::F>,
+            Poseidon2Cols<
+                SymbolicVariable<AB::F>,
+                WIDTH,
+                SBOX_DEGREE,
+                SBOX_REGISTERS,
+                HALF_FULL_ROUNDS,
+                PARTIAL_ROUNDS,
+            >,
+        > = (*symbolic_main_next).borrow();
+
+        // Preprocessing layout:
+        // [in_idx[0], in_ctl[0], normal_chain_sel[0], merkle_chain_sel[0], ..., in_idx[3], in_ctl[3], normal_chain_sel[3], merkle_chain_sel[3],
+        //  out_idx[0], out_ctl[0], out_idx[1], out_ctl[1], mmcs_index_sum_ctl_idx, new_start, merkle_path]
+        // The following corresponds to the size of the data related to one input limb (in_idx[i], in_ctl[i], normal_chain_sel[i], merkle_chain_sel[i]).
+        let preprocessing_limb_input_data_size = 4;
+        let preprocessing_limb_output_data_size = 4;
+        let in_ctl_idx = 1;
+        let start_output_idx = preprocessing_limb_input_data_size * POSEIDON_LIMBS;
+        let mmcs_index_sum_ctl_idx =
+            start_output_idx + preprocessing_limb_output_data_size * POSEIDON_PUBLIC_OUTPUT_LIMBS;
+        let new_start_idx = mmcs_index_sum_ctl_idx + 1;
+        let merkle_path_idx = new_start_idx + 1;
+
+        let preprocessed = symbolic_air_builder.preprocessed();
+        let local_preprocessed = preprocessed
+            .row_slice(0)
+            .expect("The preprocessed matrix has only one row?");
+        let local_preprocessed: &[SymbolicVariable<AB::F>] = (*local_preprocessed).borrow();
+        let next_preprocessed = preprocessed
+            .row_slice(1)
+            .expect("The preprocessed matrix has only one row?");
+        let next_preprocessed: &[SymbolicVariable<AB::F>] = (*next_preprocessed).borrow();
+        // There are POSEIDON_LIMBS input limbs and POSEIDON_PUBLIC_OUTPUT_LIMBS output limbs to be lookup up in the `Witness` table.
+        let mut lookups = Vec::with_capacity(POSEIDON_LIMBS + POSEIDON_PUBLIC_OUTPUT_LIMBS);
+        // Each input/output limb is sent with multiplicity `in_ctl/out_ctl`.
+        for limb_idx in 0..POSEIDON_LIMBS {
+            let in_ctl =
+                local_preprocessed[limb_idx * preprocessing_limb_input_data_size + in_ctl_idx];
+            let input_idx_limb =
+                iter::once(next_preprocessed[limb_idx * preprocessing_limb_input_data_size]) // input witness index
+                    .chain(
+                        next.poseidon2.inputs[limb_idx * D..(limb_idx + 1) * D]
+                            .iter()
+                            .cloned(),
+                    )
+                    .map(SymbolicExpression::from)
+                    .collect::<Vec<_>>();
+
+            let lookup_input = vec![(
+                input_idx_limb,
+                SymbolicExpression::from(in_ctl),
+                Direction::Send,
+            )];
+
+            lookups.push(AirLookupHandler::<AB>::register_lookup(
+                self,
+                Kind::Global("WitnessChecks".to_string()),
+                &lookup_input,
+            ));
+        }
+
+        for limb_idx in 0..POSEIDON_PUBLIC_OUTPUT_LIMBS {
+            let out_ctl = local_preprocessed[start_output_idx + limb_idx * 2 + 1];
+
+            let output_idx_limb = iter::once(local_preprocessed[start_output_idx + limb_idx * 2]) // output witness index
+                .chain(
+                    local.poseidon2.ending_full_rounds[HALF_FULL_ROUNDS - 1].post
+                        [limb_idx * D..(limb_idx + 1) * D]
+                        .iter()
+                        .cloned(),
+                )
+                .map(SymbolicExpression::from)
+                .collect::<Vec<_>>();
+
+            let lookup_output = vec![(
+                output_idx_limb,
+                SymbolicExpression::from(out_ctl),
+                Direction::Send,
+            )];
+
+            lookups.push(AirLookupHandler::<AB>::register_lookup(
+                self,
+                Kind::Global("WitnessChecks".to_string()),
+                &lookup_output,
+            ));
+        }
+
+        // If next.new_start = 1 and local.merkle_path = 1, then mmcs_index_sum is exposed via CTL.
+        let next_new_start = next_preprocessed[new_start_idx];
+        let local_merkle_path = local_preprocessed[merkle_path_idx];
+        let multiplicity = next_new_start * local_merkle_path;
+
+        let local_mmcs_index_sum_idx = local_preprocessed[mmcs_index_sum_ctl_idx];
+        let mut mmcs_index_sum_lookup = vec![
+            SymbolicExpression::from(local_mmcs_index_sum_idx),
+            SymbolicExpression::from(local.mmcs_index_sum),
+        ];
+        // Extend `mmcs_index_sum` to D elements with zeros.
+        mmcs_index_sum_lookup.extend(iter::repeat_n(
+            SymbolicExpression::Constant(AB::F::ZERO),
+            D - 1,
+        ));
+
+        let lookup_mmcs = (
+            mmcs_index_sum_lookup.to_vec(),
+            multiplicity,
+            Direction::Send,
+        );
+        lookups.push(AirLookupHandler::<AB>::register_lookup(
+            self,
+            Kind::Global("WitnessChecks".to_string()),
+            &[lookup_mmcs],
+        ));
+
+        lookups
     }
 }
 
