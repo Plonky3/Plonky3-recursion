@@ -108,19 +108,6 @@ impl From<usize> for PrimitiveOpType {
     }
 }
 
-impl PrimitiveOpType {
-    /// Get the number of columns in the preprocessed table for this operation
-    pub const fn get_prep_width(&self) -> usize {
-        match self {
-            Self::Witness => 1, // index
-            Self::Const => 2,   // index, val
-            Self::Public => 1,  // index
-            Self::Add => 3,     // index_a, index_b, index_out
-            Self::Mul => 3,     // index_a, index_b, index_out
-        }
-    }
-}
-
 // Custom Clone implementation for Op
 impl<F: Field + Clone> Clone for Op<F> {
     fn clone(&self) -> Self {
@@ -464,6 +451,16 @@ pub trait NonPrimitiveExecutor<F: Field>: Debug {
         ctx: &mut ExecutionContext<'_, F>,
     ) -> Result<(), CircuitError>;
 
+    /// Update the preprocessed values related to this operation. This consists of:
+    /// - the preprocessed values for the associated table
+    /// - the multiplicity for the `Witness` table.
+    fn preprocessing(
+        &self,
+        inputs: &[Vec<WitnessId>],
+        outputs: &[Vec<WitnessId>],
+        preprocessed_tables: &mut Vec<Vec<F>>,
+    );
+
     /// Get operation type identifier (for config lookup, error reporting)
     fn op_type(&self) -> &NonPrimitiveOpType;
 
@@ -724,23 +721,6 @@ mod tests {
 
         // Partial match is not enough for equality
         assert_ne!(add_op1, add_op2);
-    }
-
-    #[test]
-    fn test_primitive_op_type_from_usize() {
-        // Convert integer indices to operation types
-        let witness_type = PrimitiveOpType::from(0);
-        let const_type = PrimitiveOpType::from(1);
-        let public_type = PrimitiveOpType::from(2);
-        let add_type = PrimitiveOpType::from(3);
-        let mul_type = PrimitiveOpType::from(4);
-
-        // Verify each type has the correct preprocessing width
-        assert_eq!(witness_type.get_prep_width(), 1);
-        assert_eq!(const_type.get_prep_width(), 2);
-        assert_eq!(public_type.get_prep_width(), 1);
-        assert_eq!(add_type.get_prep_width(), 3);
-        assert_eq!(mul_type.get_prep_width(), 3);
     }
 
     #[test]
