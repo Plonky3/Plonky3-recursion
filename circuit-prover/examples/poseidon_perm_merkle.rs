@@ -11,6 +11,23 @@ use p3_field::extension::BinomialExtensionField;
 use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
 use p3_poseidon2_circuit_air::BabyBearD4Width16;
 use p3_symmetric::Permutation;
+use tracing_forest::ForestLayer;
+use tracing_forest::util::LevelFilter;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::{EnvFilter, Registry};
+
+/// Initializes a global logger with default parameters.
+fn init_logger() {
+    let env_filter = EnvFilter::builder()
+        .with_default_directive(LevelFilter::INFO.into())
+        .from_env_lossy();
+
+    Registry::default()
+        .with(env_filter)
+        .with(ForestLayer::default())
+        .init();
+}
 
 type Base = BabyBear;
 type Ext4 = BinomialExtensionField<Base, 4>;
@@ -19,6 +36,8 @@ const LIMB_SIZE: usize = 4;
 const WIDTH: usize = 16;
 
 fn main() -> Result<(), Box<dyn Error>> {
+    init_logger();
+
     // Three-row Merkle path example (2 levels):
     // Row 0: hashes leaf || sibling0 (merkle_path = true, new_start = true, mmcs_bit = 0)
     // Row 1: merkle_path = true, new_start = false, mmcs_bit = 1 (previous hash becomes right child),
