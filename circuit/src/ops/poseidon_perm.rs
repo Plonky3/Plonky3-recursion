@@ -161,40 +161,6 @@ impl<F: Field> NonPrimitiveExecutor<F> for PoseidonPermExecutor {
         Ok(())
     }
 
-    fn preprocessing(
-        &self,
-        inputs: &[Vec<WitnessId>],
-        outputs: &[Vec<WitnessId>],
-        preprocessed_tables: &mut Vec<Vec<F>>,
-    ) {
-        // Update the `Witness` table preprocessing by incrementing the multiplicity of all values read from the `Witness` table.
-        // Whenever an input or output is present, it means it is exposed in the `Permutation` table, and its multiplicity should therefore be incremented.
-        let witness_table_idx = PrimitiveOpType::Witness as usize;
-        // The last input is `mmcs_bit_idx`, which is not a preprocessed column.
-        let last_input = inputs.len() - 1;
-        for inp in inputs[..last_input].iter() {
-            for witness_id in inp {
-                let idx = witness_id.0 as usize;
-                if idx >= preprocessed_tables[witness_table_idx].len() {
-                    preprocessed_tables[witness_table_idx].resize(idx + 1, F::from_u32(0));
-                }
-                preprocessed_tables[witness_table_idx][idx] += F::ONE;
-            }
-        }
-
-        for out in outputs {
-            for witness_id in out {
-                let idx = witness_id.0 as usize;
-                if idx >= preprocessed_tables[witness_table_idx].len() {
-                    preprocessed_tables[witness_table_idx].resize(idx + 1, F::from_u32(0));
-                }
-                preprocessed_tables[witness_table_idx][idx] += F::ONE;
-            }
-        }
-
-        // TODO: Update preprocessing columns for the Permutation table as well.
-    }
-
     fn op_type(&self) -> &NonPrimitiveOpType {
         &self.op_type
     }
@@ -209,6 +175,17 @@ impl<F: Field> NonPrimitiveExecutor<F> for PoseidonPermExecutor {
         _outputs: &[Vec<WitnessId>],
         preprocessed_tables: &mut Vec<Vec<F>>,
     ) {
+        let witness_table_idx = PrimitiveOpType::Witness as usize;
+        let update_witness_table = |witness_ids: &[WitnessId], p_ts: &mut Vec<Vec<F>>| {
+            for witness_id in witness_ids {
+                let idx = witness_id.0 as usize;
+                if idx >= p_ts[witness_table_idx].len() {
+                    p_ts[witness_table_idx].resize(idx + 1, F::from_u32(0));
+                }
+                p_ts[witness_table_idx][idx] += F::ONE;
+            }
+        };
+
         // We need to populate in_ctl and out_ctl for this operation.
         let idx = PrimitiveOpType::COUNT + self.op_type.clone() as usize;
         if preprocessed_tables.len() <= idx {
@@ -230,6 +207,10 @@ impl<F: Field> NonPrimitiveExecutor<F> for PoseidonPermExecutor {
                 // Exposed input
                 preprocessed_tables[idx].push(F::from_u32(inp[0].0)); // in_idx
                 preprocessed_tables[idx].push(F::ONE); // in_ctl
+
+                // In this case, we are reading the input limbs from the witness table,
+                // so we need to update the associated witness table multiplicities.
+                update_witness_table(inp, preprocessed_tables);
             }
             let normal_chain_sel =
                 if !self.new_start && !self.merkle_path && inputs[limb_idx].is_empty() {
@@ -258,13 +239,21 @@ impl<F: Field> NonPrimitiveExecutor<F> for PoseidonPermExecutor {
                 // Exposed output
                 preprocessed_tables[idx].push(F::from_u32(out[0].0)); // out_idx
                 preprocessed_tables[idx].push(F::ONE); // out_ctl
+
+                // In this case, we are reading the output limbs from the witness table,
+                // so we need to update the associated witness table multiplicities.
+                update_witness_table(out, preprocessed_tables);
             }
         }
+
         // mmcs_index_sum
         if inputs[6].is_empty() {
-            preprocessed_tables[idx].push(F::ZERO); // mmcs_index_sum_ctl
+            preprocessed_tables[idx].push(F::ZERO);
         } else {
-            preprocessed_tables[idx].push(F::ONE); // mmcs_index_sum_ctl
+            preprocessed_tables[idx].push(F::ONE);
+            // In this case, we are reading the MMCS index sum from the witness table,
+            // so we need to update the associated witness table multiplicities.
+            update_witness_table(&inputs[6], preprocessed_tables);
         }
 
         // We need to insert `new_start` and `merkle_path` as well.
