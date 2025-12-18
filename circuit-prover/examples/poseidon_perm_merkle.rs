@@ -224,6 +224,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     runner.set_non_primitive_op_private_data(
         row1_op_id,
         NonPrimitiveOpPrivateData::PoseidonPerm(PoseidonPermPrivateData {
+            // The first two values will be overwritten by row 1 input
             input_values: vec![sibling1_limb2, sibling1_limb3],
         }),
     )?;
@@ -232,7 +233,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     runner.set_non_primitive_op_private_data(
         row2_op_id,
         NonPrimitiveOpPrivateData::PoseidonPerm(PoseidonPermPrivateData {
-            input_values: vec![sibling2_limb2, sibling2_limb3],
+            // The first two values will be overwritten by row 2 input
+            input_values: vec![Ext4::ZERO, Ext4::ZERO, sibling2_limb2, sibling2_limb3],
         }),
     )?;
 

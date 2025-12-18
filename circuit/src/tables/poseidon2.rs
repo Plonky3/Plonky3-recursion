@@ -209,7 +209,7 @@ where
                     if let Some(Some(NonPrimitiveOpPrivateData::PoseidonPerm(private_data))) =
                         self.non_primitive_op_private_data.get(op_id.0 as usize)
                     {
-                        let num_limbs = width / (2 * d);
+                        let num_limbs = width / d;
                         if private_data.input_values.len() != num_limbs {
                             return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
                                 op: executor.op_type().clone(),
@@ -217,12 +217,9 @@ where
                                 got: private_data.input_values.len(),
                             });
                         }
-                        let mut flattened: Vec<<Config as Poseidon2Params>::BaseField> =
-                            vec![<Config as Poseidon2Params>::BaseField::ZERO; width];
-                        // Private data always use the rightmost inputs
-                        for (i, limb) in private_data.input_values.iter().enumerate() {
-                            flattened[i * d + width / 2..(i + 1) * d + width / 2]
-                                .copy_from_slice(limb.as_basis_coefficients_slice());
+                        let mut flattened = Vec::with_capacity(width);
+                        for limb in &private_data.input_values {
+                            flattened.extend_from_slice(limb.as_basis_coefficients_slice());
                         }
                         flattened
                     } else {
