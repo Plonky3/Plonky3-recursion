@@ -166,7 +166,7 @@ impl<F: Field> NonPrimitiveExecutor<F> for PoseidonPermExecutor {
         self
     }
 
-    fn preprocessing(
+    fn preprocess(
         &self,
         inputs: &[Vec<WitnessId>],
         _outputs: &[Vec<WitnessId>],

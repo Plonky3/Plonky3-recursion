@@ -170,15 +170,15 @@ impl<F: Field> Circuit<F> {
             }
         }
 
-        for nop in &self.non_primitive_ops {
-            match nop {
+        for op in &self.non_primitive_ops {
+            match op {
                 Op::NonPrimitiveOpWithExecutor {
                     executor,
                     inputs,
                     outputs,
                     ..
-                } => executor.preprocessing(inputs, outputs, &mut preprocessed),
-                _ => panic!("Unexpected primitive op {:?} in non_primitive_ops", nop),
+                } => executor.preprocess(inputs, outputs, &mut preprocessed),
+                _ => panic!("Unexpected primitive op {:?} in non_primitive_ops", op),
             }
         }
 

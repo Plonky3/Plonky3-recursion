@@ -380,12 +380,13 @@ pub trait NonPrimitiveExecutor<F: Field>: Debug {
     fn as_any(&self) -> &dyn core::any::Any;
 
     /// Update the preprocessed columns with the values added by this operation.
-    fn preprocessing(
+    fn preprocess(
         &self,
-        inputs: &[Vec<WitnessId>],
-        outputs: &[Vec<WitnessId>],
-        preprocessed_tables: &mut Vec<Vec<F>>,
-    );
+        _inputs: &[Vec<WitnessId>],
+        _outputs: &[Vec<WitnessId>],
+        _preprocessed_tables: &mut Vec<Vec<F>>,
+    ) {
+    }
 
     /// Clone as trait object
     fn boxed(&self) -> Box<dyn NonPrimitiveExecutor<F>>;
