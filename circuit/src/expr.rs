@@ -14,10 +14,6 @@ pub enum Expr<F> {
     /// this is the last witness in a sequence of related hints,
     /// where each sequence is produced through a shared generation process.
     Hint { is_last_hint: bool },
-    /// Unset witness — allocates a `WitnessId` that starts as `None`.
-    /// Used for executor-computed outputs that will be written during
-    /// non-primitive operation execution. No hint filler is associated.
-    UnsetWitness,
     /// Addition of two expressions
     Add { lhs: ExprId, rhs: ExprId },
     /// Subtraction of two expressions

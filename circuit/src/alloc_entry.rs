@@ -23,8 +23,6 @@ pub enum AllocationType {
     NonPrimitiveOp(NonPrimitiveOpType),
     NonPrimitiveOutput,
     WitnessHint,
-    /// Unset witness slot that will be filled by an executor during non-primitive op execution.
-    UnsetWitness,
 }
 
 /// Detailed allocation entry for debugging
@@ -97,7 +95,6 @@ fn dump_internal_log(allocation_log: &[AllocationEntry]) {
     let mut divs = Vec::new();
     let mut non_primitives = Vec::new();
     let mut witness_hints = Vec::new();
-    let mut unset_witnesses = Vec::new();
 
     fn display_label(label: &str) -> String {
         if label.is_empty() {
@@ -119,7 +116,6 @@ fn dump_internal_log(allocation_log: &[AllocationEntry]) {
                 non_primitives.push(entry);
             }
             AllocationType::WitnessHint => witness_hints.push(entry),
-            AllocationType::UnsetWitness => unset_witnesses.push(entry),
         }
     }
 
@@ -273,18 +269,6 @@ fn dump_internal_log(allocation_log: &[AllocationEntry]) {
         for entry in witness_hints {
             tracing::debug!(
                 "  expr_{} (WitnessHint){}",
-                entry.expr_id.0,
-                display_label(entry.label)
-            );
-        }
-        tracing::debug!("");
-    }
-
-    if !unset_witnesses.is_empty() {
-        tracing::debug!("--- Unset Witnesses ({}) ---", unset_witnesses.len());
-        for entry in unset_witnesses {
-            tracing::debug!(
-                "  expr_{} (UnsetWitness){}",
                 entry.expr_id.0,
                 display_label(entry.label)
             );

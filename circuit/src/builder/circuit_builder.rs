@@ -221,45 +221,6 @@ where
             .add_witness_hints(DefaultHint { n_outputs: count }, label)
     }
 
-    /// Allocates a single unset witness expression.
-    ///
-    /// The witness slot starts as `None` and must be written by an executor
-    /// during non-primitive operation execution. Use this for outputs of
-    /// non-primitive operations when the output is not modeled as an
-    /// `Expr::NonPrimitiveOutput` node.
-    ///
-    /// # Arguments
-    ///
-    /// - `label`: Human-readable label for debug logging
-    ///
-    /// # Returns
-    ///
-    /// An [`ExprId`] handle to the unset witness expression.
-    #[must_use]
-    pub fn alloc_witness_unset(&mut self, label: &'static str) -> ExprId {
-        self.expr_builder.add_unset_witness(label)
-    }
-
-    /// Allocates multiple unset witness expressions.
-    ///
-    /// Each witness slot starts as `None` and must be written by an executor
-    /// during non-primitive operation execution. Use this for outputs of
-    /// non-primitive operations when the output is not modeled as an
-    /// `Expr::NonPrimitiveOutput` node.
-    ///
-    /// # Arguments
-    ///
-    /// - `count`: Number of unset witnesses to allocate
-    /// - `label`: Human-readable label for debug logging
-    ///
-    /// # Returns
-    ///
-    /// A vector of [`ExprId`] handles to the unset witness expressions.
-    #[must_use]
-    pub fn alloc_witnesses_unset(&mut self, count: usize, label: &'static str) -> Vec<ExprId> {
-        self.expr_builder.add_unset_witnesses(count, label)
-    }
-
     /// Adds a constant to the circuit (deduplicated).
     ///
     /// If this value was previously added, returns the original ExprId.
