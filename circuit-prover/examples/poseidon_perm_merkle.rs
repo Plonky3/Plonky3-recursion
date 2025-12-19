@@ -174,7 +174,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             mmcs_index_sum: None,
         })?;
 
-    // Row 1: chain limbs 0-1, provide sibling1 in limbs 2-3, expose output limbs 0-1 and mmcs_index_sum.
+    // Row 1: Merkle right. Chain previous digest into limbs 2-3 and provide sibling1 in limbs 0-1.
     // All inputs are private (chained from row 0 or provided via private data)
     let sibling1_inputs: [Option<ExprId>; 4] = [None, None, None, None];
     // Public root limbs
