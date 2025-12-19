@@ -1,12 +1,10 @@
-use std::collections::HashMap;
 use std::env;
 use std::error::Error;
 
 /// Poseidon permutation chain example using the PoseidonPerm op.
 ///
-/// Builds a chain of Poseidon permutations, verifies the final output against a native
-/// computation, and demonstrates how Poseidon outputs can compose with other primitive
-/// ops (addition and multiplication).
+/// Builds a chain of Poseidon permutations and verifies the final output against a native
+/// computation.
 use p3_baby_bear::{BabyBear, default_babybear_poseidon2_16};
 use p3_batch_stark::CommonData;
 use p3_circuit::ops::{PoseidonPermCall, PoseidonPermOps};
@@ -119,18 +117,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     let out0 = last_outputs[0].ok_or("missing out0 expr")?;
     let out1 = last_outputs[1].ok_or("missing out1 expr")?;
 
-    // Demonstrate arithmetic composability: out0 + out1
-    let sum_outputs = builder.add(out0, out1);
-    let expected_sum = final_limbs_ext[0] + final_limbs_ext[1];
-    let expected_sum_expr = builder.alloc_const(expected_sum, "expected_sum_outputs");
-    builder.connect(sum_outputs, expected_sum_expr);
-
-    // Demonstrate arithmetic composability: out0 * out1
-    let product_outputs = builder.mul(out0, out1);
-    let expected_product = final_limbs_ext[0] * final_limbs_ext[1];
-    let expected_product_expr = builder.alloc_const(expected_product, "expected_product_outputs");
-    builder.connect(product_outputs, expected_product_expr);
-
     // Build + run.
     let circuit = builder.build()?;
     let expr_to_widx = circuit.expr_to_widx.clone();
@@ -142,37 +128,42 @@ fn main() -> Result<(), Box<dyn Error>> {
     let traces = runner.run()?;
 
     // Sanity-check exposed outputs against the native computation.
-    let mut witness_map: HashMap<_, _> = HashMap::new();
-    for (&idx, &val) in traces
-        .witness_trace
-        .index
-        .iter()
-        .zip(traces.witness_trace.values.iter())
-    {
-        witness_map.insert(idx, val);
-    }
-
     let observed_out0 = {
         let wid = expr_to_widx
             .get(&out0)
             .ok_or("missing witness id for out0")?;
-        *witness_map
-            .get(wid)
+        let pos = traces
+            .witness_trace
+            .index
+            .iter()
+            .position(|&idx| idx == *wid)
+            .ok_or("missing witness id for out0 in witness trace")?;
+        *traces
+            .witness_trace
+            .values
+            .get(pos)
             .ok_or("missing witness value for out0")?
     };
     let observed_out1 = {
         let wid = expr_to_widx
             .get(&out1)
             .ok_or("missing witness id for out1")?;
-        *witness_map
-            .get(wid)
+        let pos = traces
+            .witness_trace
+            .index
+            .iter()
+            .position(|&idx| idx == *wid)
+            .ok_or("missing witness id for out1 in witness trace")?;
+        *traces
+            .witness_trace
+            .values
+            .get(pos)
             .ok_or("missing witness value for out1")?
     };
 
     assert_eq!(
         [observed_out0, observed_out1],
-        [final_limbs_ext[0], final_limbs_ext[1]],
-        "final exposed limbs must match native Poseidon permutation output"
+        [final_limbs_ext[0], final_limbs_ext[1]]
     );
 
     assert!(

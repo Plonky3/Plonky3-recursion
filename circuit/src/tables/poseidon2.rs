@@ -184,8 +184,6 @@ where
             };
 
             if executor.op_type() == &NonPrimitiveOpType::PoseidonPerm {
-                // TODO: Switch Poseidon trace building to use `outputs` once Poseidon perm execution
-                // materializes outputs in the witness (and stop encoding outputs via `inputs[4..]`).
                 let Some(exec) = executor.as_any().downcast_ref::<PoseidonPermExecutor>() else {
                     return Err(CircuitError::InvalidNonPrimitiveOpConfiguration {
                         op: executor.op_type().clone(),
@@ -319,6 +317,22 @@ where
                     (Config::BaseField::ZERO, 0)
                 };
                 // mmcs_bit is at inputs[5]
+                if inputs[5].len() > 1 {
+                    return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
+                        op: executor.op_type().clone(),
+                        expected: "0 or 1 element for mmcs_bit".to_string(),
+                        got: inputs[5].len(),
+                    });
+                }
+                if merkle_path && inputs[5].is_empty() {
+                    return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
+                        op: executor.op_type().clone(),
+                        operation_index: *op_id,
+                        expected: "mmcs_bit must be provided when merkle_path=true".to_string(),
+                        got: "missing mmcs_bit".to_string(),
+                    });
+                }
+
                 let mmcs_bit = if inputs[5].len() == 1 {
                     let val = self.get_witness(&inputs[5][0])?;
                     let base = val.as_base().ok_or_else(|| {

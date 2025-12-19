@@ -225,7 +225,8 @@ where
     ///
     /// The witness slot starts as `None` and must be written by an executor
     /// during non-primitive operation execution. Use this for outputs of
-    /// non-primitive operations like Poseidon permutations.
+    /// non-primitive operations when the output is not modeled as an
+    /// `Expr::NonPrimitiveOutput` node.
     ///
     /// # Arguments
     ///
@@ -243,7 +244,8 @@ where
     ///
     /// Each witness slot starts as `None` and must be written by an executor
     /// during non-primitive operation execution. Use this for outputs of
-    /// non-primitive operations like Poseidon permutations.
+    /// non-primitive operations when the output is not modeled as an
+    /// `Expr::NonPrimitiveOutput` node.
     ///
     /// # Arguments
     ///

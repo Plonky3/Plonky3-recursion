@@ -35,7 +35,10 @@ pub struct PoseidonPermCall {
     pub new_start: bool,
     /// Flag indicating whether we are verifying a Merkle path
     pub merkle_path: bool,
-    /// Optional mmcs direction bit input (base field, boolean). If None, defaults to 0/private.
+    /// MMCS direction bit input (base field, boolean).
+    ///
+    /// Required when `merkle_path = true`. When `merkle_path = false`, this may be omitted and
+    /// defaults to 0 (private).
     pub mmcs_bit: Option<ExprId>,
     /// Optional CTL exposure for each input limb (one extension element).
     /// If `None`, the limb is considered private/unexposed (in_ctl = 0).
@@ -67,7 +70,7 @@ pub trait PoseidonPermOps<F: Clone + PrimeCharacteristicRing + Eq> {
     /// Add a Poseidon perm row (one permutation).
     ///
     /// - `new_start`: if true, this row starts a new chain (no chaining from previous row).
-    /// - `merkle_path`: if true, Merkle chaining semantics apply for limbs 0–1.
+    /// - `merkle_path`: if true, Merkle-path chaining semantics apply (chained digest placement depends on `mmcs_bit`).
     /// - `mmcs_bit`: Merkle direction bit witness for this row (used when `merkle_path` is true).
     /// - `inputs`: optional CTL exposure per limb (extension element, length 4 if provided).
     /// - `out_ctl`: whether to allocate/expose output limbs 0–1 via CTL.
@@ -195,8 +198,8 @@ impl<F: Field> NonPrimitiveExecutor<F> for PoseidonPermExecutor {
             NonPrimitiveOpPrivateData::PoseidonPerm(data) => data.input_values.as_slice(),
         });
 
-        // Get mmcs_bit if provided (default to false if absent)
-        // mmcs_bit is at inputs[5]
+        // Get mmcs_bit (required when merkle_path=true; defaults to false otherwise).
+        // mmcs_bit is at inputs[5].
         let mmcs_bit = if inputs[5].len() == 1 {
             let wid = inputs[5][0];
             let val = ctx.get_witness(wid)?;
@@ -304,7 +307,8 @@ impl PoseidonPermExecutor {
     /// 1. CTL (witness) if provided and set
     /// 2. Chaining from previous permutation (if new_start=false)
     ///    - Normal mode: all 4 limbs from chaining
-    ///    - Merkle mode: only limbs 0-1 from chaining, limbs 2-3 from private/CTL
+    ///    - Merkle mode: chain prev[0..1] into (0..1) if mmcs_bit=0, else into (2..3) if mmcs_bit=1;
+    ///      the other limb pair must come from CTL/private data
     /// 3. Private data as fallback
     fn resolve_input_limb<F: Field>(
         &self,
