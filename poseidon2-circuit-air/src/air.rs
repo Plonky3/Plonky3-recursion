@@ -178,8 +178,9 @@ impl<
             // NOTE: For rows with new_start = false:
             // - Sponge mode (merkle_path = 0): all limbs come from the previous output unless
             //   a limb is exposed via in_ctl, in which case the provided input overrides it.
-            // - Merkle mode (merkle_path = 1): limbs 0-1 are chained from the previous output
-            //   (left/right selected by mmcs_bit); limbs 2-3 come from the provided inputs.
+            // - Merkle mode (merkle_path = 1): the previous digest is always the previous output limbs 0-1.
+            //   If mmcs_bit = 0 (previous digest is left child), chain into limbs 0-1; limbs 2-3 come from inputs.
+            //   If mmcs_bit = 1 (previous digest is right child), chain into limbs 2-3; limbs 0-1 come from inputs.
             // - If in_ctl[i] = 1, that limb is NOT chained and comes from CTL/witness instead.
             //   The AIR constraints will enforce this (chaining is gated by 1 - in_ctl[i]).
             let mut state = padded_inputs;
