@@ -186,17 +186,6 @@ impl<F: Field> Circuit<F> {
                         preprocessed[witness_table_idx][widx as usize] += F::ONE;
                     }
                 }
-                // Unconstrained: sets arbitrary witness values via hints.
-                // No preprocessed column data, but outputs affect max_idx.
-                Op::Unconstrained { outputs, .. } => {
-                    // We need to update the multiplicities for all `outputs` in `WitnessAir`. Since these are only hints, they are not recorded in any other table yet.
-                    for out in outputs {
-                        let out_idx = out.0;
-                        if out_idx >= preprocessed[witness_table_idx].len() as u32 {
-                            preprocessed[witness_table_idx].resize(out_idx as usize + 1, F::ZERO);
-                        }
-                    }
-                }
                 Op::NonPrimitiveOpWithExecutor {
                     executor,
                     inputs,
@@ -230,7 +219,7 @@ mod tests {
     use strum::EnumCount;
 
     use super::*;
-    use crate::op::{DefaultHint, PrimitiveOpType};
+    use crate::op::PrimitiveOpType;
     use crate::types::WitnessId;
 
     type F = BabyBear;
@@ -288,12 +277,6 @@ mod tests {
                 a: WitnessId(4),
                 b: WitnessId(2),
                 out: WitnessId(5),
-            },
-            // Unconstrained with highest index determines witness table size
-            Op::Unconstrained {
-                inputs: vec![],
-                outputs: vec![WitnessId(10)],
-                filler: DefaultHint::boxed_default(),
             },
         ];
 
