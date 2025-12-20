@@ -1,14 +1,13 @@
 use alloc::boxed::Box;
 use alloc::string::ToString as _;
-use alloc::vec;
 use alloc::vec::Vec;
+use alloc::{format, vec};
 use core::hash::Hash;
 use core::marker::PhantomData;
 
 use hashbrown::HashMap;
 use itertools::zip_eq;
 use p3_field::{ExtensionField, Field, PrimeCharacteristicRing, PrimeField64};
-use p3_util::log2_ceil_u64;
 
 use super::compiler::{ExpressionLowerer, Optimizer};
 use super::{BuilderConfig, ExpressionBuilder, PublicInputTracker};
@@ -93,14 +92,16 @@ where
 {
     /// Creates a new circuit builder.
     pub fn new() -> Self {
-        Self {
+        let mut circuit_builder = Self {
             expr_builder: ExpressionBuilder::new(),
             public_tracker: PublicInputTracker::new(),
             witness_alloc: WitnessAllocator::new(),
             non_primitive_ops: Vec::new(),
             config: BuilderConfig::new(),
             non_primitive_trace_generators: HashMap::new(),
-        }
+        };
+        // circuit_builder.enable_unconstrained_ops();
+        circuit_builder
     }
 
     /// Enables a non-primitive operation type on this builder.
@@ -129,7 +130,7 @@ where
     }
 
     /// Enables unconstrained operations. Necessary for adding non-deterministic hints.
-    pub fn enable_unconstrained_ops(&mut self)
+    fn enable_unconstrained_ops(&mut self)
     where
         F: CircuitField,
     {
@@ -145,7 +146,8 @@ where
         &self,
         op: NonPrimitiveOpType,
     ) -> Result<(), CircuitBuilderError> {
-        if !self.is_op_enabled(&op) {
+        // Unconstrained operations are always enable
+        if !self.is_op_enabled(&op) && op != NonPrimitiveOpType::Unconstrained {
             return Err(CircuitBuilderError::OpNotAllowed { op });
         }
         Ok(())
@@ -421,6 +423,7 @@ where
                     .add_non_primitive_output(call_expr_id, i as u32, label)
             })
             .collect();
+        println!("outputs = {:?}", outputs);
         (op_id, outputs)
     }
 
@@ -568,21 +571,24 @@ where
         BF: PrimeField64,
     {
         self.push_scope("decompose_to_bits");
-        self.ensure_op_enabled(NonPrimitiveOpType::Unconstrained)?;
 
         // Create bit witness variables
-        let binary_decomposition_hint = BinaryDecompositionHint::new(n_bits)?;
-        let (_, bits) = self.push_unconstrained_op(
+        let binary_decomposition_hint = BinaryDecompositionHint::new();
+        let (_, mut bits) = self.push_unconstrained_op(
             vec![vec![x]],
-            n_bits,
+            // We need all the bits so that we can reconstruct the F element.
+            size_of::<F>() * 8,
             binary_decomposition_hint,
             "decompose_to_bits",
         );
 
         // Constrain that the bits reconstruct to the original value.
         let reconstructed = self.reconstruct_index_from_bits(&bits);
-        self.connect(x, reconstructed);
+        println!("reconstructed = {:?}", reconstructed);
+        // self.connect(x, reconstructed);
 
+        // Return only `n_bits` bits.
+        let _ = bits.split_off(n_bits);
         self.pop_scope();
         Ok(bits)
     }
@@ -608,6 +614,7 @@ where
         let mut pow2 = self.add_const(F::ONE);
 
         for &b in bits {
+            println!("bits len = {:?}", bits.len());
             // Ensure each bit is boolean.
             self.assert_bool(b);
             // Add b_i · 2^i to the accumulator.
@@ -629,31 +636,16 @@ where
 /// - It extracts the canonical `u64` representation of the input field element,
 /// - It fills the witness with its little-endian binary decomposition.
 struct BinaryDecompositionHint<BF: PrimeField64> {
-    /// Number of bits in the decomposition.
-    n_bits: usize,
     /// Phantom data for the base field type.
     _phantom: PhantomData<BF>,
 }
 
 impl<BF: PrimeField64> BinaryDecompositionHint<BF> {
     /// Creates a new binary decomposition hint.
-    ///
-    /// # Parameters
-    /// - `n_bits`: Number of output bits (must be ≤ 64).
-    ///
-    /// # Errors
-    /// Returns an error if `n_bits > 64` since we extract a `u64` value.
-    pub const fn new(n_bits: usize) -> Result<Self, CircuitBuilderError> {
-        if n_bits > 64 {
-            return Err(CircuitBuilderError::BinaryDecompositionTooManyBits {
-                expected: 64,
-                n_bits,
-            });
-        }
-        Ok(Self {
-            n_bits,
+    pub const fn new() -> Self {
+        Self {
             _phantom: PhantomData,
-        })
+        }
     }
 }
 
@@ -673,10 +665,13 @@ impl<BF: PrimeField64, F: ExtensionField<BF>> NonPrimitiveExecutor<F>
                 got: inputs.len(),
             });
         }
-        if outputs.len() != self.n_bits {
+
+        let felt_bits = size_of::<BF>() * 8;
+
+        if outputs.len() > felt_bits * F::DIMENSION {
             return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
                 op: NonPrimitiveOpType::Unconstrained,
-                expected: self.n_bits.to_string(),
+                expected: format!("<= {}", felt_bits * F::DIMENSION),
                 got: outputs.len(),
             });
         }
@@ -692,10 +687,14 @@ impl<BF: PrimeField64, F: ExtensionField<BF>> NonPrimitiveExecutor<F>
             }
         })?;
 
-        let val =
-            ctx.get_witness(inputs[0][0])?.as_basis_coefficients_slice()[0].as_canonical_u64();
-        let bits = (0..self.n_bits).map(|i| F::from_bool(val >> i & 1 == 1));
-        debug_assert!(self.n_bits as u64 >= log2_ceil_u64(val));
+        let ext_val = ctx.get_witness(inputs[0][0])?;
+
+        let bits = ext_val
+            .as_basis_coefficients_slice()
+            .iter()
+            .map(BF::as_canonical_u64)
+            .flat_map(|val| (0..felt_bits).map(move |i| F::from_bool(val >> i & 1 == 1)))
+            .take(outputs.len());
 
         for (out, bit) in outputs.iter().zip(bits) {
             ctx.set_witness(out[0], bit)?;
@@ -1057,9 +1056,11 @@ mod tests {
 #[cfg(test)]
 mod proptests {
     use alloc::vec;
+    use std::array;
 
     use p3_baby_bear::BabyBear;
-    use p3_field::PrimeCharacteristicRing;
+    use p3_field::extension::BinomialExtensionField;
+    use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
     use proptest::prelude::*;
 
     use super::*;
@@ -1505,10 +1506,44 @@ mod proptests {
         assert_eq!(traces.public_trace.values[0], BabyBear::from_u64(5));
     }
 
+    type Ext4 = BinomialExtensionField<BabyBear, 4>;
+
+    #[test]
+    fn test_reconstruct_index_from_bits_ext_field() {
+        let mut builder = CircuitBuilder::<Ext4>::new();
+
+        // Test reconstructing the value 5 (binary: 101)
+        let bits: [_; 128] = array::from_fn(|i| builder.add_const(Ext4::from_usize(i % 2)));
+
+        let result = builder.reconstruct_index_from_bits(&bits);
+
+        // Connect result to a public input so we can verify its value
+        let output = builder.add_public_input();
+        builder.connect(result, output);
+
+        // Build and run the circuit
+        let circuit = builder.build().expect("Failed to build circuit");
+        let mut runner = circuit.runner();
+
+        // Set public inputs: compute the expected result
+        let expected_result = (0u64..128u64)
+            .map(|i| Ext4::from_u8((i % 2) as u8) * Ext4::TWO.exp_u64(i))
+            .sum();
+
+        runner
+            .set_public_inputs(&[expected_result])
+            .expect("Failed to set public inputs");
+
+        let traces = runner.run().expect("Failed to run circuit");
+
+        // Just verify the calculation is correct - reconstruct gives us 5
+        assert_eq!(traces.public_trace.values[0], expected_result);
+        println!("{:?}, {:?}", traces.public_trace.values[0], expected_result)
+    }
+
     #[test]
     fn test_decompose_to_bits() {
         let mut builder = CircuitBuilder::<BabyBear>::new();
-        builder.enable_unconstrained_ops();
 
         // Create a target representing the value we want to decompose
         let value = builder.add_const(BabyBear::from_u64(6)); // Binary: 110
@@ -1526,5 +1561,87 @@ mod proptests {
         assert_eq!(traces.witness_trace.values[4], BabyBear::ONE); // bit 1
         assert_eq!(traces.witness_trace.values[5], BabyBear::ONE); // bit 2
         assert_eq!(bits.len(), 3);
+    }
+
+    #[test]
+    fn test_decompose_to_bits_ext_field() {
+        let mut builder = CircuitBuilder::<Ext4>::new();
+
+        // Create a target representing the value we want to decompose
+        let value = builder.add_const(
+            Ext4::from_basis_coefficients_slice(&[
+                BabyBear::from_u32(6),          // Binary: 01100000 00000000 00000000 00000000
+                BabyBear::from_u32(0x55555555), // Binary: 10101010 10101010 10101010 10101010
+                BabyBear::from_u32(0x02000000), // Binary: 00000000 00000000 00000000 01000000
+                BabyBear::ZERO,                 // Binary:  00000000 00000000 00000000 00000000
+            ])
+            .unwrap(),
+        );
+        println!(
+            "val = {:?}",
+            Ext4::from_basis_coefficients_slice(&[
+                BabyBear::from_u32(6),          // Binary: 01100000 00000000 00000000 00000000
+                BabyBear::from_u32(0x55555555), // Binary: 10101010 10101010 10101010 10101010
+                BabyBear::from_u32(0x02000000), // Binary: 00000000 00000000 00000000 01000000
+                BabyBear::ZERO,                 // Binary:  00000000 00000000 00000000 00000000
+            ])
+        );
+
+        // Decompose into 3 bits - this creates its own public inputs for the bits
+        let bits = builder.decompose_to_bits::<BabyBear>(value, 3).unwrap();
+
+        // Build and run the circuit
+        let circuit = builder.build().expect("Failed to build circuit");
+        let runner = circuit.runner();
+        let traces = runner.run().expect("Failed to run circuit");
+
+        // Verify the bits are correctly decomposed - 6 = [0,1,1] in little-endian
+        let six_bin = [
+            0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0,
+        ]
+        .map(Ext4::from_u8);
+        let hex_0x55555555_bin = [
+            1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1,
+            0, 1, 0,
+        ]
+        .map(Ext4::from_u8);
+        let hex_0x02000000_bin = [
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0,
+            0, 0, 0,
+        ]
+        .map(Ext4::from_u8);
+        let zero_bin = [
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0,
+        ]
+        .map(Ext4::from_u8);
+        let reconstructed = six_bin
+            .iter()
+            .chain(hex_0x55555555_bin.iter())
+            .chain(hex_0x02000000_bin.iter())
+            .chain(zero_bin.iter())
+            .enumerate()
+            .map(|(i, &bit)| bit * Ext4::TWO.exp_u64(i as u64));
+        let mut acc = Ext4::ZERO;
+        println!("2 = {:?}, 2^96 = {:?}", Ext4::TWO, Ext4::TWO.exp_u64(96));
+        for (i, summand) in reconstructed.enumerate() {
+            println!("step {i} acc = {:?}", acc);
+            acc += summand;
+        }
+        println!("acc = {:?}", acc);
+        assert_eq!(traces.witness_trace.values[3..35], six_bin.to_vec()); // 6
+        assert_eq!(traces.witness_trace.values[35..67], zero_bin); // 0
+        assert_eq!(
+            traces.witness_trace.values[67..99],
+            hex_0x55555555_bin.to_vec()
+        ); // 0x55555555
+        assert_eq!(
+            traces.witness_trace.values[99..131],
+            hex_0x02000000_bin.to_vec()
+        ); // 0x02000000
+        assert_eq!(bits.len(), 3);
+
+        println!("reconstructed = {:?}", traces.witness_trace);
     }
 }

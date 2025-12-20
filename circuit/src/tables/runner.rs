@@ -282,9 +282,7 @@ impl<F: CircuitField> CircuitRunner<F> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
-    extern crate std;
+    use std;
 
     use p3_baby_bear::BabyBear;
     use p3_field::extension::BinomialExtensionField;
@@ -295,6 +293,7 @@ mod tests {
     use tracing_subscriber::util::SubscriberInitExt;
     use tracing_subscriber::{EnvFilter, Registry};
 
+    use super::*;
     use crate::NonPrimitiveOpType;
     use crate::builder::CircuitBuilder;
     use crate::op::NonPrimitiveExecutor;
@@ -389,7 +388,6 @@ mod tests {
         init_logger();
 
         let mut builder = CircuitBuilder::new();
-        builder.enable_unconstrained_ops();
 
         let c37 = builder.add_const(BabyBear::from_u64(37));
         let c111 = builder.add_const(BabyBear::from_u64(111));

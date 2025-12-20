@@ -297,7 +297,6 @@ fn test_batch_verifier_with_mixed_preprocessed() -> Result<(), VerificationError
     assert!(BaseAir::<F>::preprocessed_trace(&airs[2]).is_some());
 
     let mut circuit_builder = CircuitBuilder::new();
-    circuit_builder.enable_unconstrained_ops();
 
     // Allocate batch verifier inputs
     let air_public_counts = vec![0usize; batch_proof.opened_values.instances.len()];

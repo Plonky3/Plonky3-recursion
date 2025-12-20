@@ -127,7 +127,6 @@ fn test_poseidon_perm_verifier() -> Result<(), VerificationError> {
     >;
 
     let mut circuit_builder = CircuitBuilder::new();
-    circuit_builder.enable_unconstrained_ops();
     let verifier_inputs = StarkVerifierInputsBuilder::<
         MyConfig,
         HashTargets<F, DIGEST_ELEMS>,
