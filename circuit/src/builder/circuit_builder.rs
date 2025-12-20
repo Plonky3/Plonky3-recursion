@@ -92,16 +92,14 @@ where
 {
     /// Creates a new circuit builder.
     pub fn new() -> Self {
-        let mut circuit_builder = Self {
+        Self {
             expr_builder: ExpressionBuilder::new(),
             public_tracker: PublicInputTracker::new(),
             witness_alloc: WitnessAllocator::new(),
             non_primitive_ops: Vec::new(),
             config: BuilderConfig::new(),
             non_primitive_trace_generators: HashMap::new(),
-        };
-        // circuit_builder.enable_unconstrained_ops();
-        circuit_builder
+        }
     }
 
     /// Enables a non-primitive operation type on this builder.
@@ -127,14 +125,6 @@ where
         self.config.enable_poseidon_perm();
         self.non_primitive_trace_generators
             .insert(NonPrimitiveOpType::PoseidonPerm, trace_generator);
-    }
-
-    /// Enables unconstrained operations. Necessary for adding non-deterministic hints.
-    fn enable_unconstrained_ops(&mut self)
-    where
-        F: CircuitField,
-    {
-        self.config.enable_unconstrained_ops();
     }
 
     /// Checks whether an op type is enabled on this builder.
@@ -1070,6 +1060,12 @@ mod proptests {
         any::<u64>().prop_map(BabyBear::from_u64)
     }
 
+    // Strategy for generating valid field elements
+    fn ext_field_element() -> impl Strategy<Value = Ext4> {
+        any::<[u64; 4]>()
+            .prop_map(|x| Ext4::from_basis_coefficients_slice(&x.map(BabyBear::from_u64)).unwrap())
+    }
+
     proptest! {
         #[test]
         fn field_add_commutative(a in field_element(), b in field_element()) {
@@ -1194,6 +1190,26 @@ mod proptests {
             let  runner = circuit.runner();
             let traces = runner.run().unwrap();
 
+            prop_assert_eq!(
+                traces.witness_trace.values[result.0 as usize],
+                a,
+                "(a / b) * b = a"
+            );
+        }
+
+        #[test]
+        fn field_mul_div_ext_field(a in ext_field_element(), b in ext_field_element().prop_filter("b must be non-zero", |&x| x != Ext4::ZERO)) {
+            let mut builder = CircuitBuilder::<Ext4>::new();
+            let ca = builder.add_const(a);
+            let cb = builder.add_const(b);
+            let quot = builder.div(ca, cb);
+            let result = builder.mul(quot, cb);
+
+            let circuit = builder.build().unwrap();
+            let  runner = circuit.runner();
+            let traces = runner.run().unwrap();
+
+            println!("a = {:?}, b = {:?}", a, b);
             prop_assert_eq!(
                 traces.witness_trace.values[result.0 as usize],
                 a,
@@ -1538,7 +1554,7 @@ mod proptests {
 
         // Just verify the calculation is correct - reconstruct gives us 5
         assert_eq!(traces.public_trace.values[0], expected_result);
-        println!("{:?}, {:?}", traces.public_trace.values[0], expected_result)
+        println!("{:?}, {:?}", traces.public_trace.values[0], expected_result);
     }
 
     #[test]

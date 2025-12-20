@@ -16,14 +16,23 @@
 //! There is one interaction with the witness bus:
 //! - send (index, value)
 
+use alloc::string::ToString;
+use alloc::vec;
 use alloc::vec::Vec;
 use core::marker::PhantomData;
 
-use p3_air::{Air, AirBuilder, BaseAir};
+use p3_air::{
+    Air, AirBuilder, AirBuilderWithPublicValues, BaseAir, PairBuilder, PermutationAirBuilder,
+};
 use p3_circuit::tables::PublicTrace;
 use p3_circuit::utils::pad_to_power_of_two;
 use p3_field::{BasedVectorSpace, Field};
+use p3_lookup::lookup_traits::{AirLookupHandler, Direction, Kind, Lookup};
+use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
+use p3_uni_stark::SymbolicAirBuilder;
+
+use crate::air::utils::get_index_lookups;
 
 /// PublicAir: vector-valued public input binding with generic extension degree D.
 /// Layout per row: [value[0..D-1], index] → width = D + 1
@@ -51,6 +60,11 @@ impl<F: Field, const D: usize> PublicAir<F, D> {
             preprocessed,
             _phantom: PhantomData,
         }
+    }
+
+    /// Number of preprocessed columns: multiplicity + index
+    pub const fn preprocessed_width() -> usize {
+        2 // One column for multiplicity, one for index
     }
 
     /// Flatten a PublicTrace over an extension into a base-field matrix with D limbs + index.
@@ -97,12 +111,16 @@ impl<F: Field, const D: usize> BaseAir<F> for PublicAir<F, D> {
     }
 
     fn preprocessed_trace(&self) -> Option<RowMajorMatrix<F>> {
-        let mut preprocessed_values = self.preprocessed.clone();
-        pad_to_power_of_two(&mut preprocessed_values, 1, self.height);
+        let mut preprocessed_values = self
+            .preprocessed
+            .iter()
+            .flat_map(|v| [F::ONE, *v])
+            .collect::<Vec<F>>();
+        pad_to_power_of_two(&mut preprocessed_values, 2, self.height);
 
         Some(RowMajorMatrix::new(
             preprocessed_values,
-            1, // single preprocessed column for indices
+            2, // Two columns: one for the multiplicity (0 for padding, 1 otherwise), one for the index
         ))
     }
 }
@@ -113,6 +131,52 @@ where
 {
     fn eval(&self, _builder: &mut AB) {
         // No constraints for public inputs in Stage 1
+    }
+}
+
+impl<AB: PermutationAirBuilder + PairBuilder + AirBuilderWithPublicValues, const D: usize>
+    AirLookupHandler<AB> for PublicAir<AB::F, D>
+where
+    AB::F: Field,
+{
+    fn add_lookup_columns(&mut self) -> Vec<usize> {
+        // There is only one lookup to register in this AIR.
+        vec![0]
+    }
+
+    fn get_lookups(&mut self) -> Vec<Lookup<<AB>::F>> {
+        // Create symbolic air builder to access symbolic variables
+        let symbolic_air_builder = SymbolicAirBuilder::<AB::F>::new(
+            Self::preprocessed_width(),
+            BaseAir::<AB::F>::width(self),
+            0,
+            1,
+            0,
+        );
+
+        let symbolic_main = symbolic_air_builder.main();
+        let symbolic_main_local = symbolic_main.row_slice(0).unwrap();
+
+        let preprocessed = symbolic_air_builder.preprocessed();
+        let preprocessed_local = preprocessed.row_slice(0).unwrap();
+
+        let lookup_inps = get_index_lookups::<AB, D>(
+            0,
+            0,
+            1,
+            &symbolic_main_local,
+            &preprocessed_local,
+            Direction::Send,
+        );
+
+        assert!(lookup_inps.len() == 1);
+        let lookup = AirLookupHandler::<AB>::register_lookup(
+            self,
+            Kind::Global("WitnessChecks".to_string()),
+            &lookup_inps[0],
+        );
+
+        vec![lookup]
     }
 }
 
@@ -174,11 +238,89 @@ mod tests {
         let (prover_data, verifier_data) =
             setup_preprocessed(&config, &air, log2_ceil_usize(matrix.height())).unwrap();
 
-        let prep = air.preprocessed_trace().unwrap();
-        let row0 = prep.row_slice(0).unwrap();
-        let last_row = prep.row_slice(n - 1).unwrap();
-        assert_eq!(row0[0], F::from_u64(0)); // first index
-        assert_eq!(last_row[0], F::from_u64((n - 1) as u64)); // last index
+        // Check the correctness of preprocessed values.
+        let preprocessed = air.preprocessed_trace().unwrap();
+        let row0 = preprocessed.row_slice(0).unwrap();
+        let last_row = preprocessed.row_slice(n - 1).unwrap();
+        // The multiplicity is 1 for active rows.
+        assert_eq!(row0[0], F::from_u64(1)); // first index
+        assert_eq!(last_row[0], F::from_u64(1)); // last index
+        // Check the witness indices.
+        assert_eq!(row0[1], F::from_u64(0)); // first index
+        assert_eq!(last_row[1], F::from_u64((n - 1) as u64)); // last index
+
+        let pis: Vec<F> = vec![];
+
+        let proof = prove_with_preprocessed(&config, &air, matrix, &pis, Some(&prover_data));
+        verify_with_preprocessed(&config, &air, &proof, &pis, Some(&verifier_data))
+            .expect("PublicAir base field verification failed");
+    }
+
+    #[test]
+    fn test_public_air_padding() {
+        let n = 5usize;
+        let values: Vec<F> = (1..=n as u64).map(F::from_u64).collect();
+        let indices: Vec<WitnessId> = (0..n as u32).map(WitnessId).collect();
+
+        // Get preprocessed index values.
+        let preprocessed_values = indices
+            .iter()
+            .map(|idx| F::from_u64(idx.0 as u64))
+            .collect::<Vec<_>>();
+
+        let trace = PublicTrace {
+            values,
+            index: indices,
+        };
+
+        let matrix = PublicAir::<F, 1>::trace_to_matrix(&trace);
+
+        // Verify matrix dimensions
+        assert_eq!(matrix.width(), 1); // D = 1
+        assert_eq!(matrix.height(), 8); // Padded to next power of two
+
+        // Check first row (scope the borrow)
+        {
+            let row0 = matrix.row_slice(0).unwrap();
+            assert_eq!(row0[0], F::from_u64(1)); // value
+        }
+
+        // Check last original row (scope the borrow)
+        {
+            let last_original_row = n - 1;
+            let row_last = matrix.row_slice(last_original_row).unwrap();
+            assert_eq!(row_last[0], F::from_u64(n as u64)); // value
+        }
+        // Check padded rows (scope the borrow)
+        {
+            for i in n..matrix.height() {
+                let row = matrix.row_slice(i).unwrap();
+                assert_eq!(row[0], F::ZERO); // value
+            }
+        }
+
+        let config = build_test_config();
+        let air = PublicAir::<F, 1>::new_with_preprocessed(n, preprocessed_values);
+        let (prover_data, verifier_data) =
+            setup_preprocessed(&config, &air, log2_ceil_usize(matrix.height())).unwrap();
+
+        // Check the correctness of preprocessed values.
+        let preprocessed = air.preprocessed_trace().unwrap();
+        assert!(preprocessed.height() == 8);
+        for i in 0..n {
+            let row = preprocessed.row_slice(i).unwrap();
+            // The multiplicity is 1 for active rows.
+            assert_eq!(row[0], F::from_u64(1)); // first index
+            // Check the witness indices.
+            assert_eq!(row[1], F::from_u64(i as u64)); // first index
+        }
+        for i in n..preprocessed.height() {
+            let row = preprocessed.row_slice(i).unwrap();
+            // The multiplicity is 0 for padded rows.
+            assert_eq!(row[0], F::ZERO); // first index
+            // Check the witness indices.
+            assert_eq!(row[1], F::ZERO); // last original index
+        }
 
         let pis: Vec<F> = vec![];
 
@@ -241,10 +383,15 @@ mod tests {
             setup_preprocessed(&config, &air, log2_ceil_usize(matrix.height())).unwrap();
 
         let prep = air.preprocessed_trace().unwrap();
+        // Check the correctness of preprocessed values.
         let row0 = prep.row_slice(0).unwrap();
         let last_row = prep.row_slice(1).unwrap();
-        assert_eq!(row0[0], F::from_u64(10)); // first index
-        assert_eq!(last_row[0], F::from_u64(20)); // last index
+        // The multiplicity is 1 for active rows.
+        assert_eq!(row0[0], F::from_u64(1)); // first index
+        assert_eq!(last_row[0], F::from_u64(1)); // last index
+        // Check the witness indices.
+        assert_eq!(row0[1], F::from_u64(10)); // first index
+        assert_eq!(last_row[1], F::from_u64(20)); // last index
 
         let pis: Vec<F> = vec![];
 

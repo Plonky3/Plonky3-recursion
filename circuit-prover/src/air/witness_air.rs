@@ -7,10 +7,14 @@
 //!
 //! # Column layout
 //!
-//! For each witness element (lane) we allocate `D + 1` base-field columns. These are grouped as:
+//! For each witness element (lane) we allocate `D` base-field columns, corresponding to:
 //!
-//! - 1 column for the index of the element,
 //! - `D` columns to store the value, where `D` is the degree extension of the used field compared to the current field
+//!
+//! We also allocate two preprocessing columns:
+//!
+//! - 1 column for the indices of the witness elements
+//! - 1 column for the multiplicity at which each witness element appears in the circuit
 //!
 //! A single row can pack several of these lanes side-by-side, so the full row layout is
 //! this pattern repeated `lanes` times:
@@ -36,14 +40,22 @@
 //! tables receive interactions of the form `(index, value)`, guaranteeing that they fetch
 //! a value consistent with the witness bus maintained by this AIR.
 
+use alloc::string::ToString;
+use alloc::vec;
 use alloc::vec::Vec;
 use core::marker::PhantomData;
 
-use p3_air::{Air, AirBuilder, BaseAir, PairBuilder};
+use p3_air::{
+    Air, AirBuilder, AirBuilderWithPublicValues, BaseAir, PairBuilder, PermutationAirBuilder,
+};
 use p3_circuit::tables::WitnessTrace;
 use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
+use p3_lookup::lookup_traits::{AirLookupHandler, Direction, Kind, Lookup};
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
+use p3_uni_stark::SymbolicAirBuilder;
+
+use crate::air::utils::get_index_lookups;
 
 /// AIR enforcing a monotonically increasing witness index column for the global bus.
 /// Layout per row: `[value[0..D), index]` repeated `lanes` times.
@@ -58,6 +70,10 @@ pub struct WitnessAir<F, const D: usize = 1> {
     pub num_witnesses: usize,
     /// Number of witness entries packed side-by-side in every row.
     pub lanes: usize,
+    /// Multiplicities: number of times each witness index is used in the circuit.
+    pub multiplicities: Vec<F>,
+    /// Number of currently registered lookup columns.
+    pub num_lookup_columns: usize,
     _phantom: PhantomData<F>,
 }
 
@@ -66,12 +82,36 @@ impl<F: Field, const D: usize> WitnessAir<F, D> {
     ///
     /// - `num_witnesses`: total number of logical witness entries.
     /// - `lanes`: how many witness entries are packed side-by-side in each trace row.
+    /// - `multiplicities`: vector of multiplicities for each witness index. It is only used by the prover.
     pub const fn new(num_witnesses: usize, lanes: usize) -> Self {
         assert!(lanes > 0, "lane count must be non-zero");
 
         Self {
             num_witnesses,
             lanes,
+            multiplicities: Vec::new(),
+            num_lookup_columns: 0,
+            _phantom: PhantomData,
+        }
+    }
+
+    /// Construct a new `WitnessAir` with given multiplicities.
+    ///
+    /// - `num_witnesses`: total number of logical witness entries.
+    /// - `lanes`: how many witness entries are packed side-by-side in each trace row.
+    /// - `multiplicities`: vector of multiplicities for each witness index. It is only used by the prover.
+    pub const fn new_with_preprocessed(
+        num_witnesses: usize,
+        lanes: usize,
+        multiplicities: Vec<F>,
+    ) -> Self {
+        assert!(lanes > 0, "lane count must be non-zero");
+
+        Self {
+            num_witnesses,
+            lanes,
+            multiplicities,
+            num_lookup_columns: 0,
             _phantom: PhantomData,
         }
     }
@@ -84,6 +124,16 @@ impl<F: Field, const D: usize> WitnessAir<F, D> {
     #[inline]
     pub const fn total_width(&self) -> usize {
         self.lanes * Self::lane_width()
+    }
+
+    #[inline]
+    pub const fn preprocessed_lane_width() -> usize {
+        2
+    }
+
+    #[inline]
+    pub const fn preprocessed_width(&self) -> usize {
+        self.lanes * Self::preprocessed_lane_width()
     }
 
     /// Convert a [`WitnessTrace`] into a [`RowMajorMatrix`] suitable for the STARK prover.
@@ -182,12 +232,26 @@ impl<F: Field, const D: usize> BaseAir<F> for WitnessAir<F, D> {
     }
 
     fn preprocessed_trace(&self) -> Option<RowMajorMatrix<F>> {
+        debug_assert!(
+            self.num_witnesses == self.multiplicities.len(),
+            "Mismatch between the number of witnesses ({}) and the length of the provided multiplicities ({})",
+            self.num_witnesses,
+            self.multiplicities.len()
+        );
         let height = (self.num_witnesses.div_ceil(self.lanes)).next_power_of_two() * self.lanes;
         let all_vals = (0..height)
-            .map(|i| F::from_u32(i as u32))
+            .flat_map(|i| {
+                if i >= self.multiplicities.len() {
+                    return vec![F::ZERO, F::from_u32(i as u32)];
+                }
+                vec![self.multiplicities[i], F::from_u32(i as u32)]
+            })
             .collect::<Vec<_>>();
 
-        Some(RowMajorMatrix::new(all_vals, self.lanes)) // single preprocessed column for
+        Some(RowMajorMatrix::new(
+            all_vals,
+            self.lanes * Self::preprocessed_lane_width(),
+        ))
     }
 }
 
@@ -204,7 +268,8 @@ where
             let local_prep = preprocessed
                 .row_slice(0)
                 .expect("Preprocessed matrix should be non-empty");
-            let index0 = local_prep[0].clone();
+            // The index is in the first preprocessed column.
+            let index0 = local_prep[1].clone();
             builder.when_first_row().assert_zero(index0);
         }
 
@@ -215,14 +280,15 @@ where
             let cur_prep = preprocessed.row_slice(0).expect("non-empty");
 
             let nxt_prep = preprocessed.row_slice(1).expect("has next row");
-            let mut prev_idx = cur_prep[0].clone();
+            let mut prev_idx = cur_prep[1].clone();
             for lane in 1..lanes {
-                let idx = cur_prep[lane].clone();
+                // The index is in the second column of each lane's preprocessed data.
+                let idx = cur_prep[lane * Self::preprocessed_lane_width() + 1].clone();
                 // between consecutive lanes in the same row: index_next - index_current - 1
                 b.assert_zero(idx.clone() - prev_idx.clone() - AB::Expr::ONE);
                 prev_idx = idx;
             }
-            let next_first_idx = nxt_prep[0].clone();
+            let next_first_idx = nxt_prep[1].clone();
             // between the last lane of a row and the first lane of the next row: index_next - index_current - 1
             b.assert_zero(next_first_idx - prev_idx - AB::Expr::ONE);
         }
@@ -231,14 +297,68 @@ where
             let mut b = builder.when_last_row();
             let preprocessed = b.preprocessed();
             let last_prep = preprocessed.row_slice(0).expect("non-empty");
-            let mut prev_idx = last_prep[0].clone();
+            let mut prev_idx = last_prep[1].clone();
             for lane in 1..lanes {
-                let idx = last_prep[lane].clone();
+                let idx = last_prep[lane * Self::preprocessed_lane_width() + 1].clone();
                 // between consecutive lanes in the same row: index_next - index_current - 1
                 b.assert_zero(idx.clone() - prev_idx.clone() - AB::Expr::ONE);
                 prev_idx = idx;
             }
         }
+    }
+}
+
+impl<AB: PermutationAirBuilder + PairBuilder + AirBuilderWithPublicValues, const D: usize>
+    AirLookupHandler<AB> for WitnessAir<AB::F, D>
+{
+    fn add_lookup_columns(&mut self) -> Vec<usize> {
+        let new_idx = self.num_lookup_columns;
+        self.num_lookup_columns += 1;
+        vec![new_idx]
+    }
+
+    fn get_lookups(&mut self) -> Vec<Lookup<<AB>::F>> {
+        let mut lookups = Vec::new();
+        self.num_lookup_columns = 0;
+        let preprocessed_width = self.preprocessed_width();
+
+        // Create symbolic air builder to access symbolic variables
+        let symbolic_air_builder = SymbolicAirBuilder::<AB::F>::new(
+            preprocessed_width,
+            BaseAir::<AB::F>::width(self),
+            0,
+            0, // Here, we do not need the permutation trace
+            0,
+        );
+
+        let symbolic_main = symbolic_air_builder.main();
+        let symbolic_main_local = symbolic_main.row_slice(0).unwrap();
+
+        let preprocessed = symbolic_air_builder.preprocessed();
+        let preprocessed_local = preprocessed.row_slice(0).unwrap();
+
+        for lane in 0..self.lanes {
+            let lane_offset = lane * Self::lane_width();
+            let preprocessed_lane_offset = lane * Self::preprocessed_lane_width();
+
+            // There is only 1 lookup per lane: the witness index and its value.
+            let lane_lookup_inputs = get_index_lookups::<AB, D>(
+                lane_offset,
+                preprocessed_lane_offset,
+                1,
+                &symbolic_main_local,
+                &preprocessed_local,
+                Direction::Receive,
+            );
+
+            lookups.push(AirLookupHandler::<AB>::register_lookup(
+                self,
+                Kind::Global("WitnessChecks".to_string()),
+                &lane_lookup_inputs[0],
+            ));
+        }
+
+        lookups
     }
 }
 
@@ -262,6 +382,7 @@ mod tests {
         // Use D=1; values can be arbitrary (unused by constraints)
         let values: Vec<Val> = vec![Val::from_u64(123); n];
         let indices: Vec<WitnessId> = (0..n as u32).map(WitnessId).collect();
+        let multiplicities: Vec<Val> = vec![Val::ONE; n];
 
         let trace = WitnessTrace {
             values,
@@ -272,7 +393,7 @@ mod tests {
         assert_eq!(matrix.width(), 1);
 
         let config = build_test_config();
-        let air = WitnessAir::<Val, 1>::new(n, 1);
+        let air = WitnessAir::<Val, 1>::new_with_preprocessed(n, 1, multiplicities);
         let (prover_data, verifier_data) =
             setup_preprocessed(&config, &air, log2_ceil_usize(matrix.height())).unwrap();
         let pis: Vec<Val> = vec![];
@@ -304,6 +425,7 @@ mod tests {
 
         let values = vec![a, b];
         let indices = vec![WitnessId(0), WitnessId(1)];
+        let multiplicities = vec![Val::from_u64(1); indices.len()];
 
         let trace = WitnessTrace {
             values,
@@ -323,16 +445,21 @@ mod tests {
         }
 
         let config = build_test_config();
-        let air = WitnessAir::<Val, 4>::new(2, 1);
+        let air = WitnessAir::<Val, 4>::new_with_preprocessed(2, 1, multiplicities);
         let (prover_data, verifier_data) =
             setup_preprocessed(&config, &air, log2_ceil_usize(matrix.height())).unwrap();
 
+        // Check the correctness of preprocessed values.
         let preprocessed_matrix = air.preprocessed_trace().unwrap();
         assert_eq!(preprocessed_matrix.height(), 2);
-        let row = preprocessed_matrix.row_slice(0).unwrap();
-        assert_eq!(row[0], Val::from_u64(0)); // index
-        let row = preprocessed_matrix.row_slice(1).unwrap();
-        assert_eq!(row[0], Val::from_u64(1)); // index
+        let row0 = preprocessed_matrix.row_slice(0).unwrap();
+        let row_last = preprocessed_matrix.row_slice(1).unwrap();
+        // The first column corresponds to the multiplicity (1 for actuve rows).
+        assert_eq!(row0[0], Val::from_u64(1));
+        assert_eq!(row_last[0], Val::from_u64(1));
+        // Check the witness indices.
+        assert_eq!(row0[1], Val::from_u64(0)); // index
+        assert_eq!(row_last[1], Val::from_u64(1)); // index
 
         let pis: Vec<Val> = vec![];
 
@@ -351,6 +478,7 @@ mod tests {
             index: indices,
         };
         let matrix = WitnessAir::<Val, 1>::trace_to_matrix(&trace, 1);
+        let multiplicity = vec![Val::ONE; 1];
 
         // Should be padded to power of two
         assert!(matrix.height().is_power_of_two());
@@ -363,7 +491,7 @@ mod tests {
         }
 
         let config = build_test_config();
-        let air = WitnessAir::<Val, 1>::new(1, 1);
+        let air = WitnessAir::<Val, 1>::new_with_preprocessed(1, 1, multiplicity);
         let (prover_data, verifier_data) =
             setup_preprocessed(&config, &air, log2_ceil_usize(matrix.height())).unwrap();
 
@@ -371,7 +499,8 @@ mod tests {
         assert_eq!(preprocessed_matrix.height(), matrix.height());
         for i in 0..matrix.height() {
             let row = preprocessed_matrix.row_slice(i).unwrap();
-            assert_eq!(row[0], Val::from_u64(i as u64)); // index
+            assert_eq!(row[0], Val::ONE);
+            assert_eq!(row[1], Val::from_u64(i as u64)); // index
         }
 
         let pis: Vec<Val> = vec![];
@@ -386,6 +515,7 @@ mod tests {
         let n = 3; // Not a power of two
         let values: Vec<Val> = (1..=n as u64).map(Val::from_u64).collect();
         let indices: Vec<WitnessId> = (0..n as u32).map(WitnessId).collect();
+        let multiplicities: Vec<Val> = vec![Val::ONE; n];
 
         let trace = WitnessTrace {
             values,
@@ -410,15 +540,25 @@ mod tests {
         }
 
         let config = build_test_config();
-        let air = WitnessAir::<Val, 1>::new(3, 1);
+        let air = WitnessAir::<Val, 1>::new_with_preprocessed(3, 1, multiplicities);
         let (prover_data, verifier_data) =
             setup_preprocessed(&config, &air, log2_ceil_usize(matrix.height())).unwrap();
 
         let preprocessed_matrix = air.preprocessed_trace().unwrap();
         assert_eq!(preprocessed_matrix.height(), matrix.height());
-        for i in 0..matrix.height() {
+        for i in 0..n {
             let row = preprocessed_matrix.row_slice(i).unwrap();
-            assert_eq!(row[0], Val::from_u64(i as u64)); // index
+            // The multiplicity is 1 for active rows.
+            assert_eq!(row[0], Val::ONE);
+            // Check the witness index.
+            assert_eq!(row[1], Val::from_u64(i as u64)); // index
+        }
+        for i in n..matrix.height() {
+            let row = preprocessed_matrix.row_slice(i).unwrap();
+            // The multiplicity is 0 for padding rows.
+            assert_eq!(row[0], Val::ZERO);
+            // Check the witness index.
+            assert_eq!(row[1], Val::from_u64(i as u64));
         }
         let pis: Vec<Val> = vec![];
 
@@ -435,6 +575,13 @@ mod tests {
             Val::from_u64(30),
             Val::from_u64(40),
             Val::from_u64(50),
+        ];
+        let multiplicities = vec![
+            Val::from_u64(3),
+            Val::from_u64(4),
+            Val::from_u64(5),
+            Val::from_u64(6),
+            Val::from_u64(7),
         ];
         let indices: Vec<WitnessId> = (0..values.len() as u32).map(WitnessId).collect();
         let trace = WitnessTrace {
@@ -465,14 +612,31 @@ mod tests {
         assert_eq!(row2[0], values[4]);
         assert_eq!(row2[1], values[4]);
 
-        let air = WitnessAir::<Val, 1>::new(values.len(), lanes);
+        let air = WitnessAir::<Val, 1>::new_with_preprocessed(
+            values.len(),
+            lanes,
+            multiplicities.clone(),
+        );
         let preprocessed_matrix = air.preprocessed_trace().unwrap();
         assert_eq!(preprocessed_matrix.height(), matrix.height());
 
+        // Check that the indices and multiplicities in the preprocessed matrix are correct.
+        let preprocessed_width = WitnessAir::<Val, 1>::preprocessed_lane_width();
         for i in 0..matrix.height() {
             let row = preprocessed_matrix.row_slice(i).unwrap();
             for j in 0..lanes {
-                assert_eq!(row[j], Val::from_u64((i * lanes + j) as u64)); // index
+                assert_eq!(
+                    row[j * preprocessed_width],
+                    if i * lanes + j < values.len() {
+                        multiplicities[i * lanes + j]
+                    } else {
+                        Val::ZERO
+                    }
+                );
+                assert_eq!(
+                    row[j * preprocessed_width + 1],
+                    Val::from_u64((i * lanes + j) as u64)
+                );
             }
         }
 

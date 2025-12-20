@@ -144,13 +144,23 @@ fn primitive_airs_symbolic_to_circuit() -> Result<(), CircuitError> {
     run_recursive(&mul_air, mul_air.preprocessed_width(), 0, &mut rng)?;
 
     let const_air = ConstAir::<F, 1>::new_with_preprocessed(1, vec![F::from_u64(3)]);
-    run_recursive(&const_air, 1, 0, &mut rng)?;
+    run_recursive(
+        &const_air,
+        ConstAir::<F, 1>::preprocessed_width(),
+        0,
+        &mut rng,
+    )?;
 
     let public_air = PublicAir::<F, 1>::new_with_preprocessed(1, vec![F::from_u64(4)]);
-    run_recursive(&public_air, 1, 1, &mut rng)?;
+    run_recursive(
+        &public_air,
+        PublicAir::<F, 1>::preprocessed_width(),
+        1,
+        &mut rng,
+    )?;
 
     let witness_air = WitnessAir::<F, 1>::new(1, 1);
-    run_recursive(&witness_air, 1, 0, &mut rng)?;
+    run_recursive(&witness_air, witness_air.preprocessed_width(), 0, &mut rng)?;
 
     Ok(())
 }
@@ -160,7 +170,10 @@ fn poseidon_perm_air_symbolic_to_circuit() -> Result<(), CircuitError> {
     let mut rng = SmallRng::seed_from_u64(9);
 
     let constants = RoundConstants::new(rng.random(), rng.random(), rng.random());
-    let air = Poseidon2CircuitAirBabyBearD4Width16::new(constants);
+    let preprocessed_width = Poseidon2CircuitAirBabyBearD4Width16::preprocessed_width();
+    let preprocessed_values: Vec<F> = (0..preprocessed_width).map(|_| rng.random()).collect();
+    let air =
+        Poseidon2CircuitAirBabyBearD4Width16::new_with_preprocessed(constants, preprocessed_values);
 
-    run_recursive(&air, 0, 0, &mut rng)
+    run_recursive(&air, preprocessed_width, 0, &mut rng)
 }

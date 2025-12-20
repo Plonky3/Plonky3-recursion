@@ -282,7 +282,6 @@ impl<F: CircuitField> CircuitRunner<F> {
 
 #[cfg(test)]
 mod tests {
-    use std;
 
     use p3_baby_bear::BabyBear;
     use p3_field::extension::BinomialExtensionField;
