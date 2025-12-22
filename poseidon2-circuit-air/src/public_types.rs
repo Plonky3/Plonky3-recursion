@@ -34,7 +34,7 @@ impl Poseidon2Params for BabyBearD4Width24 {
     const WIDTH: usize = 24;
     const RATE_EXT: usize = 4;
     const CAPACITY_EXT: usize = 2;
-    const DIGEST_EXT: usize = 4;
+    const DIGEST_EXT: usize = 2;
     const SBOX_DEGREE: u64 = 7;
     const SBOX_REGISTERS: usize = 1;
     const HALF_FULL_ROUNDS: usize = 4;
@@ -66,7 +66,7 @@ impl Poseidon2Params for KoalaBearD4Width24 {
     const WIDTH: usize = 24;
     const RATE_EXT: usize = 4;
     const CAPACITY_EXT: usize = 2;
-    const DIGEST_EXT: usize = 4;
+    const DIGEST_EXT: usize = 2;
     const SBOX_DEGREE: u64 = 3;
     const SBOX_REGISTERS: usize = 0;
     const HALF_FULL_ROUNDS: usize = 4;

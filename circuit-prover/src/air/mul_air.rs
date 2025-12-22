@@ -86,16 +86,25 @@
 //! correctness of the indices with respect to the global witness bus is enforced by the
 //! bus interaction logic elsewhere in the system.
 
+use alloc::string::ToString;
 use alloc::vec;
 use alloc::vec::Vec;
+use core::iter;
 use core::marker::PhantomData;
 
-use p3_air::{Air, AirBuilder, BaseAir};
+use itertools::Itertools;
+use p3_air::{
+    Air, AirBuilder, AirBuilderWithPublicValues, BaseAir, PairBuilder, PermutationAirBuilder,
+};
 use p3_circuit::tables::MulTrace;
 use p3_circuit::utils::pad_to_power_of_two;
 use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
+use p3_lookup::lookup_traits::{AirLookupHandler, Direction, Kind, Lookup};
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
+use p3_uni_stark::SymbolicAirBuilder;
+
+use crate::air::utils::get_index_lookups;
 
 /// AIR for proving multiplication operations: lhs * rhs = result.
 ///
@@ -136,6 +145,8 @@ pub struct MulAir<F, const D: usize = 1> {
     /// When providing instances to the verifier, this field can be left empty.
     /// Preprocessed values correspond to the indices of the inputs and outputs within the `Witness` table.
     pub preprocessed: Vec<F>,
+    /// Number of lookup columns registered so far.
+    pub num_lookup_columns: usize,
     /// Marker tying this AIR to its base field.
     _phantom: PhantomData<F>,
 }
@@ -152,6 +163,7 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> MulAir<F, D> {
             lanes,
             w_binomial: None,
             preprocessed: Vec::new(),
+            num_lookup_columns: 0,
             _phantom: PhantomData,
         }
     }
@@ -167,6 +179,7 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> MulAir<F, D> {
             lanes,
             w_binomial: None,
             preprocessed,
+            num_lookup_columns: 0,
             _phantom: PhantomData,
         }
     }
@@ -182,6 +195,7 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> MulAir<F, D> {
             lanes,
             w_binomial: Some(w),
             preprocessed: Vec::new(),
+            num_lookup_columns: 0,
             _phantom: PhantomData,
         }
     }
@@ -202,6 +216,7 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> MulAir<F, D> {
             lanes,
             w_binomial: Some(w),
             preprocessed,
+            num_lookup_columns: 0,
             _phantom: PhantomData,
         }
     }
@@ -223,9 +238,9 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> MulAir<F, D> {
 
     /// Number of preprocessed base-field columns occupied by a single lane.
     ///
-    /// Each lane stores 3 indices (one for each operand)
+    /// Each lane stores 1 multiplicity (0 when the operation is padding, 1 otherwise) and 3 indices (one for each operand)
     pub const fn preprocessed_lane_width() -> usize {
-        3
+        4
     }
 
     /// Number of preprocessed columns for this AIR instance.
@@ -373,6 +388,59 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> MulAir<F, D> {
     }
 }
 
+impl<AB: PermutationAirBuilder + PairBuilder + AirBuilderWithPublicValues, const D: usize>
+    AirLookupHandler<AB> for MulAir<AB::F, D>
+{
+    fn add_lookup_columns(&mut self) -> Vec<usize> {
+        let new_idx = self.num_lookup_columns;
+        self.num_lookup_columns += 1;
+        vec![new_idx]
+    }
+
+    fn get_lookups(&mut self) -> Vec<Lookup<<AB>::F>> {
+        let mut lookups = Vec::new();
+        self.num_lookup_columns = 0;
+        let preprocessed_width = self.preprocessed_width();
+
+        // Create symbolic air builder to access symbolic variables
+        let symbolic_air_builder = SymbolicAirBuilder::<AB::F>::new(
+            preprocessed_width,
+            BaseAir::<AB::F>::width(self),
+            0,
+            0,
+            0,
+        );
+
+        let symbolic_main = symbolic_air_builder.main();
+        let symbolic_main_local = symbolic_main.row_slice(0).unwrap();
+
+        let preprocessed = symbolic_air_builder.preprocessed();
+        let preprocessed_local = preprocessed.row_slice(0).unwrap();
+
+        for lane in 0..self.lanes {
+            let lane_offset = lane * Self::lane_width();
+            let preprocessed_lane_offset = lane * Self::preprocessed_lane_width();
+
+            let lane_lookup_inputs = get_index_lookups::<AB, D>(
+                lane_offset,
+                preprocessed_lane_offset,
+                3,
+                &symbolic_main_local,
+                &preprocessed_local,
+                Direction::Send,
+            );
+            lookups.extend(lane_lookup_inputs.into_iter().map(|inps| {
+                AirLookupHandler::<AB>::register_lookup(
+                    self,
+                    Kind::Global("WitnessChecks".to_string()),
+                    &inps,
+                )
+            }));
+        }
+        lookups
+    }
+}
+
 impl<F: Field, const D: usize> BaseAir<F> for MulAir<F, D> {
     fn width(&self) -> usize {
         self.total_width()
@@ -381,7 +449,22 @@ impl<F: Field, const D: usize> BaseAir<F> for MulAir<F, D> {
     fn preprocessed_trace(&self) -> Option<RowMajorMatrix<F>> {
         let original_height = self.num_ops.div_ceil(self.lanes);
 
-        let mut preprocessed_values = self.preprocessed.clone();
+        // Add the multiplicity to the preprocessed values.
+        let mut preprocessed_values = self
+            .preprocessed
+            .iter()
+            .chunks(Self::preprocessed_lane_width() - 1)
+            .into_iter()
+            .flat_map(|chunk| iter::once(F::ONE).chain(chunk.into_iter().cloned()))
+            .collect::<Vec<F>>();
+
+        debug_assert!(
+            preprocessed_values.len() % Self::preprocessed_lane_width() == 0,
+            "Preprocessed trace length mismatch for MulAir: Got {} values, expected multiple of {}",
+            preprocessed_values.len(),
+            Self::preprocessed_lane_width()
+        );
+
         let padding_len =
             self.preprocessed_width() - preprocessed_values.len() % self.preprocessed_width();
         if padding_len != self.preprocessed_width() {
@@ -703,5 +786,90 @@ mod tests {
         let matrix: RowMajorMatrix<Val> = MulAir::<Val, 1>::trace_to_matrix(&trace, lanes);
         assert_eq!(matrix.width(), MulAir::<Val, 1>::lane_width() * lanes);
         assert_eq!(matrix.height(), 2);
+    }
+
+    #[test]
+    fn test_mul_air_padding() {
+        let n = 5;
+        let lanes = 2;
+        let lhs_values = vec![Val::from_u64(3); n];
+        let rhs_values = vec![Val::from_u64(5); n];
+        let result_values = vec![Val::from_u64(15); n];
+        let lhs_index = vec![WitnessId(1); n];
+        let rhs_index = vec![WitnessId(2); n];
+        let result_index = vec![WitnessId(3); n];
+
+        // Get preprocessed index values.
+        let mut preprocessed_values = Vec::with_capacity(n * 3);
+        lhs_index
+            .iter()
+            .zip(rhs_index.iter())
+            .zip(result_index.iter())
+            .for_each(|((lhs_idx, rhs_idx), result_idx)| {
+                preprocessed_values.extend(&[
+                    Val::from_u32(lhs_idx.0),
+                    Val::from_u32(rhs_idx.0),
+                    Val::from_u32(result_idx.0),
+                ]);
+            });
+
+        let trace = MulTrace {
+            lhs_values,
+            lhs_index: lhs_index.clone(),
+            rhs_values,
+            rhs_index: rhs_index.clone(),
+            result_values,
+            result_index: result_index.clone(),
+        };
+
+        let matrix: RowMajorMatrix<Val> = MulAir::<Val, 1>::trace_to_matrix(&trace, lanes);
+        assert_eq!(matrix.width(), 6);
+
+        let config = build_test_config();
+        let pis: Vec<Val> = vec![];
+
+        let air = MulAir::<Val, 1>::new_with_preprocessed(n, lanes, preprocessed_values);
+
+        // Check the preprocessed trace has been padded correctly.
+        let preprocessed_trace = air.preprocessed_trace().unwrap();
+        assert_eq!(preprocessed_trace.height(), 4);
+
+        let lane_width = MulAir::<Val, 1>::preprocessed_lane_width();
+        let preprocessed_width = air.preprocessed_width();
+        for i in 0..preprocessed_trace.height() {
+            for j in 0..lanes {
+                let lane_idx = i * lanes + j;
+                if lane_idx < n {
+                    assert_eq!(
+                        preprocessed_trace.values[i * preprocessed_width + lane_width * j],
+                        Val::ONE
+                    );
+                    assert_eq!(
+                        preprocessed_trace.values[i * preprocessed_width + lane_width * j + 1],
+                        Val::from_u32(lhs_index[lane_idx].0)
+                    );
+                    assert_eq!(
+                        preprocessed_trace.values[i * preprocessed_width + lane_width * j + 2],
+                        Val::from_u32(rhs_index[lane_idx].0)
+                    );
+                    assert_eq!(
+                        preprocessed_trace.values[i * preprocessed_width + lane_width * j + 3],
+                        Val::from_u32(result_index[lane_idx].0)
+                    );
+                } else {
+                    assert_eq!(
+                        preprocessed_trace.values[i * preprocessed_width + lane_width * j
+                            ..i * preprocessed_width + lane_width * (j + 1)],
+                        [Val::ZERO; 4]
+                    );
+                }
+            }
+        }
+
+        let (prover_data, verifier_data) =
+            setup_preprocessed(&config, &air, log2_ceil_usize(matrix.height())).unwrap();
+        let proof = prove_with_preprocessed(&config, &air, matrix, &pis, Some(&prover_data));
+        verify_with_preprocessed(&config, &air, &proof, &pis, Some(&verifier_data))
+            .expect("verification failed");
     }
 }

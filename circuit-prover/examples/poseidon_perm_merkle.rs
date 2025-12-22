@@ -5,7 +5,7 @@ use p3_batch_stark::CommonData;
 use p3_circuit::op::NonPrimitiveOpPrivateData;
 use p3_circuit::tables::{PoseidonPermPrivateData, generate_poseidon2_trace};
 use p3_circuit::{CircuitBuilder, ExprId, PoseidonPermOps};
-use p3_circuit_prover::common::get_airs_and_degrees_with_prep;
+use p3_circuit_prover::common::{NonPrimitiveConfig, get_airs_and_degrees_with_prep};
 use p3_circuit_prover::{BatchStarkProver, Poseidon2Config, TablePacking, config};
 use p3_field::extension::BinomialExtensionField;
 use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
@@ -209,7 +209,12 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let circuit = builder.build()?;
     let table_packing = TablePacking::new(4, 4, 1);
-    let airs_degrees = get_airs_and_degrees_with_prep::<_, _, 1>(&circuit, table_packing)?;
+    let poseidon_config = Poseidon2Config::baby_bear_d4_width16();
+    let airs_degrees = get_airs_and_degrees_with_prep::<_, _, 1>(
+        &circuit,
+        table_packing,
+        Some(&[NonPrimitiveConfig::Poseidon2(poseidon_config.clone())]),
+    )?;
     let (airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
 
     let mut runner = circuit.runner();
@@ -257,19 +262,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     assert_eq!(poseidon_trace.total_rows(), 3, "expected three perm rows");
 
     let stark_config = config::baby_bear().build();
-    let mut common = CommonData::from_airs_and_degrees(&stark_config, &airs, &degrees);
-
-    // TODO: Pad preprocessed instances for non-primitive tables (same workaround as other examples).
-    for (_, trace) in &traces.non_primitive_traces {
-        if trace.rows() != 0
-            && let Some(p) = common.preprocessed.as_mut()
-        {
-            p.instances.push(None);
-        }
-    }
+    let common = CommonData::from_airs_and_degrees(&stark_config, &airs, &degrees);
 
     let mut prover = BatchStarkProver::new(stark_config).with_table_packing(table_packing);
-    prover.register_poseidon2_table(Poseidon2Config::baby_bear_d4_width16());
+    prover.register_poseidon2_table(poseidon_config);
     let proof = prover.prove_all_tables(&traces, &common)?;
     prover.verify_all_tables(&proof, &common)?;
 
