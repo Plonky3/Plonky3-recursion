@@ -24,6 +24,7 @@ use p3_poseidon2_air::RoundConstants;
 use p3_poseidon2_circuit_air::{
     Poseidon2CircuitAirBabyBearD4Width16, Poseidon2CircuitAirBabyBearD4Width24,
     Poseidon2CircuitAirKoalaBearD4Width16, Poseidon2CircuitAirKoalaBearD4Width24,
+    extract_preprocessed_from_operations, poseidon_preprocessed_width,
 };
 use p3_symmetric::CryptographicPermutation;
 use p3_uni_stark::{ProverConstraintFolder, SymbolicAirBuilder, VerifierConstraintFolder};
@@ -441,6 +442,7 @@ impl Poseidon2Config {
 // but `Poseidon2CircuitAir` works over a specific field.
 struct Poseidon2AirWrapper<SC: StarkGenericConfig> {
     width: usize,
+    preprocessed: Vec<Val<SC>>,
     _phantom: core::marker::PhantomData<SC>,
 }
 
@@ -458,6 +460,19 @@ where
 {
     fn width(&self) -> usize {
         self.width
+    }
+
+    fn preprocessed_trace(&self) -> Option<RowMajorMatrix<Val<SC>>> {
+        let height = self
+            .preprocessed
+            .len()
+            .div_ceil(poseidon_preprocessed_width())
+            .next_power_of_two()
+            * poseidon_preprocessed_width();
+
+        let mut values = self.preprocessed.clone();
+        values.resize(height, Val::<SC>::ZERO);
+        Some(RowMajorMatrix::new(values, poseidon_preprocessed_width()))
     }
 }
 
@@ -513,6 +528,57 @@ impl Poseidon2Prover {
     /// Create a new Poseidon2Prover with the given configuration
     pub const fn new(config: Poseidon2Config) -> Self {
         Self { config }
+    }
+
+    pub fn wrapper_from_config_with_preprocessed<SC>(
+        &self,
+        preprocessed: Vec<Val<SC>>,
+    ) -> DynamicAirEntry<SC>
+    where
+        SC: StarkGenericConfig + 'static + Send + Sync,
+        Val<SC>: StarkField,
+    {
+        DynamicAirEntry::new(Box::new(Poseidon2AirWrapper {
+            width: self.width_from_config(),
+            preprocessed,
+            _phantom: core::marker::PhantomData::<SC>,
+        }))
+    }
+
+    pub fn width_from_config(&self) -> usize {
+        match &self.config {
+            Poseidon2Config::BabyBearD4Width16 { constants, .. } => {
+                let air = Poseidon2CircuitAirBabyBearD4Width16::new(constants.clone());
+                air.width()
+            }
+            Poseidon2Config::BabyBearD4Width24 { constants, .. } => {
+                let air = Poseidon2CircuitAirBabyBearD4Width24::new(constants.clone());
+                air.width()
+            }
+            Poseidon2Config::KoalaBearD4Width16 { constants, .. } => {
+                Poseidon2CircuitAirKoalaBearD4Width16::new(constants.clone()).width()
+            }
+            Poseidon2Config::KoalaBearD4Width24 { constants, .. } => {
+                Poseidon2CircuitAirKoalaBearD4Width24::new(constants.clone()).width()
+            }
+        }
+    }
+
+    pub const fn preprocessed_width_from_config(&self) -> usize {
+        match &self.config {
+            Poseidon2Config::BabyBearD4Width16 { .. } => {
+                Poseidon2CircuitAirBabyBearD4Width16::preprocessed_width()
+            }
+            Poseidon2Config::BabyBearD4Width24 { .. } => {
+                Poseidon2CircuitAirBabyBearD4Width24::preprocessed_width()
+            }
+            Poseidon2Config::KoalaBearD4Width16 { .. } => {
+                Poseidon2CircuitAirKoalaBearD4Width16::preprocessed_width()
+            }
+            Poseidon2Config::KoalaBearD4Width24 { .. } => {
+                Poseidon2CircuitAirKoalaBearD4Width24::preprocessed_width()
+            }
+        }
     }
 
     fn batch_instance_from_traces<SC, CF>(
@@ -627,14 +693,21 @@ impl Poseidon2Prover {
                 permutation,
                 constants,
             } => {
-                let air = Poseidon2CircuitAirBabyBearD4Width16::new(constants.clone());
+                let preprocessed =
+                    extract_preprocessed_from_operations::<BabyBear, Val<SC>>(&t.operations);
+                let air = Poseidon2CircuitAirBabyBearD4Width16::new_with_preprocessed(
+                    constants.clone(),
+                    preprocessed,
+                );
                 let ops_babybear: Poseidon2CircuitTrace<BabyBear> =
                     unsafe { transmute(ops_converted) };
                 let matrix_f = air.generate_trace_rows(&ops_babybear, constants, 0, permutation);
                 let matrix: RowMajorMatrix<Val<SC>> = unsafe { transmute(matrix_f) };
                 (
+                    // Preprocessed values are already stored in the AIR, so we don't need to pass them again in the wrapper.
                     Poseidon2AirWrapper {
                         width: air.width(),
+                        preprocessed: Vec::new(),
                         _phantom: core::marker::PhantomData::<SC>,
                     },
                     matrix,
@@ -644,14 +717,21 @@ impl Poseidon2Prover {
                 permutation,
                 constants,
             } => {
-                let air = Poseidon2CircuitAirBabyBearD4Width24::new(constants.clone());
+                let preprocessed =
+                    extract_preprocessed_from_operations::<BabyBear, Val<SC>>(&t.operations);
+                let air = Poseidon2CircuitAirBabyBearD4Width24::new_with_preprocessed(
+                    constants.clone(),
+                    preprocessed,
+                );
                 let ops_babybear: Poseidon2CircuitTrace<BabyBear> =
                     unsafe { transmute(ops_converted) };
                 let matrix_f = air.generate_trace_rows(&ops_babybear, constants, 0, permutation);
                 let matrix: RowMajorMatrix<Val<SC>> = unsafe { transmute(matrix_f) };
                 (
+                    // Preprocessed values are already stored in the AIR, so we don't need to pass them again in the wrapper.
                     Poseidon2AirWrapper {
                         width: air.width(),
+                        preprocessed: Vec::new(),
                         _phantom: core::marker::PhantomData::<SC>,
                     },
                     matrix,
@@ -661,14 +741,21 @@ impl Poseidon2Prover {
                 permutation,
                 constants,
             } => {
-                let air = Poseidon2CircuitAirKoalaBearD4Width16::new(constants.clone());
+                let preprocessed =
+                    extract_preprocessed_from_operations::<KoalaBear, Val<SC>>(&t.operations);
+                let air = Poseidon2CircuitAirKoalaBearD4Width16::new_with_preprocessed(
+                    constants.clone(),
+                    preprocessed,
+                );
                 let ops_koalabear: Poseidon2CircuitTrace<KoalaBear> =
                     unsafe { transmute(ops_converted) };
                 let matrix_f = air.generate_trace_rows(&ops_koalabear, constants, 0, permutation);
                 let matrix: RowMajorMatrix<Val<SC>> = unsafe { transmute(matrix_f) };
                 (
+                    // Preprocessed values are already stored in the AIR, so we don't need to pass them again in the wrapper.
                     Poseidon2AirWrapper {
                         width: air.width(),
+                        preprocessed: Vec::new(),
                         _phantom: core::marker::PhantomData::<SC>,
                     },
                     matrix,
@@ -678,14 +765,21 @@ impl Poseidon2Prover {
                 permutation,
                 constants,
             } => {
-                let air = Poseidon2CircuitAirKoalaBearD4Width24::new(constants.clone());
+                let preprocessed =
+                    extract_preprocessed_from_operations::<KoalaBear, Val<SC>>(&t.operations);
+                let air = Poseidon2CircuitAirKoalaBearD4Width24::new_with_preprocessed(
+                    constants.clone(),
+                    preprocessed,
+                );
                 let ops_koalabear: p3_circuit::tables::Poseidon2CircuitTrace<KoalaBear> =
                     unsafe { core::mem::transmute(ops_converted) };
                 let matrix_f = air.generate_trace_rows(&ops_koalabear, constants, 0, permutation);
                 let matrix: RowMajorMatrix<Val<SC>> = unsafe { core::mem::transmute(matrix_f) };
                 (
+                    // Preprocessed values are already stored in the AIR, so we don't need to pass them again in the wrapper.
                     Poseidon2AirWrapper {
                         width: air.width(),
+                        preprocessed: Vec::new(),
                         _phantom: core::marker::PhantomData::<SC>,
                     },
                     matrix,
@@ -778,6 +872,7 @@ where
                 let air = Poseidon2CircuitAirBabyBearD4Width16::new(constants.clone());
                 let wrapper = Poseidon2AirWrapper {
                     width: air.width(),
+                    preprocessed: Vec::new(),
                     _phantom: core::marker::PhantomData::<SC>,
                 };
                 Ok(DynamicAirEntry::new(Box::new(wrapper)))
@@ -787,6 +882,7 @@ where
                 let air = Poseidon2CircuitAirBabyBearD4Width24::new(constants.clone());
                 let wrapper = Poseidon2AirWrapper {
                     width: air.width(),
+                    preprocessed: Vec::new(),
                     _phantom: core::marker::PhantomData::<SC>,
                 };
                 Ok(DynamicAirEntry::new(Box::new(wrapper)))
@@ -796,6 +892,7 @@ where
                 let air = Poseidon2CircuitAirKoalaBearD4Width16::new(constants.clone());
                 let wrapper = Poseidon2AirWrapper {
                     width: air.width(),
+                    preprocessed: Vec::new(),
                     _phantom: core::marker::PhantomData::<SC>,
                 };
                 Ok(DynamicAirEntry::new(Box::new(wrapper)))
@@ -805,6 +902,7 @@ where
                 let air = Poseidon2CircuitAirKoalaBearD4Width24::new(constants.clone());
                 let wrapper = Poseidon2AirWrapper {
                     width: air.width(),
+                    preprocessed: Vec::new(),
                     _phantom: core::marker::PhantomData::<SC>,
                 };
                 Ok(DynamicAirEntry::new(Box::new(wrapper)))
@@ -1428,7 +1526,8 @@ mod tests {
 
         let circuit = builder.build().unwrap();
         let airs_degrees =
-            get_airs_and_degrees_with_prep::<_, _, 1>(&circuit, TablePacking::default()).unwrap();
+            get_airs_and_degrees_with_prep::<_, _, 1>(&circuit, TablePacking::default(), None)
+                .unwrap();
         let (airs, log_degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
 
         let mut runner = circuit.runner();
@@ -1472,7 +1571,7 @@ mod tests {
         let circuit = builder.build().unwrap();
         let default_packing = TablePacking::default();
         let airs_degrees =
-            get_airs_and_degrees_with_prep::<_, _, 1>(&circuit, default_packing).unwrap();
+            get_airs_and_degrees_with_prep::<_, _, 1>(&circuit, default_packing, None).unwrap();
         let (mut airs, log_degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
 
         // Check that the multiplicities of `WitnessAir` are computed correctly.
@@ -1588,7 +1687,8 @@ mod tests {
         builder.assert_zero(diff);
         let circuit = builder.build().unwrap();
         let airs_degrees =
-            get_airs_and_degrees_with_prep::<_, _, D>(&circuit, TablePacking::default()).unwrap();
+            get_airs_and_degrees_with_prep::<_, _, D>(&circuit, TablePacking::default(), None)
+                .unwrap();
         let (airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
 
         let mut runner = circuit.runner();
@@ -1646,7 +1746,7 @@ mod tests {
         let circuit = builder.build().unwrap();
         let default_packing = TablePacking::default();
         let airs_degrees =
-            get_airs_and_degrees_with_prep::<_, _, 1>(&circuit, default_packing).unwrap();
+            get_airs_and_degrees_with_prep::<_, _, 1>(&circuit, default_packing, None).unwrap();
         let (mut airs, log_degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
 
         // Check that the multiplicities of `WitnessAir` are computed correctly.
@@ -1790,7 +1890,8 @@ mod tests {
 
         let circuit = builder.build().unwrap();
         let airs_degrees =
-            get_airs_and_degrees_with_prep::<_, _, 1>(&circuit, TablePacking::default()).unwrap();
+            get_airs_and_degrees_with_prep::<_, _, 1>(&circuit, TablePacking::default(), None)
+                .unwrap();
         let (airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
         let mut runner = circuit.runner();
 
@@ -1842,7 +1943,8 @@ mod tests {
 
         let circuit = builder.build().unwrap();
         let airs_degrees =
-            get_airs_and_degrees_with_prep::<_, _, D>(&circuit, TablePacking::default()).unwrap();
+            get_airs_and_degrees_with_prep::<_, _, D>(&circuit, TablePacking::default(), None)
+                .unwrap();
         let (airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
         let mut runner = circuit.runner();
 
@@ -1915,7 +2017,8 @@ mod tests {
 
         let circuit = builder.build().unwrap();
         let airs_degrees =
-            get_airs_and_degrees_with_prep::<_, _, D>(&circuit, TablePacking::default()).unwrap();
+            get_airs_and_degrees_with_prep::<_, _, D>(&circuit, TablePacking::default(), None)
+                .unwrap();
         let (airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
         let mut runner = circuit.runner();
 

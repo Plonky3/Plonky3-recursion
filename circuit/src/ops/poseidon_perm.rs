@@ -20,6 +20,7 @@ use alloc::vec::Vec;
 use alloc::{format, vec};
 
 use p3_field::{Field, PrimeCharacteristicRing};
+use strum::EnumCount;
 
 use crate::CircuitError;
 use crate::builder::{CircuitBuilder, NonPrimitiveOpParams};
@@ -255,46 +256,104 @@ impl<F: Field> NonPrimitiveExecutor<F> for PoseidonPermExecutor {
         Ok(())
     }
 
-    fn preprocessing(
-        &self,
-        inputs: &[Vec<WitnessId>],
-        outputs: &[Vec<WitnessId>],
-        preprocessed_tables: &mut Vec<Vec<F>>,
-    ) {
-        // Update the `Witness` table preprocessing by incrementing the multiplicity of all values read from the `Witness` table.
-        // Whenever an input or output is present, it means it is exposed in the `Permutation` table, and its multiplicity should therefore be incremented.
-        let witness_table_idx = PrimitiveOpType::Witness as usize;
-        // The last input is `mmcs_bit_idx`, which is not a preprocessed column.
-        let last_input = inputs.len() - 1;
-        for inp in inputs[..last_input].iter() {
-            for witness_id in inp {
-                let idx = witness_id.0 as usize;
-                if idx >= preprocessed_tables[witness_table_idx].len() {
-                    preprocessed_tables[witness_table_idx].resize(idx + 1, F::from_u32(0));
-                }
-                preprocessed_tables[witness_table_idx][idx] += F::ONE;
-            }
-        }
-
-        for out in outputs {
-            for witness_id in out {
-                let idx = witness_id.0 as usize;
-                if idx >= preprocessed_tables[witness_table_idx].len() {
-                    preprocessed_tables[witness_table_idx].resize(idx + 1, F::from_u32(0));
-                }
-                preprocessed_tables[witness_table_idx][idx] += F::ONE;
-            }
-        }
-
-        // TODO: Update preprocessing columns for the Permutation table as well.
-    }
-
     fn op_type(&self) -> &NonPrimitiveOpType {
         &self.op_type
     }
 
     fn as_any(&self) -> &dyn core::any::Any {
         self
+    }
+
+    fn preprocess(
+        &self,
+        inputs: &[Vec<WitnessId>],
+        _outputs: &[Vec<WitnessId>],
+        preprocessed_tables: &mut Vec<Vec<F>>,
+    ) {
+        let witness_table_idx = PrimitiveOpType::Witness as usize;
+        let update_witness_table = |witness_ids: &[WitnessId], p_ts: &mut Vec<Vec<F>>| {
+            for witness_id in witness_ids {
+                let idx = witness_id.0 as usize;
+                if idx >= p_ts[witness_table_idx].len() {
+                    p_ts[witness_table_idx].resize(idx + 1, F::from_u32(0));
+                }
+                p_ts[witness_table_idx][idx] += F::ONE;
+            }
+        };
+
+        // We need to populate in_ctl and out_ctl for this operation.
+        let idx = PrimitiveOpType::COUNT + self.op_type.clone() as usize;
+        if preprocessed_tables.len() <= idx {
+            preprocessed_tables.resize(idx + 1, vec![]);
+        }
+
+        // The inputs have shape:
+        // inputs[0..3], outputs[0..1], mmcs_index_sum, mmcs_bit
+        // The shape of one preprocessed row is:
+        // [in_idx0, in_ctl_0, normal_chain_sel[0], merkle_chain_sel[0], in_idx1, in1_ctl, normal_chain_sel[1], merkle_chain_sel[1], ..., out_idx0, out_ctl_0, out_idx1, out_ctl_1, mmcs_index_sum_ctl_idx, new_start, merkle_path]
+
+        // First, let's add the input indices and `in_ctl` values.
+        for (limb_idx, inp) in inputs[0..4].iter().enumerate() {
+            if inp.is_empty() {
+                // Private input
+                preprocessed_tables[idx].push(F::ZERO); // in_idx
+                preprocessed_tables[idx].push(F::ZERO); // in_ctl
+            } else {
+                // Exposed input
+                preprocessed_tables[idx].push(F::from_u32(inp[0].0)); // in_idx
+                preprocessed_tables[idx].push(F::ONE); // in_ctl
+
+                // In this case, we are reading the input limbs from the witness table,
+                // so we need to update the associated witness table multiplicities.
+                update_witness_table(inp, preprocessed_tables);
+            }
+            let normal_chain_sel =
+                if !self.new_start && !self.merkle_path && inputs[limb_idx].is_empty() {
+                    F::ONE
+                } else {
+                    F::ZERO
+                };
+
+            preprocessed_tables[idx].push(normal_chain_sel);
+
+            let merkle_chain_sel =
+                if !self.new_start && self.merkle_path && inputs[limb_idx].is_empty() {
+                    F::ONE
+                } else {
+                    F::ZERO
+                };
+            preprocessed_tables[idx].push(merkle_chain_sel);
+        }
+
+        for out in inputs[4..6].iter() {
+            if out.is_empty() {
+                // Private output
+                preprocessed_tables[idx].push(F::ZERO); // out_idx
+                preprocessed_tables[idx].push(F::ZERO); // out_ctl
+            } else {
+                // Exposed output
+                preprocessed_tables[idx].push(F::from_u32(out[0].0)); // out_idx
+                preprocessed_tables[idx].push(F::ONE); // out_ctl
+
+                // In this case, we are reading the output limbs from the witness table,
+                // so we need to update the associated witness table multiplicities.
+                update_witness_table(out, preprocessed_tables);
+            }
+        }
+
+        // mmcs_index_sum
+        if inputs[6].is_empty() {
+            preprocessed_tables[idx].push(F::ZERO);
+        } else {
+            preprocessed_tables[idx].push(F::ONE);
+            // In this case, we are reading the MMCS index sum from the witness table,
+            // so we need to update the associated witness table multiplicities.
+            update_witness_table(&inputs[6], preprocessed_tables);
+        }
+
+        // We need to insert `new_start` and `merkle_path` as well.
+        preprocessed_tables[idx].push(if self.new_start { F::ONE } else { F::ZERO });
+        preprocessed_tables[idx].push(if self.merkle_path { F::ONE } else { F::ZERO });
     }
 
     fn boxed(&self) -> Box<dyn NonPrimitiveExecutor<F>> {

@@ -451,21 +451,22 @@ pub trait NonPrimitiveExecutor<F: Field>: Debug {
         ctx: &mut ExecutionContext<'_, F>,
     ) -> Result<(), CircuitError>;
 
-    /// Update the preprocessed values related to this operation. This consists of:
-    /// - the preprocessed values for the associated table
-    /// - the multiplicity for the `Witness` table.
-    fn preprocessing(
-        &self,
-        inputs: &[Vec<WitnessId>],
-        outputs: &[Vec<WitnessId>],
-        preprocessed_tables: &mut Vec<Vec<F>>,
-    );
-
     /// Get operation type identifier (for config lookup, error reporting)
     fn op_type(&self) -> &NonPrimitiveOpType;
 
     /// Allow downcasting to concrete executor types
     fn as_any(&self) -> &dyn core::any::Any;
+
+    /// Update the preprocessed values related to this operation. This consists of:
+    /// - the preprocessed values for the associated table
+    /// - the multiplicity for the `Witness` table.
+    fn preprocess(
+        &self,
+        _inputs: &[Vec<WitnessId>],
+        _outputs: &[Vec<WitnessId>],
+        _preprocessed_tables: &mut Vec<Vec<F>>,
+    ) {
+    }
 
     /// Clone as trait object
     fn boxed(&self) -> Box<dyn NonPrimitiveExecutor<F>>;

@@ -60,7 +60,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     let circuit = builder.build()?;
     let table_packing = TablePacking::new(4, 4, 1);
 
-    let airs_degrees = get_airs_and_degrees_with_prep::<_, _, 1>(&circuit, table_packing).unwrap();
+    let airs_degrees =
+        get_airs_and_degrees_with_prep::<_, _, 1>(&circuit, table_packing, None).unwrap();
     let (airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
     let mut runner = circuit.runner();
 

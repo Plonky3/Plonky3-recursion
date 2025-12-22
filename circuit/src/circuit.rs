@@ -204,7 +204,7 @@ impl<F: Field> Circuit<F> {
                     ..
                 } => {
                     // Delegate preprocessing to the non-primitive operation.
-                    executor.preprocessing(inputs, outputs, &mut preprocessed);
+                    executor.preprocess(inputs, outputs, &mut preprocessed);
                 }
             }
         }
