@@ -39,10 +39,11 @@ pub struct PoseidonPermCall {
     /// MMCS direction bit input (base field, boolean).
     ///
     /// Required when `merkle_path = true`. When `merkle_path = false`, this may be omitted and
-    /// defaults to 0 (private).
+    /// defaults to 0 (not exposed via CTL).
     pub mmcs_bit: Option<ExprId>,
     /// Optional CTL exposure for each input limb (one extension element).
-    /// If `None`, the limb is considered private/unexposed (in_ctl = 0).
+    /// If `None`, the limb is not exposed via CTL (in_ctl = 0).
+    /// Note: For Merkle mode, unexposed limbs are provided via PoseidonPermPrivateData (the sibling).
     pub inputs: [Option<ExprId>; 4],
     /// Output exposure flags for limbs 0 and 1.
     ///
@@ -74,6 +75,7 @@ pub trait PoseidonPermOps<F: Clone + PrimeCharacteristicRing + Eq> {
     /// - `merkle_path`: if true, Merkle-path chaining semantics apply (chained digest placement depends on `mmcs_bit`).
     /// - `mmcs_bit`: Merkle direction bit witness for this row (used when `merkle_path` is true).
     /// - `inputs`: optional CTL exposure per limb (extension element, length 4 if provided).
+    ///   Unexposed limbs in Merkle mode are provided separately via `PoseidonPermPrivateData`.
     /// - `out_ctl`: whether to allocate/expose output limbs 0–1 via CTL.
     /// - `mmcs_index_sum`: optional exposure of the MMCS index accumulator (base field element).
     fn add_poseidon_perm(
