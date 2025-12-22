@@ -918,7 +918,7 @@ mod tests {
     fn test_execution_context_get_private_data() {
         // Create private auxiliary data for a verification operation
         let poseidon_data: PoseidonPermPrivateData<F> = PoseidonPermPrivateData {
-            input_values: vec![],
+            sibling: [F::ZERO, F::ZERO],
         };
         let private_data = vec![Some(NonPrimitiveOpPrivateData::PoseidonPerm(
             poseidon_data.clone(),

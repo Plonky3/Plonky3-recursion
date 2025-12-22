@@ -226,30 +226,22 @@ fn main() -> Result<(), Box<dyn Error>> {
     ])?;
 
     // Set private inputs for Row 1
-    // Row 1: mmcs_bit = 1 (Right Child). Previous digest chains to limbs 2-3.
-    // Sibling goes to limbs 0-1.
-    let mut row1_private_inputs = [Ext4::ZERO; 4];
-    row1_private_inputs[0] = sibling1_limb2; // Sibling at 0
-    row1_private_inputs[1] = sibling1_limb3; // Sibling at 1
-
+    // Row 1: mmcs_bit = 1 (Right Child). Previous digest chains from previous row.
+    // For Merkle mode, provide the sibling (2 limbs). Internal logic handles placement.
     runner.set_non_primitive_op_private_data(
         row1_op_id,
         NonPrimitiveOpPrivateData::PoseidonPerm(PoseidonPermPrivateData {
-            input_values: row1_private_inputs.to_vec(),
+            sibling: [sibling1_limb2, sibling1_limb3],
         }),
     )?;
 
     // Set private inputs for Row 2
-    // Row 2: mmcs_bit = 0 (Left Child). Previous digest chains to limbs 0-1.
-    // Sibling goes to limbs 2-3.
-    let mut row2_private_inputs = [Ext4::ZERO; 4];
-    row2_private_inputs[2] = sibling2_limb2; // Sibling at 2
-    row2_private_inputs[3] = sibling2_limb3; // Sibling at 3
-
+    // Row 2: mmcs_bit = 0 (Left Child). Previous digest chains from previous row.
+    // For Merkle mode, provide the sibling (2 limbs). Internal logic handles placement.
     runner.set_non_primitive_op_private_data(
         row2_op_id,
         NonPrimitiveOpPrivateData::PoseidonPerm(PoseidonPermPrivateData {
-            input_values: row2_private_inputs.to_vec(),
+            sibling: [sibling2_limb2, sibling2_limb3],
         }),
     )?;
 

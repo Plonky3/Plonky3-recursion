@@ -14,10 +14,11 @@ use crate::op::{NonPrimitiveOpPrivateData, NonPrimitiveOpType, Op};
 use crate::ops::poseidon_perm::PoseidonPermExecutor;
 use crate::types::WitnessId;
 
-/// Private data for Poseidon permutation (e.g. pre-image).
+/// Private data for Poseidon permutation.
+/// Only used for Merkle mode operations, contains exactly 2 extension field limbs (the sibling).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PoseidonPermPrivateData<F> {
-    pub input_values: Vec<F>,
+    pub sibling: [F; 2],
 }
 
 /// Trait to provide Poseidon2 configuration parameters for a field type.
@@ -214,16 +215,28 @@ where
                     if let Some(Some(NonPrimitiveOpPrivateData::PoseidonPerm(private_data))) =
                         self.non_primitive_op_private_data.get(op_id.0 as usize)
                     {
-                        let num_limbs = width / d;
-                        if private_data.input_values.len() != num_limbs {
-                            return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
+                        // Private inputs are only valid for Merkle mode (merkle_path && !new_start).
+                        // The type [F; 2] guarantees exactly 2 limbs (the sibling).
+                        let poseidon_executor = executor
+                            .as_any()
+                            .downcast_ref::<crate::ops::poseidon_perm::PoseidonPermExecutor>()
+                            .ok_or_else(|| CircuitError::IncorrectNonPrimitiveOpPrivateData {
                                 op: executor.op_type().clone(),
-                                expected: num_limbs.to_string(),
-                                got: private_data.input_values.len(),
+                                operation_index: *op_id,
+                                expected: "PoseidonPermExecutor".to_string(),
+                                got: "unknown executor type".to_string(),
+                            })?;
+                        if !poseidon_executor.merkle_path || poseidon_executor.new_start {
+                            return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
+                                op: executor.op_type().clone(),
+                                operation_index: *op_id,
+                                expected: "no private data (only Merkle mode accepts private data)"
+                                    .to_string(),
+                                got: "private data provided for non-Merkle operation".to_string(),
                             });
                         }
                         let mut flattened = Vec::with_capacity(width);
-                        for limb in &private_data.input_values {
+                        for limb in &private_data.sibling {
                             flattened.extend_from_slice(limb.as_basis_coefficients_slice());
                         }
                         flattened

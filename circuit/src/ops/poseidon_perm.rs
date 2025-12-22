@@ -196,7 +196,7 @@ impl<F: Field> NonPrimitiveExecutor<F> for PoseidonPermExecutor {
         // Get private data if available
         let private_data = ctx.get_private_data().ok();
         let private_inputs: Option<&[F]> = private_data.map(|pd| match pd {
-            NonPrimitiveOpPrivateData::PoseidonPerm(data) => data.input_values.as_slice(),
+            NonPrimitiveOpPrivateData::PoseidonPerm(data) => &data.sibling[..],
         });
 
         // Get mmcs_bit (required when merkle_path=true; defaults to false otherwise).
@@ -364,13 +364,14 @@ impl<F: Field> NonPrimitiveExecutor<F> for PoseidonPermExecutor {
 }
 
 impl PoseidonPermExecutor {
-    /// Resolve input limb value using precedence rules:
-    /// 1. CTL (witness) if provided and set
-    /// 2. Chaining from previous permutation (if new_start=false)
-    ///    - Normal mode: all 4 limbs from chaining
-    ///    - Merkle mode: chain prev[0..1] into (0..1) if mmcs_bit=0, else into (2..3) if mmcs_bit=1;
-    ///      the other limb pair must come from CTL/private data
-    /// 3. Private data as fallback
+    /// Resolve input limb value using a layered priority system:
+    /// 1. Layer 1: Private inputs (lowest priority) - sibling placed at positions 2-3
+    /// 2. Layer 2: Chaining from previous permutation (if new_start=false)
+    /// 3. Layer 3: CTL (witness) values (highest priority, overwrites previous layers)
+    /// 4. Layer 4: Apply Merkle swap if mmcs_bit=1: positions 0↔2 and 1↔3
+    ///
+    /// This layered approach keeps the swap logic internal (where mmcs_bit is known)
+    /// rather than exposing it to callers who provide private data.
     fn resolve_input_limb<F: Field>(
         &self,
         limb: usize,
@@ -379,15 +380,20 @@ impl PoseidonPermExecutor {
         ctx: &ExecutionContext<'_, F>,
         mmcs_bit: bool,
     ) -> Result<F, CircuitError> {
-        // 1. Check CTL (witness) first - highest priority
-        if inputs.len() > limb && inputs[limb].len() == 1 {
-            let wid = inputs[limb][0];
-            if let Ok(val) = ctx.get_witness(wid) {
-                return Ok(val);
-            }
+        // Build up the input array with layered priorities
+        let mut resolved = [None; 4];
+
+        // Layer 1: Private inputs (lowest priority)
+        // Private inputs are only used in Merkle mode (merkle_path && !new_start).
+        // The sibling (exactly 2 limbs) is placed at positions 2-3.
+        if let Some(private) = private_inputs {
+            // Note: validation ensures private_inputs is only provided for Merkle mode
+            debug_assert!(self.merkle_path && !self.new_start);
+            resolved[2] = Some(private[0]);
+            resolved[3] = Some(private[1]);
         }
 
-        // 2. Check chaining from previous permutation (if new_start=false)
+        // Layer 2: Chaining from previous permutation (medium priority)
         if !self.new_start {
             let prev = ctx.last_poseidon().ok_or_else(|| {
                 CircuitError::PoseidonChainMissingPreviousState {
@@ -397,43 +403,51 @@ impl PoseidonPermExecutor {
 
             if !self.merkle_path {
                 // Normal chaining: all 4 limbs come from previous output
-                return Ok(prev[limb]);
+                for i in 0..4 {
+                    resolved[i] = Some(prev[i]);
+                }
             } else {
                 // Merkle path chaining:
-                // - The previous digest is always prev[0..1] (the "public" output limbs).
-                // - `mmcs_bit` decides whether the previous digest is the left (bit=0) or right (bit=1) child:
-                //   - bit=0: chain prev[0..1] into limbs 0..1; sibling must be provided in limbs 2..3.
-                //   - bit=1: chain prev[0..1] into limbs 2..3; sibling must be provided in limbs 0..1.
-                match (mmcs_bit, limb) {
-                    (false, 0) => return Ok(prev[0]),
-                    (false, 1) => return Ok(prev[1]),
-                    (true, 2) => return Ok(prev[0]),
-                    (true, 3) => return Ok(prev[1]),
-                    _ => { /* fall through to private data */ }
+                // Previous digest (prev[0..1]) is always placed at positions 0-1.
+                // If mmcs_bit=1, the swap in Layer 4 will move them to positions 2-3.
+                resolved[0] = Some(prev[0]);
+                resolved[1] = Some(prev[1]);
+            }
+        }
+
+        // Layer 3: CTL (witness) values (highest priority)
+        for i in 0..4 {
+            if inputs.len() > i && inputs[i].len() == 1 {
+                let wid = inputs[i][0];
+                if let Ok(val) = ctx.get_witness(wid) {
+                    resolved[i] = Some(val);
                 }
             }
         }
 
-        // 3. Check private data as fallback
-        if let Some(private) = private_inputs
-            && limb < private.len()
-        {
-            return Ok(private[limb]);
-        }
+        // Apply Merkle mode swap if needed: when mmcs_bit=1, swap pairs (0↔2, 1↔3)
+        let idx = if self.merkle_path && mmcs_bit {
+            (limb + 2) % 4
+        } else {
+            limb
+        };
 
-        // 4. Missing input error
-        if self.merkle_path && !self.new_start {
-            let is_required_sibling = matches!((mmcs_bit, limb), (false, 2 | 3) | (true, 0 | 1));
-            if is_required_sibling {
-                return Err(CircuitError::PoseidonMerkleMissingSiblingInput {
-                    operation_index: ctx.operation_id(),
-                    limb,
-                });
+        // Return the resolved value
+        resolved[idx].ok_or_else(|| {
+            if self.merkle_path && !self.new_start {
+                let is_required_sibling =
+                    matches!((mmcs_bit, limb), (false, 2 | 3) | (true, 0 | 1));
+                if is_required_sibling {
+                    return CircuitError::PoseidonMerkleMissingSiblingInput {
+                        operation_index: ctx.operation_id(),
+                        limb,
+                    };
+                }
             }
-        }
-        Err(CircuitError::PoseidonMissingInput {
-            operation_index: ctx.operation_id(),
-            limb,
+            CircuitError::PoseidonMissingInput {
+                operation_index: ctx.operation_id(),
+                limb,
+            }
         })
     }
 }
