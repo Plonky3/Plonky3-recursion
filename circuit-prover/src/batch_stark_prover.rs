@@ -1209,13 +1209,11 @@ where
     Val<SC>: StarkField + PrimeField,
 {
     fn add_lookup_columns(&mut self) -> Vec<usize> {
-        // Lookup columns are handled by the inner AIR through the Air::eval implementation
-        vec![]
+        <Poseidon2AirWrapper<SC> as AirLookupHandler<SymbolicAirBuilder<Val<SC>>>>::add_lookup_columns(self)
     }
 
     fn get_lookups(&mut self) -> Vec<p3_lookup::lookup_traits::Lookup<Val<SC>>> {
-        // Lookups are handled by the inner AIR through the Air::eval implementation
-        vec![]
+        <Poseidon2AirWrapper<SC> as AirLookupHandler<SymbolicAirBuilder<Val<SC>>>>::get_lookups(self)
     }
 }
 
@@ -1226,13 +1224,11 @@ where
     Val<SC>: StarkField + PrimeField,
 {
     fn add_lookup_columns(&mut self) -> Vec<usize> {
-        // Lookup columns are handled by the inner AIR through the Air::eval implementation
-        vec![]
+        <Poseidon2AirWrapper<SC> as AirLookupHandler<SymbolicAirBuilder<Val<SC>>>>::add_lookup_columns(self)
     }
 
     fn get_lookups(&mut self) -> Vec<p3_lookup::lookup_traits::Lookup<Val<SC>>> {
-        // Lookups are handled by the inner AIR through the Air::eval implementation
-        vec![]
+        <Poseidon2AirWrapper<SC> as AirLookupHandler<SymbolicAirBuilder<Val<SC>>>>::get_lookups(self)
     }
 }
 
