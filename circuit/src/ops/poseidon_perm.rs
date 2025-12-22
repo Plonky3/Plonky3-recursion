@@ -370,13 +370,9 @@ impl<F: Field> NonPrimitiveExecutor<F> for PoseidonPermExecutor {
 
 impl PoseidonPermExecutor {
     /// Resolve input limb value using a layered priority system:
-    /// 1. Layer 1: Private inputs (lowest priority) - sibling placed at positions 2-3
+    /// 1. Layer 1: Private inputs (lowest priority) - sibling placed based on mmcs_bit
     /// 2. Layer 2: Chaining from previous permutation (if new_start=false)
     /// 3. Layer 3: CTL (witness) values (highest priority, overwrites previous layers)
-    /// 4. Layer 4: Apply Merkle swap if mmcs_bit=1: positions 0↔2 and 1↔3
-    ///
-    /// This layered approach keeps the swap logic internal (where mmcs_bit is known)
-    /// rather than exposing it to callers who provide private data.
     fn resolve_input_limb<F: Field>(
         &self,
         limb: usize,
@@ -390,12 +386,15 @@ impl PoseidonPermExecutor {
 
         // Layer 1: Private inputs (lowest priority)
         // Private inputs are only used in Merkle mode (merkle_path && !new_start).
-        // The sibling (exactly 2 limbs) is placed at positions 2-3.
+        // The sibling (exactly 2 limbs) is placed based on mmcs_bit:
+        // - mmcs_bit=0: sibling in 2-3
+        // - mmcs_bit=1: sibling in 0-1
         if let Some(private) = private_inputs {
             // Note: validation ensures private_inputs is only provided for Merkle mode
             debug_assert!(self.merkle_path && !self.new_start);
-            resolved[2] = Some(private[0]);
-            resolved[3] = Some(private[1]);
+            let start = if mmcs_bit { 0 } else { 2 };
+            resolved[start] = Some(private[0]);
+            resolved[start + 1] = Some(private[1]);
         }
 
         // Layer 2: Chaining from previous permutation (medium priority)
@@ -413,10 +412,16 @@ impl PoseidonPermExecutor {
                 }
             } else {
                 // Merkle path chaining:
-                // Previous digest (prev[0..1]) is always placed at positions 0-1.
-                // If mmcs_bit=1, the swap in Layer 4 will move them to positions 2-3.
-                resolved[0] = Some(prev[0]);
-                resolved[1] = Some(prev[1]);
+                // Previous digest (prev[0..1]) is placed based on mmcs_bit:
+                // - mmcs_bit=0: chain into input limbs 0-1
+                // - mmcs_bit=1: chain into input limbs 2-3
+                if mmcs_bit {
+                    resolved[2] = Some(prev[0]);
+                    resolved[3] = Some(prev[1]);
+                } else {
+                    resolved[0] = Some(prev[0]);
+                    resolved[1] = Some(prev[1]);
+                }
             }
         }
 
@@ -424,21 +429,13 @@ impl PoseidonPermExecutor {
         for i in 0..4 {
             if inputs.len() > i && inputs[i].len() == 1 {
                 let wid = inputs[i][0];
-                if let Ok(val) = ctx.get_witness(wid) {
-                    resolved[i] = Some(val);
-                }
+                let val = ctx.get_witness(wid)?;
+                resolved[i] = Some(val);
             }
         }
 
-        // Apply Merkle mode swap if needed: when mmcs_bit=1, swap pairs (0↔2, 1↔3)
-        let idx = if self.merkle_path && mmcs_bit {
-            (limb + 2) % 4
-        } else {
-            limb
-        };
-
         // Return the resolved value
-        resolved[idx].ok_or_else(|| {
+        resolved[limb].ok_or_else(|| {
             if self.merkle_path && !self.new_start {
                 let is_required_sibling =
                     matches!((mmcs_bit, limb), (false, 2 | 3) | (true, 0 | 1));

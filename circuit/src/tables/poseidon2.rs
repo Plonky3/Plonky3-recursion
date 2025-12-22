@@ -208,41 +208,80 @@ where
                     });
                 }
 
-                // Initialize padded_inputs.
-                // If private data is available, use it as the default.
-                // Otherwise start with zero.
-                let mut padded_inputs =
-                    if let Some(Some(NonPrimitiveOpPrivateData::PoseidonPerm(private_data))) =
-                        self.non_primitive_op_private_data.get(op_id.0 as usize)
-                    {
-                        // Private inputs are only valid for Merkle mode (merkle_path && !new_start).
-                        // The type [F; 2] guarantees exactly 2 limbs (the sibling).
-                        let poseidon_executor = executor
-                            .as_any()
-                            .downcast_ref::<crate::ops::poseidon_perm::PoseidonPermExecutor>()
-                            .ok_or_else(|| CircuitError::IncorrectNonPrimitiveOpPrivateData {
-                                op: executor.op_type().clone(),
-                                operation_index: *op_id,
-                                expected: "PoseidonPermExecutor".to_string(),
-                                got: "unknown executor type".to_string(),
-                            })?;
-                        if !poseidon_executor.merkle_path || poseidon_executor.new_start {
+                // mmcs_bit is at inputs[5]
+                if inputs[5].len() > 1 {
+                    return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
+                        op: executor.op_type().clone(),
+                        expected: "0 or 1 element for mmcs_bit".to_string(),
+                        got: inputs[5].len(),
+                    });
+                }
+                if merkle_path && inputs[5].is_empty() {
+                    return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
+                        op: executor.op_type().clone(),
+                        operation_index: *op_id,
+                        expected: "mmcs_bit must be provided when merkle_path=true".to_string(),
+                        got: "missing mmcs_bit".to_string(),
+                    });
+                }
+
+                let mmcs_bit = if inputs[5].len() == 1 {
+                    let val = self.get_witness(&inputs[5][0])?;
+                    let base = val.as_base().ok_or_else(|| {
+                        CircuitError::IncorrectNonPrimitiveOpPrivateData {
+                            op: executor.op_type().clone(),
+                            operation_index: *op_id,
+                            expected: "base field mmcs_bit".to_string(),
+                            got: "extension value".to_string(),
+                        }
+                    })?;
+                    match base {
+                        x if x == Config::BaseField::ZERO => false,
+                        x if x == Config::BaseField::ONE => true,
+                        other => {
                             return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
                                 op: executor.op_type().clone(),
                                 operation_index: *op_id,
-                                expected: "no private data (only Merkle mode accepts private data)"
-                                    .to_string(),
-                                got: "private data provided for non-Merkle operation".to_string(),
+                                expected: "boolean mmcs_bit (0 or 1)".to_string(),
+                                got: format!("{other:?}"),
                             });
                         }
-                        let mut flattened = Vec::with_capacity(width);
-                        for limb in &private_data.sibling {
-                            flattened.extend_from_slice(limb.as_basis_coefficients_slice());
-                        }
-                        flattened
-                    } else {
-                        vec![Config::BaseField::ZERO; width]
-                    };
+                    }
+                } else {
+                    false
+                };
+
+                // Initialize padded_inputs.
+                // If private data is available, use it as the default.
+                // Otherwise start with zero.
+                let mut padded_inputs = vec![Config::BaseField::ZERO; width];
+
+                if let Some(Some(NonPrimitiveOpPrivateData::PoseidonPerm(private_data))) =
+                    self.non_primitive_op_private_data.get(op_id.0 as usize)
+                {
+                    // Private inputs are only valid for Merkle mode (merkle_path && !new_start).
+                    // The type [F; 2] guarantees exactly 2 limbs (the sibling).
+                    if !merkle_path || new_start {
+                        return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
+                            op: executor.op_type().clone(),
+                            operation_index: *op_id,
+                            expected: "no private data (only Merkle mode accepts private data)"
+                                .to_string(),
+                            got: "private data provided for non-Merkle operation".to_string(),
+                        });
+                    }
+
+                    // Place sibling in the correct limbs based on mmcs_bit.
+                    // mmcs_bit=0: sibling in 2-3
+                    // mmcs_bit=1: sibling in 0-1
+                    let start_limb = if mmcs_bit { 0 } else { 2 };
+                    for (i, limb) in private_data.sibling.iter().enumerate() {
+                        let target_limb = start_limb + i;
+                        let coeffs = limb.as_basis_coefficients_slice();
+                        padded_inputs[target_limb * d..(target_limb + 1) * d]
+                            .copy_from_slice(coeffs);
+                    }
+                }
 
                 let mut in_ctl = [false; 4];
                 let mut in_idx = [0u32; 4];
@@ -328,48 +367,6 @@ where
                     (base, inputs[4][0].0)
                 } else {
                     (Config::BaseField::ZERO, 0)
-                };
-                // mmcs_bit is at inputs[5]
-                if inputs[5].len() > 1 {
-                    return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
-                        op: executor.op_type().clone(),
-                        expected: "0 or 1 element for mmcs_bit".to_string(),
-                        got: inputs[5].len(),
-                    });
-                }
-                if merkle_path && inputs[5].is_empty() {
-                    return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
-                        op: executor.op_type().clone(),
-                        operation_index: *op_id,
-                        expected: "mmcs_bit must be provided when merkle_path=true".to_string(),
-                        got: "missing mmcs_bit".to_string(),
-                    });
-                }
-
-                let mmcs_bit = if inputs[5].len() == 1 {
-                    let val = self.get_witness(&inputs[5][0])?;
-                    let base = val.as_base().ok_or_else(|| {
-                        CircuitError::IncorrectNonPrimitiveOpPrivateData {
-                            op: executor.op_type().clone(),
-                            operation_index: *op_id,
-                            expected: "base field mmcs_bit".to_string(),
-                            got: "extension value".to_string(),
-                        }
-                    })?;
-                    match base {
-                        x if x == Config::BaseField::ZERO => false,
-                        x if x == Config::BaseField::ONE => true,
-                        other => {
-                            return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
-                                op: executor.op_type().clone(),
-                                operation_index: *op_id,
-                                expected: "boolean mmcs_bit (0 or 1)".to_string(),
-                                got: format!("{other:?}"),
-                            });
-                        }
-                    }
-                } else {
-                    false
                 };
 
                 operations.push(Poseidon2CircuitRow {
