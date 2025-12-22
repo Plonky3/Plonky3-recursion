@@ -715,9 +715,9 @@ where
                 >(
                     air.as_ref(),
                     builder,
-                    &*local_slice,
-                    &*next_slice,
-                    &*next_preprocessed_slice,
+                    &local_slice,
+                    &next_slice,
+                    &next_preprocessed_slice,
                 );
             },
             Poseidon2AirWrapperInner::BabyBearD4Width24(air) => unsafe {
@@ -738,9 +738,9 @@ where
                 >(
                     air.as_ref(),
                     builder,
-                    &*local_slice,
-                    &*next_slice,
-                    &*next_preprocessed_slice,
+                    &local_slice,
+                    &next_slice,
+                    &next_preprocessed_slice,
                 );
             },
             Poseidon2AirWrapperInner::KoalaBearD4Width16(air) => unsafe {
@@ -761,9 +761,9 @@ where
                 >(
                     air.as_ref(),
                     builder,
-                    &*local_slice,
-                    &*next_slice,
-                    &*next_preprocessed_slice,
+                    &local_slice,
+                    &next_slice,
+                    &next_preprocessed_slice,
                 );
             },
             Poseidon2AirWrapperInner::KoalaBearD4Width24(air) => unsafe {
@@ -784,9 +784,9 @@ where
                 >(
                     air.as_ref(),
                     builder,
-                    &*local_slice,
-                    &*next_slice,
-                    &*next_preprocessed_slice,
+                    &local_slice,
+                    &next_slice,
+                    &next_preprocessed_slice,
                 );
             },
         }
@@ -826,9 +826,9 @@ where
                 >(
                     air.as_ref(),
                     builder,
-                    &*local_slice,
-                    &*next_slice,
-                    &*next_preprocessed_slice,
+                    &local_slice,
+                    &next_slice,
+                    &next_preprocessed_slice,
                 );
             },
             Poseidon2AirWrapperInner::BabyBearD4Width24(air) => unsafe {
@@ -849,9 +849,9 @@ where
                 >(
                     air.as_ref(),
                     builder,
-                    &*local_slice,
-                    &*next_slice,
-                    &*next_preprocessed_slice,
+                    &local_slice,
+                    &next_slice,
+                    &next_preprocessed_slice,
                 );
             },
             Poseidon2AirWrapperInner::KoalaBearD4Width16(air) => unsafe {
@@ -872,9 +872,9 @@ where
                 >(
                     air.as_ref(),
                     builder,
-                    &*local_slice,
-                    &*next_slice,
-                    &*next_preprocessed_slice,
+                    &local_slice,
+                    &next_slice,
+                    &next_preprocessed_slice,
                 );
             },
             Poseidon2AirWrapperInner::KoalaBearD4Width24(air) => unsafe {
@@ -895,9 +895,9 @@ where
                 >(
                     air.as_ref(),
                     builder,
-                    &*local_slice,
-                    &*next_slice,
-                    &*next_preprocessed_slice,
+                    &local_slice,
+                    &next_slice,
+                    &next_preprocessed_slice,
                 );
             },
         }
@@ -1209,13 +1209,11 @@ where
     Val<SC>: StarkField + PrimeField,
 {
     fn add_lookup_columns(&mut self) -> Vec<usize> {
-        <Poseidon2AirWrapper<SC> as AirLookupHandler<SymbolicAirBuilder<Val<SC>>>>::add_lookup_columns(self)
+        <Self as AirLookupHandler<SymbolicAirBuilder<Val<SC>>>>::add_lookup_columns(self)
     }
 
     fn get_lookups(&mut self) -> Vec<p3_lookup::lookup_traits::Lookup<Val<SC>>> {
-        <Poseidon2AirWrapper<SC> as AirLookupHandler<SymbolicAirBuilder<Val<SC>>>>::get_lookups(
-            self,
-        )
+        <Self as AirLookupHandler<SymbolicAirBuilder<Val<SC>>>>::get_lookups(self)
     }
 }
 
@@ -1226,13 +1224,11 @@ where
     Val<SC>: StarkField + PrimeField,
 {
     fn add_lookup_columns(&mut self) -> Vec<usize> {
-        <Poseidon2AirWrapper<SC> as AirLookupHandler<SymbolicAirBuilder<Val<SC>>>>::add_lookup_columns(self)
+        <Self as AirLookupHandler<SymbolicAirBuilder<Val<SC>>>>::add_lookup_columns(self)
     }
 
     fn get_lookups(&mut self) -> Vec<p3_lookup::lookup_traits::Lookup<Val<SC>>> {
-        <Poseidon2AirWrapper<SC> as AirLookupHandler<SymbolicAirBuilder<Val<SC>>>>::get_lookups(
-            self,
-        )
+        <Self as AirLookupHandler<SymbolicAirBuilder<Val<SC>>>>::get_lookups(self)
     }
 }
 
