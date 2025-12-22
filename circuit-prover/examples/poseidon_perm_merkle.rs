@@ -172,10 +172,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         mmcs_index_sum: None,
     })?;
 
-    // Row 1: chain limbs 0-1, provide sibling1 in limbs 2-3, expose output limbs 0-1 and mmcs_index_sum.
+    // Row 1: mmcs_bit = 1 (right), so sibling1 goes in limbs 0-1, previous hash chains to limbs 2-3.
     let sibling1_inputs: [Option<ExprId>; 4] = [
-        None, None, None, // Private
-        None, // Private
+        None, // Private (sibling1 limb 0)
+        None, // Private (sibling1 limb 1)
+        None, None, // Chained from previous output
     ];
     // Public root limbs
     let out0 = builder.add_public_input();
@@ -192,11 +193,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         mmcs_index_sum: None,
     })?;
 
-    // Row 2: merkle left
+    // Row 2: mmcs_bit = 0 (left), so previous hash chains to limbs 0-1, sibling2 goes in limbs 2-3.
     let mmcs_bit_row2 = builder.alloc_const(Ext4::from_prime_subfield(Base::ZERO), "mmcs_bit_row2");
     let sibling2_inputs: [Option<ExprId>; 4] = [
-        None, None, None, // Private
-        None, // Private
+        None, None, // Chained from previous output
+        None, // Private (sibling2 limb 2)
+        None, // Private (sibling2 limb 3)
     ];
     let row2_op_id = builder.add_poseidon_perm(p3_circuit::ops::PoseidonPermCall {
         new_start: false,
@@ -225,20 +227,30 @@ fn main() -> Result<(), Box<dyn Error>> {
     ])?;
 
     // Set private inputs for Row 1
+    // Row 1: mmcs_bit = 1 (Right Child). Chaining into 2-3.
+    // Private input (Sibling) goes to 0-1.
+    let mut row1_private_inputs = [Ext4::ZERO; 4];
+    row1_private_inputs[0] = sibling1_limb2; // Sibling at 0
+    row1_private_inputs[1] = sibling1_limb3; // Sibling at 1
+
     runner.set_non_primitive_op_private_data(
         row1_op_id,
         NonPrimitiveOpPrivateData::PoseidonPerm(PoseidonPermPrivateData {
-            // The first two values will be overwritten by row 1 input
-            input_values: vec![Ext4::ZERO, Ext4::ZERO, sibling1_limb2, sibling1_limb3],
+            input_values: row1_private_inputs.to_vec(),
         }),
     )?;
 
     // Set private inputs for Row 2
+    // Row 2: mmcs_bit = 0 (Left Child). Chaining into 0-1.
+    // Private input (Sibling) goes to 2-3.
+    let mut row2_private_inputs = [Ext4::ZERO; 4];
+    row2_private_inputs[2] = sibling2_limb2; // Sibling at 2
+    row2_private_inputs[3] = sibling2_limb3; // Sibling at 3
+
     runner.set_non_primitive_op_private_data(
         row2_op_id,
         NonPrimitiveOpPrivateData::PoseidonPerm(PoseidonPermPrivateData {
-            // The first two values will be overwritten by row 2 input
-            input_values: vec![Ext4::ZERO, Ext4::ZERO, sibling2_limb2, sibling2_limb3],
+            input_values: row2_private_inputs.to_vec(),
         }),
     )?;
 

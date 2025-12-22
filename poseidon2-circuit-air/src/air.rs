@@ -203,39 +203,39 @@ impl<
             // NOTE: For rows with new_start = false:
             // - Sponge mode (merkle_path = 0): all limbs come from the previous output unless
             //   a limb is exposed via in_ctl, in which case the provided input overrides it.
-            // - Merkle mode (merkle_path = 1): limbs 0-1 are chained from the previous output
-            //   (left/right selected by mmcs_bit); limbs 2-3 come from the provided inputs.
+            // - Merkle mode (merkle_path = 1): previous hash and sibling positions depend on mmcs_bit:
+            //   * mmcs_bit = 0 (left): previous hash in limbs 0-1, sibling in limbs 2-3
+            //   * mmcs_bit = 1 (right): previous hash in limbs 2-3, sibling in limbs 0-1
             // - If in_ctl[i] = 1, that limb is NOT chained and comes from CTL/witness instead.
             //   The AIR constraints will enforce this (chaining is gated by 1 - in_ctl[i]).
             let mut state = padded_inputs;
             let i = inputs.len();
             if i > 0 && !*new_start {
                 if *merkle_path {
-                    // Merkle-path mode: chain based on previous row's mmcs_bit
-                    // Only chain limbs 0-1 if in_ctl[0/1] = 0 (handled by AIR constraints)
+                    // Merkle-path mode: chain based on mmcs_bit
+                    // mmcs_bit = 0: previous hash on left (limbs 0-1), sibling on right (limbs 2-3)
+                    // mmcs_bit = 1: previous hash on right (limbs 2-3), sibling on left (limbs 0-1)
                     if let Some(prev_out) = prev_output {
                         let cur_bit = *mmcs_bit;
-                        if !in_ctl[0] {
-                            if cur_bit {
-                                // Case B: mmcs_bit = 1 (right = previous hash)
-                                // in_{r}[0] = out_{r-1}[2]
-                                state[0..D].copy_from_slice(&prev_out[2 * D..3 * D]);
-                            } else {
-                                // Case A: mmcs_bit = 0 (left = previous hash)
-                                // in_{r}[0] = out_{r-1}[0]
+                        if cur_bit {
+                            // mmcs_bit = 1: previous hash goes to limbs 2-3, sibling stays in limbs 0-1
+                            if !in_ctl[2] {
+                                state[2 * D..3 * D].copy_from_slice(&prev_out[0..D]);
+                            }
+                            if !in_ctl[3] {
+                                state[3 * D..4 * D].copy_from_slice(&prev_out[D..2 * D]);
+                            }
+                            // Limbs 0-1 remain from padded_inputs (sibling)
+                        } else {
+                            // mmcs_bit = 0: previous hash goes to limbs 0-1, sibling stays in limbs 2-3
+                            if !in_ctl[0] {
                                 state[0..D].copy_from_slice(&prev_out[0..D]);
                             }
-                        }
-                        if !in_ctl[1] {
-                            if cur_bit {
-                                // in_{r}[1] = out_{r-1}[3]
-                                state[D..2 * D].copy_from_slice(&prev_out[3 * D..4 * D]);
-                            } else {
-                                // in_{r}[1] = out_{r-1}[1]
+                            if !in_ctl[1] {
                                 state[D..2 * D].copy_from_slice(&prev_out[D..2 * D]);
                             }
+                            // Limbs 2-3 remain from padded_inputs (sibling)
                         }
-                        // in_{r}[2], in_{r}[3] remain free/private (from padded_inputs)
                     }
                 } else {
                     // Normal sponge mode: in_{r+1}[i] = out_r[i] for i = 0..3
@@ -417,6 +417,9 @@ pub fn extract_preprocessed_from_operations<F: Field, OF: Field>(
 
                 preprocessed.push(normal_chain_sel);
 
+                // In merkle mode:
+                // - When mmcs_bit = 0: limbs 0-1 are chained, limbs 2-3 are private (sibling)
+                // - When mmcs_bit = 1: limbs 2-3 are chained, limbs 0-1 are private (sibling)
                 let merkle_chain_sel = if !new_start && *merkle_path && !ctl {
                     F::ONE
                 } else {
@@ -530,14 +533,15 @@ pub fn eval<
     // Merkle-path chaining.
     // If new_start_{r+1} = 0 and merkle_path_{r+1} = 1:
     //   - If mmcs_bit_{r+1} = 0 (left = previous hash): in_{r+1}[0] = out_r[0], in_{r+1}[1] = out_r[1].
-    //     Limbs 2-3 are free/private.
+    //     Limbs 2-3 are free/private (sibling).
     //   - If mmcs_bit_{r+1} = 1 (right = previous hash): in_{r+1}[2] = out_r[0], in_{r+1}[3] = out_r[1].
-    //     Limbs 0-1 are free/private.
+    //     Limbs 0-1 are free/private (sibling).
     // BUT: If in_ctl[i] = 1, CTL overrides chaining (limb is not chained).
     // Chaining only applies when in_ctl[limb] = 0.
     let is_left = AB::Expr::ONE - next_bit.clone();
 
-    // Limb 0: chain from out_r[0] (left), unless in_ctl[0] = 1. Not chained if Right.
+    // Limb 0: chain from out_r[0] when mmcs_bit = 0 (left), unless in_ctl[0] = 1.
+    // When mmcs_bit = 1 (right), limb 0 is private (sibling).
     for d in 0..D {
         let gate_left_0 = next_preprocessed[merkle_chain_idx].clone() * is_left.clone();
         builder
@@ -546,7 +550,8 @@ pub fn eval<
             .assert_zero(next_in[d].clone() - local_out[d].clone());
     }
 
-    // Limb 1: chain from out_r[1] (left), unless in_ctl[1] = 1. Not chained if Right.
+    // Limb 1: chain from out_r[1] when mmcs_bit = 0 (left), unless in_ctl[1] = 1.
+    // When mmcs_bit = 1 (right), limb 1 is private (sibling).
     for d in 0..D {
         let gate_left_1 = next_preprocessed[preprocessing_limb_data_size + merkle_chain_idx]
             .clone()
@@ -557,7 +562,8 @@ pub fn eval<
             .assert_zero(next_in[D + d].clone() - local_out[D + d].clone());
     }
 
-    // Limb 2: chain from out_r[0] (right), unless in_ctl[2] = 1. Not chained if Left.
+    // Limb 2: chain from out_r[0] when mmcs_bit = 1 (right), unless in_ctl[2] = 1.
+    // When mmcs_bit = 0 (left), limb 2 is private (sibling).
     for d in 0..D {
         let gate_right_2 = next_preprocessed[preprocessing_limb_data_size * 2 + merkle_chain_idx]
             .clone()
@@ -568,7 +574,8 @@ pub fn eval<
             .assert_zero(next_in[2 * D + d].clone() - local_out[d].clone());
     }
 
-    // Limb 3: chain from out_r[1] (right), unless in_ctl[3] = 1. Not chained if Left.
+    // Limb 3: chain from out_r[1] when mmcs_bit = 1 (right), unless in_ctl[3] = 1.
+    // When mmcs_bit = 0 (left), limb 3 is private (sibling).
     for d in 0..D {
         let gate_right_3 = next_preprocessed[preprocessing_limb_data_size * 3 + merkle_chain_idx]
             .clone()
