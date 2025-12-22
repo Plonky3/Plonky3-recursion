@@ -126,8 +126,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Previous digest (out[0..1]) chains into limbs 2-3; sibling1 provides limbs 0-1.
     let mut row1_state_base = [Base::ZERO; WIDTH];
     // limbs 0-1 from sibling1
-    let sibling1_flat: [Base; 2 * LIMB_SIZE] =
-        flatten_ext_limbs(&[sibling1_limb2, sibling1_limb3]);
+    let sibling1_flat: [Base; 2 * LIMB_SIZE] = flatten_ext_limbs(&[sibling1_limb2, sibling1_limb3]);
     row1_state_base[0..2 * LIMB_SIZE].copy_from_slice(&sibling1_flat);
     // limbs 2-3 from row0 output limbs 0-1
     row1_state_base[2 * LIMB_SIZE..4 * LIMB_SIZE].copy_from_slice(&row0_out_base[0..2 * LIMB_SIZE]);
@@ -138,8 +137,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     // limbs 2-3 from sibling2
     let mut row2_state_base = [Base::ZERO; WIDTH];
     row2_state_base[0..2 * LIMB_SIZE].copy_from_slice(&row1_out_base[0..2 * LIMB_SIZE]);
-    let sibling2_flat: [Base; 2 * LIMB_SIZE] =
-        flatten_ext_limbs(&[sibling2_limb2, sibling2_limb3]);
+    let sibling2_flat: [Base; 2 * LIMB_SIZE] = flatten_ext_limbs(&[sibling2_limb2, sibling2_limb3]);
     row2_state_base[2 * LIMB_SIZE..4 * LIMB_SIZE].copy_from_slice(&sibling2_flat);
 
     let row2_out_base = perm.permute(row2_state_base);
