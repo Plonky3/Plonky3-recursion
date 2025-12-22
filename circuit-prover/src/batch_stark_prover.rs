@@ -5,6 +5,7 @@ use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
 use alloc::{format, vec};
+use core::borrow::Borrow;
 use core::mem::transmute;
 
 use p3_air::{Air, AirBuilder, BaseAir, PairBuilder};
@@ -560,16 +561,132 @@ where
     }
 }
 
+/// Helper function to evaluate a Poseidon2 variant with a given builder.
+/// This encapsulates the common pattern of transmuting slices and calling eval_unchecked.
+unsafe fn eval_poseidon2_variant<
+    SC,
+    F: PrimeField,
+    AB: PairBuilder,
+    LinearLayers,
+    const D: usize,
+    const WIDTH: usize,
+    const WIDTH_EXT: usize,
+    const RATE_EXT: usize,
+    const CAPACITY_EXT: usize,
+    const SBOX_DEGREE: u64,
+    const SBOX_REGISTERS: usize,
+    const HALF_FULL_ROUNDS: usize,
+    const PARTIAL_ROUNDS: usize,
+>(
+    air: &Poseidon2CircuitAir<
+        F,
+        LinearLayers,
+        D,
+        WIDTH,
+        WIDTH_EXT,
+        RATE_EXT,
+        CAPACITY_EXT,
+        SBOX_DEGREE,
+        SBOX_REGISTERS,
+        HALF_FULL_ROUNDS,
+        PARTIAL_ROUNDS,
+    >,
+    builder: &mut AB,
+    local_slice: &[<AB as AirBuilder>::Var],
+    next_slice: &[<AB as AirBuilder>::Var],
+    next_preprocessed_slice: &[<AB as AirBuilder>::Var],
+) where
+    SC: StarkGenericConfig,
+    Val<SC>: StarkField + PrimeField,
+    AB::F: PrimeField,
+    LinearLayers: p3_poseidon2::GenericPoseidon2LinearLayers<WIDTH>,
+{
+    // Transmute slices from PackedVal<SC> to F::Packing
+    // SAFETY: Val<SC> == F at runtime
+    unsafe {
+        let local_slice_ptr = local_slice.as_ptr() as *const <F as p3_field::Field>::Packing;
+        let local_slice_f = core::slice::from_raw_parts(local_slice_ptr, local_slice.len());
+        let local_f: &p3_poseidon2_circuit_air::Poseidon2CircuitCols<
+            <F as p3_field::Field>::Packing,
+            p3_poseidon2_air::Poseidon2Cols<
+                <F as p3_field::Field>::Packing,
+                WIDTH,
+                SBOX_DEGREE,
+                SBOX_REGISTERS,
+                HALF_FULL_ROUNDS,
+                PARTIAL_ROUNDS,
+            >,
+        > = (*local_slice_f).borrow();
+
+        let next_slice_ptr = next_slice.as_ptr() as *const <F as p3_field::Field>::Packing;
+        let next_slice_f = core::slice::from_raw_parts(next_slice_ptr, next_slice.len());
+        let next_f: &p3_poseidon2_circuit_air::Poseidon2CircuitCols<
+            <F as p3_field::Field>::Packing,
+            p3_poseidon2_air::Poseidon2Cols<
+                <F as p3_field::Field>::Packing,
+                WIDTH,
+                SBOX_DEGREE,
+                SBOX_REGISTERS,
+                HALF_FULL_ROUNDS,
+                PARTIAL_ROUNDS,
+            >,
+        > = (*next_slice_f).borrow();
+
+        let next_preprocessed_ptr =
+            next_preprocessed_slice.as_ptr() as *const <F as p3_field::Field>::Packing;
+        let next_preprocessed_f =
+            core::slice::from_raw_parts(next_preprocessed_ptr, next_preprocessed_slice.len());
+
+        // Transmute struct references to match builder's Var type
+        let local_var: &p3_poseidon2_circuit_air::Poseidon2CircuitCols<
+            AB::Var,
+            p3_poseidon2_air::Poseidon2Cols<
+                AB::Var,
+                WIDTH,
+                SBOX_DEGREE,
+                SBOX_REGISTERS,
+                HALF_FULL_ROUNDS,
+                PARTIAL_ROUNDS,
+            >,
+        > = core::mem::transmute(local_f);
+
+        let next_var: &p3_poseidon2_circuit_air::Poseidon2CircuitCols<
+            AB::Var,
+            p3_poseidon2_air::Poseidon2Cols<
+                AB::Var,
+                WIDTH,
+                SBOX_DEGREE,
+                SBOX_REGISTERS,
+                HALF_FULL_ROUNDS,
+                PARTIAL_ROUNDS,
+            >,
+        > = core::mem::transmute(next_f);
+
+        let next_preprocessed_var: &[AB::Var] = core::mem::transmute(next_preprocessed_f);
+
+        eval_unchecked::<
+            F,
+            AB,
+            LinearLayers,
+            D,
+            WIDTH,
+            WIDTH_EXT,
+            RATE_EXT,
+            CAPACITY_EXT,
+            SBOX_DEGREE,
+            SBOX_REGISTERS,
+            HALF_FULL_ROUNDS,
+            PARTIAL_ROUNDS,
+        >(air, builder, local_var, next_var, next_preprocessed_var);
+    }
+}
+
 impl<'a, SC> Air<ProverConstraintFolder<'a, SC>> for Poseidon2AirWrapper<SC>
 where
     SC: StarkGenericConfig + Send + Sync,
     Val<SC>: StarkField + PrimeField,
 {
     fn eval(&self, builder: &mut ProverConstraintFolder<'a, SC>) {
-        use core::borrow::Borrow;
-
-        use p3_poseidon2_circuit_air::eval_unchecked;
-
         // Extract row data (same pattern as Poseidon2CircuitAir::eval)
         let main = builder.main();
         let local_slice = main.row_slice(0).expect("The matrix is empty?");
@@ -580,169 +697,36 @@ where
             .expect("The preprocessed matrix has only one row?");
 
         match &self.inner {
-            Poseidon2AirWrapperInner::BabyBearD4Width16(air) => {
-                unsafe {
-                    // Transmute slices from PackedVal<SC> to BabyBear::Packing
-                    // SAFETY: Val<SC> == BabyBear at runtime
-                    type BabyBearPacking = <BabyBear as p3_field::Field>::Packing;
-
-                    let local_slice_ptr = local_slice.as_ptr() as *const BabyBearPacking;
-                    let local_slice_bb =
-                        core::slice::from_raw_parts(local_slice_ptr, local_slice.len());
-                    let local_bb: &p3_poseidon2_circuit_air::Poseidon2CircuitCols<
-                        BabyBearPacking,
-                        p3_poseidon2_air::Poseidon2Cols<
-                            BabyBearPacking,
-                            { BabyBearD4Width16::WIDTH },
-                            { BabyBearD4Width16::SBOX_DEGREE },
-                            { BabyBearD4Width16::SBOX_REGISTERS },
-                            { BabyBearD4Width16::HALF_FULL_ROUNDS },
-                            { BabyBearD4Width16::PARTIAL_ROUNDS },
-                        >,
-                    > = (*local_slice_bb).borrow();
-
-                    let next_slice_ptr = next_slice.as_ptr() as *const BabyBearPacking;
-                    let next_slice_bb =
-                        core::slice::from_raw_parts(next_slice_ptr, next_slice.len());
-                    let next_bb: &p3_poseidon2_circuit_air::Poseidon2CircuitCols<
-                        BabyBearPacking,
-                        p3_poseidon2_air::Poseidon2Cols<
-                            BabyBearPacking,
-                            { BabyBearD4Width16::WIDTH },
-                            { BabyBearD4Width16::SBOX_DEGREE },
-                            { BabyBearD4Width16::SBOX_REGISTERS },
-                            { BabyBearD4Width16::HALF_FULL_ROUNDS },
-                            { BabyBearD4Width16::PARTIAL_ROUNDS },
-                        >,
-                    > = (*next_slice_bb).borrow();
-
-                    let next_preprocessed_ptr =
-                        next_preprocessed_slice.as_ptr() as *const BabyBearPacking;
-                    let next_preprocessed_bb = core::slice::from_raw_parts(
-                        next_preprocessed_ptr,
-                        next_preprocessed_slice.len(),
-                    );
-
-                    // Transmute struct references to match builder's Var type
-                    let local_var: &p3_poseidon2_circuit_air::Poseidon2CircuitCols<
-                        <ProverConstraintFolder<'a, SC> as p3_air::AirBuilder>::Var,
-                        p3_poseidon2_air::Poseidon2Cols<
-                            <ProverConstraintFolder<'a, SC> as p3_air::AirBuilder>::Var,
-                            { BabyBearD4Width16::WIDTH },
-                            { BabyBearD4Width16::SBOX_DEGREE },
-                            { BabyBearD4Width16::SBOX_REGISTERS },
-                            { BabyBearD4Width16::HALF_FULL_ROUNDS },
-                            { BabyBearD4Width16::PARTIAL_ROUNDS },
-                        >,
-                    > = core::mem::transmute(local_bb);
-
-                    let next_var: &p3_poseidon2_circuit_air::Poseidon2CircuitCols<
-                        <ProverConstraintFolder<'a, SC> as p3_air::AirBuilder>::Var,
-                        p3_poseidon2_air::Poseidon2Cols<
-                            <ProverConstraintFolder<'a, SC> as p3_air::AirBuilder>::Var,
-                            { BabyBearD4Width16::WIDTH },
-                            { BabyBearD4Width16::SBOX_DEGREE },
-                            { BabyBearD4Width16::SBOX_REGISTERS },
-                            { BabyBearD4Width16::HALF_FULL_ROUNDS },
-                            { BabyBearD4Width16::PARTIAL_ROUNDS },
-                        >,
-                    > = core::mem::transmute(next_bb);
-
-                    let next_preprocessed_var: &[<ProverConstraintFolder<'a, SC> as p3_air::AirBuilder>::Var] =
-                        core::mem::transmute(next_preprocessed_bb);
-
-                    eval_unchecked::<
-                        BabyBear,
-                        _,
-                        GenericPoseidon2LinearLayersBabyBear,
-                        4,
-                        { BabyBearD4Width16::WIDTH },
-                        { BabyBearD4Width16::WIDTH_EXT },
-                        { BabyBearD4Width16::RATE_EXT },
-                        { BabyBearD4Width16::CAPACITY_EXT },
-                        { BabyBearD4Width16::SBOX_DEGREE },
-                        { BabyBearD4Width16::SBOX_REGISTERS },
-                        { BabyBearD4Width16::HALF_FULL_ROUNDS },
-                        { BabyBearD4Width16::PARTIAL_ROUNDS },
-                    >(
-                        air.as_ref(),
-                        builder,
-                        local_var,
-                        next_var,
-                        next_preprocessed_var,
-                    );
-                }
-            }
-            Poseidon2AirWrapperInner::BabyBearD4Width24(air) => unsafe {
-                type BabyBearPacking = <BabyBear as p3_field::Field>::Packing;
-
-                let local_slice_ptr = local_slice.as_ptr() as *const BabyBearPacking;
-                let local_slice_bb =
-                    core::slice::from_raw_parts(local_slice_ptr, local_slice.len());
-                let local_bb: &p3_poseidon2_circuit_air::Poseidon2CircuitCols<
-                    BabyBearPacking,
-                    p3_poseidon2_air::Poseidon2Cols<
-                        BabyBearPacking,
-                        { BabyBearD4Width16::WIDTH },
-                        { BabyBearD4Width16::SBOX_DEGREE },
-                        { BabyBearD4Width16::SBOX_REGISTERS },
-                        { BabyBearD4Width16::HALF_FULL_ROUNDS },
-                        { BabyBearD4Width16::PARTIAL_ROUNDS },
-                    >,
-                > = (*local_slice_bb).borrow();
-
-                let next_slice_ptr = next_slice.as_ptr() as *const BabyBearPacking;
-                let next_slice_bb = core::slice::from_raw_parts(next_slice_ptr, next_slice.len());
-                let next_bb: &p3_poseidon2_circuit_air::Poseidon2CircuitCols<
-                    BabyBearPacking,
-                    p3_poseidon2_air::Poseidon2Cols<
-                        BabyBearPacking,
-                        { BabyBearD4Width16::WIDTH },
-                        { BabyBearD4Width16::SBOX_DEGREE },
-                        { BabyBearD4Width16::SBOX_REGISTERS },
-                        { BabyBearD4Width16::HALF_FULL_ROUNDS },
-                        { BabyBearD4Width16::PARTIAL_ROUNDS },
-                    >,
-                > = (*next_slice_bb).borrow();
-
-                let next_preprocessed_ptr =
-                    next_preprocessed_slice.as_ptr() as *const BabyBearPacking;
-                let next_preprocessed_bb = core::slice::from_raw_parts(
-                    next_preprocessed_ptr,
-                    next_preprocessed_slice.len(),
-                );
-
-                let local_var: &p3_poseidon2_circuit_air::Poseidon2CircuitCols<
-                    <ProverConstraintFolder<'a, SC> as p3_air::AirBuilder>::Var,
-                    p3_poseidon2_air::Poseidon2Cols<
-                        <ProverConstraintFolder<'a, SC> as p3_air::AirBuilder>::Var,
-                        { BabyBearD4Width24::WIDTH },
-                        { BabyBearD4Width24::SBOX_DEGREE },
-                        { BabyBearD4Width24::SBOX_REGISTERS },
-                        { BabyBearD4Width24::HALF_FULL_ROUNDS },
-                        { BabyBearD4Width24::PARTIAL_ROUNDS },
-                    >,
-                > = core::mem::transmute(local_bb);
-
-                let next_var: &p3_poseidon2_circuit_air::Poseidon2CircuitCols<
-                    <ProverConstraintFolder<'a, SC> as p3_air::AirBuilder>::Var,
-                    p3_poseidon2_air::Poseidon2Cols<
-                        <ProverConstraintFolder<'a, SC> as p3_air::AirBuilder>::Var,
-                        { BabyBearD4Width24::WIDTH },
-                        { BabyBearD4Width24::SBOX_DEGREE },
-                        { BabyBearD4Width24::SBOX_REGISTERS },
-                        { BabyBearD4Width24::HALF_FULL_ROUNDS },
-                        { BabyBearD4Width24::PARTIAL_ROUNDS },
-                    >,
-                > = core::mem::transmute(next_bb);
-
-                let next_preprocessed_var: &[<ProverConstraintFolder<'a, SC> as p3_air::AirBuilder>::Var] = core::mem::transmute(next_preprocessed_bb);
-
-                eval_unchecked::<
+            Poseidon2AirWrapperInner::BabyBearD4Width16(air) => unsafe {
+                eval_poseidon2_variant::<
+                    SC,
                     BabyBear,
-                    _,
+                    ProverConstraintFolder<'a, SC>,
                     GenericPoseidon2LinearLayersBabyBear,
-                    4,
+                    { BabyBearD4Width16::D },
+                    { BabyBearD4Width16::WIDTH },
+                    { BabyBearD4Width16::WIDTH_EXT },
+                    { BabyBearD4Width16::RATE_EXT },
+                    { BabyBearD4Width16::CAPACITY_EXT },
+                    { BabyBearD4Width16::SBOX_DEGREE },
+                    { BabyBearD4Width16::SBOX_REGISTERS },
+                    { BabyBearD4Width16::HALF_FULL_ROUNDS },
+                    { BabyBearD4Width16::PARTIAL_ROUNDS },
+                >(
+                    air.as_ref(),
+                    builder,
+                    &*local_slice,
+                    &*next_slice,
+                    &*next_preprocessed_slice,
+                );
+            },
+            Poseidon2AirWrapperInner::BabyBearD4Width24(air) => unsafe {
+                eval_poseidon2_variant::<
+                    SC,
+                    BabyBear,
+                    ProverConstraintFolder<'a, SC>,
+                    GenericPoseidon2LinearLayersBabyBear,
+                    { BabyBearD4Width24::D },
                     { BabyBearD4Width24::WIDTH },
                     { BabyBearD4Width24::WIDTH_EXT },
                     { BabyBearD4Width24::RATE_EXT },
@@ -754,81 +738,18 @@ where
                 >(
                     air.as_ref(),
                     builder,
-                    local_var,
-                    next_var,
-                    next_preprocessed_var,
+                    &*local_slice,
+                    &*next_slice,
+                    &*next_preprocessed_slice,
                 );
             },
             Poseidon2AirWrapperInner::KoalaBearD4Width16(air) => unsafe {
-                type KoalaBearPacking = <KoalaBear as p3_field::Field>::Packing;
-
-                let local_slice_ptr = local_slice.as_ptr() as *const KoalaBearPacking;
-                let local_slice_bb =
-                    core::slice::from_raw_parts(local_slice_ptr, local_slice.len());
-                let local_bb: &p3_poseidon2_circuit_air::Poseidon2CircuitCols<
-                    KoalaBearPacking,
-                    p3_poseidon2_air::Poseidon2Cols<
-                        KoalaBearPacking,
-                        { KoalaBearD4Width16::WIDTH },
-                        { KoalaBearD4Width16::SBOX_DEGREE },
-                        { KoalaBearD4Width16::SBOX_REGISTERS },
-                        { KoalaBearD4Width16::HALF_FULL_ROUNDS },
-                        { KoalaBearD4Width16::PARTIAL_ROUNDS },
-                    >,
-                > = (*local_slice_bb).borrow();
-
-                let next_slice_ptr = next_slice.as_ptr() as *const KoalaBearPacking;
-                let next_slice_bb = core::slice::from_raw_parts(next_slice_ptr, next_slice.len());
-                let next_bb: &p3_poseidon2_circuit_air::Poseidon2CircuitCols<
-                    KoalaBearPacking,
-                    p3_poseidon2_air::Poseidon2Cols<
-                        KoalaBearPacking,
-                        { KoalaBearD4Width16::WIDTH },
-                        { KoalaBearD4Width16::SBOX_DEGREE },
-                        { KoalaBearD4Width16::SBOX_REGISTERS },
-                        { KoalaBearD4Width16::HALF_FULL_ROUNDS },
-                        { KoalaBearD4Width16::PARTIAL_ROUNDS },
-                    >,
-                > = (*next_slice_bb).borrow();
-
-                let next_preprocessed_ptr =
-                    next_preprocessed_slice.as_ptr() as *const KoalaBearPacking;
-                let next_preprocessed_bb = core::slice::from_raw_parts(
-                    next_preprocessed_ptr,
-                    next_preprocessed_slice.len(),
-                );
-
-                let local_var: &p3_poseidon2_circuit_air::Poseidon2CircuitCols<
-                    <ProverConstraintFolder<'a, SC> as p3_air::AirBuilder>::Var,
-                    p3_poseidon2_air::Poseidon2Cols<
-                        <ProverConstraintFolder<'a, SC> as p3_air::AirBuilder>::Var,
-                        { KoalaBearD4Width16::WIDTH },
-                        { KoalaBearD4Width16::SBOX_DEGREE },
-                        { KoalaBearD4Width16::SBOX_REGISTERS },
-                        { KoalaBearD4Width16::HALF_FULL_ROUNDS },
-                        { KoalaBearD4Width16::PARTIAL_ROUNDS },
-                    >,
-                > = core::mem::transmute(local_bb);
-
-                let next_var: &p3_poseidon2_circuit_air::Poseidon2CircuitCols<
-                    <ProverConstraintFolder<'a, SC> as p3_air::AirBuilder>::Var,
-                    p3_poseidon2_air::Poseidon2Cols<
-                        <ProverConstraintFolder<'a, SC> as p3_air::AirBuilder>::Var,
-                        { KoalaBearD4Width16::WIDTH },
-                        { KoalaBearD4Width16::SBOX_DEGREE },
-                        { KoalaBearD4Width16::SBOX_REGISTERS },
-                        { KoalaBearD4Width16::HALF_FULL_ROUNDS },
-                        { KoalaBearD4Width16::PARTIAL_ROUNDS },
-                    >,
-                > = core::mem::transmute(next_bb);
-
-                let next_preprocessed_var: &[<ProverConstraintFolder<'a, SC> as p3_air::AirBuilder>::Var] = core::mem::transmute(next_preprocessed_bb);
-
-                eval_unchecked::<
+                eval_poseidon2_variant::<
+                    SC,
                     KoalaBear,
                     ProverConstraintFolder<'a, SC>,
                     GenericPoseidon2LinearLayersKoalaBear,
-                    4,
+                    { KoalaBearD4Width16::D },
                     { KoalaBearD4Width16::WIDTH },
                     { KoalaBearD4Width16::WIDTH_EXT },
                     { KoalaBearD4Width16::RATE_EXT },
@@ -840,81 +761,18 @@ where
                 >(
                     air.as_ref(),
                     builder,
-                    local_var,
-                    next_var,
-                    next_preprocessed_var,
+                    &*local_slice,
+                    &*next_slice,
+                    &*next_preprocessed_slice,
                 );
             },
             Poseidon2AirWrapperInner::KoalaBearD4Width24(air) => unsafe {
-                type KoalaBearPacking = <KoalaBear as p3_field::Field>::Packing;
-
-                let local_slice_ptr = local_slice.as_ptr() as *const KoalaBearPacking;
-                let local_slice_bb =
-                    core::slice::from_raw_parts(local_slice_ptr, local_slice.len());
-                let local_bb: &p3_poseidon2_circuit_air::Poseidon2CircuitCols<
-                    KoalaBearPacking,
-                    p3_poseidon2_air::Poseidon2Cols<
-                        KoalaBearPacking,
-                        { KoalaBearD4Width24::WIDTH },
-                        { KoalaBearD4Width24::SBOX_DEGREE },
-                        { KoalaBearD4Width24::SBOX_REGISTERS },
-                        { KoalaBearD4Width24::HALF_FULL_ROUNDS },
-                        { KoalaBearD4Width24::PARTIAL_ROUNDS },
-                    >,
-                > = (*local_slice_bb).borrow();
-
-                let next_slice_ptr = next_slice.as_ptr() as *const KoalaBearPacking;
-                let next_slice_bb = core::slice::from_raw_parts(next_slice_ptr, next_slice.len());
-                let next_bb: &p3_poseidon2_circuit_air::Poseidon2CircuitCols<
-                    KoalaBearPacking,
-                    p3_poseidon2_air::Poseidon2Cols<
-                        KoalaBearPacking,
-                        { KoalaBearD4Width24::WIDTH },
-                        { KoalaBearD4Width24::SBOX_DEGREE },
-                        { KoalaBearD4Width24::SBOX_REGISTERS },
-                        { KoalaBearD4Width24::HALF_FULL_ROUNDS },
-                        { KoalaBearD4Width24::PARTIAL_ROUNDS },
-                    >,
-                > = (*next_slice_bb).borrow();
-
-                let next_preprocessed_ptr =
-                    next_preprocessed_slice.as_ptr() as *const KoalaBearPacking;
-                let next_preprocessed_bb = core::slice::from_raw_parts(
-                    next_preprocessed_ptr,
-                    next_preprocessed_slice.len(),
-                );
-
-                let local_var: &p3_poseidon2_circuit_air::Poseidon2CircuitCols<
-                    <ProverConstraintFolder<'a, SC> as p3_air::AirBuilder>::Var,
-                    p3_poseidon2_air::Poseidon2Cols<
-                        <ProverConstraintFolder<'a, SC> as p3_air::AirBuilder>::Var,
-                        { KoalaBearD4Width24::WIDTH },
-                        { KoalaBearD4Width24::SBOX_DEGREE },
-                        { KoalaBearD4Width24::SBOX_REGISTERS },
-                        { KoalaBearD4Width24::HALF_FULL_ROUNDS },
-                        { KoalaBearD4Width24::PARTIAL_ROUNDS },
-                    >,
-                > = core::mem::transmute(local_bb);
-
-                let next_var: &p3_poseidon2_circuit_air::Poseidon2CircuitCols<
-                    <ProverConstraintFolder<'a, SC> as p3_air::AirBuilder>::Var,
-                    p3_poseidon2_air::Poseidon2Cols<
-                        <ProverConstraintFolder<'a, SC> as p3_air::AirBuilder>::Var,
-                        { KoalaBearD4Width24::WIDTH },
-                        { KoalaBearD4Width24::SBOX_DEGREE },
-                        { KoalaBearD4Width24::SBOX_REGISTERS },
-                        { KoalaBearD4Width24::HALF_FULL_ROUNDS },
-                        { KoalaBearD4Width24::PARTIAL_ROUNDS },
-                    >,
-                > = core::mem::transmute(next_bb);
-
-                let next_preprocessed_var: &[<ProverConstraintFolder<'a, SC> as p3_air::AirBuilder>::Var] = core::mem::transmute(next_preprocessed_bb);
-
-                eval_unchecked::<
+                eval_poseidon2_variant::<
+                    SC,
                     KoalaBear,
                     ProverConstraintFolder<'a, SC>,
                     GenericPoseidon2LinearLayersKoalaBear,
-                    4,
+                    { KoalaBearD4Width24::D },
                     { KoalaBearD4Width24::WIDTH },
                     { KoalaBearD4Width24::WIDTH_EXT },
                     { KoalaBearD4Width24::RATE_EXT },
@@ -926,9 +784,9 @@ where
                 >(
                     air.as_ref(),
                     builder,
-                    local_var,
-                    next_var,
-                    next_preprocessed_var,
+                    &*local_slice,
+                    &*next_slice,
+                    &*next_preprocessed_slice,
                 );
             },
         }
@@ -941,10 +799,6 @@ where
     Val<SC>: StarkField + PrimeField,
 {
     fn eval(&self, builder: &mut VerifierConstraintFolder<'a, SC>) {
-        use core::borrow::Borrow;
-
-        use p3_poseidon2_circuit_air::eval_unchecked;
-
         let main = builder.main();
         let local_slice = main.row_slice(0).expect("The matrix is empty?");
         let next_slice = main.row_slice(1).expect("The matrix has only one row?");
@@ -955,75 +809,12 @@ where
 
         match &self.inner {
             Poseidon2AirWrapperInner::BabyBearD4Width16(air) => unsafe {
-                type BabyBearPacking = <BabyBear as p3_field::Field>::Packing;
-
-                let local_slice_ptr = local_slice.as_ptr() as *const BabyBearPacking;
-                let local_slice_bb =
-                    core::slice::from_raw_parts(local_slice_ptr, local_slice.len());
-                let local_bb: &p3_poseidon2_circuit_air::Poseidon2CircuitCols<
-                    BabyBearPacking,
-                    p3_poseidon2_air::Poseidon2Cols<
-                        BabyBearPacking,
-                        { BabyBearD4Width16::WIDTH },
-                        { BabyBearD4Width16::SBOX_DEGREE },
-                        { BabyBearD4Width16::SBOX_REGISTERS },
-                        { BabyBearD4Width16::HALF_FULL_ROUNDS },
-                        { BabyBearD4Width16::PARTIAL_ROUNDS },
-                    >,
-                > = (*local_slice_bb).borrow();
-
-                let next_slice_ptr = next_slice.as_ptr() as *const BabyBearPacking;
-                let next_slice_bb = core::slice::from_raw_parts(next_slice_ptr, next_slice.len());
-                let next_bb: &p3_poseidon2_circuit_air::Poseidon2CircuitCols<
-                    BabyBearPacking,
-                    p3_poseidon2_air::Poseidon2Cols<
-                        BabyBearPacking,
-                        { BabyBearD4Width16::WIDTH },
-                        { BabyBearD4Width16::SBOX_DEGREE },
-                        { BabyBearD4Width16::SBOX_REGISTERS },
-                        { BabyBearD4Width16::HALF_FULL_ROUNDS },
-                        { BabyBearD4Width16::PARTIAL_ROUNDS },
-                    >,
-                > = (*next_slice_bb).borrow();
-
-                let next_preprocessed_ptr =
-                    next_preprocessed_slice.as_ptr() as *const BabyBearPacking;
-                let next_preprocessed_bb = core::slice::from_raw_parts(
-                    next_preprocessed_ptr,
-                    next_preprocessed_slice.len(),
-                );
-
-                let local_var: &p3_poseidon2_circuit_air::Poseidon2CircuitCols<
-                    <VerifierConstraintFolder<'a, SC> as p3_air::AirBuilder>::Var,
-                    p3_poseidon2_air::Poseidon2Cols<
-                        <VerifierConstraintFolder<'a, SC> as p3_air::AirBuilder>::Var,
-                        { BabyBearD4Width16::WIDTH },
-                        { BabyBearD4Width16::SBOX_DEGREE },
-                        { BabyBearD4Width16::SBOX_REGISTERS },
-                        { BabyBearD4Width16::HALF_FULL_ROUNDS },
-                        { BabyBearD4Width16::PARTIAL_ROUNDS },
-                    >,
-                > = core::mem::transmute(local_bb);
-
-                let next_var: &p3_poseidon2_circuit_air::Poseidon2CircuitCols<
-                    <VerifierConstraintFolder<'a, SC> as p3_air::AirBuilder>::Var,
-                    p3_poseidon2_air::Poseidon2Cols<
-                        <VerifierConstraintFolder<'a, SC> as p3_air::AirBuilder>::Var,
-                        { BabyBearD4Width16::WIDTH },
-                        { BabyBearD4Width16::SBOX_DEGREE },
-                        { BabyBearD4Width16::SBOX_REGISTERS },
-                        { BabyBearD4Width16::HALF_FULL_ROUNDS },
-                        { BabyBearD4Width16::PARTIAL_ROUNDS },
-                    >,
-                > = core::mem::transmute(next_bb);
-
-                let next_preprocessed_var: &[<VerifierConstraintFolder<'a, SC> as p3_air::AirBuilder>::Var] = core::mem::transmute(next_preprocessed_bb);
-
-                eval_unchecked::<
+                eval_poseidon2_variant::<
+                    SC,
                     BabyBear,
                     VerifierConstraintFolder<'a, SC>,
                     GenericPoseidon2LinearLayersBabyBear,
-                    4,
+                    { BabyBearD4Width16::D },
                     { BabyBearD4Width16::WIDTH },
                     { BabyBearD4Width16::WIDTH_EXT },
                     { BabyBearD4Width16::RATE_EXT },
@@ -1035,81 +826,18 @@ where
                 >(
                     air.as_ref(),
                     builder,
-                    local_var,
-                    next_var,
-                    next_preprocessed_var,
+                    &*local_slice,
+                    &*next_slice,
+                    &*next_preprocessed_slice,
                 );
             },
             Poseidon2AirWrapperInner::BabyBearD4Width24(air) => unsafe {
-                type BabyBearPacking = <BabyBear as p3_field::Field>::Packing;
-
-                let local_slice_ptr = local_slice.as_ptr() as *const BabyBearPacking;
-                let local_slice_bb =
-                    core::slice::from_raw_parts(local_slice_ptr, local_slice.len());
-                let local_bb: &p3_poseidon2_circuit_air::Poseidon2CircuitCols<
-                    BabyBearPacking,
-                    p3_poseidon2_air::Poseidon2Cols<
-                        BabyBearPacking,
-                        { BabyBearD4Width16::WIDTH },
-                        { BabyBearD4Width16::SBOX_DEGREE },
-                        { BabyBearD4Width16::SBOX_REGISTERS },
-                        { BabyBearD4Width16::HALF_FULL_ROUNDS },
-                        { BabyBearD4Width16::PARTIAL_ROUNDS },
-                    >,
-                > = (*local_slice_bb).borrow();
-
-                let next_slice_ptr = next_slice.as_ptr() as *const BabyBearPacking;
-                let next_slice_bb = core::slice::from_raw_parts(next_slice_ptr, next_slice.len());
-                let next_bb: &p3_poseidon2_circuit_air::Poseidon2CircuitCols<
-                    BabyBearPacking,
-                    p3_poseidon2_air::Poseidon2Cols<
-                        BabyBearPacking,
-                        { BabyBearD4Width16::WIDTH },
-                        { BabyBearD4Width16::SBOX_DEGREE },
-                        { BabyBearD4Width16::SBOX_REGISTERS },
-                        { BabyBearD4Width16::HALF_FULL_ROUNDS },
-                        { BabyBearD4Width16::PARTIAL_ROUNDS },
-                    >,
-                > = (*next_slice_bb).borrow();
-
-                let next_preprocessed_ptr =
-                    next_preprocessed_slice.as_ptr() as *const BabyBearPacking;
-                let next_preprocessed_bb = core::slice::from_raw_parts(
-                    next_preprocessed_ptr,
-                    next_preprocessed_slice.len(),
-                );
-
-                let local_var: &p3_poseidon2_circuit_air::Poseidon2CircuitCols<
-                    <VerifierConstraintFolder<'a, SC> as p3_air::AirBuilder>::Var,
-                    p3_poseidon2_air::Poseidon2Cols<
-                        <VerifierConstraintFolder<'a, SC> as p3_air::AirBuilder>::Var,
-                        { BabyBearD4Width24::WIDTH },
-                        { BabyBearD4Width24::SBOX_DEGREE },
-                        { BabyBearD4Width24::SBOX_REGISTERS },
-                        { BabyBearD4Width24::HALF_FULL_ROUNDS },
-                        { BabyBearD4Width24::PARTIAL_ROUNDS },
-                    >,
-                > = core::mem::transmute(local_bb);
-
-                let next_var: &p3_poseidon2_circuit_air::Poseidon2CircuitCols<
-                    <VerifierConstraintFolder<'a, SC> as p3_air::AirBuilder>::Var,
-                    p3_poseidon2_air::Poseidon2Cols<
-                        <VerifierConstraintFolder<'a, SC> as p3_air::AirBuilder>::Var,
-                        { BabyBearD4Width24::WIDTH },
-                        { BabyBearD4Width24::SBOX_DEGREE },
-                        { BabyBearD4Width24::SBOX_REGISTERS },
-                        { BabyBearD4Width24::HALF_FULL_ROUNDS },
-                        { BabyBearD4Width24::PARTIAL_ROUNDS },
-                    >,
-                > = core::mem::transmute(next_bb);
-
-                let next_preprocessed_var: &[<VerifierConstraintFolder<'a, SC> as p3_air::AirBuilder>::Var] = core::mem::transmute(next_preprocessed_bb);
-
-                eval_unchecked::<
+                eval_poseidon2_variant::<
+                    SC,
                     BabyBear,
                     VerifierConstraintFolder<'a, SC>,
                     GenericPoseidon2LinearLayersBabyBear,
-                    4,
+                    { BabyBearD4Width24::D },
                     { BabyBearD4Width24::WIDTH },
                     { BabyBearD4Width24::WIDTH_EXT },
                     { BabyBearD4Width24::RATE_EXT },
@@ -1121,81 +849,18 @@ where
                 >(
                     air.as_ref(),
                     builder,
-                    local_var,
-                    next_var,
-                    next_preprocessed_var,
+                    &*local_slice,
+                    &*next_slice,
+                    &*next_preprocessed_slice,
                 );
             },
             Poseidon2AirWrapperInner::KoalaBearD4Width16(air) => unsafe {
-                type KoalaBearPacking = <KoalaBear as p3_field::Field>::Packing;
-
-                let local_slice_ptr = local_slice.as_ptr() as *const KoalaBearPacking;
-                let local_slice_bb =
-                    core::slice::from_raw_parts(local_slice_ptr, local_slice.len());
-                let local_bb: &p3_poseidon2_circuit_air::Poseidon2CircuitCols<
-                    KoalaBearPacking,
-                    p3_poseidon2_air::Poseidon2Cols<
-                        KoalaBearPacking,
-                        { KoalaBearD4Width16::WIDTH },
-                        { KoalaBearD4Width16::SBOX_DEGREE },
-                        { KoalaBearD4Width16::SBOX_REGISTERS },
-                        { KoalaBearD4Width16::HALF_FULL_ROUNDS },
-                        { KoalaBearD4Width16::PARTIAL_ROUNDS },
-                    >,
-                > = (*local_slice_bb).borrow();
-
-                let next_slice_ptr = next_slice.as_ptr() as *const KoalaBearPacking;
-                let next_slice_bb = core::slice::from_raw_parts(next_slice_ptr, next_slice.len());
-                let next_bb: &p3_poseidon2_circuit_air::Poseidon2CircuitCols<
-                    KoalaBearPacking,
-                    p3_poseidon2_air::Poseidon2Cols<
-                        KoalaBearPacking,
-                        { KoalaBearD4Width16::WIDTH },
-                        { KoalaBearD4Width16::SBOX_DEGREE },
-                        { KoalaBearD4Width16::SBOX_REGISTERS },
-                        { KoalaBearD4Width16::HALF_FULL_ROUNDS },
-                        { KoalaBearD4Width16::PARTIAL_ROUNDS },
-                    >,
-                > = (*next_slice_bb).borrow();
-
-                let next_preprocessed_ptr =
-                    next_preprocessed_slice.as_ptr() as *const KoalaBearPacking;
-                let next_preprocessed_bb = core::slice::from_raw_parts(
-                    next_preprocessed_ptr,
-                    next_preprocessed_slice.len(),
-                );
-
-                let local_var: &p3_poseidon2_circuit_air::Poseidon2CircuitCols<
-                    <VerifierConstraintFolder<'a, SC> as p3_air::AirBuilder>::Var,
-                    p3_poseidon2_air::Poseidon2Cols<
-                        <VerifierConstraintFolder<'a, SC> as p3_air::AirBuilder>::Var,
-                        { KoalaBearD4Width16::WIDTH },
-                        { KoalaBearD4Width16::SBOX_DEGREE },
-                        { KoalaBearD4Width16::SBOX_REGISTERS },
-                        { KoalaBearD4Width16::HALF_FULL_ROUNDS },
-                        { KoalaBearD4Width16::PARTIAL_ROUNDS },
-                    >,
-                > = core::mem::transmute(local_bb);
-
-                let next_var: &p3_poseidon2_circuit_air::Poseidon2CircuitCols<
-                    <VerifierConstraintFolder<'a, SC> as p3_air::AirBuilder>::Var,
-                    p3_poseidon2_air::Poseidon2Cols<
-                        <VerifierConstraintFolder<'a, SC> as p3_air::AirBuilder>::Var,
-                        { KoalaBearD4Width16::WIDTH },
-                        { KoalaBearD4Width16::SBOX_DEGREE },
-                        { KoalaBearD4Width16::SBOX_REGISTERS },
-                        { KoalaBearD4Width16::HALF_FULL_ROUNDS },
-                        { KoalaBearD4Width16::PARTIAL_ROUNDS },
-                    >,
-                > = core::mem::transmute(next_bb);
-
-                let next_preprocessed_var: &[<VerifierConstraintFolder<'a, SC> as p3_air::AirBuilder>::Var] = core::mem::transmute(next_preprocessed_bb);
-
-                eval_unchecked::<
+                eval_poseidon2_variant::<
+                    SC,
                     KoalaBear,
                     VerifierConstraintFolder<'a, SC>,
                     GenericPoseidon2LinearLayersKoalaBear,
-                    4,
+                    { KoalaBearD4Width16::D },
                     { KoalaBearD4Width16::WIDTH },
                     { KoalaBearD4Width16::WIDTH_EXT },
                     { KoalaBearD4Width16::RATE_EXT },
@@ -1207,81 +872,18 @@ where
                 >(
                     air.as_ref(),
                     builder,
-                    local_var,
-                    next_var,
-                    next_preprocessed_var,
+                    &*local_slice,
+                    &*next_slice,
+                    &*next_preprocessed_slice,
                 );
             },
             Poseidon2AirWrapperInner::KoalaBearD4Width24(air) => unsafe {
-                type KoalaBearPacking = <KoalaBear as p3_field::Field>::Packing;
-
-                let local_slice_ptr = local_slice.as_ptr() as *const KoalaBearPacking;
-                let local_slice_bb =
-                    core::slice::from_raw_parts(local_slice_ptr, local_slice.len());
-                let local_bb: &p3_poseidon2_circuit_air::Poseidon2CircuitCols<
-                    KoalaBearPacking,
-                    p3_poseidon2_air::Poseidon2Cols<
-                        KoalaBearPacking,
-                        { KoalaBearD4Width24::WIDTH },
-                        { KoalaBearD4Width24::SBOX_DEGREE },
-                        { KoalaBearD4Width24::SBOX_REGISTERS },
-                        { KoalaBearD4Width24::HALF_FULL_ROUNDS },
-                        { KoalaBearD4Width24::PARTIAL_ROUNDS },
-                    >,
-                > = (*local_slice_bb).borrow();
-
-                let next_slice_ptr = next_slice.as_ptr() as *const KoalaBearPacking;
-                let next_slice_bb = core::slice::from_raw_parts(next_slice_ptr, next_slice.len());
-                let next_bb: &p3_poseidon2_circuit_air::Poseidon2CircuitCols<
-                    KoalaBearPacking,
-                    p3_poseidon2_air::Poseidon2Cols<
-                        KoalaBearPacking,
-                        { KoalaBearD4Width24::WIDTH },
-                        { KoalaBearD4Width24::SBOX_DEGREE },
-                        { KoalaBearD4Width24::SBOX_REGISTERS },
-                        { KoalaBearD4Width24::HALF_FULL_ROUNDS },
-                        { KoalaBearD4Width24::PARTIAL_ROUNDS },
-                    >,
-                > = (*next_slice_bb).borrow();
-
-                let next_preprocessed_ptr =
-                    next_preprocessed_slice.as_ptr() as *const KoalaBearPacking;
-                let next_preprocessed_bb = core::slice::from_raw_parts(
-                    next_preprocessed_ptr,
-                    next_preprocessed_slice.len(),
-                );
-
-                let local_var: &p3_poseidon2_circuit_air::Poseidon2CircuitCols<
-                    <VerifierConstraintFolder<'a, SC> as p3_air::AirBuilder>::Var,
-                    p3_poseidon2_air::Poseidon2Cols<
-                        <VerifierConstraintFolder<'a, SC> as p3_air::AirBuilder>::Var,
-                        { KoalaBearD4Width24::WIDTH },
-                        { KoalaBearD4Width24::SBOX_DEGREE },
-                        { KoalaBearD4Width24::SBOX_REGISTERS },
-                        { KoalaBearD4Width24::HALF_FULL_ROUNDS },
-                        { KoalaBearD4Width24::PARTIAL_ROUNDS },
-                    >,
-                > = core::mem::transmute(local_bb);
-
-                let next_var: &p3_poseidon2_circuit_air::Poseidon2CircuitCols<
-                    <VerifierConstraintFolder<'a, SC> as p3_air::AirBuilder>::Var,
-                    p3_poseidon2_air::Poseidon2Cols<
-                        <VerifierConstraintFolder<'a, SC> as p3_air::AirBuilder>::Var,
-                        { KoalaBearD4Width24::WIDTH },
-                        { KoalaBearD4Width24::SBOX_DEGREE },
-                        { KoalaBearD4Width24::SBOX_REGISTERS },
-                        { KoalaBearD4Width24::HALF_FULL_ROUNDS },
-                        { KoalaBearD4Width24::PARTIAL_ROUNDS },
-                    >,
-                > = core::mem::transmute(next_bb);
-
-                let next_preprocessed_var: &[<VerifierConstraintFolder<'a, SC> as p3_air::AirBuilder>::Var] = core::mem::transmute(next_preprocessed_bb);
-
-                eval_unchecked::<
+                eval_poseidon2_variant::<
+                    SC,
                     KoalaBear,
                     VerifierConstraintFolder<'a, SC>,
                     GenericPoseidon2LinearLayersKoalaBear,
-                    4,
+                    { KoalaBearD4Width24::D },
                     { KoalaBearD4Width24::WIDTH },
                     { KoalaBearD4Width24::WIDTH_EXT },
                     { KoalaBearD4Width24::RATE_EXT },
@@ -1293,9 +895,9 @@ where
                 >(
                     air.as_ref(),
                     builder,
-                    local_var,
-                    next_var,
-                    next_preprocessed_var,
+                    &*local_slice,
+                    &*next_slice,
+                    &*next_preprocessed_slice,
                 );
             },
         }
@@ -1308,14 +910,6 @@ where
     Val<SC>: StarkField + PrimeField,
 {
     fn eval(&self, builder: &mut ProverConstraintFolderWithLookups<'a, SC>) {
-        // Delegate to ProverConstraintFolder implementation
-        // ProverConstraintFolderWithLookups wraps ProverConstraintFolder
-        // SAFETY: We can access the inner folder through Deref or by extracting it
-        // For now, we'll use the same eval_unchecked approach
-        use core::borrow::Borrow;
-
-        use p3_poseidon2_circuit_air::eval_unchecked;
-
         let main = builder.main();
         let local_slice = main.row_slice(0).expect("The matrix is empty?");
         let next_slice = main.row_slice(1).expect("The matrix has only one row?");
@@ -1326,75 +920,12 @@ where
 
         match &self.inner {
             Poseidon2AirWrapperInner::BabyBearD4Width16(air) => unsafe {
-                type BabyBearPacking = <BabyBear as p3_field::Field>::Packing;
-
-                let local_slice_ptr = local_slice.as_ptr() as *const BabyBearPacking;
-                let local_slice_bb =
-                    core::slice::from_raw_parts(local_slice_ptr, local_slice.len());
-                let local_bb: &p3_poseidon2_circuit_air::Poseidon2CircuitCols<
-                    BabyBearPacking,
-                    p3_poseidon2_air::Poseidon2Cols<
-                        BabyBearPacking,
-                        { BabyBearD4Width16::WIDTH },
-                        { BabyBearD4Width16::SBOX_DEGREE },
-                        { BabyBearD4Width16::SBOX_REGISTERS },
-                        { BabyBearD4Width16::HALF_FULL_ROUNDS },
-                        { BabyBearD4Width16::PARTIAL_ROUNDS },
-                    >,
-                > = (*local_slice_bb).borrow();
-
-                let next_slice_ptr = next_slice.as_ptr() as *const BabyBearPacking;
-                let next_slice_bb = core::slice::from_raw_parts(next_slice_ptr, next_slice.len());
-                let next_bb: &p3_poseidon2_circuit_air::Poseidon2CircuitCols<
-                    BabyBearPacking,
-                    p3_poseidon2_air::Poseidon2Cols<
-                        BabyBearPacking,
-                        { BabyBearD4Width16::WIDTH },
-                        { BabyBearD4Width16::SBOX_DEGREE },
-                        { BabyBearD4Width16::SBOX_REGISTERS },
-                        { BabyBearD4Width16::HALF_FULL_ROUNDS },
-                        { BabyBearD4Width16::PARTIAL_ROUNDS },
-                    >,
-                > = (*next_slice_bb).borrow();
-
-                let next_preprocessed_ptr =
-                    next_preprocessed_slice.as_ptr() as *const BabyBearPacking;
-                let next_preprocessed_bb = core::slice::from_raw_parts(
-                    next_preprocessed_ptr,
-                    next_preprocessed_slice.len(),
-                );
-
-                let local_var: &p3_poseidon2_circuit_air::Poseidon2CircuitCols<
-                    <ProverConstraintFolderWithLookups<'a, SC> as p3_air::AirBuilder>::Var,
-                    p3_poseidon2_air::Poseidon2Cols<
-                        <ProverConstraintFolderWithLookups<'a, SC> as p3_air::AirBuilder>::Var,
-                        { BabyBearD4Width16::WIDTH },
-                        { BabyBearD4Width16::SBOX_DEGREE },
-                        { BabyBearD4Width16::SBOX_REGISTERS },
-                        { BabyBearD4Width16::HALF_FULL_ROUNDS },
-                        { BabyBearD4Width16::PARTIAL_ROUNDS },
-                    >,
-                > = core::mem::transmute(local_bb);
-
-                let next_var: &p3_poseidon2_circuit_air::Poseidon2CircuitCols<
-                    <ProverConstraintFolderWithLookups<'a, SC> as p3_air::AirBuilder>::Var,
-                    p3_poseidon2_air::Poseidon2Cols<
-                        <ProverConstraintFolderWithLookups<'a, SC> as p3_air::AirBuilder>::Var,
-                        { BabyBearD4Width16::WIDTH },
-                        { BabyBearD4Width16::SBOX_DEGREE },
-                        { BabyBearD4Width16::SBOX_REGISTERS },
-                        { BabyBearD4Width16::HALF_FULL_ROUNDS },
-                        { BabyBearD4Width16::PARTIAL_ROUNDS },
-                    >,
-                > = core::mem::transmute(next_bb);
-
-                let next_preprocessed_var: &[<ProverConstraintFolderWithLookups<'a, SC> as p3_air::AirBuilder>::Var] = core::mem::transmute(next_preprocessed_bb);
-
-                eval_unchecked::<
+                eval_poseidon2_variant::<
+                    SC,
                     BabyBear,
-                    _,
+                    ProverConstraintFolderWithLookups<'a, SC>,
                     GenericPoseidon2LinearLayersBabyBear,
-                    4,
+                    { BabyBearD4Width16::D },
                     { BabyBearD4Width16::WIDTH },
                     { BabyBearD4Width16::WIDTH_EXT },
                     { BabyBearD4Width16::RATE_EXT },
@@ -1406,81 +937,18 @@ where
                 >(
                     air.as_ref(),
                     builder,
-                    local_var,
-                    next_var,
-                    next_preprocessed_var,
+                    &local_slice,
+                    &next_slice,
+                    &next_preprocessed_slice,
                 );
             },
             Poseidon2AirWrapperInner::BabyBearD4Width24(air) => unsafe {
-                type BabyBearPacking = <BabyBear as p3_field::Field>::Packing;
-
-                let local_slice_ptr = local_slice.as_ptr() as *const BabyBearPacking;
-                let local_slice_bb =
-                    core::slice::from_raw_parts(local_slice_ptr, local_slice.len());
-                let local_bb: &p3_poseidon2_circuit_air::Poseidon2CircuitCols<
-                    BabyBearPacking,
-                    p3_poseidon2_air::Poseidon2Cols<
-                        BabyBearPacking,
-                        { BabyBearD4Width24::WIDTH },
-                        { BabyBearD4Width24::SBOX_DEGREE },
-                        { BabyBearD4Width24::SBOX_REGISTERS },
-                        { BabyBearD4Width24::HALF_FULL_ROUNDS },
-                        { BabyBearD4Width24::PARTIAL_ROUNDS },
-                    >,
-                > = (*local_slice_bb).borrow();
-
-                let next_slice_ptr = next_slice.as_ptr() as *const BabyBearPacking;
-                let next_slice_bb = core::slice::from_raw_parts(next_slice_ptr, next_slice.len());
-                let next_bb: &p3_poseidon2_circuit_air::Poseidon2CircuitCols<
-                    BabyBearPacking,
-                    p3_poseidon2_air::Poseidon2Cols<
-                        BabyBearPacking,
-                        { BabyBearD4Width24::WIDTH },
-                        { BabyBearD4Width24::SBOX_DEGREE },
-                        { BabyBearD4Width24::SBOX_REGISTERS },
-                        { BabyBearD4Width24::HALF_FULL_ROUNDS },
-                        { BabyBearD4Width24::PARTIAL_ROUNDS },
-                    >,
-                > = (*next_slice_bb).borrow();
-
-                let next_preprocessed_ptr =
-                    next_preprocessed_slice.as_ptr() as *const BabyBearPacking;
-                let next_preprocessed_bb = core::slice::from_raw_parts(
-                    next_preprocessed_ptr,
-                    next_preprocessed_slice.len(),
-                );
-
-                let local_var: &p3_poseidon2_circuit_air::Poseidon2CircuitCols<
-                    <ProverConstraintFolderWithLookups<'a, SC> as p3_air::AirBuilder>::Var,
-                    p3_poseidon2_air::Poseidon2Cols<
-                        <ProverConstraintFolderWithLookups<'a, SC> as p3_air::AirBuilder>::Var,
-                        { BabyBearD4Width24::WIDTH },
-                        { BabyBearD4Width24::SBOX_DEGREE },
-                        { BabyBearD4Width24::SBOX_REGISTERS },
-                        { BabyBearD4Width24::HALF_FULL_ROUNDS },
-                        { BabyBearD4Width24::PARTIAL_ROUNDS },
-                    >,
-                > = core::mem::transmute(local_bb);
-
-                let next_var: &p3_poseidon2_circuit_air::Poseidon2CircuitCols<
-                    <ProverConstraintFolderWithLookups<'a, SC> as p3_air::AirBuilder>::Var,
-                    p3_poseidon2_air::Poseidon2Cols<
-                        <ProverConstraintFolderWithLookups<'a, SC> as p3_air::AirBuilder>::Var,
-                        { BabyBearD4Width24::WIDTH },
-                        { BabyBearD4Width24::SBOX_DEGREE },
-                        { BabyBearD4Width24::SBOX_REGISTERS },
-                        { BabyBearD4Width24::HALF_FULL_ROUNDS },
-                        { BabyBearD4Width24::PARTIAL_ROUNDS },
-                    >,
-                > = core::mem::transmute(next_bb);
-
-                let next_preprocessed_var: &[<ProverConstraintFolderWithLookups<'a, SC> as p3_air::AirBuilder>::Var] = core::mem::transmute(next_preprocessed_bb);
-
-                eval_unchecked::<
+                eval_poseidon2_variant::<
+                    SC,
                     BabyBear,
                     ProverConstraintFolderWithLookups<'a, SC>,
                     GenericPoseidon2LinearLayersBabyBear,
-                    4,
+                    { BabyBearD4Width24::D },
                     { BabyBearD4Width24::WIDTH },
                     { BabyBearD4Width24::WIDTH_EXT },
                     { BabyBearD4Width24::RATE_EXT },
@@ -1492,81 +960,18 @@ where
                 >(
                     air.as_ref(),
                     builder,
-                    local_var,
-                    next_var,
-                    next_preprocessed_var,
+                    &local_slice,
+                    &next_slice,
+                    &next_preprocessed_slice,
                 );
             },
             Poseidon2AirWrapperInner::KoalaBearD4Width16(air) => unsafe {
-                type KoalaBearPacking = <KoalaBear as p3_field::Field>::Packing;
-
-                let local_slice_ptr = local_slice.as_ptr() as *const KoalaBearPacking;
-                let local_slice_bb =
-                    core::slice::from_raw_parts(local_slice_ptr, local_slice.len());
-                let local_bb: &p3_poseidon2_circuit_air::Poseidon2CircuitCols<
-                    KoalaBearPacking,
-                    p3_poseidon2_air::Poseidon2Cols<
-                        KoalaBearPacking,
-                        { KoalaBearD4Width16::WIDTH },
-                        { KoalaBearD4Width16::SBOX_DEGREE },
-                        { KoalaBearD4Width16::SBOX_REGISTERS },
-                        { KoalaBearD4Width16::HALF_FULL_ROUNDS },
-                        { KoalaBearD4Width16::PARTIAL_ROUNDS },
-                    >,
-                > = (*local_slice_bb).borrow();
-
-                let next_slice_ptr = next_slice.as_ptr() as *const KoalaBearPacking;
-                let next_slice_bb = core::slice::from_raw_parts(next_slice_ptr, next_slice.len());
-                let next_bb: &p3_poseidon2_circuit_air::Poseidon2CircuitCols<
-                    KoalaBearPacking,
-                    p3_poseidon2_air::Poseidon2Cols<
-                        KoalaBearPacking,
-                        { KoalaBearD4Width16::WIDTH },
-                        { KoalaBearD4Width16::SBOX_DEGREE },
-                        { KoalaBearD4Width16::SBOX_REGISTERS },
-                        { KoalaBearD4Width16::HALF_FULL_ROUNDS },
-                        { KoalaBearD4Width16::PARTIAL_ROUNDS },
-                    >,
-                > = (*next_slice_bb).borrow();
-
-                let next_preprocessed_ptr =
-                    next_preprocessed_slice.as_ptr() as *const KoalaBearPacking;
-                let next_preprocessed_bb = core::slice::from_raw_parts(
-                    next_preprocessed_ptr,
-                    next_preprocessed_slice.len(),
-                );
-
-                let local_var: &p3_poseidon2_circuit_air::Poseidon2CircuitCols<
-                    <ProverConstraintFolderWithLookups<'a, SC> as p3_air::AirBuilder>::Var,
-                    p3_poseidon2_air::Poseidon2Cols<
-                        <ProverConstraintFolderWithLookups<'a, SC> as p3_air::AirBuilder>::Var,
-                        { KoalaBearD4Width16::WIDTH },
-                        { KoalaBearD4Width16::SBOX_DEGREE },
-                        { KoalaBearD4Width16::SBOX_REGISTERS },
-                        { KoalaBearD4Width16::HALF_FULL_ROUNDS },
-                        { KoalaBearD4Width16::PARTIAL_ROUNDS },
-                    >,
-                > = core::mem::transmute(local_bb);
-
-                let next_var: &p3_poseidon2_circuit_air::Poseidon2CircuitCols<
-                    <ProverConstraintFolderWithLookups<'a, SC> as p3_air::AirBuilder>::Var,
-                    p3_poseidon2_air::Poseidon2Cols<
-                        <ProverConstraintFolderWithLookups<'a, SC> as p3_air::AirBuilder>::Var,
-                        { KoalaBearD4Width16::WIDTH },
-                        { KoalaBearD4Width16::SBOX_DEGREE },
-                        { KoalaBearD4Width16::SBOX_REGISTERS },
-                        { KoalaBearD4Width16::HALF_FULL_ROUNDS },
-                        { KoalaBearD4Width16::PARTIAL_ROUNDS },
-                    >,
-                > = core::mem::transmute(next_bb);
-
-                let next_preprocessed_var: &[<ProverConstraintFolderWithLookups<'a, SC> as p3_air::AirBuilder>::Var] = core::mem::transmute(next_preprocessed_bb);
-
-                eval_unchecked::<
+                eval_poseidon2_variant::<
+                    SC,
                     KoalaBear,
                     ProverConstraintFolderWithLookups<'a, SC>,
                     GenericPoseidon2LinearLayersKoalaBear,
-                    4,
+                    { KoalaBearD4Width16::D },
                     { KoalaBearD4Width16::WIDTH },
                     { KoalaBearD4Width16::WIDTH_EXT },
                     { KoalaBearD4Width16::RATE_EXT },
@@ -1578,81 +983,18 @@ where
                 >(
                     air.as_ref(),
                     builder,
-                    local_var,
-                    next_var,
-                    next_preprocessed_var,
+                    &local_slice,
+                    &next_slice,
+                    &next_preprocessed_slice,
                 );
             },
             Poseidon2AirWrapperInner::KoalaBearD4Width24(air) => unsafe {
-                type KoalaBearPacking = <KoalaBear as p3_field::Field>::Packing;
-
-                let local_slice_ptr = local_slice.as_ptr() as *const KoalaBearPacking;
-                let local_slice_bb =
-                    core::slice::from_raw_parts(local_slice_ptr, local_slice.len());
-                let local_bb: &p3_poseidon2_circuit_air::Poseidon2CircuitCols<
-                    KoalaBearPacking,
-                    p3_poseidon2_air::Poseidon2Cols<
-                        KoalaBearPacking,
-                        { KoalaBearD4Width24::WIDTH },
-                        { KoalaBearD4Width24::SBOX_DEGREE },
-                        { KoalaBearD4Width24::SBOX_REGISTERS },
-                        { KoalaBearD4Width24::HALF_FULL_ROUNDS },
-                        { KoalaBearD4Width24::PARTIAL_ROUNDS },
-                    >,
-                > = (*local_slice_bb).borrow();
-
-                let next_slice_ptr = next_slice.as_ptr() as *const KoalaBearPacking;
-                let next_slice_bb = core::slice::from_raw_parts(next_slice_ptr, next_slice.len());
-                let next_bb: &p3_poseidon2_circuit_air::Poseidon2CircuitCols<
-                    KoalaBearPacking,
-                    p3_poseidon2_air::Poseidon2Cols<
-                        KoalaBearPacking,
-                        { KoalaBearD4Width24::WIDTH },
-                        { KoalaBearD4Width24::SBOX_DEGREE },
-                        { KoalaBearD4Width24::SBOX_REGISTERS },
-                        { KoalaBearD4Width24::HALF_FULL_ROUNDS },
-                        { KoalaBearD4Width24::PARTIAL_ROUNDS },
-                    >,
-                > = (*next_slice_bb).borrow();
-
-                let next_preprocessed_ptr =
-                    next_preprocessed_slice.as_ptr() as *const KoalaBearPacking;
-                let next_preprocessed_bb = core::slice::from_raw_parts(
-                    next_preprocessed_ptr,
-                    next_preprocessed_slice.len(),
-                );
-
-                let local_var: &p3_poseidon2_circuit_air::Poseidon2CircuitCols<
-                    <ProverConstraintFolderWithLookups<'a, SC> as p3_air::AirBuilder>::Var,
-                    p3_poseidon2_air::Poseidon2Cols<
-                        <ProverConstraintFolderWithLookups<'a, SC> as p3_air::AirBuilder>::Var,
-                        { KoalaBearD4Width24::WIDTH },
-                        { KoalaBearD4Width24::SBOX_DEGREE },
-                        { KoalaBearD4Width24::SBOX_REGISTERS },
-                        { KoalaBearD4Width24::HALF_FULL_ROUNDS },
-                        { KoalaBearD4Width24::PARTIAL_ROUNDS },
-                    >,
-                > = core::mem::transmute(local_bb);
-
-                let next_var: &p3_poseidon2_circuit_air::Poseidon2CircuitCols<
-                    <ProverConstraintFolderWithLookups<'a, SC> as p3_air::AirBuilder>::Var,
-                    p3_poseidon2_air::Poseidon2Cols<
-                        <ProverConstraintFolderWithLookups<'a, SC> as p3_air::AirBuilder>::Var,
-                        { KoalaBearD4Width24::WIDTH },
-                        { KoalaBearD4Width24::SBOX_DEGREE },
-                        { KoalaBearD4Width24::SBOX_REGISTERS },
-                        { KoalaBearD4Width24::HALF_FULL_ROUNDS },
-                        { KoalaBearD4Width24::PARTIAL_ROUNDS },
-                    >,
-                > = core::mem::transmute(next_bb);
-
-                let next_preprocessed_var: &[<ProverConstraintFolderWithLookups<'a, SC> as p3_air::AirBuilder>::Var] = core::mem::transmute(next_preprocessed_bb);
-
-                eval_unchecked::<
+                eval_poseidon2_variant::<
+                    SC,
                     KoalaBear,
                     ProverConstraintFolderWithLookups<'a, SC>,
                     GenericPoseidon2LinearLayersKoalaBear,
-                    4,
+                    { KoalaBearD4Width24::D },
                     { KoalaBearD4Width24::WIDTH },
                     { KoalaBearD4Width24::WIDTH_EXT },
                     { KoalaBearD4Width24::RATE_EXT },
@@ -1664,9 +1006,9 @@ where
                 >(
                     air.as_ref(),
                     builder,
-                    local_var,
-                    next_var,
-                    next_preprocessed_var,
+                    &local_slice,
+                    &next_slice,
+                    &next_preprocessed_slice,
                 );
             },
         }
@@ -1679,12 +1021,6 @@ where
     Val<SC>: StarkField + PrimeField,
 {
     fn eval(&self, builder: &mut VerifierConstraintFolderWithLookups<'a, SC>) {
-        // Similar implementation to ProverConstraintFolderWithLookups
-        // Delegate to VerifierConstraintFolder implementation
-        use core::borrow::Borrow;
-
-        use p3_poseidon2_circuit_air::eval_unchecked;
-
         let main = builder.main();
         let local_slice = main.row_slice(0).expect("The matrix is empty?");
         let next_slice = main.row_slice(1).expect("The matrix has only one row?");
@@ -1695,75 +1031,12 @@ where
 
         match &self.inner {
             Poseidon2AirWrapperInner::BabyBearD4Width16(air) => unsafe {
-                type BabyBearPacking = <BabyBear as p3_field::Field>::Packing;
-
-                let local_slice_ptr = local_slice.as_ptr() as *const BabyBearPacking;
-                let local_slice_bb =
-                    core::slice::from_raw_parts(local_slice_ptr, local_slice.len());
-                let local_bb: &p3_poseidon2_circuit_air::Poseidon2CircuitCols<
-                    BabyBearPacking,
-                    p3_poseidon2_air::Poseidon2Cols<
-                        BabyBearPacking,
-                        { BabyBearD4Width16::WIDTH },
-                        { BabyBearD4Width16::SBOX_DEGREE },
-                        { BabyBearD4Width16::SBOX_REGISTERS },
-                        { BabyBearD4Width16::HALF_FULL_ROUNDS },
-                        { BabyBearD4Width16::PARTIAL_ROUNDS },
-                    >,
-                > = (*local_slice_bb).borrow();
-
-                let next_slice_ptr = next_slice.as_ptr() as *const BabyBearPacking;
-                let next_slice_bb = core::slice::from_raw_parts(next_slice_ptr, next_slice.len());
-                let next_bb: &p3_poseidon2_circuit_air::Poseidon2CircuitCols<
-                    BabyBearPacking,
-                    p3_poseidon2_air::Poseidon2Cols<
-                        BabyBearPacking,
-                        { BabyBearD4Width16::WIDTH },
-                        { BabyBearD4Width16::SBOX_DEGREE },
-                        { BabyBearD4Width16::SBOX_REGISTERS },
-                        { BabyBearD4Width16::HALF_FULL_ROUNDS },
-                        { BabyBearD4Width16::PARTIAL_ROUNDS },
-                    >,
-                > = (*next_slice_bb).borrow();
-
-                let next_preprocessed_ptr =
-                    next_preprocessed_slice.as_ptr() as *const BabyBearPacking;
-                let next_preprocessed_bb = core::slice::from_raw_parts(
-                    next_preprocessed_ptr,
-                    next_preprocessed_slice.len(),
-                );
-
-                let local_var: &p3_poseidon2_circuit_air::Poseidon2CircuitCols<
-                    <VerifierConstraintFolderWithLookups<'a, SC> as p3_air::AirBuilder>::Var,
-                    p3_poseidon2_air::Poseidon2Cols<
-                        <VerifierConstraintFolderWithLookups<'a, SC> as p3_air::AirBuilder>::Var,
-                        { BabyBearD4Width16::WIDTH },
-                        { BabyBearD4Width16::SBOX_DEGREE },
-                        { BabyBearD4Width16::SBOX_REGISTERS },
-                        { BabyBearD4Width16::HALF_FULL_ROUNDS },
-                        { BabyBearD4Width16::PARTIAL_ROUNDS },
-                    >,
-                > = core::mem::transmute(local_bb);
-
-                let next_var: &p3_poseidon2_circuit_air::Poseidon2CircuitCols<
-                    <VerifierConstraintFolderWithLookups<'a, SC> as p3_air::AirBuilder>::Var,
-                    p3_poseidon2_air::Poseidon2Cols<
-                        <VerifierConstraintFolderWithLookups<'a, SC> as p3_air::AirBuilder>::Var,
-                        { BabyBearD4Width16::WIDTH },
-                        { BabyBearD4Width16::SBOX_DEGREE },
-                        { BabyBearD4Width16::SBOX_REGISTERS },
-                        { BabyBearD4Width16::HALF_FULL_ROUNDS },
-                        { BabyBearD4Width16::PARTIAL_ROUNDS },
-                    >,
-                > = core::mem::transmute(next_bb);
-
-                let next_preprocessed_var: &[<VerifierConstraintFolderWithLookups<'a, SC> as p3_air::AirBuilder>::Var] = core::mem::transmute(next_preprocessed_bb);
-
-                eval_unchecked::<
+                eval_poseidon2_variant::<
+                    SC,
                     BabyBear,
                     VerifierConstraintFolderWithLookups<'a, SC>,
                     GenericPoseidon2LinearLayersBabyBear,
-                    4,
+                    { BabyBearD4Width16::D },
                     { BabyBearD4Width16::WIDTH },
                     { BabyBearD4Width16::WIDTH_EXT },
                     { BabyBearD4Width16::RATE_EXT },
@@ -1775,81 +1048,18 @@ where
                 >(
                     air.as_ref(),
                     builder,
-                    local_var,
-                    next_var,
-                    next_preprocessed_var,
+                    &local_slice,
+                    &next_slice,
+                    &next_preprocessed_slice,
                 );
             },
             Poseidon2AirWrapperInner::BabyBearD4Width24(air) => unsafe {
-                type BabyBearPacking = <BabyBear as p3_field::Field>::Packing;
-
-                let local_slice_ptr = local_slice.as_ptr() as *const BabyBearPacking;
-                let local_slice_bb =
-                    core::slice::from_raw_parts(local_slice_ptr, local_slice.len());
-                let local_bb: &p3_poseidon2_circuit_air::Poseidon2CircuitCols<
-                    BabyBearPacking,
-                    p3_poseidon2_air::Poseidon2Cols<
-                        BabyBearPacking,
-                        { BabyBearD4Width24::WIDTH },
-                        { BabyBearD4Width24::SBOX_DEGREE },
-                        { BabyBearD4Width24::SBOX_REGISTERS },
-                        { BabyBearD4Width24::HALF_FULL_ROUNDS },
-                        { BabyBearD4Width24::PARTIAL_ROUNDS },
-                    >,
-                > = (*local_slice_bb).borrow();
-
-                let next_slice_ptr = next_slice.as_ptr() as *const BabyBearPacking;
-                let next_slice_bb = core::slice::from_raw_parts(next_slice_ptr, next_slice.len());
-                let next_bb: &p3_poseidon2_circuit_air::Poseidon2CircuitCols<
-                    BabyBearPacking,
-                    p3_poseidon2_air::Poseidon2Cols<
-                        BabyBearPacking,
-                        { BabyBearD4Width24::WIDTH },
-                        { BabyBearD4Width24::SBOX_DEGREE },
-                        { BabyBearD4Width24::SBOX_REGISTERS },
-                        { BabyBearD4Width24::HALF_FULL_ROUNDS },
-                        { BabyBearD4Width24::PARTIAL_ROUNDS },
-                    >,
-                > = (*next_slice_bb).borrow();
-
-                let next_preprocessed_ptr =
-                    next_preprocessed_slice.as_ptr() as *const BabyBearPacking;
-                let next_preprocessed_bb = core::slice::from_raw_parts(
-                    next_preprocessed_ptr,
-                    next_preprocessed_slice.len(),
-                );
-
-                let local_var: &p3_poseidon2_circuit_air::Poseidon2CircuitCols<
-                    <VerifierConstraintFolderWithLookups<'a, SC> as p3_air::AirBuilder>::Var,
-                    p3_poseidon2_air::Poseidon2Cols<
-                        <VerifierConstraintFolderWithLookups<'a, SC> as p3_air::AirBuilder>::Var,
-                        { BabyBearD4Width24::WIDTH },
-                        { BabyBearD4Width24::SBOX_DEGREE },
-                        { BabyBearD4Width24::SBOX_REGISTERS },
-                        { BabyBearD4Width24::HALF_FULL_ROUNDS },
-                        { BabyBearD4Width24::PARTIAL_ROUNDS },
-                    >,
-                > = core::mem::transmute(local_bb);
-
-                let next_var: &p3_poseidon2_circuit_air::Poseidon2CircuitCols<
-                    <VerifierConstraintFolderWithLookups<'a, SC> as p3_air::AirBuilder>::Var,
-                    p3_poseidon2_air::Poseidon2Cols<
-                        <VerifierConstraintFolderWithLookups<'a, SC> as p3_air::AirBuilder>::Var,
-                        { BabyBearD4Width24::WIDTH },
-                        { BabyBearD4Width24::SBOX_DEGREE },
-                        { BabyBearD4Width24::SBOX_REGISTERS },
-                        { BabyBearD4Width24::HALF_FULL_ROUNDS },
-                        { BabyBearD4Width24::PARTIAL_ROUNDS },
-                    >,
-                > = core::mem::transmute(next_bb);
-
-                let next_preprocessed_var: &[<VerifierConstraintFolderWithLookups<'a, SC> as p3_air::AirBuilder>::Var] = core::mem::transmute(next_preprocessed_bb);
-
-                eval_unchecked::<
+                eval_poseidon2_variant::<
+                    SC,
                     BabyBear,
                     VerifierConstraintFolderWithLookups<'a, SC>,
                     GenericPoseidon2LinearLayersBabyBear,
-                    4,
+                    { BabyBearD4Width24::D },
                     { BabyBearD4Width24::WIDTH },
                     { BabyBearD4Width24::WIDTH_EXT },
                     { BabyBearD4Width24::RATE_EXT },
@@ -1861,81 +1071,18 @@ where
                 >(
                     air.as_ref(),
                     builder,
-                    local_var,
-                    next_var,
-                    next_preprocessed_var,
+                    &local_slice,
+                    &next_slice,
+                    &next_preprocessed_slice,
                 );
             },
             Poseidon2AirWrapperInner::KoalaBearD4Width16(air) => unsafe {
-                type KoalaBearPacking = <KoalaBear as p3_field::Field>::Packing;
-
-                let local_slice_ptr = local_slice.as_ptr() as *const KoalaBearPacking;
-                let local_slice_bb =
-                    core::slice::from_raw_parts(local_slice_ptr, local_slice.len());
-                let local_bb: &p3_poseidon2_circuit_air::Poseidon2CircuitCols<
-                    KoalaBearPacking,
-                    p3_poseidon2_air::Poseidon2Cols<
-                        KoalaBearPacking,
-                        { KoalaBearD4Width16::WIDTH },
-                        { KoalaBearD4Width16::SBOX_DEGREE },
-                        { KoalaBearD4Width16::SBOX_REGISTERS },
-                        { KoalaBearD4Width16::HALF_FULL_ROUNDS },
-                        { KoalaBearD4Width16::PARTIAL_ROUNDS },
-                    >,
-                > = (*local_slice_bb).borrow();
-
-                let next_slice_ptr = next_slice.as_ptr() as *const KoalaBearPacking;
-                let next_slice_bb = core::slice::from_raw_parts(next_slice_ptr, next_slice.len());
-                let next_bb: &p3_poseidon2_circuit_air::Poseidon2CircuitCols<
-                    KoalaBearPacking,
-                    p3_poseidon2_air::Poseidon2Cols<
-                        KoalaBearPacking,
-                        { KoalaBearD4Width16::WIDTH },
-                        { KoalaBearD4Width16::SBOX_DEGREE },
-                        { KoalaBearD4Width16::SBOX_REGISTERS },
-                        { KoalaBearD4Width16::HALF_FULL_ROUNDS },
-                        { KoalaBearD4Width16::PARTIAL_ROUNDS },
-                    >,
-                > = (*next_slice_bb).borrow();
-
-                let next_preprocessed_ptr =
-                    next_preprocessed_slice.as_ptr() as *const KoalaBearPacking;
-                let next_preprocessed_bb = core::slice::from_raw_parts(
-                    next_preprocessed_ptr,
-                    next_preprocessed_slice.len(),
-                );
-
-                let local_var: &p3_poseidon2_circuit_air::Poseidon2CircuitCols<
-                    <VerifierConstraintFolderWithLookups<'a, SC> as p3_air::AirBuilder>::Var,
-                    p3_poseidon2_air::Poseidon2Cols<
-                        <VerifierConstraintFolderWithLookups<'a, SC> as p3_air::AirBuilder>::Var,
-                        { KoalaBearD4Width16::WIDTH },
-                        { KoalaBearD4Width16::SBOX_DEGREE },
-                        { KoalaBearD4Width16::SBOX_REGISTERS },
-                        { KoalaBearD4Width16::HALF_FULL_ROUNDS },
-                        { KoalaBearD4Width16::PARTIAL_ROUNDS },
-                    >,
-                > = core::mem::transmute(local_bb);
-
-                let next_var: &p3_poseidon2_circuit_air::Poseidon2CircuitCols<
-                    <VerifierConstraintFolderWithLookups<'a, SC> as p3_air::AirBuilder>::Var,
-                    p3_poseidon2_air::Poseidon2Cols<
-                        <VerifierConstraintFolderWithLookups<'a, SC> as p3_air::AirBuilder>::Var,
-                        { KoalaBearD4Width16::WIDTH },
-                        { KoalaBearD4Width16::SBOX_DEGREE },
-                        { KoalaBearD4Width16::SBOX_REGISTERS },
-                        { KoalaBearD4Width16::HALF_FULL_ROUNDS },
-                        { KoalaBearD4Width16::PARTIAL_ROUNDS },
-                    >,
-                > = core::mem::transmute(next_bb);
-
-                let next_preprocessed_var: &[<VerifierConstraintFolderWithLookups<'a, SC> as p3_air::AirBuilder>::Var] = core::mem::transmute(next_preprocessed_bb);
-
-                eval_unchecked::<
+                eval_poseidon2_variant::<
+                    SC,
                     KoalaBear,
                     VerifierConstraintFolderWithLookups<'a, SC>,
                     GenericPoseidon2LinearLayersKoalaBear,
-                    4,
+                    { KoalaBearD4Width16::D },
                     { KoalaBearD4Width16::WIDTH },
                     { KoalaBearD4Width16::WIDTH_EXT },
                     { KoalaBearD4Width16::RATE_EXT },
@@ -1947,81 +1094,18 @@ where
                 >(
                     air.as_ref(),
                     builder,
-                    local_var,
-                    next_var,
-                    next_preprocessed_var,
+                    &local_slice,
+                    &next_slice,
+                    &next_preprocessed_slice,
                 );
             },
             Poseidon2AirWrapperInner::KoalaBearD4Width24(air) => unsafe {
-                type KoalaBearPacking = <KoalaBear as p3_field::Field>::Packing;
-
-                let local_slice_ptr = local_slice.as_ptr() as *const KoalaBearPacking;
-                let local_slice_bb =
-                    core::slice::from_raw_parts(local_slice_ptr, local_slice.len());
-                let local_bb: &p3_poseidon2_circuit_air::Poseidon2CircuitCols<
-                    KoalaBearPacking,
-                    p3_poseidon2_air::Poseidon2Cols<
-                        KoalaBearPacking,
-                        { KoalaBearD4Width24::WIDTH },
-                        { KoalaBearD4Width24::SBOX_DEGREE },
-                        { KoalaBearD4Width24::SBOX_REGISTERS },
-                        { KoalaBearD4Width24::HALF_FULL_ROUNDS },
-                        { KoalaBearD4Width24::PARTIAL_ROUNDS },
-                    >,
-                > = (*local_slice_bb).borrow();
-
-                let next_slice_ptr = next_slice.as_ptr() as *const KoalaBearPacking;
-                let next_slice_bb = core::slice::from_raw_parts(next_slice_ptr, next_slice.len());
-                let next_bb: &p3_poseidon2_circuit_air::Poseidon2CircuitCols<
-                    KoalaBearPacking,
-                    p3_poseidon2_air::Poseidon2Cols<
-                        KoalaBearPacking,
-                        { KoalaBearD4Width24::WIDTH },
-                        { KoalaBearD4Width24::SBOX_DEGREE },
-                        { KoalaBearD4Width24::SBOX_REGISTERS },
-                        { KoalaBearD4Width24::HALF_FULL_ROUNDS },
-                        { KoalaBearD4Width24::PARTIAL_ROUNDS },
-                    >,
-                > = (*next_slice_bb).borrow();
-
-                let next_preprocessed_ptr =
-                    next_preprocessed_slice.as_ptr() as *const KoalaBearPacking;
-                let next_preprocessed_bb = core::slice::from_raw_parts(
-                    next_preprocessed_ptr,
-                    next_preprocessed_slice.len(),
-                );
-
-                let local_var: &p3_poseidon2_circuit_air::Poseidon2CircuitCols<
-                    <VerifierConstraintFolderWithLookups<'a, SC> as p3_air::AirBuilder>::Var,
-                    p3_poseidon2_air::Poseidon2Cols<
-                        <VerifierConstraintFolderWithLookups<'a, SC> as p3_air::AirBuilder>::Var,
-                        { KoalaBearD4Width24::WIDTH },
-                        { KoalaBearD4Width24::SBOX_DEGREE },
-                        { KoalaBearD4Width24::SBOX_REGISTERS },
-                        { KoalaBearD4Width24::HALF_FULL_ROUNDS },
-                        { KoalaBearD4Width24::PARTIAL_ROUNDS },
-                    >,
-                > = core::mem::transmute(local_bb);
-
-                let next_var: &p3_poseidon2_circuit_air::Poseidon2CircuitCols<
-                    <VerifierConstraintFolderWithLookups<'a, SC> as p3_air::AirBuilder>::Var,
-                    p3_poseidon2_air::Poseidon2Cols<
-                        <VerifierConstraintFolderWithLookups<'a, SC> as p3_air::AirBuilder>::Var,
-                        { KoalaBearD4Width24::WIDTH },
-                        { KoalaBearD4Width24::SBOX_DEGREE },
-                        { KoalaBearD4Width24::SBOX_REGISTERS },
-                        { KoalaBearD4Width24::HALF_FULL_ROUNDS },
-                        { KoalaBearD4Width24::PARTIAL_ROUNDS },
-                    >,
-                > = core::mem::transmute(next_bb);
-
-                let next_preprocessed_var: &[<VerifierConstraintFolderWithLookups<'a, SC> as p3_air::AirBuilder>::Var] = core::mem::transmute(next_preprocessed_bb);
-
-                eval_unchecked::<
+                eval_poseidon2_variant::<
+                    SC,
                     KoalaBear,
                     VerifierConstraintFolderWithLookups<'a, SC>,
                     GenericPoseidon2LinearLayersKoalaBear,
-                    4,
+                    { KoalaBearD4Width24::D },
                     { KoalaBearD4Width24::WIDTH },
                     { KoalaBearD4Width24::WIDTH_EXT },
                     { KoalaBearD4Width24::RATE_EXT },
@@ -2033,9 +1117,9 @@ where
                 >(
                     air.as_ref(),
                     builder,
-                    local_var,
-                    next_var,
-                    next_preprocessed_var,
+                    &local_slice,
+                    &next_slice,
+                    &next_preprocessed_slice,
                 );
             },
         }
