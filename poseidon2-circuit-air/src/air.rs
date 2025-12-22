@@ -438,7 +438,7 @@ pub fn extract_preprocessed_from_operations<F: Field, OF: Field>(
     preprocessed
 }
 
-fn eval<
+pub fn eval<
     AB: PairBuilder,
     LinearLayers: GenericPoseidon2LinearLayers<WIDTH>,
     const D: usize,
@@ -618,6 +618,99 @@ fn eval<
     // out[0..3] = Poseidon2(in[0..3])
     // This holds regardless of merkle_path, new_start, CTL flags, chaining, or MMCS accumulator.
     air.p3_poseidon2.eval(&mut sub_builder);
+}
+
+/// Unsafe version of `eval` that allows calling with a builder whose field type
+/// doesn't match the AIR's field type at compile time, but matches at runtime.
+///
+/// # Safety
+/// The caller must ensure that `F == AB::F` at runtime. Violating this will cause
+/// undefined behavior.
+pub unsafe fn eval_unchecked<
+    F: PrimeField,
+    AB: PairBuilder,
+    LinearLayers: GenericPoseidon2LinearLayers<WIDTH>,
+    const D: usize,
+    const WIDTH: usize,
+    const WIDTH_EXT: usize,
+    const RATE_EXT: usize,
+    const CAPACITY_EXT: usize,
+    const SBOX_DEGREE: u64,
+    const SBOX_REGISTERS: usize,
+    const HALF_FULL_ROUNDS: usize,
+    const PARTIAL_ROUNDS: usize,
+>(
+    air: &Poseidon2CircuitAir<
+        F,
+        LinearLayers,
+        D,
+        WIDTH,
+        WIDTH_EXT,
+        RATE_EXT,
+        CAPACITY_EXT,
+        SBOX_DEGREE,
+        SBOX_REGISTERS,
+        HALF_FULL_ROUNDS,
+        PARTIAL_ROUNDS,
+    >,
+    builder: &mut AB,
+    local: &Poseidon2CircuitCols<
+        AB::Var,
+        Poseidon2Cols<
+            AB::Var,
+            WIDTH,
+            SBOX_DEGREE,
+            SBOX_REGISTERS,
+            HALF_FULL_ROUNDS,
+            PARTIAL_ROUNDS,
+        >,
+    >,
+    next: &Poseidon2CircuitCols<
+        AB::Var,
+        Poseidon2Cols<
+            AB::Var,
+            WIDTH,
+            SBOX_DEGREE,
+            SBOX_REGISTERS,
+            HALF_FULL_ROUNDS,
+            PARTIAL_ROUNDS,
+        >,
+    >,
+    next_preprocessed: &[AB::Var],
+) where
+    AB::F: PrimeField,
+{
+    // SAFETY: Transmute the AIR to match builder's field type
+    // Caller guarantees F == AB::F at runtime.
+    unsafe {
+        let air_transmuted: &Poseidon2CircuitAir<
+            AB::F,
+            LinearLayers,
+            D,
+            WIDTH,
+            WIDTH_EXT,
+            RATE_EXT,
+            CAPACITY_EXT,
+            SBOX_DEGREE,
+            SBOX_REGISTERS,
+            HALF_FULL_ROUNDS,
+            PARTIAL_ROUNDS,
+        > = core::mem::transmute(air);
+
+        eval::<
+            AB,
+            LinearLayers,
+            D,
+            WIDTH,
+            WIDTH_EXT,
+            RATE_EXT,
+            CAPACITY_EXT,
+            SBOX_DEGREE,
+            SBOX_REGISTERS,
+            HALF_FULL_ROUNDS,
+            PARTIAL_ROUNDS,
+        >(air_transmuted, builder, local, next, next_preprocessed);
+    }
 }
 
 impl<
