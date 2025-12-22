@@ -1213,7 +1213,9 @@ where
     }
 
     fn get_lookups(&mut self) -> Vec<p3_lookup::lookup_traits::Lookup<Val<SC>>> {
-        <Poseidon2AirWrapper<SC> as AirLookupHandler<SymbolicAirBuilder<Val<SC>>>>::get_lookups(self)
+        <Poseidon2AirWrapper<SC> as AirLookupHandler<SymbolicAirBuilder<Val<SC>>>>::get_lookups(
+            self,
+        )
     }
 }
 
@@ -1228,7 +1230,9 @@ where
     }
 
     fn get_lookups(&mut self) -> Vec<p3_lookup::lookup_traits::Lookup<Val<SC>>> {
-        <Poseidon2AirWrapper<SC> as AirLookupHandler<SymbolicAirBuilder<Val<SC>>>>::get_lookups(self)
+        <Poseidon2AirWrapper<SC> as AirLookupHandler<SymbolicAirBuilder<Val<SC>>>>::get_lookups(
+            self,
+        )
     }
 }
 
