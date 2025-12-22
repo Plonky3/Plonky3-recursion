@@ -267,7 +267,7 @@ impl<F: Field> NonPrimitiveExecutor<F> for PoseidonPermExecutor {
     fn preprocess(
         &self,
         inputs: &[Vec<WitnessId>],
-        _outputs: &[Vec<WitnessId>],
+        outputs: &[Vec<WitnessId>],
         preprocessed_tables: &mut Vec<Vec<F>>,
     ) {
         let witness_table_idx = PrimitiveOpType::Witness as usize;
@@ -288,7 +288,9 @@ impl<F: Field> NonPrimitiveExecutor<F> for PoseidonPermExecutor {
         }
 
         // The inputs have shape:
-        // inputs[0..3], outputs[0..1], mmcs_index_sum, mmcs_bit
+        // inputs[0..3]: input limbs, inputs[4]: mmcs_index_sum, inputs[5]: mmcs_bit
+        // The outputs have shape:
+        // outputs[0..1]: output limbs exposed via CTL
         // The shape of one preprocessed row is:
         // [in_idx0, in_ctl_0, normal_chain_sel[0], merkle_chain_sel[0], in_idx1, in1_ctl, normal_chain_sel[1], merkle_chain_sel[1], ..., out_idx0, out_ctl_0, out_idx1, out_ctl_1, mmcs_index_sum_ctl_idx, new_start, merkle_path]
 
@@ -325,7 +327,7 @@ impl<F: Field> NonPrimitiveExecutor<F> for PoseidonPermExecutor {
             preprocessed_tables[idx].push(merkle_chain_sel);
         }
 
-        for out in inputs[4..6].iter() {
+        for out in outputs[0..2].iter() {
             if out.is_empty() {
                 // Private output
                 preprocessed_tables[idx].push(F::ZERO); // out_idx
