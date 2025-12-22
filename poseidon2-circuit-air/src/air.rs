@@ -204,8 +204,8 @@ impl<
             // - Sponge mode (merkle_path = 0): all limbs come from the previous output unless
             //   a limb is exposed via in_ctl, in which case the provided input overrides it.
             // - Merkle mode (merkle_path = 1): the previous digest is always the previous output limbs 0-1.
-            //   If mmcs_bit = 0 (previous digest is left child), chain into limbs 0-1; limbs 2-3 come from inputs.
-            //   If mmcs_bit = 1 (previous digest is right child), chain into limbs 2-3; limbs 0-1 come from inputs.
+            //   If mmcs_bit = 0 (previous digest is left child), chain into input limbs 0-1; input limbs 2-3 come from inputs.
+            //   If mmcs_bit = 1 (previous digest is right child), chain into input limbs 2-3; input limbs 0-1 come from inputs.
             // - If in_ctl[i] = 1, that limb is NOT chained and comes from CTL/witness instead.
             //   The AIR constraints will enforce this (chaining is gated by 1 - in_ctl[i]).
             let mut state = padded_inputs;
@@ -214,8 +214,8 @@ impl<
                 if *merkle_path {
                     // Merkle-path mode: the previous digest is always the previous row's out[0..1].
                     // `mmcs_bit` selects whether that digest is the left (0) or right (1) child:
-                    // - bit=0: chain into limbs 0..1
-                    // - bit=1: chain into limbs 2..3
+                    // - bit=0: chain into input limbs 0..1
+                    // - bit=1: chain into input limbs 2..3
                     if let Some(prev_out) = prev_output {
                         if !*mmcs_bit {
                             if !in_ctl[0] {
@@ -526,9 +526,9 @@ fn eval<
     // Merkle-path chaining.
     // If new_start_{r+1} = 0 and merkle_path_{r+1} = 1:
     //   - If mmcs_bit_{r+1} = 0 (left = previous hash): in_{r+1}[0] = out_r[0], in_{r+1}[1] = out_r[1].
-    //     Limbs 2-3 are free/private.
+    //     Input limbs 2-3 are free/private.
     //   - If mmcs_bit_{r+1} = 1 (right = previous hash): in_{r+1}[2] = out_r[0], in_{r+1}[3] = out_r[1].
-    //     Limbs 0-1 are free/private.
+    //     Input limbs 0-1 are free/private.
     // BUT: If in_ctl[i] = 1, CTL overrides chaining (limb is not chained).
     // Chaining only applies when in_ctl[limb] = 0.
     let is_left = AB::Expr::ONE - next_bit.clone();
