@@ -97,6 +97,9 @@ where
         if call.merkle_path && call.mmcs_bit.is_none() {
             return Err(crate::CircuitBuilderError::PoseidonMerkleMissingMmcsBit);
         }
+        if !call.merkle_path && call.mmcs_bit.is_some() {
+            return Err(crate::CircuitBuilderError::PoseidonNonMerkleWithMmcsBit);
+        }
 
         // Build input_exprs layout: [in0, in1, in2, in3, mmcs_index_sum, mmcs_bit]
         let mut input_exprs: Vec<Vec<ExprId>> = Vec::with_capacity(6);

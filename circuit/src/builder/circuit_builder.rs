@@ -978,7 +978,7 @@ mod tests {
             .add_poseidon_perm(PoseidonPermCall {
                 new_start: true,
                 merkle_path: false,
-                mmcs_bit: Some(z),
+                mmcs_bit: None, // Must be None when merkle_path=false
                 inputs: [Some(z), Some(z), Some(z), Some(z)],
                 out_ctl: [true, true],
                 mmcs_index_sum: None,

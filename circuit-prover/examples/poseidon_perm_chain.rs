@@ -81,7 +81,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     });
 
     // Add permutation rows.
-    let mmcs_bit_zero = builder.alloc_const(Ext4::ZERO, "mmcs_bit_zero");
     let mut last_outputs: [Option<ExprId>; 2] = [None, None];
 
     for row in 0..chain_length {
@@ -98,7 +97,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         let (_op_id, outputs) = builder.add_poseidon_perm(PoseidonPermCall {
             new_start: is_first,
             merkle_path: false,
-            mmcs_bit: Some(mmcs_bit_zero),
+            mmcs_bit: None, // Must be None when merkle_path=false
             inputs,
             out_ctl: [is_last, is_last],
             mmcs_index_sum: None,
