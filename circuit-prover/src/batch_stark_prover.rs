@@ -435,12 +435,45 @@ impl Poseidon2Config {
             constants,
         }
     }
+
+    fn to_air_wrapper(&self) -> Poseidon2AirWrapperInner {
+        match self {
+            Self::BabyBearD4Width16 { constants, .. } => {
+                Poseidon2AirWrapperInner::BabyBearD4Width16(Box::new(
+                    Poseidon2CircuitAirBabyBearD4Width16::new(constants.clone()),
+                ))
+            }
+            Self::BabyBearD4Width24 { constants, .. } => {
+                Poseidon2AirWrapperInner::BabyBearD4Width24(Box::new(
+                    Poseidon2CircuitAirBabyBearD4Width24::new(constants.clone()),
+                ))
+            }
+            Self::KoalaBearD4Width16 { constants, .. } => {
+                Poseidon2AirWrapperInner::KoalaBearD4Width16(Box::new(
+                    Poseidon2CircuitAirKoalaBearD4Width16::new(constants.clone()),
+                ))
+            }
+            Self::KoalaBearD4Width24 { constants, .. } => {
+                Poseidon2AirWrapperInner::KoalaBearD4Width24(Box::new(
+                    Poseidon2CircuitAirKoalaBearD4Width24::new(constants.clone()),
+                ))
+            }
+        }
+    }
 }
 
 /// Wrapper for Poseidon2CircuitAir that implements BatchAir<SC>
 // We need this because `BatchAir` requires `BaseAir<Val<SC>>`.
 // but `Poseidon2CircuitAir` works over a specific field.
+enum Poseidon2AirWrapperInner {
+    BabyBearD4Width16(Box<Poseidon2CircuitAirBabyBearD4Width16>),
+    BabyBearD4Width24(Box<Poseidon2CircuitAirBabyBearD4Width24>),
+    KoalaBearD4Width16(Box<Poseidon2CircuitAirKoalaBearD4Width16>),
+    KoalaBearD4Width24(Box<Poseidon2CircuitAirKoalaBearD4Width24>),
+}
+
 struct Poseidon2AirWrapper<SC: StarkGenericConfig> {
+    inner: Poseidon2AirWrapperInner,
     width: usize,
     preprocessed: Vec<Val<SC>>,
     _phantom: core::marker::PhantomData<SC>,
@@ -482,10 +515,46 @@ where
     AB: AirBuilder<F = Val<SC>>,
     Val<SC>: StarkField,
 {
-    fn eval(&self, _builder: &mut AB) {
-        // The actual evaluation is handled by the concrete AIR type
-        // This wrapper is just for type erasure
-        // TODO: Delegate to the actual AIR if we can store it
+    fn eval(&self, builder: &mut AB) {
+        // Delegate to the actual AIR instance stored in the wrapper
+        match &self.inner {
+            Poseidon2AirWrapperInner::BabyBearD4Width16(air) => {
+                // SAFETY: Val<SC> == BabyBear when this variant is used
+                // SymbolicAirBuilder<BabyBear> and SymbolicAirBuilder<Val<SC>> have the same layout
+                unsafe {
+                    let builder_bb: &mut SymbolicAirBuilder<BabyBear> =
+                        core::mem::transmute(builder);
+                    Air::eval(air.as_ref(), builder_bb);
+                }
+            }
+            Poseidon2AirWrapperInner::BabyBearD4Width24(air) => {
+                // SAFETY: Val<SC> == BabyBear when this variant is used
+                // SymbolicAirBuilder<BabyBear> and SymbolicAirBuilder<Val<SC>> have the same layout
+                unsafe {
+                    let builder_bb: &mut SymbolicAirBuilder<BabyBear> =
+                        core::mem::transmute(builder);
+                    Air::eval(air.as_ref(), builder_bb);
+                }
+            }
+            Poseidon2AirWrapperInner::KoalaBearD4Width16(air) => {
+                // SAFETY: Val<SC> == KoalaBear when this variant is used
+                // SymbolicAirBuilder<KoalaBear> and SymbolicAirBuilder<Val<SC>> have the same layout
+                unsafe {
+                    let builder_kb: &mut SymbolicAirBuilder<KoalaBear> =
+                        core::mem::transmute(builder);
+                    Air::eval(air.as_ref(), builder_kb);
+                }
+            }
+            Poseidon2AirWrapperInner::KoalaBearD4Width24(air) => {
+                // SAFETY: Val<SC> == KoalaBear when this variant is used
+                // SymbolicAirBuilder<KoalaBear> and SymbolicAirBuilder<Val<SC>> have the same layout
+                unsafe {
+                    let builder_kb: &mut SymbolicAirBuilder<KoalaBear> =
+                        core::mem::transmute(builder);
+                    Air::eval(air.as_ref(), builder_kb);
+                }
+            }
+        }
     }
 }
 
@@ -539,6 +608,7 @@ impl Poseidon2Prover {
         Val<SC>: StarkField,
     {
         DynamicAirEntry::new(Box::new(Poseidon2AirWrapper {
+            inner: self.config.to_air_wrapper(),
             width: self.width_from_config(),
             preprocessed,
             _phantom: core::marker::PhantomData::<SC>,
@@ -706,6 +776,7 @@ impl Poseidon2Prover {
                 (
                     // Preprocessed values are already stored in the AIR, so we don't need to pass them again in the wrapper.
                     Poseidon2AirWrapper {
+                        inner: self.config.to_air_wrapper(),
                         width: air.width(),
                         preprocessed: Vec::new(),
                         _phantom: core::marker::PhantomData::<SC>,
@@ -730,6 +801,7 @@ impl Poseidon2Prover {
                 (
                     // Preprocessed values are already stored in the AIR, so we don't need to pass them again in the wrapper.
                     Poseidon2AirWrapper {
+                        inner: self.config.to_air_wrapper(),
                         width: air.width(),
                         preprocessed: Vec::new(),
                         _phantom: core::marker::PhantomData::<SC>,
@@ -754,6 +826,7 @@ impl Poseidon2Prover {
                 (
                     // Preprocessed values are already stored in the AIR, so we don't need to pass them again in the wrapper.
                     Poseidon2AirWrapper {
+                        inner: self.config.to_air_wrapper(),
                         width: air.width(),
                         preprocessed: Vec::new(),
                         _phantom: core::marker::PhantomData::<SC>,
@@ -778,6 +851,7 @@ impl Poseidon2Prover {
                 (
                     // Preprocessed values are already stored in the AIR, so we don't need to pass them again in the wrapper.
                     Poseidon2AirWrapper {
+                        inner: self.config.to_air_wrapper(),
                         width: air.width(),
                         preprocessed: Vec::new(),
                         _phantom: core::marker::PhantomData::<SC>,
@@ -871,6 +945,7 @@ where
                 use p3_poseidon2_circuit_air::Poseidon2CircuitAirBabyBearD4Width16;
                 let air = Poseidon2CircuitAirBabyBearD4Width16::new(constants.clone());
                 let wrapper = Poseidon2AirWrapper {
+                    inner: self.config.to_air_wrapper(),
                     width: air.width(),
                     preprocessed: Vec::new(),
                     _phantom: core::marker::PhantomData::<SC>,
@@ -881,6 +956,7 @@ where
                 use p3_poseidon2_circuit_air::Poseidon2CircuitAirBabyBearD4Width24;
                 let air = Poseidon2CircuitAirBabyBearD4Width24::new(constants.clone());
                 let wrapper = Poseidon2AirWrapper {
+                    inner: self.config.to_air_wrapper(),
                     width: air.width(),
                     preprocessed: Vec::new(),
                     _phantom: core::marker::PhantomData::<SC>,
@@ -891,6 +967,7 @@ where
                 use p3_poseidon2_circuit_air::Poseidon2CircuitAirKoalaBearD4Width16;
                 let air = Poseidon2CircuitAirKoalaBearD4Width16::new(constants.clone());
                 let wrapper = Poseidon2AirWrapper {
+                    inner: self.config.to_air_wrapper(),
                     width: air.width(),
                     preprocessed: Vec::new(),
                     _phantom: core::marker::PhantomData::<SC>,
@@ -901,6 +978,7 @@ where
                 use p3_poseidon2_circuit_air::Poseidon2CircuitAirKoalaBearD4Width24;
                 let air = Poseidon2CircuitAirKoalaBearD4Width24::new(constants.clone());
                 let wrapper = Poseidon2AirWrapper {
+                    inner: self.config.to_air_wrapper(),
                     width: air.width(),
                     preprocessed: Vec::new(),
                     _phantom: core::marker::PhantomData::<SC>,
