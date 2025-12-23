@@ -35,6 +35,7 @@ pub struct FriProofTargets<
     Witness: Recursive<EF>,
 > {
     pub commit_phase_commits: Vec<RecMmcs::Commitment>,
+    pub commit_pow_witnesses: Vec<Witness>,
     pub query_proofs: Vec<QueryProofTargets<F, EF, InputProof, RecMmcs>>,
     pub final_poly: Vec<Target>,
     pub pow_witness: Witness,
@@ -57,6 +58,12 @@ impl<
             .map(|commitment| RecMmcs::Commitment::new(circuit, commitment))
             .collect();
 
+        let commit_pow_witnesses = input
+            .commit_pow_witnesses
+            .iter()
+            .map(|witness| Witness::new(circuit, witness))
+            .collect();
+
         let query_proofs = input
             .query_proofs
             .iter()
@@ -68,30 +75,37 @@ impl<
 
         Self {
             commit_phase_commits,
+            commit_pow_witnesses,
             query_proofs,
             final_poly,
-            pow_witness: Witness::new(circuit, &input.pow_witness),
+            pow_witness: Witness::new(circuit, &input.query_pow_witness),
         }
     }
 
     fn get_values(input: &Self::Input) -> Vec<EF> {
         let FriProof {
             commit_phase_commits,
+            commit_pow_witnesses,
             query_proofs,
             final_poly,
-            pow_witness,
+            query_pow_witness,
         } = input;
 
         commit_phase_commits
             .iter()
             .flat_map(|c| RecMmcs::Commitment::get_values(c))
             .chain(
+                commit_pow_witnesses
+                    .iter()
+                    .flat_map(|w| Witness::get_values(w)),
+            )
+            .chain(
                 query_proofs
                     .iter()
                     .flat_map(|c| QueryProofTargets::<F, EF, InputProof, RecMmcs>::get_values(c)),
             )
             .chain(final_poly.iter().copied())
-            .chain(Witness::get_values(pow_witness))
+            .chain(Witness::get_values(query_pow_witness))
             .collect()
     }
 }
@@ -456,9 +470,20 @@ where
         // Sample FRI betas: one per commit phase
         // For each FRI commitment, observe it and sample beta
         let mut betas = Vec::with_capacity(fri_proof.commit_phase_commits.len());
-        for commit in &fri_proof.commit_phase_commits {
+        for (commit, pow) in fri_proof
+            .commit_phase_commits
+            .iter()
+            .zip(fri_proof.commit_pow_witnesses.iter())
+        {
             let commit_targets = commit.to_observation_targets();
             challenger.observe_slice(circuit, &commit_targets);
+            // Check commit-phase PoW witness.
+            challenger.check_witness(
+                circuit,
+                params.commit_pow_bits,
+                pow.witness,
+                Val::<SC>::bits(),
+            )?;
             let beta = challenger.sample(circuit);
             betas.push(beta);
         }
@@ -466,10 +491,10 @@ where
         // Observe final polynomial coefficients
         challenger.observe_slice(circuit, &fri_proof.final_poly);
 
-        // Check PoW witness.
+        // Check query PoW witness.
         challenger.check_witness(
             circuit,
-            params.pow_bits,
+            params.query_pow_bits,
             fri_proof.pow_witness.witness,
             Val::<SC>::bits(),
         )?;
@@ -504,7 +529,8 @@ where
         let FriVerifierParams {
             log_blowup,
             log_final_poly_len,
-            pow_bits: _,
+            commit_pow_bits: _,
+            query_pow_bits: _,
         } = *params;
         // Extract FRI challenges from the challenges slice.
         // Layout: [alpha, beta_0, ..., beta_{n-1}, query_0, ..., query_{m-1}]

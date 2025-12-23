@@ -91,7 +91,8 @@ fn produce_inputs_multi(
     perm: &Perm,
     log_blowup: usize,
     log_final_poly_len: usize,
-    pow_bits: usize,
+    query_pow_bits: usize,
+    commit_pow_bits: usize,
     group_sizes: &[Vec<u8>],
     seed_base: u64,
 ) -> ProduceInputsResult {
@@ -136,7 +137,7 @@ fn produce_inputs_multi(
 
     // Open and produce FRI proof
     let (opened_values, fri_proof) =
-        <MyPcs as Pcs<Challenge, Challenger>>::open(pcs, open_data, &mut p_challenger);
+        <MyPcs as Pcs<Challenge, Challenger>>::open(pcs, open_data, &mut p_challenger, None);
 
     // --- Verifier transcript replay (to derive the public inputs) ---
     let mut v_challenger = Challenger::new(perm.clone());
@@ -156,7 +157,8 @@ fn produce_inputs_multi(
         commit_phase_commits,
         ref query_proofs,
         final_poly,
-        pow_witness,
+        query_pow_witness,
+        commit_pow_witnesses,
     } = fri_proof.clone();
 
     // Observe all opened evaluation values (same order)
@@ -171,8 +173,9 @@ fn produce_inputs_multi(
 
     // β_i per phase: observe commitment, then sample β
     let mut betas: Vec<Challenge> = Vec::with_capacity(commit_phase_commits.len());
-    for c in &commit_phase_commits {
+    for (c, w) in commit_phase_commits.iter().zip(commit_pow_witnesses.iter()) {
         v_challenger.observe(*c);
+        assert!(v_challenger.check_witness(commit_pow_bits, *w));
         betas.push(v_challenger.sample_algebra_element());
     }
 
@@ -182,7 +185,7 @@ fn produce_inputs_multi(
     }
 
     // PoW check
-    assert!(v_challenger.check_witness(pow_bits, pow_witness));
+    assert!(v_challenger.check_witness(query_pow_bits, query_pow_witness));
 
     // Query indices
     let num_phases = commit_phase_commits.len();
@@ -231,7 +234,8 @@ fn produce_inputs_multi(
         commit_phase_commits,
         query_proofs: query_proofs.clone(),
         final_poly,
-        pow_witness,
+        query_pow_witness,
+        commit_pow_witnesses,
     });
 
     ProduceInputsResult {
@@ -286,7 +290,8 @@ struct FriSetup {
     perm: Perm,
     log_blowup: usize,
     log_final_poly_len: usize,
-    pow_bits: usize,
+    query_pow_bits: usize,
+    commit_pow_bits: usize,
     group_sizes: Vec<Vec<u8>>,
 }
 
@@ -296,7 +301,8 @@ impl FriSetup {
         perm: Perm,
         log_blowup: usize,
         log_final_poly_len: usize,
-        pow_bits: usize,
+        query_pow_bits: usize,
+        commit_pow_bits: usize,
         group_sizes: Vec<Vec<u8>>,
     ) -> Self {
         Self {
@@ -304,7 +310,8 @@ impl FriSetup {
             perm,
             log_blowup,
             log_final_poly_len,
-            pow_bits,
+            query_pow_bits,
+            commit_pow_bits,
             group_sizes,
         }
     }
@@ -322,7 +329,8 @@ fn generate_setup(log_final_poly_len: usize, group_sizes: Vec<Vec<u8>>) -> FriSe
     let fri_params = create_test_fri_params(challenge_mmcs, log_final_poly_len);
     let log_blowup = fri_params.log_blowup;
     let log_final_poly_len = fri_params.log_final_poly_len;
-    let pow_bits = fri_params.proof_of_work_bits;
+    let query_pow_bits = fri_params.query_proof_of_work_bits;
+    let commit_pow_bits = fri_params.commit_proof_of_work_bits;
     let pcs = MyPcs::new(dft, val_mmcs, fri_params);
 
     FriSetup::new(
@@ -330,7 +338,8 @@ fn generate_setup(log_final_poly_len: usize, group_sizes: Vec<Vec<u8>>) -> FriSe
         perm,
         log_blowup,
         log_final_poly_len,
-        pow_bits,
+        query_pow_bits,
+        commit_pow_bits,
         group_sizes,
     )
 }
@@ -341,7 +350,8 @@ fn run_fri_test(setup: FriSetup, build_only: bool) {
         perm,
         log_blowup,
         log_final_poly_len,
-        pow_bits,
+        query_pow_bits,
+        commit_pow_bits,
         group_sizes,
     } = setup;
 
@@ -351,7 +361,8 @@ fn run_fri_test(setup: FriSetup, build_only: bool) {
         &perm,
         log_blowup,
         log_final_poly_len,
-        pow_bits,
+        query_pow_bits,
+        commit_pow_bits,
         &group_sizes,
         /*seed_base=*/ 0,
     );
@@ -361,7 +372,8 @@ fn run_fri_test(setup: FriSetup, build_only: bool) {
         &perm,
         log_blowup,
         log_final_poly_len,
-        pow_bits,
+        query_pow_bits,
+        commit_pow_bits,
         &group_sizes,
         /*seed_base=*/ 1,
     );

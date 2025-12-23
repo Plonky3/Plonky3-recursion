@@ -11,14 +11,17 @@ use p3_air::{
     Air, AirBuilder, AirBuilderWithPublicValues, BaseAir, PairBuilder, PermutationAirBuilder,
 };
 use p3_baby_bear::{BabyBear, default_babybear_poseidon2_16, default_babybear_poseidon2_24};
-use p3_batch_stark::{BatchProof, CommonData, StarkGenericConfig, StarkInstance, Val};
+use p3_batch_stark::{
+    BatchProof, CommonData, DebugConstraintBuilderWithLookups, StarkGenericConfig, StarkInstance,
+    Val,
+};
 use p3_circuit::op::PrimitiveOpType;
 use p3_circuit::tables::{Poseidon2CircuitRow, Poseidon2CircuitTrace, Poseidon2Trace, Traces};
 use p3_field::extension::{BinomialExtensionField, BinomiallyExtendable};
 use p3_field::{BasedVectorSpace, ExtensionField, Field, PrimeCharacteristicRing, PrimeField};
 use p3_koala_bear::{KoalaBear, default_koalabear_poseidon2_16, default_koalabear_poseidon2_24};
 use p3_lookup::folder::{ProverConstraintFolderWithLookups, VerifierConstraintFolderWithLookups};
-use p3_lookup::lookup_traits::{AirLookupHandler, Lookup};
+use p3_lookup::lookup_traits::{AirLookupHandler, Lookup, LookupGadget};
 use p3_matrix::dense::RowMajorMatrix;
 use p3_poseidon2_air::RoundConstants;
 use p3_poseidon2_circuit_air::{
@@ -26,7 +29,7 @@ use p3_poseidon2_circuit_air::{
     Poseidon2CircuitAirKoalaBearD4Width16, Poseidon2CircuitAirKoalaBearD4Width24,
 };
 use p3_symmetric::CryptographicPermutation;
-use p3_uni_stark::{ProverConstraintFolder, SymbolicAirBuilder, VerifierConstraintFolder};
+use p3_uni_stark::{SymbolicAirBuilder, SymbolicExpression};
 use thiserror::Error;
 use tracing::instrument;
 
@@ -104,18 +107,18 @@ pub struct DynamicAirEntry<SC>
 where
     SC: StarkGenericConfig,
 {
-    air: Box<dyn BatchAir<SC>>,
+    air: Box<dyn CloneableBatchAir<SC>>,
 }
 
 impl<SC> DynamicAirEntry<SC>
 where
     SC: StarkGenericConfig,
 {
-    pub fn new(inner: Box<dyn BatchAir<SC>>) -> Self {
+    pub fn new(inner: Box<dyn CloneableBatchAir<SC>>) -> Self {
         Self { air: inner }
     }
 
-    pub fn air(&self) -> &dyn BatchAir<SC> {
+    pub fn air(&self) -> &dyn CloneableBatchAir<SC> {
         &*self.air
     }
 
@@ -124,21 +127,55 @@ where
     }
 }
 
+impl<SC> Clone for DynamicAirEntry<SC>
+where
+    SC: StarkGenericConfig,
+    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+{
+    fn clone(&self) -> Self {
+        Self {
+            air: self.air.clone_box(),
+        }
+    }
+}
+
 /// Simple super trait of [`Air`] describing the behaviour of a non-primitive
 /// dynamically dispatched AIR used in batched proofs.
 pub trait BatchAir<SC>:
     BaseAir<Val<SC>>
-    + Air<SymbolicAirBuilder<Val<SC>>>
-    + for<'a> Air<ProverConstraintFolder<'a, SC>>
-    + for<'a> Air<VerifierConstraintFolder<'a, SC>>
-    + AirLookupHandlerDyn<SymbolicAirBuilder<Val<SC>>>
+    + Air<SymbolicAirBuilder<Val<SC>, SC::Challenge>>
+    + for<'a> Air<DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>>
+    + for<'a> Air<ProverConstraintFolderWithLookups<'a, SC>>
+    + for<'a> Air<VerifierConstraintFolderWithLookups<'a, SC>>
+    + AirLookupHandlerDyn<SymbolicAirBuilder<Val<SC>, SC::Challenge>>
+    + for<'a> AirLookupHandlerDyn<DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>>
     + for<'a> AirLookupHandlerDyn<ProverConstraintFolderWithLookups<'a, SC>>
     + for<'a> AirLookupHandlerDyn<VerifierConstraintFolderWithLookups<'a, SC>>
     + Send
     + Sync
 where
     SC: StarkGenericConfig,
+    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
 {
+}
+
+pub trait CloneableBatchAir<SC>: BatchAir<SC>
+where
+    SC: StarkGenericConfig,
+    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+{
+    fn clone_box(&self) -> Box<dyn CloneableBatchAir<SC>>;
+}
+
+impl<SC, T> CloneableBatchAir<SC> for T
+where
+    SC: StarkGenericConfig,
+    T: BatchAir<SC> + Clone + 'static,
+    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+{
+    fn clone_box(&self) -> Box<dyn CloneableBatchAir<SC>> {
+        Box::new(self.clone())
+    }
 }
 
 /// Data needed to insert a dynamic table instance into the batched prover.
@@ -448,7 +485,17 @@ impl<SC> BatchAir<SC> for Poseidon2AirWrapper<SC>
 where
     SC: StarkGenericConfig + Send + Sync,
     Val<SC>: StarkField,
+    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
 {
+}
+
+impl<SC: StarkGenericConfig> Clone for Poseidon2AirWrapper<SC> {
+    fn clone(&self) -> Self {
+        Self {
+            width: self.width,
+            _phantom: core::marker::PhantomData,
+        }
+    }
 }
 
 impl<SC> BaseAir<Val<SC>> for Poseidon2AirWrapper<SC>
@@ -525,6 +572,7 @@ impl Poseidon2Prover {
         SC: StarkGenericConfig + 'static + Send + Sync,
         Val<SC>: StarkField,
         CF: Field + ExtensionField<Val<SC>>,
+        SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
     {
         let t = traces.non_primitive_trace::<Poseidon2Trace<Val<SC>>>("poseidon2")?;
 
@@ -589,6 +637,7 @@ impl Poseidon2Prover {
         F: StarkField + PrimeCharacteristicRing,
         P: CryptographicPermutation<[F; WIDTH]> + Clone,
         Val<SC>: StarkField,
+        SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
     {
         let rows = t.total_rows();
 
@@ -707,6 +756,7 @@ impl<SC> TableProver<SC> for Poseidon2Prover
 where
     SC: StarkGenericConfig + 'static + Send + Sync,
     Val<SC>: StarkField + BinomiallyExtendable<4>,
+    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
 {
     fn id(&self) -> &'static str {
         "poseidon2"
@@ -917,6 +967,7 @@ pub enum BatchStarkProverError {
 impl<SC, const D: usize> BaseAir<Val<SC>> for CircuitTableAir<SC, D>
 where
     SC: StarkGenericConfig,
+    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
 {
     fn width(&self) -> usize {
         match self {
@@ -941,83 +992,144 @@ where
     }
 }
 
-impl<SC, const D: usize> Air<SymbolicAirBuilder<Val<SC>>> for CircuitTableAir<SC, D>
+impl<SC, const D: usize> Air<SymbolicAirBuilder<Val<SC>, SC::Challenge>> for CircuitTableAir<SC, D>
 where
     SC: StarkGenericConfig,
     Val<SC>: PrimeField,
+    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
 {
-    fn eval(&self, builder: &mut SymbolicAirBuilder<Val<SC>>) {
+    fn eval(&self, builder: &mut SymbolicAirBuilder<Val<SC>, SC::Challenge>) {
         match self {
-            Self::Witness(a) => Air::<SymbolicAirBuilder<Val<SC>>>::eval(a, builder),
-            Self::Const(a) => Air::<SymbolicAirBuilder<Val<SC>>>::eval(a, builder),
-            Self::Public(a) => Air::<SymbolicAirBuilder<Val<SC>>>::eval(a, builder),
-            Self::Add(a) => Air::<SymbolicAirBuilder<Val<SC>>>::eval(a, builder),
-            Self::Mul(a) => Air::<SymbolicAirBuilder<Val<SC>>>::eval(a, builder),
+            Self::Witness(a) => Air::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::eval(a, builder),
+            Self::Const(a) => Air::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::eval(a, builder),
+            Self::Public(a) => Air::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::eval(a, builder),
+            Self::Add(a) => Air::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::eval(a, builder),
+            Self::Mul(a) => Air::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::eval(a, builder),
             Self::Dynamic(a) => {
-                <dyn BatchAir<SC> as Air<SymbolicAirBuilder<Val<SC>>>>::eval(a.air(), builder);
+                <dyn BatchAir<SC> as Air<SymbolicAirBuilder<Val<SC>, SC::Challenge>>>::eval(
+                    a.air(),
+                    builder,
+                );
             }
         }
     }
 }
 
-impl<'a, SC, const D: usize> Air<ProverConstraintFolder<'a, SC>> for CircuitTableAir<SC, D>
+impl<'a, SC, const D: usize> Air<DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>>
+    for CircuitTableAir<SC, D>
 where
     SC: StarkGenericConfig,
     Val<SC>: PrimeField,
+    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
 {
-    fn eval(&self, builder: &mut ProverConstraintFolder<'a, SC>) {
+    fn eval(&self, builder: &mut DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>) {
         match self {
-            Self::Witness(a) => Air::<ProverConstraintFolder<'a, SC>>::eval(a, builder),
-            Self::Const(a) => Air::<ProverConstraintFolder<'a, SC>>::eval(a, builder),
-            Self::Public(a) => Air::<ProverConstraintFolder<'a, SC>>::eval(a, builder),
-            Self::Add(a) => Air::<ProverConstraintFolder<'a, SC>>::eval(a, builder),
-            Self::Mul(a) => Air::<ProverConstraintFolder<'a, SC>>::eval(a, builder),
+            Self::Witness(a) => {
+                Air::<DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>>::eval(
+                    a, builder,
+                )
+            }
+            Self::Const(a) => {
+                Air::<DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>>::eval(
+                    a, builder,
+                )
+            }
+            Self::Public(a) => {
+                Air::<DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>>::eval(
+                    a, builder,
+                )
+            }
+            Self::Add(a) => {
+                Air::<DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>>::eval(
+                    a, builder,
+                )
+            }
+            Self::Mul(a) => {
+                Air::<DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>>::eval(
+                    a, builder,
+                )
+            }
             Self::Dynamic(a) => {
-                <dyn BatchAir<SC> as Air<ProverConstraintFolder<'a, SC>>>::eval(a.air(), builder);
+                <dyn BatchAir<SC> as Air<
+                    DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>,
+                >>::eval(a.air(), builder);
             }
         }
     }
 }
 
-impl<'a, SC, const D: usize> Air<VerifierConstraintFolder<'a, SC>> for CircuitTableAir<SC, D>
+impl<'a, SC, const D: usize> Air<ProverConstraintFolderWithLookups<'a, SC>>
+    for CircuitTableAir<SC, D>
 where
     SC: StarkGenericConfig,
     Val<SC>: PrimeField,
+    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
 {
-    fn eval(&self, builder: &mut VerifierConstraintFolder<'a, SC>) {
+    fn eval(&self, builder: &mut ProverConstraintFolderWithLookups<'a, SC>) {
         match self {
-            Self::Witness(a) => Air::<VerifierConstraintFolder<'a, SC>>::eval(a, builder),
-            Self::Const(a) => Air::<VerifierConstraintFolder<'a, SC>>::eval(a, builder),
-            Self::Public(a) => Air::<VerifierConstraintFolder<'a, SC>>::eval(a, builder),
-            Self::Add(a) => Air::<VerifierConstraintFolder<'a, SC>>::eval(a, builder),
-            Self::Mul(a) => Air::<VerifierConstraintFolder<'a, SC>>::eval(a, builder),
+            Self::Witness(a) => Air::<ProverConstraintFolderWithLookups<'a, SC>>::eval(a, builder),
+            Self::Const(a) => Air::<ProverConstraintFolderWithLookups<'a, SC>>::eval(a, builder),
+            Self::Public(a) => Air::<ProverConstraintFolderWithLookups<'a, SC>>::eval(a, builder),
+            Self::Add(a) => Air::<ProverConstraintFolderWithLookups<'a, SC>>::eval(a, builder),
+            Self::Mul(a) => Air::<ProverConstraintFolderWithLookups<'a, SC>>::eval(a, builder),
             Self::Dynamic(a) => {
-                <dyn BatchAir<SC> as Air<VerifierConstraintFolder<'a, SC>>>::eval(a.air(), builder);
+                <dyn BatchAir<SC> as Air<ProverConstraintFolderWithLookups<'a, SC>>>::eval(
+                    a.air(),
+                    builder,
+                );
             }
         }
     }
 }
 
-impl<SC, const D: usize> AirLookupHandler<SymbolicAirBuilder<Val<SC>>> for CircuitTableAir<SC, D>
+impl<'a, SC, const D: usize> Air<VerifierConstraintFolderWithLookups<'a, SC>>
+    for CircuitTableAir<SC, D>
 where
     SC: StarkGenericConfig,
+    Val<SC>: PrimeField,
+    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+{
+    fn eval(&self, builder: &mut VerifierConstraintFolderWithLookups<'a, SC>) {
+        match self {
+            Self::Witness(a) => {
+                Air::<VerifierConstraintFolderWithLookups<'a, SC>>::eval(a, builder)
+            }
+            Self::Const(a) => Air::<VerifierConstraintFolderWithLookups<'a, SC>>::eval(a, builder),
+            Self::Public(a) => Air::<VerifierConstraintFolderWithLookups<'a, SC>>::eval(a, builder),
+            Self::Add(a) => Air::<VerifierConstraintFolderWithLookups<'a, SC>>::eval(a, builder),
+            Self::Mul(a) => Air::<VerifierConstraintFolderWithLookups<'a, SC>>::eval(a, builder),
+            Self::Dynamic(a) => {
+                <dyn BatchAir<SC> as Air<VerifierConstraintFolderWithLookups<'a, SC>>>::eval(
+                    a.air(),
+                    builder,
+                );
+            }
+        }
+    }
+}
+
+impl<SC, const D: usize> AirLookupHandler<SymbolicAirBuilder<Val<SC>, SC::Challenge>>
+    for CircuitTableAir<SC, D>
+where
+    SC: StarkGenericConfig,
+    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
     Val<SC>: PrimeField,
 {
     fn add_lookup_columns(&mut self) -> Vec<usize> {
         match self {
             Self::Witness(a) => {
-                AirLookupHandler::<SymbolicAirBuilder<Val<SC>>>::add_lookup_columns(a)
+                AirLookupHandler::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::add_lookup_columns(a)
             }
             Self::Const(a) => {
-                AirLookupHandler::<SymbolicAirBuilder<Val<SC>>>::add_lookup_columns(a)
+                AirLookupHandler::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::add_lookup_columns(a)
             }
             Self::Public(a) => {
-                AirLookupHandler::<SymbolicAirBuilder<Val<SC>>>::add_lookup_columns(a)
+                AirLookupHandler::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::add_lookup_columns(a)
             }
-            Self::Add(a) => AirLookupHandler::<SymbolicAirBuilder<Val<SC>>>::add_lookup_columns(a),
-            Self::Mul(a) => AirLookupHandler::<SymbolicAirBuilder<Val<SC>>>::add_lookup_columns(a),
+            Self::Add(a) => AirLookupHandler::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::add_lookup_columns(a),
+            Self::Mul(a) => AirLookupHandler::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::add_lookup_columns(a),
             Self::Dynamic(a) => {
-                AirLookupHandlerDyn::<SymbolicAirBuilder<Val<SC>>>::add_lookup_columns_dyn(
+                AirLookupHandlerDyn::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::add_lookup_columns_dyn(
                     a.air_mut(),
                 )
             }
@@ -1026,13 +1138,196 @@ where
 
     fn get_lookups(&mut self) -> Vec<Lookup<Val<SC>>> {
         match self {
-            Self::Witness(a) => AirLookupHandler::<SymbolicAirBuilder<Val<SC>>>::get_lookups(a),
-            Self::Const(a) => AirLookupHandler::<SymbolicAirBuilder<Val<SC>>>::get_lookups(a),
-            Self::Public(a) => AirLookupHandler::<SymbolicAirBuilder<Val<SC>>>::get_lookups(a),
-            Self::Add(a) => AirLookupHandler::<SymbolicAirBuilder<Val<SC>>>::get_lookups(a),
-            Self::Mul(a) => AirLookupHandler::<SymbolicAirBuilder<Val<SC>>>::get_lookups(a),
+            Self::Witness(a) => {
+                AirLookupHandler::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::get_lookups(a)
+            }
+            Self::Const(a) => {
+                AirLookupHandler::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::get_lookups(a)
+            }
+            Self::Public(a) => {
+                AirLookupHandler::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::get_lookups(a)
+            }
+            Self::Add(a) => {
+                AirLookupHandler::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::get_lookups(a)
+            }
+            Self::Mul(a) => {
+                AirLookupHandler::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::get_lookups(a)
+            }
             Self::Dynamic(a) => {
-                AirLookupHandlerDyn::<SymbolicAirBuilder<Val<SC>>>::get_lookups_dyn(a.air_mut())
+                AirLookupHandlerDyn::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::get_lookups_dyn(
+                    a.air_mut(),
+                )
+            }
+        }
+    }
+}
+
+impl<'a, SC, const D: usize>
+    AirLookupHandler<DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>>
+    for CircuitTableAir<SC, D>
+where
+    SC: StarkGenericConfig,
+    Val<SC>: PrimeField,
+    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+{
+    fn add_lookup_columns(&mut self) -> Vec<usize> {
+        match self {
+            Self::Witness(a) => AirLookupHandler::<
+                DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>,
+            >::add_lookup_columns(a),
+            Self::Const(a) => AirLookupHandler::<
+                DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>,
+            >::add_lookup_columns(a),
+            Self::Public(a) => AirLookupHandler::<
+                DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>,
+            >::add_lookup_columns(a),
+            Self::Add(a) => AirLookupHandler::<
+                DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>,
+            >::add_lookup_columns(a),
+            Self::Mul(a) => AirLookupHandler::<
+                DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>,
+            >::add_lookup_columns(a),
+            Self::Dynamic(a) => AirLookupHandlerDyn::<
+                DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>,
+            >::add_lookup_columns_dyn(a.air_mut()),
+        }
+    }
+
+    fn get_lookups(&mut self) -> Vec<Lookup<Val<SC>>> {
+        match self {
+            Self::Witness(a) => AirLookupHandler::<
+                DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>,
+            >::get_lookups(a),
+            Self::Const(a) => AirLookupHandler::<
+                DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>,
+            >::get_lookups(a),
+            Self::Public(a) => AirLookupHandler::<
+                DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>,
+            >::get_lookups(a),
+            Self::Add(a) => AirLookupHandler::<
+                DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>,
+            >::get_lookups(a),
+            Self::Mul(a) => AirLookupHandler::<
+                DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>,
+            >::get_lookups(a),
+            Self::Dynamic(a) => AirLookupHandlerDyn::<
+                DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>,
+            >::get_lookups_dyn(a.air_mut()),
+        }
+    }
+}
+
+impl<'a, SC, const D: usize> AirLookupHandler<ProverConstraintFolderWithLookups<'a, SC>>
+    for CircuitTableAir<SC, D>
+where
+    SC: StarkGenericConfig,
+    Val<SC>: PrimeField,
+    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+{
+    fn add_lookup_columns(&mut self) -> Vec<usize> {
+        match self {
+            Self::Witness(a) => {
+                AirLookupHandler::<ProverConstraintFolderWithLookups<'a, SC>>::add_lookup_columns(a)
+            }
+            Self::Const(a) => {
+                AirLookupHandler::<ProverConstraintFolderWithLookups<'a, SC>>::add_lookup_columns(a)
+            }
+            Self::Public(a) => {
+                AirLookupHandler::<ProverConstraintFolderWithLookups<'a, SC>>::add_lookup_columns(a)
+            }
+            Self::Add(a) => {
+                AirLookupHandler::<ProverConstraintFolderWithLookups<'a, SC>>::add_lookup_columns(a)
+            }
+            Self::Mul(a) => {
+                AirLookupHandler::<ProverConstraintFolderWithLookups<'a, SC>>::add_lookup_columns(a)
+            }
+            Self::Dynamic(a) => {
+                AirLookupHandlerDyn::<ProverConstraintFolderWithLookups<'a, SC>>::add_lookup_columns_dyn(
+                    a.air_mut(),
+                )
+            }
+        }
+    }
+
+    fn get_lookups(&mut self) -> Vec<Lookup<Val<SC>>> {
+        match self {
+            Self::Witness(a) => {
+                AirLookupHandler::<ProverConstraintFolderWithLookups<'a, SC>>::get_lookups(a)
+            }
+            Self::Const(a) => {
+                AirLookupHandler::<ProverConstraintFolderWithLookups<'a, SC>>::get_lookups(a)
+            }
+            Self::Public(a) => {
+                AirLookupHandler::<ProverConstraintFolderWithLookups<'a, SC>>::get_lookups(a)
+            }
+            Self::Add(a) => {
+                AirLookupHandler::<ProverConstraintFolderWithLookups<'a, SC>>::get_lookups(a)
+            }
+            Self::Mul(a) => {
+                AirLookupHandler::<ProverConstraintFolderWithLookups<'a, SC>>::get_lookups(a)
+            }
+            Self::Dynamic(a) => {
+                AirLookupHandlerDyn::<ProverConstraintFolderWithLookups<'a, SC>>::get_lookups_dyn(
+                    a.air_mut(),
+                )
+            }
+        }
+    }
+}
+
+impl<'a, SC, const D: usize> AirLookupHandler<VerifierConstraintFolderWithLookups<'a, SC>>
+    for CircuitTableAir<SC, D>
+where
+    SC: StarkGenericConfig,
+    Val<SC>: PrimeField,
+    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+{
+    fn add_lookup_columns(&mut self) -> Vec<usize> {
+        match self {
+            Self::Witness(a) => {
+                AirLookupHandler::<VerifierConstraintFolderWithLookups<'a, SC>>::add_lookup_columns(a)
+            }
+            Self::Const(a) => {
+                AirLookupHandler::<VerifierConstraintFolderWithLookups<'a, SC>>::add_lookup_columns(a)
+            }
+            Self::Public(a) => {
+                AirLookupHandler::<VerifierConstraintFolderWithLookups<'a, SC>>::add_lookup_columns(a)
+            }
+            Self::Add(a) => {
+                AirLookupHandler::<VerifierConstraintFolderWithLookups<'a, SC>>::add_lookup_columns(a)
+            }
+            Self::Mul(a) => {
+                AirLookupHandler::<VerifierConstraintFolderWithLookups<'a, SC>>::add_lookup_columns(a)
+            }
+            Self::Dynamic(a) => {
+                AirLookupHandlerDyn::<VerifierConstraintFolderWithLookups<'a, SC>>::add_lookup_columns_dyn(
+                    a.air_mut(),
+                )
+            }
+        }
+    }
+
+    fn get_lookups(&mut self) -> Vec<Lookup<Val<SC>>> {
+        match self {
+            Self::Witness(a) => {
+                AirLookupHandler::<VerifierConstraintFolderWithLookups<'a, SC>>::get_lookups(a)
+            }
+            Self::Const(a) => {
+                AirLookupHandler::<VerifierConstraintFolderWithLookups<'a, SC>>::get_lookups(a)
+            }
+            Self::Public(a) => {
+                AirLookupHandler::<VerifierConstraintFolderWithLookups<'a, SC>>::get_lookups(a)
+            }
+            Self::Add(a) => {
+                AirLookupHandler::<VerifierConstraintFolderWithLookups<'a, SC>>::get_lookups(a)
+            }
+            Self::Mul(a) => {
+                AirLookupHandler::<VerifierConstraintFolderWithLookups<'a, SC>>::get_lookups(a)
+            }
+            Self::Dynamic(a) => {
+                AirLookupHandlerDyn::<VerifierConstraintFolderWithLookups<'a, SC>>::get_lookups_dyn(
+                    a.air_mut(),
+                )
             }
         }
     }
@@ -1042,6 +1337,7 @@ impl<SC> BatchStarkProver<SC>
 where
     SC: StarkGenericConfig + 'static,
     Val<SC>: StarkField,
+    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
 {
     pub fn new(config: SC) -> Self {
         Self {
@@ -1085,37 +1381,68 @@ where
 
     /// Generate a unified batch STARK proof for all circuit tables.
     #[instrument(skip_all)]
-    pub fn prove_all_tables<EF>(
+    pub fn prove_all_tables<EF, LG: LookupGadget + Sync>(
         &self,
         traces: &Traces<EF>,
         common: &CommonData<SC>,
+        witness_multiplicities: Vec<Val<SC>>,
+        lookup_gadget: &LG,
     ) -> Result<BatchStarkProof<SC>, BatchStarkProverError>
     where
+        // EF: Field + BasedVectorSpace<Val<SC>> + ExtractBinomialW<Val<SC>>,
         EF: Field + BasedVectorSpace<Val<SC>> + ExtractBinomialW<Val<SC>>,
+        SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
     {
         let w_opt = EF::extract_w();
         match EF::DIMENSION {
-            1 => self.prove::<EF, 1>(traces, None, common),
-            2 => self.prove::<EF, 2>(traces, w_opt, common),
-            4 => self.prove::<EF, 4>(traces, w_opt, common),
-            6 => self.prove::<EF, 6>(traces, w_opt, common),
-            8 => self.prove::<EF, 8>(traces, w_opt, common),
+            1 => {
+                self.prove::<EF, 1, LG>(traces, None, common, witness_multiplicities, lookup_gadget)
+            }
+            2 => self.prove::<EF, 2, LG>(
+                traces,
+                w_opt,
+                common,
+                witness_multiplicities,
+                lookup_gadget,
+            ),
+            4 => self.prove::<EF, 4, LG>(
+                traces,
+                w_opt,
+                common,
+                witness_multiplicities,
+                lookup_gadget,
+            ),
+            6 => self.prove::<EF, 6, LG>(
+                traces,
+                w_opt,
+                common,
+                witness_multiplicities,
+                lookup_gadget,
+            ),
+            8 => self.prove::<EF, 8, LG>(
+                traces,
+                w_opt,
+                common,
+                witness_multiplicities,
+                lookup_gadget,
+            ),
             d => Err(BatchStarkProverError::UnsupportedDegree(d)),
         }
     }
 
     /// Verify the unified batch STARK proof against all tables.
-    pub fn verify_all_tables(
+    pub fn verify_all_tables<LG: LookupGadget>(
         &self,
         proof: &BatchStarkProof<SC>,
         common: &CommonData<SC>,
+        lookup_gadget: &LG,
     ) -> Result<(), BatchStarkProverError> {
         match proof.ext_degree {
-            1 => self.verify::<1>(proof, None, common),
-            2 => self.verify::<2>(proof, proof.w_binomial, common),
-            4 => self.verify::<4>(proof, proof.w_binomial, common),
-            6 => self.verify::<6>(proof, proof.w_binomial, common),
-            8 => self.verify::<8>(proof, proof.w_binomial, common),
+            1 => self.verify::<1, LG>(proof, None, common, lookup_gadget),
+            2 => self.verify::<2, LG>(proof, proof.w_binomial, common, lookup_gadget),
+            4 => self.verify::<4, LG>(proof, proof.w_binomial, common, lookup_gadget),
+            6 => self.verify::<6, LG>(proof, proof.w_binomial, common, lookup_gadget),
+            8 => self.verify::<8, LG>(proof, proof.w_binomial, common, lookup_gadget),
             d => Err(BatchStarkProverError::UnsupportedDegree(d)),
         }
     }
@@ -1125,11 +1452,13 @@ where
     /// This is the core proving logic that handles all circuit tables for a given
     /// extension field dimension. It constructs AIRs, converts traces to matrices,
     /// and generates the unified proof.
-    fn prove<EF, const D: usize>(
+    fn prove<EF, const D: usize, LG: LookupGadget + Sync>(
         &self,
         traces: &Traces<EF>,
         w_binomial: Option<Val<SC>>,
         common: &CommonData<SC>,
+        witness_multiplicities: Vec<Val<SC>>,
+        lookup_gadget: &LG,
     ) -> Result<BatchStarkProof<SC>, BatchStarkProverError>
     where
         EF: Field + BasedVectorSpace<Val<SC>>,
@@ -1143,7 +1472,11 @@ where
 
         // Witness
         let witness_rows = traces.witness_trace.values.len();
-        let witness_air = WitnessAir::<Val<SC>, D>::new(witness_rows, witness_lanes);
+        let witness_air = WitnessAir::<Val<SC>, D>::new_with_preprocessed(
+            witness_rows,
+            witness_lanes,
+            witness_multiplicities,
+        );
         let witness_matrix: RowMajorMatrix<Val<SC>> =
             WitnessAir::<Val<SC>, D>::trace_to_matrix(&traces.witness_trace, witness_lanes);
 
@@ -1283,17 +1616,25 @@ where
         }
 
         let instances: Vec<StarkInstance<'_, SC, CircuitTableAir<SC, D>>> = air_storage
-            .iter()
+            .iter_mut()
             .zip(trace_storage)
             .zip(public_storage)
-            .map(|((air, trace), public_values)| StarkInstance {
-                air,
-                trace,
-                public_values,
+            .map(|((air, trace), public_values)| {
+                let lookups =
+                    AirLookupHandler::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::get_lookups(
+                        air,
+                    );
+
+                StarkInstance {
+                    air,
+                    trace,
+                    public_values,
+                    lookups,
+                }
             })
             .collect();
 
-        let proof = p3_batch_stark::prove_batch(&self.config, instances, common);
+        let proof = p3_batch_stark::prove_batch(&self.config, &instances, common, lookup_gadget);
 
         // Ensure all primitive table row counts are at least 1
         // RowCounts::new requires non-zero counts, so pad zeros to 1
@@ -1324,11 +1665,12 @@ where
     /// This reconstructs the AIRs from the proof metadata and verifies the proof
     /// against all circuit tables. The AIRs are reconstructed using the same
     /// configuration that was used during proof generation.
-    fn verify<const D: usize>(
+    fn verify<const D: usize, LG: LookupGadget>(
         &self,
         proof: &BatchStarkProof<SC>,
         w_binomial: Option<Val<SC>>,
         common: &CommonData<SC>,
+        lookup_gadget: &LG,
     ) -> Result<(), BatchStarkProverError> {
         // Rebuild AIRs in the same order as prove.
         let packing = proof.table_packing;
@@ -1388,8 +1730,15 @@ where
             pvs.push(entry.public_values.clone());
         }
 
-        p3_batch_stark::verify_batch(&self.config, &airs, &proof.proof, &pvs, common)
-            .map_err(|e| BatchStarkProverError::Verify(format!("{e:?}")))
+        p3_batch_stark::verify_batch(
+            &self.config,
+            &airs,
+            &proof.proof,
+            &pvs,
+            common,
+            lookup_gadget,
+        )
+        .map_err(|e| BatchStarkProverError::Verify(format!("{e:?}")))
     }
 }
 
@@ -1400,6 +1749,7 @@ mod tests {
     use p3_field::PrimeCharacteristicRing;
     use p3_goldilocks::Goldilocks;
     use p3_koala_bear::KoalaBear;
+    use p3_lookup::logup::LogUpGadget;
 
     use super::*;
     use crate::common::get_airs_and_degrees_with_prep;
@@ -1408,7 +1758,6 @@ mod tests {
     #[test]
     fn test_babybear_batch_stark_base_field() {
         let mut builder = CircuitBuilder::<BabyBear>::new();
-        let cfg = config::baby_bear().build();
 
         // x + 5*2 - 3 + (-1) == expected
         let x = builder.add_public_input();
@@ -1427,9 +1776,12 @@ mod tests {
         builder.assert_zero(diff);
 
         let circuit = builder.build().unwrap();
-        let airs_degrees =
-            get_airs_and_degrees_with_prep::<_, _, 1>(&circuit, TablePacking::default()).unwrap();
-        let (airs, log_degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
+        let cfg = config::baby_bear().build();
+        let (airs_degrees, witness_multiplicities) =
+            get_airs_and_degrees_with_prep::<_, _, 1>(&cfg, &circuit, TablePacking::default())
+                .unwrap();
+        let (mut airs, log_degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
+        let common = CommonData::from_airs_and_degrees(&cfg, &mut airs, &log_degrees);
 
         let mut runner = circuit.runner();
 
@@ -1437,15 +1789,21 @@ mod tests {
         let expected_val = BabyBear::from_u64(13); // 7 + 10 - 3 - 1 = 13
         runner.set_public_inputs(&[x_val, expected_val]).unwrap();
         let traces = runner.run().unwrap();
-        let common = CommonData::from_airs_and_degrees(&cfg, &airs, &log_degrees);
 
         let prover = BatchStarkProver::new(cfg);
 
-        let proof = prover.prove_all_tables(&traces, &common).unwrap();
+        let lookup_gadget = LogUpGadget::new();
+        let proof = prover
+            .prove_all_tables(&traces, &common, witness_multiplicities, &lookup_gadget)
+            .unwrap();
         assert_eq!(proof.ext_degree, 1);
         assert!(proof.w_binomial.is_none());
 
-        assert!(prover.verify_all_tables(&proof, &common).is_ok());
+        assert!(
+            prover
+                .verify_all_tables(&proof, &common, &lookup_gadget)
+                .is_ok()
+        );
     }
 
     #[test]
@@ -1471,8 +1829,8 @@ mod tests {
 
         let circuit = builder.build().unwrap();
         let default_packing = TablePacking::default();
-        let airs_degrees =
-            get_airs_and_degrees_with_prep::<_, _, 1>(&circuit, default_packing).unwrap();
+        let (airs_degrees, witness_multiplicities) =
+            get_airs_and_degrees_with_prep::<_, _, 1>(&cfg, &circuit, default_packing).unwrap();
         let (mut airs, log_degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
 
         // Check that the multiplicities of `WitnessAir` are computed correctly.
@@ -1511,19 +1869,28 @@ mod tests {
         let expected_val = BabyBear::from_u64(13); // 7 + 10 - 3 - 1 = 13
         runner.set_public_inputs(&[x_val, expected_val]).unwrap();
         let traces = runner.run().unwrap();
-        let common = CommonData::from_airs_and_degrees(&cfg, &airs, &log_degrees);
+        let common = CommonData::from_airs_and_degrees(&cfg, &mut airs, &log_degrees);
 
         let prover = BatchStarkProver::new(cfg);
 
-        let proof = prover.prove_all_tables(&traces, &common).unwrap();
+        let lookup_gadget = LogUpGadget::new();
+        let proof = prover
+            .prove_all_tables(&traces, &common, witness_multiplicities, &lookup_gadget)
+            .unwrap();
         assert_eq!(proof.ext_degree, 1);
         assert!(proof.w_binomial.is_none());
 
-        assert!(prover.verify_all_tables(&proof, &common).is_ok());
+        assert!(
+            prover
+                .verify_all_tables(&proof, &common, &lookup_gadget)
+                .is_ok()
+        );
 
         // Check that the generated lookups are correct and consistent across tables.
         for air in airs.iter_mut() {
-            let lookups = air.get_lookups();
+            let lookups = AirLookupHandler::<
+                SymbolicAirBuilder<BabyBear, BinomialExtensionField<BabyBear, 4>>,
+            >::get_lookups(air);
 
             match air {
                 CircuitTableAir::Witness(_) => {
@@ -1542,8 +1909,8 @@ mod tests {
                     assert_eq!(lookups.len(), 1, "Public table should have one lookup");
                 }
                 CircuitTableAir::Add(_) => {
-                    let expected_num_lookups = default_packing.add_lanes()
-                        * AddAir::<BabyBear, 1>::lane_width().div_ceil(2);
+                    let expected_num_lookups =
+                        default_packing.add_lanes() * AddAir::<BabyBear, 1>::lane_width();
                     assert_eq!(
                         lookups.len(),
                         expected_num_lookups,
@@ -1553,8 +1920,8 @@ mod tests {
                     );
                 }
                 CircuitTableAir::Mul(_) => {
-                    let expected_num_lookups = default_packing.mul_lanes()
-                        * MulAir::<BabyBear, 1>::lane_width().div_ceil(2);
+                    let expected_num_lookups =
+                        default_packing.mul_lanes() * MulAir::<BabyBear, 1>::lane_width();
                     assert_eq!(
                         lookups.len(),
                         expected_num_lookups,
@@ -1577,6 +1944,8 @@ mod tests {
     fn test_extension_field_batch_stark() {
         const D: usize = 4;
         type Ext4 = BinomialExtensionField<BabyBear, D>;
+        let cfg = config::baby_bear().build();
+
         let mut builder = CircuitBuilder::<Ext4>::new();
         let x = builder.add_public_input();
         let y = builder.add_public_input();
@@ -1586,10 +1955,12 @@ mod tests {
         let res = builder.add(xy, z);
         let diff = builder.sub(res, expected);
         builder.assert_zero(diff);
+
         let circuit = builder.build().unwrap();
-        let airs_degrees =
-            get_airs_and_degrees_with_prep::<_, _, D>(&circuit, TablePacking::default()).unwrap();
-        let (airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
+        let (airs_degrees, witness_multiplicities) =
+            get_airs_and_degrees_with_prep::<_, _, D>(&cfg, &circuit, TablePacking::default())
+                .unwrap();
+        let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
 
         let mut runner = circuit.runner();
         let xv = Ext4::from_basis_coefficients_slice(&[
@@ -1617,23 +1988,30 @@ mod tests {
         runner.set_public_inputs(&[xv, yv, zv, expected_v]).unwrap();
         let traces = runner.run().unwrap();
 
-        let cfg = config::baby_bear().build();
-        let common = CommonData::from_airs_and_degrees(&cfg, &airs, &degrees);
+        let common = CommonData::from_airs_and_degrees(&cfg, &mut airs, &degrees);
         let prover = BatchStarkProver::new(cfg);
-        let proof = prover.prove_all_tables(&traces, &common).unwrap();
+
+        let lookup_gadget = LogUpGadget::new();
+
+        let proof = prover
+            .prove_all_tables(&traces, &common, witness_multiplicities, &lookup_gadget)
+            .unwrap();
         assert_eq!(proof.ext_degree, 4);
         // Ensure W was captured
         let expected_w = <Ext4 as ExtractBinomialW<BabyBear>>::extract_w().unwrap();
         assert_eq!(proof.w_binomial, Some(expected_w));
-        prover.verify_all_tables(&proof, &common).unwrap();
+        prover
+            .verify_all_tables(&proof, &common, &lookup_gadget)
+            .unwrap();
     }
 
     #[test]
     fn test_extension_field_table_lookups() {
         const D: usize = 4;
         type Ext4 = BinomialExtensionField<BabyBear, D>;
-        let mut builder = CircuitBuilder::<Ext4>::new();
+        let cfg = config::baby_bear().build();
 
+        let mut builder = CircuitBuilder::<Ext4>::new();
         let x = builder.add_public_input();
         let y = builder.add_public_input();
         let z = builder.add_public_input();
@@ -1645,8 +2023,8 @@ mod tests {
 
         let circuit = builder.build().unwrap();
         let default_packing = TablePacking::default();
-        let airs_degrees =
-            get_airs_and_degrees_with_prep::<_, _, 1>(&circuit, default_packing).unwrap();
+        let (airs_degrees, witness_multiplicities) =
+            get_airs_and_degrees_with_prep::<_, _, D>(&cfg, &circuit, default_packing).unwrap();
         let (mut airs, log_degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
 
         // Check that the multiplicities of `WitnessAir` are computed correctly.
@@ -1669,6 +2047,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             2 * TablePacking::default().witness_lanes(),
         );
+
         assert_eq!(
             airs[0]
                 .preprocessed_trace()
@@ -1706,22 +2085,30 @@ mod tests {
         runner.set_public_inputs(&[xv, yv, zv, expected_v]).unwrap();
         let traces = runner.run().unwrap();
 
-        let cfg = config::baby_bear().build();
-        let common = CommonData::from_airs_and_degrees(&cfg, &airs, &log_degrees);
+        let common = CommonData::from_airs_and_degrees(&cfg, &mut airs, &log_degrees);
 
         let prover = BatchStarkProver::new(cfg);
 
-        let proof = prover.prove_all_tables(&traces, &common).unwrap();
+        let lookup_gadget = LogUpGadget::new();
+        let proof = prover
+            .prove_all_tables(&traces, &common, witness_multiplicities, &lookup_gadget)
+            .unwrap();
         assert_eq!(proof.ext_degree, 4);
         // Ensure W was captured
         let expected_w = <Ext4 as ExtractBinomialW<BabyBear>>::extract_w().unwrap();
         assert_eq!(proof.w_binomial, Some(expected_w));
 
-        assert!(prover.verify_all_tables(&proof, &common).is_ok());
+        assert!(
+            prover
+                .verify_all_tables(&proof, &common, &lookup_gadget)
+                .is_ok()
+        );
 
         // Check that the generated lookups are correct and consistent across tables.
         for air in airs.iter_mut() {
-            let lookups = air.get_lookups();
+            let lookups = AirLookupHandler::<
+                SymbolicAirBuilder<BabyBear, BinomialExtensionField<BabyBear, 4>>,
+            >::get_lookups(air);
 
             match air {
                 CircuitTableAir::Witness(_) => {
@@ -1740,8 +2127,8 @@ mod tests {
                     assert_eq!(lookups.len(), 1, "Public table should have one lookup");
                 }
                 CircuitTableAir::Add(_) => {
-                    let expected_num_lookups = default_packing.add_lanes()
-                        * AddAir::<BabyBear, 1>::lane_width().div_ceil(2);
+                    let expected_num_lookups =
+                        default_packing.add_lanes() * AddAir::<BabyBear, 1>::lane_width();
                     assert_eq!(
                         lookups.len(),
                         expected_num_lookups,
@@ -1751,8 +2138,8 @@ mod tests {
                     );
                 }
                 CircuitTableAir::Mul(_) => {
-                    let expected_num_lookups = default_packing.mul_lanes()
-                        * MulAir::<BabyBear, 1>::lane_width().div_ceil(2);
+                    let expected_num_lookups =
+                        default_packing.mul_lanes() * MulAir::<BabyBear, 1>::lane_width();
                     assert_eq!(
                         lookups.len(),
                         expected_num_lookups,
@@ -1774,6 +2161,7 @@ mod tests {
     #[test]
     fn test_koalabear_batch_stark_base_field() {
         let mut builder = CircuitBuilder::<KoalaBear>::new();
+        let cfg = config::koala_bear().build();
 
         // a * b + 100 - (-1) == expected
         let a = builder.add_public_input();
@@ -1789,9 +2177,10 @@ mod tests {
         builder.assert_zero(diff);
 
         let circuit = builder.build().unwrap();
-        let airs_degrees =
-            get_airs_and_degrees_with_prep::<_, _, 1>(&circuit, TablePacking::default()).unwrap();
-        let (airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
+        let (airs_degrees, witness_multiplicities) =
+            get_airs_and_degrees_with_prep::<_, _, 1>(&cfg, &circuit, TablePacking::default())
+                .unwrap();
+        let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
         let mut runner = circuit.runner();
 
         let a_val = KoalaBear::from_u64(42);
@@ -1802,13 +2191,18 @@ mod tests {
             .unwrap();
         let traces = runner.run().unwrap();
 
-        let cfg = config::koala_bear().build();
-        let common = CommonData::from_airs_and_degrees(&cfg, &airs, &degrees);
+        let common = CommonData::from_airs_and_degrees(&cfg, &mut airs, &degrees);
         let prover = BatchStarkProver::new(cfg);
-        let proof = prover.prove_all_tables(&traces, &common).unwrap();
+
+        let lookup_gadget = LogUpGadget::new();
+        let proof = prover
+            .prove_all_tables(&traces, &common, witness_multiplicities, &lookup_gadget)
+            .unwrap();
         assert_eq!(proof.ext_degree, 1);
         assert!(proof.w_binomial.is_none());
-        prover.verify_all_tables(&proof, &common).unwrap();
+        prover
+            .verify_all_tables(&proof, &common, &lookup_gadget)
+            .unwrap();
     }
 
     #[test]
@@ -1816,6 +2210,7 @@ mod tests {
         const D: usize = 8;
         type KBExtField = BinomialExtensionField<KoalaBear, D>;
         let mut builder = CircuitBuilder::<KBExtField>::new();
+        let cfg = config::koala_bear().build();
 
         // x * y * z == expected
         let x = builder.add_public_input();
@@ -1841,9 +2236,10 @@ mod tests {
         builder.assert_zero(diff);
 
         let circuit = builder.build().unwrap();
-        let airs_degrees =
-            get_airs_and_degrees_with_prep::<_, _, D>(&circuit, TablePacking::default()).unwrap();
-        let (airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
+        let (airs_degrees, witness_multiplicities) =
+            get_airs_and_degrees_with_prep::<_, _, D>(&cfg, &circuit, TablePacking::default())
+                .unwrap();
+        let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
         let mut runner = circuit.runner();
 
         let x_val = KBExtField::from_basis_coefficients_slice(&[
@@ -1886,14 +2282,19 @@ mod tests {
             .unwrap();
         let traces = runner.run().unwrap();
 
-        let cfg = config::koala_bear().build();
-        let common = CommonData::from_airs_and_degrees(&cfg, &airs, &degrees);
+        let common = CommonData::from_airs_and_degrees(&cfg, &mut airs, &degrees);
         let prover = BatchStarkProver::new(cfg);
-        let proof = prover.prove_all_tables(&traces, &common).unwrap();
+
+        let lookup_gadget = LogUpGadget::new();
+        let proof = prover
+            .prove_all_tables(&traces, &common, witness_multiplicities, &lookup_gadget)
+            .unwrap();
         assert_eq!(proof.ext_degree, 8);
         let expected_w = <KBExtField as ExtractBinomialW<KoalaBear>>::extract_w().unwrap();
         assert_eq!(proof.w_binomial, Some(expected_w));
-        prover.verify_all_tables(&proof, &common).unwrap();
+        prover
+            .verify_all_tables(&proof, &common, &lookup_gadget)
+            .unwrap();
     }
 
     #[test]
@@ -1901,6 +2302,7 @@ mod tests {
         const D: usize = 2;
         type Ext2 = BinomialExtensionField<Goldilocks, D>;
         let mut builder = CircuitBuilder::<Ext2>::new();
+        let cfg = config::goldilocks().build();
 
         // x * y + z == expected
         let x = builder.add_public_input();
@@ -1914,9 +2316,10 @@ mod tests {
         builder.assert_zero(diff);
 
         let circuit = builder.build().unwrap();
-        let airs_degrees =
-            get_airs_and_degrees_with_prep::<_, _, D>(&circuit, TablePacking::default()).unwrap();
-        let (airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
+        let (airs_degrees, witness_multiplicities) =
+            get_airs_and_degrees_with_prep::<_, _, D>(&cfg, &circuit, TablePacking::default())
+                .unwrap();
+        let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
         let mut runner = circuit.runner();
 
         let x_val =
@@ -1939,13 +2342,18 @@ mod tests {
             .unwrap();
         let traces = runner.run().unwrap();
 
-        let cfg = config::goldilocks().build();
-        let common = CommonData::from_airs_and_degrees(&cfg, &airs, &degrees);
+        let common = CommonData::from_airs_and_degrees(&cfg, &mut airs, &degrees);
         let prover = BatchStarkProver::new(cfg);
-        let proof = prover.prove_all_tables(&traces, &common).unwrap();
+
+        let lookup_gadget = LogUpGadget::new();
+        let proof = prover
+            .prove_all_tables(&traces, &common, witness_multiplicities, &lookup_gadget)
+            .unwrap();
         assert_eq!(proof.ext_degree, 2);
         let expected_w = <Ext2 as ExtractBinomialW<Goldilocks>>::extract_w().unwrap();
         assert_eq!(proof.w_binomial, Some(expected_w));
-        prover.verify_all_tables(&proof, &common).unwrap();
+        prover
+            .verify_all_tables(&proof, &common, &lookup_gadget)
+            .unwrap();
     }
 }

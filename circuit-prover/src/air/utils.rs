@@ -1,7 +1,6 @@
 use alloc::vec::Vec;
 use core::iter;
 
-use itertools::Itertools;
 use p3_air::{Air, AirBuilder, AirBuilderWithPublicValues, PairBuilder, PermutationAirBuilder};
 use p3_lookup::lookup_traits::{
     AirLookupHandler, Direction, Lookup, LookupData, LookupGadget, LookupInput,
@@ -18,25 +17,17 @@ pub fn get_index_lookups<
     main: &[SymbolicVariable<<AB as AirBuilder>::F>],
     preprocessed: &[SymbolicVariable<<AB as AirBuilder>::F>],
     direction: Direction,
-) -> Vec<Vec<LookupInput<AB::F>>> {
-    // Chunk by 2 so we can maintain a constraint degree 3 at most.
+) -> Vec<LookupInput<AB::F>> {
     (0..num_lookups)
-        .chunks(2)
-        .into_iter()
-        .map(|chunk| {
-            chunk
-                .map(|i| {
-                    let idx = SymbolicExpression::from(preprocessed[1 + preprocessed_start + i]);
+        .map(|i| {
+            let idx = SymbolicExpression::from(preprocessed[1 + preprocessed_start + i]);
 
-                    let multiplicity = SymbolicExpression::from(preprocessed[preprocessed_start]);
+            let multiplicity = SymbolicExpression::from(preprocessed[preprocessed_start]);
 
-                    let values =
-                        (0..D).map(|j| SymbolicExpression::from(main[main_start + i * D + j]));
-                    let inps = iter::once(idx).chain(values).collect::<Vec<_>>();
+            let values = (0..D).map(|j| SymbolicExpression::from(main[main_start + i * D + j]));
+            let inps = iter::once(idx).chain(values).collect::<Vec<_>>();
 
-                    (inps, multiplicity, direction)
-                })
-                .collect::<Vec<_>>()
+            (inps, multiplicity, direction)
         })
         .collect()
 }

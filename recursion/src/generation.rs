@@ -278,6 +278,7 @@ where
         commitments,
         opened_values,
         opening_proof,
+        global_lookup_data,
         degree_bits,
     } = proof;
 
@@ -299,6 +300,7 @@ where
 
     for inst in &opened_values.instances {
         if inst
+            .base_opened_values
             .quotient_chunks
             .iter()
             .any(|c| c.len() != SC::Challenge::DIMENSION)
@@ -380,8 +382,8 @@ where
             Ok((
                 *ext_dom,
                 vec![
-                    (zeta, inst.trace_local.clone()),
-                    (zeta_next, inst.trace_next.clone()),
+                    (zeta, inst.base_opened_values.trace_local.clone()),
+                    (zeta_next, inst.base_opened_values.trace_next.clone()),
                 ],
             ))
         })
@@ -401,12 +403,15 @@ where
 
     let mut quotient_round = Vec::new();
     for (domains, inst) in quotient_domains.iter().zip(opened_values.instances.iter()) {
-        if inst.quotient_chunks.len() != domains.len() {
+        if inst.base_opened_values.quotient_chunks.len() != domains.len() {
             return Err(GenerationError::InvalidProofShape(
                 "quotient chunk count mismatch",
             ));
         }
-        for (domain, values) in domains.iter().zip(inst.quotient_chunks.iter()) {
+        for (domain, values) in domains
+            .iter()
+            .zip(inst.base_opened_values.quotient_chunks.iter())
+        {
             quotient_round.push((*domain, vec![(zeta, values.clone())]));
         }
     }
@@ -424,18 +429,12 @@ where
             }
 
             let inst = &opened_values.instances[inst_idx];
-            let local =
-                inst.preprocessed_local
-                    .as_ref()
-                    .ok_or(GenerationError::InvalidProofShape(
-                        "preprocessed local values should exist",
-                    ))?;
-            let next =
-                inst.preprocessed_next
-                    .as_ref()
-                    .ok_or(GenerationError::InvalidProofShape(
-                        "preprocessed next values should exist",
-                    ))?;
+            let local = inst.base_opened_values.preprocessed_local.as_ref().ok_or(
+                GenerationError::InvalidProofShape("preprocessed local values should exist"),
+            )?;
+            let next = inst.base_opened_values.preprocessed_next.as_ref().ok_or(
+                GenerationError::InvalidProofShape("preprocessed next values should exist"),
+            )?;
 
             // Validate that the preprocessed data's base degree matches what we expect.
             let ext_db = degree_bits[inst_idx];
@@ -529,12 +528,23 @@ where
         challenges.push(challenger.sample_algebra_element());
 
         // Get `beta` challenges for the FRI rounds.
-        opening_proof.commit_phase_commits.iter().for_each(|comm| {
-            // To match with the prover (and for security purposes),
-            // we observe the commitment before sampling the challenge.
-            challenger.observe(comm.clone());
-            challenges.push(challenger.sample_algebra_element());
-        });
+        opening_proof
+            .commit_phase_commits
+            .iter()
+            .zip(&opening_proof.commit_pow_witnesses)
+            .for_each(|(comm, pow_witness)| {
+                // To match with the prover (and for security purposes),
+                // we observe the commitment before sampling the challenge.
+                challenger.observe(comm.clone());
+                challenger.observe(*pow_witness);
+                // Sample a challenge as H(transcript || pow_witness). The circuit later
+                // verifies that the challenge begins with the required number of leading zeros.
+                let rand_f: Val<SC> = challenger.sample();
+                let rand_usize = rand_f.as_canonical_biguint().to_u64_digits()[0] as usize;
+                challenges.push(SC::Challenge::from_usize(rand_usize));
+
+                challenges.push(challenger.sample_algebra_element());
+            });
 
         // Observe all coefficients of the final polynomial.
         opening_proof
@@ -549,7 +559,7 @@ where
         }
 
         // Check PoW witness.
-        challenger.observe(opening_proof.pow_witness);
+        challenger.observe(opening_proof.query_pow_witness);
 
         // Sample a challenge as H(transcript || pow_witness). The circuit later
         // verifies that the challenge begins with the required number of leading zeros.

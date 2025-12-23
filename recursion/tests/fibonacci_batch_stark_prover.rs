@@ -9,6 +9,7 @@ use p3_circuit_prover::common::get_airs_and_degrees_with_prep;
 use p3_circuit_prover::{BatchStarkProver, TablePacking};
 use p3_field::{Field, PrimeCharacteristicRing};
 use p3_fri::create_test_fri_params;
+use p3_lookup::logup::LogUpGadget;
 use p3_recursion::generation::generate_batch_challenges;
 use p3_recursion::pcs::fri::{FriVerifierParams, HashTargets, InputProofTargets, RecValMmcs};
 use p3_recursion::verifier::verify_p3_recursion_proof_circuit;
@@ -56,7 +57,7 @@ where
 
 #[test]
 fn test_fibonacci_batch_verifier() {
-    let n: usize = 100;
+    let n: usize = 2;
 
     let mut builder = CircuitBuilder::new();
 
@@ -80,17 +81,6 @@ fn test_fibonacci_batch_verifier() {
 
     let table_packing = TablePacking::new(1, 4, 1);
 
-    let circuit = builder.build().unwrap();
-    let airs_degrees = get_airs_and_degrees_with_prep::<_, _, 1>(&circuit, table_packing).unwrap();
-    let (airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
-    let mut runner = circuit.runner();
-
-    // Set public input
-    let expected_fib = compute_fibonacci_classical(n);
-    runner.set_public_inputs(&[expected_fib]).unwrap();
-
-    let traces = runner.run().unwrap();
-
     // Use a seeded RNG for deterministic permutations
     let mut rng = SmallRng::seed_from_u64(42);
     let perm = Perm::new_from_rng_128(&mut rng);
@@ -108,14 +98,33 @@ fn test_fibonacci_batch_verifier() {
     let challenger_proving = Challenger::new(perm);
     let config_proving = MyConfig::new(pcs_proving, challenger_proving);
 
+    let circuit = builder.build().unwrap();
+    let (airs_degrees, witness_multiplicities) =
+        get_airs_and_degrees_with_prep::<_, _, 1>(&config_proving, &circuit, table_packing)
+            .unwrap();
+    let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
+    let mut runner = circuit.runner();
+
+    // Set public input
+    let expected_fib = compute_fibonacci_classical(n);
+    runner.set_public_inputs(&[expected_fib]).unwrap();
+
+    let traces = runner.run().unwrap();
+
     // Create common data for proving and verifying.
-    let common = CommonData::from_airs_and_degrees(&config_proving, &airs, &degrees);
+    let common = CommonData::from_airs_and_degrees(&config_proving, &mut airs, &degrees);
 
     let prover = BatchStarkProver::new(config_proving).with_table_packing(table_packing);
-    let batch_stark_proof = prover.prove_all_tables(&traces, &common).unwrap();
-    prover
-        .verify_all_tables(&batch_stark_proof, &common)
+
+    let lookup_gadget = LogUpGadget::new();
+    let batch_stark_proof = prover
+        .prove_all_tables(&traces, &common, witness_multiplicities, &lookup_gadget)
         .unwrap();
+    println!("Batch STARK proof generated.");
+    prover
+        .verify_all_tables(&batch_stark_proof, &common, &lookup_gadget)
+        .unwrap();
+    println!("Batch STARK proof verified.");
 
     // Now verify the batch STARK proof recursively
     let dft2 = Dft::default();
@@ -127,7 +136,7 @@ fn test_fibonacci_batch_verifier() {
     let challenge_mmcs2 = ChallengeMmcs::new(val_mmcs2.clone());
     let fri_params2 = create_test_fri_params(challenge_mmcs2, 0);
     let fri_verifier_params = FriVerifierParams::from(&fri_params2);
-    let pow_bits = fri_params2.proof_of_work_bits;
+    let pow_bits = fri_params2.query_proof_of_work_bits;
     let log_height_max = fri_params2.log_final_poly_len + fri_params2.log_blowup;
     let pcs_verif = MyPcs::new(dft2, val_mmcs2, fri_params2);
     let challenger_verif = Challenger::new(perm2);

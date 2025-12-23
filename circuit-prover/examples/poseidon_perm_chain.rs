@@ -14,6 +14,7 @@ use p3_circuit_prover::common::get_airs_and_degrees_with_prep;
 use p3_circuit_prover::{BatchStarkProver, Poseidon2Config, TablePacking, config};
 use p3_field::extension::BinomialExtensionField;
 use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
+use p3_lookup::logup::LogUpGadget;
 use p3_poseidon2_circuit_air::BabyBearD4Width16;
 use p3_symmetric::Permutation;
 use tracing_forest::ForestLayer;
@@ -116,8 +117,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     let circuit = builder.build()?;
     let expr_to_widx = circuit.expr_to_widx.clone();
 
+    let stark_config = config::baby_bear().build();
     let table_packing = TablePacking::new(1, 1, 1);
-    let airs_degrees = get_airs_and_degrees_with_prep::<_, _, 1>(&circuit, table_packing).unwrap();
+    let (airs_degrees, witness_multiplicities) =
+        get_airs_and_degrees_with_prep::<_, _, 1>(&stark_config, &circuit, table_packing).unwrap();
 
     let runner = circuit.runner();
     let traces = runner.run()?;
@@ -153,10 +156,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     );
 
     // Prove and verify the circuit.
-    let stark_config = config::baby_bear().build();
-
-    let (airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
-    let mut common = CommonData::from_airs_and_degrees(&stark_config, &airs, &degrees);
+    let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
+    let mut common = CommonData::from_airs_and_degrees(&stark_config, &mut airs, &degrees);
 
     // TODO: Pad preprocessed instances for non-primitive tables (same workaround as other examples).
     for (_, trace) in &traces.non_primitive_traces {
@@ -169,8 +170,11 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let mut prover = BatchStarkProver::new(stark_config).with_table_packing(table_packing);
     prover.register_poseidon2_table(Poseidon2Config::baby_bear_d4_width16());
-    let proof = prover.prove_all_tables(&traces, &common)?;
-    prover.verify_all_tables(&proof, &common)?;
+
+    let lookup_gadget = LogUpGadget::new();
+    let proof =
+        prover.prove_all_tables(&traces, &common, witness_multiplicities, &lookup_gadget)?;
+    prover.verify_all_tables(&proof, &common, &lookup_gadget)?;
 
     println!("Successfully proved and verified Poseidon perm chain of length {chain_length}!");
 

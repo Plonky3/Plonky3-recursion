@@ -476,7 +476,7 @@ impl<AB: PermutationAirBuilder + PairBuilder + AirBuilderWithPublicValues, const
                 AirLookupHandler::<AB>::register_lookup(
                     self,
                     Kind::Global("WitnessChecks".to_string()),
-                    &inps,
+                    &[inps],
                 )
             }));
         }

@@ -216,31 +216,46 @@ impl<
         let mut instances = Vec::with_capacity(input.opened_values.instances.len());
 
         for inst in &input.opened_values.instances {
-            let trace_local =
-                circuit.alloc_public_inputs(inst.trace_local.len(), "trace local values");
+            let trace_local = circuit.alloc_public_inputs(
+                inst.base_opened_values.trace_local.len(),
+                "trace local values",
+            );
             aggregated_trace_local.extend(trace_local.iter().copied());
 
-            let trace_next =
-                circuit.alloc_public_inputs(inst.trace_next.len(), "trace next values");
+            let trace_next = circuit.alloc_public_inputs(
+                inst.base_opened_values.trace_next.len(),
+                "trace next values",
+            );
             aggregated_trace_next.extend(trace_next.iter().copied());
 
-            let preprocessed_local = inst.preprocessed_local.as_ref().map(|prep_local_vals| {
-                let prep_local =
-                    circuit.alloc_public_inputs(prep_local_vals.len(), "preprocessed local values");
-                aggregated_prep_local.extend(prep_local.iter().copied());
+            let preprocessed_local =
+                inst.base_opened_values
+                    .preprocessed_local
+                    .as_ref()
+                    .map(|prep_local_vals| {
+                        let prep_local = circuit.alloc_public_inputs(
+                            prep_local_vals.len(),
+                            "preprocessed local values",
+                        );
+                        aggregated_prep_local.extend(prep_local.iter().copied());
 
-                prep_local
-            });
-            let preprocessed_next = inst.preprocessed_next.as_ref().map(|prep_next_vals| {
-                let prep_next =
-                    circuit.alloc_public_inputs(prep_next_vals.len(), "preprocessed next values");
-                aggregated_prep_next.extend(prep_next.iter().copied());
+                        prep_local
+                    });
+            let preprocessed_next =
+                inst.base_opened_values
+                    .preprocessed_next
+                    .as_ref()
+                    .map(|prep_next_vals| {
+                        let prep_next = circuit
+                            .alloc_public_inputs(prep_next_vals.len(), "preprocessed next values");
+                        aggregated_prep_next.extend(prep_next.iter().copied());
 
-                prep_next
-            });
+                        prep_next
+                    });
 
-            let mut quotient_chunks = Vec::with_capacity(inst.quotient_chunks.len());
-            for chunk in &inst.quotient_chunks {
+            let mut quotient_chunks =
+                Vec::with_capacity(inst.base_opened_values.quotient_chunks.len());
+            for chunk in &inst.base_opened_values.quotient_chunks {
                 let chunk_targets =
                     circuit.alloc_public_inputs(chunk.len(), "quotient chunk values");
                 aggregated_quotient_chunks.push(chunk_targets.clone());
@@ -309,15 +324,15 @@ impl<
 
         // Opened values, preserving per-instance allocation order.
         for inst in &input.opened_values.instances {
-            values.extend(inst.trace_local.iter().copied());
-            values.extend(inst.trace_next.iter().copied());
-            if let Some(prep_local) = &inst.preprocessed_local {
+            values.extend(inst.base_opened_values.trace_local.iter().copied());
+            values.extend(inst.base_opened_values.trace_next.iter().copied());
+            if let Some(prep_local) = &inst.base_opened_values.preprocessed_local {
                 values.extend(prep_local.iter().copied());
             }
-            if let Some(prep_next) = &inst.preprocessed_next {
+            if let Some(prep_next) = &inst.base_opened_values.preprocessed_next {
                 values.extend(prep_next.iter().copied());
             }
-            for chunk in &inst.quotient_chunks {
+            for chunk in &inst.base_opened_values.quotient_chunks {
                 values.extend(chunk.iter().copied());
             }
         }
