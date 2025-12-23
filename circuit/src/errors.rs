@@ -82,6 +82,14 @@ pub enum CircuitError {
     #[error("Invalid configuration for operation {op:?}")]
     InvalidNonPrimitiveOpConfiguration { op: NonPrimitiveOpType },
 
+    /// Non-primitive operation has incorrect input/output layout.
+    #[error("Incorrect layout for operation {op:?}: expected {expected}, got {got}")]
+    NonPrimitiveOpLayoutMismatch {
+        op: NonPrimitiveOpType,
+        expected: String,
+        got: usize,
+    },
+
     /// Incorrect size of private data provided for a non-primitive operation.
     #[error(
         "Incorrect size of private data provided for operation {op:?}: expected {expected}, got {got}"
@@ -126,6 +134,30 @@ pub enum CircuitError {
     /// Invalid preprocessed values
     #[error("Preprocessed values should be base field elements")]
     InvalidPreprocessedValues,
+
+    /// Poseidon chaining requires previous state but none was available.
+    #[error(
+        "Poseidon chain missing previous state for operation {operation_index} (new_start=false but no previous permutation)"
+    )]
+    PoseidonChainMissingPreviousState { operation_index: NonPrimitiveOpId },
+
+    /// Poseidon merkle path mode requires a sibling input limb (which limbs are required depends on `mmcs_bit`).
+    #[error(
+        "Poseidon merkle path missing sibling input for operation {operation_index}, limb {limb}"
+    )]
+    PoseidonMerkleMissingSiblingInput {
+        operation_index: NonPrimitiveOpId,
+        limb: usize,
+    },
+
+    /// Poseidon operation is missing required input limb.
+    #[error(
+        "Poseidon operation {operation_index} missing input for limb {limb} (new_start=true requires all inputs)"
+    )]
+    PoseidonMissingInput {
+        operation_index: NonPrimitiveOpId,
+        limb: usize,
+    },
 }
 
 impl From<CircuitBuilderError> for CircuitError {

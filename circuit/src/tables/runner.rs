@@ -191,6 +191,9 @@ impl<F: CircuitField> CircuitRunner<F> {
         // Clone ops to avoid borrowing issues.
         let ops = self.circuit.ops.clone();
 
+        // Global chaining state for Poseidon permutation
+        let mut last_poseidon: Option<[F; 4]> = None;
+
         for op in ops {
             match op {
                 Op::Const { out, val } => {
@@ -261,6 +264,7 @@ impl<F: CircuitField> CircuitRunner<F> {
                         &self.non_primitive_op_private_data,
                         &self.circuit.enabled_ops,
                         op_id,
+                        &mut last_poseidon,
                     );
 
                     executor.execute(&inputs, &outputs, &mut ctx)?;

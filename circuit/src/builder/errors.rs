@@ -50,6 +50,14 @@ pub enum CircuitBuilderError {
     #[error("Invalid configuration for operation {op:?}")]
     InvalidNonPrimitiveOpConfiguration { op: NonPrimitiveOpType },
 
+    /// Merkle-path Poseidon rows require a direction bit.
+    #[error("PoseidonPerm merkle_path=true requires mmcs_bit")]
+    PoseidonMerkleMissingMmcsBit,
+
+    /// Non-merkle Poseidon rows should not have mmcs_bit set.
+    #[error("PoseidonPerm merkle_path=false must not have mmcs_bit (it has no effect)")]
+    PoseidonNonMerkleWithMmcsBit,
+
     /// A sequence of expressions of type Witness is missing its filler.
     #[error("Missing hint filler for expression {sequence:?}")]
     MissingWitnessFiller { sequence: Vec<WitnessId> },
