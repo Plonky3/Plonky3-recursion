@@ -92,46 +92,21 @@ pub struct PoseidonPermPrivateData<F> {
 // Execution State
 // ============================================================================
 
-/// Row record captured during execution for canonical trace generation.
-///
-/// This structure holds all the data needed to generate a trace row,
-/// eliminating the need for trace generation to re-derive values.
-#[derive(Debug, Clone)]
-struct PoseidonPermRowRecord<F> {
-    /// Control: If true, row begins a new independent Poseidon chain.
-    new_start: bool,
-    /// Control: false → normal sponge/Challenger mode, true → Merkle-path mode.
-    merkle_path: bool,
-    /// Control: Direction bit for Merkle left/right hashing.
-    mmcs_bit: bool,
-    /// The fully resolved input limbs (4 extension field elements).
-    resolved_inputs: [F; 4],
-    /// Input exposure flags: for each limb i, if true, in[i] matches witness lookup.
-    in_ctl: [bool; 4],
-    /// Input exposure indices: index into the witness table for each limb.
-    input_indices: [u32; 4],
-    /// Output exposure flags: for limbs 0-1 only.
-    out_ctl: [bool; 2],
-    /// Output exposure indices: index into the witness table for limbs 0-1.
-    output_indices: [u32; 2],
-    /// Optional MMCS accumulator value (base field).
-    mmcs_index_sum: F,
-    /// MMCS index exposure: index for CTL exposure of mmcs_index_sum.
-    mmcs_index_sum_idx: u32,
-}
-
 /// Execution state for Poseidon permutation operations.
 ///
 /// Stores:
 /// - Chaining state (output of last permutation for input to next)
-/// - Row records for canonical trace generation
+/// - Circuit rows captured during execution (with extension field values)
+///
+/// Note: During execution, `Poseidon2CircuitRow<F>::input_values` contains 4 extension
+/// field limbs. The trace generator converts these to 16 base field elements.
 #[derive(Debug, Default)]
 struct PoseidonExecutionState<F> {
     /// Output of the last Poseidon permutation for chaining.
     /// `None` if no permutation has been executed yet.
     last_output: Option<[F; 4]>,
-    /// Row records captured during execution.
-    row_records: Vec<PoseidonPermRowRecord<F>>,
+    /// Circuit rows captured during execution.
+    rows: Vec<Poseidon2CircuitRow<F>>,
 }
 
 impl<F: Send + Sync + Debug + 'static> OpExecutionState for PoseidonExecutionState<F> {
@@ -387,24 +362,24 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for PoseidonPermE
             (F::ZERO, 0)
         };
 
-        // Record row data for trace generation
-        let row_record = PoseidonPermRowRecord {
+        // Record row for trace generation (input_values contains 4 extension limbs)
+        let row = Poseidon2CircuitRow {
             new_start: self.new_start,
             merkle_path: self.merkle_path,
             mmcs_bit,
-            resolved_inputs,
+            mmcs_index_sum,
+            input_values: resolved_inputs.to_vec(),
             in_ctl,
             input_indices,
             out_ctl,
             output_indices,
-            mmcs_index_sum,
             mmcs_index_sum_idx,
         };
 
-        // Update state: chaining and row records
+        // Update state: chaining and rows
         let state = ctx.get_op_state_mut::<PoseidonExecutionState<F>>(&self.op_type);
         state.last_output = Some(output);
-        state.row_records.push(row_record);
+        state.rows.push(row);
 
         // Write outputs to witness if CTL exposure is requested
         for (out_idx, out_slot) in outputs.iter().enumerate() {
@@ -617,7 +592,7 @@ impl PoseidonPermExecutor {
 }
 
 // ============================================================================
-// Trace Generation
+// Trace Types
 // ============================================================================
 
 /// Trait to provide Poseidon2 configuration parameters for a field type.
@@ -721,13 +696,12 @@ impl<TraceF: Clone + Send + Sync + 'static, CF> NonPrimitiveTrace<CF> for Poseid
 }
 
 // ============================================================================
-// Simplified Trace Generation (uses recorded row data)
+// Trace Generation
 // ============================================================================
 
 /// Generate the Poseidon2 trace from execution state.
 ///
-/// This function reads from the row records stored during execution,
-/// eliminating the need to re-derive input values from the witness.
+/// Converts circuit rows from extension field format (4 limbs) to base field format (16 elements).
 ///
 /// # Type Parameters
 /// - `F`: The circuit field type (extension field)
@@ -741,50 +715,42 @@ pub fn generate_poseidon2_trace<
     _non_primitive_data: &[Option<NonPrimitiveOpPrivateData<F>>],
     op_states: &crate::op::OpStateMap,
 ) -> Result<Option<Box<dyn NonPrimitiveTrace<F>>>, CircuitError> {
-    // Get the execution state containing row records
     let Some(state) = op_states
         .get(&NonPrimitiveOpType::PoseidonPerm)
         .and_then(|s| s.as_any().downcast_ref::<PoseidonExecutionState<F>>())
     else {
-        // No Poseidon operations were executed
         return Ok(None);
     };
 
-    if state.row_records.is_empty() {
+    if state.rows.is_empty() {
         return Ok(None);
     }
 
     let d = Config::D;
 
-    // Convert row records to trace rows
+    // Convert extension field rows to base field rows
     let operations: Vec<Poseidon2CircuitRow<Config::BaseField>> = state
-        .row_records
+        .rows
         .iter()
-        .map(|record| {
-            // Convert resolved inputs from extension field limbs to base field elements
+        .map(|row| {
+            // Flatten 4 extension limbs to 16 base field elements
             let mut input_values = vec![Config::BaseField::ZERO; Config::WIDTH];
-            for (limb, &ext_val) in record.resolved_inputs.iter().enumerate() {
+            for (limb, ext_val) in row.input_values.iter().enumerate() {
                 let coeffs = ext_val.as_basis_coefficients_slice();
                 input_values[limb * d..(limb + 1) * d].copy_from_slice(coeffs);
             }
 
-            // Convert mmcs_index_sum to base field
-            let mmcs_index_sum = record
-                .mmcs_index_sum
-                .as_base()
-                .unwrap_or(Config::BaseField::ZERO);
-
             Poseidon2CircuitRow {
-                new_start: record.new_start,
-                merkle_path: record.merkle_path,
-                mmcs_bit: record.mmcs_bit,
-                mmcs_index_sum,
+                new_start: row.new_start,
+                merkle_path: row.merkle_path,
+                mmcs_bit: row.mmcs_bit,
+                mmcs_index_sum: row.mmcs_index_sum.as_base().unwrap_or(Config::BaseField::ZERO),
                 input_values,
-                in_ctl: record.in_ctl,
-                input_indices: record.input_indices,
-                out_ctl: record.out_ctl,
-                output_indices: record.output_indices,
-                mmcs_index_sum_idx: record.mmcs_index_sum_idx,
+                in_ctl: row.in_ctl,
+                input_indices: row.input_indices,
+                out_ctl: row.out_ctl,
+                output_indices: row.output_indices,
+                mmcs_index_sum_idx: row.mmcs_index_sum_idx,
             }
         })
         .collect();
