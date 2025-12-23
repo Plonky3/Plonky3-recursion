@@ -744,7 +744,10 @@ pub fn generate_poseidon2_trace<
                 new_start: row.new_start,
                 merkle_path: row.merkle_path,
                 mmcs_bit: row.mmcs_bit,
-                mmcs_index_sum: row.mmcs_index_sum.as_base().unwrap_or(Config::BaseField::ZERO),
+                mmcs_index_sum: row
+                    .mmcs_index_sum
+                    .as_base()
+                    .unwrap_or(Config::BaseField::ZERO),
                 input_values,
                 in_ctl: row.in_ctl,
                 input_indices: row.input_indices,
