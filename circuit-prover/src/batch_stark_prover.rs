@@ -13,7 +13,8 @@ use p3_air::{
 use p3_baby_bear::{BabyBear, default_babybear_poseidon2_16, default_babybear_poseidon2_24};
 use p3_batch_stark::{BatchProof, CommonData, StarkGenericConfig, StarkInstance, Val};
 use p3_circuit::op::PrimitiveOpType;
-use p3_circuit::tables::{Poseidon2CircuitRow, Poseidon2CircuitTrace, Poseidon2Trace, Traces};
+use p3_circuit::ops::{Poseidon2CircuitRow, Poseidon2CircuitTrace, Poseidon2Trace};
+use p3_circuit::tables::Traces;
 use p3_field::extension::{BinomialExtensionField, BinomiallyExtendable};
 use p3_field::{BasedVectorSpace, ExtensionField, Field, PrimeCharacteristicRing, PrimeField};
 use p3_koala_bear::{KoalaBear, default_koalabear_poseidon2_16, default_koalabear_poseidon2_24};
@@ -771,7 +772,7 @@ impl Poseidon2Prover {
                     constants.clone(),
                     preprocessed,
                 );
-                let ops_koalabear: p3_circuit::tables::Poseidon2CircuitTrace<KoalaBear> =
+                let ops_koalabear: p3_circuit::ops::Poseidon2CircuitTrace<KoalaBear> =
                     unsafe { core::mem::transmute(ops_converted) };
                 let matrix_f = air.generate_trace_rows(&ops_koalabear, constants, 0, permutation);
                 let matrix: RowMajorMatrix<Val<SC>> = unsafe { core::mem::transmute(matrix_f) };

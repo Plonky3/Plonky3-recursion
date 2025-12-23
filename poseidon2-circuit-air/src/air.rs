@@ -8,7 +8,7 @@ use core::mem::MaybeUninit;
 use p3_air::{
     Air, AirBuilder, AirBuilderWithPublicValues, BaseAir, PairBuilder, PermutationAirBuilder,
 };
-use p3_circuit::tables::{Poseidon2CircuitRow, Poseidon2CircuitTrace};
+use p3_circuit::ops::{Poseidon2CircuitRow, Poseidon2CircuitTrace};
 use p3_field::{Field, PrimeCharacteristicRing, PrimeField};
 use p3_lookup::lookup_traits::{AirLookupHandler, Direction, Kind, Lookup};
 use p3_matrix::Matrix;

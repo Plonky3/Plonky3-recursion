@@ -3,7 +3,7 @@ use std::error::Error;
 use p3_baby_bear::{BabyBear, default_babybear_poseidon2_16};
 use p3_batch_stark::CommonData;
 use p3_circuit::op::NonPrimitiveOpPrivateData;
-use p3_circuit::tables::{PoseidonPermPrivateData, generate_poseidon2_trace};
+use p3_circuit::ops::{PoseidonPermPrivateData, generate_poseidon2_trace};
 use p3_circuit::{CircuitBuilder, ExprId, PoseidonPermOps};
 use p3_circuit_prover::common::{NonPrimitiveConfig, get_airs_and_degrees_with_prep};
 use p3_circuit_prover::{BatchStarkProver, Poseidon2Config, TablePacking, config};
@@ -249,7 +249,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Check Poseidon trace rows and mmcs_index_sum exposure
     let poseidon_trace = traces
-        .non_primitive_trace::<p3_circuit::tables::Poseidon2Trace<Base>>("poseidon2")
+        .non_primitive_trace::<p3_circuit::ops::Poseidon2Trace<Base>>("poseidon2")
         .expect("poseidon2 trace missing");
     assert_eq!(poseidon_trace.total_rows(), 3, "expected three perm rows");
 

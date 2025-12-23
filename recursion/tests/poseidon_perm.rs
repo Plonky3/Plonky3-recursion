@@ -2,7 +2,7 @@ mod common;
 
 use p3_baby_bear::{BabyBear as F, Poseidon2BabyBear};
 use p3_circuit::CircuitBuilder;
-use p3_circuit::tables::Poseidon2CircuitRow;
+use p3_circuit::ops::Poseidon2CircuitRow;
 use p3_commit::ExtensionMmcs;
 use p3_field::PrimeCharacteristicRing;
 use p3_fri::{TwoAdicFriPcs, create_test_fri_params};
