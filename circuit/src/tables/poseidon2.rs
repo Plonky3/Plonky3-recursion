@@ -14,10 +14,11 @@ use crate::op::{NonPrimitiveOpPrivateData, NonPrimitiveOpType, Op};
 use crate::ops::poseidon_perm::PoseidonPermExecutor;
 use crate::types::WitnessId;
 
-/// Private data for Poseidon permutation (e.g. pre-image).
+/// Private data for Poseidon permutation.
+/// Only used for Merkle mode operations, contains exactly 2 extension field limbs (the sibling).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PoseidonPermPrivateData<F> {
-    pub input_values: Vec<F>,
+    pub sibling: [F; 2],
 }
 
 /// Trait to provide Poseidon2 configuration parameters for a field type.
@@ -161,7 +162,6 @@ impl<
 pub struct Poseidon2TraceBuilder<'a, CF, Config: Poseidon2Params> {
     circuit: &'a Circuit<CF>,
     witness: &'a [Option<CF>],
-    #[allow(dead_code)] // TODO: Will be used when filling the state with hints
     non_primitive_op_private_data: &'a [Option<NonPrimitiveOpPrivateData<CF>>],
 
     phantom: core::marker::PhantomData<Config>,
@@ -210,7 +210,7 @@ where
         for op in &self.circuit.ops {
             let Op::NonPrimitiveOpWithExecutor {
                 inputs,
-                outputs: _,
+                outputs,
                 executor,
                 op_id,
             } = op
@@ -219,46 +219,103 @@ where
             };
 
             if executor.op_type() == &NonPrimitiveOpType::PoseidonPerm {
-                // TODO: Switch Poseidon trace building to use `outputs` once Poseidon perm execution
-                // materializes outputs in the witness (and stop encoding outputs via `inputs[4..]`).
                 let Some(exec) = executor.as_any().downcast_ref::<PoseidonPermExecutor>() else {
                     return Err(CircuitError::InvalidNonPrimitiveOpConfiguration {
                         op: executor.op_type().clone(),
                     });
                 };
                 let (new_start, merkle_path) = (exec.new_start, exec.merkle_path);
-                // Expected layout: [in0, in1, in2, in3, out0, out1, mmcs_index_sum, mmcs_bit]
-                if inputs.len() != 8 {
-                    return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
+                // Expected input layout: [in0, in1, in2, in3, mmcs_index_sum, mmcs_bit]
+                if inputs.len() != 6 {
+                    return Err(CircuitError::NonPrimitiveOpLayoutMismatch {
                         op: executor.op_type().clone(),
-                        expected: "8 input vectors".to_string(),
+                        expected: "6 input vectors".to_string(),
                         got: inputs.len(),
                     });
                 }
+                // Expected output layout: [out0, out1]
+                if outputs.len() != 2 {
+                    return Err(CircuitError::NonPrimitiveOpLayoutMismatch {
+                        op: executor.op_type().clone(),
+                        expected: "2 output vectors".to_string(),
+                        got: outputs.len(),
+                    });
+                }
+
+                // mmcs_bit is at inputs[5]
+                if inputs[5].len() > 1 {
+                    return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
+                        op: executor.op_type().clone(),
+                        expected: "0 or 1 element for mmcs_bit".to_string(),
+                        got: inputs[5].len(),
+                    });
+                }
+                if merkle_path && inputs[5].is_empty() {
+                    return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
+                        op: executor.op_type().clone(),
+                        operation_index: *op_id,
+                        expected: "mmcs_bit must be provided when merkle_path=true".to_string(),
+                        got: "missing mmcs_bit".to_string(),
+                    });
+                }
+
+                let mmcs_bit = if inputs[5].len() == 1 {
+                    let val = self.get_witness(&inputs[5][0])?;
+                    let base = val.as_base().ok_or_else(|| {
+                        CircuitError::IncorrectNonPrimitiveOpPrivateData {
+                            op: executor.op_type().clone(),
+                            operation_index: *op_id,
+                            expected: "base field mmcs_bit".to_string(),
+                            got: "extension value".to_string(),
+                        }
+                    })?;
+                    match base {
+                        x if x == Config::BaseField::ZERO => false,
+                        x if x == Config::BaseField::ONE => true,
+                        other => {
+                            return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
+                                op: executor.op_type().clone(),
+                                operation_index: *op_id,
+                                expected: "boolean mmcs_bit (0 or 1)".to_string(),
+                                got: format!("{other:?}"),
+                            });
+                        }
+                    }
+                } else {
+                    false
+                };
 
                 // Initialize padded_inputs.
                 // If private data is available, use it as the default.
                 // Otherwise start with zero.
-                let mut padded_inputs =
-                    if let Some(Some(NonPrimitiveOpPrivateData::PoseidonPerm(private_data))) =
-                        self.non_primitive_op_private_data.get(op_id.0 as usize)
-                    {
-                        let num_limbs = width / d;
-                        if private_data.input_values.len() != num_limbs {
-                            return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
-                                op: executor.op_type().clone(),
-                                expected: num_limbs.to_string(),
-                                got: private_data.input_values.len(),
-                            });
-                        }
-                        let mut flattened = Vec::with_capacity(width);
-                        for limb in &private_data.input_values {
-                            flattened.extend_from_slice(limb.as_basis_coefficients_slice());
-                        }
-                        flattened
-                    } else {
-                        vec![Config::BaseField::ZERO; width]
-                    };
+                let mut padded_inputs = vec![Config::BaseField::ZERO; width];
+
+                if let Some(Some(NonPrimitiveOpPrivateData::PoseidonPerm(private_data))) =
+                    self.non_primitive_op_private_data.get(op_id.0 as usize)
+                {
+                    // Private inputs are only valid for Merkle mode (merkle_path && !new_start).
+                    // The type [F; 2] guarantees exactly 2 limbs (the sibling).
+                    if !merkle_path || new_start {
+                        return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
+                            op: executor.op_type().clone(),
+                            operation_index: *op_id,
+                            expected: "no private data (only Merkle mode accepts private data)"
+                                .to_string(),
+                            got: "private data provided for non-Merkle operation".to_string(),
+                        });
+                    }
+
+                    // Place sibling in the correct limbs based on mmcs_bit.
+                    // mmcs_bit=0: sibling in 2-3
+                    // mmcs_bit=1: sibling in 0-1
+                    let start_limb = if mmcs_bit { 0 } else { 2 };
+                    for (i, limb) in private_data.sibling.iter().enumerate() {
+                        let target_limb = start_limb + i;
+                        let coeffs = limb.as_basis_coefficients_slice();
+                        padded_inputs[target_limb * d..(target_limb + 1) * d]
+                            .copy_from_slice(coeffs);
+                    }
+                }
 
                 let mut in_ctl = vec![false; width_ext];
                 let mut in_idx = vec![0u32; width_ext];
@@ -311,8 +368,7 @@ where
 
                 let mut out_ctl = vec![false; digest_ext];
                 let mut out_idx = vec![0u32; digest_ext];
-                for (offset, limb) in (width_ext..width_ext + digest_ext).enumerate() {
-                    let chunk = &inputs[limb];
+                for (offset, chunk) in outputs.iter().enumerate() {
                     if chunk.len() == d || chunk.len() == 1 {
                         out_ctl[offset] = true;
                         out_idx[offset] = chunk[0].0;
@@ -325,47 +381,20 @@ where
                     }
                 }
 
-                let (mmcs_index_sum, mmcs_index_sum_idx) =
-                    if inputs[width_ext + digest_ext].len() == 1 {
-                        let val = self.get_witness(&inputs[width_ext + digest_ext][0])?;
-                        let base = val.as_base().ok_or_else(|| {
-                            CircuitError::IncorrectNonPrimitiveOpPrivateData {
-                                op: executor.op_type().clone(),
-                                operation_index: *op_id,
-                                expected: "base field mmcs_index_sum".to_string(),
-                                got: "extension value".to_string(),
-                            }
-                        })?;
-                        (base, inputs[width_ext + digest_ext][0].0)
-                    } else {
-                        (Config::BaseField::ZERO, 0)
-                    };
-                let mmcs_bit = if inputs.len() > width_ext + digest_ext + 1
-                    && inputs[width_ext + digest_ext + 1].len() == 1
-                {
-                    let val = self.get_witness(&inputs[width_ext + digest_ext + 1][0])?;
+                // mmcs_index_sum is at inputs[4]
+                let (mmcs_index_sum, mmcs_index_sum_idx) = if inputs[4].len() == 1 {
+                    let val = self.get_witness(&inputs[4][0])?;
                     let base = val.as_base().ok_or_else(|| {
                         CircuitError::IncorrectNonPrimitiveOpPrivateData {
                             op: executor.op_type().clone(),
                             operation_index: *op_id,
-                            expected: "base field mmcs_bit".to_string(),
+                            expected: "base field mmcs_index_sum".to_string(),
                             got: "extension value".to_string(),
                         }
                     })?;
-                    match base {
-                        x if x == Config::BaseField::ZERO => false,
-                        x if x == Config::BaseField::ONE => true,
-                        other => {
-                            return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
-                                op: executor.op_type().clone(),
-                                operation_index: *op_id,
-                                expected: "boolean mmcs_bit (0 or 1)".to_string(),
-                                got: format!("{other:?}"),
-                            });
-                        }
-                    }
+                    (base, inputs[4][0].0)
                 } else {
-                    false
+                    (Config::BaseField::ZERO, 0)
                 };
 
                 operations.push(Poseidon2CircuitRowDyn {

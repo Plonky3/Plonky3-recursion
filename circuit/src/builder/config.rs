@@ -3,13 +3,27 @@ use hashbrown::HashMap;
 use crate::op::{NonPrimitiveOpConfig, NonPrimitiveOpType};
 
 /// Configuration for the circuit builder.
-#[derive(Debug, Clone, Default)]
-pub struct BuilderConfig {
+#[derive(Debug)]
+pub struct BuilderConfig<F> {
     /// Enabled non-primitive operation types with their respective configuration.
-    enabled_ops: HashMap<NonPrimitiveOpType, NonPrimitiveOpConfig>,
+    enabled_ops: HashMap<NonPrimitiveOpType, NonPrimitiveOpConfig<F>>,
 }
 
-impl BuilderConfig {
+impl<F> Default for BuilderConfig<F> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<F> Clone for BuilderConfig<F> {
+    fn clone(&self) -> Self {
+        Self {
+            enabled_ops: self.enabled_ops.clone(),
+        }
+    }
+}
+
+impl<F> BuilderConfig<F> {
     /// Creates a new builder configuration.
     pub fn new() -> Self {
         Self {
@@ -18,13 +32,8 @@ impl BuilderConfig {
     }
 
     /// Enables a non-primitive operation type with its configuration.
-    pub fn enable_op(&mut self, op: NonPrimitiveOpType, cfg: NonPrimitiveOpConfig) {
+    pub fn enable_op(&mut self, op: NonPrimitiveOpType, cfg: NonPrimitiveOpConfig<F>) {
         self.enabled_ops.insert(op, cfg);
-    }
-
-    /// Enables Poseidon permutation operations (D=4 only).
-    pub fn enable_poseidon_perm(&mut self) {
-        self.enable_op(NonPrimitiveOpType::PoseidonPerm, NonPrimitiveOpConfig::None);
     }
 
     /// Checks whether an operation type is enabled.
@@ -33,31 +42,35 @@ impl BuilderConfig {
     }
 
     /// Gets the configuration for an operation type, if enabled.
-    pub fn get_op_config(&self, op: &NonPrimitiveOpType) -> Option<&NonPrimitiveOpConfig> {
+    pub fn get_op_config(&self, op: &NonPrimitiveOpType) -> Option<&NonPrimitiveOpConfig<F>> {
         self.enabled_ops.get(op)
     }
 
     /// Consumes the config and returns the enabled operations map.
-    pub fn into_enabled_ops(self) -> HashMap<NonPrimitiveOpType, NonPrimitiveOpConfig> {
+    pub fn into_enabled_ops(self) -> HashMap<NonPrimitiveOpType, NonPrimitiveOpConfig<F>> {
         self.enabled_ops
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use p3_baby_bear::BabyBear;
+
     use super::*;
+
+    type F = BabyBear;
 
     #[test]
     fn test_builder_config_default() {
-        let config = BuilderConfig::default();
+        let config = BuilderConfig::<F>::default();
         assert!(!config.is_op_enabled(&NonPrimitiveOpType::PoseidonPerm));
     }
 
     #[test]
-    fn test_builder_config_multiple_ops() {
-        let mut config = BuilderConfig::new();
+    fn test_builder_config_enable_op() {
+        let mut config = BuilderConfig::<F>::new();
 
-        config.enable_poseidon_perm();
+        config.enable_op(NonPrimitiveOpType::PoseidonPerm, NonPrimitiveOpConfig::None);
 
         assert!(config.is_op_enabled(&NonPrimitiveOpType::PoseidonPerm));
     }

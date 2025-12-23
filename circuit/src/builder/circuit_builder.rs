@@ -1,3 +1,4 @@
+use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::hash::Hash;
@@ -6,12 +7,13 @@ use core::marker::PhantomData;
 use hashbrown::HashMap;
 use itertools::zip_eq;
 use p3_field::{ExtensionField, Field, PrimeCharacteristicRing, PrimeField64};
+use p3_symmetric::Permutation;
 use p3_util::log2_ceil_u64;
 
 use super::compiler::{ExpressionLowerer, Optimizer};
 use super::{BuilderConfig, ExpressionBuilder, PublicInputTracker};
 use crate::circuit::Circuit;
-use crate::op::{DefaultHint, NonPrimitiveOpType, WitnessHintsFiller};
+use crate::op::{DefaultHint, NonPrimitiveOpType, PoseidonPermConfig, WitnessHintsFiller};
 use crate::tables::{Poseidon2Params, TraceGeneratorFn};
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};
 use crate::{CircuitBuilderError, CircuitError, CircuitField};
@@ -31,7 +33,7 @@ pub struct CircuitBuilder<F> {
     non_primitive_ops: Vec<NonPrimitiveOperationData>,
 
     /// Builder configuration
-    config: BuilderConfig,
+    config: BuilderConfig<F>,
 
     /// Registered non-primitive trace generators.
     non_primitive_trace_generators: HashMap<NonPrimitiveOpType, TraceGeneratorFn<F>>,
@@ -43,13 +45,16 @@ pub enum NonPrimitiveOpParams {
     PoseidonPerm { new_start: bool, merkle_path: bool },
 }
 
-/// The non-primitive operation id, type, the vectors of the expressions representing its inputs,
-/// and any per-op parameters.
+/// The non-primitive operation id, type, the vectors of the expressions representing its inputs
+/// and outputs, and any per-op parameters.
 #[derive(Debug, Clone)]
 pub struct NonPrimitiveOperationData {
     pub op_id: NonPrimitiveOpId,
     pub op_type: NonPrimitiveOpType,
-    pub witness_exprs: Vec<Vec<ExprId>>,
+    /// Input expressions (e.g., for PoseidonPerm: [in0, in1, in2, in3, mmcs_index_sum, mmcs_bit])
+    pub input_exprs: Vec<Vec<ExprId>>,
+    /// Output expressions (e.g., for PoseidonPerm: [out0, out1])
+    pub output_exprs: Vec<Vec<ExprId>>,
     pub params: Option<NonPrimitiveOpParams>,
 }
 
@@ -79,26 +84,67 @@ where
     }
 
     /// Enables a non-primitive operation type on this builder.
-    pub fn enable_op(&mut self, op: NonPrimitiveOpType, cfg: crate::op::NonPrimitiveOpConfig) {
+    pub fn enable_op(&mut self, op: NonPrimitiveOpType, cfg: crate::op::NonPrimitiveOpConfig<F>) {
         self.config.enable_op(op, cfg);
     }
 
     /// Enables Poseidon permutation operations (one perm per table row).
     ///
-    /// The current implementation only supports extension degree D=4.
-    pub fn enable_poseidon_perm<Config: Poseidon2Params>(
-        &mut self,
-        trace_generator: TraceGeneratorFn<F>,
-    ) where
-        F: CircuitField,
+    /// The current implementation only supports extension degree D=4 and WIDTH=16.
+    ///
+    /// # Arguments
+    /// * `trace_generator` - Function to generate Poseidon trace from circuit and witness
+    /// * `perm` - The Poseidon permutation to use for execution
+    pub fn enable_poseidon_perm<Config, P>(&mut self, trace_generator: TraceGeneratorFn<F>, perm: P)
+    where
+        Config: Poseidon2Params,
+        F: CircuitField + ExtensionField<Config::BaseField>,
+        P: Permutation<[Config::BaseField; 16]> + Clone + Send + Sync + 'static,
     {
-        // Hard gate on D=4 to avoid silently accepting incompatible configs.
+        // Hard gate on D=4 and WIDTH=16 to avoid silently accepting incompatible configs.
         assert!(
             Config::D == 4,
             "Poseidon perm op only supports extension degree D=4"
         );
+        assert!(
+            Config::WIDTH == 16,
+            "Poseidon perm op only supports WIDTH=16"
+        );
 
-        self.config.enable_poseidon_perm();
+        // Build exec closure that:
+        // 1. Converts [F;4] extension limbs to [Base;16] using basis coefficients
+        // 2. Calls perm.permute([Base;16])
+        // 3. Converts output [Base;16] back to [F;4]
+        let exec: crate::op::PoseidonPermExec<F> = Arc::new(move |input: &[F; 4]| {
+            // Convert 4 extension elements to 16 base elements
+            let mut base_input = [Config::BaseField::ZERO; 16];
+            for (i, ext_elem) in input.iter().enumerate() {
+                let coeffs = ext_elem.as_basis_coefficients_slice();
+                debug_assert_eq!(
+                    coeffs.len(),
+                    4,
+                    "Extension field should have D=4 basis coefficients"
+                );
+                base_input[i * 4..(i + 1) * 4].copy_from_slice(coeffs);
+            }
+
+            // Apply permutation
+            let base_output = perm.permute(base_input);
+
+            // Convert 16 base elements back to 4 extension elements
+            let mut output = [F::ZERO; 4];
+            for i in 0..4 {
+                let coeffs = &base_output[i * 4..(i + 1) * 4];
+                output[i] = F::from_basis_coefficients_slice(coeffs)
+                    .expect("basis coefficients should be valid");
+            }
+            output
+        });
+
+        self.config.enable_op(
+            NonPrimitiveOpType::PoseidonPerm,
+            crate::op::NonPrimitiveOpConfig::PoseidonPerm(PoseidonPermConfig { exec }),
+        );
         self.non_primitive_trace_generators
             .insert(NonPrimitiveOpType::PoseidonPerm, trace_generator);
     }
@@ -359,20 +405,22 @@ where
         res
     }
 
-    /// Pushes a non-primitive op. Returns (op_id, call_expr_id).
-    #[allow(unused_variables)]
-    pub(crate) fn push_non_primitive_op(
+    /// Pushes a non-primitive op and creates optional output nodes tied to the call.
+    ///
+    /// `output_labels` must have length equal to the op's output arity; each `Some(label)`
+    /// creates an `Expr::NonPrimitiveOutput { call, output_idx }` node for that output index.
+    /// The returned `Vec<Option<ExprId>>` is aligned with `output_labels`.
+    pub(crate) fn push_non_primitive_op_with_outputs(
         &mut self,
         op_type: NonPrimitiveOpType,
-        witness_exprs: Vec<Vec<ExprId>>,
+        input_exprs: Vec<Vec<ExprId>>,
+        output_labels: Vec<Option<&'static str>>,
         params: Option<NonPrimitiveOpParams>,
         label: &'static str,
-    ) -> (NonPrimitiveOpId, ExprId) {
+    ) -> (NonPrimitiveOpId, ExprId, Vec<Option<ExprId>>) {
         let op_id = NonPrimitiveOpId(self.non_primitive_ops.len() as u32);
 
-        // Flatten witness_exprs into a single Vec<ExprId> for DAG dependencies
-        let flattened_inputs: Vec<ExprId> = witness_exprs.iter().flatten().copied().collect();
-
+        let flattened_inputs: Vec<ExprId> = input_exprs.iter().flatten().copied().collect();
         let call_expr_id = self.expr_builder.add_non_primitive_call(
             op_id,
             op_type.clone(),
@@ -380,40 +428,27 @@ where
             label,
         );
 
+        let mut output_exprs: Vec<Vec<ExprId>> = vec![Vec::new(); output_labels.len()];
+        let mut outputs: Vec<Option<ExprId>> = vec![None; output_labels.len()];
+        for (i, maybe_label) in output_labels.into_iter().enumerate() {
+            if let Some(out_label) = maybe_label {
+                let out_expr_id =
+                    self.expr_builder
+                        .add_non_primitive_output(call_expr_id, i as u32, out_label);
+                output_exprs[i] = vec![out_expr_id];
+                outputs[i] = Some(out_expr_id);
+            }
+        }
+
         self.non_primitive_ops.push(NonPrimitiveOperationData {
             op_id,
             op_type,
-            witness_exprs,
+            input_exprs,
+            output_exprs,
             params,
         });
-        (op_id, call_expr_id)
-    }
 
-    /// Pushes a non-primitive op and returns expressions representing its outputs.
-    ///
-    /// Each returned `ExprId` is an `Expr::NonPrimitiveOutput { call, output_idx }` node,
-    /// where `call` points to the `NonPrimitiveCall` node, making the DAG dependency explicit.
-    ///
-    /// TODO: Use this for ops which materialize outputs into the witness (e.g. once Poseidon perm
-    /// execution writes outputs), so downstream expressions can depend on them.
-    #[allow(dead_code)]
-    pub(crate) fn push_non_primitive_op_with_outputs(
-        &mut self,
-        op_type: NonPrimitiveOpType,
-        witness_exprs: Vec<Vec<ExprId>>,
-        params: Option<NonPrimitiveOpParams>,
-        n_outputs: usize,
-        label: &'static str,
-    ) -> (NonPrimitiveOpId, Vec<ExprId>) {
-        let (op_id, call_expr_id) =
-            self.push_non_primitive_op(op_type, witness_exprs, params, label);
-        let outputs = (0..n_outputs)
-            .map(|i| {
-                self.expr_builder
-                    .add_non_primitive_output(call_expr_id, i as u32, label)
-            })
-            .collect();
-        (op_id, outputs)
+        (op_id, call_expr_id, outputs)
     }
 
     /// Pushes a new scope onto the scope stack.
@@ -930,32 +965,32 @@ mod tests {
 
     #[test]
     fn test_non_primitive_outputs_ordering_and_dedup() {
+        use crate::ops::{PoseidonPermCall, PoseidonPermOps};
+
         type Ext4 = BinomialExtensionField<BabyBear, 4>;
 
         let mut builder = CircuitBuilder::<Ext4>::new();
         builder.enable_op(NonPrimitiveOpType::PoseidonPerm, NonPrimitiveOpConfig::None);
 
-        // Provide minimal valid-ish witnesses.
+        // Use add_poseidon_perm with out_ctl to expose outputs.
         let z = builder.add_const(Ext4::ZERO);
-        let witness_exprs = vec![vec![z]; 4] // in0..3
-            .into_iter()
-            .chain([vec![], vec![], vec![], vec![]]) // out0..1, mmcs_index_sum, mmcs_bit (optional)
-            .collect::<Vec<_>>();
-
-        let (op_id, outputs) = builder.push_non_primitive_op_with_outputs(
-            NonPrimitiveOpType::PoseidonPerm,
-            witness_exprs,
-            Some(NonPrimitiveOpParams::PoseidonPerm {
+        let (op_id, outputs) = builder
+            .add_poseidon_perm(PoseidonPermCall {
                 new_start: true,
                 merkle_path: false,
-            }),
-            2,
-            "poseidon_perm_with_outputs",
-        );
+                mmcs_bit: None, // Must be None when merkle_path=false
+                inputs: [Some(z), Some(z), Some(z), Some(z)],
+                out_ctl: [true, true],
+                mmcs_index_sum: None,
+            })
+            .unwrap();
+
+        let out0 = outputs[0].unwrap();
+        let out1 = outputs[1].unwrap();
 
         let one = builder.add_const(Ext4::ONE);
-        let sum0 = builder.add(outputs[0], one);
-        let sum1 = builder.add(outputs[1], one);
+        let sum0 = builder.add(out0, one);
+        let sum1 = builder.add(out1, one);
 
         let circuit = builder.build().unwrap();
 
@@ -975,8 +1010,8 @@ mod tests {
         let non_prim_pos = non_prims[0];
 
         // Exact Add matches (order of a/b may swap).
-        let w_out0 = circuit.expr_to_widx[&outputs[0]];
-        let w_out1 = circuit.expr_to_widx[&outputs[1]];
+        let w_out0 = circuit.expr_to_widx[&out0];
+        let w_out1 = circuit.expr_to_widx[&out1];
         let w_one = circuit.expr_to_widx[&one];
         let w_sum0 = circuit.expr_to_widx[&sum0];
         let w_sum1 = circuit.expr_to_widx[&sum1];
