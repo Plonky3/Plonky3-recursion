@@ -1,0 +1,58 @@
+name: Weekly coverage (tarpaulin)
+
+on:
+  schedule:
+    - cron: "0 0 * * 3" # min hour day-of-month month day-of-week
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+    group: gh-pages
+    cancel-in-progress: true
+
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo/target
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-tarpaulin
+        run: cargo install --locked cargo-tarpaulin
+
+      - name: Generate HTML report
+        run: |
+          mkdir -p site
+          cargo tarpaulin \
+            --workspace \
+            --exclude field-air \
+            --exclude challenger-air \
+            --exclude interpolation-air \
+            --exclude fri-air \
+            --out Html \
+            --output-dir site
+          mv site/tarpaulin-report.html site/index.html
+
+      - name: Deploy coverage into gh-pages:/coverage
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: gh-pages
+          publish_dir: site
+          destination_dir: coverage
+          keep_files: true
