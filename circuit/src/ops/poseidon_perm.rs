@@ -43,7 +43,7 @@ use crate::tables::NonPrimitiveTrace;
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessId};
 
 // ============================================================================
-// Configuration Types (moved from op.rs)
+// Configuration
 // ============================================================================
 
 /// Type alias for the Poseidon permutation execution closure.
@@ -78,7 +78,7 @@ impl<F> Debug for PoseidonPermConfig<F> {
 }
 
 // ============================================================================
-// Private Data (moved from tables/poseidon2.rs)
+// Private Data
 // ============================================================================
 
 /// Private data for Poseidon permutation.
@@ -89,7 +89,7 @@ pub struct PoseidonPermPrivateData<F> {
 }
 
 // ============================================================================
-// Execution State (new)
+// Execution State
 // ============================================================================
 
 /// Row record captured during execution for canonical trace generation.
@@ -97,29 +97,27 @@ pub struct PoseidonPermPrivateData<F> {
 /// This structure holds all the data needed to generate a trace row,
 /// eliminating the need for trace generation to re-derive values.
 #[derive(Debug, Clone)]
-pub struct PoseidonPermRowRecord<F> {
+struct PoseidonPermRowRecord<F> {
     /// Control: If true, row begins a new independent Poseidon chain.
-    pub new_start: bool,
+    new_start: bool,
     /// Control: false → normal sponge/Challenger mode, true → Merkle-path mode.
-    pub merkle_path: bool,
+    merkle_path: bool,
     /// Control: Direction bit for Merkle left/right hashing.
-    pub mmcs_bit: bool,
+    mmcs_bit: bool,
     /// The fully resolved input limbs (4 extension field elements).
-    pub resolved_inputs: [F; 4],
+    resolved_inputs: [F; 4],
     /// Input exposure flags: for each limb i, if true, in[i] matches witness lookup.
-    pub in_ctl: [bool; 4],
+    in_ctl: [bool; 4],
     /// Input exposure indices: index into the witness table for each limb.
-    pub input_indices: [u32; 4],
+    input_indices: [u32; 4],
     /// Output exposure flags: for limbs 0-1 only.
-    pub out_ctl: [bool; 2],
+    out_ctl: [bool; 2],
     /// Output exposure indices: index into the witness table for limbs 0-1.
-    pub output_indices: [u32; 2],
+    output_indices: [u32; 2],
     /// Optional MMCS accumulator value (base field).
-    pub mmcs_index_sum: F,
+    mmcs_index_sum: F,
     /// MMCS index exposure: index for CTL exposure of mmcs_index_sum.
-    pub mmcs_index_sum_idx: u32,
-    /// Whether mmcs_index_sum is exposed via CTL.
-    pub mmcs_index_sum_ctl: bool,
+    mmcs_index_sum_idx: u32,
 }
 
 /// Execution state for Poseidon permutation operations.
@@ -128,12 +126,12 @@ pub struct PoseidonPermRowRecord<F> {
 /// - Chaining state (output of last permutation for input to next)
 /// - Row records for canonical trace generation
 #[derive(Debug, Default)]
-pub struct PoseidonExecutionState<F> {
+struct PoseidonExecutionState<F> {
     /// Output of the last Poseidon permutation for chaining.
     /// `None` if no permutation has been executed yet.
-    pub last_output: Option<[F; 4]>,
+    last_output: Option<[F; 4]>,
     /// Row records captured during execution.
-    pub row_records: Vec<PoseidonPermRowRecord<F>>,
+    row_records: Vec<PoseidonPermRowRecord<F>>,
 }
 
 impl<F: Send + Sync + Debug + 'static> OpExecutionState for PoseidonExecutionState<F> {
@@ -262,7 +260,7 @@ where
 /// Executor for Poseidon perm operations.
 ///
 #[derive(Debug, Clone)]
-pub struct PoseidonPermExecutor {
+pub(crate) struct PoseidonPermExecutor {
     op_type: NonPrimitiveOpType,
     pub new_start: bool,
     pub merkle_path: bool,
@@ -381,12 +379,12 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for PoseidonPermE
             }
         }
 
-        let (mmcs_index_sum, mmcs_index_sum_idx, mmcs_index_sum_ctl) = if inputs[4].len() == 1 {
+        let (mmcs_index_sum, mmcs_index_sum_idx) = if inputs[4].len() == 1 {
             let wid = inputs[4][0];
             let val = ctx.get_witness(wid)?;
-            (val, wid.0, true)
+            (val, wid.0)
         } else {
-            (F::ZERO, 0, false)
+            (F::ZERO, 0)
         };
 
         // Record row data for trace generation
@@ -401,7 +399,6 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for PoseidonPermE
             output_indices,
             mmcs_index_sum,
             mmcs_index_sum_idx,
-            mmcs_index_sum_ctl,
         };
 
         // Update state: chaining and row records
@@ -620,7 +617,7 @@ impl PoseidonPermExecutor {
 }
 
 // ============================================================================
-// Trace Generation Types (moved from tables/poseidon2.rs)
+// Trace Generation
 // ============================================================================
 
 /// Trait to provide Poseidon2 configuration parameters for a field type.
@@ -692,13 +689,11 @@ pub struct Poseidon2CircuitRow<F> {
     pub mmcs_index_sum_idx: u32,
 }
 
-pub type Poseidon2CircuitTrace<F> = Vec<Poseidon2CircuitRow<F>>;
-
 /// Poseidon2 trace for all hash operations in the circuit.
 #[derive(Debug, Clone)]
 pub struct Poseidon2Trace<F> {
     /// All Poseidon2 operations (permutation rows) in this trace.
-    pub operations: Poseidon2CircuitTrace<F>,
+    pub operations: Vec<Poseidon2CircuitRow<F>>,
 }
 
 impl<F> Poseidon2Trace<F> {

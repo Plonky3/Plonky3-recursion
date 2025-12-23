@@ -13,7 +13,7 @@ use p3_air::{
 use p3_baby_bear::{BabyBear, default_babybear_poseidon2_16, default_babybear_poseidon2_24};
 use p3_batch_stark::{BatchProof, CommonData, StarkGenericConfig, StarkInstance, Val};
 use p3_circuit::op::PrimitiveOpType;
-use p3_circuit::ops::{Poseidon2CircuitRow, Poseidon2CircuitTrace, Poseidon2Trace};
+use p3_circuit::ops::{Poseidon2CircuitRow, Poseidon2Trace};
 use p3_circuit::tables::Traces;
 use p3_field::extension::{BinomialExtensionField, BinomiallyExtendable};
 use p3_field::{BasedVectorSpace, ExtensionField, Field, PrimeCharacteristicRing, PrimeField};
@@ -685,7 +685,7 @@ impl Poseidon2Prover {
         // Convert trace from Val<SC> to F using unsafe transmute
         // This is safe when Val<SC> and F have the same size and layout
         // For BabyBear/KoalaBear configs, Val<SC> should be BabyBear/KoalaBear
-        let ops_converted: Poseidon2CircuitTrace<F> = unsafe { transmute(padded_ops) };
+        let ops_converted: Vec<Poseidon2CircuitRow<F>> = unsafe { transmute(padded_ops) };
 
         // Create an AIR instance based on the configuration
         // This is a bit verbose but we can't get over const generics
@@ -700,7 +700,7 @@ impl Poseidon2Prover {
                     constants.clone(),
                     preprocessed,
                 );
-                let ops_babybear: Poseidon2CircuitTrace<BabyBear> =
+                let ops_babybear: Vec<Poseidon2CircuitRow<BabyBear>> =
                     unsafe { transmute(ops_converted) };
                 let matrix_f = air.generate_trace_rows(&ops_babybear, constants, 0, permutation);
                 let matrix: RowMajorMatrix<Val<SC>> = unsafe { transmute(matrix_f) };
@@ -724,7 +724,7 @@ impl Poseidon2Prover {
                     constants.clone(),
                     preprocessed,
                 );
-                let ops_babybear: Poseidon2CircuitTrace<BabyBear> =
+                let ops_babybear: Vec<Poseidon2CircuitRow<BabyBear>> =
                     unsafe { transmute(ops_converted) };
                 let matrix_f = air.generate_trace_rows(&ops_babybear, constants, 0, permutation);
                 let matrix: RowMajorMatrix<Val<SC>> = unsafe { transmute(matrix_f) };
@@ -748,7 +748,7 @@ impl Poseidon2Prover {
                     constants.clone(),
                     preprocessed,
                 );
-                let ops_koalabear: Poseidon2CircuitTrace<KoalaBear> =
+                let ops_koalabear: Vec<Poseidon2CircuitRow<KoalaBear>> =
                     unsafe { transmute(ops_converted) };
                 let matrix_f = air.generate_trace_rows(&ops_koalabear, constants, 0, permutation);
                 let matrix: RowMajorMatrix<Val<SC>> = unsafe { transmute(matrix_f) };
@@ -772,7 +772,7 @@ impl Poseidon2Prover {
                     constants.clone(),
                     preprocessed,
                 );
-                let ops_koalabear: p3_circuit::ops::Poseidon2CircuitTrace<KoalaBear> =
+                let ops_koalabear: Vec<Poseidon2CircuitRow<KoalaBear>> =
                     unsafe { core::mem::transmute(ops_converted) };
                 let matrix_f = air.generate_trace_rows(&ops_koalabear, constants, 0, permutation);
                 let matrix: RowMajorMatrix<Val<SC>> = unsafe { core::mem::transmute(matrix_f) };

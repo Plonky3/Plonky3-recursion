@@ -8,7 +8,7 @@ use core::mem::MaybeUninit;
 use p3_air::{
     Air, AirBuilder, AirBuilderWithPublicValues, BaseAir, PairBuilder, PermutationAirBuilder,
 };
-use p3_circuit::ops::{Poseidon2CircuitRow, Poseidon2CircuitTrace};
+use p3_circuit::ops::Poseidon2CircuitRow;
 use p3_field::{Field, PrimeCharacteristicRing, PrimeField};
 use p3_lookup::lookup_traits::{AirLookupHandler, Direction, Kind, Lookup};
 use p3_matrix::Matrix;
@@ -136,7 +136,7 @@ impl<
 
     pub fn generate_trace_rows<P: CryptographicPermutation<[F; WIDTH]>>(
         &self,
-        sponge_ops: &Poseidon2CircuitTrace<F>,
+        sponge_ops: &[Poseidon2CircuitRow<F>],
         constants: &RoundConstants<F, WIDTH, HALF_FULL_ROUNDS, PARTIAL_ROUNDS>,
         extra_capacity_bits: usize,
         perm: &P,
