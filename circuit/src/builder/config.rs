@@ -63,15 +63,15 @@ mod tests {
     #[test]
     fn test_builder_config_default() {
         let config = BuilderConfig::<F>::default();
-        assert!(!config.is_op_enabled(&NonPrimitiveOpType::PoseidonPerm));
+        assert!(!config.is_op_enabled(&NonPrimitiveOpType::Poseidon2Perm));
     }
 
     #[test]
     fn test_builder_config_enable_op() {
         let mut config = BuilderConfig::<F>::new();
 
-        config.enable_op(NonPrimitiveOpType::PoseidonPerm, NonPrimitiveOpConfig::None);
+        config.enable_op(NonPrimitiveOpType::Poseidon2Perm, NonPrimitiveOpConfig::None);
 
-        assert!(config.is_op_enabled(&NonPrimitiveOpType::PoseidonPerm));
+        assert!(config.is_op_enabled(&NonPrimitiveOpType::Poseidon2Perm));
     }
 }

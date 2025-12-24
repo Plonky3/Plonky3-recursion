@@ -13,7 +13,7 @@ use p3_util::log2_ceil_u64;
 use super::compiler::{ExpressionLowerer, Optimizer};
 use super::{BuilderConfig, ExpressionBuilder, PublicInputTracker};
 use crate::circuit::Circuit;
-use crate::op::{DefaultHint, NonPrimitiveOpType, PoseidonPermConfig, WitnessHintsFiller};
+use crate::op::{DefaultHint, NonPrimitiveOpType, Poseidon2PermConfig, WitnessHintsFiller};
 use crate::tables::{Poseidon2Params, TraceGeneratorFn};
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};
 use crate::{CircuitBuilderError, CircuitError, CircuitField};
@@ -42,7 +42,7 @@ pub struct CircuitBuilder<F> {
 /// Per-op extra parameters that are not encoded in the op type.
 #[derive(Debug, Clone)]
 pub enum NonPrimitiveOpParams {
-    PoseidonPerm { new_start: bool, merkle_path: bool },
+    Poseidon2Perm { new_start: bool, merkle_path: bool },
 }
 
 /// The non-primitive operation id, type, the vectors of the expressions representing its inputs
@@ -51,9 +51,9 @@ pub enum NonPrimitiveOpParams {
 pub struct NonPrimitiveOperationData {
     pub op_id: NonPrimitiveOpId,
     pub op_type: NonPrimitiveOpType,
-    /// Input expressions (e.g., for PoseidonPerm: [in0, in1, in2, in3, mmcs_index_sum, mmcs_bit])
+    /// Input expressions (e.g., for Poseidon2Perm: [in0, in1, in2, in3, mmcs_index_sum, mmcs_bit])
     pub input_exprs: Vec<Vec<ExprId>>,
-    /// Output expressions (e.g., for PoseidonPerm: [out0, out1])
+    /// Output expressions (e.g., for Poseidon2Perm: [out0, out1])
     pub output_exprs: Vec<Vec<ExprId>>,
     pub params: Option<NonPrimitiveOpParams>,
 }
@@ -88,14 +88,14 @@ where
         self.config.enable_op(op, cfg);
     }
 
-    /// Enables Poseidon permutation operations (one perm per table row).
+    /// Enables Poseidon2 permutation operations (one perm per table row).
     ///
     /// The current implementation only supports extension degree D=4 and WIDTH=16.
     ///
     /// # Arguments
-    /// * `trace_generator` - Function to generate Poseidon trace from circuit and witness
-    /// * `perm` - The Poseidon permutation to use for execution
-    pub fn enable_poseidon_perm<Config, P>(&mut self, trace_generator: TraceGeneratorFn<F>, perm: P)
+    /// * `trace_generator` - Function to generate Poseidon2 trace from circuit and witness
+    /// * `perm` - The Poseidon2 permutation to use for execution
+    pub fn enable_poseidon2_perm<Config, P>(&mut self, trace_generator: TraceGeneratorFn<F>, perm: P)
     where
         Config: Poseidon2Params,
         F: CircuitField + ExtensionField<Config::BaseField>,
@@ -104,18 +104,18 @@ where
         // Hard gate on D=4 and WIDTH=16 to avoid silently accepting incompatible configs.
         assert!(
             Config::D == 4,
-            "Poseidon perm op only supports extension degree D=4"
+            "Poseidon2 perm op only supports extension degree D=4"
         );
         assert!(
             Config::WIDTH == 16,
-            "Poseidon perm op only supports WIDTH=16"
+            "Poseidon2 perm op only supports WIDTH=16"
         );
 
         // Build exec closure that:
         // 1. Converts [F;4] extension limbs to [Base;16] using basis coefficients
         // 2. Calls perm.permute([Base;16])
         // 3. Converts output [Base;16] back to [F;4]
-        let exec: crate::op::PoseidonPermExec<F> = Arc::new(move |input: &[F; 4]| {
+        let exec: crate::op::Poseidon2PermExec<F> = Arc::new(move |input: &[F; 4]| {
             // Convert 4 extension elements to 16 base elements
             let mut base_input = [Config::BaseField::ZERO; 16];
             for (i, ext_elem) in input.iter().enumerate() {
@@ -142,11 +142,11 @@ where
         });
 
         self.config.enable_op(
-            NonPrimitiveOpType::PoseidonPerm,
-            crate::op::NonPrimitiveOpConfig::PoseidonPerm(PoseidonPermConfig { exec }),
+            NonPrimitiveOpType::Poseidon2Perm,
+            crate::op::NonPrimitiveOpConfig::Poseidon2Perm(Poseidon2PermConfig { exec }),
         );
         self.non_primitive_trace_generators
-            .insert(NonPrimitiveOpType::PoseidonPerm, trace_generator);
+            .insert(NonPrimitiveOpType::Poseidon2Perm, trace_generator);
     }
 
     /// Checks whether an op type is enabled on this builder.
@@ -965,17 +965,17 @@ mod tests {
 
     #[test]
     fn test_non_primitive_outputs_ordering_and_dedup() {
-        use crate::ops::{PoseidonPermCall, PoseidonPermOps};
+        use crate::ops::{Poseidon2PermCall, Poseidon2PermOps};
 
         type Ext4 = BinomialExtensionField<BabyBear, 4>;
 
         let mut builder = CircuitBuilder::<Ext4>::new();
-        builder.enable_op(NonPrimitiveOpType::PoseidonPerm, NonPrimitiveOpConfig::None);
+        builder.enable_op(NonPrimitiveOpType::Poseidon2Perm, NonPrimitiveOpConfig::None);
 
-        // Use add_poseidon_perm with out_ctl to expose outputs.
+        // Use add_poseidon2_perm with out_ctl to expose outputs.
         let z = builder.add_const(Ext4::ZERO);
         let (op_id, outputs) = builder
-            .add_poseidon_perm(PoseidonPermCall {
+            .add_poseidon2_perm(Poseidon2PermCall {
                 new_start: true,
                 merkle_path: false,
                 mmcs_bit: None, // Must be None when merkle_path=false

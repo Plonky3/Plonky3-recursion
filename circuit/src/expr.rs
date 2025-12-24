@@ -31,7 +31,7 @@ pub enum Expr<F> {
     /// making dependencies explicit in the DAG structure. This enables proper topological
     /// analysis and ensures the lowerer emits ops after their inputs are available.
     ///
-    /// For stateful ops (e.g., Poseidon perm chaining with `in_ctl=false`), `inputs` may
+    /// For stateful ops (e.g., Poseidon2 perm chaining with `in_ctl=false`), `inputs` may
     /// be empty since chained values flow internally and are not materialized in the
     /// witness table. Execution order for such ops is determined by their position in
     /// the ops list during lowering.

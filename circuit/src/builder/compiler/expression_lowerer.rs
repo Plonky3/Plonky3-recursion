@@ -12,7 +12,7 @@ use crate::builder::circuit_builder::{NonPrimitiveOpParams, NonPrimitiveOperatio
 use crate::builder::compiler::get_witness_id;
 use crate::expr::{Expr, ExpressionGraph};
 use crate::op::{NonPrimitiveOpType, Op, WitnessHintsFiller};
-use crate::ops::PoseidonPermExecutor;
+use crate::ops::Poseidon2PermExecutor;
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};
 
 /// Sparse disjoint-set "find" with path compression over a HashMap (iterative).
@@ -126,13 +126,13 @@ where
         }
 
         match &data.op_type {
-            NonPrimitiveOpType::PoseidonPerm => {
+            NonPrimitiveOpType::Poseidon2Perm => {
                 let (new_start, merkle_path) = match data.params.as_ref().ok_or_else(|| {
                     CircuitBuilderError::InvalidNonPrimitiveOpConfiguration {
                         op: data.op_type.clone(),
                     }
                 })? {
-                    NonPrimitiveOpParams::PoseidonPerm {
+                    NonPrimitiveOpParams::Poseidon2Perm {
                         new_start,
                         merkle_path,
                     } => (*new_start, *merkle_path),
@@ -141,7 +141,7 @@ where
                 // Expected input layout: [in0, in1, in2, in3, mmcs_index_sum, mmcs_bit]
                 if data.input_exprs.len() != 6 {
                     return Err(CircuitBuilderError::NonPrimitiveOpArity {
-                        op: "PoseidonPerm",
+                        op: "Poseidon2Perm",
                         expected: "6 inputs (in0..3, mmcs_index_sum, mmcs_bit)".to_string(),
                         got: data.input_exprs.len(),
                     });
@@ -150,7 +150,7 @@ where
                 // Expected output layout: [out0, out1]
                 if data.output_exprs.len() != 2 {
                     return Err(CircuitBuilderError::NonPrimitiveOpArity {
-                        op: "PoseidonPerm",
+                        op: "Poseidon2Perm",
                         expected: "2 outputs (out0, out1)".to_string(),
                         got: data.output_exprs.len(),
                     });
@@ -161,7 +161,7 @@ where
                 for (i, limb_exprs) in data.input_exprs.iter().take(4).enumerate() {
                     if !(limb_exprs.is_empty() || limb_exprs.len() == 1) {
                         return Err(CircuitBuilderError::NonPrimitiveOpArity {
-                            op: "PoseidonPerm",
+                            op: "Poseidon2Perm",
                             expected: "0 or 1 extension element per input limb".to_string(),
                             got: limb_exprs.len(),
                         });
@@ -172,7 +172,7 @@ where
                             get_witness_id(
                                 expr_to_widx,
                                 expr,
-                                &format!("PoseidonPerm input limb {i}"),
+                                &format!("Poseidon2Perm input limb {i}"),
                             )
                         })
                         .collect::<Result<Vec<WitnessId>, _>>()?;
@@ -183,7 +183,7 @@ where
                 let mmcs_exprs = &data.input_exprs[4];
                 if !(mmcs_exprs.is_empty() || mmcs_exprs.len() == 1) {
                     return Err(CircuitBuilderError::NonPrimitiveOpArity {
-                        op: "PoseidonPerm",
+                        op: "Poseidon2Perm",
                         expected: "0 or 1 element for mmcs_index_sum".to_string(),
                         got: mmcs_exprs.len(),
                     });
@@ -191,7 +191,7 @@ where
                 let mmcs_widx = mmcs_exprs
                     .iter()
                     .map(|&expr| {
-                        get_witness_id(expr_to_widx, expr, "PoseidonPerm mmcs_index_sum input")
+                        get_witness_id(expr_to_widx, expr, "Poseidon2Perm mmcs_index_sum input")
                     })
                     .collect::<Result<Vec<WitnessId>, _>>()?;
                 inputs_widx.push(mmcs_widx);
@@ -200,27 +200,27 @@ where
                 let mmcs_bit_exprs = &data.input_exprs[5];
                 if !(mmcs_bit_exprs.is_empty() || mmcs_bit_exprs.len() == 1) {
                     return Err(CircuitBuilderError::NonPrimitiveOpArity {
-                        op: "PoseidonPerm",
+                        op: "Poseidon2Perm",
                         expected: "0 or 1 element for mmcs_bit".to_string(),
                         got: mmcs_bit_exprs.len(),
                     });
                 }
                 let mmcs_bit_widx = mmcs_bit_exprs
                     .iter()
-                    .map(|&expr| get_witness_id(expr_to_widx, expr, "PoseidonPerm mmcs_bit input"))
+                    .map(|&expr| get_witness_id(expr_to_widx, expr, "Poseidon2Perm mmcs_bit input"))
                     .collect::<Result<Vec<WitnessId>, _>>()?;
                 inputs_widx.push(mmcs_bit_widx);
 
                 // Output CTL exposures (0 or 1 element each).
                 //
-                // For PoseidonPerm we take outputs exclusively from `data.output_exprs` to avoid
+                // For Poseidon2Perm we take outputs exclusively from `data.output_exprs` to avoid
                 // generating multiple witness ids per output limb (which breaks both execution and
                 // trace building).
-                let mut poseidon_outputs: Vec<Vec<WitnessId>> = Vec::with_capacity(2);
+                let mut poseidon2_outputs: Vec<Vec<WitnessId>> = Vec::with_capacity(2);
                 for (i, limb_exprs) in data.output_exprs.iter().enumerate() {
                     if !(limb_exprs.is_empty() || limb_exprs.len() == 1) {
                         return Err(CircuitBuilderError::NonPrimitiveOpArity {
-                            op: "PoseidonPerm",
+                            op: "Poseidon2Perm",
                             expected: "0 or 1 extension element per output limb".to_string(),
                             got: limb_exprs.len(),
                         });
@@ -229,18 +229,18 @@ where
                         let w = get_witness_id(
                             expr_to_widx,
                             expr,
-                            &format!("PoseidonPerm output limb {i}"),
+                            &format!("Poseidon2Perm output limb {i}"),
                         )?;
-                        poseidon_outputs.push(vec![w]);
+                        poseidon2_outputs.push(vec![w]);
                     } else {
-                        poseidon_outputs.push(Vec::new());
+                        poseidon2_outputs.push(Vec::new());
                     }
                 }
 
                 ops.push(Op::NonPrimitiveOpWithExecutor {
                     inputs: inputs_widx,
-                    outputs: poseidon_outputs,
-                    executor: Box::new(PoseidonPermExecutor::new(new_start, merkle_path)),
+                    outputs: poseidon2_outputs,
+                    executor: Box::new(Poseidon2PermExecutor::new(new_start, merkle_path)),
                     op_id: data.op_id,
                 });
             }

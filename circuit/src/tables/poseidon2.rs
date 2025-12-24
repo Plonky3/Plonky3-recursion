@@ -11,13 +11,13 @@ use super::NonPrimitiveTrace;
 use crate::CircuitError;
 use crate::circuit::{Circuit, CircuitField};
 use crate::op::{NonPrimitiveOpPrivateData, NonPrimitiveOpType, Op};
-use crate::ops::poseidon_perm::PoseidonPermExecutor;
+use crate::ops::poseidon2_perm::Poseidon2PermExecutor;
 use crate::types::WitnessId;
 
-/// Private data for Poseidon permutation.
+/// Private data for Poseidon2 permutation.
 /// Only used for Merkle mode operations, contains exactly 2 extension field limbs (the sibling).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PoseidonPermPrivateData<F> {
+pub struct Poseidon2PermPrivateData<F> {
     pub sibling: [F; 2],
 }
 
@@ -56,17 +56,17 @@ pub trait Poseidon2Params {
 
 /// Poseidon2 operation table row.
 ///
-/// This implements the Poseidon Permutation Table specification.
+/// This implements the Poseidon2 Permutation Table specification.
 /// See: https://github.com/Plonky3/Plonky3-recursion/discussions/186
 ///
-/// The table has one row per Poseidon call, implementing:
+/// The table has one row per Poseidon2 call, implementing:
 /// - Standard chaining (Challenger-style sponge use)
 /// - Merkle-path chaining (MMCS directional hashing)
 /// - Selective limb exposure to the witness via CTL
 /// - Optional MMCS index accumulator
 #[derive(Debug, Clone)]
 pub struct Poseidon2CircuitRow<F> {
-    /// Control: If 1, row begins a new independent Poseidon chain.
+    /// Control: If 1, row begins a new independent Poseidon2 chain.
     pub new_start: bool,
     /// Control: 0 → normal sponge/Challenger mode, 1 → Merkle-path mode.
     pub merkle_path: bool,
@@ -129,7 +129,7 @@ impl<TraceF: Clone + Send + Sync + 'static, CF> NonPrimitiveTrace<CF> for Poseid
 /// Builder for generating Poseidon2 traces.
 ///
 /// The builder handles the conversion from the circuit's extension field (`CF`) to the
-/// base field (`Config::BaseField`) required by the Poseidon permutation.
+/// base field (`Config::BaseField`) required by the Poseidon2 permutation.
 pub struct Poseidon2TraceBuilder<'a, CF, Config: Poseidon2Params> {
     circuit: &'a Circuit<CF>,
     witness: &'a [Option<CF>],
@@ -184,8 +184,8 @@ where
                 continue;
             };
 
-            if executor.op_type() == &NonPrimitiveOpType::PoseidonPerm {
-                let Some(exec) = executor.as_any().downcast_ref::<PoseidonPermExecutor>() else {
+            if executor.op_type() == &NonPrimitiveOpType::Poseidon2Perm {
+                let Some(exec) = executor.as_any().downcast_ref::<Poseidon2PermExecutor>() else {
                     return Err(CircuitError::InvalidNonPrimitiveOpConfiguration {
                         op: executor.op_type().clone(),
                     });
@@ -256,7 +256,7 @@ where
                 // Otherwise start with zero.
                 let mut padded_inputs = vec![Config::BaseField::ZERO; width];
 
-                if let Some(Some(NonPrimitiveOpPrivateData::PoseidonPerm(private_data))) =
+                if let Some(Some(NonPrimitiveOpPrivateData::Poseidon2Perm(private_data))) =
                     self.non_primitive_op_private_data.get(op_id.0 as usize)
                 {
                     // Private inputs are only valid for Merkle mode (merkle_path && !new_start).

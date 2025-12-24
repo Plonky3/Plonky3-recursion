@@ -126,8 +126,8 @@ impl<F: CircuitField> CircuitRunner<F> {
         };
         match (executor.op_type(), &private_data) {
             (
-                crate::op::NonPrimitiveOpType::PoseidonPerm,
-                NonPrimitiveOpPrivateData::PoseidonPerm(_),
+                crate::op::NonPrimitiveOpType::Poseidon2Perm,
+                NonPrimitiveOpPrivateData::Poseidon2Perm(_),
             ) => {
                 // ok
             }
@@ -191,7 +191,7 @@ impl<F: CircuitField> CircuitRunner<F> {
         // Clone ops to avoid borrowing issues.
         let ops = self.circuit.ops.clone();
 
-        // Global chaining state for Poseidon permutation
+        // Global chaining state for Poseidon2 permutation
         let mut last_poseidon: Option<[F; 4]> = None;
 
         for op in ops {

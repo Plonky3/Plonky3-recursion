@@ -24,7 +24,7 @@ pub use constant::ConstTrace;
 pub use mul::MulTrace;
 pub use poseidon2::{
     Poseidon2CircuitRow, Poseidon2CircuitTrace, Poseidon2Params, Poseidon2Trace,
-    PoseidonPermPrivateData, generate_poseidon2_trace,
+    Poseidon2PermPrivateData, generate_poseidon2_trace,
 };
 pub use public::PublicTrace;
 pub use runner::CircuitRunner;

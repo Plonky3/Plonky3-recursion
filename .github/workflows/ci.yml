@@ -60,8 +60,8 @@ jobs:
       - name: Run examples
         run: |
           cargo run --package p3-circuit-prover --example fibonacci
-          cargo run --package p3-circuit-prover --example poseidon_perm_chain
-          cargo run --package p3-circuit-prover --example poseidon_perm_merkle
+          cargo run --package p3-circuit-prover --example poseidon2_perm_chain
+          cargo run --package p3-circuit-prover --example poseidon2_perm_merkle
           
       - name: Run allocation_log example with debug logging
         env:

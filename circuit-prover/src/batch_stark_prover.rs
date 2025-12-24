@@ -514,13 +514,13 @@ where
         let height = self
             .preprocessed
             .len()
-            .div_ceil(poseidon_preprocessed_width())
+            .div_ceil(poseidon2_preprocessed_width())
             .next_power_of_two()
-            * poseidon_preprocessed_width();
+            * poseidon2_preprocessed_width();
 
         let mut values = self.preprocessed.clone();
         values.resize(height, Val::<SC>::ZERO);
-        Some(RowMajorMatrix::new(values, poseidon_preprocessed_width()))
+        Some(RowMajorMatrix::new(values, poseidon2_preprocessed_width()))
     }
 }
 
