@@ -7,8 +7,7 @@ mod quotient;
 mod stark;
 
 pub use batch_stark::{
-    BatchProofTargets, CircuitTablesAir, InstanceOpenedValuesTargets, PcsVerifierParams,
-    verify_batch_circuit, verify_p3_recursion_proof_circuit,
+    CircuitTablesAir, PcsVerifierParams, verify_batch_circuit, verify_p3_recursion_proof_circuit,
 };
 pub use errors::VerificationError;
 pub use observable::ObservableCommitment;

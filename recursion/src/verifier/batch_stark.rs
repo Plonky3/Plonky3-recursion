@@ -2,6 +2,7 @@ use alloc::string::ToString;
 use alloc::vec::Vec;
 use alloc::{format, vec};
 use core::marker::PhantomData;
+use p3_lookup::lookup_traits::{LookupData, LookupGadget};
 
 use p3_air::{Air as P3Air, BaseAir as P3BaseAir, PairBuilder};
 use p3_batch_stark::{BatchProof, CommonData};
@@ -11,13 +12,14 @@ use p3_circuit_prover::air::{AddAir, ConstAir, MulAir, PublicAir, WitnessAir};
 use p3_circuit_prover::batch_stark_prover::{PrimitiveTable, RowCounts};
 use p3_commit::{Pcs, PolynomialSpace};
 use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
-use p3_uni_stark::StarkGenericConfig;
+use p3_uni_stark::{StarkGenericConfig, Val};
 
 use super::{ObservableCommitment, VerificationError, recompose_quotient_from_chunks_circuit};
 use crate::challenger::CircuitChallenger;
 use crate::traits::{Recursive, RecursiveAir, RecursiveChallenger, RecursivePcs};
 use crate::types::{
-    CommitmentTargets, OpenedValuesTargets, PreprocessedVerifierDataTargets, ProofTargets,
+    BatchProofTargets, CommitmentTargets, CommonDataTargets, OpenedValuesTargets,
+    OpenedValuesTargetsWithLookups, PreprocessedVerifierDataTargets, ProofTargets,
 };
 use crate::{BatchStarkVerifierInputsBuilder, Target};
 
@@ -86,6 +88,7 @@ pub fn verify_p3_recursion_proof_circuit<
         + ObservableCommitment,
     InputProof: Recursive<SC::Challenge>,
     OpeningProof: Recursive<SC::Challenge, Input = <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Proof>,
+    LG: LookupGadget,
     const RATE: usize,
     const TRACE_D: usize,
 >(
@@ -94,6 +97,7 @@ pub fn verify_p3_recursion_proof_circuit<
     proof: &p3_circuit_prover::batch_stark_prover::BatchStarkProof<SC>,
     pcs_params: &PcsVerifierParams<SC, InputProof, OpeningProof, Comm>,
     common_data: &CommonData<SC>,
+    lookup_gadget: &LG,
 ) -> Result<BatchStarkVerifierInputsBuilder<SC, Comm, OpeningProof>, VerificationError>
 where
     <SC as StarkGenericConfig>::Pcs: RecursivePcs<
@@ -151,6 +155,7 @@ where
         Comm,
         InputProof,
         OpeningProof,
+        LG,
         RATE,
     >(
         config,
@@ -160,187 +165,272 @@ where
         &verifier_inputs.air_public_targets,
         pcs_params,
         preprocessed,
+        lookup_gadget,
     )?;
 
     Ok(verifier_inputs)
 }
 
-/// Opened values for a single STARK instance within the batch-proof.
-#[derive(Clone)]
-pub struct InstanceOpenedValuesTargets<SC: StarkGenericConfig> {
-    pub trace_local: Vec<Target>,
-    pub trace_next: Vec<Target>,
-    pub preprocessed_local: Option<Vec<Target>>,
-    pub preprocessed_next: Option<Vec<Target>>,
-    pub quotient_chunks: Vec<Vec<Target>>,
-    _phantom: PhantomData<SC>,
-}
+// /// Opened values for a single STARK instance within the batch-proof.
+// #[derive(Clone)]
+// pub struct InstanceOpenedValuesTargets<SC: StarkGenericConfig> {
+//     pub trace_local: Vec<Target>,
+//     pub trace_next: Vec<Target>,
+//     pub permutation_local: Vec<Target>,
+//     pub permutation_next: Vec<Target>,
+//     pub preprocessed_local: Option<Vec<Target>>,
+//     pub preprocessed_next: Option<Vec<Target>>,
+//     pub quotient_chunks: Vec<Vec<Target>>,
+//     _phantom: PhantomData<SC>,
+// }
 
-/// Recursive targets for a batch-STARK proof.
-///
-/// The `flattened` field stores the aggregated commitments, opened values, and opening proof in the
-/// same layout expected by single-instance PCS logic. The `instances` field retains per-instance
-/// opened values so that AIR constraints can be enforced individually.
-pub struct BatchProofTargets<
-    SC: StarkGenericConfig,
-    Comm: Recursive<SC::Challenge>,
-    OpeningProof: Recursive<SC::Challenge>,
-> {
-    pub flattened: ProofTargets<SC, Comm, OpeningProof>,
-    pub instances: Vec<InstanceOpenedValuesTargets<SC>>,
-    pub degree_bits: Vec<usize>,
-}
+// /// Recursive targets for a batch-STARK proof.
+// ///
+// /// The `flattened` field stores the aggregated commitments, opened values, and opening proof in the
+// /// same layout expected by single-instance PCS logic. The `instances` field retains per-instance
+// /// opened values so that AIR constraints can be enforced individually.
+// pub struct BatchProofTargets<
+//     SC: StarkGenericConfig,
+//     Comm: Recursive<SC::Challenge>,
+//     OpeningProof: Recursive<SC::Challenge>,
+// > {
+//     pub flattened: ProofTargets<SC, Comm, OpeningProof>,
+//     pub permutation: Option<Comm>,
+//     pub instances: Vec<InstanceOpenedValuesTargets<SC>>,
+//     pub global_lookup_data: Vec<Vec<LookupData<Target>>>,
+//     pub degree_bits: Vec<usize>,
+// }
 
-impl<
-    SC: StarkGenericConfig,
-    Comm: Recursive<SC::Challenge, Input = <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment>,
-    OpeningProof: Recursive<SC::Challenge, Input = <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Proof>,
-> Recursive<SC::Challenge> for BatchProofTargets<SC, Comm, OpeningProof>
-{
-    type Input = BatchProof<SC>;
+// impl<
+//     SC: StarkGenericConfig,
+//     Comm: Recursive<SC::Challenge, Input = <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment>,
+//     OpeningProof: Recursive<SC::Challenge, Input = <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Proof>,
+// > Recursive<SC::Challenge> for BatchProofTargets<SC, Comm, OpeningProof>
+// {
+//     type Input = BatchProof<SC>;
 
-    fn new(circuit: &mut CircuitBuilder<SC::Challenge>, input: &Self::Input) -> Self {
-        let trace_targets = Comm::new(circuit, &input.commitments.main);
-        let quotient_chunks_targets = Comm::new(circuit, &input.commitments.quotient_chunks);
+//     fn new(circuit: &mut CircuitBuilder<SC::Challenge>, input: &Self::Input) -> Self {
+//         let trace_targets = Comm::new(circuit, &input.commitments.main);
+//         let quotient_chunks_targets = Comm::new(circuit, &input.commitments.quotient_chunks);
 
-        // Flattened opened values are ordered as:
-        // 1. All `trace_local` rows per instance (instance 0 .. N)
-        // 2. All `trace_next` rows per instance (instance 0 .. N)
-        // 3. Quotient chunks for each instance in commit order
-        let mut aggregated_trace_local = Vec::new();
-        let mut aggregated_trace_next = Vec::new();
-        let mut aggregated_prep_local = Vec::new();
-        let mut aggregated_prep_next = Vec::new();
-        let mut aggregated_quotient_chunks = Vec::new();
+//         // // Flattened opened values are ordered as:
+//         // // 1. All `trace_local` rows per instance (instance 0 .. N)
+//         // // 2. All `trace_next` rows per instance (instance 0 .. N)
+//         // // 3. Quotient chunks for each instance in commit order
+//         // let mut aggregated_trace_local = Vec::new();
+//         // let mut aggregated_trace_next = Vec::new();
+//         // let mut aggregated_perm_local = Vec::new();
+//         // let mut aggregated_perm_next = Vec::new();
+//         // let mut aggregated_prep_local = Vec::new();
+//         // let mut aggregated_prep_next = Vec::new();
+//         // let mut aggregated_quotient_chunks = Vec::new();
 
-        let mut instances = Vec::with_capacity(input.opened_values.instances.len());
+//         let mut instances = Vec::with_capacity(input.opened_values.instances.len());
 
-        for inst in &input.opened_values.instances {
-            let trace_local = circuit.alloc_public_inputs(
-                inst.base_opened_values.trace_local.len(),
-                "trace local values",
-            );
-            aggregated_trace_local.extend(trace_local.iter().copied());
+//         for inst in &input.opened_values.instances {
+//             let trace_local_targets = circuit.alloc_public_inputs(
+//                 inst.base_opened_values.trace_local.len(),
+//                 "trace local values",
+//             );
+//             // aggregated_trace_local.extend(trace_local.iter().copied());
 
-            let trace_next = circuit.alloc_public_inputs(
-                inst.base_opened_values.trace_next.len(),
-                "trace next values",
-            );
-            aggregated_trace_next.extend(trace_next.iter().copied());
+//             let trace_next_targets = circuit.alloc_public_inputs(
+//                 inst.base_opened_values.trace_next.len(),
+//                 "trace next values",
+//             );
+//             // aggregated_trace_next.extend(trace_next.iter().copied());
 
-            let preprocessed_local =
-                inst.base_opened_values
-                    .preprocessed_local
-                    .as_ref()
-                    .map(|prep_local_vals| {
-                        let prep_local = circuit.alloc_public_inputs(
-                            prep_local_vals.len(),
-                            "preprocessed local values",
-                        );
-                        aggregated_prep_local.extend(prep_local.iter().copied());
+//             let permutation_local_targets =
+//                 inst.permutation_local.as_ref().map(|perm_local_vals| {
+//                     let perm_local = circuit
+//                         .alloc_public_inputs(perm_local_vals.len(), "permutation local values");
 
-                        prep_local
-                    });
-            let preprocessed_next =
-                inst.base_opened_values
-                    .preprocessed_next
-                    .as_ref()
-                    .map(|prep_next_vals| {
-                        let prep_next = circuit
-                            .alloc_public_inputs(prep_next_vals.len(), "preprocessed next values");
-                        aggregated_prep_next.extend(prep_next.iter().copied());
+//                     // aggregated_perm_local.extend(perm_local.iter().copied());
+//                 });
 
-                        prep_next
-                    });
+//             let permutation_next_targets = inst.permutation_next.as_ref().map(|perm_next_vals| {
+//                 let perm_next =
+//                     circuit.alloc_public_inputs(perm_next_vals.len(), "permutation next values");
 
-            let mut quotient_chunks =
-                Vec::with_capacity(inst.base_opened_values.quotient_chunks.len());
-            for chunk in &inst.base_opened_values.quotient_chunks {
-                let chunk_targets =
-                    circuit.alloc_public_inputs(chunk.len(), "quotient chunk values");
-                aggregated_quotient_chunks.push(chunk_targets.clone());
-                quotient_chunks.push(chunk_targets);
-            }
+//                 // aggregated_perm_next.extend(perm_next.iter().copied());
+//             });
 
-            instances.push(InstanceOpenedValuesTargets {
-                trace_local,
-                trace_next,
-                preprocessed_local,
-                preprocessed_next,
-                quotient_chunks,
-                _phantom: PhantomData,
-            });
-        }
+//             let preprocessed_local_targets = inst
+//                 .base_opened_values
+//                 .preprocessed_local
+//                 .as_ref()
+//                 .map(|prep_local_vals| {
+//                     let prep_local = circuit
+//                         .alloc_public_inputs(prep_local_vals.len(), "preprocessed local values");
+//                     // aggregated_prep_local.extend(prep_local.iter().copied());
 
-        let opened_values_targets = OpenedValuesTargets {
-            trace_local_targets: aggregated_trace_local,
-            trace_next_targets: aggregated_trace_next,
-            preprocessed_local_targets: if aggregated_prep_local.is_empty() {
-                None
-            } else {
-                Some(aggregated_prep_local)
-            },
-            preprocessed_next_targets: if aggregated_prep_next.is_empty() {
-                None
-            } else {
-                Some(aggregated_prep_next)
-            },
-            quotient_chunks_targets: aggregated_quotient_chunks,
-            random_targets: None,
-            _phantom: PhantomData,
-        };
+//                     prep_local
+//                 });
+//             let preprocessed_next_targets =
+//                 inst.base_opened_values
+//                     .preprocessed_next
+//                     .as_ref()
+//                     .map(|prep_next_vals| {
+//                         let prep_next = circuit
+//                             .alloc_public_inputs(prep_next_vals.len(), "preprocessed next values");
+//                         // aggregated_prep_next.extend(prep_next.iter().copied());
 
-        let flattened = ProofTargets {
-            commitments_targets: CommitmentTargets {
-                trace_targets,
-                quotient_chunks_targets,
-                random_commit: None,
-                _phantom: PhantomData,
-            },
-            opened_values_targets,
-            opening_proof: OpeningProof::new(circuit, &input.opening_proof),
-            // Placeholder value: degree_bits is not used from the flattened ProofTargets in batch verification.
-            // The actual per-instance degree bits are stored in BatchProofTargets.degree_bits (Vec<usize>)
-            // and used directly by the verifier. The flattened structure is only used for PCS verification
-            // which doesn't access this field.
-            degree_bits: 0,
-        };
+//                         prep_next
+//                     });
 
-        Self {
-            flattened,
-            instances,
-            degree_bits: input.degree_bits.clone(),
-        }
-    }
+//             let mut quotient_chunks_targets =
+//                 Vec::with_capacity(inst.base_opened_values.quotient_chunks.len());
+//             for chunk in &inst.base_opened_values.quotient_chunks {
+//                 let chunk_targets =
+//                     circuit.alloc_public_inputs(chunk.len(), "quotient chunk values");
+//                 // aggregated_quotient_chunks.push(chunk_targets.clone());
+//                 quotient_chunks_targets.push(chunk_targets);
+//             }
 
-    fn get_values(input: &Self::Input) -> Vec<SC::Challenge> {
-        let commitments = p3_uni_stark::Commitments {
-            trace: input.commitments.main.clone(),
-            quotient_chunks: input.commitments.quotient_chunks.clone(),
-            random: None,
-        };
+//             // instances.push(InstanceOpenedValuesTargets {
+//             //     trace_local,
+//             //     trace_next,
+//             //     permutation_local,
+//             //     permutation_next,
+//             //     preprocessed_local,
+//             //     preprocessed_next,
+//             //     quotient_chunks,
+//             //     _phantom: PhantomData,
+//             // });
 
-        let mut values = CommitmentTargets::<SC::Challenge, Comm>::get_values(&commitments);
+//             let instance_opened_values_without_lookups = OpenedValuesTargets {
+//                 trace_local_targets,
+//                 trace_next_targets,
+//                 preprocessed_local_targets,
+//                 preprocessed_next_targets,
+//                 quotient_chunks_targets,
+//                 random_targets: None,
+//                 _phantom: PhantomData,
+//             };
 
-        // Opened values, preserving per-instance allocation order.
-        for inst in &input.opened_values.instances {
-            values.extend(inst.base_opened_values.trace_local.iter().copied());
-            values.extend(inst.base_opened_values.trace_next.iter().copied());
-            if let Some(prep_local) = &inst.base_opened_values.preprocessed_local {
-                values.extend(prep_local.iter().copied());
-            }
-            if let Some(prep_next) = &inst.base_opened_values.preprocessed_next {
-                values.extend(prep_next.iter().copied());
-            }
-            for chunk in &inst.base_opened_values.quotient_chunks {
-                values.extend(chunk.iter().copied());
-            }
-        }
+//             let instance_opened_values = OpenedValuesTargetsWithLookups {
+//                 opened_values_no_lookups: instance_opened_values_without_lookups,
+//                 permutation_local_targets,
+//                 permutation_next_targets,
+//             };
+//         }
 
-        values.extend(OpeningProof::get_values(&input.opening_proof));
-        values
-    }
-}
+//         // let opened_values_targets = OpenedValuesTargetsWithLookups {
+//         //     opened_values_no_lookups: OpenedValuesTargets {
+//         //         trace_local_targets: aggregated_trace_local,
+//         //         trace_next_targets: aggregated_trace_next,
+//         //         permutation_local_targets: if aggregated_perm_local.is_empty() {
+//         //             None
+//         //         } else {
+//         //         Some(aggregated_perm_local)
+//         //     },
+//         //     permutation_next_targets: if aggregated_perm_next.is_empty() {
+//         //         None
+//         //     } else {
+//         //         Some(aggregated_perm_next)
+//         //     },
+//         //     preprocessed_local_targets: if aggregated_prep_local.is_empty() {
+//         //         None
+//         //     } else {
+//         //         Some(aggregated_prep_local)
+//         //     },
+//         //     preprocessed_next_targets: if aggregated_prep_next.is_empty() {
+//         //         None
+//         //     } else {
+//         //         Some(aggregated_prep_next)
+//         //     },
+//         //     quotient_chunks_targets: aggregated_quotient_chunks,
+//         //     random_targets: None,
+//         //     _phantom: PhantomData,
+//         // };
+
+//         let flattened = ProofTargets {
+//             commitments_targets: CommitmentTargets {
+//                 trace_targets,
+//                 quotient_chunks_targets,
+//                 random_commit: None,
+//                 _phantom: PhantomData,
+//             },
+//             opened_values_targets,
+//             opening_proof: OpeningProof::new(circuit, &input.opening_proof),
+//             // Placeholder value: degree_bits is not used from the flattened ProofTargets in batch verification.
+//             // The actual per-instance degree bits are stored in BatchProofTargets.degree_bits (Vec<usize>)
+//             // and used directly by the verifier. The flattened structure is only used for PCS verification
+//             // which doesn't access this field.
+//             degree_bits: 0,
+//         };
+
+//         let permutation = if let Some(permutation_commit) = &input.commitments.permutation {
+//             Some(Comm::new(circuit, permutation_commit))
+//         } else {
+//             None
+//         };
+
+//         let global_lookup_data = input
+//             .global_lookup_data
+//             .iter()
+//             .map(|data_vec| {
+//                 data_vec
+//                     .iter()
+//                     .map(|lookup_data| LookupData {
+//                         name: lookup_data.name.clone(),
+//                         aux_idx: lookup_data.aux_idx,
+//                         expected_cumulated: circuit.alloc_public_input("Expected cumulated value"),
+//                     })
+//                     .collect::<Vec<_>>()
+//             })
+//             .collect::<Vec<_>>();
+
+//         Self {
+//             flattened,
+//             permutation,
+//             instances,
+//             global_lookup_data,
+//             degree_bits: input.degree_bits.clone(),
+//         }
+//     }
+
+//     fn get_values(input: &Self::Input) -> Vec<SC::Challenge> {
+//         let commitments = p3_uni_stark::Commitments {
+//             trace: input.commitments.main.clone(),
+//             quotient_chunks: input.commitments.quotient_chunks.clone(),
+//             random: None,
+//         };
+
+//         let mut values = CommitmentTargets::<SC::Challenge, Comm>::get_values(&commitments);
+
+//         if let Some(permutation_commit) = &input.commitments.permutation {
+//             values.extend(Comm::get_values(permutation_commit));
+//         }
+
+//         // Opened values, preserving per-instance allocation order.
+//         for inst in &input.opened_values.instances {
+//             values.extend(inst.base_opened_values.trace_local.iter().copied());
+//             values.extend(inst.base_opened_values.trace_next.iter().copied());
+//             if let Some(prep_local) = &inst.base_opened_values.preprocessed_local {
+//                 values.extend(prep_local.iter().copied());
+//             }
+//             if let Some(prep_next) = &inst.base_opened_values.preprocessed_next {
+//                 values.extend(prep_next.iter().copied());
+//             }
+//             for chunk in &inst.base_opened_values.quotient_chunks {
+//                 values.extend(chunk.iter().copied());
+//             }
+//         }
+
+//         values.extend(OpeningProof::get_values(&input.opening_proof));
+
+//         values.extend(
+//             input
+//                 .global_lookup_data
+//                 .iter()
+//                 .flatten()
+//                 .map(|d| d.expected_cumulated),
+//         );
+
+//         values
+//     }
+// }
 
 /// Verify a batch-STARK proof inside a recursive circuit.
 pub fn verify_batch_circuit<
@@ -353,6 +443,7 @@ pub fn verify_batch_circuit<
         + ObservableCommitment,
     InputProof: Recursive<SC::Challenge>,
     OpeningProof: Recursive<SC::Challenge>,
+    LG: LookupGadget,
     const RATE: usize,
 >(
     config: &SC,
@@ -361,10 +452,11 @@ pub fn verify_batch_circuit<
     proof_targets: &BatchProofTargets<SC, Comm, OpeningProof>,
     public_values: &[Vec<Target>],
     pcs_params: &PcsVerifierParams<SC, InputProof, OpeningProof, Comm>,
-    common: &PreprocessedVerifierDataTargets<SC, Comm>,
+    common: &CommonDataTargets<SC, Comm>,
+    lookup_gadget: &LG,
 ) -> Result<(), VerificationError>
 where
-    A: RecursiveAir<SC::Challenge>,
+    A: RecursiveAir<Val<SC>, SC::Challenge, LG>,
     <SC as StarkGenericConfig>::Pcs: RecursivePcs<
             SC,
             InputProof,
@@ -383,7 +475,7 @@ where
         ));
     }
 
-    if airs.len() != proof_targets.instances.len()
+    if airs.len() != proof_targets.opened_values_targets.instances.len()
         || airs.len() != public_values.len()
         || airs.len() != proof_targets.degree_bits.len()
     {
@@ -392,13 +484,15 @@ where
         ));
     }
 
+    let all_lookups = &common.lookups;
+
     let pcs = config.pcs();
 
-    let flattened = &proof_targets.flattened;
-    let commitments_targets = &flattened.commitments_targets;
-    let opened_values_targets = &flattened.opened_values_targets;
-    let opening_proof = &flattened.opening_proof;
-    let instances = &proof_targets.instances;
+    let instances = &proof_targets.opened_values_targets.instances;
+    let flattened = &proof_targets.flattened_opened_values_targets;
+    let commitments_targets = &proof_targets.commitments_targets;
+    let opened_values_targets = &proof_targets.opened_values_targets;
+    let opening_proof = &proof_targets.opening_proof;
     let degree_bits = &proof_targets.degree_bits;
 
     if commitments_targets.random_commit.is_some() {
@@ -426,24 +520,42 @@ where
             .unwrap_or(0);
         preprocessed_widths.push(pre_w);
 
-        let local_prep_len = instance.preprocessed_local.as_ref().map_or(0, |v| v.len());
-        let next_prep_len = instance.preprocessed_next.as_ref().map_or(0, |v| v.len());
+        let local_prep_len = instance
+            .opened_values_no_lookups
+            .preprocessed_local_targets
+            .as_ref()
+            .map_or(0, |v| v.len());
+        let next_prep_len = instance
+            .opened_values_no_lookups
+            .preprocessed_next_targets
+            .as_ref()
+            .map_or(0, |v| v.len());
         if local_prep_len != pre_w || next_prep_len != pre_w {
             return Err(VerificationError::InvalidProofShape(format!(
                 "Instance has incorrect preprocessed width: expected {pre_w}, got {local_prep_len} / {next_prep_len}"
             )));
         }
         let air_width = A::width(air);
-        if instance.trace_local.len() != air_width || instance.trace_next.len() != air_width {
+        if instance.opened_values_no_lookups.trace_local_targets.len() != air_width
+            || instance.opened_values_no_lookups.trace_next_targets.len() != air_width
+        {
             return Err(VerificationError::InvalidProofShape(format!(
                 "Instance has incorrect trace width: expected {}, got {} / {}",
                 air_width,
-                instance.trace_local.len(),
-                instance.trace_next.len()
+                instance.opened_values_no_lookups.trace_local_targets.len(),
+                instance.opened_values_no_lookups.trace_next_targets.len()
             )));
         }
 
-        let log_qd = A::get_log_num_quotient_chunks(air, pre_w, public_vals.len(), config.is_zk());
+        let log_qd = A::get_log_num_quotient_chunks(
+            air,
+            pre_w,
+            public_vals.len(),
+            &all_lookups[i],
+            &global_lookup_data[i],
+            config.is_zk(),
+            lookup_gadget,
+        );
         let quotient_degree = 1 << (log_qd + config.is_zk());
 
         if instance.quotient_chunks.len() != quotient_degree {
@@ -521,6 +633,29 @@ where
     }
     if let Some(global) = &common.preprocessed {
         challenger.observe_slice(circuit, &global.commitment.to_observation_targets());
+    }
+
+    // Validate shape of the lookup commitment.
+    let is_lookup = proof_targets.permutation.is_some();
+    if is_lookup != all_lookups.iter().any(|c| !c.is_empty()) {
+        return Err(VerificationError::InvalidProofShape(
+            "Mismatch between lookup commitment and lookup data".to_string(),
+        ));
+    }
+
+    // Fetch lookups and sample their challenges.
+    let challenges_per_instance =
+        get_perm_challenges::<SC, LG>(&mut challenger, all_lookups, lookup_gadget);
+
+    // Then, observe the permutation tables, if any.
+    if is_lookup {
+        challenger.observe(
+            circuit,
+            commitments
+                .permutation
+                .clone()
+                .expect("We checked that the commitment exists"),
+        );
     }
 
     let alpha = challenger.sample(circuit);
@@ -656,6 +791,37 @@ where
         coms_to_verify.push((global.commitment.clone(), pre_round));
     }
 
+    if is_lookup {
+        let permutaiton_commit = proof_targets
+            .permutation
+            .clone()
+            .expect("We checked that the commitment exists");
+
+        let mut permutation_round = Vec::new();
+
+        for (i, ext_dom, inst_opened_values) in ext_trace_domains.iter().enumerate() {
+            let inst = instances[i];
+
+            if inst.permutation_local.len() != inst.permutation_next.len() {
+                return Err(VerificationError::InvalidProofShape);
+            }
+            if !inst.permutation_local.is_empty() {
+                let zeta_next = trace_domains[i]
+                    .next_point(zeta)
+                    .ok_or(VerificationError::NextPointUnavailable)?;
+                permutation_round.push((
+                    *ext_dom,
+                    vec![
+                        (zeta, inst.permutation_local.clone()),
+                        (zeta_next, inst.permutation_next.clone()),
+                    ],
+                ));
+            }
+        }
+
+        coms_to_verify.push((permutaiton_commit, permutation_round));
+    }
+
     let pcs_challenges = SC::Pcs::get_challenges_circuit::<RATE>(
         circuit,
         &mut challenger,
@@ -706,7 +872,15 @@ where
             local_values: &inst.trace_local,
             next_values: &inst.trace_next,
         };
-        let folded_constraints = air.eval_folded_circuit(circuit, &sels, &alpha, columns_targets);
+        let folded_constraints = air.eval_folded_circuit(
+            circuit,
+            &sels,
+            &alpha,
+            all_lookups[i],
+            global_lookup_data[i],
+            columns_targets,
+            lookup_gadget,
+        );
 
         let folded_mul = circuit.mul(folded_constraints, sels.inv_vanishing);
         circuit.connect(folded_mul, quotient);

@@ -135,6 +135,11 @@ where
         self.expr_builder.add_public(pos, label)
     }
 
+    /// Returns the index of the latest allocated public input.
+    pub fn get_latest_public_input_idx(&self) -> usize {
+        self.public_tracker.count() - 1
+    }
+
     /// Allocates multiple public inputs with a descriptive label.
     pub fn alloc_public_inputs(&mut self, count: usize, label: &'static str) -> Vec<ExprId> {
         (0..count).map(|_| self.alloc_public_input(label)).collect()

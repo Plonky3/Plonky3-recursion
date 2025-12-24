@@ -6,7 +6,8 @@ mod selectors;
 
 pub use challenges::StarkChallenges;
 pub use proof::{
-    CommitmentTargets, OpenedValuesTargets, PreprocessedVerifierDataTargets, ProofTargets,
+    BatchProofTargets, CommitmentTargets, CommonDataTargets, OpenedValuesTargets,
+    OpenedValuesTargetsWithLookups, ProofTargets,
 };
 pub use selectors::RecursiveLagrangeSelectors;
 

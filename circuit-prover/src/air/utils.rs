@@ -40,7 +40,7 @@ pub trait LookupGadgetDyn<AB: PermutationAirBuilder + PairBuilder + AirBuilderWi
         &self,
         builder: &mut AB,
         contexts: &[Lookup<AB::F>],
-        lookup_data: &[LookupData<AB::EF>],
+        lookup_data: &[LookupData<AB::ExprEF>],
     );
 }
 
@@ -60,7 +60,7 @@ where
         &self,
         builder: &mut AB,
         contexts: &[Lookup<AB::F>],
-        lookup_data: &[LookupData<AB::EF>],
+        lookup_data: &[LookupData<AB::ExprEF>],
     ) {
         // forward to the generic method on the concrete handler
         LG::eval_lookups(self, builder, contexts, lookup_data);
@@ -78,7 +78,7 @@ where
         &self,
         builder: &mut AB,
         contexts: &[Lookup<AB::F>],
-        lookup_data: &[LookupData<AB::EF>],
+        lookup_data: &[LookupData<AB::ExprEF>],
         gadget: &dyn LookupGadgetDyn<AB>,
     );
 }
@@ -99,7 +99,7 @@ where
         &self,
         builder: &mut AB,
         contexts: &[Lookup<AB::F>],
-        lookup_data: &[LookupData<AB::EF>],
+        lookup_data: &[LookupData<AB::ExprEF>],
         gadget: &dyn LookupGadgetDyn<AB>,
     ) {
         Air::<AB>::eval(self, builder);
