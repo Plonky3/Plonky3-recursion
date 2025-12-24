@@ -437,7 +437,7 @@ pub fn extract_preprocessed_from_operations<F: Field, OF: Field>(
     preprocessed
 }
 
-pub fn eval<
+pub(crate) fn eval<
     AB: PairBuilder,
     LinearLayers: GenericPoseidon2LinearLayers<WIDTH>,
     const D: usize,

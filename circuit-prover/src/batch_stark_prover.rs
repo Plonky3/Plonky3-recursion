@@ -476,6 +476,17 @@ enum Poseidon2AirWrapperInner {
     KoalaBearD4Width24(Box<Poseidon2CircuitAirKoalaBearD4Width24>),
 }
 
+impl Poseidon2AirWrapperInner {
+    fn width(&self) -> usize {
+        match self {
+            Self::BabyBearD4Width16(air) => air.width(),
+            Self::BabyBearD4Width24(air) => air.width(),
+            Self::KoalaBearD4Width16(air) => air.width(),
+            Self::KoalaBearD4Width24(air) => air.width(),
+        }
+    }
+}
+
 struct Poseidon2AirWrapper<SC: StarkGenericConfig> {
     inner: Poseidon2AirWrapperInner,
     width: usize,
@@ -519,9 +530,14 @@ where
     Val<SC>: StarkField,
 {
     fn eval(&self, builder: &mut SymbolicAirBuilder<Val<SC>>) {
+        const BABY_BEAR_MODULUS: u64 = 2013265921;
+        const KOALA_BEAR_MODULUS: u64 = 2147483649;
+
         // Delegate to the actual AIR instance stored in the wrapper
         match &self.inner {
             Poseidon2AirWrapperInner::BabyBearD4Width16(air) => {
+                // Runtime check: verify Val<SC> == BabyBear before transmute
+                assert_eq!(Val::<SC>::from_u64(BABY_BEAR_MODULUS), Val::<SC>::ZERO,);
                 // SAFETY: Val<SC> == BabyBear when this variant is used
                 // SymbolicAirBuilder<BabyBear> and SymbolicAirBuilder<Val<SC>> have the same layout
                 unsafe {
@@ -531,6 +547,8 @@ where
                 }
             }
             Poseidon2AirWrapperInner::BabyBearD4Width24(air) => {
+                // Runtime check: verify Val<SC> == BabyBear before transmute
+                assert_eq!(Val::<SC>::from_u64(BABY_BEAR_MODULUS), Val::<SC>::ZERO,);
                 // SAFETY: Val<SC> == BabyBear when this variant is used
                 // SymbolicAirBuilder<BabyBear> and SymbolicAirBuilder<Val<SC>> have the same layout
                 unsafe {
@@ -540,6 +558,8 @@ where
                 }
             }
             Poseidon2AirWrapperInner::KoalaBearD4Width16(air) => {
+                // Runtime check: verify Val<SC> == KoalaBear before transmute
+                assert_eq!(Val::<SC>::from_u64(KOALA_BEAR_MODULUS), Val::<SC>::ZERO,);
                 // SAFETY: Val<SC> == KoalaBear when this variant is used
                 // SymbolicAirBuilder<KoalaBear> and SymbolicAirBuilder<Val<SC>> have the same layout
                 unsafe {
@@ -549,6 +569,8 @@ where
                 }
             }
             Poseidon2AirWrapperInner::KoalaBearD4Width24(air) => {
+                // Runtime check: verify Val<SC> == KoalaBear before transmute
+                assert_eq!(Val::<SC>::from_u64(KOALA_BEAR_MODULUS), Val::<SC>::ZERO,);
                 // SAFETY: Val<SC> == KoalaBear when this variant is used
                 // SymbolicAirBuilder<KoalaBear> and SymbolicAirBuilder<Val<SC>> have the same layout
                 unsafe {
@@ -1133,67 +1155,70 @@ where
 {
     fn add_lookup_columns(&mut self) -> Vec<usize> {
         match &mut self.inner {
-            Poseidon2AirWrapperInner::BabyBearD4Width16(air) => unsafe {
-                let air_bb: &mut Poseidon2CircuitAirBabyBearD4Width16 =
-                    core::mem::transmute(air.as_mut());
+            Poseidon2AirWrapperInner::BabyBearD4Width16(air) => {
+                let air_bb: &mut Poseidon2CircuitAirBabyBearD4Width16 = air.as_mut();
                 <Poseidon2CircuitAirBabyBearD4Width16 as AirLookupHandler<
                     SymbolicAirBuilder<BabyBear>,
                 >>::add_lookup_columns(air_bb)
-            },
-            Poseidon2AirWrapperInner::BabyBearD4Width24(air) => unsafe {
-                let air_bb: &mut Poseidon2CircuitAirBabyBearD4Width24 =
-                    core::mem::transmute(air.as_mut());
+            }
+            Poseidon2AirWrapperInner::BabyBearD4Width24(air) => {
+                let air_bb: &mut Poseidon2CircuitAirBabyBearD4Width24 = air.as_mut();
                 <Poseidon2CircuitAirBabyBearD4Width24 as AirLookupHandler<
                     SymbolicAirBuilder<BabyBear>,
                 >>::add_lookup_columns(air_bb)
-            },
-            Poseidon2AirWrapperInner::KoalaBearD4Width16(air) => unsafe {
-                let air_kb: &mut Poseidon2CircuitAirKoalaBearD4Width16 =
-                    core::mem::transmute(air.as_mut());
+            }
+            Poseidon2AirWrapperInner::KoalaBearD4Width16(air) => {
+                let air_kb: &mut Poseidon2CircuitAirKoalaBearD4Width16 = air.as_mut();
                 <Poseidon2CircuitAirKoalaBearD4Width16 as AirLookupHandler<
                     SymbolicAirBuilder<KoalaBear>,
                 >>::add_lookup_columns(air_kb)
-            },
-            Poseidon2AirWrapperInner::KoalaBearD4Width24(air) => unsafe {
-                let air_kb: &mut Poseidon2CircuitAirKoalaBearD4Width24 =
-                    core::mem::transmute(air.as_mut());
+            }
+            Poseidon2AirWrapperInner::KoalaBearD4Width24(air) => {
+                let air_kb: &mut Poseidon2CircuitAirKoalaBearD4Width24 = air.as_mut();
                 <Poseidon2CircuitAirKoalaBearD4Width24 as AirLookupHandler<
                     SymbolicAirBuilder<KoalaBear>,
                 >>::add_lookup_columns(air_kb)
-            },
+            }
         }
     }
 
     #[allow(clippy::missing_transmute_annotations)] // this gets overly verbose otherwise
     fn get_lookups(&mut self) -> Vec<p3_lookup::lookup_traits::Lookup<Val<SC>>> {
+        const BABY_BEAR_MODULUS: u64 = 2013265921;
+        const KOALA_BEAR_MODULUS: u64 = 2147483649;
+
         match &mut self.inner {
             Poseidon2AirWrapperInner::BabyBearD4Width16(air) => unsafe {
-                let air_bb: &mut Poseidon2CircuitAirBabyBearD4Width16 =
-                    core::mem::transmute(air.as_mut());
+                // Runtime check: verify Val<SC> == BabyBear before transmute
+                assert_eq!(Val::<SC>::from_u64(BABY_BEAR_MODULUS), Val::<SC>::ZERO,);
+                let air_bb: &mut Poseidon2CircuitAirBabyBearD4Width16 = air.as_mut();
                 let lookups_bb = <Poseidon2CircuitAirBabyBearD4Width16 as AirLookupHandler<
                     SymbolicAirBuilder<BabyBear>,
                 >>::get_lookups(air_bb);
                 core::mem::transmute(lookups_bb)
             },
             Poseidon2AirWrapperInner::BabyBearD4Width24(air) => unsafe {
-                let air_bb: &mut Poseidon2CircuitAirBabyBearD4Width24 =
-                    core::mem::transmute(air.as_mut());
+                // Runtime check: verify Val<SC> == BabyBear before transmute
+                assert_eq!(Val::<SC>::from_u64(BABY_BEAR_MODULUS), Val::<SC>::ZERO,);
+                let air_bb: &mut Poseidon2CircuitAirBabyBearD4Width24 = air.as_mut();
                 let lookups_bb = <Poseidon2CircuitAirBabyBearD4Width24 as AirLookupHandler<
                     SymbolicAirBuilder<BabyBear>,
                 >>::get_lookups(air_bb);
                 core::mem::transmute(lookups_bb)
             },
             Poseidon2AirWrapperInner::KoalaBearD4Width16(air) => unsafe {
-                let air_kb: &mut Poseidon2CircuitAirKoalaBearD4Width16 =
-                    core::mem::transmute(air.as_mut());
+                // Runtime check: verify Val<SC> == KoalaBear before transmute
+                assert_eq!(Val::<SC>::from_u64(KOALA_BEAR_MODULUS), Val::<SC>::ZERO,);
+                let air_kb: &mut Poseidon2CircuitAirKoalaBearD4Width16 = air.as_mut();
                 let lookups_kb = <Poseidon2CircuitAirKoalaBearD4Width16 as AirLookupHandler<
                     SymbolicAirBuilder<KoalaBear>,
                 >>::get_lookups(air_kb);
                 core::mem::transmute(lookups_kb)
             },
             Poseidon2AirWrapperInner::KoalaBearD4Width24(air) => unsafe {
-                let air_kb: &mut Poseidon2CircuitAirKoalaBearD4Width24 =
-                    core::mem::transmute(air.as_mut());
+                // Runtime check: verify Val<SC> == KoalaBear before transmute
+                assert_eq!(Val::<SC>::from_u64(KOALA_BEAR_MODULUS), Val::<SC>::ZERO,);
+                let air_kb: &mut Poseidon2CircuitAirKoalaBearD4Width24 = air.as_mut();
                 let lookups_kb = <Poseidon2CircuitAirKoalaBearD4Width24 as AirLookupHandler<
                     SymbolicAirBuilder<KoalaBear>,
                 >>::get_lookups(air_kb);
@@ -1594,45 +1619,45 @@ where
     ) -> Result<DynamicAirEntry<SC>, String> {
         // Recreate the AIR wrapper from the configuration
         match &self.config {
-            Poseidon2Config::BabyBearD4Width16 { constants, .. } => {
-                use p3_poseidon2_circuit_air::Poseidon2CircuitAirBabyBearD4Width16;
-                let air = Poseidon2CircuitAirBabyBearD4Width16::new(constants.clone());
+            Poseidon2Config::BabyBearD4Width16 { .. } => {
+                let inner = self.config.to_air_wrapper();
+                let width = inner.width();
                 let wrapper = Poseidon2AirWrapper {
-                    inner: self.config.to_air_wrapper(),
-                    width: air.width(),
+                    inner,
+                    width,
                     preprocessed: Vec::new(),
                     _phantom: core::marker::PhantomData::<SC>,
                 };
                 Ok(DynamicAirEntry::new(Box::new(wrapper)))
             }
-            Poseidon2Config::BabyBearD4Width24 { constants, .. } => {
-                use p3_poseidon2_circuit_air::Poseidon2CircuitAirBabyBearD4Width24;
-                let air = Poseidon2CircuitAirBabyBearD4Width24::new(constants.clone());
+            Poseidon2Config::BabyBearD4Width24 { .. } => {
+                let inner = self.config.to_air_wrapper();
+                let width = inner.width();
                 let wrapper = Poseidon2AirWrapper {
-                    inner: self.config.to_air_wrapper(),
-                    width: air.width(),
+                    inner,
+                    width,
                     preprocessed: Vec::new(),
                     _phantom: core::marker::PhantomData::<SC>,
                 };
                 Ok(DynamicAirEntry::new(Box::new(wrapper)))
             }
-            Poseidon2Config::KoalaBearD4Width16 { constants, .. } => {
-                use p3_poseidon2_circuit_air::Poseidon2CircuitAirKoalaBearD4Width16;
-                let air = Poseidon2CircuitAirKoalaBearD4Width16::new(constants.clone());
+            Poseidon2Config::KoalaBearD4Width16 { .. } => {
+                let inner = self.config.to_air_wrapper();
+                let width = inner.width();
                 let wrapper = Poseidon2AirWrapper {
-                    inner: self.config.to_air_wrapper(),
-                    width: air.width(),
+                    inner,
+                    width,
                     preprocessed: Vec::new(),
                     _phantom: core::marker::PhantomData::<SC>,
                 };
                 Ok(DynamicAirEntry::new(Box::new(wrapper)))
             }
-            Poseidon2Config::KoalaBearD4Width24 { constants, .. } => {
-                use p3_poseidon2_circuit_air::Poseidon2CircuitAirKoalaBearD4Width24;
-                let air = Poseidon2CircuitAirKoalaBearD4Width24::new(constants.clone());
+            Poseidon2Config::KoalaBearD4Width24 { .. } => {
+                let inner = self.config.to_air_wrapper();
+                let width = inner.width();
                 let wrapper = Poseidon2AirWrapper {
-                    inner: self.config.to_air_wrapper(),
-                    width: air.width(),
+                    inner,
+                    width,
                     preprocessed: Vec::new(),
                     _phantom: core::marker::PhantomData::<SC>,
                 };
