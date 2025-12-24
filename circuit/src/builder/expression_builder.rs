@@ -15,6 +15,7 @@ use core::hash::Hash;
 use hashbrown::HashMap;
 use p3_field::PrimeCharacteristicRing;
 
+use crate::NonPrimitiveOpType;
 use crate::expr::{Expr, ExpressionGraph};
 use crate::op::WitnessHintsFiller;
 use crate::types::{ExprId, NonPrimitiveOpId};
@@ -442,10 +443,11 @@ where
     /// The `inputs` parameter contains all input expressions (flattened), making dependencies
     /// explicit in the DAG structure. For stateful ops with chaining (e.g., `in_ctl=false`),
     /// `inputs` may be empty since chained values are not in the witness table.
+    #[allow(unused_variables)]
     pub fn add_non_primitive_call(
         &mut self,
         op_id: NonPrimitiveOpId,
-        op_type: crate::op::NonPrimitiveOpType,
+        op_type: NonPrimitiveOpType,
         inputs: Vec<ExprId>,
         label: &'static str,
     ) -> ExprId {

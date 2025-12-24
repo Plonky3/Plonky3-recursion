@@ -248,8 +248,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     let traces = runner.run()?;
 
     // Check Poseidon trace rows and mmcs_index_sum exposure
+    // The trace is stored over the circuit field (Ext4), not the base field
     let poseidon_trace = traces
-        .non_primitive_trace::<p3_circuit::tables::Poseidon2Trace<Base>>("poseidon2")
+        .non_primitive_trace::<p3_circuit::tables::Poseidon2Trace<Ext4>>("poseidon2")
         .expect("poseidon2 trace missing");
     assert_eq!(poseidon_trace.total_rows(), 3, "expected three perm rows");
 

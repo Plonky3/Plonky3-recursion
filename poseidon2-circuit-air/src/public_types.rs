@@ -18,6 +18,7 @@ impl Poseidon2Params for BabyBearD4Width16 {
     const WIDTH: usize = 16;
     const RATE_EXT: usize = 2;
     const CAPACITY_EXT: usize = 2;
+    const DIGEST_EXT: usize = 2;
     const SBOX_DEGREE: u64 = 7;
     const SBOX_REGISTERS: usize = 1;
     const HALF_FULL_ROUNDS: usize = 4;
@@ -33,6 +34,7 @@ impl Poseidon2Params for BabyBearD4Width24 {
     const WIDTH: usize = 24;
     const RATE_EXT: usize = 4;
     const CAPACITY_EXT: usize = 2;
+    const DIGEST_EXT: usize = 2;
     const SBOX_DEGREE: u64 = 7;
     const SBOX_REGISTERS: usize = 1;
     const HALF_FULL_ROUNDS: usize = 4;
@@ -48,6 +50,7 @@ impl Poseidon2Params for KoalaBearD4Width16 {
     const WIDTH: usize = 16;
     const RATE_EXT: usize = 2;
     const CAPACITY_EXT: usize = 2;
+    const DIGEST_EXT: usize = 2;
     const SBOX_DEGREE: u64 = 3;
     const SBOX_REGISTERS: usize = 0;
     const HALF_FULL_ROUNDS: usize = 4;
@@ -63,6 +66,7 @@ impl Poseidon2Params for KoalaBearD4Width24 {
     const WIDTH: usize = 24;
     const RATE_EXT: usize = 4;
     const CAPACITY_EXT: usize = 2;
+    const DIGEST_EXT: usize = 2;
     const SBOX_DEGREE: u64 = 3;
     const SBOX_REGISTERS: usize = 0;
     const HALF_FULL_ROUNDS: usize = 4;
@@ -79,6 +83,7 @@ pub type Poseidon2CircuitAirBabyBearD4Width16 = Poseidon2CircuitAir<
     { BabyBearD4Width16::WIDTH_EXT },
     { BabyBearD4Width16::RATE_EXT },
     { BabyBearD4Width16::CAPACITY_EXT },
+    { BabyBearD4Width16::DIGEST_EXT },
     { BabyBearD4Width16::SBOX_DEGREE },
     { BabyBearD4Width16::SBOX_REGISTERS },
     { BabyBearD4Width16::HALF_FULL_ROUNDS },
@@ -95,6 +100,7 @@ pub type Poseidon2CircuitAirBabyBearD4Width24 = Poseidon2CircuitAir<
     { BabyBearD4Width24::WIDTH_EXT },
     { BabyBearD4Width24::RATE_EXT },
     { BabyBearD4Width24::CAPACITY_EXT },
+    { BabyBearD4Width24::DIGEST_EXT },
     { BabyBearD4Width24::SBOX_DEGREE },
     { BabyBearD4Width24::SBOX_REGISTERS },
     { BabyBearD4Width24::HALF_FULL_ROUNDS },
@@ -111,6 +117,7 @@ pub type Poseidon2CircuitAirKoalaBearD4Width16 = Poseidon2CircuitAir<
     { KoalaBearD4Width16::WIDTH_EXT },
     { KoalaBearD4Width16::RATE_EXT },
     { KoalaBearD4Width16::CAPACITY_EXT },
+    { KoalaBearD4Width16::DIGEST_EXT },
     { KoalaBearD4Width16::SBOX_DEGREE },
     { KoalaBearD4Width16::SBOX_REGISTERS },
     { KoalaBearD4Width16::HALF_FULL_ROUNDS },
@@ -127,6 +134,7 @@ pub type Poseidon2CircuitAirKoalaBearD4Width24 = Poseidon2CircuitAir<
     { KoalaBearD4Width24::WIDTH_EXT },
     { KoalaBearD4Width24::RATE_EXT },
     { KoalaBearD4Width24::CAPACITY_EXT },
+    { KoalaBearD4Width24::DIGEST_EXT },
     { KoalaBearD4Width24::SBOX_DEGREE },
     { KoalaBearD4Width24::SBOX_REGISTERS },
     { KoalaBearD4Width24::HALF_FULL_ROUNDS },

@@ -23,12 +23,15 @@ pub use add::AddTrace;
 pub use constant::ConstTrace;
 pub use mul::MulTrace;
 pub use poseidon2::{
-    Poseidon2CircuitRow, Poseidon2CircuitTrace, Poseidon2Params, Poseidon2Trace,
-    PoseidonPermPrivateData, generate_poseidon2_trace,
+    Poseidon2CircuitRow, Poseidon2CircuitRowDyn, Poseidon2CircuitTrace, Poseidon2Params,
+    Poseidon2TraceDyn, PoseidonPermPrivateData, generate_poseidon2_trace,
 };
 pub use public::PublicTrace;
 pub use runner::CircuitRunner;
 pub use witness::WitnessTrace;
+
+/// Type alias for the dynamic Poseidon2 trace.
+pub type Poseidon2Trace<F> = poseidon2::Poseidon2TraceDyn<F>;
 
 /// Trait implemented by all non-primitive operation traces.
 pub trait NonPrimitiveTrace<F>: Send + Sync {
