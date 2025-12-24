@@ -10,14 +10,14 @@ use core::mem::transmute;
 use p3_air::{
     Air, AirBuilder, AirBuilderWithPublicValues, BaseAir, PairBuilder, PermutationAirBuilder,
 };
-use p3_baby_bear::{BabyBear, default_babybear_poseidon2_16, default_babybear_poseidon2_24};
+use p3_baby_bear::BabyBear;
 use p3_batch_stark::{BatchProof, CommonData, StarkGenericConfig, StarkInstance, Val};
 use p3_circuit::op::PrimitiveOpType;
 use p3_circuit::ops::{Poseidon2CircuitRow, Poseidon2Trace};
 use p3_circuit::tables::Traces;
 use p3_field::extension::{BinomialExtensionField, BinomiallyExtendable};
 use p3_field::{BasedVectorSpace, ExtensionField, Field, PrimeCharacteristicRing, PrimeField};
-use p3_koala_bear::{KoalaBear, default_koalabear_poseidon2_16, default_koalabear_poseidon2_24};
+use p3_koala_bear::KoalaBear;
 use p3_lookup::folder::{ProverConstraintFolderWithLookups, VerifierConstraintFolderWithLookups};
 use p3_lookup::lookup_traits::{AirLookupHandler, Lookup};
 use p3_matrix::dense::RowMajorMatrix;
@@ -27,7 +27,6 @@ use p3_poseidon2_circuit_air::{
     Poseidon2CircuitAirKoalaBearD4Width16, Poseidon2CircuitAirKoalaBearD4Width24,
     extract_preprocessed_from_operations, poseidon_preprocessed_width,
 };
-use p3_symmetric::CryptographicPermutation;
 use p3_uni_stark::{ProverConstraintFolder, SymbolicAirBuilder, VerifierConstraintFolder};
 use thiserror::Error;
 use tracing::instrument;
@@ -344,97 +343,72 @@ macro_rules! impl_table_prover_batch_instances_from_base {
 
 /// Poseidon2 configuration that can be selected at runtime.
 /// This enum represents different Poseidon2 configurations (field type, width, etc.).
+///
+/// Contains round constants needed for AIR constraint generation. The actual
+/// permutation computation happens during circuit execution, not trace generation.
 #[derive(Debug, Clone)]
 pub enum Poseidon2Config {
     /// BabyBear D=4, WIDTH=16 configuration
     BabyBearD4Width16 {
-        permutation: p3_baby_bear::Poseidon2BabyBear<16>,
         constants: RoundConstants<p3_baby_bear::BabyBear, 16, 4, 13>,
     },
     /// BabyBear D=4, WIDTH=24 configuration
     BabyBearD4Width24 {
-        permutation: p3_baby_bear::Poseidon2BabyBear<24>,
         constants: RoundConstants<p3_baby_bear::BabyBear, 24, 4, 21>,
     },
     /// KoalaBear D=4, WIDTH=16 configuration
     KoalaBearD4Width16 {
-        permutation: p3_koala_bear::Poseidon2KoalaBear<16>,
         constants: RoundConstants<p3_koala_bear::KoalaBear, 16, 4, 20>,
     },
     /// KoalaBear D=4, WIDTH=24 configuration
     KoalaBearD4Width24 {
-        permutation: p3_koala_bear::Poseidon2KoalaBear<24>,
         constants: RoundConstants<p3_koala_bear::KoalaBear, 24, 4, 23>,
     },
 }
 
 impl Poseidon2Config {
-    /// Create BabyBear D=4 WIDTH=16 configuration from default permutation.
-    /// Uses the same permutation and constants as `default_babybear_poseidon2_16()`.
+    /// Create BabyBear D=4 WIDTH=16 configuration with default round constants.
     pub fn baby_bear_d4_width16() -> Self {
-        let perm = default_babybear_poseidon2_16();
-
         let beginning_full: [[BabyBear; 16]; 4] = p3_baby_bear::BABYBEAR_RC16_EXTERNAL_INITIAL;
         let partial: [BabyBear; 13] = p3_baby_bear::BABYBEAR_RC16_INTERNAL;
         let ending_full: [[BabyBear; 16]; 4] = p3_baby_bear::BABYBEAR_RC16_EXTERNAL_FINAL;
 
         let constants = RoundConstants::new(beginning_full, partial, ending_full);
 
-        Self::BabyBearD4Width16 {
-            permutation: perm,
-            constants,
-        }
+        Self::BabyBearD4Width16 { constants }
     }
 
-    /// Create BabyBear D=4 WIDTH=24 configuration from default permutation.
-    /// Uses the same permutation and constants as `default_babybear_poseidon2_24()`.
+    /// Create BabyBear D=4 WIDTH=24 configuration with default round constants.
     pub fn baby_bear_d4_width24() -> Self {
-        let perm = default_babybear_poseidon2_24();
-
         let beginning_full: [[BabyBear; 24]; 4] = p3_baby_bear::BABYBEAR_RC24_EXTERNAL_INITIAL;
         let partial: [BabyBear; 21] = p3_baby_bear::BABYBEAR_RC24_INTERNAL;
         let ending_full: [[BabyBear; 24]; 4] = p3_baby_bear::BABYBEAR_RC24_EXTERNAL_FINAL;
 
         let constants = RoundConstants::new(beginning_full, partial, ending_full);
 
-        Self::BabyBearD4Width24 {
-            permutation: perm,
-            constants,
-        }
+        Self::BabyBearD4Width24 { constants }
     }
 
-    /// Create KoalaBear D=4 WIDTH=16 configuration from default permutation.
-    /// Uses the same permutation and constants as `default_koalabear_poseidon2_16()`.
+    /// Create KoalaBear D=4 WIDTH=16 configuration with default round constants.
     pub fn koala_bear_d4_width16() -> Self {
-        let perm = default_koalabear_poseidon2_16();
-
         let beginning_full: [[KoalaBear; 16]; 4] = p3_koala_bear::KOALABEAR_RC16_EXTERNAL_INITIAL;
         let partial: [KoalaBear; 20] = p3_koala_bear::KOALABEAR_RC16_INTERNAL;
         let ending_full: [[KoalaBear; 16]; 4] = p3_koala_bear::KOALABEAR_RC16_EXTERNAL_FINAL;
 
         let constants = RoundConstants::new(beginning_full, partial, ending_full);
 
-        Self::KoalaBearD4Width16 {
-            permutation: perm,
-            constants,
-        }
+        Self::KoalaBearD4Width16 { constants }
     }
 
-    /// Create KoalaBear D=4 WIDTH=24 configuration from default permutation.
-    /// Uses the same permutation and constants as `default_koalabear_poseidon2_24()`.
+    /// Create KoalaBear D=4 WIDTH=24 configuration with default round constants.
     pub fn koala_bear_d4_width24() -> Self {
-        let perm = default_koalabear_poseidon2_24();
-
         let beginning_full: [[KoalaBear; 24]; 4] = p3_koala_bear::KOALABEAR_RC24_EXTERNAL_INITIAL;
         let partial: [KoalaBear; 23] = p3_koala_bear::KOALABEAR_RC24_INTERNAL;
         let ending_full: [[KoalaBear; 24]; 4] = p3_koala_bear::KOALABEAR_RC24_EXTERNAL_FINAL;
 
         let constants = RoundConstants::new(beginning_full, partial, ending_full);
 
-        Self::KoalaBearD4Width24 {
-            permutation: perm,
-            constants,
-        }
+        Self::KoalaBearD4Width24 { constants }
     }
 }
 
@@ -602,45 +576,24 @@ impl Poseidon2Prover {
 
         // Pad to power of two and generate trace matrix based on configuration
         match &self.config {
-            Poseidon2Config::BabyBearD4Width16 {
-                permutation,
-                constants,
-            } => self.batch_instance_base_impl::<SC, p3_baby_bear::BabyBear, _, 16, 4, 13, 2>(
-                t,
-                permutation,
-                constants,
-            ),
-            Poseidon2Config::BabyBearD4Width24 {
-                permutation,
-                constants,
-            } => self.batch_instance_base_impl::<SC, p3_baby_bear::BabyBear, _, 24, 4, 21, 4>(
-                t,
-                permutation,
-                constants,
-            ),
-            Poseidon2Config::KoalaBearD4Width16 {
-                permutation,
-                constants,
-            } => self.batch_instance_base_impl::<SC, p3_koala_bear::KoalaBear, _, 16, 4, 20, 2>(
-                t,
-                permutation,
-                constants,
-            ),
-            Poseidon2Config::KoalaBearD4Width24 {
-                permutation,
-                constants,
-            } => self.batch_instance_base_impl::<SC, p3_koala_bear::KoalaBear, _, 24, 4, 23, 4>(
-                t,
-                permutation,
-                constants,
-            ),
+            Poseidon2Config::BabyBearD4Width16 { .. } => {
+                self.batch_instance_base_impl::<SC, p3_baby_bear::BabyBear, 16, 4, 13, 2>(t)
+            }
+            Poseidon2Config::BabyBearD4Width24 { .. } => {
+                self.batch_instance_base_impl::<SC, p3_baby_bear::BabyBear, 24, 4, 21, 4>(t)
+            }
+            Poseidon2Config::KoalaBearD4Width16 { .. } => {
+                self.batch_instance_base_impl::<SC, p3_koala_bear::KoalaBear, 16, 4, 20, 2>(t)
+            }
+            Poseidon2Config::KoalaBearD4Width24 { .. } => {
+                self.batch_instance_base_impl::<SC, p3_koala_bear::KoalaBear, 24, 4, 23, 4>(t)
+            }
         }
     }
 
     fn batch_instance_base_impl<
         SC,
         F,
-        P,
         const WIDTH: usize,
         const HALF_FULL_ROUNDS: usize,
         const PARTIAL_ROUNDS: usize,
@@ -648,13 +601,10 @@ impl Poseidon2Prover {
     >(
         &self,
         t: &Poseidon2Trace<Val<SC>>,
-        _permutation: &P,
-        _constants: &RoundConstants<F, WIDTH, HALF_FULL_ROUNDS, PARTIAL_ROUNDS>,
     ) -> Option<BatchTableInstance<SC>>
     where
         SC: StarkGenericConfig + 'static + Send + Sync,
         F: StarkField + PrimeCharacteristicRing,
-        P: CryptographicPermutation<[F; WIDTH]> + Clone,
         Val<SC>: StarkField,
     {
         let rows = t.total_rows();
@@ -690,10 +640,7 @@ impl Poseidon2Prover {
         // Create an AIR instance based on the configuration
         // This is a bit verbose but we can't get over const generics
         let (air, matrix) = match &self.config {
-            Poseidon2Config::BabyBearD4Width16 {
-                permutation,
-                constants,
-            } => {
+            Poseidon2Config::BabyBearD4Width16 { constants } => {
                 let preprocessed =
                     extract_preprocessed_from_operations::<BabyBear, Val<SC>>(&t.operations);
                 let air = Poseidon2CircuitAirBabyBearD4Width16::new_with_preprocessed(
@@ -702,7 +649,7 @@ impl Poseidon2Prover {
                 );
                 let ops_babybear: Vec<Poseidon2CircuitRow<BabyBear>> =
                     unsafe { transmute(ops_converted) };
-                let matrix_f = air.generate_trace_rows(&ops_babybear, constants, 0, permutation);
+                let matrix_f = air.generate_trace_rows(&ops_babybear, constants, 0);
                 let matrix: RowMajorMatrix<Val<SC>> = unsafe { transmute(matrix_f) };
                 (
                     // Preprocessed values are already stored in the AIR, so we don't need to pass them again in the wrapper.
@@ -714,10 +661,7 @@ impl Poseidon2Prover {
                     matrix,
                 )
             }
-            Poseidon2Config::BabyBearD4Width24 {
-                permutation,
-                constants,
-            } => {
+            Poseidon2Config::BabyBearD4Width24 { constants } => {
                 let preprocessed =
                     extract_preprocessed_from_operations::<BabyBear, Val<SC>>(&t.operations);
                 let air = Poseidon2CircuitAirBabyBearD4Width24::new_with_preprocessed(
@@ -726,7 +670,7 @@ impl Poseidon2Prover {
                 );
                 let ops_babybear: Vec<Poseidon2CircuitRow<BabyBear>> =
                     unsafe { transmute(ops_converted) };
-                let matrix_f = air.generate_trace_rows(&ops_babybear, constants, 0, permutation);
+                let matrix_f = air.generate_trace_rows(&ops_babybear, constants, 0);
                 let matrix: RowMajorMatrix<Val<SC>> = unsafe { transmute(matrix_f) };
                 (
                     // Preprocessed values are already stored in the AIR, so we don't need to pass them again in the wrapper.
@@ -738,10 +682,7 @@ impl Poseidon2Prover {
                     matrix,
                 )
             }
-            Poseidon2Config::KoalaBearD4Width16 {
-                permutation,
-                constants,
-            } => {
+            Poseidon2Config::KoalaBearD4Width16 { constants } => {
                 let preprocessed =
                     extract_preprocessed_from_operations::<KoalaBear, Val<SC>>(&t.operations);
                 let air = Poseidon2CircuitAirKoalaBearD4Width16::new_with_preprocessed(
@@ -750,7 +691,7 @@ impl Poseidon2Prover {
                 );
                 let ops_koalabear: Vec<Poseidon2CircuitRow<KoalaBear>> =
                     unsafe { transmute(ops_converted) };
-                let matrix_f = air.generate_trace_rows(&ops_koalabear, constants, 0, permutation);
+                let matrix_f = air.generate_trace_rows(&ops_koalabear, constants, 0);
                 let matrix: RowMajorMatrix<Val<SC>> = unsafe { transmute(matrix_f) };
                 (
                     // Preprocessed values are already stored in the AIR, so we don't need to pass them again in the wrapper.
@@ -762,10 +703,7 @@ impl Poseidon2Prover {
                     matrix,
                 )
             }
-            Poseidon2Config::KoalaBearD4Width24 {
-                permutation,
-                constants,
-            } => {
+            Poseidon2Config::KoalaBearD4Width24 { constants } => {
                 let preprocessed =
                     extract_preprocessed_from_operations::<KoalaBear, Val<SC>>(&t.operations);
                 let air = Poseidon2CircuitAirKoalaBearD4Width24::new_with_preprocessed(
@@ -774,7 +712,7 @@ impl Poseidon2Prover {
                 );
                 let ops_koalabear: Vec<Poseidon2CircuitRow<KoalaBear>> =
                     unsafe { core::mem::transmute(ops_converted) };
-                let matrix_f = air.generate_trace_rows(&ops_koalabear, constants, 0, permutation);
+                let matrix_f = air.generate_trace_rows(&ops_koalabear, constants, 0);
                 let matrix: RowMajorMatrix<Val<SC>> = unsafe { core::mem::transmute(matrix_f) };
                 (
                     // Preprocessed values are already stored in the AIR, so we don't need to pass them again in the wrapper.
