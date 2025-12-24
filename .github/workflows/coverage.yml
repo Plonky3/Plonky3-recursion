@@ -2,7 +2,7 @@ name: Weekly coverage (tarpaulin)
 
 on:
   schedule:
-    - cron: "0 0 * * 3" # min hour day-of-month month day-of-week
+    - cron: "0 0 * * 1" # min hour day-of-month month day-of-week
   workflow_dispatch: {}
 
 permissions:
@@ -11,8 +11,8 @@ permissions:
   id-token: write
 
 concurrency:
-    group: gh-pages
-    cancel-in-progress: true
+  group: gh-pages
+  cancel-in-progress: true
 
 jobs:
   coverage:
@@ -33,7 +33,10 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Install cargo-tarpaulin
-        run: cargo install --locked cargo-tarpaulin
+        run: |
+          if ! command -v cargo-tarpaulin >/dev/null; then
+            cargo install --locked cargo-tarpaulin
+          fi
 
       - name: Generate HTML report
         run: |
