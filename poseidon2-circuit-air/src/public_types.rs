@@ -4,7 +4,7 @@
 //! the Poseidon2 circuit AIR for commonly used configurations.
 
 use p3_baby_bear::{BabyBear, GenericPoseidon2LinearLayersBabyBear};
-use p3_circuit::tables::Poseidon2Params;
+use p3_circuit::ops::Poseidon2Params;
 use p3_koala_bear::{GenericPoseidon2LinearLayersKoalaBear, KoalaBear};
 
 use crate::Poseidon2CircuitAir;

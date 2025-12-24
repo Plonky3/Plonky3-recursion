@@ -14,7 +14,8 @@ use super::compiler::{ExpressionLowerer, Optimizer};
 use super::{BuilderConfig, ExpressionBuilder, PublicInputTracker};
 use crate::circuit::Circuit;
 use crate::op::{DefaultHint, NonPrimitiveOpType, PoseidonPermConfig, WitnessHintsFiller};
-use crate::tables::{Poseidon2Params, TraceGeneratorFn};
+use crate::ops::Poseidon2Params;
+use crate::tables::TraceGeneratorFn;
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};
 use crate::{CircuitBuilderError, CircuitError, CircuitField};
 

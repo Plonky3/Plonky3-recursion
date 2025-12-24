@@ -7,8 +7,7 @@ use std::error::Error;
 /// computation.
 use p3_baby_bear::{BabyBear, default_babybear_poseidon2_16};
 use p3_batch_stark::CommonData;
-use p3_circuit::ops::{PoseidonPermCall, PoseidonPermOps};
-use p3_circuit::tables::generate_poseidon2_trace;
+use p3_circuit::ops::{PoseidonPermCall, PoseidonPermOps, generate_poseidon2_trace};
 use p3_circuit::{CircuitBuilder, ExprId};
 use p3_circuit_prover::common::{NonPrimitiveConfig, get_airs_and_degrees_with_prep};
 use p3_circuit_prover::{BatchStarkProver, Poseidon2Config, TablePacking, config};

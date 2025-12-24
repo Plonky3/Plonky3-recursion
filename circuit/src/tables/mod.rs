@@ -9,12 +9,11 @@ use hashbrown::HashMap;
 
 use crate::CircuitError;
 use crate::circuit::Circuit;
-use crate::op::NonPrimitiveOpPrivateData;
+use crate::op::{NonPrimitiveOpPrivateData, OpStateMap};
 
 mod add;
 mod constant;
 mod mul;
-mod poseidon2;
 mod public;
 mod runner;
 mod witness;
@@ -22,10 +21,6 @@ mod witness;
 pub use add::AddTrace;
 pub use constant::ConstTrace;
 pub use mul::MulTrace;
-pub use poseidon2::{
-    Poseidon2CircuitRow, Poseidon2CircuitTrace, Poseidon2Params, Poseidon2Trace,
-    PoseidonPermPrivateData, generate_poseidon2_trace,
-};
 pub use public::PublicTrace;
 pub use runner::CircuitRunner;
 pub use witness::WitnessTrace;
@@ -43,10 +38,17 @@ pub trait NonPrimitiveTrace<F>: Send + Sync {
 }
 
 /// Function pointer for constructing a non-primitive trace from runner state.
+///
+/// The trace generator receives:
+/// - The circuit definition
+/// - The populated witness table
+/// - Private data for non-primitive operations
+/// - Operation execution state (containing recorded row data, chaining state, etc.)
 pub type TraceGeneratorFn<F> = fn(
     circuit: &Circuit<F>,
     witness: &[Option<F>],
     non_primitive_data: &[Option<NonPrimitiveOpPrivateData<F>>],
+    op_states: &OpStateMap,
 ) -> Result<Option<Box<dyn NonPrimitiveTrace<F>>>, CircuitError>;
 
 /// Execution traces for all tables.
