@@ -368,7 +368,7 @@ pub enum Poseidon2Config {
 
 impl Poseidon2Config {
     /// Create BabyBear D=4 WIDTH=16 configuration with default round constants.
-    pub fn baby_bear_d4_width16() -> Self {
+    pub const fn baby_bear_d4_width16() -> Self {
         let beginning_full: [[BabyBear; 16]; 4] = p3_baby_bear::BABYBEAR_RC16_EXTERNAL_INITIAL;
         let partial: [BabyBear; 13] = p3_baby_bear::BABYBEAR_RC16_INTERNAL;
         let ending_full: [[BabyBear; 16]; 4] = p3_baby_bear::BABYBEAR_RC16_EXTERNAL_FINAL;
@@ -379,7 +379,7 @@ impl Poseidon2Config {
     }
 
     /// Create BabyBear D=4 WIDTH=24 configuration with default round constants.
-    pub fn baby_bear_d4_width24() -> Self {
+    pub const fn baby_bear_d4_width24() -> Self {
         let beginning_full: [[BabyBear; 24]; 4] = p3_baby_bear::BABYBEAR_RC24_EXTERNAL_INITIAL;
         let partial: [BabyBear; 21] = p3_baby_bear::BABYBEAR_RC24_INTERNAL;
         let ending_full: [[BabyBear; 24]; 4] = p3_baby_bear::BABYBEAR_RC24_EXTERNAL_FINAL;
@@ -390,7 +390,7 @@ impl Poseidon2Config {
     }
 
     /// Create KoalaBear D=4 WIDTH=16 configuration with default round constants.
-    pub fn koala_bear_d4_width16() -> Self {
+    pub const fn koala_bear_d4_width16() -> Self {
         let beginning_full: [[KoalaBear; 16]; 4] = p3_koala_bear::KOALABEAR_RC16_EXTERNAL_INITIAL;
         let partial: [KoalaBear; 20] = p3_koala_bear::KOALABEAR_RC16_INTERNAL;
         let ending_full: [[KoalaBear; 16]; 4] = p3_koala_bear::KOALABEAR_RC16_EXTERNAL_FINAL;
@@ -401,7 +401,7 @@ impl Poseidon2Config {
     }
 
     /// Create KoalaBear D=4 WIDTH=24 configuration with default round constants.
-    pub fn koala_bear_d4_width24() -> Self {
+    pub const fn koala_bear_d4_width24() -> Self {
         let beginning_full: [[KoalaBear; 24]; 4] = p3_koala_bear::KOALABEAR_RC24_EXTERNAL_INITIAL;
         let partial: [KoalaBear; 23] = p3_koala_bear::KOALABEAR_RC24_INTERNAL;
         let ending_full: [[KoalaBear; 24]; 4] = p3_koala_bear::KOALABEAR_RC24_EXTERNAL_FINAL;
