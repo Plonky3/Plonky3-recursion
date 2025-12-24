@@ -95,8 +95,11 @@ where
     /// # Arguments
     /// * `trace_generator` - Function to generate Poseidon2 trace from circuit and witness
     /// * `perm` - The Poseidon2 permutation to use for execution
-    pub fn enable_poseidon2_perm<Config, P>(&mut self, trace_generator: TraceGeneratorFn<F>, perm: P)
-    where
+    pub fn enable_poseidon2_perm<Config, P>(
+        &mut self,
+        trace_generator: TraceGeneratorFn<F>,
+        perm: P,
+    ) where
         Config: Poseidon2Params,
         F: CircuitField + ExtensionField<Config::BaseField>,
         P: Permutation<[Config::BaseField; 16]> + Clone + Send + Sync + 'static,
@@ -970,7 +973,10 @@ mod tests {
         type Ext4 = BinomialExtensionField<BabyBear, 4>;
 
         let mut builder = CircuitBuilder::<Ext4>::new();
-        builder.enable_op(NonPrimitiveOpType::Poseidon2Perm, NonPrimitiveOpConfig::None);
+        builder.enable_op(
+            NonPrimitiveOpType::Poseidon2Perm,
+            NonPrimitiveOpConfig::None,
+        );
 
         // Use add_poseidon2_perm with out_ctl to expose outputs.
         let z = builder.add_const(Ext4::ZERO);
