@@ -70,6 +70,7 @@ p3-uni-stark = { path = "../Plonky3_2/uni-stark" }
 p3-util = { path = "../Plonky3_2/util" }
 
 # Other common dependencies
+hashbrown = "0.16.0"
 itertools = { version = "0.14.0", default-features = false, features = [
     "use_alloc",
 ] }

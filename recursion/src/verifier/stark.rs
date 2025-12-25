@@ -7,13 +7,17 @@ use p3_circuit::utils::ColumnsTargets;
 use p3_circuit::{CircuitBuilder, CircuitError};
 use p3_commit::Pcs;
 use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
-use p3_uni_stark::StarkGenericConfig;
+use p3_lookup::lookup_traits::EmptyLookupGadget;
+use p3_uni_stark::{StarkGenericConfig, Val};
 
 use super::{ObservableCommitment, VerificationError, recompose_quotient_from_chunks_circuit};
 use crate::Target;
 use crate::challenger::CircuitChallenger;
 use crate::traits::{Recursive, RecursiveAir, RecursivePcs};
-use crate::types::{CommitmentTargets, OpenedValuesTargets, ProofTargets, StarkChallenges};
+use crate::types::{
+    CommitmentTargets, OpenedValuesTargets, OpenedValuesTargetsWithLookups, ProofTargets,
+    StarkChallenges,
+};
 
 /// Type alias for PCS verifier parameters.
 type PcsVerifierParams<SC, InputProof, OpeningProof, Comm> =
@@ -68,7 +72,7 @@ pub fn verify_circuit<
     pcs_params: &PcsVerifierParams<SC, InputProof, OpeningProof, Comm>,
 ) -> Result<(), VerificationError>
 where
-    A: RecursiveAir<SC::Challenge>,
+    A: RecursiveAir<Val<SC>, SC::Challenge, EmptyLookupGadget>,
     <SC as StarkGenericConfig>::Pcs: RecursivePcs<
             SC,
             InputProof,
@@ -102,14 +106,20 @@ where
     } = opened_values_targets;
 
     let degree = 1 << degree_bits;
+    let lookup_gadget = EmptyLookupGadget {};
     let preprocessed_width = opt_opened_preprocessed_local_targets
         .as_ref()
         .map_or(0, |p| p.len());
+
+    // Lookups are not supported for recursive single STARK verification.
     let log_quotient_degree = A::get_log_num_quotient_chunks(
         air,
         preprocessed_width,
         public_values.len(),
+        &[],
+        &[],
         config.is_zk(),
+        &lookup_gadget,
     );
     let quotient_degree = 1 << (log_quotient_degree + config.is_zk());
 
@@ -241,10 +251,13 @@ where
     );
 
     // Evaluate AIR constraints at out-of-domain point
+    // Note that lookups are not supported for recursive single STARK verification.
     let sels = pcs.selectors_at_point_circuit(circuit, &init_trace_domain, &zeta);
     let columns_targets = ColumnsTargets {
         challenges: &[],
         public_values,
+        permutation_local_values: &[],
+        permutation_next_values: &[],
         local_prep_values: opt_opened_preprocessed_local_targets
             .as_ref()
             .map_or(&[], |p| p),
@@ -254,7 +267,15 @@ where
         local_values: opened_trace_local_targets,
         next_values: opened_trace_next_targets,
     };
-    let folded_constraints = air.eval_folded_circuit(circuit, &sels, &alpha, columns_targets);
+    let folded_constraints = air.eval_folded_circuit(
+        circuit,
+        &sels,
+        &alpha,
+        &[],
+        &[],
+        columns_targets,
+        &lookup_gadget,
+    );
 
     // Verify: constraints / Z_H(zeta) == quotient(zeta)
     let folded_mul = circuit.mul(folded_constraints, sels.inv_vanishing);
@@ -269,7 +290,7 @@ where
 /// - Base STARK challenges (alpha, zeta, zeta_next)
 /// - PCS-specific challenges (e.g., FRI betas, query indices)
 fn get_circuit_challenges<
-    A: RecursiveAir<SC::Challenge>,
+    A: RecursiveAir<Val<SC>, SC::Challenge, EmptyLookupGadget>,
     SC: StarkGenericConfig,
     Comm: Recursive<
             SC::Challenge,
@@ -301,7 +322,10 @@ where
         air,
         preprocessed_width,
         public_values.len(),
+        &[],
+        &[],
         config.is_zk(),
+        &EmptyLookupGadget {},
     );
 
     let mut challenger = CircuitChallenger::<RATE>::new();
@@ -315,12 +339,18 @@ where
         log_quotient_degree,
     );
 
+    let opened_values_no_lookups = OpenedValuesTargetsWithLookups {
+        opened_values_no_lookups: proof_targets.opened_values_targets.clone(),
+        permutation_local_targets: vec![],
+        permutation_next_targets: vec![],
+    };
+
     // Get PCS-specific challenges (FRI betas, query indices, etc.)
     let pcs_challenges = SC::Pcs::get_challenges_circuit::<RATE>(
         circuit,
         &mut challenger,
-        proof_targets,
-        &proof_targets.opened_values_targets,
+        &proof_targets.opening_proof,
+        &opened_values_no_lookups,
         pcs_params,
     )?;
 
@@ -338,7 +368,7 @@ fn validate_proof_shape<A, SC: StarkGenericConfig>(
     quotient_degree: usize,
 ) -> Result<(), VerificationError>
 where
-    A: RecursiveAir<SC::Challenge>,
+    A: RecursiveAir<Val<SC>, SC::Challenge, EmptyLookupGadget>,
     SC::Challenge: PrimeCharacteristicRing,
 {
     let air_width = A::width(air);

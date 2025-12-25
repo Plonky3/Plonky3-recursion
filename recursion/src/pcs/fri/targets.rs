@@ -23,7 +23,7 @@ use crate::traits::{
     ComsWithOpeningsTargets, Recursive, RecursiveChallenger, RecursiveExtensionMmcs, RecursiveMmcs,
     RecursivePcs,
 };
-use crate::types::{OpenedValuesTargets, ProofTargets, RecursiveLagrangeSelectors};
+use crate::types::{OpenedValuesTargetsWithLookups, RecursiveLagrangeSelectors};
 use crate::verifier::{ObservableCommitment, VerificationError};
 
 /// `Recursive` version of `FriProof`.
@@ -456,12 +456,14 @@ where
     fn get_challenges_circuit<const RATE: usize>(
         circuit: &mut CircuitBuilder<SC::Challenge>,
         challenger: &mut CircuitChallenger<RATE>,
-        proof_targets: &ProofTargets<SC, Comm, Self::RecursiveProof>,
-        opened_values: &OpenedValuesTargets<SC>,
+        fri_proof: &RecursiveFriProof<
+            SC,
+            RecursiveFriMmcs,
+            InputProofTargets<Val<SC>, SC::Challenge, RecursiveInputMmcs>,
+        >,
+        opened_values: &OpenedValuesTargetsWithLookups<SC>,
         params: &Self::VerifierParams,
     ) -> Result<Vec<Target>, CircuitError> {
-        let fri_proof = &proof_targets.opening_proof;
-
         opened_values.observe(circuit, challenger);
 
         // Sample FRI alpha (for batch opening reduction)

@@ -32,7 +32,10 @@ pub trait RecursiveAir<F: Field, EF: ExtensionField<F>, LG: LookupGadget> {
     /// - `builder`: Circuit builder for creating operations
     /// - `sels`: Row selectors and vanishing inverse for constraint evaluation
     /// - `alpha`: Challenge used for folding constraints
+    /// - `contexts`: Lookup contexts used in the AIR
+    /// - `lookup_data`: Data for global lookups
     /// - `columns`: Trace columns (local, next) and public values
+    /// - `lookup_gadget`: Gadget for handling lookups in the circuit
     ///
     /// # Returns
     /// A single target representing the folded constraint evaluation
@@ -42,7 +45,7 @@ pub trait RecursiveAir<F: Field, EF: ExtensionField<F>, LG: LookupGadget> {
         sels: &RecursiveLagrangeSelectors,
         alpha: &Target,
         contexts: &[Lookup<F>],
-        lookup_data: &[LookupData<(Target, SymbolicExpression<EF>)>],
+        lookup_data: &[LookupData<usize>],
         columns: ColumnsTargets<'_>,
         lookup_gadget: &LG,
     ) -> Target;
@@ -66,7 +69,7 @@ pub trait RecursiveAir<F: Field, EF: ExtensionField<F>, LG: LookupGadget> {
         preprocessed_width: usize,
         num_public_values: usize,
         contexts: &[Lookup<F>],
-        lookup_data: &[LookupData<(Target, usize)>],
+        lookup_data: &[LookupData<usize>],
         is_zk: usize,
         lookup_gadget: &LG,
     ) -> usize;
@@ -87,7 +90,7 @@ where
         sels: &RecursiveLagrangeSelectors,
         alpha: &Target,
         contexts: &[Lookup<F>],
-        lookup_data: &[LookupData<(Target, SymbolicExpression<EF>)>],
+        lookup_data: &[LookupData<usize>],
         columns: ColumnsTargets<'_>,
         lookup_gadget: &LG,
     ) -> Target {
@@ -98,7 +101,10 @@ where
             .map(|ld| LookupData {
                 name: ld.name.clone(),
                 aux_idx: ld.aux_idx.clone(),
-                expected_cumulated: ld.expected_cumulated.1.clone(),
+                expected_cumulated: SymbolicExpression::Variable(SymbolicVariable::new(
+                    Entry::Public,
+                    ld.expected_cumulated,
+                )),
             })
             .collect::<Vec<_>>();
 
@@ -137,7 +143,7 @@ where
         preprocessed_width: usize,
         num_public_values: usize,
         contexts: &[Lookup<F>],
-        lookup_data: &[LookupData<(Target, usize)>],
+        lookup_data: &[LookupData<usize>],
         is_zk: usize,
         lookup_gadget: &LG,
     ) -> usize
@@ -154,7 +160,7 @@ where
                 aux_idx: ld.aux_idx.clone(),
                 expected_cumulated: SymbolicExpression::Variable(SymbolicVariable::new(
                     Entry::Public,
-                    ld.expected_cumulated.1,
+                    ld.expected_cumulated,
                 )),
             })
             .collect::<Vec<_>>();

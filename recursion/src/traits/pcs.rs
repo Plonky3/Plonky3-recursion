@@ -7,7 +7,7 @@ use p3_uni_stark::StarkGenericConfig;
 
 use super::Recursive;
 use crate::Target;
-use crate::types::{OpenedValuesTargets, ProofTargets, RecursiveLagrangeSelectors};
+use crate::types::{OpenedValuesTargetsWithLookups, RecursiveLagrangeSelectors};
 use crate::verifier::VerificationError;
 
 /// Type alias for commitments with their opening points.
@@ -55,8 +55,8 @@ pub trait RecursivePcs<
     fn get_challenges_circuit<const RATE: usize>(
         circuit: &mut CircuitBuilder<SC::Challenge>,
         challenger: &mut crate::challenger::CircuitChallenger<RATE>,
-        proof_targets: &ProofTargets<SC, Comm, OpeningProof>,
-        opened_values: &OpenedValuesTargets<SC>,
+        proof_targets: &OpeningProof,
+        opened_values: &OpenedValuesTargetsWithLookups<SC>,
         params: &Self::VerifierParams,
     ) -> Result<Vec<Target>, CircuitError>;
 

@@ -1,59 +1,21 @@
 mod common;
 
-use p3_air::{Air, BaseAir, PairBuilder};
 use p3_batch_stark::CommonData;
 use p3_circuit::CircuitBuilder;
 use p3_circuit_prover::air::{AddAir, ConstAir, MulAir, PublicAir, WitnessAir};
 use p3_circuit_prover::batch_stark_prover::PrimitiveTable;
 use p3_circuit_prover::common::get_airs_and_degrees_with_prep;
 use p3_circuit_prover::{BatchStarkProver, TablePacking};
-use p3_field::{Field, PrimeCharacteristicRing};
+use p3_field::PrimeCharacteristicRing;
 use p3_fri::create_test_fri_params;
 use p3_lookup::logup::LogUpGadget;
 use p3_recursion::generation::generate_batch_challenges;
 use p3_recursion::pcs::fri::{FriVerifierParams, HashTargets, InputProofTargets, RecValMmcs};
-use p3_recursion::verifier::verify_p3_recursion_proof_circuit;
+use p3_recursion::verifier::{CircuitTablesAir, verify_p3_recursion_proof_circuit};
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
 
 use crate::common::baby_bear_params::*;
-
-/// Wrapper enum for heterogeneous circuit table AIRs
-enum CircuitTableAir<F: Field, const D: usize> {
-    Witness(WitnessAir<F, D>),
-    Const(ConstAir<F, D>),
-    Public(PublicAir<F, D>),
-    Add(AddAir<F, D>),
-    Mul(MulAir<F, D>),
-}
-
-impl<F: Field, const D: usize> BaseAir<F> for CircuitTableAir<F, D> {
-    fn width(&self) -> usize {
-        match self {
-            Self::Witness(a) => a.width(),
-            Self::Const(a) => a.width(),
-            Self::Public(a) => a.width(),
-            Self::Add(a) => a.width(),
-            Self::Mul(a) => a.width(),
-        }
-    }
-}
-
-impl<AB, const D: usize> Air<AB> for CircuitTableAir<AB::F, D>
-where
-    AB: PairBuilder,
-    AB::F: Field,
-{
-    fn eval(&self, builder: &mut AB) {
-        match self {
-            Self::Witness(a) => a.eval(builder),
-            Self::Const(a) => a.eval(builder),
-            Self::Public(a) => a.eval(builder),
-            Self::Add(a) => a.eval(builder),
-            Self::Mul(a) => a.eval(builder),
-        }
-    }
-}
 
 #[test]
 fn test_fibonacci_batch_verifier() {
@@ -151,17 +113,17 @@ fn test_fibonacci_batch_verifier() {
 
     // Base field AIRs for native challenge generation
     let native_airs = vec![
-        CircuitTableAir::Witness(WitnessAir::<F, TRACE_D>::new(
+        CircuitTablesAir::Witness(WitnessAir::<F, TRACE_D>::new(
             rows[PrimitiveTable::Witness],
             packing.witness_lanes(),
         )),
-        CircuitTableAir::Const(ConstAir::<F, TRACE_D>::new(rows[PrimitiveTable::Const])),
-        CircuitTableAir::Public(PublicAir::<F, TRACE_D>::new(rows[PrimitiveTable::Public])),
-        CircuitTableAir::Add(AddAir::<F, TRACE_D>::new(
+        CircuitTablesAir::Const(ConstAir::<F, TRACE_D>::new(rows[PrimitiveTable::Const])),
+        CircuitTablesAir::Public(PublicAir::<F, TRACE_D>::new(rows[PrimitiveTable::Public])),
+        CircuitTablesAir::Add(AddAir::<F, TRACE_D>::new(
             rows[PrimitiveTable::Add],
             packing.add_lanes(),
         )),
-        CircuitTableAir::Mul(MulAir::<F, TRACE_D>::new(
+        CircuitTablesAir::Mul(MulAir::<F, TRACE_D>::new(
             rows[PrimitiveTable::Mul],
             packing.mul_lanes(),
         )),
@@ -179,6 +141,7 @@ fn test_fibonacci_batch_verifier() {
         HashTargets<F, DIGEST_ELEMS>,
         InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>>,
         InnerFri,
+        LogUpGadget,
         RATE,
         TRACE_D,
     >(
@@ -187,6 +150,7 @@ fn test_fibonacci_batch_verifier() {
         &batch_stark_proof,
         &fri_verifier_params,
         &common,
+        &lookup_gadget,
     )
     .unwrap();
 
@@ -202,8 +166,11 @@ fn test_fibonacci_batch_verifier() {
         &pis,
         Some(&[pow_bits, log_height_max]),
         &common,
+        &lookup_gadget,
     )
     .unwrap();
+
+    println!("all challenges {}", all_challenges.len());
 
     // Pack values using the builder
     let public_inputs = verifier_inputs.pack_values(&pis, batch_proof, &common, &all_challenges);

@@ -7,6 +7,7 @@ use p3_circuit_prover::air::{AddAir, ConstAir, MulAir, PublicAir, WitnessAir};
 use p3_commit::ExtensionMmcs;
 use p3_field::PrimeCharacteristicRing;
 use p3_fri::TwoAdicFriPcs;
+use p3_lookup::lookup_traits::EmptyLookupGadget;
 use p3_matrix::dense::RowMajorMatrixView;
 use p3_matrix::stack::VerticalPair;
 use p3_poseidon2_air::RoundConstants;
@@ -32,7 +33,7 @@ fn run_recursive<A>(
 ) -> Result<(), CircuitError>
 where
     A: BaseAir<F>
-        + RecursiveAir<F>
+        + RecursiveAir<F, F, EmptyLookupGadget>
         + Air<SymbolicAirBuilder<F>>
         + for<'a> Air<VerifierConstraintFolder<'a, MyConfig>>,
 {
@@ -101,6 +102,8 @@ where
     let columns = ColumnsTargets {
         challenges: &[],
         public_values: &public_targets,
+        permutation_local_values: &[],
+        permutation_next_values: &[],
         local_prep_values: &pre_local_targets,
         next_prep_values: &pre_next_targets,
         local_values: &local_targets,
@@ -112,7 +115,16 @@ where
         row_selectors,
         inv_vanishing: builder.add_const(F::ONE),
     };
-    let sum = air.eval_folded_circuit(&mut builder, &sels, &alpha_t, columns);
+    let lookup_gadget = EmptyLookupGadget {};
+    let sum = air.eval_folded_circuit(
+        &mut builder,
+        &sels,
+        &alpha_t,
+        &[],
+        &[],
+        columns,
+        &lookup_gadget,
+    );
     let const_target = builder.add_const(folded_value);
     builder.connect(const_target, sum);
 

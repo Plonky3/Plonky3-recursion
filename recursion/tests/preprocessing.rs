@@ -332,14 +332,15 @@ fn test_batch_verifier_with_mixed_preprocessed() -> Result<(), VerificationError
     // 1. MulAir (has preprocessed columns)
     // 2. AddAirNoPreprocessed (no preprocessed columns)
     // 3. SubAirPartialPreprocessed (some preprocessed columns)
-    verify_batch_circuit::<_, _, _, _, _, RATE>(
+    verify_batch_circuit::<_, _, _, _, _, _, RATE>(
         &config,
         &airs,
         &mut circuit_builder,
         &verifier_inputs.proof_targets,
         &verifier_inputs.air_public_targets,
         &pcs_verifier_params,
-        &verifier_inputs.preprocessed,
+        &verifier_inputs.common_data,
+        &lookup_gadget,
     )?;
 
     // Build the circuit
@@ -355,6 +356,7 @@ fn test_batch_verifier_with_mixed_preprocessed() -> Result<(), VerificationError
         &pvs,
         Some(&[pow_bits, log_height_max]),
         &common_data,
+        &lookup_gadget,
     )?;
 
     // Pack values using the batch builder

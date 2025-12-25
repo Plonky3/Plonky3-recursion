@@ -4,6 +4,7 @@ mod common;
 
 use p3_circuit::CircuitBuilder;
 use p3_fri::create_test_fri_params;
+use p3_lookup::lookup_traits::AirNoLookup;
 use p3_matrix::Matrix;
 use p3_recursion::pcs::fri::{FriVerifierParams, HashTargets};
 use p3_recursion::public_inputs::StarkVerifierInputsBuilder;
@@ -43,8 +44,9 @@ fn test_mul_verifier_circuit() -> Result<(), VerificationError> {
     let pis = vec![];
 
     // Create AIR and generate valid trace
-    let air = MulAir { degree: 2, rows: n };
-    let (trace, _) = air.random_valid_trace(true);
+    let inner_air = MulAir { degree: 2, rows: n };
+    let air = AirNoLookup::new(inner_air);
+    let (trace, _) = inner_air.random_valid_trace(true);
 
     // Setup preprocessed data
     let (preprocessed_prover_data, preprocessed_vk) =

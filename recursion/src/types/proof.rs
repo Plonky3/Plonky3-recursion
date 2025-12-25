@@ -11,7 +11,7 @@ use p3_batch_stark::{BatchCommitments, BatchOpenedValues, BatchProof, CommonData
 use p3_circuit::CircuitBuilder;
 use p3_commit::Pcs;
 use p3_field::Field;
-use p3_uni_stark::{Commitments, OpenedValues, Proof, StarkGenericConfig, Val};
+use p3_uni_stark::{OpenedValues, Proof, StarkGenericConfig, Val};
 
 use crate::Target;
 use crate::traits::{Recursive, RecursiveChallenger};
@@ -47,7 +47,7 @@ pub struct BatchProofTargets<
     OpeningProof: Recursive<SC::Challenge>,
 > {
     /// Commitments to trace, quotient chunks, and optional random polynomial
-    pub commitments_targets: BatchCommitmentTargets<SC::Challenge, Comm>,
+    pub commitments_targets: CommitmentTargets<SC::Challenge, Comm>,
     pub flattened_opened_values_targets: OpenedValuesTargetsWithLookups<SC>,
     /// Opened values at evaluation points (zeta, zeta_next)
     pub opened_values_targets: BatchOpenedValuesTargets<SC>,
@@ -56,7 +56,7 @@ pub struct BatchProofTargets<
     /// Data necessary to verify the global lookup arguments across all instances
     /// We need both the `Target` (so that the values can be used in the circuit) and the offset within the public values,
     /// so we can compute the constraint evaluations using the associated symbolic expression
-    pub global_lookup_data: Vec<Vec<LookupData<(Target, usize)>>>,
+    pub global_lookup_data: Vec<Vec<LookupData<Target>>>,
     /// Log₂ of the trace domain size for all instances in a batch-STARK proof
     pub degree_bits: Vec<usize>,
 }
@@ -66,19 +66,7 @@ pub struct BatchProofTargets<
 pub struct CommitmentTargets<F: Field, Comm: Recursive<F>> {
     /// Commitment to the trace polynomial
     pub trace_targets: Comm,
-    /// Commitment to the quotient polynomial chunks
-    pub quotient_chunks_targets: Comm,
-    /// Optional commitment to random polynomial (ZK mode)
-    pub random_commit: Option<Comm>,
-    pub _phantom: PhantomData<F>,
-}
-
-/// Target structure for STARK commitments.
-#[derive(Clone)]
-pub struct BatchCommitmentTargets<F: Field, Comm: Recursive<F>> {
-    /// Commitment to the trace polynomial
-    pub trace_targets: Comm,
-    /// Commitment to all permutation polynomials (one per instance).
+    /// Commitment to all permutation polynomials.
     pub permutation_targets: Option<Comm>,
     /// Commitment to the quotient polynomial chunks
     pub quotient_chunks_targets: Comm,
@@ -87,8 +75,21 @@ pub struct BatchCommitmentTargets<F: Field, Comm: Recursive<F>> {
     pub _phantom: PhantomData<F>,
 }
 
+// Target structure for STARK commitments.
+// #[derive(Clone)]
+// pub struct CommitmentTargets<F: Field, Comm: Recursive<F>> {
+//     /// Commitment to the trace polynomial
+//     pub trace_targets: Comm,
+//     /// Commitment to all permutation polynomials (one per instance).
+//     pub permutation_targets: Option<Comm>,
+//     /// Commitment to the quotient polynomial chunks
+//     pub quotient_chunks_targets: Comm,
+//     /// Optional commitment to random polynomial (ZK mode)
+//     pub random_commit: Option<Comm>,
+//     pub _phantom: PhantomData<F>,
+// }
+
 /// Target structure for opened polynomial values.
-#[derive(Clone)]
 pub struct OpenedValuesTargets<SC: StarkGenericConfig> {
     /// Trace values at point zeta
     pub trace_local_targets: Vec<Target>,
@@ -103,6 +104,23 @@ pub struct OpenedValuesTargets<SC: StarkGenericConfig> {
     /// Optional random polynomial values (ZK mode)
     pub random_targets: Option<Vec<Target>>,
     pub _phantom: PhantomData<SC>,
+}
+
+impl<SC> Clone for OpenedValuesTargets<SC>
+where
+    SC: StarkGenericConfig,
+{
+    fn clone(&self) -> Self {
+        Self {
+            trace_local_targets: self.trace_local_targets.clone(),
+            trace_next_targets: self.trace_next_targets.clone(),
+            preprocessed_local_targets: self.preprocessed_local_targets.clone(),
+            preprocessed_next_targets: self.preprocessed_next_targets.clone(),
+            quotient_chunks_targets: self.quotient_chunks_targets.clone(),
+            random_targets: self.random_targets.clone(),
+            _phantom: PhantomData,
+        }
+    }
 }
 
 /// Target structure for opened polynomial values, including lookups.
@@ -185,7 +203,7 @@ where
     }
 }
 
-impl<SC: StarkGenericConfig> OpenedValuesTargets<SC> {
+impl<SC: StarkGenericConfig> OpenedValuesTargetsWithLookups<SC> {
     /// Observe all opened values in the Fiat-Shamir transcript.
     ///
     /// This method absorbs all opened values into the challenger state,
@@ -199,18 +217,35 @@ impl<SC: StarkGenericConfig> OpenedValuesTargets<SC> {
         circuit: &mut CircuitBuilder<F>,
         challenger: &mut impl RecursiveChallenger<F>,
     ) {
+        // Observe random values if in ZK mode
+        if let Some(random_vals) = &self.opened_values_no_lookups.random_targets {
+            challenger.observe_slice(circuit, random_vals);
+        }
+
         // Observe trace values at zeta and zeta_next
-        challenger.observe_slice(circuit, &self.trace_local_targets);
-        challenger.observe_slice(circuit, &self.trace_next_targets);
+        challenger.observe_slice(circuit, &self.opened_values_no_lookups.trace_local_targets);
+        challenger.observe_slice(circuit, &self.opened_values_no_lookups.trace_next_targets);
 
         // Observe quotient chunk values
-        for chunk_values in &self.quotient_chunks_targets {
+        for chunk_values in &self.opened_values_no_lookups.quotient_chunks_targets {
             challenger.observe_slice(circuit, chunk_values);
         }
 
-        // Observe random values if in ZK mode
-        if let Some(random_vals) = &self.random_targets {
-            challenger.observe_slice(circuit, random_vals);
+        if let Some(preprocessed_local_targets) =
+            &self.opened_values_no_lookups.preprocessed_local_targets
+        {
+            challenger.observe_slice(circuit, preprocessed_local_targets)
+        }
+        if let Some(preprocessed_next_targets) =
+            &self.opened_values_no_lookups.preprocessed_next_targets
+        {
+            challenger.observe_slice(circuit, preprocessed_next_targets)
+        }
+        if !self.permutation_local_targets.is_empty() {
+            challenger.observe_slice(circuit, &self.permutation_local_targets)
+        }
+        if !self.permutation_next_targets.is_empty() {
+            challenger.observe_slice(circuit, &self.permutation_next_targets)
         }
     }
 }
@@ -225,7 +260,13 @@ impl<
 
     /// Allocates the necessary circuit targets for storing the proof's public data.
     fn new(circuit: &mut CircuitBuilder<SC::Challenge>, input: &Self::Input) -> Self {
-        let commitments_targets = CommitmentTargets::new(circuit, &input.commitments);
+        let commitments_no_lookups = BatchCommitments {
+            main: input.commitments.trace.clone(),
+            permutation: None,
+            quotient_chunks: input.commitments.quotient_chunks.clone(),
+            random: input.commitments.random.clone(),
+        };
+        let commitments_targets = CommitmentTargets::new(circuit, &commitments_no_lookups);
         let opened_values_targets = OpenedValuesTargets::new(circuit, &input.opened_values);
         let opening_proof = OpeningProof::new(circuit, &input.opening_proof);
 
@@ -245,7 +286,13 @@ impl<
             degree_bits: _,
         } = input;
 
-        CommitmentTargets::<SC::Challenge, Comm>::get_values(commitments)
+        let commitments_no_lookups = BatchCommitments {
+            main: commitments.trace.clone(),
+            permutation: None,
+            quotient_chunks: commitments.quotient_chunks.clone(),
+            random: commitments.random.clone(),
+        };
+        CommitmentTargets::<SC::Challenge, Comm>::get_values(&commitments_no_lookups)
             .into_iter()
             .chain(OpenedValuesTargets::<SC>::get_values(opened_values))
             .chain(OpeningProof::get_values(opening_proof))
@@ -275,7 +322,7 @@ impl<
         let mut aggregated_preprocessed_next = Vec::new();
         let mut aggregated_quotient_chunks = Vec::new();
 
-        let commitments_targets = BatchCommitmentTargets::new(circuit, &input.commitments);
+        let commitments_targets = CommitmentTargets::new(circuit, &input.commitments);
         let opened_values_targets = BatchOpenedValuesTargets::new(circuit, &input.opened_values);
         let opening_proof = OpeningProof::new(circuit, &input.opening_proof);
         let global_lookup_data = input
@@ -286,11 +333,10 @@ impl<
                     .iter()
                     .map(|ld| {
                         let target = circuit.alloc_public_input("global lookup data");
-                        let idx = circuit.get_latest_public_input_idx();
                         LookupData {
                             name: ld.name.clone(),
                             aux_idx: ld.aux_idx,
-                            expected_cumulated: (target, idx),
+                            expected_cumulated: target,
                         }
                     })
                     .collect::<Vec<_>>()
@@ -355,60 +401,21 @@ impl<
             degree_bits: _,
         } = input;
 
-        BatchCommitmentTargets::<SC::Challenge, Comm>::get_values(commitments)
+        CommitmentTargets::<SC::Challenge, Comm>::get_values(commitments)
             .into_iter()
             .chain(BatchOpenedValuesTargets::<SC>::get_values(opened_values))
+            .chain(OpeningProof::get_values(opening_proof))
             .chain(
                 global_lookup_data
                     .iter()
                     .flatten()
                     .map(|ld| ld.expected_cumulated),
             )
-            .chain(OpeningProof::get_values(opening_proof))
             .collect()
     }
 }
 
 impl<F: Field, Comm> Recursive<F> for CommitmentTargets<F, Comm>
-where
-    Comm: Recursive<F>,
-{
-    type Input = Commitments<Comm::Input>;
-
-    fn new(circuit: &mut CircuitBuilder<F>, input: &Self::Input) -> Self {
-        let trace_targets = Comm::new(circuit, &input.trace);
-        let quotient_chunks_targets = Comm::new(circuit, &input.quotient_chunks);
-        let random_commit = input
-            .random
-            .as_ref()
-            .map(|random| Comm::new(circuit, random));
-
-        Self {
-            trace_targets,
-            quotient_chunks_targets,
-            random_commit,
-            _phantom: PhantomData,
-        }
-    }
-
-    fn get_values(input: &Self::Input) -> Vec<F> {
-        let Commitments {
-            trace,
-            quotient_chunks,
-            random,
-        } = input;
-
-        let mut values = vec![];
-        values.extend(Comm::get_values(trace));
-        values.extend(Comm::get_values(quotient_chunks));
-        if let Some(random) = random {
-            values.extend(Comm::get_values(random));
-        }
-        values
-    }
-}
-
-impl<F: Field, Comm> Recursive<F> for BatchCommitmentTargets<F, Comm>
 where
     Comm: Recursive<F>,
 {

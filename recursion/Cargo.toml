@@ -25,6 +25,7 @@ p3-uni-stark.workspace = true
 p3-util.workspace = true
 
 # Other dependencies
+hashbrown.workspace = true
 itertools.workspace = true
 serde.workspace = true
 thiserror.workspace = true

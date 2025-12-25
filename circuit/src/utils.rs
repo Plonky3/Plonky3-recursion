@@ -22,6 +22,10 @@ pub struct ColumnsTargets<'a> {
     pub challenges: &'a [ExprId],
     /// Public values added to the circuit.
     pub public_values: &'a [ExprId],
+    /// Targets for the permutation values used in the circuit.
+    pub permutation_local_values: &'a [ExprId],
+    /// Targets for the permutation values evaluated at the next row.
+    pub permutation_next_values: &'a [ExprId],
     /// Targets for the preprocessed values used in the circuit.
     pub local_prep_values: &'a [ExprId],
     /// Targets for the preprocessed values evaluated at the next row.
@@ -72,6 +76,8 @@ pub fn symbolic_to_circuit<F: Field>(
     let ColumnsTargets {
         challenges,
         public_values,
+        permutation_local_values,
+        permutation_next_values,
         local_prep_values,
         next_prep_values,
         local_values,
@@ -112,12 +118,17 @@ pub fn symbolic_to_circuit<F: Field>(
                             Entry::Preprocessed { offset } => {
                                 get_val(offset, v.index, local_prep_values, next_prep_values)
                             }
+                            Entry::Permutation { offset } => get_val(
+                                offset,
+                                v.index,
+                                permutation_local_values,
+                                permutation_next_values,
+                            ),
                             Entry::Main { offset } => {
                                 get_val(offset, v.index, local_values, next_values)
                             }
                             Entry::Public => public_values[v.index],
                             Entry::Challenge => challenges[v.index],
-                            _ => unimplemented!(),
                         };
                         cache.insert(key, id);
                         stack.push(id);
@@ -324,6 +335,8 @@ mod tests {
         let columns = ColumnsTargets {
             challenges: &[],
             public_values: &circuit_public_values,
+            permutation_local_values: &[],
+            permutation_next_values: &[],
             local_prep_values: &[],
             next_prep_values: &[],
             local_values: &circuit_local_values,
