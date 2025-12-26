@@ -19,7 +19,7 @@ use crate::common::baby_bear_params::*;
 
 #[test]
 fn test_fibonacci_batch_verifier() {
-    let n: usize = 2;
+    let n: usize = 100;
 
     let mut builder = CircuitBuilder::new();
 

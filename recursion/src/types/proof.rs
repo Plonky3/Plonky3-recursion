@@ -75,20 +75,6 @@ pub struct CommitmentTargets<F: Field, Comm: Recursive<F>> {
     pub _phantom: PhantomData<F>,
 }
 
-// Target structure for STARK commitments.
-// #[derive(Clone)]
-// pub struct CommitmentTargets<F: Field, Comm: Recursive<F>> {
-//     /// Commitment to the trace polynomial
-//     pub trace_targets: Comm,
-//     /// Commitment to all permutation polynomials (one per instance).
-//     pub permutation_targets: Option<Comm>,
-//     /// Commitment to the quotient polynomial chunks
-//     pub quotient_chunks_targets: Comm,
-//     /// Optional commitment to random polynomial (ZK mode)
-//     pub random_commit: Option<Comm>,
-//     pub _phantom: PhantomData<F>,
-// }
-
 /// Target structure for opened polynomial values.
 pub struct OpenedValuesTargets<SC: StarkGenericConfig> {
     /// Trace values at point zeta
