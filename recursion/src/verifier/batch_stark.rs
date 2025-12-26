@@ -1,9 +1,8 @@
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use alloc::{format, vec};
-use hashbrown::HashMap;
-use p3_lookup::lookup_traits::{AirLookupHandler, Kind, Lookup, LookupData, LookupGadget};
 
+use hashbrown::HashMap;
 use p3_air::{
     Air as P3Air, AirBuilderWithPublicValues, BaseAir as P3BaseAir, PairBuilder,
     PermutationAirBuilder,
@@ -15,12 +14,14 @@ use p3_circuit_prover::air::{AddAir, ConstAir, MulAir, PublicAir, WitnessAir};
 use p3_circuit_prover::batch_stark_prover::{PrimitiveTable, RowCounts};
 use p3_commit::{Pcs, PolynomialSpace};
 use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing, PrimeField};
+use p3_lookup::lookup_traits::{AirLookupHandler, Kind, Lookup, LookupData, LookupGadget};
 use p3_uni_stark::{StarkGenericConfig, SymbolicExpression, Val};
 
 use super::{ObservableCommitment, VerificationError, recompose_quotient_from_chunks_circuit};
 use crate::challenger::CircuitChallenger;
 use crate::traits::{
-    Recursive, RecursiveAir, RecursiveChallenger, RecursiveLookupGadget, RecursivePcs,
+    LookupMetadata, Recursive, RecursiveAir, RecursiveChallenger, RecursiveLookupGadget,
+    RecursivePcs,
 };
 use crate::types::{BatchProofTargets, CommonDataTargets, OpenedValuesTargets};
 use crate::{BatchStarkVerifierInputsBuilder, Target};
@@ -202,6 +203,7 @@ where
 }
 
 /// Verify a batch-STARK proof inside a recursive circuit.
+#[allow(clippy::too_many_arguments)]
 pub fn verify_batch_circuit<
     A,
     SC: StarkGenericConfig,
@@ -723,11 +725,8 @@ where
 
         // Add the expected cumulated values to the public values, so that we can use them in the constraints.
         let mut public_vals_with_expected_cumulated = public_vals.clone();
-        public_vals_with_expected_cumulated.extend(
-            global_lookup_data[i]
-                .iter()
-                .map(|ld| ld.expected_cumulated.clone()),
-        );
+        public_vals_with_expected_cumulated
+            .extend(global_lookup_data[i].iter().map(|ld| ld.expected_cumulated));
         let sels = pcs.selectors_at_point_circuit(circuit, trace_domain, &zeta);
         let columns_targets = ColumnsTargets {
             challenges: &challenges_per_instance[i],
@@ -739,12 +738,16 @@ where
             local_values: &inst.opened_values_no_lookups.trace_local_targets,
             next_values: &inst.opened_values_no_lookups.trace_next_targets,
         };
+
+        let lookup_metadata = LookupMetadata {
+            contexts: &all_lookups[i],
+            lookup_data: &lookup_data_to_pv_index(&global_lookup_data[i], public_vals.len()),
+        };
         let folded_constraints = air.eval_folded_circuit(
             circuit,
             &sels,
             &alpha,
-            &all_lookups[i],
-            &lookup_data_to_pv_index(&global_lookup_data[i], public_vals.len()),
+            &lookup_metadata,
             columns_targets,
             lookup_gadget,
         );
@@ -762,7 +765,7 @@ where
         }
 
         for all_expected_cumulative in global_cumulative.values() {
-            lookup_gadget.verify_global_final_value_circuit(circuit, &all_expected_cumulative);
+            lookup_gadget.verify_global_final_value_circuit(circuit, all_expected_cumulative);
         }
     }
 
@@ -818,7 +821,7 @@ fn lookup_data_to_pv_index(
         .enumerate()
         .map(|(index, ld)| LookupData {
             name: ld.name.clone(),
-            aux_idx: ld.aux_idx.clone(),
+            aux_idx: ld.aux_idx,
             expected_cumulated: public_values_len + index,
         })
         .collect::<Vec<_>>()

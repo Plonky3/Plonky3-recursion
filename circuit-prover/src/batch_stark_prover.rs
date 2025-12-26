@@ -517,7 +517,7 @@ impl Poseidon2Config {
                 Poseidon2AirWrapperInner::BabyBearD4Width16(Box::new(
                     Poseidon2CircuitAirBabyBearD4Width16::new_with_preprocessed(
                         constants.clone(),
-                        unsafe { transmute(preprocessed) },
+                        unsafe { transmute::<Vec<F>, Vec<BabyBear>>(preprocessed) },
                     ),
                 ))
             }
@@ -526,7 +526,7 @@ impl Poseidon2Config {
                 Poseidon2AirWrapperInner::BabyBearD4Width24(Box::new(
                     Poseidon2CircuitAirBabyBearD4Width24::new_with_preprocessed(
                         constants.clone(),
-                        unsafe { transmute(preprocessed) },
+                        unsafe { transmute::<Vec<F>, Vec<BabyBear>>(preprocessed) },
                     ),
                 ))
             }
@@ -535,7 +535,7 @@ impl Poseidon2Config {
                 Poseidon2AirWrapperInner::KoalaBearD4Width16(Box::new(
                     Poseidon2CircuitAirKoalaBearD4Width16::new_with_preprocessed(
                         constants.clone(),
-                        unsafe { transmute(preprocessed) },
+                        unsafe { transmute::<Vec<F>, Vec<KoalaBear>>(preprocessed) },
                     ),
                 ))
             }
@@ -544,7 +544,7 @@ impl Poseidon2Config {
                 Poseidon2AirWrapperInner::KoalaBearD4Width24(Box::new(
                     Poseidon2CircuitAirKoalaBearD4Width24::new_with_preprocessed(
                         constants.clone(),
-                        unsafe { transmute(preprocessed) },
+                        unsafe { transmute::<Vec<F>, Vec<KoalaBear>>(preprocessed) },
                     ),
                 ))
             }
@@ -674,28 +674,36 @@ where
                 assert_eq!(Val::<SC>::from_u64(BABY_BEAR_MODULUS), Val::<SC>::ZERO,);
 
                 let preprocessed = BaseAir::<BabyBear>::preprocessed_trace(air.as_ref())?;
-                Some(unsafe { transmute(preprocessed) })
+                Some(unsafe {
+                    transmute::<RowMajorMatrix<BabyBear>, RowMajorMatrix<Val<SC>>>(preprocessed)
+                })
             }
             Poseidon2AirWrapperInner::BabyBearD4Width24(air) => {
                 // SAFETY: Val<SC> == BabyBear when this variant is used
                 assert_eq!(Val::<SC>::from_u64(BABY_BEAR_MODULUS), Val::<SC>::ZERO,);
 
                 let preprocessed = BaseAir::<BabyBear>::preprocessed_trace(air.as_ref())?;
-                Some(unsafe { transmute(preprocessed) })
+                Some(unsafe {
+                    transmute::<RowMajorMatrix<BabyBear>, RowMajorMatrix<Val<SC>>>(preprocessed)
+                })
             }
             Poseidon2AirWrapperInner::KoalaBearD4Width16(air) => {
                 // SAFETY: Val<SC> == KoalaBear when this variant is used
                 assert_eq!(Val::<SC>::from_u64(KOALA_BEAR_MODULUS), Val::<SC>::ZERO,);
 
                 let preprocessed = BaseAir::<KoalaBear>::preprocessed_trace(air.as_ref())?;
-                Some(unsafe { transmute(preprocessed) })
+                Some(unsafe {
+                    transmute::<RowMajorMatrix<KoalaBear>, RowMajorMatrix<Val<SC>>>(preprocessed)
+                })
             }
             Poseidon2AirWrapperInner::KoalaBearD4Width24(air) => {
                 // SAFETY: Val<SC> == KoalaBear when this variant is used
                 assert_eq!(Val::<SC>::from_u64(KOALA_BEAR_MODULUS), Val::<SC>::ZERO,);
 
                 let preprocessed = BaseAir::<KoalaBear>::preprocessed_trace(air.as_ref())?;
-                Some(unsafe { transmute(preprocessed) })
+                Some(unsafe {
+                    transmute::<RowMajorMatrix<KoalaBear>, RowMajorMatrix<Val<SC>>>(preprocessed)
+                })
             }
         }
     }
@@ -2224,27 +2232,27 @@ where
             Self::Witness(a) => {
                 Air::<DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>>::eval(
                     a, builder,
-                )
+                );
             }
             Self::Const(a) => {
                 Air::<DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>>::eval(
                     a, builder,
-                )
+                );
             }
             Self::Public(a) => {
                 Air::<DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>>::eval(
                     a, builder,
-                )
+                );
             }
             Self::Add(a) => {
                 Air::<DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>>::eval(
                     a, builder,
-                )
+                );
             }
             Self::Mul(a) => {
                 Air::<DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>>::eval(
                     a, builder,
-                )
+                );
             }
             Self::Dynamic(a) => {
                 <dyn BatchAir<SC> as Air<
@@ -2289,7 +2297,7 @@ where
     fn eval(&self, builder: &mut VerifierConstraintFolderWithLookups<'a, SC>) {
         match self {
             Self::Witness(a) => {
-                Air::<VerifierConstraintFolderWithLookups<'a, SC>>::eval(a, builder)
+                Air::<VerifierConstraintFolderWithLookups<'a, SC>>::eval(a, builder);
             }
             Self::Const(a) => Air::<VerifierConstraintFolderWithLookups<'a, SC>>::eval(a, builder),
             Self::Public(a) => Air::<VerifierConstraintFolderWithLookups<'a, SC>>::eval(a, builder),

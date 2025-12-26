@@ -3,10 +3,8 @@ use alloc::vec::Vec;
 
 use p3_circuit::CircuitBuilder;
 use p3_field::Field;
-use p3_lookup::{
-    logup::LogUpGadget,
-    lookup_traits::{EmptyLookupGadget, LookupGadget},
-};
+use p3_lookup::logup::LogUpGadget;
+use p3_lookup::lookup_traits::{EmptyLookupGadget, LookupGadget};
 
 use crate::Target;
 
@@ -73,8 +71,8 @@ impl<F: Field> RecursiveLookupGadget<F> for LogUpGadget {
         all_expected_cumulative: &[Target],
     ) {
         let mut final_cumulative = circuit.add_const(F::ZERO);
-        for i in 0..all_expected_cumulative.len() {
-            final_cumulative = circuit.add(final_cumulative, all_expected_cumulative[i]);
+        for a_e_c in all_expected_cumulative {
+            final_cumulative = circuit.add(final_cumulative, *a_e_c);
         }
 
         circuit.assert_zero(final_cumulative);

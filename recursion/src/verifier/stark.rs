@@ -13,7 +13,7 @@ use p3_uni_stark::{StarkGenericConfig, Val};
 use super::{ObservableCommitment, VerificationError, recompose_quotient_from_chunks_circuit};
 use crate::Target;
 use crate::challenger::CircuitChallenger;
-use crate::traits::{Recursive, RecursiveAir, RecursivePcs};
+use crate::traits::{LookupMetadata, Recursive, RecursiveAir, RecursivePcs};
 use crate::types::{
     CommitmentTargets, OpenedValuesTargets, OpenedValuesTargetsWithLookups, ProofTargets,
     StarkChallenges,
@@ -268,12 +268,16 @@ where
         local_values: opened_trace_local_targets,
         next_values: opened_trace_next_targets,
     };
+
+    let dummy_lookup_metadata = LookupMetadata {
+        contexts: &[],
+        lookup_data: &[],
+    };
     let folded_constraints = air.eval_folded_circuit(
         circuit,
         &sels,
         &alpha,
-        &[],
-        &[],
+        &dummy_lookup_metadata,
         columns_targets,
         &lookup_gadget,
     );

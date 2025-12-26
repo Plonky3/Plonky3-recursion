@@ -1,6 +1,7 @@
 //! Trait for recursive AIR constraint evaluation.
 
 use alloc::vec::Vec;
+
 use p3_batch_stark::symbolic::{get_log_num_quotient_chunks, get_symbolic_constraints};
 use p3_circuit::CircuitBuilder;
 use p3_circuit::utils::{ColumnsTargets, symbolic_to_circuit};
@@ -11,6 +12,14 @@ use p3_uni_stark::{Entry, SymbolicAirBuilder, SymbolicExpression, SymbolicVariab
 use crate::Target;
 use crate::types::RecursiveLagrangeSelectors;
 
+/// Structure holding lookup verification data:
+///
+/// - `contexts`: Slice of lookup contexts used in the AIR.
+/// - `lookup_data`: Slice of lookup data for global lookups.
+pub struct LookupMetadata<'a, F: Field> {
+    pub contexts: &'a [Lookup<F>],
+    pub lookup_data: &'a [LookupData<usize>],
+}
 /// Trait for evaluating AIR constraints within a recursive verification circuit.
 ///
 /// This trait provides methods for computing constraint evaluations over circuit targets
@@ -44,8 +53,7 @@ pub trait RecursiveAir<F: Field, EF: ExtensionField<F>, LG: LookupGadget> {
         builder: &mut CircuitBuilder<EF>,
         sels: &RecursiveLagrangeSelectors,
         alpha: &Target,
-        contexts: &[Lookup<F>],
-        lookup_data: &[LookupData<usize>],
+        lookup_metadata: &LookupMetadata<'_, F>,
         columns: ColumnsTargets<'_>,
         lookup_gadget: &LG,
     ) -> Target;
@@ -89,18 +97,22 @@ where
         builder: &mut CircuitBuilder<EF>,
         sels: &RecursiveLagrangeSelectors,
         alpha: &Target,
-        contexts: &[Lookup<F>],
-        lookup_data: &[LookupData<usize>],
+        lookup_metadata: &LookupMetadata<'_, F>,
         columns: ColumnsTargets<'_>,
         lookup_gadget: &LG,
     ) -> Target {
         builder.push_scope("eval_folded_circuit");
 
+        let LookupMetadata {
+            contexts,
+            lookup_data,
+        } = lookup_metadata;
+
         let ld_expected = lookup_data
             .iter()
             .map(|ld| LookupData {
                 name: ld.name.clone(),
-                aux_idx: ld.aux_idx.clone(),
+                aux_idx: ld.aux_idx,
                 expected_cumulated: SymbolicExpression::Variable(SymbolicVariable::new(
                     Entry::Public,
                     ld.expected_cumulated,
@@ -157,7 +169,7 @@ where
             .iter()
             .map(|ld| LookupData {
                 name: ld.name.clone(),
-                aux_idx: ld.aux_idx.clone(),
+                aux_idx: ld.aux_idx,
                 expected_cumulated: SymbolicExpression::Variable(SymbolicVariable::new(
                     Entry::Public,
                     ld.expected_cumulated,

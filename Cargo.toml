@@ -48,7 +48,7 @@ cognitive_complexity = "allow"
 [workspace.dependencies]
 # Plonky3 dependencies - shared across all crates
 p3-air = { git = "https://github.com/Plonky3/Plonky3", branch = "linda/changes-recursive-lookups" }
-p3-baby-bear = { git = "https://github.com/Plonky3/Plonky3", branch = "linda/changes-recursive-lookups"}
+p3-baby-bear = { git = "https://github.com/Plonky3/Plonky3", branch = "linda/changes-recursive-lookups" }
 p3-batch-stark = { git = "https://github.com/Plonky3/Plonky3", branch = "linda/changes-recursive-lookups" }
 p3-challenger = { git = "https://github.com/Plonky3/Plonky3", branch = "linda/changes-recursive-lookups" }
 p3-circle = { git = "https://github.com/Plonky3/Plonky3", branch = "linda/changes-recursive-lookups" }

@@ -12,7 +12,7 @@ use p3_matrix::dense::RowMajorMatrixView;
 use p3_matrix::stack::VerticalPair;
 use p3_poseidon2_air::RoundConstants;
 use p3_poseidon2_circuit_air::Poseidon2CircuitAirBabyBearD4Width16;
-use p3_recursion::traits::RecursiveAir;
+use p3_recursion::traits::{LookupMetadata, RecursiveAir};
 use p3_recursion::types::RecursiveLagrangeSelectors;
 use p3_uni_stark::{StarkConfig, SymbolicAirBuilder, VerifierConstraintFolder};
 use rand::rngs::SmallRng;
@@ -116,12 +116,15 @@ where
         inv_vanishing: builder.add_const(F::ONE),
     };
     let lookup_gadget = EmptyLookupGadget {};
+    let dummy_lookup_metadata = LookupMetadata {
+        contexts: &[],
+        lookup_data: &[],
+    };
     let sum = air.eval_folded_circuit(
         &mut builder,
         &sels,
         &alpha_t,
-        &[],
-        &[],
+        &dummy_lookup_metadata,
         columns,
         &lookup_gadget,
     );

@@ -91,8 +91,8 @@ fn produce_inputs_multi(
     perm: &Perm,
     log_blowup: usize,
     log_final_poly_len: usize,
-    query_pow_bits: usize,
-    commit_pow_bits: usize,
+    // commit phase pow bits and query pow bits
+    pow_bits: (usize, usize),
     group_sizes: &[Vec<u8>],
     seed_base: u64,
 ) -> ProduceInputsResult {
@@ -170,6 +170,8 @@ fn produce_inputs_multi(
 
     // α (batch combiner)
     let alpha: Challenge = v_challenger.sample_algebra_element();
+
+    let (commit_pow_bits, query_pow_bits) = pow_bits;
 
     // β_i per phase: observe commitment, then sample β
     let mut betas: Vec<Challenge> = Vec::with_capacity(commit_phase_commits.len());
@@ -361,8 +363,7 @@ fn run_fri_test(setup: FriSetup, build_only: bool) {
         &perm,
         log_blowup,
         log_final_poly_len,
-        query_pow_bits,
-        commit_pow_bits,
+        (commit_pow_bits, query_pow_bits),
         &group_sizes,
         /*seed_base=*/ 0,
     );
@@ -372,8 +373,7 @@ fn run_fri_test(setup: FriSetup, build_only: bool) {
         &perm,
         log_blowup,
         log_final_poly_len,
-        query_pow_bits,
-        commit_pow_bits,
+        (commit_pow_bits, query_pow_bits),
         &group_sizes,
         /*seed_base=*/ 1,
     );

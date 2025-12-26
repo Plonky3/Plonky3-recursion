@@ -3,14 +3,14 @@
 use alloc::vec;
 use alloc::vec::Vec;
 use core::marker::PhantomData;
-use p3_batch_stark::proof::OpenedValuesWithLookups;
-use p3_lookup::lookup_traits::{Lookup, LookupData};
 
 use p3_batch_stark::common::PreprocessedInstanceMeta;
+use p3_batch_stark::proof::OpenedValuesWithLookups;
 use p3_batch_stark::{BatchCommitments, BatchOpenedValues, BatchProof, CommonData};
 use p3_circuit::CircuitBuilder;
 use p3_commit::Pcs;
 use p3_field::Field;
+use p3_lookup::lookup_traits::{Lookup, LookupData};
 use p3_uni_stark::{OpenedValues, Proof, StarkGenericConfig, Val};
 
 use crate::Target;
@@ -234,18 +234,18 @@ impl<SC: StarkGenericConfig> OpenedValuesTargetsWithLookups<SC> {
         if let Some(preprocessed_local_targets) =
             &self.opened_values_no_lookups.preprocessed_local_targets
         {
-            challenger.observe_slice(circuit, preprocessed_local_targets)
+            challenger.observe_slice(circuit, preprocessed_local_targets);
         }
         if let Some(preprocessed_next_targets) =
             &self.opened_values_no_lookups.preprocessed_next_targets
         {
-            challenger.observe_slice(circuit, preprocessed_next_targets)
+            challenger.observe_slice(circuit, preprocessed_next_targets);
         }
         if !self.permutation_local_targets.is_empty() {
-            challenger.observe_slice(circuit, &self.permutation_local_targets)
+            challenger.observe_slice(circuit, &self.permutation_local_targets);
         }
         if !self.permutation_next_targets.is_empty() {
-            challenger.observe_slice(circuit, &self.permutation_next_targets)
+            challenger.observe_slice(circuit, &self.permutation_next_targets);
         }
     }
 }

@@ -44,15 +44,18 @@ where
 {
     fn clone(&self) -> Self {
         match self {
-            CircuitTableAir::Witness(air) => CircuitTableAir::Witness(air.clone()),
-            CircuitTableAir::Const(air) => CircuitTableAir::Const(air.clone()),
-            CircuitTableAir::Public(air) => CircuitTableAir::Public(air.clone()),
-            CircuitTableAir::Add(air) => CircuitTableAir::Add(air.clone()),
-            CircuitTableAir::Mul(air) => CircuitTableAir::Mul(air.clone()),
-            CircuitTableAir::Dynamic(air) => CircuitTableAir::Dynamic(air.clone()),
+            Self::Witness(air) => Self::Witness(air.clone()),
+            Self::Const(air) => Self::Const(air.clone()),
+            Self::Public(air) => Self::Public(air.clone()),
+            Self::Add(air) => Self::Add(air.clone()),
+            Self::Mul(air) => Self::Mul(air.clone()),
+            Self::Dynamic(air) => Self::Dynamic(air.clone()),
         }
     }
 }
+
+/// Type alias for a vector of circuit table AIRs paired with their respective degrees (log of their trace height).
+type CircuitAirsWithDegrees<SC, const D: usize> = Vec<(CircuitTableAir<SC, D>, usize)>;
 
 pub fn get_airs_and_degrees_with_prep<
     SC: StarkGenericConfig + 'static + Send + Sync,
@@ -63,7 +66,7 @@ pub fn get_airs_and_degrees_with_prep<
     circuit: &Circuit<ExtF>,
     packing: TablePacking,
     non_primitive_configs: Option<&[NonPrimitiveConfig]>,
-) -> Result<(Vec<(CircuitTableAir<SC, D>, usize)>, Vec<Val<SC>>), CircuitError>
+) -> Result<(CircuitAirsWithDegrees<SC, D>, Vec<Val<SC>>), CircuitError>
 where
     SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
     Val<SC>: StarkField,
