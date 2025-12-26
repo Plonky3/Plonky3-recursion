@@ -76,7 +76,7 @@ where
     let witness_idx = PrimitiveOpType::Witness as usize;
     let add_idx = PrimitiveOpType::Add as usize;
     if preprocessed[add_idx].is_empty() {
-        // We add 3 * `lanes` to the multiplicity of 0.
+        // We add 3 to the multiplicity of 0.
         let num_extra = AddAir::<Val<SC>, D>::lane_width() / D;
 
         preprocessed[witness_idx][0] += ExtF::from_usize(num_extra);
@@ -87,7 +87,7 @@ where
     }
     let mul_idx = PrimitiveOpType::Mul as usize;
     if preprocessed[mul_idx].is_empty() {
-        // We add 3 * `lanes` to the multiplicity of 0.
+        // We add 3 to the multiplicity of 0.
         let num_extra = MulAir::<Val<SC>, D>::lane_width() / D;
         preprocessed[witness_idx][0] += ExtF::from_usize(num_extra);
         preprocessed[mul_idx].extend(vec![

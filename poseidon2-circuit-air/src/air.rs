@@ -401,14 +401,23 @@ impl<
             self.preprocessed.len(),
         );
 
-        let padded_height = self
+        let num_extra_rows = self
             .preprocessed
             .len()
             .div_ceil(Self::preprocessed_width())
             .next_power_of_two()
-            * Self::preprocessed_width();
+            - (self.preprocessed.len() / Self::preprocessed_width());
+
         let mut preprocessed = self.preprocessed.clone();
-        preprocessed.resize(padded_height, F::ZERO);
+        let width = Self::preprocessed_width();
+        let start_len = preprocessed.len();
+        preprocessed.resize(start_len + num_extra_rows * width, F::ZERO);
+
+        // We set `new_start` to 1 in the first padding row. This indicates to the last real permutation operation
+        // that the chaining has ended.
+        if num_extra_rows > 0 {
+            preprocessed[start_len + width - 2] = F::ONE;
+        }
 
         Some(RowMajorMatrix::new(
             preprocessed,
