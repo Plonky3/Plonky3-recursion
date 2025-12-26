@@ -8,14 +8,19 @@ use p3_field::PrimeCharacteristicRing;
 use p3_fri::{TwoAdicFriPcs, create_test_fri_params};
 use p3_poseidon2::ExternalLayerConstants;
 use p3_poseidon2_air::RoundConstants;
-use p3_poseidon2_circuit_air::Poseidon2CircuitAirBabyBearD4Width16;
+use p3_poseidon2_circuit_air::{
+    Poseidon2CircuitAirBabyBearD4Width16, extract_preprocessed_from_operations,
+};
 use p3_recursion::pcs::fri::{
     FriProofTargets, FriVerifierParams, HashTargets, InputProofTargets, RecExtensionValMmcs,
     RecValMmcs, Witness,
 };
 use p3_recursion::public_inputs::StarkVerifierInputsBuilder;
 use p3_recursion::{VerificationError, generate_challenges, verify_circuit};
-use p3_uni_stark::{StarkConfig, StarkGenericConfig, prove, verify};
+use p3_uni_stark::{
+    StarkConfig, StarkGenericConfig, prove_with_preprocessed, setup_preprocessed,
+    verify_with_preprocessed,
+};
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 use tracing_forest::ForestLayer;
@@ -44,7 +49,7 @@ type MyPcs = TwoAdicFriPcs<F, Dft, ValMmcs, ChallengeMmcs>;
 type MyConfig = StarkConfig<MyPcs, Challenge, Challenger>;
 
 #[test]
-fn test_poseidon_perm_verifier() -> Result<(), VerificationError> {
+fn test_poseidon2_perm_verifier() -> Result<(), VerificationError> {
     init_logger();
 
     let mut rng = SmallRng::seed_from_u64(1);
@@ -80,8 +85,6 @@ fn test_poseidon_perm_verifier() -> Result<(), VerificationError> {
     let challenger = Challenger::new(perm);
     let config = MyConfig::new(pcs, challenger);
 
-    let air = Poseidon2CircuitAirBabyBearD4Width16::new(constants.clone());
-
     // Build a trace with enough rows to satisfy FRI height constraints.
     let n_rows: usize = 32;
     let ops: Vec<_> = (0..n_rows)
@@ -103,11 +106,23 @@ fn test_poseidon_perm_verifier() -> Result<(), VerificationError> {
             }
         })
         .collect();
+
+    let preprocessed = extract_preprocessed_from_operations(&ops);
+    let air = Poseidon2CircuitAirBabyBearD4Width16::new_with_preprocessed(
+        constants.clone(),
+        preprocessed,
+    );
+
+    let (prover_data, verifier_data) = setup_preprocessed(&config, &air, 5).unwrap();
+
     let trace = air.generate_trace_rows(&ops, &constants, 0, &perm_for_trace);
 
     let public_inputs: Vec<F> = vec![];
-    let proof = prove(&config, &air, trace, &public_inputs);
-    assert!(verify(&config, &air, &proof, &public_inputs).is_ok());
+    let proof = prove_with_preprocessed(&config, &air, trace, &public_inputs, Some(&prover_data));
+    assert!(
+        verify_with_preprocessed(&config, &air, &proof, &public_inputs, Some(&verifier_data))
+            .is_ok()
+    );
 
     type InnerFri = FriProofTargets<
         p3_uni_stark::Val<MyConfig>,
@@ -127,11 +142,13 @@ fn test_poseidon_perm_verifier() -> Result<(), VerificationError> {
     >;
 
     let mut circuit_builder = CircuitBuilder::new();
-    let verifier_inputs = StarkVerifierInputsBuilder::<
-        MyConfig,
-        HashTargets<F, DIGEST_ELEMS>,
-        InnerFri,
-    >::allocate(&mut circuit_builder, &proof, None, public_inputs.len());
+    let verifier_inputs =
+        StarkVerifierInputsBuilder::<MyConfig, HashTargets<F, DIGEST_ELEMS>, InnerFri>::allocate(
+            &mut circuit_builder,
+            &proof,
+            Some(&verifier_data.commitment),
+            public_inputs.len(),
+        );
 
     verify_circuit::<
         Poseidon2CircuitAirBabyBearD4Width16,
@@ -146,7 +163,7 @@ fn test_poseidon_perm_verifier() -> Result<(), VerificationError> {
         &mut circuit_builder,
         &verifier_inputs.proof_targets,
         &verifier_inputs.air_public_targets,
-        &None,
+        &verifier_inputs.preprocessed_commit,
         &fri_verifier_params,
     )?;
 
@@ -161,8 +178,13 @@ fn test_poseidon_perm_verifier() -> Result<(), VerificationError> {
         Some(&[pow_bits, log_height_max]),
     )?;
     let num_queries = proof.opening_proof.query_proofs.len();
-    let packed_publics =
-        verifier_inputs.pack_values(&public_inputs, &proof, &None, &all_challenges, num_queries);
+    let packed_publics = verifier_inputs.pack_values(
+        &public_inputs,
+        &proof,
+        &Some(verifier_data.commitment),
+        &all_challenges,
+        num_queries,
+    );
 
     runner
         .set_public_inputs(&packed_publics)

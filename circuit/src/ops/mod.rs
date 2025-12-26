@@ -1,3 +1,3 @@
-pub mod poseidon_perm;
+pub mod poseidon2_perm;
 
-pub use poseidon_perm::{PoseidonPermCall, PoseidonPermExecutor, PoseidonPermOps};
+pub use poseidon2_perm::{Poseidon2PermCall, Poseidon2PermExecutor, Poseidon2PermOps};

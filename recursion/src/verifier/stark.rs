@@ -153,10 +153,11 @@ where
     }
 
     // Validate proof shape
-    validate_proof_shape::<A, SC>(
+    validate_proof_shape::<A, SC, Comm>(
         air,
         opened_values_targets,
         preprocessed_width,
+        preprocessed_commit,
         quotient_degree,
     )?;
 
@@ -361,10 +362,11 @@ where
 }
 
 /// Validate the shape of the proof (dimensions, lengths).
-fn validate_proof_shape<A, SC: StarkGenericConfig>(
+fn validate_proof_shape<A, SC: StarkGenericConfig, Comm>(
     air: &A,
     opened_values: &OpenedValuesTargets<SC>,
     preprocessed_width: usize,
+    preprocessed_commit: &Option<Comm>,
     quotient_degree: usize,
 ) -> Result<(), VerificationError>
 where
@@ -372,6 +374,18 @@ where
     SC::Challenge: PrimeCharacteristicRing,
 {
     let air_width = A::width(air);
+
+    if preprocessed_commit.is_some() && preprocessed_width == 0 {
+        return Err(VerificationError::InvalidProofShape(
+            "There is a preprocessed commit but no opening values provided.".to_string(),
+        ));
+    }
+
+    if preprocessed_commit.is_none() && preprocessed_width > 0 {
+        return Err(VerificationError::InvalidProofShape(
+            "Preprocessed width is non-zero but no preprocessed commit provided.".to_string(),
+        ));
+    }
 
     let OpenedValuesTargets {
         trace_local_targets: opened_trace_local,
