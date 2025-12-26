@@ -264,7 +264,6 @@ impl<
             main: input.commitments.trace.clone(),
             permutation: None,
             quotient_chunks: input.commitments.quotient_chunks.clone(),
-            random: input.commitments.random.clone(),
         };
         let commitments_targets = CommitmentTargets::new(circuit, &commitments_no_lookups);
         let opened_values_targets = OpenedValuesTargets::new(circuit, &input.opened_values);
@@ -290,7 +289,6 @@ impl<
             main: commitments.trace.clone(),
             permutation: None,
             quotient_chunks: commitments.quotient_chunks.clone(),
-            random: commitments.random.clone(),
         };
         CommitmentTargets::<SC::Challenge, Comm>::get_values(&commitments_no_lookups)
             .into_iter()
@@ -428,16 +426,12 @@ where
             .as_ref()
             .map(|perm| Comm::new(circuit, perm));
         let quotient_chunks_targets = Comm::new(circuit, &input.quotient_chunks);
-        let random_commit = input
-            .random
-            .as_ref()
-            .map(|random| Comm::new(circuit, random));
 
         Self {
             trace_targets,
             permutation_targets,
             quotient_chunks_targets,
-            random_commit,
+            random_commit: None, // ZK is not supported in batch proofs yet
             _phantom: PhantomData,
         }
     }
@@ -447,7 +441,6 @@ where
             main,
             permutation,
             quotient_chunks,
-            random,
         } = input;
 
         let mut values = vec![];
@@ -456,9 +449,7 @@ where
             values.extend(Comm::get_values(permutation));
         }
         values.extend(Comm::get_values(quotient_chunks));
-        if let Some(random) = random {
-            values.extend(Comm::get_values(random));
-        }
+
         values
     }
 }
