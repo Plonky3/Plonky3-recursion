@@ -313,11 +313,8 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AddAir<F, D> {
         RowMajorMatrix::new(values, width)
     }
 
-    pub fn trace_to_preprocessed<ExtF: BasedVectorSpace<F>>(
-        trace: &AddTrace<ExtF>,
-        lanes: usize,
-    ) -> Vec<F> {
-        let total_len = trace.lhs_index.len() * Self::preprocessed_lane_width() * lanes;
+    pub fn trace_to_preprocessed<ExtF: BasedVectorSpace<F>>(trace: &AddTrace<ExtF>) -> Vec<F> {
+        let total_len = trace.lhs_index.len() * Self::preprocessed_lane_width();
         let mut preprocessed_values = Vec::with_capacity(total_len);
         for (lhs_idx, rhs_idx, res_idx) in trace
             .lhs_index
@@ -346,7 +343,7 @@ impl<F: Field, const D: usize> BaseAir<F> for AddAir<F, D> {
         // At this point, the preprocessed trace should be set.
         let original_height = self.num_ops.div_ceil(self.lanes);
 
-        if original_height > 0 {
+        if self.num_ops > 0 {
             assert!(!self.preprocessed.is_empty());
         }
 

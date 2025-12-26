@@ -364,12 +364,8 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> MulAir<F, D> {
         RowMajorMatrix::new(values, width)
     }
 
-    pub fn trace_to_preprocessed<ExtF: BasedVectorSpace<F>>(
-        trace: &MulTrace<ExtF>,
-        lanes: usize,
-    ) -> Vec<F> {
-        let total_preprocessed_len =
-            trace.lhs_values.len() * Self::preprocessed_lane_width() * lanes;
+    pub fn trace_to_preprocessed<ExtF: BasedVectorSpace<F>>(trace: &MulTrace<ExtF>) -> Vec<F> {
+        let total_preprocessed_len = trace.lhs_values.len() * Self::preprocessed_lane_width();
         let mut preprocessed = Vec::with_capacity(total_preprocessed_len);
         trace
             .lhs_index

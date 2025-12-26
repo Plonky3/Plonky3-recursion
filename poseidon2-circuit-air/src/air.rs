@@ -848,7 +848,7 @@ where
 
     fn get_lookups(&mut self) -> Vec<Lookup<<AB>::F>> {
         let symbolic_air_builder = SymbolicAirBuilder::<AB::F>::new(
-            0, // TODO: update the permutation width when implemented.
+            Self::preprocessed_width(),
             BaseAir::<AB::F>::width(self),
             0,
             0, // Here, we do not need the permutation trace
@@ -856,9 +856,6 @@ where
         );
         let symbolic_main = symbolic_air_builder.main();
         let symbolic_main_local = symbolic_main.row_slice(0).expect("The matrix is empty?");
-        let symbolic_main_next = symbolic_main
-            .row_slice(1)
-            .expect("The matrix has only one row?");
 
         let local: &Poseidon2CircuitCols<
             SymbolicVariable<AB::F>,
@@ -872,24 +869,12 @@ where
             >,
         > = (*symbolic_main_local).borrow();
 
-        let next: &Poseidon2CircuitCols<
-            SymbolicVariable<AB::F>,
-            Poseidon2Cols<
-                SymbolicVariable<AB::F>,
-                WIDTH,
-                SBOX_DEGREE,
-                SBOX_REGISTERS,
-                HALF_FULL_ROUNDS,
-                PARTIAL_ROUNDS,
-            >,
-        > = (*symbolic_main_next).borrow();
-
         // Preprocessing layout:
         // [in_idx[0], in_ctl[0], normal_chain_sel[0], merkle_chain_sel[0], ..., in_idx[3], in_ctl[3], normal_chain_sel[3], merkle_chain_sel[3],
         //  out_idx[0], out_ctl[0], out_idx[1], out_ctl[1], mmcs_index_sum_ctl_idx, new_start, merkle_path]
         // The following corresponds to the size of the data related to one input limb (in_idx[i], in_ctl[i], normal_chain_sel[i], merkle_chain_sel[i]).
         let preprocessing_limb_input_data_size = 4;
-        let preprocessing_limb_output_data_size = 4;
+        let preprocessing_limb_output_data_size = 2;
         let in_ctl_idx = 1;
         let start_output_idx = preprocessing_limb_input_data_size * POSEIDON2_LIMBS;
         let mmcs_index_sum_ctl_idx =
@@ -906,16 +891,16 @@ where
             .row_slice(1)
             .expect("The preprocessed matrix has only one row?");
         let next_preprocessed: &[SymbolicVariable<AB::F>] = (*next_preprocessed).borrow();
-        // There are POSEIDON2_LIMBS input limbs and POSEIDON2_PUBLIC_OUTPUT_LIMBS output limbs to be lookup up in the `Witness` table.
+        // There are POSEIDON2_LIMBS input limbs and POSEIDON2_PUBLIC_OUTPUT_LIMBS output limbs to be looked up up in the `Witness` table.
         let mut lookups = Vec::with_capacity(POSEIDON2_LIMBS + POSEIDON2_PUBLIC_OUTPUT_LIMBS);
         // Each input/output limb is sent with multiplicity `in_ctl/out_ctl`.
         for limb_idx in 0..POSEIDON2_LIMBS {
             let in_ctl =
                 local_preprocessed[limb_idx * preprocessing_limb_input_data_size + in_ctl_idx];
             let input_idx_limb =
-                iter::once(next_preprocessed[limb_idx * preprocessing_limb_input_data_size]) // input witness index
+                iter::once(local_preprocessed[limb_idx * preprocessing_limb_input_data_size]) // input witness index
                     .chain(
-                        next.poseidon2.inputs[limb_idx * D..(limb_idx + 1) * D]
+                        local.poseidon2.inputs[limb_idx * D..(limb_idx + 1) * D]
                             .iter()
                             .cloned(),
                     )

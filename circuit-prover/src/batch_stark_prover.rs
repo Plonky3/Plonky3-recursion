@@ -384,6 +384,9 @@ macro_rules! impl_table_prover_batch_instances_from_base {
     };
 }
 
+const BABY_BEAR_MODULUS: u64 = 2013265921;
+const KOALA_BEAR_MODULUS: u64 = 2147483649;
+
 /// Poseidon2 configuration that can be selected at runtime.
 /// This enum represents different Poseidon2 configurations (field type, width, etc.).
 #[derive(Debug, Clone)]
@@ -503,6 +506,100 @@ impl Poseidon2Config {
             }
         }
     }
+
+    fn to_air_wrapper_with_preprocessed<F: Field>(
+        &self,
+        preprocessed: Vec<F>,
+    ) -> Poseidon2AirWrapperInner {
+        match self {
+            Self::BabyBearD4Width16 { constants, .. } => {
+                assert!(F::from_u64(BABY_BEAR_MODULUS) == F::ZERO,);
+                Poseidon2AirWrapperInner::BabyBearD4Width16(Box::new(
+                    Poseidon2CircuitAirBabyBearD4Width16::new_with_preprocessed(
+                        constants.clone(),
+                        unsafe { transmute(preprocessed) },
+                    ),
+                ))
+            }
+            Self::BabyBearD4Width24 { constants, .. } => {
+                assert!(F::from_u64(BABY_BEAR_MODULUS) == F::ZERO,);
+                Poseidon2AirWrapperInner::BabyBearD4Width24(Box::new(
+                    Poseidon2CircuitAirBabyBearD4Width24::new_with_preprocessed(
+                        constants.clone(),
+                        unsafe { transmute(preprocessed) },
+                    ),
+                ))
+            }
+            Self::KoalaBearD4Width16 { constants, .. } => {
+                assert!(F::from_u64(KOALA_BEAR_MODULUS) == F::ZERO,);
+                Poseidon2AirWrapperInner::KoalaBearD4Width16(Box::new(
+                    Poseidon2CircuitAirKoalaBearD4Width16::new_with_preprocessed(
+                        constants.clone(),
+                        unsafe { transmute(preprocessed) },
+                    ),
+                ))
+            }
+            Self::KoalaBearD4Width24 { constants, .. } => {
+                assert!(F::from_u64(KOALA_BEAR_MODULUS) == F::ZERO,);
+                Poseidon2AirWrapperInner::KoalaBearD4Width24(Box::new(
+                    Poseidon2CircuitAirKoalaBearD4Width24::new_with_preprocessed(
+                        constants.clone(),
+                        unsafe { transmute(preprocessed) },
+                    ),
+                ))
+            }
+        }
+    }
+
+    fn to_air_wrapper_with_preprocessed_baby_bear(
+        &self,
+        preprocessed: Vec<BabyBear>,
+    ) -> Poseidon2AirWrapperInner {
+        match self {
+            Self::BabyBearD4Width16 { constants, .. } => {
+                Poseidon2AirWrapperInner::BabyBearD4Width16(Box::new(
+                    Poseidon2CircuitAirBabyBearD4Width16::new_with_preprocessed(
+                        constants.clone(),
+                        preprocessed,
+                    ),
+                ))
+            }
+            Self::BabyBearD4Width24 { constants, .. } => {
+                Poseidon2AirWrapperInner::BabyBearD4Width24(Box::new(
+                    Poseidon2CircuitAirBabyBearD4Width24::new_with_preprocessed(
+                        constants.clone(),
+                        preprocessed,
+                    ),
+                ))
+            }
+            _ => panic!("Invalid config for BabyBear preprocessed trace"),
+        }
+    }
+
+    fn to_air_wrapper_with_preprocessed_koala_bear(
+        &self,
+        preprocessed: Vec<KoalaBear>,
+    ) -> Poseidon2AirWrapperInner {
+        match self {
+            Self::KoalaBearD4Width16 { constants, .. } => {
+                Poseidon2AirWrapperInner::KoalaBearD4Width16(Box::new(
+                    Poseidon2CircuitAirKoalaBearD4Width16::new_with_preprocessed(
+                        constants.clone(),
+                        preprocessed,
+                    ),
+                ))
+            }
+            Self::KoalaBearD4Width24 { constants, .. } => {
+                Poseidon2AirWrapperInner::KoalaBearD4Width24(Box::new(
+                    Poseidon2CircuitAirKoalaBearD4Width24::new_with_preprocessed(
+                        constants.clone(),
+                        preprocessed,
+                    ),
+                ))
+            }
+            _ => panic!("Invalid config for KoalaBear preprocessed trace"),
+        }
+    }
 }
 
 /// Wrapper for Poseidon2CircuitAir that implements BatchAir<SC>
@@ -540,7 +637,6 @@ impl Clone for Poseidon2AirWrapperInner {
 struct Poseidon2AirWrapper<SC: StarkGenericConfig> {
     inner: Poseidon2AirWrapperInner,
     width: usize,
-    preprocessed: Vec<Val<SC>>,
     _phantom: core::marker::PhantomData<SC>,
 }
 
@@ -557,7 +653,6 @@ impl<SC: StarkGenericConfig> Clone for Poseidon2AirWrapper<SC> {
         Self {
             inner: self.inner.clone(),
             width: self.width,
-            preprocessed: self.preprocessed.clone(),
             _phantom: core::marker::PhantomData,
         }
     }
@@ -573,16 +668,36 @@ where
     }
 
     fn preprocessed_trace(&self) -> Option<RowMajorMatrix<Val<SC>>> {
-        let height = self
-            .preprocessed
-            .len()
-            .div_ceil(poseidon2_preprocessed_width())
-            .next_power_of_two()
-            * poseidon2_preprocessed_width();
+        match &self.inner {
+            Poseidon2AirWrapperInner::BabyBearD4Width16(air) => {
+                // SAFETY: Val<SC> == BabyBear when this variant is used
+                assert_eq!(Val::<SC>::from_u64(BABY_BEAR_MODULUS), Val::<SC>::ZERO,);
 
-        let mut values = self.preprocessed.clone();
-        values.resize(height, Val::<SC>::ZERO);
-        Some(RowMajorMatrix::new(values, poseidon2_preprocessed_width()))
+                let preprocessed = BaseAir::<BabyBear>::preprocessed_trace(air.as_ref())?;
+                Some(unsafe { transmute(preprocessed) })
+            }
+            Poseidon2AirWrapperInner::BabyBearD4Width24(air) => {
+                // SAFETY: Val<SC> == BabyBear when this variant is used
+                assert_eq!(Val::<SC>::from_u64(BABY_BEAR_MODULUS), Val::<SC>::ZERO,);
+
+                let preprocessed = BaseAir::<BabyBear>::preprocessed_trace(air.as_ref())?;
+                Some(unsafe { transmute(preprocessed) })
+            }
+            Poseidon2AirWrapperInner::KoalaBearD4Width16(air) => {
+                // SAFETY: Val<SC> == KoalaBear when this variant is used
+                assert_eq!(Val::<SC>::from_u64(KOALA_BEAR_MODULUS), Val::<SC>::ZERO,);
+
+                let preprocessed = BaseAir::<KoalaBear>::preprocessed_trace(air.as_ref())?;
+                Some(unsafe { transmute(preprocessed) })
+            }
+            Poseidon2AirWrapperInner::KoalaBearD4Width24(air) => {
+                // SAFETY: Val<SC> == KoalaBear when this variant is used
+                assert_eq!(Val::<SC>::from_u64(KOALA_BEAR_MODULUS), Val::<SC>::ZERO,);
+
+                let preprocessed = BaseAir::<KoalaBear>::preprocessed_trace(air.as_ref())?;
+                Some(unsafe { transmute(preprocessed) })
+            }
+        }
     }
 }
 
@@ -592,9 +707,6 @@ where
     Val<SC>: StarkField,
 {
     fn eval(&self, builder: &mut SymbolicAirBuilder<Val<SC>, SC::Challenge>) {
-        const BABY_BEAR_MODULUS: u64 = 2013265921;
-        const KOALA_BEAR_MODULUS: u64 = 2147483649;
-
         // Delegate to the actual AIR instance stored in the wrapper
         match &self.inner {
             Poseidon2AirWrapperInner::BabyBearD4Width16(air) => {
@@ -1566,9 +1678,8 @@ impl Poseidon2Prover {
         SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
     {
         DynamicAirEntry::new(Box::new(Poseidon2AirWrapper {
-            inner: self.config.to_air_wrapper(),
+            inner: self.config.to_air_wrapper_with_preprocessed(preprocessed),
             width: self.width_from_config(),
-            preprocessed,
             _phantom: core::marker::PhantomData::<SC>,
         }))
     }
@@ -1727,18 +1838,18 @@ impl Poseidon2Prover {
                     extract_preprocessed_from_operations::<BabyBear, Val<SC>>(&t.operations);
                 let air = Poseidon2CircuitAirBabyBearD4Width16::new_with_preprocessed(
                     constants.clone(),
-                    preprocessed,
+                    preprocessed.clone(),
                 );
                 let ops_babybear: Poseidon2CircuitTrace<BabyBear> =
                     unsafe { transmute(ops_converted) };
                 let matrix_f = air.generate_trace_rows(&ops_babybear, constants, 0, permutation);
                 let matrix: RowMajorMatrix<Val<SC>> = unsafe { transmute(matrix_f) };
                 (
-                    // Preprocessed values are already stored in the AIR, so we don't need to pass them again in the wrapper.
                     Poseidon2AirWrapper {
-                        inner: self.config.to_air_wrapper(),
+                        inner: self
+                            .config
+                            .to_air_wrapper_with_preprocessed_baby_bear(preprocessed),
                         width: air.width(),
-                        preprocessed: Vec::new(),
                         _phantom: core::marker::PhantomData::<SC>,
                     },
                     matrix,
@@ -1752,7 +1863,7 @@ impl Poseidon2Prover {
                     extract_preprocessed_from_operations::<BabyBear, Val<SC>>(&t.operations);
                 let air = Poseidon2CircuitAirBabyBearD4Width24::new_with_preprocessed(
                     constants.clone(),
-                    preprocessed,
+                    preprocessed.clone(),
                 );
                 let ops_babybear: Poseidon2CircuitTrace<BabyBear> =
                     unsafe { transmute(ops_converted) };
@@ -1761,9 +1872,10 @@ impl Poseidon2Prover {
                 (
                     // Preprocessed values are already stored in the AIR, so we don't need to pass them again in the wrapper.
                     Poseidon2AirWrapper {
-                        inner: self.config.to_air_wrapper(),
+                        inner: self
+                            .config
+                            .to_air_wrapper_with_preprocessed_baby_bear(preprocessed),
                         width: air.width(),
-                        preprocessed: Vec::new(),
                         _phantom: core::marker::PhantomData::<SC>,
                     },
                     matrix,
@@ -1777,7 +1889,7 @@ impl Poseidon2Prover {
                     extract_preprocessed_from_operations::<KoalaBear, Val<SC>>(&t.operations);
                 let air = Poseidon2CircuitAirKoalaBearD4Width16::new_with_preprocessed(
                     constants.clone(),
-                    preprocessed,
+                    preprocessed.clone(),
                 );
                 let ops_koalabear: Poseidon2CircuitTrace<KoalaBear> =
                     unsafe { transmute(ops_converted) };
@@ -1786,9 +1898,10 @@ impl Poseidon2Prover {
                 (
                     // Preprocessed values are already stored in the AIR, so we don't need to pass them again in the wrapper.
                     Poseidon2AirWrapper {
-                        inner: self.config.to_air_wrapper(),
+                        inner: self
+                            .config
+                            .to_air_wrapper_with_preprocessed_koala_bear(preprocessed),
                         width: air.width(),
-                        preprocessed: Vec::new(),
                         _phantom: core::marker::PhantomData::<SC>,
                     },
                     matrix,
@@ -1802,7 +1915,7 @@ impl Poseidon2Prover {
                     extract_preprocessed_from_operations::<KoalaBear, Val<SC>>(&t.operations);
                 let air = Poseidon2CircuitAirKoalaBearD4Width24::new_with_preprocessed(
                     constants.clone(),
-                    preprocessed,
+                    preprocessed.clone(),
                 );
                 let ops_koalabear: p3_circuit::tables::Poseidon2CircuitTrace<KoalaBear> =
                     unsafe { core::mem::transmute(ops_converted) };
@@ -1811,9 +1924,10 @@ impl Poseidon2Prover {
                 (
                     // Preprocessed values are already stored in the AIR, so we don't need to pass them again in the wrapper.
                     Poseidon2AirWrapper {
-                        inner: self.config.to_air_wrapper(),
+                        inner: self
+                            .config
+                            .to_air_wrapper_with_preprocessed_koala_bear(preprocessed),
                         width: air.width(),
-                        preprocessed: Vec::new(),
                         _phantom: core::marker::PhantomData::<SC>,
                     },
                     matrix,
@@ -1908,7 +2022,6 @@ where
                 let wrapper = Poseidon2AirWrapper {
                     inner,
                     width,
-                    preprocessed: Vec::new(),
                     _phantom: core::marker::PhantomData::<SC>,
                 };
                 Ok(DynamicAirEntry::new(Box::new(wrapper)))
@@ -1919,7 +2032,6 @@ where
                 let wrapper = Poseidon2AirWrapper {
                     inner,
                     width,
-                    preprocessed: Vec::new(),
                     _phantom: core::marker::PhantomData::<SC>,
                 };
                 Ok(DynamicAirEntry::new(Box::new(wrapper)))
@@ -1930,7 +2042,6 @@ where
                 let wrapper = Poseidon2AirWrapper {
                     inner,
                     width,
-                    preprocessed: Vec::new(),
                     _phantom: core::marker::PhantomData::<SC>,
                 };
                 Ok(DynamicAirEntry::new(Box::new(wrapper)))
@@ -1941,7 +2052,6 @@ where
                 let wrapper = Poseidon2AirWrapper {
                     inner,
                     width,
-                    preprocessed: Vec::new(),
                     _phantom: core::marker::PhantomData::<SC>,
                 };
                 Ok(DynamicAirEntry::new(Box::new(wrapper)))
@@ -2583,14 +2693,14 @@ where
 
         // Add
         let add_rows = traces.add_trace.lhs_values.len();
-        let add_prep = AddAir::<Val<SC>, D>::trace_to_preprocessed(&traces.add_trace, add_lanes);
+        let add_prep = AddAir::<Val<SC>, D>::trace_to_preprocessed(&traces.add_trace);
         let add_air = AddAir::<Val<SC>, D>::new_with_preprocessed(add_rows, add_lanes, add_prep);
         let add_matrix: RowMajorMatrix<Val<SC>> =
             AddAir::<Val<SC>, D>::trace_to_matrix(&traces.add_trace, add_lanes);
 
         // Mul
         let mul_rows = traces.mul_trace.lhs_values.len();
-        let mul_prep = MulAir::<Val<SC>, D>::trace_to_preprocessed(&traces.mul_trace, mul_lanes);
+        let mul_prep = MulAir::<Val<SC>, D>::trace_to_preprocessed(&traces.mul_trace);
         let mul_air: MulAir<Val<SC>, D> = if D == 1 {
             MulAir::<Val<SC>, D>::new_with_preprocessed(mul_rows, mul_lanes, mul_prep)
         } else {
