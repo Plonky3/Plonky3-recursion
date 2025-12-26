@@ -96,7 +96,7 @@ where
     ) -> Target {
         builder.push_scope("eval_folded_circuit");
 
-        let ld_dummy_expected = lookup_data
+        let ld_expected = lookup_data
             .iter()
             .map(|ld| LookupData {
                 name: ld.name.clone(),
@@ -115,7 +115,7 @@ where
             num_preprocessed,
             columns.public_values.len(),
             contexts,
-            &ld_dummy_expected,
+            &ld_expected,
             lookup_gadget,
         );
 

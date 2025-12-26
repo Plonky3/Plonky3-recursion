@@ -3,6 +3,12 @@ use alloc::vec::Vec;
 
 use p3_circuit::CircuitBuilder;
 use p3_field::Field;
+use p3_lookup::{
+    logup::LogUpGadget,
+    lookup_traits::{EmptyLookupGadget, LookupGadget},
+};
+
+use crate::Target;
 
 /// Trait for converting a non-recursive type into its circuit representation.
 ///
@@ -41,4 +47,36 @@ pub trait Recursive<F: Field> {
     /// # Parameters
     /// - `input`: The non-recursive input to extract public values from
     fn get_values(input: &Self::Input) -> Vec<F>;
+}
+
+pub trait RecursiveLookupGadget<F: Field>: LookupGadget {
+    fn verify_global_final_value_circuit(
+        &self,
+        circuit: &mut CircuitBuilder<F>,
+        all_expected_cumulative: &[Target],
+    );
+}
+
+impl<F: Field> RecursiveLookupGadget<F> for EmptyLookupGadget {
+    fn verify_global_final_value_circuit(
+        &self,
+        _circuit: &mut CircuitBuilder<F>,
+        _all_expected_cumulative: &[Target],
+    ) {
+    }
+}
+
+impl<F: Field> RecursiveLookupGadget<F> for LogUpGadget {
+    fn verify_global_final_value_circuit(
+        &self,
+        circuit: &mut CircuitBuilder<F>,
+        all_expected_cumulative: &[Target],
+    ) {
+        let mut final_cumulative = circuit.add_const(F::ZERO);
+        for i in 0..all_expected_cumulative.len() {
+            final_cumulative = circuit.add(final_cumulative, all_expected_cumulative[i]);
+        }
+
+        circuit.assert_zero(final_cumulative);
+    }
 }

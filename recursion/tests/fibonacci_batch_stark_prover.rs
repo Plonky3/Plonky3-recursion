@@ -82,11 +82,10 @@ fn test_fibonacci_batch_verifier() {
     let batch_stark_proof = prover
         .prove_all_tables(&traces, &common, witness_multiplicities, &lookup_gadget)
         .unwrap();
-    println!("Batch STARK proof generated.");
+
     prover
         .verify_all_tables(&batch_stark_proof, &common, &lookup_gadget)
         .unwrap();
-    println!("Batch STARK proof verified.");
 
     // Now verify the batch STARK proof recursively
     let dft2 = Dft::default();
@@ -169,8 +168,6 @@ fn test_fibonacci_batch_verifier() {
         &lookup_gadget,
     )
     .unwrap();
-
-    println!("all challenges {}", all_challenges.len());
 
     // Pack values using the builder
     let public_inputs = verifier_inputs.pack_values(&pis, batch_proof, &common, &all_challenges);

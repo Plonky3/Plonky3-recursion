@@ -10,4 +10,4 @@ pub use air::RecursiveAir;
 pub use challenger::RecursiveChallenger;
 pub use mmcs::{RecursiveExtensionMmcs, RecursiveMmcs};
 pub use pcs::{ComsWithOpeningsTargets, RecursivePcs};
-pub use recursive::Recursive;
+pub use recursive::{Recursive, RecursiveLookupGadget};
