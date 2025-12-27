@@ -13,10 +13,9 @@ use p3_baby_bear::{
     BabyBear, GenericPoseidon2LinearLayersBabyBear, default_babybear_poseidon2_16,
     default_babybear_poseidon2_24,
 };
-use p3_batch_stark::{
-    BatchProof, CommonData, DebugConstraintBuilderWithLookups, StarkGenericConfig, StarkInstance,
-    Val,
-};
+#[cfg(debug_assertions)]
+use p3_batch_stark::DebugConstraintBuilderWithLookups;
+use p3_batch_stark::{BatchProof, CommonData, StarkGenericConfig, StarkInstance, Val};
 use p3_circuit::op::PrimitiveOpType;
 use p3_circuit::tables::{
     Poseidon2CircuitRow, Poseidon2CircuitTrace, Poseidon2Params, Poseidon2Trace, Traces,
@@ -148,6 +147,7 @@ where
 
 /// Simple super trait of [`Air`] describing the behaviour of a non-primitive
 /// dynamically dispatched AIR used in batched proofs.
+#[cfg(debug_assertions)]
 pub trait BatchAir<SC>:
     BaseAir<Val<SC>>
     + Air<SymbolicAirBuilder<Val<SC>, SC::Challenge>>
@@ -156,6 +156,23 @@ pub trait BatchAir<SC>:
     + for<'a> Air<VerifierConstraintFolderWithLookups<'a, SC>>
     + AirLookupHandlerDyn<SymbolicAirBuilder<Val<SC>, SC::Challenge>>
     + for<'a> AirLookupHandlerDyn<DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>>
+    + for<'a> AirLookupHandlerDyn<ProverConstraintFolderWithLookups<'a, SC>>
+    + for<'a> AirLookupHandlerDyn<VerifierConstraintFolderWithLookups<'a, SC>>
+    + Send
+    + Sync
+where
+    SC: StarkGenericConfig,
+    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+{
+}
+
+#[cfg(not(debug_assertions))]
+pub trait BatchAir<SC>:
+    BaseAir<Val<SC>>
+    + Air<SymbolicAirBuilder<Val<SC>, SC::Challenge>>
+    + for<'a> Air<ProverConstraintFolderWithLookups<'a, SC>>
+    + for<'a> Air<VerifierConstraintFolderWithLookups<'a, SC>>
+    + AirLookupHandlerDyn<SymbolicAirBuilder<Val<SC>, SC::Challenge>>
     + for<'a> AirLookupHandlerDyn<ProverConstraintFolderWithLookups<'a, SC>>
     + for<'a> AirLookupHandlerDyn<VerifierConstraintFolderWithLookups<'a, SC>>
     + Send
@@ -1108,6 +1125,7 @@ where
     }
 }
 
+#[cfg(debug_assertions)]
 impl<'a, SC> Air<DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>>
     for Poseidon2AirWrapper<SC>
 where
@@ -1523,6 +1541,7 @@ where
     }
 }
 
+#[cfg(debug_assertions)]
 impl<'a, SC> AirLookupHandler<DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>>
     for Poseidon2AirWrapper<SC>
 where
@@ -2220,6 +2239,7 @@ where
     }
 }
 
+#[cfg(debug_assertions)]
 impl<'a, SC, const D: usize> Air<DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>>
     for CircuitTableAir<SC, D>
 where
@@ -2367,6 +2387,7 @@ where
     }
 }
 
+#[cfg(debug_assertions)]
 impl<'a, SC, const D: usize>
     AirLookupHandler<DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>>
     for CircuitTableAir<SC, D>
