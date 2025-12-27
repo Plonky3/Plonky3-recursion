@@ -250,6 +250,7 @@ impl<
             main: input.commitments.trace.clone(),
             permutation: None,
             quotient_chunks: input.commitments.quotient_chunks.clone(),
+            random: input.commitments.random.clone(),
         };
         let commitments_targets = CommitmentTargets::new(circuit, &commitments_no_lookups);
         let opened_values_targets = OpenedValuesTargets::new(circuit, &input.opened_values);
@@ -275,6 +276,7 @@ impl<
             main: commitments.trace.clone(),
             permutation: None,
             quotient_chunks: commitments.quotient_chunks.clone(),
+            random: commitments.random.clone(),
         };
         CommitmentTargets::<SC::Challenge, Comm>::get_values(&commitments_no_lookups)
             .into_iter()
@@ -427,6 +429,7 @@ where
             main,
             permutation,
             quotient_chunks,
+            random,
         } = input;
 
         let mut values = vec![];
@@ -435,6 +438,10 @@ where
             values.extend(Comm::get_values(permutation));
         }
         values.extend(Comm::get_values(quotient_chunks));
+
+        if let Some(random) = random {
+            values.extend(Comm::get_values(random));
+        }
 
         values
     }

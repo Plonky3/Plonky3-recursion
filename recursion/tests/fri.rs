@@ -137,7 +137,7 @@ fn produce_inputs_multi(
 
     // Open and produce FRI proof
     let (opened_values, fri_proof) =
-        <MyPcs as Pcs<Challenge, Challenger>>::open(pcs, open_data, &mut p_challenger);
+        <MyPcs as Pcs<Challenge, Challenger>>::open(pcs, open_data, &mut p_challenger, None);
 
     // --- Verifier transcript replay (to derive the public inputs) ---
     let mut v_challenger = Challenger::new(perm.clone());
