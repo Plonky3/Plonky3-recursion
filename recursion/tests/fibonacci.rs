@@ -4,6 +4,7 @@ use p3_circuit::CircuitBuilder;
 use p3_circuit::test_utils::{FibonacciAir, generate_trace_rows};
 use p3_field::PrimeCharacteristicRing;
 use p3_fri::create_test_fri_params;
+use p3_lookup::lookup_traits::AirNoLookup;
 use p3_recursion::pcs::fri::{FriVerifierParams, HashTargets, InputProofTargets, RecValMmcs};
 use p3_recursion::public_inputs::StarkVerifierInputsBuilder;
 use p3_recursion::{VerificationError, generate_challenges, verify_circuit};
@@ -30,14 +31,14 @@ fn test_fibonacci_verifier() -> Result<(), VerificationError> {
     let fri_params = create_test_fri_params(challenge_mmcs, log_final_poly_len);
     let fri_verifier_params = FriVerifierParams::from(&fri_params);
     let log_height_max = fri_params.log_final_poly_len + fri_params.log_blowup;
-    let pow_bits = fri_params.proof_of_work_bits;
+    let pow_bits = fri_params.query_proof_of_work_bits;
     let pcs = MyPcs::new(dft, val_mmcs, fri_params);
     let challenger = Challenger::new(perm);
 
     let config = MyConfig::new(pcs, challenger);
     let pis = vec![BabyBear::ZERO, BabyBear::ONE, BabyBear::from_u64(x)];
 
-    let air = FibonacciAir {};
+    let air = AirNoLookup::new(FibonacciAir {});
     let proof = prove(&config, &air, trace, &pis);
     assert!(verify(&config, &air, &proof, &pis).is_ok());
 
@@ -52,7 +53,7 @@ fn test_fibonacci_verifier() -> Result<(), VerificationError> {
 
     // Add the verification circuit to the builder.
     verify_circuit::<
-        FibonacciAir,
+        AirNoLookup<FibonacciAir>,
         MyConfig,
         HashTargets<F, DIGEST_ELEMS>,
         InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>>,

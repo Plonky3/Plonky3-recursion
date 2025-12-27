@@ -10,8 +10,10 @@ pub struct FriVerifierParams {
     pub log_blowup: usize,
     /// Log₂ of the final polynomial length (after all folding rounds)
     pub log_final_poly_len: usize,
-    /// Number of proof-of-work bits required
-    pub pow_bits: usize,
+    /// Number of commit-phase proof-of-work bits required
+    pub commit_pow_bits: usize,
+    /// Number of query proof-of-work bits required
+    pub query_pow_bits: usize,
 }
 
 impl<M> From<&FriParameters<M>> for FriVerifierParams {
@@ -19,7 +21,8 @@ impl<M> From<&FriParameters<M>> for FriVerifierParams {
         Self {
             log_blowup: params.log_blowup,
             log_final_poly_len: params.log_final_poly_len,
-            pow_bits: params.proof_of_work_bits,
+            commit_pow_bits: params.commit_proof_of_work_bits,
+            query_pow_bits: params.query_proof_of_work_bits,
         }
     }
 }

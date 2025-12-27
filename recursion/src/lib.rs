@@ -27,10 +27,7 @@ pub use traits::{
     RecursivePcs,
 };
 pub use types::{
-    CommitmentTargets, OpenedValuesTargets, PreprocessedVerifierDataTargets, ProofTargets,
+    BatchProofTargets, CommitmentTargets, CommonDataTargets, OpenedValuesTargets, ProofTargets,
     RecursiveLagrangeSelectors, StarkChallenges, Target,
 };
-pub use verifier::{
-    BatchProofTargets, ObservableCommitment, VerificationError, verify_batch_circuit,
-    verify_circuit,
-};
+pub use verifier::{ObservableCommitment, VerificationError, verify_batch_circuit, verify_circuit};

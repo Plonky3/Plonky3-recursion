@@ -1,19 +1,30 @@
 //! Trait for recursive AIR constraint evaluation.
 
-use p3_air::Air;
+use alloc::vec::Vec;
+
+use p3_batch_stark::symbolic::{get_log_num_quotient_chunks, get_symbolic_constraints};
 use p3_circuit::CircuitBuilder;
 use p3_circuit::utils::{ColumnsTargets, symbolic_to_circuit};
-use p3_field::Field;
-use p3_uni_stark::{SymbolicAirBuilder, get_log_num_quotient_chunks, get_symbolic_constraints};
+use p3_field::{ExtensionField, Field};
+use p3_lookup::lookup_traits::{AirLookupHandler, Lookup, LookupData, LookupGadget};
+use p3_uni_stark::{Entry, SymbolicAirBuilder, SymbolicExpression, SymbolicVariable};
 
 use crate::Target;
 use crate::types::RecursiveLagrangeSelectors;
 
+/// Structure holding lookup verification data:
+///
+/// - `contexts`: Slice of lookup contexts used in the AIR.
+/// - `lookup_data`: Slice of lookup data for global lookups.
+pub struct LookupMetadata<'a, F: Field> {
+    pub contexts: &'a [Lookup<F>],
+    pub lookup_data: &'a [LookupData<usize>],
+}
 /// Trait for evaluating AIR constraints within a recursive verification circuit.
 ///
 /// This trait provides methods for computing constraint evaluations over circuit targets
 /// rather than concrete field values.
-pub trait RecursiveAir<F: Field> {
+pub trait RecursiveAir<F: Field, EF: ExtensionField<F>, LG: LookupGadget> {
     /// Returns the number of columns in the AIR's execution trace.
     ///
     /// This corresponds to the width of the trace matrix.
@@ -30,16 +41,21 @@ pub trait RecursiveAir<F: Field> {
     /// - `builder`: Circuit builder for creating operations
     /// - `sels`: Row selectors and vanishing inverse for constraint evaluation
     /// - `alpha`: Challenge used for folding constraints
+    /// - `contexts`: Lookup contexts used in the AIR
+    /// - `lookup_data`: Data for global lookups
     /// - `columns`: Trace columns (local, next) and public values
+    /// - `lookup_gadget`: Gadget for handling lookups in the circuit
     ///
     /// # Returns
     /// A single target representing the folded constraint evaluation
     fn eval_folded_circuit(
         &self,
-        builder: &mut CircuitBuilder<F>,
+        builder: &mut CircuitBuilder<EF>,
         sels: &RecursiveLagrangeSelectors,
         alpha: &Target,
+        lookup_metadata: &LookupMetadata<'_, F>,
         columns: ColumnsTargets<'_>,
+        lookup_gadget: &LG,
     ) -> Target;
 
     /// Compute the log of the quotient polynomial degree.
@@ -60,13 +76,17 @@ pub trait RecursiveAir<F: Field> {
         &self,
         preprocessed_width: usize,
         num_public_values: usize,
+        contexts: &[Lookup<F>],
+        lookup_data: &[LookupData<usize>],
         is_zk: usize,
+        lookup_gadget: &LG,
     ) -> usize;
 }
 
-impl<F: Field, A> RecursiveAir<F> for A
+impl<F: Field, EF: ExtensionField<F>, A, LG: LookupGadget> RecursiveAir<F, EF, LG> for A
 where
-    A: Air<SymbolicAirBuilder<F>>,
+    A: AirLookupHandler<SymbolicAirBuilder<F, EF>>,
+    SymbolicExpression<EF>: From<SymbolicExpression<F>>,
 {
     fn width(&self) -> usize {
         Self::width(self)
@@ -74,25 +94,58 @@ where
 
     fn eval_folded_circuit(
         &self,
-        builder: &mut CircuitBuilder<F>,
+        builder: &mut CircuitBuilder<EF>,
         sels: &RecursiveLagrangeSelectors,
         alpha: &Target,
+        lookup_metadata: &LookupMetadata<'_, F>,
         columns: ColumnsTargets<'_>,
+        lookup_gadget: &LG,
     ) -> Target {
         builder.push_scope("eval_folded_circuit");
 
+        let LookupMetadata {
+            contexts,
+            lookup_data,
+        } = lookup_metadata;
+
+        let ld_expected = lookup_data
+            .iter()
+            .map(|ld| LookupData {
+                name: ld.name.clone(),
+                aux_idx: ld.aux_idx,
+                expected_cumulated: SymbolicExpression::Variable(SymbolicVariable::new(
+                    Entry::Public,
+                    ld.expected_cumulated,
+                )),
+            })
+            .collect::<Vec<_>>();
+
         let num_preprocessed = columns.local_prep_values.len();
         // Get symbolic constraints from the AIR
-        let symbolic_constraints =
-            get_symbolic_constraints(self, num_preprocessed, columns.public_values.len());
+        let (base_symbolic_constraints, extension_symbolic_constraints) = get_symbolic_constraints(
+            self,
+            num_preprocessed,
+            columns.public_values.len(),
+            contexts,
+            &ld_expected,
+            lookup_gadget,
+        );
 
         // Fold all constraints: result = c₀ + α·c₁ + α²·c₂ + ...
-        let mut acc = builder.add_const(F::ZERO);
-        for s_c in symbolic_constraints {
+        let mut acc = builder.add_const(EF::ZERO);
+        for s_c in base_symbolic_constraints {
+            let mul_prev = builder.mul(acc, *alpha);
+            let constraints =
+                symbolic_to_circuit(sels.row_selectors, &columns, &s_c.into(), builder);
+            acc = builder.add(mul_prev, constraints);
+        }
+
+        for s_c in extension_symbolic_constraints {
             let mul_prev = builder.mul(acc, *alpha);
             let constraints = symbolic_to_circuit(sels.row_selectors, &columns, &s_c, builder);
             acc = builder.add(mul_prev, constraints);
         }
+
         builder.pop_scope();
         acc
     }
@@ -101,8 +154,36 @@ where
         &self,
         preprocessed_width: usize,
         num_public_values: usize,
+        contexts: &[Lookup<F>],
+        lookup_data: &[LookupData<usize>],
         is_zk: usize,
-    ) -> usize {
-        get_log_num_quotient_chunks(self, preprocessed_width, num_public_values, is_zk)
+        lookup_gadget: &LG,
+    ) -> usize
+    where
+        F: Field,
+        EF: ExtensionField<F>,
+        SymbolicExpression<EF>: From<SymbolicExpression<F>>,
+        LG: LookupGadget,
+    {
+        let ld_dummy_expected = lookup_data
+            .iter()
+            .map(|ld| LookupData {
+                name: ld.name.clone(),
+                aux_idx: ld.aux_idx,
+                expected_cumulated: SymbolicExpression::Variable(SymbolicVariable::new(
+                    Entry::Public,
+                    ld.expected_cumulated,
+                )),
+            })
+            .collect::<Vec<_>>();
+        get_log_num_quotient_chunks(
+            self,
+            preprocessed_width,
+            num_public_values,
+            contexts,
+            &ld_dummy_expected,
+            is_zk,
+            lookup_gadget,
+        )
     }
 }

@@ -9,6 +9,7 @@ use p3_circuit_prover::common::{NonPrimitiveConfig, get_airs_and_degrees_with_pr
 use p3_circuit_prover::{BatchStarkProver, Poseidon2Config, TablePacking, config};
 use p3_field::extension::BinomialExtensionField;
 use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
+use p3_lookup::logup::LogUpGadget;
 use p3_poseidon2_circuit_air::BabyBearD4Width16;
 use p3_symmetric::Permutation;
 use tracing_forest::ForestLayer;
@@ -211,12 +212,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     let circuit = builder.build()?;
     let table_packing = TablePacking::new(4, 4, 1);
     let poseidon2_config = Poseidon2Config::baby_bear_d4_width16();
-    let airs_degrees = get_airs_and_degrees_with_prep::<_, _, 1>(
+    let stark_config = config::baby_bear().build();
+    let (airs_degrees, witness_multiplicities) = get_airs_and_degrees_with_prep::<_, _, 4>(
+        &stark_config,
         &circuit,
         table_packing,
         Some(&[NonPrimitiveConfig::Poseidon2(poseidon2_config.clone())]),
     )?;
-    let (airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
+    let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
 
     let mut runner = circuit.runner();
     runner.set_public_inputs(&[
@@ -253,13 +256,15 @@ fn main() -> Result<(), Box<dyn Error>> {
         .expect("poseidon2 trace missing");
     assert_eq!(poseidon2_trace.total_rows(), 3, "expected three perm rows");
 
-    let stark_config = config::baby_bear().build();
-    let common = CommonData::from_airs_and_degrees(&stark_config, &airs, &degrees);
+    let common = CommonData::from_airs_and_degrees(&stark_config, &mut airs, &degrees);
 
     let mut prover = BatchStarkProver::new(stark_config).with_table_packing(table_packing);
     prover.register_poseidon2_table(poseidon2_config);
-    let proof = prover.prove_all_tables(&traces, &common)?;
-    prover.verify_all_tables(&proof, &common)?;
+
+    let lookup_gadget = LogUpGadget::new();
+    let proof =
+        prover.prove_all_tables(&traces, &common, witness_multiplicities, &lookup_gadget)?;
+    prover.verify_all_tables(&proof, &common, &lookup_gadget)?;
 
     Ok(())
 }

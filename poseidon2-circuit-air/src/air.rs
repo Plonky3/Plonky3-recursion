@@ -67,6 +67,42 @@ pub struct Poseidon2CircuitAir<
     preprocessed: Vec<F>,
 }
 
+impl<
+    F: PrimeField,
+    LinearLayers: GenericPoseidon2LinearLayers<WIDTH>,
+    const D: usize,
+    const WIDTH: usize,
+    const WIDTH_EXT: usize,
+    const RATE_EXT: usize,
+    const CAPACITY_EXT: usize,
+    const SBOX_DEGREE: u64,
+    const SBOX_REGISTERS: usize,
+    const HALF_FULL_ROUNDS: usize,
+    const PARTIAL_ROUNDS: usize,
+> Clone
+    for Poseidon2CircuitAir<
+        F,
+        LinearLayers,
+        D,
+        WIDTH,
+        WIDTH_EXT,
+        RATE_EXT,
+        CAPACITY_EXT,
+        SBOX_DEGREE,
+        SBOX_REGISTERS,
+        HALF_FULL_ROUNDS,
+        PARTIAL_ROUNDS,
+    >
+{
+    fn clone(&self) -> Self {
+        Self {
+            p3_poseidon2: self.p3_poseidon2.clone(),
+            num_lookup_cols: self.num_lookup_cols,
+            preprocessed: self.preprocessed.clone(),
+        }
+    }
+}
+
 pub const fn poseidon2_preprocessed_width() -> usize {
     // Witness index, `in_ctl`, `normal_chain_sel` and `merkle_chain_sel` for all input limbs, witness index and `out_ctl` for all output limbs, `mmcs_index_sum_ctl`, `new_start` and `merkle_path`.
     4 * POSEIDON2_LIMBS + 2 * POSEIDON2_PUBLIC_OUTPUT_LIMBS + 3
@@ -365,14 +401,23 @@ impl<
             self.preprocessed.len(),
         );
 
-        let padded_height = self
+        let num_extra_rows = self
             .preprocessed
             .len()
             .div_ceil(Self::preprocessed_width())
             .next_power_of_two()
-            * Self::preprocessed_width();
+            - (self.preprocessed.len() / Self::preprocessed_width());
+
         let mut preprocessed = self.preprocessed.clone();
-        preprocessed.resize(padded_height, F::ZERO);
+        let width = Self::preprocessed_width();
+        let start_len = preprocessed.len();
+        preprocessed.resize(start_len + num_extra_rows * width, F::ZERO);
+
+        // We set `new_start` to 1 in the first padding row. This indicates to the last real permutation operation
+        // that the chaining has ended.
+        if num_extra_rows > 0 {
+            preprocessed[start_len + width - 2] = F::ONE;
+        }
 
         Some(RowMajorMatrix::new(
             preprocessed,
@@ -812,7 +857,7 @@ where
 
     fn get_lookups(&mut self) -> Vec<Lookup<<AB>::F>> {
         let symbolic_air_builder = SymbolicAirBuilder::<AB::F>::new(
-            0, // TODO: update the permutation width when implemented.
+            Self::preprocessed_width(),
             BaseAir::<AB::F>::width(self),
             0,
             0, // Here, we do not need the permutation trace
@@ -820,9 +865,6 @@ where
         );
         let symbolic_main = symbolic_air_builder.main();
         let symbolic_main_local = symbolic_main.row_slice(0).expect("The matrix is empty?");
-        let symbolic_main_next = symbolic_main
-            .row_slice(1)
-            .expect("The matrix has only one row?");
 
         let local: &Poseidon2CircuitCols<
             SymbolicVariable<AB::F>,
@@ -836,24 +878,12 @@ where
             >,
         > = (*symbolic_main_local).borrow();
 
-        let next: &Poseidon2CircuitCols<
-            SymbolicVariable<AB::F>,
-            Poseidon2Cols<
-                SymbolicVariable<AB::F>,
-                WIDTH,
-                SBOX_DEGREE,
-                SBOX_REGISTERS,
-                HALF_FULL_ROUNDS,
-                PARTIAL_ROUNDS,
-            >,
-        > = (*symbolic_main_next).borrow();
-
         // Preprocessing layout:
         // [in_idx[0], in_ctl[0], normal_chain_sel[0], merkle_chain_sel[0], ..., in_idx[3], in_ctl[3], normal_chain_sel[3], merkle_chain_sel[3],
         //  out_idx[0], out_ctl[0], out_idx[1], out_ctl[1], mmcs_index_sum_ctl_idx, new_start, merkle_path]
         // The following corresponds to the size of the data related to one input limb (in_idx[i], in_ctl[i], normal_chain_sel[i], merkle_chain_sel[i]).
         let preprocessing_limb_input_data_size = 4;
-        let preprocessing_limb_output_data_size = 4;
+        let preprocessing_limb_output_data_size = 2;
         let in_ctl_idx = 1;
         let start_output_idx = preprocessing_limb_input_data_size * POSEIDON2_LIMBS;
         let mmcs_index_sum_ctl_idx =
@@ -870,16 +900,16 @@ where
             .row_slice(1)
             .expect("The preprocessed matrix has only one row?");
         let next_preprocessed: &[SymbolicVariable<AB::F>] = (*next_preprocessed).borrow();
-        // There are POSEIDON2_LIMBS input limbs and POSEIDON2_PUBLIC_OUTPUT_LIMBS output limbs to be lookup up in the `Witness` table.
+        // There are POSEIDON2_LIMBS input limbs and POSEIDON2_PUBLIC_OUTPUT_LIMBS output limbs to be looked up up in the `Witness` table.
         let mut lookups = Vec::with_capacity(POSEIDON2_LIMBS + POSEIDON2_PUBLIC_OUTPUT_LIMBS);
         // Each input/output limb is sent with multiplicity `in_ctl/out_ctl`.
         for limb_idx in 0..POSEIDON2_LIMBS {
             let in_ctl =
                 local_preprocessed[limb_idx * preprocessing_limb_input_data_size + in_ctl_idx];
             let input_idx_limb =
-                iter::once(next_preprocessed[limb_idx * preprocessing_limb_input_data_size]) // input witness index
+                iter::once(local_preprocessed[limb_idx * preprocessing_limb_input_data_size]) // input witness index
                     .chain(
-                        next.poseidon2.inputs[limb_idx * D..(limb_idx + 1) * D]
+                        local.poseidon2.inputs[limb_idx * D..(limb_idx + 1) * D]
                             .iter()
                             .cloned(),
                     )

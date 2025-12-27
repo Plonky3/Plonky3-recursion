@@ -173,7 +173,7 @@ where
         let lookup = AirLookupHandler::<AB>::register_lookup(
             self,
             Kind::Global("WitnessChecks".to_string()),
-            &lookup_inps[0],
+            &lookup_inps,
         );
 
         vec![lookup]

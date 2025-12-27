@@ -354,7 +354,7 @@ impl<AB: PermutationAirBuilder + PairBuilder + AirBuilderWithPublicValues, const
             lookups.push(AirLookupHandler::<AB>::register_lookup(
                 self,
                 Kind::Global("WitnessChecks".to_string()),
-                &lane_lookup_inputs[0],
+                &lane_lookup_inputs,
             ));
         }
 
