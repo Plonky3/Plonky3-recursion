@@ -1,0 +1,97 @@
+name: Enforce RFC for needs-rfc issues
+
+on:
+  issues:
+    types: [opened, edited, labeled, unlabeled, reopened]
+
+permissions:
+  issues: write
+
+jobs:
+  enforce:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const issue_number = context.payload.issue.number;
+
+            // Always re-fetch the issue so labels/body are current
+            const { data: issue } = await github.rest.issues.get({
+              owner, repo, issue_number
+            });
+
+            const labels = new Set((issue.labels || []).map(l => l.name));
+            const body = issue.body || "";
+
+            const NEEDS_RFC = "needs-rfc";
+            const BLOCKED = "blocked";
+
+            const hasNeedsRfc = labels.has(NEEDS_RFC);
+
+            // RFC link detection: looks for an explicit "RFC link" under `docs/rfcs`
+            const hasRfcLink = /RFC link\s*\n\s*(https?:\/\/\S+|docs\/rfcs\/\S+)/i.test(body);
+
+            // Avoid spamming: only comment once (marker in the comment body)
+            const marker = "<!-- needs-rfc-checklist-v1 -->";
+
+            async function hasChecklistComment() {
+              const comments = await github.paginate(github.rest.issues.listComments, {
+                owner, repo, issue_number, per_page: 100
+              });
+              return comments.some(c => (c.body || "").includes(marker));
+            }
+
+            async function addLabels(toAdd) {
+              if (!toAdd.length) return;
+              await github.rest.issues.addLabels({ owner, repo, issue_number, labels: toAdd });
+            }
+
+            async function removeLabel(name) {
+              try {
+                await github.rest.issues.removeLabel({ owner, repo, issue_number, name });
+              } catch (e) {
+                // ignore if label missing
+              }
+            }
+
+            // If needs-rfc but no RFC link: block + comment checklist
+            if (hasNeedsRfc && !hasRfcLink) {
+              if (!labels.has(BLOCKED)) {
+                await addLabels([BLOCKED]);
+              }
+
+              if (!(await hasChecklistComment())) {
+                const checklist = `${marker}
+This issue is labeled **needs-rfc**, so it's **blocked until an RFC/design artifact exists**.
+
+### What to do next (RFC checklist)
+- [ ] Create an RFC (docs/rfcs/NNNN-<title>.md) **or** a design-only PR
+- [ ] Include: goals/non-goals, proposed APIs/types, constraints/invariants, migration plan
+- [ ] Include: perf expectations + benchmarks (if perf-sensitive)
+- [ ] Get at least **1 non-DRI approval** before heavy implementation
+- [ ] Link it in the issue under **“RFC link”**
+
+### RFC link
+Edit the issue description and fill in the **RFC link** field so this can be unblocked.`;
+
+                await github.rest.issues.createComment({
+                  owner, repo, issue_number,
+                  body: checklist
+                });
+              }
+              return;
+            }
+
+            // If needs-rfc and RFC link exists: ensure unblocked
+            if (hasNeedsRfc && hasRfcLink) {
+              if (labels.has(BLOCKED)) {
+                await removeLabel(BLOCKED);
+              }
+              return;
+            }
+
+            // If no needs-rfc: remove blocked if it was only used for RFC gating (optional)
+            // Safer: do nothing here, because blocked might mean other things.

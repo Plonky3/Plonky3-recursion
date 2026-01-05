@@ -17,56 +17,47 @@ jobs:
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const issue_number = context.payload.issue.number;
-            const body = context.payload.issue.body || "";
 
-            // Robust checkbox detection (doesn't depend on exact suffix text)
-            const checked = (label) => {
-              // matches lines like: - [x] perf ...  (case-insensitive)
-              const re = new RegExp(`^\\s*-\\s*\$begin:math:display$x\\$end:math:display$\\s*${label}\\b`, "im");
+            // Re-fetch to avoid stale payload
+            const { data: issue } = await github.rest.issues.get({ owner, repo, issue_number });
+            const body = issue.body || "";
+
+            // Matches lines like: - [x] perf   (case-insensitive, allows trailing text)
+            const isChecked = (name) => {
+              const re = new RegExp(`^\\s*-\\s*\$begin:math:display$x\\$end:math:display$\\s*${name}\\b`, "im");
               return re.test(body);
             };
 
-            const wantsPerf = checked("perf");
-            const wantsNeedsRfc = checked("needs-rfc");
+            const wantsPerf = isChecked("perf");
+            const wantsNeedsRfc = isChecked("needs-rfc");
 
-            // --- Label sync ---
-            const current = new Set((context.payload.issue.labels || []).map(l => l.name));
-
-            const ensure = (name, want) => {
-              if (want) current.add(name);
-              else current.delete(name);
-            };
+            // --- label sync (preserve existing labels) ---
+            const labels = new Set((issue.labels || []).map(l => l.name));
+            const ensure = (name, want) => (want ? labels.add(name) : labels.delete(name));
 
             ensure("perf", wantsPerf);
             ensure("needs-rfc", wantsNeedsRfc);
 
             await github.rest.issues.setLabels({
               owner, repo, issue_number,
-              labels: Array.from(current),
+              labels: Array.from(labels),
             });
 
-            // --- Milestone sync (repo milestones) ---
+            // --- milestone sync for perf ---
             const targetMilestoneTitle = "Performance Engineering";
 
-            // Find milestone by title
             const milestones = await github.paginate(github.rest.issues.listMilestones, {
-              owner,
-              repo,
-              state: "open",
-              per_page: 100,
+              owner, repo, state: "open", per_page: 100,
             });
 
             const target = milestones.find(m => m.title === targetMilestoneTitle);
             if (!target) {
-              core.warning(`Milestone "${targetMilestoneTitle}" not found (open). Create it or adjust the title.`);
+              core.warning(`Milestone "${targetMilestoneTitle}" not found (open).`);
               return;
             }
 
-            const currentMilestone = context.payload.issue.milestone; // object or null
+            const currentMilestone = issue.milestone;
             const currentTitle = currentMilestone ? currentMilestone.title : null;
-
-            // Policy: do not overwrite an unrelated milestone
-            const overwriteOtherMilestones = false;
 
             if (wantsPerf) {
               if (!currentMilestone) {
@@ -74,18 +65,11 @@ jobs:
                   owner, repo, issue_number,
                   milestone: target.number,
                 });
-              } else if (currentTitle === targetMilestoneTitle) {
-                // already set, nothing to do
-              } else if (overwriteOtherMilestones) {
-                await github.rest.issues.update({
-                  owner, repo, issue_number,
-                  milestone: target.number,
-                });
-              } else {
+              } else if (currentTitle !== targetMilestoneTitle) {
+                // don't overwrite other milestones
                 core.info(`Issue already has milestone "${currentTitle}". Not overwriting.`);
               }
             } else {
-              // Remove milestone only if it is the perf milestone
               if (currentMilestone && currentTitle === targetMilestoneTitle) {
                 await github.rest.issues.update({
                   owner, repo, issue_number,

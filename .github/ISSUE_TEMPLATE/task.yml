@@ -13,14 +13,14 @@ body:
       required: true
 
   - type: checkboxes
-    id: auto_labels
+    id: flags
     attributes:
-      label: Labels
-      description: Check any that apply (these will auto-apply labels).
+      label: Flags
+      description: (Used by automation; check if applicable)
       options:
-        - label: needs-rfc (big change; requires RFC/design-first)
+        - label: perf
           required: false
-        - label: perf (performance-sensitive / requires benchmarks)
+        - label: needs-rfc
           required: false
 
   - type: textarea
