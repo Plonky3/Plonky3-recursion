@@ -1,0 +1,100 @@
+name: Feature
+description: New user-facing capability or meaningful new functionality
+title: "[Feature] "
+labels: ["feature"]
+body:
+  - type: input
+    id: dri
+    attributes:
+      label: DRI (owner)
+      description: GitHub handle responsible for driving this to done
+      placeholder: "@username"
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: auto_labels
+    attributes:
+      label: Labels
+      description: Check any that apply (these will auto-apply labels).
+      options:
+        - label: needs-rfc (big change; requires RFC/design-first)
+          required: false
+        - label: perf (performance-sensitive / requires benchmarks)
+          required: false
+
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Motivation / User value
+      description: Who benefits and how will we know it worked?
+      placeholder: |
+        - User/stakeholder:
+        - Value:
+        - Success signal:
+    validations:
+      required: true
+
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope
+      description: What is in and out
+      placeholder: |
+        In:
+        - ...
+
+        Out:
+        - ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: approach
+    attributes:
+      label: Proposed approach
+      description: High-level design, APIs touched, constraints/invariants
+    validations:
+      required: true
+
+  - type: textarea
+    id: perf_details
+    attributes:
+      label: Performance / benchmarking (if relevant)
+      description: Targets and how they'll be measured (required if perf checked)
+      placeholder: |
+        - Target:
+        - Benchmark:
+        - Acceptance threshold:
+    validations:
+      required: false
+
+  - type: textarea
+    id: exit
+    attributes:
+      label: Exit criteria
+      description: 1-3 bullets that define "done"
+      placeholder: |
+        - Feature works end-to-end for <scenario>
+        - Tests added/updated
+        - Docs/examples updated (if user-facing)
+    validations:
+      required: true
+
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: Dependencies / Blockers
+      placeholder: |
+        - Depends on #123
+        - Blocked by decision on <topic>
+    validations:
+      required: false
+
+  - type: textarea
+    id: links
+    attributes:
+      label: Notes / Links
+      description: Prior art, relevant files, docs, discussions
+    validations:
+      required: false

@@ -1,0 +1,74 @@
+name: Bug report
+description: Report a defect or correctness issue
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this for correctness/soundness/CI failures/regressions.
+        **Before moving to Ready/In Progress, assign exactly one person to this issue (assignee = DRI).**
+
+  - type: checkboxes
+    id: auto_labels
+    attributes:
+      label: Labels
+      description: Check any that apply (these will auto-apply labels).
+      options:
+        - label: perf (performance regression / perf-sensitive fix; include benchmarks)
+          required: false
+        - label: needs-rfc (unusually large/architectural bug fix; design-first)
+          required: false
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What's broken? One paragraph.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction steps / failing command
+      description: Include exact commands, inputs, CI links, logs, stack traces.
+      placeholder: |
+        Steps:
+        1)
+        2)
+
+        Command:
+        `cargo test ...`
+
+        Observed:
+        ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: impact
+    attributes:
+      label: Impact / risk
+      description: Soundness risk? User-facing break? Performance regression?
+    validations:
+      required: true
+
+  - type: textarea
+    id: exit
+    attributes:
+      label: Exit criteria
+      description: 1-3 bullets that define "done"
+      placeholder: |
+        - Repro captured (test or deterministic repro)
+        - Root cause fixed and covered by tests
+        - (If perf checked) Before/after benchmarks included and within threshold
+    validations:
+      required: true
