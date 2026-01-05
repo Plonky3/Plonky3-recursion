@@ -25,7 +25,6 @@ use p3_air::{
     Air, AirBuilder, AirBuilderWithPublicValues, BaseAir, PairBuilder, PermutationAirBuilder,
 };
 use p3_circuit::tables::PublicTrace;
-use p3_circuit::utils::pad_to_power_of_two;
 use p3_field::{BasedVectorSpace, Field};
 use p3_lookup::lookup_traits::{AirLookupHandler, Direction, Kind, Lookup};
 use p3_matrix::Matrix;
@@ -91,9 +90,10 @@ impl<F: Field, const D: usize> PublicAir<F, D> {
         }
 
         // Pad to power of two by repeating last row
-        pad_to_power_of_two(&mut values, width, height);
+        let mut mat = RowMajorMatrix::new(values, width);
+        mat.pad_to_power_of_two_height(F::ZERO);
 
-        RowMajorMatrix::new(values, width)
+        mat
     }
 
     pub fn trace_to_preprocessed<ExtF: BasedVectorSpace<F>>(trace: &PublicTrace<ExtF>) -> Vec<F> {
@@ -111,17 +111,15 @@ impl<F: Field, const D: usize> BaseAir<F> for PublicAir<F, D> {
     }
 
     fn preprocessed_trace(&self) -> Option<RowMajorMatrix<F>> {
-        let mut preprocessed_values = self
+        let preprocessed_values = self
             .preprocessed
             .iter()
             .flat_map(|v| [F::ONE, *v])
             .collect::<Vec<F>>();
-        pad_to_power_of_two(&mut preprocessed_values, 2, self.height);
+        let mut mat = RowMajorMatrix::new(preprocessed_values, 2);
+        mat.pad_to_power_of_two_height(F::ZERO);
 
-        Some(RowMajorMatrix::new(
-            preprocessed_values,
-            2, // Two columns: one for the multiplicity (0 for padding, 1 otherwise), one for the index
-        ))
+        Some(mat)
     }
 }
 

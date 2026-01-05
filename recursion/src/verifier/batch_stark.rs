@@ -585,7 +585,7 @@ where
     }
 
     if is_lookup {
-        let permutaiton_commit = commitments_targets
+        let permutation_commit = commitments_targets
             .permutation_targets
             .clone()
             .expect("We checked that the commitment exists");
@@ -625,7 +625,7 @@ where
             }
         }
 
-        coms_to_verify.push((permutaiton_commit, permutation_round));
+        coms_to_verify.push((permutation_commit, permutation_round));
     }
 
     let pcs_challenges = SC::Pcs::get_challenges_circuit::<RATE>(

@@ -291,6 +291,34 @@ where
         degree_bits,
     } = proof;
 
+    // Check that the global lookup data is consistent with the lookups.
+    all_lookups
+        .iter()
+        .zip(global_lookup_data)
+        .try_for_each(|(lookups, global_lookups)| {
+            let mut counter = 0;
+            lookups.iter().try_for_each(|lookup| match &lookup.kind {
+                Kind::Global(name) => {
+                    if global_lookups[counter].name != *name {
+                        Err(GenerationError::InvalidProofShape(
+                            "Global lookups are inconsistent with lookups",
+                        ))
+                    } else {
+                        counter += 1;
+                        Ok(())
+                    }
+                }
+                Kind::Local => Ok(()),
+            })?;
+            if counter != global_lookups.len() {
+                Err(GenerationError::InvalidProofShape(
+                    "Global lookups are inconsistent with lookups",
+                ))
+            } else {
+                Ok(())
+            }
+        })?;
+
     let n_instances = airs.len();
     if n_instances == 0
         || opened_values.instances.len() != n_instances
@@ -377,6 +405,7 @@ where
     let is_lookup = commitments.permutation.is_some();
 
     // Fetch lookups and sample their challenges.
+    // We use `get_different_perm_challenges` to ensure we only store the newly created challenges, in their order of sampling.
     let different_challenges =
         get_different_perm_challenges::<SC, LG>(&mut challenger, all_lookups, lookup_gadget);
 
@@ -654,13 +683,16 @@ where
     }
 }
 
+/// Samples all the different permutation challenges in the right order.
+/// This method is used to generate values for the challenge public values, and so it must store
+/// only the newly created challenges, in their order of sampling.
 pub fn get_different_perm_challenges<SC: StarkGenericConfig, LG: LookupGadget>(
     challenger: &mut SC::Challenger,
     all_lookups: &[Vec<Lookup<Val<SC>>>],
     lookup_gadget: &LG,
 ) -> Vec<SC::Challenge> {
     let num_challenges_per_lookup = lookup_gadget.num_challenges();
-    let mut global_perm_challenges = HashMap::new();
+    let mut global_perm_names = HashMap::new();
     let mut different_challenges = Vec::new();
 
     all_lookups.iter().for_each(|contexts| {
@@ -668,8 +700,10 @@ pub fn get_different_perm_challenges<SC: StarkGenericConfig, LG: LookupGadget>(
             match &context.kind {
                 Kind::Global(name) => {
                     // Get or create the global challenges.
-
-                    global_perm_challenges.entry(name).or_insert_with(|| {
+                    // We only store the newly created challenges, in `different_challenges`.
+                    // `global_perm_challenges` is just used to track the names already encountered, so
+                    // we only insert `(name, ())` when a new name is encountered.
+                    global_perm_names.entry(name).or_insert_with(|| {
                         (0..num_challenges_per_lookup).for_each(|_| {
                             let sampled = challenger.sample_algebra_element();
                             different_challenges.push(sampled);

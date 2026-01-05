@@ -97,7 +97,6 @@ use p3_air::{
     Air, AirBuilder, AirBuilderWithPublicValues, BaseAir, PairBuilder, PermutationAirBuilder,
 };
 use p3_circuit::tables::MulTrace;
-use p3_circuit::utils::pad_to_power_of_two;
 use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
 use p3_lookup::lookup_traits::{AirLookupHandler, Direction, Kind, Lookup};
 use p3_matrix::Matrix;
@@ -358,10 +357,11 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> MulAir<F, D> {
         }
 
         // Pad the matrix to a power-of-two height.
-        pad_to_power_of_two(&mut values, width, row_count);
+        let mut mat = RowMajorMatrix::new(values, width);
+        mat.pad_to_power_of_two_height(F::ZERO);
 
         // Build the row-major matrix with the computed width.
-        RowMajorMatrix::new(values, width)
+        mat
     }
 
     pub fn trace_to_preprocessed<ExtF: BasedVectorSpace<F>>(trace: &MulTrace<ExtF>) -> Vec<F> {
@@ -443,8 +443,6 @@ impl<F: Field, const D: usize> BaseAir<F> for MulAir<F, D> {
     }
 
     fn preprocessed_trace(&self) -> Option<RowMajorMatrix<F>> {
-        let original_height = self.num_ops.div_ceil(self.lanes);
-
         // Add the multiplicity to the preprocessed values.
         let mut preprocessed_values = self
             .preprocessed
@@ -466,15 +464,11 @@ impl<F: Field, const D: usize> BaseAir<F> for MulAir<F, D> {
         if padding_len != self.preprocessed_width() {
             preprocessed_values.extend(vec![F::ZERO; padding_len]);
         }
-        pad_to_power_of_two(
-            &mut preprocessed_values,
-            self.preprocessed_width(),
-            original_height,
-        );
-        Some(RowMajorMatrix::new(
-            preprocessed_values,
-            self.preprocessed_width(),
-        ))
+
+        let mut mat = RowMajorMatrix::new(preprocessed_values, self.preprocessed_width());
+        mat.pad_to_power_of_two_height(F::ZERO);
+
+        Some(mat)
     }
 }
 

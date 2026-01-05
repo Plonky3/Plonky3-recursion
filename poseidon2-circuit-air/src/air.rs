@@ -900,7 +900,7 @@ where
             .row_slice(1)
             .expect("The preprocessed matrix has only one row?");
         let next_preprocessed: &[SymbolicVariable<AB::F>] = (*next_preprocessed).borrow();
-        // There are POSEIDON2_LIMBS input limbs and POSEIDON2_PUBLIC_OUTPUT_LIMBS output limbs to be looked up up in the `Witness` table.
+        // There are POSEIDON2_LIMBS input limbs and POSEIDON2_PUBLIC_OUTPUT_LIMBS output limbs to be looked up in the `Witness` table.
         let mut lookups = Vec::with_capacity(POSEIDON2_LIMBS + POSEIDON2_PUBLIC_OUTPUT_LIMBS);
         // Each input/output limb is sent with multiplicity `in_ctl/out_ctl`.
         for limb_idx in 0..POSEIDON2_LIMBS {
