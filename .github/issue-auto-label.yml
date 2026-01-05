@@ -1,0 +1,95 @@
+name: Auto-label issues from form checkboxes (and set perf milestone)
+
+on:
+  issues:
+    types: [opened, edited, reopened]
+
+permissions:
+  issues: write
+
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const issue_number = context.payload.issue.number;
+            const body = context.payload.issue.body || "";
+
+            // Robust checkbox detection (doesn't depend on exact suffix text)
+            const checked = (label) => {
+              // matches lines like: - [x] perf ...  (case-insensitive)
+              const re = new RegExp(`^\\s*-\\s*\$begin:math:display$x\\$end:math:display$\\s*${label}\\b`, "im");
+              return re.test(body);
+            };
+
+            const wantsPerf = checked("perf");
+            const wantsNeedsRfc = checked("needs-rfc");
+
+            // --- Label sync ---
+            const current = new Set((context.payload.issue.labels || []).map(l => l.name));
+
+            const ensure = (name, want) => {
+              if (want) current.add(name);
+              else current.delete(name);
+            };
+
+            ensure("perf", wantsPerf);
+            ensure("needs-rfc", wantsNeedsRfc);
+
+            await github.rest.issues.setLabels({
+              owner, repo, issue_number,
+              labels: Array.from(current),
+            });
+
+            // --- Milestone sync (repo milestones) ---
+            const targetMilestoneTitle = "Performance Engineering";
+
+            // Find milestone by title
+            const milestones = await github.paginate(github.rest.issues.listMilestones, {
+              owner,
+              repo,
+              state: "open",
+              per_page: 100,
+            });
+
+            const target = milestones.find(m => m.title === targetMilestoneTitle);
+            if (!target) {
+              core.warning(`Milestone "${targetMilestoneTitle}" not found (open). Create it or adjust the title.`);
+              return;
+            }
+
+            const currentMilestone = context.payload.issue.milestone; // object or null
+            const currentTitle = currentMilestone ? currentMilestone.title : null;
+
+            // Policy: do not overwrite an unrelated milestone
+            const overwriteOtherMilestones = false;
+
+            if (wantsPerf) {
+              if (!currentMilestone) {
+                await github.rest.issues.update({
+                  owner, repo, issue_number,
+                  milestone: target.number,
+                });
+              } else if (currentTitle === targetMilestoneTitle) {
+                // already set, nothing to do
+              } else if (overwriteOtherMilestones) {
+                await github.rest.issues.update({
+                  owner, repo, issue_number,
+                  milestone: target.number,
+                });
+              } else {
+                core.info(`Issue already has milestone "${currentTitle}". Not overwriting.`);
+              }
+            } else {
+              // Remove milestone only if it is the perf milestone
+              if (currentMilestone && currentTitle === targetMilestoneTitle) {
+                await github.rest.issues.update({
+                  owner, repo, issue_number,
+                  milestone: null,
+                });
+              }
+            }
