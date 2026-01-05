@@ -13,7 +13,10 @@ use p3_util::log2_ceil_u64;
 use super::compiler::{ExpressionLowerer, Optimizer};
 use super::{BuilderConfig, ExpressionBuilder, PublicInputTracker};
 use crate::circuit::Circuit;
-use crate::op::{DefaultHint, NonPrimitiveOpType, Poseidon2PermConfig, WitnessHintsFiller};
+use crate::op::{
+    DefaultHint, NonPrimitiveOpConfig, NonPrimitiveOpType, Poseidon2PermConfig, Poseidon2PermExec,
+    WitnessHintsFiller,
+};
 use crate::tables::{Poseidon2Params, TraceGeneratorFn};
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};
 use crate::{CircuitBuilderError, CircuitError, CircuitField};
@@ -90,63 +93,87 @@ where
 
     /// Enables Poseidon2 permutation operations (one perm per table row).
     ///
-    /// The current implementation only supports extension degree D=4 and WIDTH=16.
-    ///
     /// # Arguments
     /// * `trace_generator` - Function to generate Poseidon2 trace from circuit and witness
     /// * `perm` - The Poseidon2 permutation to use for execution
-    pub fn enable_poseidon2_perm<Config, P>(
+    pub fn enable_poseidon2_perm<Config, P, const WIDTH: usize>(
         &mut self,
         trace_generator: TraceGeneratorFn<F>,
         perm: P,
     ) where
         Config: Poseidon2Params,
         F: CircuitField + ExtensionField<Config::BaseField>,
-        P: Permutation<[Config::BaseField; 16]> + Clone + Send + Sync + 'static,
+        P: Permutation<[Config::BaseField; WIDTH]> + Clone + Send + Sync + 'static,
+        [Config::BaseField; WIDTH]:,
     {
-        // Hard gate on D=4 and WIDTH=16 to avoid silently accepting incompatible configs.
-        assert!(
-            Config::D == 4,
-            "Poseidon2 perm op only supports extension degree D=4"
-        );
-        assert!(
-            Config::WIDTH == 16,
-            "Poseidon2 perm op only supports WIDTH=16"
+        // Verify that WIDTH matches Config::WIDTH
+        assert_eq!(
+            WIDTH,
+            Config::WIDTH,
+            "WIDTH const generic must match Config::WIDTH"
         );
 
         // Build exec closure that:
-        // 1. Converts [F;4] extension limbs to [Base;16] using basis coefficients
-        // 2. Calls perm.permute([Base;16])
-        // 3. Converts output [Base;16] back to [F;4]
-        let exec: crate::op::Poseidon2PermExec<F> = Arc::new(move |input: &[F; 4]| {
-            // Convert 4 extension elements to 16 base elements
-            let mut base_input = [Config::BaseField::ZERO; 16];
+        // 1. Converts WIDTH_EXT extension limbs to [Base;WIDTH] using basis coefficients
+        // 2. Calls perm.permute([Base;WIDTH])
+        // 3. Converts output [Base;WIDTH] back to DIGEST_EXT extension limbs
+        let width_ext = Config::WIDTH_EXT;
+        let digest_ext = Config::DIGEST_EXT;
+        let d = Config::D;
+        let exec: Poseidon2PermExec<F> = Arc::new(move |input: &[F]| {
+            debug_assert_eq!(
+                input.len(),
+                width_ext,
+                "Input should have WIDTH_EXT extension limbs"
+            );
+
+            // Convert WIDTH_EXT extension elements to WIDTH base elements
+            let mut base_input = vec![Config::BaseField::ZERO; WIDTH];
             for (i, ext_elem) in input.iter().enumerate() {
                 let coeffs = ext_elem.as_basis_coefficients_slice();
                 debug_assert_eq!(
                     coeffs.len(),
-                    4,
-                    "Extension field should have D=4 basis coefficients"
+                    d,
+                    "Extension field should have D={} basis coefficients",
+                    d
                 );
-                base_input[i * 4..(i + 1) * 4].copy_from_slice(coeffs);
+                let start_idx = i * d;
+                let end_idx = (i + 1) * d;
+                if end_idx <= WIDTH {
+                    base_input[start_idx..end_idx].copy_from_slice(coeffs);
+                } else {
+                    // Handle case where WIDTH_EXT * D > WIDTH (shouldn't happen, but be safe)
+                    let copy_len = (WIDTH - start_idx).min(coeffs.len());
+                    base_input[start_idx..start_idx + copy_len]
+                        .copy_from_slice(&coeffs[..copy_len]);
+                }
             }
 
-            // Apply permutation
-            let base_output = perm.permute(base_input);
+            // Convert base_input to fixed-size array for permutation
+            let base_input_array: [Config::BaseField; WIDTH] = base_input
+                .try_into()
+                .expect("base_input should have exactly WIDTH elements");
 
-            // Convert 16 base elements back to 4 extension elements
-            let mut output = [F::ZERO; 4];
-            for i in 0..4 {
-                let coeffs = &base_output[i * 4..(i + 1) * 4];
-                output[i] = F::from_basis_coefficients_slice(coeffs)
-                    .expect("basis coefficients should be valid");
+            // Apply permutation
+            let base_output = perm.permute(base_input_array);
+
+            // Convert WIDTH base elements back to WIDTH_EXT extension elements
+            let mut output = Vec::with_capacity(digest_ext);
+            for i in 0..digest_ext {
+                let start_idx = i * d;
+                let end_idx = (i + 1) * d;
+                let coeffs = &base_output[start_idx..end_idx];
+                output.push(
+                    F::from_basis_coefficients_slice(coeffs)
+                        .expect("basis coefficients should be valid"),
+                );
             }
             output
         });
 
         self.config.enable_op(
             NonPrimitiveOpType::Poseidon2Perm,
-            crate::op::NonPrimitiveOpConfig::Poseidon2Perm(Poseidon2PermConfig { exec }),
+            NonPrimitiveOpConfig::Poseidon2Perm(Poseidon2PermConfig { exec }),
         );
         self.non_primitive_trace_generators
             .insert(NonPrimitiveOpType::Poseidon2Perm, trace_generator);

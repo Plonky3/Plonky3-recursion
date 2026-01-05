@@ -232,17 +232,24 @@ impl<F: Field> NonPrimitiveExecutor<F> for Poseidon2PermExecutor {
             false
         };
 
-        // Resolve input limbs
-        let mut resolved_inputs = [F::ZERO; 4];
-        for (limb, resolved) in resolved_inputs.iter_mut().enumerate() {
-            *resolved = self.resolve_input_limb(limb, inputs, private_inputs, ctx, mmcs_bit)?;
+        // Resolve input limbs - determine WIDTH_EXT from number of input limbs
+        let width_ext = inputs.len().saturating_sub(2); // inputs[0..width_ext] are limbs, inputs[width_ext] is mmcs_index_sum, inputs[width_ext+1] is mmcs_bit
+        let mut resolved_inputs = Vec::with_capacity(width_ext);
+        for limb in 0..width_ext {
+            resolved_inputs.push(self.resolve_input_limb(
+                limb,
+                inputs,
+                private_inputs,
+                ctx,
+                mmcs_bit,
+            )?);
         }
 
         // Execute the permutation
         let output = exec(&resolved_inputs);
 
         // Update chaining state
-        ctx.set_last_poseidon2(output);
+        ctx.set_last_poseidon2(output.clone());
 
         // Write outputs to witness if CTL exposure is requested
         for (out_idx, out_slot) in outputs.iter().enumerate() {
@@ -406,27 +413,32 @@ impl Poseidon2PermExecutor {
             })?;
 
             if !self.merkle_path {
-                // Normal chaining: all 4 limbs come from previous output
-                for i in 0..4 {
+                // Normal chaining: all WIDTH_EXT limbs come from previous output
+                for i in 0..prev.len().min(resolved.len()) {
                     resolved[i] = Some(prev[i]);
                 }
             } else {
                 // Merkle path chaining:
-                // Previous digest (prev[0..1]) is placed based on mmcs_bit:
+                // Previous digest (prev[0..DIGEST_EXT]) is placed based on mmcs_bit:
                 // - mmcs_bit=0: chain into input limbs 0-1
                 // - mmcs_bit=1: chain into input limbs 2-3
+                let digest_ext = 2; // TODO: Make this generic based on Config::DIGEST_EXT
                 if mmcs_bit {
-                    resolved[2] = Some(prev[0]);
-                    resolved[3] = Some(prev[1]);
+                    if resolved.len() > 2 && prev.len() >= digest_ext {
+                        resolved[2] = Some(prev[0]);
+                        resolved[3] = Some(prev[1]);
+                    }
                 } else {
-                    resolved[0] = Some(prev[0]);
-                    resolved[1] = Some(prev[1]);
+                    if prev.len() >= digest_ext {
+                        resolved[0] = Some(prev[0]);
+                        resolved[1] = Some(prev[1]);
+                    }
                 }
             }
         }
 
         // Layer 3: CTL (witness) values (highest priority)
-        for i in 0..4 {
+        for i in 0..resolved.len() {
             if inputs.len() > i && inputs[i].len() == 1 {
                 let wid = inputs[i][0];
                 let val = ctx.get_witness(wid)?;

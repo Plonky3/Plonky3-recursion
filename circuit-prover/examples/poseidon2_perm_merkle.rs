@@ -3,7 +3,7 @@ use std::error::Error;
 use p3_baby_bear::{BabyBear, default_babybear_poseidon2_16};
 use p3_batch_stark::CommonData;
 use p3_circuit::op::NonPrimitiveOpPrivateData;
-use p3_circuit::tables::{Poseidon2PermPrivateData, generate_poseidon2_trace};
+use p3_circuit::tables::{Poseidon2Params, Poseidon2PermPrivateData, generate_poseidon2_trace};
 use p3_circuit::{CircuitBuilder, ExprId, Poseidon2PermOps};
 use p3_circuit_prover::common::{NonPrimitiveConfig, get_airs_and_degrees_with_prep};
 use p3_circuit_prover::{BatchStarkProver, Poseidon2Config, TablePacking, config};
@@ -148,7 +148,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Build circuit
     let mut builder = CircuitBuilder::<Ext4>::new();
-    builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
+    builder.enable_poseidon2_perm::<BabyBearD4Width16, _, { BabyBearD4Width16::WIDTH }>(
         generate_poseidon2_trace::<Ext4, BabyBearD4Width16>,
         perm,
     );

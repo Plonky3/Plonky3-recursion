@@ -223,16 +223,16 @@ pub enum NonPrimitiveOpType {
 
 /// Type alias for the Poseidon2 permutation execution closure.
 ///
-/// The closure takes 4 extension field limbs and returns 4 output limbs.
-pub type Poseidon2PermExec<F> = Arc<dyn Fn(&[F; 4]) -> [F; 4] + Send + Sync>;
+/// The closure takes WIDTH_EXT extension field limbs and returns DIGEST_EXT output limbs.
+pub type Poseidon2PermExec<F> = Arc<dyn Fn(&[F]) -> Vec<F> + Send + Sync>;
 
 /// Configuration for Poseidon2 permutation operations.
 ///
 /// Contains an execution closure that computes the Poseidon2 permutation.
-/// The closure takes 4 extension field limbs and returns 4 output limbs.
+/// The closure takes WIDTH_EXT extension field limbs and returns DIGEST_EXT output limbs.
 pub struct Poseidon2PermConfig<F> {
-    /// Execution closure: converts [F;4] extension limbs to [Base;16],
-    /// runs the permutation, and converts back to [F;4].
+    /// Execution closure: converts WIDTH_EXT extension limbs to [Base;WIDTH],
+    /// runs the permutation, and converts back to DIGEST_EXT extension limbs.
     pub exec: Poseidon2PermExec<F>,
 }
 
@@ -340,7 +340,7 @@ pub struct ExecutionContext<'a, F> {
     operation_id: NonPrimitiveOpId,
     /// Global chaining state for Poseidon2 permutation.
     /// Stores the output of the last Poseidon2 permutation for chaining.
-    last_poseidon: &'a mut Option<[F; 4]>,
+    last_poseidon: &'a mut Option<Vec<F>>,
 }
 
 impl<'a, F: Field> ExecutionContext<'a, F> {
@@ -350,7 +350,7 @@ impl<'a, F: Field> ExecutionContext<'a, F> {
         non_primitive_op_private_data: &'a [Option<NonPrimitiveOpPrivateData<F>>],
         enabled_ops: &'a HashMap<NonPrimitiveOpType, NonPrimitiveOpConfig<F>>,
         operation_id: NonPrimitiveOpId,
-        last_poseidon: &'a mut Option<[F; 4]>,
+        last_poseidon: &'a mut Option<Vec<F>>,
     ) -> Self {
         Self {
             witness,
@@ -421,14 +421,14 @@ impl<'a, F: Field> ExecutionContext<'a, F> {
     /// Get the last Poseidon2 permutation output for chaining.
     ///
     /// Returns `None` if no Poseidon2 permutation has been executed yet.
-    pub const fn last_poseidon2(&self) -> Option<[F; 4]> {
-        *self.last_poseidon
+    pub fn last_poseidon2(&self) -> Option<Vec<F>> {
+        self.last_poseidon.as_ref().map(|v| v.clone())
     }
 
     /// Set the last Poseidon2 permutation output for chaining.
     ///
     /// This should be called after each Poseidon2 permutation execution.
-    pub const fn set_last_poseidon2(&mut self, output: [F; 4]) {
+    pub fn set_last_poseidon2(&mut self, output: Vec<F>) {
         *self.last_poseidon = Some(output);
     }
 }
@@ -1097,8 +1097,8 @@ mod tests {
         assert!(ctx.last_poseidon2().is_none());
 
         // Set the last Poseidon2 output
-        let output = [F::ONE, F::from_u64(2), F::from_u64(3), F::from_u64(4)];
-        ctx.set_last_poseidon2(output);
+        let output = vec![F::ONE, F::from_u64(2), F::from_u64(3), F::from_u64(4)];
+        ctx.set_last_poseidon2(output.clone());
 
         // Verify the output was stored
         assert_eq!(ctx.last_poseidon2(), Some(output));

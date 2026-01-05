@@ -192,7 +192,7 @@ impl<F: CircuitField> CircuitRunner<F> {
         let ops = self.circuit.ops.clone();
 
         // Global chaining state for Poseidon2 permutation
-        let mut last_poseidon: Option<[F; 4]> = None;
+        let mut last_poseidon: Option<Vec<F>> = None;
 
         for op in ops {
             match op {
