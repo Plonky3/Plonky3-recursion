@@ -24,7 +24,7 @@ jobs:
 
             // Matches lines like: - [x] perf   (case-insensitive, allows trailing text)
             const isChecked = (name) => {
-              const re = new RegExp(`^\\s*-\\s*\$begin:math:display$x\\$end:math:display$\\s*${name}\\b`, "im");
+              const re = new RegExp(`^\\s*-\\s*\\[[xX]\\]\\s*${name}\\b`, "im");
               return re.test(body);
             };
 
