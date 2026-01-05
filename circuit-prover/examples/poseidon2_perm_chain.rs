@@ -1,13 +1,13 @@
 use std::env;
 use std::error::Error;
 
-/// Poseidon permutation chain example using the PoseidonPerm op.
+/// Poseidon2 permutation chain example using the Poseidon2Perm op.
 ///
-/// Builds a chain of Poseidon permutations and verifies the final output against a native
+/// Builds a chain of Poseidon2 permutations and verifies the final output against a native
 /// computation.
 use p3_baby_bear::{BabyBear, default_babybear_poseidon2_16};
 use p3_batch_stark::CommonData;
-use p3_circuit::ops::{PoseidonPermCall, PoseidonPermOps, generate_poseidon2_trace};
+use p3_circuit::ops::{Poseidon2PermCall, Poseidon2PermOps, generate_poseidon2_trace};
 use p3_circuit::{CircuitBuilder, ExprId};
 use p3_circuit_prover::common::{NonPrimitiveConfig, get_airs_and_degrees_with_prep};
 use p3_circuit_prover::{BatchStarkProver, Poseidon2Config, TablePacking, config};
@@ -65,18 +65,18 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Build the circuit.
     let mut builder = CircuitBuilder::<Ext4>::new();
-    builder.enable_poseidon_perm::<BabyBearD4Width16, _>(
+    builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
         generate_poseidon2_trace::<Ext4, BabyBearD4Width16>,
         perm,
     );
 
     // Allocate initial input limbs (constants for this example).
     let first_inputs_expr: [ExprId; 4] =
-        core::array::from_fn(|i| builder.alloc_const(ext_limbs[i], "poseidon_perm_input"));
+        core::array::from_fn(|i| builder.alloc_const(ext_limbs[i], "poseidon2_perm_input"));
 
     // Allocate expected outputs for limbs 0 and 1 of the final row (for checking).
     let expected_final_output_exprs: [ExprId; 2] = core::array::from_fn(|i| {
-        builder.alloc_const(final_limbs_ext[i], "poseidon_perm_expected_output")
+        builder.alloc_const(final_limbs_ext[i], "poseidon2_perm_expected_output")
     });
 
     // Add permutation rows.
@@ -93,7 +93,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
         }
 
-        let (_op_id, outputs) = builder.add_poseidon_perm(PoseidonPermCall {
+        let (_op_id, outputs) = builder.add_poseidon2_perm(Poseidon2PermCall {
             new_start: is_first,
             merkle_path: false,
             mmcs_bit: None, // Must be None when merkle_path=false
@@ -120,11 +120,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     let expr_to_widx = circuit.expr_to_widx.clone();
 
     let table_packing = TablePacking::new(1, 1, 1);
-    let poseidon_config = Poseidon2Config::baby_bear_d4_width16();
+    let poseidon2_config = Poseidon2Config::baby_bear_d4_width16();
     let airs_degrees = get_airs_and_degrees_with_prep::<_, _, 1>(
         &circuit,
         table_packing,
-        Some(&[NonPrimitiveConfig::Poseidon2(poseidon_config.clone())]),
+        Some(&[NonPrimitiveConfig::Poseidon2(poseidon2_config.clone())]),
     )
     .unwrap();
 
@@ -185,7 +185,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let common = CommonData::from_airs_and_degrees(&stark_config, &airs, &degrees);
 
     let mut prover = BatchStarkProver::new(stark_config).with_table_packing(table_packing);
-    prover.register_poseidon2_table(poseidon_config);
+    prover.register_poseidon2_table(poseidon2_config);
     let proof = prover.prove_all_tables(&traces, &common)?;
     prover.verify_all_tables(&proof, &common)?;
 

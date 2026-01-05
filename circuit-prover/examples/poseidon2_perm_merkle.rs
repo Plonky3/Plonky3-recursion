@@ -3,8 +3,8 @@ use std::error::Error;
 use p3_baby_bear::{BabyBear, default_babybear_poseidon2_16};
 use p3_batch_stark::CommonData;
 use p3_circuit::op::NonPrimitiveOpPrivateData;
-use p3_circuit::ops::{PoseidonPermPrivateData, generate_poseidon2_trace};
-use p3_circuit::{CircuitBuilder, ExprId, PoseidonPermOps};
+use p3_circuit::ops::{Poseidon2PermPrivateData, generate_poseidon2_trace};
+use p3_circuit::{CircuitBuilder, ExprId, Poseidon2PermOps};
 use p3_circuit_prover::common::{NonPrimitiveConfig, get_airs_and_degrees_with_prep};
 use p3_circuit_prover::{BatchStarkProver, Poseidon2Config, TablePacking, config};
 use p3_field::extension::BinomialExtensionField;
@@ -148,7 +148,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Build circuit
     let mut builder = CircuitBuilder::<Ext4>::new();
-    builder.enable_poseidon_perm::<BabyBearD4Width16, _>(
+    builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
         generate_poseidon2_trace::<Ext4, BabyBearD4Width16>,
         perm,
     );
@@ -163,7 +163,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     ];
 
     let (_row0_op_id, _row0_outputs) =
-        builder.add_poseidon_perm(p3_circuit::ops::PoseidonPermCall {
+        builder.add_poseidon2_perm(p3_circuit::ops::Poseidon2PermCall {
             new_start: true,
             merkle_path: true,
             mmcs_bit: Some(mmcs_bit_row0),
@@ -182,7 +182,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let mmcs_bit_row1 = builder.alloc_const(Ext4::from_prime_subfield(Base::ONE), "mmcs_bit_row1");
     let (row1_op_id, _row1_outputs) =
-        builder.add_poseidon_perm(p3_circuit::ops::PoseidonPermCall {
+        builder.add_poseidon2_perm(p3_circuit::ops::Poseidon2PermCall {
             new_start: false,
             merkle_path: true,
             mmcs_bit: Some(mmcs_bit_row1),
@@ -195,7 +195,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mmcs_bit_row2 = builder.alloc_const(Ext4::from_prime_subfield(Base::ZERO), "mmcs_bit_row2");
     let sibling2_inputs: [Option<ExprId>; 4] = [None, None, None, None];
     let (row2_op_id, row2_outputs) =
-        builder.add_poseidon_perm(p3_circuit::ops::PoseidonPermCall {
+        builder.add_poseidon2_perm(p3_circuit::ops::Poseidon2PermCall {
             new_start: false,
             merkle_path: true,
             mmcs_bit: Some(mmcs_bit_row2),
@@ -210,11 +210,11 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let circuit = builder.build()?;
     let table_packing = TablePacking::new(4, 4, 1);
-    let poseidon_config = Poseidon2Config::baby_bear_d4_width16();
+    let poseidon2_config = Poseidon2Config::baby_bear_d4_width16();
     let airs_degrees = get_airs_and_degrees_with_prep::<_, _, 1>(
         &circuit,
         table_packing,
-        Some(&[NonPrimitiveConfig::Poseidon2(poseidon_config.clone())]),
+        Some(&[NonPrimitiveConfig::Poseidon2(poseidon2_config.clone())]),
     )?;
     let (airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
 
@@ -230,7 +230,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     // For Merkle mode, provide the sibling (2 limbs). Internal logic handles placement.
     runner.set_non_primitive_op_private_data(
         row1_op_id,
-        NonPrimitiveOpPrivateData::PoseidonPerm(PoseidonPermPrivateData {
+        NonPrimitiveOpPrivateData::Poseidon2Perm(Poseidon2PermPrivateData {
             sibling: [sibling1_limb2, sibling1_limb3],
         }),
     )?;
@@ -240,24 +240,24 @@ fn main() -> Result<(), Box<dyn Error>> {
     // For Merkle mode, provide the sibling (2 limbs). Internal logic handles placement.
     runner.set_non_primitive_op_private_data(
         row2_op_id,
-        NonPrimitiveOpPrivateData::PoseidonPerm(PoseidonPermPrivateData {
+        NonPrimitiveOpPrivateData::Poseidon2Perm(Poseidon2PermPrivateData {
             sibling: [sibling2_limb2, sibling2_limb3],
         }),
     )?;
 
     let traces = runner.run()?;
 
-    // Check Poseidon trace rows and mmcs_index_sum exposure
-    let poseidon_trace = traces
+    // Check Poseidon2 trace rows and mmcs_index_sum exposure
+    let poseidon2_trace = traces
         .non_primitive_trace::<p3_circuit::ops::Poseidon2Trace<Base>>("poseidon2")
         .expect("poseidon2 trace missing");
-    assert_eq!(poseidon_trace.total_rows(), 3, "expected three perm rows");
+    assert_eq!(poseidon2_trace.total_rows(), 3, "expected three perm rows");
 
     let stark_config = config::baby_bear().build();
     let common = CommonData::from_airs_and_degrees(&stark_config, &airs, &degrees);
 
     let mut prover = BatchStarkProver::new(stark_config).with_table_packing(table_packing);
-    prover.register_poseidon2_table(poseidon_config);
+    prover.register_poseidon2_table(poseidon2_config);
     let proof = prover.prove_all_tables(&traces, &common)?;
     prover.verify_all_tables(&proof, &common)?;
 

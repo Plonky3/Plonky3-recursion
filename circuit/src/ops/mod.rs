@@ -1,18 +1,18 @@
-pub mod poseidon_perm;
+pub mod poseidon2_perm;
 
 // Crate-internal only
-pub(crate) use poseidon_perm::PoseidonPermExecutor;
-pub use poseidon_perm::{
+pub(crate) use poseidon2_perm::Poseidon2PermExecutor;
+pub use poseidon2_perm::{
     // Prover/AIR (trace access)
     Poseidon2CircuitRow,
     Poseidon2Params,
     Poseidon2Trace,
     // Builder API
-    PoseidonPermCall,
+    Poseidon2PermCall,
     // Configuration
-    PoseidonPermConfig,
-    PoseidonPermExec,
-    PoseidonPermOps,
-    PoseidonPermPrivateData,
+    Poseidon2PermConfig,
+    Poseidon2PermExec,
+    Poseidon2PermOps,
+    Poseidon2PermPrivateData,
     generate_poseidon2_trace,
 };

@@ -49,7 +49,7 @@ type MyPcs = TwoAdicFriPcs<F, Dft, ValMmcs, ChallengeMmcs>;
 type MyConfig = StarkConfig<MyPcs, Challenge, Challenger>;
 
 #[test]
-fn test_poseidon_perm_verifier() -> Result<(), VerificationError> {
+fn test_poseidon2_perm_verifier() -> Result<(), VerificationError> {
     init_logger();
 
     let mut rng = SmallRng::seed_from_u64(1);

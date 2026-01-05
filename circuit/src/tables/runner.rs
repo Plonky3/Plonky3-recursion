@@ -130,8 +130,8 @@ impl<F: CircuitField> CircuitRunner<F> {
         };
         match (executor.op_type(), &private_data) {
             (
-                crate::op::NonPrimitiveOpType::PoseidonPerm,
-                NonPrimitiveOpPrivateData::PoseidonPerm(_),
+                crate::op::NonPrimitiveOpType::Poseidon2Perm,
+                NonPrimitiveOpPrivateData::Poseidon2Perm(_),
             ) => {
                 // ok
             }

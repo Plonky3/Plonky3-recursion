@@ -166,7 +166,7 @@ fn primitive_airs_symbolic_to_circuit() -> Result<(), CircuitError> {
 }
 
 #[test]
-fn poseidon_perm_air_symbolic_to_circuit() -> Result<(), CircuitError> {
+fn poseidon2_perm_air_symbolic_to_circuit() -> Result<(), CircuitError> {
     let mut rng = SmallRng::seed_from_u64(9);
 
     let constants = RoundConstants::new(rng.random(), rng.random(), rng.random());

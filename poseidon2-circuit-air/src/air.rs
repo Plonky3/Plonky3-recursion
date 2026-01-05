@@ -18,16 +18,16 @@ use p3_poseidon2::GenericPoseidon2LinearLayers;
 use p3_poseidon2_air::{Poseidon2Air, Poseidon2Cols, RoundConstants, generate_trace_rows_for_perm};
 use p3_uni_stark::{SubAirBuilder, SymbolicAirBuilder, SymbolicExpression, SymbolicVariable};
 
-use crate::columns::{POSEIDON_LIMBS, POSEIDON_PUBLIC_OUTPUT_LIMBS};
+use crate::columns::{POSEIDON2_LIMBS, POSEIDON2_PUBLIC_OUTPUT_LIMBS};
 use crate::{Poseidon2CircuitCols, num_cols};
 
 /// Extends the Poseidon2 AIR with recursion circuit-specific columns and constraints.
 ///
-/// This implements the Poseidon Permutation Table specification.
+/// This implements the Poseidon2 Permutation Table specification.
 /// See: https://github.com/Plonky3/Plonky3-recursion/discussions/186
 ///
 /// The AIR enforces:
-/// - Poseidon permutation constraint: out[0..3] = Poseidon2(in[0..3])
+/// - Poseidon2 permutation constraint: out[0..3] = Poseidon2(in[0..3])
 /// - Chaining rules for normal sponge and Merkle-path modes
 /// - MMCS index accumulator updates
 ///
@@ -66,9 +66,9 @@ pub struct Poseidon2CircuitAir<
     preprocessed: Vec<F>,
 }
 
-pub const fn poseidon_preprocessed_width() -> usize {
+pub const fn poseidon2_preprocessed_width() -> usize {
     // Witness index, `in_ctl`, `normal_chain_sel` and `merkle_chain_sel` for all input limbs, witness index and `out_ctl` for all output limbs, `mmcs_index_sum_ctl`, `new_start` and `merkle_path`.
-    4 * POSEIDON_LIMBS + 2 * POSEIDON_PUBLIC_OUTPUT_LIMBS + 3
+    4 * POSEIDON2_LIMBS + 2 * POSEIDON2_PUBLIC_OUTPUT_LIMBS + 3
 }
 
 impl<
@@ -130,7 +130,7 @@ impl<
     }
 
     pub const fn preprocessed_width() -> usize {
-        poseidon_preprocessed_width()
+        poseidon2_preprocessed_width()
     }
 
     pub fn generate_trace_rows(
@@ -206,13 +206,13 @@ impl<
             circuit_part[0].write(F::from_bool(*mmcs_bit));
             circuit_part[1].write(acc);
 
-            // Save the state to be used as input for the heavy Poseidon trace generation
+            // Save the state to be used as input for the heavy Poseidon2 trace generation
             inputs.push(state);
         }
 
-        // Poseidon trace generation
+        // Poseidon2 trace generation
         //
-        // Now that we have the inputs, we can generate the expensive Poseidon columns in parallel.
+        // Now that we have the inputs, we can generate the expensive Poseidon2 columns in parallel.
 
         trace_slice[..n * ncols]
             .par_chunks_exact_mut(ncols)
@@ -251,7 +251,7 @@ impl<
 
         // SAFETY: We have written to all columns in the slice [0..n*ncols].
         // 1. Circuit columns were written in the sequential loop.
-        // 2. Poseidon columns were written in the parallel loop.
+        // 2. Poseidon2 columns were written in the parallel loop.
         unsafe {
             trace_vec.set_len(n * ncols);
         }
@@ -322,7 +322,7 @@ impl<
 pub fn extract_preprocessed_from_operations<F: Field, OF: Field>(
     operations: &[Poseidon2CircuitRow<OF>],
 ) -> Vec<F> {
-    let mut preprocessed = Vec::with_capacity(operations.len() * poseidon_preprocessed_width());
+    let mut preprocessed = Vec::with_capacity(operations.len() * poseidon2_preprocessed_width());
 
     for operation in operations {
         let Poseidon2CircuitRow {
@@ -351,6 +351,9 @@ pub fn extract_preprocessed_from_operations<F: Field, OF: Field>(
 
                 preprocessed.push(normal_chain_sel);
 
+                // In merkle mode:
+                // - When mmcs_bit = 0: limbs 0-1 are chained, limbs 2-3 are private (sibling)
+                // - When mmcs_bit = 1: limbs 2-3 are chained, limbs 0-1 are private (sibling)
                 let merkle_chain_sel = if !new_start && *merkle_path && !ctl {
                     F::ONE
                 } else {
@@ -372,7 +375,7 @@ pub fn extract_preprocessed_from_operations<F: Field, OF: Field>(
     preprocessed
 }
 
-fn eval<
+pub(crate) fn eval<
     AB: PairBuilder,
     LinearLayers: GenericPoseidon2LinearLayers<WIDTH>,
     const D: usize,
@@ -442,14 +445,14 @@ fn eval<
     let preprocessing_limb_data_size = 4;
     let normal_chain_idx = 2;
     let merkle_chain_idx = 3;
-    let new_start_idx = 4 * POSEIDON_LIMBS + 2 * POSEIDON_PUBLIC_OUTPUT_LIMBS + 1;
+    let new_start_idx = 4 * POSEIDON2_LIMBS + 2 * POSEIDON2_PUBLIC_OUTPUT_LIMBS + 1;
     let merkle_path_idx = new_start_idx + 1;
     // Normal chaining.
     // If new_start_{r+1} = 0 and merkle_path_{r+1} = 0:
     //   in_{r+1}[i] = out_r[i] for i = 0..3
     // BUT: If in_ctl[i] = 1, CTL overrides chaining (limb is not chained).
     // Chaining only applies when in_ctl[limb] = 0.
-    for limb in 0..POSEIDON_LIMBS {
+    for limb in 0..POSEIDON2_LIMBS {
         for d in 0..D {
             let idx = limb * D + d;
             let gate =
@@ -471,7 +474,8 @@ fn eval<
     // Chaining only applies when in_ctl[limb] = 0.
     let is_left = AB::Expr::ONE - next_bit.clone();
 
-    // Limb 0: chain from out_r[0] (left), unless in_ctl[0] = 1. Not chained if Right.
+    // Limb 0: chain from out_r[0] when mmcs_bit = 0 (left), unless in_ctl[0] = 1.
+    // When mmcs_bit = 1 (right), limb 0 is private (sibling).
     for d in 0..D {
         let gate_left_0 = next_preprocessed[merkle_chain_idx].clone() * is_left.clone();
         builder
@@ -480,7 +484,8 @@ fn eval<
             .assert_zero(next_in[d].clone() - local_out[d].clone());
     }
 
-    // Limb 1: chain from out_r[1] (left), unless in_ctl[1] = 1. Not chained if Right.
+    // Limb 1: chain from out_r[1] when mmcs_bit = 0 (left), unless in_ctl[1] = 1.
+    // When mmcs_bit = 1 (right), limb 1 is private (sibling).
     for d in 0..D {
         let gate_left_1 = next_preprocessed[preprocessing_limb_data_size + merkle_chain_idx]
             .clone()
@@ -491,7 +496,8 @@ fn eval<
             .assert_zero(next_in[D + d].clone() - local_out[D + d].clone());
     }
 
-    // Limb 2: chain from out_r[0] (right), unless in_ctl[2] = 1. Not chained if Left.
+    // Limb 2: chain from out_r[0] when mmcs_bit = 1 (right), unless in_ctl[2] = 1.
+    // When mmcs_bit = 0 (left), limb 2 is private (sibling).
     for d in 0..D {
         let gate_right_2 = next_preprocessed[preprocessing_limb_data_size * 2 + merkle_chain_idx]
             .clone()
@@ -502,7 +508,8 @@ fn eval<
             .assert_zero(next_in[2 * D + d].clone() - local_out[d].clone());
     }
 
-    // Limb 3: chain from out_r[1] (right), unless in_ctl[3] = 1. Not chained if Left.
+    // Limb 3: chain from out_r[1] when mmcs_bit = 1 (right), unless in_ctl[3] = 1.
+    // When mmcs_bit = 0 (left), limb 3 is private (sibling).
     for d in 0..D {
         let gate_right_3 = next_preprocessed[preprocessing_limb_data_size * 3 + merkle_chain_idx]
             .clone()
@@ -548,10 +555,103 @@ fn eval<
         AB::Var,
     >::new(builder, 0..p3_poseidon2_num_cols);
 
-    // Enforce Poseidon permutation constraint:
+    // Enforce Poseidon2 permutation constraint:
     // out[0..3] = Poseidon2(in[0..3])
     // This holds regardless of merkle_path, new_start, CTL flags, chaining, or MMCS accumulator.
     air.p3_poseidon2.eval(&mut sub_builder);
+}
+
+/// Unsafe version of `eval` that allows calling with a builder whose field type
+/// doesn't match the AIR's field type at compile time, but matches at runtime.
+///
+/// # Safety
+/// The caller must ensure that `F == AB::F` at runtime. Violating this will cause
+/// undefined behavior.
+pub unsafe fn eval_unchecked<
+    F: PrimeField,
+    AB: PairBuilder,
+    LinearLayers: GenericPoseidon2LinearLayers<WIDTH>,
+    const D: usize,
+    const WIDTH: usize,
+    const WIDTH_EXT: usize,
+    const RATE_EXT: usize,
+    const CAPACITY_EXT: usize,
+    const SBOX_DEGREE: u64,
+    const SBOX_REGISTERS: usize,
+    const HALF_FULL_ROUNDS: usize,
+    const PARTIAL_ROUNDS: usize,
+>(
+    air: &Poseidon2CircuitAir<
+        F,
+        LinearLayers,
+        D,
+        WIDTH,
+        WIDTH_EXT,
+        RATE_EXT,
+        CAPACITY_EXT,
+        SBOX_DEGREE,
+        SBOX_REGISTERS,
+        HALF_FULL_ROUNDS,
+        PARTIAL_ROUNDS,
+    >,
+    builder: &mut AB,
+    local: &Poseidon2CircuitCols<
+        AB::Var,
+        Poseidon2Cols<
+            AB::Var,
+            WIDTH,
+            SBOX_DEGREE,
+            SBOX_REGISTERS,
+            HALF_FULL_ROUNDS,
+            PARTIAL_ROUNDS,
+        >,
+    >,
+    next: &Poseidon2CircuitCols<
+        AB::Var,
+        Poseidon2Cols<
+            AB::Var,
+            WIDTH,
+            SBOX_DEGREE,
+            SBOX_REGISTERS,
+            HALF_FULL_ROUNDS,
+            PARTIAL_ROUNDS,
+        >,
+    >,
+    next_preprocessed: &[AB::Var],
+) where
+    AB::F: PrimeField,
+{
+    // SAFETY: Transmute the AIR to match builder's field type
+    // Caller guarantees F == AB::F at runtime.
+    unsafe {
+        let air_transmuted: &Poseidon2CircuitAir<
+            AB::F,
+            LinearLayers,
+            D,
+            WIDTH,
+            WIDTH_EXT,
+            RATE_EXT,
+            CAPACITY_EXT,
+            SBOX_DEGREE,
+            SBOX_REGISTERS,
+            HALF_FULL_ROUNDS,
+            PARTIAL_ROUNDS,
+        > = core::mem::transmute(air);
+
+        eval::<
+            AB,
+            LinearLayers,
+            D,
+            WIDTH,
+            WIDTH_EXT,
+            RATE_EXT,
+            CAPACITY_EXT,
+            SBOX_DEGREE,
+            SBOX_REGISTERS,
+            HALF_FULL_ROUNDS,
+            PARTIAL_ROUNDS,
+        >(air_transmuted, builder, local, next, next_preprocessed);
+    }
 }
 
 impl<
@@ -693,9 +793,9 @@ where
         let preprocessing_limb_input_data_size = 4;
         let preprocessing_limb_output_data_size = 4;
         let in_ctl_idx = 1;
-        let start_output_idx = preprocessing_limb_input_data_size * POSEIDON_LIMBS;
+        let start_output_idx = preprocessing_limb_input_data_size * POSEIDON2_LIMBS;
         let mmcs_index_sum_ctl_idx =
-            start_output_idx + preprocessing_limb_output_data_size * POSEIDON_PUBLIC_OUTPUT_LIMBS;
+            start_output_idx + preprocessing_limb_output_data_size * POSEIDON2_PUBLIC_OUTPUT_LIMBS;
         let new_start_idx = mmcs_index_sum_ctl_idx + 1;
         let merkle_path_idx = new_start_idx + 1;
 
@@ -708,10 +808,10 @@ where
             .row_slice(1)
             .expect("The preprocessed matrix has only one row?");
         let next_preprocessed: &[SymbolicVariable<AB::F>] = (*next_preprocessed).borrow();
-        // There are POSEIDON_LIMBS input limbs and POSEIDON_PUBLIC_OUTPUT_LIMBS output limbs to be lookup up in the `Witness` table.
-        let mut lookups = Vec::with_capacity(POSEIDON_LIMBS + POSEIDON_PUBLIC_OUTPUT_LIMBS);
+        // There are POSEIDON2_LIMBS input limbs and POSEIDON2_PUBLIC_OUTPUT_LIMBS output limbs to be lookup up in the `Witness` table.
+        let mut lookups = Vec::with_capacity(POSEIDON2_LIMBS + POSEIDON2_PUBLIC_OUTPUT_LIMBS);
         // Each input/output limb is sent with multiplicity `in_ctl/out_ctl`.
-        for limb_idx in 0..POSEIDON_LIMBS {
+        for limb_idx in 0..POSEIDON2_LIMBS {
             let in_ctl =
                 local_preprocessed[limb_idx * preprocessing_limb_input_data_size + in_ctl_idx];
             let input_idx_limb =
@@ -737,7 +837,7 @@ where
             ));
         }
 
-        for limb_idx in 0..POSEIDON_PUBLIC_OUTPUT_LIMBS {
+        for limb_idx in 0..POSEIDON2_PUBLIC_OUTPUT_LIMBS {
             let out_ctl = local_preprocessed[start_output_idx + limb_idx * 2 + 1];
 
             let output_idx_limb = iter::once(local_preprocessed[start_output_idx + limb_idx * 2]) // output witness index
@@ -818,7 +918,7 @@ mod test {
 
     use super::*;
     use crate::Poseidon2CircuitAirBabyBearD4Width16;
-    use crate::columns::{POSEIDON_LIMBS, POSEIDON_PUBLIC_OUTPUT_LIMBS};
+    use crate::columns::{POSEIDON2_LIMBS, POSEIDON2_PUBLIC_OUTPUT_LIMBS};
 
     const WIDTH: usize = 16;
 
@@ -900,10 +1000,10 @@ mod test {
             mmcs_bit: false,
             mmcs_index_sum: Val::ZERO,
             input_values: state_a.to_vec(),
-            in_ctl: [false; POSEIDON_LIMBS],
-            input_indices: [0; POSEIDON_LIMBS],
-            out_ctl: [false; POSEIDON_PUBLIC_OUTPUT_LIMBS],
-            output_indices: [0; POSEIDON_PUBLIC_OUTPUT_LIMBS],
+            in_ctl: [false; POSEIDON2_LIMBS],
+            input_indices: [0; POSEIDON2_LIMBS],
+            out_ctl: [false; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
+            output_indices: [0; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
             mmcs_index_sum_idx: 0,
         };
 
@@ -917,10 +1017,10 @@ mod test {
             mmcs_bit: true,
             mmcs_index_sum: Val::ZERO,
             input_values: state_b.to_vec(),
-            in_ctl: [false; POSEIDON_LIMBS],
-            input_indices: [0; POSEIDON_LIMBS],
-            out_ctl: [false; POSEIDON_PUBLIC_OUTPUT_LIMBS],
-            output_indices: [0; POSEIDON_PUBLIC_OUTPUT_LIMBS],
+            in_ctl: [false; POSEIDON2_LIMBS],
+            input_indices: [0; POSEIDON2_LIMBS],
+            out_ctl: [false; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
+            output_indices: [0; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
             mmcs_index_sum_idx: 0,
         };
 
@@ -939,10 +1039,10 @@ mod test {
             mmcs_bit: false,
             mmcs_index_sum: Val::ZERO,
             input_values: state_c.to_vec(),
-            in_ctl: [false; POSEIDON_LIMBS],
-            input_indices: [0; POSEIDON_LIMBS],
-            out_ctl: [false; POSEIDON_PUBLIC_OUTPUT_LIMBS],
-            output_indices: [0; POSEIDON_PUBLIC_OUTPUT_LIMBS],
+            in_ctl: [false; POSEIDON2_LIMBS],
+            input_indices: [0; POSEIDON2_LIMBS],
+            out_ctl: [false; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
+            output_indices: [0; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
             mmcs_index_sum_idx: 0,
         };
 
@@ -955,10 +1055,10 @@ mod test {
             mmcs_bit: false,
             mmcs_index_sum: Val::ZERO,
             input_values: state_d.to_vec(),
-            in_ctl: [false; POSEIDON_LIMBS],
-            input_indices: [0; POSEIDON_LIMBS],
-            out_ctl: [false; POSEIDON_PUBLIC_OUTPUT_LIMBS],
-            output_indices: [0; POSEIDON_PUBLIC_OUTPUT_LIMBS],
+            in_ctl: [false; POSEIDON2_LIMBS],
+            input_indices: [0; POSEIDON2_LIMBS],
+            out_ctl: [false; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
+            output_indices: [0; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
             mmcs_index_sum_idx: 0,
         };
 
@@ -973,10 +1073,10 @@ mod test {
                 mmcs_bit: false,
                 mmcs_index_sum: Val::ZERO,
                 input_values: vec![Val::ZERO; WIDTH],
-                in_ctl: [false; POSEIDON_LIMBS],
-                input_indices: [0; POSEIDON_LIMBS],
-                out_ctl: [false; POSEIDON_PUBLIC_OUTPUT_LIMBS],
-                output_indices: [0; POSEIDON_PUBLIC_OUTPUT_LIMBS],
+                in_ctl: [false; POSEIDON2_LIMBS],
+                input_indices: [0; POSEIDON2_LIMBS],
+                out_ctl: [false; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
+                output_indices: [0; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
                 mmcs_index_sum_idx: 0,
             };
             rows.resize(target_rows, filler);

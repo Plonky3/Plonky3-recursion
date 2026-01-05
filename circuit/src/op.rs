@@ -216,12 +216,12 @@ impl<F: Field + PartialEq> PartialEq for Op<F> {
 /// Non-primitive operation types
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum NonPrimitiveOpType {
-    /// Poseidon permutation operation (one Poseidon call / table row).
-    PoseidonPerm,
+    /// Poseidon2 permutation operation (one Poseidon2 call / table row).
+    Poseidon2Perm,
 }
 
-// Re-export Poseidon config types from their canonical location
-pub use crate::ops::poseidon_perm::{PoseidonPermConfig, PoseidonPermExec};
+// Re-export Poseidon2 config types from their canonical location
+pub use crate::ops::poseidon2_perm::{Poseidon2PermConfig, Poseidon2PermExec};
 
 /// Non-primitive operation configuration.
 ///
@@ -229,15 +229,15 @@ pub use crate::ops::poseidon_perm::{PoseidonPermConfig, PoseidonPermExec};
 pub enum NonPrimitiveOpConfig<F> {
     /// No configuration needed (placeholder for future operations).
     None,
-    /// Poseidon permutation configuration with exec closure.
-    PoseidonPerm(PoseidonPermConfig<F>),
+    /// Poseidon2 permutation configuration with exec closure.
+    Poseidon2Perm(Poseidon2PermConfig<F>),
 }
 
 impl<F> Clone for NonPrimitiveOpConfig<F> {
     fn clone(&self) -> Self {
         match self {
             Self::None => Self::None,
-            Self::PoseidonPerm(cfg) => Self::PoseidonPerm(cfg.clone()),
+            Self::Poseidon2Perm(cfg) => Self::Poseidon2Perm(cfg.clone()),
         }
     }
 }
@@ -246,7 +246,7 @@ impl<F> Debug for NonPrimitiveOpConfig<F> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::None => write!(f, "None"),
-            Self::PoseidonPerm(cfg) => f.debug_tuple("PoseidonPerm").field(cfg).finish(),
+            Self::Poseidon2Perm(cfg) => f.debug_tuple("Poseidon2Perm").field(cfg).finish(),
         }
     }
 }
@@ -256,7 +256,7 @@ impl<F> PartialEq for NonPrimitiveOpConfig<F> {
     fn eq(&self, other: &Self) -> bool {
         matches!(
             (self, other),
-            (Self::None, Self::None) | (Self::PoseidonPerm(_), Self::PoseidonPerm(_))
+            (Self::None, Self::None) | (Self::Poseidon2Perm(_), Self::Poseidon2Perm(_))
         )
     }
 }
@@ -293,7 +293,7 @@ impl<F> Hash for NonPrimitiveOpConfig<F> {
 /// - Is used by AIR tables to generate the appropriate constraints
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NonPrimitiveOpPrivateData<F> {
-    PoseidonPerm(crate::ops::poseidon_perm::PoseidonPermPrivateData<F>),
+    Poseidon2Perm(crate::ops::poseidon2_perm::Poseidon2PermPrivateData<F>),
 }
 
 /// Trait for operation-specific execution state.
@@ -552,7 +552,7 @@ mod tests {
     use p3_field::PrimeCharacteristicRing;
 
     use super::*;
-    use crate::ops::poseidon_perm::PoseidonPermPrivateData;
+    use crate::ops::poseidon2_perm::Poseidon2PermPrivateData;
 
     type F = BabyBear;
 
@@ -896,11 +896,11 @@ mod tests {
     #[test]
     fn test_execution_context_get_private_data() {
         // Create private auxiliary data for a verification operation
-        let poseidon_data: PoseidonPermPrivateData<F> = PoseidonPermPrivateData {
+        let poseidon2_data: Poseidon2PermPrivateData<F> = Poseidon2PermPrivateData {
             sibling: [F::ZERO, F::ZERO],
         };
-        let private_data = vec![Some(NonPrimitiveOpPrivateData::PoseidonPerm(
-            poseidon_data.clone(),
+        let private_data = vec![Some(NonPrimitiveOpPrivateData::Poseidon2Perm(
+            poseidon2_data.clone(),
         ))];
 
         // Create execution context with access to private data
@@ -917,7 +917,7 @@ mod tests {
         // Verify private data access succeeded
         assert_eq!(
             *result.unwrap(),
-            NonPrimitiveOpPrivateData::PoseidonPerm(poseidon_data)
+            NonPrimitiveOpPrivateData::Poseidon2Perm(poseidon2_data)
         );
     }
 
@@ -951,7 +951,7 @@ mod tests {
     fn test_execution_context_get_config() {
         // Create a configuration map for operation parameters
         let mut configs = HashMap::new();
-        let op_type = NonPrimitiveOpType::PoseidonPerm;
+        let op_type = NonPrimitiveOpType::Poseidon2Perm;
         configs.insert(op_type.clone(), NonPrimitiveOpConfig::None);
 
         // Create execution context with configurations
@@ -983,7 +983,7 @@ mod tests {
             ExecutionContext::new(&mut witness, &private_data, &configs, op_id, &mut op_states);
 
         // Attempt to access a configuration that wasn't registered
-        let op_type = NonPrimitiveOpType::PoseidonPerm;
+        let op_type = NonPrimitiveOpType::Poseidon2Perm;
         let result = ctx.get_config(&op_type);
 
         // Missing configurations indicate setup errors
@@ -1064,12 +1064,12 @@ mod tests {
 
         // Initially, no state should be present
         assert!(
-            ctx.get_op_state::<TestOpState>(&NonPrimitiveOpType::PoseidonPerm)
+            ctx.get_op_state::<TestOpState>(&NonPrimitiveOpType::Poseidon2Perm)
                 .is_none()
         );
 
         // Get or create state (should create default)
-        let state = ctx.get_op_state_mut::<TestOpState>(&NonPrimitiveOpType::PoseidonPerm);
+        let state = ctx.get_op_state_mut::<TestOpState>(&NonPrimitiveOpType::Poseidon2Perm);
         assert!(state.value.is_none());
 
         // Modify the state
@@ -1077,7 +1077,7 @@ mod tests {
 
         // Verify the state was stored and can be retrieved
         let state_ref = ctx
-            .get_op_state::<TestOpState>(&NonPrimitiveOpType::PoseidonPerm)
+            .get_op_state::<TestOpState>(&NonPrimitiveOpType::Poseidon2Perm)
             .unwrap();
         assert_eq!(state_ref.value, Some(42));
     }
