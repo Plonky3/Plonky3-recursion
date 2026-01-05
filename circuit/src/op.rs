@@ -1,4 +1,5 @@
 use alloc::boxed::Box;
+use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use alloc::{format, vec};
 use core::any::Any;
@@ -315,7 +316,7 @@ pub trait OpExecutionState: Any + Send + Sync + Debug {
 ///
 /// This allows each operation type to maintain its own state without
 /// coupling `ExecutionContext` to specific operation implementations.
-pub type OpStateMap = alloc::collections::BTreeMap<NonPrimitiveOpType, Box<dyn OpExecutionState>>;
+pub type OpStateMap = BTreeMap<NonPrimitiveOpType, Box<dyn OpExecutionState>>;
 
 /// Execution context providing operations access to witness table, private data, and configs
 ///
@@ -750,7 +751,7 @@ mod tests {
         let private_data = vec![];
         let configs = HashMap::new();
         let op_id = NonPrimitiveOpId(0);
-        let mut op_states = alloc::collections::BTreeMap::new();
+        let mut op_states = BTreeMap::new();
 
         // Create an execution context for operations to access the witness
         let ctx =
@@ -770,7 +771,7 @@ mod tests {
         let private_data = vec![];
         let configs = HashMap::new();
         let op_id = NonPrimitiveOpId(0);
-        let mut op_states = alloc::collections::BTreeMap::new();
+        let mut op_states = BTreeMap::new();
 
         // Create execution context
         let ctx =
@@ -796,7 +797,7 @@ mod tests {
         let private_data = vec![];
         let configs = HashMap::new();
         let op_id = NonPrimitiveOpId(0);
-        let mut op_states = alloc::collections::BTreeMap::new();
+        let mut op_states = BTreeMap::new();
 
         // Create execution context with mutable access to witness
         let mut ctx =
@@ -821,7 +822,7 @@ mod tests {
         let private_data = vec![];
         let configs = HashMap::new();
         let op_id = NonPrimitiveOpId(0);
-        let mut op_states = alloc::collections::BTreeMap::new();
+        let mut op_states = BTreeMap::new();
 
         // Create execution context
         let mut ctx =
@@ -851,7 +852,7 @@ mod tests {
         let private_data = vec![];
         let configs = HashMap::new();
         let op_id = NonPrimitiveOpId(0);
-        let mut op_states = alloc::collections::BTreeMap::new();
+        let mut op_states = BTreeMap::new();
 
         // Create execution context
         let mut ctx =
@@ -874,7 +875,7 @@ mod tests {
         let private_data = vec![];
         let configs = HashMap::new();
         let op_id = NonPrimitiveOpId(0);
-        let mut op_states = alloc::collections::BTreeMap::new();
+        let mut op_states = BTreeMap::new();
 
         // Create execution context
         let mut ctx =
@@ -907,7 +908,7 @@ mod tests {
         let mut witness = vec![];
         let configs = HashMap::new();
         let op_id = NonPrimitiveOpId(0);
-        let mut op_states = alloc::collections::BTreeMap::new();
+        let mut op_states = BTreeMap::new();
         let ctx =
             ExecutionContext::new(&mut witness, &private_data, &configs, op_id, &mut op_states);
 
@@ -928,7 +929,7 @@ mod tests {
         let mut witness = vec![];
         let configs = HashMap::new();
         let op_id = NonPrimitiveOpId(0);
-        let mut op_states = alloc::collections::BTreeMap::new();
+        let mut op_states = BTreeMap::new();
 
         // Create execution context
         let ctx: ExecutionContext<'_, F> =
@@ -958,7 +959,7 @@ mod tests {
         let mut witness = vec![];
         let private_data = vec![];
         let op_id = NonPrimitiveOpId(0);
-        let mut op_states = alloc::collections::BTreeMap::new();
+        let mut op_states = BTreeMap::new();
         let ctx: ExecutionContext<'_, F> =
             ExecutionContext::new(&mut witness, &private_data, &configs, op_id, &mut op_states);
 
@@ -976,7 +977,7 @@ mod tests {
         let mut witness = vec![];
         let private_data = vec![];
         let op_id = NonPrimitiveOpId(0);
-        let mut op_states = alloc::collections::BTreeMap::new();
+        let mut op_states = BTreeMap::new();
 
         // Create execution context
         let ctx: ExecutionContext<'_, F> =
@@ -1019,7 +1020,7 @@ mod tests {
         let private_data = vec![];
         let configs = HashMap::new();
         let expected_id = NonPrimitiveOpId(42);
-        let mut op_states = alloc::collections::BTreeMap::new();
+        let mut op_states = BTreeMap::new();
         let ctx: ExecutionContext<'_, F> = ExecutionContext::new(
             &mut witness,
             &private_data,
@@ -1057,7 +1058,7 @@ mod tests {
         let private_data = vec![];
         let configs = HashMap::new();
         let op_id = NonPrimitiveOpId(0);
-        let mut op_states = alloc::collections::BTreeMap::new();
+        let mut op_states = BTreeMap::new();
 
         let mut ctx =
             ExecutionContext::new(&mut witness, &private_data, &configs, op_id, &mut op_states);

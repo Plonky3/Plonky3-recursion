@@ -294,27 +294,26 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for Poseidon2Perm
 
         // Get mmcs_bit (required when merkle_path=true; defaults to false otherwise).
         // mmcs_bit is at inputs[5].
-        let mmcs_bit = if inputs[5].len() == 1 {
-            let wid = inputs[5][0];
+        let mmcs_bit = if let Some(&wid) = inputs[5].first() {
             let val = ctx.get_witness(wid)?;
-            if val == F::ZERO {
-                false
-            } else if val == F::ONE {
-                true
-            } else {
-                return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
-                    op: self.op_type.clone(),
-                    operation_index: ctx.operation_id(),
-                    expected: "boolean mmcs_bit (0 or 1)".to_string(),
-                    got: format!("{val:?}"),
-                });
+            match val {
+                v if v == F::ZERO => false,
+                v if v == F::ONE => true,
+                v => {
+                    return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
+                        op: self.op_type.clone(),
+                        operation_index: ctx.operation_id(),
+                        expected: "boolean mmcs_bit (0 or 1)".into(),
+                        got: format!("{v:?}"),
+                    });
+                }
             }
         } else if self.merkle_path {
             return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
                 op: self.op_type.clone(),
                 operation_index: ctx.operation_id(),
-                expected: "mmcs_bit must be provided when merkle_path=true".to_string(),
-                got: "missing mmcs_bit".to_string(),
+                expected: "mmcs_bit must be provided when merkle_path=true".into(),
+                got: "missing mmcs_bit".into(),
             });
         } else {
             false
@@ -336,23 +335,27 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for Poseidon2Perm
         let output = exec(&resolved_inputs);
 
         // Build CTL metadata for row record
-        let mut in_ctl = [false; 4];
-        let mut input_indices = [0u32; 4];
-        for i in 0..4 {
-            if inputs[i].len() == 1 {
-                in_ctl[i] = true;
-                input_indices[i] = inputs[i][0].0;
-            }
-        }
+        let (in_ctl, input_indices) = inputs[..4].iter().enumerate().fold(
+            ([false; 4], [0u32; 4]),
+            |(mut in_ctl, mut input_indices), (i, inp)| {
+                if let Some(&wid) = inp.first() {
+                    in_ctl[i] = true;
+                    input_indices[i] = wid.0;
+                }
+                (in_ctl, input_indices)
+            },
+        );
 
-        let mut out_ctl = [false; 2];
-        let mut output_indices = [0u32; 2];
-        for (i, out_slot) in outputs.iter().enumerate() {
-            if out_slot.len() == 1 {
-                out_ctl[i] = true;
-                output_indices[i] = out_slot[0].0;
-            }
-        }
+        let (out_ctl, output_indices) = outputs.iter().enumerate().fold(
+            ([false; 2], [0u32; 2]),
+            |(mut out_ctl, mut output_indices), (i, out_slot)| {
+                if let Some(&wid) = out_slot.first() {
+                    out_ctl[i] = true;
+                    output_indices[i] = wid.0;
+                }
+                (out_ctl, output_indices)
+            },
+        );
 
         let (mmcs_index_sum, mmcs_index_sum_idx) = if inputs[4].len() == 1 {
             let wid = inputs[4][0];

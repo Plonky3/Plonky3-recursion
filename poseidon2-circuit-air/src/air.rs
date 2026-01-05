@@ -190,9 +190,7 @@ impl<
                 "Trace row input_values must have length WIDTH"
             );
             let mut state = [F::ZERO; WIDTH];
-            for (dst, src) in state.iter_mut().zip(input_values.iter().copied()) {
-                *dst = src;
-            }
+            state[..WIDTH].copy_from_slice(&input_values[..WIDTH]);
 
             // Update MMCS index accumulator
             let acc = if row_index > 0 && *merkle_path && !*new_start {

@@ -36,6 +36,7 @@ where
 impl<F: PrimeCharacteristicRing, const RATE: usize, const CAPACITY: usize>
     SpongeAir<F, RATE, CAPACITY>
 {
+    #[must_use]
     pub const fn new() -> Self {
         Self {
             _phantom: PhantomData,
