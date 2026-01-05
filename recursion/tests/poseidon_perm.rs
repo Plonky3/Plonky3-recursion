@@ -49,7 +49,7 @@ type MyPcs = TwoAdicFriPcs<F, Dft, ValMmcs, ChallengeMmcs>;
 type MyConfig = StarkConfig<MyPcs, Challenge, Challenger>;
 
 #[test]
-fn test_poseidon_perm_verifier() -> Result<(), VerificationError> {
+fn test_poseidon2_perm_verifier() -> Result<(), VerificationError> {
     init_logger();
 
     let mut rng = SmallRng::seed_from_u64(1);
@@ -92,16 +92,16 @@ fn test_poseidon_perm_verifier() -> Result<(), VerificationError> {
             let input_values: Vec<F> = (0..16_u32)
                 .map(|i| F::from_u32(i + 5 + row as u32))
                 .collect();
-            Poseidon2CircuitRow {
+            Poseidon2CircuitRow::<F, 4, 2, 2> {
                 new_start: true,
                 merkle_path: false,
                 mmcs_bit: false,
                 mmcs_index_sum: F::ZERO,
                 input_values,
-                in_ctl: [false; 4],
-                input_indices: [0; 4],
-                out_ctl: [false; 2],
-                output_indices: [0; 2],
+                in_ctl: vec![false; 4],
+                input_indices: vec![0; 4],
+                out_ctl: vec![false; 2],
+                output_indices: vec![0; 2],
                 mmcs_index_sum_idx: 0,
             }
         })

@@ -162,16 +162,16 @@ where
                         let config =
                             poseidon2_config.ok_or(CircuitError::InvalidPreprocessedValues)?;
 
-                        let poseidon_prover = Poseidon2Prover::new(config.clone());
-                        let width = poseidon_prover.preprocessed_width_from_config();
-                        let poseidon_wrapper =
-                            poseidon_prover.wrapper_from_config_with_preprocessed(prep.clone());
+                        let poseidon2_prover = Poseidon2Prover::new(config.clone());
+                        let width = poseidon2_prover.preprocessed_width_from_config();
+                        let poseidon2_wrapper =
+                            poseidon2_prover.wrapper_from_config_with_preprocessed(prep.clone());
 
-                        let poseidon_wrapper_air: CircuitTableAir<SC, D> =
-                            CircuitTableAir::Dynamic(poseidon_wrapper);
+                        let poseidon2_wrapper_air: CircuitTableAir<SC, D> =
+                            CircuitTableAir::Dynamic(poseidon2_wrapper);
 
                         table_preps[idx] = (
-                            poseidon_wrapper_air,
+                            poseidon2_wrapper_air,
                             log2_ceil_usize(prep.len().div_ceil(width)),
                         );
 

@@ -19,15 +19,16 @@ use p3_poseidon2_air::{Poseidon2Air, Poseidon2Cols, RoundConstants, generate_tra
 use p3_symmetric::CryptographicPermutation;
 use p3_uni_stark::{SubAirBuilder, SymbolicAirBuilder, SymbolicExpression, SymbolicVariable};
 
+use crate::columns::{POSEIDON2_LIMBS, POSEIDON2_PUBLIC_OUTPUT_LIMBS};
 use crate::{Poseidon2CircuitCols, num_cols};
 
 /// Extends the Poseidon2 AIR with recursion circuit-specific columns and constraints.
 ///
-/// This implements the Poseidon Permutation Table specification.
+/// This implements the Poseidon2 Permutation Table specification.
 /// See: https://github.com/Plonky3/Plonky3-recursion/discussions/186
 ///
 /// The AIR enforces:
-/// - Poseidon permutation constraint: out[0..WIDTH_EXT-1] = Poseidon2(in[0..WIDTH_EXT-1])
+/// - Poseidon2 permutation constraint: out[0..3] = Poseidon2(in[0..3])
 /// - Chaining rules for normal sponge and Merkle-path modes
 /// - MMCS index accumulator updates
 ///
@@ -67,12 +68,9 @@ pub struct Poseidon2CircuitAir<
     preprocessed: Vec<F>,
 }
 
-pub const fn poseidon_preprocessed_width<const WIDTH_EXT: usize, const DIGEST_EXT: usize>() -> usize
-{
-    // witness index, `in_ctl`, `normal_chain_sel` and `merkle_chain_sel` for all input limbs,
-    // witness index and `out_ctl` for all output limbs,
-    // `mmcs_index_sum_ctl`, `new_start` and `merkle_path`.
-    4 * WIDTH_EXT + 2 * DIGEST_EXT + 3
+pub const fn poseidon2_preprocessed_width() -> usize {
+    // Witness index, `in_ctl`, `normal_chain_sel` and `merkle_chain_sel` for all input limbs, witness index and `out_ctl` for all output limbs, `mmcs_index_sum_ctl`, `new_start` and `merkle_path`.
+    4 * POSEIDON2_LIMBS + 2 * POSEIDON2_PUBLIC_OUTPUT_LIMBS + 3
 }
 
 impl<
@@ -136,7 +134,8 @@ impl<
     }
 
     pub const fn preprocessed_width() -> usize {
-        poseidon_preprocessed_width::<WIDTH_EXT, DIGEST_EXT>()
+        // Witness index, `in_ctl`, `normal_chain_sel` and `merkle_chain_sel` for all input limbs, witness index and `out_ctl` for all output limbs, `mmcs_index_sum_ctl`, `new_start` and `merkle_path`.
+        4 * WIDTH_EXT + 2 * DIGEST_EXT + 3
     }
 
     pub fn generate_trace_rows<P: CryptographicPermutation<[F; WIDTH]>>(
@@ -303,14 +302,14 @@ impl<
             circuit_part[0].write(F::from_bool(*mmcs_bit));
             circuit_part[1].write(acc);
 
-            // Save the state to be used as input for the heavy Poseidon trace generation
+            // Save the state to be used as input for the heavy Poseidon2 trace generation
             inputs.push(state);
             prev_output = Some(perm.permute(state));
         }
 
-        // Poseidon trace generation
+        // Poseidon2 trace generation
         //
-        // Now that we have the inputs, we can generate the expensive Poseidon columns in parallel.
+        // Now that we have the inputs, we can generate the expensive Poseidon2 columns in parallel.
 
         trace_slice[..n * ncols]
             .par_chunks_exact_mut(ncols)
@@ -349,7 +348,7 @@ impl<
 
         // SAFETY: We have written to all columns in the slice [0..n*ncols].
         // 1. Circuit columns were written in the sequential loop.
-        // 2. Poseidon columns were written in the parallel loop.
+        // 2. Poseidon2 columns were written in the parallel loop.
         unsafe {
             trace_vec.set_len(n * ncols);
         }
@@ -431,9 +430,7 @@ pub fn extract_preprocessed_from_operations<
 >(
     operations: &[Poseidon2CircuitRow<OF, WIDTH_EXT, RATE_EXT, DIGEST_EXT>],
 ) -> Vec<F> {
-    let mut preprocessed = Vec::with_capacity(
-        operations.len() * poseidon_preprocessed_width::<WIDTH_EXT, DIGEST_EXT>(),
-    );
+    let mut preprocessed = Vec::with_capacity(operations.len() * poseidon2_preprocessed_width());
 
     for operation in operations {
         let Poseidon2CircuitRow {
@@ -454,7 +451,7 @@ pub fn extract_preprocessed_from_operations<
             .zip(input_indices.iter())
             .for_each(|(ctl, idx)| {
                 preprocessed.extend(&[F::from_u32(*idx), F::from_bool(*ctl)]);
-                let normal_chain_sel = if !*new_start && !*merkle_path && !ctl {
+                let normal_chain_sel = if !new_start && !merkle_path && !*ctl {
                     F::ONE
                 } else {
                     F::ZERO
@@ -462,7 +459,10 @@ pub fn extract_preprocessed_from_operations<
 
                 preprocessed.push(normal_chain_sel);
 
-                let merkle_chain_sel = if !new_start && *merkle_path && !ctl {
+                // In merkle mode:
+                // - When mmcs_bit = 0: limbs 0-1 are chained, limbs 2-3 are private (sibling)
+                // - When mmcs_bit = 1: limbs 2-3 are chained, limbs 0-1 are private (sibling)
+                let merkle_chain_sel = if !*new_start && *merkle_path && !*ctl {
                     F::ONE
                 } else {
                     F::ZERO
@@ -483,7 +483,7 @@ pub fn extract_preprocessed_from_operations<
     preprocessed
 }
 
-fn eval<
+pub(crate) fn eval<
     AB: PairBuilder,
     LinearLayers: GenericPoseidon2LinearLayers<WIDTH>,
     const D: usize,
@@ -592,29 +592,50 @@ fn eval<
     let next_bit = next.mmcs_bit.clone();
     let is_left = AB::Expr::ONE - next_bit.clone();
 
-    let half = DIGEST_EXT / 2;
-    for limb in 0..half {
-        // Left limbs i, i < DIGEST_EXT / 2: chain from out_r[i] (left), unless in_ctl[i] = 1.
-        for d in 0..D {
-            let gate_left =
-                next_preprocessed[preprocessing_limb_data_size * limb + merkle_chain_idx].clone()
-                    * is_left.clone();
-            builder
-                .when_transition()
-                .when(gate_left)
-                .assert_zero(next_in[limb * D + d].clone() - local_out[limb * D + d].clone());
-        }
+    // Limb 0: chain from out_r[0] when mmcs_bit = 0 (left), unless in_ctl[0] = 1.
+    // When mmcs_bit = 1 (right), limb 0 is private (sibling).
+    for d in 0..D {
+        let gate_left_0 = next_preprocessed[merkle_chain_idx].clone() * is_left.clone();
+        builder
+            .when_transition()
+            .when(gate_left_0)
+            .assert_zero(next_in[d].clone() - local_out[d].clone());
+    }
 
-        // Right limbs i, i >= DIGEST_EXT / 2: chain from out_r[i] (right), unless in_ctl[i] = 1.
-        for d in 0..D {
-            let gate_right = next_preprocessed
-                [preprocessing_limb_data_size * (half + limb) + merkle_chain_idx]
-                .clone()
-                * next_bit.clone();
-            builder.when_transition().when(gate_right).assert_zero(
-                next_in[(half + limb) * D + d].clone() - local_out[limb * D + d].clone(),
-            );
-        }
+    // Limb 1: chain from out_r[1] when mmcs_bit = 0 (left), unless in_ctl[1] = 1.
+    // When mmcs_bit = 1 (right), limb 1 is private (sibling).
+    for d in 0..D {
+        let gate_left_1 = next_preprocessed[preprocessing_limb_data_size + merkle_chain_idx]
+            .clone()
+            * is_left.clone();
+        builder
+            .when_transition()
+            .when(gate_left_1)
+            .assert_zero(next_in[D + d].clone() - local_out[D + d].clone());
+    }
+
+    // Limb 2: chain from out_r[0] when mmcs_bit = 1 (right), unless in_ctl[2] = 1.
+    // When mmcs_bit = 0 (left), limb 2 is private (sibling).
+    for d in 0..D {
+        let gate_right_2 = next_preprocessed[preprocessing_limb_data_size * 2 + merkle_chain_idx]
+            .clone()
+            * next_bit.clone();
+        builder
+            .when_transition()
+            .when(gate_right_2)
+            .assert_zero(next_in[2 * D + d].clone() - local_out[d].clone());
+    }
+
+    // Limb 3: chain from out_r[1] when mmcs_bit = 1 (right), unless in_ctl[3] = 1.
+    // When mmcs_bit = 0 (left), limb 3 is private (sibling).
+    for d in 0..D {
+        let gate_right_3 = next_preprocessed[preprocessing_limb_data_size * 3 + merkle_chain_idx]
+            .clone()
+            * next_bit.clone();
+        builder
+            .when_transition()
+            .when(gate_right_3)
+            .assert_zero(next_in[3 * D + d].clone() - local_out[D + d].clone());
     }
 
     // MMCS accumulator update.
@@ -652,10 +673,113 @@ fn eval<
         AB::Var,
     >::new(builder, 0..p3_poseidon2_num_cols);
 
-    // Enforce Poseidon permutation constraint:
-    // out[0..WIDTH_EXT-1] = Poseidon2(in[0..WIDTH_EXT-1])
+    // Enforce Poseidon2 permutation constraint:
+    // out[0..3] = Poseidon2(in[0..3])
     // This holds regardless of merkle_path, new_start, CTL flags, chaining, or MMCS accumulator.
     air.p3_poseidon2.eval(&mut sub_builder);
+}
+
+/// Unsafe version of `eval` that allows calling with a builder whose field type
+/// doesn't match the AIR's field type at compile time, but matches at runtime.
+///
+/// # Safety
+/// The caller must ensure that `F == AB::F` at runtime. Violating this will cause
+/// undefined behavior.
+pub unsafe fn eval_unchecked<
+    F: PrimeField,
+    AB: PairBuilder,
+    LinearLayers: GenericPoseidon2LinearLayers<WIDTH>,
+    const D: usize,
+    const WIDTH: usize,
+    const WIDTH_EXT: usize,
+    const RATE_EXT: usize,
+    const CAPACITY_EXT: usize,
+    const DIGEST_EXT: usize,
+    const SBOX_DEGREE: u64,
+    const SBOX_REGISTERS: usize,
+    const HALF_FULL_ROUNDS: usize,
+    const PARTIAL_ROUNDS: usize,
+>(
+    air: &Poseidon2CircuitAir<
+        F,
+        LinearLayers,
+        D,
+        WIDTH,
+        WIDTH_EXT,
+        RATE_EXT,
+        CAPACITY_EXT,
+        DIGEST_EXT,
+        SBOX_DEGREE,
+        SBOX_REGISTERS,
+        HALF_FULL_ROUNDS,
+        PARTIAL_ROUNDS,
+    >,
+    builder: &mut AB,
+    local: &Poseidon2CircuitCols<
+        AB::Var,
+        Poseidon2Cols<
+            AB::Var,
+            WIDTH,
+            SBOX_DEGREE,
+            SBOX_REGISTERS,
+            HALF_FULL_ROUNDS,
+            PARTIAL_ROUNDS,
+        >,
+        WIDTH_EXT,
+        RATE_EXT,
+        DIGEST_EXT,
+    >,
+    next: &Poseidon2CircuitCols<
+        AB::Var,
+        Poseidon2Cols<
+            AB::Var,
+            WIDTH,
+            SBOX_DEGREE,
+            SBOX_REGISTERS,
+            HALF_FULL_ROUNDS,
+            PARTIAL_ROUNDS,
+        >,
+        WIDTH_EXT,
+        RATE_EXT,
+        DIGEST_EXT,
+    >,
+    next_preprocessed: &[AB::Var],
+) where
+    AB::F: PrimeField,
+{
+    // SAFETY: Transmute the AIR to match builder's field type
+    // Caller guarantees F == AB::F at runtime.
+    unsafe {
+        let air_transmuted: &Poseidon2CircuitAir<
+            AB::F,
+            LinearLayers,
+            D,
+            WIDTH,
+            WIDTH_EXT,
+            RATE_EXT,
+            CAPACITY_EXT,
+            DIGEST_EXT,
+            SBOX_DEGREE,
+            SBOX_REGISTERS,
+            HALF_FULL_ROUNDS,
+            PARTIAL_ROUNDS,
+        > = core::mem::transmute(air);
+
+        eval::<
+            AB,
+            LinearLayers,
+            D,
+            WIDTH,
+            WIDTH_EXT,
+            RATE_EXT,
+            CAPACITY_EXT,
+            DIGEST_EXT,
+            SBOX_DEGREE,
+            SBOX_REGISTERS,
+            HALF_FULL_ROUNDS,
+            PARTIAL_ROUNDS,
+        >(air_transmuted, builder, local, next, next_preprocessed);
+    }
 }
 
 impl<
@@ -932,8 +1056,11 @@ mod test {
     use rand::{Rng, SeedableRng};
 
     use super::*;
-    use crate::public_types::{BabyBearD4Width16, BabyBearD4Width24};
-    use crate::{Poseidon2CircuitAirBabyBearD4Width16, Poseidon2CircuitAirBabyBearD4Width24};
+    use crate::columns::{POSEIDON2_LIMBS, POSEIDON2_PUBLIC_OUTPUT_LIMBS};
+    use crate::{
+        BabyBearD4Width16, BabyBearD4Width24, Poseidon2CircuitAirBabyBearD4Width16,
+        Poseidon2CircuitAirBabyBearD4Width24,
+    };
 
     const WIDTH: usize = BabyBearD4Width16::WIDTH;
     const WIDTH_EXT: usize = BabyBearD4Width16::WIDTH_EXT;
@@ -1023,10 +1150,10 @@ mod test {
                 mmcs_bit: false,
                 mmcs_index_sum: Val::ZERO,
                 input_values: first_state,
-                in_ctl: [false; WIDTH_EXT],
-                input_indices: [0; WIDTH_EXT],
-                out_ctl: [false; DIGEST_EXT],
-                output_indices: [0; DIGEST_EXT],
+                in_ctl: vec![false; POSEIDON2_LIMBS],
+                input_indices: vec![0; POSEIDON2_LIMBS],
+                out_ctl: vec![false; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
+                output_indices: vec![0; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
                 mmcs_index_sum_idx: 0,
             };
 
@@ -1037,10 +1164,10 @@ mod test {
                 mmcs_bit: true,
                 mmcs_index_sum: Val::ZERO,
                 input_values: zero_state.clone(),
-                in_ctl: [false; WIDTH_EXT],
-                input_indices: [0; WIDTH_EXT],
-                out_ctl: [false; DIGEST_EXT],
-                output_indices: [0; DIGEST_EXT],
+                in_ctl: vec![false; POSEIDON2_LIMBS],
+                input_indices: vec![0; POSEIDON2_LIMBS],
+                out_ctl: vec![false; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
+                output_indices: vec![0; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
                 mmcs_index_sum_idx: 0,
             };
 
@@ -1051,10 +1178,10 @@ mod test {
                 mmcs_bit: false,
                 mmcs_index_sum: Val::ZERO,
                 input_values: zero_state.clone(),
-                in_ctl: [false; WIDTH_EXT],
-                input_indices: [0; WIDTH_EXT],
-                out_ctl: [false; DIGEST_EXT],
-                output_indices: [0; DIGEST_EXT],
+                in_ctl: vec![false; POSEIDON2_LIMBS],
+                input_indices: vec![0; POSEIDON2_LIMBS],
+                out_ctl: vec![false; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
+                output_indices: vec![0; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
                 mmcs_index_sum_idx: 0,
             };
 
@@ -1065,10 +1192,10 @@ mod test {
                 mmcs_bit: false,
                 mmcs_index_sum: Val::ZERO,
                 input_values: zero_state,
-                in_ctl: [false; WIDTH_EXT],
-                input_indices: [0; WIDTH_EXT],
-                out_ctl: [false; DIGEST_EXT],
-                output_indices: [0; DIGEST_EXT],
+                in_ctl: vec![false; POSEIDON2_LIMBS],
+                input_indices: vec![0; POSEIDON2_LIMBS],
+                out_ctl: vec![false; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
+                output_indices: vec![0; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
                 mmcs_index_sum_idx: 0,
             };
 
@@ -1082,10 +1209,10 @@ mod test {
                 mmcs_bit: false,
                 mmcs_index_sum: Val::ZERO,
                 input_values: vec![Val::ZERO; WIDTH],
-                in_ctl: [false; WIDTH_EXT],
-                input_indices: [0; WIDTH_EXT],
-                out_ctl: [false; DIGEST_EXT],
-                output_indices: [0; DIGEST_EXT],
+                in_ctl: vec![false; WIDTH_EXT],
+                input_indices: vec![0; WIDTH_EXT],
+                out_ctl: vec![false; DIGEST_EXT],
+                output_indices: vec![0; DIGEST_EXT],
                 mmcs_index_sum_idx: 0,
             });
             rows.resize(target_rows, filler);
@@ -1197,10 +1324,10 @@ mod test {
                 mmcs_bit: false,
                 mmcs_index_sum: Val::ZERO,
                 input_values: first_state,
-                in_ctl: [false; WIDTH_EXT_24],
-                input_indices: [0; WIDTH_EXT_24],
-                out_ctl: [false; DIGEST_EXT_24],
-                output_indices: [0; DIGEST_EXT_24],
+                in_ctl: vec![false; WIDTH_EXT_24],
+                input_indices: vec![0; WIDTH_EXT_24],
+                out_ctl: vec![false; DIGEST_EXT_24],
+                output_indices: vec![0; DIGEST_EXT_24],
                 mmcs_index_sum_idx: 0,
             };
 
@@ -1211,10 +1338,10 @@ mod test {
                 mmcs_bit: true,
                 mmcs_index_sum: Val::ZERO,
                 input_values: zero_state.clone(),
-                in_ctl: [false; WIDTH_EXT_24],
-                input_indices: [0; WIDTH_EXT_24],
-                out_ctl: [false; DIGEST_EXT_24],
-                output_indices: [0; DIGEST_EXT_24],
+                in_ctl: vec![false; WIDTH_EXT_24],
+                input_indices: vec![0; WIDTH_EXT_24],
+                out_ctl: vec![false; DIGEST_EXT_24],
+                output_indices: vec![0; DIGEST_EXT_24],
                 mmcs_index_sum_idx: 0,
             };
 
@@ -1225,10 +1352,10 @@ mod test {
                 mmcs_bit: false,
                 mmcs_index_sum: Val::ZERO,
                 input_values: zero_state.clone(),
-                in_ctl: [false; WIDTH_EXT_24],
-                input_indices: [0; WIDTH_EXT_24],
-                out_ctl: [false; DIGEST_EXT_24],
-                output_indices: [0; DIGEST_EXT_24],
+                in_ctl: vec![false; WIDTH_EXT_24],
+                input_indices: vec![0; WIDTH_EXT_24],
+                out_ctl: vec![false; DIGEST_EXT_24],
+                output_indices: vec![0; DIGEST_EXT_24],
                 mmcs_index_sum_idx: 0,
             };
 
@@ -1239,10 +1366,10 @@ mod test {
                 mmcs_bit: false,
                 mmcs_index_sum: Val::ZERO,
                 input_values: zero_state,
-                in_ctl: [false; WIDTH_EXT_24],
-                input_indices: [0; WIDTH_EXT_24],
-                out_ctl: [false; DIGEST_EXT_24],
-                output_indices: [0; DIGEST_EXT_24],
+                in_ctl: vec![false; WIDTH_EXT_24],
+                input_indices: vec![0; WIDTH_EXT_24],
+                out_ctl: vec![false; DIGEST_EXT_24],
+                output_indices: vec![0; DIGEST_EXT_24],
                 mmcs_index_sum_idx: 0,
             };
 
@@ -1250,18 +1377,26 @@ mod test {
         let degree_bits = 5;
         let target_rows = 1 << degree_bits;
         if rows.len() < target_rows {
-            let filler = rows.last().cloned().unwrap_or_else(|| Poseidon2CircuitRow {
-                new_start: true,
-                merkle_path: false,
-                mmcs_bit: false,
-                mmcs_index_sum: Val::ZERO,
-                input_values: vec![Val::ZERO; WIDTH_24],
-                in_ctl: [false; WIDTH_EXT_24],
-                input_indices: [0; WIDTH_EXT_24],
-                out_ctl: [false; DIGEST_EXT_24],
-                output_indices: [0; DIGEST_EXT_24],
-                mmcs_index_sum_idx: 0,
-            });
+            let filler = rows
+                .last()
+                .cloned()
+                .unwrap_or_else(|| Poseidon2CircuitRow::<
+                    Val,
+                    WIDTH_EXT_24,
+                    RATE_EXT_24,
+                    DIGEST_EXT_24,
+                > {
+                    new_start: true,
+                    merkle_path: false,
+                    mmcs_bit: false,
+                    mmcs_index_sum: Val::ZERO,
+                    input_values: vec![Val::ZERO; WIDTH_24],
+                    in_ctl: vec![false; WIDTH_EXT_24],
+                    input_indices: vec![0; WIDTH_EXT_24],
+                    out_ctl: vec![false; DIGEST_EXT_24],
+                    output_indices: vec![0; DIGEST_EXT_24],
+                    mmcs_index_sum_idx: 0,
+                });
             rows.resize(target_rows, filler);
         }
 

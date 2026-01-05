@@ -3,9 +3,12 @@ use core::mem::size_of;
 
 use p3_poseidon2_air::Poseidon2Cols;
 
+pub const POSEIDON2_LIMBS: usize = 4;
+pub const POSEIDON2_PUBLIC_OUTPUT_LIMBS: usize = 2;
+
 /// Columns for a Poseidon2 AIR which computes one permutation per row.
 ///
-/// This implements the Poseidon Permutation Table specification.
+/// This implements the Poseidon2 Permutation Table specification.
 /// See: https://github.com/Plonky3/Plonky3-recursion/discussions/186
 ///
 /// The table implements a WIDTH_EXT-limb Poseidon2 permutation supporting:
