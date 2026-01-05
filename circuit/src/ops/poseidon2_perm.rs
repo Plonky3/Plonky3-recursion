@@ -163,7 +163,8 @@ pub trait Poseidon2PermOps<F: Clone + PrimeCharacteristicRing + Eq> {
     /// - `merkle_path`: if true, Merkle-path chaining semantics apply (chained digest placement depends on `mmcs_bit`).
     /// - `mmcs_bit`: Merkle direction bit witness for this row (used when `merkle_path` is true).
     /// - `inputs`: optional CTL exposure per limb (extension element, length 4 if provided).
-    ///   Unexposed limbs in Merkle mode are provided separately via `Poseidon2PermPrivateData`.
+    ///   Base-component inputs are not supported; unexposed limbs in Merkle mode are
+    ///   provided separately via `Poseidon2PermPrivateData`.
     /// - `out_ctl`: whether to allocate/expose output limbs 0–1 via CTL.
     /// - `mmcs_index_sum`: optional exposure of the MMCS index accumulator (base field element).
     fn add_poseidon2_perm(
@@ -267,6 +268,29 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for Poseidon2Perm
                 got: inputs.len(),
             });
         }
+        for limb_inputs in inputs[..4].iter() {
+            if limb_inputs.len() > 1 {
+                return Err(CircuitError::NonPrimitiveOpLayoutMismatch {
+                    op: self.op_type.clone(),
+                    expected: "0 or 1 witness per input limb (extension-only)".to_string(),
+                    got: limb_inputs.len(),
+                });
+            }
+        }
+        if inputs[4].len() > 1 {
+            return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
+                op: self.op_type.clone(),
+                expected: "0 or 1 element for mmcs_index_sum".to_string(),
+                got: inputs[4].len(),
+            });
+        }
+        if inputs[5].len() > 1 {
+            return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
+                op: self.op_type.clone(),
+                expected: "0 or 1 element for mmcs_bit".to_string(),
+                got: inputs[5].len(),
+            });
+        }
         if outputs.len() != 2 {
             return Err(CircuitError::NonPrimitiveOpLayoutMismatch {
                 op: self.op_type.clone(),
@@ -286,11 +310,22 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for Poseidon2Perm
             }
         };
 
-        // Get private data if available
-        let private_data = ctx.get_private_data().ok();
-        let private_inputs: Option<&[F]> = private_data.map(|pd| match pd {
-            NonPrimitiveOpPrivateData::Poseidon2Perm(data) => &data.sibling[..],
-        });
+        // Get private data if available and validate usage rules.
+        let private_inputs: Option<&[F]> = match ctx.get_private_data() {
+            Ok(NonPrimitiveOpPrivateData::Poseidon2Perm(data)) => {
+                if !self.merkle_path || self.new_start {
+                    return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
+                        op: self.op_type.clone(),
+                        operation_index: ctx.operation_id(),
+                        expected: "no private data (only Merkle mode accepts private data)"
+                            .to_string(),
+                        got: "private data provided for non-Merkle operation".to_string(),
+                    });
+                }
+                Some(&data.sibling[..])
+            }
+            Err(_) => None,
+        };
 
         // Get mmcs_bit (required when merkle_path=true; defaults to false otherwise).
         // mmcs_bit is at inputs[5].
@@ -742,7 +777,8 @@ pub fn generate_poseidon2_trace<
     let operations: Vec<Poseidon2CircuitRow<Config::BaseField>> = state
         .rows
         .iter()
-        .map(|row| {
+        .enumerate()
+        .map(|(row_index, row)| -> Result<_, CircuitError> {
             // Flatten 4 extension limbs to WIDTH base field elements
             assert_eq!(
                 row.input_values.len(),
@@ -760,23 +796,29 @@ pub fn generate_poseidon2_trace<
                 input_values[limb * d..(limb + 1) * d].copy_from_slice(coeffs);
             }
 
-            Poseidon2CircuitRow {
+            let mmcs_index_sum = row.mmcs_index_sum.as_base().ok_or_else(|| {
+                CircuitError::IncorrectNonPrimitiveOpPrivateData {
+                    op: NonPrimitiveOpType::Poseidon2Perm,
+                    operation_index: NonPrimitiveOpId(row_index as u32),
+                    expected: "base field mmcs_index_sum".to_string(),
+                    got: "extension value".to_string(),
+                }
+            })?;
+
+            Ok(Poseidon2CircuitRow {
                 new_start: row.new_start,
                 merkle_path: row.merkle_path,
                 mmcs_bit: row.mmcs_bit,
-                mmcs_index_sum: row
-                    .mmcs_index_sum
-                    .as_base()
-                    .unwrap_or(Config::BaseField::ZERO),
+                mmcs_index_sum,
                 input_values,
                 in_ctl: row.in_ctl,
                 input_indices: row.input_indices,
                 out_ctl: row.out_ctl,
                 output_indices: row.output_indices,
                 mmcs_index_sum_idx: row.mmcs_index_sum_idx,
-            }
+            })
         })
-        .collect();
+        .collect::<Result<Vec<_>, CircuitError>>()?;
 
     Ok(Some(Box::new(Poseidon2Trace { operations })))
 }

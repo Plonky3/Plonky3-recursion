@@ -68,7 +68,6 @@ fn test_poseidon2_perm_verifier() -> Result<(), VerificationError> {
         ),
         partial_constants.to_vec(),
     );
-    let _perm_for_trace = perm.clone();
 
     let hash = MyHash::new(perm.clone());
     let compress = MyCompress::new(perm.clone());
