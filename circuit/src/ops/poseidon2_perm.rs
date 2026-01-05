@@ -428,11 +428,9 @@ impl Poseidon2PermExecutor {
                         resolved[2] = Some(prev[0]);
                         resolved[3] = Some(prev[1]);
                     }
-                } else {
-                    if prev.len() >= digest_ext {
-                        resolved[0] = Some(prev[0]);
-                        resolved[1] = Some(prev[1]);
-                    }
+                } else if prev.len() >= digest_ext {
+                    resolved[0] = Some(prev[0]);
+                    resolved[1] = Some(prev[1]);
                 }
             }
         }

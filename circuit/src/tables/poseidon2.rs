@@ -537,26 +537,10 @@ impl<F> Poseidon2TraceDyn<F> {
                     mmcs_bit: row.mmcs_bit,
                     mmcs_index_sum: row.mmcs_index_sum.clone(),
                     input_values: row.input_values.clone(),
-                    in_ctl: row
-                        .in_ctl
-                        .clone()
-                        .try_into()
-                        .map_err(|_| CircuitError::InvalidTraceData)?,
-                    input_indices: row
-                        .input_indices
-                        .clone()
-                        .try_into()
-                        .map_err(|_| CircuitError::InvalidTraceData)?,
-                    out_ctl: row
-                        .out_ctl
-                        .clone()
-                        .try_into()
-                        .map_err(|_| CircuitError::InvalidTraceData)?,
-                    output_indices: row
-                        .output_indices
-                        .clone()
-                        .try_into()
-                        .map_err(|_| CircuitError::InvalidTraceData)?,
+                    in_ctl: row.in_ctl.clone(),
+                    input_indices: row.input_indices.clone(),
+                    out_ctl: row.out_ctl.clone(),
+                    output_indices: row.output_indices.clone(),
                     mmcs_index_sum_idx: row.mmcs_index_sum_idx,
                 })
             })
