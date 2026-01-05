@@ -6,7 +6,6 @@ pub use poseidon2_perm::{
     // Prover/AIR (trace access)
     Poseidon2CircuitRow,
     Poseidon2Params,
-    Poseidon2Trace,
     // Builder API
     Poseidon2PermCall,
     // Configuration
@@ -14,5 +13,6 @@ pub use poseidon2_perm::{
     Poseidon2PermExec,
     Poseidon2PermOps,
     Poseidon2PermPrivateData,
+    Poseidon2Trace,
     generate_poseidon2_trace,
 };

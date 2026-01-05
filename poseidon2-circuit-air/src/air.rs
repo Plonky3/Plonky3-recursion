@@ -184,6 +184,11 @@ impl<
             // Copy input_values into fixed-size array, padding with zeros.
             // Note: input_values already contains the fully resolved state with chaining
             // applied during circuit execution, so no additional chaining is needed here.
+            assert_eq!(
+                input_values.len(),
+                WIDTH,
+                "Trace row input_values must have length WIDTH"
+            );
             let mut state = [F::ZERO; WIDTH];
             for (dst, src) in state.iter_mut().zip(input_values.iter().copied()) {
                 *dst = src;
@@ -621,8 +626,8 @@ pub unsafe fn eval_unchecked<
 ) where
     AB::F: PrimeField,
 {
-    // SAFETY: Transmute the AIR to match builder's field type
-    // Caller guarantees F == AB::F at runtime.
+    // SAFETY: Caller guarantees F == AB::F at runtime, so the struct layouts are identical.
+    // The transmute is safe because all field types have the same runtime representation.
     unsafe {
         let air_transmuted: &Poseidon2CircuitAir<
             AB::F,

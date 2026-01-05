@@ -363,12 +363,19 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for Poseidon2Perm
         };
 
         // Record row for trace generation (input_values contains 4 extension limbs)
+        let input_values = resolved_inputs.to_vec();
+        debug_assert_eq!(
+            input_values.len(),
+            4,
+            "Execution row must have exactly 4 input limbs"
+        );
+
         let row = Poseidon2CircuitRow {
             new_start: self.new_start,
             merkle_path: self.merkle_path,
             mmcs_bit,
             mmcs_index_sum,
-            input_values: resolved_inputs.to_vec(),
+            input_values,
             in_ctl,
             input_indices,
             out_ctl,
@@ -648,8 +655,8 @@ pub struct Poseidon2CircuitRow<F> {
     pub mmcs_bit: bool,
     /// Value: Optional MMCS accumulator (base field, encodes a u32-like integer).
     pub mmcs_index_sum: F,
-    /// Inputs to the Poseidon2 permutation (flattened state, length = WIDTH).
-    /// Represents in[0..3] - 4 extension limbs (input digest).
+    /// Inputs to the Poseidon2 permutation (flattened state).
+    /// For execution rows: 4 extension limbs. For trace rows: WIDTH base field elements.
     pub input_values: Vec<F>,
     /// Input exposure flags: for each limb i, if 1, in[i] must match witness lookup at input_indices[i].
     pub in_ctl: [bool; 4],
@@ -733,8 +740,18 @@ pub fn generate_poseidon2_trace<
         .rows
         .iter()
         .map(|row| {
-            // Flatten 4 extension limbs to 16 base field elements
+            // Flatten 4 extension limbs to WIDTH base field elements
+            assert_eq!(
+                row.input_values.len(),
+                4,
+                "Source row must have exactly 4 input limbs"
+            );
             let mut input_values = vec![Config::BaseField::ZERO; Config::WIDTH];
+            assert_eq!(
+                input_values.len(),
+                Config::WIDTH,
+                "Target row must have WIDTH input elements"
+            );
             for (limb, ext_val) in row.input_values.iter().enumerate() {
                 let coeffs = ext_val.as_basis_coefficients_slice();
                 input_values[limb * d..(limb + 1) * d].copy_from_slice(coeffs);

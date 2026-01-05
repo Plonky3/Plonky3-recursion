@@ -1,4 +1,5 @@
 use alloc::boxed::Box;
+use alloc::collections::BTreeMap;
 use alloc::string::ToString;
 use alloc::vec::Vec;
 use alloc::{format, vec};
@@ -63,7 +64,7 @@ impl<F: CircuitField> CircuitRunner<F> {
         }
 
         let non_primitive_op_private_data = vec![None; non_primitive_op_count];
-        let op_states = HashMap::new();
+        let op_states = BTreeMap::new();
         Self {
             circuit,
             witness,
@@ -166,7 +167,11 @@ impl<F: CircuitField> CircuitRunner<F> {
 
         let mut non_primitive_traces: HashMap<&'static str, Box<dyn NonPrimitiveTrace<F>>> =
             HashMap::new();
-        for generator in self.circuit.non_primitive_trace_generators.values() {
+        // Iterate over generators in deterministic order (sorted by key)
+        let mut op_types: Vec<_> = self.circuit.non_primitive_trace_generators.keys().collect();
+        op_types.sort();
+        for op_type in op_types {
+            let generator = &self.circuit.non_primitive_trace_generators[op_type];
             if let Some(trace) = generator(
                 &self.circuit,
                 &self.witness,

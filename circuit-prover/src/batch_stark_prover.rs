@@ -9,20 +9,14 @@ use core::borrow::Borrow;
 use core::mem::transmute;
 
 use p3_air::{Air, AirBuilder, BaseAir, PairBuilder};
-use p3_baby_bear::{
-    BabyBear, GenericPoseidon2LinearLayersBabyBear, default_babybear_poseidon2_16,
-    default_babybear_poseidon2_24,
-};
+use p3_baby_bear::{BabyBear, GenericPoseidon2LinearLayersBabyBear};
 use p3_batch_stark::{BatchProof, CommonData, StarkGenericConfig, StarkInstance, Val};
 use p3_circuit::op::PrimitiveOpType;
 use p3_circuit::ops::{Poseidon2CircuitRow, Poseidon2Params, Poseidon2Trace};
 use p3_circuit::tables::Traces;
 use p3_field::extension::{BinomialExtensionField, BinomiallyExtendable};
 use p3_field::{BasedVectorSpace, ExtensionField, Field, PrimeCharacteristicRing, PrimeField};
-use p3_koala_bear::{
-    GenericPoseidon2LinearLayersKoalaBear, KoalaBear, default_koalabear_poseidon2_16,
-    default_koalabear_poseidon2_24,
-};
+use p3_koala_bear::{GenericPoseidon2LinearLayersKoalaBear, KoalaBear};
 use p3_lookup::folder::{ProverConstraintFolderWithLookups, VerifierConstraintFolderWithLookups};
 use p3_lookup::lookup_traits::{AirLookupHandler, Lookup};
 use p3_matrix::Matrix;
@@ -30,11 +24,11 @@ use p3_matrix::dense::RowMajorMatrix;
 use p3_poseidon2_air::RoundConstants;
 use p3_poseidon2_circuit_air::{
     BabyBearD4Width16, BabyBearD4Width24, KoalaBearD4Width16, KoalaBearD4Width24,
-    Poseidon2CircuitAir, Poseidon2CircuitAirBabyBearD4Width16, Poseidon2CircuitAirBabyBearD4Width24,
-    Poseidon2CircuitAirKoalaBearD4Width16, Poseidon2CircuitAirKoalaBearD4Width24,
-    eval_unchecked, extract_preprocessed_from_operations, poseidon2_preprocessed_width,
+    Poseidon2CircuitAir, Poseidon2CircuitAirBabyBearD4Width16,
+    Poseidon2CircuitAirBabyBearD4Width24, Poseidon2CircuitAirKoalaBearD4Width16,
+    Poseidon2CircuitAirKoalaBearD4Width24, eval_unchecked, extract_preprocessed_from_operations,
+    poseidon2_preprocessed_width,
 };
-use p3_symmetric::CryptographicPermutation;
 use p3_uni_stark::{ProverConstraintFolder, SymbolicAirBuilder, VerifierConstraintFolder};
 use thiserror::Error;
 use tracing::instrument;
@@ -1384,9 +1378,8 @@ impl Poseidon2Prover {
             );
         }
 
-        // Convert trace from Val<SC> to F using unsafe transmute
-        // This is safe when Val<SC> and F have the same size and layout
-        // For BabyBear/KoalaBear configs, Val<SC> should be BabyBear/KoalaBear
+        // Convert trace from Val<SC> to F
+        // Val<SC> and F are guaranteed to be the same type at runtime (BabyBear/KoalaBear)
         let ops_converted: Vec<Poseidon2CircuitRow<F>> = unsafe { transmute(padded_ops) };
 
         // Create an AIR instance based on the configuration
@@ -1399,6 +1392,7 @@ impl Poseidon2Prover {
                     constants.clone(),
                     preprocessed,
                 );
+                // F is guaranteed to be BabyBear at runtime in this branch
                 let ops_babybear: Vec<Poseidon2CircuitRow<BabyBear>> =
                     unsafe { transmute(ops_converted) };
                 let matrix_f = air.generate_trace_rows(&ops_babybear, constants, 0);
@@ -1421,6 +1415,7 @@ impl Poseidon2Prover {
                     constants.clone(),
                     preprocessed,
                 );
+                // F is guaranteed to be BabyBear at runtime in this branch
                 let ops_babybear: Vec<Poseidon2CircuitRow<BabyBear>> =
                     unsafe { transmute(ops_converted) };
                 let matrix_f = air.generate_trace_rows(&ops_babybear, constants, 0);
@@ -1443,6 +1438,7 @@ impl Poseidon2Prover {
                     constants.clone(),
                     preprocessed,
                 );
+                // F is guaranteed to be KoalaBear at runtime in this branch
                 let ops_koalabear: Vec<Poseidon2CircuitRow<KoalaBear>> =
                     unsafe { transmute(ops_converted) };
                 let matrix_f = air.generate_trace_rows(&ops_koalabear, constants, 0);
