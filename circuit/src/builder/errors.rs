@@ -50,13 +50,21 @@ pub enum CircuitBuilderError {
     #[error("Invalid configuration for operation {op:?}")]
     InvalidNonPrimitiveOpConfiguration { op: NonPrimitiveOpType },
 
+    /// Merkle-path Poseidon2 rows require a direction bit.
+    #[error("Poseidon2Perm merkle_path=true requires mmcs_bit")]
+    Poseidon2MerkleMissingMmcsBit,
+
+    /// Non-merkle Poseidon2 rows should not have mmcs_bit set.
+    #[error("Poseidon2Perm merkle_path=false must not have mmcs_bit (it has no effect)")]
+    Poseidon2NonMerkleWithMmcsBit,
+
     /// A sequence of expressions of type Witness is missing its filler.
     #[error("Missing hint filler for expression {sequence:?}")]
     MissingWitnessFiller { sequence: Vec<WitnessId> },
 
     /// A sequence of witness hints has no end.
     #[error("Witness hint without last hint {sequence:?}.")]
-    MalformedWitnessHitnsSequence { sequence: Vec<WitnessId> },
+    MalformedWitnessHintsSequence { sequence: Vec<WitnessId> },
 
     /// Witness filler without any hints sequence.
     #[error("Witness filler is missing a witness hints sequence")]
@@ -65,4 +73,8 @@ pub enum CircuitBuilderError {
     /// Requested bit length exceeds the maximum allowed for binary decomposition.
     #[error("Too many bits for binary decomposition: expected at most {expected}, got {n_bits}")]
     BinaryDecompositionTooManyBits { expected: usize, n_bits: usize },
+
+    /// Missing output
+    #[error("An output was expected but none was given")]
+    MissingOutput,
 }

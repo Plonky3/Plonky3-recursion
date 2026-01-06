@@ -3,8 +3,8 @@ use std::error::Error;
 use p3_baby_bear::{BabyBear, default_babybear_poseidon2_16};
 use p3_batch_stark::CommonData;
 use p3_circuit::op::NonPrimitiveOpPrivateData;
-use p3_circuit::tables::{PoseidonPermPrivateData, generate_poseidon2_trace};
-use p3_circuit::{CircuitBuilder, ExprId, PoseidonPermOps};
+use p3_circuit::tables::{Poseidon2PermPrivateData, generate_poseidon2_trace};
+use p3_circuit::{CircuitBuilder, ExprId, Poseidon2PermOps};
 use p3_circuit_prover::common::{NonPrimitiveConfig, get_airs_and_degrees_with_prep};
 use p3_circuit_prover::{BatchStarkProver, Poseidon2Config, TablePacking, config};
 use p3_field::extension::BinomialExtensionField;
@@ -39,11 +39,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     init_logger();
 
     // Three-row Merkle path example (2 levels):
-    // Row 0: hashes leaf || sibling0 (merkle_path = true, new_start = true, mmcs_bit = 0)
+    // Row 0: permutation input is leaf || sibling0. merkle_path = true, new_start = true, mmcs_bit = 0
     // Row 1: merkle_path = true, new_start = false, mmcs_bit = 1 (previous hash becomes right child),
-    //        limbs 0-1 get prev_out limbs 2-3; limbs 2-3 take sibling1 as private inputs.
+    //        input limbs 2-3 get prev row's output limbs 0-1; input limbs 0-1 take sibling1 as private inputs.
     // Row 2: merkle_path = true, new_start = false, mmcs_bit = 0 (previous hash becomes left child),
-    //        limbs 0-1 get prev_out limbs 0-1; limbs 2-3 take sibling2 as private inputs.
+    //        input limbs 0-1 get prev row's output limbs 0-1; input limbs 2-3 take sibling2 as private inputs.
     //
     // Tree shape (limb ranges = base-field coeff slices of Ext4):
     //          root (row2 out)
@@ -122,15 +122,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     let row0_state_base = flatten_ext_limbs(&row0_state);
     let row0_out_base = perm.permute(row0_state_base);
 
-    // Row 1 chaining: mmcs_bit = 1, so previous hash becomes right child (limbs 0-1 get prev_out[2..4])
-    // limbs 2-3 from sibling1
+    // Row 1 chaining: mmcs_bit = 1, so previous hash becomes right child.
+    // Previous digest (out[0..1]) chains into limbs 2-3; sibling1 provides limbs 0-1.
     let mut row1_state_base = [Base::ZERO; WIDTH];
-    // limbs 0-1 from row0 output limbs 2-3
-    row1_state_base[0..2 * LIMB_SIZE].copy_from_slice(&row0_out_base[2 * LIMB_SIZE..4 * LIMB_SIZE]);
-    // limbs 2-3 from sibling1
-    let sibling1_flat =
-        flatten_ext_limbs(&[sibling1_limb2, sibling1_limb3, Ext4::ZERO, Ext4::ZERO]);
-    row1_state_base[2 * LIMB_SIZE..4 * LIMB_SIZE].copy_from_slice(&sibling1_flat[0..2 * LIMB_SIZE]);
+    // limbs 0-1 from sibling1
+    let sibling1_flat: [Base; 2 * LIMB_SIZE] = flatten_ext_limbs(&[sibling1_limb2, sibling1_limb3]);
+    row1_state_base[0..2 * LIMB_SIZE].copy_from_slice(&sibling1_flat);
+    // limbs 2-3 from row0 output limbs 0-1
+    row1_state_base[2 * LIMB_SIZE..4 * LIMB_SIZE].copy_from_slice(&row0_out_base[0..2 * LIMB_SIZE]);
 
     let row1_out_base = perm.permute(row1_state_base);
 
@@ -138,9 +137,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     // limbs 2-3 from sibling2
     let mut row2_state_base = [Base::ZERO; WIDTH];
     row2_state_base[0..2 * LIMB_SIZE].copy_from_slice(&row1_out_base[0..2 * LIMB_SIZE]);
-    let sibling2_flat =
-        flatten_ext_limbs(&[sibling2_limb2, sibling2_limb3, Ext4::ZERO, Ext4::ZERO]);
-    row2_state_base[2 * LIMB_SIZE..4 * LIMB_SIZE].copy_from_slice(&sibling2_flat[0..2 * LIMB_SIZE]);
+    let sibling2_flat: [Base; 2 * LIMB_SIZE] = flatten_ext_limbs(&[sibling2_limb2, sibling2_limb3]);
+    row2_state_base[2 * LIMB_SIZE..4 * LIMB_SIZE].copy_from_slice(&sibling2_flat);
 
     let row2_out_base = perm.permute(row2_state_base);
     let row2_out_limbs = collect_ext_limbs(&row2_out_base);
@@ -150,8 +148,9 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Build circuit
     let mut builder = CircuitBuilder::<Ext4>::new();
-    builder.enable_poseidon_perm::<BabyBearD4Width16>(
+    builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
         generate_poseidon2_trace::<Ext4, BabyBearD4Width16>,
+        perm,
     );
 
     // Row 0: expose all inputs
@@ -163,57 +162,59 @@ fn main() -> Result<(), Box<dyn Error>> {
         builder.alloc_const(row0_state[3], "sibling0_3"),
     ];
 
-    builder.add_poseidon_perm(p3_circuit::ops::PoseidonPermCall {
-        new_start: true,
-        merkle_path: true,
-        mmcs_bit: Some(mmcs_bit_row0),
-        inputs: inputs_row0.map(Some),
-        outputs: [None, None],
-        mmcs_index_sum: None,
-    })?;
+    let (_row0_op_id, _row0_outputs) =
+        builder.add_poseidon2_perm(p3_circuit::ops::Poseidon2PermCall {
+            new_start: true,
+            merkle_path: true,
+            mmcs_bit: Some(mmcs_bit_row0),
+            inputs: inputs_row0.map(Some),
+            out_ctl: [false, false],
+            mmcs_index_sum: None,
+        })?;
 
-    // Row 1: chain limbs 0-1, provide sibling1 in limbs 2-3, expose output limbs 0-1 and mmcs_index_sum.
-    let sibling1_inputs: [Option<ExprId>; 4] = [
-        None, None, None, // Private
-        None, // Private
-    ];
+    // Row 1: Merkle right. Chain previous digest into limbs 2-3 and provide sibling1 in limbs 0-1.
+    // All inputs are private (chained from row 0 or provided via private data)
+    let sibling1_inputs: [Option<ExprId>; 4] = [None, None, None, None];
     // Public root limbs
     let out0 = builder.add_public_input();
     let out1 = builder.add_public_input();
     let mmcs_idx_sum_expr = builder.add_public_input();
 
     let mmcs_bit_row1 = builder.alloc_const(Ext4::from_prime_subfield(Base::ONE), "mmcs_bit_row1");
-    let row1_op_id = builder.add_poseidon_perm(p3_circuit::ops::PoseidonPermCall {
-        new_start: false,
-        merkle_path: true,
-        mmcs_bit: Some(mmcs_bit_row1),
-        inputs: sibling1_inputs,
-        outputs: [None, None],
-        mmcs_index_sum: None,
-    })?;
+    let (row1_op_id, _row1_outputs) =
+        builder.add_poseidon2_perm(p3_circuit::ops::Poseidon2PermCall {
+            new_start: false,
+            merkle_path: true,
+            mmcs_bit: Some(mmcs_bit_row1),
+            inputs: sibling1_inputs,
+            out_ctl: [false, false],
+            mmcs_index_sum: None,
+        })?;
 
-    // Row 2: merkle left
+    // Row 2: merkle left - all inputs private (chained from row 1 or provided via private data)
     let mmcs_bit_row2 = builder.alloc_const(Ext4::from_prime_subfield(Base::ZERO), "mmcs_bit_row2");
-    let sibling2_inputs: [Option<ExprId>; 4] = [
-        None, None, None, // Private
-        None, // Private
-    ];
-    let row2_op_id = builder.add_poseidon_perm(p3_circuit::ops::PoseidonPermCall {
-        new_start: false,
-        merkle_path: true,
-        mmcs_bit: Some(mmcs_bit_row2),
-        inputs: sibling2_inputs,
-        outputs: [Some(out0), Some(out1)],
-        mmcs_index_sum: Some(mmcs_idx_sum_expr),
-    })?;
+    let sibling2_inputs: [Option<ExprId>; 4] = [None, None, None, None];
+    let (row2_op_id, row2_outputs) =
+        builder.add_poseidon2_perm(p3_circuit::ops::Poseidon2PermCall {
+            new_start: false,
+            merkle_path: true,
+            mmcs_bit: Some(mmcs_bit_row2),
+            inputs: sibling2_inputs,
+            out_ctl: [true, true],
+            mmcs_index_sum: Some(mmcs_idx_sum_expr),
+        })?;
+    let row2_out0 = row2_outputs[0].ok_or("missing row2 out0")?;
+    let row2_out1 = row2_outputs[1].ok_or("missing row2 out1")?;
+    builder.connect(row2_out0, out0);
+    builder.connect(row2_out1, out1);
 
     let circuit = builder.build()?;
     let table_packing = TablePacking::new(4, 4, 1);
-    let poseidon_config = Poseidon2Config::baby_bear_d4_width16();
+    let poseidon2_config = Poseidon2Config::baby_bear_d4_width16();
     let airs_degrees = get_airs_and_degrees_with_prep::<_, _, 1>(
         &circuit,
         table_packing,
-        Some(&[NonPrimitiveConfig::Poseidon2(poseidon_config.clone())]),
+        Some(&[NonPrimitiveConfig::Poseidon2(poseidon2_config.clone())]),
     )?;
     let (airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
 
@@ -225,57 +226,51 @@ fn main() -> Result<(), Box<dyn Error>> {
     ])?;
 
     // Set private inputs for Row 1
-    // Row 1: mmcs_bit = 1 (Right Child). Chaining into 2-3.
-    // Private input (Sibling) goes to 0-1.
-    let mut row1_private_inputs = [Ext4::ZERO; 4];
-    row1_private_inputs[0] = sibling1_limb2; // Sibling at 0
-    row1_private_inputs[1] = sibling1_limb3; // Sibling at 1
-
+    // Row 1: mmcs_bit = 1 (Right Child). Previous digest chains from previous row.
+    // For Merkle mode, provide the sibling (2 limbs). Internal logic handles placement.
     runner.set_non_primitive_op_private_data(
         row1_op_id,
-        NonPrimitiveOpPrivateData::PoseidonPerm(PoseidonPermPrivateData {
-            input_values: row1_private_inputs.to_vec(),
+        NonPrimitiveOpPrivateData::Poseidon2Perm(Poseidon2PermPrivateData {
+            sibling: [sibling1_limb2, sibling1_limb3],
         }),
     )?;
 
     // Set private inputs for Row 2
-    // Row 2: mmcs_bit = 0 (Left Child). Chaining into 0-1.
-    // Private input (Sibling) goes to 2-3.
-    let mut row2_private_inputs = [Ext4::ZERO; 4];
-    row2_private_inputs[2] = sibling2_limb2; // Sibling at 2
-    row2_private_inputs[3] = sibling2_limb3; // Sibling at 3
-
+    // Row 2: mmcs_bit = 0 (Left Child). Previous digest chains from previous row.
+    // For Merkle mode, provide the sibling (2 limbs). Internal logic handles placement.
     runner.set_non_primitive_op_private_data(
         row2_op_id,
-        NonPrimitiveOpPrivateData::PoseidonPerm(PoseidonPermPrivateData {
-            input_values: row2_private_inputs.to_vec(),
+        NonPrimitiveOpPrivateData::Poseidon2Perm(Poseidon2PermPrivateData {
+            sibling: [sibling2_limb2, sibling2_limb3],
         }),
     )?;
 
     let traces = runner.run()?;
 
-    // Check Poseidon trace rows and mmcs_index_sum exposure
-    let poseidon_trace = traces
+    // Check Poseidon2 trace rows and mmcs_index_sum exposure
+    let poseidon2_trace = traces
         .non_primitive_trace::<p3_circuit::tables::Poseidon2Trace<Base>>("poseidon2")
         .expect("poseidon2 trace missing");
-    assert_eq!(poseidon_trace.total_rows(), 3, "expected three perm rows");
+    assert_eq!(poseidon2_trace.total_rows(), 3, "expected three perm rows");
 
     let stark_config = config::baby_bear().build();
     let common = CommonData::from_airs_and_degrees(&stark_config, &airs, &degrees);
 
     let mut prover = BatchStarkProver::new(stark_config).with_table_packing(table_packing);
-    prover.register_poseidon2_table(poseidon_config);
+    prover.register_poseidon2_table(poseidon2_config);
     let proof = prover.prove_all_tables(&traces, &common)?;
     prover.verify_all_tables(&proof, &common)?;
 
     Ok(())
 }
 
-fn flatten_ext_limbs(limbs: &[Ext4; 4]) -> [Base; WIDTH] {
-    let mut out = [Base::ZERO; WIDTH];
+fn flatten_ext_limbs<const N: usize, const M: usize>(limbs: &[Ext4; N]) -> [Base; M] {
+    let mut out = [Base::ZERO; M];
     for (i, limb) in limbs.iter().enumerate() {
         let coeffs = limb.as_basis_coefficients_slice();
-        out[i * LIMB_SIZE..(i + 1) * LIMB_SIZE].copy_from_slice(coeffs);
+        let start = i * LIMB_SIZE;
+        let end = (start + LIMB_SIZE).min(M);
+        out[start..end].copy_from_slice(&coeffs[0..(end - start)]);
     }
     out
 }

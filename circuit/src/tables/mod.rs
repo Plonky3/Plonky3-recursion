@@ -23,8 +23,8 @@ pub use add::AddTrace;
 pub use constant::ConstTrace;
 pub use mul::MulTrace;
 pub use poseidon2::{
-    Poseidon2CircuitRow, Poseidon2CircuitTrace, Poseidon2Params, Poseidon2Trace,
-    PoseidonPermPrivateData, generate_poseidon2_trace,
+    Poseidon2CircuitRow, Poseidon2CircuitTrace, Poseidon2Params, Poseidon2PermPrivateData,
+    Poseidon2Trace, generate_poseidon2_trace,
 };
 pub use public::PublicTrace;
 pub use runner::CircuitRunner;

@@ -126,7 +126,7 @@ impl<F: CircuitField> CircuitRunner<F> {
         match (executor.op_type(), &private_data) {
             (
                 crate::op::NonPrimitiveOpType::PoseidonPerm,
-                NonPrimitiveOpPrivateData::PoseidonPerm(_),
+                NonPrimitiveOpPrivateData::Poseidon2Perm(_),
             ) => {
                 // ok
             }
@@ -192,6 +192,9 @@ impl<F: CircuitField> CircuitRunner<F> {
         // Clone ops to avoid borrowing issues.
         let ops = self.circuit.ops.clone();
 
+        // Global chaining state for Poseidon2 permutation
+        let mut last_poseidon: Option<[F; 4]> = None;
+
         for op in ops {
             match op {
                 Op::Const { out, val } => {
@@ -239,6 +242,7 @@ impl<F: CircuitField> CircuitRunner<F> {
                         &self.non_primitive_op_private_data,
                         &self.circuit.enabled_ops,
                         op_id,
+                        &mut last_poseidon,
                     );
 
                     executor.execute(&inputs, &outputs, &mut ctx)?;
@@ -393,7 +397,8 @@ mod tests {
         let x_hint = XHint::new();
         let x = builder
             .push_unconstrained_op(vec![vec![c37, c111]], 1, x_hint, "x")
-            .1[0];
+            .2[0]
+            .unwrap();
 
         let mul_result = builder.mul(c37, x);
         let sub_result = builder.sub(mul_result, c111);
