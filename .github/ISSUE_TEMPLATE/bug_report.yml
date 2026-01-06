@@ -15,10 +15,19 @@ body:
       label: Labels
       description: Check any that apply (these will auto-apply labels).
       options:
-        - label: perf (performance regression / perf-sensitive fix; include benchmarks)
+        - label: perf
           required: false
-        - label: needs-rfc (unusually large/architectural bug fix; design-first)
+        - label: needs-rfc
           required: false
+
+  - type: input
+    id: rfc_link
+    attributes:
+      label: RFC link (required if needs-rfc is checked)
+      description: Link the RFC PR (preferred) or the merged RFC file path (docs/rfcs/NNNN-*.md).
+      placeholder: "e.g. https://github.com/Plonky3/Plonky3-recursion/pull/123"
+    validations:
+      required: false
 
   - type: textarea
     id: summary

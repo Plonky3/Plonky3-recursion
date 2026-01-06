@@ -19,9 +19,7 @@ jobs:
             const issue_number = context.payload.issue.number;
 
             // Always re-fetch the issue so labels/body are current
-            const { data: issue } = await github.rest.issues.get({
-              owner, repo, issue_number
-            });
+            const { data: issue } = await github.rest.issues.get({ owner, repo, issue_number });
 
             const labels = new Set((issue.labels || []).map(l => l.name));
             const body = issue.body || "";
@@ -31,8 +29,46 @@ jobs:
 
             const hasNeedsRfc = labels.has(NEEDS_RFC);
 
-            // RFC link detection: looks for an explicit "RFC link" under `docs/rfcs`
-            const hasRfcLink = /RFC link\s*\n\s*(https?:\/\/\S+|docs\/rfcs\/\S+)/i.test(body);
+            // RFC link detection:
+            // - Prefer the explicit Issue Form field "RFC link ..."
+            // - Accept either a PR/URL or a merged RFC path like docs/rfcs/0007-foo-bar.md
+            // - Also accept markdown links like [RFC PR](https://...)
+            const extractRfcLinkField = (text) => {
+              // Match the rendered heading from Issue Forms, then capture the first non-empty line after it.
+              // Example:
+              // ### RFC link (required if needs-rfc is checked)
+              // https://...
+              // or
+              // docs/rfcs/0007-...
+              const m = text.match(/^###\s*RFC link[^\n]*\n+([\s\S]*?)(?:\n###\s|\n#\s|$)/im);
+              if (!m) return "";
+              const block = m[1] || "";
+              const lines = block
+                .split("\n")
+                .map(l => l.trim())
+                .filter(l => l.length > 0);
+              return (lines[0] || "").trim();
+            };
+
+            const extractUrlFromMarkdown = (s) => {
+              const m = s.match(/\((https?:\/\/[^)]+)\)/i);
+              return m ? m[1].trim() : null;
+            };
+
+            const rfcRaw = extractRfcLinkField(body);
+
+            const rfcUrl =
+              rfcRaw.toLowerCase().startsWith("http")
+                ? rfcRaw
+                : (extractUrlFromMarkdown(rfcRaw) || "");
+
+            const isValidDocsPath = (s) =>
+              /^docs\/rfcs\/\d{4}-[a-z0-9-]+\.md$/i.test(s);
+
+            const isValidUrl = (s) =>
+              /^https?:\/\/\S+$/i.test(s);
+
+            const hasRfcLink = isValidUrl(rfcUrl) || isValidDocsPath(rfcRaw);
 
             // Avoid spamming: only comment once (marker in the comment body)
             const marker = "<!-- needs-rfc-checklist-v1 -->";
@@ -93,5 +129,4 @@ Edit the issue description and fill in the **RFC link** field so this can be unb
               return;
             }
 
-            // If no needs-rfc: remove blocked if it was only used for RFC gating (optional)
-            // Safer: do nothing here, because blocked might mean other things.
+            // If no needs-rfc: do nothing (blocked may mean other things).
