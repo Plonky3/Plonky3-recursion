@@ -185,6 +185,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Prove and verify the circuit.
     let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
     let common = CommonData::from_airs_and_degrees(&stark_config, &mut airs, &degrees);
+    assert!(
+        !common.lookups[5].is_empty(),
+        "Poseidon2 table should have lookups"
+    );
 
     let mut prover = BatchStarkProver::new(stark_config).with_table_packing(table_packing);
     prover.register_poseidon2_table(poseidon2_config);

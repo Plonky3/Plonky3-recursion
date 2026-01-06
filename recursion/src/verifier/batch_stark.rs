@@ -267,6 +267,34 @@ where
 
     let all_lookups = &common.lookups;
 
+    // Check that the global lookup data is consistent with the lookups.
+    all_lookups
+        .iter()
+        .zip(global_lookup_data)
+        .try_for_each(|(lookups, global_lookups)| {
+            let mut counter = 0;
+            lookups.iter().try_for_each(|lookup| match &lookup.kind {
+                Kind::Global(name) => {
+                    if global_lookups[counter].name != *name {
+                        Err(VerificationError::InvalidProofShape(
+                            "Global lookups are inconsistent with lookups".to_string(),
+                        ))
+                    } else {
+                        counter += 1;
+                        Ok(())
+                    }
+                }
+                Kind::Local => Ok(()),
+            })?;
+            if counter != global_lookups.len() {
+                Err(VerificationError::InvalidProofShape(
+                    "Global lookups are inconsistent with lookups".to_string(),
+                ))
+            } else {
+                Ok(())
+            }
+        })?;
+
     let pcs = config.pcs();
 
     if commitments_targets.random_commit.is_some() {

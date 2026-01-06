@@ -257,6 +257,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     assert_eq!(poseidon2_trace.total_rows(), 3, "expected three perm rows");
 
     let common = CommonData::from_airs_and_degrees(&stark_config, &mut airs, &degrees);
+    assert!(
+        !common.lookups[5].is_empty(),
+        "Poseidon2 table should have lookups"
+    );
 
     let mut prover = BatchStarkProver::new(stark_config).with_table_packing(table_packing);
     prover.register_poseidon2_table(poseidon2_config);
