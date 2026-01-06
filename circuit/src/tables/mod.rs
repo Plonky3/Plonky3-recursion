@@ -9,7 +9,7 @@ use hashbrown::HashMap;
 
 use crate::CircuitError;
 use crate::circuit::Circuit;
-use crate::op::{NonPrimitiveOpPrivateData, OpStateMap};
+use crate::op::{NonPrimitiveOpPrivateData, NonPrimitiveOpType, OpStateMap};
 
 mod add;
 mod constant;
@@ -27,8 +27,8 @@ pub use witness::WitnessTrace;
 
 /// Trait implemented by all non-primitive operation traces.
 pub trait NonPrimitiveTrace<F>: Send + Sync {
-    /// Identifier of the non-primitive table.
-    fn id(&self) -> &'static str;
+    /// Operation type for this non-primitive trace.
+    fn op_type(&self) -> NonPrimitiveOpType;
     /// Number of rows produced by this trace.
     fn rows(&self) -> usize;
     /// Type-erased access for downcasting.
@@ -66,18 +66,18 @@ pub struct Traces<F> {
     pub add_trace: AddTrace<F>,
     /// Multiplication operation table.
     pub mul_trace: MulTrace<F>,
-    /// Dynamically registered non-primitive traces indexed by their table identifier.
-    pub non_primitive_traces: HashMap<&'static str, Box<dyn NonPrimitiveTrace<F>>>,
+    /// Dynamically registered non-primitive traces indexed by operation type.
+    pub non_primitive_traces: HashMap<NonPrimitiveOpType, Box<dyn NonPrimitiveTrace<F>>>,
 }
 
 impl<F> Traces<F> {
     /// Fetch a non-primitive trace by identifier and downcast to a concrete type.
-    pub fn non_primitive_trace<T>(&self, id: &'static str) -> Option<&T>
+    pub fn non_primitive_trace<T>(&self, op_type: NonPrimitiveOpType) -> Option<&T>
     where
         T: NonPrimitiveTrace<F> + 'static,
     {
         self.non_primitive_traces
-            .get(id)
+            .get(&op_type)
             .and_then(|trace| trace.as_any().downcast_ref::<T>())
     }
 }
@@ -93,7 +93,7 @@ impl<F: Clone> Clone for Traces<F> {
             non_primitive_traces: self
                 .non_primitive_traces
                 .iter()
-                .map(|(&id, trace)| (id, trace.boxed_clone()))
+                .map(|(&op_type, trace)| (op_type, trace.boxed_clone()))
                 .collect(),
         }
     }
@@ -111,7 +111,7 @@ where
         let extra_summary: Vec<_> = self
             .non_primitive_traces
             .iter()
-            .map(|(&id, trace)| (id, trace.rows()))
+            .map(|(&op_type, trace)| (op_type, trace.rows()))
             .collect();
         f.debug_struct("Traces")
             .field("witness_trace", &self.witness_trace)

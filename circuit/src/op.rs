@@ -214,15 +214,18 @@ impl<F: Field + PartialEq> PartialEq for Op<F> {
     }
 }
 
-/// Non-primitive operation types
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Ord, PartialOrd)]
+/// Non-primitive operation types.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
 pub enum NonPrimitiveOpType {
     /// Poseidon2 permutation operation (one Poseidon2 call / table row).
-    Poseidon2Perm,
+    Poseidon2Perm(Poseidon2Config),
 }
 
 // Re-export Poseidon2 config types from their canonical location
-pub use crate::ops::poseidon2_perm::{Poseidon2PermConfig, Poseidon2PermExec};
+pub use crate::ops::poseidon2_perm::{Poseidon2Config, Poseidon2PermConfig, Poseidon2PermExec};
+
+/// Preprocessed data for non-primitive tables, keyed by operation type.
+pub type NonPrimitivePreprocessedMap<F> = HashMap<NonPrimitiveOpType, Vec<F>>;
 
 /// Non-primitive operation configuration.
 ///
@@ -399,11 +402,9 @@ impl<'a, F: Field> ExecutionContext<'a, F> {
         &self,
         op_type: &NonPrimitiveOpType,
     ) -> Result<&NonPrimitiveOpConfig<F>, CircuitError> {
-        self.enabled_ops.get(op_type).ok_or_else(|| {
-            CircuitError::InvalidNonPrimitiveOpConfiguration {
-                op: op_type.clone(),
-            }
-        })
+        self.enabled_ops
+            .get(op_type)
+            .ok_or(CircuitError::InvalidNonPrimitiveOpConfiguration { op: *op_type })
     }
 
     /// Get the current operation ID
@@ -432,8 +433,7 @@ impl<'a, F: Field> ExecutionContext<'a, F> {
     ) -> &mut T {
         // Entry API with type-erased storage
         if !self.op_states.contains_key(op_type) {
-            self.op_states
-                .insert(op_type.clone(), Box::new(T::default()));
+            self.op_states.insert(*op_type, Box::new(T::default()));
         }
         self.op_states
             .get_mut(op_type)
@@ -473,7 +473,8 @@ pub trait NonPrimitiveExecutor<F: Field>: Debug {
         &self,
         _inputs: &[Vec<WitnessId>],
         _outputs: &[Vec<WitnessId>],
-        _preprocessed_tables: &mut Vec<Vec<F>>,
+        _primitive_preprocessed: &mut Vec<Vec<F>>,
+        _non_primitive_preprocessed: &mut NonPrimitivePreprocessedMap<F>,
     ) {
     }
 
@@ -952,8 +953,8 @@ mod tests {
     fn test_execution_context_get_config() {
         // Create a configuration map for operation parameters
         let mut configs = HashMap::new();
-        let op_type = NonPrimitiveOpType::Poseidon2Perm;
-        configs.insert(op_type.clone(), NonPrimitiveOpConfig::None);
+        let op_type = NonPrimitiveOpType::Poseidon2Perm(Poseidon2Config::BabyBearD4Width16);
+        configs.insert(op_type, NonPrimitiveOpConfig::None);
 
         // Create execution context with configurations
         let mut witness = vec![];
@@ -984,7 +985,7 @@ mod tests {
             ExecutionContext::new(&mut witness, &private_data, &configs, op_id, &mut op_states);
 
         // Attempt to access a configuration that wasn't registered
-        let op_type = NonPrimitiveOpType::Poseidon2Perm;
+        let op_type = NonPrimitiveOpType::Poseidon2Perm(Poseidon2Config::BabyBearD4Width16);
         let result = ctx.get_config(&op_type);
 
         // Missing configurations indicate setup errors
@@ -1065,12 +1066,16 @@ mod tests {
 
         // Initially, no state should be present
         assert!(
-            ctx.get_op_state::<TestOpState>(&NonPrimitiveOpType::Poseidon2Perm)
-                .is_none()
+            ctx.get_op_state::<TestOpState>(&NonPrimitiveOpType::Poseidon2Perm(
+                Poseidon2Config::BabyBearD4Width16,
+            ))
+            .is_none()
         );
 
         // Get or create state (should create default)
-        let state = ctx.get_op_state_mut::<TestOpState>(&NonPrimitiveOpType::Poseidon2Perm);
+        let state = ctx.get_op_state_mut::<TestOpState>(&NonPrimitiveOpType::Poseidon2Perm(
+            Poseidon2Config::BabyBearD4Width16,
+        ));
         assert!(state.value.is_none());
 
         // Modify the state
@@ -1078,7 +1083,9 @@ mod tests {
 
         // Verify the state was stored and can be retrieved
         let state_ref = ctx
-            .get_op_state::<TestOpState>(&NonPrimitiveOpType::Poseidon2Perm)
+            .get_op_state::<TestOpState>(&NonPrimitiveOpType::Poseidon2Perm(
+                Poseidon2Config::BabyBearD4Width16,
+            ))
             .unwrap();
         assert_eq!(state_ref.value, Some(42));
     }

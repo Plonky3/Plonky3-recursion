@@ -15,7 +15,7 @@ use super::public::PublicTraceBuilder;
 use super::witness::WitnessTraceBuilder;
 use super::{NonPrimitiveTrace, Traces};
 use crate::circuit::Circuit;
-use crate::op::{ExecutionContext, NonPrimitiveOpPrivateData, Op, OpStateMap};
+use crate::op::{ExecutionContext, NonPrimitiveOpPrivateData, NonPrimitiveOpType, Op, OpStateMap};
 use crate::types::{NonPrimitiveOpId, WitnessId};
 use crate::{CircuitError, CircuitField};
 
@@ -131,7 +131,7 @@ impl<F: CircuitField> CircuitRunner<F> {
         };
         match (executor.op_type(), &private_data) {
             (
-                crate::op::NonPrimitiveOpType::Poseidon2Perm,
+                crate::op::NonPrimitiveOpType::Poseidon2Perm(_),
                 NonPrimitiveOpPrivateData::Poseidon2Perm(_),
             ) => {
                 // ok
@@ -141,7 +141,7 @@ impl<F: CircuitField> CircuitRunner<F> {
         // Disallow double-setting private data
         if self.non_primitive_op_private_data[op_id.0 as usize].is_some() {
             return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
-                op: executor.op_type().clone(),
+                op: *executor.op_type(),
                 operation_index: op_id,
                 expected: "private data not previously set".to_string(),
                 got: "already set".to_string(),
@@ -165,7 +165,7 @@ impl<F: CircuitField> CircuitRunner<F> {
         let add_trace = AddTraceBuilder::new(&self.circuit.ops, &self.witness).build()?;
         let mul_trace = MulTraceBuilder::new(&self.circuit.ops, &self.witness).build()?;
 
-        let mut non_primitive_traces: HashMap<&'static str, Box<dyn NonPrimitiveTrace<F>>> =
+        let mut non_primitive_traces: HashMap<NonPrimitiveOpType, Box<dyn NonPrimitiveTrace<F>>> =
             HashMap::new();
         // Iterate over generators in deterministic order (sorted by key)
         let mut op_types: Vec<_> = self.circuit.non_primitive_trace_generators.keys().collect();
@@ -178,8 +178,8 @@ impl<F: CircuitField> CircuitRunner<F> {
                 &self.non_primitive_op_private_data,
                 &self.op_states,
             )? {
-                let id = trace.id();
-                non_primitive_traces.insert(id, trace);
+                let trace_op_type = trace.op_type();
+                non_primitive_traces.insert(trace_op_type, trace);
             }
         }
 

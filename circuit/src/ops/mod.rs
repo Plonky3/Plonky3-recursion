@@ -5,6 +5,7 @@ pub(crate) use poseidon2_perm::Poseidon2PermExecutor;
 pub use poseidon2_perm::{
     // Prover/AIR (trace access)
     Poseidon2CircuitRow,
+    Poseidon2Config,
     Poseidon2Params,
     // Builder API
     Poseidon2PermCall,

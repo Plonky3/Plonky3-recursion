@@ -146,11 +146,13 @@ where
         });
 
         self.config.enable_op(
-            NonPrimitiveOpType::Poseidon2Perm,
+            NonPrimitiveOpType::Poseidon2Perm(Config::CONFIG),
             crate::op::NonPrimitiveOpConfig::Poseidon2Perm(Poseidon2PermConfig { exec }),
         );
-        self.non_primitive_trace_generators
-            .insert(NonPrimitiveOpType::Poseidon2Perm, trace_generator);
+        self.non_primitive_trace_generators.insert(
+            NonPrimitiveOpType::Poseidon2Perm(Config::CONFIG),
+            trace_generator,
+        );
     }
 
     /// Checks whether an op type is enabled on this builder.
@@ -425,12 +427,9 @@ where
         let op_id = NonPrimitiveOpId(self.non_primitive_ops.len() as u32);
 
         let flattened_inputs: Vec<ExprId> = input_exprs.iter().flatten().copied().collect();
-        let call_expr_id = self.expr_builder.add_non_primitive_call(
-            op_id,
-            op_type.clone(),
-            flattened_inputs,
-            label,
-        );
+        let call_expr_id =
+            self.expr_builder
+                .add_non_primitive_call(op_id, op_type, flattened_inputs, label);
 
         let mut output_exprs: Vec<Vec<ExprId>> = vec![Vec::new(); output_labels.len()];
         let mut outputs: Vec<Option<ExprId>> = vec![None; output_labels.len()];
@@ -512,7 +511,7 @@ where
     ) -> Result<(Circuit<F>, HashMap<ExprId, WitnessId>), CircuitBuilderError> {
         // Stage 1: Lower expressions and non-primitives into a single op list
         for data in &self.non_primitive_ops {
-            self.ensure_op_enabled(data.op_type.clone())?;
+            self.ensure_op_enabled(data.op_type)?;
         }
         let lowerer = ExpressionLowerer::new(
             self.expr_builder.graph(),
@@ -969,13 +968,14 @@ mod tests {
 
     #[test]
     fn test_non_primitive_outputs_ordering_and_dedup() {
+        use crate::op::Poseidon2Config;
         use crate::ops::{Poseidon2PermCall, Poseidon2PermOps};
 
         type Ext4 = BinomialExtensionField<BabyBear, 4>;
 
         let mut builder = CircuitBuilder::<Ext4>::new();
         builder.enable_op(
-            NonPrimitiveOpType::Poseidon2Perm,
+            NonPrimitiveOpType::Poseidon2Perm(Poseidon2Config::BabyBearD4Width16),
             NonPrimitiveOpConfig::None,
         );
 
@@ -983,6 +983,7 @@ mod tests {
         let z = builder.add_const(Ext4::ZERO);
         let (op_id, outputs) = builder
             .add_poseidon2_perm(Poseidon2PermCall {
+                config: Poseidon2Config::BabyBearD4Width16,
                 new_start: true,
                 merkle_path: false,
                 mmcs_bit: None, // Must be None when merkle_path=false

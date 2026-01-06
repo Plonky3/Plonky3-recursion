@@ -126,12 +126,10 @@ where
         }
 
         match &data.op_type {
-            NonPrimitiveOpType::Poseidon2Perm => {
-                let (new_start, merkle_path) = match data.params.as_ref().ok_or_else(|| {
-                    CircuitBuilderError::InvalidNonPrimitiveOpConfiguration {
-                        op: data.op_type.clone(),
-                    }
-                })? {
+            NonPrimitiveOpType::Poseidon2Perm(_) => {
+                let (new_start, merkle_path) = match data.params.as_ref().ok_or(
+                    CircuitBuilderError::InvalidNonPrimitiveOpConfiguration { op: data.op_type },
+                )? {
                     NonPrimitiveOpParams::Poseidon2Perm {
                         new_start,
                         merkle_path,
@@ -240,7 +238,11 @@ where
                 ops.push(Op::NonPrimitiveOpWithExecutor {
                     inputs: inputs_widx,
                     outputs: poseidon2_outputs,
-                    executor: Box::new(Poseidon2PermExecutor::new(new_start, merkle_path)),
+                    executor: Box::new(Poseidon2PermExecutor::new(
+                        data.op_type,
+                        new_start,
+                        merkle_path,
+                    )),
                     op_id: data.op_id,
                 });
             }
