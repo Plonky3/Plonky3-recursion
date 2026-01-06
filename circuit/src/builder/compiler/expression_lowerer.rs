@@ -126,7 +126,7 @@ where
                         op: data.op_type.clone(),
                     }
                 })? {
-                    NonPrimitiveOpParams::PoseidonPerm {
+                    NonPrimitiveOpParams::Poseidon2Perm {
                         new_start,
                         merkle_path,
                     } => (*new_start, *merkle_path),

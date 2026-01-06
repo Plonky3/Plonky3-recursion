@@ -134,7 +134,7 @@ where
                 output_0.then_some("poseidon2_perm_out0"),
                 output_1.then_some("poseidon2_perm_out1"),
             ],
-            Some(NonPrimitiveOpParams::PoseidonPerm {
+            Some(NonPrimitiveOpParams::Poseidon2Perm {
                 new_start: call.new_start,
                 merkle_path: call.merkle_path,
             }),

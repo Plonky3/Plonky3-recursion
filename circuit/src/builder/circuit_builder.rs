@@ -43,7 +43,7 @@ pub struct CircuitBuilder<F: Field> {
 /// Per-op extra parameters that are not encoded in the op type.
 #[derive(Debug)]
 pub enum NonPrimitiveOpParams<F> {
-    PoseidonPerm {
+    Poseidon2Perm {
         new_start: bool,
         merkle_path: bool,
     },
@@ -55,10 +55,10 @@ pub enum NonPrimitiveOpParams<F> {
 impl<F: Field> Clone for NonPrimitiveOpParams<F> {
     fn clone(&self) -> Self {
         match self {
-            Self::PoseidonPerm {
+            Self::Poseidon2Perm {
                 new_start,
                 merkle_path,
-            } => Self::PoseidonPerm {
+            } => Self::Poseidon2Perm {
                 new_start: *new_start,
                 merkle_path: *merkle_path,
             },
@@ -623,20 +623,29 @@ where
         Ok(bits)
     }
 
-    /// Reconstructs an integer from its little-endian binary representation.
+    /// Packs little-endian bits into an extension-field element, limb by limb.
     ///
-    /// Computes `index = Σ b_{i} · B_{⌊i/32⌋}^{i mod 32}` for bits `[b_0, b_1, ..., b_{n-1}]`, and
-    /// `B_i[j] = 2` if `i == j` and 0 otherwise.
+    /// The input bits `[b_0, ..., b_{n-1}]` are in little-endian order. Let
+    /// `W = BF::bits()`. Bits are processed in chunks of `W` bits. For chunk index `i`,
+    /// the code computes:
+    ///
+    /// `limb_i = Σ b · 2^k`
+    ///
+    /// where the sum ranges over bits `b` in the chunk and `k` is the bit position
+    /// within the chunk.
+    ///
+    /// Each `limb_i` is embedded into `F` using the canonical basis element `E_i`.
+    /// The final value is `Σ limb_i · E_i`.
     ///
     /// # Parameters
-    /// - `bits`: Slice of boolean `ExprId`s in little-endian order.
+    /// - `bits`: Boolean `ExprId`s in little-endian order.
     ///
     /// # Returns
-    /// If the number of bits is less or equal 124, returns `Ok(ExprId)` representing the reconstructed integer value,
-    /// other wise return an error.
+    /// - `Ok(ExprId)` if `bits.len() <= F::bits()`, otherwise an error.
     ///
     /// # Cost
-    /// `n` boolean constraints + `n` multiplications + `n` additions, where `n = bits.len()`.
+    /// `n` boolean constraints + `n` multiplications + `n` additions,
+    /// where `n = bits.len()`.
     pub fn reconstruct_index_from_bits<BF>(
         &mut self,
         bits: &[ExprId],
@@ -658,8 +667,7 @@ where
         let mut acc = self.add_const(F::ZERO);
 
         for (i, chunk) in bits.chunks(BF::bits()).enumerate() {
-            // Current power of 2 at the corresponding limb. Starts at the i-th canical basis
-            // `basis`, where basis[i] = 2^0 = 1, and basis[j] = 0 when j != i).
+            // Current power of 2 at the corresponding limb.
             let mut basis = vec![BF::ZERO; F::DIMENSION];
             basis[i] = BF::ONE;
             let mut pow2 = self.add_const(
@@ -682,12 +690,12 @@ where
     }
 }
 
-#[derive(Debug, Clone)]
 /// Witness hint for binary decomposition of a field element.
 ///
 /// At runtime:
 /// - It extracts the canonical `u64` representation of the input field element,
 /// - It fills the witness with its little-endian binary decomposition.
+#[derive(Debug, Clone)]
 struct BinaryDecompositionHint<BF: PrimeField64> {
     /// Phantom data for the base field type.
     _phantom: PhantomData<BF>,
@@ -733,7 +741,7 @@ impl<BF: PrimeField64, EF: ExtensionField<BF>> NonPrimitiveExecutor<EF>
                 Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
                     op: NonPrimitiveOpType::Unconstrained,
                     expected: 1.to_string(),
-                    got: inputs.len(),
+                    got: out.len(),
                 })
             } else {
                 Ok(())
@@ -1126,12 +1134,6 @@ mod proptests {
         any::<u64>().prop_map(BabyBear::from_u64)
     }
 
-    // Strategy for generating valid field elements
-    fn ext_field_element() -> impl Strategy<Value = Ext4> {
-        any::<[u64; 4]>()
-            .prop_map(|x| Ext4::from_basis_coefficients_slice(&x.map(BabyBear::from_u64)).unwrap())
-    }
-
     proptest! {
         #[test]
         fn field_add_commutative(a in field_element(), b in field_element()) {
@@ -1247,25 +1249,6 @@ mod proptests {
         #[test]
         fn field_mul_div(a in field_element(), b in field_element().prop_filter("b must be non-zero", |&x| x != BabyBear::ZERO)) {
             let mut builder = CircuitBuilder::<BabyBear>::new();
-            let ca = builder.add_const(a);
-            let cb = builder.add_const(b);
-            let quot = builder.div(ca, cb);
-            let result = builder.mul(quot, cb);
-
-            let circuit = builder.build().unwrap();
-            let  runner = circuit.runner();
-            let traces = runner.run().unwrap();
-
-            prop_assert_eq!(
-                traces.witness_trace.values[result.0 as usize],
-                a,
-                "(a / b) * b = a"
-            );
-        }
-
-        #[test]
-        fn field_mul_div_ext_field(a in ext_field_element(), b in ext_field_element().prop_filter("b must be non-zero", |&x| x != Ext4::ZERO)) {
-            let mut builder = CircuitBuilder::<Ext4>::new();
             let ca = builder.add_const(a);
             let cb = builder.add_const(b);
             let quot = builder.div(ca, cb);

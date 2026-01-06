@@ -198,7 +198,7 @@ impl<F: Field + PartialEq> PartialEq for Op<F> {
 /// Non-primitive operation types
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum NonPrimitiveOpType {
-    /// Poseidon permutation operation (one Poseidon call / table row).
+    /// Poseidon2 permutation operation (one Poseidon2 call / table row).
     Poseidon2Perm,
     /// Unconstrained operation, used to set outputs to non-deterministic advices.
     Unconstrained,
