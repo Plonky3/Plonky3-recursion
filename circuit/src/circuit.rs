@@ -315,8 +315,8 @@ mod tests {
         );
 
         // We should have the following multiplicities in the Witness table, for indices 0 to 10:
-        // 2, 2, 3, 2, 2, 1, 0, 0, 0, 0, 0
-        let mut expected_multiplicities = vec![
+        // 2, 2, 3, 2, 2, 1
+        let expected_multiplicities = vec![
             F::from_u16(2),
             F::from_u16(2),
             F::from_u16(3),
@@ -324,7 +324,6 @@ mod tests {
             F::from_u16(2),
             F::from_u16(1),
         ];
-        expected_multiplicities.extend(vec![F::ZERO; 5]); // Indices
         assert_eq!(
             result[PrimitiveOpType::Witness as usize],
             expected_multiplicities

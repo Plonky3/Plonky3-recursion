@@ -413,7 +413,6 @@ where
                     .add_non_primitive_output(call_expr_id, i as u32, label)
             })
             .collect();
-        println!("outputs = {:?}", outputs);
         (op_id, outputs)
     }
 
@@ -561,21 +560,19 @@ where
         BF: PrimeField64,
     {
         self.push_scope("decompose_to_bits");
-
         // Create bit witness variables
         let binary_decomposition_hint = BinaryDecompositionHint::new();
         let (_, mut bits) = self.push_unconstrained_op(
             vec![vec![x]],
             // We need all the bits so that we can reconstruct the F element.
-            size_of::<F>() * 8,
+            F::bits(),
             binary_decomposition_hint,
             "decompose_to_bits",
         );
 
         // Constrain that the bits reconstruct to the original value.
-        let reconstructed = self.reconstruct_index_from_bits(&bits);
-        println!("reconstructed = {:?}", reconstructed);
-        // self.connect(x, reconstructed);
+        let reconstructed = self.reconstruct_index_from_bits(&bits)?;
+        self.connect(x, reconstructed);
 
         // Return only `n_bits` bits.
         let _ = bits.split_off(n_bits);
@@ -585,37 +582,60 @@ where
 
     /// Reconstructs an integer from its little-endian binary representation.
     ///
-    /// Computes `index = Σ b_i · 2^i` for bits `[b_0, b_1, ..., b_{n-1}]`.
+    /// Computes `index = Σ b_{i} · B_{⌊i/32⌋}^{i mod 32}` for bits `[b_0, b_1, ..., b_{n-1}]`, and
+    /// `B_i[j] = 2` if `i == j` and 0 otherwise.
     ///
     /// # Parameters
     /// - `bits`: Slice of boolean `ExprId`s in little-endian order.
     ///
     /// # Returns
-    /// An `ExprId` representing the reconstructed integer value.
+    /// If the number of bits is less or equal 124, returns `Ok(ExprId)` representing the reconstructed integer value,
+    /// other wise return an error.
     ///
     /// # Cost
     /// `n` boolean constraints + `n` multiplications + `n` additions, where `n = bits.len()`.
-    pub fn reconstruct_index_from_bits(&mut self, bits: &[ExprId]) -> ExprId {
+    pub fn reconstruct_index_from_bits<BF>(
+        &mut self,
+        bits: &[ExprId],
+    ) -> Result<ExprId, CircuitBuilderError>
+    where
+        F: ExtensionField<BF>,
+        BF: Field,
+    {
         self.push_scope("reconstruct_index_from_bits");
+
+        if bits.len() > F::bits() {
+            return Err(CircuitBuilderError::BinaryDecompositionTooManyBits {
+                expected: F::bits(),
+                n_bits: bits.len(),
+            });
+        }
 
         // Accumulator for the running sum.
         let mut acc = self.add_const(F::ZERO);
-        // Current power of 2 (starts at 2^0 = 1).
-        let mut pow2 = self.add_const(F::ONE);
 
-        for &b in bits {
-            println!("bits len = {:?}", bits.len());
-            // Ensure each bit is boolean.
-            self.assert_bool(b);
-            // Add b_i · 2^i to the accumulator.
-            let term = self.mul(b, pow2);
-            acc = self.add(acc, term);
-            // Double the power: 2^i → 2^{i+1}.
-            pow2 = self.add(pow2, pow2);
+        for (i, chunk) in bits.chunks(BF::bits()).enumerate() {
+            // Current power of 2 at the corresponding limb. Starts at the i-th canical basis
+            // `basis`, where basis[i] = 2^0 = 1, and basis[j] = 0 when j != i).
+            let mut basis = vec![BF::ZERO; F::DIMENSION];
+            basis[i] = BF::ONE;
+            let mut pow2 = self.add_const(
+                F::from_basis_coefficients_slice(&basis)
+                    .expect("`basis` is of size `F::DIMENSION`"),
+            );
+            for &b in chunk {
+                // Ensure each bit is boolean.
+                self.assert_bool(b);
+                // Add b_i · 2^i to the accumulator (at the corresponding limb).
+                let term = self.mul(b, pow2);
+                acc = self.add(acc, term);
+                // Double the power: 2^i → 2^{i+1}.
+                pow2 = self.add(pow2, pow2);
+            }
         }
 
         self.pop_scope();
-        acc
+        Ok(acc)
     }
 }
 
@@ -639,14 +659,14 @@ impl<BF: PrimeField64> BinaryDecompositionHint<BF> {
     }
 }
 
-impl<BF: PrimeField64, F: ExtensionField<BF>> NonPrimitiveExecutor<F>
+impl<BF: PrimeField64, EF: ExtensionField<BF>> NonPrimitiveExecutor<EF>
     for BinaryDecompositionHint<BF>
 {
     fn execute(
         &self,
         inputs: &[Vec<crate::WitnessId>],
         outputs: &[Vec<crate::WitnessId>],
-        ctx: &mut crate::op::ExecutionContext<'_, F>,
+        ctx: &mut crate::op::ExecutionContext<'_, EF>,
     ) -> Result<(), CircuitError> {
         if inputs.len() != 1 || inputs[0].len() != 1 {
             return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
@@ -656,12 +676,12 @@ impl<BF: PrimeField64, F: ExtensionField<BF>> NonPrimitiveExecutor<F>
             });
         }
 
-        let felt_bits = size_of::<BF>() * 8;
+        let felt_bits = BF::bits();
 
-        if outputs.len() > felt_bits * F::DIMENSION {
+        if outputs.len() > felt_bits * EF::DIMENSION {
             return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
                 op: NonPrimitiveOpType::Unconstrained,
-                expected: format!("<= {}", felt_bits * F::DIMENSION),
+                expected: format!("<= {}", felt_bits * EF::DIMENSION),
                 got: outputs.len(),
             });
         }
@@ -683,7 +703,7 @@ impl<BF: PrimeField64, F: ExtensionField<BF>> NonPrimitiveExecutor<F>
             .as_basis_coefficients_slice()
             .iter()
             .map(BF::as_canonical_u64)
-            .flat_map(|val| (0..felt_bits).map(move |i| F::from_bool(val >> i & 1 == 1)))
+            .flat_map(|val| (0..felt_bits).map(move |i| EF::from_bool(val >> i & 1 == 1)))
             .take(outputs.len());
 
         for (out, bit) in outputs.iter().zip(bits) {
@@ -700,7 +720,7 @@ impl<BF: PrimeField64, F: ExtensionField<BF>> NonPrimitiveExecutor<F>
         self
     }
 
-    fn boxed(&self) -> alloc::boxed::Box<dyn NonPrimitiveExecutor<F>> {
+    fn boxed(&self) -> alloc::boxed::Box<dyn NonPrimitiveExecutor<EF>> {
         Box::new(self.clone())
     }
 }
@@ -1046,8 +1066,9 @@ mod tests {
 #[cfg(test)]
 mod proptests {
     use alloc::vec;
-    use std::array;
+    use core::array;
 
+    use itertools::Itertools;
     use p3_baby_bear::BabyBear;
     use p3_field::extension::BinomialExtensionField;
     use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
@@ -1209,7 +1230,6 @@ mod proptests {
             let  runner = circuit.runner();
             let traces = runner.run().unwrap();
 
-            println!("a = {:?}, b = {:?}", a, b);
             prop_assert_eq!(
                 traces.witness_trace.values[result.0 as usize],
                 a,
@@ -1500,7 +1520,7 @@ mod proptests {
         let bit2 = builder.add_const(BabyBear::ONE); // 1
 
         let bits = vec![bit0, bit1, bit2];
-        let result = builder.reconstruct_index_from_bits(&bits);
+        let result = builder.reconstruct_index_from_bits(&bits).unwrap();
 
         // Connect result to a public input so we can verify its value
         let output = builder.add_public_input();
@@ -1529,9 +1549,11 @@ mod proptests {
         let mut builder = CircuitBuilder::<Ext4>::new();
 
         // Test reconstructing the value 5 (binary: 101)
-        let bits: [_; 128] = array::from_fn(|i| builder.add_const(Ext4::from_usize(i % 2)));
+        let bits: [_; 124] = array::from_fn(|i| builder.add_const(Ext4::from_usize(i % 2)));
 
-        let result = builder.reconstruct_index_from_bits(&bits);
+        let result = builder
+            .reconstruct_index_from_bits::<BabyBear>(&bits)
+            .unwrap();
 
         // Connect result to a public input so we can verify its value
         let output = builder.add_public_input();
@@ -1542,8 +1564,22 @@ mod proptests {
         let mut runner = circuit.runner();
 
         // Set public inputs: compute the expected result
-        let expected_result = (0u64..128u64)
-            .map(|i| Ext4::from_u8((i % 2) as u8) * Ext4::TWO.exp_u64(i))
+        let expected_result = (0..Ext4::bits() as u64)
+            .chunks(BabyBear::bits())
+            .into_iter()
+            .enumerate()
+            .map(|(chunk_idx, chunk)| {
+                chunk
+                    .into_iter()
+                    .map(|i| {
+                        let mut pow2 =
+                            [BabyBear::ZERO; <Ext4 as BasedVectorSpace<BabyBear>>::DIMENSION];
+                        pow2[chunk_idx] = BabyBear::TWO.exp_u64(i % BabyBear::bits() as u64);
+                        let power = Ext4::from_basis_coefficients_slice(&pow2).unwrap();
+                        Ext4::from_u8((i % 2) as u8) * power
+                    })
+                    .sum()
+            })
             .sum();
 
         runner
@@ -1554,7 +1590,6 @@ mod proptests {
 
         // Just verify the calculation is correct - reconstruct gives us 5
         assert_eq!(traces.public_trace.values[0], expected_result);
-        println!("{:?}, {:?}", traces.public_trace.values[0], expected_result);
     }
 
     #[test]
@@ -1586,21 +1621,12 @@ mod proptests {
         // Create a target representing the value we want to decompose
         let value = builder.add_const(
             Ext4::from_basis_coefficients_slice(&[
-                BabyBear::from_u32(6),          // Binary: 01100000 00000000 00000000 00000000
+                BabyBear::from_u32(0x40000006), // Binary: 01100000 00000000 00000000 00000001
                 BabyBear::from_u32(0x55555555), // Binary: 10101010 10101010 10101010 10101010
                 BabyBear::from_u32(0x02000000), // Binary: 00000000 00000000 00000000 01000000
-                BabyBear::ZERO,                 // Binary:  00000000 00000000 00000000 00000000
+                BabyBear::ZERO,                 // Binary: 00000000 00000000 00000000 00000000
             ])
             .unwrap(),
-        );
-        println!(
-            "val = {:?}",
-            Ext4::from_basis_coefficients_slice(&[
-                BabyBear::from_u32(6),          // Binary: 01100000 00000000 00000000 00000000
-                BabyBear::from_u32(0x55555555), // Binary: 10101010 10101010 10101010 10101010
-                BabyBear::from_u32(0x02000000), // Binary: 00000000 00000000 00000000 01000000
-                BabyBear::ZERO,                 // Binary:  00000000 00000000 00000000 00000000
-            ])
         );
 
         // Decompose into 3 bits - this creates its own public inputs for the bits
@@ -1611,53 +1637,45 @@ mod proptests {
         let runner = circuit.runner();
         let traces = runner.run().expect("Failed to run circuit");
 
-        // Verify the bits are correctly decomposed - 6 = [0,1,1] in little-endian
-        let six_bin = [
+        // Verify the bits are correctly decomposed
+        // Expected first limb binary decompostion
+        let hex_0x40000006_bin = [
             0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0,
+            0, 1,
         ]
         .map(Ext4::from_u8);
+        // Expected second limb binary decompostion
         let hex_0x55555555_bin = [
             1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1,
-            0, 1, 0,
+            0, 1,
         ]
         .map(Ext4::from_u8);
+        // Expected third limb binary decompostion
         let hex_0x02000000_bin = [
             0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0,
-            0, 0, 0,
+            0, 0,
         ]
         .map(Ext4::from_u8);
+        // Expected fourth limb binary decompostion
         let zero_bin = [
             0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0,
+            0, 0,
         ]
         .map(Ext4::from_u8);
-        let reconstructed = six_bin
-            .iter()
-            .chain(hex_0x55555555_bin.iter())
-            .chain(hex_0x02000000_bin.iter())
-            .chain(zero_bin.iter())
-            .enumerate()
-            .map(|(i, &bit)| bit * Ext4::TWO.exp_u64(i as u64));
-        let mut acc = Ext4::ZERO;
-        println!("2 = {:?}, 2^96 = {:?}", Ext4::TWO, Ext4::TWO.exp_u64(96));
-        for (i, summand) in reconstructed.enumerate() {
-            println!("step {i} acc = {:?}", acc);
-            acc += summand;
-        }
-        println!("acc = {:?}", acc);
-        assert_eq!(traces.witness_trace.values[3..35], six_bin.to_vec()); // 6
-        assert_eq!(traces.witness_trace.values[35..67], zero_bin); // 0
-        assert_eq!(
-            traces.witness_trace.values[67..99],
-            hex_0x55555555_bin.to_vec()
-        ); // 0x55555555
-        assert_eq!(
-            traces.witness_trace.values[99..131],
-            hex_0x02000000_bin.to_vec()
-        ); // 0x02000000
-        assert_eq!(bits.len(), 3);
 
-        println!("reconstructed = {:?}", traces.witness_trace);
+        // Given that
+        // - traces.witness_trace.values[0] is the constant 0,
+        // - traces.witness_trace.values[1] is the constant input wire,
+        // - traces.witness_trace.values[2..6] are binary decomposition constants,
+        // the 124 bits from the input's binary decomposition are stored between
+        // positions 6..130, in chunks of size 31.
+        let result = traces.witness_trace.values[6..130]
+            .chunks(31)
+            .collect::<Vec<&[Ext4]>>();
+        assert_eq!(result[0], hex_0x40000006_bin);
+        assert_eq!(result[1], hex_0x55555555_bin);
+        assert_eq!(result[2], hex_0x02000000_bin);
+        assert_eq!(result[3], zero_bin);
+        assert_eq!(bits.len(), 3);
     }
 }
