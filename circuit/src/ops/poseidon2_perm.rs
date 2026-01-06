@@ -92,7 +92,7 @@ where
         &mut self,
         call: Poseidon2PermCall,
     ) -> Result<(NonPrimitiveOpId, [Option<ExprId>; 2]), crate::CircuitBuilderError> {
-        let op_type = NonPrimitiveOpType::PoseidonPerm;
+        let op_type = NonPrimitiveOpType::Poseidon2Perm;
         self.ensure_op_enabled(op_type.clone())?;
         if call.merkle_path && call.mmcs_bit.is_none() {
             return Err(crate::CircuitBuilderError::Poseidon2MerkleMissingMmcsBit);
@@ -156,7 +156,7 @@ pub struct Poseidon2PermExecutor {
 impl Poseidon2PermExecutor {
     pub const fn new(new_start: bool, merkle_path: bool) -> Self {
         Self {
-            op_type: NonPrimitiveOpType::PoseidonPerm,
+            op_type: NonPrimitiveOpType::Poseidon2Perm,
             new_start,
             merkle_path,
         }

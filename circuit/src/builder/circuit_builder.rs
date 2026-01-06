@@ -169,11 +169,11 @@ where
         });
 
         self.config.enable_op(
-            NonPrimitiveOpType::PoseidonPerm,
+            NonPrimitiveOpType::Poseidon2Perm,
             crate::op::NonPrimitiveOpConfig::Poseidon2Perm(Poseidon2PermConfig { exec }),
         );
         self.non_primitive_trace_generators
-            .insert(NonPrimitiveOpType::PoseidonPerm, trace_generator);
+            .insert(NonPrimitiveOpType::Poseidon2Perm, trace_generator);
     }
 
     /// Checks whether an op type is enabled on this builder.
@@ -1030,7 +1030,10 @@ mod tests {
         type Ext4 = BinomialExtensionField<BabyBear, 4>;
 
         let mut builder = CircuitBuilder::<Ext4>::new();
-        builder.enable_op(NonPrimitiveOpType::PoseidonPerm, NonPrimitiveOpConfig::None);
+        builder.enable_op(
+            NonPrimitiveOpType::Poseidon2Perm,
+            NonPrimitiveOpConfig::None,
+        );
 
         // Use add_poseidon2_perm with out_ctl to expose outputs.
         let z = builder.add_const(Ext4::ZERO);

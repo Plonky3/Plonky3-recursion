@@ -120,7 +120,7 @@ where
         }
 
         match &data.op_type {
-            NonPrimitiveOpType::PoseidonPerm => {
+            NonPrimitiveOpType::Poseidon2Perm => {
                 let (new_start, merkle_path) = match data.params.as_ref().ok_or_else(|| {
                     CircuitBuilderError::InvalidNonPrimitiveOpConfiguration {
                         op: data.op_type.clone(),
@@ -132,7 +132,7 @@ where
                     } => (*new_start, *merkle_path),
                     _ => {
                         return Err(CircuitBuilderError::InvalidNonPrimitiveOpConfiguration {
-                            op: NonPrimitiveOpType::PoseidonPerm,
+                            op: NonPrimitiveOpType::Poseidon2Perm,
                         });
                     }
                 };

@@ -199,7 +199,7 @@ impl<F: Field + PartialEq> PartialEq for Op<F> {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum NonPrimitiveOpType {
     /// Poseidon permutation operation (one Poseidon call / table row).
-    PoseidonPerm,
+    Poseidon2Perm,
     /// Unconstrained operation, used to set outputs to non-deterministic advices.
     Unconstrained,
 }
@@ -908,7 +908,7 @@ mod tests {
     fn test_execution_context_get_config() {
         // Create a configuration map for operation parameters
         let mut configs = HashMap::new();
-        let op_type = NonPrimitiveOpType::PoseidonPerm;
+        let op_type = NonPrimitiveOpType::Poseidon2Perm;
         configs.insert(op_type.clone(), NonPrimitiveOpConfig::None);
 
         // Create execution context with configurations
@@ -950,7 +950,7 @@ mod tests {
         );
 
         // Attempt to access a configuration that wasn't registered
-        let op_type = NonPrimitiveOpType::PoseidonPerm;
+        let op_type = NonPrimitiveOpType::Poseidon2Perm;
         let result = ctx.get_config(&op_type);
 
         // Missing configurations indicate setup errors
