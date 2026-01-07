@@ -11,7 +11,8 @@ jobs:
   enforce:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/github-script@v7
+      - name: Enforce needs-rfc to require RFC link
+        uses: actions/github-script@v7
         with:
           script: |
             const owner = context.repo.owner;
@@ -100,18 +101,20 @@ jobs:
               }
 
               if (!(await hasChecklistComment())) {
-                const checklist = `${marker}
-This issue is labeled **needs-rfc**, so it's **blocked until an RFC/design artifact exists**.
-
-### What to do next (RFC checklist)
-- [ ] Create an RFC (docs/rfcs/NNNN-<title>.md) **or** a design-only PR
-- [ ] Include: goals/non-goals, proposed APIs/types, constraints/invariants, migration plan
-- [ ] Include: perf expectations + benchmarks (if perf-sensitive)
-- [ ] Get at least **1 non-DRI approval** before heavy implementation
-- [ ] Link it in the issue under **“RFC link”**
-
-### RFC link
-Edit the issue description and fill in the **RFC link** field so this can be unblocked.`;
+                const checklist = [
+                  marker,
+                  "This issue is labeled **needs-rfc**, so it's **blocked until an RFC/design artifact exists**.",
+                  "",
+                  "### What to do next (RFC checklist)",
+                  "- [ ] Create an RFC (docs/rfcs/NNNN-<title>.md) **or** a design-only PR",
+                  "- [ ] Include: goals/non-goals, proposed APIs/types, constraints/invariants, migration plan",
+                  "- [ ] Include: perf expectations + benchmarks (if perf-sensitive)",
+                  "- [ ] Get at least **1 non-DRI approval** before heavy implementation",
+                  "- [ ] Link it in the issue under **“RFC link”**",
+                  "",
+                  "### RFC link",
+                  "Edit the issue description and fill in the **RFC link** field so this can be unblocked."
+                ].join("\n");
 
                 await github.rest.issues.createComment({
                   owner, repo, issue_number,
@@ -129,4 +132,10 @@ Edit the issue description and fill in the **RFC link** field so this can be unb
               return;
             }
 
-            // If no needs-rfc: do nothing (blocked may mean other things).
+            // If needs-rfc is not present: remove BLOCKED only if we previously enforced it.
+            // (We use the marker comment as evidence that *this* workflow applied the block.)
+            if (!hasNeedsRfc) {
+              if (labels.has(BLOCKED) && (await hasChecklistComment())) {
+                await removeLabel(BLOCKED);
+              }
+            }
