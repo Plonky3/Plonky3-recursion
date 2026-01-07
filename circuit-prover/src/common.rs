@@ -1,3 +1,4 @@
+use alloc::collections::btree_map::BTreeMap;
 use alloc::vec::Vec;
 
 use p3_circuit::op::{NonPrimitiveOpType, Poseidon2Config, PrimitiveOpType};
@@ -135,31 +136,38 @@ where
             Ok(())
         })?;
 
+    let mut config_map = BTreeMap::new();
     if let Some(configs) = non_primitive_configs {
         for config in configs {
             match config {
                 NonPrimitiveConfig::Poseidon2(cfg) => {
                     let op_type = NonPrimitiveOpType::Poseidon2Perm(*cfg);
-                    let prep = preprocessed
-                        .non_primitive
-                        .get(&op_type)
-                        .ok_or(CircuitError::InvalidPreprocessedValues)?;
-                    let prep_base = prep
-                        .iter()
-                        .map(|v| v.as_base().ok_or(CircuitError::InvalidPreprocessedValues))
-                        .collect::<Result<Vec<_>, CircuitError>>()?;
-                    let poseidon2_prover = Poseidon2Prover::new(*cfg);
-                    let width = poseidon2_prover.preprocessed_width_from_config();
-                    let poseidon2_wrapper =
-                        poseidon2_prover.wrapper_from_config_with_preprocessed(prep_base);
-                    let poseidon2_wrapper_air: CircuitTableAir<SC, D> =
-                        CircuitTableAir::Dynamic(poseidon2_wrapper);
-
-                    table_preps.push((
-                        poseidon2_wrapper_air,
-                        log2_ceil_usize(prep.len().div_ceil(width)),
-                    ));
+                    config_map.insert(op_type, *cfg);
                 }
+            }
+        }
+    }
+    for (op_type, prep) in preprocessed.non_primitive.iter() {
+        match op_type {
+            NonPrimitiveOpType::Poseidon2Perm(_) => {
+                let cfg = config_map
+                    .get(op_type)
+                    .copied()
+                    .ok_or(CircuitError::InvalidPreprocessedValues)?;
+                let prep_base = prep
+                    .iter()
+                    .map(|v| v.as_base().ok_or(CircuitError::InvalidPreprocessedValues))
+                    .collect::<Result<Vec<_>, CircuitError>>()?;
+                let poseidon2_prover = Poseidon2Prover::new(cfg);
+                let width = poseidon2_prover.preprocessed_width_from_config();
+                let poseidon2_wrapper =
+                    poseidon2_prover.wrapper_from_config_with_preprocessed(prep_base);
+                let poseidon2_wrapper_air: CircuitTableAir<SC, D> =
+                    CircuitTableAir::Dynamic(poseidon2_wrapper);
+                table_preps.push((
+                    poseidon2_wrapper_air,
+                    log2_ceil_usize(prep.len().div_ceil(width)),
+                ));
             }
         }
     }

@@ -11,6 +11,7 @@ use hashbrown::HashMap;
 use p3_field::Field;
 use strum_macros::EnumCount;
 
+use crate::ops::poseidon2_perm::Poseidon2PermPrivateData;
 use crate::types::{NonPrimitiveOpId, WitnessId};
 use crate::{CircuitError, ExprId};
 
@@ -314,7 +315,7 @@ impl<F> Hash for NonPrimitiveOpConfig<F> {
 /// - Is used by AIR tables to generate the appropriate constraints
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NonPrimitiveOpPrivateData<F> {
-    Poseidon2Perm(crate::ops::poseidon2_perm::Poseidon2PermPrivateData<F, 2>),
+    Poseidon2Perm(Poseidon2PermPrivateData<F, 2>),
 }
 
 /// Trait for operation-specific execution state.
