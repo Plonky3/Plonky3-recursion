@@ -172,12 +172,7 @@ impl<F: CircuitField> CircuitRunner<F> {
         op_types.sort();
         for op_type in op_types {
             let generator = &self.circuit.non_primitive_trace_generators[op_type];
-            if let Some(trace) = generator(
-                &self.circuit,
-                &self.witness,
-                &self.non_primitive_op_private_data,
-                &self.op_states,
-            )? {
+            if let Some(trace) = generator(&self.op_states)? {
                 let trace_op_type = trace.op_type();
                 non_primitive_traces.insert(trace_op_type, trace);
             }

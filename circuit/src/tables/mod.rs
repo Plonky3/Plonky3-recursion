@@ -8,8 +8,7 @@ use core::fmt;
 use hashbrown::HashMap;
 
 use crate::CircuitError;
-use crate::circuit::Circuit;
-use crate::op::{NonPrimitiveOpPrivateData, NonPrimitiveOpType, OpStateMap};
+use crate::op::{NonPrimitiveOpType, OpStateMap};
 
 mod add;
 mod constant;
@@ -39,17 +38,9 @@ pub trait NonPrimitiveTrace<F>: Send + Sync {
 
 /// Function pointer for constructing a non-primitive trace from runner state.
 ///
-/// The trace generator receives:
-/// - The circuit definition
-/// - The populated witness table
-/// - Private data for non-primitive operations
-/// - Operation execution state (containing recorded row data, chaining state, etc.)
-pub type TraceGeneratorFn<F> = fn(
-    circuit: &Circuit<F>,
-    witness: &[Option<F>],
-    non_primitive_data: &[Option<NonPrimitiveOpPrivateData<F>>],
-    op_states: &OpStateMap,
-) -> Result<Option<Box<dyn NonPrimitiveTrace<F>>>, CircuitError>;
+/// The trace generator receives operation execution state (recorded row data, chaining state, etc.).
+pub type TraceGeneratorFn<F> =
+    fn(op_states: &OpStateMap) -> Result<Option<Box<dyn NonPrimitiveTrace<F>>>, CircuitError>;
 
 /// Execution traces for all tables.
 ///

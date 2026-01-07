@@ -33,7 +33,7 @@ use p3_field::{ExtensionField, Field, PrimeCharacteristicRing, PrimeField};
 
 use crate::CircuitError;
 use crate::builder::{CircuitBuilder, NonPrimitiveOpParams};
-use crate::circuit::{Circuit, CircuitField};
+use crate::circuit::CircuitField;
 use crate::op::{
     ExecutionContext, NonPrimitiveExecutor, NonPrimitiveOpConfig, NonPrimitiveOpPrivateData,
     NonPrimitiveOpType, OpExecutionState, PrimitiveOpType,
@@ -126,44 +126,19 @@ impl Poseidon2Config {
 
 /// Type alias for the Poseidon2 permutation execution closure.
 ///
-/// The closure takes 4 extension field limbs and returns 4 output limbs.
-pub type Poseidon2PermExec<F> = Arc<dyn Fn(&[F; 4]) -> [F; 4] + Send + Sync>;
-
-/// Configuration for Poseidon2 permutation operations.
-///
-/// Contains an execution closure that computes the Poseidon2 permutation.
-/// The closure takes 4 extension field limbs and returns 4 output limbs.
-pub struct Poseidon2PermConfig<F> {
-    /// Execution closure: converts [F;4] extension limbs to [Base;16],
-    /// runs the permutation, and converts back to [F;4].
-    pub exec: Poseidon2PermExec<F>,
-}
-
-impl<F> Clone for Poseidon2PermConfig<F> {
-    fn clone(&self) -> Self {
-        Self {
-            exec: Arc::clone(&self.exec),
-        }
-    }
-}
-
-impl<F> Debug for Poseidon2PermConfig<F> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("Poseidon2PermConfig")
-            .field("exec", &"<closure>")
-            .finish()
-    }
-}
+/// The closure takes `DIGEST` extension field limbs and returns `DIGEST` output limbs.
+pub type Poseidon2PermExec<F, const DIGEST: usize> =
+    Arc<dyn Fn(&[F; DIGEST]) -> [F; DIGEST] + Send + Sync>;
 
 // ============================================================================
 // Private Data
 // ============================================================================
 
 /// Private data for Poseidon2 permutation.
-/// Only used for Merkle mode operations, contains exactly 2 extension field limbs (the sibling).
+/// Only used for Merkle mode operations, contains exactly `SIBLING_LIMBS` extension field limbs.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Poseidon2PermPrivateData<F> {
-    pub sibling: [F; 2],
+pub struct Poseidon2PermPrivateData<F, const SIBLING_LIMBS: usize> {
+    pub sibling: [F; SIBLING_LIMBS],
 }
 
 // ============================================================================
@@ -383,7 +358,7 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for Poseidon2Perm
         // Get the exec closure from config
         let config = ctx.get_config(&self.op_type)?;
         let exec = match config {
-            NonPrimitiveOpConfig::Poseidon2Perm(cfg) => Arc::clone(&cfg.exec),
+            NonPrimitiveOpConfig::Poseidon2Perm { exec, .. } => Arc::clone(exec),
             NonPrimitiveOpConfig::None => {
                 return Err(CircuitError::InvalidNonPrimitiveOpConfiguration { op: self.op_type });
             }
@@ -836,9 +811,6 @@ pub fn generate_poseidon2_trace<
     F: CircuitField + ExtensionField<Config::BaseField>,
     Config: Poseidon2Params,
 >(
-    _circuit: &Circuit<F>,
-    _witness: &[Option<F>],
-    _non_primitive_data: &[Option<NonPrimitiveOpPrivateData<F>>],
     op_states: &crate::op::OpStateMap,
 ) -> Result<Option<Box<dyn NonPrimitiveTrace<F>>>, CircuitError> {
     let op_type = NonPrimitiveOpType::Poseidon2Perm(Config::CONFIG);
@@ -861,11 +833,12 @@ pub fn generate_poseidon2_trace<
         .iter()
         .enumerate()
         .map(|(row_index, row)| -> Result<_, CircuitError> {
-            // Flatten 4 extension limbs to WIDTH base field elements
+            let limb_count = Config::WIDTH / d;
+            // Flatten extension limbs to WIDTH base field elements.
             assert_eq!(
                 row.input_values.len(),
-                4,
-                "Source row must have exactly 4 input limbs"
+                limb_count,
+                "Source row must have WIDTH/D input limbs"
             );
             let mut input_values = vec![Config::BaseField::ZERO; Config::WIDTH];
             assert_eq!(

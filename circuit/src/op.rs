@@ -1,5 +1,6 @@
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use alloc::{format, vec};
 use core::any::Any;
@@ -222,7 +223,7 @@ pub enum NonPrimitiveOpType {
 }
 
 // Re-export Poseidon2 config types from their canonical location
-pub use crate::ops::poseidon2_perm::{Poseidon2Config, Poseidon2PermConfig, Poseidon2PermExec};
+pub use crate::ops::poseidon2_perm::{Poseidon2Config, Poseidon2PermExec};
 
 /// Preprocessed data for non-primitive tables, keyed by operation type.
 pub type NonPrimitivePreprocessedMap<F> = HashMap<NonPrimitiveOpType, Vec<F>>;
@@ -234,14 +235,20 @@ pub enum NonPrimitiveOpConfig<F> {
     /// No configuration needed (placeholder for future operations).
     None,
     /// Poseidon2 permutation configuration with exec closure.
-    Poseidon2Perm(Poseidon2PermConfig<F>),
+    Poseidon2Perm {
+        config: Poseidon2Config,
+        exec: Poseidon2PermExec<F, 4>,
+    },
 }
 
 impl<F> Clone for NonPrimitiveOpConfig<F> {
     fn clone(&self) -> Self {
         match self {
             Self::None => Self::None,
-            Self::Poseidon2Perm(cfg) => Self::Poseidon2Perm(cfg.clone()),
+            Self::Poseidon2Perm { config, exec } => Self::Poseidon2Perm {
+                config: *config,
+                exec: Arc::clone(exec),
+            },
         }
     }
 }
@@ -250,18 +257,25 @@ impl<F> Debug for NonPrimitiveOpConfig<F> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::None => write!(f, "None"),
-            Self::Poseidon2Perm(cfg) => f.debug_tuple("Poseidon2Perm").field(cfg).finish(),
+            Self::Poseidon2Perm { config, .. } => f
+                .debug_struct("Poseidon2Perm")
+                .field("config", config)
+                .field("exec", &"<closure>")
+                .finish(),
         }
     }
 }
 
-// Compare/Hash by variant only (ignore closure contents)
+// Compare/Hash by variant/config only (ignore closure contents)
 impl<F> PartialEq for NonPrimitiveOpConfig<F> {
     fn eq(&self, other: &Self) -> bool {
-        matches!(
-            (self, other),
-            (Self::None, Self::None) | (Self::Poseidon2Perm(_), Self::Poseidon2Perm(_))
-        )
+        match (self, other) {
+            (Self::None, Self::None) => true,
+            (Self::Poseidon2Perm { config: c1, .. }, Self::Poseidon2Perm { config: c2, .. }) => {
+                c1 == c2
+            }
+            _ => false,
+        }
     }
 }
 
@@ -270,6 +284,9 @@ impl<F> Eq for NonPrimitiveOpConfig<F> {}
 impl<F> Hash for NonPrimitiveOpConfig<F> {
     fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
         core::mem::discriminant(self).hash(state);
+        if let Self::Poseidon2Perm { config, .. } = self {
+            config.hash(state);
+        }
     }
 }
 
@@ -297,7 +314,7 @@ impl<F> Hash for NonPrimitiveOpConfig<F> {
 /// - Is used by AIR tables to generate the appropriate constraints
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NonPrimitiveOpPrivateData<F> {
-    Poseidon2Perm(crate::ops::poseidon2_perm::Poseidon2PermPrivateData<F>),
+    Poseidon2Perm(crate::ops::poseidon2_perm::Poseidon2PermPrivateData<F, 2>),
 }
 
 /// Trait for operation-specific execution state.
@@ -898,7 +915,7 @@ mod tests {
     #[test]
     fn test_execution_context_get_private_data() {
         // Create private auxiliary data for a verification operation
-        let poseidon2_data: Poseidon2PermPrivateData<F> = Poseidon2PermPrivateData {
+        let poseidon2_data: Poseidon2PermPrivateData<F, 2> = Poseidon2PermPrivateData {
             sibling: [F::ZERO, F::ZERO],
         };
         let private_data = vec![Some(NonPrimitiveOpPrivateData::Poseidon2Perm(

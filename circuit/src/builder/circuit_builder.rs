@@ -13,7 +13,7 @@ use p3_util::log2_ceil_u64;
 use super::compiler::{ExpressionLowerer, Optimizer};
 use super::{BuilderConfig, ExpressionBuilder, PublicInputTracker};
 use crate::circuit::Circuit;
-use crate::op::{DefaultHint, NonPrimitiveOpType, Poseidon2PermConfig, WitnessHintsFiller};
+use crate::op::{DefaultHint, NonPrimitiveOpType, WitnessHintsFiller};
 use crate::ops::Poseidon2Params;
 use crate::tables::TraceGeneratorFn;
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};
@@ -119,7 +119,7 @@ where
         // 1. Converts [F;4] extension limbs to [Base;16] using basis coefficients
         // 2. Calls perm.permute([Base;16])
         // 3. Converts output [Base;16] back to [F;4]
-        let exec: crate::op::Poseidon2PermExec<F> = Arc::new(move |input: &[F; 4]| {
+        let exec: crate::op::Poseidon2PermExec<F, 4> = Arc::new(move |input: &[F; 4]| {
             // Convert 4 extension elements to 16 base elements
             let mut base_input = [Config::BaseField::ZERO; 16];
             for (i, ext_elem) in input.iter().enumerate() {
@@ -147,7 +147,10 @@ where
 
         self.config.enable_op(
             NonPrimitiveOpType::Poseidon2Perm(Config::CONFIG),
-            crate::op::NonPrimitiveOpConfig::Poseidon2Perm(Poseidon2PermConfig { exec }),
+            crate::op::NonPrimitiveOpConfig::Poseidon2Perm {
+                config: Config::CONFIG,
+                exec,
+            },
         );
         self.non_primitive_trace_generators.insert(
             NonPrimitiveOpType::Poseidon2Perm(Config::CONFIG),
