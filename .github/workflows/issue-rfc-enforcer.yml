@@ -67,7 +67,7 @@ jobs:
               /^docs\/rfcs\/\d{4}-[a-z0-9-]+\.md$/i.test(s);
 
             const isValidUrl = (s) =>
-              /^https?:\/\/\S+$/i.test(s);
+              /^https?:\/\/\S+/i.test(s);
 
             const hasRfcLink = isValidUrl(rfcUrl) || isValidDocsPath(rfcRaw);
 
