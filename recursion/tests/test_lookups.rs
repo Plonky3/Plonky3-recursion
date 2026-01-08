@@ -31,73 +31,31 @@ fn repeated_arith(a: usize, b: usize, x: usize, n: usize) -> usize {
 
 #[test]
 fn test_arith_lookups() {
-    let n = 10;
-
-    let builder = get_circuit(n);
-
-    let table_packing = TablePacking::new(1, 4, 6);
-
-    let config_proving = get_proving_config();
-
-    let circuit = builder.build().unwrap();
-    let (airs_degrees, witness_multiplicities) =
-        get_airs_and_degrees_with_prep::<MyConfig, _, 1>(&circuit, table_packing, None).unwrap();
-
-    let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
-    let mut runner = circuit.runner();
-
-    let init_a = 3;
-    let init_b = 5;
-    let init_x = 7;
-    let expected_result = F::from_usize(repeated_arith(init_a, init_b, init_x, n));
-
-    runner
-        .set_public_inputs(&[
-            F::from_usize(init_x),
-            F::from_usize(init_a),
-            F::from_usize(init_b),
-            expected_result,
-        ])
-        .unwrap();
-
-    let traces = runner.run().unwrap();
-
-    // Create common data for proving and verifying.
-    let common = CommonData::from_airs_and_degrees(&config_proving, &mut airs, &degrees);
-
-    let prover = BatchStarkProver::new(config_proving).with_table_packing(table_packing);
-
-    let lookup_gadget = LogUpGadget::new();
-    let batch_stark_proof = prover
-        .prove_all_tables(&traces, &common, witness_multiplicities, &lookup_gadget)
-        .unwrap();
+    let TestCircuitProofData {
+        mut batch_stark_proof,
+        common,
+        lookup_gadget,
+        config,
+        params,
+        pis,
+        prover,
+    } = get_test_circuit_proof();
 
     prover
         .verify_all_tables(&batch_stark_proof, &common, &lookup_gadget)
         .unwrap();
 
-    // Now verify the batch STARK proof recursively
-    let (config, fri_verifier_params, pow_bits, log_height_max) = get_recursive_config_and_params();
-
     // Build the recursive verification circuit
     let mut circuit_builder = CircuitBuilder::new();
 
-    // Public values (empty for all 5 circuit tables, using base field)
-    let pis: Vec<Vec<F>> = vec![vec![]; 5];
-
-    // Attach verifier without manually building circuit_airs
-    let params = Parameters {
-        fri_verifier_params,
-        pow_bits,
-        log_height_max,
-    };
     let (verifier_inputs, all_challenges) = get_verifier_inputs_and_challenges(
         &mut circuit_builder,
         &config,
         &params,
-        &batch_stark_proof,
+        &mut batch_stark_proof,
         &common,
         &pis,
+        None,
         &lookup_gadget,
     );
 
@@ -165,7 +123,7 @@ fn test_wrong_multiplicities() {
 
     // Prove the circuit.
     let lookup_gadget = LogUpGadget::new();
-    let batch_stark_proof = prover
+    let mut batch_stark_proof = prover
         .prove_all_tables(&traces, &common, witness_multiplicities, &lookup_gadget)
         .unwrap();
 
@@ -188,9 +146,10 @@ fn test_wrong_multiplicities() {
         &mut circuit_builder,
         &config,
         &params,
-        &batch_stark_proof,
+        &mut batch_stark_proof,
         &common,
         &pis,
+        None,
         &lookup_gadget,
     );
 
@@ -220,51 +179,15 @@ fn test_wrong_multiplicities() {
 #[test]
 #[should_panic(expected = "WitnessConflict")]
 fn test_wrong_expected_cumulated() {
-    let n = 10;
-
-    // Get a circuit that computes arithmetic operations.
-    let builder = get_circuit(n);
-
-    let table_packing = TablePacking::new(1, 4, 6);
-
-    let config_proving = get_proving_config();
-
-    let circuit = builder.build().unwrap();
-    let (airs_degrees, witness_multiplicities) =
-        get_airs_and_degrees_with_prep::<MyConfig, _, 1>(&circuit, table_packing, None).unwrap();
-
-    let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
-    let mut runner = circuit.runner();
-
-    let init_a = 3;
-    let init_b = 5;
-    let init_x = 7;
-    let expected_result = F::from_usize(repeated_arith(init_a, init_b, init_x, n));
-
-    runner
-        .set_public_inputs(&[
-            F::from_usize(init_x),
-            F::from_usize(init_a),
-            F::from_usize(init_b),
-            expected_result,
-        ])
-        .unwrap();
-
-    let traces = runner.run().unwrap();
-
-    // Create common data for proving and verifying.
-    let common = CommonData::from_airs_and_degrees(&config_proving, &mut airs, &degrees);
-
-    let prover = BatchStarkProver::new(config_proving).with_table_packing(table_packing);
-
-    // Prove the circuit with wrong witness multiplicities.
-    let lookup_gadget = LogUpGadget::new();
-    let mut batch_stark_proof = prover
-        .prove_all_tables(&traces, &common, witness_multiplicities, &lookup_gadget)
-        .unwrap();
-
-    // Now verify the batch STARK proof recursively
-    let (config, fri_verifier_params, pow_bits, log_height_max) = get_recursive_config_and_params();
+    let TestCircuitProofData {
+        mut batch_stark_proof,
+        common,
+        lookup_gadget,
+        config,
+        params,
+        pis,
+        ..
+    } = get_test_circuit_proof();
 
     // Introduce an error in the global expected cumulated values for the first lookup.
     // This leads to the sum of all expected cumulated values being off by 1,
@@ -276,22 +199,14 @@ fn test_wrong_expected_cumulated() {
     // Build the recursive verification circuit
     let mut circuit_builder = CircuitBuilder::new();
 
-    // Public values (empty for all 5 circuit tables, using base field)
-    let pis: Vec<Vec<F>> = vec![vec![]; 5];
-
-    // Attach verifier without manually building circuit_airs
-    let params = Parameters {
-        fri_verifier_params,
-        pow_bits,
-        log_height_max,
-    };
     let (verifier_inputs, all_challenges) = get_verifier_inputs_and_challenges(
         &mut circuit_builder,
         &config,
         &params,
-        &batch_stark_proof,
+        &mut batch_stark_proof,
         &common,
         &pis,
+        None,
         &lookup_gadget,
     );
 
@@ -321,7 +236,323 @@ fn test_wrong_expected_cumulated() {
 }
 
 #[test]
-fn test_inconsistent_lookup_shape() {
+#[should_panic(expected = "WitnessConflict")]
+fn test_inconsistent_lookup_name() {
+    let TestCircuitProofData {
+        mut batch_stark_proof,
+        common,
+        lookup_gadget,
+        config,
+        params,
+        pis,
+        ..
+    } = get_test_circuit_proof();
+
+    let real_lookup_data = batch_stark_proof.proof.global_lookup_data.clone();
+    // First, modify the first global lookup data's name.
+    assert!(real_lookup_data.len() == 5);
+    let mut fake_global_lookup_data = real_lookup_data.clone();
+    fake_global_lookup_data[0][0].name = "ModifiedLookup".to_string();
+
+    // Build the recursive verification circuit
+    let mut circuit_builder = CircuitBuilder::new();
+
+    // Attach verifier without manually building circuit_airs. Generation fails because of the fake lookup data.
+    // First, only challenges use the fake lookup data.
+    let (_verifier_inputs, all_challenges) = get_verifier_inputs_and_challenges(
+        &mut circuit_builder,
+        &config,
+        &params,
+        &mut batch_stark_proof,
+        &common,
+        &pis,
+        Some(&fake_global_lookup_data),
+        &lookup_gadget,
+    );
+
+    match all_challenges {
+        Err(GenerationError::InvalidProofShape(msg)) => {
+            assert_eq!(msg, "Global lookups are inconsistent with lookups");
+        }
+        Err(_) => panic!("Expected InvalidProofShape"),
+        Ok(_) => panic!("Expected error due to inconsistent lookup shape"),
+    }
+
+    // Second, only the verifier uses the fake lookup data with a modified name.
+    // Since global permutation challenges are generated based on the `name`,
+    // this leads to a `WitnessConflict` during recursive verification due to failed constraints.
+    batch_stark_proof.proof.global_lookup_data = fake_global_lookup_data;
+
+    let mut circuit_builder = CircuitBuilder::new();
+    let (verifier_inputs, all_challenges) = get_verifier_inputs_and_challenges(
+        &mut circuit_builder,
+        &config,
+        &params,
+        &mut batch_stark_proof,
+        &common,
+        &pis,
+        Some(real_lookup_data.as_slice()),
+        &lookup_gadget,
+    );
+
+    // Build the circuit
+    let verification_circuit = circuit_builder.build().unwrap();
+    let expected_public_input_len = verification_circuit.public_flat_len;
+
+    // Pack values using the builder
+    let public_inputs = verifier_inputs.unwrap().pack_values(
+        &pis,
+        &batch_stark_proof.proof,
+        &common,
+        &all_challenges.unwrap(),
+    );
+
+    assert_eq!(public_inputs.len(), expected_public_input_len);
+    assert!(!public_inputs.is_empty());
+
+    // Actually run the circuit to ensure constraints are satisfiable
+    let mut runner = verification_circuit.runner();
+    runner.set_public_inputs(&public_inputs).unwrap();
+
+    // This line fails because the verifier gets wrong global lookup data.
+    // This leads to the sum of all expected cumulated values being off by 1,
+    // which causes a WitnessConflict during recursive verification.
+    let _traces = runner.run().unwrap();
+}
+
+#[test]
+fn test_inconsistent_lookup_commitment_shape() {
+    let TestCircuitProofData {
+        mut batch_stark_proof,
+        common,
+        lookup_gadget,
+        config,
+        params,
+        pis,
+        ..
+    } = get_test_circuit_proof();
+
+    let real_lookup_data = batch_stark_proof.proof.global_lookup_data.clone();
+    batch_stark_proof.proof.global_lookup_data = real_lookup_data;
+    batch_stark_proof.proof.commitments.permutation = None;
+
+    // Build the recursive verification circuit
+    let mut circuit_builder = CircuitBuilder::new();
+
+    let (verifier_inputs, _all_challenges) = get_verifier_inputs_and_challenges(
+        &mut circuit_builder,
+        &config,
+        &params,
+        &mut batch_stark_proof,
+        &common,
+        &pis,
+        None,
+        &lookup_gadget,
+    );
+
+    match verifier_inputs {
+        Err(VerificationError::InvalidProofShape(msg)) => {
+            assert_eq!(msg, "Mismatch between lookup commitment and lookup data");
+        }
+        Err(_) => panic!("Expected InvalidProofShape"),
+        Ok(_) => panic!("Expected error due to inconsistent lookup shape"),
+    }
+}
+
+#[test]
+#[should_panic(expected = "Expected cumulated values not sorted by auxiliary index")]
+fn test_inconsistent_lookup_order_shape() {
+    let TestCircuitProofData {
+        mut batch_stark_proof,
+        common,
+        lookup_gadget,
+        config,
+        params,
+        pis,
+        ..
+    } = get_test_circuit_proof();
+
+    let real_lookup_data = batch_stark_proof.proof.global_lookup_data.clone();
+    let mut fake_global_lookup_data = real_lookup_data.clone();
+    assert!(fake_global_lookup_data[3].len() > 1);
+    fake_global_lookup_data[3].swap(0, 1);
+
+    // Build the recursive verification circuit
+    let mut circuit_builder = CircuitBuilder::new();
+
+    // First, only challenges use the fake lookup data.
+    let (_verifier_inputs, all_challenges) = get_verifier_inputs_and_challenges(
+        &mut circuit_builder,
+        &config,
+        &params,
+        &mut batch_stark_proof,
+        &common,
+        &pis,
+        Some(&fake_global_lookup_data),
+        &lookup_gadget,
+    );
+
+    match all_challenges {
+        Err(GenerationError::InvalidProofShape(msg)) => {
+            assert_eq!(msg, "Global lookups are inconsistent with lookups");
+        }
+        Err(_) => panic!("Expected InvalidProofShape"),
+        Ok(_) => panic!("Expected error due to inconsistent lookup shape"),
+    }
+
+    // Second, only the verifier uses the fake lookup data.
+    batch_stark_proof.proof.global_lookup_data = fake_global_lookup_data;
+
+    let mut circuit_builder = CircuitBuilder::new();
+    let _ = get_verifier_inputs_and_challenges(
+        &mut circuit_builder,
+        &config,
+        &params,
+        &mut batch_stark_proof,
+        &common,
+        &pis,
+        Some(real_lookup_data.as_slice()),
+        &lookup_gadget,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Too many expected cumulated values provided")]
+fn test_extra_global_lookup() {
+    let TestCircuitProofData {
+        mut batch_stark_proof,
+        common,
+        lookup_gadget,
+        config,
+        params,
+        pis,
+        ..
+    } = get_test_circuit_proof();
+
+    let real_lookup_data = batch_stark_proof.proof.global_lookup_data.clone();
+    let fake_lookup = LookupData {
+        name: "FakeLookup".to_string(),
+        aux_idx: 0,
+        expected_cumulated: Challenge::ZERO,
+    };
+    let mut fake_global_lookup_data = real_lookup_data.clone();
+    fake_global_lookup_data[0].push(fake_lookup);
+
+    // Build the recursive verification circuit
+    let mut circuit_builder = CircuitBuilder::new();
+
+    // First, only challenges use the fake lookup data with an extra global lookup.
+    let (_verifier_inputs, all_challenges) = get_verifier_inputs_and_challenges(
+        &mut circuit_builder,
+        &config,
+        &params,
+        &mut batch_stark_proof,
+        &common,
+        &pis,
+        Some(&fake_global_lookup_data),
+        &lookup_gadget,
+    );
+
+    match all_challenges {
+        Err(GenerationError::InvalidProofShape(msg)) => {
+            assert_eq!(msg, "Global lookups are inconsistent with lookups");
+        }
+        Err(_) => panic!("Expected InvalidProofShape"),
+        Ok(_) => panic!("Expected error due to inconsistent lookup shape"),
+    }
+
+    // Second, only the verifier uses the fake lookup data.
+    batch_stark_proof.proof.global_lookup_data = fake_global_lookup_data;
+
+    let mut circuit_builder = CircuitBuilder::new();
+    let _ = get_verifier_inputs_and_challenges(
+        &mut circuit_builder,
+        &config,
+        &params,
+        &mut batch_stark_proof,
+        &common,
+        &pis,
+        Some(real_lookup_data.as_slice()),
+        &lookup_gadget,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Expected cumulated value missing")]
+fn test_missing_global_lookup() {
+    let TestCircuitProofData {
+        mut batch_stark_proof,
+        common,
+        lookup_gadget,
+        config,
+        params,
+        pis,
+        ..
+    } = get_test_circuit_proof();
+
+    let real_lookup_data = batch_stark_proof.proof.global_lookup_data.clone();
+    let mut fake_global_lookup_data = real_lookup_data.clone();
+    assert!(!fake_global_lookup_data[0].is_empty());
+    fake_global_lookup_data[0].pop();
+
+    // Build the recursive verification circuit
+    let mut circuit_builder = CircuitBuilder::new();
+
+    // First, only challenges use the fake lookup data with a missing global lookup.
+    let (_verifier_inputs, all_challenges) = get_verifier_inputs_and_challenges(
+        &mut circuit_builder,
+        &config,
+        &params,
+        &mut batch_stark_proof,
+        &common,
+        &pis,
+        Some(&fake_global_lookup_data),
+        &lookup_gadget,
+    );
+
+    match all_challenges {
+        Err(GenerationError::InvalidProofShape(msg)) => {
+            assert_eq!(msg, "Global lookups are inconsistent with lookups");
+        }
+        Err(_) => panic!("Expected InvalidProofShape"),
+        Ok(_) => panic!("Expected error due to inconsistent lookup shape"),
+    }
+
+    // Second, only the verifier uses the fake lookup data.
+    batch_stark_proof.proof.global_lookup_data = fake_global_lookup_data;
+
+    let mut circuit_builder = CircuitBuilder::new();
+    let (verifier_inputs, _all_challenges) = get_verifier_inputs_and_challenges(
+        &mut circuit_builder,
+        &config,
+        &params,
+        &mut batch_stark_proof,
+        &common,
+        &pis,
+        Some(real_lookup_data.as_slice()),
+        &lookup_gadget,
+    );
+
+    match verifier_inputs {
+        Err(VerificationError::InvalidProofShape(msg)) => {
+            assert_eq!(msg, "Expected cumulated value missing");
+        }
+        Err(_) => panic!("Expected InvalidProofShape"),
+        Ok(_) => panic!("Expected error due to inconsistent lookup shape"),
+    }
+}
+
+struct TestCircuitProofData {
+    batch_stark_proof: BatchStarkProof<MyConfig>,
+    common: CommonData<MyConfig>,
+    lookup_gadget: LogUpGadget,
+    config: MyConfig,
+    params: Parameters,
+    pis: Vec<Vec<F>>,
+    prover: BatchStarkProver<MyConfig>,
+}
+
+fn get_test_circuit_proof() -> TestCircuitProofData {
     let n = 10;
 
     // Get a circuit that computes arithmetic operations.
@@ -357,139 +588,28 @@ fn test_inconsistent_lookup_shape() {
     // Create common data for proving and verifying.
     let common = CommonData::from_airs_and_degrees(&config_proving, &mut airs, &degrees);
 
-    let prover = BatchStarkProver::new(config_proving).with_table_packing(table_packing);
-
-    // Prove the circuit with wrong witness multiplicities.
     let lookup_gadget = LogUpGadget::new();
-    let mut batch_stark_proof = prover
+    let prover = BatchStarkProver::new(config_proving).with_table_packing(table_packing);
+    let batch_stark_proof = prover
         .prove_all_tables(&traces, &common, witness_multiplicities, &lookup_gadget)
         .unwrap();
 
-    // Now verify the batch STARK proof recursively
     let (config, fri_verifier_params, pow_bits, log_height_max) = get_recursive_config_and_params();
-
-    // Public values (empty for all 5 circuit tables, using base field)
-    let pis: Vec<Vec<F>> = vec![vec![]; 5];
-
-    let real_lookup_data = batch_stark_proof.proof.global_lookup_data.clone();
-    // First, modify the first global lookup data's name.
-    assert!(batch_stark_proof.proof.global_lookup_data.len() == 5);
-    batch_stark_proof.proof.global_lookup_data[0][0].name = "ModifiedLookup".to_string();
-
-    // Build the recursive verification circuit
-    let mut circuit_builder = CircuitBuilder::new();
-
-    // Attach verifier without manually building circuit_airs. Generation fails because of the fake lookup data.
     let params = Parameters {
         fri_verifier_params,
         pow_bits,
         log_height_max,
     };
-    let (verifier_inputs, all_challenges) = get_verifier_inputs_and_challenges(
-        &mut circuit_builder,
-        &config,
-        &params,
-        &batch_stark_proof,
-        &common,
-        &pis,
-        &lookup_gadget,
-    );
+    let pis = vec![vec![]; 5];
 
-    match (verifier_inputs, all_challenges) {
-        (Err(v_e), Err(g_e)) => {
-            match v_e {
-                VerificationError::InvalidProofShape(msg) => {
-                    assert_eq!(msg, "Global lookups are inconsistent with lookups");
-                }
-                _ => panic!("Expected InvalidProofShape"),
-            }
-            match g_e {
-                GenerationError::InvalidProofShape(msg) => {
-                    assert_eq!(msg, "Global lookups are inconsistent with lookups");
-                }
-                _ => panic!("Expected InvalidProofShape"),
-            }
-        }
-        _ => panic!("Expected error due to inconsistent lookup shape"),
-    }
-
-    // Second, introduce an extra lookup data entry to make the lookup data inconsistent.
-    let fake_lookup = LookupData {
-        name: "FakeLookup".to_string(),
-        aux_idx: 0,
-        expected_cumulated: Challenge::ZERO,
-    };
-    batch_stark_proof.proof.global_lookup_data = real_lookup_data.clone();
-    batch_stark_proof.proof.global_lookup_data[0].push(fake_lookup);
-
-    // Build the recursive verification circuit
-    let mut circuit_builder = CircuitBuilder::new();
-
-    // Attach verifier without manually building circuit_airs. Generation fails because of the fake lookup data.
-    let params = Parameters {
-        fri_verifier_params,
-        pow_bits,
-        log_height_max,
-    };
-    let (verifier_inputs, all_challenges) = get_verifier_inputs_and_challenges(
-        &mut circuit_builder,
-        &config,
-        &params,
-        &batch_stark_proof,
-        &common,
-        &pis,
-        &lookup_gadget,
-    );
-
-    match (verifier_inputs, all_challenges) {
-        (Err(v_e), Err(g_e)) => {
-            match v_e {
-                VerificationError::InvalidProofShape(msg) => {
-                    assert_eq!(msg, "Global lookups are inconsistent with lookups");
-                }
-                _ => panic!("Expected InvalidProofShape"),
-            }
-            match g_e {
-                GenerationError::InvalidProofShape(msg) => {
-                    assert_eq!(msg, "Global lookups are inconsistent with lookups");
-                }
-                _ => panic!("Expected InvalidProofShape"),
-            }
-        }
-        _ => panic!("Expected error due to inconsistent lookup shape"),
-    }
-
-    // Third, provide an empty lookup commitment.
-    batch_stark_proof.proof.global_lookup_data = real_lookup_data;
-    batch_stark_proof.proof.commitments.permutation = None;
-
-    // Build the recursive verification circuit
-    let mut circuit_builder = CircuitBuilder::new();
-
-    let params = Parameters {
-        fri_verifier_params,
-        pow_bits,
-        log_height_max,
-    };
-    // Attach verifier without manually building circuit_airs. Generation fails because of the fake lookup data.
-    let (verifier_inputs, _all_challenges) = get_verifier_inputs_and_challenges(
-        &mut circuit_builder,
-        &config,
-        &params,
-        &batch_stark_proof,
-        &common,
-        &pis,
-        &lookup_gadget,
-    );
-
-    match verifier_inputs {
-        Err(v_e) => match v_e {
-            VerificationError::InvalidProofShape(msg) => {
-                assert_eq!(msg, "Mismatch between lookup commitment and lookup data");
-            }
-            _ => panic!("Expected InvalidProofShape"),
-        },
-        _ => panic!("Expected error due to inconsistent lookup shape"),
+    TestCircuitProofData {
+        batch_stark_proof,
+        common,
+        lookup_gadget,
+        config,
+        params,
+        pis,
+        prover,
     }
 }
 
@@ -552,13 +672,15 @@ struct Parameters {
 }
 
 // Gets the verifier inputs and generates all necessary challenges for the recursive verification circuit.
+#[allow(clippy::too_many_arguments)]
 fn get_verifier_inputs_and_challenges(
     circuit_builder: &mut CircuitBuilder<Challenge>,
     config: &MyConfig,
     params: &Parameters,
-    batch_stark_proof: &BatchStarkProof<MyConfig>,
+    batch_stark_proof: &mut BatchStarkProof<MyConfig>,
     common: &CommonData<MyConfig>,
     pis: &[Vec<F>],
+    optional_global_lookups: Option<&[Vec<LookupData<Challenge>>]>,
     lookup_gadget: &LogUpGadget,
 ) -> ResultVerifierInputsAndChallenges {
     // Extract proof components
@@ -600,6 +722,11 @@ fn get_verifier_inputs_and_challenges(
         common,
         lookup_gadget,
     );
+
+    // If provided, override the global lookups in the proof used for challenge generation
+    if let Some(global_lookups) = optional_global_lookups {
+        batch_stark_proof.proof.global_lookup_data = global_lookups.to_vec();
+    }
 
     let batch_proof = &batch_stark_proof.proof;
 

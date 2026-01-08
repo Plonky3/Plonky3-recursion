@@ -299,7 +299,7 @@ where
             let mut counter = 0;
             lookups.iter().try_for_each(|lookup| match &lookup.kind {
                 Kind::Global(name) => {
-                    if global_lookups[counter].name != *name {
+                    if counter >= global_lookups.len() || global_lookups[counter].name != *name {
                         Err(GenerationError::InvalidProofShape(
                             "Global lookups are inconsistent with lookups",
                         ))
