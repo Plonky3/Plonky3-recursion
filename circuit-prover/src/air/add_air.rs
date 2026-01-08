@@ -309,12 +309,11 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AddAir<F, D> {
         let mut mat = RowMajorMatrix::new(values, width);
         mat.pad_to_power_of_two_height(F::ZERO);
 
-        //
         mat
     }
 
     pub fn trace_to_preprocessed<ExtF: BasedVectorSpace<F>>(trace: &AddTrace<ExtF>) -> Vec<F> {
-        let total_len = trace.lhs_index.len() * Self::preprocessed_lane_width();
+        let total_len = trace.lhs_index.len() * (Self::preprocessed_lane_width() - 1);
         let mut preprocessed_values = Vec::with_capacity(total_len);
         for (lhs_idx, rhs_idx, res_idx) in trace
             .lhs_index

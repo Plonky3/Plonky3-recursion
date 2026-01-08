@@ -7,6 +7,7 @@ use p3_baby_bear::BabyBear;
 use p3_batch_stark::CommonData;
 use p3_circuit::CircuitBuilder;
 use p3_circuit_prover::common::get_airs_and_degrees_with_prep;
+use p3_circuit_prover::config::BabyBearConfig;
 use p3_circuit_prover::{BatchStarkProver, TablePacking, config};
 use p3_field::PrimeCharacteristicRing;
 use p3_lookup::logup::LogUpGadget;
@@ -64,7 +65,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     let table_packing = TablePacking::new(4, 4, 1);
 
     let (airs_degrees, witness_multiplicities) =
-        get_airs_and_degrees_with_prep::<_, _, 1>(&config, &circuit, table_packing, None).unwrap();
+        get_airs_and_degrees_with_prep::<BabyBearConfig, _, 1>(&circuit, table_packing, None)
+            .unwrap();
     let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
     let mut runner = circuit.runner();
 

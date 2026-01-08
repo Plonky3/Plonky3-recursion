@@ -2979,7 +2979,7 @@ mod tests {
 
     use super::*;
     use crate::common::get_airs_and_degrees_with_prep;
-    use crate::config;
+    use crate::config::{self, BabyBearConfig, GoldilocksConfig, KoalaBearConfig};
 
     #[test]
     fn test_babybear_batch_stark_base_field() {
@@ -3003,13 +3003,13 @@ mod tests {
 
         let circuit = builder.build().unwrap();
         let cfg = config::baby_bear().build();
-        let (airs_degrees, witness_multiplicities) = get_airs_and_degrees_with_prep::<_, _, 1>(
-            &cfg,
-            &circuit,
-            TablePacking::default(),
-            None,
-        )
-        .unwrap();
+        let (airs_degrees, witness_multiplicities) =
+            get_airs_and_degrees_with_prep::<BabyBearConfig, _, 1>(
+                &circuit,
+                TablePacking::default(),
+                None,
+            )
+            .unwrap();
         let (mut airs, log_degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
         let common = CommonData::from_airs_and_degrees(&cfg, &mut airs, &log_degrees);
 
@@ -3060,7 +3060,7 @@ mod tests {
         let circuit = builder.build().unwrap();
         let default_packing = TablePacking::default();
         let (airs_degrees, witness_multiplicities) =
-            get_airs_and_degrees_with_prep::<_, _, 1>(&cfg, &circuit, default_packing, None)
+            get_airs_and_degrees_with_prep::<BabyBearConfig, _, 1>(&circuit, default_packing, None)
                 .unwrap();
         let (mut airs, log_degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
 
@@ -3188,13 +3188,13 @@ mod tests {
         builder.assert_zero(diff);
 
         let circuit = builder.build().unwrap();
-        let (airs_degrees, witness_multiplicities) = get_airs_and_degrees_with_prep::<_, _, D>(
-            &cfg,
-            &circuit,
-            TablePacking::default(),
-            None,
-        )
-        .unwrap();
+        let (airs_degrees, witness_multiplicities) =
+            get_airs_and_degrees_with_prep::<BabyBearConfig, _, D>(
+                &circuit,
+                TablePacking::default(),
+                None,
+            )
+            .unwrap();
         let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
 
         let mut runner = circuit.runner();
@@ -3259,7 +3259,7 @@ mod tests {
         let circuit = builder.build().unwrap();
         let default_packing = TablePacking::default();
         let (airs_degrees, witness_multiplicities) =
-            get_airs_and_degrees_with_prep::<_, _, D>(&cfg, &circuit, default_packing, None)
+            get_airs_and_degrees_with_prep::<BabyBearConfig, _, D>(&circuit, default_packing, None)
                 .unwrap();
         let (mut airs, log_degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
 
@@ -3413,13 +3413,13 @@ mod tests {
         builder.assert_zero(diff);
 
         let circuit = builder.build().unwrap();
-        let (airs_degrees, witness_multiplicities) = get_airs_and_degrees_with_prep::<_, _, 1>(
-            &cfg,
-            &circuit,
-            TablePacking::default(),
-            None,
-        )
-        .unwrap();
+        let (airs_degrees, witness_multiplicities) =
+            get_airs_and_degrees_with_prep::<KoalaBearConfig, _, 1>(
+                &circuit,
+                TablePacking::default(),
+                None,
+            )
+            .unwrap();
         let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
         let mut runner = circuit.runner();
 
@@ -3476,13 +3476,13 @@ mod tests {
         builder.assert_zero(diff);
 
         let circuit = builder.build().unwrap();
-        let (airs_degrees, witness_multiplicities) = get_airs_and_degrees_with_prep::<_, _, D>(
-            &cfg,
-            &circuit,
-            TablePacking::default(),
-            None,
-        )
-        .unwrap();
+        let (airs_degrees, witness_multiplicities) =
+            get_airs_and_degrees_with_prep::<KoalaBearConfig, _, D>(
+                &circuit,
+                TablePacking::default(),
+                None,
+            )
+            .unwrap();
         let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
         let mut runner = circuit.runner();
 
@@ -3560,13 +3560,13 @@ mod tests {
         builder.assert_zero(diff);
 
         let circuit = builder.build().unwrap();
-        let (airs_degrees, witness_multiplicities) = get_airs_and_degrees_with_prep::<_, _, D>(
-            &cfg,
-            &circuit,
-            TablePacking::default(),
-            None,
-        )
-        .unwrap();
+        let (airs_degrees, witness_multiplicities) =
+            get_airs_and_degrees_with_prep::<GoldilocksConfig, _, D>(
+                &circuit,
+                TablePacking::default(),
+                None,
+            )
+            .unwrap();
         let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
         let mut runner = circuit.runner();
 

@@ -41,8 +41,7 @@ fn test_arith_lookups() {
 
     let circuit = builder.build().unwrap();
     let (airs_degrees, witness_multiplicities) =
-        get_airs_and_degrees_with_prep::<_, _, 1>(&config_proving, &circuit, table_packing, None)
-            .unwrap();
+        get_airs_and_degrees_with_prep::<MyConfig, _, 1>(&circuit, table_packing, None).unwrap();
 
     let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
     let mut runner = circuit.runner();
@@ -136,8 +135,7 @@ fn test_wrong_multiplicities() {
 
     let circuit = builder.build().unwrap();
     let (airs_degrees, mut witness_multiplicities) =
-        get_airs_and_degrees_with_prep::<_, _, 1>(&config_proving, &circuit, table_packing, None)
-            .unwrap();
+        get_airs_and_degrees_with_prep::<MyConfig, _, 1>(&circuit, table_packing, None).unwrap();
 
     // Introduce an error in the witness multiplicities.
     witness_multiplicities[PrimitiveTable::Add as usize] += F::ONE;
@@ -233,8 +231,7 @@ fn test_wrong_expected_cumulated() {
 
     let circuit = builder.build().unwrap();
     let (airs_degrees, witness_multiplicities) =
-        get_airs_and_degrees_with_prep::<_, _, 1>(&config_proving, &circuit, table_packing, None)
-            .unwrap();
+        get_airs_and_degrees_with_prep::<MyConfig, _, 1>(&circuit, table_packing, None).unwrap();
 
     let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
     let mut runner = circuit.runner();
@@ -336,8 +333,7 @@ fn test_inconsistent_lookup_shape() {
 
     let circuit = builder.build().unwrap();
     let (airs_degrees, witness_multiplicities) =
-        get_airs_and_degrees_with_prep::<_, _, 1>(&config_proving, &circuit, table_packing, None)
-            .unwrap();
+        get_airs_and_degrees_with_prep::<MyConfig, _, 1>(&circuit, table_packing, None).unwrap();
 
     let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
     let mut runner = circuit.runner();

@@ -62,7 +62,6 @@ pub fn get_airs_and_degrees_with_prep<
     ExtF: ExtensionField<Val<SC>> + ExtractBinomialW<Val<SC>>,
     const D: usize,
 >(
-    cfg: &SC,
     circuit: &Circuit<ExtF>,
     packing: TablePacking,
     non_primitive_configs: Option<&[NonPrimitiveConfig]>,
@@ -71,7 +70,6 @@ where
     SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
     Val<SC>: StarkField,
 {
-    let _ = cfg; // Simply to easily determine the type of SC in the function signature.
     let mut preprocessed: Vec<Vec<ExtF>> = circuit.generate_preprocessed_columns()?;
 
     // If Add or Mul tables are empty, we add a dummy row to avoid issues in the AIRs.
@@ -79,7 +77,6 @@ where
     let witness_idx = PrimitiveOpType::Witness as usize;
     let add_idx = PrimitiveOpType::Add as usize;
     if preprocessed[add_idx].is_empty() {
-        // We add 3 to the multiplicity of 0.
         let num_extra = AddAir::<Val<SC>, D>::lane_width() / D;
 
         preprocessed[witness_idx][0] += ExtF::from_usize(num_extra);
@@ -90,7 +87,6 @@ where
     }
     let mul_idx = PrimitiveOpType::Mul as usize;
     if preprocessed[mul_idx].is_empty() {
-        // We add 3 to the multiplicity of 0.
         let num_extra = MulAir::<Val<SC>, D>::lane_width() / D;
         preprocessed[witness_idx][0] += ExtF::from_usize(num_extra);
         preprocessed[mul_idx].extend(vec![
@@ -141,7 +137,7 @@ where
                     }
                     PrimitiveOpType::Mul => {
                         // The `- 1` comes from the fact that the first preprocessing column is the multiplicity,
-                        // which we do not need to compute here for `Add`.
+                        // which we do not need to compute here for `Mul`.
                         let lane_without_multiplicities =
                             MulAir::<Val<SC>, D>::preprocessed_lane_width() - 1;
                         assert!(prep.len() % lane_without_multiplicities == 0);

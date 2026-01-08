@@ -62,8 +62,7 @@ fn test_fibonacci_batch_verifier() {
 
     let circuit = builder.build().unwrap();
     let (airs_degrees, witness_multiplicities) =
-        get_airs_and_degrees_with_prep::<_, _, 1>(&config_proving, &circuit, table_packing, None)
-            .unwrap();
+        get_airs_and_degrees_with_prep::<MyConfig, _, 1>(&circuit, table_packing, None).unwrap();
     let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
     let mut runner = circuit.runner();
 

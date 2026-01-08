@@ -11,6 +11,7 @@ use p3_circuit::ops::{Poseidon2PermCall, Poseidon2PermOps};
 use p3_circuit::tables::generate_poseidon2_trace;
 use p3_circuit::{CircuitBuilder, ExprId};
 use p3_circuit_prover::common::{NonPrimitiveConfig, get_airs_and_degrees_with_prep};
+use p3_circuit_prover::config::BabyBearConfig;
 use p3_circuit_prover::{BatchStarkProver, Poseidon2Config, TablePacking, config};
 use p3_field::extension::BinomialExtensionField;
 use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
@@ -124,13 +125,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     let stark_config = config::baby_bear().build();
     let table_packing = TablePacking::new(1, 1, 1);
     let poseidon2_config = Poseidon2Config::baby_bear_d4_width16();
-    let (airs_degrees, witness_multiplicities) = get_airs_and_degrees_with_prep::<_, _, 4>(
-        &stark_config,
-        &circuit,
-        table_packing,
-        Some(&[NonPrimitiveConfig::Poseidon2(poseidon2_config.clone())]),
-    )
-    .unwrap();
+    let (airs_degrees, witness_multiplicities) =
+        get_airs_and_degrees_with_prep::<BabyBearConfig, _, 4>(
+            &circuit,
+            table_packing,
+            Some(&[NonPrimitiveConfig::Poseidon2(poseidon2_config.clone())]),
+        )
+        .unwrap();
 
     let runner = circuit.runner();
     let traces = runner.run()?;
