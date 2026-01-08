@@ -7,8 +7,8 @@ use std::error::Error;
 /// computation.
 use p3_baby_bear::{BabyBear, default_babybear_poseidon2_16};
 use p3_batch_stark::CommonData;
-use p3_circuit::ops::{Poseidon2PermCall, Poseidon2PermOps};
-use p3_circuit::tables::generate_poseidon2_trace;
+use p3_circuit::op::NonPrimitiveOpType;
+use p3_circuit::ops::{Poseidon2PermCall, Poseidon2PermOps, generate_poseidon2_trace};
 use p3_circuit::{CircuitBuilder, ExprId};
 use p3_circuit_prover::common::{NonPrimitiveConfig, get_airs_and_degrees_with_prep};
 use p3_circuit_prover::config::BabyBearConfig;
@@ -97,6 +97,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
 
         let (_op_id, outputs) = builder.add_poseidon2_perm(Poseidon2PermCall {
+            config: Poseidon2Config::BabyBearD4Width16,
             new_start: is_first,
             merkle_path: false,
             mmcs_bit: None, // Must be None when merkle_path=false
@@ -124,12 +125,12 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let stark_config = config::baby_bear().build();
     let table_packing = TablePacking::new(1, 1, 1);
-    let poseidon2_config = Poseidon2Config::baby_bear_d4_width16();
+    let poseidon2_config = Poseidon2Config::BabyBearD4Width16;
     let (airs_degrees, witness_multiplicities) =
         get_airs_and_degrees_with_prep::<BabyBearConfig, _, 4>(
             &circuit,
             table_packing,
-            Some(&[NonPrimitiveConfig::Poseidon2(poseidon2_config.clone())]),
+            Some(&[NonPrimitiveConfig::Poseidon2(poseidon2_config)]),
         )
         .unwrap();
 
@@ -178,7 +179,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     assert!(
         traces
             .non_primitive_traces
-            .get("poseidon2")
+            .get(&NonPrimitiveOpType::Poseidon2Perm(
+                Poseidon2Config::BabyBearD4Width16
+            ))
             .is_some_and(|t| t.rows() == chain_length),
         "Poseidon2 trace should contain one row per perm op"
     );

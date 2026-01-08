@@ -1,4 +1,5 @@
 use alloc::boxed::Box;
+use alloc::collections::BTreeMap;
 use alloc::string::ToString;
 use alloc::vec::Vec;
 use alloc::{format, vec};
@@ -14,7 +15,7 @@ use super::public::PublicTraceBuilder;
 use super::witness::WitnessTraceBuilder;
 use super::{NonPrimitiveTrace, Traces};
 use crate::circuit::Circuit;
-use crate::op::{ExecutionContext, NonPrimitiveOpPrivateData, Op};
+use crate::op::{ExecutionContext, NonPrimitiveOpPrivateData, NonPrimitiveOpType, Op, OpStateMap};
 use crate::types::{NonPrimitiveOpId, WitnessId};
 use crate::{CircuitError, CircuitField};
 
@@ -28,6 +29,8 @@ pub struct CircuitRunner<F> {
     non_primitive_op_private_data: Vec<Option<NonPrimitiveOpPrivateData<F>>>,
     /// Map from NonPrimitiveOpId -> index in `circuit.ops` for type checks.
     non_primitive_op_index_by_id: Vec<Option<usize>>,
+    /// Operation-specific execution state (e.g., Poseidon chaining, row records).
+    op_states: OpStateMap,
 }
 
 impl<F: CircuitField> CircuitRunner<F> {
@@ -61,11 +64,13 @@ impl<F: CircuitField> CircuitRunner<F> {
         }
 
         let non_primitive_op_private_data = vec![None; non_primitive_op_count];
+        let op_states = BTreeMap::new();
         Self {
             circuit,
             witness,
             non_primitive_op_private_data,
             non_primitive_op_index_by_id,
+            op_states,
         }
     }
 
@@ -126,7 +131,7 @@ impl<F: CircuitField> CircuitRunner<F> {
         };
         match (executor.op_type(), &private_data) {
             (
-                crate::op::NonPrimitiveOpType::Poseidon2Perm,
+                crate::op::NonPrimitiveOpType::Poseidon2Perm(_),
                 NonPrimitiveOpPrivateData::Poseidon2Perm(_),
             ) => {
                 // ok
@@ -136,7 +141,7 @@ impl<F: CircuitField> CircuitRunner<F> {
         // Disallow double-setting private data
         if self.non_primitive_op_private_data[op_id.0 as usize].is_some() {
             return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
-                op: executor.op_type().clone(),
+                op: *executor.op_type(),
                 operation_index: op_id,
                 expected: "private data not previously set".to_string(),
                 got: "already set".to_string(),
@@ -160,16 +165,16 @@ impl<F: CircuitField> CircuitRunner<F> {
         let add_trace = AddTraceBuilder::new(&self.circuit.ops, &self.witness).build()?;
         let mul_trace = MulTraceBuilder::new(&self.circuit.ops, &self.witness).build()?;
 
-        let mut non_primitive_traces: HashMap<&'static str, Box<dyn NonPrimitiveTrace<F>>> =
+        let mut non_primitive_traces: HashMap<NonPrimitiveOpType, Box<dyn NonPrimitiveTrace<F>>> =
             HashMap::new();
-        for generator in self.circuit.non_primitive_trace_generators.values() {
-            if let Some(trace) = generator(
-                &self.circuit,
-                &self.witness,
-                &self.non_primitive_op_private_data,
-            )? {
-                let id = trace.id();
-                non_primitive_traces.insert(id, trace);
+        // Iterate over generators in deterministic order (sorted by key)
+        let mut op_types: Vec<_> = self.circuit.non_primitive_trace_generators.keys().collect();
+        op_types.sort();
+        for op_type in op_types {
+            let generator = &self.circuit.non_primitive_trace_generators[op_type];
+            if let Some(trace) = generator(&self.op_states)? {
+                let trace_op_type = trace.op_type();
+                non_primitive_traces.insert(trace_op_type, trace);
             }
         }
 
@@ -190,9 +195,6 @@ impl<F: CircuitField> CircuitRunner<F> {
     fn execute_all(&mut self) -> Result<(), CircuitError> {
         // Clone ops to avoid borrowing issues.
         let ops = self.circuit.ops.clone();
-
-        // Global chaining state for Poseidon2 permutation
-        let mut last_poseidon: Option<[F; 4]> = None;
 
         for op in ops {
             match op {
@@ -264,7 +266,7 @@ impl<F: CircuitField> CircuitRunner<F> {
                         &self.non_primitive_op_private_data,
                         &self.circuit.enabled_ops,
                         op_id,
-                        &mut last_poseidon,
+                        &mut self.op_states,
                     );
 
                     executor.execute(&inputs, &outputs, &mut ctx)?;

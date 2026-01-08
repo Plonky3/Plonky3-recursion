@@ -2,7 +2,7 @@ mod common;
 
 use p3_baby_bear::{BabyBear as F, Poseidon2BabyBear};
 use p3_circuit::CircuitBuilder;
-use p3_circuit::tables::Poseidon2CircuitRow;
+use p3_circuit::ops::Poseidon2CircuitRow;
 use p3_commit::ExtensionMmcs;
 use p3_field::PrimeCharacteristicRing;
 use p3_fri::{TwoAdicFriPcs, create_test_fri_params};
@@ -68,7 +68,6 @@ fn test_poseidon2_perm_verifier() -> Result<(), VerificationError> {
         ),
         partial_constants.to_vec(),
     );
-    let perm_for_trace = perm.clone();
 
     let hash = MyHash::new(perm.clone());
     let compress = MyCompress::new(perm.clone());
@@ -115,7 +114,7 @@ fn test_poseidon2_perm_verifier() -> Result<(), VerificationError> {
 
     let (prover_data, verifier_data) = setup_preprocessed(&config, &air, 5).unwrap();
 
-    let trace = air.generate_trace_rows(&ops, &constants, 0, &perm_for_trace);
+    let trace = air.generate_trace_rows(&ops, &constants, 0);
 
     let public_inputs: Vec<F> = vec![];
     let proof = prove_with_preprocessed(&config, &air, trace, &public_inputs, Some(&prover_data));

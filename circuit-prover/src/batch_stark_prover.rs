@@ -9,30 +9,27 @@ use core::borrow::Borrow;
 use core::mem::transmute;
 
 use p3_air::{Air, AirBuilder, BaseAir, PairBuilder};
-use p3_baby_bear::{
-    BabyBear, GenericPoseidon2LinearLayersBabyBear, default_babybear_poseidon2_16,
-    default_babybear_poseidon2_24,
-};
+use p3_baby_bear::{BabyBear, GenericPoseidon2LinearLayersBabyBear};
 #[cfg(debug_assertions)]
 use p3_batch_stark::DebugConstraintBuilderWithLookups;
 use p3_batch_stark::{BatchProof, CommonData, StarkGenericConfig, StarkInstance, Val};
-use p3_circuit::op::PrimitiveOpType;
-use p3_circuit::tables::{
-    Poseidon2CircuitRow, Poseidon2CircuitTrace, Poseidon2Params, Poseidon2Trace, Traces,
-};
+use p3_circuit::op::{NonPrimitiveOpType, Poseidon2Config, PrimitiveOpType};
+use p3_circuit::ops::{Poseidon2CircuitRow, Poseidon2Params, Poseidon2Trace};
+use p3_circuit::tables::Traces;
 use p3_field::extension::{BinomialExtensionField, BinomiallyExtendable};
 use p3_field::{BasedVectorSpace, ExtensionField, Field, PrimeCharacteristicRing, PrimeField};
-use p3_koala_bear::{
-    GenericPoseidon2LinearLayersKoalaBear, KoalaBear, default_koalabear_poseidon2_16,
-    default_koalabear_poseidon2_24,
-};
+use p3_koala_bear::{GenericPoseidon2LinearLayersKoalaBear, KoalaBear};
 use p3_lookup::folder::{ProverConstraintFolderWithLookups, VerifierConstraintFolderWithLookups};
 use p3_lookup::lookup_traits::{AirLookupHandler, Lookup, LookupGadget};
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_poseidon2_air::RoundConstants;
-use p3_poseidon2_circuit_air::*;
-use p3_symmetric::CryptographicPermutation;
+use p3_poseidon2_circuit_air::{
+    BabyBearD4Width16, BabyBearD4Width24, KoalaBearD4Width16, KoalaBearD4Width24,
+    Poseidon2CircuitAir, Poseidon2CircuitAirBabyBearD4Width16,
+    Poseidon2CircuitAirBabyBearD4Width24, Poseidon2CircuitAirKoalaBearD4Width16,
+    Poseidon2CircuitAirKoalaBearD4Width24, eval_unchecked, extract_preprocessed_from_operations,
+};
 use p3_uni_stark::{
     ProverConstraintFolder, SymbolicAirBuilder, SymbolicExpression, VerifierConstraintFolder,
 };
@@ -95,8 +92,8 @@ pub struct NonPrimitiveTableEntry<SC>
 where
     SC: StarkGenericConfig,
 {
-    /// Plugin identifier (it should match `TableProver::id`).
-    pub id: &'static str,
+    /// Operation type (it should match `TableProver::op_type`).
+    pub op_type: NonPrimitiveOpType,
     /// Number of logical rows produced for this table.
     pub rows: usize,
     /// Public values exposed by this table (if any).
@@ -211,8 +208,8 @@ pub struct BatchTableInstance<SC>
 where
     SC: StarkGenericConfig,
 {
-    /// Plugin identifier (it should match `TableProver::id`).
-    pub id: &'static str,
+    /// Operation type (it should match `TableProver::op_type`).
+    pub op_type: NonPrimitiveOpType,
     /// The AIR implementation for this table.
     pub air: DynamicAirEntry<SC>,
     /// The populated trace matrix for this table.
@@ -249,7 +246,9 @@ pub(crate) unsafe fn transmute_traces<FromEF, ToEF>(t: &Traces<FromEF>) -> &Trac
 ///
 /// ```ignore
 /// impl<SC> TableProver<SC> for MyPlugin {
-///     fn id(&self) -> &'static str { "my_plugin" }
+///     fn op_type(&self) -> NonPrimitiveOpType {
+///         NonPrimitiveOpType::Poseidon2Perm(Poseidon2Config::BabyBearD4Width16)
+///     }
 ///
 ///     impl_table_prover_batch_instances_from_base!(batch_instance_base);
 /// }
@@ -258,8 +257,8 @@ pub trait TableProver<SC>: Send + Sync
 where
     SC: StarkGenericConfig + 'static,
 {
-    /// Identifier for this prover.
-    fn id(&self) -> &'static str;
+    /// Operation type for this prover.
+    fn op_type(&self) -> NonPrimitiveOpType;
 
     /// Produce a batched table instance for base-field traces.
     fn batch_instance_d1(
@@ -321,7 +320,9 @@ where
 ///
 /// ```ignore
 /// impl<SC> TableProver<SC> for MyPlugin {
-///     fn id(&self) -> &'static str { "my_plugin" }
+///     fn op_type(&self) -> NonPrimitiveOpType {
+///         NonPrimitiveOpType::Poseidon2Perm(Poseidon2Config::BabyBearD4Width16)
+///     }
 ///
 ///     impl_table_prover_batch_instances_from_base!(batch_instance_base);
 ///
@@ -401,224 +402,6 @@ macro_rules! impl_table_prover_batch_instances_from_base {
     };
 }
 
-const BABY_BEAR_MODULUS: u64 = 2013265921;
-const KOALA_BEAR_MODULUS: u64 = 2147483649;
-
-/// Poseidon2 configuration that can be selected at runtime.
-/// This enum represents different Poseidon2 configurations (field type, width, etc.).
-#[derive(Debug, Clone)]
-pub enum Poseidon2Config {
-    /// BabyBear D=4, WIDTH=16 configuration
-    BabyBearD4Width16 {
-        permutation: p3_baby_bear::Poseidon2BabyBear<16>,
-        constants: RoundConstants<p3_baby_bear::BabyBear, 16, 4, 13>,
-    },
-    /// BabyBear D=4, WIDTH=24 configuration
-    BabyBearD4Width24 {
-        permutation: p3_baby_bear::Poseidon2BabyBear<24>,
-        constants: RoundConstants<p3_baby_bear::BabyBear, 24, 4, 21>,
-    },
-    /// KoalaBear D=4, WIDTH=16 configuration
-    KoalaBearD4Width16 {
-        permutation: p3_koala_bear::Poseidon2KoalaBear<16>,
-        constants: RoundConstants<p3_koala_bear::KoalaBear, 16, 4, 20>,
-    },
-    /// KoalaBear D=4, WIDTH=24 configuration
-    KoalaBearD4Width24 {
-        permutation: p3_koala_bear::Poseidon2KoalaBear<24>,
-        constants: RoundConstants<p3_koala_bear::KoalaBear, 24, 4, 23>,
-    },
-}
-
-impl Poseidon2Config {
-    /// Create BabyBear D=4 WIDTH=16 configuration from default permutation.
-    /// Uses the same permutation and constants as `default_babybear_poseidon2_16()`.
-    pub fn baby_bear_d4_width16() -> Self {
-        let perm = default_babybear_poseidon2_16();
-
-        let beginning_full: [[BabyBear; 16]; 4] = p3_baby_bear::BABYBEAR_RC16_EXTERNAL_INITIAL;
-        let partial: [BabyBear; 13] = p3_baby_bear::BABYBEAR_RC16_INTERNAL;
-        let ending_full: [[BabyBear; 16]; 4] = p3_baby_bear::BABYBEAR_RC16_EXTERNAL_FINAL;
-
-        let constants = RoundConstants::new(beginning_full, partial, ending_full);
-
-        Self::BabyBearD4Width16 {
-            permutation: perm,
-            constants,
-        }
-    }
-
-    /// Create BabyBear D=4 WIDTH=24 configuration from default permutation.
-    /// Uses the same permutation and constants as `default_babybear_poseidon2_24()`.
-    pub fn baby_bear_d4_width24() -> Self {
-        let perm = default_babybear_poseidon2_24();
-
-        let beginning_full: [[BabyBear; 24]; 4] = p3_baby_bear::BABYBEAR_RC24_EXTERNAL_INITIAL;
-        let partial: [BabyBear; 21] = p3_baby_bear::BABYBEAR_RC24_INTERNAL;
-        let ending_full: [[BabyBear; 24]; 4] = p3_baby_bear::BABYBEAR_RC24_EXTERNAL_FINAL;
-
-        let constants = RoundConstants::new(beginning_full, partial, ending_full);
-
-        Self::BabyBearD4Width24 {
-            permutation: perm,
-            constants,
-        }
-    }
-
-    /// Create KoalaBear D=4 WIDTH=16 configuration from default permutation.
-    /// Uses the same permutation and constants as `default_koalabear_poseidon2_16()`.
-    pub fn koala_bear_d4_width16() -> Self {
-        let perm = default_koalabear_poseidon2_16();
-
-        let beginning_full: [[KoalaBear; 16]; 4] = p3_koala_bear::KOALABEAR_RC16_EXTERNAL_INITIAL;
-        let partial: [KoalaBear; 20] = p3_koala_bear::KOALABEAR_RC16_INTERNAL;
-        let ending_full: [[KoalaBear; 16]; 4] = p3_koala_bear::KOALABEAR_RC16_EXTERNAL_FINAL;
-
-        let constants = RoundConstants::new(beginning_full, partial, ending_full);
-
-        Self::KoalaBearD4Width16 {
-            permutation: perm,
-            constants,
-        }
-    }
-
-    /// Create KoalaBear D=4 WIDTH=24 configuration from default permutation.
-    /// Uses the same permutation and constants as `default_koalabear_poseidon2_24()`.
-    pub fn koala_bear_d4_width24() -> Self {
-        let perm = default_koalabear_poseidon2_24();
-
-        let beginning_full: [[KoalaBear; 24]; 4] = p3_koala_bear::KOALABEAR_RC24_EXTERNAL_INITIAL;
-        let partial: [KoalaBear; 23] = p3_koala_bear::KOALABEAR_RC24_INTERNAL;
-        let ending_full: [[KoalaBear; 24]; 4] = p3_koala_bear::KOALABEAR_RC24_EXTERNAL_FINAL;
-
-        let constants = RoundConstants::new(beginning_full, partial, ending_full);
-
-        Self::KoalaBearD4Width24 {
-            permutation: perm,
-            constants,
-        }
-    }
-
-    fn to_air_wrapper(&self) -> Poseidon2AirWrapperInner {
-        match self {
-            Self::BabyBearD4Width16 { constants, .. } => {
-                Poseidon2AirWrapperInner::BabyBearD4Width16(Box::new(
-                    Poseidon2CircuitAirBabyBearD4Width16::new(constants.clone()),
-                ))
-            }
-            Self::BabyBearD4Width24 { constants, .. } => {
-                Poseidon2AirWrapperInner::BabyBearD4Width24(Box::new(
-                    Poseidon2CircuitAirBabyBearD4Width24::new(constants.clone()),
-                ))
-            }
-            Self::KoalaBearD4Width16 { constants, .. } => {
-                Poseidon2AirWrapperInner::KoalaBearD4Width16(Box::new(
-                    Poseidon2CircuitAirKoalaBearD4Width16::new(constants.clone()),
-                ))
-            }
-            Self::KoalaBearD4Width24 { constants, .. } => {
-                Poseidon2AirWrapperInner::KoalaBearD4Width24(Box::new(
-                    Poseidon2CircuitAirKoalaBearD4Width24::new(constants.clone()),
-                ))
-            }
-        }
-    }
-
-    fn to_air_wrapper_with_preprocessed<F: Field>(
-        &self,
-        preprocessed: Vec<F>,
-    ) -> Poseidon2AirWrapperInner {
-        match self {
-            Self::BabyBearD4Width16 { constants, .. } => {
-                assert!(F::from_u64(BABY_BEAR_MODULUS) == F::ZERO,);
-                Poseidon2AirWrapperInner::BabyBearD4Width16(Box::new(
-                    Poseidon2CircuitAirBabyBearD4Width16::new_with_preprocessed(
-                        constants.clone(),
-                        unsafe { transmute::<Vec<F>, Vec<BabyBear>>(preprocessed) },
-                    ),
-                ))
-            }
-            Self::BabyBearD4Width24 { constants, .. } => {
-                assert!(F::from_u64(BABY_BEAR_MODULUS) == F::ZERO,);
-                Poseidon2AirWrapperInner::BabyBearD4Width24(Box::new(
-                    Poseidon2CircuitAirBabyBearD4Width24::new_with_preprocessed(
-                        constants.clone(),
-                        unsafe { transmute::<Vec<F>, Vec<BabyBear>>(preprocessed) },
-                    ),
-                ))
-            }
-            Self::KoalaBearD4Width16 { constants, .. } => {
-                assert!(F::from_u64(KOALA_BEAR_MODULUS) == F::ZERO,);
-                Poseidon2AirWrapperInner::KoalaBearD4Width16(Box::new(
-                    Poseidon2CircuitAirKoalaBearD4Width16::new_with_preprocessed(
-                        constants.clone(),
-                        unsafe { transmute::<Vec<F>, Vec<KoalaBear>>(preprocessed) },
-                    ),
-                ))
-            }
-            Self::KoalaBearD4Width24 { constants, .. } => {
-                assert!(F::from_u64(KOALA_BEAR_MODULUS) == F::ZERO,);
-                Poseidon2AirWrapperInner::KoalaBearD4Width24(Box::new(
-                    Poseidon2CircuitAirKoalaBearD4Width24::new_with_preprocessed(
-                        constants.clone(),
-                        unsafe { transmute::<Vec<F>, Vec<KoalaBear>>(preprocessed) },
-                    ),
-                ))
-            }
-        }
-    }
-
-    fn to_air_wrapper_with_preprocessed_baby_bear(
-        &self,
-        preprocessed: Vec<BabyBear>,
-    ) -> Poseidon2AirWrapperInner {
-        match self {
-            Self::BabyBearD4Width16 { constants, .. } => {
-                Poseidon2AirWrapperInner::BabyBearD4Width16(Box::new(
-                    Poseidon2CircuitAirBabyBearD4Width16::new_with_preprocessed(
-                        constants.clone(),
-                        preprocessed,
-                    ),
-                ))
-            }
-            Self::BabyBearD4Width24 { constants, .. } => {
-                Poseidon2AirWrapperInner::BabyBearD4Width24(Box::new(
-                    Poseidon2CircuitAirBabyBearD4Width24::new_with_preprocessed(
-                        constants.clone(),
-                        preprocessed,
-                    ),
-                ))
-            }
-            _ => panic!("Invalid config for BabyBear preprocessed trace"),
-        }
-    }
-
-    fn to_air_wrapper_with_preprocessed_koala_bear(
-        &self,
-        preprocessed: Vec<KoalaBear>,
-    ) -> Poseidon2AirWrapperInner {
-        match self {
-            Self::KoalaBearD4Width16 { constants, .. } => {
-                Poseidon2AirWrapperInner::KoalaBearD4Width16(Box::new(
-                    Poseidon2CircuitAirKoalaBearD4Width16::new_with_preprocessed(
-                        constants.clone(),
-                        preprocessed,
-                    ),
-                ))
-            }
-            Self::KoalaBearD4Width24 { constants, .. } => {
-                Poseidon2AirWrapperInner::KoalaBearD4Width24(Box::new(
-                    Poseidon2CircuitAirKoalaBearD4Width24::new_with_preprocessed(
-                        constants.clone(),
-                        preprocessed,
-                    ),
-                ))
-            }
-            _ => panic!("Invalid config for KoalaBear preprocessed trace"),
-        }
-    }
-}
-
 /// Wrapper for Poseidon2CircuitAir that implements BatchAir<SC>
 // We need this because `BatchAir` requires `BaseAir<Val<SC>>`.
 // but `Poseidon2CircuitAir` works over a specific field.
@@ -674,6 +457,9 @@ impl<SC: StarkGenericConfig> Clone for Poseidon2AirWrapper<SC> {
         }
     }
 }
+
+const BABY_BEAR_MODULUS: u64 = 2013265921;
+const KOALA_BEAR_MODULUS: u64 = 2147483649;
 
 impl<SC> BaseAir<Val<SC>> for Poseidon2AirWrapper<SC>
 where
@@ -1695,6 +1481,103 @@ impl Poseidon2Prover {
         Self { config }
     }
 
+    const fn baby_bear_constants_16() -> RoundConstants<BabyBear, 16, 4, 13> {
+        let beginning_full: [[BabyBear; 16]; 4] = p3_baby_bear::BABYBEAR_RC16_EXTERNAL_INITIAL;
+        let partial: [BabyBear; 13] = p3_baby_bear::BABYBEAR_RC16_INTERNAL;
+        let ending_full: [[BabyBear; 16]; 4] = p3_baby_bear::BABYBEAR_RC16_EXTERNAL_FINAL;
+        RoundConstants::new(beginning_full, partial, ending_full)
+    }
+
+    const fn baby_bear_constants_24() -> RoundConstants<BabyBear, 24, 4, 21> {
+        let beginning_full: [[BabyBear; 24]; 4] = p3_baby_bear::BABYBEAR_RC24_EXTERNAL_INITIAL;
+        let partial: [BabyBear; 21] = p3_baby_bear::BABYBEAR_RC24_INTERNAL;
+        let ending_full: [[BabyBear; 24]; 4] = p3_baby_bear::BABYBEAR_RC24_EXTERNAL_FINAL;
+        RoundConstants::new(beginning_full, partial, ending_full)
+    }
+
+    const fn koala_bear_constants_16() -> RoundConstants<KoalaBear, 16, 4, 20> {
+        let beginning_full: [[KoalaBear; 16]; 4] = p3_koala_bear::KOALABEAR_RC16_EXTERNAL_INITIAL;
+        let partial: [KoalaBear; 20] = p3_koala_bear::KOALABEAR_RC16_INTERNAL;
+        let ending_full: [[KoalaBear; 16]; 4] = p3_koala_bear::KOALABEAR_RC16_EXTERNAL_FINAL;
+        RoundConstants::new(beginning_full, partial, ending_full)
+    }
+
+    const fn koala_bear_constants_24() -> RoundConstants<KoalaBear, 24, 4, 23> {
+        let beginning_full: [[KoalaBear; 24]; 4] = p3_koala_bear::KOALABEAR_RC24_EXTERNAL_INITIAL;
+        let partial: [KoalaBear; 23] = p3_koala_bear::KOALABEAR_RC24_INTERNAL;
+        let ending_full: [[KoalaBear; 24]; 4] = p3_koala_bear::KOALABEAR_RC24_EXTERNAL_FINAL;
+        RoundConstants::new(beginning_full, partial, ending_full)
+    }
+
+    fn air_wrapper_for_config(config: Poseidon2Config) -> Poseidon2AirWrapperInner {
+        match config {
+            Poseidon2Config::BabyBearD4Width16 => {
+                Poseidon2AirWrapperInner::BabyBearD4Width16(Box::new(
+                    Poseidon2CircuitAirBabyBearD4Width16::new(Self::baby_bear_constants_16()),
+                ))
+            }
+            Poseidon2Config::BabyBearD4Width24 => {
+                Poseidon2AirWrapperInner::BabyBearD4Width24(Box::new(
+                    Poseidon2CircuitAirBabyBearD4Width24::new(Self::baby_bear_constants_24()),
+                ))
+            }
+            Poseidon2Config::KoalaBearD4Width16 => {
+                Poseidon2AirWrapperInner::KoalaBearD4Width16(Box::new(
+                    Poseidon2CircuitAirKoalaBearD4Width16::new(Self::koala_bear_constants_16()),
+                ))
+            }
+            Poseidon2Config::KoalaBearD4Width24 => {
+                Poseidon2AirWrapperInner::KoalaBearD4Width24(Box::new(
+                    Poseidon2CircuitAirKoalaBearD4Width24::new(Self::koala_bear_constants_24()),
+                ))
+            }
+        }
+    }
+
+    fn air_wrapper_for_config_with_preprocessed<F: Field>(
+        config: Poseidon2Config,
+        preprocessed: Vec<F>,
+    ) -> Poseidon2AirWrapperInner {
+        match config {
+            Poseidon2Config::BabyBearD4Width16 => {
+                assert!(F::from_u64(BABY_BEAR_MODULUS) == F::ZERO,);
+                Poseidon2AirWrapperInner::BabyBearD4Width16(Box::new(
+                    Poseidon2CircuitAirBabyBearD4Width16::new_with_preprocessed(
+                        Self::baby_bear_constants_16(),
+                        unsafe { transmute::<Vec<F>, Vec<BabyBear>>(preprocessed) },
+                    ),
+                ))
+            }
+            Poseidon2Config::BabyBearD4Width24 => {
+                assert!(F::from_u64(BABY_BEAR_MODULUS) == F::ZERO,);
+                Poseidon2AirWrapperInner::BabyBearD4Width24(Box::new(
+                    Poseidon2CircuitAirBabyBearD4Width24::new_with_preprocessed(
+                        Self::baby_bear_constants_24(),
+                        unsafe { transmute::<Vec<F>, Vec<BabyBear>>(preprocessed) },
+                    ),
+                ))
+            }
+            Poseidon2Config::KoalaBearD4Width16 => {
+                assert!(F::from_u64(KOALA_BEAR_MODULUS) == F::ZERO,);
+                Poseidon2AirWrapperInner::KoalaBearD4Width16(Box::new(
+                    Poseidon2CircuitAirKoalaBearD4Width16::new_with_preprocessed(
+                        Self::koala_bear_constants_16(),
+                        unsafe { transmute::<Vec<F>, Vec<KoalaBear>>(preprocessed) },
+                    ),
+                ))
+            }
+            Poseidon2Config::KoalaBearD4Width24 => {
+                assert!(F::from_u64(KOALA_BEAR_MODULUS) == F::ZERO,);
+                Poseidon2AirWrapperInner::KoalaBearD4Width24(Box::new(
+                    Poseidon2CircuitAirKoalaBearD4Width24::new_with_preprocessed(
+                        Self::koala_bear_constants_24(),
+                        unsafe { transmute::<Vec<F>, Vec<KoalaBear>>(preprocessed) },
+                    ),
+                ))
+            }
+        }
+    }
+
     pub fn wrapper_from_config_with_preprocessed<SC>(
         &self,
         preprocessed: Vec<Val<SC>>,
@@ -1705,43 +1588,44 @@ impl Poseidon2Prover {
         SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
     {
         DynamicAirEntry::new(Box::new(Poseidon2AirWrapper {
-            inner: self.config.to_air_wrapper_with_preprocessed(preprocessed),
+            inner: Self::air_wrapper_for_config_with_preprocessed::<Val<SC>>(
+                self.config,
+                preprocessed,
+            ),
             width: self.width_from_config(),
             _phantom: core::marker::PhantomData::<SC>,
         }))
     }
 
     pub fn width_from_config(&self) -> usize {
-        match &self.config {
-            Poseidon2Config::BabyBearD4Width16 { constants, .. } => {
-                let air = Poseidon2CircuitAirBabyBearD4Width16::new(constants.clone());
-                air.width()
+        match self.config {
+            Poseidon2Config::BabyBearD4Width16 => {
+                Poseidon2CircuitAirBabyBearD4Width16::new(Self::baby_bear_constants_16()).width()
             }
-            Poseidon2Config::BabyBearD4Width24 { constants, .. } => {
-                let air = Poseidon2CircuitAirBabyBearD4Width24::new(constants.clone());
-                air.width()
+            Poseidon2Config::BabyBearD4Width24 => {
+                Poseidon2CircuitAirBabyBearD4Width24::new(Self::baby_bear_constants_24()).width()
             }
-            Poseidon2Config::KoalaBearD4Width16 { constants, .. } => {
-                Poseidon2CircuitAirKoalaBearD4Width16::new(constants.clone()).width()
+            Poseidon2Config::KoalaBearD4Width16 => {
+                Poseidon2CircuitAirKoalaBearD4Width16::new(Self::koala_bear_constants_16()).width()
             }
-            Poseidon2Config::KoalaBearD4Width24 { constants, .. } => {
-                Poseidon2CircuitAirKoalaBearD4Width24::new(constants.clone()).width()
+            Poseidon2Config::KoalaBearD4Width24 => {
+                Poseidon2CircuitAirKoalaBearD4Width24::new(Self::koala_bear_constants_24()).width()
             }
         }
     }
 
     pub const fn preprocessed_width_from_config(&self) -> usize {
-        match &self.config {
-            Poseidon2Config::BabyBearD4Width16 { .. } => {
+        match self.config {
+            Poseidon2Config::BabyBearD4Width16 => {
                 Poseidon2CircuitAirBabyBearD4Width16::preprocessed_width()
             }
-            Poseidon2Config::BabyBearD4Width24 { .. } => {
+            Poseidon2Config::BabyBearD4Width24 => {
                 Poseidon2CircuitAirBabyBearD4Width24::preprocessed_width()
             }
-            Poseidon2Config::KoalaBearD4Width16 { .. } => {
+            Poseidon2Config::KoalaBearD4Width16 => {
                 Poseidon2CircuitAirKoalaBearD4Width16::preprocessed_width()
             }
-            Poseidon2Config::KoalaBearD4Width24 { .. } => {
+            Poseidon2Config::KoalaBearD4Width24 => {
                 Poseidon2CircuitAirKoalaBearD4Width24::preprocessed_width()
             }
         }
@@ -1759,7 +1643,9 @@ impl Poseidon2Prover {
         CF: Field + ExtensionField<Val<SC>>,
         SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
     {
-        let t = traces.non_primitive_trace::<Poseidon2Trace<Val<SC>>>("poseidon2")?;
+        let t = traces.non_primitive_trace::<Poseidon2Trace<Val<SC>>>(
+            NonPrimitiveOpType::Poseidon2Perm(self.config),
+        )?;
 
         let rows = t.total_rows();
         if rows == 0 {
@@ -1767,46 +1653,25 @@ impl Poseidon2Prover {
         }
 
         // Pad to power of two and generate trace matrix based on configuration
-        match &self.config {
-            Poseidon2Config::BabyBearD4Width16 {
-                permutation,
-                constants,
-            } => self.batch_instance_base_impl::<SC, p3_baby_bear::BabyBear, _, 16, 4, 13, 2>(
-                t,
-                permutation,
-                constants,
-            ),
-            Poseidon2Config::BabyBearD4Width24 {
-                permutation,
-                constants,
-            } => self.batch_instance_base_impl::<SC, p3_baby_bear::BabyBear, _, 24, 4, 21, 4>(
-                t,
-                permutation,
-                constants,
-            ),
-            Poseidon2Config::KoalaBearD4Width16 {
-                permutation,
-                constants,
-            } => self.batch_instance_base_impl::<SC, p3_koala_bear::KoalaBear, _, 16, 4, 20, 2>(
-                t,
-                permutation,
-                constants,
-            ),
-            Poseidon2Config::KoalaBearD4Width24 {
-                permutation,
-                constants,
-            } => self.batch_instance_base_impl::<SC, p3_koala_bear::KoalaBear, _, 24, 4, 23, 4>(
-                t,
-                permutation,
-                constants,
-            ),
+        match self.config {
+            Poseidon2Config::BabyBearD4Width16 => {
+                self.batch_instance_base_impl::<SC, p3_baby_bear::BabyBear, 16, 4, 13, 2>(t)
+            }
+            Poseidon2Config::BabyBearD4Width24 => {
+                self.batch_instance_base_impl::<SC, p3_baby_bear::BabyBear, 24, 4, 21, 4>(t)
+            }
+            Poseidon2Config::KoalaBearD4Width16 => {
+                self.batch_instance_base_impl::<SC, p3_koala_bear::KoalaBear, 16, 4, 20, 2>(t)
+            }
+            Poseidon2Config::KoalaBearD4Width24 => {
+                self.batch_instance_base_impl::<SC, p3_koala_bear::KoalaBear, 24, 4, 23, 4>(t)
+            }
         }
     }
 
     fn batch_instance_base_impl<
         SC,
         F,
-        P,
         const WIDTH: usize,
         const HALF_FULL_ROUNDS: usize,
         const PARTIAL_ROUNDS: usize,
@@ -1814,13 +1679,10 @@ impl Poseidon2Prover {
     >(
         &self,
         t: &Poseidon2Trace<Val<SC>>,
-        _permutation: &P,
-        _constants: &RoundConstants<F, WIDTH, HALF_FULL_ROUNDS, PARTIAL_ROUNDS>,
     ) -> Option<BatchTableInstance<SC>>
     where
         SC: StarkGenericConfig + 'static + Send + Sync,
         F: StarkField + PrimeCharacteristicRing,
-        P: CryptographicPermutation<[F; WIDTH]> + Clone,
         Val<SC>: StarkField,
         SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
     {
@@ -1849,111 +1711,109 @@ impl Poseidon2Prover {
             );
         }
 
-        // Convert trace from Val<SC> to F using unsafe transmute
-        // This is safe when Val<SC> and F have the same size and layout
-        // For BabyBear/KoalaBear configs, Val<SC> should be BabyBear/KoalaBear
-        let ops_converted: Poseidon2CircuitTrace<F> = unsafe { transmute(padded_ops) };
+        // Convert trace from Val<SC> to F
+        // Val<SC> and F are guaranteed to be the same type at runtime (BabyBear/KoalaBear)
+        let ops_converted: Vec<Poseidon2CircuitRow<F>> = unsafe { transmute(padded_ops) };
 
         // Create an AIR instance based on the configuration
         // This is a bit verbose but we can't get over const generics
-        let (air, matrix) = match &self.config {
-            Poseidon2Config::BabyBearD4Width16 {
-                permutation,
-                constants,
-            } => {
+        let (air, matrix) = match self.config {
+            Poseidon2Config::BabyBearD4Width16 => {
+                let constants = Self::baby_bear_constants_16();
                 let preprocessed =
                     extract_preprocessed_from_operations::<BabyBear, Val<SC>>(&t.operations);
                 let air = Poseidon2CircuitAirBabyBearD4Width16::new_with_preprocessed(
                     constants.clone(),
                     preprocessed.clone(),
                 );
-                let ops_babybear: Poseidon2CircuitTrace<BabyBear> =
+                // F is guaranteed to be BabyBear at runtime in this branch
+                let ops_babybear: Vec<Poseidon2CircuitRow<BabyBear>> =
                     unsafe { transmute(ops_converted) };
-                let matrix_f = air.generate_trace_rows(&ops_babybear, constants, 0, permutation);
+                let matrix_f = air.generate_trace_rows(&ops_babybear, &constants, 0);
                 let matrix: RowMajorMatrix<Val<SC>> = unsafe { transmute(matrix_f) };
                 (
                     Poseidon2AirWrapper {
-                        inner: self
-                            .config
-                            .to_air_wrapper_with_preprocessed_baby_bear(preprocessed),
+                        inner: Self::air_wrapper_for_config_with_preprocessed::<BabyBear>(
+                            self.config,
+                            preprocessed,
+                        ),
                         width: air.width(),
                         _phantom: core::marker::PhantomData::<SC>,
                     },
                     matrix,
                 )
             }
-            Poseidon2Config::BabyBearD4Width24 {
-                permutation,
-                constants,
-            } => {
+            Poseidon2Config::BabyBearD4Width24 => {
+                let constants = Self::baby_bear_constants_24();
                 let preprocessed =
                     extract_preprocessed_from_operations::<BabyBear, Val<SC>>(&t.operations);
                 let air = Poseidon2CircuitAirBabyBearD4Width24::new_with_preprocessed(
                     constants.clone(),
                     preprocessed.clone(),
                 );
-                let ops_babybear: Poseidon2CircuitTrace<BabyBear> =
+                // F is guaranteed to be BabyBear at runtime in this branch
+                let ops_babybear: Vec<Poseidon2CircuitRow<BabyBear>> =
                     unsafe { transmute(ops_converted) };
-                let matrix_f = air.generate_trace_rows(&ops_babybear, constants, 0, permutation);
+                let matrix_f = air.generate_trace_rows(&ops_babybear, &constants, 0);
                 let matrix: RowMajorMatrix<Val<SC>> = unsafe { transmute(matrix_f) };
                 (
                     // Preprocessed values are already stored in the AIR, so we don't need to pass them again in the wrapper.
                     Poseidon2AirWrapper {
-                        inner: self
-                            .config
-                            .to_air_wrapper_with_preprocessed_baby_bear(preprocessed),
+                        inner: Self::air_wrapper_for_config_with_preprocessed(
+                            self.config,
+                            preprocessed,
+                        ),
                         width: air.width(),
                         _phantom: core::marker::PhantomData::<SC>,
                     },
                     matrix,
                 )
             }
-            Poseidon2Config::KoalaBearD4Width16 {
-                permutation,
-                constants,
-            } => {
+            Poseidon2Config::KoalaBearD4Width16 => {
+                let constants = Self::koala_bear_constants_16();
                 let preprocessed =
                     extract_preprocessed_from_operations::<KoalaBear, Val<SC>>(&t.operations);
                 let air = Poseidon2CircuitAirKoalaBearD4Width16::new_with_preprocessed(
                     constants.clone(),
                     preprocessed.clone(),
                 );
-                let ops_koalabear: Poseidon2CircuitTrace<KoalaBear> =
+                // F is guaranteed to be KoalaBear at runtime in this branch
+                let ops_koalabear: Vec<Poseidon2CircuitRow<KoalaBear>> =
                     unsafe { transmute(ops_converted) };
-                let matrix_f = air.generate_trace_rows(&ops_koalabear, constants, 0, permutation);
+                let matrix_f = air.generate_trace_rows(&ops_koalabear, &constants, 0);
                 let matrix: RowMajorMatrix<Val<SC>> = unsafe { transmute(matrix_f) };
                 (
                     // Preprocessed values are already stored in the AIR, so we don't need to pass them again in the wrapper.
                     Poseidon2AirWrapper {
-                        inner: self
-                            .config
-                            .to_air_wrapper_with_preprocessed_koala_bear(preprocessed),
+                        inner: Self::air_wrapper_for_config_with_preprocessed(
+                            self.config,
+                            preprocessed,
+                        ),
                         width: air.width(),
                         _phantom: core::marker::PhantomData::<SC>,
                     },
                     matrix,
                 )
             }
-            Poseidon2Config::KoalaBearD4Width24 {
-                permutation,
-                constants,
-            } => {
+            Poseidon2Config::KoalaBearD4Width24 => {
+                let constants = Self::koala_bear_constants_24();
                 let preprocessed =
                     extract_preprocessed_from_operations::<KoalaBear, Val<SC>>(&t.operations);
                 let air = Poseidon2CircuitAirKoalaBearD4Width24::new_with_preprocessed(
                     constants.clone(),
                     preprocessed.clone(),
                 );
-                let ops_koalabear: p3_circuit::tables::Poseidon2CircuitTrace<KoalaBear> =
+                let ops_koalabear: Vec<Poseidon2CircuitRow<KoalaBear>> =
                     unsafe { core::mem::transmute(ops_converted) };
-                let matrix_f = air.generate_trace_rows(&ops_koalabear, constants, 0, permutation);
+                let matrix_f = air.generate_trace_rows(&ops_koalabear, &constants, 0);
                 let matrix: RowMajorMatrix<Val<SC>> = unsafe { core::mem::transmute(matrix_f) };
                 (
                     // Preprocessed values are already stored in the AIR, so we don't need to pass them again in the wrapper.
                     Poseidon2AirWrapper {
-                        inner: self
-                            .config
-                            .to_air_wrapper_with_preprocessed_koala_bear(preprocessed),
+                        inner: Self::air_wrapper_for_config_with_preprocessed(
+                            self.config,
+                            preprocessed,
+                        ),
                         width: air.width(),
                         _phantom: core::marker::PhantomData::<SC>,
                     },
@@ -1963,7 +1823,7 @@ impl Poseidon2Prover {
         };
 
         Some(BatchTableInstance {
-            id: "poseidon2",
+            op_type: NonPrimitiveOpType::Poseidon2Perm(self.config),
             air: DynamicAirEntry::new(Box::new(air)),
             trace: matrix,
             public_values: Vec::new(),
@@ -1978,8 +1838,8 @@ where
     Val<SC>: StarkField + BinomiallyExtendable<4>,
     SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
 {
-    fn id(&self) -> &'static str {
-        "poseidon2"
+    fn op_type(&self) -> NonPrimitiveOpType {
+        NonPrimitiveOpType::Poseidon2Perm(self.config)
     }
 
     fn batch_instance_d1(
@@ -2042,48 +1902,14 @@ where
         _table_entry: &NonPrimitiveTableEntry<SC>,
     ) -> Result<DynamicAirEntry<SC>, String> {
         // Recreate the AIR wrapper from the configuration
-        match &self.config {
-            Poseidon2Config::BabyBearD4Width16 { .. } => {
-                let inner = self.config.to_air_wrapper();
-                let width = inner.width();
-                let wrapper = Poseidon2AirWrapper {
-                    inner,
-                    width,
-                    _phantom: core::marker::PhantomData::<SC>,
-                };
-                Ok(DynamicAirEntry::new(Box::new(wrapper)))
-            }
-            Poseidon2Config::BabyBearD4Width24 { .. } => {
-                let inner = self.config.to_air_wrapper();
-                let width = inner.width();
-                let wrapper = Poseidon2AirWrapper {
-                    inner,
-                    width,
-                    _phantom: core::marker::PhantomData::<SC>,
-                };
-                Ok(DynamicAirEntry::new(Box::new(wrapper)))
-            }
-            Poseidon2Config::KoalaBearD4Width16 { .. } => {
-                let inner = self.config.to_air_wrapper();
-                let width = inner.width();
-                let wrapper = Poseidon2AirWrapper {
-                    inner,
-                    width,
-                    _phantom: core::marker::PhantomData::<SC>,
-                };
-                Ok(DynamicAirEntry::new(Box::new(wrapper)))
-            }
-            Poseidon2Config::KoalaBearD4Width24 { .. } => {
-                let inner = self.config.to_air_wrapper();
-                let width = inner.width();
-                let wrapper = Poseidon2AirWrapper {
-                    inner,
-                    width,
-                    _phantom: core::marker::PhantomData::<SC>,
-                };
-                Ok(DynamicAirEntry::new(Box::new(wrapper)))
-            }
-        }
+        let inner = Self::air_wrapper_for_config(self.config);
+        let width = inner.width();
+        let wrapper = Poseidon2AirWrapper {
+            inner,
+            width,
+            _phantom: core::marker::PhantomData::<SC>,
+        };
+        Ok(DynamicAirEntry::new(Box::new(wrapper)))
     }
 }
 
@@ -2184,8 +2010,8 @@ pub enum BatchStarkProverError {
     #[error("verification failed: {0}")]
     Verify(String),
 
-    #[error("missing table prover for non-primitive table `{0}`")]
-    MissingTableProver(&'static str),
+    #[error("missing table prover for non-primitive op `{0:?}`")]
+    MissingTableProver(NonPrimitiveOpType),
 }
 
 impl<SC, const D: usize> BaseAir<Val<SC>> for CircuitTableAir<SC, D>
@@ -2741,12 +2567,16 @@ where
 
         // We first handle all non-primitive tables dynamically, which will then be batched alongside primitive ones.
         // Each trace must have a corresponding registered prover for it to be provable.
-        for (&id, trace) in &traces.non_primitive_traces {
+        for (&op_type, trace) in &traces.non_primitive_traces {
             if trace.rows() == 0 {
                 continue;
             }
-            if !self.non_primitive_provers.iter().any(|p| p.id() == id) {
-                return Err(BatchStarkProverError::MissingTableProver(id));
+            if !self
+                .non_primitive_provers
+                .iter()
+                .any(|p| p.op_type() == op_type)
+            {
+                return Err(BatchStarkProverError::MissingTableProver(op_type));
             }
         }
 
@@ -2825,7 +2655,7 @@ where
 
         for instance in dynamic_instances {
             let BatchTableInstance {
-                id,
+                op_type,
                 air,
                 trace,
                 public_values,
@@ -2835,7 +2665,7 @@ where
             trace_storage.push(trace);
             public_storage.push(public_values.clone());
             non_primitives.push(NonPrimitiveTableEntry {
-                id,
+                op_type,
                 rows,
                 public_values,
             });
@@ -2941,12 +2771,12 @@ where
                 .iter()
                 .find(|p| {
                     let tp = p.as_ref();
-                    TableProver::id(tp) == entry.id
+                    TableProver::op_type(tp) == entry.op_type
                 })
                 .ok_or_else(|| {
                     BatchStarkProverError::Verify(format!(
-                        "unknown non-primitive plugin: {}",
-                        entry.id
+                        "unknown non-primitive op: {:?}",
+                        entry.op_type
                     ))
                 })?;
             let air = plugin

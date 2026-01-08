@@ -1,0 +1,101 @@
+name: Task
+description: Refactor, cleanup, infra, docs, maintenance, internal improvements
+title: "[Task] "
+labels: ["task"]
+body:
+  - type: input
+    id: dri
+    attributes:
+      label: DRI (owner)
+      description: GitHub handle responsible for driving this to done
+      placeholder: "@username"
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: flags
+    attributes:
+      label: Flags
+      description: (Used by automation; check if applicable)
+      options:
+        - label: perf
+          required: false
+        - label: needs-rfc
+          required: false
+
+  - type: input
+    id: rfc_link
+    attributes:
+      label: RFC link (required if needs-rfc is checked)
+      description: Link the RFC PR (preferred) or the merged RFC file path (docs/rfcs/NNNN-*.md).
+      placeholder: "e.g. https://github.com/Plonky3/Plonky3-recursion/pull/123"
+    validations:
+      required: false
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / Motivation
+      description: Why do we need this? What pain does it remove?
+    validations:
+      required: true
+
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope
+      description: What is in/out (keep it tight)
+      placeholder: |
+        In:
+        - ...
+
+        Out:
+        - ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: approach
+    attributes:
+      label: Proposed approach
+      description: Brief plan, files/modules touched, migration notes if any
+    validations:
+      required: true
+
+  - type: textarea
+    id: exit
+    attributes:
+      label: Exit criteria
+      description: 1-3 bullets that define "done"
+      placeholder: |
+        - Refactor complete with no behavior change (or specify change)
+        - Tests updated and passing
+        - (If perf checked) Before/after benchmarks included
+    validations:
+      required: true
+
+  - type: textarea
+    id: risk
+    attributes:
+      label: Risk / Rollout
+      description: What could break? Any staging/feature flag needed?
+    validations:
+      required: false
+
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: Dependencies / Blockers
+      placeholder: |
+        - Depends on #123
+        - Blocked by decision on <topic>
+    validations:
+      required: false
+
+  - type: textarea
+    id: links
+    attributes:
+      label: Notes / Links
+      description: Prior art, relevant files, docs, discussions
+    validations:
+      required: false
