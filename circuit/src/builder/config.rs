@@ -57,13 +57,16 @@ mod tests {
     use p3_baby_bear::BabyBear;
 
     use super::*;
+    use crate::op::Poseidon2Config;
 
     type F = BabyBear;
 
     #[test]
     fn test_builder_config_default() {
         let config = BuilderConfig::<F>::default();
-        assert!(!config.is_op_enabled(&NonPrimitiveOpType::Poseidon2Perm));
+        assert!(!config.is_op_enabled(&NonPrimitiveOpType::Poseidon2Perm(
+            Poseidon2Config::BabyBearD4Width16,
+        )));
     }
 
     #[test]
@@ -71,10 +74,12 @@ mod tests {
         let mut config = BuilderConfig::<F>::new();
 
         config.enable_op(
-            NonPrimitiveOpType::Poseidon2Perm,
+            NonPrimitiveOpType::Poseidon2Perm(Poseidon2Config::BabyBearD4Width16),
             NonPrimitiveOpConfig::None,
         );
 
-        assert!(config.is_op_enabled(&NonPrimitiveOpType::Poseidon2Perm));
+        assert!(config.is_op_enabled(&NonPrimitiveOpType::Poseidon2Perm(
+            Poseidon2Config::BabyBearD4Width16,
+        )));
     }
 }

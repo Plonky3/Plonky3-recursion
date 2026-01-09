@@ -1,5 +1,12 @@
 //! Poseidon2 permutation non-primitive operation (one Poseidon2 call per row).
 //!
+//! This module contains all Poseidon2 permutation related code:
+//! - Builder API (`Poseidon2PermCall`, `Poseidon2PermOps`)
+//! - Executor (`Poseidon2PermExecutor`)
+//! - Execution state (`Poseidon2ExecutionState`, `Poseidon2PermRowRecord`)
+//! - Private data (`Poseidon2PermPrivateData`)
+//! - Trace generation types (`Poseidon2Params`, `Poseidon2CircuitRow`, `Poseidon2Trace`)
+//!
 //! This operation is designed to support both standard hashing and specific logic required for
 //! Merkle path verification within a circuit. Its features include:
 //!
@@ -16,22 +23,158 @@
 
 use alloc::boxed::Box;
 use alloc::string::ToString;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use alloc::{format, vec};
+use core::any::Any;
+use core::fmt::Debug;
 
-use p3_field::{Field, PrimeCharacteristicRing};
-use strum::EnumCount;
+use p3_field::{ExtensionField, Field, PrimeCharacteristicRing, PrimeField};
 
 use crate::CircuitError;
 use crate::builder::{CircuitBuilder, NonPrimitiveOpParams};
+use crate::circuit::CircuitField;
 use crate::op::{
     ExecutionContext, NonPrimitiveExecutor, NonPrimitiveOpConfig, NonPrimitiveOpPrivateData,
-    NonPrimitiveOpType, PrimitiveOpType,
+    NonPrimitiveOpType, OpExecutionState, PrimitiveOpType,
 };
+use crate::tables::NonPrimitiveTrace;
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessId};
+
+// ============================================================================
+// Configuration
+// ============================================================================
+
+/// Poseidon2 configuration used as a stable operation key and parameter source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
+pub enum Poseidon2Config {
+    BabyBearD4Width16,
+    BabyBearD4Width24,
+    KoalaBearD4Width16,
+    KoalaBearD4Width24,
+}
+
+impl Poseidon2Config {
+    pub const fn d(self) -> usize {
+        match self {
+            Self::BabyBearD4Width16
+            | Self::BabyBearD4Width24
+            | Self::KoalaBearD4Width16
+            | Self::KoalaBearD4Width24 => 4,
+        }
+    }
+
+    pub const fn width(self) -> usize {
+        match self {
+            Self::BabyBearD4Width16 | Self::KoalaBearD4Width16 => 16,
+            Self::BabyBearD4Width24 | Self::KoalaBearD4Width24 => 24,
+        }
+    }
+
+    pub const fn rate_ext(self) -> usize {
+        match self {
+            Self::BabyBearD4Width16 | Self::KoalaBearD4Width16 => 2,
+            Self::BabyBearD4Width24 | Self::KoalaBearD4Width24 => 4,
+        }
+    }
+
+    pub const fn capacity_ext(self) -> usize {
+        match self {
+            Self::BabyBearD4Width16
+            | Self::BabyBearD4Width24
+            | Self::KoalaBearD4Width16
+            | Self::KoalaBearD4Width24 => 2,
+        }
+    }
+
+    pub const fn sbox_degree(self) -> u64 {
+        match self {
+            Self::BabyBearD4Width16 | Self::BabyBearD4Width24 => 7,
+            Self::KoalaBearD4Width16 | Self::KoalaBearD4Width24 => 3,
+        }
+    }
+
+    pub const fn sbox_registers(self) -> usize {
+        match self {
+            Self::BabyBearD4Width16 | Self::BabyBearD4Width24 => 1,
+            Self::KoalaBearD4Width16 | Self::KoalaBearD4Width24 => 0,
+        }
+    }
+
+    pub const fn half_full_rounds(self) -> usize {
+        match self {
+            Self::BabyBearD4Width16
+            | Self::BabyBearD4Width24
+            | Self::KoalaBearD4Width16
+            | Self::KoalaBearD4Width24 => 4,
+        }
+    }
+
+    pub const fn partial_rounds(self) -> usize {
+        match self {
+            Self::BabyBearD4Width16 => 13,
+            Self::BabyBearD4Width24 => 21,
+            Self::KoalaBearD4Width16 => 20,
+            Self::KoalaBearD4Width24 => 23,
+        }
+    }
+
+    pub const fn width_ext(self) -> usize {
+        self.rate_ext() + self.capacity_ext()
+    }
+}
+
+/// Type alias for the Poseidon2 permutation execution closure.
+///
+/// The closure takes `DIGEST` extension field limbs and returns `DIGEST` output limbs.
+pub type Poseidon2PermExec<F, const DIGEST: usize> =
+    Arc<dyn Fn(&[F; DIGEST]) -> [F; DIGEST] + Send + Sync>;
+
+// ============================================================================
+// Private Data
+// ============================================================================
+
+/// Private data for Poseidon2 permutation.
+/// Only used for Merkle mode operations, contains exactly `SIBLING_LIMBS` extension field limbs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Poseidon2PermPrivateData<F, const SIBLING_LIMBS: usize> {
+    pub sibling: [F; SIBLING_LIMBS],
+}
+
+// ============================================================================
+// Execution State
+// ============================================================================
+
+/// Execution state for Poseidon2 permutation operations.
+///
+/// Stores:
+/// - Chaining state (output of last permutation for input to next)
+/// - Circuit rows captured during execution (with extension field values)
+///
+/// Note: During execution, `Poseidon2CircuitRow<F>::input_values` contains 4 extension
+/// field limbs. The trace generator converts these to 16 base field elements.
+#[derive(Debug, Default)]
+struct Poseidon2ExecutionState<F> {
+    /// Output of the last Poseidon2 permutation for chaining.
+    /// `None` if no permutation has been executed yet.
+    last_output: Option<[F; 4]>,
+    /// Circuit rows captured during execution.
+    rows: Vec<Poseidon2CircuitRow<F>>,
+}
+
+impl<F: Send + Sync + Debug + 'static> OpExecutionState for Poseidon2ExecutionState<F> {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+}
 
 /// User-facing arguments for adding a Poseidon2 perm row.
 pub struct Poseidon2PermCall {
+    /// Poseidon2 configuration for this permutation row.
+    pub config: Poseidon2Config,
     /// Flag indicating whether a new chain is started.
     pub new_start: bool,
     /// Flag indicating whether we are verifying a Merkle path
@@ -58,6 +201,7 @@ pub struct Poseidon2PermCall {
 impl Default for Poseidon2PermCall {
     fn default() -> Self {
         Self {
+            config: Poseidon2Config::BabyBearD4Width16,
             new_start: false,
             merkle_path: false,
             mmcs_bit: None,
@@ -75,7 +219,8 @@ pub trait Poseidon2PermOps<F: Clone + PrimeCharacteristicRing + Eq> {
     /// - `merkle_path`: if true, Merkle-path chaining semantics apply (chained digest placement depends on `mmcs_bit`).
     /// - `mmcs_bit`: Merkle direction bit witness for this row (used when `merkle_path` is true).
     /// - `inputs`: optional CTL exposure per limb (extension element, length 4 if provided).
-    ///   Unexposed limbs in Merkle mode are provided separately via `Poseidon2PermPrivateData`.
+    ///   Base-component inputs are not supported; unexposed limbs in Merkle mode are
+    ///   provided separately via `Poseidon2PermPrivateData`.
     /// - `out_ctl`: whether to allocate/expose output limbs 0–1 via CTL.
     /// - `mmcs_index_sum`: optional exposure of the MMCS index accumulator (base field element).
     fn add_poseidon2_perm(
@@ -92,8 +237,8 @@ where
         &mut self,
         call: Poseidon2PermCall,
     ) -> Result<(NonPrimitiveOpId, [Option<ExprId>; 2]), crate::CircuitBuilderError> {
-        let op_type = NonPrimitiveOpType::Poseidon2Perm;
-        self.ensure_op_enabled(op_type.clone())?;
+        let op_type = NonPrimitiveOpType::Poseidon2Perm(call.config);
+        self.ensure_op_enabled(op_type)?;
         if call.merkle_path && call.mmcs_bit.is_none() {
             return Err(crate::CircuitBuilderError::Poseidon2MerkleMissingMmcsBit);
         }
@@ -147,23 +292,23 @@ where
 /// Executor for Poseidon2 perm operations.
 ///
 #[derive(Debug, Clone)]
-pub struct Poseidon2PermExecutor {
+pub(crate) struct Poseidon2PermExecutor {
     op_type: NonPrimitiveOpType,
     pub new_start: bool,
     pub merkle_path: bool,
 }
 
 impl Poseidon2PermExecutor {
-    pub const fn new(new_start: bool, merkle_path: bool) -> Self {
+    pub const fn new(op_type: NonPrimitiveOpType, new_start: bool, merkle_path: bool) -> Self {
         Self {
-            op_type: NonPrimitiveOpType::Poseidon2Perm,
+            op_type,
             new_start,
             merkle_path,
         }
     }
 }
 
-impl<F: Field> NonPrimitiveExecutor<F> for Poseidon2PermExecutor {
+impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for Poseidon2PermExecutor {
     fn execute(
         &self,
         inputs: &[Vec<WitnessId>],
@@ -174,14 +319,37 @@ impl<F: Field> NonPrimitiveExecutor<F> for Poseidon2PermExecutor {
         // Output layout: [out0, out1]
         if inputs.len() != 6 {
             return Err(CircuitError::NonPrimitiveOpLayoutMismatch {
-                op: self.op_type.clone(),
+                op: self.op_type,
                 expected: "6 input vectors".to_string(),
                 got: inputs.len(),
             });
         }
+        for limb_inputs in inputs[..4].iter() {
+            if limb_inputs.len() > 1 {
+                return Err(CircuitError::NonPrimitiveOpLayoutMismatch {
+                    op: self.op_type,
+                    expected: "0 or 1 witness per input limb (extension-only)".to_string(),
+                    got: limb_inputs.len(),
+                });
+            }
+        }
+        if inputs[4].len() > 1 {
+            return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
+                op: self.op_type,
+                expected: "0 or 1 element for mmcs_index_sum".to_string(),
+                got: inputs[4].len(),
+            });
+        }
+        if inputs[5].len() > 1 {
+            return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
+                op: self.op_type,
+                expected: "0 or 1 element for mmcs_bit".to_string(),
+                got: inputs[5].len(),
+            });
+        }
         if outputs.len() != 2 {
             return Err(CircuitError::NonPrimitiveOpLayoutMismatch {
-                op: self.op_type.clone(),
+                op: self.op_type,
                 expected: "2 output vectors".to_string(),
                 got: outputs.len(),
             });
@@ -190,59 +358,127 @@ impl<F: Field> NonPrimitiveExecutor<F> for Poseidon2PermExecutor {
         // Get the exec closure from config
         let config = ctx.get_config(&self.op_type)?;
         let exec = match config {
-            NonPrimitiveOpConfig::Poseidon2Perm(cfg) => &cfg.exec,
+            NonPrimitiveOpConfig::Poseidon2Perm { exec, .. } => Arc::clone(exec),
             NonPrimitiveOpConfig::None => {
-                return Err(CircuitError::InvalidNonPrimitiveOpConfiguration {
-                    op: self.op_type.clone(),
-                });
+                return Err(CircuitError::InvalidNonPrimitiveOpConfiguration { op: self.op_type });
             }
         };
 
-        // Get private data if available
-        let private_data = ctx.get_private_data().ok();
-        let private_inputs: Option<&[F]> = private_data.map(|pd| match pd {
-            NonPrimitiveOpPrivateData::Poseidon2Perm(data) => &data.sibling[..],
-        });
+        // Get private data if available and validate usage rules.
+        let private_inputs: Option<&[F]> = match ctx.get_private_data() {
+            Ok(NonPrimitiveOpPrivateData::Poseidon2Perm(data)) => {
+                if !self.merkle_path || self.new_start {
+                    return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
+                        op: self.op_type,
+                        operation_index: ctx.operation_id(),
+                        expected: "no private data (only Merkle mode accepts private data)"
+                            .to_string(),
+                        got: "private data provided for non-Merkle operation".to_string(),
+                    });
+                }
+                Some(&data.sibling[..])
+            }
+            Err(_) => None,
+        };
 
         // Get mmcs_bit (required when merkle_path=true; defaults to false otherwise).
         // mmcs_bit is at inputs[5].
-        let mmcs_bit = if inputs[5].len() == 1 {
-            let wid = inputs[5][0];
+        let mmcs_bit = if let Some(&wid) = inputs[5].first() {
             let val = ctx.get_witness(wid)?;
-            if val == F::ZERO {
-                false
-            } else if val == F::ONE {
-                true
-            } else {
-                return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
-                    op: self.op_type.clone(),
-                    operation_index: ctx.operation_id(),
-                    expected: "boolean mmcs_bit (0 or 1)".to_string(),
-                    got: format!("{val:?}"),
-                });
+            match val {
+                v if v == F::ZERO => false,
+                v if v == F::ONE => true,
+                v => {
+                    return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
+                        op: self.op_type,
+                        operation_index: ctx.operation_id(),
+                        expected: "boolean mmcs_bit (0 or 1)".into(),
+                        got: format!("{v:?}"),
+                    });
+                }
             }
         } else if self.merkle_path {
             return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
-                op: self.op_type.clone(),
+                op: self.op_type,
                 operation_index: ctx.operation_id(),
-                expected: "mmcs_bit must be provided when merkle_path=true".to_string(),
-                got: "missing mmcs_bit".to_string(),
+                expected: "mmcs_bit must be provided when merkle_path=true".into(),
+                got: "missing mmcs_bit".into(),
             });
         } else {
             false
         };
 
+        // Get the previous output for chaining (read from state before mutation)
+        let last_output = ctx
+            .get_op_state::<Poseidon2ExecutionState<F>>(&self.op_type)
+            .and_then(|s| s.last_output);
+
         // Resolve input limbs
         let mut resolved_inputs = [F::ZERO; 4];
         for (limb, resolved) in resolved_inputs.iter_mut().enumerate() {
-            *resolved = self.resolve_input_limb(limb, inputs, private_inputs, ctx, mmcs_bit)?;
+            *resolved =
+                self.resolve_input_limb(limb, inputs, private_inputs, ctx, last_output, mmcs_bit)?;
         }
 
         // Execute the permutation
         let output = exec(&resolved_inputs);
 
-        // Update chaining state
-        ctx.set_last_poseidon2(output);
+        // Build CTL metadata for row record
+        let (in_ctl, input_indices) = inputs[..4].iter().enumerate().fold(
+            ([false; 4], [0u32; 4]),
+            |(mut in_ctl, mut input_indices), (i, inp)| {
+                if let Some(&wid) = inp.first() {
+                    in_ctl[i] = true;
+                    input_indices[i] = wid.0;
+                }
+                (in_ctl, input_indices)
+            },
+        );
+
+        let (out_ctl, output_indices) = outputs.iter().enumerate().fold(
+            ([false; 2], [0u32; 2]),
+            |(mut out_ctl, mut output_indices), (i, out_slot)| {
+                if let Some(&wid) = out_slot.first() {
+                    out_ctl[i] = true;
+                    output_indices[i] = wid.0;
+                }
+                (out_ctl, output_indices)
+            },
+        );
+
+        let (mmcs_index_sum, mmcs_index_sum_idx) = if inputs[4].len() == 1 {
+            let wid = inputs[4][0];
+            let val = ctx.get_witness(wid)?;
+            (val, wid.0)
+        } else {
+            (F::ZERO, 0)
+        };
+
+        // Record row for trace generation (input_values contains 4 extension limbs)
+        let input_values = resolved_inputs.to_vec();
+        debug_assert_eq!(
+            input_values.len(),
+            4,
+            "Execution row must have exactly 4 input limbs"
+        );
+
+        let row = Poseidon2CircuitRow {
+            new_start: self.new_start,
+            merkle_path: self.merkle_path,
+            mmcs_bit,
+            mmcs_index_sum,
+            input_values,
+            in_ctl,
+            input_indices,
+            out_ctl,
+            output_indices,
+            mmcs_index_sum_idx,
+        };
+
+        // Update state: chaining and rows
+        let state = ctx.get_op_state_mut::<Poseidon2ExecutionState<F>>(&self.op_type);
+        state.last_output = Some(output);
+        state.rows.push(row);
 
         // Write outputs to witness if CTL exposure is requested
         for (out_idx, out_slot) in outputs.iter().enumerate() {
@@ -251,7 +487,7 @@ impl<F: Field> NonPrimitiveExecutor<F> for Poseidon2PermExecutor {
                 ctx.set_witness(wid, output[out_idx])?;
             } else if !out_slot.is_empty() {
                 return Err(CircuitError::NonPrimitiveOpLayoutMismatch {
-                    op: self.op_type.clone(),
+                    op: self.op_type,
                     expected: "0 or 1 witness per output limb".to_string(),
                     got: out_slot.len(),
                 });
@@ -273,7 +509,8 @@ impl<F: Field> NonPrimitiveExecutor<F> for Poseidon2PermExecutor {
         &self,
         inputs: &[Vec<WitnessId>],
         outputs: &[Vec<WitnessId>],
-        preprocessed_tables: &mut Vec<Vec<F>>,
+        primitive_preprocessed: &mut Vec<Vec<F>>,
+        non_primitive_preprocessed: &mut crate::op::NonPrimitivePreprocessedMap<F>,
     ) {
         let witness_table_idx = PrimitiveOpType::Witness as usize;
         let update_witness_table = |witness_ids: &[WitnessId], p_ts: &mut Vec<Vec<F>>| {
@@ -287,10 +524,7 @@ impl<F: Field> NonPrimitiveExecutor<F> for Poseidon2PermExecutor {
         };
 
         // We need to populate in_ctl and out_ctl for this operation.
-        let idx = PrimitiveOpType::COUNT + self.op_type.clone() as usize;
-        if preprocessed_tables.len() <= idx {
-            preprocessed_tables.resize(idx + 1, vec![]);
-        }
+        let entry = non_primitive_preprocessed.entry(self.op_type).or_default();
 
         // The inputs have shape:
         // inputs[0..3]: input limbs, inputs[4]: mmcs_index_sum, inputs[5]: mmcs_bit
@@ -303,16 +537,16 @@ impl<F: Field> NonPrimitiveExecutor<F> for Poseidon2PermExecutor {
         for (limb_idx, inp) in inputs[0..4].iter().enumerate() {
             if inp.is_empty() {
                 // Private input
-                preprocessed_tables[idx].push(F::ZERO); // in_idx
-                preprocessed_tables[idx].push(F::ZERO); // in_ctl
+                entry.push(F::ZERO); // in_idx
+                entry.push(F::ZERO); // in_ctl
             } else {
                 // Exposed input
-                preprocessed_tables[idx].push(F::from_u32(inp[0].0)); // in_idx
-                preprocessed_tables[idx].push(F::ONE); // in_ctl
+                entry.push(F::from_u32(inp[0].0)); // in_idx
+                entry.push(F::ONE); // in_ctl
 
                 // In this case, we are reading the input limbs from the witness table,
                 // so we need to update the associated witness table multiplicities.
-                update_witness_table(inp, preprocessed_tables);
+                update_witness_table(inp, primitive_preprocessed);
             }
             let normal_chain_sel =
                 if !self.new_start && !self.merkle_path && inputs[limb_idx].is_empty() {
@@ -321,7 +555,7 @@ impl<F: Field> NonPrimitiveExecutor<F> for Poseidon2PermExecutor {
                     F::ZERO
                 };
 
-            preprocessed_tables[idx].push(normal_chain_sel);
+            entry.push(normal_chain_sel);
 
             let merkle_chain_sel =
                 if !self.new_start && self.merkle_path && inputs[limb_idx].is_empty() {
@@ -329,38 +563,38 @@ impl<F: Field> NonPrimitiveExecutor<F> for Poseidon2PermExecutor {
                 } else {
                     F::ZERO
                 };
-            preprocessed_tables[idx].push(merkle_chain_sel);
+            entry.push(merkle_chain_sel);
         }
 
         for out in outputs[0..2].iter() {
             if out.is_empty() {
                 // Private output
-                preprocessed_tables[idx].push(F::ZERO); // out_idx
-                preprocessed_tables[idx].push(F::ZERO); // out_ctl
+                entry.push(F::ZERO); // out_idx
+                entry.push(F::ZERO); // out_ctl
             } else {
                 // Exposed output
-                preprocessed_tables[idx].push(F::from_u32(out[0].0)); // out_idx
-                preprocessed_tables[idx].push(F::ONE); // out_ctl
+                entry.push(F::from_u32(out[0].0)); // out_idx
+                entry.push(F::ONE); // out_ctl
 
                 // In this case, we are reading the output limbs from the witness table,
                 // so we need to update the associated witness table multiplicities.
-                update_witness_table(out, preprocessed_tables);
+                update_witness_table(out, primitive_preprocessed);
             }
         }
 
         // mmcs_index_sum
         if inputs[4].is_empty() {
-            preprocessed_tables[idx].push(F::ZERO);
+            entry.push(F::ZERO);
         } else {
-            preprocessed_tables[idx].push(F::ONE);
+            entry.push(F::ONE);
             // In this case, we are reading the MMCS index sum from the witness table,
             // so we need to update the associated witness table multiplicities.
-            update_witness_table(&inputs[4], preprocessed_tables);
+            update_witness_table(&inputs[4], primitive_preprocessed);
         }
 
         // We need to insert `new_start` and `merkle_path` as well.
-        preprocessed_tables[idx].push(if self.new_start { F::ONE } else { F::ZERO });
-        preprocessed_tables[idx].push(if self.merkle_path { F::ONE } else { F::ZERO });
+        entry.push(if self.new_start { F::ONE } else { F::ZERO });
+        entry.push(if self.merkle_path { F::ONE } else { F::ZERO });
     }
 
     fn boxed(&self) -> Box<dyn NonPrimitiveExecutor<F>> {
@@ -379,6 +613,7 @@ impl Poseidon2PermExecutor {
         inputs: &[Vec<WitnessId>],
         private_inputs: Option<&[F]>,
         ctx: &ExecutionContext<'_, F>,
+        last_output: Option<[F; 4]>,
         mmcs_bit: bool,
     ) -> Result<F, CircuitError> {
         // Build up the input array with layered priorities
@@ -399,11 +634,10 @@ impl Poseidon2PermExecutor {
 
         // Layer 2: Chaining from previous permutation (medium priority)
         if !self.new_start {
-            let prev = ctx.last_poseidon2().ok_or_else(|| {
-                CircuitError::Poseidon2ChainMissingPreviousState {
+            let prev =
+                last_output.ok_or_else(|| CircuitError::Poseidon2ChainMissingPreviousState {
                     operation_index: ctx.operation_id(),
-                }
-            })?;
+                })?;
 
             if !self.merkle_path {
                 // Normal chaining: all 4 limbs come from previous output
@@ -452,4 +686,197 @@ impl Poseidon2PermExecutor {
             }
         })
     }
+}
+
+// ============================================================================
+// Trace Types
+// ============================================================================
+
+/// Trait to provide Poseidon2 configuration parameters for a field type.
+///
+/// This allows the trace generator and AIR to work with different Poseidon2 configurations
+/// without hardcoding parameters. Implementations should provide the standard
+/// parameters for their field type.
+pub trait Poseidon2Params {
+    type BaseField: PrimeField + PrimeCharacteristicRing;
+    /// Poseidon2 configuration key for this parameter set.
+    const CONFIG: Poseidon2Config;
+    /// Extension degree D
+    const D: usize = Self::CONFIG.d();
+    /// Total width in base field elements
+    const WIDTH: usize = Self::CONFIG.width();
+
+    /// Rate in extension elements
+    const RATE_EXT: usize = Self::CONFIG.rate_ext();
+    /// Capacity in extension elements
+    const CAPACITY_EXT: usize = Self::CONFIG.capacity_ext();
+    /// Capacity size in base field elements = CAPACITY_EXT * D
+    const CAPACITY_SIZE: usize = Self::CAPACITY_EXT * Self::D;
+
+    /// S-box degree (polynomial degree for the S-box)
+    const SBOX_DEGREE: u64 = Self::CONFIG.sbox_degree();
+    /// Number of S-box registers
+    const SBOX_REGISTERS: usize = Self::CONFIG.sbox_registers();
+
+    /// Number of half full rounds
+    const HALF_FULL_ROUNDS: usize = Self::CONFIG.half_full_rounds();
+    /// Number of partial rounds
+    const PARTIAL_ROUNDS: usize = Self::CONFIG.partial_rounds();
+
+    /// Width in extension elements = RATE_EXT + CAPACITY_EXT
+    const WIDTH_EXT: usize = Self::RATE_EXT + Self::CAPACITY_EXT;
+}
+
+/// Poseidon2 operation table row.
+///
+/// This implements the Poseidon Permutation Table specification.
+/// See: https://github.com/Plonky3/Plonky3-recursion/discussions/186
+///
+/// The table has one row per Poseidon call, implementing:
+/// - Standard chaining (Challenger-style sponge use)
+/// - Merkle-path chaining (MMCS directional hashing)
+/// - Selective limb exposure to the witness via CTL
+/// - Optional MMCS index accumulator
+#[derive(Debug, Clone)]
+pub struct Poseidon2CircuitRow<F> {
+    /// Control: If 1, row begins a new independent Poseidon chain.
+    pub new_start: bool,
+    /// Control: 0 → normal sponge/Challenger mode, 1 → Merkle-path mode.
+    pub merkle_path: bool,
+    /// Control: Direction bit for Merkle left/right hashing (only meaningful when merkle_path = 1).
+    pub mmcs_bit: bool,
+    /// Value: Optional MMCS accumulator (base field, encodes a u32-like integer).
+    pub mmcs_index_sum: F,
+    /// Inputs to the Poseidon2 permutation (flattened state).
+    /// For execution rows: 4 extension limbs. For trace rows: WIDTH base field elements.
+    pub input_values: Vec<F>,
+    /// Input exposure flags: for each limb i, if 1, in[i] must match witness lookup at input_indices[i].
+    pub in_ctl: [bool; 4],
+    /// Input exposure indices: index into the witness table for each limb.
+    pub input_indices: [u32; 4],
+    /// Output exposure flags: for limbs 0-1 only, if 1, out[i] must match witness lookup at output_indices[i].
+    /// Note: limbs 2-3 are never publicly exposed (always private).
+    pub out_ctl: [bool; 2],
+    /// Output exposure indices: index into the witness table for limbs 0-1.
+    pub output_indices: [u32; 2],
+    /// MMCS index exposure: index for CTL exposure of mmcs_index_sum.
+    pub mmcs_index_sum_idx: u32,
+}
+
+/// Poseidon2 trace for all hash operations in the circuit.
+#[derive(Debug, Clone)]
+pub struct Poseidon2Trace<F> {
+    /// Operation type for this Poseidon2 trace.
+    pub op_type: NonPrimitiveOpType,
+    /// All Poseidon2 operations (permutation rows) in this trace.
+    pub operations: Vec<Poseidon2CircuitRow<F>>,
+}
+
+impl<F> Poseidon2Trace<F> {
+    pub const fn total_rows(&self) -> usize {
+        self.operations.len()
+    }
+}
+
+impl<TraceF: Clone + Send + Sync + 'static, CF> NonPrimitiveTrace<CF> for Poseidon2Trace<TraceF> {
+    fn op_type(&self) -> NonPrimitiveOpType {
+        self.op_type
+    }
+
+    fn rows(&self) -> usize {
+        self.total_rows()
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn boxed_clone(&self) -> Box<dyn NonPrimitiveTrace<CF>> {
+        Box::new(self.clone())
+    }
+}
+
+// ============================================================================
+// Trace Generation
+// ============================================================================
+
+/// Generate the Poseidon2 trace from execution state.
+///
+/// Converts circuit rows from extension field format (4 limbs) to base field format (16 elements).
+///
+/// # Type Parameters
+/// - `F`: The circuit field type (extension field)
+/// - `Config`: A type implementing `Poseidon2Params` that specifies the Poseidon2 configuration
+pub fn generate_poseidon2_trace<
+    F: CircuitField + ExtensionField<Config::BaseField>,
+    Config: Poseidon2Params,
+>(
+    op_states: &crate::op::OpStateMap,
+) -> Result<Option<Box<dyn NonPrimitiveTrace<F>>>, CircuitError> {
+    let op_type = NonPrimitiveOpType::Poseidon2Perm(Config::CONFIG);
+    let Some(state) = op_states
+        .get(&op_type)
+        .and_then(|s| s.as_any().downcast_ref::<Poseidon2ExecutionState<F>>())
+    else {
+        return Ok(None);
+    };
+
+    if state.rows.is_empty() {
+        return Ok(None);
+    }
+
+    let d = Config::D;
+
+    // Convert extension field rows to base field rows
+    let operations: Vec<Poseidon2CircuitRow<Config::BaseField>> = state
+        .rows
+        .iter()
+        .enumerate()
+        .map(|(row_index, row)| -> Result<_, CircuitError> {
+            let limb_count = Config::WIDTH / d;
+            // Flatten extension limbs to WIDTH base field elements.
+            assert_eq!(
+                row.input_values.len(),
+                limb_count,
+                "Source row must have WIDTH/D input limbs"
+            );
+            let mut input_values = vec![Config::BaseField::ZERO; Config::WIDTH];
+            assert_eq!(
+                input_values.len(),
+                Config::WIDTH,
+                "Target row must have WIDTH input elements"
+            );
+            for (limb, ext_val) in row.input_values.iter().enumerate() {
+                let coeffs = ext_val.as_basis_coefficients_slice();
+                input_values[limb * d..(limb + 1) * d].copy_from_slice(coeffs);
+            }
+
+            let mmcs_index_sum = row.mmcs_index_sum.as_base().ok_or_else(|| {
+                CircuitError::IncorrectNonPrimitiveOpPrivateData {
+                    op: op_type,
+                    operation_index: NonPrimitiveOpId(row_index as u32),
+                    expected: "base field mmcs_index_sum".to_string(),
+                    got: "extension value".to_string(),
+                }
+            })?;
+
+            Ok(Poseidon2CircuitRow {
+                new_start: row.new_start,
+                merkle_path: row.merkle_path,
+                mmcs_bit: row.mmcs_bit,
+                mmcs_index_sum,
+                input_values,
+                in_ctl: row.in_ctl,
+                input_indices: row.input_indices,
+                out_ctl: row.out_ctl,
+                output_indices: row.output_indices,
+                mmcs_index_sum_idx: row.mmcs_index_sum_idx,
+            })
+        })
+        .collect::<Result<Vec<_>, CircuitError>>()?;
+
+    Ok(Some(Box::new(Poseidon2Trace {
+        op_type,
+        operations,
+    })))
 }

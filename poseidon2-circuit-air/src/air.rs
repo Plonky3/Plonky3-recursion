@@ -8,7 +8,7 @@ use core::mem::MaybeUninit;
 use p3_air::{
     Air, AirBuilder, AirBuilderWithPublicValues, BaseAir, PairBuilder, PermutationAirBuilder,
 };
-use p3_circuit::tables::{Poseidon2CircuitRow, Poseidon2CircuitTrace};
+use p3_circuit::ops::Poseidon2CircuitRow;
 use p3_field::{Field, PrimeCharacteristicRing, PrimeField};
 use p3_lookup::lookup_traits::{AirLookupHandler, Direction, Kind, Lookup};
 use p3_matrix::Matrix;
@@ -16,7 +16,6 @@ use p3_matrix::dense::RowMajorMatrix;
 use p3_maybe_rayon::prelude::*;
 use p3_poseidon2::GenericPoseidon2LinearLayers;
 use p3_poseidon2_air::{Poseidon2Air, Poseidon2Cols, RoundConstants, generate_trace_rows_for_perm};
-use p3_symmetric::CryptographicPermutation;
 use p3_uni_stark::{SubAirBuilder, SymbolicAirBuilder, SymbolicExpression, SymbolicVariable};
 
 use crate::columns::{POSEIDON2_LIMBS, POSEIDON2_PUBLIC_OUTPUT_LIMBS};
@@ -134,12 +133,11 @@ impl<
         poseidon2_preprocessed_width()
     }
 
-    pub fn generate_trace_rows<P: CryptographicPermutation<[F; WIDTH]>>(
+    pub fn generate_trace_rows(
         &self,
-        sponge_ops: &Poseidon2CircuitTrace<F>,
+        sponge_ops: &[Poseidon2CircuitRow<F>],
         constants: &RoundConstants<F, WIDTH, HALF_FULL_ROUNDS, PARTIAL_ROUNDS>,
         extra_capacity_bits: usize,
-        perm: &P,
     ) -> RowMajorMatrix<F> {
         let n = sponge_ops.len();
         assert!(
@@ -168,90 +166,34 @@ impl<
         //
         // This is much smaller than the full trace (WIDTH vs NUM_COLS).
         let mut inputs = Vec::with_capacity(n);
-        let mut prev_output: Option<[F; WIDTH]> = None;
         let mut prev_mmcs_index_sum = F::ZERO;
 
         // Split slice into rows
         let rows = trace_slice[..n * ncols].chunks_exact_mut(ncols);
 
-        for (op, row) in sponge_ops.iter().zip(rows) {
+        for (row_index, (op, row)) in sponge_ops.iter().zip(rows).enumerate() {
             let Poseidon2CircuitRow {
                 new_start,
                 merkle_path,
                 mmcs_bit,
                 mmcs_index_sum,
                 input_values,
-                in_ctl,
                 ..
             } = op;
 
-            let mut padded_inputs = [F::ZERO; WIDTH];
-            for (dst, src) in padded_inputs
-                .iter_mut()
-                .zip(
-                    input_values
-                        .iter()
-                        .copied()
-                        .chain(core::iter::repeat(F::ZERO)),
-                )
-                .take(WIDTH)
-            {
-                *dst = src;
-            }
-
-            // Apply chaining rules.
-            // NOTE: For rows with new_start = false:
-            // - Sponge mode (merkle_path = 0): all limbs come from the previous output unless
-            //   a limb is exposed via in_ctl, in which case the provided input overrides it.
-            // - Merkle mode (merkle_path = 1): the previous digest is always the previous output limbs 0-1.
-            //   If mmcs_bit = 0 (previous digest is left child), chain into input limbs 0-1; input limbs 2-3 come from inputs.
-            //   If mmcs_bit = 1 (previous digest is right child), chain into input limbs 2-3; input limbs 0-1 come from inputs.
-            // - If in_ctl[i] = 1, that limb is NOT chained and comes from CTL/witness instead.
-            //   The AIR constraints will enforce this (chaining is gated by 1 - in_ctl[i]).
-            let mut state = padded_inputs;
-            let i = inputs.len();
-            if i > 0 && !*new_start {
-                if *merkle_path {
-                    // Merkle-path mode: the previous digest is always the previous row's out[0..1].
-                    // `mmcs_bit` selects whether that digest is the left (0) or right (1) child:
-                    // - bit=0: chain into input limbs 0..1
-                    // - bit=1: chain into input limbs 2..3
-                    if let Some(prev_out) = prev_output {
-                        if !*mmcs_bit {
-                            if !in_ctl[0] {
-                                state[0..D].copy_from_slice(&prev_out[0..D]);
-                            }
-                            if !in_ctl[1] {
-                                state[D..2 * D].copy_from_slice(&prev_out[D..2 * D]);
-                            }
-                        } else {
-                            if !in_ctl[2] {
-                                state[2 * D..3 * D].copy_from_slice(&prev_out[0..D]);
-                            }
-                            if !in_ctl[3] {
-                                state[3 * D..4 * D].copy_from_slice(&prev_out[D..2 * D]);
-                            }
-                        }
-                    }
-                } else {
-                    // Normal sponge mode: in_{r+1}[i] = out_r[i] for i = 0..3
-                    if let Some(prev_out) = prev_output {
-                        state
-                            .chunks_exact_mut(D)
-                            .zip(prev_out.chunks_exact(D))
-                            .zip(in_ctl.iter())
-                            .for_each(|((dst, src), ctl)| {
-                                if !*ctl {
-                                    dst.copy_from_slice(src);
-                                }
-                            });
-                    }
-                }
-            }
-            // If new_start = 1: no chaining, input determined solely by CTL
+            // Copy input_values into fixed-size array, padding with zeros.
+            // Note: input_values already contains the fully resolved state with chaining
+            // applied during circuit execution, so no additional chaining is needed here.
+            assert_eq!(
+                input_values.len(),
+                WIDTH,
+                "Trace row input_values must have length WIDTH"
+            );
+            let mut state = [F::ZERO; WIDTH];
+            state[..WIDTH].copy_from_slice(&input_values[..WIDTH]);
 
             // Update MMCS index accumulator
-            let acc = if i > 0 && *merkle_path && !*new_start {
+            let acc = if row_index > 0 && *merkle_path && !*new_start {
                 // mmcs_index_sum_{r+1} = mmcs_index_sum_r * 2 + mmcs_bit_r
                 prev_mmcs_index_sum + prev_mmcs_index_sum + F::from_bool(*mmcs_bit)
             } else {
@@ -269,7 +211,6 @@ impl<
 
             // Save the state to be used as input for the heavy Poseidon2 trace generation
             inputs.push(state);
-            prev_output = Some(perm.permute(state));
         }
 
         // Poseidon2 trace generation
@@ -683,8 +624,8 @@ pub unsafe fn eval_unchecked<
 ) where
     AB::F: PrimeField,
 {
-    // SAFETY: Transmute the AIR to match builder's field type
-    // Caller guarantees F == AB::F at runtime.
+    // SAFETY: Caller guarantees F == AB::F at runtime, so the struct layouts are identical.
+    // The transmute is safe because all field types have the same runtime representation.
     unsafe {
         let air_transmuted: &Poseidon2CircuitAir<
             AB::F,
@@ -969,7 +910,9 @@ mod test {
     use p3_merkle_tree::MerkleTreeHidingMmcs;
     use p3_poseidon2::ExternalLayerConstants;
     use p3_poseidon2_air::RoundConstants;
-    use p3_symmetric::{CompressionFunctionFromHasher, PaddingFreeSponge, SerializingHasher};
+    use p3_symmetric::{
+        CompressionFunctionFromHasher, PaddingFreeSponge, Permutation, SerializingHasher,
+    };
     use p3_uni_stark::{
         StarkConfig, prove_with_preprocessed, setup_preprocessed, verify_with_preprocessed,
     };
@@ -1050,41 +993,55 @@ mod test {
         // Generate random inputs.
         let mut rng = SmallRng::seed_from_u64(1);
 
-        let first_state: Vec<Val> = (0..WIDTH).map(|_| rng.random()).collect();
-        let zero_state = vec![Val::ZERO; WIDTH];
+        // Row A: new_start=true, sponge mode - use random initial state
+        let state_a: [Val; WIDTH] = core::array::from_fn(|_| rng.random());
+        let output_a = perm.permute(state_a);
 
         let sponge_a: Poseidon2CircuitRow<Val> = Poseidon2CircuitRow {
             new_start: true,
             merkle_path: false,
             mmcs_bit: false,
             mmcs_index_sum: Val::ZERO,
-            input_values: first_state,
+            input_values: state_a.to_vec(),
             in_ctl: [false; POSEIDON2_LIMBS],
             input_indices: [0; POSEIDON2_LIMBS],
             out_ctl: [false; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
             output_indices: [0; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
             mmcs_index_sum_idx: 0,
         };
+
+        // Row B: new_start=false, sponge mode - chain from output_a
+        let state_b = output_a;
+        let output_b = perm.permute(state_b);
 
         let sponge_b: Poseidon2CircuitRow<Val> = Poseidon2CircuitRow {
             new_start: false,
             merkle_path: false,
             mmcs_bit: true,
             mmcs_index_sum: Val::ZERO,
-            input_values: zero_state.clone(),
+            input_values: state_b.to_vec(),
             in_ctl: [false; POSEIDON2_LIMBS],
             input_indices: [0; POSEIDON2_LIMBS],
             out_ctl: [false; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
             output_indices: [0; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
             mmcs_index_sum_idx: 0,
         };
+
+        // Row C: new_start=false, merkle mode, mmcs_bit=false
+        // In merkle mode with mmcs_bit=0: prev digest (out[0..1]) goes to input limbs 0..1
+        // The rest (limbs 2..3) can be zeros (sibling)
+        const D: usize = 4; // extension degree
+        let mut state_c = [Val::ZERO; WIDTH];
+        // Chain prev output[0..2*D] into input[0..2*D] (limbs 0-1)
+        state_c[0..2 * D].copy_from_slice(&output_b[0..2 * D]);
+        let output_c = perm.permute(state_c);
 
         let sponge_c: Poseidon2CircuitRow<Val> = Poseidon2CircuitRow {
             new_start: false,
             merkle_path: true,
             mmcs_bit: false,
             mmcs_index_sum: Val::ZERO,
-            input_values: zero_state.clone(),
+            input_values: state_c.to_vec(),
             in_ctl: [false; POSEIDON2_LIMBS],
             input_indices: [0; POSEIDON2_LIMBS],
             out_ctl: [false; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
@@ -1092,12 +1049,15 @@ mod test {
             mmcs_index_sum_idx: 0,
         };
 
+        // Row D: new_start=false, sponge mode - chain from output_c
+        let state_d = output_c;
+
         let sponge_d: Poseidon2CircuitRow<Val> = Poseidon2CircuitRow {
             new_start: false,
             merkle_path: false,
             mmcs_bit: false,
             mmcs_index_sum: Val::ZERO,
-            input_values: zero_state,
+            input_values: state_d.to_vec(),
             in_ctl: [false; POSEIDON2_LIMBS],
             input_indices: [0; POSEIDON2_LIMBS],
             out_ctl: [false; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
@@ -1109,7 +1069,8 @@ mod test {
         let degree_bits = 5;
         let target_rows = 1 << degree_bits;
         if rows.len() < target_rows {
-            let filler = rows.last().cloned().unwrap_or_else(|| Poseidon2CircuitRow {
+            // Filler rows must have new_start=true to avoid chaining constraints
+            let filler = Poseidon2CircuitRow {
                 new_start: true,
                 merkle_path: false,
                 mmcs_bit: false,
@@ -1120,7 +1081,7 @@ mod test {
                 out_ctl: [false; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
                 output_indices: [0; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
                 mmcs_index_sum_idx: 0,
-            });
+            };
             rows.resize(target_rows, filler);
         }
 
@@ -1130,7 +1091,7 @@ mod test {
             preprocessed,
         );
 
-        let trace = air.generate_trace_rows(&rows, &constants, fri_params.log_blowup, &perm);
+        let trace = air.generate_trace_rows(&rows, &constants, fri_params.log_blowup);
 
         type Dft = p3_dft::Radix2Bowers;
         let dft = Dft::default();
