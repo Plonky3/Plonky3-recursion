@@ -598,9 +598,18 @@ where
         BF: PrimeField64,
     {
         self.push_scope("decompose_to_bits");
+
+        // We cannot request more bits than the extension field can represent.
+        if n_bits > F::bits() {
+            return Err(CircuitBuilderError::BinaryDecompositionTooManyBits {
+                expected: BF::bits(),
+                n_bits,
+            });
+        }
+
         // Create bit witness variables
         let binary_decomposition_hint = BinaryDecompositionHint::new();
-        let mut bits = self
+        let mut bits: Vec<ExprId> = self
             .push_unconstrained_op(
                 vec![vec![x]],
                 // We need all the bits so that we can reconstruct the F element.
@@ -667,21 +676,20 @@ where
         let mut acc = self.add_const(F::ZERO);
 
         for (i, chunk) in bits.chunks(BF::bits()).enumerate() {
-            // Current power of 2 at the corresponding limb.
-            let mut basis = vec![BF::ZERO; F::DIMENSION];
-            basis[i] = BF::ONE;
-            let mut pow2 = self.add_const(
-                F::from_basis_coefficients_slice(&basis)
-                    .expect("`basis` is of size `F::DIMENSION`"),
-            );
-            for &b in chunk {
+            // The canonical basis element e_i.
+            let mut e_i = vec![BF::ZERO; F::DIMENSION];
+            e_i[i] = BF::ONE;
+            let e_i =
+                F::from_basis_coefficients_slice(&e_i).expect("`basis` is of size `F::DIMENSION`");
+            for (j, &b) in chunk.iter().enumerate() {
+                // Add the constant `2^j * e_i`
+                let pow2 = self.add_const(e_i * BF::from_u64(1 << j));
                 // Ensure each bit is boolean.
                 self.assert_bool(b);
-                // Add b_i · 2^i to the accumulator (at the corresponding limb).
+
+                // Add b_i · 2^j to the accumulator (at the corresponding limb).
                 let term = self.mul(b, pow2);
                 acc = self.add(acc, term);
-                // Double the power: 2^i → 2^{i+1}.
-                pow2 = self.add(pow2, pow2);
             }
         }
 
@@ -1576,7 +1584,7 @@ mod proptests {
     fn test_reconstruct_index_from_bits_ext_field() {
         let mut builder = CircuitBuilder::<Ext4>::new();
 
-        // Test reconstructing the value 5 (binary: 101)
+        // Test reconstructing a value from an alternating 124-bit pattern (0xAAAA…)
         let bits: [_; 124] = array::from_fn(|i| builder.add_const(Ext4::from_usize(i % 2)));
 
         let result = builder
@@ -1632,13 +1640,22 @@ mod proptests {
 
         // Build and run the circuit
         let circuit = builder.build().expect("Failed to build circuit");
+        let expr_to_widx = circuit.expr_to_widx.clone();
         let runner = circuit.runner();
         let traces = runner.run().expect("Failed to run circuit");
 
         // Verify the bits are correctly decomposed - 6 = [0,1,1] in little-endian
-        assert_eq!(traces.witness_trace.values[3], BabyBear::ZERO); // bit 0
-        assert_eq!(traces.witness_trace.values[4], BabyBear::ONE); // bit 1
-        assert_eq!(traces.witness_trace.values[5], BabyBear::ONE); // bit 2
+        let bit_values: Vec<BabyBear> = bits
+            .iter()
+            .map(|b| {
+                let w = expr_to_widx.get(b).expect("bit expr mapped");
+                traces.witness_trace.values[w.0 as usize]
+            })
+            .collect();
+        assert_eq!(bit_values[0], BabyBear::ZERO); // bit 0
+        assert_eq!(bit_values[1], BabyBear::ONE); // bit 1
+        assert_eq!(bit_values[2], BabyBear::ONE); // bit 2
+
         assert_eq!(bits.len(), 3);
     }
 
@@ -1658,10 +1675,13 @@ mod proptests {
         );
 
         // Decompose into 3 bits - this creates its own public inputs for the bits
-        let bits = builder.decompose_to_bits::<BabyBear>(value, 3).unwrap();
+        let bits = builder
+            .decompose_to_bits::<BabyBear>(value, Ext4::bits())
+            .unwrap();
 
         // Build and run the circuit
         let circuit = builder.build().expect("Failed to build circuit");
+        let expr_to_widx = circuit.expr_to_widx.clone();
         let runner = circuit.runner();
         let traces = runner.run().expect("Failed to run circuit");
 
@@ -1691,19 +1711,18 @@ mod proptests {
         ]
         .map(Ext4::from_u8);
 
-        // Given that
-        // - traces.witness_trace.values[0] is the constant 0,
-        // - traces.witness_trace.values[1] is the constant input wire,
-        // - traces.witness_trace.values[2..6] are binary decomposition constants,
-        // the 124 bits from the input's binary decomposition are stored between
-        // positions 6..130, in chunks of size 31.
-        let result = traces.witness_trace.values[6..130]
-            .chunks(31)
-            .collect::<Vec<&[Ext4]>>();
+        let bit_values: Vec<Ext4> = bits
+            .iter()
+            .map(|b| {
+                let w = expr_to_widx.get(b).expect("bit expr mapped");
+                traces.witness_trace.values[w.0 as usize]
+            })
+            .collect();
+        let result = bit_values.chunks(31).collect::<Vec<&[Ext4]>>();
         assert_eq!(result[0], hex_0x40000006_bin);
         assert_eq!(result[1], hex_0x55555555_bin);
         assert_eq!(result[2], hex_0x02000000_bin);
         assert_eq!(result[3], zero_bin);
-        assert_eq!(bits.len(), 3);
+        assert_eq!(bits.len(), Ext4::bits());
     }
 }
