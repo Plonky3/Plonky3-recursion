@@ -218,6 +218,8 @@ where
                     log2_ceil_usize(prep.len().div_ceil(width)),
                 ));
             }
+            // Unconstrained operations do not use tables
+            NonPrimitiveOpType::Unconstrained => {}
         }
     }
 

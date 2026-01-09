@@ -1,11 +1,10 @@
 use alloc::string::String;
-use alloc::vec::Vec;
 
 use thiserror::Error;
 
+use crate::ExprId;
 use crate::op::NonPrimitiveOpType;
 use crate::types::NonPrimitiveOpId;
-use crate::{ExprId, WitnessId};
 
 /// Errors that can occur during circuit building/lowering.
 #[derive(Debug, Error)]
@@ -58,15 +57,11 @@ pub enum CircuitBuilderError {
     #[error("Poseidon2Perm merkle_path=false must not have mmcs_bit (it has no effect)")]
     Poseidon2NonMerkleWithMmcsBit,
 
-    /// A sequence of expressions of type Witness is missing its filler.
-    #[error("Missing hint filler for expression {sequence:?}")]
-    MissingWitnessFiller { sequence: Vec<WitnessId> },
+    /// Requested bit length exceeds the maximum allowed for binary decomposition.
+    #[error("Too many bits for binary decomposition: expected at most {expected}, got {n_bits}")]
+    BinaryDecompositionTooManyBits { expected: usize, n_bits: usize },
 
-    /// A sequence of witness hints has no end.
-    #[error("Witness hint without last hint {sequence:?}.")]
-    MalformedWitnessHintsSequence { sequence: Vec<WitnessId> },
-
-    /// Witness filler without any hints sequence.
-    #[error("Witness filler is missing a witness hints sequence")]
-    UnmatchedWitnessFiller {},
+    /// Missing output
+    #[error("An output was expected but none was given")]
+    MissingOutput,
 }

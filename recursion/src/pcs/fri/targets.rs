@@ -4,7 +4,7 @@ use core::marker::PhantomData;
 
 use p3_challenger::{CanObserve, GrindingChallenger};
 use p3_circuit::utils::RowSelectorsTargets;
-use p3_circuit::{CircuitBuilder, CircuitError};
+use p3_circuit::{CircuitBuilder, CircuitBuilderError};
 use p3_commit::{BatchOpening, ExtensionMmcs, Mmcs, PolynomialSpace};
 use p3_field::coset::TwoAdicMultiplicativeCoset;
 use p3_field::{
@@ -463,7 +463,7 @@ where
         >,
         opened_values: &OpenedValuesTargetsWithLookups<SC>,
         params: &Self::VerifierParams,
-    ) -> Result<Vec<Target>, CircuitError> {
+    ) -> Result<Vec<Target>, CircuitBuilderError> {
         opened_values.observe(circuit, challenger);
 
         // Sample FRI alpha (for batch opening reduction)

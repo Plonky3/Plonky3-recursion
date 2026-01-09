@@ -2,7 +2,7 @@
 
 use alloc::vec::Vec;
 
-use p3_circuit::{CircuitBuilder, CircuitError};
+use p3_circuit::{CircuitBuilder, CircuitBuilderError};
 use p3_field::{ExtensionField, Field, PrimeField64};
 
 use crate::Target;
@@ -85,7 +85,7 @@ pub trait RecursiveChallenger<F: Field> {
         circuit: &mut CircuitBuilder<F>,
         total_num_bits: usize,
         num_bits: usize,
-    ) -> Result<Vec<Target>, CircuitError>
+    ) -> Result<Vec<Target>, CircuitBuilderError>
     where
         F: ExtensionField<BF>,
     {
@@ -113,7 +113,7 @@ pub trait RecursiveChallenger<F: Field> {
         witness_bits: usize,
         witness: Target,
         total_num_bits: usize,
-    ) -> Result<(), CircuitError>
+    ) -> Result<(), CircuitBuilderError>
     where
         F: ExtensionField<BF>,
     {

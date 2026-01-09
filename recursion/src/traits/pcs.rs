@@ -2,7 +2,7 @@
 
 use alloc::vec::Vec;
 
-use p3_circuit::{CircuitBuilder, CircuitError};
+use p3_circuit::{CircuitBuilder, CircuitBuilderError};
 use p3_uni_stark::StarkGenericConfig;
 
 use super::Recursive;
@@ -58,7 +58,7 @@ pub trait RecursivePcs<
         proof_targets: &OpeningProof,
         opened_values: &OpenedValuesTargetsWithLookups<SC>,
         params: &Self::VerifierParams,
-    ) -> Result<Vec<Target>, CircuitError>;
+    ) -> Result<Vec<Target>, CircuitBuilderError>;
 
     /// Verify the polynomial commitment opening proof in-circuit.
     ///

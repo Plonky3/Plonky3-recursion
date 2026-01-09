@@ -5,7 +5,6 @@ use alloc::vec::Vec;
 use alloc::{format, vec};
 
 use hashbrown::HashMap;
-use p3_util::zip_eq::zip_eq;
 use tracing::instrument;
 
 use super::add::AddTraceBuilder;
@@ -136,6 +135,8 @@ impl<F: CircuitField> CircuitRunner<F> {
             ) => {
                 // ok
             }
+            // Unconstrained operations don't need private data.
+            (crate::op::NonPrimitiveOpType::Unconstrained, _) => return Ok(()),
         }
 
         // Disallow double-setting private data
@@ -232,29 +233,6 @@ impl<F: CircuitField> CircuitRunner<F> {
                         self.set_witness(b, b_val)?;
                     }
                 }
-                Op::Unconstrained {
-                    inputs,
-                    outputs,
-                    filler,
-                } => {
-                    let inputs_val = inputs
-                        .iter()
-                        .map(|&input| self.get_witness(input))
-                        .collect::<Result<Vec<F>, _>>()?;
-                    let outputs_val = filler.compute_outputs(inputs_val)?;
-
-                    for (&output, &output_val) in zip_eq(
-                        outputs.iter(),
-                        outputs_val.iter(),
-                        CircuitError::UnconstrainedOpInputLengthMismatch {
-                            op: "equal to".to_string(),
-                            expected: outputs.len(),
-                            got: outputs_val.len(),
-                        },
-                    )? {
-                        self.set_witness(output, output_val)?;
-                    }
-                }
                 Op::NonPrimitiveOpWithExecutor {
                     inputs,
                     outputs,
@@ -310,9 +288,6 @@ impl<F: CircuitField> CircuitRunner<F> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
-    extern crate std;
 
     use p3_baby_bear::BabyBear;
     use p3_field::extension::BinomialExtensionField;
@@ -323,9 +298,10 @@ mod tests {
     use tracing_subscriber::util::SubscriberInitExt;
     use tracing_subscriber::{EnvFilter, Registry};
 
-    use crate::ExprId;
+    use super::*;
+    use crate::NonPrimitiveOpType;
     use crate::builder::CircuitBuilder;
-    use crate::op::WitnessHintsFiller;
+    use crate::op::NonPrimitiveExecutor;
     use crate::types::WitnessId;
 
     /// Initializes a global logger with default parameters.
@@ -375,39 +351,39 @@ mod tests {
 
     #[derive(Debug, Clone)]
     /// The hint defined by x in an equation a*x - b = 0
-    struct XHint {
-        inputs: Vec<ExprId>,
-    }
+    struct XHint {}
 
     impl XHint {
-        pub fn new(a: ExprId, b: ExprId) -> Self {
-            Self { inputs: vec![a, b] }
+        pub fn new() -> Self {
+            Self {}
         }
     }
 
-    impl<F: Field> WitnessHintsFiller<F> for XHint {
-        fn inputs(&self) -> &[ExprId] {
-            &self.inputs
+    impl<F: Field> NonPrimitiveExecutor<F> for XHint {
+        fn execute(
+            &self,
+            inputs: &[Vec<WitnessId>],
+            outputs: &[Vec<WitnessId>],
+            ctx: &mut ExecutionContext<'_, F>,
+        ) -> Result<(), CircuitError> {
+            let a = ctx.get_witness(inputs[0][0])?;
+            let b = ctx.get_witness(inputs[0][1])?;
+            let inv_a = a.try_inverse().ok_or(CircuitError::DivisionByZero)?;
+            let x = b * inv_a;
+            ctx.set_witness(outputs[0][0], x)?;
+            Ok(())
         }
 
-        fn n_outputs(&self) -> usize {
-            1
+        fn op_type(&self) -> &NonPrimitiveOpType {
+            &NonPrimitiveOpType::Unconstrained
         }
 
-        fn compute_outputs(&self, inputs_val: Vec<F>) -> Result<Vec<F>, crate::CircuitError> {
-            if inputs_val.len() != self.inputs.len() {
-                Err(crate::CircuitError::UnconstrainedOpInputLengthMismatch {
-                    op: "equal to".to_string(),
-                    expected: self.inputs.len(),
-                    got: inputs_val.len(),
-                })
-            } else {
-                let a = inputs_val[0];
-                let b = inputs_val[1];
-                let inv_a = a.try_inverse().ok_or(CircuitError::DivisionByZero)?;
-                let x = b * inv_a;
-                Ok(vec![x])
-            }
+        fn as_any(&self) -> &dyn core::any::Any {
+            self
+        }
+
+        fn boxed(&self) -> Box<dyn NonPrimitiveExecutor<F>> {
+            Box::new(self.clone())
         }
     }
 
@@ -420,8 +396,11 @@ mod tests {
 
         let c37 = builder.add_const(BabyBear::from_u64(37));
         let c111 = builder.add_const(BabyBear::from_u64(111));
-        let x_hint = XHint::new(c37, c111);
-        let x = builder.alloc_witness_hints(x_hint, "x")[0];
+        let x_hint = XHint::new();
+        let x = builder
+            .push_unconstrained_op(vec![vec![c37, c111]], 1, x_hint, "x")
+            .2[0]
+            .unwrap();
 
         let mul_result = builder.mul(c37, x);
         let sub_result = builder.sub(mul_result, c111);
