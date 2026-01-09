@@ -862,4 +862,10 @@ mod tests {
         verify_with_preprocessed(&config, &air, &proof, &pis, Some(&verifier_data))
             .expect("verification failed");
     }
+
+    #[test]
+    fn test_air_constraint_degree() {
+        let air = MulAir::<Val, 1>::new_with_preprocessed(8, 2, vec![Val::ZERO; 24]);
+        p3_test_utils::assert_air_constraint_degree!(air, "MulAir");
+    }
 }

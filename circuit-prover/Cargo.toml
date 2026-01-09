@@ -44,6 +44,7 @@ thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+p3-test-utils.workspace = true
 postcard = { version = "1.0", default-features = false, features = ["alloc"] }
 rand.workspace = true
 tracing-forest = { workspace = true, features = ["ansi", "smallvec"] }

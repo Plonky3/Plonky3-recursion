@@ -642,4 +642,10 @@ mod tests {
 
         assert_eq!(air.total_width(), matrix.width());
     }
+
+    #[test]
+    fn test_air_constraint_degree() {
+        let air = WitnessAir::<Val, 1>::new_with_preprocessed(8, 2, vec![Val::ONE; 8]);
+        p3_test_utils::assert_air_constraint_degree!(air, "WitnessAir");
+    }
 }

@@ -37,6 +37,7 @@ p3-dft.workspace = true
 p3-fri.workspace = true
 p3-keccak.workspace = true
 p3-merkle-tree.workspace = true
+p3-test-utils.workspace = true
 
 tracing-forest = { workspace = true, features = ["ansi", "smallvec"] }
 tracing-subscriber = { workspace = true, features = ["std", "env-filter"] }
