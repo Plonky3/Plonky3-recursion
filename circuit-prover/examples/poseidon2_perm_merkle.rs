@@ -10,7 +10,6 @@ use p3_circuit_prover::config::BabyBearConfig;
 use p3_circuit_prover::{BatchStarkProver, Poseidon2Config, TablePacking, config};
 use p3_field::extension::BinomialExtensionField;
 use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
-use p3_lookup::logup::LogUpGadget;
 use p3_poseidon2_circuit_air::BabyBearD4Width16;
 use p3_symmetric::Permutation;
 use tracing_forest::ForestLayer;
@@ -271,10 +270,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut prover = BatchStarkProver::new(stark_config).with_table_packing(table_packing);
     prover.register_poseidon2_table(poseidon2_config);
 
-    let lookup_gadget = LogUpGadget::new();
-    let proof =
-        prover.prove_all_tables(&traces, &common, witness_multiplicities, &lookup_gadget)?;
-    prover.verify_all_tables(&proof, &common, &lookup_gadget)?;
+    let proof = prover.prove_all_tables(&traces, &common, witness_multiplicities)?;
+    prover.verify_all_tables(&proof, &common)?;
 
     Ok(())
 }

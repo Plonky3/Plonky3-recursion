@@ -10,7 +10,7 @@ use p3_air::{
 };
 use p3_circuit::ops::Poseidon2CircuitRow;
 use p3_field::{Field, PrimeCharacteristicRing, PrimeField};
-use p3_lookup::lookup_traits::{AirLookupHandler, Direction, Kind, Lookup};
+use p3_lookup::lookup_traits::{Direction, Kind, Lookup};
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_maybe_rayon::prelude::*;
@@ -759,44 +759,17 @@ where
             PARTIAL_ROUNDS,
         >(self, builder, local, next, next_preprocessed);
     }
-}
 
-impl<
-    AB: PermutationAirBuilder + PairBuilder + AirBuilderWithPublicValues,
-    LinearLayers: GenericPoseidon2LinearLayers<WIDTH>,
-    const D: usize,
-    const WIDTH: usize,
-    const WIDTH_EXT: usize,
-    const RATE_EXT: usize,
-    const CAPACITY_EXT: usize,
-    const SBOX_DEGREE: u64,
-    const SBOX_REGISTERS: usize,
-    const HALF_FULL_ROUNDS: usize,
-    const PARTIAL_ROUNDS: usize,
-> AirLookupHandler<AB>
-    for Poseidon2CircuitAir<
-        AB::F,
-        LinearLayers,
-        D,
-        WIDTH,
-        WIDTH_EXT,
-        RATE_EXT,
-        CAPACITY_EXT,
-        SBOX_DEGREE,
-        SBOX_REGISTERS,
-        HALF_FULL_ROUNDS,
-        PARTIAL_ROUNDS,
-    >
-where
-    AB::F: PrimeField,
-{
     fn add_lookup_columns(&mut self) -> Vec<usize> {
         let lookup_column_idx = self.num_lookup_cols;
         self.num_lookup_cols += 1;
         vec![lookup_column_idx]
     }
 
-    fn get_lookups(&mut self) -> Vec<Lookup<<AB>::F>> {
+    fn get_lookups(&mut self) -> Vec<Lookup<<AB>::F>>
+    where
+        AB: PermutationAirBuilder + AirBuilderWithPublicValues,
+    {
         let symbolic_air_builder = SymbolicAirBuilder::<AB::F>::new(
             Self::preprocessed_width(),
             BaseAir::<AB::F>::width(self),
@@ -863,7 +836,7 @@ where
                 Direction::Send,
             )];
 
-            lookups.push(AirLookupHandler::<AB>::register_lookup(
+            lookups.push(<Self as Air<AB>>::register_lookup(
                 self,
                 Kind::Global("WitnessChecks".to_string()),
                 &lookup_input,
@@ -889,7 +862,7 @@ where
                 Direction::Send,
             )];
 
-            lookups.push(AirLookupHandler::<AB>::register_lookup(
+            lookups.push(<Self as Air<AB>>::register_lookup(
                 self,
                 Kind::Global("WitnessChecks".to_string()),
                 &lookup_output,
@@ -917,7 +890,7 @@ where
             multiplicity,
             Direction::Send,
         );
-        lookups.push(AirLookupHandler::<AB>::register_lookup(
+        lookups.push(<Self as Air<AB>>::register_lookup(
             self,
             Kind::Global("WitnessChecks".to_string()),
             &[lookup_mmcs],

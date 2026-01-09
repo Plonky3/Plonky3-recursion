@@ -14,7 +14,7 @@ use p3_circuit_prover::air::{AddAir, ConstAir, MulAir, PublicAir, WitnessAir};
 use p3_circuit_prover::batch_stark_prover::{PrimitiveTable, RowCounts};
 use p3_commit::{Pcs, PolynomialSpace};
 use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing, PrimeField};
-use p3_lookup::lookup_traits::{AirLookupHandler, Kind, Lookup, LookupData, LookupGadget};
+use p3_lookup::lookup_traits::{Kind, Lookup, LookupData, LookupGadget};
 use p3_uni_stark::{StarkGenericConfig, SymbolicExpression, Val};
 
 use super::{ObservableCommitment, VerificationError, recompose_quotient_from_chunks_circuit};
@@ -63,7 +63,7 @@ impl<F: Field, const D: usize> P3BaseAir<F> for CircuitTablesAir<F, D> {
 
 impl<AB, const D: usize> P3Air<AB> for CircuitTablesAir<AB::F, D>
 where
-    AB: PairBuilder,
+    AB: PairBuilder + PermutationAirBuilder + AirBuilderWithPublicValues,
     AB::F: Field,
 {
     fn eval(&self, builder: &mut AB) {
@@ -75,30 +75,24 @@ where
             Self::Mul(a) => P3Air::eval(a, builder),
         }
     }
-}
 
-impl<AB: PermutationAirBuilder + PairBuilder + AirBuilderWithPublicValues, const D: usize>
-    AirLookupHandler<AB> for CircuitTablesAir<AB::F, D>
-where
-    AB::F: Field,
-{
     fn add_lookup_columns(&mut self) -> Vec<usize> {
         match self {
-            Self::Witness(a) => AirLookupHandler::<AB>::add_lookup_columns(a),
-            Self::Const(a) => AirLookupHandler::<AB>::add_lookup_columns(a),
-            Self::Public(a) => AirLookupHandler::<AB>::add_lookup_columns(a),
-            Self::Add(a) => AirLookupHandler::<AB>::add_lookup_columns(a),
-            Self::Mul(a) => AirLookupHandler::<AB>::add_lookup_columns(a),
+            Self::Witness(a) => P3Air::<AB>::add_lookup_columns(a),
+            Self::Const(a) => P3Air::<AB>::add_lookup_columns(a),
+            Self::Public(a) => P3Air::<AB>::add_lookup_columns(a),
+            Self::Add(a) => P3Air::<AB>::add_lookup_columns(a),
+            Self::Mul(a) => P3Air::<AB>::add_lookup_columns(a),
         }
     }
 
     fn get_lookups(&mut self) -> Vec<p3_lookup::lookup_traits::Lookup<<AB>::F>> {
         match self {
-            Self::Witness(a) => AirLookupHandler::<AB>::get_lookups(a),
-            Self::Const(a) => AirLookupHandler::<AB>::get_lookups(a),
-            Self::Public(a) => AirLookupHandler::<AB>::get_lookups(a),
-            Self::Add(a) => AirLookupHandler::<AB>::get_lookups(a),
-            Self::Mul(a) => AirLookupHandler::<AB>::get_lookups(a),
+            Self::Witness(a) => P3Air::<AB>::get_lookups(a),
+            Self::Const(a) => P3Air::<AB>::get_lookups(a),
+            Self::Public(a) => P3Air::<AB>::get_lookups(a),
+            Self::Add(a) => P3Air::<AB>::get_lookups(a),
+            Self::Mul(a) => P3Air::<AB>::get_lookups(a),
         }
     }
 }

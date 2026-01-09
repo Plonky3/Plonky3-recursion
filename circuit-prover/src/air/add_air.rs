@@ -91,7 +91,7 @@ use p3_air::{
 };
 use p3_circuit::tables::AddTrace;
 use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
-use p3_lookup::lookup_traits::{AirLookupHandler, Direction, Kind, Lookup};
+use p3_lookup::lookup_traits::{Direction, Kind, Lookup};
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_uni_stark::SymbolicAirBuilder;
@@ -418,18 +418,17 @@ where
             }
         }
     }
-}
 
-impl<AB: PermutationAirBuilder + PairBuilder + AirBuilderWithPublicValues, const D: usize>
-    AirLookupHandler<AB> for AddAir<AB::F, D>
-{
     fn add_lookup_columns(&mut self) -> Vec<usize> {
         let new_idx = self.num_lookup_columns;
         self.num_lookup_columns += 1;
         vec![new_idx]
     }
 
-    fn get_lookups(&mut self) -> Vec<Lookup<<AB>::F>> {
+    fn get_lookups(&mut self) -> Vec<Lookup<<AB>::F>>
+    where
+        AB: PermutationAirBuilder + AirBuilderWithPublicValues,
+    {
         let mut lookups = Vec::new();
         self.num_lookup_columns = 0;
         let preprocessed_width = self.preprocessed_width();
@@ -463,7 +462,7 @@ impl<AB: PermutationAirBuilder + PairBuilder + AirBuilderWithPublicValues, const
                 Direction::Send,
             );
             lookups.extend(lane_lookup_inputs.into_iter().map(|inps| {
-                AirLookupHandler::<AB>::register_lookup(
+                <Self as Air<AB>>::register_lookup(
                     self,
                     Kind::Global("WitnessChecks".to_string()),
                     &[inps],
