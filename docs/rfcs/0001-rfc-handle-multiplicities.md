@@ -9,10 +9,10 @@
 ## 1. Summary
 Currently, witness multiplicities are handled in an error-prone and not very user-friendly way.
 
-I suggest having `PreprocessedColumns` handle the update of witness multiplicities directly with some specific methods. Since we would only use those specialised methods for witness indices, this would make things less error-prone.
+This RFC suggests having `PreprocessedColumns` handle witness multiplicity updates directly via specialized methods. Because we would rely on those methods for witness indices, the flow becomes less error-prone.
 
-Furthermore, I propose putting all the preprocessed traces generated when creating common data into a `ProverData` structure.
-This structure would be passed to the prover instead of `CommonData`, thus making sure that the prover doesn't have to regenerate any preprocessing trace, while keeping everything hidden from the user. This would lead to a more user-friendly API. 
+It also proposes putting all preprocessed traces generated during common-data creation into a `ProverData` structure.
+This structure would be passed to the prover instead of `CommonData`, ensuring the prover does not have to regenerate any preprocessing trace without having the user pass around the multiplicities. This should lead to a more user-friendly API.
 
 
 ## 2. Motivation / Problem statement
@@ -24,16 +24,16 @@ Thus, we need to generate preprocessed values for the various operations in para
 
 In `generate_preprocessed_columns`, we update the preprocessed data as follows, for each primitive and non-primitive operation:
 - first, we extend the operation's preprocessed data with the necessary values
-- then, when the values include witness indice, we update the corresponding multiplicities accordingly.
-Since this is currently a manual process, it is easy to forget to update multiplicities. 
+- then, when the values include witness indices, we update the corresponding multiplicities accordingly.
+Since this is currently a manual process, it is easy to forget to update multiplicities.
 
-Furthermore, the prover currently requires access to the `witness_multiplicities` so that it doesn't have to regenerate them. But having the user carry the multiplicities around is not user-friendly.
+Furthermore, the prover currently requires access to the `witness_multiplicities` so that it doesn't have to regenerate them. Having the user carry the multiplicities around is not user-friendly. Moreover, the prove still has to regenerate the rest of the preprocessed data based on the traces, creating a slight overhead.
 
 Therefore, we need to redesign the way we currently handle multiplicities in order to make it less error-prone and more user-friendly.
 
 ## 3. Goals and non-goals
 **Goals**
-- Handle witness multiplicities in a somewhat automated way, making their update easier and more manageable.
+- Handle witness multiplicities in a more automated way, making their update easier and more manageable.
 - Provide the prover with the necessary data without making the API worse for the user.
 
 **Non-goals**
@@ -42,12 +42,12 @@ Therefore, we need to redesign the way we currently handle multiplicities in ord
 ## 4. Proposed design
 ### 4.1 High-level approach
 
-- Add methods to the `PreprocessedColumns` structure so that it can update the preprocessed data itself. This way, we can have specialized methods for witness indices, which would update both the current table's preprocessed data and the witness multiplicities. We can have one method to register a primitive witness read, one for non-primitive reads, and the same methods for multiple reads. Additionally, we would have a method to add a value that is not a witness index. Note that at the end of `generate_preprocessed`, the structure could then already add a single `Add` and/or `Mul` operation if either is empty. It is currently done outside of `generate_preprocessed`, which might incur errors.
-- On top of `CommonData`, we can have a `ProverData` structure which contains the common data, as well as `PreprocessedColumns` and any additional data that the prover might require. Currently, the prover is regenerating the preprocessed values based on the traces. And it could do the same for multiplicities, but this leads to more overhead when the values should already have been computed beforehand. So this approach should both simplify the API and very slightly improve the performance of the prover -- at the expense of storing more preprocessed data before proving.
+- Add methods to the `PreprocessedColumns` structure so it can update the preprocessed data itself. This enables specialized methods for witness indices that update both the current table's preprocessed data and the witness multiplicities. We can have one method to register a primitive witness read, one for non-primitive reads, and corresponding methods for multiple reads. Additionally, we would have a method to add a preprocessed value that is not a witness index. Note that currently, if either `Add` or `Mul` don't have any operations, we add one dummy operation, and we update the preprocessed data accordingly right after calling `generate_preprocessed`. But I think this dummy data should actually be added by the structure within `generate_preprocessed` to avoid any errors.
+- On top of `CommonData`, we can have a `ProverData` structure which contains the common data, as well as `PreprocessedColumns` and any additional data that the prover might require. Currently, the prover regenerates the preprocessed values based on the traces. It could do the same for multiplicities, but this leads to extra overhead when the values should already have been computed beforehand. So this approach should simplify the API and very slightly improve prover performance at the expense of storing more preprocessed data before proving.
 
 ### 4.2 APIs / traits / types
 
-First, we would need to add methods to `PreprocessedColumns` for it to have more control over how preprocessed data is generated. I propose the following changes:
+First, we would need to add methods to `PreprocessedColumns` so it has more control over how preprocessed data is generated. I propose the following changes:
 
 ```rust
 impl PreprocessedColumns {
@@ -65,40 +65,34 @@ impl PreprocessedColumns {
 
     /// Extends the preprocessed data of the `table_idx`-th primitive operation 
     /// with `wids`'s witness indices, and updates the witness multiplicities.
-    fn register_primitive_witness_reads(&mut self, table_idx: usize, wids: WitnessId) {
+    fn register_primitive_witness_reads(&mut self, table_idx: usize, wids: &[WitnessId]) {
         let wids_field = wids.iter().map(|wid| F::from_u32(wid.0));
         self.primitive[table_idx].extend(wids_field);
 
-        self.update_witness_multiplicities(&wids);
+        self.update_witness_multiplicities(wids);
     }
 
-    /// Extends the preprocessed data of `op-type`'s non-primitive operation 
+    /// Extends the preprocessed data of `op_type`'s non-primitive operation 
     /// with `wids`'s witness indices, and updates the witness multiplicities.
-    fn register_non_primitive_witness_reads(&mut self, op_type: NonPrimitiveOpType, wid: WitnessId) {
+    fn register_non_primitive_witness_reads(&mut self, op_type: NonPrimitiveOpType, wids: &[WitnessId]) {
         let entry = self.non_primitive.entry(op_type).or_default();
 
         let wids_field = wids.iter().map(|wid| F::from_u32(wid.0));
-        self.primitive[table_idx].extend(wids_field);
-
         entry.extend(wids_field);
 
-        self.update_witness_multiplicities(&[wid]);
+        self.update_witness_multiplicities(wids);
     }
 
     /// Extends the preprocessed data of the `table_idx`-th primitive operation 
     /// with `wid`'s witness index, and updates the witness multiplicity.
     fn register_primitive_witness_read(&mut self, table_idx: usize, wid: WitnessId) {
-        self.register_primitive_witness_read(table_ids, &[wid])
+        self.register_primitive_witness_reads(table_idx, &[wid])
     }
 
-    /// Extends the preprocessed data of `op-type`'s non-primitive operation 
+    /// Extends the preprocessed data of `op_type`'s non-primitive operation 
     /// with `wid`'s witness index, and updates the witness multiplicity.
     fn register_non_primitive_witness_read(&mut self, op_type: NonPrimitiveOpType, wid: WitnessId) {
-        let entry = self.non_primitive.entry(op_type).or_default();
-
-        entry.push(wid.0);
-
-        self.update_witness_multiplicities(&[wid]);
+        self.register_non_primitive_witness_reads(op_type, &[wid]);
     }
 
     /// Extends the preprocessed data of the `table_idx`-th primitive operation 
@@ -107,9 +101,9 @@ impl PreprocessedColumns {
         self.primitive[table_idx].extend(values);
     }
 
-    /// Extends the preprocessed data of `op-type`'s non-primitive operation
+    /// Extends the preprocessed data of `op_type`'s non-primitive operation
     /// with `values`.
-    fn register_non_primitive_preprocessed_no_read(&mut self, table_idx: usize, values: &[F]) {
+    fn register_non_primitive_preprocessed_no_read(&mut self, op_type: NonPrimitiveOpType, values: &[F]) {
         let entry = self.non_primitive.entry(op_type).or_default();
 
         entry.extend(values);
@@ -175,11 +169,11 @@ fn prove<EF, const D: usize, LG: LookupGadget + Sync>(
         let const_matrix: RowMajorMatrix<Val<SC>> =
             ConstAir::<Val<SC>, D>::trace_to_matrix(&traces.const_trace);
 
-        // Apply similar changes to the rest of the primitive and non primitive operaitons.
+        // Apply similar changes to the rest of the primitive and non-primitive operations.
         ..
     }
 ```
 
-With this approach, we can also remove `trace_to_preprocessed` in the various airs where it is implemented. Currently, the method is a bit redundant with `generate_preprocessed` since it is also generating preprocessed data, even though it is basing itself on the traces to do so. The redundance also makes it error-prone, so being able to get rid of it would be, in my opinion, another benefit of this approach.
+With this approach, we can also remove `trace_to_preprocessed` in the various airs where it is implemented. Currently, the method is a bit redundant with `generate_preprocessed` since it also generates preprocessed data based on the traces. This redundancy makes it error-prone, so being able to get rid of it is, in my opinion, another benefit of this approach.
 
 Note that ideally, we should also change `CommonData` in Plonky3, as it contains some prover data in `GlobalPreprocessed`.
