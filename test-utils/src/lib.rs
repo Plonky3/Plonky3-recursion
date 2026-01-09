@@ -15,16 +15,15 @@ macro_rules! assert_air_constraint_degree {
         use p3_field::PrimeCharacteristicRing;
         use p3_lookup::logup::LogUpGadget;
         use p3_lookup::lookup_traits::{AirLookupHandler, Kind, LookupData};
+        use p3_matrix::Matrix;
+        use p3_uni_stark::SymbolicAirBuilder;
 
         type F = p3_baby_bear::BabyBear;
         let mut air = $air;
 
-        let preprocessed_width = air
-            .preprocessed_trace()
-            .map(|m| m.width())
-            .unwrap_or(0);
+        let preprocessed_width = air.preprocessed_trace().map(|m| m.width()).unwrap_or(0);
 
-        let lookups = air.get_lookups();
+        let lookups = <_ as AirLookupHandler<SymbolicAirBuilder<F, F>>>::get_lookups(&mut air);
         let lookup_data = lookups
             .iter()
             .filter_map(|lookup| match &lookup.kind {

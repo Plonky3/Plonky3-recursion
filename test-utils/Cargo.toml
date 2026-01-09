@@ -11,3 +11,5 @@ p3-baby-bear.workspace = true
 p3-batch-stark.workspace = true
 p3-field.workspace = true
 p3-lookup.workspace = true
+p3-matrix.workspace = true
+p3-uni-stark.workspace = true
