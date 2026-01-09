@@ -47,11 +47,13 @@ impl StarkChallenges {
     /// # Returns
     /// The three base STARK challenges
     pub fn allocate<SC, Comm, OpeningProof>(
+        config: &SC,
         circuit: &mut CircuitBuilder<SC::Challenge>,
         challenger: &mut impl RecursiveChallenger<SC::Challenge>,
         proof_targets: &ProofTargets<SC, Comm, OpeningProof>,
+        preprocessed_commit_targets: &Option<Comm>,
         public_values: &[Target],
-        log_quotient_degree: usize,
+        preprocessed_width: usize,
     ) -> Self
     where
         SC: StarkGenericConfig,
@@ -79,15 +81,30 @@ impl StarkChallenges {
             SC::Challenge::from_usize(proof_targets.degree_bits),
             "degree bits",
         );
-        let log_quotient_degree_target = circuit.alloc_const(
-            SC::Challenge::from_usize(log_quotient_degree),
-            "log quotient degree",
+        let degree_bits_no_zk_target = circuit.alloc_const(
+            SC::Challenge::from_usize(proof_targets.degree_bits - config.is_zk()),
+            "degree bits no zk",
         );
+        let preprocessed_width_target = circuit.alloc_const(
+            SC::Challenge::from_usize(preprocessed_width),
+            "preprocessed width",
+        );
+
         challenger.observe(circuit, degree_bits_target);
-        challenger.observe(circuit, log_quotient_degree_target);
+        challenger.observe(circuit, degree_bits_no_zk_target);
+        challenger.observe(circuit, preprocessed_width_target);
 
         // Observe trace commitment
         challenger.observe_slice(circuit, &trace_comm_targets);
+
+        // Observe preprocessed commitment, if any.
+        if preprocessed_width > 0 {
+            let preprocessed_comm_targets = preprocessed_commit_targets
+                .as_ref()
+                .unwrap()
+                .to_observation_targets();
+            challenger.observe_slice(circuit, &preprocessed_comm_targets);
+        }
 
         // Observe public values
         challenger.observe_slice(circuit, public_values);

@@ -112,7 +112,7 @@ where
         .map_or(0, |p| p.len());
 
     // Lookups are not supported for recursive single STARK verification.
-    let log_quotient_degree = A::get_log_num_quotient_chunks(
+    let log_num_quotient_chunks = A::get_log_num_quotient_chunks(
         air,
         preprocessed_width,
         public_values.len(),
@@ -121,14 +121,14 @@ where
         config.is_zk(),
         &lookup_gadget,
     );
-    let quotient_degree = 1 << (log_quotient_degree + config.is_zk());
+    let quotient_degree = 1 << (log_num_quotient_chunks + config.is_zk());
 
     let pcs = config.pcs();
     let trace_domain = pcs.natural_domain_for_degree(degree);
     let init_trace_domain = pcs.natural_domain_for_degree(degree >> (config.is_zk()));
 
     let quotient_domain =
-        pcs.create_disjoint_domain(trace_domain, 1 << (degree_bits + log_quotient_degree));
+        pcs.create_disjoint_domain(trace_domain, 1 << (degree_bits + log_num_quotient_chunks));
     let quotient_chunks_domains = pcs.split_domains(&quotient_domain, quotient_degree);
 
     let randomized_quotient_chunks_domains = quotient_chunks_domains
@@ -137,10 +137,10 @@ where
         .collect_vec();
 
     // Generate all challenges (alpha, zeta, zeta_next, PCS challenges)
-    let challenge_targets = get_circuit_challenges::<A, SC, Comm, InputProof, OpeningProof, RATE>(
-        air,
+    let challenge_targets = get_circuit_challenges::<SC, Comm, InputProof, OpeningProof, RATE>(
         config,
         proof_targets,
+        preprocessed_commit,
         public_values,
         preprocessed_width,
         circuit,
@@ -295,7 +295,6 @@ where
 /// - Base STARK challenges (alpha, zeta, zeta_next)
 /// - PCS-specific challenges (e.g., FRI betas, query indices)
 fn get_circuit_challenges<
-    A: RecursiveAir<Val<SC>, SC::Challenge, EmptyLookupGadget>,
     SC: StarkGenericConfig,
     Comm: Recursive<
             SC::Challenge,
@@ -305,9 +304,9 @@ fn get_circuit_challenges<
     OpeningProof: Recursive<SC::Challenge>,
     const RATE: usize,
 >(
-    air: &A,
     config: &SC,
     proof_targets: &ProofTargets<SC, Comm, OpeningProof>,
+    preprocessed_commit: &Option<Comm>,
     public_values: &[Target],
     preprocessed_width: usize,
     circuit: &mut CircuitBuilder<SC::Challenge>,
@@ -323,25 +322,17 @@ where
         >,
     SC::Challenge: PrimeCharacteristicRing,
 {
-    let log_quotient_degree = A::get_log_num_quotient_chunks(
-        air,
-        preprocessed_width,
-        public_values.len(),
-        &[],
-        &[],
-        config.is_zk(),
-        &EmptyLookupGadget {},
-    );
-
     let mut challenger = CircuitChallenger::<RATE>::new();
 
     // Allocate base STARK challenges (alpha, zeta, zeta_next) using Fiat-Shamir
     let base_challenges = StarkChallenges::allocate::<SC, Comm, OpeningProof>(
+        config,
         circuit,
         &mut challenger,
         proof_targets,
+        preprocessed_commit,
         public_values,
-        log_quotient_degree,
+        preprocessed_width,
     );
 
     let opened_values_no_lookups = OpenedValuesTargetsWithLookups {
