@@ -7,11 +7,13 @@ use p3_air::{Air as P3Air, BaseAir as P3BaseAir, PairBuilder};
 use p3_batch_stark::{BatchProof, CommonData};
 use p3_circuit::CircuitBuilder;
 use p3_circuit::utils::ColumnsTargets;
+use p3_circuit_prover::Poseidon2Config;
 use p3_circuit_prover::air::{AddAir, ConstAir, MulAir, PublicAir, WitnessAir};
 use p3_circuit_prover::batch_stark_prover::{PrimitiveTable, RowCounts};
 use p3_commit::{Pcs, PolynomialSpace};
 use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
 use p3_uni_stark::StarkGenericConfig;
+use tracing::info;
 
 use super::{ObservableCommitment, VerificationError, recompose_quotient_from_chunks_circuit};
 use crate::challenger::CircuitChallenger;
@@ -90,6 +92,7 @@ pub fn verify_p3_recursion_proof_circuit<
     const TRACE_D: usize,
 >(
     config: &SC,
+    challenger_config: &Poseidon2Config,
     circuit: &mut CircuitBuilder<SC::Challenge>,
     proof: &p3_circuit_prover::batch_stark_prover::BatchStarkProof<SC>,
     pcs_params: &PcsVerifierParams<SC, InputProof, OpeningProof, Comm>,
@@ -154,6 +157,7 @@ where
         RATE,
     >(
         config,
+        challenger_config,
         &circuit_airs,
         circuit,
         &verifier_inputs.proof_targets,
@@ -341,6 +345,7 @@ pub fn verify_batch_circuit<
     const RATE: usize,
 >(
     config: &SC,
+    challenger_config: &Poseidon2Config,
     airs: &[A],
     circuit: &mut CircuitBuilder<SC::Challenge>,
     proof_targets: &BatchProofTargets<SC, Comm, OpeningProof>,
@@ -455,7 +460,7 @@ where
     }
 
     // Challenger initialisation mirrors the native batch-STARK verifier transcript.
-    let mut challenger = CircuitChallenger::<RATE>::new();
+    let mut challenger = CircuitChallenger::<RATE>::new(*challenger_config);
     let inst_count_target = circuit.alloc_const(
         SC::Challenge::from_usize(n_instances),
         "number of instances",
@@ -508,7 +513,7 @@ where
         challenger.observe_slice(circuit, &global.commitment.to_observation_targets());
     }
 
-    let alpha = challenger.sample(circuit);
+    let alpha = challenger.sample(circuit)?;
 
     challenger.observe_slice(
         circuit,
@@ -516,7 +521,7 @@ where
             .quotient_chunks_targets
             .to_observation_targets(),
     );
-    let zeta = challenger.sample(circuit);
+    let zeta = challenger.sample(circuit)?;
 
     // Build per-instance domains.
     let mut trace_domains = Vec::with_capacity(n_instances);

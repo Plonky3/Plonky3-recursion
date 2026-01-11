@@ -3,6 +3,7 @@ mod common;
 use p3_air::{Air, BaseAir, PairBuilder};
 use p3_batch_stark::{CommonData, StarkInstance, prove_batch, verify_batch};
 use p3_circuit::CircuitBuilder;
+use p3_circuit_prover::Poseidon2Config;
 use p3_field::Field;
 use p3_fri::create_test_fri_params;
 use p3_matrix::Matrix;
@@ -320,6 +321,7 @@ fn test_batch_verifier_with_mixed_preprocessed() -> Result<(), VerificationError
     // 3. SubAirPartialPreprocessed (some preprocessed columns)
     verify_batch_circuit::<_, _, _, _, _, RATE>(
         &config,
+        &Poseidon2Config::BabyBearD4Width16,
         &airs,
         &mut circuit_builder,
         &verifier_inputs.proof_targets,
@@ -348,7 +350,7 @@ fn test_batch_verifier_with_mixed_preprocessed() -> Result<(), VerificationError
         &pvs, // public inputs for each AIR
         &batch_proof,
         &common_data,
-        &all_challenges,
+        // &all_challenges,
     );
 
     runner

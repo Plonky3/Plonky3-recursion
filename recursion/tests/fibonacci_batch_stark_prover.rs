@@ -1,19 +1,30 @@
 mod common;
 
+use std::collections::HashMap;
+
 use p3_air::{Air, BaseAir, PairBuilder};
 use p3_batch_stark::CommonData;
-use p3_circuit::CircuitBuilder;
+use p3_circuit::ops::generate_poseidon2_trace;
+use p3_circuit::{CircuitBuilder, WitnessId};
 use p3_circuit_prover::air::{AddAir, ConstAir, MulAir, PublicAir, WitnessAir};
 use p3_circuit_prover::batch_stark_prover::PrimitiveTable;
 use p3_circuit_prover::common::get_airs_and_degrees_with_prep;
-use p3_circuit_prover::{BatchStarkProver, TablePacking};
+use p3_circuit_prover::{BatchStarkProver, Poseidon2Config, TablePacking};
+use p3_field::extension::BinomialExtensionField;
 use p3_field::{Field, PrimeCharacteristicRing};
 use p3_fri::create_test_fri_params;
+use p3_poseidon2_circuit_air::BabyBearD4Width16;
 use p3_recursion::generation::generate_batch_challenges;
 use p3_recursion::pcs::fri::{FriVerifierParams, HashTargets, InputProofTargets, RecValMmcs};
 use p3_recursion::verifier::verify_p3_recursion_proof_circuit;
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
+use tracing::{debug, info};
+use tracing_forest::ForestLayer;
+use tracing_forest::util::LevelFilter;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::{EnvFilter, Registry};
 
 use crate::common::baby_bear_params::*;
 
@@ -54,8 +65,24 @@ where
     }
 }
 
+type Ext4 = BinomialExtensionField<BabyBear, 4>;
+
+/// Initializes a global logger with default parameters.
+fn init_logger() {
+    let env_filter = EnvFilter::builder()
+        .with_default_directive(LevelFilter::INFO.into())
+        .from_env_lossy();
+
+    Registry::default()
+        .with(env_filter)
+        .with(ForestLayer::default())
+        .init();
+}
+
 #[test]
 fn test_fibonacci_batch_verifier() {
+    init_logger();
+
     let n: usize = 100;
 
     let mut builder = CircuitBuilder::new();
@@ -97,7 +124,7 @@ fn test_fibonacci_batch_verifier() {
     let perm = Perm::new_from_rng_128(&mut rng);
     let hash = MyHash::new(perm.clone());
     let compress = MyCompress::new(perm.clone());
-    let val_mmcs = ValMmcs::new(hash, compress);
+    let val_mmcs = ValMmcs::new(hash.clone(), compress.clone());
     let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
     let dft = Dft::default();
 
@@ -106,7 +133,7 @@ fn test_fibonacci_batch_verifier() {
 
     // Create config for proving
     let pcs_proving = MyPcs::new(dft, val_mmcs, fri_params);
-    let challenger_proving = Challenger::new(perm);
+    let challenger_proving = Challenger::new(perm.clone());
     let config_proving = MyConfig::new(pcs_proving, challenger_proving);
 
     // Create common data for proving and verifying.
@@ -120,18 +147,18 @@ fn test_fibonacci_batch_verifier() {
 
     // Now verify the batch STARK proof recursively
     let dft2 = Dft::default();
-    let mut rng2 = SmallRng::seed_from_u64(42);
-    let perm2 = Perm::new_from_rng_128(&mut rng2);
-    let hash2 = MyHash::new(perm2.clone());
-    let compress2 = MyCompress::new(perm2.clone());
-    let val_mmcs2 = ValMmcs::new(hash2, compress2);
+    // let mut rng2 = SmallRng::seed_from_u64(42);
+    // let perm2 = Perm::new_from_rng_128(&mut rng2);
+    // let hash2 = MyHash::new(perm2.clone());
+    // let compress2 = MyCompress::new(perm2.clone());
+    let val_mmcs2 = ValMmcs::new(hash, compress);
     let challenge_mmcs2 = ChallengeMmcs::new(val_mmcs2.clone());
     let fri_params2 = create_test_fri_params(challenge_mmcs2, 0);
     let fri_verifier_params = FriVerifierParams::from(&fri_params2);
     let pow_bits = fri_params2.proof_of_work_bits;
     let log_height_max = fri_params2.log_final_poly_len + fri_params2.log_blowup;
     let pcs_verif = MyPcs::new(dft2, val_mmcs2, fri_params2);
-    let challenger_verif = Challenger::new(perm2);
+    let challenger_verif = Challenger::new(perm.clone());
     let config = MyConfig::new(pcs_verif, challenger_verif);
 
     // Extract proof components
@@ -163,7 +190,11 @@ fn test_fibonacci_batch_verifier() {
     let pis: Vec<Vec<F>> = vec![vec![]; 5];
 
     // Build the recursive verification circuit
-    let mut circuit_builder = CircuitBuilder::new();
+    let mut circuit_builder = CircuitBuilder::<Ext4>::new();
+    circuit_builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
+        generate_poseidon2_trace::<Ext4, BabyBearD4Width16>,
+        perm,
+    );
 
     // Attach verifier without manually building circuit_airs
     let verifier_inputs = verify_p3_recursion_proof_circuit::<
@@ -171,10 +202,11 @@ fn test_fibonacci_batch_verifier() {
         HashTargets<F, DIGEST_ELEMS>,
         InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>>,
         InnerFri,
-        RATE,
+        RATE_EXT,
         TRACE_D,
     >(
         &config,
+        &Poseidon2Config::BabyBearD4Width16,
         &mut circuit_builder,
         &batch_stark_proof,
         &fri_verifier_params,
@@ -182,23 +214,39 @@ fn test_fibonacci_batch_verifier() {
     )
     .unwrap();
 
+    circuit_builder.dump_allocation_log();
+
     // Build the circuit
     let verification_circuit = circuit_builder.build().unwrap();
+
+    let mut widx_to_expr = HashMap::new();
+    for (expr, widx) in verification_circuit.expr_to_widx.iter() {
+        let exprs = widx_to_expr.entry(*widx).or_insert_with(Vec::new);
+        exprs.push(*expr);
+    }
+
+    // info!("Widx 1530 exprs: {:?}", widx_to_expr.get(&WitnessId(1530)));
+    // info!("Widx 1533 exprs: {:?}", widx_to_expr.get(&WitnessId(1533)));
+    // info!("Widx 1380 exprs: {:?}", widx_to_expr.get(&WitnessId(1380)));
+
     let expected_public_input_len = verification_circuit.public_flat_len;
 
     // Generate all the challenge values for batch proof (uses base field AIRs)
-    let all_challenges = generate_batch_challenges(
-        &native_airs,
-        &config,
-        batch_proof,
-        &pis,
-        Some(&[pow_bits, log_height_max]),
-        &common,
-    )
-    .unwrap();
+    // let all_challenges = generate_batch_challenges(
+    //     &native_airs,
+    //     &config,
+    //     batch_proof,
+    //     &pis,
+    //     Some(&[pow_bits, log_height_max]),
+    //     &common,
+    // )
+    // .unwrap();
+
+    // debug!("All challenges: {:?}", all_challenges);
 
     // Pack values using the builder
-    let public_inputs = verifier_inputs.pack_values(&pis, batch_proof, &common, &all_challenges);
+    info!("Commitments: {:?}", batch_proof.commitments);
+    let public_inputs = verifier_inputs.pack_values(&pis, batch_proof, &common);
 
     assert_eq!(public_inputs.len(), expected_public_input_len);
     assert!(!public_inputs.is_empty());

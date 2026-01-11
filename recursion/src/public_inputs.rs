@@ -325,7 +325,7 @@ where
     /// - evaluation points for openings,
     /// - FRI folding challenges,
     /// - query indices.
-    pub challenges: Vec<EF>,
+    // pub challenges: Vec<EF>,
 
     /// Number of FRI queries in the proof.
     pub num_queries: usize,
@@ -360,7 +360,7 @@ where
         builder.add_proof_values(self.preprocessed);
 
         // 4. Add all challenges in the order provided.
-        builder.add_challenges(self.challenges.iter().copied());
+        // builder.add_challenges(self.challenges.iter().copied());
 
         builder.build()
     }
@@ -383,7 +383,7 @@ pub fn construct_batch_stark_verifier_inputs<F, EF>(
     air_public_values: &[Vec<F>],
     proof_values: &[EF],
     preprocessed: &[EF],
-    challenges: &[EF],
+    // challenges: &[EF],
 ) -> Vec<EF>
 where
     F: Field + PrimeField64,
@@ -404,7 +404,7 @@ where
     builder.add_proof_values(preprocessed.iter().copied());
 
     // Add all shared challenges.
-    builder.add_challenges(challenges.iter().copied());
+    // builder.add_challenges(challenges.iter().copied());
 
     builder.build()
 }
@@ -544,7 +544,7 @@ where
         air_public_values: &[Val<SC>],
         proof: &Proof<SC>,
         preprocessed_commit: &Option<Com<SC>>,
-        challenges: &[SC::Challenge],
+        // challenges: &[SC::Challenge],
         num_queries: usize,
     ) -> Vec<SC::Challenge>
     where
@@ -568,7 +568,7 @@ where
             air_public_values: air_public_values.to_vec(),
             proof_values: proof_values.to_vec(),
             preprocessed: preprocessed.to_vec(),
-            challenges: challenges.to_vec(),
+            // challenges: challenges.to_vec(),
             num_queries,
         }
         .build()
@@ -671,7 +671,7 @@ where
         air_public_values: &[Vec<Val<SC>>],
         proof: &BatchProof<SC>,
         common: &CommonData<SC>,
-        challenges: &[SC::Challenge],
+        // challenges: &[SC::Challenge],
     ) -> Vec<SC::Challenge>
     where
         Val<SC>: PrimeField64,
@@ -688,7 +688,7 @@ where
             air_public_values,
             &proof_values,
             &common_data,
-            challenges,
+            // challenges,
         )
     }
 }

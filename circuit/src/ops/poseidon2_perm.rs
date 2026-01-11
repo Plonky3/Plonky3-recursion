@@ -30,6 +30,7 @@ use core::any::Any;
 use core::fmt::Debug;
 
 use p3_field::{ExtensionField, Field, PrimeCharacteristicRing, PrimeField};
+use tracing::{info, trace};
 
 use crate::CircuitError;
 use crate::builder::{CircuitBuilder, NonPrimitiveOpParams};
@@ -420,8 +421,15 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for Poseidon2Perm
                 self.resolve_input_limb(limb, inputs, private_inputs, ctx, last_output, mmcs_bit)?;
         }
 
+        info!(
+            "Poseidon2PermExecutor: resolved inputs: {:?}",
+            &resolved_inputs
+        );
+
         // Execute the permutation
         let output = exec(&resolved_inputs);
+
+        info!("Poseidon2PermExecutor: output: {:?}", &output);
 
         // Build CTL metadata for row record
         let (in_ctl, input_indices) = inputs[..4].iter().enumerate().fold(
@@ -484,6 +492,10 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for Poseidon2Perm
         for (out_idx, out_slot) in outputs.iter().enumerate() {
             if out_slot.len() == 1 {
                 let wid = out_slot[0];
+                // info!(
+                //     "Poseidon2PermExecutor: setting output witness {:?} to {:?}",
+                //     wid, output[out_idx]
+                // );
                 ctx.set_witness(wid, output[out_idx])?;
             } else if !out_slot.is_empty() {
                 return Err(CircuitError::NonPrimitiveOpLayoutMismatch {

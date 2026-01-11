@@ -5,15 +5,16 @@ use alloc::{format, vec};
 use itertools::Itertools;
 use p3_circuit::utils::ColumnsTargets;
 use p3_circuit::{CircuitBuilder, CircuitError};
+use p3_circuit_prover::Poseidon2Config;
 use p3_commit::Pcs;
 use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
 use p3_uni_stark::StarkGenericConfig;
 
 use super::{ObservableCommitment, VerificationError, recompose_quotient_from_chunks_circuit};
-use crate::Target;
 use crate::challenger::CircuitChallenger;
 use crate::traits::{Recursive, RecursiveAir, RecursivePcs};
 use crate::types::{CommitmentTargets, OpenedValuesTargets, ProofTargets, StarkChallenges};
+use crate::{RecursiveChallenger, Target};
 
 /// Type alias for PCS verifier parameters.
 type PcsVerifierParams<SC, InputProof, OpeningProof, Comm> =
@@ -65,6 +66,7 @@ pub fn verify_circuit<
     proof_targets: &ProofTargets<SC, Comm, OpeningProof>,
     public_values: &[Target],
     preprocessed_commit: &Option<Comm>,
+    challenger_config: Poseidon2Config,
     pcs_params: &PcsVerifierParams<SC, InputProof, OpeningProof, Comm>,
 ) -> Result<(), VerificationError>
 where
@@ -133,6 +135,7 @@ where
         proof_targets,
         public_values,
         preprocessed_width,
+        challenger_config,
         circuit,
         pcs_params,
     )?;
@@ -285,6 +288,7 @@ fn get_circuit_challenges<
     proof_targets: &ProofTargets<SC, Comm, OpeningProof>,
     public_values: &[Target],
     preprocessed_width: usize,
+    challenger_config: Poseidon2Config,
     circuit: &mut CircuitBuilder<SC::Challenge>,
     pcs_params: &PcsVerifierParams<SC, InputProof, OpeningProof, Comm>,
 ) -> Result<Vec<Target>, CircuitError>
@@ -305,7 +309,12 @@ where
         config.is_zk(),
     );
 
-    let mut challenger = CircuitChallenger::<RATE>::new();
+    let mut challenger = CircuitChallenger::<RATE>::new(challenger_config);
+
+    // TODO HAMY: TO REMOVE
+    // let one = circuit.add_const(SC::Challenge::ONE);
+    // challenger.observe(circuit, one);
+    // challenger.sample(circuit)?;
 
     // Allocate base STARK challenges (alpha, zeta, zeta_next) using Fiat-Shamir
     let base_challenges = StarkChallenges::allocate::<SC, Comm, OpeningProof>(
@@ -326,7 +335,7 @@ where
     )?;
 
     // Return flat vector: [alpha, zeta, zeta_next, ...pcs_challenges]
-    let mut all_challenges = base_challenges.to_vec();
+    let mut all_challenges = base_challenges?.to_vec();
     all_challenges.extend(pcs_challenges);
     Ok(all_challenges)
 }

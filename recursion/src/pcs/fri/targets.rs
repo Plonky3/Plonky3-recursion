@@ -2,7 +2,7 @@ use alloc::vec::Vec;
 use alloc::{format, vec};
 use core::marker::PhantomData;
 
-use p3_challenger::{CanObserve, GrindingChallenger};
+use p3_challenger::CanObserve;
 use p3_circuit::utils::RowSelectorsTargets;
 use p3_circuit::{CircuitBuilder, CircuitError};
 use p3_commit::{BatchOpening, ExtensionMmcs, Mmcs, PolynomialSpace};
@@ -295,14 +295,14 @@ impl<F: Field, EF: ExtensionField<F>, const DIGEST_ELEMS: usize> Recursive<EF>
     }
 }
 
-/// In TwoAdicFriPcs, the POW witness is just a base field element.
+/// In TwoAdicFriPcs, the POW witness is just an extension field element.
 pub struct Witness<F> {
     pub witness: Target,
     _phantom: PhantomData<F>,
 }
 
-impl<F: Field, EF: ExtensionField<F>> Recursive<EF> for Witness<F> {
-    type Input = F;
+impl<EF: Field> Recursive<EF> for Witness<EF> {
+    type Input = EF;
 
     fn new(circuit: &mut CircuitBuilder<EF>, _input: &Self::Input) -> Self {
         Self {
@@ -404,7 +404,7 @@ type RecursiveFriProof<SC, RecursiveFriMmcs, RecursiveInputProof> = FriProofTarg
     <SC as StarkGenericConfig>::Challenge,
     RecursiveFriMmcs,
     RecursiveInputProof,
-    Witness<Val<SC>>,
+    Witness<<SC as StarkGenericConfig>::Challenge>,
 >;
 
 // Implement `RecursivePcs` for `TwoAdicFriPcs`.
@@ -429,7 +429,7 @@ where
     RecursiveInputMmcs: RecursiveMmcs<Val<SC>, SC::Challenge, Input = InputMmcs>,
     RecursiveFriMmcs: RecursiveExtensionMmcs<Val<SC>, SC::Challenge, Input = FriMmcs>,
     RecursiveFriMmcs::Commitment: ObservableCommitment,
-    SC::Challenger: GrindingChallenger + CanObserve<FriMmcs::Commitment>,
+    SC::Challenger: CanObserve<FriMmcs::Commitment>,
 {
     type VerifierParams = FriVerifierParams;
     type RecursiveProof = RecursiveFriProof<
@@ -451,7 +451,7 @@ where
         opened_values.observe(circuit, challenger);
 
         // Sample FRI alpha (for batch opening reduction)
-        let fri_alpha = challenger.sample(circuit);
+        let fri_alpha = challenger.sample(circuit)?;
 
         // Sample FRI betas: one per commit phase
         // For each FRI commitment, observe it and sample beta
@@ -459,7 +459,7 @@ where
         for commit in &fri_proof.commit_phase_commits {
             let commit_targets = commit.to_observation_targets();
             challenger.observe_slice(circuit, &commit_targets);
-            let beta = challenger.sample(circuit);
+            let beta = challenger.sample(circuit)?;
             betas.push(beta);
         }
 
@@ -478,7 +478,7 @@ where
         let num_queries = fri_proof.query_proofs.len();
         let mut query_indices = Vec::with_capacity(num_queries);
         for _ in 0..num_queries {
-            let index = challenger.sample(circuit);
+            let index = challenger.sample(circuit)?;
             query_indices.push(index);
         }
 

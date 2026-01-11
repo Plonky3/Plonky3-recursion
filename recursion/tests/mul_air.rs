@@ -3,6 +3,7 @@
 mod common;
 
 use p3_circuit::CircuitBuilder;
+use p3_circuit_prover::Poseidon2Config;
 use p3_fri::create_test_fri_params;
 use p3_matrix::Matrix;
 use p3_recursion::pcs::fri::{FriVerifierParams, HashTargets};
@@ -80,6 +81,7 @@ fn test_mul_verifier_circuit() -> Result<(), VerificationError> {
         &verifier_inputs.proof_targets,
         &verifier_inputs.air_public_targets,
         &verifier_inputs.preprocessed_commit,
+        Poseidon2Config::BabyBearD4Width16,
         &fri_verifier_params,
     )?;
 
@@ -102,7 +104,7 @@ fn test_mul_verifier_circuit() -> Result<(), VerificationError> {
         &pis,
         &proof,
         &preprocessed_vk.map(|vk| vk.commitment),
-        &all_challenges,
+        // &all_challenges,
         num_queries,
     );
 

@@ -397,7 +397,7 @@ impl<'a, F: Field> ExecutionContext<'a, F> {
             return Err(CircuitError::WitnessConflict {
                 witness_id: widx,
                 existing: format!("{existing_value:?}"),
-                new: format!("{value:?}"),
+                new: format!("{value:?} in context"),
             });
         }
 

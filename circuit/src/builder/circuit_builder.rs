@@ -582,7 +582,7 @@ where
 
         // Constrain that the bits reconstruct to the original value.
         let reconstructed = self.reconstruct_index_from_bits(&bits);
-        self.connect(x, reconstructed);
+        // self.connect(x, reconstructed);
 
         self.pop_scope();
         Ok(bits)

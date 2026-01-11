@@ -36,7 +36,7 @@ pub(crate) type InnerFriGeneric<MyConfig, MyHash, MyCompress, const DIGEST_ELEMS
             <MyConfig as StarkGenericConfig>::Challenge,
             RecValMmcs<Val<MyConfig>, DIGEST_ELEMS, MyHash, MyCompress>,
         >,
-        Witness<Val<MyConfig>>,
+        Witness<<MyConfig as StarkGenericConfig>::Challenge>,
     >;
 
 /// Common parameters for the BabyBear field.
@@ -48,6 +48,7 @@ pub(crate) mod baby_bear_params {
     pub(crate) type F = BabyBear;
     pub(crate) const D: usize = 4;
     pub(crate) const RATE: usize = 8;
+    pub(crate) const RATE_EXT: usize = 2;
     pub(crate) const DIGEST_ELEMS: usize = 8;
     pub(crate) type Challenge = BinomialExtensionField<F, D>;
     pub(crate) type Dft = Radix2DitParallel<F>;
@@ -73,6 +74,7 @@ pub(crate) mod koala_bear_params {
     pub(crate) type F = KoalaBear;
     pub(crate) const D: usize = 4;
     pub(crate) const RATE: usize = 8;
+    pub(crate) const RATE_EXT: usize = 2;
     pub(crate) const DIGEST_ELEMS: usize = 8;
 
     pub(crate) type Challenge = BinomialExtensionField<F, D>;

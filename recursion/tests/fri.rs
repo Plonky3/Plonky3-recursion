@@ -1,7 +1,7 @@
 mod common;
 
 use p3_baby_bear::default_babybear_poseidon2_16;
-use p3_challenger::{CanObserve, CanSampleBits, FieldChallenger, GrindingChallenger};
+use p3_challenger::{CanObserve, CanSampleBits, FieldChallenger};
 use p3_circuit::CircuitBuilder;
 use p3_commit::Pcs;
 use p3_dft::Radix2DitParallel as Dft;
@@ -27,8 +27,13 @@ type RecExt = RecExtensionValMmcs<F, Challenge, 8, RecVal>;
 use p3_recursion::pcs::fri::verify_fri_circuit;
 
 /// Alias for FriProofTargets used for lens/value extraction and allocation
-type FriTargets =
-    FriProofTargets<F, Challenge, RecExt, InputProofTargets<F, Challenge, RecVal>, RecWitness<F>>;
+type FriTargets = FriProofTargets<
+    F,
+    Challenge,
+    RecExt,
+    InputProofTargets<F, Challenge, RecVal>,
+    RecWitness<Challenge>,
+>;
 
 /// Type alias for commitments with opening points structure
 type CommitmentsWithPoints = Vec<(
@@ -182,9 +187,9 @@ fn produce_inputs_multi(
     }
 
     // PoW check
-    assert!(v_challenger.check_witness(pow_bits, pow_witness));
+    assert!(v_challenger.check_witness_algebra(pow_bits, pow_witness));
 
-    // Query indices
+    // Query indicestype Proof
     let num_phases = commit_phase_commits.len();
     let log_max_height = num_phases + log_blowup + log_final_poly_len;
     let num_queries = query_proofs.len();
@@ -426,7 +431,7 @@ fn run_fri_test(setup: FriSetup, build_only: bool) {
     builder.pop_scope();
 
     // 4) Wire the arithmetic-only FRI verifier
-    verify_fri_circuit::<F, Challenge, RecExt, RecVal, RecWitness<F>, p3_recursion::Target>(
+    verify_fri_circuit::<F, Challenge, RecExt, RecVal, RecWitness<Challenge>, p3_recursion::Target>(
         &mut builder,
         &fri_targets,
         alpha_t,

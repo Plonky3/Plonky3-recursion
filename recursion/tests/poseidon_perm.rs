@@ -3,6 +3,7 @@ mod common;
 use p3_baby_bear::{BabyBear as F, Poseidon2BabyBear};
 use p3_circuit::CircuitBuilder;
 use p3_circuit::ops::Poseidon2CircuitRow;
+use p3_circuit_prover::Poseidon2Config;
 use p3_commit::ExtensionMmcs;
 use p3_field::PrimeCharacteristicRing;
 use p3_fri::{TwoAdicFriPcs, create_test_fri_params};
@@ -137,7 +138,7 @@ fn test_poseidon2_perm_verifier() -> Result<(), VerificationError> {
             <MyConfig as StarkGenericConfig>::Challenge,
             RecValMmcs<p3_uni_stark::Val<MyConfig>, DIGEST_ELEMS, MyHash, MyCompress>,
         >,
-        Witness<p3_uni_stark::Val<MyConfig>>,
+        Witness<<MyConfig as StarkGenericConfig>::Challenge>,
     >;
 
     let mut circuit_builder = CircuitBuilder::new();
@@ -163,6 +164,7 @@ fn test_poseidon2_perm_verifier() -> Result<(), VerificationError> {
         &verifier_inputs.proof_targets,
         &verifier_inputs.air_public_targets,
         &verifier_inputs.preprocessed_commit,
+        Poseidon2Config::BabyBearD4Width16,
         &fri_verifier_params,
     )?;
 
@@ -181,7 +183,7 @@ fn test_poseidon2_perm_verifier() -> Result<(), VerificationError> {
         &public_inputs,
         &proof,
         &Some(verifier_data.commitment),
-        &all_challenges,
+        // &all_challenges,
         num_queries,
     );
 

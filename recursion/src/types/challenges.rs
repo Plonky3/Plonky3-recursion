@@ -3,7 +3,7 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
-use p3_circuit::CircuitBuilder;
+use p3_circuit::{CircuitBuilder, CircuitBuilderError};
 use p3_field::PrimeCharacteristicRing;
 use p3_uni_stark::StarkGenericConfig;
 
@@ -52,7 +52,7 @@ impl StarkChallenges {
         proof_targets: &ProofTargets<SC, Comm, OpeningProof>,
         public_values: &[Target],
         log_quotient_degree: usize,
-    ) -> Self
+    ) -> Result<Self, CircuitBuilderError>
     where
         SC: StarkGenericConfig,
         SC::Challenge: PrimeCharacteristicRing,
@@ -83,8 +83,12 @@ impl StarkChallenges {
             SC::Challenge::from_usize(log_quotient_degree),
             "log quotient degree",
         );
+        let zero = circuit.alloc_const(SC::Challenge::ZERO, "zero");
         challenger.observe(circuit, degree_bits_target);
-        challenger.observe(circuit, log_quotient_degree_target);
+        // TODO: this should be `degree_bits - is_zk`, but ZK isn't supported.
+        challenger.observe(circuit, degree_bits_target);
+        // TODO: this should be `preprocessed_width`. Currently not supported.
+        challenger.observe(circuit, zero);
 
         // Observe trace commitment
         challenger.observe_slice(circuit, &trace_comm_targets);
@@ -93,7 +97,7 @@ impl StarkChallenges {
         challenger.observe_slice(circuit, public_values);
 
         // Sample alpha challenge
-        let alpha = challenger.sample(circuit);
+        let alpha = challenger.sample(circuit)?;
 
         // Observe quotient chunks commitment
         challenger.observe_slice(circuit, &quotient_comm_targets);
@@ -104,14 +108,14 @@ impl StarkChallenges {
         }
 
         // Sample zeta and zeta_next challenges
-        let zeta = challenger.sample(circuit);
-        let zeta_next = challenger.sample(circuit);
+        let zeta = challenger.sample(circuit)?;
+        let zeta_next = challenger.sample(circuit)?;
 
-        Self {
+        Ok(Self {
             alpha,
             zeta,
             zeta_next,
-        }
+        })
     }
 
     /// Convert to flat vector: [alpha, zeta, zeta_next]

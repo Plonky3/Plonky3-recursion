@@ -197,6 +197,7 @@ impl<F: CircuitField> CircuitRunner<F> {
         let ops = self.circuit.ops.clone();
 
         for op in ops {
+            tracing::trace!("Executing op: {:?}", op);
             match op {
                 Op::Const { out, val } => {
                     self.set_witness(out, val)?;
@@ -297,7 +298,7 @@ impl<F: CircuitField> CircuitRunner<F> {
                 return Err(CircuitError::WitnessConflict {
                     witness_id: widx,
                     existing: format!("{existing_value:?}"),
-                    new: format!("{value:?}"),
+                    new: format!("{value:?} in runner"),
                 });
             }
         } else {

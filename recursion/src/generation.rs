@@ -5,7 +5,7 @@ use itertools::zip_eq;
 use p3_air::Air;
 use p3_batch_stark::config::observe_instance_binding;
 use p3_batch_stark::{BatchProof, CommonData};
-use p3_challenger::{CanObserve, CanSample, CanSampleBits, FieldChallenger, GrindingChallenger};
+use p3_challenger::{CanObserve, CanSample, CanSampleBits, FieldChallenger};
 use p3_commit::{BatchOpening, Mmcs, Pcs, PolynomialSpace};
 use p3_field::{BasedVectorSpace, PrimeCharacteristicRing, PrimeField, TwoAdicField};
 use p3_fri::{FriProof, TwoAdicFriPcs};
@@ -487,7 +487,7 @@ where
 type InnerFriProof<SC, InputMmcs, FriMmcs> = FriProof<
     <SC as StarkGenericConfig>::Challenge,
     FriMmcs,
-    Val<SC>,
+    <SC as StarkGenericConfig>::Challenge,
     Vec<BatchOpening<Val<SC>, InputMmcs>>,
 >;
 
@@ -496,9 +496,7 @@ impl<SC: StarkGenericConfig, Dft, InputMmcs: Mmcs<Val<SC>>, FriMmcs: Mmcs<SC::Ch
     for TwoAdicFriPcs<Val<SC>, Dft, InputMmcs, FriMmcs>
 where
     Val<SC>: TwoAdicField + PrimeField,
-    SC::Challenger: FieldChallenger<Val<SC>>
-        + GrindingChallenger<Witness = Val<SC>>
-        + CanObserve<FriMmcs::Commitment>,
+    SC::Challenger: FieldChallenger<Val<SC>> + CanObserve<FriMmcs::Commitment>,
 {
     fn generate_challenges(
         &self,
@@ -549,7 +547,7 @@ where
         }
 
         // Check PoW witness.
-        challenger.observe(opening_proof.pow_witness);
+        challenger.observe_algebra_element(opening_proof.pow_witness);
 
         // Sample a challenge as H(transcript || pow_witness). The circuit later
         // verifies that the challenge begins with the required number of leading zeros.

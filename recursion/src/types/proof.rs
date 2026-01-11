@@ -10,6 +10,7 @@ use p3_circuit::CircuitBuilder;
 use p3_commit::Pcs;
 use p3_field::Field;
 use p3_uni_stark::{Commitments, OpenedValues, Proof, StarkGenericConfig};
+use tracing::info;
 
 use crate::Target;
 use crate::traits::{Recursive, RecursiveChallenger};
@@ -222,7 +223,9 @@ where
         } = input;
 
         let mut values = vec![];
+        info!("Getting trace commitment values...");
         values.extend(Comm::get_values(trace));
+        info!("Got values: {:?}", values);
         values.extend(Comm::get_values(quotient_chunks));
         if let Some(random) = random {
             values.extend(Comm::get_values(random));
