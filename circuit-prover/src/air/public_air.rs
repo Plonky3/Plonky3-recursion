@@ -410,4 +410,10 @@ mod tests {
         };
         PublicAir::<F, 1>::trace_to_matrix(&trace);
     }
+
+    #[test]
+    fn test_air_constraint_degree() {
+        let air = PublicAir::<F, 1>::new_with_preprocessed(8, vec![F::ZERO; 8]);
+        p3_test_utils::assert_air_constraint_degree!(air, "PublicAir");
+    }
 }

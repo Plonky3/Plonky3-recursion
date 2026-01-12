@@ -1139,4 +1139,13 @@ mod test {
 
         verify_with_preprocessed(&config, &air, &proof, &[], preprocessed_verifier.as_ref())
     }
+
+    #[test]
+    fn test_air_constraint_degree() {
+        let mut rng = SmallRng::seed_from_u64(1);
+        let constants = RoundConstants::new(rng.random(), rng.random(), rng.random());
+
+        let air = Poseidon2CircuitAirBabyBearD4Width16::new(constants);
+        p3_test_utils::assert_air_constraint_degree!(air, "Poseidon2CircuitAir");
+    }
 }

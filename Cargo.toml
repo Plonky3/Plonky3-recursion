@@ -11,6 +11,7 @@ members = [
     "poseidon2-circuit-air",
     "recursion",
     "symmetric-air",
+    "test-utils",
 ]
 
 [workspace.package]
@@ -66,6 +67,7 @@ p3-merkle-tree = { git = "https://github.com/Plonky3/Plonky3", rev = "cfba46c" }
 p3-poseidon2 = { git = "https://github.com/Plonky3/Plonky3", rev = "cfba46c" }
 p3-poseidon2-air = { git = "https://github.com/Plonky3/Plonky3", rev = "cfba46c" }
 p3-symmetric = { git = "https://github.com/Plonky3/Plonky3", rev = "cfba46c" }
+p3-test-utils = { path = "test-utils", version = "0.1.0" }
 p3-uni-stark = { git = "https://github.com/Plonky3/Plonky3", rev = "cfba46c" }
 p3-util = { git = "https://github.com/Plonky3/Plonky3", rev = "cfba46c" }
 
