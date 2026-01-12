@@ -51,55 +51,81 @@ Therefore, we need to redesign the way we currently handle multiplicities in ord
 First, we would need to add methods to `PreprocessedColumns` so it has more control over how preprocessed data is generated. I propose the following changes:
 
 ```rust
-impl PreprocessedColumns {
-
-    /// Updates the witness table multiplicities for all the given witness indices.
-    fn update_witness_multiplicities(&mut self, wids: &[WitnessId]) {
-        for wid in wids {
-            if wid.0 >= self.primitive[witness_table_idx].len() as u32 {
-                self.primitive[witness_table_idx].resize(wid.0 as usize + 1, F::from_u32(0));
-            }
-            self.primitive[witness_table_idx][wid.0 as usize] += F::ONE;
+impl<F: Field> PreprocessedColumns<F> {
+    /// Creates an emtpy [`PreprocessedColumns`].
+    fn new() -> Self {
+        PreprocessedColumns {
+            primitive: vec![vec![]; PrimitiveOpType::COUNT],
+            non_primitive = NonPrimitivePreprocessedMap::new()
         }
-        
+    }
+    
+    /// Updates the witness table multiplicities for all the given witness indices.
+    fn update_witness_multiplicities(&mut self, wids: &[WitnessId]) -> Result<(), CircuitError> {
+        if self.primitive.len() != PrimitiveOpType::COUNT {
+            return CircuitError::InvalidPreprocessing
+        }
+
+        const WITNESS_TABLE_IDX: usize = 0;  
+        for wid in wids {
+            if wid.0 >= self.primitive[WITNESS_TABLE_IDX].len() as u32 {
+                self.primitive[WITNESS_TABLE_IDX].resize(wid.0 as usize + 1, F::from_u32(0));
+            }
+            self.primitive[WITNESS_TABLE_IDX][wid.0 as usize] += F::ONE;
+        }
+        Ok(())
     }
 
     /// Extends the preprocessed data of the `table_idx`-th primitive operation 
     /// with `wids`'s witness indices, and updates the witness multiplicities.
-    fn register_primitive_witness_reads(&mut self, table_idx: usize, wids: &[WitnessId]) {
-        let wids_field = wids.iter().map(|wid| F::from_u32(wid.0));
-        self.primitive[table_idx].extend(wids_field);
+    fn register_primitive_witness_reads(&mut self, op_type: PrimitveOpType, wids: &[WitnessId]) -> Result<(), CircuitError> {
+        if self.primitive.len() != PrimitiveOpType::COUNT {
+            return CircuitError::InvalidPreprocessing
+        }
 
-        self.update_witness_multiplicities(wids);
+        let wids_field = wids.iter().map(|wid| F::from_u32(wid.0));
+        self.primitive[op_type as usize].extend(wids_field);
+
+        self.update_witness_multiplicities(wids)?;
+
+        Ok(())
     }
 
     /// Extends the preprocessed data of `op_type`'s non-primitive operation 
     /// with `wids`'s witness indices, and updates the witness multiplicities.
-    fn register_non_primitive_witness_reads(&mut self, op_type: NonPrimitiveOpType, wids: &[WitnessId]) {
+    fn register_non_primitive_witness_reads(&mut self, op_type: NonPrimitiveOpType, wids: &[WitnessId]) -> Result<(), CircuitError> {
         let entry = self.non_primitive.entry(op_type).or_default();
 
         let wids_field = wids.iter().map(|wid| F::from_u32(wid.0));
         entry.extend(wids_field);
 
-        self.update_witness_multiplicities(wids);
+        self.update_witness_multiplicities(wids)?;
+
+        Ok(())
     }
 
     /// Extends the preprocessed data of the `table_idx`-th primitive operation 
     /// with `wid`'s witness index, and updates the witness multiplicity.
-    fn register_primitive_witness_read(&mut self, table_idx: usize, wid: WitnessId) {
+    fn register_primitive_witness_read(&mut self, table_idx: usize, wid: WitnessId) -> Result<(), CircuitError> {
         self.register_primitive_witness_reads(table_idx, &[wid])
     }
 
     /// Extends the preprocessed data of `op_type`'s non-primitive operation 
     /// with `wid`'s witness index, and updates the witness multiplicity.
-    fn register_non_primitive_witness_read(&mut self, op_type: NonPrimitiveOpType, wid: WitnessId) {
-        self.register_non_primitive_witness_reads(op_type, &[wid]);
+    fn register_non_primitive_witness_read(&mut self, op_type: NonPrimitiveOpType, wid: WitnessId) -> Result<(), CircuitError> {
+        self.register_non_primitive_witness_reads(op_type, &[wid])
     }
 
     /// Extends the preprocessed data of the `table_idx`-th primitive operation 
     /// with `values`.
-    fn register_primitive_preprocessed_no_read(&mut self, table_idx: usize, values: &[F]) {
-        self.primitive[table_idx].extend(values);
+    fn register_primitive_preprocessed_no_read(&mut self, op_type: PrimitiveOpType, values: &[F]) -> Result<(), CircuitError> {
+        if self.primitive.len() != PrimitiveOpType::COUNT || op_type == PrimitveOpType::Witness {
+            return CircuitError::InvalidPreprocessing
+        }
+
+        self.primitive[op_type as usize].extend(values);
+
+        Ok(())
     }
 
     /// Extends the preprocessed data of `op_type`'s non-primitive operation
@@ -111,6 +137,8 @@ impl PreprocessedColumns {
     }
 }
 ```
+
+Note here that I would add `InvalidPreprocessing` to `CircuitError`, so that we can throw an error when the API is not used properly (for example when the `PreprocessedColumns` are not initialized properly and so the primitive vector does not have the right length).
 
 The second part consists in introducing a new `ProverData` structure, which contains `common_data` and the preprocessed columns:
 
@@ -172,6 +200,8 @@ fn prove<EF, const D: usize, LG: LookupGadget + Sync>(
         ..
     }
 ```
+
+We can also have the `preprocess` methods take `PreprocessColumns` as an argument instead of the primitive/non-primitive preprocessed columns.
 
 With this approach, we can also remove `trace_to_preprocessed` in the various airs where it is implemented. Currently, the method is a bit redundant with `generate_preprocessed` since it also generates preprocessed data based on the traces. This redundancy makes it error-prone, so being able to get rid of it is, in my opinion, another benefit of this approach.
 
