@@ -34,7 +34,7 @@ Therefore, we need to redesign the way we currently handle multiplicities in ord
 ## 3. Goals and non-goals
 **Goals**
 - Handle witness multiplicities in a more automated way, making their update easier and more manageable.
-- Provide the prover with the necessary data without making the API worse for the user.
+- Provide the prover with the necessary datausing a friendlier API for the user.
 
 **Non-goals**
 - We could possibly have a better design for the rest of the preprocessed data, for example by having each operation have control over what is pushed to the preprocessed data. But this is out of scope here.
@@ -43,6 +43,7 @@ Therefore, we need to redesign the way we currently handle multiplicities in ord
 ### 4.1 High-level approach
 
 - Add methods to the `PreprocessedColumns` structure so it can update the preprocessed data itself. This enables specialized methods for witness indices that update both the current table's preprocessed data and the witness multiplicities. We can have one method to register a primitive witness read, one for non-primitive reads, and corresponding methods for multiple reads. Additionally, we would have a method to add a preprocessed value that is not a witness index. Note that currently, if either `Add` or `Mul` don't have any operations, we add one dummy operation, and we update the preprocessed data accordingly right after calling `generate_preprocessed`. But I think this dummy data should actually be added by the structure within `generate_preprocessed` to avoid any errors.
+
 - On top of `CommonData`, we can have a `ProverData` structure which contains the common data, as well as `PreprocessedColumns` and any additional data that the prover might require. Currently, the prover regenerates the preprocessed values based on the traces. It could do the same for multiplicities, but this leads to extra overhead when the values should already have been computed beforehand. So this approach should simplify the API and very slightly improve prover performance at the expense of storing more preprocessed data before proving.
 
 ### 4.2 APIs / traits / types
@@ -127,7 +128,6 @@ pub fn prove_all_tables<EF, LG: LookupGadget + Sync>(
         &self,
         traces: &Traces<EF>,
         prover_data: &ProverData<SC>,
-        witness_multiplicities: Vec<Val<SC>>,
         lookup_gadget: &LG,
     ) -> Result<BatchStarkProof<SC>, BatchStarkProverError>
     where
@@ -140,7 +140,6 @@ fn prove<EF, const D: usize, LG: LookupGadget + Sync>(
         traces: &Traces<EF>,
         w_binomial: Option<Val<SC>>,
         prover_data: &ProverData<SC>,
-        witness_multiplicities: Vec<Val<SC>>,
         lookup_gadget: &LG,
     ) -> Result<BatchStarkProof<SC>, BatchStarkProverError>
     where
@@ -176,4 +175,4 @@ fn prove<EF, const D: usize, LG: LookupGadget + Sync>(
 
 With this approach, we can also remove `trace_to_preprocessed` in the various airs where it is implemented. Currently, the method is a bit redundant with `generate_preprocessed` since it also generates preprocessed data based on the traces. This redundancy makes it error-prone, so being able to get rid of it is, in my opinion, another benefit of this approach.
 
-Note that ideally, we should also change `CommonData` in Plonky3, as it contains some prover data in `GlobalPreprocessed`.
+Note that ideally, we should also change `CommonData` in Plonky3, as it contains some prover data in `GlobalPreprocessed`. And so, on the Plonky3 side, we could remove `prover_data` from `GlobalPreprocessed` and instead store it in a `ProverOnlyData` which also contains `CommonData`.
