@@ -1,10 +1,9 @@
 use alloc::vec::Vec;
 use core::iter;
 
+use p3_air::lookup::LookupEvaluator;
 use p3_air::{Air, AirBuilder, AirBuilderWithPublicValues, PairBuilder, PermutationAirBuilder};
-use p3_lookup::lookup_traits::{
-    AirLookupHandler, Direction, Lookup, LookupData, LookupGadget, LookupInput,
-};
+use p3_lookup::lookup_traits::{Direction, Lookup, LookupData, LookupInput};
 use p3_uni_stark::{SymbolicExpression, SymbolicVariable};
 
 pub fn get_index_lookups<
@@ -33,10 +32,10 @@ pub fn get_index_lookups<
 }
 
 /// Object‑safe gadget shim.
-pub trait LookupGadgetDyn<AB: PermutationAirBuilder + PairBuilder + AirBuilderWithPublicValues> {
+pub trait LookupEvaluatorDyn<AB: PermutationAirBuilder + PairBuilder + AirBuilderWithPublicValues> {
     fn num_aux_cols(&self) -> usize;
     fn num_challenges(&self) -> usize;
-    fn eval_lookups_dyn(
+    fn eval_with_lookups_dyn(
         &self,
         builder: &mut AB,
         contexts: &[Lookup<AB::F>],
@@ -44,50 +43,50 @@ pub trait LookupGadgetDyn<AB: PermutationAirBuilder + PairBuilder + AirBuilderWi
     );
 }
 
-/// Blanket: any concrete `LookupGadget` becomes object‑safe.
-impl<AB, LG> LookupGadgetDyn<AB> for LG
+/// Blanket: any concrete `LookupEvaluator` becomes object‑safe.
+impl<AB, LE> LookupEvaluatorDyn<AB> for LE
 where
     AB: PermutationAirBuilder + PairBuilder + AirBuilderWithPublicValues,
-    LG: LookupGadget,
+    LE: LookupEvaluator,
 {
     fn num_aux_cols(&self) -> usize {
-        LG::num_aux_cols(self)
+        LE::num_aux_cols(self)
     }
     fn num_challenges(&self) -> usize {
-        LG::num_challenges(self)
+        LE::num_challenges(self)
     }
-    fn eval_lookups_dyn(
+    fn eval_with_lookups_dyn(
         &self,
         builder: &mut AB,
         contexts: &[Lookup<AB::F>],
         lookup_data: &[LookupData<AB::ExprEF>],
     ) {
         // forward to the generic method on the concrete handler
-        LG::eval_lookups(self, builder, contexts, lookup_data);
+        LE::eval_lookups(self, builder, contexts, lookup_data);
     }
 }
 
-/// Object‑safe AIR lookup handler shim.
-pub trait AirLookupHandlerDyn<AB>
+/// Object‑safe AIR shim.
+pub trait AirDyn<AB>
 where
     AB: PermutationAirBuilder + PairBuilder + AirBuilderWithPublicValues,
 {
     fn add_lookup_columns_dyn(&mut self) -> Vec<usize>;
     fn get_lookups_dyn(&mut self) -> Vec<Lookup<AB::F>>;
-    fn eval_lookups_dyn(
+    fn eval_with_lookups_dyn<LE: LookupEvaluator>(
         &self,
         builder: &mut AB,
         contexts: &[Lookup<AB::F>],
         lookup_data: &[LookupData<AB::ExprEF>],
-        gadget: &dyn LookupGadgetDyn<AB>,
+        lookup_evaluator: &LE,
     );
 }
 
-/// Blanket: any existing `AirLookupHandler` now satisfies the object‑safe shim.
-impl<AB, T> AirLookupHandlerDyn<AB> for T
+/// Blanket: any existing `Air` now satisfies the object‑safe shim.
+impl<AB, T> AirDyn<AB> for T
 where
     AB: PermutationAirBuilder + PairBuilder + AirBuilderWithPublicValues,
-    T: AirLookupHandler<AB>,
+    T: Air<AB>,
 {
     fn add_lookup_columns_dyn(&mut self) -> Vec<usize> {
         self.add_lookup_columns()
@@ -95,16 +94,13 @@ where
     fn get_lookups_dyn(&mut self) -> Vec<Lookup<AB::F>> {
         self.get_lookups()
     }
-    fn eval_lookups_dyn(
+    fn eval_with_lookups_dyn<LE: LookupEvaluator>(
         &self,
         builder: &mut AB,
         contexts: &[Lookup<AB::F>],
         lookup_data: &[LookupData<AB::ExprEF>],
-        gadget: &dyn LookupGadgetDyn<AB>,
+        lookup_evaluator: &LE,
     ) {
-        Air::<AB>::eval(self, builder);
-        if !lookup_data.is_empty() {
-            gadget.eval_lookups_dyn(builder, contexts, lookup_data);
-        }
+        Air::<AB>::eval_with_lookups(self, builder, contexts, lookup_data, lookup_evaluator)
     }
 }

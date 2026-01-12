@@ -98,7 +98,7 @@ use p3_air::{
 };
 use p3_circuit::tables::MulTrace;
 use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
-use p3_lookup::lookup_traits::{AirLookupHandler, Direction, Kind, Lookup};
+use p3_lookup::lookup_traits::{Direction, Kind, Lookup};
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_uni_stark::SymbolicAirBuilder;
@@ -384,59 +384,6 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> MulAir<F, D> {
     }
 }
 
-impl<AB: PermutationAirBuilder + PairBuilder + AirBuilderWithPublicValues, const D: usize>
-    AirLookupHandler<AB> for MulAir<AB::F, D>
-{
-    fn add_lookup_columns(&mut self) -> Vec<usize> {
-        let new_idx = self.num_lookup_columns;
-        self.num_lookup_columns += 1;
-        vec![new_idx]
-    }
-
-    fn get_lookups(&mut self) -> Vec<Lookup<<AB>::F>> {
-        let mut lookups = Vec::new();
-        self.num_lookup_columns = 0;
-        let preprocessed_width = self.preprocessed_width();
-
-        // Create symbolic air builder to access symbolic variables
-        let symbolic_air_builder = SymbolicAirBuilder::<AB::F>::new(
-            preprocessed_width,
-            BaseAir::<AB::F>::width(self),
-            0,
-            0,
-            0,
-        );
-
-        let symbolic_main = symbolic_air_builder.main();
-        let symbolic_main_local = symbolic_main.row_slice(0).unwrap();
-
-        let preprocessed = symbolic_air_builder.preprocessed();
-        let preprocessed_local = preprocessed.row_slice(0).unwrap();
-
-        for lane in 0..self.lanes {
-            let lane_offset = lane * Self::lane_width();
-            let preprocessed_lane_offset = lane * Self::preprocessed_lane_width();
-
-            let lane_lookup_inputs = get_index_lookups::<AB, D>(
-                lane_offset,
-                preprocessed_lane_offset,
-                3,
-                &symbolic_main_local,
-                &preprocessed_local,
-                Direction::Send,
-            );
-            lookups.extend(lane_lookup_inputs.into_iter().map(|inps| {
-                AirLookupHandler::<AB>::register_lookup(
-                    self,
-                    Kind::Global("WitnessChecks".to_string()),
-                    &[inps],
-                )
-            }));
-        }
-        lookups
-    }
-}
-
 impl<F: Field, const D: usize> BaseAir<F> for MulAir<F, D> {
     fn width(&self) -> usize {
         self.total_width()
@@ -608,6 +555,58 @@ where
                 }
             }
         }
+    }
+
+    fn add_lookup_columns(&mut self) -> Vec<usize> {
+        let new_idx = self.num_lookup_columns;
+        self.num_lookup_columns += 1;
+        vec![new_idx]
+    }
+
+    fn get_lookups(&mut self) -> Vec<Lookup<<AB>::F>>
+    where
+        AB: PermutationAirBuilder + AirBuilderWithPublicValues + PairBuilder,
+    {
+        let mut lookups = Vec::new();
+        self.num_lookup_columns = 0;
+        let preprocessed_width = self.preprocessed_width();
+
+        // Create symbolic air builder to access symbolic variables
+        let symbolic_air_builder = SymbolicAirBuilder::<AB::F>::new(
+            preprocessed_width,
+            BaseAir::<AB::F>::width(self),
+            0,
+            0,
+            0,
+        );
+
+        let symbolic_main = symbolic_air_builder.main();
+        let symbolic_main_local = symbolic_main.row_slice(0).unwrap();
+
+        let preprocessed = symbolic_air_builder.preprocessed();
+        let preprocessed_local = preprocessed.row_slice(0).unwrap();
+
+        for lane in 0..self.lanes {
+            let lane_offset = lane * Self::lane_width();
+            let preprocessed_lane_offset = lane * Self::preprocessed_lane_width();
+
+            let lane_lookup_inputs = get_index_lookups::<AB, D>(
+                lane_offset,
+                preprocessed_lane_offset,
+                3,
+                &symbolic_main_local,
+                &preprocessed_local,
+                Direction::Send,
+            );
+            lookups.extend(lane_lookup_inputs.into_iter().map(|inps| {
+                <Self as Air<AB>>::register_lookup(
+                    self,
+                    Kind::Global("WitnessChecks".to_string()),
+                    &[inps],
+                )
+            }));
+        }
+        lookups
     }
 }
 

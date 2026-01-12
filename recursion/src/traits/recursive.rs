@@ -4,7 +4,7 @@ use alloc::vec::Vec;
 use p3_circuit::CircuitBuilder;
 use p3_field::Field;
 use p3_lookup::logup::LogUpGadget;
-use p3_lookup::lookup_traits::{EmptyLookupGadget, LookupGadget};
+use p3_lookup::lookup_traits::LookupGadget;
 
 use crate::Target;
 
@@ -53,15 +53,6 @@ pub trait RecursiveLookupGadget<F: Field>: LookupGadget {
         circuit: &mut CircuitBuilder<F>,
         all_expected_cumulative: &[Target],
     );
-}
-
-impl<F: Field> RecursiveLookupGadget<F> for EmptyLookupGadget {
-    fn verify_global_final_value_circuit(
-        &self,
-        _circuit: &mut CircuitBuilder<F>,
-        _all_expected_cumulative: &[Target],
-    ) {
-    }
 }
 
 impl<F: Field> RecursiveLookupGadget<F> for LogUpGadget {

@@ -7,7 +7,7 @@ use p3_circuit::utils::ColumnsTargets;
 use p3_circuit::{CircuitBuilder, CircuitBuilderError};
 use p3_commit::Pcs;
 use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
-use p3_lookup::lookup_traits::EmptyLookupGadget;
+use p3_lookup::logup::LogUpGadget;
 use p3_uni_stark::{StarkGenericConfig, Val};
 
 use super::{ObservableCommitment, VerificationError, recompose_quotient_from_chunks_circuit};
@@ -72,7 +72,7 @@ pub fn verify_circuit<
     pcs_params: &PcsVerifierParams<SC, InputProof, OpeningProof, Comm>,
 ) -> Result<(), VerificationError>
 where
-    A: RecursiveAir<Val<SC>, SC::Challenge, EmptyLookupGadget>,
+    A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
     <SC as StarkGenericConfig>::Pcs: RecursivePcs<
             SC,
             InputProof,
@@ -106,7 +106,7 @@ where
     } = opened_values_targets;
 
     let degree = 1 << degree_bits;
-    let lookup_gadget = EmptyLookupGadget {};
+    let lookup_gadget = LogUpGadget {};
     let preprocessed_width = opt_opened_preprocessed_local_targets
         .as_ref()
         .map_or(0, |p| p.len());
@@ -295,7 +295,7 @@ where
 /// - Base STARK challenges (alpha, zeta, zeta_next)
 /// - PCS-specific challenges (e.g., FRI betas, query indices)
 fn get_circuit_challenges<
-    A: RecursiveAir<Val<SC>, SC::Challenge, EmptyLookupGadget>,
+    A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
     SC: StarkGenericConfig,
     Comm: Recursive<
             SC::Challenge,
@@ -330,7 +330,7 @@ where
         &[],
         &[],
         config.is_zk(),
-        &EmptyLookupGadget {},
+        &LogUpGadget {},
     );
 
     let mut challenger = CircuitChallenger::<RATE>::new();
@@ -374,7 +374,7 @@ fn validate_proof_shape<A, SC: StarkGenericConfig, Comm>(
     quotient_degree: usize,
 ) -> Result<(), VerificationError>
 where
-    A: RecursiveAir<Val<SC>, SC::Challenge, EmptyLookupGadget>,
+    A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
     SC::Challenge: PrimeCharacteristicRing,
 {
     let air_width = A::width(air);

@@ -2,11 +2,12 @@
 
 use alloc::vec::Vec;
 
+use p3_air::Air;
 use p3_batch_stark::symbolic::{get_log_num_quotient_chunks, get_symbolic_constraints};
 use p3_circuit::CircuitBuilder;
 use p3_circuit::utils::{ColumnsTargets, symbolic_to_circuit};
 use p3_field::{ExtensionField, Field};
-use p3_lookup::lookup_traits::{AirLookupHandler, Lookup, LookupData, LookupGadget};
+use p3_lookup::lookup_traits::{Lookup, LookupData, LookupGadget};
 use p3_uni_stark::{Entry, SymbolicAirBuilder, SymbolicExpression, SymbolicVariable};
 
 use crate::Target;
@@ -85,7 +86,7 @@ pub trait RecursiveAir<F: Field, EF: ExtensionField<F>, LG: LookupGadget> {
 
 impl<F: Field, EF: ExtensionField<F>, A, LG: LookupGadget> RecursiveAir<F, EF, LG> for A
 where
-    A: AirLookupHandler<SymbolicAirBuilder<F, EF>>,
+    A: Air<SymbolicAirBuilder<F, EF>>,
     SymbolicExpression<EF>: From<SymbolicExpression<F>>,
 {
     fn width(&self) -> usize {

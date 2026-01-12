@@ -5,15 +5,13 @@ use hashbrown::HashMap;
 use itertools::zip_eq;
 use p3_air::Air;
 use p3_batch_stark::config::observe_instance_binding;
-use p3_batch_stark::symbolic::{
-    get_log_num_quotient_chunks as get_batch_log_num_quotient_chunks, lookup_data_to_expr,
-};
+use p3_batch_stark::symbolic::get_log_num_quotient_chunks as get_batch_log_num_quotient_chunks;
 use p3_batch_stark::{BatchProof, CommonData};
 use p3_challenger::{CanObserve, CanSample, CanSampleBits, FieldChallenger, GrindingChallenger};
 use p3_commit::{BatchOpening, Mmcs, Pcs, PolynomialSpace};
 use p3_field::{BasedVectorSpace, PrimeCharacteristicRing, PrimeField, TwoAdicField};
 use p3_fri::{FriProof, TwoAdicFriPcs};
-use p3_lookup::lookup_traits::{AirLookupHandler, Kind, Lookup, LookupGadget};
+use p3_lookup::lookup_traits::{Kind, Lookup, LookupGadget, lookup_data_to_expr};
 use p3_uni_stark::{
     Domain, Proof, StarkGenericConfig, SymbolicAirBuilder, SymbolicExpression, Val,
     VerifierConstraintFolder, get_log_num_quotient_chunks,
@@ -270,7 +268,7 @@ pub fn generate_batch_challenges<SC: StarkGenericConfig, A, LG: LookupGadget>(
     lookup_gadget: &LG,
 ) -> Result<Vec<SC::Challenge>, GenerationError>
 where
-    A: AirLookupHandler<SymbolicAirBuilder<Val<SC>, SC::Challenge>>,
+    A: Air<SymbolicAirBuilder<Val<SC>, SC::Challenge>>,
     SC::Pcs: PcsGeneration<SC, <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Proof>,
     SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
 {

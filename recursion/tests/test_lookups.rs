@@ -42,7 +42,7 @@ fn test_arith_lookups() {
     } = get_test_circuit_proof();
 
     prover
-        .verify_all_tables(&batch_stark_proof, &common, &lookup_gadget)
+        .verify_all_tables(&batch_stark_proof, &common)
         .unwrap();
 
     // Build the recursive verification circuit
@@ -124,7 +124,7 @@ fn test_wrong_multiplicities() {
     // Prove the circuit.
     let lookup_gadget = LogUpGadget::new();
     let mut batch_stark_proof = prover
-        .prove_all_tables(&traces, &common, witness_multiplicities, &lookup_gadget)
+        .prove_all_tables(&traces, &common, witness_multiplicities)
         .unwrap();
 
     // Now verify the batch STARK proof recursively
@@ -591,7 +591,7 @@ fn get_test_circuit_proof() -> TestCircuitProofData {
     let lookup_gadget = LogUpGadget::new();
     let prover = BatchStarkProver::new(config_proving).with_table_packing(table_packing);
     let batch_stark_proof = prover
-        .prove_all_tables(&traces, &common, witness_multiplicities, &lookup_gadget)
+        .prove_all_tables(&traces, &common, witness_multiplicities)
         .unwrap();
 
     let (config, fri_verifier_params, pow_bits, log_height_max) = get_recursive_config_and_params();
