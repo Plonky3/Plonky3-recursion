@@ -7,7 +7,6 @@ use alloc::vec::Vec;
 use alloc::{format, vec};
 use core::borrow::Borrow;
 use core::mem::transmute;
-use core::usize;
 
 use p3_air::{Air, AirBuilder, BaseAir, PairBuilder};
 use p3_baby_bear::{BabyBear, GenericPoseidon2LinearLayersBabyBear};
@@ -142,6 +141,114 @@ where
     }
 }
 
+impl<SC> BaseAir<Val<SC>> for DynamicAirEntry<SC>
+where
+    SC: StarkGenericConfig,
+    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+{
+    fn width(&self) -> usize {
+        <dyn CloneableBatchAir<SC> as BaseAir<Val<SC>>>::width(self.air())
+    }
+
+    fn preprocessed_trace(&self) -> Option<RowMajorMatrix<Val<SC>>> {
+        <dyn CloneableBatchAir<SC> as BaseAir<Val<SC>>>::preprocessed_trace(self.air())
+    }
+}
+
+macro_rules! impl_air_for_dynamic_entry {
+    (
+        $(#[$cfg:meta])?
+        $lt:lifetime,
+        $builder:ty,
+        $eval_method:ident,
+        $add_lookup_method:ident,
+        $get_lookup_method:ident
+    ) => {
+        $(#[$cfg])?
+        impl<$lt, SC> Air<$builder> for DynamicAirEntry<SC>
+        where
+            SC: StarkGenericConfig,
+            Val<SC>: PrimeField,
+            SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+        {
+            fn eval(&self, builder: &mut $builder) {
+                self.air().$eval_method(builder);
+            }
+
+            fn add_lookup_columns(&mut self) -> Vec<usize> {
+                self.air_mut().$add_lookup_method()
+            }
+
+            fn get_lookups(
+                &mut self,
+            ) -> Vec<Lookup<<$builder as AirBuilder>::F>> {
+                self.air_mut().$get_lookup_method()
+            }
+        }
+    };
+    (
+        $(#[$cfg:meta])?
+        $builder:ty,
+        $eval_method:ident,
+        $add_lookup_method:ident,
+        $get_lookup_method:ident
+    ) => {
+        $(#[$cfg])?
+        impl<SC> Air<$builder> for DynamicAirEntry<SC>
+        where
+            SC: StarkGenericConfig,
+            Val<SC>: PrimeField,
+            SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+        {
+            fn eval(&self, builder: &mut $builder) {
+                self.air().$eval_method(builder);
+            }
+
+            fn add_lookup_columns(&mut self) -> Vec<usize> {
+                self.air_mut().$add_lookup_method()
+            }
+
+            fn get_lookups(
+                &mut self,
+            ) -> Vec<Lookup<<$builder as AirBuilder>::F>> {
+                self.air_mut().$get_lookup_method()
+            }
+        }
+    };
+}
+
+impl_air_for_dynamic_entry!(
+    SymbolicAirBuilder<Val<SC>, SC::Challenge>,
+    eval_symbolic,
+    add_lookup_columns_symbolic,
+    get_lookups_symbolic
+);
+
+#[cfg(debug_assertions)]
+impl_air_for_dynamic_entry!(
+    'a,
+    DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>,
+    eval_debug,
+    add_lookup_columns_debug,
+    get_lookups_debug
+);
+
+impl_air_for_dynamic_entry!(
+    'a,
+    ProverConstraintFolderWithLookups<'a, SC>,
+    eval_prover,
+    add_lookup_columns_prover,
+    get_lookups_prover
+);
+
+impl_air_for_dynamic_entry!(
+    'a,
+    VerifierConstraintFolderWithLookups<'a, SC>,
+    eval_verifier,
+    add_lookup_columns_verifier,
+    get_lookups_verifier
+);
+
 /// Simple super trait of [`Air`] describing the behaviour of a non-primitive
 /// dynamically dispatched AIR used in batched proofs.
 #[cfg(debug_assertions)]
@@ -173,6 +280,54 @@ where
 {
 }
 
+macro_rules! impl_cloneable_batch_air_forwarding {
+    (
+        $(#[$cfg:meta])?
+        $lt:lifetime,
+        $builder:ty,
+        $eval_method:ident,
+        $add_lookup_method:ident,
+        $get_lookup_method:ident
+    ) => {
+        $(#[$cfg])?
+        fn $eval_method<$lt>(&self, builder: &mut $builder) {
+            <T as Air<$builder>>::eval(self, builder);
+        }
+
+        $(#[$cfg])?
+        fn $add_lookup_method<$lt>(&mut self) -> Vec<usize> {
+            <T as Air<$builder>>::add_lookup_columns(self)
+        }
+
+        $(#[$cfg])?
+        fn $get_lookup_method<$lt>(&mut self) -> Vec<Lookup<Val<SC>>> {
+            <T as Air<$builder>>::get_lookups(self)
+        }
+    };
+    (
+        $(#[$cfg:meta])?
+        $builder:ty,
+        $eval_method:ident,
+        $add_lookup_method:ident,
+        $get_lookup_method:ident
+    ) => {
+        $(#[$cfg])?
+        fn $eval_method(&self, builder: &mut $builder) {
+            <T as Air<$builder>>::eval(self, builder);
+        }
+
+        $(#[$cfg])?
+        fn $add_lookup_method(&mut self) -> Vec<usize> {
+            <T as Air<$builder>>::add_lookup_columns(self)
+        }
+
+        $(#[$cfg])?
+        fn $get_lookup_method(&mut self) -> Vec<Lookup<Val<SC>>> {
+            <T as Air<$builder>>::get_lookups(self)
+        }
+    };
+}
+
 pub trait CloneableBatchAir<SC>: BaseAir<Val<SC>> + Send + Sync
 where
     SC: StarkGenericConfig,
@@ -180,35 +335,26 @@ where
 {
     fn clone_box(&self) -> Box<dyn CloneableBatchAir<SC>>;
 
-    fn eval_symbolic(&self, builder: &mut SymbolicAirBuilder<Val<SC>, SC::Challenge>);
-
     #[cfg(debug_assertions)]
     fn eval_debug<'a>(
         &self,
         builder: &mut DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>,
     );
-
+    fn eval_symbolic(&self, builder: &mut SymbolicAirBuilder<Val<SC>, SC::Challenge>);
     fn eval_prover<'a>(&self, builder: &mut ProverConstraintFolderWithLookups<'a, SC>);
-
     fn eval_verifier<'a>(&self, builder: &mut VerifierConstraintFolderWithLookups<'a, SC>);
 
+    #[cfg(debug_assertions)]
+    fn add_lookup_columns_debug(&mut self) -> Vec<usize>;
     fn add_lookup_columns_symbolic(&mut self) -> Vec<usize>;
+    fn add_lookup_columns_prover(&mut self) -> Vec<usize>;
+    fn add_lookup_columns_verifier(&mut self) -> Vec<usize>;
 
+    #[cfg(debug_assertions)]
+    fn get_lookups_debug(&mut self) -> Vec<Lookup<Val<SC>>>;
     fn get_lookups_symbolic(&mut self) -> Vec<Lookup<Val<SC>>>;
-
-    #[cfg(debug_assertions)]
-    fn add_lookup_columns_debug<'a>(&mut self) -> Vec<usize>;
-
-    #[cfg(debug_assertions)]
-    fn get_lookups_debug<'a>(&mut self) -> Vec<Lookup<Val<SC>>>;
-
-    fn add_lookup_columns_prover<'a>(&mut self) -> Vec<usize>;
-
-    fn get_lookups_prover<'a>(&mut self) -> Vec<Lookup<Val<SC>>>;
-
-    fn add_lookup_columns_verifier<'a>(&mut self) -> Vec<usize>;
-
-    fn get_lookups_verifier<'a>(&mut self) -> Vec<Lookup<Val<SC>>>;
+    fn get_lookups_prover(&mut self) -> Vec<Lookup<Val<SC>>>;
+    fn get_lookups_verifier(&mut self) -> Vec<Lookup<Val<SC>>>;
 }
 
 impl<SC, T> CloneableBatchAir<SC> for T
@@ -221,61 +367,37 @@ where
         Box::new(self.clone())
     }
 
-    fn eval_symbolic(&self, builder: &mut SymbolicAirBuilder<Val<SC>, SC::Challenge>) {
-        <T as Air<SymbolicAirBuilder<Val<SC>, SC::Challenge>>>::eval(self, builder);
-    }
+    impl_cloneable_batch_air_forwarding!(
+        SymbolicAirBuilder<Val<SC>, SC::Challenge>,
+        eval_symbolic,
+        add_lookup_columns_symbolic,
+        get_lookups_symbolic
+    );
 
     #[cfg(debug_assertions)]
-    fn eval_debug<'a>(
-        &self,
-        builder: &mut DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>,
-    ) {
-        <T as Air<DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>>>::eval(
-            self, builder,
-        );
-    }
+    impl_cloneable_batch_air_forwarding!(
+        'a,
+        DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>,
+        eval_debug,
+        add_lookup_columns_debug,
+        get_lookups_debug
+    );
 
-    fn eval_prover<'a>(&self, builder: &mut ProverConstraintFolderWithLookups<'a, SC>) {
-        <T as Air<ProverConstraintFolderWithLookups<'a, SC>>>::eval(self, builder);
-    }
+    impl_cloneable_batch_air_forwarding!(
+        'a,
+        ProverConstraintFolderWithLookups<'a, SC>,
+        eval_prover,
+        add_lookup_columns_prover,
+        get_lookups_prover
+    );
 
-    fn eval_verifier<'a>(&self, builder: &mut VerifierConstraintFolderWithLookups<'a, SC>) {
-        <T as Air<VerifierConstraintFolderWithLookups<'a, SC>>>::eval(self, builder);
-    }
-
-    fn add_lookup_columns_symbolic(&mut self) -> Vec<usize> {
-        <T as Air<SymbolicAirBuilder<Val<SC>, SC::Challenge>>>::add_lookup_columns(self)
-    }
-
-    fn get_lookups_symbolic(&mut self) -> Vec<Lookup<Val<SC>>> {
-        <T as Air<SymbolicAirBuilder<Val<SC>, SC::Challenge>>>::get_lookups(self)
-    }
-
-    #[cfg(debug_assertions)]
-    fn add_lookup_columns_debug<'a>(&mut self) -> Vec<usize> {
-        <T as Air<DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>>>::add_lookup_columns(self)
-    }
-
-    #[cfg(debug_assertions)]
-    fn get_lookups_debug<'a>(&mut self) -> Vec<Lookup<Val<SC>>> {
-        <T as Air<DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>>>::get_lookups(self)
-    }
-
-    fn add_lookup_columns_prover<'a>(&mut self) -> Vec<usize> {
-        <T as Air<ProverConstraintFolderWithLookups<'a, SC>>>::add_lookup_columns(self)
-    }
-
-    fn get_lookups_prover<'a>(&mut self) -> Vec<Lookup<Val<SC>>> {
-        <T as Air<ProverConstraintFolderWithLookups<'a, SC>>>::get_lookups(self)
-    }
-
-    fn add_lookup_columns_verifier<'a>(&mut self) -> Vec<usize> {
-        <T as Air<VerifierConstraintFolderWithLookups<'a, SC>>>::add_lookup_columns(self)
-    }
-
-    fn get_lookups_verifier<'a>(&mut self) -> Vec<Lookup<Val<SC>>> {
-        <T as Air<VerifierConstraintFolderWithLookups<'a, SC>>>::get_lookups(self)
-    }
+    impl_cloneable_batch_air_forwarding!(
+        'a,
+        VerifierConstraintFolderWithLookups<'a, SC>,
+        eval_verifier,
+        add_lookup_columns_verifier,
+        get_lookups_verifier
+    );
 }
 
 /// Data needed to insert a dynamic table instance into the batched prover.
@@ -2234,9 +2356,7 @@ where
             Self::Public(a) => Air::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::eval(a, builder),
             Self::Add(a) => Air::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::eval(a, builder),
             Self::Mul(a) => Air::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::eval(a, builder),
-            Self::Dynamic(a) => {
-                a.air().eval_symbolic(builder);
-            }
+            Self::Dynamic(a) => Air::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::eval(a, builder),
         }
     }
 
@@ -2257,7 +2377,9 @@ where
             Self::Mul(a) => {
                 Air::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::add_lookup_columns(a)
             }
-            Self::Dynamic(a) => a.air_mut().add_lookup_columns_symbolic(),
+            Self::Dynamic(a) => {
+                Air::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::add_lookup_columns(a)
+            }
         }
     }
 
@@ -2270,7 +2392,7 @@ where
             Self::Public(a) => Air::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::get_lookups(a),
             Self::Add(a) => Air::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::get_lookups(a),
             Self::Mul(a) => Air::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::get_lookups(a),
-            Self::Dynamic(a) => a.air_mut().get_lookups_symbolic(),
+            Self::Dynamic(a) => Air::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::get_lookups(a),
         }
     }
 }
@@ -2311,7 +2433,9 @@ where
                 );
             }
             Self::Dynamic(a) => {
-                a.air().eval_debug(builder);
+                Air::<DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>>::eval(
+                    a, builder,
+                );
             }
         }
     }
@@ -2334,7 +2458,7 @@ where
                 DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>,
             >::add_lookup_columns(a),
             Self::Dynamic(a) => {
-                a.air_mut().add_lookup_columns_debug()
+                Air::<DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>>::add_lookup_columns(a)
             }
         }
     }
@@ -2359,7 +2483,9 @@ where
             Self::Mul(a) => {
                 Air::<DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>>::get_lookups(a)
             }
-            Self::Dynamic(a) => a.air_mut().get_lookups_debug(),
+            Self::Dynamic(a) => {
+                Air::<DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>>::get_lookups(a)
+            }
         }
     }
 }
@@ -2379,7 +2505,7 @@ where
             Self::Add(a) => Air::<ProverConstraintFolderWithLookups<'a, SC>>::eval(a, builder),
             Self::Mul(a) => Air::<ProverConstraintFolderWithLookups<'a, SC>>::eval(a, builder),
             Self::Dynamic(a) => {
-                a.air().eval_prover(builder);
+                Air::<ProverConstraintFolderWithLookups<'a, SC>>::eval(a, builder);
             }
         }
     }
@@ -2397,7 +2523,9 @@ where
             }
             Self::Add(a) => Air::<ProverConstraintFolderWithLookups<'a, SC>>::add_lookup_columns(a),
             Self::Mul(a) => Air::<ProverConstraintFolderWithLookups<'a, SC>>::add_lookup_columns(a),
-            Self::Dynamic(a) => a.air_mut().add_lookup_columns_prover(),
+            Self::Dynamic(a) => {
+                Air::<ProverConstraintFolderWithLookups<'a, SC>>::add_lookup_columns(a)
+            }
         }
     }
 
@@ -2410,7 +2538,7 @@ where
             Self::Public(a) => Air::<ProverConstraintFolderWithLookups<'a, SC>>::get_lookups(a),
             Self::Add(a) => Air::<ProverConstraintFolderWithLookups<'a, SC>>::get_lookups(a),
             Self::Mul(a) => Air::<ProverConstraintFolderWithLookups<'a, SC>>::get_lookups(a),
-            Self::Dynamic(a) => a.air_mut().get_lookups_prover(),
+            Self::Dynamic(a) => Air::<ProverConstraintFolderWithLookups<'a, SC>>::get_lookups(a),
         }
     }
 }
@@ -2432,7 +2560,7 @@ where
             Self::Add(a) => Air::<VerifierConstraintFolderWithLookups<'a, SC>>::eval(a, builder),
             Self::Mul(a) => Air::<VerifierConstraintFolderWithLookups<'a, SC>>::eval(a, builder),
             Self::Dynamic(a) => {
-                a.air().eval_verifier(builder);
+                Air::<VerifierConstraintFolderWithLookups<'a, SC>>::eval(a, builder);
             }
         }
     }
@@ -2454,7 +2582,9 @@ where
             Self::Mul(a) => {
                 Air::<VerifierConstraintFolderWithLookups<'a, SC>>::add_lookup_columns(a)
             }
-            Self::Dynamic(a) => a.air_mut().add_lookup_columns_verifier(),
+            Self::Dynamic(a) => {
+                Air::<VerifierConstraintFolderWithLookups<'a, SC>>::add_lookup_columns(a)
+            }
         }
     }
 
@@ -2467,7 +2597,7 @@ where
             Self::Public(a) => Air::<VerifierConstraintFolderWithLookups<'a, SC>>::get_lookups(a),
             Self::Add(a) => Air::<VerifierConstraintFolderWithLookups<'a, SC>>::get_lookups(a),
             Self::Mul(a) => Air::<VerifierConstraintFolderWithLookups<'a, SC>>::get_lookups(a),
-            Self::Dynamic(a) => a.air_mut().get_lookups_verifier(),
+            Self::Dynamic(a) => Air::<VerifierConstraintFolderWithLookups<'a, SC>>::get_lookups(a),
         }
     }
 }

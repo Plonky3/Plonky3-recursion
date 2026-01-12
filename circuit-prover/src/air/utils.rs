@@ -101,6 +101,6 @@ where
         lookup_data: &[LookupData<AB::ExprEF>],
         lookup_evaluator: &LE,
     ) {
-        Air::<AB>::eval_with_lookups(self, builder, contexts, lookup_data, lookup_evaluator)
+        Air::<AB>::eval_with_lookups(self, builder, contexts, lookup_data, lookup_evaluator);
     }
 }

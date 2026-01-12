@@ -289,7 +289,7 @@ fn test_batch_verifier_with_mixed_preprocessed() -> Result<(), VerificationError
     let common_data = CommonData::from_instances(&config, &instances);
     let lookup_gadget = LogUpGadget::new();
     let batch_proof = prove_batch(&config, &instances, &common_data);
-    let airs = [mixed_air1.clone(), mixed_air2.clone(), mixed_air3.clone()];
+    let airs = [mixed_air1, mixed_air2, mixed_air3];
 
     verify_batch(&config, &airs, &batch_proof, &pvs, &common_data).unwrap();
 
