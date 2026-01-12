@@ -367,7 +367,7 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for Poseidon2Perm
         // Get private data if available and validate usage rules.
         let private_inputs: Option<&[F]> = match ctx.get_private_data() {
             Ok(NonPrimitiveOpPrivateData::Poseidon2Perm(data)) => {
-                if !self.merkle_path || self.new_start {
+                if !self.merkle_path {
                     return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
                         op: self.op_type,
                         operation_index: ctx.operation_id(),
@@ -620,13 +620,13 @@ impl Poseidon2PermExecutor {
         let mut resolved = [None; 4];
 
         // Layer 1: Private inputs (lowest priority)
-        // Private inputs are only used in Merkle mode (merkle_path && !new_start).
+        // Private inputs are only used in Merkle mode.
         // The sibling (exactly 2 limbs) is placed based on mmcs_bit:
         // - mmcs_bit=0: sibling in 2-3
         // - mmcs_bit=1: sibling in 0-1
         if let Some(private) = private_inputs {
             // Note: validation ensures private_inputs is only provided for Merkle mode
-            debug_assert!(self.merkle_path && !self.new_start);
+            debug_assert!(self.merkle_path);
             let start = if mmcs_bit { 0 } else { 2 };
             resolved[start] = Some(private[0]);
             resolved[start + 1] = Some(private[1]);
@@ -670,7 +670,7 @@ impl Poseidon2PermExecutor {
 
         // Return the resolved value
         resolved[limb].ok_or_else(|| {
-            if self.merkle_path && !self.new_start {
+            if self.merkle_path {
                 let is_required_sibling =
                     matches!((mmcs_bit, limb), (false, 2 | 3) | (true, 0 | 1));
                 if is_required_sibling {

@@ -1,3 +1,4 @@
+pub mod hash;
 pub mod mmcs;
 pub mod poseidon2_perm;
 

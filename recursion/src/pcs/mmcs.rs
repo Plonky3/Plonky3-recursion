@@ -1,8 +1,8 @@
 use alloc::vec::Vec;
 
 use p3_circuit::op::NonPrimitiveOpType;
+use p3_circuit::ops::hash::add_hash_squeeze;
 use p3_circuit::ops::mmcs::{MmcsVerifyConfig, add_mmcs_verify};
-use p3_circuit::ops::poseidon_perm::{HashConfig, add_hash_squeeze};
 use p3_circuit::{CircuitBuilder, CircuitBuilderError, NonPrimitiveOpId};
 use p3_field::{ExtensionField, Field, TwoAdicField};
 use p3_matrix::Dimensions;
@@ -25,7 +25,6 @@ use crate::Target;
 pub fn verify_batch_circuit<F, EF>(
     circuit: &mut CircuitBuilder<EF>,
     mmcs_config: &MmcsVerifyConfig,
-    hash_config: &HashConfig<EF>,
     commitment: &[Target],
     dimensions: &[Dimensions],
     index_bits: &[Target],
@@ -52,7 +51,7 @@ where
         .map_err(
             |_| CircuitBuilderError::InvalidNonPrimitiveOpConfiguration {
                 // TODO: I this the error we want?
-                op: NonPrimitiveOpType::PoseidonPerm,
+                op: NonPrimitiveOpType::Poseidon2Perm(mmcs_config.get_poseidon2_config()),
             },
         )?;
 
@@ -61,14 +60,20 @@ where
         .into_iter()
         .map(|leaf| {
             if !leaf.is_empty() {
-                add_hash_squeeze(circuit, hash_config, "mmcs_verify", &leaf, true)
+                add_hash_squeeze(circuit, &mmcs_config.get_poseidon2_config(), &leaf, true)
             } else {
                 Ok(leaf)
             }
         })
         .collect::<Result<Vec<Vec<Target>>, _>>()?;
 
-    add_mmcs_verify(circuit, &op_vals_digests, index_bits, commitment)
+    add_mmcs_verify(
+        circuit,
+        mmcs_config.get_poseidon2_config(),
+        &op_vals_digests,
+        index_bits,
+        commitment,
+    )
 }
 
 #[cfg(test)]
@@ -80,8 +85,7 @@ mod test {
     use itertools::Itertools;
     use p3_baby_bear::{BabyBear, Poseidon2BabyBear, default_babybear_poseidon2_16};
     use p3_circuit::ops::mmcs::{MmcsVerifyConfig, add_mmcs_verify};
-    use p3_circuit::ops::poseidon_perm::HashConfig;
-    use p3_circuit::tables::{PoseidonPermPrivateData, generate_poseidon2_trace};
+    use p3_circuit::ops::{Poseidon2PermPrivateData, generate_poseidon2_trace};
     use p3_circuit::{CircuitBuilder, NonPrimitiveOpPrivateData};
     use p3_commit::Mmcs;
     use p3_field::extension::BinomialExtensionField;
@@ -114,7 +118,7 @@ mod test {
     fn test_all_openings(mats: Vec<RowMajorMatrix<F>>) {
         let perm = default_babybear_poseidon2_16();
         let hash = MyHash::new(perm.clone());
-        let compress = MyCompress::new(perm);
+        let compress = MyCompress::new(perm.clone());
         let mmcs = MyMmcs::new(hash, compress);
 
         let dimensions = mats.iter().map(DenseMatrix::dimensions).collect_vec();
@@ -132,10 +136,10 @@ mod test {
         let path_depth = log2_ceil_usize(max_height);
         for index in 0..max_height {
             let mut builder = CircuitBuilder::<CF>::new();
-            let hash_config = HashConfig::babybear_poseidon2_16(4);
             let mmcs_config = MmcsVerifyConfig::babybear_quartic_extension_default();
-            builder.enable_poseidon_perm::<BabyBearD4Width16>(
+            builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
                 generate_poseidon2_trace::<CF, BabyBearD4Width16>,
+                perm.clone(),
             );
 
             let batch_opening = mmcs.open_batch(index, &prover_data);
@@ -159,7 +163,6 @@ mod test {
             let permutation_mmcs_ops = verify_batch_circuit::<F, CF>(
                 &mut builder,
                 &mmcs_config,
-                &hash_config,
                 &root,
                 &dimensions,
                 &directions_expr,
@@ -204,8 +207,8 @@ mod test {
                 runner
                     .set_non_primitive_op_private_data(
                         op_id,
-                        NonPrimitiveOpPrivateData::PoseidonPerm(PoseidonPermPrivateData {
-                            input_values: sibling,
+                        NonPrimitiveOpPrivateData::Poseidon2Perm(Poseidon2PermPrivateData {
+                            sibling: sibling.try_into().unwrap(),
                         }),
                     )
                     .unwrap();
@@ -349,8 +352,10 @@ mod test {
 
         let mut builder = CircuitBuilder::<CF>::new();
         let mmcs_config = MmcsVerifyConfig::babybear_quartic_extension_default();
-        builder.enable_poseidon_perm::<BabyBearD4Width16>(
+        let perm = default_babybear_poseidon2_16();
+        builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
             generate_poseidon2_trace::<CF, BabyBearD4Width16>,
+            perm,
         );
 
         // open the 3rd row of each matrix, mess with proof, and verify
@@ -389,8 +394,14 @@ mod test {
         let directions_expr = builder.alloc_public_inputs(path_depth, "directions");
         let root = builder.alloc_public_inputs(mmcs_config.ext_field_digest_elems, "root");
 
-        let permutation_mmcs_ops =
-            add_mmcs_verify(&mut builder, &openings, &directions_expr, &root).unwrap();
+        let permutation_mmcs_ops = add_mmcs_verify(
+            &mut builder,
+            mmcs_config.get_poseidon2_config(),
+            &openings,
+            &directions_expr,
+            &root,
+        )
+        .unwrap();
         let circuit = builder.build().unwrap();
         let mut runner = circuit.runner();
 
@@ -425,8 +436,8 @@ mod test {
             runner
                 .set_non_primitive_op_private_data(
                     op_id,
-                    NonPrimitiveOpPrivateData::PoseidonPerm(PoseidonPermPrivateData {
-                        input_values: sibling,
+                    NonPrimitiveOpPrivateData::Poseidon2Perm(Poseidon2PermPrivateData {
+                        sibling: sibling.try_into().unwrap(),
                     }),
                 )
                 .unwrap();

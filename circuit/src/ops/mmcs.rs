@@ -195,6 +195,13 @@ impl MmcsVerifyConfig {
         Ok(formatted_openings)
     }
 
+    pub fn get_poseidon2_config(&self) -> Poseidon2Config {
+        match self.op_type {
+            NonPrimitiveOpType::Poseidon2Perm(cfg) => cfg,
+            _ => panic!("MmcsVerifyConfig has invalid op_type"),
+        }
+    }
+
     pub const fn mock_config() -> Self {
         Self {
             op_type: NonPrimitiveOpType::Poseidon2Perm(Poseidon2Config::BabyBearD4Width16),
@@ -282,6 +289,7 @@ pub fn add_mmcs_verify<F: Field>(
     // We return only the operations that require private data.
     let mut op_ids = Vec::with_capacity(openings_expr.len());
     let mut output = [None, None];
+    let zero = builder.add_const(F::ZERO);
     for (i, (row_digest, direction)) in openings_expr.iter().zip(directions_expr).enumerate() {
         let is_first = i == 0;
         let is_last = i == directions_expr.len() - 1;
@@ -291,7 +299,7 @@ pub fn add_mmcs_verify<F: Field>(
             merkle_path: true,
             mmcs_bit: Some(*direction),
             inputs: if is_first {
-                [Some(row_digest[0]), Some(row_digest[0]), None, None]
+                [Some(row_digest[0]), Some(row_digest[1]), None, None]
             } else {
                 [None, None, None, None]
             },
@@ -306,7 +314,7 @@ pub fn add_mmcs_verify<F: Field>(
                 config: permutation_config,
                 new_start: false,
                 merkle_path: true,
-                mmcs_bit: None,
+                mmcs_bit: Some(zero), // Extra row is always a left child
                 inputs: [None, None, Some(row_digest[0]), Some(row_digest[1])],
                 out_ctl: [false, false],
                 mmcs_index_sum: None,
