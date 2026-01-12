@@ -534,7 +534,7 @@ where
     /// circuit execution.
     ///
     /// Tags must be unique within a circuit. Duplicate tags will return an error.
-    /// 
+    ///
     /// Note that this is different from allocation labels for `ExprId`s, which are
     /// used purely for debugging purposes.
     ///
@@ -558,7 +558,7 @@ where
     /// circuit execution.
     ///
     /// Tags must be unique within a circuit. Duplicate tags will return an error.
-    /// 
+    ///
     /// Note that this is different from allocation labels for `ExprId`s, which are
     /// used purely for debugging purposes.
     ///
@@ -628,6 +628,10 @@ where
         for (tag, expr_id) in self.tag_to_expr {
             if let Some(&witness_id) = circuit.expr_to_widx.get(&expr_id) {
                 circuit.tag_to_witness.insert(tag, witness_id);
+            } else {
+                tracing::warn!(
+                    "Tag {tag} dropped after circuit optimization: expr_id {expr_id} not found"
+                );
             }
         }
 
@@ -1289,6 +1293,35 @@ mod tests {
                 i
             );
         }
+    }
+
+    #[test]
+    fn test_tag_drop_after_optimization() {
+        let mut builder = CircuitBuilder::<BabyBear>::new();
+
+        let x = builder.add_public_input();
+        let one = builder.add_const(BabyBear::ONE);
+        let a = builder.add(x, one);
+        let b = builder.add(x, one); // b == a
+
+        builder.tag(a, "result-a").unwrap();
+        builder.tag(b, "result-b").unwrap();
+
+        // Connect them - the optimizer should alias one to the other
+        builder.connect(a, b);
+
+        let circuit = builder.build().unwrap();
+        let mut runner = circuit.runner();
+        runner.set_public_inputs(&[BabyBear::from_u64(5)]).unwrap();
+        let traces = runner.run().unwrap();
+
+        // At least one tag should exist while the other is dropped.
+        let a_result = traces.probe("result-a");
+        let b_result = traces.probe("result-b");
+
+        assert!(
+            a_result == Some(&BabyBear::from_u64(6)) || b_result == Some(&BabyBear::from_u64(6))
+        );
     }
 }
 

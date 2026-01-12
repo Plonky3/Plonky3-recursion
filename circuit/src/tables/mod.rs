@@ -1,6 +1,7 @@
 //! Execution trace tables for zkVM circuit operations.
 
 use alloc::boxed::Box;
+use alloc::string::String;
 use alloc::vec::Vec;
 use core::any::Any;
 use core::fmt;
@@ -9,6 +10,7 @@ use hashbrown::HashMap;
 
 use crate::CircuitError;
 use crate::op::{NonPrimitiveOpType, OpStateMap};
+use crate::types::WitnessId;
 
 mod add;
 mod constant;
@@ -59,6 +61,8 @@ pub struct Traces<F> {
     pub mul_trace: MulTrace<F>,
     /// Dynamically registered non-primitive traces indexed by operation type.
     pub non_primitive_traces: HashMap<NonPrimitiveOpType, Box<dyn NonPrimitiveTrace<F>>>,
+    /// Tag to witness index mapping for probing values by name.
+    pub tag_to_witness: HashMap<String, WitnessId>,
 }
 
 impl<F> Traces<F> {
@@ -70,6 +74,19 @@ impl<F> Traces<F> {
         self.non_primitive_traces
             .get(&op_type)
             .and_then(|trace| trace.as_any().downcast_ref::<T>())
+    }
+
+    /// Probes the value of a tagged wire.
+    ///
+    /// Returns `None` if the tag was not registered during circuit construction.
+    ///
+    /// # Example
+    /// ```ignore
+    /// let value = traces.probe("my-tag").expect("tag should exist");
+    /// ```
+    pub fn probe(&self, tag: &str) -> Option<&F> {
+        let witness_id = self.tag_to_witness.get(tag)?;
+        self.witness_trace.values.get(witness_id.0 as usize)
     }
 }
 
@@ -86,6 +103,7 @@ impl<F: Clone> Clone for Traces<F> {
                 .iter()
                 .map(|(&op_type, trace)| (op_type, trace.boxed_clone()))
                 .collect(),
+            tag_to_witness: self.tag_to_witness.clone(),
         }
     }
 }
