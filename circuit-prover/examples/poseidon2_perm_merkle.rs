@@ -235,7 +235,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Set private inputs for Row 1
     // Row 1: mmcs_bit = 1 (Right Child). Previous digest chains from previous row.
     // For Merkle mode, provide the sibling (2 limbs). Internal logic handles placement.
-    runner.set_non_primitive_op_private_data(
+    runner.set_private_data(
         row1_op_id,
         NonPrimitiveOpPrivateData::Poseidon2Perm(Poseidon2PermPrivateData {
             sibling: [sibling1_limb2, sibling1_limb3],
@@ -245,7 +245,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Set private inputs for Row 2
     // Row 2: mmcs_bit = 0 (Left Child). Previous digest chains from previous row.
     // For Merkle mode, provide the sibling (2 limbs). Internal logic handles placement.
-    runner.set_non_primitive_op_private_data(
+    runner.set_private_data(
         row2_op_id,
         NonPrimitiveOpPrivateData::Poseidon2Perm(Poseidon2PermPrivateData {
             sibling: [sibling2_limb2, sibling2_limb3],

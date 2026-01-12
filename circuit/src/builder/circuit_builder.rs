@@ -1,5 +1,5 @@
 use alloc::boxed::Box;
-use alloc::string::ToString as _;
+use alloc::string::{String, ToString as _};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use alloc::{format, vec};
@@ -39,6 +39,12 @@ pub struct CircuitBuilder<F: Field> {
 
     /// Registered non-primitive trace generators.
     non_primitive_trace_generators: HashMap<NonPrimitiveOpType, TraceGeneratorFn<F>>,
+
+    /// Tags for wires (ExprId) - enables probing values by name after execution.
+    tag_to_expr: HashMap<String, ExprId>,
+
+    /// Tags for non-primitive operations - enables setting private data by name.
+    tag_to_op: HashMap<String, NonPrimitiveOpId>,
 }
 
 /// Per-op extra parameters that are not encoded in the op type.
@@ -105,6 +111,8 @@ where
             non_primitive_ops: Vec::new(),
             config: BuilderConfig::new(),
             non_primitive_trace_generators: HashMap::new(),
+            tag_to_expr: HashMap::new(),
+            tag_to_op: HashMap::new(),
         }
     }
 
@@ -521,6 +529,58 @@ where
     pub fn list_scopes(&self) -> Vec<&'static str> {
         self.expr_builder.list_scopes()
     }
+
+    /// Tags an expression for value lookup via `Traces::probe()` later on during
+    /// circuit execution.
+    ///
+    /// Tags must be unique within a circuit. Duplicate tags will return an error.
+    /// 
+    /// Note that this is different from allocation labels for `ExprId`s, which are
+    /// used purely for debugging purposes.
+    ///
+    /// # Example
+    /// ```ignore
+    /// let result = builder.add(a, b);
+    /// builder.tag(result, "my-sum")?;
+    /// // After execution:
+    /// let value = traces.probe("my-sum").unwrap();
+    /// ```
+    pub fn tag(&mut self, expr: ExprId, tag: impl Into<String>) -> Result<(), CircuitBuilderError> {
+        let tag = tag.into();
+        if self.tag_to_expr.contains_key(&tag) || self.tag_to_op.contains_key(&tag) {
+            return Err(CircuitBuilderError::DuplicateTag { tag });
+        }
+        self.tag_to_expr.insert(tag, expr);
+        Ok(())
+    }
+
+    /// Tags a non-primitive operation for private data setting via tag later on during
+    /// circuit execution.
+    ///
+    /// Tags must be unique within a circuit. Duplicate tags will return an error.
+    /// 
+    /// Note that this is different from allocation labels for `ExprId`s, which are
+    /// used purely for debugging purposes.
+    ///
+    /// # Example
+    /// ```ignore
+    /// let (op_id, outputs) = builder.add_poseidon2_perm(...)?;
+    /// builder.tag_op(op_id, format!("fri-query-{}-depth-{}", i, j))?;
+    /// // Before execution:
+    /// runner.set_private_data_by_tag("fri-query-0-depth-1", data)?;
+    /// ```
+    pub fn tag_op(
+        &mut self,
+        op_id: NonPrimitiveOpId,
+        tag: impl Into<String>,
+    ) -> Result<(), CircuitBuilderError> {
+        let tag = tag.into();
+        if self.tag_to_expr.contains_key(&tag) || self.tag_to_op.contains_key(&tag) {
+            return Err(CircuitBuilderError::DuplicateTag { tag });
+        }
+        self.tag_to_op.insert(tag, op_id);
+        Ok(())
+    }
 }
 
 impl<F> CircuitBuilder<F>
@@ -563,6 +623,16 @@ where
         circuit.public_flat_len = self.public_tracker.count();
         circuit.enabled_ops = self.config.into_enabled_ops();
         circuit.non_primitive_trace_generators = self.non_primitive_trace_generators;
+
+        // Transfer wire tags, converting ExprId to WitnessId
+        for (tag, expr_id) in self.tag_to_expr {
+            if let Some(&witness_id) = circuit.expr_to_widx.get(&expr_id) {
+                circuit.tag_to_witness.insert(tag, witness_id);
+            }
+        }
+
+        // Transfer operation tags directly
+        circuit.tag_to_op_id = self.tag_to_op;
 
         Ok((circuit, public_mappings))
     }
@@ -1126,6 +1196,99 @@ mod tests {
 
         assert!(non_prim_pos < add0_pos);
         assert!(non_prim_pos < add1_pos);
+    }
+
+    #[test]
+    fn test_basic_tagging() {
+        let mut builder = CircuitBuilder::<BabyBear>::new();
+        let a = builder.add_const(BabyBear::from_u64(5));
+        let b = builder.add_const(BabyBear::from_u64(7));
+        let sum = builder.add(a, b);
+
+        builder.tag(sum, "my-sum").unwrap();
+
+        let circuit = builder.build().unwrap();
+        let runner = circuit.runner();
+        let traces = runner.run().unwrap();
+
+        let probed = traces.probe("my-sum").unwrap();
+        assert_eq!(*probed, BabyBear::from_u64(12));
+    }
+
+    #[test]
+    fn test_tag_multiple_wires() {
+        let mut builder = CircuitBuilder::<BabyBear>::new();
+        let a = builder.add_const(BabyBear::from_u64(10));
+        let b = builder.add_const(BabyBear::from_u64(20));
+        let sum = builder.add(a, b);
+        let prod = builder.mul(a, b);
+
+        builder.tag(sum, "the-sum").unwrap();
+        builder.tag(prod, "the-product").unwrap();
+
+        let circuit = builder.build().unwrap();
+        let runner = circuit.runner();
+        let traces = runner.run().unwrap();
+
+        assert_eq!(*traces.probe("the-sum").unwrap(), BabyBear::from_u64(30));
+        assert_eq!(
+            *traces.probe("the-product").unwrap(),
+            BabyBear::from_u64(200)
+        );
+    }
+
+    #[test]
+    fn test_probe_unknown_tag() {
+        let mut builder = CircuitBuilder::<BabyBear>::new();
+        let a = builder.add_const(BabyBear::ONE);
+        builder.tag(a, "known").unwrap();
+
+        let circuit = builder.build().unwrap();
+        let runner = circuit.runner();
+        let traces = runner.run().unwrap();
+
+        assert!(traces.probe("known").is_some());
+        assert!(traces.probe("unknown").is_none());
+    }
+
+    #[test]
+    fn test_duplicate_tag() {
+        let mut builder = CircuitBuilder::<BabyBear>::new();
+        let a = builder.add_const(BabyBear::ONE);
+        let b = builder.add_const(BabyBear::from_u64(2));
+
+        builder.tag(a, "same-tag").unwrap();
+        let result = builder.tag(b, "same-tag");
+
+        assert!(matches!(
+            result,
+            Err(CircuitBuilderError::DuplicateTag { tag }) if tag == "same-tag"
+        ));
+    }
+
+    #[test]
+    fn test_tag_with_dynamic_string() {
+        let mut builder = CircuitBuilder::<BabyBear>::new();
+
+        for i in 0..3 {
+            let val = builder.add_const(BabyBear::from_u64(i as u64));
+            builder.tag(val, format!("wire-{}", i)).unwrap();
+        }
+
+        let circuit = builder.build().unwrap();
+        let runner = circuit.runner();
+        let traces = runner.run().unwrap();
+
+        for i in 0..3 {
+            let tag = format!("wire-{}", i);
+            assert_eq!(
+                *traces.probe(&tag).unwrap(),
+                BabyBear::from_u64(i as u64),
+                "wire-{} should have value {}",
+                i,
+                i
+            );
+        }
     }
 }
 

@@ -64,4 +64,8 @@ pub enum CircuitBuilderError {
     /// Missing output
     #[error("An output was expected but none was given")]
     MissingOutput,
+
+    /// Duplicate tag: a tag with this name was already registered.
+    #[error("Duplicate tag: '{tag}' is already registered")]
+    DuplicateTag { tag: String },
 }
