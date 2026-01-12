@@ -6,6 +6,8 @@ Plonky3 native support for uni-stark recursion.
 This codebase is under active development and hasn't been audited yet. As such, we do not recommend its use in any
 production software.
 
+[![Coverage](https://github.com/Plonky3/Plonky3-recursion/actions/workflows/coverage.yml/badge.svg)](https://plonky3.github.io/Plonky3-recursion/coverage/) (_updated weekly_)
+
 ## Documentation
 
 Documentation is still incomplete and will be improved over time.

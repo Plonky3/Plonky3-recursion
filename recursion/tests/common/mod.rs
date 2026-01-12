@@ -1,6 +1,7 @@
+#![allow(unused)]
+
 use itertools::Itertools;
 use p3_air::{Air, AirBuilder, BaseAir, PairBuilder};
-use p3_baby_bear::{BabyBear, Poseidon2BabyBear};
 use p3_challenger::DuplexChallenger;
 use p3_commit::ExtensionMmcs;
 use p3_dft::Radix2DitParallel;
@@ -19,40 +20,101 @@ use rand::distr::{Distribution, StandardUniform};
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 
-pub(crate) type F = BabyBear;
-pub(crate) const D: usize = 4;
-pub(crate) const RATE: usize = 8;
-pub(crate) type Challenge = BinomialExtensionField<F, D>;
-pub(crate) type Dft = Radix2DitParallel<F>;
-pub(crate) type Perm = Poseidon2BabyBear<16>;
-pub(crate) type MyHash = PaddingFreeSponge<Perm, 16, RATE, 8>;
-pub(crate) type MyCompress = TruncatedPermutation<Perm, 2, 8, 16>;
-pub(crate) type ValMmcs =
-    MerkleTreeMmcs<<F as Field>::Packing, <F as Field>::Packing, MyHash, MyCompress, 8>;
-pub(crate) type ChallengeMmcs = ExtensionMmcs<F, Challenge, ValMmcs>;
-pub(crate) type Challenger = DuplexChallenger<F, Perm, 16, RATE>;
-pub(crate) type MyPcs = TwoAdicFriPcs<F, Dft, ValMmcs, ChallengeMmcs>;
-pub(crate) type MyConfig = StarkConfig<MyPcs, Challenge, Challenger>;
-
-pub(crate) const DIGEST_ELEMS: usize = 8;
-
 // Type of the `OpeningProof` used in the circuit for a `TwoAdicFriPcs`.
-pub(crate) type InnerFri = FriProofTargets<
-    Val<MyConfig>,
-    <MyConfig as StarkGenericConfig>::Challenge,
-    RecExtensionValMmcs<
+pub(crate) type InnerFriGeneric<MyConfig, MyHash, MyCompress, const DIGEST_ELEMS: usize> =
+    FriProofTargets<
         Val<MyConfig>,
         <MyConfig as StarkGenericConfig>::Challenge,
-        DIGEST_ELEMS,
-        RecValMmcs<Val<MyConfig>, DIGEST_ELEMS, MyHash, MyCompress>,
-    >,
-    InputProofTargets<
-        Val<MyConfig>,
-        <MyConfig as StarkGenericConfig>::Challenge,
-        RecValMmcs<Val<MyConfig>, DIGEST_ELEMS, MyHash, MyCompress>,
-    >,
-    Witness<Val<MyConfig>>,
->;
+        RecExtensionValMmcs<
+            Val<MyConfig>,
+            <MyConfig as StarkGenericConfig>::Challenge,
+            DIGEST_ELEMS,
+            RecValMmcs<Val<MyConfig>, DIGEST_ELEMS, MyHash, MyCompress>,
+        >,
+        InputProofTargets<
+            Val<MyConfig>,
+            <MyConfig as StarkGenericConfig>::Challenge,
+            RecValMmcs<Val<MyConfig>, DIGEST_ELEMS, MyHash, MyCompress>,
+        >,
+        Witness<Val<MyConfig>>,
+    >;
+
+/// Common parameters for the BabyBear field.
+pub(crate) mod baby_bear_params {
+    pub(crate) use p3_baby_bear::{BabyBear, Poseidon2BabyBear};
+
+    use super::*;
+
+    pub(crate) type F = BabyBear;
+    pub(crate) const D: usize = 4;
+    pub(crate) const RATE: usize = 8;
+    pub(crate) const DIGEST_ELEMS: usize = 8;
+    pub(crate) type Challenge = BinomialExtensionField<F, D>;
+    pub(crate) type Dft = Radix2DitParallel<F>;
+    pub(crate) type Perm = Poseidon2BabyBear<16>;
+    pub(crate) type MyHash = PaddingFreeSponge<Perm, 16, RATE, 8>;
+    pub(crate) type MyCompress = TruncatedPermutation<Perm, 2, 8, 16>;
+    pub(crate) type ValMmcs =
+        MerkleTreeMmcs<<F as Field>::Packing, <F as Field>::Packing, MyHash, MyCompress, 8>;
+    pub(crate) type ChallengeMmcs = ExtensionMmcs<F, Challenge, ValMmcs>;
+    pub(crate) type Challenger = DuplexChallenger<F, Perm, 16, RATE>;
+    pub(crate) type MyPcs = TwoAdicFriPcs<F, Dft, ValMmcs, ChallengeMmcs>;
+    pub(crate) type MyConfig = StarkConfig<MyPcs, Challenge, Challenger>;
+
+    pub(crate) type InnerFri = InnerFriGeneric<MyConfig, MyHash, MyCompress, DIGEST_ELEMS>;
+}
+
+/// Common parameters for the KoalaBear field.
+pub(crate) mod koala_bear_params {
+    pub(crate) use p3_koala_bear::{KoalaBear, Poseidon2KoalaBear};
+
+    use super::*;
+
+    pub(crate) type F = KoalaBear;
+    pub(crate) const D: usize = 4;
+    pub(crate) const RATE: usize = 8;
+    pub(crate) const DIGEST_ELEMS: usize = 8;
+
+    pub(crate) type Challenge = BinomialExtensionField<F, D>;
+    pub(crate) type Dft = Radix2DitParallel<F>;
+    pub(crate) type Perm = Poseidon2KoalaBear<16>;
+    pub(crate) type MyHash = PaddingFreeSponge<Perm, 16, RATE, 8>;
+    pub(crate) type MyCompress = TruncatedPermutation<Perm, 2, 8, 16>;
+    pub(crate) type ValMmcs =
+        MerkleTreeMmcs<<F as Field>::Packing, <F as Field>::Packing, MyHash, MyCompress, 8>;
+    pub(crate) type ChallengeMmcs = ExtensionMmcs<F, Challenge, ValMmcs>;
+    pub(crate) type Challenger = DuplexChallenger<F, Perm, 16, RATE>;
+    pub(crate) type MyPcs = TwoAdicFriPcs<F, Dft, ValMmcs, ChallengeMmcs>;
+    pub(crate) type MyConfig = StarkConfig<MyPcs, Challenge, Challenger>;
+
+    pub(crate) type InnerFri = InnerFriGeneric<MyConfig, MyHash, MyCompress, DIGEST_ELEMS>;
+}
+
+/// Common parameters for the Goldilocks field.
+pub(crate) mod goldilocks_params {
+    pub(crate) use p3_goldilocks::{Goldilocks, Poseidon2Goldilocks};
+
+    use super::*;
+
+    pub(crate) type F = Goldilocks;
+    pub(crate) const D: usize = 2;
+    pub(crate) const RATE: usize = 4;
+    pub(crate) const DIGEST_ELEMS: usize = 4;
+
+    pub(crate) type Challenge = BinomialExtensionField<F, D>;
+    pub(crate) type Dft = Radix2DitParallel<F>;
+    pub(crate) type Perm = Poseidon2Goldilocks<8>;
+    pub(crate) type MyHash = PaddingFreeSponge<Perm, 8, RATE, 4>;
+    pub(crate) type MyCompress = TruncatedPermutation<Perm, 2, 4, 8>;
+    pub(crate) type ValMmcs =
+        MerkleTreeMmcs<<F as Field>::Packing, <F as Field>::Packing, MyHash, MyCompress, 4>;
+    pub(crate) type ChallengeMmcs = ExtensionMmcs<F, Challenge, ValMmcs>;
+    pub(crate) type Challenger = DuplexChallenger<F, Perm, 8, RATE>;
+    pub(crate) type MyPcs = TwoAdicFriPcs<F, Dft, ValMmcs, ChallengeMmcs>;
+    pub(crate) type MyConfig = StarkConfig<MyPcs, Challenge, Challenger>;
+
+    pub(crate) type InnerFri = super::InnerFriGeneric<MyConfig, MyHash, MyCompress, DIGEST_ELEMS>;
+}
 
 /// A test AIR that enforces multiplication constraints: `a^(degree-1) * b = c`
 ///

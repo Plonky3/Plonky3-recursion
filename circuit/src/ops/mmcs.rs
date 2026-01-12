@@ -10,16 +10,19 @@ use p3_field::{ExtensionField, Field};
 use p3_matrix::Dimensions;
 
 use crate::builder::{CircuitBuilder, CircuitBuilderError};
-use crate::op::NonPrimitiveOpType;
-use crate::ops::PoseidonPermCall;
+use crate::op::{NonPrimitiveOpType, Poseidon2Config};
+use crate::ops::Poseidon2PermCall;
+use crate::ops::poseidon2_perm::Poseidon2PermOps;
 use crate::types::ExprId;
-use crate::{CircuitError, NonPrimitiveOpId, PoseidonPermOps};
+use crate::{CircuitError, NonPrimitiveOpId};
 
 /// Configuration parameters for Mmcs verification operations. When
 /// `base_field_digest_elems > ext_field_digest_elems`, we say the configuration
 /// is packing digests into extension field elements.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct MmcsVerifyConfig {
+    /// The operation type (should be NonPrimitiveOpType::Poseidon2Perm).
+    pub op_type: NonPrimitiveOpType,
     /// The number of base field elements required for representing a digest.
     pub base_field_digest_elems: usize,
     /// The number of extension field elements required for representing a digest.
@@ -67,7 +70,7 @@ impl MmcsVerifyConfig {
         // Ensure the number of extension limbs matches the configuration.
         if digest.len() != self.ext_field_digest_elems {
             return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
-                op: NonPrimitiveOpType::PoseidonPerm,
+                op: self.op_type,
                 expected: self.ext_field_digest_elems.to_string(),
                 got: digest.len(),
             });
@@ -89,7 +92,7 @@ impl MmcsVerifyConfig {
         let len = flattened.len();
         let arr: [F; DIGEST_ELEMS] = flattened.try_into().map_err(|_| {
             CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
-                op: NonPrimitiveOpType::PoseidonPerm,
+                op: self.op_type,
                 expected: DIGEST_ELEMS.to_string(),
                 got: len,
             }
@@ -112,7 +115,7 @@ impl MmcsVerifyConfig {
     {
         if digest.len() != self.base_field_digest_elems {
             return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
-                op: NonPrimitiveOpType::PoseidonPerm,
+                op: self.op_type,
                 expected: self.base_field_digest_elems.to_string(),
                 got: digest.len(),
             });
@@ -122,9 +125,7 @@ impl MmcsVerifyConfig {
             if !self.base_field_digest_elems.is_multiple_of(EF::DIMENSION)
                 || self.ext_field_digest_elems * EF::DIMENSION != self.base_field_digest_elems
             {
-                return Err(CircuitError::InvalidNonPrimitiveOpConfiguration {
-                    op: NonPrimitiveOpType::PoseidonPerm,
-                });
+                return Err(CircuitError::InvalidNonPrimitiveOpConfiguration { op: self.op_type });
             }
             Ok(digest
                 .chunks(EF::DIMENSION)
@@ -150,7 +151,7 @@ impl MmcsVerifyConfig {
     ) -> Result<Vec<Vec<T>>, CircuitError> {
         if openings.len() > 1 << max_height_log {
             return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
-                op: NonPrimitiveOpType::PoseidonPerm,
+                op: self.op_type,
                 expected: format!("at most {}", max_height_log),
                 got: openings.len(),
             });
@@ -196,6 +197,7 @@ impl MmcsVerifyConfig {
 
     pub const fn mock_config() -> Self {
         Self {
+            op_type: NonPrimitiveOpType::Poseidon2Perm(Poseidon2Config::BabyBearD4Width16),
             base_field_digest_elems: 1,
             ext_field_digest_elems: 1,
             max_tree_height: 1,
@@ -204,6 +206,7 @@ impl MmcsVerifyConfig {
 
     pub const fn babybear_default() -> Self {
         Self {
+            op_type: NonPrimitiveOpType::Poseidon2Perm(Poseidon2Config::BabyBearD4Width16),
             base_field_digest_elems: 8,
             ext_field_digest_elems: 8,
             max_tree_height: 32,
@@ -214,6 +217,7 @@ impl MmcsVerifyConfig {
     pub const fn babybear_quartic_extension_default() -> Self {
         let packing = false;
         Self {
+            op_type: NonPrimitiveOpType::Poseidon2Perm(Poseidon2Config::BabyBearD4Width16),
             base_field_digest_elems: 8,
             ext_field_digest_elems: if packing { 2 } else { 8 },
             max_tree_height: 32,
@@ -222,6 +226,7 @@ impl MmcsVerifyConfig {
 
     pub const fn koalabear_default() -> Self {
         Self {
+            op_type: NonPrimitiveOpType::Poseidon2Perm(Poseidon2Config::KoalaBearD4Width16),
             base_field_digest_elems: 8,
             ext_field_digest_elems: 8,
             max_tree_height: 32,
@@ -232,29 +237,34 @@ impl MmcsVerifyConfig {
     pub const fn koalabear_quartic_extension_default() -> Self {
         let packing = false;
         Self {
+            op_type: NonPrimitiveOpType::Poseidon2Perm(Poseidon2Config::KoalaBearD4Width16),
             base_field_digest_elems: 8,
             ext_field_digest_elems: if packing { 2 } else { 8 },
             max_tree_height: 32,
         }
     }
 
-    pub const fn goldilocks_default() -> Self {
-        Self {
-            base_field_digest_elems: 4,
-            ext_field_digest_elems: 4,
-            max_tree_height: 32,
-        }
-    }
+    // TODO: Add support for Goldilocks.
 
-    // TODO: For now we are not considering packed inputs for Goldilocks.
-    pub const fn goldilocks_quadratic_extension_default() -> Self {
-        let packing = false;
-        Self {
-            base_field_digest_elems: 4,
-            ext_field_digest_elems: if packing { 1 } else { 4 },
-            max_tree_height: 32,
-        }
-    }
+    // pub const fn goldilocks_default() -> Self {
+    //     Self {
+    //         op_type: NonPrimitiveOpType::Poseidon2Perm(Poseidon2Config::GoldilocksD2Width8),
+    //         base_field_digest_elems: 4,
+    //         ext_field_digest_elems: 4,
+    //         max_tree_height: 32,
+    //     }
+    // }
+
+    // // TODO: For now we are not considering packed inputs for Goldilocks.
+    // pub const fn goldilocks_quadratic_extension_default() -> Self {
+    //     let packing = false;
+    //     Self {
+    //         op_type: NonPrimitiveOpType::Poseidon2Perm(Poseidon2Config::GoldilocksD2Width8),
+    //         base_field_digest_elems: 4,
+    //         ext_field_digest_elems: if packing { 1 } else { 4 },
+    //         max_tree_height: 32,
+    //     }
+    // }
 
     /// Returns whether digests are packed into extension field elements or not.
     pub const fn is_packing(&self) -> bool {
@@ -264,16 +274,19 @@ impl MmcsVerifyConfig {
 
 pub fn add_mmcs_verify<F: Field>(
     builder: &mut CircuitBuilder<F>,
+    permutation_config: Poseidon2Config,
     openings_expr: &[Vec<ExprId>],
     directions_expr: &[ExprId],
     root_expr: &[ExprId],
 ) -> Result<Vec<NonPrimitiveOpId>, CircuitBuilderError> {
     // We return only the operations that require private data.
     let mut op_ids = Vec::with_capacity(openings_expr.len());
+    let mut output = [None, None];
     for (i, (row_digest, direction)) in openings_expr.iter().zip(directions_expr).enumerate() {
         let is_first = i == 0;
         let is_last = i == directions_expr.len() - 1;
-        op_ids.push(builder.add_poseidon_perm(PoseidonPermCall {
+        let (op_id, maybe_output) = builder.add_poseidon2_perm(Poseidon2PermCall {
+            config: permutation_config,
             new_start: is_first,
             merkle_path: true,
             mmcs_bit: Some(*direction),
@@ -282,24 +295,34 @@ pub fn add_mmcs_verify<F: Field>(
             } else {
                 [None, None, None, None]
             },
-            outputs: if is_last {
-                [Some(root_expr[0]), Some(root_expr[1])]
-            } else {
-                [None, None]
-            },
+            out_ctl: [is_last, is_last],
             mmcs_index_sum: None,
-        })?);
+        })?;
+        op_ids.push(op_id);
+        output = maybe_output;
         // Check if there's an extra row at this leve
         if !is_first && !row_digest.is_empty() {
-            let _ = builder.add_poseidon_perm(PoseidonPermCall {
+            let _ = builder.add_poseidon2_perm(Poseidon2PermCall {
+                config: permutation_config,
                 new_start: false,
                 merkle_path: true,
                 mmcs_bit: None,
                 inputs: [None, None, Some(row_digest[0]), Some(row_digest[1])],
-                outputs: [None, None],
+                out_ctl: [false, false],
                 mmcs_index_sum: None,
             })?;
         }
     }
+    let output = output
+        .into_iter()
+        .map(|x| {
+            x.ok_or_else(|| CircuitBuilderError::MalformedNonPrimitiveOutputs {
+                op_id: *op_ids.last().unwrap(),
+                details: "Expected output from last Poseidon2Perm call".to_string(),
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    builder.connect(output[0], root_expr[0]);
+    builder.connect(output[1], root_expr[1]);
     Ok(op_ids)
 }

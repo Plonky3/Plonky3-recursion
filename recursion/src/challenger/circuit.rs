@@ -3,7 +3,7 @@
 use alloc::vec::Vec;
 
 use p3_circuit::CircuitBuilder;
-// TODO: Replace with Poseidon perm once integrated.
+// TODO: Replace with Poseidon2 perm once integrated.
 use p3_field::Field;
 
 use crate::Target;
@@ -32,7 +32,7 @@ impl<const RATE: usize> CircuitChallenger<RATE> {
             return;
         }
 
-        // Hash absorb removed; placeholder until Poseidon perm is wired.
+        // Hash absorb removed; placeholder until Poseidon2 perm is wired.
         self.absorb_buffer.clear();
         self.buffer_flushed = true;
     }
@@ -54,7 +54,7 @@ impl<F: Field, const RATE: usize> RecursiveChallenger<F> for CircuitChallenger<R
         // Flush any pending observations
         self.flush_absorb(circuit);
 
-        // TODO: replace with Poseidon perm squeeze; for now, sample as public input.
+        // TODO: replace with Poseidon2 perm squeeze; for now, sample as public input.
         circuit.alloc_public_input("sampled challenge")
     }
 

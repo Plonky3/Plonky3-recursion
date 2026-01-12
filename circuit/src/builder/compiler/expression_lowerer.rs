@@ -2,16 +2,18 @@ use alloc::boxed::Box;
 use alloc::string::ToString;
 use alloc::vec::Vec;
 use alloc::{format, vec};
+use core::hash::Hash;
 
 use hashbrown::{HashMap, HashSet};
-use p3_field::PrimeCharacteristicRing;
+use p3_field::{Field, PrimeCharacteristicRing};
 
-use crate::Op;
 use crate::builder::CircuitBuilderError;
+use crate::builder::circuit_builder::{NonPrimitiveOpParams, NonPrimitiveOperationData};
 use crate::builder::compiler::get_witness_id;
 use crate::expr::{Expr, ExpressionGraph};
-use crate::op::WitnessHintsFiller;
-use crate::types::{ExprId, WitnessAllocator, WitnessId};
+use crate::op::{NonPrimitiveOpType, Op};
+use crate::ops::Poseidon2PermExecutor;
+use crate::types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};
 
 /// Sparse disjoint-set "find" with path compression over a HashMap (iterative).
 /// If `x` is not present, it's its own representative and is not inserted.
@@ -63,9 +65,12 @@ fn build_connect_dsu(connects: &[(ExprId, ExprId)]) -> HashMap<usize, usize> {
 /// - Implementing the DSU-based connection strategy for witness sharing
 /// - Building the mapping from ExprId to WitnessId
 #[derive(Debug)]
-pub struct ExpressionLowerer<'a, F> {
+pub struct ExpressionLowerer<'a, F: Field> {
     /// Reference to the expression graph to lower
     graph: &'a ExpressionGraph<F>,
+
+    /// Non-primitive operations to lower (referenced by `Expr::NonPrimitiveOutput`)
+    non_primitive_ops: &'a [NonPrimitiveOperationData<F>],
 
     /// Pending connections between expressions
     pending_connects: &'a [(ExprId, ExprId)],
@@ -73,39 +78,225 @@ pub struct ExpressionLowerer<'a, F> {
     /// Number of public inputs
     public_input_count: usize,
 
-    /// The fillers corresponding to the witness hints sequences.
-    /// The order of fillers must match the order in which the witness hints sequences were allocated.
-    hints_fillers: &'a [Box<dyn WitnessHintsFiller<F>>],
-
     /// Witness allocator
     witness_alloc: WitnessAllocator,
 }
 
 impl<'a, F> ExpressionLowerer<'a, F>
 where
-    F: Clone + PrimeCharacteristicRing + PartialEq + Eq + core::hash::Hash,
+    F: Field + Clone + PrimeCharacteristicRing + PartialEq + Eq + Hash,
 {
     /// Creates a new expression lowerer.
     pub const fn new(
         graph: &'a ExpressionGraph<F>,
+        non_primitive_ops: &'a [NonPrimitiveOperationData<F>],
         pending_connects: &'a [(ExprId, ExprId)],
         public_input_count: usize,
-        hints_fillers: &'a [Box<dyn WitnessHintsFiller<F>>],
         witness_alloc: WitnessAllocator,
     ) -> Self {
         Self {
             graph,
+            non_primitive_ops,
             pending_connects,
             public_input_count,
-            hints_fillers,
             witness_alloc,
         }
     }
 
-    /// Lowers the expression graph to primitive operations.
+    fn emit_non_primitive_op<AllocFn>(
+        data: &NonPrimitiveOperationData<F>,
+        output_exprs: &[(u32, ExprId)],
+        expr_to_widx: &mut HashMap<ExprId, WitnessId>,
+        alloc_witness_id_for_expr: &mut AllocFn,
+        ops: &mut Vec<Op<F>>,
+    ) -> Result<(), CircuitBuilderError>
+    where
+        AllocFn: FnMut(usize) -> WitnessId,
+    {
+        for (_output_idx, expr_id) in output_exprs {
+            expr_to_widx
+                .entry(*expr_id)
+                .or_insert_with(|| alloc_witness_id_for_expr(expr_id.0 as usize));
+        }
+
+        match &data.op_type {
+            NonPrimitiveOpType::Poseidon2Perm(config) => {
+                let (new_start, merkle_path) = match data.params.as_ref().ok_or(
+                    CircuitBuilderError::InvalidNonPrimitiveOpConfiguration { op: data.op_type },
+                )? {
+                    NonPrimitiveOpParams::Poseidon2Perm {
+                        new_start,
+                        merkle_path,
+                    } => (*new_start, *merkle_path),
+                    _ => {
+                        return Err(CircuitBuilderError::InvalidNonPrimitiveOpConfiguration {
+                            op: NonPrimitiveOpType::Poseidon2Perm(*config),
+                        });
+                    }
+                };
+
+                // Expected input layout: [in0, in1, in2, in3, mmcs_index_sum, mmcs_bit]
+                if data.input_exprs.len() != 6 {
+                    return Err(CircuitBuilderError::NonPrimitiveOpArity {
+                        op: "Poseidon2Perm",
+                        expected: "6 inputs (in0..3, mmcs_index_sum, mmcs_bit)".to_string(),
+                        got: data.input_exprs.len(),
+                    });
+                }
+
+                // Expected output layout: [out0, out1]
+                if data.output_exprs.len() != 2 {
+                    return Err(CircuitBuilderError::NonPrimitiveOpArity {
+                        op: "Poseidon2Perm",
+                        expected: "2 outputs (out0, out1)".to_string(),
+                        got: data.output_exprs.len(),
+                    });
+                }
+
+                let mut inputs_widx: Vec<Vec<WitnessId>> = Vec::with_capacity(6);
+                // Inputs (Limbs 0-3)
+                for (i, limb_exprs) in data.input_exprs.iter().take(4).enumerate() {
+                    if !(limb_exprs.is_empty() || limb_exprs.len() == 1) {
+                        return Err(CircuitBuilderError::NonPrimitiveOpArity {
+                            op: "Poseidon2Perm",
+                            expected: "0 or 1 extension element per input limb".to_string(),
+                            got: limb_exprs.len(),
+                        });
+                    }
+                    let limb_widx = limb_exprs
+                        .iter()
+                        .map(|&expr| {
+                            get_witness_id(
+                                expr_to_widx,
+                                expr,
+                                &format!("Poseidon2Perm input limb {i}"),
+                            )
+                        })
+                        .collect::<Result<Vec<WitnessId>, _>>()?;
+                    inputs_widx.push(limb_widx);
+                }
+
+                // mmcs_index_sum (0 or 1 element)
+                let mmcs_exprs = &data.input_exprs[4];
+                if !(mmcs_exprs.is_empty() || mmcs_exprs.len() == 1) {
+                    return Err(CircuitBuilderError::NonPrimitiveOpArity {
+                        op: "Poseidon2Perm",
+                        expected: "0 or 1 element for mmcs_index_sum".to_string(),
+                        got: mmcs_exprs.len(),
+                    });
+                }
+                let mmcs_widx = mmcs_exprs
+                    .iter()
+                    .map(|&expr| {
+                        get_witness_id(expr_to_widx, expr, "Poseidon2Perm mmcs_index_sum input")
+                    })
+                    .collect::<Result<Vec<WitnessId>, _>>()?;
+                inputs_widx.push(mmcs_widx);
+
+                // mmcs_bit (0 or 1 element)
+                let mmcs_bit_exprs = &data.input_exprs[5];
+                if !(mmcs_bit_exprs.is_empty() || mmcs_bit_exprs.len() == 1) {
+                    return Err(CircuitBuilderError::NonPrimitiveOpArity {
+                        op: "Poseidon2Perm",
+                        expected: "0 or 1 element for mmcs_bit".to_string(),
+                        got: mmcs_bit_exprs.len(),
+                    });
+                }
+                let mmcs_bit_widx = mmcs_bit_exprs
+                    .iter()
+                    .map(|&expr| get_witness_id(expr_to_widx, expr, "Poseidon2Perm mmcs_bit input"))
+                    .collect::<Result<Vec<WitnessId>, _>>()?;
+                inputs_widx.push(mmcs_bit_widx);
+
+                // Output CTL exposures (0 or 1 element each).
+                //
+                // For Poseidon2Perm we take outputs exclusively from `data.output_exprs` to avoid
+                // generating multiple witness ids per output limb (which breaks both execution and
+                // trace building).
+                let mut poseidon2_outputs: Vec<Vec<WitnessId>> = Vec::with_capacity(2);
+                for (i, limb_exprs) in data.output_exprs.iter().enumerate() {
+                    if !(limb_exprs.is_empty() || limb_exprs.len() == 1) {
+                        return Err(CircuitBuilderError::NonPrimitiveOpArity {
+                            op: "Poseidon2Perm",
+                            expected: "0 or 1 extension element per output limb".to_string(),
+                            got: limb_exprs.len(),
+                        });
+                    }
+                    if let Some(&expr) = limb_exprs.first() {
+                        let w = get_witness_id(
+                            expr_to_widx,
+                            expr,
+                            &format!("Poseidon2Perm output limb {i}"),
+                        )?;
+                        poseidon2_outputs.push(vec![w]);
+                    } else {
+                        poseidon2_outputs.push(Vec::new());
+                    }
+                }
+
+                ops.push(Op::NonPrimitiveOpWithExecutor {
+                    inputs: inputs_widx,
+                    outputs: poseidon2_outputs,
+                    executor: Box::new(Poseidon2PermExecutor::new(
+                        data.op_type,
+                        new_start,
+                        merkle_path,
+                    )),
+                    op_id: data.op_id,
+                });
+            }
+            NonPrimitiveOpType::Unconstrained => {
+                let executor = match data.params.as_ref().ok_or(
+                    CircuitBuilderError::InvalidNonPrimitiveOpConfiguration { op: data.op_type },
+                )? {
+                    NonPrimitiveOpParams::Unconstrained { executor } => executor.clone(),
+                    _ => {
+                        return Err(CircuitBuilderError::InvalidNonPrimitiveOpConfiguration {
+                            op: NonPrimitiveOpType::Unconstrained,
+                        });
+                    }
+                };
+
+                // Expected layout: [in]
+                if data.input_exprs.len() != 1 {
+                    return Err(CircuitBuilderError::NonPrimitiveOpArity {
+                        op: "Unconstrained",
+                        expected: "1 [in]".to_string(),
+                        got: data.input_exprs.len(),
+                    });
+                }
+
+                let inputs = vec![
+                    data.input_exprs[0]
+                        .iter()
+                        .map(|&expr| {
+                            get_witness_id(expr_to_widx, expr, "Unconstrained operation input")
+                        })
+                        .collect::<Result<_, _>>()?,
+                ];
+                let mut outputs: Vec<Vec<WitnessId>> = Vec::with_capacity(output_exprs.len());
+                for (_output_idx, expr_idx) in output_exprs {
+                    let widx = *expr_to_widx
+                        .entry(*expr_idx)
+                        .or_insert_with(|| alloc_witness_id_for_expr(expr_idx.0 as usize));
+                    outputs.push(vec![widx]);
+                }
+                ops.push(Op::NonPrimitiveOpWithExecutor {
+                    inputs,
+                    outputs,
+                    executor,
+                    op_id: data.op_id,
+                });
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Lowers the expression graph to operations.
     ///
     /// Returns:
-    /// - Vector of primitive operations
+    /// - Vector of operations
     /// - Vector mapping public input positions to witness IDs
     /// - HashMap mapping expression IDs to witness IDs
     /// - HashMap mapping public input expression IDs to witness IDs
@@ -123,6 +314,50 @@ where
         ),
         CircuitBuilderError,
     > {
+        // Precompute mapping from op_id -> output expression nodes, to allow emitting an op once
+        // while still producing witness ids for all of its outputs.
+        let mut op_id_to_output_exprs: HashMap<u32, Vec<(u32, ExprId)>> = HashMap::new();
+        for (expr_idx, expr) in self.graph.nodes().iter().enumerate() {
+            if let Expr::NonPrimitiveOutput { call, output_idx } = expr {
+                // Look up the call expression to get the op_id
+                let Expr::NonPrimitiveCall { op_id, .. } = self.graph.get_expr(*call) else {
+                    return Err(CircuitBuilderError::MissingExprMapping {
+                        expr_id: *call,
+                        context: "NonPrimitiveOutput.call must reference a NonPrimitiveCall"
+                            .to_string(),
+                    });
+                };
+                op_id_to_output_exprs
+                    .entry(op_id.0)
+                    .or_default()
+                    .push((*output_idx, ExprId(expr_idx as u32)));
+            }
+        }
+        for outputs in op_id_to_output_exprs.values_mut() {
+            outputs.sort_by_key(|(output_idx, _)| *output_idx);
+        }
+        for (&op_id_u32, outputs) in &op_id_to_output_exprs {
+            // Enforce a simple invariant: output indices are a contiguous 0..N-1 range with no
+            // duplicates. This avoids silent mis-wiring due to gaps or repeated indices.
+            for (pos, (output_idx, _)) in outputs.iter().enumerate() {
+                if pos > 0 && outputs[pos - 1].0 == *output_idx {
+                    return Err(CircuitBuilderError::MalformedNonPrimitiveOutputs {
+                        op_id: NonPrimitiveOpId(op_id_u32),
+                        details: format!("duplicate output_idx {output_idx}"),
+                    });
+                }
+                if *output_idx != pos as u32 {
+                    return Err(CircuitBuilderError::MalformedNonPrimitiveOutputs {
+                        op_id: NonPrimitiveOpId(op_id_u32),
+                        details: format!(
+                            "expected output_idx {expected}, got {output_idx}",
+                            expected = pos as u32
+                        ),
+                    });
+                }
+            }
+        }
+
         // Build DSU over expression IDs to honor connect(a, b)
         let mut parents = build_connect_dsu(self.pending_connects);
 
@@ -133,7 +368,7 @@ where
             .flat_map(|(a, b)| [a.0 as usize, b.0 as usize])
             .collect();
 
-        let mut primitive_ops = Vec::new();
+        let mut ops = Vec::new();
         let mut expr_to_widx: HashMap<ExprId, WitnessId> = HashMap::new();
         let mut public_rows: Vec<WitnessId> = vec![WitnessId(0); self.public_input_count];
         let mut public_mappings = HashMap::new();
@@ -146,10 +381,7 @@ where
             if let Expr::Const(val) = expr {
                 let id = ExprId(expr_idx as u32);
                 let w = self.witness_alloc.alloc();
-                primitive_ops.push(Op::Const {
-                    out: w,
-                    val: val.clone(),
-                });
+                ops.push(Op::Const { out: w, val: *val });
                 expr_to_widx.insert(id, w);
 
                 // If this Const participates in a connect class, bind the class to the const slot
@@ -178,7 +410,7 @@ where
 
                 let out_widx = alloc_witness_id_for_expr(expr_idx);
 
-                primitive_ops.push(Op::Public {
+                ops.push(Op::Public {
                     out: out_widx,
                     public_pos: *pos,
                 });
@@ -189,56 +421,19 @@ where
         }
 
         // Pass C: emit arithmetic and unconstrained ops in creation order; tie outputs to class slot if connected
-        let mut hints_sequence = vec![];
-        let mut fillers_iter = self.hints_fillers.iter().cloned();
+        let mut emitted_non_primitive_ops: HashSet<u32> = HashSet::new();
+
         for (expr_idx, expr) in self.graph.nodes().iter().enumerate() {
             let expr_id = ExprId(expr_idx as u32);
             match expr {
                 Expr::Const(_) | Expr::Public(_) => { /* handled above */ }
-                Expr::Hint { is_last_hint } => {
-                    let expr_id = ExprId(expr_idx as u32);
-                    let out_widx = alloc_witness_id_for_expr(expr_idx);
-                    expr_to_widx.insert(expr_id, out_widx);
-                    hints_sequence.push(out_widx);
-                    if *is_last_hint {
-                        // Since new hints can only be added through `alloc_witness_hints` or `alloc_witness_hints_default_filler`,
-                        // there will always be exactly one filler for each sequence of expressions of the form
-                        // `Witness{false}, ..., Witness{false}, Witness{true}`.
-                        // Therefore, this error can only occur if the expression lowerer is not being used
-                        // with the circuit builder as intended.
-                        let filler = fillers_iter.next().ok_or_else(|| {
-                            CircuitBuilderError::MissingWitnessFiller {
-                                sequence: hints_sequence.clone(),
-                            }
-                        })?;
-                        let inputs = filler
-                            .inputs()
-                            .iter()
-                            .map(|expr_id| {
-                                expr_to_widx
-                                    .get(expr_id)
-                                    .ok_or_else(|| CircuitBuilderError::MissingExprMapping {
-                                        expr_id: *expr_id,
-                                        context: "Unconstrained op".to_string(),
-                                    })
-                                    .copied()
-                            })
-                            .collect::<Result<Vec<WitnessId>, _>>()?;
-                        primitive_ops.push(Op::Unconstrained {
-                            inputs,
-                            outputs: hints_sequence,
-                            filler,
-                        });
-                        hints_sequence = vec![];
-                    }
-                }
                 Expr::Add { lhs, rhs } => {
                     let out_widx = alloc_witness_id_for_expr(expr_idx);
                     let a_widx =
                         get_witness_id(&expr_to_widx, *lhs, &format!("Add lhs for {expr_id:?}"))?;
                     let b_widx =
                         get_witness_id(&expr_to_widx, *rhs, &format!("Add rhs for {expr_id:?}"))?;
-                    primitive_ops.push(Op::Add {
+                    ops.push(Op::Add {
                         a: a_widx,
                         b: b_widx,
                         out: out_widx,
@@ -252,7 +447,7 @@ where
                     let rhs_widx =
                         get_witness_id(&expr_to_widx, *rhs, &format!("Sub rhs for {expr_id:?}"))?;
                     // Encode lhs - rhs = result as result + rhs = lhs.
-                    primitive_ops.push(Op::Add {
+                    ops.push(Op::Add {
                         a: rhs_widx,
                         b: result_widx,
                         out: lhs_widx,
@@ -265,7 +460,7 @@ where
                         get_witness_id(&expr_to_widx, *lhs, &format!("Mul lhs for {expr_id:?}"))?;
                     let b_widx =
                         get_witness_id(&expr_to_widx, *rhs, &format!("Mul rhs for {expr_id:?}"))?;
-                    primitive_ops.push(Op::Mul {
+                    ops.push(Op::Mul {
                         a: a_widx,
                         b: b_widx,
                         out: out_widx,
@@ -279,7 +474,7 @@ where
                         get_witness_id(&expr_to_widx, *lhs, &format!("Div lhs for {expr_id:?}"))?;
                     let a_widx =
                         get_witness_id(&expr_to_widx, *rhs, &format!("Div rhs for {expr_id:?}"))?;
-                    primitive_ops.push(Op::Mul {
+                    ops.push(Op::Mul {
                         a: a_widx,
                         b: b_widx,
                         out: out_widx,
@@ -287,22 +482,79 @@ where
                     // The output of Div is the b_widx.
                     expr_to_widx.insert(expr_id, b_widx);
                 }
+                Expr::NonPrimitiveCall { op_id, inputs: _ } => {
+                    // The `inputs` field encodes DAG dependencies for ordering purposes.
+                    // Actual input data is read from NonPrimitiveOperationData.
+                    if emitted_non_primitive_ops.insert(op_id.0) {
+                        let data = self
+                            .non_primitive_ops
+                            .get(op_id.0 as usize)
+                            .ok_or(CircuitBuilderError::MissingNonPrimitiveOp { op_id: *op_id })?;
+                        let outputs = op_id_to_output_exprs
+                            .get(&op_id.0)
+                            .map(Vec::as_slice)
+                            .unwrap_or(&[]);
+                        Self::emit_non_primitive_op(
+                            data,
+                            outputs,
+                            &mut expr_to_widx,
+                            &mut alloc_witness_id_for_expr,
+                            &mut ops,
+                        )?;
+                    }
+                }
+                Expr::NonPrimitiveOutput {
+                    call,
+                    output_idx: _,
+                } => {
+                    // Look up the call expression to get the op_id
+                    let Expr::NonPrimitiveCall { op_id, .. } = self.graph.get_expr(*call) else {
+                        return Err(CircuitBuilderError::MissingExprMapping {
+                            expr_id: *call,
+                            context: "NonPrimitiveOutput.call must reference a NonPrimitiveCall"
+                                .to_string(),
+                        });
+                    };
+
+                    if emitted_non_primitive_ops.insert(op_id.0) {
+                        let data = self
+                            .non_primitive_ops
+                            .get(op_id.0 as usize)
+                            .ok_or(CircuitBuilderError::MissingNonPrimitiveOp { op_id: *op_id })?;
+                        let outputs = op_id_to_output_exprs
+                            .get(&op_id.0)
+                            .map(Vec::as_slice)
+                            .unwrap_or(&[]);
+                        Self::emit_non_primitive_op(
+                            data,
+                            outputs,
+                            &mut expr_to_widx,
+                            &mut alloc_witness_id_for_expr,
+                            &mut ops,
+                        )?;
+                    }
+
+                    // This output node itself should now have a witness id assigned.
+                    expr_to_widx
+                        .entry(expr_id)
+                        .or_insert_with(|| alloc_witness_id_for_expr(expr_idx));
+                }
             }
         }
 
-        if !hints_sequence.is_empty() {
-            return Err(CircuitBuilderError::MalformedWitnessHintsSequence {
-                sequence: hints_sequence,
-            });
-        }
-
-        if fillers_iter.next().is_some() {
-            return Err(CircuitBuilderError::UnmatchetWitnessFiller {});
+        if emitted_non_primitive_ops.len() != self.non_primitive_ops.len() {
+            for data in self.non_primitive_ops {
+                if !emitted_non_primitive_ops.contains(&data.op_id.0) {
+                    return Err(CircuitBuilderError::UnanchoredNonPrimitiveOp {
+                        op_id: data.op_id,
+                    });
+                }
+            }
         }
 
         let witness_count = self.witness_alloc.witness_count();
         Ok((
-            primitive_ops,
+            ops,
             public_rows,
             expr_to_widx,
             public_mappings,
@@ -418,10 +670,9 @@ mod tests {
         let quot = graph.add_expr(Expr::Div { lhs: diff, rhs: p2 });
 
         let connects = vec![];
-        let hints_fillers = vec![];
         let alloc = WitnessAllocator::new();
 
-        let lowerer = ExpressionLowerer::new(&graph, &connects, 3, &hints_fillers, alloc);
+        let lowerer = ExpressionLowerer::new(&graph, &[], &connects, 3, alloc);
         let (prims, public_rows, expr_map, public_map, witness_count) = lowerer.lower().unwrap();
 
         // Verify Primitives
@@ -588,10 +839,9 @@ mod tests {
         // Group B: p1 ~ p2 ~ p3 (transitive)
         // Group C: sum ~ p4 (operation result shared)
         let connects = vec![(c_42, p0), (p1, p2), (p2, p3), (sum, p4)];
-        let hints_fillers = vec![];
         let alloc = WitnessAllocator::new();
 
-        let lowerer = ExpressionLowerer::new(&graph, &connects, 5, &hints_fillers, alloc);
+        let lowerer = ExpressionLowerer::new(&graph, &[], &connects, 5, alloc);
         let (prims, public_rows, expr_map, public_map, witness_count) = lowerer.lower().unwrap();
 
         // Verify Primitives
@@ -729,9 +979,8 @@ mod tests {
         });
 
         let connects = vec![];
-        let hints_fillers = vec![];
         let alloc = WitnessAllocator::new();
-        let lowerer = ExpressionLowerer::new(&graph, &connects, 0, &hints_fillers, alloc);
+        let lowerer = ExpressionLowerer::new(&graph, &[], &connects, 0, alloc);
         let result = lowerer.lower();
 
         assert!(result.is_err());
@@ -751,9 +1000,8 @@ mod tests {
         });
 
         let connects = vec![];
-        let hints_fillers = vec![];
         let alloc = WitnessAllocator::new();
-        let lowerer = ExpressionLowerer::new(&graph, &connects, 0, &hints_fillers, alloc);
+        let lowerer = ExpressionLowerer::new(&graph, &[], &connects, 0, alloc);
         let result = lowerer.lower();
 
         assert!(result.is_err());

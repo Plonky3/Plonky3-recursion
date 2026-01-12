@@ -1,35 +1,24 @@
-use p3_baby_bear::{BabyBear as F, Poseidon2BabyBear as Perm, default_babybear_poseidon2_16};
-use p3_challenger::{
-    CanObserve, CanSampleBits, DuplexChallenger as Challenger, FieldChallenger, GrindingChallenger,
-};
+mod common;
+
+use p3_baby_bear::default_babybear_poseidon2_16;
+use p3_challenger::{CanObserve, CanSampleBits, FieldChallenger, GrindingChallenger};
 use p3_circuit::CircuitBuilder;
 use p3_commit::Pcs;
 use p3_dft::Radix2DitParallel as Dft;
 use p3_field::coset::TwoAdicMultiplicativeCoset;
-use p3_field::extension::BinomialExtensionField as ExtF;
 use p3_field::{Field, PrimeCharacteristicRing};
-use p3_fri::{TwoAdicFriPcs, create_test_fri_params};
+use p3_fri::create_test_fri_params;
 use p3_matrix::dense::RowMajorMatrix;
-use p3_merkle_tree::MerkleTreeMmcs;
-use p3_recursion::public_inputs::{CommitmentOpening, FriVerifierInputs};
-use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
-use rand::SeedableRng;
-use rand::rngs::SmallRng;
-
-type Challenge = ExtF<F, 4>;
-type MyChallenger = Challenger<F, Perm<16>, 16, 8>;
-type MyHash = PaddingFreeSponge<Perm<16>, 16, 8, 8>;
-type MyCompress = TruncatedPermutation<Perm<16>, 2, 8, 16>;
-type ValMmcs = MerkleTreeMmcs<<F as Field>::Packing, <F as Field>::Packing, MyHash, MyCompress, 8>;
-type ChallengeMmcs = p3_commit::ExtensionMmcs<F, Challenge, ValMmcs>;
-#[allow(clippy::upper_case_acronyms)]
-type PCS = TwoAdicFriPcs<F, Dft<F>, ValMmcs, ChallengeMmcs>;
-
 // Recursive target graph pieces
 use p3_recursion::Recursive;
 use p3_recursion::pcs::fri::{
     FriProofTargets, InputProofTargets, RecExtensionValMmcs, RecValMmcs, Witness as RecWitness,
 };
+use p3_recursion::public_inputs::{CommitmentOpening, FriVerifierInputs};
+use rand::SeedableRng;
+use rand::rngs::SmallRng;
+
+use crate::common::baby_bear_params::*;
 
 type RecVal = RecValMmcs<F, 8, MyHash, MyCompress>;
 type RecExt = RecExtensionValMmcs<F, Challenge, 8, RecVal>;
@@ -91,18 +80,19 @@ struct ProduceInputsResult {
     /// The log base 2 of the size of the largest domain.
     log_max_height: usize,
     /// The FRI proof
-    fri_proof: <PCS as Pcs<Challenge, MyChallenger>>::Proof,
+    fri_proof: <MyPcs as Pcs<Challenge, Challenger>>::Proof,
 }
 
 /// Produce all public inputs for a recursive FRI verification circuit over **multiple input batches**.
 ///
 /// `group_sizes` is a list of groups, each group is a list of log2 degrees.
 fn produce_inputs_multi(
-    pcs: &PCS,
-    perm: &Perm<16>,
+    pcs: &MyPcs,
+    perm: &Perm,
     log_blowup: usize,
     log_final_poly_len: usize,
-    pow_bits: usize,
+    // commit phase pow bits and query pow bits
+    pow_bits: (usize, usize),
     group_sizes: &[Vec<u8>],
     seed_base: u64,
 ) -> ProduceInputsResult {
@@ -123,14 +113,14 @@ fn produce_inputs_multi(
         .collect();
 
     // --- Prover path ---
-    let mut p_challenger = MyChallenger::new(perm.clone());
+    let mut p_challenger = Challenger::new(perm.clone());
     p_challenger.observe_slice(&val_sizes);
 
     // Commit each group and observe all commitments before sampling zeta
     let mut commitments_and_data = Vec::new();
     for evals in &groups_evals {
         let (commitment, prover_data) =
-            <PCS as Pcs<Challenge, MyChallenger>>::commit(pcs, evals.clone());
+            <MyPcs as Pcs<Challenge, Challenger>>::commit(pcs, evals.clone());
         p_challenger.observe(commitment);
         commitments_and_data.push((commitment, prover_data));
     }
@@ -147,10 +137,10 @@ fn produce_inputs_multi(
 
     // Open and produce FRI proof
     let (opened_values, fri_proof) =
-        <PCS as Pcs<Challenge, MyChallenger>>::open(pcs, open_data, &mut p_challenger);
+        <MyPcs as Pcs<Challenge, Challenger>>::open(pcs, open_data, &mut p_challenger);
 
     // --- Verifier transcript replay (to derive the public inputs) ---
-    let mut v_challenger = MyChallenger::new(perm.clone());
+    let mut v_challenger = Challenger::new(perm.clone());
     v_challenger.observe_slice(&val_sizes);
     for (commitment, _) in &commitments_and_data {
         v_challenger.observe(*commitment);
@@ -167,7 +157,8 @@ fn produce_inputs_multi(
         commit_phase_commits,
         ref query_proofs,
         final_poly,
-        pow_witness,
+        query_pow_witness,
+        commit_pow_witnesses,
     } = fri_proof.clone();
 
     // Observe all opened evaluation values (same order)
@@ -180,10 +171,13 @@ fn produce_inputs_multi(
     // α (batch combiner)
     let alpha: Challenge = v_challenger.sample_algebra_element();
 
+    let (commit_pow_bits, query_pow_bits) = pow_bits;
+
     // β_i per phase: observe commitment, then sample β
     let mut betas: Vec<Challenge> = Vec::with_capacity(commit_phase_commits.len());
-    for c in &commit_phase_commits {
+    for (c, w) in commit_phase_commits.iter().zip(commit_pow_witnesses.iter()) {
         v_challenger.observe(*c);
+        assert!(v_challenger.check_witness(commit_pow_bits, *w));
         betas.push(v_challenger.sample_algebra_element());
     }
 
@@ -193,7 +187,7 @@ fn produce_inputs_multi(
     }
 
     // PoW check
-    assert!(v_challenger.check_witness(pow_bits, pow_witness));
+    assert!(v_challenger.check_witness(query_pow_bits, query_pow_witness));
 
     // Query indices
     let num_phases = commit_phase_commits.len();
@@ -242,7 +236,8 @@ fn produce_inputs_multi(
         commit_phase_commits,
         query_proofs: query_proofs.clone(),
         final_poly,
-        pow_witness,
+        query_pow_witness,
+        commit_pow_witnesses,
     });
 
     ProduceInputsResult {
@@ -293,21 +288,23 @@ fn pack_inputs(
 
 /// Holds all the FRI parameters and group sizes to generate test inputs.
 struct FriSetup {
-    pcs: PCS,
-    perm: Perm<16>,
+    pcs: MyPcs,
+    perm: Perm,
     log_blowup: usize,
     log_final_poly_len: usize,
-    pow_bits: usize,
+    query_pow_bits: usize,
+    commit_pow_bits: usize,
     group_sizes: Vec<Vec<u8>>,
 }
 
 impl FriSetup {
     const fn new(
-        pcs: PCS,
-        perm: Perm<16>,
+        pcs: MyPcs,
+        perm: Perm,
         log_blowup: usize,
         log_final_poly_len: usize,
-        pow_bits: usize,
+        query_pow_bits: usize,
+        commit_pow_bits: usize,
         group_sizes: Vec<Vec<u8>>,
     ) -> Self {
         Self {
@@ -315,7 +312,8 @@ impl FriSetup {
             perm,
             log_blowup,
             log_final_poly_len,
-            pow_bits,
+            query_pow_bits,
+            commit_pow_bits,
             group_sizes,
         }
     }
@@ -333,15 +331,17 @@ fn generate_setup(log_final_poly_len: usize, group_sizes: Vec<Vec<u8>>) -> FriSe
     let fri_params = create_test_fri_params(challenge_mmcs, log_final_poly_len);
     let log_blowup = fri_params.log_blowup;
     let log_final_poly_len = fri_params.log_final_poly_len;
-    let pow_bits = fri_params.proof_of_work_bits;
-    let pcs = PCS::new(dft, val_mmcs, fri_params);
+    let query_pow_bits = fri_params.query_proof_of_work_bits;
+    let commit_pow_bits = fri_params.commit_proof_of_work_bits;
+    let pcs = MyPcs::new(dft, val_mmcs, fri_params);
 
     FriSetup::new(
         pcs,
         perm,
         log_blowup,
         log_final_poly_len,
-        pow_bits,
+        query_pow_bits,
+        commit_pow_bits,
         group_sizes,
     )
 }
@@ -352,7 +352,8 @@ fn run_fri_test(setup: FriSetup, build_only: bool) {
         perm,
         log_blowup,
         log_final_poly_len,
-        pow_bits,
+        query_pow_bits,
+        commit_pow_bits,
         group_sizes,
     } = setup;
 
@@ -362,7 +363,7 @@ fn run_fri_test(setup: FriSetup, build_only: bool) {
         &perm,
         log_blowup,
         log_final_poly_len,
-        pow_bits,
+        (commit_pow_bits, query_pow_bits),
         &group_sizes,
         /*seed_base=*/ 0,
     );
@@ -372,7 +373,7 @@ fn run_fri_test(setup: FriSetup, build_only: bool) {
         &perm,
         log_blowup,
         log_final_poly_len,
-        pow_bits,
+        (commit_pow_bits, query_pow_bits),
         &group_sizes,
         /*seed_base=*/ 1,
     );

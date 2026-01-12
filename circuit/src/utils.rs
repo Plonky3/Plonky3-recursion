@@ -1,13 +1,11 @@
 use alloc::vec;
 use alloc::vec::Vec;
-use core::marker::PhantomData;
 
-use p3_field::{ExtensionField, Field, PrimeField64};
+use hashbrown::HashMap;
+use p3_field::Field;
 use p3_uni_stark::{Entry, SymbolicExpression};
-use p3_util::log2_ceil_u64;
 
-use crate::op::{HintsOutputAndNextState, WitnessHintsFiller};
-use crate::{CircuitBuilder, CircuitError, ExprId};
+use crate::{CircuitBuilder, ExprId};
 
 /// Identifiers for special row selector flags in the circuit.
 #[derive(Clone, Copy, Debug)]
@@ -24,6 +22,10 @@ pub struct ColumnsTargets<'a> {
     pub challenges: &'a [ExprId],
     /// Public values added to the circuit.
     pub public_values: &'a [ExprId],
+    /// Targets for the permutation values used in the circuit.
+    pub permutation_local_values: &'a [ExprId],
+    /// Targets for the permutation values evaluated at the next row.
+    pub permutation_next_values: &'a [ExprId],
     /// Targets for the preprocessed values used in the circuit.
     pub local_prep_values: &'a [ExprId],
     /// Targets for the preprocessed values evaluated at the next row.
@@ -37,198 +39,147 @@ pub struct ColumnsTargets<'a> {
 /// Given symbolic constraints, adds the corresponding recursive circuit to `circuit`.
 /// The `public_values`, `local_prep_values`, `next_prep_values`, `local_values`, and `next_values`
 /// are assumed to be in the same order as those used to create the symbolic expressions.
+// Recursive approaches blowup quickly, so this takes an iterative DAG approach with
+// some caching of `SymbolicExpression` nodes.
 pub fn symbolic_to_circuit<F: Field>(
     row_selectors: RowSelectorsTargets,
     columns: &ColumnsTargets<'_>,
     symbolic: &SymbolicExpression<F>,
     circuit: &mut CircuitBuilder<F>,
 ) -> ExprId {
+    /// Used when iterating through the DAG of expressions
+    /// - `Eval` is used when visiting a node
+    /// - `Build` is used to combine entries for a given `Op`
+    enum Work<'a, F: Field> {
+        Eval(&'a SymbolicExpression<F>),
+        // Store a raw pointer instead of a reference because this removes lifetime handling
+        // and its clear that we never dereference the node.
+        // It binds the expression to the Op and its arity, so we can reuse the same node for different ops.
+        Build(*const SymbolicExpression<F>, Op, usize),
+    }
+
+    /// Arithmetic ops applied when building parent nodes
+    #[derive(Copy, Clone)]
+    enum Op {
+        Add,
+        Sub,
+        Mul,
+        Neg,
+    }
+
     let RowSelectorsTargets {
         is_first_row,
         is_last_row,
         is_transition,
     } = row_selectors;
+
     let ColumnsTargets {
         challenges,
         public_values,
+        permutation_local_values,
+        permutation_next_values,
         local_prep_values,
         next_prep_values,
         local_values,
         next_values,
     } = columns;
 
-    let mut get_target =
-        |s: &SymbolicExpression<F>| symbolic_to_circuit(row_selectors, columns, s, circuit);
+    let mut cache: HashMap<*const SymbolicExpression<F>, ExprId> = HashMap::new();
+    let mut tasks = vec![Work::Eval(symbolic)];
+    let mut stack = Vec::new();
 
-    match symbolic {
-        SymbolicExpression::Constant(c) => circuit.add_const(*c),
-        SymbolicExpression::Variable(v) => {
-            let get_val =
-                |offset: usize, index: usize, local_vals: &[ExprId], next_vals: &[ExprId]| {
-                    match offset {
-                        0 => local_vals[index],
-                        1 => next_vals[index],
-                        _ => panic!("Cannot have expressions involving more than two rows."),
+    while let Some(work) = tasks.pop() {
+        match work {
+            Work::Eval(expr) => {
+                let key = expr as *const _;
+                if let Some(&cached) = cache.get(&key) {
+                    stack.push(cached);
+                    continue;
+                }
+                match expr {
+                    SymbolicExpression::Constant(c) => {
+                        let id = circuit.add_const(*c);
+                        cache.insert(key, id);
+                        stack.push(id);
+                    }
+                    SymbolicExpression::Variable(v) => {
+                        let get_val =
+                            |offset: usize,
+                             index: usize,
+                             local_vals: &[ExprId],
+                             next_vals: &[ExprId]| match offset {
+                                0 => local_vals[index],
+                                1 => next_vals[index],
+                                _ => {
+                                    panic!("Cannot have expressions involving more than two rows.")
+                                }
+                            };
+                        let id = match v.entry {
+                            Entry::Preprocessed { offset } => {
+                                get_val(offset, v.index, local_prep_values, next_prep_values)
+                            }
+                            Entry::Permutation { offset } => get_val(
+                                offset,
+                                v.index,
+                                permutation_local_values,
+                                permutation_next_values,
+                            ),
+                            Entry::Main { offset } => {
+                                get_val(offset, v.index, local_values, next_values)
+                            }
+                            Entry::Public => public_values[v.index],
+                            Entry::Challenge => challenges[v.index],
+                        };
+                        cache.insert(key, id);
+                        stack.push(id);
+                    }
+                    SymbolicExpression::IsFirstRow => stack.push(is_first_row),
+                    SymbolicExpression::IsLastRow => stack.push(is_last_row),
+                    SymbolicExpression::IsTransition => stack.push(is_transition),
+                    SymbolicExpression::Neg { x, .. } => {
+                        tasks.push(Work::Build(key, Op::Neg, 1));
+                        tasks.push(Work::Eval(x));
+                    }
+                    SymbolicExpression::Add { x, y, .. } => {
+                        tasks.push(Work::Build(key, Op::Add, 2));
+                        tasks.push(Work::Eval(y));
+                        tasks.push(Work::Eval(x));
+                    }
+                    SymbolicExpression::Sub { x, y, .. } => {
+                        tasks.push(Work::Build(key, Op::Sub, 2));
+                        tasks.push(Work::Eval(y));
+                        tasks.push(Work::Eval(x));
+                    }
+                    SymbolicExpression::Mul { x, y, .. } => {
+                        tasks.push(Work::Build(key, Op::Mul, 2));
+                        tasks.push(Work::Eval(y));
+                        tasks.push(Work::Eval(x));
+                    }
+                }
+            }
+            Work::Build(key, op, arity) => {
+                let rhs = stack.pop().expect("rhs");
+                let lhs = if arity == 2 {
+                    stack.pop().expect("lhs")
+                } else {
+                    rhs // placeholder; for Neg we overwrite below
+                };
+                let id = match op {
+                    Op::Add => circuit.add(lhs, rhs),
+                    Op::Sub => circuit.sub(lhs, rhs),
+                    Op::Mul => circuit.mul(lhs, rhs),
+                    Op::Neg => {
+                        let zero = circuit.add_const(F::ZERO);
+                        circuit.sub(zero, rhs)
                     }
                 };
-
-            match v.entry {
-                Entry::Preprocessed { offset } => {
-                    get_val(offset, v.index, local_prep_values, next_prep_values)
-                }
-                Entry::Main { offset } => get_val(offset, v.index, local_values, next_values),
-                Entry::Public => public_values[v.index],
-                Entry::Challenge => challenges[v.index],
-                _ => unimplemented!(),
-            }
-        }
-        SymbolicExpression::IsFirstRow => is_first_row,
-        SymbolicExpression::IsLastRow => is_last_row,
-        SymbolicExpression::IsTransition => is_transition,
-        SymbolicExpression::Neg { x, .. } => {
-            let x_target = get_target(x);
-            let zero = circuit.add_const(F::ZERO);
-
-            circuit.sub(zero, x_target)
-        }
-        SymbolicExpression::Add { x, y, .. }
-        | SymbolicExpression::Sub { x, y, .. }
-        | SymbolicExpression::Mul { x, y, .. } => {
-            let x_target = get_target(x);
-            let y_target = get_target(y);
-
-            match symbolic {
-                SymbolicExpression::Add { .. } => circuit.add(x_target, y_target),
-                SymbolicExpression::Mul { .. } => circuit.mul(x_target, y_target),
-                SymbolicExpression::Sub { .. } => circuit.sub(x_target, y_target),
-                _ => unreachable!(),
+                cache.insert(key, id);
+                stack.push(id);
             }
         }
     }
-}
 
-/// Reconstruct an integer (as a field element) from little-endian bits:
-///   index = Σ b_i · 2^i
-pub fn reconstruct_index_from_bits<F: Field>(
-    builder: &mut CircuitBuilder<F>,
-    bits: &[ExprId],
-) -> ExprId {
-    builder.push_scope("reconstruct_index_from_bits");
-
-    let mut acc = builder.add_const(F::ZERO);
-    let mut pow2 = builder.add_const(F::ONE);
-    for &b in bits {
-        builder.assert_bool(b);
-        let term = builder.mul(b, pow2);
-        acc = builder.add(acc, term);
-        pow2 = builder.add(pow2, pow2); // *= 2
-    }
-
-    builder.pop_scope();
-
-    acc
-}
-
-#[derive(Debug, Clone)]
-/// Given a field element as input, decompose it into its little-endian bits and
-/// fill witness hints with the binary decomposition.
-///
-/// For a given input `input`, fills `n_bits` witness hints with `b_i`
-/// such that:
-///     input = Σ b_i · 2^i
-struct BinaryDecompositionHint<BF: PrimeField64> {
-    inputs: Vec<ExprId>,
-    n_bits: usize,
-    _phantom: PhantomData<BF>,
-}
-
-impl<BF: PrimeField64> BinaryDecompositionHint<BF> {
-    pub fn new(input: ExprId, n_bits: usize) -> Result<Self, CircuitError> {
-        if n_bits > 64 {
-            return Err(CircuitError::BinaryDecompositionTooManyBits {
-                expected: 64,
-                n_bits,
-            });
-        }
-        Ok(Self {
-            inputs: vec![input],
-            n_bits,
-            _phantom: PhantomData,
-        })
-    }
-}
-
-impl<BF: PrimeField64, F: ExtensionField<BF>> WitnessHintsFiller<F>
-    for BinaryDecompositionHint<BF>
-{
-    fn inputs(&self) -> &[ExprId] {
-        &self.inputs
-    }
-
-    fn n_outputs(&self) -> usize {
-        self.n_bits
-    }
-
-    fn compute_outputs(
-        &self,
-        inputs_val: Vec<F>,
-        _state: Option<&Vec<F>>,
-    ) -> Result<HintsOutputAndNextState<F>, CircuitError> {
-        let val: u64 = inputs_val[0].as_basis_coefficients_slice()[0].as_canonical_u64();
-        let bits = (0..self.n_bits)
-            .map(|i| F::from_bool(val >> i & 1 == 1))
-            .collect();
-        debug_assert!(self.n_bits as u64 >= log2_ceil_u64(val));
-        Ok((bits, None))
-    }
-}
-
-/// Decompose a field element into its little-endian bits.
-///
-/// For a given target `x`, this function creates `N_BITS` new boolean targets `b_i`
-/// and adds constraints to enforce that:
-///     x = Σ b_i · 2^i
-pub fn decompose_to_bits<F: ExtensionField<BF>, BF: PrimeField64>(
-    builder: &mut CircuitBuilder<F>,
-    x: ExprId,
-    n_bits: usize,
-) -> Result<Vec<ExprId>, CircuitError> {
-    builder.push_scope("decompose_to_bits");
-
-    // Create bit witness variables
-    let binary_decomposition_hint = BinaryDecompositionHint::new(x, n_bits)?;
-    let bits = builder.alloc_witness_hints(binary_decomposition_hint, "decompose_to_bits");
-
-    for &bit in bits.iter() {
-        builder.assert_bool(bit);
-    }
-
-    // Constrain that the bits reconstruct to the original element
-    let reconstructed = reconstruct_index_from_bits(builder, &bits);
-    builder.connect(x, reconstructed);
-
-    builder.pop_scope();
-
-    Ok(bits)
-}
-
-/// Helper to pad trace values to power-of-two height with zeros
-pub fn pad_to_power_of_two<F: Field>(values: &mut Vec<F>, width: usize, original_height: usize) {
-    if original_height == 0 {
-        // Empty trace - just ensure we have at least one row of zeros
-        values.resize(width, F::ZERO);
-        return;
-    }
-
-    let target_height = original_height.next_power_of_two();
-    if target_height == original_height {
-        return; // Already power of two
-    }
-
-    // Pad with zeroes
-    for _ in original_height..target_height {
-        values.extend_from_slice(&vec![F::ZERO; width]);
-    }
+    stack.pop().expect("final target")
 }
 
 #[cfg(test)]
@@ -365,6 +316,8 @@ mod tests {
         let columns = ColumnsTargets {
             challenges: &[],
             public_values: &circuit_public_values,
+            permutation_local_values: &[],
+            permutation_next_values: &[],
             local_prep_values: &[],
             next_prep_values: &[],
             local_values: &circuit_local_values,
@@ -396,118 +349,5 @@ mod tests {
         let _ = builder.run()?;
 
         Ok(())
-    }
-
-    #[test]
-    fn test_reconstruct_index_from_bits() {
-        let mut builder = CircuitBuilder::<BabyBear>::new();
-
-        // Test reconstructing the value 5 (binary: 101)
-        let bit0 = builder.add_const(BabyBear::ONE); // 1
-        let bit1 = builder.add_const(BabyBear::ZERO); // 0
-        let bit2 = builder.add_const(BabyBear::ONE); // 1
-
-        let bits = vec![bit0, bit1, bit2];
-        let result = reconstruct_index_from_bits(&mut builder, &bits);
-
-        // Connect result to a public input so we can verify its value
-        let output = builder.add_public_input();
-        builder.connect(result, output);
-
-        // Build and run the circuit
-        let circuit = builder.build().expect("Failed to build circuit");
-        let mut runner = circuit.runner();
-
-        // Set public inputs: the expected result value 5
-        let expected_result = BabyBear::from_u64(5); // 1*1 + 0*2 + 1*4 = 5
-        runner
-            .set_public_inputs(&[expected_result])
-            .expect("Failed to set public inputs");
-
-        let traces = runner.run().expect("Failed to run circuit");
-
-        // Just verify the calculation is correct - reconstruct gives us 5
-        assert_eq!(traces.public_trace.values[0], BabyBear::from_u64(5));
-    }
-
-    #[test]
-    fn test_decompose_to_bits() {
-        let mut builder = CircuitBuilder::<BabyBear>::new();
-
-        // Create a target representing the value we want to decompose
-        let value = builder.add_const(BabyBear::from_u64(6)); // Binary: 110
-
-        // Decompose into 3 bits - this creates its own public inputs for the bits
-        let bits = decompose_to_bits::<BabyBear, _>(&mut builder, value, 3).unwrap();
-
-        // Build and run the circuit
-        let circuit = builder.build().expect("Failed to build circuit");
-        let runner = circuit.runner();
-
-        let traces = runner.run().expect("Failed to run circuit");
-
-        // Verify the bits are correctly decomposed - 6 = [0,1,1] in little-endian
-        assert_eq!(traces.witness_trace.values[3], BabyBear::ZERO); // bit 0
-        assert_eq!(traces.witness_trace.values[4], BabyBear::ONE); // bit 1
-        assert_eq!(traces.witness_trace.values[5], BabyBear::ONE); // bit 2
-
-        // Also verify that the returned bits have the expected length
-        assert_eq!(bits.len(), 3);
-    }
-
-    #[test]
-    fn test_pad_to_power_of_two_basic() {
-        // Test with 3 rows -> should pad to 4
-        let mut values = vec![
-            F::from_u64(1),
-            F::from_u64(10), // row 0: [value=1, index=10]
-            F::from_u64(2),
-            F::from_u64(11), // row 1: [value=2, index=11]
-            F::from_u64(3),
-            F::from_u64(12), // row 2: [value=3, index=12]
-        ];
-        let width = 2;
-        let original_height = 3;
-
-        pad_to_power_of_two(&mut values, width, original_height);
-
-        // Should be padded to 4 rows
-        assert_eq!(values.len(), 4 * width);
-
-        // Original rows should be unchanged
-        assert_eq!(values[0], F::from_u64(1));
-        assert_eq!(values[1], F::from_u64(10));
-        assert_eq!(values[2], F::from_u64(2));
-        assert_eq!(values[3], F::from_u64(11));
-        assert_eq!(values[4], F::from_u64(3));
-        assert_eq!(values[5], F::from_u64(12));
-
-        // Padded row should be zero
-        assert_eq!(values[6], F::ZERO); // same as row 2
-        assert_eq!(values[7], F::ZERO); // same as row 2
-    }
-
-    #[test]
-    fn test_pad_to_power_of_two_already_power_of_two() {
-        // Test with 4 rows (already power of two) -> should not change
-        let mut values = vec![
-            F::from_u64(1),
-            F::from_u64(2),
-            F::from_u64(3),
-            F::from_u64(4),
-            F::from_u64(5),
-            F::from_u64(6),
-            F::from_u64(7),
-            F::from_u64(8),
-        ];
-        let original = values.clone();
-        let width = 2;
-        let original_height = 4;
-
-        pad_to_power_of_two(&mut values, width, original_height);
-
-        // Should remain unchanged
-        assert_eq!(values, original);
-        assert_eq!(values.len(), 4 * width);
     }
 }

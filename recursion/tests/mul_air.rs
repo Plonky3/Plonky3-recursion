@@ -1,7 +1,10 @@
 //! Test for recursive STARK verification with a multiplication AIR.
 
+mod common;
+
 use p3_circuit::CircuitBuilder;
 use p3_fri::create_test_fri_params;
+use p3_lookup::lookup_traits::AirNoLookup;
 use p3_matrix::Matrix;
 use p3_recursion::pcs::fri::{FriVerifierParams, HashTargets};
 use p3_recursion::public_inputs::StarkVerifierInputsBuilder;
@@ -11,12 +14,11 @@ use p3_util::log2_ceil_usize;
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
 
-use crate::common::{
-    ChallengeMmcs, Challenger, DIGEST_ELEMS, Dft, F, InnerFri, MulAir, MyCompress, MyConfig,
-    MyHash, MyPcs, Perm, RATE, ValMmcs,
+use crate::common::MulAir;
+use crate::common::baby_bear_params::{
+    ChallengeMmcs, Challenger, DIGEST_ELEMS, Dft, F, InnerFri, MyCompress, MyConfig, MyHash, MyPcs,
+    Perm, RATE, ValMmcs,
 };
-
-mod common;
 
 #[test]
 fn test_mul_verifier_circuit() -> Result<(), VerificationError> {
@@ -34,7 +36,7 @@ fn test_mul_verifier_circuit() -> Result<(), VerificationError> {
     let fri_params = create_test_fri_params(challenge_mmcs, log_final_poly_len);
     let fri_verifier_params = FriVerifierParams::from(&fri_params);
     let log_height_max = fri_params.log_final_poly_len + fri_params.log_blowup;
-    let pow_bits = fri_params.proof_of_work_bits;
+    let pow_bits = fri_params.query_proof_of_work_bits;
     let pcs = MyPcs::new(dft, val_mmcs, fri_params);
     let challenger = Challenger::new(perm);
 
@@ -42,8 +44,9 @@ fn test_mul_verifier_circuit() -> Result<(), VerificationError> {
     let pis = vec![];
 
     // Create AIR and generate valid trace
-    let air = MulAir { degree: 2, rows: n };
-    let (trace, _) = air.random_valid_trace(true);
+    let inner_air = MulAir { degree: 2, rows: n };
+    let air = AirNoLookup::new(inner_air);
+    let (trace, _) = inner_air.random_valid_trace(true);
 
     // Setup preprocessed data
     let (preprocessed_prover_data, preprocessed_vk) =

@@ -1,8 +1,12 @@
+mod common;
+
 use p3_air::{Air, BaseAir, PairBuilder};
 use p3_batch_stark::{CommonData, StarkInstance, prove_batch, verify_batch};
 use p3_circuit::CircuitBuilder;
 use p3_field::Field;
 use p3_fri::create_test_fri_params;
+use p3_lookup::logup::LogUpGadget;
+use p3_lookup::lookup_traits::AirNoLookup;
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_recursion::pcs::HashTargets;
@@ -14,12 +18,11 @@ use rand::SeedableRng;
 use rand::distr::{Distribution, StandardUniform};
 use rand::rngs::SmallRng;
 
-use crate::common::{
-    ChallengeMmcs, Challenger, DIGEST_ELEMS, Dft, F, InnerFri, MulAir, MyCompress, MyConfig,
-    MyHash, MyPcs, Perm, RATE, ValMmcs,
+use crate::common::MulAir;
+use crate::common::baby_bear_params::{
+    ChallengeMmcs, Challenger, DIGEST_ELEMS, Dft, F, InnerFri, MyCompress, MyConfig, MyHash, MyPcs,
+    Perm, RATE, ValMmcs,
 };
-
-mod common;
 
 /// Enum to hold different AIR types for batch verification
 #[derive(Clone, Copy)]
@@ -237,7 +240,7 @@ fn test_batch_verifier_with_mixed_preprocessed() -> Result<(), VerificationError
     let fri_params = create_test_fri_params(challenge_mmcs, log_final_poly_len);
     let fri_verifier_params = FriVerifierParams::from(&fri_params);
     let log_height_max = fri_params.log_final_poly_len + fri_params.log_blowup;
-    let pow_bits = fri_params.proof_of_work_bits;
+    let pow_bits = fri_params.query_proof_of_work_bits;
     let pcs = MyPcs::new(dft, val_mmcs, fri_params);
     let challenger = Challenger::new(perm);
 
@@ -257,9 +260,9 @@ fn test_batch_verifier_with_mixed_preprocessed() -> Result<(), VerificationError
     let pvs = [vec![], vec![], vec![]];
 
     // Create MixedAir instances for batch proving
-    let mixed_air1 = MixedAir::Mul(air1);
-    let mixed_air2 = MixedAir::Add(air2);
-    let mixed_air3 = MixedAir::Sub(air3);
+    let mixed_air1 = AirNoLookup::new(MixedAir::Mul(air1));
+    let mixed_air2 = AirNoLookup::new(MixedAir::Add(air2));
+    let mixed_air3 = AirNoLookup::new(MixedAir::Sub(air3));
 
     // Create StarkInstances for batch proving
     let instances = vec![
@@ -267,25 +270,37 @@ fn test_batch_verifier_with_mixed_preprocessed() -> Result<(), VerificationError
             air: &mixed_air1,
             trace: trace1,
             public_values: pvs[0].clone(),
+            lookups: Vec::new(),
         },
         StarkInstance {
             air: &mixed_air2,
             trace: trace2,
             public_values: pvs[1].clone(),
+            lookups: Vec::new(),
         },
         StarkInstance {
             air: &mixed_air3,
             trace: trace3,
             public_values: pvs[2].clone(),
+            lookups: Vec::new(),
         },
     ];
 
-    let airs = [mixed_air1, mixed_air2, mixed_air3];
-
     // Generate common data and batch proof
     let common_data = CommonData::from_instances(&config, &instances);
-    let batch_proof = prove_batch(&config, instances, &common_data);
-    verify_batch(&config, &airs, &batch_proof, &pvs, &common_data).unwrap();
+    let lookup_gadget = LogUpGadget::new();
+    let batch_proof = prove_batch(&config, &instances, &common_data, &lookup_gadget);
+    let airs = [mixed_air1.clone(), mixed_air2.clone(), mixed_air3.clone()];
+
+    verify_batch(
+        &config,
+        &airs,
+        &batch_proof,
+        &pvs,
+        &common_data,
+        &lookup_gadget,
+    )
+    .unwrap();
 
     // Create AIRs vector for verification circuit
     let airs = vec![mixed_air1, mixed_air2, mixed_air3];
@@ -317,14 +332,15 @@ fn test_batch_verifier_with_mixed_preprocessed() -> Result<(), VerificationError
     // 1. MulAir (has preprocessed columns)
     // 2. AddAirNoPreprocessed (no preprocessed columns)
     // 3. SubAirPartialPreprocessed (some preprocessed columns)
-    verify_batch_circuit::<_, _, _, _, _, RATE>(
+    verify_batch_circuit::<_, _, _, _, _, _, RATE>(
         &config,
         &airs,
         &mut circuit_builder,
         &verifier_inputs.proof_targets,
         &verifier_inputs.air_public_targets,
         &pcs_verifier_params,
-        &verifier_inputs.preprocessed,
+        &verifier_inputs.common_data,
+        &lookup_gadget,
     )?;
 
     // Build the circuit
@@ -340,6 +356,7 @@ fn test_batch_verifier_with_mixed_preprocessed() -> Result<(), VerificationError
         &pvs,
         Some(&[pow_bits, log_height_max]),
         &common_data,
+        &lookup_gadget,
     )?;
 
     // Pack values using the batch builder

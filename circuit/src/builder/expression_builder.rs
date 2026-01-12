@@ -6,7 +6,6 @@
 //! - nodes represent field operations,
 //! - edges represent dependencies between expressions.
 
-use alloc::boxed::Box;
 #[cfg(debug_assertions)]
 use alloc::vec;
 use alloc::vec::Vec;
@@ -16,8 +15,7 @@ use hashbrown::HashMap;
 use p3_field::PrimeCharacteristicRing;
 
 use crate::expr::{Expr, ExpressionGraph};
-use crate::op::WitnessHintsFiller;
-use crate::types::ExprId;
+use crate::types::{ExprId, NonPrimitiveOpId};
 #[cfg(debug_assertions)]
 use crate::{AllocationEntry, AllocationType};
 
@@ -55,16 +53,6 @@ pub struct ExpressionBuilder<F> {
     ///
     /// Self-connections `(a, a)` are filtered out to avoid unnecessary work.
     pending_connects: Vec<(ExprId, ExprId)>,
-
-    /// Witness hint fillers for computing unconstrained values.
-    ///
-    /// Each filler corresponds to a sequence of witness hints added via
-    /// [`add_witness_hints`](Self::add_witness_hints). The order in this vector
-    /// matches the order of hint sequences in the graph.
-    ///
-    /// During circuit execution, fillers compute concrete witness values from
-    /// their input expressions.
-    hints_fillers: Vec<Box<dyn WitnessHintsFiller<F>>>,
 
     /// Complete allocation history for debugging.
     ///
@@ -122,7 +110,6 @@ where
             graph,
             const_pool,
             pending_connects: Vec::new(),
-            hints_fillers: Vec::new(),
             #[cfg(debug_assertions)]
             allocation_log: Vec::new(),
             #[cfg(debug_assertions)]
@@ -213,98 +200,6 @@ where
         self.log_alloc(expr_id, label, || ());
 
         expr_id
-    }
-
-    /// Adds a single witness hint to a sequence of hints.
-    ///
-    /// Witness hints represent unconstrained prover values. They are organized in
-    /// sequences where each hint knows whether it is the last in its sequence via
-    /// the `is_last_hint` flag.
-    ///
-    /// # Arguments
-    ///
-    /// - `is_last_hint`: Whether this hint concludes its sequence
-    /// - `label`: Human-readable label for debug logging
-    ///
-    /// # Returns
-    ///
-    /// An [`ExprId`] handle to the witness hint expression.
-    ///
-    /// # Sequencing Invariant
-    ///
-    /// Hints within a sequence must be added consecutively, and exactly one hint
-    /// in each sequence must have `is_last_hint: true`. This allows the execution
-    /// engine to match hints with their corresponding fillers.
-    pub fn add_witness_hint_in_sequence(
-        &mut self,
-        is_last_hint: bool,
-        label: &'static str,
-    ) -> ExprId {
-        // Create a new Witness expression node.
-        //
-        // The `is_last_hint` flag is stored in the node so the execution engine
-        // can identify sequence boundaries without external metadata.
-        let expr_id = self.graph.add_expr(Expr::Hint { is_last_hint });
-
-        // Log the allocation in debug builds.
-        //
-        // Witness hints are leaf nodes with no dependencies.
-        #[cfg(debug_assertions)]
-        self.log_alloc(expr_id, label, || (AllocationType::WitnessHint, vec![]));
-        #[cfg(not(debug_assertions))]
-        self.log_alloc(expr_id, label, || ());
-
-        expr_id
-    }
-
-    /// Adds a sequence of witness hints with an associated filler.
-    ///
-    /// This is the primary method for adding unconstrained witness values to the circuit.
-    /// The filler object computes concrete witness values during circuit execution based
-    /// on its input expressions.
-    ///
-    /// # Arguments
-    ///
-    /// - `filler`: A witness hint filler implementing [`WitnessHintsFiller<F>`]
-    /// - `label`: Human-readable label for debug logging
-    ///
-    /// # Returns
-    ///
-    /// A vector of [`ExprId`] handles, one for each output of the filler.
-    ///
-    /// # Filler Registration
-    ///
-    /// The filler is stored in the `hints_fillers` vector in the order it was added.
-    /// During circuit execution, fillers are invoked in this order to compute witness
-    /// values.
-    #[must_use]
-    pub fn add_witness_hints<W: 'static + WitnessHintsFiller<F>>(
-        &mut self,
-        filler: W,
-        label: &'static str,
-    ) -> Vec<ExprId> {
-        // Query the number of outputs this filler will produce.
-        let n_outputs = filler.n_outputs();
-
-        // Pre-allocate the vector with exact capacity.
-        //
-        // This is possible since we know the exact size upfront.
-        let mut expr_ids = Vec::with_capacity(n_outputs);
-
-        // Add each hint in sequence.
-        //
-        // The last hint (i == n_outputs - 1) is marked with `is_last_hint: true`.
-        for i in 0..n_outputs {
-            expr_ids.push(self.add_witness_hint_in_sequence(i == n_outputs - 1, label));
-        }
-
-        // Register the filler for later use during execution.
-        //
-        // The order of fillers in this vector must match the order of hint sequences
-        // in the graph.
-        self.hints_fillers.push(Box::new(filler));
-
-        expr_ids
     }
 
     /// Adds an addition expression to the graph.
@@ -409,6 +304,63 @@ where
         )
     }
 
+    /// Adds a non-primitive output expression to the graph.
+    ///
+    /// This expression represents a value produced by a non-primitive operation.
+    /// The `call` parameter is the `ExprId` of the `NonPrimitiveCall` node, making
+    /// the dependency explicit in the DAG structure.
+    pub fn add_non_primitive_output(
+        &mut self,
+        call: ExprId,
+        output_idx: u32,
+        label: &'static str,
+    ) -> ExprId {
+        let expr_id = self
+            .graph
+            .add_expr(Expr::NonPrimitiveOutput { call, output_idx });
+
+        #[cfg(debug_assertions)]
+        self.log_alloc(expr_id, label, || {
+            (AllocationType::NonPrimitiveOutput, vec![vec![call]])
+        });
+        #[cfg(not(debug_assertions))]
+        self.log_alloc(expr_id, label, || ());
+
+        expr_id
+    }
+
+    /// Adds a non-primitive call anchor expression to the graph.
+    ///
+    /// This expression has no witness value, but provides an explicit point in the expression DAG
+    /// for the lowerer to emit the non-primitive op in the correct execution order.
+    ///
+    /// The `inputs` parameter contains all input expressions (flattened), making dependencies
+    /// explicit in the DAG structure. For stateful ops with chaining (e.g., `in_ctl=false`),
+    /// `inputs` may be empty since chained values are not in the witness table.
+    pub fn add_non_primitive_call(
+        &mut self,
+        op_id: NonPrimitiveOpId,
+        op_type: crate::op::NonPrimitiveOpType,
+        inputs: Vec<ExprId>,
+        label: &'static str,
+    ) -> ExprId {
+        #[cfg(debug_assertions)]
+        let dependencies: Vec<Vec<ExprId>> = inputs.iter().map(|&id| vec![id]).collect();
+
+        let expr_id = self
+            .graph
+            .add_expr(Expr::NonPrimitiveCall { op_id, inputs });
+
+        #[cfg(debug_assertions)]
+        self.log_alloc(expr_id, label, || {
+            (AllocationType::NonPrimitiveOp(op_type), dependencies)
+        });
+        #[cfg(not(debug_assertions))]
+        self.log_alloc(expr_id, label, || ());
+
+        expr_id
+    }
+
     /// Internal helper for adding binary operations.
     ///
     /// # Arguments
@@ -498,18 +450,6 @@ where
         &self.pending_connects
     }
 
-    /// Returns a slice of registered witness hint fillers.
-    ///
-    /// Fillers are stored in the order they were added via [`add_witness_hints`](Self::add_witness_hints).
-    ///
-    /// # Returns
-    ///
-    /// A slice of boxed [`WitnessHintsFiller`] trait objects.
-    #[inline]
-    pub fn hints_fillers(&self) -> &[Box<dyn WitnessHintsFiller<F>>] {
-        &self.hints_fillers
-    }
-
     /// Centralized logging helper for debug builds.
     ///
     /// # Arguments
@@ -559,18 +499,25 @@ where
     ///
     /// - `op_id`: The non-primitive operation ID
     /// - `op_type`: The type of operation (e.g., `NonPrimitiveOpType::MmcsVerify`)
-    /// - `dependencies`: Expression dependencies for this operation
+    /// - `input_deps`: Input expression dependencies for this operation
+    /// - `output_deps`: Output expression dependencies for this operation
     /// - `label`: Human-readable label
     #[cfg(debug_assertions)]
     pub fn log_non_primitive_op(
         &mut self,
         op_id: crate::types::NonPrimitiveOpId,
         op_type: crate::op::NonPrimitiveOpType,
-        dependencies: Vec<Vec<ExprId>>,
+        input_deps: Vec<Vec<ExprId>>,
+        output_deps: Vec<Vec<ExprId>>,
         label: &'static str,
     ) {
         // Capture the current scope.
         let scope = self.scope_stack.last().copied();
+
+        // Combine inputs and outputs for dependency tracking.
+        // Use a separator to distinguish inputs from outputs in the log.
+        let mut dependencies = input_deps;
+        dependencies.extend(output_deps);
 
         // Add to allocation log.
         //
@@ -685,14 +632,10 @@ where
 
 #[cfg(test)]
 mod tests {
-    use alloc::vec;
 
     use p3_baby_bear::BabyBear;
-    use p3_field::Field;
 
     use super::*;
-    use crate::CircuitError;
-    use crate::op::HintsOutputAndNextState;
 
     #[test]
     fn test_new_builder_has_zero_constant() {
@@ -931,61 +874,6 @@ mod tests {
                 assert_eq!(*rhs, b);
             }
             _ => panic!("Expected Div operation"),
-        }
-    }
-
-    #[derive(Debug, Clone)]
-    struct IdentityHint {
-        inputs: Vec<ExprId>,
-        n_outputs: usize,
-    }
-
-    impl IdentityHint {
-        pub fn new(inputs: Vec<ExprId>) -> Self {
-            Self {
-                n_outputs: inputs.len(),
-                inputs,
-            }
-        }
-    }
-
-    impl<F: Field> WitnessHintsFiller<F> for IdentityHint {
-        fn inputs(&self) -> &[ExprId] {
-            &self.inputs
-        }
-
-        fn n_outputs(&self) -> usize {
-            self.n_outputs
-        }
-
-        fn compute_outputs(
-            &self,
-            inputs_val: Vec<F>,
-            _state: Option<&Vec<F>>,
-        ) -> Result<HintsOutputAndNextState<F>, CircuitError> {
-            Ok((inputs_val, None))
-        }
-    }
-
-    #[test]
-    fn test_build_with_witness_hint() {
-        let mut builder = ExpressionBuilder::<BabyBear>::new();
-        let a = builder.add_const(BabyBear::ZERO, "a");
-        let b = builder.add_const(BabyBear::ONE, "b");
-        let id_hint = IdentityHint::new(vec![a, b]);
-        let c = builder.add_witness_hints(id_hint, "c");
-        assert_eq!(c.len(), 2);
-
-        assert_eq!(builder.graph().nodes().len(), 4);
-
-        match (&builder.graph().nodes()[2], &builder.graph().nodes()[3]) {
-            (
-                Expr::Hint {
-                    is_last_hint: false,
-                },
-                Expr::Hint { is_last_hint: true },
-            ) => (),
-            _ => panic!("Expected Witness operation"),
         }
     }
 

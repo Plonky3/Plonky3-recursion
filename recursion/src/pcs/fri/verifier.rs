@@ -498,6 +498,14 @@ where
         )));
     }
 
+    if num_phases != fri_proof_targets.commit_pow_witnesses.len() {
+        return Err(VerificationError::InvalidProofShape(format!(
+            "Number of commit-phase commitments must equal number of commit-phase pow witnesses: expected {}, got {}",
+            num_phases,
+            fri_proof_targets.commit_pow_witnesses.len()
+        )));
+    }
+
     if num_queries != index_bits_per_query.len() {
         return Err(VerificationError::InvalidProofShape(format!(
             "index_bits_per_query length must equal number of query proofs: expected {}, got {}",

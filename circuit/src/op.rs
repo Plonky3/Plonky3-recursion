@@ -1,7 +1,9 @@
 use alloc::boxed::Box;
-use alloc::string::String;
+use alloc::collections::BTreeMap;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use alloc::{format, vec};
+use core::any::Any;
 use core::fmt::Debug;
 use core::hash::Hash;
 
@@ -9,10 +11,9 @@ use hashbrown::HashMap;
 use p3_field::{Field, PrimeCharacteristicRing};
 use strum_macros::EnumCount;
 
-use crate::ops::poseidon_perm::HashConfig;
-use crate::tables::PoseidonPermPrivateData;
+use crate::CircuitError;
+use crate::ops::Poseidon2PermPrivateData;
 use crate::types::{NonPrimitiveOpId, WitnessId};
-use crate::{CircuitError, ExprId};
 
 /// Circuit operations.
 ///
@@ -66,16 +67,6 @@ pub enum Op<F> {
         out: WitnessId,
     },
 
-    /// Load unconstrained values into the witness table
-    ///
-    /// Sets `witness[output]`, for each `output` in `outputs`, to arbitrary values
-    /// defined by `filler`.
-    Unconstrained {
-        inputs: Vec<WitnessId>,
-        outputs: Vec<WitnessId>,
-        filler: Box<dyn WitnessHintsFiller<F>>,
-    },
-
     /// Non-primitive operation with executor-based dispatch
     NonPrimitiveOpWithExecutor {
         inputs: Vec<Vec<WitnessId>>,
@@ -109,19 +100,6 @@ impl From<usize> for PrimitiveOpType {
     }
 }
 
-impl PrimitiveOpType {
-    /// Get the number of columns in the preprocessed table for this operation
-    pub const fn get_prep_width(&self) -> usize {
-        match self {
-            Self::Witness => 1, // index
-            Self::Const => 2,   // index, val
-            Self::Public => 1,  // index
-            Self::Add => 3,     // index_a, index_b, index_out
-            Self::Mul => 3,     // index_a, index_b, index_out
-        }
-    }
-}
-
 // Custom Clone implementation for Op
 impl<F: Field + Clone> Clone for Op<F> {
     fn clone(&self) -> Self {
@@ -143,15 +121,6 @@ impl<F: Field + Clone> Clone for Op<F> {
                 a: *a,
                 b: *b,
                 out: *out,
-            },
-            Self::Unconstrained {
-                inputs,
-                outputs,
-                filler,
-            } => Self::Unconstrained {
-                inputs: inputs.clone(),
-                outputs: outputs.clone(),
-                filler: filler.clone(),
             },
             Self::NonPrimitiveOpWithExecutor {
                 inputs,
@@ -228,17 +197,81 @@ impl<F: Field + PartialEq> PartialEq for Op<F> {
     }
 }
 
-/// Non-primitive operation types
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Non-primitive operation types.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
 pub enum NonPrimitiveOpType {
-    /// Poseidon permutation operation (one Poseidon call / table row).
-    PoseidonPerm,
+    /// Poseidon2 permutation operation (one Poseidon2 call / table row).
+    Poseidon2Perm(Poseidon2Config),
+    /// Unconstrained operation, used to set outputs to non-deterministic advices.
+    Unconstrained,
 }
 
-/// Non-primitive operation types
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum NonPrimitiveOpConfig {
+// Re-export Poseidon2 config types from their canonical location
+pub use crate::ops::poseidon2_perm::{Poseidon2Config, Poseidon2PermExec};
+
+/// Preprocessed data for non-primitive tables, keyed by operation type.
+pub type NonPrimitivePreprocessedMap<F> = HashMap<NonPrimitiveOpType, Vec<F>>;
+
+/// Non-primitive operation configuration.
+///
+/// Contains operation-specific configuration data, such as execution closures.
+pub enum NonPrimitiveOpConfig<F> {
+    /// No configuration needed (placeholder for future operations).
     None,
+    /// Poseidon2 permutation configuration with exec closure.
+    Poseidon2Perm {
+        config: Poseidon2Config,
+        exec: Poseidon2PermExec<F, 4>,
+    },
+}
+
+impl<F> Clone for NonPrimitiveOpConfig<F> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::None => Self::None,
+            Self::Poseidon2Perm { config, exec } => Self::Poseidon2Perm {
+                config: *config,
+                exec: Arc::clone(exec),
+            },
+        }
+    }
+}
+
+impl<F> Debug for NonPrimitiveOpConfig<F> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::None => write!(f, "None"),
+            Self::Poseidon2Perm { config, .. } => f
+                .debug_struct("Poseidon2Perm")
+                .field("config", config)
+                .field("exec", &"<closure>")
+                .finish(),
+        }
+    }
+}
+
+// Compare/Hash by variant/config only (ignore closure contents)
+impl<F> PartialEq for NonPrimitiveOpConfig<F> {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::None, Self::None) => true,
+            (Self::Poseidon2Perm { config: c1, .. }, Self::Poseidon2Perm { config: c2, .. }) => {
+                c1 == c2
+            }
+            _ => false,
+        }
+    }
+}
+
+impl<F> Eq for NonPrimitiveOpConfig<F> {}
+
+impl<F> Hash for NonPrimitiveOpConfig<F> {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        core::mem::discriminant(self).hash(state);
+        if let Self::Poseidon2Perm { config, .. } = self {
+            config.hash(state);
+        }
+    }
 }
 
 /// Non-primitive operations representing complex cryptographic constraints.
@@ -265,8 +298,29 @@ pub enum NonPrimitiveOpConfig {
 /// - Is used by AIR tables to generate the appropriate constraints
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NonPrimitiveOpPrivateData<F> {
-    PoseidonPerm(PoseidonPermPrivateData<F>),
+    Poseidon2Perm(Poseidon2PermPrivateData<F, 2>),
 }
+
+/// Trait for operation-specific execution state.
+///
+/// Each non-primitive operation type can define its own state struct that persists
+/// across invocations during circuit execution. This enables features like:
+/// - Permutation chaining (storing previous output for next input)
+/// - Recording execution data for canonical trace generation
+///
+/// Implementors must support downcasting via `Any` for type-safe retrieval.
+pub trait OpExecutionState: Any + Send + Sync + Debug {
+    /// Downcast to concrete type for reading.
+    fn as_any(&self) -> &dyn Any;
+    /// Downcast to concrete type for mutation.
+    fn as_any_mut(&mut self) -> &mut dyn Any;
+}
+
+/// Type-erased storage for operation execution states.
+///
+/// This allows each operation type to maintain its own state without
+/// coupling `ExecutionContext` to specific operation implementations.
+pub type OpStateMap = BTreeMap<NonPrimitiveOpType, Box<dyn OpExecutionState>>;
 
 /// Execution context providing operations access to witness table, private data, and configs
 ///
@@ -278,24 +332,29 @@ pub struct ExecutionContext<'a, F> {
     /// Private data map for non-primitive operations
     non_primitive_op_private_data: &'a [Option<NonPrimitiveOpPrivateData<F>>],
     /// Operation configurations
-    enabled_ops: &'a HashMap<NonPrimitiveOpType, NonPrimitiveOpConfig>,
+    enabled_ops: &'a HashMap<NonPrimitiveOpType, NonPrimitiveOpConfig<F>>,
     /// Current operation's NonPrimitiveOpId for error reporting
     operation_id: NonPrimitiveOpId,
+    /// Operation-specific execution state storage.
+    /// Each operation type can store its own state (e.g., chaining state, row records).
+    op_states: &'a mut OpStateMap,
 }
 
 impl<'a, F: PrimeCharacteristicRing + Eq + Clone> ExecutionContext<'a, F> {
     /// Create a new execution context
-    pub const fn new(
+    pub fn new(
         witness: &'a mut [Option<F>],
         non_primitive_op_private_data: &'a [Option<NonPrimitiveOpPrivateData<F>>],
-        enabled_ops: &'a HashMap<NonPrimitiveOpType, NonPrimitiveOpConfig>,
+        enabled_ops: &'a HashMap<NonPrimitiveOpType, NonPrimitiveOpConfig<F>>,
         operation_id: NonPrimitiveOpId,
+        op_states: &'a mut OpStateMap,
     ) -> Self {
         Self {
             witness,
             non_primitive_op_private_data,
             enabled_ops,
             operation_id,
+            op_states,
         }
     }
 
@@ -344,17 +403,44 @@ impl<'a, F: PrimeCharacteristicRing + Eq + Clone> ExecutionContext<'a, F> {
     pub fn get_config(
         &self,
         op_type: &NonPrimitiveOpType,
-    ) -> Result<&NonPrimitiveOpConfig, CircuitError> {
-        self.enabled_ops.get(op_type).ok_or_else(|| {
-            CircuitError::InvalidNonPrimitiveOpConfiguration {
-                op: op_type.clone(),
-            }
-        })
+    ) -> Result<&NonPrimitiveOpConfig<F>, CircuitError> {
+        self.enabled_ops
+            .get(op_type)
+            .ok_or(CircuitError::InvalidNonPrimitiveOpConfiguration { op: *op_type })
     }
 
     /// Get the current operation ID
     pub const fn operation_id(&self) -> NonPrimitiveOpId {
         self.operation_id
+    }
+
+    /// Get operation-specific state for reading.
+    ///
+    /// Returns `None` if no state has been initialized for this operation type.
+    pub fn get_op_state<T: OpExecutionState + 'static>(
+        &self,
+        op_type: &NonPrimitiveOpType,
+    ) -> Option<&T> {
+        self.op_states
+            .get(op_type)
+            .and_then(|state| state.as_any().downcast_ref::<T>())
+    }
+
+    /// Get operation-specific state for mutation, creating default if not present.
+    ///
+    /// This is the primary way executors should access their state.
+    pub fn get_op_state_mut<T: OpExecutionState + Default + 'static>(
+        &mut self,
+        op_type: &NonPrimitiveOpType,
+    ) -> &mut T {
+        // Entry API with type-erased storage
+        if !self.op_states.contains_key(op_type) {
+            self.op_states.insert(*op_type, Box::new(T::default()));
+        }
+        self.op_states
+            .get_mut(op_type)
+            .and_then(|state| state.as_any_mut().downcast_mut::<T>())
+            .expect("type mismatch in op state - this is a bug")
     }
 }
 
@@ -382,6 +468,18 @@ pub trait NonPrimitiveExecutor<F: Field>: Debug {
     /// Allow downcasting to concrete executor types
     fn as_any(&self) -> &dyn core::any::Any;
 
+    /// Update the preprocessed values related to this operation. This consists of:
+    /// - the preprocessed values for the associated table
+    /// - the multiplicity for the `Witness` table.
+    fn preprocess(
+        &self,
+        _inputs: &[Vec<WitnessId>],
+        _outputs: &[Vec<WitnessId>],
+        _primitive_preprocessed: &mut Vec<Vec<F>>,
+        _non_primitive_preprocessed: &mut NonPrimitivePreprocessedMap<F>,
+    ) {
+    }
+
     /// Clone as trait object
     fn boxed(&self) -> Box<dyn NonPrimitiveExecutor<F>>;
 }
@@ -393,140 +491,6 @@ impl<F: Field> Clone for Box<dyn NonPrimitiveExecutor<F>> {
     }
 }
 
-/// The output of a hint filler is composed of the vector of hints values and and optional next state.
-pub type HintsOutputAndNextState<F> = (Vec<F>, Option<Vec<F>>);
-
-/// A trait for defining how unconstrained data (hints) is set.
-pub trait WitnessHintsFiller<F>: Debug + WitnessFillerClone<F> {
-    /// The state identifier for stateful fillers
-    fn state_id(&self) -> Option<String> {
-        None
-    }
-    /// Return the `ExprId` of the inputs
-    fn inputs(&self) -> &[ExprId];
-    /// Return number of outputs filled by this filler
-    fn n_outputs(&self) -> usize;
-    /// Compute the output and next state given the inputs and current state.
-    /// # Arguments
-    /// * `inputs` - Input witness
-    /// * `state` - Optional current state for stateful fillers
-    fn compute_outputs(
-        &self,
-        inputs_val: Vec<F>,
-        state: Option<&Vec<F>>,
-    ) -> Result<HintsOutputAndNextState<F>, CircuitError>;
-}
-
-impl<F> Clone for Box<dyn WitnessHintsFiller<F>> {
-    fn clone(&self) -> Self {
-        self.clone_box()
-    }
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct DefaultHint {
-    pub n_outputs: usize,
-}
-
-impl DefaultHint {
-    pub fn boxed_default<F: Default + Clone>() -> Box<dyn WitnessHintsFiller<F>> {
-        Box::new(Self::default())
-    }
-}
-
-impl<F: Default + Clone> WitnessHintsFiller<F> for DefaultHint {
-    fn inputs(&self) -> &[ExprId] {
-        &[]
-    }
-
-    fn n_outputs(&self) -> usize {
-        self.n_outputs
-    }
-
-    fn compute_outputs(
-        &self,
-        _inputs_val: Vec<F>,
-        _state: Option<&Vec<F>>,
-    ) -> Result<HintsOutputAndNextState<F>, CircuitError> {
-        Ok((vec![F::default(); self.n_outputs], None))
-    }
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct HashSqueezeHint<F: Field> {
-    state_id: Option<String>,
-    inputs: Vec<ExprId>,
-    config: HashConfig<F>,
-    reset: bool,
-}
-
-impl<F: Field> HashSqueezeHint<F> {
-    pub const fn new(
-        state_id: String,
-        inputs: Vec<ExprId>,
-        config: HashConfig<F>,
-        reset: bool,
-    ) -> Self {
-        Self {
-            state_id: Some(state_id),
-            inputs,
-            config,
-            reset,
-        }
-    }
-}
-
-impl<F: Field> WitnessHintsFiller<F> for HashSqueezeHint<F> {
-    fn state_id(&self) -> Option<String> {
-        self.state_id.clone()
-    }
-
-    fn inputs(&self) -> &[ExprId] {
-        &self.inputs
-    }
-
-    // Rate of the sponge, and size of the squeezed output
-    fn n_outputs(&self) -> usize {
-        self.config.rate
-    }
-
-    fn compute_outputs(
-        &self,
-        inputs_val: Vec<F>,
-        state: Option<&Vec<F>>,
-    ) -> Result<HintsOutputAndNextState<F>, CircuitError> {
-        let mut state = if self.reset {
-            vec![F::ZERO; self.config.width]
-        } else {
-            state
-                .cloned()
-                .unwrap_or_else(|| vec![F::ZERO; self.config.width])
-        };
-
-        for chunk in inputs_val.chunks(self.config.rate) {
-            state[..chunk.len()].copy_from_slice(chunk);
-            state = (self.config.permutation)(&state)?;
-        }
-
-        let output = state[..self.config.rate].to_vec();
-        Ok((output, Some(state)))
-    }
-}
-
-// Object-safe "clone into Box" helper
-pub trait WitnessFillerClone<F> {
-    fn clone_box(&self) -> Box<dyn WitnessHintsFiller<F>>;
-}
-
-impl<F, T> WitnessFillerClone<F> for T
-where
-    T: WitnessHintsFiller<F> + Clone + 'static,
-{
-    fn clone_box(&self) -> Box<dyn WitnessHintsFiller<F>> {
-        Box::new(self.clone())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use alloc::vec;
@@ -535,6 +499,7 @@ mod tests {
     use p3_field::PrimeCharacteristicRing;
 
     use super::*;
+    use crate::ops::poseidon2_perm::Poseidon2PermPrivateData;
 
     type F = BabyBear;
 
@@ -716,23 +681,6 @@ mod tests {
     }
 
     #[test]
-    fn test_primitive_op_type_from_usize() {
-        // Convert integer indices to operation types
-        let witness_type = PrimitiveOpType::from(0);
-        let const_type = PrimitiveOpType::from(1);
-        let public_type = PrimitiveOpType::from(2);
-        let add_type = PrimitiveOpType::from(3);
-        let mul_type = PrimitiveOpType::from(4);
-
-        // Verify each type has the correct preprocessing width
-        assert_eq!(witness_type.get_prep_width(), 1);
-        assert_eq!(const_type.get_prep_width(), 2);
-        assert_eq!(public_type.get_prep_width(), 1);
-        assert_eq!(add_type.get_prep_width(), 3);
-        assert_eq!(mul_type.get_prep_width(), 3);
-    }
-
-    #[test]
     #[should_panic(expected = "Invalid PrimitiveOpType value")]
     fn test_primitive_op_type_invalid_conversion() {
         // Attempt to convert an invalid index to an operation type
@@ -749,9 +697,11 @@ mod tests {
         let private_data = vec![];
         let configs = HashMap::new();
         let op_id = NonPrimitiveOpId(0);
+        let mut op_states = BTreeMap::new();
 
         // Create an execution context for operations to access the witness
-        let ctx = ExecutionContext::new(&mut witness, &private_data, &configs, op_id);
+        let ctx =
+            ExecutionContext::new(&mut witness, &private_data, &configs, op_id, &mut op_states);
 
         // Read a value from the witness table
         let result = ctx.get_witness(WitnessId(0));
@@ -767,9 +717,11 @@ mod tests {
         let private_data = vec![];
         let configs = HashMap::new();
         let op_id = NonPrimitiveOpId(0);
+        let mut op_states = BTreeMap::new();
 
         // Create execution context
-        let ctx = ExecutionContext::new(&mut witness, &private_data, &configs, op_id);
+        let ctx =
+            ExecutionContext::new(&mut witness, &private_data, &configs, op_id, &mut op_states);
 
         // Attempt to read a value that hasn't been set yet
         let result = ctx.get_witness(WitnessId(0));
@@ -791,9 +743,11 @@ mod tests {
         let private_data = vec![];
         let configs = HashMap::new();
         let op_id = NonPrimitiveOpId(0);
+        let mut op_states = BTreeMap::new();
 
         // Create execution context with mutable access to witness
-        let mut ctx = ExecutionContext::new(&mut witness, &private_data, &configs, op_id);
+        let mut ctx =
+            ExecutionContext::new(&mut witness, &private_data, &configs, op_id, &mut op_states);
 
         // Write a computed value into the witness table
         let val = F::from_u64(99);
@@ -814,9 +768,11 @@ mod tests {
         let private_data = vec![];
         let configs = HashMap::new();
         let op_id = NonPrimitiveOpId(0);
+        let mut op_states = BTreeMap::new();
 
         // Create execution context
-        let mut ctx = ExecutionContext::new(&mut witness, &private_data, &configs, op_id);
+        let mut ctx =
+            ExecutionContext::new(&mut witness, &private_data, &configs, op_id, &mut op_states);
 
         // Attempt to write a different value to the same slot
         //
@@ -842,9 +798,11 @@ mod tests {
         let private_data = vec![];
         let configs = HashMap::new();
         let op_id = NonPrimitiveOpId(0);
+        let mut op_states = BTreeMap::new();
 
         // Create execution context
-        let mut ctx = ExecutionContext::new(&mut witness, &private_data, &configs, op_id);
+        let mut ctx =
+            ExecutionContext::new(&mut witness, &private_data, &configs, op_id, &mut op_states);
 
         // Write the same value again to the same slot
         //
@@ -863,9 +821,11 @@ mod tests {
         let private_data = vec![];
         let configs = HashMap::new();
         let op_id = NonPrimitiveOpId(0);
+        let mut op_states = BTreeMap::new();
 
         // Create execution context
-        let mut ctx = ExecutionContext::new(&mut witness, &private_data, &configs, op_id);
+        let mut ctx =
+            ExecutionContext::new(&mut witness, &private_data, &configs, op_id, &mut op_states);
 
         // Attempt to write to an index beyond the table bounds
         let result = ctx.set_witness(WitnessId(10), F::from_u64(1));
@@ -883,18 +843,20 @@ mod tests {
     #[test]
     fn test_execution_context_get_private_data() {
         // Create private auxiliary data for a verification operation
-        let poseidon_data: PoseidonPermPrivateData<F> = PoseidonPermPrivateData {
-            input_values: vec![],
+        let poseidon2_data: Poseidon2PermPrivateData<F, 2> = Poseidon2PermPrivateData {
+            sibling: [F::ZERO, F::ZERO],
         };
-        let private_data = vec![Some(NonPrimitiveOpPrivateData::PoseidonPerm(
-            poseidon_data.clone(),
+        let private_data = vec![Some(NonPrimitiveOpPrivateData::Poseidon2Perm(
+            poseidon2_data.clone(),
         ))];
 
         // Create execution context with access to private data
         let mut witness = vec![];
         let configs = HashMap::new();
         let op_id = NonPrimitiveOpId(0);
-        let ctx = ExecutionContext::new(&mut witness, &private_data, &configs, op_id);
+        let mut op_states = BTreeMap::new();
+        let ctx =
+            ExecutionContext::new(&mut witness, &private_data, &configs, op_id, &mut op_states);
 
         // Operations can access their private data through the context
         let result = ctx.get_private_data();
@@ -902,7 +864,7 @@ mod tests {
         // Verify private data access succeeded
         assert_eq!(
             *result.unwrap(),
-            NonPrimitiveOpPrivateData::PoseidonPerm(poseidon_data)
+            NonPrimitiveOpPrivateData::Poseidon2Perm(poseidon2_data)
         );
     }
 
@@ -913,10 +875,11 @@ mod tests {
         let mut witness = vec![];
         let configs = HashMap::new();
         let op_id = NonPrimitiveOpId(0);
+        let mut op_states = BTreeMap::new();
 
         // Create execution context
         let ctx: ExecutionContext<'_, F> =
-            ExecutionContext::new(&mut witness, &private_data, &configs, op_id);
+            ExecutionContext::new(&mut witness, &private_data, &configs, op_id, &mut op_states);
 
         // Attempt to access private data that wasn't provided
         let result = ctx.get_private_data();
@@ -935,15 +898,16 @@ mod tests {
     fn test_execution_context_get_config() {
         // Create a configuration map for operation parameters
         let mut configs = HashMap::new();
-        let op_type = NonPrimitiveOpType::PoseidonPerm;
-        configs.insert(op_type.clone(), NonPrimitiveOpConfig::None);
+        let op_type = NonPrimitiveOpType::Poseidon2Perm(Poseidon2Config::BabyBearD4Width16);
+        configs.insert(op_type, NonPrimitiveOpConfig::None);
 
         // Create execution context with configurations
         let mut witness = vec![];
         let private_data = vec![];
         let op_id = NonPrimitiveOpId(0);
+        let mut op_states = BTreeMap::new();
         let ctx: ExecutionContext<'_, F> =
-            ExecutionContext::new(&mut witness, &private_data, &configs, op_id);
+            ExecutionContext::new(&mut witness, &private_data, &configs, op_id, &mut op_states);
 
         // Operations can query their configuration at runtime
         let result = ctx.get_config(&op_type);
@@ -959,13 +923,14 @@ mod tests {
         let mut witness = vec![];
         let private_data = vec![];
         let op_id = NonPrimitiveOpId(0);
+        let mut op_states = BTreeMap::new();
 
         // Create execution context
         let ctx: ExecutionContext<'_, F> =
-            ExecutionContext::new(&mut witness, &private_data, &configs, op_id);
+            ExecutionContext::new(&mut witness, &private_data, &configs, op_id, &mut op_states);
 
         // Attempt to access a configuration that wasn't registered
-        let op_type = NonPrimitiveOpType::PoseidonPerm;
+        let op_type = NonPrimitiveOpType::Poseidon2Perm(Poseidon2Config::BabyBearD4Width16);
         let result = ctx.get_config(&op_type);
 
         // Missing configurations indicate setup errors
@@ -979,36 +944,78 @@ mod tests {
     }
 
     #[test]
-    fn test_default_hint_compute_outputs() {
-        // Create a default hint that produces multiple outputs
-        let hint = DefaultHint { n_outputs: 3 };
-
-        // Compute default values for all outputs
-        let result = hint.compute_outputs(vec![], None);
-
-        // Verify the correct number of default-initialized values
-        let (outputs, state): (Vec<F>, Option<Vec<F>>) = result.unwrap();
-        assert_eq!(outputs.len(), 3);
-        assert_eq!(outputs[0], F::default());
-        assert_eq!(outputs[1], F::default());
-        assert_eq!(outputs[2], F::default());
-        assert_eq!(state, None);
-    }
-
-    #[test]
     fn test_execution_context_operation_id() {
         // Create execution context with a specific operation identifier
         let mut witness = vec![];
         let private_data = vec![];
         let configs = HashMap::new();
         let expected_id = NonPrimitiveOpId(42);
-        let ctx: ExecutionContext<'_, F> =
-            ExecutionContext::new(&mut witness, &private_data, &configs, expected_id);
+        let mut op_states = BTreeMap::new();
+        let ctx: ExecutionContext<'_, F> = ExecutionContext::new(
+            &mut witness,
+            &private_data,
+            &configs,
+            expected_id,
+            &mut op_states,
+        );
 
         // Retrieve the operation ID from the context
         let retrieved_id = ctx.operation_id();
 
         // Verify the ID is correctly preserved
         assert_eq!(retrieved_id, expected_id);
+    }
+
+    /// Test state type for verifying generic state management.
+    #[derive(Debug, Default)]
+    struct TestOpState {
+        value: Option<u64>,
+    }
+
+    impl OpExecutionState for TestOpState {
+        fn as_any(&self) -> &dyn core::any::Any {
+            self
+        }
+        fn as_any_mut(&mut self) -> &mut dyn core::any::Any {
+            self
+        }
+    }
+
+    #[test]
+    fn test_execution_context_op_state() {
+        // Test the generic operation state accessors
+        let mut witness: Vec<Option<F>> = vec![];
+        let private_data = vec![];
+        let configs = HashMap::new();
+        let op_id = NonPrimitiveOpId(0);
+        let mut op_states = BTreeMap::new();
+
+        let mut ctx =
+            ExecutionContext::new(&mut witness, &private_data, &configs, op_id, &mut op_states);
+
+        // Initially, no state should be present
+        assert!(
+            ctx.get_op_state::<TestOpState>(&NonPrimitiveOpType::Poseidon2Perm(
+                Poseidon2Config::BabyBearD4Width16,
+            ))
+            .is_none()
+        );
+
+        // Get or create state (should create default)
+        let state = ctx.get_op_state_mut::<TestOpState>(&NonPrimitiveOpType::Poseidon2Perm(
+            Poseidon2Config::BabyBearD4Width16,
+        ));
+        assert!(state.value.is_none());
+
+        // Modify the state
+        state.value = Some(42);
+
+        // Verify the state was stored and can be retrieved
+        let state_ref = ctx
+            .get_op_state::<TestOpState>(&NonPrimitiveOpType::Poseidon2Perm(
+                Poseidon2Config::BabyBearD4Width16,
+            ))
+            .unwrap();
+        assert_eq!(state_ref.value, Some(42));
     }
 }

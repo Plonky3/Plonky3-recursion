@@ -21,6 +21,7 @@ pub enum AllocationType {
     Mul,
     Div,
     NonPrimitiveOp(NonPrimitiveOpType),
+    NonPrimitiveOutput,
     WitnessHint,
 }
 
@@ -111,7 +112,9 @@ fn dump_internal_log(allocation_log: &[AllocationEntry]) {
             AllocationType::Sub => subs.push(entry),
             AllocationType::Mul => muls.push(entry),
             AllocationType::Div => divs.push(entry),
-            AllocationType::NonPrimitiveOp(_) => non_primitives.push(entry),
+            AllocationType::NonPrimitiveOp(_) | AllocationType::NonPrimitiveOutput => {
+                non_primitives.push(entry);
+            }
             AllocationType::WitnessHint => witness_hints.push(entry),
         }
     }
@@ -238,6 +241,7 @@ fn dump_internal_log(allocation_log: &[AllocationEntry]) {
         for entry in non_primitives {
             let op_name = match &entry.alloc_type {
                 AllocationType::NonPrimitiveOp(op_type) => format!("{op_type:?}").to_string(),
+                AllocationType::NonPrimitiveOutput => "NonPrimitiveOutput".to_string(),
                 _ => "Unknown".to_string(),
             };
             if !entry.dependencies.is_empty() {

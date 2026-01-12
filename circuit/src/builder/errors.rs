@@ -1,10 +1,10 @@
 use alloc::string::String;
-use alloc::vec::Vec;
 
 use thiserror::Error;
 
+use crate::ExprId;
 use crate::op::NonPrimitiveOpType;
-use crate::{ExprId, WitnessId};
+use crate::types::NonPrimitiveOpId;
 
 /// Errors that can occur during circuit building/lowering.
 #[derive(Debug, Error)]
@@ -21,6 +21,22 @@ pub enum CircuitBuilderError {
         got: usize,
     },
 
+    /// Non-primitive operation referenced by id was not found.
+    #[error("Non-primitive operation id {op_id:?} not found")]
+    MissingNonPrimitiveOp { op_id: NonPrimitiveOpId },
+
+    /// Non-primitive output indices for an op are malformed (duplicates or gaps).
+    #[error("Non-primitive output indices malformed for op {op_id:?}: {details}")]
+    MalformedNonPrimitiveOutputs {
+        op_id: NonPrimitiveOpId,
+        details: String,
+    },
+
+    /// Non-primitive operation exists in the builder but was never anchored in the expression DAG,
+    /// so the lowerer cannot place it in a well-defined execution order.
+    #[error("Non-primitive operation {op_id:?} is not anchored in the expression DAG")]
+    UnanchoredNonPrimitiveOp { op_id: NonPrimitiveOpId },
+
     /// Non-primitive operation rejected by the active policy/profile.
     #[error("Operation {op:?} is not allowed by the current profile")]
     OpNotAllowed { op: NonPrimitiveOpType },
@@ -33,15 +49,19 @@ pub enum CircuitBuilderError {
     #[error("Invalid configuration for operation {op:?}")]
     InvalidNonPrimitiveOpConfiguration { op: NonPrimitiveOpType },
 
-    /// A sequence of expressions of type Witness is missing its filler.
-    #[error("Missing hint filler for expression {sequence:?}")]
-    MissingWitnessFiller { sequence: Vec<WitnessId> },
+    /// Merkle-path Poseidon2 rows require a direction bit.
+    #[error("Poseidon2Perm merkle_path=true requires mmcs_bit")]
+    Poseidon2MerkleMissingMmcsBit,
 
-    /// A sequence of witness hints has no end.
-    #[error("Witness hint without last hint {sequence:?}.")]
-    MalformedWitnessHintsSequence { sequence: Vec<WitnessId> },
+    /// Non-merkle Poseidon2 rows should not have mmcs_bit set.
+    #[error("Poseidon2Perm merkle_path=false must not have mmcs_bit (it has no effect)")]
+    Poseidon2NonMerkleWithMmcsBit,
 
-    /// Witness filler without any hints sequence.
-    #[error("Witness filler is missing a witness hints sequence")]
-    UnmatchetWitnessFiller {},
+    /// Requested bit length exceeds the maximum allowed for binary decomposition.
+    #[error("Too many bits for binary decomposition: expected at most {expected}, got {n_bits}")]
+    BinaryDecompositionTooManyBits { expected: usize, n_bits: usize },
+
+    /// Missing output
+    #[error("An output was expected but none was given")]
+    MissingOutput,
 }

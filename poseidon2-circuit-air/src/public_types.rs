@@ -4,7 +4,7 @@
 //! the Poseidon2 circuit AIR for commonly used configurations.
 
 use p3_baby_bear::{BabyBear, GenericPoseidon2LinearLayersBabyBear};
-use p3_circuit::tables::Poseidon2Params;
+use p3_circuit::ops::{Poseidon2Config, Poseidon2Params};
 use p3_koala_bear::{GenericPoseidon2LinearLayersKoalaBear, KoalaBear};
 
 use crate::Poseidon2CircuitAir;
@@ -28,14 +28,7 @@ pub struct BabyBearD4Width16;
 
 impl Poseidon2Params for BabyBearD4Width16 {
     type BaseField = BabyBear;
-    const D: usize = 4;
-    const WIDTH: usize = 16;
-    const RATE_EXT: usize = 2;
-    const CAPACITY_EXT: usize = 2;
-    const SBOX_DEGREE: u64 = 7;
-    const SBOX_REGISTERS: usize = 1;
-    const HALF_FULL_ROUNDS: usize = 4;
-    const PARTIAL_ROUNDS: usize = 13;
+    const CONFIG: Poseidon2Config = Poseidon2Config::BabyBearD4Width16;
 }
 
 /// Poseidon2 configuration for BabyBear with D=4, WIDTH=24.
@@ -43,14 +36,7 @@ pub struct BabyBearD4Width24;
 
 impl Poseidon2Params for BabyBearD4Width24 {
     type BaseField = BabyBear;
-    const D: usize = 4;
-    const WIDTH: usize = 24;
-    const RATE_EXT: usize = 4;
-    const CAPACITY_EXT: usize = 2;
-    const SBOX_DEGREE: u64 = 7;
-    const SBOX_REGISTERS: usize = 1;
-    const HALF_FULL_ROUNDS: usize = 4;
-    const PARTIAL_ROUNDS: usize = 21;
+    const CONFIG: Poseidon2Config = Poseidon2Config::BabyBearD4Width24;
 }
 
 /// Poseidon2 configuration for KoalaBear with D=4, WIDTH=16.
@@ -58,14 +44,7 @@ pub struct KoalaBearD4Width16;
 
 impl Poseidon2Params for KoalaBearD4Width16 {
     type BaseField = KoalaBear;
-    const D: usize = 4;
-    const WIDTH: usize = 16;
-    const RATE_EXT: usize = 2;
-    const CAPACITY_EXT: usize = 2;
-    const SBOX_DEGREE: u64 = 3;
-    const SBOX_REGISTERS: usize = 0;
-    const HALF_FULL_ROUNDS: usize = 4;
-    const PARTIAL_ROUNDS: usize = 20;
+    const CONFIG: Poseidon2Config = Poseidon2Config::KoalaBearD4Width16;
 }
 
 /// Poseidon2 configuration for KoalaBear with D=4, WIDTH=24.
@@ -73,14 +52,7 @@ pub struct KoalaBearD4Width24;
 
 impl Poseidon2Params for KoalaBearD4Width24 {
     type BaseField = KoalaBear;
-    const D: usize = 4;
-    const WIDTH: usize = 24;
-    const RATE_EXT: usize = 4;
-    const CAPACITY_EXT: usize = 2;
-    const SBOX_DEGREE: u64 = 3;
-    const SBOX_REGISTERS: usize = 0;
-    const HALF_FULL_ROUNDS: usize = 4;
-    const PARTIAL_ROUNDS: usize = 23;
+    const CONFIG: Poseidon2Config = Poseidon2Config::KoalaBearD4Width24;
 }
 
 /// BabyBear Poseidon2 circuit AIR with D=1, WIDTH=16.

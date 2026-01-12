@@ -11,8 +11,7 @@ use p3_uni_stark::{Proof, StarkGenericConfig, Val};
 
 use crate::pcs::MAX_QUERY_INDEX_BITS;
 use crate::traits::Recursive;
-use crate::verifier::BatchProofTargets;
-use crate::{PreprocessedVerifierDataTargets, ProofTargets};
+use crate::{BatchProofTargets, CommonDataTargets, ProofTargets};
 
 /// Builder for constructing a flat public input vector in a canonical order.
 ///
@@ -382,7 +381,7 @@ where
 pub fn construct_batch_stark_verifier_inputs<F, EF>(
     air_public_values: &[Vec<F>],
     proof_values: &[EF],
-    preprocessed: &[EF],
+    common_data: &[EF],
     challenges: &[EF],
 ) -> Vec<EF>
 where
@@ -400,8 +399,8 @@ where
     // Add proof values (already in extension field).
     builder.add_proof_values(proof_values.iter().copied());
 
-    // Add preprocessed values.
-    builder.add_proof_values(preprocessed.iter().copied());
+    // Add common_data values.
+    builder.add_proof_values(common_data.iter().copied());
 
     // Add all shared challenges.
     builder.add_challenges(challenges.iter().copied());
@@ -603,8 +602,8 @@ where
     ///
     /// This includes all commitments and openings for all instances.
     pub proof_targets: BatchProofTargets<SC, Comm, OpeningProof>,
-    /// Allocated preprocessed commitment targets (if any).
-    pub preprocessed: PreprocessedVerifierDataTargets<SC, Comm>,
+    /// Allocated common data targets (if any).
+    pub common_data: CommonDataTargets<SC, Comm>,
 }
 
 impl<SC, Comm, OpeningProof> BatchStarkVerifierInputsBuilder<SC, Comm, OpeningProof>
@@ -648,12 +647,12 @@ where
         // Allocate targets for the batch proof structure, based on the reference proof.
         let proof_targets = BatchProofTargets::new(circuit, proof);
 
-        let preprocessed = PreprocessedVerifierDataTargets::<SC, Comm>::new(circuit, common_data);
+        let common_data = CommonDataTargets::<SC, Comm>::new(circuit, common_data);
 
         Self {
             air_public_targets,
             proof_targets,
-            preprocessed,
+            common_data,
         }
     }
 
@@ -680,7 +679,7 @@ where
         // Extract extension-field values from the batch proof structure.
         //
         // The internal order matches the structure used when targets were created.
-        let common_data = PreprocessedVerifierDataTargets::<SC, Comm>::get_values(common);
+        let common_data = CommonDataTargets::<SC, Comm>::get_values(common);
         let proof_values = BatchProofTargets::<SC, Comm, OpeningProof>::get_values(proof);
 
         // Combine AIR public values, proof values, and challenges into a single public input vector.

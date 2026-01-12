@@ -1,17 +1,22 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
+use hashbrown::HashMap;
 use itertools::zip_eq;
 use p3_air::Air;
 use p3_batch_stark::config::observe_instance_binding;
+use p3_batch_stark::symbolic::{
+    get_log_num_quotient_chunks as get_batch_log_num_quotient_chunks, lookup_data_to_expr,
+};
 use p3_batch_stark::{BatchProof, CommonData};
 use p3_challenger::{CanObserve, CanSample, CanSampleBits, FieldChallenger, GrindingChallenger};
 use p3_commit::{BatchOpening, Mmcs, Pcs, PolynomialSpace};
 use p3_field::{BasedVectorSpace, PrimeCharacteristicRing, PrimeField, TwoAdicField};
 use p3_fri::{FriProof, TwoAdicFriPcs};
+use p3_lookup::lookup_traits::{AirLookupHandler, Kind, Lookup, LookupGadget};
 use p3_uni_stark::{
-    Domain, Proof, StarkGenericConfig, SymbolicAirBuilder, Val, VerifierConstraintFolder,
-    get_log_num_quotient_chunks,
+    Domain, Proof, StarkGenericConfig, SymbolicAirBuilder, SymbolicExpression, Val,
+    VerifierConstraintFolder, get_log_num_quotient_chunks,
 };
 use thiserror::Error;
 use tracing::debug_span;
@@ -255,17 +260,19 @@ where
 }
 
 /// Generates the challenges used in the verification of a batch-STARK proof.
-pub fn generate_batch_challenges<SC: StarkGenericConfig, A>(
+pub fn generate_batch_challenges<SC: StarkGenericConfig, A, LG: LookupGadget>(
     airs: &[A],
     config: &SC,
     proof: &BatchProof<SC>,
     public_values: &[Vec<Val<SC>>],
     extra_params: Option<&[usize]>,
     common_data: &CommonData<SC>,
+    lookup_gadget: &LG,
 ) -> Result<Vec<SC::Challenge>, GenerationError>
 where
-    A: Air<SymbolicAirBuilder<Val<SC>>> + for<'a> Air<VerifierConstraintFolder<'a, SC>>,
+    A: AirLookupHandler<SymbolicAirBuilder<Val<SC>, SC::Challenge>>,
     SC::Pcs: PcsGeneration<SC, <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Proof>,
+    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
 {
     debug_assert_eq!(config.is_zk(), 0, "batch recursion assumes non-ZK");
     if SC::Pcs::ZK {
@@ -274,12 +281,43 @@ where
         ));
     }
 
+    let all_lookups = &common_data.lookups;
+
     let BatchProof {
         commitments,
         opened_values,
         opening_proof,
+        global_lookup_data,
         degree_bits,
     } = proof;
+
+    // Check that the global lookup data is consistent with the lookups.
+    all_lookups
+        .iter()
+        .zip(global_lookup_data)
+        .try_for_each(|(lookups, global_lookups)| {
+            let mut counter = 0;
+            lookups.iter().try_for_each(|lookup| match &lookup.kind {
+                Kind::Global(name) => {
+                    if counter >= global_lookups.len() || global_lookups[counter].name != *name {
+                        Err(GenerationError::InvalidProofShape(
+                            "Global lookups are inconsistent with lookups",
+                        ))
+                    } else {
+                        counter += 1;
+                        Ok(())
+                    }
+                }
+                Kind::Local => Ok(()),
+            })?;
+            if counter != global_lookups.len() {
+                Err(GenerationError::InvalidProofShape(
+                    "Global lookups are inconsistent with lookups",
+                ))
+            } else {
+                Ok(())
+            }
+        })?;
 
     let n_instances = airs.len();
     if n_instances == 0
@@ -299,6 +337,7 @@ where
 
     for inst in &opened_values.instances {
         if inst
+            .base_opened_values
             .quotient_chunks
             .iter()
             .any(|c| c.len() != SC::Challenge::DIMENSION)
@@ -320,8 +359,15 @@ where
             .unwrap_or(0);
         preprocessed_widths.push(pre_w);
 
-        let log_qd =
-            get_log_num_quotient_chunks::<Val<SC>, A>(air, pre_w, pv.len(), config.is_zk());
+        let log_qd = get_batch_log_num_quotient_chunks(
+            air,
+            pre_w,
+            pv.len(),
+            &all_lookups[i],
+            &lookup_data_to_expr(&global_lookup_data[i]),
+            config.is_zk(),
+            lookup_gadget,
+        );
         let quotient_degree = 1 << (log_qd + config.is_zk());
         log_quotient_degrees.push(log_qd);
         quotient_degrees.push(quotient_degree);
@@ -356,11 +402,29 @@ where
         challenger.observe(global.commitment.clone());
     }
 
+    let is_lookup = commitments.permutation.is_some();
+
+    // Fetch lookups and sample their challenges.
+    // We use `get_different_perm_challenges` to ensure we only store the newly created challenges, in their order of sampling.
+    let different_challenges =
+        get_different_perm_challenges::<SC, LG>(&mut challenger, all_lookups, lookup_gadget);
+
+    // Then, observe the permutation tables, if any.
+    if is_lookup {
+        challenger.observe(
+            commitments
+                .permutation
+                .clone()
+                .expect("We checked that the commitment exists"),
+        );
+    }
+
     let alpha = challenger.sample_algebra_element();
 
     challenger.observe(commitments.quotient_chunks.clone());
     let zeta = challenger.sample_algebra_element();
 
+    // TODO: Update to support ZK.
     let ext_trace_domains: Vec<_> = degree_bits
         .iter()
         .map(|&ext_db| pcs.natural_domain_for_degree(1 << ext_db))
@@ -380,8 +444,8 @@ where
             Ok((
                 *ext_dom,
                 vec![
-                    (zeta, inst.trace_local.clone()),
-                    (zeta_next, inst.trace_next.clone()),
+                    (zeta, inst.base_opened_values.trace_local.clone()),
+                    (zeta_next, inst.base_opened_values.trace_next.clone()),
                 ],
             ))
         })
@@ -401,12 +465,15 @@ where
 
     let mut quotient_round = Vec::new();
     for (domains, inst) in quotient_domains.iter().zip(opened_values.instances.iter()) {
-        if inst.quotient_chunks.len() != domains.len() {
+        if inst.base_opened_values.quotient_chunks.len() != domains.len() {
             return Err(GenerationError::InvalidProofShape(
                 "quotient chunk count mismatch",
             ));
         }
-        for (domain, values) in domains.iter().zip(inst.quotient_chunks.iter()) {
+        for (domain, values) in domains
+            .iter()
+            .zip(inst.base_opened_values.quotient_chunks.iter())
+        {
             quotient_round.push((*domain, vec![(zeta, values.clone())]));
         }
     }
@@ -424,18 +491,12 @@ where
             }
 
             let inst = &opened_values.instances[inst_idx];
-            let local =
-                inst.preprocessed_local
-                    .as_ref()
-                    .ok_or(GenerationError::InvalidProofShape(
-                        "preprocessed local values should exist",
-                    ))?;
-            let next =
-                inst.preprocessed_next
-                    .as_ref()
-                    .ok_or(GenerationError::InvalidProofShape(
-                        "preprocessed next values should exist",
-                    ))?;
+            let local = inst.base_opened_values.preprocessed_local.as_ref().ok_or(
+                GenerationError::InvalidProofShape("preprocessed local values should exist"),
+            )?;
+            let next = inst.base_opened_values.preprocessed_next.as_ref().ok_or(
+                GenerationError::InvalidProofShape("preprocessed next values should exist"),
+            )?;
 
             // Validate that the preprocessed data's base degree matches what we expect.
             let ext_db = degree_bits[inst_idx];
@@ -468,6 +529,36 @@ where
         coms_to_verify.push((global.commitment.clone(), pre_round));
     }
 
+    if is_lookup {
+        let permutation_commit = commitments.permutation.clone().unwrap();
+        let mut permutation_round = Vec::new();
+        for (ext_dom, inst_opened_vals) in
+            ext_trace_domains.iter().zip(opened_values.instances.iter())
+        {
+            if inst_opened_vals.permutation_local.len() != inst_opened_vals.permutation_next.len() {
+                return Err(GenerationError::InvalidProofShape(
+                    "Permutation opened values length mismatch",
+                ));
+            }
+            if !inst_opened_vals.permutation_local.is_empty() {
+                let zeta_next =
+                    ext_dom
+                        .next_point(zeta)
+                        .ok_or(GenerationError::InvalidProofShape(
+                            "Missing preprocessed instance metadata",
+                        ))?;
+                permutation_round.push((
+                    *ext_dom,
+                    vec![
+                        (zeta, inst_opened_vals.permutation_local.clone()),
+                        (zeta_next, inst_opened_vals.permutation_next.clone()),
+                    ],
+                ));
+            }
+        }
+        coms_to_verify.push((permutation_commit, permutation_round));
+    }
+
     let pcs_challenges = pcs.generate_challenges(
         config,
         &mut challenger,
@@ -477,6 +568,7 @@ where
     )?;
 
     let mut challenges = Vec::with_capacity(2 + pcs_challenges.len());
+    challenges.extend(different_challenges);
     challenges.push(alpha);
     challenges.push(zeta);
     challenges.extend(pcs_challenges);
@@ -529,12 +621,23 @@ where
         challenges.push(challenger.sample_algebra_element());
 
         // Get `beta` challenges for the FRI rounds.
-        opening_proof.commit_phase_commits.iter().for_each(|comm| {
-            // To match with the prover (and for security purposes),
-            // we observe the commitment before sampling the challenge.
-            challenger.observe(comm.clone());
-            challenges.push(challenger.sample_algebra_element());
-        });
+        opening_proof
+            .commit_phase_commits
+            .iter()
+            .zip(&opening_proof.commit_pow_witnesses)
+            .for_each(|(comm, pow_witness)| {
+                // To match with the prover (and for security purposes),
+                // we observe the commitment before sampling the challenge.
+                challenger.observe(comm.clone());
+                challenger.observe(*pow_witness);
+                // Sample a challenge as H(transcript || pow_witness). The circuit later
+                // verifies that the challenge begins with the required number of leading zeros.
+                let rand_f: Val<SC> = challenger.sample();
+                let rand_usize = rand_f.as_canonical_biguint().to_u64_digits()[0] as usize;
+                challenges.push(SC::Challenge::from_usize(rand_usize));
+
+                challenges.push(challenger.sample_algebra_element());
+            });
 
         // Observe all coefficients of the final polynomial.
         opening_proof
@@ -549,7 +652,7 @@ where
         }
 
         // Check PoW witness.
-        challenger.observe(opening_proof.pow_witness);
+        challenger.observe(opening_proof.query_pow_witness);
 
         // Sample a challenge as H(transcript || pow_witness). The circuit later
         // verifies that the challenge begins with the required number of leading zeros.
@@ -578,4 +681,43 @@ where
 
         Ok(num_challenges)
     }
+}
+
+/// Samples all the different permutation challenges in the right order.
+/// This method is used to generate values for the challenge public values, and so it must store
+/// only the newly created challenges, in their order of sampling.
+pub fn get_different_perm_challenges<SC: StarkGenericConfig, LG: LookupGadget>(
+    challenger: &mut SC::Challenger,
+    all_lookups: &[Vec<Lookup<Val<SC>>>],
+    lookup_gadget: &LG,
+) -> Vec<SC::Challenge> {
+    let num_challenges_per_lookup = lookup_gadget.num_challenges();
+    let mut global_perm_names = HashMap::new();
+    let mut different_challenges = Vec::new();
+
+    all_lookups.iter().for_each(|contexts| {
+        for context in contexts {
+            match &context.kind {
+                Kind::Global(name) => {
+                    // Get or create the global challenges.
+                    // We only store the newly created challenges, in `different_challenges`.
+                    // `global_perm_challenges` is just used to track the names already encountered, so
+                    // we only insert `(name, ())` when a new name is encountered.
+                    global_perm_names.entry(name).or_insert_with(|| {
+                        (0..num_challenges_per_lookup).for_each(|_| {
+                            let sampled = challenger.sample_algebra_element();
+                            different_challenges.push(sampled);
+                        });
+                    });
+                }
+                Kind::Local => {
+                    different_challenges.extend(
+                        (0..num_challenges_per_lookup)
+                            .map(|_| challenger.sample_algebra_element::<SC::Challenge>()),
+                    );
+                }
+            }
+        }
+    });
+    different_challenges
 }

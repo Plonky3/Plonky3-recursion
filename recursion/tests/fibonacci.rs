@@ -1,37 +1,18 @@
-use p3_baby_bear::{BabyBear, Poseidon2BabyBear};
-use p3_challenger::DuplexChallenger;
+mod common;
+
 use p3_circuit::CircuitBuilder;
 use p3_circuit::test_utils::{FibonacciAir, generate_trace_rows};
-use p3_commit::ExtensionMmcs;
-use p3_dft::Radix2DitParallel;
-use p3_field::extension::BinomialExtensionField;
-use p3_field::{Field, PrimeCharacteristicRing};
-use p3_fri::{TwoAdicFriPcs, create_test_fri_params};
-use p3_merkle_tree::MerkleTreeMmcs;
-use p3_recursion::pcs::fri::{
-    FriProofTargets, FriVerifierParams, HashTargets, InputProofTargets, RecExtensionValMmcs,
-    RecValMmcs, Witness,
-};
+use p3_field::PrimeCharacteristicRing;
+use p3_fri::create_test_fri_params;
+use p3_lookup::lookup_traits::AirNoLookup;
+use p3_recursion::pcs::fri::{FriVerifierParams, HashTargets, InputProofTargets, RecValMmcs};
 use p3_recursion::public_inputs::StarkVerifierInputsBuilder;
 use p3_recursion::{VerificationError, generate_challenges, verify_circuit};
-use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
-use p3_uni_stark::{StarkConfig, StarkGenericConfig, Val, prove, verify};
+use p3_uni_stark::{prove, verify};
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
 
-type F = BabyBear;
-const D: usize = 4;
-const RATE: usize = 8;
-type Challenge = BinomialExtensionField<F, D>;
-type Dft = Radix2DitParallel<F>;
-type Perm = Poseidon2BabyBear<16>;
-type MyHash = PaddingFreeSponge<Perm, 16, RATE, 8>;
-type MyCompress = TruncatedPermutation<Perm, 2, 8, 16>;
-type ValMmcs = MerkleTreeMmcs<<F as Field>::Packing, <F as Field>::Packing, MyHash, MyCompress, 8>;
-type ChallengeMmcs = ExtensionMmcs<F, Challenge, ValMmcs>;
-type Challenger = DuplexChallenger<F, Perm, 16, RATE>;
-type MyPcs = TwoAdicFriPcs<F, Dft, ValMmcs, ChallengeMmcs>;
-type MyConfig = StarkConfig<MyPcs, Challenge, Challenger>;
+use crate::common::baby_bear_params::*;
 
 #[test]
 fn test_fibonacci_verifier() -> Result<(), VerificationError> {
@@ -50,36 +31,16 @@ fn test_fibonacci_verifier() -> Result<(), VerificationError> {
     let fri_params = create_test_fri_params(challenge_mmcs, log_final_poly_len);
     let fri_verifier_params = FriVerifierParams::from(&fri_params);
     let log_height_max = fri_params.log_final_poly_len + fri_params.log_blowup;
-    let pow_bits = fri_params.proof_of_work_bits;
+    let pow_bits = fri_params.query_proof_of_work_bits;
     let pcs = MyPcs::new(dft, val_mmcs, fri_params);
     let challenger = Challenger::new(perm);
 
     let config = MyConfig::new(pcs, challenger);
     let pis = vec![BabyBear::ZERO, BabyBear::ONE, BabyBear::from_u64(x)];
 
-    let air = FibonacciAir {};
+    let air = AirNoLookup::new(FibonacciAir {});
     let proof = prove(&config, &air, trace, &pis);
     assert!(verify(&config, &air, &proof, &pis).is_ok());
-
-    const DIGEST_ELEMS: usize = 8;
-
-    // Type of the `OpeningProof` used in the circuit for a `TwoAdicFriPcs`.
-    type InnerFri = FriProofTargets<
-        Val<MyConfig>,
-        <MyConfig as StarkGenericConfig>::Challenge,
-        RecExtensionValMmcs<
-            Val<MyConfig>,
-            <MyConfig as StarkGenericConfig>::Challenge,
-            DIGEST_ELEMS,
-            RecValMmcs<Val<MyConfig>, DIGEST_ELEMS, MyHash, MyCompress>,
-        >,
-        InputProofTargets<
-            Val<MyConfig>,
-            <MyConfig as StarkGenericConfig>::Challenge,
-            RecValMmcs<Val<MyConfig>, DIGEST_ELEMS, MyHash, MyCompress>,
-        >,
-        Witness<Val<MyConfig>>,
-    >;
 
     let mut circuit_builder = CircuitBuilder::new();
 
@@ -92,7 +53,7 @@ fn test_fibonacci_verifier() -> Result<(), VerificationError> {
 
     // Add the verification circuit to the builder.
     verify_circuit::<
-        FibonacciAir,
+        AirNoLookup<FibonacciAir>,
         MyConfig,
         HashTargets<F, DIGEST_ELEMS>,
         InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>>,

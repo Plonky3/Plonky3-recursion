@@ -11,7 +11,6 @@ use super::NonPrimitiveTrace;
 use crate::CircuitError;
 use crate::circuit::{Circuit, CircuitField};
 use crate::op::{NonPrimitiveOpPrivateData, NonPrimitiveOpType, Op};
-use crate::ops::poseidon_perm::PoseidonPermExecutor;
 use crate::types::WitnessId;
 
 /// Private data for Poseidon permutation (e.g. pre-image).
@@ -185,7 +184,7 @@ where
             };
 
             if executor.op_type() == &NonPrimitiveOpType::PoseidonPerm {
-                let Some(exec) = executor.as_any().downcast_ref::<PoseidonPermExecutor>() else {
+                let Some(exec) = executor.as_any().downcast_ref::<Poseidon2PermExecutor>() else {
                     return Err(CircuitError::InvalidNonPrimitiveOpConfiguration {
                         op: executor.op_type().clone(),
                     });

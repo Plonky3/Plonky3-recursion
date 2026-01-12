@@ -20,10 +20,10 @@ pub mod utils;
 #[cfg(debug_assertions)]
 pub use alloc_entry::{AllocationEntry, AllocationType};
 pub use builder::{CircuitBuilder, CircuitBuilderError};
-pub use circuit::{Circuit, CircuitField};
+pub use circuit::{Circuit, CircuitField, PreprocessedColumns};
 pub use errors::CircuitError;
 pub use expr::{Expr, ExpressionGraph};
 pub use op::{NonPrimitiveOpPrivateData, NonPrimitiveOpType, Op};
-pub use ops::PoseidonPermOps;
+pub use ops::Poseidon2PermOps;
 pub use tables::{CircuitRunner, Traces};
 pub use types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};

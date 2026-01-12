@@ -7,16 +7,17 @@ use p3_baby_bear::BabyBear;
 use p3_batch_stark::CommonData;
 use p3_circuit::CircuitBuilder;
 use p3_circuit_prover::common::get_airs_and_degrees_with_prep;
+use p3_circuit_prover::config::BabyBearConfig;
 use p3_circuit_prover::{BatchStarkProver, TablePacking, config};
 use p3_field::PrimeCharacteristicRing;
+use p3_lookup::logup::LogUpGadget;
 use tracing_forest::ForestLayer;
 use tracing_forest::util::LevelFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Registry};
 
-type F = BabyBear;
-
+/// Initializes a global logger with default parameters.
 fn init_logger() {
     let env_filter = EnvFilter::builder()
         .with_default_directive(LevelFilter::INFO.into())
@@ -28,8 +29,12 @@ fn init_logger() {
         .init();
 }
 
+type F = BabyBear;
+
 fn main() -> Result<(), Box<dyn Error>> {
     init_logger();
+
+    let config = config::baby_bear().build();
 
     let n = env::args()
         .nth(1)
@@ -59,8 +64,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     let circuit = builder.build()?;
     let table_packing = TablePacking::new(4, 4, 1);
 
-    let airs_degrees = get_airs_and_degrees_with_prep::<_, _, 1>(&circuit, table_packing).unwrap();
-    let (airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
+    let (airs_degrees, witness_multiplicities) =
+        get_airs_and_degrees_with_prep::<BabyBearConfig, _, 1>(&circuit, table_packing, None)
+            .unwrap();
+    let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
     let mut runner = circuit.runner();
 
     // Set public input
@@ -68,11 +75,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     runner.set_public_inputs(&[expected_fib])?;
 
     let traces = runner.run()?;
-    let config = config::baby_bear().build();
-    let common = CommonData::from_airs_and_degrees(&config, &airs, &degrees);
+    let common = CommonData::from_airs_and_degrees(&config, &mut airs, &degrees);
     let prover = BatchStarkProver::new(config).with_table_packing(table_packing);
-    let proof = prover.prove_all_tables(&traces, &common)?;
-    prover.verify_all_tables(&proof, &common)?;
+
+    let lookup_gadget = LogUpGadget::new();
+    let proof =
+        prover.prove_all_tables(&traces, &common, witness_multiplicities, &lookup_gadget)?;
+    prover.verify_all_tables(&proof, &common, &lookup_gadget)?;
     Ok(())
 }
 

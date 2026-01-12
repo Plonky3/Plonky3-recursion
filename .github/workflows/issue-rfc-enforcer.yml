@@ -1,0 +1,141 @@
+name: Enforce RFC for needs-rfc issues
+
+on:
+  issues:
+    types: [opened, edited, labeled, unlabeled, reopened]
+
+permissions:
+  issues: write
+
+jobs:
+  enforce:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Enforce needs-rfc to require RFC link
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const issue_number = context.payload.issue.number;
+
+            // Always re-fetch the issue so labels/body are current
+            const { data: issue } = await github.rest.issues.get({ owner, repo, issue_number });
+
+            const labels = new Set((issue.labels || []).map(l => l.name));
+            const body = issue.body || "";
+
+            const NEEDS_RFC = "needs-rfc";
+            const BLOCKED = "blocked";
+
+            const hasNeedsRfc = labels.has(NEEDS_RFC);
+
+            // RFC link detection:
+            // - Prefer the explicit Issue Form field "RFC link ..."
+            // - Accept either a PR/URL or a merged RFC path like docs/rfcs/0007-foo-bar.md
+            // - Also accept markdown links like [RFC PR](https://...)
+            const extractRfcLinkField = (text) => {
+              // Match the rendered heading from Issue Forms, then capture the first non-empty line after it.
+              // Example:
+              // ### RFC link (required if needs-rfc is checked)
+              // https://...
+              // or
+              // docs/rfcs/0007-...
+              const m = text.match(/^###\s*RFC link[^\n]*\n+([\s\S]*?)(?:\n###\s|\n#\s|$)/im);
+              if (!m) return "";
+              const block = m[1] || "";
+              const lines = block
+                .split("\n")
+                .map(l => l.trim())
+                .filter(l => l.length > 0);
+              return (lines[0] || "").trim();
+            };
+
+            const extractUrlFromMarkdown = (s) => {
+              const m = s.match(/\((https?:\/\/[^)]+)\)/i);
+              return m ? m[1].trim() : null;
+            };
+
+            const rfcRaw = extractRfcLinkField(body);
+
+            const rfcUrl =
+              rfcRaw.toLowerCase().startsWith("http")
+                ? rfcRaw
+                : (extractUrlFromMarkdown(rfcRaw) || "");
+
+            const isValidDocsPath = (s) =>
+              /^docs\/rfcs\/\d{4}-[a-z0-9-]+\.md$/i.test(s);
+
+            const isValidUrl = (s) =>
+              /^https?:\/\/\S+/i.test(s);
+
+            const hasRfcLink = isValidUrl(rfcUrl) || isValidDocsPath(rfcRaw);
+
+            // Avoid spamming: only comment once (marker in the comment body)
+            const marker = "<!-- needs-rfc-checklist-v1 -->";
+
+            async function hasChecklistComment() {
+              const comments = await github.paginate(github.rest.issues.listComments, {
+                owner, repo, issue_number, per_page: 100
+              });
+              return comments.some(c => (c.body || "").includes(marker));
+            }
+
+            async function addLabels(toAdd) {
+              if (!toAdd.length) return;
+              await github.rest.issues.addLabels({ owner, repo, issue_number, labels: toAdd });
+            }
+
+            async function removeLabel(name) {
+              try {
+                await github.rest.issues.removeLabel({ owner, repo, issue_number, name });
+              } catch (e) {
+                // ignore if label missing
+              }
+            }
+
+            // If needs-rfc but no RFC link: block + comment checklist
+            if (hasNeedsRfc && !hasRfcLink) {
+              if (!labels.has(BLOCKED)) {
+                await addLabels([BLOCKED]);
+              }
+
+              if (!(await hasChecklistComment())) {
+                const checklist = [
+                  marker,
+                  "This issue is labeled **needs-rfc**, so it's **blocked until an RFC/design artifact exists**.",
+                  "",
+                  "### What to do next (RFC checklist)",
+                  "- [ ] Create an RFC (docs/rfcs/NNNN-<title>.md) **or** a design-only PR",
+                  "- [ ] Include: goals/non-goals, proposed APIs/types, constraints/invariants, migration plan",
+                  "- [ ] Include: perf expectations + benchmarks (if perf-sensitive)",
+                  "- [ ] Get at least **1 non-DRI approval** before heavy implementation",
+                  "- [ ] Link it in the issue under **“RFC link”**",
+                  "",
+                  "### RFC link",
+                  "Edit the issue description and fill in the **RFC link** field so this can be unblocked."
+                ].join("\n");
+
+                await github.rest.issues.createComment({
+                  owner, repo, issue_number,
+                  body: checklist
+                });
+              }
+              return;
+            }
+
+            // If needs-rfc and RFC link exists: ensure unblocked
+            if (hasNeedsRfc && hasRfcLink) {
+              if (labels.has(BLOCKED)) {
+                await removeLabel(BLOCKED);
+              }
+              return;
+            }
+
+            // If needs-rfc is not present: remove BLOCKED only if we previously enforced it.
+            // (We use the marker comment as evidence that *this* workflow applied the block.)
+            if (!hasNeedsRfc) {
+              if (labels.has(BLOCKED) && (await hasChecklistComment())) {
+                await removeLabel(BLOCKED);
+              }
+            }

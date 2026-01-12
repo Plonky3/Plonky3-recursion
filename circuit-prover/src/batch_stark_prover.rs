@@ -5,28 +5,38 @@ use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
 use alloc::{format, vec};
+use core::borrow::Borrow;
 use core::mem::transmute;
 
-use p3_air::{Air, AirBuilder, BaseAir};
-use p3_baby_bear::{BabyBear, default_babybear_poseidon2_16, default_babybear_poseidon2_24};
+use p3_air::{Air, AirBuilder, BaseAir, PairBuilder};
+use p3_baby_bear::{BabyBear, GenericPoseidon2LinearLayersBabyBear};
+#[cfg(debug_assertions)]
+use p3_batch_stark::DebugConstraintBuilderWithLookups;
 use p3_batch_stark::{BatchProof, CommonData, StarkGenericConfig, StarkInstance, Val};
-use p3_circuit::op::PrimitiveOpType;
-use p3_circuit::tables::{Poseidon2CircuitRow, Poseidon2CircuitTrace, Poseidon2Trace, Traces};
+use p3_circuit::op::{NonPrimitiveOpType, Poseidon2Config, PrimitiveOpType};
+use p3_circuit::ops::{Poseidon2CircuitRow, Poseidon2Params, Poseidon2Trace};
+use p3_circuit::tables::Traces;
 use p3_field::extension::{BinomialExtensionField, BinomiallyExtendable};
 use p3_field::{BasedVectorSpace, ExtensionField, Field, PrimeCharacteristicRing, PrimeField};
-use p3_koala_bear::{KoalaBear, default_koalabear_poseidon2_16, default_koalabear_poseidon2_24};
+use p3_koala_bear::{GenericPoseidon2LinearLayersKoalaBear, KoalaBear};
+use p3_lookup::folder::{ProverConstraintFolderWithLookups, VerifierConstraintFolderWithLookups};
+use p3_lookup::lookup_traits::{AirLookupHandler, Lookup, LookupGadget};
+use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_poseidon2_air::RoundConstants;
 use p3_poseidon2_circuit_air::{
-    Poseidon2CircuitAirBabyBearD1Width16, Poseidon2CircuitAirBabyBearD4Width16,
+    BabyBearD4Width16, BabyBearD4Width24, KoalaBearD4Width16, KoalaBearD4Width24,
+    Poseidon2CircuitAir, Poseidon2CircuitAirBabyBearD4Width16,
     Poseidon2CircuitAirBabyBearD4Width24, Poseidon2CircuitAirKoalaBearD4Width16,
-    Poseidon2CircuitAirKoalaBearD4Width24,
+    Poseidon2CircuitAirKoalaBearD4Width24, eval_unchecked, extract_preprocessed_from_operations,
 };
-use p3_symmetric::CryptographicPermutation;
-use p3_uni_stark::{ProverConstraintFolder, SymbolicAirBuilder, VerifierConstraintFolder};
+use p3_uni_stark::{
+    ProverConstraintFolder, SymbolicAirBuilder, SymbolicExpression, VerifierConstraintFolder,
+};
 use thiserror::Error;
-use tracing::{info, instrument};
+use tracing::instrument;
 
+use crate::air::utils::AirLookupHandlerDyn;
 use crate::air::{AddAir, ConstAir, MulAir, PublicAir, WitnessAir};
 use crate::common::CircuitTableAir;
 use crate::config::StarkField;
@@ -82,8 +92,8 @@ pub struct NonPrimitiveTableEntry<SC>
 where
     SC: StarkGenericConfig,
 {
-    /// Plugin identifier (it should match `TableProver::id`).
-    pub id: &'static str,
+    /// Operation type (it should match `TableProver::op_type`).
+    pub op_type: NonPrimitiveOpType,
     /// Number of logical rows produced for this table.
     pub rows: usize,
     /// Public values exposed by this table (if any).
@@ -100,34 +110,93 @@ pub struct DynamicAirEntry<SC>
 where
     SC: StarkGenericConfig,
 {
-    air: Box<dyn BatchAir<SC>>,
+    air: Box<dyn CloneableBatchAir<SC>>,
 }
 
 impl<SC> DynamicAirEntry<SC>
 where
     SC: StarkGenericConfig,
 {
-    pub fn new(inner: Box<dyn BatchAir<SC>>) -> Self {
+    pub fn new(inner: Box<dyn CloneableBatchAir<SC>>) -> Self {
         Self { air: inner }
     }
 
-    pub fn air(&self) -> &dyn BatchAir<SC> {
+    pub fn air(&self) -> &dyn CloneableBatchAir<SC> {
         &*self.air
+    }
+
+    pub fn air_mut(&mut self) -> &mut dyn BatchAir<SC> {
+        &mut *self.air
+    }
+}
+
+impl<SC> Clone for DynamicAirEntry<SC>
+where
+    SC: StarkGenericConfig,
+    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+{
+    fn clone(&self) -> Self {
+        Self {
+            air: self.air.clone_box(),
+        }
     }
 }
 
 /// Simple super trait of [`Air`] describing the behaviour of a non-primitive
 /// dynamically dispatched AIR used in batched proofs.
+#[cfg(debug_assertions)]
 pub trait BatchAir<SC>:
     BaseAir<Val<SC>>
-    + Air<SymbolicAirBuilder<Val<SC>>>
-    + for<'a> Air<ProverConstraintFolder<'a, SC>>
-    + for<'a> Air<VerifierConstraintFolder<'a, SC>>
+    + Air<SymbolicAirBuilder<Val<SC>, SC::Challenge>>
+    + for<'a> Air<DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>>
+    + for<'a> Air<ProverConstraintFolderWithLookups<'a, SC>>
+    + for<'a> Air<VerifierConstraintFolderWithLookups<'a, SC>>
+    + AirLookupHandlerDyn<SymbolicAirBuilder<Val<SC>, SC::Challenge>>
+    + for<'a> AirLookupHandlerDyn<DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>>
+    + for<'a> AirLookupHandlerDyn<ProverConstraintFolderWithLookups<'a, SC>>
+    + for<'a> AirLookupHandlerDyn<VerifierConstraintFolderWithLookups<'a, SC>>
     + Send
     + Sync
 where
     SC: StarkGenericConfig,
+    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
 {
+}
+
+#[cfg(not(debug_assertions))]
+pub trait BatchAir<SC>:
+    BaseAir<Val<SC>>
+    + Air<SymbolicAirBuilder<Val<SC>, SC::Challenge>>
+    + for<'a> Air<ProverConstraintFolderWithLookups<'a, SC>>
+    + for<'a> Air<VerifierConstraintFolderWithLookups<'a, SC>>
+    + AirLookupHandlerDyn<SymbolicAirBuilder<Val<SC>, SC::Challenge>>
+    + for<'a> AirLookupHandlerDyn<ProverConstraintFolderWithLookups<'a, SC>>
+    + for<'a> AirLookupHandlerDyn<VerifierConstraintFolderWithLookups<'a, SC>>
+    + Send
+    + Sync
+where
+    SC: StarkGenericConfig,
+    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+{
+}
+
+pub trait CloneableBatchAir<SC>: BatchAir<SC>
+where
+    SC: StarkGenericConfig,
+    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+{
+    fn clone_box(&self) -> Box<dyn CloneableBatchAir<SC>>;
+}
+
+impl<SC, T> CloneableBatchAir<SC> for T
+where
+    SC: StarkGenericConfig,
+    T: BatchAir<SC> + Clone + 'static,
+    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+{
+    fn clone_box(&self) -> Box<dyn CloneableBatchAir<SC>> {
+        Box::new(self.clone())
+    }
 }
 
 /// Data needed to insert a dynamic table instance into the batched prover.
@@ -139,8 +208,8 @@ pub struct BatchTableInstance<SC>
 where
     SC: StarkGenericConfig,
 {
-    /// Plugin identifier (it should match `TableProver::id`).
-    pub id: &'static str,
+    /// Operation type (it should match `TableProver::op_type`).
+    pub op_type: NonPrimitiveOpType,
     /// The AIR implementation for this table.
     pub air: DynamicAirEntry<SC>,
     /// The populated trace matrix for this table.
@@ -177,7 +246,9 @@ pub(crate) unsafe fn transmute_traces<FromEF, ToEF>(t: &Traces<FromEF>) -> &Trac
 ///
 /// ```ignore
 /// impl<SC> TableProver<SC> for MyPlugin {
-///     fn id(&self) -> &'static str { "my_plugin" }
+///     fn op_type(&self) -> NonPrimitiveOpType {
+///         NonPrimitiveOpType::Poseidon2Perm(Poseidon2Config::BabyBearD4Width16)
+///     }
 ///
 ///     impl_table_prover_batch_instances_from_base!(batch_instance_base);
 /// }
@@ -186,8 +257,8 @@ pub trait TableProver<SC>: Send + Sync
 where
     SC: StarkGenericConfig + 'static,
 {
-    /// Identifier for this prover.
-    fn id(&self) -> &'static str;
+    /// Operation type for this prover.
+    fn op_type(&self) -> NonPrimitiveOpType;
 
     /// Produce a batched table instance for base-field traces.
     fn batch_instance_d1(
@@ -249,7 +320,9 @@ where
 ///
 /// ```ignore
 /// impl<SC> TableProver<SC> for MyPlugin {
-///     fn id(&self) -> &'static str { "my_plugin" }
+///     fn op_type(&self) -> NonPrimitiveOpType {
+///         NonPrimitiveOpType::Poseidon2Perm(Poseidon2Config::BabyBearD4Width16)
+///     }
 ///
 ///     impl_table_prover_batch_instances_from_base!(batch_instance_base);
 ///
@@ -329,128 +402,40 @@ macro_rules! impl_table_prover_batch_instances_from_base {
     };
 }
 
-/// Poseidon2 configuration that can be selected at runtime.
-/// This enum represents different Poseidon2 configurations (field type, width, etc.).
-#[derive(Debug, Clone)]
-pub enum Poseidon2Config {
-    /// BabyBear D=1, WIDTH=16 configuration
-    BabyBearD1Width16 {
-        permutation: p3_baby_bear::Poseidon2BabyBear<16>,
-        constants: RoundConstants<p3_baby_bear::BabyBear, 16, 4, 13>,
-    },
-    /// BabyBear D=4, WIDTH=16 configuration
-    BabyBearD4Width16 {
-        permutation: p3_baby_bear::Poseidon2BabyBear<16>,
-        constants: RoundConstants<p3_baby_bear::BabyBear, 16, 4, 13>,
-    },
-    /// BabyBear D=4, WIDTH=24 configuration
-    BabyBearD4Width24 {
-        permutation: p3_baby_bear::Poseidon2BabyBear<24>,
-        constants: RoundConstants<p3_baby_bear::BabyBear, 24, 4, 21>,
-    },
-    /// KoalaBear D=4, WIDTH=16 configuration
-    KoalaBearD4Width16 {
-        permutation: p3_koala_bear::Poseidon2KoalaBear<16>,
-        constants: RoundConstants<p3_koala_bear::KoalaBear, 16, 4, 20>,
-    },
-    /// KoalaBear D=4, WIDTH=24 configuration
-    KoalaBearD4Width24 {
-        permutation: p3_koala_bear::Poseidon2KoalaBear<24>,
-        constants: RoundConstants<p3_koala_bear::KoalaBear, 24, 4, 23>,
-    },
-}
-
-impl Poseidon2Config {
-    /// Create BabyBear D=1 WIDTH=16 configuration from default permutation.
-    /// Uses the same permutation and constants as `default_babybear_poseidon2_16()`.
-    pub fn baby_bear_d1_width16() -> Self {
-        let perm = default_babybear_poseidon2_16();
-
-        let beginning_full: [[BabyBear; 16]; 4] = p3_baby_bear::BABYBEAR_RC16_EXTERNAL_INITIAL;
-        let partial: [BabyBear; 13] = p3_baby_bear::BABYBEAR_RC16_INTERNAL;
-        let ending_full: [[BabyBear; 16]; 4] = p3_baby_bear::BABYBEAR_RC16_EXTERNAL_FINAL;
-
-        let constants = RoundConstants::new(beginning_full, partial, ending_full);
-
-        Self::BabyBearD1Width16 {
-            permutation: perm,
-            constants,
-        }
-    }
-
-    /// Create BabyBear D=4 WIDTH=16 configuration from default permutation.
-    /// Uses the same permutation and constants as `default_babybear_poseidon2_16()`.
-    pub fn baby_bear_d4_width16() -> Self {
-        let perm = default_babybear_poseidon2_16();
-
-        let beginning_full: [[BabyBear; 16]; 4] = p3_baby_bear::BABYBEAR_RC16_EXTERNAL_INITIAL;
-        let partial: [BabyBear; 13] = p3_baby_bear::BABYBEAR_RC16_INTERNAL;
-        let ending_full: [[BabyBear; 16]; 4] = p3_baby_bear::BABYBEAR_RC16_EXTERNAL_FINAL;
-
-        let constants = RoundConstants::new(beginning_full, partial, ending_full);
-
-        Self::BabyBearD4Width16 {
-            permutation: perm,
-            constants,
-        }
-    }
-
-    /// Create BabyBear D=4 WIDTH=24 configuration from default permutation.
-    /// Uses the same permutation and constants as `default_babybear_poseidon2_24()`.
-    pub fn baby_bear_d4_width24() -> Self {
-        let perm = default_babybear_poseidon2_24();
-
-        let beginning_full: [[BabyBear; 24]; 4] = p3_baby_bear::BABYBEAR_RC24_EXTERNAL_INITIAL;
-        let partial: [BabyBear; 21] = p3_baby_bear::BABYBEAR_RC24_INTERNAL;
-        let ending_full: [[BabyBear; 24]; 4] = p3_baby_bear::BABYBEAR_RC24_EXTERNAL_FINAL;
-
-        let constants = RoundConstants::new(beginning_full, partial, ending_full);
-
-        Self::BabyBearD4Width24 {
-            permutation: perm,
-            constants,
-        }
-    }
-
-    /// Create KoalaBear D=4 WIDTH=16 configuration from default permutation.
-    /// Uses the same permutation and constants as `default_koalabear_poseidon2_16()`.
-    pub fn koala_bear_d4_width16() -> Self {
-        let perm = default_koalabear_poseidon2_16();
-
-        let beginning_full: [[KoalaBear; 16]; 4] = p3_koala_bear::KOALABEAR_RC16_EXTERNAL_INITIAL;
-        let partial: [KoalaBear; 20] = p3_koala_bear::KOALABEAR_RC16_INTERNAL;
-        let ending_full: [[KoalaBear; 16]; 4] = p3_koala_bear::KOALABEAR_RC16_EXTERNAL_FINAL;
-
-        let constants = RoundConstants::new(beginning_full, partial, ending_full);
-
-        Self::KoalaBearD4Width16 {
-            permutation: perm,
-            constants,
-        }
-    }
-
-    /// Create KoalaBear D=4 WIDTH=24 configuration from default permutation.
-    /// Uses the same permutation and constants as `default_koalabear_poseidon2_24()`.
-    pub fn koala_bear_d4_width24() -> Self {
-        let perm = default_koalabear_poseidon2_24();
-
-        let beginning_full: [[KoalaBear; 24]; 4] = p3_koala_bear::KOALABEAR_RC24_EXTERNAL_INITIAL;
-        let partial: [KoalaBear; 23] = p3_koala_bear::KOALABEAR_RC24_INTERNAL;
-        let ending_full: [[KoalaBear; 24]; 4] = p3_koala_bear::KOALABEAR_RC24_EXTERNAL_FINAL;
-
-        let constants = RoundConstants::new(beginning_full, partial, ending_full);
-
-        Self::KoalaBearD4Width24 {
-            permutation: perm,
-            constants,
-        }
-    }
-}
-
 /// Wrapper for Poseidon2CircuitAir that implements BatchAir<SC>
 // We need this because `BatchAir` requires `BaseAir<Val<SC>>`.
 // but `Poseidon2CircuitAir` works over a specific field.
+enum Poseidon2AirWrapperInner {
+    BabyBearD4Width16(Box<Poseidon2CircuitAirBabyBearD4Width16>),
+    BabyBearD4Width24(Box<Poseidon2CircuitAirBabyBearD4Width24>),
+    KoalaBearD4Width16(Box<Poseidon2CircuitAirKoalaBearD4Width16>),
+    KoalaBearD4Width24(Box<Poseidon2CircuitAirKoalaBearD4Width24>),
+}
+
+impl Poseidon2AirWrapperInner {
+    fn width(&self) -> usize {
+        match self {
+            Self::BabyBearD4Width16(air) => air.width(),
+            Self::BabyBearD4Width24(air) => air.width(),
+            Self::KoalaBearD4Width16(air) => air.width(),
+            Self::KoalaBearD4Width24(air) => air.width(),
+        }
+    }
+}
+
+impl Clone for Poseidon2AirWrapperInner {
+    fn clone(&self) -> Self {
+        match self {
+            Self::BabyBearD4Width16(air) => Self::BabyBearD4Width16(air.clone()),
+            Self::BabyBearD4Width24(air) => Self::BabyBearD4Width24(air.clone()),
+            Self::KoalaBearD4Width16(air) => Self::KoalaBearD4Width16(air.clone()),
+            Self::KoalaBearD4Width24(air) => Self::KoalaBearD4Width24(air.clone()),
+        }
+    }
+}
+
 struct Poseidon2AirWrapper<SC: StarkGenericConfig> {
+    inner: Poseidon2AirWrapperInner,
     width: usize,
     _phantom: core::marker::PhantomData<SC>,
 }
@@ -459,8 +444,22 @@ impl<SC> BatchAir<SC> for Poseidon2AirWrapper<SC>
 where
     SC: StarkGenericConfig + Send + Sync,
     Val<SC>: StarkField,
+    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
 {
 }
+
+impl<SC: StarkGenericConfig> Clone for Poseidon2AirWrapper<SC> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            width: self.width,
+            _phantom: core::marker::PhantomData,
+        }
+    }
+}
+
+const BABY_BEAR_MODULUS: u64 = 2013265921;
+const KOALA_BEAR_MODULUS: u64 = 2147483649;
 
 impl<SC> BaseAir<Val<SC>> for Poseidon2AirWrapper<SC>
 where
@@ -470,18 +469,995 @@ where
     fn width(&self) -> usize {
         self.width
     }
+
+    fn preprocessed_trace(&self) -> Option<RowMajorMatrix<Val<SC>>> {
+        match &self.inner {
+            Poseidon2AirWrapperInner::BabyBearD4Width16(air) => {
+                // SAFETY: Val<SC> == BabyBear when this variant is used
+                assert_eq!(Val::<SC>::from_u64(BABY_BEAR_MODULUS), Val::<SC>::ZERO,);
+
+                let preprocessed = BaseAir::<BabyBear>::preprocessed_trace(air.as_ref())?;
+                Some(unsafe {
+                    transmute::<RowMajorMatrix<BabyBear>, RowMajorMatrix<Val<SC>>>(preprocessed)
+                })
+            }
+            Poseidon2AirWrapperInner::BabyBearD4Width24(air) => {
+                // SAFETY: Val<SC> == BabyBear when this variant is used
+                assert_eq!(Val::<SC>::from_u64(BABY_BEAR_MODULUS), Val::<SC>::ZERO,);
+
+                let preprocessed = BaseAir::<BabyBear>::preprocessed_trace(air.as_ref())?;
+                Some(unsafe {
+                    transmute::<RowMajorMatrix<BabyBear>, RowMajorMatrix<Val<SC>>>(preprocessed)
+                })
+            }
+            Poseidon2AirWrapperInner::KoalaBearD4Width16(air) => {
+                // SAFETY: Val<SC> == KoalaBear when this variant is used
+                assert_eq!(Val::<SC>::from_u64(KOALA_BEAR_MODULUS), Val::<SC>::ZERO,);
+
+                let preprocessed = BaseAir::<KoalaBear>::preprocessed_trace(air.as_ref())?;
+                Some(unsafe {
+                    transmute::<RowMajorMatrix<KoalaBear>, RowMajorMatrix<Val<SC>>>(preprocessed)
+                })
+            }
+            Poseidon2AirWrapperInner::KoalaBearD4Width24(air) => {
+                // SAFETY: Val<SC> == KoalaBear when this variant is used
+                assert_eq!(Val::<SC>::from_u64(KOALA_BEAR_MODULUS), Val::<SC>::ZERO,);
+
+                let preprocessed = BaseAir::<KoalaBear>::preprocessed_trace(air.as_ref())?;
+                Some(unsafe {
+                    transmute::<RowMajorMatrix<KoalaBear>, RowMajorMatrix<Val<SC>>>(preprocessed)
+                })
+            }
+        }
+    }
 }
 
-impl<SC, AB> Air<AB> for Poseidon2AirWrapper<SC>
+impl<SC> Air<SymbolicAirBuilder<Val<SC>, SC::Challenge>> for Poseidon2AirWrapper<SC>
 where
     SC: StarkGenericConfig + Send + Sync,
-    AB: AirBuilder<F = Val<SC>>,
     Val<SC>: StarkField,
 {
-    fn eval(&self, _builder: &mut AB) {
-        // The actual evaluation is handled by the concrete AIR type
-        // This wrapper is just for type erasure
-        // TODO: Delegate to the actual AIR if we can store it
+    fn eval(&self, builder: &mut SymbolicAirBuilder<Val<SC>, SC::Challenge>) {
+        // Delegate to the actual AIR instance stored in the wrapper
+        match &self.inner {
+            Poseidon2AirWrapperInner::BabyBearD4Width16(air) => {
+                // Runtime check: verify Val<SC> == BabyBear before transmute
+                assert_eq!(Val::<SC>::from_u64(BABY_BEAR_MODULUS), Val::<SC>::ZERO,);
+                // SAFETY: Val<SC> == BabyBear when this variant is used
+                // SymbolicAirBuilder<BabyBear> and SymbolicAirBuilder<Val<SC>> have the same layout
+                unsafe {
+                    let builder_bb: &mut SymbolicAirBuilder<BabyBear> =
+                        core::mem::transmute(builder);
+                    Air::eval(air.as_ref(), builder_bb);
+                }
+            }
+            Poseidon2AirWrapperInner::BabyBearD4Width24(air) => {
+                // Runtime check: verify Val<SC> == BabyBear before transmute
+                assert_eq!(Val::<SC>::from_u64(BABY_BEAR_MODULUS), Val::<SC>::ZERO,);
+                // SAFETY: Val<SC> == BabyBear when this variant is used
+                // SymbolicAirBuilder<BabyBear> and SymbolicAirBuilder<Val<SC>> have the same layout
+                unsafe {
+                    let builder_bb: &mut SymbolicAirBuilder<BabyBear> =
+                        core::mem::transmute(builder);
+                    Air::eval(air.as_ref(), builder_bb);
+                }
+            }
+            Poseidon2AirWrapperInner::KoalaBearD4Width16(air) => {
+                // Runtime check: verify Val<SC> == KoalaBear before transmute
+                assert_eq!(Val::<SC>::from_u64(KOALA_BEAR_MODULUS), Val::<SC>::ZERO,);
+                // SAFETY: Val<SC> == KoalaBear when this variant is used
+                // SymbolicAirBuilder<KoalaBear> and SymbolicAirBuilder<Val<SC>> have the same layout
+                unsafe {
+                    let builder_kb: &mut SymbolicAirBuilder<KoalaBear> =
+                        core::mem::transmute(builder);
+                    Air::eval(air.as_ref(), builder_kb);
+                }
+            }
+            Poseidon2AirWrapperInner::KoalaBearD4Width24(air) => {
+                // Runtime check: verify Val<SC> == KoalaBear before transmute
+                assert_eq!(Val::<SC>::from_u64(KOALA_BEAR_MODULUS), Val::<SC>::ZERO,);
+                // SAFETY: Val<SC> == KoalaBear when this variant is used
+                // SymbolicAirBuilder<KoalaBear> and SymbolicAirBuilder<Val<SC>> have the same layout
+                unsafe {
+                    let builder_kb: &mut SymbolicAirBuilder<KoalaBear> =
+                        core::mem::transmute(builder);
+                    Air::eval(air.as_ref(), builder_kb);
+                }
+            }
+        }
+    }
+}
+
+/// Helper function to evaluate a Poseidon2 variant with a given builder.
+/// This encapsulates the common pattern of transmuting slices and calling eval_unchecked.
+unsafe fn eval_poseidon2_variant<
+    SC,
+    F: PrimeField,
+    AB: PairBuilder,
+    LinearLayers,
+    const D: usize,
+    const WIDTH: usize,
+    const WIDTH_EXT: usize,
+    const RATE_EXT: usize,
+    const CAPACITY_EXT: usize,
+    const SBOX_DEGREE: u64,
+    const SBOX_REGISTERS: usize,
+    const HALF_FULL_ROUNDS: usize,
+    const PARTIAL_ROUNDS: usize,
+>(
+    air: &Poseidon2CircuitAir<
+        F,
+        LinearLayers,
+        D,
+        WIDTH,
+        WIDTH_EXT,
+        RATE_EXT,
+        CAPACITY_EXT,
+        SBOX_DEGREE,
+        SBOX_REGISTERS,
+        HALF_FULL_ROUNDS,
+        PARTIAL_ROUNDS,
+    >,
+    builder: &mut AB,
+    local_slice: &[<AB as AirBuilder>::Var],
+    next_slice: &[<AB as AirBuilder>::Var],
+    next_preprocessed_slice: &[<AB as AirBuilder>::Var],
+) where
+    SC: StarkGenericConfig,
+    Val<SC>: StarkField + PrimeField,
+    AB::F: PrimeField,
+    LinearLayers: p3_poseidon2::GenericPoseidon2LinearLayers<WIDTH>,
+{
+    // Transmute slices from PackedVal<SC> to F::Packing
+    // SAFETY: Val<SC> == F at runtime
+    unsafe {
+        let local_slice_ptr = local_slice.as_ptr() as *const <F as p3_field::Field>::Packing;
+        let local_slice_f = core::slice::from_raw_parts(local_slice_ptr, local_slice.len());
+        let local_f: &p3_poseidon2_circuit_air::Poseidon2CircuitCols<
+            <F as p3_field::Field>::Packing,
+            p3_poseidon2_air::Poseidon2Cols<
+                <F as p3_field::Field>::Packing,
+                WIDTH,
+                SBOX_DEGREE,
+                SBOX_REGISTERS,
+                HALF_FULL_ROUNDS,
+                PARTIAL_ROUNDS,
+            >,
+        > = (*local_slice_f).borrow();
+
+        let next_slice_ptr = next_slice.as_ptr() as *const <F as p3_field::Field>::Packing;
+        let next_slice_f = core::slice::from_raw_parts(next_slice_ptr, next_slice.len());
+        let next_f: &p3_poseidon2_circuit_air::Poseidon2CircuitCols<
+            <F as p3_field::Field>::Packing,
+            p3_poseidon2_air::Poseidon2Cols<
+                <F as p3_field::Field>::Packing,
+                WIDTH,
+                SBOX_DEGREE,
+                SBOX_REGISTERS,
+                HALF_FULL_ROUNDS,
+                PARTIAL_ROUNDS,
+            >,
+        > = (*next_slice_f).borrow();
+
+        let next_preprocessed_ptr =
+            next_preprocessed_slice.as_ptr() as *const <F as p3_field::Field>::Packing;
+        let next_preprocessed_f =
+            core::slice::from_raw_parts(next_preprocessed_ptr, next_preprocessed_slice.len());
+
+        // Transmute struct references to match builder's Var type
+        let local_var: &p3_poseidon2_circuit_air::Poseidon2CircuitCols<
+            AB::Var,
+            p3_poseidon2_air::Poseidon2Cols<
+                AB::Var,
+                WIDTH,
+                SBOX_DEGREE,
+                SBOX_REGISTERS,
+                HALF_FULL_ROUNDS,
+                PARTIAL_ROUNDS,
+            >,
+        > = core::mem::transmute(local_f);
+
+        let next_var: &p3_poseidon2_circuit_air::Poseidon2CircuitCols<
+            AB::Var,
+            p3_poseidon2_air::Poseidon2Cols<
+                AB::Var,
+                WIDTH,
+                SBOX_DEGREE,
+                SBOX_REGISTERS,
+                HALF_FULL_ROUNDS,
+                PARTIAL_ROUNDS,
+            >,
+        > = core::mem::transmute(next_f);
+
+        let next_preprocessed_var: &[AB::Var] = core::mem::transmute(next_preprocessed_f);
+
+        eval_unchecked::<
+            F,
+            AB,
+            LinearLayers,
+            D,
+            WIDTH,
+            WIDTH_EXT,
+            RATE_EXT,
+            CAPACITY_EXT,
+            SBOX_DEGREE,
+            SBOX_REGISTERS,
+            HALF_FULL_ROUNDS,
+            PARTIAL_ROUNDS,
+        >(air, builder, local_var, next_var, next_preprocessed_var);
+    }
+}
+
+impl<'a, SC> Air<ProverConstraintFolder<'a, SC>> for Poseidon2AirWrapper<SC>
+where
+    SC: StarkGenericConfig + Send + Sync,
+    Val<SC>: StarkField + PrimeField,
+{
+    fn eval(&self, builder: &mut ProverConstraintFolder<'a, SC>) {
+        // Extract row data (same pattern as Poseidon2CircuitAir::eval)
+        let main = builder.main();
+        let local_slice = main.row_slice(0).expect("The matrix is empty?");
+        let next_slice = main.row_slice(1).expect("The matrix has only one row?");
+        let preprocessed = builder.preprocessed();
+        let next_preprocessed_slice = preprocessed
+            .row_slice(1)
+            .expect("The preprocessed matrix has only one row?");
+
+        match &self.inner {
+            Poseidon2AirWrapperInner::BabyBearD4Width16(air) => unsafe {
+                eval_poseidon2_variant::<
+                    SC,
+                    BabyBear,
+                    ProverConstraintFolder<'a, SC>,
+                    GenericPoseidon2LinearLayersBabyBear,
+                    { BabyBearD4Width16::D },
+                    { BabyBearD4Width16::WIDTH },
+                    { BabyBearD4Width16::WIDTH_EXT },
+                    { BabyBearD4Width16::RATE_EXT },
+                    { BabyBearD4Width16::CAPACITY_EXT },
+                    { BabyBearD4Width16::SBOX_DEGREE },
+                    { BabyBearD4Width16::SBOX_REGISTERS },
+                    { BabyBearD4Width16::HALF_FULL_ROUNDS },
+                    { BabyBearD4Width16::PARTIAL_ROUNDS },
+                >(
+                    air.as_ref(),
+                    builder,
+                    &local_slice,
+                    &next_slice,
+                    &next_preprocessed_slice,
+                );
+            },
+            Poseidon2AirWrapperInner::BabyBearD4Width24(air) => unsafe {
+                eval_poseidon2_variant::<
+                    SC,
+                    BabyBear,
+                    ProverConstraintFolder<'a, SC>,
+                    GenericPoseidon2LinearLayersBabyBear,
+                    { BabyBearD4Width24::D },
+                    { BabyBearD4Width24::WIDTH },
+                    { BabyBearD4Width24::WIDTH_EXT },
+                    { BabyBearD4Width24::RATE_EXT },
+                    { BabyBearD4Width24::CAPACITY_EXT },
+                    { BabyBearD4Width24::SBOX_DEGREE },
+                    { BabyBearD4Width24::SBOX_REGISTERS },
+                    { BabyBearD4Width24::HALF_FULL_ROUNDS },
+                    { BabyBearD4Width24::PARTIAL_ROUNDS },
+                >(
+                    air.as_ref(),
+                    builder,
+                    &local_slice,
+                    &next_slice,
+                    &next_preprocessed_slice,
+                );
+            },
+            Poseidon2AirWrapperInner::KoalaBearD4Width16(air) => unsafe {
+                eval_poseidon2_variant::<
+                    SC,
+                    KoalaBear,
+                    ProverConstraintFolder<'a, SC>,
+                    GenericPoseidon2LinearLayersKoalaBear,
+                    { KoalaBearD4Width16::D },
+                    { KoalaBearD4Width16::WIDTH },
+                    { KoalaBearD4Width16::WIDTH_EXT },
+                    { KoalaBearD4Width16::RATE_EXT },
+                    { KoalaBearD4Width16::CAPACITY_EXT },
+                    { KoalaBearD4Width16::SBOX_DEGREE },
+                    { KoalaBearD4Width16::SBOX_REGISTERS },
+                    { KoalaBearD4Width16::HALF_FULL_ROUNDS },
+                    { KoalaBearD4Width16::PARTIAL_ROUNDS },
+                >(
+                    air.as_ref(),
+                    builder,
+                    &local_slice,
+                    &next_slice,
+                    &next_preprocessed_slice,
+                );
+            },
+            Poseidon2AirWrapperInner::KoalaBearD4Width24(air) => unsafe {
+                eval_poseidon2_variant::<
+                    SC,
+                    KoalaBear,
+                    ProverConstraintFolder<'a, SC>,
+                    GenericPoseidon2LinearLayersKoalaBear,
+                    { KoalaBearD4Width24::D },
+                    { KoalaBearD4Width24::WIDTH },
+                    { KoalaBearD4Width24::WIDTH_EXT },
+                    { KoalaBearD4Width24::RATE_EXT },
+                    { KoalaBearD4Width24::CAPACITY_EXT },
+                    { KoalaBearD4Width24::SBOX_DEGREE },
+                    { KoalaBearD4Width24::SBOX_REGISTERS },
+                    { KoalaBearD4Width24::HALF_FULL_ROUNDS },
+                    { KoalaBearD4Width24::PARTIAL_ROUNDS },
+                >(
+                    air.as_ref(),
+                    builder,
+                    &local_slice,
+                    &next_slice,
+                    &next_preprocessed_slice,
+                );
+            },
+        }
+    }
+}
+
+impl<'a, SC> Air<VerifierConstraintFolder<'a, SC>> for Poseidon2AirWrapper<SC>
+where
+    SC: StarkGenericConfig + Send + Sync,
+    Val<SC>: StarkField + PrimeField,
+{
+    fn eval(&self, builder: &mut VerifierConstraintFolder<'a, SC>) {
+        let main = builder.main();
+        let local_slice = main.row_slice(0).expect("The matrix is empty?");
+        let next_slice = main.row_slice(1).expect("The matrix has only one row?");
+        let preprocessed = builder.preprocessed();
+        let next_preprocessed_slice = preprocessed
+            .row_slice(1)
+            .expect("The preprocessed matrix has only one row?");
+
+        match &self.inner {
+            Poseidon2AirWrapperInner::BabyBearD4Width16(air) => unsafe {
+                eval_poseidon2_variant::<
+                    SC,
+                    BabyBear,
+                    VerifierConstraintFolder<'a, SC>,
+                    GenericPoseidon2LinearLayersBabyBear,
+                    { BabyBearD4Width16::D },
+                    { BabyBearD4Width16::WIDTH },
+                    { BabyBearD4Width16::WIDTH_EXT },
+                    { BabyBearD4Width16::RATE_EXT },
+                    { BabyBearD4Width16::CAPACITY_EXT },
+                    { BabyBearD4Width16::SBOX_DEGREE },
+                    { BabyBearD4Width16::SBOX_REGISTERS },
+                    { BabyBearD4Width16::HALF_FULL_ROUNDS },
+                    { BabyBearD4Width16::PARTIAL_ROUNDS },
+                >(
+                    air.as_ref(),
+                    builder,
+                    &local_slice,
+                    &next_slice,
+                    &next_preprocessed_slice,
+                );
+            },
+            Poseidon2AirWrapperInner::BabyBearD4Width24(air) => unsafe {
+                eval_poseidon2_variant::<
+                    SC,
+                    BabyBear,
+                    VerifierConstraintFolder<'a, SC>,
+                    GenericPoseidon2LinearLayersBabyBear,
+                    { BabyBearD4Width24::D },
+                    { BabyBearD4Width24::WIDTH },
+                    { BabyBearD4Width24::WIDTH_EXT },
+                    { BabyBearD4Width24::RATE_EXT },
+                    { BabyBearD4Width24::CAPACITY_EXT },
+                    { BabyBearD4Width24::SBOX_DEGREE },
+                    { BabyBearD4Width24::SBOX_REGISTERS },
+                    { BabyBearD4Width24::HALF_FULL_ROUNDS },
+                    { BabyBearD4Width24::PARTIAL_ROUNDS },
+                >(
+                    air.as_ref(),
+                    builder,
+                    &local_slice,
+                    &next_slice,
+                    &next_preprocessed_slice,
+                );
+            },
+            Poseidon2AirWrapperInner::KoalaBearD4Width16(air) => unsafe {
+                eval_poseidon2_variant::<
+                    SC,
+                    KoalaBear,
+                    VerifierConstraintFolder<'a, SC>,
+                    GenericPoseidon2LinearLayersKoalaBear,
+                    { KoalaBearD4Width16::D },
+                    { KoalaBearD4Width16::WIDTH },
+                    { KoalaBearD4Width16::WIDTH_EXT },
+                    { KoalaBearD4Width16::RATE_EXT },
+                    { KoalaBearD4Width16::CAPACITY_EXT },
+                    { KoalaBearD4Width16::SBOX_DEGREE },
+                    { KoalaBearD4Width16::SBOX_REGISTERS },
+                    { KoalaBearD4Width16::HALF_FULL_ROUNDS },
+                    { KoalaBearD4Width16::PARTIAL_ROUNDS },
+                >(
+                    air.as_ref(),
+                    builder,
+                    &local_slice,
+                    &next_slice,
+                    &next_preprocessed_slice,
+                );
+            },
+            Poseidon2AirWrapperInner::KoalaBearD4Width24(air) => unsafe {
+                eval_poseidon2_variant::<
+                    SC,
+                    KoalaBear,
+                    VerifierConstraintFolder<'a, SC>,
+                    GenericPoseidon2LinearLayersKoalaBear,
+                    { KoalaBearD4Width24::D },
+                    { KoalaBearD4Width24::WIDTH },
+                    { KoalaBearD4Width24::WIDTH_EXT },
+                    { KoalaBearD4Width24::RATE_EXT },
+                    { KoalaBearD4Width24::CAPACITY_EXT },
+                    { KoalaBearD4Width24::SBOX_DEGREE },
+                    { KoalaBearD4Width24::SBOX_REGISTERS },
+                    { KoalaBearD4Width24::HALF_FULL_ROUNDS },
+                    { KoalaBearD4Width24::PARTIAL_ROUNDS },
+                >(
+                    air.as_ref(),
+                    builder,
+                    &local_slice,
+                    &next_slice,
+                    &next_preprocessed_slice,
+                );
+            },
+        }
+    }
+}
+
+#[cfg(debug_assertions)]
+impl<'a, SC> Air<DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>>
+    for Poseidon2AirWrapper<SC>
+where
+    SC: StarkGenericConfig + Send + Sync,
+    Val<SC>: StarkField + PrimeField,
+{
+    fn eval(&self, builder: &mut DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>) {
+        let main = builder.main();
+        let local_slice = main.row_slice(0).expect("The matrix is empty?");
+        let next_slice = main.row_slice(1).expect("The matrix has only one row?");
+        let preprocessed = builder.preprocessed();
+        let next_preprocessed_slice = preprocessed
+            .row_slice(1)
+            .expect("The preprocessed matrix has only one row?");
+
+        match &self.inner {
+            Poseidon2AirWrapperInner::BabyBearD4Width16(air) => unsafe {
+                eval_poseidon2_variant::<
+                    SC,
+                    BabyBear,
+                    DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>,
+                    GenericPoseidon2LinearLayersBabyBear,
+                    { BabyBearD4Width16::D },
+                    { BabyBearD4Width16::WIDTH },
+                    { BabyBearD4Width16::WIDTH_EXT },
+                    { BabyBearD4Width16::RATE_EXT },
+                    { BabyBearD4Width16::CAPACITY_EXT },
+                    { BabyBearD4Width16::SBOX_DEGREE },
+                    { BabyBearD4Width16::SBOX_REGISTERS },
+                    { BabyBearD4Width16::HALF_FULL_ROUNDS },
+                    { BabyBearD4Width16::PARTIAL_ROUNDS },
+                >(
+                    air.as_ref(),
+                    builder,
+                    &local_slice,
+                    &next_slice,
+                    &next_preprocessed_slice,
+                );
+            },
+            Poseidon2AirWrapperInner::BabyBearD4Width24(air) => unsafe {
+                eval_poseidon2_variant::<
+                    SC,
+                    BabyBear,
+                    DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>,
+                    GenericPoseidon2LinearLayersBabyBear,
+                    { BabyBearD4Width24::D },
+                    { BabyBearD4Width24::WIDTH },
+                    { BabyBearD4Width24::WIDTH_EXT },
+                    { BabyBearD4Width24::RATE_EXT },
+                    { BabyBearD4Width24::CAPACITY_EXT },
+                    { BabyBearD4Width24::SBOX_DEGREE },
+                    { BabyBearD4Width24::SBOX_REGISTERS },
+                    { BabyBearD4Width24::HALF_FULL_ROUNDS },
+                    { BabyBearD4Width24::PARTIAL_ROUNDS },
+                >(
+                    air.as_ref(),
+                    builder,
+                    &local_slice,
+                    &next_slice,
+                    &next_preprocessed_slice,
+                );
+            },
+            Poseidon2AirWrapperInner::KoalaBearD4Width16(air) => unsafe {
+                eval_poseidon2_variant::<
+                    SC,
+                    KoalaBear,
+                    DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>,
+                    GenericPoseidon2LinearLayersKoalaBear,
+                    { KoalaBearD4Width16::D },
+                    { KoalaBearD4Width16::WIDTH },
+                    { KoalaBearD4Width16::WIDTH_EXT },
+                    { KoalaBearD4Width16::RATE_EXT },
+                    { KoalaBearD4Width16::CAPACITY_EXT },
+                    { KoalaBearD4Width16::SBOX_DEGREE },
+                    { KoalaBearD4Width16::SBOX_REGISTERS },
+                    { KoalaBearD4Width16::HALF_FULL_ROUNDS },
+                    { KoalaBearD4Width16::PARTIAL_ROUNDS },
+                >(
+                    air.as_ref(),
+                    builder,
+                    &local_slice,
+                    &next_slice,
+                    &next_preprocessed_slice,
+                );
+            },
+            Poseidon2AirWrapperInner::KoalaBearD4Width24(air) => unsafe {
+                eval_poseidon2_variant::<
+                    SC,
+                    KoalaBear,
+                    DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>,
+                    GenericPoseidon2LinearLayersKoalaBear,
+                    { KoalaBearD4Width24::D },
+                    { KoalaBearD4Width24::WIDTH },
+                    { KoalaBearD4Width24::WIDTH_EXT },
+                    { KoalaBearD4Width24::RATE_EXT },
+                    { KoalaBearD4Width24::CAPACITY_EXT },
+                    { KoalaBearD4Width24::SBOX_DEGREE },
+                    { KoalaBearD4Width24::SBOX_REGISTERS },
+                    { KoalaBearD4Width24::HALF_FULL_ROUNDS },
+                    { KoalaBearD4Width24::PARTIAL_ROUNDS },
+                >(
+                    air.as_ref(),
+                    builder,
+                    &local_slice,
+                    &next_slice,
+                    &next_preprocessed_slice,
+                );
+            },
+        }
+    }
+}
+
+impl<'a, SC> Air<ProverConstraintFolderWithLookups<'a, SC>> for Poseidon2AirWrapper<SC>
+where
+    SC: StarkGenericConfig + Send + Sync,
+    Val<SC>: StarkField + PrimeField,
+{
+    fn eval(&self, builder: &mut ProverConstraintFolderWithLookups<'a, SC>) {
+        let main = builder.main();
+        let local_slice = main.row_slice(0).expect("The matrix is empty?");
+        let next_slice = main.row_slice(1).expect("The matrix has only one row?");
+        let preprocessed = builder.preprocessed();
+        let next_preprocessed_slice = preprocessed
+            .row_slice(1)
+            .expect("The preprocessed matrix has only one row?");
+
+        match &self.inner {
+            Poseidon2AirWrapperInner::BabyBearD4Width16(air) => unsafe {
+                eval_poseidon2_variant::<
+                    SC,
+                    BabyBear,
+                    ProverConstraintFolderWithLookups<'a, SC>,
+                    GenericPoseidon2LinearLayersBabyBear,
+                    { BabyBearD4Width16::D },
+                    { BabyBearD4Width16::WIDTH },
+                    { BabyBearD4Width16::WIDTH_EXT },
+                    { BabyBearD4Width16::RATE_EXT },
+                    { BabyBearD4Width16::CAPACITY_EXT },
+                    { BabyBearD4Width16::SBOX_DEGREE },
+                    { BabyBearD4Width16::SBOX_REGISTERS },
+                    { BabyBearD4Width16::HALF_FULL_ROUNDS },
+                    { BabyBearD4Width16::PARTIAL_ROUNDS },
+                >(
+                    air.as_ref(),
+                    builder,
+                    &local_slice,
+                    &next_slice,
+                    &next_preprocessed_slice,
+                );
+            },
+            Poseidon2AirWrapperInner::BabyBearD4Width24(air) => unsafe {
+                eval_poseidon2_variant::<
+                    SC,
+                    BabyBear,
+                    ProverConstraintFolderWithLookups<'a, SC>,
+                    GenericPoseidon2LinearLayersBabyBear,
+                    { BabyBearD4Width24::D },
+                    { BabyBearD4Width24::WIDTH },
+                    { BabyBearD4Width24::WIDTH_EXT },
+                    { BabyBearD4Width24::RATE_EXT },
+                    { BabyBearD4Width24::CAPACITY_EXT },
+                    { BabyBearD4Width24::SBOX_DEGREE },
+                    { BabyBearD4Width24::SBOX_REGISTERS },
+                    { BabyBearD4Width24::HALF_FULL_ROUNDS },
+                    { BabyBearD4Width24::PARTIAL_ROUNDS },
+                >(
+                    air.as_ref(),
+                    builder,
+                    &local_slice,
+                    &next_slice,
+                    &next_preprocessed_slice,
+                );
+            },
+            Poseidon2AirWrapperInner::KoalaBearD4Width16(air) => unsafe {
+                eval_poseidon2_variant::<
+                    SC,
+                    KoalaBear,
+                    ProverConstraintFolderWithLookups<'a, SC>,
+                    GenericPoseidon2LinearLayersKoalaBear,
+                    { KoalaBearD4Width16::D },
+                    { KoalaBearD4Width16::WIDTH },
+                    { KoalaBearD4Width16::WIDTH_EXT },
+                    { KoalaBearD4Width16::RATE_EXT },
+                    { KoalaBearD4Width16::CAPACITY_EXT },
+                    { KoalaBearD4Width16::SBOX_DEGREE },
+                    { KoalaBearD4Width16::SBOX_REGISTERS },
+                    { KoalaBearD4Width16::HALF_FULL_ROUNDS },
+                    { KoalaBearD4Width16::PARTIAL_ROUNDS },
+                >(
+                    air.as_ref(),
+                    builder,
+                    &local_slice,
+                    &next_slice,
+                    &next_preprocessed_slice,
+                );
+            },
+            Poseidon2AirWrapperInner::KoalaBearD4Width24(air) => unsafe {
+                eval_poseidon2_variant::<
+                    SC,
+                    KoalaBear,
+                    ProverConstraintFolderWithLookups<'a, SC>,
+                    GenericPoseidon2LinearLayersKoalaBear,
+                    { KoalaBearD4Width24::D },
+                    { KoalaBearD4Width24::WIDTH },
+                    { KoalaBearD4Width24::WIDTH_EXT },
+                    { KoalaBearD4Width24::RATE_EXT },
+                    { KoalaBearD4Width24::CAPACITY_EXT },
+                    { KoalaBearD4Width24::SBOX_DEGREE },
+                    { KoalaBearD4Width24::SBOX_REGISTERS },
+                    { KoalaBearD4Width24::HALF_FULL_ROUNDS },
+                    { KoalaBearD4Width24::PARTIAL_ROUNDS },
+                >(
+                    air.as_ref(),
+                    builder,
+                    &local_slice,
+                    &next_slice,
+                    &next_preprocessed_slice,
+                );
+            },
+        }
+    }
+}
+
+impl<'a, SC> Air<VerifierConstraintFolderWithLookups<'a, SC>> for Poseidon2AirWrapper<SC>
+where
+    SC: StarkGenericConfig + Send + Sync,
+    Val<SC>: StarkField + PrimeField,
+{
+    fn eval(&self, builder: &mut VerifierConstraintFolderWithLookups<'a, SC>) {
+        let main = builder.main();
+        let local_slice = main.row_slice(0).expect("The matrix is empty?");
+        let next_slice = main.row_slice(1).expect("The matrix has only one row?");
+        let preprocessed = builder.preprocessed();
+        let next_preprocessed_slice = preprocessed
+            .row_slice(1)
+            .expect("The preprocessed matrix has only one row?");
+
+        match &self.inner {
+            Poseidon2AirWrapperInner::BabyBearD4Width16(air) => unsafe {
+                eval_poseidon2_variant::<
+                    SC,
+                    BabyBear,
+                    VerifierConstraintFolderWithLookups<'a, SC>,
+                    GenericPoseidon2LinearLayersBabyBear,
+                    { BabyBearD4Width16::D },
+                    { BabyBearD4Width16::WIDTH },
+                    { BabyBearD4Width16::WIDTH_EXT },
+                    { BabyBearD4Width16::RATE_EXT },
+                    { BabyBearD4Width16::CAPACITY_EXT },
+                    { BabyBearD4Width16::SBOX_DEGREE },
+                    { BabyBearD4Width16::SBOX_REGISTERS },
+                    { BabyBearD4Width16::HALF_FULL_ROUNDS },
+                    { BabyBearD4Width16::PARTIAL_ROUNDS },
+                >(
+                    air.as_ref(),
+                    builder,
+                    &local_slice,
+                    &next_slice,
+                    &next_preprocessed_slice,
+                );
+            },
+            Poseidon2AirWrapperInner::BabyBearD4Width24(air) => unsafe {
+                eval_poseidon2_variant::<
+                    SC,
+                    BabyBear,
+                    VerifierConstraintFolderWithLookups<'a, SC>,
+                    GenericPoseidon2LinearLayersBabyBear,
+                    { BabyBearD4Width24::D },
+                    { BabyBearD4Width24::WIDTH },
+                    { BabyBearD4Width24::WIDTH_EXT },
+                    { BabyBearD4Width24::RATE_EXT },
+                    { BabyBearD4Width24::CAPACITY_EXT },
+                    { BabyBearD4Width24::SBOX_DEGREE },
+                    { BabyBearD4Width24::SBOX_REGISTERS },
+                    { BabyBearD4Width24::HALF_FULL_ROUNDS },
+                    { BabyBearD4Width24::PARTIAL_ROUNDS },
+                >(
+                    air.as_ref(),
+                    builder,
+                    &local_slice,
+                    &next_slice,
+                    &next_preprocessed_slice,
+                );
+            },
+            Poseidon2AirWrapperInner::KoalaBearD4Width16(air) => unsafe {
+                eval_poseidon2_variant::<
+                    SC,
+                    KoalaBear,
+                    VerifierConstraintFolderWithLookups<'a, SC>,
+                    GenericPoseidon2LinearLayersKoalaBear,
+                    { KoalaBearD4Width16::D },
+                    { KoalaBearD4Width16::WIDTH },
+                    { KoalaBearD4Width16::WIDTH_EXT },
+                    { KoalaBearD4Width16::RATE_EXT },
+                    { KoalaBearD4Width16::CAPACITY_EXT },
+                    { KoalaBearD4Width16::SBOX_DEGREE },
+                    { KoalaBearD4Width16::SBOX_REGISTERS },
+                    { KoalaBearD4Width16::HALF_FULL_ROUNDS },
+                    { KoalaBearD4Width16::PARTIAL_ROUNDS },
+                >(
+                    air.as_ref(),
+                    builder,
+                    &local_slice,
+                    &next_slice,
+                    &next_preprocessed_slice,
+                );
+            },
+            Poseidon2AirWrapperInner::KoalaBearD4Width24(air) => unsafe {
+                eval_poseidon2_variant::<
+                    SC,
+                    KoalaBear,
+                    VerifierConstraintFolderWithLookups<'a, SC>,
+                    GenericPoseidon2LinearLayersKoalaBear,
+                    { KoalaBearD4Width24::D },
+                    { KoalaBearD4Width24::WIDTH },
+                    { KoalaBearD4Width24::WIDTH_EXT },
+                    { KoalaBearD4Width24::RATE_EXT },
+                    { KoalaBearD4Width24::CAPACITY_EXT },
+                    { KoalaBearD4Width24::SBOX_DEGREE },
+                    { KoalaBearD4Width24::SBOX_REGISTERS },
+                    { KoalaBearD4Width24::HALF_FULL_ROUNDS },
+                    { KoalaBearD4Width24::PARTIAL_ROUNDS },
+                >(
+                    air.as_ref(),
+                    builder,
+                    &local_slice,
+                    &next_slice,
+                    &next_preprocessed_slice,
+                );
+            },
+        }
+    }
+}
+
+impl<SC> AirLookupHandler<SymbolicAirBuilder<Val<SC>, SC::Challenge>> for Poseidon2AirWrapper<SC>
+where
+    SC: StarkGenericConfig + Send + Sync,
+    Val<SC>: StarkField + PrimeField,
+    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+{
+    fn add_lookup_columns(&mut self) -> Vec<usize> {
+        match &mut self.inner {
+            Poseidon2AirWrapperInner::BabyBearD4Width16(air) => {
+                let air_bb: &mut Poseidon2CircuitAirBabyBearD4Width16 = air.as_mut();
+                <Poseidon2CircuitAirBabyBearD4Width16 as AirLookupHandler<
+                    SymbolicAirBuilder<BabyBear, BinomialExtensionField<BabyBear, 4>>,
+                >>::add_lookup_columns(air_bb)
+            }
+            Poseidon2AirWrapperInner::BabyBearD4Width24(air) => {
+                let air_bb: &mut Poseidon2CircuitAirBabyBearD4Width24 = air.as_mut();
+                <Poseidon2CircuitAirBabyBearD4Width24 as AirLookupHandler<
+                    SymbolicAirBuilder<BabyBear, BinomialExtensionField<BabyBear, 4>>,
+                >>::add_lookup_columns(air_bb)
+            }
+            Poseidon2AirWrapperInner::KoalaBearD4Width16(air) => {
+                let air_kb: &mut Poseidon2CircuitAirKoalaBearD4Width16 = air.as_mut();
+                <Poseidon2CircuitAirKoalaBearD4Width16 as AirLookupHandler<
+                    SymbolicAirBuilder<KoalaBear, BinomialExtensionField<KoalaBear, 4>>,
+                >>::add_lookup_columns(air_kb)
+            }
+            Poseidon2AirWrapperInner::KoalaBearD4Width24(air) => {
+                let air_kb: &mut Poseidon2CircuitAirKoalaBearD4Width24 = air.as_mut();
+                <Poseidon2CircuitAirKoalaBearD4Width24 as AirLookupHandler<
+                    SymbolicAirBuilder<KoalaBear, BinomialExtensionField<KoalaBear, 4>>,
+                >>::add_lookup_columns(air_kb)
+            }
+        }
+    }
+
+    #[allow(clippy::missing_transmute_annotations)] // this gets overly verbose otherwise
+    fn get_lookups(&mut self) -> Vec<p3_lookup::lookup_traits::Lookup<Val<SC>>> {
+        const BABY_BEAR_MODULUS: u64 = 2013265921;
+        const KOALA_BEAR_MODULUS: u64 = 2147483649;
+
+        match &mut self.inner {
+            Poseidon2AirWrapperInner::BabyBearD4Width16(air) => unsafe {
+                // Runtime check: verify Val<SC> == BabyBear before transmute
+                assert_eq!(Val::<SC>::from_u64(BABY_BEAR_MODULUS), Val::<SC>::ZERO,);
+                let air_bb: &mut Poseidon2CircuitAirBabyBearD4Width16 = air.as_mut();
+                let lookups_bb = <Poseidon2CircuitAirBabyBearD4Width16 as AirLookupHandler<
+                    SymbolicAirBuilder<BabyBear, BinomialExtensionField<BabyBear, 4>>,
+                >>::get_lookups(air_bb);
+                core::mem::transmute(lookups_bb)
+            },
+            Poseidon2AirWrapperInner::BabyBearD4Width24(air) => unsafe {
+                // Runtime check: verify Val<SC> == BabyBear before transmute
+                assert_eq!(Val::<SC>::from_u64(BABY_BEAR_MODULUS), Val::<SC>::ZERO,);
+                let air_bb: &mut Poseidon2CircuitAirBabyBearD4Width24 = air.as_mut();
+                let lookups_bb = <Poseidon2CircuitAirBabyBearD4Width24 as AirLookupHandler<
+                    SymbolicAirBuilder<BabyBear, BinomialExtensionField<BabyBear, 4>>,
+                >>::get_lookups(air_bb);
+                core::mem::transmute(lookups_bb)
+            },
+            Poseidon2AirWrapperInner::KoalaBearD4Width16(air) => unsafe {
+                // Runtime check: verify Val<SC> == KoalaBear before transmute
+                assert_eq!(Val::<SC>::from_u64(KOALA_BEAR_MODULUS), Val::<SC>::ZERO,);
+                let air_kb: &mut Poseidon2CircuitAirKoalaBearD4Width16 = air.as_mut();
+                let lookups_kb = <Poseidon2CircuitAirKoalaBearD4Width16 as AirLookupHandler<
+                    SymbolicAirBuilder<KoalaBear, BinomialExtensionField<KoalaBear, 4>>,
+                >>::get_lookups(air_kb);
+                core::mem::transmute(lookups_kb)
+            },
+            Poseidon2AirWrapperInner::KoalaBearD4Width24(air) => unsafe {
+                // Runtime check: verify Val<SC> == KoalaBear before transmute
+                assert_eq!(Val::<SC>::from_u64(KOALA_BEAR_MODULUS), Val::<SC>::ZERO,);
+                let air_kb: &mut Poseidon2CircuitAirKoalaBearD4Width24 = air.as_mut();
+                let lookups_kb = <Poseidon2CircuitAirKoalaBearD4Width24 as AirLookupHandler<
+                    SymbolicAirBuilder<KoalaBear, BinomialExtensionField<KoalaBear, 4>>,
+                >>::get_lookups(air_kb);
+                core::mem::transmute(lookups_kb)
+            },
+        }
+    }
+}
+
+#[cfg(debug_assertions)]
+impl<'a, SC> AirLookupHandler<DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>>
+    for Poseidon2AirWrapper<SC>
+where
+    SC: StarkGenericConfig + Send + Sync,
+    Val<SC>: StarkField + PrimeField,
+    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+{
+    fn add_lookup_columns(&mut self) -> Vec<usize> {
+        match &mut self.inner {
+            Poseidon2AirWrapperInner::BabyBearD4Width16(air) => {
+                let air_bb: &mut Poseidon2CircuitAirBabyBearD4Width16 = air.as_mut();
+                <Poseidon2CircuitAirBabyBearD4Width16 as AirLookupHandler<
+                    DebugConstraintBuilderWithLookups<
+                        'a,
+                        BabyBear,
+                        BinomialExtensionField<BabyBear, 4>,
+                    >,
+                >>::add_lookup_columns(air_bb)
+            }
+            Poseidon2AirWrapperInner::BabyBearD4Width24(air) => {
+                let air_bb: &mut Poseidon2CircuitAirBabyBearD4Width24 = air.as_mut();
+                <Poseidon2CircuitAirBabyBearD4Width24 as AirLookupHandler<
+                    DebugConstraintBuilderWithLookups<
+                        'a,
+                        BabyBear,
+                        BinomialExtensionField<BabyBear, 4>,
+                    >,
+                >>::add_lookup_columns(air_bb)
+            }
+            Poseidon2AirWrapperInner::KoalaBearD4Width16(air) => {
+                let air_kb: &mut Poseidon2CircuitAirKoalaBearD4Width16 = air.as_mut();
+                <Poseidon2CircuitAirKoalaBearD4Width16 as AirLookupHandler<
+                    DebugConstraintBuilderWithLookups<
+                        'a,
+                        KoalaBear,
+                        BinomialExtensionField<KoalaBear, 4>,
+                    >,
+                >>::add_lookup_columns(air_kb)
+            }
+            Poseidon2AirWrapperInner::KoalaBearD4Width24(air) => {
+                let air_kb: &mut Poseidon2CircuitAirKoalaBearD4Width24 = air.as_mut();
+                <Poseidon2CircuitAirKoalaBearD4Width24 as AirLookupHandler<
+                    DebugConstraintBuilderWithLookups<
+                        'a,
+                        KoalaBear,
+                        BinomialExtensionField<KoalaBear, 4>,
+                    >,
+                >>::add_lookup_columns(air_kb)
+            }
+        }
+    }
+
+    #[allow(clippy::missing_transmute_annotations)] // this gets overly verbose otherwise
+    fn get_lookups(&mut self) -> Vec<p3_lookup::lookup_traits::Lookup<Val<SC>>> {
+        const BABY_BEAR_MODULUS: u64 = 2013265921;
+        const KOALA_BEAR_MODULUS: u64 = 2147483649;
+
+        match &mut self.inner {
+            Poseidon2AirWrapperInner::BabyBearD4Width16(air) => unsafe {
+                // Runtime check: verify Val<SC> == BabyBear before transmute
+                assert_eq!(Val::<SC>::from_u64(BABY_BEAR_MODULUS), Val::<SC>::ZERO,);
+                let air_bb: &mut Poseidon2CircuitAirBabyBearD4Width16 = air.as_mut();
+                let lookups_bb = <Poseidon2CircuitAirBabyBearD4Width16 as AirLookupHandler<
+                    SymbolicAirBuilder<BabyBear, BinomialExtensionField<BabyBear, 4>>,
+                >>::get_lookups(air_bb);
+                core::mem::transmute(lookups_bb)
+            },
+            Poseidon2AirWrapperInner::BabyBearD4Width24(air) => unsafe {
+                // Runtime check: verify Val<SC> == BabyBear before transmute
+                assert_eq!(Val::<SC>::from_u64(BABY_BEAR_MODULUS), Val::<SC>::ZERO,);
+                let air_bb: &mut Poseidon2CircuitAirBabyBearD4Width24 = air.as_mut();
+                let lookups_bb = <Poseidon2CircuitAirBabyBearD4Width24 as AirLookupHandler<
+                    SymbolicAirBuilder<BabyBear, BinomialExtensionField<BabyBear, 4>>,
+                >>::get_lookups(air_bb);
+                core::mem::transmute(lookups_bb)
+            },
+            Poseidon2AirWrapperInner::KoalaBearD4Width16(air) => unsafe {
+                // Runtime check: verify Val<SC> == KoalaBear before transmute
+                assert_eq!(Val::<SC>::from_u64(KOALA_BEAR_MODULUS), Val::<SC>::ZERO,);
+                let air_kb: &mut Poseidon2CircuitAirKoalaBearD4Width16 = air.as_mut();
+                let lookups_kb = <Poseidon2CircuitAirKoalaBearD4Width16 as AirLookupHandler<
+                    SymbolicAirBuilder<KoalaBear, BinomialExtensionField<KoalaBear, 4>>,
+                >>::get_lookups(air_kb);
+                core::mem::transmute(lookups_kb)
+            },
+            Poseidon2AirWrapperInner::KoalaBearD4Width24(air) => unsafe {
+                // Runtime check: verify Val<SC> == KoalaBear before transmute
+                assert_eq!(Val::<SC>::from_u64(KOALA_BEAR_MODULUS), Val::<SC>::ZERO,);
+                let air_kb: &mut Poseidon2CircuitAirKoalaBearD4Width24 = air.as_mut();
+                let lookups_kb = <Poseidon2CircuitAirKoalaBearD4Width24 as AirLookupHandler<
+                    SymbolicAirBuilder<KoalaBear, BinomialExtensionField<KoalaBear, 4>>,
+                >>::get_lookups(air_kb);
+                core::mem::transmute(lookups_kb)
+            },
+        }
+    }
+}
+
+impl<'a, SC> AirLookupHandler<ProverConstraintFolderWithLookups<'a, SC>> for Poseidon2AirWrapper<SC>
+where
+    SC: StarkGenericConfig + Send + Sync,
+    Val<SC>: StarkField + PrimeField,
+    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+{
+    fn add_lookup_columns(&mut self) -> Vec<usize> {
+        <Self as AirLookupHandler<SymbolicAirBuilder<Val<SC>, SC::Challenge>>>::add_lookup_columns(
+            self,
+        )
+    }
+
+    fn get_lookups(&mut self) -> Vec<p3_lookup::lookup_traits::Lookup<Val<SC>>> {
+        <Self as AirLookupHandler<SymbolicAirBuilder<Val<SC>, SC::Challenge>>>::get_lookups(self)
+    }
+}
+
+impl<'a, SC> AirLookupHandler<VerifierConstraintFolderWithLookups<'a, SC>>
+    for Poseidon2AirWrapper<SC>
+where
+    SC: StarkGenericConfig + Send + Sync,
+    Val<SC>: StarkField + PrimeField,
+    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+{
+    fn add_lookup_columns(&mut self) -> Vec<usize> {
+        <Self as AirLookupHandler<SymbolicAirBuilder<Val<SC>, SC::Challenge>>>::add_lookup_columns(
+            self,
+        )
+    }
+
+    fn get_lookups(&mut self) -> Vec<p3_lookup::lookup_traits::Lookup<Val<SC>>> {
+        <Self as AirLookupHandler<SymbolicAirBuilder<Val<SC>, SC::Challenge>>>::get_lookups(self)
     }
 }
 
@@ -505,6 +1481,156 @@ impl Poseidon2Prover {
         Self { config }
     }
 
+    const fn baby_bear_constants_16() -> RoundConstants<BabyBear, 16, 4, 13> {
+        let beginning_full: [[BabyBear; 16]; 4] = p3_baby_bear::BABYBEAR_RC16_EXTERNAL_INITIAL;
+        let partial: [BabyBear; 13] = p3_baby_bear::BABYBEAR_RC16_INTERNAL;
+        let ending_full: [[BabyBear; 16]; 4] = p3_baby_bear::BABYBEAR_RC16_EXTERNAL_FINAL;
+        RoundConstants::new(beginning_full, partial, ending_full)
+    }
+
+    const fn baby_bear_constants_24() -> RoundConstants<BabyBear, 24, 4, 21> {
+        let beginning_full: [[BabyBear; 24]; 4] = p3_baby_bear::BABYBEAR_RC24_EXTERNAL_INITIAL;
+        let partial: [BabyBear; 21] = p3_baby_bear::BABYBEAR_RC24_INTERNAL;
+        let ending_full: [[BabyBear; 24]; 4] = p3_baby_bear::BABYBEAR_RC24_EXTERNAL_FINAL;
+        RoundConstants::new(beginning_full, partial, ending_full)
+    }
+
+    const fn koala_bear_constants_16() -> RoundConstants<KoalaBear, 16, 4, 20> {
+        let beginning_full: [[KoalaBear; 16]; 4] = p3_koala_bear::KOALABEAR_RC16_EXTERNAL_INITIAL;
+        let partial: [KoalaBear; 20] = p3_koala_bear::KOALABEAR_RC16_INTERNAL;
+        let ending_full: [[KoalaBear; 16]; 4] = p3_koala_bear::KOALABEAR_RC16_EXTERNAL_FINAL;
+        RoundConstants::new(beginning_full, partial, ending_full)
+    }
+
+    const fn koala_bear_constants_24() -> RoundConstants<KoalaBear, 24, 4, 23> {
+        let beginning_full: [[KoalaBear; 24]; 4] = p3_koala_bear::KOALABEAR_RC24_EXTERNAL_INITIAL;
+        let partial: [KoalaBear; 23] = p3_koala_bear::KOALABEAR_RC24_INTERNAL;
+        let ending_full: [[KoalaBear; 24]; 4] = p3_koala_bear::KOALABEAR_RC24_EXTERNAL_FINAL;
+        RoundConstants::new(beginning_full, partial, ending_full)
+    }
+
+    fn air_wrapper_for_config(config: Poseidon2Config) -> Poseidon2AirWrapperInner {
+        match config {
+            Poseidon2Config::BabyBearD4Width16 => {
+                Poseidon2AirWrapperInner::BabyBearD4Width16(Box::new(
+                    Poseidon2CircuitAirBabyBearD4Width16::new(Self::baby_bear_constants_16()),
+                ))
+            }
+            Poseidon2Config::BabyBearD4Width24 => {
+                Poseidon2AirWrapperInner::BabyBearD4Width24(Box::new(
+                    Poseidon2CircuitAirBabyBearD4Width24::new(Self::baby_bear_constants_24()),
+                ))
+            }
+            Poseidon2Config::KoalaBearD4Width16 => {
+                Poseidon2AirWrapperInner::KoalaBearD4Width16(Box::new(
+                    Poseidon2CircuitAirKoalaBearD4Width16::new(Self::koala_bear_constants_16()),
+                ))
+            }
+            Poseidon2Config::KoalaBearD4Width24 => {
+                Poseidon2AirWrapperInner::KoalaBearD4Width24(Box::new(
+                    Poseidon2CircuitAirKoalaBearD4Width24::new(Self::koala_bear_constants_24()),
+                ))
+            }
+        }
+    }
+
+    fn air_wrapper_for_config_with_preprocessed<F: Field>(
+        config: Poseidon2Config,
+        preprocessed: Vec<F>,
+    ) -> Poseidon2AirWrapperInner {
+        match config {
+            Poseidon2Config::BabyBearD4Width16 => {
+                assert!(F::from_u64(BABY_BEAR_MODULUS) == F::ZERO,);
+                Poseidon2AirWrapperInner::BabyBearD4Width16(Box::new(
+                    Poseidon2CircuitAirBabyBearD4Width16::new_with_preprocessed(
+                        Self::baby_bear_constants_16(),
+                        unsafe { transmute::<Vec<F>, Vec<BabyBear>>(preprocessed) },
+                    ),
+                ))
+            }
+            Poseidon2Config::BabyBearD4Width24 => {
+                assert!(F::from_u64(BABY_BEAR_MODULUS) == F::ZERO,);
+                Poseidon2AirWrapperInner::BabyBearD4Width24(Box::new(
+                    Poseidon2CircuitAirBabyBearD4Width24::new_with_preprocessed(
+                        Self::baby_bear_constants_24(),
+                        unsafe { transmute::<Vec<F>, Vec<BabyBear>>(preprocessed) },
+                    ),
+                ))
+            }
+            Poseidon2Config::KoalaBearD4Width16 => {
+                assert!(F::from_u64(KOALA_BEAR_MODULUS) == F::ZERO,);
+                Poseidon2AirWrapperInner::KoalaBearD4Width16(Box::new(
+                    Poseidon2CircuitAirKoalaBearD4Width16::new_with_preprocessed(
+                        Self::koala_bear_constants_16(),
+                        unsafe { transmute::<Vec<F>, Vec<KoalaBear>>(preprocessed) },
+                    ),
+                ))
+            }
+            Poseidon2Config::KoalaBearD4Width24 => {
+                assert!(F::from_u64(KOALA_BEAR_MODULUS) == F::ZERO,);
+                Poseidon2AirWrapperInner::KoalaBearD4Width24(Box::new(
+                    Poseidon2CircuitAirKoalaBearD4Width24::new_with_preprocessed(
+                        Self::koala_bear_constants_24(),
+                        unsafe { transmute::<Vec<F>, Vec<KoalaBear>>(preprocessed) },
+                    ),
+                ))
+            }
+        }
+    }
+
+    pub fn wrapper_from_config_with_preprocessed<SC>(
+        &self,
+        preprocessed: Vec<Val<SC>>,
+    ) -> DynamicAirEntry<SC>
+    where
+        SC: StarkGenericConfig + 'static + Send + Sync,
+        Val<SC>: StarkField,
+        SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+    {
+        DynamicAirEntry::new(Box::new(Poseidon2AirWrapper {
+            inner: Self::air_wrapper_for_config_with_preprocessed::<Val<SC>>(
+                self.config,
+                preprocessed,
+            ),
+            width: self.width_from_config(),
+            _phantom: core::marker::PhantomData::<SC>,
+        }))
+    }
+
+    pub fn width_from_config(&self) -> usize {
+        match self.config {
+            Poseidon2Config::BabyBearD4Width16 => {
+                Poseidon2CircuitAirBabyBearD4Width16::new(Self::baby_bear_constants_16()).width()
+            }
+            Poseidon2Config::BabyBearD4Width24 => {
+                Poseidon2CircuitAirBabyBearD4Width24::new(Self::baby_bear_constants_24()).width()
+            }
+            Poseidon2Config::KoalaBearD4Width16 => {
+                Poseidon2CircuitAirKoalaBearD4Width16::new(Self::koala_bear_constants_16()).width()
+            }
+            Poseidon2Config::KoalaBearD4Width24 => {
+                Poseidon2CircuitAirKoalaBearD4Width24::new(Self::koala_bear_constants_24()).width()
+            }
+        }
+    }
+
+    pub const fn preprocessed_width_from_config(&self) -> usize {
+        match self.config {
+            Poseidon2Config::BabyBearD4Width16 => {
+                Poseidon2CircuitAirBabyBearD4Width16::preprocessed_width()
+            }
+            Poseidon2Config::BabyBearD4Width24 => {
+                Poseidon2CircuitAirBabyBearD4Width24::preprocessed_width()
+            }
+            Poseidon2Config::KoalaBearD4Width16 => {
+                Poseidon2CircuitAirKoalaBearD4Width16::preprocessed_width()
+            }
+            Poseidon2Config::KoalaBearD4Width24 => {
+                Poseidon2CircuitAirKoalaBearD4Width24::preprocessed_width()
+            }
+        }
+    }
+
     fn batch_instance_from_traces<SC, CF>(
         &self,
         _config: &SC,
@@ -515,8 +1641,11 @@ impl Poseidon2Prover {
         SC: StarkGenericConfig + 'static + Send + Sync,
         Val<SC>: StarkField,
         CF: Field + ExtensionField<Val<SC>>,
+        SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
     {
-        let t = traces.non_primitive_trace::<Poseidon2Trace<Val<SC>>>("poseidon2")?;
+        let t = traces.non_primitive_trace::<Poseidon2Trace<Val<SC>>>(
+            NonPrimitiveOpType::Poseidon2Perm(self.config),
+        )?;
 
         let rows = t.total_rows();
         if rows == 0 {
@@ -524,54 +1653,25 @@ impl Poseidon2Prover {
         }
 
         // Pad to power of two and generate trace matrix based on configuration
-        match &self.config {
-            Poseidon2Config::BabyBearD1Width16 {
-                permutation,
-                constants,
-            } => self.batch_instance_base_impl::<SC, p3_baby_bear::BabyBear, _, 16, 4, 13, 2>(
-                t,
-                permutation,
-                constants,
-            ),
-            Poseidon2Config::BabyBearD4Width16 {
-                permutation,
-                constants,
-            } => self.batch_instance_base_impl::<SC, p3_baby_bear::BabyBear, _, 16, 4, 13, 2>(
-                t,
-                permutation,
-                constants,
-            ),
-            Poseidon2Config::BabyBearD4Width24 {
-                permutation,
-                constants,
-            } => self.batch_instance_base_impl::<SC, p3_baby_bear::BabyBear, _, 24, 4, 21, 4>(
-                t,
-                permutation,
-                constants,
-            ),
-            Poseidon2Config::KoalaBearD4Width16 {
-                permutation,
-                constants,
-            } => self.batch_instance_base_impl::<SC, p3_koala_bear::KoalaBear, _, 16, 4, 20, 2>(
-                t,
-                permutation,
-                constants,
-            ),
-            Poseidon2Config::KoalaBearD4Width24 {
-                permutation,
-                constants,
-            } => self.batch_instance_base_impl::<SC, p3_koala_bear::KoalaBear, _, 24, 4, 23, 4>(
-                t,
-                permutation,
-                constants,
-            ),
+        match self.config {
+            Poseidon2Config::BabyBearD4Width16 => {
+                self.batch_instance_base_impl::<SC, p3_baby_bear::BabyBear, 16, 4, 13, 2>(t)
+            }
+            Poseidon2Config::BabyBearD4Width24 => {
+                self.batch_instance_base_impl::<SC, p3_baby_bear::BabyBear, 24, 4, 21, 4>(t)
+            }
+            Poseidon2Config::KoalaBearD4Width16 => {
+                self.batch_instance_base_impl::<SC, p3_koala_bear::KoalaBear, 16, 4, 20, 2>(t)
+            }
+            Poseidon2Config::KoalaBearD4Width24 => {
+                self.batch_instance_base_impl::<SC, p3_koala_bear::KoalaBear, 24, 4, 23, 4>(t)
+            }
         }
     }
 
     fn batch_instance_base_impl<
         SC,
         F,
-        P,
         const WIDTH: usize,
         const HALF_FULL_ROUNDS: usize,
         const PARTIAL_ROUNDS: usize,
@@ -579,14 +1679,12 @@ impl Poseidon2Prover {
     >(
         &self,
         t: &Poseidon2Trace<Val<SC>>,
-        _permutation: &P,
-        _constants: &RoundConstants<F, WIDTH, HALF_FULL_ROUNDS, PARTIAL_ROUNDS>,
     ) -> Option<BatchTableInstance<SC>>
     where
         SC: StarkGenericConfig + 'static + Send + Sync,
         F: StarkField + PrimeCharacteristicRing,
-        P: CryptographicPermutation<[F; WIDTH]> + Clone,
         Val<SC>: StarkField,
+        SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
     {
         let rows = t.total_rows();
 
@@ -613,94 +1711,109 @@ impl Poseidon2Prover {
             );
         }
 
-        // Convert trace from Val<SC> to F using unsafe transmute
-        // This is safe when Val<SC> and F have the same size and layout
-        // For BabyBear/KoalaBear configs, Val<SC> should be BabyBear/KoalaBear
-        let ops_converted: Poseidon2CircuitTrace<F> = unsafe { transmute(padded_ops) };
+        // Convert trace from Val<SC> to F
+        // Val<SC> and F are guaranteed to be the same type at runtime (BabyBear/KoalaBear)
+        let ops_converted: Vec<Poseidon2CircuitRow<F>> = unsafe { transmute(padded_ops) };
 
         // Create an AIR instance based on the configuration
         // This is a bit verbose but we can't get over const generics
-        let (air, matrix) = match &self.config {
-            Poseidon2Config::BabyBearD1Width16 {
-                permutation,
-                constants,
-            } => {
-                let air = Poseidon2CircuitAirBabyBearD1Width16::new(constants.clone());
-                let perm_clone = permutation.clone();
-                let ops_babybear: Poseidon2CircuitTrace<BabyBear> =
+        let (air, matrix) = match self.config {
+            Poseidon2Config::BabyBearD4Width16 => {
+                let constants = Self::baby_bear_constants_16();
+                let preprocessed =
+                    extract_preprocessed_from_operations::<BabyBear, Val<SC>>(&t.operations);
+                let air = Poseidon2CircuitAirBabyBearD4Width16::new_with_preprocessed(
+                    constants.clone(),
+                    preprocessed.clone(),
+                );
+                // F is guaranteed to be BabyBear at runtime in this branch
+                let ops_babybear: Vec<Poseidon2CircuitRow<BabyBear>> =
                     unsafe { transmute(ops_converted) };
-                let matrix_f = air.generate_trace_rows(&ops_babybear, constants, 0, &perm_clone);
+                let matrix_f = air.generate_trace_rows(&ops_babybear, &constants, 0);
                 let matrix: RowMajorMatrix<Val<SC>> = unsafe { transmute(matrix_f) };
                 (
                     Poseidon2AirWrapper {
+                        inner: Self::air_wrapper_for_config_with_preprocessed::<BabyBear>(
+                            self.config,
+                            preprocessed,
+                        ),
                         width: air.width(),
                         _phantom: core::marker::PhantomData::<SC>,
                     },
                     matrix,
                 )
             }
-            Poseidon2Config::BabyBearD4Width16 {
-                permutation,
-                constants,
-            } => {
-                let air = Poseidon2CircuitAirBabyBearD4Width16::new(constants.clone());
-                let ops_babybear: Poseidon2CircuitTrace<BabyBear> =
+            Poseidon2Config::BabyBearD4Width24 => {
+                let constants = Self::baby_bear_constants_24();
+                let preprocessed =
+                    extract_preprocessed_from_operations::<BabyBear, Val<SC>>(&t.operations);
+                let air = Poseidon2CircuitAirBabyBearD4Width24::new_with_preprocessed(
+                    constants.clone(),
+                    preprocessed.clone(),
+                );
+                // F is guaranteed to be BabyBear at runtime in this branch
+                let ops_babybear: Vec<Poseidon2CircuitRow<BabyBear>> =
                     unsafe { transmute(ops_converted) };
-                let matrix_f = air.generate_trace_rows(&ops_babybear, constants, 0, permutation);
+                let matrix_f = air.generate_trace_rows(&ops_babybear, &constants, 0);
                 let matrix: RowMajorMatrix<Val<SC>> = unsafe { transmute(matrix_f) };
                 (
+                    // Preprocessed values are already stored in the AIR, so we don't need to pass them again in the wrapper.
                     Poseidon2AirWrapper {
+                        inner: Self::air_wrapper_for_config_with_preprocessed(
+                            self.config,
+                            preprocessed,
+                        ),
                         width: air.width(),
                         _phantom: core::marker::PhantomData::<SC>,
                     },
                     matrix,
                 )
             }
-            Poseidon2Config::BabyBearD4Width24 {
-                permutation,
-                constants,
-            } => {
-                let air = Poseidon2CircuitAirBabyBearD4Width24::new(constants.clone());
-                let ops_babybear: Poseidon2CircuitTrace<BabyBear> =
+            Poseidon2Config::KoalaBearD4Width16 => {
+                let constants = Self::koala_bear_constants_16();
+                let preprocessed =
+                    extract_preprocessed_from_operations::<KoalaBear, Val<SC>>(&t.operations);
+                let air = Poseidon2CircuitAirKoalaBearD4Width16::new_with_preprocessed(
+                    constants.clone(),
+                    preprocessed.clone(),
+                );
+                // F is guaranteed to be KoalaBear at runtime in this branch
+                let ops_koalabear: Vec<Poseidon2CircuitRow<KoalaBear>> =
                     unsafe { transmute(ops_converted) };
-                let matrix_f = air.generate_trace_rows(&ops_babybear, constants, 0, permutation);
+                let matrix_f = air.generate_trace_rows(&ops_koalabear, &constants, 0);
                 let matrix: RowMajorMatrix<Val<SC>> = unsafe { transmute(matrix_f) };
                 (
+                    // Preprocessed values are already stored in the AIR, so we don't need to pass them again in the wrapper.
                     Poseidon2AirWrapper {
+                        inner: Self::air_wrapper_for_config_with_preprocessed(
+                            self.config,
+                            preprocessed,
+                        ),
                         width: air.width(),
                         _phantom: core::marker::PhantomData::<SC>,
                     },
                     matrix,
                 )
             }
-            Poseidon2Config::KoalaBearD4Width16 {
-                permutation,
-                constants,
-            } => {
-                let air = Poseidon2CircuitAirKoalaBearD4Width16::new(constants.clone());
-                let ops_koalabear: Poseidon2CircuitTrace<KoalaBear> =
-                    unsafe { transmute(ops_converted) };
-                let matrix_f = air.generate_trace_rows(&ops_koalabear, constants, 0, permutation);
-                let matrix: RowMajorMatrix<Val<SC>> = unsafe { transmute(matrix_f) };
-                (
-                    Poseidon2AirWrapper {
-                        width: air.width(),
-                        _phantom: core::marker::PhantomData::<SC>,
-                    },
-                    matrix,
-                )
-            }
-            Poseidon2Config::KoalaBearD4Width24 {
-                permutation,
-                constants,
-            } => {
-                let air = Poseidon2CircuitAirKoalaBearD4Width24::new(constants.clone());
-                let ops_koalabear: p3_circuit::tables::Poseidon2CircuitTrace<KoalaBear> =
+            Poseidon2Config::KoalaBearD4Width24 => {
+                let constants = Self::koala_bear_constants_24();
+                let preprocessed =
+                    extract_preprocessed_from_operations::<KoalaBear, Val<SC>>(&t.operations);
+                let air = Poseidon2CircuitAirKoalaBearD4Width24::new_with_preprocessed(
+                    constants.clone(),
+                    preprocessed.clone(),
+                );
+                let ops_koalabear: Vec<Poseidon2CircuitRow<KoalaBear>> =
                     unsafe { core::mem::transmute(ops_converted) };
-                let matrix_f = air.generate_trace_rows(&ops_koalabear, constants, 0, permutation);
+                let matrix_f = air.generate_trace_rows(&ops_koalabear, &constants, 0);
                 let matrix: RowMajorMatrix<Val<SC>> = unsafe { core::mem::transmute(matrix_f) };
                 (
+                    // Preprocessed values are already stored in the AIR, so we don't need to pass them again in the wrapper.
                     Poseidon2AirWrapper {
+                        inner: Self::air_wrapper_for_config_with_preprocessed(
+                            self.config,
+                            preprocessed,
+                        ),
                         width: air.width(),
                         _phantom: core::marker::PhantomData::<SC>,
                     },
@@ -710,7 +1823,7 @@ impl Poseidon2Prover {
         };
 
         Some(BatchTableInstance {
-            id: "poseidon2",
+            op_type: NonPrimitiveOpType::Poseidon2Perm(self.config),
             air: DynamicAirEntry::new(Box::new(air)),
             trace: matrix,
             public_values: Vec::new(),
@@ -723,9 +1836,10 @@ impl<SC> TableProver<SC> for Poseidon2Prover
 where
     SC: StarkGenericConfig + 'static + Send + Sync,
     Val<SC>: StarkField + BinomiallyExtendable<4>,
+    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
 {
-    fn id(&self) -> &'static str {
-        "poseidon2"
+    fn op_type(&self) -> NonPrimitiveOpType {
+        NonPrimitiveOpType::Poseidon2Perm(self.config)
     }
 
     fn batch_instance_d1(
@@ -788,53 +1902,14 @@ where
         _table_entry: &NonPrimitiveTableEntry<SC>,
     ) -> Result<DynamicAirEntry<SC>, String> {
         // Recreate the AIR wrapper from the configuration
-        match &self.config {
-            Poseidon2Config::BabyBearD1Width16 { constants, .. } => {
-                use p3_poseidon2_circuit_air::Poseidon2CircuitAirBabyBearD1Width16;
-                let air = Poseidon2CircuitAirBabyBearD1Width16::new(constants.clone());
-                let wrapper = Poseidon2AirWrapper {
-                    width: air.width(),
-                    _phantom: core::marker::PhantomData::<SC>,
-                };
-                Ok(DynamicAirEntry::new(Box::new(wrapper)))
-            }
-            Poseidon2Config::BabyBearD4Width16 { constants, .. } => {
-                use p3_poseidon2_circuit_air::Poseidon2CircuitAirBabyBearD4Width16;
-                let air = Poseidon2CircuitAirBabyBearD4Width16::new(constants.clone());
-                let wrapper = Poseidon2AirWrapper {
-                    width: air.width(),
-                    _phantom: core::marker::PhantomData::<SC>,
-                };
-                Ok(DynamicAirEntry::new(Box::new(wrapper)))
-            }
-            Poseidon2Config::BabyBearD4Width24 { constants, .. } => {
-                use p3_poseidon2_circuit_air::Poseidon2CircuitAirBabyBearD4Width24;
-                let air = Poseidon2CircuitAirBabyBearD4Width24::new(constants.clone());
-                let wrapper = Poseidon2AirWrapper {
-                    width: air.width(),
-                    _phantom: core::marker::PhantomData::<SC>,
-                };
-                Ok(DynamicAirEntry::new(Box::new(wrapper)))
-            }
-            Poseidon2Config::KoalaBearD4Width16 { constants, .. } => {
-                use p3_poseidon2_circuit_air::Poseidon2CircuitAirKoalaBearD4Width16;
-                let air = Poseidon2CircuitAirKoalaBearD4Width16::new(constants.clone());
-                let wrapper = Poseidon2AirWrapper {
-                    width: air.width(),
-                    _phantom: core::marker::PhantomData::<SC>,
-                };
-                Ok(DynamicAirEntry::new(Box::new(wrapper)))
-            }
-            Poseidon2Config::KoalaBearD4Width24 { constants, .. } => {
-                use p3_poseidon2_circuit_air::Poseidon2CircuitAirKoalaBearD4Width24;
-                let air = Poseidon2CircuitAirKoalaBearD4Width24::new(constants.clone());
-                let wrapper = Poseidon2AirWrapper {
-                    width: air.width(),
-                    _phantom: core::marker::PhantomData::<SC>,
-                };
-                Ok(DynamicAirEntry::new(Box::new(wrapper)))
-            }
-        }
+        let inner = Self::air_wrapper_for_config(self.config);
+        let width = inner.width();
+        let wrapper = Poseidon2AirWrapper {
+            inner,
+            width,
+            _phantom: core::marker::PhantomData::<SC>,
+        };
+        Ok(DynamicAirEntry::new(Box::new(wrapper)))
     }
 }
 
@@ -935,13 +2010,14 @@ pub enum BatchStarkProverError {
     #[error("verification failed: {0}")]
     Verify(String),
 
-    #[error("missing table prover for non-primitive table `{0}`")]
-    MissingTableProver(&'static str),
+    #[error("missing table prover for non-primitive op `{0:?}`")]
+    MissingTableProver(NonPrimitiveOpType),
 }
 
 impl<SC, const D: usize> BaseAir<Val<SC>> for CircuitTableAir<SC, D>
 where
     SC: StarkGenericConfig,
+    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
 {
     fn width(&self) -> usize {
         match self {
@@ -966,58 +2042,344 @@ where
     }
 }
 
-impl<SC, const D: usize> Air<SymbolicAirBuilder<Val<SC>>> for CircuitTableAir<SC, D>
+impl<SC, const D: usize> Air<SymbolicAirBuilder<Val<SC>, SC::Challenge>> for CircuitTableAir<SC, D>
 where
     SC: StarkGenericConfig,
     Val<SC>: PrimeField,
+    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
 {
-    fn eval(&self, builder: &mut SymbolicAirBuilder<Val<SC>>) {
+    fn eval(&self, builder: &mut SymbolicAirBuilder<Val<SC>, SC::Challenge>) {
         match self {
-            Self::Witness(a) => a.eval(builder),
-            Self::Const(a) => a.eval(builder),
-            Self::Public(a) => a.eval(builder),
-            Self::Add(a) => a.eval(builder),
-            Self::Mul(a) => a.eval(builder),
+            Self::Witness(a) => Air::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::eval(a, builder),
+            Self::Const(a) => Air::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::eval(a, builder),
+            Self::Public(a) => Air::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::eval(a, builder),
+            Self::Add(a) => Air::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::eval(a, builder),
+            Self::Mul(a) => Air::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::eval(a, builder),
             Self::Dynamic(a) => {
-                <dyn BatchAir<SC> as Air<SymbolicAirBuilder<Val<SC>>>>::eval(a.air(), builder);
+                <dyn BatchAir<SC> as Air<SymbolicAirBuilder<Val<SC>, SC::Challenge>>>::eval(
+                    a.air(),
+                    builder,
+                );
             }
         }
     }
 }
 
-impl<'a, SC, const D: usize> Air<ProverConstraintFolder<'a, SC>> for CircuitTableAir<SC, D>
+#[cfg(debug_assertions)]
+impl<'a, SC, const D: usize> Air<DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>>
+    for CircuitTableAir<SC, D>
 where
     SC: StarkGenericConfig,
     Val<SC>: PrimeField,
+    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
 {
-    fn eval(&self, builder: &mut ProverConstraintFolder<'a, SC>) {
+    fn eval(&self, builder: &mut DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>) {
         match self {
-            Self::Witness(a) => a.eval(builder),
-            Self::Const(a) => a.eval(builder),
-            Self::Public(a) => a.eval(builder),
-            Self::Add(a) => a.eval(builder),
-            Self::Mul(a) => a.eval(builder),
+            Self::Witness(a) => {
+                Air::<DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>>::eval(
+                    a, builder,
+                );
+            }
+            Self::Const(a) => {
+                Air::<DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>>::eval(
+                    a, builder,
+                );
+            }
+            Self::Public(a) => {
+                Air::<DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>>::eval(
+                    a, builder,
+                );
+            }
+            Self::Add(a) => {
+                Air::<DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>>::eval(
+                    a, builder,
+                );
+            }
+            Self::Mul(a) => {
+                Air::<DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>>::eval(
+                    a, builder,
+                );
+            }
             Self::Dynamic(a) => {
-                <dyn BatchAir<SC> as Air<ProverConstraintFolder<'a, SC>>>::eval(a.air(), builder);
+                <dyn BatchAir<SC> as Air<
+                    DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>,
+                >>::eval(a.air(), builder);
             }
         }
     }
 }
 
-impl<'a, SC, const D: usize> Air<VerifierConstraintFolder<'a, SC>> for CircuitTableAir<SC, D>
+impl<'a, SC, const D: usize> Air<ProverConstraintFolderWithLookups<'a, SC>>
+    for CircuitTableAir<SC, D>
 where
     SC: StarkGenericConfig,
     Val<SC>: PrimeField,
+    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
 {
-    fn eval(&self, builder: &mut VerifierConstraintFolder<'a, SC>) {
+    fn eval(&self, builder: &mut ProverConstraintFolderWithLookups<'a, SC>) {
         match self {
-            Self::Witness(a) => a.eval(builder),
-            Self::Const(a) => a.eval(builder),
-            Self::Public(a) => a.eval(builder),
-            Self::Add(a) => a.eval(builder),
-            Self::Mul(a) => a.eval(builder),
+            Self::Witness(a) => Air::<ProverConstraintFolderWithLookups<'a, SC>>::eval(a, builder),
+            Self::Const(a) => Air::<ProverConstraintFolderWithLookups<'a, SC>>::eval(a, builder),
+            Self::Public(a) => Air::<ProverConstraintFolderWithLookups<'a, SC>>::eval(a, builder),
+            Self::Add(a) => Air::<ProverConstraintFolderWithLookups<'a, SC>>::eval(a, builder),
+            Self::Mul(a) => Air::<ProverConstraintFolderWithLookups<'a, SC>>::eval(a, builder),
             Self::Dynamic(a) => {
-                <dyn BatchAir<SC> as Air<VerifierConstraintFolder<'a, SC>>>::eval(a.air(), builder);
+                <dyn BatchAir<SC> as Air<ProverConstraintFolderWithLookups<'a, SC>>>::eval(
+                    a.air(),
+                    builder,
+                );
+            }
+        }
+    }
+}
+
+impl<'a, SC, const D: usize> Air<VerifierConstraintFolderWithLookups<'a, SC>>
+    for CircuitTableAir<SC, D>
+where
+    SC: StarkGenericConfig,
+    Val<SC>: PrimeField,
+    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+{
+    fn eval(&self, builder: &mut VerifierConstraintFolderWithLookups<'a, SC>) {
+        match self {
+            Self::Witness(a) => {
+                Air::<VerifierConstraintFolderWithLookups<'a, SC>>::eval(a, builder);
+            }
+            Self::Const(a) => Air::<VerifierConstraintFolderWithLookups<'a, SC>>::eval(a, builder),
+            Self::Public(a) => Air::<VerifierConstraintFolderWithLookups<'a, SC>>::eval(a, builder),
+            Self::Add(a) => Air::<VerifierConstraintFolderWithLookups<'a, SC>>::eval(a, builder),
+            Self::Mul(a) => Air::<VerifierConstraintFolderWithLookups<'a, SC>>::eval(a, builder),
+            Self::Dynamic(a) => {
+                <dyn BatchAir<SC> as Air<VerifierConstraintFolderWithLookups<'a, SC>>>::eval(
+                    a.air(),
+                    builder,
+                );
+            }
+        }
+    }
+}
+
+impl<SC, const D: usize> AirLookupHandler<SymbolicAirBuilder<Val<SC>, SC::Challenge>>
+    for CircuitTableAir<SC, D>
+where
+    SC: StarkGenericConfig,
+    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+    Val<SC>: PrimeField,
+{
+    fn add_lookup_columns(&mut self) -> Vec<usize> {
+        match self {
+            Self::Witness(a) => {
+                AirLookupHandler::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::add_lookup_columns(a)
+            }
+            Self::Const(a) => {
+                AirLookupHandler::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::add_lookup_columns(a)
+            }
+            Self::Public(a) => {
+                AirLookupHandler::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::add_lookup_columns(a)
+            }
+            Self::Add(a) => AirLookupHandler::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::add_lookup_columns(a),
+            Self::Mul(a) => AirLookupHandler::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::add_lookup_columns(a),
+            Self::Dynamic(a) => {
+                AirLookupHandlerDyn::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::add_lookup_columns_dyn(
+                    a.air_mut(),
+                )
+            }
+        }
+    }
+
+    fn get_lookups(&mut self) -> Vec<Lookup<Val<SC>>> {
+        match self {
+            Self::Witness(a) => {
+                AirLookupHandler::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::get_lookups(a)
+            }
+            Self::Const(a) => {
+                AirLookupHandler::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::get_lookups(a)
+            }
+            Self::Public(a) => {
+                AirLookupHandler::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::get_lookups(a)
+            }
+            Self::Add(a) => {
+                AirLookupHandler::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::get_lookups(a)
+            }
+            Self::Mul(a) => {
+                AirLookupHandler::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::get_lookups(a)
+            }
+            Self::Dynamic(a) => {
+                AirLookupHandlerDyn::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::get_lookups_dyn(
+                    a.air_mut(),
+                )
+            }
+        }
+    }
+}
+
+#[cfg(debug_assertions)]
+impl<'a, SC, const D: usize>
+    AirLookupHandler<DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>>
+    for CircuitTableAir<SC, D>
+where
+    SC: StarkGenericConfig,
+    Val<SC>: PrimeField,
+    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+{
+    fn add_lookup_columns(&mut self) -> Vec<usize> {
+        match self {
+            Self::Witness(a) => AirLookupHandler::<
+                DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>,
+            >::add_lookup_columns(a),
+            Self::Const(a) => AirLookupHandler::<
+                DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>,
+            >::add_lookup_columns(a),
+            Self::Public(a) => AirLookupHandler::<
+                DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>,
+            >::add_lookup_columns(a),
+            Self::Add(a) => AirLookupHandler::<
+                DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>,
+            >::add_lookup_columns(a),
+            Self::Mul(a) => AirLookupHandler::<
+                DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>,
+            >::add_lookup_columns(a),
+            Self::Dynamic(a) => AirLookupHandlerDyn::<
+                DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>,
+            >::add_lookup_columns_dyn(a.air_mut()),
+        }
+    }
+
+    fn get_lookups(&mut self) -> Vec<Lookup<Val<SC>>> {
+        match self {
+            Self::Witness(a) => AirLookupHandler::<
+                DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>,
+            >::get_lookups(a),
+            Self::Const(a) => AirLookupHandler::<
+                DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>,
+            >::get_lookups(a),
+            Self::Public(a) => AirLookupHandler::<
+                DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>,
+            >::get_lookups(a),
+            Self::Add(a) => AirLookupHandler::<
+                DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>,
+            >::get_lookups(a),
+            Self::Mul(a) => AirLookupHandler::<
+                DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>,
+            >::get_lookups(a),
+            Self::Dynamic(a) => AirLookupHandlerDyn::<
+                DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>,
+            >::get_lookups_dyn(a.air_mut()),
+        }
+    }
+}
+
+impl<'a, SC, const D: usize> AirLookupHandler<ProverConstraintFolderWithLookups<'a, SC>>
+    for CircuitTableAir<SC, D>
+where
+    SC: StarkGenericConfig,
+    Val<SC>: PrimeField,
+    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+{
+    fn add_lookup_columns(&mut self) -> Vec<usize> {
+        match self {
+            Self::Witness(a) => {
+                AirLookupHandler::<ProverConstraintFolderWithLookups<'a, SC>>::add_lookup_columns(a)
+            }
+            Self::Const(a) => {
+                AirLookupHandler::<ProverConstraintFolderWithLookups<'a, SC>>::add_lookup_columns(a)
+            }
+            Self::Public(a) => {
+                AirLookupHandler::<ProverConstraintFolderWithLookups<'a, SC>>::add_lookup_columns(a)
+            }
+            Self::Add(a) => {
+                AirLookupHandler::<ProverConstraintFolderWithLookups<'a, SC>>::add_lookup_columns(a)
+            }
+            Self::Mul(a) => {
+                AirLookupHandler::<ProverConstraintFolderWithLookups<'a, SC>>::add_lookup_columns(a)
+            }
+            Self::Dynamic(a) => {
+                AirLookupHandlerDyn::<ProverConstraintFolderWithLookups<'a, SC>>::add_lookup_columns_dyn(
+                    a.air_mut(),
+                )
+            }
+        }
+    }
+
+    fn get_lookups(&mut self) -> Vec<Lookup<Val<SC>>> {
+        match self {
+            Self::Witness(a) => {
+                AirLookupHandler::<ProverConstraintFolderWithLookups<'a, SC>>::get_lookups(a)
+            }
+            Self::Const(a) => {
+                AirLookupHandler::<ProverConstraintFolderWithLookups<'a, SC>>::get_lookups(a)
+            }
+            Self::Public(a) => {
+                AirLookupHandler::<ProverConstraintFolderWithLookups<'a, SC>>::get_lookups(a)
+            }
+            Self::Add(a) => {
+                AirLookupHandler::<ProverConstraintFolderWithLookups<'a, SC>>::get_lookups(a)
+            }
+            Self::Mul(a) => {
+                AirLookupHandler::<ProverConstraintFolderWithLookups<'a, SC>>::get_lookups(a)
+            }
+            Self::Dynamic(a) => {
+                AirLookupHandlerDyn::<ProverConstraintFolderWithLookups<'a, SC>>::get_lookups_dyn(
+                    a.air_mut(),
+                )
+            }
+        }
+    }
+}
+
+impl<'a, SC, const D: usize> AirLookupHandler<VerifierConstraintFolderWithLookups<'a, SC>>
+    for CircuitTableAir<SC, D>
+where
+    SC: StarkGenericConfig,
+    Val<SC>: PrimeField,
+    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+{
+    fn add_lookup_columns(&mut self) -> Vec<usize> {
+        match self {
+            Self::Witness(a) => {
+                AirLookupHandler::<VerifierConstraintFolderWithLookups<'a, SC>>::add_lookup_columns(a)
+            }
+            Self::Const(a) => {
+                AirLookupHandler::<VerifierConstraintFolderWithLookups<'a, SC>>::add_lookup_columns(a)
+            }
+            Self::Public(a) => {
+                AirLookupHandler::<VerifierConstraintFolderWithLookups<'a, SC>>::add_lookup_columns(a)
+            }
+            Self::Add(a) => {
+                AirLookupHandler::<VerifierConstraintFolderWithLookups<'a, SC>>::add_lookup_columns(a)
+            }
+            Self::Mul(a) => {
+                AirLookupHandler::<VerifierConstraintFolderWithLookups<'a, SC>>::add_lookup_columns(a)
+            }
+            Self::Dynamic(a) => {
+                AirLookupHandlerDyn::<VerifierConstraintFolderWithLookups<'a, SC>>::add_lookup_columns_dyn(
+                    a.air_mut(),
+                )
+            }
+        }
+    }
+
+    fn get_lookups(&mut self) -> Vec<Lookup<Val<SC>>> {
+        match self {
+            Self::Witness(a) => {
+                AirLookupHandler::<VerifierConstraintFolderWithLookups<'a, SC>>::get_lookups(a)
+            }
+            Self::Const(a) => {
+                AirLookupHandler::<VerifierConstraintFolderWithLookups<'a, SC>>::get_lookups(a)
+            }
+            Self::Public(a) => {
+                AirLookupHandler::<VerifierConstraintFolderWithLookups<'a, SC>>::get_lookups(a)
+            }
+            Self::Add(a) => {
+                AirLookupHandler::<VerifierConstraintFolderWithLookups<'a, SC>>::get_lookups(a)
+            }
+            Self::Mul(a) => {
+                AirLookupHandler::<VerifierConstraintFolderWithLookups<'a, SC>>::get_lookups(a)
+            }
+            Self::Dynamic(a) => {
+                AirLookupHandlerDyn::<VerifierConstraintFolderWithLookups<'a, SC>>::get_lookups_dyn(
+                    a.air_mut(),
+                )
             }
         }
     }
@@ -1027,6 +2389,7 @@ impl<SC> BatchStarkProver<SC>
 where
     SC: StarkGenericConfig + 'static,
     Val<SC>: StarkField,
+    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
 {
     pub fn new(config: SC) -> Self {
         Self {
@@ -1070,37 +2433,68 @@ where
 
     /// Generate a unified batch STARK proof for all circuit tables.
     #[instrument(skip_all)]
-    pub fn prove_all_tables<EF>(
+    pub fn prove_all_tables<EF, LG: LookupGadget + Sync>(
         &self,
         traces: &Traces<EF>,
         common: &CommonData<SC>,
+        witness_multiplicities: Vec<Val<SC>>,
+        lookup_gadget: &LG,
     ) -> Result<BatchStarkProof<SC>, BatchStarkProverError>
     where
+        // EF: Field + BasedVectorSpace<Val<SC>> + ExtractBinomialW<Val<SC>>,
         EF: Field + BasedVectorSpace<Val<SC>> + ExtractBinomialW<Val<SC>>,
+        SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
     {
         let w_opt = EF::extract_w();
         match EF::DIMENSION {
-            1 => self.prove::<EF, 1>(traces, None, common),
-            2 => self.prove::<EF, 2>(traces, w_opt, common),
-            4 => self.prove::<EF, 4>(traces, w_opt, common),
-            6 => self.prove::<EF, 6>(traces, w_opt, common),
-            8 => self.prove::<EF, 8>(traces, w_opt, common),
+            1 => {
+                self.prove::<EF, 1, LG>(traces, None, common, witness_multiplicities, lookup_gadget)
+            }
+            2 => self.prove::<EF, 2, LG>(
+                traces,
+                w_opt,
+                common,
+                witness_multiplicities,
+                lookup_gadget,
+            ),
+            4 => self.prove::<EF, 4, LG>(
+                traces,
+                w_opt,
+                common,
+                witness_multiplicities,
+                lookup_gadget,
+            ),
+            6 => self.prove::<EF, 6, LG>(
+                traces,
+                w_opt,
+                common,
+                witness_multiplicities,
+                lookup_gadget,
+            ),
+            8 => self.prove::<EF, 8, LG>(
+                traces,
+                w_opt,
+                common,
+                witness_multiplicities,
+                lookup_gadget,
+            ),
             d => Err(BatchStarkProverError::UnsupportedDegree(d)),
         }
     }
 
     /// Verify the unified batch STARK proof against all tables.
-    pub fn verify_all_tables(
+    pub fn verify_all_tables<LG: LookupGadget>(
         &self,
         proof: &BatchStarkProof<SC>,
         common: &CommonData<SC>,
+        lookup_gadget: &LG,
     ) -> Result<(), BatchStarkProverError> {
         match proof.ext_degree {
-            1 => self.verify::<1>(proof, None, common),
-            2 => self.verify::<2>(proof, proof.w_binomial, common),
-            4 => self.verify::<4>(proof, proof.w_binomial, common),
-            6 => self.verify::<6>(proof, proof.w_binomial, common),
-            8 => self.verify::<8>(proof, proof.w_binomial, common),
+            1 => self.verify::<1, LG>(proof, None, common, lookup_gadget),
+            2 => self.verify::<2, LG>(proof, proof.w_binomial, common, lookup_gadget),
+            4 => self.verify::<4, LG>(proof, proof.w_binomial, common, lookup_gadget),
+            6 => self.verify::<6, LG>(proof, proof.w_binomial, common, lookup_gadget),
+            8 => self.verify::<8, LG>(proof, proof.w_binomial, common, lookup_gadget),
             d => Err(BatchStarkProverError::UnsupportedDegree(d)),
         }
     }
@@ -1110,11 +2504,13 @@ where
     /// This is the core proving logic that handles all circuit tables for a given
     /// extension field dimension. It constructs AIRs, converts traces to matrices,
     /// and generates the unified proof.
-    fn prove<EF, const D: usize>(
+    fn prove<EF, const D: usize, LG: LookupGadget + Sync>(
         &self,
         traces: &Traces<EF>,
         w_binomial: Option<Val<SC>>,
         common: &CommonData<SC>,
+        witness_multiplicities: Vec<Val<SC>>,
+        lookup_gadget: &LG,
     ) -> Result<BatchStarkProof<SC>, BatchStarkProverError>
     where
         EF: Field + BasedVectorSpace<Val<SC>>,
@@ -1128,7 +2524,11 @@ where
 
         // Witness
         let witness_rows = traces.witness_trace.values.len();
-        let witness_air = WitnessAir::<Val<SC>, D>::new(witness_rows, witness_lanes);
+        let witness_air = WitnessAir::<Val<SC>, D>::new_with_preprocessed(
+            witness_rows,
+            witness_lanes,
+            witness_multiplicities,
+        );
         let witness_matrix: RowMajorMatrix<Val<SC>> =
             WitnessAir::<Val<SC>, D>::trace_to_matrix(&traces.witness_trace, witness_lanes);
 
@@ -1148,14 +2548,14 @@ where
 
         // Add
         let add_rows = traces.add_trace.lhs_values.len();
-        let add_prep = AddAir::<Val<SC>, D>::trace_to_preprocessed(&traces.add_trace, add_lanes);
+        let add_prep = AddAir::<Val<SC>, D>::trace_to_preprocessed(&traces.add_trace);
         let add_air = AddAir::<Val<SC>, D>::new_with_preprocessed(add_rows, add_lanes, add_prep);
         let add_matrix: RowMajorMatrix<Val<SC>> =
             AddAir::<Val<SC>, D>::trace_to_matrix(&traces.add_trace, add_lanes);
 
         // Mul
         let mul_rows = traces.mul_trace.lhs_values.len();
-        let mul_prep = MulAir::<Val<SC>, D>::trace_to_preprocessed(&traces.mul_trace, mul_lanes);
+        let mul_prep = MulAir::<Val<SC>, D>::trace_to_preprocessed(&traces.mul_trace);
         let mul_air: MulAir<Val<SC>, D> = if D == 1 {
             MulAir::<Val<SC>, D>::new_with_preprocessed(mul_rows, mul_lanes, mul_prep)
         } else {
@@ -1167,12 +2567,16 @@ where
 
         // We first handle all non-primitive tables dynamically, which will then be batched alongside primitive ones.
         // Each trace must have a corresponding registered prover for it to be provable.
-        for (&id, trace) in &traces.non_primitive_traces {
+        for (&op_type, trace) in &traces.non_primitive_traces {
             if trace.rows() == 0 {
                 continue;
             }
-            if !self.non_primitive_provers.iter().any(|p| p.id() == id) {
-                return Err(BatchStarkProverError::MissingTableProver(id));
+            if !self
+                .non_primitive_provers
+                .iter()
+                .any(|p| p.op_type() == op_type)
+            {
+                return Err(BatchStarkProverError::MissingTableProver(op_type));
             }
         }
 
@@ -1251,38 +2655,42 @@ where
 
         for instance in dynamic_instances {
             let BatchTableInstance {
-                id,
+                op_type,
                 air,
                 trace,
                 public_values,
                 rows,
             } = instance;
             air_storage.push(CircuitTableAir::Dynamic(air));
-            info!("nonprim trace {id}");
-            for row in trace.row_slices() {
-                info!("{:?}", row);
-            }
             trace_storage.push(trace);
             public_storage.push(public_values.clone());
             non_primitives.push(NonPrimitiveTableEntry {
-                id,
+                op_type,
                 rows,
                 public_values,
             });
         }
 
         let instances: Vec<StarkInstance<'_, SC, CircuitTableAir<SC, D>>> = air_storage
-            .iter()
+            .iter_mut()
             .zip(trace_storage)
             .zip(public_storage)
-            .map(|((air, trace), public_values)| StarkInstance {
-                air,
-                trace,
-                public_values,
+            .map(|((air, trace), public_values)| {
+                let lookups =
+                    AirLookupHandler::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::get_lookups(
+                        air,
+                    );
+
+                StarkInstance {
+                    air,
+                    trace,
+                    public_values,
+                    lookups,
+                }
             })
             .collect();
 
-        let proof = p3_batch_stark::prove_batch(&self.config, instances, common);
+        let proof = p3_batch_stark::prove_batch(&self.config, &instances, common, lookup_gadget);
 
         // Ensure all primitive table row counts are at least 1
         // RowCounts::new requires non-zero counts, so pad zeros to 1
@@ -1313,11 +2721,12 @@ where
     /// This reconstructs the AIRs from the proof metadata and verifies the proof
     /// against all circuit tables. The AIRs are reconstructed using the same
     /// configuration that was used during proof generation.
-    fn verify<const D: usize>(
+    fn verify<const D: usize, LG: LookupGadget>(
         &self,
         proof: &BatchStarkProof<SC>,
         w_binomial: Option<Val<SC>>,
         common: &CommonData<SC>,
+        lookup_gadget: &LG,
     ) -> Result<(), BatchStarkProverError> {
         // Rebuild AIRs in the same order as prove.
         let packing = proof.table_packing;
@@ -1362,12 +2771,12 @@ where
                 .iter()
                 .find(|p| {
                     let tp = p.as_ref();
-                    TableProver::id(tp) == entry.id
+                    TableProver::op_type(tp) == entry.op_type
                 })
                 .ok_or_else(|| {
                     BatchStarkProverError::Verify(format!(
-                        "unknown non-primitive plugin: {}",
-                        entry.id
+                        "unknown non-primitive op: {:?}",
+                        entry.op_type
                     ))
                 })?;
             let air = plugin
@@ -1377,8 +2786,15 @@ where
             pvs.push(entry.public_values.clone());
         }
 
-        p3_batch_stark::verify_batch(&self.config, &airs, &proof.proof, &pvs, common)
-            .map_err(|e| BatchStarkProverError::Verify(format!("{e:?}")))
+        p3_batch_stark::verify_batch(
+            &self.config,
+            &airs,
+            &proof.proof,
+            &pvs,
+            common,
+            lookup_gadget,
+        )
+        .map_err(|e| BatchStarkProverError::Verify(format!("{e:?}")))
     }
 }
 
@@ -1389,13 +2805,69 @@ mod tests {
     use p3_field::PrimeCharacteristicRing;
     use p3_goldilocks::Goldilocks;
     use p3_koala_bear::KoalaBear;
+    use p3_lookup::logup::LogUpGadget;
 
     use super::*;
     use crate::common::get_airs_and_degrees_with_prep;
-    use crate::config;
+    use crate::config::{self, BabyBearConfig, GoldilocksConfig, KoalaBearConfig};
 
     #[test]
     fn test_babybear_batch_stark_base_field() {
+        let mut builder = CircuitBuilder::<BabyBear>::new();
+
+        // x + 5*2 - 3 + (-1) == expected
+        let x = builder.add_public_input();
+        let expected = builder.add_public_input();
+        let c5 = builder.add_const(BabyBear::from_u64(5));
+        let c2 = builder.add_const(BabyBear::from_u64(2));
+        let c3 = builder.add_const(BabyBear::from_u64(3));
+        let neg_one = builder.add_const(BabyBear::NEG_ONE);
+
+        let mul_result = builder.mul(c5, c2); // 10
+        let add_result = builder.add(x, mul_result); // x + 10
+        let sub_result = builder.sub(add_result, c3); // x + 7
+        let final_result = builder.add(sub_result, neg_one); // x + 6
+
+        let diff = builder.sub(final_result, expected);
+        builder.assert_zero(diff);
+
+        let circuit = builder.build().unwrap();
+        let cfg = config::baby_bear().build();
+        let (airs_degrees, witness_multiplicities) =
+            get_airs_and_degrees_with_prep::<BabyBearConfig, _, 1>(
+                &circuit,
+                TablePacking::default(),
+                None,
+            )
+            .unwrap();
+        let (mut airs, log_degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
+        let common = CommonData::from_airs_and_degrees(&cfg, &mut airs, &log_degrees);
+
+        let mut runner = circuit.runner();
+
+        let x_val = BabyBear::from_u64(7);
+        let expected_val = BabyBear::from_u64(13); // 7 + 10 - 3 - 1 = 13
+        runner.set_public_inputs(&[x_val, expected_val]).unwrap();
+        let traces = runner.run().unwrap();
+
+        let prover = BatchStarkProver::new(cfg);
+
+        let lookup_gadget = LogUpGadget::new();
+        let proof = prover
+            .prove_all_tables(&traces, &common, witness_multiplicities, &lookup_gadget)
+            .unwrap();
+        assert_eq!(proof.ext_degree, 1);
+        assert!(proof.w_binomial.is_none());
+
+        assert!(
+            prover
+                .verify_all_tables(&proof, &common, &lookup_gadget)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn test_table_lookups() {
         let mut builder = CircuitBuilder::<BabyBear>::new();
         let cfg = config::baby_bear().build();
 
@@ -1416,9 +2888,41 @@ mod tests {
         builder.assert_zero(diff);
 
         let circuit = builder.build().unwrap();
-        let airs_degrees =
-            get_airs_and_degrees_with_prep::<_, _, 1>(&circuit, TablePacking::default()).unwrap();
-        let (airs, log_degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
+        let default_packing = TablePacking::default();
+        let (airs_degrees, witness_multiplicities) =
+            get_airs_and_degrees_with_prep::<BabyBearConfig, _, 1>(&circuit, default_packing, None)
+                .unwrap();
+        let (mut airs, log_degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
+
+        // Check that the multiplicities of `WitnessAir` are computed correctly.
+        // We can count the number of times the witness addresses appear in the various tables. We get:
+        let mut expected_multiplicities = vec![BabyBear::from_u64(2); 11];
+        // Pad multiplicities.
+        let total_witness_length = (expected_multiplicities
+            .len()
+            .div_ceil(default_packing.witness_lanes()))
+        .next_power_of_two()
+            * default_packing.witness_lanes();
+        expected_multiplicities.resize(total_witness_length, BabyBear::ZERO);
+
+        // Get expected preprocessed trace for `WitnessAir`.
+        let expected_preprocessed_trace = RowMajorMatrix::new(
+            expected_multiplicities
+                .iter()
+                .enumerate()
+                .flat_map(|(i, m)| vec![*m, BabyBear::from_usize(i)])
+                .collect::<Vec<_>>(),
+            2 * TablePacking::default().witness_lanes(),
+        );
+        assert_eq!(
+            airs[0]
+                .preprocessed_trace()
+                .expect("Witness table should have preprocessed trace"),
+            expected_preprocessed_trace,
+            "witness_multiplicities {:?} expected {:?}",
+            airs[0].preprocessed_trace(),
+            expected_preprocessed_trace,
+        );
 
         let mut runner = circuit.runner();
 
@@ -1426,21 +2930,83 @@ mod tests {
         let expected_val = BabyBear::from_u64(13); // 7 + 10 - 3 - 1 = 13
         runner.set_public_inputs(&[x_val, expected_val]).unwrap();
         let traces = runner.run().unwrap();
-        let common = CommonData::from_airs_and_degrees(&cfg, &airs, &log_degrees);
+        let common = CommonData::from_airs_and_degrees(&cfg, &mut airs, &log_degrees);
 
         let prover = BatchStarkProver::new(cfg);
 
-        let proof = prover.prove_all_tables(&traces, &common).unwrap();
+        let lookup_gadget = LogUpGadget::new();
+        let proof = prover
+            .prove_all_tables(&traces, &common, witness_multiplicities, &lookup_gadget)
+            .unwrap();
         assert_eq!(proof.ext_degree, 1);
         assert!(proof.w_binomial.is_none());
 
-        assert!(prover.verify_all_tables(&proof, &common).is_ok());
+        assert!(
+            prover
+                .verify_all_tables(&proof, &common, &lookup_gadget)
+                .is_ok()
+        );
+
+        // Check that the generated lookups are correct and consistent across tables.
+        for air in airs.iter_mut() {
+            let lookups = AirLookupHandler::<
+                SymbolicAirBuilder<BabyBear, BinomialExtensionField<BabyBear, 4>>,
+            >::get_lookups(air);
+
+            match air {
+                CircuitTableAir::Witness(_) => {
+                    assert_eq!(
+                        lookups.len(),
+                        default_packing.witness_lanes(),
+                        "Witness table should have {} lookups, found {}",
+                        default_packing.witness_lanes(),
+                        lookups.len()
+                    );
+                }
+                CircuitTableAir::Const(_) => {
+                    assert_eq!(lookups.len(), 1, "Const table should have one lookup");
+                }
+                CircuitTableAir::Public(_) => {
+                    assert_eq!(lookups.len(), 1, "Public table should have one lookup");
+                }
+                CircuitTableAir::Add(_) => {
+                    let expected_num_lookups =
+                        default_packing.add_lanes() * AddAir::<BabyBear, 1>::lane_width();
+                    assert_eq!(
+                        lookups.len(),
+                        expected_num_lookups,
+                        "Add table should have {} lookups, found {}",
+                        expected_num_lookups,
+                        lookups.len()
+                    );
+                }
+                CircuitTableAir::Mul(_) => {
+                    let expected_num_lookups =
+                        default_packing.mul_lanes() * MulAir::<BabyBear, 1>::lane_width();
+                    assert_eq!(
+                        lookups.len(),
+                        expected_num_lookups,
+                        "Mul table should have {} lookups, found {}",
+                        expected_num_lookups,
+                        lookups.len()
+                    );
+                }
+                CircuitTableAir::Dynamic(_dynamic_air) => {
+                    assert!(
+                        lookups.is_empty(),
+                        "There is no dynamic table in this test, so no lookups expected"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
     fn test_extension_field_batch_stark() {
         const D: usize = 4;
         type Ext4 = BinomialExtensionField<BabyBear, D>;
+        let cfg = config::baby_bear().build();
+
         let mut builder = CircuitBuilder::<Ext4>::new();
         let x = builder.add_public_input();
         let y = builder.add_public_input();
@@ -1450,10 +3016,16 @@ mod tests {
         let res = builder.add(xy, z);
         let diff = builder.sub(res, expected);
         builder.assert_zero(diff);
+
         let circuit = builder.build().unwrap();
-        let airs_degrees =
-            get_airs_and_degrees_with_prep::<_, _, D>(&circuit, TablePacking::default()).unwrap();
-        let (airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
+        let (airs_degrees, witness_multiplicities) =
+            get_airs_and_degrees_with_prep::<BabyBearConfig, _, D>(
+                &circuit,
+                TablePacking::default(),
+                None,
+            )
+            .unwrap();
+        let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
 
         let mut runner = circuit.runner();
         let xv = Ext4::from_basis_coefficients_slice(&[
@@ -1481,20 +3053,181 @@ mod tests {
         runner.set_public_inputs(&[xv, yv, zv, expected_v]).unwrap();
         let traces = runner.run().unwrap();
 
-        let cfg = config::baby_bear().build();
-        let common = CommonData::from_airs_and_degrees(&cfg, &airs, &degrees);
+        let common = CommonData::from_airs_and_degrees(&cfg, &mut airs, &degrees);
         let prover = BatchStarkProver::new(cfg);
-        let proof = prover.prove_all_tables(&traces, &common).unwrap();
+
+        let lookup_gadget = LogUpGadget::new();
+
+        let proof = prover
+            .prove_all_tables(&traces, &common, witness_multiplicities, &lookup_gadget)
+            .unwrap();
         assert_eq!(proof.ext_degree, 4);
         // Ensure W was captured
         let expected_w = <Ext4 as ExtractBinomialW<BabyBear>>::extract_w().unwrap();
         assert_eq!(proof.w_binomial, Some(expected_w));
-        prover.verify_all_tables(&proof, &common).unwrap();
+        prover
+            .verify_all_tables(&proof, &common, &lookup_gadget)
+            .unwrap();
+    }
+
+    #[test]
+    fn test_extension_field_table_lookups() {
+        const D: usize = 4;
+        type Ext4 = BinomialExtensionField<BabyBear, D>;
+        let cfg = config::baby_bear().build();
+
+        let mut builder = CircuitBuilder::<Ext4>::new();
+        let x = builder.add_public_input();
+        let y = builder.add_public_input();
+        let z = builder.add_public_input();
+        let expected = builder.add_public_input();
+        let xy = builder.mul(x, y);
+        let res = builder.add(xy, z);
+        let diff = builder.sub(res, expected);
+        builder.assert_zero(diff);
+
+        let circuit = builder.build().unwrap();
+        let default_packing = TablePacking::default();
+        let (airs_degrees, witness_multiplicities) =
+            get_airs_and_degrees_with_prep::<BabyBearConfig, _, D>(&circuit, default_packing, None)
+                .unwrap();
+        let (mut airs, log_degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
+
+        // Check that the multiplicities of `WitnessAir` are computed correctly.
+        // We can count the number of times the witness addresses appear in the various tables. We get:
+        let mut expected_multiplicities = vec![BabyBear::from_u64(2); 7];
+        // Pad multiplicities.
+        let total_witness_length = (expected_multiplicities
+            .len()
+            .div_ceil(default_packing.witness_lanes()))
+        .next_power_of_two()
+            * default_packing.witness_lanes();
+        expected_multiplicities.resize(total_witness_length, BabyBear::ZERO);
+
+        // Get expected preprocessed trace for `WitnessAir`.
+        let expected_preprocessed_trace = RowMajorMatrix::new(
+            expected_multiplicities
+                .iter()
+                .enumerate()
+                .flat_map(|(i, m)| vec![*m, BabyBear::from_usize(i)])
+                .collect::<Vec<_>>(),
+            2 * TablePacking::default().witness_lanes(),
+        );
+
+        assert_eq!(
+            airs[0]
+                .preprocessed_trace()
+                .expect("Witness table should have preprocessed trace"),
+            expected_preprocessed_trace,
+            "witness_multiplicities {:?} expected {:?}",
+            airs[0].preprocessed_trace(),
+            expected_preprocessed_trace,
+        );
+
+        let mut runner = circuit.runner();
+
+        let xv = Ext4::from_basis_coefficients_slice(&[
+            BabyBear::from_u64(2),
+            BabyBear::from_u64(3),
+            BabyBear::from_u64(5),
+            BabyBear::from_u64(7),
+        ])
+        .unwrap();
+        let yv = Ext4::from_basis_coefficients_slice(&[
+            BabyBear::from_u64(11),
+            BabyBear::from_u64(13),
+            BabyBear::from_u64(17),
+            BabyBear::from_u64(19),
+        ])
+        .unwrap();
+        let zv = Ext4::from_basis_coefficients_slice(&[
+            BabyBear::from_u64(23),
+            BabyBear::from_u64(29),
+            BabyBear::from_u64(31),
+            BabyBear::from_u64(37),
+        ])
+        .unwrap();
+        let expected_v = xv * yv + zv;
+        runner.set_public_inputs(&[xv, yv, zv, expected_v]).unwrap();
+        let traces = runner.run().unwrap();
+
+        let common = CommonData::from_airs_and_degrees(&cfg, &mut airs, &log_degrees);
+
+        let prover = BatchStarkProver::new(cfg);
+
+        let lookup_gadget = LogUpGadget::new();
+        let proof = prover
+            .prove_all_tables(&traces, &common, witness_multiplicities, &lookup_gadget)
+            .unwrap();
+        assert_eq!(proof.ext_degree, 4);
+        // Ensure W was captured
+        let expected_w = <Ext4 as ExtractBinomialW<BabyBear>>::extract_w().unwrap();
+        assert_eq!(proof.w_binomial, Some(expected_w));
+
+        assert!(
+            prover
+                .verify_all_tables(&proof, &common, &lookup_gadget)
+                .is_ok()
+        );
+
+        // Check that the generated lookups are correct and consistent across tables.
+        for air in airs.iter_mut() {
+            let lookups = AirLookupHandler::<
+                SymbolicAirBuilder<BabyBear, BinomialExtensionField<BabyBear, 4>>,
+            >::get_lookups(air);
+
+            match air {
+                CircuitTableAir::Witness(_) => {
+                    assert_eq!(
+                        lookups.len(),
+                        default_packing.witness_lanes(),
+                        "Witness table should have {} lookups, found {}",
+                        default_packing.witness_lanes(),
+                        lookups.len()
+                    );
+                }
+                CircuitTableAir::Const(_) => {
+                    assert_eq!(lookups.len(), 1, "Const table should have one lookup");
+                }
+                CircuitTableAir::Public(_) => {
+                    assert_eq!(lookups.len(), 1, "Public table should have one lookup");
+                }
+                CircuitTableAir::Add(_) => {
+                    let expected_num_lookups =
+                        default_packing.add_lanes() * AddAir::<BabyBear, 1>::lane_width();
+                    assert_eq!(
+                        lookups.len(),
+                        expected_num_lookups,
+                        "Add table should have {} lookups, found {}",
+                        expected_num_lookups,
+                        lookups.len()
+                    );
+                }
+                CircuitTableAir::Mul(_) => {
+                    let expected_num_lookups =
+                        default_packing.mul_lanes() * MulAir::<BabyBear, 1>::lane_width();
+                    assert_eq!(
+                        lookups.len(),
+                        expected_num_lookups,
+                        "Mul table should have {} lookups, found {}",
+                        expected_num_lookups,
+                        lookups.len()
+                    );
+                }
+                CircuitTableAir::Dynamic(_dynamic_air) => {
+                    assert!(
+                        lookups.is_empty(),
+                        "There is no dynamic table in this test, so no lookups expected"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
     fn test_koalabear_batch_stark_base_field() {
         let mut builder = CircuitBuilder::<KoalaBear>::new();
+        let cfg = config::koala_bear().build();
 
         // a * b + 100 - (-1) == expected
         let a = builder.add_public_input();
@@ -1510,9 +3243,14 @@ mod tests {
         builder.assert_zero(diff);
 
         let circuit = builder.build().unwrap();
-        let airs_degrees =
-            get_airs_and_degrees_with_prep::<_, _, 1>(&circuit, TablePacking::default()).unwrap();
-        let (airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
+        let (airs_degrees, witness_multiplicities) =
+            get_airs_and_degrees_with_prep::<KoalaBearConfig, _, 1>(
+                &circuit,
+                TablePacking::default(),
+                None,
+            )
+            .unwrap();
+        let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
         let mut runner = circuit.runner();
 
         let a_val = KoalaBear::from_u64(42);
@@ -1523,13 +3261,18 @@ mod tests {
             .unwrap();
         let traces = runner.run().unwrap();
 
-        let cfg = config::koala_bear().build();
-        let common = CommonData::from_airs_and_degrees(&cfg, &airs, &degrees);
+        let common = CommonData::from_airs_and_degrees(&cfg, &mut airs, &degrees);
         let prover = BatchStarkProver::new(cfg);
-        let proof = prover.prove_all_tables(&traces, &common).unwrap();
+
+        let lookup_gadget = LogUpGadget::new();
+        let proof = prover
+            .prove_all_tables(&traces, &common, witness_multiplicities, &lookup_gadget)
+            .unwrap();
         assert_eq!(proof.ext_degree, 1);
         assert!(proof.w_binomial.is_none());
-        prover.verify_all_tables(&proof, &common).unwrap();
+        prover
+            .verify_all_tables(&proof, &common, &lookup_gadget)
+            .unwrap();
     }
 
     #[test]
@@ -1537,6 +3280,7 @@ mod tests {
         const D: usize = 8;
         type KBExtField = BinomialExtensionField<KoalaBear, D>;
         let mut builder = CircuitBuilder::<KBExtField>::new();
+        let cfg = config::koala_bear().build();
 
         // x * y * z == expected
         let x = builder.add_public_input();
@@ -1562,9 +3306,14 @@ mod tests {
         builder.assert_zero(diff);
 
         let circuit = builder.build().unwrap();
-        let airs_degrees =
-            get_airs_and_degrees_with_prep::<_, _, D>(&circuit, TablePacking::default()).unwrap();
-        let (airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
+        let (airs_degrees, witness_multiplicities) =
+            get_airs_and_degrees_with_prep::<KoalaBearConfig, _, D>(
+                &circuit,
+                TablePacking::default(),
+                None,
+            )
+            .unwrap();
+        let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
         let mut runner = circuit.runner();
 
         let x_val = KBExtField::from_basis_coefficients_slice(&[
@@ -1607,14 +3356,19 @@ mod tests {
             .unwrap();
         let traces = runner.run().unwrap();
 
-        let cfg = config::koala_bear().build();
-        let common = CommonData::from_airs_and_degrees(&cfg, &airs, &degrees);
+        let common = CommonData::from_airs_and_degrees(&cfg, &mut airs, &degrees);
         let prover = BatchStarkProver::new(cfg);
-        let proof = prover.prove_all_tables(&traces, &common).unwrap();
+
+        let lookup_gadget = LogUpGadget::new();
+        let proof = prover
+            .prove_all_tables(&traces, &common, witness_multiplicities, &lookup_gadget)
+            .unwrap();
         assert_eq!(proof.ext_degree, 8);
         let expected_w = <KBExtField as ExtractBinomialW<KoalaBear>>::extract_w().unwrap();
         assert_eq!(proof.w_binomial, Some(expected_w));
-        prover.verify_all_tables(&proof, &common).unwrap();
+        prover
+            .verify_all_tables(&proof, &common, &lookup_gadget)
+            .unwrap();
     }
 
     #[test]
@@ -1622,6 +3376,7 @@ mod tests {
         const D: usize = 2;
         type Ext2 = BinomialExtensionField<Goldilocks, D>;
         let mut builder = CircuitBuilder::<Ext2>::new();
+        let cfg = config::goldilocks().build();
 
         // x * y + z == expected
         let x = builder.add_public_input();
@@ -1635,9 +3390,14 @@ mod tests {
         builder.assert_zero(diff);
 
         let circuit = builder.build().unwrap();
-        let airs_degrees =
-            get_airs_and_degrees_with_prep::<_, _, D>(&circuit, TablePacking::default()).unwrap();
-        let (airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
+        let (airs_degrees, witness_multiplicities) =
+            get_airs_and_degrees_with_prep::<GoldilocksConfig, _, D>(
+                &circuit,
+                TablePacking::default(),
+                None,
+            )
+            .unwrap();
+        let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
         let mut runner = circuit.runner();
 
         let x_val =
@@ -1660,13 +3420,18 @@ mod tests {
             .unwrap();
         let traces = runner.run().unwrap();
 
-        let cfg = config::goldilocks().build();
-        let common = CommonData::from_airs_and_degrees(&cfg, &airs, &degrees);
+        let common = CommonData::from_airs_and_degrees(&cfg, &mut airs, &degrees);
         let prover = BatchStarkProver::new(cfg);
-        let proof = prover.prove_all_tables(&traces, &common).unwrap();
+
+        let lookup_gadget = LogUpGadget::new();
+        let proof = prover
+            .prove_all_tables(&traces, &common, witness_multiplicities, &lookup_gadget)
+            .unwrap();
         assert_eq!(proof.ext_degree, 2);
         let expected_w = <Ext2 as ExtractBinomialW<Goldilocks>>::extract_w().unwrap();
         assert_eq!(proof.w_binomial, Some(expected_w));
-        prover.verify_all_tables(&proof, &common).unwrap();
+        prover
+            .verify_all_tables(&proof, &common, &lookup_gadget)
+            .unwrap();
     }
 }
