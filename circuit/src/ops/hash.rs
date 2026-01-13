@@ -9,7 +9,7 @@ use crate::ops::Poseidon2PermCall;
 use crate::ops::poseidon2_perm::Poseidon2PermOps;
 use crate::{CircuitBuilder, CircuitBuilderError, ExprId, NonPrimitiveOpId};
 
-pub fn add_hash_squeeze<F: Field>(
+pub fn add_hash_slice<F: Field>(
     builder: &mut CircuitBuilder<F>,
     poseidon2_config: &Poseidon2Config,
     inputs: &[ExprId],
@@ -65,7 +65,7 @@ mod tests {
     use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
     use p3_symmetric::{CryptographicHasher, PaddingFreeSponge};
 
-    use super::add_hash_squeeze;
+    use super::add_hash_slice;
     use crate::ops::{Poseidon2Config, Poseidon2Params, generate_poseidon2_trace};
     use crate::{CircuitBuilder, ExprId};
 
@@ -104,7 +104,7 @@ mod tests {
                 .map(|_| builder.add_public_input())
                 .collect();
 
-            let outputs = add_hash_squeeze(
+            let outputs = add_hash_slice(
                 &mut builder,
                 &Poseidon2Config::BabyBearD4Width16,
                 &input_exprs,

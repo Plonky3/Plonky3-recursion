@@ -1,8 +1,8 @@
 use alloc::vec::Vec;
 
-use p3_circuit::op::NonPrimitiveOpType;
-use p3_circuit::ops::hash::add_hash_squeeze;
-use p3_circuit::ops::mmcs::{MmcsVerifyConfig, add_mmcs_verify};
+use p3_circuit::op::{NonPrimitiveOpType, Poseidon2Config};
+use p3_circuit::ops::hash::add_hash_slice;
+use p3_circuit::ops::mmcs::{add_mmcs_verify, format_openings};
 use p3_circuit::{CircuitBuilder, CircuitBuilderError, NonPrimitiveOpId};
 use p3_field::{ExtensionField, Field, TwoAdicField};
 use p3_matrix::Dimensions;
@@ -24,7 +24,7 @@ use crate::Target;
 /// Returns the list of permutations operations requiring private data, otherwise returns an error.
 pub fn verify_batch_circuit<F, EF>(
     circuit: &mut CircuitBuilder<EF>,
-    mmcs_config: &MmcsVerifyConfig,
+    permutation_config: Poseidon2Config,
     commitment: &[Target],
     dimensions: &[Dimensions],
     index_bits: &[Target],
@@ -46,21 +46,25 @@ where
     //     }
     // }
 
-    let formatted_op_vals = mmcs_config
-        .format_openings(opened_values, dimensions, index_bits.len())
-        .map_err(
-            |_| CircuitBuilderError::InvalidNonPrimitiveOpConfiguration {
-                // TODO: I this the error we want?
-                op: NonPrimitiveOpType::Poseidon2Perm(mmcs_config.get_poseidon2_config()),
-            },
-        )?;
+    let formatted_op_vals = format_openings(
+        opened_values,
+        dimensions,
+        index_bits.len(),
+        permutation_config,
+    )
+    .map_err(
+        |_| CircuitBuilderError::InvalidNonPrimitiveOpConfiguration {
+            // TODO: I this the error we want?
+            op: NonPrimitiveOpType::Poseidon2Perm(permutation_config),
+        },
+    )?;
 
     // Hash the opened values while keeping the format.
     let op_vals_digests = formatted_op_vals
         .into_iter()
         .map(|leaf| {
             if !leaf.is_empty() {
-                add_hash_squeeze(circuit, &mmcs_config.get_poseidon2_config(), &leaf, true)
+                add_hash_slice(circuit, &permutation_config, &leaf, true)
             } else {
                 Ok(leaf)
             }
@@ -69,7 +73,7 @@ where
 
     add_mmcs_verify(
         circuit,
-        mmcs_config.get_poseidon2_config(),
+        permutation_config,
         &op_vals_digests,
         index_bits,
         commitment,
@@ -84,7 +88,8 @@ mod test {
 
     use itertools::Itertools;
     use p3_baby_bear::{BabyBear, Poseidon2BabyBear, default_babybear_poseidon2_16};
-    use p3_circuit::ops::mmcs::{MmcsVerifyConfig, add_mmcs_verify};
+    use p3_circuit::op::Poseidon2Config;
+    use p3_circuit::ops::mmcs::{add_mmcs_verify, format_openings};
     use p3_circuit::ops::{Poseidon2PermPrivateData, generate_poseidon2_trace};
     use p3_circuit::{CircuitBuilder, CircuitError, NonPrimitiveOpPrivateData};
     use p3_commit::Mmcs;
@@ -115,12 +120,22 @@ mod test {
     type MyMmcs =
         MerkleTreeMmcs<<F as Field>::Packing, <F as Field>::Packing, MyHash, MyCompress, 8>;
 
-    fn base_digest_to_ext(digest: &[F; 8]) -> [CF; 2] {
-        let limb0 =
-            CF::from_basis_coefficients_slice(&digest[0..4]).expect("ext limb0 from base digest");
-        let limb1 =
-            CF::from_basis_coefficients_slice(&digest[4..8]).expect("ext limb1 from base digest");
-        [limb0, limb1]
+    fn base_digest_to_ext(digest: &[F], permutation_config: Poseidon2Config) -> Vec<CF> {
+        assert_eq!(
+            digest.len(),
+            permutation_config.rate(),
+            "unexpected base digest length"
+        );
+        digest
+            .chunks(<CF as BasedVectorSpace<F>>::DIMENSION)
+            .map(|chunk| {
+                let mut coeffs = [F::ZERO; 4];
+                for (i, &val) in chunk.iter().enumerate() {
+                    coeffs[i] = val;
+                }
+                CF::from_basis_coefficients_slice(&coeffs).expect("packed base digest")
+            })
+            .collect()
     }
 
     fn test_all_openings(mats: Vec<RowMajorMatrix<F>>) {
@@ -144,7 +159,7 @@ mod test {
         let path_depth = log2_ceil_usize(max_height);
         for index in 0..max_height {
             let mut builder = CircuitBuilder::<CF>::new();
-            let mmcs_config = MmcsVerifyConfig::babybear_quartic_extension_default();
+            let permutation_config = Poseidon2Config::BabyBearD4Width16;
             builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
                 generate_poseidon2_trace::<CF, BabyBearD4Width16>,
                 perm.clone(),
@@ -166,11 +181,11 @@ mod test {
                 .collect_vec();
 
             let directions_expr = builder.alloc_public_inputs(path_depth, "directions");
-            let root = builder.alloc_public_inputs(mmcs_config.ext_field_digest_elems, "root");
+            let root = builder.alloc_public_inputs(permutation_config.rate_ext(), "root");
 
             let permutation_mmcs_ops = verify_batch_circuit::<F, CF>(
                 &mut builder,
-                &mmcs_config,
+                permutation_config,
                 &root,
                 &dimensions,
                 &directions_expr,
@@ -205,13 +220,9 @@ mod test {
                     .collect_vec(),
             );
             public_inputs.extend(directions_expr_vals.iter());
-            let commit_base: [F; 8] = commit
-                .into_iter()
-                .collect_vec()
-                .try_into()
-                .expect("commit digest");
-            let commit_ext = base_digest_to_ext(&commit_base);
-            debug_assert_eq!(mmcs_config.ext_field_digest_elems, commit_ext.len());
+            let commit_base = commit.into_iter().collect_vec();
+            let commit_ext = base_digest_to_ext(&commit_base, permutation_config);
+            debug_assert_eq!(permutation_config.rate_ext(), commit_ext.len());
             public_inputs.extend(commit_ext);
 
             runner.set_public_inputs(&public_inputs).unwrap();
@@ -373,7 +384,7 @@ mod test {
         let (commit, prover_data) = mmcs.commit(mats);
 
         let mut builder = CircuitBuilder::<CF>::new();
-        let mmcs_config = MmcsVerifyConfig::babybear_quartic_extension_default();
+        let permutation_config = Poseidon2Config::BabyBearD4Width16;
         let perm = default_babybear_poseidon2_16();
         builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
             generate_poseidon2_trace::<CF, BabyBearD4Width16>,
@@ -410,15 +421,14 @@ mod test {
                     .collect_vec()
             })
             .collect_vec();
-        let openings = mmcs_config
-            .format_openings(&openings, &dimensions, path_depth)
-            .unwrap();
+        let openings =
+            format_openings(&openings, &dimensions, path_depth, permutation_config).unwrap();
         let directions_expr = builder.alloc_public_inputs(path_depth, "directions");
-        let root_exprs = builder.alloc_public_inputs(mmcs_config.ext_field_digest_elems, "root");
+        let root_exprs = builder.alloc_public_inputs(permutation_config.rate_ext(), "root");
 
         let permutation_mmcs_ops = add_mmcs_verify(
             &mut builder,
-            mmcs_config.get_poseidon2_config(),
+            permutation_config,
             &openings,
             &directions_expr,
             &root_exprs,
@@ -439,13 +449,9 @@ mod test {
                 .flat_map(|digest| digest.map(CF::from)),
         );
         public_inputs.extend(directions.iter());
-        let commit_base: [F; 8] = commit
-            .into_iter()
-            .collect_vec()
-            .try_into()
-            .expect("commit digest");
-        let commit_ext = base_digest_to_ext(&commit_base);
-        debug_assert_eq!(mmcs_config.ext_field_digest_elems, commit_ext.len());
+        let commit_base = commit.into_iter().collect_vec();
+        let commit_ext = base_digest_to_ext(&commit_base, permutation_config);
+        debug_assert_eq!(permutation_config.rate_ext(), commit_ext.len());
         public_inputs.extend(commit_ext);
 
         runner.set_public_inputs(&public_inputs).unwrap();

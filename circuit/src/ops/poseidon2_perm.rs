@@ -78,6 +78,10 @@ impl Poseidon2Config {
         }
     }
 
+    pub const fn rate(self) -> usize {
+        self.rate_ext() * self.d()
+    }
+
     pub const fn capacity_ext(self) -> usize {
         match self {
             Self::BabyBearD4Width16
