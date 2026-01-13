@@ -1,6 +1,5 @@
 #![no_std]
 extern crate alloc;
-
 #[cfg(debug_assertions)]
 pub mod alloc_entry;
 

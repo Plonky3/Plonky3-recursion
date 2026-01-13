@@ -222,11 +222,10 @@ impl MmcsVerifyConfig {
 
     // TODO: For now we are not considering packed inputs for BabyBear.
     pub const fn babybear_quartic_extension_default() -> Self {
-        let packing = false;
         Self {
             op_type: NonPrimitiveOpType::Poseidon2Perm(Poseidon2Config::BabyBearD4Width16),
             base_field_digest_elems: 8,
-            ext_field_digest_elems: if packing { 2 } else { 8 },
+            ext_field_digest_elems: 2,
             max_tree_height: 32,
         }
     }
@@ -242,11 +241,10 @@ impl MmcsVerifyConfig {
 
     // TODO: For now we are not considering packed inputs for KoalaBear.
     pub const fn koalabear_quartic_extension_default() -> Self {
-        let packing = false;
         Self {
             op_type: NonPrimitiveOpType::Poseidon2Perm(Poseidon2Config::KoalaBearD4Width16),
             base_field_digest_elems: 8,
-            ext_field_digest_elems: if packing { 2 } else { 8 },
+            ext_field_digest_elems: 2,
             max_tree_height: 32,
         }
     }
@@ -264,11 +262,10 @@ impl MmcsVerifyConfig {
 
     // // TODO: For now we are not considering packed inputs for Goldilocks.
     // pub const fn goldilocks_quadratic_extension_default() -> Self {
-    //     let packing = false;
     //     Self {
     //         op_type: NonPrimitiveOpType::Poseidon2Perm(Poseidon2Config::GoldilocksD2Width8),
     //         base_field_digest_elems: 4,
-    //         ext_field_digest_elems: if packing { 1 } else { 4 },
+    //         ext_field_digest_elems: 1,
     //         max_tree_height: 32,
     //     }
     // }
@@ -293,6 +290,19 @@ pub fn add_mmcs_verify<F: Field>(
     for (i, (row_digest, direction)) in openings_expr.iter().zip(directions_expr).enumerate() {
         let is_first = i == 0;
         let is_last = i == directions_expr.len() - 1;
+        // Extra row (if any) must be combined before the main sibling step.
+        if !is_first && !row_digest.is_empty() {
+            let _ = builder.add_poseidon2_perm(Poseidon2PermCall {
+                config: permutation_config,
+                new_start: false,
+                merkle_path: true,
+                mmcs_bit: Some(zero), // Extra row is always a left child
+                inputs: [None, None, Some(row_digest[0]), Some(row_digest[1])],
+                out_ctl: [false, false],
+                mmcs_index_sum: None,
+            })?;
+        }
+
         let (op_id, maybe_output) = builder.add_poseidon2_perm(Poseidon2PermCall {
             config: permutation_config,
             new_start: is_first,
@@ -308,18 +318,6 @@ pub fn add_mmcs_verify<F: Field>(
         })?;
         op_ids.push(op_id);
         output = maybe_output;
-        // Check if there's an extra row at this leve
-        if !is_first && !row_digest.is_empty() {
-            let _ = builder.add_poseidon2_perm(Poseidon2PermCall {
-                config: permutation_config,
-                new_start: false,
-                merkle_path: true,
-                mmcs_bit: Some(zero), // Extra row is always a left child
-                inputs: [None, None, Some(row_digest[0]), Some(row_digest[1])],
-                out_ctl: [false, false],
-                mmcs_index_sum: None,
-            })?;
-        }
     }
     let output = output
         .into_iter()

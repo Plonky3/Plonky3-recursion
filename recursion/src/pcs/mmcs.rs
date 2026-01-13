@@ -86,7 +86,7 @@ mod test {
     use p3_baby_bear::{BabyBear, Poseidon2BabyBear, default_babybear_poseidon2_16};
     use p3_circuit::ops::mmcs::{MmcsVerifyConfig, add_mmcs_verify};
     use p3_circuit::ops::{Poseidon2PermPrivateData, generate_poseidon2_trace};
-    use p3_circuit::{CircuitBuilder, NonPrimitiveOpPrivateData};
+    use p3_circuit::{CircuitBuilder, CircuitError, NonPrimitiveOpPrivateData};
     use p3_commit::Mmcs;
     use p3_field::extension::BinomialExtensionField;
     use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
@@ -114,6 +114,14 @@ mod test {
     type MyCompress = TruncatedPermutation<Perm, 2, 8, 16>;
     type MyMmcs =
         MerkleTreeMmcs<<F as Field>::Packing, <F as Field>::Packing, MyHash, MyCompress, 8>;
+
+    fn base_digest_to_ext(digest: &[F; 8]) -> [CF; 2] {
+        let limb0 =
+            CF::from_basis_coefficients_slice(&digest[0..4]).expect("ext limb0 from base digest");
+        let limb1 =
+            CF::from_basis_coefficients_slice(&digest[4..8]).expect("ext limb1 from base digest");
+        [limb0, limb1]
+    }
 
     fn test_all_openings(mats: Vec<RowMajorMatrix<F>>) {
         let perm = default_babybear_poseidon2_16();
@@ -143,15 +151,15 @@ mod test {
             );
 
             let batch_opening = mmcs.open_batch(index, &prover_data);
-            mmcs.verify_batch(&commit, &dimensions, index, (&batch_opening).into())
-                .unwrap();
+
+            let directions = (0..path_depth).map(|k| index >> k & 1 == 1).collect_vec();
 
             let openings = batch_opening
                 .opened_values
                 .iter()
                 .map(|opening| {
                     opening
-                        .iter()
+                        .chunks(<CF as BasedVectorSpace<F>>::DIMENSION)
                         .map(|_| builder.add_public_input())
                         .collect_vec()
                 })
@@ -170,13 +178,12 @@ mod test {
             )
             .unwrap();
 
-            builder.dump_allocation_log();
-
             let circuit = builder.build().unwrap();
             let mut runner = circuit.runner();
 
-            let directions = (0..path_depth)
-                .map(|k| CF::from_bool(index >> k & 1 == 1))
+            let directions_expr_vals = directions
+                .iter()
+                .map(|&bit| CF::from_bool(bit))
                 .collect_vec();
 
             let mut public_inputs = vec![];
@@ -184,10 +191,28 @@ mod test {
                 batch_opening
                     .opened_values
                     .iter()
-                    .flat_map(|openings| openings.iter().map(|x| CF::from(*x)).collect_vec()),
+                    .flat_map(|openings| {
+                        openings
+                            .chunks(<CF as BasedVectorSpace<F>>::DIMENSION)
+                            .map(|chunk| {
+                                let mut coeffs = [F::ZERO; 4];
+                                for (i, &val) in chunk.iter().enumerate() {
+                                    coeffs[i] = val;
+                                }
+                                CF::from_basis_coefficients_slice(&coeffs).expect("packed opening")
+                            })
+                    })
+                    .collect_vec(),
             );
-            public_inputs.extend(directions.iter());
-            public_inputs.extend(commit.into_iter().map(CF::from));
+            public_inputs.extend(directions_expr_vals.iter());
+            let commit_base: [F; 8] = commit
+                .into_iter()
+                .collect_vec()
+                .try_into()
+                .expect("commit digest");
+            let commit_ext = base_digest_to_ext(&commit_base);
+            debug_assert_eq!(mmcs_config.ext_field_digest_elems, commit_ext.len());
+            public_inputs.extend(commit_ext);
 
             runner.set_public_inputs(&public_inputs).unwrap();
 
@@ -214,11 +239,9 @@ mod test {
                     .unwrap();
             }
 
-            // Whe the we run the runner and the MMCS trace is generated, it will be checked that
+            // Whe then we run the runner and the MMCS trace is generated, it will be checked that
             // the root computed by the MmcsVerify gate matches that given as input.
-            let traces = runner.run().unwrap();
-
-            traces.dump_primitive_traces_log();
+            let _ = runner.run().unwrap();
         }
     }
 
@@ -324,7 +347,6 @@ mod test {
         test_all_openings(vec![input_2, input_1]);
     }
 
-    //TODO: This test won't fail as long as we don't enforce lookups
     #[test]
     fn verify_tampered_proof_fails() {
         let mut rng = SmallRng::seed_from_u64(1);
@@ -392,17 +414,18 @@ mod test {
             .format_openings(&openings, &dimensions, path_depth)
             .unwrap();
         let directions_expr = builder.alloc_public_inputs(path_depth, "directions");
-        let root = builder.alloc_public_inputs(mmcs_config.ext_field_digest_elems, "root");
+        let root_exprs = builder.alloc_public_inputs(mmcs_config.ext_field_digest_elems, "root");
 
         let permutation_mmcs_ops = add_mmcs_verify(
             &mut builder,
             mmcs_config.get_poseidon2_config(),
             &openings,
             &directions_expr,
-            &root,
+            &root_exprs,
         )
         .unwrap();
         let circuit = builder.build().unwrap();
+        let root_widx0 = circuit.expr_to_widx[&root_exprs[0]];
         let mut runner = circuit.runner();
 
         let directions = (0..path_depth)
@@ -416,7 +439,14 @@ mod test {
                 .flat_map(|digest| digest.map(CF::from)),
         );
         public_inputs.extend(directions.iter());
-        public_inputs.extend(commit.into_iter().map(CF::from));
+        let commit_base: [F; 8] = commit
+            .into_iter()
+            .collect_vec()
+            .try_into()
+            .expect("commit digest");
+        let commit_ext = base_digest_to_ext(&commit_base);
+        debug_assert_eq!(mmcs_config.ext_field_digest_elems, commit_ext.len());
+        public_inputs.extend(commit_ext);
 
         runner.set_public_inputs(&public_inputs).unwrap();
 
@@ -433,36 +463,24 @@ mod test {
             .collect_vec();
 
         for (&op_id, sibling) in permutation_mmcs_ops.iter().zip(siblings) {
+            let sibling: [CF; 2] = sibling.try_into().unwrap();
             runner
                 .set_non_primitive_op_private_data(
                     op_id,
-                    NonPrimitiveOpPrivateData::Poseidon2Perm(Poseidon2PermPrivateData {
-                        sibling: sibling.try_into().unwrap(),
-                    }),
+                    NonPrimitiveOpPrivateData::Poseidon2Perm(Poseidon2PermPrivateData { sibling }),
                 )
                 .unwrap();
         }
 
-        // Whe the we run the runner and the MMCS trace is generated, it will be checked that
-        // the root computed by the MmcsVerify gate matches that given as input.
+        // When the we run the runner and the MMCS trace is generated, it will be checked that
+        // the root computed by the MmcsVerify gate does not match the one given as input.
         let result = runner.run();
-        result
-            .expect("TODO: This test is supposed to fail, but it won't until we enforce lookups.");
-        // TODO: Uncomnent the following code
-        // let root = commit.into_iter().map(CF::from).collect_vec();
-        // match result {
-        //     Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
-        //         op: NonPrimitiveOpType::PoseidonPerm,
-        //         operation_index: NonPrimitiveOpId(0),
-        //         expected,
-        //         ..
-        //     }) => {
-        //         if expected == alloc::format!("root: {:?}", root) {
-        //         } else {
-        //             panic!("The test was suppose to fail with a root mismatch!")
-        //         }
-        //     }
-        //     _ => panic!("The test was suppose to fail with a root mismatch!"),
-        // }
+
+        match result {
+            Err(CircuitError::WitnessConflict { witness_id, .. }) => {
+                assert_eq!(witness_id, root_widx0, "expected root witness mismatch");
+            }
+            _ => panic!("The test was suppose to fail with a root mismatch!"),
+        }
     }
 }
