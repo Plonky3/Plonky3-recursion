@@ -26,7 +26,7 @@ use p3_air::{
 };
 use p3_circuit::tables::PublicTrace;
 use p3_field::{BasedVectorSpace, Field};
-use p3_lookup::lookup_traits::{AirLookupHandler, Direction, Kind, Lookup};
+use p3_lookup::lookup_traits::{Direction, Kind, Lookup};
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_uni_stark::SymbolicAirBuilder;
@@ -130,19 +130,16 @@ where
     fn eval(&self, _builder: &mut AB) {
         // No constraints for public inputs in Stage 1
     }
-}
 
-impl<AB: PermutationAirBuilder + PairBuilder + AirBuilderWithPublicValues, const D: usize>
-    AirLookupHandler<AB> for PublicAir<AB::F, D>
-where
-    AB::F: Field,
-{
     fn add_lookup_columns(&mut self) -> Vec<usize> {
         // There is only one lookup to register in this AIR.
         vec![0]
     }
 
-    fn get_lookups(&mut self) -> Vec<Lookup<<AB>::F>> {
+    fn get_lookups(&mut self) -> Vec<Lookup<<AB>::F>>
+    where
+        AB: PermutationAirBuilder + AirBuilderWithPublicValues + PairBuilder,
+    {
         // Create symbolic air builder to access symbolic variables
         let symbolic_air_builder = SymbolicAirBuilder::<AB::F>::new(
             Self::preprocessed_width(),
@@ -168,7 +165,7 @@ where
         );
 
         assert!(lookup_inps.len() == 1);
-        let lookup = AirLookupHandler::<AB>::register_lookup(
+        let lookup = <Self as Air<AB>>::register_lookup(
             self,
             Kind::Global("WitnessChecks".to_string()),
             &lookup_inps,

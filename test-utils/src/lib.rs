@@ -12,11 +12,12 @@ pub use {p3_air, p3_batch_stark, p3_field, p3_lookup, p3_matrix, p3_uni_stark};
 #[macro_export]
 macro_rules! assert_air_constraint_degree {
     ($air:expr, $air_name:expr) => {{
+        use p3_lookup::lookup_traits::lookup_data_to_expr;
         use $crate::p3_air::BaseAir;
-        use $crate::p3_batch_stark::symbolic::{get_symbolic_constraints, lookup_data_to_expr};
+        use $crate::p3_batch_stark::symbolic::get_symbolic_constraints;
         use $crate::p3_field::PrimeCharacteristicRing;
         use $crate::p3_lookup::logup::LogUpGadget;
-        use $crate::p3_lookup::lookup_traits::{AirLookupHandler, Kind, LookupData};
+        use $crate::p3_lookup::lookup_traits::{Kind, LookupData};
         use $crate::p3_matrix::Matrix;
         use $crate::p3_uni_stark::SymbolicAirBuilder;
 
@@ -25,7 +26,7 @@ macro_rules! assert_air_constraint_degree {
 
         let preprocessed_width = air.preprocessed_trace().map(|m| m.width()).unwrap_or(0);
 
-        let lookups = <_ as AirLookupHandler<SymbolicAirBuilder<F, F>>>::get_lookups(&mut air);
+        let lookups = <_ as Air<SymbolicAirBuilder<F, F>>>::get_lookups(&mut air);
         let lookup_data = lookups
             .iter()
             .filter_map(|lookup| match &lookup.kind {

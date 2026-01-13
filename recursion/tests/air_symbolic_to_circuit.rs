@@ -7,7 +7,7 @@ use p3_circuit_prover::air::{AddAir, ConstAir, MulAir, PublicAir, WitnessAir};
 use p3_commit::ExtensionMmcs;
 use p3_field::PrimeCharacteristicRing;
 use p3_fri::TwoAdicFriPcs;
-use p3_lookup::lookup_traits::EmptyLookupGadget;
+use p3_lookup::logup::LogUpGadget;
 use p3_matrix::dense::RowMajorMatrixView;
 use p3_matrix::stack::VerticalPair;
 use p3_poseidon2_air::RoundConstants;
@@ -33,7 +33,7 @@ fn run_recursive<A>(
 ) -> Result<(), CircuitError>
 where
     A: BaseAir<F>
-        + RecursiveAir<F, F, EmptyLookupGadget>
+        + RecursiveAir<F, F, LogUpGadget>
         + Air<SymbolicAirBuilder<F>>
         + for<'a> Air<VerifierConstraintFolder<'a, MyConfig>>,
 {
@@ -115,7 +115,7 @@ where
         row_selectors,
         inv_vanishing: builder.add_const(F::ONE),
     };
-    let lookup_gadget = EmptyLookupGadget {};
+    let lookup_gadget = LogUpGadget {};
     let dummy_lookup_metadata = LookupMetadata {
         contexts: &[],
         lookup_data: &[],

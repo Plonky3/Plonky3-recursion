@@ -79,11 +79,11 @@ fn test_fibonacci_batch_verifier() {
 
     let lookup_gadget = LogUpGadget::new();
     let batch_stark_proof = prover
-        .prove_all_tables(&traces, &common, witness_multiplicities, &lookup_gadget)
+        .prove_all_tables(&traces, &common, witness_multiplicities)
         .unwrap();
 
     prover
-        .verify_all_tables(&batch_stark_proof, &common, &lookup_gadget)
+        .verify_all_tables(&batch_stark_proof, &common)
         .unwrap();
 
     // Now verify the batch STARK proof recursively
