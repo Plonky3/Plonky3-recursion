@@ -225,9 +225,9 @@ fn test_fibonacci_batch_verifier() {
         exprs.push(*expr);
     }
 
-    // info!("Widx 1530 exprs: {:?}", widx_to_expr.get(&WitnessId(1530)));
-    // info!("Widx 1533 exprs: {:?}", widx_to_expr.get(&WitnessId(1533)));
-    // info!("Widx 1380 exprs: {:?}", widx_to_expr.get(&WitnessId(1380)));
+    info!("Widx 2970 exprs: {:?}", widx_to_expr.get(&WitnessId(2970)));
+    info!("Widx 2972 exprs: {:?}", widx_to_expr.get(&WitnessId(2972)));
+    info!("Widx 1286 exprs: {:?}", widx_to_expr.get(&WitnessId(1286)));
 
     let expected_public_input_len = verification_circuit.public_flat_len;
 

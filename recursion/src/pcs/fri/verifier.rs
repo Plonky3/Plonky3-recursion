@@ -8,6 +8,7 @@ use p3_circuit::CircuitBuilder;
 use p3_field::coset::TwoAdicMultiplicativeCoset;
 use p3_field::{ExtensionField, Field, TwoAdicField};
 use p3_util::zip_eq::zip_eq;
+use tracing::info;
 
 use super::{FriProofTargets, InputProofTargets};
 use crate::Target;
@@ -133,6 +134,7 @@ fn verify_query<EF: Field>(
 ) {
     builder.push_scope("verify_query");
     let folded_eval = fold_row_chain(builder, initial_folded_eval, phases);
+    info!("Folded eval at expr: {:?}", folded_eval);
     builder.connect(folded_eval, final_value);
     builder.pop_scope(); // close `verify_query` scope
 }
@@ -648,9 +650,14 @@ where
             log_max_height,
             num_phases,
         );
+        info!(
+            "Final query point expr for query {q}: {}",
+            final_query_point
+        );
 
         let final_poly_eval =
             evaluate_polynomial(builder, &fri_proof_targets.final_poly, final_query_point);
+        info!("Final poly eval expr for query {q}: {}", final_poly_eval);
 
         // Perform the fold chain and connect to the evaluated final polynomial value
         verify_query_from_index_bits(

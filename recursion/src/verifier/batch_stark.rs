@@ -646,6 +646,16 @@ where
         coms_to_verify.push((global.commitment.clone(), pre_round));
     }
 
+    for (_, round) in &coms_to_verify {
+        for (_, mat) in round {
+            for (_, point) in mat {
+                point.iter().for_each(|&target| {
+                    challenger.observe(circuit, target);
+                });
+            }
+        }
+    }
+
     let pcs_challenges = SC::Pcs::get_challenges_circuit::<RATE>(
         circuit,
         &mut challenger,

@@ -231,7 +231,7 @@ impl<F: Field, EF: ExtensionField<F>, Inner: RecursiveMmcs<F, EF>> Recursive<EF>
 /// `HashTargets` corresponds to a commitment in the form of hashes with `DIGEST_ELEMS` digest elements.
 #[derive(Clone)]
 pub struct HashTargets<F, const DIGEST_ELEMS: usize> {
-    pub hash_targets: [Target; DIGEST_ELEMS],
+    pub hash_targets: Vec<Target>,
     _phantom: PhantomData<F>,
 }
 
@@ -250,14 +250,24 @@ impl<F: Field, EF: ExtensionField<F>, const DIGEST_ELEMS: usize> Recursive<EF>
     type Input = ValMmcsCommitment<F, DIGEST_ELEMS>;
 
     fn new(circuit: &mut CircuitBuilder<EF>, _input: &Self::Input) -> Self {
+        assert!(
+            DIGEST_ELEMS % EF::DIMENSION == 0,
+            "DIGEST_ELEMS must be a multiple of EF::DIMENSION"
+        );
         Self {
-            hash_targets: circuit.alloc_public_input_array("MMCS commitment digest"),
+            hash_targets: circuit
+                .alloc_public_inputs(DIGEST_ELEMS / EF::DIMENSION, "MMCS commitment digest"),
             _phantom: PhantomData,
         }
     }
 
     fn get_values(input: &Self::Input) -> Vec<EF> {
-        input.into_iter().map(|v| EF::from(v)).collect()
+        input
+            .as_ref()
+            .chunks_exact(EF::DIMENSION)
+            .map(|chunk| EF::from_basis_coefficients_slice(chunk))
+            .collect::<Option<Vec<_>>>()
+            .expect("Input length must be a multiple of EF::DIMENSION")
     }
 }
 
@@ -448,7 +458,8 @@ where
     ) -> Result<Vec<Target>, CircuitError> {
         let fri_proof = &proof_targets.opening_proof;
 
-        opened_values.observe(circuit, challenger);
+        // HAMY TODO: Since it's done externally in recursive batch-stark, must do it in recursive uni-stark as well.
+        // opened_values.observe(circuit, challenger);
 
         // Sample FRI alpha (for batch opening reduction)
         let fri_alpha = challenger.sample(circuit)?;
