@@ -462,7 +462,7 @@ let proof = prover.prove_all_tables(&amp;traces)?;</code></pre>
 <p>The runner is initialized with a <code>Circuit&lt;F&gt;</code> and receives:</p>
 <ul>
 <li>Public input values via <code>runner.set_public_inputs()</code></li>
-<li>Private data for non-primitive operations via <code>runner.set_non_primitive_op_private_data()</code></li>
+<li>Private data for non-primitive operations via <code>runner.set_private_data()</code></li>
 </ul>
 <p>The runner iterates through primitive operations in topological order, executing each one to populate witness slots. Operations can run in <strong>forward mode</strong> (computing outputs from inputs) or <strong>backward mode</strong> (inferring missing inputs from outputs), allowing bidirectional constraint solving.</p>
 <p>The output is a fully populated witness table where every slot contains a concrete field element. Any unset witness triggers a <code>WitnessNotSet</code> error.</p>
