@@ -2523,7 +2523,7 @@ where
         let mul_lanes = packing.mul_lanes();
 
         // Witness
-        let witness_rows = traces.witness_trace.values.len();
+        let witness_rows = traces.witness_trace.num_rows();
         let witness_air = WitnessAir::<Val<SC>, D>::new_with_preprocessed(
             witness_rows,
             witness_lanes,

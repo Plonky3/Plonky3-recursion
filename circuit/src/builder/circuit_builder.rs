@@ -1341,6 +1341,12 @@ mod proptests {
         any::<u64>().prop_map(BabyBear::from_u64)
     }
 
+    impl From<ExprId> for WitnessId {
+        fn from(expr_id: ExprId) -> Self {
+            WitnessId(expr_id.0 as u32)
+        }
+    }
+
     proptest! {
         #[test]
         fn field_add_commutative(a in field_element(), b in field_element()) {
@@ -1357,15 +1363,15 @@ mod proptests {
             let circuit1 = builder1.build().unwrap();
             let circuit2 = builder2.build().unwrap();
 
-            let  runner1 = circuit1.runner();
-            let  runner2 = circuit2.runner();
+            let runner1 = circuit1.runner();
+            let runner2 = circuit2.runner();
 
             let traces1 = runner1.run().unwrap();
             let traces2 = runner2.run().unwrap();
 
             prop_assert_eq!(
-                traces1.witness_trace.values[sum1.0 as usize],
-                traces2.witness_trace.values[sum2.0 as usize],
+                traces1.witness_trace.get_value(sum1.into()),
+                traces2.witness_trace.get_value(sum2.into()),
                 "addition should be commutative"
             );
         }
@@ -1385,15 +1391,15 @@ mod proptests {
             let circuit1 = builder1.build().unwrap();
             let circuit2 = builder2.build().unwrap();
 
-            let  runner1 = circuit1.runner();
-            let  runner2 = circuit2.runner();
+            let runner1 = circuit1.runner();
+            let runner2 = circuit2.runner();
 
             let traces1 = runner1.run().unwrap();
             let traces2 = runner2.run().unwrap();
 
             prop_assert_eq!(
-                traces1.witness_trace.values[prod1.0 as usize],
-                traces2.witness_trace.values[prod2.0 as usize],
+                traces1.witness_trace.get_value(prod1.into()),
+                traces2.witness_trace.get_value(prod2.into()),
                 "multiplication should be commutative"
             );
         }
@@ -1406,12 +1412,12 @@ mod proptests {
             let result = builder.add(ca, zero);
 
             let circuit = builder.build().unwrap();
-            let  runner = circuit.runner();
+            let runner = circuit.runner();
             let traces = runner.run().unwrap();
 
             prop_assert_eq!(
-                traces.witness_trace.values[result.0 as usize],
-                a,
+                traces.witness_trace.get_value(result.into()).unwrap(),
+                &a,
                 "a + 0 = a"
             );
         }
@@ -1428,8 +1434,8 @@ mod proptests {
             let traces = runner.run().unwrap();
 
             prop_assert_eq!(
-                traces.witness_trace.values[result.0 as usize],
-                a,
+                traces.witness_trace.get_value(result.into()).unwrap(),
+                &a,
                 "a * 1 = a"
             );
         }
@@ -1447,8 +1453,8 @@ mod proptests {
             let traces = runner.run().unwrap();
 
             prop_assert_eq!(
-                traces.witness_trace.values[result.0 as usize],
-                a,
+                traces.witness_trace.get_value(result.into()).unwrap(),
+                &a,
                 "(a - b) + b = a"
             );
         }
@@ -1466,8 +1472,8 @@ mod proptests {
             let traces = runner.run().unwrap();
 
             prop_assert_eq!(
-                traces.witness_trace.values[result.0 as usize],
-                a,
+                traces.witness_trace.get_value(result.into()).unwrap(),
+                &a,
                 "(a / b) * b = a"
             );
         }
@@ -1488,8 +1494,8 @@ mod proptests {
             let traces = runner.run().unwrap();
 
             assert_eq!(
-                traces.witness_trace.values[result.0 as usize],
-                BabyBear::from_u64(17)
+                traces.witness_trace.get_value(result.into()).unwrap(),
+                &BabyBear::from_u64(17)
             );
         }
 
@@ -1506,8 +1512,8 @@ mod proptests {
             let traces = runner.run().unwrap();
 
             assert_eq!(
-                traces.witness_trace.values[result.0 as usize],
-                BabyBear::from_u64(9)
+                traces.witness_trace.get_value(result.into()).unwrap(),
+                &BabyBear::from_u64(9)
             );
         }
     }
@@ -1524,8 +1530,8 @@ mod proptests {
             let traces = runner.run().unwrap();
 
             assert_eq!(
-                traces.witness_trace.values[result.0 as usize],
-                BabyBear::ONE
+                traces.witness_trace.get_value(result.into()).unwrap(),
+                &BabyBear::ONE
             );
         }
 
@@ -1543,8 +1549,8 @@ mod proptests {
             let traces = runner.run().unwrap();
 
             assert_eq!(
-                traces.witness_trace.values[result.0 as usize],
-                BabyBear::from_u64(120)
+                traces.witness_trace.get_value(result.into()).unwrap(),
+                &BabyBear::from_u64(120)
             );
         }
 
@@ -1563,8 +1569,8 @@ mod proptests {
             let traces = runner.run().unwrap();
 
             assert_eq!(
-                traces.witness_trace.values[result.0 as usize],
-                BabyBear::ZERO
+                traces.witness_trace.get_value(result.into()).unwrap(),
+                &BabyBear::ZERO
             );
         }
     }
@@ -1589,8 +1595,8 @@ mod proptests {
             let traces = runner.run().unwrap();
 
             assert_eq!(
-                traces.witness_trace.values[result.0 as usize],
-                BabyBear::from_u64(32)
+                traces.witness_trace.get_value(result.into()).unwrap(),
+                &BabyBear::from_u64(32)
             );
         }
 
@@ -1606,8 +1612,8 @@ mod proptests {
             let traces = runner.run().unwrap();
 
             assert_eq!(
-                traces.witness_trace.values[result.0 as usize],
-                BabyBear::ZERO
+                traces.witness_trace.get_value(result.into()).unwrap(),
+                &BabyBear::ZERO
             );
         }
 
@@ -1626,8 +1632,8 @@ mod proptests {
             let traces = runner.run().unwrap();
 
             assert_eq!(
-                traces.witness_trace.values[result.0 as usize],
-                BabyBear::ZERO
+                traces.witness_trace.get_value(result.into()).unwrap(),
+                &BabyBear::ZERO
             );
         }
     }
@@ -1676,8 +1682,8 @@ mod proptests {
 
             // Verify correctness
             prop_assert_eq!(
-                traces.witness_trace.values[result.0 as usize],
-                expected
+                traces.witness_trace.get_value(result.into()).unwrap(),
+                &expected
             );
         }
 
@@ -1707,8 +1713,8 @@ mod proptests {
 
             // Verify correctness
             prop_assert_eq!(
-                traces.witness_trace.values[result.0 as usize],
-                expected
+                traces.witness_trace.get_value(result.into()).unwrap(),
+                &expected
             );
         }
 
@@ -1739,8 +1745,8 @@ mod proptests {
 
             // Verify correctness
             prop_assert_eq!(
-                traces.witness_trace.values[result.0 as usize],
-                expected
+                traces.witness_trace.get_value(result.into()).unwrap(),
+                &expected
             );
         }
     }
@@ -1848,7 +1854,7 @@ mod proptests {
             .iter()
             .map(|b| {
                 let w = expr_to_widx.get(b).expect("bit expr mapped");
-                traces.witness_trace.values[w.0 as usize]
+                *traces.witness_trace.get_value(*w).unwrap()
             })
             .collect();
         assert_eq!(bit_values[0], BabyBear::ZERO); // bit 0
@@ -1914,7 +1920,7 @@ mod proptests {
             .iter()
             .map(|b| {
                 let w = expr_to_widx.get(b).expect("bit expr mapped");
-                traces.witness_trace.values[w.0 as usize]
+                *traces.witness_trace.get_value(*w).unwrap()
             })
             .collect();
         let result = bit_values.chunks(31).collect::<Vec<&[Ext4]>>();

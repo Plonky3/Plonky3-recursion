@@ -356,7 +356,7 @@ mod tests {
         // Check witness trace
         assert_eq!(
             traces.witness_trace.index.len(),
-            traces.witness_trace.values.len()
+            traces.witness_trace.num_rows()
         );
 
         // Check that we have const trace entries
@@ -446,7 +446,10 @@ mod tests {
 
         // Should store the value of the hint (3) at `WitnessId(3)``
         assert_eq!(traces.witness_trace.index[3], WitnessId(3));
-        assert_eq!(traces.witness_trace.values[3], BabyBear::from_usize(3));
+        assert_eq!(
+            traces.witness_trace.get_value(WitnessId(3)).unwrap(),
+            &BabyBear::from_usize(3)
+        );
 
         // Should have one mul operation: 37 * x
         assert_eq!(traces.mul_trace.lhs_values.len(), 1);

@@ -86,7 +86,7 @@ impl<F> Traces<F> {
     /// ```
     pub fn probe(&self, tag: &str) -> Option<&F> {
         let witness_id = self.tag_to_witness.get(tag)?;
-        self.witness_trace.values.get(witness_id.0 as usize)
+        self.witness_trace.get_value(*witness_id)
     }
 }
 
@@ -143,7 +143,7 @@ impl<F: alloc::fmt::Debug> Traces<F> {
                 .witness_trace
                 .index
                 .iter()
-                .zip(self.witness_trace.values.iter())
+                .zip(self.witness_trace.values().iter())
                 .enumerate()
             {
                 tracing::debug!("Row {i}: WitnessId({idx}) = {val:?}");
