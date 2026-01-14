@@ -1343,7 +1343,7 @@ mod proptests {
 
     impl From<ExprId> for WitnessId {
         fn from(expr_id: ExprId) -> Self {
-            WitnessId(expr_id.0 as u32)
+            Self(expr_id.0)
         }
     }
 
