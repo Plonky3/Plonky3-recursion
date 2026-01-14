@@ -629,9 +629,10 @@ where
             if let Some(&witness_id) = circuit.expr_to_widx.get(&expr_id) {
                 circuit.tag_to_witness.insert(tag, witness_id);
             } else {
-                tracing::warn!(
-                    "Tag {tag} dropped after circuit optimization: expr_id {expr_id} not found"
-                );
+                return Err(CircuitBuilderError::MissingExprMapping {
+                    expr_id,
+                    context: tag,
+                });
             }
         }
 
@@ -1296,7 +1297,7 @@ mod tests {
     }
 
     #[test]
-    fn test_tag_drop_after_optimization() {
+    fn test_connected_tags_resolve_after_optimization() {
         let mut builder = CircuitBuilder::<BabyBear>::new();
 
         let x = builder.add_public_input();
@@ -1315,13 +1316,10 @@ mod tests {
         runner.set_public_inputs(&[BabyBear::from_u64(5)]).unwrap();
         let traces = runner.run().unwrap();
 
-        // At least one tag should exist while the other is dropped.
-        let a_result = traces.probe("result-a");
-        let b_result = traces.probe("result-b");
-
-        assert!(
-            a_result == Some(&BabyBear::from_u64(6)) || b_result == Some(&BabyBear::from_u64(6))
-        );
+        // Both tags should resolve to the same value (5 + 1 = 6)
+        let expected = BabyBear::from_u64(6);
+        assert_eq!(traces.probe("result-a"), Some(&expected));
+        assert_eq!(traces.probe("result-b"), Some(&expected));
     }
 }
 
