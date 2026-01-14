@@ -5,7 +5,7 @@ use p3_circuit::CircuitBuilder;
 use p3_circuit_prover::air::{AddAir, ConstAir, MulAir, PublicAir, WitnessAir};
 use p3_circuit_prover::batch_stark_prover::PrimitiveTable;
 use p3_circuit_prover::common::get_airs_and_degrees_with_prep;
-use p3_circuit_prover::{BatchStarkProof, BatchStarkProver, TablePacking};
+use p3_circuit_prover::{BatchStarkProof, BatchStarkProver, Poseidon2Config, TablePacking};
 use p3_field::PrimeCharacteristicRing;
 use p3_fri::create_test_fri_params;
 use p3_lookup::logup::LogUpGadget;
@@ -716,6 +716,8 @@ fn get_verifier_inputs_and_challenges(
         TRACE_D,
     >(
         config,
+        // TODO: We should have a D1 config here
+        &Poseidon2Config::BabyBearD4Width16,
         circuit_builder,
         batch_stark_proof,
         &params.fri_verifier_params,

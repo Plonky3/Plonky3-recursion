@@ -5,7 +5,7 @@ use p3_circuit::CircuitBuilder;
 use p3_circuit_prover::air::{AddAir, ConstAir, MulAir, PublicAir, WitnessAir};
 use p3_circuit_prover::batch_stark_prover::PrimitiveTable;
 use p3_circuit_prover::common::get_airs_and_degrees_with_prep;
-use p3_circuit_prover::{BatchStarkProver, TablePacking};
+use p3_circuit_prover::{BatchStarkProver, Poseidon2Config, TablePacking};
 use p3_field::PrimeCharacteristicRing;
 use p3_fri::create_test_fri_params;
 use p3_lookup::logup::LogUpGadget;
@@ -56,8 +56,8 @@ fn test_fibonacci_batch_verifier() {
     let fri_params = create_test_fri_params(challenge_mmcs, 0);
 
     // Create config for proving
-    let pcs_proving = MyPcs::new(dft, val_mmcs, fri_params);
-    let challenger_proving = Challenger::new(perm);
+    let pcs_proving = MyPcs::new(dft, val_mmcs.clone(), fri_params.clone());
+    let challenger_proving = Challenger::new(perm.clone());
     let config_proving = MyConfig::new(pcs_proving, challenger_proving);
 
     let circuit = builder.build().unwrap();
@@ -88,19 +88,20 @@ fn test_fibonacci_batch_verifier() {
 
     // Now verify the batch STARK proof recursively
     let dft2 = Dft::default();
-    let mut rng2 = SmallRng::seed_from_u64(42);
-    let perm2 = Perm::new_from_rng_128(&mut rng2);
-    let hash2 = MyHash::new(perm2.clone());
-    let compress2 = MyCompress::new(perm2.clone());
-    let val_mmcs2 = ValMmcs::new(hash2, compress2);
-    let challenge_mmcs2 = ChallengeMmcs::new(val_mmcs2.clone());
-    let fri_params2 = create_test_fri_params(challenge_mmcs2, 0);
-    let fri_verifier_params = FriVerifierParams::from(&fri_params2);
-    let pow_bits = fri_params2.query_proof_of_work_bits;
-    let log_height_max = fri_params2.log_final_poly_len + fri_params2.log_blowup;
-    let pcs_verif = MyPcs::new(dft2, val_mmcs2, fri_params2);
-    let challenger_verif = Challenger::new(perm2);
-    let config = MyConfig::new(pcs_verif, challenger_verif);
+    // let mut rng2 = SmallRng::seed_from_u64(42);
+    // let perm2 = Perm::new_from_rng_128(&mut rng2);
+    // let hash2 = MyHash::new(perm2.clone());
+    // let compress2 = MyCompress::new(perm2.clone());
+    // let val_mmcs2 = ValMmcs::new(hash2, compress2);
+    // let challenge_mmcs2 = ChallengeMmcs::new(val_mmcs2.clone());
+    // let fri_params2 = create_test_fri_params(challenge_mmcs2, 0);
+    // let fri_verifier_params = FriVerifierParams::from(&fri_params2);
+    let pow_bits = fri_params.query_proof_of_work_bits;
+    let log_height_max = fri_params.log_final_poly_len + fri_params.log_blowup;
+    let fri_verif_params = FriVerifierParams::from(&fri_params);
+    let pcs_verif = MyPcs::new(dft2, val_mmcs, fri_params);
+    let challenger_verif = Challenger::new(perm);
+    let config_verif = MyConfig::new(pcs_verif, challenger_verif);
 
     // Extract proof components
     let batch_proof = &batch_stark_proof.proof;
@@ -143,10 +144,11 @@ fn test_fibonacci_batch_verifier() {
         RATE,
         TRACE_D,
     >(
-        &config,
+        &config_verif,
+        &Poseidon2Config::BabyBearD4Width16,
         &mut circuit_builder,
         &batch_stark_proof,
-        &fri_verifier_params,
+        &fri_verif_params,
         &common,
         &lookup_gadget,
     )
@@ -159,7 +161,7 @@ fn test_fibonacci_batch_verifier() {
     // Generate all the challenge values for batch proof (uses base field AIRs)
     let all_challenges = generate_batch_challenges(
         &native_airs,
-        &config,
+        &config_verif,
         batch_proof,
         &pis,
         Some(&[pow_bits, log_height_max]),

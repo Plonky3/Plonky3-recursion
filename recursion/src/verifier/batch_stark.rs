@@ -3,6 +3,7 @@ use alloc::vec::Vec;
 use alloc::{format, vec};
 
 use hashbrown::HashMap;
+use hashbrown::hash_map::Entry;
 use p3_air::{
     Air as P3Air, AirBuilderWithPublicValues, BaseAir as P3BaseAir, PairBuilder,
     PermutationAirBuilder,
@@ -10,6 +11,7 @@ use p3_air::{
 use p3_batch_stark::CommonData;
 use p3_circuit::CircuitBuilder;
 use p3_circuit::utils::ColumnsTargets;
+use p3_circuit_prover::Poseidon2Config;
 use p3_circuit_prover::air::{AddAir, ConstAir, MulAir, PublicAir, WitnessAir};
 use p3_circuit_prover::batch_stark_prover::{PrimitiveTable, RowCounts};
 use p3_commit::{Pcs, PolynomialSpace};
@@ -122,6 +124,7 @@ pub fn verify_p3_recursion_proof_circuit<
     const TRACE_D: usize,
 >(
     config: &SC,
+    challenger_config: &Poseidon2Config,
     circuit: &mut CircuitBuilder<SC::Challenge>,
     proof: &p3_circuit_prover::batch_stark_prover::BatchStarkProof<SC>,
     pcs_params: &PcsVerifierParams<SC, InputProof, OpeningProof, Comm>,
@@ -190,6 +193,7 @@ where
         RATE,
     >(
         config,
+        challenger_config,
         &circuit_airs,
         circuit,
         &verifier_inputs.proof_targets,
@@ -218,6 +222,7 @@ pub fn verify_batch_circuit<
     const RATE: usize,
 >(
     config: &SC,
+    challenger_config: &Poseidon2Config,
     airs: &[A],
     circuit: &mut CircuitBuilder<SC::Challenge>,
     proof_targets: &BatchProofTargets<SC, Comm, OpeningProof>,
@@ -354,7 +359,7 @@ where
     }
 
     // Challenger initialisation mirrors the native batch-STARK verifier transcript.
-    let mut challenger = CircuitChallenger::<RATE>::new();
+    let mut challenger = CircuitChallenger::<RATE>::new(challenger_config.clone());
     let inst_count_target = circuit.alloc_const(
         SC::Challenge::from_usize(n_instances),
         "number of instances",
@@ -420,7 +425,7 @@ where
 
     // Fetch lookups and sample their challenges.
     let challenges_per_instance =
-        get_perm_challenges::<SC, RATE, LG>(circuit, &mut challenger, all_lookups, lookup_gadget);
+        get_perm_challenges::<SC, RATE, LG>(circuit, &mut challenger, all_lookups, lookup_gadget)?;
 
     // Then, observe the permutation tables, if any.
     if is_lookup {
@@ -434,7 +439,7 @@ where
         );
     }
 
-    let alpha = challenger.sample(circuit);
+    let alpha = challenger.sample(circuit)?;
 
     challenger.observe_slice(
         circuit,
@@ -442,7 +447,7 @@ where
             .quotient_chunks_targets
             .to_observation_targets(),
     );
-    let zeta = challenger.sample(circuit);
+    let zeta = challenger.sample(circuit)?;
 
     // Build per-instance domains.
     let mut trace_domains = Vec::with_capacity(n_instances);
@@ -777,13 +782,13 @@ pub(crate) fn get_perm_challenges<SC: StarkGenericConfig, const RATE: usize, LG:
     challenger: &mut CircuitChallenger<RATE>,
     all_lookups: &[Vec<Lookup<Val<SC>>>],
     lookup_gadget: &LG,
-) -> Vec<Vec<Target>> {
+) -> Result<Vec<Vec<Target>>, VerificationError> {
     let num_challenges_per_lookup = lookup_gadget.num_challenges();
     let mut global_perm_challenges = HashMap::new();
 
     all_lookups
         .iter()
-        .map(|contexts| {
+        .map(|contexts| -> Result<Vec<Target>, VerificationError> {
             // Pre-allocate for the instance's challenges.
             let num_challenges = contexts.len() * num_challenges_per_lookup;
             let mut instance_challenges = Vec::with_capacity(num_challenges);
@@ -792,22 +797,27 @@ pub(crate) fn get_perm_challenges<SC: StarkGenericConfig, const RATE: usize, LG:
                 match &context.kind {
                     Kind::Global(name) => {
                         // Get or create the global challenges.
-                        let challenges: &mut Vec<Target> =
-                            global_perm_challenges.entry(name).or_insert_with(|| {
-                                (0..num_challenges_per_lookup)
+                        let challenges: &mut Vec<Target> = match global_perm_challenges.entry(name)
+                        {
+                            Entry::Occupied(o) => o.into_mut(),
+                            Entry::Vacant(v) => {
+                                let new_challenges: Vec<Target> = (0..num_challenges_per_lookup)
                                     .map(|_| challenger.sample(circuit))
-                                    .collect()
-                            });
+                                    .collect::<Result<Vec<_>, _>>()?;
+                                v.insert(new_challenges)
+                            }
+                        };
                         instance_challenges.extend_from_slice(challenges);
                     }
                     Kind::Local => {
-                        instance_challenges.extend(
-                            (0..num_challenges_per_lookup).map(|_| challenger.sample(circuit)),
-                        );
+                        let local_challenges: Vec<Target> = (0..num_challenges_per_lookup)
+                            .map(|_| challenger.sample(circuit))
+                            .collect::<Result<Vec<_>, _>>()?;
+                        instance_challenges.extend(local_challenges);
                     }
                 }
             }
-            instance_challenges
+            Ok(instance_challenges)
         })
         .collect()
 }

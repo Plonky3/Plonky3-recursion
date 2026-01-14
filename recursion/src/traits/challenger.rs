@@ -51,7 +51,7 @@ pub trait RecursiveChallenger<F: Field> {
     ///
     /// # Returns
     /// A target representing the sampled challenge
-    fn sample(&mut self, circuit: &mut CircuitBuilder<F>) -> Target;
+    fn sample(&mut self, circuit: &mut CircuitBuilder<F>) -> Result<Target, CircuitBuilderError>;
 
     /// Sample multiple challenges from the current sponge state.
     ///
@@ -63,7 +63,11 @@ pub trait RecursiveChallenger<F: Field> {
     ///
     /// # Returns
     /// Vector of sampled challenge targets
-    fn sample_vec(&mut self, circuit: &mut CircuitBuilder<F>, count: usize) -> Vec<Target> {
+    fn sample_vec(
+        &mut self,
+        circuit: &mut CircuitBuilder<F>,
+        count: usize,
+    ) -> Result<Vec<Target>, CircuitBuilderError> {
         (0..count).map(|_| self.sample(circuit)).collect()
     }
 
@@ -89,7 +93,7 @@ pub trait RecursiveChallenger<F: Field> {
     where
         F: ExtensionField<BF>,
     {
-        let x = self.sample(circuit);
+        let x = self.sample(circuit)?;
 
         // Decompose to bits and verifies they reconstruct x
         let bits = circuit.decompose_to_bits::<BF>(x, total_num_bits)?;

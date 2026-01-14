@@ -2,6 +2,7 @@ mod common;
 
 use p3_circuit::CircuitBuilder;
 use p3_circuit::test_utils::{FibonacciAir, generate_trace_rows};
+use p3_circuit_prover::Poseidon2Config;
 use p3_field::PrimeCharacteristicRing;
 use p3_fri::create_test_fri_params;
 use p3_lookup::lookup_traits::AirNoLookup;
@@ -61,6 +62,7 @@ fn test_fibonacci_verifier() -> Result<(), VerificationError> {
         RATE,
     >(
         &config,
+        &Poseidon2Config::BabyBearD4Width16,
         &air,
         &mut circuit_builder,
         &verifier_inputs.proof_targets,

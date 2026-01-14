@@ -3,6 +3,7 @@ mod common;
 use p3_baby_bear::{BabyBear as F, Poseidon2BabyBear};
 use p3_circuit::CircuitBuilder;
 use p3_circuit::ops::Poseidon2CircuitRow;
+use p3_circuit_prover::Poseidon2Config;
 use p3_commit::ExtensionMmcs;
 use p3_field::PrimeCharacteristicRing;
 use p3_fri::{TwoAdicFriPcs, create_test_fri_params};
@@ -158,6 +159,7 @@ fn test_poseidon2_perm_verifier() -> Result<(), VerificationError> {
         RATE,
     >(
         &config,
+        &Poseidon2Config::BabyBearD4Width16,
         &air,
         &mut circuit_builder,
         &verifier_inputs.proof_targets,

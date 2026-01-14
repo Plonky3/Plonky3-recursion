@@ -5,6 +5,7 @@ use alloc::{format, vec};
 use itertools::Itertools;
 use p3_circuit::utils::ColumnsTargets;
 use p3_circuit::{CircuitBuilder, CircuitBuilderError};
+use p3_circuit_prover::Poseidon2Config;
 use p3_commit::Pcs;
 use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
 use p3_lookup::lookup_traits::EmptyLookupGadget;
@@ -64,6 +65,7 @@ pub fn verify_circuit<
     const RATE: usize,
 >(
     config: &SC,
+    challenger_config: &Poseidon2Config,
     air: &A,
     circuit: &mut CircuitBuilder<SC::Challenge>,
     proof_targets: &ProofTargets<SC, Comm, OpeningProof>,
@@ -140,6 +142,7 @@ where
     let challenge_targets = get_circuit_challenges::<A, SC, Comm, InputProof, OpeningProof, RATE>(
         air,
         config,
+        challenger_config,
         proof_targets,
         public_values,
         preprocessed_width,
@@ -307,6 +310,7 @@ fn get_circuit_challenges<
 >(
     air: &A,
     config: &SC,
+    challenger_config: &Poseidon2Config,
     proof_targets: &ProofTargets<SC, Comm, OpeningProof>,
     public_values: &[Target],
     preprocessed_width: usize,
@@ -333,7 +337,7 @@ where
         &EmptyLookupGadget {},
     );
 
-    let mut challenger = CircuitChallenger::<RATE>::new();
+    let mut challenger = CircuitChallenger::<RATE>::new(challenger_config.clone());
 
     // Allocate base STARK challenges (alpha, zeta, zeta_next) using Fiat-Shamir
     let base_challenges = StarkChallenges::allocate::<SC, Comm, OpeningProof>(
@@ -342,7 +346,7 @@ where
         proof_targets,
         public_values,
         log_quotient_degree,
-    );
+    )?;
 
     let opened_values_no_lookups = OpenedValuesTargetsWithLookups {
         opened_values_no_lookups: proof_targets.opened_values_targets.clone(),

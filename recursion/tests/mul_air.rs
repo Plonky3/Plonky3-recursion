@@ -3,6 +3,7 @@
 mod common;
 
 use p3_circuit::CircuitBuilder;
+use p3_circuit_prover::Poseidon2Config;
 use p3_fri::create_test_fri_params;
 use p3_lookup::lookup_traits::AirNoLookup;
 use p3_matrix::Matrix;
@@ -77,6 +78,7 @@ fn test_mul_verifier_circuit() -> Result<(), VerificationError> {
     // Add the verification circuit to the builder
     verify_circuit::<_, _, _, _, _, RATE>(
         &config,
+        &Poseidon2Config::BabyBearD4Width16,
         &air,
         &mut circuit_builder,
         &verifier_inputs.proof_targets,

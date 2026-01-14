@@ -467,7 +467,7 @@ where
         opened_values.observe(circuit, challenger);
 
         // Sample FRI alpha (for batch opening reduction)
-        let fri_alpha = challenger.sample(circuit);
+        let fri_alpha = challenger.sample(circuit)?;
 
         // Sample FRI betas: one per commit phase
         // For each FRI commitment, observe it and sample beta
@@ -486,7 +486,7 @@ where
                 pow.witness,
                 Val::<SC>::bits(),
             )?;
-            let beta = challenger.sample(circuit);
+            let beta = challenger.sample(circuit)?;
             betas.push(beta);
         }
 
@@ -505,7 +505,7 @@ where
         let num_queries = fri_proof.query_proofs.len();
         let mut query_indices = Vec::with_capacity(num_queries);
         for _ in 0..num_queries {
-            let index = challenger.sample(circuit);
+            let index = challenger.sample(circuit)?;
             query_indices.push(index);
         }
 
