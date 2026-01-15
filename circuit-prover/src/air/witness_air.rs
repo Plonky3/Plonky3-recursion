@@ -48,6 +48,7 @@ use core::marker::PhantomData;
 use p3_air::{
     Air, AirBuilder, AirBuilderWithPublicValues, BaseAir, PairBuilder, PermutationAirBuilder,
 };
+use p3_circuit::WitnessId;
 use p3_circuit::tables::WitnessTrace;
 use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
 use p3_lookup::lookup_traits::{Direction, Kind, Lookup};
@@ -160,7 +161,7 @@ impl<F: Field, const D: usize> WitnessAir<F, D> {
     ) -> RowMajorMatrix<F> {
         assert!(lanes > 0, "lane count must be non-zero");
 
-        let witness_count = trace.values.len();
+        let witness_count = trace.num_rows();
         assert_eq!(
             witness_count,
             trace.index.len(),
@@ -181,8 +182,7 @@ impl<F: Field, const D: usize> WitnessAir<F, D> {
 
         // Prepare last value coefficients for padding lanes/rows.
         let last_coeffs = trace
-            .values
-            .last()
+            .last_value()
             .expect("non-empty trace")
             .as_basis_coefficients_slice();
         assert_eq!(
@@ -206,7 +206,10 @@ impl<F: Field, const D: usize> WitnessAir<F, D> {
             let cursor = row * width + lane * lane_width;
 
             if slot < witness_count {
-                let coeffs = trace.values[slot].as_basis_coefficients_slice();
+                let coeffs = trace
+                    .get_value(WitnessId(slot as u32))
+                    .unwrap()
+                    .as_basis_coefficients_slice();
                 assert_eq!(
                     coeffs.len(),
                     D,
@@ -383,10 +386,7 @@ mod tests {
         let indices: Vec<WitnessId> = (0..n as u32).map(WitnessId).collect();
         let multiplicities: Vec<Val> = vec![Val::ONE; n];
 
-        let trace = WitnessTrace {
-            values,
-            index: indices,
-        };
+        let trace = WitnessTrace::new(indices, values);
         let matrix = WitnessAir::<Val, 1>::trace_to_matrix(&trace, 1);
         assert_eq!(matrix.height(), n);
         assert_eq!(matrix.width(), 1);
@@ -426,10 +426,7 @@ mod tests {
         let indices = vec![WitnessId(0), WitnessId(1)];
         let multiplicities = vec![Val::from_u64(1); indices.len()];
 
-        let trace = WitnessTrace {
-            values,
-            index: indices,
-        };
+        let trace = WitnessTrace::new(indices, values);
         let matrix = WitnessAir::<Val, 4>::trace_to_matrix(&trace, 1);
 
         // Verify dimensions: D = 4 columns
@@ -472,10 +469,7 @@ mod tests {
         let values = vec![Val::from_u64(42)];
         let indices = vec![WitnessId(0)];
 
-        let trace = WitnessTrace {
-            values,
-            index: indices,
-        };
+        let trace = WitnessTrace::new(indices, values);
         let matrix = WitnessAir::<Val, 1>::trace_to_matrix(&trace, 1);
         let multiplicity = vec![Val::ONE; 1];
 
@@ -516,10 +510,7 @@ mod tests {
         let indices: Vec<WitnessId> = (0..n as u32).map(WitnessId).collect();
         let multiplicities: Vec<Val> = vec![Val::ONE; n];
 
-        let trace = WitnessTrace {
-            values,
-            index: indices,
-        };
+        let trace = WitnessTrace::new(indices, values);
         let matrix = WitnessAir::<Val, 1>::trace_to_matrix(&trace, 1);
 
         // Should be padded to next power of two (4)
@@ -583,10 +574,7 @@ mod tests {
             Val::from_u64(7),
         ];
         let indices: Vec<WitnessId> = (0..values.len() as u32).map(WitnessId).collect();
-        let trace = WitnessTrace {
-            values: values.clone(),
-            index: indices,
-        };
+        let trace = WitnessTrace::new(indices, values.clone());
 
         let lanes = 2;
         let matrix = WitnessAir::<Val, 1>::trace_to_matrix(&trace, lanes);

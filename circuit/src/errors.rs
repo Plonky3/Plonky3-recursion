@@ -158,6 +158,10 @@ pub enum CircuitError {
         operation_index: NonPrimitiveOpId,
         limb: usize,
     },
+
+    /// Unknown tag: the tag was not registered during circuit construction.
+    #[error("Unknown tag: '{tag}'")]
+    UnknownTag { tag: String },
 }
 
 impl From<CircuitBuilderError> for CircuitError {

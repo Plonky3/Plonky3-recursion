@@ -1,3 +1,4 @@
+use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt::Debug;
@@ -12,7 +13,7 @@ use crate::op::{
     NonPrimitiveOpConfig, NonPrimitiveOpType, NonPrimitivePreprocessedMap, Op, PrimitiveOpType,
 };
 use crate::tables::{CircuitRunner, TraceGeneratorFn};
-use crate::types::{ExprId, WitnessId};
+use crate::types::{ExprId, NonPrimitiveOpId, WitnessId};
 
 /// Trait encapsulating the required field operations for circuits
 pub trait CircuitField:
@@ -70,6 +71,10 @@ pub struct Circuit<F> {
     pub expr_to_widx: HashMap<ExprId, WitnessId>,
     /// Registered non-primitive trace generators.
     pub non_primitive_trace_generators: HashMap<NonPrimitiveOpType, TraceGeneratorFn<F>>,
+    /// Tag to witness index mapping for probing values by name.
+    pub tag_to_witness: HashMap<String, WitnessId>,
+    /// Tag to non-primitive operation ID mapping.
+    pub tag_to_op_id: HashMap<String, NonPrimitiveOpId>,
 }
 
 impl<F: Field + Clone> Clone for Circuit<F> {
@@ -82,6 +87,8 @@ impl<F: Field + Clone> Clone for Circuit<F> {
             enabled_ops: self.enabled_ops.clone(),
             expr_to_widx: self.expr_to_widx.clone(),
             non_primitive_trace_generators: self.non_primitive_trace_generators.clone(),
+            tag_to_witness: self.tag_to_witness.clone(),
+            tag_to_op_id: self.tag_to_op_id.clone(),
         }
     }
 }
@@ -97,6 +104,8 @@ impl<F: Field> Circuit<F> {
             enabled_ops: HashMap::new(),
             expr_to_widx,
             non_primitive_trace_generators: HashMap::new(),
+            tag_to_witness: HashMap::new(),
+            tag_to_op_id: HashMap::new(),
         }
     }
 

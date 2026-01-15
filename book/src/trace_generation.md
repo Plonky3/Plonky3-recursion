@@ -26,7 +26,7 @@ Circuit execution happens when calling `runner.run()`. This phase populates the 
 
 The runner is initialized with a `Circuit<F>` and receives:
 - Public input values via `runner.set_public_inputs()`
-- Private data for non-primitive operations via `runner.set_non_primitive_op_private_data()`
+- Private data for non-primitive operations via `runner.set_private_data()`
 
 The runner iterates through primitive operations in topological order, executing each one to populate witness slots. Operations can run in **forward mode** (computing outputs from inputs) or **backward mode** (inferring missing inputs from outputs), allowing bidirectional constraint solving.
 

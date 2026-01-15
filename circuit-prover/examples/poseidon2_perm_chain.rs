@@ -141,32 +141,18 @@ fn main() -> Result<(), Box<dyn Error>> {
         let wid = expr_to_widx
             .get(&out0)
             .ok_or("missing witness id for out0")?;
-        let pos = traces
-            .witness_trace
-            .index
-            .iter()
-            .position(|&idx| idx == *wid)
-            .ok_or("missing witness id for out0 in witness trace")?;
         *traces
             .witness_trace
-            .values
-            .get(pos)
+            .get_value(*wid)
             .ok_or("missing witness value for out0")?
     };
     let observed_out1 = {
         let wid = expr_to_widx
             .get(&out1)
             .ok_or("missing witness id for out1")?;
-        let pos = traces
-            .witness_trace
-            .index
-            .iter()
-            .position(|&idx| idx == *wid)
-            .ok_or("missing witness id for out1 in witness trace")?;
         *traces
             .witness_trace
-            .values
-            .get(pos)
+            .get_value(*wid)
             .ok_or("missing witness value for out1")?
     };
 

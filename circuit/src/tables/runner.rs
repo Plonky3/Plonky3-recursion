@@ -94,7 +94,7 @@ impl<F: CircuitField> CircuitRunner<F> {
     }
 
     /// Sets private data for a non-primitive operation.
-    pub fn set_non_primitive_op_private_data(
+    pub fn set_private_data(
         &mut self,
         op_id: NonPrimitiveOpId,
         private_data: NonPrimitiveOpPrivateData<F>,
@@ -154,6 +154,25 @@ impl<F: CircuitField> CircuitRunner<F> {
         Ok(())
     }
 
+    /// Sets private data for a non-primitive operation by its tag.
+    ///
+    /// The tag must have been registered during circuit construction via `builder.tag_op()`.
+    ///
+    /// # Errors
+    /// Returns `CircuitError::UnknownTag` if the tag was not registered.
+    pub fn set_private_data_by_tag(
+        &mut self,
+        tag: &str,
+        private_data: NonPrimitiveOpPrivateData<F>,
+    ) -> Result<(), CircuitError> {
+        let op_id = self.circuit.tag_to_op_id.get(tag).copied().ok_or_else(|| {
+            CircuitError::UnknownTag {
+                tag: tag.to_string(),
+            }
+        })?;
+        self.set_private_data(op_id, private_data)
+    }
+
     /// Run the circuit and generate traces
     #[instrument(skip_all)]
     pub fn run(mut self) -> Result<Traces<F>, CircuitError> {
@@ -185,6 +204,7 @@ impl<F: CircuitField> CircuitRunner<F> {
             public_trace,
             add_trace,
             mul_trace,
+            tag_to_witness: self.circuit.tag_to_witness,
             non_primitive_traces,
         })
     }
@@ -336,7 +356,7 @@ mod tests {
         // Check witness trace
         assert_eq!(
             traces.witness_trace.index.len(),
-            traces.witness_trace.values.len()
+            traces.witness_trace.num_rows()
         );
 
         // Check that we have const trace entries
@@ -426,7 +446,10 @@ mod tests {
 
         // Should store the value of the hint (3) at `WitnessId(3)``
         assert_eq!(traces.witness_trace.index[3], WitnessId(3));
-        assert_eq!(traces.witness_trace.values[3], BabyBear::from_usize(3));
+        assert_eq!(
+            traces.witness_trace.get_value(WitnessId(3)).unwrap(),
+            &BabyBear::from_usize(3)
+        );
 
         // Should have one mul operation: 37 * x
         assert_eq!(traces.mul_trace.lhs_values.len(), 1);
@@ -502,5 +525,28 @@ mod tests {
         assert_eq!(traces.add_trace.lhs_values[0], x_val);
         assert_eq!(traces.add_trace.rhs_values[0], expected_yz);
         assert_eq!(traces.add_trace.result_values[0], expected_result);
+    }
+
+    #[test]
+    fn test_set_private_data_by_unknown_tag_error() {
+        use crate::ops::poseidon2_perm::Poseidon2PermPrivateData;
+
+        let builder = CircuitBuilder::<BabyBear>::new();
+        let circuit = builder.build().unwrap();
+        let mut runner = circuit.runner();
+
+        let private_data = Poseidon2PermPrivateData {
+            sibling: [BabyBear::ZERO, BabyBear::ZERO],
+        };
+
+        let result = runner.set_private_data_by_tag(
+            "nonexistent-tag",
+            crate::op::NonPrimitiveOpPrivateData::Poseidon2Perm(private_data),
+        );
+
+        assert!(matches!(
+            result,
+            Err(CircuitError::UnknownTag { tag }) if tag == "nonexistent-tag"
+        ));
     }
 }

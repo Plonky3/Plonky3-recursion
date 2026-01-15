@@ -552,6 +552,19 @@ where
             }
         }
 
+        // Populate expr_to_widx for all expressions in connect classes.
+        // This ensures that expressions merged via DSU still have a mapping,
+        // so tags attached to them can be resolved after optimization.
+        for &expr_idx in &in_connect {
+            let id = ExprId(expr_idx as u32);
+            if !expr_to_widx.contains_key(&id) {
+                let root = dsu_find(&mut parents, expr_idx);
+                if let Some(&widx) = root_to_widx.get(&root) {
+                    expr_to_widx.insert(id, widx);
+                }
+            }
+        }
+
         let witness_count = self.witness_alloc.witness_count();
         Ok((
             ops,

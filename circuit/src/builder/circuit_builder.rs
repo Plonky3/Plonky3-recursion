@@ -1,5 +1,5 @@
 use alloc::boxed::Box;
-use alloc::string::ToString as _;
+use alloc::string::{String, ToString as _};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use alloc::{format, vec};
@@ -39,6 +39,12 @@ pub struct CircuitBuilder<F: Field> {
 
     /// Registered non-primitive trace generators.
     non_primitive_trace_generators: HashMap<NonPrimitiveOpType, TraceGeneratorFn<F>>,
+
+    /// Tags for wires (ExprId) - enables probing values by name after execution.
+    tag_to_expr: HashMap<String, ExprId>,
+
+    /// Tags for non-primitive operations - enables setting private data by name.
+    tag_to_op: HashMap<String, NonPrimitiveOpId>,
 }
 
 /// Per-op extra parameters that are not encoded in the op type.
@@ -105,6 +111,8 @@ where
             non_primitive_ops: Vec::new(),
             config: BuilderConfig::new(),
             non_primitive_trace_generators: HashMap::new(),
+            tag_to_expr: HashMap::new(),
+            tag_to_op: HashMap::new(),
         }
     }
 
@@ -521,6 +529,58 @@ where
     pub fn list_scopes(&self) -> Vec<&'static str> {
         self.expr_builder.list_scopes()
     }
+
+    /// Tags an expression for value lookup via `Traces::probe()` later on during
+    /// circuit execution.
+    ///
+    /// Tags must be unique within a circuit. Duplicate tags will return an error.
+    ///
+    /// Note that this is different from allocation labels for `ExprId`s, which are
+    /// used purely for debugging purposes.
+    ///
+    /// # Example
+    /// ```ignore
+    /// let result = builder.add(a, b);
+    /// builder.tag(result, "my-sum")?;
+    /// // After execution:
+    /// let value = traces.probe("my-sum").unwrap();
+    /// ```
+    pub fn tag(&mut self, expr: ExprId, tag: impl Into<String>) -> Result<(), CircuitBuilderError> {
+        let tag = tag.into();
+        if self.tag_to_expr.contains_key(&tag) || self.tag_to_op.contains_key(&tag) {
+            return Err(CircuitBuilderError::DuplicateTag { tag });
+        }
+        self.tag_to_expr.insert(tag, expr);
+        Ok(())
+    }
+
+    /// Tags a non-primitive operation for private data setting via tag later on during
+    /// circuit execution.
+    ///
+    /// Tags must be unique within a circuit. Duplicate tags will return an error.
+    ///
+    /// Note that this is different from allocation labels for `ExprId`s, which are
+    /// used purely for debugging purposes.
+    ///
+    /// # Example
+    /// ```ignore
+    /// let (op_id, outputs) = builder.add_poseidon2_perm(...)?;
+    /// builder.tag_op(op_id, format!("fri-query-{}-depth-{}", i, j))?;
+    /// // Before execution:
+    /// runner.set_private_data_by_tag("fri-query-0-depth-1", data)?;
+    /// ```
+    pub fn tag_op(
+        &mut self,
+        op_id: NonPrimitiveOpId,
+        tag: impl Into<String>,
+    ) -> Result<(), CircuitBuilderError> {
+        let tag = tag.into();
+        if self.tag_to_expr.contains_key(&tag) || self.tag_to_op.contains_key(&tag) {
+            return Err(CircuitBuilderError::DuplicateTag { tag });
+        }
+        self.tag_to_op.insert(tag, op_id);
+        Ok(())
+    }
 }
 
 impl<F> CircuitBuilder<F>
@@ -563,6 +623,21 @@ where
         circuit.public_flat_len = self.public_tracker.count();
         circuit.enabled_ops = self.config.into_enabled_ops();
         circuit.non_primitive_trace_generators = self.non_primitive_trace_generators;
+
+        // Transfer wire tags, converting ExprId to WitnessId
+        for (tag, expr_id) in self.tag_to_expr {
+            if let Some(&witness_id) = circuit.expr_to_widx.get(&expr_id) {
+                circuit.tag_to_witness.insert(tag, witness_id);
+            } else {
+                return Err(CircuitBuilderError::MissingExprMapping {
+                    expr_id,
+                    context: tag,
+                });
+            }
+        }
+
+        // Transfer operation tags directly
+        circuit.tag_to_op_id = self.tag_to_op;
 
         Ok((circuit, public_mappings))
     }
@@ -1127,6 +1202,125 @@ mod tests {
         assert!(non_prim_pos < add0_pos);
         assert!(non_prim_pos < add1_pos);
     }
+
+    #[test]
+    fn test_basic_tagging() {
+        let mut builder = CircuitBuilder::<BabyBear>::new();
+        let a = builder.add_const(BabyBear::from_u64(5));
+        let b = builder.add_const(BabyBear::from_u64(7));
+        let sum = builder.add(a, b);
+
+        builder.tag(sum, "my-sum").unwrap();
+
+        let circuit = builder.build().unwrap();
+        let runner = circuit.runner();
+        let traces = runner.run().unwrap();
+
+        let probed = traces.probe("my-sum").unwrap();
+        assert_eq!(*probed, BabyBear::from_u64(12));
+    }
+
+    #[test]
+    fn test_tag_multiple_wires() {
+        let mut builder = CircuitBuilder::<BabyBear>::new();
+        let a = builder.add_const(BabyBear::from_u64(10));
+        let b = builder.add_const(BabyBear::from_u64(20));
+        let sum = builder.add(a, b);
+        let prod = builder.mul(a, b);
+
+        builder.tag(sum, "the-sum").unwrap();
+        builder.tag(prod, "the-product").unwrap();
+
+        let circuit = builder.build().unwrap();
+        let runner = circuit.runner();
+        let traces = runner.run().unwrap();
+
+        assert_eq!(*traces.probe("the-sum").unwrap(), BabyBear::from_u64(30));
+        assert_eq!(
+            *traces.probe("the-product").unwrap(),
+            BabyBear::from_u64(200)
+        );
+    }
+
+    #[test]
+    fn test_probe_unknown_tag() {
+        let mut builder = CircuitBuilder::<BabyBear>::new();
+        let a = builder.add_const(BabyBear::ONE);
+        builder.tag(a, "known").unwrap();
+
+        let circuit = builder.build().unwrap();
+        let runner = circuit.runner();
+        let traces = runner.run().unwrap();
+
+        assert!(traces.probe("known").is_some());
+        assert!(traces.probe("unknown").is_none());
+    }
+
+    #[test]
+    fn test_duplicate_tag() {
+        let mut builder = CircuitBuilder::<BabyBear>::new();
+        let a = builder.add_const(BabyBear::ONE);
+        let b = builder.add_const(BabyBear::from_u64(2));
+
+        builder.tag(a, "same-tag").unwrap();
+        let result = builder.tag(b, "same-tag");
+
+        assert!(matches!(
+            result,
+            Err(CircuitBuilderError::DuplicateTag { tag }) if tag == "same-tag"
+        ));
+    }
+
+    #[test]
+    fn test_tag_with_dynamic_string() {
+        let mut builder = CircuitBuilder::<BabyBear>::new();
+
+        for i in 0..3 {
+            let val = builder.add_const(BabyBear::from_u64(i as u64));
+            builder.tag(val, format!("wire-{}", i)).unwrap();
+        }
+
+        let circuit = builder.build().unwrap();
+        let runner = circuit.runner();
+        let traces = runner.run().unwrap();
+
+        for i in 0..3 {
+            let tag = format!("wire-{}", i);
+            assert_eq!(
+                *traces.probe(&tag).unwrap(),
+                BabyBear::from_u64(i as u64),
+                "wire-{} should have value {}",
+                i,
+                i
+            );
+        }
+    }
+
+    #[test]
+    fn test_connected_tags_resolve_after_optimization() {
+        let mut builder = CircuitBuilder::<BabyBear>::new();
+
+        let x = builder.add_public_input();
+        let one = builder.add_const(BabyBear::ONE);
+        let a = builder.add(x, one);
+        let b = builder.add(x, one); // b == a
+
+        builder.tag(a, "result-a").unwrap();
+        builder.tag(b, "result-b").unwrap();
+
+        // Connect them - the optimizer should alias one to the other
+        builder.connect(a, b);
+
+        let circuit = builder.build().unwrap();
+        let mut runner = circuit.runner();
+        runner.set_public_inputs(&[BabyBear::from_u64(5)]).unwrap();
+        let traces = runner.run().unwrap();
+
+        // Both tags should resolve to the same value (5 + 1 = 6)
+        let expected = BabyBear::from_u64(6);
+        assert_eq!(traces.probe("result-a"), Some(&expected));
+        assert_eq!(traces.probe("result-b"), Some(&expected));
+    }
 }
 
 #[cfg(test)]
@@ -1147,6 +1341,12 @@ mod proptests {
         any::<u64>().prop_map(BabyBear::from_u64)
     }
 
+    impl From<ExprId> for WitnessId {
+        fn from(expr_id: ExprId) -> Self {
+            Self(expr_id.0)
+        }
+    }
+
     proptest! {
         #[test]
         fn field_add_commutative(a in field_element(), b in field_element()) {
@@ -1163,15 +1363,15 @@ mod proptests {
             let circuit1 = builder1.build().unwrap();
             let circuit2 = builder2.build().unwrap();
 
-            let  runner1 = circuit1.runner();
-            let  runner2 = circuit2.runner();
+            let runner1 = circuit1.runner();
+            let runner2 = circuit2.runner();
 
             let traces1 = runner1.run().unwrap();
             let traces2 = runner2.run().unwrap();
 
             prop_assert_eq!(
-                traces1.witness_trace.values[sum1.0 as usize],
-                traces2.witness_trace.values[sum2.0 as usize],
+                traces1.witness_trace.get_value(sum1.into()),
+                traces2.witness_trace.get_value(sum2.into()),
                 "addition should be commutative"
             );
         }
@@ -1191,15 +1391,15 @@ mod proptests {
             let circuit1 = builder1.build().unwrap();
             let circuit2 = builder2.build().unwrap();
 
-            let  runner1 = circuit1.runner();
-            let  runner2 = circuit2.runner();
+            let runner1 = circuit1.runner();
+            let runner2 = circuit2.runner();
 
             let traces1 = runner1.run().unwrap();
             let traces2 = runner2.run().unwrap();
 
             prop_assert_eq!(
-                traces1.witness_trace.values[prod1.0 as usize],
-                traces2.witness_trace.values[prod2.0 as usize],
+                traces1.witness_trace.get_value(prod1.into()),
+                traces2.witness_trace.get_value(prod2.into()),
                 "multiplication should be commutative"
             );
         }
@@ -1212,12 +1412,12 @@ mod proptests {
             let result = builder.add(ca, zero);
 
             let circuit = builder.build().unwrap();
-            let  runner = circuit.runner();
+            let runner = circuit.runner();
             let traces = runner.run().unwrap();
 
             prop_assert_eq!(
-                traces.witness_trace.values[result.0 as usize],
-                a,
+                traces.witness_trace.get_value(result.into()).unwrap(),
+                &a,
                 "a + 0 = a"
             );
         }
@@ -1234,8 +1434,8 @@ mod proptests {
             let traces = runner.run().unwrap();
 
             prop_assert_eq!(
-                traces.witness_trace.values[result.0 as usize],
-                a,
+                traces.witness_trace.get_value(result.into()).unwrap(),
+                &a,
                 "a * 1 = a"
             );
         }
@@ -1253,8 +1453,8 @@ mod proptests {
             let traces = runner.run().unwrap();
 
             prop_assert_eq!(
-                traces.witness_trace.values[result.0 as usize],
-                a,
+                traces.witness_trace.get_value(result.into()).unwrap(),
+                &a,
                 "(a - b) + b = a"
             );
         }
@@ -1272,8 +1472,8 @@ mod proptests {
             let traces = runner.run().unwrap();
 
             prop_assert_eq!(
-                traces.witness_trace.values[result.0 as usize],
-                a,
+                traces.witness_trace.get_value(result.into()).unwrap(),
+                &a,
                 "(a / b) * b = a"
             );
         }
@@ -1294,8 +1494,8 @@ mod proptests {
             let traces = runner.run().unwrap();
 
             assert_eq!(
-                traces.witness_trace.values[result.0 as usize],
-                BabyBear::from_u64(17)
+                traces.witness_trace.get_value(result.into()).unwrap(),
+                &BabyBear::from_u64(17)
             );
         }
 
@@ -1312,8 +1512,8 @@ mod proptests {
             let traces = runner.run().unwrap();
 
             assert_eq!(
-                traces.witness_trace.values[result.0 as usize],
-                BabyBear::from_u64(9)
+                traces.witness_trace.get_value(result.into()).unwrap(),
+                &BabyBear::from_u64(9)
             );
         }
     }
@@ -1330,8 +1530,8 @@ mod proptests {
             let traces = runner.run().unwrap();
 
             assert_eq!(
-                traces.witness_trace.values[result.0 as usize],
-                BabyBear::ONE
+                traces.witness_trace.get_value(result.into()).unwrap(),
+                &BabyBear::ONE
             );
         }
 
@@ -1349,8 +1549,8 @@ mod proptests {
             let traces = runner.run().unwrap();
 
             assert_eq!(
-                traces.witness_trace.values[result.0 as usize],
-                BabyBear::from_u64(120)
+                traces.witness_trace.get_value(result.into()).unwrap(),
+                &BabyBear::from_u64(120)
             );
         }
 
@@ -1369,8 +1569,8 @@ mod proptests {
             let traces = runner.run().unwrap();
 
             assert_eq!(
-                traces.witness_trace.values[result.0 as usize],
-                BabyBear::ZERO
+                traces.witness_trace.get_value(result.into()).unwrap(),
+                &BabyBear::ZERO
             );
         }
     }
@@ -1395,8 +1595,8 @@ mod proptests {
             let traces = runner.run().unwrap();
 
             assert_eq!(
-                traces.witness_trace.values[result.0 as usize],
-                BabyBear::from_u64(32)
+                traces.witness_trace.get_value(result.into()).unwrap(),
+                &BabyBear::from_u64(32)
             );
         }
 
@@ -1412,8 +1612,8 @@ mod proptests {
             let traces = runner.run().unwrap();
 
             assert_eq!(
-                traces.witness_trace.values[result.0 as usize],
-                BabyBear::ZERO
+                traces.witness_trace.get_value(result.into()).unwrap(),
+                &BabyBear::ZERO
             );
         }
 
@@ -1432,8 +1632,8 @@ mod proptests {
             let traces = runner.run().unwrap();
 
             assert_eq!(
-                traces.witness_trace.values[result.0 as usize],
-                BabyBear::ZERO
+                traces.witness_trace.get_value(result.into()).unwrap(),
+                &BabyBear::ZERO
             );
         }
     }
@@ -1482,8 +1682,8 @@ mod proptests {
 
             // Verify correctness
             prop_assert_eq!(
-                traces.witness_trace.values[result.0 as usize],
-                expected
+                traces.witness_trace.get_value(result.into()).unwrap(),
+                &expected
             );
         }
 
@@ -1513,8 +1713,8 @@ mod proptests {
 
             // Verify correctness
             prop_assert_eq!(
-                traces.witness_trace.values[result.0 as usize],
-                expected
+                traces.witness_trace.get_value(result.into()).unwrap(),
+                &expected
             );
         }
 
@@ -1545,8 +1745,8 @@ mod proptests {
 
             // Verify correctness
             prop_assert_eq!(
-                traces.witness_trace.values[result.0 as usize],
-                expected
+                traces.witness_trace.get_value(result.into()).unwrap(),
+                &expected
             );
         }
     }
@@ -1654,7 +1854,7 @@ mod proptests {
             .iter()
             .map(|b| {
                 let w = expr_to_widx.get(b).expect("bit expr mapped");
-                traces.witness_trace.values[w.0 as usize]
+                *traces.witness_trace.get_value(*w).unwrap()
             })
             .collect();
         assert_eq!(bit_values[0], BabyBear::ZERO); // bit 0
@@ -1720,7 +1920,7 @@ mod proptests {
             .iter()
             .map(|b| {
                 let w = expr_to_widx.get(b).expect("bit expr mapped");
-                traces.witness_trace.values[w.0 as usize]
+                *traces.witness_trace.get_value(*w).unwrap()
             })
             .collect();
         let result = bit_values.chunks(31).collect::<Vec<&[Ext4]>>();

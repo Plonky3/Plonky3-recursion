@@ -19,7 +19,38 @@ pub struct WitnessTrace<F> {
     ///
     /// Each value is one computation result.
     /// Computed during circuit execution.
-    pub values: Vec<F>,
+    values: Vec<F>,
+}
+
+impl<F> WitnessTrace<F> {
+    /// Create a new instance of [`WitnessTrace`].
+    pub fn new(index: Vec<WitnessId>, values: Vec<F>) -> Self {
+        assert_eq!(index.len(), values.len());
+        Self { index, values }
+    }
+
+    /// Output the number of rows in the trace.
+    pub const fn num_rows(&self) -> usize {
+        self.values.len()
+    }
+
+    #[cfg(debug_assertions)]
+    /// Return a reference to the values of the witness trace.
+    pub(crate) fn values(&self) -> &[F] {
+        &self.values
+    }
+
+    /// Return a reference to the value at the given witness id.
+    /// Returns `None` if the target [`WitnessId`] is not set.
+    pub fn get_value(&self, witness_id: WitnessId) -> Option<&F> {
+        self.values.get(witness_id.0 as usize)
+    }
+
+    /// Return the last value in the trace.
+    /// This is useful for padding.
+    pub fn last_value(&self) -> Option<&F> {
+        self.values.last()
+    }
 }
 
 /// Builder for generating witness traces.
