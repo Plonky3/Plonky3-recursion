@@ -98,7 +98,7 @@ which represents a multiplicity for extension and base field elements. The diffe
 
 We need to update `generate_preprocessed_columns` and `PrerocessedColumns`.
 
-We need to remove `Witness` from `PrimitieOpType`. The indexing needs to be modified as well (each base field element needs to get an index). In the following, we assume that indexing is correct. In fact, if we still assume that a `WitnessId` represents an extension field element, we can just assume that the witness index is a multiple of 4, and the `Target` holds `D` base field elements.
+We need to remove `Witness` from `PrimitieOpType`. The indexing needs to be modified as well (each base field element needs to get an index). In the following, we assume that indexing is correct. In fact, if we still assume that a `WitnessId` represents an extension field element, we can just assume that the witness index is a multiple of `D`, and the `Target` holds `D` base field elements.
 
 Here is a sketch for updating `generate_preprocessed_columns` for primitive operations.
 
@@ -169,7 +169,7 @@ pub fn generate_preprocessed_columns(&self) -> Result<PreprocessedColumns<F>, Ci
                     // If the index of the second operand exists, then this is not the output, and we are dealing with an `Add` operation.
                     let is_add = b.0 < witness_multiplicities.len() as u32
                     if b.0 >= witness_multiplicities.len() as u32 {
-                        assert!(b.0 = witness_multiplicities.len() + D); // ensure that we are not skipping indices
+                        assert!(b.0 = witness_multiplicities.len()); // ensure that we are not skipping indices
                         assert!((b.0 % D) == 0);
                         witness_multiplicities.push(WitnessMultiplicities {
                             operation: PrimitiveOpType::Add,
@@ -178,7 +178,7 @@ pub fn generate_preprocessed_columns(&self) -> Result<PreprocessedColumns<F>, Ci
                         });            
                     }
                     if out.0 >= witness_multiplicities.len() as u32 {
-                        assert!(out.0 = witness_multiplicities.len() + D); // ensure that we are not skipping indices
+                        assert!(out.0 = witness_multiplicities.len()); // ensure that we are not skipping indices
                         assert!((out.0 % D) == 0);
                         witness_multiplicities.push(WitnessMultiplicities {
                             operation: PrimitiveOpType::Add,
@@ -216,7 +216,7 @@ pub fn generate_preprocessed_columns(&self) -> Result<PreprocessedColumns<F>, Ci
                     let table_idx = PrimitiveOpType::Mul as usize;
 
                     if out.0 >= witness_multiplicities.len() as u32 {
-                        assert!(out.0 = witness_multiplicities.len() + D); // ensure that we are not skipping indices
+                        assert!(out.0 = witness_multiplicities.len()); // ensure that we are not skipping indices
                         assert!((out.0 % D) == 0);
                         witness_multiplicities.push(WitnessMultiplicities {
                             operation: PrimitiveOpType::Add,
