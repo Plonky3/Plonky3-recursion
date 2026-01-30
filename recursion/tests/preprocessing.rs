@@ -1,6 +1,6 @@
 mod common;
 
-use p3_air::{Air, BaseAir, PairBuilder};
+use p3_air::{Air, AirBuilder, BaseAir};
 use p3_batch_stark::{CommonData, StarkInstance, prove_batch, verify_batch};
 use p3_circuit::CircuitBuilder;
 use p3_field::Field;
@@ -52,7 +52,7 @@ where
     }
 }
 
-impl<AB: PairBuilder> Air<AB> for MixedAir
+impl<AB: AirBuilder> Air<AB> for MixedAir
 where
     AB::F: Field,
     StandardUniform: Distribution<AB::F>,
@@ -118,7 +118,7 @@ where
     }
 }
 
-impl<AB: PairBuilder> Air<AB> for AddAirNoPreprocessed
+impl<AB: AirBuilder> Air<AB> for AddAirNoPreprocessed
 where
     AB::F: Field,
     StandardUniform: Distribution<AB::F>,
@@ -200,7 +200,7 @@ where
     }
 }
 
-impl<AB: PairBuilder> Air<AB> for SubAirPartialPreprocessed
+impl<AB: AirBuilder> Air<AB> for SubAirPartialPreprocessed
 where
     AB::F: Field,
     StandardUniform: Distribution<AB::F>,
@@ -209,7 +209,9 @@ where
         let main = builder.main();
         let main_local = main.row_slice(0).expect("Matrix is empty?");
 
-        let preprocessed = builder.preprocessed();
+        let preprocessed = builder
+            .preprocessed()
+            .expect("Expected preprocessed columns");
         let preprocessed_local = preprocessed
             .row_slice(0)
             .expect("Preprocessed matrix is empty?");

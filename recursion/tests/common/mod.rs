@@ -1,7 +1,7 @@
 #![allow(unused)]
 
 use itertools::Itertools;
-use p3_air::{Air, AirBuilder, BaseAir, PairBuilder};
+use p3_air::{Air, AirBuilder, BaseAir};
 use p3_challenger::DuplexChallenger;
 use p3_commit::ExtensionMmcs;
 use p3_dft::Radix2DitParallel;
@@ -207,7 +207,7 @@ where
     }
 }
 
-impl<AB: PairBuilder> Air<AB> for MulAir
+impl<AB: AirBuilder> Air<AB> for MulAir
 where
     AB::F: Field,
     StandardUniform: Distribution<AB::F>,
@@ -216,7 +216,9 @@ where
         let main = builder.main();
         let main_local = main.row_slice(0).expect("Matrix is empty?");
 
-        let preprocessed = builder.preprocessed();
+        let preprocessed = builder
+            .preprocessed()
+            .expect("Expected preprocessed columns");
         let preprocessed_local = preprocessed
             .row_slice(0)
             .expect("Preprocessed matrix is empty?");

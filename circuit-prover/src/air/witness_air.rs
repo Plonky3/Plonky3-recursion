@@ -45,9 +45,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::marker::PhantomData;
 
-use p3_air::{
-    Air, AirBuilder, AirBuilderWithPublicValues, BaseAir, PairBuilder, PermutationAirBuilder,
-};
+use p3_air::{Air, AirBuilder, AirBuilderWithPublicValues, BaseAir, PermutationAirBuilder};
 use p3_circuit::WitnessId;
 use p3_circuit::tables::WitnessTrace;
 use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
@@ -258,7 +256,7 @@ impl<F: Field, const D: usize> BaseAir<F> for WitnessAir<F, D> {
     }
 }
 
-impl<AB: PairBuilder, const D: usize> Air<AB> for WitnessAir<AB::F, D>
+impl<AB: AirBuilder, const D: usize> Air<AB> for WitnessAir<AB::F, D>
 where
     AB::F: Field,
 {
@@ -267,7 +265,9 @@ where
 
         // First row: index == 0
         {
-            let preprocessed = builder.preprocessed();
+            let preprocessed = builder
+                .preprocessed()
+                .expect("Expected preprocessed columns");
             let local_prep = preprocessed
                 .row_slice(0)
                 .expect("Preprocessed matrix should be non-empty");
@@ -279,7 +279,7 @@ where
         // Enforce sequential indices within each row (lanes) and across rows.
         {
             let mut b = builder.when_transition();
-            let preprocessed = b.preprocessed();
+            let preprocessed = b.preprocessed().expect("Expected preprocessed columns");
             let cur_prep = preprocessed.row_slice(0).expect("non-empty");
 
             let nxt_prep = preprocessed.row_slice(1).expect("has next row");
@@ -298,7 +298,7 @@ where
 
         if self.lanes > 1 {
             let mut b = builder.when_last_row();
-            let preprocessed = b.preprocessed();
+            let preprocessed = b.preprocessed().expect("Expected preprocessed columns");
             let last_prep = preprocessed.row_slice(0).expect("non-empty");
             let mut prev_idx = last_prep[1].clone();
             for lane in 1..lanes {
@@ -318,7 +318,7 @@ where
 
     fn get_lookups(&mut self) -> Vec<Lookup<<AB>::F>>
     where
-        AB: PermutationAirBuilder + AirBuilderWithPublicValues + PairBuilder,
+        AB: PermutationAirBuilder + AirBuilderWithPublicValues,
     {
         let mut lookups = Vec::new();
         self.num_lookup_columns = 0;
@@ -336,7 +336,9 @@ where
         let symbolic_main = symbolic_air_builder.main();
         let symbolic_main_local = symbolic_main.row_slice(0).unwrap();
 
-        let preprocessed = symbolic_air_builder.preprocessed();
+        let preprocessed = symbolic_air_builder
+            .preprocessed()
+            .expect("Expected preprocessed columns");
         let preprocessed_local = preprocessed.row_slice(0).unwrap();
 
         for lane in 0..self.lanes {

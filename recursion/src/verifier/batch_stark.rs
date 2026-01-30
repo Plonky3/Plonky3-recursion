@@ -4,7 +4,7 @@ use alloc::{format, vec};
 
 use hashbrown::HashMap;
 use p3_air::{
-    Air as P3Air, AirBuilderWithPublicValues, BaseAir as P3BaseAir, PairBuilder,
+    Air as P3Air, AirBuilder, AirBuilderWithPublicValues, BaseAir as P3BaseAir,
     PermutationAirBuilder,
 };
 use p3_batch_stark::CommonData;
@@ -63,7 +63,7 @@ impl<F: Field, const D: usize> P3BaseAir<F> for CircuitTablesAir<F, D> {
 
 impl<AB, const D: usize> P3Air<AB> for CircuitTablesAir<AB::F, D>
 where
-    AB: PairBuilder + PermutationAirBuilder + AirBuilderWithPublicValues,
+    AB: AirBuilder + PermutationAirBuilder + AirBuilderWithPublicValues,
     AB::F: Field,
 {
     fn eval(&self, builder: &mut AB) {

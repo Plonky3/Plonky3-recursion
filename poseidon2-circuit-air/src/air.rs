@@ -5,9 +5,7 @@ use core::borrow::Borrow;
 use core::iter;
 use core::mem::MaybeUninit;
 
-use p3_air::{
-    Air, AirBuilder, AirBuilderWithPublicValues, BaseAir, PairBuilder, PermutationAirBuilder,
-};
+use p3_air::{Air, AirBuilder, AirBuilderWithPublicValues, BaseAir, PermutationAirBuilder};
 use p3_circuit::ops::Poseidon2CircuitRow;
 use p3_field::{Field, PrimeCharacteristicRing, PrimeField};
 use p3_lookup::lookup_traits::{Direction, Kind, Lookup};
@@ -424,7 +422,7 @@ pub fn extract_preprocessed_from_operations<F: Field, OF: Field>(
 }
 
 pub(crate) fn eval<
-    AB: PairBuilder,
+    AB: AirBuilder,
     LinearLayers: GenericPoseidon2LinearLayers<WIDTH>,
     const D: usize,
     const WIDTH: usize,
@@ -617,7 +615,7 @@ pub(crate) fn eval<
 /// undefined behavior.
 pub unsafe fn eval_unchecked<
     F: PrimeField,
-    AB: PairBuilder,
+    AB: AirBuilder,
     LinearLayers: GenericPoseidon2LinearLayers<WIDTH>,
     const D: usize,
     const WIDTH: usize,
@@ -703,7 +701,7 @@ pub unsafe fn eval_unchecked<
 }
 
 impl<
-    AB: PairBuilder,
+    AB: AirBuilder,
     LinearLayers: GenericPoseidon2LinearLayers<WIDTH>,
     const D: usize,
     const WIDTH: usize,
@@ -739,7 +737,9 @@ where
         let next = main.row_slice(1).expect("The matrix has only one row?");
         let next = (*next).borrow();
 
-        let preprocessed = builder.preprocessed();
+        let preprocessed = builder
+            .preprocessed()
+            .expect("Expected preprocessed columns");
         let next_preprocessed = preprocessed
             .row_slice(1)
             .expect("The preprocessed matrix has only one row?");
@@ -805,7 +805,9 @@ where
         let new_start_idx = mmcs_index_sum_ctl_idx + 1;
         let merkle_path_idx = new_start_idx + 1;
 
-        let preprocessed = symbolic_air_builder.preprocessed();
+        let preprocessed = symbolic_air_builder
+            .preprocessed()
+            .expect("Expected preprocessed columns");
         let local_preprocessed = preprocessed
             .row_slice(0)
             .expect("The preprocessed matrix has only one row?");

@@ -8,7 +8,7 @@ use alloc::{format, vec};
 use core::borrow::Borrow;
 use core::mem::transmute;
 
-use p3_air::{Air, AirBuilder, BaseAir, PairBuilder};
+use p3_air::{Air, AirBuilder, BaseAir};
 use p3_baby_bear::{BabyBear, GenericPoseidon2LinearLayersBabyBear};
 #[cfg(debug_assertions)]
 use p3_batch_stark::DebugConstraintBuilderWithLookups;
@@ -850,7 +850,7 @@ where
 unsafe fn eval_poseidon2_variant<
     SC,
     F: PrimeField,
-    AB: PairBuilder,
+    AB: AirBuilder,
     LinearLayers,
     const D: usize,
     const WIDTH: usize,
@@ -975,7 +975,9 @@ where
         let main = builder.main();
         let local_slice = main.row_slice(0).expect("The matrix is empty?");
         let next_slice = main.row_slice(1).expect("The matrix has only one row?");
-        let preprocessed = builder.preprocessed();
+        let preprocessed = builder
+            .preprocessed()
+            .expect("Expected preprocessed columns");
         let next_preprocessed_slice = preprocessed
             .row_slice(1)
             .expect("The preprocessed matrix has only one row?");
@@ -1086,7 +1088,9 @@ where
         let main = builder.main();
         let local_slice = main.row_slice(0).expect("The matrix is empty?");
         let next_slice = main.row_slice(1).expect("The matrix has only one row?");
-        let preprocessed = builder.preprocessed();
+        let preprocessed = builder
+            .preprocessed()
+            .expect("Expected preprocessed columns");
         let next_preprocessed_slice = preprocessed
             .row_slice(1)
             .expect("The preprocessed matrix has only one row?");
@@ -1199,7 +1203,9 @@ where
         let main = builder.main();
         let local_slice = main.row_slice(0).expect("The matrix is empty?");
         let next_slice = main.row_slice(1).expect("The matrix has only one row?");
-        let preprocessed = builder.preprocessed();
+        let preprocessed = builder
+            .preprocessed()
+            .expect("Expected preprocessed columns");
         let next_preprocessed_slice = preprocessed
             .row_slice(1)
             .expect("The preprocessed matrix has only one row?");
@@ -1403,7 +1409,9 @@ where
         let main = builder.main();
         let local_slice = main.row_slice(0).expect("The matrix is empty?");
         let next_slice = main.row_slice(1).expect("The matrix has only one row?");
-        let preprocessed = builder.preprocessed();
+        let preprocessed = builder
+            .preprocessed()
+            .expect("Expected preprocessed columns");
         let next_preprocessed_slice = preprocessed
             .row_slice(1)
             .expect("The preprocessed matrix has only one row?");
@@ -1586,7 +1594,9 @@ where
         let main = builder.main();
         let local_slice = main.row_slice(0).expect("The matrix is empty?");
         let next_slice = main.row_slice(1).expect("The matrix has only one row?");
-        let preprocessed = builder.preprocessed();
+        let preprocessed = builder
+            .preprocessed()
+            .expect("Expected preprocessed columns");
         let next_preprocessed_slice = preprocessed
             .row_slice(1)
             .expect("The preprocessed matrix has only one row?");

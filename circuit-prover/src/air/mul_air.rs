@@ -93,9 +93,7 @@ use core::iter;
 use core::marker::PhantomData;
 
 use itertools::Itertools;
-use p3_air::{
-    Air, AirBuilder, AirBuilderWithPublicValues, BaseAir, PairBuilder, PermutationAirBuilder,
-};
+use p3_air::{Air, AirBuilder, AirBuilderWithPublicValues, BaseAir, PermutationAirBuilder};
 use p3_circuit::tables::MulTrace;
 use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
 use p3_lookup::lookup_traits::{Direction, Kind, Lookup};
@@ -565,7 +563,7 @@ where
 
     fn get_lookups(&mut self) -> Vec<Lookup<<AB>::F>>
     where
-        AB: PermutationAirBuilder + AirBuilderWithPublicValues + PairBuilder,
+        AB: PermutationAirBuilder + AirBuilderWithPublicValues,
     {
         let mut lookups = Vec::new();
         self.num_lookup_columns = 0;
@@ -583,7 +581,9 @@ where
         let symbolic_main = symbolic_air_builder.main();
         let symbolic_main_local = symbolic_main.row_slice(0).unwrap();
 
-        let preprocessed = symbolic_air_builder.preprocessed();
+        let preprocessed = symbolic_air_builder
+            .preprocessed()
+            .expect("Expected preprocessed columns");
         let preprocessed_local = preprocessed.row_slice(0).unwrap();
 
         for lane in 0..self.lanes {

@@ -21,9 +21,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::marker::PhantomData;
 
-use p3_air::{
-    Air, AirBuilder, AirBuilderWithPublicValues, BaseAir, PairBuilder, PermutationAirBuilder,
-};
+use p3_air::{Air, AirBuilder, AirBuilderWithPublicValues, BaseAir, PermutationAirBuilder};
 use p3_circuit::tables::PublicTrace;
 use p3_field::{BasedVectorSpace, Field};
 use p3_lookup::lookup_traits::{Direction, Kind, Lookup};
@@ -138,7 +136,7 @@ where
 
     fn get_lookups(&mut self) -> Vec<Lookup<<AB>::F>>
     where
-        AB: PermutationAirBuilder + AirBuilderWithPublicValues + PairBuilder,
+        AB: PermutationAirBuilder + AirBuilderWithPublicValues,
     {
         // Create symbolic air builder to access symbolic variables
         let symbolic_air_builder = SymbolicAirBuilder::<AB::F>::new(
@@ -152,7 +150,9 @@ where
         let symbolic_main = symbolic_air_builder.main();
         let symbolic_main_local = symbolic_main.row_slice(0).unwrap();
 
-        let preprocessed = symbolic_air_builder.preprocessed();
+        let preprocessed = symbolic_air_builder
+            .preprocessed()
+            .expect("Expected preprocessed columns");
         let preprocessed_local = preprocessed.row_slice(0).unwrap();
 
         let lookup_inps = get_index_lookups::<AB, D>(
