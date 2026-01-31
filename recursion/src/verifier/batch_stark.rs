@@ -356,12 +356,14 @@ where
     }
 
     // Challenger initialisation mirrors the native batch-STARK verifier transcript.
+    // Native uses observe_base_as_algebra_element which decomposes to D coefficients,
+    // so we use observe_ext to match.
     let mut challenger = CircuitChallenger::<WIDTH, RATE>::new(poseidon2_config);
     let inst_count_target = circuit.alloc_const(
         SC::Challenge::from_usize(n_instances),
         "number of instances",
     );
-    challenger.observe(circuit, inst_count_target);
+    challenger.observe_ext(circuit, inst_count_target);
 
     for ((&ext_db, quotient_degree), air) in degree_bits
         .iter()
@@ -384,10 +386,12 @@ where
             "quotient chunk count",
         );
 
-        challenger.observe(circuit, ext_db_target);
-        challenger.observe(circuit, base_db_target);
-        challenger.observe(circuit, width_target);
-        challenger.observe(circuit, quotient_chunks_target);
+        // Native uses observe_base_as_algebra_element (via observe_instance_binding),
+        // so we use observe_ext to match by decomposing to D base coefficients.
+        challenger.observe_ext(circuit, ext_db_target);
+        challenger.observe_ext(circuit, base_db_target);
+        challenger.observe_ext(circuit, width_target);
+        challenger.observe_ext(circuit, quotient_chunks_target);
     }
 
     challenger.observe_slice(
@@ -400,10 +404,11 @@ where
 
     // Observe preprocessed widths for each instance. If a global
     // preprocessed commitment exists, observe it once.
+    // Native uses observe_base_as_algebra_element, so we use observe_ext.
     for &pre_w in preprocessed_widths.iter() {
         let pre_w_target =
             circuit.alloc_const(SC::Challenge::from_usize(pre_w), "preprocessed width");
-        challenger.observe(circuit, pre_w_target);
+        challenger.observe_ext(circuit, pre_w_target);
     }
     if let Some(global) = &common.preprocessed {
         challenger.observe_slice(circuit, &global.commitment.to_observation_targets());
