@@ -23,17 +23,35 @@ pub struct StarkChallenges {
     pub zeta_next: Target,
 }
 
+/// Parameters for STARK challenge allocation that match native challenger behavior.
+pub struct StarkChallengeParams<'a, SC: StarkGenericConfig, Comm> {
+    /// Log₂ of trace domain size
+    pub degree_bits: usize,
+    /// is_zk flag (0 or 1)
+    pub is_zk: usize,
+    /// Width of preprocessed trace (0 if none)
+    pub preprocessed_width: usize,
+    /// Preprocessed commitment targets (if preprocessed_width > 0)
+    pub preprocessed_commit: &'a Option<Comm>,
+    /// Generator of the init trace domain (for computing zeta_next = zeta * generator)
+    pub trace_domain_generator: SC::Challenge,
+}
+
 impl StarkChallenges {
     /// Allocate base STARK challenge targets using Fiat-Shamir transform.
     ///
-    /// This method follows the standard STARK protocol ordering:
-    /// 1. Observe domain parameters
-    /// 2. Observe trace commitment
-    /// 3. Observe public values
-    /// 4. Sample alpha
-    /// 5. Observe quotient commitment
-    /// 6. Observe random commitment (if ZK)
-    /// 7. Sample zeta and zeta_next
+    /// This method follows the exact native DuplexChallenger protocol ordering:
+    /// 1. Observe degree_bits
+    /// 2. Observe degree_bits - is_zk (init trace domain log size)
+    /// 3. Observe preprocessed_width
+    /// 4. Observe trace commitment
+    /// 5. If preprocessed_width > 0: observe preprocessed commitment
+    /// 6. Observe public values
+    /// 7. Sample alpha
+    /// 8. Observe quotient commitment
+    /// 9. If ZK mode: observe random commitment
+    /// 10. Sample zeta
+    /// 11. Compute zeta_next = zeta * trace_domain_generator (NOT sampled!)
     ///
     /// The challenger state is mutated and can be used for further PCS challenge sampling.
     ///
@@ -42,7 +60,7 @@ impl StarkChallenges {
     /// - `challenger`: Fiat-Shamir challenger (will be mutated)
     /// - `proof_targets`: Proof structure with commitments
     /// - `public_values`: AIR public input values
-    /// - `log_quotient_degree`: Log₂ of the quotient polynomial degree
+    /// - `params`: Challenge parameters matching native behavior
     ///
     /// # Returns
     /// The three base STARK challenges
@@ -51,7 +69,7 @@ impl StarkChallenges {
         challenger: &mut impl RecursiveChallenger<Val<SC>, SC::Challenge>,
         proof_targets: &ProofTargets<SC, Comm, OpeningProof>,
         public_values: &[Target],
-        log_quotient_degree: usize,
+        params: &StarkChallengeParams<'_, SC, Comm>,
     ) -> Self
     where
         SC: StarkGenericConfig,
@@ -74,39 +92,62 @@ impl StarkChallenges {
             .random_commit
             .as_ref()
             .map(|c| c.to_observation_targets());
+        let preprocessed_comm_targets = params
+            .preprocessed_commit
+            .as_ref()
+            .map(|c| c.to_observation_targets());
 
-        // Observe domain parameters (base field elements)
-        let degree_bits_target = circuit.alloc_const(
-            SC::Challenge::from_usize(proof_targets.degree_bits),
-            "degree bits",
-        );
-        let log_quotient_degree_target = circuit.alloc_const(
-            SC::Challenge::from_usize(log_quotient_degree),
-            "log quotient degree",
-        );
+        // 1. Observe degree_bits (base field element)
+        let degree_bits_target =
+            circuit.alloc_const(SC::Challenge::from_usize(params.degree_bits), "degree bits");
         challenger.observe(circuit, degree_bits_target);
-        challenger.observe(circuit, log_quotient_degree_target);
 
-        // Observe trace commitment (base field elements)
+        // 2. Observe degree_bits - is_zk (init trace domain log size, base field element)
+        let init_trace_log_size = params.degree_bits.saturating_sub(params.is_zk);
+        let init_trace_log_size_target = circuit.alloc_const(
+            SC::Challenge::from_usize(init_trace_log_size),
+            "init trace log size",
+        );
+        challenger.observe(circuit, init_trace_log_size_target);
+
+        // 3. Observe preprocessed_width (base field element)
+        let preprocessed_width_target = circuit.alloc_const(
+            SC::Challenge::from_usize(params.preprocessed_width),
+            "preprocessed width",
+        );
+        challenger.observe(circuit, preprocessed_width_target);
+
+        // 4. Observe trace commitment (base field elements)
         challenger.observe_slice(circuit, &trace_comm_targets);
 
-        // Observe public values (base field elements)
+        // 5. If preprocessed_width > 0: observe preprocessed commitment
+        if params.preprocessed_width > 0 {
+            if let Some(prep_comm) = &preprocessed_comm_targets {
+                challenger.observe_slice(circuit, prep_comm);
+            }
+        }
+
+        // 6. Observe public values (base field elements)
         challenger.observe_slice(circuit, public_values);
 
-        // Sample alpha challenge (extension field element)
+        // 7. Sample alpha challenge (extension field element)
         let alpha = challenger.sample_ext(circuit);
 
-        // Observe quotient chunks commitment (base field elements)
+        // 8. Observe quotient chunks commitment (base field elements)
         challenger.observe_slice(circuit, &quotient_comm_targets);
 
-        // Observe random commitment if in ZK mode
+        // 9. Observe random commitment if in ZK mode
         if let Some(random_comm) = random_comm_targets {
             challenger.observe_slice(circuit, &random_comm);
         }
 
-        // Sample zeta and zeta_next challenges (extension field elements)
+        // 10. Sample zeta (extension field element)
         let zeta = challenger.sample_ext(circuit);
-        let zeta_next = challenger.sample_ext(circuit);
+
+        // 11. Compute zeta_next = zeta * trace_domain_generator (NOT sampled!)
+        // This matches native behavior: zeta_next = init_trace_domain.next_point(zeta)
+        let generator_const = circuit.add_const(params.trace_domain_generator);
+        let zeta_next = circuit.mul(zeta, generator_const);
 
         Self {
             alpha,
