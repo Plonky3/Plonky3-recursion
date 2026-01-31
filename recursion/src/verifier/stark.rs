@@ -5,8 +5,8 @@ use alloc::{format, vec};
 use itertools::Itertools;
 use p3_circuit::utils::ColumnsTargets;
 use p3_circuit::{CircuitBuilder, CircuitBuilderError};
-use p3_commit::Pcs;
-use p3_field::{BasedVectorSpace, ExtensionField, PrimeCharacteristicRing, PrimeField64};
+use p3_commit::{Pcs, PolynomialSpace};
+use p3_field::{BasedVectorSpace, ExtensionField, Field, PrimeCharacteristicRing, PrimeField64};
 use p3_lookup::logup::LogUpGadget;
 use p3_uni_stark::{StarkGenericConfig, Val};
 
@@ -17,7 +17,7 @@ use crate::ops::Poseidon2Config;
 use crate::traits::{LookupMetadata, Recursive, RecursiveAir, RecursivePcs};
 use crate::types::{
     CommitmentTargets, OpenedValuesTargets, OpenedValuesTargetsWithLookups, ProofTargets,
-    StarkChallenges,
+    StarkChallengeParams, StarkChallenges,
 };
 
 /// Type alias for PCS verifier parameters.
@@ -148,6 +148,8 @@ where
             proof_targets,
             public_values,
             preprocessed_width,
+            preprocessed_commit,
+            &init_trace_domain,
             circuit,
             pcs_params,
             poseidon2_config,
@@ -312,11 +314,13 @@ fn get_circuit_challenges<
     const WIDTH: usize,
     const RATE: usize,
 >(
-    air: &A,
+    _air: &A,
     config: &SC,
     proof_targets: &ProofTargets<SC, Comm, OpeningProof>,
     public_values: &[Target],
     preprocessed_width: usize,
+    preprocessed_commit: &Option<Comm>,
+    init_trace_domain: &PcsDomain<SC>,
     circuit: &mut CircuitBuilder<SC::Challenge>,
     pcs_params: &PcsVerifierParams<SC, InputProof, OpeningProof, Comm>,
     poseidon2_config: Poseidon2Config,
@@ -332,17 +336,26 @@ where
     Val<SC>: PrimeField64,
     SC::Challenge: ExtensionField<Val<SC>> + PrimeCharacteristicRing,
 {
-    let log_quotient_degree = A::get_log_num_quotient_chunks(
-        air,
-        preprocessed_width,
-        public_values.len(),
-        &[],
-        &[],
-        config.is_zk(),
-        &LogUpGadget {},
-    );
+    let pcs = config.pcs();
+
+    // Compute the trace domain generator for zeta_next = zeta * generator
+    // The generator is the primitive n-th root of unity for the init_trace_domain
+    let first_point = pcs.first_point(init_trace_domain);
+    let next_point = init_trace_domain
+        .next_point(first_point)
+        .expect("init_trace_domain should have next_point");
+    let trace_domain_generator = next_point * first_point.inverse();
 
     let mut challenger = CircuitChallenger::<WIDTH, RATE>::new(poseidon2_config);
+
+    // Set up challenge parameters matching native challenger behavior
+    let challenge_params = StarkChallengeParams {
+        degree_bits: proof_targets.degree_bits,
+        is_zk: config.is_zk(),
+        preprocessed_width,
+        preprocessed_commit,
+        trace_domain_generator,
+    };
 
     // Allocate base STARK challenges (alpha, zeta, zeta_next) using Fiat-Shamir
     let base_challenges = StarkChallenges::allocate::<SC, Comm, OpeningProof>(
@@ -350,7 +363,7 @@ where
         &mut challenger,
         proof_targets,
         public_values,
-        log_quotient_degree,
+        &challenge_params,
     );
 
     let opened_values_no_lookups = OpenedValuesTargetsWithLookups {
