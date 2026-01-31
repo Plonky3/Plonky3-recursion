@@ -15,8 +15,6 @@ use p3_poseidon2_circuit_air::BabyBearD4Width16;
 use p3_recursion::Poseidon2Config;
 use p3_recursion::pcs::fri::{FriVerifierParams, HashTargets, InputProofTargets, RecValMmcs};
 use p3_recursion::verifier::{CircuitTablesAir, verify_p3_recursion_proof_circuit};
-use rand::SeedableRng;
-use rand::rngs::SmallRng;
 
 use crate::common::baby_bear_params::*;
 
@@ -46,9 +44,8 @@ fn test_fibonacci_batch_verifier() {
 
     let table_packing = TablePacking::new(1, 4, 1);
 
-    // Use a seeded RNG for deterministic permutations
-    let mut rng = SmallRng::seed_from_u64(42);
-    let perm = Perm::new_from_rng_128(&mut rng);
+    // Use the default permutation for proving to match circuit's Fiat-Shamir challenger
+    let perm = default_babybear_poseidon2_16();
     let hash = MyHash::new(perm.clone());
     let compress = MyCompress::new(perm.clone());
     let val_mmcs = ValMmcs::new(hash, compress);
@@ -60,7 +57,7 @@ fn test_fibonacci_batch_verifier() {
 
     // Create config for proving
     let pcs_proving = MyPcs::new(dft, val_mmcs, fri_params);
-    let challenger_proving = Challenger::new(perm);
+    let challenger_proving = Challenger::new(perm.clone());
     let config_proving = MyConfig::new(pcs_proving, challenger_proving);
 
     let circuit = builder.build().unwrap();
@@ -90,9 +87,9 @@ fn test_fibonacci_batch_verifier() {
         .unwrap();
 
     // Now verify the batch STARK proof recursively
+    // Use same permutation as proving to ensure Fiat-Shamir transcript compatibility
     let dft2 = Dft::default();
-    let mut rng2 = SmallRng::seed_from_u64(42);
-    let perm2 = Perm::new_from_rng_128(&mut rng2);
+    let perm2 = default_babybear_poseidon2_16();
     let hash2 = MyHash::new(perm2.clone());
     let compress2 = MyCompress::new(perm2.clone());
     let val_mmcs2 = ValMmcs::new(hash2, compress2);

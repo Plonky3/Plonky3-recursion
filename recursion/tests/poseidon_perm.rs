@@ -1,6 +1,6 @@
 mod common;
 
-use p3_baby_bear::{BabyBear as F, default_babybear_poseidon2_16};
+use p3_baby_bear::BabyBear as F;
 use p3_circuit::CircuitBuilder;
 use p3_circuit::ops::{Poseidon2CircuitRow, generate_poseidon2_trace};
 use p3_field::PrimeCharacteristicRing;
@@ -82,7 +82,7 @@ fn test_poseidon2_perm_verifier() -> Result<(), VerificationError> {
     let _log_height_max = fri_params.log_final_poly_len + fri_params.log_blowup;
     let _pow_bits = fri_params.query_proof_of_work_bits;
     let pcs = MyPcs::new(dft, val_mmcs, fri_params);
-    let challenger = Challenger::new(perm);
+    let challenger = Challenger::new(perm.clone());
     let config = MyConfig::new(pcs, challenger);
 
     // Build a trace with enough rows to satisfy FRI height constraints.
@@ -142,10 +142,10 @@ fn test_poseidon2_perm_verifier() -> Result<(), VerificationError> {
     >;
 
     let mut circuit_builder = CircuitBuilder::new();
-    let poseidon2_perm = default_babybear_poseidon2_16();
+    // Use the same permutation as the prover to ensure Fiat-Shamir challengers match
     circuit_builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
         generate_poseidon2_trace::<Challenge, BabyBearD4Width16>,
-        poseidon2_perm,
+        perm,
     );
     let verifier_inputs =
         StarkVerifierInputsBuilder::<MyConfig, HashTargets<F, DIGEST_ELEMS>, InnerFri>::allocate(

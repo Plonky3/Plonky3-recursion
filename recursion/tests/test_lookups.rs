@@ -19,8 +19,6 @@ use p3_recursion::verifier::{CircuitTablesAir, verify_p3_recursion_proof_circuit
 use p3_recursion::{
     BatchStarkVerifierInputsBuilder, GenerationError, Poseidon2Config, VerificationError,
 };
-use rand::SeedableRng;
-use rand::rngs::SmallRng;
 const TRACE_D: usize = 1; // Proof traces are in base field
 
 use crate::common::baby_bear_params::*;
@@ -622,32 +620,28 @@ fn get_test_circuit_proof() -> TestCircuitProofData {
     }
 }
 
-// Returns the proving configration for the initial circuit.
+// Returns the proving configuration for the initial circuit.
+// Uses the default permutation to match the circuit's Fiat-Shamir challenger.
 fn get_proving_config() -> MyConfig {
-    // Use a seeded RNG for deterministic permutations
-    let mut rng = SmallRng::seed_from_u64(2026);
-    let perm = Perm::new_from_rng_128(&mut rng);
+    let perm = default_babybear_poseidon2_16();
     let hash = MyHash::new(perm.clone());
     let compress = MyCompress::new(perm.clone());
     let val_mmcs = ValMmcs::new(hash, compress);
     let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
     let dft = Dft::default();
 
-    // Create test FRI params with log_final_poly_len = 0
     let fri_params = create_test_fri_params(challenge_mmcs, 0);
 
-    // Create config for proving
     let pcs_proving = MyPcs::new(dft, val_mmcs, fri_params);
     let challenger_proving = Challenger::new(perm);
     MyConfig::new(pcs_proving, challenger_proving)
 }
 
 // Returns the configuration and FRI verifier params for recursive verification.
+// Uses the default permutation to match the circuit's Fiat-Shamir challenger.
 fn get_recursive_config_and_params() -> (MyConfig, FriVerifierParams, usize, usize) {
-    // Now verify the batch STARK proof recursively
     let dft2 = Dft::default();
-    let mut rng2 = SmallRng::seed_from_u64(2026);
-    let perm2 = Perm::new_from_rng_128(&mut rng2);
+    let perm2 = default_babybear_poseidon2_16();
     let hash2 = MyHash::new(perm2.clone());
     let compress2 = MyCompress::new(perm2.clone());
     let val_mmcs2 = ValMmcs::new(hash2, compress2);

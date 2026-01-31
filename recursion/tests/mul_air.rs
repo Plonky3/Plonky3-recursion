@@ -13,21 +13,18 @@ use p3_recursion::public_inputs::StarkVerifierInputsBuilder;
 use p3_recursion::{Poseidon2Config, VerificationError, verify_circuit};
 use p3_uni_stark::{prove_with_preprocessed, setup_preprocessed, verify_with_preprocessed};
 use p3_util::log2_ceil_usize;
-use rand::SeedableRng;
-use rand::rngs::SmallRng;
 
 use crate::common::MulAir;
 use crate::common::baby_bear_params::{
     Challenge, ChallengeMmcs, Challenger, DIGEST_ELEMS, Dft, F, InnerFri, MyCompress, MyConfig,
-    MyHash, MyPcs, Perm, RATE, ValMmcs, WIDTH,
+    MyHash, MyPcs, RATE, ValMmcs, WIDTH,
 };
 
 #[test]
 fn test_mul_verifier_circuit() -> Result<(), VerificationError> {
-    let mut rng = SmallRng::seed_from_u64(1);
     let n = 1 << 3;
 
-    let perm = Perm::new_from_rng_128(&mut rng);
+    let perm = default_babybear_poseidon2_16();
     let hash = MyHash::new(perm.clone());
     let compress = MyCompress::new(perm.clone());
     let val_mmcs = ValMmcs::new(hash, compress);
@@ -40,7 +37,7 @@ fn test_mul_verifier_circuit() -> Result<(), VerificationError> {
     let _log_height_max = fri_params.log_final_poly_len + fri_params.log_blowup;
     let _pow_bits = fri_params.query_proof_of_work_bits;
     let pcs = MyPcs::new(dft, val_mmcs, fri_params);
-    let challenger = Challenger::new(perm);
+    let challenger = Challenger::new(perm.clone());
 
     let config = MyConfig::new(pcs, challenger);
     let pis = vec![];
@@ -65,10 +62,9 @@ fn test_mul_verifier_circuit() -> Result<(), VerificationError> {
     );
 
     let mut circuit_builder = CircuitBuilder::new();
-    let poseidon2_perm = default_babybear_poseidon2_16();
     circuit_builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
         generate_poseidon2_trace::<Challenge, BabyBearD4Width16>,
-        poseidon2_perm,
+        perm,
     );
 
     // Allocate all targets

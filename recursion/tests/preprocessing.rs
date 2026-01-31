@@ -16,14 +16,12 @@ use p3_recursion::{
     BatchStarkVerifierInputsBuilder, FriVerifierParams, Poseidon2Config, VerificationError,
     verify_batch_circuit,
 };
-use rand::SeedableRng;
 use rand::distr::{Distribution, StandardUniform};
-use rand::rngs::SmallRng;
 
 use crate::common::MulAir;
 use crate::common::baby_bear_params::{
     Challenge, ChallengeMmcs, Challenger, DIGEST_ELEMS, Dft, F, InnerFri, MyCompress, MyConfig,
-    MyHash, MyPcs, Perm, RATE, ValMmcs, WIDTH,
+    MyHash, MyPcs, RATE, ValMmcs, WIDTH,
 };
 
 /// Enum to hold different AIR types for batch verification
@@ -230,10 +228,9 @@ where
 
 #[test]
 fn test_batch_verifier_with_mixed_preprocessed() -> Result<(), VerificationError> {
-    let mut rng = SmallRng::seed_from_u64(42);
     let n = 1 << 3;
 
-    let perm = Perm::new_from_rng_128(&mut rng);
+    let perm = default_babybear_poseidon2_16();
     let hash = MyHash::new(perm.clone());
     let compress = MyCompress::new(perm.clone());
     let val_mmcs = ValMmcs::new(hash, compress);
@@ -246,7 +243,7 @@ fn test_batch_verifier_with_mixed_preprocessed() -> Result<(), VerificationError
     let _log_height_max = fri_params.log_final_poly_len + fri_params.log_blowup;
     let _pow_bits = fri_params.query_proof_of_work_bits;
     let pcs = MyPcs::new(dft, val_mmcs, fri_params);
-    let challenger = Challenger::new(perm);
+    let challenger = Challenger::new(perm.clone());
 
     let config = MyConfig::new(pcs, challenger);
 
@@ -307,10 +304,9 @@ fn test_batch_verifier_with_mixed_preprocessed() -> Result<(), VerificationError
     assert!(BaseAir::<F>::preprocessed_trace(&airs[2]).is_some());
 
     let mut circuit_builder = CircuitBuilder::new();
-    let poseidon2_perm = default_babybear_poseidon2_16();
     circuit_builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
         generate_poseidon2_trace::<Challenge, BabyBearD4Width16>,
-        poseidon2_perm,
+        perm,
     );
 
     // Allocate batch verifier inputs
