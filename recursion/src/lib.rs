@@ -17,6 +17,8 @@ pub use challenger::CircuitChallenger;
 pub use generation::{
     GenerationError, PcsGeneration, generate_batch_challenges, generate_challenges,
 };
+pub use p3_circuit::ops;
+pub use p3_circuit::ops::Poseidon2Config;
 pub use pcs::fri::{FriVerifierParams, MAX_QUERY_INDEX_BITS};
 pub use public_inputs::{
     BatchStarkVerifierInputsBuilder, CommitmentOpening, FriVerifierInputs, PublicInputBuilder,

@@ -14,7 +14,7 @@ use p3_poseidon2_circuit_air::BabyBearD4Width16;
 use p3_recursion::pcs::HashTargets;
 use p3_recursion::{
     BatchStarkVerifierInputsBuilder, FriVerifierParams, Poseidon2Config, VerificationError,
-    generate_batch_challenges, verify_batch_circuit,
+    verify_batch_circuit,
 };
 use rand::SeedableRng;
 use rand::distr::{Distribution, StandardUniform};
@@ -243,8 +243,8 @@ fn test_batch_verifier_with_mixed_preprocessed() -> Result<(), VerificationError
     let log_final_poly_len = 0;
     let fri_params = create_test_fri_params(challenge_mmcs, log_final_poly_len);
     let fri_verifier_params = FriVerifierParams::from(&fri_params);
-    let log_height_max = fri_params.log_final_poly_len + fri_params.log_blowup;
-    let pow_bits = fri_params.query_proof_of_work_bits;
+    let _log_height_max = fri_params.log_final_poly_len + fri_params.log_blowup;
+    let _pow_bits = fri_params.query_proof_of_work_bits;
     let pcs = MyPcs::new(dft, val_mmcs, fri_params);
     let challenger = Challenger::new(perm);
 
@@ -350,23 +350,11 @@ fn test_batch_verifier_with_mixed_preprocessed() -> Result<(), VerificationError
 
     let mut runner = circuit.runner();
 
-    // Generate all the challenge values for batch proof
-    let all_challenges = generate_batch_challenges(
-        &airs,
-        &config,
-        &batch_proof,
-        &pvs,
-        Some(&[pow_bits, log_height_max]),
-        &common_data,
-        &lookup_gadget,
-    )?;
-
     // Pack values using the batch builder
     let public_inputs = verifier_inputs.pack_values(
         &pvs, // public inputs for each AIR
         &batch_proof,
         &common_data,
-        &all_challenges,
     );
 
     runner

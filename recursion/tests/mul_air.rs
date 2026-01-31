@@ -10,7 +10,7 @@ use p3_matrix::Matrix;
 use p3_poseidon2_circuit_air::BabyBearD4Width16;
 use p3_recursion::pcs::fri::{FriVerifierParams, HashTargets};
 use p3_recursion::public_inputs::StarkVerifierInputsBuilder;
-use p3_recursion::{Poseidon2Config, VerificationError, generate_challenges, verify_circuit};
+use p3_recursion::{Poseidon2Config, VerificationError, verify_circuit};
 use p3_uni_stark::{prove_with_preprocessed, setup_preprocessed, verify_with_preprocessed};
 use p3_util::log2_ceil_usize;
 use rand::SeedableRng;
@@ -37,8 +37,8 @@ fn test_mul_verifier_circuit() -> Result<(), VerificationError> {
     let log_final_poly_len = 0;
     let fri_params = create_test_fri_params(challenge_mmcs, log_final_poly_len);
     let fri_verifier_params = FriVerifierParams::from(&fri_params);
-    let log_height_max = fri_params.log_final_poly_len + fri_params.log_blowup;
-    let pow_bits = fri_params.query_proof_of_work_bits;
+    let _log_height_max = fri_params.log_final_poly_len + fri_params.log_blowup;
+    let _pow_bits = fri_params.query_proof_of_work_bits;
     let pcs = MyPcs::new(dft, val_mmcs, fri_params);
     let challenger = Challenger::new(perm);
 
@@ -96,24 +96,10 @@ fn test_mul_verifier_circuit() -> Result<(), VerificationError> {
     let circuit = circuit_builder.build()?;
 
     let mut runner = circuit.runner();
-    // Generate all the challenge values
-    let all_challenges = generate_challenges(
-        &air,
-        &config,
-        &proof,
-        &pis,
-        Some(&[pow_bits, log_height_max]),
-    )?;
 
     // Pack values using the same builder
-    let num_queries = proof.opening_proof.query_proofs.len();
-    let public_inputs = verifier_inputs.pack_values(
-        &pis,
-        &proof,
-        &preprocessed_vk.map(|vk| vk.commitment),
-        &all_challenges,
-        num_queries,
-    );
+    let public_inputs =
+        verifier_inputs.pack_values(&pis, &proof, &preprocessed_vk.map(|vk| vk.commitment));
 
     runner
         .set_public_inputs(&public_inputs)
