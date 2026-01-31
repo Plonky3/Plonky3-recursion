@@ -13,7 +13,7 @@ use p3_circuit::utils::ColumnsTargets;
 use p3_circuit_prover::air::{AddAir, ConstAir, MulAir, PublicAir, WitnessAir};
 use p3_circuit_prover::batch_stark_prover::{PrimitiveTable, RowCounts};
 use p3_commit::{Pcs, PolynomialSpace};
-use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing, PrimeField};
+use p3_field::{BasedVectorSpace, ExtensionField, Field, PrimeCharacteristicRing, PrimeField64};
 use p3_lookup::lookup_traits::{Kind, Lookup, LookupData, LookupGadget};
 use p3_uni_stark::{StarkGenericConfig, SymbolicExpression, Val};
 
@@ -112,6 +112,7 @@ pub fn verify_p3_recursion_proof_circuit<
     InputProof: Recursive<SC::Challenge>,
     OpeningProof: Recursive<SC::Challenge, Input = <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Proof>,
     LG: RecursiveLookupGadget<SC::Challenge>,
+    const WIDTH: usize,
     const RATE: usize,
     const TRACE_D: usize,
 >(
@@ -130,8 +131,8 @@ where
             Comm,
             <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain,
         >,
-    SC::Challenge: PrimeCharacteristicRing,
-    Val<SC>: PrimeField,
+    Val<SC>: PrimeField64,
+    SC::Challenge: ExtensionField<Val<SC>> + PrimeCharacteristicRing,
     <<SC as StarkGenericConfig>::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain: Clone,
     SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
 {
@@ -181,6 +182,7 @@ where
         InputProof,
         OpeningProof,
         LG,
+        WIDTH,
         RATE,
     >(
         config,
@@ -209,6 +211,7 @@ pub fn verify_batch_circuit<
     InputProof: Recursive<SC::Challenge>,
     OpeningProof: Recursive<SC::Challenge>,
     LG: RecursiveLookupGadget<SC::Challenge>,
+    const WIDTH: usize,
     const RATE: usize,
 >(
     config: &SC,
@@ -229,7 +232,8 @@ where
             Comm,
             <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain,
         >,
-    SC::Challenge: PrimeCharacteristicRing,
+    Val<SC>: PrimeField64,
+    SC::Challenge: ExtensionField<Val<SC>> + PrimeCharacteristicRing,
     <<SC as StarkGenericConfig>::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain: Clone,
 {
     let BatchProofTargets {
@@ -348,7 +352,7 @@ where
     }
 
     // Challenger initialisation mirrors the native batch-STARK verifier transcript.
-    let mut challenger = CircuitChallenger::<RATE>::new();
+    let mut challenger = CircuitChallenger::<WIDTH, RATE>::new();
     let inst_count_target = circuit.alloc_const(
         SC::Challenge::from_usize(n_instances),
         "number of instances",
@@ -413,8 +417,12 @@ where
     }
 
     // Fetch lookups and sample their challenges.
-    let challenges_per_instance =
-        get_perm_challenges::<SC, RATE, LG>(circuit, &mut challenger, all_lookups, lookup_gadget);
+    let challenges_per_instance = get_perm_challenges::<SC, WIDTH, RATE, LG>(
+        circuit,
+        &mut challenger,
+        all_lookups,
+        lookup_gadget,
+    );
 
     // Then, observe the permutation tables, if any.
     if is_lookup {
@@ -428,7 +436,8 @@ where
         );
     }
 
-    let alpha = challenger.sample(circuit);
+    // Sample alpha challenge (extension field element)
+    let alpha = challenger.sample_ext(circuit);
 
     challenger.observe_slice(
         circuit,
@@ -436,7 +445,8 @@ where
             .quotient_chunks_targets
             .to_observation_targets(),
     );
-    let zeta = challenger.sample(circuit);
+    // Sample zeta challenge (extension field element)
+    let zeta = challenger.sample_ext(circuit);
 
     // Build per-instance domains.
     let mut trace_domains = Vec::with_capacity(n_instances);
@@ -622,7 +632,7 @@ where
         coms_to_verify.push((permutation_commit, permutation_round));
     }
 
-    let pcs_challenges = SC::Pcs::get_challenges_circuit::<RATE>(
+    let pcs_challenges = SC::Pcs::get_challenges_circuit::<WIDTH, RATE>(
         circuit,
         &mut challenger,
         &proof_targets.opening_proof,
@@ -766,12 +776,21 @@ where
     Ok(())
 }
 
-pub(crate) fn get_perm_challenges<SC: StarkGenericConfig, const RATE: usize, LG: LookupGadget>(
+pub(crate) fn get_perm_challenges<
+    SC: StarkGenericConfig,
+    const WIDTH: usize,
+    const RATE: usize,
+    LG: LookupGadget,
+>(
     circuit: &mut CircuitBuilder<SC::Challenge>,
-    challenger: &mut CircuitChallenger<RATE>,
+    challenger: &mut CircuitChallenger<WIDTH, RATE>,
     all_lookups: &[Vec<Lookup<Val<SC>>>],
     lookup_gadget: &LG,
-) -> Vec<Vec<Target>> {
+) -> Vec<Vec<Target>>
+where
+    Val<SC>: PrimeField64,
+    SC::Challenge: ExtensionField<Val<SC>>,
+{
     let num_challenges_per_lookup = lookup_gadget.num_challenges();
     let mut global_perm_challenges = HashMap::new();
 
@@ -785,18 +804,19 @@ pub(crate) fn get_perm_challenges<SC: StarkGenericConfig, const RATE: usize, LG:
             for context in contexts {
                 match &context.kind {
                     Kind::Global(name) => {
-                        // Get or create the global challenges.
+                        // Get or create the global challenges (extension field elements).
                         let challenges: &mut Vec<Target> =
                             global_perm_challenges.entry(name).or_insert_with(|| {
                                 (0..num_challenges_per_lookup)
-                                    .map(|_| challenger.sample(circuit))
+                                    .map(|_| challenger.sample_ext(circuit))
                                     .collect()
                             });
                         instance_challenges.extend_from_slice(challenges);
                     }
                     Kind::Local => {
+                        // Local challenges are extension field elements.
                         instance_challenges.extend(
-                            (0..num_challenges_per_lookup).map(|_| challenger.sample(circuit)),
+                            (0..num_challenges_per_lookup).map(|_| challenger.sample_ext(circuit)),
                         );
                     }
                 }

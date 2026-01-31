@@ -20,7 +20,7 @@ use rand::rngs::SmallRng;
 use crate::common::MulAir;
 use crate::common::baby_bear_params::{
     ChallengeMmcs, Challenger, DIGEST_ELEMS, Dft, F, InnerFri, MyCompress, MyConfig, MyHash, MyPcs,
-    Perm, RATE, ValMmcs,
+    Perm, RATE, ValMmcs, WIDTH,
 };
 
 /// Enum to hold different AIR types for batch verification
@@ -325,7 +325,7 @@ fn test_batch_verifier_with_mixed_preprocessed() -> Result<(), VerificationError
     // 1. MulAir (has preprocessed columns)
     // 2. AddAirNoPreprocessed (no preprocessed columns)
     // 3. SubAirPartialPreprocessed (some preprocessed columns)
-    verify_batch_circuit::<_, _, _, _, _, _, RATE>(
+    verify_batch_circuit::<_, _, _, _, _, _, WIDTH, RATE>(
         &config,
         &airs,
         &mut circuit_builder,

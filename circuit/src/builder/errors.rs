@@ -68,4 +68,8 @@ pub enum CircuitBuilderError {
     /// Duplicate tag: a tag with this name was already registered.
     #[error("Duplicate tag: '{tag}' is already registered")]
     DuplicateTag { tag: String },
+
+    /// Invalid dimension: expected a specific number of elements.
+    #[error("Invalid dimension: expected {expected}, got {actual}")]
+    InvalidDimension { expected: usize, actual: usize },
 }

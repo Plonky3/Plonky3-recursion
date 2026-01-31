@@ -47,6 +47,7 @@ pub(crate) mod baby_bear_params {
 
     pub(crate) type F = BabyBear;
     pub(crate) const D: usize = 4;
+    pub(crate) const WIDTH: usize = 16;
     pub(crate) const RATE: usize = 8;
     pub(crate) const DIGEST_ELEMS: usize = 8;
     pub(crate) type Challenge = BinomialExtensionField<F, D>;
@@ -72,6 +73,7 @@ pub(crate) mod koala_bear_params {
 
     pub(crate) type F = KoalaBear;
     pub(crate) const D: usize = 4;
+    pub(crate) const WIDTH: usize = 16;
     pub(crate) const RATE: usize = 8;
     pub(crate) const DIGEST_ELEMS: usize = 8;
 
@@ -98,6 +100,7 @@ pub(crate) mod goldilocks_params {
 
     pub(crate) type F = Goldilocks;
     pub(crate) const D: usize = 2;
+    pub(crate) const WIDTH: usize = 8;
     pub(crate) const RATE: usize = 4;
     pub(crate) const DIGEST_ELEMS: usize = 4;
 

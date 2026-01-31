@@ -712,6 +712,7 @@ fn get_verifier_inputs_and_challenges(
         InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>>,
         InnerFri,
         LogUpGadget,
+        WIDTH,
         RATE,
         TRACE_D,
     >(

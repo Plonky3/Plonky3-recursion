@@ -16,7 +16,7 @@ use rand::rngs::SmallRng;
 use crate::common::MulAir;
 use crate::common::baby_bear_params::{
     ChallengeMmcs, Challenger, DIGEST_ELEMS, Dft, F, InnerFri, MyCompress, MyConfig, MyHash, MyPcs,
-    Perm, RATE, ValMmcs,
+    Perm, RATE, ValMmcs, WIDTH,
 };
 
 #[test]
@@ -73,7 +73,7 @@ fn test_mul_verifier_circuit() -> Result<(), VerificationError> {
         );
 
     // Add the verification circuit to the builder
-    verify_circuit::<_, _, _, _, _, RATE>(
+    verify_circuit::<_, _, _, _, _, WIDTH, RATE>(
         &config,
         &air,
         &mut circuit_builder,

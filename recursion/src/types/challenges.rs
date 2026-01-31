@@ -4,8 +4,8 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use p3_circuit::CircuitBuilder;
-use p3_field::PrimeCharacteristicRing;
-use p3_uni_stark::StarkGenericConfig;
+use p3_field::{ExtensionField, PrimeCharacteristicRing, PrimeField64};
+use p3_uni_stark::{StarkGenericConfig, Val};
 
 use crate::Target;
 use crate::traits::{Recursive, RecursiveChallenger};
@@ -48,14 +48,15 @@ impl StarkChallenges {
     /// The three base STARK challenges
     pub fn allocate<SC, Comm, OpeningProof>(
         circuit: &mut CircuitBuilder<SC::Challenge>,
-        challenger: &mut impl RecursiveChallenger<SC::Challenge>,
+        challenger: &mut impl RecursiveChallenger<Val<SC>, SC::Challenge>,
         proof_targets: &ProofTargets<SC, Comm, OpeningProof>,
         public_values: &[Target],
         log_quotient_degree: usize,
     ) -> Self
     where
         SC: StarkGenericConfig,
-        SC::Challenge: PrimeCharacteristicRing,
+        Val<SC>: PrimeField64,
+        SC::Challenge: ExtensionField<Val<SC>> + PrimeCharacteristicRing,
         Comm: Recursive<SC::Challenge> + ObservableCommitment,
         OpeningProof: Recursive<SC::Challenge>,
     {
@@ -74,7 +75,7 @@ impl StarkChallenges {
             .as_ref()
             .map(|c| c.to_observation_targets());
 
-        // Observe domain parameters
+        // Observe domain parameters (base field elements)
         let degree_bits_target = circuit.alloc_const(
             SC::Challenge::from_usize(proof_targets.degree_bits),
             "degree bits",
@@ -86,16 +87,16 @@ impl StarkChallenges {
         challenger.observe(circuit, degree_bits_target);
         challenger.observe(circuit, log_quotient_degree_target);
 
-        // Observe trace commitment
+        // Observe trace commitment (base field elements)
         challenger.observe_slice(circuit, &trace_comm_targets);
 
-        // Observe public values
+        // Observe public values (base field elements)
         challenger.observe_slice(circuit, public_values);
 
-        // Sample alpha challenge
-        let alpha = challenger.sample(circuit);
+        // Sample alpha challenge (extension field element)
+        let alpha = challenger.sample_ext(circuit);
 
-        // Observe quotient chunks commitment
+        // Observe quotient chunks commitment (base field elements)
         challenger.observe_slice(circuit, &quotient_comm_targets);
 
         // Observe random commitment if in ZK mode
@@ -103,9 +104,9 @@ impl StarkChallenges {
             challenger.observe_slice(circuit, &random_comm);
         }
 
-        // Sample zeta and zeta_next challenges
-        let zeta = challenger.sample(circuit);
-        let zeta_next = challenger.sample(circuit);
+        // Sample zeta and zeta_next challenges (extension field elements)
+        let zeta = challenger.sample_ext(circuit);
+        let zeta_next = challenger.sample_ext(circuit);
 
         Self {
             alpha,
