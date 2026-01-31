@@ -12,9 +12,8 @@ use p3_field::PrimeCharacteristicRing;
 use p3_fri::create_test_fri_params;
 use p3_lookup::logup::LogUpGadget;
 use p3_poseidon2_circuit_air::BabyBearD4Width16;
-use p3_recursion::generation::generate_batch_challenges;
-use p3_recursion::pcs::fri::{FriVerifierParams, HashTargets, InputProofTargets, RecValMmcs};
 use p3_recursion::Poseidon2Config;
+use p3_recursion::pcs::fri::{FriVerifierParams, HashTargets, InputProofTargets, RecValMmcs};
 use p3_recursion::verifier::{CircuitTablesAir, verify_p3_recursion_proof_circuit};
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
@@ -100,8 +99,8 @@ fn test_fibonacci_batch_verifier() {
     let challenge_mmcs2 = ChallengeMmcs::new(val_mmcs2.clone());
     let fri_params2 = create_test_fri_params(challenge_mmcs2, 0);
     let fri_verifier_params = FriVerifierParams::from(&fri_params2);
-    let pow_bits = fri_params2.query_proof_of_work_bits;
-    let log_height_max = fri_params2.log_final_poly_len + fri_params2.log_blowup;
+    let _pow_bits = fri_params2.query_proof_of_work_bits;
+    let _log_height_max = fri_params2.log_final_poly_len + fri_params2.log_blowup;
     let pcs_verif = MyPcs::new(dft2, val_mmcs2, fri_params2);
     let challenger_verif = Challenger::new(perm2);
     let config = MyConfig::new(pcs_verif, challenger_verif);
@@ -114,7 +113,7 @@ fn test_fibonacci_batch_verifier() {
     const TRACE_D: usize = 1; // Proof traces are in base field
 
     // Base field AIRs for native challenge generation
-    let native_airs = vec![
+    let _native_airs = vec![
         CircuitTablesAir::Witness(WitnessAir::<F, TRACE_D>::new(
             rows[PrimitiveTable::Witness],
             packing.witness_lanes(),
@@ -167,20 +166,8 @@ fn test_fibonacci_batch_verifier() {
     let verification_circuit = circuit_builder.build().unwrap();
     let expected_public_input_len = verification_circuit.public_flat_len;
 
-    // Generate all the challenge values for batch proof (uses base field AIRs)
-    let all_challenges = generate_batch_challenges(
-        &native_airs,
-        &config,
-        batch_proof,
-        &pis,
-        Some(&[pow_bits, log_height_max]),
-        &common,
-        &lookup_gadget,
-    )
-    .unwrap();
-
     // Pack values using the builder
-    let public_inputs = verifier_inputs.pack_values(&pis, batch_proof, &common, &all_challenges);
+    let public_inputs = verifier_inputs.pack_values(&pis, batch_proof, &common);
 
     assert_eq!(public_inputs.len(), expected_public_input_len);
     assert!(!public_inputs.is_empty());

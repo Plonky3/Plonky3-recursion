@@ -63,7 +63,7 @@ fn test_arith_lookups() {
     // Build the recursive verification circuit
     let mut circuit_builder = setup_circuit_builder();
 
-    let (verifier_inputs, all_challenges) = get_verifier_inputs_and_challenges(
+    let (verifier_inputs, _all_challenges) = get_verifier_inputs_and_challenges(
         &mut circuit_builder,
         &config,
         &params,
@@ -80,10 +80,9 @@ fn test_arith_lookups() {
 
     // Pack values using the builder
     let batch_proof = &batch_stark_proof.proof;
-    let public_inputs =
-        verifier_inputs
-            .unwrap()
-            .pack_values(&pis, batch_proof, &common, &all_challenges.unwrap());
+    let public_inputs = verifier_inputs
+        .unwrap()
+        .pack_values(&pis, batch_proof, &common);
 
     assert_eq!(public_inputs.len(), expected_public_input_len);
     assert!(!public_inputs.is_empty());
@@ -157,7 +156,7 @@ fn test_wrong_multiplicities() {
         pow_bits,
         log_height_max,
     };
-    let (verifier_inputs, all_challenges) = get_verifier_inputs_and_challenges(
+    let (verifier_inputs, _all_challenges) = get_verifier_inputs_and_challenges(
         &mut circuit_builder,
         &config,
         &params,
@@ -174,10 +173,9 @@ fn test_wrong_multiplicities() {
 
     // Pack values using the builder
     let batch_proof = &batch_stark_proof.proof;
-    let public_inputs =
-        verifier_inputs
-            .unwrap()
-            .pack_values(&pis, batch_proof, &common, &all_challenges.unwrap());
+    let public_inputs = verifier_inputs
+        .unwrap()
+        .pack_values(&pis, batch_proof, &common);
 
     assert_eq!(public_inputs.len(), expected_public_input_len);
     assert!(!public_inputs.is_empty());
@@ -214,7 +212,7 @@ fn test_wrong_expected_cumulated() {
     // Build the recursive verification circuit
     let mut circuit_builder = setup_circuit_builder();
 
-    let (verifier_inputs, all_challenges) = get_verifier_inputs_and_challenges(
+    let (verifier_inputs, _all_challenges) = get_verifier_inputs_and_challenges(
         &mut circuit_builder,
         &config,
         &params,
@@ -230,12 +228,10 @@ fn test_wrong_expected_cumulated() {
     let expected_public_input_len = verification_circuit.public_flat_len;
 
     // Pack values using the builder
-    let public_inputs = verifier_inputs.unwrap().pack_values(
-        &pis,
-        &batch_stark_proof.proof,
-        &common,
-        &all_challenges.unwrap(),
-    );
+    let public_inputs =
+        verifier_inputs
+            .unwrap()
+            .pack_values(&pis, &batch_stark_proof.proof, &common);
 
     assert_eq!(public_inputs.len(), expected_public_input_len);
     assert!(!public_inputs.is_empty());
@@ -299,7 +295,7 @@ fn test_inconsistent_lookup_name() {
     batch_stark_proof.proof.global_lookup_data = fake_global_lookup_data;
 
     let mut circuit_builder = setup_circuit_builder();
-    let (verifier_inputs, all_challenges) = get_verifier_inputs_and_challenges(
+    let (verifier_inputs, _all_challenges) = get_verifier_inputs_and_challenges(
         &mut circuit_builder,
         &config,
         &params,
@@ -315,12 +311,10 @@ fn test_inconsistent_lookup_name() {
     let expected_public_input_len = verification_circuit.public_flat_len;
 
     // Pack values using the builder
-    let public_inputs = verifier_inputs.unwrap().pack_values(
-        &pis,
-        &batch_stark_proof.proof,
-        &common,
-        &all_challenges.unwrap(),
-    );
+    let public_inputs =
+        verifier_inputs
+            .unwrap()
+            .pack_values(&pis, &batch_stark_proof.proof, &common);
 
     assert_eq!(public_inputs.len(), expected_public_input_len);
     assert!(!public_inputs.is_empty());
