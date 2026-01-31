@@ -887,6 +887,53 @@ where
         self.pop_scope();
         Ok(coeffs)
     }
+
+    /// Applies Poseidon2 permutation for the circuit challenger.
+    ///
+    /// Takes 4 extension element inputs and returns 4 extension element outputs.
+    /// This uses an unconstrained witness hint that computes the permutation at runtime.
+    ///
+    /// **Note**: This operation is not yet constrained by CTLs. Soundness enforcement
+    /// should be added by connecting to the Poseidon2 table via CTLs.
+    ///
+    /// # Parameters
+    /// - `config`: The Poseidon2 configuration to use
+    /// - `inputs`: 4 extension element targets (the sponge state)
+    ///
+    /// # Returns
+    /// 4 extension element targets (the permuted state)
+    ///
+    /// # Errors
+    /// Returns error if the Poseidon2 operation is not enabled
+    pub fn add_poseidon2_perm_for_challenger(
+        &mut self,
+        config: crate::ops::Poseidon2Config,
+        inputs: [ExprId; 4],
+    ) -> Result<[ExprId; 4], CircuitBuilderError> {
+        self.push_scope("poseidon2_perm_for_challenger");
+
+        // Ensure Poseidon2 is enabled (so the exec function is available)
+        let op_type = NonPrimitiveOpType::Poseidon2Perm(config);
+        self.ensure_op_enabled(op_type)?;
+
+        // Create the hint
+        let hint = Poseidon2ChallengerHint::new(config);
+
+        // Push unconstrained op: single input vector with 4 elements, 4 output witnesses
+        let input_exprs = vec![inputs.to_vec()];
+        let (_, _, outputs) =
+            self.push_unconstrained_op(input_exprs, 4, hint, "poseidon2_challenger_perm");
+
+        let output_exprs: [ExprId; 4] = [
+            outputs[0].ok_or(CircuitBuilderError::MissingOutput)?,
+            outputs[1].ok_or(CircuitBuilderError::MissingOutput)?,
+            outputs[2].ok_or(CircuitBuilderError::MissingOutput)?,
+            outputs[3].ok_or(CircuitBuilderError::MissingOutput)?,
+        ];
+
+        self.pop_scope();
+        Ok(output_exprs)
+    }
 }
 
 /// Witness hint for extension field decomposition.
@@ -953,6 +1000,107 @@ impl<BF: PrimeField64, EF: ExtensionField<BF>> NonPrimitiveExecutor<EF>
             let embedded_ef = EF::from_basis_coefficients_slice(&embedded)
                 .expect("embedded coefficients are valid");
             ctx.set_witness(outputs[i][0], embedded_ef)?;
+        }
+
+        Ok(())
+    }
+
+    fn op_type(&self) -> &NonPrimitiveOpType {
+        &NonPrimitiveOpType::Unconstrained
+    }
+
+    fn as_any(&self) -> &dyn core::any::Any {
+        self
+    }
+
+    fn boxed(&self) -> alloc::boxed::Box<dyn NonPrimitiveExecutor<EF>> {
+        Box::new(self.clone())
+    }
+}
+
+/// Witness hint for Poseidon2 permutation used by the circuit challenger.
+///
+/// At runtime, this hint:
+/// 1. Reads 4 extension element inputs (the recomposed sponge state)
+/// 2. Looks up the Poseidon2 permutation function from the enabled ops config
+/// 3. Executes the permutation and writes 4 extension element outputs
+///
+/// This is an unconstrained operation - soundness must be enforced by CTLs later.
+#[derive(Debug, Clone)]
+struct Poseidon2ChallengerHint {
+    config: crate::ops::Poseidon2Config,
+}
+
+impl Poseidon2ChallengerHint {
+    pub const fn new(config: crate::ops::Poseidon2Config) -> Self {
+        Self { config }
+    }
+}
+
+impl<EF: Field + Send + Sync + 'static> NonPrimitiveExecutor<EF> for Poseidon2ChallengerHint {
+    fn execute(
+        &self,
+        inputs: &[Vec<crate::WitnessId>],
+        outputs: &[Vec<crate::WitnessId>],
+        ctx: &mut crate::op::ExecutionContext<'_, EF>,
+    ) -> Result<(), CircuitError> {
+        // Expected layout: inputs = [[in0, in1, in2, in3]], outputs = [[out0], [out1], [out2], [out3]]
+        if inputs.len() != 1 {
+            return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
+                op: NonPrimitiveOpType::Unconstrained,
+                expected: "1 input vector".to_string(),
+                got: inputs.len(),
+            });
+        }
+        if inputs[0].len() != 4 {
+            return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
+                op: NonPrimitiveOpType::Unconstrained,
+                expected: "4 inputs in vector".to_string(),
+                got: inputs[0].len(),
+            });
+        }
+        if outputs.len() != 4 {
+            return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
+                op: NonPrimitiveOpType::Unconstrained,
+                expected: "4 output vectors".to_string(),
+                got: outputs.len(),
+            });
+        }
+
+        for (i, out) in outputs.iter().enumerate() {
+            if out.len() != 1 {
+                return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
+                    op: NonPrimitiveOpType::Unconstrained,
+                    expected: format!("1 witness for output {}", i),
+                    got: out.len(),
+                });
+            }
+        }
+
+        // Get the Poseidon2 exec function from config
+        let op_type = NonPrimitiveOpType::Poseidon2Perm(self.config);
+        let config = ctx.get_config(&op_type)?;
+        let exec = match config {
+            crate::op::NonPrimitiveOpConfig::Poseidon2Perm { exec, .. } => Arc::clone(exec),
+            crate::op::NonPrimitiveOpConfig::None => {
+                return Err(CircuitError::InvalidNonPrimitiveOpConfiguration { op: op_type });
+            }
+        };
+
+        // Read inputs from the single input vector
+        let input_vals: [EF; 4] = [
+            ctx.get_witness(inputs[0][0])?,
+            ctx.get_witness(inputs[0][1])?,
+            ctx.get_witness(inputs[0][2])?,
+            ctx.get_witness(inputs[0][3])?,
+        ];
+
+        // Execute the permutation
+        let output_vals = exec(&input_vals);
+
+        // Write outputs
+        for (i, &val) in output_vals.iter().enumerate() {
+            ctx.set_witness(outputs[i][0], val)?;
         }
 
         Ok(())

@@ -13,6 +13,7 @@ use p3_uni_stark::{StarkGenericConfig, Val};
 use super::{ObservableCommitment, VerificationError, recompose_quotient_from_chunks_circuit};
 use crate::Target;
 use crate::challenger::CircuitChallenger;
+use crate::ops::Poseidon2Config;
 use crate::traits::{LookupMetadata, Recursive, RecursiveAir, RecursivePcs};
 use crate::types::{
     CommitmentTargets, OpenedValuesTargets, OpenedValuesTargetsWithLookups, ProofTargets,
@@ -71,6 +72,7 @@ pub fn verify_circuit<
     public_values: &[Target],
     preprocessed_commit: &Option<Comm>,
     pcs_params: &PcsVerifierParams<SC, InputProof, OpeningProof, Comm>,
+    poseidon2_config: Poseidon2Config,
 ) -> Result<(), VerificationError>
 where
     A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
@@ -148,6 +150,7 @@ where
             preprocessed_width,
             circuit,
             pcs_params,
+            poseidon2_config,
         )?;
 
     // Validate ZK randomization consistency
@@ -316,6 +319,7 @@ fn get_circuit_challenges<
     preprocessed_width: usize,
     circuit: &mut CircuitBuilder<SC::Challenge>,
     pcs_params: &PcsVerifierParams<SC, InputProof, OpeningProof, Comm>,
+    poseidon2_config: Poseidon2Config,
 ) -> Result<Vec<Target>, CircuitBuilderError>
 where
     SC::Pcs: RecursivePcs<
@@ -338,7 +342,7 @@ where
         &LogUpGadget {},
     );
 
-    let mut challenger = CircuitChallenger::<WIDTH, RATE>::new();
+    let mut challenger = CircuitChallenger::<WIDTH, RATE>::new(poseidon2_config);
 
     // Allocate base STARK challenges (alpha, zeta, zeta_next) using Fiat-Shamir
     let base_challenges = StarkChallenges::allocate::<SC, Comm, OpeningProof>(

@@ -2,12 +2,15 @@
 
 mod common;
 
+use p3_baby_bear::default_babybear_poseidon2_16;
 use p3_circuit::CircuitBuilder;
+use p3_circuit::ops::generate_poseidon2_trace;
 use p3_fri::create_test_fri_params;
 use p3_matrix::Matrix;
+use p3_poseidon2_circuit_air::BabyBearD4Width16;
 use p3_recursion::pcs::fri::{FriVerifierParams, HashTargets};
 use p3_recursion::public_inputs::StarkVerifierInputsBuilder;
-use p3_recursion::{VerificationError, generate_challenges, verify_circuit};
+use p3_recursion::{Poseidon2Config, VerificationError, generate_challenges, verify_circuit};
 use p3_uni_stark::{prove_with_preprocessed, setup_preprocessed, verify_with_preprocessed};
 use p3_util::log2_ceil_usize;
 use rand::SeedableRng;
@@ -15,8 +18,8 @@ use rand::rngs::SmallRng;
 
 use crate::common::MulAir;
 use crate::common::baby_bear_params::{
-    ChallengeMmcs, Challenger, DIGEST_ELEMS, Dft, F, InnerFri, MyCompress, MyConfig, MyHash, MyPcs,
-    Perm, RATE, ValMmcs, WIDTH,
+    Challenge, ChallengeMmcs, Challenger, DIGEST_ELEMS, Dft, F, InnerFri, MyCompress, MyConfig,
+    MyHash, MyPcs, Perm, RATE, ValMmcs, WIDTH,
 };
 
 #[test]
@@ -62,6 +65,11 @@ fn test_mul_verifier_circuit() -> Result<(), VerificationError> {
     );
 
     let mut circuit_builder = CircuitBuilder::new();
+    let poseidon2_perm = default_babybear_poseidon2_16();
+    circuit_builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
+        generate_poseidon2_trace::<Challenge, BabyBearD4Width16>,
+        poseidon2_perm,
+    );
 
     // Allocate all targets
     let verifier_inputs =
@@ -81,6 +89,7 @@ fn test_mul_verifier_circuit() -> Result<(), VerificationError> {
         &verifier_inputs.air_public_targets,
         &verifier_inputs.preprocessed_commit,
         &fri_verifier_params,
+        Poseidon2Config::BabyBearD4Width16,
     )?;
 
     // Build the circuit

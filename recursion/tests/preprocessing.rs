@@ -1,16 +1,19 @@
 mod common;
 
 use p3_air::{Air, AirBuilder, BaseAir};
+use p3_baby_bear::default_babybear_poseidon2_16;
 use p3_batch_stark::{CommonData, StarkInstance, prove_batch, verify_batch};
 use p3_circuit::CircuitBuilder;
+use p3_circuit::ops::generate_poseidon2_trace;
 use p3_field::Field;
 use p3_fri::create_test_fri_params;
 use p3_lookup::logup::LogUpGadget;
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
+use p3_poseidon2_circuit_air::BabyBearD4Width16;
 use p3_recursion::pcs::HashTargets;
 use p3_recursion::{
-    BatchStarkVerifierInputsBuilder, FriVerifierParams, VerificationError,
+    BatchStarkVerifierInputsBuilder, FriVerifierParams, Poseidon2Config, VerificationError,
     generate_batch_challenges, verify_batch_circuit,
 };
 use rand::SeedableRng;
@@ -19,8 +22,8 @@ use rand::rngs::SmallRng;
 
 use crate::common::MulAir;
 use crate::common::baby_bear_params::{
-    ChallengeMmcs, Challenger, DIGEST_ELEMS, Dft, F, InnerFri, MyCompress, MyConfig, MyHash, MyPcs,
-    Perm, RATE, ValMmcs, WIDTH,
+    Challenge, ChallengeMmcs, Challenger, DIGEST_ELEMS, Dft, F, InnerFri, MyCompress, MyConfig,
+    MyHash, MyPcs, Perm, RATE, ValMmcs, WIDTH,
 };
 
 /// Enum to hold different AIR types for batch verification
@@ -304,6 +307,11 @@ fn test_batch_verifier_with_mixed_preprocessed() -> Result<(), VerificationError
     assert!(BaseAir::<F>::preprocessed_trace(&airs[2]).is_some());
 
     let mut circuit_builder = CircuitBuilder::new();
+    let poseidon2_perm = default_babybear_poseidon2_16();
+    circuit_builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
+        generate_poseidon2_trace::<Challenge, BabyBearD4Width16>,
+        poseidon2_perm,
+    );
 
     // Allocate batch verifier inputs
     let air_public_counts = vec![0usize; batch_proof.opened_values.instances.len()];
@@ -334,6 +342,7 @@ fn test_batch_verifier_with_mixed_preprocessed() -> Result<(), VerificationError
         &pcs_verifier_params,
         &verifier_inputs.common_data,
         &lookup_gadget,
+        Poseidon2Config::BabyBearD4Width16,
     )?;
 
     // Build the circuit
