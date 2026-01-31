@@ -782,6 +782,193 @@ where
         self.pop_scope();
         Ok(acc)
     }
+
+    /// Recomposes D base field coefficients into an extension field element.
+    ///
+    /// Given coefficients `[c_0, c_1, ..., c_{D-1}]`, computes `x = sum(c_i * basis_i)`
+    /// where `basis_i` is the i-th canonical basis element of the extension field.
+    ///
+    /// Each input coefficient should be a base field element embedded in the extension
+    /// field (i.e., only the first basis component is non-zero).
+    ///
+    /// # Parameters
+    /// - `coeffs`: Slice of D base field coefficient targets
+    ///
+    /// # Returns
+    /// A single target representing the extension field element
+    ///
+    /// # Errors
+    /// Returns error if `coeffs.len() != F::DIMENSION`
+    ///
+    /// # Cost
+    /// D multiplications + (D-1) additions
+    pub fn recompose_base_coeffs_to_ext<BF>(
+        &mut self,
+        coeffs: &[ExprId],
+    ) -> Result<ExprId, CircuitBuilderError>
+    where
+        BF: PrimeField64,
+        F: ExtensionField<BF>,
+    {
+        if coeffs.len() != F::DIMENSION {
+            return Err(CircuitBuilderError::InvalidDimension {
+                expected: F::DIMENSION,
+                actual: coeffs.len(),
+            });
+        }
+
+        self.push_scope("recompose_base_coeffs_to_ext");
+
+        let mut acc = self.add_const(F::ZERO);
+
+        for (i, &coeff) in coeffs.iter().enumerate() {
+            // Construct the i-th canonical basis element: [0, ..., 0, 1, 0, ..., 0]
+            let mut basis_coeffs = vec![BF::ZERO; F::DIMENSION];
+            basis_coeffs[i] = BF::ONE;
+            let basis_elem = F::from_basis_coefficients_slice(&basis_coeffs)
+                .expect("basis coefficients are valid");
+
+            // Multiply coefficient by basis element
+            let basis_const = self.add_const(basis_elem);
+            let term = self.mul(coeff, basis_const);
+            acc = self.add(acc, term);
+        }
+
+        self.pop_scope();
+        Ok(acc)
+    }
+
+    /// Decomposes an extension field element into its D base field coefficients.
+    ///
+    /// Given `x = c_0 + c_1*w + c_2*w^2 + ... + c_{D-1}*w^{D-1}`, returns `[c_0, c_1, ..., c_{D-1}]`
+    /// as targets. Each coefficient target represents a base field element embedded in the
+    /// extension field (i.e., only the first basis component is non-zero).
+    ///
+    /// # Parameters
+    /// - `x`: The extension field element to decompose
+    ///
+    /// # Returns
+    /// Vector of D targets, each representing a base field coefficient
+    ///
+    /// # Constraints Added
+    /// - D witness allocations for coefficients (via `ExtDecompositionHint`)
+    /// - 1 recomposition constraint: `sum(c_i * basis_i) == x`
+    ///
+    /// # Cost
+    /// - D Witness rows + D Mul rows + (D-1) Add rows (for the recomposition constraint)
+    pub fn decompose_ext_to_base_coeffs<BF>(
+        &mut self,
+        x: ExprId,
+    ) -> Result<Vec<ExprId>, CircuitBuilderError>
+    where
+        BF: PrimeField64,
+        F: ExtensionField<BF>,
+    {
+        self.push_scope("decompose_ext_to_base_coeffs");
+
+        // Allocate D witness slots for coefficients using hint
+        let ext_decomposition_hint = ExtDecompositionHint::<BF>::new();
+        let coeffs: Vec<ExprId> = self
+            .push_unconstrained_op(
+                vec![vec![x]],
+                F::DIMENSION,
+                ext_decomposition_hint,
+                "ext_decomposition",
+            )
+            .2
+            .into_iter()
+            .collect::<Option<Vec<_>>>()
+            .ok_or(CircuitBuilderError::MissingOutput)?;
+
+        // Constrain: sum(coeffs[i] * basis[i]) == x
+        let reconstructed = self.recompose_base_coeffs_to_ext::<BF>(&coeffs)?;
+        self.connect(x, reconstructed);
+
+        self.pop_scope();
+        Ok(coeffs)
+    }
+}
+
+/// Witness hint for extension field decomposition.
+///
+/// At runtime, extracts the basis coefficients from an extension field element
+/// and embeds each coefficient as an extension field element with zeroed higher coefficients.
+#[derive(Debug, Clone)]
+struct ExtDecompositionHint<BF: PrimeField64> {
+    _phantom: PhantomData<BF>,
+}
+
+impl<BF: PrimeField64> ExtDecompositionHint<BF> {
+    pub const fn new() -> Self {
+        Self {
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<BF: PrimeField64, EF: ExtensionField<BF>> NonPrimitiveExecutor<EF>
+    for ExtDecompositionHint<BF>
+{
+    fn execute(
+        &self,
+        inputs: &[Vec<crate::WitnessId>],
+        outputs: &[Vec<crate::WitnessId>],
+        ctx: &mut crate::op::ExecutionContext<'_, EF>,
+    ) -> Result<(), CircuitError> {
+        if inputs.len() != 1 || inputs[0].len() != 1 {
+            return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
+                op: NonPrimitiveOpType::Unconstrained,
+                expected: "1 input".to_string(),
+                got: inputs.len(),
+            });
+        }
+
+        if outputs.len() != EF::DIMENSION {
+            return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
+                op: NonPrimitiveOpType::Unconstrained,
+                expected: format!("{} outputs", EF::DIMENSION),
+                got: outputs.len(),
+            });
+        }
+
+        outputs.iter().try_for_each(|out| {
+            if out.len() != 1 {
+                Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
+                    op: NonPrimitiveOpType::Unconstrained,
+                    expected: "1".to_string(),
+                    got: out.len(),
+                })
+            } else {
+                Ok(())
+            }
+        })?;
+
+        let ext_val = ctx.get_witness(inputs[0][0])?;
+        let coeffs = ext_val.as_basis_coefficients_slice();
+
+        for (i, coeff) in coeffs.iter().enumerate() {
+            // Embed base field coefficient into extension field (zeroed higher coeffs)
+            let mut embedded = vec![BF::ZERO; EF::DIMENSION];
+            embedded[0] = *coeff;
+            let embedded_ef = EF::from_basis_coefficients_slice(&embedded)
+                .expect("embedded coefficients are valid");
+            ctx.set_witness(outputs[i][0], embedded_ef)?;
+        }
+
+        Ok(())
+    }
+
+    fn op_type(&self) -> &NonPrimitiveOpType {
+        &NonPrimitiveOpType::Unconstrained
+    }
+
+    fn as_any(&self) -> &dyn core::any::Any {
+        self
+    }
+
+    fn boxed(&self) -> alloc::boxed::Box<dyn NonPrimitiveExecutor<EF>> {
+        Box::new(self.clone())
+    }
 }
 
 /// Witness hint for binary decomposition of a field element.
@@ -1937,5 +2124,162 @@ mod proptests {
         assert_eq!(result[2], hex_0x02000000_bin);
         assert_eq!(result[3], zero_bin);
         assert_eq!(bits.len(), Ext4::bits());
+    }
+
+    #[test]
+    fn test_recompose_base_coeffs_to_ext() {
+        type Ext4 = BinomialExtensionField<BabyBear, 4>;
+
+        let mut builder = CircuitBuilder::<Ext4>::new();
+
+        // Create base field coefficients embedded in extension field
+        let c0 = builder.add_const(Ext4::from(BabyBear::from_u64(1)));
+        let c1 = builder.add_const(Ext4::from(BabyBear::from_u64(2)));
+        let c2 = builder.add_const(Ext4::from(BabyBear::from_u64(3)));
+        let c3 = builder.add_const(Ext4::from(BabyBear::from_u64(4)));
+
+        let coeffs = [c0, c1, c2, c3];
+        let recomposed = builder
+            .recompose_base_coeffs_to_ext::<BabyBear>(&coeffs)
+            .unwrap();
+
+        // Build and run
+        let circuit = builder.build().expect("Failed to build circuit");
+        let expr_to_widx = circuit.expr_to_widx.clone();
+        let runner = circuit.runner();
+        let traces = runner.run().expect("Failed to run circuit");
+
+        // Get the recomposed value
+        let w = expr_to_widx.get(&recomposed).expect("recomposed mapped");
+        let result = *traces.witness_trace.get_value(*w).unwrap();
+
+        // Expected: 1 + 2*w + 3*w^2 + 4*w^3
+        let expected = Ext4::from_basis_coefficients_slice(&[
+            BabyBear::from_u64(1),
+            BabyBear::from_u64(2),
+            BabyBear::from_u64(3),
+            BabyBear::from_u64(4),
+        ])
+        .unwrap();
+
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_decompose_ext_to_base_coeffs() {
+        type Ext4 = BinomialExtensionField<BabyBear, 4>;
+
+        let mut builder = CircuitBuilder::<Ext4>::new();
+
+        // Create an extension field element with known coefficients
+        let ext_val = Ext4::from_basis_coefficients_slice(&[
+            BabyBear::from_u64(5),
+            BabyBear::from_u64(6),
+            BabyBear::from_u64(7),
+            BabyBear::from_u64(8),
+        ])
+        .unwrap();
+        let x = builder.add_const(ext_val);
+
+        let coeffs = builder.decompose_ext_to_base_coeffs::<BabyBear>(x).unwrap();
+
+        assert_eq!(coeffs.len(), 4);
+
+        // Build and run
+        let circuit = builder.build().expect("Failed to build circuit");
+        let expr_to_widx = circuit.expr_to_widx.clone();
+        let runner = circuit.runner();
+        let traces = runner.run().expect("Failed to run circuit");
+
+        // Verify each coefficient
+        for (i, coeff_expr) in coeffs.iter().enumerate() {
+            let w = expr_to_widx.get(coeff_expr).expect("coeff mapped");
+            let coeff_val = *traces.witness_trace.get_value(*w).unwrap();
+
+            // Each coefficient should be a base field element embedded in extension
+            // i.e., only the first basis component is non-zero
+            let expected_coeffs: &[BabyBear] = coeff_val.as_basis_coefficients_slice();
+            assert_eq!(
+                expected_coeffs[0],
+                BabyBear::from_u64(5 + i as u64),
+                "coefficient {} mismatch",
+                i
+            );
+            for j in 1..4 {
+                assert_eq!(
+                    expected_coeffs[j],
+                    BabyBear::ZERO,
+                    "coefficient {} should have zero at position {}",
+                    i,
+                    j
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_decompose_recompose_round_trip() {
+        type Ext4 = BinomialExtensionField<BabyBear, 4>;
+
+        let mut builder = CircuitBuilder::<Ext4>::new();
+
+        // Create a random-ish extension field element
+        let original = Ext4::from_basis_coefficients_slice(&[
+            BabyBear::from_u64(123),
+            BabyBear::from_u64(456),
+            BabyBear::from_u64(789),
+            BabyBear::from_u64(101112),
+        ])
+        .unwrap();
+        let x = builder.add_const(original);
+
+        // Decompose then recompose
+        let coeffs = builder.decompose_ext_to_base_coeffs::<BabyBear>(x).unwrap();
+        let recomposed = builder
+            .recompose_base_coeffs_to_ext::<BabyBear>(&coeffs)
+            .unwrap();
+
+        // The original and recomposed should be connected (same value)
+        // Note: decompose_ext_to_base_coeffs already does this internally via connect
+
+        // Build and run
+        let circuit = builder.build().expect("Failed to build circuit");
+        let expr_to_widx = circuit.expr_to_widx.clone();
+        let runner = circuit.runner();
+        let traces = runner.run().expect("Failed to run circuit");
+
+        // Verify both have the same value
+        let w_orig = expr_to_widx.get(&x).expect("original mapped");
+        let w_recomp = expr_to_widx.get(&recomposed).expect("recomposed mapped");
+
+        let val_orig = *traces.witness_trace.get_value(*w_orig).unwrap();
+        let val_recomp = *traces.witness_trace.get_value(*w_recomp).unwrap();
+
+        assert_eq!(val_orig, original);
+        assert_eq!(val_recomp, original);
+        assert_eq!(val_orig, val_recomp);
+    }
+
+    #[test]
+    fn test_recompose_invalid_dimension() {
+        type Ext4 = BinomialExtensionField<BabyBear, 4>;
+
+        let mut builder = CircuitBuilder::<Ext4>::new();
+
+        // Only 3 coefficients instead of 4
+        let c0 = builder.add_const(Ext4::ONE);
+        let c1 = builder.add_const(Ext4::ONE);
+        let c2 = builder.add_const(Ext4::ONE);
+
+        let result = builder.recompose_base_coeffs_to_ext::<BabyBear>(&[c0, c1, c2]);
+
+        assert!(result.is_err());
+        match result {
+            Err(CircuitBuilderError::InvalidDimension { expected, actual }) => {
+                assert_eq!(expected, 4);
+                assert_eq!(actual, 3);
+            }
+            _ => panic!("Expected InvalidDimension error"),
+        }
     }
 }

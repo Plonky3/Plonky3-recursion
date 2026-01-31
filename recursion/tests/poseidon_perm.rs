@@ -155,6 +155,7 @@ fn test_poseidon2_perm_verifier() -> Result<(), VerificationError> {
         HashTargets<F, DIGEST_ELEMS>,
         InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>>,
         InnerFri,
+        WIDTH,
         RATE,
     >(
         &config,

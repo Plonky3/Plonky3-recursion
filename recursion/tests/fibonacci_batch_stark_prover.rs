@@ -140,6 +140,7 @@ fn test_fibonacci_batch_verifier() {
         InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>>,
         InnerFri,
         LogUpGadget,
+        WIDTH,
         RATE,
         TRACE_D,
     >(

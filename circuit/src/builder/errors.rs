@@ -79,4 +79,8 @@ pub enum CircuitBuilderError {
         op: NonPrimitiveOpType,
         details: String,
     },
+
+    /// Invalid dimension: expected a specific number of elements.
+    #[error("Invalid dimension: expected {expected}, got {actual}")]
+    InvalidDimension { expected: usize, actual: usize },
 }

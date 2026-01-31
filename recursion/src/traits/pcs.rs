@@ -52,9 +52,9 @@ pub trait RecursivePcs<
     ///
     /// # Returns
     /// Vector of challenge targets (ordering depends on PCS scheme)
-    fn get_challenges_circuit<const RATE: usize>(
+    fn get_challenges_circuit<const WIDTH: usize, const RATE: usize>(
         circuit: &mut CircuitBuilder<SC::Challenge>,
-        challenger: &mut crate::challenger::CircuitChallenger<RATE>,
+        challenger: &mut crate::challenger::CircuitChallenger<WIDTH, RATE>,
         proof_targets: &OpeningProof,
         opened_values: &OpenedValuesTargetsWithLookups<SC>,
         params: &Self::VerifierParams,

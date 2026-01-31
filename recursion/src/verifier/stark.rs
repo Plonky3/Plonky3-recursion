@@ -6,7 +6,7 @@ use itertools::Itertools;
 use p3_circuit::utils::ColumnsTargets;
 use p3_circuit::{CircuitBuilder, CircuitBuilderError};
 use p3_commit::Pcs;
-use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
+use p3_field::{BasedVectorSpace, ExtensionField, PrimeCharacteristicRing, PrimeField64};
 use p3_lookup::logup::LogUpGadget;
 use p3_uni_stark::{StarkGenericConfig, Val};
 
@@ -61,6 +61,7 @@ pub fn verify_circuit<
         + ObservableCommitment,
     InputProof: Recursive<SC::Challenge>,
     OpeningProof: Recursive<SC::Challenge>,
+    const WIDTH: usize,
     const RATE: usize,
 >(
     config: &SC,
@@ -80,7 +81,8 @@ where
             Comm,
             <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain,
         >,
-    SC::Challenge: PrimeCharacteristicRing,
+    Val<SC>: PrimeField64,
+    SC::Challenge: ExtensionField<Val<SC>> + PrimeCharacteristicRing,
 {
     let ProofTargets {
         commitments_targets:
@@ -137,15 +139,16 @@ where
         .collect_vec();
 
     // Generate all challenges (alpha, zeta, zeta_next, PCS challenges)
-    let challenge_targets = get_circuit_challenges::<A, SC, Comm, InputProof, OpeningProof, RATE>(
-        air,
-        config,
-        proof_targets,
-        public_values,
-        preprocessed_width,
-        circuit,
-        pcs_params,
-    )?;
+    let challenge_targets =
+        get_circuit_challenges::<A, SC, Comm, InputProof, OpeningProof, WIDTH, RATE>(
+            air,
+            config,
+            proof_targets,
+            public_values,
+            preprocessed_width,
+            circuit,
+            pcs_params,
+        )?;
 
     // Validate ZK randomization consistency
     if (opened_random.is_some() != SC::Pcs::ZK) || (random_commit.is_some() != SC::Pcs::ZK) {
@@ -303,6 +306,7 @@ fn get_circuit_challenges<
         > + ObservableCommitment,
     InputProof: Recursive<SC::Challenge>,
     OpeningProof: Recursive<SC::Challenge>,
+    const WIDTH: usize,
     const RATE: usize,
 >(
     air: &A,
@@ -321,7 +325,8 @@ where
             Comm,
             <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain,
         >,
-    SC::Challenge: PrimeCharacteristicRing,
+    Val<SC>: PrimeField64,
+    SC::Challenge: ExtensionField<Val<SC>> + PrimeCharacteristicRing,
 {
     let log_quotient_degree = A::get_log_num_quotient_chunks(
         air,
@@ -333,7 +338,7 @@ where
         &LogUpGadget {},
     );
 
-    let mut challenger = CircuitChallenger::<RATE>::new();
+    let mut challenger = CircuitChallenger::<WIDTH, RATE>::new();
 
     // Allocate base STARK challenges (alpha, zeta, zeta_next) using Fiat-Shamir
     let base_challenges = StarkChallenges::allocate::<SC, Comm, OpeningProof>(
@@ -351,7 +356,7 @@ where
     };
 
     // Get PCS-specific challenges (FRI betas, query indices, etc.)
-    let pcs_challenges = SC::Pcs::get_challenges_circuit::<RATE>(
+    let pcs_challenges = SC::Pcs::get_challenges_circuit::<WIDTH, RATE>(
         circuit,
         &mut challenger,
         &proof_targets.opening_proof,
