@@ -19,6 +19,7 @@ use p3_uni_stark::{StarkGenericConfig, SymbolicExpression, Val};
 
 use super::{ObservableCommitment, VerificationError, recompose_quotient_from_chunks_circuit};
 use crate::challenger::CircuitChallenger;
+use crate::ops::Poseidon2Config;
 use crate::traits::{
     LookupMetadata, Recursive, RecursiveAir, RecursiveChallenger, RecursiveLookupGadget,
     RecursivePcs,
@@ -122,6 +123,7 @@ pub fn verify_p3_recursion_proof_circuit<
     pcs_params: &PcsVerifierParams<SC, InputProof, OpeningProof, Comm>,
     common_data: &CommonData<SC>,
     lookup_gadget: &LG,
+    poseidon2_config: Poseidon2Config,
 ) -> Result<BatchStarkVerifierInputsBuilder<SC, Comm, OpeningProof>, VerificationError>
 where
     <SC as StarkGenericConfig>::Pcs: RecursivePcs<
@@ -193,6 +195,7 @@ where
         pcs_params,
         common,
         lookup_gadget,
+        poseidon2_config,
     )?;
 
     Ok(verifier_inputs)
@@ -222,6 +225,7 @@ pub fn verify_batch_circuit<
     pcs_params: &PcsVerifierParams<SC, InputProof, OpeningProof, Comm>,
     common: &CommonDataTargets<SC, Comm>,
     lookup_gadget: &LG,
+    poseidon2_config: crate::ops::Poseidon2Config,
 ) -> Result<(), VerificationError>
 where
     A: RecursiveAir<Val<SC>, SC::Challenge, LG>,
@@ -352,7 +356,7 @@ where
     }
 
     // Challenger initialisation mirrors the native batch-STARK verifier transcript.
-    let mut challenger = CircuitChallenger::<WIDTH, RATE>::new();
+    let mut challenger = CircuitChallenger::<WIDTH, RATE>::new(poseidon2_config);
     let inst_count_target = circuit.alloc_const(
         SC::Challenge::from_usize(n_instances),
         "number of instances",

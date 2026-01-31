@@ -5,20 +5,14 @@
 //!
 //! # Implementation Status
 //!
-//! The challenger structure is complete, but the Poseidon2 permutation CTL is not yet wired.
-//! The current implementation uses placeholder public inputs for permutation outputs.
-//!
-//! To complete the implementation:
-//! 1. Wire up `circuit.add_poseidon2_perm()` in the `duplexing` method
-//! 2. Set `new_start: true` and `merkle_path: false` for challenger permutations
-//! 3. Remove the placeholder public input allocations
-//!
-//! Once Poseidon2 is wired, add transcript compatibility tests to verify exact
-//! match between circuit and native challenger outputs.
+//! The challenger computes Poseidon2 permutations via a witness hint. This ensures correct
+//! transcript values during circuit execution. Full soundness enforcement via CTLs
+//! (Cross-Table Lookups) can be added later by connecting to the Poseidon2 table.
 
 use alloc::vec;
 use alloc::vec::Vec;
 
+use p3_circuit::ops::Poseidon2Config;
 use p3_circuit::{CircuitBuilder, CircuitBuilderError};
 use p3_field::{ExtensionField, PrimeField64};
 
@@ -40,10 +34,13 @@ use crate::traits::RecursiveChallenger;
 /// When duplexing:
 /// 1. State[0..input_buffer.len()] is overwritten with inputs
 /// 2. State is recomposed to WIDTH/D extension elements
-/// 3. Poseidon2 permutation is applied via CTL
+/// 3. Poseidon2 permutation is applied (via witness hint, CTLs added later for soundness)
 /// 4. Output extension elements are decomposed back to coefficients
 /// 5. Output buffer is filled from state[0..RATE]
 pub struct CircuitChallenger<const WIDTH: usize, const RATE: usize> {
+    /// Poseidon2 configuration for the permutation.
+    poseidon2_config: Poseidon2Config,
+
     /// Sponge state: WIDTH base field coefficient targets.
     /// Each target represents a base field element embedded in EF.
     state: Vec<Target>,
@@ -61,9 +58,13 @@ pub struct CircuitChallenger<const WIDTH: usize, const RATE: usize> {
 impl<const WIDTH: usize, const RATE: usize> CircuitChallenger<WIDTH, RATE> {
     /// Create a new uninitialized circuit challenger.
     ///
+    /// # Parameters
+    /// - `poseidon2_config`: The Poseidon2 configuration to use for permutations
+    ///
     /// Call `init()` to initialize the state with zeros before use.
-    pub const fn new() -> Self {
+    pub const fn new(poseidon2_config: Poseidon2Config) -> Self {
         Self {
+            poseidon2_config,
             state: Vec::new(),
             input_buffer: Vec::new(),
             output_buffer: Vec::new(),
@@ -105,47 +106,42 @@ impl<const WIDTH: usize, const RATE: usize> CircuitChallenger<WIDTH, RATE> {
 
         // 2. Recompose WIDTH coefficient targets → WIDTH/D extension element targets
         let num_ext_limbs = WIDTH / EF::DIMENSION;
-        let ext_inputs: Vec<_> = (0..num_ext_limbs)
-            .map(|limb| {
-                let start = limb * EF::DIMENSION;
-                let end = start + EF::DIMENSION;
-                let coeffs = &self.state[start..end];
-                circuit
-                    .recompose_base_coeffs_to_ext::<BF>(coeffs)
-                    .expect("recomposition should succeed")
-            })
-            .collect();
+        assert_eq!(num_ext_limbs, 4, "Expected 4 extension limbs for WIDTH/D");
 
-        // 3. Call Poseidon2 via existing CTL
-        //
-        // NOTE: The Poseidon2 permutation CTL is not yet wired up. When implemented:
-        // - Call circuit.add_poseidon2_perm() with ext_inputs
-        // - The permutation will be applied to 4 extension elements
-        // - For challenger-specific permutations, set new_start: true, merkle_path: false
-        //
-        // For now, we use placeholder public inputs for outputs to establish circuit structure.
-        // The actual Poseidon2 wiring should replace this section.
-        let ext_outputs: Vec<Target> = (0..num_ext_limbs)
-            .map(|_| circuit.alloc_public_input("poseidon2_output_placeholder"))
-            .collect();
+        let ext_inputs: [Target; 4] = [
+            circuit
+                .recompose_base_coeffs_to_ext::<BF>(&self.state[0..EF::DIMENSION])
+                .expect("recomposition should succeed"),
+            circuit
+                .recompose_base_coeffs_to_ext::<BF>(&self.state[EF::DIMENSION..2 * EF::DIMENSION])
+                .expect("recomposition should succeed"),
+            circuit
+                .recompose_base_coeffs_to_ext::<BF>(
+                    &self.state[2 * EF::DIMENSION..3 * EF::DIMENSION],
+                )
+                .expect("recomposition should succeed"),
+            circuit
+                .recompose_base_coeffs_to_ext::<BF>(
+                    &self.state[3 * EF::DIMENSION..4 * EF::DIMENSION],
+                )
+                .expect("recomposition should succeed"),
+        ];
 
-        // 4. Decompose WIDTH/D extension outputs → WIDTH coefficient targets
-        for (limb, ext_out) in ext_outputs.iter().enumerate() {
+        // 3. Apply Poseidon2 permutation via witness hint
+        // (CTLs for soundness can be added later)
+        let ext_outputs = circuit
+            .add_poseidon2_perm_for_challenger(self.poseidon2_config, ext_inputs)
+            .expect("poseidon2 permutation should succeed");
+
+        // 4. Decompose 4 extension outputs → WIDTH coefficient targets
+        for (limb, &ext_out) in ext_outputs.iter().enumerate() {
             let coeffs = circuit
-                .decompose_ext_to_base_coeffs::<BF>(*ext_out)
+                .decompose_ext_to_base_coeffs::<BF>(ext_out)
                 .expect("decomposition should succeed");
             let start = limb * EF::DIMENSION;
             for (i, coeff) in coeffs.into_iter().enumerate() {
                 self.state[start + i] = coeff;
             }
-        }
-
-        // Constrain ext_inputs to the permutation inputs
-        // In the placeholder version, we use these as additional public inputs
-        // to ensure the circuit structure correctly depends on the state
-        for ext_in in ext_inputs.iter() {
-            let _placeholder = circuit.alloc_public_input("poseidon2_input_placeholder");
-            circuit.connect(*ext_in, _placeholder);
         }
 
         // 5. Fill output buffer from state[0..RATE]
@@ -154,9 +150,15 @@ impl<const WIDTH: usize, const RATE: usize> CircuitChallenger<WIDTH, RATE> {
     }
 }
 
-impl<const WIDTH: usize, const RATE: usize> Default for CircuitChallenger<WIDTH, RATE> {
-    fn default() -> Self {
-        Self::new()
+impl<const WIDTH: usize, const RATE: usize> CircuitChallenger<WIDTH, RATE> {
+    /// Create a challenger with BabyBear D4 Width16 configuration (default).
+    pub fn new_babybear() -> Self {
+        Self::new(Poseidon2Config::BabyBearD4Width16)
+    }
+
+    /// Create a challenger with KoalaBear D4 Width16 configuration.
+    pub fn new_koalabear() -> Self {
+        Self::new(Poseidon2Config::KoalaBearD4Width16)
     }
 }
 
@@ -258,9 +260,11 @@ where
 
 #[cfg(test)]
 mod tests {
-    use p3_baby_bear::BabyBear;
+    use p3_baby_bear::{BabyBear, default_babybear_poseidon2_16};
+    use p3_circuit::ops::generate_poseidon2_trace;
     use p3_field::extension::BinomialExtensionField;
     use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
+    use p3_poseidon2_circuit_air::BabyBearD4Width16;
 
     use super::*;
 
@@ -268,10 +272,20 @@ mod tests {
     const WIDTH: usize = 16;
     const RATE: usize = 8;
 
+    fn setup_circuit_with_poseidon2() -> CircuitBuilder<Ext4> {
+        let mut circuit = CircuitBuilder::<Ext4>::new();
+        let perm = default_babybear_poseidon2_16();
+        circuit.enable_poseidon2_perm::<BabyBearD4Width16, _>(
+            generate_poseidon2_trace::<Ext4, BabyBearD4Width16>,
+            perm,
+        );
+        circuit
+    }
+
     #[test]
     fn test_circuit_challenger_observe_sample() {
-        let mut circuit = CircuitBuilder::<Ext4>::new();
-        let mut challenger = CircuitChallenger::<WIDTH, RATE>::new();
+        let mut circuit = setup_circuit_with_poseidon2();
+        let mut challenger = CircuitChallenger::<WIDTH, RATE>::new_babybear();
 
         let val1 = circuit.add_const(Ext4::from(BabyBear::ONE));
         let val2 = circuit.add_const(Ext4::from(BabyBear::TWO));
@@ -285,8 +299,8 @@ mod tests {
 
     #[test]
     fn test_circuit_challenger_sample_ext_vec() {
-        let mut circuit = CircuitBuilder::<Ext4>::new();
-        let mut challenger = CircuitChallenger::<WIDTH, RATE>::new();
+        let mut circuit = setup_circuit_with_poseidon2();
+        let mut challenger = CircuitChallenger::<WIDTH, RATE>::new_babybear();
 
         let challenges =
             RecursiveChallenger::<BabyBear, Ext4>::sample_ext_vec(&mut challenger, &mut circuit, 3);
@@ -295,8 +309,8 @@ mod tests {
 
     #[test]
     fn test_circuit_challenger_observe_ext() {
-        let mut circuit = CircuitBuilder::<Ext4>::new();
-        let mut challenger = CircuitChallenger::<WIDTH, RATE>::new();
+        let mut circuit = setup_circuit_with_poseidon2();
+        let mut challenger = CircuitChallenger::<WIDTH, RATE>::new_babybear();
 
         // Observe an extension element (should decompose to 4 base coefficients)
         let ext_val = Ext4::from_basis_coefficients_slice(&[
@@ -315,8 +329,8 @@ mod tests {
 
     #[test]
     fn test_circuit_challenger_clear() {
-        let mut circuit = CircuitBuilder::<Ext4>::new();
-        let mut challenger = CircuitChallenger::<WIDTH, RATE>::new();
+        let mut circuit = setup_circuit_with_poseidon2();
+        let mut challenger = CircuitChallenger::<WIDTH, RATE>::new_babybear();
 
         let val = circuit.add_const(Ext4::from(BabyBear::ONE));
         RecursiveChallenger::<BabyBear, Ext4>::observe(&mut challenger, &mut circuit, val);
@@ -332,8 +346,8 @@ mod tests {
 
     #[test]
     fn test_circuit_challenger_duplexing_on_rate_full() {
-        let mut circuit = CircuitBuilder::<Ext4>::new();
-        let mut challenger = CircuitChallenger::<WIDTH, RATE>::new();
+        let mut circuit = setup_circuit_with_poseidon2();
+        let mut challenger = CircuitChallenger::<WIDTH, RATE>::new_babybear();
 
         // Observe RATE elements to trigger duplexing
         for i in 0..RATE {
@@ -349,8 +363,8 @@ mod tests {
 
     #[test]
     fn test_circuit_challenger_partial_absorb_then_sample() {
-        let mut circuit = CircuitBuilder::<Ext4>::new();
-        let mut challenger = CircuitChallenger::<WIDTH, RATE>::new();
+        let mut circuit = setup_circuit_with_poseidon2();
+        let mut challenger = CircuitChallenger::<WIDTH, RATE>::new_babybear();
 
         // Observe 3 elements (partial, not reaching RATE)
         for i in 0..3 {

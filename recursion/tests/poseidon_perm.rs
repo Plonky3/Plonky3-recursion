@@ -1,25 +1,23 @@
 mod common;
 
-use p3_baby_bear::{BabyBear as F, Poseidon2BabyBear};
+use p3_baby_bear::{BabyBear as F, default_babybear_poseidon2_16};
 use p3_circuit::CircuitBuilder;
-use p3_circuit::ops::Poseidon2CircuitRow;
-use p3_commit::ExtensionMmcs;
+use p3_circuit::ops::{Poseidon2CircuitRow, generate_poseidon2_trace};
 use p3_field::PrimeCharacteristicRing;
-use p3_fri::{TwoAdicFriPcs, create_test_fri_params};
+use p3_fri::create_test_fri_params;
 use p3_poseidon2::ExternalLayerConstants;
 use p3_poseidon2_air::RoundConstants;
 use p3_poseidon2_circuit_air::{
-    Poseidon2CircuitAirBabyBearD4Width16, extract_preprocessed_from_operations,
+    BabyBearD4Width16, Poseidon2CircuitAirBabyBearD4Width16, extract_preprocessed_from_operations,
 };
 use p3_recursion::pcs::fri::{
     FriProofTargets, FriVerifierParams, HashTargets, InputProofTargets, RecExtensionValMmcs,
     RecValMmcs, Witness,
 };
 use p3_recursion::public_inputs::StarkVerifierInputsBuilder;
-use p3_recursion::{VerificationError, generate_challenges, verify_circuit};
+use p3_recursion::{Poseidon2Config, VerificationError, generate_challenges, verify_circuit};
 use p3_uni_stark::{
-    StarkConfig, StarkGenericConfig, prove_with_preprocessed, setup_preprocessed,
-    verify_with_preprocessed,
+    StarkGenericConfig, prove_with_preprocessed, setup_preprocessed, verify_with_preprocessed,
 };
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
@@ -43,10 +41,13 @@ fn init_logger() {
 
 use crate::common::baby_bear_params::*;
 
+// Use base field challenges for this test to keep proof size manageable.
+// The common module uses extension field challenges (D=4), which would
+// create 4x more observations and circuit operations.
 type Challenge = F;
-type ChallengeMmcs = ExtensionMmcs<F, Challenge, ValMmcs>;
-type MyPcs = TwoAdicFriPcs<F, Dft, ValMmcs, ChallengeMmcs>;
-type MyConfig = StarkConfig<MyPcs, Challenge, Challenger>;
+type ChallengeMmcs = p3_commit::ExtensionMmcs<F, Challenge, ValMmcs>;
+type MyPcs = p3_fri::TwoAdicFriPcs<F, Dft, ValMmcs, ChallengeMmcs>;
+type MyConfig = p3_uni_stark::StarkConfig<MyPcs, Challenge, Challenger>;
 
 #[test]
 fn test_poseidon2_perm_verifier() -> Result<(), VerificationError> {
@@ -141,6 +142,11 @@ fn test_poseidon2_perm_verifier() -> Result<(), VerificationError> {
     >;
 
     let mut circuit_builder = CircuitBuilder::new();
+    let poseidon2_perm = default_babybear_poseidon2_16();
+    circuit_builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
+        generate_poseidon2_trace::<Challenge, BabyBearD4Width16>,
+        poseidon2_perm,
+    );
     let verifier_inputs =
         StarkVerifierInputsBuilder::<MyConfig, HashTargets<F, DIGEST_ELEMS>, InnerFri>::allocate(
             &mut circuit_builder,
@@ -165,6 +171,7 @@ fn test_poseidon2_perm_verifier() -> Result<(), VerificationError> {
         &verifier_inputs.air_public_targets,
         &verifier_inputs.preprocessed_commit,
         &fri_verifier_params,
+        Poseidon2Config::BabyBearD4Width16,
     )?;
 
     let circuit = circuit_builder.build()?;
