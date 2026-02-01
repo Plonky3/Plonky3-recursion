@@ -135,6 +135,10 @@ pub enum CircuitError {
     #[error("Preprocessed values should be base field elements")]
     InvalidPreprocessedValues,
 
+    /// Invalid preprocessing operation
+    #[error("Invalid preprocessing: {reason}")]
+    InvalidPreprocessing { reason: &'static str },
+
     /// Poseidon2 chaining requires previous state but none was available.
     #[error(
         "Poseidon2 chain missing previous state for operation {operation_index} (new_start=false but no previous permutation)"

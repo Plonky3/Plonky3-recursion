@@ -470,13 +470,16 @@ pub trait NonPrimitiveExecutor<F: Field>: Debug {
     /// Update the preprocessed values related to this operation. This consists of:
     /// - the preprocessed values for the associated table
     /// - the multiplicity for the `Witness` table.
+    ///
+    /// Uses the `PreprocessedColumns` API to ensure witness multiplicities are updated
+    /// consistently when reading from the witness table.
     fn preprocess(
         &self,
         _inputs: &[Vec<WitnessId>],
         _outputs: &[Vec<WitnessId>],
-        _primitive_preprocessed: &mut Vec<Vec<F>>,
-        _non_primitive_preprocessed: &mut NonPrimitivePreprocessedMap<F>,
-    ) {
+        _preprocessed: &mut crate::circuit::PreprocessedColumns<F>,
+    ) -> Result<(), crate::CircuitError> {
+        Ok(())
     }
 
     /// Clone as trait object

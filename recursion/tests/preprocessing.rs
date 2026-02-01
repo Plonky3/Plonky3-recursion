@@ -1,7 +1,7 @@
 mod common;
 
 use p3_air::{Air, AirBuilder, BaseAir};
-use p3_batch_stark::{CommonData, StarkInstance, prove_batch, verify_batch};
+use p3_batch_stark::{ProverData, StarkInstance, prove_batch, verify_batch};
 use p3_circuit::CircuitBuilder;
 use p3_field::Field;
 use p3_fri::create_test_fri_params;
@@ -287,13 +287,14 @@ fn test_batch_verifier_with_mixed_preprocessed() -> Result<(), VerificationError
         },
     ];
 
-    // Generate common data and batch proof
-    let common_data = CommonData::from_instances(&config, &instances);
+    // Generate prover data and batch proof
+    let prover_data = ProverData::from_instances(&config, &instances);
     let lookup_gadget = LogUpGadget::new();
-    let batch_proof = prove_batch(&config, &instances, &common_data);
+    let batch_proof = prove_batch(&config, &instances, &prover_data);
     let airs = [mixed_air1, mixed_air2, mixed_air3];
+    let common_data = &prover_data.common;
 
-    verify_batch(&config, &airs, &batch_proof, &pvs, &common_data).unwrap();
+    verify_batch(&config, &airs, &batch_proof, &pvs, common_data).unwrap();
 
     // Create AIRs vector for verification circuit
     let airs = vec![mixed_air1, mixed_air2, mixed_air3];
@@ -314,7 +315,7 @@ fn test_batch_verifier_with_mixed_preprocessed() -> Result<(), VerificationError
     >::allocate(
         &mut circuit_builder,
         &batch_proof,
-        &common_data,
+        common_data,
         &air_public_counts,
     );
 
@@ -348,7 +349,7 @@ fn test_batch_verifier_with_mixed_preprocessed() -> Result<(), VerificationError
         &batch_proof,
         &pvs,
         Some(&[pow_bits, log_height_max]),
-        &common_data,
+        common_data,
         &lookup_gadget,
     )?;
 
@@ -356,7 +357,7 @@ fn test_batch_verifier_with_mixed_preprocessed() -> Result<(), VerificationError
     let public_inputs = verifier_inputs.pack_values(
         &pvs, // public inputs for each AIR
         &batch_proof,
-        &common_data,
+        common_data,
         &all_challenges,
     );
 

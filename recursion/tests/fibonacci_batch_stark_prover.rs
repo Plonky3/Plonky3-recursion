@@ -1,11 +1,11 @@
 mod common;
 
-use p3_batch_stark::CommonData;
+use p3_batch_stark::ProverData;
 use p3_circuit::CircuitBuilder;
 use p3_circuit_prover::air::{AddAir, ConstAir, MulAir, PublicAir, WitnessAir};
 use p3_circuit_prover::batch_stark_prover::PrimitiveTable;
 use p3_circuit_prover::common::get_airs_and_degrees_with_prep;
-use p3_circuit_prover::{BatchStarkProver, TablePacking};
+use p3_circuit_prover::{BatchStarkProver, CircuitProverData, TablePacking};
 use p3_field::PrimeCharacteristicRing;
 use p3_fri::create_test_fri_params;
 use p3_lookup::logup::LogUpGadget;
@@ -61,7 +61,7 @@ fn test_fibonacci_batch_verifier() {
     let config_proving = MyConfig::new(pcs_proving, challenger_proving);
 
     let circuit = builder.build().unwrap();
-    let (airs_degrees, witness_multiplicities) =
+    let (airs_degrees, preprocessed_columns) =
         get_airs_and_degrees_with_prep::<MyConfig, _, 1>(&circuit, table_packing, None).unwrap();
     let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
     let mut runner = circuit.runner();
@@ -72,18 +72,20 @@ fn test_fibonacci_batch_verifier() {
 
     let traces = runner.run().unwrap();
 
-    // Create common data for proving and verifying.
-    let common = CommonData::from_airs_and_degrees(&config_proving, &mut airs, &degrees);
+    // Create prover data for proving and verifying.
+    let prover_data = ProverData::from_airs_and_degrees(&config_proving, &mut airs, &degrees);
+    let circuit_prover_data = CircuitProverData::new(prover_data, preprocessed_columns);
 
     let prover = BatchStarkProver::new(config_proving).with_table_packing(table_packing);
 
     let lookup_gadget = LogUpGadget::new();
     let batch_stark_proof = prover
-        .prove_all_tables(&traces, &common, witness_multiplicities)
+        .prove_all_tables(&traces, &circuit_prover_data)
         .unwrap();
 
+    let common = circuit_prover_data.common_data();
     prover
-        .verify_all_tables(&batch_stark_proof, &common)
+        .verify_all_tables(&batch_stark_proof, common)
         .unwrap();
 
     // Now verify the batch STARK proof recursively
@@ -147,7 +149,7 @@ fn test_fibonacci_batch_verifier() {
         &mut circuit_builder,
         &batch_stark_proof,
         &fri_verifier_params,
-        &common,
+        common,
         &lookup_gadget,
     )
     .unwrap();
@@ -163,13 +165,13 @@ fn test_fibonacci_batch_verifier() {
         batch_proof,
         &pis,
         Some(&[pow_bits, log_height_max]),
-        &common,
+        common,
         &lookup_gadget,
     )
     .unwrap();
 
     // Pack values using the builder
-    let public_inputs = verifier_inputs.pack_values(&pis, batch_proof, &common, &all_challenges);
+    let public_inputs = verifier_inputs.pack_values(&pis, batch_proof, common, &all_challenges);
 
     assert_eq!(public_inputs.len(), expected_public_input_len);
     assert!(!public_inputs.is_empty());

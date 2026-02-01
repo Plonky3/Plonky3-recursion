@@ -1,11 +1,12 @@
 mod common;
 
-use p3_batch_stark::CommonData;
+use p3_batch_stark::{CommonData, ProverData};
 use p3_circuit::CircuitBuilder;
+use p3_circuit::op::PrimitiveOpType;
 use p3_circuit_prover::air::{AddAir, ConstAir, MulAir, PublicAir, WitnessAir};
 use p3_circuit_prover::batch_stark_prover::PrimitiveTable;
 use p3_circuit_prover::common::get_airs_and_degrees_with_prep;
-use p3_circuit_prover::{BatchStarkProof, BatchStarkProver, TablePacking};
+use p3_circuit_prover::{BatchStarkProof, BatchStarkProver, CircuitProverData, TablePacking};
 use p3_field::PrimeCharacteristicRing;
 use p3_fri::create_test_fri_params;
 use p3_lookup::logup::LogUpGadget;
@@ -33,16 +34,17 @@ fn repeated_arith(a: usize, b: usize, x: usize, n: usize) -> usize {
 fn test_arith_lookups() {
     let TestCircuitProofData {
         mut batch_stark_proof,
-        common,
+        circuit_prover_data,
         lookup_gadget,
         config,
         params,
         pis,
         prover,
     } = get_test_circuit_proof();
+    let common = circuit_prover_data.common_data();
 
     prover
-        .verify_all_tables(&batch_stark_proof, &common)
+        .verify_all_tables(&batch_stark_proof, common)
         .unwrap();
 
     // Build the recursive verification circuit
@@ -53,7 +55,7 @@ fn test_arith_lookups() {
         &config,
         &params,
         &mut batch_stark_proof,
-        &common,
+        common,
         &pis,
         None,
         &lookup_gadget,
@@ -68,7 +70,7 @@ fn test_arith_lookups() {
     let public_inputs =
         verifier_inputs
             .unwrap()
-            .pack_values(&pis, batch_proof, &common, &all_challenges.unwrap());
+            .pack_values(&pis, batch_proof, common, &all_challenges.unwrap());
 
     assert_eq!(public_inputs.len(), expected_public_input_len);
     assert!(!public_inputs.is_empty());
@@ -92,11 +94,12 @@ fn test_wrong_multiplicities() {
     let config_proving = get_proving_config();
 
     let circuit = builder.build().unwrap();
-    let (airs_degrees, mut witness_multiplicities) =
+    let (airs_degrees, mut preprocessed_columns) =
         get_airs_and_degrees_with_prep::<MyConfig, _, 1>(&circuit, table_packing, None).unwrap();
 
     // Introduce an error in the witness multiplicities.
-    witness_multiplicities[PrimitiveTable::Add as usize] += F::ONE;
+    preprocessed_columns.primitive[PrimitiveOpType::Witness as usize]
+        [PrimitiveTable::Add as usize] += F::ONE;
     let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
     let mut runner = circuit.runner();
 
@@ -116,16 +119,18 @@ fn test_wrong_multiplicities() {
 
     let traces = runner.run().unwrap();
 
-    // Create common data for proving and verifying.
-    let common = CommonData::from_airs_and_degrees(&config_proving, &mut airs, &degrees);
+    // Create prover data for proving and verifying.
+    let prover_data = ProverData::from_airs_and_degrees(&config_proving, &mut airs, &degrees);
+    let circuit_prover_data = CircuitProverData::new(prover_data, preprocessed_columns);
 
     let prover = BatchStarkProver::new(config_proving).with_table_packing(table_packing);
 
     // Prove the circuit.
     let lookup_gadget = LogUpGadget::new();
     let mut batch_stark_proof = prover
-        .prove_all_tables(&traces, &common, witness_multiplicities)
+        .prove_all_tables(&traces, &circuit_prover_data)
         .unwrap();
+    let common = circuit_prover_data.common_data();
 
     // Now verify the batch STARK proof recursively
     let (config, fri_verifier_params, pow_bits, log_height_max) = get_recursive_config_and_params();
@@ -147,7 +152,7 @@ fn test_wrong_multiplicities() {
         &config,
         &params,
         &mut batch_stark_proof,
-        &common,
+        common,
         &pis,
         None,
         &lookup_gadget,
@@ -162,7 +167,7 @@ fn test_wrong_multiplicities() {
     let public_inputs =
         verifier_inputs
             .unwrap()
-            .pack_values(&pis, batch_proof, &common, &all_challenges.unwrap());
+            .pack_values(&pis, batch_proof, common, &all_challenges.unwrap());
 
     assert_eq!(public_inputs.len(), expected_public_input_len);
     assert!(!public_inputs.is_empty());
@@ -181,13 +186,14 @@ fn test_wrong_multiplicities() {
 fn test_wrong_expected_cumulated() {
     let TestCircuitProofData {
         mut batch_stark_proof,
-        common,
+        circuit_prover_data,
         lookup_gadget,
         config,
         params,
         pis,
         ..
     } = get_test_circuit_proof();
+    let common = circuit_prover_data.common_data();
 
     // Introduce an error in the global expected cumulated values for the first lookup.
     // This leads to the sum of all expected cumulated values being off by 1,
@@ -204,7 +210,7 @@ fn test_wrong_expected_cumulated() {
         &config,
         &params,
         &mut batch_stark_proof,
-        &common,
+        common,
         &pis,
         None,
         &lookup_gadget,
@@ -218,7 +224,7 @@ fn test_wrong_expected_cumulated() {
     let public_inputs = verifier_inputs.unwrap().pack_values(
         &pis,
         &batch_stark_proof.proof,
-        &common,
+        common,
         &all_challenges.unwrap(),
     );
 
@@ -240,13 +246,14 @@ fn test_wrong_expected_cumulated() {
 fn test_inconsistent_lookup_name() {
     let TestCircuitProofData {
         mut batch_stark_proof,
-        common,
+        circuit_prover_data,
         lookup_gadget,
         config,
         params,
         pis,
         ..
     } = get_test_circuit_proof();
+    let common = circuit_prover_data.common_data();
 
     let real_lookup_data = batch_stark_proof.proof.global_lookup_data.clone();
     // First, modify the first global lookup data's name.
@@ -264,7 +271,7 @@ fn test_inconsistent_lookup_name() {
         &config,
         &params,
         &mut batch_stark_proof,
-        &common,
+        common,
         &pis,
         Some(&fake_global_lookup_data),
         &lookup_gadget,
@@ -289,7 +296,7 @@ fn test_inconsistent_lookup_name() {
         &config,
         &params,
         &mut batch_stark_proof,
-        &common,
+        common,
         &pis,
         Some(real_lookup_data.as_slice()),
         &lookup_gadget,
@@ -303,7 +310,7 @@ fn test_inconsistent_lookup_name() {
     let public_inputs = verifier_inputs.unwrap().pack_values(
         &pis,
         &batch_stark_proof.proof,
-        &common,
+        common,
         &all_challenges.unwrap(),
     );
 
@@ -324,13 +331,14 @@ fn test_inconsistent_lookup_name() {
 fn test_inconsistent_lookup_commitment_shape() {
     let TestCircuitProofData {
         mut batch_stark_proof,
-        common,
+        circuit_prover_data,
         lookup_gadget,
         config,
         params,
         pis,
         ..
     } = get_test_circuit_proof();
+    let common = circuit_prover_data.common_data();
 
     let real_lookup_data = batch_stark_proof.proof.global_lookup_data.clone();
     batch_stark_proof.proof.global_lookup_data = real_lookup_data;
@@ -344,7 +352,7 @@ fn test_inconsistent_lookup_commitment_shape() {
         &config,
         &params,
         &mut batch_stark_proof,
-        &common,
+        common,
         &pis,
         None,
         &lookup_gadget,
@@ -364,13 +372,14 @@ fn test_inconsistent_lookup_commitment_shape() {
 fn test_inconsistent_lookup_order_shape() {
     let TestCircuitProofData {
         mut batch_stark_proof,
-        common,
+        circuit_prover_data,
         lookup_gadget,
         config,
         params,
         pis,
         ..
     } = get_test_circuit_proof();
+    let common = circuit_prover_data.common_data();
 
     let real_lookup_data = batch_stark_proof.proof.global_lookup_data.clone();
     let mut fake_global_lookup_data = real_lookup_data.clone();
@@ -386,7 +395,7 @@ fn test_inconsistent_lookup_order_shape() {
         &config,
         &params,
         &mut batch_stark_proof,
-        &common,
+        common,
         &pis,
         Some(&fake_global_lookup_data),
         &lookup_gadget,
@@ -409,7 +418,7 @@ fn test_inconsistent_lookup_order_shape() {
         &config,
         &params,
         &mut batch_stark_proof,
-        &common,
+        common,
         &pis,
         Some(real_lookup_data.as_slice()),
         &lookup_gadget,
@@ -421,13 +430,14 @@ fn test_inconsistent_lookup_order_shape() {
 fn test_extra_global_lookup() {
     let TestCircuitProofData {
         mut batch_stark_proof,
-        common,
+        circuit_prover_data,
         lookup_gadget,
         config,
         params,
         pis,
         ..
     } = get_test_circuit_proof();
+    let common = circuit_prover_data.common_data();
 
     let real_lookup_data = batch_stark_proof.proof.global_lookup_data.clone();
     let fake_lookup = LookupData {
@@ -447,7 +457,7 @@ fn test_extra_global_lookup() {
         &config,
         &params,
         &mut batch_stark_proof,
-        &common,
+        common,
         &pis,
         Some(&fake_global_lookup_data),
         &lookup_gadget,
@@ -470,7 +480,7 @@ fn test_extra_global_lookup() {
         &config,
         &params,
         &mut batch_stark_proof,
-        &common,
+        common,
         &pis,
         Some(real_lookup_data.as_slice()),
         &lookup_gadget,
@@ -482,13 +492,14 @@ fn test_extra_global_lookup() {
 fn test_missing_global_lookup() {
     let TestCircuitProofData {
         mut batch_stark_proof,
-        common,
+        circuit_prover_data,
         lookup_gadget,
         config,
         params,
         pis,
         ..
     } = get_test_circuit_proof();
+    let common = circuit_prover_data.common_data();
 
     let real_lookup_data = batch_stark_proof.proof.global_lookup_data.clone();
     let mut fake_global_lookup_data = real_lookup_data.clone();
@@ -504,7 +515,7 @@ fn test_missing_global_lookup() {
         &config,
         &params,
         &mut batch_stark_proof,
-        &common,
+        common,
         &pis,
         Some(&fake_global_lookup_data),
         &lookup_gadget,
@@ -527,7 +538,7 @@ fn test_missing_global_lookup() {
         &config,
         &params,
         &mut batch_stark_proof,
-        &common,
+        common,
         &pis,
         Some(real_lookup_data.as_slice()),
         &lookup_gadget,
@@ -544,7 +555,7 @@ fn test_missing_global_lookup() {
 
 struct TestCircuitProofData {
     batch_stark_proof: BatchStarkProof<MyConfig>,
-    common: CommonData<MyConfig>,
+    circuit_prover_data: CircuitProverData<MyConfig>,
     lookup_gadget: LogUpGadget,
     config: MyConfig,
     params: Parameters,
@@ -563,7 +574,7 @@ fn get_test_circuit_proof() -> TestCircuitProofData {
     let config_proving = get_proving_config();
 
     let circuit = builder.build().unwrap();
-    let (airs_degrees, witness_multiplicities) =
+    let (airs_degrees, preprocessed_columns) =
         get_airs_and_degrees_with_prep::<MyConfig, _, 1>(&circuit, table_packing, None).unwrap();
 
     let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
@@ -585,13 +596,14 @@ fn get_test_circuit_proof() -> TestCircuitProofData {
 
     let traces = runner.run().unwrap();
 
-    // Create common data for proving and verifying.
-    let common = CommonData::from_airs_and_degrees(&config_proving, &mut airs, &degrees);
+    // Create prover data for proving and verifying.
+    let prover_data = ProverData::from_airs_and_degrees(&config_proving, &mut airs, &degrees);
+    let circuit_prover_data = CircuitProverData::new(prover_data, preprocessed_columns);
 
     let lookup_gadget = LogUpGadget::new();
     let prover = BatchStarkProver::new(config_proving).with_table_packing(table_packing);
     let batch_stark_proof = prover
-        .prove_all_tables(&traces, &common, witness_multiplicities)
+        .prove_all_tables(&traces, &circuit_prover_data)
         .unwrap();
 
     let (config, fri_verifier_params, pow_bits, log_height_max) = get_recursive_config_and_params();
@@ -604,7 +616,7 @@ fn get_test_circuit_proof() -> TestCircuitProofData {
 
     TestCircuitProofData {
         batch_stark_proof,
-        common,
+        circuit_prover_data,
         lookup_gadget,
         config,
         params,

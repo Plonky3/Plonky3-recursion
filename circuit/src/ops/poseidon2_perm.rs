@@ -36,7 +36,7 @@ use crate::builder::{CircuitBuilder, NonPrimitiveOpParams};
 use crate::circuit::CircuitField;
 use crate::op::{
     ExecutionContext, NonPrimitiveExecutor, NonPrimitiveOpConfig, NonPrimitiveOpPrivateData,
-    NonPrimitiveOpType, OpExecutionState, PrimitiveOpType,
+    NonPrimitiveOpType, OpExecutionState,
 };
 use crate::tables::NonPrimitiveTrace;
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessId};
@@ -509,23 +509,9 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for Poseidon2Perm
         &self,
         inputs: &[Vec<WitnessId>],
         outputs: &[Vec<WitnessId>],
-        primitive_preprocessed: &mut Vec<Vec<F>>,
-        non_primitive_preprocessed: &mut crate::op::NonPrimitivePreprocessedMap<F>,
-    ) {
-        let witness_table_idx = PrimitiveOpType::Witness as usize;
-        let update_witness_table = |witness_ids: &[WitnessId], p_ts: &mut Vec<Vec<F>>| {
-            for witness_id in witness_ids {
-                let idx = witness_id.0 as usize;
-                if idx >= p_ts[witness_table_idx].len() {
-                    p_ts[witness_table_idx].resize(idx + 1, F::from_u32(0));
-                }
-                p_ts[witness_table_idx][idx] += F::ONE;
-            }
-        };
-
+        preprocessed: &mut crate::circuit::PreprocessedColumns<F>,
+    ) -> Result<(), CircuitError> {
         // We need to populate in_ctl and out_ctl for this operation.
-        let entry = non_primitive_preprocessed.entry(self.op_type).or_default();
-
         // The inputs have shape:
         // inputs[0..3]: input limbs, inputs[4]: mmcs_index_sum, inputs[5]: mmcs_bit
         // The outputs have shape:
@@ -537,16 +523,15 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for Poseidon2Perm
         for (limb_idx, inp) in inputs[0..4].iter().enumerate() {
             if inp.is_empty() {
                 // Private input
-                entry.push(F::ZERO); // in_idx
-                entry.push(F::ZERO); // in_ctl
+                preprocessed.register_non_primitive_preprocessed_no_read(
+                    self.op_type,
+                    &[F::ZERO, F::ZERO], // in_idx, in_ctl
+                );
             } else {
-                // Exposed input
-                entry.push(F::from_u32(inp[0].0)); // in_idx
-                entry.push(F::ONE); // in_ctl
-
-                // In this case, we are reading the input limbs from the witness table,
-                // so we need to update the associated witness table multiplicities.
-                update_witness_table(inp, primitive_preprocessed);
+                // Exposed input: register the witness read (updates multiplicities)
+                preprocessed.register_non_primitive_witness_reads(self.op_type, inp)?;
+                // Add in_ctl value
+                preprocessed.register_non_primitive_preprocessed_no_read(self.op_type, &[F::ONE]);
             }
             let normal_chain_sel =
                 if !self.new_start && !self.merkle_path && inputs[limb_idx].is_empty() {
@@ -555,7 +540,8 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for Poseidon2Perm
                     F::ZERO
                 };
 
-            entry.push(normal_chain_sel);
+            preprocessed
+                .register_non_primitive_preprocessed_no_read(self.op_type, &[normal_chain_sel]);
 
             let merkle_chain_sel =
                 if !self.new_start && self.merkle_path && inputs[limb_idx].is_empty() {
@@ -563,38 +549,42 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for Poseidon2Perm
                 } else {
                     F::ZERO
                 };
-            entry.push(merkle_chain_sel);
+            preprocessed
+                .register_non_primitive_preprocessed_no_read(self.op_type, &[merkle_chain_sel]);
         }
 
         for out in outputs[0..2].iter() {
             if out.is_empty() {
                 // Private output
-                entry.push(F::ZERO); // out_idx
-                entry.push(F::ZERO); // out_ctl
+                preprocessed.register_non_primitive_preprocessed_no_read(
+                    self.op_type,
+                    &[F::ZERO, F::ZERO], // out_idx, out_ctl
+                );
             } else {
-                // Exposed output
-                entry.push(F::from_u32(out[0].0)); // out_idx
-                entry.push(F::ONE); // out_ctl
-
-                // In this case, we are reading the output limbs from the witness table,
-                // so we need to update the associated witness table multiplicities.
-                update_witness_table(out, primitive_preprocessed);
+                // Exposed output: register the witness read (updates multiplicities)
+                preprocessed.register_non_primitive_witness_reads(self.op_type, out)?;
+                // Add out_ctl value
+                preprocessed.register_non_primitive_preprocessed_no_read(self.op_type, &[F::ONE]);
             }
         }
 
         // Index of mmcs_index_sum
         if inputs[4].is_empty() {
-            entry.push(F::ZERO);
+            preprocessed.register_non_primitive_preprocessed_no_read(self.op_type, &[F::ZERO]);
         } else {
-            entry.push(F::from_u32(inputs[4][0].0));
-            // In this case, we are reading the MMCS index sum from the witness table,
-            // so we need to update the associated witness table multiplicities.
-            update_witness_table(&inputs[4], primitive_preprocessed);
+            // Register the witness read (updates multiplicities)
+            preprocessed.register_non_primitive_witness_reads(self.op_type, &inputs[4])?;
         }
 
         // We need to insert `new_start` and `merkle_path` as well.
-        entry.push(if self.new_start { F::ONE } else { F::ZERO });
-        entry.push(if self.merkle_path { F::ONE } else { F::ZERO });
+        let new_start_val = if self.new_start { F::ONE } else { F::ZERO };
+        let merkle_path_val = if self.merkle_path { F::ONE } else { F::ZERO };
+        preprocessed.register_non_primitive_preprocessed_no_read(
+            self.op_type,
+            &[new_start_val, merkle_path_val],
+        );
+
+        Ok(())
     }
 
     fn boxed(&self) -> Box<dyn NonPrimitiveExecutor<F>> {

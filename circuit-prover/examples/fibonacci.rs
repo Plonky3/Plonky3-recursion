@@ -4,11 +4,11 @@ use std::error::Error;
 /// Fibonacci circuit: Compute F(n) and prove correctness
 /// Public input: expected_result (F(n))
 use p3_baby_bear::BabyBear;
-use p3_batch_stark::CommonData;
+use p3_batch_stark::ProverData;
 use p3_circuit::CircuitBuilder;
 use p3_circuit_prover::common::get_airs_and_degrees_with_prep;
 use p3_circuit_prover::config::BabyBearConfig;
-use p3_circuit_prover::{BatchStarkProver, TablePacking, config};
+use p3_circuit_prover::{BatchStarkProver, CircuitProverData, TablePacking, config};
 use p3_field::PrimeCharacteristicRing;
 use tracing_forest::ForestLayer;
 use tracing_forest::util::LevelFilter;
@@ -63,7 +63,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let circuit = builder.build()?;
     let table_packing = TablePacking::new(4, 4, 1);
 
-    let (airs_degrees, witness_multiplicities) =
+    let (airs_degrees, preprocessed_columns) =
         get_airs_and_degrees_with_prep::<BabyBearConfig, _, 1>(&circuit, table_packing, None)
             .unwrap();
     let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
@@ -74,11 +74,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     runner.set_public_inputs(&[expected_fib])?;
 
     let traces = runner.run()?;
-    let common = CommonData::from_airs_and_degrees(&config, &mut airs, &degrees);
+    let prover_data = ProverData::from_airs_and_degrees(&config, &mut airs, &degrees);
+    let circuit_prover_data = CircuitProverData::new(prover_data, preprocessed_columns);
     let prover = BatchStarkProver::new(config).with_table_packing(table_packing);
 
-    let proof = prover.prove_all_tables(&traces, &common, witness_multiplicities)?;
-    prover.verify_all_tables(&proof, &common)?;
+    let proof = prover.prove_all_tables(&traces, &circuit_prover_data)?;
+    prover.verify_all_tables(&proof, circuit_prover_data.common_data())?;
     Ok(())
 }
 

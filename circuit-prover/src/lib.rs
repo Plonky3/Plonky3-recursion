@@ -45,7 +45,7 @@ pub mod field_params;
 
 // Re-export main API
 pub use batch_stark_prover::{
-    BatchStarkProof, BatchStarkProver, BatchTableInstance, DynamicAirEntry, NonPrimitiveTableEntry,
-    Poseidon2Prover, TablePacking, TableProver,
+    BatchStarkProof, BatchStarkProver, BatchTableInstance, CircuitProverData, DynamicAirEntry,
+    NonPrimitiveTableEntry, Poseidon2Prover, TablePacking, TableProver,
 };
 pub use p3_circuit::op::Poseidon2Config;
