@@ -213,6 +213,11 @@ impl<const WIDTH: usize, const RATE: usize> CircuitChallenger<WIDTH, RATE> {
     pub const fn new_koalabear() -> Self {
         Self::new(Poseidon2Config::KoalaBearD4Width16)
     }
+
+    /// Create a challenger with KoalaBear D1 Width16 configuration (base field challenges).
+    pub const fn new_koalabear_base() -> Self {
+        Self::new(Poseidon2Config::KoalaBearD1Width16)
+    }
 }
 
 impl<BF, EF, const WIDTH: usize, const RATE: usize> RecursiveChallenger<BF, EF>

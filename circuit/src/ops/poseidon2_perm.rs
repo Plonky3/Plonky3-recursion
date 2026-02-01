@@ -52,6 +52,8 @@ pub enum Poseidon2Config {
     BabyBearD1Width16,
     BabyBearD4Width16,
     BabyBearD4Width24,
+    /// KoalaBear with extension degree D=1 (base field challenges), width 16.
+    KoalaBearD1Width16,
     KoalaBearD4Width16,
     KoalaBearD4Width24,
 }
@@ -59,7 +61,7 @@ pub enum Poseidon2Config {
 impl Poseidon2Config {
     pub const fn d(self) -> usize {
         match self {
-            Self::BabyBearD1Width16 => 1,
+            Self::BabyBearD1Width16 | Self::KoalaBearD1Width16 => 1,
             Self::BabyBearD4Width16
             | Self::BabyBearD4Width24
             | Self::KoalaBearD4Width16
@@ -69,7 +71,10 @@ impl Poseidon2Config {
 
     pub const fn width(self) -> usize {
         match self {
-            Self::BabyBearD1Width16 | Self::BabyBearD4Width16 | Self::KoalaBearD4Width16 => 16,
+            Self::BabyBearD1Width16
+            | Self::BabyBearD4Width16
+            | Self::KoalaBearD1Width16
+            | Self::KoalaBearD4Width16 => 16,
             Self::BabyBearD4Width24 | Self::KoalaBearD4Width24 => 24,
         }
     }
@@ -77,7 +82,7 @@ impl Poseidon2Config {
     /// Rate in extension field elements (WIDTH / D for D=4, or WIDTH for D=1).
     pub const fn rate_ext(self) -> usize {
         match self {
-            Self::BabyBearD1Width16 => 8, // 16 base elements, rate = 8 for sponge
+            Self::BabyBearD1Width16 | Self::KoalaBearD1Width16 => 8, // 16 base elements, rate = 8 for sponge
             Self::BabyBearD4Width16 | Self::KoalaBearD4Width16 => 2,
             Self::BabyBearD4Width24 | Self::KoalaBearD4Width24 => 4,
         }
@@ -90,7 +95,7 @@ impl Poseidon2Config {
     /// Capacity in extension field elements.
     pub const fn capacity_ext(self) -> usize {
         match self {
-            Self::BabyBearD1Width16 => 8, // 16 - 8 = 8 capacity
+            Self::BabyBearD1Width16 | Self::KoalaBearD1Width16 => 8, // 16 - 8 = 8 capacity
             Self::BabyBearD4Width16
             | Self::BabyBearD4Width24
             | Self::KoalaBearD4Width16
@@ -101,14 +106,14 @@ impl Poseidon2Config {
     pub const fn sbox_degree(self) -> u64 {
         match self {
             Self::BabyBearD1Width16 | Self::BabyBearD4Width16 | Self::BabyBearD4Width24 => 7,
-            Self::KoalaBearD4Width16 | Self::KoalaBearD4Width24 => 3,
+            Self::KoalaBearD1Width16 | Self::KoalaBearD4Width16 | Self::KoalaBearD4Width24 => 3,
         }
     }
 
     pub const fn sbox_registers(self) -> usize {
         match self {
             Self::BabyBearD1Width16 | Self::BabyBearD4Width16 | Self::BabyBearD4Width24 => 1,
-            Self::KoalaBearD4Width16 | Self::KoalaBearD4Width24 => 0,
+            Self::KoalaBearD1Width16 | Self::KoalaBearD4Width16 | Self::KoalaBearD4Width24 => 0,
         }
     }
 
@@ -117,6 +122,7 @@ impl Poseidon2Config {
             Self::BabyBearD1Width16
             | Self::BabyBearD4Width16
             | Self::BabyBearD4Width24
+            | Self::KoalaBearD1Width16
             | Self::KoalaBearD4Width16
             | Self::KoalaBearD4Width24 => 4,
         }
@@ -126,7 +132,7 @@ impl Poseidon2Config {
         match self {
             Self::BabyBearD1Width16 | Self::BabyBearD4Width16 => 13,
             Self::BabyBearD4Width24 => 21,
-            Self::KoalaBearD4Width16 => 20,
+            Self::KoalaBearD1Width16 | Self::KoalaBearD4Width16 => 20,
             Self::KoalaBearD4Width24 => 23,
         }
     }
@@ -757,6 +763,17 @@ pub struct BabyBearD1Width16;
 impl Poseidon2Params for BabyBearD1Width16 {
     type BaseField = p3_baby_bear::BabyBear;
     const CONFIG: Poseidon2Config = Poseidon2Config::BabyBearD1Width16;
+}
+
+/// KoalaBear D=1 Width=16 configuration for base field challenges.
+///
+/// This is used when the challenge type is the base field itself (no extension).
+/// The Poseidon2 permutation operates directly on 16 base field elements.
+pub struct KoalaBearD1Width16;
+
+impl Poseidon2Params for KoalaBearD1Width16 {
+    type BaseField = p3_koala_bear::KoalaBear;
+    const CONFIG: Poseidon2Config = Poseidon2Config::KoalaBearD1Width16;
 }
 
 /// Poseidon2 operation table row.

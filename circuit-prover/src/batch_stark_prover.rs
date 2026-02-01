@@ -1819,7 +1819,8 @@ impl Poseidon2Prover {
                     Poseidon2CircuitAirBabyBearD4Width24::new(Self::baby_bear_constants_24()),
                 ))
             }
-            Poseidon2Config::KoalaBearD4Width16 => {
+            // D=1 and D=4 use the same underlying AIR (operates on 16 base field elements)
+            Poseidon2Config::KoalaBearD1Width16 | Poseidon2Config::KoalaBearD4Width16 => {
                 Poseidon2AirWrapperInner::KoalaBearD4Width16(Box::new(
                     Poseidon2CircuitAirKoalaBearD4Width16::new(Self::koala_bear_constants_16()),
                 ))
@@ -1856,7 +1857,8 @@ impl Poseidon2Prover {
                     ),
                 ))
             }
-            Poseidon2Config::KoalaBearD4Width16 => {
+            // D=1 and D=4 use the same underlying AIR (operates on 16 base field elements)
+            Poseidon2Config::KoalaBearD1Width16 | Poseidon2Config::KoalaBearD4Width16 => {
                 assert!(F::from_u64(KOALA_BEAR_MODULUS) == F::ZERO,);
                 Poseidon2AirWrapperInner::KoalaBearD4Width16(Box::new(
                     Poseidon2CircuitAirKoalaBearD4Width16::new_with_preprocessed(
@@ -1905,7 +1907,8 @@ impl Poseidon2Prover {
             Poseidon2Config::BabyBearD4Width24 => {
                 Poseidon2CircuitAirBabyBearD4Width24::new(Self::baby_bear_constants_24()).width()
             }
-            Poseidon2Config::KoalaBearD4Width16 => {
+            // D=1 and D=4 use the same underlying AIR
+            Poseidon2Config::KoalaBearD1Width16 | Poseidon2Config::KoalaBearD4Width16 => {
                 Poseidon2CircuitAirKoalaBearD4Width16::new(Self::koala_bear_constants_16()).width()
             }
             Poseidon2Config::KoalaBearD4Width24 => {
@@ -1923,7 +1926,8 @@ impl Poseidon2Prover {
             Poseidon2Config::BabyBearD4Width24 => {
                 Poseidon2CircuitAirBabyBearD4Width24::preprocessed_width()
             }
-            Poseidon2Config::KoalaBearD4Width16 => {
+            // D=1 and D=4 use the same underlying AIR
+            Poseidon2Config::KoalaBearD1Width16 | Poseidon2Config::KoalaBearD4Width16 => {
                 Poseidon2CircuitAirKoalaBearD4Width16::preprocessed_width()
             }
             Poseidon2Config::KoalaBearD4Width24 => {
@@ -1962,7 +1966,8 @@ impl Poseidon2Prover {
             Poseidon2Config::BabyBearD4Width24 => {
                 self.batch_instance_base_impl::<SC, p3_baby_bear::BabyBear, 24, 4, 21, 4>(t)
             }
-            Poseidon2Config::KoalaBearD4Width16 => {
+            // D=1 and D=4 use the same underlying AIR
+            Poseidon2Config::KoalaBearD1Width16 | Poseidon2Config::KoalaBearD4Width16 => {
                 self.batch_instance_base_impl::<SC, p3_koala_bear::KoalaBear, 16, 4, 20, 2>(t)
             }
             Poseidon2Config::KoalaBearD4Width24 => {
@@ -2072,7 +2077,8 @@ impl Poseidon2Prover {
                     matrix,
                 )
             }
-            Poseidon2Config::KoalaBearD4Width16 => {
+            // D=1 and D=4 use the same underlying AIR
+            Poseidon2Config::KoalaBearD1Width16 | Poseidon2Config::KoalaBearD4Width16 => {
                 let constants = Self::koala_bear_constants_16();
                 let preprocessed =
                     extract_preprocessed_from_operations::<KoalaBear, Val<SC>>(&t.operations);
