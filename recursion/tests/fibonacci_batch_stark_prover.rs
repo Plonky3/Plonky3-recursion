@@ -4,8 +4,6 @@ use p3_baby_bear::default_babybear_poseidon2_16;
 use p3_batch_stark::CommonData;
 use p3_circuit::CircuitBuilder;
 use p3_circuit::ops::generate_poseidon2_trace;
-use p3_circuit_prover::air::{AddAir, ConstAir, MulAir, PublicAir, WitnessAir};
-use p3_circuit_prover::batch_stark_prover::PrimitiveTable;
 use p3_circuit_prover::common::get_airs_and_degrees_with_prep;
 use p3_circuit_prover::{BatchStarkProver, TablePacking};
 use p3_field::PrimeCharacteristicRing;
@@ -14,7 +12,7 @@ use p3_lookup::logup::LogUpGadget;
 use p3_poseidon2_circuit_air::BabyBearD4Width16;
 use p3_recursion::Poseidon2Config;
 use p3_recursion::pcs::fri::{FriVerifierParams, HashTargets, InputProofTargets, RecValMmcs};
-use p3_recursion::verifier::{CircuitTablesAir, verify_p3_recursion_proof_circuit};
+use p3_recursion::verifier::verify_p3_recursion_proof_circuit;
 
 use crate::common::baby_bear_params::*;
 
@@ -57,7 +55,7 @@ fn test_fibonacci_batch_verifier() {
 
     // Create config for proving
     let pcs_proving = MyPcs::new(dft, val_mmcs, fri_params);
-    let challenger_proving = Challenger::new(perm.clone());
+    let challenger_proving = Challenger::new(perm);
     let config_proving = MyConfig::new(pcs_proving, challenger_proving);
 
     let circuit = builder.build().unwrap();
@@ -104,28 +102,8 @@ fn test_fibonacci_batch_verifier() {
 
     // Extract proof components
     let batch_proof = &batch_stark_proof.proof;
-    let rows = batch_stark_proof.rows;
-    let packing = batch_stark_proof.table_packing;
 
     const TRACE_D: usize = 1; // Proof traces are in base field
-
-    // Base field AIRs for native challenge generation
-    let _native_airs = vec![
-        CircuitTablesAir::Witness(WitnessAir::<F, TRACE_D>::new(
-            rows[PrimitiveTable::Witness],
-            packing.witness_lanes(),
-        )),
-        CircuitTablesAir::Const(ConstAir::<F, TRACE_D>::new(rows[PrimitiveTable::Const])),
-        CircuitTablesAir::Public(PublicAir::<F, TRACE_D>::new(rows[PrimitiveTable::Public])),
-        CircuitTablesAir::Add(AddAir::<F, TRACE_D>::new(
-            rows[PrimitiveTable::Add],
-            packing.add_lanes(),
-        )),
-        CircuitTablesAir::Mul(MulAir::<F, TRACE_D>::new(
-            rows[PrimitiveTable::Mul],
-            packing.mul_lanes(),
-        )),
-    ];
 
     // Public values (empty for all 5 circuit tables, using base field)
     let pis: Vec<Vec<F>> = vec![vec![]; 5];

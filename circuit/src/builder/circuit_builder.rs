@@ -2542,9 +2542,9 @@ mod proptests {
                 "coefficient {} mismatch",
                 i
             );
-            for j in 1..4 {
+            for (j, coeff) in expected_coeffs.iter().enumerate().skip(1) {
                 assert_eq!(
-                    expected_coeffs[j],
+                    *coeff,
                     BabyBear::ZERO,
                     "coefficient {} should have zero at position {}",
                     i,

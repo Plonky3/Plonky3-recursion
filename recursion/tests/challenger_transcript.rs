@@ -83,7 +83,7 @@ fn test_transcript_single_observe_sample() {
 fn test_transcript_observe_ext_compatibility() {
     let perm = default_babybear_poseidon2_16();
 
-    let mut native = DuplexChallenger::<F, _, WIDTH, RATE>::new(perm.clone());
+    let mut native = DuplexChallenger::<F, _, WIDTH, RATE>::new(perm);
     let mut circuit = setup_circuit_with_poseidon2();
     let mut circuit_challenger = CircuitChallenger::<WIDTH, RATE>::new_babybear();
 
@@ -121,7 +121,7 @@ fn test_transcript_observe_ext_compatibility() {
 fn test_transcript_multiple_duplexing_rounds() {
     let perm = default_babybear_poseidon2_16();
 
-    let mut native = DuplexChallenger::<F, _, WIDTH, RATE>::new(perm.clone());
+    let mut native = DuplexChallenger::<F, _, WIDTH, RATE>::new(perm);
     let mut circuit = setup_circuit_with_poseidon2();
     let mut circuit_challenger = CircuitChallenger::<WIDTH, RATE>::new_babybear();
 
@@ -181,7 +181,7 @@ fn test_transcript_multiple_duplexing_rounds() {
 fn test_transcript_partial_absorption() {
     let perm = default_babybear_poseidon2_16();
 
-    let mut native = DuplexChallenger::<F, _, WIDTH, RATE>::new(perm.clone());
+    let mut native = DuplexChallenger::<F, _, WIDTH, RATE>::new(perm);
     let mut circuit = setup_circuit_with_poseidon2();
     let mut circuit_challenger = CircuitChallenger::<WIDTH, RATE>::new_babybear();
 
@@ -215,7 +215,7 @@ fn test_transcript_partial_absorption() {
 fn test_transcript_observe_extension_element() {
     let perm = default_babybear_poseidon2_16();
 
-    let mut native = DuplexChallenger::<F, _, WIDTH, RATE>::new(perm.clone());
+    let mut native = DuplexChallenger::<F, _, WIDTH, RATE>::new(perm);
     let mut circuit = setup_circuit_with_poseidon2();
     let mut circuit_challenger = CircuitChallenger::<WIDTH, RATE>::new_babybear();
 
@@ -268,7 +268,7 @@ fn test_transcript_observe_extension_element() {
 fn test_transcript_mixed_observations() {
     let perm = default_babybear_poseidon2_16();
 
-    let mut native = DuplexChallenger::<F, _, WIDTH, RATE>::new(perm.clone());
+    let mut native = DuplexChallenger::<F, _, WIDTH, RATE>::new(perm);
     let mut circuit = setup_circuit_with_poseidon2();
     let mut circuit_challenger = CircuitChallenger::<WIDTH, RATE>::new_babybear();
 
@@ -324,7 +324,7 @@ fn test_transcript_clear_produces_fresh_state() {
     let perm = default_babybear_poseidon2_16();
 
     // Create a fresh native challenger (simulating what clear does)
-    let mut native = DuplexChallenger::<F, _, WIDTH, RATE>::new(perm.clone());
+    let mut native = DuplexChallenger::<F, _, WIDTH, RATE>::new(perm);
 
     let mut circuit = setup_circuit_with_poseidon2();
     let mut circuit_challenger = CircuitChallenger::<WIDTH, RATE>::new_babybear();
@@ -370,7 +370,7 @@ fn test_transcript_clear_produces_fresh_state() {
 fn test_transcript_consecutive_samples() {
     let perm = default_babybear_poseidon2_16();
 
-    let mut native = DuplexChallenger::<F, _, WIDTH, RATE>::new(perm.clone());
+    let mut native = DuplexChallenger::<F, _, WIDTH, RATE>::new(perm);
     let mut circuit = setup_circuit_with_poseidon2();
     let mut circuit_challenger = CircuitChallenger::<WIDTH, RATE>::new_babybear();
 
@@ -409,7 +409,7 @@ fn test_transcript_consecutive_samples() {
 fn test_edge_case_exactly_rate_observations() {
     let perm = default_babybear_poseidon2_16();
 
-    let mut native = DuplexChallenger::<F, _, WIDTH, RATE>::new(perm.clone());
+    let mut native = DuplexChallenger::<F, _, WIDTH, RATE>::new(perm);
     let mut circuit = setup_circuit_with_poseidon2();
     let mut circuit_challenger = CircuitChallenger::<WIDTH, RATE>::new_babybear();
 
@@ -451,7 +451,7 @@ fn test_edge_case_exactly_rate_observations() {
 fn test_edge_case_drain_output_buffer_completely() {
     let perm = default_babybear_poseidon2_16();
 
-    let mut native = DuplexChallenger::<F, _, WIDTH, RATE>::new(perm.clone());
+    let mut native = DuplexChallenger::<F, _, WIDTH, RATE>::new(perm);
     let mut circuit = setup_circuit_with_poseidon2();
     let mut circuit_challenger = CircuitChallenger::<WIDTH, RATE>::new_babybear();
 
@@ -497,7 +497,7 @@ fn test_edge_case_drain_output_buffer_completely() {
 fn test_edge_case_interleaved_observe_sample() {
     let perm = default_babybear_poseidon2_16();
 
-    let mut native = DuplexChallenger::<F, _, WIDTH, RATE>::new(perm.clone());
+    let mut native = DuplexChallenger::<F, _, WIDTH, RATE>::new(perm);
     let mut circuit = setup_circuit_with_poseidon2();
     let mut circuit_challenger = CircuitChallenger::<WIDTH, RATE>::new_babybear();
 
@@ -565,7 +565,7 @@ fn test_edge_case_interleaved_observe_sample() {
 fn test_edge_case_sample_without_observations() {
     let perm = default_babybear_poseidon2_16();
 
-    let mut native = DuplexChallenger::<F, _, WIDTH, RATE>::new(perm.clone());
+    let mut native = DuplexChallenger::<F, _, WIDTH, RATE>::new(perm);
     let mut circuit = setup_circuit_with_poseidon2();
     let mut circuit_challenger = CircuitChallenger::<WIDTH, RATE>::new_babybear();
 
@@ -596,7 +596,7 @@ fn test_edge_case_sample_without_observations() {
 fn test_edge_case_single_observe_multiple_samples() {
     let perm = default_babybear_poseidon2_16();
 
-    let mut native = DuplexChallenger::<F, _, WIDTH, RATE>::new(perm.clone());
+    let mut native = DuplexChallenger::<F, _, WIDTH, RATE>::new(perm);
     let mut circuit = setup_circuit_with_poseidon2();
     let mut circuit_challenger = CircuitChallenger::<WIDTH, RATE>::new_babybear();
 
@@ -629,7 +629,7 @@ fn test_edge_case_single_observe_multiple_samples() {
 fn test_edge_case_extension_samples_drain_buffer() {
     let perm = default_babybear_poseidon2_16();
 
-    let mut native = DuplexChallenger::<F, _, WIDTH, RATE>::new(perm.clone());
+    let mut native = DuplexChallenger::<F, _, WIDTH, RATE>::new(perm);
     let mut circuit = setup_circuit_with_poseidon2();
     let mut circuit_challenger = CircuitChallenger::<WIDTH, RATE>::new_babybear();
 

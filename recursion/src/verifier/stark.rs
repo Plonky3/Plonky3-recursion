@@ -52,6 +52,7 @@ type PcsDomain<SC> = <<SC as StarkGenericConfig>::Pcs as Pcs<
 ///
 /// # Returns
 /// `Ok(())` if the circuit was successfully constructed, `Err` otherwise.
+#[allow(clippy::too_many_arguments)]
 pub fn verify_circuit<
     A,
     SC: StarkGenericConfig,
@@ -302,6 +303,7 @@ where
 /// This includes:
 /// - Base STARK challenges (alpha, zeta, zeta_next)
 /// - PCS-specific challenges (e.g., FRI betas, query indices)
+#[allow(clippy::too_many_arguments)]
 fn get_circuit_challenges<
     A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
     SC: StarkGenericConfig,

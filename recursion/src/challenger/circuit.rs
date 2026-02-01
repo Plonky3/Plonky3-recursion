@@ -200,17 +200,17 @@ impl<const WIDTH: usize, const RATE: usize> CircuitChallenger<WIDTH, RATE> {
 
 impl<const WIDTH: usize, const RATE: usize> CircuitChallenger<WIDTH, RATE> {
     /// Create a challenger with BabyBear D4 Width16 configuration (default).
-    pub fn new_babybear() -> Self {
+    pub const fn new_babybear() -> Self {
         Self::new(Poseidon2Config::BabyBearD4Width16)
     }
 
     /// Create a challenger with BabyBear D1 Width16 configuration (base field challenges).
-    pub fn new_babybear_base() -> Self {
+    pub const fn new_babybear_base() -> Self {
         Self::new(Poseidon2Config::BabyBearD1Width16)
     }
 
     /// Create a challenger with KoalaBear D4 Width16 configuration.
-    pub fn new_koalabear() -> Self {
+    pub const fn new_koalabear() -> Self {
         Self::new(Poseidon2Config::KoalaBearD4Width16)
     }
 }

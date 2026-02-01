@@ -121,10 +121,10 @@ impl StarkChallenges {
         challenger.observe_slice(circuit, &trace_comm_targets);
 
         // 5. If preprocessed_width > 0: observe preprocessed commitment
-        if params.preprocessed_width > 0 {
-            if let Some(prep_comm) = &preprocessed_comm_targets {
-                challenger.observe_slice(circuit, prep_comm);
-            }
+        if params.preprocessed_width > 0
+            && let Some(prep_comm) = &preprocessed_comm_targets
+        {
+            challenger.observe_slice(circuit, prep_comm);
         }
 
         // 6. Observe public values (base field elements)
