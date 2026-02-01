@@ -534,6 +534,7 @@ where
             log_final_poly_len,
             commit_pow_bits: _,
             query_pow_bits: _,
+            permutation_config,
         } = *params;
         // Extract FRI challenges from the challenges slice.
         // Layout: [alpha, beta_0, ..., beta_{n-1}, query_0, ..., query_{m-1}]
@@ -572,8 +573,6 @@ where
             })
             .collect::<Result<_, _>>()?;
 
-        // TODO: Pass permutation_config through the trait to enable MMCS verification.
-        // For now, pass None to only perform arithmetic verification.
         let _mmcs_op_ids = verify_fri_circuit(
             circuit,
             opening_proof,
@@ -582,8 +581,9 @@ where
             &index_bits_per_query,
             commitments_with_opening_points,
             log_blowup,
-            None, // MMCS verification disabled in trait implementation
+            permutation_config,
         )?;
+        // TODO: Return mmcs_op_ids once trait return type is updated (item 2)
         Ok(())
     }
 
