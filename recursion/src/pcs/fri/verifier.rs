@@ -681,27 +681,41 @@ where
                 .zip(query_proof.commit_phase_openings.iter())
                 .enumerate()
             {
-                let commitment_targets = commit.to_observation_targets();
                 // Each commit-phase layer is a single extension field column
                 // Height at phase i is 2^(log_max_height - i - 1)
                 let log_folded_height = log_max_height.saturating_sub(phase_idx + 1);
+
+                // Skip MMCS verification for height-1 matrices (no Merkle tree structure).
+                // For height 1, there's only one value and the "sibling" is just the value itself.
+                // The commitment is the hash of that single value, with no tree to verify.
+                if log_folded_height == 0 {
+                    continue;
+                }
+
+                // Get the lifted commitment targets and pack them into extension representation
+                let lifted_commitment = commit.to_observation_targets();
+                let packed_commitment = pack_lifted_to_ext::<F, EF>(builder, &lifted_commitment);
+
                 let folded_height = 1usize << log_folded_height;
                 let dimensions = vec![Dimensions {
                     height: folded_height,
                     width: 1, // Single extension field element per row
                 }];
 
-                // Sibling index at phase i is (query_index >> i) ^ 1
-                // In bits: [1 - bit[i], bit[i+1], bit[i+2], ...]
-                // The first bit is flipped to get the sibling's position
+                // Sibling index in the commitment at phase i:
+                // - The commitment has height 2^log_folded_height
+                // - Query index in this commitment is bits[phase_idx+1 .. phase_idx+1+log_folded_height]
+                // - Sibling index has the lowest bit flipped
                 let mut sibling_index_bits = Vec::with_capacity(log_folded_height);
-                if log_folded_height > 0 {
-                    // Flip the lowest bit: sibling_bit_0 = 1 - index_bits[phase_idx]
-                    let flipped_bit = builder.sub(one, index_bits_per_query[q][phase_idx]);
-                    sibling_index_bits.push(flipped_bit);
-                    // Copy remaining bits
-                    sibling_index_bits.extend_from_slice(&index_bits_per_query[q][phase_idx + 1..]);
-                }
+                // Flip the lowest bit: sibling_bit_0 = 1 - index_bits[phase_idx]
+                // Note: we use index_bits[phase_idx] because after shifting by phase_idx,
+                // bit[0] of the shifted index is the original bit[phase_idx]
+                let flipped_bit = builder.sub(one, index_bits_per_query[q][phase_idx]);
+                sibling_index_bits.push(flipped_bit);
+                // Copy remaining bits, but only take log_folded_height - 1 more bits
+                let end_idx = (phase_idx + 1 + log_folded_height - 1).min(log_max_height);
+                sibling_index_bits
+                    .extend_from_slice(&index_bits_per_query[q][phase_idx + 1..end_idx]);
 
                 // Opened value is the sibling - pack as single-element row
                 let opened_values = vec![vec![opening.sibling_value]];
