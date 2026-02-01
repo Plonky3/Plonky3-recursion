@@ -437,17 +437,19 @@ fn run_fri_test(setup: FriSetup, build_only: bool) {
     }
     builder.pop_scope();
 
-    // 4) Wire the arithmetic-only FRI verifier
-    verify_fri_circuit::<F, Challenge, RecExt, RecVal, RecWitness<F>, p3_recursion::Target>(
-        &mut builder,
-        &fri_targets,
-        alpha_t,
-        &betas_t,
-        &index_bits_t_per_query,
-        &commitments_with_opening_points_targets,
-        log_blowup,
-    )
-    .unwrap();
+    // 4) Wire the arithmetic-only FRI verifier (MMCS verification disabled for this test)
+    let _mmcs_op_ids =
+        verify_fri_circuit::<F, Challenge, RecExt, RecVal, RecWitness<F>, p3_recursion::Target>(
+            &mut builder,
+            &fri_targets,
+            alpha_t,
+            &betas_t,
+            &index_bits_t_per_query,
+            &commitments_with_opening_points_targets,
+            log_blowup,
+            None, // MMCS verification disabled
+        )
+        .unwrap();
 
     builder.dump_allocation_log();
     let circuit = builder.build().unwrap();

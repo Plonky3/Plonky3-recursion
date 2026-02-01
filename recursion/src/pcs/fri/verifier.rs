@@ -4,15 +4,18 @@ use alloc::vec::Vec;
 use alloc::{format, vec};
 use core::iter;
 
-use p3_circuit::CircuitBuilder;
+use p3_circuit::op::Poseidon2Config;
+use p3_circuit::{CircuitBuilder, NonPrimitiveOpId};
 use p3_field::coset::TwoAdicMultiplicativeCoset;
-use p3_field::{ExtensionField, Field, TwoAdicField};
+use p3_field::{BasedVectorSpace, ExtensionField, Field, TwoAdicField};
+use p3_matrix::Dimensions;
 use p3_util::zip_eq::zip_eq;
 
 use super::{FriProofTargets, InputProofTargets};
 use crate::Target;
+use crate::pcs::verify_batch_circuit;
 use crate::traits::{ComsWithOpeningsTargets, Recursive, RecursiveExtensionMmcs, RecursiveMmcs};
-use crate::verifier::VerificationError;
+use crate::verifier::{ObservableCommitment, VerificationError};
 
 /// Inputs for one FRI fold phase (matches the values used by the verifier per round).
 #[derive(Clone, Debug)]
@@ -343,7 +346,7 @@ fn compute_single_reduced_opening<EF: Field>(
 }
 
 /// Compute reduced openings grouped **by height** with **per-height alpha powers**,
-/// Returns a vector of (log_height, ro) sorted by descending height.
+/// Returns a vector of (log_height, ro) sorted by descending height, plus the MMCS op IDs.
 ///
 /// Reference (Plonky3): `p3_fri::verifier::open_input`
 #[allow(clippy::too_many_arguments)]
@@ -355,10 +358,12 @@ fn open_input<F, EF, Comm>(
     log_blowup: usize,
     commitments_with_opening_points: &ComsWithOpeningsTargets<Comm, TwoAdicMultiplicativeCoset<F>>,
     batch_opened_values: &[Vec<Vec<Target>>], // Per batch -> per matrix -> per column
-) -> Result<Vec<(usize, Target)>, VerificationError>
+    permutation_config: Option<Poseidon2Config>,
+) -> Result<(Vec<(usize, Target)>, Vec<NonPrimitiveOpId>), VerificationError>
 where
     F: Field + TwoAdicField,
     EF: ExtensionField<F>,
+    Comm: ObservableCommitment,
 {
     builder.push_scope("open_input");
 
@@ -374,9 +379,10 @@ where
 
     // height -> (alpha_pow_for_this_height, ro_sum_for_this_height)
     let mut reduced_openings = BTreeMap::<usize, (Target, Target)>::new();
+    let mut mmcs_op_ids = Vec::new();
 
     // Process each batch
-    for (batch_idx, ((_batch_commit, mats), batch_openings)) in zip_eq(
+    for (batch_idx, ((batch_commit, mats), batch_openings)) in zip_eq(
         commitments_with_opening_points.iter(),
         batch_opened_values.iter(),
         VerificationError::InvalidProofShape(
@@ -385,8 +391,42 @@ where
     )?
     .enumerate()
     {
-        // TODO: Add recursive MMCS verification here for this batch:
-        // Verify batch_openings against _batch_commit at the computed reduced_index.
+        // Recursive MMCS verification for this batch
+        if let Some(perm_config) = permutation_config {
+            // Get the lifted commitment targets and pack them into extension representation
+            let lifted_commitment = batch_commit.to_observation_targets();
+            let packed_commitment = pack_lifted_to_ext::<F, EF>(builder, &lifted_commitment);
+
+            // Pack the opened values: each matrix's row values are base field, stored as
+            // lifted extension elements, but MMCS verification expects packed representation
+            let packed_openings: Vec<Vec<Target>> = batch_openings
+                .iter()
+                .map(|mat_row| pack_lifted_to_ext::<F, EF>(builder, mat_row))
+                .collect();
+
+            let dimensions: Vec<Dimensions> = mats
+                .iter()
+                .map(|(domain, _)| Dimensions {
+                    height: 1 << (domain.log_size() + log_blowup),
+                    width: 0, // Width is derived from opened_values
+                })
+                .collect();
+
+            let op_ids = verify_batch_circuit::<F, EF>(
+                builder,
+                perm_config,
+                &packed_commitment,
+                &dimensions,
+                index_bits,
+                &packed_openings,
+            )
+            .map_err(|e| {
+                VerificationError::InvalidProofShape(format!(
+                    "MMCS verification failed for batch {batch_idx}: {e:?}"
+                ))
+            })?;
+            mmcs_op_ids.extend(op_ids);
+        }
 
         // For each matrix in the batch
         for (mat_idx, ((mat_domain, mat_points_and_values), mat_opening)) in zip_eq(
@@ -450,21 +490,22 @@ where
     builder.pop_scope(); // close `open_input` scope
 
     // Into descending (height, ro) list
-    Ok(reduced_openings
+    let reduced_list: Vec<_> = reduced_openings
         .into_iter()
         .rev()
         .map(|(h, (_ap, ro))| (h, ro))
-        .collect())
+        .collect();
+    Ok((reduced_list, mmcs_op_ids))
 }
 
-/// Verify FRI arithmetic in-circuit.
+/// Verify FRI arithmetic in-circuit with optional MMCS verification.
 ///
-/// TODO:
-/// - Challenge/indices generation lives in the outer verifier. Keep this
-///   function purely arithmetic and take `alpha`, `betas`, and
-///   `index_bits_per_query` as inputs.
-/// - Add recursive MMCS verification for both input openings (`open_input`) and
-///   per-phase commitments.
+/// When `permutation_config` is `Some`, this function performs full recursive MMCS
+/// verification for both input batch openings and commit-phase openings.
+/// When `None`, only arithmetic verification is performed (for testing).
+///
+/// Returns the list of non-primitive operation IDs that require private data
+/// (Merkle sibling values) to be set by the runner.
 ///
 /// Reference (Plonky3): `p3_fri::verifier::verify_fri`
 #[allow(clippy::too_many_arguments)]
@@ -476,13 +517,16 @@ pub fn verify_fri_circuit<F, EF, RecMmcs, Inner, Witness, Comm>(
     index_bits_per_query: &[Vec<Target>],
     commitments_with_opening_points: &ComsWithOpeningsTargets<Comm, TwoAdicMultiplicativeCoset<F>>,
     log_blowup: usize,
-) -> Result<(), VerificationError>
+    permutation_config: Option<Poseidon2Config>,
+) -> Result<Vec<NonPrimitiveOpId>, VerificationError>
 where
     F: Field + TwoAdicField,
     EF: ExtensionField<F>,
     RecMmcs: RecursiveExtensionMmcs<F, EF>,
+    RecMmcs::Commitment: ObservableCommitment,
     Inner: RecursiveMmcs<F, EF>,
     Witness: Recursive<EF>,
+    Comm: ObservableCommitment,
 {
     builder.push_scope("verify_fri");
 
@@ -572,6 +616,9 @@ where
         })
         .collect();
 
+    // Collect all MMCS operation IDs for private data setting
+    let mut all_mmcs_op_ids = Vec::new();
+
     // For each query, extract opened values from proof and compute reduced openings and fold.
     for (q, query_proof) in fri_proof_targets.query_proofs.iter().enumerate() {
         // Extract opened values from the input_proof (batch openings)
@@ -582,8 +629,8 @@ where
             .map(|batch| batch.opened_values.clone())
             .collect();
 
-        // Arithmetic `open_input` to get (height, ro) descending
-        let reduced_by_height = open_input::<F, EF, Comm>(
+        // Arithmetic `open_input` to get (height, ro) descending, plus MMCS op IDs
+        let (reduced_by_height, input_mmcs_ops) = open_input::<F, EF, Comm>(
             builder,
             log_max_height,
             &index_bits_per_query[q],
@@ -591,7 +638,9 @@ where
             log_blowup,
             commitments_with_opening_points,
             &batch_opened_values,
+            permutation_config,
         )?;
+        all_mmcs_op_ids.extend(input_mmcs_ops);
 
         // Must have the max-height entry at the front
 
@@ -621,6 +670,57 @@ where
                 num_phases,
                 sibling_values.len()
             )));
+        }
+
+        // Commit-phase MMCS verification: verify sibling values against commit-phase commits
+        if let Some(perm_config) = permutation_config {
+            let one = builder.add_const(EF::ONE);
+            for (phase_idx, (commit, opening)) in fri_proof_targets
+                .commit_phase_commits
+                .iter()
+                .zip(query_proof.commit_phase_openings.iter())
+                .enumerate()
+            {
+                let commitment_targets = commit.to_observation_targets();
+                // Each commit-phase layer is a single extension field column
+                // Height at phase i is 2^(log_max_height - i - 1)
+                let log_folded_height = log_max_height.saturating_sub(phase_idx + 1);
+                let folded_height = 1usize << log_folded_height;
+                let dimensions = vec![Dimensions {
+                    height: folded_height,
+                    width: 1, // Single extension field element per row
+                }];
+
+                // Sibling index at phase i is (query_index >> i) ^ 1
+                // In bits: [1 - bit[i], bit[i+1], bit[i+2], ...]
+                // The first bit is flipped to get the sibling's position
+                let mut sibling_index_bits = Vec::with_capacity(log_folded_height);
+                if log_folded_height > 0 {
+                    // Flip the lowest bit: sibling_bit_0 = 1 - index_bits[phase_idx]
+                    let flipped_bit = builder.sub(one, index_bits_per_query[q][phase_idx]);
+                    sibling_index_bits.push(flipped_bit);
+                    // Copy remaining bits
+                    sibling_index_bits.extend_from_slice(&index_bits_per_query[q][phase_idx + 1..]);
+                }
+
+                // Opened value is the sibling - pack as single-element row
+                let opened_values = vec![vec![opening.sibling_value]];
+
+                let commit_phase_ops = verify_batch_circuit::<F, EF>(
+                    builder,
+                    perm_config,
+                    &packed_commitment,
+                    &dimensions,
+                    &sibling_index_bits,
+                    &opened_values,
+                )
+                .map_err(|e| {
+                    VerificationError::InvalidProofShape(format!(
+                        "Commit-phase MMCS verification failed for query {q}, phase {phase_idx}: {e:?}"
+                    ))
+                })?;
+                all_mmcs_op_ids.extend(commit_phase_ops);
+            }
         }
 
         // Build height-aligned roll-ins for each phase (desc heights -> phases)
@@ -671,9 +771,9 @@ where
             &pows_per_phase,
             final_poly_eval,
         );
-
-        builder.pop_scope(); // close `verify_fri` scope
     }
 
-    Ok(())
+    builder.pop_scope(); // close `verify_fri` scope
+
+    Ok(all_mmcs_op_ids)
 }

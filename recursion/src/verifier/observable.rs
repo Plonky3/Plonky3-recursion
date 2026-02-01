@@ -1,3 +1,4 @@
+use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::Target;
@@ -15,4 +16,11 @@ pub trait ObservableCommitment {
     /// # Returns
     /// A vector of targets representing the commitment
     fn to_observation_targets(&self) -> Vec<Target>;
+}
+
+/// Implementation for a single target (used in tests where commitment is a placeholder).
+impl ObservableCommitment for Target {
+    fn to_observation_targets(&self) -> Vec<Target> {
+        vec![*self]
+    }
 }

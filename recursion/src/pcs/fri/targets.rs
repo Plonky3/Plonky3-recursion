@@ -439,7 +439,7 @@ where
     Val<SC>: TwoAdicField + PrimeField64,
     InputMmcs: Mmcs<Val<SC>>,
     FriMmcs: Mmcs<SC::Challenge>,
-    Comm: Recursive<SC::Challenge>,
+    Comm: Recursive<SC::Challenge> + ObservableCommitment,
     RecursiveInputMmcs: RecursiveMmcs<Val<SC>, SC::Challenge, Input = InputMmcs>,
     RecursiveFriMmcs: RecursiveExtensionMmcs<Val<SC>, SC::Challenge, Input = FriMmcs>,
     RecursiveFriMmcs::Commitment: ObservableCommitment,
@@ -572,7 +572,9 @@ where
             })
             .collect::<Result<_, _>>()?;
 
-        verify_fri_circuit(
+        // TODO: Pass permutation_config through the trait to enable MMCS verification.
+        // For now, pass None to only perform arithmetic verification.
+        let _mmcs_op_ids = verify_fri_circuit(
             circuit,
             opening_proof,
             alpha,
@@ -580,7 +582,9 @@ where
             &index_bits_per_query,
             commitments_with_opening_points,
             log_blowup,
-        )
+            None, // MMCS verification disabled in trait implementation
+        )?;
+        Ok(())
     }
 
     fn selectors_at_point_circuit(
