@@ -100,7 +100,14 @@ impl<const WIDTH: usize, const RATE: usize> CircuitChallenger<WIDTH, RATE> {
         debug_assert!(self.input_buffer.len() <= RATE, "Input buffer exceeds RATE");
 
         // Validate config matches extension field dimension
-        self.validate_config_dimension::<EF>();
+        let config_d = self.poseidon2_config.d();
+        assert_eq!(
+            config_d,
+            EF::DIMENSION,
+            "Poseidon2 config dimension mismatch: config D={} but EF::DIMENSION={}",
+            config_d,
+            EF::DIMENSION
+        );
 
         // 1. Overwrite state[0..n] with inputs (NOT XOR, matches native)
         for (i, val) in self.input_buffer.drain(..).enumerate() {
@@ -119,20 +126,6 @@ impl<const WIDTH: usize, const RATE: usize> CircuitChallenger<WIDTH, RATE> {
         // 5. Fill output buffer from state[0..RATE]
         self.output_buffer.clear();
         self.output_buffer.extend_from_slice(&self.state[..RATE]);
-    }
-
-    /// Validate that the Poseidon2 config matches the extension field dimension.
-    ///
-    /// Panics if the config's extension degree doesn't match `EF::DIMENSION`.
-    fn validate_config_dimension<EF: p3_field::Field>(&self) {
-        let config_d = self.poseidon2_config.d();
-        assert_eq!(
-            config_d,
-            EF::DIMENSION,
-            "Poseidon2 config dimension mismatch: config D={} but EF::DIMENSION={}",
-            config_d,
-            EF::DIMENSION
-        );
     }
 
     /// Duplexing for D=1 (base field): permutation operates directly on 16 elements.

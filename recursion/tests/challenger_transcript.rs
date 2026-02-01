@@ -398,3 +398,275 @@ fn test_transcript_consecutive_samples() {
 
     assert!(traces.witness_trace.num_rows() > 0);
 }
+
+// ============================================================================
+// Edge Case Tests
+// ============================================================================
+
+/// Edge case: Exactly RATE observations triggers duplexing, then sample.
+/// Tests the boundary condition when input buffer is exactly full.
+#[test]
+fn test_edge_case_exactly_rate_observations() {
+    let perm = default_babybear_poseidon2_16();
+
+    let mut native = DuplexChallenger::<F, _, WIDTH, RATE>::new(perm.clone());
+    let mut circuit = setup_circuit_with_poseidon2();
+    let mut circuit_challenger = CircuitChallenger::<WIDTH, RATE>::new_babybear();
+
+    // Observe exactly RATE elements (should trigger duplexing on last observe)
+    for i in 0..RATE {
+        let val = F::from_u64(i as u64 + 500);
+        native.observe(val);
+        let t = circuit.add_const(EF::from(val));
+        RecursiveChallenger::<F, EF>::observe(&mut circuit_challenger, &mut circuit, t);
+    }
+
+    // At this point, input buffer should be empty (duplexing occurred)
+    // and output buffer should be full
+
+    // Sample should come from output buffer without triggering new duplexing
+    let native_s1: F = native.sample();
+    let circuit_s1 = RecursiveChallenger::<F, EF>::sample(&mut circuit_challenger, &mut circuit);
+    let expected_s1 = circuit.add_const(EF::from(native_s1));
+    circuit.connect(circuit_s1, expected_s1);
+
+    // Sample again to verify output buffer state
+    let native_s2: F = native.sample();
+    let circuit_s2 = RecursiveChallenger::<F, EF>::sample(&mut circuit_challenger, &mut circuit);
+    let expected_s2 = circuit.add_const(EF::from(native_s2));
+    circuit.connect(circuit_s2, expected_s2);
+
+    let compiled = circuit.build().expect("Circuit should build");
+    let traces: Traces<EF> = compiled
+        .runner()
+        .run()
+        .expect("Exactly RATE observations should match native");
+
+    assert!(traces.witness_trace.num_rows() > 0);
+}
+
+/// Edge case: Drain entire output buffer (RATE samples) then sample again.
+/// This triggers a new duplexing when output buffer is empty.
+#[test]
+fn test_edge_case_drain_output_buffer_completely() {
+    let perm = default_babybear_poseidon2_16();
+
+    let mut native = DuplexChallenger::<F, _, WIDTH, RATE>::new(perm.clone());
+    let mut circuit = setup_circuit_with_poseidon2();
+    let mut circuit_challenger = CircuitChallenger::<WIDTH, RATE>::new_babybear();
+
+    // Observe RATE elements to trigger duplexing
+    for i in 0..RATE {
+        let val = F::from_u64(i as u64 + 600);
+        native.observe(val);
+        let t = circuit.add_const(EF::from(val));
+        RecursiveChallenger::<F, EF>::observe(&mut circuit_challenger, &mut circuit, t);
+    }
+
+    // Drain entire output buffer (RATE samples)
+    for j in 0..RATE {
+        let native_s: F = native.sample();
+        let circuit_s = RecursiveChallenger::<F, EF>::sample(&mut circuit_challenger, &mut circuit);
+        let expected = circuit.add_const(EF::from(native_s));
+        circuit.connect(circuit_s, expected);
+
+        // Verify we got a valid sample at each step
+        if j == RATE - 1 {
+            // Last sample from output buffer
+        }
+    }
+
+    // Now output buffer is empty - this sample should trigger new duplexing
+    let native_extra: F = native.sample();
+    let circuit_extra = RecursiveChallenger::<F, EF>::sample(&mut circuit_challenger, &mut circuit);
+    let expected_extra = circuit.add_const(EF::from(native_extra));
+    circuit.connect(circuit_extra, expected_extra);
+
+    let compiled = circuit.build().expect("Circuit should build");
+    let traces: Traces<EF> = compiled
+        .runner()
+        .run()
+        .expect("Draining output buffer then sampling should match native");
+
+    assert!(traces.witness_trace.num_rows() > 0);
+}
+
+/// Edge case: Interleaved observe/sample pattern.
+/// Tests complex state transitions with alternating operations.
+#[test]
+fn test_edge_case_interleaved_observe_sample() {
+    let perm = default_babybear_poseidon2_16();
+
+    let mut native = DuplexChallenger::<F, _, WIDTH, RATE>::new(perm.clone());
+    let mut circuit = setup_circuit_with_poseidon2();
+    let mut circuit_challenger = CircuitChallenger::<WIDTH, RATE>::new_babybear();
+
+    // Pattern: observe a few, sample, observe more, sample, etc.
+    // This tests output buffer invalidation on observe
+
+    // Observe 3
+    for i in 0..3 {
+        let val = F::from_u64(i as u64 + 700);
+        native.observe(val);
+        let t = circuit.add_const(EF::from(val));
+        RecursiveChallenger::<F, EF>::observe(&mut circuit_challenger, &mut circuit, t);
+    }
+
+    // Sample (triggers duplexing with 3 inputs)
+    let native_s1: F = native.sample();
+    let circuit_s1 = RecursiveChallenger::<F, EF>::sample(&mut circuit_challenger, &mut circuit);
+    let expected_s1 = circuit.add_const(EF::from(native_s1));
+    circuit.connect(circuit_s1, expected_s1);
+
+    // Observe 2 more (invalidates output buffer)
+    for i in 0..2 {
+        let val = F::from_u64(i as u64 + 800);
+        native.observe(val);
+        let t = circuit.add_const(EF::from(val));
+        RecursiveChallenger::<F, EF>::observe(&mut circuit_challenger, &mut circuit, t);
+    }
+
+    // Sample (triggers new duplexing with 2 inputs)
+    let native_s2: F = native.sample();
+    let circuit_s2 = RecursiveChallenger::<F, EF>::sample(&mut circuit_challenger, &mut circuit);
+    let expected_s2 = circuit.add_const(EF::from(native_s2));
+    circuit.connect(circuit_s2, expected_s2);
+
+    // Sample again (from output buffer)
+    let native_s3: F = native.sample();
+    let circuit_s3 = RecursiveChallenger::<F, EF>::sample(&mut circuit_challenger, &mut circuit);
+    let expected_s3 = circuit.add_const(EF::from(native_s3));
+    circuit.connect(circuit_s3, expected_s3);
+
+    // Observe 1 more
+    let val = F::from_u64(900);
+    native.observe(val);
+    let t = circuit.add_const(EF::from(val));
+    RecursiveChallenger::<F, EF>::observe(&mut circuit_challenger, &mut circuit, t);
+
+    // Final sample
+    let native_s4: F = native.sample();
+    let circuit_s4 = RecursiveChallenger::<F, EF>::sample(&mut circuit_challenger, &mut circuit);
+    let expected_s4 = circuit.add_const(EF::from(native_s4));
+    circuit.connect(circuit_s4, expected_s4);
+
+    let compiled = circuit.build().expect("Circuit should build");
+    let traces: Traces<EF> = compiled
+        .runner()
+        .run()
+        .expect("Interleaved observe/sample should match native");
+
+    assert!(traces.witness_trace.num_rows() > 0);
+}
+
+/// Edge case: Sample immediately without any observations.
+/// Tests initial state sampling behavior.
+#[test]
+fn test_edge_case_sample_without_observations() {
+    let perm = default_babybear_poseidon2_16();
+
+    let mut native = DuplexChallenger::<F, _, WIDTH, RATE>::new(perm.clone());
+    let mut circuit = setup_circuit_with_poseidon2();
+    let mut circuit_challenger = CircuitChallenger::<WIDTH, RATE>::new_babybear();
+
+    // Sample immediately (duplexing with zero-initialized state)
+    let native_s1: F = native.sample();
+    let circuit_s1 = RecursiveChallenger::<F, EF>::sample(&mut circuit_challenger, &mut circuit);
+    let expected_s1 = circuit.add_const(EF::from(native_s1));
+    circuit.connect(circuit_s1, expected_s1);
+
+    // Sample again
+    let native_s2: F = native.sample();
+    let circuit_s2 = RecursiveChallenger::<F, EF>::sample(&mut circuit_challenger, &mut circuit);
+    let expected_s2 = circuit.add_const(EF::from(native_s2));
+    circuit.connect(circuit_s2, expected_s2);
+
+    let compiled = circuit.build().expect("Circuit should build");
+    let traces: Traces<EF> = compiled
+        .runner()
+        .run()
+        .expect("Sample without observations should match native");
+
+    assert!(traces.witness_trace.num_rows() > 0);
+}
+
+/// Edge case: Observe single element then sample multiple times.
+/// Tests output buffer usage after minimal input.
+#[test]
+fn test_edge_case_single_observe_multiple_samples() {
+    let perm = default_babybear_poseidon2_16();
+
+    let mut native = DuplexChallenger::<F, _, WIDTH, RATE>::new(perm.clone());
+    let mut circuit = setup_circuit_with_poseidon2();
+    let mut circuit_challenger = CircuitChallenger::<WIDTH, RATE>::new_babybear();
+
+    // Single observation
+    let val = F::from_u64(12345);
+    native.observe(val);
+    let t = circuit.add_const(EF::from(val));
+    RecursiveChallenger::<F, EF>::observe(&mut circuit_challenger, &mut circuit, t);
+
+    // Multiple samples (first triggers duplexing, rest from buffer)
+    for _ in 0..RATE {
+        let native_s: F = native.sample();
+        let circuit_s = RecursiveChallenger::<F, EF>::sample(&mut circuit_challenger, &mut circuit);
+        let expected = circuit.add_const(EF::from(native_s));
+        circuit.connect(circuit_s, expected);
+    }
+
+    let compiled = circuit.build().expect("Circuit should build");
+    let traces: Traces<EF> = compiled
+        .runner()
+        .run()
+        .expect("Single observe then multiple samples should match native");
+
+    assert!(traces.witness_trace.num_rows() > 0);
+}
+
+/// Edge case: Extension field samples draining output buffer.
+/// Each sample_ext consumes D base elements from output.
+#[test]
+fn test_edge_case_extension_samples_drain_buffer() {
+    let perm = default_babybear_poseidon2_16();
+
+    let mut native = DuplexChallenger::<F, _, WIDTH, RATE>::new(perm.clone());
+    let mut circuit = setup_circuit_with_poseidon2();
+    let mut circuit_challenger = CircuitChallenger::<WIDTH, RATE>::new_babybear();
+
+    // Observe RATE elements
+    for i in 0..RATE {
+        let val = F::from_u64(i as u64 + 1000);
+        native.observe(val);
+        let t = circuit.add_const(EF::from(val));
+        RecursiveChallenger::<F, EF>::observe(&mut circuit_challenger, &mut circuit, t);
+    }
+
+    // Sample extension elements (each consumes 4 base elements from RATE=8 buffer)
+    // After 2 ext samples, buffer is empty
+    let native_ext1: EF = native.sample_algebra_element();
+    let circuit_ext1 =
+        RecursiveChallenger::<F, EF>::sample_ext(&mut circuit_challenger, &mut circuit);
+    let expected_ext1 = circuit.add_const(native_ext1);
+    circuit.connect(circuit_ext1, expected_ext1);
+
+    let native_ext2: EF = native.sample_algebra_element();
+    let circuit_ext2 =
+        RecursiveChallenger::<F, EF>::sample_ext(&mut circuit_challenger, &mut circuit);
+    let expected_ext2 = circuit.add_const(native_ext2);
+    circuit.connect(circuit_ext2, expected_ext2);
+
+    // Third ext sample should trigger new duplexing
+    let native_ext3: EF = native.sample_algebra_element();
+    let circuit_ext3 =
+        RecursiveChallenger::<F, EF>::sample_ext(&mut circuit_challenger, &mut circuit);
+    let expected_ext3 = circuit.add_const(native_ext3);
+    circuit.connect(circuit_ext3, expected_ext3);
+
+    let compiled = circuit.build().expect("Circuit should build");
+    let traces: Traces<EF> = compiled
+        .runner()
+        .run()
+        .expect("Extension samples draining buffer should match native");
+
+    assert!(traces.witness_trace.num_rows() > 0);
+}
