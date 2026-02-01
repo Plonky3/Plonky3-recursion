@@ -8,8 +8,8 @@ use p3_air::{
     PermutationAirBuilder,
 };
 use p3_batch_stark::CommonData;
-use p3_circuit::CircuitBuilder;
 use p3_circuit::utils::ColumnsTargets;
+use p3_circuit::{CircuitBuilder, NonPrimitiveOpId};
 use p3_circuit_prover::air::{AddAir, ConstAir, MulAir, PublicAir, WitnessAir};
 use p3_circuit_prover::batch_stark_prover::{PrimitiveTable, RowCounts};
 use p3_commit::{Pcs, PolynomialSpace};
@@ -204,6 +204,12 @@ where
 }
 
 /// Verify a batch-STARK proof inside a recursive circuit.
+///
+/// # Returns
+/// `Ok(Vec<NonPrimitiveOpId>)` containing operation IDs that require private data
+/// (e.g., Merkle sibling values for MMCS verification). The caller must set
+/// private data for these operations before running the circuit.
+/// `Err` if there was a structural error.
 #[allow(clippy::too_many_arguments)]
 pub fn verify_batch_circuit<
     A,
@@ -228,7 +234,7 @@ pub fn verify_batch_circuit<
     common: &CommonDataTargets<SC, Comm>,
     lookup_gadget: &LG,
     poseidon2_config: crate::ops::Poseidon2Config,
-) -> Result<(), VerificationError>
+) -> Result<Vec<NonPrimitiveOpId>, VerificationError>
 where
     A: RecursiveAir<Val<SC>, SC::Challenge, LG>,
     <SC as StarkGenericConfig>::Pcs: RecursivePcs<
@@ -662,7 +668,7 @@ where
         pcs_params,
     )?;
 
-    pcs.verify_circuit(
+    let mmcs_op_ids = pcs.verify_circuit(
         circuit,
         &pcs_challenges,
         &coms_to_verify,
@@ -795,7 +801,7 @@ where
         }
     }
 
-    Ok(())
+    Ok(mmcs_op_ids)
 }
 
 pub(crate) fn get_perm_challenges<

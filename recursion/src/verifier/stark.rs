@@ -4,7 +4,7 @@ use alloc::{format, vec};
 
 use itertools::Itertools;
 use p3_circuit::utils::ColumnsTargets;
-use p3_circuit::{CircuitBuilder, CircuitBuilderError};
+use p3_circuit::{CircuitBuilder, CircuitBuilderError, NonPrimitiveOpId};
 use p3_commit::{Pcs, PolynomialSpace};
 use p3_field::{BasedVectorSpace, ExtensionField, Field, PrimeCharacteristicRing, PrimeField64};
 use p3_lookup::logup::LogUpGadget;
@@ -51,7 +51,10 @@ type PcsDomain<SC> = <<SC as StarkGenericConfig>::Pcs as Pcs<
 /// - `pcs_params`: PCS-specific verifier parameters (e.g. FRI's log blowup / final poly size)
 ///
 /// # Returns
-/// `Ok(())` if the circuit was successfully constructed, `Err` otherwise.
+/// `Ok(Vec<NonPrimitiveOpId>)` containing operation IDs that require private data
+/// (e.g., Merkle sibling values for MMCS verification). The caller must set
+/// private data for these operations before running the circuit.
+/// `Err` if there was a structural error.
 #[allow(clippy::too_many_arguments)]
 pub fn verify_circuit<
     A,
@@ -74,7 +77,7 @@ pub fn verify_circuit<
     preprocessed_commit: &Option<Comm>,
     pcs_params: &PcsVerifierParams<SC, InputProof, OpeningProof, Comm>,
     poseidon2_config: Poseidon2Config,
-) -> Result<(), VerificationError>
+) -> Result<Vec<NonPrimitiveOpId>, VerificationError>
 where
     A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
     <SC as StarkGenericConfig>::Pcs: RecursivePcs<
@@ -237,7 +240,7 @@ where
     }
 
     // Verify polynomial openings using PCS
-    pcs.verify_circuit(
+    let mmcs_op_ids = pcs.verify_circuit(
         circuit,
         &challenge_targets[3..], // PCS challenges (after alpha, zeta, zeta_next)
         &coms_to_verify,
@@ -295,7 +298,7 @@ where
     let folded_mul = circuit.mul(folded_constraints, sels.inv_vanishing);
     circuit.connect(folded_mul, quotient);
 
-    Ok(())
+    Ok(mmcs_op_ids)
 }
 
 /// Generate all challenges for STARK verification.

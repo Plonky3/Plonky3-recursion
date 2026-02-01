@@ -4,7 +4,7 @@ use core::marker::PhantomData;
 
 use p3_challenger::{CanObserve, GrindingChallenger};
 use p3_circuit::utils::RowSelectorsTargets;
-use p3_circuit::{CircuitBuilder, CircuitBuilderError};
+use p3_circuit::{CircuitBuilder, CircuitBuilderError, NonPrimitiveOpId};
 use p3_commit::{BatchOpening, ExtensionMmcs, Mmcs, PolynomialSpace};
 use p3_field::coset::TwoAdicMultiplicativeCoset;
 use p3_field::{
@@ -528,7 +528,7 @@ where
         >,
         opening_proof: &Self::RecursiveProof,
         params: &Self::VerifierParams,
-    ) -> Result<(), VerificationError> {
+    ) -> Result<Vec<NonPrimitiveOpId>, VerificationError> {
         let FriVerifierParams {
             log_blowup,
             log_final_poly_len,
@@ -573,7 +573,7 @@ where
             })
             .collect::<Result<_, _>>()?;
 
-        let _mmcs_op_ids = verify_fri_circuit(
+        verify_fri_circuit(
             circuit,
             opening_proof,
             alpha,
@@ -582,9 +582,7 @@ where
             commitments_with_opening_points,
             log_blowup,
             permutation_config,
-        )?;
-        // TODO: Return mmcs_op_ids once trait return type is updated (item 2)
-        Ok(())
+        )
     }
 
     fn selectors_at_point_circuit(

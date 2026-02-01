@@ -1,11 +1,14 @@
 use alloc::format;
 use alloc::vec::Vec;
 
-use p3_circuit::op::{NonPrimitiveOpType, Poseidon2Config};
+use p3_circuit::op::{NonPrimitiveOpPrivateData, NonPrimitiveOpType, Poseidon2Config};
+use p3_circuit::ops::Poseidon2PermPrivateData;
 use p3_circuit::ops::hash::add_hash_slice;
 use p3_circuit::ops::mmcs::{add_mmcs_verify, format_openings};
-use p3_circuit::{CircuitBuilder, CircuitBuilderError, NonPrimitiveOpId};
-use p3_field::{ExtensionField, Field, TwoAdicField};
+use p3_circuit::{CircuitBuilder, CircuitBuilderError, CircuitRunner, NonPrimitiveOpId};
+use p3_commit::BatchOpening;
+use p3_field::{BasedVectorSpace, ExtensionField, Field, TwoAdicField};
+use p3_fri::FriProof;
 use p3_matrix::Dimensions;
 
 use crate::Target;
@@ -80,6 +83,129 @@ where
         index_bits,
         commitment,
     )
+}
+
+/// Convert a base field Merkle proof to extension field sibling values.
+///
+/// Each sibling hash in the proof has `DIGEST_ELEMS` base field elements.
+/// These are packed into extension field elements (EF::DIMENSION base elements per extension element).
+/// The result is `rate_ext` extension field elements per sibling.
+fn convert_merkle_proof_to_siblings<F, EF, const DIGEST_ELEMS: usize>(
+    opening_proof: &[[F; DIGEST_ELEMS]],
+) -> Vec<[EF; 2]>
+where
+    F: Field,
+    EF: ExtensionField<F> + BasedVectorSpace<F>,
+{
+    opening_proof
+        .iter()
+        .map(|digest| {
+            // Pack base field elements into extension field elements
+            let ext_elements: Vec<EF> = digest
+                .chunks(EF::DIMENSION)
+                .map(|chunk| {
+                    EF::from_basis_coefficients_slice(chunk)
+                        .expect("chunk size should match extension degree")
+                })
+                .collect();
+            // For Poseidon2 MMCS, we expect exactly 2 extension elements per sibling
+            debug_assert_eq!(
+                ext_elements.len(),
+                2,
+                "Expected 2 extension elements per sibling, got {}",
+                ext_elements.len()
+            );
+            [ext_elements[0], ext_elements[1]]
+        })
+        .collect()
+}
+
+/// Set private data for FRI MMCS verification operations.
+///
+/// This function extracts Merkle sibling values from a FRI proof and sets them
+/// as private data for the circuit operations returned by `verify_fri_circuit`.
+///
+/// # Parameters
+/// - `runner`: The circuit runner to set private data on
+/// - `op_ids`: Operation IDs returned by `verify_fri_circuit`
+/// - `fri_proof`: The FRI proof containing Merkle proofs
+///
+/// # Returns
+/// `Ok(())` if all private data was set successfully, or an error if there was a mismatch.
+///
+/// # Operation ID Order
+/// The `op_ids` are expected in the following order (matching `verify_fri_circuit`):
+/// 1. For each query:
+///    - Input batch MMCS ops (one per batch, each with `path_depth` siblings)
+///    - Commit-phase MMCS ops (one per phase, each with `phase_depth` siblings)
+pub fn set_fri_mmcs_private_data<F, EF, FriMmcs, InputMmcs, H, C, const DIGEST_ELEMS: usize>(
+    runner: &mut CircuitRunner<EF>,
+    op_ids: &[NonPrimitiveOpId],
+    fri_proof: &FriProof<EF, FriMmcs, F, Vec<BatchOpening<F, InputMmcs>>>,
+) -> Result<(), &'static str>
+where
+    F: Field,
+    EF: ExtensionField<F> + BasedVectorSpace<F>,
+    FriMmcs: p3_commit::Mmcs<EF, Proof = Vec<[F; DIGEST_ELEMS]>>,
+    InputMmcs: p3_commit::Mmcs<F, Proof = Vec<[F; DIGEST_ELEMS]>>,
+    H: p3_symmetric::CryptographicHasher<F, [F; DIGEST_ELEMS]>
+        + p3_symmetric::CryptographicHasher<F::Packing, [F::Packing; DIGEST_ELEMS]>
+        + Sync,
+    C: p3_symmetric::PseudoCompressionFunction<[F; DIGEST_ELEMS], 2>
+        + p3_symmetric::PseudoCompressionFunction<[F::Packing; DIGEST_ELEMS], 2>
+        + Sync,
+{
+    let mut op_idx = 0;
+
+    for query_proof in &fri_proof.query_proofs {
+        // Input batch MMCS proofs
+        for batch_opening in &query_proof.input_proof {
+            let siblings = convert_merkle_proof_to_siblings::<F, EF, DIGEST_ELEMS>(
+                &batch_opening.opening_proof,
+            );
+            for sibling in siblings {
+                if op_idx >= op_ids.len() {
+                    return Err("More siblings in proof than op_ids provided");
+                }
+                runner
+                    .set_private_data(
+                        op_ids[op_idx],
+                        NonPrimitiveOpPrivateData::Poseidon2Perm(Poseidon2PermPrivateData {
+                            sibling,
+                        }),
+                    )
+                    .map_err(|_| "Failed to set private data for input batch MMCS")?;
+                op_idx += 1;
+            }
+        }
+
+        // Commit-phase MMCS proofs
+        for phase_opening in &query_proof.commit_phase_openings {
+            let siblings = convert_merkle_proof_to_siblings::<F, EF, DIGEST_ELEMS>(
+                &phase_opening.opening_proof,
+            );
+            for sibling in siblings {
+                if op_idx >= op_ids.len() {
+                    return Err("More siblings in proof than op_ids provided");
+                }
+                runner
+                    .set_private_data(
+                        op_ids[op_idx],
+                        NonPrimitiveOpPrivateData::Poseidon2Perm(Poseidon2PermPrivateData {
+                            sibling,
+                        }),
+                    )
+                    .map_err(|_| "Failed to set private data for commit-phase MMCS")?;
+                op_idx += 1;
+            }
+        }
+    }
+
+    if op_idx != op_ids.len() {
+        return Err("Fewer siblings in proof than op_ids provided");
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]

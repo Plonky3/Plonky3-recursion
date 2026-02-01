@@ -8,4 +8,4 @@ pub use fri::{
     HashProofTargets, HashTargets, InputProofTargets, MAX_QUERY_INDEX_BITS, QueryProofTargets,
     RecExtensionValMmcs, RecValMmcs, TwoAdicFriProofTargets, Witness, verify_fri_circuit,
 };
-pub use mmcs::verify_batch_circuit;
+pub use mmcs::{set_fri_mmcs_private_data, verify_batch_circuit};
