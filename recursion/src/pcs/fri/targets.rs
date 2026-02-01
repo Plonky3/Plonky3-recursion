@@ -461,14 +461,16 @@ where
             RecursiveFriMmcs,
             InputProofTargets<Val<SC>, SC::Challenge, RecursiveInputMmcs>,
         >,
-        opened_values: &OpenedValuesTargetsWithLookups<SC>,
+        _opened_values: &OpenedValuesTargetsWithLookups<SC>,
         params: &Self::VerifierParams,
     ) -> Result<Vec<Target>, CircuitBuilderError>
     where
         Val<SC>: PrimeField64,
         SC::Challenge: ExtensionField<Val<SC>>,
     {
-        opened_values.observe(circuit, challenger);
+        // NOTE: Opened values must be observed by the caller BEFORE calling this function.
+        // For batch-STARK, the caller must observe in per-instance order to match native.
+        // For single-STARK, the caller can use opened_values.observe() directly.
 
         // Sample FRI alpha (for batch opening reduction) - extension field
         let fri_alpha = challenger.sample_ext(circuit);

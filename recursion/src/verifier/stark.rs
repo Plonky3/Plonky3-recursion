@@ -372,6 +372,10 @@ where
         permutation_next_targets: vec![],
     };
 
+    // Observe opened values before getting PCS challenges.
+    // For single-STARK with one instance, the standard observation order is correct.
+    opened_values_no_lookups.observe(circuit, &mut challenger);
+
     // Get PCS-specific challenges (FRI betas, query indices, etc.)
     let pcs_challenges = SC::Pcs::get_challenges_circuit::<WIDTH, RATE>(
         circuit,

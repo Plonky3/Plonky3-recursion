@@ -2,13 +2,13 @@ mod common;
 
 use p3_baby_bear::BabyBear as F;
 use p3_circuit::CircuitBuilder;
-use p3_circuit::ops::{Poseidon2CircuitRow, generate_poseidon2_trace};
+use p3_circuit::ops::{BabyBearD1Width16, Poseidon2CircuitRow, generate_poseidon2_trace};
 use p3_field::PrimeCharacteristicRing;
 use p3_fri::create_test_fri_params;
 use p3_poseidon2::ExternalLayerConstants;
 use p3_poseidon2_air::RoundConstants;
 use p3_poseidon2_circuit_air::{
-    BabyBearD4Width16, Poseidon2CircuitAirBabyBearD4Width16, extract_preprocessed_from_operations,
+    Poseidon2CircuitAirBabyBearD4Width16, extract_preprocessed_from_operations,
 };
 use p3_recursion::pcs::fri::{
     FriProofTargets, FriVerifierParams, HashTargets, InputProofTargets, RecExtensionValMmcs,
@@ -142,9 +142,10 @@ fn test_poseidon2_perm_verifier() -> Result<(), VerificationError> {
     >;
 
     let mut circuit_builder = CircuitBuilder::new();
-    // Use the same permutation as the prover to ensure Fiat-Shamir challengers match
-    circuit_builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
-        generate_poseidon2_trace::<Challenge, BabyBearD4Width16>,
+    // Use the same permutation as the prover to ensure Fiat-Shamir challengers match.
+    // D=1 (base field challenges) uses the base variant which operates on 16 elements directly.
+    circuit_builder.enable_poseidon2_perm_base::<BabyBearD1Width16, _>(
+        generate_poseidon2_trace::<Challenge, BabyBearD1Width16>,
         perm,
     );
     let verifier_inputs =
@@ -171,7 +172,7 @@ fn test_poseidon2_perm_verifier() -> Result<(), VerificationError> {
         &verifier_inputs.air_public_targets,
         &verifier_inputs.preprocessed_commit,
         &fri_verifier_params,
-        Poseidon2Config::BabyBearD4Width16,
+        Poseidon2Config::BabyBearD1Width16,
     )?;
 
     let circuit = circuit_builder.build()?;

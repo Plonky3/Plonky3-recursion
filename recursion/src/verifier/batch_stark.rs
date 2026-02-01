@@ -24,7 +24,9 @@ use crate::traits::{
     LookupMetadata, Recursive, RecursiveAir, RecursiveChallenger, RecursiveLookupGadget,
     RecursivePcs,
 };
-use crate::types::{BatchProofTargets, CommonDataTargets, OpenedValuesTargets};
+use crate::types::{
+    BatchProofTargets, CommonDataTargets, OpenedValuesTargets, OpenedValuesTargetsWithLookups,
+};
 use crate::{BatchStarkVerifierInputsBuilder, Target};
 
 /// Type alias for PCS verifier parameters.
@@ -641,6 +643,17 @@ where
         coms_to_verify.push((permutation_commit, permutation_round));
     }
 
+    // Observe opened values in the correct order (matching native).
+    // Native observes per-instance: trace_local, trace_next, then quotient chunks,
+    // then preprocessed, then permutation.
+    // The flattened structure has the wrong order, so we observe from instances directly.
+    observe_opened_values_circuit::<SC, WIDTH, RATE>(
+        circuit,
+        &mut challenger,
+        instances,
+        &quotient_degrees,
+    );
+
     let pcs_challenges = SC::Pcs::get_challenges_circuit::<WIDTH, RATE>(
         circuit,
         &mut challenger,
@@ -848,4 +861,60 @@ fn lookup_data_to_pv_index(
             expected_cumulated: public_values_len + index,
         })
         .collect::<Vec<_>>()
+}
+
+/// Observe opened values in the circuit in the correct order to match native.
+///
+/// Native observes opened values in this order:
+/// 1. Trace round: for each instance, observe trace_local then trace_next
+/// 2. Quotient round: for each instance, for each chunk, observe quotient
+/// 3. Preprocessed round: for each instance, observe prep_local then prep_next
+/// 4. Permutation round: for each instance, observe perm_local then perm_next
+fn observe_opened_values_circuit<SC, const WIDTH: usize, const RATE: usize>(
+    circuit: &mut CircuitBuilder<SC::Challenge>,
+    challenger: &mut crate::challenger::CircuitChallenger<WIDTH, RATE>,
+    instances: &[OpenedValuesTargetsWithLookups<SC>],
+    quotient_degrees: &[usize],
+) where
+    SC: StarkGenericConfig,
+    Val<SC>: PrimeField64,
+    SC::Challenge: ExtensionField<Val<SC>>,
+{
+    // 1. Trace round: for each instance, observe trace_local then trace_next
+    for inst in instances {
+        challenger.observe_ext_slice(circuit, &inst.opened_values_no_lookups.trace_local_targets);
+        challenger.observe_ext_slice(circuit, &inst.opened_values_no_lookups.trace_next_targets);
+    }
+
+    // 2. Quotient round: for each instance, for each chunk, observe quotient
+    for (inst, &qd) in instances.iter().zip(quotient_degrees.iter()) {
+        for chunk_values in inst
+            .opened_values_no_lookups
+            .quotient_chunks_targets
+            .iter()
+            .take(qd)
+        {
+            challenger.observe_ext_slice(circuit, chunk_values);
+        }
+    }
+
+    // 3. Preprocessed round: for each instance, observe prep_local then prep_next
+    for inst in instances {
+        if let Some(prep_local) = &inst.opened_values_no_lookups.preprocessed_local_targets {
+            challenger.observe_ext_slice(circuit, prep_local);
+        }
+        if let Some(prep_next) = &inst.opened_values_no_lookups.preprocessed_next_targets {
+            challenger.observe_ext_slice(circuit, prep_next);
+        }
+    }
+
+    // 4. Permutation round: for each instance, observe perm_local then perm_next
+    for inst in instances {
+        if !inst.permutation_local_targets.is_empty() {
+            challenger.observe_ext_slice(circuit, &inst.permutation_local_targets);
+        }
+        if !inst.permutation_next_targets.is_empty() {
+            challenger.observe_ext_slice(circuit, &inst.permutation_next_targets);
+        }
+    }
 }

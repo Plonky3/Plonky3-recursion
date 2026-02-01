@@ -1808,7 +1808,8 @@ impl Poseidon2Prover {
 
     fn air_wrapper_for_config(config: Poseidon2Config) -> Poseidon2AirWrapperInner {
         match config {
-            Poseidon2Config::BabyBearD4Width16 => {
+            // D=1 and D=4 use the same underlying AIR (operates on 16 base field elements)
+            Poseidon2Config::BabyBearD1Width16 | Poseidon2Config::BabyBearD4Width16 => {
                 Poseidon2AirWrapperInner::BabyBearD4Width16(Box::new(
                     Poseidon2CircuitAirBabyBearD4Width16::new(Self::baby_bear_constants_16()),
                 ))
@@ -1836,7 +1837,8 @@ impl Poseidon2Prover {
         preprocessed: Vec<F>,
     ) -> Poseidon2AirWrapperInner {
         match config {
-            Poseidon2Config::BabyBearD4Width16 => {
+            // D=1 and D=4 use the same underlying AIR (operates on 16 base field elements)
+            Poseidon2Config::BabyBearD1Width16 | Poseidon2Config::BabyBearD4Width16 => {
                 assert!(F::from_u64(BABY_BEAR_MODULUS) == F::ZERO,);
                 Poseidon2AirWrapperInner::BabyBearD4Width16(Box::new(
                     Poseidon2CircuitAirBabyBearD4Width16::new_with_preprocessed(
@@ -1896,7 +1898,8 @@ impl Poseidon2Prover {
 
     pub fn width_from_config(&self) -> usize {
         match self.config {
-            Poseidon2Config::BabyBearD4Width16 => {
+            // D=1 and D=4 use the same underlying AIR
+            Poseidon2Config::BabyBearD1Width16 | Poseidon2Config::BabyBearD4Width16 => {
                 Poseidon2CircuitAirBabyBearD4Width16::new(Self::baby_bear_constants_16()).width()
             }
             Poseidon2Config::BabyBearD4Width24 => {
@@ -1913,7 +1916,8 @@ impl Poseidon2Prover {
 
     pub const fn preprocessed_width_from_config(&self) -> usize {
         match self.config {
-            Poseidon2Config::BabyBearD4Width16 => {
+            // D=1 and D=4 use the same underlying AIR
+            Poseidon2Config::BabyBearD1Width16 | Poseidon2Config::BabyBearD4Width16 => {
                 Poseidon2CircuitAirBabyBearD4Width16::preprocessed_width()
             }
             Poseidon2Config::BabyBearD4Width24 => {
@@ -1951,7 +1955,8 @@ impl Poseidon2Prover {
 
         // Pad to power of two and generate trace matrix based on configuration
         match self.config {
-            Poseidon2Config::BabyBearD4Width16 => {
+            // D=1 and D=4 use the same underlying AIR
+            Poseidon2Config::BabyBearD1Width16 | Poseidon2Config::BabyBearD4Width16 => {
                 self.batch_instance_base_impl::<SC, p3_baby_bear::BabyBear, 16, 4, 13, 2>(t)
             }
             Poseidon2Config::BabyBearD4Width24 => {
@@ -2015,7 +2020,8 @@ impl Poseidon2Prover {
         // Create an AIR instance based on the configuration
         // This is a bit verbose but we can't get over const generics
         let (air, matrix) = match self.config {
-            Poseidon2Config::BabyBearD4Width16 => {
+            // D=1 and D=4 use the same underlying AIR
+            Poseidon2Config::BabyBearD1Width16 | Poseidon2Config::BabyBearD4Width16 => {
                 let constants = Self::baby_bear_constants_16();
                 let preprocessed =
                     extract_preprocessed_from_operations::<BabyBear, Val<SC>>(&t.operations);

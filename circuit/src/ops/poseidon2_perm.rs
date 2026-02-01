@@ -48,6 +48,8 @@ use crate::types::{ExprId, NonPrimitiveOpId, WitnessId};
 /// Poseidon2 configuration used as a stable operation key and parameter source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
 pub enum Poseidon2Config {
+    /// BabyBear with extension degree D=1 (base field challenges), width 16.
+    BabyBearD1Width16,
     BabyBearD4Width16,
     BabyBearD4Width24,
     KoalaBearD4Width16,
@@ -57,6 +59,7 @@ pub enum Poseidon2Config {
 impl Poseidon2Config {
     pub const fn d(self) -> usize {
         match self {
+            Self::BabyBearD1Width16 => 1,
             Self::BabyBearD4Width16
             | Self::BabyBearD4Width24
             | Self::KoalaBearD4Width16
@@ -66,13 +69,15 @@ impl Poseidon2Config {
 
     pub const fn width(self) -> usize {
         match self {
-            Self::BabyBearD4Width16 | Self::KoalaBearD4Width16 => 16,
+            Self::BabyBearD1Width16 | Self::BabyBearD4Width16 | Self::KoalaBearD4Width16 => 16,
             Self::BabyBearD4Width24 | Self::KoalaBearD4Width24 => 24,
         }
     }
 
+    /// Rate in extension field elements (WIDTH / D for D=4, or WIDTH for D=1).
     pub const fn rate_ext(self) -> usize {
         match self {
+            Self::BabyBearD1Width16 => 8, // 16 base elements, rate = 8 for sponge
             Self::BabyBearD4Width16 | Self::KoalaBearD4Width16 => 2,
             Self::BabyBearD4Width24 | Self::KoalaBearD4Width24 => 4,
         }
@@ -82,8 +87,10 @@ impl Poseidon2Config {
         self.rate_ext() * self.d()
     }
 
+    /// Capacity in extension field elements.
     pub const fn capacity_ext(self) -> usize {
         match self {
+            Self::BabyBearD1Width16 => 8, // 16 - 8 = 8 capacity
             Self::BabyBearD4Width16
             | Self::BabyBearD4Width24
             | Self::KoalaBearD4Width16
@@ -93,21 +100,22 @@ impl Poseidon2Config {
 
     pub const fn sbox_degree(self) -> u64 {
         match self {
-            Self::BabyBearD4Width16 | Self::BabyBearD4Width24 => 7,
+            Self::BabyBearD1Width16 | Self::BabyBearD4Width16 | Self::BabyBearD4Width24 => 7,
             Self::KoalaBearD4Width16 | Self::KoalaBearD4Width24 => 3,
         }
     }
 
     pub const fn sbox_registers(self) -> usize {
         match self {
-            Self::BabyBearD4Width16 | Self::BabyBearD4Width24 => 1,
+            Self::BabyBearD1Width16 | Self::BabyBearD4Width16 | Self::BabyBearD4Width24 => 1,
             Self::KoalaBearD4Width16 | Self::KoalaBearD4Width24 => 0,
         }
     }
 
     pub const fn half_full_rounds(self) -> usize {
         match self {
-            Self::BabyBearD4Width16
+            Self::BabyBearD1Width16
+            | Self::BabyBearD4Width16
             | Self::BabyBearD4Width24
             | Self::KoalaBearD4Width16
             | Self::KoalaBearD4Width24 => 4,
@@ -116,7 +124,7 @@ impl Poseidon2Config {
 
     pub const fn partial_rounds(self) -> usize {
         match self {
-            Self::BabyBearD4Width16 => 13,
+            Self::BabyBearD1Width16 | Self::BabyBearD4Width16 => 13,
             Self::BabyBearD4Width24 => 21,
             Self::KoalaBearD4Width16 => 20,
             Self::KoalaBearD4Width24 => 23,
@@ -128,11 +136,16 @@ impl Poseidon2Config {
     }
 }
 
-/// Type alias for the Poseidon2 permutation execution closure.
+/// Type alias for the Poseidon2 permutation execution closure (D=4).
 ///
 /// The closure takes `DIGEST` extension field limbs and returns `DIGEST` output limbs.
 pub type Poseidon2PermExec<F, const DIGEST: usize> =
     Arc<dyn Fn(&[F; DIGEST]) -> [F; DIGEST] + Send + Sync>;
+
+/// Type alias for the Poseidon2 permutation execution closure for D=1 (base field).
+///
+/// The closure takes 16 base field elements and returns 16 base field elements.
+pub type Poseidon2PermExecBase<F> = Arc<dyn Fn(&[F; 16]) -> [F; 16] + Send + Sync>;
 
 // ============================================================================
 // Private Data
@@ -363,6 +376,10 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for Poseidon2Perm
         let config = ctx.get_config(&self.op_type)?;
         let exec = match config {
             NonPrimitiveOpConfig::Poseidon2Perm { exec, .. } => Arc::clone(exec),
+            NonPrimitiveOpConfig::Poseidon2PermBase { .. } => {
+                // D=1 config not supported by this executor (use D=4)
+                return Err(CircuitError::InvalidNonPrimitiveOpConfiguration { op: self.op_type });
+            }
             NonPrimitiveOpConfig::None => {
                 return Err(CircuitError::InvalidNonPrimitiveOpConfiguration { op: self.op_type });
             }
@@ -729,6 +746,17 @@ pub trait Poseidon2Params {
 
     /// Width in extension elements = RATE_EXT + CAPACITY_EXT
     const WIDTH_EXT: usize = Self::RATE_EXT + Self::CAPACITY_EXT;
+}
+
+/// BabyBear D=1 Width=16 configuration for base field challenges.
+///
+/// This is used when the challenge type is the base field itself (no extension).
+/// The Poseidon2 permutation operates directly on 16 base field elements.
+pub struct BabyBearD1Width16;
+
+impl Poseidon2Params for BabyBearD1Width16 {
+    type BaseField = p3_baby_bear::BabyBear;
+    const CONFIG: Poseidon2Config = Poseidon2Config::BabyBearD1Width16;
 }
 
 /// Poseidon2 operation table row.

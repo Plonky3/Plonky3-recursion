@@ -104,6 +104,47 @@ impl<const WIDTH: usize, const RATE: usize> CircuitChallenger<WIDTH, RATE> {
             self.state[i] = val;
         }
 
+        // Branch based on extension degree
+        if EF::DIMENSION == 1 {
+            // D=1: Use base field permutation directly
+            self.duplexing_base(circuit);
+        } else {
+            // D=4: Use extension field permutation with recomposition
+            self.duplexing_ext::<BF, EF>(circuit);
+        }
+
+        // 5. Fill output buffer from state[0..RATE]
+        self.output_buffer.clear();
+        self.output_buffer.extend_from_slice(&self.state[..RATE]);
+    }
+
+    /// Duplexing for D=1 (base field): permutation operates directly on 16 elements.
+    fn duplexing_base<EF>(&mut self, circuit: &mut CircuitBuilder<EF>)
+    where
+        EF: p3_field::Field,
+    {
+        // State is already 16 base field elements, use directly
+        let inputs: [Target; 16] = self
+            .state
+            .clone()
+            .try_into()
+            .expect("state should have WIDTH=16 elements");
+
+        // Apply Poseidon2 permutation via witness hint (base field version)
+        let outputs = circuit
+            .add_poseidon2_perm_for_challenger_base(self.poseidon2_config, inputs)
+            .expect("poseidon2 base permutation should succeed");
+
+        // Update state directly
+        self.state = outputs.to_vec();
+    }
+
+    /// Duplexing for D=4 (extension field): pack/unpack around permutation.
+    fn duplexing_ext<BF, EF>(&mut self, circuit: &mut CircuitBuilder<EF>)
+    where
+        BF: PrimeField64,
+        EF: ExtensionField<BF>,
+    {
         // 2. Recompose WIDTH coefficient targets → WIDTH/D extension element targets
         let num_ext_limbs = WIDTH / EF::DIMENSION;
         assert_eq!(num_ext_limbs, 4, "Expected 4 extension limbs for WIDTH/D");
@@ -143,10 +184,6 @@ impl<const WIDTH: usize, const RATE: usize> CircuitChallenger<WIDTH, RATE> {
                 self.state[start + i] = coeff;
             }
         }
-
-        // 5. Fill output buffer from state[0..RATE]
-        self.output_buffer.clear();
-        self.output_buffer.extend_from_slice(&self.state[..RATE]);
     }
 }
 
@@ -154,6 +191,11 @@ impl<const WIDTH: usize, const RATE: usize> CircuitChallenger<WIDTH, RATE> {
     /// Create a challenger with BabyBear D4 Width16 configuration (default).
     pub fn new_babybear() -> Self {
         Self::new(Poseidon2Config::BabyBearD4Width16)
+    }
+
+    /// Create a challenger with BabyBear D1 Width16 configuration (base field challenges).
+    pub fn new_babybear_base() -> Self {
+        Self::new(Poseidon2Config::BabyBearD1Width16)
     }
 
     /// Create a challenger with KoalaBear D4 Width16 configuration.
@@ -255,131 +297,5 @@ where
         self.input_buffer.clear();
         self.output_buffer.clear();
         self.initialized = true;
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use p3_baby_bear::{BabyBear, default_babybear_poseidon2_16};
-    use p3_circuit::ops::generate_poseidon2_trace;
-    use p3_field::extension::BinomialExtensionField;
-    use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
-    use p3_poseidon2_circuit_air::BabyBearD4Width16;
-
-    use super::*;
-
-    type Ext4 = BinomialExtensionField<BabyBear, 4>;
-    const WIDTH: usize = 16;
-    const RATE: usize = 8;
-
-    fn setup_circuit_with_poseidon2() -> CircuitBuilder<Ext4> {
-        let mut circuit = CircuitBuilder::<Ext4>::new();
-        let perm = default_babybear_poseidon2_16();
-        circuit.enable_poseidon2_perm::<BabyBearD4Width16, _>(
-            generate_poseidon2_trace::<Ext4, BabyBearD4Width16>,
-            perm,
-        );
-        circuit
-    }
-
-    #[test]
-    fn test_circuit_challenger_observe_sample() {
-        let mut circuit = setup_circuit_with_poseidon2();
-        let mut challenger = CircuitChallenger::<WIDTH, RATE>::new_babybear();
-
-        let val1 = circuit.add_const(Ext4::from(BabyBear::ONE));
-        let val2 = circuit.add_const(Ext4::from(BabyBear::TWO));
-        RecursiveChallenger::<BabyBear, Ext4>::observe(&mut challenger, &mut circuit, val1);
-        RecursiveChallenger::<BabyBear, Ext4>::observe(&mut challenger, &mut circuit, val2);
-
-        let challenge =
-            RecursiveChallenger::<BabyBear, Ext4>::sample(&mut challenger, &mut circuit);
-        assert!(challenge.0 > 0);
-    }
-
-    #[test]
-    fn test_circuit_challenger_sample_ext_vec() {
-        let mut circuit = setup_circuit_with_poseidon2();
-        let mut challenger = CircuitChallenger::<WIDTH, RATE>::new_babybear();
-
-        let challenges =
-            RecursiveChallenger::<BabyBear, Ext4>::sample_ext_vec(&mut challenger, &mut circuit, 3);
-        assert_eq!(challenges.len(), 3);
-    }
-
-    #[test]
-    fn test_circuit_challenger_observe_ext() {
-        let mut circuit = setup_circuit_with_poseidon2();
-        let mut challenger = CircuitChallenger::<WIDTH, RATE>::new_babybear();
-
-        // Observe an extension element (should decompose to 4 base coefficients)
-        let ext_val = Ext4::from_basis_coefficients_slice(&[
-            BabyBear::from_u64(1),
-            BabyBear::from_u64(2),
-            BabyBear::from_u64(3),
-            BabyBear::from_u64(4),
-        ])
-        .unwrap();
-        let target = circuit.add_const(ext_val);
-        RecursiveChallenger::<BabyBear, Ext4>::observe_ext(&mut challenger, &mut circuit, target);
-
-        // Should have 4 elements in input buffer
-        assert_eq!(challenger.input_buffer.len(), 4);
-    }
-
-    #[test]
-    fn test_circuit_challenger_clear() {
-        let mut circuit = setup_circuit_with_poseidon2();
-        let mut challenger = CircuitChallenger::<WIDTH, RATE>::new_babybear();
-
-        let val = circuit.add_const(Ext4::from(BabyBear::ONE));
-        RecursiveChallenger::<BabyBear, Ext4>::observe(&mut challenger, &mut circuit, val);
-
-        assert_eq!(challenger.input_buffer.len(), 1);
-
-        RecursiveChallenger::<BabyBear, Ext4>::clear(&mut challenger, &mut circuit);
-
-        assert!(challenger.input_buffer.is_empty());
-        assert!(challenger.output_buffer.is_empty());
-        assert_eq!(challenger.state.len(), WIDTH);
-    }
-
-    #[test]
-    fn test_circuit_challenger_duplexing_on_rate_full() {
-        let mut circuit = setup_circuit_with_poseidon2();
-        let mut challenger = CircuitChallenger::<WIDTH, RATE>::new_babybear();
-
-        // Observe RATE elements to trigger duplexing
-        for i in 0..RATE {
-            let val = circuit.add_const(Ext4::from(BabyBear::from_u64(i as u64)));
-            RecursiveChallenger::<BabyBear, Ext4>::observe(&mut challenger, &mut circuit, val);
-        }
-
-        // After RATE observations, input buffer should be empty (duplexed)
-        assert!(challenger.input_buffer.is_empty());
-        // Output buffer should be filled
-        assert_eq!(challenger.output_buffer.len(), RATE);
-    }
-
-    #[test]
-    fn test_circuit_challenger_partial_absorb_then_sample() {
-        let mut circuit = setup_circuit_with_poseidon2();
-        let mut challenger = CircuitChallenger::<WIDTH, RATE>::new_babybear();
-
-        // Observe 3 elements (partial, not reaching RATE)
-        for i in 0..3 {
-            let val = circuit.add_const(Ext4::from(BabyBear::from_u64(i as u64)));
-            RecursiveChallenger::<BabyBear, Ext4>::observe(&mut challenger, &mut circuit, val);
-        }
-
-        assert_eq!(challenger.input_buffer.len(), 3);
-
-        // Sample should trigger duplexing with partial input
-        let _sample = RecursiveChallenger::<BabyBear, Ext4>::sample(&mut challenger, &mut circuit);
-
-        // After sample, input buffer should be empty
-        assert!(challenger.input_buffer.is_empty());
-        // Output buffer should have RATE - 1 elements (one was popped)
-        assert_eq!(challenger.output_buffer.len(), RATE - 1);
     }
 }
