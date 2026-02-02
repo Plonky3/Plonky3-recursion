@@ -659,8 +659,8 @@ impl<SC: StarkGenericConfig> Clone for Poseidon2AirWrapper<SC> {
     }
 }
 
-const BABY_BEAR_MODULUS: u64 = 2013265921;
-const KOALA_BEAR_MODULUS: u64 = 2147483649;
+const BABY_BEAR_MODULUS: u64 = 0x78000001;
+const KOALA_BEAR_MODULUS: u64 = 0x7f000001;
 
 impl<SC> BaseAir<Val<SC>> for Poseidon2AirWrapper<SC>
 where
@@ -801,9 +801,6 @@ where
     fn get_lookups(
         &mut self,
     ) -> Vec<Lookup<<SymbolicAirBuilder<Val<SC>, SC::Challenge> as AirBuilder>::F>> {
-        const BABY_BEAR_MODULUS: u64 = 2013265921;
-        const KOALA_BEAR_MODULUS: u64 = 2147483649;
-
         match &mut self.inner {
             Poseidon2AirWrapperInner::BabyBearD4Width16(air) => unsafe {
                 // Runtime check: verify Val<SC> == BabyBear before transmute
@@ -1356,9 +1353,6 @@ where
         &mut self,
     ) -> Vec<Lookup<<DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge> as AirBuilder>::F>>
     {
-        const BABY_BEAR_MODULUS: u64 = 2013265921;
-        const KOALA_BEAR_MODULUS: u64 = 2147483649;
-
         match &mut self.inner {
             Poseidon2AirWrapperInner::BabyBearD4Width16(air) => unsafe {
                 // Runtime check: verify Val<SC> == BabyBear before transmute
@@ -1545,9 +1539,6 @@ where
     fn get_lookups(
         &mut self,
     ) -> Vec<Lookup<<ProverConstraintFolderWithLookups<'a, SC> as AirBuilder>::F>> {
-        const BABY_BEAR_MODULUS: u64 = 2013265921;
-        const KOALA_BEAR_MODULUS: u64 = 2147483649;
-
         match &mut self.inner {
             Poseidon2AirWrapperInner::BabyBearD4Width16(air) => unsafe {
                 assert_eq!(Val::<SC>::from_u64(BABY_BEAR_MODULUS), Val::<SC>::ZERO,);
@@ -1730,9 +1721,6 @@ where
     fn get_lookups(
         &mut self,
     ) -> Vec<Lookup<<VerifierConstraintFolderWithLookups<'a, SC> as AirBuilder>::F>> {
-        const BABY_BEAR_MODULUS: u64 = 2013265921;
-        const KOALA_BEAR_MODULUS: u64 = 2147483649;
-
         match &mut self.inner {
             Poseidon2AirWrapperInner::BabyBearD4Width16(air) => unsafe {
                 assert_eq!(Val::<SC>::from_u64(BABY_BEAR_MODULUS), Val::<SC>::ZERO,);
@@ -3591,5 +3579,54 @@ mod tests {
         let expected_w = <Ext2 as ExtractBinomialW<Goldilocks>>::extract_w().unwrap();
         assert_eq!(proof.w_binomial, Some(expected_w));
         prover.verify_all_tables(&proof, &common).unwrap();
+    }
+
+    #[test]
+    fn test_koalabear_modulus_constant() {
+        // Verify KOALA_BEAR_MODULUS matches the actual KoalaBear field modulus.
+        // The modulus p satisfies: from_u64(p) == 0 in the field.
+        assert_eq!(
+            KoalaBear::from_u64(KOALA_BEAR_MODULUS),
+            KoalaBear::ZERO,
+            "KOALA_BEAR_MODULUS (0x{:x}) does not match KoalaBear's actual modulus",
+            KOALA_BEAR_MODULUS
+        );
+
+        // Verify the exact hex value (2130706433 = 0x7f000001).
+        assert_eq!(KOALA_BEAR_MODULUS, 0x7f000001);
+        assert_eq!(KOALA_BEAR_MODULUS, 2130706433);
+
+        // Verify arithmetic at the modulus boundary with hardcoded expected values.
+        // (p - 1) + 2 = 1 in the field
+        let p_minus_1 = KoalaBear::from_u64(KOALA_BEAR_MODULUS - 1);
+        assert_eq!(p_minus_1, KoalaBear::NEG_ONE);
+        assert_eq!(p_minus_1 + KoalaBear::TWO, KoalaBear::ONE);
+
+        // (p - 1) * (p - 1) = 1 in the field (since (-1) * (-1) = 1)
+        assert_eq!(p_minus_1 * p_minus_1, KoalaBear::ONE);
+
+        // Verify from_u64(p + 1) == 1
+        assert_eq!(KoalaBear::from_u64(KOALA_BEAR_MODULUS + 1), KoalaBear::ONE);
+    }
+
+    #[test]
+    fn test_babybear_modulus_constant() {
+        // Verify BABY_BEAR_MODULUS matches the actual BabyBear field modulus.
+        assert_eq!(
+            BabyBear::from_u64(BABY_BEAR_MODULUS),
+            BabyBear::ZERO,
+            "BABY_BEAR_MODULUS (0x{:x}) does not match BabyBear's actual modulus",
+            BABY_BEAR_MODULUS
+        );
+
+        // Verify the exact hex value (2013265921 = 0x78000001).
+        assert_eq!(BABY_BEAR_MODULUS, 0x78000001);
+        assert_eq!(BABY_BEAR_MODULUS, 2013265921);
+
+        // Verify arithmetic at the modulus boundary.
+        let p_minus_1 = BabyBear::from_u64(BABY_BEAR_MODULUS - 1);
+        assert_eq!(p_minus_1, BabyBear::NEG_ONE);
+        assert_eq!(p_minus_1 + BabyBear::TWO, BabyBear::ONE);
+        assert_eq!(BabyBear::from_u64(BABY_BEAR_MODULUS + 1), BabyBear::ONE);
     }
 }
