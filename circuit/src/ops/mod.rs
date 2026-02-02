@@ -13,6 +13,7 @@ pub use poseidon2_perm::{
     Poseidon2Params,
     // Builder API
     Poseidon2PermCall,
+    Poseidon2PermCallBase,
     // Configuration
     Poseidon2PermExec,
     Poseidon2PermOps,

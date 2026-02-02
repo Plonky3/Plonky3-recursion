@@ -171,6 +171,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             mmcs_bit: Some(mmcs_bit_row0),
             inputs: inputs_row0.map(Some),
             out_ctl: [false, false],
+            return_all_outputs: false,
             mmcs_index_sum: None,
         })?;
 
@@ -191,6 +192,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             mmcs_bit: Some(mmcs_bit_row1),
             inputs: sibling1_inputs,
             out_ctl: [false, false],
+            return_all_outputs: false,
             mmcs_index_sum: None,
         })?;
 
@@ -205,6 +207,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             mmcs_bit: Some(mmcs_bit_row2),
             inputs: sibling2_inputs,
             out_ctl: [true, true],
+            return_all_outputs: false,
             mmcs_index_sum: Some(mmcs_idx_sum_expr),
         })?;
     let row2_out0 = row2_outputs[0].ok_or("missing row2 out0")?;

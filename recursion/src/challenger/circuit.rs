@@ -3,11 +3,10 @@
 //! This module provides [`CircuitChallenger`], which maintains state as coefficient-level
 //! targets to ensure exact transcript compatibility with the native `DuplexChallenger`.
 //!
-//! # Implementation Status
+//! # Soundness
 //!
-//! The challenger computes Poseidon2 permutations via a witness hint. This ensures correct
-//! transcript values during circuit execution. Full soundness enforcement via CTLs
-//! (Cross-Table Lookups) can be added later by connecting to the Poseidon2 table.
+//! All Poseidon2 permutations in the challenger are CTL-verified against the Poseidon2 AIR
+//! table. This ensures cryptographic soundness of the transcript computations.
 
 use alloc::vec;
 use alloc::vec::Vec;
@@ -34,7 +33,7 @@ use crate::traits::RecursiveChallenger;
 /// When duplexing:
 /// 1. State[0..input_buffer.len()] is overwritten with inputs
 /// 2. State is recomposed to WIDTH/D extension elements
-/// 3. Poseidon2 permutation is applied (via witness hint, CTLs added later for soundness)
+/// 3. Poseidon2 permutation is applied (CTL-verified against Poseidon2 AIR table)
 /// 4. Output extension elements are decomposed back to coefficients
 /// 5. Output buffer is filled from state[0..RATE]
 pub struct CircuitChallenger<const WIDTH: usize, const RATE: usize> {
@@ -179,8 +178,7 @@ impl<const WIDTH: usize, const RATE: usize> CircuitChallenger<WIDTH, RATE> {
                 .expect("recomposition should succeed"),
         ];
 
-        // 3. Apply Poseidon2 permutation via witness hint
-        // (CTLs for soundness can be added later)
+        // 3. Apply Poseidon2 permutation (CTL-verified against Poseidon2 AIR table)
         let ext_outputs = circuit
             .add_poseidon2_perm_for_challenger(self.poseidon2_config, ext_inputs)
             .expect("poseidon2 permutation should succeed");

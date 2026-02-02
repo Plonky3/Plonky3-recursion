@@ -17,7 +17,7 @@ pub fn add_hash_slice<F: Field>(
 ) -> Result<Vec<ExprId>, CircuitBuilderError> {
     let chunks = inputs.chunks(poseidon2_config.rate_ext());
     let last_idx = chunks.len() - 1;
-    let mut outputs = [None, None];
+    let mut outputs = [None, None, None, None];
     let mut last_op_id = NonPrimitiveOpId(0);
     for (i, input) in chunks.enumerate() {
         let is_first = i == 0;
@@ -37,13 +37,15 @@ pub fn add_hash_slice<F: Field>(
                 .try_into()
                 .expect("We have already taken 4 elements"),
             out_ctl: [is_last, is_last],
+            return_all_outputs: false,
             mmcs_index_sum: None,
         })?;
         outputs = maybe_outputs;
         last_op_id = op_id;
     }
 
-    outputs
+    // Only return outputs 0-1 (rate elements) for hashing
+    [outputs[0], outputs[1]]
         .into_iter()
         .map(|o| {
             o.ok_or_else(|| CircuitBuilderError::MalformedNonPrimitiveOutputs {

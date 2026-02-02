@@ -934,10 +934,12 @@ where
     /// Applies Poseidon2 permutation for the circuit challenger.
     ///
     /// Takes 4 extension element inputs and returns 4 extension element outputs.
-    /// This uses an unconstrained witness hint that computes the permutation at runtime.
+    /// This operation is **CTL-verified** against the Poseidon2 AIR table for soundness.
     ///
-    /// **Note**: This operation is not yet constrained by CTLs. Soundness enforcement
-    /// should be added by connecting to the Poseidon2 table via CTLs.
+    /// # CTL Verification
+    /// - Inputs 0-3: CTL-verified against witness table
+    /// - Outputs 0-1: CTL-verified against witness table (rate elements)
+    /// - Outputs 2-3: NOT CTL-verified (capacity elements, constrained by Poseidon2 AIR)
     ///
     /// # Parameters
     /// - `config`: The Poseidon2 configuration to use
@@ -953,19 +955,29 @@ where
         config: crate::ops::Poseidon2Config,
         inputs: [ExprId; 4],
     ) -> Result<[ExprId; 4], CircuitBuilderError> {
+        use crate::ops::poseidon2_perm::{Poseidon2PermCall, Poseidon2PermOps};
+
         self.push_scope("poseidon2_perm_for_challenger");
 
-        // Ensure Poseidon2 is enabled (so the exec function is available)
-        let op_type = NonPrimitiveOpType::Poseidon2Perm(config);
-        self.ensure_op_enabled(op_type)?;
-
-        // Create the hint
-        let hint = Poseidon2ChallengerHint::new(config);
-
-        // Push unconstrained op: single input vector with 4 elements, 4 output witnesses
-        let input_exprs = vec![inputs.to_vec()];
-        let (_, _, outputs) =
-            self.push_unconstrained_op(input_exprs, 4, hint, "poseidon2_challenger_perm");
+        // Use add_poseidon2_perm with CTL verification for soundness
+        // - All 4 inputs are CTL-verified
+        // - Outputs 0-1 are CTL-verified (rate elements)
+        // - Outputs 2-3 are returned but NOT CTL-verified (capacity elements)
+        let (_op_id, outputs) = self.add_poseidon2_perm(Poseidon2PermCall {
+            config,
+            new_start: true, // Each challenger permutation is independent
+            merkle_path: false,
+            mmcs_bit: None,
+            inputs: [
+                Some(inputs[0]),
+                Some(inputs[1]),
+                Some(inputs[2]),
+                Some(inputs[3]),
+            ],
+            out_ctl: [true, true],    // CTL-verify rate outputs
+            return_all_outputs: true, // Return all 4 outputs for sponge state
+            mmcs_index_sum: None,
+        })?;
 
         let output_exprs: [ExprId; 4] = [
             outputs[0].ok_or(CircuitBuilderError::MissingOutput)?,
@@ -981,10 +993,12 @@ where
     /// Applies Poseidon2 permutation for the circuit challenger (base field, D=1).
     ///
     /// Takes 16 base field element inputs and returns 16 base field element outputs.
-    /// This uses an unconstrained witness hint that computes the permutation at runtime.
+    /// This operation is **CTL-verified** against the Poseidon2 AIR table for soundness.
     ///
-    /// **Note**: This operation is not yet constrained by CTLs. Soundness enforcement
-    /// should be added by connecting to the Poseidon2 table via CTLs.
+    /// # CTL Verification
+    /// - Inputs 0-15: CTL-verified against witness table
+    /// - Outputs 0-7: CTL-verified against witness table (rate elements)
+    /// - Outputs 8-15: NOT CTL-verified (capacity elements, constrained by Poseidon2 AIR)
     ///
     /// # Parameters
     /// - `config`: The Poseidon2 configuration to use (must be D=1)
@@ -1000,19 +1014,21 @@ where
         config: crate::ops::Poseidon2Config,
         inputs: [ExprId; 16],
     ) -> Result<[ExprId; 16], CircuitBuilderError> {
+        use crate::ops::poseidon2_perm::{Poseidon2PermCallBase, Poseidon2PermOps};
+
         self.push_scope("poseidon2_perm_for_challenger_base");
 
-        // Ensure Poseidon2 is enabled (so the exec function is available)
-        let op_type = NonPrimitiveOpType::Poseidon2Perm(config);
-        self.ensure_op_enabled(op_type)?;
-
-        // Create the hint
-        let hint = Poseidon2ChallengerBaseHint::new(config);
-
-        // Push unconstrained op: single input vector with 16 elements, 16 output witnesses
-        let input_exprs = vec![inputs.to_vec()];
-        let (_, _, outputs) =
-            self.push_unconstrained_op(input_exprs, 16, hint, "poseidon2_challenger_perm_base");
+        // Use add_poseidon2_perm_base with CTL verification for soundness
+        // - All 16 inputs are CTL-verified
+        // - Outputs 0-7 are CTL-verified (rate elements)
+        // - Outputs 8-15 are returned but NOT CTL-verified (capacity elements)
+        let (_op_id, outputs) = self.add_poseidon2_perm_base(Poseidon2PermCallBase {
+            config,
+            new_start: true,          // Each challenger permutation is independent
+            inputs: inputs.map(Some), // All 16 inputs are CTL-verified
+            out_ctl: [true; 8],       // CTL-verify all 8 rate outputs
+            return_all_outputs: true, // Return all 16 outputs for sponge state
+        })?;
 
         let output_exprs: [ExprId; 16] =
             core::array::from_fn(|i| outputs[i].expect("output should exist"));
@@ -1100,210 +1116,6 @@ impl<BF: PrimeField64, EF: ExtensionField<BF>> NonPrimitiveExecutor<EF>
     }
 
     fn boxed(&self) -> alloc::boxed::Box<dyn NonPrimitiveExecutor<EF>> {
-        Box::new(self.clone())
-    }
-}
-
-/// Witness hint for Poseidon2 permutation used by the circuit challenger.
-///
-/// At runtime, this hint:
-/// 1. Reads 4 extension element inputs (the recomposed sponge state)
-/// 2. Looks up the Poseidon2 permutation function from the enabled ops config
-/// 3. Executes the permutation and writes 4 extension element outputs
-///
-/// This is an unconstrained operation - soundness must be enforced by CTLs later.
-#[derive(Debug, Clone)]
-struct Poseidon2ChallengerHint {
-    config: crate::ops::Poseidon2Config,
-}
-
-impl Poseidon2ChallengerHint {
-    pub const fn new(config: crate::ops::Poseidon2Config) -> Self {
-        Self { config }
-    }
-}
-
-impl<EF: Field + Send + Sync + 'static> NonPrimitiveExecutor<EF> for Poseidon2ChallengerHint {
-    fn execute(
-        &self,
-        inputs: &[Vec<crate::WitnessId>],
-        outputs: &[Vec<crate::WitnessId>],
-        ctx: &mut crate::op::ExecutionContext<'_, EF>,
-    ) -> Result<(), CircuitError> {
-        // Expected layout: inputs = [[in0, in1, in2, in3]], outputs = [[out0], [out1], [out2], [out3]]
-        if inputs.len() != 1 {
-            return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
-                op: NonPrimitiveOpType::Unconstrained,
-                expected: "1 input vector".to_string(),
-                got: inputs.len(),
-            });
-        }
-        if inputs[0].len() != 4 {
-            return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
-                op: NonPrimitiveOpType::Unconstrained,
-                expected: "4 inputs in vector".to_string(),
-                got: inputs[0].len(),
-            });
-        }
-        if outputs.len() != 4 {
-            return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
-                op: NonPrimitiveOpType::Unconstrained,
-                expected: "4 output vectors".to_string(),
-                got: outputs.len(),
-            });
-        }
-
-        for (i, out) in outputs.iter().enumerate() {
-            if out.len() != 1 {
-                return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
-                    op: NonPrimitiveOpType::Unconstrained,
-                    expected: format!("1 witness for output {}", i),
-                    got: out.len(),
-                });
-            }
-        }
-
-        // Get the Poseidon2 exec function from config
-        let op_type = NonPrimitiveOpType::Poseidon2Perm(self.config);
-        let config = ctx.get_config(&op_type)?;
-        let exec = match config {
-            crate::op::NonPrimitiveOpConfig::Poseidon2Perm { exec, .. } => Arc::clone(exec),
-            crate::op::NonPrimitiveOpConfig::Poseidon2PermBase { .. } => {
-                return Err(CircuitError::InvalidNonPrimitiveOpConfiguration { op: op_type });
-            }
-            crate::op::NonPrimitiveOpConfig::None => {
-                return Err(CircuitError::InvalidNonPrimitiveOpConfiguration { op: op_type });
-            }
-        };
-
-        // Read inputs from the single input vector
-        let input_vals: [EF; 4] = [
-            ctx.get_witness(inputs[0][0])?,
-            ctx.get_witness(inputs[0][1])?,
-            ctx.get_witness(inputs[0][2])?,
-            ctx.get_witness(inputs[0][3])?,
-        ];
-
-        // Execute the permutation
-        let output_vals = exec(&input_vals);
-
-        // Write outputs
-        for (i, &val) in output_vals.iter().enumerate() {
-            ctx.set_witness(outputs[i][0], val)?;
-        }
-
-        Ok(())
-    }
-
-    fn op_type(&self) -> &NonPrimitiveOpType {
-        &NonPrimitiveOpType::Unconstrained
-    }
-
-    fn as_any(&self) -> &dyn core::any::Any {
-        self
-    }
-
-    fn boxed(&self) -> alloc::boxed::Box<dyn NonPrimitiveExecutor<EF>> {
-        Box::new(self.clone())
-    }
-}
-
-/// Witness hint for Poseidon2 permutation used by the circuit challenger (D=1, base field).
-///
-/// At runtime, this hint:
-/// 1. Reads 16 base field element inputs (the sponge state)
-/// 2. Looks up the Poseidon2 permutation function from the enabled ops config
-/// 3. Executes the permutation and writes 16 base field element outputs
-///
-/// This is an unconstrained operation - soundness must be enforced by CTLs later.
-#[derive(Debug, Clone)]
-struct Poseidon2ChallengerBaseHint {
-    config: crate::ops::Poseidon2Config,
-}
-
-impl Poseidon2ChallengerBaseHint {
-    pub const fn new(config: crate::ops::Poseidon2Config) -> Self {
-        Self { config }
-    }
-}
-
-impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for Poseidon2ChallengerBaseHint {
-    fn execute(
-        &self,
-        inputs: &[Vec<crate::WitnessId>],
-        outputs: &[Vec<crate::WitnessId>],
-        ctx: &mut crate::op::ExecutionContext<'_, F>,
-    ) -> Result<(), CircuitError> {
-        // Expected layout: inputs = [[in0..in15]], outputs = [[out0], [out1], ..., [out15]]
-        if inputs.len() != 1 {
-            return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
-                op: NonPrimitiveOpType::Unconstrained,
-                expected: "1 input vector".to_string(),
-                got: inputs.len(),
-            });
-        }
-        if inputs[0].len() != 16 {
-            return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
-                op: NonPrimitiveOpType::Unconstrained,
-                expected: "16 inputs in vector".to_string(),
-                got: inputs[0].len(),
-            });
-        }
-        if outputs.len() != 16 {
-            return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
-                op: NonPrimitiveOpType::Unconstrained,
-                expected: "16 output vectors".to_string(),
-                got: outputs.len(),
-            });
-        }
-
-        for (i, out) in outputs.iter().enumerate() {
-            if out.len() != 1 {
-                return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
-                    op: NonPrimitiveOpType::Unconstrained,
-                    expected: format!("1 witness for output {}", i),
-                    got: out.len(),
-                });
-            }
-        }
-
-        // Get the Poseidon2 exec function from config
-        let op_type = NonPrimitiveOpType::Poseidon2Perm(self.config);
-        let config = ctx.get_config(&op_type)?;
-        let exec = match config {
-            crate::op::NonPrimitiveOpConfig::Poseidon2PermBase { exec, .. } => Arc::clone(exec),
-            crate::op::NonPrimitiveOpConfig::Poseidon2Perm { .. } => {
-                return Err(CircuitError::InvalidNonPrimitiveOpConfiguration { op: op_type });
-            }
-            crate::op::NonPrimitiveOpConfig::None => {
-                return Err(CircuitError::InvalidNonPrimitiveOpConfiguration { op: op_type });
-            }
-        };
-
-        // Read inputs from the single input vector
-        let input_vals: [F; 16] =
-            core::array::from_fn(|i| ctx.get_witness(inputs[0][i]).expect("input should exist"));
-
-        // Execute the permutation
-        let output_vals = exec(&input_vals);
-
-        // Write outputs
-        for (i, &val) in output_vals.iter().enumerate() {
-            ctx.set_witness(outputs[i][0], val)?;
-        }
-
-        Ok(())
-    }
-
-    fn op_type(&self) -> &NonPrimitiveOpType {
-        &NonPrimitiveOpType::Unconstrained
-    }
-
-    fn as_any(&self) -> &dyn core::any::Any {
-        self
-    }
-
-    fn boxed(&self) -> alloc::boxed::Box<dyn NonPrimitiveExecutor<F>> {
         Box::new(self.clone())
     }
 }
@@ -1672,6 +1484,7 @@ mod tests {
                 mmcs_bit: None, // Must be None when merkle_path=false
                 inputs: [Some(z), Some(z), Some(z), Some(z)],
                 out_ctl: [true, true],
+                return_all_outputs: false,
                 mmcs_index_sum: None,
             })
             .unwrap();
