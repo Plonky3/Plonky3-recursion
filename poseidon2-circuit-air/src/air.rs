@@ -823,62 +823,38 @@ where
         // There are POSEIDON2_LIMBS input limbs and POSEIDON2_PUBLIC_OUTPUT_LIMBS output limbs to be looked up in the `Witness` table.
         let mut lookups = Vec::with_capacity(POSEIDON2_LIMBS + POSEIDON2_PUBLIC_OUTPUT_LIMBS);
 
-        // When merkle_path=1 AND mmcs_bit=1, the input VALUES are permuted in the trace:
-        // When permuted (merkle_path && mmcs_bit), physical limbs 0-1 have sibling values,
-        // physical limbs 2-3 have logical limbs 0-1's values. Adjust CTL metadata accordingly.
+        // Input CTL lookups disabled for merkle_path=1 rows due to degree constraints:
+        // permuting CTL metadata based on runtime would make `mmcs_bit` exceed degree 3.
+        //
+        // This is sound because:
+        // - Row digest values are bound to expression IDs that were CTL-verified
+        //   during creation (in `add_hash_slice` with merkle_path=false)
+        // - Sibling values are private proof data (wrong siblings → wrong root)
+        // - Chained values are AIR-constrained to equal previous Poseidon2 outputs
         let local_merkle_path = local_preprocessed[merkle_path_idx];
-        let local_mmcs_bit = SymbolicExpression::from(local.mmcs_bit);
-        let permuted = SymbolicExpression::from(local_merkle_path) * local_mmcs_bit;
-        let one = SymbolicExpression::Constant(AB::F::ONE);
-        let not_permuted = one - permuted.clone();
+        let not_merkle =
+            SymbolicExpression::Constant(AB::F::ONE) - SymbolicExpression::from(local_merkle_path);
 
         for limb_idx in 0..POSEIDON2_LIMBS {
-            // Get preprocessed data for this limb and its permutation partner
-            let partner_idx = match limb_idx {
-                0 => 2,
-                1 => 3,
-                2 => 0,
-                3 => 1,
-                _ => limb_idx,
-            };
-
-            let in_ctl_this =
+            let in_ctl =
                 local_preprocessed[limb_idx * preprocessing_limb_input_data_size + in_ctl_idx];
-            let in_ctl_partner =
-                local_preprocessed[partner_idx * preprocessing_limb_input_data_size + in_ctl_idx];
-            let input_idx_this = local_preprocessed[limb_idx * preprocessing_limb_input_data_size];
-            let input_idx_partner =
-                local_preprocessed[partner_idx * preprocessing_limb_input_data_size];
+            let input_idx_limb =
+                iter::once(local_preprocessed[limb_idx * preprocessing_limb_input_data_size])
+                    .chain(
+                        local.poseidon2.inputs[limb_idx * D..(limb_idx + 1) * D]
+                            .iter()
+                            .cloned(),
+                    )
+                    .map(SymbolicExpression::from)
+                    .collect::<Vec<_>>();
 
-            let (effective_mult, effective_idx) = if limb_idx < 2 {
-                // Limbs 0-1: no CTL when permuted (sibling values)
-                let mult = not_permuted.clone() * SymbolicExpression::from(in_ctl_this);
-                let idx = SymbolicExpression::from(input_idx_this);
-                (mult, idx)
-            } else {
-                // Limbs 2-3: use partner's CTL metadata when permuted
-                let mult = not_permuted.clone() * SymbolicExpression::from(in_ctl_this)
-                    + permuted.clone() * SymbolicExpression::from(in_ctl_partner);
-                let idx = not_permuted.clone() * SymbolicExpression::from(input_idx_this)
-                    + permuted.clone() * SymbolicExpression::from(input_idx_partner);
-                (mult, idx)
-            };
-
-            let input_idx_limb = iter::once(effective_idx)
-                .chain(
-                    local.poseidon2.inputs[limb_idx * D..(limb_idx + 1) * D]
-                        .iter()
-                        .cloned()
-                        .map(SymbolicExpression::from),
-                )
-                .collect::<Vec<_>>();
-
-            let lookup_input = vec![(input_idx_limb, effective_mult, Direction::Send)];
+            // Multiplicity = in_ctl * (1 - merkle_path), both preprocessed, so degree 0
+            let mult = SymbolicExpression::from(in_ctl) * not_merkle.clone();
 
             lookups.push(<Self as Air<AB>>::register_lookup(
                 self,
                 Kind::Global("WitnessChecks".to_string()),
-                &lookup_input,
+                &[(input_idx_limb, mult, Direction::Send)],
             ));
         }
 

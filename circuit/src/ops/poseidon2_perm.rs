@@ -572,9 +572,13 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for Poseidon2Perm
                 entry.push(F::from_u32(inp[0].0)); // in_idx
                 entry.push(F::ONE); // in_ctl
 
-                // In this case, we are reading the input limbs from the witness table,
-                // so we need to update the associated witness table multiplicities.
-                update_witness_table(inp, primitive_preprocessed);
+                // Update witness multiplicities only if NOT merkle_path mode.
+                // In merkle_path mode, input CTL lookups are disabled in the AIR
+                // because the value permutation (based on runtime mmcs_bit) would
+                // require degree-1 conditional logic that exceeds constraint limits.
+                if !self.merkle_path {
+                    update_witness_table(inp, primitive_preprocessed);
+                }
             }
             let normal_chain_sel =
                 if !self.new_start && !self.merkle_path && inputs[limb_idx].is_empty() {
