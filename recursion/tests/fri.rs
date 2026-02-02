@@ -7,7 +7,7 @@ use p3_circuit::ops::generate_poseidon2_trace;
 use p3_commit::Pcs;
 use p3_dft::Radix2DitParallel as Dft;
 use p3_field::coset::TwoAdicMultiplicativeCoset;
-use p3_field::{Field, PrimeCharacteristicRing};
+use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
 use p3_fri::create_test_fri_params;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_poseidon2_circuit_air::BabyBearD4Width16;
@@ -16,9 +16,6 @@ use p3_recursion::pcs::fri::{
     FriProofTargets, HashTargets, InputProofTargets, RecExtensionValMmcs, RecValMmcs,
     Witness as RecWitness,
 };
-// Note: set_fri_mmcs_private_data is available for full E2E execution
-#[allow(unused_imports)]
-use p3_recursion::pcs::set_fri_mmcs_private_data;
 use p3_recursion::public_inputs::{CommitmentOpening, FriVerifierInputs};
 use p3_recursion::{Poseidon2Config, Recursive};
 use rand::SeedableRng;
@@ -663,26 +660,94 @@ fn run_fri_test_with_mmcs(setup: FriSetup) {
         mmcs_op_ids.len()
     );
 
-    // Verify circuit builds successfully
-    let _circuit = builder.build().unwrap();
-    println!("FRI+MMCS circuit built successfully");
+    // Build the circuit
+    let circuit = builder.build().unwrap();
 
-    // NOTE: Full E2E execution requires careful coordination between:
-    // 1. Value packing: The circuit packs lifted base field values into extension
-    //    field representation using pack_lifted_to_ext. Public inputs must be set
-    //    in lifted form (HashTargets::get_values returns lifted values).
-    // 2. Private data: The sibling values from Merkle proofs must be packed
-    //    consistently with what the Poseidon2 circuit expects.
-    // 3. Index bits: The Merkle path direction bits must match the proof structure.
-    //
-    // The existing MMCS tests (in recursion/src/pcs/mmcs.rs) demonstrate the
-    // correct packing approach. Integration with FRI requires additional work
-    // to ensure the FriProofTargets allocation matches the MMCS verification
-    // expectations.
+    // ---- Pack public inputs in allocation order ----
+    let mut packed_inputs: Vec<Challenge> = Vec::new();
+
+    // 1. FRI proof values (allocated by FriTargets::new - lifted for batch openings)
+    packed_inputs.extend(&result.fri_values);
+
+    // 2. Alpha
+    packed_inputs.push(result.alpha);
+
+    // 3. Betas
+    packed_inputs.extend(&result.betas);
+
+    // 4. Index bits per query
+    for bits in &result.index_bits_per_query {
+        packed_inputs.extend(bits);
+    }
+
+    // 5. Commitments with opening points
+    // HashTargets uses lifted representation (one target per base field value)
+    for (group_idx, (_commit_placeholder, mats_data)) in
+        result.commitments_with_points.iter().enumerate()
+    {
+        // Commitment as lifted extension field values
+        for &c in &actual_commitments[group_idx] {
+            packed_inputs.push(Challenge::from(c));
+        }
+
+        // Then (z, fz) pairs for each matrix
+        for (_domain, points_and_values) in mats_data {
+            for (z, fz) in points_and_values {
+                packed_inputs.push(*z);
+                packed_inputs.extend(fz);
+            }
+        }
+    }
+
+    let mut runner = circuit.runner();
+    runner.set_public_inputs(&packed_inputs).unwrap();
+
+    // Set MMCS private data from the FRI proof (input batch only, commit-phase is disabled)
+    // Note: Currently only input batch MMCS is verified (commit-phase extension field
+    // verification requires different handling due to how ExtensionMmcs flattens values).
+    let mut op_idx = 0;
+    for query_proof in &result.fri_proof.query_proofs {
+        for batch_opening in &query_proof.input_proof {
+            let siblings: Vec<[Challenge; 2]> = batch_opening
+                .opening_proof
+                .iter()
+                .map(|digest| {
+                    let ext_elements: Vec<Challenge> = digest
+                        .chunks(4)
+                        .map(|chunk| {
+                            Challenge::from_basis_coefficients_slice(chunk)
+                                .expect("chunk size should match extension degree")
+                        })
+                        .collect();
+                    [ext_elements[0], ext_elements[1]]
+                })
+                .collect();
+            for sibling in siblings {
+                runner
+                    .set_private_data(
+                        mmcs_op_ids[op_idx],
+                        p3_circuit::NonPrimitiveOpPrivateData::Poseidon2Perm(
+                            p3_circuit::ops::Poseidon2PermPrivateData { sibling },
+                        ),
+                    )
+                    .expect("Failed to set input batch MMCS private data");
+                op_idx += 1;
+            }
+        }
+    }
+    assert_eq!(
+        op_idx,
+        mmcs_op_ids.len(),
+        "Should have set private data for all MMCS ops"
+    );
+
+    // Run the circuit
+    runner.run().expect("FRI+MMCS circuit execution failed");
 }
 
 #[test]
 fn test_circuit_fri_verifier_with_mmcs() {
+    init_logger();
     // Test that the FRI circuit with MMCS verification builds correctly.
     // Full execution is documented for future work.
     let groups = vec![vec![4u8, 5]];

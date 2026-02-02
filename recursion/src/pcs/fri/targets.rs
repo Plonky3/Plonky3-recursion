@@ -198,9 +198,13 @@ impl<F: Field, EF: ExtensionField<F>, RecMmcs: RecursiveExtensionMmcs<F, EF>> Re
 }
 
 /// `Recursive` version of `BatchOpening`.
+///
+/// Uses **lifted representation**: each base field value is represented as a single extension
+/// field element `EF([v, 0, 0, 0])`. This allows 1:1 correspondence with polynomial values
+/// for arithmetic verification.
 pub struct BatchOpeningTargets<F: Field, EF: ExtensionField<F>, RecMmcs: RecursiveMmcs<F, EF>> {
     /// The opened row values from each matrix in the batch.
-    /// Each inner vector corresponds to one matrix.
+    /// Each inner vector has one target per base field value.
     pub opened_values: Vec<Vec<Target>>,
     /// The proof showing the values are valid openings.
     pub opening_proof: RecMmcs::Proof,
@@ -243,6 +247,9 @@ impl<F: Field, EF: ExtensionField<F>, Inner: RecursiveMmcs<F, EF>> Recursive<EF>
 // Now, we define the commitment schemes.
 
 /// `HashTargets` corresponds to a commitment in the form of hashes with `DIGEST_ELEMS` digest elements.
+///
+/// Uses **lifted representation**: each base field hash element is stored as a separate extension
+/// field target `EF([v, 0, 0, 0])`. This is consistent with Fiat-Shamir observation.
 #[derive(Clone)]
 pub struct HashTargets<F, const DIGEST_ELEMS: usize> {
     pub hash_targets: [Target; DIGEST_ELEMS],
