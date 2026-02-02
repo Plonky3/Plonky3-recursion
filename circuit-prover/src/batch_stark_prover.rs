@@ -81,6 +81,50 @@ impl Default for TablePacking {
     }
 }
 
+/// Summary of trace lengths for all circuit tables.
+#[derive(Debug, Clone)]
+pub struct TraceLengths {
+    pub witness: usize,
+    pub const_: usize,
+    pub public: usize,
+    pub add: usize,
+    pub mul: usize,
+    pub non_primitive: Vec<(NonPrimitiveOpType, usize)>,
+}
+
+impl TraceLengths {
+    /// Compute trace lengths from traces and packing configuration.
+    pub fn from_traces<F>(traces: &Traces<F>, packing: TablePacking) -> Self {
+        Self {
+            witness: traces.witness_trace.num_rows() / packing.witness_lanes(),
+            const_: traces.const_trace.values.len(),
+            public: traces.public_trace.values.len(),
+            add: traces.add_trace.lhs_values.len() / packing.add_lanes(),
+            mul: traces.mul_trace.lhs_values.len() / packing.mul_lanes(),
+            non_primitive: traces
+                .non_primitive_traces
+                .iter()
+                .map(|(&op, t)| (op, t.rows()))
+                .collect(),
+        }
+    }
+
+    /// Log all trace lengths at info level.
+    pub fn log(&self) {
+        tracing::info!(
+            witness = %self.witness,
+            const_ = %self.const_,
+            public = %self.public,
+            add = %self.add,
+            mul = %self.mul,
+            "Primitive trace lengths"
+        );
+        for (op, rows) in &self.non_primitive {
+            tracing::info!(?op, rows, "Non-primitive trace");
+        }
+    }
+}
+
 /// Metadata describing a non-primitive table inside a batch proof.
 ///
 /// Every non-primitive dynamic plugin produces exactly one `NonPrimitiveTableEntry`
@@ -2708,6 +2752,8 @@ where
         let add_lanes = packing.add_lanes();
         let mul_lanes = packing.mul_lanes();
 
+        TraceLengths::from_traces(traces, packing).log();
+
         // Witness
         let witness_rows = traces.witness_trace.num_rows();
         let witness_air = WitnessAir::<Val<SC>, D>::new_with_preprocessed(
@@ -2750,6 +2796,8 @@ where
         };
         let mul_matrix: RowMajorMatrix<Val<SC>> =
             MulAir::<Val<SC>, D>::trace_to_matrix(&traces.mul_trace, mul_lanes);
+
+        TraceLengths::from_traces(traces, packing).log();
 
         // We first handle all non-primitive tables dynamically, which will then be batched alongside primitive ones.
         // Each trace must have a corresponding registered prover for it to be provable.
