@@ -295,6 +295,11 @@ where
         witness_bits: usize,
         witness: Target,
     ) -> Result<(), CircuitBuilderError> {
+        // When no PoW is required, keep challenger state unchanged
+        if witness_bits == 0 {
+            return Ok(());
+        }
+
         // Observe witness as base field element
         self.observe(circuit, witness);
 
