@@ -23,7 +23,7 @@ pub struct FriVerifierParams {
 
 impl FriVerifierParams {
     /// Create params with MMCS verification enabled.
-    pub fn with_mmcs(
+    pub const fn with_mmcs(
         log_blowup: usize,
         log_final_poly_len: usize,
         commit_pow_bits: usize,
@@ -40,7 +40,7 @@ impl FriVerifierParams {
     }
 
     /// Create params without MMCS verification (arithmetic-only, for testing).
-    pub fn arithmetic_only(
+    pub const fn arithmetic_only(
         log_blowup: usize,
         log_final_poly_len: usize,
         commit_pow_bits: usize,

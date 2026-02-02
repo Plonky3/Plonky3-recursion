@@ -2011,9 +2011,11 @@ impl Poseidon2Prover {
                         input_values: vec![Val::<SC>::ZERO; WIDTH],
                         in_ctl: [false; 4],
                         input_indices: [0; 4],
+                        in_ctl_for_chain: [false; 4],
                         out_ctl: [false; 2],
                         output_indices: [0; 2],
                         mmcs_index_sum_idx: 0,
+                        mmcs_ctl_enabled: false,
                     }),
             );
         }
@@ -2762,6 +2764,21 @@ where
         };
         let mul_matrix: RowMajorMatrix<Val<SC>> =
             MulAir::<Val<SC>, D>::trace_to_matrix(&traces.mul_trace, mul_lanes);
+
+        tracing::warn!(
+            "Witness length: {}",
+            traces.witness_trace.num_rows() / witness_lanes
+        );
+        tracing::warn!("Const length: {}", traces.const_trace.values.len());
+        tracing::warn!("Public length: {}", traces.public_trace.values.len());
+        tracing::warn!(
+            "Add length: {}",
+            traces.add_trace.lhs_values.len() / add_lanes
+        );
+        tracing::warn!(
+            "Mul length: {}",
+            traces.mul_trace.lhs_values.len() / mul_lanes
+        );
 
         // We first handle all non-primitive tables dynamically, which will then be batched alongside primitive ones.
         // Each trace must have a corresponding registered prover for it to be provable.

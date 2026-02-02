@@ -105,6 +105,7 @@ where
 /// This reconstructs the circuit table AIRs from the proof metadata (rows + packing) so callers
 /// don't need to pass `circuit_airs` explicitly. Returns the allocated input builder to pack
 /// public inputs afterwards.
+#[allow(clippy::type_complexity)]
 pub fn verify_p3_recursion_proof_circuit<
     SC: StarkGenericConfig,
     Comm: Recursive<

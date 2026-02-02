@@ -586,7 +586,7 @@ fn run_fri_test_with_mmcs(setup: FriSetup) {
 
     // 3) Build commitments_with_opening_points targets structure with HashTargets
     // Extract actual commitments from the prover transcript
-    let mut v_challenger = Challenger::new(perm.clone());
+    let mut v_challenger = Challenger::new(perm);
     let val_sizes: Vec<F> = group_sizes
         .iter()
         .flat_map(|sizes| sizes.iter().map(|&b| F::from_u8(b)))

@@ -4,7 +4,7 @@ use p3_baby_bear::default_babybear_poseidon2_16;
 use p3_batch_stark::CommonData;
 use p3_circuit::CircuitBuilder;
 use p3_circuit::ops::generate_poseidon2_trace;
-use p3_circuit_prover::common::get_airs_and_degrees_with_prep;
+use p3_circuit_prover::common::{NonPrimitiveConfig, get_airs_and_degrees_with_prep};
 use p3_circuit_prover::{BatchStarkProver, TablePacking};
 use p3_field::PrimeCharacteristicRing;
 use p3_fri::create_test_fri_params;
@@ -112,7 +112,6 @@ fn test_fibonacci_batch_verifier() {
     let val_mmcs2 = ValMmcs::new(hash2, compress2);
     let challenge_mmcs2 = ChallengeMmcs::new(val_mmcs2.clone());
     let fri_params2 = create_test_fri_params(challenge_mmcs2, 0);
-    // Enable MMCS verification with Poseidon2 permutation
     let fri_verifier_params = FriVerifierParams::with_mmcs(
         fri_params2.log_blowup,
         fri_params2.log_final_poly_len,
@@ -171,11 +170,25 @@ fn test_fibonacci_batch_verifier() {
     assert_eq!(public_inputs.len(), expected_public_input_len);
     assert!(!public_inputs.is_empty());
 
-    // Actually run the circuit to ensure constraints are satisfiable
+    // Prepare for proving BEFORE running (runner() consumes the circuit)
+    // Use TRACE_D=4 because the verification circuit is over the extension field
+    let verification_table_packing = TablePacking::new(1, 1, 1);
+    let poseidon2_config = Poseidon2Config::BabyBearD4Width16;
+    let (verification_airs_degrees, verification_witness_multiplicities) =
+        get_airs_and_degrees_with_prep::<MyConfig, _, 4>(
+            &verification_circuit,
+            verification_table_packing,
+            Some(&[NonPrimitiveConfig::Poseidon2(poseidon2_config)]),
+        )
+        .unwrap();
+    let (mut verification_airs, verification_degrees): (Vec<_>, Vec<usize>) =
+        verification_airs_degrees.into_iter().unzip();
+
+    // Now run the circuit to generate traces
     let mut runner = verification_circuit.runner();
     runner.set_public_inputs(&public_inputs).unwrap();
 
-    // Set MMCS private data from the FRI proof
+    // Set MMCS private data for the verification circuit
     set_fri_mmcs_private_data::<
         F,
         Challenge,
@@ -184,11 +197,49 @@ fn test_fibonacci_batch_verifier() {
         MyHash,
         MyCompress,
         DIGEST_ELEMS,
-    >(&mut runner, &mmcs_op_ids, &batch_proof.opening_proof)
-    .expect("Failed to set MMCS private data");
+    >(
+        &mut runner,
+        &mmcs_op_ids,
+        &batch_stark_proof.proof.opening_proof,
+    )
+    .unwrap();
 
-    // Run the circuit
-    runner.run().unwrap();
+    // Run the circuit to generate traces
+    let verification_traces = runner.run().unwrap();
+
+    // Create a new config and prover for the verification circuit
+    let dft3 = Dft::default();
+    let perm3 = default_babybear_poseidon2_16();
+    let hash3 = MyHash::new(perm3.clone());
+    let compress3 = MyCompress::new(perm3.clone());
+    let val_mmcs3 = ValMmcs::new(hash3, compress3);
+    let challenge_mmcs3 = ChallengeMmcs::new(val_mmcs3.clone());
+    let fri_params3 = create_test_fri_params(challenge_mmcs3, 0);
+    let pcs3 = MyPcs::new(dft3, val_mmcs3, fri_params3);
+    let challenger3 = Challenger::new(perm3);
+    let config3 = MyConfig::new(pcs3, challenger3);
+
+    // Create common data for the verification circuit
+    let verification_common =
+        CommonData::from_airs_and_degrees(&config3, &mut verification_airs, &verification_degrees);
+
+    let mut verification_prover =
+        BatchStarkProver::new(config3).with_table_packing(verification_table_packing);
+    verification_prover.register_poseidon2_table(poseidon2_config);
+
+    // Prove the verification circuit
+    let verification_proof = verification_prover
+        .prove_all_tables(
+            &verification_traces,
+            &verification_common,
+            verification_witness_multiplicities,
+        )
+        .expect("Failed to prove verification circuit");
+
+    // Verify the proof of the verification circuit
+    verification_prover
+        .verify_all_tables(&verification_proof, &verification_common)
+        .expect("Failed to verify proof of verification circuit");
 }
 
 fn compute_fibonacci_classical(n: usize) -> F {

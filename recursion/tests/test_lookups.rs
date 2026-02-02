@@ -776,3 +776,210 @@ fn get_circuit(n: usize) -> CircuitBuilder<F> {
 
     builder
 }
+
+/// Test Poseidon2 with input/output CTL lookups enabled.
+/// This is a minimal test to verify that CTL lookups work correctly
+/// with Poseidon2 operations, similar to how MMCS uses them.
+#[test]
+fn test_poseidon2_ctl_lookups() {
+    use p3_circuit::Poseidon2PermOps;
+    use p3_circuit::ops::Poseidon2PermCall;
+    use p3_poseidon2_circuit_air::BabyBearD4Width16;
+
+    let mut builder: CircuitBuilder<Challenge> = CircuitBuilder::new();
+    let poseidon2_perm = default_babybear_poseidon2_16();
+    builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
+        generate_poseidon2_trace::<Challenge, BabyBearD4Width16>,
+        poseidon2_perm,
+    );
+
+    // Create public inputs that will also serve as witnesses for the Poseidon2 inputs
+    let input0 = builder.add_public_input();
+    let input1 = builder.add_public_input();
+
+    // Create a Poseidon2 operation with input CTL enabled for limbs 0 and 1
+    let (_op_id, outputs) = builder
+        .add_poseidon2_perm(Poseidon2PermCall {
+            config: Poseidon2Config::BabyBearD4Width16,
+            new_start: true,
+            merkle_path: false,
+            mmcs_bit: None,
+            inputs: [Some(input0), Some(input1), None, None],
+            out_ctl: [true, true], // Enable output CTL
+            mmcs_index_sum: None,
+        })
+        .unwrap();
+
+    // The outputs should be witnesses that can be used
+    let output0 = outputs[0].unwrap();
+    let output1 = outputs[1].unwrap();
+
+    // Create another Poseidon2 operation that uses these outputs as inputs
+    let (_op_id2, _) = builder
+        .add_poseidon2_perm(Poseidon2PermCall {
+            config: Poseidon2Config::BabyBearD4Width16,
+            new_start: true,
+            merkle_path: false,
+            mmcs_bit: None,
+            inputs: [Some(output0), Some(output1), None, None],
+            out_ctl: [false, false],
+            mmcs_index_sum: None,
+        })
+        .unwrap();
+
+    let table_packing = TablePacking::new(1, 4, 6);
+    let config_proving = get_proving_config();
+
+    let circuit = builder.build().unwrap();
+
+    let (airs_degrees, witness_multiplicities) = get_airs_and_degrees_with_prep::<MyConfig, _, 4>(
+        &circuit,
+        table_packing,
+        Some(&[p3_circuit_prover::common::NonPrimitiveConfig::Poseidon2(
+            Poseidon2Config::BabyBearD4Width16,
+        )]),
+    )
+    .unwrap();
+
+    let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
+    let mut runner = circuit.runner();
+
+    // Set the public inputs
+    let input_val0 = Challenge::from_u32(12345);
+    let input_val1 = Challenge::from_u32(67890);
+    runner.set_public_inputs(&[input_val0, input_val1]).unwrap();
+
+    let traces = runner.run().unwrap();
+
+    // Create common data for proving and verifying
+    let common = CommonData::from_airs_and_degrees(&config_proving, &mut airs, &degrees);
+
+    let mut prover = BatchStarkProver::new(config_proving).with_table_packing(table_packing);
+    prover.register_poseidon2_table(Poseidon2Config::BabyBearD4Width16);
+
+    // Prove the circuit - this will verify the CTL lookups
+    let batch_stark_proof = prover
+        .prove_all_tables(&traces, &common, witness_multiplicities)
+        .unwrap();
+
+    // Verify the proof
+    prover
+        .verify_all_tables(&batch_stark_proof, &common)
+        .expect("Poseidon2 CTL lookup verification should succeed");
+}
+
+/// Test Poseidon2 with chained operations and CTL lookups.
+/// This tests a chain of Poseidon2 operations where:
+/// - First operation: CTL inputs from witness
+/// - Middle operation: chained from previous (no explicit inputs)
+/// - Last operation: CTL outputs to witness
+#[test]
+fn test_poseidon2_chained_ctl_lookups() {
+    use p3_circuit::Poseidon2PermOps;
+    use p3_circuit::ops::Poseidon2PermCall;
+    use p3_poseidon2_circuit_air::BabyBearD4Width16;
+
+    let mut builder: CircuitBuilder<Challenge> = CircuitBuilder::new();
+    let poseidon2_perm = default_babybear_poseidon2_16();
+    builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
+        generate_poseidon2_trace::<Challenge, BabyBearD4Width16>,
+        poseidon2_perm,
+    );
+
+    // Create public inputs for the first operation's inputs
+    let input0 = builder.add_public_input();
+    let input1 = builder.add_public_input();
+
+    // First Poseidon2 operation: new_start=true, inputs from witness
+    let (_op_id, _outputs) = builder
+        .add_poseidon2_perm(Poseidon2PermCall {
+            config: Poseidon2Config::BabyBearD4Width16,
+            new_start: true,
+            merkle_path: false, // Sponge mode
+            mmcs_bit: None,
+            inputs: [Some(input0), Some(input1), None, None],
+            out_ctl: [false, false], // Not exposing outputs yet
+            mmcs_index_sum: None,
+        })
+        .unwrap();
+
+    // Second Poseidon2 operation: new_start=false, chained from first
+    let (_op_id2, _outputs2) = builder
+        .add_poseidon2_perm(Poseidon2PermCall {
+            config: Poseidon2Config::BabyBearD4Width16,
+            new_start: false, // Chained
+            merkle_path: false,
+            mmcs_bit: None,
+            inputs: [None, None, None, None], // Chained from previous output
+            out_ctl: [false, false],
+            mmcs_index_sum: None,
+        })
+        .unwrap();
+
+    // Third Poseidon2 operation: new_start=false, chained, with output CTL
+    let (_op_id3, _outputs3) = builder
+        .add_poseidon2_perm(Poseidon2PermCall {
+            config: Poseidon2Config::BabyBearD4Width16,
+            new_start: false,
+            merkle_path: false,
+            mmcs_bit: None,
+            inputs: [None, None, None, None],
+            out_ctl: [true, true], // Expose outputs via CTL
+            mmcs_index_sum: None,
+        })
+        .unwrap();
+
+    // Fourth operation: new_start=true to signal end of previous chain
+    // This operation uses the exposed outputs from op3 as inputs
+    let (_op_id4, _) = builder
+        .add_poseidon2_perm(Poseidon2PermCall {
+            config: Poseidon2Config::BabyBearD4Width16,
+            new_start: true,
+            merkle_path: false,
+            mmcs_bit: None,
+            inputs: [_outputs3[0], _outputs3[1], None, None],
+            out_ctl: [false, false],
+            mmcs_index_sum: None,
+        })
+        .unwrap();
+
+    let table_packing = TablePacking::new(1, 4, 6);
+    let config_proving = get_proving_config();
+
+    let circuit = builder.build().unwrap();
+
+    let (airs_degrees, witness_multiplicities) = get_airs_and_degrees_with_prep::<MyConfig, _, 4>(
+        &circuit,
+        table_packing,
+        Some(&[p3_circuit_prover::common::NonPrimitiveConfig::Poseidon2(
+            Poseidon2Config::BabyBearD4Width16,
+        )]),
+    )
+    .unwrap();
+
+    let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
+    let mut runner = circuit.runner();
+
+    // Set the public inputs
+    let input_val0 = Challenge::from_u32(111);
+    let input_val1 = Challenge::from_u32(222);
+    runner.set_public_inputs(&[input_val0, input_val1]).unwrap();
+
+    let traces = runner.run().unwrap();
+
+    // Create common data for proving and verifying
+    let common = CommonData::from_airs_and_degrees(&config_proving, &mut airs, &degrees);
+
+    let mut prover = BatchStarkProver::new(config_proving).with_table_packing(table_packing);
+    prover.register_poseidon2_table(Poseidon2Config::BabyBearD4Width16);
+
+    // Prove the circuit - this will verify the CTL lookups
+    let batch_stark_proof = prover
+        .prove_all_tables(&traces, &common, witness_multiplicities)
+        .unwrap();
+
+    // Verify the proof
+    prover
+        .verify_all_tables(&batch_stark_proof, &common)
+        .expect("Chained Poseidon2 CTL lookup verification should succeed");
+}

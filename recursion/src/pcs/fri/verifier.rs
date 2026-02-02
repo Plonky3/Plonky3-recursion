@@ -395,6 +395,7 @@ fn compute_single_reduced_opening<EF: Field>(
 ///
 /// Reference (Plonky3): `p3_fri::verifier::open_input`
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::type_complexity)]
 fn open_input<F, EF, Comm>(
     builder: &mut CircuitBuilder<EF>,
     log_global_max_height: usize,

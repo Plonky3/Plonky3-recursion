@@ -101,8 +101,11 @@ impl<
 }
 
 pub const fn poseidon2_preprocessed_width() -> usize {
-    // Witness index, `in_ctl`, `normal_chain_sel` and `merkle_chain_sel` for all input limbs, witness index and `out_ctl` for all output limbs, `mmcs_index_sum_ctl`, `new_start` and `merkle_path`.
-    4 * POSEIDON2_LIMBS + 2 * POSEIDON2_PUBLIC_OUTPUT_LIMBS + 3
+    // Witness index, `in_ctl`, `normal_chain_sel` and `merkle_chain_sel` for all input limbs,
+    // witness index and `out_ctl` for all output limbs,
+    // `mmcs_index_sum_ctl_idx`, `mmcs_merkle_flag` (precomputed: mmcs_ctl * merkle_path),
+    // `new_start` and `merkle_path`.
+    4 * POSEIDON2_LIMBS + 2 * POSEIDON2_PUBLIC_OUTPUT_LIMBS + 4
 }
 
 impl<
@@ -374,39 +377,53 @@ pub fn extract_preprocessed_from_operations<F: Field, OF: Field>(
         let Poseidon2CircuitRow {
             in_ctl,
             input_indices,
+            in_ctl_for_chain,
             out_ctl,
             output_indices,
             mmcs_index_sum_idx,
+            mmcs_ctl_enabled,
             new_start,
             merkle_path,
             ..
         } = operation;
 
         // One row of preprocessed values is of the form:
-        // [input_indices[0], in_ctl[0], normal_chain_sel[0], merkle_chain_sel[0], ..., output_indices[1], out_ctl[1], output_indices[2], out_ctl[2], mmcs_index_sum_idx, new_start, merkle_path]
-        in_ctl
-            .iter()
-            .zip(input_indices.iter())
-            .for_each(|(ctl, idx)| {
-                preprocessed.extend(&[F::from_u32(*idx), F::from_bool(*ctl)]);
-                let normal_chain_sel = if !*new_start && !*merkle_path && !ctl {
-                    F::ONE
-                } else {
-                    F::ZERO
-                };
+        // [input_indices[0], in_ctl[0], normal_chain_sel[0], merkle_chain_sel[0], ..., output_indices[1], out_ctl[1], output_indices[2], out_ctl[2], mmcs_index_sum_idx, mmcs_merkle_flag, new_start, merkle_path]
+        //
+        // Note: in_ctl and input_indices may be permuted (swapped 0↔2, 1↔3) when merkle_path && mmcs_bit.
+        // This permutation ensures:
+        // 1. The CTL lookup sends the correct (index, value) pairs for each physical limb
+        // 2. The chaining selector correctly indicates if the physical limb chains or has CTL override
+        //
+        // The permuted in_ctl[i] tells whether physical limb i has a CTL override (from the logical
+        // limb whose value is stored in physical position i). This is exactly what we need for
+        // both the CTL lookup multiplicity and the chaining selector.
+        let _ = in_ctl_for_chain; // Not used - keeping field for potential future debugging
+        for limb_idx in 0..4 {
+            let ctl = in_ctl[limb_idx];
+            let idx = input_indices[limb_idx];
 
-                preprocessed.push(normal_chain_sel);
+            preprocessed.extend(&[F::from_u32(idx), F::from_bool(ctl)]);
 
-                // In merkle mode:
-                // - When mmcs_bit = 0: limbs 0-1 are chained, limbs 2-3 are private (sibling)
-                // - When mmcs_bit = 1: limbs 2-3 are chained, limbs 0-1 are private (sibling)
-                let merkle_chain_sel = if !new_start && *merkle_path && !ctl {
-                    F::ONE
-                } else {
-                    F::ZERO
-                };
-                preprocessed.push(merkle_chain_sel);
-            });
+            let normal_chain_sel = if !*new_start && !*merkle_path && !ctl {
+                F::ONE
+            } else {
+                F::ZERO
+            };
+            preprocessed.push(normal_chain_sel);
+
+            // In merkle mode:
+            // - When mmcs_bit = 0: limbs 0-1 are chained, limbs 2-3 are private (sibling)
+            // - When mmcs_bit = 1: limbs 2-3 are chained, limbs 0-1 are private (sibling)
+            // The chaining selector uses the permuted in_ctl which correctly indicates
+            // if this physical limb position has a CTL override for its logical value.
+            let merkle_chain_sel = if !new_start && *merkle_path && !ctl {
+                F::ONE
+            } else {
+                F::ZERO
+            };
+            preprocessed.push(merkle_chain_sel);
+        }
         out_ctl
             .iter()
             .zip(output_indices.iter())
@@ -414,6 +431,13 @@ pub fn extract_preprocessed_from_operations<F: Field, OF: Field>(
                 preprocessed.extend(&[F::from_u32(*idx), F::from_bool(*ctl)]);
             });
         preprocessed.push(F::from_u64(*mmcs_index_sum_idx as u64));
+        // mmcs_merkle_flag = mmcs_ctl_enabled * merkle_path (precomputed)
+        let mmcs_merkle_flag = if *mmcs_ctl_enabled && *merkle_path {
+            F::ONE
+        } else {
+            F::ZERO
+        };
+        preprocessed.push(mmcs_merkle_flag);
         preprocessed.push(F::from_bool(*new_start));
         preprocessed.push(F::from_bool(*merkle_path));
     }
@@ -486,12 +510,12 @@ pub(crate) fn eval<
 
     // Preprocessing layout:
     // [in_idx[0], in_ctl[0], normal_chain_sel[0], merkle_chain_sel[0], ..., in_idx[3], in_ctl[3], normal_chain_sel[3], merkle_chain_sel[3],
-    //  out_idx[0], out_ctl[0], out_idx[1], out_ctl[1], mmcs_index_sum_ctl_idx, new_start, merkle_path]
+    //  out_idx[0], out_ctl[0], out_idx[1], out_ctl[1], mmcs_index_sum_ctl_idx, mmcs_merkle_flag, new_start, merkle_path]
     // The following corresponds to the size of the data related to one input limb (in_idx[i], in_ctl[i], normal_chain_sel[i], merkle_chain_sel[i]).
     let preprocessing_limb_data_size = 4;
     let normal_chain_idx = 2;
     let merkle_chain_idx = 3;
-    let new_start_idx = 4 * POSEIDON2_LIMBS + 2 * POSEIDON2_PUBLIC_OUTPUT_LIMBS + 1;
+    let new_start_idx = 4 * POSEIDON2_LIMBS + 2 * POSEIDON2_PUBLIC_OUTPUT_LIMBS + 2;
     let merkle_path_idx = new_start_idx + 1;
     // Normal chaining.
     // If new_start_{r+1} = 0 and merkle_path_{r+1} = 0:
@@ -542,22 +566,28 @@ pub(crate) fn eval<
             .assert_zero(next_in[D + d].clone() - local_out[D + d].clone());
     }
 
-    // Limb 2: chain from out_r[0] when mmcs_bit = 1 (right), unless in_ctl[2] = 1.
+    // Limb 2: chain from out_r[0] when mmcs_bit = 1 (right).
     // When mmcs_bit = 0 (left), limb 2 is private (sibling).
+    //
+    // IMPORTANT: When mmcs_bit = 1, physical limb 2 contains logical limb 0's value
+    // (due to value permutation in resolve_input_limb). So we must check in_ctl[0],
+    // not in_ctl[2], to determine if this physical position should chain.
+    // We use merkle_chain_sel[0] which is based on in_ctl[0].
     for d in 0..D {
-        let gate_right_2 = next_preprocessed[preprocessing_limb_data_size * 2 + merkle_chain_idx]
-            .clone()
-            * next_bit.clone();
+        let gate_right_2 = next_preprocessed[merkle_chain_idx].clone() * next_bit.clone();
         builder
             .when_transition()
             .when(gate_right_2)
             .assert_zero(next_in[2 * D + d].clone() - local_out[d].clone());
     }
 
-    // Limb 3: chain from out_r[1] when mmcs_bit = 1 (right), unless in_ctl[3] = 1.
+    // Limb 3: chain from out_r[1] when mmcs_bit = 1 (right).
     // When mmcs_bit = 0 (left), limb 3 is private (sibling).
+    //
+    // IMPORTANT: When mmcs_bit = 1, physical limb 3 contains logical limb 1's value.
+    // So we use merkle_chain_sel[1] which is based on in_ctl[1].
     for d in 0..D {
-        let gate_right_3 = next_preprocessed[preprocessing_limb_data_size * 3 + merkle_chain_idx]
+        let gate_right_3 = next_preprocessed[preprocessing_limb_data_size + merkle_chain_idx]
             .clone()
             * next_bit.clone();
         builder
@@ -794,7 +824,7 @@ where
 
         // Preprocessing layout:
         // [in_idx[0], in_ctl[0], normal_chain_sel[0], merkle_chain_sel[0], ..., in_idx[3], in_ctl[3], normal_chain_sel[3], merkle_chain_sel[3],
-        //  out_idx[0], out_ctl[0], out_idx[1], out_ctl[1], mmcs_index_sum_ctl_idx, new_start, merkle_path]
+        //  out_idx[0], out_ctl[0], out_idx[1], out_ctl[1], mmcs_index_sum_ctl_idx, mmcs_merkle_flag, new_start, merkle_path]
         // The following corresponds to the size of the data related to one input limb (in_idx[i], in_ctl[i], normal_chain_sel[i], merkle_chain_sel[i]).
         let preprocessing_limb_input_data_size = 4;
         let preprocessing_limb_output_data_size = 2;
@@ -802,7 +832,8 @@ where
         let start_output_idx = preprocessing_limb_input_data_size * POSEIDON2_LIMBS;
         let mmcs_index_sum_ctl_idx =
             start_output_idx + preprocessing_limb_output_data_size * POSEIDON2_PUBLIC_OUTPUT_LIMBS;
-        let new_start_idx = mmcs_index_sum_ctl_idx + 1;
+        let mmcs_merkle_flag_idx = mmcs_index_sum_ctl_idx + 1;
+        let new_start_idx = mmcs_merkle_flag_idx + 1;
         let merkle_path_idx = new_start_idx + 1;
 
         let preprocessed = symbolic_air_builder
@@ -818,25 +849,79 @@ where
         let next_preprocessed: &[SymbolicVariable<AB::F>] = (*next_preprocessed).borrow();
         // There are POSEIDON2_LIMBS input limbs and POSEIDON2_PUBLIC_OUTPUT_LIMBS output limbs to be looked up in the `Witness` table.
         let mut lookups = Vec::with_capacity(POSEIDON2_LIMBS + POSEIDON2_PUBLIC_OUTPUT_LIMBS);
-        // Each input/output limb is sent with multiplicity `in_ctl/out_ctl`.
-        for limb_idx in 0..POSEIDON2_LIMBS {
-            let in_ctl =
-                local_preprocessed[limb_idx * preprocessing_limb_input_data_size + in_ctl_idx];
-            let input_idx_limb =
-                iter::once(local_preprocessed[limb_idx * preprocessing_limb_input_data_size]) // input witness index
-                    .chain(
-                        local.poseidon2.inputs[limb_idx * D..(limb_idx + 1) * D]
-                            .iter()
-                            .cloned(),
-                    )
-                    .map(SymbolicExpression::from)
-                    .collect::<Vec<_>>();
 
-            let lookup_input = vec![(
-                input_idx_limb,
-                SymbolicExpression::from(in_ctl),
-                Direction::Send,
-            )];
+        // When merkle_path=1 AND mmcs_bit=1, the input VALUES are permuted in the trace:
+        // - Physical limbs 0-1 contain logical limbs 2-3's values (sibling, private)
+        // - Physical limbs 2-3 contain logical limbs 0-1's values (CTL or chained)
+        //
+        // The CTL lookup must account for this permutation:
+        // - Physical limb i sends the lookup for whichever logical limb's value it contains
+        // - The permutation flag: permuted = merkle_path * mmcs_bit (degree 1)
+        //
+        // For physical limb 0:
+        //   - When NOT permuted: send (input_indices[0], trace[0..D]) with mult in_ctl[0]
+        //   - When permuted: DON'T send (trace[0..D] has sibling, not a CTL value)
+        //   => effective_mult[0] = (1 - permuted) * in_ctl[0]
+        //
+        // For physical limb 2:
+        //   - When NOT permuted: send (input_indices[2], trace[8..12]) with mult in_ctl[2]
+        //   - When permuted: send (input_indices[0], trace[8..12]) with mult in_ctl[0]
+        //   => effective_mult[2] = (1 - permuted) * in_ctl[2] + permuted * in_ctl[0]
+        //   => effective_idx[2] = (1 - permuted) * input_indices[2] + permuted * input_indices[0]
+
+        let local_merkle_path = local_preprocessed[merkle_path_idx];
+        let local_mmcs_bit = SymbolicExpression::from(local.mmcs_bit);
+        let permuted = SymbolicExpression::from(local_merkle_path) * local_mmcs_bit;
+        let one = SymbolicExpression::Constant(AB::F::ONE);
+        let not_permuted = one - permuted.clone();
+
+        for limb_idx in 0..POSEIDON2_LIMBS {
+            // Get preprocessed data for this limb and its permutation partner
+            let partner_idx = match limb_idx {
+                0 => 2,
+                1 => 3,
+                2 => 0,
+                3 => 1,
+                _ => limb_idx,
+            };
+
+            let in_ctl_this =
+                local_preprocessed[limb_idx * preprocessing_limb_input_data_size + in_ctl_idx];
+            let in_ctl_partner =
+                local_preprocessed[partner_idx * preprocessing_limb_input_data_size + in_ctl_idx];
+            let input_idx_this = local_preprocessed[limb_idx * preprocessing_limb_input_data_size];
+            let input_idx_partner =
+                local_preprocessed[partner_idx * preprocessing_limb_input_data_size];
+
+            // Compute effective multiplicity and index based on permutation state
+            let (effective_mult, effective_idx) = if limb_idx < 2 {
+                // Physical limbs 0-1: when permuted, they contain sibling (no CTL)
+                // effective_mult = (1 - permuted) * in_ctl[this]
+                // effective_idx = input_idx[this] (only matters when mult != 0)
+                let mult = not_permuted.clone() * SymbolicExpression::from(in_ctl_this);
+                let idx = SymbolicExpression::from(input_idx_this);
+                (mult, idx)
+            } else {
+                // Physical limbs 2-3: when permuted, they contain logical 0-1's values
+                // effective_mult = (1 - permuted) * in_ctl[this] + permuted * in_ctl[partner]
+                // effective_idx = (1 - permuted) * input_idx[this] + permuted * input_idx[partner]
+                let mult = not_permuted.clone() * SymbolicExpression::from(in_ctl_this)
+                    + permuted.clone() * SymbolicExpression::from(in_ctl_partner);
+                let idx = not_permuted.clone() * SymbolicExpression::from(input_idx_this)
+                    + permuted.clone() * SymbolicExpression::from(input_idx_partner);
+                (mult, idx)
+            };
+
+            let input_idx_limb = iter::once(effective_idx)
+                .chain(
+                    local.poseidon2.inputs[limb_idx * D..(limb_idx + 1) * D]
+                        .iter()
+                        .cloned()
+                        .map(SymbolicExpression::from),
+                )
+                .collect::<Vec<_>>();
+
+            let lookup_input = vec![(input_idx_limb, effective_mult, Direction::Send)];
 
             lookups.push(<Self as Air<AB>>::register_lookup(
                 self,
@@ -871,10 +956,13 @@ where
             ));
         }
 
-        // If next.new_start = 1 and local.merkle_path = 1, then mmcs_index_sum is exposed via CTL.
+        // If mmcs_merkle_flag = 1 AND next.new_start = 1, then mmcs_index_sum is exposed via CTL.
+        // mmcs_merkle_flag is precomputed as: mmcs_ctl_enabled * merkle_path
+        // This keeps the multiplicity at degree 2 (safe for constraint evaluation).
+        // When mmcs_index_sum is not allocated (mmcs_ctl = 0) or merkle_path = 0, the flag is 0.
+        let local_mmcs_merkle_flag = local_preprocessed[mmcs_merkle_flag_idx];
         let next_new_start = next_preprocessed[new_start_idx];
-        let local_merkle_path = local_preprocessed[merkle_path_idx];
-        let multiplicity = next_new_start * local_merkle_path;
+        let multiplicity = local_mmcs_merkle_flag * next_new_start;
 
         let local_mmcs_index_sum_idx = local_preprocessed[mmcs_index_sum_ctl_idx];
         let mut mmcs_index_sum_lookup = vec![
@@ -1010,9 +1098,11 @@ mod test {
             input_values: state_a.to_vec(),
             in_ctl: [false; POSEIDON2_LIMBS],
             input_indices: [0; POSEIDON2_LIMBS],
+            in_ctl_for_chain: [false; POSEIDON2_LIMBS],
             out_ctl: [false; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
             output_indices: [0; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
             mmcs_index_sum_idx: 0,
+            mmcs_ctl_enabled: false,
         };
 
         // Row B: new_start=false, sponge mode - chain from output_a
@@ -1027,9 +1117,11 @@ mod test {
             input_values: state_b.to_vec(),
             in_ctl: [false; POSEIDON2_LIMBS],
             input_indices: [0; POSEIDON2_LIMBS],
+            in_ctl_for_chain: [false; POSEIDON2_LIMBS],
             out_ctl: [false; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
             output_indices: [0; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
             mmcs_index_sum_idx: 0,
+            mmcs_ctl_enabled: false,
         };
 
         // Row C: new_start=false, merkle mode, mmcs_bit=false
@@ -1049,9 +1141,11 @@ mod test {
             input_values: state_c.to_vec(),
             in_ctl: [false; POSEIDON2_LIMBS],
             input_indices: [0; POSEIDON2_LIMBS],
+            in_ctl_for_chain: [false; POSEIDON2_LIMBS],
             out_ctl: [false; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
             output_indices: [0; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
             mmcs_index_sum_idx: 0,
+            mmcs_ctl_enabled: false,
         };
 
         // Row D: new_start=false, sponge mode - chain from output_c
@@ -1065,9 +1159,11 @@ mod test {
             input_values: state_d.to_vec(),
             in_ctl: [false; POSEIDON2_LIMBS],
             input_indices: [0; POSEIDON2_LIMBS],
+            in_ctl_for_chain: [false; POSEIDON2_LIMBS],
             out_ctl: [false; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
             output_indices: [0; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
             mmcs_index_sum_idx: 0,
+            mmcs_ctl_enabled: false,
         };
 
         let mut rows = vec![sponge_a, sponge_b, sponge_c, sponge_d];
@@ -1083,9 +1179,11 @@ mod test {
                 input_values: vec![Val::ZERO; WIDTH],
                 in_ctl: [false; POSEIDON2_LIMBS],
                 input_indices: [0; POSEIDON2_LIMBS],
+                in_ctl_for_chain: [false; POSEIDON2_LIMBS],
                 out_ctl: [false; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
                 output_indices: [0; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
                 mmcs_index_sum_idx: 0,
+                mmcs_ctl_enabled: false,
             };
             rows.resize(target_rows, filler);
         }

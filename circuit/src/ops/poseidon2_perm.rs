@@ -451,6 +451,10 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for Poseidon2Perm
         let output = exec(&resolved_inputs);
 
         // Build CTL metadata for row record
+        // NOTE: We do NOT permute in_ctl and input_indices here, even when merkle_path && mmcs_bit.
+        // This is because the preprocessed data must match between prover and verifier.
+        // The verifier doesn't know mmcs_bit (it's a witness value), so it can't compute
+        // the permutation. Instead, the CTL lookup is disabled for MMCS mode inputs.
         let (in_ctl, input_indices) = inputs[..4].iter().enumerate().fold(
             ([false; 4], [0u32; 4]),
             |(mut in_ctl, mut input_indices), (i, inp)| {
@@ -461,6 +465,9 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for Poseidon2Perm
                 (in_ctl, input_indices)
             },
         );
+
+        // Store the original in_ctl for chaining selector computation
+        let in_ctl_for_chain = in_ctl;
 
         let (out_ctl, output_indices) = outputs.iter().enumerate().fold(
             ([false; 2], [0u32; 2]),
@@ -473,12 +480,12 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for Poseidon2Perm
             },
         );
 
-        let (mmcs_index_sum, mmcs_index_sum_idx) = if inputs[4].len() == 1 {
+        let (mmcs_index_sum, mmcs_index_sum_idx, mmcs_ctl_enabled) = if inputs[4].len() == 1 {
             let wid = inputs[4][0];
             let val = ctx.get_witness(wid)?;
-            (val, wid.0)
+            (val, wid.0, true)
         } else {
-            (F::ZERO, 0)
+            (F::ZERO, 0, false)
         };
 
         // Record row for trace generation (input_values contains 4 extension limbs)
@@ -497,9 +504,11 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for Poseidon2Perm
             input_values,
             in_ctl,
             input_indices,
+            in_ctl_for_chain,
             out_ctl,
             output_indices,
             mmcs_index_sum_idx,
+            mmcs_ctl_enabled,
         };
 
         // Update state: chaining and rows
@@ -609,15 +618,27 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for Poseidon2Perm
             }
         }
 
-        // Index of mmcs_index_sum
+        // Index for mmcs_index_sum CTL
+        // NOTE: We do NOT update witness multiplicities here because the mmcs_index_sum
+        // lookup has CONDITIONAL multiplicity (mmcs_merkle_flag * next_new_start).
+        // The multiplicity is computed in get_airs_and_degrees_with_prep() which scans
+        // the preprocessed data and updates witness multiplicities accordingly.
         if inputs[4].is_empty() {
-            entry.push(F::ZERO);
+            entry.push(F::ZERO); // mmcs_index_sum_ctl_idx (unused, defaults to 0)
         } else {
-            entry.push(F::from_u32(inputs[4][0].0));
-            // In this case, we are reading the MMCS index sum from the witness table,
-            // so we need to update the associated witness table multiplicities.
-            update_witness_table(&inputs[4], primitive_preprocessed);
+            entry.push(F::from_u32(inputs[4][0].0)); // mmcs_index_sum_ctl_idx
         }
+
+        // Precomputed flag: mmcs_ctl_enabled * merkle_path
+        // This allows the lookup multiplicity to be computed as: mmcs_merkle_flag * next_new_start
+        // which has degree 2 (safe for constraint evaluation)
+        let mmcs_ctl_enabled = if inputs[4].is_empty() {
+            F::ZERO
+        } else {
+            F::ONE
+        };
+        let merkle_path_val = if self.merkle_path { F::ONE } else { F::ZERO };
+        entry.push(mmcs_ctl_enabled * merkle_path_val); // mmcs_merkle_flag
 
         // We need to insert `new_start` and `merkle_path` as well.
         entry.push(if self.new_start { F::ONE } else { F::ZERO });
@@ -799,10 +820,15 @@ pub struct Poseidon2CircuitRow<F> {
     /// Inputs to the Poseidon2 permutation (flattened state).
     /// For execution rows: 4 extension limbs. For trace rows: WIDTH base field elements.
     pub input_values: Vec<F>,
-    /// Input exposure flags: for each limb i, if 1, in[i] must match witness lookup at input_indices[i].
+    /// Input exposure flags for CTL lookups: permuted to match the physical trace layout.
+    /// When merkle_path && mmcs_bit, these are permuted (swapped 0↔2, 1↔3) so that
+    /// the CTL lookup for physical limb i uses the correct logical limb's metadata.
     pub in_ctl: [bool; 4],
-    /// Input exposure indices: index into the witness table for each limb.
+    /// Input exposure indices for CTL lookups: permuted to match the physical trace layout.
     pub input_indices: [u32; 4],
+    /// Original (unpermuted) input exposure flags for chaining selector computation.
+    /// This is used to determine if a physical limb position should chain from previous output.
+    pub in_ctl_for_chain: [bool; 4],
     /// Output exposure flags: for limbs 0-1 only, if 1, out[i] must match witness lookup at output_indices[i].
     /// Note: limbs 2-3 are never publicly exposed (always private).
     pub out_ctl: [bool; 2],
@@ -810,6 +836,8 @@ pub struct Poseidon2CircuitRow<F> {
     pub output_indices: [u32; 2],
     /// MMCS index exposure: index for CTL exposure of mmcs_index_sum.
     pub mmcs_index_sum_idx: u32,
+    /// Whether mmcs_index_sum CTL is enabled. When false, the mmcs_index_sum lookup is disabled.
+    pub mmcs_ctl_enabled: bool,
 }
 
 /// Poseidon2 trace for all hash operations in the circuit.
@@ -917,9 +945,11 @@ pub fn generate_poseidon2_trace<
                 input_values,
                 in_ctl: row.in_ctl,
                 input_indices: row.input_indices,
+                in_ctl_for_chain: row.in_ctl_for_chain,
                 out_ctl: row.out_ctl,
                 output_indices: row.output_indices,
                 mmcs_index_sum_idx: row.mmcs_index_sum_idx,
+                mmcs_ctl_enabled: row.mmcs_ctl_enabled,
             })
         })
         .collect::<Result<Vec<_>, CircuitError>>()?;
