@@ -59,6 +59,7 @@ p3-field = { git = "https://github.com/Plonky3/Plonky3", rev = "909674140915379b
 p3-fri = { git = "https://github.com/Plonky3/Plonky3", rev = "909674140915379bf9568607b3118beca261234c" }
 p3-goldilocks = { git = "https://github.com/Plonky3/Plonky3", rev = "909674140915379bf9568607b3118beca261234c" }
 p3-keccak = { git = "https://github.com/Plonky3/Plonky3", rev = "909674140915379bf9568607b3118beca261234c" }
+p3-keccak-air = { git = "https://github.com/Plonky3/Plonky3", rev = "909674140915379bf9568607b3118beca261234c" }
 p3-koala-bear = { git = "https://github.com/Plonky3/Plonky3", rev = "909674140915379bf9568607b3118beca261234c" }
 p3-lookup = { git = "https://github.com/Plonky3/Plonky3", rev = "909674140915379bf9568607b3118beca261234c" }
 p3-matrix = { git = "https://github.com/Plonky3/Plonky3", rev = "909674140915379bf9568607b3118beca261234c" }
@@ -73,6 +74,7 @@ p3-util = { git = "https://github.com/Plonky3/Plonky3", rev = "909674140915379bf
 p3-test-utils = { path = "test-utils", version = "0.1.0" }
 
 # Other common dependencies
+clap = { version = "4.5", features = ["derive"] }
 hashbrown = "0.16.0"
 itertools = { version = "0.14.0", default-features = false, features = [
     "use_alloc",

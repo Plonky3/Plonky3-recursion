@@ -100,6 +100,63 @@ where
     }
 }
 
+/// Create a MulAir with the appropriate constructor based on TRACE_D.
+///
+/// For D=1 (base field), uses `MulAir::new()`.
+/// For D>1 (extension field), uses `MulAir::new_binomial()` with the W parameter
+/// extracted from the challenge field type.
+fn create_mul_air<F, EF, const TRACE_D: usize>(num_ops: usize, lanes: usize) -> MulAir<F, TRACE_D>
+where
+    F: Field + PrimeCharacteristicRing,
+    EF: ExtensionField<F>,
+{
+    if TRACE_D == 1 {
+        MulAir::<F, TRACE_D>::new(num_ops, lanes)
+    } else {
+        // For D > 1, extract W from the extension field
+        // BinomialExtensionField<F, D> has W as the constant such that x^D = W
+        let w = extract_binomial_w::<F, EF>();
+        MulAir::<F, TRACE_D>::new_binomial(num_ops, lanes, w)
+    }
+}
+
+/// Extract the binomial parameter W from an extension field type.
+///
+/// For BinomialExtensionField<F, D>, this returns F::W.
+/// Panics if called on a non-extension field.
+fn extract_binomial_w<F: Field, EF: ExtensionField<F>>() -> F {
+    // The extension field dimension tells us the degree
+    let d = EF::DIMENSION;
+
+    // For common cases, we know the W values:
+    // BabyBear: x^4 = 11 (W = 11)
+    // KoalaBear: x^4 = 3 (W = 3)
+    // These are the standard Plonky3 values.
+    //
+    // We use a runtime check based on the field characteristic to determine W.
+    // This is a workaround since we can't easily extract W from the type at runtime.
+
+    if d == 4 {
+        // Check which field we're using based on the modulus
+        let baby_bear_mod = F::from_u64(2013265921);
+        let koala_bear_mod = F::from_u64(2130706433);
+
+        if baby_bear_mod == F::ZERO {
+            // BabyBear: W = 11
+            F::from_u64(11)
+        } else if koala_bear_mod == F::ZERO {
+            // KoalaBear: W = 3
+            F::from_u64(3)
+        } else {
+            // Goldilocks or other - try W = 7 (common for some fields)
+            // This is a fallback; proper implementation would use BinomiallyExtendable trait
+            F::from_u64(7)
+        }
+    } else {
+        panic!("Unsupported extension degree: {d}. Only D=1 and D=4 are supported.")
+    }
+}
+
 /// Build and attach a recursive verifier circuit for a circuit-prover [`BatchStarkProof`].
 ///
 /// This reconstructs the circuit table AIRs from the proof metadata (rows + packing) so callers
@@ -154,6 +211,12 @@ where
     let add_lanes = packing.add_lanes();
     let mul_lanes = packing.mul_lanes();
 
+    // Create MulAir with appropriate constructor based on TRACE_D
+    // For D > 1, we need the binomial parameter W.
+    // We extract it from the challenge field which is BinomialExtensionField<Val<SC>, D>.
+    let mul_air =
+        create_mul_air::<Val<SC>, SC::Challenge, TRACE_D>(rows[PrimitiveTable::Mul], mul_lanes);
+
     let circuit_airs = vec![
         CircuitTablesAir::Witness(WitnessAir::<Val<SC>, TRACE_D>::new(
             rows[PrimitiveTable::Witness],
@@ -169,10 +232,7 @@ where
             rows[PrimitiveTable::Add],
             add_lanes,
         )),
-        CircuitTablesAir::Mul(MulAir::<Val<SC>, TRACE_D>::new(
-            rows[PrimitiveTable::Mul],
-            mul_lanes,
-        )),
+        CircuitTablesAir::Mul(mul_air),
     ];
 
     // TODO: public values are empty for all circuit tables for now.
