@@ -8,7 +8,8 @@ use p3_circuit::{CircuitBuilder, CircuitBuilderError, NonPrimitiveOpId};
 use p3_commit::{BatchOpening, ExtensionMmcs, Mmcs, PolynomialSpace};
 use p3_field::coset::TwoAdicMultiplicativeCoset;
 use p3_field::{
-    ExtensionField, Field, PackedValue, PrimeCharacteristicRing, PrimeField64, TwoAdicField,
+    BasedVectorSpace, ExtensionField, Field, PackedValue, PrimeCharacteristicRing, PrimeField64,
+    TwoAdicField,
 };
 use p3_fri::{CommitPhaseProofStep, FriProof, QueryProof, TwoAdicFriPcs};
 use p3_merkle_tree::MerkleTreeMmcs;
@@ -158,28 +159,61 @@ impl<
 }
 
 /// `Recursive` version of `CommitPhaseProofStepTargets`.
+///
+/// The sibling value is stored as **lifted base field coefficients** to enable MMCS verification.
+/// ExtensionMmcs commits by flattening extension elements to base field, so we need the
+/// coefficients separately for hashing. Use `sibling_value_packed()` to get the extension
+/// element for FRI folding arithmetic.
 pub struct CommitPhaseProofStepTargets<
     F: Field,
     EF: ExtensionField<F>,
     RecMmcs: RecursiveExtensionMmcs<F, EF>,
 > {
-    pub sibling_value: Target,
+    /// The 4 base field coefficients of the sibling value, each lifted to extension field.
+    /// sibling_value = c0 + c1*X + c2*X^2 + c3*X^3 where each ci is stored as EF([ci, 0, 0, 0]).
+    pub sibling_coefficients: Vec<Target>,
     pub opening_proof: RecMmcs::Proof,
-    // This is necessary because the `Input` type can include the extension field element.
-    _phantom: PhantomData<EF>,
+    _phantom: PhantomData<(F, EF)>,
 }
 
-impl<F: Field, EF: ExtensionField<F>, RecMmcs: RecursiveExtensionMmcs<F, EF>> Recursive<EF>
-    for CommitPhaseProofStepTargets<F, EF, RecMmcs>
+impl<F: Field, EF: ExtensionField<F> + BasedVectorSpace<F>, RecMmcs: RecursiveExtensionMmcs<F, EF>>
+    CommitPhaseProofStepTargets<F, EF, RecMmcs>
+{
+    /// Returns the sibling value as a packed extension element for FRI folding arithmetic.
+    ///
+    /// Computes: c0 + c1*W + c2*W^2 + c3*W^3 where W is the extension field generator.
+    pub fn sibling_value_packed(&self, circuit: &mut CircuitBuilder<EF>) -> Target {
+        // Get the extension field basis: [1, W, W^2, W^3] where W is the generator
+        // Create each basis element as EF with a 1 in the corresponding position
+        let basis: Vec<EF> = (0..EF::DIMENSION)
+            .map(|i| EF::from_basis_coefficients_fn(|j| if i == j { F::ONE } else { F::ZERO }))
+            .collect();
+
+        // Compute sum of ci * basis[i]
+        // Note: basis[0] = EF::ONE, so c0 * basis[0] = c0
+        let mut result = self.sibling_coefficients[0];
+        for (i, &basis_elem) in basis.iter().enumerate().skip(1) {
+            let basis_const = circuit.add_const(basis_elem);
+            let term = circuit.mul(self.sibling_coefficients[i], basis_const);
+            result = circuit.add(result, term);
+        }
+        result
+    }
+}
+
+impl<F: Field, EF: ExtensionField<F> + BasedVectorSpace<F>, RecMmcs: RecursiveExtensionMmcs<F, EF>>
+    Recursive<EF> for CommitPhaseProofStepTargets<F, EF, RecMmcs>
 {
     // This is used with an extension field element, since it is part of `FriProof`, not a base field element.
     type Input = CommitPhaseProofStep<EF, RecMmcs::Input>;
 
     fn new(circuit: &mut CircuitBuilder<EF>, input: &Self::Input) -> Self {
-        let sibling_value = circuit.alloc_public_input("FRI commit phase sibling value");
+        // Allocate 4 public inputs for the base field coefficients (lifted)
+        let sibling_coefficients =
+            circuit.alloc_public_inputs(EF::DIMENSION, "FRI commit phase sibling coefficients");
         let opening_proof = RecMmcs::Proof::new(circuit, &input.opening_proof);
         Self {
-            sibling_value,
+            sibling_coefficients,
             opening_proof,
             _phantom: PhantomData,
         }
@@ -191,7 +225,9 @@ impl<F: Field, EF: ExtensionField<F>, RecMmcs: RecursiveExtensionMmcs<F, EF>> Re
             opening_proof,
         } = input;
 
-        let mut values = vec![*sibling_value];
+        // Return the 4 coefficients as lifted extension field elements
+        let coeffs = sibling_value.as_basis_coefficients_slice();
+        let mut values: Vec<EF> = coeffs.iter().map(|&c| EF::from(c)).collect();
         values.extend(RecMmcs::Proof::get_values(opening_proof));
         values
     }

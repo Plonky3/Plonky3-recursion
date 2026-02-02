@@ -702,11 +702,18 @@ fn run_fri_test_with_mmcs(setup: FriSetup) {
     let mut runner = circuit.runner();
     runner.set_public_inputs(&packed_inputs).unwrap();
 
-    // Set MMCS private data from the FRI proof (input batch only, commit-phase is disabled)
-    // Note: Currently only input batch MMCS is verified (commit-phase extension field
-    // verification requires different handling due to how ExtensionMmcs flattens values).
+    println!(
+        "FRI circuit with MMCS: {} MMCS operations (input batch + commit-phase)",
+        mmcs_op_ids.len()
+    );
+
+    // Set MMCS private data from the FRI proof
+    // This sets siblings for both input batch MMCS and commit-phase MMCS
+    let log_max_height = result.log_max_height;
+
     let mut op_idx = 0;
     for query_proof in &result.fri_proof.query_proofs {
+        // Input batch MMCS proofs
         for batch_opening in &query_proof.input_proof {
             let siblings: Vec<[Challenge; 2]> = batch_opening
                 .opening_proof
@@ -734,6 +741,41 @@ fn run_fri_test_with_mmcs(setup: FriSetup) {
                 op_idx += 1;
             }
         }
+
+        // Commit-phase MMCS proofs
+        for (phase_idx, phase_opening) in query_proof.commit_phase_openings.iter().enumerate() {
+            let log_folded_height = log_max_height.saturating_sub(phase_idx + 1);
+
+            // Only set data if there's a tree to verify (height > 0)
+            if log_folded_height > 0 {
+                let siblings: Vec<[Challenge; 2]> = phase_opening
+                    .opening_proof
+                    .iter()
+                    .take(log_folded_height)
+                    .map(|digest| {
+                        let ext_elements: Vec<Challenge> = digest
+                            .chunks(4)
+                            .map(|chunk| {
+                                Challenge::from_basis_coefficients_slice(chunk)
+                                    .expect("chunk size should match extension degree")
+                            })
+                            .collect();
+                        [ext_elements[0], ext_elements[1]]
+                    })
+                    .collect();
+                for sibling in siblings {
+                    runner
+                        .set_private_data(
+                            mmcs_op_ids[op_idx],
+                            p3_circuit::NonPrimitiveOpPrivateData::Poseidon2Perm(
+                                p3_circuit::ops::Poseidon2PermPrivateData { sibling },
+                            ),
+                        )
+                        .expect("Failed to set commit-phase MMCS private data");
+                    op_idx += 1;
+                }
+            }
+        }
     }
     assert_eq!(
         op_idx,
@@ -747,9 +789,7 @@ fn run_fri_test_with_mmcs(setup: FriSetup) {
 
 #[test]
 fn test_circuit_fri_verifier_with_mmcs() {
-    init_logger();
-    // Test that the FRI circuit with MMCS verification builds correctly.
-    // Full execution is documented for future work.
+    // Test that the FRI circuit with MMCS verification builds and runs correctly.
     let groups = vec![vec![4u8, 5]];
     let setup = generate_setup(1, groups);
     run_fri_test_with_mmcs(setup);

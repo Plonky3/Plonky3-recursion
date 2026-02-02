@@ -705,10 +705,12 @@ where
         let initial_folded_eval = reduced_by_height[0].1;
 
         // Sibling values for this query (one per phase)
+        // The sibling coefficients are stored as lifted base field values.
+        // We pack them back to extension elements for FRI folding arithmetic.
         let sibling_values: Vec<Target> = query_proof
             .commit_phase_openings
             .iter()
-            .map(|opening| opening.sibling_value)
+            .map(|opening| opening.sibling_value_packed(builder))
             .collect();
 
         if sibling_values.len() != num_phases {
@@ -719,85 +721,8 @@ where
             )));
         }
 
-        // Commit-phase MMCS verification: verify sibling values against commit-phase commits
-        // Note: For ExtensionMmcs, the native hash is computed on FLATTENED base field coefficients.
-        // The sibling_value is an extension field element EF([c0,c1,c2,c3]).
-        // ExtensionMmcs commits by flattening extension values to [c0,c1,c2,c3] base field values.
-        // The circuit must hash the coefficients correctly.
-        //
-        // Currently disabled: The Poseidon2 circuit processes extension elements directly,
-        // but the rate/padding differs from native when we have a single extension element.
-        // TODO: Implement proper extension field MMCS verification.
-        if let Some(_perm_config) = permutation_config {
-            // Skip commit-phase MMCS for now - only input batch MMCS is verified
-        }
-        #[allow(unreachable_code)]
-        if false && permutation_config.is_some() {
-            let perm_config = permutation_config.unwrap();
-            let one = builder.add_const(EF::ONE);
-            for (phase_idx, (commit, opening)) in fri_proof_targets
-                .commit_phase_commits
-                .iter()
-                .zip(query_proof.commit_phase_openings.iter())
-                .enumerate()
-            {
-                // Each commit-phase layer is a single extension field column
-                // Height at phase i is 2^(log_max_height - i - 1)
-                let log_folded_height = log_max_height.saturating_sub(phase_idx + 1);
-
-                // Skip MMCS verification for height-1 matrices (no Merkle tree structure).
-                // For height 1, there's only one value and the "sibling" is just the value itself.
-                // The commitment is the hash of that single value, with no tree to verify.
-                if log_folded_height == 0 {
-                    continue;
-                }
-
-                // Pack commitment from lifted to packed representation
-                let lifted_commitment = commit.to_observation_targets();
-                let packed_commitment = pack_lifted_to_ext::<F, EF>(builder, &lifted_commitment);
-
-                let folded_height = 1usize << log_folded_height;
-                let dimensions = vec![Dimensions {
-                    height: folded_height,
-                    width: 1, // Single extension field element per row
-                }];
-
-                // Sibling index in the commitment at phase i:
-                // - The commitment has height 2^log_folded_height
-                // - Query index in this commitment is bits[phase_idx+1 .. phase_idx+1+log_folded_height]
-                // - Sibling index has the lowest bit flipped
-                let mut sibling_index_bits = Vec::with_capacity(log_folded_height);
-                // Flip the lowest bit: sibling_bit_0 = 1 - index_bits[phase_idx]
-                // Note: we use index_bits[phase_idx] because after shifting by phase_idx,
-                // bit[0] of the shifted index is the original bit[phase_idx]
-                let flipped_bit = builder.sub(one, index_bits_per_query[q][phase_idx]);
-                sibling_index_bits.push(flipped_bit);
-                // Copy remaining bits, but only take log_folded_height - 1 more bits
-                let end_idx = (phase_idx + 1 + log_folded_height - 1).min(log_max_height);
-                sibling_index_bits
-                    .extend_from_slice(&index_bits_per_query[q][phase_idx + 1..end_idx]);
-
-                // Opened value is the sibling - single extension field element per row
-                let opened_values = vec![vec![opening.sibling_value]];
-
-                let commit_phase_ops = verify_batch_circuit::<F, EF>(
-                    builder,
-                    perm_config,
-                    &packed_commitment,
-                    &dimensions,
-                    &sibling_index_bits,
-                    &opened_values,
-                )
-                .map_err(|e| {
-                    VerificationError::InvalidProofShape(format!(
-                        "Commit-phase MMCS verification failed for query {q}, phase {phase_idx}: {e:?}"
-                    ))
-                })?;
-                all_mmcs_op_ids.extend(commit_phase_ops);
-            }
-        }
-
         // Build height-aligned roll-ins for each phase (desc heights -> phases)
+        // Need this before MMCS verification since the fold computation uses roll-ins
         let mut roll_ins: Vec<Option<Target>> = vec![None; num_phases];
         for &(h, ro) in reduced_by_height.iter().skip(1) {
             // height -> phase index mapping
@@ -806,10 +731,6 @@ where
                 .and_then(|x| x.checked_sub(h))
                 .expect("height->phase mapping underflow");
             if i < num_phases {
-                // There should be at most one roll-in per phase since `reduced_by_height`
-                // aggregates all matrices at the same height already (and we only support a
-                // single input batch). Multiple entries mapping to the same phase indicate an
-                // invariant violation.
                 if roll_ins[i].is_some() {
                     return Err(VerificationError::InvalidProofShape(format!(
                         "duplicate roll-in for phase {i} (height {h})",
@@ -817,9 +738,147 @@ where
                 }
                 roll_ins[i] = Some(ro);
             } else {
-                // If a height is below final folded height, it should be unused; connect to zero.
                 let zero = builder.add_const(EF::ZERO);
                 builder.connect(ro, zero);
+            }
+        }
+
+        // Commit-phase MMCS verification: verify (folded_eval, sibling_value) pairs
+        //
+        // Native FRI verifies PAIRS of values at each commit-phase step. The Merkle tree
+        // commits to pairs with dimensions = { width: 2, height: 2^(log_folded_height) }.
+        // Each leaf is the hash of 2 extension elements (8 base coefficients = full rate).
+        //
+        // The pair index = query_index >> (phase_idx + 1), and we verify both folded_eval
+        // and sibling_value together.
+        //
+        // Commit-phase MMCS verification: verify (folded_eval, sibling_value) pairs
+        if let Some(perm_config) = permutation_config {
+            let one = builder.add_const(EF::ONE);
+
+            // Track folded_eval as we go through phases
+            let mut current_folded = initial_folded_eval;
+            let neg_half = builder.add_const(EF::NEG_ONE * EF::ONE.halve());
+
+            for (phase_idx, (commit, _opening)) in fri_proof_targets
+                .commit_phase_commits
+                .iter()
+                .zip(query_proof.commit_phase_openings.iter())
+                .enumerate()
+            {
+                let sibling_value = sibling_values[phase_idx];
+
+                // log_folded_height = log_max_height - phase_idx - 1
+                let log_folded_height = log_max_height.saturating_sub(phase_idx + 1);
+
+                // Skip MMCS verification for height < 2 (no tree structure for pairs)
+                if log_folded_height == 0 {
+                    // Still need to compute the fold for subsequent phases
+                    let index_bit = index_bits_per_query[q][phase_idx];
+                    let sibling_is_right = builder.sub(one, index_bit);
+                    let e0 = builder.select(sibling_is_right, current_folded, sibling_value);
+                    let x0 = compute_x0_from_index_bits(
+                        builder,
+                        &index_bits_per_query[q],
+                        phase_idx,
+                        &pows_per_phase[phase_idx],
+                    );
+                    let inv = builder.div(neg_half, x0);
+                    let d = builder.sub(sibling_value, current_folded);
+                    let two_b = builder.add(sibling_is_right, sibling_is_right);
+                    let two_b_minus_one = builder.sub(two_b, one);
+                    let e1_minus_e0 = builder.mul(two_b_minus_one, d);
+                    let beta = betas[phase_idx];
+                    let beta_minus_x0 = builder.sub(beta, x0);
+                    let t = builder.mul(beta_minus_x0, e1_minus_e0);
+                    let t_inv = builder.mul(t, inv);
+                    current_folded = builder.add(e0, t_inv);
+                    if let Some(ro) = roll_ins[phase_idx] {
+                        let beta_sq = builder.mul(beta, beta);
+                        let add_term = builder.mul(beta_sq, ro);
+                        current_folded = builder.add(current_folded, add_term);
+                    }
+                    continue;
+                }
+
+                // Pack commitment from lifted to packed representation
+                let lifted_commitment = commit.to_observation_targets();
+                let packed_commitment = pack_lifted_to_ext::<F, EF>(builder, &lifted_commitment);
+
+                // Dimensions: width=2 (pair of extension elements), height = 2^log_folded_height
+                let folded_height = 1usize << log_folded_height;
+                let dimensions = vec![Dimensions {
+                    height: folded_height,
+                    width: 2,
+                }];
+
+                // Build the pair (lo, hi) based on index bit ordering
+                // If index_bit[phase_idx] == 0: lo = current_folded, hi = sibling_value
+                // If index_bit[phase_idx] == 1: lo = sibling_value, hi = current_folded
+                let index_bit = index_bits_per_query[q][phase_idx];
+                let lo = builder.select(index_bit, sibling_value, current_folded);
+                let hi = builder.select(index_bit, current_folded, sibling_value);
+
+                // Pack the pair for verification
+                let pair_values = vec![lo, hi];
+
+                // Pair index = query_index >> (phase_idx + 1)
+                // The commit-phase Merkle tree is in NATURAL order (not bit-reversed like FFT).
+                // Native passes `start_index >> 1` directly to verify_batch, which extracts
+                // bits in little-endian order: (index >> i) & 1 for i = 0, 1, 2, ...
+                // So pair_index_bits should be the little-endian bits of pair_index.
+                let start_bit = phase_idx + 1;
+                let end_bit = (start_bit + log_folded_height).min(log_max_height);
+                let zero = builder.add_const(EF::ZERO);
+
+                let mut pair_index_bits: Vec<Target> =
+                    index_bits_per_query[q][start_bit..end_bit].to_vec();
+                // Pad to log_folded_height if needed
+                while pair_index_bits.len() < log_folded_height {
+                    pair_index_bits.push(zero);
+                }
+
+                let commit_phase_ops = verify_batch_circuit::<F, EF>(
+                    builder,
+                    perm_config,
+                    &packed_commitment,
+                    &dimensions,
+                    &pair_index_bits,
+                    &[pair_values],
+                )
+                .map_err(|e| {
+                    VerificationError::InvalidProofShape(format!(
+                        "Commit-phase MMCS verification failed for query {q}, phase {phase_idx}: {e:?}"
+                    ))
+                })?;
+                all_mmcs_op_ids.extend(commit_phase_ops);
+
+                // Compute next folded_eval (same as fold_row_chain)
+                let sibling_is_right = builder.sub(one, index_bit);
+                let e0 = builder.select(sibling_is_right, current_folded, sibling_value);
+                let x0 = compute_x0_from_index_bits(
+                    builder,
+                    &index_bits_per_query[q],
+                    phase_idx,
+                    &pows_per_phase[phase_idx],
+                );
+                let inv = builder.div(neg_half, x0);
+                let d = builder.sub(sibling_value, current_folded);
+                let two_b = builder.add(sibling_is_right, sibling_is_right);
+                let two_b_minus_one = builder.sub(two_b, one);
+                let e1_minus_e0 = builder.mul(two_b_minus_one, d);
+                let beta = betas[phase_idx];
+                let beta_minus_x0 = builder.sub(beta, x0);
+                let t = builder.mul(beta_minus_x0, e1_minus_e0);
+                let t_inv = builder.mul(t, inv);
+                current_folded = builder.add(e0, t_inv);
+
+                // Apply roll-in if present
+                if let Some(ro) = roll_ins[phase_idx] {
+                    let beta_sq = builder.mul(beta, beta);
+                    let add_term = builder.mul(beta_sq, ro);
+                    current_folded = builder.add(current_folded, add_term);
+                }
             }
         }
 
