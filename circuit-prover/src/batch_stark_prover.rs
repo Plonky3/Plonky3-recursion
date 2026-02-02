@@ -659,8 +659,8 @@ impl<SC: StarkGenericConfig> Clone for Poseidon2AirWrapper<SC> {
     }
 }
 
-const BABY_BEAR_MODULUS: u64 = 2013265921;
-const KOALA_BEAR_MODULUS: u64 = 2147483649;
+const BABY_BEAR_MODULUS: u64 = 0x78000001;
+const KOALA_BEAR_MODULUS: u64 = 0x7f000001;
 
 impl<SC> BaseAir<Val<SC>> for Poseidon2AirWrapper<SC>
 where
@@ -801,9 +801,6 @@ where
     fn get_lookups(
         &mut self,
     ) -> Vec<Lookup<<SymbolicAirBuilder<Val<SC>, SC::Challenge> as AirBuilder>::F>> {
-        const BABY_BEAR_MODULUS: u64 = 2013265921;
-        const KOALA_BEAR_MODULUS: u64 = 2147483649;
-
         match &mut self.inner {
             Poseidon2AirWrapperInner::BabyBearD4Width16(air) => unsafe {
                 // Runtime check: verify Val<SC> == BabyBear before transmute
@@ -1356,9 +1353,6 @@ where
         &mut self,
     ) -> Vec<Lookup<<DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge> as AirBuilder>::F>>
     {
-        const BABY_BEAR_MODULUS: u64 = 2013265921;
-        const KOALA_BEAR_MODULUS: u64 = 2147483649;
-
         match &mut self.inner {
             Poseidon2AirWrapperInner::BabyBearD4Width16(air) => unsafe {
                 // Runtime check: verify Val<SC> == BabyBear before transmute
@@ -1545,9 +1539,6 @@ where
     fn get_lookups(
         &mut self,
     ) -> Vec<Lookup<<ProverConstraintFolderWithLookups<'a, SC> as AirBuilder>::F>> {
-        const BABY_BEAR_MODULUS: u64 = 2013265921;
-        const KOALA_BEAR_MODULUS: u64 = 2147483649;
-
         match &mut self.inner {
             Poseidon2AirWrapperInner::BabyBearD4Width16(air) => unsafe {
                 assert_eq!(Val::<SC>::from_u64(BABY_BEAR_MODULUS), Val::<SC>::ZERO,);
@@ -1730,9 +1721,6 @@ where
     fn get_lookups(
         &mut self,
     ) -> Vec<Lookup<<VerifierConstraintFolderWithLookups<'a, SC> as AirBuilder>::F>> {
-        const BABY_BEAR_MODULUS: u64 = 2013265921;
-        const KOALA_BEAR_MODULUS: u64 = 2147483649;
-
         match &mut self.inner {
             Poseidon2AirWrapperInner::BabyBearD4Width16(air) => unsafe {
                 assert_eq!(Val::<SC>::from_u64(BABY_BEAR_MODULUS), Val::<SC>::ZERO,);
