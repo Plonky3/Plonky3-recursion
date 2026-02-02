@@ -170,9 +170,7 @@ fn test_fibonacci_batch_verifier() {
     assert_eq!(public_inputs.len(), expected_public_input_len);
     assert!(!public_inputs.is_empty());
 
-    // Prepare for proving BEFORE running (runner() consumes the circuit)
-    // Use TRACE_D=4 because the verification circuit is over the extension field
-    let verification_table_packing = TablePacking::new(1, 1, 1);
+    let verification_table_packing = TablePacking::new(16, 8, 8);
     let poseidon2_config = Poseidon2Config::BabyBearD4Width16;
     let (verification_airs_degrees, verification_witness_multiplicities) =
         get_airs_and_degrees_with_prep::<MyConfig, _, 4>(

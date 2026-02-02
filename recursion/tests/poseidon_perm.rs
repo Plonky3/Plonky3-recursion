@@ -100,7 +100,6 @@ fn test_poseidon2_perm_verifier() -> Result<(), VerificationError> {
                 input_values,
                 in_ctl: [false; 4],
                 input_indices: [0; 4],
-                in_ctl_for_chain: [false; 4],
                 out_ctl: [false; 2],
                 output_indices: [0; 2],
                 mmcs_index_sum_idx: 0,

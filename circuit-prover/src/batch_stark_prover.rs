@@ -2011,7 +2011,6 @@ impl Poseidon2Prover {
                         input_values: vec![Val::<SC>::ZERO; WIDTH],
                         in_ctl: [false; 4],
                         input_indices: [0; 4],
-                        in_ctl_for_chain: [false; 4],
                         out_ctl: [false; 2],
                         output_indices: [0; 2],
                         mmcs_index_sum_idx: 0,
