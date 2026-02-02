@@ -94,8 +94,6 @@ fn test_fibonacci_batch_verifier() {
     let challenge_mmcs2 = ChallengeMmcs::new(val_mmcs2.clone());
     let fri_params2 = create_test_fri_params(challenge_mmcs2, 0);
     let fri_verifier_params = FriVerifierParams::from(&fri_params2);
-    let _pow_bits = fri_params2.query_proof_of_work_bits;
-    let _log_height_max = fri_params2.log_final_poly_len + fri_params2.log_blowup;
     let pcs_verif = MyPcs::new(dft2, val_mmcs2, fri_params2);
     let challenger_verif = Challenger::new(perm2);
     let config = MyConfig::new(pcs_verif, challenger_verif);
@@ -142,7 +140,7 @@ fn test_fibonacci_batch_verifier() {
     let expected_public_input_len = verification_circuit.public_flat_len;
 
     // Pack values using the builder
-    let public_inputs = verifier_inputs.pack_values(&pis, batch_proof, &common);
+    let public_inputs = verifier_inputs.0.pack_values(&pis, batch_proof, &common);
 
     assert_eq!(public_inputs.len(), expected_public_input_len);
     assert!(!public_inputs.is_empty());

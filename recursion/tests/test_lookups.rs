@@ -726,7 +726,8 @@ fn get_verifier_inputs_and_challenges(
         common,
         lookup_gadget,
         Poseidon2Config::BabyBearD4Width16,
-    );
+    )
+    .map(|(inputs, _mmcs_op_ids)| inputs);
 
     // If provided, override the global lookups in the proof used for challenge generation
     if let Some(global_lookups) = optional_global_lookups {

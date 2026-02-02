@@ -126,7 +126,13 @@ pub fn verify_p3_recursion_proof_circuit<
     common_data: &CommonData<SC>,
     lookup_gadget: &LG,
     poseidon2_config: Poseidon2Config,
-) -> Result<BatchStarkVerifierInputsBuilder<SC, Comm, OpeningProof>, VerificationError>
+) -> Result<
+    (
+        BatchStarkVerifierInputsBuilder<SC, Comm, OpeningProof>,
+        Vec<NonPrimitiveOpId>,
+    ),
+    VerificationError,
+>
 where
     <SC as StarkGenericConfig>::Pcs: RecursivePcs<
             SC,
@@ -179,7 +185,7 @@ where
 
     let common = &verifier_inputs.common_data;
 
-    verify_batch_circuit::<
+    let mmcs_op_ids = verify_batch_circuit::<
         CircuitTablesAir<Val<SC>, TRACE_D>,
         SC,
         Comm,
@@ -200,7 +206,7 @@ where
         poseidon2_config,
     )?;
 
-    Ok(verifier_inputs)
+    Ok((verifier_inputs, mmcs_op_ids))
 }
 
 /// Verify a batch-STARK proof inside a recursive circuit.
