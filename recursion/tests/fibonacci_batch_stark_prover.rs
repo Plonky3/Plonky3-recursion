@@ -12,12 +12,31 @@ use p3_lookup::logup::LogUpGadget;
 use p3_poseidon2_circuit_air::BabyBearD4Width16;
 use p3_recursion::Poseidon2Config;
 use p3_recursion::pcs::fri::{FriVerifierParams, HashTargets, InputProofTargets, RecValMmcs};
+use p3_recursion::pcs::set_fri_mmcs_private_data;
 use p3_recursion::verifier::verify_p3_recursion_proof_circuit;
+use tracing_forest::ForestLayer;
+use tracing_forest::util::LevelFilter;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::{EnvFilter, Registry};
 
 use crate::common::baby_bear_params::*;
 
+fn init_logger() {
+    let env_filter = EnvFilter::builder()
+        .with_default_directive(LevelFilter::INFO.into())
+        .from_env_lossy();
+
+    Registry::default()
+        .with(env_filter)
+        .with(ForestLayer::default())
+        .init();
+}
+
 #[test]
 fn test_fibonacci_batch_verifier() {
+    init_logger();
+
     let n: usize = 100;
 
     let mut builder = CircuitBuilder::new();
@@ -93,7 +112,14 @@ fn test_fibonacci_batch_verifier() {
     let val_mmcs2 = ValMmcs::new(hash2, compress2);
     let challenge_mmcs2 = ChallengeMmcs::new(val_mmcs2.clone());
     let fri_params2 = create_test_fri_params(challenge_mmcs2, 0);
-    let fri_verifier_params = FriVerifierParams::from(&fri_params2);
+    // Enable MMCS verification with Poseidon2 permutation
+    let fri_verifier_params = FriVerifierParams::with_mmcs(
+        fri_params2.log_blowup,
+        fri_params2.log_final_poly_len,
+        fri_params2.commit_proof_of_work_bits,
+        fri_params2.query_proof_of_work_bits,
+        Poseidon2Config::BabyBearD4Width16,
+    );
     let pcs_verif = MyPcs::new(dft2, val_mmcs2, fri_params2);
     let challenger_verif = Challenger::new(perm2);
     let config = MyConfig::new(pcs_verif, challenger_verif);
@@ -115,7 +141,7 @@ fn test_fibonacci_batch_verifier() {
     );
 
     // Attach verifier without manually building circuit_airs
-    let verifier_inputs = verify_p3_recursion_proof_circuit::<
+    let (verifier_inputs, mmcs_op_ids) = verify_p3_recursion_proof_circuit::<
         MyConfig,
         HashTargets<F, DIGEST_ELEMS>,
         InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>>,
@@ -140,7 +166,7 @@ fn test_fibonacci_batch_verifier() {
     let expected_public_input_len = verification_circuit.public_flat_len;
 
     // Pack values using the builder
-    let public_inputs = verifier_inputs.0.pack_values(&pis, batch_proof, &common);
+    let public_inputs = verifier_inputs.pack_values(&pis, batch_proof, &common);
 
     assert_eq!(public_inputs.len(), expected_public_input_len);
     assert!(!public_inputs.is_empty());
@@ -148,7 +174,21 @@ fn test_fibonacci_batch_verifier() {
     // Actually run the circuit to ensure constraints are satisfiable
     let mut runner = verification_circuit.runner();
     runner.set_public_inputs(&public_inputs).unwrap();
-    let _traces = runner.run().unwrap();
+
+    // Set MMCS private data from the FRI proof
+    set_fri_mmcs_private_data::<
+        F,
+        Challenge,
+        ChallengeMmcs,
+        ValMmcs,
+        MyHash,
+        MyCompress,
+        DIGEST_ELEMS,
+    >(&mut runner, &mmcs_op_ids, &batch_proof.opening_proof)
+    .expect("Failed to set MMCS private data");
+
+    // Run the circuit
+    runner.run().unwrap();
 }
 
 fn compute_fibonacci_classical(n: usize) -> F {

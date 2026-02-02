@@ -1,13 +1,12 @@
-use alloc::format;
+use alloc::vec;
 use alloc::vec::Vec;
 
-use p3_circuit::op::{NonPrimitiveOpPrivateData, NonPrimitiveOpType, Poseidon2Config};
+use p3_circuit::op::{NonPrimitiveOpPrivateData, Poseidon2Config};
 use p3_circuit::ops::Poseidon2PermPrivateData;
 use p3_circuit::ops::hash::add_hash_slice;
-use p3_circuit::ops::mmcs::{add_mmcs_verify, format_openings};
 use p3_circuit::{CircuitBuilder, CircuitBuilderError, CircuitRunner, NonPrimitiveOpId};
 use p3_commit::BatchOpening;
-use p3_field::{BasedVectorSpace, ExtensionField, Field, TwoAdicField};
+use p3_field::{BasedVectorSpace, ExtensionField, Field, PrimeField64, TwoAdicField};
 use p3_fri::FriProof;
 use p3_matrix::Dimensions;
 
@@ -26,55 +25,98 @@ use crate::Target;
 ///   with index `(index << i) ^ 1`.
 ///
 /// Returns the list of permutations operations requiring private data, otherwise returns an error.
+///
+/// This function properly handles matrices with arbitrary base field widths by:
+/// 1. Decomposing extension field targets to base field coefficients
+/// 2. Truncating to actual widths (removing zero-padding from extension packing)
+/// 3. Re-packing for hashing that matches native MMCS
+///
+/// # Parameters
+/// - `circuit`: The circuit builder
+/// - `permutation_config`: Poseidon2 configuration
+/// - `commitment`: The Merkle root (2 extension elements)
+/// - `dimensions`: Matrix dimensions (height used for tree structure)
+/// - `base_widths`: Actual base field column widths per matrix (for proper truncation)
+/// - `index_bits`: Merkle path direction bits
+/// - `opened_values`: Packed extension field targets (may contain zero-padding)
 pub fn verify_batch_circuit<F, EF>(
     circuit: &mut CircuitBuilder<EF>,
     permutation_config: Poseidon2Config,
     commitment: &[Target],
     dimensions: &[Dimensions],
+    base_widths: &[usize],
     index_bits: &[Target],
     opened_values: &[Vec<Target>],
 ) -> Result<Vec<NonPrimitiveOpId>, CircuitBuilderError>
 where
-    F: Field + TwoAdicField,
+    F: Field + TwoAdicField + PrimeField64,
     EF: ExtensionField<F>,
 {
+    use p3_circuit::ops::mmcs::add_mmcs_verify;
+
     // Check that the openings have the correct shape.
-    if dimensions.len() != opened_values.len() {
+    if dimensions.len() != opened_values.len() || dimensions.len() != base_widths.len() {
         return Err(CircuitBuilderError::WrongBatchSize {
             expected: dimensions.len(),
             got: opened_values.len(),
         });
     }
 
-    // TODO: Disabled for now since TwoAdicFriPcs and CirclePcs currently pass 0 for width.
-    // for (dims, opened_vals) in zip_eq(dimensions.iter(), opened_values) {
-    //     if opened_vals.len() != dims.width {
-    //         return Err(WrongWidth);
-    //     }
-    // }
+    use core::cmp::Reverse;
 
-    let formatted_op_vals = format_openings(
-        opened_values,
-        dimensions,
-        index_bits.len(),
-        permutation_config,
-    )
-    .map_err(|e| CircuitBuilderError::FormatOpeningsFailed {
-        op: NonPrimitiveOpType::Poseidon2Perm(permutation_config),
-        details: format!("{:?}", e),
-    })?;
+    use itertools::Itertools;
 
-    // Hash the opened values while keeping the format.
-    let op_vals_digests = formatted_op_vals
-        .into_iter()
-        .map(|leaf| {
-            if !leaf.is_empty() {
-                add_hash_slice(circuit, &permutation_config, &leaf, true)
-            } else {
-                Ok(leaf)
+    let ext_degree = <EF as BasedVectorSpace<F>>::DIMENSION;
+
+    // Decompose extension targets to base coefficients and truncate to actual widths
+    let truncated_openings: Vec<Vec<Target>> = opened_values
+        .iter()
+        .zip(base_widths.iter())
+        .map(|(ext_targets, &base_width)| {
+            // Decompose each extension target to base field coefficients
+            let mut base_coeffs: Vec<Target> = Vec::with_capacity(ext_targets.len() * ext_degree);
+            for &ext_target in ext_targets {
+                let coeffs = circuit.decompose_ext_to_base_coeffs::<F>(ext_target)?;
+                base_coeffs.extend(coeffs);
             }
+            // Truncate to actual base field width (remove zero-padding)
+            base_coeffs.truncate(base_width);
+            Ok(base_coeffs)
         })
-        .collect::<Result<Vec<Vec<Target>>, _>>()?;
+        .collect::<Result<Vec<_>, CircuitBuilderError>>()?;
+
+    // Group matrices by height level (matching format_openings logic)
+    // Native MMCS combines all matrices at the same height THEN hashes them together
+    let max_height_log = index_bits.len();
+    let mut heights_tallest_first = dimensions
+        .iter()
+        .enumerate()
+        .sorted_by_key(|(_, dims)| Reverse(dims.height))
+        .peekable();
+
+    let mut formatted_digests = vec![vec![]; max_height_log];
+    for (i, digest) in formatted_digests.iter_mut().enumerate() {
+        let curr_height = 1 << (max_height_log - i);
+
+        // Collect all base coefficients from matrices at this height level
+        let all_base_coeffs: Vec<Target> = heights_tallest_first
+            .peeking_take_while(|(_, dims)| dims.height.next_power_of_two() == curr_height)
+            .flat_map(|(mat_idx, _)| truncated_openings[mat_idx].clone())
+            .collect();
+
+        if all_base_coeffs.is_empty() {
+            continue;
+        }
+
+        // Repack the combined base coefficients into extension targets
+        // This matches native MMCS which hashes the concatenated raw values
+        let repacked = repack_base_to_ext::<F, EF>(circuit, &all_base_coeffs)?;
+
+        // Hash the repacked values
+        *digest = add_hash_slice(circuit, &permutation_config, &repacked, true)?;
+    }
+
+    let op_vals_digests = formatted_digests;
 
     add_mmcs_verify(
         circuit,
@@ -83,6 +125,34 @@ where
         index_bits,
         commitment,
     )
+}
+
+/// Re-pack base field coefficients into extension field targets.
+/// Pads with zeros to fill the last extension element if needed.
+fn repack_base_to_ext<F, EF>(
+    circuit: &mut CircuitBuilder<EF>,
+    base_coeffs: &[Target],
+) -> Result<Vec<Target>, CircuitBuilderError>
+where
+    F: Field + PrimeField64,
+    EF: ExtensionField<F>,
+{
+    let ext_degree = <EF as BasedVectorSpace<F>>::DIMENSION;
+    let num_ext = base_coeffs.len().div_ceil(ext_degree);
+    let mut result = Vec::with_capacity(num_ext);
+
+    for chunk in base_coeffs.chunks(ext_degree) {
+        // Pad chunk with zeros if needed
+        let mut padded = chunk.to_vec();
+        while padded.len() < ext_degree {
+            padded.push(circuit.add_const(EF::ZERO));
+        }
+        // Recompose base coefficients to extension element
+        let ext_target = circuit.recompose_base_coeffs_to_ext::<F>(&padded)?;
+        result.push(ext_target);
+    }
+
+    Ok(result)
 }
 
 /// Convert a base field Merkle proof to extension field sibling values.
@@ -311,11 +381,19 @@ mod test {
             let directions_expr = builder.alloc_public_inputs(path_depth, "directions");
             let root = builder.alloc_public_inputs(permutation_config.rate_ext(), "root");
 
+            // Compute actual base field widths (number of base field values per matrix)
+            let base_widths: Vec<usize> = batch_opening
+                .opened_values
+                .iter()
+                .map(|v| v.len())
+                .collect_vec();
+
             let permutation_mmcs_ops = verify_batch_circuit::<F, CF>(
                 &mut builder,
                 permutation_config,
                 &root,
                 &dimensions,
+                &base_widths,
                 &directions_expr,
                 &openings,
             )
@@ -389,10 +467,11 @@ mod test {
             .with_default_directive(LevelFilter::INFO.into())
             .from_env_lossy();
 
-        Registry::default()
+        // Use try_init to avoid panic if logger is already initialized
+        let _ = Registry::default()
             .with(env_filter)
             .with(ForestLayer::default())
-            .init();
+            .try_init();
     }
 
     #[test]
@@ -484,6 +563,39 @@ mod test {
 
         test_all_openings(vec![input_1.clone(), input_2.clone()]);
         test_all_openings(vec![input_2, input_1]);
+    }
+
+    /// Test with batch STARK's exact height configuration: [512, 8, 4, 128, 4]
+    /// This replicates the multi-instance batch STARK trace commitment structure.
+    #[test]
+    fn commit_batch_stark_heights() {
+        init_logger();
+        let mut rng = SmallRng::seed_from_u64(42);
+
+        // Heights matching batch STARK degree_bits [7, 1, 0, 5, 0] with log_blowup=2
+        // heights = [2^(7+2), 2^(1+2), 2^(0+2), 2^(5+2), 2^(0+2)] = [512, 8, 4, 128, 4]
+        // Widths matching trace batch: [1, 1, 1, 12, 3]
+        let mat_0 = RowMajorMatrix::<F>::rand(&mut rng, 512, 1);
+        let mat_1 = RowMajorMatrix::<F>::rand(&mut rng, 8, 1);
+        let mat_2 = RowMajorMatrix::<F>::rand(&mut rng, 4, 1);
+        let mat_3 = RowMajorMatrix::<F>::rand(&mut rng, 128, 12);
+        let mat_4 = RowMajorMatrix::<F>::rand(&mut rng, 4, 3);
+
+        test_all_openings(vec![mat_0, mat_1, mat_2, mat_3, mat_4]);
+    }
+
+    /// Test with multiple matrices at the same height (4) - potential edge case
+    #[test]
+    fn commit_same_height_matrices() {
+        init_logger();
+        let mut rng = SmallRng::seed_from_u64(123);
+
+        // Two matrices with same height should be combined at the same level
+        let mat_0 = RowMajorMatrix::<F>::rand(&mut rng, 8, 4);
+        let mat_1 = RowMajorMatrix::<F>::rand(&mut rng, 4, 2);
+        let mat_2 = RowMajorMatrix::<F>::rand(&mut rng, 4, 3);
+
+        test_all_openings(vec![mat_0, mat_1, mat_2]);
     }
 
     #[test]

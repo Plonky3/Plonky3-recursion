@@ -7,7 +7,7 @@ use core::iter;
 use p3_circuit::op::Poseidon2Config;
 use p3_circuit::{CircuitBuilder, NonPrimitiveOpId};
 use p3_field::coset::TwoAdicMultiplicativeCoset;
-use p3_field::{BasedVectorSpace, ExtensionField, Field, TwoAdicField};
+use p3_field::{BasedVectorSpace, ExtensionField, Field, PrimeField64, TwoAdicField};
 use p3_matrix::Dimensions;
 use p3_util::zip_eq::zip_eq;
 
@@ -406,7 +406,7 @@ fn open_input<F, EF, Comm>(
     permutation_config: Option<Poseidon2Config>,
 ) -> Result<(Vec<(usize, Target)>, Vec<NonPrimitiveOpId>), VerificationError>
 where
-    F: Field + TwoAdicField,
+    F: Field + TwoAdicField + PrimeField64,
     EF: ExtensionField<F>,
     Comm: ObservableCommitment,
 {
@@ -448,6 +448,10 @@ where
                 .map(|mat_row| pack_lifted_to_ext::<F, EF>(builder, mat_row))
                 .collect();
 
+            // Compute actual base field widths (number of base field values per matrix)
+            // This is needed to properly truncate zero-padding from extension packing
+            let base_widths: Vec<usize> = batch_openings.iter().map(|v| v.len()).collect();
+
             let dimensions: Vec<Dimensions> = mats
                 .iter()
                 .map(|(domain, _)| Dimensions {
@@ -461,6 +465,7 @@ where
                 perm_config,
                 &packed_commitment,
                 &dimensions,
+                &base_widths,
                 index_bits,
                 &packed_openings,
             )
@@ -564,7 +569,7 @@ pub fn verify_fri_circuit<F, EF, RecMmcs, Inner, Witness, Comm>(
     permutation_config: Option<Poseidon2Config>,
 ) -> Result<Vec<NonPrimitiveOpId>, VerificationError>
 where
-    F: Field + TwoAdicField,
+    F: Field + TwoAdicField + PrimeField64,
     EF: ExtensionField<F>,
     RecMmcs: RecursiveExtensionMmcs<F, EF>,
     RecMmcs::Commitment: ObservableCommitment,
@@ -835,13 +840,20 @@ where
                     pair_index_bits.push(zero);
                 }
 
+                // For commit-phase, pair_values contains 2 full extension elements
+                // (no zero-padding since these are not packed from base field)
+                // base_width = 2 extension elements × 4 base coefficients = 8
+                let base_widths = vec![pair_values.len() * <EF as BasedVectorSpace<F>>::DIMENSION];
+                let pair_values_slice = vec![pair_values];
+
                 let commit_phase_ops = verify_batch_circuit::<F, EF>(
                     builder,
                     perm_config,
                     &packed_commitment,
                     &dimensions,
+                    &base_widths,
                     &pair_index_bits,
-                    &[pair_values],
+                    &pair_values_slice,
                 )
                 .map_err(|e| {
                     VerificationError::InvalidProofShape(format!(

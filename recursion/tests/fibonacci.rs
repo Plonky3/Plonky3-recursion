@@ -113,11 +113,15 @@ fn test_fibonacci_verifier() -> Result<(), VerificationError> {
         .map_err(VerificationError::Circuit)?;
 
     // Set MMCS private data from the FRI proof
-    set_fri_mmcs_private_data::<F, Challenge, ChallengeMmcs, ValMmcs, MyHash, MyCompress, DIGEST_ELEMS>(
-        &mut runner,
-        &mmcs_op_ids,
-        &proof.opening_proof,
-    )
+    set_fri_mmcs_private_data::<
+        F,
+        Challenge,
+        ChallengeMmcs,
+        ValMmcs,
+        MyHash,
+        MyCompress,
+        DIGEST_ELEMS,
+    >(&mut runner, &mmcs_op_ids, &proof.opening_proof)
     .map_err(|e| VerificationError::InvalidProofShape(e.to_string()))?;
 
     let _traces = runner.run().map_err(VerificationError::Circuit)?;

@@ -590,12 +590,15 @@ where
                 ));
             }
 
-            let ext_dom = &ext_trace_domains[inst_idx];
+            // Compute base preprocessed domain (matching prover in generation.rs)
+            let pre_domain = pcs.natural_domain_for_degree(1 << meta.degree_bits);
 
+            // Use extended trace domain for zeta_next computation (same generator)
+            let ext_dom = &ext_trace_domains[inst_idx];
             let first_point = pcs.first_point(ext_dom);
             let next_point = ext_dom.next_point(first_point).ok_or_else(|| {
                 VerificationError::InvalidProofShape(
-                    "Trace domain does not provide next point".to_string(),
+                    "Preprocessed domain does not provide next point".to_string(),
                 )
             })?;
             let generator = next_point * first_point.inverse();
@@ -603,7 +606,7 @@ where
             let zeta_next = circuit.mul(zeta, generator_const);
 
             pre_round.push((
-                *ext_dom,
+                pre_domain,
                 vec![(zeta, local.clone()), (zeta_next, next.clone())],
             ));
         }
