@@ -111,9 +111,6 @@ fn fold_row_chain<EF: Field>(
         roll_in,
     } in phases.iter().cloned()
     {
-        // TODO: Add recursive MMCS batch verification for this commit phase:
-        // Verify the sibling value against the commitment at the parent index.
-
         // e0 = select(bit, folded, e_sibling)
         let e0 = builder.select(sibling_is_right, folded, e_sibling);
 
