@@ -1,5 +1,5 @@
-use alloc::vec::Vec;
 use alloc::format;
+use alloc::vec::Vec;
 
 use p3_circuit::op::{NonPrimitiveOpType, Poseidon2Config};
 use p3_circuit::ops::hash::add_hash_slice;

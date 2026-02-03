@@ -75,5 +75,8 @@ pub enum CircuitBuilderError {
 
     /// Failed to format openings for MMCS preprocessing; preserves some context.
     #[error("Failed to format openings for operation {op:?}: {details}")]
-    FormatOpeningsFailed { op: NonPrimitiveOpType, details: String },
+    FormatOpeningsFailed {
+        op: NonPrimitiveOpType,
+        details: String,
+    },
 }
