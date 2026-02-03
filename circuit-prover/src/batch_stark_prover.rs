@@ -41,6 +41,29 @@ use crate::common::CircuitTableAir;
 use crate::config::StarkField;
 use crate::field_params::ExtractBinomialW;
 
+/// Pad a trace matrix to at least `min_height` rows.
+/// The height is always rounded up to a power of two.
+fn pad_matrix_to_min_height<F: Field>(
+    mut matrix: RowMajorMatrix<F>,
+    min_height: usize,
+) -> RowMajorMatrix<F> {
+    let current_height = matrix.height();
+    // Target height is max of current power-of-two and min_height
+    let target_height = current_height
+        .next_power_of_two()
+        .max(min_height.next_power_of_two());
+
+    if current_height < target_height {
+        // Pad with zeros to reach target height
+        let width = matrix.width();
+        let padding_rows = target_height - current_height;
+        matrix
+            .values
+            .extend(core::iter::repeat(F::ZERO).take(padding_rows * width));
+    }
+    matrix
+}
+
 /// Configuration for packing multiple primitive operations into a single AIR row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TablePacking {
@@ -48,6 +71,11 @@ pub struct TablePacking {
     public_lanes: usize,
     add_lanes: usize,
     mul_lanes: usize,
+    /// Minimum trace height for all tables (must be power of two).
+    /// This is required for FRI with higher `log_final_poly_len`.
+    /// FRI requires: log_trace_height > log_final_poly_len + log_blowup
+    /// So min_trace_height should be >= 2^(log_final_poly_len + log_blowup + 1)
+    min_trace_height: usize,
 }
 
 impl TablePacking {
@@ -62,7 +90,33 @@ impl TablePacking {
             public_lanes: public_lanes.max(1),
             add_lanes: add_lanes.max(1),
             mul_lanes: mul_lanes.max(1),
+            min_trace_height: 1,
         }
+    }
+
+    /// Create TablePacking with a minimum trace height requirement.
+    ///
+    /// Use this when FRI parameters have `log_final_poly_len > 0`.
+    /// The minimum trace height must satisfy: `min_trace_height > 2^(log_final_poly_len + log_blowup)`
+    ///
+    /// For example, with `log_final_poly_len = 3` and `log_blowup = 1`:
+    /// - Required: `min_trace_height > 2^(3+1) = 16`
+    /// - So use `min_trace_height = 32` (next power of two)
+    pub fn with_min_trace_height(mut self, min_trace_height: usize) -> Self {
+        // Ensure min_trace_height is a power of two and at least 1
+        self.min_trace_height = min_trace_height.next_power_of_two().max(1);
+        self
+    }
+
+    /// Create TablePacking with minimum height derived from FRI parameters.
+    ///
+    /// This automatically calculates the minimum trace height from `log_final_poly_len` and `log_blowup`.
+    pub fn with_fri_params(mut self, log_final_poly_len: usize, log_blowup: usize) -> Self {
+        // FRI requires: log_min_height > log_final_poly_len + log_blowup
+        // So min_height must be >= 2^(log_final_poly_len + log_blowup + 1)
+        let min_log_height = log_final_poly_len + log_blowup + 1;
+        self.min_trace_height = 1usize << min_log_height;
+        self
     }
 
     pub fn from_counts(
@@ -88,6 +142,10 @@ impl TablePacking {
 
     pub const fn mul_lanes(self) -> usize {
         self.mul_lanes
+    }
+
+    pub const fn min_trace_height(self) -> usize {
+        self.min_trace_height
     }
 }
 
@@ -2734,6 +2792,7 @@ where
         // Build matrices and AIRs per table.
         let packing = self.table_packing;
         let witness_lanes = packing.witness_lanes();
+        let min_height = packing.min_trace_height();
 
         // Check if Add/Mul tables have only dummy operations (trace length <= 1).
         // The table implementation adds a dummy row when empty, so we check for <= 1.
@@ -2776,14 +2835,16 @@ where
             witness_rows,
             witness_lanes,
             witness_multiplicities,
-        );
+        )
+        .with_min_height(min_height);
         let witness_matrix: RowMajorMatrix<Val<SC>> =
             WitnessAir::<Val<SC>, D>::trace_to_matrix(&traces.witness_trace, witness_lanes);
 
         // Const
         let const_rows = traces.const_trace.values.len();
         let const_prep = ConstAir::<Val<SC>, D>::trace_to_preprocessed(&traces.const_trace);
-        let const_air = ConstAir::<Val<SC>, D>::new_with_preprocessed(const_rows, const_prep);
+        let const_air = ConstAir::<Val<SC>, D>::new_with_preprocessed(const_rows, const_prep)
+            .with_min_height(min_height);
         let const_matrix: RowMajorMatrix<Val<SC>> =
             ConstAir::<Val<SC>, D>::trace_to_matrix(&traces.const_trace);
 
@@ -2805,7 +2866,8 @@ where
         let public_rows = traces.public_trace.values.len();
         let public_prep = PublicAir::<Val<SC>, D>::trace_to_preprocessed(&traces.public_trace);
         let public_air =
-            PublicAir::<Val<SC>, D>::new_with_preprocessed(public_rows, public_lanes, public_prep);
+            PublicAir::<Val<SC>, D>::new_with_preprocessed(public_rows, public_lanes, public_prep)
+                .with_min_height(min_height);
         let public_matrix: RowMajorMatrix<Val<SC>> =
             PublicAir::<Val<SC>, D>::trace_to_matrix(&traces.public_trace, public_lanes);
 
@@ -2825,7 +2887,8 @@ where
                 AddAir::<Val<SC>, D>::trace_to_preprocessed(&traces.add_trace),
             )
         };
-        let add_air = AddAir::<Val<SC>, D>::new_with_preprocessed(add_rows, add_lanes, add_prep);
+        let add_air = AddAir::<Val<SC>, D>::new_with_preprocessed(add_rows, add_lanes, add_prep)
+            .with_min_height(min_height);
         let add_matrix: RowMajorMatrix<Val<SC>> =
             AddAir::<Val<SC>, D>::trace_to_matrix(&traces.add_trace, add_lanes);
 
@@ -2847,9 +2910,11 @@ where
         };
         let mul_air: MulAir<Val<SC>, D> = if D == 1 {
             MulAir::<Val<SC>, D>::new_with_preprocessed(mul_rows, mul_lanes, mul_prep)
+                .with_min_height(min_height)
         } else {
             let w = w_binomial.ok_or(BatchStarkProverError::MissingWForExtension)?;
             MulAir::<Val<SC>, D>::new_binomial_with_preprocessed(mul_rows, mul_lanes, w, mul_prep)
+                .with_min_height(min_height)
         };
         let mul_matrix: RowMajorMatrix<Val<SC>> =
             MulAir::<Val<SC>, D>::trace_to_matrix(&traces.mul_trace, mul_lanes);
@@ -2940,24 +3005,25 @@ where
         let mut non_primitives: Vec<NonPrimitiveTableEntry<SC>> =
             Vec::with_capacity(dynamic_instances.len());
 
+        // Pad all trace matrices to at least min_height (for FRI compatibility)
         air_storage.push(CircuitTableAir::Witness(witness_air));
-        trace_storage.push(witness_matrix);
+        trace_storage.push(pad_matrix_to_min_height(witness_matrix, min_height));
         public_storage.push(Vec::new());
 
         air_storage.push(CircuitTableAir::Const(const_air));
-        trace_storage.push(const_matrix);
+        trace_storage.push(pad_matrix_to_min_height(const_matrix, min_height));
         public_storage.push(Vec::new());
 
         air_storage.push(CircuitTableAir::Public(public_air));
-        trace_storage.push(public_matrix);
+        trace_storage.push(pad_matrix_to_min_height(public_matrix, min_height));
         public_storage.push(Vec::new());
 
         air_storage.push(CircuitTableAir::Add(add_air));
-        trace_storage.push(add_matrix);
+        trace_storage.push(pad_matrix_to_min_height(add_matrix, min_height));
         public_storage.push(Vec::new());
 
         air_storage.push(CircuitTableAir::Mul(mul_air));
-        trace_storage.push(mul_matrix);
+        trace_storage.push(pad_matrix_to_min_height(mul_matrix, min_height));
         public_storage.push(Vec::new());
 
         for instance in dynamic_instances {
@@ -2969,7 +3035,7 @@ where
                 rows,
             } = instance;
             air_storage.push(CircuitTableAir::Dynamic(air));
-            trace_storage.push(trace);
+            trace_storage.push(pad_matrix_to_min_height(trace, min_height));
             public_storage.push(public_values.clone());
             non_primitives.push(NonPrimitiveTableEntry {
                 op_type,
@@ -3007,7 +3073,8 @@ where
         // Store the effective packing (with reduced lanes if applicable) so the verifier
         // uses the same configuration that was actually used during proving.
         let effective_packing =
-            TablePacking::new(witness_lanes, public_lanes, add_lanes, mul_lanes);
+            TablePacking::new(witness_lanes, public_lanes, add_lanes, mul_lanes)
+                .with_min_trace_height(min_height);
 
         Ok(BatchStarkProof {
             proof,

@@ -254,6 +254,16 @@ where
     }
 
     // Now create the AIRs with the updated multiplicities
+    // Get min_height from packing configuration and pass it to AIRs
+    let min_height = packing.min_trace_height();
+
+    // Helper to compute degree that respects min_height
+    let compute_degree = |num_rows: usize| -> usize {
+        let natural_height = num_rows.next_power_of_two();
+        let min_rows = min_height.next_power_of_two();
+        log2_ceil_usize(natural_height.max(min_rows))
+    };
+
     let default_air = WitnessAir::new(1, 1);
     let mut table_preps = (0..base_prep.len())
         .map(|_| (CircuitTableAir::Witness(default_air.clone()), 1))
@@ -273,11 +283,10 @@ where
 
                     let num_ops = prep.len().div_ceil(lane_without_multiplicities);
                     let add_air =
-                        AddAir::new_with_preprocessed(num_ops, effective_add_lanes, prep.clone());
-                    table_preps[idx] = (
-                        CircuitTableAir::Add(add_air),
-                        log2_ceil_usize(num_ops.div_ceil(effective_add_lanes)),
-                    );
+                        AddAir::new_with_preprocessed(num_ops, effective_add_lanes, prep.clone())
+                            .with_min_height(min_height);
+                    let num_rows = num_ops.div_ceil(effective_add_lanes);
+                    table_preps[idx] = (CircuitTableAir::Add(add_air), compute_degree(num_rows));
                 }
                 PrimitiveOpType::Mul => {
                     // The `- 1` comes from the fact that the first preprocessing column is the multiplicity,
@@ -288,6 +297,7 @@ where
                     let num_ops = prep.len().div_ceil(lane_without_multiplicities);
                     let mul_air = if D == 1 {
                         MulAir::new_with_preprocessed(num_ops, effective_mul_lanes, prep.clone())
+                            .with_min_height(min_height)
                     } else {
                         let w = w_binomial.unwrap();
                         MulAir::new_binomial_with_preprocessed(
@@ -296,11 +306,10 @@ where
                             w,
                             prep.clone(),
                         )
+                        .with_min_height(min_height)
                     };
-                    table_preps[idx] = (
-                        CircuitTableAir::Mul(mul_air),
-                        log2_ceil_usize(num_ops.div_ceil(effective_mul_lanes)),
-                    );
+                    let num_rows = num_ops.div_ceil(effective_mul_lanes);
+                    table_preps[idx] = (CircuitTableAir::Mul(mul_air), compute_degree(num_rows));
                 }
                 PrimitiveOpType::Public => {
                     let num_ops = prep.len();
@@ -308,16 +317,19 @@ where
                         num_ops,
                         effective_public_lanes,
                         prep.clone(),
-                    );
+                    )
+                    .with_min_height(min_height);
+                    let num_rows = num_ops.div_ceil(effective_public_lanes);
                     table_preps[idx] = (
                         CircuitTableAir::Public(public_air),
-                        log2_ceil_usize(num_ops.div_ceil(effective_public_lanes)),
+                        compute_degree(num_rows),
                     );
                 }
                 PrimitiveOpType::Const => {
                     let height = prep.len();
-                    let const_air = ConstAir::new_with_preprocessed(height, prep.clone());
-                    table_preps[idx] = (CircuitTableAir::Const(const_air), log2_ceil_usize(height));
+                    let const_air = ConstAir::new_with_preprocessed(height, prep.clone())
+                        .with_min_height(min_height);
+                    table_preps[idx] = (CircuitTableAir::Const(const_air), compute_degree(height));
                 }
                 PrimitiveOpType::Witness => {
                     let num_witnesses = prep.len();
@@ -325,10 +337,12 @@ where
                         num_witnesses,
                         packing.witness_lanes(),
                         prep.clone(),
-                    );
+                    )
+                    .with_min_height(min_height);
+                    let num_rows = num_witnesses.div_ceil(packing.witness_lanes());
                     table_preps[idx] = (
                         CircuitTableAir::Witness(witness_air),
-                        log2_ceil_usize(num_witnesses.div_ceil(packing.witness_lanes())),
+                        compute_degree(num_rows),
                     );
                 }
             }
@@ -364,10 +378,8 @@ where
                     poseidon2_prover.wrapper_from_config_with_preprocessed(prep_base);
                 let poseidon2_wrapper_air: CircuitTableAir<SC, D> =
                     CircuitTableAir::Dynamic(poseidon2_wrapper);
-                table_preps.push((
-                    poseidon2_wrapper_air,
-                    log2_ceil_usize(prep.len().div_ceil(width)),
-                ));
+                let num_rows = prep.len().div_ceil(width);
+                table_preps.push((poseidon2_wrapper_air, compute_degree(num_rows)));
             }
             // Unconstrained operations do not use tables
             NonPrimitiveOpType::Unconstrained => {}
