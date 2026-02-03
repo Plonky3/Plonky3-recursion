@@ -664,17 +664,6 @@ impl Poseidon2PermExecutor {
             }
         }
 
-        // Layer 4: Default to zero for new_start sponge mode
-        // In sponge mode with new_start=true, unspecified limbs default to zero.
-        // This allows partial absorption where only some rate limbs are provided.
-        if self.new_start && !self.merkle_path {
-            for limb in &mut resolved {
-                if limb.is_none() {
-                    *limb = Some(F::ZERO);
-                }
-            }
-        }
-
         let permuted_idx = if self.merkle_path && mmcs_bit {
             match limb {
                 0 => 2,
