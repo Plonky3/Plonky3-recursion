@@ -395,9 +395,35 @@ impl<'a, F: PrimeCharacteristicRing + Eq + Clone> ExecutionContext<'a, F> {
         }
 
         // Check for conflicting reassignment
-        if let Some(existing_value) = &self.witness[widx.0 as usize]
-            && *existing_value != value
-        {
+        if let Some(existing_value) = &self.witness[widx.0 as usize] {
+            if *existing_value == value {
+                // Same value - this is fine (duplicate set via connect)
+                tracing::debug!(
+                    "Witness {:?} already set to same value {:?} (op {:?})",
+                    widx,
+                    value,
+                    self.operation_id
+                );
+                return Ok(());
+            }
+            let expr_ids = self
+                .expr_to_widx
+                .iter()
+                .filter_map(|(expr_id, &witness_id)| {
+                    if witness_id == widx {
+                        Some(*expr_id)
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>();
+            tracing::error!(
+                "WitnessConflict: witness {:?} has existing={:?}, trying to set new={:?}, op_id={:?}",
+                widx,
+                existing_value,
+                value,
+                self.operation_id
+            );
             return Err(CircuitError::WitnessConflict {
                 witness_id: widx,
                 existing: format!("{existing_value:?}"),
@@ -406,6 +432,15 @@ impl<'a, F: PrimeCharacteristicRing + Eq + Clone> ExecutionContext<'a, F> {
             });
         }
 
+        // Debug: log first write to specific witnesses
+        if widx.0 == 72315 || widx.0 == 72321 {
+            tracing::debug!(
+                "First write to witness {:?} with value {:?} from op {:?}",
+                widx,
+                value,
+                self.operation_id
+            );
+        }
         self.witness[widx.0 as usize] = Some(value);
         Ok(())
     }

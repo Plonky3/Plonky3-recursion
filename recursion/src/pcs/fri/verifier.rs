@@ -583,6 +583,13 @@ where
     let num_phases = betas.len();
     let num_queries = fri_proof_targets.query_proofs.len();
 
+    tracing::debug!(
+        "verify_fri_circuit: num_phases={}, num_queries={}, log_blowup={}",
+        num_phases,
+        num_queries,
+        log_blowup
+    );
+
     // Validate shape.
     if num_phases != fri_proof_targets.commit_phase_commits.len() {
         return Err(VerificationError::InvalidProofShape(format!(

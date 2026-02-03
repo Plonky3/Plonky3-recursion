@@ -3109,34 +3109,35 @@ where
         let public_lanes = packing.public_lanes();
         let add_lanes = packing.add_lanes();
         let mul_lanes = packing.mul_lanes();
+        let min_height = packing.min_trace_height();
 
-        let witness_air = CircuitTableAir::Witness(WitnessAir::<Val<SC>, D>::new(
-            proof.rows[PrimitiveTable::Witness],
-            witness_lanes,
-        ));
-        let const_air = CircuitTableAir::Const(ConstAir::<Val<SC>, D>::new(
-            proof.rows[PrimitiveTable::Const],
-        ));
-        let public_air = CircuitTableAir::Public(PublicAir::<Val<SC>, D>::new(
-            proof.rows[PrimitiveTable::Public],
-            public_lanes,
-        ));
-        let add_air = CircuitTableAir::Add(AddAir::<Val<SC>, D>::new(
-            proof.rows[PrimitiveTable::Add],
-            add_lanes,
-        ));
+        let witness_air = CircuitTableAir::Witness(
+            WitnessAir::<Val<SC>, D>::new(proof.rows[PrimitiveTable::Witness], witness_lanes)
+                .with_min_height(min_height),
+        );
+        let const_air = CircuitTableAir::Const(
+            ConstAir::<Val<SC>, D>::new(proof.rows[PrimitiveTable::Const])
+                .with_min_height(min_height),
+        );
+        let public_air = CircuitTableAir::Public(
+            PublicAir::<Val<SC>, D>::new(proof.rows[PrimitiveTable::Public], public_lanes)
+                .with_min_height(min_height),
+        );
+        let add_air = CircuitTableAir::Add(
+            AddAir::<Val<SC>, D>::new(proof.rows[PrimitiveTable::Add], add_lanes)
+                .with_min_height(min_height),
+        );
         let mul_air: CircuitTableAir<SC, D> = if D == 1 {
-            CircuitTableAir::Mul(MulAir::<Val<SC>, D>::new(
-                proof.rows[PrimitiveTable::Mul],
-                mul_lanes,
-            ))
+            CircuitTableAir::Mul(
+                MulAir::<Val<SC>, D>::new(proof.rows[PrimitiveTable::Mul], mul_lanes)
+                    .with_min_height(min_height),
+            )
         } else {
             let w = w_binomial.ok_or(BatchStarkProverError::MissingWForExtension)?;
-            CircuitTableAir::Mul(MulAir::<Val<SC>, D>::new_binomial(
-                proof.rows[PrimitiveTable::Mul],
-                mul_lanes,
-                w,
-            ))
+            CircuitTableAir::Mul(
+                MulAir::<Val<SC>, D>::new_binomial(proof.rows[PrimitiveTable::Mul], mul_lanes, w)
+                    .with_min_height(min_height),
+            )
         };
         let mut airs = vec![witness_air, const_air, public_air, add_air, mul_air];
         // TODO: Handle public values.

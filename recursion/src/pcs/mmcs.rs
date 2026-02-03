@@ -1,9 +1,10 @@
 use alloc::vec;
 use alloc::vec::Vec;
+use core::cmp::min;
 
 use p3_circuit::op::{NonPrimitiveOpPrivateData, Poseidon2Config};
-use p3_circuit::ops::Poseidon2PermPrivateData;
-use p3_circuit::ops::hash::add_hash_slice;
+use p3_circuit::ops::poseidon2_perm::Poseidon2PermOps;
+use p3_circuit::ops::{Poseidon2PermCall, Poseidon2PermPrivateData};
 use p3_circuit::{CircuitBuilder, CircuitBuilderError, CircuitRunner, NonPrimitiveOpId};
 use p3_commit::BatchOpening;
 use p3_field::{BasedVectorSpace, ExtensionField, Field, PrimeField64, TwoAdicField};
@@ -11,6 +12,134 @@ use p3_fri::FriProof;
 use p3_matrix::Dimensions;
 
 use crate::Target;
+
+/// Hash base field coefficients using overwrite-mode sponge (matching native PaddingFreeSponge).
+///
+/// Native `PaddingFreeSponge` uses "overwrite mode": when absorbing a partial chunk,
+/// only the absorbed positions are overwritten; the remaining rate positions keep their
+/// values from the previous permutation output.
+///
+/// This function implements the same behavior in the circuit by:
+/// 1. Processing base coefficients in chunks of `rate` (8 for BabyBear)
+/// 2. For partial chunks, mixing absorbed values with previous output for remaining positions
+/// 3. Using proper chaining for the capacity portion
+///
+/// # Parameters
+/// - `circuit`: Circuit builder
+/// - `permutation_config`: Poseidon2 configuration
+/// - `base_coeffs`: Base field coefficient targets (in lifted representation)
+/// - `reset`: If true, starts a new hash chain (initial state = zeros)
+fn add_hash_base_coeffs_overwrite<F, EF>(
+    circuit: &mut CircuitBuilder<EF>,
+    permutation_config: &Poseidon2Config,
+    base_coeffs: &[Target],
+    reset: bool,
+) -> Result<Vec<Target>, CircuitBuilderError>
+where
+    F: Field + PrimeField64,
+    EF: ExtensionField<F>,
+{
+    if base_coeffs.is_empty() {
+        // Return zeros for empty input (shouldn't happen in practice)
+        let zero = circuit.add_const(EF::ZERO);
+        return Ok(vec![zero, zero]);
+    }
+
+    let ext_degree = <EF as BasedVectorSpace<F>>::DIMENSION;
+    let rate = permutation_config.rate(); // Base field rate (8 for BabyBear)
+    let rate_ext = permutation_config.rate_ext(); // Extension rate (2 for D=4)
+
+    // Process in chunks of `rate` base field values
+    let num_chunks = base_coeffs.len().div_ceil(rate);
+    // Only store rate outputs (0-1) for overwrite mode chaining
+    let mut last_rate_outputs: Option<[Target; 2]> = None;
+    let mut final_outputs = [None, None, None, None];
+
+    for (chunk_idx, chunk) in base_coeffs.chunks(rate).enumerate() {
+        let is_first = chunk_idx == 0;
+        let is_last = chunk_idx == num_chunks - 1;
+
+        // Build inputs for this permutation
+        // Rate portion (inputs[0..rate_ext]): absorbed values with overwrite semantics
+        // Capacity portion (inputs[rate_ext..4]): None for chaining
+        let mut inputs: [Option<Target>; 4] = [None; 4];
+
+        for ext_idx in 0..rate_ext {
+            let base_start = ext_idx * ext_degree;
+            let num_values_in_ext = min(ext_degree, chunk.len().saturating_sub(base_start));
+
+            if num_values_in_ext == 0 {
+                // No values for this extension position - use None for chaining
+                // This keeps the previous output (overwrite mode)
+                inputs[ext_idx] = None;
+            } else if num_values_in_ext == ext_degree {
+                // Full extension element - just recompose our values
+                let ext_coeffs: Vec<_> = (0..ext_degree).map(|i| chunk[base_start + i]).collect();
+                inputs[ext_idx] = Some(circuit.recompose_base_coeffs_to_ext::<F>(&ext_coeffs)?);
+            } else {
+                // Partial extension element - mix with previous output (overwrite mode)
+                // This is the key fix: unused positions keep previous permutation output
+                let prev_coeffs: Option<Vec<Target>> = if !is_first {
+                    if let Some(ref prev_rate) = last_rate_outputs {
+                        Some(circuit.decompose_ext_to_base_coeffs::<F>(prev_rate[ext_idx])?)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                let mut ext_coeffs = Vec::with_capacity(ext_degree);
+                for coeff_idx in 0..ext_degree {
+                    if coeff_idx < num_values_in_ext {
+                        // Use our absorbed value
+                        ext_coeffs.push(chunk[base_start + coeff_idx]);
+                    } else if let Some(ref prev) = prev_coeffs {
+                        // Overwrite mode: keep previous output for this position
+                        ext_coeffs.push(prev[coeff_idx]);
+                    } else {
+                        // First permutation with new_start, use zero
+                        ext_coeffs.push(circuit.add_const(EF::ZERO));
+                    }
+                }
+
+                inputs[ext_idx] = Some(circuit.recompose_base_coeffs_to_ext::<F>(&ext_coeffs)?);
+            }
+        }
+
+        // Capacity positions (rate_ext..4) are None for chaining from previous permutation
+
+        // Add permutation
+        // Always get rate outputs (0-1) for potential chaining; capacity outputs not needed
+        let (_, maybe_outputs) = circuit.add_poseidon2_perm(Poseidon2PermCall {
+            config: *permutation_config,
+            new_start: if is_first { reset } else { false },
+            merkle_path: false,
+            mmcs_bit: None,
+            inputs,
+            out_ctl: [true, true],     // Always expose rate outputs
+            return_all_outputs: false, // Don't need capacity outputs
+            mmcs_index_sum: None,
+        })?;
+
+        // Store rate outputs for next iteration (for overwrite mode chaining)
+        if !is_last {
+            // Only need rate outputs (0-1) for overwrite mode - capacity is handled by chaining
+            last_rate_outputs = Some([
+                maybe_outputs[0].ok_or(CircuitBuilderError::MissingOutput)?,
+                maybe_outputs[1].ok_or(CircuitBuilderError::MissingOutput)?,
+            ]);
+        }
+
+        final_outputs = maybe_outputs;
+    }
+
+    // Return rate outputs (0-1) as the hash digest
+    [final_outputs[0], final_outputs[1]]
+        .into_iter()
+        .map(|o| o.ok_or(CircuitBuilderError::MissingOutput))
+        .collect()
+}
 
 /// Recursive verison of `MerkleTreeMmcs::verify_batch`. Adds a circuit that verifies an opened batch of rows with respect to a given commitment.
 ///
@@ -108,12 +237,13 @@ where
             continue;
         }
 
-        // Repack the combined base coefficients into extension targets
-        // This matches native MMCS which hashes the concatenated raw values
-        let repacked = repack_base_to_ext::<F, EF>(circuit, &all_base_coeffs)?;
-
-        // Hash the repacked values
-        *digest = add_hash_slice(circuit, &permutation_config, &repacked, true)?;
+        // Hash using overwrite-mode sponge (matching native PaddingFreeSponge)
+        *digest = add_hash_base_coeffs_overwrite::<F, EF>(
+            circuit,
+            &permutation_config,
+            &all_base_coeffs,
+            true,
+        )?;
     }
 
     let op_vals_digests = formatted_digests;
@@ -125,34 +255,6 @@ where
         index_bits,
         commitment,
     )
-}
-
-/// Re-pack base field coefficients into extension field targets.
-/// Pads with zeros to fill the last extension element if needed.
-fn repack_base_to_ext<F, EF>(
-    circuit: &mut CircuitBuilder<EF>,
-    base_coeffs: &[Target],
-) -> Result<Vec<Target>, CircuitBuilderError>
-where
-    F: Field + PrimeField64,
-    EF: ExtensionField<F>,
-{
-    let ext_degree = <EF as BasedVectorSpace<F>>::DIMENSION;
-    let num_ext = base_coeffs.len().div_ceil(ext_degree);
-    let mut result = Vec::with_capacity(num_ext);
-
-    for chunk in base_coeffs.chunks(ext_degree) {
-        // Pad chunk with zeros if needed
-        let mut padded = chunk.to_vec();
-        while padded.len() < ext_degree {
-            padded.push(circuit.add_const(EF::ZERO));
-        }
-        // Recompose base coefficients to extension element
-        let ext_target = circuit.recompose_base_coeffs_to_ext::<F>(&padded)?;
-        result.push(ext_target);
-    }
-
-    Ok(result)
 }
 
 /// Convert a base field Merkle proof to extension field sibling values.
@@ -292,7 +394,7 @@ mod test {
     use p3_circuit::{CircuitBuilder, CircuitError, NonPrimitiveOpPrivateData};
     use p3_commit::Mmcs;
     use p3_field::extension::BinomialExtensionField;
-    use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
+    use p3_field::{BasedVectorSpace, ExtensionField, Field, PrimeCharacteristicRing};
     use p3_matrix::dense::{DenseMatrix, RowMajorMatrix};
     use p3_matrix::{Dimensions, Matrix};
     use p3_merkle_tree::MerkleTreeMmcs;
@@ -728,5 +830,428 @@ mod test {
             }
             _ => panic!("The test was suppose to fail with a root mismatch!"),
         }
+    }
+
+    /// Test MMCS verification using lifted representation (like FRI verifier does).
+    /// This tests that `pack_lifted_to_ext` + `verify_batch_circuit` produces correct results.
+    ///
+    /// The FRI verifier stores opened values as "lifted" targets (one ext target per base field value,
+    /// where the ext value is `[base_val, 0, 0, 0]`), then packs them before MMCS verification.
+    #[test]
+    fn verify_batch_with_lifted_representation() {
+        init_logger();
+
+        let perm = default_babybear_poseidon2_16();
+        let hash = MyHash::new(perm.clone());
+        let compress = MyCompress::new(perm.clone());
+        let mmcs = MyMmcs::new(hash, compress);
+
+        // Create a small matrix (similar to small FRI proofs)
+        let mat = RowMajorMatrix::new(
+            vec![
+                F::from_u32(1),
+                F::from_u32(2),
+                F::from_u32(3),
+                F::from_u32(4),
+                F::from_u32(5),
+                F::from_u32(6),
+                F::from_u32(7),
+                F::from_u32(8),
+            ],
+            4, // 2 rows, 4 columns
+        );
+
+        let dimensions = vec![mat.dimensions()];
+        let max_height = mat.height();
+        let path_depth = log2_ceil_usize(max_height);
+
+        let (commit, prover_data) = mmcs.commit(vec![mat]);
+
+        for index in 0..max_height {
+            let mut builder = CircuitBuilder::<CF>::new();
+            let permutation_config = Poseidon2Config::BabyBearD4Width16;
+            builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
+                generate_poseidon2_trace::<CF, BabyBearD4Width16>,
+                perm.clone(),
+            );
+
+            let batch_opening = mmcs.open_batch(index, &prover_data);
+
+            let directions = (0..path_depth).map(|k| index >> k & 1 == 1).collect_vec();
+
+            // Allocate openings as LIFTED targets (one target per base field value)
+            // This mimics how FRI verifier allocates BatchOpeningTargets
+            let lifted_openings: Vec<Vec<_>> = batch_opening
+                .opened_values
+                .iter()
+                .map(|values| {
+                    values
+                        .iter()
+                        .map(|_| builder.add_public_input())
+                        .collect_vec()
+                })
+                .collect();
+
+            // Pack lifted targets into extension targets (like FRI verifier does)
+            let packed_openings: Vec<Vec<_>> = lifted_openings
+                .iter()
+                .map(|lifted| pack_lifted_targets::<F, CF>(&mut builder, lifted))
+                .collect();
+
+            let directions_expr = builder.alloc_public_inputs(path_depth, "directions");
+
+            // Allocate root as LIFTED targets, then pack (like FRI verifier does)
+            let lifted_root: Vec<_> = (0..permutation_config.rate())
+                .map(|_| builder.add_public_input())
+                .collect();
+            let packed_root = pack_lifted_targets::<F, CF>(&mut builder, &lifted_root);
+
+            // Base widths = number of base field values per matrix
+            let base_widths: Vec<usize> = batch_opening
+                .opened_values
+                .iter()
+                .map(|v| v.len())
+                .collect_vec();
+
+            let _permutation_mmcs_ops = verify_batch_circuit::<F, CF>(
+                &mut builder,
+                permutation_config,
+                &packed_root,
+                &dimensions,
+                &base_widths,
+                &directions_expr,
+                &packed_openings,
+            )
+            .unwrap();
+
+            let circuit = builder.build().unwrap();
+            let mut runner = circuit.runner();
+
+            // Set public inputs using LIFTED representation
+            // First: lifted opened values (one EF per base field value)
+            let mut public_inputs: Vec<CF> = batch_opening
+                .opened_values
+                .iter()
+                .flat_map(|values| values.iter().map(|&v| CF::from(v)))
+                .collect();
+
+            // Then: direction bits
+            public_inputs.extend(directions.iter().map(|&bit| CF::from_bool(bit)));
+
+            // Then: lifted root (one EF per base field digest element)
+            let commit_base = commit.into_iter().collect_vec();
+            public_inputs.extend(commit_base.iter().map(|&v| CF::from(v)));
+
+            runner.set_public_inputs(&public_inputs).unwrap();
+
+            // Set private data for siblings
+            let siblings = batch_opening
+                .opening_proof
+                .iter()
+                .map(|digest| {
+                    digest
+                        .chunks(4)
+                        .map(CF::from_basis_coefficients_slice)
+                        .collect::<Option<Vec<_>>>()
+                        .unwrap()
+                })
+                .collect_vec();
+
+            for (&op_id, sibling) in _permutation_mmcs_ops.iter().zip(siblings) {
+                runner
+                    .set_private_data(
+                        op_id,
+                        NonPrimitiveOpPrivateData::Poseidon2Perm(Poseidon2PermPrivateData {
+                            sibling: sibling.try_into().unwrap(),
+                        }),
+                    )
+                    .unwrap();
+            }
+
+            // Run and verify
+            let result = runner.run();
+            assert!(
+                result.is_ok(),
+                "MMCS verification with lifted representation failed at index {}: {:?}",
+                index,
+                result.err()
+            );
+        }
+    }
+
+    /// Helper function to pack lifted targets into extension targets.
+    /// Mimics `pack_lifted_to_ext` from FRI verifier.
+    fn pack_lifted_targets<BF, EF>(
+        builder: &mut CircuitBuilder<EF>,
+        lifted: &[crate::Target],
+    ) -> Vec<crate::Target>
+    where
+        BF: Field,
+        EF: ExtensionField<BF> + BasedVectorSpace<BF>,
+    {
+        if lifted.is_empty() {
+            return Vec::new();
+        }
+
+        let d = EF::DIMENSION;
+        let basis: Vec<EF> = (0..d)
+            .map(|i| {
+                let mut coeffs = vec![BF::ZERO; d];
+                coeffs[i] = BF::ONE;
+                EF::from_basis_coefficients_slice(&coeffs).expect("valid basis")
+            })
+            .collect();
+
+        lifted
+            .chunks(d)
+            .map(|chunk| {
+                let mut acc = builder.add_const(EF::ZERO);
+                for (i, &target) in chunk.iter().enumerate() {
+                    let basis_const = builder.add_const(basis[i]);
+                    let term = builder.mul(target, basis_const);
+                    acc = builder.add(acc, term);
+                }
+                acc
+            })
+            .collect()
+    }
+
+    /// Test helper that runs MMCS verification using lifted representation for various matrix configs.
+    fn test_lifted_openings(mats: Vec<RowMajorMatrix<F>>) {
+        let perm = default_babybear_poseidon2_16();
+        let hash = MyHash::new(perm.clone());
+        let compress = MyCompress::new(perm.clone());
+        let mmcs = MyMmcs::new(hash, compress);
+
+        let dimensions = mats.iter().map(DenseMatrix::dimensions).collect_vec();
+
+        let mut heights_tallest_first = dimensions
+            .iter()
+            .enumerate()
+            .sorted_by_key(|(_, dims)| Reverse(dims.height))
+            .peekable();
+
+        let max_height = heights_tallest_first.peek().unwrap().1.height;
+
+        let (commit, prover_data) = mmcs.commit(mats);
+
+        let path_depth = log2_ceil_usize(max_height);
+        for index in 0..max_height {
+            let mut builder = CircuitBuilder::<CF>::new();
+            let permutation_config = Poseidon2Config::BabyBearD4Width16;
+            builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
+                generate_poseidon2_trace::<CF, BabyBearD4Width16>,
+                perm.clone(),
+            );
+
+            let batch_opening = mmcs.open_batch(index, &prover_data);
+
+            let directions = (0..path_depth).map(|k| index >> k & 1 == 1).collect_vec();
+
+            // Allocate openings as LIFTED targets (like FRI verifier)
+            let lifted_openings: Vec<Vec<_>> = batch_opening
+                .opened_values
+                .iter()
+                .map(|values| {
+                    values
+                        .iter()
+                        .map(|_| builder.add_public_input())
+                        .collect_vec()
+                })
+                .collect();
+
+            // Pack lifted to extension (like FRI verifier)
+            let packed_openings: Vec<Vec<_>> = lifted_openings
+                .iter()
+                .map(|lifted| pack_lifted_targets::<F, CF>(&mut builder, lifted))
+                .collect();
+
+            let directions_expr = builder.alloc_public_inputs(path_depth, "directions");
+
+            // Allocate root as LIFTED, then pack
+            let lifted_root: Vec<_> = (0..permutation_config.rate())
+                .map(|_| builder.add_public_input())
+                .collect();
+            let packed_root = pack_lifted_targets::<F, CF>(&mut builder, &lifted_root);
+
+            // Base widths = number of base field values per matrix
+            let base_widths: Vec<usize> = batch_opening
+                .opened_values
+                .iter()
+                .map(|v| v.len())
+                .collect_vec();
+
+            let permutation_mmcs_ops = verify_batch_circuit::<F, CF>(
+                &mut builder,
+                permutation_config,
+                &packed_root,
+                &dimensions,
+                &base_widths,
+                &directions_expr,
+                &packed_openings,
+            )
+            .unwrap();
+
+            let circuit = builder.build().unwrap();
+            let mut runner = circuit.runner();
+
+            // Set public inputs using LIFTED representation
+            let mut public_inputs: Vec<CF> = batch_opening
+                .opened_values
+                .iter()
+                .flat_map(|values| values.iter().map(|&v| CF::from(v)))
+                .collect();
+
+            public_inputs.extend(directions.iter().map(|&bit| CF::from_bool(bit)));
+
+            let commit_base = commit.into_iter().collect_vec();
+            public_inputs.extend(commit_base.iter().map(|&v| CF::from(v)));
+
+            runner.set_public_inputs(&public_inputs).unwrap();
+
+            // Set private data for siblings
+            let siblings = batch_opening
+                .opening_proof
+                .iter()
+                .map(|digest| {
+                    digest
+                        .chunks(4)
+                        .map(CF::from_basis_coefficients_slice)
+                        .collect::<Option<Vec<_>>>()
+                        .unwrap()
+                })
+                .collect_vec();
+
+            for (&op_id, sibling) in permutation_mmcs_ops.iter().zip(siblings) {
+                runner
+                    .set_private_data(
+                        op_id,
+                        NonPrimitiveOpPrivateData::Poseidon2Perm(Poseidon2PermPrivateData {
+                            sibling: sibling.try_into().unwrap(),
+                        }),
+                    )
+                    .unwrap();
+            }
+
+            let _ = runner.run().unwrap();
+        }
+    }
+
+    /// Test with very small matrix (height=2, minimal Merkle tree depth=1)
+    #[test]
+    fn lifted_verify_small_2x4() {
+        init_logger();
+        let mat = RowMajorMatrix::new(
+            (0..8).map(|i| F::from_u32(i as u32)).collect_vec(),
+            4, // 2 rows, 4 columns
+        );
+        test_lifted_openings(vec![mat]);
+    }
+
+    /// Test with non-power-of-4 width (tests truncation)
+    #[test]
+    fn lifted_verify_small_2x5() {
+        init_logger();
+        let mat = RowMajorMatrix::new(
+            (0..10).map(|i| F::from_u32(i as u32)).collect_vec(),
+            5, // 2 rows, 5 columns
+        );
+        test_lifted_openings(vec![mat]);
+    }
+
+    /// Test with multiple matrices at different heights (like FRI batches)
+    #[test]
+    fn lifted_verify_multi_height() {
+        init_logger();
+        // Two matrices: 8 rows and 4 rows (different heights)
+        let mat1 = RowMajorMatrix::new(
+            (0..16).map(|i| F::from_u32(i as u32)).collect_vec(),
+            2, // 8 rows, 2 columns
+        );
+        let mat2 = RowMajorMatrix::new(
+            (20..32).map(|i| F::from_u32(i as u32)).collect_vec(),
+            3, // 4 rows, 3 columns
+        );
+        test_lifted_openings(vec![mat1, mat2]);
+    }
+
+    /// Test with matrices at same height (combined at same level)
+    #[test]
+    fn lifted_verify_same_height() {
+        init_logger();
+        // Two matrices with same height
+        let mat1 = RowMajorMatrix::new(
+            (0..8).map(|i| F::from_u32(i as u32)).collect_vec(),
+            2, // 4 rows, 2 columns
+        );
+        let mat2 = RowMajorMatrix::new(
+            (10..22).map(|i| F::from_u32(i as u32)).collect_vec(),
+            3, // 4 rows, 3 columns
+        );
+        test_lifted_openings(vec![mat1, mat2]);
+    }
+
+    /// Test with very small column widths (1 column) - edge case from recursive_fibonacci -n 1
+    /// This tests base_widths=[1, 1, 1, 3, 3] configuration
+    ///
+    /// This test verifies that `verify_batch_circuit` correctly handles non-aligned
+    /// base field widths by using overwrite-mode hashing (matching native PaddingFreeSponge).
+    #[test]
+    fn lifted_verify_single_column_matrices() {
+        init_logger();
+        // Simulate batch 0 from fibonacci -n 1: base_widths=[1, 1, 1, 3, 3], 5 matrices
+        // With log_max_height=3, so 8 rows for the tallest matrix
+        let mat0 = RowMajorMatrix::new(
+            (0..8).map(|i| F::from_u32(i as u32)).collect_vec(),
+            1, // 8 rows, 1 column
+        );
+        let mat1 = RowMajorMatrix::new(
+            (10..18).map(|i| F::from_u32(i as u32)).collect_vec(),
+            1, // 8 rows, 1 column
+        );
+        let mat2 = RowMajorMatrix::new(
+            (20..28).map(|i| F::from_u32(i as u32)).collect_vec(),
+            1, // 8 rows, 1 column
+        );
+        let mat3 = RowMajorMatrix::new(
+            (30..54).map(|i| F::from_u32(i as u32)).collect_vec(),
+            3, // 8 rows, 3 columns
+        );
+        let mat4 = RowMajorMatrix::new(
+            (60..84).map(|i| F::from_u32(i as u32)).collect_vec(),
+            3, // 8 rows, 3 columns
+        );
+        test_lifted_openings(vec![mat0, mat1, mat2, mat3, mat4]);
+    }
+
+    /// Test with mixed heights matching fibonacci -n 1's batch 0 (with log_blowup applied)
+    /// This specifically tests the height grouping logic
+    #[test]
+    fn lifted_verify_fibonacci_batch0_config() {
+        init_logger();
+        // From fibonacci -n 1: batch 0 has 5 matrices with base_widths=[1, 1, 1, 3, 3]
+        // heights depend on domain sizes and log_blowup
+        // Let's test with different heights to trigger height grouping
+        let mat0 = RowMajorMatrix::new(
+            (0..8).map(|i| F::from_u32(i as u32)).collect_vec(),
+            1, // 8 rows, 1 column
+        );
+        let mat1 = RowMajorMatrix::new(
+            (10..14).map(|i| F::from_u32(i as u32)).collect_vec(),
+            1, // 4 rows, 1 column
+        );
+        let mat2 = RowMajorMatrix::new(
+            (20..24).map(|i| F::from_u32(i as u32)).collect_vec(),
+            1, // 4 rows, 1 column
+        );
+        let mat3 = RowMajorMatrix::new(
+            (30..54).map(|i| F::from_u32(i as u32)).collect_vec(),
+            3, // 8 rows, 3 columns
+        );
+        let mat4 = RowMajorMatrix::new(
+            (60..72).map(|i| F::from_u32(i as u32)).collect_vec(),
+            3, // 4 rows, 3 columns
+        );
+        test_lifted_openings(vec![mat0, mat1, mat2, mat3, mat4]);
     }
 }

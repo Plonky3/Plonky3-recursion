@@ -178,9 +178,12 @@ pub struct Poseidon2PermPrivateData<F, const SIBLING_LIMBS: usize> {
 /// field limbs. The trace generator converts these to 16 base field elements.
 #[derive(Debug, Default)]
 struct Poseidon2ExecutionState<F> {
-    /// Output of the last Poseidon2 permutation for chaining.
-    /// `None` if no permutation has been executed yet.
-    last_output: Option<[F; 4]>,
+    /// Output of the last non-merkle Poseidon2 permutation for sponge/challenger chaining.
+    /// Used when `merkle_path=false`. `None` if no such permutation has been executed yet.
+    last_output_normal: Option<[F; 4]>,
+    /// Output of the last merkle-path Poseidon2 permutation for MMCS chaining.
+    /// Used when `merkle_path=true`. `None` if no such permutation has been executed yet.
+    last_output_merkle: Option<[F; 4]>,
     /// Circuit rows captured during execution.
     rows: Vec<Poseidon2CircuitRow<F>>,
 }
@@ -595,9 +598,17 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for Poseidon2Perm
         };
 
         // Get the previous output for chaining (read from state before mutation)
+        // Use separate chaining states for merkle_path vs non-merkle_path operations
+        // to prevent cross-contamination between MMCS and challenger chains.
         let last_output = ctx
             .get_op_state::<Poseidon2ExecutionState<F>>(&self.op_type)
-            .and_then(|s| s.last_output);
+            .and_then(|s| {
+                if self.merkle_path {
+                    s.last_output_merkle
+                } else {
+                    s.last_output_normal
+                }
+            });
 
         // Resolve input limbs
         let mut resolved_inputs = [F::ZERO; 4];
@@ -664,8 +675,30 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for Poseidon2Perm
         };
 
         // Update state: chaining and rows
+        // Use separate chaining states for merkle_path vs non-merkle_path operations.
+        let op_id = ctx.operation_id();
         let state = ctx.get_op_state_mut::<Poseidon2ExecutionState<F>>(&self.op_type);
-        state.last_output = Some(output);
+        if self.merkle_path {
+            tracing::trace!(
+                "Poseidon2 op {:?}: updating last_output_merkle from {:?} to {:?}",
+                op_id,
+                state
+                    .last_output_merkle
+                    .map(|o| format!("[{:?}, {:?}]", o[0], o[1])),
+                format!("[{:?}, {:?}]", output[0], output[1])
+            );
+            state.last_output_merkle = Some(output);
+        } else {
+            tracing::trace!(
+                "Poseidon2 op {:?}: updating last_output_normal from {:?} to {:?}",
+                op_id,
+                state
+                    .last_output_normal
+                    .map(|o| format!("[{:?}, {:?}]", o[0], o[1])),
+                format!("[{:?}, {:?}]", output[0], output[1])
+            );
+            state.last_output_normal = Some(output);
+        }
         state.rows.push(row);
 
         // Write outputs to witness (outputs 0-1 for CTL, outputs 2-3 for capacity if requested)

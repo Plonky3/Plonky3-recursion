@@ -40,7 +40,10 @@ pub struct AllocationEntry {
     pub scope: Option<&'static str>,
 }
 
-/// Look up and dump allocation info for specific `ExprId`s.
+/// Look up allocation info for specific ExprIds and dump to debug log.
+///
+/// This is useful for debugging WitnessConflict errors where two ExprIds
+/// have been merged to the same WitnessId.
 pub fn dump_expr_ids(allocation_log: &[AllocationEntry], expr_ids: &[ExprId]) {
     tracing::debug!("=== Allocation Info for ExprIds {:?} ===", expr_ids);
     for expr_id in expr_ids {

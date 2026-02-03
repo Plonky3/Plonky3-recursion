@@ -611,6 +611,15 @@ where
         crate::alloc_entry::dump_allocation_log(&self.allocation_log);
     }
 
+    /// Dumps allocation info for specific ExprIds (debug builds only).
+    ///
+    /// Useful for debugging WitnessConflict errors.
+    #[allow(clippy::missing_const_for_fn)]
+    pub fn dump_expr_ids(&self, expr_ids: &[ExprId]) {
+        #[cfg(debug_assertions)]
+        crate::alloc_entry::dump_expr_ids(&self.allocation_log, expr_ids);
+    }
+
     /// Lists all unique scopes in the allocation log.
     ///
     /// Returns a vector of scope names that appear in the allocation log,

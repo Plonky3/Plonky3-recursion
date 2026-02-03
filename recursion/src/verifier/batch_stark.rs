@@ -211,29 +211,32 @@ where
     let public_lanes = packing.public_lanes();
     let add_lanes = packing.add_lanes();
     let mul_lanes = packing.mul_lanes();
+    let min_height = packing.min_trace_height();
 
     // Create MulAir with appropriate constructor based on TRACE_D
     // For D > 1, we need the binomial parameter W.
     // We extract it from the challenge field which is BinomialExtensionField<Val<SC>, D>.
     let mul_air =
-        create_mul_air::<Val<SC>, SC::Challenge, TRACE_D>(rows[PrimitiveTable::Mul], mul_lanes);
+        create_mul_air::<Val<SC>, SC::Challenge, TRACE_D>(rows[PrimitiveTable::Mul], mul_lanes)
+            .with_min_height(min_height);
 
     let circuit_airs = vec![
-        CircuitTablesAir::Witness(WitnessAir::<Val<SC>, TRACE_D>::new(
-            rows[PrimitiveTable::Witness],
-            witness_lanes,
-        )),
-        CircuitTablesAir::Const(ConstAir::<Val<SC>, TRACE_D>::new(
-            rows[PrimitiveTable::Const],
-        )),
-        CircuitTablesAir::Public(PublicAir::<Val<SC>, TRACE_D>::new(
-            rows[PrimitiveTable::Public],
-            public_lanes,
-        )),
-        CircuitTablesAir::Add(AddAir::<Val<SC>, TRACE_D>::new(
-            rows[PrimitiveTable::Add],
-            add_lanes,
-        )),
+        CircuitTablesAir::Witness(
+            WitnessAir::<Val<SC>, TRACE_D>::new(rows[PrimitiveTable::Witness], witness_lanes)
+                .with_min_height(min_height),
+        ),
+        CircuitTablesAir::Const(
+            ConstAir::<Val<SC>, TRACE_D>::new(rows[PrimitiveTable::Const])
+                .with_min_height(min_height),
+        ),
+        CircuitTablesAir::Public(
+            PublicAir::<Val<SC>, TRACE_D>::new(rows[PrimitiveTable::Public], public_lanes)
+                .with_min_height(min_height),
+        ),
+        CircuitTablesAir::Add(
+            AddAir::<Val<SC>, TRACE_D>::new(rows[PrimitiveTable::Add], add_lanes)
+                .with_min_height(min_height),
+        ),
         CircuitTablesAir::Mul(mul_air),
     ];
 

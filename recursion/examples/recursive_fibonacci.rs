@@ -134,8 +134,9 @@ macro_rules! define_field_module {
             // =====================================================================
             // Benchmark-inspired config with higher log_final_poly_len for smaller proofs.
             // Traces must be padded to meet: log_trace_height > log_final_poly_len + log_blowup
+            // DEBUGGING: Using LOG_FINAL_POLY_LEN = 0 for smaller circuit
             const LOG_BLOWUP: usize = 1;
-            const LOG_FINAL_POLY_LEN: usize = 3;
+            const LOG_FINAL_POLY_LEN: usize = 0;
             const NUM_QUERIES: usize = 84;
             const COMMIT_POW_BITS: usize = 0;
             const QUERY_POW_BITS: usize = 16;

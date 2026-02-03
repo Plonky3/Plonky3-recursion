@@ -24,6 +24,10 @@ pub struct CircuitRunner<F> {
     circuit: Circuit<F>,
     /// Witness values (None = unset, Some = computed).
     witness: Vec<Option<F>>,
+    /// Track which operation index set each witness (for debugging conflicts)
+    witness_set_by: Vec<Option<usize>>,
+    /// Current operation index being executed
+    current_op_idx: usize,
     /// Private data for non-primitive operations (not on witness bus)
     non_primitive_op_private_data: Vec<Option<NonPrimitiveOpPrivateData<F>>>,
     /// Map from NonPrimitiveOpId -> index in `circuit.ops` for type checks.
@@ -64,9 +68,12 @@ impl<F: CircuitField> CircuitRunner<F> {
 
         let non_primitive_op_private_data = vec![None; non_primitive_op_count];
         let op_states = BTreeMap::new();
+        let witness_set_by = vec![None; witness.len()];
         Self {
             circuit,
             witness,
+            witness_set_by,
+            current_op_idx: 0,
             non_primitive_op_private_data,
             non_primitive_op_index_by_id,
             op_states,
@@ -217,40 +224,41 @@ impl<F: CircuitField> CircuitRunner<F> {
         // Clone ops to avoid borrowing issues.
         let ops = self.circuit.ops.clone();
 
-        for op in ops {
+        for (op_idx, op) in ops.iter().enumerate() {
+            self.current_op_idx = op_idx;
             match op {
                 Op::Const { out, val } => {
-                    self.set_witness(out, val)?;
+                    self.set_witness(*out, *val)?;
                 }
                 Op::Public { out, public_pos: _ } => {
                     // Public inputs should already be set
                     if self.witness[out.0 as usize].is_none() {
-                        return Err(CircuitError::PublicInputNotSet { witness_id: out });
+                        return Err(CircuitError::PublicInputNotSet { witness_id: *out });
                     }
                 }
                 Op::Add { a, b, out } => {
-                    let a_val = self.get_witness(a)?;
-                    if let Ok(b_val) = self.get_witness(b) {
+                    let a_val = self.get_witness(*a)?;
+                    if let Ok(b_val) = self.get_witness(*b) {
                         let result = a_val + b_val;
-                        self.set_witness(out, result)?;
+                        self.set_witness(*out, result)?;
                     } else {
-                        let out_val = self.get_witness(out)?;
+                        let out_val = self.get_witness(*out)?;
                         let b_val = out_val - a_val;
-                        self.set_witness(b, b_val)?;
+                        self.set_witness(*b, b_val)?;
                     }
                 }
                 Op::Mul { a, b, out } => {
                     // Mul is used to represent either `Mul` or `Div` operations.
                     // We determine which based on which inputs are set.
-                    let a_val = self.get_witness(a)?;
-                    if let Ok(b_val) = self.get_witness(b) {
+                    let a_val = self.get_witness(*a)?;
+                    if let Ok(b_val) = self.get_witness(*b) {
                         let result = a_val * b_val;
-                        self.set_witness(out, result)?;
+                        self.set_witness(*out, result)?;
                     } else {
-                        let result_val = self.get_witness(out)?;
+                        let result_val = self.get_witness(*out)?;
                         let a_inv = a_val.try_inverse().ok_or(CircuitError::DivisionByZero)?;
                         let b_val = result_val * a_inv;
-                        self.set_witness(b, b_val)?;
+                        self.set_witness(*b, b_val)?;
                     }
                 }
                 Op::NonPrimitiveOpWithExecutor {
@@ -263,11 +271,11 @@ impl<F: CircuitField> CircuitRunner<F> {
                         &mut self.witness,
                         &self.non_primitive_op_private_data,
                         &self.circuit.enabled_ops,
-                        op_id,
+                        *op_id,
                         &mut self.op_states,
                     );
 
-                    executor.execute(&inputs, &outputs, &mut ctx)?;
+                    executor.execute(inputs, outputs, &mut ctx)?;
                 }
             }
         }
@@ -314,6 +322,7 @@ impl<F: CircuitField> CircuitRunner<F> {
             }
         } else {
             self.witness[widx.0 as usize] = Some(value);
+            self.witness_set_by[widx.0 as usize] = Some(self.current_op_idx);
         }
 
         Ok(())
