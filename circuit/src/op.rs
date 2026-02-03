@@ -406,17 +406,6 @@ impl<'a, F: PrimeCharacteristicRing + Eq + Clone> ExecutionContext<'a, F> {
                 );
                 return Ok(());
             }
-            let expr_ids = self
-                .expr_to_widx
-                .iter()
-                .filter_map(|(expr_id, &witness_id)| {
-                    if witness_id == widx {
-                        Some(*expr_id)
-                    } else {
-                        None
-                    }
-                })
-                .collect::<Vec<_>>();
             tracing::error!(
                 "WitnessConflict: witness {:?} has existing={:?}, trying to set new={:?}, op_id={:?}",
                 widx,
@@ -428,7 +417,7 @@ impl<'a, F: PrimeCharacteristicRing + Eq + Clone> ExecutionContext<'a, F> {
                 witness_id: widx,
                 existing: format!("{existing_value:?}"),
                 new: format!("{value:?}"),
-                expr_ids: vec![], // TODO: Could be filled with expression IDs if tracked
+                expr_ids: vec![],
             });
         }
 

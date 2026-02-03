@@ -573,15 +573,6 @@ where
         self.expr_builder.dump_allocation_log();
     }
 
-    /// Dumps allocation info for specific ExprIds.
-    ///
-    /// Useful for debugging WitnessConflict errors.
-    /// If debug_assertions are not enabled, this is a no-op.
-    #[allow(clippy::missing_const_for_fn)]
-    pub fn dump_expr_ids(&self, expr_ids: &[ExprId]) {
-        self.expr_builder.dump_expr_ids(expr_ids);
-    }
-
     /// Lists all unique scopes in the allocation log.
     ///
     /// Returns an empty vector if debug_assertions are not enabled.
