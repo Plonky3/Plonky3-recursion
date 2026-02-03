@@ -1,11 +1,13 @@
 mod common;
 
+use p3_baby_bear::default_babybear_poseidon2_16;
 use p3_batch_stark::CommonData;
 use p3_circuit::CircuitBuilder;
+use p3_circuit::ops::generate_poseidon2_trace;
 use p3_circuit_prover::air::{AddAir, ConstAir, MulAir, PublicAir, WitnessAir};
 use p3_circuit_prover::batch_stark_prover::PrimitiveTable;
 use p3_circuit_prover::common::get_airs_and_degrees_with_prep;
-use p3_circuit_prover::{BatchStarkProof, BatchStarkProver, TablePacking};
+use p3_circuit_prover::{BatchStarkProof, BatchStarkProver, Poseidon2Config, TablePacking};
 use p3_field::PrimeCharacteristicRing;
 use p3_fri::create_test_fri_params;
 use p3_lookup::logup::LogUpGadget;

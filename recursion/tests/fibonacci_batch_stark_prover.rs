@@ -116,7 +116,10 @@ fn test_fibonacci_batch_verifier() {
             packing.witness_lanes(),
         )),
         CircuitTablesAir::Const(ConstAir::<F, TRACE_D>::new(rows[PrimitiveTable::Const])),
-        CircuitTablesAir::Public(PublicAir::<F, TRACE_D>::new(rows[PrimitiveTable::Public])),
+        CircuitTablesAir::Public(PublicAir::<F, TRACE_D>::new(
+            rows[PrimitiveTable::Public],
+            packing.public_lanes(),
+        )),
         CircuitTablesAir::Add(AddAir::<F, TRACE_D>::new(
             rows[PrimitiveTable::Add],
             packing.add_lanes(),

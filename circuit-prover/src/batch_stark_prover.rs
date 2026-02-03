@@ -3774,4 +3774,126 @@ mod tests {
         assert_eq!(p_minus_1 + BabyBear::TWO, BabyBear::ONE);
         assert_eq!(BabyBear::from_u64(BABY_BEAR_MODULUS + 1), BabyBear::ONE);
     }
+
+    #[test]
+    fn test_empty_add_table_padding() {
+        // Circuit with only mul operations - add table will have 0 rows and get padded to 1.
+        let mut builder = CircuitBuilder::<BabyBear>::new();
+        let cfg = config::baby_bear().build();
+
+        let x = builder.add_public_input();
+        let y = builder.add_public_input();
+        let expected = builder.add_public_input();
+
+        // Only multiplication, no addition
+        let xy = builder.mul(x, y);
+        let diff = builder.sub(xy, expected); // sub uses add internally but with negation
+        builder.assert_zero(diff);
+
+        let circuit = builder.build().unwrap();
+        let (airs_degrees, witness_multiplicities) =
+            get_airs_and_degrees_with_prep::<BabyBearConfig, _, 1>(
+                &circuit,
+                TablePacking::default(),
+                None,
+            )
+            .unwrap();
+        let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
+        let mut runner = circuit.runner();
+
+        let x_val = BabyBear::from_u64(7);
+        let y_val = BabyBear::from_u64(11);
+        let expected_val = x_val * y_val;
+        runner
+            .set_public_inputs(&[x_val, y_val, expected_val])
+            .unwrap();
+        let traces = runner.run().unwrap();
+
+        let common = CommonData::from_airs_and_degrees(&cfg, &mut airs, &degrees);
+        let prover = BatchStarkProver::new(cfg);
+
+        let proof = prover
+            .prove_all_tables(&traces, &common, witness_multiplicities)
+            .unwrap();
+        prover.verify_all_tables(&proof, &common).unwrap();
+    }
+
+    #[test]
+    fn test_empty_mul_table_padding() {
+        // Circuit with only add operations - mul table will have 0 rows and get padded to 1.
+        let mut builder = CircuitBuilder::<BabyBear>::new();
+        let cfg = config::baby_bear().build();
+
+        let x = builder.add_public_input();
+        let y = builder.add_public_input();
+        let expected = builder.add_public_input();
+
+        // Only addition, no multiplication
+        let sum = builder.add(x, y);
+        let diff = builder.sub(sum, expected);
+        builder.assert_zero(diff);
+
+        let circuit = builder.build().unwrap();
+        let (airs_degrees, witness_multiplicities) =
+            get_airs_and_degrees_with_prep::<BabyBearConfig, _, 1>(
+                &circuit,
+                TablePacking::default(),
+                None,
+            )
+            .unwrap();
+        let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
+        let mut runner = circuit.runner();
+
+        let x_val = BabyBear::from_u64(42);
+        let y_val = BabyBear::from_u64(13);
+        let expected_val = x_val + y_val;
+        runner
+            .set_public_inputs(&[x_val, y_val, expected_val])
+            .unwrap();
+        let traces = runner.run().unwrap();
+
+        let common = CommonData::from_airs_and_degrees(&cfg, &mut airs, &degrees);
+        let prover = BatchStarkProver::new(cfg);
+
+        let proof = prover
+            .prove_all_tables(&traces, &common, witness_multiplicities)
+            .unwrap();
+        prover.verify_all_tables(&proof, &common).unwrap();
+    }
+
+    #[test]
+    fn test_minimal_circuit_all_tables_padded() {
+        // Minimal circuit: just assert a public input equals itself.
+        // This may result in minimal/zero rows in several tables.
+        let mut builder = CircuitBuilder::<BabyBear>::new();
+        let cfg = config::baby_bear().build();
+
+        let x = builder.add_public_input();
+        let zero = builder.sub(x, x);
+        builder.assert_zero(zero);
+
+        let circuit = builder.build().unwrap();
+        let (airs_degrees, witness_multiplicities) =
+            get_airs_and_degrees_with_prep::<BabyBearConfig, _, 1>(
+                &circuit,
+                TablePacking::default(),
+                None,
+            )
+            .unwrap();
+        let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
+        let mut runner = circuit.runner();
+
+        runner
+            .set_public_inputs(&[BabyBear::from_u64(999)])
+            .unwrap();
+        let traces = runner.run().unwrap();
+
+        let common = CommonData::from_airs_and_degrees(&cfg, &mut airs, &degrees);
+        let prover = BatchStarkProver::new(cfg);
+
+        let proof = prover
+            .prove_all_tables(&traces, &common, witness_multiplicities)
+            .unwrap();
+        prover.verify_all_tables(&proof, &common).unwrap();
+    }
 }
