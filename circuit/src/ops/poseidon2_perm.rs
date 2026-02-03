@@ -78,6 +78,10 @@ impl Poseidon2Config {
         }
     }
 
+    pub const fn rate(self) -> usize {
+        self.rate_ext() * self.d()
+    }
+
     pub const fn capacity_ext(self) -> usize {
         match self {
             Self::BabyBearD4Width16
@@ -367,7 +371,7 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for Poseidon2Perm
         // Get private data if available and validate usage rules.
         let private_inputs: Option<&[F]> = match ctx.get_private_data() {
             Ok(NonPrimitiveOpPrivateData::Poseidon2Perm(data)) => {
-                if !self.merkle_path || self.new_start {
+                if !self.merkle_path {
                     return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
                         op: self.op_type,
                         operation_index: ctx.operation_id(),
@@ -604,8 +608,8 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for Poseidon2Perm
 
 impl Poseidon2PermExecutor {
     /// Resolve input limb value using a layered priority system:
-    /// 1. Layer 1: Private inputs (lowest priority) - sibling placed based on mmcs_bit
-    /// 2. Layer 2: Chaining from previous permutation (if new_start=false)
+    /// 1. Layer 1: Chaining from previous permutation (lowest priority) or zeros if new_start
+    /// 2. Layer 2: Private inputs - sibling placed based on mmcs_bit
     /// 3. Layer 3: CTL (witness) values (highest priority, overwrites previous layers)
     fn resolve_input_limb<F: Field>(
         &self,
@@ -619,20 +623,7 @@ impl Poseidon2PermExecutor {
         // Build up the input array with layered priorities
         let mut resolved = [None; 4];
 
-        // Layer 1: Private inputs (lowest priority)
-        // Private inputs are only used in Merkle mode (merkle_path && !new_start).
-        // The sibling (exactly 2 limbs) is placed based on mmcs_bit:
-        // - mmcs_bit=0: sibling in 2-3
-        // - mmcs_bit=1: sibling in 0-1
-        if let Some(private) = private_inputs {
-            // Note: validation ensures private_inputs is only provided for Merkle mode
-            debug_assert!(self.merkle_path && !self.new_start);
-            let start = if mmcs_bit { 0 } else { 2 };
-            resolved[start] = Some(private[0]);
-            resolved[start + 1] = Some(private[1]);
-        }
-
-        // Layer 2: Chaining from previous permutation (medium priority)
+        // Layer 1: Chaining from previous permutation (lowest priority)
         if !self.new_start {
             let prev =
                 last_output.ok_or_else(|| CircuitError::Poseidon2ChainMissingPreviousState {
@@ -645,18 +636,23 @@ impl Poseidon2PermExecutor {
                     resolved[i] = Some(prev[i]);
                 }
             } else {
-                // Merkle path chaining:
-                // Previous digest (prev[0..1]) is placed based on mmcs_bit:
-                // - mmcs_bit=0: chain into input limbs 0-1
-                // - mmcs_bit=1: chain into input limbs 2-3
-                if mmcs_bit {
-                    resolved[2] = Some(prev[0]);
-                    resolved[3] = Some(prev[1]);
-                } else {
-                    resolved[0] = Some(prev[0]);
-                    resolved[1] = Some(prev[1]);
-                }
+                // Merkle path chaining: canonical placement in limbs 0-1.
+                resolved[0] = Some(prev[0]);
+                resolved[1] = Some(prev[1]);
             }
+        } else if !self.merkle_path {
+            // new_start = true: all limbs default to zero
+            resolved.fill(Some(F::ZERO));
+        }
+
+        // Layer 2: Private inputs (medium priority)
+        // Private inputs are only used in Merkle mode.
+        // Canonical placement: sibling in limbs 2-3.
+        if let Some(private) = private_inputs
+            && self.merkle_path
+        {
+            resolved[2] = Some(private[0]);
+            resolved[3] = Some(private[1]);
         }
 
         // Layer 3: CTL (witness) values (highest priority)
@@ -668,7 +664,7 @@ impl Poseidon2PermExecutor {
             }
         }
 
-        // Layer 4: Default to zero for new_start sponge mode (lowest priority fallback)
+        // Layer 4: Default to zero for new_start sponge mode
         // In sponge mode with new_start=true, unspecified limbs default to zero.
         // This allows partial absorption where only some rate limbs are provided.
         if self.new_start && !self.merkle_path {
@@ -679,17 +675,25 @@ impl Poseidon2PermExecutor {
             }
         }
 
+        let permuted_idx = if self.merkle_path && mmcs_bit {
+            match limb {
+                0 => 2,
+                1 => 3,
+                2 => 0,
+                3 => 1,
+                _ => limb,
+            }
+        } else {
+            limb
+        };
+
         // Return the resolved value
-        resolved[limb].ok_or_else(|| {
-            if self.merkle_path && !self.new_start {
-                let is_required_sibling =
-                    matches!((mmcs_bit, limb), (false, 2 | 3) | (true, 0 | 1));
-                if is_required_sibling {
-                    return CircuitError::Poseidon2MerkleMissingSiblingInput {
-                        operation_index: ctx.operation_id(),
-                        limb,
-                    };
-                }
+        resolved[permuted_idx].ok_or_else(|| {
+            if self.merkle_path && matches!(permuted_idx, 2 | 3) {
+                return CircuitError::Poseidon2MerkleMissingSiblingInput {
+                    operation_index: ctx.operation_id(),
+                    limb,
+                };
             }
             CircuitError::Poseidon2MissingInput {
                 operation_index: ctx.operation_id(),
