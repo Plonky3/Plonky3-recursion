@@ -668,9 +668,9 @@ impl Poseidon2PermExecutor {
         // In sponge mode with new_start=true, unspecified limbs default to zero.
         // This allows partial absorption where only some rate limbs are provided.
         if self.new_start && !self.merkle_path {
-            for i in 0..4 {
-                if resolved[i].is_none() {
-                    resolved[i] = Some(F::ZERO);
+            for limb in &mut resolved {
+                if limb.is_none() {
+                    *limb = Some(F::ZERO);
                 }
             }
         }
