@@ -2749,8 +2749,41 @@ where
         // Build matrices and AIRs per table.
         let packing = self.table_packing;
         let witness_lanes = packing.witness_lanes();
-        let add_lanes = packing.add_lanes();
-        let mul_lanes = packing.mul_lanes();
+
+        // Check if Add/Mul tables have only dummy operations (trace length <= 1).
+        // The table implementation adds a dummy row when empty, so we check for <= 1.
+        // Using lanes > 1 with only dummy operations causes issues in recursive verification
+        // due to a bug in how multi-lane padding interacts with lookup constraints.
+        // We automatically reduce lanes to 1 in these cases with a warning.
+        //
+        // The trace length check is more reliable than checking preprocessed width because
+        // the circuit tables add dummy rows to avoid empty traces.
+        let add_trace_only_dummy = traces.add_trace.lhs_values.len() <= 1;
+        let mul_trace_only_dummy = traces.mul_trace.lhs_values.len() <= 1;
+
+        let add_lanes = if add_trace_only_dummy && packing.add_lanes() > 1 {
+            tracing::warn!(
+                "Add table has only dummy operations but add_lanes={} > 1. Reducing to \
+                 add_lanes=1 to avoid recursive verification issues. Consider using \
+                 add_lanes=1 when no additions are expected.",
+                packing.add_lanes()
+            );
+            1
+        } else {
+            packing.add_lanes()
+        };
+
+        let mul_lanes = if mul_trace_only_dummy && packing.mul_lanes() > 1 {
+            tracing::warn!(
+                "Mul table has only dummy operations but mul_lanes={} > 1. Reducing to \
+                 mul_lanes=1 to avoid recursive verification issues. Consider using \
+                 mul_lanes=1 when no multiplications are expected.",
+                packing.mul_lanes()
+            );
+            1
+        } else {
+            packing.mul_lanes()
+        };
 
         TraceLengths::from_traces(traces, packing).log();
 
@@ -2779,15 +2812,41 @@ where
             PublicAir::<Val<SC>, D>::trace_to_matrix(&traces.public_trace);
 
         // Add
+        // When the Add trace is empty, we add a dummy operation to match
+        // what get_airs_and_degrees_with_prep does for the CommonData preprocessed commitment.
+        // This ensures the prover's AIR.preprocessed_trace() matches the committed data.
         let add_rows = traces.add_trace.lhs_values.len();
-        let add_prep = AddAir::<Val<SC>, D>::trace_to_preprocessed(&traces.add_trace);
+        let (add_rows, add_prep) = if add_rows == 0 {
+            // Add dummy operation with indices [0, 0, 0]
+            let dummy_prep =
+                vec![Val::<SC>::ZERO; AddAir::<Val<SC>, D>::preprocessed_lane_width() - 1];
+            (1, dummy_prep)
+        } else {
+            (
+                add_rows,
+                AddAir::<Val<SC>, D>::trace_to_preprocessed(&traces.add_trace),
+            )
+        };
         let add_air = AddAir::<Val<SC>, D>::new_with_preprocessed(add_rows, add_lanes, add_prep);
         let add_matrix: RowMajorMatrix<Val<SC>> =
             AddAir::<Val<SC>, D>::trace_to_matrix(&traces.add_trace, add_lanes);
 
         // Mul
+        // When the Mul trace is empty, we add a dummy operation to match
+        // what get_airs_and_degrees_with_prep does for the CommonData preprocessed commitment.
+        // This ensures the prover's AIR.preprocessed_trace() matches the committed data.
         let mul_rows = traces.mul_trace.lhs_values.len();
-        let mul_prep = MulAir::<Val<SC>, D>::trace_to_preprocessed(&traces.mul_trace);
+        let (mul_rows, mul_prep) = if mul_rows == 0 {
+            // Add dummy operation with indices [0, 0, 0]
+            let dummy_prep =
+                vec![Val::<SC>::ZERO; MulAir::<Val<SC>, D>::preprocessed_lane_width() - 1];
+            (1, dummy_prep)
+        } else {
+            (
+                mul_rows,
+                MulAir::<Val<SC>, D>::trace_to_preprocessed(&traces.mul_trace),
+            )
+        };
         let mul_air: MulAir<Val<SC>, D> = if D == 1 {
             MulAir::<Val<SC>, D>::new_with_preprocessed(mul_rows, mul_lanes, mul_prep)
         } else {
@@ -2931,9 +2990,13 @@ where
         let add_rows_padded = add_rows.max(1);
         let mul_rows_padded = mul_rows.max(1);
 
+        // Store the effective packing (with reduced lanes if applicable) so the verifier
+        // uses the same configuration that was actually used during proving.
+        let effective_packing = TablePacking::new(witness_lanes, add_lanes, mul_lanes);
+
         Ok(BatchStarkProof {
             proof,
-            table_packing: packing,
+            table_packing: effective_packing,
             rows: RowCounts::new([
                 witness_rows_padded,
                 const_rows_padded,
