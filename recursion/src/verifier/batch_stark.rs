@@ -139,6 +139,7 @@ where
     let rows: RowCounts = proof.rows;
     let packing = proof.table_packing;
     let witness_lanes = packing.witness_lanes();
+    let public_lanes = packing.public_lanes();
     let add_lanes = packing.add_lanes();
     let mul_lanes = packing.mul_lanes();
 
@@ -152,6 +153,7 @@ where
         )),
         CircuitTablesAir::Public(PublicAir::<Val<SC>, TRACE_D>::new(
             rows[PrimitiveTable::Public],
+            public_lanes,
         )),
         CircuitTablesAir::Add(AddAir::<Val<SC>, TRACE_D>::new(
             rows[PrimitiveTable::Add],

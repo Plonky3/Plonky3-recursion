@@ -72,17 +72,31 @@ where
 {
     let mut preprocessed = circuit.generate_preprocessed_columns()?;
 
-    // Check if Add/Mul tables are empty and lanes > 1.
+    // Check if Public/Add/Mul tables are empty and lanes > 1.
     // Using lanes > 1 with empty tables causes issues in recursive verification
     // due to a bug in how multi-lane padding interacts with lookup constraints.
     // We automatically reduce lanes to 1 in these cases with a warning.
     // IMPORTANT: This must be synchronized with prove_all_tables in batch_stark_prover.rs
     let witness_idx = PrimitiveOpType::Witness as usize;
+    let public_idx = PrimitiveOpType::Public as usize;
     let add_idx = PrimitiveOpType::Add as usize;
     let mul_idx = PrimitiveOpType::Mul as usize;
 
+    let public_empty = preprocessed.primitive[public_idx].is_empty();
     let add_empty = preprocessed.primitive[add_idx].is_empty();
     let mul_empty = preprocessed.primitive[mul_idx].is_empty();
+
+    let effective_public_lanes = if public_empty && packing.public_lanes() > 1 {
+        tracing::warn!(
+            "Public table is empty but public_lanes={} > 1. Reducing to public_lanes=1 to avoid \
+             recursive verification issues. Consider using public_lanes=1 when few public inputs \
+             are expected.",
+            packing.public_lanes()
+        );
+        1
+    } else {
+        packing.public_lanes()
+    };
 
     let effective_add_lanes = if add_empty && packing.add_lanes() > 1 {
         tracing::warn!(
@@ -191,10 +205,16 @@ where
                     );
                 }
                 PrimitiveOpType::Public => {
-                    let height = prep.len();
-                    let public_air = PublicAir::new_with_preprocessed(height, prep.clone());
-                    table_preps[idx] =
-                        (CircuitTableAir::Public(public_air), log2_ceil_usize(height));
+                    let num_ops = prep.len();
+                    let public_air = PublicAir::new_with_preprocessed(
+                        num_ops,
+                        effective_public_lanes,
+                        prep.clone(),
+                    );
+                    table_preps[idx] = (
+                        CircuitTableAir::Public(public_air),
+                        log2_ceil_usize(num_ops.div_ceil(effective_public_lanes)),
+                    );
                 }
                 PrimitiveOpType::Const => {
                     let height = prep.len();
