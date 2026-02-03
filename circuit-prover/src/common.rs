@@ -72,11 +72,45 @@ where
 {
     let mut preprocessed = circuit.generate_preprocessed_columns()?;
 
-    // If Add or Mul tables are empty, we add a dummy row to avoid issues in the AIRs.
-    // That means we need to update the witness multiplicities accordingly.
+    // Check if Add/Mul tables are empty and lanes > 1.
+    // Using lanes > 1 with empty tables causes issues in recursive verification
+    // due to a bug in how multi-lane padding interacts with lookup constraints.
+    // We automatically reduce lanes to 1 in these cases with a warning.
+    // IMPORTANT: This must be synchronized with prove_all_tables in batch_stark_prover.rs
     let witness_idx = PrimitiveOpType::Witness as usize;
     let add_idx = PrimitiveOpType::Add as usize;
-    if preprocessed.primitive[add_idx].is_empty() {
+    let mul_idx = PrimitiveOpType::Mul as usize;
+
+    let add_empty = preprocessed.primitive[add_idx].is_empty();
+    let mul_empty = preprocessed.primitive[mul_idx].is_empty();
+
+    let effective_add_lanes = if add_empty && packing.add_lanes() > 1 {
+        tracing::warn!(
+            "Add table is empty but add_lanes={} > 1. Reducing to add_lanes=1 to avoid \
+             recursive verification issues. Consider using add_lanes=1 when no additions \
+             are expected.",
+            packing.add_lanes()
+        );
+        1
+    } else {
+        packing.add_lanes()
+    };
+
+    let effective_mul_lanes = if mul_empty && packing.mul_lanes() > 1 {
+        tracing::warn!(
+            "Mul table is empty but mul_lanes={} > 1. Reducing to mul_lanes=1 to avoid \
+             recursive verification issues. Consider using mul_lanes=1 when no multiplications \
+             are expected.",
+            packing.mul_lanes()
+        );
+        1
+    } else {
+        packing.mul_lanes()
+    };
+
+    // If Add or Mul tables are empty, we add a dummy row to avoid issues in the AIRs.
+    // That means we need to update the witness multiplicities accordingly.
+    if add_empty {
         let num_extra = AddAir::<Val<SC>, D>::lane_width() / D;
 
         preprocessed.primitive[witness_idx][0] += ExtF::from_usize(num_extra);
@@ -86,8 +120,7 @@ where
                 - 1
         ]);
     }
-    let mul_idx = PrimitiveOpType::Mul as usize;
-    if preprocessed.primitive[mul_idx].is_empty() {
+    if mul_empty {
         let num_extra = MulAir::<Val<SC>, D>::lane_width() / D;
         preprocessed.primitive[witness_idx][0] += ExtF::from_usize(num_extra);
         preprocessed.primitive[mul_idx].extend(vec![
@@ -226,10 +259,10 @@ where
 
                     let num_ops = prep.len().div_ceil(lane_without_multiplicities);
                     let add_air =
-                        AddAir::new_with_preprocessed(num_ops, packing.add_lanes(), prep.clone());
+                        AddAir::new_with_preprocessed(num_ops, effective_add_lanes, prep.clone());
                     table_preps[idx] = (
                         CircuitTableAir::Add(add_air),
-                        log2_ceil_usize(num_ops.div_ceil(packing.add_lanes())),
+                        log2_ceil_usize(num_ops.div_ceil(effective_add_lanes)),
                     );
                 }
                 PrimitiveOpType::Mul => {
@@ -240,19 +273,19 @@ where
                     assert!(prep.len() % lane_without_multiplicities == 0);
                     let num_ops = prep.len().div_ceil(lane_without_multiplicities);
                     let mul_air = if D == 1 {
-                        MulAir::new_with_preprocessed(num_ops, packing.mul_lanes(), prep.clone())
+                        MulAir::new_with_preprocessed(num_ops, effective_mul_lanes, prep.clone())
                     } else {
                         let w = w_binomial.unwrap();
                         MulAir::new_binomial_with_preprocessed(
                             num_ops,
-                            packing.mul_lanes(),
+                            effective_mul_lanes,
                             w,
                             prep.clone(),
                         )
                     };
                     table_preps[idx] = (
                         CircuitTableAir::Mul(mul_air),
-                        log2_ceil_usize(num_ops.div_ceil(packing.mul_lanes())),
+                        log2_ceil_usize(num_ops.div_ceil(effective_mul_lanes)),
                     );
                 }
                 PrimitiveOpType::Public => {

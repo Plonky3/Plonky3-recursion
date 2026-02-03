@@ -30,7 +30,7 @@ use p3_commit::ExtensionMmcs;
 use p3_dft::Radix2DitParallel;
 use p3_field::extension::BinomialExtensionField;
 use p3_field::{Field, PrimeCharacteristicRing};
-use p3_fri::{TwoAdicFriPcs, create_test_fri_params};
+use p3_fri::{FriParameters, TwoAdicFriPcs};
 use p3_lookup::logup::LogUpGadget;
 use p3_merkle_tree::MerkleTreeMmcs;
 use p3_recursion::Poseidon2Config;
@@ -129,42 +129,46 @@ macro_rules! define_field_module {
                 p3_recursion::pcs::Witness<F>,
             >;
 
-            /// FRI params for layer 0 (base proof).
-            /// The in-circuit verifier MUST use the same params.
-            const LOG_FINAL_POLY_LEN_LAYER0: usize = 0;
+            // =====================================================================
+            // FRI Parameters - customize these for recursion efficiency
+            // =====================================================================
+            // Benchmark-inspired config with higher log_final_poly_len for smaller proofs.
+            // Traces must be padded to meet: log_trace_height > log_final_poly_len + log_blowup
+            const LOG_BLOWUP: usize = 1;
+            const LOG_FINAL_POLY_LEN: usize = 0;
+            const NUM_QUERIES: usize = 100;
+            const COMMIT_POW_BITS: usize = 0;
+            const QUERY_POW_BITS: usize = 16;
 
-            /// FRI params for layer 1 (recursive proof).
-            /// Can be different from layer 0.
-            const LOG_FINAL_POLY_LEN_LAYER1: usize = 1;
-
-            /// Create a STARK config with the given log_final_poly_len.
-            fn create_config(log_final_poly_len: usize) -> MyConfig {
+            /// Create a STARK config with benchmark-inspired FRI params.
+            fn create_config() -> MyConfig {
                 let perm = $default_perm();
                 let hash = MyHash::new(perm.clone());
                 let compress = MyCompress::new(perm.clone());
                 let val_mmcs = ValMmcs::new(hash, compress);
                 let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
                 let dft = Dft::default();
-                let fri_params = create_test_fri_params(challenge_mmcs, log_final_poly_len);
+                let fri_params = FriParameters {
+                    log_blowup: LOG_BLOWUP,
+                    log_final_poly_len: LOG_FINAL_POLY_LEN,
+                    num_queries: NUM_QUERIES,
+                    commit_proof_of_work_bits: COMMIT_POW_BITS,
+                    query_proof_of_work_bits: QUERY_POW_BITS,
+                    mmcs: challenge_mmcs,
+                };
                 let pcs = MyPcs::new(dft, val_mmcs, fri_params);
                 let challenger = Challenger::new(perm);
                 MyConfig::new(pcs, challenger)
             }
 
             /// Create FRI verifier params for the in-circuit verifier.
-            /// MUST match the FRI params used by the native prover being verified.
-            fn create_fri_verifier_params(log_final_poly_len: usize) -> FriVerifierParams {
-                let perm = $default_perm();
-                let hash = MyHash::new(perm.clone());
-                let compress = MyCompress::new(perm.clone());
-                let val_mmcs = ValMmcs::new(hash, compress);
-                let challenge_mmcs = ChallengeMmcs::new(val_mmcs);
-                let fri_params = create_test_fri_params(challenge_mmcs, log_final_poly_len);
+            /// MUST match the FRI params used by the native prover.
+            fn create_fri_verifier_params() -> FriVerifierParams {
                 FriVerifierParams::with_mmcs(
-                    fri_params.log_blowup,
-                    fri_params.log_final_poly_len,
-                    fri_params.commit_proof_of_work_bits,
-                    fri_params.query_proof_of_work_bits,
+                    LOG_BLOWUP,
+                    LOG_FINAL_POLY_LEN,
+                    COMMIT_POW_BITS,
+                    QUERY_POW_BITS,
                     $poseidon2_config,
                 )
             }
@@ -206,10 +210,10 @@ macro_rules! define_field_module {
                 builder.connect(b, expected_result);
 
                 let base_circuit = builder.build().unwrap();
-                let table_packing_0 = TablePacking::new(1, 4, 1);
+                let table_packing_0 = TablePacking::new(1, 1, 1);
 
                 // Layer 0 prover config
-                let config_0 = create_config(LOG_FINAL_POLY_LEN_LAYER0);
+                let config_0 = create_config();
                 let (airs_degrees_0, witness_mults_0) =
                     get_airs_and_degrees_with_prep::<MyConfig, _, 1>(
                         &base_circuit,
@@ -217,8 +221,7 @@ macro_rules! define_field_module {
                         None,
                     )
                     .unwrap();
-                let (mut airs_0, degrees_0): (Vec<_>, Vec<_>) =
-                    airs_degrees_0.into_iter().unzip();
+                let (mut airs_0, degrees_0): (Vec<_>, Vec<_>) = airs_degrees_0.into_iter().unzip();
 
                 let mut runner_0 = base_circuit.runner();
                 let expected_fib = compute_fibonacci(n);
@@ -228,8 +231,7 @@ macro_rules! define_field_module {
                 let common_0 =
                     CommonData::from_airs_and_degrees(&config_0, &mut airs_0, &degrees_0);
 
-                let prover_0 =
-                    BatchStarkProver::new(config_0).with_table_packing(table_packing_0);
+                let prover_0 = BatchStarkProver::new(config_0).with_table_packing(table_packing_0);
                 let proof_0 = prover_0
                     .prove_all_tables(&traces_0, &common_0, witness_mults_0)
                     .expect("Failed to prove base circuit");
@@ -245,7 +247,7 @@ macro_rules! define_field_module {
                 // =================================================================
 
                 // In-circuit verifier params MUST match layer 0's FRI params
-                let fri_verifier_params = create_fri_verifier_params(LOG_FINAL_POLY_LEN_LAYER0);
+                let fri_verifier_params = create_fri_verifier_params();
                 let lookup_gadget_1 = LogUpGadget::new();
 
                 let mut circuit_builder_1 = CircuitBuilder::new();
@@ -258,13 +260,17 @@ macro_rules! define_field_module {
                 const TRACE_D_LAYER0: usize = 1;
                 let pis_0: Vec<Vec<F>> = vec![vec![]; num_tables_0];
 
-                // Layer 1 prover config
-                let config_1 = create_config(LOG_FINAL_POLY_LEN_LAYER1);
+                // Layer 1 prover config (same FRI params as layer 0)
+                let config_1 = create_config();
 
                 let (verifier_inputs_1, mmcs_op_ids_1) = verify_p3_recursion_proof_circuit::<
                     MyConfig,
                     HashTargets<F, DIGEST_ELEMS>,
-                    InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>>,
+                    InputProofTargets<
+                        F,
+                        Challenge,
+                        RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>,
+                    >,
                     InnerFri,
                     LogUpGadget,
                     WIDTH,
@@ -288,7 +294,7 @@ macro_rules! define_field_module {
 
                 info!("Verification circuit built with {num_ops_1} operations");
 
-                let table_packing_1 = TablePacking::new(16, 8, 8);
+                let table_packing_1 = TablePacking::new(32, 16, 16);
 
                 let (airs_degrees_1, witness_mults_1) =
                     get_airs_and_degrees_with_prep::<MyConfig, _, D>(
@@ -297,8 +303,7 @@ macro_rules! define_field_module {
                         Some(&[NonPrimitiveConfig::Poseidon2($poseidon2_config)]),
                     )
                     .expect("Failed to get AIRs for layer 1");
-                let (mut airs_1, degrees_1): (Vec<_>, Vec<_>) =
-                    airs_degrees_1.into_iter().unzip();
+                let (mut airs_1, degrees_1): (Vec<_>, Vec<_>) = airs_degrees_1.into_iter().unzip();
 
                 let mut runner_1 = verification_circuit_1.runner();
                 runner_1.set_public_inputs(&public_inputs_1).unwrap();
@@ -311,9 +316,7 @@ macro_rules! define_field_module {
                     MyHash,
                     MyCompress,
                     DIGEST_ELEMS,
-                >(
-                    &mut runner_1, &mmcs_op_ids_1, &proof_0.proof.opening_proof
-                )
+                >(&mut runner_1, &mmcs_op_ids_1, &proof_0.proof.opening_proof)
                 .expect("Failed to set MMCS private data for layer 1");
 
                 let traces_1 = runner_1.run().expect("Failed to run layer 1 circuit");

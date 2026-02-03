@@ -27,7 +27,9 @@ use p3_fri::{TwoAdicFriPcs, create_test_fri_params};
 use p3_keccak_air::KeccakAir;
 use p3_merkle_tree::MerkleTreeMmcs;
 use p3_recursion::pcs::{HashTargets, InputProofTargets, RecValMmcs, set_fri_mmcs_private_data};
-use p3_recursion::{FriVerifierParams, Poseidon2Config, StarkVerifierInputsBuilder, verify_circuit};
+use p3_recursion::{
+    FriVerifierParams, Poseidon2Config, StarkVerifierInputsBuilder, verify_circuit,
+};
 use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
 use p3_uni_stark::{StarkConfig, prove, verify};
 use tracing::info;
@@ -206,7 +208,11 @@ macro_rules! define_field_module {
                     KeccakAir,
                     MyConfig,
                     HashTargets<F, DIGEST_ELEMS>,
-                    InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>>,
+                    InputProofTargets<
+                        F,
+                        Challenge,
+                        RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>,
+                    >,
                     InnerFri,
                     WIDTH,
                     RATE,
@@ -237,8 +243,7 @@ macro_rules! define_field_module {
                         Some(&[NonPrimitiveConfig::Poseidon2($poseidon2_config)]),
                     )
                     .expect("Failed to get AIRs");
-                let (mut airs_1, degrees_1): (Vec<_>, Vec<_>) =
-                    airs_degrees_1.into_iter().unzip();
+                let (mut airs_1, degrees_1): (Vec<_>, Vec<_>) = airs_degrees_1.into_iter().unzip();
 
                 let mut runner_1 = verification_circuit_1.runner();
                 runner_1.set_public_inputs(&public_inputs_1).unwrap();
@@ -251,9 +256,7 @@ macro_rules! define_field_module {
                     MyHash,
                     MyCompress,
                     DIGEST_ELEMS,
-                >(
-                    &mut runner_1, &mmcs_op_ids_1, &proof_0.opening_proof
-                )
+                >(&mut runner_1, &mmcs_op_ids_1, &proof_0.opening_proof)
                 .expect("Failed to set MMCS private data");
 
                 let traces_1 = runner_1.run().expect("Failed to run verification circuit");
