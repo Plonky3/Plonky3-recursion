@@ -210,7 +210,10 @@ macro_rules! define_field_module {
                 builder.connect(b, expected_result);
 
                 let base_circuit = builder.build().unwrap();
-                let table_packing_0 = TablePacking::new(1, 1, 1);
+                // (witness_lanes, public_lanes, add_lanes, mul_lanes)
+                // Using mul_lanes=2 for a circuit with no multiplications will trigger
+                // automatic lane reduction to mul_lanes=1 with a warning.
+                let table_packing_0 = TablePacking::new(1, 1, 1, 2);
 
                 // Layer 0 prover config
                 let config_0 = create_config();
@@ -294,7 +297,7 @@ macro_rules! define_field_module {
 
                 info!("Verification circuit built with {num_ops_1} operations");
 
-                let table_packing_1 = TablePacking::new(32, 16, 16);
+                let table_packing_1 = TablePacking::new(64, 8, 32, 32);
 
                 let (airs_degrees_1, witness_mults_1) =
                     get_airs_and_degrees_with_prep::<MyConfig, _, D>(

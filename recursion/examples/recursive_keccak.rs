@@ -234,7 +234,7 @@ macro_rules! define_field_module {
 
                 info!("Verification circuit built with {num_ops_1} operations");
 
-                let table_packing_1 = TablePacking::new(16, 8, 8);
+                let table_packing_1 = TablePacking::new(16, 1, 8, 8);
 
                 let (airs_degrees_1, witness_mults_1) =
                     get_airs_and_degrees_with_prep::<MyConfig, _, D>(

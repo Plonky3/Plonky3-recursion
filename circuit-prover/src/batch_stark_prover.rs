@@ -45,25 +45,41 @@ use crate::field_params::ExtractBinomialW;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TablePacking {
     witness_lanes: usize,
+    public_lanes: usize,
     add_lanes: usize,
     mul_lanes: usize,
 }
 
 impl TablePacking {
-    pub fn new(witness_lanes: usize, add_lanes: usize, mul_lanes: usize) -> Self {
+    pub fn new(
+        witness_lanes: usize,
+        public_lanes: usize,
+        add_lanes: usize,
+        mul_lanes: usize,
+    ) -> Self {
         Self {
             witness_lanes: witness_lanes.max(1),
+            public_lanes: public_lanes.max(1),
             add_lanes: add_lanes.max(1),
             mul_lanes: mul_lanes.max(1),
         }
     }
 
-    pub fn from_counts(witness_lanes: usize, add_lanes: usize, mul_lanes: usize) -> Self {
-        Self::new(witness_lanes, add_lanes, mul_lanes)
+    pub fn from_counts(
+        witness_lanes: usize,
+        public_lanes: usize,
+        add_lanes: usize,
+        mul_lanes: usize,
+    ) -> Self {
+        Self::new(witness_lanes, public_lanes, add_lanes, mul_lanes)
     }
 
     pub const fn witness_lanes(self) -> usize {
         self.witness_lanes
+    }
+
+    pub const fn public_lanes(self) -> usize {
+        self.public_lanes
     }
 
     pub const fn add_lanes(self) -> usize {
@@ -77,7 +93,7 @@ impl TablePacking {
 
 impl Default for TablePacking {
     fn default() -> Self {
-        Self::new(1, 1, 1)
+        Self::new(1, 1, 1, 1)
     }
 }
 
@@ -2772,11 +2788,26 @@ where
             ConstAir::<Val<SC>, D>::trace_to_matrix(&traces.const_trace);
 
         // Public
+        // Similar to Add/Mul, reduce lanes to 1 if the table has only dummy operations.
+        let public_trace_only_dummy = traces.public_trace.values.len() <= 1;
+        let public_lanes = if public_trace_only_dummy && packing.public_lanes() > 1 {
+            tracing::warn!(
+                "Public table has only dummy operations but public_lanes={} > 1. Reducing to \
+                 public_lanes=1 to avoid recursive verification issues. Consider using \
+                 public_lanes=1 when few public inputs are expected.",
+                packing.public_lanes()
+            );
+            1
+        } else {
+            packing.public_lanes()
+        };
+
         let public_rows = traces.public_trace.values.len();
         let public_prep = PublicAir::<Val<SC>, D>::trace_to_preprocessed(&traces.public_trace);
-        let public_air = PublicAir::<Val<SC>, D>::new_with_preprocessed(public_rows, public_prep);
+        let public_air =
+            PublicAir::<Val<SC>, D>::new_with_preprocessed(public_rows, public_lanes, public_prep);
         let public_matrix: RowMajorMatrix<Val<SC>> =
-            PublicAir::<Val<SC>, D>::trace_to_matrix(&traces.public_trace);
+            PublicAir::<Val<SC>, D>::trace_to_matrix(&traces.public_trace, public_lanes);
 
         // Add
         // When the Add trace is empty, we add a dummy operation to match
@@ -2828,7 +2859,10 @@ where
             traces.witness_trace.num_rows() / witness_lanes
         );
         tracing::warn!("Const length: {}", traces.const_trace.values.len());
-        tracing::warn!("Public length: {}", traces.public_trace.values.len());
+        tracing::warn!(
+            "Public length: {}",
+            traces.public_trace.values.len() / public_lanes
+        );
         tracing::warn!(
             "Add length: {}",
             traces.add_trace.lhs_values.len() / add_lanes
@@ -2972,7 +3006,8 @@ where
 
         // Store the effective packing (with reduced lanes if applicable) so the verifier
         // uses the same configuration that was actually used during proving.
-        let effective_packing = TablePacking::new(witness_lanes, add_lanes, mul_lanes);
+        let effective_packing =
+            TablePacking::new(witness_lanes, public_lanes, add_lanes, mul_lanes);
 
         Ok(BatchStarkProof {
             proof,
@@ -3004,6 +3039,7 @@ where
         // Rebuild AIRs in the same order as prove.
         let packing = proof.table_packing;
         let witness_lanes = packing.witness_lanes();
+        let public_lanes = packing.public_lanes();
         let add_lanes = packing.add_lanes();
         let mul_lanes = packing.mul_lanes();
 
@@ -3016,6 +3052,7 @@ where
         ));
         let public_air = CircuitTableAir::Public(PublicAir::<Val<SC>, D>::new(
             proof.rows[PrimitiveTable::Public],
+            public_lanes,
         ));
         let add_air = CircuitTableAir::Add(AddAir::<Val<SC>, D>::new(
             proof.rows[PrimitiveTable::Add],

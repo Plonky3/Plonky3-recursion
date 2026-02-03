@@ -216,7 +216,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     builder.connect(row2_out1, out1);
 
     let circuit = builder.build()?;
-    let table_packing = TablePacking::new(4, 4, 1);
+    let table_packing = TablePacking::new(4, 1, 4, 1);
     let poseidon2_config = Poseidon2Config::BabyBearD4Width16;
     let stark_config = config::baby_bear().build();
     let (airs_degrees, witness_multiplicities) =

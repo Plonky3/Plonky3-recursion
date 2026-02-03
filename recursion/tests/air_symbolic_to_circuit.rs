@@ -166,13 +166,8 @@ fn primitive_airs_symbolic_to_circuit() -> Result<(), CircuitError> {
         &mut rng,
     )?;
 
-    let public_air = PublicAir::<F, 1>::new_with_preprocessed(1, vec![F::from_u64(4)]);
-    run_recursive(
-        &public_air,
-        PublicAir::<F, 1>::preprocessed_width(),
-        1,
-        &mut rng,
-    )?;
+    let public_air = PublicAir::<F, 1>::new_with_preprocessed(1, 1, vec![F::from_u64(4)]);
+    run_recursive(&public_air, public_air.preprocessed_width(), 1, &mut rng)?;
 
     let witness_air = WitnessAir::<F, 1>::new(1, 1);
     run_recursive(&witness_air, witness_air.preprocessed_width(), 0, &mut rng)?;
