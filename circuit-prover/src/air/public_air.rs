@@ -137,7 +137,7 @@ impl<F: Field, const D: usize> PublicAir<F, D> {
                     values.extend_from_slice(coeffs);
                 } else {
                     // Padding: fill with zeros
-                    values.extend(core::iter::repeat(F::ZERO).take(lane_width));
+                    values.extend(core::iter::repeat_n(F::ZERO, lane_width));
                 }
             }
         }
