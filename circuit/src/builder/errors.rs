@@ -68,4 +68,12 @@ pub enum CircuitBuilderError {
     /// Duplicate tag: a tag with this name was already registered.
     #[error("Duplicate tag: '{tag}' is already registered")]
     DuplicateTag { tag: String },
+
+    /// Wrong batch size passed to recursive MMCS verifier: expected one length, got another.
+    #[error("Wrong batch size: expected {expected}, got {got}")]
+    WrongBatchSize { expected: usize, got: usize },
+
+    /// Failed to format openings for MMCS preprocessing; preserves some context.
+    #[error("Failed to format openings for operation {op:?}: {details}")]
+    FormatOpeningsFailed { op: NonPrimitiveOpType, details: String },
 }

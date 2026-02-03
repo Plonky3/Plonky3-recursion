@@ -145,6 +145,11 @@ pub enum CircuitError {
     #[error("Preprocessed values should be base field elements")]
     InvalidPreprocessedValues,
 
+    /// Inconsistent matrix heights when formatting openings: heights that round up
+    /// to the same power of two must be equal.
+    #[error("Inconsistent matrix heights: {details}")]
+    InconsistentMatrixHeights { details: String },
+
     /// Poseidon2 chaining requires previous state but none was available.
     #[error(
         "Poseidon2 chain missing previous state for operation {operation_index} (new_start=false but no previous permutation)"

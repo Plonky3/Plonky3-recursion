@@ -45,7 +45,9 @@ pub fn format_openings<T: Clone + alloc::fmt::Debug>(
         .tuple_windows()
         .all(|(curr, next)| curr == next || curr.next_power_of_two() != next.next_power_of_two())
     {
-        panic!("Heights that round up to the same power of two must be equal"); //TODO: Add errors
+        return Err(CircuitError::InconsistentMatrixHeights {
+            details: "Heights that round up to the same power of two must be equal".to_string(),
+        });
     }
 
     let mut formatted_openings = vec![vec![]; max_height_log];

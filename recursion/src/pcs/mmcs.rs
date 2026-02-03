@@ -1,4 +1,5 @@
 use alloc::vec::Vec;
+use alloc::format;
 
 use p3_circuit::op::{NonPrimitiveOpType, Poseidon2Config};
 use p3_circuit::ops::hash::add_hash_slice;
@@ -36,7 +37,10 @@ where
 {
     // Check that the openings have the correct shape.
     if dimensions.len() != opened_values.len() {
-        panic!("Wrong batch size"); // TODO: Add errors
+        return Err(CircuitBuilderError::WrongBatchSize {
+            expected: dimensions.len(),
+            got: opened_values.len(),
+        });
     }
 
     // TODO: Disabled for now since TwoAdicFriPcs and CirclePcs currently pass 0 for width.
@@ -52,12 +56,10 @@ where
         index_bits.len(),
         permutation_config,
     )
-    .map_err(
-        |_| CircuitBuilderError::InvalidNonPrimitiveOpConfiguration {
-            // TODO: I this the error we want?
-            op: NonPrimitiveOpType::Poseidon2Perm(permutation_config),
-        },
-    )?;
+    .map_err(|e| CircuitBuilderError::FormatOpeningsFailed {
+        op: NonPrimitiveOpType::Poseidon2Perm(permutation_config),
+        details: format!("{:?}", e),
+    })?;
 
     // Hash the opened values while keeping the format.
     let op_vals_digests = formatted_op_vals
