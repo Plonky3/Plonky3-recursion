@@ -338,7 +338,6 @@ fn test_batch_verifier_with_mixed_preprocessed() -> Result<(), VerificationError
 
     // Build the circuit
     let circuit = circuit_builder.build()?;
-
     let mut runner = circuit.runner();
 
     // Generate all the challenge values for batch proof

@@ -11,7 +11,7 @@ use crate::types::WitnessId;
 pub struct Optimizer;
 
 /// Information about an operation definition.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 enum OpDef<F> {
     Const(F),
     Add { a: WitnessId, b: WitnessId },
@@ -19,13 +19,7 @@ enum OpDef<F> {
     Other,
 }
 
-/// A candidate MulAdd operation to be created.
-struct MulAddCandidate<F> {
-    /// Index of the mul operation that will be consumed by this MulAdd
-    consumed_mul_idx: usize,
-    /// The MulAdd operation to emit
-    op: Op<F>,
-}
+// MulAddCandidate struct removed - now using inline tuple returns
 
 impl Optimizer {
     /// Creates a new optimizer.
@@ -44,14 +38,19 @@ impl Optimizer {
     /// - Common subexpression elimination
     /// - Constant folding
     pub fn optimize<F: Field>(&self, primitive_ops: Vec<Op<F>>) -> Vec<Op<F>> {
-        // BoolCheck only for now - MulAdd fusion causing issues in complex circuits
-        self.fuse_bool_checks(primitive_ops)
+        // BoolCheck first, then MulAdd
+        let ops = self.fuse_bool_checks(primitive_ops);
+        self.fuse_mul_adds(ops)
     }
 
     /// Detects and fuses `a * b + c` patterns into MulAdd operations.
     ///
     /// Pattern: add(mul(a, b), c) where the mul result is only used by this add.
     /// This saves one row in the ALU table by combining the mul and add into one operation.
+    ///
+    /// Uses a two-phase approach to handle chained patterns correctly:
+    /// 1. Identify all potential fusions (ignoring ordering)
+    /// 2. Filter to only keep fusions where the addend is available at the mul's position
     fn fuse_mul_adds<F: Field>(&self, ops: Vec<Op<F>>) -> Vec<Op<F>> {
         // Build use counts for each witness ID (counting ALL uses, not just ALU)
         let mut use_counts: HashMap<WitnessId, usize> = HashMap::new();
@@ -65,7 +64,6 @@ impl Optimizer {
                     }
                 }
                 Op::NonPrimitiveOpWithExecutor { inputs, .. } => {
-                    // Count uses in non-primitive operations
                     for input_group in inputs {
                         for witness_id in input_group {
                             *use_counts.entry(*witness_id).or_insert(0) += 1;
@@ -76,10 +74,21 @@ impl Optimizer {
             }
         }
 
-        // Build a map from output witness ID to operation definition
+        // Build a map from output witness ID to operation definition.
+        // Important: Const entries are never overwritten because witness slots shared
+        // via connect() should keep the Const definition.
         let mut defs: HashMap<WitnessId, (usize, OpDef<F>)> = HashMap::new();
+
+        // Also track witnesses computed by backwards adds.
+        // In a backwards add(a, b, out), if `out` is already defined, then `b` is computed.
+        // We need to track where `b` is computed so we don't treat it as always available.
+        let mut backwards_add_computed: HashMap<WitnessId, usize> = HashMap::new();
+
         for (idx, op) in ops.iter().enumerate() {
             match op {
+                Op::Const { out, val } => {
+                    defs.insert(*out, (idx, OpDef::Const(*val)));
+                }
                 Op::Alu {
                     kind: AluOpKind::Mul,
                     a,
@@ -88,7 +97,21 @@ impl Optimizer {
                     c: None,
                     ..
                 } => {
-                    defs.insert(*out, (idx, OpDef::Mul { a: *a, b: *b }));
+                    if !matches!(defs.get(out), Some((_, OpDef::Const(_)))) {
+                        // Check if this is a backwards mul (division)
+                        // If `out` is already defined, then `b` is computed
+                        if let Some((out_def_idx, _)) = defs.get(out) {
+                            if *out_def_idx < idx {
+                                backwards_add_computed.insert(*b, idx);
+                                // Also track the computed value in defs so subsequent
+                                // backwards adds can detect their output is defined
+                                if !matches!(defs.get(b), Some((_, OpDef::Const(_)))) {
+                                    defs.insert(*b, (idx, OpDef::Other));
+                                }
+                            }
+                        }
+                        defs.insert(*out, (idx, OpDef::Mul { a: *a, b: *b }));
+                    }
                 }
                 Op::Alu {
                     kind: AluOpKind::Add,
@@ -98,31 +121,47 @@ impl Optimizer {
                     c: None,
                     ..
                 } => {
-                    defs.insert(*out, (idx, OpDef::Add { a: *a, b: *b }));
+                    if !matches!(defs.get(out), Some((_, OpDef::Const(_)))) {
+                        // Check if this is a backwards add (subtraction)
+                        // If `out` is already defined, then `b` is computed
+                        if let Some((out_def_idx, _)) = defs.get(out) {
+                            if *out_def_idx < idx {
+                                backwards_add_computed.insert(*b, idx);
+                                // Also track the computed value in defs so subsequent
+                                // backwards adds can detect their output is defined
+                                if !matches!(defs.get(b), Some((_, OpDef::Const(_)))) {
+                                    defs.insert(*b, (idx, OpDef::Other));
+                                }
+                            }
+                        }
+                        defs.insert(*out, (idx, OpDef::Add { a: *a, b: *b }));
+                    }
                 }
                 Op::Alu { out, .. } => {
-                    defs.insert(*out, (idx, OpDef::Other));
-                }
-                Op::Const { out, val } => {
-                    defs.insert(*out, (idx, OpDef::Const(*val)));
+                    if !matches!(defs.get(out), Some((_, OpDef::Const(_)))) {
+                        defs.insert(*out, (idx, OpDef::Other));
+                    }
                 }
                 Op::Public { out, .. } => {
-                    defs.insert(*out, (idx, OpDef::Other));
+                    if !matches!(defs.get(out), Some((_, OpDef::Const(_)))) {
+                        defs.insert(*out, (idx, OpDef::Other));
+                    }
                 }
                 Op::NonPrimitiveOpWithExecutor { outputs, .. } => {
-                    // Track non-primitive op outputs so we know when they're available
                     for output_group in outputs {
                         for out_id in output_group {
-                            defs.insert(*out_id, (idx, OpDef::Other));
+                            if !matches!(defs.get(out_id), Some((_, OpDef::Const(_)))) {
+                                defs.insert(*out_id, (idx, OpDef::Other));
+                            }
                         }
                     }
                 }
             }
         }
 
-        // First pass: identify fusions - map mul_idx -> (MulAdd op, add_idx to skip)
-        let mut mul_to_muladd: HashMap<usize, (Op<F>, usize)> = HashMap::new();
-        let mut consumed_adds: hashbrown::HashSet<usize> = hashbrown::HashSet::new();
+        // Phase 1: Identify ALL potential fusions (without ordering checks)
+        // Store: add_idx -> (mul_idx, MulAdd op, addend)
+        let mut potential_fusions: HashMap<usize, (usize, Op<F>, WitnessId)> = HashMap::new();
 
         for (add_idx, op) in ops.iter().enumerate() {
             if let Op::Alu {
@@ -134,52 +173,126 @@ impl Optimizer {
                 ..
             } = op
             {
-                // Skip "backwards" adds (from Sub operations) where out is already defined
-                // by an earlier op and we're computing b = out - a instead of out = a + b.
-                // These can't be fused because the semantics are different.
-                if let Some((out_def_idx, _)) = defs.get(out) {
-                    // If out is defined by an op BEFORE this add, it's a backwards add
-                    if *out_def_idx < add_idx {
-                        continue;
-                    }
-                }
-
-                // Check if add_a is a mul result with use count 1
-                if let Some(muladd) =
-                    self.try_create_muladd(*add_a, *add_b, *out, &defs, &use_counts)
-                    && !mul_to_muladd.contains_key(&muladd.consumed_mul_idx)
-                {
-                    let mul_idx = muladd.consumed_mul_idx;
-                    mul_to_muladd.insert(mul_idx, (muladd.op, add_idx));
-                    consumed_adds.insert(add_idx);
+                // Skip adds where output is a Const (connect aliasing)
+                if matches!(defs.get(out), Some((_, OpDef::Const(_)))) {
                     continue;
                 }
 
-                // Check symmetric case: add_b is a mul result
-                if let Some(muladd) =
-                    self.try_create_muladd(*add_b, *add_a, *out, &defs, &use_counts)
-                    && !mul_to_muladd.contains_key(&muladd.consumed_mul_idx)
-                {
-                    let mul_idx = muladd.consumed_mul_idx;
-                    mul_to_muladd.insert(mul_idx, (muladd.op, add_idx));
-                    consumed_adds.insert(add_idx);
+                // Detect backwards adds: if `out` is defined BEFORE this add,
+                // then this add computes one of its inputs (a or b), not `out`.
+                // We cannot fuse backwards adds.
+                let is_backwards_add = defs
+                    .get(out)
+                    .map(|(def_idx, _)| *def_idx < add_idx)
+                    .unwrap_or(false);
+                if is_backwards_add {
+                    continue;
+                }
+
+                // Try add_a as mul result
+                if let Some((mul_idx, muladd_op, addend)) = self.try_create_muladd_candidate(
+                    *add_a,
+                    *add_b,
+                    *out,
+                    add_idx,
+                    &defs,
+                    &use_counts,
+                    &backwards_add_computed,
+                ) {
+                    potential_fusions.insert(add_idx, (mul_idx, muladd_op, addend));
+                    continue;
+                }
+
+                // Try add_b as mul result (symmetric)
+                if let Some((mul_idx, muladd_op, addend)) = self.try_create_muladd_candidate(
+                    *add_b,
+                    *add_a,
+                    *out,
+                    add_idx,
+                    &defs,
+                    &use_counts,
+                    &backwards_add_computed,
+                ) {
+                    potential_fusions.insert(add_idx, (mul_idx, muladd_op, addend));
                 }
             }
         }
 
-        // Second pass: build result
-        // - Replace muls with their fused MulAdd (runs at mul's position for correct ordering)
-        // - Skip the consumed adds
+        // Phase 2: Iteratively filter fusions based on ordering constraints
+        // We iterate until no more fusions are invalidated.
+        //
+        // A fusion is valid if its addend is available at the mul's position.
+        // The addend's effective position depends on whether the op producing it will be fused.
+
+        let mut valid_add_indices: hashbrown::HashSet<usize> =
+            potential_fusions.keys().copied().collect();
+
+        loop {
+            // Build map: add_out -> mul_idx for CURRENTLY valid fusions only
+            let mut add_out_to_mul_idx: HashMap<WitnessId, usize> = HashMap::new();
+            for &add_idx in &valid_add_indices {
+                if let Some((mul_idx, _, _)) = potential_fusions.get(&add_idx) {
+                    if let Some(Op::Alu { out, .. }) = ops.get(add_idx) {
+                        add_out_to_mul_idx.insert(*out, *mul_idx);
+                    }
+                }
+            }
+
+            // Check each currently valid fusion
+            let mut to_remove: Vec<usize> = Vec::new();
+
+            for &add_idx in &valid_add_indices {
+                if let Some((mul_idx, _, addend)) = potential_fusions.get(&add_idx) {
+                    let addend_available_at =
+                        self.compute_effective_position(*addend, &defs, &add_out_to_mul_idx);
+
+                    // Invalid if addend isn't available when MulAdd runs
+                    // None means always available (witness/public input), which is fine
+                    if let Some(pos) = addend_available_at {
+                        if pos >= *mul_idx {
+                            to_remove.push(add_idx);
+                        }
+                    }
+                }
+            }
+
+            if to_remove.is_empty() {
+                break; // Fixed point reached
+            }
+
+            for add_idx in to_remove {
+                valid_add_indices.remove(&add_idx);
+            }
+        }
+
+        // Build valid_fusions from the remaining valid indices
+        let mut valid_fusions: HashMap<usize, (usize, Op<F>)> = HashMap::new();
+        for add_idx in valid_add_indices {
+            if let Some((mul_idx, muladd_op, _addend)) = potential_fusions.remove(&add_idx) {
+                valid_fusions.insert(add_idx, (mul_idx, muladd_op));
+            }
+        }
+
+        // Build the result
+        let mut consumed_adds: hashbrown::HashSet<usize> = hashbrown::HashSet::new();
+        let mut mul_to_muladd: HashMap<usize, Op<F>> = HashMap::new();
+
+        for (add_idx, (mul_idx, muladd_op)) in valid_fusions {
+            // Avoid double-fusing the same mul
+            if !mul_to_muladd.contains_key(&mul_idx) {
+                mul_to_muladd.insert(mul_idx, muladd_op);
+                consumed_adds.insert(add_idx);
+            }
+        }
+
         let mut result = Vec::with_capacity(ops.len() - consumed_adds.len());
 
         for (idx, op) in ops.into_iter().enumerate() {
-            // Skip adds that were consumed by MulAdd fusion
             if consumed_adds.contains(&idx) {
                 continue;
             }
 
-            // Replace muls with fused MulAdds
-            if let Some((muladd_op, _)) = mul_to_muladd.remove(&idx) {
+            if let Some(muladd_op) = mul_to_muladd.remove(&idx) {
                 result.push(muladd_op);
                 continue;
             }
@@ -190,20 +303,18 @@ impl Optimizer {
         result
     }
 
-    /// Tries to create a MulAdd operation from add(mul_result, addend).
-    ///
-    /// Returns Some if:
-    /// - mul_result is the output of a Mul operation
-    /// - mul_result has use count of exactly 1 (only used by this add)
-    /// - addend is defined before the mul (so MulAdd can run at mul's position)
-    fn try_create_muladd<F: Field>(
+    /// Creates a MulAdd candidate without full ordering checks.
+    /// Returns (mul_idx, MulAdd op, addend) if the pattern matches.
+    fn try_create_muladd_candidate<F: Field>(
         &self,
         mul_result: WitnessId,
         addend: WitnessId,
         out: WitnessId,
+        add_idx: usize,
         defs: &HashMap<WitnessId, (usize, OpDef<F>)>,
         use_counts: &HashMap<WitnessId, usize>,
-    ) -> Option<MulAddCandidate<F>> {
+        backwards_add_computed: &HashMap<WitnessId, usize>,
+    ) -> Option<(usize, Op<F>, WitnessId)> {
         // Check if mul_result is from a Mul operation
         let (mul_idx, mul_def) = defs.get(&mul_result)?;
         let (mul_a, mul_b) = match mul_def {
@@ -217,29 +328,56 @@ impl Optimizer {
             return None;
         }
 
-        // Check that the addend is available at the mul's position.
-        // The addend must be defined before mul_idx, otherwise we can't move
-        // the MulAdd to the mul's position (the addend wouldn't be computed yet).
+        // Don't fuse if mul_result is a constant (connect aliasing)
+        if matches!(defs.get(&mul_result), Some((_, OpDef::Const(_)))) {
+            return None;
+        }
+
+        // Don't fuse if the addend isn't defined yet (would be computed by this add)
         if let Some((addend_def_idx, _)) = defs.get(&addend) {
-            if *addend_def_idx >= *mul_idx {
+            if *addend_def_idx >= add_idx {
                 return None;
             }
         }
-        // If addend not in defs, it's a witness/public input - always available
 
-        // Create the MulAdd operation with intermediate_out set to the original mul result
-        // so the runner can still set that witness value for any remaining references
-        Some(MulAddCandidate {
-            consumed_mul_idx: *mul_idx,
-            op: Op::Alu {
-                kind: AluOpKind::MulAdd,
-                a: mul_a,
-                b: mul_b,
-                c: Some(addend),
-                out,
-                intermediate_out: Some(mul_result),
-            },
-        })
+        // Don't fuse if the addend is computed by a backwards add that runs at or after mul_idx
+        // (the MulAdd would run at mul_idx but the addend wouldn't be available yet)
+        if let Some(&computed_at_idx) = backwards_add_computed.get(&addend) {
+            if computed_at_idx >= *mul_idx {
+                return None;
+            }
+        }
+
+        let muladd_op = Op::Alu {
+            kind: AluOpKind::MulAdd,
+            a: mul_a,
+            b: mul_b,
+            c: Some(addend),
+            out,
+            intermediate_out: Some(mul_result),
+        };
+
+        Some((*mul_idx, muladd_op, addend))
+    }
+
+    /// Computes the effective position where a witness will be available.
+    /// Takes into account that an Add's output might be moved if it gets fused.
+    /// Returns None for witnesses that are always available (public inputs, witness inputs).
+    fn compute_effective_position<F>(
+        &self,
+        witness: WitnessId,
+        defs: &HashMap<WitnessId, (usize, OpDef<F>)>,
+        add_out_to_mul_idx: &HashMap<WitnessId, usize>,
+    ) -> Option<usize> {
+        // If this witness is the output of an Add that will be fused,
+        // its effective position is the corresponding Mul's position
+        if let Some(&mul_idx) = add_out_to_mul_idx.get(&witness) {
+            return Some(mul_idx);
+        }
+
+        // Otherwise, use the original definition position
+        // If not in defs (witness/public input), it's always available
+        defs.get(&witness).map(|(idx, _)| *idx)
     }
 
     /// Detects and fuses `assert_bool` patterns into BoolCheck operations.
@@ -437,25 +575,39 @@ mod tests {
         let optimized = optimizer.optimize(ops);
 
         // BoolCheck fusion converts mul(b, b_minus_one) into BoolCheck
-        // MulAdd fusion is disabled, so: 2 Const + mul + add + BoolCheck = 5 ops
-        assert_eq!(optimized.len(), 5);
+        // MulAdd fusion fuses mul(one, neg_one) + add(b, ...) into MulAdd
+        // Result: 2 Const + 1 MulAdd + 1 BoolCheck = 4 ops
+        assert_eq!(optimized.len(), 4, "Expected 4 ops, got {:?}", optimized);
 
-        // Check that the last op is now a BoolCheck
-        match &optimized[4] {
-            Op::Alu {
-                kind: AluOpKind::BoolCheck,
-                a,
-                out,
-                ..
-            } => {
-                assert_eq!(*a, b, "BoolCheck should check witness b");
-                assert_eq!(
-                    *out, product,
-                    "BoolCheck output should be at product location"
-                );
-            }
-            _ => panic!("Expected last op to be BoolCheck, got {:?}", optimized[4]),
-        }
+        // Check that there's a BoolCheck
+        let bool_check_count = optimized
+            .iter()
+            .filter(|op| {
+                matches!(
+                    op,
+                    Op::Alu {
+                        kind: AluOpKind::BoolCheck,
+                        ..
+                    }
+                )
+            })
+            .count();
+        assert_eq!(bool_check_count, 1, "Expected 1 BoolCheck");
+
+        // Check that there's a MulAdd
+        let muladd_count = optimized
+            .iter()
+            .filter(|op| {
+                matches!(
+                    op,
+                    Op::Alu {
+                        kind: AluOpKind::MulAdd,
+                        ..
+                    }
+                )
+            })
+            .count();
+        assert_eq!(muladd_count, 1, "Expected 1 MulAdd");
     }
 
     #[test]
@@ -517,7 +669,9 @@ mod tests {
 
         let optimized = optimizer.fuse_mul_adds(ops);
 
-        // Should fuse both mul+add pairs
+        // Both fusions should happen:
+        // - First: mul(bit0, pow0) + add(acc0, term0) -> MulAdd (acc0 is Const, available at mul's position)
+        // - Second: mul(bit1, pow1) + add(acc1, term1) -> MulAdd (acc1 is from first MulAdd, runs at mul0's position which is before mul1)
         // Result: 3 consts + 2 MulAdds = 5 ops
         assert_eq!(
             optimized.len(),
@@ -527,9 +681,20 @@ mod tests {
             optimized
         );
 
-        // Check that acc1 is produced before it's needed
-        // MulAdd at idx 3 should produce acc1
-        // MulAdd at idx 5 (now idx 4 after skipping add at 4) should consume acc1
+        // Verify both MulAdds exist
+        let muladd_count = optimized
+            .iter()
+            .filter(|op| {
+                matches!(
+                    op,
+                    Op::Alu {
+                        kind: AluOpKind::MulAdd,
+                        ..
+                    }
+                )
+            })
+            .count();
+        assert_eq!(muladd_count, 2, "Expected 2 MulAdds");
     }
 
     #[test]

@@ -11,7 +11,9 @@ use crate::builder::CircuitBuilderError;
 use crate::builder::circuit_builder::{NonPrimitiveOpParams, NonPrimitiveOperationData};
 use crate::builder::compiler::get_witness_id;
 use crate::expr::{Expr, ExpressionGraph};
-use crate::op::{AluOpKind, NonPrimitiveOpType, Op};
+#[cfg(test)]
+use crate::op::AluOpKind;
+use crate::op::{NonPrimitiveOpType, Op};
 use crate::ops::Poseidon2PermExecutor;
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};
 

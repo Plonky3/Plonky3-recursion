@@ -214,15 +214,15 @@ impl<F: CircuitField> CircuitRunner<F> {
         // Clone ops to avoid borrowing issues.
         let ops = self.circuit.ops.clone();
 
-        for op in ops {
+        for op in ops.iter() {
             match op {
                 Op::Const { out, val } => {
-                    self.set_witness(out, val)?;
+                    self.set_witness(*out, *val)?;
                 }
                 Op::Public { out, public_pos: _ } => {
                     // Public inputs should already be set
                     if self.witness[out.0 as usize].is_none() {
-                        return Err(CircuitError::PublicInputNotSet { witness_id: out });
+                        return Err(CircuitError::PublicInputNotSet { witness_id: *out });
                     }
                 }
                 Op::Alu {
@@ -236,54 +236,54 @@ impl<F: CircuitField> CircuitRunner<F> {
                     use crate::op::AluOpKind;
                     match kind {
                         AluOpKind::Add => {
-                            let a_val = self.get_witness(a)?;
-                            if let Ok(b_val) = self.get_witness(b) {
+                            let a_val = self.get_witness(*a)?;
+                            if let Ok(b_val) = self.get_witness(*b) {
                                 let result = a_val + b_val;
-                                self.set_witness(out, result)?;
+                                self.set_witness(*out, result)?;
                             } else {
-                                let out_val = self.get_witness(out)?;
+                                let out_val = self.get_witness(*out)?;
                                 let b_val = out_val - a_val;
-                                self.set_witness(b, b_val)?;
+                                self.set_witness(*b, b_val)?;
                             }
                         }
                         AluOpKind::Mul => {
                             // Mul is used to represent either `Mul` or `Div` operations.
                             // We determine which based on which inputs are set.
-                            let a_val = self.get_witness(a)?;
-                            if let Ok(b_val) = self.get_witness(b) {
+                            let a_val = self.get_witness(*a)?;
+                            if let Ok(b_val) = self.get_witness(*b) {
                                 let result = a_val * b_val;
-                                self.set_witness(out, result)?;
+                                self.set_witness(*out, result)?;
                             } else {
-                                let result_val = self.get_witness(out)?;
+                                let result_val = self.get_witness(*out)?;
                                 let a_inv =
                                     a_val.try_inverse().ok_or(CircuitError::DivisionByZero)?;
                                 let b_val = result_val * a_inv;
-                                self.set_witness(b, b_val)?;
+                                self.set_witness(*b, b_val)?;
                             }
                         }
                         AluOpKind::BoolCheck => {
                             // BoolCheck constraint is checked in the AIR; here we just ensure out = a
-                            let a_val = self.get_witness(a)?;
-                            self.set_witness(out, a_val)?;
+                            let a_val = self.get_witness(*a)?;
+                            self.set_witness(*out, a_val)?;
                         }
                         AluOpKind::MulAdd => {
                             // out = a * b + c
-                            let a_val = self.get_witness(a)?;
-                            let b_val = self.get_witness(b)?;
+                            let a_val = self.get_witness(*a)?;
+                            let b_val = self.get_witness(*b)?;
                             let ab_product = a_val * b_val;
 
                             // Set intermediate_out if fused from separate operations
                             if let Some(io) = intermediate_out {
-                                self.set_witness(io, ab_product)?;
+                                self.set_witness(*io, ab_product)?;
                             }
 
                             let c_val = if let Some(c_id) = c {
-                                self.get_witness(c_id)?
+                                self.get_witness(*c_id)?
                             } else {
                                 F::ZERO
                             };
                             let result = ab_product + c_val;
-                            self.set_witness(out, result)?;
+                            self.set_witness(*out, result)?;
                         }
                     }
                 }
@@ -297,11 +297,11 @@ impl<F: CircuitField> CircuitRunner<F> {
                         &mut self.witness,
                         &self.non_primitive_op_private_data,
                         &self.circuit.enabled_ops,
-                        op_id,
+                        *op_id,
                         &mut self.op_states,
                     );
 
-                    executor.execute(&inputs, &outputs, &mut ctx)?;
+                    executor.execute(inputs, outputs, &mut ctx)?;
                 }
             }
         }
@@ -540,20 +540,16 @@ mod tests {
         assert_eq!(traces.public_trace.values[1], y_val);
         assert_eq!(traces.public_trace.values[2], z_val);
 
-        // Should have mul and add operations (MulAdd fusion disabled)
-        assert_eq!(traces.alu_trace.a_values.len(), 2);
+        // Should have one MulAdd operation (fused from y * z + x)
+        assert_eq!(traces.alu_trace.a_values.len(), 1);
 
-        // Verify mul operation: y * z
+        // Verify MulAdd operation: y * z + x
         let expected_yz = y_val * z_val;
+        let expected_result = expected_yz + x_val;
         assert_eq!(traces.alu_trace.a_values[0], y_val);
         assert_eq!(traces.alu_trace.b_values[0], z_val);
-        assert_eq!(traces.alu_trace.out_values[0], expected_yz);
-
-        // Verify add operation: x + (y * z)
-        let expected_result = x_val + expected_yz;
-        assert_eq!(traces.alu_trace.a_values[1], x_val);
-        assert_eq!(traces.alu_trace.b_values[1], expected_yz);
-        assert_eq!(traces.alu_trace.out_values[1], expected_result);
+        assert_eq!(traces.alu_trace.c_values[0], x_val);
+        assert_eq!(traces.alu_trace.out_values[0], expected_result);
     }
 
     #[test]
