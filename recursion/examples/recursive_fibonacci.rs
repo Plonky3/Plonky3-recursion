@@ -129,11 +129,9 @@ macro_rules! define_field_module {
                 p3_recursion::pcs::Witness<F>,
             >;
 
-            // =====================================================================
-            // FRI Parameters - customize these for recursion efficiency
-            // =====================================================================
-            // Benchmark-inspired config with higher log_final_poly_len for smaller proofs.
-            // Traces must be padded to meet: log_trace_height > log_final_poly_len + log_blowup
+            // ===============
+            // FRI Parameters
+            // ===============
             const LOG_BLOWUP: usize = 4;
             const LOG_FINAL_POLY_LEN: usize = 1;
             const COMMIT_POW_BITS: usize = 0;

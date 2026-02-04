@@ -23,7 +23,7 @@ use p3_commit::ExtensionMmcs;
 use p3_dft::Radix2DitParallel;
 use p3_field::Field;
 use p3_field::extension::BinomialExtensionField;
-use p3_fri::{TwoAdicFriPcs, create_test_fri_params};
+use p3_fri::{TwoAdicFriPcs, create_test_fri_params, FriParameters};
 use p3_keccak_air::KeccakAir;
 use p3_merkle_tree::MerkleTreeMmcs;
 use p3_recursion::pcs::{HashTargets, InputProofTargets, RecValMmcs, set_fri_mmcs_private_data};
@@ -122,23 +122,33 @@ macro_rules! define_field_module {
                 p3_recursion::pcs::Witness<F>,
             >;
 
-            /// FRI params for layer 0 (base proof).
-            /// The in-circuit verifier MUST use the same params.
-            const LOG_FINAL_POLY_LEN_LAYER0: usize = 1;
+            // ===============
+            // FRI Parameters
+            // ===============
+            const LOG_BLOWUP: usize = 4;
+            const LOG_FINAL_POLY_LEN: usize = 1;
+            const COMMIT_POW_BITS: usize = 0;
+            const QUERY_POW_BITS: usize = 16;
 
-            /// FRI params for layer 1 (recursive proof).
-            /// Can be different from layer 0.
-            const LOG_FINAL_POLY_LEN_LAYER1: usize = 1;
-
-            /// Create a STARK config with the given log_final_poly_len.
-            fn create_config(log_final_poly_len: usize) -> MyConfig {
+            /// Create a STARK config with benchmark-inspired FRI params.
+            fn create_config(log_blowup: usize) -> MyConfig {
                 let perm = $default_perm();
                 let hash = MyHash::new(perm.clone());
                 let compress = MyCompress::new(perm.clone());
                 let val_mmcs = ValMmcs::new(hash, compress);
                 let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
                 let dft = Dft::default();
-                let fri_params = create_test_fri_params(challenge_mmcs, log_final_poly_len);
+
+                let num_queries = (100 - QUERY_POW_BITS) / log_blowup;
+
+                let fri_params = FriParameters {
+                    log_blowup,
+                    log_final_poly_len: LOG_FINAL_POLY_LEN,
+                    num_queries,
+                    commit_proof_of_work_bits: COMMIT_POW_BITS,
+                    query_proof_of_work_bits: QUERY_POW_BITS,
+                    mmcs: challenge_mmcs,
+                };
                 let pcs = MyPcs::new(dft, val_mmcs, fri_params);
                 let challenger = Challenger::new(perm);
                 MyConfig::new(pcs, challenger)
@@ -146,13 +156,13 @@ macro_rules! define_field_module {
 
             /// Create FRI verifier params for the in-circuit verifier.
             /// MUST match the FRI params used by the native prover being verified.
-            fn create_fri_verifier_params(log_final_poly_len: usize) -> FriVerifierParams {
+            fn create_fri_verifier_params() -> FriVerifierParams {
                 let perm = $default_perm();
                 let hash = MyHash::new(perm.clone());
                 let compress = MyCompress::new(perm.clone());
                 let val_mmcs = ValMmcs::new(hash, compress);
                 let challenge_mmcs = ChallengeMmcs::new(val_mmcs);
-                let fri_params = create_test_fri_params(challenge_mmcs, log_final_poly_len);
+                let fri_params = create_test_fri_params(challenge_mmcs, LOG_FINAL_POLY_LEN);
                 FriVerifierParams::with_mmcs(
                     fri_params.log_blowup,
                     fri_params.log_final_poly_len,
@@ -171,7 +181,7 @@ macro_rules! define_field_module {
                 let trace = keccak_air.generate_trace_rows(num_hashes, 0);
 
                 // Layer 0 prover config
-                let config_0 = create_config(LOG_FINAL_POLY_LEN_LAYER0);
+                let config_0 = create_config(1);
                 let pis: Vec<F> = vec![];
 
                 let proof_0 = prove(&config_0, &keccak_air, trace, &pis);
@@ -184,10 +194,10 @@ macro_rules! define_field_module {
                 // =================================================================
 
                 // In-circuit verifier params MUST match layer 0's FRI params
-                let fri_verifier_params = create_fri_verifier_params(LOG_FINAL_POLY_LEN_LAYER0);
+                let fri_verifier_params = create_fri_verifier_params();
 
                 // Layer 1 prover config
-                let config_1 = create_config(LOG_FINAL_POLY_LEN_LAYER1);
+                let config_1 = create_config(LOG_BLOWUP);
                 let perm_1 = $default_perm();
 
                 let mut circuit_builder_1 = CircuitBuilder::new();
