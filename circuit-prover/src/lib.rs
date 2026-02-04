@@ -38,13 +38,13 @@
 extern crate alloc;
 
 pub mod air;
-pub mod batch_stark_prover;
+pub mod batch_stark;
 pub mod common;
 pub mod config;
 pub mod field_params;
 
 // Re-export main API
-pub use batch_stark_prover::{
+pub use batch_stark::{
     BatchStarkProof, BatchStarkProver, BatchTableInstance, DynamicAirEntry, NonPrimitiveTableEntry,
     Poseidon2Prover, TablePacking, TableProver,
 };

@@ -9,9 +9,9 @@ use p3_uni_stark::{StarkGenericConfig, SymbolicExpression, Val};
 use p3_util::log2_ceil_usize;
 
 use crate::air::{AddAir, ConstAir, MulAir, PublicAir, WitnessAir};
+use crate::batch_stark::{DynamicAirEntry, Poseidon2Prover, TablePacking};
 use crate::config::StarkField;
 use crate::field_params::ExtractBinomialW;
-use crate::{DynamicAirEntry, Poseidon2Prover, TablePacking};
 
 /// Enum wrapper to allow heterogeneous table AIRs in a single batch STARK aggregation.
 ///
