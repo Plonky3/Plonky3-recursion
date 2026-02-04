@@ -36,7 +36,7 @@ use p3_uni_stark::{
 use thiserror::Error;
 use tracing::instrument;
 
-use crate::air::{AddAir, AluAir, ConstAir, MulAir, PublicAir, WitnessAir};
+use crate::air::{AluAir, ConstAir, PublicAir, WitnessAir};
 use crate::common::CircuitTableAir;
 use crate::config::StarkField;
 use crate::field_params::ExtractBinomialW;
@@ -2316,8 +2316,6 @@ where
             Self::Const(a) => a.width(),
             Self::Public(a) => a.width(),
             Self::Alu(a) => a.width(),
-            Self::Add(a) => a.width(),
-            Self::Mul(a) => a.width(),
             Self::Dynamic(a) => <dyn CloneableBatchAir<SC> as BaseAir<Val<SC>>>::width(a.air()),
         }
     }
@@ -2328,8 +2326,6 @@ where
             Self::Const(a) => a.preprocessed_trace(),
             Self::Public(a) => a.preprocessed_trace(),
             Self::Alu(a) => a.preprocessed_trace(),
-            Self::Add(a) => a.preprocessed_trace(),
-            Self::Mul(a) => a.preprocessed_trace(),
             Self::Dynamic(a) => {
                 <dyn CloneableBatchAir<SC> as BaseAir<Val<SC>>>::preprocessed_trace(a.air())
             }
@@ -2349,8 +2345,6 @@ where
             Self::Const(a) => Air::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::eval(a, builder),
             Self::Public(a) => Air::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::eval(a, builder),
             Self::Alu(a) => Air::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::eval(a, builder),
-            Self::Add(a) => Air::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::eval(a, builder),
-            Self::Mul(a) => Air::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::eval(a, builder),
             Self::Dynamic(a) => Air::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::eval(a, builder),
         }
     }
@@ -2369,12 +2363,6 @@ where
             Self::Alu(a) => {
                 Air::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::add_lookup_columns(a)
             }
-            Self::Add(a) => {
-                Air::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::add_lookup_columns(a)
-            }
-            Self::Mul(a) => {
-                Air::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::add_lookup_columns(a)
-            }
             Self::Dynamic(a) => {
                 Air::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::add_lookup_columns(a)
             }
@@ -2389,8 +2377,6 @@ where
             Self::Const(a) => Air::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::get_lookups(a),
             Self::Public(a) => Air::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::get_lookups(a),
             Self::Alu(a) => Air::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::get_lookups(a),
-            Self::Add(a) => Air::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::get_lookups(a),
-            Self::Mul(a) => Air::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::get_lookups(a),
             Self::Dynamic(a) => Air::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::get_lookups(a),
         }
     }
@@ -2426,16 +2412,6 @@ where
                     a, builder,
                 );
             }
-            Self::Add(a) => {
-                Air::<DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>>::eval(
-                    a, builder,
-                );
-            }
-            Self::Mul(a) => {
-                Air::<DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>>::eval(
-                    a, builder,
-                );
-            }
             Self::Dynamic(a) => {
                 Air::<DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>>::eval(
                     a, builder,
@@ -2456,12 +2432,6 @@ where
                 DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>,
             >::add_lookup_columns(a),
             Self::Alu(a) => Air::<
-                DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>,
-            >::add_lookup_columns(a),
-            Self::Add(a) => Air::<
-                DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>,
-            >::add_lookup_columns(a),
-            Self::Mul(a) => Air::<
                 DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>,
             >::add_lookup_columns(a),
             Self::Dynamic(a) => {
@@ -2487,12 +2457,6 @@ where
             Self::Alu(a) => {
                 Air::<DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>>::get_lookups(a)
             }
-            Self::Add(a) => {
-                Air::<DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>>::get_lookups(a)
-            }
-            Self::Mul(a) => {
-                Air::<DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>>::get_lookups(a)
-            }
             Self::Dynamic(a) => {
                 Air::<DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>>::get_lookups(a)
             }
@@ -2513,8 +2477,6 @@ where
             Self::Const(a) => Air::<ProverConstraintFolderWithLookups<'a, SC>>::eval(a, builder),
             Self::Public(a) => Air::<ProverConstraintFolderWithLookups<'a, SC>>::eval(a, builder),
             Self::Alu(a) => Air::<ProverConstraintFolderWithLookups<'a, SC>>::eval(a, builder),
-            Self::Add(a) => Air::<ProverConstraintFolderWithLookups<'a, SC>>::eval(a, builder),
-            Self::Mul(a) => Air::<ProverConstraintFolderWithLookups<'a, SC>>::eval(a, builder),
             Self::Dynamic(a) => {
                 Air::<ProverConstraintFolderWithLookups<'a, SC>>::eval(a, builder);
             }
@@ -2533,8 +2495,6 @@ where
                 Air::<ProverConstraintFolderWithLookups<'a, SC>>::add_lookup_columns(a)
             }
             Self::Alu(a) => Air::<ProverConstraintFolderWithLookups<'a, SC>>::add_lookup_columns(a),
-            Self::Add(a) => Air::<ProverConstraintFolderWithLookups<'a, SC>>::add_lookup_columns(a),
-            Self::Mul(a) => Air::<ProverConstraintFolderWithLookups<'a, SC>>::add_lookup_columns(a),
             Self::Dynamic(a) => {
                 Air::<ProverConstraintFolderWithLookups<'a, SC>>::add_lookup_columns(a)
             }
@@ -2549,8 +2509,6 @@ where
             Self::Const(a) => Air::<ProverConstraintFolderWithLookups<'a, SC>>::get_lookups(a),
             Self::Public(a) => Air::<ProverConstraintFolderWithLookups<'a, SC>>::get_lookups(a),
             Self::Alu(a) => Air::<ProverConstraintFolderWithLookups<'a, SC>>::get_lookups(a),
-            Self::Add(a) => Air::<ProverConstraintFolderWithLookups<'a, SC>>::get_lookups(a),
-            Self::Mul(a) => Air::<ProverConstraintFolderWithLookups<'a, SC>>::get_lookups(a),
             Self::Dynamic(a) => Air::<ProverConstraintFolderWithLookups<'a, SC>>::get_lookups(a),
         }
     }
@@ -2571,8 +2529,6 @@ where
             Self::Const(a) => Air::<VerifierConstraintFolderWithLookups<'a, SC>>::eval(a, builder),
             Self::Public(a) => Air::<VerifierConstraintFolderWithLookups<'a, SC>>::eval(a, builder),
             Self::Alu(a) => Air::<VerifierConstraintFolderWithLookups<'a, SC>>::eval(a, builder),
-            Self::Add(a) => Air::<VerifierConstraintFolderWithLookups<'a, SC>>::eval(a, builder),
-            Self::Mul(a) => Air::<VerifierConstraintFolderWithLookups<'a, SC>>::eval(a, builder),
             Self::Dynamic(a) => {
                 Air::<VerifierConstraintFolderWithLookups<'a, SC>>::eval(a, builder);
             }
@@ -2593,12 +2549,6 @@ where
             Self::Alu(a) => {
                 Air::<VerifierConstraintFolderWithLookups<'a, SC>>::add_lookup_columns(a)
             }
-            Self::Add(a) => {
-                Air::<VerifierConstraintFolderWithLookups<'a, SC>>::add_lookup_columns(a)
-            }
-            Self::Mul(a) => {
-                Air::<VerifierConstraintFolderWithLookups<'a, SC>>::add_lookup_columns(a)
-            }
             Self::Dynamic(a) => {
                 Air::<VerifierConstraintFolderWithLookups<'a, SC>>::add_lookup_columns(a)
             }
@@ -2613,8 +2563,6 @@ where
             Self::Const(a) => Air::<VerifierConstraintFolderWithLookups<'a, SC>>::get_lookups(a),
             Self::Public(a) => Air::<VerifierConstraintFolderWithLookups<'a, SC>>::get_lookups(a),
             Self::Alu(a) => Air::<VerifierConstraintFolderWithLookups<'a, SC>>::get_lookups(a),
-            Self::Add(a) => Air::<VerifierConstraintFolderWithLookups<'a, SC>>::get_lookups(a),
-            Self::Mul(a) => Air::<VerifierConstraintFolderWithLookups<'a, SC>>::get_lookups(a),
             Self::Dynamic(a) => Air::<VerifierConstraintFolderWithLookups<'a, SC>>::get_lookups(a),
         }
     }
@@ -3163,10 +3111,6 @@ mod tests {
                         lookups.len()
                     );
                 }
-                CircuitTableAir::Add(_) | CircuitTableAir::Mul(_) => {
-                    // Deprecated tables, should not appear in new tests
-                    panic!("Deprecated Add/Mul table found in test");
-                }
                 CircuitTableAir::Dynamic(_dynamic_air) => {
                     assert!(
                         lookups.is_empty(),
@@ -3374,10 +3318,6 @@ mod tests {
                         expected_num_lookups,
                         lookups.len()
                     );
-                }
-                CircuitTableAir::Add(_) | CircuitTableAir::Mul(_) => {
-                    // Deprecated tables, should not appear in new tests
-                    panic!("Deprecated Add/Mul table found in test");
                 }
                 CircuitTableAir::Dynamic(_dynamic_air) => {
                     assert!(

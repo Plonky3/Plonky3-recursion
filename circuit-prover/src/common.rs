@@ -8,7 +8,7 @@ use p3_field::ExtensionField;
 use p3_uni_stark::{StarkGenericConfig, SymbolicExpression, Val};
 use p3_util::log2_ceil_usize;
 
-use crate::air::{AddAir, AluAir, ConstAir, MulAir, PublicAir, WitnessAir};
+use crate::air::{AluAir, ConstAir, PublicAir, WitnessAir};
 use crate::config::StarkField;
 use crate::field_params::ExtractBinomialW;
 use crate::{DynamicAirEntry, Poseidon2Prover, TablePacking};
@@ -25,12 +25,8 @@ where
     Witness(WitnessAir<Val<SC>, D>),
     Const(ConstAir<Val<SC>, D>),
     Public(PublicAir<Val<SC>, D>),
-    /// Unified ALU table (replaces Add and Mul)
+    /// Unified ALU table for all arithmetic operations
     Alu(AluAir<Val<SC>, D>),
-    /// Deprecated: Addition table (will be removed)
-    Add(AddAir<Val<SC>, D>),
-    /// Deprecated: Multiplication table (will be removed)
-    Mul(MulAir<Val<SC>, D>),
     Dynamic(DynamicAirEntry<SC>),
 }
 
@@ -52,8 +48,6 @@ where
             Self::Const(air) => Self::Const(air.clone()),
             Self::Public(air) => Self::Public(air.clone()),
             Self::Alu(air) => Self::Alu(air.clone()),
-            Self::Add(air) => Self::Add(air.clone()),
-            Self::Mul(air) => Self::Mul(air.clone()),
             Self::Dynamic(air) => Self::Dynamic(air.clone()),
         }
     }

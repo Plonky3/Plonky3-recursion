@@ -7,10 +7,8 @@ use alloc::{format, vec};
 use hashbrown::HashMap;
 use tracing::instrument;
 
-use super::add::AddTraceBuilder;
 use super::alu::AluTraceBuilder;
 use super::constant::ConstTraceBuilder;
-use super::mul::MulTraceBuilder;
 use super::public::PublicTraceBuilder;
 use super::witness::WitnessTraceBuilder;
 use super::{NonPrimitiveTrace, Traces};
@@ -184,9 +182,6 @@ impl<F: CircuitField> CircuitRunner<F> {
         let const_trace = ConstTraceBuilder::new(&self.circuit.ops).build()?;
         let public_trace = PublicTraceBuilder::new(&self.circuit.ops, &self.witness).build()?;
         let alu_trace = AluTraceBuilder::new(&self.circuit.ops, &self.witness).build()?;
-        // Deprecated: add_trace and mul_trace are kept for backward compatibility
-        let add_trace = AddTraceBuilder::new(&self.circuit.ops, &self.witness).build()?;
-        let mul_trace = MulTraceBuilder::new(&self.circuit.ops, &self.witness).build()?;
 
         let mut non_primitive_traces: HashMap<NonPrimitiveOpType, Box<dyn NonPrimitiveTrace<F>>> =
             HashMap::new();
@@ -206,8 +201,6 @@ impl<F: CircuitField> CircuitRunner<F> {
             const_trace,
             public_trace,
             alu_trace,
-            add_trace,
-            mul_trace,
             tag_to_witness: self.circuit.tag_to_witness,
             non_primitive_traces,
         })
@@ -232,7 +225,14 @@ impl<F: CircuitField> CircuitRunner<F> {
                         return Err(CircuitError::PublicInputNotSet { witness_id: out });
                     }
                 }
-                Op::Alu { kind, a, b, c, out } => {
+                Op::Alu {
+                    kind,
+                    a,
+                    b,
+                    c,
+                    out,
+                    intermediate_out,
+                } => {
                     use crate::op::AluOpKind;
                     match kind {
                         AluOpKind::Add => {
@@ -270,12 +270,19 @@ impl<F: CircuitField> CircuitRunner<F> {
                             // out = a * b + c
                             let a_val = self.get_witness(a)?;
                             let b_val = self.get_witness(b)?;
+                            let ab_product = a_val * b_val;
+
+                            // Set intermediate_out if fused from separate operations
+                            if let Some(io) = intermediate_out {
+                                self.set_witness(io, ab_product)?;
+                            }
+
                             let c_val = if let Some(c_id) = c {
                                 self.get_witness(c_id)?
                             } else {
                                 F::ZERO
                             };
-                            let result = a_val * b_val + c_val;
+                            let result = ab_product + c_val;
                             self.set_witness(out, result)?;
                         }
                     }
@@ -392,8 +399,8 @@ mod tests {
         // Check that we have public trace entries
         assert!(!traces.public_trace.values.is_empty());
 
-        // Check that we have add trace entries
-        assert!(!traces.add_trace.lhs_values.is_empty());
+        // Check that we have ALU trace entries
+        assert!(!traces.alu_trace.a_values.is_empty());
     }
 
     #[derive(Debug, Clone)]
@@ -479,13 +486,9 @@ mod tests {
         );
 
         // Should have one mul operation: 37 * x
-        assert_eq!(traces.mul_trace.lhs_values.len(), 1);
-
-        // Encoded subtraction lands in the add table (result + rhs = lhs).
-        assert_eq!(traces.add_trace.lhs_values.len(), 1);
-        assert_eq!(traces.add_trace.lhs_index, vec![WitnessId(2)]);
-        assert_eq!(traces.add_trace.rhs_index, vec![WitnessId(0)]);
-        assert_eq!(traces.add_trace.result_index, vec![WitnessId(4)]);
+        // And one add operation for sub: result + rhs = lhs
+        // Total 2 ALU operations
+        assert_eq!(traces.alu_trace.a_values.len(), 2);
     }
 
     #[test]
@@ -537,21 +540,20 @@ mod tests {
         assert_eq!(traces.public_trace.values[1], y_val);
         assert_eq!(traces.public_trace.values[2], z_val);
 
-        // Should have one mul and one add operation
-        assert_eq!(traces.mul_trace.lhs_values.len(), 1);
-        assert_eq!(traces.add_trace.lhs_values.len(), 1);
+        // Should have mul and add operations (MulAdd fusion disabled)
+        assert_eq!(traces.alu_trace.a_values.len(), 2);
 
-        // Verify mul operation: y * z with genuine extension field multiplication
+        // Verify mul operation: y * z
         let expected_yz = y_val * z_val;
-        assert_eq!(traces.mul_trace.lhs_values[0], y_val);
-        assert_eq!(traces.mul_trace.rhs_values[0], z_val);
-        assert_eq!(traces.mul_trace.result_values[0], expected_yz);
+        assert_eq!(traces.alu_trace.a_values[0], y_val);
+        assert_eq!(traces.alu_trace.b_values[0], z_val);
+        assert_eq!(traces.alu_trace.out_values[0], expected_yz);
 
-        // Verify add operation: x + yz with genuine extension field addition
+        // Verify add operation: x + (y * z)
         let expected_result = x_val + expected_yz;
-        assert_eq!(traces.add_trace.lhs_values[0], x_val);
-        assert_eq!(traces.add_trace.rhs_values[0], expected_yz);
-        assert_eq!(traces.add_trace.result_values[0], expected_result);
+        assert_eq!(traces.alu_trace.a_values[1], x_val);
+        assert_eq!(traces.alu_trace.b_values[1], expected_yz);
+        assert_eq!(traces.alu_trace.out_values[1], expected_result);
     }
 
     #[test]

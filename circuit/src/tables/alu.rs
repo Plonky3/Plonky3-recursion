@@ -76,7 +76,10 @@ impl<'a, F: Clone + Field> AluTraceBuilder<'a, F> {
         let mut out_index = Vec::new();
 
         for prim in self.primitive_ops {
-            if let Op::Alu { kind, a, b, c, out } = prim {
+            if let Op::Alu {
+                kind, a, b, c, out, ..
+            } = prim
+            {
                 let a_val = self.resolve(a)?;
                 let b_val = self.resolve(b)?;
                 let c_val = if let Some(c_id) = c {
@@ -153,13 +156,7 @@ mod tests {
         let out = F::from_u64(8);
         let witness = vec![Some(a), Some(b), Some(out)];
 
-        let ops = vec![Op::Alu {
-            kind: AluOpKind::Add,
-            a: WitnessId(0),
-            b: WitnessId(1),
-            c: None,
-            out: WitnessId(2),
-        }];
+        let ops = vec![Op::add(WitnessId(0), WitnessId(1), WitnessId(2))];
 
         let builder = AluTraceBuilder::new(&ops, &witness);
         let trace = builder.build().expect("Failed to build trace");
@@ -178,13 +175,7 @@ mod tests {
         let out = F::from_u64(15);
         let witness = vec![Some(a), Some(b), Some(out)];
 
-        let ops = vec![Op::Alu {
-            kind: AluOpKind::Mul,
-            a: WitnessId(0),
-            b: WitnessId(1),
-            c: None,
-            out: WitnessId(2),
-        }];
+        let ops = vec![Op::mul(WitnessId(0), WitnessId(1), WitnessId(2))];
 
         let builder = AluTraceBuilder::new(&ops, &witness);
         let trace = builder.build().expect("Failed to build trace");
@@ -205,13 +196,12 @@ mod tests {
         let out = F::from_u64(17);
         let witness = vec![Some(a), Some(b), Some(c), Some(out)];
 
-        let ops = vec![Op::Alu {
-            kind: AluOpKind::MulAdd,
-            a: WitnessId(0),
-            b: WitnessId(1),
-            c: Some(WitnessId(2)),
-            out: WitnessId(3),
-        }];
+        let ops = vec![Op::mul_add(
+            WitnessId(0),
+            WitnessId(1),
+            WitnessId(2),
+            WitnessId(3),
+        )];
 
         let builder = AluTraceBuilder::new(&ops, &witness);
         let trace = builder.build().expect("Failed to build trace");
@@ -231,13 +221,7 @@ mod tests {
         let a = F::ONE;
         let witness = vec![Some(a), Some(F::ZERO)]; // a and placeholder for b
 
-        let ops = vec![Op::Alu {
-            kind: AluOpKind::BoolCheck,
-            a: WitnessId(0),
-            b: WitnessId(1), // unused for BoolCheck but required structurally
-            c: None,
-            out: WitnessId(0), // out = a
-        }];
+        let ops = vec![Op::bool_check(WitnessId(0), WitnessId(1), WitnessId(0))];
 
         let builder = AluTraceBuilder::new(&ops, &witness);
         let trace = builder.build().expect("Failed to build trace");
@@ -267,20 +251,8 @@ mod tests {
         ];
 
         let ops = vec![
-            Op::Alu {
-                kind: AluOpKind::Add,
-                a: WitnessId(0),
-                b: WitnessId(1),
-                c: None,
-                out: WitnessId(2),
-            },
-            Op::Alu {
-                kind: AluOpKind::Mul,
-                a: WitnessId(3),
-                b: WitnessId(4),
-                c: None,
-                out: WitnessId(5),
-            },
+            Op::add(WitnessId(0), WitnessId(1), WitnessId(2)),
+            Op::mul(WitnessId(3), WitnessId(4), WitnessId(5)),
         ];
 
         let builder = AluTraceBuilder::new(&ops, &witness);
@@ -310,13 +282,7 @@ mod tests {
     fn test_missing_witness_returns_error() {
         let witness = vec![None, Some(F::from_u64(5)), Some(F::from_u64(5))];
 
-        let ops = vec![Op::Alu {
-            kind: AluOpKind::Add,
-            a: WitnessId(0),
-            b: WitnessId(1),
-            c: None,
-            out: WitnessId(2),
-        }];
+        let ops = vec![Op::add(WitnessId(0), WitnessId(1), WitnessId(2))];
 
         let builder = AluTraceBuilder::new(&ops, &witness);
         let result = builder.build();

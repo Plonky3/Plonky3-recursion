@@ -123,7 +123,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let expr_to_widx = circuit.expr_to_widx.clone();
 
     let stark_config = config::baby_bear().build();
-    let table_packing = TablePacking::new(1, 1, 1);
+    let table_packing = TablePacking::new(1, 1);
     let poseidon2_config = Poseidon2Config::BabyBearD4Width16;
     let (airs_degrees, witness_multiplicities) =
         get_airs_and_degrees_with_prep::<BabyBearConfig, _, 4>(

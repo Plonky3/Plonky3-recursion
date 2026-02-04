@@ -83,6 +83,9 @@ pub enum Op<F> {
         /// Third operand, only used for MulAdd
         c: Option<WitnessId>,
         out: WitnessId,
+        /// Intermediate output for MulAdd: stores a * b when fused from separate mul + add.
+        /// The runner sets this witness value so dependent operations still work.
+        intermediate_out: Option<WitnessId>,
     },
 
     /// Non-primitive operation with executor-based dispatch
@@ -104,6 +107,7 @@ impl<F> Op<F> {
             b,
             c: None,
             out,
+            intermediate_out: None,
         }
     }
 
@@ -115,6 +119,7 @@ impl<F> Op<F> {
             b,
             c: None,
             out,
+            intermediate_out: None,
         }
     }
 
@@ -126,6 +131,7 @@ impl<F> Op<F> {
             b,
             c: Some(c),
             out,
+            intermediate_out: None,
         }
     }
 
@@ -137,6 +143,7 @@ impl<F> Op<F> {
             b,
             c: None,
             out,
+            intermediate_out: None,
         }
     }
 
@@ -190,12 +197,20 @@ impl<F: Field + Clone> Clone for Op<F> {
                 out: *out,
                 public_pos: *public_pos,
             },
-            Self::Alu { kind, a, b, c, out } => Self::Alu {
+            Self::Alu {
+                kind,
+                a,
+                b,
+                c,
+                out,
+                intermediate_out,
+            } => Self::Alu {
                 kind: *kind,
                 a: *a,
                 b: *b,
                 c: *c,
                 out: *out,
+                intermediate_out: *intermediate_out,
             },
             Self::NonPrimitiveOpWithExecutor {
                 inputs,
@@ -236,6 +251,7 @@ impl<F: Field + PartialEq> PartialEq for Op<F> {
                     b: b1,
                     c: c1,
                     out: o1,
+                    intermediate_out: io1,
                 },
                 Self::Alu {
                     kind: k2,
@@ -243,8 +259,9 @@ impl<F: Field + PartialEq> PartialEq for Op<F> {
                     b: b2,
                     c: c2,
                     out: o2,
+                    intermediate_out: io2,
                 },
-            ) => k1 == k2 && a1 == a2 && b1 == b2 && c1 == c2 && o1 == o2,
+            ) => k1 == k2 && a1 == a2 && b1 == b2 && c1 == c2 && o1 == o2 && io1 == io2,
             (
                 Self::NonPrimitiveOpWithExecutor {
                     inputs: i1,
@@ -577,13 +594,7 @@ mod tests {
             val: F::from_u64(5),
         };
 
-        let alu_op = Op::Alu {
-            kind: AluOpKind::Add,
-            a: WitnessId(0),
-            b: WitnessId(1),
-            c: None,
-            out: WitnessId(2),
-        };
+        let alu_op = Op::add(WitnessId(0), WitnessId(1), WitnessId(2));
 
         // Operations of different variants should never be equal
         assert_ne!(const_op, alu_op);
@@ -592,21 +603,8 @@ mod tests {
     #[test]
     fn test_op_partial_eq_same_variant_different_values() {
         // Create two ALU operations with different witness indices
-        let alu_op1: Op<F> = Op::Alu {
-            kind: AluOpKind::Add,
-            a: WitnessId(0),
-            b: WitnessId(1),
-            c: None,
-            out: WitnessId(2),
-        };
-
-        let alu_op2: Op<F> = Op::Alu {
-            kind: AluOpKind::Add,
-            a: WitnessId(3),
-            b: WitnessId(4),
-            c: None,
-            out: WitnessId(5),
-        };
+        let alu_op1: Op<F> = Op::add(WitnessId(0), WitnessId(1), WitnessId(2));
+        let alu_op2: Op<F> = Op::add(WitnessId(3), WitnessId(4), WitnessId(5));
 
         // Same variant but different values should not be equal
         assert_ne!(alu_op1, alu_op2);
@@ -619,20 +617,8 @@ mod tests {
         let b = WitnessId(1);
         let out = WitnessId(2);
 
-        let alu_op1: Op<F> = Op::Alu {
-            kind: AluOpKind::Add,
-            a,
-            b,
-            c: None,
-            out,
-        };
-        let alu_op2: Op<F> = Op::Alu {
-            kind: AluOpKind::Add,
-            a,
-            b,
-            c: None,
-            out,
-        };
+        let alu_op1: Op<F> = Op::add(a, b, out);
+        let alu_op2: Op<F> = Op::add(a, b, out);
 
         // Identical operations should be equal
         assert_eq!(alu_op1, alu_op2);
@@ -715,21 +701,8 @@ mod tests {
     #[test]
     fn test_op_partial_eq_alu_mul_different_values() {
         // Create two ALU multiplication operations with different witness indices
-        let mul_op1: Op<F> = Op::Alu {
-            kind: AluOpKind::Mul,
-            a: WitnessId(0),
-            b: WitnessId(1),
-            c: None,
-            out: WitnessId(2),
-        };
-
-        let mul_op2: Op<F> = Op::Alu {
-            kind: AluOpKind::Mul,
-            a: WitnessId(10),
-            b: WitnessId(11),
-            c: None,
-            out: WitnessId(12),
-        };
+        let mul_op1: Op<F> = Op::mul(WitnessId(0), WitnessId(1), WitnessId(2));
+        let mul_op2: Op<F> = Op::mul(WitnessId(10), WitnessId(11), WitnessId(12));
 
         // Different witness indices should not be equal
         assert_ne!(mul_op1, mul_op2);
@@ -742,20 +715,8 @@ mod tests {
         let b = WitnessId(8);
         let out = WitnessId(9);
 
-        let mul_op1: Op<F> = Op::Alu {
-            kind: AluOpKind::Mul,
-            a,
-            b,
-            c: None,
-            out,
-        };
-        let mul_op2: Op<F> = Op::Alu {
-            kind: AluOpKind::Mul,
-            a,
-            b,
-            c: None,
-            out,
-        };
+        let mul_op1: Op<F> = Op::mul(a, b, out);
+        let mul_op2: Op<F> = Op::mul(a, b, out);
 
         // Identical multiplication operations should be equal
         assert_eq!(mul_op1, mul_op2);
@@ -764,21 +725,8 @@ mod tests {
     #[test]
     fn test_op_partial_eq_alu_partial_match() {
         // Create two ALU operations where only some fields match
-        let alu_op1: Op<F> = Op::Alu {
-            kind: AluOpKind::Add,
-            a: WitnessId(0),
-            b: WitnessId(1),
-            c: None,
-            out: WitnessId(2),
-        };
-
-        let alu_op2: Op<F> = Op::Alu {
-            kind: AluOpKind::Add,
-            a: WitnessId(0),
-            b: WitnessId(1),
-            c: None,
-            out: WitnessId(99), // Different output
-        };
+        let alu_op1: Op<F> = Op::add(WitnessId(0), WitnessId(1), WitnessId(2));
+        let alu_op2: Op<F> = Op::add(WitnessId(0), WitnessId(1), WitnessId(99)); // Different output
 
         // Partial match is not enough for equality
         assert_ne!(alu_op1, alu_op2);
@@ -787,21 +735,8 @@ mod tests {
     #[test]
     fn test_op_partial_eq_alu_different_kinds() {
         // Create two ALU operations with same operands but different kinds
-        let add_op: Op<F> = Op::Alu {
-            kind: AluOpKind::Add,
-            a: WitnessId(0),
-            b: WitnessId(1),
-            c: None,
-            out: WitnessId(2),
-        };
-
-        let mul_op: Op<F> = Op::Alu {
-            kind: AluOpKind::Mul,
-            a: WitnessId(0),
-            b: WitnessId(1),
-            c: None,
-            out: WitnessId(2),
-        };
+        let add_op: Op<F> = Op::add(WitnessId(0), WitnessId(1), WitnessId(2));
+        let mul_op: Op<F> = Op::mul(WitnessId(0), WitnessId(1), WitnessId(2));
 
         // Different operation kinds should not be equal
         assert_ne!(add_op, mul_op);
@@ -810,21 +745,8 @@ mod tests {
     #[test]
     fn test_op_partial_eq_alu_muladd() {
         // Create two identical MulAdd operations
-        let muladd_op1: Op<F> = Op::Alu {
-            kind: AluOpKind::MulAdd,
-            a: WitnessId(0),
-            b: WitnessId(1),
-            c: Some(WitnessId(2)),
-            out: WitnessId(3),
-        };
-
-        let muladd_op2: Op<F> = Op::Alu {
-            kind: AluOpKind::MulAdd,
-            a: WitnessId(0),
-            b: WitnessId(1),
-            c: Some(WitnessId(2)),
-            out: WitnessId(3),
-        };
+        let muladd_op1: Op<F> = Op::mul_add(WitnessId(0), WitnessId(1), WitnessId(2), WitnessId(3));
+        let muladd_op2: Op<F> = Op::mul_add(WitnessId(0), WitnessId(1), WitnessId(2), WitnessId(3));
 
         assert_eq!(muladd_op1, muladd_op2);
     }

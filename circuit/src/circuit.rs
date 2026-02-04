@@ -167,7 +167,9 @@ impl<F: Field> Circuit<F> {
                 }
                 // Unified ALU operations with selectors for operation kind.
                 // Preprocessed: [sel_add, sel_mul, sel_bool, sel_muladd, a_idx, b_idx, c_idx, out_idx]
-                Op::Alu { kind, a, b, c, out } => {
+                Op::Alu {
+                    kind, a, b, c, out, ..
+                } => {
                     use crate::op::AluOpKind;
 
                     // Generate selectors based on operation kind

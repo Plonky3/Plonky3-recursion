@@ -2,7 +2,7 @@ mod common;
 
 use p3_batch_stark::CommonData;
 use p3_circuit::CircuitBuilder;
-use p3_circuit_prover::air::{AddAir, ConstAir, MulAir, PublicAir, WitnessAir};
+use p3_circuit_prover::air::{AluAir, ConstAir, PublicAir, WitnessAir};
 use p3_circuit_prover::batch_stark_prover::PrimitiveTable;
 use p3_circuit_prover::common::get_airs_and_degrees_with_prep;
 use p3_circuit_prover::{BatchStarkProver, TablePacking};
@@ -41,7 +41,7 @@ fn test_fibonacci_batch_verifier() {
 
     builder.dump_allocation_log();
 
-    let table_packing = TablePacking::new(1, 4, 1);
+    let table_packing = TablePacking::new(1, 4);
 
     // Use a seeded RNG for deterministic permutations
     let mut rng = SmallRng::seed_from_u64(42);
@@ -117,18 +117,14 @@ fn test_fibonacci_batch_verifier() {
         )),
         CircuitTablesAir::Const(ConstAir::<F, TRACE_D>::new(rows[PrimitiveTable::Const])),
         CircuitTablesAir::Public(PublicAir::<F, TRACE_D>::new(rows[PrimitiveTable::Public])),
-        CircuitTablesAir::Add(AddAir::<F, TRACE_D>::new(
-            rows[PrimitiveTable::Add],
-            packing.add_lanes(),
-        )),
-        CircuitTablesAir::Mul(MulAir::<F, TRACE_D>::new(
-            rows[PrimitiveTable::Mul],
-            packing.mul_lanes(),
+        CircuitTablesAir::Alu(AluAir::<F, TRACE_D>::new(
+            rows[PrimitiveTable::Alu],
+            packing.alu_lanes(),
         )),
     ];
 
-    // Public values (empty for all 5 circuit tables, using base field)
-    let pis: Vec<Vec<F>> = vec![vec![]; 5];
+    // Public values (empty for all 4 circuit tables, using base field)
+    let pis: Vec<Vec<F>> = vec![vec![]; 4];
 
     // Build the recursive verification circuit
     let mut circuit_builder = CircuitBuilder::new();

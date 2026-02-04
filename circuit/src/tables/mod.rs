@@ -12,18 +12,14 @@ use crate::CircuitError;
 use crate::op::{NonPrimitiveOpType, OpStateMap};
 use crate::types::WitnessId;
 
-mod add;
 mod alu;
 mod constant;
-mod mul;
 mod public;
 mod runner;
 mod witness;
 
-pub use add::AddTrace;
 pub use alu::{AluTrace, AluTraceBuilder};
 pub use constant::ConstTrace;
-pub use mul::MulTrace;
 pub use public::PublicTrace;
 pub use runner::CircuitRunner;
 pub use witness::WitnessTrace;
@@ -59,10 +55,6 @@ pub struct Traces<F> {
     pub public_trace: PublicTrace<F>,
     /// Unified ALU operation table (Add, Mul, BoolCheck, MulAdd).
     pub alu_trace: AluTrace<F>,
-    /// Addition operation table (deprecated, will be removed).
-    pub add_trace: AddTrace<F>,
-    /// Multiplication operation table (deprecated, will be removed).
-    pub mul_trace: MulTrace<F>,
     /// Dynamically registered non-primitive traces indexed by operation type.
     pub non_primitive_traces: HashMap<NonPrimitiveOpType, Box<dyn NonPrimitiveTrace<F>>>,
     /// Tag to witness index mapping for probing values by name.
@@ -101,8 +93,6 @@ impl<F: Clone> Clone for Traces<F> {
             const_trace: self.const_trace.clone(),
             public_trace: self.public_trace.clone(),
             alu_trace: self.alu_trace.clone(),
-            add_trace: self.add_trace.clone(),
-            mul_trace: self.mul_trace.clone(),
             non_primitive_traces: self
                 .non_primitive_traces
                 .iter()
@@ -119,8 +109,6 @@ where
     ConstTrace<F>: fmt::Debug,
     PublicTrace<F>: fmt::Debug,
     AluTrace<F>: fmt::Debug,
-    AddTrace<F>: fmt::Debug,
-    MulTrace<F>: fmt::Debug,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let extra_summary: Vec<_> = self
@@ -133,8 +121,6 @@ where
             .field("const_trace", &self.const_trace)
             .field("public_trace", &self.public_trace)
             .field("alu_trace", &self.alu_trace)
-            .field("add_trace", &self.add_trace)
-            .field("mul_trace", &self.mul_trace)
             .field("non_primitive_traces", &extra_summary)
             .finish()
     }
@@ -178,31 +164,20 @@ impl<F: alloc::fmt::Debug> Traces<F> {
                 tracing::debug!("Row {i}: WitnessId({idx}) = {val:?}");
             }
 
-            tracing::debug!("\n=== MUL TRACE ===");
-            for i in 0..self.mul_trace.lhs_values.len() {
+            tracing::debug!("\n=== ALU TRACE ===");
+            for i in 0..self.alu_trace.a_values.len() {
                 tracing::debug!(
-                    "Row {}: WitnessId({}) * WitnessId({}) -> WitnessId({}) | {:?} * {:?} -> {:?}",
+                    "Row {}: {:?} WitnessId({}) op WitnessId({}) [c={}] -> WitnessId({}) | {:?} op {:?} [{:?}] -> {:?}",
                     i,
-                    self.mul_trace.lhs_index[i],
-                    self.mul_trace.rhs_index[i],
-                    self.mul_trace.result_index[i],
-                    self.mul_trace.lhs_values[i],
-                    self.mul_trace.rhs_values[i],
-                    self.mul_trace.result_values[i]
-                );
-            }
-
-            tracing::debug!("\n=== ADD TRACE ===");
-            for i in 0..self.add_trace.lhs_values.len() {
-                tracing::debug!(
-                    "Row {}: WitnessId({}) + WitnessId({}) -> WitnessId({}) | {:?} + {:?} -> {:?}",
-                    i,
-                    self.add_trace.lhs_index[i],
-                    self.add_trace.rhs_index[i],
-                    self.add_trace.result_index[i],
-                    self.add_trace.lhs_values[i],
-                    self.add_trace.rhs_values[i],
-                    self.add_trace.result_values[i]
+                    self.alu_trace.op_kind[i],
+                    self.alu_trace.a_index[i],
+                    self.alu_trace.b_index[i],
+                    self.alu_trace.c_index[i],
+                    self.alu_trace.out_index[i],
+                    self.alu_trace.a_values[i],
+                    self.alu_trace.b_values[i],
+                    self.alu_trace.c_values[i],
+                    self.alu_trace.out_values[i]
                 );
             }
         }

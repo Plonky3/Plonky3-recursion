@@ -10,7 +10,7 @@ use p3_air::{
 use p3_batch_stark::CommonData;
 use p3_circuit::CircuitBuilder;
 use p3_circuit::utils::ColumnsTargets;
-use p3_circuit_prover::air::{AddAir, ConstAir, MulAir, PublicAir, WitnessAir};
+use p3_circuit_prover::air::{AluAir, ConstAir, PublicAir, WitnessAir};
 use p3_circuit_prover::batch_stark_prover::{PrimitiveTable, RowCounts};
 use p3_commit::{Pcs, PolynomialSpace};
 use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing, PrimeField};
@@ -45,8 +45,7 @@ pub enum CircuitTablesAir<F: Field, const D: usize> {
     Witness(WitnessAir<F, D>),
     Const(ConstAir<F, D>),
     Public(PublicAir<F, D>),
-    Add(AddAir<F, D>),
-    Mul(MulAir<F, D>),
+    Alu(AluAir<F, D>),
 }
 
 impl<F: Field, const D: usize> P3BaseAir<F> for CircuitTablesAir<F, D> {
@@ -55,8 +54,7 @@ impl<F: Field, const D: usize> P3BaseAir<F> for CircuitTablesAir<F, D> {
             Self::Witness(a) => P3BaseAir::width(a),
             Self::Const(a) => P3BaseAir::width(a),
             Self::Public(a) => P3BaseAir::width(a),
-            Self::Add(a) => P3BaseAir::width(a),
-            Self::Mul(a) => P3BaseAir::width(a),
+            Self::Alu(a) => P3BaseAir::width(a),
         }
     }
 }
@@ -71,8 +69,7 @@ where
             Self::Witness(a) => P3Air::eval(a, builder),
             Self::Const(a) => P3Air::eval(a, builder),
             Self::Public(a) => P3Air::eval(a, builder),
-            Self::Add(a) => P3Air::eval(a, builder),
-            Self::Mul(a) => P3Air::eval(a, builder),
+            Self::Alu(a) => P3Air::eval(a, builder),
         }
     }
 
@@ -81,8 +78,7 @@ where
             Self::Witness(a) => P3Air::<AB>::add_lookup_columns(a),
             Self::Const(a) => P3Air::<AB>::add_lookup_columns(a),
             Self::Public(a) => P3Air::<AB>::add_lookup_columns(a),
-            Self::Add(a) => P3Air::<AB>::add_lookup_columns(a),
-            Self::Mul(a) => P3Air::<AB>::add_lookup_columns(a),
+            Self::Alu(a) => P3Air::<AB>::add_lookup_columns(a),
         }
     }
 
@@ -91,8 +87,7 @@ where
             Self::Witness(a) => P3Air::<AB>::get_lookups(a),
             Self::Const(a) => P3Air::<AB>::get_lookups(a),
             Self::Public(a) => P3Air::<AB>::get_lookups(a),
-            Self::Add(a) => P3Air::<AB>::get_lookups(a),
-            Self::Mul(a) => P3Air::<AB>::get_lookups(a),
+            Self::Alu(a) => P3Air::<AB>::get_lookups(a),
         }
     }
 }
@@ -139,8 +134,7 @@ where
     let rows: RowCounts = proof.rows;
     let packing = proof.table_packing;
     let witness_lanes = packing.witness_lanes();
-    let add_lanes = packing.add_lanes();
-    let mul_lanes = packing.mul_lanes();
+    let alu_lanes = packing.alu_lanes();
 
     let circuit_airs = vec![
         CircuitTablesAir::Witness(WitnessAir::<Val<SC>, TRACE_D>::new(
@@ -153,13 +147,9 @@ where
         CircuitTablesAir::Public(PublicAir::<Val<SC>, TRACE_D>::new(
             rows[PrimitiveTable::Public],
         )),
-        CircuitTablesAir::Add(AddAir::<Val<SC>, TRACE_D>::new(
-            rows[PrimitiveTable::Add],
-            add_lanes,
-        )),
-        CircuitTablesAir::Mul(MulAir::<Val<SC>, TRACE_D>::new(
-            rows[PrimitiveTable::Mul],
-            mul_lanes,
+        CircuitTablesAir::Alu(AluAir::<Val<SC>, TRACE_D>::new(
+            rows[PrimitiveTable::Alu],
+            alu_lanes,
         )),
     ];
 
