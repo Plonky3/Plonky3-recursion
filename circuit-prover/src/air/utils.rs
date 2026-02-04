@@ -28,6 +28,41 @@ pub fn get_index_lookups<AB: PermutationAirBuilder + AirBuilderWithPublicValues,
         .collect()
 }
 
+/// Get ALU lookups for the 4 operands (a, b, c, out).
+///
+/// ALU preprocessed layout per lane:
+/// - 0: multiplicity
+/// - 1-4: selectors (add, mul, bool, muladd)
+/// - 5-8: indices (a_idx, b_idx, c_idx, out_idx)
+///
+/// Main layout per lane: a[D], b[D], c[D], out[D]
+pub fn get_alu_index_lookups<
+    AB: PermutationAirBuilder + AirBuilderWithPublicValues,
+    const D: usize,
+>(
+    main_start: usize,
+    preprocessed_start: usize,
+    main: &[SymbolicVariable<<AB as AirBuilder>::F>],
+    preprocessed: &[SymbolicVariable<<AB as AirBuilder>::F>],
+    direction: Direction,
+) -> Vec<LookupInput<AB::F>> {
+    let multiplicity = SymbolicExpression::from(preprocessed[preprocessed_start]);
+
+    // Indices are at positions 5, 6, 7, 8 (after multiplicity + 4 selectors)
+    let idx_offset = 5;
+
+    (0..4)
+        .map(|i| {
+            let idx = SymbolicExpression::from(preprocessed[preprocessed_start + idx_offset + i]);
+
+            let values = (0..D).map(|j| SymbolicExpression::from(main[main_start + i * D + j]));
+            let inps = iter::once(idx).chain(values).collect::<Vec<_>>();
+
+            (inps, multiplicity.clone(), direction)
+        })
+        .collect()
+}
+
 /// Object‑safe gadget shim.
 pub trait LookupEvaluatorDyn<AB: PermutationAirBuilder + AirBuilderWithPublicValues> {
     fn num_aux_cols(&self) -> usize;

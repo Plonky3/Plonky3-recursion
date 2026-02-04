@@ -8,7 +8,7 @@ use p3_field::ExtensionField;
 use p3_uni_stark::{StarkGenericConfig, SymbolicExpression, Val};
 use p3_util::log2_ceil_usize;
 
-use crate::air::{AddAir, ConstAir, MulAir, PublicAir, WitnessAir};
+use crate::air::{AddAir, AluAir, ConstAir, MulAir, PublicAir, WitnessAir};
 use crate::config::StarkField;
 use crate::field_params::ExtractBinomialW;
 use crate::{DynamicAirEntry, Poseidon2Prover, TablePacking};
@@ -25,7 +25,11 @@ where
     Witness(WitnessAir<Val<SC>, D>),
     Const(ConstAir<Val<SC>, D>),
     Public(PublicAir<Val<SC>, D>),
+    /// Unified ALU table (replaces Add and Mul)
+    Alu(AluAir<Val<SC>, D>),
+    /// Deprecated: Addition table (will be removed)
     Add(AddAir<Val<SC>, D>),
+    /// Deprecated: Multiplication table (will be removed)
     Mul(MulAir<Val<SC>, D>),
     Dynamic(DynamicAirEntry<SC>),
 }
@@ -47,6 +51,7 @@ where
             Self::Witness(air) => Self::Witness(air.clone()),
             Self::Const(air) => Self::Const(air.clone()),
             Self::Public(air) => Self::Public(air.clone()),
+            Self::Alu(air) => Self::Alu(air.clone()),
             Self::Add(air) => Self::Add(air.clone()),
             Self::Mul(air) => Self::Mul(air.clone()),
             Self::Dynamic(air) => Self::Dynamic(air.clone()),
@@ -72,27 +77,19 @@ where
 {
     let mut preprocessed = circuit.generate_preprocessed_columns()?;
 
-    // If Add or Mul tables are empty, we add a dummy row to avoid issues in the AIRs.
+    // If ALU table is empty, we add a dummy row to avoid issues in the AIR.
     // That means we need to update the witness multiplicities accordingly.
     let witness_idx = PrimitiveOpType::Witness as usize;
-    let add_idx = PrimitiveOpType::Add as usize;
-    if preprocessed.primitive[add_idx].is_empty() {
-        let num_extra = AddAir::<Val<SC>, D>::lane_width() / D;
-
+    let alu_idx = PrimitiveOpType::Alu as usize;
+    if preprocessed.primitive[alu_idx].is_empty() {
+        // ALU lane has 4 operands (a, b, c, out), each with D elements
+        let num_extra = AluAir::<Val<SC>, D>::lane_width() / D;
         preprocessed.primitive[witness_idx][0] += ExtF::from_usize(num_extra);
-        preprocessed.primitive[add_idx].extend(vec![
+        // Preprocessed width per op (excluding multiplicity): 8 values
+        // [sel_add, sel_mul, sel_bool, sel_muladd, a_idx, b_idx, c_idx, out_idx]
+        preprocessed.primitive[alu_idx].extend(vec![
             ExtF::ZERO;
-            AddAir::<Val<SC>, D>::preprocessed_lane_width()
-                - 1
-        ]);
-    }
-    let mul_idx = PrimitiveOpType::Mul as usize;
-    if preprocessed.primitive[mul_idx].is_empty() {
-        let num_extra = MulAir::<Val<SC>, D>::lane_width() / D;
-        preprocessed.primitive[witness_idx][0] += ExtF::from_usize(num_extra);
-        preprocessed.primitive[mul_idx].extend(vec![
-            ExtF::ZERO;
-            MulAir::<Val<SC>, D>::preprocessed_lane_width()
+            AluAir::<Val<SC>, D>::preprocessed_lane_width()
                 - 1
         ]);
     }
@@ -119,42 +116,33 @@ where
         .try_for_each(|(idx, prep)| -> Result<(), CircuitError> {
             let table = PrimitiveOpType::from(idx);
             match table {
-                PrimitiveOpType::Add => {
-                    // The `- 1` comes from the fact that the first preprocessing column is the multiplicity,
-                    // which we do not need to compute here for `Add`.
+                PrimitiveOpType::Alu => {
+                    // ALU preprocessed per op (excluding multiplicity): 8 values
+                    // [sel_add, sel_mul, sel_bool, sel_muladd, a_idx, b_idx, c_idx, out_idx]
                     let lane_without_multiplicities =
-                        AddAir::<Val<SC>, D>::preprocessed_lane_width() - 1;
-                    assert!(prep.len() % lane_without_multiplicities == 0);
+                        AluAir::<Val<SC>, D>::preprocessed_lane_width() - 1;
+                    assert!(
+                        prep.len() % lane_without_multiplicities == 0,
+                        "ALU preprocessed length {} is not a multiple of {}",
+                        prep.len(),
+                        lane_without_multiplicities
+                    );
 
                     let num_ops = prep.len().div_ceil(lane_without_multiplicities);
-                    let add_air =
-                        AddAir::new_with_preprocessed(num_ops, packing.add_lanes(), prep.clone());
-                    table_preps[idx] = (
-                        CircuitTableAir::Add(add_air),
-                        log2_ceil_usize(num_ops.div_ceil(packing.add_lanes())),
-                    );
-                }
-                PrimitiveOpType::Mul => {
-                    // The `- 1` comes from the fact that the first preprocessing column is the multiplicity,
-                    // which we do not need to compute here for `Mul`.
-                    let lane_without_multiplicities =
-                        MulAir::<Val<SC>, D>::preprocessed_lane_width() - 1;
-                    assert!(prep.len() % lane_without_multiplicities == 0);
-                    let num_ops = prep.len().div_ceil(lane_without_multiplicities);
-                    let mul_air = if D == 1 {
-                        MulAir::new_with_preprocessed(num_ops, packing.mul_lanes(), prep.clone())
+                    let alu_air = if D == 1 {
+                        AluAir::new_with_preprocessed(num_ops, packing.alu_lanes(), prep.clone())
                     } else {
                         let w = w_binomial.unwrap();
-                        MulAir::new_binomial_with_preprocessed(
+                        AluAir::new_binomial_with_preprocessed(
                             num_ops,
-                            packing.mul_lanes(),
+                            packing.alu_lanes(),
                             w,
                             prep.clone(),
                         )
                     };
                     table_preps[idx] = (
-                        CircuitTableAir::Mul(mul_air),
-                        log2_ceil_usize(num_ops.div_ceil(packing.mul_lanes())),
+                        CircuitTableAir::Alu(alu_air),
+                        log2_ceil_usize(num_ops.div_ceil(packing.alu_lanes())),
                     );
                 }
                 PrimitiveOpType::Public => {

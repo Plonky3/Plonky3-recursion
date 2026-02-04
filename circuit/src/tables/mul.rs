@@ -51,7 +51,10 @@ impl<'a, F: Clone + Field> MulTraceBuilder<'a, F> {
         let mut result_index = Vec::new();
 
         for prim in self.primitive_ops {
-            if let Op::Mul { a, b, out } = prim {
+            // Multiplication: a * b = out (using unified ALU op)
+            if prim.is_mul()
+                && let Op::Alu { a, b, out, .. } = prim
+            {
                 let a_val = self.resolve(a)?;
                 let b_val = self.resolve(b)?;
                 let out_val = self.resolve(out)?;
@@ -126,11 +129,7 @@ mod tests {
         // Define a single multiplication operation: witness[0] * witness[1] = witness[2]
         //
         // This represents the constraint: 5 * 3 = 15
-        let ops = vec![Op::Mul {
-            a: WitnessId(0),
-            b: WitnessId(1),
-            out: WitnessId(2),
-        }];
+        let ops = vec![Op::mul(WitnessId(0), WitnessId(1), WitnessId(2))];
 
         // Build the trace using the builder pattern
         let builder = MulTraceBuilder::new(&ops, &witness);
@@ -197,21 +196,9 @@ mod tests {
         let out3_witness_id = WitnessId(8);
 
         let ops = vec![
-            Op::Mul {
-                a: lhs1_witness_id,
-                b: rhs1_witness_id,
-                out: out1_witness_id,
-            },
-            Op::Mul {
-                a: lhs2_witness_id,
-                b: rhs2_witness_id,
-                out: out2_witness_id,
-            },
-            Op::Mul {
-                a: lhs3_witness_id,
-                b: rhs3_witness_id,
-                out: out3_witness_id,
-            },
+            Op::mul(lhs1_witness_id, rhs1_witness_id, out1_witness_id),
+            Op::mul(lhs2_witness_id, rhs2_witness_id, out2_witness_id),
+            Op::mul(lhs3_witness_id, rhs3_witness_id, out3_witness_id),
         ];
 
         // Build the trace
@@ -293,21 +280,9 @@ mod tests {
         //
         // Only the Mul operation should be processed; Add should be ignored
         let ops = vec![
-            Op::Add {
-                a: WitnessId(0),
-                b: WitnessId(1),
-                out: WitnessId(3),
-            }, // Should be ignored
-            Op::Mul {
-                a: WitnessId(0),
-                b: WitnessId(1),
-                out: WitnessId(2),
-            }, // Should be processed
-            Op::Add {
-                a: WitnessId(1),
-                b: WitnessId(2),
-                out: WitnessId(3),
-            }, // Should be ignored
+            Op::add(WitnessId(0), WitnessId(1), WitnessId(3)), // Should be ignored
+            Op::mul(WitnessId(0), WitnessId(1), WitnessId(2)), // Should be processed
+            Op::add(WitnessId(1), WitnessId(2), WitnessId(3)), // Should be ignored
         ];
 
         // Build the trace
@@ -340,11 +315,7 @@ mod tests {
         ];
 
         // Define a multiplication that references the missing witness
-        let ops = vec![Op::Mul {
-            a: WitnessId(0), // References the None value
-            b: WitnessId(1),
-            out: WitnessId(2),
-        }];
+        let ops = vec![Op::mul(WitnessId(0), WitnessId(1), WitnessId(2))];
 
         // Attempt to build the trace
         let builder = MulTraceBuilder::new(&ops, &witness);
@@ -377,11 +348,7 @@ mod tests {
         ];
 
         // Define a multiplication that references the missing witness
-        let ops = vec![Op::Mul {
-            a: WitnessId(0),
-            b: WitnessId(1), // References the None value
-            out: WitnessId(2),
-        }];
+        let ops = vec![Op::mul(WitnessId(0), WitnessId(1), WitnessId(2))];
 
         // Attempt to build the trace
         let builder = MulTraceBuilder::new(&ops, &witness);
@@ -414,11 +381,7 @@ mod tests {
         ];
 
         // Define a multiplication that references the missing result
-        let ops = vec![Op::Mul {
-            a: WitnessId(0),
-            b: WitnessId(1),
-            out: WitnessId(2), // References the None value
-        }];
+        let ops = vec![Op::mul(WitnessId(0), WitnessId(1), WitnessId(2))];
 
         // Attempt to build the trace
         let builder = MulTraceBuilder::new(&ops, &witness);
@@ -450,11 +413,7 @@ mod tests {
         let witness = vec![Some(lhs), Some(rhs)];
 
         // Attempt to reference WitnessId(5), which doesn't exist
-        let ops = vec![Op::Mul {
-            a: WitnessId(0),
-            b: WitnessId(1),
-            out: WitnessId(5), // Out of bounds!
-        }];
+        let ops = vec![Op::mul(WitnessId(0), WitnessId(1), WitnessId(5))];
 
         // Attempt to build the trace
         let builder = MulTraceBuilder::new(&ops, &witness);

@@ -113,13 +113,12 @@ impl<F: Field> Circuit<F> {
     ///
     /// Returns a [`PreprocessedColumns`] with one primitive entry per [`PrimitiveOpType`]:
     ///
-    /// | Index | Operation | Column Layout                             | Width (per op) |
-    /// |-------|-----------|-------------------------------------------|----------------|
-    /// | 0     | Witness   | `[idx_0, mul_0, idx_1, mul_1, ...]`       | 2              |
-    /// | 1     | Const     | `[out_0, out_1, ...]`                     | 1              |
-    /// | 2     | Public    | `[out_0, out_1, ...]`                     | 1              |
-    /// | 3     | Add       | `[a_0, b_0, out_0, a_1, b_1, out_1, ...]` | 3              |
-    /// | 4     | Mul       | `[a_0, b_0, out_0, a_1, b_1, out_1, ...]` | 3              |
+    /// | Index | Operation | Column Layout                                                       | Width (per op) |
+    /// |-------|-----------|---------------------------------------------------------------------|----------------|
+    /// | 0     | Witness   | `[mul_0, mul_1, ...]`                                               | 1              |
+    /// | 1     | Const     | `[out_0, out_1, ...]`                                               | 1              |
+    /// | 2     | Public    | `[out_0, out_1, ...]`                                               | 1              |
+    /// | 3     | Alu       | `[sel_add, sel_mul, sel_bool, sel_muladd, a_idx, b_idx, c_idx, out_idx, ...]` | 8 |
     ///
     /// Note that `mul_i` in the Witness table preprocessed column indicates how many times
     /// each witness index appears in the circuit.
@@ -128,13 +127,14 @@ impl<F: Field> Circuit<F> {
     ///
     // TODO: Centralize the multiplicity logic to make reads/writes less error-prone.
     pub fn generate_preprocessed_columns(&self) -> Result<PreprocessedColumns<F>, CircuitError> {
-        // Allocate one empty vector per primitive operation type (Witness, Const, Public, Add, Mul).
+        // Allocate one empty vector per primitive operation type (Witness, Const, Public, Alu).
         let mut preprocessed = vec![vec![]; PrimitiveOpType::COUNT];
         let mut non_primitive_preprocessed = NonPrimitivePreprocessedMap::new();
 
         // We know that the Witness table has at least one entry for index 0 (multiplicity 0 at the start).
         preprocessed[PrimitiveOpType::Witness as usize].push(F::ZERO);
         let witness_table_idx = PrimitiveOpType::Witness as usize;
+        let alu_table_idx = PrimitiveOpType::Alu as usize;
 
         // Process each primitive operation, extracting its witness indices.
         for op in &self.ops {
@@ -145,7 +145,7 @@ impl<F: Field> Circuit<F> {
                     let table_idx = PrimitiveOpType::Const as usize;
                     preprocessed[table_idx].extend(&[F::from_u32(out.0)]);
 
-                    // Since the values in `PublicAir` are looked up in `WitnessAir`,
+                    // Since the values in `ConstAir` are looked up in `WitnessAir`,
                     // we need to take the values into account in `WitnessAir`s preprocessed multiplicities.
                     if out.0 >= preprocessed[witness_table_idx].len() as u32 {
                         preprocessed[witness_table_idx].resize(out.0 as usize + 1, F::from_u32(0));
@@ -165,38 +165,39 @@ impl<F: Field> Circuit<F> {
                     }
                     preprocessed[witness_table_idx][out.0 as usize] += F::ONE;
                 }
-                // Add: computes witness[out] = witness[a] + witness[b].
-                // Preprocessed data: input indices a, b and output index out.
-                Op::Add { a, b, out } => {
-                    let table_idx = PrimitiveOpType::Add as usize;
-                    preprocessed[table_idx].extend(&[
+                // Unified ALU operations with selectors for operation kind.
+                // Preprocessed: [sel_add, sel_mul, sel_bool, sel_muladd, a_idx, b_idx, c_idx, out_idx]
+                Op::Alu { kind, a, b, c, out } => {
+                    use crate::op::AluOpKind;
+
+                    // Generate selectors based on operation kind
+                    let (sel_add, sel_mul, sel_bool, sel_muladd) = match kind {
+                        AluOpKind::Add => (F::ONE, F::ZERO, F::ZERO, F::ZERO),
+                        AluOpKind::Mul => (F::ZERO, F::ONE, F::ZERO, F::ZERO),
+                        AluOpKind::BoolCheck => (F::ZERO, F::ZERO, F::ONE, F::ZERO),
+                        AluOpKind::MulAdd => (F::ZERO, F::ZERO, F::ZERO, F::ONE),
+                    };
+
+                    // c_idx is 0 for non-MulAdd operations (points to witness index 0)
+                    let c_idx = c.map_or(0u32, |w| w.0);
+
+                    preprocessed[alu_table_idx].extend(&[
+                        sel_add,
+                        sel_mul,
+                        sel_bool,
+                        sel_muladd,
                         F::from_u32(a.0),
                         F::from_u32(b.0),
+                        F::from_u32(c_idx),
                         F::from_u32(out.0),
                     ]);
 
-                    // We need to update the multiplicities for `a`, `b`, and `out` in `WitnessAir`.
-                    for &widx in &[a.0, b.0, out.0] {
-                        if widx >= preprocessed[witness_table_idx].len() as u32 {
-                            preprocessed[witness_table_idx]
-                                .resize(widx as usize + 1, F::from_u32(0));
-                        }
-                        preprocessed[witness_table_idx][widx as usize] += F::ONE;
-                    }
-                }
+                    // Update multiplicities for all 4 operands in WitnessAir
+                    // ALU table always sends 4 lookups per operation (a, b, c, out)
+                    // For non-MulAdd operations, c points to index 0
+                    let operand_indices = [a.0, b.0, c_idx, out.0];
 
-                // Mul: computes witness[out] = witness[a] * witness[b].
-                // Preprocessed data: input indices a, b and output index out.
-                Op::Mul { a, b, out } => {
-                    let table_idx = PrimitiveOpType::Mul as usize;
-                    preprocessed[table_idx].extend(&[
-                        F::from_u32(a.0),
-                        F::from_u32(b.0),
-                        F::from_u32(out.0),
-                    ]);
-
-                    // We need to update the multiplicities for `a`, `b`, and `out` in `WitnessAir`.
-                    for &widx in &[a.0, b.0, out.0] {
+                    for widx in operand_indices {
                         if widx >= preprocessed[witness_table_idx].len() as u32 {
                             preprocessed[witness_table_idx]
                                 .resize(widx as usize + 1, F::from_u32(0));
@@ -268,8 +269,7 @@ mod tests {
         );
         assert!(result.primitive[PrimitiveOpType::Const as usize].is_empty());
         assert!(result.primitive[PrimitiveOpType::Public as usize].is_empty());
-        assert!(result.primitive[PrimitiveOpType::Add as usize].is_empty());
-        assert!(result.primitive[PrimitiveOpType::Mul as usize].is_empty());
+        assert!(result.primitive[PrimitiveOpType::Alu as usize].is_empty());
     }
 
     #[test]
@@ -278,7 +278,6 @@ mod tests {
         // - Each operation type populates its correct column
         // - Multiplicities in Witness table are accurate
         // - Column data preserves operation order
-        // - Unconstrained affects the Witness table preprocessing but produces no column data
         let ops = vec![
             Op::Const {
                 out: WitnessId(0),
@@ -292,21 +291,9 @@ mod tests {
                 out: WitnessId(2),
                 val: F::from_u64(200),
             },
-            Op::Add {
-                a: WitnessId(0),
-                b: WitnessId(1),
-                out: WitnessId(3),
-            },
-            Op::Add {
-                a: WitnessId(3),
-                b: WitnessId(2),
-                out: WitnessId(4),
-            },
-            Op::Mul {
-                a: WitnessId(4),
-                b: WitnessId(2),
-                out: WitnessId(5),
-            },
+            Op::add(WitnessId(0), WitnessId(1), WitnessId(3)),
+            Op::add(WitnessId(3), WitnessId(2), WitnessId(4)),
+            Op::mul(WitnessId(4), WitnessId(2), WitnessId(5)),
         ];
 
         let circuit = make_circuit(ops);
@@ -324,29 +311,53 @@ mod tests {
             vec![F::from_u32(1)]
         );
 
-        // Add column: (a, b, out) triplets concatenated
+        // ALU column: [sel_add, sel_mul, sel_bool, sel_muladd, a, b, c, out] per op
+        // Op 1: add(0, 1, 3) -> [1, 0, 0, 0, 0, 1, 0, 3]
+        // Op 2: add(3, 2, 4) -> [1, 0, 0, 0, 3, 2, 0, 4]
+        // Op 3: mul(4, 2, 5) -> [0, 1, 0, 0, 4, 2, 0, 5]
+        let expected_alu = vec![
+            // add(0, 1, 3)
+            F::ONE,
+            F::ZERO,
+            F::ZERO,
+            F::ZERO,
+            F::ZERO,
+            F::from_u32(1),
+            F::ZERO,
+            F::from_u32(3),
+            // add(3, 2, 4)
+            F::ONE,
+            F::ZERO,
+            F::ZERO,
+            F::ZERO,
+            F::from_u32(3),
+            F::from_u32(2),
+            F::ZERO,
+            F::from_u32(4),
+            // mul(4, 2, 5)
+            F::ZERO,
+            F::ONE,
+            F::ZERO,
+            F::ZERO,
+            F::from_u32(4),
+            F::from_u32(2),
+            F::ZERO,
+            F::from_u32(5),
+        ];
         assert_eq!(
-            result.primitive[PrimitiveOpType::Add as usize],
-            vec![
-                F::ZERO,
-                F::from_u32(1),
-                F::from_u32(3),
-                F::from_u32(3),
-                F::from_u32(2),
-                F::from_u32(4)
-            ]
+            result.primitive[PrimitiveOpType::Alu as usize],
+            expected_alu
         );
 
-        // Mul column: (a, b, out) triplet
-        assert_eq!(
-            result.primitive[PrimitiveOpType::Mul as usize],
-            vec![F::from_u32(4), F::from_u32(2), F::from_u32(5)]
-        );
-
-        // We should have the following multiplicities in the Witness table, for indices 0 to 10:
-        // 2, 2, 3, 2, 2, 1
+        // We should have the following multiplicities in the Witness table, for indices 0 to 5:
+        // Index 0: 2 (const out) + 3 (c_idx for 3 ALU ops that use c=0) = 5
+        // Index 1: 2 (public out + add input a)
+        // Index 2: 3 (const out + add input b + mul input b)
+        // Index 3: 2 (add output + add input a)
+        // Index 4: 2 (add output + mul input a)
+        // Index 5: 1 (mul output)
         let expected_multiplicities = vec![
-            F::from_u16(2),
+            F::from_u16(5), // Index 0: const + 3x c_idx (for add, add, mul operations)
             F::from_u16(2),
             F::from_u16(3),
             F::from_u16(2),
@@ -362,19 +373,22 @@ mod tests {
     #[test]
     fn test_input_indices_contribute_to_max_idx() {
         // Ensures input indices that exceed outputs are tracked for witness table size
-        let ops = vec![Op::Add {
-            a: WitnessId(0),
-            b: WitnessId(15), // Highest index is an input, not output
-            out: WitnessId(5),
-        }];
+        let ops = vec![Op::add(
+            WitnessId(0),
+            WitnessId(15), // Highest index is an input, not output
+            WitnessId(5),
+        )];
 
         let circuit = make_circuit(ops);
         let result = circuit.generate_preprocessed_columns().unwrap();
 
-        // Elements 0, 15 and 5 have multiplicity 1; others 0.
+        // Index 0 has multiplicity 2 (once for 'a', once for 'c' which defaults to 0)
+        // Index 5 and 15 have multiplicity 1
         let expected_witness: Vec<F> = (0..=15)
             .map(|i| {
-                if i == 0 || i == 5 || i == 15 {
+                if i == 0 {
+                    F::from_u16(2) // a + c_idx (c defaults to 0)
+                } else if i == 5 || i == 15 {
                     F::ONE
                 } else {
                     F::ZERO
@@ -384,6 +398,61 @@ mod tests {
         assert_eq!(
             result.primitive[PrimitiveOpType::Witness as usize],
             expected_witness
+        );
+    }
+
+    #[test]
+    fn test_muladd_operation() {
+        // Test the MulAdd operation preprocessed format
+        let ops = vec![
+            Op::Const {
+                out: WitnessId(0),
+                val: F::from_u64(3),
+            },
+            Op::Const {
+                out: WitnessId(1),
+                val: F::from_u64(5),
+            },
+            Op::Const {
+                out: WitnessId(2),
+                val: F::from_u64(7),
+            },
+            Op::mul_add(WitnessId(0), WitnessId(1), WitnessId(2), WitnessId(3)), // 3*5+7=22
+        ];
+
+        let circuit = make_circuit(ops);
+        let result = circuit.generate_preprocessed_columns().unwrap();
+
+        // ALU column for MulAdd: [sel_add=0, sel_mul=0, sel_bool=0, sel_muladd=1, a=0, b=1, c=2, out=3]
+        let expected_alu = vec![
+            F::ZERO,
+            F::ZERO,
+            F::ZERO,
+            F::ONE,
+            F::ZERO,
+            F::from_u32(1),
+            F::from_u32(2),
+            F::from_u32(3),
+        ];
+        assert_eq!(
+            result.primitive[PrimitiveOpType::Alu as usize],
+            expected_alu
+        );
+
+        // Multiplicities: 0,1,2,3 each appear once in const or ALU
+        // Index 0: const out + ALU a = 2
+        // Index 1: const out + ALU b = 2
+        // Index 2: const out + ALU c = 2
+        // Index 3: ALU out = 1
+        let expected_multiplicities = vec![
+            F::from_u16(2),
+            F::from_u16(2),
+            F::from_u16(2),
+            F::from_u16(1),
+        ];
+        assert_eq!(
+            result.primitive[PrimitiveOpType::Witness as usize],
+            expected_multiplicities
         );
     }
 }

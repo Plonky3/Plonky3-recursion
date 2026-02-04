@@ -11,7 +11,7 @@ use crate::builder::CircuitBuilderError;
 use crate::builder::circuit_builder::{NonPrimitiveOpParams, NonPrimitiveOperationData};
 use crate::builder::compiler::get_witness_id;
 use crate::expr::{Expr, ExpressionGraph};
-use crate::op::{NonPrimitiveOpType, Op};
+use crate::op::{AluOpKind, NonPrimitiveOpType, Op};
 use crate::ops::Poseidon2PermExecutor;
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};
 
@@ -433,11 +433,7 @@ where
                         get_witness_id(&expr_to_widx, *lhs, &format!("Add lhs for {expr_id:?}"))?;
                     let b_widx =
                         get_witness_id(&expr_to_widx, *rhs, &format!("Add rhs for {expr_id:?}"))?;
-                    ops.push(Op::Add {
-                        a: a_widx,
-                        b: b_widx,
-                        out: out_widx,
-                    });
+                    ops.push(Op::add(a_widx, b_widx, out_widx));
                     expr_to_widx.insert(expr_id, out_widx);
                 }
                 Expr::Sub { lhs, rhs } => {
@@ -447,11 +443,7 @@ where
                     let rhs_widx =
                         get_witness_id(&expr_to_widx, *rhs, &format!("Sub rhs for {expr_id:?}"))?;
                     // Encode lhs - rhs = result as result + rhs = lhs.
-                    ops.push(Op::Add {
-                        a: rhs_widx,
-                        b: result_widx,
-                        out: lhs_widx,
-                    });
+                    ops.push(Op::add(rhs_widx, result_widx, lhs_widx));
                     expr_to_widx.insert(expr_id, result_widx);
                 }
                 Expr::Mul { lhs, rhs } => {
@@ -460,11 +452,7 @@ where
                         get_witness_id(&expr_to_widx, *lhs, &format!("Mul lhs for {expr_id:?}"))?;
                     let b_widx =
                         get_witness_id(&expr_to_widx, *rhs, &format!("Mul rhs for {expr_id:?}"))?;
-                    ops.push(Op::Mul {
-                        a: a_widx,
-                        b: b_widx,
-                        out: out_widx,
-                    });
+                    ops.push(Op::mul(a_widx, b_widx, out_widx));
                     expr_to_widx.insert(expr_id, out_widx);
                 }
                 Expr::Div { lhs, rhs } => {
@@ -474,11 +462,7 @@ where
                         get_witness_id(&expr_to_widx, *lhs, &format!("Div lhs for {expr_id:?}"))?;
                     let a_widx =
                         get_witness_id(&expr_to_widx, *rhs, &format!("Div rhs for {expr_id:?}"))?;
-                    ops.push(Op::Mul {
-                        a: a_widx,
-                        b: b_widx,
-                        out: out_widx,
-                    });
+                    ops.push(Op::mul(a_widx, b_widx, out_widx));
                     // The output of Div is the b_widx.
                     expr_to_widx.insert(expr_id, b_widx);
                 }
@@ -749,42 +733,66 @@ mod tests {
         // Arithmetic operations (Pass C): Add, Mul, Add (encoding Sub), Mul (encoding Div)
         // Add: sum = p0 + p1
         match &prims[7] {
-            Op::Add { a, b, out } => {
+            Op::Alu {
+                kind: AluOpKind::Add,
+                a,
+                b,
+                out,
+                ..
+            } => {
                 assert_eq!(*a, WitnessId(4)); // p0
                 assert_eq!(*b, WitnessId(5)); // p1
                 assert_eq!(out.0, 7); // sum
             }
-            _ => panic!("Expected Add at position 7"),
+            _ => panic!("Expected ALU Add at position 7"),
         }
 
         // Mul: prod = sum * c3
         match &prims[8] {
-            Op::Mul { a, b, out } => {
+            Op::Alu {
+                kind: AluOpKind::Mul,
+                a,
+                b,
+                out,
+                ..
+            } => {
                 assert_eq!(*a, WitnessId(7)); // sum
                 assert_eq!(*b, WitnessId(2)); // c_three
                 assert_eq!(out.0, 8); // prod
             }
-            _ => panic!("Expected Mul at position 8"),
+            _ => panic!("Expected ALU Mul at position 8"),
         }
 
         // Sub encoded as Add: diff + c7 = prod
         match &prims[9] {
-            Op::Add { a, b, out } => {
+            Op::Alu {
+                kind: AluOpKind::Add,
+                a,
+                b,
+                out,
+                ..
+            } => {
                 assert_eq!(*a, WitnessId(3)); // c_seven (rhs)
                 assert_eq!(*b, WitnessId(9)); // diff (result)
                 assert_eq!(*out, WitnessId(8)); // prod (lhs)
             }
-            _ => panic!("Expected Add (Sub encoding) at position 9"),
+            _ => panic!("Expected ALU Add (Sub encoding) at position 9"),
         }
 
         // Div encoded as Mul: p2 * quot = diff
         match &prims[10] {
-            Op::Mul { a, b, out } => {
+            Op::Alu {
+                kind: AluOpKind::Mul,
+                a,
+                b,
+                out,
+                ..
+            } => {
                 assert_eq!(*a, WitnessId(6)); // p2 (divisor)
                 assert_eq!(*b, WitnessId(10)); // quot (result)
                 assert_eq!(*out, WitnessId(9)); // diff (dividend)
             }
-            _ => panic!("Expected Mul (Div encoding) at position 10"),
+            _ => panic!("Expected ALU Mul (Div encoding) at position 10"),
         }
 
         // Verify Public Rows
@@ -931,7 +939,13 @@ mod tests {
 
         // Add operation: sum = p0 + c1
         match &prims[9] {
-            Op::Add { a, b, out } => {
+            Op::Alu {
+                kind: AluOpKind::Add,
+                a,
+                b,
+                out,
+                ..
+            } => {
                 assert_eq!(*a, WitnessId(2)); // p0 (shares with c42)
                 assert_eq!(*b, WitnessId(1)); // c1
                 assert_eq!(*out, WitnessId(5)); // sum (shares with p4)

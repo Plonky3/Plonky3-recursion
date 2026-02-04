@@ -8,6 +8,7 @@ use hashbrown::HashMap;
 use tracing::instrument;
 
 use super::add::AddTraceBuilder;
+use super::alu::AluTraceBuilder;
 use super::constant::ConstTraceBuilder;
 use super::mul::MulTraceBuilder;
 use super::public::PublicTraceBuilder;
@@ -182,6 +183,8 @@ impl<F: CircuitField> CircuitRunner<F> {
         let witness_trace = WitnessTraceBuilder::new(&self.witness).build()?;
         let const_trace = ConstTraceBuilder::new(&self.circuit.ops).build()?;
         let public_trace = PublicTraceBuilder::new(&self.circuit.ops, &self.witness).build()?;
+        let alu_trace = AluTraceBuilder::new(&self.circuit.ops, &self.witness).build()?;
+        // Deprecated: add_trace and mul_trace are kept for backward compatibility
         let add_trace = AddTraceBuilder::new(&self.circuit.ops, &self.witness).build()?;
         let mul_trace = MulTraceBuilder::new(&self.circuit.ops, &self.witness).build()?;
 
@@ -202,6 +205,7 @@ impl<F: CircuitField> CircuitRunner<F> {
             witness_trace,
             const_trace,
             public_trace,
+            alu_trace,
             add_trace,
             mul_trace,
             tag_to_witness: self.circuit.tag_to_witness,
@@ -228,29 +232,52 @@ impl<F: CircuitField> CircuitRunner<F> {
                         return Err(CircuitError::PublicInputNotSet { witness_id: out });
                     }
                 }
-                Op::Add { a, b, out } => {
-                    let a_val = self.get_witness(a)?;
-                    if let Ok(b_val) = self.get_witness(b) {
-                        let result = a_val + b_val;
-                        self.set_witness(out, result)?;
-                    } else {
-                        let out_val = self.get_witness(out)?;
-                        let b_val = out_val - a_val;
-                        self.set_witness(b, b_val)?;
-                    }
-                }
-                Op::Mul { a, b, out } => {
-                    // Mul is used to represent either `Mul` or `Div` operations.
-                    // We determine which based on which inputs are set.
-                    let a_val = self.get_witness(a)?;
-                    if let Ok(b_val) = self.get_witness(b) {
-                        let result = a_val * b_val;
-                        self.set_witness(out, result)?;
-                    } else {
-                        let result_val = self.get_witness(out)?;
-                        let a_inv = a_val.try_inverse().ok_or(CircuitError::DivisionByZero)?;
-                        let b_val = result_val * a_inv;
-                        self.set_witness(b, b_val)?;
+                Op::Alu { kind, a, b, c, out } => {
+                    use crate::op::AluOpKind;
+                    match kind {
+                        AluOpKind::Add => {
+                            let a_val = self.get_witness(a)?;
+                            if let Ok(b_val) = self.get_witness(b) {
+                                let result = a_val + b_val;
+                                self.set_witness(out, result)?;
+                            } else {
+                                let out_val = self.get_witness(out)?;
+                                let b_val = out_val - a_val;
+                                self.set_witness(b, b_val)?;
+                            }
+                        }
+                        AluOpKind::Mul => {
+                            // Mul is used to represent either `Mul` or `Div` operations.
+                            // We determine which based on which inputs are set.
+                            let a_val = self.get_witness(a)?;
+                            if let Ok(b_val) = self.get_witness(b) {
+                                let result = a_val * b_val;
+                                self.set_witness(out, result)?;
+                            } else {
+                                let result_val = self.get_witness(out)?;
+                                let a_inv =
+                                    a_val.try_inverse().ok_or(CircuitError::DivisionByZero)?;
+                                let b_val = result_val * a_inv;
+                                self.set_witness(b, b_val)?;
+                            }
+                        }
+                        AluOpKind::BoolCheck => {
+                            // BoolCheck constraint is checked in the AIR; here we just ensure out = a
+                            let a_val = self.get_witness(a)?;
+                            self.set_witness(out, a_val)?;
+                        }
+                        AluOpKind::MulAdd => {
+                            // out = a * b + c
+                            let a_val = self.get_witness(a)?;
+                            let b_val = self.get_witness(b)?;
+                            let c_val = if let Some(c_id) = c {
+                                self.get_witness(c_id)?
+                            } else {
+                                F::ZERO
+                            };
+                            let result = a_val * b_val + c_val;
+                            self.set_witness(out, result)?;
+                        }
                     }
                 }
                 Op::NonPrimitiveOpWithExecutor {

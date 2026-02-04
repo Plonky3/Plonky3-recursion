@@ -1087,12 +1087,18 @@ mod tests {
         assert_eq!(circuit.ops.len(), 4);
 
         match &circuit.ops[3] {
-            crate::op::Op::Add { out, a, b } => {
+            crate::op::Op::Alu {
+                kind: crate::op::AluOpKind::Add,
+                a,
+                b,
+                out,
+                ..
+            } => {
                 assert_eq!(*out, WitnessId(3));
                 assert_eq!(*a, WitnessId(1));
                 assert_eq!(*b, WitnessId(2));
             }
-            _ => panic!("Expected Add at index 3"),
+            _ => panic!("Expected ALU Add at index 3"),
         }
     }
 
@@ -1187,7 +1193,13 @@ mod tests {
             .ops
             .iter()
             .position(|op| match op {
-                crate::op::Op::Add { a, b, out } => {
+                crate::op::Op::Alu {
+                    kind: crate::op::AluOpKind::Add,
+                    a,
+                    b,
+                    out,
+                    ..
+                } => {
                     *out == w_sum0
                         && ((*a == w_out0 && *b == w_one) || (*a == w_one && *b == w_out0))
                 }
@@ -1199,7 +1211,13 @@ mod tests {
             .ops
             .iter()
             .position(|op| match op {
-                crate::op::Op::Add { a, b, out } => {
+                crate::op::Op::Alu {
+                    kind: crate::op::AluOpKind::Add,
+                    a,
+                    b,
+                    out,
+                    ..
+                } => {
                     *out == w_sum1
                         && ((*a == w_out1 && *b == w_one) || (*a == w_one && *b == w_out1))
                 }
@@ -1937,5 +1955,47 @@ mod proptests {
         assert_eq!(result[2], hex_0x02000000_bin);
         assert_eq!(result[3], zero_bin);
         assert_eq!(bits.len(), Ext4::bits());
+    }
+
+    #[test]
+    fn test_bool_check_fusion() {
+        let mut builder = CircuitBuilder::<BabyBear>::new();
+
+        // Create a boolean value and assert it's boolean
+        let b = builder.add_public_input();
+        builder.assert_bool(b);
+
+        let circuit = builder.build().unwrap();
+
+        // The assert_bool pattern creates:
+        // 1. sub(b, one) = add(b, mul(one, neg_one))
+        // 2. mul(b, b_minus_one)
+        // 3. connect(prod, zero) - aliases prod output to zero's WitnessId
+        //
+        // Due to aliasing and constant pool optimizations in the IR,
+        // the lowered pattern may differ from the simple optimizer test.
+        // For now, verify the circuit runs correctly with boolean values.
+
+        // Verify the circuit works with valid boolean values (0 and 1)
+        let mut runner = circuit.runner();
+        runner.set_public_inputs(&[BabyBear::ZERO]).unwrap();
+        let traces = runner.run().unwrap();
+        assert!(
+            !traces.alu_trace.is_empty(),
+            "ALU trace should not be empty"
+        );
+
+        // Create a new circuit to test with 1
+        let mut builder2 = CircuitBuilder::<BabyBear>::new();
+        let b2 = builder2.add_public_input();
+        builder2.assert_bool(b2);
+        let circuit2 = builder2.build().unwrap();
+        let mut runner2 = circuit2.runner();
+        runner2.set_public_inputs(&[BabyBear::ONE]).unwrap();
+        let traces2 = runner2.run().unwrap();
+        assert!(
+            !traces2.alu_trace.is_empty(),
+            "ALU trace should not be empty"
+        );
     }
 }

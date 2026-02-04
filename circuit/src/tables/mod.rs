@@ -13,6 +13,7 @@ use crate::op::{NonPrimitiveOpType, OpStateMap};
 use crate::types::WitnessId;
 
 mod add;
+mod alu;
 mod constant;
 mod mul;
 mod public;
@@ -20,6 +21,7 @@ mod runner;
 mod witness;
 
 pub use add::AddTrace;
+pub use alu::{AluTrace, AluTraceBuilder};
 pub use constant::ConstTrace;
 pub use mul::MulTrace;
 pub use public::PublicTrace;
@@ -55,9 +57,11 @@ pub struct Traces<F> {
     pub const_trace: ConstTrace<F>,
     /// Public input table for externally provided values.
     pub public_trace: PublicTrace<F>,
-    /// Addition operation table.
+    /// Unified ALU operation table (Add, Mul, BoolCheck, MulAdd).
+    pub alu_trace: AluTrace<F>,
+    /// Addition operation table (deprecated, will be removed).
     pub add_trace: AddTrace<F>,
-    /// Multiplication operation table.
+    /// Multiplication operation table (deprecated, will be removed).
     pub mul_trace: MulTrace<F>,
     /// Dynamically registered non-primitive traces indexed by operation type.
     pub non_primitive_traces: HashMap<NonPrimitiveOpType, Box<dyn NonPrimitiveTrace<F>>>,
@@ -96,6 +100,7 @@ impl<F: Clone> Clone for Traces<F> {
             witness_trace: self.witness_trace.clone(),
             const_trace: self.const_trace.clone(),
             public_trace: self.public_trace.clone(),
+            alu_trace: self.alu_trace.clone(),
             add_trace: self.add_trace.clone(),
             mul_trace: self.mul_trace.clone(),
             non_primitive_traces: self
@@ -113,6 +118,7 @@ where
     WitnessTrace<F>: fmt::Debug,
     ConstTrace<F>: fmt::Debug,
     PublicTrace<F>: fmt::Debug,
+    AluTrace<F>: fmt::Debug,
     AddTrace<F>: fmt::Debug,
     MulTrace<F>: fmt::Debug,
 {
@@ -126,6 +132,7 @@ where
             .field("witness_trace", &self.witness_trace)
             .field("const_trace", &self.const_trace)
             .field("public_trace", &self.public_trace)
+            .field("alu_trace", &self.alu_trace)
             .field("add_trace", &self.add_trace)
             .field("mul_trace", &self.mul_trace)
             .field("non_primitive_traces", &extra_summary)
