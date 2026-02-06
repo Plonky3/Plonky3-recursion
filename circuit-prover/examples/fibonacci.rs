@@ -61,7 +61,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     builder.dump_allocation_log();
 
     let circuit = builder.build()?;
-    let table_packing = TablePacking::new(4, 4, 1);
+    let table_packing = TablePacking::new(4, 1, 4, 1);
 
     let (airs_degrees, preprocessed_columns) =
         get_airs_and_degrees_with_prep::<BabyBearConfig, _, 1>(&circuit, table_packing, None)
