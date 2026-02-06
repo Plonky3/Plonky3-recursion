@@ -916,7 +916,7 @@ fn test_poseidon2_chained_ctl_lookups() {
         .unwrap();
 
     // Third Poseidon2 operation: new_start=false, chained, with output CTL
-    let (_op_id3, _outputs3) = builder
+    let (_op_id3, outputs3) = builder
         .add_poseidon2_perm(Poseidon2PermCall {
             config: Poseidon2Config::BabyBearD4Width16,
             new_start: false,
@@ -936,7 +936,7 @@ fn test_poseidon2_chained_ctl_lookups() {
             new_start: true,
             merkle_path: false,
             mmcs_bit: None,
-            inputs: [_outputs3[0], _outputs3[1], None, None],
+            inputs: [outputs3[0], outputs3[1], None, None],
             out_ctl: [false, false],
             mmcs_index_sum: None,
         })
