@@ -11,9 +11,9 @@ use hashbrown::HashMap;
 use p3_field::{Field, PrimeCharacteristicRing};
 use strum_macros::EnumCount;
 
-use crate::CircuitError;
 use crate::ops::Poseidon2PermPrivateData;
 use crate::types::{NonPrimitiveOpId, WitnessId};
+use crate::{CircuitError, PreprocessedColumns};
 
 /// Circuit operations.
 ///
@@ -478,8 +478,8 @@ pub trait NonPrimitiveExecutor<F: Field>: Debug {
         &self,
         _inputs: &[Vec<WitnessId>],
         _outputs: &[Vec<WitnessId>],
-        _preprocessed: &mut crate::circuit::PreprocessedColumns<F>,
-    ) -> Result<(), crate::CircuitError> {
+        _preprocessed: &mut PreprocessedColumns<F>,
+    ) -> Result<(), CircuitError> {
         Ok(())
     }
 

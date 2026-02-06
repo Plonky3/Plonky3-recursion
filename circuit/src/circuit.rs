@@ -84,6 +84,12 @@ impl<F: Field> PreprocessedColumns<F> {
         op_type: PrimitiveOpType,
         wids: &[WitnessId],
     ) -> Result<(), CircuitError> {
+        if let PrimitiveOpType::Witness = op_type {
+            return Err(CircuitError::InvalidPreprocessing {
+                reason: "Witness reads cannot be made from the Witness bus",
+            });
+        }
+
         if self.primitive.len() != PrimitiveOpType::COUNT {
             return Err(CircuitError::InvalidPreprocessing {
                 reason: "primitive vector length does not match PrimitiveOpType::COUNT",

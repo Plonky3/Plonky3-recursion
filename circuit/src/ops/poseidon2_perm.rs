@@ -31,7 +31,6 @@ use core::fmt::Debug;
 
 use p3_field::{ExtensionField, Field, PrimeCharacteristicRing, PrimeField};
 
-use crate::CircuitError;
 use crate::builder::{CircuitBuilder, NonPrimitiveOpParams};
 use crate::circuit::CircuitField;
 use crate::op::{
@@ -40,6 +39,7 @@ use crate::op::{
 };
 use crate::tables::NonPrimitiveTrace;
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessId};
+use crate::{CircuitError, PreprocessedColumns};
 
 // ============================================================================
 // Configuration
@@ -513,7 +513,7 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for Poseidon2Perm
         &self,
         inputs: &[Vec<WitnessId>],
         outputs: &[Vec<WitnessId>],
-        preprocessed: &mut crate::circuit::PreprocessedColumns<F>,
+        preprocessed: &mut PreprocessedColumns<F>,
     ) -> Result<(), CircuitError> {
         // We need to populate in_ctl and out_ctl for this operation.
         // The inputs have shape:

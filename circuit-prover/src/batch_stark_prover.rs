@@ -192,11 +192,6 @@ impl<SC: StarkGenericConfig> CircuitProverData<SC> {
     pub const fn preprocessed_columns(&self) -> &PreprocessedColumns<Val<SC>> {
         &self.preprocessed_columns
     }
-
-    /// Get the witness multiplicities (convenience method).
-    pub fn witness_multiplicities(&self) -> &[Val<SC>] {
-        &self.preprocessed_columns.primitive[PrimitiveOpType::Witness as usize]
-    }
 }
 
 /// Type-erased AIR implementation for dynamically registered non-primitive tables.
