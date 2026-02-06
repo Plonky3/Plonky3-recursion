@@ -3872,7 +3872,7 @@ mod tests {
         let proof = prover
             .prove_all_tables(&traces, &circuit_prover_data)
             .unwrap();
-        prover.verify_all_tables(&proof, &common).unwrap();
+        prover.verify_all_tables(&proof, common).unwrap();
     }
 
     #[test]
@@ -3919,6 +3919,6 @@ mod tests {
         let proof = prover
             .prove_all_tables(&traces, &circuit_prover_data)
             .unwrap();
-        prover.verify_all_tables(&proof, &common).unwrap();
+        prover.verify_all_tables(&proof, common).unwrap();
     }
 }

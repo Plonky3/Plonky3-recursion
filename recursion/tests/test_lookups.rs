@@ -875,7 +875,7 @@ fn test_poseidon2_ctl_lookups() {
         .unwrap();
 
     prover
-        .verify_all_tables(&proof, &common)
+        .verify_all_tables(&proof, common)
         .expect("Poseidon2 CTL lookup verification should succeed");
 }
 
@@ -990,6 +990,6 @@ fn test_poseidon2_chained_ctl_lookups() {
         .unwrap();
 
     prover
-        .verify_all_tables(&proof, &common)
+        .verify_all_tables(&proof, common)
         .expect("Chained Poseidon2 CTL lookup verification should succeed");
 }
