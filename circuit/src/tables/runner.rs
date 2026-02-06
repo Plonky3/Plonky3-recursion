@@ -292,10 +292,24 @@ impl<F: CircuitField> CircuitRunner<F> {
         // Check for conflicting reassignment
         if let Some(existing_value) = self.witness[widx.0 as usize] {
             if existing_value != value {
+                let expr_ids = self
+                    .circuit
+                    .expr_to_widx
+                    .iter()
+                    .filter_map(|(expr_id, &witness_id)| {
+                        if witness_id == widx {
+                            Some(expr_id)
+                        } else {
+                            None
+                        }
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>();
                 return Err(CircuitError::WitnessConflict {
                     witness_id: widx,
                     existing: format!("{existing_value:?}"),
                     new: format!("{value:?}"),
+                    expr_ids,
                 });
             }
         } else {

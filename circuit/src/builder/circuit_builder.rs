@@ -514,6 +514,14 @@ where
         self.expr_builder.pop_scope();
     }
 
+    /// Dumps the allocation log for specific `ExprId`s.
+    ///
+    /// If debug_assertions are not enabled, this is a no-op.
+    #[allow(clippy::missing_const_for_fn)]
+    pub fn dump_expr_ids(&self, expr_ids: &[ExprId]) {
+        self.expr_builder.dump_expr_ids(expr_ids);
+    }
+
     /// Dumps the allocation log.
     ///
     /// If debug_assertions are not enabled, this is a no-op.

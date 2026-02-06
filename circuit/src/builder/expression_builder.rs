@@ -586,6 +586,16 @@ where
         &self.allocation_log
     }
 
+    /// Dumps the allocation log for specific `ExprId`s.
+    ///
+    /// If debug_assertions are not enabled, this is a no-op.
+    #[allow(clippy::missing_const_for_fn)]
+    #[allow(unused_variables)]
+    pub fn dump_expr_ids(&self, expr_ids: &[ExprId]) {
+        #[cfg(debug_assertions)]
+        crate::alloc_entry::dump_expr_ids(&self.allocation_log, expr_ids);
+    }
+
     /// Dumps the allocation log to stdout (debug builds only).
     ///
     /// Prints a formatted view of all allocations, including their types, labels,

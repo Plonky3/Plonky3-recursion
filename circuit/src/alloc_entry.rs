@@ -40,6 +40,26 @@ pub struct AllocationEntry {
     pub scope: Option<&'static str>,
 }
 
+/// Look up and dump allocation info for specific `ExprId`s.
+pub fn dump_expr_ids(allocation_log: &[AllocationEntry], expr_ids: &[ExprId]) {
+    tracing::debug!("=== Allocation Info for ExprIds {:?} ===", expr_ids);
+    for expr_id in expr_ids {
+        if let Some(entry) = allocation_log.iter().find(|e| e.expr_id == *expr_id) {
+            tracing::debug!(
+                "  ExprId({}) = {:?}, label='{}', scope={:?}, deps={:?}",
+                entry.expr_id.0,
+                entry.alloc_type,
+                entry.label,
+                entry.scope,
+                entry.dependencies
+            );
+        } else {
+            tracing::debug!("  ExprId({}) not found in allocation log", expr_id.0);
+        }
+    }
+    tracing::debug!("=== End ExprId Info ===\n");
+}
+
 /// Dump an allocation log (debug builds only).
 ///
 /// Shows all allocations with their types, labels, and dependencies,
