@@ -84,7 +84,7 @@ impl<F: Field> PreprocessedColumns<F> {
         op_type: PrimitiveOpType,
         wids: &[WitnessId],
     ) -> Result<(), CircuitError> {
-        if let PrimitiveOpType::Witness = op_type {
+        if matches!(op_type, PrimitiveOpType::Witness) {
             return Err(CircuitError::InvalidPreprocessing {
                 reason: "Witness reads cannot be made from the Witness bus",
             });
