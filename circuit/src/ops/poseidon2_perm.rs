@@ -716,8 +716,21 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for Poseidon2Perm
                     &[F::ZERO, F::ZERO], // in_idx, in_ctl
                 );
             } else {
-                // Exposed input: register the witness read (updates multiplicities)
-                preprocessed.register_non_primitive_witness_reads(self.op_type, inp)?;
+                // Exposed input
+                // Update witness multiplicities only if NOT merkle_path mode.
+                // In merkle_path mode, input CTL lookups are disabled in the AIR
+                // because the value permutation (based on runtime mmcs_bit) would
+                // require degree-1 conditional logic that exceeds constraint limits.
+                if self.merkle_path {
+                    // Don't update multiplicities - just register the index
+                    preprocessed.register_non_primitive_preprocessed_no_read(
+                        self.op_type,
+                        &[F::from_u32(inp[0].0)],
+                    );
+                } else {
+                    // Register the witness read (updates multiplicities)
+                    preprocessed.register_non_primitive_witness_reads(self.op_type, inp)?;
+                }
                 // Add in_ctl value
                 preprocessed.register_non_primitive_preprocessed_no_read(self.op_type, &[F::ONE]);
             }
