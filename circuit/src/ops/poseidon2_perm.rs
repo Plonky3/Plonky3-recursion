@@ -769,12 +769,19 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for Poseidon2Perm
                 preprocessed.register_non_primitive_preprocessed_no_read(self.op_type, &[F::ONE]);
             }
         }
-        // Index of mmcs_index_sum
+        // Index for mmcs_index_sum CTL
+        // **NOTE**: We do NOT update witness multiplicities here because the mmcs_index_sum
+        // lookup has CONDITIONAL multiplicity (mmcs_merkle_flag * next_new_start).
+        // The multiplicity is computed in get_airs_and_degrees_with_prep() which scans
+        // the preprocessed data and updates witness multiplicities accordingly.
         if inputs[4].is_empty() {
             preprocessed.register_non_primitive_preprocessed_no_read(self.op_type, &[F::ZERO]);
         } else {
-            // Register the witness read (updates multiplicities)
-            preprocessed.register_non_primitive_witness_reads(self.op_type, &inputs[4])?;
+            // Just register the index value, do NOT update multiplicities
+            preprocessed.register_non_primitive_preprocessed_no_read(
+                self.op_type,
+                &[F::from_u32(inputs[4][0].0)],
+            );
         }
 
         // mmcs_merkle_flag = mmcs_ctl_enabled * merkle_path (precomputed)
