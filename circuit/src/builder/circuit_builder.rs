@@ -14,7 +14,7 @@ use p3_symmetric::Permutation;
 use super::compiler::{ExpressionLowerer, Optimizer};
 use super::{BuilderConfig, ExpressionBuilder, PublicInputTracker};
 use crate::circuit::Circuit;
-use crate::op::{NonPrimitiveExecutor, NonPrimitiveOpType};
+use crate::op::{NonPrimitiveExecutor, NonPrimitiveOpConfig, NonPrimitiveOpType};
 use crate::ops::Poseidon2Params;
 use crate::tables::TraceGeneratorFn;
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};
@@ -179,7 +179,7 @@ where
 
         self.config.enable_op(
             NonPrimitiveOpType::Poseidon2Perm(Config::CONFIG),
-            crate::op::NonPrimitiveOpConfig::Poseidon2Perm {
+            NonPrimitiveOpConfig::Poseidon2Perm {
                 config: Config::CONFIG,
                 exec,
             },

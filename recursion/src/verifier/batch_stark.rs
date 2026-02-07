@@ -134,6 +134,7 @@ where
     let rows: RowCounts = proof.rows;
     let packing = proof.table_packing;
     let witness_lanes = packing.witness_lanes();
+    let public_lanes = packing.public_lanes();
     let alu_lanes = packing.alu_lanes();
 
     let circuit_airs = vec![
@@ -146,6 +147,7 @@ where
         )),
         CircuitTablesAir::Public(PublicAir::<Val<SC>, TRACE_D>::new(
             rows[PrimitiveTable::Public],
+            public_lanes,
         )),
         CircuitTablesAir::Alu(AluAir::<Val<SC>, TRACE_D>::new(
             rows[PrimitiveTable::Alu],

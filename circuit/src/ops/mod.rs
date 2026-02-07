@@ -1,3 +1,5 @@
+pub mod hash;
+pub mod mmcs;
 pub mod poseidon2_perm;
 
 pub(crate) use poseidon2_perm::Poseidon2PermExecutor;

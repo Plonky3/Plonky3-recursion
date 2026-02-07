@@ -1,19 +1,19 @@
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
-use alloc::format;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use alloc::{format, vec};
 use core::any::Any;
 use core::fmt::Debug;
 use core::hash::Hash;
 
 use hashbrown::HashMap;
-use p3_field::Field;
+use p3_field::{Field, PrimeCharacteristicRing};
 use strum_macros::EnumCount;
 
-use crate::CircuitError;
-use crate::ops::poseidon2_perm::Poseidon2PermPrivateData;
+use crate::ops::Poseidon2PermPrivateData;
 use crate::types::{NonPrimitiveOpId, WitnessId};
+use crate::{CircuitError, PreprocessedColumns};
 
 /// ALU operation kinds for the unified arithmetic table.
 ///
@@ -424,7 +424,7 @@ pub struct ExecutionContext<'a, F> {
     op_states: &'a mut OpStateMap,
 }
 
-impl<'a, F: Field> ExecutionContext<'a, F> {
+impl<'a, F: PrimeCharacteristicRing + Eq + Clone> ExecutionContext<'a, F> {
     /// Create a new execution context
     pub fn new(
         witness: &'a mut [Option<F>],
@@ -458,13 +458,14 @@ impl<'a, F: Field> ExecutionContext<'a, F> {
         }
 
         // Check for conflicting reassignment
-        if let Some(existing_value) = self.witness[widx.0 as usize]
-            && existing_value != value
+        if let Some(existing_value) = &self.witness[widx.0 as usize]
+            && *existing_value != value
         {
             return Err(CircuitError::WitnessConflict {
                 witness_id: widx,
                 existing: format!("{existing_value:?}"),
                 new: format!("{value:?}"),
+                expr_ids: vec![], // TODO: Could be filled with expression IDs if tracked
             });
         }
 
@@ -554,13 +555,16 @@ pub trait NonPrimitiveExecutor<F: Field>: Debug {
     /// Update the preprocessed values related to this operation. This consists of:
     /// - the preprocessed values for the associated table
     /// - the multiplicity for the `Witness` table.
+    ///
+    /// Uses the `PreprocessedColumns` API to ensure witness multiplicities are updated
+    /// consistently when reading from the witness table.
     fn preprocess(
         &self,
         _inputs: &[Vec<WitnessId>],
         _outputs: &[Vec<WitnessId>],
-        _primitive_preprocessed: &mut Vec<Vec<F>>,
-        _non_primitive_preprocessed: &mut NonPrimitivePreprocessedMap<F>,
-    ) {
+        _preprocessed: &mut PreprocessedColumns<F>,
+    ) -> Result<(), CircuitError> {
+        Ok(())
     }
 
     /// Clone as trait object

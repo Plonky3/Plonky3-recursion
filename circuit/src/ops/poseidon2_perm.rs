@@ -31,15 +31,15 @@ use core::fmt::Debug;
 
 use p3_field::{ExtensionField, Field, PrimeCharacteristicRing, PrimeField};
 
-use crate::CircuitError;
 use crate::builder::{CircuitBuilder, NonPrimitiveOpParams};
 use crate::circuit::CircuitField;
 use crate::op::{
     ExecutionContext, NonPrimitiveExecutor, NonPrimitiveOpConfig, NonPrimitiveOpPrivateData,
-    NonPrimitiveOpType, OpExecutionState, PrimitiveOpType,
+    NonPrimitiveOpType, OpExecutionState,
 };
 use crate::tables::NonPrimitiveTrace;
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessId};
+use crate::{CircuitError, PreprocessedColumns};
 
 // ============================================================================
 // Configuration
@@ -76,6 +76,10 @@ impl Poseidon2Config {
             Self::BabyBearD4Width16 | Self::KoalaBearD4Width16 => 2,
             Self::BabyBearD4Width24 | Self::KoalaBearD4Width24 => 4,
         }
+    }
+
+    pub const fn rate(self) -> usize {
+        self.rate_ext() * self.d()
     }
 
     pub const fn capacity_ext(self) -> usize {
@@ -367,7 +371,7 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for Poseidon2Perm
         // Get private data if available and validate usage rules.
         let private_inputs: Option<&[F]> = match ctx.get_private_data() {
             Ok(NonPrimitiveOpPrivateData::Poseidon2Perm(data)) => {
-                if !self.merkle_path || self.new_start {
+                if !self.merkle_path {
                     return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
                         op: self.op_type,
                         operation_index: ctx.operation_id(),
@@ -509,23 +513,9 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for Poseidon2Perm
         &self,
         inputs: &[Vec<WitnessId>],
         outputs: &[Vec<WitnessId>],
-        primitive_preprocessed: &mut Vec<Vec<F>>,
-        non_primitive_preprocessed: &mut crate::op::NonPrimitivePreprocessedMap<F>,
-    ) {
-        let witness_table_idx = PrimitiveOpType::Witness as usize;
-        let update_witness_table = |witness_ids: &[WitnessId], p_ts: &mut Vec<Vec<F>>| {
-            for witness_id in witness_ids {
-                let idx = witness_id.0 as usize;
-                if idx >= p_ts[witness_table_idx].len() {
-                    p_ts[witness_table_idx].resize(idx + 1, F::from_u32(0));
-                }
-                p_ts[witness_table_idx][idx] += F::ONE;
-            }
-        };
-
+        preprocessed: &mut PreprocessedColumns<F>,
+    ) -> Result<(), CircuitError> {
         // We need to populate in_ctl and out_ctl for this operation.
-        let entry = non_primitive_preprocessed.entry(self.op_type).or_default();
-
         // The inputs have shape:
         // inputs[0..3]: input limbs, inputs[4]: mmcs_index_sum, inputs[5]: mmcs_bit
         // The outputs have shape:
@@ -537,16 +527,15 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for Poseidon2Perm
         for (limb_idx, inp) in inputs[0..4].iter().enumerate() {
             if inp.is_empty() {
                 // Private input
-                entry.push(F::ZERO); // in_idx
-                entry.push(F::ZERO); // in_ctl
+                preprocessed.register_non_primitive_preprocessed_no_read(
+                    self.op_type,
+                    &[F::ZERO, F::ZERO], // in_idx, in_ctl
+                );
             } else {
-                // Exposed input
-                entry.push(F::from_u32(inp[0].0)); // in_idx
-                entry.push(F::ONE); // in_ctl
-
-                // In this case, we are reading the input limbs from the witness table,
-                // so we need to update the associated witness table multiplicities.
-                update_witness_table(inp, primitive_preprocessed);
+                // Exposed input: register the witness read (updates multiplicities)
+                preprocessed.register_non_primitive_witness_reads(self.op_type, inp)?;
+                // Add in_ctl value
+                preprocessed.register_non_primitive_preprocessed_no_read(self.op_type, &[F::ONE]);
             }
             let normal_chain_sel =
                 if !self.new_start && !self.merkle_path && inputs[limb_idx].is_empty() {
@@ -555,7 +544,8 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for Poseidon2Perm
                     F::ZERO
                 };
 
-            entry.push(normal_chain_sel);
+            preprocessed
+                .register_non_primitive_preprocessed_no_read(self.op_type, &[normal_chain_sel]);
 
             let merkle_chain_sel =
                 if !self.new_start && self.merkle_path && inputs[limb_idx].is_empty() {
@@ -563,38 +553,42 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for Poseidon2Perm
                 } else {
                     F::ZERO
                 };
-            entry.push(merkle_chain_sel);
+            preprocessed
+                .register_non_primitive_preprocessed_no_read(self.op_type, &[merkle_chain_sel]);
         }
 
         for out in outputs[0..2].iter() {
             if out.is_empty() {
                 // Private output
-                entry.push(F::ZERO); // out_idx
-                entry.push(F::ZERO); // out_ctl
+                preprocessed.register_non_primitive_preprocessed_no_read(
+                    self.op_type,
+                    &[F::ZERO, F::ZERO], // out_idx, out_ctl
+                );
             } else {
-                // Exposed output
-                entry.push(F::from_u32(out[0].0)); // out_idx
-                entry.push(F::ONE); // out_ctl
-
-                // In this case, we are reading the output limbs from the witness table,
-                // so we need to update the associated witness table multiplicities.
-                update_witness_table(out, primitive_preprocessed);
+                // Exposed output: register the witness read (updates multiplicities)
+                preprocessed.register_non_primitive_witness_reads(self.op_type, out)?;
+                // Add out_ctl value
+                preprocessed.register_non_primitive_preprocessed_no_read(self.op_type, &[F::ONE]);
             }
         }
 
         // Index of mmcs_index_sum
         if inputs[4].is_empty() {
-            entry.push(F::ZERO);
+            preprocessed.register_non_primitive_preprocessed_no_read(self.op_type, &[F::ZERO]);
         } else {
-            entry.push(F::from_u32(inputs[4][0].0));
-            // In this case, we are reading the MMCS index sum from the witness table,
-            // so we need to update the associated witness table multiplicities.
-            update_witness_table(&inputs[4], primitive_preprocessed);
+            // Register the witness read (updates multiplicities)
+            preprocessed.register_non_primitive_witness_reads(self.op_type, &inputs[4])?;
         }
 
         // We need to insert `new_start` and `merkle_path` as well.
-        entry.push(if self.new_start { F::ONE } else { F::ZERO });
-        entry.push(if self.merkle_path { F::ONE } else { F::ZERO });
+        let new_start_val = if self.new_start { F::ONE } else { F::ZERO };
+        let merkle_path_val = if self.merkle_path { F::ONE } else { F::ZERO };
+        preprocessed.register_non_primitive_preprocessed_no_read(
+            self.op_type,
+            &[new_start_val, merkle_path_val],
+        );
+
+        Ok(())
     }
 
     fn boxed(&self) -> Box<dyn NonPrimitiveExecutor<F>> {
@@ -604,8 +598,8 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for Poseidon2Perm
 
 impl Poseidon2PermExecutor {
     /// Resolve input limb value using a layered priority system:
-    /// 1. Layer 1: Private inputs (lowest priority) - sibling placed based on mmcs_bit
-    /// 2. Layer 2: Chaining from previous permutation (if new_start=false)
+    /// 1. Layer 1: Chaining from previous permutation (lowest priority) or zeros if new_start
+    /// 2. Layer 2: Private inputs - sibling placed based on mmcs_bit
     /// 3. Layer 3: CTL (witness) values (highest priority, overwrites previous layers)
     fn resolve_input_limb<F: Field>(
         &self,
@@ -619,20 +613,7 @@ impl Poseidon2PermExecutor {
         // Build up the input array with layered priorities
         let mut resolved = [None; 4];
 
-        // Layer 1: Private inputs (lowest priority)
-        // Private inputs are only used in Merkle mode (merkle_path && !new_start).
-        // The sibling (exactly 2 limbs) is placed based on mmcs_bit:
-        // - mmcs_bit=0: sibling in 2-3
-        // - mmcs_bit=1: sibling in 0-1
-        if let Some(private) = private_inputs {
-            // Note: validation ensures private_inputs is only provided for Merkle mode
-            debug_assert!(self.merkle_path && !self.new_start);
-            let start = if mmcs_bit { 0 } else { 2 };
-            resolved[start] = Some(private[0]);
-            resolved[start + 1] = Some(private[1]);
-        }
-
-        // Layer 2: Chaining from previous permutation (medium priority)
+        // Layer 1: Chaining from previous permutation (lowest priority)
         if !self.new_start {
             let prev =
                 last_output.ok_or_else(|| CircuitError::Poseidon2ChainMissingPreviousState {
@@ -645,18 +626,23 @@ impl Poseidon2PermExecutor {
                     resolved[i] = Some(prev[i]);
                 }
             } else {
-                // Merkle path chaining:
-                // Previous digest (prev[0..1]) is placed based on mmcs_bit:
-                // - mmcs_bit=0: chain into input limbs 0-1
-                // - mmcs_bit=1: chain into input limbs 2-3
-                if mmcs_bit {
-                    resolved[2] = Some(prev[0]);
-                    resolved[3] = Some(prev[1]);
-                } else {
-                    resolved[0] = Some(prev[0]);
-                    resolved[1] = Some(prev[1]);
-                }
+                // Merkle path chaining: canonical placement in limbs 0-1.
+                resolved[0] = Some(prev[0]);
+                resolved[1] = Some(prev[1]);
             }
+        } else if !self.merkle_path {
+            // new_start = true: all limbs default to zero
+            resolved.fill(Some(F::ZERO));
+        }
+
+        // Layer 2: Private inputs (medium priority)
+        // Private inputs are only used in Merkle mode.
+        // Canonical placement: sibling in limbs 2-3.
+        if let Some(private) = private_inputs
+            && self.merkle_path
+        {
+            resolved[2] = Some(private[0]);
+            resolved[3] = Some(private[1]);
         }
 
         // Layer 3: CTL (witness) values (highest priority)
@@ -668,17 +654,25 @@ impl Poseidon2PermExecutor {
             }
         }
 
+        let permuted_idx = if self.merkle_path && mmcs_bit {
+            match limb {
+                0 => 2,
+                1 => 3,
+                2 => 0,
+                3 => 1,
+                _ => limb,
+            }
+        } else {
+            limb
+        };
+
         // Return the resolved value
-        resolved[limb].ok_or_else(|| {
-            if self.merkle_path && !self.new_start {
-                let is_required_sibling =
-                    matches!((mmcs_bit, limb), (false, 2 | 3) | (true, 0 | 1));
-                if is_required_sibling {
-                    return CircuitError::Poseidon2MerkleMissingSiblingInput {
-                        operation_index: ctx.operation_id(),
-                        limb,
-                    };
-                }
+        resolved[permuted_idx].ok_or_else(|| {
+            if self.merkle_path && matches!(permuted_idx, 2 | 3) {
+                return CircuitError::Poseidon2MerkleMissingSiblingInput {
+                    operation_index: ctx.operation_id(),
+                    limb,
+                };
             }
             CircuitError::Poseidon2MissingInput {
                 operation_index: ctx.operation_id(),

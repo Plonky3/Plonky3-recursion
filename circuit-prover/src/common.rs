@@ -2,8 +2,11 @@ use alloc::collections::btree_map::BTreeMap;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use p3_circuit::op::{NonPrimitiveOpType, Poseidon2Config, PrimitiveOpType};
-use p3_circuit::{Circuit, CircuitError};
+use hashbrown::HashMap;
+use p3_circuit::op::{
+    NonPrimitiveOpType, NonPrimitivePreprocessedMap, Poseidon2Config, PrimitiveOpType,
+};
+use p3_circuit::{Circuit, CircuitError, PreprocessedColumns};
 use p3_field::ExtensionField;
 use p3_uni_stark::{StarkGenericConfig, SymbolicExpression, Val};
 use p3_util::log2_ceil_usize;
@@ -64,23 +67,54 @@ pub fn get_airs_and_degrees_with_prep<
     circuit: &Circuit<ExtF>,
     packing: TablePacking,
     non_primitive_configs: Option<&[NonPrimitiveConfig]>,
-) -> Result<(CircuitAirsWithDegrees<SC, D>, Vec<Val<SC>>), CircuitError>
+) -> Result<(CircuitAirsWithDegrees<SC, D>, PreprocessedColumns<Val<SC>>), CircuitError>
 where
     SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
     Val<SC>: StarkField,
 {
     let mut preprocessed = circuit.generate_preprocessed_columns()?;
 
-    // If ALU table is empty, we add a dummy row to avoid issues in the AIR.
-    // That means we need to update the witness multiplicities accordingly.
+    // Check if Public/Alu tables are empty and lanes > 1.
+    // Using lanes > 1 with empty tables causes issues in recursive verification
+    // due to a bug in how multi-lane padding interacts with lookup constraints.
+    // We automatically reduce lanes to 1 in these cases with a warning.
+    // IMPORTANT: This must be synchronized with prove_all_tables in batch_stark_prover.rs
     let witness_idx = PrimitiveOpType::Witness as usize;
+    let public_idx = PrimitiveOpType::Public as usize;
     let alu_idx = PrimitiveOpType::Alu as usize;
-    if preprocessed.primitive[alu_idx].is_empty() {
-        // ALU lane has 4 operands (a, b, c, out), each with D elements
+
+    let public_rows = preprocessed.primitive[public_idx].len();
+    let public_trace_only_dummy = public_rows <= 1;
+    let effective_public_lanes = if public_trace_only_dummy && packing.public_lanes() > 1 {
+        tracing::warn!(
+            "Public table has <=1 row but public_lanes={} > 1. Reducing to public_lanes=1 to avoid \
+             recursive verification issues. Consider using public_lanes=1 when few public inputs \
+             are expected.",
+            packing.public_lanes()
+        );
+        1
+    } else {
+        packing.public_lanes()
+    };
+
+    let alu_empty = preprocessed.primitive[alu_idx].is_empty();
+    let effective_alu_lanes = if alu_empty && packing.alu_lanes() > 1 {
+        tracing::warn!(
+            "ALU table is empty but alu_lanes={} > 1. Reducing to alu_lanes=1 to avoid \
+             recursive verification issues. Consider using alu_lanes=1 when no additions \
+             are expected.",
+            packing.alu_lanes()
+        );
+        1
+    } else {
+        packing.alu_lanes()
+    };
+
+    // If Alu table is empty, we add a dummy row to avoid issues in the AIRs.
+    // That means we need to update the witness multiplicities accordingly.
+    if alu_empty {
         let num_extra = AluAir::<Val<SC>, D>::lane_width() / D;
         preprocessed.primitive[witness_idx][0] += ExtF::from_usize(num_extra);
-        // Preprocessed width per op (excluding multiplicity): 8 values
-        // [sel_add, sel_mul, sel_bool, sel_muladd, a_idx, b_idx, c_idx, out_idx]
         preprocessed.primitive[alu_idx].extend(vec![
             ExtF::ZERO;
             AluAir::<Val<SC>, D>::preprocessed_lane_width()
@@ -124,12 +158,12 @@ where
 
                     let num_ops = prep.len().div_ceil(lane_without_multiplicities);
                     let alu_air = if D == 1 {
-                        AluAir::new_with_preprocessed(num_ops, packing.alu_lanes(), prep.clone())
+                        AluAir::new_with_preprocessed(num_ops, effective_alu_lanes, prep.clone())
                     } else {
                         let w = w_binomial.unwrap();
                         AluAir::new_binomial_with_preprocessed(
                             num_ops,
-                            packing.alu_lanes(),
+                            effective_alu_lanes,
                             w,
                             prep.clone(),
                         )
@@ -140,10 +174,16 @@ where
                     );
                 }
                 PrimitiveOpType::Public => {
-                    let height = prep.len();
-                    let public_air = PublicAir::new_with_preprocessed(height, prep.clone());
-                    table_preps[idx] =
-                        (CircuitTableAir::Public(public_air), log2_ceil_usize(height));
+                    let num_ops = prep.len();
+                    let public_air = PublicAir::new_with_preprocessed(
+                        num_ops,
+                        effective_public_lanes,
+                        prep.clone(),
+                    );
+                    table_preps[idx] = (
+                        CircuitTableAir::Public(public_air),
+                        log2_ceil_usize(num_ops.div_ceil(effective_public_lanes)),
+                    );
                 }
                 PrimitiveOpType::Const => {
                     let height = prep.len();
@@ -178,6 +218,8 @@ where
             }
         }
     }
+    // Convert non-primitive preprocessed data to base field
+    let mut non_primitive_base: NonPrimitivePreprocessedMap<Val<SC>> = HashMap::new();
     for (op_type, prep) in preprocessed.non_primitive.iter() {
         match op_type {
             NonPrimitiveOpType::Poseidon2Perm(_) => {
@@ -185,10 +227,11 @@ where
                     .get(op_type)
                     .copied()
                     .ok_or(CircuitError::InvalidPreprocessedValues)?;
-                let prep_base = prep
+                let prep_base: Vec<Val<SC>> = prep
                     .iter()
                     .map(|v| v.as_base().ok_or(CircuitError::InvalidPreprocessedValues))
                     .collect::<Result<Vec<_>, CircuitError>>()?;
+                non_primitive_base.insert(*op_type, prep_base.clone());
                 let poseidon2_prover = Poseidon2Prover::new(cfg);
                 let width = poseidon2_prover.preprocessed_width_from_config();
                 let poseidon2_wrapper =
@@ -205,5 +248,11 @@ where
         }
     }
 
-    Ok((table_preps, base_prep[0].clone()))
+    // Construct the PreprocessedColumns with base field elements
+    let preprocessed_columns = PreprocessedColumns {
+        primitive: base_prep,
+        non_primitive: non_primitive_base,
+    };
+
+    Ok((table_preps, preprocessed_columns))
 }

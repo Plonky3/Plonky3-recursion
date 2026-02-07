@@ -8,12 +8,12 @@ use hashbrown::HashMap;
 use p3_field::Field;
 use strum::EnumCount;
 
-use crate::CircuitError;
 use crate::op::{
     NonPrimitiveOpConfig, NonPrimitiveOpType, NonPrimitivePreprocessedMap, Op, PrimitiveOpType,
 };
 use crate::tables::{CircuitRunner, TraceGeneratorFn};
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessId};
+use crate::{AluOpKind, CircuitError};
 
 /// Trait encapsulating the required field operations for circuits
 pub trait CircuitField:
@@ -44,6 +44,142 @@ impl<F> CircuitField for F where
 pub struct PreprocessedColumns<F> {
     pub primitive: Vec<Vec<F>>,
     pub non_primitive: NonPrimitivePreprocessedMap<F>,
+}
+
+impl<F: Field> PreprocessedColumns<F> {
+    /// Creates an empty [`PreprocessedColumns`] with one primitive entry per [`PrimitiveOpType`].
+    pub fn new() -> Self {
+        Self {
+            primitive: vec![vec![]; PrimitiveOpType::COUNT],
+            non_primitive: NonPrimitivePreprocessedMap::new(),
+        }
+    }
+
+    /// Updates the witness table multiplicities for all the given witness indices.
+    pub fn update_witness_multiplicities(
+        &mut self,
+        wids: &[WitnessId],
+    ) -> Result<(), CircuitError> {
+        if self.primitive.len() != PrimitiveOpType::COUNT {
+            return Err(CircuitError::InvalidPreprocessing {
+                reason: "primitive vector length does not match PrimitiveOpType::COUNT",
+            });
+        }
+
+        const WITNESS_TABLE_IDX: usize = PrimitiveOpType::Witness as usize;
+        for wid in wids {
+            let idx = wid.0 as usize;
+            if idx >= self.primitive[WITNESS_TABLE_IDX].len() {
+                self.primitive[WITNESS_TABLE_IDX].resize(idx + 1, F::ZERO);
+            }
+            self.primitive[WITNESS_TABLE_IDX][idx] += F::ONE;
+        }
+        Ok(())
+    }
+
+    /// Extends the preprocessed data of `op_type`'s primitive operation
+    /// with `wids`'s witness indices, and updates the witness multiplicities.
+    pub fn register_primitive_witness_reads(
+        &mut self,
+        op_type: PrimitiveOpType,
+        wids: &[WitnessId],
+    ) -> Result<(), CircuitError> {
+        if matches!(op_type, PrimitiveOpType::Witness) {
+            return Err(CircuitError::InvalidPreprocessing {
+                reason: "Witness reads cannot be made from the Witness bus",
+            });
+        }
+
+        if self.primitive.len() != PrimitiveOpType::COUNT {
+            return Err(CircuitError::InvalidPreprocessing {
+                reason: "primitive vector length does not match PrimitiveOpType::COUNT",
+            });
+        }
+
+        let wids_field = wids.iter().map(|wid| F::from_u32(wid.0));
+        self.primitive[op_type as usize].extend(wids_field);
+
+        self.update_witness_multiplicities(wids)?;
+
+        Ok(())
+    }
+
+    /// Extends the preprocessed data of `op_type`'s non-primitive operation
+    /// with `wids`'s witness indices, and updates the witness multiplicities.
+    pub fn register_non_primitive_witness_reads(
+        &mut self,
+        op_type: NonPrimitiveOpType,
+        wids: &[WitnessId],
+    ) -> Result<(), CircuitError> {
+        let entry = self.non_primitive.entry(op_type).or_default();
+
+        let wids_field = wids.iter().map(|wid| F::from_u32(wid.0));
+        entry.extend(wids_field);
+
+        self.update_witness_multiplicities(wids)?;
+
+        Ok(())
+    }
+
+    /// Extends the preprocessed data of `op_type`'s primitive operation
+    /// with `wid`'s witness index, and updates the witness multiplicity.
+    pub fn register_primitive_witness_read(
+        &mut self,
+        op_type: PrimitiveOpType,
+        wid: WitnessId,
+    ) -> Result<(), CircuitError> {
+        self.register_primitive_witness_reads(op_type, &[wid])
+    }
+
+    /// Extends the preprocessed data of `op_type`'s non-primitive operation
+    /// with `wid`'s witness index, and updates the witness multiplicity.
+    pub fn register_non_primitive_witness_read(
+        &mut self,
+        op_type: NonPrimitiveOpType,
+        wid: WitnessId,
+    ) -> Result<(), CircuitError> {
+        self.register_non_primitive_witness_reads(op_type, &[wid])
+    }
+
+    /// Extends the preprocessed data of `op_type`'s primitive operation with `values`.
+    /// Does not update witness multiplicities.
+    pub fn register_primitive_preprocessed_no_read(
+        &mut self,
+        op_type: PrimitiveOpType,
+        values: &[F],
+    ) -> Result<(), CircuitError> {
+        if self.primitive.len() != PrimitiveOpType::COUNT {
+            return Err(CircuitError::InvalidPreprocessing {
+                reason: "primitive vector length does not match PrimitiveOpType::COUNT",
+            });
+        }
+        if matches!(op_type, PrimitiveOpType::Witness) {
+            return Err(CircuitError::InvalidPreprocessing {
+                reason: "cannot use register_primitive_preprocessed_no_read for Witness table",
+            });
+        }
+
+        self.primitive[op_type as usize].extend(values);
+
+        Ok(())
+    }
+
+    /// Extends the preprocessed data of `op_type`'s non-primitive operation with `values`.
+    /// Does not update witness multiplicities.
+    pub fn register_non_primitive_preprocessed_no_read(
+        &mut self,
+        op_type: NonPrimitiveOpType,
+        values: &[F],
+    ) {
+        let entry = self.non_primitive.entry(op_type).or_default();
+        entry.extend(values);
+    }
+}
+
+impl<F: Field> Default for PreprocessedColumns<F> {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Static circuit specification containing constraint system and metadata
@@ -122,57 +258,37 @@ impl<F: Field> Circuit<F> {
     ///
     /// Note that `mul_i` in the Witness table preprocessed column indicates how many times
     /// each witness index appears in the circuit.
-    /// We do not generate multiplicities for the other tables, as the multiplicity is always 1 for active operations
-    /// (0 for padding). Multiplicities are therefore generated by the tables themselves.
-    ///
-    // TODO: Centralize the multiplicity logic to make reads/writes less error-prone.
+    /// ALU rows include selectors followed by indices; multiplicity is handled when building the ALU table.
     pub fn generate_preprocessed_columns(&self) -> Result<PreprocessedColumns<F>, CircuitError> {
-        // Allocate one empty vector per primitive operation type (Witness, Const, Public, Alu).
-        let mut preprocessed = vec![vec![]; PrimitiveOpType::COUNT];
-        let mut non_primitive_preprocessed = NonPrimitivePreprocessedMap::new();
+        let mut preprocessed = PreprocessedColumns::new();
 
         // We know that the Witness table has at least one entry for index 0 (multiplicity 0 at the start).
-        preprocessed[PrimitiveOpType::Witness as usize].push(F::ZERO);
-        let witness_table_idx = PrimitiveOpType::Witness as usize;
-        let alu_table_idx = PrimitiveOpType::Alu as usize;
+        preprocessed.primitive[PrimitiveOpType::Witness as usize].push(F::ZERO);
 
         // Process each primitive operation, extracting its witness indices.
         for op in &self.ops {
             match op {
                 // Const: stores a constant value at witness[out].
                 // Preprocessed data: the output witness index.
+                // Since the values in ConstAir are looked up in WitnessAir,
+                // we register the read to update multiplicities.
                 Op::Const { out, .. } => {
-                    let table_idx = PrimitiveOpType::Const as usize;
-                    preprocessed[table_idx].extend(&[F::from_u32(out.0)]);
-
-                    // Since the values in `ConstAir` are looked up in `WitnessAir`,
-                    // we need to take the values into account in `WitnessAir`s preprocessed multiplicities.
-                    if out.0 >= preprocessed[witness_table_idx].len() as u32 {
-                        preprocessed[witness_table_idx].resize(out.0 as usize + 1, F::from_u32(0));
-                    }
-                    preprocessed[witness_table_idx][out.0 as usize] += F::ONE;
+                    preprocessed
+                        .register_primitive_witness_reads(PrimitiveOpType::Const, &[*out])?;
                 }
                 // Public: loads a public input into witness[out].
                 // Preprocessed data: the output witness index.
+                // Since the values in PublicAir are looked up in WitnessAir,
+                // we register the read to update multiplicities.
                 Op::Public { out, .. } => {
-                    let table_idx = PrimitiveOpType::Public as usize;
-                    preprocessed[table_idx].extend(&[F::from_u32(out.0)]);
-
-                    // Since the values in `PublicAir` are looked up in `WitnessAir`,
-                    // we need to take the values into account in `WitnessAir`s preprocessed multiplicities.
-                    if out.0 >= preprocessed[witness_table_idx].len() as u32 {
-                        preprocessed[witness_table_idx].resize(out.0 as usize + 1, F::from_u32(0));
-                    }
-                    preprocessed[witness_table_idx][out.0 as usize] += F::ONE;
+                    preprocessed
+                        .register_primitive_witness_reads(PrimitiveOpType::Public, &[*out])?;
                 }
                 // Unified ALU operations with selectors for operation kind.
                 // Preprocessed: [sel_add, sel_mul, sel_bool, sel_muladd, a_idx, b_idx, c_idx, out_idx]
                 Op::Alu {
                     kind, a, b, c, out, ..
                 } => {
-                    use crate::op::AluOpKind;
-
-                    // Generate selectors based on operation kind
                     let (sel_add, sel_mul, sel_bool, sel_muladd) = match kind {
                         AluOpKind::Add => (F::ONE, F::ZERO, F::ZERO, F::ZERO),
                         AluOpKind::Mul => (F::ZERO, F::ONE, F::ZERO, F::ZERO),
@@ -180,32 +296,21 @@ impl<F: Field> Circuit<F> {
                         AluOpKind::MulAdd => (F::ZERO, F::ZERO, F::ZERO, F::ONE),
                     };
 
-                    // c_idx is 0 for non-MulAdd operations (points to witness index 0)
-                    let c_idx = c.map_or(0u32, |w| w.0);
+                    preprocessed.register_primitive_preprocessed_no_read(
+                        PrimitiveOpType::Alu,
+                        &[sel_add, sel_mul, sel_bool, sel_muladd],
+                    )?;
 
-                    preprocessed[alu_table_idx].extend(&[
-                        sel_add,
-                        sel_mul,
-                        sel_bool,
-                        sel_muladd,
-                        F::from_u32(a.0),
-                        F::from_u32(b.0),
-                        F::from_u32(c_idx),
-                        F::from_u32(out.0),
-                    ]);
-
-                    // Update multiplicities for all 4 operands in WitnessAir
-                    // ALU table always sends 4 lookups per operation (a, b, c, out)
-                    // For non-MulAdd operations, c points to index 0
-                    let operand_indices = [a.0, b.0, c_idx, out.0];
-
-                    for widx in operand_indices {
-                        if widx >= preprocessed[witness_table_idx].len() as u32 {
-                            preprocessed[witness_table_idx]
-                                .resize(widx as usize + 1, F::from_u32(0));
-                        }
-                        preprocessed[witness_table_idx][widx as usize] += F::ONE;
-                    }
+                    // Witness indices contribute to multiplicities and follow the selectors in order.
+                    preprocessed.register_primitive_witness_reads(
+                        PrimitiveOpType::Alu,
+                        &[
+                            *a,
+                            *b,
+                            c.unwrap_or(WitnessId(0)), // c is for non MulAdd operations
+                            *out,
+                        ],
+                    )?;
                 }
                 Op::NonPrimitiveOpWithExecutor {
                     executor,
@@ -214,20 +319,12 @@ impl<F: Field> Circuit<F> {
                     ..
                 } => {
                     // Delegate preprocessing to the non-primitive operation.
-                    executor.preprocess(
-                        inputs,
-                        outputs,
-                        &mut preprocessed,
-                        &mut non_primitive_preprocessed,
-                    );
+                    executor.preprocess(inputs, outputs, &mut preprocessed)?;
                 }
             }
         }
 
-        Ok(PreprocessedColumns {
-            primitive: preprocessed,
-            non_primitive: non_primitive_preprocessed,
-        })
+        Ok(preprocessed)
     }
 }
 
@@ -314,6 +411,7 @@ mod tests {
         );
 
         // ALU column: [sel_add, sel_mul, sel_bool, sel_muladd, a, b, c, out] per op
+        // Layout per op: [sel_add, sel_mul, sel_bool, sel_muladd, a, b, c, out]
         // Op 1: add(0, 1, 3) -> [1, 0, 0, 0, 0, 1, 0, 3]
         // Op 2: add(3, 2, 4) -> [1, 0, 0, 0, 3, 2, 0, 4]
         // Op 3: mul(4, 2, 5) -> [0, 1, 0, 0, 4, 2, 0, 5]
