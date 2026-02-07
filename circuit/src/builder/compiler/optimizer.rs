@@ -100,14 +100,14 @@ impl Optimizer {
                     if !matches!(defs.get(out), Some((_, OpDef::Const(_)))) {
                         // Check if this is a backwards mul (division)
                         // If `out` is already defined, then `b` is computed
-                        if let Some((out_def_idx, _)) = defs.get(out) {
-                            if *out_def_idx < idx {
-                                backwards_add_computed.insert(*b, idx);
-                                // Also track the computed value in defs so subsequent
-                                // backwards adds can detect their output is defined
-                                if !matches!(defs.get(b), Some((_, OpDef::Const(_)))) {
-                                    defs.insert(*b, (idx, OpDef::Other));
-                                }
+                        if let Some((out_def_idx, _)) = defs.get(out)
+                            && *out_def_idx < idx
+                        {
+                            backwards_add_computed.insert(*b, idx);
+                            // Also track the computed value in defs so subsequent
+                            // backwards adds can detect their output is defined
+                            if !matches!(defs.get(b), Some((_, OpDef::Const(_)))) {
+                                defs.insert(*b, (idx, OpDef::Other));
                             }
                         }
                         defs.insert(*out, (idx, OpDef::Mul { a: *a, b: *b }));
@@ -124,14 +124,14 @@ impl Optimizer {
                     if !matches!(defs.get(out), Some((_, OpDef::Const(_)))) {
                         // Check if this is a backwards add (subtraction)
                         // If `out` is already defined, then `b` is computed
-                        if let Some((out_def_idx, _)) = defs.get(out) {
-                            if *out_def_idx < idx {
-                                backwards_add_computed.insert(*b, idx);
-                                // Also track the computed value in defs so subsequent
-                                // backwards adds can detect their output is defined
-                                if !matches!(defs.get(b), Some((_, OpDef::Const(_)))) {
-                                    defs.insert(*b, (idx, OpDef::Other));
-                                }
+                        if let Some((out_def_idx, _)) = defs.get(out)
+                            && *out_def_idx < idx
+                        {
+                            backwards_add_computed.insert(*b, idx);
+                            // Also track the computed value in defs so subsequent
+                            // backwards adds can detect their output is defined
+                            if !matches!(defs.get(b), Some((_, OpDef::Const(_)))) {
+                                defs.insert(*b, (idx, OpDef::Other));
                             }
                         }
                         defs.insert(*out, (idx, OpDef::Add { a: *a, b: *b }));
@@ -231,10 +231,10 @@ impl Optimizer {
             // Build map: add_out -> mul_idx for CURRENTLY valid fusions only
             let mut add_out_to_mul_idx: HashMap<WitnessId, usize> = HashMap::new();
             for &add_idx in &valid_add_indices {
-                if let Some((mul_idx, _, _)) = potential_fusions.get(&add_idx) {
-                    if let Some(Op::Alu { out, .. }) = ops.get(add_idx) {
-                        add_out_to_mul_idx.insert(*out, *mul_idx);
-                    }
+                if let Some((mul_idx, _, _)) = potential_fusions.get(&add_idx)
+                    && let Some(Op::Alu { out, .. }) = ops.get(add_idx)
+                {
+                    add_out_to_mul_idx.insert(*out, *mul_idx);
                 }
             }
 
@@ -248,10 +248,10 @@ impl Optimizer {
 
                     // Invalid if addend isn't available when MulAdd runs
                     // None means always available (witness/public input), which is fine
-                    if let Some(pos) = addend_available_at {
-                        if pos >= *mul_idx {
-                            to_remove.push(add_idx);
-                        }
+                    if let Some(pos) = addend_available_at
+                        && pos >= *mul_idx
+                    {
+                        to_remove.push(add_idx);
                     }
                 }
             }
@@ -305,6 +305,7 @@ impl Optimizer {
 
     /// Creates a MulAdd candidate without full ordering checks.
     /// Returns (mul_idx, MulAdd op, addend) if the pattern matches.
+    #[allow(clippy::too_many_arguments)]
     fn try_create_muladd_candidate<F: Field>(
         &self,
         mul_result: WitnessId,
@@ -334,18 +335,18 @@ impl Optimizer {
         }
 
         // Don't fuse if the addend isn't defined yet (would be computed by this add)
-        if let Some((addend_def_idx, _)) = defs.get(&addend) {
-            if *addend_def_idx >= add_idx {
-                return None;
-            }
+        if let Some((addend_def_idx, _)) = defs.get(&addend)
+            && *addend_def_idx >= add_idx
+        {
+            return None;
         }
 
         // Don't fuse if the addend is computed by a backwards add that runs at or after mul_idx
         // (the MulAdd would run at mul_idx but the addend wouldn't be available yet)
-        if let Some(&computed_at_idx) = backwards_add_computed.get(&addend) {
-            if computed_at_idx >= *mul_idx {
-                return None;
-            }
+        if let Some(&computed_at_idx) = backwards_add_computed.get(&addend)
+            && computed_at_idx >= *mul_idx
+        {
+            return None;
         }
 
         let muladd_op = Op::Alu {

@@ -292,6 +292,7 @@ impl<AB: AirBuilder, const D: usize> Air<AB> for AluAir<AB::F, D>
 where
     AB::F: Field,
 {
+    #[allow(clippy::needless_range_loop)]
     fn eval(&self, builder: &mut AB) {
         let main = builder.main();
         debug_assert_eq!(main.width(), self.total_width(), "column width mismatch");
@@ -505,15 +506,15 @@ mod tests {
         let out_index = vec![WitnessId(3); n];
 
         let trace = AluTrace {
-            op_kind: op_kind.clone(),
+            op_kind,
             a_values,
-            a_index: a_index.clone(),
+            a_index,
             b_values,
-            b_index: b_index.clone(),
+            b_index,
             c_values,
-            c_index: c_index.clone(),
+            c_index,
             out_values,
-            out_index: out_index.clone(),
+            out_index,
         };
 
         let preprocessed_values = AluAir::<Val, 1>::trace_to_preprocessed(&trace);
@@ -545,15 +546,15 @@ mod tests {
         let out_index = vec![WitnessId(3); n];
 
         let trace = AluTrace {
-            op_kind: op_kind.clone(),
+            op_kind,
             a_values,
-            a_index: a_index.clone(),
+            a_index,
             b_values,
-            b_index: b_index.clone(),
+            b_index,
             c_values,
-            c_index: c_index.clone(),
+            c_index,
             out_values,
-            out_index: out_index.clone(),
+            out_index,
         };
 
         let preprocessed_values = AluAir::<Val, 1>::trace_to_preprocessed(&trace);
@@ -585,15 +586,15 @@ mod tests {
         let out_index = vec![WitnessId(1); n]; // out points to same as a
 
         let trace = AluTrace {
-            op_kind: op_kind.clone(),
+            op_kind,
             a_values,
-            a_index: a_index.clone(),
+            a_index,
             b_values,
-            b_index: b_index.clone(),
+            b_index,
             c_values,
-            c_index: c_index.clone(),
+            c_index,
             out_values,
-            out_index: out_index.clone(),
+            out_index,
         };
 
         let preprocessed_values = AluAir::<Val, 1>::trace_to_preprocessed(&trace);
@@ -625,15 +626,15 @@ mod tests {
         let out_index = vec![WitnessId(4); n];
 
         let trace = AluTrace {
-            op_kind: op_kind.clone(),
+            op_kind,
             a_values,
-            a_index: a_index.clone(),
+            a_index,
             b_values,
-            b_index: b_index.clone(),
+            b_index,
             c_values,
-            c_index: c_index.clone(),
+            c_index,
             out_values,
-            out_index: out_index.clone(),
+            out_index,
         };
 
         let preprocessed_values = AluAir::<Val, 1>::trace_to_preprocessed(&trace);
