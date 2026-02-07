@@ -255,42 +255,42 @@ where
 
     /// Adds two expressions.
     ///
-    /// Cost: 1 row in Add table + 1 row in witness table.
+    /// Cost: 1 row in the ALU table (add selector) + 1 row in the witness table.
     pub fn add(&mut self, lhs: ExprId, rhs: ExprId) -> ExprId {
         self.alloc_add(lhs, rhs, "")
     }
 
     /// Adds two expressions with a descriptive label.
     ///
-    /// Cost: 1 row in Add table + 1 row in witness table.
+    /// Cost: 1 row in the ALU table (add selector) + 1 row in the witness table.
     pub fn alloc_add(&mut self, lhs: ExprId, rhs: ExprId, label: &'static str) -> ExprId {
         self.expr_builder.add_add(lhs, rhs, label)
     }
 
     /// Subtracts two expressions.
     ///
-    /// Cost: 1 row in Add table + 1 row in witness table (encoded as result + rhs = lhs).
+    /// Cost: 1 row in the ALU table (add selector) + 1 row in the witness table (encoded as result + rhs = lhs).
     pub fn sub(&mut self, lhs: ExprId, rhs: ExprId) -> ExprId {
         self.alloc_sub(lhs, rhs, "")
     }
 
     /// Subtracts two expressions with a descriptive label.
     ///
-    /// Cost: 1 row in Add table + 1 row in witness table.
+    /// Cost: 1 row in the ALU table (add selector) + 1 row in the witness table.
     pub fn alloc_sub(&mut self, lhs: ExprId, rhs: ExprId, label: &'static str) -> ExprId {
         self.expr_builder.add_sub(lhs, rhs, label)
     }
 
     /// Multiplies two expressions.
     ///
-    /// Cost: 1 row in Mul table + 1 row in witness table.
+    /// Cost: 1 row in the ALU table (mul selector) + 1 row in the witness table.
     pub fn mul(&mut self, lhs: ExprId, rhs: ExprId) -> ExprId {
         self.alloc_mul(lhs, rhs, "")
     }
 
     /// Multiplies two expressions with a descriptive label.
     ///
-    /// Cost: 1 row in Mul table + 1 row in witness table.
+    /// Cost: 1 row in the ALU table (mul selector) + 1 row in the witness table.
     pub fn alloc_mul(&mut self, lhs: ExprId, rhs: ExprId, label: &'static str) -> ExprId {
         self.expr_builder.add_mul(lhs, rhs, label)
     }
@@ -363,14 +363,14 @@ where
 
     /// Divides two expressions.
     ///
-    /// Cost: 1 row in Mul table + 1 row in witness table (encoded as rhs * out = lhs).
+    /// Cost: 1 row in the ALU table (mul selector) + 1 row in the witness table (encoded as rhs * out = lhs).
     pub fn div(&mut self, lhs: ExprId, rhs: ExprId) -> ExprId {
         self.alloc_div(lhs, rhs, "")
     }
 
     /// Divides two expressions with a descriptive label.
     ///
-    /// Cost: 1 row in Mul table + 1 row in witness table.
+    /// Cost: 1 row in the ALU table (mul selector) + 1 row in the witness table.
     pub fn alloc_div(&mut self, lhs: ExprId, rhs: ExprId, label: &'static str) -> ExprId {
         self.expr_builder.add_div(lhs, rhs, label)
     }

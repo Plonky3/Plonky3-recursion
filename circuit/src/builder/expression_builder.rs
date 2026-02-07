@@ -231,8 +231,8 @@ where
     ///
     /// Represents the field subtraction operation: `result = lhs - rhs`.
     ///
-    /// **Note**: During lowering, subtraction is encoded as addition:
-    /// `lhs - rhs = result` becomes `result + rhs = lhs` in the Add table.
+    /// **Note**: During lowering, subtraction is encoded as an addition row in the ALU table:
+    /// `lhs - rhs = result` becomes `result + rhs = lhs` with the `add` selector enabled.
     ///
     /// # Arguments
     ///
@@ -282,8 +282,8 @@ where
     ///
     /// Represents the field division operation: `result = lhs / rhs`.
     ///
-    /// **Note**: During lowering, division is encoded as multiplication:
-    /// `lhs / rhs = result` becomes `result * rhs = lhs` in the Mul table.
+    /// **Note**: During lowering, division is encoded as a multiplication row in the ALU table:
+    /// `lhs / rhs = result` becomes `result * rhs = lhs` with the `mul` selector enabled.
     ///
     /// # Arguments
     ///
