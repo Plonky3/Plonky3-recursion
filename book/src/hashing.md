@@ -41,8 +41,8 @@ The same Poseidon2 permutation can be viewed in two equivalent ways:
 
 **D=1 View (Base Field)**
 ```
-Input:  [f₀, f₁, f₂, ..., f₁₅]     ← 16 base field elements
-Output: [g₀, g₁, g₂, ..., g₁₅]     ← 16 base field elements
+Input:  [e₀, e₁, e₂, ..., e₁₅]     ← 16 base field elements
+Output: [f₀, f₁, f₂, ..., f₁₅]     ← 16 base field elements
 ```
 
 **D=4 View (Extension Field)**
@@ -50,7 +50,7 @@ Output: [g₀, g₁, g₂, ..., g₁₅]     ← 16 base field elements
 Input:  [E₀, E₁, E₂, E₃]           ← 4 extension field elements
 Output: [F₀, F₁, F₂, F₃]           ← 4 extension field elements
 
-where each Eᵢ = fᵢ₀ + fᵢ₁·ω + fᵢ₂·ω² + fᵢ₃·ω³
+where each Eᵢ = eᵢ₀ + eᵢ₁·ω + eᵢ₂·ω² + eᵢ₃·ω³
 ```
 
 Both views represent the same Poseidon2 permutation over the base field. The difference is purely representational:
@@ -81,7 +81,7 @@ The challenger implements a duplex sponge construction as follows:
 │   observe(value):                                              │
 │     1. Clear output_buffer (any pending outputs are invalid)   │
 │     2. Push value to input_buffer                              │
-│     3. If input_buffer.len() == RATE:                          │
+│     3. If input_buffer.len() == RATE, apply duplexing:         │
 │        • Overwrite state[0..RATE] with input_buffer            │
 │        • Apply Poseidon2 permutation                           │
 │        • Fill output_buffer from state[0..RATE]                │
