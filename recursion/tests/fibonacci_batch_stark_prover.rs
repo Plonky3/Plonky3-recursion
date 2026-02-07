@@ -1,11 +1,11 @@
 mod common;
 
 use p3_baby_bear::default_babybear_poseidon2_16;
-use p3_batch_stark::CommonData;
+use p3_batch_stark::ProverData;
 use p3_circuit::CircuitBuilder;
 use p3_circuit::ops::generate_poseidon2_trace;
 use p3_circuit_prover::common::get_airs_and_degrees_with_prep;
-use p3_circuit_prover::{BatchStarkProver, TablePacking};
+use p3_circuit_prover::{BatchStarkProver, CircuitProverData, TablePacking};
 use p3_field::PrimeCharacteristicRing;
 use p3_fri::create_test_fri_params;
 use p3_lookup::logup::LogUpGadget;
@@ -40,7 +40,7 @@ fn test_fibonacci_batch_verifier() {
 
     builder.dump_allocation_log();
 
-    let table_packing = TablePacking::new(1, 4, 1);
+    let table_packing = TablePacking::new(1, 1, 4, 1);
 
     // Use the default permutation for proving to match circuit's Fiat-Shamir challenger
     let perm = default_babybear_poseidon2_16();
@@ -59,7 +59,7 @@ fn test_fibonacci_batch_verifier() {
     let config_proving = MyConfig::new(pcs_proving, challenger_proving);
 
     let circuit = builder.build().unwrap();
-    let (airs_degrees, witness_multiplicities) =
+    let (airs_degrees, preprocessed_columns) =
         get_airs_and_degrees_with_prep::<MyConfig, _, 1>(&circuit, table_packing, None).unwrap();
     let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
     let mut runner = circuit.runner();
@@ -70,18 +70,20 @@ fn test_fibonacci_batch_verifier() {
 
     let traces = runner.run().unwrap();
 
-    // Create common data for proving and verifying.
-    let common = CommonData::from_airs_and_degrees(&config_proving, &mut airs, &degrees);
+    // Create prover data for proving and verifying.
+    let prover_data = ProverData::from_airs_and_degrees(&config_proving, &mut airs, &degrees);
+    let circuit_prover_data = CircuitProverData::new(prover_data, preprocessed_columns);
 
     let prover = BatchStarkProver::new(config_proving).with_table_packing(table_packing);
 
     let lookup_gadget = LogUpGadget::new();
     let batch_stark_proof = prover
-        .prove_all_tables(&traces, &common, witness_multiplicities)
+        .prove_all_tables(&traces, &circuit_prover_data)
         .unwrap();
 
+    let common = circuit_prover_data.common_data();
     prover
-        .verify_all_tables(&batch_stark_proof, &common)
+        .verify_all_tables(&batch_stark_proof, common)
         .unwrap();
 
     // Now verify the batch STARK proof recursively
@@ -94,8 +96,6 @@ fn test_fibonacci_batch_verifier() {
     let challenge_mmcs2 = ChallengeMmcs::new(val_mmcs2.clone());
     let fri_params2 = create_test_fri_params(challenge_mmcs2, 0);
     let fri_verifier_params = FriVerifierParams::from(&fri_params2);
-    let _pow_bits = fri_params2.query_proof_of_work_bits;
-    let _log_height_max = fri_params2.log_final_poly_len + fri_params2.log_blowup;
     let pcs_verif = MyPcs::new(dft2, val_mmcs2, fri_params2);
     let challenger_verif = Challenger::new(perm2);
     let config = MyConfig::new(pcs_verif, challenger_verif);
@@ -131,7 +131,7 @@ fn test_fibonacci_batch_verifier() {
         &mut circuit_builder,
         &batch_stark_proof,
         &fri_verifier_params,
-        &common,
+        common,
         &lookup_gadget,
         Poseidon2Config::BabyBearD4Width16,
     )
@@ -142,7 +142,7 @@ fn test_fibonacci_batch_verifier() {
     let expected_public_input_len = verification_circuit.public_flat_len;
 
     // Pack values using the builder
-    let public_inputs = verifier_inputs.pack_values(&pis, batch_proof, &common);
+    let public_inputs = verifier_inputs.pack_values(&pis, batch_proof, common);
 
     assert_eq!(public_inputs.len(), expected_public_input_len);
     assert!(!public_inputs.is_empty());

@@ -145,6 +145,10 @@ pub enum CircuitError {
     #[error("Preprocessed values should be base field elements")]
     InvalidPreprocessedValues,
 
+    /// Invalid preprocessing operation
+    #[error("Invalid preprocessing: {reason}")]
+    InvalidPreprocessing { reason: &'static str },
+
     /// Inconsistent matrix heights when formatting openings: heights that round up
     /// to the same power of two must be equal.
     #[error("Inconsistent matrix heights: {details}")]
