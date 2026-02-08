@@ -2,10 +2,11 @@
 
 use alloc::vec::Vec;
 
+use hashbrown::HashMap;
 use p3_air::Air;
 use p3_batch_stark::symbolic::{get_log_num_quotient_chunks, get_symbolic_constraints};
 use p3_circuit::CircuitBuilder;
-use p3_circuit::utils::{ColumnsTargets, symbolic_to_circuit};
+use p3_circuit::utils::{ColumnsTargets, symbolic_to_circuit_base, symbolic_to_circuit_ext};
 use p3_field::{ExtensionField, Field};
 use p3_lookup::lookup_traits::{Lookup, LookupData, LookupGadget};
 use p3_uni_stark::{Entry, SymbolicAirBuilder, SymbolicExpression, SymbolicVariable};
@@ -133,17 +134,32 @@ where
         );
 
         // Fold all constraints: result = c₀ + α·c₁ + α²·c₂ + ...
+        //
+        // Converting directly the tree SymbolicExpression<F> → SymbolicExpression<EF>
+        // destroys Arc-based sub-expression sharing and causes exponential blowup.
+        // Instead, we lift F → EF constants directly.
+        //
+        // Additionally, the cache is shared across all constraint calls to reuse circuit
+        // operations for sub-expressions shared between different constraints.
         let mut acc = builder.add_const(EF::ZERO);
-        for s_c in base_symbolic_constraints {
+        let mut base_cache = HashMap::new();
+        for s_c in &base_symbolic_constraints {
             let mul_prev = builder.mul(acc, *alpha);
-            let constraints =
-                symbolic_to_circuit(sels.row_selectors, &columns, &s_c.into(), builder);
+            let constraints = symbolic_to_circuit_base(
+                sels.row_selectors,
+                &columns,
+                s_c,
+                builder,
+                &mut base_cache,
+            );
             acc = builder.add(mul_prev, constraints);
         }
 
-        for s_c in extension_symbolic_constraints {
+        let mut ext_cache = HashMap::new();
+        for s_c in &extension_symbolic_constraints {
             let mul_prev = builder.mul(acc, *alpha);
-            let constraints = symbolic_to_circuit(sels.row_selectors, &columns, &s_c, builder);
+            let constraints =
+                symbolic_to_circuit_ext(sels.row_selectors, &columns, s_c, builder, &mut ext_cache);
             acc = builder.add(mul_prev, constraints);
         }
 
