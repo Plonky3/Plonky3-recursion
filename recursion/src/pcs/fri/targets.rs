@@ -40,8 +40,6 @@ pub struct FriProofTargets<
     pub query_proofs: Vec<QueryProofTargets<F, EF, InputProof, RecMmcs>>,
     pub final_poly: Vec<Target>,
     pub pow_witness: Witness,
-    /// Per-round folding arities (log2) extracted from the proof at construction time.
-    /// These are bound into the challenger transcript before query grinding.
     pub log_arities: Vec<usize>,
 }
 
@@ -240,7 +238,6 @@ impl<F: Field, EF: ExtensionField<F> + BasedVectorSpace<F>, RecMmcs: RecursiveEx
             sibling_values,
             opening_proof,
         } = input;
-
         // TODO: Support higher-arity
         let sibling_value = sibling_values[0];
 
