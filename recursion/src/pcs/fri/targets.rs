@@ -8,7 +8,8 @@ use p3_circuit::{CircuitBuilder, CircuitBuilderError};
 use p3_commit::{BatchOpening, ExtensionMmcs, Mmcs, PolynomialSpace};
 use p3_field::coset::TwoAdicMultiplicativeCoset;
 use p3_field::{
-    ExtensionField, Field, PackedValue, PrimeCharacteristicRing, PrimeField64, TwoAdicField,
+    BasedVectorSpace, ExtensionField, Field, PackedValue, PrimeCharacteristicRing, PrimeField64,
+    TwoAdicField,
 };
 use p3_fri::{CommitPhaseProofStep, FriProof, QueryProof, TwoAdicFriPcs};
 use p3_merkle_tree::MerkleTreeMmcs;
@@ -170,29 +171,83 @@ impl<
     }
 }
 
-/// `Recursive` version of `CommitPhaseProofStepTargets`.
+/// `Recursive` version of `CommitPhaseProofStep`.
+///
+/// Sibling values are stored as **lifted base field coefficients** to enable MMCS verification.
+/// ExtensionMmcs commits by flattening extension elements to base field, so we need the
+/// coefficients separately for hashing. Use `sibling_values_packed()` to get the packed
+/// extension elements for FRI folding arithmetic.
+///
+/// For arity `k = 2^log_arity`, we store `k - 1` sibling values (the queried value is the
+/// folded evaluation from the previous phase). Each sibling is represented by `EF::DIMENSION`
+/// lifted base field coefficients, giving `(k - 1) * EF::DIMENSION` targets total.
 pub struct CommitPhaseProofStepTargets<
     F: Field,
     EF: ExtensionField<F>,
     RecMmcs: RecursiveExtensionMmcs<F, EF>,
 > {
-    pub sibling_value: Target,
+    pub log_arity: usize,
+    /// Lifted base field coefficients for all (arity - 1) sibling values, flattened.
+    /// Layout: [sib0_c0, sib0_c1, .., sib0_cD, sib1_c0, .., sib{a-2}_cD]
+    pub sibling_coefficients: Vec<Target>,
     pub opening_proof: RecMmcs::Proof,
     // This is necessary because the `Input` type can include the extension field element.
     _phantom: PhantomData<EF>,
 }
 
-impl<F: Field, EF: ExtensionField<F>, RecMmcs: RecursiveExtensionMmcs<F, EF>> Recursive<EF>
-    for CommitPhaseProofStepTargets<F, EF, RecMmcs>
+impl<F: Field, EF: ExtensionField<F> + BasedVectorSpace<F>, RecMmcs: RecursiveExtensionMmcs<F, EF>>
+    CommitPhaseProofStepTargets<F, EF, RecMmcs>
 {
-    // This is used with an extension field element, since it is part of `FriProof`, not a base field element.
+    /// Pack a single sibling's lifted base field coefficients into an extension element.
+    fn pack_one_sibling(coeffs: &[Target], circuit: &mut CircuitBuilder<EF>) -> Target {
+        let basis: Vec<EF> = (0..EF::DIMENSION)
+            .map(|i| EF::from_basis_coefficients_fn(|j| if i == j { F::ONE } else { F::ZERO }))
+            .collect();
+
+        let mut result = coeffs[0];
+        for (i, &basis_elem) in basis.iter().enumerate().skip(1) {
+            let basis_const = circuit.add_const(basis_elem);
+            let term = circuit.mul(coeffs[i], basis_const);
+            result = circuit.add(result, term);
+        }
+        result
+    }
+
+    /// Returns all (arity - 1) sibling values as packed extension elements.
+    pub fn sibling_values_packed(&self, circuit: &mut CircuitBuilder<EF>) -> Vec<Target> {
+        let d = EF::DIMENSION;
+        self.sibling_coefficients
+            .chunks_exact(d)
+            .map(|chunk| Self::pack_one_sibling(chunk, circuit))
+            .collect()
+    }
+
+    /// Returns the single sibling value as a packed extension element (arity-2 convenience).
+    pub fn sibling_value_packed(&self, circuit: &mut CircuitBuilder<EF>) -> Target {
+        debug_assert_eq!(
+            self.log_arity, 1,
+            "sibling_value_packed is for arity-2 only; use sibling_values_packed for higher arity"
+        );
+        Self::pack_one_sibling(&self.sibling_coefficients, circuit)
+    }
+}
+
+impl<F: Field, EF: ExtensionField<F> + BasedVectorSpace<F>, RecMmcs: RecursiveExtensionMmcs<F, EF>>
+    Recursive<EF> for CommitPhaseProofStepTargets<F, EF, RecMmcs>
+{
     type Input = CommitPhaseProofStep<EF, RecMmcs::Input>;
 
     fn new(circuit: &mut CircuitBuilder<EF>, input: &Self::Input) -> Self {
-        let sibling_value = circuit.alloc_public_input("FRI commit phase sibling value");
+        let log_arity = input.log_arity as usize;
+        let arity = 1usize << log_arity;
+        let num_siblings = arity - 1;
+        let num_coeffs = num_siblings * EF::DIMENSION;
+        let sibling_coefficients =
+            circuit.alloc_public_inputs(num_coeffs, "FRI commit phase sibling coefficients");
         let opening_proof = RecMmcs::Proof::new(circuit, &input.opening_proof);
         Self {
-            sibling_value,
+            log_arity,
+            sibling_coefficients,
             opening_proof,
             _phantom: PhantomData,
         }
@@ -204,10 +259,11 @@ impl<F: Field, EF: ExtensionField<F>, RecMmcs: RecursiveExtensionMmcs<F, EF>> Re
             sibling_values,
             opening_proof,
         } = input;
-        // TODO: Support higher-arity
-        let sibling_value = sibling_values[0];
-        let mut values = vec![sibling_value];
-
+        let mut values: Vec<EF> = Vec::new();
+        for sibling_value in sibling_values {
+            let coeffs = sibling_value.as_basis_coefficients_slice();
+            values.extend(coeffs.iter().map(|&c| EF::from(c)));
+        }
         values.extend(RecMmcs::Proof::get_values(opening_proof));
         values
     }
@@ -573,7 +629,9 @@ where
         let query_indices = &challenges[1 + num_betas..1 + num_betas + num_queries];
 
         // Calculate the maximum height of the FRI proof tree.
-        let log_max_height = num_betas + log_final_poly_len + log_blowup;
+        // With variable arity, total log reduction = sum(log_arities), not just num_betas.
+        let total_log_reduction: usize = opening_proof.log_arities.iter().sum();
+        let log_max_height = total_log_reduction + log_final_poly_len + log_blowup;
 
         if log_max_height > MAX_QUERY_INDEX_BITS {
             return Err(VerificationError::InvalidProofShape(format!(
