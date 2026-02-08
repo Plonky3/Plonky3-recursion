@@ -133,6 +133,7 @@ macro_rules! define_field_module {
             // FRI Parameters
             // ===============
             const LOG_BLOWUP: usize = 3;
+            const MAX_LOG_ARITY: usize = 3;
             const LOG_FINAL_POLY_LEN: usize = 1;
             const COMMIT_POW_BITS: usize = 0;
             const QUERY_POW_BITS: usize = 16;
@@ -149,7 +150,7 @@ macro_rules! define_field_module {
                 let num_queries = (100 - QUERY_POW_BITS) / log_blowup;
 
                 let fri_params = FriParameters {
-                    max_log_arity: 1,
+                    max_log_arity: MAX_LOG_ARITY,
                     log_blowup,
                     log_final_poly_len: LOG_FINAL_POLY_LEN,
                     num_queries,

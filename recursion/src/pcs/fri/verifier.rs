@@ -65,81 +65,346 @@ where
         .collect()
 }
 
-/// Inputs for one FRI fold phase (matches the values used by the verifier per round).
+/// Per-phase configuration for the FRI fold chain.
 #[derive(Clone, Debug)]
-pub struct FoldPhaseInputsTarget {
-    /// Per-phase challenge β (sampled after observing that layer's commitment).
+pub struct FoldPhaseConfig {
     pub beta: Target,
-    /// Subgroup point x₀ for this phase (the other point is x₁ = −x₀).
-    pub x0: Target,
-    /// Sibling evaluation at the opposite child index.
-    pub e_sibling: Target,
-    /// Boolean {0,1}. Equals 1 iff sibling occupies evals[1] (the "right" slot).
-    /// In Plonky3 this is 1 − (domain_index & 1) at this phase.
-    pub sibling_is_right: Target,
-    /// Optional reduced opening to roll in at this height (added as β² · roll_in).
+    /// Packed extension field sibling evaluations (arity - 1 values).
+    pub siblings: Vec<Target>,
     pub roll_in: Option<Target>,
 }
 
-/// Perform the arity-2 FRI fold chain with optional roll-ins.
-/// Starts from the initial reduced opening at max height; returns the final folded value.
-/// All arithmetic is over the circuit field `EF`.
-///
-/// Interpolation per phase:
-///   folded ← e0 + (β − x0)·(e1 − e0)·(x1 − x0)^{-1}, with x1 = −x0
-///           = e0 + (β − x0)·(e1 − e0)·(−1/2)·x0^{-1}
-fn fold_row_chain<EF: Field>(
+/// Compute a one-hot encoding from `log_arity` index bits.
+/// Returns a vector of `2^log_arity` targets where `result[j] = 1` iff j matches the
+/// integer value of the input bits (little-endian).
+fn one_hot_from_bits<EF: Field>(
     builder: &mut CircuitBuilder<EF>,
-    initial_folded_eval: Target,
-    phases: &[FoldPhaseInputsTarget],
-) -> Target {
-    builder.push_scope("fold_row_chain");
+    bits: &[Target],
+) -> Vec<Target> {
+    let log_arity = bits.len();
+    let arity = 1usize << log_arity;
+    let one = builder.add_const(EF::ONE);
 
-    let mut folded = initial_folded_eval;
+    let mut one_hot = Vec::with_capacity(arity);
+    for j in 0..arity {
+        let mut product = one;
+        for (k, &bit) in bits.iter().enumerate() {
+            if (j >> k) & 1 == 1 {
+                product = builder.mul(product, bit);
+            } else {
+                let not_bit = builder.sub(one, bit);
+                product = builder.mul(product, not_bit);
+            }
+        }
+        one_hot.push(product);
+    }
+    one_hot
+}
 
-    let one = builder.alloc_const(EF::ONE, "1");
+/// Reconstruct the full evaluation row from `folded` + `siblings` using the index bits.
+///
+/// `index_in_group_bits` are the `log_arity` lowest bits of the current start_index.
+/// The native verifier does:
+///   evals[index_in_group] = folded; evals[j] = siblings[...] for j != index_in_group
+///
+/// This circuit version uses a one-hot encoding to place values correctly.
+fn reconstruct_evals<EF: Field>(
+    builder: &mut CircuitBuilder<EF>,
+    folded: Target,
+    siblings: &[Target],
+    index_in_group_bits: &[Target],
+) -> Vec<Target> {
+    let log_arity = index_in_group_bits.len();
+    let arity = 1usize << log_arity;
+    debug_assert_eq!(siblings.len(), arity - 1);
 
-    // Precompute constants as field constants: 2^{-1} and −1/2.
-    let two_inv_val = EF::ONE.halve(); // 1/2
-    let neg_half = builder.alloc_const(EF::NEG_ONE * two_inv_val, "−1/2"); // −1/2
+    let one_hot = one_hot_from_bits(builder, index_in_group_bits);
 
-    for FoldPhaseInputsTarget {
-        beta,
-        x0,
-        e_sibling,
-        sibling_is_right,
-        roll_in,
-    } in phases.iter().cloned()
-    {
-        // e0 = select(bit, folded, e_sibling)
-        let e0 = builder.select(sibling_is_right, folded, e_sibling);
+    // Compute cumulative sum: cum[j] = sum(one_hot[0..=j]) ∈ {0, 1}
+    let mut cum = Vec::with_capacity(arity);
+    cum.push(one_hot[0]);
+    for j in 1..arity {
+        cum.push(builder.add(cum[j - 1], one_hot[j]));
+    }
 
-        // inv = (x1 − x0)^{-1} = (−2x0)^{-1} = (−1/2) / x0
-        let inv = builder.alloc_div(neg_half, x0, "inv");
+    // For each position j:
+    //   if one_hot[j] = 1: evals[j] = folded
+    //   if one_hot[j] = 0 and cum[j] = 0: evals[j] = siblings[j]     (j < index_in_group)
+    //   if one_hot[j] = 0 and cum[j] = 1: evals[j] = siblings[j-1]   (j > index_in_group)
+    let mut evals = Vec::with_capacity(arity);
+    for j in 0..arity {
+        let left_idx = if j > 0 { j - 1 } else { 0 };
+        let right_idx = if j < arity - 1 { j } else { arity - 2 };
+        let actual_sibling = builder.select(cum[j], siblings[left_idx], siblings[right_idx]);
+        let eval_j = builder.select(one_hot[j], folded, actual_sibling);
+        evals.push(eval_j);
+    }
 
-        // e1 − e0 = (2b − 1) · (e_sibling − folded)
-        let d = builder.alloc_sub(e_sibling, folded, "d");
-        let two_b = builder.alloc_add(sibling_is_right, sibling_is_right, "two_b");
-        let two_b_minus_one = builder.alloc_sub(two_b, one, "two_b_minus_one");
-        let e1_minus_e0 = builder.alloc_mul(two_b_minus_one, d, "e1_minus_e0");
+    evals
+}
 
-        // t = (β − x0) * (e1 − e0)
-        let beta_minus_x0 = builder.alloc_sub(beta, x0, "beta_minus_x0");
-        let t = builder.alloc_mul(beta_minus_x0, e1_minus_e0, "t");
+/// Compute the subgroup evaluation points for a single FRI fold phase.
+///
+/// Returns `arity` evaluation points in bit-reversed order:
+///   xs[i] = subgroup_start * omega^{br(i)}
+/// where:
+///   omega = two_adic_generator(log_arity)
+///   subgroup_start = two_adic_generator(log_folded_height + log_arity)^{rev(parent_index)}
+fn compute_subgroup_points<F, EF>(
+    builder: &mut CircuitBuilder<EF>,
+    index_bits: &[Target],
+    bits_consumed: usize,
+    log_arity: usize,
+    log_folded_height: usize,
+) -> Vec<Target>
+where
+    F: Field + TwoAdicField,
+    EF: ExtensionField<F>,
+{
+    let arity = 1usize << log_arity;
 
-        // folded = e0 + t * inv
-        let t_inv = builder.alloc_mul(t, inv, "t_inv");
-        folded = builder.alloc_add(e0, t_inv, "folded 1");
+    // Parent index bits start after index_in_group bits
+    let parent_offset = bits_consumed + log_arity;
 
-        // Optional roll-in: folded += β² · roll_in
-        if let Some(ro) = roll_in {
-            let beta_sq = builder.alloc_mul(beta, beta, "beta_sq");
-            let add_term = builder.alloc_mul(beta_sq, ro, "add_term");
-            folded = builder.alloc_add(folded, add_term, "folded 2");
+    // Compute subgroup_start = g_big^{reverse_bits_len(parent_index, log_folded_height)}
+    let g_big = F::two_adic_generator(log_folded_height + log_arity);
+    let one = builder.add_const(EF::ONE);
+    let mut subgroup_start = one;
+
+    if log_folded_height > 0 {
+        // Reversed bits: we take bits [parent_offset..parent_offset+log_folded_height] reversed
+        for j in 0..log_folded_height {
+            let bit = index_bits[parent_offset + log_folded_height - 1 - j];
+            let pow_val = g_big.exp_power_of_2(j);
+            let pow_const = builder.add_const(EF::from(pow_val));
+            let multiplier = builder.select(bit, pow_const, one);
+            subgroup_start = builder.mul(subgroup_start, multiplier);
         }
     }
 
-    builder.pop_scope(); // close `fold_row_chain` scope
+    // Compute xs[i] = subgroup_start * omega^{br(i)}
+    let omega = F::two_adic_generator(log_arity);
+    let mut xs = Vec::with_capacity(arity);
+    for i in 0..arity {
+        let br_i = p3_util::reverse_bits_len(i, log_arity);
+        let omega_br = omega.exp_u64(br_i as u64);
+        let omega_const = builder.add_const(EF::from(omega_br));
+        let xi = builder.mul(subgroup_start, omega_const);
+        xs.push(xi);
+    }
+
+    xs
+}
+
+/// Lagrange interpolation in circuit: evaluate the interpolating polynomial at `z`.
+///
+/// Given evaluation points xs[0..n] and values ys[0..n], computes
+/// the unique polynomial p of degree < n passing through (xs[i], ys[i])
+/// and returns p(z).
+fn lagrange_interpolate_circuit<EF: Field>(
+    builder: &mut CircuitBuilder<EF>,
+    xs: &[Target],
+    ys: &[Target],
+    z: Target,
+) -> Target {
+    let n = xs.len();
+    debug_assert_eq!(n, ys.len());
+
+    // Compute diffs[i] = z - xs[i]
+    let diffs: Vec<Target> = xs.iter().map(|&xi| builder.sub(z, xi)).collect();
+
+    // Compute L(z) = prod(diffs)
+    let mut l_z = diffs[0];
+    for &d in &diffs[1..] {
+        l_z = builder.mul(l_z, d);
+    }
+
+    // For each i, compute:
+    //   partial_num[i] = L(z) / diffs[i]  (Lagrange numerator without the y)
+    //   denom[i] = prod_{j!=i} (xs[i] - xs[j])
+    //   term[i] = ys[i] * partial_num[i] / denom[i]
+    //
+    // result = sum(term[i])
+    let mut result = builder.add_const(EF::ZERO);
+    for i in 0..n {
+        // partial_num[i] = L(z) / (z - xs[i])
+        let partial_num = builder.div(l_z, diffs[i]);
+
+        // denom[i] = prod_{j!=i} (xs[i] - xs[j])
+        let denom = xs.iter().enumerate().filter(|&(j, _)| j != i).fold(
+            {
+                let one = builder.add_const(EF::ONE);
+                one
+            },
+            |acc, (_, &xj)| {
+                let diff = builder.sub(xs[i], xj);
+                builder.mul(acc, diff)
+            },
+        );
+
+        // term = ys[i] * partial_num / denom
+        let num_term = builder.mul(ys[i], partial_num);
+        let term = builder.div(num_term, denom);
+
+        result = builder.add(result, term);
+    }
+
+    result
+}
+
+/// Perform a single FRI fold phase with arbitrary arity.
+///
+/// Reconstructs the full evaluation row, computes evaluation points,
+/// performs Lagrange interpolation at beta, and applies optional roll-in.
+#[allow(clippy::too_many_arguments)]
+fn fold_one_phase<F, EF>(
+    builder: &mut CircuitBuilder<EF>,
+    folded: Target,
+    siblings: &[Target],
+    beta: Target,
+    index_bits: &[Target],
+    bits_consumed: usize,
+    log_arity: usize,
+    log_current_height: usize,
+    roll_in: Option<Target>,
+) -> Target
+where
+    F: Field + TwoAdicField,
+    EF: ExtensionField<F>,
+{
+    let log_folded_height = log_current_height - log_arity;
+    let index_in_group_bits = &index_bits[bits_consumed..bits_consumed + log_arity];
+
+    // For arity 2, use the optimized formula
+    if log_arity == 1 {
+        let sibling = siblings[0];
+        let one = builder.add_const(EF::ONE);
+        let neg_half = builder.add_const(EF::NEG_ONE * EF::ONE.halve());
+        let sibling_is_right = builder.sub(one, index_bits[bits_consumed]);
+
+        let e0 = builder.select(sibling_is_right, folded, sibling);
+        let x0 = compute_x0_from_index_bits_general::<F, EF>(
+            builder,
+            index_bits,
+            bits_consumed,
+            log_folded_height,
+        );
+        let inv = builder.div(neg_half, x0);
+
+        let d = builder.sub(sibling, folded);
+        let two_b = builder.add(sibling_is_right, sibling_is_right);
+        let two_b_m1 = builder.sub(two_b, one);
+        let e1_minus_e0 = builder.mul(two_b_m1, d);
+
+        let beta_minus_x0 = builder.sub(beta, x0);
+        let t = builder.mul(beta_minus_x0, e1_minus_e0);
+        let t_inv = builder.mul(t, inv);
+        let mut new_folded = builder.add(e0, t_inv);
+
+        if let Some(ro) = roll_in {
+            let beta_sq = builder.mul(beta, beta);
+            let add_term = builder.mul(beta_sq, ro);
+            new_folded = builder.add(new_folded, add_term);
+        }
+        return new_folded;
+    }
+
+    // General path: Lagrange interpolation
+    let evals = reconstruct_evals(builder, folded, siblings, index_in_group_bits);
+    let xs = compute_subgroup_points::<F, EF>(
+        builder,
+        index_bits,
+        bits_consumed,
+        log_arity,
+        log_folded_height,
+    );
+
+    let mut new_folded = lagrange_interpolate_circuit(builder, &xs, &evals, beta);
+
+    // Roll-in: folded += beta^{2^log_arity} * roll_in
+    if let Some(ro) = roll_in {
+        let beta_pow = builder.exp_power_of_2(beta, log_arity);
+        let add_term = builder.mul(beta_pow, ro);
+        new_folded = builder.add(new_folded, add_term);
+    }
+
+    new_folded
+}
+
+/// Compute x0 for arity-2 folding from index bits (generalized for variable bits_consumed).
+///
+/// x0 = two_adic_generator(log_folded_height + 1)^{reverse_bits_len(parent_index, log_folded_height)}
+fn compute_x0_from_index_bits_general<F, EF>(
+    builder: &mut CircuitBuilder<EF>,
+    index_bits: &[Target],
+    bits_consumed: usize,
+    log_folded_height: usize,
+) -> Target
+where
+    F: Field + TwoAdicField,
+    EF: ExtensionField<F>,
+{
+    let g = F::two_adic_generator(log_folded_height + 1);
+    let pows: Vec<EF> = iter::successors(Some(g), |&prev| Some(prev.square()))
+        .take(log_folded_height)
+        .map(EF::from)
+        .collect();
+
+    let one = builder.add_const(EF::ONE);
+    let mut res = one;
+
+    let parent_offset = bits_consumed + 1;
+    let k = log_folded_height;
+
+    for j in 0..k {
+        let bit = index_bits[parent_offset + k - 1 - j];
+        let pow_const = builder.add_const(pows[j]);
+        let diff = builder.sub(pow_const, one);
+        let diff_bit = builder.mul(diff, bit);
+        let gate = builder.add(one, diff_bit);
+        res = builder.mul(res, gate);
+    }
+
+    res
+}
+
+/// Perform the full FRI fold chain with variable arity per phase.
+fn fold_chain_circuit<F, EF>(
+    builder: &mut CircuitBuilder<EF>,
+    initial_folded_eval: Target,
+    index_bits: &[Target],
+    phases: &[FoldPhaseConfig],
+    log_arities: &[usize],
+) -> Target
+where
+    F: Field + TwoAdicField,
+    EF: ExtensionField<F>,
+{
+    builder.push_scope("fold_chain_circuit");
+
+    let log_max_height = index_bits.len();
+    let mut folded = initial_folded_eval;
+    let mut bits_consumed = 0usize;
+    let mut log_current_height = log_max_height;
+
+    for (i, phase) in phases.iter().enumerate() {
+        let log_arity = log_arities[i];
+        folded = fold_one_phase::<F, EF>(
+            builder,
+            folded,
+            &phase.siblings,
+            phase.beta,
+            index_bits,
+            bits_consumed,
+            log_arity,
+            log_current_height,
+            phase.roll_in,
+        );
+        bits_consumed += log_arity;
+        log_current_height -= log_arity;
+    }
+
+    builder.pop_scope();
     folded
 }
 
@@ -170,28 +435,15 @@ fn evaluate_polynomial<EF: Field>(
     result
 }
 
-/// Arithmetic-only version of Plonky3 `verify_query`:
-/// - Applies the fold chain and enforces equality to the provided final polynomial evaluation.
-/// - Caller must supply `initial_folded_eval` (the reduced opening at max height).
-fn verify_query<EF: Field>(
-    builder: &mut CircuitBuilder<EF>,
-    initial_folded_eval: Target,
-    phases: &[FoldPhaseInputsTarget],
-    final_value: Target,
-) {
-    builder.push_scope("verify_query");
-    let folded_eval = fold_row_chain(builder, initial_folded_eval, phases);
-    builder.connect(folded_eval, final_value);
-    builder.pop_scope(); // close `verify_query` scope
-}
-
 /// Compute the final query point after all FRI folding rounds.
-/// This is the point at which the final polynomial should be evaluated.
+///
+/// After consuming `total_bits_consumed` bits through all fold phases, the remaining
+/// bits form the domain index for the final polynomial evaluation.
 fn compute_final_query_point<F, EF>(
     builder: &mut CircuitBuilder<EF>,
     index_bits: &[Target],
     log_max_height: usize,
-    num_phases: usize,
+    total_bits_consumed: usize,
 ) -> Target
 where
     F: Field + TwoAdicField,
@@ -199,11 +451,11 @@ where
 {
     builder.push_scope("compute_final_query_point");
 
-    // Extract the bits that form domain_index (bits [num_phases..log_max_height]) after `num_phases` folds
-    let domain_index_bits: Vec<Target> = index_bits[num_phases..log_max_height].to_vec();
+    let domain_index_bits: Vec<Target> =
+        index_bits[total_bits_consumed..log_max_height].to_vec();
 
     // Pad bits and reverse
-    let mut reversed_bits = vec![builder.add_const(EF::ZERO); num_phases];
+    let mut reversed_bits = vec![builder.add_const(EF::ZERO); total_bits_consumed];
     reversed_bits.extend(domain_index_bits.iter().rev().copied());
 
     // Compute g^{reversed_index}
@@ -220,98 +472,8 @@ where
         result = builder.mul(result, multiplier);
     }
 
-    builder.pop_scope(); // close `compute_final_query_point` scope
+    builder.pop_scope();
     result
-}
-
-/// Compute x₀ for phase `i` from the query index bits and a caller-provided power ladder.
-///
-/// For phase with folded height `k` (log_folded_height), caller must pass:
-///   `pows = [g^{2^0}, g^{2^1}, ..., g^{2^{k-1}}]`
-/// where `g = two_adic_generator(k + 1)` (note the +1 for arity-2).
-///
-/// We use bit window `bits[i+1 .. i+1+k]` (little-endian), but multiplied in reverse to match
-/// `reverse_bits_len(index >> (i+1), k)` semantics from the verifier.
-fn compute_x0_from_index_bits<EF: Field>(
-    builder: &mut CircuitBuilder<EF>,
-    index_bits: &[Target],
-    phase: usize,
-    pows: &[EF],
-) -> Target {
-    builder.push_scope("compute_x0_from_index_bits");
-
-    let one = builder.add_const(EF::ONE);
-    let mut res = one;
-
-    // Bits window: offset = i+1, length = pows.len() = k
-    let offset = phase + 1;
-    let k = pows.len();
-
-    for j in 0..k {
-        let bit = index_bits[offset + k - 1 - j]; // reversed
-        let pow_const = builder.add_const(pows[j]);
-        let diff = builder.sub(pow_const, one);
-        let diff_bit = builder.mul(diff, bit);
-        let gate = builder.add(one, diff_bit);
-        res = builder.mul(res, gate);
-    }
-
-    builder.pop_scope(); // close `compute_x0_from_index_bits` scope
-    res
-}
-
-/// Build and verify the fold chain from index bits:
-/// - `index_bits`: little-endian query index bits (must be boolean-constrained by caller).
-/// - `betas`/`sibling_values`/`roll_ins`: per-phase arrays.
-/// - `pows_per_phase[i]`: power ladder for the generator at that phase (see `compute_x0_from_index_bits`).
-#[allow(clippy::too_many_arguments)]
-fn verify_query_from_index_bits<EF: Field>(
-    builder: &mut CircuitBuilder<EF>,
-    initial_folded_eval: Target,
-    index_bits: &[Target],
-    betas: &[Target],
-    sibling_values: &[Target],
-    roll_ins: &[Option<Target>],
-    pows_per_phase: &[Vec<EF>],
-    final_value: Target,
-) {
-    builder.push_scope("verify_query_from_index_bits");
-
-    let num_phases = betas.len();
-    debug_assert_eq!(
-        sibling_values.len(),
-        num_phases,
-        "sibling_values len mismatch"
-    );
-    debug_assert_eq!(roll_ins.len(), num_phases, "roll_ins len mismatch");
-    debug_assert_eq!(
-        pows_per_phase.len(),
-        num_phases,
-        "pows_per_phase len mismatch"
-    );
-
-    let one = builder.add_const(EF::ONE);
-
-    let mut phases_vec = Vec::with_capacity(num_phases);
-    for i in 0..num_phases {
-        // x0 from bits (using the appropriate generator ladder for this phase)
-        let x0 = compute_x0_from_index_bits(builder, index_bits, i, &pows_per_phase[i]);
-
-        // sibling_is_right = 1 − (index_bit[i])
-        let raw_bit = index_bits[i];
-        let sibling_is_right = builder.sub(one, raw_bit);
-
-        phases_vec.push(FoldPhaseInputsTarget {
-            beta: betas[i],
-            x0,
-            e_sibling: sibling_values[i],
-            sibling_is_right,
-            roll_in: roll_ins[i],
-        });
-    }
-
-    verify_query(builder, initial_folded_eval, &phases_vec, final_value);
-    builder.pop_scope(); // close `verify_query_from_index_bits` scope
 }
 
 /// Compute evaluation point x from domain height and reversed reduced index bits in the circuit field EF.
@@ -550,6 +712,9 @@ where
 
 /// Verify FRI arithmetic in-circuit with optional MMCS verification.
 ///
+/// Supports variable-arity FRI folding: each phase may fold by a different arity
+/// determined by `log_arities` extracted from the proof.
+///
 /// When `permutation_config` is `Some`, this function performs full recursive MMCS
 /// verification for both input batch openings and commit-phase openings.
 /// When `None`, only arithmetic verification is performed (for testing).
@@ -582,12 +747,16 @@ where
 
     let num_phases = betas.len();
     let num_queries = fri_proof_targets.query_proofs.len();
+    let log_arities = &fri_proof_targets.log_arities;
+
+    let total_log_reduction: usize = log_arities.iter().sum();
 
     tracing::debug!(
-        "verify_fri_circuit: num_phases={}, num_queries={}, log_blowup={}",
+        "verify_fri_circuit: num_phases={}, num_queries={}, log_blowup={}, log_arities={:?}",
         num_phases,
         num_queries,
-        log_blowup
+        log_blowup,
+        log_arities,
     );
 
     // Validate shape.
@@ -604,6 +773,14 @@ where
             "Number of commit-phase commitments must equal number of commit-phase pow witnesses: expected {}, got {}",
             num_phases,
             fri_proof_targets.commit_pow_witnesses.len()
+        )));
+    }
+
+    if log_arities.len() != num_phases {
+        return Err(VerificationError::InvalidProofShape(format!(
+            "log_arities length must equal number of phases: expected {}, got {}",
+            num_phases,
+            log_arities.len()
         )));
     }
 
@@ -631,46 +808,37 @@ where
         ));
     }
 
-    // Compute the expected final polynomial length from FRI parameters
-    // log_max_height = num_phases + log_final_poly_len + log_blowup
-    // So: log_final_poly_len = log_max_height - num_phases - log_blowup
+    // With variable arity: log_max_height = total_log_reduction + log_final_poly_len + log_blowup
     let log_final_poly_len = log_max_height
-        .checked_sub(num_phases)
+        .checked_sub(total_log_reduction)
         .and_then(|x| x.checked_sub(log_blowup))
         .ok_or_else(|| {
             VerificationError::InvalidProofShape(
-                "Invalid FRI parameters: log_max_height too small".to_string(),
+                "Invalid FRI parameters: log_max_height too small for given log_arities".to_string(),
             )
         })?;
 
     let expected_final_poly_len = 1 << log_final_poly_len;
     let actual_final_poly_len = fri_proof_targets.final_poly.len();
 
-    //  Check the final polynomial length.
     if actual_final_poly_len != expected_final_poly_len {
         return Err(VerificationError::InvalidProofShape(format!(
             "Final polynomial length mismatch: expected 2^{log_final_poly_len} = {expected_final_poly_len}, got {actual_final_poly_len}"
         )));
     }
 
-    // Precompute two-adic generator ladders for each phase (in circuit field EF).
-    //
-    // For phase i, folded height k = log_max_height - i - 1.
-    // Use generator g = two_adic_generator(k + 1) and ladder [g^{2^0},...,g^{2^{k-1}}].
-    let pows_per_phase: Vec<Vec<EF>> = (0..num_phases)
-        .map(|i| {
-            // `k` is the height of the folded domain after `i` rounds of folding.
-            let k = log_max_height.saturating_sub(i + 1);
-            if k == 0 {
-                return Vec::new();
-            }
-            let g = F::two_adic_generator(k + 1);
-            // Create the power ladder [g, g^2, g^4, ...].
-            iter::successors(Some(g), |&prev| Some(prev.square()))
-                .take(k)
-                .map(EF::from)
-                .collect()
-        })
+    // Precompute cumulative bits consumed after each phase.
+    // cumulative_bits[i] = sum(log_arities[0..i])
+    let mut cumulative_bits = Vec::with_capacity(num_phases + 1);
+    cumulative_bits.push(0usize);
+    for &la in log_arities {
+        cumulative_bits.push(cumulative_bits.last().unwrap() + la);
+    }
+
+    // Precompute the folded height after each phase for roll-in mapping.
+    // folded_height_after[i] = log_max_height - cumulative_bits[i+1]
+    let folded_height_after: Vec<usize> = (0..num_phases)
+        .map(|i| log_max_height - cumulative_bits[i + 1])
         .collect();
 
     // Collect all MMCS operation IDs for private data setting
@@ -678,8 +846,6 @@ where
 
     // For each query, extract opened values from proof and compute reduced openings and fold.
     for (q, query_proof) in fri_proof_targets.query_proofs.iter().enumerate() {
-        // Extract opened values from the input_proof (batch openings)
-        // Structure: Vec<BatchOpening> where each BatchOpening has Vec<Vec<Target>> (matrices -> columns)
         let batch_opened_values: Vec<Vec<Vec<Target>>> = query_proof
             .input_proof
             .iter()
@@ -699,8 +865,6 @@ where
         )?;
         all_mmcs_op_ids.extend(input_mmcs_ops);
 
-        // Must have the max-height entry at the front
-
         if reduced_by_height.is_empty() {
             return Err(VerificationError::InvalidProofShape(
                 "No reduced openings; did you commit to zero polynomials?".to_string(),
@@ -714,33 +878,27 @@ where
         }
         let initial_folded_eval = reduced_by_height[0].1;
 
-        // Sibling values for this query (one per phase)
-        // The sibling coefficients are stored as lifted base field values.
-        // We pack them back to extension elements for FRI folding arithmetic.
-        let sibling_values: Vec<Target> = query_proof
+        // Pack sibling values for each phase (variable count per phase).
+        let sibling_values_per_phase: Vec<Vec<Target>> = query_proof
             .commit_phase_openings
             .iter()
-            .map(|opening| opening.sibling_value_packed(builder))
+            .map(|opening| opening.sibling_values_packed(builder))
             .collect();
 
-        if sibling_values.len() != num_phases {
+        if sibling_values_per_phase.len() != num_phases {
             return Err(VerificationError::InvalidProofShape(format!(
-                "sibling_values must match number of betas/phases: expected {}, got {}",
+                "commit_phase_openings count must match phases: expected {}, got {}",
                 num_phases,
-                sibling_values.len()
+                sibling_values_per_phase.len()
             )));
         }
 
-        // Build height-aligned roll-ins for each phase (desc heights -> phases)
-        // Need this before MMCS verification since the fold computation uses roll-ins
+        // Build height-aligned roll-ins using variable-arity cumulative bits.
         let mut roll_ins: Vec<Option<Target>> = vec![None; num_phases];
         for &(h, ro) in reduced_by_height.iter().skip(1) {
-            // height -> phase index mapping
-            let i = log_max_height
-                .checked_sub(1)
-                .and_then(|x| x.checked_sub(h))
-                .expect("height->phase mapping underflow");
-            if i < num_phases {
+            // Find the phase whose folded height matches h
+            let phase_idx = folded_height_after.iter().position(|&fh| fh == h);
+            if let Some(i) = phase_idx {
                 if roll_ins[i].is_some() {
                     return Err(VerificationError::InvalidProofShape(format!(
                         "duplicate roll-in for phase {i} (height {h})",
@@ -753,22 +911,28 @@ where
             }
         }
 
-        // Commit-phase MMCS verification: verify (folded_eval, sibling_value) pairs
-        //
-        // Native FRI verifies PAIRS of values at each commit-phase step. The Merkle tree
-        // commits to pairs with dimensions = { width: 2, height: 2^(log_folded_height) }.
-        // Each leaf is the hash of 2 extension elements (8 base coefficients = full rate).
-        //
-        // The pair index = query_index >> (phase_idx + 1), and we verify both folded_eval
-        // and sibling_value together.
-        //
-        // Commit-phase MMCS verification: verify (folded_eval, sibling_value) pairs
-        if let Some(perm_config) = permutation_config {
-            let one = builder.add_const(EF::ONE);
+        // Compute the final query point using total bits consumed
+        let final_query_point = compute_final_query_point::<F, EF>(
+            builder,
+            &index_bits_per_query[q],
+            log_max_height,
+            total_log_reduction,
+        );
 
-            // Track folded_eval as we go through phases
+        let final_poly_eval =
+            evaluate_polynomial(builder, &fri_proof_targets.final_poly, final_query_point);
+
+        // Commit-phase MMCS verification with variable arity.
+        // When MMCS verification is active, the fold chain is computed as part of
+        // the MMCS loop (each phase calls fold_one_phase), so the final
+        // current_folded is connected directly to final_poly_eval — no separate
+        // fold_chain_circuit call is needed.
+        // When MMCS verification is not active (no Poseidon2 table), we fall back
+        // to fold_chain_circuit for the arithmetic fold constraint.
+        if let Some(perm_config) = permutation_config {
             let mut current_folded = initial_folded_eval;
-            let neg_half = builder.add_const(EF::NEG_ONE * EF::ONE.halve());
+            let mut bits_consumed = 0usize;
+            let mut log_current_height = log_max_height;
 
             for (phase_idx, (commit, _opening)) in fri_proof_targets
                 .commit_phase_commits
@@ -776,83 +940,60 @@ where
                 .zip(query_proof.commit_phase_openings.iter())
                 .enumerate()
             {
-                let sibling_value = sibling_values[phase_idx];
+                let log_arity = log_arities[phase_idx];
+                let arity = 1usize << log_arity;
+                let log_folded_height = log_current_height - log_arity;
+                let siblings = &sibling_values_per_phase[phase_idx];
 
-                // log_folded_height = log_max_height - phase_idx - 1
-                let log_folded_height = log_max_height.saturating_sub(phase_idx + 1);
-
-                // Skip MMCS verification for height < 2 (no tree structure for pairs)
+                // Skip MMCS verification for height 0 (no Merkle tree)
                 if log_folded_height == 0 {
-                    // Still need to compute the fold for subsequent phases
-                    let index_bit = index_bits_per_query[q][phase_idx];
-                    let sibling_is_right = builder.sub(one, index_bit);
-                    let e0 = builder.select(sibling_is_right, current_folded, sibling_value);
-                    let x0 = compute_x0_from_index_bits(
+                    current_folded = fold_one_phase::<F, EF>(
                         builder,
+                        current_folded,
+                        siblings,
+                        betas[phase_idx],
                         &index_bits_per_query[q],
-                        phase_idx,
-                        &pows_per_phase[phase_idx],
+                        bits_consumed,
+                        log_arity,
+                        log_current_height,
+                        roll_ins[phase_idx],
                     );
-                    let inv = builder.div(neg_half, x0);
-                    let d = builder.sub(sibling_value, current_folded);
-                    let two_b = builder.add(sibling_is_right, sibling_is_right);
-                    let two_b_minus_one = builder.sub(two_b, one);
-                    let e1_minus_e0 = builder.mul(two_b_minus_one, d);
-                    let beta = betas[phase_idx];
-                    let beta_minus_x0 = builder.sub(beta, x0);
-                    let t = builder.mul(beta_minus_x0, e1_minus_e0);
-                    let t_inv = builder.mul(t, inv);
-                    current_folded = builder.add(e0, t_inv);
-                    if let Some(ro) = roll_ins[phase_idx] {
-                        let beta_sq = builder.mul(beta, beta);
-                        let add_term = builder.mul(beta_sq, ro);
-                        current_folded = builder.add(current_folded, add_term);
-                    }
+                    bits_consumed += log_arity;
+                    log_current_height = log_folded_height;
                     continue;
                 }
+
+                // Build full evaluation row for MMCS verification
+                let index_in_group_bits =
+                    &index_bits_per_query[q][bits_consumed..bits_consumed + log_arity];
+                let evals =
+                    reconstruct_evals(builder, current_folded, siblings, index_in_group_bits);
 
                 // Pack commitment from lifted to packed representation
                 let lifted_commitment = commit.to_observation_targets();
                 let packed_commitment = pack_lifted_to_ext::<F, EF>(builder, &lifted_commitment);
 
-                // Dimensions: width=2 (pair of extension elements), height = 2^log_folded_height
+                // Dimensions: width = arity, height = 2^log_folded_height
                 let folded_height = 1usize << log_folded_height;
                 let dimensions = vec![Dimensions {
                     height: folded_height,
-                    width: 2,
+                    width: arity,
                 }];
 
-                // Build the pair (lo, hi) based on index bit ordering
-                // If index_bit[phase_idx] == 0: lo = current_folded, hi = sibling_value
-                // If index_bit[phase_idx] == 1: lo = sibling_value, hi = current_folded
-                let index_bit = index_bits_per_query[q][phase_idx];
-                let lo = builder.select(index_bit, sibling_value, current_folded);
-                let hi = builder.select(index_bit, current_folded, sibling_value);
-
-                // Pack the pair for verification
-                let pair_values = vec![lo, hi];
-
-                // Pair index = query_index >> (phase_idx + 1)
-                // The commit-phase Merkle tree is in NATURAL order (not bit-reversed like FFT).
-                // Native passes `start_index >> 1` directly to verify_batch, which extracts
-                // bits in little-endian order: (index >> i) & 1 for i = 0, 1, 2, ...
-                // So pair_index_bits should be the little-endian bits of pair_index.
-                let start_bit = phase_idx + 1;
-                let end_bit = (start_bit + log_folded_height).min(log_max_height);
+                // Parent index bits start after index_in_group bits
+                let parent_bit_start = bits_consumed + log_arity;
+                let parent_bit_end = (parent_bit_start + log_folded_height).min(log_max_height);
                 let zero = builder.add_const(EF::ZERO);
 
-                let mut pair_index_bits: Vec<Target> =
-                    index_bits_per_query[q][start_bit..end_bit].to_vec();
-                // Pad to log_folded_height if needed
-                while pair_index_bits.len() < log_folded_height {
-                    pair_index_bits.push(zero);
+                let mut parent_index_bits: Vec<Target> =
+                    index_bits_per_query[q][parent_bit_start..parent_bit_end].to_vec();
+                while parent_index_bits.len() < log_folded_height {
+                    parent_index_bits.push(zero);
                 }
 
-                // For commit-phase, pair_values contains 2 full extension elements
-                // (no zero-padding since these are not packed from base field)
-                // base_width = 2 extension elements × 4 base coefficients = 8
-                let base_widths = vec![pair_values.len() * <EF as BasedVectorSpace<F>>::DIMENSION];
-                let pair_values_slice = vec![pair_values];
+                // base_width = arity extension elements × EF::DIMENSION base coefficients
+                let base_widths = vec![evals.len() * <EF as BasedVectorSpace<F>>::DIMENSION];
+                let evals_slice = vec![evals];
 
                 let commit_phase_ops = verify_batch_circuit::<F, EF>(
                     builder,
@@ -860,8 +1001,8 @@ where
                     &packed_commitment,
                     &dimensions,
                     &base_widths,
-                    &pair_index_bits,
-                    &pair_values_slice,
+                    &parent_index_bits,
+                    &evals_slice,
                 )
                 .map_err(|e| {
                     VerificationError::InvalidProofShape(format!(
@@ -870,60 +1011,48 @@ where
                 })?;
                 all_mmcs_op_ids.extend(commit_phase_ops);
 
-                // Compute next folded_eval (same as fold_row_chain)
-                let sibling_is_right = builder.sub(one, index_bit);
-                let e0 = builder.select(sibling_is_right, current_folded, sibling_value);
-                let x0 = compute_x0_from_index_bits(
+                // Fold to get next current_folded
+                current_folded = fold_one_phase::<F, EF>(
                     builder,
+                    current_folded,
+                    siblings,
+                    betas[phase_idx],
                     &index_bits_per_query[q],
-                    phase_idx,
-                    &pows_per_phase[phase_idx],
+                    bits_consumed,
+                    log_arity,
+                    log_current_height,
+                    roll_ins[phase_idx],
                 );
-                let inv = builder.div(neg_half, x0);
-                let d = builder.sub(sibling_value, current_folded);
-                let two_b = builder.add(sibling_is_right, sibling_is_right);
-                let two_b_minus_one = builder.sub(two_b, one);
-                let e1_minus_e0 = builder.mul(two_b_minus_one, d);
-                let beta = betas[phase_idx];
-                let beta_minus_x0 = builder.sub(beta, x0);
-                let t = builder.mul(beta_minus_x0, e1_minus_e0);
-                let t_inv = builder.mul(t, inv);
-                current_folded = builder.add(e0, t_inv);
 
-                // Apply roll-in if present
-                if let Some(ro) = roll_ins[phase_idx] {
-                    let beta_sq = builder.mul(beta, beta);
-                    let add_term = builder.mul(beta_sq, ro);
-                    current_folded = builder.add(current_folded, add_term);
-                }
+                bits_consumed += log_arity;
+                log_current_height = log_folded_height;
             }
+
+            // The MMCS loop already computed the full fold chain; connect directly.
+            builder.connect(current_folded, final_poly_eval);
+        } else {
+            // No MMCS verification — use fold_chain_circuit for the arithmetic constraint.
+            let mut fold_phases = Vec::with_capacity(num_phases);
+            for i in 0..num_phases {
+                fold_phases.push(FoldPhaseConfig {
+                    beta: betas[i],
+                    siblings: sibling_values_per_phase[i].clone(),
+                    roll_in: roll_ins[i],
+                });
+            }
+
+            let folded_eval = fold_chain_circuit::<F, EF>(
+                builder,
+                initial_folded_eval,
+                &index_bits_per_query[q],
+                &fold_phases,
+                log_arities,
+            );
+            builder.connect(folded_eval, final_poly_eval);
         }
-
-        // Compute the final query point for this query and evaluate the final polynomial
-        let final_query_point = compute_final_query_point::<F, EF>(
-            builder,
-            &index_bits_per_query[q],
-            log_max_height,
-            num_phases,
-        );
-
-        let final_poly_eval =
-            evaluate_polynomial(builder, &fri_proof_targets.final_poly, final_query_point);
-
-        // Perform the fold chain and connect to the evaluated final polynomial value
-        verify_query_from_index_bits(
-            builder,
-            initial_folded_eval,
-            &index_bits_per_query[q],
-            betas,
-            &sibling_values,
-            &roll_ins,
-            &pows_per_phase,
-            final_poly_eval,
-        );
     }
 
-    builder.pop_scope(); // close `verify_fri` scope
+    builder.pop_scope();
 
     Ok(all_mmcs_op_ids)
 }
