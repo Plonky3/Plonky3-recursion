@@ -19,9 +19,7 @@ use p3_poseidon2_circuit_air::BabyBearD4Width16;
 use p3_recursion::generation::generate_batch_challenges;
 use p3_recursion::pcs::fri::{FriVerifierParams, HashTargets, InputProofTargets, RecValMmcs};
 use p3_recursion::verifier::{CircuitTablesAir, verify_p3_recursion_proof_circuit};
-use p3_recursion::{
-    BatchStarkVerifierInputsBuilder, GenerationError, VerificationError,
-};
+use p3_recursion::{BatchStarkVerifierInputsBuilder, GenerationError, VerificationError};
 const TRACE_D: usize = 1; // Proof traces are in base field
 
 use crate::common::baby_bear_params::*;

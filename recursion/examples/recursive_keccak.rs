@@ -142,6 +142,7 @@ macro_rules! define_field_module {
                 let num_queries = (100 - QUERY_POW_BITS) / log_blowup;
 
                 let fri_params = FriParameters {
+                    max_log_arity: 1,
                     log_blowup,
                     log_final_poly_len: LOG_FINAL_POLY_LEN,
                     num_queries,

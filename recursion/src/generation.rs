@@ -643,6 +643,14 @@ where
             .iter()
             .for_each(|x| challenger.observe_algebra_element(*x));
 
+        // Bind the variable-arity schedule into the transcript before query grinding,
+        // matching the native FRI verifier in Plonky3.
+        if let Some(first_qp) = opening_proof.query_proofs.first() {
+            for step in &first_qp.commit_phase_openings {
+                challenger.observe(Val::<SC>::from_usize(step.log_arity as usize));
+            }
+        }
+
         let params = extra_params.ok_or(GenerationError::MissingParameterError)?;
 
         if params.len() != 2 {
