@@ -14,6 +14,7 @@ categories.workspace = true
 rustdoc-args = ["--html-in-header", ".cargo/katex-header.html"]
 
 [dependencies]
+hashbrown.workspace = true
 itertools.workspace = true
 p3-air.workspace = true
 p3-baby-bear.workspace = true

@@ -2,8 +2,11 @@ use alloc::collections::btree_map::BTreeMap;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use p3_circuit::op::{NonPrimitiveOpType, Poseidon2Config, PrimitiveOpType};
-use p3_circuit::{Circuit, CircuitError};
+use hashbrown::HashMap;
+use p3_circuit::op::{
+    NonPrimitiveOpType, NonPrimitivePreprocessedMap, Poseidon2Config, PrimitiveOpType,
+};
+use p3_circuit::{Circuit, CircuitError, PreprocessedColumns};
 use p3_field::{ExtensionField, PrimeCharacteristicRing, PrimeField64};
 use p3_uni_stark::{StarkGenericConfig, SymbolicExpression, Val};
 use p3_util::log2_ceil_usize;
@@ -65,7 +68,7 @@ pub fn get_airs_and_degrees_with_prep<
     circuit: &Circuit<ExtF>,
     packing: TablePacking,
     non_primitive_configs: Option<&[NonPrimitiveConfig]>,
-) -> Result<(CircuitAirsWithDegrees<SC, D>, Vec<Val<SC>>), CircuitError>
+) -> Result<(CircuitAirsWithDegrees<SC, D>, PreprocessedColumns<Val<SC>>), CircuitError>
 where
     SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
     Val<SC>: StarkField,
@@ -361,6 +364,8 @@ where
             }
         }
     }
+    // Convert non-primitive preprocessed data to base field
+    let mut non_primitive_base: NonPrimitivePreprocessedMap<Val<SC>> = HashMap::new();
     for (op_type, prep) in preprocessed.non_primitive.iter() {
         match op_type {
             NonPrimitiveOpType::Poseidon2Perm(_) => {
@@ -368,10 +373,11 @@ where
                     .get(op_type)
                     .copied()
                     .ok_or(CircuitError::InvalidPreprocessedValues)?;
-                let prep_base = prep
+                let prep_base: Vec<Val<SC>> = prep
                     .iter()
                     .map(|v| v.as_base().ok_or(CircuitError::InvalidPreprocessedValues))
                     .collect::<Result<Vec<_>, CircuitError>>()?;
+                non_primitive_base.insert(*op_type, prep_base.clone());
                 let poseidon2_prover = Poseidon2Prover::new(cfg);
                 let width = poseidon2_prover.preprocessed_width_from_config();
                 let poseidon2_wrapper =
@@ -386,9 +392,11 @@ where
         }
     }
 
-    // Post-processing: Update witness multiplicities for mmcs_index_sum lookups.
-    //
-    // The Poseidon2 AIR sends an mmcs_index_sum lookup when:
-    //   next_row.new_start * current_row.merkle_path = 1
-    Ok((table_preps, base_prep[0].clone()))
+    // Construct the PreprocessedColumns with base field elements
+    let preprocessed_columns = PreprocessedColumns {
+        primitive: base_prep,
+        non_primitive: non_primitive_base,
+    };
+
+    Ok((table_preps, preprocessed_columns))
 }

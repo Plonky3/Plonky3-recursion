@@ -1,11 +1,11 @@
 mod common;
 
 use p3_baby_bear::default_babybear_poseidon2_16;
-use p3_batch_stark::CommonData;
+use p3_batch_stark::ProverData;
 use p3_circuit::CircuitBuilder;
 use p3_circuit::ops::generate_poseidon2_trace;
 use p3_circuit_prover::common::{NonPrimitiveConfig, get_airs_and_degrees_with_prep};
-use p3_circuit_prover::{BatchStarkProver, TablePacking};
+use p3_circuit_prover::{BatchStarkProver, CircuitProverData, TablePacking};
 use p3_field::PrimeCharacteristicRing;
 use p3_fri::create_test_fri_params;
 use p3_lookup::logup::LogUpGadget;
@@ -78,7 +78,7 @@ fn test_fibonacci_batch_verifier() {
     let config_proving = MyConfig::new(pcs_proving, challenger_proving);
 
     let circuit = builder.build().unwrap();
-    let (airs_degrees, witness_multiplicities) =
+    let (airs_degrees, preprocessed_columns) =
         get_airs_and_degrees_with_prep::<MyConfig, _, 1>(&circuit, table_packing, None).unwrap();
     let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
     let mut runner = circuit.runner();
@@ -89,18 +89,20 @@ fn test_fibonacci_batch_verifier() {
 
     let traces = runner.run().unwrap();
 
-    // Create common data for proving and verifying.
-    let common = CommonData::from_airs_and_degrees(&config_proving, &mut airs, &degrees);
+    // Create prover data for proving and verifying.
+    let prover_data = ProverData::from_airs_and_degrees(&config_proving, &mut airs, &degrees);
+    let circuit_prover_data = CircuitProverData::new(prover_data, preprocessed_columns);
 
     let prover = BatchStarkProver::new(config_proving).with_table_packing(table_packing);
 
     let lookup_gadget = LogUpGadget::new();
     let batch_stark_proof = prover
-        .prove_all_tables(&traces, &common, witness_multiplicities)
+        .prove_all_tables(&traces, &circuit_prover_data)
         .unwrap();
 
+    let common = circuit_prover_data.common_data();
     prover
-        .verify_all_tables(&batch_stark_proof, &common)
+        .verify_all_tables(&batch_stark_proof, common)
         .unwrap();
 
     // Now verify the batch STARK proof recursively
@@ -154,7 +156,7 @@ fn test_fibonacci_batch_verifier() {
         &mut circuit_builder,
         &batch_stark_proof,
         &fri_verifier_params,
-        &common,
+        common,
         &lookup_gadget,
         Poseidon2Config::BabyBearD4Width16,
     )
@@ -165,14 +167,14 @@ fn test_fibonacci_batch_verifier() {
     let expected_public_input_len = verification_circuit.public_flat_len;
 
     // Pack values using the builder
-    let public_inputs = verifier_inputs.pack_values(&pis, batch_proof, &common);
+    let public_inputs = verifier_inputs.pack_values(&pis, batch_proof, common);
 
     assert_eq!(public_inputs.len(), expected_public_input_len);
     assert!(!public_inputs.is_empty());
 
     let verification_table_packing = TablePacking::new(16, 1, 8, 8);
     let poseidon2_config = Poseidon2Config::BabyBearD4Width16;
-    let (verification_airs_degrees, verification_witness_multiplicities) =
+    let (verification_airs_degrees, verification_preprocessed_columns) =
         get_airs_and_degrees_with_prep::<MyConfig, _, 4>(
             &verification_circuit,
             verification_table_packing,
@@ -217,9 +219,10 @@ fn test_fibonacci_batch_verifier() {
     let challenger3 = Challenger::new(perm3);
     let config3 = MyConfig::new(pcs3, challenger3);
 
-    // Create common data for the verification circuit
-    let verification_common =
-        CommonData::from_airs_and_degrees(&config3, &mut verification_airs, &verification_degrees);
+    let verification_prover_data =
+        ProverData::from_airs_and_degrees(&config3, &mut verification_airs, &verification_degrees);
+    let verification_circuit_prover_data =
+        CircuitProverData::new(verification_prover_data, verification_preprocessed_columns);
 
     let mut verification_prover =
         BatchStarkProver::new(config3).with_table_packing(verification_table_packing);
@@ -227,16 +230,15 @@ fn test_fibonacci_batch_verifier() {
 
     // Prove the verification circuit
     let verification_proof = verification_prover
-        .prove_all_tables(
-            &verification_traces,
-            &verification_common,
-            verification_witness_multiplicities,
-        )
+        .prove_all_tables(&verification_traces, &verification_circuit_prover_data)
         .expect("Failed to prove verification circuit");
 
     // Verify the proof of the verification circuit
     verification_prover
-        .verify_all_tables(&verification_proof, &verification_common)
+        .verify_all_tables(
+            &verification_proof,
+            verification_circuit_prover_data.common_data(),
+        )
         .expect("Failed to verify proof of verification circuit");
 }
 

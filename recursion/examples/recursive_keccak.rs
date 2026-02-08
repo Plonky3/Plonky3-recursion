@@ -13,17 +13,17 @@
 //! Run with: cargo run --release --example recursive_keccak -- --field koala-bear --num-hashes 4
 
 use clap::{Parser, ValueEnum};
-use p3_batch_stark::CommonData;
+use p3_batch_stark::ProverData;
 use p3_challenger::DuplexChallenger;
 use p3_circuit::CircuitBuilder;
 use p3_circuit::ops::generate_poseidon2_trace;
 use p3_circuit_prover::common::{NonPrimitiveConfig, get_airs_and_degrees_with_prep};
-use p3_circuit_prover::{BatchStarkProver, TablePacking};
+use p3_circuit_prover::{BatchStarkProver, CircuitProverData, TablePacking};
 use p3_commit::ExtensionMmcs;
 use p3_dft::Radix2DitParallel;
 use p3_field::Field;
 use p3_field::extension::BinomialExtensionField;
-use p3_fri::{TwoAdicFriPcs, create_test_fri_params, FriParameters};
+use p3_fri::{FriParameters, TwoAdicFriPcs, create_test_fri_params};
 use p3_keccak_air::KeccakAir;
 use p3_merkle_tree::MerkleTreeMmcs;
 use p3_recursion::pcs::{HashTargets, InputProofTargets, RecValMmcs, set_fri_mmcs_private_data};
@@ -246,7 +246,7 @@ macro_rules! define_field_module {
 
                 let table_packing_1 = TablePacking::new(16, 1, 8, 8);
 
-                let (airs_degrees_1, witness_mults_1) =
+                let (airs_degrees_1, preprocessed_columns_1) =
                     get_airs_and_degrees_with_prep::<MyConfig, _, D>(
                         &verification_circuit_1,
                         table_packing_1,
@@ -271,15 +271,19 @@ macro_rules! define_field_module {
 
                 let traces_1 = runner_1.run().expect("Failed to run verification circuit");
 
-                let common_1 =
-                    CommonData::from_airs_and_degrees(&config_1, &mut airs_1, &degrees_1);
+                let prover_data_1 =
+                    ProverData::from_airs_and_degrees(&config_1, &mut airs_1, &degrees_1);
+                let circuit_prover_data_1 =
+                    CircuitProverData::new(prover_data_1, preprocessed_columns_1);
+
+                let common_1 = circuit_prover_data_1.common_data();
 
                 let mut prover_1 =
                     BatchStarkProver::new(config_1).with_table_packing(table_packing_1);
                 prover_1.register_poseidon2_table($poseidon2_config);
 
                 let proof_1 = prover_1
-                    .prove_all_tables(&traces_1, &common_1, witness_mults_1)
+                    .prove_all_tables(&traces_1, &circuit_prover_data_1)
                     .expect("Failed to prove verification circuit");
 
                 prover_1

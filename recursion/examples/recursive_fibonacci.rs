@@ -20,12 +20,12 @@
 //! Run with: cargo run --release --example recursive_fibonacci -- --field koala-bear --n 100
 
 use clap::{Parser, ValueEnum};
-use p3_batch_stark::CommonData;
+use p3_batch_stark::ProverData;
 use p3_challenger::DuplexChallenger;
 use p3_circuit::CircuitBuilder;
 use p3_circuit::ops::generate_poseidon2_trace;
 use p3_circuit_prover::common::{NonPrimitiveConfig, get_airs_and_degrees_with_prep};
-use p3_circuit_prover::{BatchStarkProver, TablePacking};
+use p3_circuit_prover::{BatchStarkProver, CircuitProverData, TablePacking};
 use p3_commit::ExtensionMmcs;
 use p3_dft::Radix2DitParallel;
 use p3_field::extension::BinomialExtensionField;
@@ -220,7 +220,7 @@ macro_rules! define_field_module {
 
                 // Layer 0 prover config
                 let config_0 = create_config(LOG_BLOWUP);
-                let (airs_degrees_0, witness_mults_0) =
+                let (airs_degrees_0, preprocessed_columns_0) =
                     get_airs_and_degrees_with_prep::<MyConfig, _, 1>(
                         &base_circuit,
                         table_packing_0,
@@ -234,12 +234,14 @@ macro_rules! define_field_module {
                 runner_0.set_public_inputs(&[expected_fib]).unwrap();
 
                 let traces_0 = runner_0.run().unwrap();
-                let common_0 =
-                    CommonData::from_airs_and_degrees(&config_0, &mut airs_0, &degrees_0);
-
+                let prover_data_0 =
+                    ProverData::from_airs_and_degrees(&config_0, &mut airs_0, &degrees_0);
+                let circuit_prover_data_0 =
+                    CircuitProverData::new(prover_data_0, preprocessed_columns_0);
+                let common_0 = circuit_prover_data_0.common_data();
                 let prover_0 = BatchStarkProver::new(config_0).with_table_packing(table_packing_0);
                 let proof_0 = prover_0
-                    .prove_all_tables(&traces_0, &common_0, witness_mults_0)
+                    .prove_all_tables(&traces_0, &circuit_prover_data_0)
                     .expect("Failed to prove base circuit");
 
                 prover_0
@@ -303,7 +305,7 @@ macro_rules! define_field_module {
                 let table_packing_1 = TablePacking::new(128, 16, 64, 64)
                     .with_fri_params(LOG_FINAL_POLY_LEN, LOG_BLOWUP);
 
-                let (airs_degrees_1, witness_mults_1) =
+                let (airs_degrees_1, preprocessed_columns_1) =
                     get_airs_and_degrees_with_prep::<MyConfig, _, D>(
                         &verification_circuit_1,
                         table_packing_1,
@@ -328,15 +330,19 @@ macro_rules! define_field_module {
 
                 let traces_1 = runner_1.run().expect("Failed to run layer 1 circuit");
 
-                let common_1 =
-                    CommonData::from_airs_and_degrees(&config_1, &mut airs_1, &degrees_1);
+                let prover_data_1 =
+                    ProverData::from_airs_and_degrees(&config_1, &mut airs_1, &degrees_1);
+                let circuit_prover_data_1 =
+                    CircuitProverData::new(prover_data_1, preprocessed_columns_1);
+
+                let common_1 = circuit_prover_data_1.common_data();
 
                 let mut prover_1 =
                     BatchStarkProver::new(config_1).with_table_packing(table_packing_1);
                 prover_1.register_poseidon2_table($poseidon2_config);
 
                 let proof_1 = prover_1
-                    .prove_all_tables(&traces_1, &common_1, witness_mults_1)
+                    .prove_all_tables(&traces_1, &circuit_prover_data_1)
                     .expect("Failed to prove layer 1 circuit");
 
                 prover_1

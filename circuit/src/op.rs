@@ -11,9 +11,9 @@ use hashbrown::HashMap;
 use p3_field::{Field, PrimeCharacteristicRing};
 use strum_macros::EnumCount;
 
-use crate::CircuitError;
 use crate::ops::Poseidon2PermPrivateData;
 use crate::types::{NonPrimitiveOpId, WitnessId};
+use crate::{CircuitError, PreprocessedColumns};
 
 /// Circuit operations.
 ///
@@ -516,13 +516,16 @@ pub trait NonPrimitiveExecutor<F: Field>: Debug {
     /// Update the preprocessed values related to this operation. This consists of:
     /// - the preprocessed values for the associated table
     /// - the multiplicity for the `Witness` table.
+    ///
+    /// Uses the `PreprocessedColumns` API to ensure witness multiplicities are updated
+    /// consistently when reading from the witness table.
     fn preprocess(
         &self,
         _inputs: &[Vec<WitnessId>],
         _outputs: &[Vec<WitnessId>],
-        _primitive_preprocessed: &mut Vec<Vec<F>>,
-        _non_primitive_preprocessed: &mut NonPrimitivePreprocessedMap<F>,
-    ) {
+        _preprocessed: &mut PreprocessedColumns<F>,
+    ) -> Result<(), CircuitError> {
+        Ok(())
     }
 
     /// Clone as trait object
