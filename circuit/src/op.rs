@@ -398,12 +398,6 @@ impl<'a, F: PrimeCharacteristicRing + Eq + Clone> ExecutionContext<'a, F> {
         if let Some(existing_value) = &self.witness[widx.0 as usize] {
             if *existing_value == value {
                 // Same value - this is fine (duplicate set via connect)
-                tracing::debug!(
-                    "Witness {:?} already set to same value {:?} (op {:?})",
-                    widx,
-                    value,
-                    self.operation_id
-                );
                 return Ok(());
             }
             tracing::error!(
