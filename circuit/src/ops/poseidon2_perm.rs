@@ -748,6 +748,17 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for Poseidon2Perm
                     self.op_type,
                     &[F::ZERO, F::ZERO], // in_idx, in_ctl
                 );
+            } else if self.merkle_path {
+                // Exposed input on a merkle_path row: store index and in_ctl=1 but
+                // do NOT update witness multiplicities because the lookup multiplicity
+                // is in_ctl * (1 - merkle_path) = 0 — the CTL never fires.
+                for wid in inp {
+                    preprocessed.register_non_primitive_preprocessed_no_read(
+                        self.op_type,
+                        &[F::from_u32(wid.0)],
+                    );
+                }
+                preprocessed.register_non_primitive_preprocessed_no_read(self.op_type, &[F::ONE]);
             } else {
                 // Exposed input: register the witness read (updates multiplicities)
                 preprocessed.register_non_primitive_witness_reads(self.op_type, inp)?;
@@ -799,8 +810,14 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for Poseidon2Perm
         if inputs[4].is_empty() {
             preprocessed.register_non_primitive_preprocessed_no_read(self.op_type, &[F::ZERO]);
         } else {
-            // Register the witness read (updates multiplicities)
-            preprocessed.register_non_primitive_witness_reads(self.op_type, &inputs[4])?;
+            // Store the witness index without updating multiplicities.
+            // The conditional multiplicity is handled by get_airs_and_degrees_with_prep().
+            for wid in &inputs[4] {
+                preprocessed.register_non_primitive_preprocessed_no_read(
+                    self.op_type,
+                    &[F::from_u32(wid.0)],
+                );
+            }
         }
 
         // Precomputed flag: mmcs_ctl_enabled * merkle_path

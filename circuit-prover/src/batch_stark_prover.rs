@@ -2459,6 +2459,8 @@ where
     table_packing: TablePacking,
     /// Registered dynamic non-primitive table provers.
     non_primitive_provers: Vec<Box<dyn TableProver<SC>>>,
+    /// When true, run the lookup debugger before proving to report imbalanced multisets.
+    debug_lookups: bool,
 }
 
 /// Errors for the batch STARK table prover.
@@ -2777,12 +2779,22 @@ where
             config,
             table_packing: TablePacking::default(),
             non_primitive_provers: Vec::new(),
+            debug_lookups: false,
         }
     }
 
     #[must_use]
     pub const fn with_table_packing(mut self, table_packing: TablePacking) -> Self {
         self.table_packing = table_packing;
+        self
+    }
+
+    /// Enable the lookup debugger. When set, `prove_all_tables` will run
+    /// `check_lookups` on the constructed traces before generating the proof,
+    /// panicking with a detailed message on any multiset imbalance.
+    #[must_use]
+    pub const fn with_debug_lookups(mut self) -> Self {
+        self.debug_lookups = true;
         self
     }
 
@@ -3121,6 +3133,27 @@ where
                 }
             })
             .collect();
+
+        if self.debug_lookups {
+            use p3_lookup::debug_util::{LookupDebugInstance, check_lookups};
+
+            let preprocessed_traces: Vec<Option<RowMajorMatrix<Val<SC>>>> = instances
+                .iter()
+                .map(|inst| inst.air.preprocessed_trace())
+                .collect();
+            let debug_instances: Vec<LookupDebugInstance<'_, Val<SC>>> = instances
+                .iter()
+                .zip(preprocessed_traces.iter())
+                .map(|(inst, prep)| LookupDebugInstance {
+                    main_trace: &inst.trace,
+                    preprocessed_trace: prep,
+                    public_values: &inst.public_values,
+                    lookups: &inst.lookups,
+                    permutation_challenges: &[],
+                })
+                .collect();
+            check_lookups(&debug_instances);
+        }
 
         let proof = p3_batch_stark::prove_batch(&self.config, &instances, prover_data);
 
