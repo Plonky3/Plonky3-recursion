@@ -39,6 +39,7 @@ pub struct FriProofTargets<
     pub query_proofs: Vec<QueryProofTargets<F, EF, InputProof, RecMmcs>>,
     pub final_poly: Vec<Target>,
     pub pow_witness: Witness,
+    pub log_arities: Vec<usize>,
 }
 
 impl<
@@ -73,12 +74,24 @@ impl<
         let final_poly = circuit
             .alloc_public_inputs(input.final_poly.len(), "FRI final polynomial coefficients");
 
+        let log_arities = input
+            .query_proofs
+            .first()
+            .map(|qp| {
+                qp.commit_phase_openings
+                    .iter()
+                    .map(|o| o.log_arity as usize)
+                    .collect()
+            })
+            .unwrap_or_default();
+
         Self {
             commit_phase_commits,
             commit_pow_witnesses,
             query_proofs,
             final_poly,
             pow_witness: Witness::new(circuit, &input.query_pow_witness),
+            log_arities,
         }
     }
 
@@ -187,11 +200,14 @@ impl<F: Field, EF: ExtensionField<F>, RecMmcs: RecursiveExtensionMmcs<F, EF>> Re
 
     fn get_values(input: &Self::Input) -> Vec<EF> {
         let CommitPhaseProofStep {
-            sibling_value,
+            log_arity: _,
+            sibling_values,
             opening_proof,
         } = input;
+        // TODO: Support higher-arity
+        let sibling_value = sibling_values[0];
+        let mut values = vec![sibling_value];
 
-        let mut values = vec![*sibling_value];
         values.extend(RecMmcs::Proof::get_values(opening_proof));
         values
     }
@@ -492,6 +508,14 @@ where
 
         // Observe final polynomial coefficients
         challenger.observe_slice(circuit, &fri_proof.final_poly);
+
+        // Bind the variable-arity schedule into the transcript before query grinding,
+        // matching the native FRI verifier in Plonky3.
+        for &log_arity in &fri_proof.log_arities {
+            let log_arity_target =
+                circuit.alloc_const(SC::Challenge::from_usize(log_arity), "FRI log_arity");
+            challenger.observe(circuit, log_arity_target);
+        }
 
         // Check query PoW witness.
         challenger.check_witness(
