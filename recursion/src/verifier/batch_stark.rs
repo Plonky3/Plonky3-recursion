@@ -352,7 +352,7 @@ where
     // Challenger initialisation mirrors the native batch-STARK verifier transcript.
     let mut challenger = CircuitChallenger::<RATE>::new();
     let inst_count_target = circuit.alloc_const(
-        SC::Challenge::from_usize(n_instances),
+        SC::Challenge::from_u32(n_instances as u32),
         "number of instances",
     );
     challenger.observe(circuit, inst_count_target);
@@ -368,13 +368,15 @@ where
             )
         })?;
         let base_db_target =
-            circuit.alloc_const(SC::Challenge::from_usize(base_db), "base degree bits");
-        let ext_db_target =
-            circuit.alloc_const(SC::Challenge::from_usize(ext_db), "extended degree bits");
+            circuit.alloc_const(SC::Challenge::from_u32(base_db as u32), "base degree bits");
+        let ext_db_target = circuit.alloc_const(
+            SC::Challenge::from_u32(ext_db as u32),
+            "extended degree bits",
+        );
         let width_target =
-            circuit.alloc_const(SC::Challenge::from_usize(A::width(air)), "air width");
+            circuit.alloc_const(SC::Challenge::from_u32(A::width(air) as u32), "air width");
         let quotient_chunks_target = circuit.alloc_const(
-            SC::Challenge::from_usize(*quotient_degree),
+            SC::Challenge::from_u32(*quotient_degree as u32),
             "quotient chunk count",
         );
 
@@ -396,7 +398,7 @@ where
     // preprocessed commitment exists, observe it once.
     for &pre_w in preprocessed_widths.iter() {
         let pre_w_target =
-            circuit.alloc_const(SC::Challenge::from_usize(pre_w), "preprocessed width");
+            circuit.alloc_const(SC::Challenge::from_u32(pre_w as u32), "preprocessed width");
         challenger.observe(circuit, pre_w_target);
     }
     if let Some(global) = &common.preprocessed {

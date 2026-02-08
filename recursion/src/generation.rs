@@ -149,10 +149,10 @@ where
 
     let mut challenger = config.initialise_challenger();
 
-    challenger.observe(Val::<SC>::from_usize(*degree_bits));
-    challenger.observe(Val::<SC>::from_usize(*degree_bits - config.is_zk()));
+    challenger.observe(Val::<SC>::from_u32(*degree_bits as u32));
+    challenger.observe(Val::<SC>::from_u32((*degree_bits - config.is_zk()) as u32));
 
-    challenger.observe(Val::<SC>::from_usize(preprocessed_width));
+    challenger.observe(Val::<SC>::from_u32(preprocessed_width as u32));
     challenger.observe(commitments.trace.clone());
     if preprocessed_width > 0 {
         challenger.observe(
@@ -331,7 +331,8 @@ where
     let pcs = config.pcs();
     let mut challenger = config.initialise_challenger();
 
-    challenger.observe_base_as_algebra_element::<SC::Challenge>(Val::<SC>::from_usize(n_instances));
+    challenger
+        .observe_base_as_algebra_element::<SC::Challenge>(Val::<SC>::from_u32(n_instances as u32));
 
     for inst in &opened_values.instances {
         if inst
@@ -394,7 +395,8 @@ where
         challenger.observe_slice(pv);
     }
     for pre_w in &preprocessed_widths {
-        challenger.observe_base_as_algebra_element::<SC::Challenge>(Val::<SC>::from_usize(*pre_w));
+        challenger
+            .observe_base_as_algebra_element::<SC::Challenge>(Val::<SC>::from_u32(*pre_w as u32));
     }
     if let Some(global) = &common_data.preprocessed {
         challenger.observe(global.commitment.clone());
@@ -632,7 +634,7 @@ where
                 // verifies that the challenge begins with the required number of leading zeros.
                 let rand_f: Val<SC> = challenger.sample();
                 let rand_usize = rand_f.as_canonical_biguint().to_u64_digits()[0] as usize;
-                challenges.push(SC::Challenge::from_usize(rand_usize));
+                challenges.push(SC::Challenge::from_u32(rand_usize as u32));
 
                 challenges.push(challenger.sample_algebra_element());
             });

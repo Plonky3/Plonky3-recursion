@@ -130,7 +130,7 @@ where
     if add_empty {
         let num_extra = AddAir::<Val<SC>, D>::lane_width() / D;
 
-        preprocessed.primitive[witness_idx][0] += ExtF::from_usize(num_extra);
+        preprocessed.primitive[witness_idx][0] += ExtF::from_u32(num_extra as u32);
         preprocessed.primitive[add_idx].extend(vec![
             ExtF::ZERO;
             AddAir::<Val<SC>, D>::preprocessed_lane_width()
@@ -139,7 +139,7 @@ where
     }
     if mul_empty {
         let num_extra = MulAir::<Val<SC>, D>::lane_width() / D;
-        preprocessed.primitive[witness_idx][0] += ExtF::from_usize(num_extra);
+        preprocessed.primitive[witness_idx][0] += ExtF::from_u32(num_extra as u32);
         preprocessed.primitive[mul_idx].extend(vec![
             ExtF::ZERO;
             MulAir::<Val<SC>, D>::preprocessed_lane_width()
