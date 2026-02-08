@@ -133,8 +133,8 @@ macro_rules! define_field_module {
             // FRI Parameters
             // ===============
             const LOG_BLOWUP: usize = 3;
-            const MAX_LOG_ARITY: usize = 3;
-            const LOG_FINAL_POLY_LEN: usize = 1;
+            const MAX_LOG_ARITY: usize = 4;
+            const LOG_FINAL_POLY_LEN: usize = 5;
             const COMMIT_POW_BITS: usize = 0;
             const QUERY_POW_BITS: usize = 16;
 
@@ -405,7 +405,7 @@ macro_rules! define_field_module {
 
                 info!("Verification circuit built with {num_ops_2} operations");
 
-                let table_packing_2 = TablePacking::new(2, 1, 2, 2)
+                let table_packing_2 = TablePacking::new(2, 2, 2, 2)
                     .with_fri_params(LOG_FINAL_POLY_LEN, LOG_BLOWUP);
 
                 let (airs_degrees_2, preprocessed_columns_2) =
