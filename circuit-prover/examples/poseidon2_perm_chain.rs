@@ -179,7 +179,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let circuit_prover_data = CircuitProverData::new(prover_data, preprocessed_columns);
 
     assert!(
-        !circuit_prover_data.common_data().lookups[5].is_empty(),
+        !circuit_prover_data.common_data().lookups[4].is_empty(),
         "Poseidon2 table should have lookups"
     );
 
