@@ -142,18 +142,18 @@ fn reconstruct_evals<EF: Field>(
 
 /// Compute the subgroup evaluation points for a single FRI fold phase.
 ///
-/// Returns `arity` evaluation points in bit-reversed order:
-///   xs[i] = subgroup_start * omega^{br(i)}
-/// where:
-///   omega = two_adic_generator(log_arity)
-///   subgroup_start = two_adic_generator(log_folded_height + log_arity)^{rev(parent_index)}
+/// Returns `(xs, subgroup_start)` where:
+/// - `xs[i] = subgroup_start * omega^{br(i)}` are the `arity` evaluation points
+///   in bit-reversed order,
+/// - `omega = two_adic_generator(log_arity)`,
+/// - `subgroup_start = two_adic_generator(log_folded_height + log_arity)^{rev(parent_index)}`.
 fn compute_subgroup_points<F, EF>(
     builder: &mut CircuitBuilder<EF>,
     index_bits: &[Target],
     bits_consumed: usize,
     log_arity: usize,
     log_folded_height: usize,
-) -> Vec<Target>
+) -> (Vec<Target>, Target)
 where
     F: Field + TwoAdicField,
     EF: ExtensionField<F>,
@@ -190,7 +190,128 @@ where
         xs.push(xi);
     }
 
-    xs
+    (xs, subgroup_start)
+}
+
+/// Precompute Lagrange denominator inverses for a given FRI arity, in the
+/// canonical subgroup with `subgroup_start = 1`.
+///
+/// For `xs0[i] = omega^{br(i)}` where `omega = two_adic_generator(log_arity)`,
+/// returns `denom_inv[i] = 1 / ∏_{j != i} (xs0[i] - xs0[j])` lifted to `EF`.
+fn precompute_lagrange_denominator_inverses<F, EF>(log_arity: usize) -> Vec<EF>
+where
+    F: Field + TwoAdicField,
+    EF: ExtensionField<F>,
+{
+    let arity = 1usize << log_arity;
+    let omega = F::two_adic_generator(log_arity);
+
+    // Canonical subgroup points xs0[i] = omega^{br(i)} in EF.
+    let mut xs0 = Vec::with_capacity(arity);
+    for i in 0..arity {
+        let br_i = p3_util::reverse_bits_len(i, log_arity);
+        let g_i = omega.exp_u64(br_i as u64);
+        xs0.push(EF::from(g_i));
+    }
+
+    let mut denom_inv = Vec::with_capacity(arity);
+    for i in 0..arity {
+        let mut denom = EF::ONE;
+        for j in 0..arity {
+            if j == i {
+                continue;
+            }
+            denom *= xs0[i] - xs0[j];
+        }
+        // denom should never be zero for distinct xs0.
+        let inv = denom.inverse();
+        denom_inv.push(inv);
+    }
+
+    denom_inv
+}
+
+/// Optimized Lagrange interpolation for small arities (`log_arity` 2, 3, 4).
+///
+/// This uses:
+/// - a batch inversion for `diffs[i] = z - xs[i]` (one division),
+/// - a single inversion for `subgroup_start^{arity-1}`,
+/// - precomputed denominator inverses from the canonical subgroup, scaled
+///   by `subgroup_start^{-(arity-1)}` in-circuit.
+fn lagrange_interpolate_small<F, EF>(
+    builder: &mut CircuitBuilder<EF>,
+    xs: &[Target],
+    ys: &[Target],
+    z: Target,
+    subgroup_start: Target,
+    log_arity: usize,
+) -> Target
+where
+    F: Field + TwoAdicField,
+    EF: ExtensionField<F>,
+{
+    let arity = 1usize << log_arity;
+    debug_assert_eq!(xs.len(), arity);
+    debug_assert_eq!(ys.len(), arity);
+
+    // diffs[i] = z - xs[i]
+    let mut diffs = Vec::with_capacity(arity);
+    for &xi in xs {
+        diffs.push(builder.sub(z, xi));
+    }
+
+    // L(z) = ∏ diffs[i]
+    let mut l_z = diffs[0];
+    for d in &diffs[1..] {
+        l_z = builder.mul(l_z, *d);
+    }
+
+    // Batch inversion of diffs: inv_diffs[i] = 1 / (z - xs[i])
+    let one = builder.add_const(EF::ONE);
+    let mut prefix = Vec::with_capacity(arity);
+    prefix.push(diffs[0]);
+    for i in 1..arity {
+        let prod = builder.mul(prefix[i - 1], diffs[i]);
+        prefix.push(prod);
+    }
+
+    // Single division for the inverse of the total product.
+    let mut inv_total = builder.div(one, prefix[arity - 1]);
+
+    let mut inv_diffs = vec![inv_total; arity];
+    // Standard batch inversion backward sweep:
+    for i in (0..arity).rev() {
+        let prev = if i == 0 { one } else { prefix[i - 1] };
+        inv_diffs[i] = builder.mul(inv_total, prev);
+        inv_total = builder.mul(inv_total, diffs[i]);
+    }
+
+    // Compute subgroup_start^{arity-1} and its inverse.
+    let mut s_pow = subgroup_start;
+    for _ in 1..(arity - 1) {
+        s_pow = builder.mul(s_pow, subgroup_start);
+    }
+    let inv_s_pow = builder.div(one, s_pow);
+
+    // Precomputed canonical denominator inverses (in EF).
+    let denom_inv_consts = precompute_lagrange_denominator_inverses::<F, EF>(log_arity);
+    debug_assert_eq!(denom_inv_consts.len(), arity);
+
+    // result = sum_i ys[i] * L(z)/(z - xs[i]) * (1 / denom[i])
+    // where 1/denom[i] = denom_inv_consts[i] * subgroup_start^{-(arity-1)}.
+    let mut result = builder.add_const(EF::ZERO);
+    for i in 0..arity {
+        let partial_num = builder.mul(l_z, inv_diffs[i]);
+        let scaled_y = builder.mul(ys[i], partial_num);
+
+        let denom_inv_const = builder.add_const(denom_inv_consts[i]);
+        let tmp = builder.mul(scaled_y, denom_inv_const);
+        let term = builder.mul(tmp, inv_s_pow);
+
+        result = builder.add(result, term);
+    }
+
+    result
 }
 
 /// Lagrange interpolation in circuit: evaluate the interpolating polynomial at `z`.
@@ -308,7 +429,7 @@ where
 
     // General path: Lagrange interpolation
     let evals = reconstruct_evals(builder, folded, siblings, index_in_group_bits);
-    let xs = compute_subgroup_points::<F, EF>(
+    let (xs, subgroup_start) = compute_subgroup_points::<F, EF>(
         builder,
         index_bits,
         bits_consumed,
@@ -316,7 +437,13 @@ where
         log_folded_height,
     );
 
-    let mut new_folded = lagrange_interpolate_circuit(builder, &xs, &evals, beta);
+    // For small arities (2, 4, 8, 16), use the optimized interpolation that
+    // avoids rebuilding denominators in-circuit.
+    let mut new_folded = if (2..=4).contains(&log_arity) {
+        lagrange_interpolate_small::<F, EF>(builder, &xs, &evals, beta, subgroup_start, log_arity)
+    } else {
+        lagrange_interpolate_circuit(builder, &xs, &evals, beta)
+    };
 
     // Roll-in: folded += beta^{2^log_arity} * roll_in
     if let Some(ro) = roll_in {
