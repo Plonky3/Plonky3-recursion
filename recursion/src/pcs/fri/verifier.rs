@@ -74,28 +74,121 @@ pub struct FoldPhaseConfig {
     pub roll_in: Option<Target>,
 }
 
+/// Optimized one-hot computation for 2 bits.
+fn one_hot_from_two_bits<EF: Field>(
+    builder: &mut CircuitBuilder<EF>,
+    b0: Target,
+    b1: Target,
+) -> [Target; 4] {
+    let one = builder.add_const(EF::ONE);
+    let nb0 = builder.sub(one, b0);
+    let nb1 = builder.sub(one, b1);
+
+    let h0 = builder.mul(nb0, nb1); // 00
+    let h1 = builder.mul(b0, nb1); // 01
+    let h2 = builder.mul(nb0, b1); // 10
+    let h3 = builder.mul(b0, b1); // 11
+
+    [h0, h1, h2, h3]
+}
+
+/// Optimized one-hot computation for 3 bits.
+fn one_hot_from_three_bits<EF: Field>(
+    builder: &mut CircuitBuilder<EF>,
+    b0: Target,
+    b1: Target,
+    b2: Target,
+) -> [Target; 8] {
+    let one = builder.add_const(EF::ONE);
+    let nb0 = builder.sub(one, b0);
+    let nb1 = builder.sub(one, b1);
+    let nb2 = builder.sub(one, b2);
+
+    // Shared products for (b1, b2).
+    let t00 = builder.mul(nb1, nb2); // b1=0, b2=0
+    let t01 = builder.mul(nb1, b2); // b1=0, b2=1
+    let t10 = builder.mul(b1, nb2); // b1=1, b2=0
+    let t11 = builder.mul(b1, b2); // b1=1, b2=1
+
+    // Index j = b0 + 2*b1 + 4*b2 (little-endian).
+    let h0 = builder.mul(nb0, t00); // 0,0,0 -> j=0
+    let h1 = builder.mul(b0, t00); // 1,0,0 -> j=1
+    let h2 = builder.mul(nb0, t10); // 0,1,0 -> j=2
+    let h3 = builder.mul(b0, t10); // 1,1,0 -> j=3
+    let h4 = builder.mul(nb0, t01); // 0,0,1 -> j=4
+    let h5 = builder.mul(b0, t01); // 1,0,1 -> j=5
+    let h6 = builder.mul(nb0, t11); // 0,1,1 -> j=6
+    let h7 = builder.mul(b0, t11); // 1,1,1 -> j=7
+
+    [h0, h1, h2, h3, h4, h5, h6, h7]
+}
+
+/// Optimized one-hot computation for 4 bits, using two 2-bit one-hots.
+fn one_hot_from_four_bits<EF: Field>(
+    builder: &mut CircuitBuilder<EF>,
+    bits: &[Target],
+) -> Vec<Target> {
+    debug_assert_eq!(bits.len(), 4);
+    let low = one_hot_from_two_bits(builder, bits[0], bits[1]);
+    let high = one_hot_from_two_bits(builder, bits[2], bits[3]);
+
+    let mut result = Vec::with_capacity(16);
+    for j in 0..16 {
+        let low_idx = j & 3;
+        let high_idx = j >> 2;
+        let val = builder.mul(low[low_idx], high[high_idx]);
+        result.push(val);
+    }
+    result
+}
+
 /// Compute a one-hot encoding from `log_arity` index bits.
 /// Returns a vector of `2^log_arity` targets where `result[j] = 1` iff j matches the
 /// integer value of the input bits (little-endian).
 fn one_hot_from_bits<EF: Field>(builder: &mut CircuitBuilder<EF>, bits: &[Target]) -> Vec<Target> {
     let log_arity = bits.len();
     let arity = 1usize << log_arity;
-    let one = builder.add_const(EF::ONE);
 
-    let mut one_hot = Vec::with_capacity(arity);
-    for j in 0..arity {
-        let mut product = one;
-        for (k, &bit) in bits.iter().enumerate() {
-            if (j >> k) & 1 == 1 {
-                product = builder.mul(product, bit);
-            } else {
-                let not_bit = builder.sub(one, bit);
-                product = builder.mul(product, not_bit);
-            }
+    match log_arity {
+        0 => {
+            // Degenerate case: arity 1, always index 0.
+            vec![builder.add_const(EF::ONE)]
         }
-        one_hot.push(product);
+        1 => {
+            // One bit: [!b0, b0]
+            let one = builder.add_const(EF::ONE);
+            let b0 = bits[0];
+            let nb0 = builder.sub(one, b0);
+            vec![nb0, b0]
+        }
+        2 => {
+            let [h0, h1, h2, h3] = one_hot_from_two_bits(builder, bits[0], bits[1]);
+            vec![h0, h1, h2, h3]
+        }
+        3 => {
+            let [h0, h1, h2, h3, h4, h5, h6, h7] =
+                one_hot_from_three_bits(builder, bits[0], bits[1], bits[2]);
+            vec![h0, h1, h2, h3, h4, h5, h6, h7]
+        }
+        4 => one_hot_from_four_bits(builder, bits),
+        _ => {
+            let one = builder.add_const(EF::ONE);
+            let mut one_hot = Vec::with_capacity(arity);
+            for j in 0..arity {
+                let mut product = one;
+                for (k, &bit) in bits.iter().enumerate() {
+                    if (j >> k) & 1 == 1 {
+                        product = builder.mul(product, bit);
+                    } else {
+                        let not_bit = builder.sub(one, bit);
+                        product = builder.mul(product, not_bit);
+                    }
+                }
+                one_hot.push(product);
+            }
+            one_hot
+        }
     }
-    one_hot
 }
 
 /// Reconstruct the full evaluation row from `folded` + `siblings` using the index bits.
