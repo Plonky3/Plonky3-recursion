@@ -23,7 +23,19 @@ pub struct FoldPhaseConfig {
     pub roll_in: Option<Target>,
 }
 
+// Below are generic and optimized one-hot computation functions for different
+// numbers of bits.
+// In the FRI verifier, for each fold phase we have a small “group” of evaluation
+// points whose index in the group is given by some of the query index bits.
+// We need to say “the value at the queried position is this one, and at the other
+// positions it’s these siblings.”
+// This is done by reconstructing the full row of evaluations and then, for each
+// position, selecting either the folded value or the right sibling. The one-hot
+// vector is used as the selector: only the position that matches the index bits
+// gets the folded value; the others get the corresponding sibling.
+
 /// Optimized one-hot computation for 2 bits.
+/// This yields 4 targets: [00, 01, 10, 11].
 fn one_hot_from_two_bits<EF: Field>(
     builder: &mut CircuitBuilder<EF>,
     b0: Target,
@@ -42,6 +54,7 @@ fn one_hot_from_two_bits<EF: Field>(
 }
 
 /// Optimized one-hot computation for 3 bits.
+/// This yields 8 targets: [000, 001, 010, 011, 100, 101, 110, 111].
 fn one_hot_from_three_bits<EF: Field>(
     builder: &mut CircuitBuilder<EF>,
     b0: Target,
@@ -73,6 +86,7 @@ fn one_hot_from_three_bits<EF: Field>(
 }
 
 /// Optimized one-hot computation for 4 bits, using two 2-bit one-hots.
+/// This yields 16 targets from 0000 to 1111.
 fn one_hot_from_four_bits<EF: Field>(
     builder: &mut CircuitBuilder<EF>,
     bits: &[Target],
