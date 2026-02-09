@@ -12,6 +12,28 @@ jobs:
   label:
     runs-on: ubuntu-latest
     steps:
+      - name: Label by PR title
+        run: |
+          title="${{ github.event.pull_request.title }}"
+          labels=()
+          case "${title,,}" in
+            *perf*|*optimize*|*optimise*) labels+=("perf") ;;
+          esac
+          case "${title,,}" in
+            *bug*|*fix*) labels+=("bug") ;;
+          esac
+          case "${title,,}" in
+            *fri*) labels+=("FRI") ;;
+          esac
+          case "${title,,}" in
+            *refactor*) labels+=("refactoring") ;;
+          esac
+          if [ ${#labels[@]} -gt 0 ]; then
+            echo "${labels[*]}" | tr ' ' '\n' | xargs -I {} gh pr edit "${{ github.event.pull_request.number }}" --repo "${{ github.repository }}" --add-label "{}"
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+
       - uses: actions/labeler@v5
         with:
           sync-labels: true
