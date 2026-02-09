@@ -407,6 +407,20 @@ where
     result
 }
 
+/// Precompute and cache powers `beta^{2^k}` for all fold phases.
+fn precompute_beta_powers_per_phase<EF: Field>(
+    builder: &mut CircuitBuilder<EF>,
+    betas: &[Target],
+    log_arities: &[usize],
+) -> Vec<Target> {
+    debug_assert_eq!(betas.len(), log_arities.len());
+    betas
+        .iter()
+        .zip(log_arities.iter())
+        .map(|(&beta, &log_arity)| builder.exp_power_of_2(beta, log_arity))
+        .collect()
+}
+
 /// Lagrange interpolation in circuit: evaluate the interpolating polynomial at `z`.
 ///
 /// Given evaluation points xs[0..n] and values ys[0..n], computes
@@ -478,6 +492,7 @@ fn fold_one_phase<F, EF>(
     log_arity: usize,
     log_current_height: usize,
     roll_in: Option<Target>,
+    precomputed_beta_pow: Option<Target>,
 ) -> Target
 where
     F: Field + TwoAdicField,
@@ -513,7 +528,8 @@ where
         let mut new_folded = builder.add(e0, t_inv);
 
         if let Some(ro) = roll_in {
-            let beta_sq = builder.mul(beta, beta);
+            // For arity-2, roll-in uses beta^2; reuse precomputed value if provided.
+            let beta_sq = precomputed_beta_pow.unwrap_or_else(|| builder.mul(beta, beta));
             let add_term = builder.mul(beta_sq, ro);
             new_folded = builder.add(new_folded, add_term);
         }
@@ -540,7 +556,8 @@ where
 
     // Roll-in: folded += beta^{2^log_arity} * roll_in
     if let Some(ro) = roll_in {
-        let beta_pow = builder.exp_power_of_2(beta, log_arity);
+        let beta_pow =
+            precomputed_beta_pow.unwrap_or_else(|| builder.exp_power_of_2(beta, log_arity));
         let add_term = builder.mul(beta_pow, ro);
         new_folded = builder.add(new_folded, add_term);
     }
@@ -592,6 +609,7 @@ fn fold_chain_circuit<F, EF>(
     index_bits: &[Target],
     phases: &[FoldPhaseConfig],
     log_arities: &[usize],
+    beta_pows_per_phase: &[Target],
 ) -> Target
 where
     F: Field + TwoAdicField,
@@ -616,6 +634,7 @@ where
             log_arity,
             log_current_height,
             phase.roll_in,
+            Some(beta_pows_per_phase[i]),
         );
         bits_consumed += log_arity;
         log_current_height -= log_arity;
@@ -652,6 +671,23 @@ fn evaluate_polynomial<EF: Field>(
     result
 }
 
+/// Precompute powers `g^{2^j}` (as circuit constants) for a two-adic generator of the
+/// given height. The result can be shared across queries.
+fn precompute_two_adic_powers<F, EF>(
+    builder: &mut CircuitBuilder<EF>,
+    log_height: usize,
+) -> Vec<Target>
+where
+    F: Field + TwoAdicField,
+    EF: ExtensionField<F>,
+{
+    let g = F::two_adic_generator(log_height);
+    iter::successors(Some(g), |&prev| Some(prev.square()))
+        .take(log_height)
+        .map(|p| builder.add_const(EF::from(p)))
+        .collect()
+}
+
 /// Compute the final query point after all FRI folding rounds.
 ///
 /// After consuming `total_bits_consumed` bits through all fold phases, the remaining
@@ -661,6 +697,7 @@ fn compute_final_query_point<F, EF>(
     index_bits: &[Target],
     log_max_height: usize,
     total_bits_consumed: usize,
+    powers_of_g: &[Target],
 ) -> Target
 where
     F: Field + TwoAdicField,
@@ -674,16 +711,9 @@ where
     let mut reversed_bits = vec![builder.add_const(EF::ZERO); total_bits_consumed];
     reversed_bits.extend(domain_index_bits.iter().rev().copied());
 
-    // Compute g^{reversed_index}
-    let g = F::two_adic_generator(log_max_height);
-    let powers_of_g: Vec<_> = iter::successors(Some(g), |&prev| Some(prev.square()))
-        .take(log_max_height)
-        .map(|p| builder.add_const(EF::from(p)))
-        .collect();
-
     let one = builder.add_const(EF::ONE);
     let mut result = one;
-    for (&bit, &power) in reversed_bits.iter().zip(&powers_of_g) {
+    for (&bit, &power) in reversed_bits.iter().zip(powers_of_g.iter()) {
         let multiplier = builder.select(bit, power, one);
         result = builder.mul(result, multiplier);
     }
@@ -1058,6 +1088,10 @@ where
         .map(|i| log_max_height - cumulative_bits[i + 1])
         .collect();
 
+    // Precompute shared beta powers and generator powers used across queries.
+    let beta_pows_per_phase = precompute_beta_powers_per_phase(builder, betas, log_arities);
+    let powers_of_g_final = precompute_two_adic_powers::<F, EF>(builder, log_max_height);
+
     // Collect all MMCS operation IDs for private data setting
     let mut all_mmcs_op_ids = Vec::new();
 
@@ -1134,6 +1168,7 @@ where
             &index_bits_per_query[q],
             log_max_height,
             total_log_reduction,
+            &powers_of_g_final,
         );
 
         let final_poly_eval =
@@ -1174,6 +1209,7 @@ where
                         log_arity,
                         log_current_height,
                         roll_ins[phase_idx],
+                        Some(beta_pows_per_phase[phase_idx]),
                     );
                     bits_consumed += log_arity;
                     log_current_height = log_folded_height;
@@ -1239,6 +1275,7 @@ where
                     log_arity,
                     log_current_height,
                     roll_ins[phase_idx],
+                    Some(beta_pows_per_phase[phase_idx]),
                 );
 
                 bits_consumed += log_arity;
@@ -1264,6 +1301,7 @@ where
                 &index_bits_per_query[q],
                 &fold_phases,
                 log_arities,
+                &beta_pows_per_phase,
             );
             builder.connect(folded_eval, final_poly_eval);
         }
