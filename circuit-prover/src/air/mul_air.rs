@@ -269,6 +269,7 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> MulAir<F, D> {
     /// ```text
     ///     [lhs[0..D), lhs_index, rhs[0..D), rhs_index, result[0..D), result_index] repeated `lanes` times.
     /// ```
+    #[inline]
     pub fn trace_to_matrix<ExtF: BasedVectorSpace<F>>(
         trace: &MulTrace<ExtF>,
         lanes: usize,
