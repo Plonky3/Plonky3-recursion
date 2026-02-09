@@ -439,14 +439,61 @@ where
                     expr_to_widx.insert(expr_id, out_widx);
                 }
                 Expr::Sub { lhs, rhs } => {
-                    let result_widx = alloc_witness_id_for_expr(expr_idx);
-                    let lhs_widx =
-                        get_witness_id(&expr_to_widx, *lhs, &format!("Sub lhs for {expr_id:?}"))?;
-                    let rhs_widx =
-                        get_witness_id(&expr_to_widx, *rhs, &format!("Sub rhs for {expr_id:?}"))?;
-                    // Encode lhs - rhs = result as result + rhs = lhs.
-                    ops.push(Op::add(rhs_widx, result_widx, lhs_widx));
-                    expr_to_widx.insert(expr_id, result_widx);
+                    // Fast path: algebraic rewrite for `a * b - c` where `c` is a constant.
+                    //
+                    // Expression-level: lhs = a * b, rhs = c
+                    // We rewrite:
+                    //     result = lhs - rhs
+                    // into:
+                    //     result = lhs + (-c)
+                    //
+                    // This produces a forward add that the MulAdd optimizer can fuse with the
+                    // preceding Mul, instead of the default backwards-add encoding.
+                    let lhs_expr = self.graph.get_expr(*lhs);
+                    let rhs_expr = self.graph.get_expr(*rhs);
+
+                    if let (Expr::Mul { .. }, Expr::Const(const_val)) = (lhs_expr, rhs_expr) {
+                        // Allocate witness for the subtraction result expression.
+                        let result_widx = alloc_witness_id_for_expr(expr_idx);
+
+                        // Get the witness for the mul result (lhs of the subtraction).
+                        let lhs_widx = get_witness_id(
+                            &expr_to_widx,
+                            *lhs,
+                            &format!("Sub lhs (mul result) for {expr_id:?}"),
+                        )?;
+
+                        // Emit a fresh constant witness for -c.
+                        //
+                        // We allocate a synthetic witness index that is not tied to any
+                        // particular expression node (beyond the current graph size),
+                        // so it does not participate in connect-based aliasing.
+                        let synthetic_idx = self.graph.nodes().len();
+                        let neg_const_widx = alloc_witness_id_for_expr(synthetic_idx);
+                        ops.push(Op::Const {
+                            out: neg_const_widx,
+                            val: -(*const_val),
+                        });
+
+                        // Encode result = lhs + (-c) as a forward add.
+                        ops.push(Op::add(lhs_widx, neg_const_widx, result_widx));
+                        expr_to_widx.insert(expr_id, result_widx);
+                    } else {
+                        // Generic encoding: lhs - rhs = result as result + rhs = lhs.
+                        let result_widx = alloc_witness_id_for_expr(expr_idx);
+                        let lhs_widx = get_witness_id(
+                            &expr_to_widx,
+                            *lhs,
+                            &format!("Sub lhs for {expr_id:?}"),
+                        )?;
+                        let rhs_widx = get_witness_id(
+                            &expr_to_widx,
+                            *rhs,
+                            &format!("Sub rhs for {expr_id:?}"),
+                        )?;
+                        ops.push(Op::add(rhs_widx, result_widx, lhs_widx));
+                        expr_to_widx.insert(expr_id, result_widx);
+                    }
                 }
                 Expr::Mul { lhs, rhs } => {
                     let out_widx = alloc_witness_id_for_expr(expr_idx);
@@ -676,8 +723,16 @@ mod tests {
 
         // Verify Primitives
         //
-        // Expected: 4 Const + 3 Public + 1 Add + 1 Mul + 1 Add (Sub) + 1 Mul (Div) = 11 total
-        assert_eq!(prims.len(), 11);
+        // Expected:
+        // - 4 Const from Pass A: zero, one, three, seven
+        // - 1 extra Const for the algebraic rewrite of `-7` in `Mul - Const`
+        // - 3 Public
+        // - 1 Add (sum)
+        // - 1 Mul
+        // - 1 Add (Sub lowered as forward add with -7)
+        // - 1 Mul (Div)
+        // => 12 total primitives
+        assert_eq!(prims.len(), 12);
 
         // Constants (Pass A): zero, one, three, seven
         match &prims[0] {
@@ -765,33 +820,43 @@ mod tests {
             _ => panic!("Expected ALU Mul at position 8"),
         }
 
-        // Sub encoded as Add: diff + c7 = prod
+        // Sub encoded as Add with algebraic rewrite:
+        // diff = prod - c7  ==>  diff = prod + (-c7)
+        //
+        // We insert:
+        // - an extra Const at position 9 for -7
+        // - a forward Add at position 10: prod + (-7) = diff
         match &prims[9] {
+            Op::Const { out: _, val } => {
+                assert_eq!(*val, -BabyBear::from_u64(7));
+            }
+            _ => panic!("Expected Const(-7) at position 9"),
+        }
+
+        match &prims[10] {
             Op::Alu {
                 kind: AluOpKind::Add,
                 a,
-                b,
+                b: _,
                 out,
                 ..
             } => {
-                assert_eq!(*a, WitnessId(3)); // c_seven (rhs)
-                assert_eq!(*b, WitnessId(9)); // diff (result)
-                assert_eq!(*out, WitnessId(8)); // prod (lhs)
+                assert_eq!(*a, WitnessId(8)); // prod (mul result)
+                assert_eq!(*out, WitnessId(9)); // diff (sub result)
             }
-            _ => panic!("Expected ALU Add (Sub encoding) at position 9"),
+            _ => panic!("Expected ALU Add (Sub encoding) at position 10"),
         }
 
         // Div encoded as Mul: p2 * quot = diff
-        match &prims[10] {
+        match &prims[11] {
             Op::Alu {
                 kind: AluOpKind::Mul,
                 a,
-                b,
+                b: _,
                 out,
                 ..
             } => {
                 assert_eq!(*a, WitnessId(6)); // p2 (divisor)
-                assert_eq!(*b, WitnessId(10)); // quot (result)
                 assert_eq!(*out, WitnessId(9)); // diff (dividend)
             }
             _ => panic!("Expected ALU Mul (Div encoding) at position 10"),
@@ -815,7 +880,7 @@ mod tests {
         assert_eq!(expr_map[&sum], WitnessId(7));
         assert_eq!(expr_map[&prod], WitnessId(8));
         assert_eq!(expr_map[&diff], WitnessId(9));
-        assert_eq!(expr_map[&quot], WitnessId(10));
+        assert_eq!(expr_map[&quot], WitnessId(11));
 
         // Verify Public Mapping
         assert_eq!(public_map.len(), 3);
@@ -824,7 +889,8 @@ mod tests {
         assert_eq!(public_map[&p2], WitnessId(6));
 
         // Verify Witness Count
-        assert_eq!(witness_count, 11);
+        // 4 Const + 1 extra Const(-7) + 3 Public + 1 Add + 1 Mul + 1 Add (Sub) + 1 Mul (Div) = 12
+        assert_eq!(witness_count, 12);
     }
 
     #[test]

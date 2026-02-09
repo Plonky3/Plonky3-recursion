@@ -486,8 +486,8 @@ mod tests {
         // Verify trace structure
         assert_eq!(traces.witness_trace.index.len(), witness_count as usize);
 
-        // Should have constants: 0, 37, 111
-        assert_eq!(traces.const_trace.values.len(), 3);
+        // Should have constants: 0, 37, 111 and -111 (introduced by algebraic rewrite)
+        assert_eq!(traces.const_trace.values.len(), 4);
 
         // Should have no public input
         assert!(traces.public_trace.values.is_empty());
