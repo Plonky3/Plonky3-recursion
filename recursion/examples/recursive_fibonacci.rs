@@ -80,6 +80,11 @@ fn main() {
 
     let args = Args::parse();
 
+    info!(
+        "Recursively proving {} Fibonacci iterations with field {:?}",
+        args.n, args.field
+    );
+
     match args.field {
         FieldOption::KoalaBear => koala_bear::run(args.n),
         FieldOption::BabyBear => baby_bear::run(args.n),
@@ -304,8 +309,8 @@ macro_rules! define_field_module {
 
                 info!("Verification circuit built with {num_ops_1} operations");
 
-                let table_packing_1 = TablePacking::new(2, 1, 2, 2)
-                    .with_fri_params(LOG_FINAL_POLY_LEN, LOG_BLOWUP);
+                let table_packing_1 =
+                    TablePacking::new(2, 2, 2, 2).with_fri_params(LOG_FINAL_POLY_LEN, LOG_BLOWUP);
 
                 let (airs_degrees_1, preprocessed_columns_1) =
                     get_airs_and_degrees_with_prep::<MyConfig, _, D>(
@@ -405,8 +410,8 @@ macro_rules! define_field_module {
 
                 info!("Verification circuit built with {num_ops_2} operations");
 
-                let table_packing_2 = TablePacking::new(4, 2, 2, 2)
-                    .with_fri_params(LOG_FINAL_POLY_LEN, LOG_BLOWUP);
+                let table_packing_2 =
+                    TablePacking::new(4, 3, 2, 2).with_fri_params(LOG_FINAL_POLY_LEN, LOG_BLOWUP);
 
                 let (airs_degrees_2, preprocessed_columns_2) =
                     get_airs_and_degrees_with_prep::<MyConfig, _, D>(
@@ -505,8 +510,8 @@ macro_rules! define_field_module {
 
                 info!("Verification circuit built with {num_ops_3} operations");
 
-                let table_packing_3 = TablePacking::new(4, 2, 2, 2)
-                    .with_fri_params(LOG_FINAL_POLY_LEN, LOG_BLOWUP);
+                let table_packing_3 =
+                    TablePacking::new(4, 3, 2, 2).with_fri_params(LOG_FINAL_POLY_LEN, LOG_BLOWUP);
 
                 let (airs_degrees_3, preprocessed_columns_3) =
                     get_airs_and_degrees_with_prep::<MyConfig, _, D>(

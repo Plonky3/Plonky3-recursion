@@ -77,10 +77,7 @@ pub struct FoldPhaseConfig {
 /// Compute a one-hot encoding from `log_arity` index bits.
 /// Returns a vector of `2^log_arity` targets where `result[j] = 1` iff j matches the
 /// integer value of the input bits (little-endian).
-fn one_hot_from_bits<EF: Field>(
-    builder: &mut CircuitBuilder<EF>,
-    bits: &[Target],
-) -> Vec<Target> {
+fn one_hot_from_bits<EF: Field>(builder: &mut CircuitBuilder<EF>, bits: &[Target]) -> Vec<Target> {
     let log_arity = bits.len();
     let arity = 1usize << log_arity;
     let one = builder.add_const(EF::ONE);
@@ -451,8 +448,7 @@ where
 {
     builder.push_scope("compute_final_query_point");
 
-    let domain_index_bits: Vec<Target> =
-        index_bits[total_bits_consumed..log_max_height].to_vec();
+    let domain_index_bits: Vec<Target> = index_bits[total_bits_consumed..log_max_height].to_vec();
 
     // Pad bits and reverse
     let mut reversed_bits = vec![builder.add_const(EF::ZERO); total_bits_consumed];
@@ -814,7 +810,8 @@ where
         .and_then(|x| x.checked_sub(log_blowup))
         .ok_or_else(|| {
             VerificationError::InvalidProofShape(
-                "Invalid FRI parameters: log_max_height too small for given log_arities".to_string(),
+                "Invalid FRI parameters: log_max_height too small for given log_arities"
+                    .to_string(),
             )
         })?;
 
