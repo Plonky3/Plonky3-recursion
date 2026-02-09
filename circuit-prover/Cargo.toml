@@ -45,6 +45,7 @@ thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
 p3-test-utils.workspace = true
 postcard = { version = "1.0", default-features = false, features = ["alloc"] }
 rand.workspace = true
@@ -68,3 +69,7 @@ path = "examples/poseidon2_perm_chain.rs"
 [[example]]
 name = "poseidon2_perm_merkle"
 path = "examples/poseidon2_perm_merkle.rs"
+
+[[bench]]
+name = "prover"
+harness = false

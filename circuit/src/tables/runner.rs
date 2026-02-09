@@ -213,7 +213,7 @@ impl<F: CircuitField> CircuitRunner<F> {
     ///
     /// The circuit is already lowered into a valid execution order, so this function
     /// can blindly execute from index 0 to end.
-    fn execute_all(&mut self) -> Result<(), CircuitError> {
+    pub fn execute_all(&mut self) -> Result<(), CircuitError> {
         for i in 0..self.circuit.ops.len() {
             let op = &self.circuit.ops[i];
             match op {
@@ -318,6 +318,16 @@ impl<F: CircuitField> CircuitRunner<F> {
 
         *slot = Some(value);
         Ok(())
+    }
+
+    /// Reference to the witness slice (for benchmarking trace builders after `execute_all`).
+    pub fn witness(&self) -> &[Option<F>] {
+        &self.witness
+    }
+
+    /// Reference to the circuit ops (for benchmarking trace builders after `execute_all`).
+    pub fn ops(&self) -> &[Op<F>] {
+        &self.circuit.ops
     }
 }
 
