@@ -45,6 +45,7 @@ thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
 p3-test-utils.workspace = true
 postcard = { version = "1.0", default-features = false, features = ["alloc"] }
 rand.workspace = true
@@ -53,6 +54,10 @@ tracing-subscriber = { workspace = true, features = ["std", "env-filter"] }
 
 [features]
 parallel = ["p3-maybe-rayon/parallel"]
+
+[[bench]]
+name = "prover"
+harness = false
 
 [lints]
 workspace = true

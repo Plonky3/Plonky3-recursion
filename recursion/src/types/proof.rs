@@ -300,13 +300,14 @@ impl<
         // 1. All `trace_local` rows per instance (instance 0 .. N)
         // 2. All `trace_next` rows per instance (instance 0 .. N)
         // 3. Quotient chunks for each instance in commit order
-        let mut aggregated_trace_local = Vec::new();
-        let mut aggregated_trace_next = Vec::new();
-        let mut aggregated_permutation_local = Vec::new();
-        let mut aggregated_permutation_next = Vec::new();
-        let mut aggregated_preprocessed_local = Vec::new();
-        let mut aggregated_preprocessed_next = Vec::new();
-        let mut aggregated_quotient_chunks = Vec::new();
+        let num_instances = input.opened_values.instances.len();
+        let mut aggregated_trace_local = Vec::with_capacity(num_instances);
+        let mut aggregated_trace_next = Vec::with_capacity(num_instances);
+        let mut aggregated_permutation_local = Vec::with_capacity(num_instances);
+        let mut aggregated_permutation_next = Vec::with_capacity(num_instances);
+        let mut aggregated_preprocessed_local = Vec::with_capacity(num_instances);
+        let mut aggregated_preprocessed_next = Vec::with_capacity(num_instances);
+        let mut aggregated_quotient_chunks = Vec::with_capacity(num_instances);
 
         let commitments_targets = CommitmentTargets::new(circuit, &input.commitments);
         let opened_values_targets = BatchOpenedValuesTargets::new(circuit, &input.opened_values);

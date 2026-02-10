@@ -108,6 +108,7 @@ impl<F: Field, const D: usize> PublicAir<F, D> {
     }
 
     /// Flatten a PublicTrace over an extension into a base-field matrix with lanes packing.
+    #[inline]
     pub fn trace_to_matrix<ExtF: BasedVectorSpace<F>>(
         trace: &PublicTrace<ExtF>,
         lanes: usize,

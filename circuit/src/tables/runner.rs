@@ -15,7 +15,7 @@ use super::{NonPrimitiveTrace, Traces};
 use crate::circuit::Circuit;
 use crate::op::{ExecutionContext, NonPrimitiveOpPrivateData, NonPrimitiveOpType, Op, OpStateMap};
 use crate::types::{NonPrimitiveOpId, WitnessId};
-use crate::{CircuitError, CircuitField};
+use crate::{AluOpKind, CircuitError, CircuitField};
 
 /// Circuit execution engine.
 pub struct CircuitRunner<F> {
@@ -210,11 +210,9 @@ impl<F: CircuitField> CircuitRunner<F> {
     ///
     /// The circuit is already lowered into a valid execution order, so this function
     /// can blindly execute from index 0 to end.
-    fn execute_all(&mut self) -> Result<(), CircuitError> {
-        // Clone ops to avoid borrowing issues.
-        let ops = self.circuit.ops.clone();
-
-        for op in ops.iter() {
+    pub fn execute_all(&mut self) -> Result<(), CircuitError> {
+        for i in 0..self.circuit.ops.len() {
+            let op = &self.circuit.ops[i];
             match op {
                 Op::Const { out, val } => {
                     self.set_witness(*out, *val)?;
@@ -233,7 +231,6 @@ impl<F: CircuitField> CircuitRunner<F> {
                     out,
                     intermediate_out,
                 } => {
-                    use crate::op::AluOpKind;
                     match kind {
                         AluOpKind::Add => {
                             let a_val = self.get_witness(*a)?;
@@ -271,19 +268,22 @@ impl<F: CircuitField> CircuitRunner<F> {
                             let a_val = self.get_witness(*a)?;
                             let b_val = self.get_witness(*b)?;
                             let ab_product = a_val * b_val;
+                            let intermediate_out_id = *intermediate_out;
+                            let c_id_opt = *c;
+                            let out_id = *out;
 
                             // Set intermediate_out if fused from separate operations
-                            if let Some(io) = intermediate_out {
-                                self.set_witness(*io, ab_product)?;
+                            if let Some(io) = intermediate_out_id {
+                                self.set_witness(io, ab_product)?;
                             }
 
-                            let c_val = if let Some(c_id) = c {
-                                self.get_witness(*c_id)?
+                            let c_val = if let Some(c_id) = c_id_opt {
+                                self.get_witness(c_id)?
                             } else {
                                 F::ZERO
                             };
                             let result = ab_product + c_val;
-                            self.set_witness(*out, result)?;
+                            self.set_witness(out_id, result)?;
                         }
                     }
                 }
@@ -309,6 +309,7 @@ impl<F: CircuitField> CircuitRunner<F> {
     }
 
     /// Gets witness value by ID.
+    #[inline]
     fn get_witness(&self, widx: WitnessId) -> Result<F, CircuitError> {
         self.witness
             .get(widx.0 as usize)
@@ -318,39 +319,51 @@ impl<F: CircuitField> CircuitRunner<F> {
     }
 
     /// Sets witness value by ID.
+    #[inline]
     fn set_witness(&mut self, widx: WitnessId, value: F) -> Result<(), CircuitError> {
         if widx.0 as usize >= self.witness.len() {
             return Err(CircuitError::WitnessIdOutOfBounds { witness_id: widx });
         }
 
+        let slot = &mut self.witness[widx.0 as usize];
+
         // Check for conflicting reassignment
-        if let Some(existing_value) = self.witness[widx.0 as usize] {
-            if existing_value != value {
-                let expr_ids = self
-                    .circuit
-                    .expr_to_widx
-                    .iter()
-                    .filter_map(|(expr_id, &witness_id)| {
-                        if witness_id == widx {
-                            Some(expr_id)
-                        } else {
-                            None
-                        }
-                    })
-                    .cloned()
-                    .collect::<Vec<_>>();
-                return Err(CircuitError::WitnessConflict {
-                    witness_id: widx,
-                    existing: format!("{existing_value:?}"),
-                    new: format!("{value:?}"),
-                    expr_ids,
-                });
+        if let Some(existing_value) = slot.as_ref() {
+            if *existing_value == value {
+                return Ok(());
             }
-        } else {
-            self.witness[widx.0 as usize] = Some(value);
+            let expr_ids = self
+                .circuit
+                .expr_to_widx
+                .iter()
+                .filter_map(|(expr_id, &witness_id)| {
+                    if witness_id == widx {
+                        Some(*expr_id)
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>();
+            return Err(CircuitError::WitnessConflict {
+                witness_id: widx,
+                existing: format!("{existing_value:?}"),
+                new: format!("{value:?}"),
+                expr_ids,
+            });
         }
 
+        *slot = Some(value);
         Ok(())
+    }
+
+    /// Reference to the witness slice (for benchmarking trace builders after `execute_all`).
+    pub fn witness(&self) -> &[Option<F>] {
+        &self.witness
+    }
+
+    /// Reference to the circuit ops (for benchmarking trace builders after `execute_all`).
+    pub fn ops(&self) -> &[Op<F>] {
+        &self.circuit.ops
     }
 }
 

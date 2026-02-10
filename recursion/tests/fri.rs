@@ -186,6 +186,14 @@ fn produce_inputs_multi(
         v_challenger.observe_algebra_element(c);
     }
 
+    // Bind the variable-arity schedule into the transcript before query grinding,
+    // matching the native FRI verifier in Plonky3.
+    if let Some(first_qp) = query_proofs.first() {
+        for step in &first_qp.commit_phase_openings {
+            v_challenger.observe(F::from_usize(step.log_arity as usize));
+        }
+    }
+
     // PoW check
     assert!(v_challenger.check_witness(query_pow_bits, query_pow_witness));
 

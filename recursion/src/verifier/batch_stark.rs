@@ -440,7 +440,9 @@ where
     }
 
     // Collect commitments with opening points for PCS verification.
-    let mut coms_to_verify = vec![];
+    // We have, in the typical lookup case, up to four rounds:
+    // trace, quotient, optional preprocessed, and optional permutation.
+    let mut coms_to_verify = Vec::with_capacity(4);
 
     let trace_round: Vec<_> = ext_trace_domains
         .iter()
@@ -483,7 +485,8 @@ where
         })
         .collect();
 
-    let mut quotient_round = Vec::new();
+    let mut quotient_round =
+        Vec::with_capacity(quotient_domains.iter().map(|domains| domains.len()).sum());
     for (domains, inst) in quotient_domains.iter().zip(instances.iter()) {
         if domains.len() != inst.opened_values_no_lookups.quotient_chunks_targets.len() {
             return Err(VerificationError::InvalidProofShape(
@@ -576,7 +579,7 @@ where
             .clone()
             .expect("We checked that the commitment exists");
 
-        let mut permutation_round = Vec::new();
+        let mut permutation_round = Vec::with_capacity(ext_trace_domains.len());
 
         for (i, ext_dom) in ext_trace_domains.iter().enumerate() {
             let inst = &instances[i];
@@ -765,7 +768,8 @@ pub(crate) fn get_perm_challenges<SC: StarkGenericConfig, const RATE: usize, LG:
     lookup_gadget: &LG,
 ) -> Vec<Vec<Target>> {
     let num_challenges_per_lookup = lookup_gadget.num_challenges();
-    let mut global_perm_challenges = HashMap::new();
+    let approx_global_names: usize = all_lookups.iter().map(|contexts| contexts.len()).sum();
+    let mut global_perm_challenges = HashMap::with_capacity(approx_global_names);
 
     all_lookups
         .iter()

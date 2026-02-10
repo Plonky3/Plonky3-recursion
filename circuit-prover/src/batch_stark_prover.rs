@@ -2844,8 +2844,6 @@ where
         let alu_matrix: RowMajorMatrix<Val<SC>> =
             AluAir::<Val<SC>, D>::trace_to_matrix(&traces.alu_trace, alu_lanes);
 
-        TraceLengths::from_traces(traces, packing).log();
-
         // We first handle all non-primitive tables dynamically, which will then be batched alongside primitive ones.
         // Each trace must have a corresponding registered prover for it to be provable.
         for (&op_type, trace) in &traces.non_primitive_traces {
@@ -3158,28 +3156,9 @@ mod tests {
                 .unwrap();
         let (mut airs, log_degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
 
-        // Check that the multiplicities of `WitnessAir` are computed correctly.
-        // We can count the number of times the witness addresses appear in the various tables.
-        // Note: With the unified ALU table, all ALU operations (including those without a third operand)
-        // send 4 lookups per operation. For ops without 'c', c_idx defaults to 0, so index 0 gets
-        // extra lookups from every non-MulAdd ALU operation.
-        //
-        // Operations: x, expected (public), c5, c2, c3, neg_one (const), plus:
-        // - mul(c5, c2) -> c_idx=0
-        // - add(x, mul_result) -> c_idx=0
-        // - sub = add(a, mul(b, neg_one)) so 2 ALU ops each with c_idx=0
-        // - add(sub_result, neg_one) -> c_idx=0
-        // Total ALU ops with c=None: 5 (from the pattern: mul, add, mul_sub, add_sub, add)
-        // Actually sub does mul+add, and we have 3 subs here, each creating 2 ALU ops = 6 ops total
-        // Wait, let me count from the circuit structure more carefully
-        //
-        // For simplicity, we compute expected multiplicities from the preprocessed data:
+        // Witness multiplicities: index 0 gets c_idx lookups from ALU ops without c; values from preprocessed.
         let mut expected_multiplicities = vec![BabyBear::from_u64(2); 11];
-        // Index 0 gets additional c_idx lookups: count ALU ops without c.
-        // With MulAdd fusion, some mul+add pairs are fused, reducing c_idx=0 lookups.
-        // Based on actual result: expected 5 at index 0
         expected_multiplicities[0] = BabyBear::from_u64(5);
-        // Index 7 also changes due to fusion
         expected_multiplicities[7] = BabyBear::from_u64(0);
         // Pad multiplicities.
         let total_witness_length = (expected_multiplicities
@@ -3367,7 +3346,6 @@ mod tests {
 
         // Check that the multiplicities of `WitnessAir` are computed correctly.
         // With MulAdd fusion, mul+add pairs are fused, reducing the number of ALU ops.
-        // Based on actual result with fusion enabled:
         let mut expected_multiplicities = vec![BabyBear::from_u64(2); 7];
         expected_multiplicities[0] = BabyBear::from_u64(3); // reduced due to MulAdd fusion
         expected_multiplicities[5] = BabyBear::from_u64(0); // changed due to fusion

@@ -2,7 +2,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use hashbrown::HashMap;
-use p3_field::Field;
+use p3_field::{ExtensionField, Field};
 use p3_uni_stark::{Entry, SymbolicExpression};
 
 use crate::{CircuitBuilder, ExprId};
@@ -47,18 +47,62 @@ pub fn symbolic_to_circuit<F: Field>(
     symbolic: &SymbolicExpression<F>,
     circuit: &mut CircuitBuilder<F>,
 ) -> ExprId {
-    /// Used when iterating through the DAG of expressions
-    /// - `Eval` is used when visiting a node
-    /// - `Build` is used to combine entries for a given `Op`
-    enum Work<'a, F: Field> {
-        Eval(&'a SymbolicExpression<F>),
-        // Store a raw pointer instead of a reference because this removes lifetime handling
-        // and its clear that we never dereference the node.
-        // It binds the expression to the Op and its arity, so we can reuse the same node for different ops.
-        Build(*const SymbolicExpression<F>, Op, usize),
+    let mut cache = HashMap::new();
+    symbolic_to_circuit_core(row_selectors, columns, symbolic, circuit, &mut cache, |c| c)
+}
+
+/// Convert base-field symbolic constraints to extension-field circuit operations.
+///
+/// Unlike [`symbolic_to_circuit`], this accepts `SymbolicExpression<F>` (base field)
+/// with a `CircuitBuilder<EF>` (extension field), lifting constants via `EF::from(c)`.
+///
+/// Converting directly the tree SymbolicExpression<F> → SymbolicExpression<EF>
+/// destroys Arc-based sub-expression sharing and causes exponential blowup.
+/// Instead, we lift F → EF constants directly.
+///
+/// Additionally, the `cache` is shared across all constraint calls to reuse circuit
+/// operations for sub-expressions shared between different constraints.
+pub fn symbolic_to_circuit_base<F: Field, EF: ExtensionField<F>>(
+    row_selectors: RowSelectorsTargets,
+    columns: &ColumnsTargets<'_>,
+    symbolic: &SymbolicExpression<F>,
+    circuit: &mut CircuitBuilder<EF>,
+    cache: &mut HashMap<*const SymbolicExpression<F>, ExprId>,
+) -> ExprId {
+    symbolic_to_circuit_core(row_selectors, columns, symbolic, circuit, cache, EF::from)
+}
+
+/// Convert extension-field symbolic constraints to circuit operations with an external cache.
+///
+/// Same as [`symbolic_to_circuit`] but with an external `cache` to allow sharing across
+/// multiple calls.
+pub fn symbolic_to_circuit_ext<F: Field>(
+    row_selectors: RowSelectorsTargets,
+    columns: &ColumnsTargets<'_>,
+    symbolic: &SymbolicExpression<F>,
+    circuit: &mut CircuitBuilder<F>,
+    cache: &mut HashMap<*const SymbolicExpression<F>, ExprId>,
+) -> ExprId {
+    symbolic_to_circuit_core(row_selectors, columns, symbolic, circuit, cache, |c| c)
+}
+
+/// Core implementation of symbolic-to-circuit conversion.
+///
+/// Generic over the expression constant field (`CF`) and circuit field (`F`).
+/// `convert_const` lifts expression constants from `CF` to `F`.
+fn symbolic_to_circuit_core<CF: Field, F: Field>(
+    row_selectors: RowSelectorsTargets,
+    columns: &ColumnsTargets<'_>,
+    symbolic: &SymbolicExpression<CF>,
+    circuit: &mut CircuitBuilder<F>,
+    cache: &mut HashMap<*const SymbolicExpression<CF>, ExprId>,
+    convert_const: impl Fn(CF) -> F,
+) -> ExprId {
+    enum Work<'a, CF: Field> {
+        Eval(&'a SymbolicExpression<CF>),
+        Build(*const SymbolicExpression<CF>, Op, usize),
     }
 
-    /// Arithmetic ops applied when building parent nodes
     #[derive(Copy, Clone)]
     enum Op {
         Add,
@@ -84,9 +128,8 @@ pub fn symbolic_to_circuit<F: Field>(
         next_values,
     } = columns;
 
-    let mut cache: HashMap<*const SymbolicExpression<F>, ExprId> = HashMap::new();
     let mut tasks = vec![Work::Eval(symbolic)];
-    let mut stack = Vec::new();
+    let mut stack = Vec::with_capacity(16);
 
     while let Some(work) = tasks.pop() {
         match work {
@@ -98,7 +141,7 @@ pub fn symbolic_to_circuit<F: Field>(
                 }
                 match expr {
                     SymbolicExpression::Constant(c) => {
-                        let id = circuit.add_const(*c);
+                        let id = circuit.add_const(convert_const(*c));
                         cache.insert(key, id);
                         stack.push(id);
                     }

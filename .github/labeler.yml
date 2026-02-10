@@ -1,0 +1,11 @@
+---  # Github labeler configuration file
+
+# Add 'specs' label to any changes within 'docs' or `book` folder.
+'specs':
+  - changed-files:
+      - any-glob-to-any-file: ['docs/**', 'book/**']
+
+# Add 'ci' label to any changes within '.github' folder.
+'ci':
+  - changed-files:
+      - any-glob-to-any-file: .github/**
