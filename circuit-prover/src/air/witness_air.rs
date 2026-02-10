@@ -153,6 +153,7 @@ impl<F: Field, const D: usize> WitnessAir<F, D> {
     ///
     /// ```text
     ///     [value[0..D), index] repeated `lanes` times.
+    #[inline]
     pub fn trace_to_matrix<ExtF: BasedVectorSpace<F>>(
         trace: &WitnessTrace<ExtF>,
         lanes: usize,

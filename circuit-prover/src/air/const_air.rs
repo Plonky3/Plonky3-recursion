@@ -88,6 +88,7 @@ impl<F: Field, const D: usize> ConstAir<F, D> {
     ///
     /// 1. Decomposing each extension element in the trace into `D` basis coordinates.
     /// 2. Padding the trace to have a power-of-two number of rows.
+    #[inline]
     pub fn trace_to_matrix<ExtF: BasedVectorSpace<F>>(
         trace: &ConstTrace<ExtF>,
     ) -> RowMajorMatrix<F> {
