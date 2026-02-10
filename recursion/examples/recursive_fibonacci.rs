@@ -170,7 +170,7 @@ macro_rules! define_field_module {
 
             /// Create FRI verifier params for the in-circuit verifier.
             /// MUST match the FRI params used by the native prover.
-            fn create_fri_verifier_params() -> FriVerifierParams {
+            const fn create_fri_verifier_params() -> FriVerifierParams {
                 FriVerifierParams::with_mmcs(
                     LOG_BLOWUP,
                     LOG_FINAL_POLY_LEN,

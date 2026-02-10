@@ -428,7 +428,9 @@ where
         .map(|&ext_db| pcs.natural_domain_for_degree(1 << ext_db))
         .collect();
 
-    let mut coms_to_verify = Vec::new();
+    // We have, in the typical lookup case, up to four rounds:
+    // trace, quotient, optional preprocessed, and optional permutation.
+    let mut coms_to_verify = Vec::with_capacity(4);
 
     let trace_round = ext_trace_domains
         .iter()
@@ -461,7 +463,8 @@ where
         })
         .collect();
 
-    let mut quotient_round = Vec::new();
+    let mut quotient_round =
+        Vec::with_capacity(quotient_domains.iter().map(|domains| domains.len()).sum());
     for (domains, inst) in quotient_domains.iter().zip(opened_values.instances.iter()) {
         if inst.base_opened_values.quotient_chunks.len() != domains.len() {
             return Err(GenerationError::InvalidProofShape(
@@ -529,7 +532,7 @@ where
 
     if is_lookup {
         let permutation_commit = commitments.permutation.clone().unwrap();
-        let mut permutation_round = Vec::new();
+        let mut permutation_round = Vec::with_capacity(ext_trace_domains.len());
         for (ext_dom, inst_opened_vals) in
             ext_trace_domains.iter().zip(opened_values.instances.iter())
         {
@@ -698,8 +701,13 @@ pub fn get_different_perm_challenges<SC: StarkGenericConfig, LG: LookupGadget>(
     lookup_gadget: &LG,
 ) -> Vec<SC::Challenge> {
     let num_challenges_per_lookup = lookup_gadget.num_challenges();
-    let mut global_perm_names = HashMap::new();
-    let mut different_challenges = Vec::new();
+    let approx_global_names: usize = all_lookups.iter().map(|contexts| contexts.len()).sum();
+    let approx_total_challenges: usize = all_lookups
+        .iter()
+        .map(|contexts| contexts.len() * num_challenges_per_lookup)
+        .sum();
+    let mut global_perm_names = HashMap::with_capacity(approx_global_names);
+    let mut different_challenges = Vec::with_capacity(approx_total_challenges);
 
     all_lookups.iter().for_each(|contexts| {
         for context in contexts {

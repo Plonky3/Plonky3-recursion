@@ -380,6 +380,7 @@ impl<'a, F: PrimeCharacteristicRing + Eq + Clone> ExecutionContext<'a, F> {
     }
 
     /// Get witness value at the given index
+    #[inline]
     pub fn get_witness(&self, widx: WitnessId) -> Result<F, CircuitError> {
         self.witness
             .get(widx.0 as usize)
@@ -389,24 +390,20 @@ impl<'a, F: PrimeCharacteristicRing + Eq + Clone> ExecutionContext<'a, F> {
     }
 
     /// Set witness value at the given index
+    #[inline]
     pub fn set_witness(&mut self, widx: WitnessId, value: F) -> Result<(), CircuitError> {
         if widx.0 as usize >= self.witness.len() {
             return Err(CircuitError::WitnessIdOutOfBounds { witness_id: widx });
         }
 
+        let slot = &mut self.witness[widx.0 as usize];
+
         // Check for conflicting reassignment
-        if let Some(existing_value) = &self.witness[widx.0 as usize] {
+        if let Some(existing_value) = slot.as_ref() {
             if *existing_value == value {
                 // Same value - this is fine (duplicate set via connect)
                 return Ok(());
             }
-            tracing::error!(
-                "WitnessConflict: witness {:?} has existing={:?}, trying to set new={:?}, op_id={:?}",
-                widx,
-                existing_value,
-                value,
-                self.operation_id
-            );
             return Err(CircuitError::WitnessConflict {
                 witness_id: widx,
                 existing: format!("{existing_value:?}"),
@@ -415,16 +412,7 @@ impl<'a, F: PrimeCharacteristicRing + Eq + Clone> ExecutionContext<'a, F> {
             });
         }
 
-        // Debug: log first write to specific witnesses
-        if widx.0 == 72315 || widx.0 == 72321 {
-            tracing::debug!(
-                "First write to witness {:?} with value {:?} from op {:?}",
-                widx,
-                value,
-                self.operation_id
-            );
-        }
-        self.witness[widx.0 as usize] = Some(value);
+        *slot = Some(value);
         Ok(())
     }
 

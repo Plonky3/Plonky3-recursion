@@ -60,7 +60,7 @@ fn pad_matrix_to_min_height<F: Field>(
         let padding_rows = target_height - current_height;
         matrix
             .values
-            .extend(core::iter::repeat(F::ZERO).take(padding_rows * width));
+            .extend(core::iter::repeat_n(F::ZERO, padding_rows * width));
     }
     matrix
 }
@@ -112,7 +112,7 @@ impl TablePacking {
     /// Create TablePacking with minimum height derived from FRI parameters.
     ///
     /// This automatically calculates the minimum trace height from `log_final_poly_len` and `log_blowup`.
-    pub fn with_fri_params(mut self, log_final_poly_len: usize, log_blowup: usize) -> Self {
+    pub const fn with_fri_params(mut self, log_final_poly_len: usize, log_blowup: usize) -> Self {
         // FRI requires: log_min_height > log_final_poly_len + log_blowup
         // So min_height must be >= 2^(log_final_poly_len + log_blowup + 1)
         let min_log_height = log_final_poly_len + log_blowup + 1;

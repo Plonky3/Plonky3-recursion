@@ -43,12 +43,13 @@ impl<'a, F: Clone + Field> MulTraceBuilder<'a, F> {
 
     /// Builds the multiplication trace from circuit operations.
     pub fn build(self) -> Result<MulTrace<F>, CircuitError> {
-        let mut lhs_values = Vec::new();
-        let mut lhs_index = Vec::new();
-        let mut rhs_values = Vec::new();
-        let mut rhs_index = Vec::new();
-        let mut result_values = Vec::new();
-        let mut result_index = Vec::new();
+        let estimated_len = self.primitive_ops.len();
+        let mut lhs_values = Vec::with_capacity(estimated_len);
+        let mut lhs_index = Vec::with_capacity(estimated_len);
+        let mut rhs_values = Vec::with_capacity(estimated_len);
+        let mut rhs_index = Vec::with_capacity(estimated_len);
+        let mut result_values = Vec::with_capacity(estimated_len);
+        let mut result_index = Vec::with_capacity(estimated_len);
 
         for prim in self.primitive_ops {
             if let Op::Mul { a, b, out } = prim {

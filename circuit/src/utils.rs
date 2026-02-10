@@ -129,7 +129,7 @@ fn symbolic_to_circuit_core<CF: Field, F: Field>(
     } = columns;
 
     let mut tasks = vec![Work::Eval(symbolic)];
-    let mut stack = Vec::new();
+    let mut stack = Vec::with_capacity(16);
 
     while let Some(work) = tasks.pop() {
         match work {

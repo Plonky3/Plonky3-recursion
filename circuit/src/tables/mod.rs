@@ -19,12 +19,12 @@ mod public;
 mod runner;
 mod witness;
 
-pub use add::AddTrace;
-pub use constant::ConstTrace;
-pub use mul::MulTrace;
-pub use public::PublicTrace;
+pub use add::{AddTrace, AddTraceBuilder};
+pub use constant::{ConstTrace, ConstTraceBuilder};
+pub use mul::{MulTrace, MulTraceBuilder};
+pub use public::{PublicTrace, PublicTraceBuilder};
 pub use runner::CircuitRunner;
-pub use witness::WitnessTrace;
+pub use witness::{WitnessTrace, WitnessTraceBuilder};
 
 /// Trait implemented by all non-primitive operation traces.
 pub trait NonPrimitiveTrace<F>: Send + Sync {

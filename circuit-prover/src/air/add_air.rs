@@ -231,6 +231,7 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AddAir<F, D> {
     /// ```text
     ///     [lhs[D], lhs_idx, rhs[D], rhs_idx, result[D], result_idx] repeated `lanes` times.
     /// ```
+    #[inline]
     pub fn trace_to_matrix<ExtF: BasedVectorSpace<F>>(
         trace: &AddTrace<ExtF>,
         lanes: usize,
@@ -386,7 +387,7 @@ impl<F: Field, const D: usize> BaseAir<F> for AddAir<F, D> {
             let width = mat.width();
             let padding_rows = min_rows - mat.height();
             mat.values
-                .extend(core::iter::repeat(F::ZERO).take(padding_rows * width));
+                .extend(core::iter::repeat_n(F::ZERO, padding_rows * width));
         }
 
         Some(mat)

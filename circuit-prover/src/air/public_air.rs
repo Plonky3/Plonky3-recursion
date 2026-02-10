@@ -121,6 +121,7 @@ impl<F: Field, const D: usize> PublicAir<F, D> {
     }
 
     /// Flatten a PublicTrace over an extension into a base-field matrix with lanes packing.
+    #[inline]
     pub fn trace_to_matrix<ExtF: BasedVectorSpace<F>>(
         trace: &PublicTrace<ExtF>,
         lanes: usize,
@@ -150,7 +151,7 @@ impl<F: Field, const D: usize> PublicAir<F, D> {
                     values.extend_from_slice(coeffs);
                 } else {
                     // Padding: fill with zeros
-                    values.extend(core::iter::repeat(F::ZERO).take(lane_width));
+                    values.extend(core::iter::repeat_n(F::ZERO, lane_width));
                 }
             }
         }
@@ -206,7 +207,7 @@ impl<F: Field, const D: usize> BaseAir<F> for PublicAir<F, D> {
             let width = mat.width();
             let padding_rows = min_rows - mat.height();
             mat.values
-                .extend(core::iter::repeat(F::ZERO).take(padding_rows * width));
+                .extend(core::iter::repeat_n(F::ZERO, padding_rows * width));
         }
 
         Some(mat)

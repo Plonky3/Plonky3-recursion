@@ -174,7 +174,7 @@ mod tests {
         let mut builder = CircuitBuilder::<CF>::new();
         builder.enable_poseidon2_perm::<DummyParams, _>(
             generate_poseidon2_trace::<CF, DummyParams>,
-            perm.clone(),
+            perm,
         );
 
         // Pack base inputs into extension elements (will zero-pad the last one)

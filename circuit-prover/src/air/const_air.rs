@@ -101,6 +101,7 @@ impl<F: Field, const D: usize> ConstAir<F, D> {
     ///
     /// 1. Decomposing each extension element in the trace into `D` basis coordinates.
     /// 2. Padding the trace to have a power-of-two number of rows.
+    #[inline]
     pub fn trace_to_matrix<ExtF: BasedVectorSpace<F>>(
         trace: &ConstTrace<ExtF>,
     ) -> RowMajorMatrix<F> {
@@ -164,7 +165,7 @@ impl<F: Field, const D: usize> BaseAir<F> for ConstAir<F, D> {
             let width = mat.width();
             let padding_rows = min_rows - mat.height();
             mat.values
-                .extend(core::iter::repeat(F::ZERO).take(padding_rows * width));
+                .extend(core::iter::repeat_n(F::ZERO, padding_rows * width));
         }
 
         Some(mat)

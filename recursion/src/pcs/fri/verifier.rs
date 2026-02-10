@@ -457,10 +457,7 @@ fn lagrange_interpolate_circuit<EF: Field>(
 
         // denom[i] = prod_{j!=i} (xs[i] - xs[j])
         let denom = xs.iter().enumerate().filter(|&(j, _)| j != i).fold(
-            {
-                let one = builder.add_const(EF::ONE);
-                one
-            },
+            builder.add_const(EF::ONE),
             |acc, (_, &xj)| {
                 let diff = builder.sub(xs[i], xj);
                 builder.mul(acc, diff)

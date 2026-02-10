@@ -748,20 +748,22 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for Poseidon2Perm
                     self.op_type,
                     &[F::ZERO, F::ZERO], // in_idx, in_ctl
                 );
-            } else if self.merkle_path {
-                // Exposed input on a merkle_path row: store index and in_ctl=1 but
-                // do NOT update witness multiplicities because the lookup multiplicity
-                // is in_ctl * (1 - merkle_path) = 0 — the CTL never fires.
-                for wid in inp {
+            } else {
+                // Exposed input
+                // Update witness multiplicities only if NOT merkle_path mode.
+                // In merkle_path mode, input CTL lookups are disabled in the AIR
+                // because the value permutation (based on runtime mmcs_bit) would
+                // require degree-1 conditional logic that exceeds constraint limits.
+                if self.merkle_path {
+                    // Don't update multiplicities - just register the index
                     preprocessed.register_non_primitive_preprocessed_no_read(
                         self.op_type,
-                        &[F::from_u32(wid.0)],
+                        &[F::from_u32(inp[0].0)],
                     );
+                } else {
+                    // Register the witness read (updates multiplicities)
+                    preprocessed.register_non_primitive_witness_reads(self.op_type, inp)?;
                 }
-                preprocessed.register_non_primitive_preprocessed_no_read(self.op_type, &[F::ONE]);
-            } else {
-                // Exposed input: register the witness read (updates multiplicities)
-                preprocessed.register_non_primitive_witness_reads(self.op_type, inp)?;
                 // Add in_ctl value
                 preprocessed.register_non_primitive_preprocessed_no_read(self.op_type, &[F::ONE]);
             }
@@ -800,39 +802,31 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for Poseidon2Perm
                 preprocessed.register_non_primitive_preprocessed_no_read(self.op_type, &[F::ONE]);
             }
         }
-        // Outputs 2-3 (capacity elements) are NOT CTL-exposed, no preprocessing needed
-
         // Index for mmcs_index_sum CTL
-        // NOTE: We do NOT update witness multiplicities here because the mmcs_index_sum
+        // **NOTE**: We do NOT update witness multiplicities here because the mmcs_index_sum
         // lookup has CONDITIONAL multiplicity (mmcs_merkle_flag * next_new_start).
         // The multiplicity is computed in get_airs_and_degrees_with_prep() which scans
         // the preprocessed data and updates witness multiplicities accordingly.
         if inputs[4].is_empty() {
             preprocessed.register_non_primitive_preprocessed_no_read(self.op_type, &[F::ZERO]);
         } else {
-            // Store the witness index without updating multiplicities.
-            // The conditional multiplicity is handled by get_airs_and_degrees_with_prep().
-            for wid in &inputs[4] {
-                preprocessed.register_non_primitive_preprocessed_no_read(
-                    self.op_type,
-                    &[F::from_u32(wid.0)],
-                );
-            }
+            // Just register the index value, do NOT update multiplicities
+            preprocessed.register_non_primitive_preprocessed_no_read(
+                self.op_type,
+                &[F::from_u32(inputs[4][0].0)],
+            );
         }
 
-        // Precomputed flag: mmcs_ctl_enabled * merkle_path
+        // mmcs_merkle_flag = mmcs_ctl_enabled * merkle_path (precomputed)
         // This allows the lookup multiplicity to be computed as: mmcs_merkle_flag * next_new_start
         // which has degree 2 (safe for constraint evaluation)
-        let mmcs_ctl_enabled = if inputs[4].is_empty() {
-            F::ZERO
-        } else {
+        let mmcs_ctl_enabled = !inputs[4].is_empty();
+        let mmcs_merkle_flag = if mmcs_ctl_enabled && self.merkle_path {
             F::ONE
+        } else {
+            F::ZERO
         };
-        let merkle_path_val = if self.merkle_path { F::ONE } else { F::ZERO };
-        preprocessed.register_non_primitive_preprocessed_no_read(
-            self.op_type,
-            &[mmcs_ctl_enabled * merkle_path_val],
-        );
+        preprocessed.register_non_primitive_preprocessed_no_read(self.op_type, &[mmcs_merkle_flag]);
 
         // We need to insert `new_start` and `merkle_path` as well.
         let new_start_val = if self.new_start { F::ONE } else { F::ZERO };
