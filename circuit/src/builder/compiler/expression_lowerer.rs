@@ -11,8 +11,6 @@ use crate::builder::CircuitBuilderError;
 use crate::builder::circuit_builder::{NonPrimitiveOpParams, NonPrimitiveOperationData};
 use crate::builder::compiler::get_witness_id;
 use crate::expr::{Expr, ExpressionGraph};
-#[cfg(test)]
-use crate::op::AluOpKind;
 use crate::op::{NonPrimitiveOpType, Op};
 use crate::ops::Poseidon2PermExecutor;
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};
@@ -452,17 +450,17 @@ where
                     let lhs_expr = self.graph.get_expr(*lhs);
                     let rhs_expr = self.graph.get_expr(*rhs);
 
+                    // Allocate witness for the subtraction result expression.
+                    let result_widx = alloc_witness_id_for_expr(expr_idx);
+
+                    // Get the witness for the mul result (lhs of the subtraction).
+                    let lhs_widx = get_witness_id(
+                        &expr_to_widx,
+                        *lhs,
+                        &format!("Sub lhs (mul result) for {expr_id:?}"),
+                    )?;
+
                     if let (Expr::Mul { .. }, Expr::Const(const_val)) = (lhs_expr, rhs_expr) {
-                        // Allocate witness for the subtraction result expression.
-                        let result_widx = alloc_witness_id_for_expr(expr_idx);
-
-                        // Get the witness for the mul result (lhs of the subtraction).
-                        let lhs_widx = get_witness_id(
-                            &expr_to_widx,
-                            *lhs,
-                            &format!("Sub lhs (mul result) for {expr_id:?}"),
-                        )?;
-
                         // Emit a fresh constant witness for -c.
                         //
                         // We allocate a synthetic witness index that is not tied to any
@@ -477,23 +475,16 @@ where
 
                         // Encode result = lhs + (-c) as a forward add.
                         ops.push(Op::add(lhs_widx, neg_const_widx, result_widx));
-                        expr_to_widx.insert(expr_id, result_widx);
                     } else {
                         // Generic encoding: lhs - rhs = result as result + rhs = lhs.
-                        let result_widx = alloc_witness_id_for_expr(expr_idx);
-                        let lhs_widx = get_witness_id(
-                            &expr_to_widx,
-                            *lhs,
-                            &format!("Sub lhs for {expr_id:?}"),
-                        )?;
                         let rhs_widx = get_witness_id(
                             &expr_to_widx,
                             *rhs,
                             &format!("Sub rhs for {expr_id:?}"),
                         )?;
                         ops.push(Op::add(rhs_widx, result_widx, lhs_widx));
-                        expr_to_widx.insert(expr_id, result_widx);
                     }
+                    expr_to_widx.insert(expr_id, result_widx);
                 }
                 Expr::Mul { lhs, rhs } => {
                     let out_widx = alloc_witness_id_for_expr(expr_idx);
@@ -614,6 +605,7 @@ mod tests {
     use p3_baby_bear::BabyBear;
 
     use super::*;
+    use crate::AluOpKind;
 
     /// Helper to create an expression graph with a zero constant pre-allocated.
     fn create_graph_with_zero() -> ExpressionGraph<BabyBear> {

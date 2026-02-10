@@ -151,14 +151,12 @@ where
 fn primitive_airs_symbolic_to_circuit() -> Result<(), CircuitError> {
     let mut rng = SmallRng::seed_from_u64(7);
 
-    // AluAir preprocessed format: [mult, sel_add, sel_mul, sel_bool, sel_muladd, a_idx, b_idx, c_idx, out_idx]
-    // For an ADD operation: sel_add=1, sel_mul=0, sel_bool=0, sel_muladd=0
+    // AluAir preprocessed format (per op, multiplicity added by AIR): [sel_add_vs_mul, sel_bool, sel_muladd, a_idx, b_idx, c_idx, out_idx]
+    // For an ADD operation: sel_add_vs_mul=1, sel_bool=0, sel_muladd=0
     let alu_add_prep = vec![
-        F::ONE, // mult
-        F::ONE,
-        F::ZERO,
-        F::ZERO,
-        F::ZERO, // selectors: add
+        F::ONE,  // sel_add_vs_mul
+        F::ZERO, // sel_bool
+        F::ZERO, // sel_muladd
         F::ZERO,
         F::ONE,
         F::ZERO,

@@ -23,7 +23,10 @@
 //! Preprocessed columns per lane:
 //!
 //! - 1 column for multiplicity (1 for real ops, 0 for padding),
-//! - 4 columns for operation selectors (sel_add, sel_mul, sel_bool, sel_muladd),
+//! - 3 columns for operation selectors:
+//!   - `sel_add_vs_mul` (1 = Add, 0 = Mul when `sel_bool = sel_muladd = 0`)
+//!   - `sel_bool` (1 = BoolCheck),
+//!   - `sel_muladd` (1 = MulAdd),
 //! - 4 columns for operand indices (a_idx, b_idx, c_idx, out_idx).
 //!
 //! # Constraints (degree ≤ 3)
@@ -145,10 +148,13 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AluAir<F, D> {
 
     /// Number of preprocessed columns per lane:
     /// - 1 multiplicity
-    /// - 4 selectors (add, mul, bool, muladd)
+    /// - 3 selectors:
+    ///   - 1 bit for Add vs Mul (when Bool/MulAdd are 0)
+    ///   - 1 for BoolCheck
+    ///   - 1 for MulAdd
     /// - 4 indices (a, b, c, out)
     pub const fn preprocessed_lane_width() -> usize {
-        9
+        8
     }
 
     /// Total preprocessed width for this AIR instance.
@@ -221,23 +227,26 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AluAir<F, D> {
     }
 
     /// Convert an `AluTrace` to preprocessed values.
-    /// Layout per op: [sel_add, sel_mul, sel_bool, sel_muladd, a_idx, b_idx, c_idx, out_idx]
+    /// Layout per op (without multiplicity):
+    /// [sel_add_vs_mul, sel_bool, sel_muladd, a_idx, b_idx, c_idx, out_idx]
     pub fn trace_to_preprocessed<ExtF: BasedVectorSpace<F>>(trace: &AluTrace<ExtF>) -> Vec<F> {
         let total_len = trace.a_index.len() * (Self::preprocessed_lane_width() - 1);
         let mut preprocessed_values = Vec::with_capacity(total_len);
 
         for (i, kind) in trace.op_kind.iter().enumerate() {
-            // Selectors
-            let (sel_add, sel_mul, sel_bool, sel_muladd) = match kind {
-                AluOpKind::Add => (F::ONE, F::ZERO, F::ZERO, F::ZERO),
-                AluOpKind::Mul => (F::ZERO, F::ONE, F::ZERO, F::ZERO),
-                AluOpKind::BoolCheck => (F::ZERO, F::ZERO, F::ONE, F::ZERO),
-                AluOpKind::MulAdd => (F::ZERO, F::ZERO, F::ZERO, F::ONE),
+            // Selectors encoded as:
+            // - sel_add_vs_mul: 1 for Add, 0 for Mul (when Bool/MulAdd are 0)
+            // - sel_bool: 1 for BoolCheck
+            // - sel_muladd: 1 for MulAdd
+            let (sel_add_vs_mul, sel_bool, sel_muladd) = match kind {
+                AluOpKind::Add => (F::ONE, F::ZERO, F::ZERO),
+                AluOpKind::Mul => (F::ZERO, F::ZERO, F::ZERO),
+                AluOpKind::BoolCheck => (F::ZERO, F::ONE, F::ZERO),
+                AluOpKind::MulAdd => (F::ZERO, F::ZERO, F::ONE),
             };
 
             preprocessed_values.extend(&[
-                sel_add,
-                sel_mul,
+                sel_add_vs_mul,
                 sel_bool,
                 sel_muladd,
                 F::from_u32(trace.a_index[i].0),
@@ -322,14 +331,22 @@ where
                 let c = local[main_offset + 2].clone();
                 let out = local[main_offset + 3].clone();
 
-                // Selectors from preprocessed (skip multiplicity at index 0)
-                let sel_add = preprocessed_local[prep_offset + 1].clone();
-                let sel_mul = preprocessed_local[prep_offset + 2].clone();
-                let sel_bool = preprocessed_local[prep_offset + 3].clone();
-                let sel_muladd = preprocessed_local[prep_offset + 4].clone();
+                // Multiplicity and selectors from preprocessed:
+                // layout per lane: [m, sel_add_vs_mul, sel_bool, sel_muladd, a_idx, b_idx, c_idx, out_idx]
+                let multiplicity = preprocessed_local[prep_offset].clone();
+                let sel_add_vs_mul = preprocessed_local[prep_offset + 1].clone();
+                let sel_bool = preprocessed_local[prep_offset + 2].clone();
+                let sel_muladd = preprocessed_local[prep_offset + 3].clone();
 
-                // ADD constraint: sel_add * (a + b - out) = 0
-                builder.assert_zero(sel_add.clone() * (a.clone() + b.clone() - out.clone()));
+                // Derive MUL selector linearly:
+                // sel_mul = m - sel_bool - sel_muladd - sel_add_vs_mul
+                let sel_mul = multiplicity.clone()
+                    - sel_bool.clone()
+                    - sel_muladd.clone()
+                    - sel_add_vs_mul.clone();
+
+                // ADD constraint: sel_add_vs_mul * (a + b - out) = 0
+                builder.assert_zero(sel_add_vs_mul.clone() * (a.clone() + b.clone() - out.clone()));
 
                 // MUL constraint: sel_mul * (a * b - out) = 0
                 builder.assert_zero(sel_mul.clone() * (a.clone() * b.clone() - out.clone()));
@@ -360,15 +377,24 @@ where
                 let c_slice = &local[main_offset + 2 * D..main_offset + 3 * D];
                 let out_slice = &local[main_offset + 3 * D..main_offset + 4 * D];
 
-                let sel_add = preprocessed_local[prep_offset + 1].clone();
-                let sel_mul = preprocessed_local[prep_offset + 2].clone();
-                let sel_bool = preprocessed_local[prep_offset + 3].clone();
-                let sel_muladd = preprocessed_local[prep_offset + 4].clone();
+                // Multiplicity and selectors from preprocessed:
+                // layout per lane: [m, sel_add_vs_mul, sel_bool, sel_muladd, a_idx, b_idx, c_idx, out_idx]
+                let multiplicity = preprocessed_local[prep_offset].clone();
+                let sel_add_vs_mul = preprocessed_local[prep_offset + 1].clone();
+                let sel_bool = preprocessed_local[prep_offset + 2].clone();
+                let sel_muladd = preprocessed_local[prep_offset + 3].clone();
 
-                // ADD constraints: sel_add * (a[i] + b[i] - out[i]) = 0
+                // Derive MUL selector linearly:
+                // sel_mul = m - sel_bool - sel_muladd - sel_add_vs_mul
+                let sel_mul = multiplicity.clone()
+                    - sel_bool.clone()
+                    - sel_muladd.clone()
+                    - sel_add_vs_mul.clone();
+
+                // ADD constraints: sel_add_vs_mul * (a[i] + b[i] - out[i]) = 0
                 for i in 0..D {
                     builder.assert_zero(
-                        sel_add.clone()
+                        sel_add_vs_mul.clone()
                             * (a_slice[i].clone() + b_slice[i].clone() - out_slice[i].clone()),
                     );
                 }
@@ -742,7 +768,7 @@ mod tests {
 
     #[test]
     fn test_alu_air_constraint_degree() {
-        let preprocessed = vec![Val::ZERO; 8 * 8]; // 8 ops * 8 preprocessed values per op
+        let preprocessed = vec![Val::ZERO; 8 * 7]; // 8 ops * 7 preprocessed values per op
         let air = AluAir::<Val, 1>::new_with_preprocessed(8, 2, preprocessed);
         p3_test_utils::assert_air_constraint_degree!(air, "AluAir");
     }

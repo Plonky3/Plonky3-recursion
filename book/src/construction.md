@@ -106,7 +106,7 @@ A chip contains:
 - An AIR that enforces its semantics.
 
 We distinguish two kind of chips: those representing native, i.e. primitive operations, and additional non-primitive ones, defined at runtime, that serve as precompiles to optimize certain operations.
-The recursion machine contains 3 primitive chips: `CONST`, `PUBLIC_INPUT`, and a unified `ALU` chip with selectors for add / mul / bool-check / mul-add. `SUB` and `DIV` are encoded as ALU rows using the add or mul selector.
+The recursion machine contains 3 primitive chips: `CONST`, `PUBLIC_INPUT`, and a unified `ALU` chip with three selector columns (add/mul, bool-check, mul-add). `SUB` and `DIV` are encoded as ALU rows using the add or mul operation.
 
 Given only the primitive operations, one should be able to carry out most operations necessary in circuit verification. Primitive operations have the following properties:
 

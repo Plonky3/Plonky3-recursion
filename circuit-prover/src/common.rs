@@ -145,8 +145,8 @@ where
             let table = PrimitiveOpType::from(idx);
             match table {
                 PrimitiveOpType::Alu => {
-                    // ALU preprocessed per op (excluding multiplicity): 8 values
-                    // [sel_add, sel_mul, sel_bool, sel_muladd, a_idx, b_idx, c_idx, out_idx]
+                    // ALU preprocessed per op (excluding multiplicity): 7 values
+                    // [sel_add_vs_mul, sel_bool, sel_muladd, a_idx, b_idx, c_idx, out_idx]
                     let lane_without_multiplicities =
                         AluAir::<Val<SC>, D>::preprocessed_lane_width() - 1;
                     assert!(
