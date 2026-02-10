@@ -55,6 +55,10 @@ tracing-subscriber = { workspace = true, features = ["std", "env-filter"] }
 [features]
 parallel = ["p3-maybe-rayon/parallel"]
 
+[[bench]]
+name = "prover"
+harness = false
+
 [lints]
 workspace = true
 
@@ -69,7 +73,3 @@ path = "examples/poseidon2_perm_chain.rs"
 [[example]]
 name = "poseidon2_perm_merkle"
 path = "examples/poseidon2_perm_merkle.rs"
-
-[[bench]]
-name = "prover"
-harness = false
