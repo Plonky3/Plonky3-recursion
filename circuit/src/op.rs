@@ -380,6 +380,7 @@ impl<'a, F: PrimeCharacteristicRing + Eq + Clone> ExecutionContext<'a, F> {
     }
 
     /// Get witness value at the given index
+    #[inline]
     pub fn get_witness(&self, widx: WitnessId) -> Result<F, CircuitError> {
         self.witness
             .get(widx.0 as usize)
@@ -389,15 +390,19 @@ impl<'a, F: PrimeCharacteristicRing + Eq + Clone> ExecutionContext<'a, F> {
     }
 
     /// Set witness value at the given index
+    #[inline]
     pub fn set_witness(&mut self, widx: WitnessId, value: F) -> Result<(), CircuitError> {
         if widx.0 as usize >= self.witness.len() {
             return Err(CircuitError::WitnessIdOutOfBounds { witness_id: widx });
         }
 
+        let slot = &mut self.witness[widx.0 as usize];
+
         // Check for conflicting reassignment
-        if let Some(existing_value) = &self.witness[widx.0 as usize]
-            && *existing_value != value
-        {
+        if let Some(existing_value) = slot.as_ref() {
+            if *existing_value == value {
+                return Ok(());
+            }
             return Err(CircuitError::WitnessConflict {
                 witness_id: widx,
                 existing: format!("{existing_value:?}"),
@@ -406,7 +411,7 @@ impl<'a, F: PrimeCharacteristicRing + Eq + Clone> ExecutionContext<'a, F> {
             });
         }
 
-        self.witness[widx.0 as usize] = Some(value);
+        *slot = Some(value);
         Ok(())
     }
 

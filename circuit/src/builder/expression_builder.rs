@@ -83,6 +83,16 @@ impl<F> ExpressionBuilder<F>
 where
     F: Clone + PrimeCharacteristicRing + Eq + Hash,
 {
+    #[inline]
+    fn is_const_zero(&self, id: ExprId) -> bool {
+        matches!(self.graph.get_expr(id), Expr::Const(val) if *val == F::ZERO)
+    }
+
+    #[inline]
+    fn is_const_one(&self, id: ExprId) -> bool {
+        matches!(self.graph.get_expr(id), Expr::Const(val) if *val == F::ONE)
+    }
+
     /// Creates a new expression builder with zero constant pre-allocated.
     ///
     /// The zero constant is always the first node in the graph, accessible via
@@ -217,6 +227,14 @@ where
     ///
     /// An [`ExprId`] handle to the addition expression.
     pub fn add_add(&mut self, lhs: ExprId, rhs: ExprId, label: &'static str) -> ExprId {
+        // x + 0 = x, 0 + x = x
+        if self.is_const_zero(lhs) {
+            return rhs;
+        }
+        if self.is_const_zero(rhs) {
+            return lhs;
+        }
+
         self.add_bin_op(
             Expr::Add { lhs, rhs },
             label,
@@ -268,6 +286,19 @@ where
     ///
     /// An [`ExprId`] handle to the multiplication expression.
     pub fn add_mul(&mut self, lhs: ExprId, rhs: ExprId, label: &'static str) -> ExprId {
+        // x * 0 = 0, 0 * x = 0
+        if self.is_const_zero(lhs) || self.is_const_zero(rhs) {
+            return ExprId::ZERO;
+        }
+
+        // x * 1 = x, 1 * x = x
+        if self.is_const_one(lhs) {
+            return rhs;
+        }
+        if self.is_const_one(rhs) {
+            return lhs;
+        }
+
         self.add_bin_op(
             Expr::Mul { lhs, rhs },
             label,

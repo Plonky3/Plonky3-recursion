@@ -218,6 +218,7 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AddAir<F, D> {
     /// ```text
     ///     [lhs[D], lhs_idx, rhs[D], rhs_idx, result[D], result_idx] repeated `lanes` times.
     /// ```
+    #[inline]
     pub fn trace_to_matrix<ExtF: BasedVectorSpace<F>>(
         trace: &AddTrace<ExtF>,
         lanes: usize,

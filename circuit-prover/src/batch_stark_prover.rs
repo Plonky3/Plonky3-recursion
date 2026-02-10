@@ -2932,8 +2932,6 @@ where
         let mul_matrix: RowMajorMatrix<Val<SC>> =
             MulAir::<Val<SC>, D>::trace_to_matrix(&traces.mul_trace, mul_lanes);
 
-        TraceLengths::from_traces(traces, packing).log();
-
         // We first handle all non-primitive tables dynamically, which will then be batched alongside primitive ones.
         // Each trace must have a corresponding registered prover for it to be provable.
         for (&op_type, trace) in &traces.non_primitive_traces {
