@@ -532,6 +532,202 @@ mul_trace: []
 <p><strong>Builder pattern efficiency</strong> — Trace builders operate in a single pass using only the data they need. No builder depends on another's output, enabling future parallelization.</p>
 <p><strong>Preprocessed columns</strong> — All index columns in operation traces are preprocessed. Since the IR is fixed, the verifier can reconstruct these columns without online commitments, significantly reducing proof size.</p>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
+<h1 id="hashing-and-fiat-shamir-in-recursion"><a class="header" href="#hashing-and-fiat-shamir-in-recursion">Hashing and Fiat-Shamir in Recursion</a></h1>
+<p>This section explains how cryptographic hashing, specifically Poseidon2, is used in recursive verification,
+and how the Fiat-Shamir challenger is implemented to maintain transcript compatibility with native Plonky3.</p>
+<h2 id="overview-1"><a class="header" href="#overview-1">Overview</a></h2>
+<p>Recursive verification requires two distinct uses of the permutation used by the selected prover configuration:</p>
+<ol>
+<li><strong>Fiat-Shamir Challenger</strong>: Derives random challenges from the transcript (commitments, opened values, etc.)</li>
+<li><strong>MMCS/Merkle Verification</strong>: Verifies Merkle tree opening proofs for commitments</li>
+</ol>
+<p>Both operations use the same underlying Poseidon2 permutation, but they interact with it differently:</p>
+<pre><code>┌─────────────────────────────────────────────────────────────────────┐
+│                    Poseidon2 Permutation (WIDTH=16)                 │
+├──────────────────────────────┬──────────────────────────────────────┤
+│     Fiat-Shamir Challenger   │        MMCS/Merkle Hashing           │
+├──────────────────────────────┼──────────────────────────────────────┤
+│ • Duplex sponge construction │ • Compression function               │
+│ • Absorb/squeeze pattern     │ • Hash two siblings → parent         │
+│ • ~20 calls per verification │ • Hundreds of calls per verification │
+│ • Transcript-sensitive       │ • Position-sensitive                 │
+└──────────────────────────────┴──────────────────────────────────────┘
+</code></pre>
+<h2 id="the-poseidon2-permutation"><a class="header" href="#the-poseidon2-permutation">The Poseidon2 Permutation</a></h2>
+<p>In this implementation, we use the Poseidon2 permutation with:</p>
+<ul>
+<li><strong>WIDTH = 16</strong>: The permutation operates on 16 field elements</li>
+<li><strong>RATE = 8</strong>: In sponge mode, 8 elements are absorbed/squeezed per permutation</li>
+</ul>
+<p><strong>Note</strong>: These parameters (WIDTH=16, RATE=8) are currently fixed and tailored to 32-bit fields.
+Future versions will make them configurable to support a wider range of applications.</p>
+<h3 id="base-field-vs-extension-field-views"><a class="header" href="#base-field-vs-extension-field-views">Base Field vs Extension Field Views</a></h3>
+<p>The same Poseidon2 permutation can be viewed in two equivalent ways:</p>
+<p><strong>D=1 View (Base Field)</strong></p>
+<pre><code>Input:  [e₀, e₁, e₂, ..., e₁₅]     ← 16 base field elements
+Output: [f₀, f₁, f₂, ..., f₁₅]     ← 16 base field elements
+</code></pre>
+<p><strong>D=4 View (Extension Field)</strong></p>
+<pre><code>Input:  [E₀, E₁, E₂, E₃]           ← 4 extension field elements
+Output: [F₀, F₁, F₂, F₃]           ← 4 extension field elements
+
+where each Eᵢ = eᵢ₀ + eᵢ₁·ω + eᵢ₂·ω² + eᵢ₃·ω³
+</code></pre>
+<p>Both views represent the same Poseidon2 permutation over the base field. The difference is purely representational:</p>
+<ul>
+<li>D=1: Direct representation as 16 base field elements</li>
+<li>D=4: Packed representation as 4 degree-4 extension field elements</li>
+</ul>
+<h2 id="the-fiat-shamir-challenger"><a class="header" href="#the-fiat-shamir-challenger">The Fiat-Shamir Challenger</a></h2>
+<h3 id="native-plonky3-behavior"><a class="header" href="#native-plonky3-behavior">Native Plonky3 Behavior</a></h3>
+<p>Plonky3's native <code>DuplexChallenger</code> maintains internal state as <strong>base field elements</strong>:</p>
+<pre><pre class="playground"><code class="language-rust edition2024"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>struct DuplexChallenger&lt;F, Permutation, const WIDTH: usize, const RATE: usize&gt; {
+    sponge_state: [F; WIDTH],        // 16 base field elements
+    input_buffer: Vec&lt;F&gt;,            // Pending observations (0..RATE)
+    output_buffer: Vec&lt;F&gt;,           // Available samples (0..RATE)
+}
+<span class="boring">}</span></code></pre></pre>
+<p>The challenger implements a duplex sponge construction as follows:</p>
+<pre><code>┌────────────────────────────────────────────────────────────────┐
+│                     Duplex Sponge Operation                    │
+├────────────────────────────────────────────────────────────────┤
+│                                                                │
+│   observe(value):                                              │
+│     1. Clear output_buffer (any pending outputs are invalid)   │
+│     2. Push value to input_buffer                              │
+│     3. If input_buffer.len() == RATE, apply duplexing:         │
+│        • Overwrite state[0..RATE] with input_buffer            │
+│        • Apply Poseidon2 permutation                           │
+│        • Fill output_buffer from state[0..RATE]                │
+│        • Clear input_buffer                                    │
+│                                                                │
+│   sample():                                                    │
+│     1. If input_buffer not empty OR output_buffer empty:       │
+│        • Trigger duplexing (same as step 3 above)              │
+│     2. Pop and return from output_buffer                       │
+│                                                                │
+└────────────────────────────────────────────────────────────────┘
+</code></pre>
+<h3 id="circuit-challenger-design"><a class="header" href="#circuit-challenger-design">Circuit Challenger Design</a></h3>
+<p>The recursive circuit operates over extension field elements, but must produce <strong>identical transcripts</strong> to the native challenger. This requires careful state management.</p>
+<p>The <code>CircuitChallenger</code> maintains state as <strong>coefficient-level targets</strong>:</p>
+<pre><pre class="playground"><code class="language-rust edition2024"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>struct CircuitChallenger&lt;const WIDTH: usize, const RATE: usize&gt; {
+    state: Vec&lt;Target&gt;,           // Targets, (base field coefficients)
+    input_buffer: Vec&lt;Target&gt;,    // Pending observations
+    output_buffer: Vec&lt;Target&gt;,   // Available samples
+    poseidon2_config: Poseidon2Config,
+}
+<span class="boring">}</span></code></pre></pre>
+<p>Each target in <code>state</code> represents a base field element embedded in the extension field (i.e., only the constant coefficient is non-zero).</p>
+<h3 id="duplexing-in-the-circuit"><a class="header" href="#duplexing-in-the-circuit">Duplexing in the Circuit</a></h3>
+<p>When the circuit challenger needs to permute, it must bridge between coefficient-level state and the Poseidon2 permutation:</p>
+<pre><code>    16 coefficient targets                4 extension targets
+    [c₀, c₁, c₂, ..., c₁₅]    ────►     [E₀, E₁, E₂, E₃]
+                               recompose
+                                  │
+                                  ▼
+                          ┌─────────────┐
+                          │  Poseidon2  │
+                          │ Permutation │
+                          └─────────────┘
+                                  │
+                                  ▼
+    [c'₀, c'₁, c'₂, ..., c'₁₅]  ◄────   [F₀, F₁, F₂, F₃]
+                               decompose
+</code></pre>
+<p><strong>Recomposition</strong> (16 coefficients → 4 extension elements):</p>
+<pre><code>E₀ = c₀ + c₁·ω + c₂·ω² + c₃·ω³
+E₁ = c₄ + c₅·ω + c₆·ω² + c₇·ω³
+E₂ = c₈ + c₉·ω + c₁₀·ω² + c₁₁·ω³
+E₃ = c₁₂ + c₁₃·ω + c₁₄·ω² + c₁₅·ω³
+</code></pre>
+<p><strong>Decomposition</strong> (4 extension elements → 16 coefficients):
+The inverse operation, extracting basis coefficients from each extension element.</p>
+<h3 id="row-overhead"><a class="header" href="#row-overhead">Row Overhead</a></h3>
+<p>The recomposition/decomposition unfortunately adds overhead in the primitive tables:</p>
+<div class="table-wrapper"><table><thead><tr><th>Operation</th><th>Mul Rows</th><th>Add Rows</th><th>Witness Rows</th></tr></thead><tbody>
+<tr><td>Recompose (4 ext)</td><td>16</td><td>12</td><td>0</td></tr>
+<tr><td>Decompose (4 ext)</td><td>16</td><td>12</td><td>16</td></tr>
+<tr><td><strong>Total per duplexing</strong></td><td><strong>32</strong></td><td><strong>24</strong></td><td><strong>16</strong></td></tr>
+</tbody></table>
+</div>
+<p>This adds a total of approximately <strong>70</strong> rows over the different primitive tables per challenger duplexing.</p>
+<blockquote>
+<p><strong>Optimization Note</strong>: When using D=1 configuration (base field challenges), no recomposition/decomposition
+is needed as the state maps directly to the Poseidon2 inputs, eliminating this overhead.</p>
+</blockquote>
+<h2 id="coexistence-on-a-single-trace"><a class="header" href="#coexistence-on-a-single-trace">Coexistence on a Single Trace</a></h2>
+<p>Both D=1 and D=4 views share the <strong>same Poseidon2 AIR trace</strong>.
+The AIR constrains the Poseidon2 permutation over the base field regardless of how inputs/outputs are packed:</p>
+<pre><code>┌───────────────────────────────────────────────────────────────────────────────────┐
+│                          Poseidon2 AIR Trace (WIDTH=16)                           │
+├───────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                   │
+│  Each row: [s₀, s₁, s₂, s₃, s₄, s₅, s₆, s₇, s₈, s₉, s₁₀, s₁₁, s₁₂, s₁₃, s₁₄, s₁₅] │
+│                                                                                   │
+│  The AIR constraints enforce the Poseidon2 round function:                        │
+│     • S-box application                                                           │
+│     • Linear layer (MDS matrix multiplication)                                    │
+│     • Round constant addition                                                     │
+│                                                                                   │
+│  These constraints are identical whether the caller interprets the 16 columns as: │
+│     • 16 individual base field elements (D=1), or                                 │
+│     • 4 extension field elements of degree 4 (D=4)                                │
+│                                                                                   │
+└───────────────────────────────────────────────────────────────────────────────────┘
+</code></pre>
+<h2 id="transcript-compatibility"><a class="header" href="#transcript-compatibility">Transcript Compatibility</a></h2>
+<p>For recursive verification to be sound, the circuit challenger must produce <strong>identical challenge values</strong> to the native challenger given the same inputs. This requires:</p>
+<ol>
+<li><strong>Same observation order</strong>: Values must be absorbed in the exact same sequence</li>
+<li><strong>Same duplexing triggers</strong>: Permutation must occur at the same points</li>
+<li><strong>Same output buffer management</strong>: Samples must come from the same buffer positions</li>
+</ol>
+<h3 id="extension-field-operations"><a class="header" href="#extension-field-operations">Extension Field Operations</a></h3>
+<p>The native challenger provides methods for extension field values:</p>
+<div class="table-wrapper"><table><thead><tr><th>Native Method</th><th>Circuit Method</th><th>Behavior</th></tr></thead><tbody>
+<tr><td><code>observe_algebra_element(ext)</code></td><td><code>observe_ext(target)</code></td><td>Decompose to D coefficients, observe each</td></tr>
+<tr><td><code>sample_algebra_element()</code></td><td><code>sample_ext()</code></td><td>Sample D base elements, recompose</td></tr>
+</tbody></table>
+</div>
+<p>These methods ensure that extension field observations/samples are transcript-compatible.</p>
+<p>In addition, when observing opened values in batch verification, we must ensure to respect
+the order the native verifier performed for the recursive circuit to be able to satisfy the
+associated constraints.</p>
+<h2 id="soundness-considerations"><a class="header" href="#soundness-considerations">Soundness Considerations</a></h2>
+<h3 id="current-witness-hints"><a class="header" href="#current-witness-hints">Current: Witness Hints</a></h3>
+<p>Currently, the Poseidon2 permutation for the challenger is computed via <strong>witness hints</strong>:</p>
+<pre><pre class="playground"><code class="language-rust edition2024"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Prover provides the permutation output as a witness hint
+let outputs = circuit.add_poseidon2_perm_for_challenger(config, inputs);
+<span class="boring">}</span></code></pre></pre>
+<p>The prover computes the correct Poseidon2 output natively and provides it as a witness. The circuit then constrains consistency between inputs and outputs.</p>
+<h3 id="future-cross-table-lookups-ctls"><a class="header" href="#future-cross-table-lookups-ctls">Future: Cross-Table Lookups (CTLs)</a></h3>
+<p>For full soundness, each challenger Poseidon2 call should be connected to the Poseidon2 AIR table via CTLs. This cryptographically enforces that the permutation was computed correctly:</p>
+<pre><code>Challenger Circuit              Poseidon2 AIR Table
+──────────────────              ──────────────────────
+[in₀, in₁, in₂, in₃]  ──CTL──►  Row with matching
+[out₀, out₁, out₂, out₃] ◄─────  inputs/outputs
+</code></pre>
+<p>The CTL proves that the (input, output) pair appears in the Poseidon2 table, ensuring the permutation wasn't forged by the prover.</p>
+<h2 id="configuration"><a class="header" href="#configuration">Configuration</a></h2>
+<p>The challenger is configured with a <code>Poseidon2Config</code> that specifies the field and extension degree:</p>
+<div class="table-wrapper"><table><thead><tr><th>Config</th><th>Field</th><th>D</th><th>WIDTH</th><th>Use Case</th></tr></thead><tbody>
+<tr><td><code>BabyBearD4Width16</code></td><td>BabyBear</td><td>4</td><td>16</td><td>Standard recursive verification</td></tr>
+<tr><td><code>BabyBearD1Width16</code></td><td>BabyBear</td><td>1</td><td>16</td><td>Base field challenges (lower overhead)</td></tr>
+<tr><td><code>BabyBearD4Width24</code></td><td>BabyBear</td><td>4</td><td>24</td><td>Wider configuration, efficient hashing</td></tr>
+<tr><td><code>KoalaBearD4Width16</code></td><td>KoalaBear</td><td>4</td><td>16</td><td>Alternative field</td></tr>
+<tr><td><code>KoalaBearD1Width16</code></td><td>KoalaBear</td><td>1</td><td>16</td><td>Base field challenges (lower overhead)</td></tr>
+<tr><td><code>KoalaBearD4Width24</code></td><td>KoalaBear</td><td>4</td><td>24</td><td>Wider configuration, efficient hashing</td></tr>
+</tbody></table>
+</div>
+<p>The challenger is in charge to validate at runtime that the config matches the extension field being used.</p>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="handling-arbitrary-programs"><a class="header" href="#handling-arbitrary-programs">Handling arbitrary programs</a></h1>
 <p>The fixed recursive verifier described in this book supports only fixed, predetermined programs.<br />
 This design choice maximizes performance but raises the question: <strong>how can one prove statements of varying size or complexity?</strong></p>
