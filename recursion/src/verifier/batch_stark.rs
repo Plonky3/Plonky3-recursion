@@ -8,22 +8,25 @@ use p3_air::{
     PermutationAirBuilder,
 };
 use p3_batch_stark::CommonData;
-use p3_circuit::CircuitBuilder;
 use p3_circuit::utils::ColumnsTargets;
+use p3_circuit::{CircuitBuilder, NonPrimitiveOpId};
 use p3_circuit_prover::air::{AddAir, ConstAir, MulAir, PublicAir, WitnessAir};
 use p3_circuit_prover::batch_stark_prover::{PrimitiveTable, RowCounts};
 use p3_commit::{Pcs, PolynomialSpace};
-use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing, PrimeField};
+use p3_field::{BasedVectorSpace, ExtensionField, Field, PrimeCharacteristicRing, PrimeField64};
 use p3_lookup::lookup_traits::{Kind, Lookup, LookupData, LookupGadget};
 use p3_uni_stark::{StarkGenericConfig, SymbolicExpression, Val};
 
 use super::{ObservableCommitment, VerificationError, recompose_quotient_from_chunks_circuit};
 use crate::challenger::CircuitChallenger;
+use crate::ops::Poseidon2Config;
 use crate::traits::{
     LookupMetadata, Recursive, RecursiveAir, RecursiveChallenger, RecursiveLookupGadget,
     RecursivePcs,
 };
-use crate::types::{BatchProofTargets, CommonDataTargets, OpenedValuesTargets};
+use crate::types::{
+    BatchProofTargets, CommonDataTargets, OpenedValuesTargets, OpenedValuesTargetsWithLookups,
+};
 use crate::{BatchStarkVerifierInputsBuilder, Target};
 
 /// Type alias for PCS verifier parameters.
@@ -102,6 +105,7 @@ where
 /// This reconstructs the circuit table AIRs from the proof metadata (rows + packing) so callers
 /// don't need to pass `circuit_airs` explicitly. Returns the allocated input builder to pack
 /// public inputs afterwards.
+#[allow(clippy::type_complexity)]
 pub fn verify_p3_recursion_proof_circuit<
     SC: StarkGenericConfig,
     Comm: Recursive<
@@ -112,6 +116,7 @@ pub fn verify_p3_recursion_proof_circuit<
     InputProof: Recursive<SC::Challenge>,
     OpeningProof: Recursive<SC::Challenge, Input = <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Proof>,
     LG: RecursiveLookupGadget<SC::Challenge>,
+    const WIDTH: usize,
     const RATE: usize,
     const TRACE_D: usize,
 >(
@@ -121,7 +126,14 @@ pub fn verify_p3_recursion_proof_circuit<
     pcs_params: &PcsVerifierParams<SC, InputProof, OpeningProof, Comm>,
     common_data: &CommonData<SC>,
     lookup_gadget: &LG,
-) -> Result<BatchStarkVerifierInputsBuilder<SC, Comm, OpeningProof>, VerificationError>
+    poseidon2_config: Poseidon2Config,
+) -> Result<
+    (
+        BatchStarkVerifierInputsBuilder<SC, Comm, OpeningProof>,
+        Vec<NonPrimitiveOpId>,
+    ),
+    VerificationError,
+>
 where
     <SC as StarkGenericConfig>::Pcs: RecursivePcs<
             SC,
@@ -130,8 +142,8 @@ where
             Comm,
             <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain,
         >,
-    SC::Challenge: PrimeCharacteristicRing,
-    Val<SC>: PrimeField,
+    Val<SC>: PrimeField64,
+    SC::Challenge: ExtensionField<Val<SC>> + PrimeCharacteristicRing,
     <<SC as StarkGenericConfig>::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain: Clone,
     SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
 {
@@ -176,13 +188,14 @@ where
 
     let common = &verifier_inputs.common_data;
 
-    verify_batch_circuit::<
+    let mmcs_op_ids = verify_batch_circuit::<
         CircuitTablesAir<Val<SC>, TRACE_D>,
         SC,
         Comm,
         InputProof,
         OpeningProof,
         LG,
+        WIDTH,
         RATE,
     >(
         config,
@@ -193,12 +206,19 @@ where
         pcs_params,
         common,
         lookup_gadget,
+        poseidon2_config,
     )?;
 
-    Ok(verifier_inputs)
+    Ok((verifier_inputs, mmcs_op_ids))
 }
 
 /// Verify a batch-STARK proof inside a recursive circuit.
+///
+/// # Returns
+/// `Ok(Vec<NonPrimitiveOpId>)` containing operation IDs that require private data
+/// (e.g., Merkle sibling values for MMCS verification). The caller must set
+/// private data for these operations before running the circuit.
+/// `Err` if there was a structural error.
 #[allow(clippy::too_many_arguments)]
 pub fn verify_batch_circuit<
     A,
@@ -211,6 +231,7 @@ pub fn verify_batch_circuit<
     InputProof: Recursive<SC::Challenge>,
     OpeningProof: Recursive<SC::Challenge>,
     LG: RecursiveLookupGadget<SC::Challenge>,
+    const WIDTH: usize,
     const RATE: usize,
 >(
     config: &SC,
@@ -221,7 +242,8 @@ pub fn verify_batch_circuit<
     pcs_params: &PcsVerifierParams<SC, InputProof, OpeningProof, Comm>,
     common: &CommonDataTargets<SC, Comm>,
     lookup_gadget: &LG,
-) -> Result<(), VerificationError>
+    poseidon2_config: crate::ops::Poseidon2Config,
+) -> Result<Vec<NonPrimitiveOpId>, VerificationError>
 where
     A: RecursiveAir<Val<SC>, SC::Challenge, LG>,
     <SC as StarkGenericConfig>::Pcs: RecursivePcs<
@@ -231,7 +253,8 @@ where
             Comm,
             <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain,
         >,
-    SC::Challenge: PrimeCharacteristicRing,
+    Val<SC>: PrimeField64,
+    SC::Challenge: ExtensionField<Val<SC>> + PrimeCharacteristicRing,
     <<SC as StarkGenericConfig>::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain: Clone,
 {
     let BatchProofTargets {
@@ -350,12 +373,14 @@ where
     }
 
     // Challenger initialisation mirrors the native batch-STARK verifier transcript.
-    let mut challenger = CircuitChallenger::<RATE>::new();
+    // Native uses observe_base_as_algebra_element which decomposes to D coefficients,
+    // so we use observe_ext to match.
+    let mut challenger = CircuitChallenger::<WIDTH, RATE>::new(poseidon2_config);
     let inst_count_target = circuit.alloc_const(
         SC::Challenge::from_usize(n_instances),
         "number of instances",
     );
-    challenger.observe(circuit, inst_count_target);
+    challenger.observe_ext(circuit, inst_count_target);
 
     for ((&ext_db, quotient_degree), air) in degree_bits
         .iter()
@@ -378,10 +403,12 @@ where
             "quotient chunk count",
         );
 
-        challenger.observe(circuit, ext_db_target);
-        challenger.observe(circuit, base_db_target);
-        challenger.observe(circuit, width_target);
-        challenger.observe(circuit, quotient_chunks_target);
+        // Native uses observe_base_as_algebra_element (via observe_instance_binding),
+        // so we use observe_ext to match by decomposing to D base coefficients.
+        challenger.observe_ext(circuit, ext_db_target);
+        challenger.observe_ext(circuit, base_db_target);
+        challenger.observe_ext(circuit, width_target);
+        challenger.observe_ext(circuit, quotient_chunks_target);
     }
 
     challenger.observe_slice(
@@ -394,10 +421,11 @@ where
 
     // Observe preprocessed widths for each instance. If a global
     // preprocessed commitment exists, observe it once.
+    // Native uses observe_base_as_algebra_element, so we use observe_ext.
     for &pre_w in preprocessed_widths.iter() {
         let pre_w_target =
             circuit.alloc_const(SC::Challenge::from_usize(pre_w), "preprocessed width");
-        challenger.observe(circuit, pre_w_target);
+        challenger.observe_ext(circuit, pre_w_target);
     }
     if let Some(global) = &common.preprocessed {
         challenger.observe_slice(circuit, &global.commitment.to_observation_targets());
@@ -415,8 +443,12 @@ where
     }
 
     // Fetch lookups and sample their challenges.
-    let challenges_per_instance =
-        get_perm_challenges::<SC, RATE, LG>(circuit, &mut challenger, all_lookups, lookup_gadget);
+    let challenges_per_instance = get_perm_challenges::<SC, WIDTH, RATE, LG>(
+        circuit,
+        &mut challenger,
+        all_lookups,
+        lookup_gadget,
+    );
 
     // Then, observe the permutation tables, if any.
     if is_lookup {
@@ -430,7 +462,8 @@ where
         );
     }
 
-    let alpha = challenger.sample(circuit);
+    // Sample alpha challenge (extension field element)
+    let alpha = challenger.sample_ext(circuit);
 
     challenger.observe_slice(
         circuit,
@@ -438,7 +471,8 @@ where
             .quotient_chunks_targets
             .to_observation_targets(),
     );
-    let zeta = challenger.sample(circuit);
+    // Sample zeta challenge (extension field element)
+    let zeta = challenger.sample_ext(circuit);
 
     // Build per-instance domains.
     let mut trace_domains = Vec::with_capacity(n_instances);
@@ -562,12 +596,15 @@ where
                 ));
             }
 
-            let ext_dom = &ext_trace_domains[inst_idx];
+            // Compute base preprocessed domain (matching prover in generation.rs)
+            let pre_domain = pcs.natural_domain_for_degree(1 << meta.degree_bits);
 
+            // Use extended trace domain for zeta_next computation (same generator)
+            let ext_dom = &ext_trace_domains[inst_idx];
             let first_point = pcs.first_point(ext_dom);
             let next_point = ext_dom.next_point(first_point).ok_or_else(|| {
                 VerificationError::InvalidProofShape(
-                    "Trace domain does not provide next point".to_string(),
+                    "Preprocessed domain does not provide next point".to_string(),
                 )
             })?;
             let generator = next_point * first_point.inverse();
@@ -575,7 +612,7 @@ where
             let zeta_next = circuit.mul(zeta, generator_const);
 
             pre_round.push((
-                *ext_dom,
+                pre_domain,
                 vec![(zeta, local.clone()), (zeta_next, next.clone())],
             ));
         }
@@ -627,7 +664,18 @@ where
         coms_to_verify.push((permutation_commit, permutation_round));
     }
 
-    let pcs_challenges = SC::Pcs::get_challenges_circuit::<RATE>(
+    // Observe opened values in the correct order (matching native).
+    // Native observes per-instance: trace_local, trace_next, then quotient chunks,
+    // then preprocessed, then permutation.
+    // The flattened structure has the wrong order, so we observe from instances directly.
+    observe_opened_values_circuit::<SC, WIDTH, RATE>(
+        circuit,
+        &mut challenger,
+        instances,
+        &quotient_degrees,
+    );
+
+    let pcs_challenges = SC::Pcs::get_challenges_circuit::<WIDTH, RATE>(
         circuit,
         &mut challenger,
         &proof_targets.opening_proof,
@@ -635,7 +683,7 @@ where
         pcs_params,
     )?;
 
-    pcs.verify_circuit(
+    let mmcs_op_ids = pcs.verify_circuit(
         circuit,
         &pcs_challenges,
         &coms_to_verify,
@@ -768,15 +816,24 @@ where
         }
     }
 
-    Ok(())
+    Ok(mmcs_op_ids)
 }
 
-pub(crate) fn get_perm_challenges<SC: StarkGenericConfig, const RATE: usize, LG: LookupGadget>(
+pub(crate) fn get_perm_challenges<
+    SC: StarkGenericConfig,
+    const WIDTH: usize,
+    const RATE: usize,
+    LG: LookupGadget,
+>(
     circuit: &mut CircuitBuilder<SC::Challenge>,
-    challenger: &mut CircuitChallenger<RATE>,
+    challenger: &mut CircuitChallenger<WIDTH, RATE>,
     all_lookups: &[Vec<Lookup<Val<SC>>>],
     lookup_gadget: &LG,
-) -> Vec<Vec<Target>> {
+) -> Vec<Vec<Target>>
+where
+    Val<SC>: PrimeField64,
+    SC::Challenge: ExtensionField<Val<SC>>,
+{
     let num_challenges_per_lookup = lookup_gadget.num_challenges();
     let approx_global_names: usize = all_lookups.iter().map(|contexts| contexts.len()).sum();
     let mut global_perm_challenges = HashMap::with_capacity(approx_global_names);
@@ -791,18 +848,19 @@ pub(crate) fn get_perm_challenges<SC: StarkGenericConfig, const RATE: usize, LG:
             for context in contexts {
                 match &context.kind {
                     Kind::Global(name) => {
-                        // Get or create the global challenges.
+                        // Get or create the global challenges (extension field elements).
                         let challenges: &mut Vec<Target> =
                             global_perm_challenges.entry(name).or_insert_with(|| {
                                 (0..num_challenges_per_lookup)
-                                    .map(|_| challenger.sample(circuit))
+                                    .map(|_| challenger.sample_ext(circuit))
                                     .collect()
                             });
                         instance_challenges.extend_from_slice(challenges);
                     }
                     Kind::Local => {
+                        // Local challenges are extension field elements.
                         instance_challenges.extend(
-                            (0..num_challenges_per_lookup).map(|_| challenger.sample(circuit)),
+                            (0..num_challenges_per_lookup).map(|_| challenger.sample_ext(circuit)),
                         );
                     }
                 }
@@ -825,4 +883,60 @@ fn lookup_data_to_pv_index(
             expected_cumulated: public_values_len + index,
         })
         .collect::<Vec<_>>()
+}
+
+/// Observe opened values in the circuit in the correct order to match native.
+///
+/// Native observes opened values in this order:
+/// 1. Trace round: for each instance, observe trace_local then trace_next
+/// 2. Quotient round: for each instance, for each chunk, observe quotient
+/// 3. Preprocessed round: for each instance, observe prep_local then prep_next
+/// 4. Permutation round: for each instance, observe perm_local then perm_next
+fn observe_opened_values_circuit<SC, const WIDTH: usize, const RATE: usize>(
+    circuit: &mut CircuitBuilder<SC::Challenge>,
+    challenger: &mut crate::challenger::CircuitChallenger<WIDTH, RATE>,
+    instances: &[OpenedValuesTargetsWithLookups<SC>],
+    quotient_degrees: &[usize],
+) where
+    SC: StarkGenericConfig,
+    Val<SC>: PrimeField64,
+    SC::Challenge: ExtensionField<Val<SC>>,
+{
+    // 1. Trace round: for each instance, observe trace_local then trace_next
+    for inst in instances {
+        challenger.observe_ext_slice(circuit, &inst.opened_values_no_lookups.trace_local_targets);
+        challenger.observe_ext_slice(circuit, &inst.opened_values_no_lookups.trace_next_targets);
+    }
+
+    // 2. Quotient round: for each instance, for each chunk, observe quotient
+    for (inst, &qd) in instances.iter().zip(quotient_degrees.iter()) {
+        for chunk_values in inst
+            .opened_values_no_lookups
+            .quotient_chunks_targets
+            .iter()
+            .take(qd)
+        {
+            challenger.observe_ext_slice(circuit, chunk_values);
+        }
+    }
+
+    // 3. Preprocessed round: for each instance, observe prep_local then prep_next
+    for inst in instances {
+        if let Some(prep_local) = &inst.opened_values_no_lookups.preprocessed_local_targets {
+            challenger.observe_ext_slice(circuit, prep_local);
+        }
+        if let Some(prep_next) = &inst.opened_values_no_lookups.preprocessed_next_targets {
+            challenger.observe_ext_slice(circuit, prep_next);
+        }
+    }
+
+    // 4. Permutation round: for each instance, observe perm_local then perm_next
+    for inst in instances {
+        if !inst.permutation_local_targets.is_empty() {
+            challenger.observe_ext_slice(circuit, &inst.permutation_local_targets);
+        }
+        if !inst.permutation_next_targets.is_empty() {
+            challenger.observe_ext_slice(circuit, &inst.permutation_next_targets);
+        }
+    }
 }

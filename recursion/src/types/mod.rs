@@ -4,7 +4,7 @@ mod challenges;
 mod proof;
 mod selectors;
 
-pub use challenges::StarkChallenges;
+pub use challenges::{StarkChallengeParams, StarkChallenges};
 pub use proof::{
     BatchProofTargets, CommitmentTargets, CommonDataTargets, OpenedValuesTargets,
     OpenedValuesTargetsWithLookups, ProofTargets,

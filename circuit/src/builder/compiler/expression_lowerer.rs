@@ -135,90 +135,136 @@ where
                     }
                 };
 
-                // Expected input layout: [in0, in1, in2, in3, mmcs_index_sum, mmcs_bit]
-                if data.input_exprs.len() != 6 {
+                // Detect D=1 (base field) vs D=4 (extension field) based on input count
+                // D=4 mode: 6 inputs [in0..3, mmcs_index_sum, mmcs_bit], 2 or 4 outputs
+                // D=1 mode: 16 inputs [in0..15], 8 or 16 outputs (no merkle support)
+                let is_d1_mode = data.input_exprs.len() == 16;
+                let is_d4_mode = data.input_exprs.len() == 6;
+
+                if !is_d1_mode && !is_d4_mode {
                     return Err(CircuitBuilderError::NonPrimitiveOpArity {
                         op: "Poseidon2Perm",
-                        expected: "6 inputs (in0..3, mmcs_index_sum, mmcs_bit)".to_string(),
+                        expected: "6 inputs (D=4 mode) or 16 inputs (D=1 mode)".to_string(),
                         got: data.input_exprs.len(),
                     });
                 }
 
-                // Expected output layout: [out0, out1]
-                if data.output_exprs.len() != 2 {
+                // Validate output count based on mode
+                let valid_output_count = if is_d1_mode {
+                    // D=1: 8 (rate only) or 16 (with capacity)
+                    data.output_exprs.len() == 8 || data.output_exprs.len() == 16
+                } else {
+                    // D=4: 2 (rate only) or 4 (with capacity)
+                    data.output_exprs.len() == 2 || data.output_exprs.len() == 4
+                };
+
+                if !valid_output_count {
                     return Err(CircuitBuilderError::NonPrimitiveOpArity {
                         op: "Poseidon2Perm",
-                        expected: "2 outputs (out0, out1)".to_string(),
+                        expected: if is_d1_mode {
+                            "8 or 16 outputs for D=1 mode".to_string()
+                        } else {
+                            "2 or 4 outputs for D=4 mode".to_string()
+                        },
                         got: data.output_exprs.len(),
                     });
                 }
 
-                let mut inputs_widx: Vec<Vec<WitnessId>> = Vec::with_capacity(6);
-                // Inputs (Limbs 0-3)
-                for (i, limb_exprs) in data.input_exprs.iter().take(4).enumerate() {
-                    if !(limb_exprs.is_empty() || limb_exprs.len() == 1) {
+                let mut inputs_widx: Vec<Vec<WitnessId>> =
+                    Vec::with_capacity(data.input_exprs.len());
+
+                if is_d1_mode {
+                    // D=1 mode: 16 input elements (no mmcs_index_sum, no mmcs_bit)
+                    for (i, limb_exprs) in data.input_exprs.iter().enumerate() {
+                        if !(limb_exprs.is_empty() || limb_exprs.len() == 1) {
+                            return Err(CircuitBuilderError::NonPrimitiveOpArity {
+                                op: "Poseidon2Perm",
+                                expected: "0 or 1 base field element per input".to_string(),
+                                got: limb_exprs.len(),
+                            });
+                        }
+                        let limb_widx = limb_exprs
+                            .iter()
+                            .map(|&expr| {
+                                get_witness_id(
+                                    expr_to_widx,
+                                    expr,
+                                    &format!("Poseidon2Perm D=1 input {i}"),
+                                )
+                            })
+                            .collect::<Result<Vec<WitnessId>, _>>()?;
+                        inputs_widx.push(limb_widx);
+                    }
+                } else {
+                    // D=4 mode: Inputs (Limbs 0-3)
+                    for (i, limb_exprs) in data.input_exprs.iter().take(4).enumerate() {
+                        if !(limb_exprs.is_empty() || limb_exprs.len() == 1) {
+                            return Err(CircuitBuilderError::NonPrimitiveOpArity {
+                                op: "Poseidon2Perm",
+                                expected: "0 or 1 extension element per input limb".to_string(),
+                                got: limb_exprs.len(),
+                            });
+                        }
+                        let limb_widx = limb_exprs
+                            .iter()
+                            .map(|&expr| {
+                                get_witness_id(
+                                    expr_to_widx,
+                                    expr,
+                                    &format!("Poseidon2Perm input limb {i}"),
+                                )
+                            })
+                            .collect::<Result<Vec<WitnessId>, _>>()?;
+                        inputs_widx.push(limb_widx);
+                    }
+
+                    // mmcs_index_sum (0 or 1 element)
+                    let mmcs_exprs = &data.input_exprs[4];
+                    if !(mmcs_exprs.is_empty() || mmcs_exprs.len() == 1) {
                         return Err(CircuitBuilderError::NonPrimitiveOpArity {
                             op: "Poseidon2Perm",
-                            expected: "0 or 1 extension element per input limb".to_string(),
-                            got: limb_exprs.len(),
+                            expected: "0 or 1 element for mmcs_index_sum".to_string(),
+                            got: mmcs_exprs.len(),
                         });
                     }
-                    let limb_widx = limb_exprs
+                    let mmcs_widx = mmcs_exprs
                         .iter()
                         .map(|&expr| {
-                            get_witness_id(
-                                expr_to_widx,
-                                expr,
-                                &format!("Poseidon2Perm input limb {i}"),
-                            )
+                            get_witness_id(expr_to_widx, expr, "Poseidon2Perm mmcs_index_sum input")
                         })
                         .collect::<Result<Vec<WitnessId>, _>>()?;
-                    inputs_widx.push(limb_widx);
-                }
+                    inputs_widx.push(mmcs_widx);
 
-                // mmcs_index_sum (0 or 1 element)
-                let mmcs_exprs = &data.input_exprs[4];
-                if !(mmcs_exprs.is_empty() || mmcs_exprs.len() == 1) {
-                    return Err(CircuitBuilderError::NonPrimitiveOpArity {
-                        op: "Poseidon2Perm",
-                        expected: "0 or 1 element for mmcs_index_sum".to_string(),
-                        got: mmcs_exprs.len(),
-                    });
+                    // mmcs_bit (0 or 1 element)
+                    let mmcs_bit_exprs = &data.input_exprs[5];
+                    if !(mmcs_bit_exprs.is_empty() || mmcs_bit_exprs.len() == 1) {
+                        return Err(CircuitBuilderError::NonPrimitiveOpArity {
+                            op: "Poseidon2Perm",
+                            expected: "0 or 1 element for mmcs_bit".to_string(),
+                            got: mmcs_bit_exprs.len(),
+                        });
+                    }
+                    let mmcs_bit_widx = mmcs_bit_exprs
+                        .iter()
+                        .map(|&expr| {
+                            get_witness_id(expr_to_widx, expr, "Poseidon2Perm mmcs_bit input")
+                        })
+                        .collect::<Result<Vec<WitnessId>, _>>()?;
+                    inputs_widx.push(mmcs_bit_widx);
                 }
-                let mmcs_widx = mmcs_exprs
-                    .iter()
-                    .map(|&expr| {
-                        get_witness_id(expr_to_widx, expr, "Poseidon2Perm mmcs_index_sum input")
-                    })
-                    .collect::<Result<Vec<WitnessId>, _>>()?;
-                inputs_widx.push(mmcs_widx);
-
-                // mmcs_bit (0 or 1 element)
-                let mmcs_bit_exprs = &data.input_exprs[5];
-                if !(mmcs_bit_exprs.is_empty() || mmcs_bit_exprs.len() == 1) {
-                    return Err(CircuitBuilderError::NonPrimitiveOpArity {
-                        op: "Poseidon2Perm",
-                        expected: "0 or 1 element for mmcs_bit".to_string(),
-                        got: mmcs_bit_exprs.len(),
-                    });
-                }
-                let mmcs_bit_widx = mmcs_bit_exprs
-                    .iter()
-                    .map(|&expr| get_witness_id(expr_to_widx, expr, "Poseidon2Perm mmcs_bit input"))
-                    .collect::<Result<Vec<WitnessId>, _>>()?;
-                inputs_widx.push(mmcs_bit_widx);
 
                 // Output CTL exposures (0 or 1 element each).
                 //
                 // For Poseidon2Perm we take outputs exclusively from `data.output_exprs` to avoid
                 // generating multiple witness ids per output limb (which breaks both execution and
                 // trace building).
-                let mut poseidon2_outputs: Vec<Vec<WitnessId>> = Vec::with_capacity(2);
+                let mut poseidon2_outputs: Vec<Vec<WitnessId>> =
+                    Vec::with_capacity(data.output_exprs.len());
                 for (i, limb_exprs) in data.output_exprs.iter().enumerate() {
                     if !(limb_exprs.is_empty() || limb_exprs.len() == 1) {
                         return Err(CircuitBuilderError::NonPrimitiveOpArity {
                             op: "Poseidon2Perm",
-                            expected: "0 or 1 extension element per output limb".to_string(),
+                            expected: "0 or 1 element per output".to_string(),
                             got: limb_exprs.len(),
                         });
                     }
@@ -226,7 +272,7 @@ where
                         let w = get_witness_id(
                             expr_to_widx,
                             expr,
-                            &format!("Poseidon2Perm output limb {i}"),
+                            &format!("Poseidon2Perm output {i}"),
                         )?;
                         poseidon2_outputs.push(vec![w]);
                     } else {

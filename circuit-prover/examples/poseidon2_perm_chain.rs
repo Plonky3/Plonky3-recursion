@@ -84,7 +84,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     });
 
     // Add permutation rows.
-    let mut last_outputs: [Option<ExprId>; 2] = [None, None];
+    let mut last_outputs: [Option<ExprId>; 4] = [None, None, None, None];
 
     for row in 0..chain_length {
         let is_first = row == 0;
@@ -104,6 +104,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             mmcs_bit: None, // Must be None when merkle_path=false
             inputs,
             out_ctl: [is_last, is_last],
+            return_all_outputs: false,
             mmcs_index_sum: None,
         })?;
 

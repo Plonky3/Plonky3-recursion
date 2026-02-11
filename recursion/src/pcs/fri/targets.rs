@@ -4,7 +4,7 @@ use core::marker::PhantomData;
 
 use p3_challenger::{CanObserve, GrindingChallenger};
 use p3_circuit::utils::RowSelectorsTargets;
-use p3_circuit::{CircuitBuilder, CircuitBuilderError};
+use p3_circuit::{CircuitBuilder, CircuitBuilderError, NonPrimitiveOpId};
 use p3_commit::{BatchOpening, ExtensionMmcs, Mmcs, PolynomialSpace};
 use p3_field::coset::TwoAdicMultiplicativeCoset;
 use p3_field::{
@@ -191,8 +191,7 @@ pub struct CommitPhaseProofStepTargets<
     /// Layout: [sib0_c0, sib0_c1, .., sib0_cD, sib1_c0, .., sib{a-2}_cD]
     pub sibling_coefficients: Vec<Target>,
     pub opening_proof: RecMmcs::Proof,
-    // This is necessary because the `Input` type can include the extension field element.
-    _phantom: PhantomData<EF>,
+    _phantom: PhantomData<(F, EF)>,
 }
 
 impl<F: Field, EF: ExtensionField<F> + BasedVectorSpace<F>, RecMmcs: RecursiveExtensionMmcs<F, EF>>
@@ -270,9 +269,13 @@ impl<F: Field, EF: ExtensionField<F> + BasedVectorSpace<F>, RecMmcs: RecursiveEx
 }
 
 /// `Recursive` version of `BatchOpening`.
+///
+/// Uses **lifted representation**: each base field value is represented as a single extension
+/// field element `EF([v, 0, 0, 0])`. This allows 1:1 correspondence with polynomial values
+/// for arithmetic verification.
 pub struct BatchOpeningTargets<F: Field, EF: ExtensionField<F>, RecMmcs: RecursiveMmcs<F, EF>> {
     /// The opened row values from each matrix in the batch.
-    /// Each inner vector corresponds to one matrix.
+    /// Each inner vector has one target per base field value.
     pub opened_values: Vec<Vec<Target>>,
     /// The proof showing the values are valid openings.
     pub opening_proof: RecMmcs::Proof,
@@ -315,6 +318,9 @@ impl<F: Field, EF: ExtensionField<F>, Inner: RecursiveMmcs<F, EF>> Recursive<EF>
 // Now, we define the commitment schemes.
 
 /// `HashTargets` corresponds to a commitment in the form of hashes with `DIGEST_ELEMS` digest elements.
+///
+/// Uses **lifted representation**: each base field hash element is stored as a separate extension
+/// field target `EF([v, 0, 0, 0])`. This is consistent with Fiat-Shamir observation.
 #[derive(Clone)]
 pub struct HashTargets<F, const DIGEST_ELEMS: usize> {
     pub hash_targets: [Target; DIGEST_ELEMS],
@@ -511,7 +517,7 @@ where
     Val<SC>: TwoAdicField + PrimeField64,
     InputMmcs: Mmcs<Val<SC>>,
     FriMmcs: Mmcs<SC::Challenge>,
-    Comm: Recursive<SC::Challenge>,
+    Comm: Recursive<SC::Challenge> + ObservableCommitment,
     RecursiveInputMmcs: RecursiveMmcs<Val<SC>, SC::Challenge, Input = InputMmcs>,
     RecursiveFriMmcs: RecursiveExtensionMmcs<Val<SC>, SC::Challenge, Input = FriMmcs>,
     RecursiveFriMmcs::Commitment: ObservableCommitment,
@@ -525,21 +531,27 @@ where
     >;
 
     /// Observes all opened values and derives PCS-specific challenges.
-    fn get_challenges_circuit<const RATE: usize>(
+    fn get_challenges_circuit<const WIDTH: usize, const RATE: usize>(
         circuit: &mut CircuitBuilder<SC::Challenge>,
-        challenger: &mut CircuitChallenger<RATE>,
+        challenger: &mut CircuitChallenger<WIDTH, RATE>,
         fri_proof: &RecursiveFriProof<
             SC,
             RecursiveFriMmcs,
             InputProofTargets<Val<SC>, SC::Challenge, RecursiveInputMmcs>,
         >,
-        opened_values: &OpenedValuesTargetsWithLookups<SC>,
+        _opened_values: &OpenedValuesTargetsWithLookups<SC>,
         params: &Self::VerifierParams,
-    ) -> Result<Vec<Target>, CircuitBuilderError> {
-        opened_values.observe(circuit, challenger);
+    ) -> Result<Vec<Target>, CircuitBuilderError>
+    where
+        Val<SC>: PrimeField64,
+        SC::Challenge: ExtensionField<Val<SC>>,
+    {
+        // NOTE: Opened values must be observed by the caller BEFORE calling this function.
+        // For batch-STARK, the caller must observe in per-instance order to match native.
+        // For single-STARK, the caller can use opened_values.observe() directly.
 
-        // Sample FRI alpha (for batch opening reduction)
-        let fri_alpha = challenger.sample(circuit);
+        // Sample FRI alpha (for batch opening reduction) - extension field
+        let fri_alpha = challenger.sample_ext(circuit);
 
         // Sample FRI betas: one per commit phase
         // For each FRI commitment, observe it and sample beta
@@ -552,18 +564,14 @@ where
             let commit_targets = commit.to_observation_targets();
             challenger.observe_slice(circuit, &commit_targets);
             // Check commit-phase PoW witness.
-            challenger.check_witness(
-                circuit,
-                params.commit_pow_bits,
-                pow.witness,
-                Val::<SC>::bits(),
-            )?;
-            let beta = challenger.sample(circuit);
+            challenger.check_pow_witness(circuit, params.commit_pow_bits, pow.witness)?;
+            // Sample beta - extension field
+            let beta = challenger.sample_ext(circuit);
             betas.push(beta);
         }
 
-        // Observe final polynomial coefficients
-        challenger.observe_slice(circuit, &fri_proof.final_poly);
+        // Observe final polynomial coefficients (extension field values)
+        challenger.observe_ext_slice(circuit, &fri_proof.final_poly);
 
         // Bind the variable-arity schedule into the transcript before query grinding,
         // matching the native FRI verifier in Plonky3.
@@ -574,14 +582,13 @@ where
         }
 
         // Check query PoW witness.
-        challenger.check_witness(
+        challenger.check_pow_witness(
             circuit,
             params.query_pow_bits,
             fri_proof.pow_witness.witness,
-            Val::<SC>::bits(),
         )?;
 
-        // Sample query indices
+        // Sample query indices - base field elements used as indices
         let num_queries = fri_proof.query_proofs.len();
         let mut query_indices = Vec::with_capacity(num_queries);
         for _ in 0..num_queries {
@@ -607,12 +614,13 @@ where
         >,
         opening_proof: &Self::RecursiveProof,
         params: &Self::VerifierParams,
-    ) -> Result<(), VerificationError> {
+    ) -> Result<Vec<NonPrimitiveOpId>, VerificationError> {
         let FriVerifierParams {
             log_blowup,
             log_final_poly_len,
             commit_pow_bits: _,
             query_pow_bits: _,
+            permutation_config,
         } = *params;
         // Extract FRI challenges from the challenges slice.
         // Layout: [alpha, beta_0, ..., beta_{n-1}, query_0, ..., query_{m-1}]
@@ -661,6 +669,7 @@ where
             &index_bits_per_query,
             commitments_with_opening_points,
             log_blowup,
+            permutation_config,
         )
     }
 
