@@ -277,10 +277,8 @@ where
                         )
                         .with_min_height(min_height)
                     };
-                    table_preps[idx] = (
-                        CircuitTableAir::Alu(alu_air),
-                        log2_ceil_usize(num_ops.div_ceil(packing.alu_lanes())),
-                    );
+                    let num_rows = num_ops.div_ceil(packing.alu_lanes());
+                    table_preps[idx] = (CircuitTableAir::Alu(alu_air), compute_degree(num_rows));
                 }
                 PrimitiveOpType::Public => {
                     let num_ops = prep.len();
@@ -349,7 +347,7 @@ where
                 let poseidon2_prover = Poseidon2Prover::new(cfg);
                 let width = poseidon2_prover.preprocessed_width_from_config();
                 let poseidon2_wrapper =
-                    poseidon2_prover.wrapper_from_config_with_preprocessed(prep_base);
+                    poseidon2_prover.wrapper_from_config_with_preprocessed(prep_base, min_height);
                 let poseidon2_wrapper_air: CircuitTableAir<SC, D> =
                     CircuitTableAir::Dynamic(poseidon2_wrapper);
                 let num_rows = prep.len().div_ceil(width);

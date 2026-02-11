@@ -1310,6 +1310,7 @@ impl Poseidon2Prover {
     fn air_wrapper_for_config_with_preprocessed<F: Field>(
         config: Poseidon2Config,
         preprocessed: Vec<F>,
+        min_height: usize,
     ) -> Poseidon2AirWrapperInner {
         match config {
             Poseidon2Config::BabyBearD1Width16 | Poseidon2Config::BabyBearD4Width16 => {
@@ -1318,7 +1319,8 @@ impl Poseidon2Prover {
                     Poseidon2CircuitAirBabyBearD4Width16::new_with_preprocessed(
                         Self::baby_bear_constants_16(),
                         unsafe { transmute::<Vec<F>, Vec<BabyBear>>(preprocessed) },
-                    ),
+                    )
+                    .with_min_height(min_height),
                 ))
             }
             Poseidon2Config::BabyBearD4Width24 => {
@@ -1327,7 +1329,8 @@ impl Poseidon2Prover {
                     Poseidon2CircuitAirBabyBearD4Width24::new_with_preprocessed(
                         Self::baby_bear_constants_24(),
                         unsafe { transmute::<Vec<F>, Vec<BabyBear>>(preprocessed) },
-                    ),
+                    )
+                    .with_min_height(min_height),
                 ))
             }
             Poseidon2Config::KoalaBearD1Width16 | Poseidon2Config::KoalaBearD4Width16 => {
@@ -1336,7 +1339,8 @@ impl Poseidon2Prover {
                     Poseidon2CircuitAirKoalaBearD4Width16::new_with_preprocessed(
                         Self::koala_bear_constants_16(),
                         unsafe { transmute::<Vec<F>, Vec<KoalaBear>>(preprocessed) },
-                    ),
+                    )
+                    .with_min_height(min_height),
                 ))
             }
             Poseidon2Config::KoalaBearD4Width24 => {
@@ -1345,7 +1349,8 @@ impl Poseidon2Prover {
                     Poseidon2CircuitAirKoalaBearD4Width24::new_with_preprocessed(
                         Self::koala_bear_constants_24(),
                         unsafe { transmute::<Vec<F>, Vec<KoalaBear>>(preprocessed) },
-                    ),
+                    )
+                    .with_min_height(min_height),
                 ))
             }
         }
@@ -1354,6 +1359,7 @@ impl Poseidon2Prover {
     pub fn wrapper_from_config_with_preprocessed<SC>(
         &self,
         preprocessed: Vec<Val<SC>>,
+        min_height: usize,
     ) -> DynamicAirEntry<SC>
     where
         SC: StarkGenericConfig + 'static + Send + Sync,
@@ -1364,6 +1370,7 @@ impl Poseidon2Prover {
             inner: Self::air_wrapper_for_config_with_preprocessed::<Val<SC>>(
                 self.config,
                 preprocessed,
+                min_height,
             ),
             width: self.width_from_config(),
             _phantom: core::marker::PhantomData::<SC>,
@@ -1407,7 +1414,7 @@ impl Poseidon2Prover {
     fn batch_instance_from_traces<SC, CF>(
         &self,
         _config: &SC,
-        _packing: TablePacking,
+        packing: TablePacking,
         traces: &Traces<CF>,
     ) -> Option<BatchTableInstance<SC>>
     where
@@ -1425,25 +1432,31 @@ impl Poseidon2Prover {
             return None;
         }
 
+        let min_height = packing.min_trace_height();
         match self.config {
             Poseidon2Config::BabyBearD1Width16 | Poseidon2Config::BabyBearD4Width16 => {
-                self.batch_instance_base_impl::<SC, p3_baby_bear::BabyBear, 16, 4, 13, 2>(t)
+                self.batch_instance_base_impl::<SC, 16, 4, 13, 2>(
+                    t, min_height,
+                )
             }
-            Poseidon2Config::BabyBearD4Width24 => {
-                self.batch_instance_base_impl::<SC, p3_baby_bear::BabyBear, 24, 4, 21, 4>(t)
-            }
+            Poseidon2Config::BabyBearD4Width24 => self
+                .batch_instance_base_impl::<SC, 24, 4, 21, 4>(
+                    t, min_height,
+                ),
             Poseidon2Config::KoalaBearD1Width16 | Poseidon2Config::KoalaBearD4Width16 => {
-                self.batch_instance_base_impl::<SC, p3_koala_bear::KoalaBear, 16, 4, 20, 2>(t)
+                self.batch_instance_base_impl::<SC, 16, 4, 20, 2>(
+                    t, min_height,
+                )
             }
-            Poseidon2Config::KoalaBearD4Width24 => {
-                self.batch_instance_base_impl::<SC, p3_koala_bear::KoalaBear, 24, 4, 23, 4>(t)
-            }
+            Poseidon2Config::KoalaBearD4Width24 => self
+                .batch_instance_base_impl::<SC, 24, 4, 23, 4>(
+                    t, min_height,
+                ),
         }
     }
 
     fn batch_instance_base_impl<
         SC,
-        F,
         const WIDTH: usize,
         const HALF_FULL_ROUNDS: usize,
         const PARTIAL_ROUNDS: usize,
@@ -1451,10 +1464,10 @@ impl Poseidon2Prover {
     >(
         &self,
         t: &Poseidon2Trace<Val<SC>>,
+        min_height: usize,
     ) -> Option<BatchTableInstance<SC>>
     where
         SC: StarkGenericConfig + 'static + Send + Sync,
-        F: StarkField + PrimeCharacteristicRing,
         Val<SC>: StarkField,
         SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
     {
@@ -1483,8 +1496,6 @@ impl Poseidon2Prover {
             );
         }
 
-        let ops_converted: Vec<Poseidon2CircuitRow<F>> = unsafe { transmute(padded_ops) };
-
         let (air, matrix) = match self.config {
             Poseidon2Config::BabyBearD1Width16 | Poseidon2Config::BabyBearD4Width16 => {
                 let constants = Self::baby_bear_constants_16();
@@ -1493,9 +1504,10 @@ impl Poseidon2Prover {
                 let air = Poseidon2CircuitAirBabyBearD4Width16::new_with_preprocessed(
                     constants.clone(),
                     preprocessed.clone(),
-                );
+                )
+                .with_min_height(min_height);
                 let ops_babybear: Vec<Poseidon2CircuitRow<BabyBear>> =
-                    unsafe { transmute(ops_converted) };
+                    unsafe { transmute(padded_ops.clone()) };
                 let matrix_f = air.generate_trace_rows(&ops_babybear, &constants, 0);
                 let matrix: RowMajorMatrix<Val<SC>> = unsafe { transmute(matrix_f) };
                 (
@@ -1503,6 +1515,7 @@ impl Poseidon2Prover {
                         inner: Self::air_wrapper_for_config_with_preprocessed::<BabyBear>(
                             self.config,
                             preprocessed,
+                            min_height,
                         ),
                         width: air.width(),
                         _phantom: core::marker::PhantomData::<SC>,
@@ -1517,9 +1530,10 @@ impl Poseidon2Prover {
                 let air = Poseidon2CircuitAirBabyBearD4Width24::new_with_preprocessed(
                     constants.clone(),
                     preprocessed.clone(),
-                );
+                )
+                .with_min_height(min_height);
                 let ops_babybear: Vec<Poseidon2CircuitRow<BabyBear>> =
-                    unsafe { transmute(ops_converted) };
+                    unsafe { transmute(padded_ops.clone()) };
                 let matrix_f = air.generate_trace_rows(&ops_babybear, &constants, 0);
                 let matrix: RowMajorMatrix<Val<SC>> = unsafe { transmute(matrix_f) };
                 (
@@ -1527,6 +1541,7 @@ impl Poseidon2Prover {
                         inner: Self::air_wrapper_for_config_with_preprocessed(
                             self.config,
                             preprocessed,
+                            min_height,
                         ),
                         width: air.width(),
                         _phantom: core::marker::PhantomData::<SC>,
@@ -1541,9 +1556,10 @@ impl Poseidon2Prover {
                 let air = Poseidon2CircuitAirKoalaBearD4Width16::new_with_preprocessed(
                     constants.clone(),
                     preprocessed.clone(),
-                );
+                )
+                .with_min_height(min_height);
                 let ops_koalabear: Vec<Poseidon2CircuitRow<KoalaBear>> =
-                    unsafe { transmute(ops_converted) };
+                    unsafe { transmute(padded_ops.clone()) };
                 let matrix_f = air.generate_trace_rows(&ops_koalabear, &constants, 0);
                 let matrix: RowMajorMatrix<Val<SC>> = unsafe { transmute(matrix_f) };
                 (
@@ -1551,6 +1567,7 @@ impl Poseidon2Prover {
                         inner: Self::air_wrapper_for_config_with_preprocessed(
                             self.config,
                             preprocessed,
+                            min_height,
                         ),
                         width: air.width(),
                         _phantom: core::marker::PhantomData::<SC>,
@@ -1565,9 +1582,10 @@ impl Poseidon2Prover {
                 let air = Poseidon2CircuitAirKoalaBearD4Width24::new_with_preprocessed(
                     constants.clone(),
                     preprocessed.clone(),
-                );
+                )
+                .with_min_height(min_height);
                 let ops_koalabear: Vec<Poseidon2CircuitRow<KoalaBear>> =
-                    unsafe { transmute(ops_converted) };
+                    unsafe { transmute(padded_ops.clone()) };
                 let matrix_f = air.generate_trace_rows(&ops_koalabear, &constants, 0);
                 let matrix: RowMajorMatrix<Val<SC>> = unsafe { transmute(matrix_f) };
                 (
@@ -1575,6 +1593,7 @@ impl Poseidon2Prover {
                         inner: Self::air_wrapper_for_config_with_preprocessed(
                             self.config,
                             preprocessed,
+                            min_height,
                         ),
                         width: air.width(),
                         _phantom: core::marker::PhantomData::<SC>,

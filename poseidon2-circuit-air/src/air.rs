@@ -62,6 +62,8 @@ pub struct Poseidon2CircuitAir<
     pub num_lookup_cols: usize,
     /// Preprocessed values for the AIR. These values are only needed by the prover. During verification, the `Vec` can be empty.
     preprocessed: Vec<F>,
+    /// Minimum trace height (for FRI compatibility with higher log_final_poly_len).
+    min_height: usize,
 }
 
 impl<
@@ -96,6 +98,7 @@ impl<
             p3_poseidon2: self.p3_poseidon2.clone(),
             num_lookup_cols: self.num_lookup_cols,
             preprocessed: self.preprocessed.clone(),
+            min_height: self.min_height,
         }
     }
 }
@@ -147,7 +150,13 @@ impl<
             p3_poseidon2: Poseidon2Air::new(constants),
             num_lookup_cols: 0,
             preprocessed: Vec::new(),
+            min_height: 1,
         }
+    }
+
+    pub fn with_min_height(mut self, min_height: usize) -> Self {
+        self.min_height = min_height.next_power_of_two().max(1);
+        self
     }
 
     pub const fn new_with_preprocessed(
@@ -163,6 +172,7 @@ impl<
             p3_poseidon2: Poseidon2Air::new(constants),
             num_lookup_cols: 0,
             preprocessed,
+            min_height: 1,
         }
     }
 
@@ -343,28 +353,31 @@ impl<
             self.preprocessed.len(),
         );
 
-        let num_extra_rows = self
-            .preprocessed
-            .len()
-            .div_ceil(Self::preprocessed_width())
+        let width = Self::preprocessed_width();
+        let natural_rows = self.preprocessed.len() / width;
+        let num_extra_rows = natural_rows
             .next_power_of_two()
-            - (self.preprocessed.len() / Self::preprocessed_width());
+            .saturating_sub(natural_rows);
 
         let mut preprocessed = self.preprocessed.clone();
-        let width = Self::preprocessed_width();
         let start_len = preprocessed.len();
         preprocessed.resize(start_len + num_extra_rows * width, F::ZERO);
 
-        // We set `new_start` to 1 in the first padding row. This indicates to the last real permutation operation
-        // that the chaining has ended.
         if num_extra_rows > 0 {
             preprocessed[start_len + width - 2] = F::ONE;
         }
 
-        Some(RowMajorMatrix::new(
-            preprocessed,
-            Self::preprocessed_width(),
-        ))
+        let mut mat = RowMajorMatrix::new(preprocessed, width);
+        let current_height = mat.height();
+        let target_height = current_height
+            .next_power_of_two()
+            .max(self.min_height.next_power_of_two());
+        if current_height < target_height {
+            let padding_rows = target_height - current_height;
+            mat.values
+                .extend(core::iter::repeat_n(F::ZERO, padding_rows * width));
+        }
+        Some(mat)
     }
 }
 

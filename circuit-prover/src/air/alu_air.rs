@@ -308,6 +308,14 @@ impl<F: Field, const D: usize> BaseAir<F> for AluAir<F, D> {
         let mut mat = RowMajorMatrix::new(preprocessed_values, self.preprocessed_width());
         mat.pad_to_power_of_two_height(F::ZERO);
 
+        let min_rows = self.min_height.next_power_of_two();
+        if mat.height() < min_rows {
+            let width = mat.width();
+            let padding_rows = min_rows - mat.height();
+            mat.values
+                .extend(core::iter::repeat_n(F::ZERO, padding_rows * width));
+        }
+
         Some(mat)
     }
 }
