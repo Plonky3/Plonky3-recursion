@@ -7,7 +7,7 @@ use p3_circuit::op::{
     NonPrimitiveOpType, NonPrimitivePreprocessedMap, Poseidon2Config, PrimitiveOpType,
 };
 use p3_circuit::{Circuit, CircuitError, PreprocessedColumns};
-use p3_field::ExtensionField;
+use p3_field::{ExtensionField, PrimeCharacteristicRing, PrimeField64};
 use p3_uni_stark::{StarkGenericConfig, SymbolicExpression, Val};
 use p3_util::log2_ceil_usize;
 
@@ -124,7 +124,7 @@ where
 
     let w_binomial = ExtF::extract_w();
     // First, get base field elements for the preprocessed values.
-    let base_prep: Vec<Vec<Val<SC>>> = preprocessed
+    let mut base_prep: Vec<Vec<Val<SC>>> = preprocessed
         .primitive
         .iter()
         .map(|vals| {
@@ -133,6 +133,113 @@ where
                 .collect::<Result<Vec<_>, CircuitError>>()
         })
         .collect::<Result<Vec<_>, CircuitError>>()?;
+
+    // Pre-processing: Update witness multiplicities for mmcs_index_sum lookups.
+    //
+    // The Poseidon2 AIR sends an mmcs_index_sum lookup when:
+    //   next_row.new_start * current_row.merkle_path = 1
+    //
+    // This lookup uses the witness index from mmcs_index_sum_ctl_idx (which is 0 when
+    // mmcs_index_sum is not explicitly set). The preprocessing function doesn't update
+    // witness multiplicities for this case because it processes operations one at a time
+    // without knowing the next operation's new_start value.
+    //
+    // We fix this by scanning the Poseidon2 preprocessed data and incrementing the witness
+    // multiplicity for each such lookup.
+    //
+    // This must be done BEFORE creating the Witness AIR so it captures the correct multiplicities.
+    //
+    // TODO: Update these indices once generic Poseidon2 is implemented.
+    // Poseidon2 preprocessed row layout (24 fields per row):
+    //   [0..16]  = 4 input limbs (each: in_idx, in_ctl, normal_chain_sel, merkle_chain_sel)
+    //   [16..20] = 2 output limbs (each: out_idx, out_ctl)
+    //   [20]     = mmcs_index_sum_ctl_idx
+    //   [21]     = mmcs_merkle_flag (precomputed: mmcs_ctl * merkle_path)
+    //   [22]     = new_start
+    //   [23]     = merkle_path
+    const POSEIDON2_PREP_ROW_WIDTH: usize = 24;
+    const MMCS_INDEX_SUM_CTL_IDX_OFFSET: usize = 20;
+    const MMCS_MERKLE_FLAG_OFFSET: usize = 21;
+    const NEW_START_OFFSET: usize = 22;
+
+    let mut mmcs_lookup_count = 0usize;
+    for (op_type, prep) in preprocessed.non_primitive.iter() {
+        if matches!(op_type, NonPrimitiveOpType::Poseidon2Perm(_)) {
+            let prep_base: Vec<Val<SC>> = prep
+                .iter()
+                .map(|v| v.as_base().ok_or(CircuitError::InvalidPreprocessedValues))
+                .collect::<Result<Vec<_>, CircuitError>>()?;
+
+            let num_rows = prep_base.len() / POSEIDON2_PREP_ROW_WIDTH;
+
+            // Check if padding will be added (trace height is padded to power of two)
+            let trace_height = num_rows.next_power_of_two();
+            let has_padding = trace_height > num_rows;
+
+            for row_idx in 0..num_rows {
+                let row_start = row_idx * POSEIDON2_PREP_ROW_WIDTH;
+                // mmcs_merkle_flag is precomputed as: mmcs_ctl * merkle_path
+                let current_mmcs_merkle_flag = prep_base[row_start + MMCS_MERKLE_FLAG_OFFSET];
+
+                // Check if next row exists and has new_start = 1
+                // Note: The Poseidon2 AIR pads the trace and sets new_start = 1 in the first
+                // padding row (only if padding exists). This means the LAST real row will
+                // also trigger a lookup if its mmcs_merkle_flag = 1 and there is padding.
+                let next_new_start = if row_idx + 1 < num_rows {
+                    let next_row_start = (row_idx + 1) * POSEIDON2_PREP_ROW_WIDTH;
+                    prep_base[next_row_start + NEW_START_OFFSET]
+                } else if has_padding {
+                    // Last real row with padding - the AIR sets new_start = 1 in first padding row
+                    <Val<SC> as PrimeCharacteristicRing>::ONE
+                } else {
+                    // No padding - the AIR wraps around (cyclically), so next row is the first row
+                    // The first row's new_start value determines the multiplicity
+                    prep_base[NEW_START_OFFSET]
+                };
+
+                // If multiplicity = mmcs_merkle_flag * next_new_start != 0
+                let multiplicity = current_mmcs_merkle_flag * next_new_start;
+                if multiplicity != <Val<SC> as PrimeCharacteristicRing>::ZERO {
+                    // Get the mmcs_index_sum witness index for this row
+                    let mmcs_idx = prep_base[row_start + MMCS_INDEX_SUM_CTL_IDX_OFFSET];
+
+                    // Convert to usize for indexing
+                    // The witness index should be a small integer that fits in usize
+                    let mmcs_idx_u64 = <Val<SC> as PrimeField64>::as_canonical_u64(&mmcs_idx);
+                    let mmcs_idx_usize = mmcs_idx_u64 as usize;
+
+                    // Ensure witness multiplicity vector is large enough
+                    if mmcs_idx_usize >= base_prep[witness_idx].len() {
+                        base_prep[witness_idx].resize(
+                            mmcs_idx_usize + 1,
+                            <Val<SC> as PrimeCharacteristicRing>::ZERO,
+                        );
+                    }
+
+                    // Increment the multiplicity
+                    base_prep[witness_idx][mmcs_idx_usize] += multiplicity;
+                    mmcs_lookup_count += 1;
+                }
+            }
+        }
+    }
+    if mmcs_lookup_count > 0 {
+        tracing::debug!(
+            "Updated {} mmcs_index_sum lookups in witness multiplicities",
+            mmcs_lookup_count
+        );
+    }
+
+    // Now create the AIRs with the updated multiplicities
+    // Get min_height from packing configuration and pass it to AIRs
+    let min_height = packing.min_trace_height();
+
+    // Helper to compute degree that respects min_height
+    let compute_degree = |num_rows: usize| -> usize {
+        let natural_height = num_rows.next_power_of_two();
+        let min_rows = min_height.next_power_of_two();
+        log2_ceil_usize(natural_height.max(min_rows))
+    };
 
     let default_air = WitnessAir::new(1, 1);
     let mut table_preps = (0..base_prep.len())
@@ -159,6 +266,7 @@ where
                     let num_ops = prep.len().div_ceil(lane_without_multiplicities);
                     let alu_air = if D == 1 {
                         AluAir::new_with_preprocessed(num_ops, effective_alu_lanes, prep.clone())
+                            .with_min_height(min_height)
                     } else {
                         let w = w_binomial.unwrap();
                         AluAir::new_binomial_with_preprocessed(
@@ -167,6 +275,7 @@ where
                             w,
                             prep.clone(),
                         )
+                        .with_min_height(min_height)
                     };
                     table_preps[idx] = (
                         CircuitTableAir::Alu(alu_air),
@@ -179,16 +288,19 @@ where
                         num_ops,
                         effective_public_lanes,
                         prep.clone(),
-                    );
+                    )
+                    .with_min_height(min_height);
+                    let num_rows = num_ops.div_ceil(effective_public_lanes);
                     table_preps[idx] = (
                         CircuitTableAir::Public(public_air),
-                        log2_ceil_usize(num_ops.div_ceil(effective_public_lanes)),
+                        compute_degree(num_rows),
                     );
                 }
                 PrimitiveOpType::Const => {
                     let height = prep.len();
-                    let const_air = ConstAir::new_with_preprocessed(height, prep.clone());
-                    table_preps[idx] = (CircuitTableAir::Const(const_air), log2_ceil_usize(height));
+                    let const_air = ConstAir::new_with_preprocessed(height, prep.clone())
+                        .with_min_height(min_height);
+                    table_preps[idx] = (CircuitTableAir::Const(const_air), compute_degree(height));
                 }
                 PrimitiveOpType::Witness => {
                     let num_witnesses = prep.len();
@@ -196,10 +308,12 @@ where
                         num_witnesses,
                         packing.witness_lanes(),
                         prep.clone(),
-                    );
+                    )
+                    .with_min_height(min_height);
+                    let num_rows = num_witnesses.div_ceil(packing.witness_lanes());
                     table_preps[idx] = (
                         CircuitTableAir::Witness(witness_air),
-                        log2_ceil_usize(num_witnesses.div_ceil(packing.witness_lanes())),
+                        compute_degree(num_rows),
                     );
                 }
             }
@@ -238,10 +352,8 @@ where
                     poseidon2_prover.wrapper_from_config_with_preprocessed(prep_base);
                 let poseidon2_wrapper_air: CircuitTableAir<SC, D> =
                     CircuitTableAir::Dynamic(poseidon2_wrapper);
-                table_preps.push((
-                    poseidon2_wrapper_air,
-                    log2_ceil_usize(prep.len().div_ceil(width)),
-                ));
+                let num_rows = prep.len().div_ceil(width);
+                table_preps.push((poseidon2_wrapper_air, compute_degree(num_rows)));
             }
             // Unconstrained operations do not use tables
             NonPrimitiveOpType::Unconstrained => {}

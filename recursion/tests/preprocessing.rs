@@ -1,26 +1,27 @@
 mod common;
 
 use p3_air::{Air, AirBuilder, BaseAir};
+use p3_baby_bear::default_babybear_poseidon2_16;
 use p3_batch_stark::{ProverData, StarkInstance, prove_batch, verify_batch};
 use p3_circuit::CircuitBuilder;
+use p3_circuit::ops::generate_poseidon2_trace;
 use p3_field::Field;
 use p3_fri::create_test_fri_params;
 use p3_lookup::logup::LogUpGadget;
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
+use p3_poseidon2_circuit_air::BabyBearD4Width16;
 use p3_recursion::pcs::HashTargets;
 use p3_recursion::{
-    BatchStarkVerifierInputsBuilder, FriVerifierParams, VerificationError,
-    generate_batch_challenges, verify_batch_circuit,
+    BatchStarkVerifierInputsBuilder, FriVerifierParams, Poseidon2Config, VerificationError,
+    verify_batch_circuit,
 };
-use rand::SeedableRng;
 use rand::distr::{Distribution, StandardUniform};
-use rand::rngs::SmallRng;
 
 use crate::common::MulAir;
 use crate::common::baby_bear_params::{
-    ChallengeMmcs, Challenger, DIGEST_ELEMS, Dft, F, InnerFri, MyCompress, MyConfig, MyHash, MyPcs,
-    Perm, RATE, ValMmcs,
+    Challenge, ChallengeMmcs, Challenger, DIGEST_ELEMS, Dft, F, InnerFri, MyCompress, MyConfig,
+    MyHash, MyPcs, RATE, ValMmcs, WIDTH,
 };
 
 /// Enum to hold different AIR types for batch verification
@@ -227,10 +228,9 @@ where
 
 #[test]
 fn test_batch_verifier_with_mixed_preprocessed() -> Result<(), VerificationError> {
-    let mut rng = SmallRng::seed_from_u64(42);
     let n = 1 << 3;
 
-    let perm = Perm::new_from_rng_128(&mut rng);
+    let perm = default_babybear_poseidon2_16();
     let hash = MyHash::new(perm.clone());
     let compress = MyCompress::new(perm.clone());
     let val_mmcs = ValMmcs::new(hash, compress);
@@ -240,10 +240,10 @@ fn test_batch_verifier_with_mixed_preprocessed() -> Result<(), VerificationError
     let log_final_poly_len = 0;
     let fri_params = create_test_fri_params(challenge_mmcs, log_final_poly_len);
     let fri_verifier_params = FriVerifierParams::from(&fri_params);
-    let log_height_max = fri_params.log_final_poly_len + fri_params.log_blowup;
-    let pow_bits = fri_params.query_proof_of_work_bits;
+    let _log_height_max = fri_params.log_final_poly_len + fri_params.log_blowup;
+    let _pow_bits = fri_params.query_proof_of_work_bits;
     let pcs = MyPcs::new(dft, val_mmcs, fri_params);
-    let challenger = Challenger::new(perm);
+    let challenger = Challenger::new(perm.clone());
 
     let config = MyConfig::new(pcs, challenger);
 
@@ -305,6 +305,10 @@ fn test_batch_verifier_with_mixed_preprocessed() -> Result<(), VerificationError
     assert!(BaseAir::<F>::preprocessed_trace(&airs[2]).is_some());
 
     let mut circuit_builder = CircuitBuilder::new();
+    circuit_builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
+        generate_poseidon2_trace::<Challenge, BabyBearD4Width16>,
+        perm,
+    );
 
     // Allocate batch verifier inputs
     let air_public_counts = vec![0usize; batch_proof.opened_values.instances.len()];
@@ -326,7 +330,7 @@ fn test_batch_verifier_with_mixed_preprocessed() -> Result<(), VerificationError
     // 1. MulAir (has preprocessed columns)
     // 2. AddAirNoPreprocessed (no preprocessed columns)
     // 3. SubAirPartialPreprocessed (some preprocessed columns)
-    verify_batch_circuit::<_, _, _, _, _, _, RATE>(
+    verify_batch_circuit::<_, _, _, _, _, _, WIDTH, RATE>(
         &config,
         &airs,
         &mut circuit_builder,
@@ -335,29 +339,18 @@ fn test_batch_verifier_with_mixed_preprocessed() -> Result<(), VerificationError
         &pcs_verifier_params,
         &verifier_inputs.common_data,
         &lookup_gadget,
+        Poseidon2Config::BabyBearD4Width16,
     )?;
 
     // Build the circuit
     let circuit = circuit_builder.build()?;
     let mut runner = circuit.runner();
 
-    // Generate all the challenge values for batch proof
-    let all_challenges = generate_batch_challenges(
-        &airs,
-        &config,
-        &batch_proof,
-        &pvs,
-        Some(&[pow_bits, log_height_max]),
-        common_data,
-        &lookup_gadget,
-    )?;
-
     // Pack values using the batch builder
     let public_inputs = verifier_inputs.pack_values(
         &pvs, // public inputs for each AIR
         &batch_proof,
         common_data,
-        &all_challenges,
     );
 
     runner

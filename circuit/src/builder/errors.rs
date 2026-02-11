@@ -57,6 +57,10 @@ pub enum CircuitBuilderError {
     #[error("Poseidon2Perm merkle_path=false must not have mmcs_bit (it has no effect)")]
     Poseidon2NonMerkleWithMmcsBit,
 
+    /// Poseidon2 configuration mismatch.
+    #[error("Poseidon2 config mismatch: expected {expected}, got {got}")]
+    Poseidon2ConfigMismatch { expected: String, got: String },
+
     /// Requested bit length exceeds the maximum allowed for binary decomposition.
     #[error("Too many bits for binary decomposition: expected at most {expected}, got {n_bits}")]
     BinaryDecompositionTooManyBits { expected: usize, n_bits: usize },
@@ -79,4 +83,8 @@ pub enum CircuitBuilderError {
         op: NonPrimitiveOpType,
         details: String,
     },
+
+    /// Invalid dimension: expected a specific number of elements.
+    #[error("Invalid dimension: expected {expected}, got {actual}")]
+    InvalidDimension { expected: usize, actual: usize },
 }

@@ -17,7 +17,7 @@ pub fn add_hash_slice<F: Field>(
 ) -> Result<Vec<ExprId>, CircuitBuilderError> {
     let chunks = inputs.chunks(poseidon2_config.rate_ext());
     let last_idx = chunks.len() - 1;
-    let mut outputs = [None, None];
+    let mut outputs = [None, None, None, None];
     let mut last_op_id = NonPrimitiveOpId(0);
     for (i, input) in chunks.enumerate() {
         let is_first = i == 0;
@@ -37,13 +37,15 @@ pub fn add_hash_slice<F: Field>(
                 .try_into()
                 .expect("We have already taken 4 elements"),
             out_ctl: [is_last, is_last],
+            return_all_outputs: false,
             mmcs_index_sum: None,
         })?;
         outputs = maybe_outputs;
         last_op_id = op_id;
     }
 
-    outputs
+    // Only return outputs 0-1 (rate elements) for hashing
+    [outputs[0], outputs[1]]
         .into_iter()
         .map(|o| {
             o.ok_or_else(|| CircuitBuilderError::MalformedNonPrimitiveOutputs {
@@ -86,6 +88,9 @@ mod tests {
         let perm = default_babybear_poseidon2_16();
         let hasher = MyHash::new(perm.clone());
 
+        // Test only lengths that are multiples of 4 (aligned to extension degree)
+        // Non-aligned lengths (like 9, 10, 11) have different behavior in overwrite-mode
+        // sponge vs zero-padded extension packing - see test_hash_non_aligned for details
         for len in [4, 8, 12, 16, 32, 64] {
             let base_inputs = (0..len)
                 .map(|i| F::from_u64(i as u64 + 1))
@@ -139,5 +144,83 @@ mod tests {
 
             runner.run().unwrap();
         }
+    }
+
+    /// Test that exposes the mismatch between circuit hashing and native PaddingFreeSponge
+    /// for non-aligned input lengths.
+    ///
+    /// Native PaddingFreeSponge uses "overwrite mode": when absorbing a partial chunk,
+    /// only the absorbed positions are overwritten; the rest keep their previous values.
+    ///
+    /// The circuit's add_hash_slice + repack_base_to_ext uses zero-padding: partial
+    /// extension elements are padded with zeros, which overwrites all rate positions.
+    ///
+    /// This test demonstrates the mismatch for 9 base field elements (not a multiple of 4).
+    #[test]
+    #[should_panic(expected = "WitnessConflict")]
+    fn test_hash_non_aligned_shows_mismatch() {
+        let perm = default_babybear_poseidon2_16();
+        let hasher = MyHash::new(perm.clone());
+
+        // 9 elements: NOT aligned to extension degree (4)
+        // Circuit will pack as 3 extension elements: [[v0,v1,v2,v3], [v4,v5,v6,v7], [v8,0,0,0]]
+        // Native sponge will absorb: [v0..v7], permute, then [v8] (keeping positions 1-7 from permutation)
+        let len = 9;
+        let base_inputs = (0..len)
+            .map(|i| F::from_u64(i as u64 + 1))
+            .collect::<Vec<_>>();
+        let expected = hasher.hash_iter(base_inputs.clone());
+
+        let mut builder = CircuitBuilder::<CF>::new();
+        builder.enable_poseidon2_perm::<DummyParams, _>(
+            generate_poseidon2_trace::<CF, DummyParams>,
+            perm,
+        );
+
+        // Pack base inputs into extension elements (will zero-pad the last one)
+        let input_exprs: Vec<ExprId> = base_inputs
+            .chunks(<CF as BasedVectorSpace<F>>::DIMENSION)
+            .map(|_| builder.add_public_input())
+            .collect();
+
+        let outputs = add_hash_slice(
+            &mut builder,
+            &Poseidon2Config::BabyBearD4Width16,
+            &input_exprs,
+            true,
+        )
+        .unwrap();
+
+        let out0_pi = builder.add_public_input();
+        let out1_pi = builder.add_public_input();
+        builder.connect(outputs[0], out0_pi);
+        builder.connect(outputs[1], out1_pi);
+
+        let circuit = builder.build().unwrap();
+        let mut runner = circuit.runner();
+
+        // Pack base inputs with zero-padding for the last chunk
+        let mut public_inputs = base_inputs
+            .chunks(<CF as BasedVectorSpace<F>>::DIMENSION)
+            .map(|chunk| {
+                let chunk: Vec<F> = chunk
+                    .iter()
+                    .cloned()
+                    .chain(iter::repeat(F::ZERO))
+                    .take(<CF as BasedVectorSpace<F>>::DIMENSION)
+                    .collect();
+                CF::from_basis_coefficients_slice(&chunk).unwrap()
+            })
+            .collect::<Vec<_>>();
+
+        // Native hash expects different result due to overwrite mode
+        let expected_limb0 = CF::from_basis_coefficients_slice(&expected[0..4]).unwrap();
+        let expected_limb1 = CF::from_basis_coefficients_slice(&expected[4..8]).unwrap();
+        public_inputs.push(expected_limb0);
+        public_inputs.push(expected_limb1);
+        runner.set_public_inputs(&public_inputs).unwrap();
+
+        // This will panic with WitnessConflict because circuit hash != native hash
+        runner.run().unwrap();
     }
 }

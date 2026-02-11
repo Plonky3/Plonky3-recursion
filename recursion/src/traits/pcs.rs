@@ -2,7 +2,7 @@
 
 use alloc::vec::Vec;
 
-use p3_circuit::{CircuitBuilder, CircuitBuilderError};
+use p3_circuit::{CircuitBuilder, CircuitBuilderError, NonPrimitiveOpId};
 use p3_uni_stark::StarkGenericConfig;
 
 use super::Recursive;
@@ -52,9 +52,9 @@ pub trait RecursivePcs<
     ///
     /// # Returns
     /// Vector of challenge targets (ordering depends on PCS scheme)
-    fn get_challenges_circuit<const RATE: usize>(
+    fn get_challenges_circuit<const WIDTH: usize, const RATE: usize>(
         circuit: &mut CircuitBuilder<SC::Challenge>,
-        challenger: &mut crate::challenger::CircuitChallenger<RATE>,
+        challenger: &mut crate::challenger::CircuitChallenger<WIDTH, RATE>,
         proof_targets: &OpeningProof,
         opened_values: &OpenedValuesTargetsWithLookups<SC>,
         params: &Self::VerifierParams,
@@ -73,8 +73,10 @@ pub trait RecursivePcs<
     /// - `params`: PCS-specific verifier parameters
     ///
     /// # Returns
-    /// `Ok(())` if verification constraints were successfully added,
-    /// `Err` if there was a structural error in the proof
+    /// `Ok(Vec<NonPrimitiveOpId>)` containing operation IDs that require private data
+    /// (e.g., Merkle sibling values for MMCS verification). The caller must set
+    /// private data for these operations before running the circuit.
+    /// `Err` if there was a structural error in the proof.
     fn verify_circuit(
         &self,
         circuit: &mut CircuitBuilder<SC::Challenge>,
@@ -82,7 +84,7 @@ pub trait RecursivePcs<
         commitments_with_opening_points: &ComsWithOpeningsTargets<Comm, Domain>,
         opening_proof: &OpeningProof,
         params: &Self::VerifierParams,
-    ) -> Result<(), VerificationError>;
+    ) -> Result<Vec<NonPrimitiveOpId>, VerificationError>;
 
     /// Compute Lagrange selector values at a point within the circuit.
     ///

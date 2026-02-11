@@ -17,7 +17,7 @@ pub mod utils;
 
 // Re-export public API
 #[cfg(debug_assertions)]
-pub use alloc_entry::{AllocationEntry, AllocationType};
+pub use alloc_entry::{AllocationEntry, AllocationType, dump_expr_ids};
 pub use builder::{CircuitBuilder, CircuitBuilderError};
 pub use circuit::{Circuit, CircuitField, PreprocessedColumns};
 pub use errors::CircuitError;

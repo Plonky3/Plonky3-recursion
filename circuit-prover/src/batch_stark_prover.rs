@@ -42,12 +42,40 @@ use crate::common::CircuitTableAir;
 use crate::config::StarkField;
 use crate::field_params::ExtractBinomialW;
 
+/// Pad a trace matrix to at least `min_height` rows.
+/// The height is always rounded up to a power of two.
+fn pad_matrix_to_min_height<F: Field>(
+    mut matrix: RowMajorMatrix<F>,
+    min_height: usize,
+) -> RowMajorMatrix<F> {
+    let current_height = matrix.height();
+    // Target height is max of current power-of-two and min_height
+    let target_height = current_height
+        .next_power_of_two()
+        .max(min_height.next_power_of_two());
+
+    if current_height < target_height {
+        // Pad with zeros to reach target height
+        let width = matrix.width();
+        let padding_rows = target_height - current_height;
+        matrix
+            .values
+            .extend(core::iter::repeat_n(F::ZERO, padding_rows * width));
+    }
+    matrix
+}
+
 /// Configuration for packing multiple primitive operations into a single AIR row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TablePacking {
     witness_lanes: usize,
     public_lanes: usize,
     alu_lanes: usize,
+    /// Minimum trace height for all tables (must be power of two).
+    /// This is required for FRI with higher `log_final_poly_len`.
+    /// FRI requires: log_trace_height > log_final_poly_len + log_blowup
+    /// So min_trace_height should be >= 2^(log_final_poly_len + log_blowup + 1)
+    min_trace_height: usize,
 }
 
 impl TablePacking {
@@ -56,11 +84,33 @@ impl TablePacking {
             witness_lanes: witness_lanes.max(1),
             public_lanes: public_lanes.max(1),
             alu_lanes: alu_lanes.max(1),
+            min_trace_height: 1,
         }
     }
 
-    pub fn from_counts(witness_lanes: usize, public_lanes: usize, alu_lanes: usize) -> Self {
-        Self::new(witness_lanes, public_lanes, alu_lanes)
+    /// Create TablePacking with a minimum trace height requirement.
+    ///
+    /// Use this when FRI parameters have `log_final_poly_len > 0`.
+    /// The minimum trace height must satisfy: `min_trace_height > 2^(log_final_poly_len + log_blowup)`
+    ///
+    /// For example, with `log_final_poly_len = 3` and `log_blowup = 1`:
+    /// - Required: `min_trace_height > 2^(3+1) = 16`
+    /// - So use `min_trace_height = 32` (next power of two)
+    pub fn with_min_trace_height(mut self, min_trace_height: usize) -> Self {
+        // Ensure min_trace_height is a power of two and at least 1
+        self.min_trace_height = min_trace_height.next_power_of_two().max(1);
+        self
+    }
+
+    /// Create TablePacking with minimum height derived from FRI parameters.
+    ///
+    /// This automatically calculates the minimum trace height from `log_final_poly_len` and `log_blowup`.
+    pub const fn with_fri_params(mut self, log_final_poly_len: usize, log_blowup: usize) -> Self {
+        // FRI requires: log_min_height > log_final_poly_len + log_blowup
+        // So min_height must be >= 2^(log_final_poly_len + log_blowup + 1)
+        let min_log_height = log_final_poly_len + log_blowup + 1;
+        self.min_trace_height = 1usize << min_log_height;
+        self
     }
 
     pub const fn witness_lanes(self) -> usize {
@@ -73,6 +123,10 @@ impl TablePacking {
 
     pub const fn alu_lanes(self) -> usize {
         self.alu_lanes
+    }
+
+    pub const fn min_trace_height(self) -> usize {
+        self.min_trace_height
     }
 }
 
@@ -1884,7 +1938,8 @@ impl Poseidon2Prover {
 
     fn air_wrapper_for_config(config: Poseidon2Config) -> Poseidon2AirWrapperInner {
         match config {
-            Poseidon2Config::BabyBearD4Width16 => {
+            // D=1 and D=4 use the same underlying AIR (operates on 16 base field elements)
+            Poseidon2Config::BabyBearD1Width16 | Poseidon2Config::BabyBearD4Width16 => {
                 Poseidon2AirWrapperInner::BabyBearD4Width16(Box::new(
                     Poseidon2CircuitAirBabyBearD4Width16::new(Self::baby_bear_constants_16()),
                 ))
@@ -1894,7 +1949,8 @@ impl Poseidon2Prover {
                     Poseidon2CircuitAirBabyBearD4Width24::new(Self::baby_bear_constants_24()),
                 ))
             }
-            Poseidon2Config::KoalaBearD4Width16 => {
+            // D=1 and D=4 use the same underlying AIR (operates on 16 base field elements)
+            Poseidon2Config::KoalaBearD1Width16 | Poseidon2Config::KoalaBearD4Width16 => {
                 Poseidon2AirWrapperInner::KoalaBearD4Width16(Box::new(
                     Poseidon2CircuitAirKoalaBearD4Width16::new(Self::koala_bear_constants_16()),
                 ))
@@ -1912,7 +1968,8 @@ impl Poseidon2Prover {
         preprocessed: Vec<F>,
     ) -> Poseidon2AirWrapperInner {
         match config {
-            Poseidon2Config::BabyBearD4Width16 => {
+            // D=1 and D=4 use the same underlying AIR (operates on 16 base field elements)
+            Poseidon2Config::BabyBearD1Width16 | Poseidon2Config::BabyBearD4Width16 => {
                 assert!(F::from_u64(BABY_BEAR_MODULUS) == F::ZERO,);
                 Poseidon2AirWrapperInner::BabyBearD4Width16(Box::new(
                     Poseidon2CircuitAirBabyBearD4Width16::new_with_preprocessed(
@@ -1930,7 +1987,8 @@ impl Poseidon2Prover {
                     ),
                 ))
             }
-            Poseidon2Config::KoalaBearD4Width16 => {
+            // D=1 and D=4 use the same underlying AIR (operates on 16 base field elements)
+            Poseidon2Config::KoalaBearD1Width16 | Poseidon2Config::KoalaBearD4Width16 => {
                 assert!(F::from_u64(KOALA_BEAR_MODULUS) == F::ZERO,);
                 Poseidon2AirWrapperInner::KoalaBearD4Width16(Box::new(
                     Poseidon2CircuitAirKoalaBearD4Width16::new_with_preprocessed(
@@ -1972,13 +2030,15 @@ impl Poseidon2Prover {
 
     pub fn width_from_config(&self) -> usize {
         match self.config {
-            Poseidon2Config::BabyBearD4Width16 => {
+            // D=1 and D=4 use the same underlying AIR
+            Poseidon2Config::BabyBearD1Width16 | Poseidon2Config::BabyBearD4Width16 => {
                 Poseidon2CircuitAirBabyBearD4Width16::new(Self::baby_bear_constants_16()).width()
             }
             Poseidon2Config::BabyBearD4Width24 => {
                 Poseidon2CircuitAirBabyBearD4Width24::new(Self::baby_bear_constants_24()).width()
             }
-            Poseidon2Config::KoalaBearD4Width16 => {
+            // D=1 and D=4 use the same underlying AIR
+            Poseidon2Config::KoalaBearD1Width16 | Poseidon2Config::KoalaBearD4Width16 => {
                 Poseidon2CircuitAirKoalaBearD4Width16::new(Self::koala_bear_constants_16()).width()
             }
             Poseidon2Config::KoalaBearD4Width24 => {
@@ -1989,13 +2049,15 @@ impl Poseidon2Prover {
 
     pub const fn preprocessed_width_from_config(&self) -> usize {
         match self.config {
-            Poseidon2Config::BabyBearD4Width16 => {
+            // D=1 and D=4 use the same underlying AIR
+            Poseidon2Config::BabyBearD1Width16 | Poseidon2Config::BabyBearD4Width16 => {
                 Poseidon2CircuitAirBabyBearD4Width16::preprocessed_width()
             }
             Poseidon2Config::BabyBearD4Width24 => {
                 Poseidon2CircuitAirBabyBearD4Width24::preprocessed_width()
             }
-            Poseidon2Config::KoalaBearD4Width16 => {
+            // D=1 and D=4 use the same underlying AIR
+            Poseidon2Config::KoalaBearD1Width16 | Poseidon2Config::KoalaBearD4Width16 => {
                 Poseidon2CircuitAirKoalaBearD4Width16::preprocessed_width()
             }
             Poseidon2Config::KoalaBearD4Width24 => {
@@ -2027,13 +2089,15 @@ impl Poseidon2Prover {
 
         // Pad to power of two and generate trace matrix based on configuration
         match self.config {
-            Poseidon2Config::BabyBearD4Width16 => {
+            // D=1 and D=4 use the same underlying AIR
+            Poseidon2Config::BabyBearD1Width16 | Poseidon2Config::BabyBearD4Width16 => {
                 self.batch_instance_base_impl::<SC, p3_baby_bear::BabyBear, 16, 4, 13, 2>(t)
             }
             Poseidon2Config::BabyBearD4Width24 => {
                 self.batch_instance_base_impl::<SC, p3_baby_bear::BabyBear, 24, 4, 21, 4>(t)
             }
-            Poseidon2Config::KoalaBearD4Width16 => {
+            // D=1 and D=4 use the same underlying AIR
+            Poseidon2Config::KoalaBearD1Width16 | Poseidon2Config::KoalaBearD4Width16 => {
                 self.batch_instance_base_impl::<SC, p3_koala_bear::KoalaBear, 16, 4, 20, 2>(t)
             }
             Poseidon2Config::KoalaBearD4Width24 => {
@@ -2080,6 +2144,7 @@ impl Poseidon2Prover {
                         out_ctl: [false; 2],
                         output_indices: [0; 2],
                         mmcs_index_sum_idx: 0,
+                        mmcs_ctl_enabled: false,
                     }),
             );
         }
@@ -2091,7 +2156,8 @@ impl Poseidon2Prover {
         // Create an AIR instance based on the configuration
         // This is a bit verbose but we can't get over const generics
         let (air, matrix) = match self.config {
-            Poseidon2Config::BabyBearD4Width16 => {
+            // D=1 and D=4 use the same underlying AIR
+            Poseidon2Config::BabyBearD1Width16 | Poseidon2Config::BabyBearD4Width16 => {
                 let constants = Self::baby_bear_constants_16();
                 let preprocessed =
                     extract_preprocessed_from_operations::<BabyBear, Val<SC>>(&t.operations);
@@ -2142,7 +2208,8 @@ impl Poseidon2Prover {
                     matrix,
                 )
             }
-            Poseidon2Config::KoalaBearD4Width16 => {
+            // D=1 and D=4 use the same underlying AIR
+            Poseidon2Config::KoalaBearD1Width16 | Poseidon2Config::KoalaBearD4Width16 => {
                 let constants = Self::koala_bear_constants_16();
                 let preprocessed =
                     extract_preprocessed_from_operations::<KoalaBear, Val<SC>>(&t.operations);
@@ -2369,6 +2436,8 @@ where
     table_packing: TablePacking,
     /// Registered dynamic non-primitive table provers.
     non_primitive_provers: Vec<Box<dyn TableProver<SC>>>,
+    /// When true, run the lookup debugger before proving to report imbalanced multisets.
+    debug_lookups: bool,
 }
 
 /// Errors for the batch STARK table prover.
@@ -2661,12 +2730,22 @@ where
             config,
             table_packing: TablePacking::default(),
             non_primitive_provers: Vec::new(),
+            debug_lookups: false,
         }
     }
 
     #[must_use]
     pub const fn with_table_packing(mut self, table_packing: TablePacking) -> Self {
         self.table_packing = table_packing;
+        self
+    }
+
+    /// Enable the lookup debugger. When set, `prove_all_tables` will run
+    /// `check_lookups` on the constructed traces before generating the proof,
+    /// panicking with a detailed message on any multiset imbalance.
+    #[must_use]
+    pub const fn with_debug_lookups(mut self) -> Self {
+        self.debug_lookups = true;
         self
     }
 
@@ -2757,6 +2836,7 @@ where
         // Build matrices and AIRs per table.
         let packing = self.table_packing;
         let witness_lanes = packing.witness_lanes();
+        let min_height = packing.min_trace_height();
 
         // Check if Alu table has only dummy operations (trace length <= 1).
         // The table implementation adds a dummy row when empty, so we check for <= 1.
@@ -2789,14 +2869,16 @@ where
             witness_rows,
             witness_lanes,
             witness_multiplicities,
-        );
+        )
+        .with_min_height(min_height);
         let witness_matrix: RowMajorMatrix<Val<SC>> =
             WitnessAir::<Val<SC>, D>::trace_to_matrix(&traces.witness_trace, witness_lanes);
 
         // Const
         let const_rows = traces.const_trace.values.len();
         let const_prep = primitive[PrimitiveOpType::Const as usize].clone();
-        let const_air = ConstAir::<Val<SC>, D>::new_with_preprocessed(const_rows, const_prep);
+        let const_air = ConstAir::<Val<SC>, D>::new_with_preprocessed(const_rows, const_prep)
+            .with_min_height(min_height);
         let const_matrix: RowMajorMatrix<Val<SC>> =
             ConstAir::<Val<SC>, D>::trace_to_matrix(&traces.const_trace);
 
@@ -2818,7 +2900,8 @@ where
         let public_rows = traces.public_trace.values.len();
         let public_prep = primitive[PrimitiveOpType::Public as usize].clone();
         let public_air =
-            PublicAir::<Val<SC>, D>::new_with_preprocessed(public_rows, public_lanes, public_prep);
+            PublicAir::<Val<SC>, D>::new_with_preprocessed(public_rows, public_lanes, public_prep)
+                .with_min_height(min_height);
         let public_matrix: RowMajorMatrix<Val<SC>> =
             PublicAir::<Val<SC>, D>::trace_to_matrix(&traces.public_trace, public_lanes);
 
@@ -2837,9 +2920,11 @@ where
         };
         let alu_air: AluAir<Val<SC>, D> = if D == 1 {
             AluAir::<Val<SC>, D>::new_with_preprocessed(alu_rows, alu_lanes, alu_prep)
+                .with_min_height(min_height)
         } else {
             let w = w_binomial.ok_or(BatchStarkProverError::MissingWForExtension)?;
             AluAir::<Val<SC>, D>::new_binomial_with_preprocessed(alu_rows, alu_lanes, w, alu_prep)
+                .with_min_height(min_height)
         };
         let alu_matrix: RowMajorMatrix<Val<SC>> =
             AluAir::<Val<SC>, D>::trace_to_matrix(&traces.alu_trace, alu_lanes);
@@ -2912,20 +2997,21 @@ where
         let mut non_primitives: Vec<NonPrimitiveTableEntry<SC>> =
             Vec::with_capacity(dynamic_instances.len());
 
+        // Pad all trace matrices to at least min_height (for FRI compatibility)
         air_storage.push(CircuitTableAir::Witness(witness_air));
-        trace_storage.push(witness_matrix);
+        trace_storage.push(pad_matrix_to_min_height(witness_matrix, min_height));
         public_storage.push(Vec::new());
 
         air_storage.push(CircuitTableAir::Const(const_air));
-        trace_storage.push(const_matrix);
+        trace_storage.push(pad_matrix_to_min_height(const_matrix, min_height));
         public_storage.push(Vec::new());
 
         air_storage.push(CircuitTableAir::Public(public_air));
-        trace_storage.push(public_matrix);
+        trace_storage.push(pad_matrix_to_min_height(public_matrix, min_height));
         public_storage.push(Vec::new());
 
         air_storage.push(CircuitTableAir::Alu(alu_air));
-        trace_storage.push(alu_matrix);
+        trace_storage.push(pad_matrix_to_min_height(alu_matrix, min_height));
         public_storage.push(Vec::new());
 
         for instance in dynamic_instances {
@@ -2937,7 +3023,7 @@ where
                 rows,
             } = instance;
             air_storage.push(CircuitTableAir::Dynamic(air));
-            trace_storage.push(trace);
+            trace_storage.push(pad_matrix_to_min_height(trace, min_height));
             public_storage.push(public_values.clone());
             non_primitives.push(NonPrimitiveTableEntry {
                 op_type,
@@ -2962,6 +3048,27 @@ where
             })
             .collect();
 
+        if self.debug_lookups {
+            use p3_lookup::debug_util::{LookupDebugInstance, check_lookups};
+
+            let preprocessed_traces: Vec<Option<RowMajorMatrix<Val<SC>>>> = instances
+                .iter()
+                .map(|inst| inst.air.preprocessed_trace())
+                .collect();
+            let debug_instances: Vec<LookupDebugInstance<'_, Val<SC>>> = instances
+                .iter()
+                .zip(preprocessed_traces.iter())
+                .map(|(inst, prep)| LookupDebugInstance {
+                    main_trace: &inst.trace,
+                    preprocessed_trace: prep,
+                    public_values: &inst.public_values,
+                    lookups: &inst.lookups,
+                    permutation_challenges: &[],
+                })
+                .collect();
+            check_lookups(&debug_instances);
+        }
+
         let proof = p3_batch_stark::prove_batch(&self.config, &instances, prover_data);
 
         // Ensure all primitive table row counts are at least 1
@@ -2973,7 +3080,8 @@ where
 
         // Store the effective packing (with reduced lanes if applicable) so the verifier
         // uses the same configuration that was actually used during proving.
-        let effective_packing = TablePacking::new(witness_lanes, public_lanes, alu_lanes);
+        let effective_packing = TablePacking::new(witness_lanes, public_lanes, alu_lanes)
+            .with_min_trace_height(min_height);
 
         Ok(BatchStarkProof {
             proof,
@@ -3006,30 +3114,31 @@ where
         let witness_lanes = packing.witness_lanes();
         let public_lanes = packing.public_lanes();
         let alu_lanes = packing.alu_lanes();
+        let min_height = packing.min_trace_height();
 
-        let witness_air = CircuitTableAir::Witness(WitnessAir::<Val<SC>, D>::new(
-            proof.rows[PrimitiveTable::Witness],
-            witness_lanes,
-        ));
-        let const_air = CircuitTableAir::Const(ConstAir::<Val<SC>, D>::new(
-            proof.rows[PrimitiveTable::Const],
-        ));
-        let public_air = CircuitTableAir::Public(PublicAir::<Val<SC>, D>::new(
-            proof.rows[PrimitiveTable::Public],
-            public_lanes,
-        ));
+        let witness_air = CircuitTableAir::Witness(
+            WitnessAir::<Val<SC>, D>::new(proof.rows[PrimitiveTable::Witness], witness_lanes)
+                .with_min_height(min_height),
+        );
+        let const_air = CircuitTableAir::Const(
+            ConstAir::<Val<SC>, D>::new(proof.rows[PrimitiveTable::Const])
+                .with_min_height(min_height),
+        );
+        let public_air = CircuitTableAir::Public(
+            PublicAir::<Val<SC>, D>::new(proof.rows[PrimitiveTable::Public], public_lanes)
+                .with_min_height(min_height),
+        );
         let alu_air: CircuitTableAir<SC, D> = if D == 1 {
-            CircuitTableAir::Alu(AluAir::<Val<SC>, D>::new(
-                proof.rows[PrimitiveTable::Alu],
-                alu_lanes,
-            ))
+            CircuitTableAir::Alu(
+                AluAir::<Val<SC>, D>::new(proof.rows[PrimitiveTable::Alu], alu_lanes)
+                    .with_min_height(min_height),
+            )
         } else {
             let w = w_binomial.ok_or(BatchStarkProverError::MissingWForExtension)?;
-            CircuitTableAir::Alu(AluAir::<Val<SC>, D>::new_binomial(
-                proof.rows[PrimitiveTable::Alu],
-                alu_lanes,
-                w,
-            ))
+            CircuitTableAir::Alu(
+                AluAir::<Val<SC>, D>::new_binomial(proof.rows[PrimitiveTable::Alu], alu_lanes, w)
+                    .with_min_height(min_height),
+            )
         };
         let mut airs = vec![witness_air, const_air, public_air, alu_air];
         // TODO: Handle public values.

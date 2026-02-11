@@ -4,19 +4,20 @@ use alloc::{format, vec};
 
 use itertools::Itertools;
 use p3_circuit::utils::ColumnsTargets;
-use p3_circuit::{CircuitBuilder, CircuitBuilderError};
-use p3_commit::Pcs;
-use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
+use p3_circuit::{CircuitBuilder, CircuitBuilderError, NonPrimitiveOpId};
+use p3_commit::{Pcs, PolynomialSpace};
+use p3_field::{BasedVectorSpace, ExtensionField, Field, PrimeCharacteristicRing, PrimeField64};
 use p3_lookup::logup::LogUpGadget;
 use p3_uni_stark::{StarkGenericConfig, Val};
 
 use super::{ObservableCommitment, VerificationError, recompose_quotient_from_chunks_circuit};
 use crate::Target;
 use crate::challenger::CircuitChallenger;
+use crate::ops::Poseidon2Config;
 use crate::traits::{LookupMetadata, Recursive, RecursiveAir, RecursivePcs};
 use crate::types::{
     CommitmentTargets, OpenedValuesTargets, OpenedValuesTargetsWithLookups, ProofTargets,
-    StarkChallenges,
+    StarkChallengeParams, StarkChallenges,
 };
 
 /// Type alias for PCS verifier parameters.
@@ -50,7 +51,11 @@ type PcsDomain<SC> = <<SC as StarkGenericConfig>::Pcs as Pcs<
 /// - `pcs_params`: PCS-specific verifier parameters (e.g. FRI's log blowup / final poly size)
 ///
 /// # Returns
-/// `Ok(())` if the circuit was successfully constructed, `Err` otherwise.
+/// `Ok(Vec<NonPrimitiveOpId>)` containing operation IDs that require private data
+/// (e.g., Merkle sibling values for MMCS verification). The caller must set
+/// private data for these operations before running the circuit.
+/// `Err` if there was a structural error.
+#[allow(clippy::too_many_arguments)]
 pub fn verify_circuit<
     A,
     SC: StarkGenericConfig,
@@ -61,6 +66,7 @@ pub fn verify_circuit<
         + ObservableCommitment,
     InputProof: Recursive<SC::Challenge>,
     OpeningProof: Recursive<SC::Challenge>,
+    const WIDTH: usize,
     const RATE: usize,
 >(
     config: &SC,
@@ -70,7 +76,8 @@ pub fn verify_circuit<
     public_values: &[Target],
     preprocessed_commit: &Option<Comm>,
     pcs_params: &PcsVerifierParams<SC, InputProof, OpeningProof, Comm>,
-) -> Result<(), VerificationError>
+    poseidon2_config: Poseidon2Config,
+) -> Result<Vec<NonPrimitiveOpId>, VerificationError>
 where
     A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
     <SC as StarkGenericConfig>::Pcs: RecursivePcs<
@@ -80,7 +87,8 @@ where
             Comm,
             <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain,
         >,
-    SC::Challenge: PrimeCharacteristicRing,
+    Val<SC>: PrimeField64,
+    SC::Challenge: ExtensionField<Val<SC>> + PrimeCharacteristicRing,
 {
     let ProofTargets {
         commitments_targets:
@@ -137,15 +145,19 @@ where
         .collect_vec();
 
     // Generate all challenges (alpha, zeta, zeta_next, PCS challenges)
-    let challenge_targets = get_circuit_challenges::<A, SC, Comm, InputProof, OpeningProof, RATE>(
-        air,
-        config,
-        proof_targets,
-        public_values,
-        preprocessed_width,
-        circuit,
-        pcs_params,
-    )?;
+    let challenge_targets =
+        get_circuit_challenges::<A, SC, Comm, InputProof, OpeningProof, WIDTH, RATE>(
+            air,
+            config,
+            proof_targets,
+            public_values,
+            preprocessed_width,
+            preprocessed_commit,
+            &init_trace_domain,
+            circuit,
+            pcs_params,
+            poseidon2_config,
+        )?;
 
     // Validate ZK randomization consistency
     if (opened_random.is_some() != SC::Pcs::ZK) || (random_commit.is_some() != SC::Pcs::ZK) {
@@ -228,7 +240,7 @@ where
     }
 
     // Verify polynomial openings using PCS
-    pcs.verify_circuit(
+    let mmcs_op_ids = pcs.verify_circuit(
         circuit,
         &challenge_targets[3..], // PCS challenges (after alpha, zeta, zeta_next)
         &coms_to_verify,
@@ -286,7 +298,7 @@ where
     let folded_mul = circuit.mul(folded_constraints, sels.inv_vanishing);
     circuit.connect(folded_mul, quotient);
 
-    Ok(())
+    Ok(mmcs_op_ids)
 }
 
 /// Generate all challenges for STARK verification.
@@ -294,6 +306,7 @@ where
 /// This includes:
 /// - Base STARK challenges (alpha, zeta, zeta_next)
 /// - PCS-specific challenges (e.g., FRI betas, query indices)
+#[allow(clippy::too_many_arguments)]
 fn get_circuit_challenges<
     A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
     SC: StarkGenericConfig,
@@ -303,15 +316,19 @@ fn get_circuit_challenges<
         > + ObservableCommitment,
     InputProof: Recursive<SC::Challenge>,
     OpeningProof: Recursive<SC::Challenge>,
+    const WIDTH: usize,
     const RATE: usize,
 >(
-    air: &A,
+    _air: &A,
     config: &SC,
     proof_targets: &ProofTargets<SC, Comm, OpeningProof>,
     public_values: &[Target],
     preprocessed_width: usize,
+    preprocessed_commit: &Option<Comm>,
+    init_trace_domain: &PcsDomain<SC>,
     circuit: &mut CircuitBuilder<SC::Challenge>,
     pcs_params: &PcsVerifierParams<SC, InputProof, OpeningProof, Comm>,
+    poseidon2_config: Poseidon2Config,
 ) -> Result<Vec<Target>, CircuitBuilderError>
 where
     SC::Pcs: RecursivePcs<
@@ -321,19 +338,29 @@ where
             Comm,
             <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain,
         >,
-    SC::Challenge: PrimeCharacteristicRing,
+    Val<SC>: PrimeField64,
+    SC::Challenge: ExtensionField<Val<SC>> + PrimeCharacteristicRing,
 {
-    let log_quotient_degree = A::get_log_num_quotient_chunks(
-        air,
-        preprocessed_width,
-        public_values.len(),
-        &[],
-        &[],
-        config.is_zk(),
-        &LogUpGadget {},
-    );
+    let pcs = config.pcs();
 
-    let mut challenger = CircuitChallenger::<RATE>::new();
+    // Compute the trace domain generator for zeta_next = zeta * generator
+    // The generator is the primitive n-th root of unity for the init_trace_domain
+    let first_point = pcs.first_point(init_trace_domain);
+    let next_point = init_trace_domain
+        .next_point(first_point)
+        .expect("init_trace_domain should have next_point");
+    let trace_domain_generator = next_point * first_point.inverse();
+
+    let mut challenger = CircuitChallenger::<WIDTH, RATE>::new(poseidon2_config);
+
+    // Set up challenge parameters matching native challenger behavior
+    let challenge_params = StarkChallengeParams {
+        degree_bits: proof_targets.degree_bits,
+        is_zk: config.is_zk(),
+        preprocessed_width,
+        preprocessed_commit,
+        trace_domain_generator,
+    };
 
     // Allocate base STARK challenges (alpha, zeta, zeta_next) using Fiat-Shamir
     let base_challenges = StarkChallenges::allocate::<SC, Comm, OpeningProof>(
@@ -341,7 +368,7 @@ where
         &mut challenger,
         proof_targets,
         public_values,
-        log_quotient_degree,
+        &challenge_params,
     );
 
     let opened_values_no_lookups = OpenedValuesTargetsWithLookups {
@@ -350,8 +377,12 @@ where
         permutation_next_targets: vec![],
     };
 
+    // Observe opened values before getting PCS challenges.
+    // For single-STARK with one instance, the standard observation order is correct.
+    opened_values_no_lookups.observe(circuit, &mut challenger);
+
     // Get PCS-specific challenges (FRI betas, query indices, etc.)
-    let pcs_challenges = SC::Pcs::get_challenges_circuit::<RATE>(
+    let pcs_challenges = SC::Pcs::get_challenges_circuit::<WIDTH, RATE>(
         circuit,
         &mut challenger,
         &proof_targets.opening_proof,

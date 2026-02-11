@@ -4,11 +4,12 @@ use core::marker::PhantomData;
 
 use p3_challenger::{CanObserve, GrindingChallenger};
 use p3_circuit::utils::RowSelectorsTargets;
-use p3_circuit::{CircuitBuilder, CircuitBuilderError};
+use p3_circuit::{CircuitBuilder, CircuitBuilderError, NonPrimitiveOpId};
 use p3_commit::{BatchOpening, ExtensionMmcs, Mmcs, PolynomialSpace};
 use p3_field::coset::TwoAdicMultiplicativeCoset;
 use p3_field::{
-    ExtensionField, Field, PackedValue, PrimeCharacteristicRing, PrimeField64, TwoAdicField,
+    BasedVectorSpace, ExtensionField, Field, PackedValue, PrimeCharacteristicRing, PrimeField64,
+    TwoAdicField,
 };
 use p3_fri::{CommitPhaseProofStep, FriProof, QueryProof, TwoAdicFriPcs};
 use p3_merkle_tree::MerkleTreeMmcs;
@@ -170,29 +171,82 @@ impl<
     }
 }
 
-/// `Recursive` version of `CommitPhaseProofStepTargets`.
+/// `Recursive` version of `CommitPhaseProofStep`.
+///
+/// Sibling values are stored as **lifted base field coefficients** to enable MMCS verification.
+/// ExtensionMmcs commits by flattening extension elements to base field, so we need the
+/// coefficients separately for hashing. Use `sibling_values_packed()` to get the packed
+/// extension elements for FRI folding arithmetic.
+///
+/// For arity `k = 2^log_arity`, we store `k - 1` sibling values (the queried value is the
+/// folded evaluation from the previous phase). Each sibling is represented by `EF::DIMENSION`
+/// lifted base field coefficients, giving `(k - 1) * EF::DIMENSION` targets total.
 pub struct CommitPhaseProofStepTargets<
     F: Field,
     EF: ExtensionField<F>,
     RecMmcs: RecursiveExtensionMmcs<F, EF>,
 > {
-    pub sibling_value: Target,
+    pub log_arity: usize,
+    /// Lifted base field coefficients for all (arity - 1) sibling values, flattened.
+    /// Layout: [sib0_c0, sib0_c1, .., sib0_cD, sib1_c0, .., sib{a-2}_cD]
+    pub sibling_coefficients: Vec<Target>,
     pub opening_proof: RecMmcs::Proof,
-    // This is necessary because the `Input` type can include the extension field element.
-    _phantom: PhantomData<EF>,
+    _phantom: PhantomData<(F, EF)>,
 }
 
-impl<F: Field, EF: ExtensionField<F>, RecMmcs: RecursiveExtensionMmcs<F, EF>> Recursive<EF>
-    for CommitPhaseProofStepTargets<F, EF, RecMmcs>
+impl<F: Field, EF: ExtensionField<F> + BasedVectorSpace<F>, RecMmcs: RecursiveExtensionMmcs<F, EF>>
+    CommitPhaseProofStepTargets<F, EF, RecMmcs>
 {
-    // This is used with an extension field element, since it is part of `FriProof`, not a base field element.
+    /// Pack a single sibling's lifted base field coefficients into an extension element.
+    fn pack_one_sibling(coeffs: &[Target], circuit: &mut CircuitBuilder<EF>) -> Target {
+        let basis: Vec<EF> = (0..EF::DIMENSION)
+            .map(|i| EF::from_basis_coefficients_fn(|j| if i == j { F::ONE } else { F::ZERO }))
+            .collect();
+
+        let mut result = coeffs[0];
+        for (i, &basis_elem) in basis.iter().enumerate().skip(1) {
+            let basis_const = circuit.add_const(basis_elem);
+            let term = circuit.mul(coeffs[i], basis_const);
+            result = circuit.add(result, term);
+        }
+        result
+    }
+
+    /// Returns all (arity - 1) sibling values as packed extension elements.
+    pub fn sibling_values_packed(&self, circuit: &mut CircuitBuilder<EF>) -> Vec<Target> {
+        let d = EF::DIMENSION;
+        self.sibling_coefficients
+            .chunks_exact(d)
+            .map(|chunk| Self::pack_one_sibling(chunk, circuit))
+            .collect()
+    }
+
+    /// Returns the single sibling value as a packed extension element (arity-2 convenience).
+    pub fn sibling_value_packed(&self, circuit: &mut CircuitBuilder<EF>) -> Target {
+        debug_assert_eq!(
+            self.log_arity, 1,
+            "sibling_value_packed is for arity-2 only; use sibling_values_packed for higher arity"
+        );
+        Self::pack_one_sibling(&self.sibling_coefficients, circuit)
+    }
+}
+
+impl<F: Field, EF: ExtensionField<F> + BasedVectorSpace<F>, RecMmcs: RecursiveExtensionMmcs<F, EF>>
+    Recursive<EF> for CommitPhaseProofStepTargets<F, EF, RecMmcs>
+{
     type Input = CommitPhaseProofStep<EF, RecMmcs::Input>;
 
     fn new(circuit: &mut CircuitBuilder<EF>, input: &Self::Input) -> Self {
-        let sibling_value = circuit.alloc_public_input("FRI commit phase sibling value");
+        let log_arity = input.log_arity as usize;
+        let arity = 1usize << log_arity;
+        let num_siblings = arity - 1;
+        let num_coeffs = num_siblings * EF::DIMENSION;
+        let sibling_coefficients =
+            circuit.alloc_public_inputs(num_coeffs, "FRI commit phase sibling coefficients");
         let opening_proof = RecMmcs::Proof::new(circuit, &input.opening_proof);
         Self {
-            sibling_value,
+            log_arity,
+            sibling_coefficients,
             opening_proof,
             _phantom: PhantomData,
         }
@@ -204,19 +258,24 @@ impl<F: Field, EF: ExtensionField<F>, RecMmcs: RecursiveExtensionMmcs<F, EF>> Re
             sibling_values,
             opening_proof,
         } = input;
-        // TODO: Support higher-arity
-        let sibling_value = sibling_values[0];
-        let mut values = vec![sibling_value];
-
+        let mut values: Vec<EF> = Vec::new();
+        for sibling_value in sibling_values {
+            let coeffs = sibling_value.as_basis_coefficients_slice();
+            values.extend(coeffs.iter().map(|&c| EF::from(c)));
+        }
         values.extend(RecMmcs::Proof::get_values(opening_proof));
         values
     }
 }
 
 /// `Recursive` version of `BatchOpening`.
+///
+/// Uses **lifted representation**: each base field value is represented as a single extension
+/// field element `EF([v, 0, 0, 0])`. This allows 1:1 correspondence with polynomial values
+/// for arithmetic verification.
 pub struct BatchOpeningTargets<F: Field, EF: ExtensionField<F>, RecMmcs: RecursiveMmcs<F, EF>> {
     /// The opened row values from each matrix in the batch.
-    /// Each inner vector corresponds to one matrix.
+    /// Each inner vector has one target per base field value.
     pub opened_values: Vec<Vec<Target>>,
     /// The proof showing the values are valid openings.
     pub opening_proof: RecMmcs::Proof,
@@ -259,6 +318,9 @@ impl<F: Field, EF: ExtensionField<F>, Inner: RecursiveMmcs<F, EF>> Recursive<EF>
 // Now, we define the commitment schemes.
 
 /// `HashTargets` corresponds to a commitment in the form of hashes with `DIGEST_ELEMS` digest elements.
+///
+/// Uses **lifted representation**: each base field hash element is stored as a separate extension
+/// field target `EF([v, 0, 0, 0])`. This is consistent with Fiat-Shamir observation.
 #[derive(Clone)]
 pub struct HashTargets<F, const DIGEST_ELEMS: usize> {
     pub hash_targets: [Target; DIGEST_ELEMS],
@@ -455,7 +517,7 @@ where
     Val<SC>: TwoAdicField + PrimeField64,
     InputMmcs: Mmcs<Val<SC>>,
     FriMmcs: Mmcs<SC::Challenge>,
-    Comm: Recursive<SC::Challenge>,
+    Comm: Recursive<SC::Challenge> + ObservableCommitment,
     RecursiveInputMmcs: RecursiveMmcs<Val<SC>, SC::Challenge, Input = InputMmcs>,
     RecursiveFriMmcs: RecursiveExtensionMmcs<Val<SC>, SC::Challenge, Input = FriMmcs>,
     RecursiveFriMmcs::Commitment: ObservableCommitment,
@@ -469,21 +531,27 @@ where
     >;
 
     /// Observes all opened values and derives PCS-specific challenges.
-    fn get_challenges_circuit<const RATE: usize>(
+    fn get_challenges_circuit<const WIDTH: usize, const RATE: usize>(
         circuit: &mut CircuitBuilder<SC::Challenge>,
-        challenger: &mut CircuitChallenger<RATE>,
+        challenger: &mut CircuitChallenger<WIDTH, RATE>,
         fri_proof: &RecursiveFriProof<
             SC,
             RecursiveFriMmcs,
             InputProofTargets<Val<SC>, SC::Challenge, RecursiveInputMmcs>,
         >,
-        opened_values: &OpenedValuesTargetsWithLookups<SC>,
+        _opened_values: &OpenedValuesTargetsWithLookups<SC>,
         params: &Self::VerifierParams,
-    ) -> Result<Vec<Target>, CircuitBuilderError> {
-        opened_values.observe(circuit, challenger);
+    ) -> Result<Vec<Target>, CircuitBuilderError>
+    where
+        Val<SC>: PrimeField64,
+        SC::Challenge: ExtensionField<Val<SC>>,
+    {
+        // NOTE: Opened values must be observed by the caller BEFORE calling this function.
+        // For batch-STARK, the caller must observe in per-instance order to match native.
+        // For single-STARK, the caller can use opened_values.observe() directly.
 
-        // Sample FRI alpha (for batch opening reduction)
-        let fri_alpha = challenger.sample(circuit);
+        // Sample FRI alpha (for batch opening reduction) - extension field
+        let fri_alpha = challenger.sample_ext(circuit);
 
         // Sample FRI betas: one per commit phase
         // For each FRI commitment, observe it and sample beta
@@ -496,18 +564,14 @@ where
             let commit_targets = commit.to_observation_targets();
             challenger.observe_slice(circuit, &commit_targets);
             // Check commit-phase PoW witness.
-            challenger.check_witness(
-                circuit,
-                params.commit_pow_bits,
-                pow.witness,
-                Val::<SC>::bits(),
-            )?;
-            let beta = challenger.sample(circuit);
+            challenger.check_pow_witness(circuit, params.commit_pow_bits, pow.witness)?;
+            // Sample beta - extension field
+            let beta = challenger.sample_ext(circuit);
             betas.push(beta);
         }
 
-        // Observe final polynomial coefficients
-        challenger.observe_slice(circuit, &fri_proof.final_poly);
+        // Observe final polynomial coefficients (extension field values)
+        challenger.observe_ext_slice(circuit, &fri_proof.final_poly);
 
         // Bind the variable-arity schedule into the transcript before query grinding,
         // matching the native FRI verifier in Plonky3.
@@ -518,14 +582,13 @@ where
         }
 
         // Check query PoW witness.
-        challenger.check_witness(
+        challenger.check_pow_witness(
             circuit,
             params.query_pow_bits,
             fri_proof.pow_witness.witness,
-            Val::<SC>::bits(),
         )?;
 
-        // Sample query indices
+        // Sample query indices - base field elements used as indices
         let num_queries = fri_proof.query_proofs.len();
         let mut query_indices = Vec::with_capacity(num_queries);
         for _ in 0..num_queries {
@@ -551,12 +614,13 @@ where
         >,
         opening_proof: &Self::RecursiveProof,
         params: &Self::VerifierParams,
-    ) -> Result<(), VerificationError> {
+    ) -> Result<Vec<NonPrimitiveOpId>, VerificationError> {
         let FriVerifierParams {
             log_blowup,
             log_final_poly_len,
             commit_pow_bits: _,
             query_pow_bits: _,
+            permutation_config,
         } = *params;
         // Extract FRI challenges from the challenges slice.
         // Layout: [alpha, beta_0, ..., beta_{n-1}, query_0, ..., query_{m-1}]
@@ -573,7 +637,9 @@ where
         let query_indices = &challenges[1 + num_betas..1 + num_betas + num_queries];
 
         // Calculate the maximum height of the FRI proof tree.
-        let log_max_height = num_betas + log_final_poly_len + log_blowup;
+        // With variable arity, total log reduction = sum(log_arities), not just num_betas.
+        let total_log_reduction: usize = opening_proof.log_arities.iter().sum();
+        let log_max_height = total_log_reduction + log_final_poly_len + log_blowup;
 
         if log_max_height > MAX_QUERY_INDEX_BITS {
             return Err(VerificationError::InvalidProofShape(format!(
@@ -603,6 +669,7 @@ where
             &index_bits_per_query,
             commitments_with_opening_points,
             log_blowup,
+            permutation_config,
         )
     }
 

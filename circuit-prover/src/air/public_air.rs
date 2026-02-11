@@ -46,6 +46,8 @@ pub struct PublicAir<F, const D: usize = 1> {
     pub preprocessed: Vec<F>,
     /// Number of lookup columns registered by this AIR so far.
     pub num_lookup_columns: usize,
+    /// Minimum trace height (for FRI compatibility with higher log_final_poly_len).
+    pub min_height: usize,
     _phantom: PhantomData<F>,
 }
 
@@ -63,6 +65,7 @@ impl<F: Field, const D: usize> PublicAir<F, D> {
             lanes,
             preprocessed: Vec::new(),
             num_lookup_columns: 0,
+            min_height: 1,
             _phantom: PhantomData,
         }
     }
@@ -81,8 +84,18 @@ impl<F: Field, const D: usize> PublicAir<F, D> {
             lanes,
             preprocessed,
             num_lookup_columns: 0,
+            min_height: 1,
             _phantom: PhantomData,
         }
+    }
+
+    /// Set the minimum trace height for FRI compatibility.
+    ///
+    /// FRI requires: `log_trace_height > log_final_poly_len + log_blowup`
+    /// So `min_height` should be >= `2^(log_final_poly_len + log_blowup + 1)`.
+    pub const fn with_min_height(mut self, min_height: usize) -> Self {
+        self.min_height = min_height;
+        self
     }
 
     /// Number of base-field columns occupied by a single lane.
@@ -187,6 +200,15 @@ impl<F: Field, const D: usize> BaseAir<F> for PublicAir<F, D> {
 
         let mut mat = RowMajorMatrix::new(preprocessed_values, row_width);
         mat.pad_to_power_of_two_height(F::ZERO);
+
+        // Pad to min_height for FRI compatibility
+        let min_rows = self.min_height.next_power_of_two();
+        if mat.height() < min_rows {
+            let width = mat.width();
+            let padding_rows = min_rows - mat.height();
+            mat.values
+                .extend(core::iter::repeat_n(F::ZERO, padding_rows * width));
+        }
 
         Some(mat)
     }

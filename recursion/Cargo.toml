@@ -12,15 +12,19 @@ categories.workspace = true
 [dependencies]
 # Plonky3 dependencies
 p3-air.workspace = true
+p3-baby-bear.workspace = true
 p3-batch-stark.workspace = true
 p3-challenger.workspace = true
 p3-circuit-prover.workspace = true
 p3-commit.workspace = true
 p3-field.workspace = true
 p3-fri.workspace = true
+p3-koala-bear.workspace = true
 p3-lookup.workspace = true
 p3-matrix.workspace = true
 p3-merkle-tree.workspace = true
+p3-poseidon2-air.workspace = true
+p3-poseidon2-circuit-air.workspace = true
 p3-symmetric.workspace = true
 p3-uni-stark.workspace = true
 p3-util.workspace = true
@@ -36,16 +40,14 @@ tracing.workspace = true
 p3-circuit.workspace = true
 
 [dev-dependencies]
+clap.workspace = true
 p3-air.workspace = true
-p3-baby-bear.workspace = true
 p3-challenger.workspace = true
 p3-dft.workspace = true
 p3-goldilocks.workspace = true
-p3-koala-bear.workspace = true
+p3-keccak-air.workspace = true
 p3-matrix.workspace = true
 p3-poseidon2.workspace = true
-p3-poseidon2-air.workspace = true
-p3-poseidon2-circuit-air.workspace = true
 p3-util.workspace = true
 proptest.workspace = true
 rand.workspace = true

@@ -291,7 +291,7 @@ pub enum NonPrimitiveOpType {
 }
 
 // Re-export Poseidon2 config types from their canonical location
-pub use crate::ops::poseidon2_perm::{Poseidon2Config, Poseidon2PermExec};
+pub use crate::ops::poseidon2_perm::{Poseidon2Config, Poseidon2PermExec, Poseidon2PermExecBase};
 
 /// Preprocessed data for non-primitive tables, keyed by operation type.
 pub type NonPrimitivePreprocessedMap<F> = HashMap<NonPrimitiveOpType, Vec<F>>;
@@ -302,10 +302,15 @@ pub type NonPrimitivePreprocessedMap<F> = HashMap<NonPrimitiveOpType, Vec<F>>;
 pub enum NonPrimitiveOpConfig<F> {
     /// No configuration needed (placeholder for future operations).
     None,
-    /// Poseidon2 permutation configuration with exec closure.
+    /// Poseidon2 permutation configuration with exec closure (D=4, 4 extension elements).
     Poseidon2Perm {
         config: Poseidon2Config,
         exec: Poseidon2PermExec<F, 4>,
+    },
+    /// Poseidon2 permutation configuration for base field (D=1, 16 base elements).
+    Poseidon2PermBase {
+        config: Poseidon2Config,
+        exec: Poseidon2PermExecBase<F>,
     },
 }
 
@@ -314,6 +319,10 @@ impl<F> Clone for NonPrimitiveOpConfig<F> {
         match self {
             Self::None => Self::None,
             Self::Poseidon2Perm { config, exec } => Self::Poseidon2Perm {
+                config: *config,
+                exec: Arc::clone(exec),
+            },
+            Self::Poseidon2PermBase { config, exec } => Self::Poseidon2PermBase {
                 config: *config,
                 exec: Arc::clone(exec),
             },
@@ -330,6 +339,11 @@ impl<F> Debug for NonPrimitiveOpConfig<F> {
                 .field("config", config)
                 .field("exec", &"<closure>")
                 .finish(),
+            Self::Poseidon2PermBase { config, .. } => f
+                .debug_struct("Poseidon2PermBase")
+                .field("config", config)
+                .field("exec", &"<closure>")
+                .finish(),
         }
     }
 }
@@ -342,6 +356,10 @@ impl<F> PartialEq for NonPrimitiveOpConfig<F> {
             (Self::Poseidon2Perm { config: c1, .. }, Self::Poseidon2Perm { config: c2, .. }) => {
                 c1 == c2
             }
+            (
+                Self::Poseidon2PermBase { config: c1, .. },
+                Self::Poseidon2PermBase { config: c2, .. },
+            ) => c1 == c2,
             _ => false,
         }
     }
@@ -352,8 +370,11 @@ impl<F> Eq for NonPrimitiveOpConfig<F> {}
 impl<F> Hash for NonPrimitiveOpConfig<F> {
     fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
         core::mem::discriminant(self).hash(state);
-        if let Self::Poseidon2Perm { config, .. } = self {
-            config.hash(state);
+        match self {
+            Self::Poseidon2Perm { config, .. } | Self::Poseidon2PermBase { config, .. } => {
+                config.hash(state);
+            }
+            Self::None => {}
         }
     }
 }
@@ -464,6 +485,7 @@ impl<'a, F: PrimeCharacteristicRing + Eq + Clone> ExecutionContext<'a, F> {
         // Check for conflicting reassignment
         if let Some(existing_value) = slot.as_ref() {
             if *existing_value == value {
+                // Same value - this is fine (duplicate set via connect)
                 return Ok(());
             }
             return Err(CircuitError::WitnessConflict {

@@ -1,11 +1,10 @@
 mod common;
 
-use p3_baby_bear::{BabyBear as F, Poseidon2BabyBear};
+use p3_baby_bear::BabyBear as F;
 use p3_circuit::CircuitBuilder;
-use p3_circuit::ops::Poseidon2CircuitRow;
-use p3_commit::ExtensionMmcs;
+use p3_circuit::ops::{BabyBearD1Width16, Poseidon2CircuitRow, generate_poseidon2_trace};
 use p3_field::PrimeCharacteristicRing;
-use p3_fri::{TwoAdicFriPcs, create_test_fri_params};
+use p3_fri::create_test_fri_params;
 use p3_poseidon2::ExternalLayerConstants;
 use p3_poseidon2_air::RoundConstants;
 use p3_poseidon2_circuit_air::{
@@ -16,10 +15,9 @@ use p3_recursion::pcs::fri::{
     RecValMmcs, Witness,
 };
 use p3_recursion::public_inputs::StarkVerifierInputsBuilder;
-use p3_recursion::{VerificationError, generate_challenges, verify_circuit};
+use p3_recursion::{Poseidon2Config, VerificationError, verify_circuit};
 use p3_uni_stark::{
-    StarkConfig, StarkGenericConfig, prove_with_preprocessed, setup_preprocessed,
-    verify_with_preprocessed,
+    StarkGenericConfig, prove_with_preprocessed, setup_preprocessed, verify_with_preprocessed,
 };
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
@@ -43,10 +41,13 @@ fn init_logger() {
 
 use crate::common::baby_bear_params::*;
 
+// Use base field challenges for this test to keep proof size manageable.
+// The common module uses extension field challenges (D=4), which would
+// create 4x more observations and circuit operations.
 type Challenge = F;
-type ChallengeMmcs = ExtensionMmcs<F, Challenge, ValMmcs>;
-type MyPcs = TwoAdicFriPcs<F, Dft, ValMmcs, ChallengeMmcs>;
-type MyConfig = StarkConfig<MyPcs, Challenge, Challenger>;
+type ChallengeMmcs = p3_commit::ExtensionMmcs<F, Challenge, ValMmcs>;
+type MyPcs = p3_fri::TwoAdicFriPcs<F, Dft, ValMmcs, ChallengeMmcs>;
+type MyConfig = p3_uni_stark::StarkConfig<MyPcs, Challenge, Challenger>;
 
 #[test]
 fn test_poseidon2_perm_verifier() -> Result<(), VerificationError> {
@@ -78,10 +79,10 @@ fn test_poseidon2_perm_verifier() -> Result<(), VerificationError> {
     let log_final_poly_len = 0;
     let fri_params = create_test_fri_params(challenge_mmcs, log_final_poly_len);
     let fri_verifier_params = FriVerifierParams::from(&fri_params);
-    let log_height_max = fri_params.log_final_poly_len + fri_params.log_blowup;
-    let pow_bits = fri_params.query_proof_of_work_bits;
+    let _log_height_max = fri_params.log_final_poly_len + fri_params.log_blowup;
+    let _pow_bits = fri_params.query_proof_of_work_bits;
     let pcs = MyPcs::new(dft, val_mmcs, fri_params);
-    let challenger = Challenger::new(perm);
+    let challenger = Challenger::new(perm.clone());
     let config = MyConfig::new(pcs, challenger);
 
     // Build a trace with enough rows to satisfy FRI height constraints.
@@ -102,6 +103,7 @@ fn test_poseidon2_perm_verifier() -> Result<(), VerificationError> {
                 out_ctl: [false; 2],
                 output_indices: [0; 2],
                 mmcs_index_sum_idx: 0,
+                mmcs_ctl_enabled: false,
             }
         })
         .collect();
@@ -141,6 +143,12 @@ fn test_poseidon2_perm_verifier() -> Result<(), VerificationError> {
     >;
 
     let mut circuit_builder = CircuitBuilder::new();
+    // Use the same permutation as the prover to ensure Fiat-Shamir challengers match.
+    // D=1 (base field challenges) uses the base variant which operates on 16 elements directly.
+    circuit_builder.enable_poseidon2_perm_base::<BabyBearD1Width16, _>(
+        generate_poseidon2_trace::<Challenge, BabyBearD1Width16>,
+        perm,
+    );
     let verifier_inputs =
         StarkVerifierInputsBuilder::<MyConfig, HashTargets<F, DIGEST_ELEMS>, InnerFri>::allocate(
             &mut circuit_builder,
@@ -155,6 +163,7 @@ fn test_poseidon2_perm_verifier() -> Result<(), VerificationError> {
         HashTargets<F, DIGEST_ELEMS>,
         InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>>,
         InnerFri,
+        WIDTH,
         RATE,
     >(
         &config,
@@ -164,26 +173,14 @@ fn test_poseidon2_perm_verifier() -> Result<(), VerificationError> {
         &verifier_inputs.air_public_targets,
         &verifier_inputs.preprocessed_commit,
         &fri_verifier_params,
+        Poseidon2Config::BabyBearD1Width16,
     )?;
 
     let circuit = circuit_builder.build()?;
     let mut runner = circuit.runner();
 
-    let all_challenges = generate_challenges(
-        &air,
-        &config,
-        &proof,
-        &public_inputs,
-        Some(&[pow_bits, log_height_max]),
-    )?;
-    let num_queries = proof.opening_proof.query_proofs.len();
-    let packed_publics = verifier_inputs.pack_values(
-        &public_inputs,
-        &proof,
-        &Some(verifier_data.commitment),
-        &all_challenges,
-        num_queries,
-    );
+    let packed_publics =
+        verifier_inputs.pack_values(&public_inputs, &proof, &Some(verifier_data.commitment));
 
     runner
         .set_public_inputs(&packed_publics)

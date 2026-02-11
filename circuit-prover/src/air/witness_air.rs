@@ -73,6 +73,8 @@ pub struct WitnessAir<F, const D: usize = 1> {
     pub multiplicities: Vec<F>,
     /// Number of currently registered lookup columns.
     pub num_lookup_columns: usize,
+    /// Minimum trace height (for FRI compatibility with higher log_final_poly_len).
+    pub min_height: usize,
     _phantom: PhantomData<F>,
 }
 
@@ -90,6 +92,7 @@ impl<F: Field, const D: usize> WitnessAir<F, D> {
             lanes,
             multiplicities: Vec::new(),
             num_lookup_columns: 0,
+            min_height: 1,
             _phantom: PhantomData,
         }
     }
@@ -111,8 +114,18 @@ impl<F: Field, const D: usize> WitnessAir<F, D> {
             lanes,
             multiplicities,
             num_lookup_columns: 0,
+            min_height: 1,
             _phantom: PhantomData,
         }
+    }
+
+    /// Set the minimum trace height for FRI compatibility.
+    ///
+    /// FRI requires: `log_trace_height > log_final_poly_len + log_blowup`
+    /// So `min_height` should be >= `2^(log_final_poly_len + log_blowup + 1)`.
+    pub const fn with_min_height(mut self, min_height: usize) -> Self {
+        self.min_height = min_height;
+        self
     }
 
     #[inline]
@@ -240,10 +253,16 @@ impl<F: Field, const D: usize> BaseAir<F> for WitnessAir<F, D> {
             self.num_witnesses,
             self.multiplicities.len()
         );
-        let height = (self.num_witnesses.div_ceil(self.lanes)).next_power_of_two() * self.lanes;
+        // Calculate natural height and respect min_height for FRI compatibility
+        let natural_rows = self.num_witnesses.div_ceil(self.lanes).next_power_of_two();
+        let min_rows = self.min_height.next_power_of_two();
+        let num_rows = natural_rows.max(min_rows);
+        let height = num_rows * self.lanes;
+
         let all_vals = (0..height)
             .flat_map(|i| {
                 if i >= self.multiplicities.len() {
+                    // Padding rows have zero multiplicity
                     return vec![F::ZERO, F::from_u32(i as u32)];
                 }
                 vec![self.multiplicities[i], F::from_u32(i as u32)]

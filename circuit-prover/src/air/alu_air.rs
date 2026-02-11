@@ -71,6 +71,8 @@ pub struct AluAir<F, const D: usize = 1> {
     pub preprocessed: Vec<F>,
     /// Number of lookup columns registered so far.
     pub num_lookup_columns: usize,
+    /// Minimum trace height (for FRI compatibility with higher log_final_poly_len).
+    pub min_height: usize,
     _phantom: PhantomData<F>,
 }
 
@@ -85,6 +87,7 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AluAir<F, D> {
             w_binomial: None,
             preprocessed: Vec::new(),
             num_lookup_columns: 0,
+            min_height: 1,
             _phantom: PhantomData,
         }
     }
@@ -99,6 +102,7 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AluAir<F, D> {
             w_binomial: None,
             preprocessed,
             num_lookup_columns: 0,
+            min_height: 1,
             _phantom: PhantomData,
         }
     }
@@ -113,6 +117,7 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AluAir<F, D> {
             w_binomial: Some(w),
             preprocessed: Vec::new(),
             num_lookup_columns: 0,
+            min_height: 1,
             _phantom: PhantomData,
         }
     }
@@ -132,8 +137,18 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AluAir<F, D> {
             w_binomial: Some(w),
             preprocessed,
             num_lookup_columns: 0,
+            min_height: 1,
             _phantom: PhantomData,
         }
+    }
+
+    /// Set the minimum trace height for FRI compatibility.
+    ///
+    /// FRI requires: `log_trace_height > log_final_poly_len + log_blowup`
+    /// So `min_height` should be >= `2^(log_final_poly_len + log_blowup + 1)`.
+    pub const fn with_min_height(mut self, min_height: usize) -> Self {
+        self.min_height = min_height;
+        self
     }
 
     /// Number of main columns per lane: a[D], b[D], c[D], out[D]

@@ -79,7 +79,7 @@ pub fn add_mmcs_verify<F: Field>(
 ) -> Result<Vec<NonPrimitiveOpId>, CircuitBuilderError> {
     // We return only the operations that require private data.
     let mut op_ids = Vec::with_capacity(openings_expr.len());
-    let mut output = [None, None];
+    let mut output = [None, None, None, None];
     let zero = builder.add_const(F::ZERO);
     for (i, (row_digest, direction)) in openings_expr.iter().zip(directions_expr).enumerate() {
         let is_first = i == 0;
@@ -93,6 +93,7 @@ pub fn add_mmcs_verify<F: Field>(
                 mmcs_bit: Some(zero), // Extra row is always a left child
                 inputs: [None, None, Some(row_digest[0]), Some(row_digest[1])],
                 out_ctl: [false, false],
+                return_all_outputs: false,
                 mmcs_index_sum: None,
             })?;
         }
@@ -108,12 +109,14 @@ pub fn add_mmcs_verify<F: Field>(
                 [None, None, None, None]
             },
             out_ctl: [is_last, is_last],
+            return_all_outputs: false,
             mmcs_index_sum: None,
         })?;
         op_ids.push(op_id);
         output = maybe_output;
     }
-    let output = output
+    // Only outputs 0-1 are CTL-exposed for MMCS verification
+    let output = [output[0], output[1]]
         .into_iter()
         .map(|x| {
             x.ok_or_else(|| CircuitBuilderError::MalformedNonPrimitiveOutputs {

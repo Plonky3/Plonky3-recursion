@@ -3,18 +3,21 @@ mod common;
 use p3_baby_bear::default_babybear_poseidon2_16;
 use p3_challenger::{CanObserve, CanSampleBits, FieldChallenger, GrindingChallenger};
 use p3_circuit::CircuitBuilder;
+use p3_circuit::ops::generate_poseidon2_trace;
 use p3_commit::Pcs;
 use p3_dft::Radix2DitParallel as Dft;
 use p3_field::coset::TwoAdicMultiplicativeCoset;
-use p3_field::{Field, PrimeCharacteristicRing};
+use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
 use p3_fri::create_test_fri_params;
 use p3_matrix::dense::RowMajorMatrix;
+use p3_poseidon2_circuit_air::BabyBearD4Width16;
 // Recursive target graph pieces
-use p3_recursion::Recursive;
 use p3_recursion::pcs::fri::{
-    FriProofTargets, InputProofTargets, RecExtensionValMmcs, RecValMmcs, Witness as RecWitness,
+    FriProofTargets, HashTargets, InputProofTargets, RecExtensionValMmcs, RecValMmcs,
+    Witness as RecWitness,
 };
 use p3_recursion::public_inputs::{CommitmentOpening, FriVerifierInputs};
+use p3_recursion::{Poseidon2Config, Recursive};
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
 
@@ -445,17 +448,19 @@ fn run_fri_test(setup: FriSetup, build_only: bool) {
     }
     builder.pop_scope();
 
-    // 4) Wire the arithmetic-only FRI verifier
-    verify_fri_circuit::<F, Challenge, RecExt, RecVal, RecWitness<F>, p3_recursion::Target>(
-        &mut builder,
-        &fri_targets,
-        alpha_t,
-        &betas_t,
-        &index_bits_t_per_query,
-        &commitments_with_opening_points_targets,
-        log_blowup,
-    )
-    .unwrap();
+    // 4) Wire the arithmetic-only FRI verifier (MMCS verification disabled for this test)
+    let _mmcs_op_ids =
+        verify_fri_circuit::<F, Challenge, RecExt, RecVal, RecWitness<F>, p3_recursion::Target>(
+            &mut builder,
+            &fri_targets,
+            alpha_t,
+            &betas_t,
+            &index_bits_t_per_query,
+            &commitments_with_opening_points_targets,
+            log_blowup,
+            None, // MMCS verification disabled
+        )
+        .unwrap();
 
     builder.dump_allocation_log();
     let circuit = builder.build().unwrap();
@@ -527,4 +532,273 @@ fn test_circuit_fri_verifier_scoped_builder() {
     let groups = vec![vec![0u8, 5, 8, 8, 10], vec![8u8, 11], vec![4u8, 5, 8]];
     let setup = generate_setup(0, groups);
     run_fri_test(setup, true);
+}
+
+// ============================================================================
+// E2E test with full MMCS verification
+// ============================================================================
+
+/// Run FRI test with full MMCS verification.
+fn run_fri_test_with_mmcs(setup: FriSetup) {
+    let FriSetup {
+        pcs,
+        perm,
+        log_blowup,
+        log_final_poly_len,
+        query_pow_bits,
+        commit_pow_bits,
+        group_sizes,
+    } = setup;
+
+    // Produce a proof
+    let result = produce_inputs_multi(
+        &pcs,
+        &perm,
+        log_blowup,
+        log_final_poly_len,
+        (commit_pow_bits, query_pow_bits),
+        &group_sizes,
+        /*seed_base=*/ 42,
+    );
+
+    let num_phases = result.num_phases;
+    let log_max_height = result.log_max_height;
+    let num_queries = result.index_bits_per_query.len();
+
+    // ——— Build circuit with MMCS verification enabled ———
+    let mut builder = CircuitBuilder::<Challenge>::new();
+
+    // Enable Poseidon2 permutation for MMCS verification
+    let perm_for_circuit = default_babybear_poseidon2_16();
+    builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
+        generate_poseidon2_trace::<Challenge, BabyBearD4Width16>,
+        perm_for_circuit,
+    );
+
+    // 1) Allocate FriProofTargets
+    let fri_targets = FriTargets::new(&mut builder, &result.fri_proof);
+
+    // 2) Public inputs for α, βs, index bits
+    let alpha_t = builder.add_public_input();
+    let betas_t: Vec<_> = (0..num_phases)
+        .map(|_| builder.add_public_input())
+        .collect();
+
+    let index_bits_t_per_query: Vec<Vec<_>> = (0..num_queries)
+        .map(|_| {
+            (0..log_max_height)
+                .map(|_| builder.add_public_input())
+                .collect()
+        })
+        .collect();
+
+    // 3) Build commitments_with_opening_points targets structure with HashTargets
+    // Extract actual commitments from the prover transcript
+    let mut v_challenger = Challenger::new(perm);
+    let val_sizes: Vec<F> = group_sizes
+        .iter()
+        .flat_map(|sizes| sizes.iter().map(|&b| F::from_u8(b)))
+        .collect();
+    v_challenger.observe_slice(&val_sizes);
+
+    // Rebuild commitments for targets and values
+    let mut actual_commitments: Vec<[F; DIGEST_ELEMS]> = Vec::new();
+
+    // We need to extract the commitments from the PCS - for this test, we'll
+    // recreate the evaluation matrices and re-commit to get the actual values
+    let mut groups_evals = Vec::new();
+    for (i, sizes) in group_sizes.iter().enumerate() {
+        groups_evals.push(make_evals(sizes, 42 + i as u64));
+    }
+
+    for evals in &groups_evals {
+        let (commitment, _prover_data) =
+            <MyPcs as Pcs<Challenge, Challenger>>::commit(&pcs, evals.clone());
+        v_challenger.observe(commitment);
+        actual_commitments.push(commitment.into());
+    }
+
+    let mut commitments_with_opening_points_targets = Vec::new();
+
+    for (group_idx, (_commit_placeholder, mats_data)) in
+        result.commitments_with_points.iter().enumerate()
+    {
+        // Allocate HashTargets for the commitment using Recursive::new
+        let commit_hash_targets = <HashTargets<F, DIGEST_ELEMS> as Recursive<Challenge>>::new(
+            &mut builder,
+            &p3_symmetric::Hash::from(actual_commitments[group_idx]),
+        );
+
+        let mut mats_targets = Vec::new();
+        for (domain, points_and_values) in mats_data {
+            let mut pv_targets = Vec::new();
+            for (_z, fz) in points_and_values {
+                let z_t = builder.add_public_input();
+                let fz_t: Vec<_> = (0..fz.len()).map(|_| builder.add_public_input()).collect();
+                pv_targets.push((z_t, fz_t));
+            }
+            mats_targets.push((*domain, pv_targets));
+        }
+
+        commitments_with_opening_points_targets.push((commit_hash_targets, mats_targets));
+    }
+
+    // 4) Wire the FRI verifier with MMCS verification enabled
+    let mmcs_op_ids = verify_fri_circuit::<
+        F,
+        Challenge,
+        RecExt,
+        RecVal,
+        RecWitness<F>,
+        HashTargets<F, DIGEST_ELEMS>,
+    >(
+        &mut builder,
+        &fri_targets,
+        alpha_t,
+        &betas_t,
+        &index_bits_t_per_query,
+        &commitments_with_opening_points_targets,
+        log_blowup,
+        Some(Poseidon2Config::BabyBearD4Width16),
+    )
+    .unwrap();
+
+    println!(
+        "FRI circuit with MMCS: {} MMCS operations requiring private data",
+        mmcs_op_ids.len()
+    );
+
+    // Build the circuit
+    let circuit = builder.build().unwrap();
+
+    // ---- Pack public inputs in allocation order ----
+    let mut packed_inputs: Vec<Challenge> = Vec::new();
+
+    // 1. FRI proof values (allocated by FriTargets::new - lifted for batch openings)
+    packed_inputs.extend(&result.fri_values);
+
+    // 2. Alpha
+    packed_inputs.push(result.alpha);
+
+    // 3. Betas
+    packed_inputs.extend(&result.betas);
+
+    // 4. Index bits per query
+    for bits in &result.index_bits_per_query {
+        packed_inputs.extend(bits);
+    }
+
+    // 5. Commitments with opening points
+    // HashTargets uses lifted representation (one target per base field value)
+    for (group_idx, (_commit_placeholder, mats_data)) in
+        result.commitments_with_points.iter().enumerate()
+    {
+        // Commitment as lifted extension field values
+        for &c in &actual_commitments[group_idx] {
+            packed_inputs.push(Challenge::from(c));
+        }
+
+        // Then (z, fz) pairs for each matrix
+        for (_domain, points_and_values) in mats_data {
+            for (z, fz) in points_and_values {
+                packed_inputs.push(*z);
+                packed_inputs.extend(fz);
+            }
+        }
+    }
+
+    let mut runner = circuit.runner();
+    runner.set_public_inputs(&packed_inputs).unwrap();
+
+    println!(
+        "FRI circuit with MMCS: {} MMCS operations (input batch + commit-phase)",
+        mmcs_op_ids.len()
+    );
+
+    // Set MMCS private data from the FRI proof
+    // This sets siblings for both input batch MMCS and commit-phase MMCS
+    let log_max_height = result.log_max_height;
+
+    let mut op_idx = 0;
+    for query_proof in &result.fri_proof.query_proofs {
+        // Input batch MMCS proofs
+        for batch_opening in &query_proof.input_proof {
+            let siblings: Vec<[Challenge; 2]> = batch_opening
+                .opening_proof
+                .iter()
+                .map(|digest| {
+                    let ext_elements: Vec<Challenge> = digest
+                        .chunks(4)
+                        .map(|chunk| {
+                            Challenge::from_basis_coefficients_slice(chunk)
+                                .expect("chunk size should match extension degree")
+                        })
+                        .collect();
+                    [ext_elements[0], ext_elements[1]]
+                })
+                .collect();
+            for sibling in siblings {
+                runner
+                    .set_private_data(
+                        mmcs_op_ids[op_idx],
+                        p3_circuit::NonPrimitiveOpPrivateData::Poseidon2Perm(
+                            p3_circuit::ops::Poseidon2PermPrivateData { sibling },
+                        ),
+                    )
+                    .expect("Failed to set input batch MMCS private data");
+                op_idx += 1;
+            }
+        }
+
+        // Commit-phase MMCS proofs
+        for (phase_idx, phase_opening) in query_proof.commit_phase_openings.iter().enumerate() {
+            let log_folded_height = log_max_height.saturating_sub(phase_idx + 1);
+
+            // Only set data if there's a tree to verify (height > 0)
+            if log_folded_height > 0 {
+                let siblings: Vec<[Challenge; 2]> = phase_opening
+                    .opening_proof
+                    .iter()
+                    .take(log_folded_height)
+                    .map(|digest| {
+                        let ext_elements: Vec<Challenge> = digest
+                            .chunks(4)
+                            .map(|chunk| {
+                                Challenge::from_basis_coefficients_slice(chunk)
+                                    .expect("chunk size should match extension degree")
+                            })
+                            .collect();
+                        [ext_elements[0], ext_elements[1]]
+                    })
+                    .collect();
+                for sibling in siblings {
+                    runner
+                        .set_private_data(
+                            mmcs_op_ids[op_idx],
+                            p3_circuit::NonPrimitiveOpPrivateData::Poseidon2Perm(
+                                p3_circuit::ops::Poseidon2PermPrivateData { sibling },
+                            ),
+                        )
+                        .expect("Failed to set commit-phase MMCS private data");
+                    op_idx += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(
+        op_idx,
+        mmcs_op_ids.len(),
+        "Should have set private data for all MMCS ops"
+    );
+
+    // Run the circuit
+    runner.run().expect("FRI+MMCS circuit execution failed");
+}
+
+#[test]
+fn test_circuit_fri_verifier_with_mmcs() {
+    // Test that the FRI circuit with MMCS verification builds and runs correctly.
+    let groups = vec![vec![4u8, 5]];
+    let setup = generate_setup(1, groups);
+    run_fri_test_with_mmcs(setup);
 }

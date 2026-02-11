@@ -340,8 +340,7 @@ where
     /// # Canonical input order
     /// 1. AIR public values,
     /// 2. Proof values,
-    /// 3. Preprocessed commitment values,
-    /// 4. All challenges.
+    /// 3. Preprocessed commitment values.
     ///
     /// # Returns
     /// A vector of extension field elements ready for circuit execution.
@@ -358,9 +357,6 @@ where
         // 3. Add preprocessed commitment values.
         builder.add_proof_values(self.preprocessed);
 
-        // 4. Add all challenges in the order provided.
-        builder.add_challenges(self.challenges.iter().copied());
-
         builder.build()
     }
 }
@@ -373,8 +369,7 @@ where
 /// # Parameters
 /// - `air_public_values`: For each instance, its AIR public values in `F`.
 /// - `proof_values`: Values extracted from the batch proof in `EF`.
-/// - `preprocessed`: Preprocessed values.
-/// - `challenges`: All challenges shared across the batch in `EF`.
+/// - `common_data`: Common data values.
 ///
 /// # Returns
 /// A vector of extension field elements suitable for a batch verifier circuit.
@@ -382,7 +377,6 @@ pub fn construct_batch_stark_verifier_inputs<F, EF>(
     air_public_values: &[Vec<F>],
     proof_values: &[EF],
     common_data: &[EF],
-    challenges: &[EF],
 ) -> Vec<EF>
 where
     F: Field + PrimeField64,
@@ -401,9 +395,6 @@ where
 
     // Add common_data values.
     builder.add_proof_values(common_data.iter().copied());
-
-    // Add all shared challenges.
-    builder.add_challenges(challenges.iter().copied());
 
     builder.build()
 }
@@ -431,8 +422,7 @@ where
 /// let built_circuit = circuit.build()?;
 ///
 /// // Phase 2: Execution
-/// let challenges = generate_challenges(...);
-/// let public_inputs = verifier.pack_values(&pis, &proof, &challenges, num_queries);
+/// let public_inputs = verifier.pack_values(&pis, &proof, &None);
 /// runner.set_public_inputs(&public_inputs)?;
 /// ```
 pub struct StarkVerifierInputsBuilder<SC, Comm, OpeningProof>
@@ -524,8 +514,7 @@ where
 
     /// Packs concrete values into public inputs in the canonical order.
     ///
-    /// This must be called in the execution phase, after challenges and actual
-    /// proof data are known.
+    /// This must be called in the execution phase, after proof data is known.
     ///
     /// The output vector is consistent with the target allocation order used in `allocate`.
     ///
@@ -533,8 +522,6 @@ where
     /// - `air_public_values`: AIR public values in the base field.
     /// - `proof`: Actual proof whose values are extracted.
     /// - `preprocessed_commit`: Actual preprocessed commitment, if any.
-    /// - `challenges`: All Fiat–Shamir challenges.
-    /// - `num_queries`: Number of FRI queries (forwarded to the helper).
     ///
     /// # Returns
     /// A public input vector ready to be passed to the verifier circuit.
@@ -543,8 +530,6 @@ where
         air_public_values: &[Val<SC>],
         proof: &Proof<SC>,
         preprocessed_commit: &Option<Com<SC>>,
-        challenges: &[SC::Challenge],
-        num_queries: usize,
     ) -> Vec<SC::Challenge>
     where
         Val<SC>: PrimeField64,
@@ -567,8 +552,8 @@ where
             air_public_values: air_public_values.to_vec(),
             proof_values: proof_values.to_vec(),
             preprocessed: preprocessed.to_vec(),
-            challenges: challenges.to_vec(),
-            num_queries,
+            challenges: Vec::new(),
+            num_queries: 0,
         }
         .build()
     }
@@ -661,7 +646,7 @@ where
     /// # Parameters
     /// - `air_public_values`: AIR public values for each instance.
     /// - `proof`: Actual batch proof.
-    /// - `challenges`: All shared challenges.
+    /// - `common`: Common data for the batch proof.
     ///
     /// # Returns
     /// A flattened public input vector ready for the batch verifier circuit.
@@ -670,7 +655,6 @@ where
         air_public_values: &[Vec<Val<SC>>],
         proof: &BatchProof<SC>,
         common: &CommonData<SC>,
-        challenges: &[SC::Challenge],
     ) -> Vec<SC::Challenge>
     where
         Val<SC>: PrimeField64,
@@ -682,13 +666,8 @@ where
         let common_data = CommonDataTargets::<SC, Comm>::get_values(common);
         let proof_values = BatchProofTargets::<SC, Comm, OpeningProof>::get_values(proof);
 
-        // Combine AIR public values, proof values, and challenges into a single public input vector.
-        construct_batch_stark_verifier_inputs(
-            air_public_values,
-            &proof_values,
-            &common_data,
-            challenges,
-        )
+        // Combine AIR public values and proof values into a single public input vector.
+        construct_batch_stark_verifier_inputs(air_public_values, &proof_values, &common_data)
     }
 }
 
