@@ -1304,6 +1304,9 @@ impl Poseidon2Prover {
                     Poseidon2CircuitAirKoalaBearD4Width24::new(Self::koala_bear_constants_24()),
                 ))
             }
+            Poseidon2Config::GoldilocksD2Width8 => {
+                panic!("Goldilocks Poseidon2 not yet implemented")
+            }
         }
     }
 
@@ -1348,6 +1351,9 @@ impl Poseidon2Prover {
                     ),
                 ))
             }
+            Poseidon2Config::GoldilocksD2Width8 => {
+                panic!("Goldilocks Poseidon2 not yet implemented")
+            }
         }
     }
 
@@ -1384,6 +1390,9 @@ impl Poseidon2Prover {
             Poseidon2Config::KoalaBearD4Width24 => {
                 Poseidon2CircuitAirKoalaBearD4Width24::new(Self::koala_bear_constants_24()).width()
             }
+            Poseidon2Config::GoldilocksD2Width8 => {
+                panic!("Goldilocks Poseidon2 not yet implemented")
+            }
         }
     }
 
@@ -1400,6 +1409,9 @@ impl Poseidon2Prover {
             }
             Poseidon2Config::KoalaBearD4Width24 => {
                 Poseidon2CircuitAirKoalaBearD4Width24::preprocessed_width()
+            }
+            Poseidon2Config::GoldilocksD2Width8 => {
+                panic!("Goldilocks Poseidon2 not yet implemented")
             }
         }
     }
@@ -1438,6 +1450,7 @@ impl Poseidon2Prover {
             Poseidon2Config::KoalaBearD4Width24 => {
                 self.batch_instance_base_impl::<SC, p3_koala_bear::KoalaBear, 24, 4, 23, 4>(t)
             }
+            Poseidon2Config::GoldilocksD2Width8 => None,
         }
     }
 
@@ -1582,6 +1595,9 @@ impl Poseidon2Prover {
                     matrix,
                 )
             }
+            Poseidon2Config::GoldilocksD2Width8 => {
+                panic!("Goldilocks Poseidon2 not yet implemented")
+            }
         };
 
         Some(BatchTableInstance {
@@ -1632,6 +1648,16 @@ where
         self.batch_instance_from_traces::<SC, BinomialExtensionField<Val<SC>, 4>>(
             config, packing, traces,
         )
+    }
+
+    fn batch_instance_d5(
+        &self,
+        config: &SC,
+        packing: TablePacking,
+        traces: &Traces<BinomialExtensionField<Val<SC>, 5>>,
+    ) -> Option<BatchTableInstance<SC>> {
+        let _ = (config, packing, traces);
+        None
     }
 
     fn batch_instance_d6(

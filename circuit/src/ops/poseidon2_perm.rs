@@ -56,12 +56,15 @@ pub enum Poseidon2Config {
     KoalaBearD1Width16,
     KoalaBearD4Width16,
     KoalaBearD4Width24,
+    /// Goldilocks with extension degree D=2, width 8.
+    GoldilocksD2Width8,
 }
 
 impl Poseidon2Config {
     pub const fn d(self) -> usize {
         match self {
             Self::BabyBearD1Width16 | Self::KoalaBearD1Width16 => 1,
+            Self::GoldilocksD2Width8 => 2,
             Self::BabyBearD4Width16
             | Self::BabyBearD4Width24
             | Self::KoalaBearD4Width16
@@ -76,13 +79,15 @@ impl Poseidon2Config {
             | Self::KoalaBearD1Width16
             | Self::KoalaBearD4Width16 => 16,
             Self::BabyBearD4Width24 | Self::KoalaBearD4Width24 => 24,
+            Self::GoldilocksD2Width8 => 8,
         }
     }
 
-    /// Rate in extension field elements (WIDTH / D for D=4, or WIDTH for D=1).
+    /// Rate in extension field elements (WIDTH / D for extension, or WIDTH for D=1).
     pub const fn rate_ext(self) -> usize {
         match self {
-            Self::BabyBearD1Width16 | Self::KoalaBearD1Width16 => 8, // 16 base elements, rate = 8 for sponge
+            Self::BabyBearD1Width16 | Self::KoalaBearD1Width16 => 8,
+            Self::GoldilocksD2Width8 => 2,
             Self::BabyBearD4Width16 | Self::KoalaBearD4Width16 => 2,
             Self::BabyBearD4Width24 | Self::KoalaBearD4Width24 => 4,
         }
@@ -95,7 +100,8 @@ impl Poseidon2Config {
     /// Capacity in extension field elements.
     pub const fn capacity_ext(self) -> usize {
         match self {
-            Self::BabyBearD1Width16 | Self::KoalaBearD1Width16 => 8, // 16 - 8 = 8 capacity
+            Self::BabyBearD1Width16 | Self::KoalaBearD1Width16 => 8,
+            Self::GoldilocksD2Width8 => 2,
             Self::BabyBearD4Width16
             | Self::BabyBearD4Width24
             | Self::KoalaBearD4Width16
@@ -107,12 +113,16 @@ impl Poseidon2Config {
         match self {
             Self::BabyBearD1Width16 | Self::BabyBearD4Width16 | Self::BabyBearD4Width24 => 7,
             Self::KoalaBearD1Width16 | Self::KoalaBearD4Width16 | Self::KoalaBearD4Width24 => 3,
+            Self::GoldilocksD2Width8 => 7,
         }
     }
 
     pub const fn sbox_registers(self) -> usize {
         match self {
-            Self::BabyBearD1Width16 | Self::BabyBearD4Width16 | Self::BabyBearD4Width24 => 1,
+            Self::BabyBearD1Width16
+            | Self::BabyBearD4Width16
+            | Self::BabyBearD4Width24
+            | Self::GoldilocksD2Width8 => 1,
             Self::KoalaBearD1Width16 | Self::KoalaBearD4Width16 | Self::KoalaBearD4Width24 => 0,
         }
     }
@@ -124,7 +134,8 @@ impl Poseidon2Config {
             | Self::BabyBearD4Width24
             | Self::KoalaBearD1Width16
             | Self::KoalaBearD4Width16
-            | Self::KoalaBearD4Width24 => 4,
+            | Self::KoalaBearD4Width24
+            | Self::GoldilocksD2Width8 => 4,
         }
     }
 
@@ -134,6 +145,7 @@ impl Poseidon2Config {
             Self::BabyBearD4Width24 => 21,
             Self::KoalaBearD1Width16 | Self::KoalaBearD4Width16 => 20,
             Self::KoalaBearD4Width24 => 23,
+            Self::GoldilocksD2Width8 => 8,
         }
     }
 
@@ -1107,6 +1119,14 @@ pub struct KoalaBearD1Width16;
 impl Poseidon2Params for KoalaBearD1Width16 {
     type BaseField = p3_koala_bear::KoalaBear;
     const CONFIG: Poseidon2Config = Poseidon2Config::KoalaBearD1Width16;
+}
+
+/// Goldilocks D=2 Width=8 configuration for extension field challenges.
+pub struct GoldilocksD2Width8;
+
+impl Poseidon2Params for GoldilocksD2Width8 {
+    type BaseField = p3_goldilocks::Goldilocks;
+    const CONFIG: Poseidon2Config = Poseidon2Config::GoldilocksD2Width8;
 }
 
 /// Poseidon2 operation table row.

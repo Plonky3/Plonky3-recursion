@@ -123,7 +123,7 @@ where
 
     /// Enables Poseidon2 permutation operations (one perm per table row).
     ///
-    /// The current implementation only supports extension degree D=4 and WIDTH=16.
+    /// The current implementation supports extension degree D=4 and WIDTH=16.
     ///
     /// # Arguments
     /// * `trace_generator` - Function to generate Poseidon2 trace from circuit and witness
@@ -137,22 +137,12 @@ where
         F: CircuitField + ExtensionField<Config::BaseField>,
         P: Permutation<[Config::BaseField; 16]> + Clone + Send + Sync + 'static,
     {
-        // Hard gate on D=4 and WIDTH=16 to avoid silently accepting incompatible configs.
         assert!(
-            Config::D == 4,
-            "Poseidon2 perm op only supports extension degree D=4"
-        );
-        assert!(
-            Config::WIDTH == 16,
-            "Poseidon2 perm op only supports WIDTH=16"
+            Config::D == 4 && Config::WIDTH == 16,
+            "Poseidon2 perm op only supports extension degree D=4 and WIDTH=16"
         );
 
-        // Build exec closure that:
-        // 1. Converts [F;4] extension limbs to [Base;16] using basis coefficients
-        // 2. Calls perm.permute([Base;16])
-        // 3. Converts output [Base;16] back to [F;4]
         let exec: crate::op::Poseidon2PermExec<F, 4> = Arc::new(move |input: &[F; 4]| {
-            // Convert 4 extension elements to 16 base elements
             let mut base_input = [Config::BaseField::ZERO; 16];
             for (i, ext_elem) in input.iter().enumerate() {
                 let coeffs = ext_elem.as_basis_coefficients_slice();
@@ -164,10 +154,8 @@ where
                 base_input[i * 4..(i + 1) * 4].copy_from_slice(coeffs);
             }
 
-            // Apply permutation
             let base_output = perm.permute(base_input);
 
-            // Convert 16 base elements back to 4 extension elements
             let mut output = [F::ZERO; 4];
             for i in 0..4 {
                 let coeffs = &base_output[i * 4..(i + 1) * 4];

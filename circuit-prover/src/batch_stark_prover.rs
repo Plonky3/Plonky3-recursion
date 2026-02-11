@@ -158,6 +158,19 @@ macro_rules! impl_table_prover_batch_instances_from_base {
             self.$base::<SC>(config, packing, t)
         }
 
+        fn batch_instance_d5(
+            &self,
+            config: &SC,
+            packing: TablePacking,
+            traces: &p3_circuit::tables::Traces<
+                p3_field::extension::BinomialExtensionField<p3_batch_stark::Val<SC>, 5>,
+            >,
+        ) -> Option<BatchTableInstance<SC>> {
+            let t: &p3_circuit::tables::Traces<p3_batch_stark::Val<SC>> =
+                unsafe { transmute_traces(traces) };
+            self.$base::<SC>(config, packing, t)
+        }
+
         fn batch_instance_d6(
             &self,
             config: &SC,
@@ -798,6 +811,14 @@ where
             let t: &Traces<EF4<Val<SC>>> = unsafe { transmute_traces(traces) };
             for p in &self.non_primitive_provers {
                 if let Some(instance) = p.batch_instance_d4(&self.config, packing, t) {
+                    dynamic_instances.push(instance);
+                }
+            }
+        } else if D == 5 {
+            type EF5<F> = BinomialExtensionField<F, 5>;
+            let t: &Traces<EF5<Val<SC>>> = unsafe { transmute_traces(traces) };
+            for p in &self.non_primitive_provers {
+                if let Some(instance) = p.batch_instance_d5(&self.config, packing, t) {
                     dynamic_instances.push(instance);
                 }
             }

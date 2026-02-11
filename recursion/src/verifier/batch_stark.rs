@@ -52,6 +52,7 @@ pub type PcsVerifierParams<SC, InputProof, OpeningProof, Comm> =
 
 const BABY_BEAR_MODULUS: u64 = 0x78000001;
 const KOALA_BEAR_MODULUS: u64 = 0x7f000001;
+const GOLDILOCKS_MODULUS: u64 = 0xFFFFFFFE00000001;
 
 /// Wrapper enum for Poseidon2 circuit AIRs used in recursive verification.
 ///
@@ -110,6 +111,11 @@ impl Poseidon2VerifierAir {
                 Self::KoalaBearD4Width24(Box::new(Poseidon2CircuitAirKoalaBearD4Width24::new(
                     constants,
                 )))
+            }
+            Poseidon2Config::GoldilocksD2Width8 => {
+                panic!(
+                    "Goldilocks Poseidon2 circuit AIR not yet implemented. p3-goldilocks does not provide GenericPoseidon2LinearLayers."
+                )
             }
         }
     }
@@ -343,35 +349,45 @@ where
 /// For BinomialExtensionField<F, D>, this returns F::W.
 /// Panics if called on a non-extension field.
 fn extract_binomial_w<F: Field, EF: ExtensionField<F>>() -> F {
-    // The extension field dimension tells us the degree
     let d = EF::DIMENSION;
+    let baby_bear_mod = F::from_u64(BABY_BEAR_MODULUS);
+    let koala_bear_mod = F::from_u64(KOALA_BEAR_MODULUS);
+    let goldilocks_mod = F::from_u64(GOLDILOCKS_MODULUS);
 
-    // For common cases, we know the W values:
-    // BabyBear: x^4 = 11 (W = 11)
-    // KoalaBear: x^4 = 3 (W = 3)
-    // These are the standard Plonky3 values.
-    //
-    // We use a runtime check based on the field characteristic to determine W.
-    // This is a workaround since we can't easily extract W from the type at runtime.
-
-    if d == 4 {
-        // Check which field we're using based on the modulus
-        let baby_bear_mod = F::from_u64(0x78000001);
-        let koala_bear_mod = F::from_u64(0x7F000001);
-
-        if baby_bear_mod == F::ZERO {
-            // BabyBear: W = 11
-            F::from_u64(11)
-        } else if koala_bear_mod == F::ZERO {
-            // KoalaBear: W = 3
-            F::from_u64(3)
-        } else {
-            // Goldilocks or other - try W = 7 (common for some fields)
-            // This is a fallback; proper implementation would use BinomiallyExtendable trait
-            F::from_u64(7)
+    match d {
+        2 => {
+            if goldilocks_mod == F::ZERO {
+                F::from_u64(7)
+            } else {
+                panic!("Unsupported base field for D=2. Goldilocks (x²=7) expected.")
+            }
         }
-    } else {
-        panic!("Unsupported extension degree: {d}. Only D=1 and D=4 are supported.")
+        4 => {
+            if baby_bear_mod == F::ZERO {
+                F::from_u64(11)
+            } else if koala_bear_mod == F::ZERO {
+                F::from_u64(3)
+            } else if goldilocks_mod == F::ZERO {
+                F::from_u64(7)
+            } else {
+                panic!("Unsupported base field for D=4.")
+            }
+        }
+        5 => {
+            if baby_bear_mod == F::ZERO {
+                F::from_u64(11)
+            } else if koala_bear_mod == F::ZERO {
+                F::from_u64(3)
+            } else {
+                panic!("Unsupported base field for D=5. BabyBear or KoalaBear expected.")
+            }
+        }
+        6 | 8 => panic!(
+            "Unsupported extension degree: {d}. D=2 (Goldilocks), D=4, and D=5 are supported."
+        ),
+        other => panic!(
+            "Unsupported extension degree: {other}. D=2 (Goldilocks), D=4, and D=5 are supported."
+        ),
     }
 }
 

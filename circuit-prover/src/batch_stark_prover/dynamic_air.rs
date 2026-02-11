@@ -393,6 +393,14 @@ where
         traces: &Traces<BinomialExtensionField<Val<SC>, 4>>,
     ) -> Option<BatchTableInstance<SC>>;
 
+    /// Produce a batched table instance for degree-5 extension traces.
+    fn batch_instance_d5(
+        &self,
+        config: &SC,
+        packing: TablePacking,
+        traces: &Traces<BinomialExtensionField<Val<SC>, 5>>,
+    ) -> Option<BatchTableInstance<SC>>;
+
     /// Produce a batched table instance for degree-6 extension traces.
     fn batch_instance_d6(
         &self,

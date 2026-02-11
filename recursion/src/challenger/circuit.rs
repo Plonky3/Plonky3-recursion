@@ -148,16 +148,17 @@ impl<const WIDTH: usize, const RATE: usize> CircuitChallenger<WIDTH, RATE> {
         self.state = outputs.to_vec();
     }
 
-    /// Duplexing for D=4 (extension field): pack/unpack around permutation.
-    // TODO: Generalize for D=2 (Goldilocks) when needed.
+    /// Duplexing for extension field (D=2 or D=4): pack/unpack around permutation.
     fn duplexing_ext<BF, EF>(&mut self, circuit: &mut CircuitBuilder<EF>)
     where
         BF: PrimeField64,
         EF: ExtensionField<BF>,
     {
-        // 2. Recompose WIDTH coefficient targets → WIDTH/D extension element targets
         let num_ext_limbs = WIDTH / EF::DIMENSION;
-        assert_eq!(num_ext_limbs, 4, "Expected 4 extension limbs for WIDTH/D");
+        assert_eq!(
+            num_ext_limbs, 4,
+            "Expected 4 extension limbs for WIDTH/D (D=2 or D=4)"
+        );
 
         let ext_inputs: [Target; 4] = [
             circuit
@@ -215,6 +216,11 @@ impl<const WIDTH: usize, const RATE: usize> CircuitChallenger<WIDTH, RATE> {
     /// Create a challenger with KoalaBear D1 Width16 configuration (base field challenges).
     pub const fn new_koalabear_base() -> Self {
         Self::new(Poseidon2Config::KoalaBearD1Width16)
+    }
+
+    /// Create a challenger with Goldilocks D2 Width8 configuration.
+    pub const fn new_goldilocks() -> Self {
+        Self::new(Poseidon2Config::GoldilocksD2Width8)
     }
 }
 
