@@ -408,7 +408,7 @@ impl<'a, F: PrimeCharacteristicRing + Eq + Clone> ExecutionContext<'a, F> {
                 witness_id: widx,
                 existing: format!("{existing_value:?}"),
                 new: format!("{value:?}"),
-                expr_ids: vec![],
+                expr_ids: vec![], // TODO: Could be filled with expression IDs if tracked
             });
         }
 
