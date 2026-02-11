@@ -52,9 +52,8 @@ use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
 use p3_lookup::lookup_traits::{Direction, Kind, Lookup};
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
-use p3_uni_stark::SymbolicAirBuilder;
 
-use crate::air::utils::get_index_lookups;
+use crate::air::utils::{create_symbolic_variables, get_index_lookups, pad_matrix_with_min_height};
 
 /// AIR enforcing a monotonically increasing witness index column for the global bus.
 /// Layout per row: `[value[0..D), index]` repeated `lanes` times.
@@ -269,10 +268,8 @@ impl<F: Field, const D: usize> BaseAir<F> for WitnessAir<F, D> {
             })
             .collect::<Vec<_>>();
 
-        Some(RowMajorMatrix::new(
-            all_vals,
-            self.lanes * Self::preprocessed_lane_width(),
-        ))
+        let mat = RowMajorMatrix::new(all_vals, self.lanes * Self::preprocessed_lane_width());
+        Some(pad_matrix_with_min_height(mat, self.min_height))
     }
 }
 
@@ -342,24 +339,13 @@ where
     {
         let mut lookups = Vec::new();
         self.num_lookup_columns = 0;
-        let preprocessed_width = self.preprocessed_width();
 
-        // Create symbolic air builder to access symbolic variables
-        let symbolic_air_builder = SymbolicAirBuilder::<AB::F>::new(
-            preprocessed_width,
+        let (symbolic_main_local, preprocessed_local) = create_symbolic_variables::<AB::F>(
+            self.preprocessed_width(),
             BaseAir::<AB::F>::width(self),
             0,
-            0, // Here, we do not need the permutation trace
             0,
         );
-
-        let symbolic_main = symbolic_air_builder.main();
-        let symbolic_main_local = symbolic_main.row_slice(0).unwrap();
-
-        let preprocessed = symbolic_air_builder
-            .preprocessed()
-            .expect("Expected preprocessed columns");
-        let preprocessed_local = preprocessed.row_slice(0).unwrap();
 
         for lane in 0..self.lanes {
             let lane_offset = lane * Self::lane_width();

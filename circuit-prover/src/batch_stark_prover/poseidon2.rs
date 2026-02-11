@@ -1435,23 +1435,17 @@ impl Poseidon2Prover {
         let min_height = packing.min_trace_height();
         match self.config {
             Poseidon2Config::BabyBearD1Width16 | Poseidon2Config::BabyBearD4Width16 => {
-                self.batch_instance_base_impl::<SC, 16, 4, 13, 2>(
-                    t, min_height,
-                )
+                self.batch_instance_base_impl::<SC, 16, 4, 13, 2>(t, min_height)
             }
-            Poseidon2Config::BabyBearD4Width24 => self
-                .batch_instance_base_impl::<SC, 24, 4, 21, 4>(
-                    t, min_height,
-                ),
+            Poseidon2Config::BabyBearD4Width24 => {
+                self.batch_instance_base_impl::<SC, 24, 4, 21, 4>(t, min_height)
+            }
             Poseidon2Config::KoalaBearD1Width16 | Poseidon2Config::KoalaBearD4Width16 => {
-                self.batch_instance_base_impl::<SC, 16, 4, 20, 2>(
-                    t, min_height,
-                )
+                self.batch_instance_base_impl::<SC, 16, 4, 20, 2>(t, min_height)
             }
-            Poseidon2Config::KoalaBearD4Width24 => self
-                .batch_instance_base_impl::<SC, 24, 4, 23, 4>(
-                    t, min_height,
-                ),
+            Poseidon2Config::KoalaBearD4Width24 => {
+                self.batch_instance_base_impl::<SC, 24, 4, 23, 4>(t, min_height)
+            }
         }
     }
 

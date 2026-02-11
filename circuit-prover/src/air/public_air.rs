@@ -28,11 +28,11 @@ use p3_air::{Air, AirBuilder, AirBuilderWithPublicValues, BaseAir, PermutationAi
 use p3_circuit::tables::PublicTrace;
 use p3_field::{BasedVectorSpace, Field};
 use p3_lookup::lookup_traits::{Direction, Kind, Lookup};
-use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
-use p3_uni_stark::SymbolicAirBuilder;
 
-use crate::air::utils::get_index_lookups;
+use crate::air::utils::{
+    create_preprocessed_trace_with_multiplicity, create_symbolic_variables, get_index_lookups,
+};
 
 /// PublicAir: vector-valued public input binding with generic extension degree D.
 /// Layout per row: [value[0..D)] repeated `lanes` times.
@@ -177,40 +177,19 @@ impl<F: Field, const D: usize> BaseAir<F> for PublicAir<F, D> {
     }
 
     fn preprocessed_trace(&self) -> Option<RowMajorMatrix<F>> {
-        let lanes = self.lanes;
-        let num_rows = self.num_ops.div_ceil(lanes);
-        let preprocessed_lane_width = Self::preprocessed_lane_width();
-        let row_width = lanes * preprocessed_lane_width;
-
-        let mut preprocessed_values = Vec::with_capacity(num_rows * row_width);
-        for row_idx in 0..num_rows {
-            for lane in 0..lanes {
-                let op_idx = row_idx * lanes + lane;
+        Some(create_preprocessed_trace_with_multiplicity(
+            &self.preprocessed,
+            Self::preprocessed_lane_width(),
+            self.lanes,
+            self.min_height,
+            |op_idx| {
                 if op_idx < self.preprocessed.len() {
-                    // Active operation: multiplicity = 1, index from preprocessed
-                    preprocessed_values.push(F::ONE);
-                    preprocessed_values.push(self.preprocessed[op_idx]);
+                    F::ONE
                 } else {
-                    // Padding: multiplicity = 0, index = 0
-                    preprocessed_values.push(F::ZERO);
-                    preprocessed_values.push(F::ZERO);
+                    F::ZERO
                 }
-            }
-        }
-
-        let mut mat = RowMajorMatrix::new(preprocessed_values, row_width);
-        mat.pad_to_power_of_two_height(F::ZERO);
-
-        // Pad to min_height for FRI compatibility
-        let min_rows = self.min_height.next_power_of_two();
-        if mat.height() < min_rows {
-            let width = mat.width();
-            let padding_rows = min_rows - mat.height();
-            mat.values
-                .extend(core::iter::repeat_n(F::ZERO, padding_rows * width));
-        }
-
-        Some(mat)
+            },
+        ))
     }
 }
 
@@ -234,24 +213,13 @@ where
     {
         let mut lookups = Vec::new();
         self.num_lookup_columns = 0;
-        let preprocessed_width = self.preprocessed_width();
 
-        // Create symbolic air builder to access symbolic variables
-        let symbolic_air_builder = SymbolicAirBuilder::<AB::F>::new(
-            preprocessed_width,
+        let (symbolic_main_local, preprocessed_local) = create_symbolic_variables::<AB::F>(
+            self.preprocessed_width(),
             BaseAir::<AB::F>::width(self),
-            0,
             self.lanes,
             0,
         );
-
-        let symbolic_main = symbolic_air_builder.main();
-        let symbolic_main_local = symbolic_main.row_slice(0).unwrap();
-
-        let preprocessed = symbolic_air_builder
-            .preprocessed()
-            .expect("Expected preprocessed columns");
-        let preprocessed_local = preprocessed.row_slice(0).unwrap();
 
         for lane in 0..self.lanes {
             let lane_offset = lane * Self::lane_width();
