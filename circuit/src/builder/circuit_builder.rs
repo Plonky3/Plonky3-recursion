@@ -516,7 +516,6 @@ where
     ///
     /// This is used for creating new unconstrained wires assigned to a non-deterministic values
     /// computed by `hint`.
-    #[allow(dead_code)]
     pub(crate) fn push_unconstrained_op<H: NonPrimitiveExecutor<F> + 'static>(
         &mut self,
         input_exprs: Vec<Vec<ExprId>>,
