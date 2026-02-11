@@ -174,6 +174,7 @@ where
     //
     // This must be done BEFORE creating the Witness AIR so it captures the correct multiplicities.
     //
+    // TODO: Update these indices once generic Poseidon2 is implemented.
     // Poseidon2 preprocessed row layout (24 fields per row):
     //   [0..16]  = 4 input limbs (each: in_idx, in_ctl, normal_chain_sel, merkle_chain_sel)
     //   [16..20] = 2 output limbs (each: out_idx, out_ctl)
@@ -185,8 +186,6 @@ where
     const MMCS_INDEX_SUM_CTL_IDX_OFFSET: usize = 20;
     const MMCS_MERKLE_FLAG_OFFSET: usize = 21;
     const NEW_START_OFFSET: usize = 22;
-    #[allow(dead_code)]
-    const MERKLE_PATH_OFFSET: usize = 23;
 
     let mut mmcs_lookup_count = 0usize;
     for (op_type, prep) in preprocessed.non_primitive.iter() {
