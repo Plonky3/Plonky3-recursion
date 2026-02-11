@@ -15,10 +15,10 @@ use super::compiler::{ExpressionLowerer, Optimizer};
 use super::{BuilderConfig, ExpressionBuilder, PublicInputTracker};
 use crate::circuit::Circuit;
 use crate::op::{NonPrimitiveExecutor, NonPrimitiveOpConfig, NonPrimitiveOpType};
-use crate::ops::Poseidon2Params;
+use crate::ops::{Poseidon2Params, Poseidon2PermCall, Poseidon2PermCallBase};
 use crate::tables::TraceGeneratorFn;
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};
-use crate::{CircuitBuilderError, CircuitError, CircuitField};
+use crate::{CircuitBuilderError, CircuitError, CircuitField, Poseidon2PermOps};
 
 /// Builder for constructing circuits.
 pub struct CircuitBuilder<F: Field> {
@@ -955,8 +955,6 @@ where
         config: crate::ops::Poseidon2Config,
         inputs: [ExprId; 4],
     ) -> Result<[ExprId; 4], CircuitBuilderError> {
-        use crate::ops::poseidon2_perm::{Poseidon2PermCall, Poseidon2PermOps};
-
         self.push_scope("poseidon2_perm_for_challenger");
 
         // Use add_poseidon2_perm with CTL verification for soundness
@@ -1014,8 +1012,6 @@ where
         config: crate::ops::Poseidon2Config,
         inputs: [ExprId; 16],
     ) -> Result<[ExprId; 16], CircuitBuilderError> {
-        use crate::ops::poseidon2_perm::{Poseidon2PermCallBase, Poseidon2PermOps};
-
         self.push_scope("poseidon2_perm_for_challenger_base");
 
         // Use add_poseidon2_perm_base with CTL verification for soundness
