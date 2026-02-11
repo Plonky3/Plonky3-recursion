@@ -317,53 +317,47 @@ where
     }
 }
 
+macro_rules! impl_circuit_table_air_for_builder {
+    ($builder_ty:ty) => {
+        fn eval(&self, builder: &mut $builder_ty) {
+            match self {
+                Self::Witness(a) => Air::<$builder_ty>::eval(a, builder),
+                Self::Const(a) => Air::<$builder_ty>::eval(a, builder),
+                Self::Public(a) => Air::<$builder_ty>::eval(a, builder),
+                Self::Alu(a) => Air::<$builder_ty>::eval(a, builder),
+                Self::Dynamic(a) => Air::<$builder_ty>::eval(a, builder),
+            }
+        }
+
+        fn add_lookup_columns(&mut self) -> Vec<usize> {
+            match self {
+                Self::Witness(a) => Air::<$builder_ty>::add_lookup_columns(a),
+                Self::Const(a) => Air::<$builder_ty>::add_lookup_columns(a),
+                Self::Public(a) => Air::<$builder_ty>::add_lookup_columns(a),
+                Self::Alu(a) => Air::<$builder_ty>::add_lookup_columns(a),
+                Self::Dynamic(a) => Air::<$builder_ty>::add_lookup_columns(a),
+            }
+        }
+
+        fn get_lookups(&mut self) -> Vec<Lookup<<$builder_ty as AirBuilder>::F>> {
+            match self {
+                Self::Witness(a) => Air::<$builder_ty>::get_lookups(a),
+                Self::Const(a) => Air::<$builder_ty>::get_lookups(a),
+                Self::Public(a) => Air::<$builder_ty>::get_lookups(a),
+                Self::Alu(a) => Air::<$builder_ty>::get_lookups(a),
+                Self::Dynamic(a) => Air::<$builder_ty>::get_lookups(a),
+            }
+        }
+    };
+}
+
 impl<SC, const D: usize> Air<SymbolicAirBuilder<Val<SC>, SC::Challenge>> for CircuitTableAir<SC, D>
 where
     SC: StarkGenericConfig,
     Val<SC>: PrimeField,
     SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
 {
-    fn eval(&self, builder: &mut SymbolicAirBuilder<Val<SC>, SC::Challenge>) {
-        match self {
-            Self::Witness(a) => Air::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::eval(a, builder),
-            Self::Const(a) => Air::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::eval(a, builder),
-            Self::Public(a) => Air::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::eval(a, builder),
-            Self::Alu(a) => Air::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::eval(a, builder),
-            Self::Dynamic(a) => Air::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::eval(a, builder),
-        }
-    }
-
-    fn add_lookup_columns(&mut self) -> Vec<usize> {
-        match self {
-            Self::Witness(a) => {
-                Air::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::add_lookup_columns(a)
-            }
-            Self::Const(a) => {
-                Air::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::add_lookup_columns(a)
-            }
-            Self::Public(a) => {
-                Air::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::add_lookup_columns(a)
-            }
-            Self::Alu(a) => {
-                Air::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::add_lookup_columns(a)
-            }
-            Self::Dynamic(a) => {
-                Air::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::add_lookup_columns(a)
-            }
-        }
-    }
-
-    fn get_lookups(
-        &mut self,
-    ) -> Vec<Lookup<<SymbolicAirBuilder<Val<SC>, SC::Challenge> as AirBuilder>::F>> {
-        match self {
-            Self::Witness(a) => Air::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::get_lookups(a),
-            Self::Const(a) => Air::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::get_lookups(a),
-            Self::Public(a) => Air::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::get_lookups(a),
-            Self::Alu(a) => Air::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::get_lookups(a),
-            Self::Dynamic(a) => Air::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::get_lookups(a),
-        }
-    }
+    impl_circuit_table_air_for_builder!(SymbolicAirBuilder<Val<SC>, SC::Challenge>);
 }
 
 #[cfg(debug_assertions)]
@@ -374,78 +368,9 @@ where
     Val<SC>: PrimeField,
     SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
 {
-    fn eval(&self, builder: &mut DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>) {
-        match self {
-            Self::Witness(a) => {
-                Air::<DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>>::eval(
-                    a, builder,
-                );
-            }
-            Self::Const(a) => {
-                Air::<DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>>::eval(
-                    a, builder,
-                );
-            }
-            Self::Public(a) => {
-                Air::<DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>>::eval(
-                    a, builder,
-                );
-            }
-            Self::Alu(a) => {
-                Air::<DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>>::eval(
-                    a, builder,
-                );
-            }
-            Self::Dynamic(a) => {
-                Air::<DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>>::eval(
-                    a, builder,
-                );
-            }
-        }
-    }
-
-    fn add_lookup_columns(&mut self) -> Vec<usize> {
-        match self {
-            Self::Witness(a) => Air::<
-                DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>,
-            >::add_lookup_columns(a),
-            Self::Const(a) => Air::<
-                DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>,
-            >::add_lookup_columns(a),
-            Self::Public(a) => Air::<
-                DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>,
-            >::add_lookup_columns(a),
-            Self::Alu(a) => Air::<
-                DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>,
-            >::add_lookup_columns(a),
-            Self::Dynamic(a) => {
-                Air::<DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>>::add_lookup_columns(a)
-            }
-        }
-    }
-
-    fn get_lookups(
-        &mut self,
-    ) -> Vec<Lookup<<DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge> as AirBuilder>::F>>
-    {
-        match self {
-            Self::Witness(a) => {
-                Air::<DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>>::get_lookups(a)
-            }
-            Self::Const(a) => {
-                Air::<DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>>::get_lookups(a)
-            }
-            Self::Public(a) => {
-                Air::<DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>>::get_lookups(a)
-            }
-            Self::Alu(a) => {
-                Air::<DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>>::get_lookups(a)
-            }
-            Self::Dynamic(a) => {
-                Air::<DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>>::get_lookups(a)
-            }
-        }
-    }
+    impl_circuit_table_air_for_builder!(
+        DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>
+    );
 }
 
 impl<'a, SC, const D: usize> Air<ProverConstraintFolderWithLookups<'a, SC>>
@@ -455,47 +380,7 @@ where
     Val<SC>: PrimeField,
     SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
 {
-    fn eval(&self, builder: &mut ProverConstraintFolderWithLookups<'a, SC>) {
-        match self {
-            Self::Witness(a) => Air::<ProverConstraintFolderWithLookups<'a, SC>>::eval(a, builder),
-            Self::Const(a) => Air::<ProverConstraintFolderWithLookups<'a, SC>>::eval(a, builder),
-            Self::Public(a) => Air::<ProverConstraintFolderWithLookups<'a, SC>>::eval(a, builder),
-            Self::Alu(a) => Air::<ProverConstraintFolderWithLookups<'a, SC>>::eval(a, builder),
-            Self::Dynamic(a) => {
-                Air::<ProverConstraintFolderWithLookups<'a, SC>>::eval(a, builder);
-            }
-        }
-    }
-
-    fn add_lookup_columns(&mut self) -> Vec<usize> {
-        match self {
-            Self::Witness(a) => {
-                Air::<ProverConstraintFolderWithLookups<'a, SC>>::add_lookup_columns(a)
-            }
-            Self::Const(a) => {
-                Air::<ProverConstraintFolderWithLookups<'a, SC>>::add_lookup_columns(a)
-            }
-            Self::Public(a) => {
-                Air::<ProverConstraintFolderWithLookups<'a, SC>>::add_lookup_columns(a)
-            }
-            Self::Alu(a) => Air::<ProverConstraintFolderWithLookups<'a, SC>>::add_lookup_columns(a),
-            Self::Dynamic(a) => {
-                Air::<ProverConstraintFolderWithLookups<'a, SC>>::add_lookup_columns(a)
-            }
-        }
-    }
-
-    fn get_lookups(
-        &mut self,
-    ) -> Vec<Lookup<<ProverConstraintFolderWithLookups<'a, SC> as AirBuilder>::F>> {
-        match self {
-            Self::Witness(a) => Air::<ProverConstraintFolderWithLookups<'a, SC>>::get_lookups(a),
-            Self::Const(a) => Air::<ProverConstraintFolderWithLookups<'a, SC>>::get_lookups(a),
-            Self::Public(a) => Air::<ProverConstraintFolderWithLookups<'a, SC>>::get_lookups(a),
-            Self::Alu(a) => Air::<ProverConstraintFolderWithLookups<'a, SC>>::get_lookups(a),
-            Self::Dynamic(a) => Air::<ProverConstraintFolderWithLookups<'a, SC>>::get_lookups(a),
-        }
-    }
+    impl_circuit_table_air_for_builder!(ProverConstraintFolderWithLookups<'a, SC>);
 }
 
 impl<'a, SC, const D: usize> Air<VerifierConstraintFolderWithLookups<'a, SC>>
@@ -505,51 +390,7 @@ where
     Val<SC>: PrimeField,
     SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
 {
-    fn eval(&self, builder: &mut VerifierConstraintFolderWithLookups<'a, SC>) {
-        match self {
-            Self::Witness(a) => {
-                Air::<VerifierConstraintFolderWithLookups<'a, SC>>::eval(a, builder);
-            }
-            Self::Const(a) => Air::<VerifierConstraintFolderWithLookups<'a, SC>>::eval(a, builder),
-            Self::Public(a) => Air::<VerifierConstraintFolderWithLookups<'a, SC>>::eval(a, builder),
-            Self::Alu(a) => Air::<VerifierConstraintFolderWithLookups<'a, SC>>::eval(a, builder),
-            Self::Dynamic(a) => {
-                Air::<VerifierConstraintFolderWithLookups<'a, SC>>::eval(a, builder);
-            }
-        }
-    }
-
-    fn add_lookup_columns(&mut self) -> Vec<usize> {
-        match self {
-            Self::Witness(a) => {
-                Air::<VerifierConstraintFolderWithLookups<'a, SC>>::add_lookup_columns(a)
-            }
-            Self::Const(a) => {
-                Air::<VerifierConstraintFolderWithLookups<'a, SC>>::add_lookup_columns(a)
-            }
-            Self::Public(a) => {
-                Air::<VerifierConstraintFolderWithLookups<'a, SC>>::add_lookup_columns(a)
-            }
-            Self::Alu(a) => {
-                Air::<VerifierConstraintFolderWithLookups<'a, SC>>::add_lookup_columns(a)
-            }
-            Self::Dynamic(a) => {
-                Air::<VerifierConstraintFolderWithLookups<'a, SC>>::add_lookup_columns(a)
-            }
-        }
-    }
-
-    fn get_lookups(
-        &mut self,
-    ) -> Vec<Lookup<<VerifierConstraintFolderWithLookups<'a, SC> as AirBuilder>::F>> {
-        match self {
-            Self::Witness(a) => Air::<VerifierConstraintFolderWithLookups<'a, SC>>::get_lookups(a),
-            Self::Const(a) => Air::<VerifierConstraintFolderWithLookups<'a, SC>>::get_lookups(a),
-            Self::Public(a) => Air::<VerifierConstraintFolderWithLookups<'a, SC>>::get_lookups(a),
-            Self::Alu(a) => Air::<VerifierConstraintFolderWithLookups<'a, SC>>::get_lookups(a),
-            Self::Dynamic(a) => Air::<VerifierConstraintFolderWithLookups<'a, SC>>::get_lookups(a),
-        }
-    }
+    impl_circuit_table_air_for_builder!(VerifierConstraintFolderWithLookups<'a, SC>);
 }
 
 impl<SC> BatchStarkProver<SC>

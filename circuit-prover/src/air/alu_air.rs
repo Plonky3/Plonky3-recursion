@@ -41,10 +41,8 @@
 use alloc::string::ToString;
 use alloc::vec;
 use alloc::vec::Vec;
-use core::iter;
 use core::marker::PhantomData;
 
-use itertools::Itertools;
 use p3_air::{Air, AirBuilder, AirBuilderWithPublicValues, BaseAir, PermutationAirBuilder};
 use p3_circuit::op::AluOpKind;
 use p3_circuit::tables::AluTrace;
@@ -52,9 +50,10 @@ use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
 use p3_lookup::lookup_traits::{Direction, Kind, Lookup};
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
-use p3_uni_stark::SymbolicAirBuilder;
 
-use crate::air::utils::get_alu_index_lookups;
+use crate::air::utils::{
+    create_chunked_preprocessed_trace, create_symbolic_variables, get_alu_index_lookups,
+};
 
 /// AIR for proving unified arithmetic operations.
 ///
@@ -285,30 +284,12 @@ impl<F: Field, const D: usize> BaseAir<F> for AluAir<F, D> {
             assert!(!self.preprocessed.is_empty());
         }
 
-        // Add multiplicity to preprocessed values
-        let mut preprocessed_values = self
-            .preprocessed
-            .iter()
-            .chunks(Self::preprocessed_lane_width() - 1)
-            .into_iter()
-            .flat_map(|chunk| iter::once(F::ONE).chain(chunk.into_iter().cloned()))
-            .collect::<Vec<F>>();
-
-        debug_assert!(
-            preprocessed_values.len() % Self::preprocessed_lane_width() == 0,
-            "Preprocessed trace length mismatch for AluAir"
-        );
-
-        let padding_len =
-            self.preprocessed_width() - preprocessed_values.len() % self.preprocessed_width();
-        if padding_len != self.preprocessed_width() {
-            preprocessed_values.extend(vec![F::ZERO; padding_len]);
-        }
-
-        let mut mat = RowMajorMatrix::new(preprocessed_values, self.preprocessed_width());
-        mat.pad_to_power_of_two_height(F::ZERO);
-
-        Some(mat)
+        Some(create_chunked_preprocessed_trace(
+            &self.preprocessed,
+            Self::preprocessed_lane_width(),
+            self.lanes,
+            self.min_height,
+        ))
     }
 }
 
@@ -477,23 +458,13 @@ where
     {
         let mut lookups = Vec::new();
         self.num_lookup_columns = 0;
-        let preprocessed_width = self.preprocessed_width();
 
-        let symbolic_air_builder = SymbolicAirBuilder::<AB::F>::new(
-            preprocessed_width,
+        let (symbolic_main_local, preprocessed_local) = create_symbolic_variables::<AB::F>(
+            self.preprocessed_width(),
             BaseAir::<AB::F>::width(self),
             0,
             0,
-            0,
         );
-
-        let symbolic_main = symbolic_air_builder.main();
-        let symbolic_main_local = symbolic_main.row_slice(0).unwrap();
-
-        let preprocessed = symbolic_air_builder
-            .preprocessed()
-            .expect("Expected preprocessed columns");
-        let preprocessed_local = preprocessed.row_slice(0).unwrap();
 
         for lane in 0..self.lanes {
             let lane_offset = lane * Self::lane_width();

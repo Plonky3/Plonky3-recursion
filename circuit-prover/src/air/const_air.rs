@@ -33,11 +33,11 @@ use p3_air::{Air, AirBuilder, AirBuilderWithPublicValues, BaseAir, PermutationAi
 use p3_circuit::tables::ConstTrace;
 use p3_field::{BasedVectorSpace, Field};
 use p3_lookup::lookup_traits::{Direction, Kind, Lookup};
-use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
-use p3_uni_stark::SymbolicAirBuilder;
 
-use crate::air::utils::get_index_lookups;
+use crate::air::utils::{
+    create_simple_preprocessed_trace, create_symbolic_variables, get_index_lookups,
+};
 
 /// ConstAir: vector-valued constant binding with generic extension degree D.
 ///
@@ -150,25 +150,11 @@ impl<F: Field, const D: usize> BaseAir<F> for ConstAir<F, D> {
     }
 
     fn preprocessed_trace(&self) -> Option<RowMajorMatrix<F>> {
-        let preprocessed_values = self
-            .preprocessed
-            .iter()
-            .flat_map(|v| [F::ONE, *v])
-            .collect::<Vec<F>>();
-
-        let mut mat = RowMajorMatrix::new(preprocessed_values, 2);
-        mat.pad_to_power_of_two_height(F::ZERO);
-
-        // Pad to min_height for FRI compatibility
-        let min_rows = self.min_height.next_power_of_two();
-        if mat.height() < min_rows {
-            let width = mat.width();
-            let padding_rows = min_rows - mat.height();
-            mat.values
-                .extend(core::iter::repeat_n(F::ZERO, padding_rows * width));
-        }
-
-        Some(mat)
+        Some(create_simple_preprocessed_trace(
+            &self.preprocessed,
+            Self::preprocessed_width(),
+            self.min_height,
+        ))
     }
 }
 
@@ -188,22 +174,12 @@ where
     where
         AB: PermutationAirBuilder + AirBuilderWithPublicValues,
     {
-        // Create symbolic air builder to access symbolic variables
-        let symbolic_air_builder = SymbolicAirBuilder::<AB::F>::new(
+        let (symbolic_main_local, preprocessed_local) = create_symbolic_variables::<AB::F>(
             Self::preprocessed_width(),
             BaseAir::<AB::F>::width(self),
-            0,
             1,
             0,
         );
-
-        let symbolic_main = symbolic_air_builder.main();
-        let symbolic_main_local = symbolic_main.row_slice(0).unwrap();
-
-        let preprocessed = symbolic_air_builder
-            .preprocessed()
-            .expect("Expected preprocessed columns");
-        let preprocessed_local = preprocessed.row_slice(0).unwrap();
 
         let lookup_inps = get_index_lookups::<AB, D>(
             0,
