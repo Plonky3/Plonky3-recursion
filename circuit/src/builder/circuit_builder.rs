@@ -601,9 +601,7 @@ where
         per_scope
     }
 
-    /// Convenience method returning both global and per-scope profiling information.
-    ///
-    /// This wraps `global_op_counts` and `scope_op_counts` into a single call.
+    /// Convenience method logging global, per-scope, and per-non-primitive-id profiling information.
     ///
     /// When the `profiling` feature is disabled, this is a no-op.
     #[allow(clippy::missing_const_for_fn)]

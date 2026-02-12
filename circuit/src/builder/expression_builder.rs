@@ -24,7 +24,7 @@ use crate::{AllocationEntry, AllocationType};
 ///
 /// This is only compiled when the `profiling` feature is enabled on the `p3-circuit` crate.
 #[cfg(feature = "profiling")]
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct OpCounts {
     /// Number of public input expressions allocated.
     pub publics: u64,
@@ -38,8 +38,8 @@ pub struct OpCounts {
     pub muls: u64,
     /// Number of division expressions allocated.
     pub divs: u64,
-    /// Number of non-primitive expressions allocated (calls + outputs).
-    pub non_primitives: u64,
+    /// Number of non-primitive calls allocated, broken down by type.
+    pub non_primitives: HashMap<NonPrimitiveOpType, u64>,
 }
 
 /// Internal profiling state tracking global and per-scope counts.
@@ -97,8 +97,15 @@ impl ProfilingState {
     }
 
     #[inline]
-    fn bump_non_primitive(&mut self) {
-        self.bump_with(|c| c.non_primitives += 1);
+    fn bump_non_primitive(&mut self, op_type: NonPrimitiveOpType) {
+        // Global totals.
+        *self.global.non_primitives.entry(op_type).or_default() += 1;
+
+        // Per-scope totals (if a scope is active).
+        if let Some(scope) = self.scope_stack.last().copied() {
+            let entry = self.per_scope.entry(scope).or_default();
+            *entry.non_primitives.entry(op_type).or_default() += 1;
+        }
     }
 }
 
@@ -462,10 +469,6 @@ where
             .graph
             .add_expr(Expr::NonPrimitiveOutput { call, output_idx });
 
-        // Count non-primitive outputs when profiling is enabled.
-        #[cfg(feature = "profiling")]
-        self.profiling.bump_non_primitive();
-
         #[cfg(feature = "debugging")]
         self.log_alloc(expr_id, label, || {
             (AllocationType::NonPrimitiveOutput, vec![vec![call]])
@@ -501,7 +504,7 @@ where
 
         // Count non-primitive calls when profiling is enabled.
         #[cfg(feature = "profiling")]
-        self.profiling.bump_non_primitive();
+        self.profiling.bump_non_primitive(op_type);
 
         #[cfg(feature = "debugging")]
         self.log_alloc(expr_id, label, || {
@@ -787,8 +790,6 @@ where
     }
 
     /// Returns the global and per-scope operation counts when profiling is enabled.
-    ///
-    /// When the `profiling` feature is disabled, this always returns `None`.
     #[cfg(feature = "profiling")]
     pub const fn profiling_counts(&self) -> (&OpCounts, &HashMap<&'static str, OpCounts>) {
         (&self.profiling.global, &self.profiling.per_scope)
