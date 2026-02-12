@@ -34,6 +34,7 @@ thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
 p3-air.workspace = true
 p3-baby-bear.workspace = true
 p3-challenger.workspace = true
@@ -49,6 +50,14 @@ proptest.workspace = true
 rand.workspace = true
 tracing-forest = { workspace = true, features = ["ansi", "smallvec"] }
 tracing-subscriber = { workspace = true, features = ["std", "env-filter"] }
+
+[features]
+debugging = []
+profiling = ["debugging"]
+
+[[bench]]
+name = "runner_traces"
+harness = false
 
 [lints]
 workspace = true

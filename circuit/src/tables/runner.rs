@@ -7,16 +7,15 @@ use alloc::{format, vec};
 use hashbrown::HashMap;
 use tracing::instrument;
 
-use super::add::AddTraceBuilder;
+use super::alu::AluTraceBuilder;
 use super::constant::ConstTraceBuilder;
-use super::mul::MulTraceBuilder;
 use super::public::PublicTraceBuilder;
 use super::witness::WitnessTraceBuilder;
 use super::{NonPrimitiveTrace, Traces};
 use crate::circuit::Circuit;
 use crate::op::{ExecutionContext, NonPrimitiveOpPrivateData, NonPrimitiveOpType, Op, OpStateMap};
 use crate::types::{NonPrimitiveOpId, WitnessId};
-use crate::{CircuitError, CircuitField};
+use crate::{AluOpKind, CircuitError, CircuitField};
 
 /// Circuit execution engine.
 pub struct CircuitRunner<F> {
@@ -182,12 +181,13 @@ impl<F: CircuitField> CircuitRunner<F> {
         let witness_trace = WitnessTraceBuilder::new(&self.witness).build()?;
         let const_trace = ConstTraceBuilder::new(&self.circuit.ops).build()?;
         let public_trace = PublicTraceBuilder::new(&self.circuit.ops, &self.witness).build()?;
-        let add_trace = AddTraceBuilder::new(&self.circuit.ops, &self.witness).build()?;
-        let mul_trace = MulTraceBuilder::new(&self.circuit.ops, &self.witness).build()?;
+        let alu_trace = AluTraceBuilder::new(&self.circuit.ops, &self.witness).build()?;
 
         let mut non_primitive_traces: HashMap<NonPrimitiveOpType, Box<dyn NonPrimitiveTrace<F>>> =
             HashMap::new();
         // Iterate over generators in deterministic order (sorted by key)
+        let _scope = tracing::debug_span!("generators").entered();
+
         let mut op_types: Vec<_> = self.circuit.non_primitive_trace_generators.keys().collect();
         op_types.sort();
         for op_type in op_types {
@@ -197,13 +197,13 @@ impl<F: CircuitField> CircuitRunner<F> {
                 non_primitive_traces.insert(trace_op_type, trace);
             }
         }
+        _scope.exit();
 
         Ok(Traces {
             witness_trace,
             const_trace,
             public_trace,
-            add_trace,
-            mul_trace,
+            alu_trace,
             tag_to_witness: self.circuit.tag_to_witness,
             non_primitive_traces,
         })
@@ -213,44 +213,82 @@ impl<F: CircuitField> CircuitRunner<F> {
     ///
     /// The circuit is already lowered into a valid execution order, so this function
     /// can blindly execute from index 0 to end.
-    fn execute_all(&mut self) -> Result<(), CircuitError> {
-        // Clone ops to avoid borrowing issues.
-        let ops = self.circuit.ops.clone();
-
-        for op in ops {
+    #[instrument(skip_all, level = "debug")]
+    pub fn execute_all(&mut self) -> Result<(), CircuitError> {
+        for i in 0..self.circuit.ops.len() {
+            let op = &self.circuit.ops[i];
             match op {
                 Op::Const { out, val } => {
-                    self.set_witness(out, val)?;
+                    self.set_witness(*out, *val)?;
                 }
                 Op::Public { out, public_pos: _ } => {
                     // Public inputs should already be set
                     if self.witness[out.0 as usize].is_none() {
-                        return Err(CircuitError::PublicInputNotSet { witness_id: out });
+                        return Err(CircuitError::PublicInputNotSet { witness_id: *out });
                     }
                 }
-                Op::Add { a, b, out } => {
-                    let a_val = self.get_witness(a)?;
-                    if let Ok(b_val) = self.get_witness(b) {
-                        let result = a_val + b_val;
-                        self.set_witness(out, result)?;
-                    } else {
-                        let out_val = self.get_witness(out)?;
-                        let b_val = out_val - a_val;
-                        self.set_witness(b, b_val)?;
-                    }
-                }
-                Op::Mul { a, b, out } => {
-                    // Mul is used to represent either `Mul` or `Div` operations.
-                    // We determine which based on which inputs are set.
-                    let a_val = self.get_witness(a)?;
-                    if let Ok(b_val) = self.get_witness(b) {
-                        let result = a_val * b_val;
-                        self.set_witness(out, result)?;
-                    } else {
-                        let result_val = self.get_witness(out)?;
-                        let a_inv = a_val.try_inverse().ok_or(CircuitError::DivisionByZero)?;
-                        let b_val = result_val * a_inv;
-                        self.set_witness(b, b_val)?;
+                Op::Alu {
+                    kind,
+                    a,
+                    b,
+                    c,
+                    out,
+                    intermediate_out,
+                } => {
+                    match kind {
+                        AluOpKind::Add => {
+                            let a_val = self.get_witness(*a)?;
+                            if let Ok(b_val) = self.get_witness(*b) {
+                                let result = a_val + b_val;
+                                self.set_witness(*out, result)?;
+                            } else {
+                                let out_val = self.get_witness(*out)?;
+                                let b_val = out_val - a_val;
+                                self.set_witness(*b, b_val)?;
+                            }
+                        }
+                        AluOpKind::Mul => {
+                            // Mul is used to represent either `Mul` or `Div` operations.
+                            // We determine which based on which inputs are set.
+                            let a_val = self.get_witness(*a)?;
+                            if let Ok(b_val) = self.get_witness(*b) {
+                                let result = a_val * b_val;
+                                self.set_witness(*out, result)?;
+                            } else {
+                                let result_val = self.get_witness(*out)?;
+                                let a_inv =
+                                    a_val.try_inverse().ok_or(CircuitError::DivisionByZero)?;
+                                let b_val = result_val * a_inv;
+                                self.set_witness(*b, b_val)?;
+                            }
+                        }
+                        AluOpKind::BoolCheck => {
+                            // BoolCheck constraint is checked in the AIR; here we just ensure out = a
+                            let a_val = self.get_witness(*a)?;
+                            self.set_witness(*out, a_val)?;
+                        }
+                        AluOpKind::MulAdd => {
+                            // out = a * b + c
+                            let a_val = self.get_witness(*a)?;
+                            let b_val = self.get_witness(*b)?;
+                            let ab_product = a_val * b_val;
+                            let intermediate_out_id = *intermediate_out;
+                            let c_id_opt = *c;
+                            let out_id = *out;
+
+                            // Set intermediate_out if fused from separate operations
+                            if let Some(io) = intermediate_out_id {
+                                self.set_witness(io, ab_product)?;
+                            }
+
+                            let c_val = if let Some(c_id) = c_id_opt {
+                                self.get_witness(c_id)?
+                            } else {
+                                F::ZERO
+                            };
+                            let result = ab_product + c_val;
+                            self.set_witness(out_id, result)?;
+                        }
                     }
                 }
                 Op::NonPrimitiveOpWithExecutor {
@@ -263,11 +301,11 @@ impl<F: CircuitField> CircuitRunner<F> {
                         &mut self.witness,
                         &self.non_primitive_op_private_data,
                         &self.circuit.enabled_ops,
-                        op_id,
+                        *op_id,
                         &mut self.op_states,
                     );
 
-                    executor.execute(&inputs, &outputs, &mut ctx)?;
+                    executor.execute(inputs, outputs, &mut ctx)?;
                 }
             }
         }
@@ -275,6 +313,7 @@ impl<F: CircuitField> CircuitRunner<F> {
     }
 
     /// Gets witness value by ID.
+    #[inline]
     fn get_witness(&self, widx: WitnessId) -> Result<F, CircuitError> {
         self.witness
             .get(widx.0 as usize)
@@ -284,25 +323,51 @@ impl<F: CircuitField> CircuitRunner<F> {
     }
 
     /// Sets witness value by ID.
+    #[inline]
     fn set_witness(&mut self, widx: WitnessId, value: F) -> Result<(), CircuitError> {
         if widx.0 as usize >= self.witness.len() {
             return Err(CircuitError::WitnessIdOutOfBounds { witness_id: widx });
         }
 
+        let slot = &mut self.witness[widx.0 as usize];
+
         // Check for conflicting reassignment
-        if let Some(existing_value) = self.witness[widx.0 as usize] {
-            if existing_value != value {
-                return Err(CircuitError::WitnessConflict {
-                    witness_id: widx,
-                    existing: format!("{existing_value:?}"),
-                    new: format!("{value:?}"),
-                });
+        if let Some(existing_value) = slot.as_ref() {
+            if *existing_value == value {
+                return Ok(());
             }
-        } else {
-            self.witness[widx.0 as usize] = Some(value);
+            let expr_ids = self
+                .circuit
+                .expr_to_widx
+                .iter()
+                .filter_map(|(expr_id, &witness_id)| {
+                    if witness_id == widx {
+                        Some(*expr_id)
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>();
+            return Err(CircuitError::WitnessConflict {
+                witness_id: widx,
+                existing: format!("{existing_value:?}"),
+                new: format!("{value:?}"),
+                expr_ids,
+            });
         }
 
+        *slot = Some(value);
         Ok(())
+    }
+
+    /// Reference to the witness slice (for benchmarking trace builders after `execute_all`).
+    pub fn witness(&self) -> &[Option<F>] {
+        &self.witness
+    }
+
+    /// Reference to the circuit ops (for benchmarking trace builders after `execute_all`).
+    pub fn ops(&self) -> &[Op<F>] {
+        &self.circuit.ops
     }
 }
 
@@ -365,8 +430,8 @@ mod tests {
         // Check that we have public trace entries
         assert!(!traces.public_trace.values.is_empty());
 
-        // Check that we have add trace entries
-        assert!(!traces.add_trace.lhs_values.is_empty());
+        // Check that we have ALU trace entries
+        assert!(!traces.alu_trace.a_values.is_empty());
     }
 
     #[derive(Debug, Clone)]
@@ -438,8 +503,8 @@ mod tests {
         // Verify trace structure
         assert_eq!(traces.witness_trace.index.len(), witness_count as usize);
 
-        // Should have constants: 0, 37, 111
-        assert_eq!(traces.const_trace.values.len(), 3);
+        // Should have constants: 0, 37, 111 and -111 (introduced by algebraic rewrite)
+        assert_eq!(traces.const_trace.values.len(), 4);
 
         // Should have no public input
         assert!(traces.public_trace.values.is_empty());
@@ -452,13 +517,9 @@ mod tests {
         );
 
         // Should have one mul operation: 37 * x
-        assert_eq!(traces.mul_trace.lhs_values.len(), 1);
-
-        // Encoded subtraction lands in the add table (result + rhs = lhs).
-        assert_eq!(traces.add_trace.lhs_values.len(), 1);
-        assert_eq!(traces.add_trace.lhs_index, vec![WitnessId(2)]);
-        assert_eq!(traces.add_trace.rhs_index, vec![WitnessId(0)]);
-        assert_eq!(traces.add_trace.result_index, vec![WitnessId(4)]);
+        // And one add operation for sub: result + rhs = lhs
+        // Total 2 ALU operations
+        assert_eq!(traces.alu_trace.a_values.len(), 2);
     }
 
     #[test]
@@ -510,21 +571,16 @@ mod tests {
         assert_eq!(traces.public_trace.values[1], y_val);
         assert_eq!(traces.public_trace.values[2], z_val);
 
-        // Should have one mul and one add operation
-        assert_eq!(traces.mul_trace.lhs_values.len(), 1);
-        assert_eq!(traces.add_trace.lhs_values.len(), 1);
+        // Should have one MulAdd operation (fused from y * z + x)
+        assert_eq!(traces.alu_trace.a_values.len(), 1);
 
-        // Verify mul operation: y * z with genuine extension field multiplication
+        // Verify MulAdd operation: y * z + x
         let expected_yz = y_val * z_val;
-        assert_eq!(traces.mul_trace.lhs_values[0], y_val);
-        assert_eq!(traces.mul_trace.rhs_values[0], z_val);
-        assert_eq!(traces.mul_trace.result_values[0], expected_yz);
-
-        // Verify add operation: x + yz with genuine extension field addition
-        let expected_result = x_val + expected_yz;
-        assert_eq!(traces.add_trace.lhs_values[0], x_val);
-        assert_eq!(traces.add_trace.rhs_values[0], expected_yz);
-        assert_eq!(traces.add_trace.result_values[0], expected_result);
+        let expected_result = expected_yz + x_val;
+        assert_eq!(traces.alu_trace.a_values[0], y_val);
+        assert_eq!(traces.alu_trace.b_values[0], z_val);
+        assert_eq!(traces.alu_trace.c_values[0], x_val);
+        assert_eq!(traces.alu_trace.out_values[0], expected_result);
     }
 
     #[test]

@@ -9,7 +9,7 @@ use p3_batch_stark::proof::OpenedValuesWithLookups;
 use p3_batch_stark::{BatchCommitments, BatchOpenedValues, BatchProof, CommonData};
 use p3_circuit::CircuitBuilder;
 use p3_commit::Pcs;
-use p3_field::Field;
+use p3_field::{ExtensionField, Field, PrimeField64};
 use p3_lookup::lookup_traits::{Lookup, LookupData};
 use p3_uni_stark::{OpenedValues, Proof, StarkGenericConfig, Val};
 
@@ -195,43 +195,48 @@ impl<SC: StarkGenericConfig> OpenedValuesTargetsWithLookups<SC> {
     /// This method absorbs all opened values into the challenger state,
     /// which is necessary before sampling PCS challenges.
     ///
+    /// The opened values are extension field elements, so we use observe_ext_slice.
+    ///
     /// # Parameters
     /// - `circuit`: Circuit builder
     /// - `challenger`: Running challenger state
-    pub fn observe<F: Field>(
+    pub fn observe<BF, EF>(
         &self,
-        circuit: &mut CircuitBuilder<F>,
-        challenger: &mut impl RecursiveChallenger<F>,
-    ) {
-        // Observe random values if in ZK mode
+        circuit: &mut CircuitBuilder<EF>,
+        challenger: &mut impl RecursiveChallenger<BF, EF>,
+    ) where
+        BF: PrimeField64,
+        EF: ExtensionField<BF>,
+    {
+        // Observe random values if in ZK mode (extension field elements)
         if let Some(random_vals) = &self.opened_values_no_lookups.random_targets {
-            challenger.observe_slice(circuit, random_vals);
+            challenger.observe_ext_slice(circuit, random_vals);
         }
 
-        // Observe trace values at zeta and zeta_next
-        challenger.observe_slice(circuit, &self.opened_values_no_lookups.trace_local_targets);
-        challenger.observe_slice(circuit, &self.opened_values_no_lookups.trace_next_targets);
+        // Observe trace values at zeta and zeta_next (extension field elements)
+        challenger.observe_ext_slice(circuit, &self.opened_values_no_lookups.trace_local_targets);
+        challenger.observe_ext_slice(circuit, &self.opened_values_no_lookups.trace_next_targets);
 
-        // Observe quotient chunk values
+        // Observe quotient chunk values (extension field elements)
         for chunk_values in &self.opened_values_no_lookups.quotient_chunks_targets {
-            challenger.observe_slice(circuit, chunk_values);
+            challenger.observe_ext_slice(circuit, chunk_values);
         }
 
         if let Some(preprocessed_local_targets) =
             &self.opened_values_no_lookups.preprocessed_local_targets
         {
-            challenger.observe_slice(circuit, preprocessed_local_targets);
+            challenger.observe_ext_slice(circuit, preprocessed_local_targets);
         }
         if let Some(preprocessed_next_targets) =
             &self.opened_values_no_lookups.preprocessed_next_targets
         {
-            challenger.observe_slice(circuit, preprocessed_next_targets);
+            challenger.observe_ext_slice(circuit, preprocessed_next_targets);
         }
         if !self.permutation_local_targets.is_empty() {
-            challenger.observe_slice(circuit, &self.permutation_local_targets);
+            challenger.observe_ext_slice(circuit, &self.permutation_local_targets);
         }
         if !self.permutation_next_targets.is_empty() {
-            challenger.observe_slice(circuit, &self.permutation_next_targets);
+            challenger.observe_ext_slice(circuit, &self.permutation_next_targets);
         }
     }
 }
@@ -300,13 +305,14 @@ impl<
         // 1. All `trace_local` rows per instance (instance 0 .. N)
         // 2. All `trace_next` rows per instance (instance 0 .. N)
         // 3. Quotient chunks for each instance in commit order
-        let mut aggregated_trace_local = Vec::new();
-        let mut aggregated_trace_next = Vec::new();
-        let mut aggregated_permutation_local = Vec::new();
-        let mut aggregated_permutation_next = Vec::new();
-        let mut aggregated_preprocessed_local = Vec::new();
-        let mut aggregated_preprocessed_next = Vec::new();
-        let mut aggregated_quotient_chunks = Vec::new();
+        let num_instances = input.opened_values.instances.len();
+        let mut aggregated_trace_local = Vec::with_capacity(num_instances);
+        let mut aggregated_trace_next = Vec::with_capacity(num_instances);
+        let mut aggregated_permutation_local = Vec::with_capacity(num_instances);
+        let mut aggregated_permutation_next = Vec::with_capacity(num_instances);
+        let mut aggregated_preprocessed_local = Vec::with_capacity(num_instances);
+        let mut aggregated_preprocessed_next = Vec::with_capacity(num_instances);
+        let mut aggregated_quotient_chunks = Vec::with_capacity(num_instances);
 
         let commitments_targets = CommitmentTargets::new(circuit, &input.commitments);
         let opened_values_targets = BatchOpenedValuesTargets::new(circuit, &input.opened_values);

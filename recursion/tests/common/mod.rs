@@ -1,7 +1,7 @@
 #![allow(unused)]
 
 use itertools::Itertools;
-use p3_air::{Air, AirBuilder, BaseAir, PairBuilder};
+use p3_air::{Air, AirBuilder, BaseAir};
 use p3_challenger::DuplexChallenger;
 use p3_commit::ExtensionMmcs;
 use p3_dft::Radix2DitParallel;
@@ -47,6 +47,7 @@ pub(crate) mod baby_bear_params {
 
     pub(crate) type F = BabyBear;
     pub(crate) const D: usize = 4;
+    pub(crate) const WIDTH: usize = 16;
     pub(crate) const RATE: usize = 8;
     pub(crate) const DIGEST_ELEMS: usize = 8;
     pub(crate) type Challenge = BinomialExtensionField<F, D>;
@@ -72,6 +73,7 @@ pub(crate) mod koala_bear_params {
 
     pub(crate) type F = KoalaBear;
     pub(crate) const D: usize = 4;
+    pub(crate) const WIDTH: usize = 16;
     pub(crate) const RATE: usize = 8;
     pub(crate) const DIGEST_ELEMS: usize = 8;
 
@@ -98,6 +100,7 @@ pub(crate) mod goldilocks_params {
 
     pub(crate) type F = Goldilocks;
     pub(crate) const D: usize = 2;
+    pub(crate) const WIDTH: usize = 8;
     pub(crate) const RATE: usize = 4;
     pub(crate) const DIGEST_ELEMS: usize = 4;
 
@@ -207,7 +210,7 @@ where
     }
 }
 
-impl<AB: PairBuilder> Air<AB> for MulAir
+impl<AB: AirBuilder> Air<AB> for MulAir
 where
     AB::F: Field,
     StandardUniform: Distribution<AB::F>,
@@ -216,7 +219,9 @@ where
         let main = builder.main();
         let main_local = main.row_slice(0).expect("Matrix is empty?");
 
-        let preprocessed = builder.preprocessed();
+        let preprocessed = builder
+            .preprocessed()
+            .expect("Expected preprocessed columns");
         let preprocessed_local = preprocessed
             .row_slice(0)
             .expect("Preprocessed matrix is empty?");

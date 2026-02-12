@@ -34,7 +34,7 @@ impl<F> WitnessTrace<F> {
         self.values.len()
     }
 
-    #[cfg(debug_assertions)]
+    #[cfg(feature = "debugging")]
     /// Return a reference to the values of the witness trace.
     pub(crate) fn values(&self) -> &[F] {
         &self.values
@@ -66,8 +66,9 @@ impl<'a, F: Clone> WitnessTraceBuilder<'a, F> {
 
     /// Builds the witness trace from the populated witness table.
     pub fn build(self) -> Result<WitnessTrace<F>, CircuitError> {
-        let mut index = Vec::new();
-        let mut values = Vec::new();
+        let capacity = self.witness.len();
+        let mut index = Vec::with_capacity(capacity);
+        let mut values = Vec::with_capacity(capacity);
 
         for (i, witness_opt) in self.witness.iter().enumerate() {
             match witness_opt {

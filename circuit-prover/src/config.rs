@@ -20,7 +20,7 @@ use p3_commit::ExtensionMmcs;
 use p3_dft::Radix2DitParallel;
 use p3_field::extension::BinomialExtensionField;
 use p3_field::{Field, PrimeCharacteristicRing, PrimeField64, TwoAdicField};
-use p3_fri::{TwoAdicFriPcs, create_benchmark_fri_params};
+use p3_fri::{TwoAdicFriPcs, create_benchmark_fri_params_high_arity};
 use p3_goldilocks::{Goldilocks, Poseidon2Goldilocks};
 use p3_koala_bear::{KoalaBear, Poseidon2KoalaBear, default_koalabear_poseidon2_16};
 use p3_merkle_tree::MerkleTreeMmcs;
@@ -164,7 +164,7 @@ where
         let val_mmcs = MerkleTreeMmcs::new(hash, compress);
         let challenge_mmcs = ExtensionMmcs::new(val_mmcs.clone());
         let dft = Radix2DitParallel::default();
-        let fri_params = create_benchmark_fri_params(challenge_mmcs);
+        let fri_params = create_benchmark_fri_params_high_arity(challenge_mmcs);
         let pcs = TwoAdicFriPcs::new(dft, val_mmcs, fri_params);
         let challenger = DuplexChallenger::new(self.perm_hash);
 

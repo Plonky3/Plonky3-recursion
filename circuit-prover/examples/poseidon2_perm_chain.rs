@@ -6,13 +6,15 @@ use std::error::Error;
 /// Builds a chain of Poseidon2 permutations and verifies the final output against a native
 /// computation.
 use p3_baby_bear::{BabyBear, default_babybear_poseidon2_16};
-use p3_batch_stark::CommonData;
+use p3_batch_stark::ProverData;
 use p3_circuit::op::NonPrimitiveOpType;
 use p3_circuit::ops::{Poseidon2PermCall, Poseidon2PermOps, generate_poseidon2_trace};
 use p3_circuit::{CircuitBuilder, ExprId};
 use p3_circuit_prover::common::{NonPrimitiveConfig, get_airs_and_degrees_with_prep};
 use p3_circuit_prover::config::BabyBearConfig;
-use p3_circuit_prover::{BatchStarkProver, Poseidon2Config, TablePacking, config};
+use p3_circuit_prover::{
+    BatchStarkProver, CircuitProverData, Poseidon2Config, TablePacking, config,
+};
 use p3_field::extension::BinomialExtensionField;
 use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
 use p3_poseidon2_circuit_air::BabyBearD4Width16;
@@ -82,7 +84,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     });
 
     // Add permutation rows.
-    let mut last_outputs: [Option<ExprId>; 2] = [None, None];
+    let mut last_outputs: [Option<ExprId>; 4] = [None, None, None, None];
 
     for row in 0..chain_length {
         let is_first = row == 0;
@@ -102,6 +104,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             mmcs_bit: None, // Must be None when merkle_path=false
             inputs,
             out_ctl: [is_last, is_last],
+            return_all_outputs: false,
             mmcs_index_sum: None,
         })?;
 
@@ -123,9 +126,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     let expr_to_widx = circuit.expr_to_widx.clone();
 
     let stark_config = config::baby_bear().build();
-    let table_packing = TablePacking::new(1, 1, 1);
+    let table_packing = TablePacking::new(2, 2, 2);
     let poseidon2_config = Poseidon2Config::BabyBearD4Width16;
-    let (airs_degrees, witness_multiplicities) =
+    let (airs_degrees, preprocessed_columns) =
         get_airs_and_degrees_with_prep::<BabyBearConfig, _, 4>(
             &circuit,
             table_packing,
@@ -173,17 +176,19 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Prove and verify the circuit.
     let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
-    let common = CommonData::from_airs_and_degrees(&stark_config, &mut airs, &degrees);
+    let prover_data = ProverData::from_airs_and_degrees(&stark_config, &mut airs, &degrees);
+    let circuit_prover_data = CircuitProverData::new(prover_data, preprocessed_columns);
+
     assert!(
-        !common.lookups[5].is_empty(),
+        !circuit_prover_data.common_data().lookups[4].is_empty(),
         "Poseidon2 table should have lookups"
     );
 
     let mut prover = BatchStarkProver::new(stark_config).with_table_packing(table_packing);
     prover.register_poseidon2_table(poseidon2_config);
 
-    let proof = prover.prove_all_tables(&traces, &common, witness_multiplicities)?;
-    prover.verify_all_tables(&proof, &common)?;
+    let proof = prover.prove_all_tables(&traces, &circuit_prover_data)?;
+    prover.verify_all_tables(&proof, circuit_prover_data.common_data())?;
 
     Ok(())
 }

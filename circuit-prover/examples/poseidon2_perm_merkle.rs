@@ -1,13 +1,15 @@
 use std::error::Error;
 
 use p3_baby_bear::{BabyBear, default_babybear_poseidon2_16};
-use p3_batch_stark::CommonData;
+use p3_batch_stark::ProverData;
 use p3_circuit::op::{NonPrimitiveOpPrivateData, NonPrimitiveOpType};
 use p3_circuit::ops::{Poseidon2PermPrivateData, generate_poseidon2_trace};
 use p3_circuit::{CircuitBuilder, ExprId, Poseidon2PermOps};
 use p3_circuit_prover::common::{NonPrimitiveConfig, get_airs_and_degrees_with_prep};
 use p3_circuit_prover::config::BabyBearConfig;
-use p3_circuit_prover::{BatchStarkProver, Poseidon2Config, TablePacking, config};
+use p3_circuit_prover::{
+    BatchStarkProver, CircuitProverData, Poseidon2Config, TablePacking, config,
+};
 use p3_field::extension::BinomialExtensionField;
 use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
 use p3_poseidon2_circuit_air::BabyBearD4Width16;
@@ -171,6 +173,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             mmcs_bit: Some(mmcs_bit_row0),
             inputs: inputs_row0.map(Some),
             out_ctl: [false, false],
+            return_all_outputs: false,
             mmcs_index_sum: None,
         })?;
 
@@ -191,6 +194,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             mmcs_bit: Some(mmcs_bit_row1),
             inputs: sibling1_inputs,
             out_ctl: [false, false],
+            return_all_outputs: false,
             mmcs_index_sum: None,
         })?;
 
@@ -205,6 +209,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             mmcs_bit: Some(mmcs_bit_row2),
             inputs: sibling2_inputs,
             out_ctl: [true, true],
+            return_all_outputs: false,
             mmcs_index_sum: Some(mmcs_idx_sum_expr),
         })?;
     let row2_out0 = row2_outputs[0].ok_or("missing row2 out0")?;
@@ -213,10 +218,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     builder.connect(row2_out1, out1);
 
     let circuit = builder.build()?;
-    let table_packing = TablePacking::new(4, 4, 1);
+    let table_packing = TablePacking::new(4, 4, 4);
     let poseidon2_config = Poseidon2Config::BabyBearD4Width16;
     let stark_config = config::baby_bear().build();
-    let (airs_degrees, witness_multiplicities) =
+    let (airs_degrees, preprocessed_columns) =
         get_airs_and_degrees_with_prep::<BabyBearConfig, _, 4>(
             &circuit,
             table_packing,
@@ -261,17 +266,19 @@ fn main() -> Result<(), Box<dyn Error>> {
         .expect("poseidon2 trace missing");
     assert_eq!(poseidon2_trace.total_rows(), 3, "expected three perm rows");
 
-    let common = CommonData::from_airs_and_degrees(&stark_config, &mut airs, &degrees);
+    let prover_data = ProverData::from_airs_and_degrees(&stark_config, &mut airs, &degrees);
+    let circuit_prover_data = CircuitProverData::new(prover_data, preprocessed_columns);
+
     assert!(
-        !common.lookups[5].is_empty(),
+        !circuit_prover_data.common_data().lookups[4].is_empty(),
         "Poseidon2 table should have lookups"
     );
 
     let mut prover = BatchStarkProver::new(stark_config).with_table_packing(table_packing);
     prover.register_poseidon2_table(poseidon2_config);
 
-    let proof = prover.prove_all_tables(&traces, &common, witness_multiplicities)?;
-    prover.verify_all_tables(&proof, &common)?;
+    let proof = prover.prove_all_tables(&traces, &circuit_prover_data)?;
+    prover.verify_all_tables(&proof, circuit_prover_data.common_data())?;
 
     Ok(())
 }

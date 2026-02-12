@@ -43,7 +43,7 @@ The lookups can be seen as representing the `READ`/`WRITE` operations from/to th
 The example below represents the (fixed) IR associated to the statement `37.x - 111 = 0`, where `x` is a public input. It can be reproduced by running
 
 ```bash
-cargo test --package p3-circuit --lib -- tables::tests::test_toy_example_37_times_x_minus_111 --exact --show-output
+RUST_LOG=debug cargo test --package p3-circuit --lib -- tables::runner::tests::test_toy_example_37_times_x_minus_111 --exact --show-output
 ```
 
 A given row of the represented IR contains an operation and its associated operands. 
@@ -54,8 +54,8 @@ A given row of the represented IR contains an operation and its associated opera
 1: Const { out: WitnessId(1), val: 37 }
 2: Const { out: WitnessId(2), val: 111 }
 3: Public { out: WitnessId(3), public_pos: 0 }
-4: Mul { a: WitnessId(1), b: WitnessId(3), out: WitnessId(4) }
-5: Add { a: WitnessId(2), b: WitnessId(0), out: WitnessId(4) }
+4: Alu { a: WitnessId(1), b: WitnessId(3), out: WitnessId(4), mul_selector: 1 }
+5: Alu { a: WitnessId(2), b: WitnessId(0), out: WitnessId(4), add_selector: 1 }
 ```
 
 i.e. operation 4 performs `w[4] <- w[1] * w[3]`, and operation 5 encodes the subtraction check as an addition `w[2] + w[0] = w[4]` (verifying `37 * x - 111 = 0`).
@@ -106,7 +106,7 @@ A chip contains:
 - An AIR that enforces its semantics.
 
 We distinguish two kind of chips: those representing native, i.e. primitive operations, and additional non-primitive ones, defined at runtime, that serve as precompiles to optimize certain operations.
-The recursion machine contains 4 primitive chips: `CONST` / `PUBLIC_INPUT` / `ADD` and `MUL`, with `SUB` and `DIV` being emulated via the `ADD` and `MUL` chips. 
+The recursion machine contains 3 primitive chips: `CONST`, `PUBLIC_INPUT`, and a unified `ALU` chip with three selector columns (add/mul, bool-check, mul-add). `SUB` and `DIV` are encoded as ALU rows using the add or mul operation.
 
 Given only the primitive operations, one should be able to carry out most operations necessary in circuit verification. Primitive operations have the following properties:
 
@@ -133,11 +133,9 @@ Row 2: WitnessId(w2) = 111
 === PUBLIC TRACE ===
 Row 0: WitnessId(w3) = 3
 
-=== MUL TRACE ===
-Row 0: WitnessId(w1) * WitnessId(w3) -> WitnessId(w4) | 37 * 3 -> 111
-
-=== ADD TRACE ===
-Row 0: WitnessId(w2) + WitnessId(w0) -> WitnessId(w4) | 111 + 0 -> 111
+=== ALU TRACE ===
+Row 0: mul: WitnessId(w1) * WitnessId(w3) -> WitnessId(w4) | 37 * 3 -> 111
+Row 1: add: WitnessId(w2) + WitnessId(w0) -> WitnessId(w4) | 111 + 0 -> 111
 ```
 
 Note that because we started from a known, fixed program that has been lowered to a deterministic IR, we can have the `CONST` chip's table entirely preprocessed
@@ -154,14 +152,14 @@ Cross-table lookups (CTLs) ensure that **every** chip interaction happens throug
 For the toy example the CTL relations are:[^2]
 
 ```bash
-(index 0, value 0)   : CONST → Witness → ADD
-(index 1, value 37)  : CONST → Witness → MUL
-(index 2, value 111) : CONST → Witness → ADD
-(index 3, value 3)   : PUBLIC → Witness → MUL
-(index 4, value 111) : MUL → Witness ← ADD
+(index 0, value 0)   : CONST → Witness → ALU(add row)
+(index 1, value 37)  : CONST → Witness → ALU(mul row)
+(index 2, value 111) : CONST → Witness → ALU(add row)
+(index 3, value 3)   : PUBLIC → Witness → ALU(mul row)
+(index 4, value 111) : ALU(mul row) → Witness ← ALU(add row)
 ```
 
 
 [^1]: Preprocessed columns / polynomials can be reconstructed manually by the verifier, removing the need for a prover to commit to them and later perform the FRI protocol on them. However, the verifier needs $O(n)$ work when these columns are not structured, as it still needs to interpolate them. To alleviate this, the Plonky3 recursion stack performs *offline* commitment of unstructured preprocessed columns, so that we need only one instance of the FRI protocol to verify all preprocessed columns evaluations. 
 
-[^2]: The `ADD` and `MUL` tables both issue CTL writes of their outputs to the same Witness row. Because the Witness table is a *read-only* / *write-once* memory bus, the aggregated lookup forces those duplicate writes `w4 = 111` to agree, which is exactly the constraint `37 * 3 = 111 = 0 + 111`.
+[^2]: The two ALU rows both write `w4 = 111` to the Witness table (once via a mul row, once via an add row). Because the Witness table is a *read-only* / *write-once* memory bus, the aggregated lookup forces those duplicate writes to agree, which is exactly the constraint `37 * 3 = 111 = 0 + 111`.

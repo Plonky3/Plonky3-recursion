@@ -45,18 +45,15 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::marker::PhantomData;
 
-use p3_air::{
-    Air, AirBuilder, AirBuilderWithPublicValues, BaseAir, PairBuilder, PermutationAirBuilder,
-};
+use p3_air::{Air, AirBuilder, AirBuilderWithPublicValues, BaseAir, PermutationAirBuilder};
 use p3_circuit::WitnessId;
 use p3_circuit::tables::WitnessTrace;
 use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
 use p3_lookup::lookup_traits::{Direction, Kind, Lookup};
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
-use p3_uni_stark::SymbolicAirBuilder;
 
-use crate::air::utils::get_index_lookups;
+use crate::air::utils::{create_symbolic_variables, get_index_lookups, pad_matrix_with_min_height};
 
 /// AIR enforcing a monotonically increasing witness index column for the global bus.
 /// Layout per row: `[value[0..D), index]` repeated `lanes` times.
@@ -75,6 +72,8 @@ pub struct WitnessAir<F, const D: usize = 1> {
     pub multiplicities: Vec<F>,
     /// Number of currently registered lookup columns.
     pub num_lookup_columns: usize,
+    /// Minimum trace height (for FRI compatibility with higher log_final_poly_len).
+    pub min_height: usize,
     _phantom: PhantomData<F>,
 }
 
@@ -92,6 +91,7 @@ impl<F: Field, const D: usize> WitnessAir<F, D> {
             lanes,
             multiplicities: Vec::new(),
             num_lookup_columns: 0,
+            min_height: 1,
             _phantom: PhantomData,
         }
     }
@@ -113,8 +113,18 @@ impl<F: Field, const D: usize> WitnessAir<F, D> {
             lanes,
             multiplicities,
             num_lookup_columns: 0,
+            min_height: 1,
             _phantom: PhantomData,
         }
+    }
+
+    /// Set the minimum trace height for FRI compatibility.
+    ///
+    /// FRI requires: `log_trace_height > log_final_poly_len + log_blowup`
+    /// So `min_height` should be >= `2^(log_final_poly_len + log_blowup + 1)`.
+    pub const fn with_min_height(mut self, min_height: usize) -> Self {
+        self.min_height = min_height;
+        self
     }
 
     #[inline]
@@ -155,6 +165,7 @@ impl<F: Field, const D: usize> WitnessAir<F, D> {
     ///
     /// ```text
     ///     [value[0..D), index] repeated `lanes` times.
+    #[inline]
     pub fn trace_to_matrix<ExtF: BasedVectorSpace<F>>(
         trace: &WitnessTrace<ExtF>,
         lanes: usize,
@@ -241,24 +252,28 @@ impl<F: Field, const D: usize> BaseAir<F> for WitnessAir<F, D> {
             self.num_witnesses,
             self.multiplicities.len()
         );
-        let height = (self.num_witnesses.div_ceil(self.lanes)).next_power_of_two() * self.lanes;
+        // Calculate natural height and respect min_height for FRI compatibility
+        let natural_rows = self.num_witnesses.div_ceil(self.lanes).next_power_of_two();
+        let min_rows = self.min_height.next_power_of_two();
+        let num_rows = natural_rows.max(min_rows);
+        let height = num_rows * self.lanes;
+
         let all_vals = (0..height)
             .flat_map(|i| {
                 if i >= self.multiplicities.len() {
+                    // Padding rows have zero multiplicity
                     return vec![F::ZERO, F::from_u32(i as u32)];
                 }
                 vec![self.multiplicities[i], F::from_u32(i as u32)]
             })
             .collect::<Vec<_>>();
 
-        Some(RowMajorMatrix::new(
-            all_vals,
-            self.lanes * Self::preprocessed_lane_width(),
-        ))
+        let mat = RowMajorMatrix::new(all_vals, self.lanes * Self::preprocessed_lane_width());
+        Some(pad_matrix_with_min_height(mat, self.min_height))
     }
 }
 
-impl<AB: PairBuilder, const D: usize> Air<AB> for WitnessAir<AB::F, D>
+impl<AB: AirBuilder, const D: usize> Air<AB> for WitnessAir<AB::F, D>
 where
     AB::F: Field,
 {
@@ -267,7 +282,9 @@ where
 
         // First row: index == 0
         {
-            let preprocessed = builder.preprocessed();
+            let preprocessed = builder
+                .preprocessed()
+                .expect("Expected preprocessed columns");
             let local_prep = preprocessed
                 .row_slice(0)
                 .expect("Preprocessed matrix should be non-empty");
@@ -279,7 +296,7 @@ where
         // Enforce sequential indices within each row (lanes) and across rows.
         {
             let mut b = builder.when_transition();
-            let preprocessed = b.preprocessed();
+            let preprocessed = b.preprocessed().expect("Expected preprocessed columns");
             let cur_prep = preprocessed.row_slice(0).expect("non-empty");
 
             let nxt_prep = preprocessed.row_slice(1).expect("has next row");
@@ -298,7 +315,7 @@ where
 
         if self.lanes > 1 {
             let mut b = builder.when_last_row();
-            let preprocessed = b.preprocessed();
+            let preprocessed = b.preprocessed().expect("Expected preprocessed columns");
             let last_prep = preprocessed.row_slice(0).expect("non-empty");
             let mut prev_idx = last_prep[1].clone();
             for lane in 1..lanes {
@@ -318,26 +335,17 @@ where
 
     fn get_lookups(&mut self) -> Vec<Lookup<<AB>::F>>
     where
-        AB: PermutationAirBuilder + AirBuilderWithPublicValues + PairBuilder,
+        AB: PermutationAirBuilder + AirBuilderWithPublicValues,
     {
         let mut lookups = Vec::new();
         self.num_lookup_columns = 0;
-        let preprocessed_width = self.preprocessed_width();
 
-        // Create symbolic air builder to access symbolic variables
-        let symbolic_air_builder = SymbolicAirBuilder::<AB::F>::new(
-            preprocessed_width,
+        let (symbolic_main_local, preprocessed_local) = create_symbolic_variables::<AB::F>(
+            self.preprocessed_width(),
             BaseAir::<AB::F>::width(self),
             0,
-            0, // Here, we do not need the permutation trace
             0,
         );
-
-        let symbolic_main = symbolic_air_builder.main();
-        let symbolic_main_local = symbolic_main.row_slice(0).unwrap();
-
-        let preprocessed = symbolic_air_builder.preprocessed();
-        let preprocessed_local = preprocessed.row_slice(0).unwrap();
 
         for lane in 0..self.lanes {
             let lane_offset = lane * Self::lane_width();

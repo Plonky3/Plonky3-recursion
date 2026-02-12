@@ -3,7 +3,7 @@ mod common;
 use p3_air::{Air, BaseAir};
 use p3_circuit::utils::{ColumnsTargets, RowSelectorsTargets};
 use p3_circuit::{CircuitBuilder, CircuitError};
-use p3_circuit_prover::air::{AddAir, ConstAir, MulAir, PublicAir, WitnessAir};
+use p3_circuit_prover::air::{AluAir, ConstAir, PublicAir, WitnessAir};
 use p3_commit::ExtensionMmcs;
 use p3_field::PrimeCharacteristicRing;
 use p3_fri::TwoAdicFriPcs;
@@ -151,12 +151,19 @@ where
 fn primitive_airs_symbolic_to_circuit() -> Result<(), CircuitError> {
     let mut rng = SmallRng::seed_from_u64(7);
 
-    let add_air =
-        AddAir::<F, 1>::new_with_preprocessed(1, 1, vec![F::ZERO, F::ONE, F::from_u64(2)]);
-    run_recursive(&add_air, add_air.preprocessed_width(), 0, &mut rng)?;
-
-    let mul_air = MulAir::<F, 1>::new_with_preprocessed(1, 1, vec![F::ONE; 3]);
-    run_recursive(&mul_air, mul_air.preprocessed_width(), 0, &mut rng)?;
+    // AluAir preprocessed format (per op, multiplicity added by AIR): [sel_add_vs_mul, sel_bool, sel_muladd, a_idx, b_idx, c_idx, out_idx]
+    // For an ADD operation: sel_add_vs_mul=1, sel_bool=0, sel_muladd=0
+    let alu_add_prep = vec![
+        F::ONE,  // sel_add_vs_mul
+        F::ZERO, // sel_bool
+        F::ZERO, // sel_muladd
+        F::ZERO,
+        F::ONE,
+        F::ZERO,
+        F::from_u64(2), // a_idx, b_idx, c_idx, out_idx
+    ];
+    let alu_air = AluAir::<F, 1>::new_with_preprocessed(1, 1, alu_add_prep);
+    run_recursive(&alu_air, alu_air.preprocessed_width(), 0, &mut rng)?;
 
     let const_air = ConstAir::<F, 1>::new_with_preprocessed(1, vec![F::from_u64(3)]);
     run_recursive(
@@ -166,13 +173,8 @@ fn primitive_airs_symbolic_to_circuit() -> Result<(), CircuitError> {
         &mut rng,
     )?;
 
-    let public_air = PublicAir::<F, 1>::new_with_preprocessed(1, vec![F::from_u64(4)]);
-    run_recursive(
-        &public_air,
-        PublicAir::<F, 1>::preprocessed_width(),
-        1,
-        &mut rng,
-    )?;
+    let public_air = PublicAir::<F, 1>::new_with_preprocessed(1, 1, vec![F::from_u64(4)]);
+    run_recursive(&public_air, public_air.preprocessed_width(), 1, &mut rng)?;
 
     let witness_air = WitnessAir::<F, 1>::new(1, 1);
     run_recursive(&witness_air, witness_air.preprocessed_width(), 0, &mut rng)?;

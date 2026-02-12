@@ -51,6 +51,9 @@ jobs:
       - name: Test
         run: cargo test --verbose --all-targets
 
+      - name: Test (all-features)
+        run: cargo test --verbose --all-targets --all-features
+
       - name: Check (release)
         run: cargo check --verbose --all-targets --release
 
@@ -142,6 +145,9 @@ jobs:
 
       - name: Clippy
         run: cargo +stable clippy --all-targets -- -D warnings
+
+      - name: Clippy (all-features)
+        run: cargo +stable clippy --all-targets --all-features -- -D warnings
 
       - name: Format
         run: cargo +nightly fmt --all -- --check

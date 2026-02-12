@@ -37,7 +37,30 @@ pub struct AllocationEntry {
     /// Dependencies for this entry, i.e. the expressions that this entry depends on.
     pub dependencies: Vec<Vec<ExprId>>,
     /// Scope/sub-circuit this allocation belongs to (if any)
-    pub scope: Option<&'static str>,
+    pub scope: Option<String>,
+}
+
+/// Look up allocation info for specific ExprIds and dump to debug log.
+///
+/// This is useful for debugging WitnessConflict errors where two ExprIds
+/// have been merged to the same WitnessId.
+pub fn dump_expr_ids(allocation_log: &[AllocationEntry], expr_ids: &[ExprId]) {
+    tracing::debug!("=== Allocation Info for ExprIds {:?} ===", expr_ids);
+    for expr_id in expr_ids {
+        if let Some(entry) = allocation_log.iter().find(|e| e.expr_id == *expr_id) {
+            tracing::debug!(
+                "  ExprId({}) = {:?}, label='{}', scope={:?}, deps={:?}",
+                entry.expr_id.0,
+                entry.alloc_type,
+                entry.label,
+                entry.scope,
+                entry.dependencies
+            );
+        } else {
+            tracing::debug!("  ExprId({}) not found in allocation log", expr_id.0);
+        }
+    }
+    tracing::debug!("=== End ExprId Info ===\n");
 }
 
 /// Dump an allocation log (debug builds only).
@@ -51,7 +74,7 @@ pub(crate) fn dump_allocation_log(allocation_log: &[AllocationEntry]) {
     let all_scopes = list_scopes(allocation_log);
 
     for scope in all_scopes {
-        dump_allocation_log_scope(allocation_log, Some(scope));
+        dump_allocation_log_scope(allocation_log, Some(&scope));
     }
 
     // Dump also allocations that do not fall under a particular scope
@@ -66,7 +89,7 @@ pub(crate) fn dump_allocation_log(allocation_log: &[AllocationEntry]) {
 pub(crate) fn dump_allocation_log_scope(allocation_log: &[AllocationEntry], scope: Option<&str>) {
     let filtered: Vec<_> = allocation_log
         .iter()
-        .filter(|e| e.scope == scope)
+        .filter(|e| e.scope == scope.map(|s| s.to_string()))
         .cloned()
         .collect();
 
@@ -278,11 +301,11 @@ fn dump_internal_log(allocation_log: &[AllocationEntry]) {
 }
 
 /// List all unique scopes present in the allocation log.
-pub(crate) fn list_scopes(allocation_log: &[AllocationEntry]) -> Vec<&'static str> {
+pub(crate) fn list_scopes(allocation_log: &[AllocationEntry]) -> Vec<String> {
     let mut scopes = HashSet::new();
     for entry in allocation_log {
-        if let Some(scope) = entry.scope {
-            scopes.insert(scope);
+        if let Some(scope) = &entry.scope {
+            scopes.insert(scope.clone());
         }
     }
 

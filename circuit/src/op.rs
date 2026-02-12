@@ -1,19 +1,35 @@
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
-use alloc::format;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use alloc::{format, vec};
 use core::any::Any;
 use core::fmt::Debug;
 use core::hash::Hash;
 
 use hashbrown::HashMap;
-use p3_field::Field;
+use p3_field::{Field, PrimeCharacteristicRing};
 use strum_macros::EnumCount;
 
-use crate::CircuitError;
-use crate::ops::poseidon2_perm::Poseidon2PermPrivateData;
+use crate::ops::Poseidon2PermPrivateData;
 use crate::types::{NonPrimitiveOpId, WitnessId};
+use crate::{CircuitError, PreprocessedColumns};
+
+/// ALU operation kinds for the unified arithmetic table.
+///
+/// This enum defines the different arithmetic operations that can be performed
+/// in a single ALU row, selected by preprocessed selectors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AluOpKind {
+    /// Addition: out = a + b
+    Add,
+    /// Multiplication: out = a * b
+    Mul,
+    /// Boolean check: a * (a - 1) = 0, out = a
+    BoolCheck,
+    /// Fused multiply-add: out = a * b + c
+    MulAdd,
+}
 
 /// Circuit operations.
 ///
@@ -53,18 +69,23 @@ pub enum Op<F> {
     /// for circuit inputs and expected outputs.
     Public { out: WitnessId, public_pos: usize },
 
-    /// Field addition: witness[out] = witness[a] + witness[b]
-    Add {
+    /// Unified ALU operation supporting multiple arithmetic operations.
+    ///
+    /// The `kind` field determines the operation:
+    /// - `Add`: out = a + b
+    /// - `Mul`: out = a * b
+    /// - `BoolCheck`: a * (a - 1) = 0, out = a
+    /// - `MulAdd`: out = a * b + c
+    Alu {
+        kind: AluOpKind,
         a: WitnessId,
         b: WitnessId,
+        /// Third operand, only used for MulAdd
+        c: Option<WitnessId>,
         out: WitnessId,
-    },
-
-    /// Field multiplication: witness[out] = witness[a] * witness[b]
-    Mul {
-        a: WitnessId,
-        b: WitnessId,
-        out: WitnessId,
+        /// Intermediate output for MulAdd: stores a * b when fused from separate mul + add.
+        /// The runner sets this witness value so dependent operations still work.
+        intermediate_out: Option<WitnessId>,
     },
 
     /// Non-primitive operation with executor-based dispatch
@@ -77,13 +98,78 @@ pub enum Op<F> {
     },
 }
 
-#[derive(EnumCount)]
+impl<F> Op<F> {
+    /// Create an addition operation (convenience wrapper for Op::Alu with AluOpKind::Add).
+    pub const fn add(a: WitnessId, b: WitnessId, out: WitnessId) -> Self {
+        Self::Alu {
+            kind: AluOpKind::Add,
+            a,
+            b,
+            c: None,
+            out,
+            intermediate_out: None,
+        }
+    }
+
+    /// Create a multiplication operation (convenience wrapper for Op::Alu with AluOpKind::Mul).
+    pub const fn mul(a: WitnessId, b: WitnessId, out: WitnessId) -> Self {
+        Self::Alu {
+            kind: AluOpKind::Mul,
+            a,
+            b,
+            c: None,
+            out,
+            intermediate_out: None,
+        }
+    }
+
+    /// Create a fused multiply-add operation: out = a * b + c.
+    pub const fn mul_add(a: WitnessId, b: WitnessId, c: WitnessId, out: WitnessId) -> Self {
+        Self::Alu {
+            kind: AluOpKind::MulAdd,
+            a,
+            b,
+            c: Some(c),
+            out,
+            intermediate_out: None,
+        }
+    }
+
+    /// Create a boolean check operation: a * (a - 1) = 0.
+    pub const fn bool_check(a: WitnessId, b: WitnessId, out: WitnessId) -> Self {
+        Self::Alu {
+            kind: AluOpKind::BoolCheck,
+            a,
+            b,
+            c: None,
+            out,
+            intermediate_out: None,
+        }
+    }
+
+    /// Check if this is an ALU operation of the given kind.
+    pub fn is_alu_kind(&self, kind: AluOpKind) -> bool {
+        matches!(self, Self::Alu { kind: k, .. } if *k == kind)
+    }
+
+    /// Check if this is an addition operation.
+    pub fn is_add(&self) -> bool {
+        self.is_alu_kind(AluOpKind::Add)
+    }
+
+    /// Check if this is a multiplication operation.
+    pub fn is_mul(&self) -> bool {
+        self.is_alu_kind(AluOpKind::Mul)
+    }
+}
+
+#[derive(EnumCount, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PrimitiveOpType {
     Witness = 0,
     Const = 1,
     Public = 2,
-    Add = 3,
-    Mul = 4,
+    /// Unified ALU table (combines Add, Mul, BoolCheck, MulAdd)
+    Alu = 3,
 }
 
 #[allow(clippy::fallible_impl_from)]
@@ -93,8 +179,7 @@ impl From<usize> for PrimitiveOpType {
             0 => Self::Witness,
             1 => Self::Const,
             2 => Self::Public,
-            3 => Self::Add,
-            4 => Self::Mul,
+            3 => Self::Alu,
             _ => panic!("Invalid PrimitiveOpType value: {}", value),
         }
     }
@@ -112,15 +197,20 @@ impl<F: Field + Clone> Clone for Op<F> {
                 out: *out,
                 public_pos: *public_pos,
             },
-            Self::Add { a, b, out } => Self::Add {
+            Self::Alu {
+                kind,
+                a,
+                b,
+                c,
+                out,
+                intermediate_out,
+            } => Self::Alu {
+                kind: *kind,
                 a: *a,
                 b: *b,
+                c: *c,
                 out: *out,
-            },
-            Self::Mul { a, b, out } => Self::Mul {
-                a: *a,
-                b: *b,
-                out: *out,
+                intermediate_out: *intermediate_out,
             },
             Self::NonPrimitiveOpWithExecutor {
                 inputs,
@@ -155,29 +245,23 @@ impl<F: Field + PartialEq> PartialEq for Op<F> {
                 },
             ) => o1 == o2 && p1 == p2,
             (
-                Self::Add {
+                Self::Alu {
+                    kind: k1,
                     a: a1,
                     b: b1,
+                    c: c1,
                     out: o1,
+                    intermediate_out: io1,
                 },
-                Self::Add {
+                Self::Alu {
+                    kind: k2,
                     a: a2,
                     b: b2,
+                    c: c2,
                     out: o2,
+                    intermediate_out: io2,
                 },
-            ) => a1 == a2 && b1 == b2 && o1 == o2,
-            (
-                Self::Mul {
-                    a: a1,
-                    b: b1,
-                    out: o1,
-                },
-                Self::Mul {
-                    a: a2,
-                    b: b2,
-                    out: o2,
-                },
-            ) => a1 == a2 && b1 == b2 && o1 == o2,
+            ) => k1 == k2 && a1 == a2 && b1 == b2 && c1 == c2 && o1 == o2 && io1 == io2,
             (
                 Self::NonPrimitiveOpWithExecutor {
                     inputs: i1,
@@ -207,7 +291,7 @@ pub enum NonPrimitiveOpType {
 }
 
 // Re-export Poseidon2 config types from their canonical location
-pub use crate::ops::poseidon2_perm::{Poseidon2Config, Poseidon2PermExec};
+pub use crate::ops::poseidon2_perm::{Poseidon2Config, Poseidon2PermExec, Poseidon2PermExecBase};
 
 /// Preprocessed data for non-primitive tables, keyed by operation type.
 pub type NonPrimitivePreprocessedMap<F> = HashMap<NonPrimitiveOpType, Vec<F>>;
@@ -218,10 +302,15 @@ pub type NonPrimitivePreprocessedMap<F> = HashMap<NonPrimitiveOpType, Vec<F>>;
 pub enum NonPrimitiveOpConfig<F> {
     /// No configuration needed (placeholder for future operations).
     None,
-    /// Poseidon2 permutation configuration with exec closure.
+    /// Poseidon2 permutation configuration with exec closure (D=4, 4 extension elements).
     Poseidon2Perm {
         config: Poseidon2Config,
         exec: Poseidon2PermExec<F, 4>,
+    },
+    /// Poseidon2 permutation configuration for base field (D=1, 16 base elements).
+    Poseidon2PermBase {
+        config: Poseidon2Config,
+        exec: Poseidon2PermExecBase<F>,
     },
 }
 
@@ -230,6 +319,10 @@ impl<F> Clone for NonPrimitiveOpConfig<F> {
         match self {
             Self::None => Self::None,
             Self::Poseidon2Perm { config, exec } => Self::Poseidon2Perm {
+                config: *config,
+                exec: Arc::clone(exec),
+            },
+            Self::Poseidon2PermBase { config, exec } => Self::Poseidon2PermBase {
                 config: *config,
                 exec: Arc::clone(exec),
             },
@@ -246,6 +339,11 @@ impl<F> Debug for NonPrimitiveOpConfig<F> {
                 .field("config", config)
                 .field("exec", &"<closure>")
                 .finish(),
+            Self::Poseidon2PermBase { config, .. } => f
+                .debug_struct("Poseidon2PermBase")
+                .field("config", config)
+                .field("exec", &"<closure>")
+                .finish(),
         }
     }
 }
@@ -258,6 +356,10 @@ impl<F> PartialEq for NonPrimitiveOpConfig<F> {
             (Self::Poseidon2Perm { config: c1, .. }, Self::Poseidon2Perm { config: c2, .. }) => {
                 c1 == c2
             }
+            (
+                Self::Poseidon2PermBase { config: c1, .. },
+                Self::Poseidon2PermBase { config: c2, .. },
+            ) => c1 == c2,
             _ => false,
         }
     }
@@ -268,8 +370,11 @@ impl<F> Eq for NonPrimitiveOpConfig<F> {}
 impl<F> Hash for NonPrimitiveOpConfig<F> {
     fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
         core::mem::discriminant(self).hash(state);
-        if let Self::Poseidon2Perm { config, .. } = self {
-            config.hash(state);
+        match self {
+            Self::Poseidon2Perm { config, .. } | Self::Poseidon2PermBase { config, .. } => {
+                config.hash(state);
+            }
+            Self::None => {}
         }
     }
 }
@@ -340,7 +445,7 @@ pub struct ExecutionContext<'a, F> {
     op_states: &'a mut OpStateMap,
 }
 
-impl<'a, F: Field> ExecutionContext<'a, F> {
+impl<'a, F: PrimeCharacteristicRing + Eq + Clone> ExecutionContext<'a, F> {
     /// Create a new execution context
     pub fn new(
         witness: &'a mut [Option<F>],
@@ -359,6 +464,7 @@ impl<'a, F: Field> ExecutionContext<'a, F> {
     }
 
     /// Get witness value at the given index
+    #[inline]
     pub fn get_witness(&self, widx: WitnessId) -> Result<F, CircuitError> {
         self.witness
             .get(widx.0 as usize)
@@ -368,23 +474,29 @@ impl<'a, F: Field> ExecutionContext<'a, F> {
     }
 
     /// Set witness value at the given index
+    #[inline]
     pub fn set_witness(&mut self, widx: WitnessId, value: F) -> Result<(), CircuitError> {
         if widx.0 as usize >= self.witness.len() {
             return Err(CircuitError::WitnessIdOutOfBounds { witness_id: widx });
         }
 
+        let slot = &mut self.witness[widx.0 as usize];
+
         // Check for conflicting reassignment
-        if let Some(existing_value) = self.witness[widx.0 as usize]
-            && existing_value != value
-        {
+        if let Some(existing_value) = slot.as_ref() {
+            if *existing_value == value {
+                // Same value - this is fine (duplicate set via connect)
+                return Ok(());
+            }
             return Err(CircuitError::WitnessConflict {
                 witness_id: widx,
                 existing: format!("{existing_value:?}"),
                 new: format!("{value:?}"),
+                expr_ids: vec![], // TODO: Could be filled with expression IDs if tracked
             });
         }
 
-        self.witness[widx.0 as usize] = Some(value);
+        *slot = Some(value);
         Ok(())
     }
 
@@ -470,13 +582,16 @@ pub trait NonPrimitiveExecutor<F: Field>: Debug {
     /// Update the preprocessed values related to this operation. This consists of:
     /// - the preprocessed values for the associated table
     /// - the multiplicity for the `Witness` table.
+    ///
+    /// Uses the `PreprocessedColumns` API to ensure witness multiplicities are updated
+    /// consistently when reading from the witness table.
     fn preprocess(
         &self,
         _inputs: &[Vec<WitnessId>],
         _outputs: &[Vec<WitnessId>],
-        _primitive_preprocessed: &mut Vec<Vec<F>>,
-        _non_primitive_preprocessed: &mut NonPrimitivePreprocessedMap<F>,
-    ) {
+        _preprocessed: &mut PreprocessedColumns<F>,
+    ) -> Result<(), CircuitError> {
+        Ok(())
     }
 
     /// Clone as trait object
@@ -510,47 +625,34 @@ mod tests {
             val: F::from_u64(5),
         };
 
-        let add_op = Op::Add {
-            a: WitnessId(0),
-            b: WitnessId(1),
-            out: WitnessId(2),
-        };
+        let alu_op = Op::add(WitnessId(0), WitnessId(1), WitnessId(2));
 
         // Operations of different variants should never be equal
-        assert_ne!(const_op, add_op);
+        assert_ne!(const_op, alu_op);
     }
 
     #[test]
     fn test_op_partial_eq_same_variant_different_values() {
-        // Create two addition operations with different witness indices
-        let add_op1: Op<F> = Op::Add {
-            a: WitnessId(0),
-            b: WitnessId(1),
-            out: WitnessId(2),
-        };
-
-        let add_op2: Op<F> = Op::Add {
-            a: WitnessId(3),
-            b: WitnessId(4),
-            out: WitnessId(5),
-        };
+        // Create two ALU operations with different witness indices
+        let alu_op1: Op<F> = Op::add(WitnessId(0), WitnessId(1), WitnessId(2));
+        let alu_op2: Op<F> = Op::add(WitnessId(3), WitnessId(4), WitnessId(5));
 
         // Same variant but different values should not be equal
-        assert_ne!(add_op1, add_op2);
+        assert_ne!(alu_op1, alu_op2);
     }
 
     #[test]
-    fn test_op_partial_eq_add_same_values() {
-        // Create two identical addition operations
+    fn test_op_partial_eq_alu_add_same_values() {
+        // Create two identical ALU addition operations
         let a = WitnessId(0);
         let b = WitnessId(1);
         let out = WitnessId(2);
 
-        let add_op1: Op<F> = Op::Add { a, b, out };
-        let add_op2: Op<F> = Op::Add { a, b, out };
+        let alu_op1: Op<F> = Op::add(a, b, out);
+        let alu_op2: Op<F> = Op::add(a, b, out);
 
         // Identical operations should be equal
-        assert_eq!(add_op1, add_op2);
+        assert_eq!(alu_op1, alu_op2);
     }
 
     #[test]
@@ -628,55 +730,56 @@ mod tests {
     }
 
     #[test]
-    fn test_op_partial_eq_mul_different_values() {
-        // Create two multiplication operations with different witness indices
-        let mul_op1: Op<F> = Op::Mul {
-            a: WitnessId(0),
-            b: WitnessId(1),
-            out: WitnessId(2),
-        };
-
-        let mul_op2: Op<F> = Op::Mul {
-            a: WitnessId(10),
-            b: WitnessId(11),
-            out: WitnessId(12),
-        };
+    fn test_op_partial_eq_alu_mul_different_values() {
+        // Create two ALU multiplication operations with different witness indices
+        let mul_op1: Op<F> = Op::mul(WitnessId(0), WitnessId(1), WitnessId(2));
+        let mul_op2: Op<F> = Op::mul(WitnessId(10), WitnessId(11), WitnessId(12));
 
         // Different witness indices should not be equal
         assert_ne!(mul_op1, mul_op2);
     }
 
     #[test]
-    fn test_op_partial_eq_mul_same_values() {
-        // Create two identical multiplication operations
+    fn test_op_partial_eq_alu_mul_same_values() {
+        // Create two identical ALU multiplication operations
         let a = WitnessId(7);
         let b = WitnessId(8);
         let out = WitnessId(9);
 
-        let mul_op1: Op<F> = Op::Mul { a, b, out };
-        let mul_op2: Op<F> = Op::Mul { a, b, out };
+        let mul_op1: Op<F> = Op::mul(a, b, out);
+        let mul_op2: Op<F> = Op::mul(a, b, out);
 
         // Identical multiplication operations should be equal
         assert_eq!(mul_op1, mul_op2);
     }
 
     #[test]
-    fn test_op_partial_eq_add_partial_match() {
-        // Create two addition operations where only some fields match
-        let add_op1: Op<F> = Op::Add {
-            a: WitnessId(0),
-            b: WitnessId(1),
-            out: WitnessId(2),
-        };
-
-        let add_op2: Op<F> = Op::Add {
-            a: WitnessId(0),
-            b: WitnessId(1),
-            out: WitnessId(99), // Different output
-        };
+    fn test_op_partial_eq_alu_partial_match() {
+        // Create two ALU operations where only some fields match
+        let alu_op1: Op<F> = Op::add(WitnessId(0), WitnessId(1), WitnessId(2));
+        let alu_op2: Op<F> = Op::add(WitnessId(0), WitnessId(1), WitnessId(99)); // Different output
 
         // Partial match is not enough for equality
-        assert_ne!(add_op1, add_op2);
+        assert_ne!(alu_op1, alu_op2);
+    }
+
+    #[test]
+    fn test_op_partial_eq_alu_different_kinds() {
+        // Create two ALU operations with same operands but different kinds
+        let add_op: Op<F> = Op::add(WitnessId(0), WitnessId(1), WitnessId(2));
+        let mul_op: Op<F> = Op::mul(WitnessId(0), WitnessId(1), WitnessId(2));
+
+        // Different operation kinds should not be equal
+        assert_ne!(add_op, mul_op);
+    }
+
+    #[test]
+    fn test_op_partial_eq_alu_muladd() {
+        // Create two identical MulAdd operations
+        let muladd_op1: Op<F> = Op::mul_add(WitnessId(0), WitnessId(1), WitnessId(2), WitnessId(3));
+        let muladd_op2: Op<F> = Op::mul_add(WitnessId(0), WitnessId(1), WitnessId(2), WitnessId(3));
+
+        assert_eq!(muladd_op1, muladd_op2);
     }
 
     #[test]

@@ -11,14 +11,16 @@ use itertools::zip_eq;
 use p3_field::{ExtensionField, Field, PrimeCharacteristicRing, PrimeField64};
 use p3_symmetric::Permutation;
 
+#[cfg(feature = "profiling")]
+use super::OpCounts;
 use super::compiler::{ExpressionLowerer, Optimizer};
 use super::{BuilderConfig, ExpressionBuilder, PublicInputTracker};
 use crate::circuit::Circuit;
-use crate::op::{NonPrimitiveExecutor, NonPrimitiveOpType};
-use crate::ops::Poseidon2Params;
+use crate::op::{NonPrimitiveExecutor, NonPrimitiveOpConfig, NonPrimitiveOpType};
+use crate::ops::{Poseidon2Params, Poseidon2PermCall, Poseidon2PermCallBase};
 use crate::tables::TraceGeneratorFn;
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};
-use crate::{CircuitBuilderError, CircuitError, CircuitField};
+use crate::{CircuitBuilderError, CircuitError, CircuitField, Poseidon2PermOps};
 
 /// Builder for constructing circuits.
 pub struct CircuitBuilder<F: Field> {
@@ -179,7 +181,50 @@ where
 
         self.config.enable_op(
             NonPrimitiveOpType::Poseidon2Perm(Config::CONFIG),
-            crate::op::NonPrimitiveOpConfig::Poseidon2Perm {
+            NonPrimitiveOpConfig::Poseidon2Perm {
+                config: Config::CONFIG,
+                exec,
+            },
+        );
+        self.non_primitive_trace_generators.insert(
+            NonPrimitiveOpType::Poseidon2Perm(Config::CONFIG),
+            trace_generator,
+        );
+    }
+
+    /// Enables the Poseidon2 permutation operation for base field challenges (D=1).
+    ///
+    /// This variant is for tests/circuits using base field as the challenge type.
+    /// The permutation operates directly on 16 base field elements without packing.
+    ///
+    /// # Arguments
+    /// * `trace_generator` - Function to generate Poseidon2 trace from circuit and witness
+    /// * `perm` - The Poseidon2 permutation to use for execution
+    pub fn enable_poseidon2_perm_base<Config, P>(
+        &mut self,
+        trace_generator: TraceGeneratorFn<F>,
+        perm: P,
+    ) where
+        Config: Poseidon2Params,
+        F: CircuitField,
+        P: Permutation<[F; 16]> + Clone + Send + Sync + 'static,
+    {
+        assert!(
+            Config::D == 1,
+            "enable_poseidon2_perm_base only supports extension degree D=1"
+        );
+        assert!(
+            Config::WIDTH == 16,
+            "enable_poseidon2_perm_base only supports WIDTH=16"
+        );
+
+        // For D=1, the exec closure operates directly on 16 base field elements
+        let exec: crate::op::Poseidon2PermExecBase<F> =
+            Arc::new(move |input: &[F; 16]| perm.permute(*input));
+
+        self.config.enable_op(
+            NonPrimitiveOpType::Poseidon2Perm(Config::CONFIG),
+            crate::op::NonPrimitiveOpConfig::Poseidon2PermBase {
                 config: Config::CONFIG,
                 exec,
             },
@@ -255,42 +300,42 @@ where
 
     /// Adds two expressions.
     ///
-    /// Cost: 1 row in Add table + 1 row in witness table.
+    /// Cost: 1 row in the ALU table (add selector) + 1 row in the witness table.
     pub fn add(&mut self, lhs: ExprId, rhs: ExprId) -> ExprId {
         self.alloc_add(lhs, rhs, "")
     }
 
     /// Adds two expressions with a descriptive label.
     ///
-    /// Cost: 1 row in Add table + 1 row in witness table.
+    /// Cost: 1 row in the ALU table (add selector) + 1 row in the witness table.
     pub fn alloc_add(&mut self, lhs: ExprId, rhs: ExprId, label: &'static str) -> ExprId {
         self.expr_builder.add_add(lhs, rhs, label)
     }
 
     /// Subtracts two expressions.
     ///
-    /// Cost: 1 row in Add table + 1 row in witness table (encoded as result + rhs = lhs).
+    /// Cost: 1 row in the ALU table (add selector) + 1 row in the witness table (encoded as result + rhs = lhs).
     pub fn sub(&mut self, lhs: ExprId, rhs: ExprId) -> ExprId {
         self.alloc_sub(lhs, rhs, "")
     }
 
     /// Subtracts two expressions with a descriptive label.
     ///
-    /// Cost: 1 row in Add table + 1 row in witness table.
+    /// Cost: 1 row in the ALU table (add selector) + 1 row in the witness table.
     pub fn alloc_sub(&mut self, lhs: ExprId, rhs: ExprId, label: &'static str) -> ExprId {
         self.expr_builder.add_sub(lhs, rhs, label)
     }
 
     /// Multiplies two expressions.
     ///
-    /// Cost: 1 row in Mul table + 1 row in witness table.
+    /// Cost: 1 row in the ALU table (mul selector) + 1 row in the witness table.
     pub fn mul(&mut self, lhs: ExprId, rhs: ExprId) -> ExprId {
         self.alloc_mul(lhs, rhs, "")
     }
 
     /// Multiplies two expressions with a descriptive label.
     ///
-    /// Cost: 1 row in Mul table + 1 row in witness table.
+    /// Cost: 1 row in the ALU table (mul selector) + 1 row in the witness table.
     pub fn alloc_mul(&mut self, lhs: ExprId, rhs: ExprId, label: &'static str) -> ExprId {
         self.expr_builder.add_mul(lhs, rhs, label)
     }
@@ -363,14 +408,14 @@ where
 
     /// Divides two expressions.
     ///
-    /// Cost: 1 row in Mul table + 1 row in witness table (encoded as rhs * out = lhs).
+    /// Cost: 1 row in the ALU table (mul selector) + 1 row in the witness table (encoded as rhs * out = lhs).
     pub fn div(&mut self, lhs: ExprId, rhs: ExprId) -> ExprId {
         self.alloc_div(lhs, rhs, "")
     }
 
     /// Divides two expressions with a descriptive label.
     ///
-    /// Cost: 1 row in Mul table + 1 row in witness table.
+    /// Cost: 1 row in the ALU table (mul selector) + 1 row in the witness table.
     pub fn alloc_div(&mut self, lhs: ExprId, rhs: ExprId, label: &'static str) -> ExprId {
         self.expr_builder.add_div(lhs, rhs, label)
     }
@@ -473,7 +518,6 @@ where
     ///
     /// This is used for creating new unconstrained wires assigned to a non-deterministic values
     /// computed by `hint`.
-    #[allow(dead_code)]
     pub(crate) fn push_unconstrained_op<H: NonPrimitiveExecutor<F> + 'static>(
         &mut self,
         input_exprs: Vec<Vec<ExprId>>,
@@ -497,21 +541,28 @@ where
     /// All subsequent allocations will be tagged with this scope until
     /// `pop_scope` is called. Scopes can be nested.
     ///
-    /// If debug_assertions are not enabled, this is a no-op.
-    #[allow(unused_variables)]
-    #[allow(clippy::missing_const_for_fn)]
-    pub fn push_scope(&mut self, scope: &'static str) {
-        #[cfg(debug_assertions)]
+    /// If the `debugging` feature is not enabled, this is a no-op.
+    #[allow(warnings)]
+    pub fn push_scope(&mut self, scope: impl Into<String>) {
+        #[cfg(feature = "debugging")]
         self.expr_builder.push_scope(scope);
     }
 
     /// Pops the current scope from the scope stack.
     ///
-    /// If debug_assertions are not enabled, this is a no-op.
+    /// If the `debugging` feature is not enabled, this is a no-op.
     #[allow(clippy::missing_const_for_fn)]
     pub fn pop_scope(&mut self) {
-        #[cfg(debug_assertions)]
+        #[cfg(feature = "debugging")]
         self.expr_builder.pop_scope();
+    }
+
+    /// Dumps the allocation log for specific `ExprId`s.
+    ///
+    /// If the `debugging` feature is not enabled, this is a no-op.
+    #[allow(clippy::missing_const_for_fn)]
+    pub fn dump_expr_ids(&self, expr_ids: &[ExprId]) {
+        self.expr_builder.dump_expr_ids(expr_ids);
     }
 
     /// Dumps the allocation log.
@@ -524,10 +575,45 @@ where
 
     /// Lists all unique scopes in the allocation log.
     ///
-    /// Returns an empty vector if debug_assertions are not enabled.
+    /// Returns an empty vector if the `debugging` feature is not enabled.
     #[allow(clippy::missing_const_for_fn)]
-    pub fn list_scopes(&self) -> Vec<&'static str> {
+    pub fn list_scopes(&self) -> Vec<String> {
         self.expr_builder.list_scopes()
+    }
+
+    /// Returns global operation counts collected during circuit construction when profiling is enabled.
+    ///
+    /// When the `profiling` feature is disabled, this method is not compiled.
+    #[cfg(feature = "profiling")]
+    pub const fn global_op_counts(&self) -> &OpCounts {
+        let (global, _) = self.expr_builder.profiling_counts();
+        global
+    }
+
+    /// Returns per-scope operation counts collected during circuit construction when profiling is enabled.
+    ///
+    /// The returned map is keyed by the scope names passed to `push_scope`.
+    /// When the `profiling` feature is disabled, this method is not compiled.
+    #[cfg(feature = "profiling")]
+    pub const fn scope_op_counts(&self) -> &HashMap<String, OpCounts> {
+        let (_, per_scope) = self.expr_builder.profiling_counts();
+        per_scope
+    }
+
+    /// Convenience method logging global, per-scope, and per-non-primitive-id profiling information.
+    ///
+    /// When the `profiling` feature is disabled, this is a no-op.
+    #[allow(clippy::missing_const_for_fn)]
+    pub fn profile(&self) {
+        #[cfg(feature = "profiling")]
+        {
+            let (global, per_scope) = self.expr_builder.profiling_counts();
+
+            tracing::info!("[PROFILING] global: {:?}", global);
+            for (scope, counts) in per_scope.iter() {
+                tracing::info!("[PROFILING] scope: {:?}, counts: {:?}", scope, counts);
+            }
+        }
     }
 
     /// Tags an expression for value lookup via `Traces::probe()` later on during
@@ -590,6 +676,8 @@ where
     /// Builds the circuit into a Circuit with separate lowering and IR transformation stages.
     /// Returns an error if lowering fails due to an internal inconsistency.
     pub fn build(self) -> Result<Circuit<F>, CircuitBuilderError> {
+        self.profile();
+
         let (circuit, _) = self.build_with_public_mapping()?;
         Ok(circuit)
     }
@@ -774,6 +862,295 @@ where
         self.pop_scope();
         Ok(acc)
     }
+
+    /// Recomposes D base field coefficients into an extension field element.
+    ///
+    /// Given coefficients `[c_0, c_1, ..., c_{D-1}]`, computes `x = sum(c_i * basis_i)`
+    /// where `basis_i` is the i-th canonical basis element of the extension field.
+    ///
+    /// Each input coefficient should be a base field element embedded in the extension
+    /// field (i.e., only the first basis component is non-zero).
+    ///
+    /// # Parameters
+    /// - `coeffs`: Slice of D base field coefficient targets
+    ///
+    /// # Returns
+    /// A single target representing the extension field element
+    ///
+    /// # Errors
+    /// Returns error if `coeffs.len() != F::DIMENSION`
+    ///
+    /// # Cost
+    /// D multiplications + (D-1) additions
+    pub fn recompose_base_coeffs_to_ext<BF>(
+        &mut self,
+        coeffs: &[ExprId],
+    ) -> Result<ExprId, CircuitBuilderError>
+    where
+        BF: PrimeField64,
+        F: ExtensionField<BF>,
+    {
+        if coeffs.len() != F::DIMENSION {
+            return Err(CircuitBuilderError::InvalidDimension {
+                expected: F::DIMENSION,
+                actual: coeffs.len(),
+            });
+        }
+
+        self.push_scope("recompose_base_coeffs_to_ext");
+
+        let mut acc = self.add_const(F::ZERO);
+
+        for (i, &coeff) in coeffs.iter().enumerate() {
+            // Construct the i-th canonical basis element: [0, ..., 0, 1, 0, ..., 0]
+            let mut basis_coeffs = vec![BF::ZERO; F::DIMENSION];
+            basis_coeffs[i] = BF::ONE;
+            let basis_elem = F::from_basis_coefficients_slice(&basis_coeffs)
+                .expect("basis coefficients are valid");
+
+            // Multiply coefficient by basis element
+            let basis_const = self.add_const(basis_elem);
+            let term = self.mul(coeff, basis_const);
+            acc = self.add(acc, term);
+        }
+
+        self.pop_scope();
+        Ok(acc)
+    }
+
+    /// Decomposes an extension field element into its D base field coefficients.
+    ///
+    /// Given `x = c_0 + c_1*w + c_2*w^2 + ... + c_{D-1}*w^{D-1}`, returns `[c_0, c_1, ..., c_{D-1}]`
+    /// as targets. Each coefficient target represents a base field element embedded in the
+    /// extension field (i.e., only the first basis component is non-zero).
+    ///
+    /// # Parameters
+    /// - `x`: The extension field element to decompose
+    ///
+    /// # Returns
+    /// Vector of D targets, each representing a base field coefficient
+    ///
+    /// # Constraints Added
+    /// - D witness allocations for coefficients (via `ExtDecompositionHint`)
+    /// - 1 recomposition constraint: `sum(c_i * basis_i) == x`
+    ///
+    /// # Cost
+    /// - D Witness rows + D Mul rows + (D-1) Add rows (for the recomposition constraint)
+    pub fn decompose_ext_to_base_coeffs<BF>(
+        &mut self,
+        x: ExprId,
+    ) -> Result<Vec<ExprId>, CircuitBuilderError>
+    where
+        BF: PrimeField64,
+        F: ExtensionField<BF>,
+    {
+        self.push_scope("decompose_ext_to_base_coeffs");
+
+        // Allocate D witness slots for coefficients using hint
+        let ext_decomposition_hint = ExtDecompositionHint::<BF>::new();
+        let coeffs: Vec<ExprId> = self
+            .push_unconstrained_op(
+                vec![vec![x]],
+                F::DIMENSION,
+                ext_decomposition_hint,
+                "ext_decomposition",
+            )
+            .2
+            .into_iter()
+            .collect::<Option<Vec<_>>>()
+            .ok_or(CircuitBuilderError::MissingOutput)?;
+
+        // Constrain: sum(coeffs[i] * basis[i]) == x
+        let reconstructed = self.recompose_base_coeffs_to_ext::<BF>(&coeffs)?;
+        self.connect(x, reconstructed);
+
+        self.pop_scope();
+        Ok(coeffs)
+    }
+
+    /// Applies Poseidon2 permutation for the circuit challenger.
+    ///
+    /// Takes 4 extension element inputs and returns 4 extension element outputs.
+    /// This operation is **CTL-verified** against the Poseidon2 AIR table for soundness.
+    ///
+    /// # CTL Verification
+    /// - Inputs 0-3: CTL-verified against witness table
+    /// - Outputs 0-1: CTL-verified against witness table (rate elements)
+    /// - Outputs 2-3: NOT CTL-verified (capacity elements, constrained by Poseidon2 AIR)
+    ///
+    /// # Parameters
+    /// - `config`: The Poseidon2 configuration to use
+    /// - `inputs`: 4 extension element targets (the sponge state)
+    ///
+    /// # Returns
+    /// 4 extension element targets (the permuted state)
+    ///
+    /// # Errors
+    /// Returns error if the Poseidon2 operation is not enabled
+    pub fn add_poseidon2_perm_for_challenger(
+        &mut self,
+        config: crate::ops::Poseidon2Config,
+        inputs: [ExprId; 4],
+    ) -> Result<[ExprId; 4], CircuitBuilderError> {
+        self.push_scope("poseidon2_perm_for_challenger");
+
+        // Use add_poseidon2_perm with CTL verification for soundness
+        // - All 4 inputs are CTL-verified
+        // - Outputs 0-1 are CTL-verified (rate elements)
+        // - Outputs 2-3 are returned but NOT CTL-verified (capacity elements)
+        let (_op_id, outputs) = self.add_poseidon2_perm(Poseidon2PermCall {
+            config,
+            new_start: true, // Each challenger permutation is independent
+            merkle_path: false,
+            mmcs_bit: None,
+            inputs: [
+                Some(inputs[0]),
+                Some(inputs[1]),
+                Some(inputs[2]),
+                Some(inputs[3]),
+            ],
+            out_ctl: [true, true],    // CTL-verify rate outputs
+            return_all_outputs: true, // Return all 4 outputs for sponge state
+            mmcs_index_sum: None,
+        })?;
+
+        let output_exprs: [ExprId; 4] = [
+            outputs[0].ok_or(CircuitBuilderError::MissingOutput)?,
+            outputs[1].ok_or(CircuitBuilderError::MissingOutput)?,
+            outputs[2].ok_or(CircuitBuilderError::MissingOutput)?,
+            outputs[3].ok_or(CircuitBuilderError::MissingOutput)?,
+        ];
+
+        self.pop_scope();
+        Ok(output_exprs)
+    }
+
+    /// Applies Poseidon2 permutation for the circuit challenger (base field, D=1).
+    ///
+    /// Takes 16 base field element inputs and returns 16 base field element outputs.
+    /// This operation is **CTL-verified** against the Poseidon2 AIR table for soundness.
+    ///
+    /// # CTL Verification
+    /// - Inputs 0-15: CTL-verified against witness table
+    /// - Outputs 0-7: CTL-verified against witness table (rate elements)
+    /// - Outputs 8-15: NOT CTL-verified (capacity elements, constrained by Poseidon2 AIR)
+    ///
+    /// # Parameters
+    /// - `config`: The Poseidon2 configuration to use (must be D=1)
+    /// - `inputs`: 16 base field element targets (the sponge state)
+    ///
+    /// # Returns
+    /// 16 base field element targets (the permuted state)
+    ///
+    /// # Errors
+    /// Returns error if the Poseidon2 operation is not enabled
+    pub fn add_poseidon2_perm_for_challenger_base(
+        &mut self,
+        config: crate::ops::Poseidon2Config,
+        inputs: [ExprId; 16],
+    ) -> Result<[ExprId; 16], CircuitBuilderError> {
+        self.push_scope("poseidon2_perm_for_challenger_base");
+
+        // Use add_poseidon2_perm_base with CTL verification for soundness
+        // - All 16 inputs are CTL-verified
+        // - Outputs 0-7 are CTL-verified (rate elements)
+        // - Outputs 8-15 are returned but NOT CTL-verified (capacity elements)
+        let (_op_id, outputs) = self.add_poseidon2_perm_base(Poseidon2PermCallBase {
+            config,
+            new_start: true,          // Each challenger permutation is independent
+            inputs: inputs.map(Some), // All 16 inputs are CTL-verified
+            out_ctl: [true; 8],       // CTL-verify all 8 rate outputs
+            return_all_outputs: true, // Return all 16 outputs for sponge state
+        })?;
+
+        let output_exprs: [ExprId; 16] =
+            core::array::from_fn(|i| outputs[i].expect("output should exist"));
+
+        self.pop_scope();
+        Ok(output_exprs)
+    }
+}
+
+/// Witness hint for extension field decomposition.
+///
+/// At runtime, extracts the basis coefficients from an extension field element
+/// and embeds each coefficient as an extension field element with zeroed higher coefficients.
+#[derive(Debug, Clone)]
+struct ExtDecompositionHint<BF: PrimeField64> {
+    _phantom: PhantomData<BF>,
+}
+
+impl<BF: PrimeField64> ExtDecompositionHint<BF> {
+    pub const fn new() -> Self {
+        Self {
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<BF: PrimeField64, EF: ExtensionField<BF>> NonPrimitiveExecutor<EF>
+    for ExtDecompositionHint<BF>
+{
+    fn execute(
+        &self,
+        inputs: &[Vec<crate::WitnessId>],
+        outputs: &[Vec<crate::WitnessId>],
+        ctx: &mut crate::op::ExecutionContext<'_, EF>,
+    ) -> Result<(), CircuitError> {
+        if inputs.len() != 1 || inputs[0].len() != 1 {
+            return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
+                op: NonPrimitiveOpType::Unconstrained,
+                expected: "1 input".to_string(),
+                got: inputs.len(),
+            });
+        }
+
+        if outputs.len() != EF::DIMENSION {
+            return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
+                op: NonPrimitiveOpType::Unconstrained,
+                expected: format!("{} outputs", EF::DIMENSION),
+                got: outputs.len(),
+            });
+        }
+
+        outputs.iter().try_for_each(|out| {
+            if out.len() != 1 {
+                Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
+                    op: NonPrimitiveOpType::Unconstrained,
+                    expected: "1".to_string(),
+                    got: out.len(),
+                })
+            } else {
+                Ok(())
+            }
+        })?;
+
+        let ext_val = ctx.get_witness(inputs[0][0])?;
+        let coeffs = ext_val.as_basis_coefficients_slice();
+
+        for (i, coeff) in coeffs.iter().enumerate() {
+            // Embed base field coefficient into extension field (zeroed higher coeffs)
+            let mut embedded = vec![BF::ZERO; EF::DIMENSION];
+            embedded[0] = *coeff;
+            let embedded_ef = EF::from_basis_coefficients_slice(&embedded)
+                .expect("embedded coefficients are valid");
+            ctx.set_witness(outputs[i][0], embedded_ef)?;
+        }
+
+        Ok(())
+    }
+
+    fn op_type(&self) -> &NonPrimitiveOpType {
+        &NonPrimitiveOpType::Unconstrained
+    }
+
+    fn as_any(&self) -> &dyn core::any::Any {
+        self
+    }
+
+    fn boxed(&self) -> alloc::boxed::Box<dyn NonPrimitiveExecutor<EF>> {
+        Box::new(self.clone())
+    }
 }
 
 /// Witness hint for binary decomposition of a field element.
@@ -945,18 +1322,18 @@ mod tests {
     }
 
     #[test]
-    #[cfg(debug_assertions)]
+    #[cfg(feature = "debugging")]
     fn test_scope_operations() {
         let mut builder = CircuitBuilder::<BabyBear>::new();
         builder.push_scope("test_scope");
         builder.add_const(BabyBear::ONE);
         builder.pop_scope();
         let scopes = builder.list_scopes();
-        assert!(scopes.contains(&"test_scope"));
+        assert!(scopes.contains(&("test_scope".to_string())));
     }
 
     #[test]
-    #[cfg(not(debug_assertions))]
+    #[cfg(feature = "debugging")]
     fn test_list_scopes_release() {
         let builder = CircuitBuilder::<BabyBear>::new();
         assert!(builder.list_scopes().is_empty());
@@ -1079,12 +1456,18 @@ mod tests {
         assert_eq!(circuit.ops.len(), 4);
 
         match &circuit.ops[3] {
-            crate::op::Op::Add { out, a, b } => {
+            crate::op::Op::Alu {
+                kind: crate::op::AluOpKind::Add,
+                a,
+                b,
+                out,
+                ..
+            } => {
                 assert_eq!(*out, WitnessId(3));
                 assert_eq!(*a, WitnessId(1));
                 assert_eq!(*b, WitnessId(2));
             }
-            _ => panic!("Expected Add at index 3"),
+            _ => panic!("Expected ALU Add at index 3"),
         }
     }
 
@@ -1140,6 +1523,7 @@ mod tests {
                 mmcs_bit: None, // Must be None when merkle_path=false
                 inputs: [Some(z), Some(z), Some(z), Some(z)],
                 out_ctl: [true, true],
+                return_all_outputs: false,
                 mmcs_index_sum: None,
             })
             .unwrap();
@@ -1179,7 +1563,13 @@ mod tests {
             .ops
             .iter()
             .position(|op| match op {
-                crate::op::Op::Add { a, b, out } => {
+                crate::op::Op::Alu {
+                    kind: crate::op::AluOpKind::Add,
+                    a,
+                    b,
+                    out,
+                    ..
+                } => {
                     *out == w_sum0
                         && ((*a == w_out0 && *b == w_one) || (*a == w_one && *b == w_out0))
                 }
@@ -1191,7 +1581,13 @@ mod tests {
             .ops
             .iter()
             .position(|op| match op {
-                crate::op::Op::Add { a, b, out } => {
+                crate::op::Op::Alu {
+                    kind: crate::op::AluOpKind::Add,
+                    a,
+                    b,
+                    out,
+                    ..
+                } => {
                     *out == w_sum1
                         && ((*a == w_out1 && *b == w_one) || (*a == w_one && *b == w_out1))
                 }
@@ -1929,5 +2325,175 @@ mod proptests {
         assert_eq!(result[2], hex_0x02000000_bin);
         assert_eq!(result[3], zero_bin);
         assert_eq!(bits.len(), Ext4::bits());
+    }
+
+    #[test]
+    fn test_recompose_base_coeffs_to_ext() {
+        type Ext4 = BinomialExtensionField<BabyBear, 4>;
+
+        let mut builder = CircuitBuilder::<Ext4>::new();
+
+        let c0 = builder.add_const(Ext4::from(BabyBear::from_u64(1)));
+        let c1 = builder.add_const(Ext4::from(BabyBear::from_u64(2)));
+        let c2 = builder.add_const(Ext4::from(BabyBear::from_u64(3)));
+        let c3 = builder.add_const(Ext4::from(BabyBear::from_u64(4)));
+
+        let coeffs = [c0, c1, c2, c3];
+        let recomposed = builder
+            .recompose_base_coeffs_to_ext::<BabyBear>(&coeffs)
+            .unwrap();
+
+        let circuit = builder.build().expect("Failed to build circuit");
+        let expr_to_widx = circuit.expr_to_widx.clone();
+        let runner = circuit.runner();
+        let traces = runner.run().expect("Failed to run circuit");
+
+        let w = expr_to_widx.get(&recomposed).expect("recomposed mapped");
+        let result = *traces.witness_trace.get_value(*w).unwrap();
+
+        let expected = Ext4::from_basis_coefficients_slice(&[
+            BabyBear::from_u64(1),
+            BabyBear::from_u64(2),
+            BabyBear::from_u64(3),
+            BabyBear::from_u64(4),
+        ])
+        .unwrap();
+
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_decompose_ext_to_base_coeffs() {
+        type Ext4 = BinomialExtensionField<BabyBear, 4>;
+
+        let mut builder = CircuitBuilder::<Ext4>::new();
+
+        let ext_val = Ext4::from_basis_coefficients_slice(&[
+            BabyBear::from_u64(5),
+            BabyBear::from_u64(6),
+            BabyBear::from_u64(7),
+            BabyBear::from_u64(8),
+        ])
+        .unwrap();
+        let x = builder.add_const(ext_val);
+
+        let coeffs = builder.decompose_ext_to_base_coeffs::<BabyBear>(x).unwrap();
+
+        assert_eq!(coeffs.len(), 4);
+
+        let circuit = builder.build().expect("Failed to build circuit");
+        let expr_to_widx = circuit.expr_to_widx.clone();
+        let runner = circuit.runner();
+        let traces = runner.run().expect("Failed to run circuit");
+
+        for (i, coeff_expr) in coeffs.iter().enumerate() {
+            let w = expr_to_widx.get(coeff_expr).expect("coeff mapped");
+            let coeff_val = *traces.witness_trace.get_value(*w).unwrap();
+
+            let expected_coeffs: &[BabyBear] = coeff_val.as_basis_coefficients_slice();
+            assert_eq!(
+                expected_coeffs[0],
+                BabyBear::from_u64(5 + i as u64),
+                "coefficient {} mismatch",
+                i
+            );
+            for (j, coeff) in expected_coeffs.iter().enumerate().skip(1) {
+                assert_eq!(
+                    *coeff,
+                    BabyBear::ZERO,
+                    "coefficient {} should have zero at position {}",
+                    i,
+                    j
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_decompose_recompose_round_trip() {
+        type Ext4 = BinomialExtensionField<BabyBear, 4>;
+
+        let mut builder = CircuitBuilder::<Ext4>::new();
+
+        let original = Ext4::from_basis_coefficients_slice(&[
+            BabyBear::from_u64(123),
+            BabyBear::from_u64(456),
+            BabyBear::from_u64(789),
+            BabyBear::from_u64(101112),
+        ])
+        .unwrap();
+        let x = builder.add_const(original);
+
+        let coeffs = builder.decompose_ext_to_base_coeffs::<BabyBear>(x).unwrap();
+        let recomposed = builder
+            .recompose_base_coeffs_to_ext::<BabyBear>(&coeffs)
+            .unwrap();
+
+        let circuit = builder.build().expect("Failed to build circuit");
+        let expr_to_widx = circuit.expr_to_widx.clone();
+        let runner = circuit.runner();
+        let traces = runner.run().expect("Failed to run circuit");
+
+        let w_orig = expr_to_widx.get(&x).expect("original mapped");
+        let w_recomp = expr_to_widx.get(&recomposed).expect("recomposed mapped");
+
+        let val_orig = *traces.witness_trace.get_value(*w_orig).unwrap();
+        let val_recomp = *traces.witness_trace.get_value(*w_recomp).unwrap();
+
+        assert_eq!(val_orig, original);
+        assert_eq!(val_recomp, original);
+        assert_eq!(val_orig, val_recomp);
+    }
+
+    #[test]
+    fn test_recompose_invalid_dimension() {
+        type Ext4 = BinomialExtensionField<BabyBear, 4>;
+
+        let mut builder = CircuitBuilder::<Ext4>::new();
+
+        let c0 = builder.add_const(Ext4::ONE);
+        let c1 = builder.add_const(Ext4::ONE);
+        let c2 = builder.add_const(Ext4::ONE);
+
+        let result = builder.recompose_base_coeffs_to_ext::<BabyBear>(&[c0, c1, c2]);
+
+        assert!(result.is_err());
+        match result {
+            Err(CircuitBuilderError::InvalidDimension { expected, actual }) => {
+                assert_eq!(expected, 4);
+                assert_eq!(actual, 3);
+            }
+            _ => panic!("Expected InvalidDimension error"),
+        }
+    }
+
+    #[test]
+    fn test_bool_check_fusion() {
+        let mut builder = CircuitBuilder::<BabyBear>::new();
+
+        let b = builder.add_public_input();
+        builder.assert_bool(b);
+
+        let circuit = builder.build().unwrap();
+
+        let mut runner = circuit.runner();
+        runner.set_public_inputs(&[BabyBear::ZERO]).unwrap();
+        let traces = runner.run().unwrap();
+        assert!(
+            !traces.alu_trace.is_empty(),
+            "ALU trace should not be empty"
+        );
+
+        let mut builder2 = CircuitBuilder::<BabyBear>::new();
+        let b2 = builder2.add_public_input();
+        builder2.assert_bool(b2);
+        let circuit2 = builder2.build().unwrap();
+        let mut runner2 = circuit2.runner();
+        runner2.set_public_inputs(&[BabyBear::ONE]).unwrap();
+        let traces2 = runner2.run().unwrap();
+        assert!(
+            !traces2.alu_trace.is_empty(),
+            "ALU trace should not be empty"
+        );
     }
 }

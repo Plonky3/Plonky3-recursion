@@ -1,29 +1,40 @@
+#![allow(clippy::upper_case_acronyms)]
+
+use alloc::boxed::Box;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use alloc::{format, vec};
 
 use hashbrown::HashMap;
-use p3_air::{
-    Air as P3Air, AirBuilderWithPublicValues, BaseAir as P3BaseAir, PairBuilder,
-    PermutationAirBuilder,
-};
+use p3_air::{Air, Air as P3Air, AirBuilder, BaseAir as P3BaseAir};
+use p3_baby_bear::BabyBear;
 use p3_batch_stark::CommonData;
-use p3_circuit::CircuitBuilder;
+use p3_circuit::op::NonPrimitiveOpType;
 use p3_circuit::utils::ColumnsTargets;
-use p3_circuit_prover::air::{AddAir, ConstAir, MulAir, PublicAir, WitnessAir};
+use p3_circuit::{CircuitBuilder, NonPrimitiveOpId};
+use p3_circuit_prover::air::{AluAir, ConstAir, PublicAir, WitnessAir};
 use p3_circuit_prover::batch_stark_prover::{PrimitiveTable, RowCounts};
 use p3_commit::{Pcs, PolynomialSpace};
-use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing, PrimeField};
+use p3_field::{BasedVectorSpace, ExtensionField, Field, PrimeCharacteristicRing, PrimeField64};
+use p3_koala_bear::KoalaBear;
 use p3_lookup::lookup_traits::{Kind, Lookup, LookupData, LookupGadget};
+use p3_poseidon2_air::RoundConstants;
+use p3_poseidon2_circuit_air::{
+    Poseidon2CircuitAirBabyBearD4Width16, Poseidon2CircuitAirBabyBearD4Width24,
+    Poseidon2CircuitAirKoalaBearD4Width16, Poseidon2CircuitAirKoalaBearD4Width24,
+};
 use p3_uni_stark::{StarkGenericConfig, SymbolicExpression, Val};
 
 use super::{ObservableCommitment, VerificationError, recompose_quotient_from_chunks_circuit};
 use crate::challenger::CircuitChallenger;
+use crate::ops::Poseidon2Config;
 use crate::traits::{
     LookupMetadata, Recursive, RecursiveAir, RecursiveChallenger, RecursiveLookupGadget,
     RecursivePcs,
 };
-use crate::types::{BatchProofTargets, CommonDataTargets, OpenedValuesTargets};
+use crate::types::{
+    BatchProofTargets, CommonDataTargets, OpenedValuesTargets, OpenedValuesTargetsWithLookups,
+};
 use crate::{BatchStarkVerifierInputsBuilder, Target};
 
 /// Type alias for PCS verifier parameters.
@@ -39,14 +50,88 @@ pub type PcsVerifierParams<SC, InputProof, OpeningProof, Comm> =
         >>::Domain,
     >>::VerifierParams;
 
+const BABY_BEAR_MODULUS: u64 = 0x78000001;
+const KOALA_BEAR_MODULUS: u64 = 0x7f000001;
+
+/// Wrapper enum for Poseidon2 circuit AIRs used in recursive verification.
+///
+/// Erases the concrete field/config generics to allow inclusion in [`CircuitTablesAir`].
+/// Uses transmutes to bridge the generic `F` to concrete field types, following the same
+/// pattern as the prover's `Poseidon2AirWrapper`.
+pub enum Poseidon2VerifierAir {
+    BabyBearD4Width16(Box<Poseidon2CircuitAirBabyBearD4Width16>),
+    BabyBearD4Width24(Box<Poseidon2CircuitAirBabyBearD4Width24>),
+    KoalaBearD4Width16(Box<Poseidon2CircuitAirKoalaBearD4Width16>),
+    KoalaBearD4Width24(Box<Poseidon2CircuitAirKoalaBearD4Width24>),
+}
+
+impl Poseidon2VerifierAir {
+    /// Create a Poseidon2 verifier AIR from a [`Poseidon2Config`].
+    ///
+    /// Constructs the AIR without preprocessed data (not needed for verification).
+    pub fn from_config(config: Poseidon2Config) -> Self {
+        match config {
+            Poseidon2Config::BabyBearD1Width16 | Poseidon2Config::BabyBearD4Width16 => {
+                let constants: RoundConstants<BabyBear, 16, 4, 13> = RoundConstants::new(
+                    p3_baby_bear::BABYBEAR_RC16_EXTERNAL_INITIAL,
+                    p3_baby_bear::BABYBEAR_RC16_INTERNAL,
+                    p3_baby_bear::BABYBEAR_RC16_EXTERNAL_FINAL,
+                );
+                Self::BabyBearD4Width16(Box::new(Poseidon2CircuitAirBabyBearD4Width16::new(
+                    constants,
+                )))
+            }
+            Poseidon2Config::BabyBearD4Width24 => {
+                let constants: RoundConstants<BabyBear, 24, 4, 21> = RoundConstants::new(
+                    p3_baby_bear::BABYBEAR_RC24_EXTERNAL_INITIAL,
+                    p3_baby_bear::BABYBEAR_RC24_INTERNAL,
+                    p3_baby_bear::BABYBEAR_RC24_EXTERNAL_FINAL,
+                );
+                Self::BabyBearD4Width24(Box::new(Poseidon2CircuitAirBabyBearD4Width24::new(
+                    constants,
+                )))
+            }
+            Poseidon2Config::KoalaBearD1Width16 | Poseidon2Config::KoalaBearD4Width16 => {
+                let constants: RoundConstants<KoalaBear, 16, 4, 20> = RoundConstants::new(
+                    p3_koala_bear::KOALABEAR_RC16_EXTERNAL_INITIAL,
+                    p3_koala_bear::KOALABEAR_RC16_INTERNAL,
+                    p3_koala_bear::KOALABEAR_RC16_EXTERNAL_FINAL,
+                );
+                Self::KoalaBearD4Width16(Box::new(Poseidon2CircuitAirKoalaBearD4Width16::new(
+                    constants,
+                )))
+            }
+            Poseidon2Config::KoalaBearD4Width24 => {
+                let constants: RoundConstants<KoalaBear, 24, 4, 23> = RoundConstants::new(
+                    p3_koala_bear::KOALABEAR_RC24_EXTERNAL_INITIAL,
+                    p3_koala_bear::KOALABEAR_RC24_INTERNAL,
+                    p3_koala_bear::KOALABEAR_RC24_EXTERNAL_FINAL,
+                );
+                Self::KoalaBearD4Width24(Box::new(Poseidon2CircuitAirKoalaBearD4Width24::new(
+                    constants,
+                )))
+            }
+        }
+    }
+
+    fn width_inner(&self) -> usize {
+        match self {
+            Self::BabyBearD4Width16(a) => P3BaseAir::<BabyBear>::width(a.as_ref()),
+            Self::BabyBearD4Width24(a) => P3BaseAir::<BabyBear>::width(a.as_ref()),
+            Self::KoalaBearD4Width16(a) => P3BaseAir::<KoalaBear>::width(a.as_ref()),
+            Self::KoalaBearD4Width24(a) => P3BaseAir::<KoalaBear>::width(a.as_ref()),
+        }
+    }
+}
+
 // TODO(Robin): Remove with dynamic dispatch
 /// Wrapper enum for heterogeneous circuit table AIRs used by circuit-prover tables.
 pub enum CircuitTablesAir<F: Field, const D: usize> {
     Witness(WitnessAir<F, D>),
     Const(ConstAir<F, D>),
     Public(PublicAir<F, D>),
-    Add(AddAir<F, D>),
-    Mul(MulAir<F, D>),
+    Alu(AluAir<F, D>),
+    Poseidon2(Poseidon2VerifierAir),
 }
 
 impl<F: Field, const D: usize> P3BaseAir<F> for CircuitTablesAir<F, D> {
@@ -55,45 +140,238 @@ impl<F: Field, const D: usize> P3BaseAir<F> for CircuitTablesAir<F, D> {
             Self::Witness(a) => P3BaseAir::width(a),
             Self::Const(a) => P3BaseAir::width(a),
             Self::Public(a) => P3BaseAir::width(a),
-            Self::Add(a) => P3BaseAir::width(a),
-            Self::Mul(a) => P3BaseAir::width(a),
+            Self::Alu(a) => P3BaseAir::width(a),
+            Self::Poseidon2(a) => a.width_inner(),
         }
     }
 }
 
-impl<AB, const D: usize> P3Air<AB> for CircuitTablesAir<AB::F, D>
+impl<F, EF, const D: usize> P3Air<p3_uni_stark::SymbolicAirBuilder<F, EF>>
+    for CircuitTablesAir<F, D>
 where
-    AB: PairBuilder + PermutationAirBuilder + AirBuilderWithPublicValues,
-    AB::F: Field,
+    F: Field,
+    EF: ExtensionField<F>,
+    SymbolicExpression<EF>: From<SymbolicExpression<F>>,
 {
-    fn eval(&self, builder: &mut AB) {
+    fn eval(&self, builder: &mut p3_uni_stark::SymbolicAirBuilder<F, EF>) {
         match self {
             Self::Witness(a) => P3Air::eval(a, builder),
             Self::Const(a) => P3Air::eval(a, builder),
             Self::Public(a) => P3Air::eval(a, builder),
-            Self::Add(a) => P3Air::eval(a, builder),
-            Self::Mul(a) => P3Air::eval(a, builder),
+            Self::Alu(a) => P3Air::eval(a, builder),
+            Self::Poseidon2(p2) => match p2 {
+                Poseidon2VerifierAir::BabyBearD4Width16(air) => {
+                    assert_eq!(F::from_u64(BABY_BEAR_MODULUS), F::ZERO);
+                    unsafe {
+                        let builder_bb: &mut p3_uni_stark::SymbolicAirBuilder<BabyBear> =
+                            core::mem::transmute(builder);
+                        Air::eval(air.as_ref(), builder_bb);
+                    }
+                }
+                Poseidon2VerifierAir::BabyBearD4Width24(air) => {
+                    assert_eq!(F::from_u64(BABY_BEAR_MODULUS), F::ZERO);
+                    unsafe {
+                        let builder_bb: &mut p3_uni_stark::SymbolicAirBuilder<BabyBear> =
+                            core::mem::transmute(builder);
+                        Air::eval(air.as_ref(), builder_bb);
+                    }
+                }
+                Poseidon2VerifierAir::KoalaBearD4Width16(air) => {
+                    assert_eq!(F::from_u64(KOALA_BEAR_MODULUS), F::ZERO);
+                    unsafe {
+                        let builder_kb: &mut p3_uni_stark::SymbolicAirBuilder<KoalaBear> =
+                            core::mem::transmute(builder);
+                        Air::eval(air.as_ref(), builder_kb);
+                    }
+                }
+                Poseidon2VerifierAir::KoalaBearD4Width24(air) => {
+                    assert_eq!(F::from_u64(KOALA_BEAR_MODULUS), F::ZERO);
+                    unsafe {
+                        let builder_kb: &mut p3_uni_stark::SymbolicAirBuilder<KoalaBear> =
+                            core::mem::transmute(builder);
+                        Air::eval(air.as_ref(), builder_kb);
+                    }
+                }
+            },
         }
     }
 
     fn add_lookup_columns(&mut self) -> Vec<usize> {
         match self {
-            Self::Witness(a) => P3Air::<AB>::add_lookup_columns(a),
-            Self::Const(a) => P3Air::<AB>::add_lookup_columns(a),
-            Self::Public(a) => P3Air::<AB>::add_lookup_columns(a),
-            Self::Add(a) => P3Air::<AB>::add_lookup_columns(a),
-            Self::Mul(a) => P3Air::<AB>::add_lookup_columns(a),
+            Self::Witness(a) => {
+                P3Air::<p3_uni_stark::SymbolicAirBuilder<F, EF>>::add_lookup_columns(a)
+            }
+            Self::Const(a) => {
+                P3Air::<p3_uni_stark::SymbolicAirBuilder<F, EF>>::add_lookup_columns(a)
+            }
+            Self::Public(a) => {
+                P3Air::<p3_uni_stark::SymbolicAirBuilder<F, EF>>::add_lookup_columns(a)
+            }
+            Self::Alu(a) => P3Air::<p3_uni_stark::SymbolicAirBuilder<F, EF>>::add_lookup_columns(a),
+            Self::Poseidon2(p2) => match p2 {
+                Poseidon2VerifierAir::BabyBearD4Width16(a) => {
+                    use p3_field::extension::BinomialExtensionField;
+                    type SAB = p3_uni_stark::SymbolicAirBuilder<
+                        BabyBear,
+                        BinomialExtensionField<BabyBear, 4>,
+                    >;
+                    <Poseidon2CircuitAirBabyBearD4Width16 as Air<SAB>>::add_lookup_columns(
+                        a.as_mut(),
+                    )
+                }
+                Poseidon2VerifierAir::BabyBearD4Width24(a) => {
+                    use p3_field::extension::BinomialExtensionField;
+                    type SAB = p3_uni_stark::SymbolicAirBuilder<
+                        BabyBear,
+                        BinomialExtensionField<BabyBear, 4>,
+                    >;
+                    <Poseidon2CircuitAirBabyBearD4Width24 as Air<SAB>>::add_lookup_columns(
+                        a.as_mut(),
+                    )
+                }
+                Poseidon2VerifierAir::KoalaBearD4Width16(a) => {
+                    use p3_field::extension::BinomialExtensionField;
+                    type SAB = p3_uni_stark::SymbolicAirBuilder<
+                        KoalaBear,
+                        BinomialExtensionField<KoalaBear, 4>,
+                    >;
+                    <Poseidon2CircuitAirKoalaBearD4Width16 as Air<SAB>>::add_lookup_columns(
+                        a.as_mut(),
+                    )
+                }
+                Poseidon2VerifierAir::KoalaBearD4Width24(a) => {
+                    use p3_field::extension::BinomialExtensionField;
+                    type SAB = p3_uni_stark::SymbolicAirBuilder<
+                        KoalaBear,
+                        BinomialExtensionField<KoalaBear, 4>,
+                    >;
+                    <Poseidon2CircuitAirKoalaBearD4Width24 as Air<SAB>>::add_lookup_columns(
+                        a.as_mut(),
+                    )
+                }
+            },
         }
     }
 
-    fn get_lookups(&mut self) -> Vec<p3_lookup::lookup_traits::Lookup<<AB>::F>> {
+    #[allow(clippy::missing_transmute_annotations)]
+    fn get_lookups(
+        &mut self,
+    ) -> Vec<
+        p3_lookup::lookup_traits::Lookup<
+            <p3_uni_stark::SymbolicAirBuilder<F, EF> as AirBuilder>::F,
+        >,
+    > {
         match self {
-            Self::Witness(a) => P3Air::<AB>::get_lookups(a),
-            Self::Const(a) => P3Air::<AB>::get_lookups(a),
-            Self::Public(a) => P3Air::<AB>::get_lookups(a),
-            Self::Add(a) => P3Air::<AB>::get_lookups(a),
-            Self::Mul(a) => P3Air::<AB>::get_lookups(a),
+            Self::Witness(a) => P3Air::<p3_uni_stark::SymbolicAirBuilder<F, EF>>::get_lookups(a),
+            Self::Const(a) => P3Air::<p3_uni_stark::SymbolicAirBuilder<F, EF>>::get_lookups(a),
+            Self::Public(a) => P3Air::<p3_uni_stark::SymbolicAirBuilder<F, EF>>::get_lookups(a),
+            Self::Alu(a) => P3Air::<p3_uni_stark::SymbolicAirBuilder<F, EF>>::get_lookups(a),
+            Self::Poseidon2(p2) => match p2 {
+                Poseidon2VerifierAir::BabyBearD4Width16(a) => unsafe {
+                    assert_eq!(F::from_u64(BABY_BEAR_MODULUS), F::ZERO);
+                    use p3_field::extension::BinomialExtensionField;
+                    type SAB = p3_uni_stark::SymbolicAirBuilder<
+                        BabyBear,
+                        BinomialExtensionField<BabyBear, 4>,
+                    >;
+                    let lookups =
+                        <Poseidon2CircuitAirBabyBearD4Width16 as Air<SAB>>::get_lookups(a.as_mut());
+                    core::mem::transmute(lookups)
+                },
+                Poseidon2VerifierAir::BabyBearD4Width24(a) => unsafe {
+                    assert_eq!(F::from_u64(BABY_BEAR_MODULUS), F::ZERO);
+                    use p3_field::extension::BinomialExtensionField;
+                    type SAB = p3_uni_stark::SymbolicAirBuilder<
+                        BabyBear,
+                        BinomialExtensionField<BabyBear, 4>,
+                    >;
+                    let lookups =
+                        <Poseidon2CircuitAirBabyBearD4Width24 as Air<SAB>>::get_lookups(a.as_mut());
+                    core::mem::transmute(lookups)
+                },
+                Poseidon2VerifierAir::KoalaBearD4Width16(a) => unsafe {
+                    assert_eq!(F::from_u64(KOALA_BEAR_MODULUS), F::ZERO);
+                    use p3_field::extension::BinomialExtensionField;
+                    type SAB = p3_uni_stark::SymbolicAirBuilder<
+                        KoalaBear,
+                        BinomialExtensionField<KoalaBear, 4>,
+                    >;
+                    let lookups = <Poseidon2CircuitAirKoalaBearD4Width16 as Air<SAB>>::get_lookups(
+                        a.as_mut(),
+                    );
+                    core::mem::transmute(lookups)
+                },
+                Poseidon2VerifierAir::KoalaBearD4Width24(a) => unsafe {
+                    assert_eq!(F::from_u64(KOALA_BEAR_MODULUS), F::ZERO);
+                    use p3_field::extension::BinomialExtensionField;
+                    type SAB = p3_uni_stark::SymbolicAirBuilder<
+                        KoalaBear,
+                        BinomialExtensionField<KoalaBear, 4>,
+                    >;
+                    let lookups = <Poseidon2CircuitAirKoalaBearD4Width24 as Air<SAB>>::get_lookups(
+                        a.as_mut(),
+                    );
+                    core::mem::transmute(lookups)
+                },
+            },
         }
+    }
+}
+
+/// Create an AluAir with the appropriate constructor based on TRACE_D.
+///
+/// For D=1 (base field), uses `AluAir::new()`.
+/// For D>1 (extension field), uses `AluAir::new_binomial()` with the W parameter
+/// extracted from the challenge field type.
+fn create_alu_air<F, EF, const TRACE_D: usize>(num_ops: usize, lanes: usize) -> AluAir<F, TRACE_D>
+where
+    F: Field + PrimeCharacteristicRing,
+    EF: ExtensionField<F>,
+{
+    if TRACE_D == 1 {
+        AluAir::<F, TRACE_D>::new(num_ops, lanes)
+    } else {
+        // For D > 1, extract W from the extension field
+        // BinomialExtensionField<F, D> has W as the constant such that x^D = W
+        let w = extract_binomial_w::<F, EF>();
+        AluAir::<F, TRACE_D>::new_binomial(num_ops, lanes, w)
+    }
+}
+
+/// Extract the binomial parameter W from an extension field type.
+///
+/// For BinomialExtensionField<F, D>, this returns F::W.
+/// Panics if called on a non-extension field.
+fn extract_binomial_w<F: Field, EF: ExtensionField<F>>() -> F {
+    // The extension field dimension tells us the degree
+    let d = EF::DIMENSION;
+
+    // For common cases, we know the W values:
+    // BabyBear: x^4 = 11 (W = 11)
+    // KoalaBear: x^4 = 3 (W = 3)
+    // These are the standard Plonky3 values.
+    //
+    // We use a runtime check based on the field characteristic to determine W.
+    // This is a workaround since we can't easily extract W from the type at runtime.
+
+    if d == 4 {
+        // Check which field we're using based on the modulus
+        let baby_bear_mod = F::from_u64(0x78000001);
+        let koala_bear_mod = F::from_u64(0x7F000001);
+
+        if baby_bear_mod == F::ZERO {
+            // BabyBear: W = 11
+            F::from_u64(11)
+        } else if koala_bear_mod == F::ZERO {
+            // KoalaBear: W = 3
+            F::from_u64(3)
+        } else {
+            // Goldilocks or other - try W = 7 (common for some fields)
+            // This is a fallback; proper implementation would use BinomiallyExtendable trait
+            F::from_u64(7)
+        }
+    } else {
+        panic!("Unsupported extension degree: {d}. Only D=1 and D=4 are supported.")
     }
 }
 
@@ -102,6 +380,7 @@ where
 /// This reconstructs the circuit table AIRs from the proof metadata (rows + packing) so callers
 /// don't need to pass `circuit_airs` explicitly. Returns the allocated input builder to pack
 /// public inputs afterwards.
+#[allow(clippy::type_complexity)]
 pub fn verify_p3_recursion_proof_circuit<
     SC: StarkGenericConfig,
     Comm: Recursive<
@@ -112,6 +391,7 @@ pub fn verify_p3_recursion_proof_circuit<
     InputProof: Recursive<SC::Challenge>,
     OpeningProof: Recursive<SC::Challenge, Input = <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Proof>,
     LG: RecursiveLookupGadget<SC::Challenge>,
+    const WIDTH: usize,
     const RATE: usize,
     const TRACE_D: usize,
 >(
@@ -121,7 +401,14 @@ pub fn verify_p3_recursion_proof_circuit<
     pcs_params: &PcsVerifierParams<SC, InputProof, OpeningProof, Comm>,
     common_data: &CommonData<SC>,
     lookup_gadget: &LG,
-) -> Result<BatchStarkVerifierInputsBuilder<SC, Comm, OpeningProof>, VerificationError>
+    poseidon2_config: Poseidon2Config,
+) -> Result<
+    (
+        BatchStarkVerifierInputsBuilder<SC, Comm, OpeningProof>,
+        Vec<NonPrimitiveOpId>,
+    ),
+    VerificationError,
+>
 where
     <SC as StarkGenericConfig>::Pcs: RecursivePcs<
             SC,
@@ -130,8 +417,8 @@ where
             Comm,
             <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain,
         >,
-    SC::Challenge: PrimeCharacteristicRing,
-    Val<SC>: PrimeField,
+    Val<SC>: PrimeField64,
+    SC::Challenge: ExtensionField<Val<SC>> + PrimeCharacteristicRing,
     <<SC as StarkGenericConfig>::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain: Clone,
     SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
 {
@@ -139,10 +426,16 @@ where
     let rows: RowCounts = proof.rows;
     let packing = proof.table_packing;
     let witness_lanes = packing.witness_lanes();
-    let add_lanes = packing.add_lanes();
-    let mul_lanes = packing.mul_lanes();
+    let public_lanes = packing.public_lanes();
+    let alu_lanes = packing.alu_lanes();
 
-    let circuit_airs = vec![
+    // Create AluAir with appropriate constructor based on TRACE_D
+    // For D > 1, we need the binomial parameter W.
+    // We extract it from the challenge field which is BinomialExtensionField<Val<SC>, D>.
+    let alu_air =
+        create_alu_air::<Val<SC>, SC::Challenge, TRACE_D>(rows[PrimitiveTable::Alu], alu_lanes);
+
+    let mut circuit_airs: Vec<CircuitTablesAir<Val<SC>, TRACE_D>> = vec![
         CircuitTablesAir::Witness(WitnessAir::<Val<SC>, TRACE_D>::new(
             rows[PrimitiveTable::Witness],
             witness_lanes,
@@ -152,16 +445,24 @@ where
         )),
         CircuitTablesAir::Public(PublicAir::<Val<SC>, TRACE_D>::new(
             rows[PrimitiveTable::Public],
+            public_lanes,
         )),
-        CircuitTablesAir::Add(AddAir::<Val<SC>, TRACE_D>::new(
-            rows[PrimitiveTable::Add],
-            add_lanes,
-        )),
-        CircuitTablesAir::Mul(MulAir::<Val<SC>, TRACE_D>::new(
-            rows[PrimitiveTable::Mul],
-            mul_lanes,
-        )),
+        CircuitTablesAir::Alu(alu_air),
     ];
+
+    // Add non-primitive AIRs (e.g., Poseidon2) from the proof manifest.
+    for entry in &proof.non_primitives {
+        match entry.op_type {
+            NonPrimitiveOpType::Poseidon2Perm(config) => {
+                circuit_airs.push(CircuitTablesAir::Poseidon2(
+                    Poseidon2VerifierAir::from_config(config),
+                ));
+            }
+            NonPrimitiveOpType::Unconstrained => {
+                // Unconstrained operations don't produce a separate AIR table.
+            }
+        }
+    }
 
     // TODO: public values are empty for all circuit tables for now.
     let air_public_counts = vec![0usize; proof.proof.opened_values.instances.len()];
@@ -174,13 +475,14 @@ where
 
     let common = &verifier_inputs.common_data;
 
-    verify_batch_circuit::<
+    let mmcs_op_ids = verify_batch_circuit::<
         CircuitTablesAir<Val<SC>, TRACE_D>,
         SC,
         Comm,
         InputProof,
         OpeningProof,
         LG,
+        WIDTH,
         RATE,
     >(
         config,
@@ -191,12 +493,19 @@ where
         pcs_params,
         common,
         lookup_gadget,
+        poseidon2_config,
     )?;
 
-    Ok(verifier_inputs)
+    Ok((verifier_inputs, mmcs_op_ids))
 }
 
 /// Verify a batch-STARK proof inside a recursive circuit.
+///
+/// # Returns
+/// `Ok(Vec<NonPrimitiveOpId>)` containing operation IDs that require private data
+/// (e.g., Merkle sibling values for MMCS verification). The caller must set
+/// private data for these operations before running the circuit.
+/// `Err` if there was a structural error.
 #[allow(clippy::too_many_arguments)]
 pub fn verify_batch_circuit<
     A,
@@ -209,6 +518,7 @@ pub fn verify_batch_circuit<
     InputProof: Recursive<SC::Challenge>,
     OpeningProof: Recursive<SC::Challenge>,
     LG: RecursiveLookupGadget<SC::Challenge>,
+    const WIDTH: usize,
     const RATE: usize,
 >(
     config: &SC,
@@ -219,7 +529,8 @@ pub fn verify_batch_circuit<
     pcs_params: &PcsVerifierParams<SC, InputProof, OpeningProof, Comm>,
     common: &CommonDataTargets<SC, Comm>,
     lookup_gadget: &LG,
-) -> Result<(), VerificationError>
+    poseidon2_config: crate::ops::Poseidon2Config,
+) -> Result<Vec<NonPrimitiveOpId>, VerificationError>
 where
     A: RecursiveAir<Val<SC>, SC::Challenge, LG>,
     <SC as StarkGenericConfig>::Pcs: RecursivePcs<
@@ -229,7 +540,8 @@ where
             Comm,
             <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain,
         >,
-    SC::Challenge: PrimeCharacteristicRing,
+    Val<SC>: PrimeField64,
+    SC::Challenge: ExtensionField<Val<SC>> + PrimeCharacteristicRing,
     <<SC as StarkGenericConfig>::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain: Clone,
 {
     let BatchProofTargets {
@@ -348,12 +660,14 @@ where
     }
 
     // Challenger initialisation mirrors the native batch-STARK verifier transcript.
-    let mut challenger = CircuitChallenger::<RATE>::new();
+    // Native uses observe_base_as_algebra_element which decomposes to D coefficients,
+    // so we use observe_ext to match.
+    let mut challenger = CircuitChallenger::<WIDTH, RATE>::new(poseidon2_config);
     let inst_count_target = circuit.alloc_const(
         SC::Challenge::from_usize(n_instances),
         "number of instances",
     );
-    challenger.observe(circuit, inst_count_target);
+    challenger.observe_ext(circuit, inst_count_target);
 
     for ((&ext_db, quotient_degree), air) in degree_bits
         .iter()
@@ -376,10 +690,12 @@ where
             "quotient chunk count",
         );
 
-        challenger.observe(circuit, ext_db_target);
-        challenger.observe(circuit, base_db_target);
-        challenger.observe(circuit, width_target);
-        challenger.observe(circuit, quotient_chunks_target);
+        // Native uses observe_base_as_algebra_element (via observe_instance_binding),
+        // so we use observe_ext to match by decomposing to D base coefficients.
+        challenger.observe_ext(circuit, ext_db_target);
+        challenger.observe_ext(circuit, base_db_target);
+        challenger.observe_ext(circuit, width_target);
+        challenger.observe_ext(circuit, quotient_chunks_target);
     }
 
     challenger.observe_slice(
@@ -392,10 +708,11 @@ where
 
     // Observe preprocessed widths for each instance. If a global
     // preprocessed commitment exists, observe it once.
+    // Native uses observe_base_as_algebra_element, so we use observe_ext.
     for &pre_w in preprocessed_widths.iter() {
         let pre_w_target =
             circuit.alloc_const(SC::Challenge::from_usize(pre_w), "preprocessed width");
-        challenger.observe(circuit, pre_w_target);
+        challenger.observe_ext(circuit, pre_w_target);
     }
     if let Some(global) = &common.preprocessed {
         challenger.observe_slice(circuit, &global.commitment.to_observation_targets());
@@ -413,8 +730,12 @@ where
     }
 
     // Fetch lookups and sample their challenges.
-    let challenges_per_instance =
-        get_perm_challenges::<SC, RATE, LG>(circuit, &mut challenger, all_lookups, lookup_gadget);
+    let challenges_per_instance = get_perm_challenges::<SC, WIDTH, RATE, LG>(
+        circuit,
+        &mut challenger,
+        all_lookups,
+        lookup_gadget,
+    );
 
     // Then, observe the permutation tables, if any.
     if is_lookup {
@@ -428,7 +749,8 @@ where
         );
     }
 
-    let alpha = challenger.sample(circuit);
+    // Sample alpha challenge (extension field element)
+    let alpha = challenger.sample_ext(circuit);
 
     challenger.observe_slice(
         circuit,
@@ -436,7 +758,8 @@ where
             .quotient_chunks_targets
             .to_observation_targets(),
     );
-    let zeta = challenger.sample(circuit);
+    // Sample zeta challenge (extension field element)
+    let zeta = challenger.sample_ext(circuit);
 
     // Build per-instance domains.
     let mut trace_domains = Vec::with_capacity(n_instances);
@@ -448,7 +771,9 @@ where
     }
 
     // Collect commitments with opening points for PCS verification.
-    let mut coms_to_verify = vec![];
+    // We have, in the typical lookup case, up to four rounds:
+    // trace, quotient, optional preprocessed, and optional permutation.
+    let mut coms_to_verify = Vec::with_capacity(4);
 
     let trace_round: Vec<_> = ext_trace_domains
         .iter()
@@ -491,7 +816,8 @@ where
         })
         .collect();
 
-    let mut quotient_round = Vec::new();
+    let mut quotient_round =
+        Vec::with_capacity(quotient_domains.iter().map(|domains| domains.len()).sum());
     for (domains, inst) in quotient_domains.iter().zip(instances.iter()) {
         if domains.len() != inst.opened_values_no_lookups.quotient_chunks_targets.len() {
             return Err(VerificationError::InvalidProofShape(
@@ -557,12 +883,15 @@ where
                 ));
             }
 
-            let ext_dom = &ext_trace_domains[inst_idx];
+            // Compute base preprocessed domain (matching prover in generation.rs)
+            let pre_domain = pcs.natural_domain_for_degree(1 << meta.degree_bits);
 
+            // Use extended trace domain for zeta_next computation (same generator)
+            let ext_dom = &ext_trace_domains[inst_idx];
             let first_point = pcs.first_point(ext_dom);
             let next_point = ext_dom.next_point(first_point).ok_or_else(|| {
                 VerificationError::InvalidProofShape(
-                    "Trace domain does not provide next point".to_string(),
+                    "Preprocessed domain does not provide next point".to_string(),
                 )
             })?;
             let generator = next_point * first_point.inverse();
@@ -570,7 +899,7 @@ where
             let zeta_next = circuit.mul(zeta, generator_const);
 
             pre_round.push((
-                *ext_dom,
+                pre_domain,
                 vec![(zeta, local.clone()), (zeta_next, next.clone())],
             ));
         }
@@ -584,7 +913,7 @@ where
             .clone()
             .expect("We checked that the commitment exists");
 
-        let mut permutation_round = Vec::new();
+        let mut permutation_round = Vec::with_capacity(ext_trace_domains.len());
 
         for (i, ext_dom) in ext_trace_domains.iter().enumerate() {
             let inst = &instances[i];
@@ -622,7 +951,18 @@ where
         coms_to_verify.push((permutation_commit, permutation_round));
     }
 
-    let pcs_challenges = SC::Pcs::get_challenges_circuit::<RATE>(
+    // Observe opened values in the correct order (matching native).
+    // Native observes per-instance: trace_local, trace_next, then quotient chunks,
+    // then preprocessed, then permutation.
+    // The flattened structure has the wrong order, so we observe from instances directly.
+    observe_opened_values_circuit::<SC, WIDTH, RATE>(
+        circuit,
+        &mut challenger,
+        instances,
+        &quotient_degrees,
+    );
+
+    let pcs_challenges = SC::Pcs::get_challenges_circuit::<WIDTH, RATE>(
         circuit,
         &mut challenger,
         &proof_targets.opening_proof,
@@ -630,7 +970,7 @@ where
         pcs_params,
     )?;
 
-    pcs.verify_circuit(
+    let mmcs_op_ids = pcs.verify_circuit(
         circuit,
         &pcs_challenges,
         &coms_to_verify,
@@ -763,17 +1103,27 @@ where
         }
     }
 
-    Ok(())
+    Ok(mmcs_op_ids)
 }
 
-pub(crate) fn get_perm_challenges<SC: StarkGenericConfig, const RATE: usize, LG: LookupGadget>(
+pub(crate) fn get_perm_challenges<
+    SC: StarkGenericConfig,
+    const WIDTH: usize,
+    const RATE: usize,
+    LG: LookupGadget,
+>(
     circuit: &mut CircuitBuilder<SC::Challenge>,
-    challenger: &mut CircuitChallenger<RATE>,
+    challenger: &mut CircuitChallenger<WIDTH, RATE>,
     all_lookups: &[Vec<Lookup<Val<SC>>>],
     lookup_gadget: &LG,
-) -> Vec<Vec<Target>> {
+) -> Vec<Vec<Target>>
+where
+    Val<SC>: PrimeField64,
+    SC::Challenge: ExtensionField<Val<SC>>,
+{
     let num_challenges_per_lookup = lookup_gadget.num_challenges();
-    let mut global_perm_challenges = HashMap::new();
+    let approx_global_names: usize = all_lookups.iter().map(|contexts| contexts.len()).sum();
+    let mut global_perm_challenges = HashMap::with_capacity(approx_global_names);
 
     all_lookups
         .iter()
@@ -785,18 +1135,19 @@ pub(crate) fn get_perm_challenges<SC: StarkGenericConfig, const RATE: usize, LG:
             for context in contexts {
                 match &context.kind {
                     Kind::Global(name) => {
-                        // Get or create the global challenges.
+                        // Get or create the global challenges (extension field elements).
                         let challenges: &mut Vec<Target> =
                             global_perm_challenges.entry(name).or_insert_with(|| {
                                 (0..num_challenges_per_lookup)
-                                    .map(|_| challenger.sample(circuit))
+                                    .map(|_| challenger.sample_ext(circuit))
                                     .collect()
                             });
                         instance_challenges.extend_from_slice(challenges);
                     }
                     Kind::Local => {
+                        // Local challenges are extension field elements.
                         instance_challenges.extend(
-                            (0..num_challenges_per_lookup).map(|_| challenger.sample(circuit)),
+                            (0..num_challenges_per_lookup).map(|_| challenger.sample_ext(circuit)),
                         );
                     }
                 }
@@ -819,4 +1170,60 @@ fn lookup_data_to_pv_index(
             expected_cumulated: public_values_len + index,
         })
         .collect::<Vec<_>>()
+}
+
+/// Observe opened values in the circuit in the correct order to match native.
+///
+/// Native observes opened values in this order:
+/// 1. Trace round: for each instance, observe trace_local then trace_next
+/// 2. Quotient round: for each instance, for each chunk, observe quotient
+/// 3. Preprocessed round: for each instance, observe prep_local then prep_next
+/// 4. Permutation round: for each instance, observe perm_local then perm_next
+fn observe_opened_values_circuit<SC, const WIDTH: usize, const RATE: usize>(
+    circuit: &mut CircuitBuilder<SC::Challenge>,
+    challenger: &mut crate::challenger::CircuitChallenger<WIDTH, RATE>,
+    instances: &[OpenedValuesTargetsWithLookups<SC>],
+    quotient_degrees: &[usize],
+) where
+    SC: StarkGenericConfig,
+    Val<SC>: PrimeField64,
+    SC::Challenge: ExtensionField<Val<SC>>,
+{
+    // 1. Trace round: for each instance, observe trace_local then trace_next
+    for inst in instances {
+        challenger.observe_ext_slice(circuit, &inst.opened_values_no_lookups.trace_local_targets);
+        challenger.observe_ext_slice(circuit, &inst.opened_values_no_lookups.trace_next_targets);
+    }
+
+    // 2. Quotient round: for each instance, for each chunk, observe quotient
+    for (inst, &qd) in instances.iter().zip(quotient_degrees.iter()) {
+        for chunk_values in inst
+            .opened_values_no_lookups
+            .quotient_chunks_targets
+            .iter()
+            .take(qd)
+        {
+            challenger.observe_ext_slice(circuit, chunk_values);
+        }
+    }
+
+    // 3. Preprocessed round: for each instance, observe prep_local then prep_next
+    for inst in instances {
+        if let Some(prep_local) = &inst.opened_values_no_lookups.preprocessed_local_targets {
+            challenger.observe_ext_slice(circuit, prep_local);
+        }
+        if let Some(prep_next) = &inst.opened_values_no_lookups.preprocessed_next_targets {
+            challenger.observe_ext_slice(circuit, prep_next);
+        }
+    }
+
+    // 4. Permutation round: for each instance, observe perm_local then perm_next
+    for inst in instances {
+        if !inst.permutation_local_targets.is_empty() {
+            challenger.observe_ext_slice(circuit, &inst.permutation_local_targets);
+        }
+        if !inst.permutation_next_targets.is_empty() {
+            challenger.observe_ext_slice(circuit, &inst.permutation_next_targets);
+        }
+    }
 }

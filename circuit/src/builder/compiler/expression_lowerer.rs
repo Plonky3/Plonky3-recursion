@@ -135,90 +135,136 @@ where
                     }
                 };
 
-                // Expected input layout: [in0, in1, in2, in3, mmcs_index_sum, mmcs_bit]
-                if data.input_exprs.len() != 6 {
+                // Detect D=1 (base field) vs D=4 (extension field) based on input count
+                // D=4 mode: 6 inputs [in0..3, mmcs_index_sum, mmcs_bit], 2 or 4 outputs
+                // D=1 mode: 16 inputs [in0..15], 8 or 16 outputs (no merkle support)
+                let is_d1_mode = data.input_exprs.len() == 16;
+                let is_d4_mode = data.input_exprs.len() == 6;
+
+                if !is_d1_mode && !is_d4_mode {
                     return Err(CircuitBuilderError::NonPrimitiveOpArity {
                         op: "Poseidon2Perm",
-                        expected: "6 inputs (in0..3, mmcs_index_sum, mmcs_bit)".to_string(),
+                        expected: "6 inputs (D=4 mode) or 16 inputs (D=1 mode)".to_string(),
                         got: data.input_exprs.len(),
                     });
                 }
 
-                // Expected output layout: [out0, out1]
-                if data.output_exprs.len() != 2 {
+                // Validate output count based on mode
+                let valid_output_count = if is_d1_mode {
+                    // D=1: 8 (rate only) or 16 (with capacity)
+                    data.output_exprs.len() == 8 || data.output_exprs.len() == 16
+                } else {
+                    // D=4: 2 (rate only) or 4 (with capacity)
+                    data.output_exprs.len() == 2 || data.output_exprs.len() == 4
+                };
+
+                if !valid_output_count {
                     return Err(CircuitBuilderError::NonPrimitiveOpArity {
                         op: "Poseidon2Perm",
-                        expected: "2 outputs (out0, out1)".to_string(),
+                        expected: if is_d1_mode {
+                            "8 or 16 outputs for D=1 mode".to_string()
+                        } else {
+                            "2 or 4 outputs for D=4 mode".to_string()
+                        },
                         got: data.output_exprs.len(),
                     });
                 }
 
-                let mut inputs_widx: Vec<Vec<WitnessId>> = Vec::with_capacity(6);
-                // Inputs (Limbs 0-3)
-                for (i, limb_exprs) in data.input_exprs.iter().take(4).enumerate() {
-                    if !(limb_exprs.is_empty() || limb_exprs.len() == 1) {
+                let mut inputs_widx: Vec<Vec<WitnessId>> =
+                    Vec::with_capacity(data.input_exprs.len());
+
+                if is_d1_mode {
+                    // D=1 mode: 16 input elements (no mmcs_index_sum, no mmcs_bit)
+                    for (i, limb_exprs) in data.input_exprs.iter().enumerate() {
+                        if !(limb_exprs.is_empty() || limb_exprs.len() == 1) {
+                            return Err(CircuitBuilderError::NonPrimitiveOpArity {
+                                op: "Poseidon2Perm",
+                                expected: "0 or 1 base field element per input".to_string(),
+                                got: limb_exprs.len(),
+                            });
+                        }
+                        let limb_widx = limb_exprs
+                            .iter()
+                            .map(|&expr| {
+                                get_witness_id(
+                                    expr_to_widx,
+                                    expr,
+                                    &format!("Poseidon2Perm D=1 input {i}"),
+                                )
+                            })
+                            .collect::<Result<Vec<WitnessId>, _>>()?;
+                        inputs_widx.push(limb_widx);
+                    }
+                } else {
+                    // D=4 mode: Inputs (Limbs 0-3)
+                    for (i, limb_exprs) in data.input_exprs.iter().take(4).enumerate() {
+                        if !(limb_exprs.is_empty() || limb_exprs.len() == 1) {
+                            return Err(CircuitBuilderError::NonPrimitiveOpArity {
+                                op: "Poseidon2Perm",
+                                expected: "0 or 1 extension element per input limb".to_string(),
+                                got: limb_exprs.len(),
+                            });
+                        }
+                        let limb_widx = limb_exprs
+                            .iter()
+                            .map(|&expr| {
+                                get_witness_id(
+                                    expr_to_widx,
+                                    expr,
+                                    &format!("Poseidon2Perm input limb {i}"),
+                                )
+                            })
+                            .collect::<Result<Vec<WitnessId>, _>>()?;
+                        inputs_widx.push(limb_widx);
+                    }
+
+                    // mmcs_index_sum (0 or 1 element)
+                    let mmcs_exprs = &data.input_exprs[4];
+                    if !(mmcs_exprs.is_empty() || mmcs_exprs.len() == 1) {
                         return Err(CircuitBuilderError::NonPrimitiveOpArity {
                             op: "Poseidon2Perm",
-                            expected: "0 or 1 extension element per input limb".to_string(),
-                            got: limb_exprs.len(),
+                            expected: "0 or 1 element for mmcs_index_sum".to_string(),
+                            got: mmcs_exprs.len(),
                         });
                     }
-                    let limb_widx = limb_exprs
+                    let mmcs_widx = mmcs_exprs
                         .iter()
                         .map(|&expr| {
-                            get_witness_id(
-                                expr_to_widx,
-                                expr,
-                                &format!("Poseidon2Perm input limb {i}"),
-                            )
+                            get_witness_id(expr_to_widx, expr, "Poseidon2Perm mmcs_index_sum input")
                         })
                         .collect::<Result<Vec<WitnessId>, _>>()?;
-                    inputs_widx.push(limb_widx);
-                }
+                    inputs_widx.push(mmcs_widx);
 
-                // mmcs_index_sum (0 or 1 element)
-                let mmcs_exprs = &data.input_exprs[4];
-                if !(mmcs_exprs.is_empty() || mmcs_exprs.len() == 1) {
-                    return Err(CircuitBuilderError::NonPrimitiveOpArity {
-                        op: "Poseidon2Perm",
-                        expected: "0 or 1 element for mmcs_index_sum".to_string(),
-                        got: mmcs_exprs.len(),
-                    });
+                    // mmcs_bit (0 or 1 element)
+                    let mmcs_bit_exprs = &data.input_exprs[5];
+                    if !(mmcs_bit_exprs.is_empty() || mmcs_bit_exprs.len() == 1) {
+                        return Err(CircuitBuilderError::NonPrimitiveOpArity {
+                            op: "Poseidon2Perm",
+                            expected: "0 or 1 element for mmcs_bit".to_string(),
+                            got: mmcs_bit_exprs.len(),
+                        });
+                    }
+                    let mmcs_bit_widx = mmcs_bit_exprs
+                        .iter()
+                        .map(|&expr| {
+                            get_witness_id(expr_to_widx, expr, "Poseidon2Perm mmcs_bit input")
+                        })
+                        .collect::<Result<Vec<WitnessId>, _>>()?;
+                    inputs_widx.push(mmcs_bit_widx);
                 }
-                let mmcs_widx = mmcs_exprs
-                    .iter()
-                    .map(|&expr| {
-                        get_witness_id(expr_to_widx, expr, "Poseidon2Perm mmcs_index_sum input")
-                    })
-                    .collect::<Result<Vec<WitnessId>, _>>()?;
-                inputs_widx.push(mmcs_widx);
-
-                // mmcs_bit (0 or 1 element)
-                let mmcs_bit_exprs = &data.input_exprs[5];
-                if !(mmcs_bit_exprs.is_empty() || mmcs_bit_exprs.len() == 1) {
-                    return Err(CircuitBuilderError::NonPrimitiveOpArity {
-                        op: "Poseidon2Perm",
-                        expected: "0 or 1 element for mmcs_bit".to_string(),
-                        got: mmcs_bit_exprs.len(),
-                    });
-                }
-                let mmcs_bit_widx = mmcs_bit_exprs
-                    .iter()
-                    .map(|&expr| get_witness_id(expr_to_widx, expr, "Poseidon2Perm mmcs_bit input"))
-                    .collect::<Result<Vec<WitnessId>, _>>()?;
-                inputs_widx.push(mmcs_bit_widx);
 
                 // Output CTL exposures (0 or 1 element each).
                 //
                 // For Poseidon2Perm we take outputs exclusively from `data.output_exprs` to avoid
                 // generating multiple witness ids per output limb (which breaks both execution and
                 // trace building).
-                let mut poseidon2_outputs: Vec<Vec<WitnessId>> = Vec::with_capacity(2);
+                let mut poseidon2_outputs: Vec<Vec<WitnessId>> =
+                    Vec::with_capacity(data.output_exprs.len());
                 for (i, limb_exprs) in data.output_exprs.iter().enumerate() {
                     if !(limb_exprs.is_empty() || limb_exprs.len() == 1) {
                         return Err(CircuitBuilderError::NonPrimitiveOpArity {
                             op: "Poseidon2Perm",
-                            expected: "0 or 1 extension element per output limb".to_string(),
+                            expected: "0 or 1 element per output".to_string(),
                             got: limb_exprs.len(),
                         });
                     }
@@ -226,7 +272,7 @@ where
                         let w = get_witness_id(
                             expr_to_widx,
                             expr,
-                            &format!("Poseidon2Perm output limb {i}"),
+                            &format!("Poseidon2Perm output {i}"),
                         )?;
                         poseidon2_outputs.push(vec![w]);
                     } else {
@@ -433,25 +479,57 @@ where
                         get_witness_id(&expr_to_widx, *lhs, &format!("Add lhs for {expr_id:?}"))?;
                     let b_widx =
                         get_witness_id(&expr_to_widx, *rhs, &format!("Add rhs for {expr_id:?}"))?;
-                    ops.push(Op::Add {
-                        a: a_widx,
-                        b: b_widx,
-                        out: out_widx,
-                    });
+                    ops.push(Op::add(a_widx, b_widx, out_widx));
                     expr_to_widx.insert(expr_id, out_widx);
                 }
                 Expr::Sub { lhs, rhs } => {
+                    // Fast path: algebraic rewrite for `a * b - c` where `c` is a constant.
+                    //
+                    // Expression-level: lhs = a * b, rhs = c
+                    // We rewrite:
+                    //     result = lhs - rhs
+                    // into:
+                    //     result = lhs + (-c)
+                    //
+                    // This produces a forward add that the MulAdd optimizer can fuse with the
+                    // preceding Mul, instead of the default backwards-add encoding.
+                    let lhs_expr = self.graph.get_expr(*lhs);
+                    let rhs_expr = self.graph.get_expr(*rhs);
+
+                    // Allocate witness for the subtraction result expression.
                     let result_widx = alloc_witness_id_for_expr(expr_idx);
-                    let lhs_widx =
-                        get_witness_id(&expr_to_widx, *lhs, &format!("Sub lhs for {expr_id:?}"))?;
-                    let rhs_widx =
-                        get_witness_id(&expr_to_widx, *rhs, &format!("Sub rhs for {expr_id:?}"))?;
-                    // Encode lhs - rhs = result as result + rhs = lhs.
-                    ops.push(Op::Add {
-                        a: rhs_widx,
-                        b: result_widx,
-                        out: lhs_widx,
-                    });
+
+                    // Get the witness for the mul result (lhs of the subtraction).
+                    let lhs_widx = get_witness_id(
+                        &expr_to_widx,
+                        *lhs,
+                        &format!("Sub lhs (mul result) for {expr_id:?}"),
+                    )?;
+
+                    if let (Expr::Mul { .. }, Expr::Const(const_val)) = (lhs_expr, rhs_expr) {
+                        // Emit a fresh constant witness for -c.
+                        //
+                        // We allocate a synthetic witness index that is not tied to any
+                        // particular expression node (beyond the current graph size),
+                        // so it does not participate in connect-based aliasing.
+                        let synthetic_idx = self.graph.nodes().len();
+                        let neg_const_widx = alloc_witness_id_for_expr(synthetic_idx);
+                        ops.push(Op::Const {
+                            out: neg_const_widx,
+                            val: -(*const_val),
+                        });
+
+                        // Encode result = lhs + (-c) as a forward add.
+                        ops.push(Op::add(lhs_widx, neg_const_widx, result_widx));
+                    } else {
+                        // Generic encoding: lhs - rhs = result as result + rhs = lhs.
+                        let rhs_widx = get_witness_id(
+                            &expr_to_widx,
+                            *rhs,
+                            &format!("Sub rhs for {expr_id:?}"),
+                        )?;
+                        ops.push(Op::add(rhs_widx, result_widx, lhs_widx));
+                    }
                     expr_to_widx.insert(expr_id, result_widx);
                 }
                 Expr::Mul { lhs, rhs } => {
@@ -460,11 +538,7 @@ where
                         get_witness_id(&expr_to_widx, *lhs, &format!("Mul lhs for {expr_id:?}"))?;
                     let b_widx =
                         get_witness_id(&expr_to_widx, *rhs, &format!("Mul rhs for {expr_id:?}"))?;
-                    ops.push(Op::Mul {
-                        a: a_widx,
-                        b: b_widx,
-                        out: out_widx,
-                    });
+                    ops.push(Op::mul(a_widx, b_widx, out_widx));
                     expr_to_widx.insert(expr_id, out_widx);
                 }
                 Expr::Div { lhs, rhs } => {
@@ -474,11 +548,7 @@ where
                         get_witness_id(&expr_to_widx, *lhs, &format!("Div lhs for {expr_id:?}"))?;
                     let a_widx =
                         get_witness_id(&expr_to_widx, *rhs, &format!("Div rhs for {expr_id:?}"))?;
-                    ops.push(Op::Mul {
-                        a: a_widx,
-                        b: b_widx,
-                        out: out_widx,
-                    });
+                    ops.push(Op::mul(a_widx, b_widx, out_widx));
                     // The output of Div is the b_widx.
                     expr_to_widx.insert(expr_id, b_widx);
                 }
@@ -581,6 +651,7 @@ mod tests {
     use p3_baby_bear::BabyBear;
 
     use super::*;
+    use crate::AluOpKind;
 
     /// Helper to create an expression graph with a zero constant pre-allocated.
     fn create_graph_with_zero() -> ExpressionGraph<BabyBear> {
@@ -690,8 +761,16 @@ mod tests {
 
         // Verify Primitives
         //
-        // Expected: 4 Const + 3 Public + 1 Add + 1 Mul + 1 Add (Sub) + 1 Mul (Div) = 11 total
-        assert_eq!(prims.len(), 11);
+        // Expected:
+        // - 4 Const from Pass A: zero, one, three, seven
+        // - 1 extra Const for the algebraic rewrite of `-7` in `Mul - Const`
+        // - 3 Public
+        // - 1 Add (sum)
+        // - 1 Mul
+        // - 1 Add (Sub lowered as forward add with -7)
+        // - 1 Mul (Div)
+        // => 12 total primitives
+        assert_eq!(prims.len(), 12);
 
         // Constants (Pass A): zero, one, three, seven
         match &prims[0] {
@@ -749,42 +828,76 @@ mod tests {
         // Arithmetic operations (Pass C): Add, Mul, Add (encoding Sub), Mul (encoding Div)
         // Add: sum = p0 + p1
         match &prims[7] {
-            Op::Add { a, b, out } => {
+            Op::Alu {
+                kind: AluOpKind::Add,
+                a,
+                b,
+                out,
+                ..
+            } => {
                 assert_eq!(*a, WitnessId(4)); // p0
                 assert_eq!(*b, WitnessId(5)); // p1
                 assert_eq!(out.0, 7); // sum
             }
-            _ => panic!("Expected Add at position 7"),
+            _ => panic!("Expected ALU Add at position 7"),
         }
 
         // Mul: prod = sum * c3
         match &prims[8] {
-            Op::Mul { a, b, out } => {
+            Op::Alu {
+                kind: AluOpKind::Mul,
+                a,
+                b,
+                out,
+                ..
+            } => {
                 assert_eq!(*a, WitnessId(7)); // sum
                 assert_eq!(*b, WitnessId(2)); // c_three
                 assert_eq!(out.0, 8); // prod
             }
-            _ => panic!("Expected Mul at position 8"),
+            _ => panic!("Expected ALU Mul at position 8"),
         }
 
-        // Sub encoded as Add: diff + c7 = prod
+        // Sub encoded as Add with algebraic rewrite:
+        // diff = prod - c7  ==>  diff = prod + (-c7)
+        //
+        // We insert:
+        // - an extra Const at position 9 for -7
+        // - a forward Add at position 10: prod + (-7) = diff
         match &prims[9] {
-            Op::Add { a, b, out } => {
-                assert_eq!(*a, WitnessId(3)); // c_seven (rhs)
-                assert_eq!(*b, WitnessId(9)); // diff (result)
-                assert_eq!(*out, WitnessId(8)); // prod (lhs)
+            Op::Const { out: _, val } => {
+                assert_eq!(*val, -BabyBear::from_u64(7));
             }
-            _ => panic!("Expected Add (Sub encoding) at position 9"),
+            _ => panic!("Expected Const(-7) at position 9"),
+        }
+
+        match &prims[10] {
+            Op::Alu {
+                kind: AluOpKind::Add,
+                a,
+                b: _,
+                out,
+                ..
+            } => {
+                assert_eq!(*a, WitnessId(8)); // prod (mul result)
+                assert_eq!(*out, WitnessId(9)); // diff (sub result)
+            }
+            _ => panic!("Expected ALU Add (Sub encoding) at position 10"),
         }
 
         // Div encoded as Mul: p2 * quot = diff
-        match &prims[10] {
-            Op::Mul { a, b, out } => {
+        match &prims[11] {
+            Op::Alu {
+                kind: AluOpKind::Mul,
+                a,
+                b: _,
+                out,
+                ..
+            } => {
                 assert_eq!(*a, WitnessId(6)); // p2 (divisor)
-                assert_eq!(*b, WitnessId(10)); // quot (result)
                 assert_eq!(*out, WitnessId(9)); // diff (dividend)
             }
-            _ => panic!("Expected Mul (Div encoding) at position 10"),
+            _ => panic!("Expected ALU Mul (Div encoding) at position 10"),
         }
 
         // Verify Public Rows
@@ -805,7 +918,7 @@ mod tests {
         assert_eq!(expr_map[&sum], WitnessId(7));
         assert_eq!(expr_map[&prod], WitnessId(8));
         assert_eq!(expr_map[&diff], WitnessId(9));
-        assert_eq!(expr_map[&quot], WitnessId(10));
+        assert_eq!(expr_map[&quot], WitnessId(11));
 
         // Verify Public Mapping
         assert_eq!(public_map.len(), 3);
@@ -814,7 +927,8 @@ mod tests {
         assert_eq!(public_map[&p2], WitnessId(6));
 
         // Verify Witness Count
-        assert_eq!(witness_count, 11);
+        // 4 Const + 1 extra Const(-7) + 3 Public + 1 Add + 1 Mul + 1 Add (Sub) + 1 Mul (Div) = 12
+        assert_eq!(witness_count, 12);
     }
 
     #[test]
@@ -931,7 +1045,13 @@ mod tests {
 
         // Add operation: sum = p0 + c1
         match &prims[9] {
-            Op::Add { a, b, out } => {
+            Op::Alu {
+                kind: AluOpKind::Add,
+                a,
+                b,
+                out,
+                ..
+            } => {
                 assert_eq!(*a, WitnessId(2)); // p0 (shares with c42)
                 assert_eq!(*b, WitnessId(1)); // c1
                 assert_eq!(*out, WitnessId(5)); // sum (shares with p4)

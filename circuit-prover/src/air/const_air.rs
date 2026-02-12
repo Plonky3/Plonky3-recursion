@@ -29,17 +29,15 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::marker::PhantomData;
 
-use p3_air::{
-    Air, AirBuilder, AirBuilderWithPublicValues, BaseAir, PairBuilder, PermutationAirBuilder,
-};
+use p3_air::{Air, AirBuilder, AirBuilderWithPublicValues, BaseAir, PermutationAirBuilder};
 use p3_circuit::tables::ConstTrace;
 use p3_field::{BasedVectorSpace, Field};
 use p3_lookup::lookup_traits::{Direction, Kind, Lookup};
-use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
-use p3_uni_stark::SymbolicAirBuilder;
 
-use crate::air::utils::get_index_lookups;
+use crate::air::utils::{
+    create_simple_preprocessed_trace, create_symbolic_variables, get_index_lookups,
+};
 
 /// ConstAir: vector-valued constant binding with generic extension degree D.
 ///
@@ -56,6 +54,8 @@ pub struct ConstAir<F, const D: usize = 1> {
     pub height: usize,
     /// Preprocessed values, corresponding to the indices in the trace.
     pub preprocessed: Vec<F>,
+    /// Minimum trace height (for FRI compatibility with higher log_final_poly_len).
+    pub min_height: usize,
     /// Marker tying this AIR to its base field.
     _phantom: PhantomData<F>,
 }
@@ -68,6 +68,7 @@ impl<F: Field, const D: usize> ConstAir<F, D> {
         Self {
             height,
             preprocessed: Vec::new(),
+            min_height: 1,
             _phantom: PhantomData,
         }
     }
@@ -76,8 +77,18 @@ impl<F: Field, const D: usize> ConstAir<F, D> {
         Self {
             height,
             preprocessed,
+            min_height: 1,
             _phantom: PhantomData,
         }
+    }
+
+    /// Set the minimum trace height for FRI compatibility.
+    ///
+    /// FRI requires: `log_trace_height > log_final_poly_len + log_blowup`
+    /// So `min_height` should be >= `2^(log_final_poly_len + log_blowup + 1)`.
+    pub const fn with_min_height(mut self, min_height: usize) -> Self {
+        self.min_height = min_height;
+        self
     }
 
     /// Number of preprocessed columns: multiplicity + index
@@ -90,6 +101,7 @@ impl<F: Field, const D: usize> ConstAir<F, D> {
     ///
     /// 1. Decomposing each extension element in the trace into `D` basis coordinates.
     /// 2. Padding the trace to have a power-of-two number of rows.
+    #[inline]
     pub fn trace_to_matrix<ExtF: BasedVectorSpace<F>>(
         trace: &ConstTrace<ExtF>,
     ) -> RowMajorMatrix<F> {
@@ -138,16 +150,11 @@ impl<F: Field, const D: usize> BaseAir<F> for ConstAir<F, D> {
     }
 
     fn preprocessed_trace(&self) -> Option<RowMajorMatrix<F>> {
-        let preprocessed_values = self
-            .preprocessed
-            .iter()
-            .flat_map(|v| [F::ONE, *v])
-            .collect::<Vec<F>>();
-
-        let mut mat = RowMajorMatrix::new(preprocessed_values, 2);
-        mat.pad_to_power_of_two_height(F::ZERO);
-
-        Some(mat)
+        Some(create_simple_preprocessed_trace(
+            &self.preprocessed,
+            Self::preprocessed_width(),
+            self.min_height,
+        ))
     }
 }
 
@@ -165,22 +172,14 @@ where
 
     fn get_lookups(&mut self) -> Vec<Lookup<<AB>::F>>
     where
-        AB: PermutationAirBuilder + AirBuilderWithPublicValues + PairBuilder,
+        AB: PermutationAirBuilder + AirBuilderWithPublicValues,
     {
-        // Create symbolic air builder to access symbolic variables
-        let symbolic_air_builder = SymbolicAirBuilder::<AB::F>::new(
+        let (symbolic_main_local, preprocessed_local) = create_symbolic_variables::<AB::F>(
             Self::preprocessed_width(),
             BaseAir::<AB::F>::width(self),
-            0,
             1,
             0,
         );
-
-        let symbolic_main = symbolic_air_builder.main();
-        let symbolic_main_local = symbolic_main.row_slice(0).unwrap();
-
-        let preprocessed = symbolic_air_builder.preprocessed();
-        let preprocessed_local = preprocessed.row_slice(0).unwrap();
 
         let lookup_inps = get_index_lookups::<AB, D>(
             0,

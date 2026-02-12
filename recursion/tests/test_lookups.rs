@@ -1,24 +1,38 @@
 mod common;
 
-use p3_batch_stark::CommonData;
-use p3_circuit::CircuitBuilder;
-use p3_circuit_prover::air::{AddAir, ConstAir, MulAir, PublicAir, WitnessAir};
+use p3_baby_bear::default_babybear_poseidon2_16;
+use p3_batch_stark::{CommonData, ProverData};
+use p3_circuit::op::PrimitiveOpType;
+use p3_circuit::ops::{Poseidon2PermCall, generate_poseidon2_trace};
+use p3_circuit::{CircuitBuilder, Poseidon2PermOps};
+use p3_circuit_prover::air::{AluAir, ConstAir, PublicAir, WitnessAir};
 use p3_circuit_prover::batch_stark_prover::PrimitiveTable;
-use p3_circuit_prover::common::get_airs_and_degrees_with_prep;
-use p3_circuit_prover::{BatchStarkProof, BatchStarkProver, TablePacking};
+use p3_circuit_prover::common::{NonPrimitiveConfig, get_airs_and_degrees_with_prep};
+use p3_circuit_prover::{
+    BatchStarkProof, BatchStarkProver, CircuitProverData, Poseidon2Config, TablePacking,
+};
 use p3_field::PrimeCharacteristicRing;
 use p3_fri::create_test_fri_params;
 use p3_lookup::logup::LogUpGadget;
 use p3_lookup::lookup_traits::LookupData;
+use p3_poseidon2_circuit_air::BabyBearD4Width16;
 use p3_recursion::generation::generate_batch_challenges;
 use p3_recursion::pcs::fri::{FriVerifierParams, HashTargets, InputProofTargets, RecValMmcs};
 use p3_recursion::verifier::{CircuitTablesAir, verify_p3_recursion_proof_circuit};
 use p3_recursion::{BatchStarkVerifierInputsBuilder, GenerationError, VerificationError};
-use rand::SeedableRng;
-use rand::rngs::SmallRng;
 const TRACE_D: usize = 1; // Proof traces are in base field
 
 use crate::common::baby_bear_params::*;
+
+fn setup_circuit_builder() -> CircuitBuilder<Challenge> {
+    let mut circuit_builder = CircuitBuilder::new();
+    let poseidon2_perm = default_babybear_poseidon2_16();
+    circuit_builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
+        generate_poseidon2_trace::<Challenge, BabyBearD4Width16>,
+        poseidon2_perm,
+    );
+    circuit_builder
+}
 
 // In this file, the circuits compute the following function.
 fn repeated_arith(a: usize, b: usize, x: usize, n: usize) -> usize {
@@ -33,27 +47,28 @@ fn repeated_arith(a: usize, b: usize, x: usize, n: usize) -> usize {
 fn test_arith_lookups() {
     let TestCircuitProofData {
         mut batch_stark_proof,
-        common,
+        circuit_prover_data,
         lookup_gadget,
         config,
         params,
         pis,
         prover,
     } = get_test_circuit_proof();
+    let common = circuit_prover_data.common_data();
 
     prover
-        .verify_all_tables(&batch_stark_proof, &common)
+        .verify_all_tables(&batch_stark_proof, common)
         .unwrap();
 
     // Build the recursive verification circuit
-    let mut circuit_builder = CircuitBuilder::new();
+    let mut circuit_builder = setup_circuit_builder();
 
-    let (verifier_inputs, all_challenges) = get_verifier_inputs_and_challenges(
+    let (verifier_inputs, _all_challenges) = get_verifier_inputs_and_challenges(
         &mut circuit_builder,
         &config,
         &params,
         &mut batch_stark_proof,
-        &common,
+        common,
         &pis,
         None,
         &lookup_gadget,
@@ -65,10 +80,9 @@ fn test_arith_lookups() {
 
     // Pack values using the builder
     let batch_proof = &batch_stark_proof.proof;
-    let public_inputs =
-        verifier_inputs
-            .unwrap()
-            .pack_values(&pis, batch_proof, &common, &all_challenges.unwrap());
+    let public_inputs = verifier_inputs
+        .unwrap()
+        .pack_values(&pis, batch_proof, common);
 
     assert_eq!(public_inputs.len(), expected_public_input_len);
     assert!(!public_inputs.is_empty());
@@ -87,16 +101,17 @@ fn test_wrong_multiplicities() {
     // Get a circuit that computes arithmetic operations.
     let builder = get_circuit(n);
 
-    let table_packing = TablePacking::new(1, 4, 6);
+    let table_packing = TablePacking::new(1, 4, 4);
 
     let config_proving = get_proving_config();
 
     let circuit = builder.build().unwrap();
-    let (airs_degrees, mut witness_multiplicities) =
+    let (airs_degrees, mut preprocessed_columns) =
         get_airs_and_degrees_with_prep::<MyConfig, _, 1>(&circuit, table_packing, None).unwrap();
 
     // Introduce an error in the witness multiplicities.
-    witness_multiplicities[PrimitiveTable::Add as usize] += F::ONE;
+    preprocessed_columns.primitive[PrimitiveOpType::Witness as usize]
+        [PrimitiveTable::Alu as usize] += F::ONE;
     let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
     let mut runner = circuit.runner();
 
@@ -116,25 +131,27 @@ fn test_wrong_multiplicities() {
 
     let traces = runner.run().unwrap();
 
-    // Create common data for proving and verifying.
-    let common = CommonData::from_airs_and_degrees(&config_proving, &mut airs, &degrees);
+    // Create prover data for proving and verifying.
+    let prover_data = ProverData::from_airs_and_degrees(&config_proving, &mut airs, &degrees);
+    let circuit_prover_data = CircuitProverData::new(prover_data, preprocessed_columns);
 
     let prover = BatchStarkProver::new(config_proving).with_table_packing(table_packing);
 
     // Prove the circuit.
     let lookup_gadget = LogUpGadget::new();
     let mut batch_stark_proof = prover
-        .prove_all_tables(&traces, &common, witness_multiplicities)
+        .prove_all_tables(&traces, &circuit_prover_data)
         .unwrap();
+    let common = circuit_prover_data.common_data();
 
     // Now verify the batch STARK proof recursively
     let (config, fri_verifier_params, pow_bits, log_height_max) = get_recursive_config_and_params();
 
     // Build the recursive verification circuit
-    let mut circuit_builder = CircuitBuilder::new();
+    let mut circuit_builder = setup_circuit_builder();
 
-    // Public values (empty for all 5 circuit tables, using base field)
-    let pis: Vec<Vec<F>> = vec![vec![]; 5];
+    // Public values (empty for all 4 circuit tables, using base field)
+    let pis: Vec<Vec<F>> = vec![vec![]; 4];
 
     // Attach verifier without manually building circuit_airs
     let params = Parameters {
@@ -142,12 +159,12 @@ fn test_wrong_multiplicities() {
         pow_bits,
         log_height_max,
     };
-    let (verifier_inputs, all_challenges) = get_verifier_inputs_and_challenges(
+    let (verifier_inputs, _all_challenges) = get_verifier_inputs_and_challenges(
         &mut circuit_builder,
         &config,
         &params,
         &mut batch_stark_proof,
-        &common,
+        common,
         &pis,
         None,
         &lookup_gadget,
@@ -159,10 +176,9 @@ fn test_wrong_multiplicities() {
 
     // Pack values using the builder
     let batch_proof = &batch_stark_proof.proof;
-    let public_inputs =
-        verifier_inputs
-            .unwrap()
-            .pack_values(&pis, batch_proof, &common, &all_challenges.unwrap());
+    let public_inputs = verifier_inputs
+        .unwrap()
+        .pack_values(&pis, batch_proof, common);
 
     assert_eq!(public_inputs.len(), expected_public_input_len);
     assert!(!public_inputs.is_empty());
@@ -181,30 +197,31 @@ fn test_wrong_multiplicities() {
 fn test_wrong_expected_cumulated() {
     let TestCircuitProofData {
         mut batch_stark_proof,
-        common,
+        circuit_prover_data,
         lookup_gadget,
         config,
         params,
         pis,
         ..
     } = get_test_circuit_proof();
+    let common = circuit_prover_data.common_data();
 
     // Introduce an error in the global expected cumulated values for the first lookup.
     // This leads to the sum of all expected cumulated values being off by 1,
     // which causes a WitnessConflict during recursive verification.
     batch_stark_proof.proof.global_lookup_data[0][0].expected_cumulated += F::ONE;
     // Introduce an error in the expected cumulated values for the first lookup.
-    assert!(batch_stark_proof.proof.global_lookup_data.len() == 5);
+    assert!(batch_stark_proof.proof.global_lookup_data.len() == 4);
 
     // Build the recursive verification circuit
-    let mut circuit_builder = CircuitBuilder::new();
+    let mut circuit_builder = setup_circuit_builder();
 
-    let (verifier_inputs, all_challenges) = get_verifier_inputs_and_challenges(
+    let (verifier_inputs, _all_challenges) = get_verifier_inputs_and_challenges(
         &mut circuit_builder,
         &config,
         &params,
         &mut batch_stark_proof,
-        &common,
+        common,
         &pis,
         None,
         &lookup_gadget,
@@ -215,12 +232,10 @@ fn test_wrong_expected_cumulated() {
     let expected_public_input_len = verification_circuit.public_flat_len;
 
     // Pack values using the builder
-    let public_inputs = verifier_inputs.unwrap().pack_values(
-        &pis,
-        &batch_stark_proof.proof,
-        &common,
-        &all_challenges.unwrap(),
-    );
+    let public_inputs =
+        verifier_inputs
+            .unwrap()
+            .pack_values(&pis, &batch_stark_proof.proof, common);
 
     assert_eq!(public_inputs.len(), expected_public_input_len);
     assert!(!public_inputs.is_empty());
@@ -240,22 +255,23 @@ fn test_wrong_expected_cumulated() {
 fn test_inconsistent_lookup_name() {
     let TestCircuitProofData {
         mut batch_stark_proof,
-        common,
+        circuit_prover_data,
         lookup_gadget,
         config,
         params,
         pis,
         ..
     } = get_test_circuit_proof();
+    let common = circuit_prover_data.common_data();
 
     let real_lookup_data = batch_stark_proof.proof.global_lookup_data.clone();
     // First, modify the first global lookup data's name.
-    assert!(real_lookup_data.len() == 5);
+    assert!(real_lookup_data.len() == 4);
     let mut fake_global_lookup_data = real_lookup_data.clone();
     fake_global_lookup_data[0][0].name = "ModifiedLookup".to_string();
 
     // Build the recursive verification circuit
-    let mut circuit_builder = CircuitBuilder::new();
+    let mut circuit_builder = setup_circuit_builder();
 
     // Attach verifier without manually building circuit_airs. Generation fails because of the fake lookup data.
     // First, only challenges use the fake lookup data.
@@ -264,7 +280,7 @@ fn test_inconsistent_lookup_name() {
         &config,
         &params,
         &mut batch_stark_proof,
-        &common,
+        common,
         &pis,
         Some(&fake_global_lookup_data),
         &lookup_gadget,
@@ -283,13 +299,13 @@ fn test_inconsistent_lookup_name() {
     // this leads to a `WitnessConflict` during recursive verification due to failed constraints.
     batch_stark_proof.proof.global_lookup_data = fake_global_lookup_data;
 
-    let mut circuit_builder = CircuitBuilder::new();
-    let (verifier_inputs, all_challenges) = get_verifier_inputs_and_challenges(
+    let mut circuit_builder = setup_circuit_builder();
+    let (verifier_inputs, _all_challenges) = get_verifier_inputs_and_challenges(
         &mut circuit_builder,
         &config,
         &params,
         &mut batch_stark_proof,
-        &common,
+        common,
         &pis,
         Some(real_lookup_data.as_slice()),
         &lookup_gadget,
@@ -300,12 +316,10 @@ fn test_inconsistent_lookup_name() {
     let expected_public_input_len = verification_circuit.public_flat_len;
 
     // Pack values using the builder
-    let public_inputs = verifier_inputs.unwrap().pack_values(
-        &pis,
-        &batch_stark_proof.proof,
-        &common,
-        &all_challenges.unwrap(),
-    );
+    let public_inputs =
+        verifier_inputs
+            .unwrap()
+            .pack_values(&pis, &batch_stark_proof.proof, common);
 
     assert_eq!(public_inputs.len(), expected_public_input_len);
     assert!(!public_inputs.is_empty());
@@ -324,27 +338,28 @@ fn test_inconsistent_lookup_name() {
 fn test_inconsistent_lookup_commitment_shape() {
     let TestCircuitProofData {
         mut batch_stark_proof,
-        common,
+        circuit_prover_data,
         lookup_gadget,
         config,
         params,
         pis,
         ..
     } = get_test_circuit_proof();
+    let common = circuit_prover_data.common_data();
 
     let real_lookup_data = batch_stark_proof.proof.global_lookup_data.clone();
     batch_stark_proof.proof.global_lookup_data = real_lookup_data;
     batch_stark_proof.proof.commitments.permutation = None;
 
     // Build the recursive verification circuit
-    let mut circuit_builder = CircuitBuilder::new();
+    let mut circuit_builder = setup_circuit_builder();
 
     let (verifier_inputs, _all_challenges) = get_verifier_inputs_and_challenges(
         &mut circuit_builder,
         &config,
         &params,
         &mut batch_stark_proof,
-        &common,
+        common,
         &pis,
         None,
         &lookup_gadget,
@@ -364,13 +379,14 @@ fn test_inconsistent_lookup_commitment_shape() {
 fn test_inconsistent_lookup_order_shape() {
     let TestCircuitProofData {
         mut batch_stark_proof,
-        common,
+        circuit_prover_data,
         lookup_gadget,
         config,
         params,
         pis,
         ..
     } = get_test_circuit_proof();
+    let common = circuit_prover_data.common_data();
 
     let real_lookup_data = batch_stark_proof.proof.global_lookup_data.clone();
     let mut fake_global_lookup_data = real_lookup_data.clone();
@@ -378,7 +394,7 @@ fn test_inconsistent_lookup_order_shape() {
     fake_global_lookup_data[3].swap(0, 1);
 
     // Build the recursive verification circuit
-    let mut circuit_builder = CircuitBuilder::new();
+    let mut circuit_builder = setup_circuit_builder();
 
     // First, only challenges use the fake lookup data.
     let (_verifier_inputs, all_challenges) = get_verifier_inputs_and_challenges(
@@ -386,7 +402,7 @@ fn test_inconsistent_lookup_order_shape() {
         &config,
         &params,
         &mut batch_stark_proof,
-        &common,
+        common,
         &pis,
         Some(&fake_global_lookup_data),
         &lookup_gadget,
@@ -403,13 +419,13 @@ fn test_inconsistent_lookup_order_shape() {
     // Second, only the verifier uses the fake lookup data.
     batch_stark_proof.proof.global_lookup_data = fake_global_lookup_data;
 
-    let mut circuit_builder = CircuitBuilder::new();
+    let mut circuit_builder = setup_circuit_builder();
     let _ = get_verifier_inputs_and_challenges(
         &mut circuit_builder,
         &config,
         &params,
         &mut batch_stark_proof,
-        &common,
+        common,
         &pis,
         Some(real_lookup_data.as_slice()),
         &lookup_gadget,
@@ -421,13 +437,14 @@ fn test_inconsistent_lookup_order_shape() {
 fn test_extra_global_lookup() {
     let TestCircuitProofData {
         mut batch_stark_proof,
-        common,
+        circuit_prover_data,
         lookup_gadget,
         config,
         params,
         pis,
         ..
     } = get_test_circuit_proof();
+    let common = circuit_prover_data.common_data();
 
     let real_lookup_data = batch_stark_proof.proof.global_lookup_data.clone();
     let fake_lookup = LookupData {
@@ -439,7 +456,7 @@ fn test_extra_global_lookup() {
     fake_global_lookup_data[0].push(fake_lookup);
 
     // Build the recursive verification circuit
-    let mut circuit_builder = CircuitBuilder::new();
+    let mut circuit_builder = setup_circuit_builder();
 
     // First, only challenges use the fake lookup data with an extra global lookup.
     let (_verifier_inputs, all_challenges) = get_verifier_inputs_and_challenges(
@@ -447,7 +464,7 @@ fn test_extra_global_lookup() {
         &config,
         &params,
         &mut batch_stark_proof,
-        &common,
+        common,
         &pis,
         Some(&fake_global_lookup_data),
         &lookup_gadget,
@@ -464,13 +481,13 @@ fn test_extra_global_lookup() {
     // Second, only the verifier uses the fake lookup data.
     batch_stark_proof.proof.global_lookup_data = fake_global_lookup_data;
 
-    let mut circuit_builder = CircuitBuilder::new();
+    let mut circuit_builder = setup_circuit_builder();
     let _ = get_verifier_inputs_and_challenges(
         &mut circuit_builder,
         &config,
         &params,
         &mut batch_stark_proof,
-        &common,
+        common,
         &pis,
         Some(real_lookup_data.as_slice()),
         &lookup_gadget,
@@ -482,13 +499,14 @@ fn test_extra_global_lookup() {
 fn test_missing_global_lookup() {
     let TestCircuitProofData {
         mut batch_stark_proof,
-        common,
+        circuit_prover_data,
         lookup_gadget,
         config,
         params,
         pis,
         ..
     } = get_test_circuit_proof();
+    let common = circuit_prover_data.common_data();
 
     let real_lookup_data = batch_stark_proof.proof.global_lookup_data.clone();
     let mut fake_global_lookup_data = real_lookup_data.clone();
@@ -496,7 +514,7 @@ fn test_missing_global_lookup() {
     fake_global_lookup_data[0].pop();
 
     // Build the recursive verification circuit
-    let mut circuit_builder = CircuitBuilder::new();
+    let mut circuit_builder = setup_circuit_builder();
 
     // First, only challenges use the fake lookup data with a missing global lookup.
     let (_verifier_inputs, all_challenges) = get_verifier_inputs_and_challenges(
@@ -504,7 +522,7 @@ fn test_missing_global_lookup() {
         &config,
         &params,
         &mut batch_stark_proof,
-        &common,
+        common,
         &pis,
         Some(&fake_global_lookup_data),
         &lookup_gadget,
@@ -521,13 +539,13 @@ fn test_missing_global_lookup() {
     // Second, only the verifier uses the fake lookup data.
     batch_stark_proof.proof.global_lookup_data = fake_global_lookup_data;
 
-    let mut circuit_builder = CircuitBuilder::new();
+    let mut circuit_builder = setup_circuit_builder();
     let (verifier_inputs, _all_challenges) = get_verifier_inputs_and_challenges(
         &mut circuit_builder,
         &config,
         &params,
         &mut batch_stark_proof,
-        &common,
+        common,
         &pis,
         Some(real_lookup_data.as_slice()),
         &lookup_gadget,
@@ -544,7 +562,7 @@ fn test_missing_global_lookup() {
 
 struct TestCircuitProofData {
     batch_stark_proof: BatchStarkProof<MyConfig>,
-    common: CommonData<MyConfig>,
+    circuit_prover_data: CircuitProverData<MyConfig>,
     lookup_gadget: LogUpGadget,
     config: MyConfig,
     params: Parameters,
@@ -558,12 +576,12 @@ fn get_test_circuit_proof() -> TestCircuitProofData {
     // Get a circuit that computes arithmetic operations.
     let builder = get_circuit(n);
 
-    let table_packing = TablePacking::new(1, 4, 6);
+    let table_packing = TablePacking::new(1, 4, 4);
 
     let config_proving = get_proving_config();
 
     let circuit = builder.build().unwrap();
-    let (airs_degrees, witness_multiplicities) =
+    let (airs_degrees, preprocessed_columns) =
         get_airs_and_degrees_with_prep::<MyConfig, _, 1>(&circuit, table_packing, None).unwrap();
 
     let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
@@ -585,13 +603,14 @@ fn get_test_circuit_proof() -> TestCircuitProofData {
 
     let traces = runner.run().unwrap();
 
-    // Create common data for proving and verifying.
-    let common = CommonData::from_airs_and_degrees(&config_proving, &mut airs, &degrees);
+    // Create prover data for proving and verifying.
+    let prover_data = ProverData::from_airs_and_degrees(&config_proving, &mut airs, &degrees);
+    let circuit_prover_data = CircuitProverData::new(prover_data, preprocessed_columns);
 
     let lookup_gadget = LogUpGadget::new();
     let prover = BatchStarkProver::new(config_proving).with_table_packing(table_packing);
     let batch_stark_proof = prover
-        .prove_all_tables(&traces, &common, witness_multiplicities)
+        .prove_all_tables(&traces, &circuit_prover_data)
         .unwrap();
 
     let (config, fri_verifier_params, pow_bits, log_height_max) = get_recursive_config_and_params();
@@ -600,11 +619,11 @@ fn get_test_circuit_proof() -> TestCircuitProofData {
         pow_bits,
         log_height_max,
     };
-    let pis = vec![vec![]; 5];
+    let pis = vec![vec![]; 4];
 
     TestCircuitProofData {
         batch_stark_proof,
-        common,
+        circuit_prover_data,
         lookup_gadget,
         config,
         params,
@@ -613,32 +632,28 @@ fn get_test_circuit_proof() -> TestCircuitProofData {
     }
 }
 
-// Returns the proving configration for the initial circuit.
+// Returns the proving configuration for the initial circuit.
+// Uses the default permutation to match the circuit's Fiat-Shamir challenger.
 fn get_proving_config() -> MyConfig {
-    // Use a seeded RNG for deterministic permutations
-    let mut rng = SmallRng::seed_from_u64(2026);
-    let perm = Perm::new_from_rng_128(&mut rng);
+    let perm = default_babybear_poseidon2_16();
     let hash = MyHash::new(perm.clone());
     let compress = MyCompress::new(perm.clone());
     let val_mmcs = ValMmcs::new(hash, compress);
     let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
     let dft = Dft::default();
 
-    // Create test FRI params with log_final_poly_len = 0
     let fri_params = create_test_fri_params(challenge_mmcs, 0);
 
-    // Create config for proving
     let pcs_proving = MyPcs::new(dft, val_mmcs, fri_params);
     let challenger_proving = Challenger::new(perm);
     MyConfig::new(pcs_proving, challenger_proving)
 }
 
 // Returns the configuration and FRI verifier params for recursive verification.
+// Uses the default permutation to match the circuit's Fiat-Shamir challenger.
 fn get_recursive_config_and_params() -> (MyConfig, FriVerifierParams, usize, usize) {
-    // Now verify the batch STARK proof recursively
     let dft2 = Dft::default();
-    let mut rng2 = SmallRng::seed_from_u64(2026);
-    let perm2 = Perm::new_from_rng_128(&mut rng2);
+    let perm2 = default_babybear_poseidon2_16();
     let hash2 = MyHash::new(perm2.clone());
     let compress2 = MyCompress::new(perm2.clone());
     let val_mmcs2 = ValMmcs::new(hash2, compress2);
@@ -694,14 +709,13 @@ fn get_verifier_inputs_and_challenges(
             packing.witness_lanes(),
         )),
         CircuitTablesAir::Const(ConstAir::<F, TRACE_D>::new(rows[PrimitiveTable::Const])),
-        CircuitTablesAir::Public(PublicAir::<F, TRACE_D>::new(rows[PrimitiveTable::Public])),
-        CircuitTablesAir::Add(AddAir::<F, TRACE_D>::new(
-            rows[PrimitiveTable::Add],
-            packing.add_lanes(),
+        CircuitTablesAir::Public(PublicAir::<F, TRACE_D>::new(
+            rows[PrimitiveTable::Public],
+            packing.public_lanes(),
         )),
-        CircuitTablesAir::Mul(MulAir::<F, TRACE_D>::new(
-            rows[PrimitiveTable::Mul],
-            packing.mul_lanes(),
+        CircuitTablesAir::Alu(AluAir::<F, TRACE_D>::new(
+            rows[PrimitiveTable::Alu],
+            packing.alu_lanes(),
         )),
     ];
 
@@ -712,6 +726,7 @@ fn get_verifier_inputs_and_challenges(
         InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>>,
         InnerFri,
         LogUpGadget,
+        WIDTH,
         RATE,
         TRACE_D,
     >(
@@ -721,7 +736,9 @@ fn get_verifier_inputs_and_challenges(
         &params.fri_verifier_params,
         common,
         lookup_gadget,
-    );
+        Poseidon2Config::BabyBearD4Width16,
+    )
+    .map(|(inputs, _mmcs_op_ids)| inputs);
 
     // If provided, override the global lookups in the proof used for challenge generation
     if let Some(global_lookups) = optional_global_lookups {
@@ -769,4 +786,211 @@ fn get_circuit(n: usize) -> CircuitBuilder<F> {
     builder.connect(y, expected_result);
 
     builder
+}
+
+/// Test Poseidon2 with input/output CTL lookups enabled.
+/// This is a minimal test to verify that CTL lookups work correctly
+/// with Poseidon2 operations, similar to how MMCS uses them.
+#[test]
+fn test_poseidon2_ctl_lookups() {
+    let mut builder: CircuitBuilder<Challenge> = CircuitBuilder::new();
+    let poseidon2_perm = default_babybear_poseidon2_16();
+    let poseidon2_config = Poseidon2Config::BabyBearD4Width16;
+    builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
+        generate_poseidon2_trace::<Challenge, BabyBearD4Width16>,
+        poseidon2_perm,
+    );
+
+    // Create public inputs that will also serve as witnesses for the Poseidon2 inputs
+    let input0 = builder.add_public_input();
+    let input1 = builder.add_public_input();
+
+    // Create a Poseidon2 operation with input CTL enabled for limbs 0 and 1
+    let (_op_id, outputs) = builder
+        .add_poseidon2_perm(Poseidon2PermCall {
+            config: poseidon2_config,
+            new_start: true,
+            merkle_path: false,
+            mmcs_bit: None,
+            inputs: [Some(input0), Some(input1), None, None],
+            out_ctl: [true, true], // Enable output CTL
+            return_all_outputs: false,
+            mmcs_index_sum: None,
+        })
+        .unwrap();
+
+    // The outputs should be witnesses that can be used
+    let output0 = outputs[0].unwrap();
+    let output1 = outputs[1].unwrap();
+
+    // Create another Poseidon2 operation that uses these outputs as inputs
+    let (_op_id2, _) = builder
+        .add_poseidon2_perm(Poseidon2PermCall {
+            config: poseidon2_config,
+            new_start: true,
+            merkle_path: false,
+            mmcs_bit: None,
+            inputs: [Some(output0), Some(output1), None, None],
+            out_ctl: [false, false],
+            return_all_outputs: false,
+            mmcs_index_sum: None,
+        })
+        .unwrap();
+
+    let table_packing = TablePacking::new(1, 1, 4);
+    let config_proving = get_proving_config();
+
+    let circuit = builder.build().unwrap();
+
+    let (airs_degrees, preprocessed_columns) = get_airs_and_degrees_with_prep::<MyConfig, _, 4>(
+        &circuit,
+        table_packing,
+        Some(&[NonPrimitiveConfig::Poseidon2(poseidon2_config)]),
+    )
+    .unwrap();
+
+    let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
+    let mut runner = circuit.runner();
+
+    // Set the public inputs
+    let input_val0 = Challenge::from_u32(12345);
+    let input_val1 = Challenge::from_u32(67890);
+    runner.set_public_inputs(&[input_val0, input_val1]).unwrap();
+
+    let traces = runner.run().unwrap();
+
+    let prover_data = ProverData::from_airs_and_degrees(&config_proving, &mut airs, &degrees);
+    let circuit_prover_data = CircuitProverData::new(prover_data, preprocessed_columns);
+
+    let common = circuit_prover_data.common_data();
+
+    let mut prover = BatchStarkProver::new(config_proving).with_table_packing(table_packing);
+    prover.register_poseidon2_table(poseidon2_config);
+
+    let proof = prover
+        .prove_all_tables(&traces, &circuit_prover_data)
+        .unwrap();
+
+    prover
+        .verify_all_tables(&proof, common)
+        .expect("Poseidon2 CTL lookup verification should succeed");
+}
+
+/// Test Poseidon2 with chained operations and CTL lookups.
+/// This tests a chain of Poseidon2 operations where:
+/// - First operation: CTL inputs from witness
+/// - Middle operation: chained from previous (no explicit inputs)
+/// - Last operation: CTL outputs to witness
+#[test]
+fn test_poseidon2_chained_ctl_lookups() {
+    use p3_circuit::Poseidon2PermOps;
+    use p3_circuit::ops::Poseidon2PermCall;
+    use p3_poseidon2_circuit_air::BabyBearD4Width16;
+
+    let mut builder: CircuitBuilder<Challenge> = CircuitBuilder::new();
+    let poseidon2_perm = default_babybear_poseidon2_16();
+    let poseidon2_config = Poseidon2Config::BabyBearD4Width16;
+    builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
+        generate_poseidon2_trace::<Challenge, BabyBearD4Width16>,
+        poseidon2_perm,
+    );
+
+    // Create public inputs for the first operation's inputs
+    let input0 = builder.add_public_input();
+    let input1 = builder.add_public_input();
+
+    // First Poseidon2 operation: new_start=true, inputs from witness
+    let (_op_id, _outputs) = builder
+        .add_poseidon2_perm(Poseidon2PermCall {
+            config: poseidon2_config,
+            new_start: true,
+            merkle_path: false, // Sponge mode
+            mmcs_bit: None,
+            inputs: [Some(input0), Some(input1), None, None],
+            out_ctl: [false, false], // Not exposing outputs yet
+            return_all_outputs: false,
+            mmcs_index_sum: None,
+        })
+        .unwrap();
+
+    // Second Poseidon2 operation: new_start=false, chained from first
+    let (_op_id2, _outputs2) = builder
+        .add_poseidon2_perm(Poseidon2PermCall {
+            config: poseidon2_config,
+            new_start: false, // Chained
+            merkle_path: false,
+            mmcs_bit: None,
+            inputs: [None, None, None, None], // Chained from previous output
+            out_ctl: [false, false],
+            return_all_outputs: false,
+            mmcs_index_sum: None,
+        })
+        .unwrap();
+
+    // Third Poseidon2 operation: new_start=false, chained, with output CTL
+    let (_op_id3, outputs3) = builder
+        .add_poseidon2_perm(Poseidon2PermCall {
+            config: poseidon2_config,
+            new_start: false,
+            merkle_path: false,
+            mmcs_bit: None,
+            inputs: [None, None, None, None],
+            out_ctl: [true, true], // Expose outputs via CTL
+            return_all_outputs: false,
+            mmcs_index_sum: None,
+        })
+        .unwrap();
+
+    // Fourth operation: new_start=true to signal end of previous chain
+    // This operation uses the exposed outputs from op3 as inputs
+    let (_op_id4, _) = builder
+        .add_poseidon2_perm(Poseidon2PermCall {
+            config: poseidon2_config,
+            new_start: true,
+            merkle_path: false,
+            mmcs_bit: None,
+            inputs: [outputs3[0], outputs3[1], None, None],
+            out_ctl: [false, false],
+            return_all_outputs: false,
+            mmcs_index_sum: None,
+        })
+        .unwrap();
+
+    let table_packing = TablePacking::new(1, 1, 4);
+    let config_proving = get_proving_config();
+
+    let circuit = builder.build().unwrap();
+
+    let (airs_degrees, preprocessed_columns) = get_airs_and_degrees_with_prep::<MyConfig, _, 4>(
+        &circuit,
+        table_packing,
+        Some(&[NonPrimitiveConfig::Poseidon2(poseidon2_config)]),
+    )
+    .unwrap();
+
+    let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
+    let mut runner = circuit.runner();
+
+    // Set the public inputs
+    let input_val0 = Challenge::from_u32(111);
+    let input_val1 = Challenge::from_u32(222);
+    runner.set_public_inputs(&[input_val0, input_val1]).unwrap();
+
+    let traces = runner.run().unwrap();
+
+    let prover_data = ProverData::from_airs_and_degrees(&config_proving, &mut airs, &degrees);
+    let circuit_prover_data = CircuitProverData::new(prover_data, preprocessed_columns);
+
+    let common = circuit_prover_data.common_data();
+
+    let mut prover = BatchStarkProver::new(config_proving).with_table_packing(table_packing);
+    prover.register_poseidon2_table(poseidon2_config);
+
+    let proof = prover
+        .prove_all_tables(&traces, &circuit_prover_data)
+        .unwrap();
+
+    prover
+        .verify_all_tables(&proof, common)
+        .expect("Chained Poseidon2 CTL lookup verification should succeed");
 }
