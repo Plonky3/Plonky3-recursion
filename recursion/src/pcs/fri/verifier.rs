@@ -1319,9 +1319,7 @@ where
                 });
             }
 
-            let scope_name = format!("fri_fold_chain_no_mmcs query_{q}");
-            builder.push_scope(&scope_name);
-
+            builder.push_scope("fri_fold_chain_no_mmcs query");
             let folded_eval = fold_chain_circuit::<F, EF>(
                 builder,
                 initial_folded_eval,
