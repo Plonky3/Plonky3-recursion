@@ -1,6 +1,6 @@
 #![no_std]
 extern crate alloc;
-#[cfg(debug_assertions)]
+#[cfg(feature = "debugging")]
 pub mod alloc_entry;
 
 pub mod builder;
@@ -16,7 +16,7 @@ pub mod types;
 pub mod utils;
 
 // Re-export public API
-#[cfg(debug_assertions)]
+#[cfg(feature = "debugging")]
 pub use alloc_entry::{AllocationEntry, AllocationType, dump_expr_ids};
 pub use builder::{CircuitBuilder, CircuitBuilderError};
 pub use circuit::{Circuit, CircuitField, PreprocessedColumns};

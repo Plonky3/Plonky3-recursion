@@ -55,5 +55,9 @@ tracing-subscriber = { workspace = true, features = ["std", "env-filter"] }
 name = "runner_traces"
 harness = false
 
+[features]
+debugging = []
+profiling = ["debugging"]
+
 [lints]
 workspace = true

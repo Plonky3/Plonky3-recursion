@@ -136,7 +136,7 @@ impl TraceLengths {
             "Primitive trace lengths"
         );
         for (op, rows) in &self.non_primitive {
-            tracing::info!(?op, rows, "Non-primitive trace");
+            tracing::info!(?op, rows, "Non-primitive trace length");
         }
     }
 }

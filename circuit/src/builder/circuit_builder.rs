@@ -11,6 +11,8 @@ use itertools::zip_eq;
 use p3_field::{ExtensionField, Field, PrimeCharacteristicRing, PrimeField64};
 use p3_symmetric::Permutation;
 
+#[cfg(feature = "profiling")]
+use super::OpCounts;
 use super::compiler::{ExpressionLowerer, Optimizer};
 use super::{BuilderConfig, ExpressionBuilder, PublicInputTracker};
 use crate::circuit::Circuit;
@@ -539,26 +541,26 @@ where
     /// All subsequent allocations will be tagged with this scope until
     /// `pop_scope` is called. Scopes can be nested.
     ///
-    /// If debug_assertions are not enabled, this is a no-op.
+    /// If the `debugging` feature is not enabled, this is a no-op.
     #[allow(unused_variables)]
     #[allow(clippy::missing_const_for_fn)]
     pub fn push_scope(&mut self, scope: &'static str) {
-        #[cfg(debug_assertions)]
+        #[cfg(feature = "debugging")]
         self.expr_builder.push_scope(scope);
     }
 
     /// Pops the current scope from the scope stack.
     ///
-    /// If debug_assertions are not enabled, this is a no-op.
+    /// If the `debugging` feature is not enabled, this is a no-op.
     #[allow(clippy::missing_const_for_fn)]
     pub fn pop_scope(&mut self) {
-        #[cfg(debug_assertions)]
+        #[cfg(feature = "debugging")]
         self.expr_builder.pop_scope();
     }
 
     /// Dumps the allocation log for specific `ExprId`s.
     ///
-    /// If debug_assertions are not enabled, this is a no-op.
+    /// If the `debugging` feature is not enabled, this is a no-op.
     #[allow(clippy::missing_const_for_fn)]
     pub fn dump_expr_ids(&self, expr_ids: &[ExprId]) {
         self.expr_builder.dump_expr_ids(expr_ids);
@@ -574,10 +576,47 @@ where
 
     /// Lists all unique scopes in the allocation log.
     ///
-    /// Returns an empty vector if debug_assertions are not enabled.
+    /// Returns an empty vector if the `debugging` feature is not enabled.
     #[allow(clippy::missing_const_for_fn)]
     pub fn list_scopes(&self) -> Vec<&'static str> {
         self.expr_builder.list_scopes()
+    }
+
+    /// Returns global operation counts collected during circuit construction when profiling is enabled.
+    ///
+    /// When the `profiling` feature is disabled, this method is not compiled.
+    #[cfg(feature = "profiling")]
+    pub const fn global_op_counts(&self) -> &OpCounts {
+        let (global, _) = self.expr_builder.profiling_counts();
+        global
+    }
+
+    /// Returns per-scope operation counts collected during circuit construction when profiling is enabled.
+    ///
+    /// The returned map is keyed by the scope names passed to `push_scope`.
+    /// When the `profiling` feature is disabled, this method is not compiled.
+    #[cfg(feature = "profiling")]
+    pub const fn scope_op_counts(&self) -> &HashMap<&'static str, OpCounts> {
+        let (_, per_scope) = self.expr_builder.profiling_counts();
+        per_scope
+    }
+
+    /// Convenience method returning both global and per-scope profiling information.
+    ///
+    /// This wraps `global_op_counts` and `scope_op_counts` into a single call.
+    ///
+    /// When the `profiling` feature is disabled, this is a no-op.
+    #[allow(clippy::missing_const_for_fn)]
+    pub fn profile(&self) {
+        #[cfg(feature = "profiling")]
+        {
+            let (global, per_scope) = self.expr_builder.profiling_counts();
+
+            tracing::info!("[PROFILING] global: {:?}", global);
+            for (scope, counts) in per_scope.iter() {
+                tracing::info!("[PROFILING] scope: {:?}, counts: {:?}", scope, counts);
+            }
+        }
     }
 
     /// Tags an expression for value lookup via `Traces::probe()` later on during
@@ -640,6 +679,8 @@ where
     /// Builds the circuit into a Circuit with separate lowering and IR transformation stages.
     /// Returns an error if lowering fails due to an internal inconsistency.
     pub fn build(self) -> Result<Circuit<F>, CircuitBuilderError> {
+        self.profile();
+
         let (circuit, _) = self.build_with_public_mapping()?;
         Ok(circuit)
     }

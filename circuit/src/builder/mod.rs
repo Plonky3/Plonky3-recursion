@@ -11,4 +11,6 @@ pub use circuit_builder::{CircuitBuilder, NonPrimitiveOpParams, NonPrimitiveOper
 pub use config::BuilderConfig;
 pub use errors::CircuitBuilderError;
 pub use expression_builder::ExpressionBuilder;
+#[cfg(feature = "profiling")]
+pub use expression_builder::OpCounts;
 pub use public_input_tracker::PublicInputTracker;
