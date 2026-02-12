@@ -51,13 +51,13 @@ rand.workspace = true
 tracing-forest = { workspace = true, features = ["ansi", "smallvec"] }
 tracing-subscriber = { workspace = true, features = ["std", "env-filter"] }
 
-[[bench]]
-name = "runner_traces"
-harness = false
-
 [features]
 debugging = []
 profiling = ["debugging"]
+
+[[bench]]
+name = "runner_traces"
+harness = false
 
 [lints]
 workspace = true
