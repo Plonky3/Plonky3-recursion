@@ -45,6 +45,9 @@ where
         })
         .collect();
 
+    // Lift basis elements to circuit constants once and reuse across all chunks.
+    let basis_consts: Vec<Target> = basis.iter().map(|b| builder.add_const(*b)).collect();
+
     // Add a zero constant for padding partial chunks
     let zero = builder.add_const(EF::ZERO);
 
@@ -56,8 +59,7 @@ where
             let mut packed = chunk[0];
             for j in 1..d {
                 let val = if j < chunk.len() { chunk[j] } else { zero };
-                let basis_const = builder.add_const(basis[j]);
-                let term = builder.mul(val, basis_const);
+                let term = builder.mul(val, basis_consts[j]);
                 packed = builder.add(packed, term);
             }
             packed
@@ -173,6 +175,9 @@ fn one_hot_from_bits<EF: Field>(builder: &mut CircuitBuilder<EF>, bits: &[Target
         4 => one_hot_from_four_bits(builder, bits),
         _ => {
             let one = builder.add_const(EF::ONE);
+            // Precompute negations of bits once to avoid rebuilding `1 - bit` inside the inner loop for every index j.
+            let not_bits: Vec<Target> = bits.iter().map(|&bit| builder.sub(one, bit)).collect();
+
             let mut one_hot = Vec::with_capacity(arity);
             for j in 0..arity {
                 let mut product = one;
@@ -180,8 +185,7 @@ fn one_hot_from_bits<EF: Field>(builder: &mut CircuitBuilder<EF>, bits: &[Target
                     if (j >> k) & 1 == 1 {
                         product = builder.mul(product, bit);
                     } else {
-                        let not_bit = builder.sub(one, bit);
-                        product = builder.mul(product, not_bit);
+                        product = builder.mul(product, not_bits[k]);
                     }
                 }
                 one_hot.push(product);
@@ -263,27 +267,41 @@ where
     // Compute subgroup_start = g_big^{reverse_bits_len(parent_index, log_folded_height)}
     let g_big = F::two_adic_generator(log_folded_height + log_arity);
     let one = builder.add_const(EF::ONE);
-    let mut subgroup_start = one;
 
+    // Precompute all g_big powers once and lift to circuit constants
+    let g_big_pows: Vec<Target> = if log_folded_height > 0 {
+        iter::successors(Some(g_big), |&prev| Some(prev.square()))
+            .take(log_folded_height)
+            .map(|p| builder.add_const(EF::from(p)))
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    let mut subgroup_start = one;
     if log_folded_height > 0 {
         // Reversed bits: we take bits [parent_offset..parent_offset+log_folded_height] reversed
         for j in 0..log_folded_height {
             let bit = index_bits[parent_offset + log_folded_height - 1 - j];
-            let pow_val = g_big.exp_power_of_2(j);
-            let pow_const = builder.add_const(EF::from(pow_val));
-            let multiplier = builder.select(bit, pow_const, one);
+            let multiplier = builder.select(bit, g_big_pows[j], one);
             subgroup_start = builder.mul(subgroup_start, multiplier);
         }
     }
 
     // Compute xs[i] = subgroup_start * omega^{br(i)}
     let omega = F::two_adic_generator(log_arity);
+    // Precompute all omega^{br(i)} values once and lift to circuit constants
+    let omega_br_consts: Vec<Target> = (0..arity)
+        .map(|i| {
+            let br_i = p3_util::reverse_bits_len(i, log_arity);
+            let omega_br = omega.exp_u64(br_i as u64);
+            builder.add_const(EF::from(omega_br))
+        })
+        .collect();
+
     let mut xs = Vec::with_capacity(arity);
-    for i in 0..arity {
-        let br_i = p3_util::reverse_bits_len(i, log_arity);
-        let omega_br = omega.exp_u64(br_i as u64);
-        let omega_const = builder.add_const(EF::from(omega_br));
-        let xi = builder.mul(subgroup_start, omega_const);
+    for &omega_br_const in omega_br_consts.iter() {
+        let xi = builder.mul(subgroup_start, omega_br_const);
         xs.push(xi);
     }
 
@@ -395,21 +413,26 @@ where
     let denom_inv_consts = precompute_lagrange_denominator_inverses::<F, EF>(log_arity);
     debug_assert_eq!(denom_inv_consts.len(), arity);
 
+    // Pre-lift all denominator inverse constants once before the loop
+    let denom_inv_targets: Vec<Target> = denom_inv_consts
+        .iter()
+        .map(|&c| builder.add_const(c))
+        .collect();
+
     // result = sum_i ys[i] * L(z)/(z - xs[i]) * (1 / denom[i])
     // where 1/denom[i] = denom_inv_consts[i] * subgroup_start^{-(arity-1)}.
-    let mut result = builder.add_const(EF::ZERO);
+    let mut accumulator = builder.add_const(EF::ZERO);
     for i in 0..arity {
         let partial_num = builder.mul(l_z, inv_diffs[i]);
         let scaled_y = builder.mul(ys[i], partial_num);
 
-        let denom_inv_const = builder.add_const(denom_inv_consts[i]);
-        let tmp = builder.mul(scaled_y, denom_inv_const);
-        let term = builder.mul(tmp, inv_s_pow);
+        let term = builder.mul(scaled_y, denom_inv_targets[i]);
 
-        result = builder.add(result, term);
+        accumulator = builder.add(accumulator, term);
     }
 
-    result
+    // Apply the common factor subgroup_start^{-(arity-1)} once at the end.
+    builder.mul(accumulator, inv_s_pow)
 }
 
 /// Precompute and cache powers `beta^{2^k}` for all fold phases.
@@ -595,6 +618,9 @@ where
         .map(EF::from)
         .collect();
 
+    // Pre-lift all powers to circuit constants once
+    let pow_consts: Vec<Target> = pows.iter().map(|p| builder.add_const(*p)).collect();
+
     let one = builder.add_const(EF::ONE);
     let mut res = one;
 
@@ -603,8 +629,7 @@ where
 
     for j in 0..k {
         let bit = index_bits[parent_offset + k - 1 - j];
-        let pow_const = builder.add_const(pows[j]);
-        let diff = builder.sub(pow_const, one);
+        let diff = builder.sub(pow_consts[j], one);
         let diff_bit = builder.mul(diff, bit);
         let gate = builder.add(one, diff_bit);
         res = builder.mul(res, gate);

@@ -239,6 +239,12 @@ where
 
     // Phase 3: In-circuit combination
 
+    // Pre-lift all denominator constants once before the loop
+    let den_targets: Vec<_> = den_constants
+        .iter()
+        .map(|&c| circuit.add_const(c))
+        .collect();
+
     // For each chunk i, compute L_i(ζ) = [∏_j Z_j(ζ) / Z_i(ζ)] / den_i
     //
     // Cost: O(N) divisions (2 divisions per chunk)
@@ -254,7 +260,7 @@ where
             // Denominator: Pre-computed constant ∏_{j≠i} Z_j(g_i)
             //
             // Simply embed the constant into the circuit (no computation!)
-            let den = circuit.add_const(den_constants[i]);
+            let den = den_targets[i];
 
             // Final Lagrange coefficient: L_i(ζ) = numerator / denominator
             circuit.div(num, den)
