@@ -143,5 +143,8 @@ jobs:
       - name: Clippy
         run: cargo +stable clippy --all-targets -- -D warnings
 
+      - name: Clippy (all-features)
+        run: cargo +stable clippy --all-targets --all-features -- -D warnings
+
       - name: Format
         run: cargo +nightly fmt --all -- --check
