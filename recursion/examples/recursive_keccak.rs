@@ -18,7 +18,7 @@ use p3_challenger::DuplexChallenger;
 use p3_circuit::CircuitBuilder;
 use p3_circuit::ops::generate_poseidon2_trace;
 use p3_circuit_prover::common::{NonPrimitiveConfig, get_airs_and_degrees_with_prep};
-use p3_circuit_prover::{BatchStarkProof, BatchStarkProver, CircuitProverData, TablePacking};
+use p3_circuit_prover::{BatchStarkProver, CircuitProverData, TablePacking};
 use p3_commit::ExtensionMmcs;
 use p3_dft::Radix2DitParallel;
 use p3_field::Field;
@@ -33,7 +33,8 @@ use p3_recursion::{
     FriVerifierParams, Poseidon2Config, StarkVerifierInputsBuilder, verify_circuit,
 };
 use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
-use p3_uni_stark::{StarkConfig, StarkGenericConfig, prove, verify};
+use p3_uni_stark::{StarkConfig, prove, verify};
+use serde::Serialize;
 use tracing::info;
 use tracing_forest::ForestLayer;
 use tracing_forest::util::LevelFilter;
@@ -249,6 +250,7 @@ macro_rules! define_field_module {
                 let pis: Vec<F> = vec![];
 
                 let proof_0 = prove(&config_0, &keccak_air, trace, &pis);
+                report_proof_size(&proof_0);
 
                 verify(&config_0, &keccak_air, &proof_0, &pis)
                     .expect("Failed to verify Keccak proof natively");
@@ -492,9 +494,9 @@ define_field_module!(
 /// Serializes the given proof instance using postcard and prints the size in bytes.
 /// Panics if serialization fails.
 #[inline]
-pub fn report_proof_size<SC>(proof: &BatchStarkProof<SC>)
+pub fn report_proof_size<S>(proof: &S)
 where
-    SC: StarkGenericConfig,
+    S: Serialize,
 {
     let proof_bytes = postcard::to_allocvec(proof).expect("Failed to serialize proof");
     println!("Proof size: {} bytes", proof_bytes.len());
