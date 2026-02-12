@@ -1323,7 +1323,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(debug_assertions)]
+    #[cfg(feature = "debugging")]
     fn test_scope_operations() {
         let mut builder = CircuitBuilder::<BabyBear>::new();
         builder.push_scope("test_scope");
@@ -1334,7 +1334,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(debug_assertions))]
+    #[cfg(feature = "debugging")]
     fn test_list_scopes_release() {
         let builder = CircuitBuilder::<BabyBear>::new();
         assert!(builder.list_scopes().is_empty());
