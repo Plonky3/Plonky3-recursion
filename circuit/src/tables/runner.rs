@@ -186,6 +186,8 @@ impl<F: CircuitField> CircuitRunner<F> {
         let mut non_primitive_traces: HashMap<NonPrimitiveOpType, Box<dyn NonPrimitiveTrace<F>>> =
             HashMap::new();
         // Iterate over generators in deterministic order (sorted by key)
+        let _scope = tracing::debug_span!("generators").entered();
+
         let mut op_types: Vec<_> = self.circuit.non_primitive_trace_generators.keys().collect();
         op_types.sort();
         for op_type in op_types {
@@ -195,6 +197,7 @@ impl<F: CircuitField> CircuitRunner<F> {
                 non_primitive_traces.insert(trace_op_type, trace);
             }
         }
+        _scope.exit();
 
         Ok(Traces {
             witness_trace,
@@ -210,6 +213,7 @@ impl<F: CircuitField> CircuitRunner<F> {
     ///
     /// The circuit is already lowered into a valid execution order, so this function
     /// can blindly execute from index 0 to end.
+    #[instrument(skip_all, level = "debug")]
     pub fn execute_all(&mut self) -> Result<(), CircuitError> {
         for i in 0..self.circuit.ops.len() {
             let op = &self.circuit.ops[i];
