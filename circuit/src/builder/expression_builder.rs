@@ -698,12 +698,26 @@ where
     /// - `scope`: Human-readable scope name
     #[allow(unused_variables)]
     #[allow(clippy::missing_const_for_fn)]
-    pub fn push_scope(&mut self, scope: impl Into<String>) {
-        let scope = scope.into();
-        #[cfg(feature = "debugging")]
-        self.scope_stack.push(scope.clone());
-        #[cfg(feature = "profiling")]
-        self.profiling.scope_stack.push(scope);
+    pub fn push_scope(&mut self, scope: &str) {
+        #[cfg(any(feature = "debugging", feature = "profiling"))]
+        {
+            let scope = String::from(scope);
+            #[cfg(all(feature = "debugging", feature = "profiling"))]
+            {
+                // When both features are enabled, clone once and use for both
+                let scope_clone = scope.clone();
+                self.scope_stack.push(scope_clone);
+                self.profiling.scope_stack.push(scope);
+            }
+            #[cfg(all(feature = "debugging", not(feature = "profiling")))]
+            {
+                self.scope_stack.push(scope);
+            }
+            #[cfg(all(feature = "profiling", not(feature = "debugging")))]
+            {
+                self.profiling.scope_stack.push(scope);
+            }
+        }
     }
 
     /// Pops the current scope from the scope stack (debug builds only).

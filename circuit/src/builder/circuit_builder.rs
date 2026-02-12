@@ -543,7 +543,7 @@ where
     ///
     /// If the `debugging` feature is not enabled, this is a no-op.
     #[allow(warnings)]
-    pub fn push_scope(&mut self, scope: impl Into<String>) {
+    pub fn push_scope(&mut self, scope: &str) {
         #[cfg(feature = "debugging")]
         self.expr_builder.push_scope(scope);
     }
