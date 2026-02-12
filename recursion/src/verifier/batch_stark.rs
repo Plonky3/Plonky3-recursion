@@ -15,6 +15,7 @@ use p3_circuit::{CircuitBuilder, NonPrimitiveOpId};
 use p3_circuit_prover::air::{AluAir, ConstAir, PublicAir, WitnessAir};
 use p3_circuit_prover::batch_stark_prover::{PrimitiveTable, RowCounts};
 use p3_commit::{Pcs, PolynomialSpace};
+use p3_field::extension::BinomialExtensionField;
 use p3_field::{BasedVectorSpace, ExtensionField, Field, PrimeCharacteristicRing, PrimeField64};
 use p3_koala_bear::KoalaBear;
 use p3_lookup::lookup_traits::{Kind, Lookup, LookupData, LookupGadget};
@@ -210,7 +211,6 @@ where
             Self::Alu(a) => P3Air::<p3_uni_stark::SymbolicAirBuilder<F, EF>>::add_lookup_columns(a),
             Self::Poseidon2(p2) => match p2 {
                 Poseidon2VerifierAir::BabyBearD4Width16(a) => {
-                    use p3_field::extension::BinomialExtensionField;
                     type SAB = p3_uni_stark::SymbolicAirBuilder<
                         BabyBear,
                         BinomialExtensionField<BabyBear, 4>,
@@ -220,7 +220,6 @@ where
                     )
                 }
                 Poseidon2VerifierAir::BabyBearD4Width24(a) => {
-                    use p3_field::extension::BinomialExtensionField;
                     type SAB = p3_uni_stark::SymbolicAirBuilder<
                         BabyBear,
                         BinomialExtensionField<BabyBear, 4>,
@@ -230,7 +229,6 @@ where
                     )
                 }
                 Poseidon2VerifierAir::KoalaBearD4Width16(a) => {
-                    use p3_field::extension::BinomialExtensionField;
                     type SAB = p3_uni_stark::SymbolicAirBuilder<
                         KoalaBear,
                         BinomialExtensionField<KoalaBear, 4>,
@@ -240,7 +238,6 @@ where
                     )
                 }
                 Poseidon2VerifierAir::KoalaBearD4Width24(a) => {
-                    use p3_field::extension::BinomialExtensionField;
                     type SAB = p3_uni_stark::SymbolicAirBuilder<
                         KoalaBear,
                         BinomialExtensionField<KoalaBear, 4>,
@@ -269,7 +266,6 @@ where
             Self::Poseidon2(p2) => match p2 {
                 Poseidon2VerifierAir::BabyBearD4Width16(a) => unsafe {
                     assert_eq!(F::from_u64(BABY_BEAR_MODULUS), F::ZERO);
-                    use p3_field::extension::BinomialExtensionField;
                     type SAB = p3_uni_stark::SymbolicAirBuilder<
                         BabyBear,
                         BinomialExtensionField<BabyBear, 4>,
@@ -280,7 +276,6 @@ where
                 },
                 Poseidon2VerifierAir::BabyBearD4Width24(a) => unsafe {
                     assert_eq!(F::from_u64(BABY_BEAR_MODULUS), F::ZERO);
-                    use p3_field::extension::BinomialExtensionField;
                     type SAB = p3_uni_stark::SymbolicAirBuilder<
                         BabyBear,
                         BinomialExtensionField<BabyBear, 4>,
@@ -291,7 +286,6 @@ where
                 },
                 Poseidon2VerifierAir::KoalaBearD4Width16(a) => unsafe {
                     assert_eq!(F::from_u64(KOALA_BEAR_MODULUS), F::ZERO);
-                    use p3_field::extension::BinomialExtensionField;
                     type SAB = p3_uni_stark::SymbolicAirBuilder<
                         KoalaBear,
                         BinomialExtensionField<KoalaBear, 4>,
@@ -303,7 +297,6 @@ where
                 },
                 Poseidon2VerifierAir::KoalaBearD4Width24(a) => unsafe {
                     assert_eq!(F::from_u64(KOALA_BEAR_MODULUS), F::ZERO);
-                    use p3_field::extension::BinomialExtensionField;
                     type SAB = p3_uni_stark::SymbolicAirBuilder<
                         KoalaBear,
                         BinomialExtensionField<KoalaBear, 4>,

@@ -1042,8 +1042,6 @@ where
 
         match &self.inner {
             Poseidon2AirWrapperInner::BabyBearD4Width16(air) => unsafe {
-                use p3_batch_stark::DebugConstraintBuilderWithLookups;
-
                 eval_poseidon2_variant::<
                     SC,
                     BabyBear,
@@ -1067,8 +1065,6 @@ where
                 );
             },
             Poseidon2AirWrapperInner::BabyBearD4Width24(air) => unsafe {
-                use p3_batch_stark::DebugConstraintBuilderWithLookups;
-
                 eval_poseidon2_variant::<
                     SC,
                     BabyBear,
@@ -1115,8 +1111,6 @@ where
                 );
             },
             Poseidon2AirWrapperInner::KoalaBearD4Width24(air) => unsafe {
-                use p3_batch_stark::DebugConstraintBuilderWithLookups;
-
                 eval_poseidon2_variant::<
                     SC,
                     KoalaBear,
@@ -1145,8 +1139,6 @@ where
     fn add_lookup_columns(&mut self) -> Vec<usize> {
         match &mut self.inner {
             Poseidon2AirWrapperInner::BabyBearD4Width16(air) => {
-                use p3_batch_stark::DebugConstraintBuilderWithLookups;
-
                 let air_bb: &mut Poseidon2CircuitAirBabyBearD4Width16 = air.as_mut();
                 <Poseidon2CircuitAirBabyBearD4Width16 as Air<
                     DebugConstraintBuilderWithLookups<
@@ -1157,8 +1149,6 @@ where
                 >>::add_lookup_columns(air_bb)
             }
             Poseidon2AirWrapperInner::BabyBearD4Width24(air) => {
-                use p3_batch_stark::DebugConstraintBuilderWithLookups;
-
                 let air_bb: &mut Poseidon2CircuitAirBabyBearD4Width24 = air.as_mut();
                 <Poseidon2CircuitAirBabyBearD4Width24 as Air<
                     DebugConstraintBuilderWithLookups<
@@ -1169,8 +1159,6 @@ where
                 >>::add_lookup_columns(air_bb)
             }
             Poseidon2AirWrapperInner::KoalaBearD4Width16(air) => {
-                use p3_batch_stark::DebugConstraintBuilderWithLookups;
-
                 let air_kb: &mut Poseidon2CircuitAirKoalaBearD4Width16 = air.as_mut();
                 <Poseidon2CircuitAirKoalaBearD4Width16 as Air<
                     DebugConstraintBuilderWithLookups<
