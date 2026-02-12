@@ -18,7 +18,7 @@ use p3_challenger::DuplexChallenger;
 use p3_circuit::CircuitBuilder;
 use p3_circuit::ops::generate_poseidon2_trace;
 use p3_circuit_prover::common::{NonPrimitiveConfig, get_airs_and_degrees_with_prep};
-use p3_circuit_prover::{BatchStarkProver, CircuitProverData, TablePacking};
+use p3_circuit_prover::{BatchStarkProof, BatchStarkProver, CircuitProverData, TablePacking};
 use p3_commit::ExtensionMmcs;
 use p3_dft::Radix2DitParallel;
 use p3_field::Field;
@@ -33,7 +33,7 @@ use p3_recursion::{
     FriVerifierParams, Poseidon2Config, StarkVerifierInputsBuilder, verify_circuit,
 };
 use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
-use p3_uni_stark::{StarkConfig, prove, verify};
+use p3_uni_stark::{StarkConfig, StarkGenericConfig, prove, verify};
 use tracing::info;
 use tracing_forest::ForestLayer;
 use tracing_forest::util::LevelFilter;
@@ -349,6 +349,7 @@ macro_rules! define_field_module {
                     let proof_1 = prover_1
                         .prove_all_tables(&traces_1, &circuit_prover_data_1)
                         .expect("Failed to prove layer 1 circuit");
+                    report_proof_size(&proof_1);
 
                     prover_1
                         .verify_all_tables(&proof_1, common_1)
@@ -452,6 +453,7 @@ macro_rules! define_field_module {
                     let proof = prover
                         .prove_all_tables(&traces, &circuit_prover_data)
                         .expect(&format!("Failed to prove layer {layer} circuit"));
+                    report_proof_size(&proof);
 
                     prover
                         .verify_all_tables(&proof, common)
@@ -484,3 +486,16 @@ define_field_module!(
     Poseidon2Config::BabyBearD4Width16,
     p3_poseidon2_circuit_air::BabyBearD4Width16
 );
+
+/// Report the size of the serialized proof.
+///
+/// Serializes the given proof instance using postcard and prints the size in bytes.
+/// Panics if serialization fails.
+#[inline]
+pub fn report_proof_size<SC>(proof: &BatchStarkProof<SC>)
+where
+    SC: StarkGenericConfig,
+{
+    let proof_bytes = postcard::to_allocvec(proof).expect("Failed to serialize proof");
+    println!("Proof size: {} bytes", proof_bytes.len());
+}

@@ -9,6 +9,7 @@ use core::hash::Hash;
 
 use hashbrown::HashMap;
 use p3_field::{Field, PrimeCharacteristicRing};
+use serde::{Deserialize, Serialize};
 use strum_macros::EnumCount;
 
 use crate::ops::Poseidon2PermPrivateData;
@@ -282,7 +283,7 @@ impl<F: Field + PartialEq> PartialEq for Op<F> {
 }
 
 /// Non-primitive operation types.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd, Serialize, Deserialize)]
 pub enum NonPrimitiveOpType {
     /// Poseidon2 permutation operation (one Poseidon2 call / table row).
     Poseidon2Perm(Poseidon2Config),

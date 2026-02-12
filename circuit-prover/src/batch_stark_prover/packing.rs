@@ -5,6 +5,7 @@ use p3_circuit::tables::Traces;
 use p3_field::Field;
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
+use serde::{Deserialize, Serialize};
 
 /// Pad a trace matrix to at least `min_height` rows.
 /// The height is always rounded up to a power of two.
@@ -30,7 +31,7 @@ pub(crate) fn pad_matrix_to_min_height<F: Field>(
 }
 
 /// Configuration for packing multiple primitive operations into a single AIR row.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TablePacking {
     witness_lanes: usize,
     public_lanes: usize,

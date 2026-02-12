@@ -30,6 +30,7 @@ use core::any::Any;
 use core::fmt::Debug;
 
 use p3_field::{ExtensionField, Field, PrimeCharacteristicRing, PrimeField};
+use serde::{Deserialize, Serialize};
 
 use crate::builder::{CircuitBuilder, NonPrimitiveOpParams};
 use crate::circuit::CircuitField;
@@ -46,7 +47,7 @@ use crate::{CircuitError, PreprocessedColumns};
 // ============================================================================
 
 /// Poseidon2 configuration used as a stable operation key and parameter source.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd, Serialize, Deserialize)]
 pub enum Poseidon2Config {
     /// BabyBear with extension degree D=1 (base field challenges), width 16.
     BabyBearD1Width16,

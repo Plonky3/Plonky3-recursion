@@ -19,6 +19,7 @@ use p3_lookup::folder::{ProverConstraintFolderWithLookups, VerifierConstraintFol
 use p3_lookup::lookup_traits::Lookup;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_uni_stark::{SymbolicAirBuilder, SymbolicExpression};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tracing::instrument;
 
@@ -47,6 +48,8 @@ pub const KOALA_BEAR_MODULUS: u64 = 0x7f00_0001;
 /// per batch instance. The entry is stored inside a `BatchStarkProof` and later provided
 /// back to the plugin during verification through
 /// [`TableProver::batch_air_from_table_entry`].
+#[derive(Serialize, Deserialize)]
+#[serde(bound = "")]
 pub struct NonPrimitiveTableEntry<SC>
 where
     SC: StarkGenericConfig,
@@ -192,7 +195,7 @@ pub type PrimitiveTable = PrimitiveOpType;
 pub const NUM_PRIMITIVE_TABLES: usize = PrimitiveTable::Alu as usize + 1;
 
 /// Row counts wrapper with type-safe indexing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RowCounts([usize; NUM_PRIMITIVE_TABLES]);
 
 impl RowCounts {
@@ -228,6 +231,8 @@ impl From<[usize; NUM_PRIMITIVE_TABLES]> for RowCounts {
 }
 
 /// Proof bundle and metadata for the unified batch STARK proof across all circuit tables.
+#[derive(Serialize, Deserialize)]
+#[serde(bound = "")]
 pub struct BatchStarkProof<SC>
 where
     SC: StarkGenericConfig,
