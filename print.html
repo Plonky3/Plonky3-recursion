@@ -797,9 +797,54 @@ feature to evaluate AIR constraints, available in debug mode.
 This ensures that all constraints are properly satisfied before proceeding to the next proving phases.</p>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="benchmarks"><a class="header" href="#benchmarks">Benchmarks</a></h1>
-<p>This section will present empirical performance results for the Plonky3 recursion system,
-including instructions for reproducibility across target machines.</p>
-<p><em>To be filled soon.</em></p>
+<p>This section presents empirical performance results for the Plonky3 recursion system, including instructions for reproducibility across target machines.</p>
+<p><strong>NOTE</strong>: This library is still at an early stage, parameters have not been finely tuned yet, and as such performance results here may not reflect the full potential of the library.</p>
+<h2 id="setup"><a class="header" href="#setup">Setup</a></h2>
+<p>The two reference examples are a Plonky3 uni-stark proof of the Keccak AIR imported directly and a Plonky3 batch-stark proof of the Fibonacci sequence, generated with the <code>CircuitBuilder</code> of this library.</p>
+<ul>
+<li>Keccak example: set number of hashes with <code>-n</code> argument</li>
+</ul>
+<pre><code class="language-bash">RUSTFLAGS=-Ctarget-cpu=native RUSTFLAGS=-Copt-level=3 RUST_LOG=info cargo run --release \
+    --example recursive_keccak --features parallel -- -n 2500 
+</code></pre>
+<ul>
+<li>Fibonacci example: set element index in the sequence with <code>-n</code> argument</li>
+</ul>
+<pre><code class="language-bash">RUSTFLAGS=-Ctarget-cpu=native RUSTFLAGS=-Copt-level=3 RUST_LOG=info cargo run --release \
+    --example recursive_fibonacci --features parallel -- -n 10000
+</code></pre>
+<h3 id="parameterization"><a class="header" href="#parameterization">Parameterization</a></h3>
+<p>Each example supports additional parameterization around the FRI parameters, namely:</p>
+<ul>
+<li><code>--log-blowup</code>: logarithmic blowup factor for the LDE. Default 3.</li>
+<li><code>--max-log-arity</code>: maximum arity allowed during the FRI folding phases. Default 4.</li>
+<li><code>--log-final-poly-len</code>: logarithmic size (or degree) allowed for the final polynomial after folding. Default 5.</li>
+<li><code>--commit-pow-bits</code>: additional PoW grinding during the FRI commit phase. Default 0.</li>
+<li><code>--query-pow-bits</code>: additional PoW grinding during the FRI query phase. Default 16.</li>
+<li><code>--num-recursive-layers</code>: number of recursive proofs to be generated in a chain, starting from the base proof (Keccak or Fibonacci). Default 3.</li>
+</ul>
+<h2 id="results"><a class="header" href="#results">Results</a></h2>
+<p>Running on a Apple M4 pro, 14 Cores, with <strong>KoalaBear</strong> field and extension of <strong>degree 4</strong>, using default parameters mentioned above, performance benchmarks are as follows:</p>
+<ul>
+<li>
+<p><strong>Keccak AIR program:</strong> (1,000 hashes)</p>
+<ul>
+<li>Base uni-stark proof: 2.71 s</li>
+<li>1st recursion layer: 1.75 s</li>
+<li>2nd recursion layer: 858 ms</li>
+<li>3rd recursion layer: 807 ms</li>
+</ul>
+</li>
+<li>
+<p><strong>Fibonacci multi-AIR program:</strong> (10,000th element)</p>
+<ul>
+<li>Base uni-stark proof: 83.9 ms</li>
+<li>1st recursion layer: 486 ms</li>
+<li>2nd recursion layer: 766 ms</li>
+<li>3rd recursion layer: 713 ms</li>
+</ul>
+</li>
+</ul>
 
                     </main>
 
