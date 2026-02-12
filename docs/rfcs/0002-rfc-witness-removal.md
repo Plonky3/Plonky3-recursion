@@ -9,7 +9,7 @@
 - **Tracking issue:** #103
 
 ## 1. Summary
-The Witness table is very long and could potentially blow up easily. Moreover, it only supports extension field elements, which is a problem for verifying uni-stark proofs.
+The Witness table is very long and could potentially blow up easily. For example, recursion gives with default packing a Witness table length of 2^19 after padding (around 420k/440k rows unpadded) with the second largest (MUL) is below 200k unpadded. Moreover, it only supports extension field elements, which makes verifying uni-stark proofs more complex.
 
 This RFC proposes a way to remove the Witness table without impacting soundness. It also suggests a way of supporting base field elements for the permutation table without impacting performance too much.
 
@@ -18,7 +18,7 @@ We currently have two issues with the design of the Witness table.
 
 The first is a performance issue related to the size of the Witness table. The latter could easily become very long and already takes the most time to prove. Moreover, its only goal is to ensure that values are not overwritten. While this is a critical soundness point, it could be ensured in other ways, as this RFC shows.
 
-The second is that the Witness table only supports extension field elements. On the other hand, the uni-stark challenger observes and retrieves base field elements. The current design therefore makes it impossible to correctly reproduce the behaviour of the uni-stark verifier. We could easily add 3 global lookups to the Witness table, but it would lead to at least 3 more columns for the multiplicities (and, for degree reasons, we would also have extra lookup polynomials). Since, as mentioned in the previous paragraph, the Witness table is currently very heavy, I do not think it would be advisable to implement this approach for extension field support. If we get rid of the Witness table, the impact of supporting extension field elements becomes lighter.
+The second is that the Witness table only supports extension field elements. On the other hand, the uni-stark challenger observes and retrieves base field elements. The current design therefore makes it harder to reproduce the behaviour of the uni-stark verifier: the challenger needs to decompose some `Target`s into multiple base field ones, as well as recompose extension field `Target`s from multiple base field ones. This adds even more rows to the already long Witness table. We could easily add 3 global lookups to the Witness table, but it would lead to at least 3 more columns for the multiplicities (and, for degree reasons, we would also have extra lookup polynomials). Since, as mentioned in the previous paragraph, the Witness table is currently very heavy, I do not think it would be advisable to implement this approach. If we get rid of the Witness table, the impact of supporting extension field elements becomes lighter.
 
 ## 3. Goals and non-goals
 **Goals**
@@ -38,24 +38,24 @@ To replace this pivotal role, I propose to keep the notion of witness indices an
 - If we encounter an index for the first time (in any table), its multiplicity is positive.
 - If we have already encountered the index (in any table), then its multiplicity is negative.
 
-This way, all values pairs (index, value) are "reading" from the same location (the one with positive multiplicity).
+This way, all value pairs (index, value) are "reading" from the same location (the one with positive multiplicity).
 
 As a special case, `Public` and `Constant` always have positive multiplicities.
 
 Overall, the changes, in the various tables, required to remove `Witness` are as follows:
 - `Public` and `Constant`: nothing changes, except the way multiplicities are computed.
-- `Add` and `Mul`: each operation element now need its own multiplicity column (the multiplicity cannot be shared by the inputs and output). So this amounts to two extra preprocessed columns.
+- `Add` and `Mul`: each operation element now needs its own multiplicity column (the multiplicity cannot be shared by the inputs and output). So this amounts to two extra preprocessed columns.
 - `Poseidon2Circuit`: We can use `in_ctl` and `out_ctl` to store the actual multiplicities (they would no longer just be flags). No other change would be necessary.
 
 Now, let us describe how we can support extension field elements. As mentioned above, only hashing requires some base field elements.
 
 For hashing, `Poseidon2CircuitAir` receives (at most 4 extension field) inputs from among the public values or constant values. And it creates new outputs (2 extension field elements).
 
-The permutation table can get its inputs from the `Public` or `Constant` table. Since the challenger can observe base field values, `Public` and `Constant` either need to support both base field and extension field elements or only base field elements. The problem with the latter is that it would force `Add` and `Mul` to have 3 more CTLs per limb (and therefore 9 more permutation columns each). As `Public` and `Constant` should generally be shorter than `Add` and `Mul`, I believe it would be better for `Public` and `Const` to support both base field and extension field elements. `Add` and `Mul` can the remain unchanged -- with the exception of added multiplicities. I will explain later how this would work. 
+The permutation table can get its inputs from the `Public` or `Constant` table. Since the challenger can observe base field values, `Public` and `Constant` either need to support both base field and extension field elements or only base field elements. The problem with the latter is that it would force `Add` and `Mul` to have 3 more CTLs per limb (and therefore 9 more permutation columns each). As `Public` and `Constant` should generally be shorter than `Add` and `Mul`, I believe it would be better for `Public` and `Const` to support both base field and extension field elements. `Add` and `Mul` can remain unchanged -- with the exception of added multiplicities. I will explain later how this would work. 
 
 #### Permutation table
 For permutation inputs:
-- Since the base field input limbs are not necessarily contiguous, we need to have an index column for each limb. We would also need a CTL for each base field limb. Thus, we would need to have 12 extra index columns and 12 extra multiplicity colmns (note that we can use `in_ctl` to store the multiplicity of the first base field element).
+- Since the base field input limbs are not necessarily contiguous, we need to have an index column for each limb. We would also need a CTL for each base field limb. Thus, we would need to have 12 extra index columns and 12 extra multiplicity columns (note that we can use `in_ctl` to store the multiplicity of the first base field element).
 - For each base field input element, we send `(index, base_element)` with multiplicity -1. Since the hasher is reading from either the public inputs or the constant values, `(index, base_element)` is stored in one of the two tables, and we can update its multiplicity there as well.
 
 For permutation outputs:
@@ -71,14 +71,14 @@ Thus, we have 4 extra logup columns and 4 extra preprocessed multiplicity column
 We might be able to pack some base field values together in the two tables, but it is not necessary in this first step.
 
 #### Add and Mul tables
-The non-reprocessed columns also remain unchanged here. Once again, we can assume that the base field elements pertaining to the same extension field are contiguous and we can use the index of the first element to deduce the rest. If we want to reconstruct an extension field element using the permutation base field outputs, we can directly use the created `(index, base_field, 0, ...)` values for that. 
+The non-preprocessed columns also remain unchanged here. Once again, we can assume that the base field elements pertaining to the same extension field are contiguous and we can use the index of the first element to deduce the rest. If we want to reconstruct an extension field element using the permutation base field outputs, we can directly use the created `(index, base_field, 0, ...)` values for that. 
 
 However, we need some additional preprocessed multiplicities for `Add`. Indeed, the outputs of additions, multiplications or subtractions are generally a new index that needs to be stored. For `Mul`, it just means that we have to set the output multiplicity to -1 for non padding rows (and so we can still use the current multiplicity column). But for `Add`, the output can be either in the second operand or in the output (depending on whether the operation is an addition or a subtraction). We need a multiplicity column for the two operands and the output. So we would need 2 extra multiplicity columns for `Add`, and no new preprocessed columns for `Mul`.
 
 ### 4.2 APIs / traits / types
 The only trait / API changes are related to the way multiplicities are computed. When it comes to adapting the lookups to extension field elements, we only need to update `get_lookups` for all tables using what we described above. Of course, we would also need to update preprocessed values with the multiplicities.
 
-In order to keep track of the multiplicities for all tables, we can introduce a `WitnessMultiplicities` structure. Instead of a `Vec<F>`, `generate_preprocessed_columns` would update a `Vec<WitnessMultiplicities>`. In `WitnessMultiplicities>`, we need to keep track of the operation type and operation index where the index was created. Indeed, we need to update the multiplicity of that value every time the index is encountered again. Note that for the proposed approach to work, we need to ensure that indices are updated with increasing indices. 
+In order to keep track of the multiplicities for all tables, we can introduce a `WitnessMultiplicities` structure. Instead of a `Vec<F>`, `generate_preprocessed_columns` would update a `Vec<WitnessMultiplicities>`. In `WitnessMultiplicities`, we need to keep track of the operation type and operation index where the index was created. Indeed, we need to update the multiplicity of that value every time the index is encountered again. Note that for the proposed approach to work, we need to ensure that indices are updated with increasing indices. 
 
 ```rust
 pub struct WitnessMultiplicities {
@@ -96,9 +96,9 @@ pub struct Multiplicity {
 ```
 which represents a multiplicity for extension and base field elements. The differentiation is only needed for `Public` and `Constant` though.
 
-We need to update `generate_preprocessed_columns` and `PrerocessedColumns`.
+We need to update `generate_preprocessed_columns` and `PreprocessedColumns`.
 
-We need to remove `Witness` from `PrimitieOpType`. The indexing needs to be modified as well (each base field element needs to get an index). In the following, we assume that indexing is correct. In fact, if we still assume that a `WitnessId` represents an extension field element, we can just assume that the witness index is a multiple of `D`, and the `Target` holds `D` base field elements.
+We need to remove `Witness` from `PrimitiveOpType`. The indexing needs to be modified as well (each base field element needs to get an index). In the following, we assume that indexing is correct. In fact, if we still assume that a `WitnessId` represents an extension field element, we can just assume that the witness index is a multiple of `D`, and the `Target` holds `D` base field elements.
 
 Here is a sketch for updating `generate_preprocessed_columns` for primitive operations.
 
@@ -120,7 +120,7 @@ pub fn generate_preprocessed_columns(&self) -> Result<PreprocessedColumns<F>, Ci
                     
 
                     // Since the values in `PublicAir` are looked up in `WitnessAir`,
-                    // we need to take the values into account in `WitnessAir`s preprocessed multiplicities.
+                    // we need to take the values into account in `WitnessAir`'s preprocessed multiplicities.
                     if out.0 >= witness_multiplicities.len() as u32 {
                         assert!(out.0 = witness_multiplicities.len()); // ensure that we are not skipping indices
                         assert!((out.0 % D) == 0);
@@ -133,7 +133,7 @@ pub fn generate_preprocessed_columns(&self) -> Result<PreprocessedColumns<F>, Ci
                         }           
                     }
 
-                    preprocessed[table_idx].push(WitnessMultiplicity {
+                    preprocessed[table_idx].push(Multiplicity {
                         extension: 0,
                         base: [0; D]
                     });
@@ -158,7 +158,7 @@ pub fn generate_preprocessed_columns(&self) -> Result<PreprocessedColumns<F>, Ci
                                   
                     }
 
-                    preprocessed[table_idx].push(WitnessMultiplicity {
+                    preprocessed[table_idx].push(Multiplicity {
                         extension: 0,
                         base: [0; D]
                     });
@@ -167,9 +167,9 @@ pub fn generate_preprocessed_columns(&self) -> Result<PreprocessedColumns<F>, Ci
                     let table_idx = PrimitiveOpType::Add as usize;
 
                     // If the index of the second operand exists, then this is not the output, and we are dealing with an `Add` operation.
-                    let is_add = b.0 < witness_multiplicities.len() as u32
+                    let is_add = b.0 < witness_multiplicities.len() as u32;
                     if b.0 >= witness_multiplicities.len() as u32 {
-                        assert!(b.0 = witness_multiplicities.len()); // ensure that we are not skipping indices
+                        assert!(b.0 == witness_multiplicities.len()); // ensure that we are not skipping indices
                         assert!((b.0 % D) == 0);
                         witness_multiplicities.push(WitnessMultiplicities {
                             operation: PrimitiveOpType::Add,
@@ -178,7 +178,7 @@ pub fn generate_preprocessed_columns(&self) -> Result<PreprocessedColumns<F>, Ci
                         });            
                     }
                     if out.0 >= witness_multiplicities.len() as u32 {
-                        assert!(out.0 = witness_multiplicities.len()); // ensure that we are not skipping indices
+                        assert!(out.0 == witness_multiplicities.len()); // ensure that we are not skipping indices
                         assert!((out.0 % D) == 0);
                         witness_multiplicities.push(WitnessMultiplicities {
                             operation: PrimitiveOpType::Add,
