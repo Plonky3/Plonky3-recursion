@@ -28,6 +28,7 @@ Each example supports additional parameterization around the FRI parameters, nam
 - `--log-final-poly-len`: logarithmic size (or degree) allowed for the final polynomial after folding. Default 5.
 - `--commit-pow-bits`: additional PoW grinding during the FRI commit phase. Default 0.
 - `--query-pow-bits`: additional PoW grinding during the FRI query phase. Default 16.
+- `--num-recursive-layers`: number of recursive proofs to be generated in a chain, starting from the base proof (Keccak or Fibonacci). Default 3.
 
 ## Results
 

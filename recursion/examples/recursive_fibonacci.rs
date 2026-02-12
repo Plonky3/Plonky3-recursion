@@ -72,6 +72,14 @@ struct Args {
     #[arg(short, long, default_value_t = 100)]
     n: usize,
 
+    /// Number of recursive verification layers (1 = verify base once, 3 = base + 3 recursive layers).
+    #[arg(
+        long,
+        default_value_t = 3,
+        help = "Number of recursive verification layers"
+    )]
+    num_recursive_layers: usize,
+
     #[arg(
         long,
         default_value_t = 3,
@@ -131,14 +139,18 @@ fn main() {
         query_pow_bits: args.query_pow_bits,
     };
 
+    if args.num_recursive_layers < 1 {
+        panic!("Number of recursive layers should be at least 1");
+    }
+
     info!(
         "Recursively proving {} Fibonacci iterations with field {:?}",
         args.n, args.field
     );
 
     match args.field {
-        FieldOption::KoalaBear => koala_bear::run(args.n, &fri_params),
-        FieldOption::BabyBear => baby_bear::run(args.n, &fri_params),
+        FieldOption::KoalaBear => koala_bear::run(args.n, args.num_recursive_layers, &fri_params),
+        FieldOption::BabyBear => baby_bear::run(args.n, args.num_recursive_layers, &fri_params),
     }
 }
 
@@ -236,7 +248,7 @@ macro_rules! define_field_module {
                 b
             }
 
-            pub fn run(n: usize, fri_params: &super::FriParams) {
+            pub fn run(n: usize, num_recursive_layers: usize, fri_params: &super::FriParams) {
                 // =================================================================
                 // LAYER 0: Create and prove Fibonacci(n)
                 // =================================================================
@@ -292,301 +304,151 @@ macro_rules! define_field_module {
                     .expect("Failed to verify base proof");
 
                 let num_tables_0 = airs_0.len();
+                let mut proof_chain: Vec<(
+                    p3_circuit_prover::BatchStarkProof<MyConfig>,
+                    CircuitProverData<MyConfig>,
+                )> = Vec::new();
+                proof_chain.push((proof_0, circuit_prover_data_0));
+                let mut prev_num_tables = num_tables_0;
 
-                // =================================================================
-                // LAYER 1: Recursively verify the base proof
-                // =================================================================
+                for layer in 1..=num_recursive_layers {
+                    let (prev_proof, prev_cp_data) = proof_chain.last().unwrap();
+                    let prev_common = prev_cp_data.common_data();
 
-                let fri_verifier_params = create_fri_verifier_params(fri_params);
-                let lookup_gadget_1 = LogUpGadget::new();
+                    let fri_verifier_params = create_fri_verifier_params(fri_params);
+                    let lookup_gadget = LogUpGadget::new();
 
-                let mut circuit_builder_1 = CircuitBuilder::new();
-                let perm_1 = $default_perm();
-                circuit_builder_1.enable_poseidon2_perm::<$poseidon2_circuit_config, _>(
-                    generate_poseidon2_trace::<Challenge, $poseidon2_circuit_config>,
-                    perm_1,
-                );
+                    let mut circuit_builder = CircuitBuilder::new();
+                    let perm = $default_perm();
+                    circuit_builder.enable_poseidon2_perm::<$poseidon2_circuit_config, _>(
+                        generate_poseidon2_trace::<Challenge, $poseidon2_circuit_config>,
+                        perm,
+                    );
 
-                const TRACE_D_LAYER0: usize = 1;
-                let pis_0: Vec<Vec<F>> = vec![vec![]; num_tables_0];
+                    let (table_packing, verifier_inputs, mmcs_op_ids) = if layer == 1 {
+                        const TRACE_D_LAYER0: usize = 1;
+                        let table_packing = TablePacking::new(2, 2, 2)
+                            .with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup);
+                        let config = create_config(fri_params);
+                        let (vi, mmcs) = verify_p3_recursion_proof_circuit::<
+                            MyConfig,
+                            HashTargets<F, DIGEST_ELEMS>,
+                            InputProofTargets<
+                                F,
+                                Challenge,
+                                RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>,
+                            >,
+                            InnerFri,
+                            LogUpGadget,
+                            WIDTH,
+                            RATE,
+                            TRACE_D_LAYER0,
+                        >(
+                            &config,
+                            &mut circuit_builder,
+                            prev_proof,
+                            &fri_verifier_params,
+                            prev_common,
+                            &lookup_gadget,
+                            $poseidon2_config,
+                        )
+                        .expect(&format!(
+                            "Failed to build verification circuit for layer {layer}"
+                        ));
+                        (table_packing, vi, mmcs)
+                    } else {
+                        const TRACE_D_LAYER_REC: usize = 4;
+                        let table_packing = TablePacking::new(4, 3, 3)
+                            .with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup);
+                        let config = create_config(fri_params);
+                        let (vi, mmcs) = verify_p3_recursion_proof_circuit::<
+                            MyConfig,
+                            HashTargets<F, DIGEST_ELEMS>,
+                            InputProofTargets<
+                                F,
+                                Challenge,
+                                RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>,
+                            >,
+                            InnerFri,
+                            LogUpGadget,
+                            WIDTH,
+                            RATE,
+                            TRACE_D_LAYER_REC,
+                        >(
+                            &config,
+                            &mut circuit_builder,
+                            prev_proof,
+                            &fri_verifier_params,
+                            prev_common,
+                            &lookup_gadget,
+                            $poseidon2_config,
+                        )
+                        .expect(&format!(
+                            "Failed to build verification circuit for layer {layer}"
+                        ));
+                        (table_packing, vi, mmcs)
+                    };
 
-                let config_1 = create_config(fri_params);
+                    let pis: Vec<Vec<F>> = vec![vec![]; prev_num_tables];
+                    let verification_circuit = circuit_builder.build().unwrap();
+                    let num_ops = verification_circuit.ops.len();
+                    let public_inputs =
+                        verifier_inputs.pack_values(&pis, &prev_proof.proof, prev_common);
 
-                let (verifier_inputs_1, mmcs_op_ids_1) = verify_p3_recursion_proof_circuit::<
-                    MyConfig,
-                    HashTargets<F, DIGEST_ELEMS>,
-                    InputProofTargets<
+                    info!("Layer {layer} verification circuit built with {num_ops} operations");
+
+                    let (airs_degrees, preprocessed_columns) =
+                        get_airs_and_degrees_with_prep::<MyConfig, _, D>(
+                            &verification_circuit,
+                            table_packing,
+                            Some(&[NonPrimitiveConfig::Poseidon2($poseidon2_config)]),
+                        )
+                        .expect(&format!("Failed to get AIRs for layer {layer}"));
+                    let (mut airs, degrees): (Vec<_>, Vec<_>) = airs_degrees.into_iter().unzip();
+
+                    let config = create_config(fri_params);
+                    let mut runner = verification_circuit.runner();
+                    runner.set_public_inputs(&public_inputs).unwrap();
+
+                    set_fri_mmcs_private_data::<
                         F,
                         Challenge,
-                        RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>,
-                    >,
-                    InnerFri,
-                    LogUpGadget,
-                    WIDTH,
-                    RATE,
-                    TRACE_D_LAYER0,
-                >(
-                    &config_1,
-                    &mut circuit_builder_1,
-                    &proof_0,
-                    &fri_verifier_params,
-                    &common_0,
-                    &lookup_gadget_1,
-                    $poseidon2_config,
-                )
-                .expect("Failed to build verification circuit for layer 1");
+                        ChallengeMmcs,
+                        ValMmcs,
+                        MyHash,
+                        MyCompress,
+                        DIGEST_ELEMS,
+                    >(&mut runner, &mmcs_op_ids, &prev_proof.proof.opening_proof)
+                    .expect(&format!(
+                        "Failed to set MMCS private data for layer {layer}"
+                    ));
 
-                let verification_circuit_1 = circuit_builder_1.build().unwrap();
-                let num_ops_1 = verification_circuit_1.ops.len();
-                let public_inputs_1 =
-                    verifier_inputs_1.pack_values(&pis_0, &proof_0.proof, &common_0);
+                    let traces = runner
+                        .run()
+                        .expect(&format!("Failed to run layer {layer} circuit"));
 
-                info!("Verification circuit built with {num_ops_1} operations");
+                    let prover_data =
+                        ProverData::from_airs_and_degrees(&config, &mut airs, &degrees);
+                    let circuit_prover_data =
+                        CircuitProverData::new(prover_data, preprocessed_columns);
 
-                let table_packing_1 = TablePacking::new(2, 2, 2)
-                    .with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup);
+                    let common = circuit_prover_data.common_data();
 
-                let (airs_degrees_1, preprocessed_columns_1) =
-                    get_airs_and_degrees_with_prep::<MyConfig, _, D>(
-                        &verification_circuit_1,
-                        table_packing_1,
-                        Some(&[NonPrimitiveConfig::Poseidon2($poseidon2_config)]),
-                    )
-                    .expect("Failed to get AIRs for layer 1");
-                let (mut airs_1, degrees_1): (Vec<_>, Vec<_>) = airs_degrees_1.into_iter().unzip();
+                    let mut prover =
+                        BatchStarkProver::new(config).with_table_packing(table_packing);
+                    prover.register_poseidon2_table($poseidon2_config);
 
-                let mut runner_1 = verification_circuit_1.runner();
-                runner_1.set_public_inputs(&public_inputs_1).unwrap();
+                    let proof = prover
+                        .prove_all_tables(&traces, &circuit_prover_data)
+                        .expect(&format!("Failed to prove layer {layer} circuit"));
 
-                set_fri_mmcs_private_data::<
-                    F,
-                    Challenge,
-                    ChallengeMmcs,
-                    ValMmcs,
-                    MyHash,
-                    MyCompress,
-                    DIGEST_ELEMS,
-                >(&mut runner_1, &mmcs_op_ids_1, &proof_0.proof.opening_proof)
-                .expect("Failed to set MMCS private data for layer 1");
+                    prover
+                        .verify_all_tables(&proof, common)
+                        .expect(&format!("Failed to verify layer {layer} proof"));
 
-                let traces_1 = runner_1.run().expect("Failed to run layer 1 circuit");
-
-                let prover_data_1 =
-                    ProverData::from_airs_and_degrees(&config_1, &mut airs_1, &degrees_1);
-                let circuit_prover_data_1 =
-                    CircuitProverData::new(prover_data_1, preprocessed_columns_1);
-
-                let common_1 = circuit_prover_data_1.common_data();
-
-                let mut prover_1 =
-                    BatchStarkProver::new(config_1).with_table_packing(table_packing_1);
-                prover_1.register_poseidon2_table($poseidon2_config);
-
-                let proof_1 = prover_1
-                    .prove_all_tables(&traces_1, &circuit_prover_data_1)
-                    .expect("Failed to prove layer 1 circuit");
-
-                prover_1
-                    .verify_all_tables(&proof_1, &common_1)
-                    .expect("Failed to verify layer 1 proof");
-
-                let num_tables_1 = airs_1.len();
-
-                // =================================================================
-                // LAYER 2: Recursively verify the recursive proof
-                // =================================================================
-
-                let fri_verifier_params = create_fri_verifier_params(fri_params);
-                let lookup_gadget_2 = LogUpGadget::new();
-
-                let mut circuit_builder_2 = CircuitBuilder::new();
-                let perm_2 = $default_perm();
-                circuit_builder_2.enable_poseidon2_perm::<$poseidon2_circuit_config, _>(
-                    generate_poseidon2_trace::<Challenge, $poseidon2_circuit_config>,
-                    perm_2,
-                );
-
-                const TRACE_D_LAYER1: usize = 4;
-                let pis_1: Vec<Vec<F>> = vec![vec![]; num_tables_1];
-
-                let config_2 = create_config(fri_params);
-
-                let (verifier_inputs_2, mmcs_op_ids_2) = verify_p3_recursion_proof_circuit::<
-                    MyConfig,
-                    HashTargets<F, DIGEST_ELEMS>,
-                    InputProofTargets<
-                        F,
-                        Challenge,
-                        RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>,
-                    >,
-                    InnerFri,
-                    LogUpGadget,
-                    WIDTH,
-                    RATE,
-                    TRACE_D_LAYER1,
-                >(
-                    &config_2,
-                    &mut circuit_builder_2,
-                    &proof_1,
-                    &fri_verifier_params,
-                    &common_1,
-                    &lookup_gadget_2,
-                    $poseidon2_config,
-                )
-                .expect("Failed to build verification circuit for layer 2");
-
-                let verification_circuit_2 = circuit_builder_2.build().unwrap();
-                let num_ops_2 = verification_circuit_2.ops.len();
-                let public_inputs_2 =
-                    verifier_inputs_2.pack_values(&pis_1, &proof_1.proof, &common_1);
-
-                info!("Verification circuit built with {num_ops_2} operations");
-
-                let table_packing_2 = TablePacking::new(4, 3, 3)
-                    .with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup);
-
-                let (airs_degrees_2, preprocessed_columns_2) =
-                    get_airs_and_degrees_with_prep::<MyConfig, _, D>(
-                        &verification_circuit_2,
-                        table_packing_2,
-                        Some(&[NonPrimitiveConfig::Poseidon2($poseidon2_config)]),
-                    )
-                    .expect("Failed to get AIRs for layer 2");
-                let (mut airs_2, degrees_2): (Vec<_>, Vec<_>) = airs_degrees_2.into_iter().unzip();
-
-                let mut runner_2 = verification_circuit_2.runner();
-                runner_2.set_public_inputs(&public_inputs_2).unwrap();
-
-                set_fri_mmcs_private_data::<
-                    F,
-                    Challenge,
-                    ChallengeMmcs,
-                    ValMmcs,
-                    MyHash,
-                    MyCompress,
-                    DIGEST_ELEMS,
-                >(&mut runner_2, &mmcs_op_ids_2, &proof_1.proof.opening_proof)
-                .expect("Failed to set MMCS private data for layer 2");
-
-                let traces_2 = runner_2.run().expect("Failed to run layer 2 circuit");
-
-                let prover_data_2 =
-                    ProverData::from_airs_and_degrees(&config_2, &mut airs_2, &degrees_2);
-                let circuit_prover_data_2 =
-                    CircuitProverData::new(prover_data_2, preprocessed_columns_2);
-
-                let common_2 = circuit_prover_data_2.common_data();
-
-                let mut prover_2 =
-                    BatchStarkProver::new(config_2).with_table_packing(table_packing_2);
-                prover_2.register_poseidon2_table($poseidon2_config);
-
-                let proof_2 = prover_2
-                    .prove_all_tables(&traces_2, &circuit_prover_data_2)
-                    .expect("Failed to prove layer 2 circuit");
-
-                prover_2
-                    .verify_all_tables(&proof_2, &common_2)
-                    .expect("Failed to verify layer 2 proof");
-                let num_tables_2 = airs_2.len();
-
-                // =================================================================
-                // LAYER 3: Recursively verify the recursive proof
-                // =================================================================
-
-                let fri_verifier_params = create_fri_verifier_params(fri_params);
-                let lookup_gadget_3 = LogUpGadget::new();
-
-                let mut circuit_builder_3 = CircuitBuilder::new();
-                let perm_3 = $default_perm();
-                circuit_builder_3.enable_poseidon2_perm::<$poseidon2_circuit_config, _>(
-                    generate_poseidon2_trace::<Challenge, $poseidon2_circuit_config>,
-                    perm_3,
-                );
-
-                const TRACE_D_LAYER2: usize = 4;
-                let pis_2: Vec<Vec<F>> = vec![vec![]; num_tables_2];
-
-                let config_3 = create_config(fri_params);
-
-                let (verifier_inputs_3, mmcs_op_ids_3) = verify_p3_recursion_proof_circuit::<
-                    MyConfig,
-                    HashTargets<F, DIGEST_ELEMS>,
-                    InputProofTargets<
-                        F,
-                        Challenge,
-                        RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>,
-                    >,
-                    InnerFri,
-                    LogUpGadget,
-                    WIDTH,
-                    RATE,
-                    TRACE_D_LAYER2,
-                >(
-                    &config_3,
-                    &mut circuit_builder_3,
-                    &proof_2,
-                    &fri_verifier_params,
-                    &common_2,
-                    &lookup_gadget_3,
-                    $poseidon2_config,
-                )
-                .expect("Failed to build verification circuit for layer 3");
-
-                let verification_circuit_3 = circuit_builder_3.build().unwrap();
-                let num_ops_3 = verification_circuit_3.ops.len();
-                let public_inputs_3 =
-                    verifier_inputs_3.pack_values(&pis_2, &proof_2.proof, &common_2);
-
-                info!("Verification circuit built with {num_ops_3} operations");
-
-                let table_packing_3 = TablePacking::new(4, 3, 3)
-                    .with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup);
-
-                let (airs_degrees_3, preprocessed_columns_3) =
-                    get_airs_and_degrees_with_prep::<MyConfig, _, D>(
-                        &verification_circuit_3,
-                        table_packing_3,
-                        Some(&[NonPrimitiveConfig::Poseidon2($poseidon2_config)]),
-                    )
-                    .expect("Failed to get AIRs for layer 3");
-
-                let (mut airs_3, degrees_3): (Vec<_>, Vec<_>) = airs_degrees_3.into_iter().unzip();
-
-                let mut runner_3 = verification_circuit_3.runner();
-                runner_3.set_public_inputs(&public_inputs_3).unwrap();
-
-                set_fri_mmcs_private_data::<
-                    F,
-                    Challenge,
-                    ChallengeMmcs,
-                    ValMmcs,
-                    MyHash,
-                    MyCompress,
-                    DIGEST_ELEMS,
-                >(&mut runner_3, &mmcs_op_ids_3, &proof_2.proof.opening_proof)
-                .expect("Failed to set MMCS private data for layer 3");
-
-                let traces_3 = runner_3.run().expect("Failed to run layer 3 circuit");
-
-                let prover_data_3 =
-                    ProverData::from_airs_and_degrees(&config_3, &mut airs_3, &degrees_3);
-                let circuit_prover_data_3 =
-                    CircuitProverData::new(prover_data_3, preprocessed_columns_3);
-
-                let common_3 = circuit_prover_data_3.common_data();
-
-                let mut prover_3 =
-                    BatchStarkProver::new(config_3).with_table_packing(table_packing_3);
-                prover_3.register_poseidon2_table($poseidon2_config);
-
-                let proof_3 = prover_3
-                    .prove_all_tables(&traces_3, &circuit_prover_data_3)
-                    .expect("Failed to prove layer 3 circuit");
-
-                prover_3
-                    .verify_all_tables(&proof_3, &common_3)
-                    .expect("Failed to verify layer 3 proof");
+                    proof_chain.push((proof, circuit_prover_data));
+                    prev_num_tables = airs.len();
+                }
 
                 info!("Recursive proof verified successfully");
             }
