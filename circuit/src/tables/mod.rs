@@ -129,7 +129,7 @@ where
 impl<F: alloc::fmt::Debug> Traces<F> {
     #[allow(clippy::missing_const_for_fn)]
     pub fn dump_primitive_traces_log(&self) {
-        #[cfg(debug_assertions)]
+        #[cfg(feature = "debugging")]
         {
             tracing::debug!("\n=== WITNESS TRACE ===");
             for (i, (idx, val)) in self

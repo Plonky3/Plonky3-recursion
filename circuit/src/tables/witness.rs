@@ -34,7 +34,7 @@ impl<F> WitnessTrace<F> {
         self.values.len()
     }
 
-    #[cfg(debug_assertions)]
+    #[cfg(feature = "debugging")]
     /// Return a reference to the values of the witness trace.
     pub(crate) fn values(&self) -> &[F] {
         &self.values
