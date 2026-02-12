@@ -4,7 +4,7 @@
 
 - **Author(s):** @LindaGuiga
 - **DRI:** @LindaGuiga
-- **Status:** Draft
+- **Status:** Accepted
 - **Created:** 2026-01-13
 - **Tracking issue:** #103
 
