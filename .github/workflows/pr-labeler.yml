@@ -17,7 +17,7 @@ jobs:
           title="${{ github.event.pull_request.title }}"
           labels=()
           case "${title,,}" in
-            *perf*|*optimize*|*optimise*) labels+=("perf") ;;
+            *perf*|*optimize*|*optimise*|*profiling*) labels+=("perf") ;;
           esac
           case "${title,,}" in
             *bug*|*fix*) labels+=("bug") ;;
