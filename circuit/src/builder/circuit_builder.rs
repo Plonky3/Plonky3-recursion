@@ -542,9 +542,8 @@ where
     /// `pop_scope` is called. Scopes can be nested.
     ///
     /// If the `debugging` feature is not enabled, this is a no-op.
-    #[allow(unused_variables)]
-    #[allow(clippy::missing_const_for_fn)]
-    pub fn push_scope(&mut self, scope: &'static str) {
+    #[allow(warnings)]
+    pub fn push_scope(&mut self, scope: impl Into<String>) {
         #[cfg(feature = "debugging")]
         self.expr_builder.push_scope(scope);
     }
@@ -578,7 +577,7 @@ where
     ///
     /// Returns an empty vector if the `debugging` feature is not enabled.
     #[allow(clippy::missing_const_for_fn)]
-    pub fn list_scopes(&self) -> Vec<&'static str> {
+    pub fn list_scopes(&self) -> Vec<String> {
         self.expr_builder.list_scopes()
     }
 
@@ -596,7 +595,7 @@ where
     /// The returned map is keyed by the scope names passed to `push_scope`.
     /// When the `profiling` feature is disabled, this method is not compiled.
     #[cfg(feature = "profiling")]
-    pub const fn scope_op_counts(&self) -> &HashMap<&'static str, OpCounts> {
+    pub const fn scope_op_counts(&self) -> &HashMap<String, OpCounts> {
         let (_, per_scope) = self.expr_builder.profiling_counts();
         per_scope
     }
@@ -1330,7 +1329,7 @@ mod tests {
         builder.add_const(BabyBear::ONE);
         builder.pop_scope();
         let scopes = builder.list_scopes();
-        assert!(scopes.contains(&"test_scope"));
+        assert!(scopes.contains(&("test_scope".to_string())));
     }
 
     #[test]

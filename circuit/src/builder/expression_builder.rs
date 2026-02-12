@@ -6,6 +6,7 @@
 //! - nodes represent field operations,
 //! - edges represent dependencies between expressions.
 
+use alloc::string::String;
 #[cfg(feature = "debugging")]
 use alloc::vec;
 use alloc::vec::Vec;
@@ -47,9 +48,9 @@ pub struct OpCounts {
 #[derive(Debug, Default)]
 pub struct ProfilingState {
     pub(crate) global: OpCounts,
-    pub(crate) per_scope: HashMap<&'static str, OpCounts>,
+    pub(crate) per_scope: HashMap<String, OpCounts>,
     /// Dedicated scope stack for profiling so it can be enabled independently of debug assertions.
-    pub(crate) scope_stack: Vec<&'static str>,
+    pub(crate) scope_stack: Vec<String>,
 }
 
 #[cfg(feature = "profiling")]
@@ -60,7 +61,7 @@ impl ProfilingState {
         f(&mut self.global);
 
         // Per-scope totals (if a scope is active).
-        if let Some(scope) = self.scope_stack.last().copied() {
+        if let Some(scope) = self.scope_stack.last().cloned() {
             let entry = self.per_scope.entry(scope).or_default();
             f(entry);
         }
@@ -102,7 +103,7 @@ impl ProfilingState {
         *self.global.non_primitives.entry(op_type).or_default() += 1;
 
         // Per-scope totals (if a scope is active).
-        if let Some(scope) = self.scope_stack.last().copied() {
+        if let Some(scope) = self.scope_stack.last().cloned() {
             let entry = self.per_scope.entry(scope).or_default();
             *entry.non_primitives.entry(op_type).or_default() += 1;
         }
@@ -165,7 +166,7 @@ pub struct ExpressionBuilder<F> {
     ///
     /// **Only present in debug builds.**
     #[cfg(feature = "debugging")]
-    scope_stack: Vec<&'static str>,
+    scope_stack: Vec<String>,
 
     /// Optional profiling state for counting allocations by type and scope.
     ///
@@ -622,7 +623,7 @@ where
         let (alloc_type, dependencies) = info_fn();
 
         // Capture the current scope from the stack.
-        let scope = self.scope_stack.last().copied();
+        let scope = self.scope_stack.last().cloned();
 
         // Add an entry to the allocation log.
         self.allocation_log.push(AllocationEntry {
@@ -667,7 +668,7 @@ where
         label: &'static str,
     ) {
         // Capture the current scope.
-        let scope = self.scope_stack.last().copied();
+        let scope = self.scope_stack.last().cloned();
 
         // Combine inputs and outputs for dependency tracking.
         // Use a separator to distinguish inputs from outputs in the log.
@@ -697,9 +698,10 @@ where
     /// - `scope`: Human-readable scope name
     #[allow(unused_variables)]
     #[allow(clippy::missing_const_for_fn)]
-    pub fn push_scope(&mut self, scope: &'static str) {
+    pub fn push_scope(&mut self, scope: impl Into<String>) {
+        let scope = scope.into();
         #[cfg(feature = "debugging")]
-        self.scope_stack.push(scope);
+        self.scope_stack.push(scope.clone());
         #[cfg(feature = "profiling")]
         self.profiling.scope_stack.push(scope);
     }
@@ -726,8 +728,8 @@ where
     /// - `Some(&'static str)` - The name of the current scope
     /// - `None` - No active scope
     #[cfg(feature = "debugging")]
-    pub fn current_scope(&self) -> Option<&'static str> {
-        self.scope_stack.last().copied()
+    pub fn current_scope(&self) -> Option<&str> {
+        self.scope_stack.last().map(|s| s.as_str())
     }
 
     /// Returns a reference to the allocation log (debug builds only).
@@ -778,7 +780,7 @@ where
     /// - **Debug builds**: Vector of unique scope names
     /// - **Release builds**: Empty vector (no scopes tracked)
     #[allow(clippy::missing_const_for_fn)]
-    pub fn list_scopes(&self) -> Vec<&'static str> {
+    pub fn list_scopes(&self) -> Vec<String> {
         #[cfg(feature = "debugging")]
         {
             crate::alloc_entry::list_scopes(&self.allocation_log)
@@ -791,7 +793,7 @@ where
 
     /// Returns the global and per-scope operation counts when profiling is enabled.
     #[cfg(feature = "profiling")]
-    pub const fn profiling_counts(&self) -> (&OpCounts, &HashMap<&'static str, OpCounts>) {
+    pub const fn profiling_counts(&self) -> (&OpCounts, &HashMap<String, OpCounts>) {
         (&self.profiling.global, &self.profiling.per_scope)
     }
 }
@@ -807,10 +809,11 @@ where
 
 #[cfg(test)]
 mod tests {
-
     use p3_baby_bear::BabyBear;
 
     use super::*;
+    #[cfg(feature = "debugging")]
+    use crate::alloc::string::ToString;
 
     #[test]
     fn test_new_builder_has_zero_constant() {
@@ -1232,8 +1235,8 @@ mod tests {
         builder.add_const(BabyBear::from_u64(3), "in_a_again");
 
         let scopes = builder.list_scopes();
-        assert!(scopes.contains(&"scope_a"));
-        assert!(scopes.contains(&"scope_b"));
+        assert!(scopes.contains(&("scope_a".to_string())));
+        assert!(scopes.contains(&("scope_b".to_string())));
     }
 
     #[test]
