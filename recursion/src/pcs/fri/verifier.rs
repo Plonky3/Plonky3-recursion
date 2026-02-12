@@ -204,6 +204,7 @@ fn reconstruct_evals<EF: Field>(
     siblings: &[Target],
     index_in_group_bits: &[Target],
 ) -> Vec<Target> {
+    builder.push_scope("fri_reconstruct_evals");
     let log_arity = index_in_group_bits.len();
     let arity = 1usize << log_arity;
     debug_assert_eq!(siblings.len(), arity - 1);
@@ -230,6 +231,7 @@ fn reconstruct_evals<EF: Field>(
         evals.push(eval_j);
     }
 
+    builder.pop_scope();
     evals
 }
 
@@ -251,6 +253,8 @@ where
     F: Field + TwoAdicField,
     EF: ExtensionField<F>,
 {
+    builder.push_scope("fri_compute_subgroup_points");
+
     let arity = 1usize << log_arity;
 
     // Parent index bits start after index_in_group bits
@@ -283,6 +287,7 @@ where
         xs.push(xi);
     }
 
+    builder.pop_scope();
     (xs, subgroup_start)
 }
 
@@ -413,12 +418,17 @@ fn precompute_beta_powers_per_phase<EF: Field>(
     betas: &[Target],
     log_arities: &[usize],
 ) -> Vec<Target> {
+    builder.push_scope("fri_precompute_betas");
+
     debug_assert_eq!(betas.len(), log_arities.len());
-    betas
+    let result = betas
         .iter()
         .zip(log_arities.iter())
         .map(|(&beta, &log_arity)| builder.exp_power_of_2(beta, log_arity))
-        .collect()
+        .collect();
+
+    builder.pop_scope();
+    result
 }
 
 /// Lagrange interpolation in circuit: evaluate the interpolating polynomial at `z`.
@@ -495,6 +505,8 @@ where
     F: Field + TwoAdicField,
     EF: ExtensionField<F>,
 {
+    builder.push_scope("fri_fold_one_phase");
+
     let log_folded_height = log_current_height - log_arity;
     let index_in_group_bits = &index_bits[bits_consumed..bits_consumed + log_arity];
 
@@ -530,6 +542,7 @@ where
             let add_term = builder.mul(beta_sq, ro);
             new_folded = builder.add(new_folded, add_term);
         }
+        builder.pop_scope();
         return new_folded;
     }
 
@@ -559,6 +572,7 @@ where
         new_folded = builder.add(new_folded, add_term);
     }
 
+    builder.pop_scope();
     new_folded
 }
 
@@ -678,11 +692,16 @@ where
     F: Field + TwoAdicField,
     EF: ExtensionField<F>,
 {
+    builder.push_scope("fri_precompute_two_adic_powers");
+
     let g = F::two_adic_generator(log_height);
-    iter::successors(Some(g), |&prev| Some(prev.square()))
+    let result = iter::successors(Some(g), |&prev| Some(prev.square()))
         .take(log_height)
         .map(|p| builder.add_const(EF::from(p)))
-        .collect()
+        .collect();
+
+    builder.pop_scope();
+    result
 }
 
 /// Compute the final query point after all FRI folding rounds.
@@ -1094,6 +1113,7 @@ where
 
     // For each query, extract opened values from proof and compute reduced openings and fold.
     for (q, query_proof) in fri_proof_targets.query_proofs.iter().enumerate() {
+        builder.push_scope("verify_fri_query");
         let batch_opened_values: Vec<Vec<Vec<Target>>> = query_proof
             .input_proof
             .iter()
@@ -1160,6 +1180,7 @@ where
         }
 
         // Compute the final query point using total bits consumed
+        builder.push_scope("compute_final_query_point");
         let final_query_point = compute_final_query_point::<F, EF>(
             builder,
             &index_bits_per_query[q],
@@ -1167,6 +1188,7 @@ where
             total_log_reduction,
             &powers_of_g_final,
         );
+        builder.pop_scope();
 
         let final_poly_eval =
             evaluate_polynomial(builder, &fri_proof_targets.final_poly, final_query_point);
@@ -1212,6 +1234,8 @@ where
                     log_current_height = log_folded_height;
                     continue;
                 }
+
+                builder.push_scope("fri_commit_phase_mmcs phase");
 
                 // Build full evaluation row for MMCS verification
                 let index_in_group_bits =
@@ -1277,6 +1301,8 @@ where
 
                 bits_consumed += log_arity;
                 log_current_height = log_folded_height;
+
+                builder.pop_scope(); // close fri_commit_phase_mmcs
             }
 
             // The MMCS loop already computed the full fold chain; connect directly.
@@ -1292,6 +1318,8 @@ where
                 });
             }
 
+            builder.push_scope(format!("fri_fold_chain_no_mmcs query_{q}"));
+
             let folded_eval = fold_chain_circuit::<F, EF>(
                 builder,
                 initial_folded_eval,
@@ -1300,8 +1328,11 @@ where
                 log_arities,
                 &beta_pows_per_phase,
             );
+            builder.pop_scope();
             builder.connect(folded_eval, final_poly_eval);
         }
+
+        builder.pop_scope(); // close verify_fri_query
     }
 
     builder.pop_scope();
