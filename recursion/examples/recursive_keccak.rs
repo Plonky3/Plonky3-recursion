@@ -47,6 +47,15 @@ enum FieldOption {
     BabyBear,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct FriParams {
+    log_blowup: usize,
+    max_log_arity: usize,
+    log_final_poly_len: usize,
+    commit_pow_bits: usize,
+    query_pow_bits: usize,
+}
+
 #[derive(Parser, Debug)]
 #[command(version, about = "Recursive Keccak proof verification example")]
 struct Args {
@@ -57,6 +66,41 @@ struct Args {
     /// Number of Keccak permutations to prove.
     #[arg(short, long, default_value_t = 4)]
     num_hashes: usize,
+
+    #[arg(
+        long,
+        default_value_t = 3,
+        help = "Logarithmic blowup factor for the LDE"
+    )]
+    log_blowup: usize,
+
+    #[arg(
+        long,
+        default_value_t = 4,
+        help = "Maximum arity allowed during FRI folding phases"
+    )]
+    max_log_arity: usize,
+
+    #[arg(
+        long,
+        default_value_t = 5,
+        help = "Log size of final polynomial after FRI folding"
+    )]
+    log_final_poly_len: usize,
+
+    #[arg(
+        long,
+        default_value_t = 0,
+        help = "PoW grinding bits during FRI commit phase"
+    )]
+    commit_pow_bits: usize,
+
+    #[arg(
+        long,
+        default_value_t = 16,
+        help = "PoW grinding bits during FRI query phase"
+    )]
+    query_pow_bits: usize,
 }
 
 fn init_logger() {
@@ -74,6 +118,13 @@ fn main() {
     init_logger();
 
     let args = Args::parse();
+    let fri_params = FriParams {
+        log_blowup: args.log_blowup,
+        max_log_arity: args.max_log_arity,
+        log_final_poly_len: args.log_final_poly_len,
+        commit_pow_bits: args.commit_pow_bits,
+        query_pow_bits: args.query_pow_bits,
+    };
 
     info!(
         "Recursively proving {} Keccak hashes with field {:?}",
@@ -81,8 +132,8 @@ fn main() {
     );
 
     match args.field {
-        FieldOption::KoalaBear => koala_bear::run(args.num_hashes),
-        FieldOption::BabyBear => baby_bear::run(args.num_hashes),
+        FieldOption::KoalaBear => koala_bear::run(args.num_hashes, &fri_params),
+        FieldOption::BabyBear => baby_bear::run(args.num_hashes, &fri_params),
     }
 }
 
@@ -129,17 +180,7 @@ macro_rules! define_field_module {
                 p3_recursion::pcs::Witness<F>,
             >;
 
-            // ===============
-            // FRI Parameters
-            // ===============
-            const LOG_BLOWUP: usize = 3;
-            const MAX_LOG_ARITY: usize = 4;
-            const LOG_FINAL_POLY_LEN: usize = 5;
-            const COMMIT_POW_BITS: usize = 0;
-            const QUERY_POW_BITS: usize = 16;
-
-            /// Create a STARK config with benchmark-inspired FRI params.
-            fn create_config(log_blowup: usize) -> MyConfig {
+            fn create_config(fp: &super::FriParams) -> MyConfig {
                 let perm = $default_perm();
                 let hash = MyHash::new(perm.clone());
                 let compress = MyCompress::new(perm.clone());
@@ -147,15 +188,15 @@ macro_rules! define_field_module {
                 let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
                 let dft = Dft::default();
 
-                let num_queries = (100 - QUERY_POW_BITS) / log_blowup;
+                let num_queries = (100 - fp.query_pow_bits) / fp.log_blowup;
 
                 let fri_params = FriParameters {
-                    max_log_arity: MAX_LOG_ARITY,
-                    log_blowup,
-                    log_final_poly_len: LOG_FINAL_POLY_LEN,
+                    max_log_arity: fp.max_log_arity,
+                    log_blowup: fp.log_blowup,
+                    log_final_poly_len: fp.log_final_poly_len,
                     num_queries,
-                    commit_proof_of_work_bits: COMMIT_POW_BITS,
-                    query_proof_of_work_bits: QUERY_POW_BITS,
+                    commit_proof_of_work_bits: fp.commit_pow_bits,
+                    query_proof_of_work_bits: fp.query_pow_bits,
                     mmcs: challenge_mmcs,
                 };
                 let pcs = MyPcs::new(dft, val_mmcs, fri_params);
@@ -163,36 +204,32 @@ macro_rules! define_field_module {
                 MyConfig::new(pcs, challenger)
             }
 
-            /// Create FRI verifier params for the in-circuit verifier.
-            /// MUST match the FRI params used by the native prover being verified.
-            const fn create_fri_verifier_params() -> FriVerifierParams {
+            const fn create_fri_verifier_params(fp: &super::FriParams) -> FriVerifierParams {
                 FriVerifierParams::with_mmcs(
-                    LOG_BLOWUP,
-                    LOG_FINAL_POLY_LEN,
-                    COMMIT_POW_BITS,
-                    QUERY_POW_BITS,
+                    fp.log_blowup,
+                    fp.log_final_poly_len,
+                    fp.commit_pow_bits,
+                    fp.query_pow_bits,
                     $poseidon2_config,
                 )
             }
 
-            pub fn run(num_hashes: usize) {
+            pub fn run(num_hashes: usize, fri_params: &super::FriParams) {
                 // =================================================================
                 // LAYER 0: Create and prove Keccak permutations
                 // =================================================================
 
                 let keccak_air = KeccakAir {};
-                let min_trace_rows = 1 << (LOG_FINAL_POLY_LEN + LOG_BLOWUP + 1);
-                let min_keccak_hashes = (min_trace_rows + p3_keccak_air::NUM_ROUNDS - 1)
-                    / p3_keccak_air::NUM_ROUNDS;
+                let min_trace_rows: usize = 1 << (fri_params.log_final_poly_len + fri_params.log_blowup + 1);
+                let min_keccak_hashes = min_trace_rows.div_ceil(p3_keccak_air::NUM_ROUNDS);
                 let effective_num_hashes = num_hashes.max(min_keccak_hashes);
                 if effective_num_hashes != num_hashes {
                     tracing::warn!("Number of equivalent Keccak hashes after mandatory padding: {effective_num_hashes}");
                 }
                 let trace =
-                    keccak_air.generate_trace_rows(effective_num_hashes, LOG_BLOWUP);
+                    keccak_air.generate_trace_rows(effective_num_hashes, fri_params.log_blowup);
 
-                // Layer 0 prover config
-                let config_0 = create_config(LOG_BLOWUP);
+                let config_0 = create_config(fri_params);
                 let pis: Vec<F> = vec![];
 
                 let proof_0 = prove(&config_0, &keccak_air, trace, &pis);
@@ -204,11 +241,9 @@ macro_rules! define_field_module {
                 // LAYER 1: Recursively verify the Keccak proof
                 // =================================================================
 
-                // In-circuit verifier params MUST match layer 0's FRI params
-                let fri_verifier_params = create_fri_verifier_params();
+                let fri_verifier_params = create_fri_verifier_params(fri_params);
 
-                // Layer 1 prover config
-                let config_1 = create_config(LOG_BLOWUP);
+                let config_1 = create_config(fri_params);
                 let perm_1 = $default_perm();
 
                 let mut circuit_builder_1 = CircuitBuilder::new();
@@ -255,7 +290,8 @@ macro_rules! define_field_module {
 
                 info!("Verification circuit built with {num_ops_1} operations");
 
-                let table_packing_1 = TablePacking::new(17, 3, 8);
+                let table_packing_1 = TablePacking::new(17, 3, 8)
+                    .with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup);
 
                 let (airs_degrees_1, preprocessed_columns_1) =
                     get_airs_and_degrees_with_prep::<MyConfig, _, D>(
@@ -307,8 +343,7 @@ macro_rules! define_field_module {
                 // LAYER 2: Recursively verify the recursive proof
                 // =================================================================
 
-                // In-circuit verifier params MUST match layer 0's FRI params
-                let fri_verifier_params = create_fri_verifier_params();
+                let fri_verifier_params = create_fri_verifier_params(fri_params);
                 let lookup_gadget_2 = LogUpGadget::new();
 
                 let mut circuit_builder_2 = CircuitBuilder::new();
@@ -321,8 +356,7 @@ macro_rules! define_field_module {
                 const TRACE_D_LAYER1: usize = 4;
                 let pis_1: Vec<Vec<F>> = vec![vec![]; num_tables_1];
 
-                // Layer 2 prover config
-                let config_2 = create_config(LOG_BLOWUP);
+                let config_2 = create_config(fri_params);
 
                 let (verifier_inputs_2, mmcs_op_ids_2) = verify_p3_recursion_proof_circuit::<
                     MyConfig,
@@ -356,7 +390,7 @@ macro_rules! define_field_module {
                 info!("Verification circuit built with {num_ops_2} operations");
 
                 let table_packing_2 =
-                    TablePacking::new(6, 2, 3).with_fri_params(LOG_FINAL_POLY_LEN, LOG_BLOWUP);
+                    TablePacking::new(6, 2, 3).with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup);
 
                 let (airs_degrees_2, preprocessed_columns_2) =
                     get_airs_and_degrees_with_prep::<MyConfig, _, D>(
@@ -407,8 +441,7 @@ macro_rules! define_field_module {
                 // LAYER 3: Recursively verify the recursive proof
                 // =================================================================
 
-                // In-circuit verifier params MUST match layer 0's FRI params
-                let fri_verifier_params = create_fri_verifier_params();
+                let fri_verifier_params = create_fri_verifier_params(fri_params);
                 let lookup_gadget_3 = LogUpGadget::new();
 
                 let mut circuit_builder_3 = CircuitBuilder::new();
@@ -421,8 +454,7 @@ macro_rules! define_field_module {
                 const TRACE_D_LAYER2: usize = 4;
                 let pis_2: Vec<Vec<F>> = vec![vec![]; num_tables_2];
 
-                // Layer 3 prover config
-                let config_3 = create_config(LOG_BLOWUP);
+                let config_3 = create_config(fri_params);
 
                 let (verifier_inputs_3, mmcs_op_ids_3) = verify_p3_recursion_proof_circuit::<
                     MyConfig,
@@ -456,7 +488,7 @@ macro_rules! define_field_module {
                 info!("Verification circuit built with {num_ops_3} operations");
 
                 let table_packing_3 =
-                    TablePacking::new(6, 2, 3).with_fri_params(LOG_FINAL_POLY_LEN, LOG_BLOWUP);
+                    TablePacking::new(6, 2, 3).with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup);
 
                 let (airs_degrees_3, preprocessed_columns_3) =
                     get_airs_and_degrees_with_prep::<MyConfig, _, D>(
