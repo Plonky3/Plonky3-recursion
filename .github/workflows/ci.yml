@@ -51,6 +51,9 @@ jobs:
       - name: Test
         run: cargo test --verbose --all-targets
 
+      - name: Test (all-features)
+      run: cargo test --verbose --all-targets --all-features
+
       - name: Check (release)
         run: cargo check --verbose --all-targets --release
 
