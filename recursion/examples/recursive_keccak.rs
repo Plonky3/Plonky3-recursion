@@ -181,7 +181,15 @@ macro_rules! define_field_module {
                 // =================================================================
 
                 let keccak_air = KeccakAir {};
-                let trace = keccak_air.generate_trace_rows(num_hashes, 0);
+                let min_trace_rows = 1 << (LOG_FINAL_POLY_LEN + LOG_BLOWUP + 1);
+                let min_keccak_hashes = (min_trace_rows + p3_keccak_air::NUM_ROUNDS - 1)
+                    / p3_keccak_air::NUM_ROUNDS;
+                let effective_num_hashes = num_hashes.max(min_keccak_hashes);
+                if effective_num_hashes != num_hashes {
+                    tracing::warn!("Number of equivalent Keccak hashes after mandatory padding: {effective_num_hashes}");
+                }
+                let trace =
+                    keccak_air.generate_trace_rows(effective_num_hashes, LOG_BLOWUP);
 
                 // Layer 0 prover config
                 let config_0 = create_config(LOG_BLOWUP);
