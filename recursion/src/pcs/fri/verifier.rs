@@ -800,15 +800,16 @@ fn compute_single_reduced_opening<EF: Field>(
         // diff = p_at_z - p_at_x
         let diff = builder.sub(p_at_z, p_at_x);
 
-        // term = alpha_pow * diff * quotient
+        // term = alpha_pow * diff
         let alpha_diff = builder.mul(current_alpha_pow, diff);
-        let term = builder.mul(alpha_diff, quotient);
 
-        reduced_opening = builder.add(reduced_opening, term);
+        reduced_opening = builder.add(reduced_opening, alpha_diff);
 
         // advance alpha power for the *next column in this height*
         current_alpha_pow = builder.mul(current_alpha_pow, alpha);
     }
+    // term = reduced_opening * quotient
+    let reduced_opening = builder.mul(reduced_opening, quotient);
 
     builder.pop_scope(); // close `compute_single_reduced_opening` scope
     (current_alpha_pow, reduced_opening)
