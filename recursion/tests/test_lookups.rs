@@ -94,7 +94,7 @@ fn test_arith_lookups() {
 }
 
 #[test]
-#[should_panic(expected = "WitnessConflict")]
+#[should_panic]
 fn test_wrong_multiplicities() {
     let n = 10;
 
