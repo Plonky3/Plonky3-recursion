@@ -16,7 +16,7 @@ use p3_recursion::traits::{LookupMetadata, RecursiveAir};
 use p3_recursion::types::RecursiveLagrangeSelectors;
 use p3_uni_stark::{StarkConfig, SymbolicAirBuilder, VerifierConstraintFolder};
 use rand::rngs::SmallRng;
-use rand::{Rng, RngCore, SeedableRng};
+use rand::{Rng, RngExt, SeedableRng};
 
 use crate::common::baby_bear_params::*;
 

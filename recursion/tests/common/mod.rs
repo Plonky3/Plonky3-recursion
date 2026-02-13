@@ -18,7 +18,7 @@ use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
 use p3_uni_stark::{StarkConfig, StarkGenericConfig, Val};
 use rand::distr::{Distribution, StandardUniform};
 use rand::rngs::SmallRng;
-use rand::{Rng, SeedableRng};
+use rand::{Rng, RngExt, SeedableRng};
 
 // Type of the `OpeningProof` used in the circuit for a `TwoAdicFriPcs`.
 pub(crate) type InnerFriGeneric<MyConfig, MyHash, MyCompress, const DIGEST_ELEMS: usize> =

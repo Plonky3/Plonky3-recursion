@@ -951,7 +951,7 @@ mod test {
         StarkConfig, prove_with_preprocessed, setup_preprocessed, verify_with_preprocessed,
     };
     use rand::rngs::SmallRng;
-    use rand::{Rng, SeedableRng};
+    use rand::{RngExt, SeedableRng};
 
     use super::*;
     use crate::Poseidon2CircuitAirBabyBearD4Width16;

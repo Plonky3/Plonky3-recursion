@@ -243,7 +243,7 @@ mod tests {
         StarkConfig, SymbolicExpression, VerifierConstraintFolder, get_symbolic_constraints,
     };
     use rand::rngs::SmallRng;
-    use rand::{RngCore, SeedableRng};
+    use rand::{Rng, SeedableRng};
 
     use super::*;
 

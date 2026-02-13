@@ -20,7 +20,7 @@ use p3_uni_stark::{
     StarkGenericConfig, prove_with_preprocessed, setup_preprocessed, verify_with_preprocessed,
 };
 use rand::rngs::SmallRng;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use tracing_forest::ForestLayer;
 use tracing_forest::util::LevelFilter;
 use tracing_subscriber::layer::SubscriberExt;
