@@ -11,7 +11,7 @@ use p3_fri::create_test_fri_params;
 use p3_lookup::logup::LogUpGadget;
 use p3_poseidon2_circuit_air::BabyBearD4Width16;
 use p3_recursion::Poseidon2Config;
-use p3_recursion::pcs::fri::{FriVerifierParams, HashTargets, InputProofTargets, RecValMmcs};
+use p3_recursion::pcs::fri::{FriVerifierParams, InputProofTargets, MerkleCapTargets, RecValMmcs};
 use p3_recursion::pcs::set_fri_mmcs_private_data;
 use p3_recursion::verifier::verify_p3_recursion_proof_circuit;
 use tracing_forest::ForestLayer;
@@ -65,7 +65,7 @@ fn test_fibonacci_batch_verifier() {
     let perm = default_babybear_poseidon2_16();
     let hash = MyHash::new(perm.clone());
     let compress = MyCompress::new(perm.clone());
-    let val_mmcs = ValMmcs::new(hash, compress);
+    let val_mmcs = ValMmcs::new(hash, compress, 0);
     let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
     let dft = Dft::default();
 
@@ -111,7 +111,7 @@ fn test_fibonacci_batch_verifier() {
     let perm2 = default_babybear_poseidon2_16();
     let hash2 = MyHash::new(perm2.clone());
     let compress2 = MyCompress::new(perm2.clone());
-    let val_mmcs2 = ValMmcs::new(hash2, compress2);
+    let val_mmcs2 = ValMmcs::new(hash2, compress2, 0);
     let challenge_mmcs2 = ChallengeMmcs::new(val_mmcs2.clone());
     let fri_params2 = create_test_fri_params(challenge_mmcs2, 0);
     let fri_verifier_params = FriVerifierParams::with_mmcs(
@@ -144,7 +144,7 @@ fn test_fibonacci_batch_verifier() {
     // Attach verifier without manually building circuit_airs
     let (verifier_inputs, mmcs_op_ids) = verify_p3_recursion_proof_circuit::<
         MyConfig,
-        HashTargets<F, DIGEST_ELEMS>,
+        MerkleCapTargets<F, DIGEST_ELEMS>,
         InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>>,
         InnerFri,
         LogUpGadget,
@@ -212,7 +212,7 @@ fn test_fibonacci_batch_verifier() {
     let perm3 = default_babybear_poseidon2_16();
     let hash3 = MyHash::new(perm3.clone());
     let compress3 = MyCompress::new(perm3.clone());
-    let val_mmcs3 = ValMmcs::new(hash3, compress3);
+    let val_mmcs3 = ValMmcs::new(hash3, compress3, 0);
     let challenge_mmcs3 = ChallengeMmcs::new(val_mmcs3.clone());
     let fri_params3 = create_test_fri_params(challenge_mmcs3, 0);
     let pcs3 = MyPcs::new(dft3, val_mmcs3, fri_params3);

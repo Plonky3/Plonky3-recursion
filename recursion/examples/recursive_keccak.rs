@@ -55,7 +55,9 @@ use p3_fri::{FriParameters, TwoAdicFriPcs};
 use p3_keccak_air::KeccakAir;
 use p3_lookup::logup::LogUpGadget;
 use p3_merkle_tree::MerkleTreeMmcs;
-use p3_recursion::pcs::{HashTargets, InputProofTargets, RecValMmcs, set_fri_mmcs_private_data};
+use p3_recursion::pcs::{
+    InputProofTargets, MerkleCapTargets, RecValMmcs, set_fri_mmcs_private_data,
+};
 use p3_recursion::verifier::verify_p3_recursion_proof_circuit;
 use p3_recursion::{
     FriVerifierParams, Poseidon2Config, StarkVerifierInputsBuilder, verify_circuit,
@@ -229,7 +231,7 @@ macro_rules! define_field_module {
                 let perm = $default_perm();
                 let hash = MyHash::new(perm.clone());
                 let compress = MyCompress::new(perm.clone());
-                let val_mmcs = ValMmcs::new(hash, compress);
+                let val_mmcs = ValMmcs::new(hash, compress, 0);
                 let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
                 let dft = Dft::default();
 
@@ -301,7 +303,7 @@ macro_rules! define_field_module {
 
                     let verifier_inputs_1 = StarkVerifierInputsBuilder::<
                         MyConfig,
-                        HashTargets<F, DIGEST_ELEMS>,
+                        MerkleCapTargets<F, DIGEST_ELEMS>,
                         InnerFri,
                     >::allocate(
                         &mut circuit_builder_1, &proof_0, None, pis.len()
@@ -310,7 +312,7 @@ macro_rules! define_field_module {
                     let mmcs_op_ids_1 = verify_circuit::<
                         KeccakAir,
                         MyConfig,
-                        HashTargets<F, DIGEST_ELEMS>,
+                        MerkleCapTargets<F, DIGEST_ELEMS>,
                         InputProofTargets<
                             F,
                             Challenge,
@@ -414,7 +416,7 @@ macro_rules! define_field_module {
 
                     let (verifier_inputs, mmcs_op_ids) = verify_p3_recursion_proof_circuit::<
                         MyConfig,
-                        HashTargets<F, DIGEST_ELEMS>,
+                        MerkleCapTargets<F, DIGEST_ELEMS>,
                         InputProofTargets<
                             F,
                             Challenge,

@@ -13,7 +13,7 @@ use p3_field::{
 };
 use p3_fri::{CommitPhaseProofStep, FriProof, QueryProof, TwoAdicFriPcs};
 use p3_merkle_tree::MerkleTreeMmcs;
-use p3_symmetric::{CryptographicHasher, Hash, PseudoCompressionFunction};
+use p3_symmetric::{CryptographicHasher, MerkleCap, PseudoCompressionFunction};
 use p3_uni_stark::{StarkGenericConfig, Val};
 use serde::{Deserialize, Serialize};
 
@@ -317,39 +317,53 @@ impl<F: Field, EF: ExtensionField<F>, Inner: RecursiveMmcs<F, EF>> Recursive<EF>
 
 // Now, we define the commitment schemes.
 
-/// `HashTargets` corresponds to a commitment in the form of hashes with `DIGEST_ELEMS` digest elements.
+/// `MerkleCapTargets` corresponds to a Merkle cap commitment with `2^cap_height` hash entries,
+/// each having `DIGEST_ELEMS` digest elements.
 ///
 /// Uses **lifted representation**: each base field hash element is stored as a separate extension
 /// field target `EF([v, 0, 0, 0])`. This is consistent with Fiat-Shamir observation.
+///
+/// A cap of height 0 contains a single entry (the root), while a cap of height `h` contains
+/// `2^h` entries. The Fiat-Shamir transcript observes all entries sequentially.
 #[derive(Clone)]
-pub struct HashTargets<F, const DIGEST_ELEMS: usize> {
-    pub hash_targets: [Target; DIGEST_ELEMS],
+pub struct MerkleCapTargets<F, const DIGEST_ELEMS: usize> {
+    pub cap_targets: Vec<[Target; DIGEST_ELEMS]>,
     _phantom: PhantomData<F>,
 }
 
-impl<F, const DIGEST_ELEMS: usize> ObservableCommitment for HashTargets<F, DIGEST_ELEMS> {
+impl<F, const DIGEST_ELEMS: usize> ObservableCommitment for MerkleCapTargets<F, DIGEST_ELEMS> {
     fn to_observation_targets(&self) -> Vec<Target> {
-        self.hash_targets.to_vec()
+        self.cap_targets
+            .iter()
+            .flat_map(|entry| entry.iter().copied())
+            .collect()
     }
 }
 
 type ValMmcsCommitment<F, const DIGEST_ELEMS: usize> =
-    Hash<<F as PackedValue>::Value, <F as PackedValue>::Value, DIGEST_ELEMS>;
+    MerkleCap<<F as PackedValue>::Value, <F as PackedValue>::Value, DIGEST_ELEMS>;
 
 impl<F: Field, EF: ExtensionField<F>, const DIGEST_ELEMS: usize> Recursive<EF>
-    for HashTargets<F, DIGEST_ELEMS>
+    for MerkleCapTargets<F, DIGEST_ELEMS>
 {
     type Input = ValMmcsCommitment<F, DIGEST_ELEMS>;
 
-    fn new(circuit: &mut CircuitBuilder<EF>, _input: &Self::Input) -> Self {
+    fn new(circuit: &mut CircuitBuilder<EF>, input: &Self::Input) -> Self {
+        let cap_targets = (0..input.len())
+            .map(|_| circuit.alloc_public_input_array("MMCS commitment cap entry"))
+            .collect();
         Self {
-            hash_targets: circuit.alloc_public_input_array("MMCS commitment digest"),
+            cap_targets,
             _phantom: PhantomData,
         }
     }
 
     fn get_values(input: &Self::Input) -> Vec<EF> {
-        input.into_iter().map(|v| EF::from(v)).collect()
+        input
+            .as_slice()
+            .iter()
+            .flat_map(|entry| entry.iter().map(|v| EF::from(*v)))
+            .collect()
     }
 }
 
@@ -433,7 +447,7 @@ where
 {
     type Input = MerkleTreeMmcs<F::Packing, F::Packing, H, C, DIGEST_ELEMS>;
 
-    type Commitment = HashTargets<F, DIGEST_ELEMS>;
+    type Commitment = MerkleCapTargets<F, DIGEST_ELEMS>;
 
     type Proof = HashProofTargets<F, DIGEST_ELEMS>;
 }

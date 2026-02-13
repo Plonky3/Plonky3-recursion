@@ -886,9 +886,16 @@ where
     {
         // Recursive MMCS verification for this batch
         if let Some(perm_config) = permutation_config {
-            // Pack commitment from lifted to packed representation
+            // Pack commitment cap from lifted to packed representation
             let lifted_commitment = batch_commit.to_observation_targets();
-            let packed_commitment = pack_lifted_to_ext::<F, EF>(builder, &lifted_commitment);
+            let packed_commitment_flat = pack_lifted_to_ext::<F, EF>(builder, &lifted_commitment);
+
+            // Reshape flat packed commitment into cap entries
+            let rate_ext = perm_config.rate_ext();
+            let commitment_cap: Vec<Vec<Target>> = packed_commitment_flat
+                .chunks(rate_ext)
+                .map(|c| c.to_vec())
+                .collect();
 
             // Pack opened values from lifted to packed representation
             let packed_openings: Vec<Vec<Target>> = batch_openings
@@ -911,7 +918,7 @@ where
             let op_ids = verify_batch_circuit::<F, EF>(
                 builder,
                 perm_config,
-                &packed_commitment,
+                &commitment_cap,
                 &dimensions,
                 &base_widths,
                 index_bits,
@@ -1266,9 +1273,17 @@ where
                 let evals =
                     reconstruct_evals(builder, current_folded, siblings, index_in_group_bits);
 
-                // Pack commitment from lifted to packed representation
+                // Pack commitment cap from lifted to packed representation
                 let lifted_commitment = commit.to_observation_targets();
-                let packed_commitment = pack_lifted_to_ext::<F, EF>(builder, &lifted_commitment);
+                let packed_commitment_flat =
+                    pack_lifted_to_ext::<F, EF>(builder, &lifted_commitment);
+
+                // Reshape flat packed commitment into cap entries
+                let rate_ext = perm_config.rate_ext();
+                let commitment_cap: Vec<Vec<Target>> = packed_commitment_flat
+                    .chunks(rate_ext)
+                    .map(|c| c.to_vec())
+                    .collect();
 
                 // Dimensions: width = arity, height = 2^log_folded_height
                 let folded_height = 1usize << log_folded_height;
@@ -1295,7 +1310,7 @@ where
                 let commit_phase_ops = verify_batch_circuit::<F, EF>(
                     builder,
                     perm_config,
-                    &packed_commitment,
+                    &commitment_cap,
                     &dimensions,
                     &base_widths,
                     &parent_index_bits,

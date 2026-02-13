@@ -11,7 +11,7 @@ use p3_poseidon2_circuit_air::{
     Poseidon2CircuitAirBabyBearD4Width16, extract_preprocessed_from_operations,
 };
 use p3_recursion::pcs::fri::{
-    FriProofTargets, FriVerifierParams, HashTargets, InputProofTargets, RecExtensionValMmcs,
+    FriProofTargets, FriVerifierParams, InputProofTargets, MerkleCapTargets, RecExtensionValMmcs,
     RecValMmcs, Witness,
 };
 use p3_recursion::public_inputs::StarkVerifierInputsBuilder;
@@ -72,7 +72,7 @@ fn test_poseidon2_perm_verifier() -> Result<(), VerificationError> {
 
     let hash = MyHash::new(perm.clone());
     let compress = MyCompress::new(perm.clone());
-    let val_mmcs = ValMmcs::new(hash, compress);
+    let val_mmcs = ValMmcs::new(hash, compress, 0);
     let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
     let dft = Dft::default();
     // Keep a small final poly length; with enough rows we still get FRI fold phases.
@@ -149,18 +149,21 @@ fn test_poseidon2_perm_verifier() -> Result<(), VerificationError> {
         generate_poseidon2_trace::<Challenge, BabyBearD1Width16>,
         perm,
     );
-    let verifier_inputs =
-        StarkVerifierInputsBuilder::<MyConfig, HashTargets<F, DIGEST_ELEMS>, InnerFri>::allocate(
-            &mut circuit_builder,
-            &proof,
-            Some(&verifier_data.commitment),
-            public_inputs.len(),
-        );
+    let verifier_inputs = StarkVerifierInputsBuilder::<
+        MyConfig,
+        MerkleCapTargets<F, DIGEST_ELEMS>,
+        InnerFri,
+    >::allocate(
+        &mut circuit_builder,
+        &proof,
+        Some(&verifier_data.commitment),
+        public_inputs.len(),
+    );
 
     verify_circuit::<
         Poseidon2CircuitAirBabyBearD4Width16,
         MyConfig,
-        HashTargets<F, DIGEST_ELEMS>,
+        MerkleCapTargets<F, DIGEST_ELEMS>,
         InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>>,
         InnerFri,
         WIDTH,

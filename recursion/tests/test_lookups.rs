@@ -17,7 +17,7 @@ use p3_lookup::logup::LogUpGadget;
 use p3_lookup::lookup_traits::LookupData;
 use p3_poseidon2_circuit_air::BabyBearD4Width16;
 use p3_recursion::generation::generate_batch_challenges;
-use p3_recursion::pcs::fri::{FriVerifierParams, HashTargets, InputProofTargets, RecValMmcs};
+use p3_recursion::pcs::fri::{FriVerifierParams, InputProofTargets, MerkleCapTargets, RecValMmcs};
 use p3_recursion::verifier::{CircuitTablesAir, verify_p3_recursion_proof_circuit};
 use p3_recursion::{BatchStarkVerifierInputsBuilder, GenerationError, VerificationError};
 const TRACE_D: usize = 1; // Proof traces are in base field
@@ -638,7 +638,7 @@ fn get_proving_config() -> MyConfig {
     let perm = default_babybear_poseidon2_16();
     let hash = MyHash::new(perm.clone());
     let compress = MyCompress::new(perm.clone());
-    let val_mmcs = ValMmcs::new(hash, compress);
+    let val_mmcs = ValMmcs::new(hash, compress, 0);
     let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
     let dft = Dft::default();
 
@@ -656,7 +656,7 @@ fn get_recursive_config_and_params() -> (MyConfig, FriVerifierParams, usize, usi
     let perm2 = default_babybear_poseidon2_16();
     let hash2 = MyHash::new(perm2.clone());
     let compress2 = MyCompress::new(perm2.clone());
-    let val_mmcs2 = ValMmcs::new(hash2, compress2);
+    let val_mmcs2 = ValMmcs::new(hash2, compress2, 0);
     let challenge_mmcs2 = ChallengeMmcs::new(val_mmcs2.clone());
     let fri_params2 = create_test_fri_params(challenge_mmcs2, 0);
     let fri_verifier_params = FriVerifierParams::from(&fri_params2);
@@ -674,7 +674,7 @@ fn get_recursive_config_and_params() -> (MyConfig, FriVerifierParams, usize, usi
 
 type ResultVerifierInputsAndChallenges = (
     Result<
-        BatchStarkVerifierInputsBuilder<MyConfig, HashTargets<F, DIGEST_ELEMS>, InnerFri>,
+        BatchStarkVerifierInputsBuilder<MyConfig, MerkleCapTargets<F, DIGEST_ELEMS>, InnerFri>,
         VerificationError,
     >,
     Result<Vec<Challenge>, GenerationError>,
@@ -722,7 +722,7 @@ fn get_verifier_inputs_and_challenges(
     // Attach verifier without manually building circuit_airs
     let verifier_inputs = verify_p3_recursion_proof_circuit::<
         MyConfig,
-        HashTargets<F, DIGEST_ELEMS>,
+        MerkleCapTargets<F, DIGEST_ELEMS>,
         InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>>,
         InnerFri,
         LogUpGadget,

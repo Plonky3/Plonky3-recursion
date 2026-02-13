@@ -70,6 +70,14 @@ pub fn format_openings<T: Clone + alloc::fmt::Debug>(
     Ok(formatted_openings)
 }
 
+/// Verify a Merkle path in the circuit.
+///
+/// `openings_expr` contains the row digests at each tree level. When its length equals
+/// `directions_expr.len()`, every entry corresponds to a sibling-compression step.
+/// When its length is `directions_expr.len() + 1`, the extra trailing entry is a
+/// **tail digest**: it is compressed into the running hash *after* the last sibling
+/// step but *before* the root comparison. This mirrors the native MMCS behaviour
+/// where matrices at the cap level are injected after the final proof sibling.
 pub fn add_mmcs_verify<F: Field>(
     builder: &mut CircuitBuilder<F>,
     permutation_config: Poseidon2Config,
@@ -81,9 +89,19 @@ pub fn add_mmcs_verify<F: Field>(
     let mut op_ids = Vec::with_capacity(openings_expr.len());
     let mut output = [None, None, None, None];
     let zero = builder.add_const(F::ZERO);
-    for (i, (row_digest, direction)) in openings_expr.iter().zip(directions_expr).enumerate() {
+
+    // Detect a non-empty tail digest (cap-level rows to inject after the main path).
+    let has_tail = openings_expr.len() > directions_expr.len()
+        && !openings_expr[directions_expr.len()].is_empty();
+
+    let path_openings = &openings_expr[..directions_expr.len()];
+
+    for (i, (row_digest, direction)) in path_openings.iter().zip(directions_expr).enumerate() {
         let is_first = i == 0;
-        let is_last = i == directions_expr.len() - 1;
+        let is_last_direction = i == directions_expr.len() - 1;
+        // The step is truly final only when there is no tail to inject afterwards.
+        let is_final = is_last_direction && !has_tail;
+
         // Extra row (if any) must be combined before the main sibling step.
         if !is_first && !row_digest.is_empty() {
             let _ = builder.add_poseidon2_perm(Poseidon2PermCall {
@@ -108,13 +126,30 @@ pub fn add_mmcs_verify<F: Field>(
             } else {
                 [None, None, None, None]
             },
-            out_ctl: [is_last, is_last],
+            out_ctl: [is_final, is_final],
             return_all_outputs: false,
             mmcs_index_sum: None,
         })?;
         op_ids.push(op_id);
         output = maybe_output;
     }
+
+    // Inject tail digest (cap-level rows) after the last sibling step.
+    if has_tail {
+        let tail = &openings_expr[directions_expr.len()];
+        let (_, tail_output) = builder.add_poseidon2_perm(Poseidon2PermCall {
+            config: permutation_config,
+            new_start: false,
+            merkle_path: true,
+            mmcs_bit: Some(zero),
+            inputs: [None, None, Some(tail[0]), Some(tail[1])],
+            out_ctl: [true, true],
+            return_all_outputs: false,
+            mmcs_index_sum: None,
+        })?;
+        output = tail_output;
+    }
+
     // Only outputs 0-1 are CTL-exposed for MMCS verification
     let output = [output[0], output[1]]
         .into_iter()

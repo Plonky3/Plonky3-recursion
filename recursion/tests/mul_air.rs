@@ -8,7 +8,7 @@ use p3_circuit::ops::generate_poseidon2_trace;
 use p3_fri::create_test_fri_params;
 use p3_matrix::Matrix;
 use p3_poseidon2_circuit_air::BabyBearD4Width16;
-use p3_recursion::pcs::fri::{FriVerifierParams, HashTargets};
+use p3_recursion::pcs::fri::{FriVerifierParams, MerkleCapTargets};
 use p3_recursion::public_inputs::StarkVerifierInputsBuilder;
 use p3_recursion::{Poseidon2Config, VerificationError, verify_circuit};
 use p3_uni_stark::{prove_with_preprocessed, setup_preprocessed, verify_with_preprocessed};
@@ -27,7 +27,7 @@ fn test_mul_verifier_circuit() -> Result<(), VerificationError> {
     let perm = default_babybear_poseidon2_16();
     let hash = MyHash::new(perm.clone());
     let compress = MyCompress::new(perm.clone());
-    let val_mmcs = ValMmcs::new(hash, compress);
+    let val_mmcs = ValMmcs::new(hash, compress, 0);
     let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
     let dft = Dft::default();
 
@@ -68,13 +68,16 @@ fn test_mul_verifier_circuit() -> Result<(), VerificationError> {
     );
 
     // Allocate all targets
-    let verifier_inputs =
-        StarkVerifierInputsBuilder::<MyConfig, HashTargets<F, DIGEST_ELEMS>, InnerFri>::allocate(
-            &mut circuit_builder,
-            &proof,
-            preprocessed_vk.as_ref().map(|vk| &vk.commitment),
-            pis.len(),
-        );
+    let verifier_inputs = StarkVerifierInputsBuilder::<
+        MyConfig,
+        MerkleCapTargets<F, DIGEST_ELEMS>,
+        InnerFri,
+    >::allocate(
+        &mut circuit_builder,
+        &proof,
+        preprocessed_vk.as_ref().map(|vk| &vk.commitment),
+        pis.len(),
+    );
 
     // Add the verification circuit to the builder
     verify_circuit::<_, _, _, _, _, WIDTH, RATE>(

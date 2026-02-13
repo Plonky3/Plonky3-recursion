@@ -11,7 +11,7 @@ use p3_lookup::logup::LogUpGadget;
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_poseidon2_circuit_air::BabyBearD4Width16;
-use p3_recursion::pcs::HashTargets;
+use p3_recursion::pcs::MerkleCapTargets;
 use p3_recursion::{
     BatchStarkVerifierInputsBuilder, FriVerifierParams, Poseidon2Config, VerificationError,
     verify_batch_circuit,
@@ -233,7 +233,7 @@ fn test_batch_verifier_with_mixed_preprocessed() -> Result<(), VerificationError
     let perm = default_babybear_poseidon2_16();
     let hash = MyHash::new(perm.clone());
     let compress = MyCompress::new(perm.clone());
-    let val_mmcs = ValMmcs::new(hash, compress);
+    let val_mmcs = ValMmcs::new(hash, compress, 0);
     let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
     let dft = Dft::default();
 
@@ -314,7 +314,7 @@ fn test_batch_verifier_with_mixed_preprocessed() -> Result<(), VerificationError
     let air_public_counts = vec![0usize; batch_proof.opened_values.instances.len()];
     let verifier_inputs = BatchStarkVerifierInputsBuilder::<
         MyConfig,
-        HashTargets<F, DIGEST_ELEMS>,
+        MerkleCapTargets<F, DIGEST_ELEMS>,
         InnerFri,
     >::allocate(
         &mut circuit_builder,

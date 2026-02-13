@@ -13,7 +13,7 @@ use p3_matrix::dense::RowMajorMatrix;
 use p3_poseidon2_circuit_air::BabyBearD4Width16;
 // Recursive target graph pieces
 use p3_recursion::pcs::fri::{
-    FriProofTargets, HashTargets, InputProofTargets, RecExtensionValMmcs, RecValMmcs,
+    FriProofTargets, InputProofTargets, MerkleCapTargets, RecExtensionValMmcs, RecValMmcs,
     Witness as RecWitness,
 };
 use p3_recursion::public_inputs::{CommitmentOpening, FriVerifierInputs};
@@ -124,7 +124,7 @@ fn produce_inputs_multi(
     for evals in &groups_evals {
         let (commitment, prover_data) =
             <MyPcs as Pcs<Challenge, Challenger>>::commit(pcs, evals.clone());
-        p_challenger.observe(commitment);
+        p_challenger.observe(commitment.clone());
         commitments_and_data.push((commitment, prover_data));
     }
 
@@ -146,7 +146,7 @@ fn produce_inputs_multi(
     let mut v_challenger = Challenger::new(perm.clone());
     v_challenger.observe_slice(&val_sizes);
     for (commitment, _) in &commitments_and_data {
-        v_challenger.observe(*commitment);
+        v_challenger.observe(commitment.clone());
     }
     let _zeta_v: Challenge = v_challenger.sample_algebra_element();
 
@@ -179,7 +179,7 @@ fn produce_inputs_multi(
     // β_i per phase: observe commitment, then sample β
     let mut betas: Vec<Challenge> = Vec::with_capacity(commit_phase_commits.len());
     for (c, w) in commit_phase_commits.iter().zip(commit_pow_witnesses.iter()) {
-        v_challenger.observe(*c);
+        v_challenger.observe(c.clone());
         assert!(v_challenger.check_witness(commit_pow_bits, *w));
         betas.push(v_challenger.sample_algebra_element());
     }
@@ -335,7 +335,7 @@ fn generate_setup(log_final_poly_len: usize, group_sizes: Vec<Vec<u8>>) -> FriSe
     let perm = default_babybear_poseidon2_16();
     let hash = MyHash::new(perm.clone());
     let compress = MyCompress::new(perm.clone());
-    let val_mmcs = ValMmcs::new(hash, compress);
+    let val_mmcs = ValMmcs::new(hash, compress, 0);
     let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
     let dft = Dft::<F>::default();
 
@@ -592,7 +592,7 @@ fn run_fri_test_with_mmcs(setup: FriSetup) {
         })
         .collect();
 
-    // 3) Build commitments_with_opening_points targets structure with HashTargets
+    // 3) Build commitments_with_opening_points targets structure with MerkleCapTargets
     // Extract actual commitments from the prover transcript
     let mut v_challenger = Challenger::new(perm);
     let val_sizes: Vec<F> = group_sizes
@@ -602,7 +602,7 @@ fn run_fri_test_with_mmcs(setup: FriSetup) {
     v_challenger.observe_slice(&val_sizes);
 
     // Rebuild commitments for targets and values
-    let mut actual_commitments: Vec<[F; DIGEST_ELEMS]> = Vec::new();
+    let mut actual_commitments = Vec::new();
 
     // We need to extract the commitments from the PCS - for this test, we'll
     // recreate the evaluation matrices and re-commit to get the actual values
@@ -614,8 +614,8 @@ fn run_fri_test_with_mmcs(setup: FriSetup) {
     for evals in &groups_evals {
         let (commitment, _prover_data) =
             <MyPcs as Pcs<Challenge, Challenger>>::commit(&pcs, evals.clone());
-        v_challenger.observe(commitment);
-        actual_commitments.push(commitment.into());
+        v_challenger.observe(commitment.clone());
+        actual_commitments.push(commitment);
     }
 
     let mut commitments_with_opening_points_targets = Vec::new();
@@ -623,10 +623,10 @@ fn run_fri_test_with_mmcs(setup: FriSetup) {
     for (group_idx, (_commit_placeholder, mats_data)) in
         result.commitments_with_points.iter().enumerate()
     {
-        // Allocate HashTargets for the commitment using Recursive::new
-        let commit_hash_targets = <HashTargets<F, DIGEST_ELEMS> as Recursive<Challenge>>::new(
+        // Allocate MerkleCapTargets for the commitment using Recursive::new
+        let commit_hash_targets = <MerkleCapTargets<F, DIGEST_ELEMS> as Recursive<Challenge>>::new(
             &mut builder,
-            &p3_symmetric::Hash::from(actual_commitments[group_idx]),
+            &actual_commitments[group_idx],
         );
 
         let mut mats_targets = Vec::new();
@@ -650,7 +650,7 @@ fn run_fri_test_with_mmcs(setup: FriSetup) {
         RecExt,
         RecVal,
         RecWitness<F>,
-        HashTargets<F, DIGEST_ELEMS>,
+        MerkleCapTargets<F, DIGEST_ELEMS>,
     >(
         &mut builder,
         &fri_targets,
@@ -689,13 +689,15 @@ fn run_fri_test_with_mmcs(setup: FriSetup) {
     }
 
     // 5. Commitments with opening points
-    // HashTargets uses lifted representation (one target per base field value)
+    // MerkleCapTargets uses lifted representation (one target per base field value)
     for (group_idx, (_commit_placeholder, mats_data)) in
         result.commitments_with_points.iter().enumerate()
     {
-        // Commitment as lifted extension field values
-        for &c in &actual_commitments[group_idx] {
-            packed_inputs.push(Challenge::from(c));
+        // Commitment cap entries as lifted extension field values
+        for entry in actual_commitments[group_idx].as_slice() {
+            for &c in entry {
+                packed_inputs.push(Challenge::from(c));
+            }
         }
 
         // Then (z, fz) pairs for each matrix

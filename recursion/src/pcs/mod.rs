@@ -5,7 +5,7 @@ pub mod mmcs;
 
 pub use fri::{
     BatchOpeningTargets, CommitPhaseProofStepTargets, FriProofTargets, FriVerifierParams,
-    HashProofTargets, HashTargets, InputProofTargets, MAX_QUERY_INDEX_BITS, QueryProofTargets,
+    HashProofTargets, InputProofTargets, MAX_QUERY_INDEX_BITS, MerkleCapTargets, QueryProofTargets,
     RecExtensionValMmcs, RecValMmcs, TwoAdicFriProofTargets, Witness, verify_fri_circuit,
 };
 pub use mmcs::{set_fri_mmcs_private_data, verify_batch_circuit};

@@ -161,7 +161,7 @@ where
         let compress = Compress::<PermCompress, COMPRESS_PERM_WIDTH, COMPRESS_CHUNK>::new(
             self.perm_compress.clone(),
         );
-        let val_mmcs = MerkleTreeMmcs::new(hash, compress);
+        let val_mmcs = MerkleTreeMmcs::new(hash, compress, 3);
         let challenge_mmcs = ExtensionMmcs::new(val_mmcs.clone());
         let dft = Radix2DitParallel::default();
         let fri_params = create_benchmark_fri_params_high_arity(challenge_mmcs);

@@ -49,7 +49,7 @@ use p3_fri::{FriParameters, TwoAdicFriPcs};
 use p3_lookup::logup::LogUpGadget;
 use p3_merkle_tree::MerkleTreeMmcs;
 use p3_recursion::Poseidon2Config;
-use p3_recursion::pcs::fri::{FriVerifierParams, HashTargets, InputProofTargets, RecValMmcs};
+use p3_recursion::pcs::fri::{FriVerifierParams, InputProofTargets, MerkleCapTargets, RecValMmcs};
 use p3_recursion::pcs::set_fri_mmcs_private_data;
 use p3_recursion::verifier::verify_p3_recursion_proof_circuit;
 use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
@@ -216,7 +216,7 @@ macro_rules! define_field_module {
                 let perm = $default_perm();
                 let hash = MyHash::new(perm.clone());
                 let compress = MyCompress::new(perm.clone());
-                let val_mmcs = ValMmcs::new(hash, compress);
+                let val_mmcs = ValMmcs::new(hash, compress, 0);
                 let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
                 let dft = Dft::default();
 
@@ -348,7 +348,7 @@ macro_rules! define_field_module {
                         let config = create_config(fri_params);
                         let (vi, mmcs) = verify_p3_recursion_proof_circuit::<
                             MyConfig,
-                            HashTargets<F, DIGEST_ELEMS>,
+                            MerkleCapTargets<F, DIGEST_ELEMS>,
                             InputProofTargets<
                                 F,
                                 Challenge,
@@ -379,7 +379,7 @@ macro_rules! define_field_module {
                         let config = create_config(fri_params);
                         let (vi, mmcs) = verify_p3_recursion_proof_circuit::<
                             MyConfig,
-                            HashTargets<F, DIGEST_ELEMS>,
+                            MerkleCapTargets<F, DIGEST_ELEMS>,
                             InputProofTargets<
                                 F,
                                 Challenge,

@@ -7,7 +7,7 @@ use p3_circuit::test_utils::{FibonacciAir, generate_trace_rows};
 use p3_field::PrimeCharacteristicRing;
 use p3_fri::create_test_fri_params;
 use p3_poseidon2_circuit_air::BabyBearD4Width16;
-use p3_recursion::pcs::fri::{FriVerifierParams, HashTargets, InputProofTargets, RecValMmcs};
+use p3_recursion::pcs::fri::{FriVerifierParams, InputProofTargets, MerkleCapTargets, RecValMmcs};
 use p3_recursion::pcs::set_fri_mmcs_private_data;
 use p3_recursion::public_inputs::StarkVerifierInputsBuilder;
 use p3_recursion::{Poseidon2Config, VerificationError, verify_circuit};
@@ -41,7 +41,7 @@ fn test_fibonacci_verifier() -> Result<(), VerificationError> {
     let perm = default_babybear_poseidon2_16();
     let hash = MyHash::new(perm.clone());
     let compress = MyCompress::new(perm.clone());
-    let val_mmcs = ValMmcs::new(hash, compress);
+    let val_mmcs = ValMmcs::new(hash, compress, 0);
     let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
     let dft = Dft::default();
     let trace = generate_trace_rows::<F>(0, 1, n);
@@ -76,7 +76,7 @@ fn test_fibonacci_verifier() -> Result<(), VerificationError> {
     // Allocate all targets
     let verifier_inputs = StarkVerifierInputsBuilder::<
         MyConfig,
-        HashTargets<F, DIGEST_ELEMS>,
+        MerkleCapTargets<F, DIGEST_ELEMS>,
         InnerFri,
     >::allocate(&mut circuit_builder, &proof, None, pis.len());
 
@@ -84,7 +84,7 @@ fn test_fibonacci_verifier() -> Result<(), VerificationError> {
     let mmcs_op_ids = verify_circuit::<
         FibonacciAir,
         MyConfig,
-        HashTargets<F, DIGEST_ELEMS>,
+        MerkleCapTargets<F, DIGEST_ELEMS>,
         InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>>,
         InnerFri,
         WIDTH,
