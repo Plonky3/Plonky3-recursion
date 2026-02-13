@@ -816,11 +816,6 @@ fn compute_single_reduced_opening<EF: Field>(
     let mut reduced_opening = builder.add_const(EF::ZERO);
     let mut current_alpha_pow = alpha_pow;
 
-    // quotient = (z - x)^{-1}
-    let z_minus_x = builder.sub(challenge_point, evaluation_point);
-    let one = builder.add_const(EF::ONE);
-    let quotient = builder.div(one, z_minus_x);
-
     for (&p_at_x, &p_at_z) in opened_values.iter().zip(point_values.iter()) {
         // diff = p_at_z - p_at_x
         let diff = builder.sub(p_at_z, p_at_x);
@@ -833,8 +828,10 @@ fn compute_single_reduced_opening<EF: Field>(
         // advance alpha power for the *next column in this height*
         current_alpha_pow = builder.mul(current_alpha_pow, alpha);
     }
-    // term = reduced_opening * quotient
-    let reduced_opening = builder.mul(reduced_opening, quotient);
+
+    // Apply division by (z - x) once at the end: reduced_opening / (z - x)
+    let z_minus_x = builder.sub(challenge_point, evaluation_point);
+    let reduced_opening = builder.div(reduced_opening, z_minus_x);
 
     builder.pop_scope(); // close `compute_single_reduced_opening` scope
     (current_alpha_pow, reduced_opening)
