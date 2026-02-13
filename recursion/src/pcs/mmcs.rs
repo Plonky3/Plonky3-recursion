@@ -284,11 +284,15 @@ where
     )
 }
 
-/// Select one cap entry from a Merkle cap using index bits as a multiplexer.
+/// Select one cap entry from a Merkle cap using a binary tree multiplexer.
 ///
 /// For `cap_height = 0` (single entry), returns the entry directly.
-/// For `cap_height > 0`, computes a one-hot encoding of the index bits and uses it
-/// to select the correct entry via a dot product.
+/// For `cap_height > 0`, progressively halves the candidates using one index bit
+/// at each level. Each selection step computes `left + bit * (right - left)` per
+/// component, requiring only one multiplication per component per level.
+///
+/// Total cost: `rate_ext * (2^cap_height - 1)` multiplications, compared to
+/// `(cap_height + rate_ext) * 2^cap_height` for the one-hot + dot-product approach.
 fn select_cap_entry<EF: Field>(
     circuit: &mut CircuitBuilder<EF>,
     cap: &[Vec<Target>],
@@ -298,74 +302,35 @@ fn select_cap_entry<EF: Field>(
         return cap[0].clone();
     }
 
+    debug_assert_eq!(cap.len(), 1 << index_bits.len());
+
     let rate_ext = cap[0].len();
-    let cap_len = cap.len();
 
-    // Compute one-hot encoding of index_bits
-    let one_hot = compute_one_hot(circuit, index_bits, cap_len);
+    // Binary tree selection: each bit halves the number of candidates.
+    // bit[0] (LSB) selects between adjacent pairs, bit[1] between groups of 4, etc.
+    let mut current: Vec<Vec<Target>> = cap.to_vec();
 
-    // For each component of the cap entry, compute the dot product with one_hot
-    let mut selected = Vec::with_capacity(rate_ext);
-    for j in 0..rate_ext {
-        let mut acc = circuit.add_const(EF::ZERO);
-        for (i, entry) in cap.iter().enumerate() {
-            let term = circuit.mul(one_hot[i], entry[j]);
-            acc = circuit.add(acc, term);
-        }
-        selected.push(acc);
-    }
-
-    selected
-}
-
-/// Compute a one-hot encoding from binary index bits.
-///
-/// Returns a vector of `len` targets where exactly one is 1 and the rest are 0,
-/// corresponding to the integer value of the bits (little-endian).
-fn compute_one_hot<EF: Field>(
-    circuit: &mut CircuitBuilder<EF>,
-    bits: &[Target],
-    len: usize,
-) -> Vec<Target> {
-    debug_assert_eq!(len, 1 << bits.len());
-
-    match bits.len() {
-        0 => vec![circuit.add_const(EF::ONE)],
-        1 => {
-            let one = circuit.add_const(EF::ONE);
-            let b0 = bits[0];
-            let nb0 = circuit.sub(one, b0);
-            vec![nb0, b0]
-        }
-        2 => {
-            let one = circuit.add_const(EF::ONE);
-            let nb0 = circuit.sub(one, bits[0]);
-            let nb1 = circuit.sub(one, bits[1]);
-            vec![
-                circuit.mul(nb0, nb1),         // 00
-                circuit.mul(bits[0], nb1),     // 01
-                circuit.mul(nb0, bits[1]),     // 10
-                circuit.mul(bits[0], bits[1]), // 11
-            ]
-        }
-        _ => {
-            let one = circuit.add_const(EF::ONE);
-            let not_bits: Vec<Target> = bits.iter().map(|&bit| circuit.sub(one, bit)).collect();
-            let mut one_hot = Vec::with_capacity(len);
-            for j in 0..len {
-                let mut product = one;
-                for (k, &bit) in bits.iter().enumerate() {
-                    if (j >> k) & 1 == 1 {
-                        product = circuit.mul(product, bit);
-                    } else {
-                        product = circuit.mul(product, not_bits[k]);
-                    }
-                }
-                one_hot.push(product);
+    for &bit in index_bits {
+        let half = current.len() / 2;
+        let mut next = Vec::with_capacity(half);
+        for i in 0..half {
+            let left = &current[2 * i];
+            let right = &current[2 * i + 1];
+            let mut selected = Vec::with_capacity(rate_ext);
+            for j in 0..rate_ext {
+                // left[j] + bit * (right[j] - left[j])
+                let diff = circuit.sub(right[j], left[j]);
+                let term = circuit.mul(bit, diff);
+                let val = circuit.add(left[j], term);
+                selected.push(val);
             }
-            one_hot
+            next.push(selected);
         }
+        current = next;
     }
+
+    debug_assert_eq!(current.len(), 1);
+    current.into_iter().next().unwrap()
 }
 
 /// Convert a base field Merkle proof to extension field sibling values.

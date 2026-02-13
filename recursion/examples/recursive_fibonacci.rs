@@ -216,7 +216,7 @@ macro_rules! define_field_module {
                 let perm = $default_perm();
                 let hash = MyHash::new(perm.clone());
                 let compress = MyCompress::new(perm.clone());
-                let val_mmcs = ValMmcs::new(hash, compress, 0);
+                let val_mmcs = ValMmcs::new(hash, compress, 3);
                 let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
                 let dft = Dft::default();
 
