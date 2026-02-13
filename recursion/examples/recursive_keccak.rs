@@ -1,16 +1,44 @@
 //! Recursive Keccak proof verification example.
 //!
-//! This example demonstrates end-to-end recursive verification:
+//! This example demonstrates end-to-end multi-layer recursive verification:
 //! 1. **Layer 0 (Base)**: Create a Keccak AIR proof with Plonky3 STARK
-//! 2. **Layer 1 (Recursive)**: Build a verification circuit that checks the Layer 0 proof,
-//!    then prove this circuit itself
+//! 2. **Layer 1+ (Recursive)**: Build verification circuits that check the previous layer's proof,
+//!    then prove each verification circuit itself
+//!
+//! ## What this proves
+//!
+//! The final proof attests that:
+//! - The Keccak hash computation was performed correctly
+//! - All intermediate Plonky3 STARK verifications succeeded
+//! - The recursive proof chain is valid
+//!
+//! ## Multi-layer recursion
+//!
+//! This example supports configurable recursion depth via `--num-recursive-layers`.
+//! Each recursive layer verifies the previous layer's proof, creating a chain of proofs.
 //!
 //! ## Note on Performance
 //!
 //! The Keccak AIR produces a large verification circuit due to the complexity of Keccak
-//! constraints (~1700 columns). Recursive verification is computationally intensive.
+//! constraints (~2600 columns) and hence may require either additional recursive layers
+//! or more aggressive recursion parameters.
 //!
-//! Run with: cargo run --release --example recursive_keccak -- --field koala-bear --num-hashes 4
+//! ## Usage
+//!
+//! ```bash
+//! # Basic usage with default parameters (3 recursive layers)
+//! cargo run --release --example recursive_keccak -- --field koala-bear --num-hashes 1000
+//!
+//! # With custom FRI parameters and recursion depth
+//! cargo run --release --example recursive_keccak -- \
+//!     --field koala-bear \
+//!     --num-hashes 1000 \
+//!     --num-recursive-layers 5 \
+//!     --log-blowup 3 \
+//!     --max-log-arity 4 \
+//!     --log-final-poly-len 5 \
+//!     --query-pow-bits 16
+//! ```
 
 use clap::{Parser, ValueEnum};
 use p3_batch_stark::ProverData;
