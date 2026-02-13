@@ -286,7 +286,7 @@ macro_rules! define_field_module {
                 // (witness_lanes, public_lanes, add_lanes, mul_lanes)
                 // Using mul_lanes=2 for a circuit with no multiplications will trigger
                 // automatic lane reduction to mul_lanes=1 with a warning.
-                let table_packing_0 = TablePacking::new(1, 1, 2)
+                let table_packing_0 = TablePacking::new(1, 1, 1)
                     .with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup);
 
                 let config_0 = create_config(fri_params);
@@ -343,7 +343,7 @@ macro_rules! define_field_module {
 
                     let (table_packing, verifier_inputs, mmcs_op_ids) = if layer == 1 {
                         const TRACE_D_LAYER0: usize = 1;
-                        let table_packing = TablePacking::new(2, 2, 2)
+                        let table_packing = TablePacking::new(3, 1, 2)
                             .with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup);
                         let config = create_config(fri_params);
                         let (vi, mmcs) = verify_p3_recursion_proof_circuit::<
@@ -374,7 +374,7 @@ macro_rules! define_field_module {
                         (table_packing, vi, mmcs)
                     } else {
                         const TRACE_D_LAYER_REC: usize = 4;
-                        let table_packing = TablePacking::new(4, 3, 3)
+                        let table_packing = TablePacking::new(3, 1, 2)
                             .with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup);
                         let config = create_config(fri_params);
                         let (vi, mmcs) = verify_p3_recursion_proof_circuit::<
