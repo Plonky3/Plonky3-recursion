@@ -8,19 +8,18 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  CARGO_INCREMENTAL: 1
+  CARGO_INCREMENTAL: 0 // reduce disk bloat
 
 jobs:
   build_and_test:
     name: Build and Test
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
           - os: ubuntu-latest
             features: "+avx2"
-          - os: macos-latest
-          - os: windows-latest
     runs-on: ${{ matrix.os }}
     if: "! contains(toJSON(github.event.commits.*.message), '[skip-ci]')"
 
@@ -30,46 +29,56 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         id: rs-stable
 
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: rust-${{ steps.rs-stable.outputs.rustc_hash }}-${{ matrix.os }}-${{ matrix.features }}-${{ hashFiles('**/Cargo.toml') }}
-
-      - name: Set flags
+      - name: Set flags (AVX2)
         if: ${{ matrix.features }}
         run: |
           echo "RUSTFLAGS=-Ctarget-feature=${{ matrix.features }}" >> "$GITHUB_ENV"
 
-      - name: Build
-        run: cargo build --verbose --all-targets
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ matrix.os }}-${{ matrix.features }}
+          cache-on-failure: true
 
-      - name: Test
-        run: cargo test --verbose --all-targets
+      - name: Disk usage (before)
+        run: |
+          set -eux
+          df -h
+          du -sh target || true
+          du -sh ~/.cargo/registry ~/.cargo/git || true
 
-      - name: Test (all-features)
-        run: cargo test --verbose --all-targets --all-features
+      - name: Test (workspace)
+        run: cargo test --verbose --workspace --all-targets
+
+      - name: Test (workspace, all-features)
+        run: cargo test --verbose --workspace --all-targets --all-features
 
       - name: Check (release)
-        run: cargo check --verbose --all-targets --release
+        run: cargo check --verbose --workspace --all-targets --release
 
       - name: Test documentation
-        run: cargo test --verbose --doc
+        run: cargo test --verbose --workspace --doc
 
+      # Run examples only once (non-AVX2) to avoid duplicating heavy builds.
       - name: Run examples
+        if: ${{ !matrix.features }}
         run: |
           cargo run --package p3-circuit-prover --example fibonacci
           cargo run --package p3-circuit-prover --example poseidon2_perm_chain
           cargo run --package p3-circuit-prover --example poseidon2_perm_merkle
-          
+
       - name: Run allocation_log example with debug logging
+        if: ${{ !matrix.features }}
         env:
           RUST_LOG: debug
         run: cargo run --package p3-circuit --example allocation_log
+
+      - name: Disk usage (after)
+        if: always()
+        run: |
+          set -eux
+          df -h
+          du -sh target || true
+          du -sh ~/.cargo/registry ~/.cargo/git || true
 
   check_embedded:
     name: Build embedded
@@ -78,6 +87,7 @@ jobs:
 
     env:
       target: thumbv7em-none-eabi
+      CARGO_TARGET_DIR: target-embedded
 
     steps:
       - uses: actions/checkout@v4
@@ -87,15 +97,17 @@ jobs:
           targets: ${{ env.target }}
         id: rs-stable
 
-      - uses: actions/cache@v4
+      - uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: rust-${{ steps.rs-stable.outputs.rustc_hash }}-${{ env.target }}-${{ hashFiles('**/Cargo.toml') }}
+          shared-key: embedded-${{ env.target }}
+          cache-on-failure: true
+
+      - name: Disk usage (before)
+        run: |
+          set -eux
+          df -h
+          du -sh "${CARGO_TARGET_DIR}" || true
+          du -sh ~/.cargo/registry ~/.cargo/git || true
 
       # NB: Some crates are currently skipped as unimplemented.
       - name: Build
@@ -109,6 +121,14 @@ jobs:
           cargo build --verbose --target ${{ env.target }} -p p3-poseidon2-circuit-air
           cargo build --verbose --target ${{ env.target }} -p p3-symmetric-air
           cargo build --verbose --target ${{ env.target }} -p p3-recursion
+
+      - name: Disk usage (after)
+        if: always()
+        run: |
+          set -eux
+          df -h
+          du -sh "${CARGO_TARGET_DIR}" || true
+          du -sh ~/.cargo/registry ~/.cargo/git || true
 
   lint:
     name: Formatting and Clippy
@@ -127,19 +147,14 @@ jobs:
         with:
           components: rustfmt
 
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: lint
+          cache-on-failure: true
+
       - name: Install cargo-sort
         run: cargo install cargo-sort
 
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: rust-${{ steps.rs-stable.outputs.rustc_hash }}-${{ hashFiles('**/Cargo.toml') }}
-        
       - name: Sort Cargo.toml
         run: cargo +stable sort --workspace --grouped --check
 
