@@ -349,6 +349,14 @@ impl Optimizer {
             return None;
         }
 
+        // Don't fuse if the Mul's b is produced by a later op.
+        // The MulAdd would run at mul_idx but b wouldn't be available yet.
+        if let Some((b_def_idx, _)) = defs.get(&mul_b)
+            && *b_def_idx >= *mul_idx
+        {
+            return None;
+        }
+
         let muladd_op = Op::Alu {
             kind: AluOpKind::MulAdd,
             a: mul_a,
