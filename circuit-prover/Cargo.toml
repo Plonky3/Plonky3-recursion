@@ -46,7 +46,7 @@ thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-criterion = { version = "0.5", features = ["html_reports"] }
+criterion = { version = "0.8", features = ["html_reports"] }
 p3-test-utils.workspace = true
 postcard = { version = "1.0", default-features = false, features = ["alloc"] }
 rand.workspace = true
