@@ -222,35 +222,15 @@ impl Optimizer {
 
     /// Detects and fuses `a * b + c` patterns into MulAdd operations.
     ///
-    /// Pattern: add(mul(a, b), c) where the mul result is only used by this add.
-    /// This saves one row in the ALU table by combining the mul and add into one operation.
+    /// Pattern: add(mul(a, b), c) → single MulAdd that saves one ALU row.
+    /// The fused op sets `intermediate_out` to the mul's output WitnessId, so the
+    /// runner still writes `a*b` there and any other consumers of the mul result
+    /// are unaffected.
     ///
     /// Uses a two-phase approach to handle chained patterns correctly:
     /// 1. Identify all potential fusions (ignoring ordering)
     /// 2. Filter to only keep fusions where the addend is available at the mul's position
     fn fuse_mul_adds<F: Field>(&self, ops: Vec<Op<F>>) -> Vec<Op<F>> {
-        // Build use counts for each witness ID (counting ALL uses, not just ALU)
-        let mut use_counts: HashMap<WitnessId, usize> = HashMap::new();
-        for op in &ops {
-            match op {
-                Op::Alu { a, b, c, .. } => {
-                    *use_counts.entry(*a).or_insert(0) += 1;
-                    *use_counts.entry(*b).or_insert(0) += 1;
-                    if let Some(c_id) = c {
-                        *use_counts.entry(*c_id).or_insert(0) += 1;
-                    }
-                }
-                Op::NonPrimitiveOpWithExecutor { inputs, .. } => {
-                    for input_group in inputs {
-                        for witness_id in input_group {
-                            *use_counts.entry(*witness_id).or_insert(0) += 1;
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-
         // Build a map from output witness ID to operation definition.
         // Important: Const entries are never overwritten because witness slots shared
         // via connect() should keep the Const definition.
@@ -373,7 +353,6 @@ impl Optimizer {
                     *out,
                     add_idx,
                     &defs,
-                    &use_counts,
                     &backwards_add_computed,
                 ) {
                     potential_fusions.insert(add_idx, (mul_idx, muladd_op, addend));
@@ -387,7 +366,6 @@ impl Optimizer {
                     *out,
                     add_idx,
                     &defs,
-                    &use_counts,
                     &backwards_add_computed,
                 ) {
                     potential_fusions.insert(add_idx, (mul_idx, muladd_op, addend));
@@ -490,7 +468,6 @@ impl Optimizer {
         out: WitnessId,
         add_idx: usize,
         defs: &HashMap<WitnessId, (usize, OpDef<F>)>,
-        use_counts: &HashMap<WitnessId, usize>,
         backwards_add_computed: &HashMap<WitnessId, usize>,
     ) -> Option<(usize, Op<F>, WitnessId)> {
         // Check if mul_result is from a Mul operation
@@ -499,12 +476,6 @@ impl Optimizer {
             OpDef::Mul { a, b } => (*a, *b),
             _ => return None,
         };
-
-        // Check that mul_result is only used once (by this add)
-        let use_count = use_counts.get(&mul_result).copied().unwrap_or(0);
-        if use_count != 1 {
-            return None;
-        }
 
         // Don't fuse if mul_result is a constant (connect aliasing)
         if matches!(defs.get(&mul_result), Some((_, OpDef::Const(_)))) {
@@ -1007,11 +978,12 @@ mod tests {
     }
 
     #[test]
-    fn test_no_muladd_fusion_when_mul_has_multiple_uses_internal() {
-        // Test the fuse_mul_adds method directly (bypassing the disabled public API)
+    fn test_muladd_fusion_with_multi_use_mul() {
         let optimizer = Optimizer::new();
 
-        // Pattern: mul result is used twice (in add and elsewhere)
+        // mul result used twice: once in an add (fusible) and once elsewhere.
+        // Fusion should still happen because `intermediate_out` preserves the
+        // mul product for the second consumer.
         let a = WitnessId(0);
         let b = WitnessId(1);
         let c = WitnessId(2);
@@ -1021,31 +993,38 @@ mod tests {
 
         let ops: Vec<Op<F>> = vec![
             Op::mul(a, b, mul_result),            // a * b
-            Op::add(mul_result, c, add_result),   // (a * b) + c
-            Op::add(mul_result, a, other_result), // mul_result used again!
+            Op::add(mul_result, c, add_result),   // (a * b) + c  → fusible
+            Op::add(mul_result, a, other_result), // mul_result used again
         ];
 
-        // Call fuse_mul_adds directly
         let optimized = optimizer.fuse_mul_adds(ops);
 
-        // Should NOT fuse because mul_result has use count > 1
+        // One add fuses with the mul → MulAdd; the other add stays standalone.
         assert_eq!(
             optimized.len(),
-            3,
-            "Should not fuse when mul has multiple uses"
+            2,
+            "Expected 1 MulAdd + 1 standalone Add, got {:?}",
+            optimized
         );
 
-        // First op should still be mul
-        assert!(
-            matches!(
-                optimized[0],
-                Op::Alu {
-                    kind: AluOpKind::Mul,
-                    ..
-                }
-            ),
-            "First op should remain Mul"
-        );
+        let muladd_count = optimized
+            .iter()
+            .filter(|op| op.is_alu_kind(AluOpKind::MulAdd))
+            .count();
+        assert_eq!(muladd_count, 1, "Expected 1 MulAdd");
+
+        // The MulAdd must set intermediate_out so the second add can read mul_result.
+        let muladd = optimized
+            .iter()
+            .find(|op| op.is_alu_kind(AluOpKind::MulAdd))
+            .unwrap();
+        match muladd {
+            Op::Alu {
+                intermediate_out: Some(io),
+                ..
+            } => assert_eq!(*io, mul_result, "intermediate_out must be mul_result"),
+            _ => panic!("MulAdd should have intermediate_out set"),
+        }
     }
 
     // ---- constant folding tests ----
