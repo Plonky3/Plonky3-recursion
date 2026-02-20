@@ -56,7 +56,7 @@ type PcsDomain<SC> = <<SC as StarkGenericConfig>::Pcs as Pcs<
 /// private data for these operations before running the circuit.
 /// `Err` if there was a structural error.
 #[allow(clippy::too_many_arguments)]
-pub fn verify_circuit<
+pub fn verify_p3_uni_proof_circuit<
     A,
     SC: StarkGenericConfig,
     Comm: Recursive<

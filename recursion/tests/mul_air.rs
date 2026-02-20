@@ -10,7 +10,7 @@ use p3_matrix::Matrix;
 use p3_poseidon2_circuit_air::BabyBearD4Width16;
 use p3_recursion::pcs::fri::{FriVerifierParams, MerkleCapTargets};
 use p3_recursion::public_inputs::StarkVerifierInputsBuilder;
-use p3_recursion::{Poseidon2Config, VerificationError, verify_circuit};
+use p3_recursion::{Poseidon2Config, VerificationError, verify_p3_uni_proof_circuit};
 use p3_uni_stark::{prove_with_preprocessed, setup_preprocessed, verify_with_preprocessed};
 use p3_util::log2_ceil_usize;
 
@@ -80,7 +80,7 @@ fn test_mul_verifier_circuit() -> Result<(), VerificationError> {
     );
 
     // Add the verification circuit to the builder
-    verify_circuit::<_, _, _, _, _, WIDTH, RATE>(
+    verify_p3_uni_proof_circuit::<_, _, _, _, _, WIDTH, RATE>(
         &config,
         &air,
         &mut circuit_builder,

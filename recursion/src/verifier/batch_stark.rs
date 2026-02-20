@@ -374,7 +374,7 @@ fn extract_binomial_w<F: Field, EF: ExtensionField<F>>() -> F {
 /// don't need to pass `circuit_airs` explicitly. Returns the allocated input builder to pack
 /// public inputs afterwards.
 #[allow(clippy::type_complexity)]
-pub fn verify_p3_recursion_proof_circuit<
+pub fn verify_p3_batch_proof_circuit<
     SC: StarkGenericConfig,
     Comm: Recursive<
             SC::Challenge,

@@ -10,7 +10,7 @@ use p3_poseidon2_circuit_air::BabyBearD4Width16;
 use p3_recursion::pcs::fri::{FriVerifierParams, InputProofTargets, MerkleCapTargets, RecValMmcs};
 use p3_recursion::pcs::set_fri_mmcs_private_data;
 use p3_recursion::public_inputs::StarkVerifierInputsBuilder;
-use p3_recursion::{Poseidon2Config, VerificationError, verify_circuit};
+use p3_recursion::{Poseidon2Config, VerificationError, verify_p3_uni_proof_circuit};
 use p3_uni_stark::{prove, verify};
 use tracing_forest::ForestLayer;
 use tracing_forest::util::LevelFilter;
@@ -81,7 +81,7 @@ fn test_fibonacci_verifier() -> Result<(), VerificationError> {
     >::allocate(&mut circuit_builder, &proof, None, pis.len());
 
     // Add the verification circuit to the builder.
-    let mmcs_op_ids = verify_circuit::<
+    let mmcs_op_ids = verify_p3_uni_proof_circuit::<
         FibonacciAir,
         MyConfig,
         MerkleCapTargets<F, DIGEST_ELEMS>,
