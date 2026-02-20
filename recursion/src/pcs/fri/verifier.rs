@@ -763,40 +763,70 @@ where
     result
 }
 
-/// Compute evaluation point x from domain height and reversed reduced index bits in the circuit field EF.
-/// x = GENERATOR * two_adic_generator(log_height)^{rev_reduced_index}
-fn compute_evaluation_point<F, EF>(
+/// Precompute evaluation points for all unique heights.
+///
+/// Runs a single select-mul chain for the tallest height's reversed index bits and derives
+/// smaller heights via `exp_power_of_2` on captured intermediates.
+fn precompute_evaluation_points<F, EF>(
     builder: &mut CircuitBuilder<EF>,
-    log_height: usize,
-    rev_reduced_index_bits: &[Target],
-) -> Target
+    unique_heights_desc: &[usize],
+    index_bits: &[Target],
+    log_global_max_height: usize,
+) -> BTreeMap<usize, Target>
 where
     F: Field + TwoAdicField,
     EF: ExtensionField<F>,
 {
-    builder.push_scope("compute_evaluation_point");
+    builder.push_scope("precompute_evaluation_points");
 
-    // Build power-of-two ladder for two-adic generator g: [g, g^2, g^4, ...]
-    let g = F::two_adic_generator(log_height);
+    debug_assert!(
+        !unique_heights_desc.is_empty(),
+        "must have at least one height"
+    );
+    debug_assert!(
+        unique_heights_desc.windows(2).all(|w| w[0] > w[1]),
+        "heights must be sorted in strictly descending order"
+    );
+
+    let h_max = unique_heights_desc[0];
+    let bits_reduced = log_global_max_height - h_max;
+    let rev_bits: Vec<Target> = index_bits[bits_reduced..bits_reduced + h_max]
+        .iter()
+        .rev()
+        .copied()
+        .collect();
+
+    let g = F::two_adic_generator(h_max);
     let powers_of_g: Vec<_> = iter::successors(Some(g), |&prev| Some(prev.square()))
-        .take(rev_reduced_index_bits.len())
+        .take(h_max)
         .map(|p| builder.add_const(EF::from(p)))
         .collect();
 
-    // Compute g^{rev_reduced_index} using the provided reversed bits
+    let capture_set: BTreeMap<usize, ()> =
+        unique_heights_desc[1..].iter().map(|&h| (h, ())).collect();
+
     let one = builder.add_const(EF::ONE);
-    let mut g_pow_index = one;
-    for (&bit, &power) in rev_reduced_index_bits.iter().zip(&powers_of_g) {
-        let multiplier = builder.select(bit, power, one);
-        g_pow_index = builder.mul(g_pow_index, multiplier);
+    let generator = builder.alloc_const(EF::from(F::GENERATOR), "coset_generator");
+    let mut g_pow = one;
+    let mut result = BTreeMap::new();
+
+    for i in 0..h_max {
+        let multiplier = builder.select(rev_bits[i], powers_of_g[i], one);
+        g_pow = builder.mul(g_pow, multiplier);
+
+        let bits_done = i + 1;
+        if capture_set.contains_key(&bits_done) {
+            let derived = builder.exp_power_of_2(g_pow, h_max - bits_done);
+            let x = builder.alloc_mul(generator, derived, "eval_point");
+            result.insert(bits_done, x);
+        }
     }
 
-    // Multiply by the coset generator (also lifted to EF) to get x
-    let generator = builder.alloc_const(EF::from(F::GENERATOR), "coset_generator");
-    let eval_point = builder.alloc_mul(generator, g_pow_index, "eval_point");
+    let x_max = builder.alloc_mul(generator, g_pow, "eval_point");
+    result.insert(h_max, x_max);
 
-    builder.pop_scope(); // close `compute_evaluation_point` scope
-    eval_point
+    builder.pop_scope(); // close `precompute_evaluation_points` scope
+    result
 }
 
 /// Compute reduced opening for a single matrix in circuit form (EF-field).
@@ -870,6 +900,32 @@ where
         "index_bits.len() must equal log_global_max_height"
     );
 
+    // Collect unique heights across all matrices and precompute evaluation points.
+    let unique_heights_desc: Vec<usize> = {
+        let mut heights: Vec<usize> = commitments_with_opening_points
+            .iter()
+            .flat_map(|(_, mats)| {
+                mats.iter()
+                    .map(|(domain, _)| domain.log_size() + log_blowup)
+            })
+            .collect();
+        heights.sort_unstable();
+        heights.dedup();
+        heights.reverse();
+        heights
+    };
+
+    let eval_points = if unique_heights_desc.is_empty() {
+        BTreeMap::new()
+    } else {
+        precompute_evaluation_points::<F, EF>(
+            builder,
+            &unique_heights_desc,
+            index_bits,
+            log_global_max_height,
+        )
+    };
+
     // height -> (alpha_pow_for_this_height, ro_sum_for_this_height)
     let mut reduced_openings = BTreeMap::<usize, (Target, Target)>::new();
     let mut mmcs_op_ids = Vec::new();
@@ -937,15 +993,7 @@ where
         {
             let log_height = mat_domain.log_size() + log_blowup;
 
-            let bits_reduced = log_global_max_height - log_height;
-            let rev_bits: Vec<Target> = index_bits[bits_reduced..bits_reduced + log_height]
-                .iter()
-                .rev()
-                .copied()
-                .collect();
-
-            // Compute evaluation point x
-            let x = compute_evaluation_point::<F, EF>(builder, log_height, &rev_bits);
+            let x = eval_points[&log_height];
 
             // Initialize / fetch per-height (alpha_pow, ro)
             let (alpha_pow_h, ro_h) = reduced_openings
