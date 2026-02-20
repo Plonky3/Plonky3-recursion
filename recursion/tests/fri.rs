@@ -694,7 +694,7 @@ fn run_fri_test_with_mmcs(setup: FriSetup) {
         result.commitments_with_points.iter().enumerate()
     {
         // Commitment cap entries as lifted extension field values
-        for entry in actual_commitments[group_idx].as_slice() {
+        for entry in actual_commitments[group_idx].roots() {
             for &c in entry {
                 packed_inputs.push(Challenge::from(c));
             }

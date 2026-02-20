@@ -341,7 +341,7 @@ impl<F, const DIGEST_ELEMS: usize> ObservableCommitment for MerkleCapTargets<F, 
 }
 
 type ValMmcsCommitment<F, const DIGEST_ELEMS: usize> =
-    MerkleCap<<F as PackedValue>::Value, <F as PackedValue>::Value, DIGEST_ELEMS>;
+    MerkleCap<<F as PackedValue>::Value, [<F as PackedValue>::Value; DIGEST_ELEMS]>;
 
 impl<F: Field, EF: ExtensionField<F>, const DIGEST_ELEMS: usize> Recursive<EF>
     for MerkleCapTargets<F, DIGEST_ELEMS>
@@ -349,7 +349,7 @@ impl<F: Field, EF: ExtensionField<F>, const DIGEST_ELEMS: usize> Recursive<EF>
     type Input = ValMmcsCommitment<F, DIGEST_ELEMS>;
 
     fn new(circuit: &mut CircuitBuilder<EF>, input: &Self::Input) -> Self {
-        let cap_targets = (0..input.len())
+        let cap_targets = (0..input.num_roots())
             .map(|_| circuit.alloc_public_input_array("MMCS commitment cap entry"))
             .collect();
         Self {
@@ -360,9 +360,11 @@ impl<F: Field, EF: ExtensionField<F>, const DIGEST_ELEMS: usize> Recursive<EF>
 
     fn get_values(input: &Self::Input) -> Vec<EF> {
         input
-            .as_slice()
+            .roots()
             .iter()
-            .flat_map(|entry| entry.iter().map(|v| EF::from(*v)))
+            .flat_map(|entry: &[<F as PackedValue>::Value; DIGEST_ELEMS]| {
+                entry.iter().map(|v| EF::from(*v))
+            })
             .collect()
     }
 }

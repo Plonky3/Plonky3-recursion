@@ -339,7 +339,7 @@ macro_rules! define_field_module {
 
                     info!("Layer 1 verification circuit built with {num_ops_1} operations");
 
-                    let table_packing_1 = TablePacking::new(3, 1, 4)
+                    let table_packing_1 = TablePacking::new(1, 1, 1)
                         .with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup);
 
                     let (airs_degrees_1, preprocessed_columns_1) =
@@ -409,7 +409,7 @@ macro_rules! define_field_module {
                     );
 
                     const TRACE_D_LAYER_REC: usize = 4;
-                    let table_packing = TablePacking::new(3, 1, 2)
+                    let table_packing = TablePacking::new(5, 1, 3)
                         .with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup);
                     let pis: Vec<Vec<F>> = vec![vec![]; prev_num_tables];
                     let config = create_config(fri_params);

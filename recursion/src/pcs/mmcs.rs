@@ -565,7 +565,7 @@ mod test {
             let directions_expr = builder.alloc_public_inputs(log_max_height, "directions");
 
             // Allocate cap entries: each entry has rate_ext extension targets
-            let cap_len = commit.len();
+            let cap_len = commit.num_roots();
             let rate_ext = permutation_config.rate_ext();
             let cap_exprs: Vec<Vec<_>> = (0..cap_len)
                 .map(|_| builder.alloc_public_inputs(rate_ext, "cap entry").to_vec())
@@ -617,7 +617,7 @@ mod test {
             );
             public_inputs.extend(directions_expr_vals.iter());
             // Pack each cap entry to extension field and add as public inputs
-            for entry in commit.as_slice() {
+            for entry in commit.roots() {
                 let commit_ext = base_digest_to_ext(entry, permutation_config);
                 debug_assert_eq!(rate_ext, commit_ext.len());
                 public_inputs.extend(commit_ext);
@@ -917,7 +917,7 @@ mod test {
         );
         public_inputs.extend(directions.iter());
         // For cap_height=0, commit has 1 entry
-        let commit_entry = &commit.as_slice()[0];
+        let commit_entry = &commit.roots()[0];
         let commit_ext = base_digest_to_ext(commit_entry, permutation_config);
         debug_assert_eq!(permutation_config.rate_ext(), commit_ext.len());
         public_inputs.extend(commit_ext);
@@ -1028,7 +1028,7 @@ mod test {
             let directions_expr = builder.alloc_public_inputs(log_max_height, "directions");
 
             // Allocate cap entries as LIFTED targets, then pack
-            let cap_len = commit.len();
+            let cap_len = commit.num_roots();
             let mut cap_exprs = Vec::with_capacity(cap_len);
             for _ in 0..cap_len {
                 let lifted: Vec<_> = (0..permutation_config.rate())
@@ -1070,7 +1070,7 @@ mod test {
             public_inputs.extend(directions.iter().map(|&bit| CF::from_bool(bit)));
 
             // Then: lifted cap entries (one EF per base field digest element per entry)
-            for entry in commit.as_slice() {
+            for entry in commit.roots() {
                 public_inputs.extend(entry.iter().map(|&v| CF::from(v)));
             }
 
@@ -1206,7 +1206,7 @@ mod test {
             let directions_expr = builder.alloc_public_inputs(log_max_height, "directions");
 
             // Allocate cap entries as LIFTED, then pack
-            let cap_len = commit.len();
+            let cap_len = commit.num_roots();
             let mut cap_exprs = Vec::with_capacity(cap_len);
             for _ in 0..cap_len {
                 let lifted: Vec<_> = (0..permutation_config.rate())
@@ -1247,7 +1247,7 @@ mod test {
             public_inputs.extend(directions.iter().map(|&bit| CF::from_bool(bit)));
 
             // Lifted cap entries
-            for entry in commit.as_slice() {
+            for entry in commit.roots() {
                 public_inputs.extend(entry.iter().map(|&v| CF::from(v)));
             }
 
