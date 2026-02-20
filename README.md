@@ -21,9 +21,40 @@ This library provides a **fixed recursive verifier** for Plonky3 STARK (both `p3
 
 ## Quick Start
 
-### Basic Usage
+### Unified recursion API
 
-The main entry point for recursive verification is `verify_p3_recursion_proof_circuit`, which handles batch STARK proofs:
+For most use cases, use the **unified API**: a single entry point works for both uni-stark (e.g. Keccak) and batch-stark (e.g. Fibonacci) proofs. Implement [`FriRecursionConfig`] for your config (or a wrapper that holds FRI verifier params), then call [`prove_next_layer`] in a loop.
+
+[`FriRecursionConfig`]: https://docs.rs/p3-recursion/latest/p3_recursion/trait.FriRecursionConfig.html
+[`prove_next_layer`]: https://docs.rs/p3-recursion/latest/p3_recursion/fn.prove_next_layer.html
+
+```rust
+use p3_recursion::{
+    FriRecursionBackend, FriRecursionConfig, ProveNextLayerParams, RecursionInput, RecursionOutput,
+    prove_next_layer,
+};
+
+// First layer: recurse on a uni-stark proof (e.g. Keccak)
+let input = RecursionInput::UniStark {
+    proof: &base_proof,
+    air: &keccak_air,
+    public_inputs: pis.clone(),
+    preprocessed_commit: None,
+};
+let backend = FriRecursionBackend::new(poseidon2_config);
+let params = ProveNextLayerParams { table_packing, use_poseidon2_in_circuit: true };
+let output = prove_next_layer(&input, &config, &backend, &params)?;
+
+// Next layers: recurse on the previous batch proof
+let input = output.into_recursion_input::<BatchOnly>();
+let output = prove_next_layer(&input, &config, &backend, &params)?;
+```
+
+`RecursionOutput` is `(BatchStarkProof, CircuitProverData)`; use `into_recursion_input::<BatchOnly>()` to chain further layers.
+
+### Low-level API
+
+For fine-grained control, you can build the verification circuit and run the prover pipeline yourself via `verify_p3_recursion_proof_circuit` (batch) or `verify_circuit` (uni-stark):
 
 ```rust
 use p3_recursion::verifier::verify_p3_recursion_proof_circuit;
@@ -69,14 +100,14 @@ let traces = runner.run()?;
 
 ### Examples
 
-See the `recursion/examples/` directory for complete working examples:
+Both examples use the unified API (`prove_next_layer`, `RecursionInput`, `FriRecursionBackend`):
 
-- **`recursive_fibonacci.rs`**: Multi-layer recursive verification of the Fibonacci sequence, constructed as a `p3-batch-stark` proof with this library's `CircuitBuilder` 
+- **`recursive_fibonacci.rs`**: Base layer is a batch-stark circuit (Fibonacci); recursive layers use `into_recursion_input::<BatchOnly>()` and `prove_next_layer`.
   ```bash
   cargo run --release --example recursive_fibonacci -- --field koala-bear --n 1000 --num-recursive-layers 5
   ```
 
-- **`recursive_keccak.rs`**: Multi-layer recursive verification of the Keccak hash permutation, taken from the Plonky3's `p3-uni-stark` Keccak AIR.
+- **`recursive_keccak.rs`**: Base layer is a uni-stark Keccak proof; layer 1 uses `RecursionInput::UniStark`, then further layers use `into_recursion_input::<BatchOnly>()` and `prove_next_layer`.
   ```bash
   cargo run --release --example recursive_keccak -- --field koala-bear --n 100 --num-recursive-layers 5
   ```
