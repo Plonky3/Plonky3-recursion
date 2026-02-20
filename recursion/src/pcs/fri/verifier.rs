@@ -511,6 +511,9 @@ fn lagrange_interpolate_circuit<EF: Field>(
 ///
 /// Reconstructs the full evaluation row, computes evaluation points,
 /// performs Lagrange interpolation at beta, and applies optional roll-in.
+///
+/// When `precomputed_evals` is `Some`, those evals are reused instead of
+/// rebuilding them via `reconstruct_evals`.
 #[allow(clippy::too_many_arguments)]
 fn fold_one_phase<F, EF>(
     builder: &mut CircuitBuilder<EF>,
@@ -523,6 +526,7 @@ fn fold_one_phase<F, EF>(
     log_current_height: usize,
     roll_in: Option<Target>,
     precomputed_beta_pow: Option<Target>,
+    precomputed_evals: Option<&[Target]>,
 ) -> Target
 where
     F: Field + TwoAdicField,
@@ -570,7 +574,16 @@ where
     }
 
     // General path: Lagrange interpolation
-    let evals = reconstruct_evals(builder, folded, siblings, index_in_group_bits);
+    let owned_evals;
+    #[allow(clippy::option_if_let_else)] // false positive
+    let evals: &[Target] = match precomputed_evals {
+        Some(e) => e,
+        None => {
+            owned_evals = reconstruct_evals(builder, folded, siblings, index_in_group_bits);
+            &owned_evals
+        }
+    };
+
     let (xs, subgroup_start) = compute_subgroup_points::<F, EF>(
         builder,
         index_bits,
@@ -582,9 +595,9 @@ where
     // For small arities (2, 4, 8, 16), use the optimized interpolation that
     // avoids rebuilding denominators in-circuit.
     let mut new_folded = if (2..=4).contains(&log_arity) {
-        lagrange_interpolate_small::<F, EF>(builder, &xs, &evals, beta, subgroup_start, log_arity)
+        lagrange_interpolate_small::<F, EF>(builder, &xs, evals, beta, subgroup_start, log_arity)
     } else {
-        lagrange_interpolate_circuit(builder, &xs, &evals, beta)
+        lagrange_interpolate_circuit(builder, &xs, evals, beta)
     };
 
     // Roll-in: folded += beta^{2^log_arity} * roll_in
@@ -671,6 +684,7 @@ where
             log_current_height,
             phase.roll_in,
             Some(beta_pows_per_phase[i]),
+            None,
         );
         bits_consumed += log_arity;
         log_current_height -= log_arity;
@@ -1300,6 +1314,7 @@ where
                         log_current_height,
                         roll_ins[phase_idx],
                         Some(beta_pows_per_phase[phase_idx]),
+                        None,
                     );
                     bits_consumed += log_arity;
                     log_current_height = log_folded_height;
@@ -1308,7 +1323,7 @@ where
 
                 builder.push_scope("fri_commit_phase_mmcs phase");
 
-                // Build full evaluation row for MMCS verification
+                // Build full evaluation row once; reused for both MMCS and folding.
                 let index_in_group_bits =
                     &index_bits_per_query[q][bits_consumed..bits_consumed + log_arity];
                 let evals =
@@ -1338,7 +1353,7 @@ where
 
                 // base_width = arity extension elements × EF::DIMENSION base coefficients
                 let base_widths = vec![evals.len() * <EF as BasedVectorSpace<F>>::DIMENSION];
-                let evals_slice = vec![evals];
+                let evals_for_mmcs = vec![evals.clone()];
 
                 let commit_phase_ops = verify_batch_circuit::<F, EF>(
                     builder,
@@ -1347,7 +1362,7 @@ where
                     &dimensions,
                     &base_widths,
                     &parent_index_bits,
-                    &evals_slice,
+                    &evals_for_mmcs,
                 )
                 .map_err(|e| {
                     VerificationError::InvalidProofShape(format!(
@@ -1356,7 +1371,7 @@ where
                 })?;
                 all_mmcs_op_ids.extend(commit_phase_ops);
 
-                // Fold to get next current_folded
+                // Fold reusing the pre-built evals
                 current_folded = fold_one_phase::<F, EF>(
                     builder,
                     current_folded,
@@ -1368,6 +1383,7 @@ where
                     log_current_height,
                     roll_ins[phase_idx],
                     Some(beta_pows_per_phase[phase_idx]),
+                    Some(&evals),
                 );
 
                 bits_consumed += log_arity;
