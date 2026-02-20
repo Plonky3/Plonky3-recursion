@@ -407,7 +407,7 @@ macro_rules! define_field_module {
                     );
 
                     const TRACE_D_LAYER_REC: usize = 4;
-                    let table_packing = TablePacking::new(3, 1, 2)
+                    let table_packing = TablePacking::new(3, 1, 3)
                         .with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup);
                     let pis: Vec<Vec<F>> = vec![vec![]; prev_num_tables];
                     let config = create_config(fri_params);
