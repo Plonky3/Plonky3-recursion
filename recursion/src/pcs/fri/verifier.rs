@@ -944,7 +944,9 @@ where
 }
 
 /// Compute reduced opening for a single matrix in circuit form (EF-field).
-/// ro += alpha_pow * (p_at_z - p_at_x) * (z - x)^{-1}; and alpha_pow *= alpha (per column)
+///
+/// Uses Horner's method to evaluate the polynomial in alpha without an explicit
+/// alpha-power chain, saving one multiplication per column.
 fn compute_single_reduced_opening<EF: Field>(
     builder: &mut CircuitBuilder<EF>,
     opened_values: &[Target], // Values at evaluation point x
@@ -957,28 +959,67 @@ fn compute_single_reduced_opening<EF: Field>(
 {
     builder.push_scope("compute_single_reduced_opening");
 
-    let mut reduced_opening = builder.add_const(EF::ZERO);
-    let mut current_alpha_pow = alpha_pow;
+    let n = opened_values.len();
 
-    for (&p_at_x, &p_at_z) in opened_values.iter().zip(point_values.iter()) {
-        // diff = p_at_z - p_at_x
-        let diff = builder.sub(p_at_z, p_at_x);
-
-        // term = alpha_pow * diff
-        let alpha_diff = builder.mul(current_alpha_pow, diff);
-
-        reduced_opening = builder.add(reduced_opening, alpha_diff);
-
-        // advance alpha power for the *next column in this height*
-        current_alpha_pow = builder.mul(current_alpha_pow, alpha);
+    if n == 0 {
+        let zero = builder.add_const(EF::ZERO);
+        builder.pop_scope();
+        return (alpha_pow, zero);
     }
 
-    // Apply division by (z - x) once at the end: reduced_opening / (z - x)
-    let z_minus_x = builder.sub(challenge_point, evaluation_point);
-    let reduced_opening = builder.div(reduced_opening, z_minus_x);
+    // Compute all diffs: diff[i] = p_at_z[i] - p_at_x[i]
+    let diffs: Vec<Target> = opened_values
+        .iter()
+        .zip(point_values.iter())
+        .map(|(&p_at_x, &p_at_z)| builder.sub(p_at_z, p_at_x))
+        .collect();
 
-    builder.pop_scope(); // close `compute_single_reduced_opening` scope
-    (current_alpha_pow, reduced_opening)
+    // Horner's method: evaluate sum_{i=0}^{n-1} alpha^i * diff[i] as
+    //   inner = diff[n-1]
+    //   inner = inner * alpha + diff[n-2]
+    //   ...
+    //   inner = inner * alpha + diff[0]
+    let mut inner = diffs[n - 1];
+    for i in (0..n - 1).rev() {
+        let prod = builder.mul(inner, alpha);
+        inner = builder.add(prod, diffs[i]);
+    }
+
+    // reduced_opening = alpha_pow * inner / (z - x)
+    let numerator = builder.mul(alpha_pow, inner);
+    let z_minus_x = builder.sub(challenge_point, evaluation_point);
+    let reduced_opening = builder.div(numerator, z_minus_x);
+
+    // Advance alpha_pow by alpha^n using square-and-multiply
+    let alpha_n = circuit_exp_by_constant(builder, alpha, n);
+    let new_alpha_pow = builder.mul(alpha_pow, alpha_n);
+
+    builder.pop_scope();
+    (new_alpha_pow, reduced_opening)
+}
+
+/// Computes `base^n` in-circuit using square-and-multiply.
+///
+/// Cost: `floor(log2(n)) + popcount(n) - 1` multiplications.
+fn circuit_exp_by_constant<EF: Field>(
+    builder: &mut CircuitBuilder<EF>,
+    base: Target,
+    n: usize,
+) -> Target {
+    debug_assert!(n > 0);
+    if n == 1 {
+        return base;
+    }
+    let num_bits = usize::BITS - n.leading_zeros();
+    // Start from the MSB (already implicit as `base`), process remaining bits top-down.
+    let mut result = base;
+    for i in (0..num_bits - 1).rev() {
+        result = builder.mul(result, result);
+        if (n >> i) & 1 == 1 {
+            result = builder.mul(result, base);
+        }
+    }
+    result
 }
 
 /// Compute reduced openings grouped **by height** with **per-height alpha powers**,
