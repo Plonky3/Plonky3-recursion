@@ -134,8 +134,19 @@ impl<F: CircuitField> CircuitRunner<F> {
             ) => {
                 // ok
             }
+            (crate::op::NonPrimitiveOpType::OpenInput, NonPrimitiveOpPrivateData::OpenInput) => {
+                // ok
+            }
             // Unconstrained operations don't need private data.
             (crate::op::NonPrimitiveOpType::Unconstrained, _) => return Ok(()),
+            _ => {
+                return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
+                    op: executor.op_type().clone(),
+                    operation_index: op_id,
+                    expected: format!("private data matching op type {:?}", executor.op_type()),
+                    got: format!("{:?}", private_data),
+                });
+            }
         }
 
         // Disallow double-setting private data

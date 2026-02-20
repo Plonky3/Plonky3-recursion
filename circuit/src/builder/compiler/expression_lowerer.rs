@@ -13,6 +13,7 @@ use crate::builder::compiler::get_witness_id;
 use crate::expr::{Expr, ExpressionGraph};
 use crate::op::{NonPrimitiveOpType, Op};
 use crate::ops::Poseidon2PermExecutor;
+use crate::ops::open_input::OpenInputExecutor;
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};
 
 /// Sparse disjoint-set "find" with path compression over a HashMap (iterative).
@@ -120,6 +121,42 @@ where
         }
 
         match &data.op_type {
+            NonPrimitiveOpType::OpenInput => {
+                assert_eq!(data.input_exprs.len(), 5);
+                assert!(data.output_exprs.len() <= 1); // Only the last OpenInput op can have an output, and it has at most 1 output.
+
+                let inputs_widx = data
+                    .input_exprs
+                    .iter()
+                    .map(|exprs| {
+                        exprs
+                            .iter()
+                            .map(|&expr| {
+                                get_witness_id(expr_to_widx, expr, "OpenInput operation input")
+                            })
+                            .collect::<Result<Vec<WitnessId>, _>>()
+                    })
+                    .collect::<Result<Vec<Vec<WitnessId>>, _>>()?;
+                let outputs_widx = data
+                    .output_exprs
+                    .iter()
+                    .map(|exprs| {
+                        exprs
+                            .iter()
+                            .map(|&expr| {
+                                get_witness_id(expr_to_widx, expr, "OpenInput operation output")
+                            })
+                            .collect::<Result<Vec<WitnessId>, _>>()
+                    })
+                    .collect::<Result<Vec<Vec<WitnessId>>, _>>()?;
+
+                ops.push(Op::NonPrimitiveOpWithExecutor {
+                    inputs: inputs_widx,
+                    outputs: outputs_widx,
+                    executor: Box::new(OpenInputExecutor::new()),
+                    op_id: data.op_id,
+                });
+            }
             NonPrimitiveOpType::Poseidon2Perm(config) => {
                 let (new_start, merkle_path) = match data.params.as_ref().ok_or(
                     CircuitBuilderError::InvalidNonPrimitiveOpConfiguration { op: data.op_type },

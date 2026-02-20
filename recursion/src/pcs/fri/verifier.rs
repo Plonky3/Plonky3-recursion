@@ -537,7 +537,7 @@ where
     if log_arity == 1 {
         let sibling = siblings[0];
         let one = builder.add_const(EF::ONE);
-        let neg_half = builder.add_const(EF::NEG_ONE * EF::ONE.halve());
+        let neg_half = builder.add_const(EF::NEG_ONE.halve());
         let sibling_is_right = builder.sub(one, index_bits[bits_consumed]);
 
         let e0 = builder.select(sibling_is_right, folded, sibling);

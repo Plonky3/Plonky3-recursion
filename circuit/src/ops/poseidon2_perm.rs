@@ -568,6 +568,14 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for Poseidon2Perm
                 }
                 Some(&data.sibling[..])
             }
+            Ok(_) => {
+                return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
+                    op: self.op_type,
+                    operation_index: ctx.operation_id(),
+                    expected: "Poseidon2PermPrivateData".to_string(),
+                    got: "unexpected private data type".to_string(),
+                });
+            }
             Err(_) => None,
         };
 

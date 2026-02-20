@@ -287,6 +287,8 @@ impl<F: Field + PartialEq> PartialEq for Op<F> {
 pub enum NonPrimitiveOpType {
     /// Poseidon2 permutation operation (one Poseidon2 call / table row).
     Poseidon2Perm(Poseidon2Config),
+    /// Operation carried out in the `open_input` function in FRI.
+    OpenInput,
     /// Unconstrained operation, used to set outputs to non-deterministic advices.
     Unconstrained,
 }
@@ -405,6 +407,7 @@ impl<F> Hash for NonPrimitiveOpConfig<F> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NonPrimitiveOpPrivateData<F> {
     Poseidon2Perm(Poseidon2PermPrivateData<F, 2>),
+    OpenInput,
 }
 
 /// Trait for operation-specific execution state.

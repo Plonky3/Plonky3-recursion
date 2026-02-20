@@ -22,7 +22,6 @@
 use alloc::string::ToString;
 use alloc::vec;
 use alloc::vec::Vec;
-use core::marker::PhantomData;
 
 use p3_air::{Air, AirBuilder, AirBuilderWithPublicValues, BaseAir, PermutationAirBuilder};
 use p3_circuit::tables::PublicTrace;
@@ -48,7 +47,6 @@ pub struct PublicAir<F, const D: usize = 1> {
     pub num_lookup_columns: usize,
     /// Minimum trace height (for FRI compatibility with higher log_final_poly_len).
     pub min_height: usize,
-    _phantom: PhantomData<F>,
 }
 
 impl<F: Field, const D: usize> PublicAir<F, D> {
@@ -66,7 +64,6 @@ impl<F: Field, const D: usize> PublicAir<F, D> {
             preprocessed: Vec::new(),
             num_lookup_columns: 0,
             min_height: 1,
-            _phantom: PhantomData,
         }
     }
 
@@ -85,7 +82,6 @@ impl<F: Field, const D: usize> PublicAir<F, D> {
             preprocessed,
             num_lookup_columns: 0,
             min_height: 1,
-            _phantom: PhantomData,
         }
     }
 
