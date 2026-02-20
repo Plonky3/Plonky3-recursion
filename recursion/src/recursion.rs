@@ -281,7 +281,7 @@ where
 ///
 /// # Example
 ///
-/// ```rust
+/// ```ignore
 /// let (verification_circuit, verifier_result) = build_next_layer_circuit::<SC, A, B>(prev, config, backend)?;
 /// let out = prove_next_layer::<SC, A, B, D>(prev, verification_circuit, verifier_result, config, backend, params);
 /// ```
@@ -467,7 +467,7 @@ where
 ///
 /// # Example
 ///
-/// ```rust
+/// ```ignore
 /// let (verification_circuit, (left_result, right_result)) = build_aggregation_layer_circuit::<SC, A1, A2, B, D>(left, right, config, backend)?;
 /// let out = prove_aggregation_layer::<SC, A1, A2, B, D>(left, right, left_result, right_result, verification_circuit, config, backend, params);
 /// ```
