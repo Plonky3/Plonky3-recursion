@@ -7,6 +7,7 @@ use alloc::vec::Vec;
 use alloc::{format, vec};
 use core::iter;
 
+use hashbrown::HashMap;
 use p3_circuit::op::Poseidon2Config;
 use p3_circuit::{CircuitBuilder, NonPrimitiveOpId};
 use p3_field::coset::TwoAdicMultiplicativeCoset;
@@ -955,6 +956,7 @@ fn compute_single_reduced_opening<EF: Field>(
     challenge_point: Target,  // z
     alpha_pow: Target,        // Current alpha power (for this height)
     alpha: Target,            // Alpha challenge
+    alpha_powers_set: &mut HashMap<usize, Target>,
 ) -> (Target, Target) // (new_alpha_pow, reduced_opening_contrib)
 {
     builder.push_scope("compute_single_reduced_opening");
@@ -991,7 +993,13 @@ fn compute_single_reduced_opening<EF: Field>(
     let reduced_opening = builder.div(numerator, z_minus_x);
 
     // Advance alpha_pow by alpha^n using square-and-multiply
-    let alpha_n = circuit_exp_by_constant(builder, alpha, n);
+    let alpha_n = if let Some(alpha_n) = alpha_powers_set.get(&n) {
+        *alpha_n
+    } else {
+        let alpha_n = circuit_exp_by_constant(builder, alpha, n);
+        alpha_powers_set.insert(n, alpha_n);
+        alpha_n
+    };
     let new_alpha_pow = builder.mul(alpha_pow, alpha_n);
 
     builder.pop_scope();
@@ -1135,6 +1143,8 @@ where
             mmcs_op_ids.extend(op_ids);
         }
 
+        let mut alpha_powers_set = HashMap::new();
+
         // For each matrix in the batch
         for (mat_idx, ((mat_domain, mat_points_and_values), mat_opening)) in zip_eq(
             mats.iter(),
@@ -1170,6 +1180,7 @@ where
                     *z,
                     *alpha_pow_h,
                     alpha,
+                    &mut alpha_powers_set,
                 );
 
                 *ro_h = builder.add(*ro_h, ro_contrib);
