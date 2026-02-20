@@ -1070,21 +1070,11 @@ where
                     .collect()
             };
 
-            // Pack opened values from lifted to packed representation
-            let packed_openings: Vec<Vec<Target>> = batch_openings
-                .iter()
-                .map(|mat_row| pack_lifted_to_ext::<F, EF>(builder, mat_row))
-                .collect();
-
-            // Compute actual base field widths (number of base field values per matrix)
-            // This is needed to properly truncate zero-padding from extension packing
-            let base_widths: Vec<usize> = batch_openings.iter().map(|v| v.len()).collect();
-
             let dimensions: Vec<Dimensions> = mats
                 .iter()
                 .map(|(domain, _)| Dimensions {
                     height: 1 << (domain.log_size() + log_blowup),
-                    width: 0, // Width is derived from opened_values
+                    width: 0,
                 })
                 .collect();
 
@@ -1093,9 +1083,8 @@ where
                 perm_config,
                 &commitment_cap,
                 &dimensions,
-                &base_widths,
                 index_bits,
-                &packed_openings,
+                batch_openings,
             )
             .map_err(|e| {
                 VerificationError::InvalidProofShape(format!(
@@ -1511,18 +1500,23 @@ where
                     parent_index_bits.push(zero);
                 }
 
-                // base_width = arity extension elements × EF::DIMENSION base coefficients
-                let base_widths = vec![evals.len() * <EF as BasedVectorSpace<F>>::DIMENSION];
-                let evals_for_mmcs = vec![evals.clone()];
+                let evals_base_coeffs: Vec<Target> = evals
+                    .iter()
+                    .map(|&eval| builder.decompose_ext_to_base_coeffs::<F>(eval))
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| VerificationError::InvalidProofShape(format!("decompose: {e:?}")))?
+                    .into_iter()
+                    .flatten()
+                    .collect();
+                let evals_base_for_mmcs = vec![evals_base_coeffs];
 
                 let commit_phase_ops = verify_batch_circuit::<F, EF>(
                     builder,
                     perm_config,
                     &commitment_cap,
                     &dimensions,
-                    &base_widths,
                     &parent_index_bits,
-                    &evals_for_mmcs,
+                    &evals_base_for_mmcs,
                 )
                 .map_err(|e| {
                     VerificationError::InvalidProofShape(format!(

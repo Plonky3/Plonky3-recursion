@@ -166,17 +166,15 @@ where
 /// - `permutation_config`: Poseidon2 configuration
 /// - `commitment_cap`: Merkle cap entries, each with `rate_ext` packed extension targets
 /// - `dimensions`: Matrix dimensions (height used for tree structure)
-/// - `base_widths`: Actual base field column widths per matrix (for proper truncation)
 /// - `index_bits`: All Merkle path direction bits (length = `log_max_height`)
-/// - `opened_values`: Packed extension field targets (may contain zero-padding)
+/// - `opened_base_coeffs`: Base field coefficients per matrix (already decomposed)
 pub fn verify_batch_circuit<F, EF>(
     circuit: &mut CircuitBuilder<EF>,
     permutation_config: Poseidon2Config,
     commitment_cap: &[Vec<Target>],
     dimensions: &[Dimensions],
-    base_widths: &[usize],
     index_bits: &[Target],
-    opened_values: &[Vec<Target>],
+    opened_base_coeffs: &[Vec<Target>],
 ) -> Result<Vec<NonPrimitiveOpId>, CircuitBuilderError>
 where
     F: Field + TwoAdicField + PrimeField64,
@@ -185,11 +183,10 @@ where
     use p3_circuit::ops::mmcs::add_mmcs_verify;
     use p3_util::log2_strict_usize;
 
-    // Check that the openings have the correct shape.
-    if dimensions.len() != opened_values.len() || dimensions.len() != base_widths.len() {
+    if dimensions.len() != opened_base_coeffs.len() {
         return Err(CircuitBuilderError::WrongBatchSize {
             expected: dimensions.len(),
-            got: opened_values.len(),
+            got: opened_base_coeffs.len(),
         });
     }
 
@@ -201,8 +198,6 @@ where
     use core::cmp::Reverse;
 
     use itertools::Itertools;
-
-    let ext_degree = <EF as BasedVectorSpace<F>>::DIMENSION;
 
     // Derive cap_height from commitment size: cap has 2^cap_height entries
     let cap_height = if commitment_cap.len() == 1 {
@@ -220,23 +215,6 @@ where
 
     // Select the correct cap entry using a multiplexer
     let selected_root = select_cap_entry(circuit, commitment_cap, cap_index_bits);
-
-    // Decompose extension targets to base coefficients and truncate to actual widths
-    let truncated_openings: Vec<Vec<Target>> = opened_values
-        .iter()
-        .zip(base_widths.iter())
-        .map(|(ext_targets, &base_width)| {
-            // Decompose each extension target to base field coefficients
-            let mut base_coeffs: Vec<Target> = Vec::with_capacity(ext_targets.len() * ext_degree);
-            for &ext_target in ext_targets {
-                let coeffs = circuit.decompose_ext_to_base_coeffs::<F>(ext_target)?;
-                base_coeffs.extend(coeffs);
-            }
-            // Truncate to actual base field width (remove zero-padding)
-            base_coeffs.truncate(base_width);
-            Ok(base_coeffs)
-        })
-        .collect::<Result<Vec<_>, CircuitBuilderError>>()?;
 
     // Group matrices by height level (matching format_openings logic)
     // Native MMCS combines all matrices at the same height THEN hashes them together
@@ -257,7 +235,7 @@ where
         // Collect all base coefficients from matrices at this height level
         let all_base_coeffs: Vec<Target> = heights_tallest_first
             .peeking_take_while(|(_, dims)| dims.height.next_power_of_two() == curr_height)
-            .flat_map(|(mat_idx, _)| truncated_openings[mat_idx].clone())
+            .flat_map(|(mat_idx, _)| opened_base_coeffs[mat_idx].clone())
             .collect();
 
         if all_base_coeffs.is_empty() {
@@ -551,12 +529,11 @@ mod test {
                 .map(|k| index >> k & 1 == 1)
                 .collect_vec();
 
-            let openings = batch_opening
+            let openings: Vec<Vec<_>> = batch_opening
                 .opened_values
                 .iter()
                 .map(|opening| {
-                    opening
-                        .chunks(<CF as BasedVectorSpace<F>>::DIMENSION)
+                    (0..opening.len())
                         .map(|_| builder.add_public_input())
                         .collect_vec()
                 })
@@ -571,19 +548,11 @@ mod test {
                 .map(|_| builder.alloc_public_inputs(rate_ext, "cap entry").to_vec())
                 .collect();
 
-            // Compute actual base field widths (number of base field values per matrix)
-            let base_widths: Vec<usize> = batch_opening
-                .opened_values
-                .iter()
-                .map(|v| v.len())
-                .collect_vec();
-
             let permutation_mmcs_ops = verify_batch_circuit::<F, CF>(
                 &mut builder,
                 permutation_config,
                 &cap_exprs,
                 &dimensions,
-                &base_widths,
                 &directions_expr,
                 &openings,
             )
@@ -597,24 +566,11 @@ mod test {
                 .map(|&bit| CF::from_bool(bit))
                 .collect_vec();
 
-            let mut public_inputs = vec![];
-            public_inputs.extend(
-                batch_opening
-                    .opened_values
-                    .iter()
-                    .flat_map(|openings| {
-                        openings
-                            .chunks(<CF as BasedVectorSpace<F>>::DIMENSION)
-                            .map(|chunk| {
-                                let mut coeffs = [F::ZERO; 4];
-                                for (i, &val) in chunk.iter().enumerate() {
-                                    coeffs[i] = val;
-                                }
-                                CF::from_basis_coefficients_slice(&coeffs).expect("packed opening")
-                            })
-                    })
-                    .collect_vec(),
-            );
+            let mut public_inputs: Vec<CF> = batch_opening
+                .opened_values
+                .iter()
+                .flat_map(|values| values.iter().map(|&v| CF::from(v)))
+                .collect();
             public_inputs.extend(directions_expr_vals.iter());
             // Pack each cap entry to extension field and add as public inputs
             for entry in commit.roots() {
@@ -1007,7 +963,6 @@ mod test {
                 .map(|k| index >> k & 1 == 1)
                 .collect_vec();
 
-            // Allocate openings as LIFTED targets (one target per base field value)
             let lifted_openings: Vec<Vec<_>> = batch_opening
                 .opened_values
                 .iter()
@@ -1017,12 +972,6 @@ mod test {
                         .map(|_| builder.add_public_input())
                         .collect_vec()
                 })
-                .collect();
-
-            // Pack lifted targets into extension targets (like FRI verifier does)
-            let packed_openings: Vec<Vec<_>> = lifted_openings
-                .iter()
-                .map(|lifted| pack_lifted_targets::<F, CF>(&mut builder, lifted))
                 .collect();
 
             let directions_expr = builder.alloc_public_inputs(log_max_height, "directions");
@@ -1038,21 +987,13 @@ mod test {
                 cap_exprs.push(packed);
             }
 
-            // Base widths = number of base field values per matrix
-            let base_widths: Vec<usize> = batch_opening
-                .opened_values
-                .iter()
-                .map(|v| v.len())
-                .collect_vec();
-
             let _permutation_mmcs_ops = verify_batch_circuit::<F, CF>(
                 &mut builder,
                 permutation_config,
                 &cap_exprs,
                 &dimensions,
-                &base_widths,
                 &directions_expr,
-                &packed_openings,
+                &lifted_openings,
             )
             .unwrap();
 
@@ -1185,7 +1126,6 @@ mod test {
                 .map(|k| index >> k & 1 == 1)
                 .collect_vec();
 
-            // Allocate openings as LIFTED targets (like FRI verifier)
             let lifted_openings: Vec<Vec<_>> = batch_opening
                 .opened_values
                 .iter()
@@ -1195,12 +1135,6 @@ mod test {
                         .map(|_| builder.add_public_input())
                         .collect_vec()
                 })
-                .collect();
-
-            // Pack lifted to extension (like FRI verifier)
-            let packed_openings: Vec<Vec<_>> = lifted_openings
-                .iter()
-                .map(|lifted| pack_lifted_targets::<F, CF>(&mut builder, lifted))
                 .collect();
 
             let directions_expr = builder.alloc_public_inputs(log_max_height, "directions");
@@ -1216,21 +1150,13 @@ mod test {
                 cap_exprs.push(packed);
             }
 
-            // Base widths = number of base field values per matrix
-            let base_widths: Vec<usize> = batch_opening
-                .opened_values
-                .iter()
-                .map(|v| v.len())
-                .collect_vec();
-
             let permutation_mmcs_ops = verify_batch_circuit::<F, CF>(
                 &mut builder,
                 permutation_config,
                 &cap_exprs,
                 &dimensions,
-                &base_widths,
                 &directions_expr,
-                &packed_openings,
+                &lifted_openings,
             )
             .unwrap();
 
