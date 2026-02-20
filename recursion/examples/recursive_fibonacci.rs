@@ -118,7 +118,7 @@ struct Args {
     )]
     max_log_arity: usize,
 
-    #[arg(long, default_value_t = 1, help = "Height of the Merkle cap to open")]
+    #[arg(long, default_value_t = 0, help = "Height of the Merkle cap to open")]
     cap_height: usize,
 
     #[arg(

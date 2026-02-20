@@ -84,6 +84,7 @@ enum FieldOption {
 struct FriParams {
     log_blowup: usize,
     max_log_arity: usize,
+    cap_height: usize,
     log_final_poly_len: usize,
     commit_pow_bits: usize,
     query_pow_bits: usize,
@@ -121,6 +122,9 @@ struct Args {
         help = "Maximum arity allowed during FRI folding phases"
     )]
     max_log_arity: usize,
+
+    #[arg(long, default_value_t = 0, help = "Height of the Merkle cap to open")]
+    cap_height: usize,
 
     #[arg(
         long,
@@ -162,6 +166,7 @@ fn main() {
     let fri_params = FriParams {
         log_blowup: args.log_blowup,
         max_log_arity: args.max_log_arity,
+        cap_height: args.cap_height,
         log_final_poly_len: args.log_final_poly_len,
         commit_pow_bits: args.commit_pow_bits,
         query_pow_bits: args.query_pow_bits,
@@ -331,7 +336,7 @@ macro_rules! define_field_module {
                 let perm = $default_perm();
                 let hash = MyHash::new(perm.clone());
                 let compress = MyCompress::new(perm.clone());
-                let val_mmcs = ValMmcs::new(hash, compress, 0);
+                let val_mmcs = ValMmcs::new(hash, compress, fp.cap_height);
                 let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
                 let dft = Dft::default();
 
