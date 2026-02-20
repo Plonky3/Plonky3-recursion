@@ -62,7 +62,7 @@ use p3_recursion::traits::{RecursiveAir, RecursivePcs};
 use p3_recursion::verifier::VerificationError;
 use p3_recursion::{
     BatchOnly, FriRecursionBackend, FriRecursionConfig, FriVerifierParams, Poseidon2Config,
-    ProveNextLayerParams, RecursionInput, RecursionOutput, prove_next_layer,
+    ProveNextLayerParams, RecursionInput, RecursionOutput, build_and_prove_next_layer,
 };
 use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
 use p3_uni_stark::{StarkConfig, StarkGenericConfig, Val, prove, verify};
@@ -421,7 +421,7 @@ macro_rules! define_field_module {
                             public_inputs: pis.clone(),
                             preprocessed_commit: None,
                         };
-                        prove_next_layer::<ConfigWithFriParams, _, _, D>(
+                        build_and_prove_next_layer::<ConfigWithFriParams, _, _, D>(
                             &input,
                             &config,
                             &backend,
@@ -429,7 +429,7 @@ macro_rules! define_field_module {
                         )
                     } else {
                         let input = output.as_ref().unwrap().into_recursion_input::<BatchOnly>();
-                        prove_next_layer::<ConfigWithFriParams, _, _, D>(
+                        build_and_prove_next_layer::<ConfigWithFriParams, _, _, D>(
                             &input,
                             &config,
                             &backend,

@@ -33,7 +33,8 @@ pub use public_inputs::{
 /// Unified recursion API: single entry point for proving the next layer over a uni-stark or batch-stark proof.
 pub use recursion::{
     BatchOnly, PcsRecursionBackend, ProveNextLayerParams, RecursionInput, RecursionOutput,
-    VerifierCircuitResult, prove_next_layer,
+    VerifierCircuitResult, build_and_prove_aggregation_layer, build_and_prove_next_layer,
+    prove_aggregation_layer, prove_next_layer,
 };
 pub use traits::{
     Recursive, RecursiveAir, RecursiveChallenger, RecursiveExtensionMmcs, RecursiveMmcs,

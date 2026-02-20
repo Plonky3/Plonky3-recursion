@@ -1,33 +1,30 @@
-//! Recursive Fibonacci proof verification example.
+//! 2-to-1 proof aggregation example (binary tree).
 //!
-//! This example demonstrates end-to-end multi-layer recursive verification:
-//! 1. **Layer 0 (Base)**: Create a Fibonacci(n) circuit and prove it with Plonky3 STARK
-//! 2. **Layer 1+ (Recursive)**: Build verification circuits that check the previous layer's proof,
-//!    then prove each verification circuit itself
+//! Builds a full binary aggregation tree from distinct base proofs:
+//! 1. **Leaves**: `2^(N+1)` dummy circuits (each a single distinct constant),
+//!    each proved independently with batch STARK.
+//! 2. **Levels 1..N+1**: Pairwise 2-to-1 aggregation up the tree until a
+//!    single root proof remains.
+//!
+//! `N` is the `--num-recursive-layers` argument (default 1).
 //!
 //! ## What this proves
 //!
-//! The final proof attests that:
-//! - The original Fibonacci(n) computation was performed correctly
-//! - All intermediate Plonky3 STARK verifications succeeded
-//! - The recursive proof chain is valid
-//!
-//! ## Multi-layer recursion
-//!
-//! This example supports configurable recursion depth via `--num-recursive-layers`.
-//! Each recursive layer verifies the previous layer's proof, creating a chain of proofs.
+//! The root proof attests that every base proof in the tree is valid.  All
+//! base proofs are genuinely distinct (different constant values) so the
+//! circuit optimizer cannot collapse the two verifications inside an
+//! aggregation node.
 //!
 //! ## Usage
 //!
 //! ```bash
-//! # Basic usage with default parameters (3 recursive layers)
-//! cargo run --release --example recursive_fibonacci -- --field koala-bear --n 10000
+//! # 4 base proofs, 2 aggregation levels (default)
+//! cargo run --release --example recursive_aggregation -- --field koala-bear
 //!
-//! # With custom FRI parameters and recursion depth
-//! cargo run --release --example recursive_fibonacci -- \
+//! # 8 base proofs, 3 aggregation levels, custom FRI parameters
+//! cargo run --release --example recursive_aggregation -- \
 //!     --field koala-bear \
-//!     --n 10000 \
-//!     --num-recursive-layers 5 \
+//!     --num-recursive-layers 2 \
 //!     --log-blowup 3 \
 //!     --max-log-arity 4 \
 //!     --log-final-poly-len 5 \
@@ -46,7 +43,7 @@ use p3_circuit_prover::{BatchStarkProver, CircuitProverData, TablePacking};
 use p3_commit::{ExtensionMmcs, Pcs};
 use p3_dft::Radix2DitParallel;
 use p3_field::extension::BinomialExtensionField;
-use p3_field::{Field, PrimeCharacteristicRing};
+use p3_field::{Field, PrimeCharacteristicRing as _};
 use p3_fri::{FriParameters, TwoAdicFriPcs};
 use p3_lookup::logup::LogUpGadget;
 use p3_merkle_tree::MerkleTreeMmcs;
@@ -57,7 +54,7 @@ use p3_recursion::traits::{RecursiveAir, RecursivePcs};
 use p3_recursion::verifier::VerificationError;
 use p3_recursion::{
     BatchOnly, FriRecursionBackend, FriRecursionConfig, FriVerifierParams, Poseidon2Config,
-    ProveNextLayerParams, RecursionInput, RecursionOutput, build_and_prove_next_layer,
+    ProveNextLayerParams, RecursionInput, RecursionOutput, build_and_prove_aggregation_layer,
 };
 use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
 use p3_uni_stark::{StarkConfig, StarkGenericConfig, Val};
@@ -86,21 +83,16 @@ struct FriParams {
 }
 
 #[derive(Parser, Debug)]
-#[command(version, about = "Recursive Fibonacci proof verification example")]
+#[command(version, about = "2-to-1 proof aggregation example")]
 struct Args {
-    /// The field to use for the proof.
     #[arg(short, long, ignore_case = true, value_enum, default_value_t = FieldOption::KoalaBear)]
     field: FieldOption,
 
-    /// The Fibonacci index to compute (F(n)).
-    #[arg(short, long, default_value_t = 100)]
-    n: usize,
-
-    /// Number of recursive verification layers (1 = verify base once, 3 = base + 3 recursive layers).
+    /// Tree depth (total base proofs = 2^(tree_depth)).  (1 = single pair, 2 = 4 leaves, …)
     #[arg(
         long,
-        default_value_t = 3,
-        help = "Number of recursive verification layers"
+        default_value_t = 1,
+        help = "Tree depth (total base proofs = 2^(tree_depth))"
     )]
     num_recursive_layers: usize,
 
@@ -167,18 +159,16 @@ fn main() {
         query_pow_bits: args.query_pow_bits,
     };
 
-    if args.num_recursive_layers < 1 {
-        panic!("Number of recursive layers should be at least 1");
-    }
+    assert!(args.num_recursive_layers >= 1);
 
     info!(
-        "Recursively proving {} Fibonacci iterations with field {:?}",
-        args.n, args.field
+        "2-to-1 aggregation with field {:?}, {} aggregation recursive layers",
+        args.field, args.num_recursive_layers
     );
 
     match args.field {
-        FieldOption::KoalaBear => koala_bear::run(args.n, args.num_recursive_layers, &fri_params),
-        FieldOption::BabyBear => baby_bear::run(args.n, args.num_recursive_layers, &fri_params),
+        FieldOption::KoalaBear => koala_bear::run(args.num_recursive_layers, &fri_params),
+        FieldOption::BabyBear => baby_bear::run(args.num_recursive_layers, &fri_params),
     }
 }
 
@@ -373,107 +363,124 @@ macro_rules! define_field_module {
                 }
             }
 
-            fn compute_fibonacci(n: usize) -> F {
-                if n == 0 {
-                    return F::ZERO;
-                }
-                if n == 1 {
-                    return F::ONE;
-                }
-                let mut a = F::ZERO;
-                let mut b = F::ONE;
-                for _ in 2..=n {
-                    let next = a + b;
-                    a = b;
-                    b = next;
-                }
-                b
+            /// Build a dummy circuit with a single constant and prove it.
+            fn prove_dummy_circuit(
+                constant_value: u32,
+                config: &ConfigWithFriParams,
+                table_packing: TablePacking,
+            ) -> RecursionOutput<ConfigWithFriParams> {
+                let mut builder = CircuitBuilder::new();
+                let c = builder.alloc_const(F::from_u32(constant_value), "dummy_const");
+                let expected = builder.alloc_public_input("expected");
+                builder.connect(c, expected);
+
+                let circuit = builder.build().unwrap();
+                let (airs_degrees, preprocessed_columns) = get_airs_and_degrees_with_prep::<
+                    ConfigWithFriParams,
+                    _,
+                    1,
+                >(&circuit, table_packing, None)
+                .unwrap();
+                let (mut airs, degrees): (Vec<_>, Vec<_>) = airs_degrees.into_iter().unzip();
+
+                let mut runner = circuit.runner();
+                runner
+                    .set_public_inputs(&[F::from_u32(constant_value)])
+                    .unwrap();
+                let traces = runner.run().unwrap();
+
+                let prover_data = ProverData::from_airs_and_degrees(config, &mut airs, &degrees);
+                let circuit_prover_data = CircuitProverData::new(prover_data, preprocessed_columns);
+                let prover =
+                    BatchStarkProver::new(config.clone()).with_table_packing(table_packing);
+
+                let proof = prover
+                    .prove_all_tables(&traces, &circuit_prover_data)
+                    .expect("Failed to prove dummy circuit");
+                report_proof_size(&proof);
+
+                prover
+                    .verify_all_tables(&proof, circuit_prover_data.common_data())
+                    .expect("Failed to verify dummy proof");
+
+                RecursionOutput(proof, circuit_prover_data)
             }
 
-            pub fn run(n: usize, num_recursive_layers: usize, fri_params: &FriParams) {
-                let mut builder = CircuitBuilder::new();
-                let expected_result = builder.alloc_public_input("expected_result");
-
-                let mut a = builder.alloc_const(F::ZERO, "F(0)");
-                let mut b = builder.alloc_const(F::ONE, "F(1)");
-
-                for _ in 2..=n {
-                    let next = builder.add(a, b);
-                    a = b;
-                    b = next;
-                }
-
-                builder.connect(b, expected_result);
-
-                let base_circuit = builder.build().unwrap();
-                let table_packing_0 = TablePacking::new(1, 1, 1)
+            pub fn run(num_recursive_layers: usize, fri_params: &FriParams) {
+                let config = config_with_fri_params(fri_params);
+                let base_table_packing = TablePacking::new(1, 1, 1)
                     .with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup);
-
-                let config_0 = config_with_fri_params(fri_params);
-                let (airs_degrees_0, preprocessed_columns_0) =
-                    get_airs_and_degrees_with_prep::<ConfigWithFriParams, _, 1>(
-                        &base_circuit,
-                        table_packing_0,
-                        None,
-                    )
-                    .unwrap();
-                let (mut airs_0, degrees_0): (Vec<_>, Vec<_>) = airs_degrees_0.into_iter().unzip();
-
-                let mut runner_0 = base_circuit.runner();
-                let expected_fib = compute_fibonacci(n);
-                runner_0.set_public_inputs(&[expected_fib]).unwrap();
-
-                let traces_0 = runner_0.run().unwrap();
-                let prover_data_0 =
-                    ProverData::from_airs_and_degrees(&config_0, &mut airs_0, &degrees_0);
-                let circuit_prover_data_0 =
-                    CircuitProverData::new(prover_data_0, preprocessed_columns_0);
-                let common_0 = circuit_prover_data_0.common_data();
-                let prover_0 =
-                    BatchStarkProver::new(config_0.clone()).with_table_packing(table_packing_0);
-                let proof_0 = prover_0
-                    .prove_all_tables(&traces_0, &circuit_prover_data_0)
-                    .expect("Failed to prove base circuit");
-                report_proof_size(&proof_0);
-
-                prover_0
-                    .verify_all_tables(&proof_0, &common_0)
-                    .expect("Failed to verify base proof");
-
-                if num_recursive_layers == 0 {
-                    info!("Recursive proof verified successfully");
-                    return;
-                }
-
                 let backend = FriRecursionBackend::<WIDTH, RATE>::new($poseidon2_config);
-                let mut output = RecursionOutput(proof_0, circuit_prover_data_0);
 
-                for layer in 1..=num_recursive_layers {
-                    let params = ProveNextLayerParams {
-                        table_packing: TablePacking::new(5, 1, 3)
-                            .with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup),
+                let tree_depth = num_recursive_layers;
+                let num_leaves = 1usize << tree_depth;
+                info!("Binary aggregation tree: {num_leaves} base proofs, {tree_depth} levels");
+
+                // --- Leaf layer: produce distinct base proofs ---
+                let mut proofs: Vec<RecursionOutput<ConfigWithFriParams>> = (0..num_leaves)
+                    .map(|i| {
+                        let val = (i + 1) as u32;
+                        info!("Base proof {i} (const = {val})");
+                        prove_dummy_circuit(val, &config, base_table_packing)
+                    })
+                    .collect();
+
+                // --- Aggregate pairwise, bottom-up ---
+                let mut level = 0u32;
+                while proofs.len() > 1 {
+                    level += 1;
+                    let pairs = proofs.len() / 2;
+                    info!(
+                        "Aggregation level {level}: {} proofs -> {pairs}",
+                        proofs.len()
+                    );
+
+                    let agg_params = ProveNextLayerParams {
+                        table_packing: if level == 1 {
+                            TablePacking::new(5, 1, 3)
+                        } else {
+                            TablePacking::new(8, 2, 5)
+                        }
+                        .with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup),
                         use_poseidon2_in_circuit: true,
                     };
-                    let config = config_with_fri_params(fri_params);
 
-                    let input = output.into_recursion_input::<BatchOnly>();
-                    let out = build_and_prove_next_layer::<ConfigWithFriParams, _, _, D>(
-                        &input, &config, &backend, &params,
-                    )
-                    .unwrap_or_else(|e| panic!("Failed to prove layer {layer}: {e:?}"));
+                    let mut next_level = Vec::with_capacity(pairs);
+                    for pair_idx in 0..pairs {
+                        let li = pair_idx * 2;
+                        let left = proofs[li].into_recursion_input::<BatchOnly>();
+                        let right = proofs[li + 1].into_recursion_input::<BatchOnly>();
 
-                    report_proof_size(&out.0);
-                    let mut prover = BatchStarkProver::new(config.clone())
-                        .with_table_packing(params.table_packing);
-                    prover.register_poseidon2_table($poseidon2_config);
-                    prover
-                        .verify_all_tables(&out.0, out.1.common_data())
-                        .unwrap_or_else(|e| panic!("Failed to verify layer {layer}: {e:?}"));
+                        let out = build_and_prove_aggregation_layer::<
+                            ConfigWithFriParams,
+                            _,
+                            _,
+                            _,
+                            D,
+                        >(&left, &right, &config, &backend, &agg_params)
+                        .unwrap_or_else(|e| {
+                            panic!("Failed at level {level}, pair {pair_idx}: {e:?}")
+                        });
 
-                    output = out;
+                        report_proof_size(&out.0);
+
+                        let mut verifier = BatchStarkProver::new(config.clone())
+                            .with_table_packing(agg_params.table_packing);
+                        verifier.register_poseidon2_table($poseidon2_config);
+                        verifier
+                            .verify_all_tables(&out.0, out.1.common_data())
+                            .unwrap_or_else(|e| {
+                                panic!(
+                                    "Verification failed at level {level}, pair {pair_idx}: {e:?}"
+                                )
+                            });
+
+                        next_level.push(out);
+                    }
+                    proofs = next_level;
                 }
 
-                info!("Recursive proof verified successfully");
+                info!("All levels verified successfully");
             }
         }
     };
@@ -497,7 +504,6 @@ define_field_module!(
     p3_poseidon2_circuit_air::BabyBearD4Width16
 );
 
-/// Report the size of the serialized proof.
 #[inline]
 pub fn report_proof_size<S: Serialize>(proof: &S) {
     let proof_bytes = postcard::to_allocvec(proof).expect("Failed to serialize proof");
