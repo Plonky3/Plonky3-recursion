@@ -42,7 +42,7 @@ use p3_challenger::DuplexChallenger;
 use p3_circuit::ops::generate_poseidon2_trace;
 use p3_circuit::{CircuitBuilder, CircuitRunner, NonPrimitiveOpId};
 use p3_circuit_prover::common::get_airs_and_degrees_with_prep;
-use p3_circuit_prover::{BatchStarkProof, BatchStarkProver, CircuitProverData, TablePacking};
+use p3_circuit_prover::{BatchStarkProver, CircuitProverData, TablePacking};
 use p3_commit::{ExtensionMmcs, Pcs};
 use p3_dft::Radix2DitParallel;
 use p3_field::extension::BinomialExtensionField;
@@ -59,6 +59,7 @@ use p3_recursion::{
 };
 use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
 use p3_uni_stark::{StarkConfig, StarkGenericConfig};
+use serde::Serialize;
 use tracing::info;
 use tracing_forest::ForestLayer;
 use tracing_forest::util::LevelFilter;
@@ -324,7 +325,7 @@ macro_rules! define_field_module {
                 }
             }
 
-            fn create_config(fp: &super::FriParams) -> MyConfig {
+            fn create_config(fp: &FriParams) -> MyConfig {
                 let perm = $default_perm();
                 let hash = MyHash::new(perm.clone());
                 let compress = MyCompress::new(perm.clone());
@@ -348,7 +349,7 @@ macro_rules! define_field_module {
                 MyConfig::new(pcs, challenger)
             }
 
-            const fn create_fri_verifier_params(fp: &super::FriParams) -> FriVerifierParams {
+            const fn create_fri_verifier_params(fp: &FriParams) -> FriVerifierParams {
                 FriVerifierParams::with_mmcs(
                     fp.log_blowup,
                     fp.log_final_poly_len,
@@ -356,6 +357,13 @@ macro_rules! define_field_module {
                     fp.query_pow_bits,
                     $poseidon2_config,
                 )
+            }
+
+            fn config_with_fri_params(fp: &FriParams) -> ConfigWithFriParams {
+                ConfigWithFriParams {
+                    config: Arc::new(create_config(fp)),
+                    fri_verifier_params: create_fri_verifier_params(fp),
+                }
             }
 
             fn compute_fibonacci(n: usize) -> F {
@@ -375,7 +383,7 @@ macro_rules! define_field_module {
                 b
             }
 
-            pub fn run(n: usize, num_recursive_layers: usize, fri_params: &super::FriParams) {
+            pub fn run(n: usize, num_recursive_layers: usize, fri_params: &FriParams) {
                 let mut builder = CircuitBuilder::new();
                 let expected_result = builder.alloc_public_input("expected_result");
 
@@ -394,10 +402,7 @@ macro_rules! define_field_module {
                 let table_packing_0 = TablePacking::new(1, 1, 1)
                     .with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup);
 
-                let config_0 = ConfigWithFriParams {
-                    config: Arc::new(create_config(fri_params)),
-                    fri_verifier_params: create_fri_verifier_params(fri_params),
-                };
+                let config_0 = config_with_fri_params(fri_params);
                 let (airs_degrees_0, preprocessed_columns_0) =
                     get_airs_and_degrees_with_prep::<ConfigWithFriParams, _, 1>(
                         &base_circuit,
@@ -437,37 +442,26 @@ macro_rules! define_field_module {
                 let mut output = RecursionOutput(proof_0, circuit_prover_data_0);
 
                 for layer in 1..=num_recursive_layers {
-                    let table_packing = TablePacking::new(3, 1, 2)
-                        .with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup);
                     let params = ProveNextLayerParams {
-                        table_packing,
+                        table_packing: TablePacking::new(3, 1, 2)
+                            .with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup),
                         use_poseidon2_in_circuit: true,
                     };
-                    let config_with_params = ConfigWithFriParams {
-                        config: Arc::new(create_config(fri_params)),
-                        fri_verifier_params: create_fri_verifier_params(fri_params),
-                    };
+                    let config = config_with_fri_params(fri_params);
 
                     let input = output.into_recursion_input::<BatchOnly>();
                     let out = prove_next_layer::<ConfigWithFriParams, _, _, D>(
-                        &input,
-                        &config_with_params,
-                        &backend,
-                        &params,
+                        &input, &config, &backend, &params,
                     )
-                    .expect(&format!("Failed to prove layer {layer}"));
+                    .unwrap_or_else(|e| panic!("Failed to prove layer {layer}: {e:?}"));
 
                     report_proof_size(&out.0);
-                    let common = out.1.common_data();
-                    let mut prover = BatchStarkProver::new(ConfigWithFriParams {
-                        config: Arc::new(create_config(fri_params)),
-                        fri_verifier_params: create_fri_verifier_params(fri_params),
-                    })
-                    .with_table_packing(params.table_packing);
+                    let mut prover = BatchStarkProver::new(config.clone())
+                        .with_table_packing(params.table_packing);
                     prover.register_poseidon2_table($poseidon2_config);
                     prover
-                        .verify_all_tables(&out.0, common)
-                        .expect(&format!("Failed to verify layer {layer} proof"));
+                        .verify_all_tables(&out.0, out.1.common_data())
+                        .unwrap_or_else(|e| panic!("Failed to verify layer {layer}: {e:?}"));
 
                     output = out;
                 }
@@ -497,14 +491,8 @@ define_field_module!(
 );
 
 /// Report the size of the serialized proof.
-///
-/// Serializes the given proof instance using postcard and prints the size in bytes.
-/// Panics if serialization fails.
 #[inline]
-pub fn report_proof_size<SC>(proof: &BatchStarkProof<SC>)
-where
-    SC: StarkGenericConfig,
-{
+pub fn report_proof_size<S: Serialize>(proof: &S) {
     let proof_bytes = postcard::to_allocvec(proof).expect("Failed to serialize proof");
     println!("Proof size: {} bytes", proof_bytes.len());
 }

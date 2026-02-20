@@ -325,7 +325,7 @@ macro_rules! define_field_module {
                 }
             }
 
-            fn create_config(fp: &super::FriParams) -> MyConfig {
+            fn create_config(fp: &FriParams) -> MyConfig {
                 let perm = $default_perm();
                 let hash = MyHash::new(perm.clone());
                 let compress = MyCompress::new(perm.clone());
@@ -349,7 +349,7 @@ macro_rules! define_field_module {
                 MyConfig::new(pcs, challenger)
             }
 
-            const fn create_fri_verifier_params(fp: &super::FriParams) -> FriVerifierParams {
+            const fn create_fri_verifier_params(fp: &FriParams) -> FriVerifierParams {
                 FriVerifierParams::with_mmcs(
                     fp.log_blowup,
                     fp.log_final_poly_len,
@@ -359,7 +359,14 @@ macro_rules! define_field_module {
                 )
             }
 
-            pub fn run(num_hashes: usize, num_recursive_layers: usize, fri_params: &super::FriParams) {
+            fn config_with_fri_params(fp: &FriParams) -> ConfigWithFriParams {
+                ConfigWithFriParams {
+                    config: Arc::new(create_config(fp)),
+                    fri_verifier_params: create_fri_verifier_params(fp),
+                }
+            }
+
+            pub fn run(num_hashes: usize, num_recursive_layers: usize, fri_params: &FriParams) {
                 let keccak_air = KeccakAir {};
                 let min_trace_rows: usize =
                     1 << (fri_params.log_final_poly_len + fri_params.log_blowup + 1);
@@ -371,10 +378,7 @@ macro_rules! define_field_module {
                 let trace =
                     keccak_air.generate_trace_rows(effective_num_hashes, fri_params.log_blowup);
 
-                let config_0 = ConfigWithFriParams {
-                    config: Arc::new(create_config(fri_params)),
-                    fri_verifier_params: create_fri_verifier_params(fri_params),
-                };
+                let config_0 = config_with_fri_params(fri_params);
                 let pis: Vec<F> = vec![];
 
                 let proof_0 = prove(&config_0, &keccak_air, trace, &pis);
@@ -393,62 +397,49 @@ macro_rules! define_field_module {
                 for layer in 1..=num_recursive_layers {
                     let table_packing = if layer == 1 {
                         TablePacking::new(3, 1, 4)
-                            .with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup)
                     } else {
                         TablePacking::new(3, 1, 2)
-                            .with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup)
-                    };
+                    }
+                    .with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup);
                     let params = ProveNextLayerParams {
                         table_packing,
                         use_poseidon2_in_circuit: true,
                     };
-                    let config_with_params = ConfigWithFriParams {
-                        config: Arc::new(create_config(fri_params)),
-                        fri_verifier_params: create_fri_verifier_params(fri_params),
-                    };
+                    let config = config_with_fri_params(fri_params);
 
-                    let (proof, cp_data) = if layer == 1 {
+                    let out = if layer == 1 {
                         let input = RecursionInput::UniStark {
                             proof: &proof_0,
                             air: &keccak_air,
                             public_inputs: pis.clone(),
                             preprocessed_commit: None,
                         };
-                        let out = prove_next_layer::<ConfigWithFriParams, _, _, D>(
+                        prove_next_layer::<ConfigWithFriParams, _, _, D>(
                             &input,
-                            &config_with_params,
+                            &config,
                             &backend,
                             &params,
                         )
-                        .expect("Failed to prove layer 1");
-                        (out.0, out.1)
                     } else {
-                        let prev = output.as_ref().unwrap();
-                        let input = prev.into_recursion_input::<BatchOnly>();
-                        let out = prove_next_layer::<ConfigWithFriParams, _, _, D>(
+                        let input = output.as_ref().unwrap().into_recursion_input::<BatchOnly>();
+                        prove_next_layer::<ConfigWithFriParams, _, _, D>(
                             &input,
-                            &config_with_params,
+                            &config,
                             &backend,
                             &params,
                         )
-                        .expect(&format!("Failed to prove layer {layer}"));
-                        (out.0, out.1)
-                    };
+                    }
+                    .unwrap_or_else(|e| panic!("Failed to prove layer {layer}: {e:?}"));
 
-                    report_proof_size(&proof);
-                    let common = cp_data.common_data();
-                    let mut prover =
-                        BatchStarkProver::new(ConfigWithFriParams {
-                            config: Arc::new(create_config(fri_params)),
-                            fri_verifier_params: create_fri_verifier_params(fri_params),
-                        })
+                    report_proof_size(&out.0);
+                    let mut prover = BatchStarkProver::new(config.clone())
                         .with_table_packing(params.table_packing);
                     prover.register_poseidon2_table($poseidon2_config);
                     prover
-                        .verify_all_tables(&proof, common)
-                        .expect(&format!("Failed to verify layer {layer} proof"));
+                        .verify_all_tables(&out.0, out.1.common_data())
+                        .unwrap_or_else(|e| panic!("Failed to verify layer {layer}: {e:?}"));
 
-                    output = Some(RecursionOutput(proof, cp_data));
+                    output = Some(out);
                 }
 
                 info!("Recursive proof verified successfully");
@@ -476,14 +467,8 @@ define_field_module!(
 );
 
 /// Report the size of the serialized proof.
-///
-/// Serializes the given proof instance using postcard and prints the size in bytes.
-/// Panics if serialization fails.
 #[inline]
-pub fn report_proof_size<S>(proof: &S)
-where
-    S: Serialize,
-{
+pub fn report_proof_size<S: Serialize>(proof: &S) {
     let proof_bytes = postcard::to_allocvec(proof).expect("Failed to serialize proof");
     println!("Proof size: {} bytes", proof_bytes.len());
 }
