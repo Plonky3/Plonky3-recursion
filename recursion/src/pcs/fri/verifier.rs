@@ -412,8 +412,11 @@ where
     }
 
     // Compute subgroup_start^{arity-1} and its inverse.
+    // arity-1 = 2^log_arity - 1 is all-ones in binary, so use the recurrence
+    // r_1 = s, r_{i+1} = r_i^2 * s which converges in log_arity-1 steps.
     let mut s_pow = subgroup_start;
-    for _ in 1..(arity - 1) {
+    for _ in 1..log_arity {
+        s_pow = builder.mul(s_pow, s_pow);
         s_pow = builder.mul(s_pow, subgroup_start);
     }
     let inv_s_pow = builder.div(one, s_pow);
