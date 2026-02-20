@@ -211,6 +211,10 @@ pub struct Circuit<F> {
     pub tag_to_witness: HashMap<String, WitnessId>,
     /// Tag to non-primitive operation ID mapping.
     pub tag_to_op_id: HashMap<String, NonPrimitiveOpId>,
+    /// Witness aliases produced by constant folding.
+    /// Each `(dst, src)` pair means `witness[dst]` should be copied from `witness[src]`
+    /// after all ops have executed, before trace building.
+    pub witness_aliases: Vec<(WitnessId, WitnessId)>,
 }
 
 impl<F: Field + Clone> Clone for Circuit<F> {
@@ -225,6 +229,7 @@ impl<F: Field + Clone> Clone for Circuit<F> {
             non_primitive_trace_generators: self.non_primitive_trace_generators.clone(),
             tag_to_witness: self.tag_to_witness.clone(),
             tag_to_op_id: self.tag_to_op_id.clone(),
+            witness_aliases: self.witness_aliases.clone(),
         }
     }
 }
@@ -242,6 +247,7 @@ impl<F: Field> Circuit<F> {
             non_primitive_trace_generators: HashMap::new(),
             tag_to_witness: HashMap::new(),
             tag_to_op_id: HashMap::new(),
+            witness_aliases: Vec::new(),
         }
     }
 

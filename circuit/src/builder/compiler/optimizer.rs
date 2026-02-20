@@ -29,18 +29,195 @@ impl Optimizer {
 
     /// Optimizes primitive operations.
     ///
-    /// Currently implements:
-    /// - BoolCheck fusion: detects `b * (b - 1) = 0` patterns and fuses them into BoolCheck ops
-    /// - MulAdd fusion: detects `a * b + c` patterns and fuses them into MulAdd ops
+    /// Currently implements (in order):
+    /// 1. Constant folding: eliminates trivial identity ops like `mul(x, ONE)` and `add(x, ZERO)`
+    /// 2. BoolCheck fusion: detects `b * (b - 1) = 0` patterns and fuses them into BoolCheck ops
+    /// 3. MulAdd fusion: detects `a * b + c` patterns and fuses them into MulAdd ops
     ///
-    /// Future passes that can be added here:
-    /// - Dead code elimination
-    /// - Common subexpression elimination
-    /// - Constant folding
-    pub fn optimize<F: Field>(&self, primitive_ops: Vec<Op<F>>) -> Vec<Op<F>> {
-        // BoolCheck first, then MulAdd
-        let ops = self.fuse_bool_checks(primitive_ops);
-        self.fuse_mul_adds(ops)
+    /// Returns `(optimized_ops, witness_aliases)` where `witness_aliases` maps
+    /// each folded-away output WitnessId to the WitnessId it should copy from.
+    pub fn optimize<F: Field>(
+        &self,
+        primitive_ops: Vec<Op<F>>,
+    ) -> (Vec<Op<F>>, Vec<(WitnessId, WitnessId)>) {
+        let (ops, aliases) = self.fold_constants(primitive_ops);
+        let ops = self.fuse_bool_checks(ops);
+        (self.fuse_mul_adds(ops), aliases)
+    }
+
+    /// Eliminates trivial identity operations where the result is statically known:
+    ///
+    /// - `add(x, ZERO)` or `add(ZERO, x)` → `x`
+    /// - `mul(x, ONE)` or `mul(ONE, x)` → `x`
+    /// - `mul(x, ZERO)` or `mul(ZERO, x)` → `ZERO`
+    ///
+    /// Only folds *forward* ops (where `out` is first defined here). Backward ops
+    /// (subs/divs encoded as `add`/`mul` with a pre-existing `out`) are left alone.
+    fn fold_constants<F: Field>(
+        &self,
+        ops: Vec<Op<F>>,
+    ) -> (Vec<Op<F>>, Vec<(WitnessId, WitnessId)>) {
+        // Phase 1: collect constant values and first-definition positions.
+        let mut const_values: HashMap<WitnessId, F> = HashMap::new();
+        let mut defined_at: HashMap<WitnessId, usize> = HashMap::new();
+
+        for (idx, op) in ops.iter().enumerate() {
+            match op {
+                Op::Const { out, val } => {
+                    const_values.insert(*out, *val);
+                    defined_at.insert(*out, idx);
+                }
+                Op::Public { out, .. } => {
+                    defined_at.entry(*out).or_insert(idx);
+                }
+                Op::Alu { out, .. } => {
+                    defined_at.entry(*out).or_insert(idx);
+                }
+                Op::NonPrimitiveOpWithExecutor { outputs, .. } => {
+                    for group in outputs {
+                        for out_id in group {
+                            defined_at.entry(*out_id).or_insert(idx);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Find a ZERO-valued WitnessId for mul-by-zero folding.
+        let zero_id: Option<WitnessId> = const_values
+            .iter()
+            .find(|(_, v)| **v == F::ZERO)
+            .map(|(id, _)| *id);
+
+        // Phase 2: identify trivially reducible forward ops and build alias map.
+        let mut aliases: HashMap<WitnessId, WitnessId> = HashMap::new();
+        let mut removed: hashbrown::HashSet<usize> = hashbrown::HashSet::new();
+
+        for (idx, op) in ops.iter().enumerate() {
+            let (kind, a, b, out) = match op {
+                Op::Alu {
+                    kind,
+                    a,
+                    b,
+                    c: None,
+                    out,
+                    ..
+                } => (*kind, *a, *b, *out),
+                _ => continue,
+            };
+
+            // Skip backward ops (out was defined before this index).
+            if defined_at.get(&out).is_some_and(|&d| d < idx) {
+                continue;
+            }
+
+            let a_r = Self::resolve(a, &aliases);
+            let b_r = Self::resolve(b, &aliases);
+
+            match kind {
+                AluOpKind::Add => {
+                    if const_values.get(&a_r).is_some_and(|v| *v == F::ZERO) {
+                        aliases.insert(out, b_r);
+                        removed.insert(idx);
+                    } else if const_values.get(&b_r).is_some_and(|v| *v == F::ZERO) {
+                        aliases.insert(out, a_r);
+                        removed.insert(idx);
+                    }
+                }
+                AluOpKind::Mul => {
+                    if const_values.get(&a_r).is_some_and(|v| *v == F::ONE) {
+                        aliases.insert(out, b_r);
+                        removed.insert(idx);
+                    } else if const_values.get(&b_r).is_some_and(|v| *v == F::ONE) {
+                        aliases.insert(out, a_r);
+                        removed.insert(idx);
+                    } else if let Some(z) = zero_id {
+                        let z_r = Self::resolve(z, &aliases);
+                        if const_values.get(&a_r).is_some_and(|v| *v == F::ZERO)
+                            || const_values.get(&b_r).is_some_and(|v| *v == F::ZERO)
+                        {
+                            aliases.insert(out, z_r);
+                            removed.insert(idx);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if removed.is_empty() {
+            return (ops, Vec::new());
+        }
+
+        // Build the copy list: (dst, src) pairs the runner must fill after execution.
+        let witness_aliases: Vec<(WitnessId, WitnessId)> =
+            aliases.iter().map(|(&dst, &src)| (dst, src)).collect();
+
+        // Phase 3: rewrite remaining ops through aliases and drop removed ones.
+        let ops = ops
+            .into_iter()
+            .enumerate()
+            .filter(|(idx, _)| !removed.contains(idx))
+            .map(|(_, op)| Self::rewrite(op, &aliases))
+            .collect();
+
+        (ops, witness_aliases)
+    }
+
+    /// Chase an alias chain to its root.
+    fn resolve(id: WitnessId, aliases: &HashMap<WitnessId, WitnessId>) -> WitnessId {
+        let mut cur = id;
+        while let Some(&next) = aliases.get(&cur) {
+            cur = next;
+        }
+        cur
+    }
+
+    /// Rewrite every WitnessId reference in an op through the alias map.
+    fn rewrite<F>(op: Op<F>, aliases: &HashMap<WitnessId, WitnessId>) -> Op<F> {
+        if aliases.is_empty() {
+            return op;
+        }
+        let r = |id: WitnessId| Self::resolve(id, aliases);
+        match op {
+            Op::Const { out, val } => Op::Const { out: r(out), val },
+            Op::Public { out, public_pos } => Op::Public {
+                out: r(out),
+                public_pos,
+            },
+            Op::Alu {
+                kind,
+                a,
+                b,
+                c,
+                out,
+                intermediate_out,
+            } => Op::Alu {
+                kind,
+                a: r(a),
+                b: r(b),
+                c: c.map(r),
+                out: r(out),
+                intermediate_out: intermediate_out.map(r),
+            },
+            Op::NonPrimitiveOpWithExecutor {
+                inputs,
+                outputs,
+                executor,
+                op_id,
+            } => Op::NonPrimitiveOpWithExecutor {
+                inputs: inputs
+                    .into_iter()
+                    .map(|g| g.into_iter().map(r).collect())
+                    .collect(),
+                outputs: outputs
+                    .into_iter()
+                    .map(|g| g.into_iter().map(r).collect())
+                    .collect(),
+                executor,
+                op_id,
+            },
+        }
     }
 
     /// Detects and fuses `a * b + c` patterns into MulAdd operations.
@@ -539,12 +716,12 @@ mod tests {
         let ops: Vec<Op<F>> = vec![
             Op::Const {
                 out: WitnessId(0),
-                val: F::ZERO,
+                val: F::TWO,
             },
             Op::add(WitnessId(0), WitnessId(1), WitnessId(2)),
         ];
 
-        let optimized = optimizer.optimize(ops.clone());
+        let (optimized, _) = optimizer.optimize(ops.clone());
         assert_eq!(optimized, ops);
     }
 
@@ -581,14 +758,13 @@ mod tests {
             Op::mul(b, b_minus_one, product),           // b * (b - 1) - this should be fused
         ];
 
-        let optimized = optimizer.optimize(ops);
+        let (optimized, _) = optimizer.optimize(ops);
 
-        // BoolCheck fusion converts mul(b, b_minus_one) into BoolCheck
-        // MulAdd fusion fuses mul(one, neg_one) + add(b, ...) into MulAdd
-        // Result: 2 Const + 1 MulAdd + 1 BoolCheck = 4 ops
+        // Constant folding removes mul(one, neg_one) since one = ONE → alias to neg_one.
+        // BoolCheck fusion converts mul(b, b_minus_one) into BoolCheck.
+        // Result: 2 Const + 1 Add + 1 BoolCheck = 4 ops
         assert_eq!(optimized.len(), 4, "Expected 4 ops, got {:?}", optimized);
 
-        // Check that there's a BoolCheck
         let bool_check_count = optimized
             .iter()
             .filter(|op| {
@@ -602,21 +778,6 @@ mod tests {
             })
             .count();
         assert_eq!(bool_check_count, 1, "Expected 1 BoolCheck");
-
-        // Check that there's a MulAdd
-        let muladd_count = optimized
-            .iter()
-            .filter(|op| {
-                matches!(
-                    op,
-                    Op::Alu {
-                        kind: AluOpKind::MulAdd,
-                        ..
-                    }
-                )
-            })
-            .count();
-        assert_eq!(muladd_count, 1, "Expected 1 MulAdd");
     }
 
     #[test]
@@ -630,7 +791,7 @@ mod tests {
 
         let ops: Vec<Op<F>> = vec![Op::mul(a, b, out)];
 
-        let optimized = optimizer.optimize(ops.clone());
+        let (optimized, _) = optimizer.optimize(ops.clone());
 
         // Should remain unchanged
         assert_eq!(optimized, ops);
@@ -885,5 +1046,194 @@ mod tests {
             ),
             "First op should remain Mul"
         );
+    }
+
+    // ---- constant folding tests ----
+
+    #[test]
+    fn test_fold_add_zero_lhs() {
+        let optimizer = Optimizer::new();
+        let x = WitnessId(0);
+        let z = WitnessId(1);
+        let out = WitnessId(2);
+        let ops: Vec<Op<F>> = vec![
+            Op::Const {
+                out: z,
+                val: F::ZERO,
+            },
+            Op::add(z, x, out), // ZERO + x → x
+        ];
+        let (optimized, _) = optimizer.fold_constants(ops);
+        assert_eq!(optimized.len(), 1, "add(ZERO, x) should be folded away");
+        assert!(!optimized[0].is_alu_kind(AluOpKind::Add));
+    }
+
+    #[test]
+    fn test_fold_add_zero_rhs() {
+        let optimizer = Optimizer::new();
+        let x = WitnessId(0);
+        let z = WitnessId(1);
+        let out = WitnessId(2);
+        let ops: Vec<Op<F>> = vec![
+            Op::Const {
+                out: z,
+                val: F::ZERO,
+            },
+            Op::add(x, z, out), // x + ZERO → x
+        ];
+        let (optimized, _) = optimizer.fold_constants(ops);
+        assert_eq!(optimized.len(), 1, "add(x, ZERO) should be folded away");
+    }
+
+    #[test]
+    fn test_fold_mul_one_lhs() {
+        let optimizer = Optimizer::new();
+        let x = WitnessId(0);
+        let one = WitnessId(1);
+        let out = WitnessId(2);
+        let ops: Vec<Op<F>> = vec![
+            Op::Const {
+                out: one,
+                val: F::ONE,
+            },
+            Op::mul(one, x, out), // ONE * x → x
+        ];
+        let (optimized, _) = optimizer.fold_constants(ops);
+        assert_eq!(optimized.len(), 1, "mul(ONE, x) should be folded away");
+    }
+
+    #[test]
+    fn test_fold_mul_one_rhs() {
+        let optimizer = Optimizer::new();
+        let x = WitnessId(0);
+        let one = WitnessId(1);
+        let out = WitnessId(2);
+        let ops: Vec<Op<F>> = vec![
+            Op::Const {
+                out: one,
+                val: F::ONE,
+            },
+            Op::mul(x, one, out), // x * ONE → x
+        ];
+        let (optimized, _) = optimizer.fold_constants(ops);
+        assert_eq!(optimized.len(), 1, "mul(x, ONE) should be folded away");
+    }
+
+    #[test]
+    fn test_fold_mul_zero() {
+        let optimizer = Optimizer::new();
+        let x = WitnessId(0);
+        let z = WitnessId(1);
+        let out = WitnessId(2);
+        let ops: Vec<Op<F>> = vec![
+            Op::Const {
+                out: z,
+                val: F::ZERO,
+            },
+            Op::mul(x, z, out), // x * ZERO → ZERO
+        ];
+        let (optimized, _) = optimizer.fold_constants(ops);
+        assert_eq!(optimized.len(), 1, "mul(x, ZERO) should be folded away");
+    }
+
+    #[test]
+    fn test_fold_does_not_touch_backward_add() {
+        let optimizer = Optimizer::new();
+        let z = WitnessId(0);
+        let result = WitnessId(1);
+        let lhs = WitnessId(2);
+        let ops: Vec<Op<F>> = vec![
+            Op::Const {
+                out: z,
+                val: F::ZERO,
+            },
+            Op::Const {
+                out: lhs,
+                val: F::TWO,
+            },
+            // Backward add: sub(lhs, z) encoded as add(z, result, lhs) where lhs defined above
+            Op::add(z, result, lhs),
+        ];
+        let (optimized, _) = optimizer.fold_constants(ops);
+        assert_eq!(optimized.len(), 3, "backward add must not be folded");
+    }
+
+    #[test]
+    fn test_fold_chained_aliases() {
+        let optimizer = Optimizer::new();
+        let x = WitnessId(0);
+        let z = WitnessId(1);
+        let one = WitnessId(2);
+        let mid = WitnessId(3);
+        let out = WitnessId(4);
+        let ops: Vec<Op<F>> = vec![
+            Op::Const {
+                out: z,
+                val: F::ZERO,
+            },
+            Op::Const {
+                out: one,
+                val: F::ONE,
+            },
+            Op::add(z, x, mid),     // ZERO + x → mid aliases x
+            Op::mul(mid, one, out), // mid * ONE → out aliases mid → x
+        ];
+        let (optimized, aliases) = optimizer.fold_constants(ops);
+        // Both trivial ops folded; only the two Const ops remain.
+        assert_eq!(optimized.len(), 2, "chained folds should remove both ops");
+        assert_eq!(aliases.len(), 2, "two aliases produced");
+    }
+
+    #[test]
+    fn test_fold_enables_muladd() {
+        // recompose_base_coeffs_to_ext pattern: acc=ZERO, mul(coeff, ONE), add(acc, term)
+        // After folding the first iteration is eliminated, letting subsequent iterations fuse.
+        let optimizer = Optimizer::new();
+        let coeff0 = WitnessId(0);
+        let coeff1 = WitnessId(1);
+        let acc0 = WitnessId(2);
+        let basis0 = WitnessId(3);
+        let basis1 = WitnessId(4);
+        let term0 = WitnessId(5);
+        let acc1 = WitnessId(6);
+        let term1 = WitnessId(7);
+        let acc2 = WitnessId(8);
+
+        let ops: Vec<Op<F>> = vec![
+            Op::Const {
+                out: acc0,
+                val: F::ZERO,
+            },
+            Op::Const {
+                out: basis0,
+                val: F::ONE,
+            },
+            Op::Const {
+                out: basis1,
+                val: F::TWO,
+            },
+            Op::mul(coeff0, basis0, term0), // coeff0 * ONE → coeff0
+            Op::add(acc0, term0, acc1),     // ZERO + term0 → term0 → coeff0
+            Op::mul(coeff1, basis1, term1), // coeff1 * TWO (kept)
+            Op::add(acc1, term1, acc2),     // coeff0 + term1 (kept, fusible)
+        ];
+
+        let (optimized, aliases) = optimizer.optimize(ops);
+
+        // Folding removes mul(coeff0, ONE) and add(ZERO, term0).
+        // MulAdd fuses mul(coeff1, basis1) + add(coeff0, term1) into MulAdd.
+        // Result: 3 Consts + 1 MulAdd = 4 ops, 2 witness aliases.
+        assert_eq!(
+            optimized.len(),
+            4,
+            "Expected 3 consts + 1 MulAdd, got {:?}",
+            optimized
+        );
+        assert_eq!(aliases.len(), 2, "Expected 2 witness aliases from folding");
+        let muladd_count = optimized
+            .iter()
+            .filter(|op| op.is_alu_kind(AluOpKind::MulAdd))
+            .count();
+        assert_eq!(muladd_count, 1);
     }
 }

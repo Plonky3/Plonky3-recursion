@@ -702,11 +702,12 @@ where
 
         // Stage 2: IR transformations and optimizations
         let optimizer = Optimizer::new();
-        let ops = optimizer.optimize(ops);
+        let (ops, witness_aliases) = optimizer.optimize(ops);
 
         // Stage 3: Generate final circuit
         let mut circuit = Circuit::new(witness_count, expr_to_widx);
         circuit.ops = ops;
+        circuit.witness_aliases = witness_aliases;
         circuit.public_rows = public_rows;
         circuit.public_flat_len = self.public_tracker.count();
         circuit.enabled_ops = self.config.into_enabled_ops();

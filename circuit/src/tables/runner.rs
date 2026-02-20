@@ -177,6 +177,13 @@ impl<F: CircuitField> CircuitRunner<F> {
     pub fn run(mut self) -> Result<Traces<F>, CircuitError> {
         self.execute_all()?;
 
+        // Apply witness aliases produced by constant folding: copy src → dst.
+        for &(dst, src) in &self.circuit.witness_aliases {
+            let val = self.witness[src.0 as usize]
+                .ok_or(CircuitError::WitnessNotSet { witness_id: src })?;
+            self.witness[dst.0 as usize] = Some(val);
+        }
+
         // Delegate to trace builders for each table
         let witness_trace = WitnessTraceBuilder::new(&self.witness).build()?;
         let const_trace = ConstTraceBuilder::new(&self.circuit.ops).build()?;
