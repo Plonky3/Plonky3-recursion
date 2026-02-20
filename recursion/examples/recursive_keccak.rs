@@ -396,9 +396,9 @@ macro_rules! define_field_module {
 
                 for layer in 1..=num_recursive_layers {
                     let table_packing = if layer == 1 {
-                        TablePacking::new(3, 1, 4)
+                        TablePacking::new(1, 1, 1)
                     } else {
-                        TablePacking::new(3, 1, 2)
+                        TablePacking::new(5, 1, 3)
                     }
                     .with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup);
                     let params = ProveNextLayerParams {

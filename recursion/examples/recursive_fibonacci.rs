@@ -443,7 +443,7 @@ macro_rules! define_field_module {
 
                 for layer in 1..=num_recursive_layers {
                     let params = ProveNextLayerParams {
-                        table_packing: TablePacking::new(3, 1, 2)
+                        table_packing: TablePacking::new(5, 1, 3)
                             .with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup),
                         use_poseidon2_in_circuit: true,
                     };
