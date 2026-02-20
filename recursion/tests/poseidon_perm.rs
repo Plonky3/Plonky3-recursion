@@ -15,7 +15,7 @@ use p3_recursion::pcs::fri::{
     RecValMmcs, Witness,
 };
 use p3_recursion::public_inputs::StarkVerifierInputsBuilder;
-use p3_recursion::{Poseidon2Config, VerificationError, verify_circuit};
+use p3_recursion::{Poseidon2Config, VerificationError, verify_p3_uni_proof_circuit};
 use p3_uni_stark::{
     StarkGenericConfig, prove_with_preprocessed, setup_preprocessed, verify_with_preprocessed,
 };
@@ -157,7 +157,7 @@ fn test_poseidon2_perm_verifier() -> Result<(), VerificationError> {
             public_inputs.len(),
         );
 
-    verify_circuit::<
+    verify_p3_uni_proof_circuit::<
         Poseidon2CircuitAirBabyBearD4Width16,
         MyConfig,
         HashTargets<F, DIGEST_ELEMS>,

@@ -54,10 +54,10 @@ let output = prove_next_layer(&input, &config, &backend, &params)?;
 
 ### Low-level API
 
-For fine-grained control, you can build the verification circuit and run the prover pipeline yourself via `verify_p3_recursion_proof_circuit` (batch) or `verify_circuit` (uni-stark):
+For fine-grained control, you can build the verification circuit and run the prover pipeline yourself via `verify_p3_batch_proof_circuit` (batch) or `verify_circuit` (uni-stark):
 
 ```rust
-use p3_recursion::verifier::verify_p3_recursion_proof_circuit;
+use p3_recursion::verifier::verify_p3_batch_proof_circuit;
 use p3_recursion::public_inputs::BatchStarkVerifierInputsBuilder;
 use p3_circuit::CircuitBuilder;
 
@@ -65,7 +65,7 @@ use p3_circuit::CircuitBuilder;
 let mut circuit_builder = CircuitBuilder::new();
 circuit_builder.enable_poseidon2_perm::<Config, _>(trace_generator, poseidon2_perm);
 
-let (verifier_inputs, mmcs_op_ids) = verify_p3_recursion_proof_circuit::<
+let (verifier_inputs, mmcs_op_ids) = verify_p3_batch_proof_circuit::<
     MyConfig,
     HashTargets<F, DIGEST_ELEMS>,
     InputProofTargets<F, Challenge, RecValMmcs<...>>,

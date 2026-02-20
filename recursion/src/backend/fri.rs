@@ -13,7 +13,8 @@ use crate::public_inputs::{BatchStarkVerifierInputsBuilder, StarkVerifierInputsB
 use crate::recursion::{PcsRecursionBackend, RecursionInput, VerifierCircuitResult};
 use crate::traits::RecursiveAir;
 use crate::verifier::{
-    ObservableCommitment, VerificationError, verify_circuit, verify_p3_recursion_proof_circuit,
+    ObservableCommitment, VerificationError, verify_p3_batch_proof_circuit,
+    verify_p3_uni_proof_circuit,
 };
 use crate::{Recursive, RecursivePcs};
 
@@ -222,7 +223,7 @@ where
                         preprocessed_commit.as_ref(),
                         public_inputs.len(),
                     );
-                let op_ids = verify_circuit::<
+                let op_ids = verify_p3_uni_proof_circuit::<
                     A,
                     SC,
                     SC::Commitment,
@@ -249,7 +250,7 @@ where
             } => {
                 let lookup_gadget = p3_lookup::logup::LogUpGadget::new();
                 let (verifier_inputs, op_ids) = match proof.ext_degree {
-                    1 => verify_p3_recursion_proof_circuit::<
+                    1 => verify_p3_batch_proof_circuit::<
                         SC,
                         SC::Commitment,
                         SC::InputProof,
@@ -267,7 +268,7 @@ where
                         &lookup_gadget,
                         self.poseidon2_config,
                     )?,
-                    4 => verify_p3_recursion_proof_circuit::<
+                    4 => verify_p3_batch_proof_circuit::<
                         SC,
                         SC::Commitment,
                         SC::InputProof,

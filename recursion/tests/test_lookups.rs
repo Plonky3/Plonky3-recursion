@@ -18,7 +18,7 @@ use p3_lookup::lookup_traits::LookupData;
 use p3_poseidon2_circuit_air::BabyBearD4Width16;
 use p3_recursion::generation::generate_batch_challenges;
 use p3_recursion::pcs::fri::{FriVerifierParams, HashTargets, InputProofTargets, RecValMmcs};
-use p3_recursion::verifier::{CircuitTablesAir, verify_p3_recursion_proof_circuit};
+use p3_recursion::verifier::{CircuitTablesAir, verify_p3_batch_proof_circuit};
 use p3_recursion::{BatchStarkVerifierInputsBuilder, GenerationError, VerificationError};
 const TRACE_D: usize = 1; // Proof traces are in base field
 
@@ -720,7 +720,7 @@ fn get_verifier_inputs_and_challenges(
     ];
 
     // Attach verifier without manually building circuit_airs
-    let verifier_inputs = verify_p3_recursion_proof_circuit::<
+    let verifier_inputs = verify_p3_batch_proof_circuit::<
         MyConfig,
         HashTargets<F, DIGEST_ELEMS>,
         InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>>,
