@@ -343,7 +343,7 @@ macro_rules! define_field_module {
 
                     let (table_packing, verifier_inputs, mmcs_op_ids) = if layer == 1 {
                         const TRACE_D_LAYER0: usize = 1;
-                        let table_packing = TablePacking::new(3, 1, 3)
+                        let table_packing = TablePacking::new(5, 1, 3)
                             .with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup);
                         let config = create_config(fri_params);
                         let (vi, mmcs) = verify_p3_recursion_proof_circuit::<
@@ -374,7 +374,7 @@ macro_rules! define_field_module {
                         (table_packing, vi, mmcs)
                     } else {
                         const TRACE_D_LAYER_REC: usize = 4;
-                        let table_packing = TablePacking::new(3, 1, 3)
+                        let table_packing = TablePacking::new(5, 1, 3)
                             .with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup);
                         let config = create_config(fri_params);
                         let (vi, mmcs) = verify_p3_recursion_proof_circuit::<
