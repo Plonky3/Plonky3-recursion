@@ -1,3 +1,6 @@
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::option_if_let_else)]
+
 use alloc::collections::btree_map::BTreeMap;
 use alloc::string::ToString;
 use alloc::vec::Vec;
@@ -246,12 +249,16 @@ fn reconstruct_evals<EF: Field>(
 ///   in bit-reversed order,
 /// - `omega = two_adic_generator(log_arity)`,
 /// - `subgroup_start = two_adic_generator(log_folded_height + log_arity)^{rev(parent_index)}`.
+///
+/// When `precomputed_subgroup_start` is `Some`, the select-mul chain for
+/// `subgroup_start` is skipped and the provided value is used directly.
 fn compute_subgroup_points<F, EF>(
     builder: &mut CircuitBuilder<EF>,
     index_bits: &[Target],
     bits_consumed: usize,
     log_arity: usize,
     log_folded_height: usize,
+    precomputed_subgroup_start: Option<Target>,
 ) -> (Vec<Target>, Target)
 where
     F: Field + TwoAdicField,
@@ -261,36 +268,38 @@ where
 
     let arity = 1usize << log_arity;
 
-    // Parent index bits start after index_in_group bits
-    let parent_offset = bits_consumed + log_arity;
-
-    // Compute subgroup_start = g_big^{reverse_bits_len(parent_index, log_folded_height)}
-    let g_big = F::two_adic_generator(log_folded_height + log_arity);
-    let one = builder.add_const(EF::ONE);
-
-    // Precompute all g_big powers once and lift to circuit constants
-    let g_big_pows: Vec<Target> = if log_folded_height > 0 {
-        iter::successors(Some(g_big), |&prev| Some(prev.square()))
-            .take(log_folded_height)
-            .map(|p| builder.add_const(EF::from(p)))
-            .collect()
+    let subgroup_start = if let Some(ss) = precomputed_subgroup_start {
+        ss
     } else {
-        Vec::new()
-    };
+        // Parent index bits start after index_in_group bits
+        let parent_offset = bits_consumed + log_arity;
 
-    let mut subgroup_start = one;
-    if log_folded_height > 0 {
-        // Reversed bits: we take bits [parent_offset..parent_offset+log_folded_height] reversed
-        for j in 0..log_folded_height {
-            let bit = index_bits[parent_offset + log_folded_height - 1 - j];
-            let multiplier = builder.select(bit, g_big_pows[j], one);
-            subgroup_start = builder.mul(subgroup_start, multiplier);
+        // Compute subgroup_start = g_big^{reverse_bits_len(parent_index, log_folded_height)}
+        let g_big = F::two_adic_generator(log_folded_height + log_arity);
+        let one = builder.add_const(EF::ONE);
+
+        let g_big_pows: Vec<Target> = if log_folded_height > 0 {
+            iter::successors(Some(g_big), |&prev| Some(prev.square()))
+                .take(log_folded_height)
+                .map(|p| builder.add_const(EF::from(p)))
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        let mut ss = one;
+        if log_folded_height > 0 {
+            for j in 0..log_folded_height {
+                let bit = index_bits[parent_offset + log_folded_height - 1 - j];
+                let multiplier = builder.select(bit, g_big_pows[j], one);
+                ss = builder.mul(ss, multiplier);
+            }
         }
-    }
+        ss
+    };
 
     // Compute xs[i] = subgroup_start * omega^{br(i)}
     let omega = F::two_adic_generator(log_arity);
-    // Precompute all omega^{br(i)} values once and lift to circuit constants
     let omega_br_consts: Vec<Target> = (0..arity)
         .map(|i| {
             let br_i = p3_util::reverse_bits_len(i, log_arity);
@@ -435,6 +444,82 @@ where
     builder.mul(accumulator, inv_s_pow)
 }
 
+/// Precompute `subgroup_start` for every FRI phase within a single query.
+///
+/// All phases compute `g_i^{rev(parent_index_i)}` where
+/// `g_i = two_adic_generator(log_current_height_i)`. Because the reversed parent
+/// bits for phase `i` are a prefix of phase 0's bits, and
+/// `g_i = g_0^{2^{cumulative_bits_i}}`, we derive later phases from the
+/// intermediate of phase 0's chain:
+/// `subgroup_start_i = (g_0^{N_i})^{2^{cumulative_bits_i}}`.
+fn precompute_subgroup_starts<F, EF>(
+    builder: &mut CircuitBuilder<EF>,
+    index_bits: &[Target],
+    log_max_height: usize,
+    log_arities: &[usize],
+    cumulative_bits: &[usize],
+) -> Vec<Target>
+where
+    F: Field + TwoAdicField,
+    EF: ExtensionField<F>,
+{
+    let num_phases = log_arities.len();
+    let one = builder.add_const(EF::ONE);
+
+    // log_folded_height[i] = log_max_height - cumulative_bits[i+1]
+    let log_folded_heights: Vec<usize> = (0..num_phases)
+        .map(|i| log_max_height - cumulative_bits[i + 1])
+        .collect();
+
+    let max_chain_len = log_folded_heights[0];
+
+    if max_chain_len == 0 {
+        builder.pop_scope();
+        return vec![one; num_phases];
+    }
+
+    let g_0 = F::two_adic_generator(log_max_height);
+    let powers_of_g: Vec<_> = iter::successors(Some(g_0), |&prev| Some(prev.square()))
+        .take(max_chain_len)
+        .map(|p| builder.add_const(EF::from(p)))
+        .collect();
+
+    let parent_offset_0 = cumulative_bits[1]; // = log_arities[0]
+
+    let mut capture_at: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    for (i, &lf) in log_folded_heights
+        .iter()
+        .enumerate()
+        .take(num_phases)
+        .skip(1)
+    {
+        if lf > 0 {
+            capture_at.entry(lf).or_default().push(i);
+        }
+    }
+
+    let mut g_pow = one;
+    let mut result = vec![one; num_phases];
+
+    for j in 0..max_chain_len {
+        let bit = index_bits[parent_offset_0 + max_chain_len - 1 - j];
+        let multiplier = builder.select(bit, powers_of_g[j], one);
+        g_pow = builder.mul(g_pow, multiplier);
+
+        let bits_done = j + 1;
+        if let Some(phase_indices) = capture_at.get(&bits_done) {
+            for &phase_i in phase_indices {
+                result[phase_i] = builder.exp_power_of_2(g_pow, cumulative_bits[phase_i]);
+            }
+        }
+    }
+
+    // Phase 0: full chain, cumulative_bits[0] = 0, no squaring.
+    result[0] = g_pow;
+
+    result
+}
+
 /// Precompute and cache powers `beta^{2^k}` for all fold phases.
 fn precompute_beta_powers_per_phase<EF: Field>(
     builder: &mut CircuitBuilder<EF>,
@@ -514,7 +599,6 @@ fn lagrange_interpolate_circuit<EF: Field>(
 ///
 /// When `precomputed_evals` is `Some`, those evals are reused instead of
 /// rebuilding them via `reconstruct_evals`.
-#[allow(clippy::too_many_arguments)]
 fn fold_one_phase<F, EF>(
     builder: &mut CircuitBuilder<EF>,
     folded: Target,
@@ -527,6 +611,7 @@ fn fold_one_phase<F, EF>(
     roll_in: Option<Target>,
     precomputed_beta_pow: Option<Target>,
     precomputed_evals: Option<&[Target]>,
+    precomputed_subgroup_start: Option<Target>,
 ) -> Target
 where
     F: Field + TwoAdicField,
@@ -545,12 +630,14 @@ where
         let sibling_is_right = builder.sub(one, index_bits[bits_consumed]);
 
         let e0 = builder.select(sibling_is_right, folded, sibling);
-        let x0 = compute_x0_from_index_bits_general::<F, EF>(
-            builder,
-            index_bits,
-            bits_consumed,
-            log_folded_height,
-        );
+        let x0 = precomputed_subgroup_start.unwrap_or_else(|| {
+            compute_x0_from_index_bits_general::<F, EF>(
+                builder,
+                index_bits,
+                bits_consumed,
+                log_folded_height,
+            )
+        });
         let inv = builder.div(neg_half, x0);
 
         let d = builder.sub(sibling, folded);
@@ -564,7 +651,6 @@ where
         let mut new_folded = builder.add(e0, t_inv);
 
         if let Some(ro) = roll_in {
-            // For arity-2, roll-in uses beta^2; reuse precomputed value if provided.
             let beta_sq = precomputed_beta_pow.unwrap_or_else(|| builder.mul(beta, beta));
             let add_term = builder.mul(beta_sq, ro);
             new_folded = builder.add(new_folded, add_term);
@@ -575,7 +661,6 @@ where
 
     // General path: Lagrange interpolation
     let owned_evals;
-    #[allow(clippy::option_if_let_else)] // false positive
     let evals: &[Target] = match precomputed_evals {
         Some(e) => e,
         None => {
@@ -590,6 +675,7 @@ where
         bits_consumed,
         log_arity,
         log_folded_height,
+        precomputed_subgroup_start,
     );
 
     // For small arities (2, 4, 8, 16), use the optimized interpolation that
@@ -658,6 +744,7 @@ fn fold_chain_circuit<F, EF>(
     index_bits: &[Target],
     phases: &[FoldPhaseConfig],
     log_arities: &[usize],
+    cumulative_bits: &[usize],
     beta_pows_per_phase: &[Target],
 ) -> Target
 where
@@ -667,6 +754,15 @@ where
     builder.push_scope("fold_chain_circuit");
 
     let log_max_height = index_bits.len();
+
+    let subgroup_starts = precompute_subgroup_starts::<F, EF>(
+        builder,
+        index_bits,
+        log_max_height,
+        log_arities,
+        cumulative_bits,
+    );
+
     let mut folded = initial_folded_eval;
     let mut bits_consumed = 0usize;
     let mut log_current_height = log_max_height;
@@ -685,6 +781,7 @@ where
             phase.roll_in,
             Some(beta_pows_per_phase[i]),
             None,
+            Some(subgroup_starts[i]),
         );
         bits_consumed += log_arity;
         log_current_height -= log_arity;
@@ -885,7 +982,6 @@ fn compute_single_reduced_opening<EF: Field>(
 /// Returns a vector of (log_height, ro) sorted by descending height, plus the MMCS op IDs.
 ///
 /// Reference (Plonky3): `p3_fri::verifier::open_input`
-#[allow(clippy::too_many_arguments)]
 #[allow(clippy::type_complexity)]
 fn open_input<F, EF, Comm>(
     builder: &mut CircuitBuilder<EF>,
@@ -1070,7 +1166,6 @@ where
 /// (Merkle sibling values) to be set by the runner.
 ///
 /// Reference (Plonky3): `p3_fri::verifier::verify_fri`
-#[allow(clippy::too_many_arguments)]
 pub fn verify_fri_circuit<F, EF, RecMmcs, Inner, Witness, Comm>(
     builder: &mut CircuitBuilder<EF>,
     fri_proof_targets: &FriProofTargets<F, EF, RecMmcs, InputProofTargets<F, EF, Inner>, Witness>,
@@ -1286,6 +1381,14 @@ where
         // When MMCS verification is not active (no Poseidon2 table), we fall back
         // to fold_chain_circuit for the arithmetic fold constraint.
         if let Some(perm_config) = permutation_config {
+            let subgroup_starts = precompute_subgroup_starts::<F, EF>(
+                builder,
+                &index_bits_per_query[q],
+                log_max_height,
+                log_arities,
+                &cumulative_bits,
+            );
+
             let mut current_folded = initial_folded_eval;
             let mut bits_consumed = 0usize;
             let mut log_current_height = log_max_height;
@@ -1315,13 +1418,14 @@ where
                         roll_ins[phase_idx],
                         Some(beta_pows_per_phase[phase_idx]),
                         None,
+                        Some(subgroup_starts[phase_idx]),
                     );
                     bits_consumed += log_arity;
                     log_current_height = log_folded_height;
                     continue;
                 }
 
-                builder.push_scope("fri_commit_phase_mmcs phase");
+                builder.push_scope("fri_commit_phase_mmcs");
 
                 // Build full evaluation row once; reused for both MMCS and folding.
                 let index_in_group_bits =
@@ -1371,7 +1475,7 @@ where
                 })?;
                 all_mmcs_op_ids.extend(commit_phase_ops);
 
-                // Fold reusing the pre-built evals
+                // Fold reusing the pre-built evals and subgroup_start
                 current_folded = fold_one_phase::<F, EF>(
                     builder,
                     current_folded,
@@ -1384,6 +1488,7 @@ where
                     roll_ins[phase_idx],
                     Some(beta_pows_per_phase[phase_idx]),
                     Some(&evals),
+                    Some(subgroup_starts[phase_idx]),
                 );
 
                 bits_consumed += log_arity;
@@ -1412,6 +1517,7 @@ where
                 &index_bits_per_query[q],
                 &fold_phases,
                 log_arities,
+                &cumulative_bits,
                 &beta_pows_per_phase,
             );
             builder.pop_scope();
