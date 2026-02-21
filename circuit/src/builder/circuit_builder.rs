@@ -702,12 +702,22 @@ where
 
         // Stage 2: IR transformations and optimizations
         let optimizer = Optimizer::new();
-        let ops = optimizer.optimize(ops);
+        let (ops, rewrite) = optimizer.optimize(ops);
+
+        let resolve = |id: WitnessId| Optimizer::resolve_witness(&rewrite, id);
+        let expr_to_widx = expr_to_widx
+            .into_iter()
+            .map(|(e, w)| (e, resolve(w)))
+            .collect();
+        let public_rows = public_rows.into_iter().map(resolve).collect();
 
         // Stage 3: Generate final circuit
         let mut circuit = Circuit::new(witness_count, expr_to_widx);
         circuit.ops = ops;
         circuit.public_rows = public_rows;
+        if !rewrite.is_empty() {
+            circuit.witness_rewrite = Some(rewrite);
+        }
         circuit.public_flat_len = self.public_tracker.count();
         circuit.enabled_ops = self.config.into_enabled_ops();
         circuit.non_primitive_trace_generators = self.non_primitive_trace_generators;

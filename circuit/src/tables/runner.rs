@@ -177,6 +177,22 @@ impl<F: CircuitField> CircuitRunner<F> {
     pub fn run(mut self) -> Result<Traces<F>, CircuitError> {
         self.execute_all()?;
 
+        if let Some(rewrite) = self.circuit.witness_rewrite.clone() {
+            let resolve = |id: WitnessId| {
+                let mut cur = id;
+                while let Some(&next) = rewrite.get(&cur) {
+                    cur = next;
+                }
+                cur
+            };
+            for (dup, canon) in &rewrite {
+                let root = resolve(*canon);
+                if let Some(ref val) = self.witness[root.0 as usize] {
+                    self.set_witness(*dup, *val)?;
+                }
+            }
+        }
+
         // Delegate to trace builders for each table
         let witness_trace = WitnessTraceBuilder::new(&self.witness).build()?;
         let const_trace = ConstTraceBuilder::new(&self.circuit.ops).build()?;

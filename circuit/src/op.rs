@@ -162,6 +162,53 @@ impl<F> Op<F> {
     pub fn is_mul(&self) -> bool {
         self.is_alu_kind(AluOpKind::Mul)
     }
+
+    /// Rewrite witness IDs in place using the given map (follows chains to canonical ID).
+    /// Used by the optimizer to apply ALU dedup without re-boxing non-primitive executors.
+    pub fn apply_witness_rewrite(&mut self, rewrite: &HashMap<WitnessId, WitnessId>) {
+        if rewrite.is_empty() {
+            return;
+        }
+        let resolve = |id: WitnessId| {
+            let mut cur = id;
+            while let Some(&next) = rewrite.get(&cur) {
+                cur = next;
+            }
+            cur
+        };
+        match self {
+            Self::Const { out, .. } => *out = resolve(*out),
+            Self::Public { out, .. } => *out = resolve(*out),
+            Self::Alu {
+                a,
+                b,
+                c,
+                out,
+                intermediate_out,
+                ..
+            } => {
+                *a = resolve(*a);
+                *b = resolve(*b);
+                *c = c.map(resolve);
+                *out = resolve(*out);
+                *intermediate_out = intermediate_out.map(resolve);
+            }
+            Self::NonPrimitiveOpWithExecutor {
+                inputs, outputs, ..
+            } => {
+                for g in inputs.iter_mut() {
+                    for w in g.iter_mut() {
+                        *w = resolve(*w);
+                    }
+                }
+                for g in outputs.iter_mut() {
+                    for w in g.iter_mut() {
+                        *w = resolve(*w);
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[derive(EnumCount, Debug, Clone, Copy, PartialEq, Eq, Hash)]

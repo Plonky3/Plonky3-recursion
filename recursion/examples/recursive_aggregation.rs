@@ -437,9 +437,9 @@ macro_rules! define_field_module {
 
                     let agg_params = ProveNextLayerParams {
                         table_packing: if level == 1 {
-                            TablePacking::new(5, 1, 3)
+                            TablePacking::new(3, 1, 2)
                         } else {
-                            TablePacking::new(8, 2, 5)
+                            TablePacking::new(4, 4, 2)
                         }
                         .with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup),
                         use_poseidon2_in_circuit: true,

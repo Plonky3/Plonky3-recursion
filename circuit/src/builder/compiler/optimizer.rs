@@ -29,18 +29,121 @@ impl Optimizer {
 
     /// Optimizes primitive operations.
     ///
+    /// Returns the optimized op list and a rewrite map: any witness ID that was removed
+    /// as a duplicate points to its canonical witness. The caller should apply this map
+    /// to expr_to_widx, public_rows, and tag_to_witness so no reference stays to removed IDs.
+    ///
     /// Currently implements:
+    /// - ALU deduplication: removes duplicate ALU ops (identical or same inputs via connect)
     /// - BoolCheck fusion: detects `b * (b - 1) = 0` patterns and fuses them into BoolCheck ops
     /// - MulAdd fusion: detects `a * b + c` patterns and fuses them into MulAdd ops
     ///
     /// Future passes that can be added here:
     /// - Dead code elimination
-    /// - Common subexpression elimination
     /// - Constant folding
-    pub fn optimize<F: Field>(&self, primitive_ops: Vec<Op<F>>) -> Vec<Op<F>> {
-        // BoolCheck first, then MulAdd
-        let ops = self.fuse_bool_checks(primitive_ops);
-        self.fuse_mul_adds(ops)
+    pub fn optimize<F: Field>(
+        &self,
+        primitive_ops: Vec<Op<F>>,
+    ) -> (Vec<Op<F>>, HashMap<WitnessId, WitnessId>) {
+        let (ops, rewrite) = self.deduplicate_alu_ops(primitive_ops);
+        let ops = self.fuse_bool_checks(ops);
+        let ops = self.fuse_mul_adds(ops);
+        (ops, rewrite)
+    }
+
+    /// Resolves a witness ID through the rewrite map (follows chain to canonical ID).
+    pub fn resolve_witness(rewrite: &HashMap<WitnessId, WitnessId>, id: WitnessId) -> WitnessId {
+        let mut cur = id;
+        while let Some(&next) = rewrite.get(&cur) {
+            cur = next;
+        }
+        cur
+    }
+
+    /// Removes duplicate ALU operations: same kind and same inputs (commutative ops normalized).
+    /// When a duplicate is found, its output is rewritten to the first op's output in all later ops.
+    /// Returns the optimized ops and a map from removed output IDs to their canonical output.
+    fn deduplicate_alu_ops<F: Field>(
+        &self,
+        ops: Vec<Op<F>>,
+    ) -> (Vec<Op<F>>, HashMap<WitnessId, WitnessId>) {
+        #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+        struct AluKey {
+            kind: AluOpKind,
+            a: u32,
+            b: u32,
+            c: u32,
+        }
+
+        fn resolve(id: WitnessId, rewrite: &HashMap<WitnessId, WitnessId>) -> WitnessId {
+            let mut cur = id;
+            while let Some(&next) = rewrite.get(&cur) {
+                cur = next;
+            }
+            cur
+        }
+
+        let mut rewrite: HashMap<WitnessId, WitnessId> = HashMap::new();
+        let mut seen: HashMap<AluKey, WitnessId> = HashMap::new();
+        let mut result = Vec::with_capacity(ops.len());
+
+        for mut op in ops {
+            op.apply_witness_rewrite(&rewrite);
+
+            let (is_dup, dup_out, canonical_out) = match &op {
+                Op::Alu {
+                    kind, a, b, c, out, ..
+                } => {
+                    let (a, b, c) = (
+                        resolve(*a, &rewrite),
+                        resolve(*b, &rewrite),
+                        c.map(|id| resolve(id, &rewrite)),
+                    );
+                    let key = match kind {
+                        AluOpKind::Add | AluOpKind::Mul => {
+                            let (x, y) = if a.0 <= b.0 { (a.0, b.0) } else { (b.0, a.0) };
+                            AluKey {
+                                kind: *kind,
+                                a: x,
+                                b: y,
+                                c: 0,
+                            }
+                        }
+                        AluOpKind::BoolCheck => AluKey {
+                            kind: *kind,
+                            a: a.0,
+                            b: b.0,
+                            c: 0,
+                        },
+                        AluOpKind::MulAdd => AluKey {
+                            kind: *kind,
+                            a: a.0,
+                            b: b.0,
+                            c: c.unwrap_or(WitnessId(0)).0,
+                        },
+                    };
+                    if let Some(&first_out) = seen.get(&key) {
+                        (true, *out, first_out)
+                    } else {
+                        seen.insert(key, *out);
+                        (false, WitnessId(0), WitnessId(0))
+                    }
+                }
+                _ => (false, WitnessId(0), WitnessId(0)),
+            };
+
+            if is_dup {
+                let root = resolve(canonical_out, &rewrite);
+                if dup_out != root {
+                    rewrite.insert(dup_out, root);
+                }
+                continue;
+            }
+
+            result.push(op);
+        }
+
+        (result, rewrite)
     }
 
     /// Detects and fuses `a * b + c` patterns into MulAdd operations.
@@ -529,6 +632,8 @@ mod tests {
     use p3_field::PrimeCharacteristicRing;
 
     use super::*;
+    use crate::CircuitBuilder;
+    use crate::op::AluOpKind;
 
     type F = BabyBear;
 
@@ -544,7 +649,7 @@ mod tests {
             Op::add(WitnessId(0), WitnessId(1), WitnessId(2)),
         ];
 
-        let optimized = optimizer.optimize(ops.clone());
+        let (optimized, _) = optimizer.optimize(ops.clone());
         assert_eq!(optimized, ops);
     }
 
@@ -581,7 +686,7 @@ mod tests {
             Op::mul(b, b_minus_one, product),           // b * (b - 1) - this should be fused
         ];
 
-        let optimized = optimizer.optimize(ops);
+        let (optimized, _) = optimizer.optimize(ops);
 
         // BoolCheck fusion converts mul(b, b_minus_one) into BoolCheck
         // MulAdd fusion fuses mul(one, neg_one) + add(b, ...) into MulAdd
@@ -630,7 +735,7 @@ mod tests {
 
         let ops: Vec<Op<F>> = vec![Op::mul(a, b, out)];
 
-        let optimized = optimizer.optimize(ops.clone());
+        let (optimized, _) = optimizer.optimize(ops.clone());
 
         // Should remain unchanged
         assert_eq!(optimized, ops);
@@ -885,5 +990,50 @@ mod tests {
             ),
             "First op should remain Mul"
         );
+    }
+
+    #[test]
+    fn test_duplicated_op_fusion() {
+        let optimizer = Optimizer::new();
+
+        let a = WitnessId(0);
+        let b = WitnessId(1);
+        let c = WitnessId(2);
+        let mul_result = WitnessId(3);
+        let add_result = WitnessId(4);
+
+        let ops: Vec<Op<F>> = vec![
+            Op::mul(a, b, mul_result),
+            Op::mul(a, b, mul_result), // identical op
+            Op::add(mul_result, c, add_result),
+        ];
+
+        let (optimized, _) = optimizer.optimize(ops);
+
+        assert_eq!(optimized.len(), 1);
+        assert!(optimized[0].is_alu_kind(AluOpKind::MulAdd));
+    }
+
+    #[test]
+    fn test_duplicated_op_fusion_in_builder() {
+        let mut builder = CircuitBuilder::<F>::new();
+        let a = builder.add_const(F::TWO);
+        let b = builder.add_public_input();
+        let c = builder.add_public_input();
+
+        builder.connect(b, c);
+
+        builder.alloc_mul(a, b, "mul_result1");
+        builder.alloc_mul(a, c, "mul_result2"); // identical op via connect
+
+        let circuit = builder.build().unwrap();
+        let mut runner = circuit.runner();
+        runner
+            .set_public_inputs(&[F::from_u32(42), F::from_u32(42)])
+            .unwrap();
+
+        let traces = runner.run().unwrap();
+
+        assert_eq!(traces.alu_trace.len(), 1);
     }
 }

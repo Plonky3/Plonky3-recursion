@@ -211,6 +211,9 @@ pub struct Circuit<F> {
     pub tag_to_witness: HashMap<String, WitnessId>,
     /// Tag to non-primitive operation ID mapping.
     pub tag_to_op_id: HashMap<String, NonPrimitiveOpId>,
+    /// After ALU deduplication, duplicate outputs are rewritten to canonical.
+    /// This map is used by the runner to fill those slots.
+    pub witness_rewrite: Option<HashMap<WitnessId, WitnessId>>,
 }
 
 impl<F: Field + Clone> Clone for Circuit<F> {
@@ -225,6 +228,7 @@ impl<F: Field + Clone> Clone for Circuit<F> {
             non_primitive_trace_generators: self.non_primitive_trace_generators.clone(),
             tag_to_witness: self.tag_to_witness.clone(),
             tag_to_op_id: self.tag_to_op_id.clone(),
+            witness_rewrite: self.witness_rewrite.clone(),
         }
     }
 }
@@ -242,6 +246,7 @@ impl<F: Field> Circuit<F> {
             non_primitive_trace_generators: HashMap::new(),
             tag_to_witness: HashMap::new(),
             tag_to_op_id: HashMap::new(),
+            witness_rewrite: None,
         }
     }
 
