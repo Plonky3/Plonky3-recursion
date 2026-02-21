@@ -12,15 +12,16 @@ A recursive proof attests that:
 
 ## Security parameters
 
-FRI soundness depends on several parameters working together. However, it is not generally correct to model security as
-“`num_queries × log_blowup` bits”. That heuristic relied on strong proximity-gap / correlated-agreement assumptions
-that are no longer believed to hold in full generality. See for instance:
+FRI soundness depends on several parameters working together. However, it is not generally correct to
+model security as “`num_queries × log_blowup` bits”. That heuristic relied on strong proximity-gap / 
+correlated-agreement assumptions that are no longer believed to hold in full generality.
+See for instance:
 
 - https://eprint.iacr.org/2025/2010
 - https://eprint.iacr.org/2025/2046
 
-Instead, the soundness error must be derived from a *proven bound* for the specific FRI variant and parameter regime
-being used.
+Instead, the soundness error must be derived from a *proven bound* for the specific FRI variant
+and parameter regime being used.
 
 | Parameter | Role |
 |-----------|------|

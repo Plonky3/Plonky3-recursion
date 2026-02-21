@@ -4,17 +4,15 @@ This section covers the parameters you need to choose when setting up recursive 
 
 ## Field selection
 
-The library supports three base fields:
+The library currently supports two base fields:
 
 | Field | Modulus | Bits | Status |
 |-------|---------|------|--------|
 | **KoalaBear** | `0x7F000001` | 31 | Recommended |
 | **BabyBear** | `0x78000001` | 31 | Fully supported |
-| **Goldilocks** | `2^64 - 2^32 + 1` | 64 | Experimental |
 
-All three fields support degree-4 binomial extensions (`BinomialExtensionField<F, 4>`). KoalaBear and BabyBear are the primary targets; Goldilocks support exists but is less tested.
-
-The extension degree is always `D = 4` for the recursion stack.
+All fields support degree-4 binomial extensions (`BinomialExtensionField<F, 4>`), which is a currently
+fixed parameter for the recursion stack, with plans to lift it to a runtime parameter in the future.
 
 ## FRI parameters
 
@@ -42,6 +40,10 @@ With default parameters (`target = 100 bits`, `query_pow_bits = 16`, `log_blowup
 ```
 num_queries = (100 - 16) / 3 = 28
 ```
+
+See related section in the **[Soundness and Security](./../advanced_topics/soundness.md)** chapter for a
+more thorough analysis of the security estimate in the light of recent findings against the underlying
+assumptions used in these heuristics.
 
 ### Intermediate layer relaxation
 
