@@ -17,7 +17,7 @@ use p3_util::zip_eq::zip_eq;
 
 use super::{FriProofTargets, InputProofTargets};
 use crate::Target;
-use crate::pcs::verify_batch_circuit;
+use crate::pcs::{verify_batch_circuit, verify_batch_circuit_from_extension_opened};
 use crate::traits::{ComsWithOpeningsTargets, Recursive, RecursiveExtensionMmcs, RecursiveMmcs};
 use crate::verifier::{ObservableCommitment, VerificationError};
 
@@ -1558,23 +1558,15 @@ where
                     parent_index_bits.push(zero);
                 }
 
-                let evals_base_coeffs: Vec<Target> = evals
-                    .iter()
-                    .map(|&eval| builder.decompose_ext_to_base_coeffs::<F>(eval))
-                    .collect::<Result<Vec<_>, _>>()
-                    .map_err(|e| VerificationError::InvalidProofShape(format!("decompose: {e:?}")))?
-                    .into_iter()
-                    .flatten()
-                    .collect();
-                let evals_base_for_mmcs = vec![evals_base_coeffs];
+                let evals_for_mmcs = vec![evals.clone()];
 
-                let commit_phase_ops = verify_batch_circuit::<F, EF>(
+                let commit_phase_ops = verify_batch_circuit_from_extension_opened::<F, EF>(
                     builder,
                     perm_config,
                     &commitment_cap,
                     &dimensions,
                     &parent_index_bits,
-                    &evals_base_for_mmcs,
+                    &evals_for_mmcs,
                 )
                 .map_err(|e| {
                     VerificationError::InvalidProofShape(format!(
