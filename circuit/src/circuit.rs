@@ -46,6 +46,15 @@ pub struct PreprocessedColumns<F> {
     pub non_primitive: NonPrimitivePreprocessedMap<F>,
 }
 
+impl<F: Field + Clone> Clone for PreprocessedColumns<F> {
+    fn clone(&self) -> Self {
+        Self {
+            primitive: self.primitive.clone(),
+            non_primitive: self.non_primitive.clone(),
+        }
+    }
+}
+
 impl<F: Field> PreprocessedColumns<F> {
     /// Creates an empty [`PreprocessedColumns`] with one primitive entry per [`PrimitiveOpType`].
     pub fn new() -> Self {

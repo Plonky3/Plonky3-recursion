@@ -191,7 +191,7 @@ impl<F: CircuitField> CircuitRunner<F> {
             for (dup, canon) in &rewrite {
                 let r = root(*canon);
                 if let Some(ref val) = self.witness[r.0 as usize] {
-                    self.set_witness_execute(*dup, *val)?;
+                    self.set_witness(*dup, *val)?;
                 }
             }
         }
@@ -236,7 +236,7 @@ impl<F: CircuitField> CircuitRunner<F> {
             let op = &self.circuit.ops[i];
             match op {
                 Op::Const { out, val } => {
-                    self.set_witness_execute(*out, *val)?;
+                    self.set_witness(*out, *val)?;
                 }
                 Op::Public { out, public_pos: _ } => {
                     if self.witness[out.0 as usize].is_none() {
@@ -255,26 +255,26 @@ impl<F: CircuitField> CircuitRunner<F> {
                         let a_val = self.get_witness(*a)?;
                         if let Ok(b_val) = self.get_witness(*b) {
                             let result = a_val + b_val;
-                            self.set_witness_execute(*out, result)?;
+                            self.set_witness(*out, result)?;
                         } else {
                             let out_val = self.get_witness(*out)?;
                             let b_val = out_val - a_val;
-                            self.set_witness_execute(*b, b_val)?;
+                            self.set_witness(*b, b_val)?;
                         }
                     }
                     AluOpKind::Mul => {
                         let a_val = self.get_witness(*a)?;
                         if let Ok(b_val) = self.get_witness(*b) {
-                            self.set_witness_execute(*out, a_val * b_val)?;
+                            self.set_witness(*out, a_val * b_val)?;
                         } else {
                             let result_val = self.get_witness(*out)?;
                             let a_inv = a_val.try_inverse().ok_or(CircuitError::DivisionByZero)?;
-                            self.set_witness_execute(*b, result_val * a_inv)?;
+                            self.set_witness(*b, result_val * a_inv)?;
                         }
                     }
                     AluOpKind::BoolCheck => {
                         let a_val = self.get_witness(*a)?;
-                        self.set_witness_execute(*out, a_val)?;
+                        self.set_witness(*out, a_val)?;
                     }
                     AluOpKind::MulAdd => {
                         let a_val = self.get_witness(*a)?;
@@ -285,7 +285,7 @@ impl<F: CircuitField> CircuitRunner<F> {
                         let out_id = *out;
 
                         if let Some(io) = intermediate_out_id {
-                            self.set_witness_execute(io, ab_product)?;
+                            self.set_witness(io, ab_product)?;
                         }
 
                         let c_val = if let Some(c_id) = c_id_opt {
@@ -293,7 +293,7 @@ impl<F: CircuitField> CircuitRunner<F> {
                         } else {
                             F::ZERO
                         };
-                        self.set_witness_execute(out_id, ab_product + c_val)?;
+                        self.set_witness(out_id, ab_product + c_val)?;
                     }
                 },
                 Op::NonPrimitiveOpWithExecutor {
@@ -327,16 +327,6 @@ impl<F: CircuitField> CircuitRunner<F> {
             .ok_or(CircuitError::WitnessNotSet { witness_id: widx })
     }
 
-    /// Sets witness during execution; no conflict check (single-write assumption).
-    #[inline(always)]
-    fn set_witness_execute(&mut self, widx: WitnessId, value: F) -> Result<(), CircuitError> {
-        if widx.0 as usize >= self.witness.len() {
-            return Err(CircuitError::WitnessIdOutOfBounds { witness_id: widx });
-        }
-        self.witness[widx.0 as usize] = Some(value);
-        Ok(())
-    }
-
     /// Sets witness value by ID (with conflict check for public inputs etc.).
     #[inline]
     fn set_witness(&mut self, widx: WitnessId, value: F) -> Result<(), CircuitError> {
@@ -365,6 +355,7 @@ impl<F: CircuitField> CircuitRunner<F> {
                 .collect::<Vec<_>>();
             #[cfg(not(feature = "debugging"))]
             let expr_ids = vec![];
+
             return Err(CircuitError::WitnessConflict {
                 witness_id: widx,
                 existing: format!("{existing_value:?}"),
