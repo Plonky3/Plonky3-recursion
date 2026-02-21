@@ -37,8 +37,8 @@ pub fn get_index_lookups<AB: PermutationAirBuilder + AirBuilderWithPublicValues,
 ///
 /// ALU preprocessed layout per lane:
 /// - 0: multiplicity
-/// - 1-3: selectors (add_vs_mul, bool, muladd)
-/// - 4-7: indices (a_idx, b_idx, c_idx, out_idx)
+/// - 1-4: selectors (add_vs_mul, bool, muladd, horner)
+/// - 5-8: indices (a_idx, b_idx, c_idx, out_idx)
 ///
 /// Main layout per lane: a[D], b[D], c[D], out[D]
 pub fn get_alu_index_lookups<
@@ -53,8 +53,7 @@ pub fn get_alu_index_lookups<
 ) -> Vec<LookupInput<AB::F>> {
     let multiplicity = SymbolicExpression::from(preprocessed[preprocessed_start]);
 
-    // Indices are at positions 4, 5, 6, 7 (after multiplicity + 3 selectors)
-    let idx_offset = 4;
+    let idx_offset = 5;
 
     (0..4)
         .map(|i| {

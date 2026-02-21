@@ -30,6 +30,13 @@ pub enum AluOpKind {
     BoolCheck,
     /// Fused multiply-add: out = a * b + c
     MulAdd,
+    /// Row-chained Horner accumulator: out = prev_row_out * b + c - a
+    ///
+    /// Uses the `out` column of the previous ALU row (same lane) as an implicit
+    /// accumulator input. Fuses multiply-add-subtract into a single row.
+    /// HornerAcc ops within the same chain must be placed in consecutive ALU rows
+    /// of the same lane.
+    HornerAcc,
 }
 
 /// Circuit operations.
@@ -77,14 +84,16 @@ pub enum Op<F> {
     /// - `Mul`: out = a * b
     /// - `BoolCheck`: a * (a - 1) = 0, out = a
     /// - `MulAdd`: out = a * b + c
+    /// - `HornerAcc`: out = acc * b + c - a (acc from previous row's out, same lane)
     Alu {
         kind: AluOpKind,
         a: WitnessId,
         b: WitnessId,
-        /// Third operand, only used for MulAdd
+        /// Third operand, used for MulAdd and HornerAcc
         c: Option<WitnessId>,
         out: WitnessId,
         /// Intermediate output for MulAdd: stores a * b when fused from separate mul + add.
+        /// For HornerAcc: stores the accumulator WitnessId (previous Horner step's out).
         /// The runner sets this witness value so dependent operations still work.
         intermediate_out: Option<WitnessId>,
     },
@@ -133,6 +142,27 @@ impl<F> Op<F> {
             c: Some(c),
             out,
             intermediate_out: None,
+        }
+    }
+
+    /// Create a Horner accumulator: out = acc * b + c - a.
+    ///
+    /// `acc` is the previous Horner step's output (used by runner for computation).
+    /// In the AIR, the accumulator comes implicitly from the previous row's `out` column.
+    pub const fn horner_acc(
+        a: WitnessId,
+        b: WitnessId,
+        c: WitnessId,
+        out: WitnessId,
+        acc: WitnessId,
+    ) -> Self {
+        Self::Alu {
+            kind: AluOpKind::HornerAcc,
+            a,
+            b,
+            c: Some(c),
+            out,
+            intermediate_out: Some(acc),
         }
     }
 

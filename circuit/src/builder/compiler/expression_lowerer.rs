@@ -552,6 +552,42 @@ where
                     // The output of Div is the b_widx.
                     expr_to_widx.insert(expr_id, b_widx);
                 }
+                Expr::HornerAcc {
+                    acc,
+                    alpha,
+                    p_at_z,
+                    p_at_x,
+                } => {
+                    let out_widx = alloc_witness_id_for_expr(expr_idx);
+                    let acc_widx = get_witness_id(
+                        &expr_to_widx,
+                        *acc,
+                        &format!("HornerAcc acc for {expr_id:?}"),
+                    )?;
+                    let alpha_widx = get_witness_id(
+                        &expr_to_widx,
+                        *alpha,
+                        &format!("HornerAcc alpha for {expr_id:?}"),
+                    )?;
+                    let p_at_z_widx = get_witness_id(
+                        &expr_to_widx,
+                        *p_at_z,
+                        &format!("HornerAcc p_at_z for {expr_id:?}"),
+                    )?;
+                    let p_at_x_widx = get_witness_id(
+                        &expr_to_widx,
+                        *p_at_x,
+                        &format!("HornerAcc p_at_x for {expr_id:?}"),
+                    )?;
+                    ops.push(Op::horner_acc(
+                        p_at_x_widx,
+                        alpha_widx,
+                        p_at_z_widx,
+                        out_widx,
+                        acc_widx,
+                    ));
+                    expr_to_widx.insert(expr_id, out_widx);
+                }
                 Expr::NonPrimitiveCall { op_id, inputs: _ } => {
                     // The `inputs` field encodes DAG dependencies for ordering purposes.
                     // Actual input data is read from NonPrimitiveOperationData.

@@ -357,6 +357,21 @@ where
         self.add(product, c)
     }
 
+    /// Horner accumulator step: result = acc * alpha + p_at_z - p_at_x
+    ///
+    /// Emits a single HornerAcc ALU operation, avoiding intermediate witnesses
+    /// that would arise from separate mul + add + sub.
+    pub fn horner_acc_step(
+        &mut self,
+        acc: ExprId,
+        alpha: ExprId,
+        p_at_z: ExprId,
+        p_at_x: ExprId,
+    ) -> ExprId {
+        self.expr_builder
+            .add_horner_acc(acc, alpha, p_at_z, p_at_x, "")
+    }
+
     /// Multiplies a slice of expressions together.
     ///
     /// # Arguments

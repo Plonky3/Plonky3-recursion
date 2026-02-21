@@ -455,6 +455,37 @@ where
         )
     }
 
+    /// Adds a Horner accumulator step to the graph: result = acc * alpha + p_at_z - p_at_x.
+    ///
+    /// Lowers to a single HornerAcc ALU op with no intermediate witnesses.
+    pub fn add_horner_acc(
+        &mut self,
+        acc: ExprId,
+        alpha: ExprId,
+        p_at_z: ExprId,
+        p_at_x: ExprId,
+        label: &'static str,
+    ) -> ExprId {
+        let expr_id = self.graph.add_expr(Expr::HornerAcc {
+            acc,
+            alpha,
+            p_at_z,
+            p_at_x,
+        });
+
+        #[cfg(feature = "debugging")]
+        self.log_alloc(expr_id, label, || {
+            (
+                AllocationType::HornerAcc,
+                vec![vec![acc], vec![alpha], vec![p_at_z], vec![p_at_x]],
+            )
+        });
+        #[cfg(not(feature = "debugging"))]
+        self.log_alloc(expr_id, label, || ());
+
+        expr_id
+    }
+
     /// Adds a non-primitive output expression to the graph.
     ///
     /// This expression represents a value produced by a non-primitive operation.

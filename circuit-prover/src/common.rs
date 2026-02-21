@@ -252,8 +252,8 @@ where
             let table = PrimitiveOpType::from(idx);
             match table {
                 PrimitiveOpType::Alu => {
-                    // ALU preprocessed per op (excluding multiplicity): 7 values
-                    // [sel_add_vs_mul, sel_bool, sel_muladd, a_idx, b_idx, c_idx, out_idx]
+                    // ALU preprocessed per op (excluding multiplicity): 8 values
+                    // [sel_add_vs_mul, sel_bool, sel_muladd, sel_horner, a_idx, b_idx, c_idx, out_idx]
                     let lane_without_multiplicities =
                         AluAir::<Val<SC>, D>::preprocessed_lane_width() - 1;
                     assert!(
@@ -277,7 +277,8 @@ where
                         )
                         .with_min_height(min_height)
                     };
-                    let num_rows = num_ops.div_ceil(packing.alu_lanes());
+                    let num_entries = alu_air.scheduled_entry_count();
+                    let num_rows = num_entries.div_ceil(effective_alu_lanes);
                     table_preps[idx] = (CircuitTableAir::Alu(alu_air), compute_degree(num_rows));
                 }
                 PrimitiveOpType::Public => {

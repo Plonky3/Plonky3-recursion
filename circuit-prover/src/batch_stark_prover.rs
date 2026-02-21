@@ -605,8 +605,7 @@ where
             AluAir::<Val<SC>, D>::new_binomial_with_preprocessed(alu_rows, alu_lanes, w, alu_prep)
                 .with_min_height(min_height)
         };
-        let alu_matrix: RowMajorMatrix<Val<SC>> =
-            AluAir::<Val<SC>, D>::trace_to_matrix(&traces.alu_trace, alu_lanes);
+        let alu_matrix: RowMajorMatrix<Val<SC>> = alu_air.trace_to_matrix(&traces.alu_trace);
 
         // We first handle all non-primitive tables dynamically, which will then be batched alongside primitive ones.
         // Each trace must have a corresponding registered prover for it to be provable.

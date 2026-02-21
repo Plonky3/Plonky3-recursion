@@ -17,6 +17,15 @@ pub enum Expr<F> {
     Mul { lhs: ExprId, rhs: ExprId },
     /// Division of two expressions
     Div { lhs: ExprId, rhs: ExprId },
+    /// Horner accumulator step: result = acc * alpha + p_at_z - p_at_x
+    ///
+    /// Emits a single HornerAcc ALU op with no intermediate witnesses.
+    HornerAcc {
+        acc: ExprId,
+        alpha: ExprId,
+        p_at_z: ExprId,
+        p_at_x: ExprId,
+    },
     /// Anchor node for a non-primitive operation in the expression DAG.
     ///
     /// This node has no witness value itself, but it fixes the relative execution order
