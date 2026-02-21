@@ -405,7 +405,7 @@ macro_rules! define_field_module {
                     let table_packing = if layer == 1 {
                         TablePacking::new(1, 1, 1)
                     } else {
-                        TablePacking::new(4, 1, 2)
+                        TablePacking::new(7, 2, 3)
                     }
                     .with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup);
                     let params = ProveNextLayerParams {

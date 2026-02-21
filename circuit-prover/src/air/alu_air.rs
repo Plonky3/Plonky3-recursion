@@ -1,7 +1,7 @@
 //! [`AluAir`] defines the unified AIR for proving arithmetic operations over both base and extension fields.
 //!
-//! This AIR combines addition, multiplication, boolean checks, and fused multiply-add operations
-//! into a single table, reducing the number of table commitments in the proof.
+//! This AIR combines addition, multiplication, boolean checks, fused multiply-add, and
+//! row-chained Horner accumulator operations into a single table.
 //!
 //! Conceptually, each row of the trace encodes one or more arithmetic constraints based on
 //! preprocessed operation selectors:
@@ -10,6 +10,7 @@
 //! - **MUL**: `a * b = out`
 //! - **BOOL_CHECK**: `a * (a - 1) = 0`, `out = a`
 //! - **MUL_ADD**: `a * b + c = out`
+//! - **HORNER_ACC**: `out = prev_row_out * b + c - a` (inter-row constraint)
 //!
 //! # Column layout
 //!
@@ -17,16 +18,17 @@
 //!
 //! - `D` columns for operand `a` (basis coefficients),
 //! - `D` columns for operand `b` (basis coefficients),
-//! - `D` columns for operand `c` (basis coefficients, only used for MulAdd),
+//! - `D` columns for operand `c` (basis coefficients, used for MulAdd/HornerAcc),
 //! - `D` columns for output `out` (basis coefficients).
 //!
 //! Preprocessed columns per lane:
 //!
 //! - 1 column for multiplicity (1 for real ops, 0 for padding),
-//! - 3 columns for operation selectors:
-//!   - `sel_add_vs_mul` (1 = Add, 0 = Mul when `sel_bool = sel_muladd = 0`)
+//! - 4 columns for operation selectors:
+//!   - `sel_add_vs_mul` (1 = Add, 0 = Mul when other selectors are 0)
 //!   - `sel_bool` (1 = BoolCheck),
 //!   - `sel_muladd` (1 = MulAdd),
+//!   - `sel_horner` (1 = HornerAcc),
 //! - 4 columns for operand indices (a_idx, b_idx, c_idx, out_idx).
 //!
 //! # Constraints (degree ≤ 3)
@@ -37,6 +39,7 @@
 //! - MUL: `a * b - out = 0` (degree 2)
 //! - BOOL_CHECK: `a * (a - 1) = 0` (degree 2)
 //! - MUL_ADD: `a * b + c - out = 0` (degree 2)
+//! - HORNER_ACC: `prev_row_out * b + c - a - out = 0` (degree 2, inter-row)
 
 use alloc::string::ToString;
 use alloc::vec;
@@ -53,7 +56,17 @@ use p3_matrix::dense::RowMajorMatrix;
 
 use crate::air::utils::{
     create_chunked_preprocessed_trace, create_symbolic_variables, get_alu_index_lookups,
+    pad_matrix_with_min_height,
 };
+
+/// Entry in the HornerAcc lane schedule.
+#[derive(Debug, Clone, Copy)]
+enum ScheduleEntry {
+    /// A real ALU op at the given original index.
+    Op(usize),
+    /// A virtual zero-separator (multiplicity 0, all values 0).
+    Separator,
+}
 
 /// AIR for proving unified arithmetic operations.
 ///
@@ -66,12 +79,15 @@ pub struct AluAir<F, const D: usize = 1> {
     pub lanes: usize,
     /// For binomial extensions x^D = W (D > 1).
     pub w_binomial: Option<F>,
-    /// Flattened preprocessed values (selectors + indices).
+    /// Flattened preprocessed values (selectors + indices), in original op order.
     pub preprocessed: Vec<F>,
     /// Number of lookup columns registered so far.
     pub num_lookup_columns: usize,
     /// Minimum trace height (for FRI compatibility with higher log_final_poly_len).
     pub min_height: usize,
+    /// HornerAcc lane schedule. When present, ops are reordered so that HornerAcc
+    /// chains occupy lane 0 in consecutive rows, with zero-separators between chains.
+    schedule: Option<Vec<ScheduleEntry>>,
     _phantom: PhantomData<F>,
 }
 
@@ -87,14 +103,16 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AluAir<F, D> {
             preprocessed: Vec::new(),
             num_lookup_columns: 0,
             min_height: 1,
+            schedule: None,
             _phantom: PhantomData,
         }
     }
 
     /// Construct a new `AluAir` for base-field operations with preprocessed data.
-    pub const fn new_with_preprocessed(num_ops: usize, lanes: usize, preprocessed: Vec<F>) -> Self {
+    pub fn new_with_preprocessed(num_ops: usize, lanes: usize, preprocessed: Vec<F>) -> Self {
         assert!(lanes > 0, "lane count must be non-zero");
         assert!(D == 1, "Use new_binomial_with_preprocessed for D > 1");
+        let schedule = Self::compute_schedule(&preprocessed, lanes);
         Self {
             num_ops,
             lanes,
@@ -102,6 +120,7 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AluAir<F, D> {
             preprocessed,
             num_lookup_columns: 0,
             min_height: 1,
+            schedule,
             _phantom: PhantomData,
         }
     }
@@ -117,12 +136,13 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AluAir<F, D> {
             preprocessed: Vec::new(),
             num_lookup_columns: 0,
             min_height: 1,
+            schedule: None,
             _phantom: PhantomData,
         }
     }
 
     /// Construct a new `AluAir` for binomial extension-field operations with preprocessed data.
-    pub const fn new_binomial_with_preprocessed(
+    pub fn new_binomial_with_preprocessed(
         num_ops: usize,
         lanes: usize,
         w: F,
@@ -130,6 +150,7 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AluAir<F, D> {
     ) -> Self {
         assert!(lanes > 0, "lane count must be non-zero");
         assert!(D >= 2, "Binomial constructor requires D >= 2");
+        let schedule = Self::compute_schedule(&preprocessed, lanes);
         Self {
             num_ops,
             lanes,
@@ -137,6 +158,7 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AluAir<F, D> {
             preprocessed,
             num_lookup_columns: 0,
             min_height: 1,
+            schedule,
             _phantom: PhantomData,
         }
     }
@@ -162,13 +184,10 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AluAir<F, D> {
 
     /// Number of preprocessed columns per lane:
     /// - 1 multiplicity
-    /// - 3 selectors:
-    ///   - 1 bit for Add vs Mul (when Bool/MulAdd are 0)
-    ///   - 1 for BoolCheck
-    ///   - 1 for MulAdd
+    /// - 4 selectors (add_vs_mul, bool, muladd, horner)
     /// - 4 indices (a, b, c, out)
     pub const fn preprocessed_lane_width() -> usize {
-        8
+        9
     }
 
     /// Total preprocessed width for this AIR instance.
@@ -181,58 +200,155 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AluAir<F, D> {
         self.lanes * (Self::preprocessed_lane_width() - 1)
     }
 
-    /// Convert an `AluTrace` into a `RowMajorMatrix` suitable for the STARK prover.
+    /// Total entries in the scheduled trace (including separators).
+    pub fn scheduled_entry_count(&self) -> usize {
+        self.schedule.as_ref().map_or(self.num_ops, |s| s.len())
+    }
+
+    /// Compute a lane schedule that places HornerAcc chains in lane 0.
+    ///
+    /// Returns `None` if no HornerAcc ops are present.
+    /// Even with `lanes == 1`, scheduling is required: chains must start at
+    /// row 0 so the cyclic wrap from the last (zero-padded) row provides
+    /// `prev_out = 0`, and separators must appear between chains.
+    fn compute_schedule(preprocessed: &[F], lanes: usize) -> Option<Vec<ScheduleEntry>> {
+        let chunk = Self::preprocessed_lane_width() - 1; // 8 values per op
+        let num_ops = preprocessed.len() / chunk;
+        if num_ops == 0 {
+            return None;
+        }
+
+        let is_horner: Vec<bool> = (0..num_ops)
+            .map(|i| preprocessed[i * chunk + 3] == F::ONE) // sel_horner at offset 3
+            .collect();
+
+        if !is_horner.iter().any(|&h| h) {
+            return None;
+        }
+
+        // Find maximal runs of consecutive HornerAcc ops (chains)
+        let mut chains: Vec<Vec<usize>> = Vec::new();
+        let mut current_chain: Vec<usize> = Vec::new();
+        let mut non_chain: Vec<usize> = Vec::new();
+
+        for (i, &h) in is_horner.iter().enumerate() {
+            if h {
+                current_chain.push(i);
+            } else {
+                if !current_chain.is_empty() {
+                    chains.push(core::mem::take(&mut current_chain));
+                }
+                non_chain.push(i);
+            }
+        }
+        if !current_chain.is_empty() {
+            chains.push(current_chain);
+        }
+
+        let mut schedule: Vec<ScheduleEntry> = Vec::new();
+        let mut nc = 0; // cursor into non_chain
+
+        // Helper: fill remaining slots in current row with non-chain ops or separators
+        let fill_row = |schedule: &mut Vec<ScheduleEntry>, nc: &mut usize, non_chain: &[usize]| {
+            while !schedule.len().is_multiple_of(lanes) {
+                if *nc < non_chain.len() {
+                    schedule.push(ScheduleEntry::Op(non_chain[*nc]));
+                    *nc += 1;
+                } else {
+                    schedule.push(ScheduleEntry::Separator);
+                }
+            }
+        };
+
+        for (chain_idx, chain) in chains.iter().enumerate() {
+            if chain_idx > 0 {
+                // Complete previous row
+                fill_row(&mut schedule, &mut nc, &non_chain);
+                // Separator row: lane 0 = zero, other lanes = non-chain or zero
+                schedule.push(ScheduleEntry::Separator);
+                fill_row(&mut schedule, &mut nc, &non_chain);
+            }
+
+            // Place chain ops in lane 0
+            for &op_idx in chain {
+                debug_assert_eq!(schedule.len() % lanes, 0, "chain op not at lane 0");
+                schedule.push(ScheduleEntry::Op(op_idx));
+                fill_row(&mut schedule, &mut nc, &non_chain);
+            }
+        }
+
+        // Complete last chain row
+        fill_row(&mut schedule, &mut nc, &non_chain);
+
+        // Remaining non-chain ops fill all lanes
+        while nc < non_chain.len() {
+            schedule.push(ScheduleEntry::Op(non_chain[nc]));
+            nc += 1;
+        }
+        // Pad final row
+        fill_row(&mut schedule, &mut nc, &non_chain);
+
+        Some(schedule)
+    }
+
+    /// Convert an `AluTrace` into a `RowMajorMatrix`, applying the HornerAcc schedule.
     pub fn trace_to_matrix<ExtF: BasedVectorSpace<F>>(
+        &self,
         trace: &AluTrace<ExtF>,
-        lanes: usize,
     ) -> RowMajorMatrix<F> {
+        let lanes = self.lanes;
         assert!(lanes > 0, "lane count must be non-zero");
 
         let lane_width = Self::lane_width();
         let width = lane_width * lanes;
-        let op_count = trace.a_values.len();
-        let row_count = op_count.div_ceil(lanes);
+        let entry_count = self.scheduled_entry_count();
+        let row_count = entry_count.div_ceil(lanes);
 
         let mut values = F::zero_vec(width * row_count.max(1));
 
-        for (op_idx, (((a_val, b_val), c_val), out_val)) in trace
-            .a_values
-            .iter()
-            .zip(trace.b_values.iter())
-            .zip(trace.c_values.iter())
-            .zip(trace.out_values.iter())
-            .enumerate()
-        {
-            let row = op_idx / lanes;
-            let lane = op_idx % lanes;
-            let mut cursor = (row * width) + (lane * lane_width);
+        // Write one entry at position `pos` (row = pos/lanes, lane = pos%lanes)
+        let mut write_op =
+            |pos: usize, a_val: &ExtF, b_val: &ExtF, c_val: &ExtF, out_val: &ExtF| {
+                let row = pos / lanes;
+                let lane = pos % lanes;
+                let mut cursor = row * width + lane * lane_width;
 
-            // Write a[D]
-            let a_coeffs = a_val.as_basis_coefficients_slice();
-            assert_eq!(a_coeffs.len(), D, "Extension field degree mismatch for a");
-            values[cursor..cursor + D].copy_from_slice(a_coeffs);
-            cursor += D;
+                let a_coeffs = a_val.as_basis_coefficients_slice();
+                values[cursor..cursor + D].copy_from_slice(a_coeffs);
+                cursor += D;
+                let b_coeffs = b_val.as_basis_coefficients_slice();
+                values[cursor..cursor + D].copy_from_slice(b_coeffs);
+                cursor += D;
+                let c_coeffs = c_val.as_basis_coefficients_slice();
+                values[cursor..cursor + D].copy_from_slice(c_coeffs);
+                cursor += D;
+                let out_coeffs = out_val.as_basis_coefficients_slice();
+                values[cursor..cursor + D].copy_from_slice(out_coeffs);
+            };
 
-            // Write b[D]
-            let b_coeffs = b_val.as_basis_coefficients_slice();
-            assert_eq!(b_coeffs.len(), D, "Extension field degree mismatch for b");
-            values[cursor..cursor + D].copy_from_slice(b_coeffs);
-            cursor += D;
-
-            // Write c[D]
-            let c_coeffs = c_val.as_basis_coefficients_slice();
-            assert_eq!(c_coeffs.len(), D, "Extension field degree mismatch for c");
-            values[cursor..cursor + D].copy_from_slice(c_coeffs);
-            cursor += D;
-
-            // Write out[D]
-            let out_coeffs = out_val.as_basis_coefficients_slice();
-            assert_eq!(
-                out_coeffs.len(),
-                D,
-                "Extension field degree mismatch for out"
-            );
-            values[cursor..cursor + D].copy_from_slice(out_coeffs);
+        if let Some(ref schedule) = self.schedule {
+            for (pos, entry) in schedule.iter().enumerate() {
+                if let ScheduleEntry::Op(i) = entry {
+                    write_op(
+                        pos,
+                        &trace.a_values[*i],
+                        &trace.b_values[*i],
+                        &trace.c_values[*i],
+                        &trace.out_values[*i],
+                    );
+                }
+                // Separator entries stay zero (already initialized)
+            }
+        } else {
+            for op_idx in 0..trace.a_values.len() {
+                write_op(
+                    op_idx,
+                    &trace.a_values[op_idx],
+                    &trace.b_values[op_idx],
+                    &trace.c_values[op_idx],
+                    &trace.out_values[op_idx],
+                );
+            }
         }
 
         let mut mat = RowMajorMatrix::new(values, width);
@@ -240,29 +356,59 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AluAir<F, D> {
         mat
     }
 
+    /// Build the preprocessed trace matrix with HornerAcc scheduling applied.
+    ///
+    /// Separator entries get multiplicity=0 (no lookups), all selectors/indices=0.
+    fn build_scheduled_preprocessed_trace(&self, schedule: &[ScheduleEntry]) -> RowMajorMatrix<F> {
+        let plw = Self::preprocessed_lane_width(); // 9 (with multiplicity)
+        let chunk = plw - 1; // 8 (without multiplicity)
+        let row_count = schedule.len().div_ceil(self.lanes);
+        let row_width = self.lanes * plw;
+
+        let mut values = F::zero_vec(row_count.max(1) * row_width);
+
+        for (pos, entry) in schedule.iter().enumerate() {
+            let row = pos / self.lanes;
+            let lane = pos % self.lanes;
+            let base = row * row_width + lane * plw;
+
+            match entry {
+                ScheduleEntry::Op(i) => {
+                    values[base] = F::ONE; // multiplicity = 1
+                    let src = &self.preprocessed[i * chunk..(i + 1) * chunk];
+                    values[base + 1..base + 1 + chunk].copy_from_slice(src);
+                }
+                ScheduleEntry::Separator => {
+                    // multiplicity = 0, all zeros — already initialized
+                }
+            }
+        }
+
+        let mat = RowMajorMatrix::new(values, row_width);
+        pad_matrix_with_min_height(mat, self.min_height)
+    }
+
     /// Convert an `AluTrace` to preprocessed values.
     /// Layout per op (without multiplicity):
-    /// [sel_add_vs_mul, sel_bool, sel_muladd, a_idx, b_idx, c_idx, out_idx]
+    /// [sel_add_vs_mul, sel_bool, sel_muladd, sel_horner, a_idx, b_idx, c_idx, out_idx]
     pub fn trace_to_preprocessed<ExtF: BasedVectorSpace<F>>(trace: &AluTrace<ExtF>) -> Vec<F> {
         let total_len = trace.a_index.len() * (Self::preprocessed_lane_width() - 1);
         let mut preprocessed_values = Vec::with_capacity(total_len);
 
         for (i, kind) in trace.op_kind.iter().enumerate() {
-            // Selectors encoded as:
-            // - sel_add_vs_mul: 1 for Add, 0 for Mul (when Bool/MulAdd are 0)
-            // - sel_bool: 1 for BoolCheck
-            // - sel_muladd: 1 for MulAdd
-            let (sel_add_vs_mul, sel_bool, sel_muladd) = match kind {
-                AluOpKind::Add => (F::ONE, F::ZERO, F::ZERO),
-                AluOpKind::Mul => (F::ZERO, F::ZERO, F::ZERO),
-                AluOpKind::BoolCheck => (F::ZERO, F::ONE, F::ZERO),
-                AluOpKind::MulAdd => (F::ZERO, F::ZERO, F::ONE),
+            let (sel_add_vs_mul, sel_bool, sel_muladd, sel_horner) = match kind {
+                AluOpKind::Add => (F::ONE, F::ZERO, F::ZERO, F::ZERO),
+                AluOpKind::Mul => (F::ZERO, F::ZERO, F::ZERO, F::ZERO),
+                AluOpKind::BoolCheck => (F::ZERO, F::ONE, F::ZERO, F::ZERO),
+                AluOpKind::MulAdd => (F::ZERO, F::ZERO, F::ONE, F::ZERO),
+                AluOpKind::HornerAcc => (F::ZERO, F::ZERO, F::ZERO, F::ONE),
             };
 
             preprocessed_values.extend(&[
                 sel_add_vs_mul,
                 sel_bool,
                 sel_muladd,
+                sel_horner,
                 F::from_u32(trace.a_index[i].0),
                 F::from_u32(trace.b_index[i].0),
                 F::from_u32(trace.c_index[i].0),
@@ -284,12 +430,17 @@ impl<F: Field, const D: usize> BaseAir<F> for AluAir<F, D> {
             assert!(!self.preprocessed.is_empty());
         }
 
-        Some(create_chunked_preprocessed_trace(
-            &self.preprocessed,
-            Self::preprocessed_lane_width(),
-            self.lanes,
-            self.min_height,
-        ))
+        self.schedule.as_ref().map_or_else(
+            || {
+                Some(create_chunked_preprocessed_trace(
+                    &self.preprocessed,
+                    Self::preprocessed_lane_width(),
+                    self.lanes,
+                    self.min_height,
+                ))
+            },
+            |schedule| Some(self.build_scheduled_preprocessed_trace(schedule)),
+        )
     }
 }
 
@@ -314,6 +465,12 @@ where
             .expect("preprocessed must be non-empty");
         let preprocessed_lane_width = Self::preprocessed_lane_width();
 
+        // Next-row access for HornerAcc inter-row constraint
+        let next = main.row_slice(1).expect("matrix must have next row");
+        let preprocessed_next = preprocessed
+            .row_slice(1)
+            .expect("preprocessed must have next row");
+
         // D=1 specialization
         if D == 1 {
             debug_assert_eq!(lane_width, 4);
@@ -327,18 +484,17 @@ where
                 let c = local[main_offset + 2].clone();
                 let out = local[main_offset + 3].clone();
 
-                // Multiplicity and selectors from preprocessed:
-                // layout per lane: [m, sel_add_vs_mul, sel_bool, sel_muladd, a_idx, b_idx, c_idx, out_idx]
                 let multiplicity = preprocessed_local[prep_offset].clone();
                 let sel_add_vs_mul = preprocessed_local[prep_offset + 1].clone();
                 let sel_bool = preprocessed_local[prep_offset + 2].clone();
                 let sel_muladd = preprocessed_local[prep_offset + 3].clone();
+                let sel_horner = preprocessed_local[prep_offset + 4].clone();
 
-                // Derive MUL selector linearly:
-                // sel_mul = m - sel_bool - sel_muladd - sel_add_vs_mul
+                // sel_mul = m - sel_bool - sel_muladd - sel_horner - sel_add_vs_mul
                 let sel_mul = multiplicity.clone()
                     - sel_bool.clone()
                     - sel_muladd.clone()
+                    - sel_horner.clone()
                     - sel_add_vs_mul.clone();
 
                 // ADD constraint: sel_add_vs_mul * (a + b - out) = 0
@@ -354,6 +510,16 @@ where
                 // MUL_ADD constraint: sel_muladd * (a * b + c - out) = 0
                 builder.assert_zero(
                     sel_muladd.clone() * (a.clone() * b.clone() + c.clone() - out.clone()),
+                );
+
+                // HORNER_ACC constraint (inter-row): next_sel_horner * (local_out * next_b + next_c - next_a - next_out) = 0
+                let next_sel_horner = preprocessed_next[prep_offset + 4].clone();
+                let next_b = next[main_offset + 1].clone();
+                let next_c = next[main_offset + 2].clone();
+                let next_a = next[main_offset].clone();
+                let next_out = next[main_offset + 3].clone();
+                builder.assert_zero(
+                    next_sel_horner * (out.clone() * next_b + next_c - next_a - next_out),
                 );
             }
         } else {
@@ -373,21 +539,19 @@ where
                 let c_slice = &local[main_offset + 2 * D..main_offset + 3 * D];
                 let out_slice = &local[main_offset + 3 * D..main_offset + 4 * D];
 
-                // Multiplicity and selectors from preprocessed:
-                // layout per lane: [m, sel_add_vs_mul, sel_bool, sel_muladd, a_idx, b_idx, c_idx, out_idx]
                 let multiplicity = preprocessed_local[prep_offset].clone();
                 let sel_add_vs_mul = preprocessed_local[prep_offset + 1].clone();
                 let sel_bool = preprocessed_local[prep_offset + 2].clone();
                 let sel_muladd = preprocessed_local[prep_offset + 3].clone();
+                let sel_horner = preprocessed_local[prep_offset + 4].clone();
 
-                // Derive MUL selector linearly:
-                // sel_mul = m - sel_bool - sel_muladd - sel_add_vs_mul
                 let sel_mul = multiplicity.clone()
                     - sel_bool.clone()
                     - sel_muladd.clone()
+                    - sel_horner.clone()
                     - sel_add_vs_mul.clone();
 
-                // ADD constraints: sel_add_vs_mul * (a[i] + b[i] - out[i]) = 0
+                // ADD constraints
                 for i in 0..D {
                     builder.assert_zero(
                         sel_add_vs_mul.clone()
@@ -413,8 +577,7 @@ where
                         .assert_zero(sel_mul.clone() * (mul_acc[i].clone() - out_slice[i].clone()));
                 }
 
-                // BOOL_CHECK constraints: sel_bool * a[i] * (a[i] - 1) = 0 for i=0 only (base component)
-                // For extension fields, boolean check only makes sense on the base component
+                // BOOL_CHECK constraint (base component only)
                 let one = AB::Expr::ONE;
                 builder.assert_zero(
                     sel_bool.clone() * a_slice[0].clone() * (a_slice[0].clone() - one.clone()),
@@ -433,13 +596,43 @@ where
                         }
                     }
                 }
-                // Add c component-wise
                 for i in 0..D {
                     muladd_acc[i] = muladd_acc[i].clone() + c_slice[i].clone();
                 }
                 for i in 0..D {
                     builder.assert_zero(
                         sel_muladd.clone() * (muladd_acc[i].clone() - out_slice[i].clone()),
+                    );
+                }
+
+                // HORNER_ACC constraint (inter-row, extension field):
+                // next_out = local_out * next_b + next_c - next_a
+                let next_sel_horner = preprocessed_next[prep_offset + 4].clone();
+                let next_a_slice = &next[main_offset..main_offset + D];
+                let next_b_slice = &next[main_offset + D..main_offset + 2 * D];
+                let next_c_slice = &next[main_offset + 2 * D..main_offset + 3 * D];
+                let next_out_slice = &next[main_offset + 3 * D..main_offset + 4 * D];
+
+                // Compute local_out * next_b as extension field product
+                let mut horner_mul = vec![AB::Expr::ZERO; D];
+                for i in 0..D {
+                    for j in 0..D {
+                        let term = out_slice[i].clone() * next_b_slice[j].clone();
+                        let k = i + j;
+                        if k < D {
+                            horner_mul[k] = horner_mul[k].clone() + term;
+                        } else {
+                            horner_mul[k - D] = horner_mul[k - D].clone() + w.clone() * term;
+                        }
+                    }
+                }
+                // horner_result = local_out * next_b + next_c - next_a
+                for i in 0..D {
+                    builder.assert_zero(
+                        next_sel_horner.clone()
+                            * (horner_mul[i].clone() + next_c_slice[i].clone()
+                                - next_a_slice[i].clone()
+                                - next_out_slice[i].clone()),
                     );
                 }
             }
@@ -530,13 +723,12 @@ mod tests {
         };
 
         let preprocessed_values = AluAir::<Val, 1>::trace_to_preprocessed(&trace);
-        let matrix: RowMajorMatrix<Val> = AluAir::<Val, 1>::trace_to_matrix(&trace, 1);
+        let air = AluAir::<Val, 1>::new_with_preprocessed(n, 1, preprocessed_values);
+        let matrix: RowMajorMatrix<Val> = air.trace_to_matrix(&trace);
         assert_eq!(matrix.width(), 4);
 
         let config = build_test_config();
         let pis: Vec<Val> = vec![];
-
-        let air = AluAir::<Val, 1>::new_with_preprocessed(n, 1, preprocessed_values);
         let (prover_data, verifier_data) =
             setup_preprocessed(&config, &air, log2_ceil_usize(matrix.height())).unwrap();
         let proof = prove_with_preprocessed(&config, &air, matrix, &pis, Some(&prover_data));
@@ -570,12 +762,12 @@ mod tests {
         };
 
         let preprocessed_values = AluAir::<Val, 1>::trace_to_preprocessed(&trace);
-        let matrix: RowMajorMatrix<Val> = AluAir::<Val, 1>::trace_to_matrix(&trace, 1);
+        let air = AluAir::<Val, 1>::new_with_preprocessed(n, 1, preprocessed_values);
+        let matrix: RowMajorMatrix<Val> = air.trace_to_matrix(&trace);
 
         let config = build_test_config();
         let pis: Vec<Val> = vec![];
 
-        let air = AluAir::<Val, 1>::new_with_preprocessed(n, 1, preprocessed_values);
         let (prover_data, verifier_data) =
             setup_preprocessed(&config, &air, log2_ceil_usize(matrix.height())).unwrap();
         let proof = prove_with_preprocessed(&config, &air, matrix, &pis, Some(&prover_data));
@@ -610,12 +802,12 @@ mod tests {
         };
 
         let preprocessed_values = AluAir::<Val, 1>::trace_to_preprocessed(&trace);
-        let matrix: RowMajorMatrix<Val> = AluAir::<Val, 1>::trace_to_matrix(&trace, 1);
+        let air = AluAir::<Val, 1>::new_with_preprocessed(n, 1, preprocessed_values);
+        let matrix: RowMajorMatrix<Val> = air.trace_to_matrix(&trace);
 
         let config = build_test_config();
         let pis: Vec<Val> = vec![];
 
-        let air = AluAir::<Val, 1>::new_with_preprocessed(n, 1, preprocessed_values);
         let (prover_data, verifier_data) =
             setup_preprocessed(&config, &air, log2_ceil_usize(matrix.height())).unwrap();
         let proof = prove_with_preprocessed(&config, &air, matrix, &pis, Some(&prover_data));
@@ -650,12 +842,12 @@ mod tests {
         };
 
         let preprocessed_values = AluAir::<Val, 1>::trace_to_preprocessed(&trace);
-        let matrix: RowMajorMatrix<Val> = AluAir::<Val, 1>::trace_to_matrix(&trace, 1);
+        let air = AluAir::<Val, 1>::new_with_preprocessed(n, 1, preprocessed_values);
+        let matrix: RowMajorMatrix<Val> = air.trace_to_matrix(&trace);
 
         let config = build_test_config();
         let pis: Vec<Val> = vec![];
 
-        let air = AluAir::<Val, 1>::new_with_preprocessed(n, 1, preprocessed_values);
         let (prover_data, verifier_data) =
             setup_preprocessed(&config, &air, log2_ceil_usize(matrix.height())).unwrap();
         let proof = prove_with_preprocessed(&config, &air, matrix, &pis, Some(&prover_data));
@@ -685,12 +877,11 @@ mod tests {
         };
 
         let preprocessed_values = AluAir::<Val, 1>::trace_to_preprocessed(&trace);
-        let matrix: RowMajorMatrix<Val> = AluAir::<Val, 1>::trace_to_matrix(&trace, 1);
+        let air = AluAir::<Val, 1>::new_with_preprocessed(2, 1, preprocessed_values);
+        let matrix: RowMajorMatrix<Val> = air.trace_to_matrix(&trace);
 
         let config = build_test_config();
         let pis: Vec<Val> = vec![];
-
-        let air = AluAir::<Val, 1>::new_with_preprocessed(2, 1, preprocessed_values);
         let (prover_data, verifier_data) =
             setup_preprocessed(&config, &air, log2_ceil_usize(matrix.height())).unwrap();
         let proof = prove_with_preprocessed(&config, &air, matrix, &pis, Some(&prover_data));
@@ -735,8 +926,6 @@ mod tests {
         };
 
         let preprocessed_values = AluAir::<Val, 4>::trace_to_preprocessed(&trace);
-        let matrix: RowMajorMatrix<Val> = AluAir::<Val, 4>::trace_to_matrix(&trace, 1);
-        assert_eq!(matrix.width(), AluAir::<Val, 4>::lane_width());
 
         let config = build_test_config();
         let pis: Vec<Val> = vec![];
@@ -745,6 +934,8 @@ mod tests {
         let w = Val::from_u64(11); // BabyBear's binomial extension uses w=11
 
         let air = AluAir::<Val, 4>::new_binomial_with_preprocessed(n, 1, w, preprocessed_values);
+        let matrix: RowMajorMatrix<Val> = air.trace_to_matrix(&trace);
+        assert_eq!(matrix.width(), AluAir::<Val, 4>::lane_width());
         let (prover_data, verifier_data) =
             setup_preprocessed(&config, &air, log2_ceil_usize(matrix.height())).unwrap();
         let proof = prove_with_preprocessed(&config, &air, matrix, &pis, Some(&prover_data));
@@ -754,7 +945,7 @@ mod tests {
 
     #[test]
     fn test_alu_air_constraint_degree() {
-        let preprocessed = vec![Val::ZERO; 8 * 7]; // 8 ops * 7 preprocessed values per op
+        let preprocessed = vec![Val::ZERO; 8 * 8]; // 8 ops * 8 preprocessed values per op
         let air = AluAir::<Val, 1>::new_with_preprocessed(8, 2, preprocessed);
         p3_test_utils::assert_air_constraint_degree!(air, "AluAir");
     }

@@ -20,6 +20,7 @@ pub enum AllocationType {
     Sub,
     Mul,
     Div,
+    HornerAcc,
     NonPrimitiveOp(NonPrimitiveOpType),
     NonPrimitiveOutput,
     WitnessHint,

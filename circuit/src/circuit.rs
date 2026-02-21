@@ -291,24 +291,21 @@ impl<F: Field> Circuit<F> {
                 }
                 // Unified ALU operations with selectors for operation kind.
                 // Preprocessed per op (without multiplicity):
-                // [sel_add_vs_mul, sel_bool, sel_muladd, a_idx, b_idx, c_idx, out_idx]
+                // [sel_add_vs_mul, sel_bool, sel_muladd, sel_horner, a_idx, b_idx, c_idx, out_idx]
                 Op::Alu {
                     kind, a, b, c, out, ..
                 } => {
-                    // Encode operation kind as:
-                    // - sel_add_vs_mul: 1 for Add, 0 for Mul (when Bool/MulAdd are 0)
-                    // - sel_bool: 1 for BoolCheck
-                    // - sel_muladd: 1 for MulAdd
-                    let (sel_add_vs_mul, sel_bool, sel_muladd) = match kind {
-                        AluOpKind::Add => (F::ONE, F::ZERO, F::ZERO),
-                        AluOpKind::Mul => (F::ZERO, F::ZERO, F::ZERO),
-                        AluOpKind::BoolCheck => (F::ZERO, F::ONE, F::ZERO),
-                        AluOpKind::MulAdd => (F::ZERO, F::ZERO, F::ONE),
+                    let (sel_add_vs_mul, sel_bool, sel_muladd, sel_horner) = match kind {
+                        AluOpKind::Add => (F::ONE, F::ZERO, F::ZERO, F::ZERO),
+                        AluOpKind::Mul => (F::ZERO, F::ZERO, F::ZERO, F::ZERO),
+                        AluOpKind::BoolCheck => (F::ZERO, F::ONE, F::ZERO, F::ZERO),
+                        AluOpKind::MulAdd => (F::ZERO, F::ZERO, F::ONE, F::ZERO),
+                        AluOpKind::HornerAcc => (F::ZERO, F::ZERO, F::ZERO, F::ONE),
                     };
 
                     preprocessed.register_primitive_preprocessed_no_read(
                         PrimitiveOpType::Alu,
-                        &[sel_add_vs_mul, sel_bool, sel_muladd],
+                        &[sel_add_vs_mul, sel_bool, sel_muladd, sel_horner],
                     )?;
 
                     // Witness indices contribute to multiplicities and follow the selectors in order.
@@ -428,29 +425,28 @@ mod tests {
             vec![F::from_u32(1)]
         );
 
-        // ALU column: [sel_add_vs_mul, sel_bool, sel_muladd, a, b, c, out] per op
-        // Layout per op: [sel_add_vs_mul, sel_bool, sel_muladd, a, b, c, out]
-        // Op 1: add(0, 1, 3) -> [1, 0, 0, 0, 1, 0, 3]
-        // Op 2: add(3, 2, 4) -> [1, 0, 0, 3, 2, 0, 4]
-        // Op 3: mul(4, 2, 5) -> [0, 0, 0, 4, 2, 0, 5]
+        // ALU column: [sel_add_vs_mul, sel_bool, sel_muladd, sel_horner, a, b, c, out] per op
         let expected_alu = vec![
-            // add(0, 1, 3)
+            // add(0, 1, 3): [1, 0, 0, 0, 0, 1, 0, 3]
             F::ONE,
+            F::ZERO,
             F::ZERO,
             F::ZERO,
             F::ZERO,
             F::from_u32(1),
             F::ZERO,
             F::from_u32(3),
-            // add(3, 2, 4)
+            // add(3, 2, 4): [1, 0, 0, 0, 3, 2, 0, 4]
             F::ONE,
+            F::ZERO,
             F::ZERO,
             F::ZERO,
             F::from_u32(3),
             F::from_u32(2),
             F::ZERO,
             F::from_u32(4),
-            // mul(4, 2, 5)
+            // mul(4, 2, 5): [0, 0, 0, 0, 4, 2, 0, 5]
+            F::ZERO,
             F::ZERO,
             F::ZERO,
             F::ZERO,
@@ -538,11 +534,12 @@ mod tests {
         let circuit = make_circuit(ops);
         let result = circuit.generate_preprocessed_columns().unwrap();
 
-        // ALU column for MulAdd: [sel_add_vs_mul=0, sel_bool=0, sel_muladd=1, a=0, b=1, c=2, out=3]
+        // ALU column for MulAdd: [sel_add_vs_mul=0, sel_bool=0, sel_muladd=1, sel_horner=0, a=0, b=1, c=2, out=3]
         let expected_alu = vec![
             F::ZERO,
             F::ZERO,
             F::ONE,
+            F::ZERO,
             F::ZERO,
             F::from_u32(1),
             F::from_u32(2),
