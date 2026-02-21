@@ -1,9 +1,12 @@
 //! Unified recursion API: one entry point to prove the next layer over a uni-stark or batch-stark proof.
 
+use alloc::rc::Rc;
+use alloc::string::ToString;
 use alloc::vec::Vec;
 
 use p3_air::SymbolicExpression;
 use p3_batch_stark::{CommonData, ProverData};
+use p3_circuit::tables::Traces;
 use p3_circuit::utils::ColumnsTargets;
 use p3_circuit::{Circuit, CircuitBuilder, CircuitRunner, NonPrimitiveOpId};
 use p3_circuit_prover::common::{NonPrimitiveConfig, get_airs_and_degrees_with_prep};
@@ -23,6 +26,18 @@ use crate::ops::Poseidon2Config;
 use crate::traits::{LookupMetadata, RecursiveAir};
 use crate::types::RecursiveLagrangeSelectors;
 use crate::verifier::VerificationError;
+
+fn proof_shape_err(e: &impl ToString) -> VerificationError {
+    VerificationError::InvalidProofShape(e.to_string())
+}
+
+/// Cached prover data and prover for aggregation when the same verification circuit is reused per level.
+/// Pass `Some(&mut None)` on the first aggregation at a given level; the slot is filled after the
+/// first proof and reused for subsequent pairs to avoid ~100ms of clone/from_airs_and_degrees/prover creation.
+pub struct AggregationPrepCache<SC: StarkGenericConfig + 'static> {
+    pub circuit_prover_data: Rc<CircuitProverData<SC>>,
+    pub prover: BatchStarkProver<SC>,
+}
 
 /// Input to one recursion step: either a uni-stark proof or a batch-stark proof (with common data).
 pub enum RecursionInput<'a, SC, A>
@@ -46,7 +61,7 @@ where
 }
 
 /// Output of one recursion step: the next-layer batch proof and its prover data (for chaining or verification).
-pub struct RecursionOutput<SC>(pub BatchStarkProof<SC>, pub CircuitProverData<SC>)
+pub struct RecursionOutput<SC>(pub BatchStarkProof<SC>, pub Rc<CircuitProverData<SC>>)
 where
     SC: StarkGenericConfig;
 
@@ -236,43 +251,45 @@ where
         .map(|c| alloc::vec![NonPrimitiveConfig::Poseidon2(c)]);
     let non_primitive_ref = non_primitive.as_deref();
 
-    let (airs_degrees, preprocessed_columns) =
+    let (airs_degrees, preprocessed_columns) = {
         get_airs_and_degrees_with_prep::<SC, SC::Challenge, D>(
             &verification_circuit,
             params.table_packing,
             non_primitive_ref,
         )
-        .map_err(VerificationError::Circuit)?;
+        .map_err(VerificationError::Circuit)?
+    };
 
     let (mut airs, degrees): (Vec<_>, Vec<_>) = airs_degrees.into_iter().unzip();
 
-    let public_inputs = verifier_result.pack_public_inputs(prev)?;
-    let mut runner = verification_circuit.runner();
-    runner
-        .set_public_inputs(&public_inputs)
-        .map_err(VerificationError::Circuit)?;
+    let traces = {
+        let public_inputs = verifier_result.pack_public_inputs(prev)?;
+        let mut runner = verification_circuit.runner();
+        runner
+            .set_public_inputs(&public_inputs)
+            .map_err(VerificationError::Circuit)?;
 
-    backend
-        .set_private_data(config, &mut runner, verifier_result.op_ids(), prev)
-        .map_err(|e| VerificationError::InvalidProofShape(alloc::string::ToString::to_string(e)))?;
+        backend
+            .set_private_data(config, &mut runner, verifier_result.op_ids(), prev)
+            .map_err(|e| proof_shape_err(&e))?;
 
-    let traces = runner.run().map_err(VerificationError::Circuit)?;
+        runner.run().map_err(VerificationError::Circuit)?
+    };
 
-    let prover_data = ProverData::from_airs_and_degrees(config, &mut airs, &degrees);
-    let circuit_prover_data = CircuitProverData::new(prover_data, preprocessed_columns);
+    let circuit_prover_data = {
+        let prover_data = ProverData::from_airs_and_degrees(config, &mut airs, &degrees);
+        CircuitProverData::new(prover_data, preprocessed_columns)
+    };
 
     let mut prover = BatchStarkProver::new(config.clone()).with_table_packing(params.table_packing);
-    if let Some(poseidon2_config) = backend.poseidon2_config_for_circuit() {
-        prover.register_poseidon2_table(poseidon2_config);
+    if let Some(cfg) = backend.poseidon2_config_for_circuit() {
+        prover.register_poseidon2_table(cfg);
     }
-
     let proof = prover
         .prove_all_tables(&traces, &circuit_prover_data)
-        .map_err(|e| {
-            VerificationError::InvalidProofShape(alloc::string::ToString::to_string(&e))
-        })?;
+        .map_err(|e| proof_shape_err(&e.to_string()))?;
 
-    Ok(RecursionOutput(proof, circuit_prover_data))
+    Ok(RecursionOutput(proof, Rc::new(circuit_prover_data)))
 }
 
 /// Convenience method to build and prove a recursion layer.
@@ -366,8 +383,57 @@ where
     Ok((verification_circuit, (left_result, right_result)))
 }
 
+fn run_aggregation_verification_circuit<SC, A1, A2, B>(
+    left: &RecursionInput<'_, SC, A1>,
+    right: &RecursionInput<'_, SC, A2>,
+    left_result: &<B as PcsRecursionBackend<SC, A1>>::VerifierResult,
+    right_result: &<B as PcsRecursionBackend<SC, A2>>::VerifierResult,
+    verification_circuit: &Circuit<SC::Challenge>,
+    config: &SC,
+    backend: &B,
+) -> Result<Traces<SC::Challenge>, VerificationError>
+where
+    SC: StarkGenericConfig,
+    A1: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
+    A2: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
+    B: PcsRecursionBackend<SC, A1> + PcsRecursionBackend<SC, A2>,
+    Val<SC>: PrimeField64,
+{
+    let mut public_inputs = left_result.pack_public_inputs(left)?;
+    public_inputs.extend(right_result.pack_public_inputs(right)?);
+
+    let mut runner = verification_circuit.clone().runner();
+    runner
+        .set_public_inputs(&public_inputs)
+        .map_err(VerificationError::Circuit)?;
+
+    <B as PcsRecursionBackend<SC, A1>>::set_private_data(
+        backend,
+        config,
+        &mut runner,
+        left_result.op_ids(),
+        left,
+    )
+    .map_err(|e| proof_shape_err(&e.to_string()))?;
+
+    <B as PcsRecursionBackend<SC, A2>>::set_private_data(
+        backend,
+        config,
+        &mut runner,
+        right_result.op_ids(),
+        right,
+    )
+    .map_err(|e| proof_shape_err(&e.to_string()))?;
+
+    runner.run().map_err(VerificationError::Circuit)
+}
+
 /// Prove a 2-to-1 aggregation layer: build verifier circuits for both `left` and `right`
 /// in a single circuit, run it, and produce one aggregated batch STARK proof.
+///
+/// When proving multiple pairs with the same verification circuit (e.g. all pairs at one level),
+/// pass `prep_cache: Some(&mut None)` on the first call; the slot is filled and can be passed
+/// again for subsequent pairs to skip [`get_airs_and_degrees_with_prep`].
 ///
 /// The two inputs may be different `RecursionInput` variants (e.g. one `UniStark` left
 /// and one `BatchStark` right) or identical ones.
@@ -378,10 +444,11 @@ pub fn prove_aggregation_layer<SC, A1, A2, B, const D: usize>(
     right: &RecursionInput<'_, SC, A2>,
     left_result: &<B as PcsRecursionBackend<SC, A1>>::VerifierResult,
     right_result: &<B as PcsRecursionBackend<SC, A2>>::VerifierResult,
-    verification_circuit: Circuit<SC::Challenge>,
+    verification_circuit: &Circuit<SC::Challenge>,
     config: &SC,
     backend: &B,
     params: &ProveNextLayerParams,
+    mut prep_cache: Option<&mut Option<AggregationPrepCache<SC>>>,
 ) -> Result<RecursionOutput<SC>, VerificationError>
 where
     SC: StarkGenericConfig + Send + Sync + Clone + 'static,
@@ -395,67 +462,74 @@ where
         + ExtractBinomialW<Val<SC>>,
     SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
 {
+    if let Some(ref mut cache_slot) = prep_cache
+        && let Some(cached) = cache_slot.as_ref()
+    {
+        let traces = run_aggregation_verification_circuit(
+            left,
+            right,
+            left_result,
+            right_result,
+            verification_circuit,
+            config,
+            backend,
+        )?;
+        let proof = cached
+            .prover
+            .prove_all_tables(&traces, &cached.circuit_prover_data)
+            .map_err(|e| proof_shape_err(&e.to_string()))?;
+        return Ok(RecursionOutput(
+            proof,
+            Rc::clone(&cached.circuit_prover_data),
+        ));
+    }
+
     let non_primitive = <B as PcsRecursionBackend<SC, A1>>::poseidon2_config_for_circuit(backend)
         .map(|c| alloc::vec![NonPrimitiveConfig::Poseidon2(c)]);
-    let non_primitive_ref = non_primitive.as_deref();
-
-    let (airs_degrees, preprocessed_columns) =
+    let (airs_degrees, preprocessed_columns) = {
         get_airs_and_degrees_with_prep::<SC, SC::Challenge, D>(
-            &verification_circuit,
+            verification_circuit,
             params.table_packing,
-            non_primitive_ref,
+            non_primitive.as_deref(),
         )
-        .map_err(VerificationError::Circuit)?;
+        .map_err(VerificationError::Circuit)?
+    };
 
     let (mut airs, degrees): (Vec<_>, Vec<_>) = airs_degrees.into_iter().unzip();
 
-    // Pack public inputs: left then right, concatenated.
-    let mut public_inputs = left_result.pack_public_inputs(left)?;
-    public_inputs.extend(right_result.pack_public_inputs(right)?);
-
-    let mut runner = verification_circuit.runner();
-    runner
-        .set_public_inputs(&public_inputs)
-        .map_err(VerificationError::Circuit)?;
-
-    // Set Merkle-path private data for both verifications.
-    <B as PcsRecursionBackend<SC, A1>>::set_private_data(
-        backend,
-        config,
-        &mut runner,
-        left_result.op_ids(),
+    let traces = run_aggregation_verification_circuit(
         left,
-    )
-    .map_err(|e| VerificationError::InvalidProofShape(alloc::string::ToString::to_string(e)))?;
-
-    <B as PcsRecursionBackend<SC, A2>>::set_private_data(
-        backend,
-        config,
-        &mut runner,
-        right_result.op_ids(),
         right,
-    )
-    .map_err(|e| VerificationError::InvalidProofShape(alloc::string::ToString::to_string(e)))?;
+        left_result,
+        right_result,
+        verification_circuit,
+        config,
+        backend,
+    )?;
 
-    let traces = runner.run().map_err(VerificationError::Circuit)?;
-
-    let prover_data = ProverData::from_airs_and_degrees(config, &mut airs, &degrees);
-    let circuit_prover_data = CircuitProverData::new(prover_data, preprocessed_columns);
+    let circuit_prover_data = {
+        let prover_data = ProverData::from_airs_and_degrees(config, &mut airs, &degrees);
+        CircuitProverData::new(prover_data, preprocessed_columns)
+    };
 
     let mut prover = BatchStarkProver::new(config.clone()).with_table_packing(params.table_packing);
-    if let Some(poseidon2_config) =
-        <B as PcsRecursionBackend<SC, A1>>::poseidon2_config_for_circuit(backend)
-    {
-        prover.register_poseidon2_table(poseidon2_config);
+    if let Some(cfg) = <B as PcsRecursionBackend<SC, A1>>::poseidon2_config_for_circuit(backend) {
+        prover.register_poseidon2_table(cfg);
     }
-
     let proof = prover
         .prove_all_tables(&traces, &circuit_prover_data)
-        .map_err(|e| {
-            VerificationError::InvalidProofShape(alloc::string::ToString::to_string(&e))
-        })?;
+        .map_err(|e| proof_shape_err(&e.to_string()))?;
 
-    Ok(RecursionOutput(proof, circuit_prover_data))
+    if let Some(ref mut cache_slot) = prep_cache {
+        let circuit_prover_data_rc = Rc::new(circuit_prover_data);
+        **cache_slot = Some(AggregationPrepCache {
+            circuit_prover_data: Rc::clone(&circuit_prover_data_rc),
+            prover,
+        });
+        Ok(RecursionOutput(proof, circuit_prover_data_rc))
+    } else {
+        Ok(RecursionOutput(proof, Rc::new(circuit_prover_data)))
+    }
 }
 
 /// Convenience method to build and prove a 2-to-1 aggregation layer.
@@ -469,7 +543,7 @@ where
 ///
 /// ```ignore
 /// let (verification_circuit, (left_result, right_result)) = build_aggregation_layer_circuit::<SC, A1, A2, B, D>(left, right, config, backend)?;
-/// let out = prove_aggregation_layer::<SC, A1, A2, B, D>(left, right, left_result, right_result, verification_circuit, config, backend, params);
+/// let out = prove_aggregation_layer::<SC, A1, A2, B, D>(..., params, None);
 /// ```
 pub fn build_and_prove_aggregation_layer<SC, A1, A2, B, const D: usize>(
     left: &RecursionInput<'_, SC, A1>,
@@ -477,6 +551,7 @@ pub fn build_and_prove_aggregation_layer<SC, A1, A2, B, const D: usize>(
     config: &SC,
     backend: &B,
     params: &ProveNextLayerParams,
+    prep_cache: Option<&mut Option<AggregationPrepCache<SC>>>,
 ) -> Result<RecursionOutput<SC>, VerificationError>
 where
     SC: StarkGenericConfig + Send + Sync + Clone + 'static,
@@ -498,9 +573,10 @@ where
         right,
         &left_result,
         &right_result,
-        verification_circuit,
+        &verification_circuit,
         config,
         backend,
         params,
+        prep_cache,
     )
 }

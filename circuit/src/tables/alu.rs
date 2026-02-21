@@ -65,15 +65,15 @@ impl<'a, F: Clone + Field> AluTraceBuilder<'a, F> {
 
     /// Builds the ALU trace from circuit operations.
     pub fn build(self) -> Result<AluTrace<F>, CircuitError> {
-        let mut op_kind = Vec::new();
-        let mut a_values = Vec::new();
-        let mut a_index = Vec::new();
-        let mut b_values = Vec::new();
-        let mut b_index = Vec::new();
-        let mut c_values = Vec::new();
-        let mut c_index = Vec::new();
-        let mut out_values = Vec::new();
-        let mut out_index = Vec::new();
+        let mut op_kind = Vec::with_capacity(1 << 15);
+        let mut a_values = Vec::with_capacity(1 << 15);
+        let mut a_index = Vec::with_capacity(1 << 15);
+        let mut b_values = Vec::with_capacity(1 << 15);
+        let mut b_index = Vec::with_capacity(1 << 15);
+        let mut c_values = Vec::with_capacity(1 << 15);
+        let mut c_index = Vec::with_capacity(1 << 15);
+        let mut out_values = Vec::with_capacity(1 << 15);
+        let mut out_index = Vec::with_capacity(1 << 15);
 
         for prim in self.primitive_ops {
             if let Op::Alu {

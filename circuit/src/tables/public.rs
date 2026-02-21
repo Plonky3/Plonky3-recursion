@@ -39,9 +39,8 @@ impl<'a, F: Clone> PublicTraceBuilder<'a, F> {
 
     /// Builds the public input trace from circuit operations.
     pub fn build(self) -> Result<PublicTrace<F>, CircuitError> {
-        let estimated_len = self.primitive_ops.len();
-        let mut index = Vec::with_capacity(estimated_len);
-        let mut values = Vec::with_capacity(estimated_len);
+        let mut index = Vec::with_capacity(1 << 15);
+        let mut values = Vec::with_capacity(1 << 15);
 
         for prim in self.primitive_ops {
             if let Op::Public { out, public_pos: _ } = prim {

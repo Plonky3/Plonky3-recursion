@@ -46,6 +46,15 @@ pub struct PreprocessedColumns<F> {
     pub non_primitive: NonPrimitivePreprocessedMap<F>,
 }
 
+impl<F: Field + Clone> Clone for PreprocessedColumns<F> {
+    fn clone(&self) -> Self {
+        Self {
+            primitive: self.primitive.clone(),
+            non_primitive: self.non_primitive.clone(),
+        }
+    }
+}
+
 impl<F: Field> PreprocessedColumns<F> {
     /// Creates an empty [`PreprocessedColumns`] with one primitive entry per [`PrimitiveOpType`].
     pub fn new() -> Self {
@@ -207,6 +216,8 @@ pub struct Circuit<F> {
     pub expr_to_widx: HashMap<ExprId, WitnessId>,
     /// Registered non-primitive trace generators.
     pub non_primitive_trace_generators: HashMap<NonPrimitiveOpType, TraceGeneratorFn<F>>,
+    /// Sorted keys of `non_primitive_trace_generators` for deterministic iteration without sorting each run.
+    pub non_primitive_trace_generator_order: Vec<NonPrimitiveOpType>,
     /// Tag to witness index mapping for probing values by name.
     pub tag_to_witness: HashMap<String, WitnessId>,
     /// Tag to non-primitive operation ID mapping.
@@ -226,6 +237,7 @@ impl<F: Field + Clone> Clone for Circuit<F> {
             enabled_ops: self.enabled_ops.clone(),
             expr_to_widx: self.expr_to_widx.clone(),
             non_primitive_trace_generators: self.non_primitive_trace_generators.clone(),
+            non_primitive_trace_generator_order: self.non_primitive_trace_generator_order.clone(),
             tag_to_witness: self.tag_to_witness.clone(),
             tag_to_op_id: self.tag_to_op_id.clone(),
             witness_rewrite: self.witness_rewrite.clone(),
@@ -244,6 +256,7 @@ impl<F: Field> Circuit<F> {
             enabled_ops: HashMap::new(),
             expr_to_widx,
             non_primitive_trace_generators: HashMap::new(),
+            non_primitive_trace_generator_order: Vec::new(),
             tag_to_witness: HashMap::new(),
             tag_to_op_id: HashMap::new(),
             witness_rewrite: None,

@@ -32,9 +32,8 @@ impl<'a, F: Clone> ConstTraceBuilder<'a, F> {
 
     /// Builds the constant trace from circuit operations.
     pub fn build(self) -> Result<ConstTrace<F>, CircuitError> {
-        let estimated_len = self.primitive_ops.len();
-        let mut index = Vec::with_capacity(estimated_len);
-        let mut values = Vec::with_capacity(estimated_len);
+        let mut index = Vec::with_capacity(1 << 9);
+        let mut values = Vec::with_capacity(1 << 9);
 
         for prim in self.primitive_ops {
             if let Op::Const { out, val } = prim {

@@ -736,6 +736,13 @@ where
         circuit.public_flat_len = self.public_tracker.count();
         circuit.enabled_ops = self.config.into_enabled_ops();
         circuit.non_primitive_trace_generators = self.non_primitive_trace_generators;
+        let mut gen_order: Vec<_> = circuit
+            .non_primitive_trace_generators
+            .keys()
+            .copied()
+            .collect();
+        gen_order.sort();
+        circuit.non_primitive_trace_generator_order = gen_order;
 
         // Transfer wire tags, converting ExprId to WitnessId
         for (tag, expr_id) in self.tag_to_expr {

@@ -31,6 +31,7 @@
 //!     --query-pow-bits 16
 //! ```
 
+use std::rc::Rc;
 use std::sync::Arc;
 
 use clap::{Parser, ValueEnum};
@@ -53,8 +54,9 @@ use p3_recursion::pcs::{
 use p3_recursion::traits::{RecursiveAir, RecursivePcs};
 use p3_recursion::verifier::VerificationError;
 use p3_recursion::{
-    BatchOnly, FriRecursionBackend, FriRecursionConfig, FriVerifierParams, Poseidon2Config,
-    ProveNextLayerParams, RecursionInput, RecursionOutput, build_and_prove_aggregation_layer,
+    AggregationPrepCache, BatchOnly, FriRecursionBackend, FriRecursionConfig, FriVerifierParams,
+    Poseidon2Config, ProveNextLayerParams, RecursionInput, RecursionOutput,
+    build_and_prove_aggregation_layer,
 };
 use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
 use p3_uni_stark::{StarkConfig, StarkGenericConfig, Val};
@@ -403,7 +405,7 @@ macro_rules! define_field_module {
                     .verify_all_tables(&proof, circuit_prover_data.common_data())
                     .expect("Failed to verify dummy proof");
 
-                RecursionOutput(proof, circuit_prover_data)
+                RecursionOutput(proof, Rc::new(circuit_prover_data))
             }
 
             pub fn run(num_recursive_layers: usize, fri_params: &FriParams) {
@@ -446,21 +448,24 @@ macro_rules! define_field_module {
                     };
 
                     let mut next_level = Vec::with_capacity(pairs);
+                    let mut prep_cache: Option<AggregationPrepCache<ConfigWithFriParams>> = None;
                     for pair_idx in 0..pairs {
                         let li = pair_idx * 2;
                         let left = proofs[li].into_recursion_input::<BatchOnly>();
                         let right = proofs[li + 1].into_recursion_input::<BatchOnly>();
 
-                        let out = build_and_prove_aggregation_layer::<
-                            ConfigWithFriParams,
-                            _,
-                            _,
-                            _,
-                            D,
-                        >(&left, &right, &config, &backend, &agg_params)
-                        .unwrap_or_else(|e| {
-                            panic!("Failed at level {level}, pair {pair_idx}: {e:?}")
-                        });
+                        let out =
+                            build_and_prove_aggregation_layer::<ConfigWithFriParams, _, _, _, D>(
+                                &left,
+                                &right,
+                                &config,
+                                &backend,
+                                &agg_params,
+                                Some(&mut prep_cache),
+                            )
+                            .unwrap_or_else(|e| {
+                                panic!("Failed at level {level}, pair {pair_idx}: {e:?}")
+                            });
 
                         report_proof_size(&out.0);
 
