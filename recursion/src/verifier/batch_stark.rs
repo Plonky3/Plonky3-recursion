@@ -963,9 +963,10 @@ where
         pcs_params,
     )?;
 
-    let mmcs_op_ids = pcs.verify_circuit(
+    let mmcs_op_ids = pcs.verify_circuit::<WIDTH, RATE>(
         circuit,
         &pcs_challenges,
+        &mut challenger,
         &coms_to_verify,
         opening_proof,
         pcs_params,
@@ -1174,7 +1175,7 @@ fn lookup_data_to_pv_index(
 /// 4. Permutation round: for each instance, observe perm_local then perm_next
 fn observe_opened_values_circuit<SC, const WIDTH: usize, const RATE: usize>(
     circuit: &mut CircuitBuilder<SC::Challenge>,
-    challenger: &mut crate::challenger::CircuitChallenger<WIDTH, RATE>,
+    challenger: &mut CircuitChallenger<WIDTH, RATE>,
     instances: &[OpenedValuesTargetsWithLookups<SC>],
     quotient_degrees: &[usize],
 ) where

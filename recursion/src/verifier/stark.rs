@@ -145,7 +145,7 @@ where
         .collect_vec();
 
     // Generate all challenges (alpha, zeta, zeta_next, PCS challenges)
-    let challenge_targets =
+    let (challenge_targets, mut challenger) =
         get_circuit_challenges::<A, SC, Comm, InputProof, OpeningProof, WIDTH, RATE>(
             air,
             config,
@@ -240,9 +240,10 @@ where
     }
 
     // Verify polynomial openings using PCS
-    let mmcs_op_ids = pcs.verify_circuit(
+    let mmcs_op_ids = pcs.verify_circuit::<WIDTH, RATE>(
         circuit,
         &challenge_targets[3..], // PCS challenges (after alpha, zeta, zeta_next)
+        &mut challenger,
         &coms_to_verify,
         opening_proof,
         pcs_params,
@@ -329,7 +330,7 @@ fn get_circuit_challenges<
     circuit: &mut CircuitBuilder<SC::Challenge>,
     pcs_params: &PcsVerifierParams<SC, InputProof, OpeningProof, Comm>,
     poseidon2_config: Poseidon2Config,
-) -> Result<Vec<Target>, CircuitBuilderError>
+) -> Result<(Vec<Target>, CircuitChallenger<WIDTH, RATE>), CircuitBuilderError>
 where
     SC::Pcs: RecursivePcs<
             SC,
@@ -390,10 +391,10 @@ where
         pcs_params,
     )?;
 
-    // Return flat vector: [alpha, zeta, zeta_next, ...pcs_challenges]
+    // Return flat vector: [alpha, zeta, zeta_next, ...pcs_challenges] and challenger for PCS verification
     let mut all_challenges = base_challenges.to_vec();
     all_challenges.extend(pcs_challenges);
-    Ok(all_challenges)
+    Ok((all_challenges, challenger))
 }
 
 /// Validate the shape of the proof (dimensions, lengths).

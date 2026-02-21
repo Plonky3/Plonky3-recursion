@@ -1051,7 +1051,6 @@ where
 {
     builder.push_scope("open_input");
 
-    // TODO(challenger): Indices should be sampled from a RecursiveChallenger, not passed in.
     for &b in index_bits {
         builder.assert_bool(b);
     }
