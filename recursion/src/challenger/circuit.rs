@@ -5,8 +5,10 @@
 //!
 //! # Soundness
 //!
-//! All Poseidon2 permutations in the challenger are CTL-verified against the Poseidon2 AIR
-//! table. This ensures cryptographic soundness of the transcript computations.
+//! All Poseidon2 permutations in the challenger are CTL-verified against the Poseidon2 AIR table.
+//! The circuit builder's `add_poseidon2_perm_for_challenger` / `add_poseidon2_perm_for_challenger_base`
+//! (in `p3_circuit`) delegate to the standard Poseidon2 non-primitive op with full input and rate-output CTL exposure,
+//! and the executor runs the real permutation so the lookup argument enforces correctness.
 
 use alloc::vec;
 use alloc::vec::Vec;
@@ -139,7 +141,7 @@ impl<const WIDTH: usize, const RATE: usize> CircuitChallenger<WIDTH, RATE> {
             .try_into()
             .expect("state should have WIDTH=16 elements");
 
-        // Apply Poseidon2 permutation via witness hint (base field version)
+        // CTL-verified within `add_poseidon2_perm_for_challenger_base`.
         let outputs = circuit
             .add_poseidon2_perm_for_challenger_base(self.poseidon2_config, inputs)
             .expect("poseidon2 base permutation should succeed");

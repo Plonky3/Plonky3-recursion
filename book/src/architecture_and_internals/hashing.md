@@ -205,32 +205,6 @@ In addition, when observing opened values in batch verification, we must ensure 
 the order the native verifier performed for the recursive circuit to be able to satisfy the
 associated constraints.
 
-## Soundness Considerations
-
-### Current: Witness Hints
-
-Currently, the Poseidon2 permutation for the challenger is computed via **witness hints**:
-
-```rust
-// Prover provides the permutation output as a witness hint
-let outputs = circuit.add_poseidon2_perm_for_challenger(config, inputs);
-```
-
-The prover computes the correct Poseidon2 output natively and provides it as a witness. The circuit then constrains consistency between inputs and outputs.
-
-### Future: Cross-Table Lookups (CTLs)
-
-For full soundness, each challenger Poseidon2 call should be connected to the Poseidon2 AIR table via CTLs. This cryptographically enforces that the permutation was computed correctly:
-
-```
-Challenger Circuit              Poseidon2 AIR Table
-──────────────────              ──────────────────────
-[in₀, in₁, in₂, in₃]  ──CTL──►  Row with matching
-[out₀, out₁, out₂, out₃] ◄─────  inputs/outputs
-```
-
-The CTL proves that the (input, output) pair appears in the Poseidon2 table, ensuring the permutation wasn't forged by the prover.
-
 ## Configuration
 
 The challenger is configured with a `Poseidon2Config` that specifies the field and extension degree:

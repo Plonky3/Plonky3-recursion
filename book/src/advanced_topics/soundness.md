@@ -42,10 +42,6 @@ Crucially, `-log2(ε_FRI)` must be computed from a proven soundness bound for th
 It should not be replaced by `num_queries × log_blowup` unless an additional (explicitly stated)
 conjectural assumption is being made.
 
-With defaults (`num_queries = 28`, `log_blowup = 3`, `query_pow_bits = 16`),
-the correct security level depends on the concrete bound used to evaluate ε_FRI.
-The value “100 bits” cannot be justified purely from 28 × 3 + 16 without further assumptions.
-
 ## Cryptographic components verified in-circuit
 
 ### Merkle tree verification
@@ -74,13 +70,9 @@ The circuit challenger implements a duplex sponge construction identical to Plon
 
 The library currently supports only non-ZK STARKs (`config.is_zk() == 0`). The recursive verifier does not handle zero-knowledge randomization of traces.
 
-### Challenger Poseidon2: witness hints
+### Challenger Poseidon2: CTL-verified
 
-The Fiat-Shamir challenger's Poseidon2 permutations are currently computed via **witness hints**: the prover provides the correct output as a witness, and the circuit constrains input/output consistency.
-
-This is sound **only if** the witness is honestly generated. For full cryptographic soundness, each challenger Poseidon2 call should be connected to the Poseidon2 AIR table via cross-table lookups (CTLs), which would enforce that the permutation was actually computed by the Poseidon2 chip. This is planned but not yet implemented.
-
-The MMCS Poseidon2 calls (Merkle verification) *are* connected to the Poseidon2 AIR via CTLs.
+The Fiat-Shamir challenger's Poseidon2 permutations are connected to the Poseidon2 AIR table via cross-table lookups (CTLs). The circuit builder's `add_poseidon2_perm_for_challenger` / `add_poseidon2_perm_for_challenger_base` use the standard Poseidon2 non-primitive op with full input and rate-output CTL exposure; the executor runs the real permutation and the lookup argument enforces that the (input, output) pair appears in the Poseidon2 table. The MMCS Poseidon2 calls (Merkle verification) are also CTL-verified.
 
 ### Fixed Poseidon2 parameters
 
@@ -94,6 +86,6 @@ The recursion stack currently requires `WIDTH = 16` and `RATE = 8` for 32-bit fi
 | FRI fold chain | Algebraic consistency checks in-circuit |
 | FRI query indices | Sampled in-circuit from transcript |
 | Proof-of-work | Verified in-circuit |
-| Fiat-Shamir challenges | Circuit challenger (witness hints, CTLs planned) |
+| Fiat-Shamir challenges | Circuit challenger (CTL-verified against Poseidon2 AIR) |
 | AIR constraint satisfaction | Evaluated in-circuit via symbolic-to-circuit translation |
 | Lookup argument | LogUp verification in-circuit |
