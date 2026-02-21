@@ -6,7 +6,7 @@ This section presents empirical performance results for the Plonky3 recursion sy
 
 ## Setup
 
-The two reference examples are a Plonky3 uni-stark proof of the Keccak AIR imported directly and a Plonky3 batch-stark proof of the Fibonacci sequence, generated with the `CircuitBuilder` of this library.
+The reference examples are a Plonky3 uni-stark proof of the Keccak AIR imported directly, a Plonky3 batch-stark proof of the Fibonacci sequence generated with the `CircuitBuilder` of this library, and a 2-to-1 aggregation tree over basic `p3-batch-stark` proofs.
 
 - Keccak example: set number of hashes with `-n` argument
 ```bash
@@ -18,6 +18,12 @@ RUSTFLAGS=-Ctarget-cpu=native RUSTFLAGS=-Copt-level=3 RUST_LOG=info cargo run --
 ```bash
 RUSTFLAGS=-Ctarget-cpu=native RUSTFLAGS=-Copt-level=3 RUST_LOG=info cargo run --release \
     --example recursive_fibonacci --features parallel -- -n 10000
+```
+
+- 2-to-1 aggregation example:
+```bash
+RUSTFLAGS=-Ctarget-cpu=native RUSTFLAGS=-Copt-level=3 RUST_LOG=info cargo run --release \
+    --example recursive_aggregation --features parallel -- --field koala-bear
 ```
 
 ### Parameterization
@@ -43,7 +49,13 @@ Running on a Apple M4 pro, 14 Cores, with **KoalaBear** field and extension of *
 
 
 - **Fibonacci multi-AIR program:** (10,000th element)
-  - Base uni-stark proof: 86.1 ms
+  - Base batch-stark proof: 86.1 ms
   - 1st recursion layer: 281 ms
   - 2nd recursion layer: 466 ms
   - 3rd recursion layer: 450 ms
+
+- **2-to-1 aggregation:**
+  - Base batch-stark proof: 30 ms
+  - 1st aggregation layer: 428 ms
+  - 2nd aggregation layer: 802 ms
+  - 3rd and next aggregation layers: 1.04 ms
