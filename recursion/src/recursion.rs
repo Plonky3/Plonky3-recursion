@@ -1,6 +1,7 @@
 //! Unified recursion API: one entry point to prove the next layer over a uni-stark or batch-stark proof.
 
 use alloc::rc::Rc;
+use alloc::string::ToString;
 use alloc::vec::Vec;
 
 use p3_air::SymbolicExpression;
@@ -26,7 +27,7 @@ use crate::traits::{LookupMetadata, RecursiveAir};
 use crate::types::RecursiveLagrangeSelectors;
 use crate::verifier::VerificationError;
 
-fn proof_shape_err(e: impl alloc::string::ToString) -> VerificationError {
+fn proof_shape_err(e: &impl ToString) -> VerificationError {
     VerificationError::InvalidProofShape(e.to_string())
 }
 
@@ -270,7 +271,7 @@ where
 
         backend
             .set_private_data(config, &mut runner, verifier_result.op_ids(), prev)
-            .map_err(proof_shape_err)?;
+            .map_err(|e| proof_shape_err(&e))?;
 
         runner.run().map_err(VerificationError::Circuit)?
     };
@@ -286,7 +287,7 @@ where
     }
     let proof = prover
         .prove_all_tables(&traces, &circuit_prover_data)
-        .map_err(proof_shape_err)?;
+        .map_err(|e| proof_shape_err(&e.to_string()))?;
 
     Ok(RecursionOutput(proof, Rc::new(circuit_prover_data)))
 }
@@ -413,7 +414,7 @@ where
         left_result.op_ids(),
         left,
     )
-    .map_err(proof_shape_err)?;
+    .map_err(|e| proof_shape_err(&e.to_string()))?;
 
     <B as PcsRecursionBackend<SC, A2>>::set_private_data(
         backend,
@@ -422,7 +423,7 @@ where
         right_result.op_ids(),
         right,
     )
-    .map_err(proof_shape_err)?;
+    .map_err(|e| proof_shape_err(&e.to_string()))?;
 
     runner.run().map_err(VerificationError::Circuit)
 }
@@ -443,7 +444,7 @@ pub fn prove_aggregation_layer<SC, A1, A2, B, const D: usize>(
     right: &RecursionInput<'_, SC, A2>,
     left_result: &<B as PcsRecursionBackend<SC, A1>>::VerifierResult,
     right_result: &<B as PcsRecursionBackend<SC, A2>>::VerifierResult,
-    verification_circuit: Circuit<SC::Challenge>,
+    verification_circuit: &Circuit<SC::Challenge>,
     config: &SC,
     backend: &B,
     params: &ProveNextLayerParams,
@@ -462,21 +463,21 @@ where
     SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
 {
     if let Some(ref mut cache_slot) = prep_cache
-        && let Some(ref cached) = cache_slot.as_ref()
+        && let Some(cached) = cache_slot.as_ref()
     {
         let traces = run_aggregation_verification_circuit(
             left,
             right,
             left_result,
             right_result,
-            &verification_circuit,
+            verification_circuit,
             config,
             backend,
         )?;
         let proof = cached
             .prover
             .prove_all_tables(&traces, &cached.circuit_prover_data)
-            .map_err(proof_shape_err)?;
+            .map_err(|e| proof_shape_err(&e.to_string()))?;
         return Ok(RecursionOutput(
             proof,
             Rc::clone(&cached.circuit_prover_data),
@@ -487,7 +488,7 @@ where
         .map(|c| alloc::vec![NonPrimitiveConfig::Poseidon2(c)]);
     let (airs_degrees, preprocessed_columns) = {
         get_airs_and_degrees_with_prep::<SC, SC::Challenge, D>(
-            &verification_circuit,
+            verification_circuit,
             params.table_packing,
             non_primitive.as_deref(),
         )
@@ -501,7 +502,7 @@ where
         right,
         left_result,
         right_result,
-        &verification_circuit,
+        verification_circuit,
         config,
         backend,
     )?;
@@ -517,7 +518,7 @@ where
     }
     let proof = prover
         .prove_all_tables(&traces, &circuit_prover_data)
-        .map_err(proof_shape_err)?;
+        .map_err(|e| proof_shape_err(&e.to_string()))?;
 
     if let Some(ref mut cache_slot) = prep_cache {
         let circuit_prover_data_rc = Rc::new(circuit_prover_data);
@@ -572,7 +573,7 @@ where
         right,
         &left_result,
         &right_result,
-        verification_circuit,
+        &verification_circuit,
         config,
         backend,
         params,
