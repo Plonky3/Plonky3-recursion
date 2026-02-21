@@ -141,6 +141,68 @@ where
         .collect()
 }
 
+/// Hash extension field elements directly (no recompose). Use when values are already
+/// extension elements (e.g. FRI commit-phase evals). Absorbs in chunks of `rate_ext`.
+fn add_hash_extension_elements<F, EF>(
+    circuit: &mut CircuitBuilder<EF>,
+    permutation_config: &Poseidon2Config,
+    ext_elements: &[Target],
+    reset: bool,
+) -> Result<Vec<Target>, CircuitBuilderError>
+where
+    F: Field + PrimeField64,
+    EF: ExtensionField<F>,
+{
+    let rate_ext = permutation_config.rate_ext();
+    if ext_elements.is_empty() {
+        let zero = circuit.add_const(EF::ZERO);
+        return Ok(vec![zero, zero]);
+    }
+
+    let zero = circuit.add_const(EF::ZERO);
+    let mut last_rate_outputs: Option<[Target; 2]> = None;
+    let mut final_outputs = [None, None, None, None];
+
+    for (i, chunk) in ext_elements.chunks(rate_ext).enumerate() {
+        let is_first = i == 0;
+        let mut inputs: [Option<Target>; 4] = [None; 4];
+        for (j, &t) in chunk.iter().enumerate() {
+            inputs[j] = Some(t);
+        }
+        for j in chunk.len()..rate_ext {
+            inputs[j] = Some(if is_first {
+                zero
+            } else {
+                last_rate_outputs.map(|o| o[j]).unwrap_or(zero)
+            });
+        }
+
+        let (_, maybe_outputs) = circuit.add_poseidon2_perm(Poseidon2PermCall {
+            config: *permutation_config,
+            new_start: is_first && reset,
+            merkle_path: false,
+            mmcs_bit: None,
+            inputs,
+            out_ctl: [true, true],
+            return_all_outputs: false,
+            mmcs_index_sum: None,
+        })?;
+
+        if chunk.len() == rate_ext {
+            last_rate_outputs = Some([
+                maybe_outputs[0].ok_or(CircuitBuilderError::MissingOutput)?,
+                maybe_outputs[1].ok_or(CircuitBuilderError::MissingOutput)?,
+            ]);
+        }
+        final_outputs = maybe_outputs;
+    }
+
+    [final_outputs[0], final_outputs[1]]
+        .into_iter()
+        .map(|o| o.ok_or(CircuitBuilderError::MissingOutput))
+        .collect()
+}
+
 /// Recursive version of `MerkleTreeMmcs::verify_batch`. Adds a circuit that verifies an opened
 /// batch of rows with respect to a given commitment (Merkle cap).
 ///
@@ -257,6 +319,84 @@ where
         circuit,
         permutation_config,
         &op_vals_digests,
+        path_bits,
+        &selected_root,
+    )
+}
+
+/// Like `verify_batch_circuit` but opened values are already extension elements (no decompose).
+/// Use for FRI commit-phase where evals are extension and only the challenger needs base form.
+pub fn verify_batch_circuit_from_extension_opened<F, EF>(
+    circuit: &mut CircuitBuilder<EF>,
+    permutation_config: Poseidon2Config,
+    commitment_cap: &[Vec<Target>],
+    dimensions: &[Dimensions],
+    index_bits: &[Target],
+    opened_extension_values: &[Vec<Target>],
+) -> Result<Vec<NonPrimitiveOpId>, CircuitBuilderError>
+where
+    F: Field + TwoAdicField + PrimeField64,
+    EF: ExtensionField<F>,
+{
+    use core::cmp::Reverse;
+
+    use itertools::Itertools;
+    use p3_circuit::ops::mmcs::add_mmcs_verify;
+    use p3_util::log2_strict_usize;
+
+    if dimensions.len() != opened_extension_values.len() {
+        return Err(CircuitBuilderError::WrongBatchSize {
+            expected: dimensions.len(),
+            got: opened_extension_values.len(),
+        });
+    }
+
+    assert!(
+        !commitment_cap.is_empty(),
+        "commitment cap must have at least one entry"
+    );
+
+    let cap_height = if commitment_cap.len() == 1 {
+        0
+    } else {
+        log2_strict_usize(commitment_cap.len())
+    };
+
+    let max_height_log = index_bits.len();
+    let path_depth = max_height_log - cap_height;
+    let path_bits = &index_bits[..path_depth];
+    let cap_index_bits = &index_bits[path_depth..];
+
+    let selected_root = select_cap_entry(circuit, commitment_cap, cap_index_bits);
+
+    let mut heights_tallest_first = dimensions
+        .iter()
+        .enumerate()
+        .sorted_by_key(|(_, dims)| Reverse(dims.height))
+        .peekable();
+
+    let digest_levels = path_depth + 1;
+    let mut formatted_digests = vec![vec![]; digest_levels];
+    for (i, digest) in formatted_digests.iter_mut().enumerate() {
+        let curr_height = 1 << (max_height_log - i);
+
+        let all_ext: Vec<Target> = heights_tallest_first
+            .peeking_take_while(|(_, dims)| dims.height.next_power_of_two() == curr_height)
+            .flat_map(|(mat_idx, _)| opened_extension_values[mat_idx].clone())
+            .collect();
+
+        if all_ext.is_empty() {
+            continue;
+        }
+
+        *digest =
+            add_hash_extension_elements::<F, EF>(circuit, &permutation_config, &all_ext, true)?;
+    }
+
+    add_mmcs_verify(
+        circuit,
+        permutation_config,
+        &formatted_digests,
         path_bits,
         &selected_root,
     )
