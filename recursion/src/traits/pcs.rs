@@ -6,9 +6,9 @@ use p3_circuit::{CircuitBuilder, CircuitBuilderError, NonPrimitiveOpId};
 use p3_uni_stark::StarkGenericConfig;
 
 use super::Recursive;
-use crate::Target;
 use crate::types::{OpenedValuesTargetsWithLookups, RecursiveLagrangeSelectors};
 use crate::verifier::VerificationError;
+use crate::{CircuitChallenger, Target};
 
 /// Type alias for commitments with their opening points.
 ///
@@ -54,7 +54,7 @@ pub trait RecursivePcs<
     /// Vector of challenge targets (ordering depends on PCS scheme)
     fn get_challenges_circuit<const WIDTH: usize, const RATE: usize>(
         circuit: &mut CircuitBuilder<SC::Challenge>,
-        challenger: &mut crate::challenger::CircuitChallenger<WIDTH, RATE>,
+        challenger: &mut CircuitChallenger<WIDTH, RATE>,
         proof_targets: &OpeningProof,
         opened_values: &OpenedValuesTargetsWithLookups<SC>,
         params: &Self::VerifierParams,
@@ -85,7 +85,7 @@ pub trait RecursivePcs<
         &self,
         circuit: &mut CircuitBuilder<SC::Challenge>,
         challenges: &[Target],
-        challenger: &mut crate::challenger::CircuitChallenger<WIDTH, RATE>,
+        challenger: &mut CircuitChallenger<WIDTH, RATE>,
         commitments_with_opening_points: &ComsWithOpeningsTargets<Comm, Domain>,
         opening_proof: &OpeningProof,
         params: &Self::VerifierParams,

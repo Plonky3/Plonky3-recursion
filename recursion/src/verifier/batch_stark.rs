@@ -1175,7 +1175,7 @@ fn lookup_data_to_pv_index(
 /// 4. Permutation round: for each instance, observe perm_local then perm_next
 fn observe_opened_values_circuit<SC, const WIDTH: usize, const RATE: usize>(
     circuit: &mut CircuitBuilder<SC::Challenge>,
-    challenger: &mut crate::challenger::CircuitChallenger<WIDTH, RATE>,
+    challenger: &mut CircuitChallenger<WIDTH, RATE>,
     instances: &[OpenedValuesTargetsWithLookups<SC>],
     quotient_degrees: &[usize],
 ) where
