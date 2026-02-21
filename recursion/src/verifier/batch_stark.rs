@@ -963,9 +963,10 @@ where
         pcs_params,
     )?;
 
-    let mmcs_op_ids = pcs.verify_circuit(
+    let mmcs_op_ids = pcs.verify_circuit::<WIDTH, RATE>(
         circuit,
         &pcs_challenges,
+        &mut challenger,
         &coms_to_verify,
         opening_proof,
         pcs_params,

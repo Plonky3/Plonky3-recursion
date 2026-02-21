@@ -604,26 +604,19 @@ where
             fri_proof.pow_witness.witness,
         )?;
 
-        // Sample query indices - base field elements used as indices
-        let num_queries = fri_proof.query_proofs.len();
-        let mut query_indices = Vec::with_capacity(num_queries);
-        for _ in 0..num_queries {
-            let index = challenger.sample(circuit);
-            query_indices.push(index);
-        }
-
-        // Return challenges in order: [fri_alpha, betas..., query_indices...]
-        let mut challenges = Vec::with_capacity(1 + betas.len() + num_queries);
+        // Query indices are sampled in-circuit by verify_circuit from the challenger
+        // (which is left in the correct state here) to ensure soundness.
+        let mut challenges = Vec::with_capacity(1 + betas.len());
         challenges.push(fri_alpha);
         challenges.extend(betas);
-        challenges.extend(query_indices);
         Ok(challenges)
     }
 
-    fn verify_circuit(
+    fn verify_circuit<const WIDTH: usize, const RATE: usize>(
         &self,
         circuit: &mut CircuitBuilder<SC::Challenge>,
         challenges: &[Target],
+        challenger: &mut CircuitChallenger<WIDTH, RATE>,
         commitments_with_opening_points: &ComsWithOpeningsTargets<
             Comm,
             TwoAdicMultiplicativeCoset<Val<SC>>,
@@ -638,22 +631,12 @@ where
             query_pow_bits: _,
             permutation_config,
         } = *params;
-        // Extract FRI challenges from the challenges slice.
-        // Layout: [alpha, beta_0, ..., beta_{n-1}, query_0, ..., query_{m-1}]
-        // where:
-        //   - alpha: FRI batch combination challenge
-        //   - betas: one challenge per FRI folding round
-        //   - query indices: sampled indices for FRI queries (as field elements)
         let num_betas = opening_proof.commit_phase_commits.len();
         let num_queries = opening_proof.query_proofs.len();
 
         let alpha = challenges[0];
         let betas = &challenges[1..1 + num_betas];
 
-        let query_indices = &challenges[1 + num_betas..1 + num_betas + num_queries];
-
-        // Calculate the maximum height of the FRI proof tree.
-        // With variable arity, total log reduction = sum(log_arities), not just num_betas.
         let total_log_reduction: usize = opening_proof.log_arities.iter().sum();
         let log_max_height = total_log_reduction + log_final_poly_len + log_blowup;
 
@@ -663,19 +646,9 @@ where
             )));
         }
 
-        let index_bits_per_query: Vec<Vec<Target>> = query_indices
-            .iter()
-            .map(|&index_target| {
-                let all_bits =
-                    circuit.decompose_to_bits::<Val<SC>>(index_target, MAX_QUERY_INDEX_BITS);
-                all_bits.map(|all_bits| {
-                    all_bits
-                        .into_iter()
-                        .take(log_max_height)
-                        .collect::<Vec<_>>()
-                })
-            })
-            .collect::<Result<_, _>>()?;
+        let index_bits_per_query: Vec<Vec<Target>> = (0..num_queries)
+            .map(|_| challenger.sample_bits(circuit, log_max_height))
+            .collect::<Result<Vec<_>, _>>()?;
 
         verify_fri_circuit(
             circuit,

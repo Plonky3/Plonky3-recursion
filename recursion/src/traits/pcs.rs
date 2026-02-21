@@ -65,9 +65,13 @@ pub trait RecursivePcs<
     /// This method checks that the claimed opened values are consistent with
     /// the commitments, using the opening proof and challenges.
     ///
+    /// Query indices (e.g., for FRI) are sampled in-circuit from the challenger
+    /// to ensure soundness—they must be derived from the transcript, not passed in.
+    ///
     /// # Parameters
     /// - `circuit`: Circuit builder for creating operations
-    /// - `challenges`: PCS challenges (from `get_challenges_circuit`)
+    /// - `challenges`: PCS challenges (from `get_challenges_circuit`), excluding query indices
+    /// - `challenger`: Challenger in state ready to sample query indices (after check_pow_witness)
     /// - `commitments_with_opening_points`: All commitments and their opening points
     /// - `opening_proof`: The opening proof targets
     /// - `params`: PCS-specific verifier parameters
@@ -77,10 +81,11 @@ pub trait RecursivePcs<
     /// (e.g., Merkle sibling values for MMCS verification). The caller must set
     /// private data for these operations before running the circuit.
     /// `Err` if there was a structural error in the proof.
-    fn verify_circuit(
+    fn verify_circuit<const WIDTH: usize, const RATE: usize>(
         &self,
         circuit: &mut CircuitBuilder<SC::Challenge>,
         challenges: &[Target],
+        challenger: &mut crate::challenger::CircuitChallenger<WIDTH, RATE>,
         commitments_with_opening_points: &ComsWithOpeningsTargets<Comm, Domain>,
         opening_proof: &OpeningProof,
         params: &Self::VerifierParams,
