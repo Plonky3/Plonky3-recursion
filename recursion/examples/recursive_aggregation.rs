@@ -439,7 +439,7 @@ macro_rules! define_field_module {
                         table_packing: if level == 1 {
                             TablePacking::new(3, 1, 2)
                         } else {
-                            TablePacking::new(4, 4, 2)
+                            TablePacking::new(7, 2, 4)
                         }
                         .with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup),
                         use_poseidon2_in_circuit: true,
