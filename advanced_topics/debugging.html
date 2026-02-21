@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Overview - The Plonky3 recursion book</title>
+        <title>Debugging - The Plonky3 recursion book</title>
 
 
         <!-- Custom HTML head -->
@@ -12,34 +12,34 @@
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <meta name="theme-color" content="#ffffff">
 
-        <link rel="icon" href="favicon.svg">
-        <link rel="shortcut icon" href="favicon.png">
-        <link rel="stylesheet" href="css/variables.css">
-        <link rel="stylesheet" href="css/general.css">
-        <link rel="stylesheet" href="css/chrome.css">
-        <link rel="stylesheet" href="css/print.css" media="print">
+        <link rel="icon" href="../favicon.svg">
+        <link rel="shortcut icon" href="../favicon.png">
+        <link rel="stylesheet" href="../css/variables.css">
+        <link rel="stylesheet" href="../css/general.css">
+        <link rel="stylesheet" href="../css/chrome.css">
+        <link rel="stylesheet" href="../css/print.css" media="print">
 
         <!-- Fonts -->
-        <link rel="stylesheet" href="FontAwesome/css/font-awesome.css">
-        <link rel="stylesheet" href="fonts/fonts.css">
+        <link rel="stylesheet" href="../FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="../fonts/fonts.css">
 
         <!-- Highlight.js Stylesheets -->
-        <link rel="stylesheet" id="highlight-css" href="highlight.css">
-        <link rel="stylesheet" id="tomorrow-night-css" href="tomorrow-night.css">
-        <link rel="stylesheet" id="ayu-highlight-css" href="ayu-highlight.css">
+        <link rel="stylesheet" id="highlight-css" href="../highlight.css">
+        <link rel="stylesheet" id="tomorrow-night-css" href="../tomorrow-night.css">
+        <link rel="stylesheet" id="ayu-highlight-css" href="../ayu-highlight.css">
 
         <!-- Custom theme stylesheets -->
 
 
         <!-- Provide site root and default themes to javascript -->
         <script>
-            const path_to_root = "";
+            const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex.js";
+            window.path_to_searchindex_js = "../searchindex.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc.js"></script>
+        <script src="../toc.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -106,7 +106,7 @@
             <!-- populated by js -->
             <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
             <noscript>
-                <iframe class="sidebar-iframe-outer" src="toc.html"></iframe>
+                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
             </noscript>
             <div id="sidebar-resize-handle" class="sidebar-resize-handle">
                 <div class="sidebar-resize-indicator"></div>
@@ -141,7 +141,7 @@
                     <h1 class="menu-title">The Plonky3 recursion book</h1>
 
                     <div class="right-buttons">
-                        <a href="print.html" title="Print this book" aria-label="Print this book">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
                             <i id="print-button" class="fa fa-print"></i>
                         </a>
 
@@ -176,31 +176,63 @@
                 <div id="content" class="content">
                     <main>
                         <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
-<h1 id="plonky3-recursion"><a class="header" href="#plonky3-recursion">Plonky3 Recursion</a></h1>
-<p>This book is the user guide for <strong>Plonky3 recursion</strong>, an independent project providing native recursive STARK verification for <a href="https://github.com/Plonky3/Plonky3">Plonky3</a>.</p>
-<p>The library lets you verify Plonky3 STARK proofs inside circuits, chain recursive layers to compress proof size, and aggregate independent proofs into a single attestation. It is built entirely on Plonky3's own STARK primitives — no separate plonkish SNARK wrapper.</p>
-<h2 id="what-this-book-covers"><a class="header" href="#what-this-book-covers">What this book covers</a></h2>
-<ul>
-<li><strong><a href="./getting_started/introduction.html">Getting Started</a></strong> — Motivation, design philosophy, and a quick start guide with working examples.</li>
-<li><strong><a href="./user_guide/api.html">User Guide</a></strong> — The unified recursion API, aggregation, configuration, public inputs, integration into your project, and the low-level API for advanced use cases.</li>
-<li><strong><a href="./architecture_and_internals/construction.html">Architecture &amp; Internals</a></strong> — How the fixed recursive verifier is built: the execution IR, witness table, operation-specific chips, circuit building pipeline, trace generation, and Poseidon2-based hashing.</li>
-<li><strong><a href="./advanced_topics/scaling.html">Advanced Topics</a></strong> — Scaling strategies for variable-length inputs, performance tuning, soundness considerations, and debugging tools.</li>
-<li><strong><a href="./appendix/benchmark.html">Appendix</a></strong> — Benchmarks, roadmap, and glossary.</li>
-</ul>
-<h2 id="quick-links"><a class="header" href="#quick-links">Quick links</a></h2>
-<ul>
-<li><strong>Source</strong>: <a href="https://github.com/Plonky3/Plonky3-recursion">github.com/Plonky3/Plonky3-recursion</a></li>
-<li><strong>API docs</strong>: <code>cargo doc --open</code></li>
-<li><strong>Examples</strong>: <code>recursion/examples/</code> — recursive Fibonacci, Keccak, and 2-to-1 aggregation</li>
-<li><strong>License</strong>: Dual MIT / Apache-2.0</li>
-</ul>
+<h1 id="debugging"><a class="header" href="#debugging">Debugging</a></h1>
+<p>The <code>CircuitBuilder</code> provides built-in debugging tools to help identify wiring issues and unsatisfied constraints.</p>
+<h2 id="allocation-logging"><a class="header" href="#allocation-logging">Allocation Logging</a></h2>
+<p>The <code>CircuitBuilder</code> supports an allocation logger during circuit building that logs allocations being performed.
+These logs can then be analyzed at runtime and leveraged to detect issues in circuit constructions.</p>
+<h3 id="enabling-debug-logging"><a class="header" href="#enabling-debug-logging">Enabling Debug Logging</a></h3>
+<p>Allocation logging is automatically enabled in debug builds (or moe generally if <code>debug_assertions</code> are enabled).
+Logs can be dumped to <code>stdout</code> when calling <code>builder.dump_allocation_log()</code>, if logging level is set to <code>DEBUG</code> or lower.</p>
+<h3 id="allocation-log-format"><a class="header" href="#allocation-log-format">Allocation Log Format</a></h3>
+<p>By default, the <code>CircuitBuilder</code> automatically logs all allocations with no specific labels.
+One can decide to attach a specific descriptive to ease debugging, like so:</p>
+<pre><code class="language-rust ignore">let mut builder = CircuitBuilder::&lt;F&gt;::new();
+
+// Allocating with custom labels
+let input_a = builder.alloc_public_input("input_a");
+let input_b = builder.alloc_public_input("input_b");
+let input_c = builder.alloc_public_input("input_c");
+
+let b_times_c = builder.alloc_mul(input_b, input_c, "b_times_c");
+let a_plus_bc = builder.alloc_add(input_a, b_times_c, "a_plus_bc");
+let a_minus_bc = builder.alloc_sub(input_a, b_times_c, "a_minus_bc");
+
+// Default allocation
+let x = builder.add_public_input(); // unlabelled
+let y = builder.add(x, z);          // unlabelled</code></pre>
+<p>The <code>CircuitBuilder</code> also allows for nested scoping of allocation logs, so that users can debug
+a specific context within a larger circuit. Scoping can be defined arbitrarily by users as follows:</p>
+<pre><code class="language-rust ignore">fn complex_function(builder: &amp;mut CircuitBuilder) {
+    builder.push_scope("complex function");
+
+    // Do something
+    inner_function(builder); // &lt;- this will create a nested scope within the inner function
+
+    builder.pop_scope();
+}
+
+fn inner_function(builder: &amp;mut CircuitBuilder) {
+    builder.push_scope("inner function");
+
+    // Do something else
+
+    builder.pop_scope();
+}</code></pre>
+<h2 id="debugging-constraints"><a class="header" href="#debugging-constraints">Debugging constraints</a></h2>
+<p>When debugging constraint satisfaction issues, the system relies on Plonky3's internal <code>check_constraints</code>
+feature to evaluate AIR constraints, available in debug mode.
+This ensures that all constraints are properly satisfied before proceeding to the next proving phases.</p>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../advanced_topics/soundness.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <i class="fa fa-angle-left"></i>
+                            </a>
 
-                            <a rel="next prefetch" href="getting_started/introduction.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="../appendix/benchmark.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <i class="fa fa-angle-right"></i>
                             </a>
 
@@ -210,8 +242,11 @@
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../advanced_topics/soundness.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <i class="fa fa-angle-left"></i>
+                    </a>
 
-                    <a rel="next prefetch" href="getting_started/introduction.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="../appendix/benchmark.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <i class="fa fa-angle-right"></i>
                     </a>
             </nav>
@@ -226,17 +261,17 @@
         </script>
 
 
-        <script src="elasticlunr.min.js"></script>
-        <script src="mark.min.js"></script>
-        <script src="searcher.js"></script>
+        <script src="../elasticlunr.min.js"></script>
+        <script src="../mark.min.js"></script>
+        <script src="../searcher.js"></script>
 
-        <script src="clipboard.min.js"></script>
-        <script src="highlight.js"></script>
-        <script src="book.js"></script>
+        <script src="../clipboard.min.js"></script>
+        <script src="../highlight.js"></script>
+        <script src="../book.js"></script>
 
         <!-- Custom JS scripts -->
-        <script src="mermaid.min.js"></script>
-        <script src="mermaid-init.js"></script>
+        <script src="../mermaid.min.js"></script>
+        <script src="../mermaid-init.js"></script>
 
 
 

@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Overview - The Plonky3 recursion book</title>
+        <title>Scaling Strategies - The Plonky3 recursion book</title>
 
 
         <!-- Custom HTML head -->
@@ -12,34 +12,34 @@
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <meta name="theme-color" content="#ffffff">
 
-        <link rel="icon" href="favicon.svg">
-        <link rel="shortcut icon" href="favicon.png">
-        <link rel="stylesheet" href="css/variables.css">
-        <link rel="stylesheet" href="css/general.css">
-        <link rel="stylesheet" href="css/chrome.css">
-        <link rel="stylesheet" href="css/print.css" media="print">
+        <link rel="icon" href="../favicon.svg">
+        <link rel="shortcut icon" href="../favicon.png">
+        <link rel="stylesheet" href="../css/variables.css">
+        <link rel="stylesheet" href="../css/general.css">
+        <link rel="stylesheet" href="../css/chrome.css">
+        <link rel="stylesheet" href="../css/print.css" media="print">
 
         <!-- Fonts -->
-        <link rel="stylesheet" href="FontAwesome/css/font-awesome.css">
-        <link rel="stylesheet" href="fonts/fonts.css">
+        <link rel="stylesheet" href="../FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="../fonts/fonts.css">
 
         <!-- Highlight.js Stylesheets -->
-        <link rel="stylesheet" id="highlight-css" href="highlight.css">
-        <link rel="stylesheet" id="tomorrow-night-css" href="tomorrow-night.css">
-        <link rel="stylesheet" id="ayu-highlight-css" href="ayu-highlight.css">
+        <link rel="stylesheet" id="highlight-css" href="../highlight.css">
+        <link rel="stylesheet" id="tomorrow-night-css" href="../tomorrow-night.css">
+        <link rel="stylesheet" id="ayu-highlight-css" href="../ayu-highlight.css">
 
         <!-- Custom theme stylesheets -->
 
 
         <!-- Provide site root and default themes to javascript -->
         <script>
-            const path_to_root = "";
+            const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex.js";
+            window.path_to_searchindex_js = "../searchindex.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc.js"></script>
+        <script src="../toc.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -106,7 +106,7 @@
             <!-- populated by js -->
             <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
             <noscript>
-                <iframe class="sidebar-iframe-outer" src="toc.html"></iframe>
+                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
             </noscript>
             <div id="sidebar-resize-handle" class="sidebar-resize-handle">
                 <div class="sidebar-resize-indicator"></div>
@@ -141,7 +141,7 @@
                     <h1 class="menu-title">The Plonky3 recursion book</h1>
 
                     <div class="right-buttons">
-                        <a href="print.html" title="Print this book" aria-label="Print this book">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
                             <i id="print-button" class="fa fa-print"></i>
                         </a>
 
@@ -176,31 +176,28 @@
                 <div id="content" class="content">
                     <main>
                         <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
-<h1 id="plonky3-recursion"><a class="header" href="#plonky3-recursion">Plonky3 Recursion</a></h1>
-<p>This book is the user guide for <strong>Plonky3 recursion</strong>, an independent project providing native recursive STARK verification for <a href="https://github.com/Plonky3/Plonky3">Plonky3</a>.</p>
-<p>The library lets you verify Plonky3 STARK proofs inside circuits, chain recursive layers to compress proof size, and aggregate independent proofs into a single attestation. It is built entirely on Plonky3's own STARK primitives — no separate plonkish SNARK wrapper.</p>
-<h2 id="what-this-book-covers"><a class="header" href="#what-this-book-covers">What this book covers</a></h2>
-<ul>
-<li><strong><a href="./getting_started/introduction.html">Getting Started</a></strong> — Motivation, design philosophy, and a quick start guide with working examples.</li>
-<li><strong><a href="./user_guide/api.html">User Guide</a></strong> — The unified recursion API, aggregation, configuration, public inputs, integration into your project, and the low-level API for advanced use cases.</li>
-<li><strong><a href="./architecture_and_internals/construction.html">Architecture &amp; Internals</a></strong> — How the fixed recursive verifier is built: the execution IR, witness table, operation-specific chips, circuit building pipeline, trace generation, and Poseidon2-based hashing.</li>
-<li><strong><a href="./advanced_topics/scaling.html">Advanced Topics</a></strong> — Scaling strategies for variable-length inputs, performance tuning, soundness considerations, and debugging tools.</li>
-<li><strong><a href="./appendix/benchmark.html">Appendix</a></strong> — Benchmarks, roadmap, and glossary.</li>
-</ul>
-<h2 id="quick-links"><a class="header" href="#quick-links">Quick links</a></h2>
-<ul>
-<li><strong>Source</strong>: <a href="https://github.com/Plonky3/Plonky3-recursion">github.com/Plonky3/Plonky3-recursion</a></li>
-<li><strong>API docs</strong>: <code>cargo doc --open</code></li>
-<li><strong>Examples</strong>: <code>recursion/examples/</code> — recursive Fibonacci, Keccak, and 2-to-1 aggregation</li>
-<li><strong>License</strong>: Dual MIT / Apache-2.0</li>
-</ul>
+<h1 id="scaling-strategies"><a class="header" href="#scaling-strategies">Scaling Strategies</a></h1>
+<p>The fixed recursive verifier supports only predetermined programs. This section describes strategies for handling computations of varying size or complexity.</p>
+<h2 id="tree-style-recursion-for-variable-length-inputs"><a class="header" href="#tree-style-recursion-for-variable-length-inputs">Tree-style recursion for variable-length inputs</a></h2>
+<p>Split a large computation into chunks and prove each chunk independently using a fixed inner circuit. Then aggregate the proofs in a binary tree, where each leaf corresponds to a portion of the computation. The tree root yields a single proof attesting to the entire computation.</p>
+<p>This approach is naturally parallelizable: all leaf proofs are independent, and each tree level can be processed in parallel across pairs.</p>
+<p>A formal description of tree-style recursion for STARKs can be found in <a href="https://eprint.iacr.org/2023/208">zkTree</a>. See also the <a href="./aggregation.html">Aggregation</a> chapter for the API.</p>
+<h2 id="flexible-fri-verification"><a class="header" href="#flexible-fri-verification">Flexible FRI verification</a></h2>
+<p>To support proofs with different FRI shapes (different trace sizes), two techniques apply:</p>
+<h3 id="proof-lifting"><a class="header" href="#proof-lifting">Proof lifting</a></h3>
+<p><strong>Lift</strong> smaller proofs to a larger domain, as described in <a href="https://hackmd.io/HkfET6x1Qh-yNvm4fKc7zA">Lifting Plonky3</a>. Lifting projects a smaller domain into a larger one, reusing the original LDE and commitments. This lets a fixed circuit verify proofs from a range of trace sizes without recomputation.</p>
+<h3 id="multi-shape-fri-verification"><a class="header" href="#multi-shape-fri-verification">Multi-shape FRI verification</a></h3>
+<p>Instead of fixing a single proof size per verifier circuit, extend the FRI verifier to handle a <strong>range</strong> of sizes within the same circuit, at minimal overhead. A related approach is implemented in Plonky2 recursion (<a href="https://github.com/0xPolygonZero/plonky2/pull/1635">PR #1635</a>).</p>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../architecture_and_internals/hashing.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <i class="fa fa-angle-left"></i>
+                            </a>
 
-                            <a rel="next prefetch" href="getting_started/introduction.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="../advanced_topics/soundness.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <i class="fa fa-angle-right"></i>
                             </a>
 
@@ -210,8 +207,11 @@
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../architecture_and_internals/hashing.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <i class="fa fa-angle-left"></i>
+                    </a>
 
-                    <a rel="next prefetch" href="getting_started/introduction.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="../advanced_topics/soundness.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <i class="fa fa-angle-right"></i>
                     </a>
             </nav>
@@ -226,17 +226,17 @@
         </script>
 
 
-        <script src="elasticlunr.min.js"></script>
-        <script src="mark.min.js"></script>
-        <script src="searcher.js"></script>
+        <script src="../elasticlunr.min.js"></script>
+        <script src="../mark.min.js"></script>
+        <script src="../searcher.js"></script>
 
-        <script src="clipboard.min.js"></script>
-        <script src="highlight.js"></script>
-        <script src="book.js"></script>
+        <script src="../clipboard.min.js"></script>
+        <script src="../highlight.js"></script>
+        <script src="../book.js"></script>
 
         <!-- Custom JS scripts -->
-        <script src="mermaid.min.js"></script>
-        <script src="mermaid-init.js"></script>
+        <script src="../mermaid.min.js"></script>
+        <script src="../mermaid-init.js"></script>
 
 
 

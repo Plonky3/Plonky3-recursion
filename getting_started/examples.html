@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Handling arbitrary programs - The Plonky3 recursion book</title>
+        <title>Examples - The Plonky3 recursion book</title>
 
 
         <!-- Custom HTML head -->
@@ -12,34 +12,34 @@
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <meta name="theme-color" content="#ffffff">
 
-        <link rel="icon" href="favicon.svg">
-        <link rel="shortcut icon" href="favicon.png">
-        <link rel="stylesheet" href="css/variables.css">
-        <link rel="stylesheet" href="css/general.css">
-        <link rel="stylesheet" href="css/chrome.css">
-        <link rel="stylesheet" href="css/print.css" media="print">
+        <link rel="icon" href="../favicon.svg">
+        <link rel="shortcut icon" href="../favicon.png">
+        <link rel="stylesheet" href="../css/variables.css">
+        <link rel="stylesheet" href="../css/general.css">
+        <link rel="stylesheet" href="../css/chrome.css">
+        <link rel="stylesheet" href="../css/print.css" media="print">
 
         <!-- Fonts -->
-        <link rel="stylesheet" href="FontAwesome/css/font-awesome.css">
-        <link rel="stylesheet" href="fonts/fonts.css">
+        <link rel="stylesheet" href="../FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="../fonts/fonts.css">
 
         <!-- Highlight.js Stylesheets -->
-        <link rel="stylesheet" id="highlight-css" href="highlight.css">
-        <link rel="stylesheet" id="tomorrow-night-css" href="tomorrow-night.css">
-        <link rel="stylesheet" id="ayu-highlight-css" href="ayu-highlight.css">
+        <link rel="stylesheet" id="highlight-css" href="../highlight.css">
+        <link rel="stylesheet" id="tomorrow-night-css" href="../tomorrow-night.css">
+        <link rel="stylesheet" id="ayu-highlight-css" href="../ayu-highlight.css">
 
         <!-- Custom theme stylesheets -->
 
 
         <!-- Provide site root and default themes to javascript -->
         <script>
-            const path_to_root = "";
+            const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex.js";
+            window.path_to_searchindex_js = "../searchindex.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc.js"></script>
+        <script src="../toc.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -106,7 +106,7 @@
             <!-- populated by js -->
             <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
             <noscript>
-                <iframe class="sidebar-iframe-outer" src="toc.html"></iframe>
+                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
             </noscript>
             <div id="sidebar-resize-handle" class="sidebar-resize-handle">
                 <div class="sidebar-resize-indicator"></div>
@@ -141,7 +141,7 @@
                     <h1 class="menu-title">The Plonky3 recursion book</h1>
 
                     <div class="right-buttons">
-                        <a href="print.html" title="Print this book" aria-label="Print this book">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
                             <i id="print-button" class="fa fa-print"></i>
                         </a>
 
@@ -176,37 +176,77 @@
                 <div id="content" class="content">
                     <main>
                         <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
-<h1 id="handling-arbitrary-programs"><a class="header" href="#handling-arbitrary-programs">Handling arbitrary programs</a></h1>
-<p>The fixed recursive verifier described in this book supports only fixed, predetermined programs.<br />
-This design choice maximizes performance but raises the question: <strong>how can one prove statements of varying size or complexity?</strong></p>
-<p>We highlight below two distinct approaches to alleviate this limitation and allow for arbitrary recursion</p>
-<h2 id="tree-style-recursion-for-variable-length-inputs"><a class="header" href="#tree-style-recursion-for-variable-length-inputs">Tree-style recursion for variable-length inputs</a></h2>
-<p>One can split a large computation into chunks and prove each piece using a fixed inner circuit in parallel.
-These proofs can then be <em>recursively aggregated</em> in a tree structure, where each leaf of the tree corresponds to a prover portion of the computation. The tree root yields a single proof attesting to the validity of the entire computation.</p>
-<p>A formal description of this tree-style recursion for STARKs can be seen in <a href="https://eprint.iacr.org/2023/208">zkTree</a>.</p>
-<h2 id="flexible-fri-verification"><a class="header" href="#flexible-fri-verification">Flexible FRI verification</a></h2>
-<p>To support proofs with different FRI shapes, one can:</p>
-<ul>
+<h1 id="examples"><a class="header" href="#examples">Examples</a></h1>
+<p>This section walks through the three provided examples to illustrate common recursion patterns.</p>
+<h2 id="recursive-keccak--verifying-a-uni-stark-proof"><a class="header" href="#recursive-keccak--verifying-a-uni-stark-proof">Recursive Keccak — verifying a uni-STARK proof</a></h2>
+<p><strong>Source</strong>: <code>recursion/examples/recursive_keccak.rs</code></p>
+<p>This example starts from a standard Plonky3 uni-STARK proof of the Keccak AIR, then recursively verifies it through multiple layers.</p>
+<p><strong>Flow:</strong></p>
+<ol>
+<li>Generate a Keccak trace and prove it with <code>p3_uni_stark::prove</code>.</li>
+<li>Wrap the resulting <code>Proof&lt;SC&gt;</code> in a <code>RecursionInput::UniStark</code>.</li>
+<li>Call <code>build_and_prove_next_layer</code> — this builds a verification circuit that checks the Keccak proof, runs it, and produces a batch-STARK proof.</li>
+<li>For subsequent layers, convert the output with <code>output.into_recursion_input::&lt;BatchOnly&gt;()</code> and repeat.</li>
+</ol>
+<p>The key point: the first recursive layer handles a <strong>uni-STARK</strong> proof (potentially large, depending on the AIR width). After that, every layer verifies the previous layer's <strong>batch-STARK</strong> proof, which has a predictable, smaller structure. This is why layer 1 is typically slower than layers 2+.</p>
+<pre><code class="language-bash">cargo run --release --example recursive_keccak -- \
+    --field koala-bear --num-hashes 1000 --num-recursive-layers 3
+</code></pre>
+<h2 id="recursive-fibonacci--verifying-a-batch-stark-proof"><a class="header" href="#recursive-fibonacci--verifying-a-batch-stark-proof">Recursive Fibonacci — verifying a batch-STARK proof</a></h2>
+<p><strong>Source</strong>: <code>recursion/examples/recursive_fibonacci.rs</code></p>
+<p>This example builds a Fibonacci circuit from scratch using <code>CircuitBuilder</code>, proves it with <code>BatchStarkProver</code>, then recurses.</p>
+<p><strong>Flow:</strong></p>
+<ol>
+<li>Build the circuit: <code>CircuitBuilder::new()</code>, add constants, public inputs, arithmetic, <code>connect</code>, <code>build</code>.</li>
+<li>Run and prove the base circuit with <code>BatchStarkProver</code>.</li>
+<li>Wrap the output in <code>RecursionOutput</code> (since it's already a batch proof), then use <code>into_recursion_input::&lt;BatchOnly&gt;()</code>.</li>
+<li>Call <code>build_and_prove_next_layer</code> in a loop for each recursive layer.</li>
+</ol>
+<p>This example demonstrates how to use the <code>CircuitBuilder</code> for your own computations and then feed the resulting proof into the recursion pipeline.</p>
+<pre><code class="language-bash">cargo run --release --example recursive_fibonacci -- \
+    --field koala-bear --n 10000 --num-recursive-layers 3
+</code></pre>
+<h2 id="recursive-aggregation--2-to-1-proof-merging"><a class="header" href="#recursive-aggregation--2-to-1-proof-merging">Recursive Aggregation — 2-to-1 proof merging</a></h2>
+<p><strong>Source</strong>: <code>recursion/examples/recursive_aggregation.rs</code></p>
+<p>This example produces multiple independent base proofs and aggregates them pairwise in a binary tree.</p>
+<p><strong>Flow:</strong></p>
+<ol>
+<li>Produce <code>2^depth</code> independent base proofs (each proving a different constant).</li>
+<li>At each tree level, pair up proofs and call <code>build_and_prove_aggregation_layer</code> on each pair.</li>
+<li>Repeat until a single root proof remains.</li>
+</ol>
+<p>The aggregation circuit verifies <strong>two</strong> proofs in a single circuit — left and right children — producing one output proof. The two inputs may be different kinds of <code>RecursionInput</code> (e.g., one <code>UniStark</code> and one <code>BatchStark</code>), though in this example they are all <code>BatchStark</code>.</p>
+<pre><code class="language-bash"># 4 base proofs, 2 aggregation levels
+cargo run --release --example recursive_aggregation -- \
+    --field koala-bear --num-recursive-layers 2
+</code></pre>
+<h2 id="common-patterns-across-examples"><a class="header" href="#common-patterns-across-examples">Common patterns across examples</a></h2>
+<p>All three examples share the same setup pattern:</p>
+<ol>
 <li>
-<p><strong>Lift the proofs</strong> to a larger domain, as described in <a href="https://hackmd.io/HkfET6x1Qh-yNvm4fKc7zA">Lifting plonky3</a>.<br />
-Lifting allows a fixed circuit to efficiently verify proofs of varying trace sizes
-by projecting smaller domains into larger ones, reusing the original LDE and commitments without recomputation.</p>
+<p><strong>Config wrapper</strong>: A <code>ConfigWithFriParams</code> struct that wraps a <code>StarkConfig</code> and adds <code>FriVerifierParams</code>. It implements <code>StarkGenericConfig</code> (by delegating) and <code>FriRecursionConfig</code>.</p>
 </li>
 <li>
-<p><strong>Verify distinct proof shapes together</strong> inside a fixed FRI verifier circuit. Instead of having a single proof
-size that can be verified by a given FRI verifier circuit, one can extend it over a range of sizes instead at a minimal overhead cost. See a related implementation in <code>plonky2</code> recursion: (<a href="https://github.com/0xPolygonZero/plonky2/pull/1635">Plonky2 PR #1635</a>) for more details.</p>
+<p><strong>Backend creation</strong>: <code>FriRecursionBackend::&lt;WIDTH, RATE&gt;::new(poseidon2_config)</code>.</p>
 </li>
-</ul>
+<li>
+<p><strong>Table packing</strong>: Adjusted per layer — the first layer may need different packing than subsequent layers because the verification circuit has a different shape.</p>
+</li>
+<li>
+<p><strong>Verification after proving</strong>: Each example verifies the proof it just produced, using <code>BatchStarkProver::verify_all_tables</code>.</p>
+</li>
+</ol>
+<p>See the <a href="./integration.html">Integration Guide</a> for how to adapt this pattern to your own project.</p>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="hashing.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="../getting_started/quick_start.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <i class="fa fa-angle-left"></i>
                             </a>
 
-                            <a rel="next prefetch" href="debugging.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="../user_guide/api.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <i class="fa fa-angle-right"></i>
                             </a>
 
@@ -216,11 +256,11 @@ size that can be verified by a given FRI verifier circuit, one can extend it ove
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="hashing.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="../getting_started/quick_start.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <i class="fa fa-angle-left"></i>
                     </a>
 
-                    <a rel="next prefetch" href="debugging.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="../user_guide/api.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <i class="fa fa-angle-right"></i>
                     </a>
             </nav>
@@ -235,17 +275,17 @@ size that can be verified by a given FRI verifier circuit, one can extend it ove
         </script>
 
 
-        <script src="elasticlunr.min.js"></script>
-        <script src="mark.min.js"></script>
-        <script src="searcher.js"></script>
+        <script src="../elasticlunr.min.js"></script>
+        <script src="../mark.min.js"></script>
+        <script src="../searcher.js"></script>
 
-        <script src="clipboard.min.js"></script>
-        <script src="highlight.js"></script>
-        <script src="book.js"></script>
+        <script src="../clipboard.min.js"></script>
+        <script src="../highlight.js"></script>
+        <script src="../book.js"></script>
 
         <!-- Custom JS scripts -->
-        <script src="mermaid.min.js"></script>
-        <script src="mermaid-init.js"></script>
+        <script src="../mermaid.min.js"></script>
+        <script src="../mermaid-init.js"></script>
 
 
 

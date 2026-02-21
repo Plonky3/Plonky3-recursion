@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Benchmarks - The Plonky3 recursion book</title>
+        <title>Glossary - The Plonky3 recursion book</title>
 
 
         <!-- Custom HTML head -->
@@ -12,34 +12,34 @@
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <meta name="theme-color" content="#ffffff">
 
-        <link rel="icon" href="favicon.svg">
-        <link rel="shortcut icon" href="favicon.png">
-        <link rel="stylesheet" href="css/variables.css">
-        <link rel="stylesheet" href="css/general.css">
-        <link rel="stylesheet" href="css/chrome.css">
-        <link rel="stylesheet" href="css/print.css" media="print">
+        <link rel="icon" href="../favicon.svg">
+        <link rel="shortcut icon" href="../favicon.png">
+        <link rel="stylesheet" href="../css/variables.css">
+        <link rel="stylesheet" href="../css/general.css">
+        <link rel="stylesheet" href="../css/chrome.css">
+        <link rel="stylesheet" href="../css/print.css" media="print">
 
         <!-- Fonts -->
-        <link rel="stylesheet" href="FontAwesome/css/font-awesome.css">
-        <link rel="stylesheet" href="fonts/fonts.css">
+        <link rel="stylesheet" href="../FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="../fonts/fonts.css">
 
         <!-- Highlight.js Stylesheets -->
-        <link rel="stylesheet" id="highlight-css" href="highlight.css">
-        <link rel="stylesheet" id="tomorrow-night-css" href="tomorrow-night.css">
-        <link rel="stylesheet" id="ayu-highlight-css" href="ayu-highlight.css">
+        <link rel="stylesheet" id="highlight-css" href="../highlight.css">
+        <link rel="stylesheet" id="tomorrow-night-css" href="../tomorrow-night.css">
+        <link rel="stylesheet" id="ayu-highlight-css" href="../ayu-highlight.css">
 
         <!-- Custom theme stylesheets -->
 
 
         <!-- Provide site root and default themes to javascript -->
         <script>
-            const path_to_root = "";
+            const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex.js";
+            window.path_to_searchindex_js = "../searchindex.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc.js"></script>
+        <script src="../toc.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -106,7 +106,7 @@
             <!-- populated by js -->
             <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
             <noscript>
-                <iframe class="sidebar-iframe-outer" src="toc.html"></iframe>
+                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
             </noscript>
             <div id="sidebar-resize-handle" class="sidebar-resize-handle">
                 <div class="sidebar-resize-indicator"></div>
@@ -141,7 +141,7 @@
                     <h1 class="menu-title">The Plonky3 recursion book</h1>
 
                     <div class="right-buttons">
-                        <a href="print.html" title="Print this book" aria-label="Print this book">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
                             <i id="print-button" class="fa fa-print"></i>
                         </a>
 
@@ -176,62 +176,28 @@
                 <div id="content" class="content">
                     <main>
                         <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
-<h1 id="benchmarks"><a class="header" href="#benchmarks">Benchmarks</a></h1>
-<p>This section presents empirical performance results for the Plonky3 recursion system, including instructions for reproducibility across target machines.</p>
-<p><strong>NOTE</strong>: This library is still at an early stage, parameters have not been finely tuned yet, and as such performance results here may not reflect the full potential of the library.</p>
-<h2 id="setup"><a class="header" href="#setup">Setup</a></h2>
-<p>The two reference examples are a Plonky3 uni-stark proof of the Keccak AIR imported directly and a Plonky3 batch-stark proof of the Fibonacci sequence, generated with the <code>CircuitBuilder</code> of this library.</p>
-<ul>
-<li>Keccak example: set number of hashes with <code>-n</code> argument</li>
-</ul>
-<pre><code class="language-bash">RUSTFLAGS=-Ctarget-cpu=native RUSTFLAGS=-Copt-level=3 RUST_LOG=info cargo run --release \
-    --example recursive_keccak --features parallel -- -n 2500 
-</code></pre>
-<ul>
-<li>Fibonacci example: set element index in the sequence with <code>-n</code> argument</li>
-</ul>
-<pre><code class="language-bash">RUSTFLAGS=-Ctarget-cpu=native RUSTFLAGS=-Copt-level=3 RUST_LOG=info cargo run --release \
-    --example recursive_fibonacci --features parallel -- -n 10000
-</code></pre>
-<h3 id="parameterization"><a class="header" href="#parameterization">Parameterization</a></h3>
-<p>Each example supports additional parameterization around the FRI parameters, namely:</p>
-<ul>
-<li><code>--log-blowup</code>: logarithmic blowup factor for the LDE. Default 3.</li>
-<li><code>--max-log-arity</code>: maximum arity allowed during the FRI folding phases. Default 4.</li>
-<li><code>--log-final-poly-len</code>: logarithmic size (or degree) allowed for the final polynomial after folding. Default 5.</li>
-<li><code>--cap-height</code>: the height at which the MMCS tree is truncated for commitments. Default 0 (unique root).</li>
-<li><code>--commit-pow-bits</code>: additional PoW grinding during the FRI commit phase. Default 0.</li>
-<li><code>--query-pow-bits</code>: additional PoW grinding during the FRI query phase. Default 16.</li>
-<li><code>--num-recursive-layers</code>: number of recursive proofs to be generated in a chain, starting from the base proof (Keccak or Fibonacci). Default 3.</li>
-</ul>
-<h2 id="results"><a class="header" href="#results">Results</a></h2>
-<p>Running on a Apple M4 pro, 14 Cores, with <strong>KoalaBear</strong> field and extension of <strong>degree 4</strong>, using default parameters mentioned above, performance benchmarks are as follows:</p>
-<ul>
-<li>
-<p><strong>Keccak AIR program:</strong> (1,000 hashes)</p>
-<ul>
-<li>Base uni-stark proof: 1.45 s</li>
-<li>1st recursion layer: 4.91 s</li>
-<li>2nd recursion layer: 470 ms</li>
-<li>3rd recursion layer: 436 ms</li>
-</ul>
-</li>
-<li>
-<p><strong>Fibonacci multi-AIR program:</strong> (10,000th element)</p>
-<ul>
-<li>Base uni-stark proof: 86.1 ms</li>
-<li>1st recursion layer: 281 ms</li>
-<li>2nd recursion layer: 466 ms</li>
-<li>3rd recursion layer: 450 ms</li>
-</ul>
-</li>
-</ul>
+<h1 id="glossary"><a class="header" href="#glossary">Glossary</a></h1>
+<p><strong>AIR</strong> — Algebraic Intermediate Representation. A set of polynomial constraints that define the validity of an execution trace. Each row of the trace must satisfy the AIR's constraints.</p>
+<p><strong>ALU</strong> — Arithmetic Logic Unit. In this library, the primitive chip that handles <code>add</code>, <code>mul</code>, <code>sub</code>, <code>div</code>, <code>bool_check</code>, and <code>mul_add</code> operations via selector columns.</p>
+<p><strong>CTL</strong> — Cross-Table Lookup. A mechanism to enforce consistency between different AIR tables by proving that multisets of tuples match across tables. Uses the LogUp argument.</p>
+<p><strong>D</strong> — Extension field degree. The recursion stack uses degree-4 extensions (<code>D = 4</code>), meaning each extension field element is represented by 4 base field elements.</p>
+<p><strong>FRI</strong> — Fast Reed-Solomon Interactive Oracle Proof. The polynomial commitment scheme used by Plonky3. Proves that a committed function is close to a low-degree polynomial via iterative folding and random queries.</p>
+<p><strong>IR</strong> — Intermediate Representation. The deterministic sequence of operations (constants, public inputs, arithmetic, non-primitives) that defines a circuit's computation.</p>
+<p><strong>LDE</strong> — Low-Degree Extension. Evaluating a polynomial on a domain larger than its degree, used to create redundancy for FRI queries. The blowup factor controls the domain expansion ratio.</p>
+<p><strong>LogUp</strong> — Logarithmic derivative lookup argument. The specific lookup protocol used to enforce CTL relations between tables. Based on <a href="https://eprint.iacr.org/2022/1530">Ulrich Haböck's construction</a>.</p>
+<p><strong>MMCS</strong> — Mixed Matrix Commitment Scheme. Plonky3's abstraction for committing to matrices of field elements. Typically instantiated with Merkle trees over Poseidon2 hashes.</p>
+<p><strong>PCS</strong> — Polynomial Commitment Scheme. A cryptographic primitive that allows committing to a polynomial and later proving evaluations at chosen points. FRI is the PCS used here.</p>
+<p><strong>Poseidon2</strong> — An algebraic hash function optimized for arithmetic circuits. Used for Merkle tree hashing and Fiat-Shamir challenges. Parameterized by WIDTH (number of state elements) and RATE (elements absorbed per permutation).</p>
+<p><strong>RAP</strong> — Randomized AIR with Preprocessing. An extension of AIR that supports preprocessed columns (known to the verifier before the proof) and randomized columns (computed after an initial commitment round).</p>
+<p><strong>STARK</strong> — Scalable Transparent Argument of Knowledge. A proof system based on polynomial IOPs and hash functions (no trusted setup). Plonky3 implements uni-STARKs (single AIR) and batch-STARKs (multiple AIRs with shared FRI).</p>
+<p><strong>Target</strong> — An identifier for a value in the circuit's expression graph. Each <code>Target</code> (also called <code>ExprId</code>) refers to either a constant, a public input, or the output of an operation.</p>
+<p><strong>WitnessId</strong> — An index into the global Witness table. After circuit compilation, each <code>Target</code> is assigned a <code>WitnessId</code> that identifies its slot in the witness memory bus.</p>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="debugging.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="../appendix/roadmap.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <i class="fa fa-angle-left"></i>
                             </a>
 
@@ -242,7 +208,7 @@
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="debugging.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="../appendix/roadmap.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <i class="fa fa-angle-left"></i>
                     </a>
 
@@ -258,17 +224,17 @@
         </script>
 
 
-        <script src="elasticlunr.min.js"></script>
-        <script src="mark.min.js"></script>
-        <script src="searcher.js"></script>
+        <script src="../elasticlunr.min.js"></script>
+        <script src="../mark.min.js"></script>
+        <script src="../searcher.js"></script>
 
-        <script src="clipboard.min.js"></script>
-        <script src="highlight.js"></script>
-        <script src="book.js"></script>
+        <script src="../clipboard.min.js"></script>
+        <script src="../highlight.js"></script>
+        <script src="../book.js"></script>
 
         <!-- Custom JS scripts -->
-        <script src="mermaid.min.js"></script>
-        <script src="mermaid-init.js"></script>
+        <script src="../mermaid.min.js"></script>
+        <script src="../mermaid-init.js"></script>
 
 
 

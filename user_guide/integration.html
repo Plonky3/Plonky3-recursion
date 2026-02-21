@@ -1,0 +1,367 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Integration Guide - The Plonky3 recursion book</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon.svg">
+        <link rel="shortcut icon" href="../favicon.png">
+        <link rel="stylesheet" href="../css/variables.css">
+        <link rel="stylesheet" href="../css/general.css">
+        <link rel="stylesheet" href="../css/chrome.css">
+        <link rel="stylesheet" href="../css/print.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="../fonts/fonts.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="highlight-css" href="../highlight.css">
+        <link rel="stylesheet" id="tomorrow-night-css" href="../tomorrow-night.css">
+        <link rel="stylesheet" id="ayu-highlight-css" href="../ayu-highlight.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "../";
+            const default_light_theme = "light";
+            const default_dark_theme = "navy";
+            window.path_to_searchindex_js = "../searchindex.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="../toc.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
+            </noscript>
+            <div id="sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="menu-bar-hover-placeholder"></div>
+                <div id="menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="sidebar-toggle" class="icon-button" for="sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="sidebar">
+                            <i class="fa fa-bars"></i>
+                        </label>
+                        <button id="theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="theme-list">
+                            <i class="fa fa-paint-brush"></i>
+                        </button>
+                        <ul id="theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="ayu">Ayu</button></li>
+                        </ul>
+                        <button id="search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="searchbar">
+                            <i class="fa fa-search"></i>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">The Plonky3 recursion book</h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <i id="print-button" class="fa fa-print"></i>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="search-wrapper" class="hidden">
+                    <form id="searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <i class="fa fa-spinner fa-spin"></i>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="searchresults-outer" class="searchresults-outer hidden">
+                        <div id="searchresults-header" class="searchresults-header"></div>
+                        <ul id="searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="content" class="content">
+                    <main>
+                        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
+<h1 id="integration-guide"><a class="header" href="#integration-guide">Integration Guide</a></h1>
+<p>This section explains how to wire Plonky3-recursion into your own project.</p>
+<h2 id="implementing-frirecursionconfig"><a class="header" href="#implementing-frirecursionconfig">Implementing <code>FriRecursionConfig</code></a></h2>
+<p>The unified API requires your STARK config to implement <code>FriRecursionConfig</code>. This trait bridges your native Plonky3 config with the recursive verifier's type system.</p>
+<p>The typical pattern is a wrapper struct that holds both the native config and the <code>FriVerifierParams</code>:</p>
+<pre><code class="language-rust ignore">use p3_recursion::{
+    FriRecursionConfig, FriVerifierParams, Poseidon2Config,
+    RecursionInput, RecursiveAir, pcs::*,
+};
+
+#[derive(Clone)]
+struct MyRecursionConfig {
+    config: Arc&lt;MyStarkConfig&gt;,
+    fri_verifier_params: FriVerifierParams,
+}</code></pre>
+<h3 id="delegate-starkgenericconfig"><a class="header" href="#delegate-starkgenericconfig">Delegate <code>StarkGenericConfig</code></a></h3>
+<p>The wrapper must implement <code>StarkGenericConfig</code> by delegating to the inner config:</p>
+<pre><code class="language-rust ignore">impl StarkGenericConfig for MyRecursionConfig {
+    type Challenge = Challenge;
+    type Challenger = Challenger;
+    type Pcs = MyPcs;
+
+    fn pcs(&amp;self) -&gt; &amp;MyPcs { self.config.pcs() }
+    fn initialise_challenger(&amp;self) -&gt; Challenger { self.config.initialise_challenger() }
+}</code></pre>
+<h3 id="implement-frirecursionconfig"><a class="header" href="#implement-frirecursionconfig">Implement <code>FriRecursionConfig</code></a></h3>
+<p>The trait requires five associated types and four methods:</p>
+<pre><code class="language-rust ignore">impl FriRecursionConfig for MyRecursionConfig {
+    type Commitment = MerkleCapTargets&lt;F, DIGEST_ELEMS&gt;;
+    type InputProof = InputProofTargets&lt;F, Challenge, RecValMmcs&lt;F, DIGEST_ELEMS, MyHash, MyCompress&gt;&gt;;
+    type OpeningProof = FriProofTargets&lt;...&gt;;
+    type RawOpeningProof = &lt;MyPcs as Pcs&lt;Challenge, Challenger&gt;&gt;::Proof;
+    const DIGEST_ELEMS: usize = 8;
+
+    fn with_fri_opening_proof&lt;'a, A, R&gt;(
+        prev: &amp;RecursionInput&lt;'a, Self, A&gt;,
+        f: impl FnOnce(&amp;Self::RawOpeningProof) -&gt; R,
+    ) -&gt; R {
+        match prev {
+            RecursionInput::UniStark { proof, .. } =&gt; f(&amp;proof.opening_proof),
+            RecursionInput::BatchStark { proof, .. } =&gt; f(&amp;proof.proof.opening_proof),
+        }
+    }
+
+    fn enable_poseidon2_on_circuit(
+        &amp;self,
+        circuit: &amp;mut CircuitBuilder&lt;Challenge&gt;,
+    ) -&gt; Result&lt;(), VerificationError&gt; {
+        let perm = default_poseidon2_perm();
+        circuit.enable_poseidon2_perm::&lt;MyPoseidon2CircuitConfig, _&gt;(
+            generate_poseidon2_trace::&lt;Challenge, MyPoseidon2CircuitConfig&gt;,
+            perm,
+        );
+        Ok(())
+    }
+
+    fn pcs_verifier_params(&amp;self) -&gt; &amp;FriVerifierParams {
+        &amp;self.fri_verifier_params
+    }
+
+    fn set_fri_private_data(
+        runner: &amp;mut CircuitRunner&lt;Challenge&gt;,
+        op_ids: &amp;[NonPrimitiveOpId],
+        opening_proof: &amp;Self::RawOpeningProof,
+    ) -&gt; Result&lt;(), &amp;'static str&gt; {
+        set_fri_mmcs_private_data::&lt;F, Challenge, ChallengeMmcs, ValMmcs, MyHash, MyCompress, DIGEST_ELEMS&gt;(
+            runner, op_ids, opening_proof,
+        )
+    }
+}</code></pre>
+<p>The concrete types (<code>MyHash</code>, <code>MyCompress</code>, <code>ValMmcs</code>, etc.) must match your native Plonky3 prover setup. See the examples for complete implementations.</p>
+<h2 id="verifying-your-own-air"><a class="header" href="#verifying-your-own-air">Verifying your own AIR</a></h2>
+<p>To recursively verify a proof produced by a custom AIR, implement <code>RecursiveAir</code> for your AIR type:</p>
+<pre><code class="language-rust ignore">impl RecursiveAir&lt;F, EF, LogUpGadget&gt; for MyAir {
+    fn width(&amp;self) -&gt; usize {
+        // Number of main trace columns in your AIR
+        MY_AIR_WIDTH
+    }
+
+    fn eval_folded_circuit(
+        &amp;self,
+        builder: &amp;mut CircuitBuilder&lt;EF&gt;,
+        sels: &amp;RecursiveLagrangeSelectors,
+        alpha: &amp;Target,
+        lookup_metadata: &amp;LookupMetadata&lt;'_, F&gt;,
+        columns: ColumnsTargets&lt;'_&gt;,
+        lookup_gadget: &amp;LogUpGadget,
+    ) -&gt; Target {
+        // Convert your AIR's symbolic constraints to circuit form
+        // and fold them with alpha.
+        // Use `symbolic_to_circuit` or build manually.
+    }
+
+    fn get_log_num_quotient_chunks(
+        &amp;self,
+        preprocessed_width: usize,
+        num_public_values: usize,
+        contexts: &amp;[Lookup&lt;F&gt;],
+        lookup_data: &amp;[LookupData&lt;usize&gt;],
+        is_zk: usize,
+        lookup_gadget: &amp;LogUpGadget,
+    ) -&gt; usize {
+        // log2 of the number of quotient polynomial chunks.
+        // Must match what the native prover uses.
+    }
+}</code></pre>
+<p>For AIRs built with Plonky3's <code>Air</code> trait, the symbolic constraint extraction and folding can be done generically using <code>get_symbolic_constraints</code> and <code>symbolic_to_circuit</code>, as described in <a href="./circuit_building.html#building-recursive-air-constraints">Circuit Building</a>.</p>
+<p>Then wrap your proof in <code>RecursionInput::UniStark</code>:</p>
+<pre><code class="language-rust ignore">let input = RecursionInput::UniStark {
+    proof: &amp;my_proof,
+    air: &amp;my_air,
+    public_inputs: my_public_values.clone(),
+    preprocessed_commit: Some(preprocessed_commitment),  // if your AIR has preprocessed columns
+};</code></pre>
+<h2 id="custom-non-primitive-chips"><a class="header" href="#custom-non-primitive-chips">Custom non-primitive chips</a></h2>
+<p>The circuit builder supports registering custom non-primitive operations beyond Poseidon2. These are operations that are too expensive to express purely in primitives and benefit from dedicated AIR tables.</p>
+<p>Non-primitive operations:</p>
+<ul>
+<li>Are controlled by a runtime policy (<code>DefaultProfile</code> disables all, <code>AllowAllProfile</code> enables all)</li>
+<li>Require a custom trace builder for trace generation</li>
+<li>Interact with the witness table via lookups, and may additionally use private data</li>
+</ul>
+<p>To enable a non-primitive operation, call the appropriate <code>enable_*</code> method on the <code>CircuitBuilder</code> before building. Attempting to use a non-primitive operation that hasn't been enabled will result in a runtime error.</p>
+<h2 id="end-to-end-integration-checklist"><a class="header" href="#end-to-end-integration-checklist">End-to-end integration checklist</a></h2>
+<ol>
+<li>Set up your Plonky3 prover config (field, hash, PCS, FRI params)</li>
+<li>Create a config wrapper implementing <code>FriRecursionConfig</code></li>
+<li>If verifying a custom AIR: implement <code>RecursiveAir</code></li>
+<li>Create a <code>FriRecursionBackend</code> with matching <code>Poseidon2Config</code></li>
+<li>Choose <code>TablePacking</code> values (start with defaults, tune later)</li>
+<li>Call <code>build_and_prove_next_layer</code> or the split build/prove variant</li>
+<li>Chain layers with <code>into_recursion_input::&lt;BatchOnly&gt;()</code></li>
+<li>Verify the final proof with <code>BatchStarkProver::verify_all_tables</code></li>
+</ol>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../user_guide/public_inputs.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <i class="fa fa-angle-left"></i>
+                            </a>
+
+                            <a rel="next prefetch" href="../user_guide/low_level_api.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <i class="fa fa-angle-right"></i>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../user_guide/public_inputs.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <i class="fa fa-angle-left"></i>
+                    </a>
+
+                    <a rel="next prefetch" href="../user_guide/low_level_api.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <i class="fa fa-angle-right"></i>
+                    </a>
+            </nav>
+
+        </div>
+
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="../elasticlunr.min.js"></script>
+        <script src="../mark.min.js"></script>
+        <script src="../searcher.js"></script>
+
+        <script src="../clipboard.min.js"></script>
+        <script src="../highlight.js"></script>
+        <script src="../book.js"></script>
+
+        <!-- Custom JS scripts -->
+        <script src="../mermaid.min.js"></script>
+        <script src="../mermaid-init.js"></script>
+
+
+
+    </div>
+    </body>
+</html>

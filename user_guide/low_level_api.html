@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Introduction - The Plonky3 recursion book</title>
+        <title>Low-Level API - The Plonky3 recursion book</title>
 
 
         <!-- Custom HTML head -->
@@ -12,34 +12,34 @@
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <meta name="theme-color" content="#ffffff">
 
-        <link rel="icon" href="favicon.svg">
-        <link rel="shortcut icon" href="favicon.png">
-        <link rel="stylesheet" href="css/variables.css">
-        <link rel="stylesheet" href="css/general.css">
-        <link rel="stylesheet" href="css/chrome.css">
-        <link rel="stylesheet" href="css/print.css" media="print">
+        <link rel="icon" href="../favicon.svg">
+        <link rel="shortcut icon" href="../favicon.png">
+        <link rel="stylesheet" href="../css/variables.css">
+        <link rel="stylesheet" href="../css/general.css">
+        <link rel="stylesheet" href="../css/chrome.css">
+        <link rel="stylesheet" href="../css/print.css" media="print">
 
         <!-- Fonts -->
-        <link rel="stylesheet" href="FontAwesome/css/font-awesome.css">
-        <link rel="stylesheet" href="fonts/fonts.css">
+        <link rel="stylesheet" href="../FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="../fonts/fonts.css">
 
         <!-- Highlight.js Stylesheets -->
-        <link rel="stylesheet" id="highlight-css" href="highlight.css">
-        <link rel="stylesheet" id="tomorrow-night-css" href="tomorrow-night.css">
-        <link rel="stylesheet" id="ayu-highlight-css" href="ayu-highlight.css">
+        <link rel="stylesheet" id="highlight-css" href="../highlight.css">
+        <link rel="stylesheet" id="tomorrow-night-css" href="../tomorrow-night.css">
+        <link rel="stylesheet" id="ayu-highlight-css" href="../ayu-highlight.css">
 
         <!-- Custom theme stylesheets -->
 
 
         <!-- Provide site root and default themes to javascript -->
         <script>
-            const path_to_root = "";
+            const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex.js";
+            window.path_to_searchindex_js = "../searchindex.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc.js"></script>
+        <script src="../toc.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -106,7 +106,7 @@
             <!-- populated by js -->
             <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
             <noscript>
-                <iframe class="sidebar-iframe-outer" src="toc.html"></iframe>
+                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
             </noscript>
             <div id="sidebar-resize-handle" class="sidebar-resize-handle">
                 <div class="sidebar-resize-indicator"></div>
@@ -141,7 +141,7 @@
                     <h1 class="menu-title">The Plonky3 recursion book</h1>
 
                     <div class="right-buttons">
-                        <a href="print.html" title="Print this book" aria-label="Print this book">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
                             <i id="print-button" class="fa fa-print"></i>
                         </a>
 
@@ -176,21 +176,107 @@
                 <div id="content" class="content">
                     <main>
                         <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
-<h1 id="introduction"><a class="header" href="#introduction">Introduction</a></h1>
-<p><a href="https://github.com/Plonky3/Plonky3">Plonky3</a> offers a comprehensive toolbox of cryptographic building blocks: hash functions, finite fields, and polynomial commitment schemes, ... to build tailored STARK proof systems. However, its adoption has been limited by the lack of native recursion, to allow arbitrary program execution replication in proof systems and to alleviate proof sizes and related on-chain verification costs.</p>
-<p>This project aims at addressing this limitation, by proposing a minimal, fixed recursive verifier for Plonky3, which conceptual simplicity allows for blazing fast recursion performance. A key distinction with its predecessor <a href="https://github.com/0xPolygonZero/plonky2">plonky2</a>, is that rather than wrapping a STARK proof in a separate plonkish SNARK, the Plonky3 recursion stack itself is built using Plonky3’s STARK primitives.</p>
-<p>The source code is open-source, available at <a href="https://github.com/Plonky3/Plonky3-recursion">Plonky3 recursion</a> and dual-licensed MIT/APACHE-2.</p>
-<p><em><strong>NOTE</strong></em>: <em>This project is under active development, unaudited and as such not ready for production use. We welcome all external contributors who would like to support the development effort.</em></p>
+<h1 id="low-level-api"><a class="header" href="#low-level-api">Low-Level API</a></h1>
+<p>For fine-grained control over the verification circuit, you can bypass the unified API and build the pipeline manually.</p>
+<h2 id="manual-uni-stark-verification"><a class="header" href="#manual-uni-stark-verification">Manual uni-STARK verification</a></h2>
+<pre><code class="language-rust ignore">use p3_recursion::verifier::verify_p3_uni_proof_circuit;
+use p3_recursion::public_inputs::StarkVerifierInputsBuilder;
+use p3_circuit::CircuitBuilder;
+
+let mut circuit_builder = CircuitBuilder::new();
+
+// Enable Poseidon2 for MMCS verification
+circuit_builder.enable_poseidon2_perm::&lt;MyPoseidon2Config, _&gt;(trace_generator, perm);
+
+// Allocate public input targets and build verification constraints
+let verifier_inputs = StarkVerifierInputsBuilder::allocate(
+    &amp;mut circuit_builder, &amp;proof, preprocessed_commit.as_ref(), num_public_values,
+);
+
+let op_ids = verify_p3_uni_proof_circuit::&lt;
+    MyAir, MyConfig, CommitTargets, InputProofTargets, OpeningProofTargets,
+    WIDTH, RATE,
+&gt;(
+    &amp;config, &amp;air, &amp;mut circuit_builder,
+    &amp;verifier_inputs.proof_targets,
+    &amp;verifier_inputs.air_public_targets,
+    &amp;verifier_inputs.preprocessed_commit,
+    &amp;fri_verifier_params,
+    poseidon2_config,
+)?;
+
+// Build and run
+let circuit = circuit_builder.build()?;
+let mut runner = circuit.runner();
+
+let public_inputs = verifier_inputs.pack_values(&amp;pis, &amp;proof, &amp;preprocessed_commit);
+runner.set_public_inputs(&amp;public_inputs)?;
+
+set_fri_mmcs_private_data(&amp;mut runner, &amp;op_ids, &amp;proof.opening_proof)?;
+
+let traces = runner.run()?;</code></pre>
+<h2 id="manual-batch-stark-verification"><a class="header" href="#manual-batch-stark-verification">Manual batch-STARK verification</a></h2>
+<pre><code class="language-rust ignore">use p3_recursion::verifier::verify_p3_batch_proof_circuit;
+
+let mut circuit_builder = CircuitBuilder::new();
+circuit_builder.enable_poseidon2_perm::&lt;MyPoseidon2Config, _&gt;(trace_generator, perm);
+
+let lookup_gadget = LogUpGadget::new();
+
+let (verifier_inputs, op_ids) = verify_p3_batch_proof_circuit::&lt;
+    MyConfig, CommitTargets, InputProofTargets, OpeningProofTargets, LogUpGadget,
+    WIDTH, RATE, TRACE_D,
+&gt;(
+    &amp;config, &amp;mut circuit_builder, &amp;batch_proof,
+    &amp;fri_verifier_params, &amp;common_data, &amp;lookup_gadget, poseidon2_config,
+)?;
+
+let circuit = circuit_builder.build()?;
+let mut runner = circuit.runner();
+
+let public_inputs = verifier_inputs.pack_values(
+    &amp;table_public_inputs, &amp;batch_proof.proof, &amp;common_data,
+);
+runner.set_public_inputs(&amp;public_inputs)?;
+
+set_fri_mmcs_private_data(&amp;mut runner, &amp;op_ids, &amp;batch_proof.proof.opening_proof)?;
+
+let traces = runner.run()?;</code></pre>
+<h2 id="proving-the-verification-circuit"><a class="header" href="#proving-the-verification-circuit">Proving the verification circuit</a></h2>
+<p>Once you have traces, prove them with <code>BatchStarkProver</code>:</p>
+<pre><code class="language-rust ignore">use p3_circuit_prover::{BatchStarkProver, CircuitProverData};
+use p3_circuit_prover::common::get_airs_and_degrees_with_prep;
+
+let (airs_degrees, preprocessed) = get_airs_and_degrees_with_prep::&lt;SC, EF, D&gt;(
+    &amp;circuit, table_packing, Some(&amp;[NonPrimitiveConfig::Poseidon2(poseidon2_config)]),
+)?;
+
+let (mut airs, degrees): (Vec&lt;_&gt;, Vec&lt;_&gt;) = airs_degrees.into_iter().unzip();
+let prover_data = ProverData::from_airs_and_degrees(&amp;config, &amp;mut airs, &amp;degrees);
+let circuit_prover_data = CircuitProverData::new(prover_data, preprocessed);
+
+let mut prover = BatchStarkProver::new(config.clone())
+    .with_table_packing(table_packing);
+prover.register_poseidon2_table(poseidon2_config);
+
+let proof = prover.prove_all_tables(&amp;traces, &amp;circuit_prover_data)?;</code></pre>
+<h2 id="when-to-use-the-low-level-api"><a class="header" href="#when-to-use-the-low-level-api">When to use the low-level API</a></h2>
+<ul>
+<li>You need to inspect or modify the circuit between building and proving</li>
+<li>You want to share a single <code>CircuitBuilder</code> across multiple verification circuits (custom aggregation patterns beyond 2-to-1)</li>
+<li>You need to inject additional constraints into the verification circuit</li>
+<li>You want to separate circuit construction from execution for caching or serialization</li>
+</ul>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="index.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="../user_guide/integration.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <i class="fa fa-angle-left"></i>
                             </a>
 
-                            <a rel="next prefetch" href="construction.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="../architecture_and_internals/construction.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <i class="fa fa-angle-right"></i>
                             </a>
 
@@ -200,11 +286,11 @@
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="index.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="../user_guide/integration.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <i class="fa fa-angle-left"></i>
                     </a>
 
-                    <a rel="next prefetch" href="construction.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="../architecture_and_internals/construction.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <i class="fa fa-angle-right"></i>
                     </a>
             </nav>
@@ -219,17 +305,17 @@
         </script>
 
 
-        <script src="elasticlunr.min.js"></script>
-        <script src="mark.min.js"></script>
-        <script src="searcher.js"></script>
+        <script src="../elasticlunr.min.js"></script>
+        <script src="../mark.min.js"></script>
+        <script src="../searcher.js"></script>
 
-        <script src="clipboard.min.js"></script>
-        <script src="highlight.js"></script>
-        <script src="book.js"></script>
+        <script src="../clipboard.min.js"></script>
+        <script src="../highlight.js"></script>
+        <script src="../book.js"></script>
 
         <!-- Custom JS scripts -->
-        <script src="mermaid.min.js"></script>
-        <script src="mermaid-init.js"></script>
+        <script src="../mermaid.min.js"></script>
+        <script src="../mermaid-init.js"></script>
 
 
 

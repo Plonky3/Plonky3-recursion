@@ -177,16 +177,682 @@
                 <div id="content" class="content">
                     <main>
                         <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
-<h1 id="plonky3-recursion-book"><a class="header" href="#plonky3-recursion-book">Plonky3 recursion book</a></h1>
-<p>This book introduces the <strong>Plonky3 recursion</strong> stack, a <a href="https://polygon.technology/">Polygon Labs</a> project, aimed at providing sufficient modularity and flexibility for developers, while maintaining high efficiency through its fixed recursive verifier design.</p>
-<p>The material is organized to help potential contributors and users understand the motivation, construction and extensions of the recursive verifier.</p>
-<p><strong>Using the API:</strong> The library exposes a <strong>unified recursion API</strong>: a single entry point (<a href="https://github.com/Plonky3/Plonky3-recursion#unified-recursion-api"><code>prove_next_layer</code></a>) supports both uni-stark and batch-stark proofs. See the <a href="https://github.com/Plonky3/Plonky3-recursion">repository README</a> for quick start and examples.</p>
+<h1 id="plonky3-recursion"><a class="header" href="#plonky3-recursion">Plonky3 Recursion</a></h1>
+<p>This book is the user guide for <strong>Plonky3 recursion</strong>, an independent project providing native recursive STARK verification for <a href="https://github.com/Plonky3/Plonky3">Plonky3</a>.</p>
+<p>The library lets you verify Plonky3 STARK proofs inside circuits, chain recursive layers to compress proof size, and aggregate independent proofs into a single attestation. It is built entirely on Plonky3's own STARK primitives — no separate plonkish SNARK wrapper.</p>
+<h2 id="what-this-book-covers"><a class="header" href="#what-this-book-covers">What this book covers</a></h2>
+<ul>
+<li><strong><a href="./getting_started/introduction.html">Getting Started</a></strong> — Motivation, design philosophy, and a quick start guide with working examples.</li>
+<li><strong><a href="./user_guide/api.html">User Guide</a></strong> — The unified recursion API, aggregation, configuration, public inputs, integration into your project, and the low-level API for advanced use cases.</li>
+<li><strong><a href="./architecture_and_internals/construction.html">Architecture &amp; Internals</a></strong> — How the fixed recursive verifier is built: the execution IR, witness table, operation-specific chips, circuit building pipeline, trace generation, and Poseidon2-based hashing.</li>
+<li><strong><a href="./advanced_topics/scaling.html">Advanced Topics</a></strong> — Scaling strategies for variable-length inputs, performance tuning, soundness considerations, and debugging tools.</li>
+<li><strong><a href="./appendix/benchmark.html">Appendix</a></strong> — Benchmarks, roadmap, and glossary.</li>
+</ul>
+<h2 id="quick-links"><a class="header" href="#quick-links">Quick links</a></h2>
+<ul>
+<li><strong>Source</strong>: <a href="https://github.com/Plonky3/Plonky3-recursion">github.com/Plonky3/Plonky3-recursion</a></li>
+<li><strong>API docs</strong>: <code>cargo doc --open</code></li>
+<li><strong>Examples</strong>: <code>recursion/examples/</code> — recursive Fibonacci, Keccak, and 2-to-1 aggregation</li>
+<li><strong>License</strong>: Dual MIT / Apache-2.0</li>
+</ul>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="introduction"><a class="header" href="#introduction">Introduction</a></h1>
 <p><a href="https://github.com/Plonky3/Plonky3">Plonky3</a> offers a comprehensive toolbox of cryptographic building blocks: hash functions, finite fields, and polynomial commitment schemes, ... to build tailored STARK proof systems. However, its adoption has been limited by the lack of native recursion, to allow arbitrary program execution replication in proof systems and to alleviate proof sizes and related on-chain verification costs.</p>
 <p>This project aims at addressing this limitation, by proposing a minimal, fixed recursive verifier for Plonky3, which conceptual simplicity allows for blazing fast recursion performance. A key distinction with its predecessor <a href="https://github.com/0xPolygonZero/plonky2">plonky2</a>, is that rather than wrapping a STARK proof in a separate plonkish SNARK, the Plonky3 recursion stack itself is built using Plonky3’s STARK primitives.</p>
 <p>The source code is open-source, available at <a href="https://github.com/Plonky3/Plonky3-recursion">Plonky3 recursion</a> and dual-licensed MIT/APACHE-2.</p>
 <p><em><strong>NOTE</strong></em>: <em>This project is under active development, unaudited and as such not ready for production use. We welcome all external contributors who would like to support the development effort.</em></p>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
+<h1 id="quick-start"><a class="header" href="#quick-start">Quick Start</a></h1>
+<h2 id="requirements"><a class="header" href="#requirements">Requirements</a></h2>
+<ul>
+<li>Rust stable (edition 2024)</li>
+<li>For best performance: <code>RUSTFLAGS="-Ctarget-cpu=native"</code></li>
+</ul>
+<h2 id="add-the-dependency"><a class="header" href="#add-the-dependency">Add the dependency</a></h2>
+<p>Plonky3-recursion is not yet published on crates.io. Add it as a git dependency:</p>
+<pre><code class="language-toml">[dependencies]
+p3-recursion = { git = "https://github.com/Plonky3/Plonky3-recursion", package = "p3-recursion" }
+</code></pre>
+<p>You will also need Plonky3 crates for fields, STARKs, and hashing. The recursion library re-exports what it needs, but your base prover setup will require direct Plonky3 dependencies.</p>
+<h2 id="minimal-example"><a class="header" href="#minimal-example">Minimal example</a></h2>
+<p>The fastest way to verify a proof recursively:</p>
+<pre><code class="language-rust ignore">use p3_recursion::{
+    FriRecursionBackend, ProveNextLayerParams, RecursionInput,
+    build_and_prove_next_layer, BatchOnly, Poseidon2Config,
+};
+
+// 1. You already have a Plonky3 STARK proof (uni-stark or batch-stark).
+//    Wrap it in a RecursionInput.
+let input = RecursionInput::UniStark {
+    proof: &amp;base_proof,
+    air: &amp;my_air,
+    public_inputs: public_values.clone(),
+    preprocessed_commit: None,
+};
+
+// 2. Create the FRI backend with a Poseidon2 config matching your field.
+let backend = FriRecursionBackend::&lt;16, 8&gt;::new(Poseidon2Config::KoalaBearD4Width16);
+
+// 3. Prove. This builds the verifier circuit, runs it, and produces a batch-STARK proof.
+let params = ProveNextLayerParams::default();
+let output = build_and_prove_next_layer::&lt;_, _, _, 4&gt;(
+    &amp;input, &amp;config, &amp;backend, &amp;params,
+)?;
+
+// 4. Chain further layers by converting the output back to an input.
+let next_input = output.into_recursion_input::&lt;BatchOnly&gt;();
+let output_2 = build_and_prove_next_layer::&lt;_, _, _, 4&gt;(
+    &amp;next_input, &amp;config, &amp;backend, &amp;params,
+)?;</code></pre>
+<p>The config (<code>&amp;config</code>) must implement <code>FriRecursionConfig</code>. See the <a href="getting_started/./integration.html">Integration Guide</a> for how to set this up, or the <a href="getting_started/./examples.html">Examples</a> for complete working code.</p>
+<h2 id="running-the-examples"><a class="header" href="#running-the-examples">Running the examples</a></h2>
+<p>Three examples ship with the library:</p>
+<pre><code class="language-bash"># Recursive Keccak (uni-STARK base proof)
+cargo run --release --example recursive_keccak -- --field koala-bear --num-hashes 100
+
+# Recursive Fibonacci (batch-STARK base proof built with CircuitBuilder)
+cargo run --release --example recursive_fibonacci -- --field koala-bear --n 1000
+
+# 2-to-1 aggregation (binary tree of proofs)
+cargo run --release --example recursive_aggregation -- --field koala-bear
+</code></pre>
+<p>Add <code>--features parallel</code> and <code>RUSTFLAGS="-Ctarget-cpu=native"</code> for production-level performance.</p>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
+<h1 id="examples"><a class="header" href="#examples">Examples</a></h1>
+<p>This section walks through the three provided examples to illustrate common recursion patterns.</p>
+<h2 id="recursive-keccak--verifying-a-uni-stark-proof"><a class="header" href="#recursive-keccak--verifying-a-uni-stark-proof">Recursive Keccak — verifying a uni-STARK proof</a></h2>
+<p><strong>Source</strong>: <code>recursion/examples/recursive_keccak.rs</code></p>
+<p>This example starts from a standard Plonky3 uni-STARK proof of the Keccak AIR, then recursively verifies it through multiple layers.</p>
+<p><strong>Flow:</strong></p>
+<ol>
+<li>Generate a Keccak trace and prove it with <code>p3_uni_stark::prove</code>.</li>
+<li>Wrap the resulting <code>Proof&lt;SC&gt;</code> in a <code>RecursionInput::UniStark</code>.</li>
+<li>Call <code>build_and_prove_next_layer</code> — this builds a verification circuit that checks the Keccak proof, runs it, and produces a batch-STARK proof.</li>
+<li>For subsequent layers, convert the output with <code>output.into_recursion_input::&lt;BatchOnly&gt;()</code> and repeat.</li>
+</ol>
+<p>The key point: the first recursive layer handles a <strong>uni-STARK</strong> proof (potentially large, depending on the AIR width). After that, every layer verifies the previous layer's <strong>batch-STARK</strong> proof, which has a predictable, smaller structure. This is why layer 1 is typically slower than layers 2+.</p>
+<pre><code class="language-bash">cargo run --release --example recursive_keccak -- \
+    --field koala-bear --num-hashes 1000 --num-recursive-layers 3
+</code></pre>
+<h2 id="recursive-fibonacci--verifying-a-batch-stark-proof"><a class="header" href="#recursive-fibonacci--verifying-a-batch-stark-proof">Recursive Fibonacci — verifying a batch-STARK proof</a></h2>
+<p><strong>Source</strong>: <code>recursion/examples/recursive_fibonacci.rs</code></p>
+<p>This example builds a Fibonacci circuit from scratch using <code>CircuitBuilder</code>, proves it with <code>BatchStarkProver</code>, then recurses.</p>
+<p><strong>Flow:</strong></p>
+<ol>
+<li>Build the circuit: <code>CircuitBuilder::new()</code>, add constants, public inputs, arithmetic, <code>connect</code>, <code>build</code>.</li>
+<li>Run and prove the base circuit with <code>BatchStarkProver</code>.</li>
+<li>Wrap the output in <code>RecursionOutput</code> (since it's already a batch proof), then use <code>into_recursion_input::&lt;BatchOnly&gt;()</code>.</li>
+<li>Call <code>build_and_prove_next_layer</code> in a loop for each recursive layer.</li>
+</ol>
+<p>This example demonstrates how to use the <code>CircuitBuilder</code> for your own computations and then feed the resulting proof into the recursion pipeline.</p>
+<pre><code class="language-bash">cargo run --release --example recursive_fibonacci -- \
+    --field koala-bear --n 10000 --num-recursive-layers 3
+</code></pre>
+<h2 id="recursive-aggregation--2-to-1-proof-merging"><a class="header" href="#recursive-aggregation--2-to-1-proof-merging">Recursive Aggregation — 2-to-1 proof merging</a></h2>
+<p><strong>Source</strong>: <code>recursion/examples/recursive_aggregation.rs</code></p>
+<p>This example produces multiple independent base proofs and aggregates them pairwise in a binary tree.</p>
+<p><strong>Flow:</strong></p>
+<ol>
+<li>Produce <code>2^depth</code> independent base proofs (each proving a different constant).</li>
+<li>At each tree level, pair up proofs and call <code>build_and_prove_aggregation_layer</code> on each pair.</li>
+<li>Repeat until a single root proof remains.</li>
+</ol>
+<p>The aggregation circuit verifies <strong>two</strong> proofs in a single circuit — left and right children — producing one output proof. The two inputs may be different kinds of <code>RecursionInput</code> (e.g., one <code>UniStark</code> and one <code>BatchStark</code>), though in this example they are all <code>BatchStark</code>.</p>
+<pre><code class="language-bash"># 4 base proofs, 2 aggregation levels
+cargo run --release --example recursive_aggregation -- \
+    --field koala-bear --num-recursive-layers 2
+</code></pre>
+<h2 id="common-patterns-across-examples"><a class="header" href="#common-patterns-across-examples">Common patterns across examples</a></h2>
+<p>All three examples share the same setup pattern:</p>
+<ol>
+<li>
+<p><strong>Config wrapper</strong>: A <code>ConfigWithFriParams</code> struct that wraps a <code>StarkConfig</code> and adds <code>FriVerifierParams</code>. It implements <code>StarkGenericConfig</code> (by delegating) and <code>FriRecursionConfig</code>.</p>
+</li>
+<li>
+<p><strong>Backend creation</strong>: <code>FriRecursionBackend::&lt;WIDTH, RATE&gt;::new(poseidon2_config)</code>.</p>
+</li>
+<li>
+<p><strong>Table packing</strong>: Adjusted per layer — the first layer may need different packing than subsequent layers because the verification circuit has a different shape.</p>
+</li>
+<li>
+<p><strong>Verification after proving</strong>: Each example verifies the proof it just produced, using <code>BatchStarkProver::verify_all_tables</code>.</p>
+</li>
+</ol>
+<p>See the <a href="getting_started/./integration.html">Integration Guide</a> for how to adapt this pattern to your own project.</p>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
+<h1 id="unified-recursion-api"><a class="header" href="#unified-recursion-api">Unified Recursion API</a></h1>
+<p>The library exposes a unified API that handles both uni-STARK and batch-STARK proofs through a single set of entry points.</p>
+<h2 id="core-types"><a class="header" href="#core-types">Core types</a></h2>
+<h3 id="recursioninput"><a class="header" href="#recursioninput"><code>RecursionInput</code></a></h3>
+<p>Wraps the proof to verify at each recursion step:</p>
+<pre><code class="language-rust ignore">pub enum RecursionInput&lt;'a, SC, A&gt; {
+    /// A single-instance STARK proof (e.g. from p3-uni-stark).
+    UniStark {
+        proof: &amp;'a Proof&lt;SC&gt;,
+        air: &amp;'a A,
+        public_inputs: Vec&lt;Val&lt;SC&gt;&gt;,
+        preprocessed_commit: Option&lt;Commitment&gt;,
+    },
+    /// A batch STARK proof (e.g. from p3-batch-stark or circuit-prover).
+    BatchStark {
+        proof: &amp;'a BatchStarkProof&lt;SC&gt;,
+        common_data: &amp;'a CommonData&lt;SC&gt;,
+        table_public_inputs: Vec&lt;Vec&lt;Val&lt;SC&gt;&gt;&gt;,
+    },
+}</code></pre>
+<p>Use <code>UniStark</code> when verifying an external Plonky3 proof (e.g. Keccak AIR). Use <code>BatchStark</code> when verifying a proof produced by this library's own prover.</p>
+<h3 id="recursionoutput"><a class="header" href="#recursionoutput"><code>RecursionOutput</code></a></h3>
+<p>The output of one recursion step:</p>
+<pre><code class="language-rust ignore">pub struct RecursionOutput&lt;SC&gt;(pub BatchStarkProof&lt;SC&gt;, pub CircuitProverData&lt;SC&gt;);</code></pre>
+<p>Contains the batch-STARK proof and the prover data needed for further chaining. Convert it to a <code>RecursionInput</code> for the next layer:</p>
+<pre><code class="language-rust ignore">let next_input = output.into_recursion_input::&lt;BatchOnly&gt;();</code></pre>
+<p>The <code>BatchOnly</code> marker type satisfies the <code>RecursiveAir</code> bound without carrying any AIR data — it's a no-op used when the next layer only needs to verify the recursive batch proof.</p>
+<h3 id="provenextlayerparams"><a class="header" href="#provenextlayerparams"><code>ProveNextLayerParams</code></a></h3>
+<p>Controls the proving pipeline:</p>
+<pre><code class="language-rust ignore">pub struct ProveNextLayerParams {
+    pub table_packing: TablePacking,
+    pub use_poseidon2_in_circuit: bool,
+}</code></pre>
+<ul>
+<li><code>table_packing</code>: How to distribute operations across table lanes. See <a href="user_guide/./configuration.html#table-packing">Configuration</a>.</li>
+<li><code>use_poseidon2_in_circuit</code>: Whether to register the Poseidon2 non-primitive table. Should be <code>true</code> for FRI verification.</li>
+</ul>
+<h2 id="entry-points"><a class="header" href="#entry-points">Entry points</a></h2>
+<h3 id="build_and_prove_next_layer"><a class="header" href="#build_and_prove_next_layer"><code>build_and_prove_next_layer</code></a></h3>
+<p>The simplest way to prove one recursion step. Builds the verifier circuit, runs it, and proves it in one call:</p>
+<pre><code class="language-rust ignore">let output = build_and_prove_next_layer::&lt;SC, A, B, D&gt;(
+    &amp;input, &amp;config, &amp;backend, &amp;params,
+)?;</code></pre>
+<h3 id="prove_next_layer"><a class="header" href="#prove_next_layer"><code>prove_next_layer</code></a></h3>
+<p>For better performance in production, separate circuit building from proving. The circuit only needs to be built once if the proof shape doesn't change between invocations:</p>
+<pre><code class="language-rust ignore">// Build once
+let (circuit, verifier_result) = build_next_layer_circuit(&amp;input, &amp;config, &amp;backend)?;
+
+// Prove (can be called multiple times with different inputs of the same shape)
+let output = prove_next_layer::&lt;SC, A, B, D&gt;(
+    &amp;input, circuit, &amp;verifier_result, &amp;config, &amp;backend, &amp;params,
+)?;</code></pre>
+<h3 id="build_and_prove_aggregation_layer"><a class="header" href="#build_and_prove_aggregation_layer"><code>build_and_prove_aggregation_layer</code></a></h3>
+<p>Verifies two proofs in a single circuit. The two inputs can be different <code>RecursionInput</code> variants:</p>
+<pre><code class="language-rust ignore">let output = build_and_prove_aggregation_layer::&lt;SC, A1, A2, B, D&gt;(
+    &amp;left, &amp;right, &amp;config, &amp;backend, &amp;params,
+)?;</code></pre>
+<h3 id="prove_aggregation_layer"><a class="header" href="#prove_aggregation_layer"><code>prove_aggregation_layer</code></a></h3>
+<p>The split build/prove variant for aggregation:</p>
+<pre><code class="language-rust ignore">let (circuit, (left_result, right_result)) =
+    build_aggregation_layer_circuit(&amp;left, &amp;right, &amp;config, &amp;backend)?;
+
+let output = prove_aggregation_layer::&lt;SC, A1, A2, B, D&gt;(
+    &amp;left, &amp;right, &amp;left_result, &amp;right_result,
+    circuit, &amp;config, &amp;backend, &amp;params,
+)?;</code></pre>
+<h2 id="recursion-loop-pattern"><a class="header" href="#recursion-loop-pattern">Recursion loop pattern</a></h2>
+<p>A typical recursion loop looks like this:</p>
+<pre><code class="language-rust ignore">let backend = FriRecursionBackend::&lt;16, 8&gt;::new(Poseidon2Config::KoalaBearD4Width16);
+
+// Layer 1: verify the base proof
+let input = RecursionInput::UniStark { proof: &amp;base_proof, air: &amp;my_air, .. };
+let mut output = build_and_prove_next_layer::&lt;_, _, _, 4&gt;(&amp;input, &amp;config, &amp;backend, &amp;params)?;
+
+// Layers 2..N: verify the previous recursive proof
+for _ in 2..=num_layers {
+    let input = output.into_recursion_input::&lt;BatchOnly&gt;();
+    output = build_and_prove_next_layer::&lt;_, _, _, 4&gt;(&amp;input, &amp;config, &amp;backend, &amp;params)?;
+}</code></pre>
+<p>After enough layers, the recursive proof reaches a steady-state size — further layers don't meaningfully change the proof dimensions.</p>
+<h2 id="type-parameter-d"><a class="header" href="#type-parameter-d">Type parameter <code>D</code></a></h2>
+<p>The const generic <code>D</code> is the extension field degree. For all currently supported fields (BabyBear, KoalaBear), use <code>D = 4</code>.</p>
+<h2 id="frirecursionbackend"><a class="header" href="#frirecursionbackend">FriRecursionBackend</a></h2>
+<p>The <code>FriRecursionBackend&lt;WIDTH, RATE&gt;</code> implements <code>PcsRecursionBackend</code> for FRI-based configs. It handles:</p>
+<ul>
+<li>Enabling Poseidon2 on the circuit builder</li>
+<li>Building the verifier circuit (delegating to <code>verify_p3_uni_proof_circuit</code> or <code>verify_p3_batch_proof_circuit</code>)</li>
+<li>Packing public inputs</li>
+<li>Setting Merkle path private data</li>
+</ul>
+<p>Create one with:</p>
+<pre><code class="language-rust ignore">let backend = FriRecursionBackend::&lt;16, 8&gt;::new(Poseidon2Config::KoalaBearD4Width16);</code></pre>
+<p><code>WIDTH</code> and <code>RATE</code> are the Poseidon2 permutation parameters (typically 16 and 8 for 32-bit fields).</p>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
+<h1 id="aggregation"><a class="header" href="#aggregation">Aggregation</a></h1>
+<p>The library supports 2-to-1 recursive aggregation: verifying two proofs inside a single circuit and producing one output proof. This enables binary tree aggregation of independent computations.</p>
+<h2 id="how-it-works"><a class="header" href="#how-it-works">How it works</a></h2>
+<p>An aggregation circuit contains two verifier sub-circuits sharing the same <code>CircuitBuilder</code>. Both verifications use the same Poseidon2 table and primitive chips. The combined circuit is then proved as a single batch-STARK.</p>
+<pre><code>       ┌────────────────────────┐
+       │   Aggregation Circuit  │
+       │                        │
+       │  ┌──────┐  ┌──────┐   │
+       │  │Verify│  │Verify│   │
+       │  │ left │  │right │   │
+       │  └──────┘  └──────┘   │
+       │                        │
+       └────────────────────────┘
+                  │
+            One batch-STARK
+               proof out
+</code></pre>
+<p>The left and right inputs are independent — they can be different <code>RecursionInput</code> variants (e.g., one <code>UniStark</code> and one <code>BatchStark</code>), and they can verify different AIRs entirely.</p>
+<h2 id="api"><a class="header" href="#api">API</a></h2>
+<pre><code class="language-rust ignore">use p3_recursion::{
+    build_and_prove_aggregation_layer, RecursionInput, BatchOnly,
+    FriRecursionBackend, ProveNextLayerParams, Poseidon2Config,
+};
+
+let left = RecursionInput::UniStark {
+    proof: &amp;proof_a, air: &amp;air_a, public_inputs: pis_a.clone(), preprocessed_commit: None,
+};
+let right = RecursionInput::UniStark {
+    proof: &amp;proof_b, air: &amp;air_b, public_inputs: pis_b.clone(), preprocessed_commit: None,
+};
+
+let backend = FriRecursionBackend::&lt;16, 8&gt;::new(Poseidon2Config::KoalaBearD4Width16);
+let params = ProveNextLayerParams::default();
+
+let output = build_and_prove_aggregation_layer::&lt;_, _, _, _, 4&gt;(
+    &amp;left, &amp;right, &amp;config, &amp;backend, &amp;params,
+)?;</code></pre>
+<p>The output is a regular <code>RecursionOutput</code> and can be fed into further aggregation or recursion layers via <code>into_recursion_input::&lt;BatchOnly&gt;()</code>.</p>
+<h2 id="tree-aggregation"><a class="header" href="#tree-aggregation">Tree aggregation</a></h2>
+<p>To aggregate N independent proofs, arrange them as leaves of a binary tree and aggregate pairwise, bottom up:</p>
+<pre><code>Level 0 (leaves):  P0   P1   P2   P3
+                    \  /      \  /
+Level 1:           Agg01    Agg23
+                      \    /
+Level 2 (root):      Root
+</code></pre>
+<p>At each level, every pair is aggregated independently — this is embarrassingly parallel.</p>
+<pre><code class="language-rust ignore">let mut proofs: Vec&lt;RecursionOutput&lt;SC&gt;&gt; = base_proofs;
+
+while proofs.len() &gt; 1 {
+    let mut next = Vec::new();
+    for pair in proofs.chunks(2) {
+        let left = pair[0].into_recursion_input::&lt;BatchOnly&gt;();
+        let right = pair[1].into_recursion_input::&lt;BatchOnly&gt;();
+        let out = build_and_prove_aggregation_layer::&lt;_, _, _, _, 4&gt;(
+            &amp;left, &amp;right, &amp;config, &amp;backend, &amp;params,
+        )?;
+        next.push(out);
+    }
+    proofs = next;
+}
+// proofs[0] is the root proof</code></pre>
+<h2 id="cost"><a class="header" href="#cost">Cost</a></h2>
+<p>An aggregation circuit is roughly twice the size of a single-verification circuit (two verifiers in one circuit). The Poseidon2 table is shared, so the overhead is less than 2x for hash-heavy proofs.</p>
+<p>Adjust <code>TablePacking</code> for aggregation circuits — they produce wider traces than single-verification circuits. See <a href="user_guide/./configuration.html#table-packing">Configuration</a> for guidance.</p>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
+<h1 id="configuration"><a class="header" href="#configuration">Configuration</a></h1>
+<p>This section covers the parameters you need to choose when setting up recursive verification.</p>
+<h2 id="field-selection"><a class="header" href="#field-selection">Field selection</a></h2>
+<p>The library currently supports two base fields:</p>
+<div class="table-wrapper"><table><thead><tr><th>Field</th><th>Modulus</th><th>Bits</th><th>Status</th></tr></thead><tbody>
+<tr><td><strong>KoalaBear</strong></td><td><code>0x7F000001</code></td><td>31</td><td>Recommended</td></tr>
+<tr><td><strong>BabyBear</strong></td><td><code>0x78000001</code></td><td>31</td><td>Fully supported</td></tr>
+</tbody></table>
+</div>
+<p>All fields support degree-4 binomial extensions (<code>BinomialExtensionField&lt;F, 4&gt;</code>), which is a currently
+fixed parameter for the recursion stack, with plans to lift it to a runtime parameter in the future.</p>
+<h2 id="fri-parameters"><a class="header" href="#fri-parameters">FRI parameters</a></h2>
+<p>FRI parameters control the trade-off between proof size, verifier cost, and security level.</p>
+<div class="table-wrapper"><table><thead><tr><th>Parameter</th><th>Typical value</th><th>Effect</th></tr></thead><tbody>
+<tr><td><code>log_blowup</code></td><td>3</td><td>LDE blowup factor (<code>2^log_blowup</code>). Higher = more redundancy, fewer queries needed.</td></tr>
+<tr><td><code>max_log_arity</code></td><td>4</td><td>Maximum folding factor per FRI round (<code>2^max_log_arity</code>). Controls how quickly polynomial degree reduces.</td></tr>
+<tr><td><code>log_final_poly_len</code></td><td>5</td><td>Degree of the final polynomial after folding. Smaller = more folding rounds but simpler final check.</td></tr>
+<tr><td><code>query_pow_bits</code></td><td>16</td><td>Proof-of-work bits during the query phase. Higher = fewer queries needed for same security.</td></tr>
+<tr><td><code>commit_pow_bits</code></td><td>0</td><td>Proof-of-work bits during the commit phase. Usually 0.</td></tr>
+<tr><td><code>cap_height</code></td><td>0</td><td>Height at which Merkle trees are truncated for commitments. 0 = single root hash.</td></tr>
+</tbody></table>
+</div>
+<h3 id="security-level"><a class="header" href="#security-level">Security level</a></h3>
+<p>The number of FRI queries is derived as:</p>
+<pre><code>num_queries = (target_security_bits - query_pow_bits) / log_blowup
+</code></pre>
+<p>With default parameters (<code>target = 100 bits</code>, <code>query_pow_bits = 16</code>, <code>log_blowup = 3</code>):</p>
+<pre><code>num_queries = (100 - 16) / 3 = 28
+</code></pre>
+<p>See related section in the <strong><a href="user_guide/./../advanced_topics/soundness.html">Soundness and Security</a></strong> chapter for a
+more thorough analysis of the security estimate in the light of recent findings against the underlying
+assumptions used in these heuristics.</p>
+<h3 id="intermediate-layer-relaxation"><a class="header" href="#intermediate-layer-relaxation">Intermediate layer relaxation</a></h3>
+<p>For intermediate recursive layers (not the final one), soundness requirements compose, so relaxed parameters can be used:</p>
+<ul>
+<li><code>query_pow_bits = 20</code>, <code>num_queries = 26</code> — saves 2 queries worth of in-circuit work</li>
+<li><code>query_pow_bits = 24</code>, <code>num_queries = 25</code> — more aggressive, suitable for deeply nested layers</li>
+</ul>
+<p>The outermost (final) layer should use full-strength parameters.</p>
+<h3 id="friverifierparams"><a class="header" href="#friverifierparams">FriVerifierParams</a></h3>
+<p>The recursion circuit uses <code>FriVerifierParams</code> to know the FRI structure without accessing the native <code>FriParameters</code> directly:</p>
+<pre><code class="language-rust ignore">let fri_verifier_params = FriVerifierParams::with_mmcs(
+    log_blowup,
+    log_final_poly_len,
+    commit_pow_bits,
+    query_pow_bits,
+    poseidon2_config,
+);</code></pre>
+<p>This is stored in your config wrapper and returned via <code>FriRecursionConfig::pcs_verifier_params()</code>.</p>
+<h2 id="poseidon2-configuration"><a class="header" href="#poseidon2-configuration">Poseidon2 configuration</a></h2>
+<p>The <code>Poseidon2Config</code> enum selects the hash function parameters for in-circuit hashing (MMCS verification and Fiat-Shamir):</p>
+<div class="table-wrapper"><table><thead><tr><th>Config</th><th>Field</th><th>D</th><th>WIDTH</th><th>RATE</th></tr></thead><tbody>
+<tr><td><code>BabyBearD4Width16</code></td><td>BabyBear</td><td>4</td><td>16</td><td>8</td></tr>
+<tr><td><code>BabyBearD1Width16</code></td><td>BabyBear</td><td>1</td><td>16</td><td>8</td></tr>
+<tr><td><code>BabyBearD4Width24</code></td><td>BabyBear</td><td>4</td><td>24</td><td>12</td></tr>
+<tr><td><code>KoalaBearD4Width16</code></td><td>KoalaBear</td><td>4</td><td>16</td><td>8</td></tr>
+<tr><td><code>KoalaBearD1Width16</code></td><td>KoalaBear</td><td>1</td><td>16</td><td>8</td></tr>
+<tr><td><code>KoalaBearD4Width24</code></td><td>KoalaBear</td><td>4</td><td>24</td><td>12</td></tr>
+</tbody></table>
+</div>
+<p>For standard recursive verification, use the <code>D4Width16</code> variant matching your field. The <code>D1</code> variants use base field challenges (lower overhead per duplexing, but different security trade-offs). The <code>Width24</code> variants use a wider permutation for more efficient hashing.</p>
+<p>The <code>Poseidon2Config</code> must be consistent between:</p>
+<ul>
+<li>The <code>FriRecursionBackend</code> constructor</li>
+<li>The <code>FriVerifierParams</code></li>
+<li>The Poseidon2 permutation enabled on the <code>CircuitBuilder</code></li>
+</ul>
+<h2 id="table-packing"><a class="header" href="#table-packing">Table packing</a></h2>
+<p><code>TablePacking</code> controls how circuit operations are distributed across table lanes. Each lane adds columns to a table; more lanes means shorter (fewer rows) but wider (more columns) tables.</p>
+<pre><code class="language-rust ignore">TablePacking::new(witness_lanes, public_lanes, alu_lanes)</code></pre>
+<div class="table-wrapper"><table><thead><tr><th>Parameter</th><th>Controls</th><th>Trade-off</th></tr></thead><tbody>
+<tr><td><code>witness_lanes</code></td><td>Witness table width</td><td>More lanes → fewer rows, but wider table</td></tr>
+<tr><td><code>public_lanes</code></td><td>Public input table width</td><td>Often the bottleneck for row count</td></tr>
+<tr><td><code>alu_lanes</code></td><td>ALU (add/mul) table width</td><td>Most operations land here</td></tr>
+</tbody></table>
+</div>
+<p>The total row count of each table is <code>ceil(num_ops / num_lanes)</code>, padded to the next power of two. The <strong>maximum table height</strong> across all tables determines the FRI polynomial degree and dominates proving cost.</p>
+<h3 id="choosing-packing-values"><a class="header" href="#choosing-packing-values">Choosing packing values</a></h3>
+<p>The goal is to balance table heights so no single table forces a large power-of-two padding.</p>
+<p><strong>Example</strong> — a recursive verification circuit with ~65K witness ops, ~43K public ops, ~60K ALU ops:</p>
+<div class="table-wrapper"><table><thead><tr><th>Packing</th><th>Max height</th><th>Notes</th></tr></thead><tbody>
+<tr><td><code>(5, 1, 3)</code></td><td>2^16 = 65,536</td><td>Public table (43K/1 = 43K rows) forces 2^16</td></tr>
+<tr><td><code>(5, 2, 3)</code></td><td>2^15 = 32,768</td><td>Public drops to 21.5K, halving the max</td></tr>
+<tr><td><code>(5, 3, 3)</code></td><td>2^15 = 32,768</td><td>Public at 14.3K, ALU at 20K — both fit in 2^15</td></tr>
+<tr><td><code>(8, 4, 4)</code></td><td>2^14 = 16,384</td><td>Everything fits, but tables are very wide</td></tr>
+</tbody></table>
+</div>
+<p>Halving the max table height cuts FRI proving time by roughly 40-50% (one fewer folding round, half the polynomial size).</p>
+<p>Use <code>.with_fri_params(log_final_poly_len, log_blowup)</code> to set minimum row counts:</p>
+<pre><code class="language-rust ignore">let packing = TablePacking::new(5, 2, 3)
+    .with_fri_params(log_final_poly_len, log_blowup);</code></pre>
+<h3 id="layer-specific-packing"><a class="header" href="#layer-specific-packing">Layer-specific packing</a></h3>
+<p>The first recursive layer (verifying the original proof) often has a different operation distribution than subsequent layers. It's common to use different packing per layer:</p>
+<pre><code class="language-rust ignore">let packing = if layer == 1 {
+    TablePacking::new(1, 1, 1)
+} else {
+    TablePacking::new(5, 1, 3)
+}.with_fri_params(log_final_poly_len, log_blowup);</code></pre>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
+<h1 id="public-inputs"><a class="header" href="#public-inputs">Public Inputs</a></h1>
+<p>Public inputs are the values the verifier knows — they connect the circuit to the proof being verified. In recursive verification, the previous proof's commitments, opened values, and challenges become public inputs to the recursive circuit.</p>
+<h2 id="how-public-inputs-flow"><a class="header" href="#how-public-inputs-flow">How public inputs flow</a></h2>
+<p>When a verifier circuit is built, it allocates public input targets in a specific order. At proving time, concrete values must be packed in <strong>exactly the same order</strong>. If the order doesn't match, the proof will fail.</p>
+<pre><code>Base proof (commitments, openings, challenges)
+         │
+         ▼
+┌─────────────────────────┐
+│   pack_public_inputs()  │  ← extracts values from the proof in allocation order
+└─────────────────────────┘
+         │
+         ▼
+   runner.set_public_inputs(&amp;packed_values)
+</code></pre>
+<h2 id="automatic-packing-via-the-unified-api"><a class="header" href="#automatic-packing-via-the-unified-api">Automatic packing via the unified API</a></h2>
+<p>When using <code>prove_next_layer</code> or <code>build_and_prove_next_layer</code>, public input packing is handled automatically. The <code>VerifierCircuitResult::pack_public_inputs</code> method extracts values from the <code>RecursionInput</code> in the correct order.</p>
+<p>You don't need to interact with the builders directly unless you're using the <a href="user_guide/./low_level_api.html">low-level API</a>.</p>
+<h2 id="manual-packing-low-level-api"><a class="header" href="#manual-packing-low-level-api">Manual packing (low-level API)</a></h2>
+<p>If building the verification circuit manually, use the dedicated builders:</p>
+<h3 id="starkverifierinputsbuilder-uni-stark"><a class="header" href="#starkverifierinputsbuilder-uni-stark"><code>StarkVerifierInputsBuilder</code> (uni-STARK)</a></h3>
+<p>Returned by <code>verify_p3_uni_proof_circuit</code>. Packs values from a <code>Proof&lt;SC&gt;</code>:</p>
+<pre><code class="language-rust ignore">let public_inputs = verifier_inputs.pack_values(
+    &amp;air_public_inputs,
+    &amp;proof,
+    &amp;preprocessed_commit,
+);
+runner.set_public_inputs(&amp;public_inputs)?;</code></pre>
+<h3 id="batchstarkverifierinputsbuilder-batch-stark"><a class="header" href="#batchstarkverifierinputsbuilder-batch-stark"><code>BatchStarkVerifierInputsBuilder</code> (batch-STARK)</a></h3>
+<p>Returned by <code>verify_p3_batch_proof_circuit</code>. Packs values from a <code>BatchProof&lt;SC&gt;</code> and <code>CommonData&lt;SC&gt;</code>:</p>
+<pre><code class="language-rust ignore">let public_inputs = verifier_inputs.pack_values(
+    &amp;table_public_inputs,
+    &amp;batch_proof,
+    &amp;common_data,
+);
+runner.set_public_inputs(&amp;public_inputs)?;</code></pre>
+<h3 id="publicinputbuilder-generic"><a class="header" href="#publicinputbuilder-generic"><code>PublicInputBuilder</code> (generic)</a></h3>
+<p>For custom circuits (not recursive verification), use the generic builder:</p>
+<pre><code class="language-rust ignore">let mut builder = PublicInputBuilder::new();
+builder
+    .add_proof_values(proof_values)
+    .add_challenge(alpha)
+    .add_challenges(betas);
+let public_inputs = builder.build();</code></pre>
+<h2 id="public-inputs-in-aggregation"><a class="header" href="#public-inputs-in-aggregation">Public inputs in aggregation</a></h2>
+<p>For aggregation circuits, public inputs from both verifications are concatenated — left first, then right. This is handled automatically by <code>prove_aggregation_layer</code>:</p>
+<pre><code class="language-rust ignore">let mut public_inputs = left_result.pack_public_inputs(&amp;left)?;
+public_inputs.extend(right_result.pack_public_inputs(&amp;right)?);</code></pre>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
+<h1 id="integration-guide"><a class="header" href="#integration-guide">Integration Guide</a></h1>
+<p>This section explains how to wire Plonky3-recursion into your own project.</p>
+<h2 id="implementing-frirecursionconfig"><a class="header" href="#implementing-frirecursionconfig">Implementing <code>FriRecursionConfig</code></a></h2>
+<p>The unified API requires your STARK config to implement <code>FriRecursionConfig</code>. This trait bridges your native Plonky3 config with the recursive verifier's type system.</p>
+<p>The typical pattern is a wrapper struct that holds both the native config and the <code>FriVerifierParams</code>:</p>
+<pre><code class="language-rust ignore">use p3_recursion::{
+    FriRecursionConfig, FriVerifierParams, Poseidon2Config,
+    RecursionInput, RecursiveAir, pcs::*,
+};
+
+#[derive(Clone)]
+struct MyRecursionConfig {
+    config: Arc&lt;MyStarkConfig&gt;,
+    fri_verifier_params: FriVerifierParams,
+}</code></pre>
+<h3 id="delegate-starkgenericconfig"><a class="header" href="#delegate-starkgenericconfig">Delegate <code>StarkGenericConfig</code></a></h3>
+<p>The wrapper must implement <code>StarkGenericConfig</code> by delegating to the inner config:</p>
+<pre><code class="language-rust ignore">impl StarkGenericConfig for MyRecursionConfig {
+    type Challenge = Challenge;
+    type Challenger = Challenger;
+    type Pcs = MyPcs;
+
+    fn pcs(&amp;self) -&gt; &amp;MyPcs { self.config.pcs() }
+    fn initialise_challenger(&amp;self) -&gt; Challenger { self.config.initialise_challenger() }
+}</code></pre>
+<h3 id="implement-frirecursionconfig"><a class="header" href="#implement-frirecursionconfig">Implement <code>FriRecursionConfig</code></a></h3>
+<p>The trait requires five associated types and four methods:</p>
+<pre><code class="language-rust ignore">impl FriRecursionConfig for MyRecursionConfig {
+    type Commitment = MerkleCapTargets&lt;F, DIGEST_ELEMS&gt;;
+    type InputProof = InputProofTargets&lt;F, Challenge, RecValMmcs&lt;F, DIGEST_ELEMS, MyHash, MyCompress&gt;&gt;;
+    type OpeningProof = FriProofTargets&lt;...&gt;;
+    type RawOpeningProof = &lt;MyPcs as Pcs&lt;Challenge, Challenger&gt;&gt;::Proof;
+    const DIGEST_ELEMS: usize = 8;
+
+    fn with_fri_opening_proof&lt;'a, A, R&gt;(
+        prev: &amp;RecursionInput&lt;'a, Self, A&gt;,
+        f: impl FnOnce(&amp;Self::RawOpeningProof) -&gt; R,
+    ) -&gt; R {
+        match prev {
+            RecursionInput::UniStark { proof, .. } =&gt; f(&amp;proof.opening_proof),
+            RecursionInput::BatchStark { proof, .. } =&gt; f(&amp;proof.proof.opening_proof),
+        }
+    }
+
+    fn enable_poseidon2_on_circuit(
+        &amp;self,
+        circuit: &amp;mut CircuitBuilder&lt;Challenge&gt;,
+    ) -&gt; Result&lt;(), VerificationError&gt; {
+        let perm = default_poseidon2_perm();
+        circuit.enable_poseidon2_perm::&lt;MyPoseidon2CircuitConfig, _&gt;(
+            generate_poseidon2_trace::&lt;Challenge, MyPoseidon2CircuitConfig&gt;,
+            perm,
+        );
+        Ok(())
+    }
+
+    fn pcs_verifier_params(&amp;self) -&gt; &amp;FriVerifierParams {
+        &amp;self.fri_verifier_params
+    }
+
+    fn set_fri_private_data(
+        runner: &amp;mut CircuitRunner&lt;Challenge&gt;,
+        op_ids: &amp;[NonPrimitiveOpId],
+        opening_proof: &amp;Self::RawOpeningProof,
+    ) -&gt; Result&lt;(), &amp;'static str&gt; {
+        set_fri_mmcs_private_data::&lt;F, Challenge, ChallengeMmcs, ValMmcs, MyHash, MyCompress, DIGEST_ELEMS&gt;(
+            runner, op_ids, opening_proof,
+        )
+    }
+}</code></pre>
+<p>The concrete types (<code>MyHash</code>, <code>MyCompress</code>, <code>ValMmcs</code>, etc.) must match your native Plonky3 prover setup. See the examples for complete implementations.</p>
+<h2 id="verifying-your-own-air"><a class="header" href="#verifying-your-own-air">Verifying your own AIR</a></h2>
+<p>To recursively verify a proof produced by a custom AIR, implement <code>RecursiveAir</code> for your AIR type:</p>
+<pre><code class="language-rust ignore">impl RecursiveAir&lt;F, EF, LogUpGadget&gt; for MyAir {
+    fn width(&amp;self) -&gt; usize {
+        // Number of main trace columns in your AIR
+        MY_AIR_WIDTH
+    }
+
+    fn eval_folded_circuit(
+        &amp;self,
+        builder: &amp;mut CircuitBuilder&lt;EF&gt;,
+        sels: &amp;RecursiveLagrangeSelectors,
+        alpha: &amp;Target,
+        lookup_metadata: &amp;LookupMetadata&lt;'_, F&gt;,
+        columns: ColumnsTargets&lt;'_&gt;,
+        lookup_gadget: &amp;LogUpGadget,
+    ) -&gt; Target {
+        // Convert your AIR's symbolic constraints to circuit form
+        // and fold them with alpha.
+        // Use `symbolic_to_circuit` or build manually.
+    }
+
+    fn get_log_num_quotient_chunks(
+        &amp;self,
+        preprocessed_width: usize,
+        num_public_values: usize,
+        contexts: &amp;[Lookup&lt;F&gt;],
+        lookup_data: &amp;[LookupData&lt;usize&gt;],
+        is_zk: usize,
+        lookup_gadget: &amp;LogUpGadget,
+    ) -&gt; usize {
+        // log2 of the number of quotient polynomial chunks.
+        // Must match what the native prover uses.
+    }
+}</code></pre>
+<p>For AIRs built with Plonky3's <code>Air</code> trait, the symbolic constraint extraction and folding can be done generically using <code>get_symbolic_constraints</code> and <code>symbolic_to_circuit</code>, as described in <a href="user_guide/./circuit_building.html#building-recursive-air-constraints">Circuit Building</a>.</p>
+<p>Then wrap your proof in <code>RecursionInput::UniStark</code>:</p>
+<pre><code class="language-rust ignore">let input = RecursionInput::UniStark {
+    proof: &amp;my_proof,
+    air: &amp;my_air,
+    public_inputs: my_public_values.clone(),
+    preprocessed_commit: Some(preprocessed_commitment),  // if your AIR has preprocessed columns
+};</code></pre>
+<h2 id="custom-non-primitive-chips"><a class="header" href="#custom-non-primitive-chips">Custom non-primitive chips</a></h2>
+<p>The circuit builder supports registering custom non-primitive operations beyond Poseidon2. These are operations that are too expensive to express purely in primitives and benefit from dedicated AIR tables.</p>
+<p>Non-primitive operations:</p>
+<ul>
+<li>Are controlled by a runtime policy (<code>DefaultProfile</code> disables all, <code>AllowAllProfile</code> enables all)</li>
+<li>Require a custom trace builder for trace generation</li>
+<li>Interact with the witness table via lookups, and may additionally use private data</li>
+</ul>
+<p>To enable a non-primitive operation, call the appropriate <code>enable_*</code> method on the <code>CircuitBuilder</code> before building. Attempting to use a non-primitive operation that hasn't been enabled will result in a runtime error.</p>
+<h2 id="end-to-end-integration-checklist"><a class="header" href="#end-to-end-integration-checklist">End-to-end integration checklist</a></h2>
+<ol>
+<li>Set up your Plonky3 prover config (field, hash, PCS, FRI params)</li>
+<li>Create a config wrapper implementing <code>FriRecursionConfig</code></li>
+<li>If verifying a custom AIR: implement <code>RecursiveAir</code></li>
+<li>Create a <code>FriRecursionBackend</code> with matching <code>Poseidon2Config</code></li>
+<li>Choose <code>TablePacking</code> values (start with defaults, tune later)</li>
+<li>Call <code>build_and_prove_next_layer</code> or the split build/prove variant</li>
+<li>Chain layers with <code>into_recursion_input::&lt;BatchOnly&gt;()</code></li>
+<li>Verify the final proof with <code>BatchStarkProver::verify_all_tables</code></li>
+</ol>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
+<h1 id="low-level-api"><a class="header" href="#low-level-api">Low-Level API</a></h1>
+<p>For fine-grained control over the verification circuit, you can bypass the unified API and build the pipeline manually.</p>
+<h2 id="manual-uni-stark-verification"><a class="header" href="#manual-uni-stark-verification">Manual uni-STARK verification</a></h2>
+<pre><code class="language-rust ignore">use p3_recursion::verifier::verify_p3_uni_proof_circuit;
+use p3_recursion::public_inputs::StarkVerifierInputsBuilder;
+use p3_circuit::CircuitBuilder;
+
+let mut circuit_builder = CircuitBuilder::new();
+
+// Enable Poseidon2 for MMCS verification
+circuit_builder.enable_poseidon2_perm::&lt;MyPoseidon2Config, _&gt;(trace_generator, perm);
+
+// Allocate public input targets and build verification constraints
+let verifier_inputs = StarkVerifierInputsBuilder::allocate(
+    &amp;mut circuit_builder, &amp;proof, preprocessed_commit.as_ref(), num_public_values,
+);
+
+let op_ids = verify_p3_uni_proof_circuit::&lt;
+    MyAir, MyConfig, CommitTargets, InputProofTargets, OpeningProofTargets,
+    WIDTH, RATE,
+&gt;(
+    &amp;config, &amp;air, &amp;mut circuit_builder,
+    &amp;verifier_inputs.proof_targets,
+    &amp;verifier_inputs.air_public_targets,
+    &amp;verifier_inputs.preprocessed_commit,
+    &amp;fri_verifier_params,
+    poseidon2_config,
+)?;
+
+// Build and run
+let circuit = circuit_builder.build()?;
+let mut runner = circuit.runner();
+
+let public_inputs = verifier_inputs.pack_values(&amp;pis, &amp;proof, &amp;preprocessed_commit);
+runner.set_public_inputs(&amp;public_inputs)?;
+
+set_fri_mmcs_private_data(&amp;mut runner, &amp;op_ids, &amp;proof.opening_proof)?;
+
+let traces = runner.run()?;</code></pre>
+<h2 id="manual-batch-stark-verification"><a class="header" href="#manual-batch-stark-verification">Manual batch-STARK verification</a></h2>
+<pre><code class="language-rust ignore">use p3_recursion::verifier::verify_p3_batch_proof_circuit;
+
+let mut circuit_builder = CircuitBuilder::new();
+circuit_builder.enable_poseidon2_perm::&lt;MyPoseidon2Config, _&gt;(trace_generator, perm);
+
+let lookup_gadget = LogUpGadget::new();
+
+let (verifier_inputs, op_ids) = verify_p3_batch_proof_circuit::&lt;
+    MyConfig, CommitTargets, InputProofTargets, OpeningProofTargets, LogUpGadget,
+    WIDTH, RATE, TRACE_D,
+&gt;(
+    &amp;config, &amp;mut circuit_builder, &amp;batch_proof,
+    &amp;fri_verifier_params, &amp;common_data, &amp;lookup_gadget, poseidon2_config,
+)?;
+
+let circuit = circuit_builder.build()?;
+let mut runner = circuit.runner();
+
+let public_inputs = verifier_inputs.pack_values(
+    &amp;table_public_inputs, &amp;batch_proof.proof, &amp;common_data,
+);
+runner.set_public_inputs(&amp;public_inputs)?;
+
+set_fri_mmcs_private_data(&amp;mut runner, &amp;op_ids, &amp;batch_proof.proof.opening_proof)?;
+
+let traces = runner.run()?;</code></pre>
+<h2 id="proving-the-verification-circuit"><a class="header" href="#proving-the-verification-circuit">Proving the verification circuit</a></h2>
+<p>Once you have traces, prove them with <code>BatchStarkProver</code>:</p>
+<pre><code class="language-rust ignore">use p3_circuit_prover::{BatchStarkProver, CircuitProverData};
+use p3_circuit_prover::common::get_airs_and_degrees_with_prep;
+
+let (airs_degrees, preprocessed) = get_airs_and_degrees_with_prep::&lt;SC, EF, D&gt;(
+    &amp;circuit, table_packing, Some(&amp;[NonPrimitiveConfig::Poseidon2(poseidon2_config)]),
+)?;
+
+let (mut airs, degrees): (Vec&lt;_&gt;, Vec&lt;_&gt;) = airs_degrees.into_iter().unzip();
+let prover_data = ProverData::from_airs_and_degrees(&amp;config, &amp;mut airs, &amp;degrees);
+let circuit_prover_data = CircuitProverData::new(prover_data, preprocessed);
+
+let mut prover = BatchStarkProver::new(config.clone())
+    .with_table_packing(table_packing);
+prover.register_poseidon2_table(poseidon2_config);
+
+let proof = prover.prove_all_tables(&amp;traces, &amp;circuit_prover_data)?;</code></pre>
+<h2 id="when-to-use-the-low-level-api"><a class="header" href="#when-to-use-the-low-level-api">When to use the low-level API</a></h2>
+<ul>
+<li>You need to inspect or modify the circuit between building and proving</li>
+<li>You want to share a single <code>CircuitBuilder</code> across multiple verification circuits (custom aggregation patterns beyond 2-to-1)</li>
+<li>You need to inject additional constraints into the verification circuit</li>
+<li>You want to separate circuit construction from execution for caching or serialization</li>
+</ul>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="recursion-approach-and-construction"><a class="header" href="#recursion-approach-and-construction">Recursion Approach and Construction</a></h1>
 <h2 id="high-level-architecture"><a class="header" href="#high-level-architecture">High-level architecture</a></h2>
@@ -223,7 +889,7 @@ overhead of handling arbitrary control flow, and makes the resulting AIR(s) stat
 <p><strong>Reusability</strong>: adapting to a new program requires a new circuit.</p>
 </li>
 </ul>
-<p>The rest of this book explains how this approach is built, <a href="extensions.html#strategies">how to soften its rigidity</a>,
+<p>The rest of this book explains how this approach is built, <a href="architecture_and_internals/scaling.html">how to soften its rigidity</a>,
 and why it provides a powerful foundation for recursive proof systems.</p>
 <h2 id="execution-ir"><a class="header" href="#execution-ir">Execution IR</a></h2>
 <p>An <strong>Execution IR</strong> (intermediate representation) is defined to describe the steps of the verifier.
@@ -251,7 +917,7 @@ The lookups can be seen as representing the <code>READ</code>/<code>WRITE</code>
 <li>the output of an operation.</li>
 </ul>
 <p>The computation graph that represents all operations in the IR is called <code>Circuit</code>.</p>
-<p>A <code>circuit_builder</code> provides convenient helper functions and macros for representing and defining operations within this graph. See section <a href="./circuit_building.html#building-circuits">Building Circuits</a> for more details on how to build a circuit.</p>
+<p>A <code>circuit_builder</code> provides convenient helper functions and macros for representing and defining operations within this graph. See section <a href="architecture_and_internals/./circuit_building.html#building-circuits">Building Circuits</a> for more details on how to build a circuit.</p>
 <h2 id="witness-table"><a class="header" href="#witness-table">Witness Table</a></h2>
 <p>The <code>Witness</code> table can be seen as a central memory bus that stores values shared across all operations. It is represented as pairs <code>(index, value)</code>, where indices are  that will be accessed by
 the different chips via lookups to enforce consistency.</p>
@@ -368,7 +1034,7 @@ For instance, if the output of a primitive operation is never used elsewhere in 
 be pruned away from the graph, and the operation removed.</p>
 <p>Once all the nodes have been assigned, and the circuit has been fully optimized, we output it.</p>
 <h2 id="building-recursive-air-constraints"><a class="header" href="#building-recursive-air-constraints">Building recursive AIR constraints</a></h2>
-<p>In order to recursively verify an AIR, its constraints need to be added to the circuit and folded together. In Plonky3, we can get an AIR's constraints in symbolic form. Since our primitive chips (see section <a href="./construction.html#execution-ir">Execution IR</a>) encompass the various entries in the symbolic representation, we can simply map each symbolic operation to its circuit counterpart. The <code>symbolic_to_circuit</code> function does exactly that for a given symbolic constraint.</p>
+<p>In order to recursively verify an AIR, its constraints need to be added to the circuit and folded together. In Plonky3, we can get an AIR's constraints in symbolic form. Since our primitive chips (see section <a href="architecture_and_internals/./construction.html#execution-ir">Execution IR</a>) encompass the various entries in the symbolic representation, we can simply map each symbolic operation to its circuit counterpart. The <code>symbolic_to_circuit</code> function does exactly that for a given symbolic constraint.</p>
 <p>We can consider a small example to show how operations are mapped. Given public inputs <code>a</code> and <code>b</code>, and a constant <code>c</code>, we have the following symbolic constraint: <code>Mul{ a, Sub {b, Const{ c }}}</code> (which corresponds to: <code>a * (b - c)</code>).</p>
 <pre><code class="language-rust ignore">// We get the `ExprId` corresponding to Const{ c } by adding a constant to the circuit.
 let x = builder.add_const(c);
@@ -442,99 +1108,10 @@ let proof = prover.prove_all_tables(&amp;traces)?;</code></pre>
 </li>
 </ul>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
-<h1 id="trace-generation-pipeline"><a class="header" href="#trace-generation-pipeline">Trace Generation Pipeline</a></h1>
-<p>After building a circuit, the next step is execution: running the program with concrete inputs and generating the execution traces needed for proving. This section describes the complete flow from a static <code>Circuit</code> specification to the final <code>Traces</code> structure.</p>
-<h2 id="overview"><a class="header" href="#overview">Overview</a></h2>
-<p>The trace generation pipeline consists of three distinct phases:</p>
-<ol>
-<li><strong>Circuit compilation</strong> — Transform high-level circuit expressions into a fixed intermediate representation.</li>
-<li><strong>Circuit execution</strong> — Populate the witness table by evaluating operations with concrete input values.</li>
-<li><strong>Trace extraction</strong> — Generate operation-specific traces from the populated witness table.</li>
-</ol>
-<p>Each phase has a clear responsibility and produces well-defined outputs that feed into the next stage.</p>
-<h2 id="phase-1-circuit-compilation"><a class="header" href="#phase-1-circuit-compilation">Phase 1: Circuit Compilation</a></h2>
-<p>Circuit compilation happens when calling <code>builder.build()</code>. This phase translates circuit expressions into a deterministic sequence of primitive and non-primitive operations.</p>
-<p>The compilation process is described in detail in the <a href="./circuit_building.html#building-pipeline">Circuit Building</a> section. In summary, it performs three successive passes to lower expressions to primitives, handle non-primitive operations, and optimize the resulting graph.</p>
-<p>The output is a <code>Circuit&lt;F&gt;</code> containing the primitive operations in topological order, non-primitive operation specifications, and witness allocation metadata. This circuit is a static, serializable specification that can be executed multiple times with different inputs.</p>
-<h2 id="phase-2-circuit-execution"><a class="header" href="#phase-2-circuit-execution">Phase 2: Circuit Execution</a></h2>
-<p>Circuit execution happens when calling <code>runner.run()</code>. This phase populates the witness table by evaluating each operation with concrete field element values.</p>
-<p>The runner is initialized with a <code>Circuit&lt;F&gt;</code> and receives:</p>
-<ul>
-<li>Public input values via <code>runner.set_public_inputs()</code></li>
-<li>Private data for non-primitive operations via <code>runner.set_private_data()</code></li>
-</ul>
-<p>The runner iterates through primitive operations in topological order, executing each one to populate witness slots. Operations can run in <strong>forward mode</strong> (computing outputs from inputs) or <strong>backward mode</strong> (inferring missing inputs from outputs), allowing bidirectional constraint solving.</p>
-<p>The output is a fully populated witness table where every slot contains a concrete field element. Any unset witness triggers a <code>WitnessNotSet</code> error.</p>
-<h2 id="phase-3-trace-extraction"><a class="header" href="#phase-3-trace-extraction">Phase 3: Trace Extraction</a></h2>
-<p>Trace extraction happens internally within <code>runner.run()</code> after execution completes. This phase delegates to specialized trace builders that transform the populated witness table into operation-specific trace tables.</p>
-<p>Each primitive operation has a dedicated builder that extracts its operations from the IR and produces trace columns:</p>
-<ul>
-<li><strong>WitnessTraceBuilder</strong> — Generates the central <a href="./construction.html#witness-table">witness table</a> with sequential <code>(index, value)</code> pairs</li>
-<li><strong>ConstTraceBuilder</strong> — Extracts constants (both columns preprocessed)</li>
-<li><strong>PublicTraceBuilder</strong> — Extracts public inputs (index preprocessed, values at runtime)</li>
-<li><strong>AddTraceBuilder</strong> — Extracts additions with six columns: <code>(lhs_index, lhs_value, rhs_index, rhs_value, result_index, result_value)</code></li>
-<li><strong>MulTraceBuilder</strong> — Extracts multiplications with the same six-column structure</li>
-</ul>
-<p>Non-primitive operations require custom trace builders. For example, <strong>MmcsTraceBuilder</strong> validates and extracts MMCS path verification traces. Custom trace builders follow the same pattern, operating independently in a single pass to produce isolated trace tables. All index columns are preprocessed since the IR is fixed and known to the verifier.</p>
-<p>The output is a <code>Traces&lt;F&gt;</code> structure containing all execution traces needed by the prover to generate STARK proofs for each <a href="./construction.html#operation-specific-stark-chips">operation-specific chip</a>.</p>
-<h2 id="example-fibonacci-circuit"><a class="header" href="#example-fibonacci-circuit">Example: Fibonacci Circuit</a></h2>
-<p>Consider a simple Fibonacci circuit computing <code>F(5)</code>:</p>
-<pre><code class="language-rust ignore">let mut builder = CircuitBuilder::new();
-
-let expected = builder.add_public_input();
-let mut a = builder.add_const(F::ZERO);
-let mut b = builder.add_const(F::ONE);
-
-for _ in 2..=5 {
-    let next = builder.add(a, b);
-    a = b;
-    b = next;
-}
-
-builder.connect(b, expected);
-let circuit = builder.build()?;</code></pre>
-<p><strong>Phase 1: Compilation</strong> produces:</p>
-<pre><code class="language-text">primitive_ops: [
-  Const { out: w0, val: 0 },
-  Const { out: w1, val: 1 },
-  Public { out: w2, public_pos: 0 },
-  Add { a: w0, b: w1, out: w3 },  // F(2) = 0 + 1
-  Add { a: w1, b: w3, out: w4 },  // F(3) = 1 + 1
-  Add { a: w3, b: w4, out: w5 },  // F(4) = 1 + 2
-  Add { a: w4, b: w5, out: w2 },  // F(5) = 2 + 3 (connects to expected)
-]
-witness_count: 6
-</code></pre>
-<p><strong>Phase 2: Execution</strong> with <code>runner.set_public_inputs(&amp;[F::from(5)])</code>:</p>
-<pre><code class="language-text">witness[0] = Some(0)
-witness[1] = Some(1)
-witness[2] = Some(5)
-witness[3] = Some(1)
-witness[4] = Some(2)
-witness[5] = Some(3)
-</code></pre>
-<p><strong>Phase 3: Trace Extraction</strong> produces:</p>
-<pre><code class="language-text">const_trace: [(w0, 0), (w1, 1)]
-public_trace: [(w2, 5)]
-add_trace: [
-  (w0, 0, w1, 1, w3, 1),
-  (w1, 1, w3, 1, w4, 2),
-  (w3, 1, w4, 2, w5, 3),
-  (w4, 2, w5, 3, w2, 5),
-]
-mul_trace: []
-</code></pre>
-<p>The witness table acts as the central bus, with each operation table containing <a href="./construction.html#lookups">lookups</a> into it. The aggregated lookup argument enforces that all these lookups are consistent.</p>
-<h2 id="key-properties"><a class="header" href="#key-properties">Key Properties</a></h2>
-<p><strong>Determinism</strong> — Given the same circuit and inputs, trace generation is completely deterministic, ensuring reproducible proofs.</p>
-<p><strong>Separation of concerns</strong> — Each phase has a single responsibility: compilation handles expression lowering, execution populates concrete values, and trace builders format data for proving.</p>
-<p><strong>Builder pattern efficiency</strong> — Trace builders operate in a single pass using only the data they need. No builder depends on another's output, enabling future parallelization.</p>
-<p><strong>Preprocessed columns</strong> — All index columns in operation traces are preprocessed. Since the IR is fixed, the verifier can reconstruct these columns without online commitments, significantly reducing proof size.</p>
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="hashing-and-fiat-shamir-in-recursion"><a class="header" href="#hashing-and-fiat-shamir-in-recursion">Hashing and Fiat-Shamir in Recursion</a></h1>
 <p>This section explains how cryptographic hashing, specifically Poseidon2, is used in recursive verification,
 and how the Fiat-Shamir challenger is implemented to maintain transcript compatibility with native Plonky3.</p>
-<h2 id="overview-1"><a class="header" href="#overview-1">Overview</a></h2>
+<h2 id="overview"><a class="header" href="#overview">Overview</a></h2>
 <p>Recursive verification requires two distinct uses of the permutation used by the selected prover configuration:</p>
 <ol>
 <li><strong>Fiat-Shamir Challenger</strong>: Derives random challenges from the transcript (commitments, opened values, etc.)</li>
@@ -697,24 +1274,7 @@ The AIR constrains the Poseidon2 permutation over the base field regardless of h
 <p>In addition, when observing opened values in batch verification, we must ensure to respect
 the order the native verifier performed for the recursive circuit to be able to satisfy the
 associated constraints.</p>
-<h2 id="soundness-considerations"><a class="header" href="#soundness-considerations">Soundness Considerations</a></h2>
-<h3 id="current-witness-hints"><a class="header" href="#current-witness-hints">Current: Witness Hints</a></h3>
-<p>Currently, the Poseidon2 permutation for the challenger is computed via <strong>witness hints</strong>:</p>
-<pre><pre class="playground"><code class="language-rust edition2024"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>// Prover provides the permutation output as a witness hint
-let outputs = circuit.add_poseidon2_perm_for_challenger(config, inputs);
-<span class="boring">}</span></code></pre></pre>
-<p>The prover computes the correct Poseidon2 output natively and provides it as a witness. The circuit then constrains consistency between inputs and outputs.</p>
-<h3 id="future-cross-table-lookups-ctls"><a class="header" href="#future-cross-table-lookups-ctls">Future: Cross-Table Lookups (CTLs)</a></h3>
-<p>For full soundness, each challenger Poseidon2 call should be connected to the Poseidon2 AIR table via CTLs. This cryptographically enforces that the permutation was computed correctly:</p>
-<pre><code>Challenger Circuit              Poseidon2 AIR Table
-──────────────────              ──────────────────────
-[in₀, in₁, in₂, in₃]  ──CTL──►  Row with matching
-[out₀, out₁, out₂, out₃] ◄─────  inputs/outputs
-</code></pre>
-<p>The CTL proves that the (input, output) pair appears in the Poseidon2 table, ensuring the permutation wasn't forged by the prover.</p>
-<h2 id="configuration"><a class="header" href="#configuration">Configuration</a></h2>
+<h2 id="configuration-1"><a class="header" href="#configuration-1">Configuration</a></h2>
 <p>The challenger is configured with a <code>Poseidon2Config</code> that specifies the field and extension degree:</p>
 <div class="table-wrapper"><table><thead><tr><th>Config</th><th>Field</th><th>D</th><th>WIDTH</th><th>Use Case</th></tr></thead><tbody>
 <tr><td><code>BabyBearD4Width16</code></td><td>BabyBear</td><td>4</td><td>16</td><td>Standard recursive verification</td></tr>
@@ -727,28 +1287,93 @@ let outputs = circuit.add_poseidon2_perm_for_challenger(config, inputs);
 </div>
 <p>The challenger is in charge to validate at runtime that the config matches the extension field being used.</p>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
-<h1 id="handling-arbitrary-programs"><a class="header" href="#handling-arbitrary-programs">Handling arbitrary programs</a></h1>
-<p>The fixed recursive verifier described in this book supports only fixed, predetermined programs.<br />
-This design choice maximizes performance but raises the question: <strong>how can one prove statements of varying size or complexity?</strong></p>
-<p>We highlight below two distinct approaches to alleviate this limitation and allow for arbitrary recursion</p>
+<h1 id="scaling-strategies"><a class="header" href="#scaling-strategies">Scaling Strategies</a></h1>
+<p>The fixed recursive verifier supports only predetermined programs. This section describes strategies for handling computations of varying size or complexity.</p>
 <h2 id="tree-style-recursion-for-variable-length-inputs"><a class="header" href="#tree-style-recursion-for-variable-length-inputs">Tree-style recursion for variable-length inputs</a></h2>
-<p>One can split a large computation into chunks and prove each piece using a fixed inner circuit in parallel.
-These proofs can then be <em>recursively aggregated</em> in a tree structure, where each leaf of the tree corresponds to a prover portion of the computation. The tree root yields a single proof attesting to the validity of the entire computation.</p>
-<p>A formal description of this tree-style recursion for STARKs can be seen in <a href="https://eprint.iacr.org/2023/208">zkTree</a>.</p>
+<p>Split a large computation into chunks and prove each chunk independently using a fixed inner circuit. Then aggregate the proofs in a binary tree, where each leaf corresponds to a portion of the computation. The tree root yields a single proof attesting to the entire computation.</p>
+<p>This approach is naturally parallelizable: all leaf proofs are independent, and each tree level can be processed in parallel across pairs.</p>
+<p>A formal description of tree-style recursion for STARKs can be found in <a href="https://eprint.iacr.org/2023/208">zkTree</a>. See also the <a href="advanced_topics/./aggregation.html">Aggregation</a> chapter for the API.</p>
 <h2 id="flexible-fri-verification"><a class="header" href="#flexible-fri-verification">Flexible FRI verification</a></h2>
-<p>To support proofs with different FRI shapes, one can:</p>
-<ul>
-<li>
-<p><strong>Lift the proofs</strong> to a larger domain, as described in <a href="https://hackmd.io/HkfET6x1Qh-yNvm4fKc7zA">Lifting plonky3</a>.<br />
-Lifting allows a fixed circuit to efficiently verify proofs of varying trace sizes
-by projecting smaller domains into larger ones, reusing the original LDE and commitments without recomputation.</p>
-</li>
-<li>
-<p><strong>Verify distinct proof shapes together</strong> inside a fixed FRI verifier circuit. Instead of having a single proof
-size that can be verified by a given FRI verifier circuit, one can extend it over a range of sizes instead at a minimal overhead cost. See a related implementation in <code>plonky2</code> recursion: (<a href="https://github.com/0xPolygonZero/plonky2/pull/1635">Plonky2 PR #1635</a>) for more details.</p>
-</li>
-</ul>
+<p>To support proofs with different FRI shapes (different trace sizes), two techniques apply:</p>
+<h3 id="proof-lifting"><a class="header" href="#proof-lifting">Proof lifting</a></h3>
+<p><strong>Lift</strong> smaller proofs to a larger domain, as described in <a href="https://hackmd.io/HkfET6x1Qh-yNvm4fKc7zA">Lifting Plonky3</a>. Lifting projects a smaller domain into a larger one, reusing the original LDE and commitments. This lets a fixed circuit verify proofs from a range of trace sizes without recomputation.</p>
+<h3 id="multi-shape-fri-verification"><a class="header" href="#multi-shape-fri-verification">Multi-shape FRI verification</a></h3>
+<p>Instead of fixing a single proof size per verifier circuit, extend the FRI verifier to handle a <strong>range</strong> of sizes within the same circuit, at minimal overhead. A related approach is implemented in Plonky2 recursion (<a href="https://github.com/0xPolygonZero/plonky2/pull/1635">PR #1635</a>).</p>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
+<h1 id="soundness-and-security"><a class="header" href="#soundness-and-security">Soundness and Security</a></h1>
+<p>This section describes the security model, current guarantees, and known limitations.</p>
+<h2 id="what-is-proven"><a class="header" href="#what-is-proven">What is proven</a></h2>
+<p>A recursive proof attests that:</p>
+<ol>
+<li>The original computation (base layer) was executed correctly according to the AIR constraints.</li>
+<li>Each intermediate STARK verification was performed correctly: commitments were checked, FRI queries were sampled from the transcript, Merkle paths were verified, and polynomial evaluations matched.</li>
+<li>The Fiat-Shamir transcript was computed consistently — the circuit challenger produces identical challenges to the native Plonky3 challenger given the same observations.</li>
+</ol>
+<h2 id="security-parameters"><a class="header" href="#security-parameters">Security parameters</a></h2>
+<p>FRI soundness depends on several parameters working together. However, it is not generally correct to
+model security as “<code>num_queries × log_blowup</code> bits”. That heuristic relied on strong proximity-gap /
+correlated-agreement assumptions that are no longer believed to hold in full generality.
+See for instance:</p>
+<ul>
+<li>https://eprint.iacr.org/2025/2010</li>
+<li>https://eprint.iacr.org/2025/2046</li>
+</ul>
+<p>Instead, the soundness error must be derived from a <em>proven bound</em> for the specific FRI variant
+and parameter regime being used.</p>
+<div class="table-wrapper"><table><thead><tr><th>Parameter</th><th>Role</th></tr></thead><tbody>
+<tr><td><code>log_blowup</code></td><td>Sets the Reed–Solomon code rate (blowup factor). This affects the code distance and proximity gap, but does <strong>not</strong> directly translate into a fixed number of “bits per query”.</td></tr>
+<tr><td><code>num_queries</code></td><td>Number of independent FRI consistency checks. Increasing this reduces soundness error according to the <em>actual</em> FRI soundness bound being used.</td></tr>
+<tr><td><code>query_pow_bits</code></td><td>Proof-of-work grinding. Adds <code>query_pow_bits</code> bits of security independently of the code-theoretic soundness term.</td></tr>
+</tbody></table>
+</div>
+<p>Let:</p>
+<pre><code>ε_FRI = soundness error derived from the relevant FRI theorem/bound
+        (depends on blowup, proximity parameter δ, domain size,
+         field size, and list-decodability/proximity-gap behavior)
+</code></pre>
+<p>Then the security level should be expressed as:</p>
+<pre><code>security ≈ -log2(ε_FRI) + query_pow_bits
+</code></pre>
+<p>Crucially, <code>-log2(ε_FRI)</code> must be computed from a proven soundness bound for the specific FRI configuration.
+It should not be replaced by <code>num_queries × log_blowup</code> unless an additional (explicitly stated)
+conjectural assumption is being made.</p>
+<h2 id="cryptographic-components-verified-in-circuit"><a class="header" href="#cryptographic-components-verified-in-circuit">Cryptographic components verified in-circuit</a></h2>
+<h3 id="merkle-tree-verification"><a class="header" href="#merkle-tree-verification">Merkle tree verification</a></h3>
+<p>Every MMCS opening proof (Merkle path) is verified in-circuit via Poseidon2 hashing. The circuit:</p>
+<ul>
+<li>Hashes sibling pairs up the tree</li>
+<li>Checks that the reconstructed root matches the committed root (a public input)</li>
+<li>Handles position-dependent ordering (left vs right sibling)</li>
+</ul>
+<h3 id="fri-verification"><a class="header" href="#fri-verification">FRI verification</a></h3>
+<p>The circuit performs the full FRI verification protocol:</p>
+<ul>
+<li>Samples folding challenges (beta) from the transcript</li>
+<li>Samples query indices from the transcript</li>
+<li>Verifies proof-of-work witnesses</li>
+<li>Checks the fold chain: at each FRI round, verifies that the folded polynomial evaluations are consistent with the committed Merkle trees</li>
+<li>Evaluates and checks the final polynomial</li>
+</ul>
+<h3 id="fiat-shamir-challenger"><a class="header" href="#fiat-shamir-challenger">Fiat-Shamir challenger</a></h3>
+<p>The circuit challenger implements a duplex sponge construction identical to Plonky3's native <code>DuplexChallenger</code>. It absorbs commitments and opened values in the same order as the native verifier, producing identical challenges. See <a href="advanced_topics/./hashing.html">Hashing and Fiat-Shamir</a> for details on transcript compatibility.</p>
+<h2 id="current-limitations"><a class="header" href="#current-limitations">Current limitations</a></h2>
+<h3 id="non-zk-mode-only"><a class="header" href="#non-zk-mode-only">Non-ZK mode only</a></h3>
+<p>The library currently supports only non-ZK STARKs (<code>config.is_zk() == 0</code>). The recursive verifier does not handle zero-knowledge randomization of traces.</p>
+<h3 id="challenger-poseidon2-ctl-verified"><a class="header" href="#challenger-poseidon2-ctl-verified">Challenger Poseidon2: CTL-verified</a></h3>
+<p>The Fiat-Shamir challenger's Poseidon2 permutations are connected to the Poseidon2 AIR table via cross-table lookups (CTLs). The circuit builder's <code>add_poseidon2_perm_for_challenger</code> / <code>add_poseidon2_perm_for_challenger_base</code> use the standard Poseidon2 non-primitive op with full input and rate-output CTL exposure; the executor runs the real permutation and the lookup argument enforces that the (input, output) pair appears in the Poseidon2 table. The MMCS Poseidon2 calls (Merkle verification) are also CTL-verified.</p>
+<h3 id="fixed-poseidon2-parameters"><a class="header" href="#fixed-poseidon2-parameters">Fixed Poseidon2 parameters</a></h3>
+<p>The recursion stack currently requires <code>WIDTH = 16</code> and <code>RATE = 8</code> for 32-bit fields with degree-4 extensions. Future versions will support configurable parameters.</p>
+<h2 id="verifier-trust-model"><a class="header" href="#verifier-trust-model">Verifier trust model</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Component</th><th>How it's verified</th></tr></thead><tbody>
+<tr><td>Commitment openings</td><td>Merkle path verification (Poseidon2, CTL-enforced)</td></tr>
+<tr><td>FRI fold chain</td><td>Algebraic consistency checks in-circuit</td></tr>
+<tr><td>FRI query indices</td><td>Sampled in-circuit from transcript</td></tr>
+<tr><td>Proof-of-work</td><td>Verified in-circuit</td></tr>
+<tr><td>Fiat-Shamir challenges</td><td>Circuit challenger (CTL-verified against Poseidon2 AIR)</td></tr>
+<tr><td>AIR constraint satisfaction</td><td>Evaluated in-circuit via symbolic-to-circuit translation</td></tr>
+<tr><td>Lookup argument</td><td>LogUp verification in-circuit</td></tr>
+</tbody></table>
+</div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="debugging"><a class="header" href="#debugging">Debugging</a></h1>
 <p>The <code>CircuitBuilder</code> provides built-in debugging tools to help identify wiring issues and unsatisfied constraints.</p>
 <h2 id="allocation-logging"><a class="header" href="#allocation-logging">Allocation Logging</a></h2>
@@ -801,7 +1426,7 @@ This ensures that all constraints are properly satisfied before proceeding to th
 <p>This section presents empirical performance results for the Plonky3 recursion system, including instructions for reproducibility across target machines.</p>
 <p><strong>NOTE</strong>: This library is still at an early stage, parameters have not been finely tuned yet, and as such performance results here may not reflect the full potential of the library.</p>
 <h2 id="setup"><a class="header" href="#setup">Setup</a></h2>
-<p>The two reference examples are a Plonky3 uni-stark proof of the Keccak AIR imported directly and a Plonky3 batch-stark proof of the Fibonacci sequence, generated with the <code>CircuitBuilder</code> of this library.</p>
+<p>The reference examples are a Plonky3 uni-stark proof of the Keccak AIR imported directly, a Plonky3 batch-stark proof of the Fibonacci sequence generated with the <code>CircuitBuilder</code> of this library, and a 2-to-1 aggregation tree over basic <code>p3-batch-stark</code> proofs.</p>
 <ul>
 <li>Keccak example: set number of hashes with <code>-n</code> argument</li>
 </ul>
@@ -813,6 +1438,12 @@ This ensures that all constraints are properly satisfied before proceeding to th
 </ul>
 <pre><code class="language-bash">RUSTFLAGS=-Ctarget-cpu=native RUSTFLAGS=-Copt-level=3 RUST_LOG=info cargo run --release \
     --example recursive_fibonacci --features parallel -- -n 10000
+</code></pre>
+<ul>
+<li>2-to-1 aggregation example:</li>
+</ul>
+<pre><code class="language-bash">RUSTFLAGS=-Ctarget-cpu=native RUSTFLAGS=-Copt-level=3 RUST_LOG=info cargo run --release \
+    --example recursive_aggregation --features parallel -- --field koala-bear
 </code></pre>
 <h3 id="parameterization"><a class="header" href="#parameterization">Parameterization</a></h3>
 <p>Each example supports additional parameterization around the FRI parameters, namely:</p>
@@ -840,13 +1471,59 @@ This ensures that all constraints are properly satisfied before proceeding to th
 <li>
 <p><strong>Fibonacci multi-AIR program:</strong> (10,000th element)</p>
 <ul>
-<li>Base uni-stark proof: 86.1 ms</li>
+<li>Base batch-stark proof: 86.1 ms</li>
 <li>1st recursion layer: 281 ms</li>
 <li>2nd recursion layer: 466 ms</li>
 <li>3rd recursion layer: 450 ms</li>
 </ul>
 </li>
+<li>
+<p><strong>2-to-1 aggregation:</strong></p>
+<ul>
+<li>Base batch-stark proof: 30 ms</li>
+<li>1st aggregation layer: 428 ms</li>
+<li>2nd aggregation layer: 802 ms</li>
+<li>3rd and next aggregation layers: 1.04 ms</li>
 </ul>
+</li>
+</ul>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
+<h1 id="roadmap"><a class="header" href="#roadmap">Roadmap</a></h1>
+<p>This page tracks planned improvements and known optimization opportunities.</p>
+<h2 id="soundness"><a class="header" href="#soundness">Soundness</a></h2>
+<ul>
+<li><strong>ZK mode</strong>: Support zero-knowledge STARKs (trace randomization). Currently only non-ZK mode is supported.</li>
+</ul>
+<h2 id="performance"><a class="header" href="#performance">Performance</a></h2>
+<ul>
+<li><strong>Eliminate decompose/recompose round-trips</strong>: Base field values are currently lifted to extension field targets and then repacked before MMCS verification, which decomposes them again. Keeping values in base coefficient form throughout would eliminate ~15-20% of circuit operations.</li>
+<li><strong>Dedicated FRI AIR table</strong>: A specialized non-primitive chip for Lagrange interpolation during FRI folding would offload ~30K primitive operations to a compact AIR.</li>
+<li><strong>Remove the Witness bus</strong>: Since the verifier program is fixed and deterministic, the global Witness table can be replaced with direct inter-chip lookups, eliminating an entire table.</li>
+<li><strong>Additional optimization passes</strong>: More aggressive dead-node pruning, common subexpression elimination, and chain fusion in the circuit optimizer.</li>
+</ul>
+<h2 id="flexibility"><a class="header" href="#flexibility">Flexibility</a></h2>
+<ul>
+<li><strong>Configurable WIDTH/RATE</strong>: Currently fixed at <code>WIDTH=16</code>, <code>RATE=8</code> for 32-bit fields. Making these configurable would support wider permutations and different security/performance trade-offs.</li>
+<li><strong>Goldilocks support</strong>: Full testing and optimization for the 64-bit Goldilocks field.</li>
+<li><strong>Multi-shape FRI verification</strong>: A single verifier circuit that can handle proofs with different trace sizes, reducing the need for proof lifting.</li>
+</ul>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
+<h1 id="glossary"><a class="header" href="#glossary">Glossary</a></h1>
+<p><strong>AIR</strong> — Algebraic Intermediate Representation. A set of polynomial constraints that define the validity of an execution trace. Each row of the trace must satisfy the AIR's constraints.</p>
+<p><strong>ALU</strong> — Arithmetic Logic Unit. In this library, the primitive chip that handles <code>add</code>, <code>mul</code>, <code>sub</code>, <code>div</code>, <code>bool_check</code>, and <code>mul_add</code> operations via selector columns.</p>
+<p><strong>CTL</strong> — Cross-Table Lookup. A mechanism to enforce consistency between different AIR tables by proving that multisets of tuples match across tables. Uses the LogUp argument.</p>
+<p><strong>D</strong> — Extension field degree. The recursion stack uses degree-4 extensions (<code>D = 4</code>), meaning each extension field element is represented by 4 base field elements.</p>
+<p><strong>FRI</strong> — Fast Reed-Solomon Interactive Oracle Proof. The polynomial commitment scheme used by Plonky3. Proves that a committed function is close to a low-degree polynomial via iterative folding and random queries.</p>
+<p><strong>IR</strong> — Intermediate Representation. The deterministic sequence of operations (constants, public inputs, arithmetic, non-primitives) that defines a circuit's computation.</p>
+<p><strong>LDE</strong> — Low-Degree Extension. Evaluating a polynomial on a domain larger than its degree, used to create redundancy for FRI queries. The blowup factor controls the domain expansion ratio.</p>
+<p><strong>LogUp</strong> — Logarithmic derivative lookup argument. The specific lookup protocol used to enforce CTL relations between tables. Based on <a href="https://eprint.iacr.org/2022/1530">Ulrich Haböck's construction</a>.</p>
+<p><strong>MMCS</strong> — Mixed Matrix Commitment Scheme. Plonky3's abstraction for committing to matrices of field elements. Typically instantiated with Merkle trees over Poseidon2 hashes.</p>
+<p><strong>PCS</strong> — Polynomial Commitment Scheme. A cryptographic primitive that allows committing to a polynomial and later proving evaluations at chosen points. FRI is the PCS used here.</p>
+<p><strong>Poseidon2</strong> — An algebraic hash function optimized for arithmetic circuits. Used for Merkle tree hashing and Fiat-Shamir challenges. Parameterized by WIDTH (number of state elements) and RATE (elements absorbed per permutation).</p>
+<p><strong>RAP</strong> — Randomized AIR with Preprocessing. An extension of AIR that supports preprocessed columns (known to the verifier before the proof) and randomized columns (computed after an initial commitment round).</p>
+<p><strong>STARK</strong> — Scalable Transparent Argument of Knowledge. A proof system based on polynomial IOPs and hash functions (no trusted setup). Plonky3 implements uni-STARKs (single AIR) and batch-STARKs (multiple AIRs with shared FRI).</p>
+<p><strong>Target</strong> — An identifier for a value in the circuit's expression graph. Each <code>Target</code> (also called <code>ExprId</code>) refers to either a constant, a public input, or the output of an operation.</p>
+<p><strong>WitnessId</strong> — An index into the global Witness table. After circuit compilation, each <code>Target</code> is assigned a <code>WitnessId</code> that identifies its slot in the witness memory bus.</p>
 
                     </main>
 
