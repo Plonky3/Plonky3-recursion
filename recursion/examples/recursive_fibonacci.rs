@@ -34,6 +34,7 @@
 //!     --query-pow-bits 16
 //! ```
 
+use std::rc::Rc;
 use std::sync::Arc;
 
 use clap::{Parser, ValueEnum};
@@ -446,7 +447,7 @@ macro_rules! define_field_module {
                 }
 
                 let backend = FriRecursionBackend::<WIDTH, RATE>::new($poseidon2_config);
-                let mut output = RecursionOutput(proof_0, std::rc::Rc::new(circuit_prover_data_0));
+                let mut output = RecursionOutput(proof_0, Rc::new(circuit_prover_data_0));
 
                 for layer in 1..=num_recursive_layers {
                     let params = ProveNextLayerParams {

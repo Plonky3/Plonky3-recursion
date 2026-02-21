@@ -239,6 +239,7 @@ impl<F: CircuitField> CircuitRunner<F> {
                     self.set_witness(*out, *val)?;
                 }
                 Op::Public { out, public_pos: _ } => {
+                    // Public inputs should already be set
                     if self.witness[out.0 as usize].is_none() {
                         return Err(CircuitError::PublicInputNotSet { witness_id: *out });
                     }
@@ -263,6 +264,8 @@ impl<F: CircuitField> CircuitRunner<F> {
                         }
                     }
                     AluOpKind::Mul => {
+                        // Mul is used to represent either `Mul` or `Div` operations.
+                        // We determine which based on which inputs are set.
                         let a_val = self.get_witness(*a)?;
                         if let Ok(b_val) = self.get_witness(*b) {
                             self.set_witness(*out, a_val * b_val)?;
@@ -273,10 +276,12 @@ impl<F: CircuitField> CircuitRunner<F> {
                         }
                     }
                     AluOpKind::BoolCheck => {
+                        // BoolCheck constraint is checked in the AIR; here we just ensure out = a
                         let a_val = self.get_witness(*a)?;
                         self.set_witness(*out, a_val)?;
                     }
                     AluOpKind::MulAdd => {
+                        // out = a * b + c
                         let a_val = self.get_witness(*a)?;
                         let b_val = self.get_witness(*b)?;
                         let ab_product = a_val * b_val;
@@ -284,6 +289,7 @@ impl<F: CircuitField> CircuitRunner<F> {
                         let c_id_opt = *c;
                         let out_id = *out;
 
+                        // Set intermediate_out if fused from separate operations
                         if let Some(io) = intermediate_out_id {
                             self.set_witness(io, ab_product)?;
                         }
@@ -327,7 +333,7 @@ impl<F: CircuitField> CircuitRunner<F> {
             .ok_or(CircuitError::WitnessNotSet { witness_id: widx })
     }
 
-    /// Sets witness value by ID (with conflict check for public inputs etc.).
+    /// Sets witness value by ID.
     #[inline]
     fn set_witness(&mut self, widx: WitnessId, value: F) -> Result<(), CircuitError> {
         if widx.0 as usize >= self.witness.len() {
@@ -336,6 +342,7 @@ impl<F: CircuitField> CircuitRunner<F> {
 
         let slot = &mut self.witness[widx.0 as usize];
 
+        // Check for conflicting reassignment
         if let Some(existing_value) = slot.as_ref() {
             if *existing_value == value {
                 return Ok(());

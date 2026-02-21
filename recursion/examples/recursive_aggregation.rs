@@ -31,6 +31,7 @@
 //!     --query-pow-bits 16
 //! ```
 
+use std::rc::Rc;
 use std::sync::Arc;
 
 use clap::{Parser, ValueEnum};
@@ -404,7 +405,7 @@ macro_rules! define_field_module {
                     .verify_all_tables(&proof, circuit_prover_data.common_data())
                     .expect("Failed to verify dummy proof");
 
-                RecursionOutput(proof, std::rc::Rc::new(circuit_prover_data))
+                RecursionOutput(proof, Rc::new(circuit_prover_data))
             }
 
             pub fn run(num_recursive_layers: usize, fri_params: &FriParams) {
