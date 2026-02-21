@@ -334,6 +334,14 @@ impl<F: Field> Circuit<F> {
             }
         }
 
+        // After optimization passes, some witness slots may be unreferenced,
+        // so we need to resize the witness table to match the witness_count.
+        const WITNESS_IDX: usize = PrimitiveOpType::Witness as usize;
+        let size = self.witness_count as usize;
+        if preprocessed.primitive[WITNESS_IDX].len() < size {
+            preprocessed.primitive[WITNESS_IDX].resize(size, F::ZERO);
+        }
+
         Ok(preprocessed)
     }
 }
