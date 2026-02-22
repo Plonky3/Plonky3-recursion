@@ -862,11 +862,9 @@ fn compute_single_reduced_opening<EF: Field>(
     // Each step emits a single HornerAcc ALU op (no intermediate witnesses).
     let zero = builder.define_const(EF::ZERO);
     let mut inner = zero;
-    builder.push_scope("horner_method");
     for i in (0..n).rev() {
         inner = builder.horner_acc_step(inner, alpha, point_values[i], opened_values[i]);
     }
-    builder.pop_scope();
 
     // reduced_opening = alpha_pow * inner * (1 / (z - x))
     let numerator = builder.mul(alpha_pow, inner);

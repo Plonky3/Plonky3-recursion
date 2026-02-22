@@ -39,6 +39,8 @@ pub struct OpCounts {
     pub muls: u64,
     /// Number of division expressions allocated.
     pub divs: u64,
+    /// Number of Horner accumulator expressions allocated.
+    pub horner_accs: u64,
     /// Number of non-primitive calls allocated, broken down by type.
     pub non_primitives: HashMap<NonPrimitiveOpType, u64>,
 }
@@ -95,6 +97,11 @@ impl ProfilingState {
     #[inline]
     fn bump_div(&mut self) {
         self.bump_with(|c| c.divs += 1);
+    }
+
+    #[inline]
+    fn bump_horner_acc(&mut self) {
+        self.bump_with(|c| c.horner_accs += 1);
     }
 
     #[inline]
@@ -466,6 +473,9 @@ where
         p_at_x: ExprId,
         label: &'static str,
     ) -> ExprId {
+        #[cfg(feature = "profiling")]
+        self.profiling.bump_horner_acc();
+
         let expr_id = self.graph.add_expr(Expr::HornerAcc {
             acc,
             alpha,
