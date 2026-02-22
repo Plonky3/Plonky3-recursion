@@ -295,11 +295,12 @@ fn test_extension_field_table_lookups() {
     expected_multiplicities.resize(total_witness_length, BabyBear::ZERO);
 
     // Get expected preprocessed trace for `WitnessAir`.
+    // Indices are D-scaled: WitnessId(i) maps to base-field index i * D = i * 4.
     let expected_preprocessed_trace = RowMajorMatrix::new(
         expected_multiplicities
             .iter()
             .enumerate()
-            .flat_map(|(i, m)| vec![*m, BabyBear::from_usize(i)])
+            .flat_map(|(i, m)| vec![*m, BabyBear::from_usize(i * D)])
             .collect::<Vec<_>>(),
         2 * TablePacking::default().witness_lanes(),
     );

@@ -243,6 +243,7 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AluAir<F, D> {
     /// Convert an `AluTrace` to preprocessed values.
     /// Layout per op (without multiplicity):
     /// [sel_add_vs_mul, sel_bool, sel_muladd, a_idx, b_idx, c_idx, out_idx]
+    /// Indices are D-scaled: `WitnessId(n)` is stored as base-field index `n * D`.
     pub fn trace_to_preprocessed<ExtF: BasedVectorSpace<F>>(trace: &AluTrace<ExtF>) -> Vec<F> {
         let total_len = trace.a_index.len() * (Self::preprocessed_lane_width() - 1);
         let mut preprocessed_values = Vec::with_capacity(total_len);
@@ -263,10 +264,10 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AluAir<F, D> {
                 sel_add_vs_mul,
                 sel_bool,
                 sel_muladd,
-                F::from_u32(trace.a_index[i].0),
-                F::from_u32(trace.b_index[i].0),
-                F::from_u32(trace.c_index[i].0),
-                F::from_u32(trace.out_index[i].0),
+                F::from_u32(trace.a_index[i].0 * D as u32),
+                F::from_u32(trace.b_index[i].0 * D as u32),
+                F::from_u32(trace.c_index[i].0 * D as u32),
+                F::from_u32(trace.out_index[i].0 * D as u32),
             ]);
         }
 

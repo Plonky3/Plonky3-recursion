@@ -108,7 +108,7 @@ fn test_poseidon2_perm_verifier() -> Result<(), VerificationError> {
         })
         .collect();
 
-    let preprocessed = extract_preprocessed_from_operations(&ops);
+    let preprocessed = extract_preprocessed_from_operations(&ops, 4);
     let air = Poseidon2CircuitAirBabyBearD4Width16::new_with_preprocessed(
         constants.clone(),
         preprocessed,
