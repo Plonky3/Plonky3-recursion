@@ -178,7 +178,7 @@ impl<F: Field, EF: ExtensionField<F>, LG: LookupGadget> RecursiveAir<F, EF, LG> 
         _columns: ColumnsTargets<'_>,
         _lookup_gadget: &LG,
     ) -> Target {
-        builder.add_const(EF::ZERO)
+        builder.define_const(EF::ZERO)
     }
 
     fn get_log_num_quotient_chunks(

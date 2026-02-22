@@ -141,7 +141,7 @@ fn symbolic_to_circuit_core<CF: Field, F: Field>(
                 }
                 match expr {
                     SymbolicExpression::Constant(c) => {
-                        let id = circuit.add_const(convert_const(*c));
+                        let id = circuit.define_const(convert_const(*c));
                         cache.insert(key, id);
                         stack.push(id);
                     }
@@ -212,7 +212,7 @@ fn symbolic_to_circuit_core<CF: Field, F: Field>(
                     Op::Sub => circuit.sub(lhs, rhs),
                     Op::Mul => circuit.mul(lhs, rhs),
                     Op::Neg => {
-                        let zero = circuit.add_const(F::ZERO);
+                        let zero = circuit.define_const(F::ZERO);
                         circuit.sub(zero, rhs)
                     }
                 };
@@ -334,20 +334,20 @@ mod tests {
         // Build a circuit adding public inputs for `sels`, public values, local values and next values.
         let mut circuit = CircuitBuilder::new();
         let circuit_sels = [
-            circuit.add_public_input(),
-            circuit.add_public_input(),
-            circuit.add_public_input(),
+            circuit.public_input(),
+            circuit.public_input(),
+            circuit.public_input(),
         ];
         let circuit_public_values = [
-            circuit.add_public_input(),
-            circuit.add_public_input(),
-            circuit.add_public_input(),
+            circuit.public_input(),
+            circuit.public_input(),
+            circuit.public_input(),
         ];
         let mut circuit_local_values = Vec::with_capacity(NUM_FIBONACCI_COLS);
         let mut circuit_next_values = Vec::with_capacity(NUM_FIBONACCI_COLS);
         for _ in 0..NUM_FIBONACCI_COLS {
-            circuit_local_values.push(circuit.add_public_input());
-            circuit_next_values.push(circuit.add_public_input());
+            circuit_local_values.push(circuit.public_input());
+            circuit_next_values.push(circuit.public_input());
         }
 
         let row_selectors = RowSelectorsTargets {
@@ -376,7 +376,7 @@ mod tests {
         );
 
         // Check that the circuit output equals the folded constraints.
-        let final_result_const = circuit.add_const(folded_constraints);
+        let final_result_const = circuit.define_const(folded_constraints);
         circuit.connect(final_result_const, sum);
 
         let mut all_public_values = sels.to_vec();

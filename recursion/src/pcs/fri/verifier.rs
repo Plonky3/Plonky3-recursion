@@ -50,10 +50,10 @@ where
         .collect();
 
     // Lift basis elements to circuit constants once and reuse across all chunks.
-    let basis_consts: Vec<Target> = basis.iter().map(|b| builder.add_const(*b)).collect();
+    let basis_consts: Vec<Target> = basis.iter().map(|b| builder.define_const(*b)).collect();
 
     // Add a zero constant for padding partial chunks
-    let zero = builder.add_const(EF::ZERO);
+    let zero = builder.define_const(EF::ZERO);
 
     lifted
         .chunks(d)
@@ -86,7 +86,7 @@ fn one_hot_from_two_bits<EF: Field>(
     b0: Target,
     b1: Target,
 ) -> [Target; 4] {
-    let one = builder.add_const(EF::ONE);
+    let one = builder.define_const(EF::ONE);
     let nb0 = builder.sub(one, b0);
     let nb1 = builder.sub(one, b1);
 
@@ -105,7 +105,7 @@ fn one_hot_from_three_bits<EF: Field>(
     b1: Target,
     b2: Target,
 ) -> [Target; 8] {
-    let one = builder.add_const(EF::ONE);
+    let one = builder.define_const(EF::ONE);
     let nb0 = builder.sub(one, b0);
     let nb1 = builder.sub(one, b1);
     let nb2 = builder.sub(one, b2);
@@ -158,11 +158,11 @@ fn one_hot_from_bits<EF: Field>(builder: &mut CircuitBuilder<EF>, bits: &[Target
     match log_arity {
         0 => {
             // Degenerate case: arity 1, always index 0.
-            vec![builder.add_const(EF::ONE)]
+            vec![builder.define_const(EF::ONE)]
         }
         1 => {
             // One bit: [!b0, b0]
-            let one = builder.add_const(EF::ONE);
+            let one = builder.define_const(EF::ONE);
             let b0 = bits[0];
             let nb0 = builder.sub(one, b0);
             vec![nb0, b0]
@@ -178,7 +178,7 @@ fn one_hot_from_bits<EF: Field>(builder: &mut CircuitBuilder<EF>, bits: &[Target
         }
         4 => one_hot_from_four_bits(builder, bits),
         _ => {
-            let one = builder.add_const(EF::ONE);
+            let one = builder.define_const(EF::ONE);
             // Precompute negations of bits once to avoid rebuilding `1 - bit` inside the inner loop for every index j.
             let not_bits: Vec<Target> = bits.iter().map(|&bit| builder.sub(one, bit)).collect();
 
@@ -277,12 +277,12 @@ where
 
         // Compute subgroup_start = g_big^{reverse_bits_len(parent_index, log_folded_height)}
         let g_big = F::two_adic_generator(log_folded_height + log_arity);
-        let one = builder.add_const(EF::ONE);
+        let one = builder.define_const(EF::ONE);
 
         let g_big_pows: Vec<Target> = if log_folded_height > 0 {
             iter::successors(Some(g_big), |&prev| Some(prev.square()))
                 .take(log_folded_height)
-                .map(|p| builder.add_const(EF::from(p)))
+                .map(|p| builder.define_const(EF::from(p)))
                 .collect()
         } else {
             Vec::new()
@@ -305,7 +305,7 @@ where
         .map(|i| {
             let br_i = p3_util::reverse_bits_len(i, log_arity);
             let omega_br = omega.exp_u64(br_i as u64);
-            builder.add_const(EF::from(omega_br))
+            builder.define_const(EF::from(omega_br))
         })
         .collect();
 
@@ -339,7 +339,7 @@ where
     EF: ExtensionField<F>,
 {
     let num_phases = log_arities.len();
-    let one = builder.add_const(EF::ONE);
+    let one = builder.define_const(EF::ONE);
 
     // log_folded_height[i] = log_max_height - cumulative_bits[i+1]
     let log_folded_heights: Vec<usize> = (0..num_phases)
@@ -356,7 +356,7 @@ where
     let g_0 = F::two_adic_generator(log_max_height);
     let powers_of_g: Vec<_> = iter::successors(Some(g_0), |&prev| Some(prev.square()))
         .take(max_chain_len)
-        .map(|p| builder.add_const(EF::from(p)))
+        .map(|p| builder.define_const(EF::from(p)))
         .collect();
 
     let parent_offset_0 = cumulative_bits[1]; // = log_arities[0]
@@ -423,7 +423,7 @@ fn arity2_fold_at_point<EF: Field>(
     beta: Target,
     x0: Target,
 ) -> Target {
-    let neg_half = builder.add_const(EF::NEG_ONE * EF::ONE.halve());
+    let neg_half = builder.define_const(EF::NEG_ONE * EF::ONE.halve());
     let inv = builder.div(neg_half, x0);
     let e1_minus_e0 = builder.sub(e1, e0);
     let beta_minus_x0 = builder.sub(beta, x0);
@@ -465,8 +465,8 @@ where
     // For arity 2, use the optimized formula
     if log_arity == 1 {
         let sibling = siblings[0];
-        let one = builder.add_const(EF::ONE);
-        let neg_half = builder.add_const(EF::NEG_ONE * EF::ONE.halve());
+        let one = builder.define_const(EF::ONE);
+        let neg_half = builder.define_const(EF::NEG_ONE * EF::ONE.halve());
         let sibling_is_right = builder.sub(one, index_bits[bits_consumed]);
 
         let e0 = builder.select(sibling_is_right, folded, sibling);
@@ -552,7 +552,7 @@ where
                 .map(|j| {
                     let br_2j = p3_util::reverse_bits_len(2 * j, log_domain);
                     let c = omega_s.exp_u64(br_2j as u64);
-                    builder.add_const(EF::from(c))
+                    builder.define_const(EF::from(c))
                 })
                 .collect();
             for j in 0..num_pairs {
@@ -606,9 +606,9 @@ where
         .collect();
 
     // Pre-lift all powers to circuit constants once
-    let pow_consts: Vec<Target> = pows.iter().map(|p| builder.add_const(*p)).collect();
+    let pow_consts: Vec<Target> = pows.iter().map(|p| builder.define_const(*p)).collect();
 
-    let one = builder.add_const(EF::ONE);
+    let one = builder.define_const(EF::ONE);
     let mut res = one;
 
     let parent_offset = bits_consumed + 1;
@@ -721,7 +721,7 @@ where
     let g = F::two_adic_generator(log_height);
     let result = iter::successors(Some(g), |&prev| Some(prev.square()))
         .take(log_height)
-        .map(|p| builder.add_const(EF::from(p)))
+        .map(|p| builder.define_const(EF::from(p)))
         .collect();
 
     builder.pop_scope();
@@ -748,10 +748,10 @@ where
     let domain_index_bits: Vec<Target> = index_bits[total_bits_consumed..log_max_height].to_vec();
 
     // Pad bits and reverse
-    let mut reversed_bits = vec![builder.add_const(EF::ZERO); total_bits_consumed];
+    let mut reversed_bits = vec![builder.define_const(EF::ZERO); total_bits_consumed];
     reversed_bits.extend(domain_index_bits.iter().rev().copied());
 
-    let one = builder.add_const(EF::ONE);
+    let one = builder.define_const(EF::ONE);
     let mut result = one;
     for (&bit, &power) in reversed_bits.iter().zip(powers_of_g.iter()) {
         let multiplier = builder.select(bit, power, one);
@@ -798,13 +798,13 @@ where
     let g = F::two_adic_generator(h_max);
     let powers_of_g: Vec<_> = iter::successors(Some(g), |&prev| Some(prev.square()))
         .take(h_max)
-        .map(|p| builder.add_const(EF::from(p)))
+        .map(|p| builder.define_const(EF::from(p)))
         .collect();
 
     let capture_set: BTreeMap<usize, ()> =
         unique_heights_desc[1..].iter().map(|&h| (h, ())).collect();
 
-    let one = builder.add_const(EF::ONE);
+    let one = builder.define_const(EF::ONE);
     let generator = builder.alloc_const(EF::from(F::GENERATOR), "coset_generator");
     let mut g_pow = one;
     let mut result = BTreeMap::new();
@@ -847,7 +847,7 @@ fn compute_single_reduced_opening<EF: Field>(
     let n = opened_values.len();
 
     if n == 0 {
-        let zero = builder.add_const(EF::ZERO);
+        let zero = builder.define_const(EF::ZERO);
         builder.pop_scope();
         return (alpha_pow, zero);
     }
@@ -1042,9 +1042,12 @@ where
             let x = eval_points[&log_height];
 
             // Initialize / fetch per-height (alpha_pow, ro)
-            let (alpha_pow_h, ro_h) = reduced_openings
-                .entry(log_height)
-                .or_insert_with(|| (builder.add_const(EF::ONE), builder.add_const(EF::ZERO)));
+            let (alpha_pow_h, ro_h) = reduced_openings.entry(log_height).or_insert_with(|| {
+                (
+                    builder.define_const(EF::ONE),
+                    builder.define_const(EF::ZERO),
+                )
+            });
 
             // Process each (z, ps_at_z) pair for this matrix
             for (z, ps_at_z) in mat_points_and_values {
@@ -1059,7 +1062,7 @@ where
                         .entry((log_height, *z))
                         .or_insert_with(|| {
                             let z_minus_x = builder.sub(*z, x);
-                            let one = builder.add_const(EF::ONE);
+                            let one = builder.define_const(EF::ONE);
                             builder.div(one, z_minus_x)
                         });
 
@@ -1082,7 +1085,7 @@ where
         // trace matrix of height 1. In this case `f` is constant, so `(f(zeta) - f(x))/(zeta - x)`
         // must equal `0`.
         if let Some((_ap, ro0)) = reduced_openings.get(&log_blowup) {
-            let zero = builder.add_const(EF::ZERO);
+            let zero = builder.define_const(EF::ZERO);
             builder.connect(*ro0, zero);
         }
     }
@@ -1330,7 +1333,7 @@ where
                 }
                 roll_ins[i] = Some(ro);
             } else {
-                let zero = builder.add_const(EF::ZERO);
+                let zero = builder.define_const(EF::ZERO);
                 builder.connect(ro, zero);
             }
         }
@@ -1434,7 +1437,7 @@ where
                 // Parent index bits start after index_in_group bits
                 let parent_bit_start = bits_consumed + log_arity;
                 let parent_bit_end = (parent_bit_start + log_folded_height).min(log_max_height);
-                let zero = builder.add_const(EF::ZERO);
+                let zero = builder.define_const(EF::ZERO);
 
                 let mut parent_index_bits: Vec<Target> =
                     index_bits_per_query[q][parent_bit_start..parent_bit_end].to_vec();

@@ -779,7 +779,7 @@ where
                 )
             })?;
             let generator = next_point * first_point.inverse();
-            let generator_const = circuit.add_const(generator);
+            let generator_const = circuit.define_const(generator);
             let zeta_next = circuit.mul(zeta, generator_const);
             Ok((
                 *ext_dom,
@@ -888,7 +888,7 @@ where
                 )
             })?;
             let generator = next_point * first_point.inverse();
-            let generator_const = circuit.add_const(generator);
+            let generator_const = circuit.define_const(generator);
             let zeta_next = circuit.mul(zeta, generator_const);
 
             pre_round.push((
@@ -928,7 +928,7 @@ where
                     )
                 })?;
                 let generator = next_point * first_point.inverse();
-                let generator_const = circuit.add_const(generator);
+                let generator_const = circuit.define_const(generator);
                 let zeta_next = circuit.mul(zeta, generator_const);
 
                 permutation_round.push((
@@ -1016,10 +1016,10 @@ where
             // Each chunk represents the coefficients of one extension field element.
             flat.chunks_exact(ext_degree)
                 .map(|coeffs| {
-                    let mut sum = circuit.add_const(SC::Challenge::ZERO);
+                    let mut sum = circuit.define_const(SC::Challenge::ZERO);
                     // Dot product: sum(coeff_j * basis_j)
                     coeffs.iter().enumerate().for_each(|(j, &coeff)| {
-                        let e_i = circuit.add_const(
+                        let e_i = circuit.define_const(
                             SC::Challenge::ith_basis_element(j)
                                 .expect("Basis element should exist"),
                         );

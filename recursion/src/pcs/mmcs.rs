@@ -41,7 +41,7 @@ where
 {
     if base_coeffs.is_empty() {
         // Return zeros for empty input (shouldn't happen in practice)
-        let zero = circuit.add_const(EF::ZERO);
+        let zero = circuit.define_const(EF::ZERO);
         return Ok(vec![zero, zero]);
     }
 
@@ -99,7 +99,7 @@ where
                         ext_coeffs.push(prev[coeff_idx]);
                     } else {
                         // First permutation with new_start, use zero
-                        ext_coeffs.push(circuit.add_const(EF::ZERO));
+                        ext_coeffs.push(circuit.define_const(EF::ZERO));
                     }
                 }
 
@@ -155,11 +155,11 @@ where
 {
     let rate_ext = permutation_config.rate_ext();
     if ext_elements.is_empty() {
-        let zero = circuit.add_const(EF::ZERO);
+        let zero = circuit.define_const(EF::ZERO);
         return Ok(vec![zero, zero]);
     }
 
-    let zero = circuit.add_const(EF::ZERO);
+    let zero = circuit.define_const(EF::ZERO);
     let mut last_rate_outputs: Option<[Target; 2]> = None;
     let mut final_outputs = [None, None, None, None];
 
@@ -674,7 +674,7 @@ mod test {
                 .iter()
                 .map(|opening| {
                     (0..opening.len())
-                        .map(|_| builder.add_public_input())
+                        .map(|_| builder.public_input())
                         .collect_vec()
                 })
                 .collect_vec();
@@ -980,7 +980,7 @@ mod test {
             .map(|mat_hash| {
                 mat_hash
                     .iter()
-                    .map(|_| builder.add_public_input())
+                    .map(|_| builder.public_input())
                     .collect_vec()
             })
             .collect_vec();
@@ -1106,12 +1106,7 @@ mod test {
             let lifted_openings: Vec<Vec<_>> = batch_opening
                 .opened_values
                 .iter()
-                .map(|values| {
-                    values
-                        .iter()
-                        .map(|_| builder.add_public_input())
-                        .collect_vec()
-                })
+                .map(|values| values.iter().map(|_| builder.public_input()).collect_vec())
                 .collect();
 
             let directions_expr = builder.alloc_public_inputs(log_max_height, "directions");
@@ -1121,7 +1116,7 @@ mod test {
             let mut cap_exprs = Vec::with_capacity(cap_len);
             for _ in 0..cap_len {
                 let lifted: Vec<_> = (0..permutation_config.rate())
-                    .map(|_| builder.add_public_input())
+                    .map(|_| builder.public_input())
                     .collect();
                 let packed = pack_lifted_targets::<F, CF>(&mut builder, &lifted);
                 cap_exprs.push(packed);
@@ -1217,11 +1212,10 @@ mod test {
         lifted
             .chunks(d)
             .map(|chunk| {
-                let mut acc = builder.add_const(EF::ZERO);
+                let mut acc = builder.define_const(EF::ZERO);
                 for (i, &target) in chunk.iter().enumerate() {
-                    let basis_const = builder.add_const(basis[i]);
-                    let term = builder.mul(target, basis_const);
-                    acc = builder.add(acc, term);
+                    let basis_const = builder.define_const(basis[i]);
+                    acc = builder.mul_add(target, basis_const, acc);
                 }
                 acc
             })
@@ -1269,12 +1263,7 @@ mod test {
             let lifted_openings: Vec<Vec<_>> = batch_opening
                 .opened_values
                 .iter()
-                .map(|values| {
-                    values
-                        .iter()
-                        .map(|_| builder.add_public_input())
-                        .collect_vec()
-                })
+                .map(|values| values.iter().map(|_| builder.public_input()).collect_vec())
                 .collect();
 
             let directions_expr = builder.alloc_public_inputs(log_max_height, "directions");
@@ -1284,7 +1273,7 @@ mod test {
             let mut cap_exprs = Vec::with_capacity(cap_len);
             for _ in 0..cap_len {
                 let lifted: Vec<_> = (0..permutation_config.rate())
-                    .map(|_| builder.add_public_input())
+                    .map(|_| builder.public_input())
                     .collect();
                 let packed = pack_lifted_targets::<F, CF>(&mut builder, &lifted);
                 cap_exprs.push(packed);

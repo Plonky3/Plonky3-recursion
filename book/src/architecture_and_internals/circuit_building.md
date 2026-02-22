@@ -7,11 +7,11 @@ We’ll use a simple Fibonacci example throughout this page to ground the ideas 
 let mut builder = CircuitBuilder::<F>::new();
 
 // Public input: expected F(n)
-let expected_result = builder.add_public_input();
+let expected_result = builder.public_input();
 
 // Compute F(n) iteratively
-let mut a = builder.add_const(F::ZERO); // F(0)
-let mut b = builder.add_const(F::ONE);  // F(1)
+let mut a = builder.define_const(F::ZERO); // F(0)
+let mut b = builder.define_const(F::ONE);  // F(1)
 
 for _i in 2..=n {
     let next = builder.add(a, b); // F(N) <- F(N-1) + F(N-2)
@@ -62,7 +62,7 @@ We can consider a small example to show how operations are mapped. Given public 
 
 ```rust,ignore
 // We get the `ExprId` corresponding to Const{ c } by adding a constant to the circuit.
-let x = builder.add_const(c);
+let x = builder.define_const(c);
 // We use the previously computed `x` to compute the subtraction in the circuit.
 let y = builder.sub(b, x);
 // We use the previously computed `y` to compute the multiplication in the circuit.
@@ -91,7 +91,7 @@ fn eval_folded_circuit(
             get_symbolic_constraints(self, 0, columns.public_values.len());
 
         // Fold all the constraints using the folding challenge.
-        let mut acc = builder.add_const(F::ZERO);
+        let mut acc = builder.define_const(F::ZERO);
         for s_c in symbolic_constraints {
             let mul_prev = builder.mul(acc, *alpha);
 

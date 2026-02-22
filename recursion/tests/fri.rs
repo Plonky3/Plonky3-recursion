@@ -411,16 +411,14 @@ fn run_fri_test(setup: FriSetup, build_only: bool) {
     );
 
     // 2) Public inputs for α, βs, index bits
-    let alpha_t = builder.add_public_input();
-    let betas_t: Vec<_> = (0..num_phases)
-        .map(|_| builder.add_public_input())
-        .collect();
+    let alpha_t = builder.public_input();
+    let betas_t: Vec<_> = (0..num_phases).map(|_| builder.public_input()).collect();
 
     let num_queries = result_1.index_bits_per_query.len();
     let index_bits_t_per_query: Vec<Vec<_>> = (0..num_queries)
         .map(|_| {
             (0..log_max_height)
-                .map(|_| builder.add_public_input())
+                .map(|_| builder.public_input())
                 .collect()
         })
         .collect();
@@ -432,14 +430,14 @@ fn run_fri_test(setup: FriSetup, build_only: bool) {
     let mut commitments_with_opening_points_targets = Vec::new();
     for (_commit_val, mats_data) in &result_1.commitments_with_points {
         // Allocate commitment target (placeholder, not used in arithmetic verification)
-        let commit_t = builder.add_public_input();
+        let commit_t = builder.public_input();
 
         let mut mats_targets = Vec::new();
         for (domain, points_and_values) in mats_data {
             let mut pv_targets = Vec::new();
             for (_z, fz) in points_and_values {
-                let z_t = builder.add_public_input();
-                let fz_t: Vec<_> = (0..fz.len()).map(|_| builder.add_public_input()).collect();
+                let z_t = builder.public_input();
+                let fz_t: Vec<_> = (0..fz.len()).map(|_| builder.public_input()).collect();
                 pv_targets.push((z_t, fz_t));
             }
             mats_targets.push((*domain, pv_targets));
@@ -579,15 +577,13 @@ fn run_fri_test_with_mmcs(setup: FriSetup) {
     let fri_targets = FriTargets::new(&mut builder, &result.fri_proof);
 
     // 2) Public inputs for α, βs, index bits
-    let alpha_t = builder.add_public_input();
-    let betas_t: Vec<_> = (0..num_phases)
-        .map(|_| builder.add_public_input())
-        .collect();
+    let alpha_t = builder.public_input();
+    let betas_t: Vec<_> = (0..num_phases).map(|_| builder.public_input()).collect();
 
     let index_bits_t_per_query: Vec<Vec<_>> = (0..num_queries)
         .map(|_| {
             (0..log_max_height)
-                .map(|_| builder.add_public_input())
+                .map(|_| builder.public_input())
                 .collect()
         })
         .collect();
@@ -633,8 +629,8 @@ fn run_fri_test_with_mmcs(setup: FriSetup) {
         for (domain, points_and_values) in mats_data {
             let mut pv_targets = Vec::new();
             for (_z, fz) in points_and_values {
-                let z_t = builder.add_public_input();
-                let fz_t: Vec<_> = (0..fz.len()).map(|_| builder.add_public_input()).collect();
+                let z_t = builder.public_input();
+                let fz_t: Vec<_> = (0..fz.len()).map(|_| builder.public_input()).collect();
                 pv_targets.push((z_t, fz_t));
             }
             mats_targets.push((*domain, pv_targets));

@@ -421,8 +421,8 @@ mod tests {
         let mut builder = CircuitBuilder::new();
 
         // Simple test: x + 5 = result
-        let x = builder.add_public_input();
-        let c5 = builder.add_const(BabyBear::from_u64(5));
+        let x = builder.public_input();
+        let c5 = builder.define_const(BabyBear::from_u64(5));
         let _result = builder.add(x, c5);
 
         let circuit = builder.build().unwrap();
@@ -494,8 +494,8 @@ mod tests {
 
         let mut builder = CircuitBuilder::new();
 
-        let c37 = builder.add_const(BabyBear::from_u64(37));
-        let c111 = builder.add_const(BabyBear::from_u64(111));
+        let c37 = builder.define_const(BabyBear::from_u64(37));
+        let c111 = builder.define_const(BabyBear::from_u64(111));
         let x_hint = XHint::new();
         let x = builder
             .push_unconstrained_op(vec![vec![c37, c111]], 1, x_hint, "x")
@@ -544,9 +544,9 @@ mod tests {
         let mut builder = CircuitBuilder::new();
 
         // Test extension field operations: x + y * z
-        let x = builder.add_public_input();
-        let y = builder.add_public_input();
-        let z = builder.add_public_input();
+        let x = builder.public_input();
+        let y = builder.public_input();
+        let z = builder.public_input();
 
         let yz = builder.mul(y, z);
         let _result = builder.add(x, yz);

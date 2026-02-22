@@ -181,9 +181,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     // All inputs are private (chained from row 0 or provided via private data)
     let sibling1_inputs: [Option<ExprId>; 4] = [None, None, None, None];
     // Public root limbs
-    let out0 = builder.add_public_input();
-    let out1 = builder.add_public_input();
-    let mmcs_idx_sum_expr = builder.add_public_input();
+    let out0 = builder.public_input();
+    let out1 = builder.public_input();
+    let mmcs_idx_sum_expr = builder.public_input();
 
     let mmcs_bit_row1 = builder.alloc_const(Ext4::from_prime_subfield(Base::ONE), "mmcs_bit_row1");
     let (row1_op_id, _row1_outputs) =
