@@ -20,9 +20,9 @@
 //!
 //! # Global Interactions
 //!
-//! There is one interaction with the global witness bus:
+//! One interaction with the global witness bus (WitnessChecks):
 //!
-//! - send (index, value)
+//! - send `(index, value[0..D])` with multiplicity `ext_mult`
 
 use alloc::string::ToString;
 use alloc::vec;
@@ -56,6 +56,8 @@ pub struct ConstAir<F, const D: usize = 1> {
     pub preprocessed: Vec<F>,
     /// Minimum trace height (for FRI compatibility with higher log_final_poly_len).
     pub min_height: usize,
+    /// Counter for unique auxiliary lookup column indices assigned by `add_lookup_columns`.
+    pub num_lookup_columns: usize,
     /// Marker tying this AIR to its base field.
     _phantom: PhantomData<F>,
 }
@@ -69,6 +71,7 @@ impl<F: Field, const D: usize> ConstAir<F, D> {
             height,
             preprocessed: Vec::new(),
             min_height: 1,
+            num_lookup_columns: 0,
             _phantom: PhantomData,
         }
     }
@@ -78,8 +81,14 @@ impl<F: Field, const D: usize> ConstAir<F, D> {
             height,
             preprocessed,
             min_height: 1,
+            num_lookup_columns: 0,
             _phantom: PhantomData,
         }
+    }
+
+    /// Returns the number of auxiliary lookup columns registered so far.
+    pub const fn num_lookup_columns(&self) -> usize {
+        self.num_lookup_columns
     }
 
     /// Set the minimum trace height for FRI compatibility.
@@ -91,9 +100,9 @@ impl<F: Field, const D: usize> ConstAir<F, D> {
         self
     }
 
-    /// Number of preprocessed columns: multiplicity + index
+    /// Number of preprocessed columns: multiplicity + index.
     pub const fn preprocessed_width() -> usize {
-        2 // One column for multiplicity, one for index
+        2
     }
     /// Convert a `ConstTrace` into a `RowMajorMatrix` suitable for the STARK prover.
     ///
@@ -139,7 +148,7 @@ impl<F: Field, const D: usize> ConstAir<F, D> {
         trace
             .index
             .iter()
-            .map(|widx| F::from_u64(widx.0 as u64))
+            .map(|widx| F::from_u64(widx.0 as u64 * D as u64))
             .collect()
     }
 }
@@ -166,14 +175,17 @@ where
         // No constraints for constants in Stage 1
     }
     fn add_lookup_columns(&mut self) -> Vec<usize> {
-        // There is only one lookup to register in this AIR.
-        vec![0]
+        let new_idx = self.num_lookup_columns;
+        self.num_lookup_columns += 1;
+        vec![new_idx]
     }
 
     fn get_lookups(&mut self) -> Vec<Lookup<<AB>::F>>
     where
         AB: PermutationAirBuilder + AirBuilderWithPublicValues,
     {
+        self.num_lookup_columns = 0;
+
         let (symbolic_main_local, preprocessed_local) = create_symbolic_variables::<AB::F>(
             Self::preprocessed_width(),
             BaseAir::<AB::F>::width(self),
@@ -276,11 +288,12 @@ mod tests {
         assert_eq!(preprocessed_matrix.height(), height);
 
         // Assert the preprocessed values were properly created.
+        // Layout: [mult, index] (width=2)
         const_indices.iter().enumerate().for_each(|(i, const_idx)| {
             let row = preprocessed_matrix.row_slice(i).unwrap();
             // The multiplicity should be 1 for all active rows.
             assert_eq!(row[0], F::ONE);
-            // Check the witness index.
+            // Check the witness index (D=1: no scaling).
             assert_eq!(row[1], F::from_u32(const_idx.0));
         });
         // Check the padding row
@@ -316,9 +329,10 @@ mod tests {
 
         let const_values = vec![const1, const2];
         let const_indices = vec![WitnessId(10), WitnessId(20)];
+        // Preprocessed indices are D-scaled: WitnessId(n) → n * D = n * 4.
         let preprocessed_values = const_indices
             .iter()
-            .map(|idx| F::from_u64(idx.0 as u64))
+            .map(|idx| F::from_u64(idx.0 as u64 * 4))
             .collect::<Vec<_>>();
 
         let trace = ConstTrace {
@@ -354,16 +368,15 @@ mod tests {
 
         let air = ConstAir::<F, 4>::new_with_preprocessed(height, preprocessed_values);
         let preprocessed_matrix = air.preprocessed_trace().unwrap();
+        // Layout: [ext_mult, index] (width=2, D-scaled indices)
         let row0 = preprocessed_matrix.row_slice(0).unwrap();
-        // Assert that the multipliticy is 1 since the furst row is active
-        assert_eq!(row0[0], F::ONE);
-        // Assert that the witness index is correct.
-        assert_eq!(row0[1], F::from_u64(10));
+        assert_eq!(row0[0], F::ONE); // ext_mult
+        // D-scaled index: WitnessId(10) → 10 * 4 = 40
+        assert_eq!(row0[1], F::from_u64(40));
         let last_row = preprocessed_matrix.row_slice(height - 1).unwrap();
-        // Assert that the multipliticy is 1 since the furst row is active
-        assert_eq!(last_row[0], F::ONE);
-        // Assert that the witness index is correct.
-        assert_eq!(last_row[1], F::from_u64(20));
+        assert_eq!(last_row[0], F::ONE); // ext_mult
+        // D-scaled index: WitnessId(20) → 20 * 4 = 80
+        assert_eq!(last_row[1], F::from_u64(80));
         let (prover_data, verifier_data) =
             setup_preprocessed(&config, &air, log2_ceil_usize(height)).unwrap();
         let proof = prove_with_preprocessed(&config, &air, matrix, &pis, Some(&prover_data));

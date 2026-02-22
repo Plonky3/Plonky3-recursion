@@ -44,6 +44,9 @@ impl<F> CircuitField for F where
 pub struct PreprocessedColumns<F> {
     pub primitive: Vec<Vec<F>>,
     pub non_primitive: NonPrimitivePreprocessedMap<F>,
+    /// Extension degree used for base-field index scaling.
+    /// A `WitnessId(n)` is stored as base-field index `n * d` in CTL lookup tuples.
+    pub d: usize,
 }
 
 impl<F: Field + Clone> Clone for PreprocessedColumns<F> {
@@ -51,17 +54,39 @@ impl<F: Field + Clone> Clone for PreprocessedColumns<F> {
         Self {
             primitive: self.primitive.clone(),
             non_primitive: self.non_primitive.clone(),
+            d: self.d,
         }
     }
 }
 
 impl<F: Field> PreprocessedColumns<F> {
-    /// Creates an empty [`PreprocessedColumns`] with one primitive entry per [`PrimitiveOpType`].
+    /// Creates an empty [`PreprocessedColumns`] with one primitive entry per [`PrimitiveOpType`]
+    /// and extension degree 1 (base field, no index scaling).
     pub fn new() -> Self {
         Self {
             primitive: vec![vec![]; PrimitiveOpType::COUNT],
             non_primitive: NonPrimitivePreprocessedMap::new(),
+            d: 1,
         }
+    }
+
+    /// Creates an empty [`PreprocessedColumns`] with the given extension degree `d`.
+    ///
+    /// With `d > 1`, `WitnessId(n)` is stored as base-field index `n * d` in CTL lookup tuples.
+    pub fn new_with_d(d: usize) -> Self {
+        assert!(d >= 1, "extension degree must be at least 1");
+        Self {
+            primitive: vec![vec![]; PrimitiveOpType::COUNT],
+            non_primitive: NonPrimitivePreprocessedMap::new(),
+            d,
+        }
+    }
+
+    /// Returns the D-scaled base-field index for a given witness ID as a field element.
+    ///
+    /// `WitnessId(n)` maps to base-field index `n * d`.
+    pub fn witness_index_as_field(&self, wid: WitnessId) -> F {
+        F::from_u32(wid.0 * self.d as u32)
     }
 
     /// Updates the witness table multiplicities for all the given witness indices.
@@ -87,7 +112,7 @@ impl<F: Field> PreprocessedColumns<F> {
     }
 
     /// Extends the preprocessed data of `op_type`'s primitive operation
-    /// with `wids`'s witness indices, and updates the witness multiplicities.
+    /// with `wids`'s witness indices (D-scaled), and updates the witness multiplicities.
     pub fn register_primitive_witness_reads(
         &mut self,
         op_type: PrimitiveOpType,
@@ -105,7 +130,8 @@ impl<F: Field> PreprocessedColumns<F> {
             });
         }
 
-        let wids_field = wids.iter().map(|wid| F::from_u32(wid.0));
+        let d = self.d as u32;
+        let wids_field = wids.iter().map(|wid| F::from_u32(wid.0 * d));
         self.primitive[op_type as usize].extend(wids_field);
 
         self.update_witness_multiplicities(wids)?;
@@ -114,7 +140,7 @@ impl<F: Field> PreprocessedColumns<F> {
     }
 
     /// Extends the preprocessed data of `op_type`'s non-primitive operation
-    /// with `wids`'s witness indices, and updates the witness multiplicities.
+    /// with `wids`'s witness indices (D-scaled), and updates the witness multiplicities.
     pub fn register_non_primitive_witness_reads(
         &mut self,
         op_type: NonPrimitiveOpType,
@@ -122,7 +148,8 @@ impl<F: Field> PreprocessedColumns<F> {
     ) -> Result<(), CircuitError> {
         let entry = self.non_primitive.entry(op_type).or_default();
 
-        let wids_field = wids.iter().map(|wid| F::from_u32(wid.0));
+        let d = self.d as u32;
+        let wids_field = wids.iter().map(|wid| F::from_u32(wid.0 * d));
         entry.extend(wids_field);
 
         self.update_witness_multiplicities(wids)?;
@@ -188,6 +215,12 @@ impl<F: Field> PreprocessedColumns<F> {
 impl<F: Field> Default for PreprocessedColumns<F> {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl<F: Field> PreprocessedColumns<F> {
+    pub const fn extension_degree(&self) -> usize {
+        self.d
     }
 }
 
@@ -277,8 +310,12 @@ impl<F: Field> Circuit<F> {
     /// Note that `mul_i` in the Witness table preprocessed column indicates how many times
     /// each witness index appears in the circuit.
     /// ALU rows include selectors followed by indices; multiplicity is handled when building the ALU table.
-    pub fn generate_preprocessed_columns(&self) -> Result<PreprocessedColumns<F>, CircuitError> {
-        let mut preprocessed = PreprocessedColumns::new();
+    /// Indices in CTL lookups are stored as `WitnessId(n) * d`; use `d = EF::DIMENSION` for extension field.
+    pub fn generate_preprocessed_columns(
+        &self,
+        d: usize,
+    ) -> Result<PreprocessedColumns<F>, CircuitError> {
+        let mut preprocessed = PreprocessedColumns::new_with_d(d);
 
         // We know that the Witness table has at least one entry for index 0 (multiplicity 0 at the start).
         preprocessed.primitive[PrimitiveOpType::Witness as usize].push(F::ZERO);
@@ -390,7 +427,7 @@ mod tests {
     #[test]
     fn test_empty_circuit() {
         let circuit: Circuit<F> = make_circuit(vec![]);
-        let result = circuit.generate_preprocessed_columns().unwrap();
+        let result = circuit.generate_preprocessed_columns(1).unwrap();
 
         assert_eq!(result.primitive.len(), PrimitiveOpType::COUNT);
         assert_eq!(
@@ -427,7 +464,7 @@ mod tests {
         ];
 
         let circuit = make_circuit(ops);
-        let result = circuit.generate_preprocessed_columns().unwrap();
+        let result = circuit.generate_preprocessed_columns(1).unwrap();
 
         // Const column: output indices in order
         assert_eq!(
@@ -508,7 +545,7 @@ mod tests {
         )];
 
         let circuit = make_circuit(ops);
-        let result = circuit.generate_preprocessed_columns().unwrap();
+        let result = circuit.generate_preprocessed_columns(1).unwrap();
 
         // Index 0 has multiplicity 2 (once for 'a', once for 'c' which defaults to 0)
         // Index 5 and 15 have multiplicity 1
@@ -549,7 +586,7 @@ mod tests {
         ];
 
         let circuit = make_circuit(ops);
-        let result = circuit.generate_preprocessed_columns().unwrap();
+        let result = circuit.generate_preprocessed_columns(1).unwrap();
 
         // ALU column for MulAdd: [sel_add_vs_mul=0, sel_bool=0, sel_muladd=1, a=0, b=1, c=2, out=3]
         let expected_alu = vec![

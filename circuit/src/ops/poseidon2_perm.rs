@@ -756,10 +756,10 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for Poseidon2Perm
                 // because the value permutation (based on runtime mmcs_bit) would
                 // require degree-1 conditional logic that exceeds constraint limits.
                 if self.merkle_path {
-                    // Don't update multiplicities - just register the index
+                    // Don't update multiplicities - just register the D-scaled index
                     preprocessed.register_non_primitive_preprocessed_no_read(
                         self.op_type,
-                        &[F::from_u32(inp[0].0)],
+                        &[preprocessed.witness_index_as_field(inp[0])],
                     );
                 } else {
                     // Register the witness read (updates multiplicities)
@@ -811,10 +811,10 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for Poseidon2Perm
         if inputs[4].is_empty() {
             preprocessed.register_non_primitive_preprocessed_no_read(self.op_type, &[F::ZERO]);
         } else {
-            // Just register the index value, do NOT update multiplicities
+            // Just register the D-scaled index value, do NOT update multiplicities
             preprocessed.register_non_primitive_preprocessed_no_read(
                 self.op_type,
-                &[F::from_u32(inputs[4][0].0)],
+                &[preprocessed.witness_index_as_field(inputs[4][0])],
             );
         }
 

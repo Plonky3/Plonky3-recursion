@@ -162,11 +162,12 @@ impl<F: Field, const D: usize> PublicAir<F, D> {
     }
 
     /// Extract preprocessed indices from a PublicTrace (without multiplicities).
+    /// Indices are D-scaled: `WitnessId(n)` becomes base-field index `n * D`.
     pub fn trace_to_preprocessed<ExtF: BasedVectorSpace<F>>(trace: &PublicTrace<ExtF>) -> Vec<F> {
         trace
             .index
             .iter()
-            .map(|widx| F::from_u64(widx.0 as u64))
+            .map(|widx| F::from_u64(widx.0 as u64 * D as u64))
             .collect()
     }
 }
@@ -418,9 +419,10 @@ mod tests {
 
         let values = vec![a, b];
         let indices = vec![WitnessId(10), WitnessId(20)];
+        // Preprocessed indices are D-scaled: WitnessId(n) → n * D = n * 4.
         let preprocessed_values = indices
             .iter()
-            .map(|idx| F::from_u64(idx.0 as u64))
+            .map(|idx| F::from_u64(idx.0 as u64 * 4))
             .collect();
 
         let trace = PublicTrace {
@@ -456,11 +458,11 @@ mod tests {
         let row0 = prep.row_slice(0).unwrap();
         let last_row = prep.row_slice(1).unwrap();
         // The multiplicity is 1 for active rows.
-        assert_eq!(row0[0], F::from_u64(1)); // first index
-        assert_eq!(last_row[0], F::from_u64(1)); // last index
-        // Check the witness indices.
-        assert_eq!(row0[1], F::from_u64(10)); // first index
-        assert_eq!(last_row[1], F::from_u64(20)); // last index
+        assert_eq!(row0[0], F::from_u64(1));
+        assert_eq!(last_row[0], F::from_u64(1));
+        // Check the witness indices (D-scaled: WitnessId(10) → 10 * 4 = 40, WitnessId(20) → 20 * 4 = 80).
+        assert_eq!(row0[1], F::from_u64(40)); // 10 * 4
+        assert_eq!(last_row[1], F::from_u64(80)); // 20 * 4
 
         let pis: Vec<F> = vec![];
 

@@ -381,8 +381,10 @@ impl<
     }
 }
 
+/// Preprocessed columns from Poseidon2 circuit rows. `d`: extension degree; indices are scaled by `d`.
 pub fn extract_preprocessed_from_operations<F: Field, OF: Field>(
     operations: &[Poseidon2CircuitRow<OF>],
+    d: u32,
 ) -> Vec<F> {
     let mut preprocessed = Vec::with_capacity(operations.len() * poseidon2_preprocessed_width());
 
@@ -401,7 +403,7 @@ pub fn extract_preprocessed_from_operations<F: Field, OF: Field>(
 
         for limb_idx in 0..4 {
             let ctl = in_ctl[limb_idx];
-            let idx = input_indices[limb_idx];
+            let idx = input_indices[limb_idx] * d;
 
             preprocessed.extend(&[F::from_u32(idx), F::from_bool(ctl)]);
 
@@ -423,9 +425,9 @@ pub fn extract_preprocessed_from_operations<F: Field, OF: Field>(
             .iter()
             .zip(output_indices.iter())
             .for_each(|(ctl, idx)| {
-                preprocessed.extend(&[F::from_u32(*idx), F::from_bool(*ctl)]);
+                preprocessed.extend(&[F::from_u32(*idx * d), F::from_bool(*ctl)]);
             });
-        preprocessed.push(F::from_u64(*mmcs_index_sum_idx as u64));
+        preprocessed.push(F::from_u64(*mmcs_index_sum_idx as u64 * d as u64));
         // mmcs_merkle_flag = mmcs_ctl_enabled * merkle_path (precomputed)
         let mmcs_merkle_flag = if *mmcs_ctl_enabled && *merkle_path {
             F::ONE
@@ -1124,7 +1126,7 @@ mod test {
             rows.resize(target_rows, filler);
         }
 
-        let preprocessed = extract_preprocessed_from_operations::<Val, Val>(&rows);
+        let preprocessed = extract_preprocessed_from_operations::<Val, Val>(&rows, 4);
         let air = Poseidon2CircuitAirBabyBearD4Width16::new_with_preprocessed(
             constants.clone(),
             preprocessed,

@@ -72,7 +72,7 @@ where
     SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
     Val<SC>: StarkField,
 {
-    let mut preprocessed = circuit.generate_preprocessed_columns()?;
+    let mut preprocessed = circuit.generate_preprocessed_columns(D)?;
 
     // Check if Public/Alu tables are empty and lanes > 1.
     // Using lanes > 1 with empty tables causes issues in recursive verification
@@ -162,7 +162,6 @@ where
     const MMCS_MERKLE_FLAG_OFFSET: usize = 21;
     const NEW_START_OFFSET: usize = 22;
 
-    let mut mmcs_lookup_count = 0usize;
     for (op_type, prep) in preprocessed.non_primitive.iter() {
         if matches!(op_type, NonPrimitiveOpType::Poseidon2Perm(_)) {
             let prep_base: Vec<Val<SC>> = prep
@@ -203,33 +202,23 @@ where
                     // Get the mmcs_index_sum witness index for this row
                     let mmcs_idx = prep_base[row_start + MMCS_INDEX_SUM_CTL_IDX_OFFSET];
 
-                    // Convert to usize for indexing
-                    // The witness index should be a small integer that fits in usize
+                    // The stored index is D-scaled (wid.0 * D); convert back to WitnessId.0
                     let mmcs_idx_u64 = <Val<SC> as PrimeField64>::as_canonical_u64(&mmcs_idx);
-                    let mmcs_idx_usize = mmcs_idx_u64 as usize;
+                    let mmcs_witness_idx = (mmcs_idx_u64 as usize) / D;
 
                     // Ensure witness multiplicity vector is large enough
-                    if mmcs_idx_usize >= base_prep[witness_idx].len() {
+                    if mmcs_witness_idx >= base_prep[witness_idx].len() {
                         base_prep[witness_idx].resize(
-                            mmcs_idx_usize + 1,
+                            mmcs_witness_idx + 1,
                             <Val<SC> as PrimeCharacteristicRing>::ZERO,
                         );
                     }
 
-                    // Increment the multiplicity
-                    base_prep[witness_idx][mmcs_idx_usize] += multiplicity;
-                    mmcs_lookup_count += 1;
+                    base_prep[witness_idx][mmcs_witness_idx] += multiplicity;
                 }
             }
         }
     }
-    if mmcs_lookup_count > 0 {
-        tracing::debug!(
-            "Updated {} mmcs_index_sum lookups in witness multiplicities",
-            mmcs_lookup_count
-        );
-    }
-
     // Now create the AIRs with the updated multiplicities
     // Get min_height from packing configuration and pass it to AIRs
     let min_height = packing.min_trace_height();
@@ -362,6 +351,7 @@ where
     let preprocessed_columns = PreprocessedColumns {
         primitive: base_prep,
         non_primitive: non_primitive_base,
+        d: D,
     };
 
     Ok((table_preps, preprocessed_columns))

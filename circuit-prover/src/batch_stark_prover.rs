@@ -509,6 +509,7 @@ where
         let PreprocessedColumns {
             primitive,
             non_primitive: _,
+            d: _,
         } = &circuit_prover_data.preprocessed_columns;
         let prover_data = &circuit_prover_data.prover_data;
 

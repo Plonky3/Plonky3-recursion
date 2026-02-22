@@ -260,11 +260,13 @@ impl<F: Field, const D: usize> BaseAir<F> for WitnessAir<F, D> {
 
         let all_vals = (0..height)
             .flat_map(|i| {
+                // Index is D-scaled: WitnessId(i) maps to base-field index i * D
+                let scaled_idx = F::from_u32((i as u32) * D as u32);
                 if i >= self.multiplicities.len() {
                     // Padding rows have zero multiplicity
-                    return vec![F::ZERO, F::from_u32(i as u32)];
+                    return vec![F::ZERO, scaled_idx];
                 }
-                vec![self.multiplicities[i], F::from_u32(i as u32)]
+                vec![self.multiplicities[i], scaled_idx]
             })
             .collect::<Vec<_>>();
 
@@ -294,6 +296,8 @@ where
         }
 
         // Enforce sequential indices within each row (lanes) and across rows.
+        // Each consecutive witness advances the base-field index by D (extension degree).
+        let step = AB::Expr::from(AB::F::from_u32(D as u32));
         {
             let mut b = builder.when_transition();
             let preprocessed = b.preprocessed().expect("Expected preprocessed columns");
@@ -304,13 +308,13 @@ where
             for lane in 1..lanes {
                 // The index is in the second column of each lane's preprocessed data.
                 let idx = cur_prep[lane * Self::preprocessed_lane_width() + 1].clone();
-                // between consecutive lanes in the same row: index_next - index_current - 1
-                b.assert_zero(idx.clone() - prev_idx.clone() - AB::Expr::ONE);
+                // between consecutive lanes in the same row: index_next - index_current - D
+                b.assert_zero(idx.clone() - prev_idx.clone() - step.clone());
                 prev_idx = idx;
             }
             let next_first_idx = nxt_prep[1].clone();
-            // between the last lane of a row and the first lane of the next row: index_next - index_current - 1
-            b.assert_zero(next_first_idx - prev_idx - AB::Expr::ONE);
+            // between the last lane of a row and the first lane of the next row: index_next - index_current - D
+            b.assert_zero(next_first_idx - prev_idx - step.clone());
         }
 
         if self.lanes > 1 {
@@ -320,8 +324,8 @@ where
             let mut prev_idx = last_prep[1].clone();
             for lane in 1..lanes {
                 let idx = last_prep[lane * Self::preprocessed_lane_width() + 1].clone();
-                // between consecutive lanes in the same row: index_next - index_current - 1
-                b.assert_zero(idx.clone() - prev_idx.clone() - AB::Expr::ONE);
+                // between consecutive lanes in the same row: index_next - index_current - D
+                b.assert_zero(idx.clone() - prev_idx.clone() - step.clone());
                 prev_idx = idx;
             }
         }
@@ -458,12 +462,12 @@ mod tests {
         assert_eq!(preprocessed_matrix.height(), 2);
         let row0 = preprocessed_matrix.row_slice(0).unwrap();
         let row_last = preprocessed_matrix.row_slice(1).unwrap();
-        // The first column corresponds to the multiplicity (1 for actuve rows).
+        // The first column corresponds to the multiplicity (1 for active rows).
         assert_eq!(row0[0], Val::from_u64(1));
         assert_eq!(row_last[0], Val::from_u64(1));
-        // Check the witness indices.
-        assert_eq!(row0[1], Val::from_u64(0)); // index
-        assert_eq!(row_last[1], Val::from_u64(1)); // index
+        // Check the witness indices (D-scaled: WitnessId(n) → n * D = n * 4).
+        assert_eq!(row0[1], Val::from_u64(0)); // WitnessId(0) → 0 * 4 = 0
+        assert_eq!(row_last[1], Val::from_u64(4)); // WitnessId(1) → 1 * 4 = 4
 
         let pis: Vec<Val> = vec![];
 
