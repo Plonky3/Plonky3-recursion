@@ -319,135 +319,6 @@ where
     (xs, subgroup_start)
 }
 
-/// Precompute Lagrange denominator inverses for a given FRI arity, in the
-/// canonical subgroup with `subgroup_start = 1`.
-///
-/// For `xs0[i] = omega^{br(i)}` where `omega = two_adic_generator(log_arity)`,
-/// returns `denom_inv[i] = 1 / ∏_{j != i} (xs0[i] - xs0[j])` lifted to `EF`.
-fn precompute_lagrange_denominator_inverses<F, EF>(log_arity: usize) -> Vec<EF>
-where
-    F: Field + TwoAdicField,
-    EF: ExtensionField<F>,
-{
-    let arity = 1usize << log_arity;
-    let omega = F::two_adic_generator(log_arity);
-
-    // Canonical subgroup points xs0[i] = omega^{br(i)} in EF.
-    let mut xs0 = Vec::with_capacity(arity);
-    for i in 0..arity {
-        let br_i = p3_util::reverse_bits_len(i, log_arity);
-        let g_i = omega.exp_u64(br_i as u64);
-        xs0.push(EF::from(g_i));
-    }
-
-    let mut denom_inv = Vec::with_capacity(arity);
-    for i in 0..arity {
-        let mut denom = EF::ONE;
-        for j in 0..arity {
-            if j == i {
-                continue;
-            }
-            denom *= xs0[i] - xs0[j];
-        }
-        // denom should never be zero for distinct xs0.
-        let inv = denom.inverse();
-        denom_inv.push(inv);
-    }
-
-    denom_inv
-}
-
-/// Optimized Lagrange interpolation for small arities (`log_arity` 2, 3, 4).
-///
-/// This uses:
-/// - a batch inversion for `diffs[i] = z - xs[i]` (one division),
-/// - a single inversion for `subgroup_start^{arity-1}`,
-/// - precomputed denominator inverses from the canonical subgroup, scaled
-///   by `subgroup_start^{-(arity-1)}` in-circuit.
-fn lagrange_interpolate_small<F, EF>(
-    builder: &mut CircuitBuilder<EF>,
-    xs: &[Target],
-    ys: &[Target],
-    z: Target,
-    subgroup_start: Target,
-    log_arity: usize,
-) -> Target
-where
-    F: Field + TwoAdicField,
-    EF: ExtensionField<F>,
-{
-    let arity = 1usize << log_arity;
-    debug_assert_eq!(xs.len(), arity);
-    debug_assert_eq!(ys.len(), arity);
-
-    // diffs[i] = z - xs[i]
-    let mut diffs = Vec::with_capacity(arity);
-    for &xi in xs {
-        diffs.push(builder.sub(z, xi));
-    }
-
-    // L(z) = ∏ diffs[i]
-    let mut l_z = diffs[0];
-    for d in &diffs[1..] {
-        l_z = builder.mul(l_z, *d);
-    }
-
-    // Batch inversion of diffs: inv_diffs[i] = 1 / (z - xs[i])
-    let one = builder.add_const(EF::ONE);
-    let mut prefix = Vec::with_capacity(arity);
-    prefix.push(diffs[0]);
-    for i in 1..arity {
-        let prod = builder.mul(prefix[i - 1], diffs[i]);
-        prefix.push(prod);
-    }
-
-    // Single division for the inverse of the total product.
-    let mut inv_total = builder.div(one, prefix[arity - 1]);
-
-    let mut inv_diffs = vec![inv_total; arity];
-    // Standard batch inversion backward sweep:
-    for i in (0..arity).rev() {
-        let prev = if i == 0 { one } else { prefix[i - 1] };
-        inv_diffs[i] = builder.mul(inv_total, prev);
-        inv_total = builder.mul(inv_total, diffs[i]);
-    }
-
-    // Compute subgroup_start^{arity-1} and its inverse.
-    // arity-1 = 2^log_arity - 1 is all-ones in binary, so use the recurrence
-    // r_1 = s, r_{i+1} = r_i^2 * s which converges in log_arity-1 steps.
-    let mut s_pow = subgroup_start;
-    for _ in 1..log_arity {
-        s_pow = builder.mul(s_pow, s_pow);
-        s_pow = builder.mul(s_pow, subgroup_start);
-    }
-    let inv_s_pow = builder.div(one, s_pow);
-
-    // Precomputed canonical denominator inverses (in EF).
-    let denom_inv_consts = precompute_lagrange_denominator_inverses::<F, EF>(log_arity);
-    debug_assert_eq!(denom_inv_consts.len(), arity);
-
-    // Pre-lift all denominator inverse constants once before the loop
-    let denom_inv_targets: Vec<Target> = denom_inv_consts
-        .iter()
-        .map(|&c| builder.add_const(c))
-        .collect();
-
-    // result = sum_i ys[i] * L(z)/(z - xs[i]) * (1 / denom[i])
-    // where 1/denom[i] = denom_inv_consts[i] * subgroup_start^{-(arity-1)}.
-    let mut accumulator = builder.add_const(EF::ZERO);
-    for i in 0..arity {
-        let partial_num = builder.mul(l_z, inv_diffs[i]);
-        let scaled_y = builder.mul(ys[i], partial_num);
-
-        let term = builder.mul(scaled_y, denom_inv_targets[i]);
-
-        accumulator = builder.add(accumulator, term);
-    }
-
-    // Apply the common factor subgroup_start^{-(arity-1)} once at the end.
-    builder.mul(accumulator, inv_s_pow)
-}
-
 /// Precompute `subgroup_start` for every FRI phase within a single query.
 ///
 /// All phases compute `g_i^{rev(parent_index_i)}` where
@@ -543,63 +414,28 @@ fn precompute_beta_powers_per_phase<EF: Field>(
     result
 }
 
-/// Lagrange interpolation in circuit: evaluate the interpolating polynomial at `z`.
-///
-/// Given evaluation points xs[0..n] and values ys[0..n], computes
-/// the unique polynomial p of degree < n passing through (xs[i], ys[i])
-/// and returns p(z).
-fn lagrange_interpolate_circuit<EF: Field>(
+/// Single arity-2 fold at a point: given (e0, e1) and evaluation point beta,
+/// returns the folded value using (e0 + e1)/2 + (e1 - e0)*beta/(2*x0).
+fn arity2_fold_at_point<EF: Field>(
     builder: &mut CircuitBuilder<EF>,
-    xs: &[Target],
-    ys: &[Target],
-    z: Target,
+    e0: Target,
+    e1: Target,
+    beta: Target,
+    x0: Target,
 ) -> Target {
-    let n = xs.len();
-    debug_assert_eq!(n, ys.len());
-
-    // Compute diffs[i] = z - xs[i]
-    let diffs: Vec<Target> = xs.iter().map(|&xi| builder.sub(z, xi)).collect();
-
-    // Compute L(z) = prod(diffs)
-    let mut l_z = diffs[0];
-    for &d in &diffs[1..] {
-        l_z = builder.mul(l_z, d);
-    }
-
-    // For each i, compute:
-    //   partial_num[i] = L(z) / diffs[i]  (Lagrange numerator without the y)
-    //   denom[i] = prod_{j!=i} (xs[i] - xs[j])
-    //   term[i] = ys[i] * partial_num[i] / denom[i]
-    //
-    // result = sum(term[i])
-    let mut result = builder.add_const(EF::ZERO);
-    for i in 0..n {
-        // partial_num[i] = L(z) / (z - xs[i])
-        let partial_num = builder.div(l_z, diffs[i]);
-
-        // denom[i] = prod_{j!=i} (xs[i] - xs[j])
-        let denom = xs.iter().enumerate().filter(|&(j, _)| j != i).fold(
-            builder.add_const(EF::ONE),
-            |acc, (_, &xj)| {
-                let diff = builder.sub(xs[i], xj);
-                builder.mul(acc, diff)
-            },
-        );
-
-        // term = ys[i] * partial_num / denom
-        let num_term = builder.mul(ys[i], partial_num);
-        let term = builder.div(num_term, denom);
-
-        result = builder.add(result, term);
-    }
-
-    result
+    let neg_half = builder.add_const(EF::NEG_ONE * EF::ONE.halve());
+    let inv = builder.div(neg_half, x0);
+    let e1_minus_e0 = builder.sub(e1, e0);
+    let beta_minus_x0 = builder.sub(beta, x0);
+    let t = builder.mul(beta_minus_x0, e1_minus_e0);
+    let t_inv = builder.mul(t, inv);
+    builder.add(e0, t_inv)
 }
 
 /// Perform a single FRI fold phase with arbitrary arity.
 ///
-/// Reconstructs the full evaluation row, computes evaluation points,
-/// performs Lagrange interpolation at beta, and applies optional roll-in.
+/// For log_arity > 1 we use k sequential arity-2 folds (beta, beta^2, ...)
+/// instead of one Lagrange interpolation, reducing batch inversions to one per step.
 ///
 /// When `precomputed_evals` is `Some`, those evals are reused instead of
 /// rebuilding them via `reconstruct_evals`.
@@ -663,7 +499,8 @@ where
         return new_folded;
     }
 
-    // General path: Lagrange interpolation
+    // General path: k sequential arity-2 folds (beta, beta^2, ...) instead of
+    // one Lagrange interpolation, matching the native optimization to reduce inversions.
     let owned_evals;
     let evals: &[Target] = match precomputed_evals {
         Some(e) => e,
@@ -682,13 +519,60 @@ where
         precomputed_subgroup_start,
     );
 
-    // For small arities (2, 4, 8, 16), use the optimized interpolation that
-    // avoids rebuilding denominators in-circuit.
-    let mut new_folded = if (2..=4).contains(&log_arity) {
-        lagrange_interpolate_small::<F, EF>(builder, &xs, evals, beta, subgroup_start, log_arity)
-    } else {
-        lagrange_interpolate_circuit(builder, &xs, evals, beta)
-    };
+    let mut subgroup_start_powers: Vec<Target> = vec![subgroup_start];
+    for _ in 1..log_arity {
+        let prev = subgroup_start_powers.last().copied().unwrap();
+        subgroup_start_powers.push(builder.mul(prev, prev));
+    }
+
+    let omega = F::two_adic_generator(log_arity);
+    let mut data: Vec<Target> = evals.to_vec();
+    let mut current_beta = beta;
+
+    for (step, ss) in subgroup_start_powers
+        .into_iter()
+        .enumerate()
+        .take(log_arity)
+    {
+        let num_pairs = data.len() / 2;
+        if step == 0 {
+            for j in 0..num_pairs {
+                data[j] = arity2_fold_at_point::<EF>(
+                    builder,
+                    data[2 * j],
+                    data[2 * j + 1],
+                    current_beta,
+                    xs[2 * j],
+                );
+            }
+        } else {
+            let log_domain = log_arity - step;
+            let omega_s = omega.exp_u64(1 << step);
+            let omega_s_br: Vec<Target> = (0..num_pairs)
+                .map(|j| {
+                    let br_2j = p3_util::reverse_bits_len(2 * j, log_domain);
+                    let c = omega_s.exp_u64(br_2j as u64);
+                    builder.add_const(EF::from(c))
+                })
+                .collect();
+            for j in 0..num_pairs {
+                let x0 = builder.mul(ss, omega_s_br[j]);
+                data[j] = arity2_fold_at_point::<EF>(
+                    builder,
+                    data[2 * j],
+                    data[2 * j + 1],
+                    current_beta,
+                    x0,
+                );
+            }
+        }
+        data.truncate(num_pairs);
+        if step < log_arity - 1 {
+            current_beta = builder.mul(current_beta, current_beta);
+        }
+    }
+
+    let mut new_folded = data[0];
 
     // Roll-in: folded += beta^{2^log_arity} * roll_in
     if let Some(ro) = roll_in {
