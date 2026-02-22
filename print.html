@@ -995,11 +995,11 @@ We’ll use a simple Fibonacci example throughout this page to ground the ideas 
 <pre><code class="language-rust ignore">let mut builder = CircuitBuilder::&lt;F&gt;::new();
 
 // Public input: expected F(n)
-let expected_result = builder.add_public_input();
+let expected_result = builder.public_input();
 
 // Compute F(n) iteratively
-let mut a = builder.add_const(F::ZERO); // F(0)
-let mut b = builder.add_const(F::ONE);  // F(1)
+let mut a = builder.define_const(F::ZERO); // F(0)
+let mut b = builder.define_const(F::ONE);  // F(1)
 
 for _i in 2..=n {
     let next = builder.add(a, b); // F(N) &lt;- F(N-1) + F(N-2)
@@ -1037,7 +1037,7 @@ be pruned away from the graph, and the operation removed.</p>
 <p>In order to recursively verify an AIR, its constraints need to be added to the circuit and folded together. In Plonky3, we can get an AIR's constraints in symbolic form. Since our primitive chips (see section <a href="architecture_and_internals/./construction.html#execution-ir">Execution IR</a>) encompass the various entries in the symbolic representation, we can simply map each symbolic operation to its circuit counterpart. The <code>symbolic_to_circuit</code> function does exactly that for a given symbolic constraint.</p>
 <p>We can consider a small example to show how operations are mapped. Given public inputs <code>a</code> and <code>b</code>, and a constant <code>c</code>, we have the following symbolic constraint: <code>Mul{ a, Sub {b, Const{ c }}}</code> (which corresponds to: <code>a * (b - c)</code>).</p>
 <pre><code class="language-rust ignore">// We get the `ExprId` corresponding to Const{ c } by adding a constant to the circuit.
-let x = builder.add_const(c);
+let x = builder.define_const(c);
 // We use the previously computed `x` to compute the subtraction in the circuit.
 let y = builder.sub(b, x);
 // We use the previously computed `y` to compute the multiplication in the circuit.
@@ -1062,7 +1062,7 @@ fn eval_folded_circuit(
             get_symbolic_constraints(self, 0, columns.public_values.len());
 
         // Fold all the constraints using the folding challenge.
-        let mut acc = builder.add_const(F::ZERO);
+        let mut acc = builder.define_const(F::ZERO);
         for s_c in symbolic_constraints {
             let mul_prev = builder.mul(acc, *alpha);
 
@@ -1397,7 +1397,7 @@ let a_plus_bc = builder.alloc_add(input_a, b_times_c, "a_plus_bc");
 let a_minus_bc = builder.alloc_sub(input_a, b_times_c, "a_minus_bc");
 
 // Default allocation
-let x = builder.add_public_input(); // unlabelled
+let x = builder.public_input(); // unlabelled
 let y = builder.add(x, z);          // unlabelled</code></pre>
 <p>The <code>CircuitBuilder</code> also allows for nested scoping of allocation logs, so that users can debug
 a specific context within a larger circuit. Scoping can be defined arbitrarily by users as follows:</p>
