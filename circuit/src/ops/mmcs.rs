@@ -88,7 +88,7 @@ pub fn add_mmcs_verify<F: Field>(
     // We return only the operations that require private data.
     let mut op_ids = Vec::with_capacity(openings_expr.len());
     let mut output = [None, None, None, None];
-    let zero = builder.add_const(F::ZERO);
+    let zero = builder.define_const(F::ZERO);
 
     // Detect a non-empty tail digest (cap-level rows to inject after the main path).
     let has_tail = openings_expr.len() > directions_expr.len()

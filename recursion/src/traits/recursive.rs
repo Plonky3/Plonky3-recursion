@@ -61,7 +61,7 @@ impl<F: Field> RecursiveLookupGadget<F> for LogUpGadget {
         circuit: &mut CircuitBuilder<F>,
         all_expected_cumulative: &[Target],
     ) {
-        let mut final_cumulative = circuit.add_const(F::ZERO);
+        let mut final_cumulative = circuit.define_const(F::ZERO);
         for a_e_c in all_expected_cumulative {
             final_cumulative = circuit.add(final_cumulative, *a_e_c);
         }

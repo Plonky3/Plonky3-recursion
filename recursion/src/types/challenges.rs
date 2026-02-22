@@ -146,7 +146,7 @@ impl StarkChallenges {
 
         // 11. Compute zeta_next = zeta * trace_domain_generator (NOT sampled!)
         // This matches native behavior: zeta_next = init_trace_domain.next_point(zeta)
-        let generator_const = circuit.add_const(params.trace_domain_generator);
+        let generator_const = circuit.define_const(params.trace_domain_generator);
         let zeta_next = circuit.mul(zeta, generator_const);
 
         Self {

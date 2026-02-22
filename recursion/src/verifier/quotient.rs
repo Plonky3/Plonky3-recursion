@@ -242,7 +242,7 @@ where
     // Pre-lift all denominator constants once before the loop
     let den_targets: Vec<_> = den_constants
         .iter()
-        .map(|&c| circuit.add_const(c))
+        .map(|&c| circuit.define_const(c))
         .collect();
 
     // For each chunk i, compute L_i(ζ) = [∏_j Z_j(ζ) / Z_i(ζ)] / den_i
@@ -304,7 +304,7 @@ where
 
     // Handle edge cases: empty chunks or trivial extension
     if d == 0 || opened_quotient_chunks.is_empty() {
-        return circuit.add_const(SC::Challenge::ZERO);
+        return circuit.define_const(SC::Challenge::ZERO);
     }
 
     // Phase 1: Pre-compute extension field basis elements
@@ -316,7 +316,7 @@ where
         .map(|i| {
             let basis_elem =
                 SC::Challenge::ith_basis_element(i).expect("Basis index should be in range [0, d)");
-            circuit.add_const(basis_elem)
+            circuit.define_const(basis_elem)
         })
         .collect();
 
@@ -391,7 +391,7 @@ where
     // Normalize: compute point/g where g is the coset generator
     //
     // Cost: 1 multiplication constraint
-    let inv = circuit.add_const(pcs.first_point(domain).inverse());
+    let inv = circuit.define_const(pcs.first_point(domain).inverse());
     let mul = circuit.mul(point, inv);
 
     // Exponentiate: compute (point/g)^n where n = 2^(log_size)
@@ -402,6 +402,6 @@ where
     // Subtract: Z_H(point) = (point/g)^n - 1
     //
     // Cost: 1 subtraction constraint
-    let one = circuit.add_const(SC::Challenge::ONE);
+    let one = circuit.define_const(SC::Challenge::ONE);
     circuit.sub(exp, one)
 }

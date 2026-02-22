@@ -106,7 +106,7 @@ mod tests {
             let input_exprs: Vec<ExprId> = (0..base_inputs.len())
                 .chunks(<CF as BasedVectorSpace<F>>::DIMENSION)
                 .into_iter()
-                .map(|_| builder.add_public_input())
+                .map(|_| builder.public_input())
                 .collect();
 
             let outputs = add_hash_slice(
@@ -117,8 +117,8 @@ mod tests {
             )
             .unwrap();
 
-            let out0_pi = builder.add_public_input();
-            let out1_pi = builder.add_public_input();
+            let out0_pi = builder.public_input();
+            let out1_pi = builder.public_input();
             builder.connect(outputs[0], out0_pi);
             builder.connect(outputs[1], out1_pi);
 
@@ -180,7 +180,7 @@ mod tests {
         // Pack base inputs into extension elements (will zero-pad the last one)
         let input_exprs: Vec<ExprId> = base_inputs
             .chunks(<CF as BasedVectorSpace<F>>::DIMENSION)
-            .map(|_| builder.add_public_input())
+            .map(|_| builder.public_input())
             .collect();
 
         let outputs = add_hash_slice(
@@ -191,8 +191,8 @@ mod tests {
         )
         .unwrap();
 
-        let out0_pi = builder.add_public_input();
-        let out1_pi = builder.add_public_input();
+        let out0_pi = builder.public_input();
+        let out1_pi = builder.public_input();
         builder.connect(outputs[0], out0_pi);
         builder.connect(outputs[1], out1_pi);
 

@@ -141,7 +141,7 @@ where
         //
         // Additionally, the cache is shared across all constraint calls to reuse circuit
         // operations for sub-expressions shared between different constraints.
-        let mut acc = builder.add_const(EF::ZERO);
+        let mut acc = builder.define_const(EF::ZERO);
         let mut base_cache = HashMap::new();
         for s_c in &base_symbolic_constraints {
             let mul_prev = builder.mul(acc, *alpha);

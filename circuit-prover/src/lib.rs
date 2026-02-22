@@ -20,10 +20,10 @@
 //! use p3_circuit_prover::BatchStarkProver;
 //!
 //! let mut builder = CircuitBuilder::<BabyBear>::new();
-//! let x = builder.add_public_input();
-//! let y = builder.add_public_input();
+//! let x = builder.public_input();
+//! let y = builder.public_input();
 //! let z = builder.add(x, y);
-//! builder.assert_zero(builder.sub(z, builder.add_const(BabyBear::from_u64(3))));
+//! builder.assert_zero(builder.sub(z, builder.define_const(BabyBear::from_u64(3))));
 //! let circuit = builder.build();
 //! let mut runner = circuit.runner();
 //! runner.set_public_inputs(&[BabyBear::from_u64(1), BabyBear::from_u64(2)]).unwrap();

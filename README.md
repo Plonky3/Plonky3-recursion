@@ -172,8 +172,8 @@ Both examples use the unified API (`prove_next_layer`, `RecursionInput`, `FriRec
 The `CircuitBuilder<F>` provides a modular API for building circuits:
 
 **Primitive Operations** (always available):
-- `add_const(val)` - Add a constant
-- `add_public_input()` - Allocate a public input
+- `define_const(val)` - Add a constant
+- `public_input()` - Allocate a public input
 - `mul(a, b)` - Multiply two expressions
 - `add(a, b)` / `sub(a, b)` - Arithmetic operations
 - `connect(a, b)` - Constrain two expressions to be equal

@@ -57,5 +57,5 @@ Running on a Apple M4 pro, 14 Cores, with **KoalaBear** field and extension of *
 - **2-to-1 aggregation:**
   - Base batch-stark proof: 30 ms
   - 1st aggregation layer: 358 ms
-  - 2nd aggregation layer: 580 ms
-  - 3rd and next aggregation layers: 576 ms
+  - 2nd aggregation layer: 553 ms
+  - 3rd and next aggregation layers: 562 ms

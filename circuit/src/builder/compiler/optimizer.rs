@@ -1017,9 +1017,9 @@ mod tests {
     #[test]
     fn test_duplicated_op_fusion_in_builder() {
         let mut builder = CircuitBuilder::<F>::new();
-        let a = builder.add_const(F::TWO);
-        let b = builder.add_public_input();
-        let c = builder.add_public_input();
+        let a = builder.define_const(F::TWO);
+        let b = builder.public_input();
+        let c = builder.public_input();
 
         builder.connect(b, c);
 

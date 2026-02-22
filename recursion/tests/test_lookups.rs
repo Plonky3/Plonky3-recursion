@@ -770,10 +770,10 @@ fn get_verifier_inputs_and_challenges(
 fn get_circuit(n: usize) -> CircuitBuilder<F> {
     let mut builder = CircuitBuilder::<F>::new();
 
-    let x = builder.add_public_input();
-    let a = builder.add_public_input();
-    let b = builder.add_public_input();
-    let expected_result = builder.add_public_input();
+    let x = builder.public_input();
+    let a = builder.public_input();
+    let b = builder.public_input();
+    let expected_result = builder.public_input();
 
     // y = a * x + b
     let mut y = builder.mul(a, x);
@@ -802,8 +802,8 @@ fn test_poseidon2_ctl_lookups() {
     );
 
     // Create public inputs that will also serve as witnesses for the Poseidon2 inputs
-    let input0 = builder.add_public_input();
-    let input1 = builder.add_public_input();
+    let input0 = builder.public_input();
+    let input1 = builder.public_input();
 
     // Create a Poseidon2 operation with input CTL enabled for limbs 0 and 1
     let (_op_id, outputs) = builder
@@ -896,8 +896,8 @@ fn test_poseidon2_chained_ctl_lookups() {
     );
 
     // Create public inputs for the first operation's inputs
-    let input0 = builder.add_public_input();
-    let input1 = builder.add_public_input();
+    let input0 = builder.public_input();
+    let input1 = builder.public_input();
 
     // First Poseidon2 operation: new_start=true, inputs from witness
     let (_op_id, _outputs) = builder

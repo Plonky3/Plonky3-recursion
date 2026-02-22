@@ -76,22 +76,22 @@ where
 
     let mut builder = CircuitBuilder::<F>::new();
     let selector_targets = [
-        builder.add_public_input(),
-        builder.add_public_input(),
-        builder.add_public_input(),
+        builder.public_input(),
+        builder.public_input(),
+        builder.public_input(),
     ];
     let public_targets: Vec<_> = (0..num_public_values)
-        .map(|_| builder.add_public_input())
+        .map(|_| builder.public_input())
         .collect();
 
     let pre_local_targets: Vec<_> = (0..preprocessed_width)
-        .map(|_| builder.add_public_input())
+        .map(|_| builder.public_input())
         .collect();
     let pre_next_targets: Vec<_> = (0..preprocessed_width)
-        .map(|_| builder.add_public_input())
+        .map(|_| builder.public_input())
         .collect();
-    let local_targets: Vec<_> = (0..width).map(|_| builder.add_public_input()).collect();
-    let next_targets: Vec<_> = (0..width).map(|_| builder.add_public_input()).collect();
+    let local_targets: Vec<_> = (0..width).map(|_| builder.public_input()).collect();
+    let next_targets: Vec<_> = (0..width).map(|_| builder.public_input()).collect();
 
     let row_selectors = RowSelectorsTargets {
         is_first_row: selector_targets[0],
@@ -110,10 +110,10 @@ where
         next_values: &next_targets,
     };
 
-    let alpha_t = builder.add_const(alpha);
+    let alpha_t = builder.define_const(alpha);
     let sels = RecursiveLagrangeSelectors {
         row_selectors,
-        inv_vanishing: builder.add_const(F::ONE),
+        inv_vanishing: builder.define_const(F::ONE),
     };
     let lookup_gadget = LogUpGadget {};
     let dummy_lookup_metadata = LookupMetadata {
@@ -128,7 +128,7 @@ where
         columns,
         &lookup_gadget,
     );
-    let const_target = builder.add_const(folded_value);
+    let const_target = builder.define_const(folded_value);
     builder.connect(const_target, sum);
 
     let mut all_public_inputs = Vec::new();

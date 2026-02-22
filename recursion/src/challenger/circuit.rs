@@ -84,7 +84,7 @@ impl<const WIDTH: usize, const RATE: usize> CircuitChallenger<WIDTH, RATE> {
         if self.initialized {
             return;
         }
-        let zero = circuit.add_const(EF::ZERO);
+        let zero = circuit.define_const(EF::ZERO);
         self.state = vec![zero; WIDTH];
         self.initialized = true;
     }
@@ -313,7 +313,7 @@ where
     }
 
     fn clear(&mut self, circuit: &mut CircuitBuilder<EF>) {
-        let zero = circuit.add_const(EF::ZERO);
+        let zero = circuit.define_const(EF::ZERO);
         self.state = vec![zero; WIDTH];
         self.input_buffer.clear();
         self.output_buffer.clear();

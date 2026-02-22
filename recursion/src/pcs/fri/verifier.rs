@@ -50,10 +50,10 @@ where
         .collect();
 
     // Lift basis elements to circuit constants once and reuse across all chunks.
-    let basis_consts: Vec<Target> = basis.iter().map(|b| builder.add_const(*b)).collect();
+    let basis_consts: Vec<Target> = basis.iter().map(|b| builder.define_const(*b)).collect();
 
     // Add a zero constant for padding partial chunks
-    let zero = builder.add_const(EF::ZERO);
+    let zero = builder.define_const(EF::ZERO);
 
     lifted
         .chunks(d)
@@ -86,7 +86,7 @@ fn one_hot_from_two_bits<EF: Field>(
     b0: Target,
     b1: Target,
 ) -> [Target; 4] {
-    let one = builder.add_const(EF::ONE);
+    let one = builder.define_const(EF::ONE);
     let nb0 = builder.sub(one, b0);
     let nb1 = builder.sub(one, b1);
 
@@ -105,7 +105,7 @@ fn one_hot_from_three_bits<EF: Field>(
     b1: Target,
     b2: Target,
 ) -> [Target; 8] {
-    let one = builder.add_const(EF::ONE);
+    let one = builder.define_const(EF::ONE);
     let nb0 = builder.sub(one, b0);
     let nb1 = builder.sub(one, b1);
     let nb2 = builder.sub(one, b2);
@@ -158,11 +158,11 @@ fn one_hot_from_bits<EF: Field>(builder: &mut CircuitBuilder<EF>, bits: &[Target
     match log_arity {
         0 => {
             // Degenerate case: arity 1, always index 0.
-            vec![builder.add_const(EF::ONE)]
+            vec![builder.define_const(EF::ONE)]
         }
         1 => {
             // One bit: [!b0, b0]
-            let one = builder.add_const(EF::ONE);
+            let one = builder.define_const(EF::ONE);
             let b0 = bits[0];
             let nb0 = builder.sub(one, b0);
             vec![nb0, b0]
@@ -178,7 +178,7 @@ fn one_hot_from_bits<EF: Field>(builder: &mut CircuitBuilder<EF>, bits: &[Target
         }
         4 => one_hot_from_four_bits(builder, bits),
         _ => {
-            let one = builder.add_const(EF::ONE);
+            let one = builder.define_const(EF::ONE);
             // Precompute negations of bits once to avoid rebuilding `1 - bit` inside the inner loop for every index j.
             let not_bits: Vec<Target> = bits.iter().map(|&bit| builder.sub(one, bit)).collect();
 
@@ -277,12 +277,12 @@ where
 
         // Compute subgroup_start = g_big^{reverse_bits_len(parent_index, log_folded_height)}
         let g_big = F::two_adic_generator(log_folded_height + log_arity);
-        let one = builder.add_const(EF::ONE);
+        let one = builder.define_const(EF::ONE);
 
         let g_big_pows: Vec<Target> = if log_folded_height > 0 {
             iter::successors(Some(g_big), |&prev| Some(prev.square()))
                 .take(log_folded_height)
-                .map(|p| builder.add_const(EF::from(p)))
+                .map(|p| builder.define_const(EF::from(p)))
                 .collect()
         } else {
             Vec::new()
@@ -305,7 +305,7 @@ where
         .map(|i| {
             let br_i = p3_util::reverse_bits_len(i, log_arity);
             let omega_br = omega.exp_u64(br_i as u64);
-            builder.add_const(EF::from(omega_br))
+            builder.define_const(EF::from(omega_br))
         })
         .collect();
 
@@ -317,135 +317,6 @@ where
 
     builder.pop_scope();
     (xs, subgroup_start)
-}
-
-/// Precompute Lagrange denominator inverses for a given FRI arity, in the
-/// canonical subgroup with `subgroup_start = 1`.
-///
-/// For `xs0[i] = omega^{br(i)}` where `omega = two_adic_generator(log_arity)`,
-/// returns `denom_inv[i] = 1 / ∏_{j != i} (xs0[i] - xs0[j])` lifted to `EF`.
-fn precompute_lagrange_denominator_inverses<F, EF>(log_arity: usize) -> Vec<EF>
-where
-    F: Field + TwoAdicField,
-    EF: ExtensionField<F>,
-{
-    let arity = 1usize << log_arity;
-    let omega = F::two_adic_generator(log_arity);
-
-    // Canonical subgroup points xs0[i] = omega^{br(i)} in EF.
-    let mut xs0 = Vec::with_capacity(arity);
-    for i in 0..arity {
-        let br_i = p3_util::reverse_bits_len(i, log_arity);
-        let g_i = omega.exp_u64(br_i as u64);
-        xs0.push(EF::from(g_i));
-    }
-
-    let mut denom_inv = Vec::with_capacity(arity);
-    for i in 0..arity {
-        let mut denom = EF::ONE;
-        for j in 0..arity {
-            if j == i {
-                continue;
-            }
-            denom *= xs0[i] - xs0[j];
-        }
-        // denom should never be zero for distinct xs0.
-        let inv = denom.inverse();
-        denom_inv.push(inv);
-    }
-
-    denom_inv
-}
-
-/// Optimized Lagrange interpolation for small arities (`log_arity` 2, 3, 4).
-///
-/// This uses:
-/// - a batch inversion for `diffs[i] = z - xs[i]` (one division),
-/// - a single inversion for `subgroup_start^{arity-1}`,
-/// - precomputed denominator inverses from the canonical subgroup, scaled
-///   by `subgroup_start^{-(arity-1)}` in-circuit.
-fn lagrange_interpolate_small<F, EF>(
-    builder: &mut CircuitBuilder<EF>,
-    xs: &[Target],
-    ys: &[Target],
-    z: Target,
-    subgroup_start: Target,
-    log_arity: usize,
-) -> Target
-where
-    F: Field + TwoAdicField,
-    EF: ExtensionField<F>,
-{
-    let arity = 1usize << log_arity;
-    debug_assert_eq!(xs.len(), arity);
-    debug_assert_eq!(ys.len(), arity);
-
-    // diffs[i] = z - xs[i]
-    let mut diffs = Vec::with_capacity(arity);
-    for &xi in xs {
-        diffs.push(builder.sub(z, xi));
-    }
-
-    // L(z) = ∏ diffs[i]
-    let mut l_z = diffs[0];
-    for d in &diffs[1..] {
-        l_z = builder.mul(l_z, *d);
-    }
-
-    // Batch inversion of diffs: inv_diffs[i] = 1 / (z - xs[i])
-    let one = builder.add_const(EF::ONE);
-    let mut prefix = Vec::with_capacity(arity);
-    prefix.push(diffs[0]);
-    for i in 1..arity {
-        let prod = builder.mul(prefix[i - 1], diffs[i]);
-        prefix.push(prod);
-    }
-
-    // Single division for the inverse of the total product.
-    let mut inv_total = builder.div(one, prefix[arity - 1]);
-
-    let mut inv_diffs = vec![inv_total; arity];
-    // Standard batch inversion backward sweep:
-    for i in (0..arity).rev() {
-        let prev = if i == 0 { one } else { prefix[i - 1] };
-        inv_diffs[i] = builder.mul(inv_total, prev);
-        inv_total = builder.mul(inv_total, diffs[i]);
-    }
-
-    // Compute subgroup_start^{arity-1} and its inverse.
-    // arity-1 = 2^log_arity - 1 is all-ones in binary, so use the recurrence
-    // r_1 = s, r_{i+1} = r_i^2 * s which converges in log_arity-1 steps.
-    let mut s_pow = subgroup_start;
-    for _ in 1..log_arity {
-        s_pow = builder.mul(s_pow, s_pow);
-        s_pow = builder.mul(s_pow, subgroup_start);
-    }
-    let inv_s_pow = builder.div(one, s_pow);
-
-    // Precomputed canonical denominator inverses (in EF).
-    let denom_inv_consts = precompute_lagrange_denominator_inverses::<F, EF>(log_arity);
-    debug_assert_eq!(denom_inv_consts.len(), arity);
-
-    // Pre-lift all denominator inverse constants once before the loop
-    let denom_inv_targets: Vec<Target> = denom_inv_consts
-        .iter()
-        .map(|&c| builder.add_const(c))
-        .collect();
-
-    // result = sum_i ys[i] * L(z)/(z - xs[i]) * (1 / denom[i])
-    // where 1/denom[i] = denom_inv_consts[i] * subgroup_start^{-(arity-1)}.
-    let mut accumulator = builder.add_const(EF::ZERO);
-    for i in 0..arity {
-        let partial_num = builder.mul(l_z, inv_diffs[i]);
-        let scaled_y = builder.mul(ys[i], partial_num);
-
-        let term = builder.mul(scaled_y, denom_inv_targets[i]);
-
-        accumulator = builder.add(accumulator, term);
-    }
-
-    // Apply the common factor subgroup_start^{-(arity-1)} once at the end.
-    builder.mul(accumulator, inv_s_pow)
 }
 
 /// Precompute `subgroup_start` for every FRI phase within a single query.
@@ -468,7 +339,7 @@ where
     EF: ExtensionField<F>,
 {
     let num_phases = log_arities.len();
-    let one = builder.add_const(EF::ONE);
+    let one = builder.define_const(EF::ONE);
 
     // log_folded_height[i] = log_max_height - cumulative_bits[i+1]
     let log_folded_heights: Vec<usize> = (0..num_phases)
@@ -485,7 +356,7 @@ where
     let g_0 = F::two_adic_generator(log_max_height);
     let powers_of_g: Vec<_> = iter::successors(Some(g_0), |&prev| Some(prev.square()))
         .take(max_chain_len)
-        .map(|p| builder.add_const(EF::from(p)))
+        .map(|p| builder.define_const(EF::from(p)))
         .collect();
 
     let parent_offset_0 = cumulative_bits[1]; // = log_arities[0]
@@ -543,63 +414,28 @@ fn precompute_beta_powers_per_phase<EF: Field>(
     result
 }
 
-/// Lagrange interpolation in circuit: evaluate the interpolating polynomial at `z`.
-///
-/// Given evaluation points xs[0..n] and values ys[0..n], computes
-/// the unique polynomial p of degree < n passing through (xs[i], ys[i])
-/// and returns p(z).
-fn lagrange_interpolate_circuit<EF: Field>(
+/// Single arity-2 fold at a point: given (e0, e1) and evaluation point beta,
+/// returns the folded value using (e0 + e1)/2 + (e1 - e0)*beta/(2*x0).
+fn arity2_fold_at_point<EF: Field>(
     builder: &mut CircuitBuilder<EF>,
-    xs: &[Target],
-    ys: &[Target],
-    z: Target,
+    e0: Target,
+    e1: Target,
+    beta: Target,
+    x0: Target,
 ) -> Target {
-    let n = xs.len();
-    debug_assert_eq!(n, ys.len());
-
-    // Compute diffs[i] = z - xs[i]
-    let diffs: Vec<Target> = xs.iter().map(|&xi| builder.sub(z, xi)).collect();
-
-    // Compute L(z) = prod(diffs)
-    let mut l_z = diffs[0];
-    for &d in &diffs[1..] {
-        l_z = builder.mul(l_z, d);
-    }
-
-    // For each i, compute:
-    //   partial_num[i] = L(z) / diffs[i]  (Lagrange numerator without the y)
-    //   denom[i] = prod_{j!=i} (xs[i] - xs[j])
-    //   term[i] = ys[i] * partial_num[i] / denom[i]
-    //
-    // result = sum(term[i])
-    let mut result = builder.add_const(EF::ZERO);
-    for i in 0..n {
-        // partial_num[i] = L(z) / (z - xs[i])
-        let partial_num = builder.div(l_z, diffs[i]);
-
-        // denom[i] = prod_{j!=i} (xs[i] - xs[j])
-        let denom = xs.iter().enumerate().filter(|&(j, _)| j != i).fold(
-            builder.add_const(EF::ONE),
-            |acc, (_, &xj)| {
-                let diff = builder.sub(xs[i], xj);
-                builder.mul(acc, diff)
-            },
-        );
-
-        // term = ys[i] * partial_num / denom
-        let num_term = builder.mul(ys[i], partial_num);
-        let term = builder.div(num_term, denom);
-
-        result = builder.add(result, term);
-    }
-
-    result
+    let neg_half = builder.define_const(EF::NEG_ONE * EF::ONE.halve());
+    let inv = builder.div(neg_half, x0);
+    let e1_minus_e0 = builder.sub(e1, e0);
+    let beta_minus_x0 = builder.sub(beta, x0);
+    let t = builder.mul(beta_minus_x0, e1_minus_e0);
+    let t_inv = builder.mul(t, inv);
+    builder.add(e0, t_inv)
 }
 
 /// Perform a single FRI fold phase with arbitrary arity.
 ///
-/// Reconstructs the full evaluation row, computes evaluation points,
-/// performs Lagrange interpolation at beta, and applies optional roll-in.
+/// For log_arity > 1 we use k sequential arity-2 folds (beta, beta^2, ...)
+/// instead of one Lagrange interpolation, reducing batch inversions to one per step.
 ///
 /// When `precomputed_evals` is `Some`, those evals are reused instead of
 /// rebuilding them via `reconstruct_evals`.
@@ -629,8 +465,8 @@ where
     // For arity 2, use the optimized formula
     if log_arity == 1 {
         let sibling = siblings[0];
-        let one = builder.add_const(EF::ONE);
-        let neg_half = builder.add_const(EF::NEG_ONE * EF::ONE.halve());
+        let one = builder.define_const(EF::ONE);
+        let neg_half = builder.define_const(EF::NEG_ONE * EF::ONE.halve());
         let sibling_is_right = builder.sub(one, index_bits[bits_consumed]);
 
         let e0 = builder.select(sibling_is_right, folded, sibling);
@@ -663,7 +499,8 @@ where
         return new_folded;
     }
 
-    // General path: Lagrange interpolation
+    // General path: k sequential arity-2 folds (beta, beta^2, ...) instead of
+    // one Lagrange interpolation, matching the native optimization to reduce inversions.
     let owned_evals;
     let evals: &[Target] = match precomputed_evals {
         Some(e) => e,
@@ -682,13 +519,60 @@ where
         precomputed_subgroup_start,
     );
 
-    // For small arities (2, 4, 8, 16), use the optimized interpolation that
-    // avoids rebuilding denominators in-circuit.
-    let mut new_folded = if (2..=4).contains(&log_arity) {
-        lagrange_interpolate_small::<F, EF>(builder, &xs, evals, beta, subgroup_start, log_arity)
-    } else {
-        lagrange_interpolate_circuit(builder, &xs, evals, beta)
-    };
+    let mut subgroup_start_powers: Vec<Target> = vec![subgroup_start];
+    for _ in 1..log_arity {
+        let prev = subgroup_start_powers.last().copied().unwrap();
+        subgroup_start_powers.push(builder.mul(prev, prev));
+    }
+
+    let omega = F::two_adic_generator(log_arity);
+    let mut data: Vec<Target> = evals.to_vec();
+    let mut current_beta = beta;
+
+    for (step, ss) in subgroup_start_powers
+        .into_iter()
+        .enumerate()
+        .take(log_arity)
+    {
+        let num_pairs = data.len() / 2;
+        if step == 0 {
+            for j in 0..num_pairs {
+                data[j] = arity2_fold_at_point::<EF>(
+                    builder,
+                    data[2 * j],
+                    data[2 * j + 1],
+                    current_beta,
+                    xs[2 * j],
+                );
+            }
+        } else {
+            let log_domain = log_arity - step;
+            let omega_s = omega.exp_u64(1 << step);
+            let omega_s_br: Vec<Target> = (0..num_pairs)
+                .map(|j| {
+                    let br_2j = p3_util::reverse_bits_len(2 * j, log_domain);
+                    let c = omega_s.exp_u64(br_2j as u64);
+                    builder.define_const(EF::from(c))
+                })
+                .collect();
+            for j in 0..num_pairs {
+                let x0 = builder.mul(ss, omega_s_br[j]);
+                data[j] = arity2_fold_at_point::<EF>(
+                    builder,
+                    data[2 * j],
+                    data[2 * j + 1],
+                    current_beta,
+                    x0,
+                );
+            }
+        }
+        data.truncate(num_pairs);
+        if step < log_arity - 1 {
+            current_beta = builder.mul(current_beta, current_beta);
+        }
+    }
+
+    let mut new_folded = data[0];
 
     // Roll-in: folded += beta^{2^log_arity} * roll_in
     if let Some(ro) = roll_in {
@@ -722,9 +606,9 @@ where
         .collect();
 
     // Pre-lift all powers to circuit constants once
-    let pow_consts: Vec<Target> = pows.iter().map(|p| builder.add_const(*p)).collect();
+    let pow_consts: Vec<Target> = pows.iter().map(|p| builder.define_const(*p)).collect();
 
-    let one = builder.add_const(EF::ONE);
+    let one = builder.define_const(EF::ONE);
     let mut res = one;
 
     let parent_offset = bits_consumed + 1;
@@ -837,7 +721,7 @@ where
     let g = F::two_adic_generator(log_height);
     let result = iter::successors(Some(g), |&prev| Some(prev.square()))
         .take(log_height)
-        .map(|p| builder.add_const(EF::from(p)))
+        .map(|p| builder.define_const(EF::from(p)))
         .collect();
 
     builder.pop_scope();
@@ -864,10 +748,10 @@ where
     let domain_index_bits: Vec<Target> = index_bits[total_bits_consumed..log_max_height].to_vec();
 
     // Pad bits and reverse
-    let mut reversed_bits = vec![builder.add_const(EF::ZERO); total_bits_consumed];
+    let mut reversed_bits = vec![builder.define_const(EF::ZERO); total_bits_consumed];
     reversed_bits.extend(domain_index_bits.iter().rev().copied());
 
-    let one = builder.add_const(EF::ONE);
+    let one = builder.define_const(EF::ONE);
     let mut result = one;
     for (&bit, &power) in reversed_bits.iter().zip(powers_of_g.iter()) {
         let multiplier = builder.select(bit, power, one);
@@ -914,13 +798,13 @@ where
     let g = F::two_adic_generator(h_max);
     let powers_of_g: Vec<_> = iter::successors(Some(g), |&prev| Some(prev.square()))
         .take(h_max)
-        .map(|p| builder.add_const(EF::from(p)))
+        .map(|p| builder.define_const(EF::from(p)))
         .collect();
 
     let capture_set: BTreeMap<usize, ()> =
         unique_heights_desc[1..].iter().map(|&h| (h, ())).collect();
 
-    let one = builder.add_const(EF::ONE);
+    let one = builder.define_const(EF::ONE);
     let generator = builder.alloc_const(EF::from(F::GENERATOR), "coset_generator");
     let mut g_pow = one;
     let mut result = BTreeMap::new();
@@ -963,7 +847,7 @@ fn compute_single_reduced_opening<EF: Field>(
     let n = opened_values.len();
 
     if n == 0 {
-        let zero = builder.add_const(EF::ZERO);
+        let zero = builder.define_const(EF::ZERO);
         builder.pop_scope();
         return (alpha_pow, zero);
     }
@@ -976,7 +860,7 @@ fn compute_single_reduced_opening<EF: Field>(
     //   inner = inner * alpha + p_at_z[0] - p_at_x[0]
     //
     // Each step emits a single HornerAcc ALU op (no intermediate witnesses).
-    let zero = builder.add_const(EF::ZERO);
+    let zero = builder.define_const(EF::ZERO);
     let mut inner = zero;
     builder.push_scope("horner_method");
     for i in (0..n).rev() {
@@ -1156,9 +1040,12 @@ where
             let x = eval_points[&log_height];
 
             // Initialize / fetch per-height (alpha_pow, ro)
-            let (alpha_pow_h, ro_h) = reduced_openings
-                .entry(log_height)
-                .or_insert_with(|| (builder.add_const(EF::ONE), builder.add_const(EF::ZERO)));
+            let (alpha_pow_h, ro_h) = reduced_openings.entry(log_height).or_insert_with(|| {
+                (
+                    builder.define_const(EF::ONE),
+                    builder.define_const(EF::ZERO),
+                )
+            });
 
             // Process each (z, ps_at_z) pair for this matrix
             for (z, ps_at_z) in mat_points_and_values {
@@ -1173,7 +1060,7 @@ where
                         .entry((log_height, *z))
                         .or_insert_with(|| {
                             let z_minus_x = builder.sub(*z, x);
-                            let one = builder.add_const(EF::ONE);
+                            let one = builder.define_const(EF::ONE);
                             builder.div(one, z_minus_x)
                         });
 
@@ -1196,7 +1083,7 @@ where
         // trace matrix of height 1. In this case `f` is constant, so `(f(zeta) - f(x))/(zeta - x)`
         // must equal `0`.
         if let Some((_ap, ro0)) = reduced_openings.get(&log_blowup) {
-            let zero = builder.add_const(EF::ZERO);
+            let zero = builder.define_const(EF::ZERO);
             builder.connect(*ro0, zero);
         }
     }
@@ -1444,7 +1331,7 @@ where
                 }
                 roll_ins[i] = Some(ro);
             } else {
-                let zero = builder.add_const(EF::ZERO);
+                let zero = builder.define_const(EF::ZERO);
                 builder.connect(ro, zero);
             }
         }
@@ -1548,7 +1435,7 @@ where
                 // Parent index bits start after index_in_group bits
                 let parent_bit_start = bits_consumed + log_arity;
                 let parent_bit_end = (parent_bit_start + log_folded_height).min(log_max_height);
-                let zero = builder.add_const(EF::ZERO);
+                let zero = builder.define_const(EF::ZERO);
 
                 let mut parent_index_bits: Vec<Target> =
                     index_bits_per_query[q][parent_bit_start..parent_bit_end].to_vec();

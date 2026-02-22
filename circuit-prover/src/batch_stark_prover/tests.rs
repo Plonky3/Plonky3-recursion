@@ -14,12 +14,12 @@ fn test_babybear_batch_stark_base_field() {
     let mut builder = CircuitBuilder::<BabyBear>::new();
 
     // x + 5*2 - 3 + (-1) == expected
-    let x = builder.add_public_input();
-    let expected = builder.add_public_input();
-    let c5 = builder.add_const(BabyBear::from_u64(5));
-    let c2 = builder.add_const(BabyBear::from_u64(2));
-    let c3 = builder.add_const(BabyBear::from_u64(3));
-    let neg_one = builder.add_const(BabyBear::NEG_ONE);
+    let x = builder.public_input();
+    let expected = builder.public_input();
+    let c5 = builder.define_const(BabyBear::from_u64(5));
+    let c2 = builder.define_const(BabyBear::from_u64(2));
+    let c3 = builder.define_const(BabyBear::from_u64(3));
+    let neg_one = builder.define_const(BabyBear::NEG_ONE);
 
     let mul_result = builder.mul(c5, c2); // 10
     let add_result = builder.add(x, mul_result); // x + 10
@@ -70,12 +70,12 @@ fn test_table_lookups() {
     let cfg = config::baby_bear().build();
 
     // x + 5*2 - 3 + (-1) == expected
-    let x = builder.add_public_input();
-    let expected = builder.add_public_input();
-    let c5 = builder.add_const(BabyBear::from_u64(5));
-    let c2 = builder.add_const(BabyBear::from_u64(2));
-    let c3 = builder.add_const(BabyBear::from_u64(3));
-    let neg_one = builder.add_const(BabyBear::NEG_ONE);
+    let x = builder.public_input();
+    let expected = builder.public_input();
+    let c5 = builder.define_const(BabyBear::from_u64(5));
+    let c2 = builder.define_const(BabyBear::from_u64(2));
+    let c3 = builder.define_const(BabyBear::from_u64(3));
+    let neg_one = builder.define_const(BabyBear::NEG_ONE);
 
     let mul_result = builder.mul(c5, c2); // 10
     let add_result = builder.add(x, mul_result); // x + 10
@@ -197,10 +197,10 @@ fn test_extension_field_batch_stark() {
     let cfg = config::baby_bear().build();
 
     let mut builder = CircuitBuilder::<Ext4>::new();
-    let x = builder.add_public_input();
-    let y = builder.add_public_input();
-    let z = builder.add_public_input();
-    let expected = builder.add_public_input();
+    let x = builder.public_input();
+    let y = builder.public_input();
+    let z = builder.public_input();
+    let expected = builder.public_input();
     let xy = builder.mul(x, y);
     let res = builder.add(xy, z);
     let diff = builder.sub(res, expected);
@@ -265,10 +265,10 @@ fn test_extension_field_table_lookups() {
     let cfg = config::baby_bear().build();
 
     let mut builder = CircuitBuilder::<Ext4>::new();
-    let x = builder.add_public_input();
-    let y = builder.add_public_input();
-    let z = builder.add_public_input();
-    let expected = builder.add_public_input();
+    let x = builder.public_input();
+    let y = builder.public_input();
+    let z = builder.public_input();
+    let expected = builder.public_input();
     let xy = builder.mul(x, y);
     let res = builder.add(xy, z);
     let diff = builder.sub(res, expected);
@@ -410,11 +410,11 @@ fn test_koalabear_batch_stark_base_field() {
     let cfg = config::koala_bear().build();
 
     // a * b + 100 - (-1) == expected
-    let a = builder.add_public_input();
-    let b = builder.add_public_input();
-    let expected = builder.add_public_input();
-    let c = builder.add_const(KoalaBear::from_u64(100));
-    let d = builder.add_const(KoalaBear::NEG_ONE);
+    let a = builder.public_input();
+    let b = builder.public_input();
+    let expected = builder.public_input();
+    let c = builder.define_const(KoalaBear::from_u64(100));
+    let d = builder.define_const(KoalaBear::NEG_ONE);
 
     let ab = builder.mul(a, b);
     let add = builder.add(ab, c);
@@ -462,10 +462,10 @@ fn test_koalabear_batch_stark_extension_field_d8() {
     let cfg = config::koala_bear().build();
 
     // x * y * z == expected
-    let x = builder.add_public_input();
-    let y = builder.add_public_input();
-    let expected = builder.add_public_input();
-    let z = builder.add_const(
+    let x = builder.public_input();
+    let y = builder.public_input();
+    let expected = builder.public_input();
+    let z = builder.define_const(
         KBExtField::from_basis_coefficients_slice(&[
             KoalaBear::from_u64(1),
             KoalaBear::NEG_ONE,
@@ -557,10 +557,10 @@ fn test_goldilocks_batch_stark_extension_field_d2() {
     let cfg = config::goldilocks().build();
 
     // x * y + z == expected
-    let x = builder.add_public_input();
-    let y = builder.add_public_input();
-    let z = builder.add_public_input();
-    let expected = builder.add_public_input();
+    let x = builder.public_input();
+    let y = builder.public_input();
+    let z = builder.public_input();
+    let expected = builder.public_input();
 
     let xy = builder.mul(x, y);
     let res = builder.add(xy, z);
@@ -663,8 +663,8 @@ fn test_mul_only_circuit_padding() {
     let mut builder = CircuitBuilder::<BabyBear>::new();
     let cfg = config::baby_bear().build();
 
-    let x = builder.add_public_input();
-    let y = builder.add_public_input();
+    let x = builder.public_input();
+    let y = builder.public_input();
 
     // Only multiplication, no addition
     builder.mul(x, y);
@@ -704,9 +704,9 @@ fn test_add_only_circuit_padding() {
     let mut builder = CircuitBuilder::<BabyBear>::new();
     let cfg = config::baby_bear().build();
 
-    let x = builder.add_public_input();
-    let y = builder.add_public_input();
-    let expected = builder.add_public_input();
+    let x = builder.public_input();
+    let y = builder.public_input();
+    let expected = builder.public_input();
 
     // Only addition, no multiplication
     let sum = builder.add(x, y);
