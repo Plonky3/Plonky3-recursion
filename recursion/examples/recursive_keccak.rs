@@ -146,6 +146,27 @@ struct Args {
         help = "PoW grinding bits during FRI query phase"
     )]
     query_pow_bits: usize,
+
+    #[arg(
+        long,
+        default_value_t = 4,
+        help = "Number of witness lanes for the table packing in recursive layers"
+    )]
+    witness_lanes: usize,
+
+    #[arg(
+        long,
+        default_value_t = 1,
+        help = "Number of public lanes for the table packing in recursive layers"
+    )]
+    public_lanes: usize,
+
+    #[arg(
+        long,
+        default_value_t = 2,
+        help = "Number of ALU lanes for the table packing in recursive layers"
+    )]
+    alu_lanes: usize,
 }
 
 fn init_logger() {
@@ -172,6 +193,8 @@ fn main() {
         query_pow_bits: args.query_pow_bits,
     };
 
+    let table_packing = TablePacking::new(args.witness_lanes, args.public_lanes, args.alu_lanes);
+
     if args.num_recursive_layers < 1 {
         panic!("Number of recursive layers should be at least 1");
     }
@@ -183,10 +206,20 @@ fn main() {
 
     match args.field {
         FieldOption::KoalaBear => {
-            koala_bear::run(args.num_hashes, args.num_recursive_layers, &fri_params);
+            koala_bear::run(
+                args.num_hashes,
+                args.num_recursive_layers,
+                &fri_params,
+                &table_packing,
+            );
         }
         FieldOption::BabyBear => {
-            baby_bear::run(args.num_hashes, args.num_recursive_layers, &fri_params);
+            baby_bear::run(
+                args.num_hashes,
+                args.num_recursive_layers,
+                &fri_params,
+                &table_packing,
+            );
         }
     }
 }
@@ -373,7 +406,7 @@ macro_rules! define_field_module {
                 }
             }
 
-            pub fn run(num_hashes: usize, num_recursive_layers: usize, fri_params: &FriParams) {
+            pub fn run(num_hashes: usize, num_recursive_layers: usize, fri_params: &FriParams, table_packing: &TablePacking) {
                 let keccak_air = KeccakAir {};
                 let min_trace_rows: usize =
                     1 << (fri_params.log_final_poly_len + fri_params.log_blowup + 1);
@@ -405,7 +438,7 @@ macro_rules! define_field_module {
                     let table_packing = if layer == 1 {
                         TablePacking::new(1, 1, 1)
                     } else {
-                        TablePacking::new(4, 1, 2)
+                        table_packing.clone()
                     }
                     .with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup);
                     let params = ProveNextLayerParams {
