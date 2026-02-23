@@ -149,14 +149,14 @@ struct Args {
 
     #[arg(
         long,
-        default_value_t = 1,
+        default_value_t = 2,
         help = "Number of public lanes for the table packing in recursive layers"
     )]
     public_lanes: usize,
 
     #[arg(
         long,
-        default_value_t = 2,
+        default_value_t = 3,
         help = "Number of ALU lanes for the table packing in recursive layers"
     )]
     alu_lanes: usize,
@@ -429,7 +429,7 @@ macro_rules! define_field_module {
 
                 for layer in 1..=num_recursive_layers {
                     let table_packing = if layer == 1 {
-                        TablePacking::new(1, 1)
+                        TablePacking::new(1, 2)
                     } else {
                         table_packing.clone()
                     }

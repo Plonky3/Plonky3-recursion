@@ -62,14 +62,14 @@ where
 
 /// Get ALU lookups for the 4 operands (a, b, c, out).
 ///
-/// ALU preprocessed layout per lane (12 columns):
+/// ALU preprocessed layout per lane (13 columns):
 /// - 0: mult_a (base multiplicity; `-1` for all active rows, `0` for padding)
-/// - 1-3: selectors (add_vs_mul, bool, muladd)
-/// - 4-7: indices (a_idx, b_idx, c_idx, out_idx)
-/// - 8: mult_b (signed multiplicity for `b`: neg_one if reader, +N_reads if creator)
-/// - 9: mult_out (signed multiplicity for `out`: +N_reads if creator, neg_one if reader)
-/// - 10: a_is_reader (`1` if `a` is a constrained witness, `0` if unconstrained)
-/// - 11: c_is_reader (`1` if `c` is a constrained witness, `0` if unconstrained)
+/// - 1-4: selectors (add_vs_mul, bool, muladd, horner)
+/// - 5-8: indices (a_idx, b_idx, c_idx, out_idx)
+/// - 9: mult_b (signed multiplicity for `b`: neg_one if reader, +N_reads if creator)
+/// - 10: mult_out (signed multiplicity for `out`: +N_reads if creator, neg_one if reader)
+/// - 11: a_is_reader (`1` if `a` is a constrained witness, `0` if unconstrained)
+/// - 12: c_is_reader (`1` if `c` is a constrained witness, `0` if unconstrained)
 ///
 /// All lookups use `Direction::Receive`. Sign encodes creator vs reader:
 /// - neg_one → contribution -1 (reader)
@@ -91,13 +91,13 @@ pub fn get_alu_index_lookups<
     _direction: Direction,
 ) -> Vec<LookupInput<AB::F>> {
     let mult_a = SymbolicExpression::from(preprocessed[preprocessed_start]);
-    let mult_b = SymbolicExpression::from(preprocessed[preprocessed_start + 8]);
-    let mult_out = SymbolicExpression::from(preprocessed[preprocessed_start + 9]);
-    let a_is_reader = SymbolicExpression::from(preprocessed[preprocessed_start + 10]);
-    let c_is_reader = SymbolicExpression::from(preprocessed[preprocessed_start + 11]);
+    let mult_b = SymbolicExpression::from(preprocessed[preprocessed_start + 9]);
+    let mult_out = SymbolicExpression::from(preprocessed[preprocessed_start + 10]);
+    let a_is_reader = SymbolicExpression::from(preprocessed[preprocessed_start + 11]);
+    let c_is_reader = SymbolicExpression::from(preprocessed[preprocessed_start + 12]);
 
-    // Indices are at positions 4, 5, 6, 7 (after mult_a + 3 selectors)
-    let idx_offset = 4;
+    // Indices are at positions 5-8 (after mult_a + 4 selectors)
+    let idx_offset = 5;
 
     // Effective multiplicities: mult_a * is_reader. This zeros out bus contributions
     // for unconstrained witnesses while keeping mult_a = -1 for active = -mult_a = 1.

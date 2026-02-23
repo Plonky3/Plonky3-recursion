@@ -39,6 +39,8 @@ pub struct OpCounts {
     pub muls: u64,
     /// Number of division expressions allocated.
     pub divs: u64,
+    /// Number of Horner accumulator expressions allocated.
+    pub horner_accs: u64,
     /// Number of non-primitive calls allocated, broken down by type.
     pub non_primitives: HashMap<NonPrimitiveOpType, u64>,
 }
@@ -95,6 +97,11 @@ impl ProfilingState {
     #[inline]
     fn bump_div(&mut self) {
         self.bump_with(|c| c.divs += 1);
+    }
+
+    #[inline]
+    fn bump_horner_acc(&mut self) {
+        self.bump_with(|c| c.horner_accs += 1);
     }
 
     #[inline]
@@ -453,6 +460,40 @@ where
             lhs,
             rhs,
         )
+    }
+
+    /// Adds a Horner accumulator step to the graph: result = acc * alpha + p_at_z - p_at_x.
+    ///
+    /// Lowers to a single HornerAcc ALU op with no intermediate witnesses.
+    pub fn add_horner_acc(
+        &mut self,
+        acc: ExprId,
+        alpha: ExprId,
+        p_at_z: ExprId,
+        p_at_x: ExprId,
+        label: &'static str,
+    ) -> ExprId {
+        #[cfg(feature = "profiling")]
+        self.profiling.bump_horner_acc();
+
+        let expr_id = self.graph.add_expr(Expr::HornerAcc {
+            acc,
+            alpha,
+            p_at_z,
+            p_at_x,
+        });
+
+        #[cfg(feature = "debugging")]
+        self.log_alloc(expr_id, label, || {
+            (
+                AllocationType::HornerAcc,
+                vec![vec![acc], vec![alpha], vec![p_at_z], vec![p_at_x]],
+            )
+        });
+        #[cfg(not(feature = "debugging"))]
+        self.log_alloc(expr_id, label, || ());
+
+        expr_id
     }
 
     /// Adds a non-primitive output expression to the graph.

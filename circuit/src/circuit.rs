@@ -335,8 +335,8 @@ impl<F: Field> Circuit<F> {
                 }
                 // Unified ALU operations with selectors for operation kind.
                 //
-                // Preprocessed per op (11 values, no multiplicities):
-                // [sel_add_vs_mul, sel_bool, sel_muladd, a_idx, b_idx, c_idx, out_idx,
+                // Preprocessed per op (12 values, no multiplicities):
+                // [sel_add_vs_mul, sel_bool, sel_muladd, sel_horner, a_idx, b_idx, c_idx, out_idx,
                 //  a_is_reader, b_is_creator, c_is_reader, out_is_creator]
                 //
                 // a_is_reader: 1 if `a` is a constrained witness (defined by Const/Public/ALU/Poseidon2).
@@ -358,11 +358,12 @@ impl<F: Field> Circuit<F> {
                 Op::Alu {
                     kind, a, b, c, out, ..
                 } => {
-                    let (sel_add_vs_mul, sel_bool, sel_muladd) = match kind {
-                        AluOpKind::Add => (F::ONE, F::ZERO, F::ZERO),
-                        AluOpKind::Mul => (F::ZERO, F::ZERO, F::ZERO),
-                        AluOpKind::BoolCheck => (F::ZERO, F::ONE, F::ZERO),
-                        AluOpKind::MulAdd => (F::ZERO, F::ZERO, F::ONE),
+                    let (sel_add_vs_mul, sel_bool, sel_muladd, sel_horner) = match kind {
+                        AluOpKind::Add => (F::ONE, F::ZERO, F::ZERO, F::ZERO),
+                        AluOpKind::Mul => (F::ZERO, F::ZERO, F::ZERO, F::ZERO),
+                        AluOpKind::BoolCheck => (F::ZERO, F::ONE, F::ZERO, F::ZERO),
+                        AluOpKind::MulAdd => (F::ZERO, F::ZERO, F::ONE, F::ZERO),
+                        AluOpKind::HornerAcc => (F::ZERO, F::ZERO, F::ZERO, F::ONE),
                     };
                     let c_wid = c.unwrap_or(WitnessId(0));
                     let d_u32 = d as u32;
@@ -390,6 +391,7 @@ impl<F: Field> Circuit<F> {
                         sel_add_vs_mul,
                         sel_bool,
                         sel_muladd,
+                        sel_horner,
                         F::from_u32(a.0 * d_u32),
                         F::from_u32(b.0 * d_u32),
                         F::from_u32(c_wid.0 * d_u32),
@@ -589,11 +591,12 @@ mod tests {
             vec![F::from_u32(1)]
         );
 
-        // ALU column: [sel1, sel2, sel3, a, b, c, out, a_is_reader, b_is_creator, c_is_reader, out_is_creator] per op
+        // ALU column: [sel1, sel2, sel3, sel4, a, b, c, out, a_is_reader, b_is_creator, c_is_reader, out_is_creator] per op
         // All operands are Const/Public defined: a_is_reader=1, c_is_reader=1. All forward: out_is_creator=1.
         let expected_alu = vec![
             // add(0, 1, 3): forward, a=0(defined), c=0(defined) → a_is_reader=1, c_is_reader=1
             F::ONE,
+            F::ZERO,
             F::ZERO,
             F::ZERO,
             F::ZERO,
@@ -608,6 +611,7 @@ mod tests {
             F::ONE,
             F::ZERO,
             F::ZERO,
+            F::ZERO,
             F::from_u32(3),
             F::from_u32(2),
             F::ZERO,
@@ -620,6 +624,7 @@ mod tests {
             F::ZERO,
             F::ZERO,
             F::ZERO,
+            F::ZERO, // sel_horner
             F::from_u32(4),
             F::from_u32(2),
             F::ZERO,
@@ -699,12 +704,13 @@ mod tests {
         let circuit = make_circuit(ops);
         let result = circuit.generate_preprocessed_columns(1).unwrap();
 
-        // ALU column for MulAdd (forward): [sel1, sel2, sel3, a, b, c, out, a_is_reader, b_is_creator, c_is_reader, out_is_creator]
+        // ALU column for MulAdd (forward): [sel1, sel2, sel3, sel_horner, a, b, c, out, a_is_reader, b_is_creator, c_is_reader, out_is_creator]
         // a=0(defined), c=2(defined) → a_is_reader=1, c_is_reader=1
         let expected_alu = vec![
             F::ZERO,
             F::ZERO,
             F::ONE,
+            F::ZERO, // sel_horner
             F::ZERO,
             F::from_u32(1),
             F::from_u32(2),

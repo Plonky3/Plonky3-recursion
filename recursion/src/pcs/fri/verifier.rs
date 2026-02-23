@@ -852,22 +852,18 @@ fn compute_single_reduced_opening<EF: Field>(
         return (alpha_pow, zero);
     }
 
-    // Compute all diffs: diff[i] = p_at_z[i] - p_at_x[i]
-    let diffs: Vec<Target> = opened_values
-        .iter()
-        .zip(point_values.iter())
-        .map(|(&p_at_x, &p_at_z)| builder.sub(p_at_z, p_at_x))
-        .collect();
-
-    // Horner's method: evaluate sum_{i=0}^{n-1} alpha^i * diff[i] as
-    //   inner = diff[n-1]
-    //   inner = inner * alpha + diff[n-2]
+    // Horner's method with inline subtraction via HornerAcc:
+    //   inner = 0
+    //   inner = inner * alpha + p_at_z[n-1] - p_at_x[n-1]
+    //   inner = inner * alpha + p_at_z[n-2] - p_at_x[n-2]
     //   ...
-    //   inner = inner * alpha + diff[0]
-    let mut inner = diffs[n - 1];
-    for i in (0..n - 1).rev() {
-        let prod = builder.mul(inner, alpha);
-        inner = builder.add(prod, diffs[i]);
+    //   inner = inner * alpha + p_at_z[0] - p_at_x[0]
+    //
+    // Each step emits a single HornerAcc ALU op (no intermediate witnesses).
+    let zero = builder.define_const(EF::ZERO);
+    let mut inner = zero;
+    for i in (0..n).rev() {
+        inner = builder.horner_acc_step(inner, alpha, point_values[i], opened_values[i]);
     }
 
     // reduced_opening = alpha_pow * inner * (1 / (z - x))
