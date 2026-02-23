@@ -797,9 +797,12 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for Poseidon2Perm
                     &[F::ZERO, F::ZERO], // out_idx, out_ctl
                 );
             } else {
-                // Exposed output: register the witness read (updates multiplicities)
-                preprocessed.register_non_primitive_witness_reads(self.op_type, out)?;
-                // Add out_ctl value
+                // Exposed output: store the D-scaled index for the out_ctl lookup.
+                // Do NOT increment ext_reads here; Poseidon2 is the CREATOR of this witness,
+                // not a reader. The out_ctl multiplicity (+N_reads) is computed in
+                // get_airs_and_degrees_with_prep based on how many other tables read this witness.
+                preprocessed.register_non_primitive_output_index(self.op_type, out);
+                // Add out_ctl value (placeholder 1; overwritten in get_airs_and_degrees_with_prep).
                 preprocessed.register_non_primitive_preprocessed_no_read(self.op_type, &[F::ONE]);
             }
         }

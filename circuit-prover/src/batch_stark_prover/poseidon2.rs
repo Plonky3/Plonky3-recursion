@@ -1678,4 +1678,12 @@ where
         };
         Ok(DynamicAirEntry::new(Box::new(wrapper)))
     }
+
+    fn air_with_committed_preprocessed(
+        &self,
+        committed_prep: Vec<Val<SC>>,
+        min_height: usize,
+    ) -> Option<DynamicAirEntry<SC>> {
+        Some(self.wrapper_from_config_with_preprocessed(committed_prep, min_height))
+    }
 }

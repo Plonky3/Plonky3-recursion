@@ -104,11 +104,9 @@ impl Default for TablePacking {
 /// Summary of trace lengths for all circuit tables.
 #[derive(Debug, Clone)]
 pub struct TraceLengths {
-    pub witness: usize,
     pub const_: usize,
     pub public: usize,
     pub alu: usize,
-    pub witness_lanes: usize,
     pub public_lanes: usize,
     pub alu_lanes: usize,
     pub non_primitive: Vec<(NonPrimitiveOpType, usize)>,
@@ -118,11 +116,9 @@ impl TraceLengths {
     /// Compute trace lengths from traces and packing configuration.
     pub fn from_traces<F>(traces: &Traces<F>, packing: TablePacking) -> Self {
         Self {
-            witness: traces.witness_trace.num_rows() / packing.witness_lanes(),
             const_: traces.const_trace.values.len(),
             public: traces.public_trace.values.len() / packing.public_lanes(),
             alu: traces.alu_trace.op_kind.len() / packing.alu_lanes(),
-            witness_lanes: packing.witness_lanes(),
             public_lanes: packing.public_lanes(),
             alu_lanes: packing.alu_lanes(),
             non_primitive: traces
@@ -136,8 +132,6 @@ impl TraceLengths {
     /// Log all trace lengths at info level.
     pub fn log(&self) {
         tracing::info!(
-            witness = %self.witness,
-            witness_lanes = %self.witness_lanes,
             const_ = %self.const_,
             const_lanes = 1usize,
             public = %self.public,

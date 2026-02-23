@@ -5,7 +5,7 @@ use p3_batch_stark::{CommonData, ProverData};
 use p3_circuit::op::PrimitiveOpType;
 use p3_circuit::ops::{Poseidon2PermCall, generate_poseidon2_trace};
 use p3_circuit::{CircuitBuilder, Poseidon2PermOps};
-use p3_circuit_prover::air::{AluAir, ConstAir, PublicAir, WitnessAir};
+use p3_circuit_prover::air::{AluAir, ConstAir, PublicAir};
 use p3_circuit_prover::batch_stark_prover::PrimitiveTable;
 use p3_circuit_prover::common::{NonPrimitiveConfig, get_airs_and_degrees_with_prep};
 use p3_circuit_prover::{
@@ -109,9 +109,8 @@ fn test_wrong_multiplicities() {
     let (airs_degrees, mut preprocessed_columns) =
         get_airs_and_degrees_with_prep::<MyConfig, _, 1>(&circuit, table_packing, None).unwrap();
 
-    // Introduce an error in the witness multiplicities.
-    preprocessed_columns.primitive[PrimitiveOpType::Witness as usize]
-        [PrimitiveTable::Alu as usize] += F::ONE;
+    // Introduce an error in the Const table multiplicities.
+    preprocessed_columns.primitive[PrimitiveOpType::Const as usize][0] += F::ONE;
     let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
     let mut runner = circuit.runner();
 
@@ -211,7 +210,7 @@ fn test_wrong_expected_cumulated() {
     // which causes a WitnessConflict during recursive verification.
     batch_stark_proof.proof.global_lookup_data[0][0].expected_cumulated += F::ONE;
     // Introduce an error in the expected cumulated values for the first lookup.
-    assert!(batch_stark_proof.proof.global_lookup_data.len() == 4);
+    assert!(batch_stark_proof.proof.global_lookup_data.len() == 3);
 
     // Build the recursive verification circuit
     let mut circuit_builder = setup_circuit_builder();
@@ -266,7 +265,7 @@ fn test_inconsistent_lookup_name() {
 
     let real_lookup_data = batch_stark_proof.proof.global_lookup_data.clone();
     // First, modify the first global lookup data's name.
-    assert!(real_lookup_data.len() == 4);
+    assert!(real_lookup_data.len() == 3);
     let mut fake_global_lookup_data = real_lookup_data.clone();
     fake_global_lookup_data[0][0].name = "ModifiedLookup".to_string();
 
@@ -390,8 +389,8 @@ fn test_inconsistent_lookup_order_shape() {
 
     let real_lookup_data = batch_stark_proof.proof.global_lookup_data.clone();
     let mut fake_global_lookup_data = real_lookup_data.clone();
-    assert!(fake_global_lookup_data[3].len() > 1);
-    fake_global_lookup_data[3].swap(0, 1);
+    assert!(fake_global_lookup_data[2].len() > 1);
+    fake_global_lookup_data[2].swap(0, 1);
 
     // Build the recursive verification circuit
     let mut circuit_builder = setup_circuit_builder();
@@ -619,7 +618,7 @@ fn get_test_circuit_proof() -> TestCircuitProofData {
         pow_bits,
         log_height_max,
     };
-    let pis = vec![vec![]; 4];
+    let pis = vec![vec![]; 3];
 
     TestCircuitProofData {
         batch_stark_proof,
@@ -704,10 +703,6 @@ fn get_verifier_inputs_and_challenges(
 
     // Base field AIRs for native challenge generation
     let native_airs = vec![
-        CircuitTablesAir::Witness(WitnessAir::<F, TRACE_D>::new(
-            rows[PrimitiveTable::Witness],
-            packing.witness_lanes(),
-        )),
         CircuitTablesAir::Const(ConstAir::<F, TRACE_D>::new(rows[PrimitiveTable::Const])),
         CircuitTablesAir::Public(PublicAir::<F, TRACE_D>::new(
             rows[PrimitiveTable::Public],
