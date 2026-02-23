@@ -20,13 +20,16 @@ jobs:
             *perf*|*optimize*|*optimise*|*profiling*) labels+=("perf") ;;
           esac
           case "${title,,}" in
-            *bug*|*fix*) labels+=("bug") ;;
+            bug|bug\ *|*\ bug|*\ bug\ *|fix|fix\ *|*\ fix|*\ fix\ *) labels+=("bug") ;;
           esac
           case "${title,,}" in
             *fri*) labels+=("FRI") ;;
           esac
           case "${title,,}" in
             *refactor*) labels+=("refactoring") ;;
+          esac
+          case "${title,,}" in
+            *test*) labels+=("testing") ;;
           esac
           if [ ${#labels[@]} -gt 0 ]; then
             echo "${labels[*]}" | tr ' ' '\n' | xargs -I {} gh pr edit "${{ github.event.pull_request.number }}" --repo "${{ github.repository }}" --add-label "{}"
