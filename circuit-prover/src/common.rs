@@ -1,5 +1,4 @@
 use alloc::collections::btree_map::BTreeMap;
-use alloc::vec;
 use alloc::vec::Vec;
 
 use hashbrown::HashMap;
@@ -11,7 +10,7 @@ use p3_field::{ExtensionField, PrimeCharacteristicRing, PrimeField64};
 use p3_uni_stark::{StarkGenericConfig, SymbolicExpression, Val};
 use p3_util::log2_ceil_usize;
 
-use crate::air::{AluAir, ConstAir, PublicAir, WitnessAir};
+use crate::air::{AluAir, ConstAir, PublicAir};
 use crate::config::StarkField;
 use crate::field_params::ExtractBinomialW;
 use crate::{DynamicAirEntry, Poseidon2Prover, TablePacking};
@@ -25,7 +24,6 @@ where
     SC: StarkGenericConfig,
     SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
 {
-    Witness(WitnessAir<Val<SC>, D>),
     Const(ConstAir<Val<SC>, D>),
     Public(PublicAir<Val<SC>, D>),
     /// Unified ALU table for all arithmetic operations
@@ -47,7 +45,6 @@ where
 {
     fn clone(&self) -> Self {
         match self {
-            Self::Witness(air) => Self::Witness(air.clone()),
             Self::Const(air) => Self::Const(air.clone()),
             Self::Public(air) => Self::Public(air.clone()),
             Self::Alu(air) => Self::Alu(air.clone()),
@@ -79,7 +76,6 @@ where
     // due to a bug in how multi-lane padding interacts with lookup constraints.
     // We automatically reduce lanes to 1 in these cases with a warning.
     // IMPORTANT: This must be synchronized with prove_all_tables in batch_stark_prover.rs
-    let witness_idx = PrimitiveOpType::Witness as usize;
     let public_idx = PrimitiveOpType::Public as usize;
     let alu_idx = PrimitiveOpType::Alu as usize;
 
@@ -110,19 +106,8 @@ where
         packing.alu_lanes()
     };
 
-    // If Alu table is empty, we add a dummy row to avoid issues in the AIRs.
-    // That means we need to update the witness multiplicities accordingly.
-    if alu_empty {
-        let num_extra = AluAir::<Val<SC>, D>::lane_width() / D;
-        preprocessed.primitive[witness_idx][0] += ExtF::from_usize(num_extra);
-        preprocessed.primitive[alu_idx].extend(vec![
-            ExtF::ZERO;
-            AluAir::<Val<SC>, D>::preprocessed_lane_width()
-                - 1
-        ]);
-    }
-
     let w_binomial = ExtF::extract_w();
+
     // First, get base field elements for the preprocessed values.
     let mut base_prep: Vec<Vec<Val<SC>>> = preprocessed
         .primitive
@@ -134,21 +119,7 @@ where
         })
         .collect::<Result<Vec<_>, CircuitError>>()?;
 
-    // Pre-processing: Update witness multiplicities for mmcs_index_sum lookups.
-    //
-    // The Poseidon2 AIR sends an mmcs_index_sum lookup when:
-    //   next_row.new_start * current_row.merkle_path = 1
-    //
-    // This lookup uses the witness index from mmcs_index_sum_ctl_idx (which is 0 when
-    // mmcs_index_sum is not explicitly set). The preprocessing function doesn't update
-    // witness multiplicities for this case because it processes operations one at a time
-    // without knowing the next operation's new_start value.
-    //
-    // We fix this by scanning the Poseidon2 preprocessed data and incrementing the witness
-    // multiplicity for each such lookup.
-    //
-    // This must be done BEFORE creating the Witness AIR so it captures the correct multiplicities.
-    //
+    // Poseidon2 preprocessing layout constants.
     // TODO: Update these indices once generic Poseidon2 is implemented.
     // Poseidon2 preprocessed row layout (24 fields per row):
     //   [0..16]  = 4 input limbs (each: in_idx, in_ctl, normal_chain_sel, merkle_chain_sel)
@@ -162,6 +133,8 @@ where
     const MMCS_MERKLE_FLAG_OFFSET: usize = 21;
     const NEW_START_OFFSET: usize = 22;
 
+    // Phase 1: Scan Poseidon2 preprocessed data to count mmcs_index_sum conditional reads,
+    // and update `ext_reads` accordingly. This must happen before computing multiplicities.
     for (op_type, prep) in preprocessed.non_primitive.iter() {
         if matches!(op_type, NonPrimitiveOpType::Poseidon2Perm(_)) {
             let prep_base: Vec<Val<SC>> = prep
@@ -170,56 +143,99 @@ where
                 .collect::<Result<Vec<_>, CircuitError>>()?;
 
             let num_rows = prep_base.len() / POSEIDON2_PREP_ROW_WIDTH;
-
-            // Check if padding will be added (trace height is padded to power of two)
             let trace_height = num_rows.next_power_of_two();
             let has_padding = trace_height > num_rows;
 
             for row_idx in 0..num_rows {
                 let row_start = row_idx * POSEIDON2_PREP_ROW_WIDTH;
-                // mmcs_merkle_flag is precomputed as: mmcs_ctl * merkle_path
                 let current_mmcs_merkle_flag = prep_base[row_start + MMCS_MERKLE_FLAG_OFFSET];
 
-                // Check if next row exists and has new_start = 1
-                // Note: The Poseidon2 AIR pads the trace and sets new_start = 1 in the first
-                // padding row (only if padding exists). This means the LAST real row will
-                // also trigger a lookup if its mmcs_merkle_flag = 1 and there is padding.
+                // Check if next row exists and has new_start = 1.
+                // The Poseidon2 AIR pads the trace and sets new_start = 1 in the first
+                // padding row (only if padding exists), so the last real row can trigger a
+                // lookup if its mmcs_merkle_flag = 1 and there is padding.
                 let next_new_start = if row_idx + 1 < num_rows {
                     let next_row_start = (row_idx + 1) * POSEIDON2_PREP_ROW_WIDTH;
                     prep_base[next_row_start + NEW_START_OFFSET]
                 } else if has_padding {
-                    // Last real row with padding - the AIR sets new_start = 1 in first padding row
                     <Val<SC> as PrimeCharacteristicRing>::ONE
                 } else {
-                    // No padding - the AIR wraps around (cyclically), so next row is the first row
-                    // The first row's new_start value determines the multiplicity
                     prep_base[NEW_START_OFFSET]
                 };
 
-                // If multiplicity = mmcs_merkle_flag * next_new_start != 0
                 let multiplicity = current_mmcs_merkle_flag * next_new_start;
                 if multiplicity != <Val<SC> as PrimeCharacteristicRing>::ZERO {
-                    // Get the mmcs_index_sum witness index for this row
                     let mmcs_idx = prep_base[row_start + MMCS_INDEX_SUM_CTL_IDX_OFFSET];
-
-                    // The stored index is D-scaled (wid.0 * D); convert back to WitnessId.0
                     let mmcs_idx_u64 = <Val<SC> as PrimeField64>::as_canonical_u64(&mmcs_idx);
                     let mmcs_witness_idx = (mmcs_idx_u64 as usize) / D;
 
-                    // Ensure witness multiplicity vector is large enough
-                    if mmcs_witness_idx >= base_prep[witness_idx].len() {
-                        base_prep[witness_idx].resize(
-                            mmcs_witness_idx + 1,
-                            <Val<SC> as PrimeCharacteristicRing>::ZERO,
-                        );
+                    // Update ext_reads for the mmcs_index_sum witness read.
+                    let idx = mmcs_witness_idx;
+                    if idx >= preprocessed.ext_reads.len() {
+                        preprocessed.ext_reads.resize(idx + 1, 0);
                     }
-
-                    base_prep[witness_idx][mmcs_witness_idx] += multiplicity;
+                    preprocessed.ext_reads[idx] += 1;
                 }
             }
         }
     }
-    // Now create the AIRs with the updated multiplicities
+
+    // Phase 2: Update Poseidon2 out_ctl values in the base field preprocessed data.
+    // in_ctl = +1 for active inputs (kept as-is from circuit.rs preprocessing).
+    // out_ctl positions: 17, 19 (active → ext_reads[out_wid]).
+    let mut non_primitive_base: NonPrimitivePreprocessedMap<Val<SC>> = HashMap::new();
+    for (op_type, prep) in preprocessed.non_primitive.iter() {
+        if matches!(op_type, NonPrimitiveOpType::Poseidon2Perm(_)) {
+            let mut prep_base: Vec<Val<SC>> = prep
+                .iter()
+                .map(|v| v.as_base().ok_or(CircuitError::InvalidPreprocessedValues))
+                .collect::<Result<Vec<_>, CircuitError>>()?;
+
+            let num_rows = prep_base.len() / POSEIDON2_PREP_ROW_WIDTH;
+
+            for row_idx in 0..num_rows {
+                let row_start = row_idx * POSEIDON2_PREP_ROW_WIDTH;
+
+                // in_ctl = +1 for active inputs (Direction::Send with +1 → -1 logup contribution).
+                // No modification needed; the preprocessed data already has +1 from circuit.rs.
+
+                // Set out_ctl for active rate outputs.
+                // out_ctl placeholder from generate_preprocessed_columns:
+                //   ZERO → private output (no bus contribution; skip)
+                //   ONE  → active output (creator or duplicate reader; check poseidon2_dup_wids)
+                //
+                // Poseidon2 duplicate creators (from optimizer witness_rewrite deduplication)
+                // are recorded in `preprocessed.poseidon2_dup_wids`. For those, out_ctl = -1
+                // (reader contribution). For first-occurrence creators, out_ctl = +ext_reads[wid].
+                let neg_one = <Val<SC>>::ZERO - <Val<SC>>::ONE;
+                for out_limb in 0..2 {
+                    let out_idx_offset = row_start + 16 + out_limb * 2;
+                    let out_ctl_offset = out_idx_offset + 1;
+                    if prep_base[out_ctl_offset] != <Val<SC> as PrimeCharacteristicRing>::ZERO {
+                        let out_idx_val = prep_base[out_idx_offset];
+                        let out_idx_u64 = <Val<SC> as PrimeField64>::as_canonical_u64(&out_idx_val);
+                        let out_wid = (out_idx_u64 as usize) / D;
+                        let is_dup = preprocessed
+                            .poseidon2_dup_wids
+                            .get(out_wid)
+                            .copied()
+                            .unwrap_or(false);
+                        if is_dup {
+                            // Duplicate (optimizer-merged): this op is a reader, out_ctl = -1.
+                            prep_base[out_ctl_offset] = neg_one;
+                        } else {
+                            // Creator: set out_ctl = total read count.
+                            let n_reads = preprocessed.ext_reads.get(out_wid).copied().unwrap_or(0);
+                            prep_base[out_ctl_offset] = <Val<SC>>::from_u32(n_reads);
+                        }
+                    }
+                }
+            }
+
+            non_primitive_base.insert(*op_type, prep_base);
+        }
+    }
+
     // Get min_height from packing configuration and pass it to AIRs
     let min_height = packing.min_trace_height();
 
@@ -230,83 +246,174 @@ where
         log2_ceil_usize(natural_height.max(min_rows))
     };
 
-    let default_air = WitnessAir::new(1, 1);
-    let mut table_preps = (0..base_prep.len())
-        .map(|_| (CircuitTableAir::Witness(default_air.clone()), 1))
-        .collect::<Vec<_>>();
-    base_prep
-        .iter()
-        .enumerate()
-        .try_for_each(|(idx, prep)| -> Result<(), CircuitError> {
-            let table = PrimitiveOpType::from(idx);
-            match table {
-                PrimitiveOpType::Alu => {
-                    // ALU preprocessed per op (excluding multiplicity): 7 values
-                    // [sel_add_vs_mul, sel_bool, sel_muladd, a_idx, b_idx, c_idx, out_idx]
-                    let lane_without_multiplicities =
-                        AluAir::<Val<SC>, D>::preprocessed_lane_width() - 1;
-                    assert!(
-                        prep.len() % lane_without_multiplicities == 0,
-                        "ALU preprocessed length {} is not a multiple of {}",
-                        prep.len(),
-                        lane_without_multiplicities
-                    );
+    let mut table_preps: Vec<(CircuitTableAir<SC, D>, usize)> = Vec::with_capacity(base_prep.len());
 
-                    let num_ops = prep.len().div_ceil(lane_without_multiplicities);
-                    let alu_air = if D == 1 {
-                        AluAir::new_with_preprocessed(num_ops, effective_alu_lanes, prep.clone())
-                            .with_min_height(min_height)
-                    } else {
-                        let w = w_binomial.unwrap();
-                        AluAir::new_binomial_with_preprocessed(
-                            num_ops,
-                            effective_alu_lanes,
-                            w,
-                            prep.clone(),
-                        )
+    #[allow(clippy::needless_range_loop)]
+    for idx in 0..base_prep.len() {
+        let table = PrimitiveOpType::from(idx);
+        match table {
+            PrimitiveOpType::Alu => {
+                // ALU preprocessed per op from circuit.rs (without multiplicities): 11 values
+                // [sel_add_vs_mul, sel_bool, sel_muladd, a_idx, b_idx, c_idx, out_idx,
+                //  a_is_reader, b_is_creator, c_is_reader, out_is_creator]
+                //
+                // We convert to 12 values per op for the AluAir:
+                // [mult_a, sel1, sel2, sel3, a_idx, b_idx, c_idx, out_idx, mult_b, mult_out,
+                //  a_is_reader, c_is_reader]
+                //
+                // Multiplicity convention (all use Direction::Receive):
+                //   Reader (already defined): neg_one → logup contribution -1
+                //   Creator (first occurrence): +ext_reads[wid] → logup contribution +N_reads
+                //   Unconstrained: mult_a=-1 but effective mult = mult_a * is_reader_col = 0
+                //
+                // mult_a = -1 for ALL active rows (padding = 0). The actual bus contribution for
+                // a is mult_a * a_is_reader and for c is mult_a * c_is_reader (computed in AIR).
+                let lane_11 = 11_usize;
+                let neg_one = <Val<SC>>::ZERO - <Val<SC>>::ONE;
+
+                let mut prep_12col: Vec<Val<SC>> = base_prep[idx]
+                    .chunks(lane_11)
+                    .flat_map(|chunk| {
+                        let sel1 = chunk[0];
+                        let sel2 = chunk[1];
+                        let sel3 = chunk[2];
+                        let a_idx = chunk[3];
+                        let b_idx = chunk[4];
+                        let c_idx = chunk[5];
+                        let out_idx = chunk[6];
+                        let a_is_reader =
+                            <Val<SC> as PrimeField64>::as_canonical_u64(&chunk[7]) != 0;
+                        let b_is_creator =
+                            <Val<SC> as PrimeField64>::as_canonical_u64(&chunk[8]) != 0;
+                        let c_is_reader =
+                            <Val<SC> as PrimeField64>::as_canonical_u64(&chunk[9]) != 0;
+                        let out_is_creator =
+                            <Val<SC> as PrimeField64>::as_canonical_u64(&chunk[10]) != 0;
+
+                        // mult_a = -1 for all active rows; active = -mult_a = 1 always.
+                        // Effective a-lookup mult = mult_a * a_is_reader_col (in get_alu_index_lookups).
+                        // Effective c-lookup mult = mult_a * c_is_reader_col (in get_alu_index_lookups).
+                        let mult_a = neg_one;
+                        let a_reader_col = if a_is_reader {
+                            <Val<SC>>::ONE
+                        } else {
+                            <Val<SC>>::ZERO
+                        };
+                        let c_reader_col = if c_is_reader {
+                            <Val<SC>>::ONE
+                        } else {
+                            <Val<SC>>::ZERO
+                        };
+
+                        // b: creator if b_is_creator, reader otherwise.
+                        let mult_b = if b_is_creator {
+                            let b_wid =
+                                <Val<SC> as PrimeField64>::as_canonical_u64(&b_idx) as usize / D;
+                            let n_reads = preprocessed.ext_reads.get(b_wid).copied().unwrap_or(0);
+                            <Val<SC>>::from_u32(n_reads)
+                        } else {
+                            neg_one
+                        };
+
+                        // out: creator if out_is_creator, reader otherwise.
+                        let mult_out = if out_is_creator {
+                            let out_wid =
+                                <Val<SC> as PrimeField64>::as_canonical_u64(&out_idx) as usize / D;
+                            let n_reads = preprocessed.ext_reads.get(out_wid).copied().unwrap_or(0);
+                            <Val<SC>>::from_u32(n_reads)
+                        } else {
+                            neg_one
+                        };
+
+                        [
+                            mult_a,
+                            sel1,
+                            sel2,
+                            sel3,
+                            a_idx,
+                            b_idx,
+                            c_idx,
+                            out_idx,
+                            mult_b,
+                            mult_out,
+                            a_reader_col,
+                            c_reader_col,
+                        ]
+                    })
+                    .collect();
+
+                // If ALU was empty, add a dummy row (all zeros = padding, no logup contribution).
+                if alu_empty {
+                    prep_12col.extend([<Val<SC>>::ZERO; 12]);
+                }
+
+                let num_ops = prep_12col.len() / 12;
+                let alu_air = if D == 1 {
+                    AluAir::new_with_preprocessed(num_ops, effective_alu_lanes, prep_12col.clone())
                         .with_min_height(min_height)
-                    };
-                    let num_rows = num_ops.div_ceil(packing.alu_lanes());
-                    table_preps[idx] = (CircuitTableAir::Alu(alu_air), compute_degree(num_rows));
-                }
-                PrimitiveOpType::Public => {
-                    let num_ops = prep.len();
-                    let public_air = PublicAir::new_with_preprocessed(
+                } else {
+                    let w = w_binomial.unwrap();
+                    AluAir::new_binomial_with_preprocessed(
                         num_ops,
-                        effective_public_lanes,
-                        prep.clone(),
+                        effective_alu_lanes,
+                        w,
+                        prep_12col.clone(),
                     )
-                    .with_min_height(min_height);
-                    let num_rows = num_ops.div_ceil(effective_public_lanes);
-                    table_preps[idx] = (
-                        CircuitTableAir::Public(public_air),
-                        compute_degree(num_rows),
-                    );
-                }
-                PrimitiveOpType::Const => {
-                    let height = prep.len();
-                    let const_air = ConstAir::new_with_preprocessed(height, prep.clone())
-                        .with_min_height(min_height);
-                    table_preps[idx] = (CircuitTableAir::Const(const_air), compute_degree(height));
-                }
-                PrimitiveOpType::Witness => {
-                    let num_witnesses = prep.len();
-                    let witness_air = WitnessAir::new_with_preprocessed(
-                        num_witnesses,
-                        packing.witness_lanes(),
-                        prep.clone(),
-                    )
-                    .with_min_height(min_height);
-                    let num_rows = num_witnesses.div_ceil(packing.witness_lanes());
-                    table_preps[idx] = (
-                        CircuitTableAir::Witness(witness_air),
-                        compute_degree(num_rows),
-                    );
-                }
+                    .with_min_height(min_height)
+                };
+                let num_rows = num_ops.div_ceil(effective_alu_lanes);
+                // Overwrite with converted 13-col format for prover.
+                base_prep[idx] = prep_12col;
+                table_preps.push((CircuitTableAir::Alu(alu_air), compute_degree(num_rows)));
             }
+            PrimitiveOpType::Public => {
+                // Public preprocessed per op from circuit.rs: 1 value (D-scaled out_idx).
+                // Convert to [ext_mult, out_idx] pairs using ext_reads.
+                let prep_2col: Vec<Val<SC>> = base_prep[idx]
+                    .iter()
+                    .flat_map(|&out_idx| {
+                        let out_wid =
+                            (<Val<SC> as PrimeField64>::as_canonical_u64(&out_idx) as usize) / D;
+                        let n_reads = preprocessed.ext_reads.get(out_wid).copied().unwrap_or(0);
+                        [<Val<SC>>::from_u32(n_reads), out_idx]
+                    })
+                    .collect();
 
-            Ok(())
-        })?;
+                let num_ops = prep_2col.len() / 2;
+                let public_air = PublicAir::new_with_preprocessed(
+                    num_ops,
+                    effective_public_lanes,
+                    prep_2col.clone(),
+                )
+                .with_min_height(min_height);
+                let num_rows = num_ops.div_ceil(effective_public_lanes);
+                base_prep[idx] = prep_2col;
+                table_preps.push((
+                    CircuitTableAir::Public(public_air),
+                    compute_degree(num_rows),
+                ));
+            }
+            PrimitiveOpType::Const => {
+                // Const preprocessed per op from circuit.rs: 1 value (D-scaled out_idx).
+                // Convert to [ext_mult, out_idx] pairs using ext_reads.
+                let prep_2col: Vec<Val<SC>> = base_prep[idx]
+                    .iter()
+                    .flat_map(|&out_idx| {
+                        let out_wid =
+                            (<Val<SC> as PrimeField64>::as_canonical_u64(&out_idx) as usize) / D;
+                        let n_reads = preprocessed.ext_reads.get(out_wid).copied().unwrap_or(0);
+                        [<Val<SC>>::from_u32(n_reads), out_idx]
+                    })
+                    .collect();
+
+                let height = prep_2col.len() / 2;
+                let const_air = ConstAir::new_with_preprocessed(height, prep_2col.clone())
+                    .with_min_height(min_height);
+                base_prep[idx] = prep_2col;
+                table_preps.push((CircuitTableAir::Const(const_air), compute_degree(height)));
+            }
+        }
+    }
 
     let mut config_map = BTreeMap::new();
     if let Some(configs) = non_primitive_configs {
@@ -319,39 +426,49 @@ where
             }
         }
     }
-    // Convert non-primitive preprocessed data to base field
-    let mut non_primitive_base: NonPrimitivePreprocessedMap<Val<SC>> = HashMap::new();
-    for (op_type, prep) in preprocessed.non_primitive.iter() {
+
+    // Add non-primitive (Poseidon2) AIR entries using the updated base field preprocessed data.
+    for (op_type, prep_base) in non_primitive_base.iter() {
         match op_type {
             NonPrimitiveOpType::Poseidon2Perm(_) => {
                 let cfg = config_map
                     .get(op_type)
                     .copied()
                     .ok_or(CircuitError::InvalidPreprocessedValues)?;
-                let prep_base: Vec<Val<SC>> = prep
-                    .iter()
-                    .map(|v| v.as_base().ok_or(CircuitError::InvalidPreprocessedValues))
-                    .collect::<Result<Vec<_>, CircuitError>>()?;
-                non_primitive_base.insert(*op_type, prep_base.clone());
                 let poseidon2_prover = Poseidon2Prover::new(cfg);
                 let width = poseidon2_prover.preprocessed_width_from_config();
-                let poseidon2_wrapper =
-                    poseidon2_prover.wrapper_from_config_with_preprocessed(prep_base, min_height);
+                let poseidon2_wrapper = poseidon2_prover
+                    .wrapper_from_config_with_preprocessed(prep_base.clone(), min_height);
                 let poseidon2_wrapper_air: CircuitTableAir<SC, D> =
                     CircuitTableAir::Dynamic(poseidon2_wrapper);
-                let num_rows = prep.len().div_ceil(width);
+                let num_rows = prep_base.len().div_ceil(width);
                 table_preps.push((poseidon2_wrapper_air, compute_degree(num_rows)));
             }
-            // Unconstrained operations do not use tables
             NonPrimitiveOpType::Unconstrained => {}
         }
     }
 
-    // Construct the PreprocessedColumns with base field elements
+    // Build base_prep for the output PreprocessedColumns (without Poseidon2 multiplicities).
+    // The non_primitive_base already has the updated in_ctl/out_ctl values.
+    let mut non_primitive_output: NonPrimitivePreprocessedMap<Val<SC>> = non_primitive_base;
+
+    // Also include any non-primitive ops that weren't Poseidon2 (e.g. Unconstrained)
+    for (op_type, prep) in preprocessed.non_primitive.iter() {
+        if !matches!(op_type, NonPrimitiveOpType::Poseidon2Perm(_)) {
+            let prep_base: Vec<Val<SC>> = prep
+                .iter()
+                .map(|v| v.as_base().ok_or(CircuitError::InvalidPreprocessedValues))
+                .collect::<Result<Vec<_>, CircuitError>>()?;
+            non_primitive_output.insert(*op_type, prep_base);
+        }
+    }
+
     let preprocessed_columns = PreprocessedColumns {
         primitive: base_prep,
-        non_primitive: non_primitive_base,
+        non_primitive: non_primitive_output,
         d: D,
+        ext_reads: preprocessed.ext_reads,
+        poseidon2_dup_wids: preprocessed.poseidon2_dup_wids,
     };
 
     Ok((table_preps, preprocessed_columns))

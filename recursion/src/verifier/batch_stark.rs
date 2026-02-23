@@ -12,7 +12,7 @@ use p3_batch_stark::CommonData;
 use p3_circuit::op::NonPrimitiveOpType;
 use p3_circuit::utils::ColumnsTargets;
 use p3_circuit::{CircuitBuilder, NonPrimitiveOpId};
-use p3_circuit_prover::air::{AluAir, ConstAir, PublicAir, WitnessAir};
+use p3_circuit_prover::air::{AluAir, ConstAir, PublicAir};
 use p3_circuit_prover::batch_stark_prover::{PrimitiveTable, RowCounts};
 use p3_commit::{Pcs, PolynomialSpace};
 use p3_field::extension::BinomialExtensionField;
@@ -128,7 +128,6 @@ impl Poseidon2VerifierAir {
 // TODO(Robin): Remove with dynamic dispatch
 /// Wrapper enum for heterogeneous circuit table AIRs used by circuit-prover tables.
 pub enum CircuitTablesAir<F: Field, const D: usize> {
-    Witness(WitnessAir<F, D>),
     Const(ConstAir<F, D>),
     Public(PublicAir<F, D>),
     Alu(AluAir<F, D>),
@@ -138,7 +137,6 @@ pub enum CircuitTablesAir<F: Field, const D: usize> {
 impl<F: Field, const D: usize> P3BaseAir<F> for CircuitTablesAir<F, D> {
     fn width(&self) -> usize {
         match self {
-            Self::Witness(a) => P3BaseAir::width(a),
             Self::Const(a) => P3BaseAir::width(a),
             Self::Public(a) => P3BaseAir::width(a),
             Self::Alu(a) => P3BaseAir::width(a),
@@ -156,7 +154,6 @@ where
 {
     fn eval(&self, builder: &mut p3_uni_stark::SymbolicAirBuilder<F, EF>) {
         match self {
-            Self::Witness(a) => P3Air::eval(a, builder),
             Self::Const(a) => P3Air::eval(a, builder),
             Self::Public(a) => P3Air::eval(a, builder),
             Self::Alu(a) => P3Air::eval(a, builder),
@@ -199,9 +196,6 @@ where
 
     fn add_lookup_columns(&mut self) -> Vec<usize> {
         match self {
-            Self::Witness(a) => {
-                P3Air::<p3_uni_stark::SymbolicAirBuilder<F, EF>>::add_lookup_columns(a)
-            }
             Self::Const(a) => {
                 P3Air::<p3_uni_stark::SymbolicAirBuilder<F, EF>>::add_lookup_columns(a)
             }
@@ -259,7 +253,6 @@ where
         >,
     > {
         match self {
-            Self::Witness(a) => P3Air::<p3_uni_stark::SymbolicAirBuilder<F, EF>>::get_lookups(a),
             Self::Const(a) => P3Air::<p3_uni_stark::SymbolicAirBuilder<F, EF>>::get_lookups(a),
             Self::Public(a) => P3Air::<p3_uni_stark::SymbolicAirBuilder<F, EF>>::get_lookups(a),
             Self::Alu(a) => P3Air::<p3_uni_stark::SymbolicAirBuilder<F, EF>>::get_lookups(a),
@@ -418,7 +411,6 @@ where
     assert_eq!(proof.ext_degree, TRACE_D, "trace extension degree mismatch");
     let rows: RowCounts = proof.rows;
     let packing = proof.table_packing;
-    let witness_lanes = packing.witness_lanes();
     let public_lanes = packing.public_lanes();
     let alu_lanes = packing.alu_lanes();
 
@@ -429,10 +421,6 @@ where
         create_alu_air::<Val<SC>, SC::Challenge, TRACE_D>(rows[PrimitiveTable::Alu], alu_lanes);
 
     let mut circuit_airs: Vec<CircuitTablesAir<Val<SC>, TRACE_D>> = vec![
-        CircuitTablesAir::Witness(WitnessAir::<Val<SC>, TRACE_D>::new(
-            rows[PrimitiveTable::Witness],
-            witness_lanes,
-        )),
         CircuitTablesAir::Const(ConstAir::<Val<SC>, TRACE_D>::new(
             rows[PrimitiveTable::Const],
         )),

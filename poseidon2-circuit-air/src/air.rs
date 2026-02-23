@@ -889,7 +889,7 @@ where
             let lookup_output = vec![(
                 output_idx_limb,
                 SymbolicExpression::from(out_ctl),
-                Direction::Send,
+                Direction::Receive,
             )];
 
             lookups.push(<Self as Air<AB>>::register_lookup(

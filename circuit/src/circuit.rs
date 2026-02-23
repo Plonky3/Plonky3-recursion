@@ -47,6 +47,22 @@ pub struct PreprocessedColumns<F> {
     /// Extension degree used for base-field index scaling.
     /// A `WitnessId(n)` is stored as base-field index `n * d` in CTL lookup tuples.
     pub d: usize,
+    /// Ext-field read counts per witness index (indexed by `WitnessId.0`).
+    ///
+    /// `ext_reads[i]` is the number of times `WitnessId(i)` is read by any table
+    /// as an extension-field value. This is used by creator tables to set their
+    /// signed multiplicity on the `WitnessChecks` bus.
+    pub ext_reads: Vec<u32>,
+    /// Tracks WitnessIds that are duplicate Poseidon2 rate outputs.
+    ///
+    /// Due to the circuit optimizer's witness_rewrite deduplication, two distinct Poseidon2
+    /// operations can end up sharing the same output WitnessId (when they hash identical inputs).
+    /// The FIRST operation is the creator; subsequent ones must be treated as readers (out_ctl=-1).
+    ///
+    /// `poseidon2_dup_wids[i] = true` means WitnessId(i) is a duplicate Poseidon2 output:
+    /// the creator was a previous op. Used by `common.rs` Phase 2 to set out_ctl = -1 instead
+    /// of +ext_reads[i].
+    pub poseidon2_dup_wids: Vec<bool>,
 }
 
 impl<F: Field + Clone> Clone for PreprocessedColumns<F> {
@@ -55,6 +71,8 @@ impl<F: Field + Clone> Clone for PreprocessedColumns<F> {
             primitive: self.primitive.clone(),
             non_primitive: self.non_primitive.clone(),
             d: self.d,
+            ext_reads: self.ext_reads.clone(),
+            poseidon2_dup_wids: self.poseidon2_dup_wids.clone(),
         }
     }
 }
@@ -67,6 +85,8 @@ impl<F: Field> PreprocessedColumns<F> {
             primitive: vec![vec![]; PrimitiveOpType::COUNT],
             non_primitive: NonPrimitivePreprocessedMap::new(),
             d: 1,
+            ext_reads: Vec::new(),
+            poseidon2_dup_wids: Vec::new(),
         }
     }
 
@@ -79,6 +99,8 @@ impl<F: Field> PreprocessedColumns<F> {
             primitive: vec![vec![]; PrimitiveOpType::COUNT],
             non_primitive: NonPrimitivePreprocessedMap::new(),
             d,
+            ext_reads: Vec::new(),
+            poseidon2_dup_wids: Vec::new(),
         }
     }
 
@@ -89,58 +111,38 @@ impl<F: Field> PreprocessedColumns<F> {
         F::from_u32(wid.0 * self.d as u32)
     }
 
-    /// Updates the witness table multiplicities for all the given witness indices.
-    pub fn update_witness_multiplicities(
-        &mut self,
-        wids: &[WitnessId],
-    ) -> Result<(), CircuitError> {
-        if self.primitive.len() != PrimitiveOpType::COUNT {
-            return Err(CircuitError::InvalidPreprocessing {
-                reason: "primitive vector length does not match PrimitiveOpType::COUNT",
-            });
-        }
-
-        const WITNESS_TABLE_IDX: usize = PrimitiveOpType::Witness as usize;
+    /// Increments the ext-field read count for each of the given witness indices.
+    pub fn increment_ext_reads(&mut self, wids: &[WitnessId]) {
         for wid in wids {
             let idx = wid.0 as usize;
-            if idx >= self.primitive[WITNESS_TABLE_IDX].len() {
-                self.primitive[WITNESS_TABLE_IDX].resize(idx + 1, F::ZERO);
+            if idx >= self.ext_reads.len() {
+                self.ext_reads.resize(idx + 1, 0);
             }
-            self.primitive[WITNESS_TABLE_IDX][idx] += F::ONE;
+            self.ext_reads[idx] += 1;
         }
-        Ok(())
-    }
-
-    /// Extends the preprocessed data of `op_type`'s primitive operation
-    /// with `wids`'s witness indices (D-scaled), and updates the witness multiplicities.
-    pub fn register_primitive_witness_reads(
-        &mut self,
-        op_type: PrimitiveOpType,
-        wids: &[WitnessId],
-    ) -> Result<(), CircuitError> {
-        if matches!(op_type, PrimitiveOpType::Witness) {
-            return Err(CircuitError::InvalidPreprocessing {
-                reason: "Witness reads cannot be made from the Witness bus",
-            });
-        }
-
-        if self.primitive.len() != PrimitiveOpType::COUNT {
-            return Err(CircuitError::InvalidPreprocessing {
-                reason: "primitive vector length does not match PrimitiveOpType::COUNT",
-            });
-        }
-
-        let d = self.d as u32;
-        let wids_field = wids.iter().map(|wid| F::from_u32(wid.0 * d));
-        self.primitive[op_type as usize].extend(wids_field);
-
-        self.update_witness_multiplicities(wids)?;
-
-        Ok(())
     }
 
     /// Extends the preprocessed data of `op_type`'s non-primitive operation
-    /// with `wids`'s witness indices (D-scaled), and updates the witness multiplicities.
+    /// with `wids`'s witness indices (D-scaled). Does NOT increment ext-field read counts.
+    ///
+    /// Use this for non-primitive OUTPUTS: the table creates these witnesses on the
+    /// `WitnessChecks` bus, so they are not readers. The `out_ctl` multiplicity is
+    /// set separately by `get_airs_and_degrees_with_prep` based on `ext_reads`.
+    pub fn register_non_primitive_output_index(
+        &mut self,
+        op_type: NonPrimitiveOpType,
+        wids: &[WitnessId],
+    ) {
+        let entry = self.non_primitive.entry(op_type).or_default();
+        let d = self.d as u32;
+        let wids_field = wids.iter().map(|wid| F::from_u32(wid.0 * d));
+        entry.extend(wids_field);
+    }
+
+    /// Extends the preprocessed data of `op_type`'s non-primitive operation
+    /// with `wids`'s witness indices (D-scaled), and increments their ext-field read counts.
+    ///
+    /// Use this for non-primitive inputs that the table reads from the `WitnessChecks` bus.
     pub fn register_non_primitive_witness_reads(
         &mut self,
         op_type: NonPrimitiveOpType,
@@ -152,23 +154,13 @@ impl<F: Field> PreprocessedColumns<F> {
         let wids_field = wids.iter().map(|wid| F::from_u32(wid.0 * d));
         entry.extend(wids_field);
 
-        self.update_witness_multiplicities(wids)?;
+        self.increment_ext_reads(wids);
 
         Ok(())
     }
 
-    /// Extends the preprocessed data of `op_type`'s primitive operation
-    /// with `wid`'s witness index, and updates the witness multiplicity.
-    pub fn register_primitive_witness_read(
-        &mut self,
-        op_type: PrimitiveOpType,
-        wid: WitnessId,
-    ) -> Result<(), CircuitError> {
-        self.register_primitive_witness_reads(op_type, &[wid])
-    }
-
     /// Extends the preprocessed data of `op_type`'s non-primitive operation
-    /// with `wid`'s witness index, and updates the witness multiplicity.
+    /// with a single witness index (D-scaled), and increments its ext-field read count.
     pub fn register_non_primitive_witness_read(
         &mut self,
         op_type: NonPrimitiveOpType,
@@ -178,7 +170,7 @@ impl<F: Field> PreprocessedColumns<F> {
     }
 
     /// Extends the preprocessed data of `op_type`'s primitive operation with `values`.
-    /// Does not update witness multiplicities.
+    /// Does not update read counts.
     pub fn register_primitive_preprocessed_no_read(
         &mut self,
         op_type: PrimitiveOpType,
@@ -189,11 +181,6 @@ impl<F: Field> PreprocessedColumns<F> {
                 reason: "primitive vector length does not match PrimitiveOpType::COUNT",
             });
         }
-        if matches!(op_type, PrimitiveOpType::Witness) {
-            return Err(CircuitError::InvalidPreprocessing {
-                reason: "cannot use register_primitive_preprocessed_no_read for Witness table",
-            });
-        }
 
         self.primitive[op_type as usize].extend(values);
 
@@ -201,7 +188,7 @@ impl<F: Field> PreprocessedColumns<F> {
     }
 
     /// Extends the preprocessed data of `op_type`'s non-primitive operation with `values`.
-    /// Does not update witness multiplicities.
+    /// Does not update read counts.
     pub fn register_non_primitive_preprocessed_no_read(
         &mut self,
         op_type: NonPrimitiveOpType,
@@ -300,16 +287,15 @@ impl<F: Field> Circuit<F> {
     ///
     /// Returns a [`PreprocessedColumns`] with one primitive entry per [`PrimitiveOpType`]:
     ///
-    /// | Index | Operation | Column Layout                                                       | Width (per op) |
-    /// |-------|-----------|---------------------------------------------------------------------|----------------|
-    /// | 0     | Witness   | `[mul_0, mul_1, ...]`                                               | 1              |
-    /// | 1     | Const     | `[out_0, out_1, ...]`                                               | 1              |
-    /// | 2     | Public    | `[out_0, out_1, ...]`                                               | 1              |
-    /// | 3     | Alu       | `[sel_add_vs_mul, sel_bool, sel_muladd, a_idx, b_idx, c_idx, out_idx, ...]` | 7 |
+    /// | Index | Operation | Column Layout                                                              | Width (per op) |
+    /// |-------|-----------|----------------------------------------------------------------------------|----------------|
+    /// | 0     | Const     | `[out_0, out_1, ...]` (D-scaled indices)                                   | 1              |
+    /// | 1     | Public    | `[out_0, out_1, ...]` (D-scaled indices)                                   | 1              |
+    /// | 2     | Alu       | `[sel_add_vs_mul, sel_bool, sel_muladd, a_idx, b_idx, c_idx, out_idx, a_is_reader, b_is_creator, c_is_reader, out_is_creator]` | 11 |
     ///
-    /// Note that `mul_i` in the Witness table preprocessed column indicates how many times
-    /// each witness index appears in the circuit.
-    /// ALU rows include selectors followed by indices; multiplicity is handled when building the ALU table.
+    /// Signed multiplicities are not stored here; they are computed in `get_airs_and_degrees_with_prep`
+    /// using the `ext_reads` field, which tracks how many times each witness is read.
+    ///
     /// Indices in CTL lookups are stored as `WitnessId(n) * d`; use `d = EF::DIMENSION` for extension field.
     pub fn generate_preprocessed_columns(
         &self,
@@ -317,60 +303,147 @@ impl<F: Field> Circuit<F> {
     ) -> Result<PreprocessedColumns<F>, CircuitError> {
         let mut preprocessed = PreprocessedColumns::new_with_d(d);
 
-        // We know that the Witness table has at least one entry for index 0 (multiplicity 0 at the start).
-        preprocessed.primitive[PrimitiveOpType::Witness as usize].push(F::ZERO);
+        // Track which witnesses have been defined (first-occurrence = creator).
+        // Const and Public define their outputs first. ALU ops define their output (forward)
+        // or their `b` operand (backward/sub encoding where `out` was already defined).
+        let mut defined = alloc::vec![false; self.witness_count as usize];
 
-        // Process each primitive operation, extracting its witness indices.
+        // Process each primitive operation.
         for op in &self.ops {
             match op {
-                // Const: stores a constant value at witness[out].
-                // Preprocessed data: the output witness index.
-                // Since the values in ConstAir are looked up in WitnessAir,
-                // we register the read to update multiplicities.
+                // Const: creates the output witness value. Store D-scaled out index.
+                // No ext_reads increment: Const is a creator, not a reader.
                 Op::Const { out, .. } => {
-                    preprocessed
-                        .register_primitive_witness_reads(PrimitiveOpType::Const, &[*out])?;
+                    let idx = preprocessed.witness_index_as_field(*out);
+                    preprocessed.primitive[PrimitiveOpType::Const as usize].push(idx);
+                    let out_idx = out.0 as usize;
+                    if out_idx >= defined.len() {
+                        defined.resize(out_idx + 1, false);
+                    }
+                    defined[out_idx] = true;
                 }
-                // Public: loads a public input into witness[out].
-                // Preprocessed data: the output witness index.
-                // Since the values in PublicAir are looked up in WitnessAir,
-                // we register the read to update multiplicities.
+                // Public: creates the output witness value. Store D-scaled out index.
+                // No ext_reads increment: Public is a creator, not a reader.
                 Op::Public { out, .. } => {
-                    preprocessed
-                        .register_primitive_witness_reads(PrimitiveOpType::Public, &[*out])?;
+                    let idx = preprocessed.witness_index_as_field(*out);
+                    preprocessed.primitive[PrimitiveOpType::Public as usize].push(idx);
+                    let out_idx = out.0 as usize;
+                    if out_idx >= defined.len() {
+                        defined.resize(out_idx + 1, false);
+                    }
+                    defined[out_idx] = true;
                 }
                 // Unified ALU operations with selectors for operation kind.
-                // Preprocessed per op (without multiplicity):
-                // [sel_add_vs_mul, sel_bool, sel_muladd, a_idx, b_idx, c_idx, out_idx]
+                //
+                // Preprocessed per op (11 values, no multiplicities):
+                // [sel_add_vs_mul, sel_bool, sel_muladd, a_idx, b_idx, c_idx, out_idx,
+                //  a_is_reader, b_is_creator, c_is_reader, out_is_creator]
+                //
+                // a_is_reader: 1 if `a` is a constrained witness (defined by Const/Public/ALU/Poseidon2).
+                // c_is_reader: 1 if `c` is a constrained witness.
+                // 0 means unconstrained (Unconstrained NonPrimitive op output): no bus contribution.
+                //
+                // Three cases based on which operands are already defined:
+                //
+                // Forward (out not yet defined): b_is_creator=0, out_is_creator=1.
+                //   Creator: out. Readers: b (always), a (if a_is_reader), c (if c_is_reader).
+                //
+                // Backward (out defined, b not yet defined, e.g. backward-encoded Sub):
+                //   b_is_creator=1, out_is_creator=0. Creator: b.
+                //   Readers: out (always), a (if a_is_reader), c (if c_is_reader).
+                //
+                // All-reader (out and b both already defined, e.g. assert_zero rewrite):
+                //   b_is_creator=0, out_is_creator=0. No creator.
+                //   Readers: b, out (always), a (if a_is_reader), c (if c_is_reader).
                 Op::Alu {
                     kind, a, b, c, out, ..
                 } => {
-                    // Encode operation kind as:
-                    // - sel_add_vs_mul: 1 for Add, 0 for Mul (when Bool/MulAdd are 0)
-                    // - sel_bool: 1 for BoolCheck
-                    // - sel_muladd: 1 for MulAdd
                     let (sel_add_vs_mul, sel_bool, sel_muladd) = match kind {
                         AluOpKind::Add => (F::ONE, F::ZERO, F::ZERO),
                         AluOpKind::Mul => (F::ZERO, F::ZERO, F::ZERO),
                         AluOpKind::BoolCheck => (F::ZERO, F::ONE, F::ZERO),
                         AluOpKind::MulAdd => (F::ZERO, F::ZERO, F::ONE),
                     };
+                    let c_wid = c.unwrap_or(WitnessId(0));
+                    let d_u32 = d as u32;
 
-                    preprocessed.register_primitive_preprocessed_no_read(
-                        PrimitiveOpType::Alu,
-                        &[sel_add_vs_mul, sel_bool, sel_muladd],
-                    )?;
+                    let out_already_defined =
+                        (out.0 as usize) < defined.len() && defined[out.0 as usize];
+                    let b_already_defined = (b.0 as usize) < defined.len() && defined[b.0 as usize];
 
-                    // Witness indices contribute to multiplicities and follow the selectors in order.
-                    preprocessed.register_primitive_witness_reads(
-                        PrimitiveOpType::Alu,
-                        &[
-                            *a,
-                            *b,
-                            c.unwrap_or(WitnessId(0)), // c is for non MulAdd operations
-                            *out,
-                        ],
-                    )?;
+                    // Determine whether a and c are constrained witnesses (have creator AIRs).
+                    // Unconstrained witnesses are never marked defined; their reads don't
+                    // contribute to the WitnessChecks bus.
+                    let a_is_reader = (a.0 as usize) < defined.len() && defined[a.0 as usize];
+                    let c_is_reader =
+                        (c_wid.0 as usize) < defined.len() && defined[c_wid.0 as usize];
+
+                    let (b_is_creator, out_is_creator) = if !out_already_defined {
+                        (F::ZERO, F::ONE) // forward: out is new creator
+                    } else if !b_already_defined {
+                        (F::ONE, F::ZERO) // backward: b is new creator
+                    } else {
+                        (F::ZERO, F::ZERO) // all-reader: no new creator
+                    };
+
+                    preprocessed.primitive[PrimitiveOpType::Alu as usize].extend([
+                        sel_add_vs_mul,
+                        sel_bool,
+                        sel_muladd,
+                        F::from_u32(a.0 * d_u32),
+                        F::from_u32(b.0 * d_u32),
+                        F::from_u32(c_wid.0 * d_u32),
+                        F::from_u32(out.0 * d_u32),
+                        if a_is_reader { F::ONE } else { F::ZERO },
+                        b_is_creator,
+                        if c_is_reader { F::ONE } else { F::ZERO },
+                        out_is_creator,
+                    ]);
+
+                    if !out_already_defined {
+                        // Forward: out is the creator, b is always a reader.
+                        // a and c contribute to ext_reads only if they are constrained.
+                        let out_idx = out.0 as usize;
+                        if out_idx >= defined.len() {
+                            defined.resize(out_idx + 1, false);
+                        }
+                        defined[out_idx] = true;
+                        let mut readers = alloc::vec![*b];
+                        if a_is_reader {
+                            readers.push(*a);
+                        }
+                        if c_is_reader {
+                            readers.push(c_wid);
+                        }
+                        preprocessed.increment_ext_reads(&readers);
+                    } else if !b_already_defined {
+                        // Backward: b is the creator, out is always a reader.
+                        // a and c contribute to ext_reads only if they are constrained.
+                        let b_idx = b.0 as usize;
+                        if b_idx >= defined.len() {
+                            defined.resize(b_idx + 1, false);
+                        }
+                        defined[b_idx] = true;
+                        let mut readers = alloc::vec![*out];
+                        if a_is_reader {
+                            readers.push(*a);
+                        }
+                        if c_is_reader {
+                            readers.push(c_wid);
+                        }
+                        preprocessed.increment_ext_reads(&readers);
+                    } else {
+                        // All-reader: b and out are always readers.
+                        // a and c contribute to ext_reads only if they are constrained.
+                        let mut readers = alloc::vec![*b, *out];
+                        if a_is_reader {
+                            readers.push(*a);
+                        }
+                        if c_is_reader {
+                            readers.push(c_wid);
+                        }
+                        preprocessed.increment_ext_reads(&readers);
+                    }
                 }
                 Op::NonPrimitiveOpWithExecutor {
                     executor,
@@ -378,18 +451,57 @@ impl<F: Field> Circuit<F> {
                     outputs,
                     ..
                 } => {
-                    // Delegate preprocessing to the non-primitive operation.
                     executor.preprocess(inputs, outputs, &mut preprocessed)?;
+
+                    // Mark Poseidon2 rate outputs as 'defined': they are created on the
+                    // WitnessChecks bus by the Poseidon2 AIR, so subsequent ALU ops that
+                    // read them are constrained readers (mult = -1).
+                    //
+                    // The circuit optimizer's witness_rewrite deduplication can cause two
+                    // Poseidon2 ops to share the same output WitnessId (when hashing the same
+                    // inputs). The FIRST op is the creator; subsequent ops are readers. Duplicates
+                    // are recorded in `preprocessed.poseidon2_dup_wids` so that Phase 2 in
+                    // common.rs can set out_ctl = -1 (reader) instead of +ext_reads (creator).
+                    //
+                    // Unconstrained ops have no AIR; their outputs remain undefined so
+                    // ALU reads are treated as unconstrained (mult = 0, no bus lookup).
+                    match executor.op_type() {
+                        NonPrimitiveOpType::Poseidon2Perm(_) => {
+                            for out_limb in outputs.iter().take(2) {
+                                for wid in out_limb {
+                                    let wid_idx = wid.0 as usize;
+                                    if wid_idx < defined.len() && defined[wid_idx] {
+                                        // Duplicate: a previous Poseidon2 op already created
+                                        // this WitnessId. Record it as a duplicate reader.
+                                        let dup_len = preprocessed.poseidon2_dup_wids.len();
+                                        if wid_idx >= dup_len {
+                                            preprocessed
+                                                .poseidon2_dup_wids
+                                                .resize(wid_idx + 1, false);
+                                        }
+                                        preprocessed.poseidon2_dup_wids[wid_idx] = true;
+                                        // Increment ext_reads: this op reads the witness.
+                                        preprocessed.increment_ext_reads(&[*wid]);
+                                    } else {
+                                        // First occurrence: mark as defined (creator).
+                                        if wid_idx >= defined.len() {
+                                            defined.resize(wid_idx + 1, false);
+                                        }
+                                        defined[wid_idx] = true;
+                                    }
+                                }
+                            }
+                        }
+                        NonPrimitiveOpType::Unconstrained => {}
+                    }
                 }
             }
         }
 
-        // After optimization passes, some witness slots may be unreferenced,
-        // so we need to resize the witness table to match the witness_count.
-        const WITNESS_IDX: usize = PrimitiveOpType::Witness as usize;
+        // Ensure ext_reads covers at least all witnesses.
         let size = self.witness_count as usize;
-        if preprocessed.primitive[WITNESS_IDX].len() < size {
-            preprocessed.primitive[WITNESS_IDX].resize(size, F::ZERO);
+        if preprocessed.ext_reads.len() < size {
+            preprocessed.ext_reads.resize(size, 0);
         }
 
         Ok(preprocessed)
@@ -426,24 +538,23 @@ mod tests {
 
     #[test]
     fn test_empty_circuit() {
-        let circuit: Circuit<F> = make_circuit(vec![]);
+        let mut circuit: Circuit<F> = make_circuit(vec![]);
+        circuit.witness_count = 1;
         let result = circuit.generate_preprocessed_columns(1).unwrap();
 
         assert_eq!(result.primitive.len(), PrimitiveOpType::COUNT);
-        assert_eq!(
-            result.primitive[PrimitiveOpType::Witness as usize],
-            vec![F::ZERO]
-        );
         assert!(result.primitive[PrimitiveOpType::Const as usize].is_empty());
         assert!(result.primitive[PrimitiveOpType::Public as usize].is_empty());
         assert!(result.primitive[PrimitiveOpType::Alu as usize].is_empty());
+        // ext_reads sized to at least witness_count
+        assert_eq!(result.ext_reads.len(), 1);
     }
 
     #[test]
     fn test_mixed_operations() {
         // Test covering various operation types and behaviors:
         // - Each operation type populates its correct column
-        // - Multiplicities in Witness table are accurate
+        // - ext_reads tracks ALU input reads correctly
         // - Column data preserves operation order
         let ops = vec![
             Op::Const {
@@ -466,25 +577,22 @@ mod tests {
         let circuit = make_circuit(ops);
         let result = circuit.generate_preprocessed_columns(1).unwrap();
 
-        // Const column: output indices in order
+        // Const column: D-scaled output indices in order (D=1, no scaling)
         assert_eq!(
             result.primitive[PrimitiveOpType::Const as usize],
             vec![F::ZERO, F::from_u32(2)]
         );
 
-        // Public column: output index
+        // Public column: D-scaled output index
         assert_eq!(
             result.primitive[PrimitiveOpType::Public as usize],
             vec![F::from_u32(1)]
         );
 
-        // ALU column: [sel_add_vs_mul, sel_bool, sel_muladd, a, b, c, out] per op
-        // Layout per op: [sel_add_vs_mul, sel_bool, sel_muladd, a, b, c, out]
-        // Op 1: add(0, 1, 3) -> [1, 0, 0, 0, 1, 0, 3]
-        // Op 2: add(3, 2, 4) -> [1, 0, 0, 3, 2, 0, 4]
-        // Op 3: mul(4, 2, 5) -> [0, 0, 0, 4, 2, 0, 5]
+        // ALU column: [sel1, sel2, sel3, a, b, c, out, a_is_reader, b_is_creator, c_is_reader, out_is_creator] per op
+        // All operands are Const/Public defined: a_is_reader=1, c_is_reader=1. All forward: out_is_creator=1.
         let expected_alu = vec![
-            // add(0, 1, 3)
+            // add(0, 1, 3): forward, a=0(defined), c=0(defined) → a_is_reader=1, c_is_reader=1
             F::ONE,
             F::ZERO,
             F::ZERO,
@@ -492,7 +600,11 @@ mod tests {
             F::from_u32(1),
             F::ZERO,
             F::from_u32(3),
-            // add(3, 2, 4)
+            F::ONE,
+            F::ZERO,
+            F::ONE,
+            F::ONE,
+            // add(3, 2, 4): forward, a=3(defined by prev ALU), c=0(defined) → a_is_reader=1, c_is_reader=1
             F::ONE,
             F::ZERO,
             F::ZERO,
@@ -500,7 +612,11 @@ mod tests {
             F::from_u32(2),
             F::ZERO,
             F::from_u32(4),
-            // mul(4, 2, 5)
+            F::ONE,
+            F::ZERO,
+            F::ONE,
+            F::ONE,
+            // mul(4, 2, 5): forward, a=4(defined by prev ALU), c=0(defined) → a_is_reader=1, c_is_reader=1
             F::ZERO,
             F::ZERO,
             F::ZERO,
@@ -508,62 +624,57 @@ mod tests {
             F::from_u32(2),
             F::ZERO,
             F::from_u32(5),
+            F::ONE,
+            F::ZERO,
+            F::ONE,
+            F::ONE,
         ];
         assert_eq!(
             result.primitive[PrimitiveOpType::Alu as usize],
             expected_alu
         );
 
-        // We should have the following multiplicities in the Witness table, for indices 0 to 5:
-        // Index 0: 2 (const out) + 3 (c_idx for 3 ALU ops that use c=0) = 5
-        // Index 1: 2 (public out + add input a)
-        // Index 2: 3 (const out + add input b + mul input b)
-        // Index 3: 2 (add output + add input a)
-        // Index 4: 2 (add output + mul input a)
-        // Index 5: 1 (mul output)
-        let expected_multiplicities = vec![
-            F::from_u16(5), // Index 0: const + 3x c_idx (for add, add, mul operations)
-            F::from_u16(2),
-            F::from_u16(3),
-            F::from_u16(2),
-            F::from_u16(2),
-            F::from_u16(1),
-        ];
-        assert_eq!(
-            result.primitive[PrimitiveOpType::Witness as usize],
-            expected_multiplicities
-        );
+        // ext_reads[i] = number of times WitnessId(i) is read by ALU inputs (a, b, c).
+        // Const/Public outputs are NOT reads. ALU outputs are NOT reads.
+        // add(0, 1, 3): reads 0(a), 1(b), 0(c=default)
+        // add(3, 2, 4): reads 3(a), 2(b), 0(c=default)
+        // mul(4, 2, 5): reads 4(a), 2(b), 0(c=default)
+        // Index 0: 1(a) + 1(c_default) + 1(c_default) + 1(c_default) = 4? Wait:
+        // add(0,1,3): a=0, b=1, c=WitnessId(0) → reads 0,1,0
+        // add(3,2,4): a=3, b=2, c=WitnessId(0) → reads 3,2,0
+        // mul(4,2,5): a=4, b=2, c=WitnessId(0) → reads 4,2,0
+        // Index 0: 3 reads (a from op1 + c_default from all 3 ops = 1+3=4? No: a=0 for op1, plus c=0 for ops 1,2,3)
+        // op1: a=WitnessId(0), c=WitnessId(0) → 2 reads for wid 0
+        // op2: a=WitnessId(3), c=WitnessId(0) → 1 read for wid 0
+        // op3: a=WitnessId(4), c=WitnessId(0) → 1 read for wid 0
+        // Total reads for wid 0: 2 + 1 + 1 = 4
+        assert_eq!(result.ext_reads[0], 4); // WitnessId(0): a in op1, c-default in all 3 ops
+        assert_eq!(result.ext_reads[1], 1); // WitnessId(1): b in op1
+        assert_eq!(result.ext_reads[2], 2); // WitnessId(2): b in op2, b in op3
+        assert_eq!(result.ext_reads[3], 1); // WitnessId(3): a in op2
+        assert_eq!(result.ext_reads[4], 1); // WitnessId(4): a in op3
+        // WitnessId(5) is created by mul output - not read
     }
 
     #[test]
-    fn test_input_indices_contribute_to_max_idx() {
-        // Ensures input indices that exceed outputs are tracked for witness table size
+    fn test_input_indices_contribute_to_ext_reads() {
+        // Ensures input indices are tracked for ext_reads
         let ops = vec![Op::add(
             WitnessId(0),
             WitnessId(15), // Highest index is an input, not output
             WitnessId(5),
         )];
 
-        let circuit = make_circuit(ops);
+        let mut circuit = make_circuit(ops);
+        circuit.witness_count = 16;
         let result = circuit.generate_preprocessed_columns(1).unwrap();
 
-        // Index 0 has multiplicity 2 (once for 'a', once for 'c' which defaults to 0)
-        // Index 5 and 15 have multiplicity 1
-        let expected_witness: Vec<F> = (0..=15)
-            .map(|i| {
-                if i == 0 {
-                    F::from_u16(2) // a + c_idx (c defaults to 0)
-                } else if i == 5 || i == 15 {
-                    F::ONE
-                } else {
-                    F::ZERO
-                }
-            })
-            .collect();
-        assert_eq!(
-            result.primitive[PrimitiveOpType::Witness as usize],
-            expected_witness
-        );
+        // add(0, 15, 5): a=WitnessId(0) (undefined), c=WitnessId(0) (undefined) → a_is_reader=0, c_is_reader=0
+        // Only b=WitnessId(15) is counted (always a reader in forward case).
+        assert_eq!(result.ext_reads[0], 0); // a and c_default: undefined → no ext_reads increment
+        assert_eq!(result.ext_reads[15], 1); // b: always counted as reader
+        // output (5) is not a read
+        assert_eq!(result.ext_reads[5], 0);
     }
 
     #[test]
@@ -588,7 +699,8 @@ mod tests {
         let circuit = make_circuit(ops);
         let result = circuit.generate_preprocessed_columns(1).unwrap();
 
-        // ALU column for MulAdd: [sel_add_vs_mul=0, sel_bool=0, sel_muladd=1, a=0, b=1, c=2, out=3]
+        // ALU column for MulAdd (forward): [sel1, sel2, sel3, a, b, c, out, a_is_reader, b_is_creator, c_is_reader, out_is_creator]
+        // a=0(defined), c=2(defined) → a_is_reader=1, c_is_reader=1
         let expected_alu = vec![
             F::ZERO,
             F::ZERO,
@@ -597,26 +709,20 @@ mod tests {
             F::from_u32(1),
             F::from_u32(2),
             F::from_u32(3),
+            F::ONE,
+            F::ZERO,
+            F::ONE,
+            F::ONE, // a_is_reader=1, b_is_creator=0, c_is_reader=1, out_is_creator=1
         ];
         assert_eq!(
             result.primitive[PrimitiveOpType::Alu as usize],
             expected_alu
         );
 
-        // Multiplicities: 0,1,2,3 each appear once in const or ALU
-        // Index 0: const out + ALU a = 2
-        // Index 1: const out + ALU b = 2
-        // Index 2: const out + ALU c = 2
-        // Index 3: ALU out = 1
-        let expected_multiplicities = vec![
-            F::from_u16(2),
-            F::from_u16(2),
-            F::from_u16(2),
-            F::from_u16(1),
-        ];
-        assert_eq!(
-            result.primitive[PrimitiveOpType::Witness as usize],
-            expected_multiplicities
-        );
+        // ext_reads: mul_add(0,1,2,3) reads 0(a), 1(b), 2(c); creates 3(out).
+        assert_eq!(result.ext_reads[0], 1); // WitnessId(0): a
+        assert_eq!(result.ext_reads[1], 1); // WitnessId(1): b
+        assert_eq!(result.ext_reads[2], 1); // WitnessId(2): c
+        // WitnessId(3) is created (out), not read
     }
 }

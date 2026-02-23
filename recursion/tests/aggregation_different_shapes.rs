@@ -81,7 +81,7 @@ fn test_aggregation_with_different_shapes() -> Result<(), VerificationError> {
     let expected = builder.alloc_public_input("expected");
     builder.connect(c, expected);
     let circuit = builder.build().unwrap();
-    let table_packing = TablePacking::new(1, 1, 1).with_fri_params(0, 3);
+    let table_packing = TablePacking::new(1, 1).with_fri_params(0, 3);
     let (airs_degrees, preprocessed_columns) =
         get_airs_and_degrees_with_prep::<MyConfig, _, 1>(&circuit, table_packing, None).unwrap();
     let (mut airs, degrees): (Vec<_>, Vec<_>) = airs_degrees.into_iter().unzip();

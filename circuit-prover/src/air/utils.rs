@@ -62,12 +62,24 @@ where
 
 /// Get ALU lookups for the 4 operands (a, b, c, out).
 ///
-/// ALU preprocessed layout per lane:
-/// - 0: multiplicity
+/// ALU preprocessed layout per lane (12 columns):
+/// - 0: mult_a (base multiplicity; `-1` for all active rows, `0` for padding)
 /// - 1-3: selectors (add_vs_mul, bool, muladd)
 /// - 4-7: indices (a_idx, b_idx, c_idx, out_idx)
+/// - 8: mult_b (signed multiplicity for `b`: neg_one if reader, +N_reads if creator)
+/// - 9: mult_out (signed multiplicity for `out`: +N_reads if creator, neg_one if reader)
+/// - 10: a_is_reader (`1` if `a` is a constrained witness, `0` if unconstrained)
+/// - 11: c_is_reader (`1` if `c` is a constrained witness, `0` if unconstrained)
 ///
-/// Main layout per lane: a[D], b[D], c[D], out[D]
+/// All lookups use `Direction::Receive`. Sign encodes creator vs reader:
+/// - neg_one → contribution -1 (reader)
+/// - +N_reads → contribution +N_reads (creator)
+///
+/// Effective multiplicities for `a` and `c`:
+/// - `mult_a * a_is_reader`: constrained active → `-1`; unconstrained/padding → `0`
+/// - `mult_a * c_is_reader`: constrained active → `-1`; unconstrained/padding → `0`
+///
+/// `active = -mult_a` is always `1` for active rows, independent of reader flags.
 pub fn get_alu_index_lookups<
     AB: PermutationAirBuilder + AirBuilderWithPublicValues,
     const D: usize,
@@ -76,12 +88,24 @@ pub fn get_alu_index_lookups<
     preprocessed_start: usize,
     main: &[SymbolicVariable<<AB as AirBuilder>::F>],
     preprocessed: &[SymbolicVariable<<AB as AirBuilder>::F>],
-    direction: Direction,
+    _direction: Direction,
 ) -> Vec<LookupInput<AB::F>> {
-    let multiplicity = SymbolicExpression::from(preprocessed[preprocessed_start]);
+    let mult_a = SymbolicExpression::from(preprocessed[preprocessed_start]);
+    let mult_b = SymbolicExpression::from(preprocessed[preprocessed_start + 8]);
+    let mult_out = SymbolicExpression::from(preprocessed[preprocessed_start + 9]);
+    let a_is_reader = SymbolicExpression::from(preprocessed[preprocessed_start + 10]);
+    let c_is_reader = SymbolicExpression::from(preprocessed[preprocessed_start + 11]);
 
-    // Indices are at positions 4, 5, 6, 7 (after multiplicity + 3 selectors)
+    // Indices are at positions 4, 5, 6, 7 (after mult_a + 3 selectors)
     let idx_offset = 4;
+
+    // Effective multiplicities: mult_a * is_reader. This zeros out bus contributions
+    // for unconstrained witnesses while keeping mult_a = -1 for active = -mult_a = 1.
+    let eff_mult_a = mult_a.clone() * a_is_reader;
+    let eff_mult_c = mult_a * c_is_reader;
+
+    // [a, b, c, out] multiplicities
+    let multiplicities = [eff_mult_a, mult_b, eff_mult_c, mult_out];
 
     (0..4)
         .map(|i| {
@@ -90,9 +114,36 @@ pub fn get_alu_index_lookups<
             let values = (0..D).map(|j| SymbolicExpression::from(main[main_start + i * D + j]));
             let inps = iter::once(idx).chain(values).collect::<Vec<_>>();
 
-            (inps, multiplicity.clone(), direction)
+            (inps, multiplicities[i].clone(), Direction::Receive)
         })
         .collect()
+}
+
+/// Helper to create a preprocessed trace from complete preprocessed values (already including
+/// multiplicities). Simply reshapes the flat per-op data into a row-major matrix.
+pub fn create_direct_preprocessed_trace<F: Field>(
+    preprocessed_values: &[F],
+    preprocessed_lane_width: usize,
+    num_lanes: usize,
+    min_height: usize,
+) -> RowMajorMatrix<F> {
+    let preprocessed_width = num_lanes * preprocessed_lane_width;
+
+    let mut values = preprocessed_values.to_vec();
+
+    // Pad to a multiple of the full row width
+    if preprocessed_width > 0 && !values.len().is_multiple_of(preprocessed_width) {
+        let padding = preprocessed_width - (values.len() % preprocessed_width);
+        values.extend(core::iter::repeat_n(F::ZERO, padding));
+    }
+
+    // Ensure at least one row
+    if values.is_empty() {
+        values.extend(core::iter::repeat_n(F::ZERO, preprocessed_width.max(1)));
+    }
+
+    let mat = RowMajorMatrix::new(values, preprocessed_width);
+    pad_matrix_with_min_height(mat, min_height)
 }
 
 /// Object‑safe gadget shim.
