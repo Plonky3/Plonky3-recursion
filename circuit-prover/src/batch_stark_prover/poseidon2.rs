@@ -14,7 +14,7 @@ use p3_circuit::op::{NonPrimitiveOpType, Poseidon2Config};
 use p3_circuit::ops::{Poseidon2CircuitRow, Poseidon2Params, Poseidon2Trace};
 use p3_circuit::tables::Traces;
 use p3_field::extension::{BinomialExtensionField, BinomiallyExtendable};
-use p3_field::{ExtensionField, Field, PrimeCharacteristicRing, PrimeField};
+use p3_field::{ExtensionField, Field, PrimeCharacteristicRing, PrimeField, PrimeField64};
 use p3_koala_bear::{GenericPoseidon2LinearLayersKoalaBear, KoalaBear};
 use p3_lookup::folder::{ProverConstraintFolderWithLookups, VerifierConstraintFolderWithLookups};
 use p3_lookup::lookup_traits::Lookup;
@@ -40,7 +40,10 @@ use crate::config::StarkField;
 /// Wrapper for Poseidon2CircuitAir that implements BatchAir<SC>
 /// We need this because `BatchAir` requires `BaseAir<Val<SC>>`.
 /// but `Poseidon2CircuitAir` works over a specific field.
-pub(crate) enum Poseidon2AirWrapperInner {
+///
+/// Shared between the circuit-prover and the recursion verifier so Poseidon2
+/// dispatch (config → concrete AIR, eval/lookups) is defined in one place.
+pub enum Poseidon2AirWrapperInner {
     BabyBearD4Width16(Box<Poseidon2CircuitAirBabyBearD4Width16>),
     BabyBearD4Width24(Box<Poseidon2CircuitAirBabyBearD4Width24>),
     KoalaBearD4Width16(Box<Poseidon2CircuitAirKoalaBearD4Width16>),
@@ -48,7 +51,7 @@ pub(crate) enum Poseidon2AirWrapperInner {
 }
 
 impl Poseidon2AirWrapperInner {
-    fn width(&self) -> usize {
+    pub fn width(&self) -> usize {
         match self {
             Self::BabyBearD4Width16(air) => air.width(),
             Self::BabyBearD4Width24(air) => air.width(),
@@ -246,6 +249,135 @@ where
             },
         }
     }
+}
+
+impl<F: Field> BaseAir<F> for Poseidon2AirWrapperInner {
+    fn width(&self) -> usize {
+        match self {
+            Self::BabyBearD4Width16(a) => BaseAir::<BabyBear>::width(a.as_ref()),
+            Self::BabyBearD4Width24(a) => BaseAir::<BabyBear>::width(a.as_ref()),
+            Self::KoalaBearD4Width16(a) => BaseAir::<KoalaBear>::width(a.as_ref()),
+            Self::KoalaBearD4Width24(a) => BaseAir::<KoalaBear>::width(a.as_ref()),
+        }
+    }
+}
+
+impl<F, EF> Air<SymbolicAirBuilder<F, EF>> for Poseidon2AirWrapperInner
+where
+    F: Field + PrimeField64,
+    EF: ExtensionField<F>,
+    SymbolicExpression<EF>: From<SymbolicExpression<F>>,
+{
+    fn eval(&self, builder: &mut SymbolicAirBuilder<F, EF>) {
+        match self {
+            Self::BabyBearD4Width16(air) => {
+                assert_eq!(F::from_u64(BABY_BEAR_MODULUS), F::ZERO);
+                unsafe {
+                    let builder_bb: &mut SymbolicAirBuilder<BabyBear> =
+                        core::mem::transmute(builder);
+                    Air::eval(air.as_ref(), builder_bb);
+                }
+            }
+            Self::BabyBearD4Width24(air) => {
+                assert_eq!(F::from_u64(BABY_BEAR_MODULUS), F::ZERO);
+                unsafe {
+                    let builder_bb: &mut SymbolicAirBuilder<BabyBear> =
+                        core::mem::transmute(builder);
+                    Air::eval(air.as_ref(), builder_bb);
+                }
+            }
+            Self::KoalaBearD4Width16(air) => {
+                assert_eq!(F::from_u64(KOALA_BEAR_MODULUS), F::ZERO);
+                unsafe {
+                    let builder_kb: &mut SymbolicAirBuilder<KoalaBear> =
+                        core::mem::transmute(builder);
+                    Air::eval(air.as_ref(), builder_kb);
+                }
+            }
+            Self::KoalaBearD4Width24(air) => {
+                assert_eq!(F::from_u64(KOALA_BEAR_MODULUS), F::ZERO);
+                unsafe {
+                    let builder_kb: &mut SymbolicAirBuilder<KoalaBear> =
+                        core::mem::transmute(builder);
+                    Air::eval(air.as_ref(), builder_kb);
+                }
+            }
+        }
+    }
+
+    fn add_lookup_columns(&mut self) -> Vec<usize> {
+        match self {
+            Self::BabyBearD4Width16(air) => {
+                let air_bb: &mut Poseidon2CircuitAirBabyBearD4Width16 = air.as_mut();
+                <Poseidon2CircuitAirBabyBearD4Width16 as Air<
+                    SymbolicAirBuilder<BabyBear, BinomialExtensionField<BabyBear, 4>>,
+                >>::add_lookup_columns(air_bb)
+            }
+            Self::BabyBearD4Width24(air) => {
+                let air_bb: &mut Poseidon2CircuitAirBabyBearD4Width24 = air.as_mut();
+                <Poseidon2CircuitAirBabyBearD4Width24 as Air<
+                    SymbolicAirBuilder<BabyBear, BinomialExtensionField<BabyBear, 4>>,
+                >>::add_lookup_columns(air_bb)
+            }
+            Self::KoalaBearD4Width16(air) => {
+                let air_kb: &mut Poseidon2CircuitAirKoalaBearD4Width16 = air.as_mut();
+                <Poseidon2CircuitAirKoalaBearD4Width16 as Air<
+                    SymbolicAirBuilder<KoalaBear, BinomialExtensionField<KoalaBear, 4>>,
+                >>::add_lookup_columns(air_kb)
+            }
+            Self::KoalaBearD4Width24(air) => {
+                let air_kb: &mut Poseidon2CircuitAirKoalaBearD4Width24 = air.as_mut();
+                <Poseidon2CircuitAirKoalaBearD4Width24 as Air<
+                    SymbolicAirBuilder<KoalaBear, BinomialExtensionField<KoalaBear, 4>>,
+                >>::add_lookup_columns(air_kb)
+            }
+        }
+    }
+
+    #[allow(clippy::missing_transmute_annotations)]
+    fn get_lookups(&mut self) -> Vec<Lookup<<SymbolicAirBuilder<F, EF> as AirBuilder>::F>> {
+        match self {
+            Self::BabyBearD4Width16(air) => unsafe {
+                assert_eq!(F::from_u64(BABY_BEAR_MODULUS), F::ZERO);
+                let air_bb: &mut Poseidon2CircuitAirBabyBearD4Width16 = air.as_mut();
+                let lookups_bb = <Poseidon2CircuitAirBabyBearD4Width16 as Air<
+                    SymbolicAirBuilder<BabyBear, BinomialExtensionField<BabyBear, 4>>,
+                >>::get_lookups(air_bb);
+                core::mem::transmute(lookups_bb)
+            },
+            Self::BabyBearD4Width24(air) => unsafe {
+                assert_eq!(F::from_u64(BABY_BEAR_MODULUS), F::ZERO);
+                let air_bb: &mut Poseidon2CircuitAirBabyBearD4Width24 = air.as_mut();
+                let lookups_bb = <Poseidon2CircuitAirBabyBearD4Width24 as Air<
+                    SymbolicAirBuilder<BabyBear, BinomialExtensionField<BabyBear, 4>>,
+                >>::get_lookups(air_bb);
+                core::mem::transmute(lookups_bb)
+            },
+            Self::KoalaBearD4Width16(air) => unsafe {
+                assert_eq!(F::from_u64(KOALA_BEAR_MODULUS), F::ZERO);
+                let air_kb: &mut Poseidon2CircuitAirKoalaBearD4Width16 = air.as_mut();
+                let lookups_kb = <Poseidon2CircuitAirKoalaBearD4Width16 as Air<
+                    SymbolicAirBuilder<KoalaBear, BinomialExtensionField<KoalaBear, 4>>,
+                >>::get_lookups(air_kb);
+                core::mem::transmute(lookups_kb)
+            },
+            Self::KoalaBearD4Width24(air) => unsafe {
+                assert_eq!(F::from_u64(KOALA_BEAR_MODULUS), F::ZERO);
+                let air_kb: &mut Poseidon2CircuitAirKoalaBearD4Width24 = air.as_mut();
+                let lookups_kb = <Poseidon2CircuitAirKoalaBearD4Width24 as Air<
+                    SymbolicAirBuilder<KoalaBear, BinomialExtensionField<KoalaBear, 4>>,
+                >>::get_lookups(air_kb);
+                core::mem::transmute(lookups_kb)
+            },
+        }
+    }
+}
+
+/// Builds a Poseidon2 AIR wrapper from config for use in the recursive verifier
+/// (no preprocessed data). Single source of truth for config → AIR so prover
+/// and verifier stay in sync.
+pub fn poseidon2_verifier_air_from_config(config: Poseidon2Config) -> Poseidon2AirWrapperInner {
+    Poseidon2Prover::air_wrapper_for_config(config)
 }
 
 /// Helper function to evaluate a Poseidon2 variant with a given builder.
@@ -1270,7 +1402,7 @@ impl Poseidon2Prover {
         RoundConstants::new(beginning_full, partial, ending_full)
     }
 
-    fn air_wrapper_for_config(config: Poseidon2Config) -> Poseidon2AirWrapperInner {
+    pub(crate) fn air_wrapper_for_config(config: Poseidon2Config) -> Poseidon2AirWrapperInner {
         match config {
             Poseidon2Config::BabyBearD1Width16 | Poseidon2Config::BabyBearD4Width16 => {
                 Poseidon2AirWrapperInner::BabyBearD4Width16(Box::new(
