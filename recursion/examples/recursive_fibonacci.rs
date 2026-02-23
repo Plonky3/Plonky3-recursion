@@ -435,8 +435,7 @@ macro_rules! define_field_module {
                 let mut a = builder.alloc_const(F::ZERO, "F(0)");
                 let mut b = builder.alloc_const(F::ONE, "F(1)");
 
-                // TODO: remove, for CI testing
-                for _ in 2..=n+1 {
+                for _ in 2..=n {
                     let next = builder.add(a, b);
                     a = b;
                     b = next;
