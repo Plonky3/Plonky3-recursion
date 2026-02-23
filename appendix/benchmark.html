@@ -209,6 +209,9 @@
 <li><code>--commit-pow-bits</code>: additional PoW grinding during the FRI commit phase. Default 0.</li>
 <li><code>--query-pow-bits</code>: additional PoW grinding during the FRI query phase. Default 16.</li>
 <li><code>--num-recursive-layers</code>: number of recursive proofs to be generated in a chain, starting from the base proof (Keccak or Fibonacci). Default 3.</li>
+<li><code>--witness-lanes</code>: number of witness lanes for the table packing in recursive layers. Default varies per examples.</li>
+<li><code>--public-lanes</code>: number of public lanes for the table packing in recursive layers. Default varies per examples.</li>
+<li><code>--alu-lanes</code>: number of ALU lanes for the table packing in recursive layers. Default varies per examples.</li>
 </ul>
 <h2 id="results"><a class="header" href="#results">Results</a></h2>
 <p>Running on a Apple M4 pro, 14 Cores, with <strong>KoalaBear</strong> field and extension of <strong>degree 4</strong>, using default parameters mentioned above, performance benchmarks are as follows:</p>
