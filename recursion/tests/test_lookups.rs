@@ -101,7 +101,7 @@ fn test_wrong_multiplicities() {
     // Get a circuit that computes arithmetic operations.
     let builder = get_circuit(n);
 
-    let table_packing = TablePacking::new(1, 4, 4);
+    let table_packing = TablePacking::new(4, 4);
 
     let config_proving = get_proving_config();
 
@@ -575,7 +575,7 @@ fn get_test_circuit_proof() -> TestCircuitProofData {
     // Get a circuit that computes arithmetic operations.
     let builder = get_circuit(n);
 
-    let table_packing = TablePacking::new(1, 4, 4);
+    let table_packing = TablePacking::new(4, 4);
 
     let config_proving = get_proving_config();
 
@@ -832,7 +832,7 @@ fn test_poseidon2_ctl_lookups() {
         })
         .unwrap();
 
-    let table_packing = TablePacking::new(1, 1, 4);
+    let table_packing = TablePacking::new(1, 4);
     let config_proving = get_proving_config();
 
     let circuit = builder.build().unwrap();
@@ -951,7 +951,7 @@ fn test_poseidon2_chained_ctl_lookups() {
         })
         .unwrap();
 
-    let table_packing = TablePacking::new(1, 1, 4);
+    let table_packing = TablePacking::new(1, 4);
     let config_proving = get_proving_config();
 
     let circuit = builder.build().unwrap();

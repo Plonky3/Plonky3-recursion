@@ -33,7 +33,6 @@ pub(crate) fn pad_matrix_to_min_height<F: Field>(
 /// Configuration for packing multiple primitive operations into a single AIR row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TablePacking {
-    witness_lanes: usize,
     public_lanes: usize,
     alu_lanes: usize,
     /// Minimum trace height for all tables (must be power of two).
@@ -44,9 +43,8 @@ pub struct TablePacking {
 }
 
 impl TablePacking {
-    pub fn new(witness_lanes: usize, public_lanes: usize, alu_lanes: usize) -> Self {
+    pub fn new(public_lanes: usize, alu_lanes: usize) -> Self {
         Self {
-            witness_lanes: witness_lanes.max(1),
             public_lanes: public_lanes.max(1),
             alu_lanes: alu_lanes.max(1),
             min_trace_height: 1,
@@ -78,10 +76,6 @@ impl TablePacking {
         self
     }
 
-    pub const fn witness_lanes(self) -> usize {
-        self.witness_lanes
-    }
-
     pub const fn public_lanes(self) -> usize {
         self.public_lanes
     }
@@ -97,7 +91,7 @@ impl TablePacking {
 
 impl Default for TablePacking {
     fn default() -> Self {
-        Self::new(1, 1, 1)
+        Self::new(1, 1)
     }
 }
 

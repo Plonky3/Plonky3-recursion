@@ -145,13 +145,6 @@ struct Args {
 
     #[arg(
         long,
-        default_value_t = 4,
-        help = "Number of witness lanes for the table packing in recursive layers"
-    )]
-    witness_lanes: usize,
-
-    #[arg(
-        long,
         default_value_t = 1,
         help = "Number of public lanes for the table packing in recursive layers"
     )]
@@ -188,7 +181,7 @@ fn main() {
         commit_pow_bits: args.commit_pow_bits,
         query_pow_bits: args.query_pow_bits,
     };
-    let table_packing = TablePacking::new(args.witness_lanes, args.public_lanes, args.alu_lanes);
+    let table_packing = TablePacking::new(args.public_lanes, args.alu_lanes);
 
     if args.num_recursive_layers < 1 {
         panic!("Number of recursive layers should be at least 1");
@@ -444,7 +437,7 @@ macro_rules! define_field_module {
                 builder.connect(b, expected_result);
 
                 let base_circuit = builder.build().unwrap();
-                let table_packing_0 = TablePacking::new(1, 1, 1)
+                let table_packing_0 = TablePacking::new(1, 1)
                     .with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup);
 
                 let config_0 = config_with_fri_params(fri_params);

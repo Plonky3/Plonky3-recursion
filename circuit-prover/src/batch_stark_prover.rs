@@ -778,7 +778,7 @@ where
         // Store the effective packing (with reduced lanes if applicable) so the verifier
         // uses the same configuration that was actually used during proving.
         let effective_packing =
-            TablePacking::new(1, public_lanes, alu_lanes).with_min_trace_height(min_height);
+            TablePacking::new(public_lanes, alu_lanes).with_min_trace_height(min_height);
 
         Ok(BatchStarkProof {
             proof,

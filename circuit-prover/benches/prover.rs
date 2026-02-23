@@ -49,7 +49,7 @@ fn fib_classical(n: usize) -> F {
 }
 
 fn bench_trace_to_matrix(c: &mut Criterion) {
-    let table_packing = TablePacking::new(4, 1, 4);
+    let table_packing = TablePacking::new(1, 4);
     let lanes_p = table_packing.public_lanes();
     let lanes_a = table_packing.alu_lanes();
 
@@ -74,7 +74,7 @@ fn bench_trace_to_matrix(c: &mut Criterion) {
 }
 
 fn bench_prove_all_tables(c: &mut Criterion) {
-    let table_packing = TablePacking::new(4, 1, 4);
+    let table_packing = TablePacking::new(1, 4);
 
     let mut group = c.benchmark_group("prove_all_tables");
     for n in [100, 500, 2000] {
