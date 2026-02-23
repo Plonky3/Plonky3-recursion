@@ -1,0 +1,45 @@
+name: Performance
+
+on:
+  pull_request:
+    branches:
+      - "**"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  regression_check:
+    name: Check for regressions
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    if: "! contains(toJSON(github.event.commits.*.message), '[skip-ci]')"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo/target
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: perf-gate
+          cache-on-failure: true
+
+      - name: Run performance gate
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.sha || github.sha }}
+          HEAD_REF: ${{ github.event.pull_request.head.sha || github.sha }}
+          REGRESSION_THRESHOLD_PCT: "5"
+          PERF_RUNS: "3"
+          PERF_WARMUPS: "1"
+        run: bash .github/scripts/perf_gate.sh
