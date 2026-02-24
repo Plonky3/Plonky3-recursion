@@ -20,7 +20,7 @@
 //! - `D` columns for operand `c` (basis coefficients, only used for MulAdd),
 //! - `D` columns for output `out` (basis coefficients).
 //!
-//! Preprocessed columns per lane (11 total):
+//! Preprocessed columns per lane (12 total):
 //!
 //! - 1 column `mult_a`: signed multiplicity base for `a` and `c` (`-1` for all active rows, `0` for padding)
 //! - 3 columns for operation selectors:
@@ -28,8 +28,12 @@
 //!   - `sel_bool` (1 = BoolCheck),
 //!   - `sel_muladd` (1 = MulAdd),
 //! - 4 columns for operand indices (a_idx, b_idx, c_idx, out_idx)
-//! - 1 column `mult_b`: signed multiplicity for `b` read (`-1` for active, `0` for padding)
-//! - 1 column `mult_out`: signed multiplicity for `out` creation (`+N_reads` for active, `0` for padding)
+//! - 1 column `mult_b`: signed multiplicity for `b` (`-1` if reader, `+N_reads` if creator, `0` for padding).
+//!   For ADD `b` is a reader; for SUB/DIV the operands are swapped so `b` is the creator.
+//! - 1 column `mult_out`: signed multiplicity for `out` (`+N_reads` if creator, `-1` if reader, `0` for padding).
+//!   For ADD/MUL `out` is the creator; for SUB/DIV the operands are swapped so `out` is a reader.
+//! - 1 column `a_is_reader` (`1` if `a` is a constrained witness, `0` if unconstrained)
+//! - 1 column `c_is_reader` (`1` if `c` is a constrained witness, `0` if unconstrained)
 //!
 //! # Constraints (degree ≤ 3)
 //!
