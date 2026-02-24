@@ -40,7 +40,6 @@ impl Optimizer {
     ///
     /// Future passes that can be added here:
     /// - Dead code elimination
-    /// - Constant folding
     pub fn optimize<F: Field>(
         &self,
         primitive_ops: Vec<Op<F>>,
