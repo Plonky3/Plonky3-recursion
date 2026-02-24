@@ -8,7 +8,7 @@ use p3_circuit::{CircuitBuilder, ExprId, Poseidon2PermOps};
 use p3_circuit_prover::common::{NonPrimitiveConfig, get_airs_and_degrees_with_prep};
 use p3_circuit_prover::config::BabyBearConfig;
 use p3_circuit_prover::{
-    BatchStarkProver, CircuitProverData, Poseidon2Config, TablePacking, config,
+    BatchStarkProver, CircuitProverData, ConstraintProfile, Poseidon2Config, TablePacking, config,
 };
 use p3_field::extension::BinomialExtensionField;
 use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
@@ -226,6 +226,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             &circuit,
             table_packing,
             Some(&[NonPrimitiveConfig::Poseidon2(poseidon2_config)]),
+            ConstraintProfile::Standard,
         )?;
     let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
 

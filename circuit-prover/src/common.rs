@@ -12,6 +12,7 @@ use p3_util::log2_ceil_usize;
 
 use crate::air::{AluAir, ConstAir, PublicAir};
 use crate::config::StarkField;
+use crate::constraint_profile::ConstraintProfile;
 use crate::field_params::ExtractBinomialW;
 use crate::{DynamicAirEntry, Poseidon2Prover, TablePacking};
 
@@ -64,6 +65,7 @@ pub fn get_airs_and_degrees_with_prep<
     circuit: &Circuit<ExtF>,
     packing: TablePacking,
     non_primitive_configs: Option<&[NonPrimitiveConfig]>,
+    constraint_profile: ConstraintProfile,
 ) -> Result<(CircuitAirsWithDegrees<SC, D>, PreprocessedColumns<Val<SC>>), CircuitError>
 where
     SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
@@ -435,7 +437,7 @@ where
                     .get(op_type)
                     .copied()
                     .ok_or(CircuitError::InvalidPreprocessedValues)?;
-                let poseidon2_prover = Poseidon2Prover::new(cfg);
+                let poseidon2_prover = Poseidon2Prover::new(cfg, constraint_profile);
                 let width = poseidon2_prover.preprocessed_width_from_config();
                 let poseidon2_wrapper = poseidon2_prover
                     .wrapper_from_config_with_preprocessed(prep_base.clone(), min_height);

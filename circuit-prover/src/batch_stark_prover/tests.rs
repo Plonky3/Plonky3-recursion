@@ -5,6 +5,7 @@ use p3_goldilocks::Goldilocks;
 use p3_koala_bear::KoalaBear;
 
 use super::*;
+use crate::ConstraintProfile;
 use crate::batch_stark_prover::{BABY_BEAR_MODULUS, KOALA_BEAR_MODULUS};
 use crate::common::get_airs_and_degrees_with_prep;
 use crate::config::{self, BabyBearConfig, GoldilocksConfig, KoalaBearConfig};
@@ -36,6 +37,7 @@ fn test_babybear_batch_stark_base_field() {
             &circuit,
             TablePacking::default(),
             None,
+            ConstraintProfile::Standard,
         )
         .unwrap();
     let (mut airs, log_degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
@@ -88,8 +90,13 @@ fn test_table_lookups() {
     let circuit = builder.build().unwrap();
     let default_packing = TablePacking::default();
     let (airs_degrees, preprocessed_columns) =
-        get_airs_and_degrees_with_prep::<BabyBearConfig, _, 1>(&circuit, default_packing, None)
-            .unwrap();
+        get_airs_and_degrees_with_prep::<BabyBearConfig, _, 1>(
+            &circuit,
+            default_packing,
+            None,
+            ConstraintProfile::Standard,
+        )
+        .unwrap();
     let (mut airs, log_degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
 
     let mut runner = circuit.runner();
@@ -172,6 +179,7 @@ fn test_extension_field_batch_stark() {
             &circuit,
             TablePacking::default(),
             None,
+            ConstraintProfile::Standard,
         )
         .unwrap();
     let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
@@ -237,8 +245,13 @@ fn test_extension_field_table_lookups() {
     let circuit = builder.build().unwrap();
     let default_packing = TablePacking::default();
     let (airs_degrees, preprocessed_columns) =
-        get_airs_and_degrees_with_prep::<BabyBearConfig, _, D>(&circuit, default_packing, None)
-            .unwrap();
+        get_airs_and_degrees_with_prep::<BabyBearConfig, _, D>(
+            &circuit,
+            default_packing,
+            None,
+            ConstraintProfile::Standard,
+        )
+        .unwrap();
     let (mut airs, log_degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
 
     let mut runner = circuit.runner();
@@ -341,12 +354,14 @@ fn test_koalabear_batch_stark_base_field() {
     builder.assert_zero(diff);
 
     let circuit = builder.build().unwrap();
-    let (airs_degrees, preprocessed_columns) = get_airs_and_degrees_with_prep::<
-        KoalaBearConfig,
-        _,
-        1,
-    >(&circuit, TablePacking::default(), None)
-    .unwrap();
+    let (airs_degrees, preprocessed_columns) =
+        get_airs_and_degrees_with_prep::<KoalaBearConfig, _, 1>(
+            &circuit,
+            TablePacking::default(),
+            None,
+            ConstraintProfile::Standard,
+        )
+        .unwrap();
     let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
     let mut runner = circuit.runner();
 
@@ -403,12 +418,14 @@ fn test_koalabear_batch_stark_extension_field_d8() {
     builder.assert_zero(diff);
 
     let circuit = builder.build().unwrap();
-    let (airs_degrees, preprocessed_columns) = get_airs_and_degrees_with_prep::<
-        KoalaBearConfig,
-        _,
-        D,
-    >(&circuit, TablePacking::default(), None)
-    .unwrap();
+    let (airs_degrees, preprocessed_columns) =
+        get_airs_and_degrees_with_prep::<KoalaBearConfig, _, D>(
+            &circuit,
+            TablePacking::default(),
+            None,
+            ConstraintProfile::Standard,
+        )
+        .unwrap();
     let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
     let mut runner = circuit.runner();
 
@@ -486,12 +503,14 @@ fn test_goldilocks_batch_stark_extension_field_d2() {
     builder.assert_zero(diff);
 
     let circuit = builder.build().unwrap();
-    let (airs_degrees, preprocessed_columns) = get_airs_and_degrees_with_prep::<
-        GoldilocksConfig,
-        _,
-        D,
-    >(&circuit, TablePacking::default(), None)
-    .unwrap();
+    let (airs_degrees, preprocessed_columns) =
+        get_airs_and_degrees_with_prep::<GoldilocksConfig, _, D>(
+            &circuit,
+            TablePacking::default(),
+            None,
+            ConstraintProfile::Standard,
+        )
+        .unwrap();
     let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
     let mut runner = circuit.runner();
 
@@ -593,6 +612,7 @@ fn test_mul_only_circuit_padding() {
             &circuit,
             TablePacking::default(),
             None,
+            ConstraintProfile::Standard,
         )
         .unwrap();
     let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
@@ -637,6 +657,7 @@ fn test_add_only_circuit_padding() {
             &circuit,
             TablePacking::default(),
             None,
+            ConstraintProfile::Standard,
         )
         .unwrap();
     let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();

@@ -11,7 +11,7 @@ use p3_circuit::op::NonPrimitiveOpType;
 use p3_circuit::utils::ColumnsTargets;
 use p3_circuit::{CircuitBuilder, NonPrimitiveOpId};
 use p3_circuit_prover::air::{AluAir, ConstAir, PublicAir};
-use p3_circuit_prover::batch_stark_prover::{PrimitiveTable, RowCounts};
+use p3_circuit_prover::batch_stark_prover::{AirVariant, PrimitiveTable, RowCounts};
 use p3_circuit_prover::{
     BABY_BEAR_MODULUS, KOALA_BEAR_MODULUS, Poseidon2AirWrapperInner,
     poseidon2_verifier_air_from_config,
@@ -226,11 +226,15 @@ where
     let public_lanes = packing.public_lanes();
     let alu_lanes = packing.alu_lanes();
 
-    // Create AluAir with appropriate constructor based on TRACE_D
-    // For D > 1, we need the binomial parameter W.
-    // We extract it from the challenge field which is BinomialExtensionField<Val<SC>, D>.
-    let alu_air =
-        create_alu_air::<Val<SC>, SC::Challenge, TRACE_D>(rows[PrimitiveTable::Alu], alu_lanes);
+    // Create AluAir with appropriate constructor based on TRACE_D and the stored
+    // primitive ALU variant used during proving.
+    // For now both variants share the same AIR type; this hook allows us to swap
+    // in a different ALU AIR in the future based on `proof.alu_variant`.
+    let alu_air = match proof.alu_variant {
+        AirVariant::Baseline | AirVariant::Optimized => {
+            create_alu_air::<Val<SC>, SC::Challenge, TRACE_D>(rows[PrimitiveTable::Alu], alu_lanes)
+        }
+    };
 
     let mut circuit_airs: Vec<CircuitTablesAir<Val<SC>, TRACE_D>> = vec![
         CircuitTablesAir::Const(ConstAir::<Val<SC>, TRACE_D>::new(

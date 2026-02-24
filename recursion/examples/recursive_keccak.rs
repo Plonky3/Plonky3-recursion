@@ -46,7 +46,7 @@ use clap::{Parser, ValueEnum};
 use p3_challenger::DuplexChallenger;
 use p3_circuit::ops::generate_poseidon2_trace;
 use p3_circuit::{CircuitBuilder, CircuitRunner, NonPrimitiveOpId};
-use p3_circuit_prover::{BatchStarkProver, TablePacking};
+use p3_circuit_prover::{BatchStarkProver, ConstraintProfile, TablePacking};
 use p3_commit::{ExtensionMmcs, Pcs};
 use p3_dft::Radix2DitParallel;
 use p3_field::Field;
@@ -437,6 +437,7 @@ macro_rules! define_field_module {
                     let params = ProveNextLayerParams {
                         table_packing,
                         use_poseidon2_in_circuit: true,
+                        constraint_profile: ConstraintProfile::Standard,
                     };
                     let config = config_with_fri_params(fri_params);
 
