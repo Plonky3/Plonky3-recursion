@@ -179,8 +179,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     let prover_data = ProverData::from_airs_and_degrees(&stark_config, &mut airs, &degrees);
     let circuit_prover_data = CircuitProverData::new(prover_data, preprocessed_columns);
 
+    // Lookups order being CONST, PUBLIC, ALU, DYNAMIC.
     assert!(
-        !circuit_prover_data.common_data().lookups[4].is_empty(),
+        !circuit_prover_data.common_data().lookups[3].is_empty(),
         "Poseidon2 table should have lookups"
     );
 
