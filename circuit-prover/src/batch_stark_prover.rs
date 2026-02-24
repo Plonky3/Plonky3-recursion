@@ -27,6 +27,7 @@ use crate::air::{AluAir, ConstAir, PublicAir, WitnessAir};
 use crate::batch_stark_prover::dynamic_air::transmute_traces;
 use crate::common::CircuitTableAir;
 use crate::config::StarkField;
+use crate::constraint_profile::ConstraintProfile;
 use crate::field_params::ExtractBinomialW;
 
 mod dynamic_air;
@@ -43,6 +44,20 @@ pub use poseidon2::{
 
 pub const BABY_BEAR_MODULUS: u64 = 0x7800_0001;
 pub const KOALA_BEAR_MODULUS: u64 = 0x7f00_0001;
+
+/// Opaque variant tag for a non-primitive AIR in a batch proof.
+///
+/// Each [`NonPrimitiveTableEntry`] has one tag. The **meaning** of the tag is
+/// defined by that entry's `op_type`: the corresponding [`TableProver`] interprets
+/// it when building the AIR in [`TableProver::batch_air_from_table_entry`].
+#[derive(Clone, Copy, Default, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum AirVariant {
+    /// Baseline AIR for this op type (default behaviour).
+    #[default]
+    Baseline = 0,
+    /// Recursion-optimized variant.
+    Optimized = 1,
+}
 
 /// Metadata describing a non-primitive table inside a batch proof.
 ///
@@ -62,6 +77,9 @@ where
     pub rows: usize,
     /// Public values exposed by this table (if any).
     pub public_values: Vec<Val<SC>>,
+    /// AIR variant used for this non-primitive table.
+    #[serde(default)]
+    pub air_variant: AirVariant,
 }
 
 /// Combined data for circuit proving, including STARK prover data and preprocessed columns.
@@ -443,12 +461,18 @@ where
     }
 
     /// Register the non-primitive Poseidon2 prover plugin with the given configuration.
+    ///
+    /// Uses the standard constraint profile; recursion-specific code paths
+    /// can instantiate `Poseidon2Prover` directly with other profiles if needed.
     pub fn register_poseidon2_table(&mut self, config: Poseidon2Config)
     where
         SC: Send + Sync,
         Val<SC>: BinomiallyExtendable<4>,
     {
-        self.register_table_prover(Box::new(Poseidon2Prover::new(config)));
+        self.register_table_prover(Box::new(Poseidon2Prover::new(
+            config,
+            ConstraintProfile::Standard,
+        )));
     }
 
     #[inline]
@@ -713,6 +737,7 @@ where
                 op_type,
                 rows,
                 public_values,
+                air_variant: AirVariant::Baseline,
             });
         }
 

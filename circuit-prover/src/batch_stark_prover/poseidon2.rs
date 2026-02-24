@@ -1370,7 +1370,10 @@ unsafe impl Send for Poseidon2Prover {}
 unsafe impl Sync for Poseidon2Prover {}
 
 impl Poseidon2Prover {
-    pub const fn new(config: Poseidon2Config) -> Self {
+    pub const fn new(
+        config: Poseidon2Config,
+        _profile: crate::constraint_profile::ConstraintProfile,
+    ) -> Self {
         Self { config }
     }
 

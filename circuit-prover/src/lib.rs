@@ -41,12 +41,10 @@ pub mod air;
 pub mod batch_stark_prover;
 pub mod common;
 pub mod config;
+pub mod constraint_profile;
 pub mod field_params;
 
 // Re-export main API
-pub use batch_stark_prover::{
-    BABY_BEAR_MODULUS, BatchStarkProof, BatchStarkProver, BatchTableInstance, CircuitProverData,
-    DynamicAirEntry, KOALA_BEAR_MODULUS, NonPrimitiveTableEntry, Poseidon2AirWrapperInner,
-    Poseidon2Prover, TablePacking, TableProver, poseidon2_verifier_air_from_config,
-};
+pub use batch_stark_prover::*;
+pub use constraint_profile::ConstraintProfile;
 pub use p3_circuit::op::Poseidon2Config;

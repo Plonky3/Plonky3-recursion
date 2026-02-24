@@ -10,7 +10,9 @@ use p3_circuit::CircuitBuilder;
 use p3_circuit_prover::air::{AluAir, ConstAir, PublicAir, WitnessAir};
 use p3_circuit_prover::common::get_airs_and_degrees_with_prep;
 use p3_circuit_prover::config::BabyBearConfig;
-use p3_circuit_prover::{BatchStarkProver, CircuitProverData, TablePacking, config};
+use p3_circuit_prover::{
+    BatchStarkProver, CircuitProverData, ConstraintProfile, TablePacking, config,
+};
 use p3_field::PrimeCharacteristicRing;
 
 type F = BabyBear;
@@ -92,6 +94,7 @@ fn bench_prove_all_tables(c: &mut Criterion) {
                         &circuit,
                         table_packing,
                         None,
+                        ConstraintProfile::Standard,
                     )
                     .unwrap();
                 let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();

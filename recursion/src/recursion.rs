@@ -12,7 +12,9 @@ use p3_circuit::{Circuit, CircuitBuilder, CircuitRunner, NonPrimitiveOpId};
 use p3_circuit_prover::common::{NonPrimitiveConfig, get_airs_and_degrees_with_prep};
 use p3_circuit_prover::config::StarkField;
 use p3_circuit_prover::field_params::ExtractBinomialW;
-use p3_circuit_prover::{BatchStarkProof, BatchStarkProver, CircuitProverData, TablePacking};
+use p3_circuit_prover::{
+    BatchStarkProof, BatchStarkProver, CircuitProverData, ConstraintProfile, TablePacking,
+};
 use p3_commit::Pcs;
 use p3_field::extension::BinomiallyExtendable;
 use p3_field::{BasedVectorSpace, ExtensionField, Field, PrimeField64};
@@ -148,6 +150,8 @@ where
 pub struct ProveNextLayerParams {
     pub table_packing: TablePacking,
     pub use_poseidon2_in_circuit: bool,
+    /// Constraint profile controlling which AIR variants are used for this layer.
+    pub constraint_profile: ConstraintProfile,
 }
 
 impl Default for ProveNextLayerParams {
@@ -155,6 +159,7 @@ impl Default for ProveNextLayerParams {
         Self {
             table_packing: TablePacking::new(3, 1, 4),
             use_poseidon2_in_circuit: true,
+            constraint_profile: ConstraintProfile::Standard,
         }
     }
 }
@@ -256,6 +261,7 @@ where
             &verification_circuit,
             params.table_packing,
             non_primitive_ref,
+            params.constraint_profile,
         )
         .map_err(VerificationError::Circuit)?
     };
@@ -491,6 +497,7 @@ where
             verification_circuit,
             params.table_packing,
             non_primitive.as_deref(),
+            params.constraint_profile,
         )
         .map_err(VerificationError::Circuit)?
     };

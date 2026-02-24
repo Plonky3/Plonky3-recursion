@@ -5,7 +5,7 @@ use p3_batch_stark::ProverData;
 use p3_circuit::CircuitBuilder;
 use p3_circuit::ops::generate_poseidon2_trace;
 use p3_circuit_prover::common::{NonPrimitiveConfig, get_airs_and_degrees_with_prep};
-use p3_circuit_prover::{BatchStarkProver, CircuitProverData, TablePacking};
+use p3_circuit_prover::{BatchStarkProver, CircuitProverData, ConstraintProfile, TablePacking};
 use p3_field::PrimeCharacteristicRing;
 use p3_fri::create_test_fri_params;
 use p3_lookup::logup::LogUpGadget;
@@ -78,8 +78,13 @@ fn test_fibonacci_batch_verifier() {
     let config_proving = MyConfig::new(pcs_proving, challenger_proving);
 
     let circuit = builder.build().unwrap();
-    let (airs_degrees, preprocessed_columns) =
-        get_airs_and_degrees_with_prep::<MyConfig, _, 1>(&circuit, table_packing, None).unwrap();
+    let (airs_degrees, preprocessed_columns) = get_airs_and_degrees_with_prep::<MyConfig, _, 1>(
+        &circuit,
+        table_packing,
+        None,
+        ConstraintProfile::Standard,
+    )
+    .unwrap();
     let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
     let mut runner = circuit.runner();
 
@@ -179,6 +184,7 @@ fn test_fibonacci_batch_verifier() {
             &verification_circuit,
             verification_table_packing,
             Some(&[NonPrimitiveConfig::Poseidon2(poseidon2_config)]),
+            ConstraintProfile::Standard,
         )
         .unwrap();
     let (mut verification_airs, verification_degrees): (Vec<_>, Vec<usize>) =

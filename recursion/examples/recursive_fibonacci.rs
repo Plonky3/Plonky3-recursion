@@ -43,7 +43,7 @@ use p3_challenger::DuplexChallenger;
 use p3_circuit::ops::generate_poseidon2_trace;
 use p3_circuit::{CircuitBuilder, CircuitRunner, NonPrimitiveOpId};
 use p3_circuit_prover::common::get_airs_and_degrees_with_prep;
-use p3_circuit_prover::{BatchStarkProver, CircuitProverData, TablePacking};
+use p3_circuit_prover::{BatchStarkProver, CircuitProverData, ConstraintProfile, TablePacking};
 use p3_commit::{ExtensionMmcs, Pcs};
 use p3_dft::Radix2DitParallel;
 use p3_field::extension::BinomialExtensionField;
@@ -453,6 +453,7 @@ macro_rules! define_field_module {
                         &base_circuit,
                         table_packing_0,
                         None,
+                        ConstraintProfile::Standard,
                     )
                     .unwrap();
                 let (mut airs_0, degrees_0): (Vec<_>, Vec<_>) = airs_degrees_0.into_iter().unzip();
@@ -491,6 +492,7 @@ macro_rules! define_field_module {
                         table_packing: table_packing
                             .with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup),
                         use_poseidon2_in_circuit: true,
+                        constraint_profile: ConstraintProfile::Standard,
                     };
                     let config = config_with_fri_params(fri_params);
 
