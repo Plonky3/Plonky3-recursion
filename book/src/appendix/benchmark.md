@@ -45,20 +45,20 @@ Each example supports additional parameterization around the FRI parameters, nam
 Running on a Apple M4 pro, 14 Cores, with **KoalaBear** field and extension of **degree 4**, using default parameters mentioned above, performance benchmarks are as follows:
 
 - **Keccak AIR program:** (1,000 hashes)
-  - Base uni-stark proof: 1.44 s
-  - 1st recursion layer: 2.71 s
-  - 2nd recursion layer: 374 ms
-  - 3rd recursion layer: 372 ms
+  - Base uni-stark proof: 1.51 s
+  - 1st recursion layer: 1.72 s
+  - 2nd recursion layer: 326 ms
+  - 3rd recursion layer: 316 ms
 
 
 - **Fibonacci multi-AIR program:** (10,000th element)
   - Base batch-stark proof: 86.1 ms
-  - 1st recursion layer: 243 ms
-  - 2nd recursion layer: 415 ms
-  - 3rd recursion layer: 393 ms
+  - 1st recursion layer: 205 ms
+  - 2nd recursion layer: 330 ms
+  - 3rd recursion layer: 317 ms
 
 - **2-to-1 aggregation:**
   - Base batch-stark proof: 30 ms
-  - 1st aggregation layer: 431 ms
-  - 2nd aggregation layer: 825 ms
-  - 3rd and next aggregation layers: 806 ms
+  - 1st aggregation layer: 224 ms
+  - 2nd aggregation layer: 451 ms
+  - 3rd and next aggregation layers: 453 ms
