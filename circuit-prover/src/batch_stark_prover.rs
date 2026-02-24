@@ -37,7 +37,9 @@ pub use dynamic_air::{
     BatchAir, BatchTableInstance, CloneableBatchAir, DynamicAirEntry, TableProver,
 };
 pub use packing::{TablePacking, TraceLengths};
-pub use poseidon2::Poseidon2Prover;
+pub use poseidon2::{
+    Poseidon2AirWrapperInner, Poseidon2Prover, poseidon2_verifier_air_from_config,
+};
 
 pub const BABY_BEAR_MODULUS: u64 = 0x7800_0001;
 pub const KOALA_BEAR_MODULUS: u64 = 0x7f00_0001;
