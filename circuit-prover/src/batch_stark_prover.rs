@@ -263,6 +263,8 @@ where
     pub table_packing: TablePacking,
     /// The number of rows in each of the circuit tables.
     pub rows: RowCounts,
+    /// Variant used for the primitive ALU table.
+    pub alu_variant: AirVariant,
     /// The degree of the field extension (`D`) used for the proof.
     pub ext_degree: usize,
     /// The binomial coefficient `W` for extension field multiplication, if `ext_degree > 1`.
@@ -292,6 +294,8 @@ where
 {
     config: SC,
     table_packing: TablePacking,
+    /// Variant used for the primitive ALU AIR.
+    alu_variant: AirVariant,
     /// Registered dynamic non-primitive table provers.
     non_primitive_provers: Vec<Box<dyn TableProver<SC>>>,
     /// When true, run the lookup debugger before proving to report imbalanced multisets.
@@ -428,6 +432,7 @@ where
         Self {
             config,
             table_packing: TablePacking::default(),
+            alu_variant: AirVariant::Optimized,
             non_primitive_provers: Vec::new(),
             debug_lookups: false,
         }
@@ -478,6 +483,13 @@ where
     #[inline]
     pub const fn table_packing(&self) -> TablePacking {
         self.table_packing
+    }
+
+    /// Select which ALU AIR variant to use for primitive tables.
+    #[must_use]
+    pub const fn with_alu_variant(mut self, variant: AirVariant) -> Self {
+        self.alu_variant = variant;
+        self
     }
 
     /// Generate a unified batch STARK proof for all circuit tables.
@@ -801,6 +813,7 @@ where
                 public_rows_padded,
                 alu_rows_padded,
             ]),
+            alu_variant: self.alu_variant,
             ext_degree: D,
             w_binomial: if D > 1 { w_binomial } else { None },
             non_primitives,

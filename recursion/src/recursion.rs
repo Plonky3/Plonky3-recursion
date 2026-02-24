@@ -13,7 +13,8 @@ use p3_circuit_prover::common::{NonPrimitiveConfig, get_airs_and_degrees_with_pr
 use p3_circuit_prover::config::StarkField;
 use p3_circuit_prover::field_params::ExtractBinomialW;
 use p3_circuit_prover::{
-    BatchStarkProof, BatchStarkProver, CircuitProverData, ConstraintProfile, TablePacking,
+    AirVariant, BatchStarkProof, BatchStarkProver, CircuitProverData, ConstraintProfile,
+    TablePacking,
 };
 use p3_commit::Pcs;
 use p3_field::extension::BinomiallyExtendable;
@@ -287,7 +288,12 @@ where
         CircuitProverData::new(prover_data, preprocessed_columns)
     };
 
-    let mut prover = BatchStarkProver::new(config.clone()).with_table_packing(params.table_packing);
+    let mut prover = BatchStarkProver::new(config.clone())
+        .with_table_packing(params.table_packing)
+        .with_alu_variant(match params.constraint_profile {
+            ConstraintProfile::Standard => AirVariant::Baseline,
+            ConstraintProfile::RecursionOptimized => AirVariant::Optimized,
+        });
     if let Some(cfg) = backend.poseidon2_config_for_circuit() {
         prover.register_poseidon2_table(cfg);
     }
@@ -519,7 +525,12 @@ where
         CircuitProverData::new(prover_data, preprocessed_columns)
     };
 
-    let mut prover = BatchStarkProver::new(config.clone()).with_table_packing(params.table_packing);
+    let mut prover = BatchStarkProver::new(config.clone())
+        .with_table_packing(params.table_packing)
+        .with_alu_variant(match params.constraint_profile {
+            ConstraintProfile::Standard => AirVariant::Baseline,
+            ConstraintProfile::RecursionOptimized => AirVariant::Optimized,
+        });
     if let Some(cfg) = <B as PcsRecursionBackend<SC, A1>>::poseidon2_config_for_circuit(backend) {
         prover.register_poseidon2_table(cfg);
     }
