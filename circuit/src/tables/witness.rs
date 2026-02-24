@@ -5,8 +5,7 @@ use crate::types::WitnessId;
 /// Witness value store.
 ///
 /// Holds all intermediate computation values produced during circuit execution.
-/// After Phase 2 (Witness table removal), this struct no longer corresponds to a
-/// separate AIR table; it exists only as a convenient value store for inspection.
+/// It exists only as a convenient value store for inspection.
 #[derive(Debug, Clone)]
 pub struct WitnessTrace<F> {
     /// Sequential witness IDs: WitnessId(0), WitnessId(1), WitnessId(2), ...

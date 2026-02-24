@@ -60,7 +60,7 @@ pub struct PreprocessedColumns<F> {
     /// The FIRST operation is the creator; subsequent ones must be treated as readers (out_ctl=-1).
     ///
     /// `poseidon2_dup_wids[i] = true` means WitnessId(i) is a duplicate Poseidon2 output:
-    /// the creator was a previous op. Used by `common.rs` Phase 2 to set out_ctl = -1 instead
+    /// the creator was a previous op. Used by the prover to set out_ctl = -1 instead
     /// of +ext_reads[i].
     pub poseidon2_dup_wids: Vec<bool>,
 }
@@ -460,8 +460,8 @@ impl<F: Field> Circuit<F> {
                     // The circuit optimizer's witness_rewrite deduplication can cause two
                     // Poseidon2 ops to share the same output WitnessId (when hashing the same
                     // inputs). The FIRST op is the creator; subsequent ops are readers. Duplicates
-                    // are recorded in `preprocessed.poseidon2_dup_wids` so that Phase 2 in
-                    // common.rs can set out_ctl = -1 (reader) instead of +ext_reads (creator).
+                    // are recorded in `preprocessed.poseidon2_dup_wids` so that we can set
+                    // out_ctl = -1 (reader) instead of +ext_reads (creator) in the prover.
                     //
                     // Unconstrained ops have no AIR; their outputs remain undefined so
                     // ALU reads are treated as unconstrained (mult = 0, no bus lookup).
