@@ -104,12 +104,8 @@ where
 
     let degree = 1 << degree_bits;
     let pcs = config.pcs();
-    let log_quotient_degree = get_log_num_quotient_chunks::<Val<SC>, A>(
-        air,
-        preprocessed_width,
-        public_values.len(),
-        config.is_zk(),
-    );
+    let log_quotient_degree =
+        get_log_num_quotient_chunks::<Val<SC>, A>(air, preprocessed_width, config.is_zk());
     let quotient_degree = 1 << (log_quotient_degree + config.is_zk());
 
     let trace_domain = pcs.natural_domain_for_degree(degree);
@@ -197,7 +193,13 @@ where
                 trace_domain,
                 vec![
                     (zeta, opened_values.trace_local.clone()),
-                    (zeta_next, opened_values.trace_next.clone()),
+                    (
+                        zeta_next,
+                        opened_values
+                            .trace_next
+                            .clone()
+                            .expect("trace_next is always present"),
+                    ),
                 ],
             )],
         ),
@@ -349,7 +351,7 @@ where
     let mut preprocessed_widths = Vec::with_capacity(airs.len());
     let mut log_quotient_degrees = Vec::with_capacity(n_instances);
     let mut quotient_degrees = Vec::with_capacity(n_instances);
-    for (i, (air, pv)) in airs.iter().zip(public_values.iter()).enumerate() {
+    for (i, air) in airs.iter().enumerate() {
         let pre_w = common_data
             .preprocessed
             .as_ref()
@@ -360,7 +362,6 @@ where
         let log_qd = get_batch_log_num_quotient_chunks(
             air,
             pre_w,
-            pv.len(),
             &all_lookups[i],
             &lookup_data_to_expr(&global_lookup_data[i]),
             config.is_zk(),
@@ -445,7 +446,13 @@ where
                 *ext_dom,
                 vec![
                     (zeta, inst.base_opened_values.trace_local.clone()),
-                    (zeta_next, inst.base_opened_values.trace_next.clone()),
+                    (
+                        zeta_next,
+                        inst.base_opened_values
+                            .trace_next
+                            .clone()
+                            .expect("trace_next is always present"),
+                    ),
                 ],
             ))
         })

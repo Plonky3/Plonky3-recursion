@@ -29,7 +29,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::marker::PhantomData;
 
-use p3_air::{Air, AirBuilder, AirBuilderWithPublicValues, BaseAir, PermutationAirBuilder};
+use p3_air::{Air, AirBuilder, BaseAir, PermutationAirBuilder};
 use p3_circuit::tables::ConstTrace;
 use p3_field::{BasedVectorSpace, Field};
 use p3_lookup::lookup_traits::{Direction, Kind, Lookup};
@@ -186,7 +186,7 @@ where
 
     fn get_lookups(&mut self) -> Vec<Lookup<<AB>::F>>
     where
-        AB: PermutationAirBuilder + AirBuilderWithPublicValues,
+        AB: PermutationAirBuilder,
     {
         self.num_lookup_columns = 0;
 

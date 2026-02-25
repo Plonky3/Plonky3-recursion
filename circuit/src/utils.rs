@@ -318,7 +318,7 @@ mod tests {
 
         // Get the symbolic constraints from `FibonacciAir`.
         let symbolic_constraints: Vec<p3_uni_stark::SymbolicExpression<Challenge>> =
-            get_symbolic_constraints(&air, 0, pis.len());
+            get_symbolic_constraints(&air, 0);
 
         // Fold the symbolic constraints using `alpha`.
         let folded_symbolic_constraints = {

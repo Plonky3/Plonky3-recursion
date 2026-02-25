@@ -6,9 +6,9 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use alloc::{format, vec};
 
-use p3_air::{Air, AirBuilder, BaseAir};
 #[cfg(debug_assertions)]
-use p3_batch_stark::DebugConstraintBuilderWithLookups;
+use p3_air::DebugConstraintBuilder;
+use p3_air::{Air, AirBuilder, BaseAir};
 use p3_batch_stark::{BatchProof, CommonData, ProverData, StarkGenericConfig, StarkInstance, Val};
 use p3_circuit::PreprocessedColumns;
 use p3_circuit::op::{NonPrimitiveOpType, Poseidon2Config, PrimitiveOpType};
@@ -385,16 +385,14 @@ where
 }
 
 #[cfg(debug_assertions)]
-impl<'a, SC, const D: usize> Air<DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>>
+impl<'a, SC, const D: usize> Air<DebugConstraintBuilder<'a, Val<SC>, SC::Challenge>>
     for CircuitTableAir<SC, D>
 where
     SC: StarkGenericConfig,
     Val<SC>: PrimeField,
     SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
 {
-    impl_circuit_table_air_for_builder!(
-        DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>
-    );
+    impl_circuit_table_air_for_builder!(DebugConstraintBuilder<'a, Val<SC>, SC::Challenge>);
 }
 
 impl<'a, SC, const D: usize> Air<ProverConstraintFolderWithLookups<'a, SC>>
