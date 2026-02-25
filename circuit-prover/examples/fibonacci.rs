@@ -1,17 +1,17 @@
 use std::env;
 use std::error::Error;
 
-/// Fibonacci circuit: Compute F(n) and prove correctness
-/// Public input: expected_result (F(n))
-use p3_baby_bear::BabyBear;
 use p3_batch_stark::ProverData;
 use p3_circuit::CircuitBuilder;
 use p3_circuit_prover::common::get_airs_and_degrees_with_prep;
-use p3_circuit_prover::config::BabyBearConfig;
+use p3_circuit_prover::config::KoalaBearConfig;
 use p3_circuit_prover::{
     BatchStarkProver, CircuitProverData, ConstraintProfile, TablePacking, config,
 };
 use p3_field::PrimeCharacteristicRing;
+/// Fibonacci circuit: Compute F(n) and prove correctness
+/// Public input: expected_result (F(n))
+use p3_koala_bear::KoalaBear;
 use tracing_forest::ForestLayer;
 use tracing_forest::util::LevelFilter;
 use tracing_subscriber::layer::SubscriberExt;
@@ -30,12 +30,12 @@ fn init_logger() {
         .init();
 }
 
-type F = BabyBear;
+type F = KoalaBear;
 
 fn main() -> Result<(), Box<dyn Error>> {
     init_logger();
 
-    let config = config::baby_bear().build();
+    let config = config::koala_bear().build();
 
     let n = env::args()
         .nth(1)
@@ -66,7 +66,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let table_packing = TablePacking::new(4, 4, 4);
 
     let (airs_degrees, preprocessed_columns) =
-        get_airs_and_degrees_with_prep::<BabyBearConfig, _, 1>(
+        get_airs_and_degrees_with_prep::<KoalaBearConfig, _, 1>(
             &circuit,
             table_packing,
             None,
