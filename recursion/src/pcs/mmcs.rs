@@ -20,7 +20,7 @@ use crate::Target;
 /// values from the previous permutation output.
 ///
 /// This function implements the same behavior in the circuit by:
-/// 1. Processing base coefficients in chunks of `rate` (8 for BabyBear)
+/// 1. Processing base coefficients in chunks of `rate` (8 for BabyBear / KoalaBear)
 /// 2. For partial chunks, mixing absorbed values with previous output for remaining positions
 /// 3. Using proper chaining for the capacity portion
 ///
@@ -46,7 +46,7 @@ where
     }
 
     let ext_degree = <EF as BasedVectorSpace<F>>::DIMENSION;
-    let rate = permutation_config.rate(); // Base field rate (8 for BabyBear)
+    let rate = permutation_config.rate(); // Base field rate (8 for BabyBear / KoalaBear)
     let rate_ext = permutation_config.rate_ext(); // Extension rate (2 for D=4)
 
     // Process in chunks of `rate` base field values
@@ -581,7 +581,6 @@ mod test {
     use core::cmp::Reverse;
 
     use itertools::Itertools;
-    use p3_baby_bear::{BabyBear, Poseidon2BabyBear, default_babybear_poseidon2_16};
     use p3_circuit::op::Poseidon2Config;
     use p3_circuit::ops::mmcs::{add_mmcs_verify, format_openings};
     use p3_circuit::ops::{Poseidon2PermPrivateData, generate_poseidon2_trace};
@@ -589,10 +588,11 @@ mod test {
     use p3_commit::Mmcs;
     use p3_field::extension::BinomialExtensionField;
     use p3_field::{BasedVectorSpace, ExtensionField, Field, PrimeCharacteristicRing};
+    use p3_koala_bear::{KoalaBear, Poseidon2KoalaBear, default_koalabear_poseidon2_16};
     use p3_matrix::dense::{DenseMatrix, RowMajorMatrix};
     use p3_matrix::{Dimensions, Matrix};
     use p3_merkle_tree::MerkleTreeMmcs;
-    use p3_poseidon2_circuit_air::BabyBearD4Width16;
+    use p3_poseidon2_circuit_air::KoalaBearD4Width16;
     use p3_symmetric::{CryptographicHasher, PaddingFreeSponge, TruncatedPermutation};
     use p3_util::log2_ceil_usize;
     use rand::SeedableRng;
@@ -605,10 +605,10 @@ mod test {
 
     use crate::pcs::verify_batch_circuit;
 
-    type F = BabyBear;
+    type F = KoalaBear;
     type CF = BinomialExtensionField<F, 4>;
 
-    type Perm = Poseidon2BabyBear<16>;
+    type Perm = Poseidon2KoalaBear<16>;
     type MyHash = PaddingFreeSponge<Perm, 16, 8, 8>;
     type MyCompress = TruncatedPermutation<Perm, 2, 8, 16>;
     type MyMmcs =
@@ -637,7 +637,7 @@ mod test {
     }
 
     fn test_all_openings_with_cap_height(mats: Vec<RowMajorMatrix<F>>, cap_height: usize) {
-        let perm = default_babybear_poseidon2_16();
+        let perm = default_koalabear_poseidon2_16();
         let hash = MyHash::new(perm.clone());
         let compress = MyCompress::new(perm.clone());
         let mmcs = MyMmcs::new(hash, compress, cap_height);
@@ -657,9 +657,9 @@ mod test {
         let log_max_height = log2_ceil_usize(max_height);
         for index in 0..max_height {
             let mut builder = CircuitBuilder::<CF>::new();
-            let permutation_config = Poseidon2Config::BabyBearD4Width16;
-            builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
-                generate_poseidon2_trace::<CF, BabyBearD4Width16>,
+            let permutation_config = Poseidon2Config::KoalaBearD4Width16;
+            builder.enable_poseidon2_perm::<KoalaBearD4Width16, _>(
+                generate_poseidon2_trace::<CF, KoalaBearD4Width16>,
                 perm.clone(),
             );
 
@@ -947,10 +947,10 @@ mod test {
         let (commit, prover_data) = mmcs.commit(mats);
 
         let mut builder = CircuitBuilder::<CF>::new();
-        let permutation_config = Poseidon2Config::BabyBearD4Width16;
-        let perm = default_babybear_poseidon2_16();
-        builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
-            generate_poseidon2_trace::<CF, BabyBearD4Width16>,
+        let permutation_config = Poseidon2Config::KoalaBearD4Width16;
+        let perm = default_koalabear_poseidon2_16();
+        builder.enable_poseidon2_perm::<KoalaBearD4Width16, _>(
+            generate_poseidon2_trace::<CF, KoalaBearD4Width16>,
             perm,
         );
 
@@ -1063,7 +1063,7 @@ mod test {
     fn verify_batch_with_lifted_representation() {
         init_logger();
 
-        let perm = default_babybear_poseidon2_16();
+        let perm = default_koalabear_poseidon2_16();
         let hash = MyHash::new(perm.clone());
         let compress = MyCompress::new(perm.clone());
         let mmcs = MyMmcs::new(hash, compress, 0);
@@ -1091,9 +1091,9 @@ mod test {
 
         for index in 0..max_height {
             let mut builder = CircuitBuilder::<CF>::new();
-            let permutation_config = Poseidon2Config::BabyBearD4Width16;
-            builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
-                generate_poseidon2_trace::<CF, BabyBearD4Width16>,
+            let permutation_config = Poseidon2Config::KoalaBearD4Width16;
+            builder.enable_poseidon2_perm::<KoalaBearD4Width16, _>(
+                generate_poseidon2_trace::<CF, KoalaBearD4Width16>,
                 perm.clone(),
             );
 
@@ -1228,7 +1228,7 @@ mod test {
     }
 
     fn test_lifted_openings_with_cap_height(mats: Vec<RowMajorMatrix<F>>, cap_height: usize) {
-        let perm = default_babybear_poseidon2_16();
+        let perm = default_koalabear_poseidon2_16();
         let hash = MyHash::new(perm.clone());
         let compress = MyCompress::new(perm.clone());
         let mmcs = MyMmcs::new(hash, compress, cap_height);
@@ -1248,9 +1248,9 @@ mod test {
         let log_max_height = log2_ceil_usize(max_height);
         for index in 0..max_height {
             let mut builder = CircuitBuilder::<CF>::new();
-            let permutation_config = Poseidon2Config::BabyBearD4Width16;
-            builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
-                generate_poseidon2_trace::<CF, BabyBearD4Width16>,
+            let permutation_config = Poseidon2Config::KoalaBearD4Width16;
+            builder.enable_poseidon2_perm::<KoalaBearD4Width16, _>(
+                generate_poseidon2_trace::<CF, KoalaBearD4Width16>,
                 perm.clone(),
             );
 

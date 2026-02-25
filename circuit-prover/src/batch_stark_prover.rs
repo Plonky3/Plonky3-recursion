@@ -27,6 +27,7 @@ use crate::air::{AluAir, ConstAir, PublicAir};
 use crate::batch_stark_prover::dynamic_air::transmute_traces;
 use crate::common::CircuitTableAir;
 use crate::config::StarkField;
+use crate::constraint_profile::ConstraintProfile;
 use crate::field_params::ExtractBinomialW;
 
 mod dynamic_air;
@@ -43,6 +44,20 @@ pub use poseidon2::{
 
 pub const BABY_BEAR_MODULUS: u64 = 0x7800_0001;
 pub const KOALA_BEAR_MODULUS: u64 = 0x7f00_0001;
+
+/// Opaque variant tag for a non-primitive AIR in a batch proof.
+///
+/// Each [`NonPrimitiveTableEntry`] has one tag. The **meaning** of the tag is
+/// defined by that entry's `op_type`: the corresponding [`TableProver`] interprets
+/// it when building the AIR in [`TableProver::batch_air_from_table_entry`].
+#[derive(Clone, Copy, Default, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum AirVariant {
+    /// Baseline AIR for this op type (default behaviour).
+    #[default]
+    Baseline = 0,
+    /// Recursion-optimized variant.
+    Optimized = 1,
+}
 
 /// Metadata describing a non-primitive table inside a batch proof.
 ///
@@ -62,6 +77,9 @@ where
     pub rows: usize,
     /// Public values exposed by this table (if any).
     pub public_values: Vec<Val<SC>>,
+    /// AIR variant used for this non-primitive table.
+    #[serde(default)]
+    pub air_variant: AirVariant,
 }
 
 /// Combined data for circuit proving, including STARK prover data and preprocessed columns.
@@ -245,6 +263,8 @@ where
     pub table_packing: TablePacking,
     /// The number of rows in each of the circuit tables.
     pub rows: RowCounts,
+    /// Variant used for the primitive ALU table.
+    pub alu_variant: AirVariant,
     /// The degree of the field extension (`D`) used for the proof.
     pub ext_degree: usize,
     /// The binomial coefficient `W` for extension field multiplication, if `ext_degree > 1`.
@@ -274,6 +294,8 @@ where
 {
     config: SC,
     table_packing: TablePacking,
+    /// Variant used for the primitive ALU AIR.
+    alu_variant: AirVariant,
     /// Registered dynamic non-primitive table provers.
     non_primitive_provers: Vec<Box<dyn TableProver<SC>>>,
     /// When true, run the lookup debugger before proving to report imbalanced multisets.
@@ -405,6 +427,7 @@ where
         Self {
             config,
             table_packing: TablePacking::default(),
+            alu_variant: AirVariant::Optimized,
             non_primitive_provers: Vec::new(),
             debug_lookups: false,
         }
@@ -438,17 +461,30 @@ where
     }
 
     /// Register the non-primitive Poseidon2 prover plugin with the given configuration.
+    ///
+    /// Uses the standard constraint profile; recursion-specific code paths
+    /// can instantiate `Poseidon2Prover` directly with other profiles if needed.
     pub fn register_poseidon2_table(&mut self, config: Poseidon2Config)
     where
         SC: Send + Sync,
         Val<SC>: BinomiallyExtendable<4>,
     {
-        self.register_table_prover(Box::new(Poseidon2Prover::new(config)));
+        self.register_table_prover(Box::new(Poseidon2Prover::new(
+            config,
+            ConstraintProfile::Standard,
+        )));
     }
 
     #[inline]
     pub const fn table_packing(&self) -> TablePacking {
         self.table_packing
+    }
+
+    /// Select which ALU AIR variant to use for primitive tables.
+    #[must_use]
+    pub const fn with_alu_variant(mut self, variant: AirVariant) -> Self {
+        self.alu_variant = variant;
+        self
     }
 
     /// Generate a unified batch STARK proof for all circuit tables.
@@ -705,6 +741,7 @@ where
                 op_type,
                 rows,
                 public_values,
+                air_variant: AirVariant::Baseline,
             });
         }
 
@@ -741,7 +778,7 @@ where
                 if let NonPrimitiveOpType::Poseidon2Perm(cfg) = instance.op_type
                     && let Some(committed_prep) = non_primitive.get(&instance.op_type)
                 {
-                    let poseidon2_prover = Poseidon2Prover::new(cfg);
+                    let poseidon2_prover = Poseidon2Prover::new(cfg, ConstraintProfile::Standard);
                     let width = poseidon2_prover.preprocessed_width_from_config();
                     let padded_rows = instance.rows.next_power_of_two().max(min_height);
                     let mut prep_data = committed_prep.clone();
@@ -785,6 +822,7 @@ where
             proof,
             table_packing: effective_packing,
             rows: RowCounts::new([const_rows_padded, public_rows_padded, alu_rows_padded]),
+            alu_variant: self.alu_variant,
             ext_degree: D,
             w_binomial: if D > 1 { w_binomial } else { None },
             non_primitives,

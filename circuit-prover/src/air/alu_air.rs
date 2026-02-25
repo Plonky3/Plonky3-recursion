@@ -513,7 +513,10 @@ where
                 // active = -mult_a: 1 for active rows, 0 for padding
                 let active = AB::Expr::ZERO - mult_a;
                 // sel_mul = active - sel_bool - sel_muladd - sel_horner - sel_add_vs_mul
-                let sel_mul = active - sel_bool.clone() - sel_muladd.clone() - sel_horner.clone()
+                let sel_mul = active
+                    - sel_bool.clone()
+                    - sel_muladd.clone()
+                    - sel_horner.clone()
                     - sel_add_vs_mul.clone();
 
                 // ADD constraint: sel_add_vs_mul * (a + b - out) = 0
@@ -569,9 +572,11 @@ where
                 // active = -mult_a: 1 for active rows, 0 for padding
                 let active = AB::Expr::ZERO - mult_a;
                 // sel_mul = active - sel_bool - sel_muladd - sel_horner - sel_add_vs_mul
-                let sel_mul =
-                    active - sel_bool.clone() - sel_muladd.clone() - sel_horner.clone()
-                        - sel_add_vs_mul.clone();
+                let sel_mul = active
+                    - sel_bool.clone()
+                    - sel_muladd.clone()
+                    - sel_horner.clone()
+                    - sel_add_vs_mul.clone();
 
                 // ADD constraints
                 for i in 0..D {

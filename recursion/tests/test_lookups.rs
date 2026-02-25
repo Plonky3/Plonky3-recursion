@@ -9,7 +9,8 @@ use p3_circuit_prover::air::{AluAir, ConstAir, PublicAir};
 use p3_circuit_prover::batch_stark_prover::PrimitiveTable;
 use p3_circuit_prover::common::{NonPrimitiveConfig, get_airs_and_degrees_with_prep};
 use p3_circuit_prover::{
-    BatchStarkProof, BatchStarkProver, CircuitProverData, Poseidon2Config, TablePacking,
+    BatchStarkProof, BatchStarkProver, CircuitProverData, ConstraintProfile, Poseidon2Config,
+    TablePacking,
 };
 use p3_field::PrimeCharacteristicRing;
 use p3_fri::create_test_fri_params;
@@ -107,7 +108,13 @@ fn test_wrong_multiplicities() {
 
     let circuit = builder.build().unwrap();
     let (airs_degrees, mut preprocessed_columns) =
-        get_airs_and_degrees_with_prep::<MyConfig, _, 1>(&circuit, table_packing, None).unwrap();
+        get_airs_and_degrees_with_prep::<MyConfig, _, 1>(
+            &circuit,
+            table_packing,
+            None,
+            ConstraintProfile::Standard,
+        )
+        .unwrap();
 
     // Introduce an error in the Const table multiplicities.
     preprocessed_columns.primitive[PrimitiveOpType::Const as usize][0] += F::ONE;
@@ -580,8 +587,13 @@ fn get_test_circuit_proof() -> TestCircuitProofData {
     let config_proving = get_proving_config();
 
     let circuit = builder.build().unwrap();
-    let (airs_degrees, preprocessed_columns) =
-        get_airs_and_degrees_with_prep::<MyConfig, _, 1>(&circuit, table_packing, None).unwrap();
+    let (airs_degrees, preprocessed_columns) = get_airs_and_degrees_with_prep::<MyConfig, _, 1>(
+        &circuit,
+        table_packing,
+        None,
+        ConstraintProfile::Standard,
+    )
+    .unwrap();
 
     let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
     let mut runner = circuit.runner();
@@ -841,6 +853,7 @@ fn test_poseidon2_ctl_lookups() {
         &circuit,
         table_packing,
         Some(&[NonPrimitiveConfig::Poseidon2(poseidon2_config)]),
+        ConstraintProfile::Standard,
     )
     .unwrap();
 
@@ -960,6 +973,7 @@ fn test_poseidon2_chained_ctl_lookups() {
         &circuit,
         table_packing,
         Some(&[NonPrimitiveConfig::Poseidon2(poseidon2_config)]),
+        ConstraintProfile::Standard,
     )
     .unwrap();
 

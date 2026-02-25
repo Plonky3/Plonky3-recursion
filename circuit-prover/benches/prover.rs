@@ -4,16 +4,18 @@
 //! scaling is visible.
 
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
-use p3_baby_bear::BabyBear;
 use p3_batch_stark::ProverData;
 use p3_circuit::CircuitBuilder;
 use p3_circuit_prover::air::{AluAir, ConstAir, PublicAir};
 use p3_circuit_prover::common::get_airs_and_degrees_with_prep;
-use p3_circuit_prover::config::BabyBearConfig;
-use p3_circuit_prover::{BatchStarkProver, CircuitProverData, TablePacking, config};
+use p3_circuit_prover::config::KoalaBearConfig;
+use p3_circuit_prover::{
+    BatchStarkProver, CircuitProverData, ConstraintProfile, TablePacking, config,
+};
 use p3_field::PrimeCharacteristicRing;
+use p3_koala_bear::KoalaBear;
 
-type F = BabyBear;
+type F = KoalaBear;
 
 fn fib_circuit(n: usize) -> (p3_circuit::Circuit<F>, F) {
     let mut builder = CircuitBuilder::new();
@@ -81,13 +83,14 @@ fn bench_prove_all_tables(c: &mut Criterion) {
     for n in [100, 500, 2000] {
         group.bench_with_input(BenchmarkId::new("fibonacci", n), &n, |b, &n| {
             b.iter(|| {
-                let config = config::baby_bear().build();
+                let config = config::koala_bear().build();
                 let (circuit, expected_fib) = fib_circuit(n);
                 let (airs_degrees, preprocessed_columns) =
-                    get_airs_and_degrees_with_prep::<BabyBearConfig, _, 1>(
+                    get_airs_and_degrees_with_prep::<KoalaBearConfig, _, 1>(
                         &circuit,
                         table_packing,
                         None,
+                        ConstraintProfile::Standard,
                     )
                     .unwrap();
                 let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();

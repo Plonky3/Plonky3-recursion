@@ -40,7 +40,7 @@ use p3_challenger::DuplexChallenger;
 use p3_circuit::ops::generate_poseidon2_trace;
 use p3_circuit::{CircuitBuilder, CircuitRunner, NonPrimitiveOpId};
 use p3_circuit_prover::common::get_airs_and_degrees_with_prep;
-use p3_circuit_prover::{BatchStarkProver, CircuitProverData, TablePacking};
+use p3_circuit_prover::{BatchStarkProver, CircuitProverData, ConstraintProfile, TablePacking};
 use p3_commit::{ExtensionMmcs, Pcs};
 use p3_dft::Radix2DitParallel;
 use p3_field::extension::BinomialExtensionField;
@@ -397,12 +397,14 @@ macro_rules! define_field_module {
                 builder.connect(c, expected);
 
                 let circuit = builder.build().unwrap();
-                let (airs_degrees, preprocessed_columns) = get_airs_and_degrees_with_prep::<
-                    ConfigWithFriParams,
-                    _,
-                    1,
-                >(&circuit, table_packing, None)
-                .unwrap();
+                let (airs_degrees, preprocessed_columns) =
+                    get_airs_and_degrees_with_prep::<ConfigWithFriParams, _, 1>(
+                        &circuit,
+                        table_packing,
+                        None,
+                        ConstraintProfile::Standard,
+                    )
+                    .unwrap();
                 let (mut airs, degrees): (Vec<_>, Vec<_>) = airs_degrees.into_iter().unzip();
 
                 let mut runner = circuit.runner();
@@ -469,6 +471,7 @@ macro_rules! define_field_module {
                         }
                         .with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup),
                         use_poseidon2_in_circuit: true,
+                        constraint_profile: ConstraintProfile::Standard,
                     };
 
                     let mut next_level = Vec::with_capacity(pairs);
