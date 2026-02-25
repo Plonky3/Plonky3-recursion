@@ -123,7 +123,6 @@ where
     let log_quotient_degree = A::get_log_num_quotient_chunks(
         air,
         preprocessed_width,
-        public_values.len(),
         &[],
         &[],
         config.is_zk(),

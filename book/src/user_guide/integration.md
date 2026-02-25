@@ -116,7 +116,6 @@ impl RecursiveAir<F, EF, LogUpGadget> for MyAir {
     fn get_log_num_quotient_chunks(
         &self,
         preprocessed_width: usize,
-        num_public_values: usize,
         contexts: &[Lookup<F>],
         lookup_data: &[LookupData<usize>],
         is_zk: usize,

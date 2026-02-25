@@ -5,7 +5,7 @@ use core::borrow::Borrow;
 use core::iter;
 use core::mem::MaybeUninit;
 
-use p3_air::{Air, AirBuilder, AirBuilderWithPublicValues, BaseAir, PermutationAirBuilder};
+use p3_air::{Air, AirBuilder, BaseAir, PermutationAirBuilder};
 use p3_circuit::ops::Poseidon2CircuitRow;
 use p3_field::{Field, PrimeCharacteristicRing, PrimeField};
 use p3_lookup::lookup_traits::{Direction, Kind, Lookup};
@@ -786,7 +786,7 @@ where
 
     fn get_lookups(&mut self) -> Vec<Lookup<<AB>::F>>
     where
-        AB: PermutationAirBuilder + AirBuilderWithPublicValues,
+        AB: PermutationAirBuilder,
     {
         let symbolic_air_builder = SymbolicAirBuilder::<AB::F>::new(
             Self::preprocessed_width(),
