@@ -4,12 +4,12 @@
 //! building, and full run. Parameterized by instance size and shape.
 
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
-use p3_baby_bear::BabyBear;
 use p3_circuit::CircuitBuilder;
 use p3_circuit::tables::{AluTraceBuilder, ConstTraceBuilder, PublicTraceBuilder};
 use p3_field::PrimeCharacteristicRing;
+use p3_koala_bear::KoalaBear;
 
-type F = BabyBear;
+type F = KoalaBear;
 
 fn fib_circuit(n: usize) -> (p3_circuit::Circuit<F>, F) {
     let mut builder = CircuitBuilder::new();
