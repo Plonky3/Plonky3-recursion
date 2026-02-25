@@ -1,23 +1,23 @@
 use std::env;
 use std::error::Error;
 
-/// Poseidon2 permutation chain example using the Poseidon2Perm op.
-///
-/// Builds a chain of Poseidon2 permutations and verifies the final output against a native
-/// computation.
-use p3_baby_bear::{BabyBear, default_babybear_poseidon2_16};
 use p3_batch_stark::ProverData;
 use p3_circuit::op::NonPrimitiveOpType;
 use p3_circuit::ops::{Poseidon2PermCall, Poseidon2PermOps, generate_poseidon2_trace};
 use p3_circuit::{CircuitBuilder, ExprId};
 use p3_circuit_prover::common::{NonPrimitiveConfig, get_airs_and_degrees_with_prep};
-use p3_circuit_prover::config::BabyBearConfig;
+use p3_circuit_prover::config::KoalaBearConfig;
 use p3_circuit_prover::{
     BatchStarkProver, CircuitProverData, ConstraintProfile, Poseidon2Config, TablePacking, config,
 };
 use p3_field::extension::BinomialExtensionField;
 use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
-use p3_poseidon2_circuit_air::BabyBearD4Width16;
+/// Poseidon2 permutation chain example using the Poseidon2Perm op.
+///
+/// Builds a chain of Poseidon2 permutations and verifies the final output against a native
+/// computation.
+use p3_koala_bear::{KoalaBear, default_koalabear_poseidon2_16};
+use p3_poseidon2_circuit_air::KoalaBearD4Width16;
 use p3_symmetric::Permutation;
 use tracing_forest::ForestLayer;
 use tracing_forest::util::LevelFilter;
@@ -37,7 +37,7 @@ fn init_logger() {
         .init();
 }
 
-type Base = BabyBear;
+type Base = KoalaBear;
 type Ext4 = BinomialExtensionField<Base, 4>;
 
 const WIDTH: usize = 16;
@@ -59,7 +59,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     // Compute native permutation chain over the base field (flattened coefficients).
-    let perm = default_babybear_poseidon2_16();
+    let perm = default_koalabear_poseidon2_16();
     let mut state_base = flatten_ext_limbs(&ext_limbs);
     for _ in 0..chain_length {
         state_base = perm.permute(state_base);
@@ -69,8 +69,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Build the circuit.
     let mut builder = CircuitBuilder::<Ext4>::new();
-    builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
-        generate_poseidon2_trace::<Ext4, BabyBearD4Width16>,
+    builder.enable_poseidon2_perm::<KoalaBearD4Width16, _>(
+        generate_poseidon2_trace::<Ext4, KoalaBearD4Width16>,
         perm,
     );
 
@@ -98,7 +98,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
 
         let (_op_id, outputs) = builder.add_poseidon2_perm(Poseidon2PermCall {
-            config: Poseidon2Config::BabyBearD4Width16,
+            config: Poseidon2Config::KoalaBearD4Width16,
             new_start: is_first,
             merkle_path: false,
             mmcs_bit: None, // Must be None when merkle_path=false
@@ -125,11 +125,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     let circuit = builder.build()?;
     let expr_to_widx = circuit.expr_to_widx.clone();
 
-    let stark_config = config::baby_bear().build();
+    let stark_config = config::koala_bear().build();
     let table_packing = TablePacking::new(2, 2, 2);
-    let poseidon2_config = Poseidon2Config::BabyBearD4Width16;
+    let poseidon2_config = Poseidon2Config::KoalaBearD4Width16;
     let (airs_degrees, preprocessed_columns) =
-        get_airs_and_degrees_with_prep::<BabyBearConfig, _, 4>(
+        get_airs_and_degrees_with_prep::<KoalaBearConfig, _, 4>(
             &circuit,
             table_packing,
             Some(&[NonPrimitiveConfig::Poseidon2(poseidon2_config)]),
@@ -169,7 +169,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         traces
             .non_primitive_traces
             .get(&NonPrimitiveOpType::Poseidon2Perm(
-                Poseidon2Config::BabyBearD4Width16
+                Poseidon2Config::KoalaBearD4Width16
             ))
             .is_some_and(|t| t.rows() == chain_length),
         "Poseidon2 trace should contain one row per perm op"

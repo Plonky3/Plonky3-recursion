@@ -1,6 +1,5 @@
 mod common;
 
-use p3_baby_bear::default_babybear_poseidon2_16;
 use p3_batch_stark::ProverData;
 use p3_circuit::CircuitBuilder;
 use p3_circuit::ops::generate_poseidon2_trace;
@@ -8,8 +7,9 @@ use p3_circuit_prover::common::{NonPrimitiveConfig, get_airs_and_degrees_with_pr
 use p3_circuit_prover::{BatchStarkProver, CircuitProverData, ConstraintProfile, TablePacking};
 use p3_field::PrimeCharacteristicRing;
 use p3_fri::create_test_fri_params;
+use p3_koala_bear::default_koalabear_poseidon2_16;
 use p3_lookup::logup::LogUpGadget;
-use p3_poseidon2_circuit_air::BabyBearD4Width16;
+use p3_poseidon2_circuit_air::KoalaBearD4Width16;
 use p3_recursion::Poseidon2Config;
 use p3_recursion::pcs::fri::{FriVerifierParams, InputProofTargets, MerkleCapTargets, RecValMmcs};
 use p3_recursion::pcs::set_fri_mmcs_private_data;
@@ -20,7 +20,7 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Registry};
 
-use crate::common::baby_bear_params::*;
+use crate::common::koala_bear_params::*;
 
 fn init_logger() {
     let env_filter = EnvFilter::builder()
@@ -62,7 +62,7 @@ fn test_fibonacci_batch_verifier() {
     let table_packing = TablePacking::new(1, 2, 4);
 
     // Use the default permutation for proving to match circuit's Fiat-Shamir challenger
-    let perm = default_babybear_poseidon2_16();
+    let perm = default_koalabear_poseidon2_16();
     let hash = MyHash::new(perm.clone());
     let compress = MyCompress::new(perm.clone());
     let val_mmcs = ValMmcs::new(hash, compress, 0);
@@ -113,7 +113,7 @@ fn test_fibonacci_batch_verifier() {
     // Now verify the batch STARK proof recursively
     // Use same permutation as proving to ensure Fiat-Shamir transcript compatibility
     let dft2 = Dft::default();
-    let perm2 = default_babybear_poseidon2_16();
+    let perm2 = default_koalabear_poseidon2_16();
     let hash2 = MyHash::new(perm2.clone());
     let compress2 = MyCompress::new(perm2.clone());
     let val_mmcs2 = ValMmcs::new(hash2, compress2, 0);
@@ -124,7 +124,7 @@ fn test_fibonacci_batch_verifier() {
         fri_params2.log_final_poly_len,
         fri_params2.commit_proof_of_work_bits,
         fri_params2.query_proof_of_work_bits,
-        Poseidon2Config::BabyBearD4Width16,
+        Poseidon2Config::KoalaBearD4Width16,
     );
     let pcs_verif = MyPcs::new(dft2, val_mmcs2, fri_params2);
     let challenger_verif = Challenger::new(perm2);
@@ -140,9 +140,9 @@ fn test_fibonacci_batch_verifier() {
 
     // Build the recursive verification circuit
     let mut circuit_builder = CircuitBuilder::new();
-    let poseidon2_perm = default_babybear_poseidon2_16();
-    circuit_builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
-        generate_poseidon2_trace::<Challenge, BabyBearD4Width16>,
+    let poseidon2_perm = default_koalabear_poseidon2_16();
+    circuit_builder.enable_poseidon2_perm::<KoalaBearD4Width16, _>(
+        generate_poseidon2_trace::<Challenge, KoalaBearD4Width16>,
         poseidon2_perm,
     );
 
@@ -163,7 +163,7 @@ fn test_fibonacci_batch_verifier() {
         &fri_verifier_params,
         common,
         &lookup_gadget,
-        Poseidon2Config::BabyBearD4Width16,
+        Poseidon2Config::KoalaBearD4Width16,
     )
     .unwrap();
 
@@ -178,7 +178,7 @@ fn test_fibonacci_batch_verifier() {
     assert!(!public_inputs.is_empty());
 
     let verification_table_packing = TablePacking::new(16, 1, 8);
-    let poseidon2_config = Poseidon2Config::BabyBearD4Width16;
+    let poseidon2_config = Poseidon2Config::KoalaBearD4Width16;
     let (verification_airs_degrees, verification_preprocessed_columns) =
         get_airs_and_degrees_with_prep::<MyConfig, _, 4>(
             &verification_circuit,
@@ -215,7 +215,7 @@ fn test_fibonacci_batch_verifier() {
 
     // Create a new config and prover for the verification circuit
     let dft3 = Dft::default();
-    let perm3 = default_babybear_poseidon2_16();
+    let perm3 = default_koalabear_poseidon2_16();
     let hash3 = MyHash::new(perm3.clone());
     let compress3 = MyCompress::new(perm3.clone());
     let val_mmcs3 = ValMmcs::new(hash3, compress3, 0);
