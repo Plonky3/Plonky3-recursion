@@ -63,23 +63,11 @@ where
 /// Get ALU lookups for the 4 operands (a, b, c, out).
 ///
 /// ALU preprocessed layout per lane (12 columns):
-/// - 0: mult_a (base multiplicity; `-1` for all active rows, `0` for padding)
-/// - 1-3: selectors (add_vs_mul, bool, muladd)
-/// - 4-7: indices (a_idx, b_idx, c_idx, out_idx)
-/// - 8: mult_b (signed multiplicity for `b`: neg_one if reader, +N_reads if creator)
-/// - 9: mult_out (signed multiplicity for `out`: +N_reads if creator, neg_one if reader)
-/// - 10: a_is_reader (`1` if `a` is a constrained witness, `0` if unconstrained)
-/// - 11: c_is_reader (`1` if `c` is a constrained witness, `0` if unconstrained)
-///
-/// All lookups use `Direction::Receive`. Sign encodes creator vs reader:
-/// - neg_one → contribution -1 (reader)
-/// - +N_reads → contribution +N_reads (creator)
-///
-/// Effective multiplicities for `a` and `c`:
-/// - `mult_a * a_is_reader`: constrained active → `-1`; unconstrained/padding → `0`
-/// - `mult_a * c_is_reader`: constrained active → `-1`; unconstrained/padding → `0`
-///
-/// `active = -mult_a` is always `1` for active rows, independent of reader flags.
+/// - 0: active (1 for active row, 0 for padding)
+/// - 1: mult_a (-1 reader, +N first unconstrained creator, 0 padding)
+/// - 2-4: selectors (add_vs_mul, bool, muladd)
+/// - 5-8: indices (a_idx, b_idx, c_idx, out_idx)
+/// - 9: mult_b, 10: mult_out, 11: mult_c
 pub fn get_alu_index_lookups<
     AB: PermutationAirBuilder + AirBuilderWithPublicValues,
     const D: usize,
@@ -90,22 +78,13 @@ pub fn get_alu_index_lookups<
     preprocessed: &[SymbolicVariable<<AB as AirBuilder>::F>],
     _direction: Direction,
 ) -> Vec<LookupInput<AB::F>> {
-    let mult_a = SymbolicExpression::from(preprocessed[preprocessed_start]);
-    let mult_b = SymbolicExpression::from(preprocessed[preprocessed_start + 8]);
-    let mult_out = SymbolicExpression::from(preprocessed[preprocessed_start + 9]);
-    let a_is_reader = SymbolicExpression::from(preprocessed[preprocessed_start + 10]);
-    let c_is_reader = SymbolicExpression::from(preprocessed[preprocessed_start + 11]);
+    let mult_a = SymbolicExpression::from(preprocessed[preprocessed_start + 1]);
+    let mult_b = SymbolicExpression::from(preprocessed[preprocessed_start + 9]);
+    let mult_out = SymbolicExpression::from(preprocessed[preprocessed_start + 10]);
+    let mult_c = SymbolicExpression::from(preprocessed[preprocessed_start + 11]);
 
-    // Indices are at positions 4, 5, 6, 7 (after mult_a + 3 selectors)
-    let idx_offset = 4;
-
-    // Effective multiplicities: mult_a * is_reader. This zeros out bus contributions
-    // for unconstrained witnesses while keeping mult_a = -1 for active = -mult_a = 1.
-    let eff_mult_a = mult_a.clone() * a_is_reader;
-    let eff_mult_c = mult_a * c_is_reader;
-
-    // [a, b, c, out] multiplicities
-    let multiplicities = [eff_mult_a, mult_b, eff_mult_c, mult_out];
+    let idx_offset = 5;
+    let multiplicities = [mult_a, mult_b, mult_c, mult_out];
 
     (0..4)
         .map(|i| {

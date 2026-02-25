@@ -255,21 +255,12 @@ where
         let table = PrimitiveOpType::from(idx);
         match table {
             PrimitiveOpType::Alu => {
-                // ALU preprocessed per op from circuit.rs (without multiplicities): 11 values
+                // ALU preprocessed per op from circuit.rs: 11 values
                 // [sel_add_vs_mul, sel_bool, sel_muladd, a_idx, b_idx, c_idx, out_idx,
-                //  a_is_reader, b_is_creator, c_is_reader, out_is_creator]
+                //  mult_a_eff, b_is_creator, mult_c_eff, out_is_creator]
                 //
-                // We convert to 12 values per op for the AluAir:
-                // [mult_a, sel1, sel2, sel3, a_idx, b_idx, c_idx, out_idx, mult_b, mult_out,
-                //  a_is_reader, c_is_reader]
-                //
-                // Multiplicity convention (all use Direction::Receive):
-                //   Reader (already defined): neg_one → logup contribution -1
-                //   Creator (first occurrence): +ext_reads[wid] → logup contribution +N_reads
-                //   Unconstrained: mult_a=-1 but effective mult = mult_a * is_reader_col = 0
-                //
-                // mult_a = -1 for ALL active rows (padding = 0). The actual bus contribution for
-                // a is mult_a * a_is_reader and for c is mult_a * c_is_reader (computed in AIR).
+                // mult_a_eff / mult_c_eff: -1 (reader or later unconstrained), or +N (first
+                // unconstrained creator). We convert to 12 values for AluAir (same order, mult_c_eff last).
                 let lane_11 = 11_usize;
                 let neg_one = <Val<SC>>::ZERO - <Val<SC>>::ONE;
 
@@ -283,31 +274,13 @@ where
                         let b_idx = chunk[4];
                         let c_idx = chunk[5];
                         let out_idx = chunk[6];
-                        let a_is_reader =
-                            <Val<SC> as PrimeField64>::as_canonical_u64(&chunk[7]) != 0;
+                        let mult_a_eff = chunk[7];
                         let b_is_creator =
                             <Val<SC> as PrimeField64>::as_canonical_u64(&chunk[8]) != 0;
-                        let c_is_reader =
-                            <Val<SC> as PrimeField64>::as_canonical_u64(&chunk[9]) != 0;
+                        let mult_c_eff = chunk[9];
                         let out_is_creator =
                             <Val<SC> as PrimeField64>::as_canonical_u64(&chunk[10]) != 0;
 
-                        // mult_a = -1 for all active rows; active = -mult_a = 1 always.
-                        // Effective a-lookup mult = mult_a * a_is_reader_col (in get_alu_index_lookups).
-                        // Effective c-lookup mult = mult_a * c_is_reader_col (in get_alu_index_lookups).
-                        let mult_a = neg_one;
-                        let a_reader_col = if a_is_reader {
-                            <Val<SC>>::ONE
-                        } else {
-                            <Val<SC>>::ZERO
-                        };
-                        let c_reader_col = if c_is_reader {
-                            <Val<SC>>::ONE
-                        } else {
-                            <Val<SC>>::ZERO
-                        };
-
-                        // b: creator if b_is_creator, reader otherwise.
                         let mult_b = if b_is_creator {
                             let b_wid =
                                 <Val<SC> as PrimeField64>::as_canonical_u64(&b_idx) as usize / D;
@@ -317,7 +290,6 @@ where
                             neg_one
                         };
 
-                        // out: creator if out_is_creator, reader otherwise.
                         let mult_out = if out_is_creator {
                             let out_wid =
                                 <Val<SC> as PrimeField64>::as_canonical_u64(&out_idx) as usize / D;
@@ -328,7 +300,8 @@ where
                         };
 
                         [
-                            mult_a,
+                            <Val<SC>>::ONE, // active (1 for active row; padding rows are all zeros)
+                            mult_a_eff,
                             sel1,
                             sel2,
                             sel3,
@@ -338,18 +311,17 @@ where
                             out_idx,
                             mult_b,
                             mult_out,
-                            a_reader_col,
-                            c_reader_col,
+                            mult_c_eff,
                         ]
                     })
                     .collect();
 
-                // If ALU was empty, add a dummy row (all zeros = padding, no logup contribution).
                 if alu_empty {
                     prep_12col.extend([<Val<SC>>::ZERO; 12]);
                 }
 
-                let num_ops = prep_12col.len() / 12;
+                const ALU_PREP_WIDTH: usize = 12;
+                let num_ops = prep_12col.len() / ALU_PREP_WIDTH;
                 let alu_air = if D == 1 {
                     AluAir::new_with_preprocessed(num_ops, effective_alu_lanes, prep_12col.clone())
                         .with_min_height(min_height)
@@ -364,7 +336,6 @@ where
                     .with_min_height(min_height)
                 };
                 let num_rows = num_ops.div_ceil(effective_alu_lanes);
-                // Overwrite with converted 13-col format for prover.
                 base_prep[idx] = prep_12col;
                 table_preps.push((CircuitTableAir::Alu(alu_air), compute_degree(num_rows)));
             }

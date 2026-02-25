@@ -22,18 +22,11 @@
 //!
 //! Preprocessed columns per lane (12 total):
 //!
-//! - 1 column `mult_a`: signed multiplicity base for `a` and `c` (`-1` for all active rows, `0` for padding)
-//! - 3 columns for operation selectors:
-//!   - `sel_add_vs_mul` (1 = Add, 0 = Mul when `sel_bool = sel_muladd = 0`)
-//!   - `sel_bool` (1 = BoolCheck),
-//!   - `sel_muladd` (1 = MulAdd),
+//! - 1 column `active` (1 for active row, 0 for padding)
+//! - 1 column `mult_a`: signed multiplicity for `a` (`-1` reader, `+N` first unconstrained creator, `0` padding)
+//! - 3 columns for operation selectors (sel_add_vs_mul, sel_bool, sel_muladd)
 //! - 4 columns for operand indices (a_idx, b_idx, c_idx, out_idx)
-//! - 1 column `mult_b`: signed multiplicity for `b` (`-1` if reader, `+N_reads` if creator, `0` for padding).
-//!   For ADD `b` is a reader; for SUB/DIV the operands are swapped so `b` is the creator.
-//! - 1 column `mult_out`: signed multiplicity for `out` (`+N_reads` if creator, `-1` if reader, `0` for padding).
-//!   For ADD/MUL `out` is the creator; for SUB/DIV the operands are swapped so `out` is a reader.
-//! - 1 column `a_is_reader` (`1` if `a` is a constrained witness, `0` if unconstrained)
-//! - 1 column `c_is_reader` (`1` if `c` is a constrained witness, `0` if unconstrained)
+//! - 1 column `mult_b`, 1 column `mult_out`, 1 column `mult_c` (same multiplicity convention)
 //!
 //! # Constraints (degree ≤ 3)
 //!
@@ -167,18 +160,7 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AluAir<F, D> {
     }
 
     /// Number of preprocessed columns per lane (12 total):
-    /// - 1 `mult_a` (base multiplicity; `-1` for all active rows, `0` for padding)
-    /// - 3 selectors (add_vs_mul, bool, muladd)
-    /// - 4 indices (a_idx, b_idx, c_idx, out_idx)
-    /// - 1 `mult_b` (signed multiplicity for `b`)
-    /// - 1 `mult_out` (signed multiplicity for `out`)
-    /// - 1 `a_is_reader` (`1` if `a` is a constrained witness, `0` if unconstrained)
-    /// - 1 `c_is_reader` (`1` if `c` is a constrained witness, `0` if unconstrained)
-    ///
-    /// Effective lookup multiplicities:
-    /// - `a` lookup: `mult_a * a_is_reader` → `-1` for constrained, `0` for unconstrained/padding
-    /// - `c` lookup: `mult_a * c_is_reader` → `-1` for constrained, `0` for unconstrained/padding
-    /// - `active = -mult_a`: `1` for all active rows (independent of reader flags), `0` for padding
+    /// [active, mult_a, sel1, sel2, sel3, a_idx, b_idx, c_idx, out_idx, mult_b, mult_out, mult_c]
     pub const fn preprocessed_lane_width() -> usize {
         12
     }
@@ -247,20 +229,9 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AluAir<F, D> {
         mat
     }
 
-    /// Convert an `AluTrace` to preprocessed values (10 columns per op).
+    /// Convert an `AluTrace` to preprocessed values (12 columns per op).
     ///
-    /// Layout per op:
-    /// Preprocessed layout per op (12 columns):
-    /// `[mult_a, sel_add_vs_mul, sel_bool, sel_muladd, a_idx, b_idx, c_idx, out_idx, mult_b, mult_out, a_is_reader, c_is_reader]`
-    ///
-    /// Indices are D-scaled: `WitnessId(n)` is stored as base-field index `n * D`.
-    ///
-    /// All lookups use `Direction::Receive`. Effective multiplicity:
-    /// - `a`: `mult_a * a_is_reader`; constrained: `-1`, unconstrained/padding: `0`
-    /// - `c`: `mult_a * c_is_reader`; constrained: `-1`, unconstrained/padding: `0`
-    ///
-    /// In standalone tests: all witnesses are assumed constrained, so `a_is_reader = c_is_reader = 1`.
-    /// In the full pipeline, `common.rs` sets these flags from the `defined` tracking in `circuit.rs`.
+    /// Layout: `[active, mult_a, sel1, sel2, sel3, a_idx, b_idx, c_idx, out_idx, mult_b, mult_out, mult_c]`.
     pub fn trace_to_preprocessed<ExtF: BasedVectorSpace<F>>(trace: &AluTrace<ExtF>) -> Vec<F> {
         let total_len = trace.a_index.len() * Self::preprocessed_lane_width();
         let mut preprocessed_values = Vec::with_capacity(total_len);
@@ -275,7 +246,8 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AluAir<F, D> {
             };
 
             preprocessed_values.extend(&[
-                neg_one, // mult_a (base; active = 1)
+                F::ONE, // active
+                neg_one,
                 sel_add_vs_mul,
                 sel_bool,
                 sel_muladd,
@@ -283,10 +255,9 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AluAir<F, D> {
                 F::from_u32(trace.b_index[i].0 * D as u32),
                 F::from_u32(trace.c_index[i].0 * D as u32),
                 F::from_u32(trace.out_index[i].0 * D as u32),
-                neg_one, // mult_b (reader placeholder)
-                F::ONE,  // mult_out (creator placeholder)
-                F::ONE,  // a_is_reader (standalone: constrained)
-                F::ONE,  // c_is_reader (standalone: constrained)
+                neg_one,
+                F::ONE,
+                neg_one, // mult_c
             ]);
         }
 
@@ -347,18 +318,11 @@ where
                 let c = local[main_offset + 2].clone();
                 let out = local[main_offset + 3].clone();
 
-                // Preprocessed layout per lane:
-                // [mult_a, sel_add_vs_mul, sel_bool, sel_muladd, a_idx, b_idx, c_idx, out_idx, mult_b, mult_out]
-                //
-                // mult_a = neg_one (-1) for active rows, 0 for padding rows.
-                // active = -mult_a = 1 for active rows, 0 for padding.
-                let mult_a = preprocessed_local[prep_offset].clone();
-                let sel_add_vs_mul = preprocessed_local[prep_offset + 1].clone();
-                let sel_bool = preprocessed_local[prep_offset + 2].clone();
-                let sel_muladd = preprocessed_local[prep_offset + 3].clone();
-
-                // active = -mult_a: 1 for active rows, 0 for padding
-                let active = AB::Expr::ZERO - mult_a;
+                // Preprocessed layout: [active, mult_a, sel1, sel2, sel3, a_idx, b_idx, c_idx, out_idx, mult_b, mult_out, mult_c]
+                let active = preprocessed_local[prep_offset].clone();
+                let sel_add_vs_mul = preprocessed_local[prep_offset + 2].clone();
+                let sel_bool = preprocessed_local[prep_offset + 3].clone();
+                let sel_muladd = preprocessed_local[prep_offset + 4].clone();
 
                 // Derive MUL selector linearly:
                 // sel_mul = active - sel_bool - sel_muladd - sel_add_vs_mul
@@ -397,21 +361,12 @@ where
                 let c_slice = &local[main_offset + 2 * D..main_offset + 3 * D];
                 let out_slice = &local[main_offset + 3 * D..main_offset + 4 * D];
 
-                // Preprocessed layout per lane:
-                // [mult_a, sel_add_vs_mul, sel_bool, sel_muladd, a_idx, b_idx, c_idx, out_idx, mult_b, mult_out]
-                //
-                // mult_a = neg_one (-1) for active rows, 0 for padding rows.
-                // active = -mult_a = 1 for active rows, 0 for padding.
-                let mult_a = preprocessed_local[prep_offset].clone();
-                let sel_add_vs_mul = preprocessed_local[prep_offset + 1].clone();
-                let sel_bool = preprocessed_local[prep_offset + 2].clone();
-                let sel_muladd = preprocessed_local[prep_offset + 3].clone();
+                // Preprocessed layout: [active, mult_a, sel1, sel2, sel3, a_idx, b_idx, c_idx, out_idx, mult_b, mult_out, mult_c]
+                let active = preprocessed_local[prep_offset].clone();
+                let sel_add_vs_mul = preprocessed_local[prep_offset + 2].clone();
+                let sel_bool = preprocessed_local[prep_offset + 3].clone();
+                let sel_muladd = preprocessed_local[prep_offset + 4].clone();
 
-                // active = -mult_a: 1 for active rows, 0 for padding
-                let active = AB::Expr::ZERO - mult_a;
-
-                // Derive MUL selector linearly:
-                // sel_mul = active - sel_bool - sel_muladd - sel_add_vs_mul
                 let sel_mul =
                     active - sel_bool.clone() - sel_muladd.clone() - sel_add_vs_mul.clone();
 
@@ -783,7 +738,7 @@ mod tests {
     #[test]
     fn test_alu_air_constraint_degree() {
         // 8 ops * 10 columns per op (new layout including multiplicities)
-        let preprocessed = vec![Val::ZERO; 8 * 10];
+        let preprocessed = vec![Val::ZERO; 8 * AluAir::<Val, 1>::preprocessed_lane_width()];
         let air = AluAir::<Val, 1>::new_with_preprocessed(8, 2, preprocessed);
         p3_test_utils::assert_air_constraint_degree!(air, "AluAir");
     }
