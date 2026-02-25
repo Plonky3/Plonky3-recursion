@@ -5,7 +5,7 @@ use core::iter;
 use itertools::Itertools;
 use p3_air::lookup::LookupEvaluator;
 use p3_air::{Air, AirBuilder, AirBuilderWithPublicValues, PermutationAirBuilder};
-use p3_field::{Field, PrimeCharacteristicRing};
+use p3_field::Field;
 use p3_lookup::lookup_traits::{Direction, Lookup, LookupData, LookupInput};
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
@@ -33,33 +33,6 @@ pub fn get_index_lookups<AB: PermutationAirBuilder + AirBuilderWithPublicValues,
         .collect()
 }
 
-/// D per-coefficient lookups on the "BaseFieldChecks" bus: `lookup_i: (index + i, coeff_i)` with multiplicity from preprocessed.
-pub fn get_base_field_lookups<AB, const D: usize>(
-    main_start: usize,
-    preprocessed_index_col: usize,
-    preprocessed_bf_mult_start: usize,
-    main: &[SymbolicVariable<AB::F>],
-    preprocessed: &[SymbolicVariable<AB::F>],
-    direction: Direction,
-) -> Vec<LookupInput<AB::F>>
-where
-    AB: PermutationAirBuilder + AirBuilderWithPublicValues,
-{
-    let base_idx = SymbolicExpression::from(preprocessed[preprocessed_index_col]);
-
-    (0..D)
-        .map(|i| {
-            let idx_i = base_idx.clone() + SymbolicExpression::from(AB::F::from_u32(i as u32));
-            let coeff_i = SymbolicExpression::from(main[main_start + i]);
-            let multiplicity =
-                SymbolicExpression::from(preprocessed[preprocessed_bf_mult_start + i]);
-
-            let inps = vec![idx_i, coeff_i];
-            (inps, multiplicity, direction)
-        })
-        .collect()
-}
-
 /// Get ALU lookups for the 4 operands (a, b, c, out).
 ///
 /// ALU preprocessed layout per lane (12 columns):
@@ -76,7 +49,6 @@ pub fn get_alu_index_lookups<
     preprocessed_start: usize,
     main: &[SymbolicVariable<<AB as AirBuilder>::F>],
     preprocessed: &[SymbolicVariable<<AB as AirBuilder>::F>],
-    _direction: Direction,
 ) -> Vec<LookupInput<AB::F>> {
     let mult_a = SymbolicExpression::from(preprocessed[preprocessed_start + 1]);
     let mult_b = SymbolicExpression::from(preprocessed[preprocessed_start + 9]);

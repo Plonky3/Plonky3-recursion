@@ -683,10 +683,9 @@ where
         }
 
         // The `batch_instance_dN` methods regenerate Poseidon2 preprocessed data from
-        // runtime ops using `extract_preprocessed_from_operations`. This omits changes
-        // done like for duplicate Poseidon2 outputs.
+        // runtime ops using `extract_preprocessed_from_operations`.
         //
-        // Hence, we override with the committed preprocessed data so the debug
+        // Hence, we override here with the committed preprocessed data so the debug
         // lookup check is consistent with the committed preprocessed trace.
         for instance in &mut dynamic_instances {
             if let Some(committed_prep) = non_primitive.get(&instance.op_type) {

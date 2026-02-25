@@ -46,7 +46,7 @@ use p3_air::{Air, AirBuilder, AirBuilderWithPublicValues, BaseAir, PermutationAi
 use p3_circuit::op::AluOpKind;
 use p3_circuit::tables::AluTrace;
 use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
-use p3_lookup::lookup_traits::{Direction, Kind, Lookup};
+use p3_lookup::lookup_traits::{Kind, Lookup};
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
 
@@ -235,7 +235,7 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AluAir<F, D> {
     pub fn trace_to_preprocessed<ExtF: BasedVectorSpace<F>>(trace: &AluTrace<ExtF>) -> Vec<F> {
         let total_len = trace.a_index.len() * Self::preprocessed_lane_width();
         let mut preprocessed_values = Vec::with_capacity(total_len);
-        let neg_one = F::ZERO - F::ONE;
+        let neg_one = F::NEG_ONE;
 
         for (i, kind) in trace.op_kind.iter().enumerate() {
             let (sel_add_vs_mul, sel_bool, sel_muladd) = match kind {
@@ -459,7 +459,6 @@ where
                 preprocessed_lane_offset,
                 &symbolic_main_local,
                 &preprocessed_local,
-                Direction::Receive,
             );
             lookups.extend(lane_lookup_inputs.into_iter().map(|inps| {
                 <Self as Air<AB>>::register_lookup(
@@ -737,7 +736,7 @@ mod tests {
 
     #[test]
     fn test_alu_air_constraint_degree() {
-        // 8 ops * 10 columns per op (new layout including multiplicities)
+        // 8 ops * 12 columns per op (new layout including multiplicities)
         let preprocessed = vec![Val::ZERO; 8 * AluAir::<Val, 1>::preprocessed_lane_width()];
         let air = AluAir::<Val, 1>::new_with_preprocessed(8, 2, preprocessed);
         p3_test_utils::assert_air_constraint_degree!(air, "AluAir");

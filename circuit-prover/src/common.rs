@@ -135,6 +135,8 @@ where
     const MMCS_MERKLE_FLAG_OFFSET: usize = 21;
     const NEW_START_OFFSET: usize = 22;
 
+    let neg_one = <Val<SC>>::NEG_ONE;
+
     // Phase 1: Scan Poseidon2 preprocessed data to count mmcs_index_sum conditional reads,
     // and update `ext_reads` accordingly. This must happen before computing multiplicities.
     for (op_type, prep) in preprocessed.non_primitive.iter() {
@@ -209,7 +211,6 @@ where
                 // Poseidon2 duplicate creators (from optimizer witness_rewrite deduplication)
                 // are recorded in `preprocessed.poseidon2_dup_wids`. For those, out_ctl = -1
                 // (reader contribution). For first-occurrence creators, out_ctl = +ext_reads[wid].
-                let neg_one = <Val<SC>>::ZERO - <Val<SC>>::ONE;
                 for out_limb in 0..2 {
                     let out_idx_offset = row_start + 16 + out_limb * 2;
                     let out_ctl_offset = out_idx_offset + 1;
@@ -262,7 +263,6 @@ where
                 // mult_a_eff / mult_c_eff: -1 (reader or later unconstrained), or +N (first
                 // unconstrained creator). We convert to 12 values for AluAir (same order, mult_c_eff last).
                 let lane_11 = 11_usize;
-                let neg_one = <Val<SC>>::ZERO - <Val<SC>>::ONE;
 
                 let mut prep_12col: Vec<Val<SC>> = base_prep[idx]
                     .chunks(lane_11)
