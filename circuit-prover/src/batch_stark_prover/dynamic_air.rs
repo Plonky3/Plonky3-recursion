@@ -417,7 +417,7 @@ where
         table_entry: &super::NonPrimitiveTableEntry<SC>,
     ) -> Result<DynamicAirEntry<SC>, String>;
 
-    /// Build an AIR entry using committed (Phase 2 modified) preprocessed data.
+    /// Build an AIR entry using committed preprocessed data.
     ///
     /// Returns `None` if not supported by this table prover.
     /// This is used to override the preprocessed data regenerated from runtime ops

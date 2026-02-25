@@ -23,17 +23,11 @@
 //!
 //! Preprocessed columns per lane (13 total):
 //!
-//! - 1 column `mult_a`: signed multiplicity base for `a` and `c` (`-1` for all active rows, `0` for padding)
-//! - 4 columns for operation selectors:
-//!   - `sel_add_vs_mul` (1 = Add, 0 = Mul when `sel_bool = sel_muladd = sel_horner = 0`)
-//!   - `sel_bool` (1 = BoolCheck),
-//!   - `sel_muladd` (1 = MulAdd),
-//!   - `sel_horner` (1 = HornerAcc),
+//! - 1 column `active` (1 for active row, 0 for padding)
+//! - 1 column `mult_a`: signed multiplicity for `a` (`-1` reader, `+N` first unconstrained creator, `0` padding)
+//! - 4 columns for operation selectors (sel_add_vs_mul, sel_bool, sel_muladd, sel_horner)
 //! - 4 columns for operand indices (a_idx, b_idx, c_idx, out_idx)
-//! - 1 column `mult_b`: signed multiplicity for `b` read (`-1` for active, `0` for padding)
-//! - 1 column `mult_out`: signed multiplicity for `out` creation (`+N_reads` for active, `0` for padding)
-//! - 1 column `a_is_reader` (`1` if `a` is a constrained witness, `0` if unconstrained)
-//! - 1 column `c_is_reader` (`1` if `c` is a constrained witness, `0` if unconstrained)
+//! - 1 column `mult_b`, 1 column `mult_out`, 1 column `mult_c` (same multiplicity convention)
 //!
 //! # Constraints (degree ≤ 3)
 //!
@@ -54,7 +48,7 @@ use p3_air::{Air, AirBuilder, AirBuilderWithPublicValues, BaseAir, PermutationAi
 use p3_circuit::op::AluOpKind;
 use p3_circuit::tables::AluTrace;
 use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
-use p3_lookup::lookup_traits::{Direction, Kind, Lookup};
+use p3_lookup::lookup_traits::{Kind, Lookup};
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
 
@@ -186,19 +180,8 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AluAir<F, D> {
         self.lanes * Self::lane_width()
     }
 
-    /// Number of preprocessed columns per lane (13 total):
-    /// - 1 `mult_a` (base multiplicity; `-1` for all active rows, `0` for padding)
-    /// - 4 selectors (add_vs_mul, bool, muladd, horner)
-    /// - 4 indices (a_idx, b_idx, c_idx, out_idx)
-    /// - 1 `mult_b` (signed multiplicity for `b`)
-    /// - 1 `mult_out` (signed multiplicity for `out`)
-    /// - 1 `a_is_reader` (`1` if `a` is a constrained witness, `0` if unconstrained)
-    /// - 1 `c_is_reader` (`1` if `c` is a constrained witness, `0` if unconstrained)
-    ///
-    /// Effective lookup multiplicities:
-    /// - `a` lookup: `mult_a * a_is_reader` → `-1` for constrained, `0` for unconstrained/padding
-    /// - `c` lookup: `mult_a * c_is_reader` → `-1` for constrained, `0` for unconstrained/padding
-    /// - `active = -mult_a`: `1` for all active rows (independent of reader flags), `0` for padding
+    /// Number of preprocessed columns per lane (12 total):
+    /// [active, mult_a, sel1, sel2, sel3, sel4, a_idx, b_idx, c_idx, out_idx, mult_b, mult_out, mult_c]
     pub const fn preprocessed_lane_width() -> usize {
         13
     }
@@ -304,7 +287,7 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AluAir<F, D> {
         Some(schedule)
     }
 
-    /// Convert an `AluTrace` into a `RowMajorMatrix`, applying the HornerAcc schedule.
+    /// Convert an `AluTrace` into a `RowMajorMatrix` suitable for the STARK prover.
     pub fn trace_to_matrix<ExtF: BasedVectorSpace<F>>(
         &self,
         trace: &AluTrace<ExtF>,
@@ -696,7 +679,6 @@ where
                 preprocessed_lane_offset,
                 &symbolic_main_local,
                 &preprocessed_local,
-                Direction::Receive,
             );
             lookups.extend(lane_lookup_inputs.into_iter().map(|inps| {
                 <Self as Air<AB>>::register_lookup(

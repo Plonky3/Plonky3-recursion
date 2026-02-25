@@ -681,12 +681,11 @@ where
             }
         }
 
-        // Replace each Poseidon2 instance's AIR with one built from the committed
-        // (Phase 2 modified) preprocessed data. The `batch_instance_dN` methods regenerate
-        // preprocessed data from runtime ops using `extract_preprocessed_from_operations`,
-        // which does not apply Phase 2 modifications (e.g. neg-one out_ctl for duplicate
-        // Poseidon2 outputs). Using the committed data ensures the debug lookup check inside
-        // `prove_batch` (under `#[cfg(debug_assertions)]`) is consistent with the proof.
+        // The `batch_instance_dN` methods regenerate Poseidon2 preprocessed data from
+        // runtime ops using `extract_preprocessed_from_operations`.
+        //
+        // Hence, we override here with the committed preprocessed data so the debug
+        // lookup check is consistent with the committed preprocessed trace.
         for instance in &mut dynamic_instances {
             if let Some(committed_prep) = non_primitive.get(&instance.op_type) {
                 for p in &self.non_primitive_provers {
@@ -770,10 +769,10 @@ where
                 .collect();
 
             // The `batch_instance_dN` methods regenerate Poseidon2 preprocessed data from
-            // runtime ops using `extract_preprocessed_from_operations`, which does NOT apply
-            // Phase 2 modifications (e.g. neg_one out_ctl for duplicate Poseidon2 outputs).
-            // Override with the committed (Phase 2 modified) preprocessed data so the debug
-            // lookup check is consistent with the committed preprocessed trace.
+            // runtime ops using `extract_preprocessed_from_operations`. This omits changes
+            // done like for duplicate Poseidon2 outputs.
+            //
+            // Hence, we override with the committed preprocessed data so the debug
             for (j, instance) in non_primitives.iter().enumerate() {
                 if let NonPrimitiveOpType::Poseidon2Perm(cfg) = instance.op_type
                     && let Some(committed_prep) = non_primitive.get(&instance.op_type)

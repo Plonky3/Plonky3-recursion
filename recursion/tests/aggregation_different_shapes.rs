@@ -4,7 +4,6 @@
 
 mod common;
 
-use p3_baby_bear::default_babybear_poseidon2_16;
 use p3_batch_stark::ProverData;
 use p3_circuit::CircuitBuilder;
 use p3_circuit::ops::generate_poseidon2_trace;
@@ -13,15 +12,16 @@ use p3_circuit_prover::common::get_airs_and_degrees_with_prep;
 use p3_circuit_prover::{BatchStarkProver, CircuitProverData, ConstraintProfile, TablePacking};
 use p3_field::PrimeCharacteristicRing;
 use p3_fri::FriParameters;
+use p3_koala_bear::default_koalabear_poseidon2_16;
 use p3_lookup::logup::LogUpGadget;
-use p3_poseidon2_circuit_air::BabyBearD4Width16;
+use p3_poseidon2_circuit_air::KoalaBearD4Width16;
 use p3_recursion::pcs::fri::{FriVerifierParams, InputProofTargets, MerkleCapTargets, RecValMmcs};
 use p3_recursion::pcs::set_fri_mmcs_private_data;
 use p3_recursion::verifier::{verify_p3_batch_proof_circuit, verify_p3_uni_proof_circuit};
 use p3_recursion::{Poseidon2Config, StarkVerifierInputsBuilder, VerificationError};
 use p3_uni_stark::{prove, verify};
 
-use crate::common::baby_bear_params::{
+use crate::common::koala_bear_params::{
     Challenge, ChallengeMmcs, Challenger, DIGEST_ELEMS, Dft, F, InnerFri, MyCompress, MyConfig,
     MyHash, MyPcs, Perm, RATE, ValMmcs, WIDTH,
 };
@@ -51,12 +51,12 @@ fn make_config(perm: &Perm, log_blowup: usize, max_log_arity: usize) -> MyConfig
 }
 
 const fn fri_verifier_params(log_blowup: usize) -> FriVerifierParams {
-    FriVerifierParams::with_mmcs(log_blowup, 0, 0, 16, Poseidon2Config::BabyBearD4Width16)
+    FriVerifierParams::with_mmcs(log_blowup, 0, 0, 16, Poseidon2Config::KoalaBearD4Width16)
 }
 
 #[test]
 fn test_aggregation_with_different_shapes() -> Result<(), VerificationError> {
-    let perm = default_babybear_poseidon2_16();
+    let perm = default_koalabear_poseidon2_16();
 
     // Uni-Stark (Fibonacci) with log_blowup=2, max_arity_log=3.
     let left_config = make_config(&perm, 2, 3);
@@ -106,8 +106,8 @@ fn test_aggregation_with_different_shapes() -> Result<(), VerificationError> {
 
     // Build the verification circuit.
     let mut circuit_builder = CircuitBuilder::new();
-    circuit_builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
-        generate_poseidon2_trace::<Challenge, BabyBearD4Width16>,
+    circuit_builder.enable_poseidon2_perm::<KoalaBearD4Width16, _>(
+        generate_poseidon2_trace::<Challenge, KoalaBearD4Width16>,
         perm,
     );
 
@@ -138,7 +138,7 @@ fn test_aggregation_with_different_shapes() -> Result<(), VerificationError> {
         &left_verifier_inputs.air_public_targets,
         &None,
         &left_fri_params,
-        Poseidon2Config::BabyBearD4Width16,
+        Poseidon2Config::KoalaBearD4Width16,
     )?;
 
     // Build the verifier inputs for the Batch-Stark.
@@ -163,7 +163,7 @@ fn test_aggregation_with_different_shapes() -> Result<(), VerificationError> {
         &right_fri_params,
         common,
         &lookup_gadget,
-        Poseidon2Config::BabyBearD4Width16,
+        Poseidon2Config::KoalaBearD4Width16,
     )?;
 
     // Build the verification circuit.

@@ -1,18 +1,18 @@
 use std::error::Error;
 
-use p3_baby_bear::{BabyBear, default_babybear_poseidon2_16};
 use p3_batch_stark::ProverData;
 use p3_circuit::op::{NonPrimitiveOpPrivateData, NonPrimitiveOpType};
 use p3_circuit::ops::{Poseidon2PermPrivateData, generate_poseidon2_trace};
 use p3_circuit::{CircuitBuilder, ExprId, Poseidon2PermOps};
 use p3_circuit_prover::common::{NonPrimitiveConfig, get_airs_and_degrees_with_prep};
-use p3_circuit_prover::config::BabyBearConfig;
+use p3_circuit_prover::config::KoalaBearConfig;
 use p3_circuit_prover::{
     BatchStarkProver, CircuitProverData, ConstraintProfile, Poseidon2Config, TablePacking, config,
 };
 use p3_field::extension::BinomialExtensionField;
 use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
-use p3_poseidon2_circuit_air::BabyBearD4Width16;
+use p3_koala_bear::{KoalaBear, default_koalabear_poseidon2_16};
+use p3_poseidon2_circuit_air::KoalaBearD4Width16;
 use p3_symmetric::Permutation;
 use tracing_forest::ForestLayer;
 use tracing_forest::util::LevelFilter;
@@ -32,7 +32,7 @@ fn init_logger() {
         .init();
 }
 
-type Base = BabyBear;
+type Base = KoalaBear;
 type Ext4 = BinomialExtensionField<Base, 4>;
 
 const LIMB_SIZE: usize = 4;
@@ -59,7 +59,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     //
     // We expose final digest limbs 0-1 as public inputs and the mmcs_index_sum (should be binary 010 = 2).
 
-    let perm = default_babybear_poseidon2_16();
+    let perm = default_koalabear_poseidon2_16();
 
     // Build leaf and siblings as extension limbs.
     let leaf_limb0 = Ext4::from_basis_coefficients_slice(&[
@@ -151,8 +151,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Build circuit
     let mut builder = CircuitBuilder::<Ext4>::new();
-    builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
-        generate_poseidon2_trace::<Ext4, BabyBearD4Width16>,
+    builder.enable_poseidon2_perm::<KoalaBearD4Width16, _>(
+        generate_poseidon2_trace::<Ext4, KoalaBearD4Width16>,
         perm,
     );
 
@@ -167,7 +167,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let (_row0_op_id, _row0_outputs) =
         builder.add_poseidon2_perm(p3_circuit::ops::Poseidon2PermCall {
-            config: Poseidon2Config::BabyBearD4Width16,
+            config: Poseidon2Config::KoalaBearD4Width16,
             new_start: true,
             merkle_path: true,
             mmcs_bit: Some(mmcs_bit_row0),
@@ -188,7 +188,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mmcs_bit_row1 = builder.alloc_const(Ext4::from_prime_subfield(Base::ONE), "mmcs_bit_row1");
     let (row1_op_id, _row1_outputs) =
         builder.add_poseidon2_perm(p3_circuit::ops::Poseidon2PermCall {
-            config: Poseidon2Config::BabyBearD4Width16,
+            config: Poseidon2Config::KoalaBearD4Width16,
             new_start: false,
             merkle_path: true,
             mmcs_bit: Some(mmcs_bit_row1),
@@ -203,7 +203,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let sibling2_inputs: [Option<ExprId>; 4] = [None, None, None, None];
     let (row2_op_id, row2_outputs) =
         builder.add_poseidon2_perm(p3_circuit::ops::Poseidon2PermCall {
-            config: Poseidon2Config::BabyBearD4Width16,
+            config: Poseidon2Config::KoalaBearD4Width16,
             new_start: false,
             merkle_path: true,
             mmcs_bit: Some(mmcs_bit_row2),
@@ -219,10 +219,10 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let circuit = builder.build()?;
     let table_packing = TablePacking::new(4, 4);
-    let poseidon2_config = Poseidon2Config::BabyBearD4Width16;
-    let stark_config = config::baby_bear().build();
+    let poseidon2_config = Poseidon2Config::KoalaBearD4Width16;
+    let stark_config = config::koala_bear().build();
     let (airs_degrees, preprocessed_columns) =
-        get_airs_and_degrees_with_prep::<BabyBearConfig, _, 4>(
+        get_airs_and_degrees_with_prep::<KoalaBearConfig, _, 4>(
             &circuit,
             table_packing,
             Some(&[NonPrimitiveConfig::Poseidon2(poseidon2_config)]),
@@ -262,7 +262,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Check Poseidon2 trace rows and mmcs_index_sum exposure
     let poseidon2_trace = traces
         .non_primitive_trace::<p3_circuit::ops::Poseidon2Trace<Base>>(
-            NonPrimitiveOpType::Poseidon2Perm(Poseidon2Config::BabyBearD4Width16),
+            NonPrimitiveOpType::Poseidon2Perm(Poseidon2Config::KoalaBearD4Width16),
         )
         .expect("poseidon2 trace missing");
     assert_eq!(poseidon2_trace.total_rows(), 3, "expected three perm rows");
@@ -270,8 +270,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     let prover_data = ProverData::from_airs_and_degrees(&stark_config, &mut airs, &degrees);
     let circuit_prover_data = CircuitProverData::new(prover_data, preprocessed_columns);
 
+    // Lookups order being CONST, PUBLIC, ALU, DYNAMIC.
     assert!(
-        !circuit_prover_data.common_data().lookups[4].is_empty(),
+        !circuit_prover_data.common_data().lookups[3].is_empty(),
         "Poseidon2 table should have lookups"
     );
 

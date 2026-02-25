@@ -254,21 +254,12 @@ where
         let table = PrimitiveOpType::from(idx);
         match table {
             PrimitiveOpType::Alu => {
-                // ALU preprocessed per op from circuit.rs (without multiplicities): 12 values
+                // ALU preprocessed per op from circuit.rs: 12 values
                 // [sel_add_vs_mul, sel_bool, sel_muladd, sel_horner, a_idx, b_idx, c_idx, out_idx,
-                //  a_is_reader, b_is_creator, c_is_reader, out_is_creator]
+                //  mult_a_eff, b_is_creator, mult_c_eff, out_is_creator]
                 //
-                // We convert to 13 values per op for the AluAir:
-                // [mult_a, sel1, sel2, sel3, sel_horner, a_idx, b_idx, c_idx, out_idx, mult_b, mult_out,
-                //  a_is_reader, c_is_reader]
-                //
-                // Multiplicity convention (all use Direction::Receive):
-                //   Reader (already defined): neg_one → logup contribution -1
-                //   Creator (first occurrence): +ext_reads[wid] → logup contribution +N_reads
-                //   Unconstrained: mult_a=-1 but effective mult = mult_a * is_reader_col = 0
-                //
-                // mult_a = -1 for ALL active rows (padding = 0). The actual bus contribution for
-                // a is mult_a * a_is_reader and for c is mult_a * c_is_reader (computed in AIR).
+                // mult_a_eff / mult_c_eff: -1 (reader or later unconstrained), or +N (first
+                // unconstrained creator). We convert to 12 values for AluAir (same order, mult_c_eff last).
                 let lane_12 = 12_usize;
                 let neg_one = <Val<SC>>::ZERO - <Val<SC>>::ONE;
 
@@ -469,12 +460,6 @@ where
         }
     }
 
-    // Construct the PreprocessedColumns with base field elements.
-    // base_prep now contains the converted [ext_mult, idx] pairs for Const/Public
-    // and 10-col format for ALU — but wait, base_prep was the ORIGINAL format (before 10-col).
-    // We need to store the converted data for the verifier.
-    // For now, store the original 7-col ALU data and 1-col Const/Public data in base_prep,
-    // and let the verifier reconstruct with ext_reads.
     let preprocessed_columns = PreprocessedColumns {
         primitive: base_prep,
         non_primitive: non_primitive_output,

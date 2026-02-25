@@ -5,7 +5,7 @@ use core::iter;
 use itertools::Itertools;
 use p3_air::lookup::LookupEvaluator;
 use p3_air::{Air, AirBuilder, AirBuilderWithPublicValues, PermutationAirBuilder};
-use p3_field::{Field, PrimeCharacteristicRing};
+use p3_field::Field;
 use p3_lookup::lookup_traits::{Direction, Lookup, LookupData, LookupInput};
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
@@ -33,53 +33,14 @@ pub fn get_index_lookups<AB: PermutationAirBuilder + AirBuilderWithPublicValues,
         .collect()
 }
 
-/// D per-coefficient lookups on the "BaseFieldChecks" bus: `lookup_i: (index + i, coeff_i)` with multiplicity from preprocessed.
-pub fn get_base_field_lookups<AB, const D: usize>(
-    main_start: usize,
-    preprocessed_index_col: usize,
-    preprocessed_bf_mult_start: usize,
-    main: &[SymbolicVariable<AB::F>],
-    preprocessed: &[SymbolicVariable<AB::F>],
-    direction: Direction,
-) -> Vec<LookupInput<AB::F>>
-where
-    AB: PermutationAirBuilder + AirBuilderWithPublicValues,
-{
-    let base_idx = SymbolicExpression::from(preprocessed[preprocessed_index_col]);
-
-    (0..D)
-        .map(|i| {
-            let idx_i = base_idx.clone() + SymbolicExpression::from(AB::F::from_u32(i as u32));
-            let coeff_i = SymbolicExpression::from(main[main_start + i]);
-            let multiplicity =
-                SymbolicExpression::from(preprocessed[preprocessed_bf_mult_start + i]);
-
-            let inps = vec![idx_i, coeff_i];
-            (inps, multiplicity, direction)
-        })
-        .collect()
-}
-
 /// Get ALU lookups for the 4 operands (a, b, c, out).
 ///
 /// ALU preprocessed layout per lane (13 columns):
-/// - 0: mult_a (base multiplicity; `-1` for all active rows, `0` for padding)
-/// - 1-4: selectors (add_vs_mul, bool, muladd, horner)
-/// - 5-8: indices (a_idx, b_idx, c_idx, out_idx)
-/// - 9: mult_b (signed multiplicity for `b`: neg_one if reader, +N_reads if creator)
-/// - 10: mult_out (signed multiplicity for `out`: +N_reads if creator, neg_one if reader)
-/// - 11: a_is_reader (`1` if `a` is a constrained witness, `0` if unconstrained)
-/// - 12: c_is_reader (`1` if `c` is a constrained witness, `0` if unconstrained)
-///
-/// All lookups use `Direction::Receive`. Sign encodes creator vs reader:
-/// - neg_one → contribution -1 (reader)
-/// - +N_reads → contribution +N_reads (creator)
-///
-/// Effective multiplicities for `a` and `c`:
-/// - `mult_a * a_is_reader`: constrained active → `-1`; unconstrained/padding → `0`
-/// - `mult_a * c_is_reader`: constrained active → `-1`; unconstrained/padding → `0`
-///
-/// `active = -mult_a` is always `1` for active rows, independent of reader flags.
+/// - 0: active (1 for active row, 0 for padding)
+/// - 1: mult_a (-1 reader, +N first unconstrained creator, 0 padding)
+/// - 2-5: selectors (add_vs_mul, bool, muladd, horner)
+/// - 6-9: indices (a_idx, b_idx, c_idx, out_idx)
+/// - 10: mult_b, 11: mult_out, 12: mult_c
 pub fn get_alu_index_lookups<
     AB: PermutationAirBuilder + AirBuilderWithPublicValues,
     const D: usize,
@@ -88,7 +49,6 @@ pub fn get_alu_index_lookups<
     preprocessed_start: usize,
     main: &[SymbolicVariable<<AB as AirBuilder>::F>],
     preprocessed: &[SymbolicVariable<<AB as AirBuilder>::F>],
-    _direction: Direction,
 ) -> Vec<LookupInput<AB::F>> {
     let mult_a = SymbolicExpression::from(preprocessed[preprocessed_start]);
     let mult_b = SymbolicExpression::from(preprocessed[preprocessed_start + 9]);
