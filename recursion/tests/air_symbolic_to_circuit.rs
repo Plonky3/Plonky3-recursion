@@ -3,7 +3,7 @@ mod common;
 use p3_air::{Air, BaseAir};
 use p3_circuit::utils::{ColumnsTargets, RowSelectorsTargets};
 use p3_circuit::{CircuitBuilder, CircuitError};
-use p3_circuit_prover::air::{AluAir, ConstAir, PublicAir, WitnessAir};
+use p3_circuit_prover::air::{AluAir, ConstAir, PublicAir};
 use p3_commit::ExtensionMmcs;
 use p3_field::PrimeCharacteristicRing;
 use p3_fri::TwoAdicFriPcs;
@@ -175,9 +175,6 @@ fn primitive_airs_symbolic_to_circuit() -> Result<(), CircuitError> {
 
     let public_air = PublicAir::<F, 1>::new_with_preprocessed(1, 1, vec![F::from_u64(4)]);
     run_recursive(&public_air, public_air.preprocessed_width(), 1, &mut rng)?;
-
-    let witness_air = WitnessAir::<F, 1>::new(1, 1);
-    run_recursive(&witness_air, witness_air.preprocessed_width(), 0, &mut rng)?;
 
     Ok(())
 }

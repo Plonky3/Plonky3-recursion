@@ -63,7 +63,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     builder.dump_allocation_log();
 
     let circuit = builder.build()?;
-    let table_packing = TablePacking::new(4, 4, 4);
+    let table_packing = TablePacking::new(4, 4);
 
     let (airs_degrees, preprocessed_columns) =
         get_airs_and_degrees_with_prep::<KoalaBearConfig, _, 1>(

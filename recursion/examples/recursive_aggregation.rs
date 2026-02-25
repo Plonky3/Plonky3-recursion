@@ -139,20 +139,13 @@ struct Args {
     #[arg(
         long,
         default_value_t = 4,
-        help = "Number of witness lanes for the table packing in recursive layers"
-    )]
-    witness_lanes: usize,
-
-    #[arg(
-        long,
-        default_value_t = 4,
         help = "Number of public lanes for the table packing in recursive layers"
     )]
     public_lanes: usize,
 
     #[arg(
         long,
-        default_value_t = 2,
+        default_value_t = 4,
         help = "Number of ALU lanes for the table packing in recursive layers"
     )]
     alu_lanes: usize,
@@ -182,7 +175,7 @@ fn main() {
         query_pow_bits: args.query_pow_bits,
     };
 
-    let table_packing = TablePacking::new(args.witness_lanes, args.public_lanes, args.alu_lanes);
+    let table_packing = TablePacking::new(args.public_lanes, args.alu_lanes);
 
     assert!(args.num_recursive_layers >= 1);
 
@@ -443,7 +436,7 @@ macro_rules! define_field_module {
                 table_packing: &TablePacking,
             ) {
                 let config = config_with_fri_params(fri_params);
-                let base_table_packing = TablePacking::new(1, 1, 1)
+                let base_table_packing = TablePacking::new(1, 1)
                     .with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup);
                 let backend = FriRecursionBackend::<WIDTH, RATE>::new($poseidon2_config);
 
@@ -472,7 +465,7 @@ macro_rules! define_field_module {
 
                     let agg_params = ProveNextLayerParams {
                         table_packing: if level == 1 {
-                            TablePacking::new(3, 1, 2)
+                            TablePacking::new(1, 3)
                         } else {
                             table_packing.clone()
                         }

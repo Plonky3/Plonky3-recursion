@@ -126,7 +126,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let expr_to_widx = circuit.expr_to_widx.clone();
 
     let stark_config = config::koala_bear().build();
-    let table_packing = TablePacking::new(2, 2, 2);
+    let table_packing = TablePacking::new(2, 2);
     let poseidon2_config = Poseidon2Config::KoalaBearD4Width16;
     let (airs_degrees, preprocessed_columns) =
         get_airs_and_degrees_with_prep::<KoalaBearConfig, _, 4>(
@@ -180,8 +180,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     let prover_data = ProverData::from_airs_and_degrees(&stark_config, &mut airs, &degrees);
     let circuit_prover_data = CircuitProverData::new(prover_data, preprocessed_columns);
 
+    // Lookups order being CONST, PUBLIC, ALU, DYNAMIC.
     assert!(
-        !circuit_prover_data.common_data().lookups[4].is_empty(),
+        !circuit_prover_data.common_data().lookups[3].is_empty(),
         "Poseidon2 table should have lookups"
     );
 

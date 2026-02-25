@@ -10,7 +10,7 @@ use tracing::instrument;
 use super::alu::AluTraceBuilder;
 use super::constant::ConstTraceBuilder;
 use super::public::PublicTraceBuilder;
-use super::witness::WitnessTraceBuilder;
+use super::witness::WitnessTrace;
 use super::{NonPrimitiveTrace, Traces};
 use crate::circuit::Circuit;
 use crate::op::{ExecutionContext, NonPrimitiveOpPrivateData, NonPrimitiveOpType, Op, OpStateMap};
@@ -196,8 +196,15 @@ impl<F: CircuitField> CircuitRunner<F> {
             }
         }
 
-        // Delegate to trace builders for each table
-        let witness_trace = WitnessTraceBuilder::new(&self.witness).build()?;
+        // Build witness trace directly from the populated witness table.
+        let witness_values: Result<Vec<_>, _> = self
+            .witness
+            .iter()
+            .enumerate()
+            .map(|(i, v)| (*v).ok_or(CircuitError::WitnessNotSetForIndex { index: i }))
+            .collect();
+        let witness_trace = WitnessTrace::new(witness_values?);
+
         let const_trace = ConstTraceBuilder::new(&self.circuit.ops).build()?;
         let public_trace = PublicTraceBuilder::new(&self.circuit.ops, &self.witness).build()?;
         let alu_trace = AluTraceBuilder::new(&self.circuit.ops, &self.witness).build()?;

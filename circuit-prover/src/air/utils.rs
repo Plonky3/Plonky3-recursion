@@ -35,12 +35,12 @@ pub fn get_index_lookups<AB: PermutationAirBuilder + AirBuilderWithPublicValues,
 
 /// Get ALU lookups for the 4 operands (a, b, c, out).
 ///
-/// ALU preprocessed layout per lane:
-/// - 0: multiplicity
-/// - 1-3: selectors (add_vs_mul, bool, muladd)
-/// - 4-7: indices (a_idx, b_idx, c_idx, out_idx)
-///
-/// Main layout per lane: a[D], b[D], c[D], out[D]
+/// ALU preprocessed layout per lane (12 columns):
+/// - 0: active (1 for active row, 0 for padding)
+/// - 1: mult_a (-1 reader, +N first unconstrained creator, 0 padding)
+/// - 2-4: selectors (add_vs_mul, bool, muladd)
+/// - 5-8: indices (a_idx, b_idx, c_idx, out_idx)
+/// - 9: mult_b, 10: mult_out, 11: mult_c
 pub fn get_alu_index_lookups<
     AB: PermutationAirBuilder + AirBuilderWithPublicValues,
     const D: usize,
@@ -49,12 +49,14 @@ pub fn get_alu_index_lookups<
     preprocessed_start: usize,
     main: &[SymbolicVariable<<AB as AirBuilder>::F>],
     preprocessed: &[SymbolicVariable<<AB as AirBuilder>::F>],
-    direction: Direction,
 ) -> Vec<LookupInput<AB::F>> {
-    let multiplicity = SymbolicExpression::from(preprocessed[preprocessed_start]);
+    let mult_a = SymbolicExpression::from(preprocessed[preprocessed_start + 1]);
+    let mult_b = SymbolicExpression::from(preprocessed[preprocessed_start + 9]);
+    let mult_out = SymbolicExpression::from(preprocessed[preprocessed_start + 10]);
+    let mult_c = SymbolicExpression::from(preprocessed[preprocessed_start + 11]);
 
-    // Indices are at positions 4, 5, 6, 7 (after multiplicity + 3 selectors)
-    let idx_offset = 4;
+    let idx_offset = 5;
+    let multiplicities = [mult_a, mult_b, mult_c, mult_out];
 
     (0..4)
         .map(|i| {
@@ -63,9 +65,36 @@ pub fn get_alu_index_lookups<
             let values = (0..D).map(|j| SymbolicExpression::from(main[main_start + i * D + j]));
             let inps = iter::once(idx).chain(values).collect::<Vec<_>>();
 
-            (inps, multiplicity.clone(), direction)
+            (inps, multiplicities[i].clone(), Direction::Receive)
         })
         .collect()
+}
+
+/// Helper to create a preprocessed trace from complete preprocessed values (already including
+/// multiplicities). Simply reshapes the flat per-op data into a row-major matrix.
+pub fn create_direct_preprocessed_trace<F: Field>(
+    preprocessed_values: &[F],
+    preprocessed_lane_width: usize,
+    num_lanes: usize,
+    min_height: usize,
+) -> RowMajorMatrix<F> {
+    let preprocessed_width = num_lanes * preprocessed_lane_width;
+
+    let mut values = preprocessed_values.to_vec();
+
+    // Pad to a multiple of the full row width
+    if preprocessed_width > 0 && !values.len().is_multiple_of(preprocessed_width) {
+        let padding = preprocessed_width - (values.len() % preprocessed_width);
+        values.extend(core::iter::repeat_n(F::ZERO, padding));
+    }
+
+    // Ensure at least one row
+    if values.is_empty() {
+        values.extend(core::iter::repeat_n(F::ZERO, preprocessed_width.max(1)));
+    }
+
+    let mat = RowMajorMatrix::new(values, preprocessed_width);
+    pad_matrix_with_min_height(mat, min_height)
 }
 
 /// Object‑safe gadget shim.

@@ -416,4 +416,18 @@ where
         degree: usize,
         table_entry: &super::NonPrimitiveTableEntry<SC>,
     ) -> Result<DynamicAirEntry<SC>, String>;
+
+    /// Build an AIR entry using committed preprocessed data.
+    ///
+    /// Returns `None` if not supported by this table prover.
+    /// This is used to override the preprocessed data regenerated from runtime ops
+    /// with the data that was committed during `get_airs_and_degrees_with_prep`.
+    fn air_with_committed_preprocessed(
+        &self,
+        committed_prep: Vec<Val<SC>>,
+        min_height: usize,
+    ) -> Option<DynamicAirEntry<SC>> {
+        let _ = (committed_prep, min_height);
+        None
+    }
 }

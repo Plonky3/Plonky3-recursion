@@ -1616,8 +1616,10 @@ impl Poseidon2Prover {
         let (air, matrix) = match self.config {
             Poseidon2Config::BabyBearD1Width16 | Poseidon2Config::BabyBearD4Width16 => {
                 let constants = Self::baby_bear_constants_16();
-                let preprocessed =
-                    extract_preprocessed_from_operations::<BabyBear, Val<SC>>(&t.operations);
+                let preprocessed = extract_preprocessed_from_operations::<BabyBear, Val<SC>>(
+                    &t.operations,
+                    self.config.d() as u32,
+                );
                 let air = Poseidon2CircuitAirBabyBearD4Width16::new_with_preprocessed(
                     constants.clone(),
                     preprocessed.clone(),
@@ -1642,8 +1644,10 @@ impl Poseidon2Prover {
             }
             Poseidon2Config::BabyBearD4Width24 => {
                 let constants = Self::baby_bear_constants_24();
-                let preprocessed =
-                    extract_preprocessed_from_operations::<BabyBear, Val<SC>>(&t.operations);
+                let preprocessed = extract_preprocessed_from_operations::<BabyBear, Val<SC>>(
+                    &t.operations,
+                    self.config.d() as u32,
+                );
                 let air = Poseidon2CircuitAirBabyBearD4Width24::new_with_preprocessed(
                     constants.clone(),
                     preprocessed.clone(),
@@ -1668,8 +1672,10 @@ impl Poseidon2Prover {
             }
             Poseidon2Config::KoalaBearD1Width16 | Poseidon2Config::KoalaBearD4Width16 => {
                 let constants = Self::koala_bear_constants_16();
-                let preprocessed =
-                    extract_preprocessed_from_operations::<KoalaBear, Val<SC>>(&t.operations);
+                let preprocessed = extract_preprocessed_from_operations::<KoalaBear, Val<SC>>(
+                    &t.operations,
+                    self.config.d() as u32,
+                );
                 let air = Poseidon2CircuitAirKoalaBearD4Width16::new_with_preprocessed(
                     constants.clone(),
                     preprocessed.clone(),
@@ -1694,8 +1700,10 @@ impl Poseidon2Prover {
             }
             Poseidon2Config::KoalaBearD4Width24 => {
                 let constants = Self::koala_bear_constants_24();
-                let preprocessed =
-                    extract_preprocessed_from_operations::<KoalaBear, Val<SC>>(&t.operations);
+                let preprocessed = extract_preprocessed_from_operations::<KoalaBear, Val<SC>>(
+                    &t.operations,
+                    self.config.d() as u32,
+                );
                 let air = Poseidon2CircuitAirKoalaBearD4Width24::new_with_preprocessed(
                     constants.clone(),
                     preprocessed.clone(),
@@ -1804,5 +1812,13 @@ where
             _phantom: core::marker::PhantomData::<SC>,
         };
         Ok(DynamicAirEntry::new(Box::new(wrapper)))
+    }
+
+    fn air_with_committed_preprocessed(
+        &self,
+        committed_prep: Vec<Val<SC>>,
+        min_height: usize,
+    ) -> Option<DynamicAirEntry<SC>> {
+        Some(self.wrapper_from_config_with_preprocessed(committed_prep, min_height))
     }
 }

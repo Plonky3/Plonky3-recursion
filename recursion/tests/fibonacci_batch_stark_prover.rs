@@ -59,7 +59,7 @@ fn test_fibonacci_batch_verifier() {
 
     builder.dump_allocation_log();
 
-    let table_packing = TablePacking::new(1, 2, 4);
+    let table_packing = TablePacking::new(2, 4);
 
     // Use the default permutation for proving to match circuit's Fiat-Shamir challenger
     let perm = default_koalabear_poseidon2_16();
@@ -177,7 +177,7 @@ fn test_fibonacci_batch_verifier() {
     assert_eq!(public_inputs.len(), expected_public_input_len);
     assert!(!public_inputs.is_empty());
 
-    let verification_table_packing = TablePacking::new(16, 1, 8);
+    let verification_table_packing = TablePacking::new(1, 8);
     let poseidon2_config = Poseidon2Config::KoalaBearD4Width16;
     let (verification_airs_degrees, verification_preprocessed_columns) =
         get_airs_and_degrees_with_prep::<MyConfig, _, 4>(

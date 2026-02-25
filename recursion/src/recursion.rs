@@ -158,7 +158,7 @@ pub struct ProveNextLayerParams {
 impl Default for ProveNextLayerParams {
     fn default() -> Self {
         Self {
-            table_packing: TablePacking::new(3, 1, 4),
+            table_packing: TablePacking::new(1, 4),
             use_poseidon2_in_circuit: true,
             constraint_profile: ConstraintProfile::Standard,
         }

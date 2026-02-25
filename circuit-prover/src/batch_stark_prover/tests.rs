@@ -99,39 +99,6 @@ fn test_table_lookups() {
         .unwrap();
     let (mut airs, log_degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
 
-    // Witness multiplicities: index 0 gets c_idx lookups from ALU ops without c; values from preprocessed.
-    // Constant folding evaluates mul(5,2) at build time, so there is no Mul ALU op.
-    let mut expected_multiplicities = vec![BabyBear::from_u64(2); 11];
-    expected_multiplicities[0] = BabyBear::from_u64(6);
-    expected_multiplicities[1] = BabyBear::from_u64(1);
-    expected_multiplicities[2] = BabyBear::from_u64(1);
-    // Pad multiplicities.
-    let total_witness_length = (expected_multiplicities
-        .len()
-        .div_ceil(default_packing.witness_lanes()))
-    .next_power_of_two()
-        * default_packing.witness_lanes();
-    expected_multiplicities.resize(total_witness_length, BabyBear::ZERO);
-
-    // Get expected preprocessed trace for `WitnessAir`.
-    let expected_preprocessed_trace = RowMajorMatrix::new(
-        expected_multiplicities
-            .iter()
-            .enumerate()
-            .flat_map(|(i, m)| vec![*m, BabyBear::from_usize(i)])
-            .collect::<Vec<_>>(),
-        2 * TablePacking::default().witness_lanes(),
-    );
-    assert_eq!(
-        airs[0]
-            .preprocessed_trace()
-            .expect("Witness table should have preprocessed trace"),
-        expected_preprocessed_trace,
-        "witness_multiplicities {:?} expected {:?}",
-        airs[0].preprocessed_trace(),
-        expected_preprocessed_trace,
-    );
-
     let mut runner = circuit.runner();
 
     let x_val = BabyBear::from_u64(7);
@@ -163,15 +130,6 @@ fn test_table_lookups() {
             );
 
         match air {
-            CircuitTableAir::Witness(_) => {
-                assert_eq!(
-                    lookups.len(),
-                    default_packing.witness_lanes(),
-                    "Witness table should have {} lookups, found {}",
-                    default_packing.witness_lanes(),
-                    lookups.len()
-                );
-            }
             CircuitTableAir::Const(_) => {
                 assert_eq!(lookups.len(), 1, "Const table should have one lookup");
             }
@@ -296,39 +254,6 @@ fn test_extension_field_table_lookups() {
         .unwrap();
     let (mut airs, log_degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
 
-    // Check that the multiplicities of `WitnessAir` are computed correctly.
-    // With MulAdd fusion, mul+add pairs are fused, reducing the number of ALU ops.
-    let mut expected_multiplicities = vec![BabyBear::from_u64(2); 7];
-    expected_multiplicities[0] = BabyBear::from_u64(3); // reduced due to MulAdd fusion
-    expected_multiplicities[5] = BabyBear::from_u64(0); // changed due to fusion
-    // Pad multiplicities.
-    let total_witness_length = (expected_multiplicities
-        .len()
-        .div_ceil(default_packing.witness_lanes()))
-    .next_power_of_two()
-        * default_packing.witness_lanes();
-    expected_multiplicities.resize(total_witness_length, BabyBear::ZERO);
-
-    // Get expected preprocessed trace for `WitnessAir`.
-    let expected_preprocessed_trace = RowMajorMatrix::new(
-        expected_multiplicities
-            .iter()
-            .enumerate()
-            .flat_map(|(i, m)| vec![*m, BabyBear::from_usize(i)])
-            .collect::<Vec<_>>(),
-        2 * TablePacking::default().witness_lanes(),
-    );
-
-    assert_eq!(
-        airs[0]
-            .preprocessed_trace()
-            .expect("Witness table should have preprocessed trace"),
-        expected_preprocessed_trace,
-        "witness_multiplicities {:?} expected {:?}",
-        airs[0].preprocessed_trace(),
-        expected_preprocessed_trace,
-    );
-
     let mut runner = circuit.runner();
 
     let xv = Ext4::from_basis_coefficients_slice(&[
@@ -383,15 +308,6 @@ fn test_extension_field_table_lookups() {
             );
 
         match air {
-            CircuitTableAir::Witness(_) => {
-                assert_eq!(
-                    lookups.len(),
-                    default_packing.witness_lanes(),
-                    "Witness table should have {} lookups, found {}",
-                    default_packing.witness_lanes(),
-                    lookups.len()
-                );
-            }
             CircuitTableAir::Const(_) => {
                 assert_eq!(lookups.len(), 1, "Const table should have one lookup");
             }

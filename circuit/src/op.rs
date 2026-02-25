@@ -213,21 +213,19 @@ impl<F> Op<F> {
 
 #[derive(EnumCount, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PrimitiveOpType {
-    Witness = 0,
-    Const = 1,
-    Public = 2,
+    Const = 0,
+    Public = 1,
     /// Unified ALU table (combines Add, Mul, BoolCheck, MulAdd)
-    Alu = 3,
+    Alu = 2,
 }
 
 #[allow(clippy::fallible_impl_from)]
 impl From<usize> for PrimitiveOpType {
     fn from(value: usize) -> Self {
         match value {
-            0 => Self::Witness,
-            1 => Self::Const,
-            2 => Self::Public,
-            3 => Self::Alu,
+            0 => Self::Const,
+            1 => Self::Public,
+            2 => Self::Alu,
             _ => panic!("Invalid PrimitiveOpType value: {}", value),
         }
     }

@@ -20,14 +20,13 @@
 //! - `D` columns for operand `c` (basis coefficients, only used for MulAdd),
 //! - `D` columns for output `out` (basis coefficients).
 //!
-//! Preprocessed columns per lane:
+//! Preprocessed columns per lane (12 total):
 //!
-//! - 1 column for multiplicity (1 for real ops, 0 for padding),
-//! - 3 columns for operation selectors:
-//!   - `sel_add_vs_mul` (1 = Add, 0 = Mul when `sel_bool = sel_muladd = 0`)
-//!   - `sel_bool` (1 = BoolCheck),
-//!   - `sel_muladd` (1 = MulAdd),
-//! - 4 columns for operand indices (a_idx, b_idx, c_idx, out_idx).
+//! - 1 column `active` (1 for active row, 0 for padding)
+//! - 1 column `mult_a`: signed multiplicity for `a` (`-1` reader, `+N` first unconstrained creator, `0` padding)
+//! - 3 columns for operation selectors (sel_add_vs_mul, sel_bool, sel_muladd)
+//! - 4 columns for operand indices (a_idx, b_idx, c_idx, out_idx)
+//! - 1 column `mult_b`, 1 column `mult_out`, 1 column `mult_c` (same multiplicity convention)
 //!
 //! # Constraints (degree ≤ 3)
 //!
@@ -47,12 +46,12 @@ use p3_air::{Air, AirBuilder, AirBuilderWithPublicValues, BaseAir, PermutationAi
 use p3_circuit::op::AluOpKind;
 use p3_circuit::tables::AluTrace;
 use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
-use p3_lookup::lookup_traits::{Direction, Kind, Lookup};
+use p3_lookup::lookup_traits::{Kind, Lookup};
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
 
 use crate::air::utils::{
-    create_chunked_preprocessed_trace, create_symbolic_variables, get_alu_index_lookups,
+    create_direct_preprocessed_trace, create_symbolic_variables, get_alu_index_lookups,
 };
 
 /// AIR for proving unified arithmetic operations.
@@ -160,25 +159,15 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AluAir<F, D> {
         self.lanes * Self::lane_width()
     }
 
-    /// Number of preprocessed columns per lane:
-    /// - 1 multiplicity
-    /// - 3 selectors:
-    ///   - 1 bit for Add vs Mul (when Bool/MulAdd are 0)
-    ///   - 1 for BoolCheck
-    ///   - 1 for MulAdd
-    /// - 4 indices (a, b, c, out)
+    /// Number of preprocessed columns per lane (12 total):
+    /// [active, mult_a, sel1, sel2, sel3, a_idx, b_idx, c_idx, out_idx, mult_b, mult_out, mult_c]
     pub const fn preprocessed_lane_width() -> usize {
-        8
+        12
     }
 
     /// Total preprocessed width for this AIR instance.
     pub const fn preprocessed_width(&self) -> usize {
         self.lanes * Self::preprocessed_lane_width()
-    }
-
-    /// Number of preprocessed columns excluding multiplicity.
-    pub const fn preprocessed_width_without_multiplicity(&self) -> usize {
-        self.lanes * (Self::preprocessed_lane_width() - 1)
     }
 
     /// Convert an `AluTrace` into a `RowMajorMatrix` suitable for the STARK prover.
@@ -240,18 +229,15 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AluAir<F, D> {
         mat
     }
 
-    /// Convert an `AluTrace` to preprocessed values.
-    /// Layout per op (without multiplicity):
-    /// [sel_add_vs_mul, sel_bool, sel_muladd, a_idx, b_idx, c_idx, out_idx]
+    /// Convert an `AluTrace` to preprocessed values (12 columns per op).
+    ///
+    /// Layout: `[active, mult_a, sel1, sel2, sel3, a_idx, b_idx, c_idx, out_idx, mult_b, mult_out, mult_c]`.
     pub fn trace_to_preprocessed<ExtF: BasedVectorSpace<F>>(trace: &AluTrace<ExtF>) -> Vec<F> {
-        let total_len = trace.a_index.len() * (Self::preprocessed_lane_width() - 1);
+        let total_len = trace.a_index.len() * Self::preprocessed_lane_width();
         let mut preprocessed_values = Vec::with_capacity(total_len);
+        let neg_one = F::NEG_ONE;
 
         for (i, kind) in trace.op_kind.iter().enumerate() {
-            // Selectors encoded as:
-            // - sel_add_vs_mul: 1 for Add, 0 for Mul (when Bool/MulAdd are 0)
-            // - sel_bool: 1 for BoolCheck
-            // - sel_muladd: 1 for MulAdd
             let (sel_add_vs_mul, sel_bool, sel_muladd) = match kind {
                 AluOpKind::Add => (F::ONE, F::ZERO, F::ZERO),
                 AluOpKind::Mul => (F::ZERO, F::ZERO, F::ZERO),
@@ -260,13 +246,18 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AluAir<F, D> {
             };
 
             preprocessed_values.extend(&[
+                F::ONE, // active
+                neg_one,
                 sel_add_vs_mul,
                 sel_bool,
                 sel_muladd,
-                F::from_u32(trace.a_index[i].0),
-                F::from_u32(trace.b_index[i].0),
-                F::from_u32(trace.c_index[i].0),
-                F::from_u32(trace.out_index[i].0),
+                F::from_u32(trace.a_index[i].0 * D as u32),
+                F::from_u32(trace.b_index[i].0 * D as u32),
+                F::from_u32(trace.c_index[i].0 * D as u32),
+                F::from_u32(trace.out_index[i].0 * D as u32),
+                neg_one,
+                F::ONE,
+                neg_one, // mult_c
             ]);
         }
 
@@ -284,7 +275,7 @@ impl<F: Field, const D: usize> BaseAir<F> for AluAir<F, D> {
             assert!(!self.preprocessed.is_empty());
         }
 
-        Some(create_chunked_preprocessed_trace(
+        Some(create_direct_preprocessed_trace(
             &self.preprocessed,
             Self::preprocessed_lane_width(),
             self.lanes,
@@ -327,19 +318,16 @@ where
                 let c = local[main_offset + 2].clone();
                 let out = local[main_offset + 3].clone();
 
-                // Multiplicity and selectors from preprocessed:
-                // layout per lane: [m, sel_add_vs_mul, sel_bool, sel_muladd, a_idx, b_idx, c_idx, out_idx]
-                let multiplicity = preprocessed_local[prep_offset].clone();
-                let sel_add_vs_mul = preprocessed_local[prep_offset + 1].clone();
-                let sel_bool = preprocessed_local[prep_offset + 2].clone();
-                let sel_muladd = preprocessed_local[prep_offset + 3].clone();
+                // Preprocessed layout: [active, mult_a, sel1, sel2, sel3, a_idx, b_idx, c_idx, out_idx, mult_b, mult_out, mult_c]
+                let active = preprocessed_local[prep_offset].clone();
+                let sel_add_vs_mul = preprocessed_local[prep_offset + 2].clone();
+                let sel_bool = preprocessed_local[prep_offset + 3].clone();
+                let sel_muladd = preprocessed_local[prep_offset + 4].clone();
 
                 // Derive MUL selector linearly:
-                // sel_mul = m - sel_bool - sel_muladd - sel_add_vs_mul
-                let sel_mul = multiplicity.clone()
-                    - sel_bool.clone()
-                    - sel_muladd.clone()
-                    - sel_add_vs_mul.clone();
+                // sel_mul = active - sel_bool - sel_muladd - sel_add_vs_mul
+                let sel_mul =
+                    active - sel_bool.clone() - sel_muladd.clone() - sel_add_vs_mul.clone();
 
                 // ADD constraint: sel_add_vs_mul * (a + b - out) = 0
                 builder.assert_zero(sel_add_vs_mul.clone() * (a.clone() + b.clone() - out.clone()));
@@ -373,19 +361,14 @@ where
                 let c_slice = &local[main_offset + 2 * D..main_offset + 3 * D];
                 let out_slice = &local[main_offset + 3 * D..main_offset + 4 * D];
 
-                // Multiplicity and selectors from preprocessed:
-                // layout per lane: [m, sel_add_vs_mul, sel_bool, sel_muladd, a_idx, b_idx, c_idx, out_idx]
-                let multiplicity = preprocessed_local[prep_offset].clone();
-                let sel_add_vs_mul = preprocessed_local[prep_offset + 1].clone();
-                let sel_bool = preprocessed_local[prep_offset + 2].clone();
-                let sel_muladd = preprocessed_local[prep_offset + 3].clone();
+                // Preprocessed layout: [active, mult_a, sel1, sel2, sel3, a_idx, b_idx, c_idx, out_idx, mult_b, mult_out, mult_c]
+                let active = preprocessed_local[prep_offset].clone();
+                let sel_add_vs_mul = preprocessed_local[prep_offset + 2].clone();
+                let sel_bool = preprocessed_local[prep_offset + 3].clone();
+                let sel_muladd = preprocessed_local[prep_offset + 4].clone();
 
-                // Derive MUL selector linearly:
-                // sel_mul = m - sel_bool - sel_muladd - sel_add_vs_mul
-                let sel_mul = multiplicity.clone()
-                    - sel_bool.clone()
-                    - sel_muladd.clone()
-                    - sel_add_vs_mul.clone();
+                let sel_mul =
+                    active - sel_bool.clone() - sel_muladd.clone() - sel_add_vs_mul.clone();
 
                 // ADD constraints: sel_add_vs_mul * (a[i] + b[i] - out[i]) = 0
                 for i in 0..D {
@@ -470,13 +453,12 @@ where
             let lane_offset = lane * Self::lane_width();
             let preprocessed_lane_offset = lane * Self::preprocessed_lane_width();
 
-            // 4 lookups per lane: a, b, c, out
+            // 4 lookups per lane: a, b, c, out (all Direction::Receive)
             let lane_lookup_inputs = get_alu_index_lookups::<AB, D>(
                 lane_offset,
                 preprocessed_lane_offset,
                 &symbolic_main_local,
                 &preprocessed_local,
-                Direction::Send,
             );
             lookups.extend(lane_lookup_inputs.into_iter().map(|inps| {
                 <Self as Air<AB>>::register_lookup(
@@ -754,7 +736,8 @@ mod tests {
 
     #[test]
     fn test_alu_air_constraint_degree() {
-        let preprocessed = vec![Val::ZERO; 8 * 7]; // 8 ops * 7 preprocessed values per op
+        // 8 ops * 12 columns per op (new layout including multiplicities)
+        let preprocessed = vec![Val::ZERO; 8 * AluAir::<Val, 1>::preprocessed_lane_width()];
         let air = AluAir::<Val, 1>::new_with_preprocessed(8, 2, preprocessed);
         p3_test_utils::assert_air_constraint_degree!(air, "AluAir");
     }

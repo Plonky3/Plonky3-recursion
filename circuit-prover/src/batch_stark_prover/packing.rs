@@ -33,7 +33,6 @@ pub(crate) fn pad_matrix_to_min_height<F: Field>(
 /// Configuration for packing multiple primitive operations into a single AIR row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TablePacking {
-    witness_lanes: usize,
     public_lanes: usize,
     alu_lanes: usize,
     /// Minimum trace height for all tables (must be power of two).
@@ -44,9 +43,8 @@ pub struct TablePacking {
 }
 
 impl TablePacking {
-    pub fn new(witness_lanes: usize, public_lanes: usize, alu_lanes: usize) -> Self {
+    pub fn new(public_lanes: usize, alu_lanes: usize) -> Self {
         Self {
-            witness_lanes: witness_lanes.max(1),
             public_lanes: public_lanes.max(1),
             alu_lanes: alu_lanes.max(1),
             min_trace_height: 1,
@@ -78,10 +76,6 @@ impl TablePacking {
         self
     }
 
-    pub const fn witness_lanes(self) -> usize {
-        self.witness_lanes
-    }
-
     pub const fn public_lanes(self) -> usize {
         self.public_lanes
     }
@@ -97,18 +91,16 @@ impl TablePacking {
 
 impl Default for TablePacking {
     fn default() -> Self {
-        Self::new(1, 1, 1)
+        Self::new(1, 1)
     }
 }
 
 /// Summary of trace lengths for all circuit tables.
 #[derive(Debug, Clone)]
 pub struct TraceLengths {
-    pub witness: usize,
     pub const_: usize,
     pub public: usize,
     pub alu: usize,
-    pub witness_lanes: usize,
     pub public_lanes: usize,
     pub alu_lanes: usize,
     pub non_primitive: Vec<(NonPrimitiveOpType, usize)>,
@@ -118,11 +110,9 @@ impl TraceLengths {
     /// Compute trace lengths from traces and packing configuration.
     pub fn from_traces<F>(traces: &Traces<F>, packing: TablePacking) -> Self {
         Self {
-            witness: traces.witness_trace.num_rows() / packing.witness_lanes(),
             const_: traces.const_trace.values.len(),
             public: traces.public_trace.values.len() / packing.public_lanes(),
             alu: traces.alu_trace.op_kind.len() / packing.alu_lanes(),
-            witness_lanes: packing.witness_lanes(),
             public_lanes: packing.public_lanes(),
             alu_lanes: packing.alu_lanes(),
             non_primitive: traces
@@ -136,8 +126,6 @@ impl TraceLengths {
     /// Log all trace lengths at info level.
     pub fn log(&self) {
         tracing::info!(
-            witness = %self.witness,
-            witness_lanes = %self.witness_lanes,
             const_ = %self.const_,
             const_lanes = 1usize,
             public = %self.public,
