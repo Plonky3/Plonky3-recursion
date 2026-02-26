@@ -11,6 +11,7 @@ pub mod pcs;
 pub mod prelude;
 pub mod public_inputs;
 pub mod recursion;
+pub mod testing;
 pub mod traits;
 pub mod types;
 pub mod verifier;

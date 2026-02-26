@@ -68,20 +68,12 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Registry};
 
+type FriParams = p3_recursion::testing::FriParams;
+
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum FieldOption {
     KoalaBear,
     BabyBear,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct FriParams {
-    log_blowup: usize,
-    max_log_arity: usize,
-    cap_height: usize,
-    log_final_poly_len: usize,
-    commit_pow_bits: usize,
-    query_pow_bits: usize,
 }
 
 #[derive(Parser, Debug)]
