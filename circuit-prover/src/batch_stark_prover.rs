@@ -905,5 +905,32 @@ where
     }
 }
 
+/// Trait to register Poseidon2 by extension degree so recursion can dispatch D=2 vs D=4.
+pub trait RegisterPoseidon2ForDegree<const D: usize> {
+    fn register_poseidon2(&mut self, config: Poseidon2Config);
+}
+
+impl<SC> RegisterPoseidon2ForDegree<2> for BatchStarkProver<SC>
+where
+    SC: StarkGenericConfig + Send + Sync,
+    Val<SC>: BinomiallyExtendable<2> + StarkField,
+    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+{
+    fn register_poseidon2(&mut self, config: Poseidon2Config) {
+        self.register_poseidon2_table_d2(config);
+    }
+}
+
+impl<SC> RegisterPoseidon2ForDegree<4> for BatchStarkProver<SC>
+where
+    SC: StarkGenericConfig + Send + Sync,
+    Val<SC>: BinomiallyExtendable<4> + StarkField,
+    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+{
+    fn register_poseidon2(&mut self, config: Poseidon2Config) {
+        self.register_poseidon2_table(config);
+    }
+}
+
 #[cfg(test)]
 mod tests;

@@ -474,9 +474,8 @@ pub(crate) unsafe fn eval_poseidon2_variant<
     SC: StarkGenericConfig,
     Val<SC>: StarkField + PrimeField,
     AB::F: PrimeField,
-    ABConcrete::F:
-        PrimeField + PrimeCharacteristicRing<PrimeSubfield = LinearLayers::PrimeSubfield>,
-    ABConcrete::Expr: PrimeCharacteristicRing<PrimeSubfield = LinearLayers::PrimeSubfield>,
+    ABConcrete::F: PrimeField + PrimeCharacteristicRing,
+    ABConcrete::Expr: PrimeCharacteristicRing,
     LinearLayers: p3_poseidon2::GenericPoseidon2LinearLayers<WIDTH>,
 {
     unsafe {
@@ -1670,8 +1669,19 @@ impl Poseidon2Prover {
     }
 
     fn goldilocks_constants_8() -> RoundConstants<Goldilocks, 8, 4, 22> {
+        use rand::RngExt;
+        use rand::distr::StandardUniform;
         let mut rng = SmallRng::seed_from_u64(1);
-        RoundConstants::from_rng(&mut rng)
+        // Match the RNG order of Poseidon2::new_from_rng_128 / ExternalLayerConstants::new_from_rng:
+        //   1. initial external (beginning_full)
+        //   2. terminal external (ending_full)
+        //   3. internal (partial)
+        let beginning_full: [[Goldilocks; 8]; 4] =
+            core::array::from_fn(|_| rng.sample(StandardUniform));
+        let ending_full: [[Goldilocks; 8]; 4] =
+            core::array::from_fn(|_| rng.sample(StandardUniform));
+        let partial: [Goldilocks; 22] = core::array::from_fn(|_| rng.sample(StandardUniform));
+        RoundConstants::new(beginning_full, partial, ending_full)
     }
 
     pub(crate) fn air_wrapper_for_config(config: Poseidon2Config) -> Poseidon2AirWrapperInner {
@@ -1859,7 +1869,7 @@ impl Poseidon2Prover {
                 self.batch_instance_base_impl::<SC, 24, 4, 23, 4>(t, min_height)
             }
             Poseidon2Config::GoldilocksD2Width8 => {
-                panic!("Goldilocks Poseidon2 AIR not implemented")
+                self.batch_instance_base_impl::<SC, 8, 4, 22, 2>(t, min_height)
             }
         }
     }

@@ -112,7 +112,7 @@ pub const fn poseidon2_preprocessed_width() -> usize {
 }
 
 impl<
-    F: PrimeField + PrimeCharacteristicRing<PrimeSubfield = LinearLayers::PrimeSubfield>,
+    F: PrimeField,
     LinearLayers: GenericPoseidon2LinearLayers<WIDTH>,
     const D: usize,
     const WIDTH: usize,
@@ -311,7 +311,7 @@ impl<
 }
 
 impl<
-    F: PrimeField + PrimeCharacteristicRing<PrimeSubfield = LinearLayers::PrimeSubfield> + Sync,
+    F: PrimeField + Sync,
     LinearLayers: GenericPoseidon2LinearLayers<WIDTH> + Sync,
     const D: usize,
     const WIDTH: usize,
@@ -492,10 +492,7 @@ pub(crate) fn eval<
         >,
     >,
     next_preprocessed: &[AB::Var],
-) where
-    AB::F: PrimeCharacteristicRing<PrimeSubfield = LinearLayers::PrimeSubfield>,
-    AB::Expr: PrimeCharacteristicRing<PrimeSubfield = LinearLayers::PrimeSubfield>,
-{
+) {
     // Control flags (new_start, merkle_path, in_ctl, out_ctl) are preprocessed columns,
     // so they are known to the verifier and don't need bool assertions.
     // Note: mmcs_bit is a value column (not transparent) because it's used in constraints
@@ -688,9 +685,7 @@ pub unsafe fn eval_unchecked_with_concrete<
     >,
     next_preprocessed: &[AB::Var],
 ) where
-    ABConcrete::F:
-        PrimeField + PrimeCharacteristicRing<PrimeSubfield = LinearLayers::PrimeSubfield>,
-    ABConcrete::Expr: PrimeCharacteristicRing<PrimeSubfield = LinearLayers::PrimeSubfield>,
+    ABConcrete::F: PrimeField,
 {
     unsafe {
         let builder_c: &mut ABConcrete = core::mem::transmute(builder);
@@ -804,8 +799,7 @@ pub unsafe fn eval_unchecked<
     >,
     next_preprocessed: &[AB::Var],
 ) where
-    AB::F: PrimeField + PrimeCharacteristicRing<PrimeSubfield = LinearLayers::PrimeSubfield>,
-    AB::Expr: PrimeCharacteristicRing<PrimeSubfield = LinearLayers::PrimeSubfield>,
+    AB::F: PrimeField,
 {
     // SAFETY: Caller guarantees F == AB::F at runtime, so the struct layouts are identical.
     // The transmute is safe because all field types have the same runtime representation.
@@ -867,8 +861,7 @@ impl<
         PARTIAL_ROUNDS,
     >
 where
-    AB::F: PrimeField + PrimeCharacteristicRing<PrimeSubfield = LinearLayers::PrimeSubfield>,
-    AB::Expr: PrimeCharacteristicRing<PrimeSubfield = LinearLayers::PrimeSubfield>,
+    AB::F: PrimeField,
 {
     #[inline]
     fn eval(&self, builder: &mut AB) {
