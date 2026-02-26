@@ -245,9 +245,8 @@ assumptions used in these heuristics.</p>
 </ul>
 <h2 id="table-packing"><a class="header" href="#table-packing">Table packing</a></h2>
 <p><code>TablePacking</code> controls how circuit operations are distributed across table lanes. Each lane adds columns to a table; more lanes means shorter (fewer rows) but wider (more columns) tables.</p>
-<pre><code class="language-rust ignore">TablePacking::new(witness_lanes, public_lanes, alu_lanes)</code></pre>
+<pre><code class="language-rust ignore">TablePacking::new(public_lanes, alu_lanes)</code></pre>
 <div class="table-wrapper"><table><thead><tr><th>Parameter</th><th>Controls</th><th>Trade-off</th></tr></thead><tbody>
-<tr><td><code>witness_lanes</code></td><td>Witness table width</td><td>More lanes → fewer rows, but wider table</td></tr>
 <tr><td><code>public_lanes</code></td><td>Public input table width</td><td>Often the bottleneck for row count</td></tr>
 <tr><td><code>alu_lanes</code></td><td>ALU (add/mul) table width</td><td>Most operations land here</td></tr>
 </tbody></table>
@@ -265,14 +264,14 @@ assumptions used in these heuristics.</p>
 </div>
 <p>Halving the max table height cuts FRI proving time by roughly 40-50% (one fewer folding round, half the polynomial size).</p>
 <p>Use <code>.with_fri_params(log_final_poly_len, log_blowup)</code> to set minimum row counts:</p>
-<pre><code class="language-rust ignore">let packing = TablePacking::new(5, 2, 3)
+<pre><code class="language-rust ignore">let packing = TablePacking::new(2, 3)
     .with_fri_params(log_final_poly_len, log_blowup);</code></pre>
 <h3 id="layer-specific-packing"><a class="header" href="#layer-specific-packing">Layer-specific packing</a></h3>
 <p>The first recursive layer (verifying the original proof) often has a different operation distribution than subsequent layers. It's common to use different packing per layer:</p>
 <pre><code class="language-rust ignore">let packing = if layer == 1 {
-    TablePacking::new(1, 1, 1)
+    TablePacking::new(1, 1)
 } else {
-    TablePacking::new(5, 1, 3)
+    TablePacking::new(1, 3)
 }.with_fri_params(log_final_poly_len, log_blowup);</code></pre>
 
                     </main>

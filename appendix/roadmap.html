@@ -186,13 +186,12 @@
 <ul>
 <li><strong>Eliminate decompose/recompose round-trips</strong>: Base field values are currently lifted to extension field targets and then repacked before MMCS verification, which decomposes them again. Keeping values in base coefficient form throughout would eliminate ~15-20% of circuit operations.</li>
 <li><strong>Dedicated FRI AIR table</strong>: A specialized non-primitive chip for Lagrange interpolation during FRI folding would offload ~30K primitive operations to a compact AIR.</li>
-<li><strong>Remove the Witness bus</strong>: Since the verifier program is fixed and deterministic, the global Witness table can be replaced with direct inter-chip lookups, eliminating an entire table.</li>
 <li><strong>Additional optimization passes</strong>: More aggressive dead-node pruning, common subexpression elimination, and chain fusion in the circuit optimizer.</li>
 </ul>
 <h2 id="flexibility"><a class="header" href="#flexibility">Flexibility</a></h2>
 <ul>
-<li><strong>Configurable WIDTH/RATE</strong>: Currently fixed at <code>WIDTH=16</code>, <code>RATE=8</code> for 32-bit fields. Making these configurable would support wider permutations and different security/performance trade-offs.</li>
-<li><strong>Goldilocks support</strong>: Full testing and optimization for the 64-bit Goldilocks field.</li>
+<li><strong>Configurable WIDTH/RATE</strong>: Currently fixed at <code>WIDTH=16</code>, <code>RATE=8</code> for 32-bit fields, <code>WIDTH=8</code>, <code>RATE=4</code> for Goldilocks.
+Making these configurable would support wider permutations and different security/performance trade-offs.</li>
 <li><strong>Multi-shape FRI verification</strong>: A single verifier circuit that can handle proofs with different trace sizes, reducing the need for proof lifting.</li>
 </ul>
 
