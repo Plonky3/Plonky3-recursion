@@ -308,6 +308,18 @@ impl<F: CircuitField> CircuitRunner<F> {
                         };
                         self.set_witness(out_id, ab_product + c_val)?;
                     }
+                    AluOpKind::HornerAcc => {
+                        // out = acc * b + c - a
+                        // acc WitnessId is stored in intermediate_out
+                        let acc_id =
+                            intermediate_out.expect("HornerAcc requires acc in intermediate_out");
+                        let acc_val = self.get_witness(acc_id)?;
+                        let a_val = self.get_witness(*a)?;
+                        let b_val = self.get_witness(*b)?;
+                        let c_val = self.get_witness(c.expect("HornerAcc requires c operand"))?;
+                        let result = acc_val * b_val + c_val - a_val;
+                        self.set_witness(*out, result)?;
+                    }
                 },
                 Op::NonPrimitiveOpWithExecutor {
                     inputs,

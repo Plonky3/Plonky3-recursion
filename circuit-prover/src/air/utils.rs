@@ -35,25 +35,34 @@ pub fn get_index_lookups<AB: PermutationAirBuilder, const D: usize>(
 
 /// Get ALU lookups for the 4 operands (a, b, c, out).
 ///
-/// ALU preprocessed layout per lane (12 columns):
+/// ALU preprocessed layout per lane (13 columns):
 /// - 0: active (1 for active row, 0 for padding)
 /// - 1: mult_a (-1 reader, +N first unconstrained creator, 0 padding)
-/// - 2-4: selectors (add_vs_mul, bool, muladd)
-/// - 5-8: indices (a_idx, b_idx, c_idx, out_idx)
-/// - 9: mult_b, 10: mult_out, 11: mult_c
+/// - 2-5: selectors (add_vs_mul, bool, muladd, horner)
+/// - 6-9: indices (a_idx, b_idx, c_idx, out_idx)
+/// - 10: mult_b, 11: mult_out, 12: mult_c
 pub fn get_alu_index_lookups<AB: PermutationAirBuilder, const D: usize>(
     main_start: usize,
     preprocessed_start: usize,
     main: &[SymbolicVariable<<AB as AirBuilder>::F>],
     preprocessed: &[SymbolicVariable<<AB as AirBuilder>::F>],
 ) -> Vec<LookupInput<AB::F>> {
-    let mult_a = SymbolicExpression::from(preprocessed[preprocessed_start + 1]);
+    let mult_a = SymbolicExpression::from(preprocessed[preprocessed_start]);
     let mult_b = SymbolicExpression::from(preprocessed[preprocessed_start + 9]);
     let mult_out = SymbolicExpression::from(preprocessed[preprocessed_start + 10]);
-    let mult_c = SymbolicExpression::from(preprocessed[preprocessed_start + 11]);
+    let a_is_reader = SymbolicExpression::from(preprocessed[preprocessed_start + 11]);
+    let c_is_reader = SymbolicExpression::from(preprocessed[preprocessed_start + 12]);
 
+    // Indices are at positions 5-8 (after mult_a + 4 selectors)
     let idx_offset = 5;
-    let multiplicities = [mult_a, mult_b, mult_c, mult_out];
+
+    // Effective multiplicities: mult_a * is_reader. This zeros out bus contributions
+    // for unconstrained witnesses while keeping mult_a = -1 for active = -mult_a = 1.
+    let eff_mult_a = mult_a.clone() * a_is_reader;
+    let eff_mult_c = mult_a * c_is_reader;
+
+    // [a, b, c, out] multiplicities
+    let multiplicities = [eff_mult_a, mult_b, eff_mult_c, mult_out];
 
     (0..4)
         .map(|i| {

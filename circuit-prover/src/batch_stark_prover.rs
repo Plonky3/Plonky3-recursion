@@ -620,8 +620,7 @@ where
             )
             .with_min_height(min_height)
         };
-        let alu_matrix: RowMajorMatrix<Val<SC>> =
-            AluAir::<Val<SC>, D>::trace_to_matrix(&traces.alu_trace, alu_lanes);
+        let alu_matrix: RowMajorMatrix<Val<SC>> = alu_air.trace_to_matrix(&traces.alu_trace);
 
         // We first handle all non-primitive tables dynamically, which will then be batched alongside primitive ones.
         // Each trace must have a corresponding registered prover for it to be provable.
@@ -772,7 +771,6 @@ where
             // done like for duplicate Poseidon2 outputs.
             //
             // Hence, we override with the committed preprocessed data so the debug
-            // lookup check is consistent with the committed preprocessed trace.
             for (j, instance) in non_primitives.iter().enumerate() {
                 if let NonPrimitiveOpType::Poseidon2Perm(cfg) = instance.op_type
                     && let Some(committed_prep) = non_primitive.get(&instance.op_type)

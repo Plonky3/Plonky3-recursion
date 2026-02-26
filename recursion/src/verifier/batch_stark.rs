@@ -11,9 +11,9 @@ use p3_circuit::op::NonPrimitiveOpType;
 use p3_circuit::utils::ColumnsTargets;
 use p3_circuit::{CircuitBuilder, NonPrimitiveOpId};
 use p3_circuit_prover::air::{AluAir, ConstAir, PublicAir};
-use p3_circuit_prover::batch_stark_prover::{AirVariant, PrimitiveTable, RowCounts};
+use p3_circuit_prover::batch_stark_prover::{PrimitiveTable, RowCounts};
 use p3_circuit_prover::{
-    BABY_BEAR_MODULUS, KOALA_BEAR_MODULUS, Poseidon2AirWrapperInner,
+    AirVariant, BABY_BEAR_MODULUS, KOALA_BEAR_MODULUS, Poseidon2AirWrapperInner,
     poseidon2_verifier_air_from_config,
 };
 use p3_commit::{Pcs, PolynomialSpace};

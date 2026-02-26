@@ -1,3 +1,8 @@
+//! Poseidon2 permutation chain example using the Poseidon2Perm op.
+//!
+//! Builds a chain of Poseidon2 permutations and verifies the final output against a native
+//! computation.
+
 use std::env;
 use std::error::Error;
 
@@ -12,10 +17,6 @@ use p3_circuit_prover::{
 };
 use p3_field::extension::BinomialExtensionField;
 use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
-/// Poseidon2 permutation chain example using the Poseidon2Perm op.
-///
-/// Builds a chain of Poseidon2 permutations and verifies the final output against a native
-/// computation.
 use p3_koala_bear::{KoalaBear, default_koalabear_poseidon2_16};
 use p3_poseidon2_circuit_air::KoalaBearD4Width16;
 use p3_symmetric::Permutation;

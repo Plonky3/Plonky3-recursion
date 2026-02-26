@@ -60,7 +60,7 @@ pub struct PreprocessedColumns<F> {
     /// The FIRST operation is the creator; subsequent ones must be treated as readers (out_ctl=-1).
     ///
     /// `poseidon2_dup_wids[i] = true` means WitnessId(i) is a duplicate Poseidon2 output:
-    /// the creator was a previous op. Used by the prover to set out_ctl = -1 instead
+    /// the creator was a previous op. Used by `common.rs` Phase 2 to set out_ctl = -1 instead
     /// of +ext_reads[i].
     pub poseidon2_dup_wids: Vec<bool>,
 }
@@ -291,12 +291,10 @@ impl<F: Field> Circuit<F> {
     /// |-------|-----------|----------------------------------------------------------------------------|----------------|
     /// | 0     | Const     | `[out_0, out_1, ...]` (D-scaled indices)                                   | 1              |
     /// | 1     | Public    | `[out_0, out_1, ...]` (D-scaled indices)                                   | 1              |
-    /// | 2     | Alu       | `[sel_add_vs_mul, sel_bool, sel_muladd, a_idx, b_idx, c_idx, out_idx, mult_a_eff, b_is_creator, mult_c_eff, out_is_creator]` | 11 |
+    /// | 2     | Alu       | `[sel_add_vs_mul, sel_bool, sel_muladd, a_idx, b_idx, c_idx, out_idx, a_is_reader, b_is_creator, c_is_reader, out_is_creator]` | 11 |
     ///
-    /// For constrained operands, `mult_a_eff` / `mult_c_eff` are -1 (reader). For unconstrained
-    /// operands, the first ALU row that uses that index sends +N (N = total unconstrained reads of
-    /// that index); later rows send -1. This preserves soundness without a witness table.
-    /// Other signed multiplicities are computed in `get_airs_and_degrees_with_prep` from `ext_reads`.
+    /// Signed multiplicities are not stored here; they are computed in `get_airs_and_degrees_with_prep`
+    /// using the `ext_reads` field, which tracks how many times each witness is read.
     ///
     /// Indices in CTL lookups are stored as `WitnessId(n) * d`; use `d = EF::DIMENSION` for extension field.
     pub fn generate_preprocessed_columns(
@@ -305,13 +303,16 @@ impl<F: Field> Circuit<F> {
     ) -> Result<PreprocessedColumns<F>, CircuitError> {
         let mut preprocessed = PreprocessedColumns::new_with_d(d);
 
+        // Track which witnesses have been defined (first-occurrence = creator).
+        // Const and Public define their outputs first. ALU ops define their output (forward)
+        // or their `b` operand (backward/sub encoding where `out` was already defined).
         let mut defined = alloc::vec![false; self.witness_count as usize];
-        let mut unconstrained_reads: Vec<u32> = alloc::vec![0; self.witness_count as usize];
-        let mut alu_creator_flags: Vec<(F, F)> = alloc::vec![];
 
-        // Pass 1: build defined[], unconstrained_reads[], ext_reads; emit Const/Public; do not emit ALU rows.
+        // Process each primitive operation.
         for op in &self.ops {
             match op {
+                // Const: creates the output witness value. Store D-scaled out index.
+                // No ext_reads increment: Const is a creator, not a reader.
                 Op::Const { out, .. } => {
                     let idx = preprocessed.witness_index_as_field(*out);
                     preprocessed.primitive[PrimitiveOpType::Const as usize].push(idx);
@@ -321,6 +322,8 @@ impl<F: Field> Circuit<F> {
                     }
                     defined[out_idx] = true;
                 }
+                // Public: creates the output witness value. Store D-scaled out index.
+                // No ext_reads increment: Public is a creator, not a reader.
                 Op::Public { out, .. } => {
                     let idx = preprocessed.witness_index_as_field(*out);
                     preprocessed.primitive[PrimitiveOpType::Public as usize].push(idx);
@@ -330,64 +333,117 @@ impl<F: Field> Circuit<F> {
                     }
                     defined[out_idx] = true;
                 }
+                // Unified ALU operations with selectors for operation kind.
+                //
+                // Preprocessed per op (12 values, no multiplicities):
+                // [sel_add_vs_mul, sel_bool, sel_muladd, sel_horner, a_idx, b_idx, c_idx, out_idx,
+                //  a_is_reader, b_is_creator, c_is_reader, out_is_creator]
+                //
+                // a_is_reader: 1 if `a` is a constrained witness (defined by Const/Public/ALU/Poseidon2).
+                // c_is_reader: 1 if `c` is a constrained witness.
+                // 0 means unconstrained (Unconstrained NonPrimitive op output): no bus contribution.
+                //
+                // Three cases based on which operands are already defined:
+                //
+                // Forward (out not yet defined): b_is_creator=0, out_is_creator=1.
+                //   Creator: out. Readers: b (always), a (if a_is_reader), c (if c_is_reader).
+                //
+                // Backward (out defined, b not yet defined, e.g. backward-encoded Sub):
+                //   b_is_creator=1, out_is_creator=0. Creator: b.
+                //   Readers: out (always), a (if a_is_reader), c (if c_is_reader).
+                //
+                // All-reader (out and b both already defined, e.g. assert_zero rewrite):
+                //   b_is_creator=0, out_is_creator=0. No creator.
+                //   Readers: b, out (always), a (if a_is_reader), c (if c_is_reader).
                 Op::Alu {
-                    kind: _kind,
-                    a,
-                    b,
-                    c,
-                    out,
-                    ..
+                    kind, a, b, c, out, ..
                 } => {
+                    let (sel_add_vs_mul, sel_bool, sel_muladd, sel_horner) = match kind {
+                        AluOpKind::Add => (F::ONE, F::ZERO, F::ZERO, F::ZERO),
+                        AluOpKind::Mul => (F::ZERO, F::ZERO, F::ZERO, F::ZERO),
+                        AluOpKind::BoolCheck => (F::ZERO, F::ONE, F::ZERO, F::ZERO),
+                        AluOpKind::MulAdd => (F::ZERO, F::ZERO, F::ONE, F::ZERO),
+                        AluOpKind::HornerAcc => (F::ZERO, F::ZERO, F::ZERO, F::ONE),
+                    };
                     let c_wid = c.unwrap_or(WitnessId(0));
+                    let d_u32 = d as u32;
+
                     let out_already_defined =
                         (out.0 as usize) < defined.len() && defined[out.0 as usize];
                     let b_already_defined = (b.0 as usize) < defined.len() && defined[b.0 as usize];
+
+                    // Determine whether a and c are constrained witnesses (have creator AIRs).
+                    // Unconstrained witnesses are never marked defined; their reads don't
+                    // contribute to the WitnessChecks bus.
                     let a_is_reader = (a.0 as usize) < defined.len() && defined[a.0 as usize];
                     let c_is_reader =
                         (c_wid.0 as usize) < defined.len() && defined[c_wid.0 as usize];
 
-                    if !a_is_reader {
-                        let idx = a.0 as usize;
-                        if idx >= unconstrained_reads.len() {
-                            unconstrained_reads.resize(idx + 1, 0);
-                        }
-                        unconstrained_reads[idx] += 1;
-                    }
-                    if !c_is_reader {
-                        let idx = c_wid.0 as usize;
-                        if idx >= unconstrained_reads.len() {
-                            unconstrained_reads.resize(idx + 1, 0);
-                        }
-                        unconstrained_reads[idx] += 1;
-                    }
-
                     let (b_is_creator, out_is_creator) = if !out_already_defined {
-                        (F::ZERO, F::ONE)
+                        (F::ZERO, F::ONE) // forward: out is new creator
                     } else if !b_already_defined {
-                        (F::ONE, F::ZERO)
+                        (F::ONE, F::ZERO) // backward: b is new creator
                     } else {
-                        (F::ZERO, F::ZERO)
+                        (F::ZERO, F::ZERO) // all-reader: no new creator
                     };
-                    alu_creator_flags.push((b_is_creator, out_is_creator));
+
+                    preprocessed.primitive[PrimitiveOpType::Alu as usize].extend([
+                        sel_add_vs_mul,
+                        sel_bool,
+                        sel_muladd,
+                        sel_horner,
+                        F::from_u32(a.0 * d_u32),
+                        F::from_u32(b.0 * d_u32),
+                        F::from_u32(c_wid.0 * d_u32),
+                        F::from_u32(out.0 * d_u32),
+                        if a_is_reader { F::ONE } else { F::ZERO },
+                        b_is_creator,
+                        if c_is_reader { F::ONE } else { F::ZERO },
+                        out_is_creator,
+                    ]);
 
                     if !out_already_defined {
+                        // Forward: out is the creator, b is always a reader.
+                        // a and c contribute to ext_reads only if they are constrained.
                         let out_idx = out.0 as usize;
                         if out_idx >= defined.len() {
                             defined.resize(out_idx + 1, false);
                         }
                         defined[out_idx] = true;
-                        let readers = alloc::vec![*b, *a, c_wid];
+                        let mut readers = alloc::vec![*b];
+                        if a_is_reader {
+                            readers.push(*a);
+                        }
+                        if c_is_reader {
+                            readers.push(c_wid);
+                        }
                         preprocessed.increment_ext_reads(&readers);
                     } else if !b_already_defined {
+                        // Backward: b is the creator, out is always a reader.
+                        // a and c contribute to ext_reads only if they are constrained.
                         let b_idx = b.0 as usize;
                         if b_idx >= defined.len() {
                             defined.resize(b_idx + 1, false);
                         }
                         defined[b_idx] = true;
-                        let readers = alloc::vec![*out, *a, c_wid];
+                        let mut readers = alloc::vec![*out];
+                        if a_is_reader {
+                            readers.push(*a);
+                        }
+                        if c_is_reader {
+                            readers.push(c_wid);
+                        }
                         preprocessed.increment_ext_reads(&readers);
                     } else {
-                        let readers = alloc::vec![*b, *out, *a, c_wid];
+                        // All-reader: b and out are always readers.
+                        // a and c contribute to ext_reads only if they are constrained.
+                        let mut readers = alloc::vec![*b, *out];
+                        if a_is_reader {
+                            readers.push(*a);
+                        }
+                        if c_is_reader {
+                            readers.push(c_wid);
+                        }
                         preprocessed.increment_ext_reads(&readers);
                     }
                 }
@@ -398,12 +454,27 @@ impl<F: Field> Circuit<F> {
                     ..
                 } => {
                     executor.preprocess(inputs, outputs, &mut preprocessed)?;
+
+                    // Mark Poseidon2 rate outputs as 'defined': they are created on the
+                    // WitnessChecks bus by the Poseidon2 AIR, so subsequent ALU ops that
+                    // read them are constrained readers (mult = -1).
+                    //
+                    // The circuit optimizer's witness_rewrite deduplication can cause two
+                    // Poseidon2 ops to share the same output WitnessId (when hashing the same
+                    // inputs). The FIRST op is the creator; subsequent ops are readers. Duplicates
+                    // are recorded in `preprocessed.poseidon2_dup_wids` so that Phase 2 in
+                    // common.rs can set out_ctl = -1 (reader) instead of +ext_reads (creator).
+                    //
+                    // Unconstrained ops have no AIR; their outputs remain undefined so
+                    // ALU reads are treated as unconstrained (mult = 0, no bus lookup).
                     match executor.op_type() {
                         NonPrimitiveOpType::Poseidon2Perm(_) => {
                             for out_limb in outputs.iter().take(2) {
                                 for wid in out_limb {
                                     let wid_idx = wid.0 as usize;
                                     if wid_idx < defined.len() && defined[wid_idx] {
+                                        // Duplicate: a previous Poseidon2 op already created
+                                        // this WitnessId. Record it as a duplicate reader.
                                         let dup_len = preprocessed.poseidon2_dup_wids.len();
                                         if wid_idx >= dup_len {
                                             preprocessed
@@ -411,8 +482,10 @@ impl<F: Field> Circuit<F> {
                                                 .resize(wid_idx + 1, false);
                                         }
                                         preprocessed.poseidon2_dup_wids[wid_idx] = true;
+                                        // Increment ext_reads: this op reads the witness.
                                         preprocessed.increment_ext_reads(&[*wid]);
                                     } else {
+                                        // First occurrence: mark as defined (creator).
                                         if wid_idx >= defined.len() {
                                             defined.resize(wid_idx + 1, false);
                                         }
@@ -427,78 +500,7 @@ impl<F: Field> Circuit<F> {
             }
         }
 
-        let neg_one = F::ZERO - F::ONE;
-        let d_u32 = d as u32;
-        let mut seen_unconstrained = alloc::vec![false; self.witness_count as usize];
-        let mut alu_flag_idx = 0_usize;
-
-        // Pass 2: emit ALU preprocessed with mult_a_eff and mult_c_eff (first unconstrained = creator).
-        for op in &self.ops {
-            if let Op::Alu {
-                kind, a, b, c, out, ..
-            } = op
-            {
-                let (b_is_creator, out_is_creator) = alu_creator_flags[alu_flag_idx];
-                alu_flag_idx += 1;
-
-                let (sel_add_vs_mul, sel_bool, sel_muladd) = match kind {
-                    AluOpKind::Add => (F::ONE, F::ZERO, F::ZERO),
-                    AluOpKind::Mul => (F::ZERO, F::ZERO, F::ZERO),
-                    AluOpKind::BoolCheck => (F::ZERO, F::ONE, F::ZERO),
-                    AluOpKind::MulAdd => (F::ZERO, F::ZERO, F::ONE),
-                };
-                let c_wid = c.unwrap_or(WitnessId(0));
-                let a_is_reader = (a.0 as usize) < defined.len() && defined[a.0 as usize];
-                let c_is_reader = (c_wid.0 as usize) < defined.len() && defined[c_wid.0 as usize];
-
-                let mult_a_eff = if a_is_reader {
-                    neg_one
-                } else {
-                    let idx = a.0 as usize;
-                    if idx >= seen_unconstrained.len() {
-                        seen_unconstrained.resize(idx + 1, false);
-                    }
-                    if !seen_unconstrained[idx] {
-                        seen_unconstrained[idx] = true;
-                        let n = unconstrained_reads.get(idx).copied().unwrap_or(0);
-                        F::from_u32(n.saturating_sub(1))
-                    } else {
-                        neg_one
-                    }
-                };
-
-                let mult_c_eff = if c_is_reader {
-                    neg_one
-                } else {
-                    let idx = c_wid.0 as usize;
-                    if idx >= seen_unconstrained.len() {
-                        seen_unconstrained.resize(idx + 1, false);
-                    }
-                    if !seen_unconstrained[idx] {
-                        seen_unconstrained[idx] = true;
-                        let n = unconstrained_reads.get(idx).copied().unwrap_or(0);
-                        F::from_u32(n.saturating_sub(1))
-                    } else {
-                        neg_one
-                    }
-                };
-
-                preprocessed.primitive[PrimitiveOpType::Alu as usize].extend([
-                    sel_add_vs_mul,
-                    sel_bool,
-                    sel_muladd,
-                    F::from_u32(a.0 * d_u32),
-                    F::from_u32(b.0 * d_u32),
-                    F::from_u32(c_wid.0 * d_u32),
-                    F::from_u32(out.0 * d_u32),
-                    mult_a_eff,
-                    b_is_creator,
-                    mult_c_eff,
-                    out_is_creator,
-                ]);
-            }
-        }
-
+        // Ensure ext_reads covers at least all witnesses.
         let size = self.witness_count as usize;
         if preprocessed.ext_reads.len() < size {
             preprocessed.ext_reads.resize(size, 0);
@@ -589,45 +591,47 @@ mod tests {
             vec![F::from_u32(1)]
         );
 
-        // ALU column: [sel1, sel2, sel3, a, b, c, out, mult_a_eff, b_is_creator, mult_c_eff, out_is_creator] per op
-        // All constrained → mult_a_eff = mult_c_eff = -1. All forward → out_is_creator=1.
-        let neg_one = F::ZERO - F::ONE;
+        // ALU column: [sel1, sel2, sel3, sel4, a, b, c, out, a_is_reader, b_is_creator, c_is_reader, out_is_creator] per op
+        // All operands are Const/Public defined: a_is_reader=1, c_is_reader=1. All forward: out_is_creator=1.
         let expected_alu = vec![
-            // add(0, 1, 3)
+            // add(0, 1, 3): forward, a=0(defined), c=0(defined) → a_is_reader=1, c_is_reader=1
             F::ONE,
+            F::ZERO,
             F::ZERO,
             F::ZERO,
             F::ZERO,
             F::from_u32(1),
             F::ZERO,
             F::from_u32(3),
-            neg_one,
+            F::ONE,
             F::ZERO,
-            neg_one,
             F::ONE,
-            // add(3, 2, 4)
             F::ONE,
+            // add(3, 2, 4): forward, a=3(defined by prev ALU), c=0(defined) → a_is_reader=1, c_is_reader=1
+            F::ONE,
+            F::ZERO,
             F::ZERO,
             F::ZERO,
             F::from_u32(3),
             F::from_u32(2),
             F::ZERO,
             F::from_u32(4),
-            neg_one,
-            F::ZERO,
-            neg_one,
             F::ONE,
-            // mul(4, 2, 5)
+            F::ZERO,
+            F::ONE,
+            F::ONE,
+            // mul(4, 2, 5): forward, a=4(defined by prev ALU), c=0(defined) → a_is_reader=1, c_is_reader=1
             F::ZERO,
             F::ZERO,
             F::ZERO,
+            F::ZERO, // sel_horner
             F::from_u32(4),
             F::from_u32(2),
             F::ZERO,
             F::from_u32(5),
-            neg_one,
+            F::ONE,
             F::ZERO,
-            neg_one,
+            F::ONE,
             F::ONE,
         ];
         assert_eq!(
@@ -645,7 +649,7 @@ mod tests {
         // add(3,2,4): a=3, b=2, c=WitnessId(0) → reads 3,2,0
         // mul(4,2,5): a=4, b=2, c=WitnessId(0) → reads 4,2,0
         // Index 0: 3 reads (a from op1 + c_default from all 3 ops = 1+3=4? No: a=0 for op1, plus c=0 for ops 1,2,3)
-        // op1: a=WitnessId(0), c=WitnessId(0) → 2 reads for wid 0
+        // Actually op1: a=WitnessId(0), c=WitnessId(0) → 2 reads for wid 0
         // op2: a=WitnessId(3), c=WitnessId(0) → 1 read for wid 0
         // op3: a=WitnessId(4), c=WitnessId(0) → 1 read for wid 0
         // Total reads for wid 0: 2 + 1 + 1 = 4
@@ -670,15 +674,12 @@ mod tests {
         circuit.witness_count = 16;
         let result = circuit.generate_preprocessed_columns(1).unwrap();
 
-        // add(0, 15, 5): a=0 and c=0 undefined; ext_reads[0]=2 (a and c), mult_a_eff=+1 (first), mult_c_eff=-1
-        assert_eq!(result.ext_reads[0], 2);
-        assert_eq!(result.ext_reads[15], 1);
+        // add(0, 15, 5): a=WitnessId(0) (undefined), c=WitnessId(0) (undefined) → a_is_reader=0, c_is_reader=0
+        // Only b=WitnessId(15) is counted (always a reader in forward case).
+        assert_eq!(result.ext_reads[0], 0); // a and c_default: undefined → no ext_reads increment
+        assert_eq!(result.ext_reads[15], 1); // b: always counted as reader
+        // output (5) is not a read
         assert_eq!(result.ext_reads[5], 0);
-
-        let alu = &result.primitive[PrimitiveOpType::Alu as usize];
-        let neg_one = F::ZERO - F::ONE;
-        assert_eq!(alu[7], F::from_u32(1)); // mult_a_eff: +(N-1) first unconstrained for index 0
-        assert_eq!(alu[9], neg_one); // mult_c_eff: same index 0, already seen
     }
 
     #[test]
@@ -703,20 +704,21 @@ mod tests {
         let circuit = make_circuit(ops);
         let result = circuit.generate_preprocessed_columns(1).unwrap();
 
-        // ALU column for MulAdd (forward): all constrained → mult_a_eff = mult_c_eff = -1
-        let neg_one = F::ZERO - F::ONE;
+        // ALU column for MulAdd (forward): [sel1, sel2, sel3, sel_horner, a, b, c, out, a_is_reader, b_is_creator, c_is_reader, out_is_creator]
+        // a=0(defined), c=2(defined) → a_is_reader=1, c_is_reader=1
         let expected_alu = vec![
             F::ZERO,
             F::ZERO,
             F::ONE,
+            F::ZERO, // sel_horner
             F::ZERO,
             F::from_u32(1),
             F::from_u32(2),
             F::from_u32(3),
-            neg_one,
-            F::ZERO,
-            neg_one,
             F::ONE,
+            F::ZERO,
+            F::ONE,
+            F::ONE, // a_is_reader=1, b_is_creator=0, c_is_reader=1, out_is_creator=1
         ];
         assert_eq!(
             result.primitive[PrimitiveOpType::Alu as usize],

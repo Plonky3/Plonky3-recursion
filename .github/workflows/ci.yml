@@ -66,11 +66,11 @@ jobs:
           cargo run --package p3-circuit-prover --example poseidon2_perm_chain
           cargo run --package p3-circuit-prover --example poseidon2_perm_merkle
 
-      - name: Run allocation_log example with debug logging
+      - name: Run allocation_log example with debugging feature and debug logging
         if: ${{ !matrix.features }}
         env:
           RUST_LOG: debug
-        run: cargo run --package p3-circuit --example allocation_log
+        run: cargo run --package p3-circuit --example allocation_log --features debugging
 
       - name: Disk usage (after)
         if: always()
