@@ -539,7 +539,7 @@ pub(crate) fn eval<
     //     Input limbs 0-1 are free/private.
     // BUT: If in_ctl[i] = 1, CTL overrides chaining (limb is not chained).
     // Chaining only applies when in_ctl[limb] = 0.
-    let is_left = AB::Expr::ONE - next_bit.clone();
+    let is_left = AB::Expr::ONE - next_bit.clone().into();
 
     // Limb 0: chain from out_r[0] when mmcs_bit = 0 (left), unless in_ctl[0] = 1.
     // When mmcs_bit = 1 (right), limb 0 is private (sibling).
@@ -588,14 +588,14 @@ pub(crate) fn eval<
     // If merkle_path_{r+1} = 1 and new_start_{r+1} = 0:
     //   mmcs_index_sum_{r+1} = mmcs_index_sum_r * 2 + mmcs_bit_{r+1}
     let two = AB::Expr::ONE + AB::Expr::ONE;
-    let not_next_new_start = AB::Expr::ONE - next_preprocessed[new_start_idx].clone();
+    let not_next_new_start = AB::Expr::ONE - next_preprocessed[new_start_idx].clone().into();
     builder
         .when_transition()
         .when(not_next_new_start)
         .when(next_preprocessed[merkle_path_idx].clone())
         .assert_zero(
             next.mmcs_index_sum.clone()
-                - (local.mmcs_index_sum.clone() * two + next.mmcs_bit.clone()),
+                - (local.mmcs_index_sum.clone() * two + next.mmcs_bit.clone().into()),
         );
 
     let p3_poseidon2_num_cols = p3_poseidon2_air::num_cols::<
@@ -623,6 +623,122 @@ pub(crate) fn eval<
     // out[0..3] = Poseidon2(in[0..3])
     // This holds regardless of merkle_path, new_start, CTL flags, chaining, or MMCS accumulator.
     air.p3_poseidon2.eval(&mut sub_builder);
+}
+
+/// Like `eval_unchecked` but the PrimeSubfield bound is on `ABConcrete`; `AB` is
+/// only required to be an `AirBuilder`. Caller must ensure `AB` and `ABConcrete`
+/// have identical layout at runtime.
+///
+/// # Safety
+/// Caller must ensure `F == AB::F == ABConcrete::F` at runtime and that `AB` and
+/// `ABConcrete` are layout-compatible.
+pub unsafe fn eval_unchecked_with_concrete<
+    F: PrimeField,
+    AB: AirBuilder,
+    ABConcrete: AirBuilder,
+    LinearLayers: GenericPoseidon2LinearLayers<WIDTH>,
+    const D: usize,
+    const WIDTH: usize,
+    const WIDTH_EXT: usize,
+    const RATE_EXT: usize,
+    const CAPACITY_EXT: usize,
+    const SBOX_DEGREE: u64,
+    const SBOX_REGISTERS: usize,
+    const HALF_FULL_ROUNDS: usize,
+    const PARTIAL_ROUNDS: usize,
+>(
+    air: &Poseidon2CircuitAir<
+        F,
+        LinearLayers,
+        D,
+        WIDTH,
+        WIDTH_EXT,
+        RATE_EXT,
+        CAPACITY_EXT,
+        SBOX_DEGREE,
+        SBOX_REGISTERS,
+        HALF_FULL_ROUNDS,
+        PARTIAL_ROUNDS,
+    >,
+    builder: &mut AB,
+    local: &Poseidon2CircuitCols<
+        AB::Var,
+        Poseidon2Cols<
+            AB::Var,
+            WIDTH,
+            SBOX_DEGREE,
+            SBOX_REGISTERS,
+            HALF_FULL_ROUNDS,
+            PARTIAL_ROUNDS,
+        >,
+    >,
+    next: &Poseidon2CircuitCols<
+        AB::Var,
+        Poseidon2Cols<
+            AB::Var,
+            WIDTH,
+            SBOX_DEGREE,
+            SBOX_REGISTERS,
+            HALF_FULL_ROUNDS,
+            PARTIAL_ROUNDS,
+        >,
+    >,
+    next_preprocessed: &[AB::Var],
+) where
+    ABConcrete::F: PrimeField,
+{
+    unsafe {
+        let builder_c: &mut ABConcrete = core::mem::transmute(builder);
+        let local_c: &Poseidon2CircuitCols<
+            ABConcrete::Var,
+            Poseidon2Cols<
+                ABConcrete::Var,
+                WIDTH,
+                SBOX_DEGREE,
+                SBOX_REGISTERS,
+                HALF_FULL_ROUNDS,
+                PARTIAL_ROUNDS,
+            >,
+        > = core::mem::transmute(local);
+        let next_c: &Poseidon2CircuitCols<
+            ABConcrete::Var,
+            Poseidon2Cols<
+                ABConcrete::Var,
+                WIDTH,
+                SBOX_DEGREE,
+                SBOX_REGISTERS,
+                HALF_FULL_ROUNDS,
+                PARTIAL_ROUNDS,
+            >,
+        > = core::mem::transmute(next);
+        let next_preprocessed_c: &[ABConcrete::Var] = core::mem::transmute(next_preprocessed);
+        let air_c: &Poseidon2CircuitAir<
+            ABConcrete::F,
+            LinearLayers,
+            D,
+            WIDTH,
+            WIDTH_EXT,
+            RATE_EXT,
+            CAPACITY_EXT,
+            SBOX_DEGREE,
+            SBOX_REGISTERS,
+            HALF_FULL_ROUNDS,
+            PARTIAL_ROUNDS,
+        > = core::mem::transmute(air);
+        eval::<
+            ABConcrete,
+            LinearLayers,
+            D,
+            WIDTH,
+            WIDTH_EXT,
+            RATE_EXT,
+            CAPACITY_EXT,
+            SBOX_DEGREE,
+            SBOX_REGISTERS,
+            HALF_FULL_ROUNDS,
+            PARTIAL_ROUNDS,
+        >(air_c, builder_c, local_c, next_c, next_preprocessed_c);
+    }
 }
 
 /// Unsafe version of `eval` that allows calling with a builder whose field type
@@ -1039,10 +1155,10 @@ mod test {
             mmcs_bit: false,
             mmcs_index_sum: Val::ZERO,
             input_values: state_a.to_vec(),
-            in_ctl: [false; POSEIDON2_LIMBS],
-            input_indices: [0; POSEIDON2_LIMBS],
-            out_ctl: [false; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
-            output_indices: [0; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
+            in_ctl: vec![false; POSEIDON2_LIMBS],
+            input_indices: vec![0; POSEIDON2_LIMBS],
+            out_ctl: vec![false; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
+            output_indices: vec![0; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
             mmcs_index_sum_idx: 0,
             mmcs_ctl_enabled: false,
         };
@@ -1057,10 +1173,10 @@ mod test {
             mmcs_bit: true,
             mmcs_index_sum: Val::ZERO,
             input_values: state_b.to_vec(),
-            in_ctl: [false; POSEIDON2_LIMBS],
-            input_indices: [0; POSEIDON2_LIMBS],
-            out_ctl: [false; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
-            output_indices: [0; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
+            in_ctl: vec![false; POSEIDON2_LIMBS],
+            input_indices: vec![0; POSEIDON2_LIMBS],
+            out_ctl: vec![false; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
+            output_indices: vec![0; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
             mmcs_index_sum_idx: 0,
             mmcs_ctl_enabled: false,
         };
@@ -1080,10 +1196,10 @@ mod test {
             mmcs_bit: false,
             mmcs_index_sum: Val::ZERO,
             input_values: state_c.to_vec(),
-            in_ctl: [false; POSEIDON2_LIMBS],
-            input_indices: [0; POSEIDON2_LIMBS],
-            out_ctl: [false; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
-            output_indices: [0; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
+            in_ctl: vec![false; POSEIDON2_LIMBS],
+            input_indices: vec![0; POSEIDON2_LIMBS],
+            out_ctl: vec![false; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
+            output_indices: vec![0; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
             mmcs_index_sum_idx: 0,
             mmcs_ctl_enabled: false,
         };
@@ -1097,10 +1213,10 @@ mod test {
             mmcs_bit: false,
             mmcs_index_sum: Val::ZERO,
             input_values: state_d.to_vec(),
-            in_ctl: [false; POSEIDON2_LIMBS],
-            input_indices: [0; POSEIDON2_LIMBS],
-            out_ctl: [false; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
-            output_indices: [0; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
+            in_ctl: vec![false; POSEIDON2_LIMBS],
+            input_indices: vec![0; POSEIDON2_LIMBS],
+            out_ctl: vec![false; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
+            output_indices: vec![0; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
             mmcs_index_sum_idx: 0,
             mmcs_ctl_enabled: false,
         };
@@ -1116,10 +1232,10 @@ mod test {
                 mmcs_bit: false,
                 mmcs_index_sum: Val::ZERO,
                 input_values: vec![Val::ZERO; WIDTH],
-                in_ctl: [false; POSEIDON2_LIMBS],
-                input_indices: [0; POSEIDON2_LIMBS],
-                out_ctl: [false; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
-                output_indices: [0; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
+                in_ctl: vec![false; POSEIDON2_LIMBS],
+                input_indices: vec![0; POSEIDON2_LIMBS],
+                out_ctl: vec![false; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
+                output_indices: vec![0; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
                 mmcs_index_sum_idx: 0,
                 mmcs_ctl_enabled: false,
             };

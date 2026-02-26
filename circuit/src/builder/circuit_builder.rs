@@ -139,46 +139,81 @@ where
         F: CircuitField + ExtensionField<Config::BaseField>,
         P: Permutation<[Config::BaseField; 16]> + Clone + Send + Sync + 'static,
     {
-        // Hard gate on D=4 and WIDTH=16 to avoid silently accepting incompatible configs.
-        assert!(
-            Config::D == 4,
-            "Poseidon2 perm op only supports extension degree D=4"
-        );
-        assert!(
-            Config::WIDTH == 16,
-            "Poseidon2 perm op only supports WIDTH=16"
-        );
-
-        // Build exec closure that:
-        // 1. Converts [F;4] extension limbs to [Base;16] using basis coefficients
-        // 2. Calls perm.permute([Base;16])
-        // 3. Converts output [Base;16] back to [F;4]
-        let exec: crate::op::Poseidon2PermExec<F, 4> = Arc::new(move |input: &[F; 4]| {
-            // Convert 4 extension elements to 16 base elements
-            let mut base_input = [Config::BaseField::ZERO; 16];
+        let d = Config::D;
+        let width_ext = Config::WIDTH_EXT;
+        let width = Config::WIDTH;
+        let exec: crate::op::Poseidon2PermExec<F> = Arc::new(move |input: &[F]| {
+            let mut base_input = vec![Config::BaseField::ZERO; width];
             for (i, ext_elem) in input.iter().enumerate() {
                 let coeffs = ext_elem.as_basis_coefficients_slice();
-                debug_assert_eq!(
-                    coeffs.len(),
-                    4,
-                    "Extension field should have D=4 basis coefficients"
-                );
-                base_input[i * 4..(i + 1) * 4].copy_from_slice(coeffs);
+                base_input[i * d..(i + 1) * d].copy_from_slice(coeffs);
             }
-
-            // Apply permutation
-            let base_output = perm.permute(base_input);
-
-            // Convert 16 base elements back to 4 extension elements
-            let mut output = [F::ZERO; 4];
-            for i in 0..4 {
-                let coeffs = &base_output[i * 4..(i + 1) * 4];
-                output[i] = F::from_basis_coefficients_slice(coeffs)
-                    .expect("basis coefficients should be valid");
+            let base_output = perm.permute(
+                base_input
+                    .try_into()
+                    .expect("base_input length must equal WIDTH"),
+            );
+            let mut output = Vec::with_capacity(width_ext);
+            for i in 0..width_ext {
+                let coeffs = &base_output[i * d..(i + 1) * d];
+                output.push(
+                    F::from_basis_coefficients_slice(coeffs)
+                        .expect("basis coefficients should be valid"),
+                );
             }
             output
         });
 
+        self.config.enable_op(
+            NonPrimitiveOpType::Poseidon2Perm(Config::CONFIG),
+            NonPrimitiveOpConfig::Poseidon2Perm {
+                config: Config::CONFIG,
+                exec,
+            },
+        );
+        self.non_primitive_trace_generators.insert(
+            NonPrimitiveOpType::Poseidon2Perm(Config::CONFIG),
+            trace_generator,
+        );
+    }
+
+    /// Enables Poseidon2 for configs with WIDTH=8 (e.g. Goldilocks).
+    pub fn enable_poseidon2_perm_width_8<Config, P>(
+        &mut self,
+        trace_generator: TraceGeneratorFn<F>,
+        perm: P,
+    ) where
+        Config: Poseidon2Params,
+        F: CircuitField + ExtensionField<Config::BaseField>,
+        P: Permutation<[Config::BaseField; 8]> + Clone + Send + Sync + 'static,
+    {
+        assert!(
+            Config::WIDTH == 8,
+            "enable_poseidon2_perm_width_8 requires WIDTH=8"
+        );
+        let d = Config::D;
+        let width_ext = Config::WIDTH_EXT;
+        let exec: crate::op::Poseidon2PermExec<F> = Arc::new(move |input: &[F]| {
+            let mut base_input = vec![Config::BaseField::ZERO; 8];
+            for (i, ext_elem) in input.iter().enumerate() {
+                let coeffs = ext_elem.as_basis_coefficients_slice();
+                base_input[i * d..(i + 1) * d].copy_from_slice(coeffs);
+            }
+            let base_output = perm.permute(
+                base_input
+                    .try_into()
+                    .expect("base_input length must equal 8"),
+            );
+            let mut output = Vec::with_capacity(width_ext);
+            for i in 0..width_ext {
+                let coeffs = &base_output[i * d..(i + 1) * d];
+                output.push(
+                    F::from_basis_coefficients_slice(coeffs)
+                        .expect("basis coefficients should be valid"),
+                );
+            }
+            output
+        });
         self.config.enable_op(
             NonPrimitiveOpType::Poseidon2Perm(Config::CONFIG),
             NonPrimitiveOpConfig::Poseidon2Perm {
@@ -1008,46 +1043,39 @@ where
     ///
     /// # Parameters
     /// - `config`: The Poseidon2 configuration to use
-    /// - `inputs`: 4 extension element targets (the sponge state)
+    /// - `inputs`: width_ext extension element targets (the sponge state)
     ///
     /// # Returns
-    /// 4 extension element targets (the permuted state)
+    /// width_ext extension element targets (the permuted state)
     ///
     /// # Errors
     /// Returns error if the Poseidon2 operation is not enabled
     pub fn add_poseidon2_perm_for_challenger(
         &mut self,
         config: crate::ops::Poseidon2Config,
-        inputs: [ExprId; 4],
-    ) -> Result<[ExprId; 4], CircuitBuilderError> {
+        inputs: &[ExprId],
+    ) -> Result<Vec<ExprId>, CircuitBuilderError> {
         self.push_scope("poseidon2_perm_for_challenger");
 
         // Use add_poseidon2_perm with CTL verification for soundness
         // - All 4 inputs are CTL-verified
         // - Outputs 0-1 are CTL-verified (rate elements)
         // - Outputs 2-3 are returned but NOT CTL-verified (capacity elements)
+        let width_ext = config.width_ext();
         let (_op_id, outputs) = self.add_poseidon2_perm(Poseidon2PermCall {
             config,
             new_start: true, // Each challenger permutation is independent
             merkle_path: false,
             mmcs_bit: None,
-            inputs: [
-                Some(inputs[0]),
-                Some(inputs[1]),
-                Some(inputs[2]),
-                Some(inputs[3]),
-            ],
-            out_ctl: [true, true],    // CTL-verify rate outputs
-            return_all_outputs: true, // Return all 4 outputs for sponge state
+            inputs: inputs.iter().map(|&x| Some(x)).collect(),
+            out_ctl: vec![true; config.rate_ext()],
+            return_all_outputs: true,
             mmcs_index_sum: None,
         })?;
 
-        let output_exprs: [ExprId; 4] = [
-            outputs[0].ok_or(CircuitBuilderError::MissingOutput)?,
-            outputs[1].ok_or(CircuitBuilderError::MissingOutput)?,
-            outputs[2].ok_or(CircuitBuilderError::MissingOutput)?,
-            outputs[3].ok_or(CircuitBuilderError::MissingOutput)?,
-        ];
+        let output_exprs: Vec<ExprId> = (0..width_ext)
+            .map(|i| outputs[i].ok_or(CircuitBuilderError::MissingOutput))
+            .collect::<Result<Vec<_>, _>>()?;
 
         self.pop_scope();
         Ok(output_exprs)
@@ -1557,16 +1585,15 @@ mod tests {
             NonPrimitiveOpConfig::None,
         );
 
-        // Use add_poseidon2_perm with out_ctl to expose outputs.
         let z = builder.define_const(Ext4::ZERO);
         let (op_id, outputs) = builder
             .add_poseidon2_perm(Poseidon2PermCall {
                 config: Poseidon2Config::BabyBearD4Width16,
                 new_start: true,
                 merkle_path: false,
-                mmcs_bit: None, // Must be None when merkle_path=false
-                inputs: [Some(z), Some(z), Some(z), Some(z)],
-                out_ctl: [true, true],
+                mmcs_bit: None,
+                inputs: vec![Some(z), Some(z), Some(z), Some(z)],
+                out_ctl: vec![true, true],
                 return_all_outputs: false,
                 mmcs_index_sum: None,
             })

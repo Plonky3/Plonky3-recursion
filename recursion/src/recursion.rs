@@ -146,6 +146,11 @@ where
     }
 }
 
+/// Implemented by backends that can register Poseidon2 on the prover for a given extension degree (2 or 4).
+pub trait RegisterPoseidon2ForDegree<SC: StarkGenericConfig, const D: usize> {
+    fn register_poseidon2(&self, prover: &mut BatchStarkProver<SC>, config: Poseidon2Config);
+}
+
 /// Parameters for the shared recursion pipeline (table packing, optional overrides).
 #[derive(Clone, Debug)]
 pub struct ProveNextLayerParams {
@@ -201,7 +206,7 @@ impl<F: Field, EF: ExtensionField<F>, LG: LookupGadget> RecursiveAir<F, EF, LG> 
 
 /// Build a verifier circuit for a recursion layer.
 #[instrument(skip_all)]
-fn build_next_layer_circuit<SC, A, B>(
+fn build_next_layer_circuit<SC, A, B, const D: usize>(
     prev: &RecursionInput<'_, SC, A>,
     config: &SC,
     backend: &B,
@@ -210,7 +215,7 @@ where
     SC: StarkGenericConfig + Send + Sync + Clone + 'static,
     A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
     B: PcsRecursionBackend<SC, A>,
-    Val<SC>: PrimeField64 + StarkField + BinomiallyExtendable<4>,
+    Val<SC>: PrimeField64 + StarkField + BinomiallyExtendable<D>,
     SC::Challenge: BasedVectorSpace<Val<SC>>
         + From<Val<SC>>
         + ExtensionField<Val<SC>>
@@ -243,8 +248,8 @@ pub fn prove_next_layer<SC, A, B, const D: usize>(
 where
     SC: StarkGenericConfig + Send + Sync + Clone + 'static,
     A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
-    B: PcsRecursionBackend<SC, A>,
-    Val<SC>: PrimeField64 + StarkField + BinomiallyExtendable<4>,
+    B: PcsRecursionBackend<SC, A> + RegisterPoseidon2ForDegree<SC, D>,
+    Val<SC>: PrimeField64 + StarkField + BinomiallyExtendable<D>,
     SC::Challenge: BasedVectorSpace<Val<SC>>
         + From<Val<SC>>
         + ExtensionField<Val<SC>>
@@ -294,7 +299,7 @@ where
             ConstraintProfile::RecursionOptimized => AirVariant::Optimized,
         });
     if let Some(cfg) = backend.poseidon2_config_for_circuit() {
-        prover.register_poseidon2_table(cfg);
+        RegisterPoseidon2ForDegree::<SC, D>::register_poseidon2(backend, &mut prover, cfg);
     }
     let proof = prover
         .prove_all_tables(&traces, &circuit_prover_data)
@@ -322,8 +327,8 @@ pub fn build_and_prove_next_layer<SC, A, B, const D: usize>(
 where
     SC: StarkGenericConfig + Send + Sync + Clone + 'static,
     A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
-    B: PcsRecursionBackend<SC, A>,
-    Val<SC>: PrimeField64 + StarkField + BinomiallyExtendable<4>,
+    B: PcsRecursionBackend<SC, A> + RegisterPoseidon2ForDegree<SC, D>,
+    Val<SC>: PrimeField64 + StarkField + BinomiallyExtendable<D>,
     SC::Challenge: BasedVectorSpace<Val<SC>>
         + From<Val<SC>>
         + ExtensionField<Val<SC>>
@@ -331,7 +336,7 @@ where
     SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
 {
     let (verification_circuit, verifier_result) =
-        build_next_layer_circuit::<SC, A, B>(prev, config, backend)?;
+        build_next_layer_circuit::<SC, A, B, D>(prev, config, backend)?;
 
     prove_next_layer::<SC, A, B, D>(
         prev,
@@ -369,7 +374,7 @@ where
     A1: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
     A2: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
     B: PcsRecursionBackend<SC, A1> + PcsRecursionBackend<SC, A2>,
-    Val<SC>: PrimeField64 + StarkField + BinomiallyExtendable<4>,
+    Val<SC>: PrimeField64 + StarkField + BinomiallyExtendable<D>,
     SC::Challenge: BasedVectorSpace<Val<SC>>
         + From<Val<SC>>
         + ExtensionField<Val<SC>>
@@ -465,8 +470,10 @@ where
     SC: StarkGenericConfig + Send + Sync + Clone + 'static,
     A1: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
     A2: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
-    B: PcsRecursionBackend<SC, A1> + PcsRecursionBackend<SC, A2>,
-    Val<SC>: PrimeField64 + StarkField + BinomiallyExtendable<4>,
+    B: PcsRecursionBackend<SC, A1>
+        + PcsRecursionBackend<SC, A2>
+        + RegisterPoseidon2ForDegree<SC, D>,
+    Val<SC>: PrimeField64 + StarkField + BinomiallyExtendable<D>,
     SC::Challenge: BasedVectorSpace<Val<SC>>
         + From<Val<SC>>
         + ExtensionField<Val<SC>>
@@ -531,7 +538,7 @@ where
             ConstraintProfile::RecursionOptimized => AirVariant::Optimized,
         });
     if let Some(cfg) = <B as PcsRecursionBackend<SC, A1>>::poseidon2_config_for_circuit(backend) {
-        prover.register_poseidon2_table(cfg);
+        RegisterPoseidon2ForDegree::<SC, D>::register_poseidon2(backend, &mut prover, cfg);
     }
     let proof = prover
         .prove_all_tables(&traces, &circuit_prover_data)
@@ -574,8 +581,10 @@ where
     SC: StarkGenericConfig + Send + Sync + Clone + 'static,
     A1: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
     A2: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
-    B: PcsRecursionBackend<SC, A1> + PcsRecursionBackend<SC, A2>,
-    Val<SC>: PrimeField64 + StarkField + BinomiallyExtendable<4>,
+    B: PcsRecursionBackend<SC, A1>
+        + PcsRecursionBackend<SC, A2>
+        + RegisterPoseidon2ForDegree<SC, D>,
+    Val<SC>: PrimeField64 + StarkField + BinomiallyExtendable<D>,
     SC::Challenge: BasedVectorSpace<Val<SC>>
         + From<Val<SC>>
         + ExtensionField<Val<SC>>

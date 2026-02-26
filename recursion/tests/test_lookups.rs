@@ -819,8 +819,8 @@ fn test_poseidon2_ctl_lookups() {
             new_start: true,
             merkle_path: false,
             mmcs_bit: None,
-            inputs: [Some(input0), Some(input1), None, None],
-            out_ctl: [true, true], // Enable output CTL
+            inputs: vec![Some(input0), Some(input1), None, None],
+            out_ctl: vec![true, true],
             return_all_outputs: false,
             mmcs_index_sum: None,
         })
@@ -837,8 +837,8 @@ fn test_poseidon2_ctl_lookups() {
             new_start: true,
             merkle_path: false,
             mmcs_bit: None,
-            inputs: [Some(output0), Some(output1), None, None],
-            out_ctl: [false, false],
+            inputs: vec![Some(output0), Some(output1), None, None],
+            out_ctl: vec![false, false],
             return_all_outputs: false,
             mmcs_index_sum: None,
         })
@@ -912,10 +912,10 @@ fn test_poseidon2_chained_ctl_lookups() {
         .add_poseidon2_perm(Poseidon2PermCall {
             config: poseidon2_config,
             new_start: true,
-            merkle_path: false, // Sponge mode
+            merkle_path: false,
             mmcs_bit: None,
-            inputs: [Some(input0), Some(input1), None, None],
-            out_ctl: [false, false], // Not exposing outputs yet
+            inputs: vec![Some(input0), Some(input1), None, None],
+            out_ctl: vec![false, false],
             return_all_outputs: false,
             mmcs_index_sum: None,
         })
@@ -925,11 +925,11 @@ fn test_poseidon2_chained_ctl_lookups() {
     let (_op_id2, _outputs2) = builder
         .add_poseidon2_perm(Poseidon2PermCall {
             config: poseidon2_config,
-            new_start: false, // Chained
+            new_start: false,
             merkle_path: false,
             mmcs_bit: None,
-            inputs: [None, None, None, None], // Chained from previous output
-            out_ctl: [false, false],
+            inputs: vec![None, None, None, None],
+            out_ctl: vec![false, false],
             return_all_outputs: false,
             mmcs_index_sum: None,
         })
@@ -942,8 +942,8 @@ fn test_poseidon2_chained_ctl_lookups() {
             new_start: false,
             merkle_path: false,
             mmcs_bit: None,
-            inputs: [None, None, None, None],
-            out_ctl: [true, true], // Expose outputs via CTL
+            inputs: vec![None, None, None, None],
+            out_ctl: vec![true, true],
             return_all_outputs: false,
             mmcs_index_sum: None,
         })
@@ -957,8 +957,8 @@ fn test_poseidon2_chained_ctl_lookups() {
             new_start: true,
             merkle_path: false,
             mmcs_bit: None,
-            inputs: [outputs3[0], outputs3[1], None, None],
-            out_ctl: [false, false],
+            inputs: vec![outputs3[0], outputs3[1], None, None],
+            out_ctl: vec![false, false],
             return_all_outputs: false,
             mmcs_index_sum: None,
         })

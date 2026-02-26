@@ -1,4 +1,5 @@
 use alloc::string::ToString;
+use alloc::vec;
 use alloc::vec::Vec;
 use core::iter;
 
@@ -15,28 +16,29 @@ pub fn add_hash_slice<F: Field>(
     inputs: &[ExprId],
     reset: bool,
 ) -> Result<Vec<ExprId>, CircuitBuilderError> {
-    let chunks = inputs.chunks(poseidon2_config.rate_ext());
+    let width_ext = poseidon2_config.width_ext();
+    let rate_ext = poseidon2_config.rate_ext();
+    let chunks = inputs.chunks(rate_ext);
     let last_idx = chunks.len() - 1;
-    let mut outputs = [None, None, None, None];
+    let mut outputs = vec![None; width_ext];
     let mut last_op_id = NonPrimitiveOpId(0);
     for (i, input) in chunks.enumerate() {
         let is_first = i == 0;
         let is_last = i == last_idx;
+        let call_inputs: Vec<Option<ExprId>> = input
+            .iter()
+            .cloned()
+            .map(Some)
+            .chain(iter::repeat(None))
+            .take(width_ext)
+            .collect();
         let (op_id, maybe_outputs) = builder.add_poseidon2_perm(Poseidon2PermCall {
             config: *poseidon2_config,
             new_start: if is_first { reset } else { false },
             merkle_path: false,
             mmcs_bit: None,
-            inputs: input
-                .iter()
-                .cloned()
-                .map(Some)
-                .chain(iter::repeat(None))
-                .take(4)
-                .collect::<Vec<_>>()
-                .try_into()
-                .expect("We have already taken 4 elements"),
-            out_ctl: [is_last, is_last],
+            inputs: call_inputs,
+            out_ctl: vec![is_last; rate_ext],
             return_all_outputs: false,
             mmcs_index_sum: None,
         })?;
@@ -44,10 +46,10 @@ pub fn add_hash_slice<F: Field>(
         last_op_id = op_id;
     }
 
-    // Only return outputs 0-1 (rate elements) for hashing
-    [outputs[0], outputs[1]]
+    outputs
         .into_iter()
-        .map(|o| {
+        .take(rate_ext)
+        .map(|o: Option<ExprId>| {
             o.ok_or_else(|| CircuitBuilderError::MalformedNonPrimitiveOutputs {
                 op_id: last_op_id,
                 details: "".to_string(),

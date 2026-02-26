@@ -348,10 +348,10 @@ pub type NonPrimitivePreprocessedMap<F> = HashMap<NonPrimitiveOpType, Vec<F>>;
 pub enum NonPrimitiveOpConfig<F> {
     /// No configuration needed (placeholder for future operations).
     None,
-    /// Poseidon2 permutation configuration with exec closure (D=4, 4 extension elements).
+    /// Poseidon2 permutation configuration with exec closure (extension field mode).
     Poseidon2Perm {
         config: Poseidon2Config,
-        exec: Poseidon2PermExec<F, 4>,
+        exec: Poseidon2PermExec<F>,
     },
     /// Poseidon2 permutation configuration for base field (D=1, 16 base elements).
     Poseidon2PermBase {
