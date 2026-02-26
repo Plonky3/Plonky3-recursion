@@ -1,5 +1,6 @@
 use alloc::collections::btree_map::BTreeMap;
 use alloc::vec::Vec;
+use core::borrow::{Borrow, BorrowMut};
 
 use hashbrown::HashMap;
 use p3_circuit::op::{
@@ -7,6 +8,7 @@ use p3_circuit::op::{
 };
 use p3_circuit::{Circuit, CircuitError, PreprocessedColumns};
 use p3_field::{ExtensionField, PrimeCharacteristicRing, PrimeField64};
+use p3_poseidon2_circuit_air::{Poseidon2PreprocessedRow, poseidon2_preprocessed_width};
 use p3_uni_stark::{StarkGenericConfig, SymbolicExpression, Val};
 use p3_util::log2_ceil_usize;
 
@@ -121,20 +123,7 @@ where
         })
         .collect::<Result<Vec<_>, CircuitError>>()?;
 
-    // Poseidon2 preprocessing layout constants.
-    // TODO: Update these indices once generic Poseidon2 is implemented.
-    // Poseidon2 preprocessed row layout (24 fields per row):
-    //   [0..16]  = 4 input limbs (each: in_idx, in_ctl, normal_chain_sel, merkle_chain_sel)
-    //   [16..20] = 2 output limbs (each: out_idx, out_ctl)
-    //   [20]     = mmcs_index_sum_ctl_idx
-    //   [21]     = mmcs_merkle_flag (precomputed: mmcs_ctl * merkle_path)
-    //   [22]     = new_start
-    //   [23]     = merkle_path
-    const POSEIDON2_PREP_ROW_WIDTH: usize = 24;
-    const MMCS_INDEX_SUM_CTL_IDX_OFFSET: usize = 20;
-    const MMCS_MERKLE_FLAG_OFFSET: usize = 21;
-    const NEW_START_OFFSET: usize = 22;
-
+    let prep_row_width = poseidon2_preprocessed_width();
     let neg_one = <Val<SC>>::NEG_ONE;
 
     // Phase 1: Scan Poseidon2 preprocessed data to count mmcs_index_sum conditional reads,
@@ -146,39 +135,43 @@ where
                 .map(|v| v.as_base().ok_or(CircuitError::InvalidPreprocessedValues))
                 .collect::<Result<Vec<_>, CircuitError>>()?;
 
-            let num_rows = prep_base.len() / POSEIDON2_PREP_ROW_WIDTH;
+            let num_rows = prep_base.len() / prep_row_width;
             let trace_height = num_rows.next_power_of_two();
             let has_padding = trace_height > num_rows;
 
             for row_idx in 0..num_rows {
-                let row_start = row_idx * POSEIDON2_PREP_ROW_WIDTH;
-                let current_mmcs_merkle_flag = prep_base[row_start + MMCS_MERKLE_FLAG_OFFSET];
+                let row_start = row_idx * prep_row_width;
+                let row: &Poseidon2PreprocessedRow<Val<SC>> =
+                    prep_base[row_start..row_start + prep_row_width].borrow();
+                let current_mmcs_merkle_flag = row.mmcs_merkle_flag;
 
                 // Check if next row exists and has new_start = 1.
                 // The Poseidon2 AIR pads the trace and sets new_start = 1 in the first
                 // padding row (only if padding exists), so the last real row can trigger a
                 // lookup if its mmcs_merkle_flag = 1 and there is padding.
                 let next_new_start = if row_idx + 1 < num_rows {
-                    let next_row_start = (row_idx + 1) * POSEIDON2_PREP_ROW_WIDTH;
-                    prep_base[next_row_start + NEW_START_OFFSET]
+                    let next_start = (row_idx + 1) * prep_row_width;
+                    let next_row: &Poseidon2PreprocessedRow<Val<SC>> =
+                        prep_base[next_start..next_start + prep_row_width].borrow();
+                    next_row.new_start
                 } else if has_padding {
                     <Val<SC> as PrimeCharacteristicRing>::ONE
                 } else {
-                    prep_base[NEW_START_OFFSET]
+                    let first_row: &Poseidon2PreprocessedRow<Val<SC>> =
+                        prep_base[0..prep_row_width].borrow();
+                    first_row.new_start
                 };
 
                 let multiplicity = current_mmcs_merkle_flag * next_new_start;
                 if multiplicity != <Val<SC> as PrimeCharacteristicRing>::ZERO {
-                    let mmcs_idx = prep_base[row_start + MMCS_INDEX_SUM_CTL_IDX_OFFSET];
-                    let mmcs_idx_u64 = <Val<SC> as PrimeField64>::as_canonical_u64(&mmcs_idx);
+                    let mmcs_idx_u64 =
+                        <Val<SC> as PrimeField64>::as_canonical_u64(&row.mmcs_index_sum_ctl_idx);
                     let mmcs_witness_idx = (mmcs_idx_u64 as usize) / D;
 
-                    // Update ext_reads for the mmcs_index_sum witness read.
-                    let idx = mmcs_witness_idx;
-                    if idx >= preprocessed.ext_reads.len() {
-                        preprocessed.ext_reads.resize(idx + 1, 0);
+                    if mmcs_witness_idx >= preprocessed.ext_reads.len() {
+                        preprocessed.ext_reads.resize(mmcs_witness_idx + 1, 0);
                     }
-                    preprocessed.ext_reads[idx] += 1;
+                    preprocessed.ext_reads[mmcs_witness_idx] += 1;
                 }
             }
         }
@@ -186,7 +179,14 @@ where
 
     // Phase 2: Update Poseidon2 out_ctl values in the base field preprocessed data.
     // in_ctl = +1 for active inputs (kept as-is from circuit.rs preprocessing).
-    // out_ctl positions: 17, 19 (active → ext_reads[out_wid]).
+    //
+    // out_ctl placeholder from generate_preprocessed_columns:
+    //   ZERO → private output (no bus contribution; skip)
+    //   ONE  → active output (creator or duplicate reader; check poseidon2_dup_wids)
+    //
+    // Poseidon2 duplicate creators (from optimizer witness_rewrite deduplication)
+    // are recorded in `preprocessed.poseidon2_dup_wids`. For those, out_ctl = -1
+    // (reader contribution). For first-occurrence creators, out_ctl = +ext_reads[wid].
     let mut non_primitive_base: NonPrimitivePreprocessedMap<Val<SC>> = HashMap::new();
     for (op_type, prep) in preprocessed.non_primitive.iter() {
         if matches!(op_type, NonPrimitiveOpType::Poseidon2Perm(_)) {
@@ -195,41 +195,27 @@ where
                 .map(|v| v.as_base().ok_or(CircuitError::InvalidPreprocessedValues))
                 .collect::<Result<Vec<_>, CircuitError>>()?;
 
-            let num_rows = prep_base.len() / POSEIDON2_PREP_ROW_WIDTH;
+            let num_rows = prep_base.len() / prep_row_width;
 
             for row_idx in 0..num_rows {
-                let row_start = row_idx * POSEIDON2_PREP_ROW_WIDTH;
+                let row_start = row_idx * prep_row_width;
+                let row: &mut Poseidon2PreprocessedRow<Val<SC>> =
+                    prep_base[row_start..row_start + prep_row_width].borrow_mut();
 
-                // in_ctl = +1 for active inputs (Direction::Send with +1 → -1 logup contribution).
-                // No modification needed; the preprocessed data already has +1 from circuit.rs.
-
-                // Set out_ctl for active rate outputs.
-                // out_ctl placeholder from generate_preprocessed_columns:
-                //   ZERO → private output (no bus contribution; skip)
-                //   ONE  → active output (creator or duplicate reader; check poseidon2_dup_wids)
-                //
-                // Poseidon2 duplicate creators (from optimizer witness_rewrite deduplication)
-                // are recorded in `preprocessed.poseidon2_dup_wids`. For those, out_ctl = -1
-                // (reader contribution). For first-occurrence creators, out_ctl = +ext_reads[wid].
-                for out_limb in 0..2 {
-                    let out_idx_offset = row_start + 16 + out_limb * 2;
-                    let out_ctl_offset = out_idx_offset + 1;
-                    if prep_base[out_ctl_offset] != <Val<SC> as PrimeCharacteristicRing>::ZERO {
-                        let out_idx_val = prep_base[out_idx_offset];
-                        let out_idx_u64 = <Val<SC> as PrimeField64>::as_canonical_u64(&out_idx_val);
-                        let out_wid = (out_idx_u64 as usize) / D;
+                for out_limb in &mut row.output_limbs {
+                    if out_limb.out_ctl != <Val<SC> as PrimeCharacteristicRing>::ZERO {
+                        let out_wid =
+                            <Val<SC> as PrimeField64>::as_canonical_u64(&out_limb.idx) as usize / D;
                         let is_dup = preprocessed
                             .poseidon2_dup_wids
                             .get(out_wid)
                             .copied()
                             .unwrap_or(false);
                         if is_dup {
-                            // Duplicate (optimizer-merged): this op is a reader, out_ctl = -1.
-                            prep_base[out_ctl_offset] = neg_one;
+                            out_limb.out_ctl = neg_one;
                         } else {
-                            // Creator: set out_ctl = total read count.
                             let n_reads = preprocessed.ext_reads.get(out_wid).copied().unwrap_or(0);
-                            prep_base[out_ctl_offset] = <Val<SC>>::from_u32(n_reads);
+                            out_limb.out_ctl = <Val<SC>>::from_u32(n_reads);
                         }
                     }
                 }

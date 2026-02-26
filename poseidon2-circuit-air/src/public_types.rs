@@ -3,10 +3,17 @@
 //! Defines abstracted field-specific parameters for
 //! the Poseidon2 circuit AIR for commonly used configurations.
 
+extern crate alloc;
+
+use alloc::vec::Vec;
+
 use p3_baby_bear::{BabyBear, GenericPoseidon2LinearLayersBabyBear};
 use p3_circuit::ops::{GoldilocksD2Width8, Poseidon2Config, Poseidon2Params};
 use p3_goldilocks::{GenericPoseidon2LinearLayersGoldilocks, Goldilocks};
 use p3_koala_bear::{GenericPoseidon2LinearLayersKoalaBear, KoalaBear};
+use p3_poseidon2_air::RoundConstants;
+use rand::SeedableRng;
+use rand::rngs::SmallRng;
 
 use crate::Poseidon2CircuitAir;
 
@@ -18,12 +25,62 @@ impl Poseidon2Params for BabyBearD4Width16 {
     const CONFIG: Poseidon2Config = Poseidon2Config::BabyBearD4Width16;
 }
 
+impl BabyBearD4Width16 {
+    pub const fn round_constants() -> RoundConstants<BabyBear, 16, 4, 13> {
+        RoundConstants::new(
+            p3_baby_bear::BABYBEAR_RC16_EXTERNAL_INITIAL,
+            p3_baby_bear::BABYBEAR_RC16_INTERNAL,
+            p3_baby_bear::BABYBEAR_RC16_EXTERNAL_FINAL,
+        )
+    }
+
+    pub const fn default_air() -> Poseidon2CircuitAirBabyBearD4Width16 {
+        Poseidon2CircuitAirBabyBearD4Width16::new(Self::round_constants())
+    }
+
+    pub fn default_air_with_preprocessed(
+        preprocessed: Vec<BabyBear>,
+        min_height: usize,
+    ) -> Poseidon2CircuitAirBabyBearD4Width16 {
+        Poseidon2CircuitAirBabyBearD4Width16::new_with_preprocessed(
+            Self::round_constants(),
+            preprocessed,
+        )
+        .with_min_height(min_height)
+    }
+}
+
 /// Poseidon2 configuration for BabyBear with D=4, WIDTH=24.
 pub struct BabyBearD4Width24;
 
 impl Poseidon2Params for BabyBearD4Width24 {
     type BaseField = BabyBear;
     const CONFIG: Poseidon2Config = Poseidon2Config::BabyBearD4Width24;
+}
+
+impl BabyBearD4Width24 {
+    pub const fn round_constants() -> RoundConstants<BabyBear, 24, 4, 21> {
+        RoundConstants::new(
+            p3_baby_bear::BABYBEAR_RC24_EXTERNAL_INITIAL,
+            p3_baby_bear::BABYBEAR_RC24_INTERNAL,
+            p3_baby_bear::BABYBEAR_RC24_EXTERNAL_FINAL,
+        )
+    }
+
+    pub const fn default_air() -> Poseidon2CircuitAirBabyBearD4Width24 {
+        Poseidon2CircuitAirBabyBearD4Width24::new(Self::round_constants())
+    }
+
+    pub fn default_air_with_preprocessed(
+        preprocessed: Vec<BabyBear>,
+        min_height: usize,
+    ) -> Poseidon2CircuitAirBabyBearD4Width24 {
+        Poseidon2CircuitAirBabyBearD4Width24::new_with_preprocessed(
+            Self::round_constants(),
+            preprocessed,
+        )
+        .with_min_height(min_height)
+    }
 }
 
 /// Poseidon2 configuration for KoalaBear with D=4, WIDTH=16.
@@ -34,12 +91,62 @@ impl Poseidon2Params for KoalaBearD4Width16 {
     const CONFIG: Poseidon2Config = Poseidon2Config::KoalaBearD4Width16;
 }
 
+impl KoalaBearD4Width16 {
+    pub const fn round_constants() -> RoundConstants<KoalaBear, 16, 4, 20> {
+        RoundConstants::new(
+            p3_koala_bear::KOALABEAR_RC16_EXTERNAL_INITIAL,
+            p3_koala_bear::KOALABEAR_RC16_INTERNAL,
+            p3_koala_bear::KOALABEAR_RC16_EXTERNAL_FINAL,
+        )
+    }
+
+    pub const fn default_air() -> Poseidon2CircuitAirKoalaBearD4Width16 {
+        Poseidon2CircuitAirKoalaBearD4Width16::new(Self::round_constants())
+    }
+
+    pub fn default_air_with_preprocessed(
+        preprocessed: Vec<KoalaBear>,
+        min_height: usize,
+    ) -> Poseidon2CircuitAirKoalaBearD4Width16 {
+        Poseidon2CircuitAirKoalaBearD4Width16::new_with_preprocessed(
+            Self::round_constants(),
+            preprocessed,
+        )
+        .with_min_height(min_height)
+    }
+}
+
 /// Poseidon2 configuration for KoalaBear with D=4, WIDTH=24.
 pub struct KoalaBearD4Width24;
 
 impl Poseidon2Params for KoalaBearD4Width24 {
     type BaseField = KoalaBear;
     const CONFIG: Poseidon2Config = Poseidon2Config::KoalaBearD4Width24;
+}
+
+impl KoalaBearD4Width24 {
+    pub const fn round_constants() -> RoundConstants<KoalaBear, 24, 4, 23> {
+        RoundConstants::new(
+            p3_koala_bear::KOALABEAR_RC24_EXTERNAL_INITIAL,
+            p3_koala_bear::KOALABEAR_RC24_INTERNAL,
+            p3_koala_bear::KOALABEAR_RC24_EXTERNAL_FINAL,
+        )
+    }
+
+    pub const fn default_air() -> Poseidon2CircuitAirKoalaBearD4Width24 {
+        Poseidon2CircuitAirKoalaBearD4Width24::new(Self::round_constants())
+    }
+
+    pub fn default_air_with_preprocessed(
+        preprocessed: Vec<KoalaBear>,
+        min_height: usize,
+    ) -> Poseidon2CircuitAirKoalaBearD4Width24 {
+        Poseidon2CircuitAirKoalaBearD4Width24::new_with_preprocessed(
+            Self::round_constants(),
+            preprocessed,
+        )
+        .with_min_height(min_height)
+    }
 }
 
 /// BabyBear Poseidon2 circuit AIR with D=4, WIDTH=16.
@@ -120,3 +227,29 @@ pub type Poseidon2CircuitAirGoldilocksD2Width8 = Poseidon2CircuitAir<
     { GoldilocksD2Width8::HALF_FULL_ROUNDS },
     { GoldilocksD2Width8::PARTIAL_ROUNDS },
 >;
+
+pub fn goldilocks_d2_width8_round_constants() -> RoundConstants<Goldilocks, 8, 4, 22> {
+    use rand::RngExt;
+    use rand::distr::StandardUniform;
+    let mut rng = SmallRng::seed_from_u64(1);
+    let beginning_full: [[Goldilocks; 8]; 4] =
+        core::array::from_fn(|_| rng.sample(StandardUniform));
+    let ending_full: [[Goldilocks; 8]; 4] = core::array::from_fn(|_| rng.sample(StandardUniform));
+    let partial: [Goldilocks; 22] = core::array::from_fn(|_| rng.sample(StandardUniform));
+    RoundConstants::new(beginning_full, partial, ending_full)
+}
+
+pub fn goldilocks_d2_width8_default_air() -> Poseidon2CircuitAirGoldilocksD2Width8 {
+    Poseidon2CircuitAirGoldilocksD2Width8::new(goldilocks_d2_width8_round_constants())
+}
+
+pub fn goldilocks_d2_width8_default_air_with_preprocessed(
+    preprocessed: Vec<Goldilocks>,
+    min_height: usize,
+) -> Poseidon2CircuitAirGoldilocksD2Width8 {
+    Poseidon2CircuitAirGoldilocksD2Width8::new_with_preprocessed(
+        goldilocks_d2_width8_round_constants(),
+        preprocessed,
+    )
+    .with_min_height(min_height)
+}

@@ -38,9 +38,9 @@ pub use dynamic_air::{
     BatchAir, BatchTableInstance, CloneableBatchAir, DynamicAirEntry, TableProver,
 };
 pub use packing::{TablePacking, TraceLengths};
+use poseidon2::Poseidon2ProverD2;
 pub use poseidon2::{
-    Poseidon2AirWrapperInner, Poseidon2Prover, Poseidon2ProverD2,
-    poseidon2_verifier_air_from_config,
+    Poseidon2AirWrapperInner, Poseidon2Prover, poseidon2_verifier_air_from_config,
 };
 
 pub const BABY_BEAR_MODULUS: u64 = 0x7800_0001;

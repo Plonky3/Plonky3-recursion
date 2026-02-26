@@ -1,3 +1,4 @@
+use alloc::vec::Vec;
 use core::borrow::{Borrow, BorrowMut};
 use core::mem::size_of;
 
@@ -69,5 +70,71 @@ impl<T, P: PermutationColumns<T>> BorrowMut<Poseidon2CircuitCols<T, P>> for [T] 
         debug_assert!(suffix.is_empty(), "Alignment should match");
         debug_assert_eq!(shorts.len(), 1);
         &mut shorts[0]
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+#[repr(C)]
+pub struct Poseidon2PrepInputLimb<T> {
+    pub idx: T,
+    pub in_ctl: T,
+    pub normal_chain_sel: T,
+    pub merkle_chain_sel: T,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+#[repr(C)]
+pub struct Poseidon2PrepOutputLimb<T> {
+    pub idx: T,
+    pub out_ctl: T,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+#[repr(C)]
+pub struct Poseidon2PreprocessedRow<T> {
+    pub input_limbs: [Poseidon2PrepInputLimb<T>; POSEIDON2_LIMBS],
+    pub output_limbs: [Poseidon2PrepOutputLimb<T>; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
+    pub mmcs_index_sum_ctl_idx: T,
+    pub mmcs_merkle_flag: T,
+    pub new_start: T,
+    pub merkle_path: T,
+}
+
+impl<T: Copy> Poseidon2PreprocessedRow<T> {
+    pub fn write_into(self, buf: &mut Vec<T>) {
+        for limb in self.input_limbs {
+            buf.push(limb.idx);
+            buf.push(limb.in_ctl);
+            buf.push(limb.normal_chain_sel);
+            buf.push(limb.merkle_chain_sel);
+        }
+        for limb in self.output_limbs {
+            buf.push(limb.idx);
+            buf.push(limb.out_ctl);
+        }
+        buf.push(self.mmcs_index_sum_ctl_idx);
+        buf.push(self.mmcs_merkle_flag);
+        buf.push(self.new_start);
+        buf.push(self.merkle_path);
+    }
+}
+
+impl<T> Borrow<Poseidon2PreprocessedRow<T>> for [T] {
+    fn borrow(&self) -> &Poseidon2PreprocessedRow<T> {
+        let (prefix, rows, suffix) = unsafe { self.align_to::<Poseidon2PreprocessedRow<T>>() };
+        debug_assert!(prefix.is_empty(), "Alignment should match");
+        debug_assert!(suffix.is_empty(), "Alignment should match");
+        debug_assert_eq!(rows.len(), 1);
+        &rows[0]
+    }
+}
+
+impl<T> BorrowMut<Poseidon2PreprocessedRow<T>> for [T] {
+    fn borrow_mut(&mut self) -> &mut Poseidon2PreprocessedRow<T> {
+        let (prefix, rows, suffix) = unsafe { self.align_to_mut::<Poseidon2PreprocessedRow<T>>() };
+        debug_assert!(prefix.is_empty(), "Alignment should match");
+        debug_assert!(suffix.is_empty(), "Alignment should match");
+        debug_assert_eq!(rows.len(), 1);
+        &mut rows[0]
     }
 }
