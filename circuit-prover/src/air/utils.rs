@@ -4,14 +4,14 @@ use core::iter;
 
 use itertools::Itertools;
 use p3_air::lookup::LookupEvaluator;
-use p3_air::{Air, AirBuilder, AirBuilderWithPublicValues, PermutationAirBuilder};
+use p3_air::{Air, AirBuilder, PermutationAirBuilder};
 use p3_field::Field;
 use p3_lookup::lookup_traits::{Direction, Lookup, LookupData, LookupInput};
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_uni_stark::{SymbolicAirBuilder, SymbolicExpression, SymbolicVariable};
 
-pub fn get_index_lookups<AB: PermutationAirBuilder + AirBuilderWithPublicValues, const D: usize>(
+pub fn get_index_lookups<AB: PermutationAirBuilder, const D: usize>(
     main_start: usize,
     preprocessed_start: usize,
     num_lookups: usize,
@@ -41,10 +41,7 @@ pub fn get_index_lookups<AB: PermutationAirBuilder + AirBuilderWithPublicValues,
 /// - 2-5: selectors (add_vs_mul, bool, muladd, horner)
 /// - 6-9: indices (a_idx, b_idx, c_idx, out_idx)
 /// - 10: mult_b, 11: mult_out, 12: mult_c
-pub fn get_alu_index_lookups<
-    AB: PermutationAirBuilder + AirBuilderWithPublicValues,
-    const D: usize,
->(
+pub fn get_alu_index_lookups<AB: PermutationAirBuilder, const D: usize>(
     main_start: usize,
     preprocessed_start: usize,
     main: &[SymbolicVariable<<AB as AirBuilder>::F>],
@@ -107,7 +104,7 @@ pub fn create_direct_preprocessed_trace<F: Field>(
 }
 
 /// Object‑safe gadget shim.
-pub trait LookupEvaluatorDyn<AB: PermutationAirBuilder + AirBuilderWithPublicValues> {
+pub trait LookupEvaluatorDyn<AB: PermutationAirBuilder> {
     fn num_aux_cols(&self) -> usize;
     fn num_challenges(&self) -> usize;
     fn eval_with_lookups_dyn(
@@ -121,7 +118,7 @@ pub trait LookupEvaluatorDyn<AB: PermutationAirBuilder + AirBuilderWithPublicVal
 /// Blanket: any concrete `LookupEvaluator` becomes object‑safe.
 impl<AB, LE> LookupEvaluatorDyn<AB> for LE
 where
-    AB: PermutationAirBuilder + AirBuilderWithPublicValues,
+    AB: PermutationAirBuilder,
     LE: LookupEvaluator,
 {
     fn num_aux_cols(&self) -> usize {
@@ -144,7 +141,7 @@ where
 /// Object‑safe AIR shim.
 pub trait AirDyn<AB>
 where
-    AB: PermutationAirBuilder + AirBuilderWithPublicValues,
+    AB: PermutationAirBuilder,
 {
     fn add_lookup_columns_dyn(&mut self) -> Vec<usize>;
     fn get_lookups_dyn(&mut self) -> Vec<Lookup<AB::F>>;
@@ -160,7 +157,7 @@ where
 /// Blanket: any existing `Air` now satisfies the object‑safe shim.
 impl<AB, T> AirDyn<AB> for T
 where
-    AB: PermutationAirBuilder + AirBuilderWithPublicValues,
+    AB: PermutationAirBuilder,
     T: Air<AB>,
 {
     fn add_lookup_columns_dyn(&mut self) -> Vec<usize> {

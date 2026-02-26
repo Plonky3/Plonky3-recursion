@@ -5,10 +5,10 @@ use alloc::vec::Vec;
 use core::borrow::Borrow;
 use core::mem::transmute;
 
+#[cfg(debug_assertions)]
+use p3_air::DebugConstraintBuilder;
 use p3_air::{Air, AirBuilder, BaseAir};
 use p3_baby_bear::{BabyBear, GenericPoseidon2LinearLayersBabyBear};
-#[cfg(debug_assertions)]
-use p3_batch_stark::DebugConstraintBuilderWithLookups;
 use p3_batch_stark::{StarkGenericConfig, Val};
 use p3_circuit::op::{NonPrimitiveOpType, Poseidon2Config};
 use p3_circuit::ops::{Poseidon2CircuitRow, Poseidon2Params, Poseidon2Trace};
@@ -1155,13 +1155,12 @@ where
 }
 
 #[cfg(debug_assertions)]
-impl<'a, SC> Air<DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>>
-    for Poseidon2AirWrapper<SC>
+impl<'a, SC> Air<DebugConstraintBuilder<'a, Val<SC>, SC::Challenge>> for Poseidon2AirWrapper<SC>
 where
     SC: StarkGenericConfig + Send + Sync,
     Val<SC>: StarkField + PrimeField,
 {
-    fn eval(&self, builder: &mut DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>) {
+    fn eval(&self, builder: &mut DebugConstraintBuilder<'a, Val<SC>, SC::Challenge>) {
         let main = builder.main();
         let local_slice = main.row_slice(0).expect("The matrix is empty?");
         let next_slice = main.row_slice(1).expect("The matrix has only one row?");
@@ -1177,7 +1176,7 @@ where
                 eval_poseidon2_variant::<
                     SC,
                     BabyBear,
-                    DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>,
+                    DebugConstraintBuilder<'a, Val<SC>, SC::Challenge>,
                     GenericPoseidon2LinearLayersBabyBear,
                     { BabyBearD4Width16::D },
                     { BabyBearD4Width16::WIDTH },
@@ -1200,7 +1199,7 @@ where
                 eval_poseidon2_variant::<
                     SC,
                     BabyBear,
-                    DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>,
+                    DebugConstraintBuilder<'a, Val<SC>, SC::Challenge>,
                     GenericPoseidon2LinearLayersBabyBear,
                     { BabyBearD4Width24::D },
                     { BabyBearD4Width24::WIDTH },
@@ -1223,7 +1222,7 @@ where
                 eval_poseidon2_variant::<
                     SC,
                     KoalaBear,
-                    DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>,
+                    DebugConstraintBuilder<'a, Val<SC>, SC::Challenge>,
                     GenericPoseidon2LinearLayersKoalaBear,
                     { KoalaBearD4Width16::D },
                     { KoalaBearD4Width16::WIDTH },
@@ -1246,7 +1245,7 @@ where
                 eval_poseidon2_variant::<
                     SC,
                     KoalaBear,
-                    DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>,
+                    DebugConstraintBuilder<'a, Val<SC>, SC::Challenge>,
                     GenericPoseidon2LinearLayersKoalaBear,
                     { KoalaBearD4Width24::D },
                     { KoalaBearD4Width24::WIDTH },
@@ -1273,41 +1272,25 @@ where
             Poseidon2AirWrapperInner::BabyBearD4Width16(air) => {
                 let air_bb: &mut Poseidon2CircuitAirBabyBearD4Width16 = air.as_mut();
                 <Poseidon2CircuitAirBabyBearD4Width16 as Air<
-                    DebugConstraintBuilderWithLookups<
-                        'a,
-                        BabyBear,
-                        BinomialExtensionField<BabyBear, 4>,
-                    >,
+                    DebugConstraintBuilder<'a, BabyBear, BinomialExtensionField<BabyBear, 4>>,
                 >>::add_lookup_columns(air_bb)
             }
             Poseidon2AirWrapperInner::BabyBearD4Width24(air) => {
                 let air_bb: &mut Poseidon2CircuitAirBabyBearD4Width24 = air.as_mut();
                 <Poseidon2CircuitAirBabyBearD4Width24 as Air<
-                    DebugConstraintBuilderWithLookups<
-                        'a,
-                        BabyBear,
-                        BinomialExtensionField<BabyBear, 4>,
-                    >,
+                    DebugConstraintBuilder<'a, BabyBear, BinomialExtensionField<BabyBear, 4>>,
                 >>::add_lookup_columns(air_bb)
             }
             Poseidon2AirWrapperInner::KoalaBearD4Width16(air) => {
                 let air_kb: &mut Poseidon2CircuitAirKoalaBearD4Width16 = air.as_mut();
                 <Poseidon2CircuitAirKoalaBearD4Width16 as Air<
-                    DebugConstraintBuilderWithLookups<
-                        'a,
-                        KoalaBear,
-                        BinomialExtensionField<KoalaBear, 4>,
-                    >,
+                    DebugConstraintBuilder<'a, KoalaBear, BinomialExtensionField<KoalaBear, 4>>,
                 >>::add_lookup_columns(air_kb)
             }
             Poseidon2AirWrapperInner::KoalaBearD4Width24(air) => {
                 let air_kb: &mut Poseidon2CircuitAirKoalaBearD4Width24 = air.as_mut();
                 <Poseidon2CircuitAirKoalaBearD4Width24 as Air<
-                    DebugConstraintBuilderWithLookups<
-                        'a,
-                        KoalaBear,
-                        BinomialExtensionField<KoalaBear, 4>,
-                    >,
+                    DebugConstraintBuilder<'a, KoalaBear, BinomialExtensionField<KoalaBear, 4>>,
                 >>::add_lookup_columns(air_kb)
             }
         }
@@ -1316,8 +1299,7 @@ where
     #[allow(clippy::missing_transmute_annotations)] // this gets overly verbose otherwise
     fn get_lookups(
         &mut self,
-    ) -> Vec<Lookup<<DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge> as AirBuilder>::F>>
-    {
+    ) -> Vec<Lookup<<DebugConstraintBuilder<'a, Val<SC>, SC::Challenge> as AirBuilder>::F>> {
         match &mut self.inner {
             Poseidon2AirWrapperInner::BabyBearD4Width16(air) => unsafe {
                 // Runtime check: verify Val<SC> == BabyBear before transmute

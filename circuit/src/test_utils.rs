@@ -1,6 +1,6 @@
 use core::borrow::Borrow;
 
-use p3_air::{Air, AirBuilder, AirBuilderWithPublicValues, BaseAir};
+use p3_air::{Air, AirBuilder, BaseAir};
 use p3_field::PrimeField64;
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
@@ -13,9 +13,13 @@ impl<F> BaseAir<F> for FibonacciAir {
     fn width(&self) -> usize {
         NUM_FIBONACCI_COLS
     }
+
+    fn num_public_values(&self) -> usize {
+        3
+    }
 }
 
-impl<AB: AirBuilderWithPublicValues> Air<AB> for FibonacciAir {
+impl<AB: AirBuilder> Air<AB> for FibonacciAir {
     fn eval(&self, builder: &mut AB) {
         let main = builder.main();
 

@@ -426,7 +426,6 @@ where
         let log_qd = A::get_log_num_quotient_chunks(
             air,
             pre_w,
-            public_vals.len() + global_lookup_data[i].len(), // The expected cumulated values are also public inputs.
             &all_lookups[i],
             &lookup_data_to_pv_index(&global_lookup_data[i], public_vals.len()),
             config.is_zk(),

@@ -2,9 +2,9 @@ use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use p3_air::{Air, AirBuilder, BaseAir};
 #[cfg(debug_assertions)]
-use p3_batch_stark::DebugConstraintBuilderWithLookups;
+use p3_air::DebugConstraintBuilder;
+use p3_air::{Air, AirBuilder, BaseAir};
 use p3_batch_stark::{StarkGenericConfig, Val};
 use p3_circuit::op::NonPrimitiveOpType;
 use p3_circuit::tables::Traces;
@@ -145,7 +145,7 @@ impl_air_for_dynamic_entry!(
 #[cfg(debug_assertions)]
 impl_air_for_dynamic_entry!(
     'a,
-    DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>,
+    DebugConstraintBuilder<'a, Val<SC>, SC::Challenge>,
     eval_debug,
     add_lookup_columns_debug,
     get_lookups_debug
@@ -173,7 +173,7 @@ impl_air_for_dynamic_entry!(
 pub trait BatchAir<SC>:
     BaseAir<Val<SC>>
     + Air<SymbolicAirBuilder<Val<SC>, SC::Challenge>>
-    + for<'a> Air<DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>>
+    + for<'a> Air<DebugConstraintBuilder<'a, Val<SC>, SC::Challenge>>
     + for<'a> Air<ProverConstraintFolderWithLookups<'a, SC>>
     + for<'a> Air<VerifierConstraintFolderWithLookups<'a, SC>>
     + Send
@@ -254,10 +254,7 @@ where
     fn clone_box(&self) -> Box<dyn CloneableBatchAir<SC>>;
 
     #[cfg(debug_assertions)]
-    fn eval_debug<'a>(
-        &self,
-        builder: &mut DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>,
-    );
+    fn eval_debug<'a>(&self, builder: &mut DebugConstraintBuilder<'a, Val<SC>, SC::Challenge>);
     fn eval_symbolic(&self, builder: &mut SymbolicAirBuilder<Val<SC>, SC::Challenge>);
     fn eval_prover<'a>(&self, builder: &mut ProverConstraintFolderWithLookups<'a, SC>);
     fn eval_verifier<'a>(&self, builder: &mut VerifierConstraintFolderWithLookups<'a, SC>);
@@ -295,7 +292,7 @@ where
     #[cfg(debug_assertions)]
     impl_cloneable_batch_air_forwarding!(
         'a,
-        DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>,
+        DebugConstraintBuilder<'a, Val<SC>, SC::Challenge>,
         eval_debug,
         add_lookup_columns_debug,
         get_lookups_debug
