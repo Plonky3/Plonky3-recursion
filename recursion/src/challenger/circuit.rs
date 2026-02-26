@@ -150,42 +150,26 @@ impl<const WIDTH: usize, const RATE: usize> CircuitChallenger<WIDTH, RATE> {
         self.state = outputs.to_vec();
     }
 
-    /// Duplexing for D=4 (extension field): pack/unpack around permutation.
-    // TODO: Generalize for D=2 (Goldilocks) when needed.
     fn duplexing_ext<BF, EF>(&mut self, circuit: &mut CircuitBuilder<EF>)
     where
         BF: PrimeField64,
         EF: ExtensionField<BF>,
     {
-        // 2. Recompose WIDTH coefficient targets → WIDTH/D extension element targets
         let num_ext_limbs = WIDTH / EF::DIMENSION;
-        assert_eq!(num_ext_limbs, 4, "Expected 4 extension limbs for WIDTH/D");
+        let mut ext_inputs = Vec::with_capacity(num_ext_limbs);
+        for i in 0..num_ext_limbs {
+            let start = i * EF::DIMENSION;
+            let end = start + EF::DIMENSION;
+            let ext = circuit
+                .recompose_base_coeffs_to_ext::<BF>(&self.state[start..end])
+                .expect("recomposition should succeed");
+            ext_inputs.push(ext);
+        }
 
-        let ext_inputs: [Target; 4] = [
-            circuit
-                .recompose_base_coeffs_to_ext::<BF>(&self.state[0..EF::DIMENSION])
-                .expect("recomposition should succeed"),
-            circuit
-                .recompose_base_coeffs_to_ext::<BF>(&self.state[EF::DIMENSION..2 * EF::DIMENSION])
-                .expect("recomposition should succeed"),
-            circuit
-                .recompose_base_coeffs_to_ext::<BF>(
-                    &self.state[2 * EF::DIMENSION..3 * EF::DIMENSION],
-                )
-                .expect("recomposition should succeed"),
-            circuit
-                .recompose_base_coeffs_to_ext::<BF>(
-                    &self.state[3 * EF::DIMENSION..4 * EF::DIMENSION],
-                )
-                .expect("recomposition should succeed"),
-        ];
-
-        // 3. Apply Poseidon2 permutation (CTL-verified against Poseidon2 AIR table)
         let ext_outputs = circuit
-            .add_poseidon2_perm_for_challenger(self.poseidon2_config, ext_inputs)
+            .add_poseidon2_perm_for_challenger(self.poseidon2_config, &ext_inputs)
             .expect("poseidon2 permutation should succeed");
 
-        // 4. Decompose 4 extension outputs → WIDTH coefficient targets
         for (limb, &ext_out) in ext_outputs.iter().enumerate() {
             let coeffs = circuit
                 .decompose_ext_to_base_coeffs::<BF>(ext_out)
@@ -217,6 +201,13 @@ impl<const WIDTH: usize, const RATE: usize> CircuitChallenger<WIDTH, RATE> {
     /// Create a challenger with KoalaBear D1 Width16 configuration (base field challenges).
     pub const fn new_koalabear_base() -> Self {
         Self::new(Poseidon2Config::KoalaBearD1Width16)
+    }
+}
+
+impl CircuitChallenger<8, 4> {
+    /// Create a challenger with Goldilocks D2 Width8 configuration.
+    pub const fn new_goldilocks() -> Self {
+        Self::new(Poseidon2Config::GoldilocksD2Width8)
     }
 }
 

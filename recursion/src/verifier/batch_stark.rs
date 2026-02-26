@@ -12,10 +12,8 @@ use p3_circuit::utils::ColumnsTargets;
 use p3_circuit::{CircuitBuilder, NonPrimitiveOpId};
 use p3_circuit_prover::air::{AluAir, ConstAir, PublicAir};
 use p3_circuit_prover::batch_stark_prover::{AirVariant, PrimitiveTable, RowCounts};
-use p3_circuit_prover::{
-    BABY_BEAR_MODULUS, KOALA_BEAR_MODULUS, Poseidon2AirWrapperInner,
-    poseidon2_verifier_air_from_config,
-};
+use p3_circuit_prover::field_params::ExtractBinomialW;
+use p3_circuit_prover::{Poseidon2AirWrapperInner, poseidon2_verifier_air_from_config};
 use p3_commit::{Pcs, PolynomialSpace};
 use p3_field::{BasedVectorSpace, ExtensionField, Field, PrimeCharacteristicRing, PrimeField64};
 use p3_lookup::lookup_traits::{Kind, Lookup, LookupData, LookupGadget};
@@ -124,53 +122,20 @@ where
 fn create_alu_air<F, EF, const TRACE_D: usize>(num_ops: usize, lanes: usize) -> AluAir<F, TRACE_D>
 where
     F: Field + PrimeCharacteristicRing,
-    EF: ExtensionField<F>,
+    EF: ExtensionField<F> + ExtractBinomialW<F>,
 {
     if TRACE_D == 1 {
         AluAir::<F, TRACE_D>::new(num_ops, lanes)
     } else {
         // For D > 1, extract W from the extension field
         // BinomialExtensionField<F, D> has W as the constant such that x^D = W
-        let w = extract_binomial_w::<F, EF>();
+        let w = binomial_w_for_alu::<F, EF>();
         AluAir::<F, TRACE_D>::new_binomial(num_ops, lanes, w)
     }
 }
 
-/// Extract the binomial parameter W from an extension field type.
-///
-/// For BinomialExtensionField<F, D>, this returns F::W.
-/// Panics if called on a non-extension field.
-fn extract_binomial_w<F: Field, EF: ExtensionField<F>>() -> F {
-    // The extension field dimension tells us the degree
-    let d = EF::DIMENSION;
-
-    // For common cases, we know the W values:
-    // BabyBear: x^4 = 11 (W = 11)
-    // KoalaBear: x^4 = 3 (W = 3)
-    // These are the standard Plonky3 values.
-    //
-    // We use a runtime check based on the field characteristic to determine W.
-    // This is a workaround since we can't easily extract W from the type at runtime.
-
-    if d == 4 {
-        // Check which field we're using based on the modulus
-        let baby_bear_mod = F::from_u64(BABY_BEAR_MODULUS);
-        let koala_bear_mod = F::from_u64(KOALA_BEAR_MODULUS);
-
-        if baby_bear_mod == F::ZERO {
-            // BabyBear: W = 11
-            F::from_u64(11)
-        } else if koala_bear_mod == F::ZERO {
-            // KoalaBear: W = 3
-            F::from_u64(3)
-        } else {
-            // Goldilocks or other - try W = 7 (common for some fields)
-            // This is a fallback; proper implementation would use BinomiallyExtendable trait
-            F::from_u64(7)
-        }
-    } else {
-        panic!("Unsupported extension degree: {d}. Only D=1 and D=4 are supported.")
-    }
+fn binomial_w_for_alu<F: Field, EF: ExtensionField<F> + ExtractBinomialW<F>>() -> F {
+    EF::extract_w().expect("extension field must provide binomial W for ALU AIR")
 }
 
 /// Build and attach a recursive verifier circuit for a circuit-prover [`BatchStarkProof`].
@@ -216,7 +181,7 @@ where
             <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain,
         >,
     Val<SC>: PrimeField64,
-    SC::Challenge: ExtensionField<Val<SC>> + PrimeCharacteristicRing,
+    SC::Challenge: ExtensionField<Val<SC>> + PrimeCharacteristicRing + ExtractBinomialW<Val<SC>>,
     <<SC as StarkGenericConfig>::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain: Clone,
     SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
 {

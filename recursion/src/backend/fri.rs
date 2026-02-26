@@ -3,6 +3,7 @@
 use alloc::vec::Vec;
 
 use p3_circuit::{CircuitBuilder, CircuitRunner, NonPrimitiveOpId};
+use p3_circuit_prover::field_params::ExtractBinomialW;
 use p3_commit::Pcs;
 use p3_field::{BasedVectorSpace, PrimeField64};
 use p3_lookup::logup::LogUpGadget;
@@ -181,7 +182,8 @@ where
     SC::Challenge: BasedVectorSpace<Val<SC>>
         + From<Val<SC>>
         + p3_field::ExtensionField<Val<SC>>
-        + p3_field::PrimeCharacteristicRing,
+        + p3_field::PrimeCharacteristicRing
+        + ExtractBinomialW<Val<SC>>,
     <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain: Clone,
     p3_uni_stark::SymbolicExpression<SC::Challenge>:
         From<p3_uni_stark::SymbolicExpression<Val<SC>>>,
@@ -259,6 +261,24 @@ where
                         WIDTH,
                         RATE,
                         1,
+                    >(
+                        config,
+                        circuit,
+                        proof,
+                        config.pcs_verifier_params(),
+                        common_data,
+                        &lookup_gadget,
+                        self.poseidon2_config,
+                    )?,
+                    2 => verify_p3_batch_proof_circuit::<
+                        SC,
+                        SC::Commitment,
+                        SC::InputProof,
+                        SC::OpeningProof,
+                        _,
+                        WIDTH,
+                        RATE,
+                        2,
                     >(
                         config,
                         circuit,

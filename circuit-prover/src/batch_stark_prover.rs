@@ -39,7 +39,8 @@ pub use dynamic_air::{
 };
 pub use packing::{TablePacking, TraceLengths};
 pub use poseidon2::{
-    Poseidon2AirWrapperInner, Poseidon2Prover, poseidon2_verifier_air_from_config,
+    Poseidon2AirWrapperInner, Poseidon2Prover, Poseidon2ProverD2,
+    poseidon2_verifier_air_from_config,
 };
 
 pub const BABY_BEAR_MODULUS: u64 = 0x7800_0001;
@@ -458,10 +459,7 @@ where
         self
     }
 
-    /// Register the non-primitive Poseidon2 prover plugin with the given configuration.
-    ///
-    /// Uses the standard constraint profile; recursion-specific code paths
-    /// can instantiate `Poseidon2Prover` directly with other profiles if needed.
+    /// Register the non-primitive Poseidon2 prover plugin with the given configuration (D=4).
     pub fn register_poseidon2_table(&mut self, config: Poseidon2Config)
     where
         SC: Send + Sync,
@@ -471,6 +469,18 @@ where
             config,
             ConstraintProfile::Standard,
         )));
+    }
+
+    /// Register Poseidon2 for D=2 challenge field (e.g. Goldilocks).
+    pub fn register_poseidon2_table_d2(&mut self, config: Poseidon2Config)
+    where
+        SC: Send + Sync,
+        Val<SC>: BinomiallyExtendable<2>,
+    {
+        self.register_table_prover(Box::new(Poseidon2ProverD2(Poseidon2Prover::new(
+            config,
+            ConstraintProfile::Standard,
+        ))));
     }
 
     #[inline]

@@ -1348,6 +1348,16 @@ pub struct Poseidon2Prover {
     config: Poseidon2Config,
 }
 
+impl Poseidon2Prover {
+    pub(crate) const fn config(&self) -> Poseidon2Config {
+        self.config
+    }
+
+    pub(crate) const fn poseidon2_op_type(&self) -> NonPrimitiveOpType {
+        NonPrimitiveOpType::Poseidon2Perm(self.config)
+    }
+}
+
 unsafe impl Send for Poseidon2Prover {}
 unsafe impl Sync for Poseidon2Prover {}
 
@@ -1409,6 +1419,11 @@ impl Poseidon2Prover {
                     Poseidon2CircuitAirKoalaBearD4Width24::new(Self::koala_bear_constants_24()),
                 ))
             }
+            Poseidon2Config::GoldilocksD2Width8 => {
+                panic!(
+                    "Goldilocks Poseidon2 AIR not implemented: p3-goldilocks does not export GenericPoseidon2LinearLayers<8>"
+                )
+            }
         }
     }
 
@@ -1458,6 +1473,11 @@ impl Poseidon2Prover {
                     .with_min_height(min_height),
                 ))
             }
+            Poseidon2Config::GoldilocksD2Width8 => {
+                panic!(
+                    "Goldilocks Poseidon2 AIR not implemented: p3-goldilocks does not export GenericPoseidon2LinearLayers<8>"
+                )
+            }
         }
     }
 
@@ -1496,6 +1516,9 @@ impl Poseidon2Prover {
             Poseidon2Config::KoalaBearD4Width24 => {
                 Poseidon2CircuitAirKoalaBearD4Width24::new(Self::koala_bear_constants_24()).width()
             }
+            Poseidon2Config::GoldilocksD2Width8 => {
+                panic!("Goldilocks Poseidon2 AIR not implemented")
+            }
         }
     }
 
@@ -1512,6 +1535,9 @@ impl Poseidon2Prover {
             }
             Poseidon2Config::KoalaBearD4Width24 => {
                 Poseidon2CircuitAirKoalaBearD4Width24::preprocessed_width()
+            }
+            Poseidon2Config::GoldilocksD2Width8 => {
+                panic!("Goldilocks Poseidon2 AIR not implemented")
             }
         }
     }
@@ -1551,6 +1577,9 @@ impl Poseidon2Prover {
             Poseidon2Config::KoalaBearD4Width24 => {
                 self.batch_instance_base_impl::<SC, 24, 4, 23, 4>(t, min_height)
             }
+            Poseidon2Config::GoldilocksD2Width8 => {
+                panic!("Goldilocks Poseidon2 AIR not implemented")
+            }
         }
     }
 
@@ -1585,10 +1614,10 @@ impl Poseidon2Prover {
                         mmcs_bit: false,
                         mmcs_index_sum: Val::<SC>::ZERO,
                         input_values: vec![Val::<SC>::ZERO; WIDTH],
-                        in_ctl: [false; 4],
-                        input_indices: [0; 4],
-                        out_ctl: [false; 2],
-                        output_indices: [0; 2],
+                        in_ctl: vec![false; 4],
+                        input_indices: vec![0; 4],
+                        out_ctl: vec![false; 2],
+                        output_indices: vec![0; 2],
                         mmcs_index_sum_idx: 0,
                         mmcs_ctl_enabled: false,
                     }),
@@ -1708,6 +1737,9 @@ impl Poseidon2Prover {
                     matrix,
                 )
             }
+            Poseidon2Config::GoldilocksD2Width8 => {
+                panic!("Goldilocks Poseidon2 AIR not implemented")
+            }
         };
 
         Some(BatchTableInstance {
@@ -1727,7 +1759,7 @@ where
     SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
 {
     fn op_type(&self) -> NonPrimitiveOpType {
-        NonPrimitiveOpType::Poseidon2Perm(self.config)
+        self.poseidon2_op_type()
     }
 
     fn batch_instance_d1(
@@ -1802,5 +1834,94 @@ where
         min_height: usize,
     ) -> Option<DynamicAirEntry<SC>> {
         Some(self.wrapper_from_config_with_preprocessed(committed_prep, min_height))
+    }
+}
+
+/// Wrapper so we can implement TableProver for D=2 (Goldilocks) without conflicting with D=4 impl.
+pub struct Poseidon2ProverD2(pub Poseidon2Prover);
+
+impl<SC> TableProver<SC> for Poseidon2ProverD2
+where
+    SC: StarkGenericConfig + 'static + Send + Sync,
+    Val<SC>: StarkField + BinomiallyExtendable<2>,
+    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+{
+    fn op_type(&self) -> NonPrimitiveOpType {
+        self.0.poseidon2_op_type()
+    }
+
+    fn batch_instance_d1(
+        &self,
+        _config: &SC,
+        _packing: TablePacking,
+        _traces: &Traces<Val<SC>>,
+    ) -> Option<BatchTableInstance<SC>> {
+        None
+    }
+
+    fn batch_instance_d2(
+        &self,
+        config: &SC,
+        packing: TablePacking,
+        traces: &Traces<BinomialExtensionField<Val<SC>, 2>>,
+    ) -> Option<BatchTableInstance<SC>> {
+        self.0
+            .batch_instance_from_traces::<SC, BinomialExtensionField<Val<SC>, 2>>(
+                config, packing, traces,
+            )
+    }
+
+    fn batch_instance_d4(
+        &self,
+        _config: &SC,
+        _packing: TablePacking,
+        _traces: &Traces<BinomialExtensionField<Val<SC>, 4>>,
+    ) -> Option<BatchTableInstance<SC>> {
+        None
+    }
+
+    fn batch_instance_d6(
+        &self,
+        _config: &SC,
+        _packing: TablePacking,
+        _traces: &Traces<BinomialExtensionField<Val<SC>, 6>>,
+    ) -> Option<BatchTableInstance<SC>> {
+        None
+    }
+
+    fn batch_instance_d8(
+        &self,
+        _config: &SC,
+        _packing: TablePacking,
+        _traces: &Traces<BinomialExtensionField<Val<SC>, 8>>,
+    ) -> Option<BatchTableInstance<SC>> {
+        None
+    }
+
+    fn batch_air_from_table_entry(
+        &self,
+        _config: &SC,
+        _degree: usize,
+        _table_entry: &NonPrimitiveTableEntry<SC>,
+    ) -> Result<DynamicAirEntry<SC>, String> {
+        let inner = Poseidon2Prover::air_wrapper_for_config(self.0.config());
+        let width = inner.width();
+        let wrapper = Poseidon2AirWrapper {
+            inner,
+            width,
+            _phantom: core::marker::PhantomData::<SC>,
+        };
+        Ok(DynamicAirEntry::new(Box::new(wrapper)))
+    }
+
+    fn air_with_committed_preprocessed(
+        &self,
+        committed_prep: Vec<Val<SC>>,
+        min_height: usize,
+    ) -> Option<DynamicAirEntry<SC>> {
+        Some(
+            self.0
+                .wrapper_from_config_with_preprocessed(committed_prep, min_height),
+        )
     }
 }

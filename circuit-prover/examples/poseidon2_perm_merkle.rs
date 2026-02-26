@@ -171,16 +171,13 @@ fn main() -> Result<(), Box<dyn Error>> {
             new_start: true,
             merkle_path: true,
             mmcs_bit: Some(mmcs_bit_row0),
-            inputs: inputs_row0.map(Some),
-            out_ctl: [false, false],
+            inputs: inputs_row0.iter().map(|&x| Some(x)).collect(),
+            out_ctl: vec![false, false],
             return_all_outputs: false,
             mmcs_index_sum: None,
         })?;
 
-    // Row 1: Merkle right. Chain previous digest into limbs 2-3 and provide sibling1 in limbs 0-1.
-    // All inputs are private (chained from row 0 or provided via private data)
-    let sibling1_inputs: [Option<ExprId>; 4] = [None, None, None, None];
-    // Public root limbs
+    let sibling1_inputs: Vec<Option<ExprId>> = vec![None; 4];
     let out0 = builder.public_input();
     let out1 = builder.public_input();
     let mmcs_idx_sum_expr = builder.public_input();
@@ -193,14 +190,13 @@ fn main() -> Result<(), Box<dyn Error>> {
             merkle_path: true,
             mmcs_bit: Some(mmcs_bit_row1),
             inputs: sibling1_inputs,
-            out_ctl: [false, false],
+            out_ctl: vec![false, false],
             return_all_outputs: false,
             mmcs_index_sum: None,
         })?;
 
-    // Row 2: merkle left - all inputs private (chained from row 1 or provided via private data)
     let mmcs_bit_row2 = builder.alloc_const(Ext4::from_prime_subfield(Base::ZERO), "mmcs_bit_row2");
-    let sibling2_inputs: [Option<ExprId>; 4] = [None, None, None, None];
+    let sibling2_inputs: Vec<Option<ExprId>> = vec![None; 4];
     let (row2_op_id, row2_outputs) =
         builder.add_poseidon2_perm(p3_circuit::ops::Poseidon2PermCall {
             config: Poseidon2Config::KoalaBearD4Width16,
@@ -208,7 +204,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             merkle_path: true,
             mmcs_bit: Some(mmcs_bit_row2),
             inputs: sibling2_inputs,
-            out_ctl: [true, true],
+            out_ctl: vec![true, true],
             return_all_outputs: false,
             mmcs_index_sum: Some(mmcs_idx_sum_expr),
         })?;

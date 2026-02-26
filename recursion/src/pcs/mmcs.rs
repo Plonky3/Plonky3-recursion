@@ -46,23 +46,19 @@ where
     }
 
     let ext_degree = <EF as BasedVectorSpace<F>>::DIMENSION;
-    let rate = permutation_config.rate(); // Base field rate (8 for BabyBear / KoalaBear)
-    let rate_ext = permutation_config.rate_ext(); // Extension rate (2 for D=4)
+    let rate = permutation_config.rate();
+    let rate_ext = permutation_config.rate_ext();
+    let width_ext = permutation_config.width_ext();
 
-    // Process in chunks of `rate` base field values
     let num_chunks = base_coeffs.len().div_ceil(rate);
-    // Only store rate outputs (0-1) for overwrite mode chaining
-    let mut last_rate_outputs: Option<[Target; 2]> = None;
-    let mut final_outputs = [None, None, None, None];
+    let mut last_rate_outputs: Option<Vec<Target>> = None;
+    let mut final_outputs: Vec<Option<Target>> = vec![None; width_ext];
 
     for (chunk_idx, chunk) in base_coeffs.chunks(rate).enumerate() {
         let is_first = chunk_idx == 0;
         let is_last = chunk_idx == num_chunks - 1;
 
-        // Build inputs for this permutation
-        // Rate portion (inputs[0..rate_ext]): absorbed values with overwrite semantics
-        // Capacity portion (inputs[rate_ext..4]): None for chaining
-        let mut inputs: [Option<Target>; 4] = [None; 4];
+        let mut inputs: Vec<Option<Target>> = vec![None; width_ext];
 
         for ext_idx in 0..rate_ext {
             let base_start = ext_idx * ext_degree;
@@ -107,36 +103,34 @@ where
             }
         }
 
-        // Capacity positions (rate_ext..4) are None for chaining from previous permutation
-
         // Add permutation
-        // Always get rate outputs (0-1) for potential chaining; capacity outputs not needed
         let (_, maybe_outputs) = circuit.add_poseidon2_perm(Poseidon2PermCall {
             config: *permutation_config,
             new_start: if is_first { reset } else { false },
             merkle_path: false,
             mmcs_bit: None,
             inputs,
-            out_ctl: [true, true],     // Always expose rate outputs
-            return_all_outputs: false, // Don't need capacity outputs
+            out_ctl: vec![true; rate_ext],
+            return_all_outputs: false,
             mmcs_index_sum: None,
         })?;
 
-        // Store rate outputs for next iteration (for overwrite mode chaining)
         if !is_last {
-            // Only need rate outputs (0-1) for overwrite mode - capacity is handled by chaining
-            last_rate_outputs = Some([
-                maybe_outputs[0].ok_or(CircuitBuilderError::MissingOutput)?,
-                maybe_outputs[1].ok_or(CircuitBuilderError::MissingOutput)?,
-            ]);
+            last_rate_outputs = Some(
+                maybe_outputs
+                    .iter()
+                    .take(rate_ext)
+                    .map(|o| o.ok_or(CircuitBuilderError::MissingOutput))
+                    .collect::<Result<Vec<_>, _>>()?,
+            );
         }
 
         final_outputs = maybe_outputs;
     }
 
-    // Return rate outputs (0-1) as the hash digest
-    [final_outputs[0], final_outputs[1]]
+    final_outputs
         .into_iter()
+        .take(rate_ext)
         .map(|o| o.ok_or(CircuitBuilderError::MissingOutput))
         .collect()
 }
@@ -154,18 +148,19 @@ where
     EF: ExtensionField<F>,
 {
     let rate_ext = permutation_config.rate_ext();
+    let width_ext = permutation_config.width_ext();
     if ext_elements.is_empty() {
         let zero = circuit.define_const(EF::ZERO);
-        return Ok(vec![zero, zero]);
+        return Ok(vec![zero; rate_ext]);
     }
 
     let zero = circuit.define_const(EF::ZERO);
-    let mut last_rate_outputs: Option<[Target; 2]> = None;
-    let mut final_outputs = [None, None, None, None];
+    let mut last_rate_outputs: Option<Vec<Target>> = None;
+    let mut final_outputs: Vec<Option<Target>> = vec![None; width_ext];
 
     for (i, chunk) in ext_elements.chunks(rate_ext).enumerate() {
         let is_first = i == 0;
-        let mut inputs: [Option<Target>; 4] = [None; 4];
+        let mut inputs: Vec<Option<Target>> = vec![None; width_ext];
         for (j, &t) in chunk.iter().enumerate() {
             inputs[j] = Some(t);
         }
@@ -173,7 +168,7 @@ where
             inputs[j] = Some(if is_first {
                 zero
             } else {
-                last_rate_outputs.map(|o| o[j]).unwrap_or(zero)
+                last_rate_outputs.as_ref().map(|o| o[j]).unwrap_or(zero)
             });
         }
 
@@ -183,22 +178,26 @@ where
             merkle_path: false,
             mmcs_bit: None,
             inputs,
-            out_ctl: [true, true],
+            out_ctl: vec![true; rate_ext],
             return_all_outputs: false,
             mmcs_index_sum: None,
         })?;
 
         if chunk.len() == rate_ext {
-            last_rate_outputs = Some([
-                maybe_outputs[0].ok_or(CircuitBuilderError::MissingOutput)?,
-                maybe_outputs[1].ok_or(CircuitBuilderError::MissingOutput)?,
-            ]);
+            last_rate_outputs = Some(
+                maybe_outputs
+                    .iter()
+                    .take(rate_ext)
+                    .map(|o| o.ok_or(CircuitBuilderError::MissingOutput))
+                    .collect::<Result<Vec<_>, _>>()?,
+            );
         }
         final_outputs = maybe_outputs;
     }
 
-    [final_outputs[0], final_outputs[1]]
+    final_outputs
         .into_iter()
+        .take(rate_ext)
         .map(|o| o.ok_or(CircuitBuilderError::MissingOutput))
         .collect()
 }
