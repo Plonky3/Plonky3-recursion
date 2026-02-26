@@ -83,14 +83,13 @@ fn main() -> Result<(), Box<dyn Error>> {
         builder.alloc_const(final_limbs_ext[i], "poseidon2_perm_expected_output")
     });
 
-    // Add permutation rows.
-    let mut last_outputs: [Option<ExprId>; 4] = [None, None, None, None];
+    let mut last_outputs: Vec<Option<ExprId>> = vec![None; 4];
 
     for row in 0..chain_length {
         let is_first = row == 0;
         let is_last = row + 1 == chain_length;
 
-        let mut inputs: [Option<ExprId>; 4] = [None, None, None, None];
+        let mut inputs: Vec<Option<ExprId>> = vec![None; 4];
         if is_first {
             for limb in 0..4 {
                 inputs[limb] = Some(first_inputs_expr[limb]);
@@ -101,18 +100,17 @@ fn main() -> Result<(), Box<dyn Error>> {
             config: Poseidon2Config::KoalaBearD4Width16,
             new_start: is_first,
             merkle_path: false,
-            mmcs_bit: None, // Must be None when merkle_path=false
+            mmcs_bit: None,
             inputs,
-            out_ctl: [is_last, is_last],
+            out_ctl: vec![is_last, is_last],
             return_all_outputs: false,
             mmcs_index_sum: None,
         })?;
 
         if is_last {
             last_outputs = outputs;
-
-            let out0 = outputs[0].ok_or("missing out0 expr")?;
-            let out1 = outputs[1].ok_or("missing out1 expr")?;
+            let out0 = last_outputs[0].ok_or("missing out0 expr")?;
+            let out1 = last_outputs[1].ok_or("missing out1 expr")?;
             builder.connect(out0, expected_final_output_exprs[0]);
             builder.connect(out1, expected_final_output_exprs[1]);
         }

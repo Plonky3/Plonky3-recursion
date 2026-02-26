@@ -6,6 +6,7 @@ pub(crate) use poseidon2_perm::Poseidon2PermExecutor;
 pub use poseidon2_perm::{
     // D=1 configurations for base field challenges
     BabyBearD1Width16,
+    GoldilocksD2Width8,
     KoalaBearD1Width16,
     // Prover/AIR (trace access)
     Poseidon2CircuitRow,

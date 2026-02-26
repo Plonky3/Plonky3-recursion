@@ -4,7 +4,8 @@
 //! the Poseidon2 circuit AIR for commonly used configurations.
 
 use p3_baby_bear::{BabyBear, GenericPoseidon2LinearLayersBabyBear};
-use p3_circuit::ops::{Poseidon2Config, Poseidon2Params};
+use p3_circuit::ops::{GoldilocksD2Width8, Poseidon2Config, Poseidon2Params};
+use p3_goldilocks::{GenericPoseidon2LinearLayersGoldilocks, Goldilocks};
 use p3_koala_bear::{GenericPoseidon2LinearLayersKoalaBear, KoalaBear};
 
 use crate::Poseidon2CircuitAir;
@@ -103,4 +104,19 @@ pub type Poseidon2CircuitAirKoalaBearD4Width24 = Poseidon2CircuitAir<
     { KoalaBearD4Width24::SBOX_REGISTERS },
     { KoalaBearD4Width24::HALF_FULL_ROUNDS },
     { KoalaBearD4Width24::PARTIAL_ROUNDS },
+>;
+
+/// Goldilocks Poseidon2 circuit AIR with D=2, WIDTH=8.
+pub type Poseidon2CircuitAirGoldilocksD2Width8 = Poseidon2CircuitAir<
+    Goldilocks,
+    GenericPoseidon2LinearLayersGoldilocks,
+    { GoldilocksD2Width8::D },
+    { GoldilocksD2Width8::WIDTH },
+    { GoldilocksD2Width8::WIDTH_EXT },
+    { GoldilocksD2Width8::RATE_EXT },
+    { GoldilocksD2Width8::CAPACITY_EXT },
+    { GoldilocksD2Width8::SBOX_DEGREE },
+    { GoldilocksD2Width8::SBOX_REGISTERS },
+    { GoldilocksD2Width8::HALF_FULL_ROUNDS },
+    { GoldilocksD2Width8::PARTIAL_ROUNDS },
 >;

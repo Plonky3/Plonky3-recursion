@@ -3,14 +3,19 @@
 use alloc::vec::Vec;
 
 use p3_circuit::{CircuitBuilder, CircuitRunner, NonPrimitiveOpId};
+use p3_circuit_prover::BatchStarkProver;
+use p3_circuit_prover::field_params::ExtractBinomialW;
 use p3_commit::Pcs;
+use p3_field::extension::BinomiallyExtendable;
 use p3_field::{BasedVectorSpace, PrimeField64};
 use p3_lookup::logup::LogUpGadget;
 use p3_uni_stark::{StarkGenericConfig, Val};
 
 use crate::ops::Poseidon2Config;
 use crate::public_inputs::{BatchStarkVerifierInputsBuilder, StarkVerifierInputsBuilder};
-use crate::recursion::{PcsRecursionBackend, RecursionInput, VerifierCircuitResult};
+use crate::recursion::{
+    PcsRecursionBackend, RecursionInput, RegisterPoseidon2ForDegree, VerifierCircuitResult,
+};
 use crate::traits::RecursiveAir;
 use crate::verifier::{
     ObservableCommitment, VerificationError, verify_p3_batch_proof_circuit,
@@ -181,7 +186,8 @@ where
     SC::Challenge: BasedVectorSpace<Val<SC>>
         + From<Val<SC>>
         + p3_field::ExtensionField<Val<SC>>
-        + p3_field::PrimeCharacteristicRing,
+        + p3_field::PrimeCharacteristicRing
+        + ExtractBinomialW<Val<SC>>,
     <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain: Clone,
     p3_uni_stark::SymbolicExpression<SC::Challenge>:
         From<p3_uni_stark::SymbolicExpression<Val<SC>>>,
@@ -268,6 +274,24 @@ where
                         &lookup_gadget,
                         self.poseidon2_config,
                     )?,
+                    2 => verify_p3_batch_proof_circuit::<
+                        SC,
+                        SC::Commitment,
+                        SC::InputProof,
+                        SC::OpeningProof,
+                        _,
+                        WIDTH,
+                        RATE,
+                        2,
+                    >(
+                        config,
+                        circuit,
+                        proof,
+                        config.pcs_verifier_params(),
+                        common_data,
+                        &lookup_gadget,
+                        self.poseidon2_config,
+                    )?,
                     4 => verify_p3_batch_proof_circuit::<
                         SC,
                         SC::Commitment,
@@ -314,5 +338,45 @@ where
 
     fn poseidon2_config_for_circuit(&self) -> Option<Poseidon2Config> {
         Some(self.poseidon2_config)
+    }
+}
+
+impl<SC, const WIDTH: usize, const RATE: usize> RegisterPoseidon2ForDegree<SC, 2>
+    for FriRecursionBackend<WIDTH, RATE>
+where
+    SC: FriRecursionConfig + Send + Sync,
+    Val<SC>: BinomiallyExtendable<2> + p3_circuit_prover::config::StarkField,
+    p3_uni_stark::SymbolicExpression<SC::Challenge>:
+        From<p3_uni_stark::SymbolicExpression<Val<SC>>>,
+    SC::Pcs: RecursivePcs<
+            SC,
+            SC::InputProof,
+            SC::OpeningProof,
+            SC::Commitment,
+            <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain,
+        >,
+{
+    fn register_poseidon2(&self, prover: &mut BatchStarkProver<SC>, config: Poseidon2Config) {
+        prover.register_poseidon2_table_d2(config);
+    }
+}
+
+impl<SC, const WIDTH: usize, const RATE: usize> RegisterPoseidon2ForDegree<SC, 4>
+    for FriRecursionBackend<WIDTH, RATE>
+where
+    SC: FriRecursionConfig + Send + Sync,
+    Val<SC>: BinomiallyExtendable<4> + p3_circuit_prover::config::StarkField,
+    p3_uni_stark::SymbolicExpression<SC::Challenge>:
+        From<p3_uni_stark::SymbolicExpression<Val<SC>>>,
+    SC::Pcs: RecursivePcs<
+            SC,
+            SC::InputProof,
+            SC::OpeningProof,
+            SC::Commitment,
+            <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain,
+        >,
+{
+    fn register_poseidon2(&self, prover: &mut BatchStarkProver<SC>, config: Poseidon2Config) {
+        prover.register_poseidon2_table(config);
     }
 }

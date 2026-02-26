@@ -1,8 +1,12 @@
 use p3_baby_bear::BabyBear;
 use p3_circuit::builder::CircuitBuilder;
+use p3_circuit::ops::hash::add_hash_slice;
+use p3_circuit::ops::poseidon2_perm::GoldilocksD2Width8;
+use p3_circuit::ops::{Poseidon2Config, generate_poseidon2_trace};
 use p3_field::PrimeCharacteristicRing;
-use p3_goldilocks::Goldilocks;
+use p3_goldilocks::{Goldilocks, Poseidon2Goldilocks};
 use p3_koala_bear::KoalaBear;
+use p3_symmetric::CryptographicHasher;
 
 use super::*;
 use crate::ConstraintProfile;
@@ -543,6 +547,48 @@ fn test_goldilocks_batch_stark_extension_field_d2() {
     prover
         .verify_all_tables(&proof, circuit_prover_data.common_data())
         .unwrap();
+}
+
+#[test]
+fn test_goldilocks_poseidon2_circuit_build_and_run() {
+    const D: usize = 2;
+    type Ext2 = BinomialExtensionField<Goldilocks, D>;
+    let mut rng = <rand::rngs::SmallRng as rand::SeedableRng>::seed_from_u64(0);
+    let perm = Poseidon2Goldilocks::<8>::new_from_rng_128(&mut rng);
+    let perm_for_hash = perm.clone();
+    let mut builder = CircuitBuilder::<Ext2>::new();
+    builder.enable_poseidon2_perm_width_8::<GoldilocksD2Width8, _>(
+        generate_poseidon2_trace::<Ext2, GoldilocksD2Width8>,
+        perm,
+    );
+    let poseidon2_config = Poseidon2Config::GoldilocksD2Width8;
+    let inputs = [builder.public_input(), builder.public_input()];
+    let hash_outputs = add_hash_slice(&mut builder, &poseidon2_config, &inputs, true).unwrap();
+    let expected0 = builder.public_input();
+    let expected1 = builder.public_input();
+    let sub0 = builder.sub(hash_outputs[0], expected0);
+    builder.assert_zero(sub0);
+    let sub1 = builder.sub(hash_outputs[1], expected1);
+    builder.assert_zero(sub1);
+    let circuit = builder.build().unwrap();
+    let mut runner = circuit.runner();
+    let in0 =
+        Ext2::from_basis_coefficients_slice(&[Goldilocks::from_u64(1), Goldilocks::ZERO]).unwrap();
+    let in1 =
+        Ext2::from_basis_coefficients_slice(&[Goldilocks::from_u64(2), Goldilocks::ZERO]).unwrap();
+    let hasher =
+        p3_symmetric::PaddingFreeSponge::<Poseidon2Goldilocks<8>, 8, 4, 4>::new(perm_for_hash);
+    let base_inputs = [
+        Goldilocks::from_u64(1),
+        Goldilocks::ZERO,
+        Goldilocks::from_u64(2),
+        Goldilocks::ZERO,
+    ];
+    let expected_hash = hasher.hash_iter(base_inputs);
+    let out0 = Ext2::from_basis_coefficients_slice(&expected_hash[0..2]).unwrap();
+    let out1 = Ext2::from_basis_coefficients_slice(&expected_hash[2..4]).unwrap();
+    runner.set_public_inputs(&[in0, in1, out0, out1]).unwrap();
+    let _traces = runner.run().unwrap();
 }
 
 #[test]

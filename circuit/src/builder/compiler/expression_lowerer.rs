@@ -135,27 +135,25 @@ where
                     }
                 };
 
-                // Detect D=1 (base field) vs D=4 (extension field) based on input count
-                // D=4 mode: 6 inputs [in0..3, mmcs_index_sum, mmcs_bit], 2 or 4 outputs
-                // D=1 mode: 16 inputs [in0..15], 8 or 16 outputs (no merkle support)
-                let is_d1_mode = data.input_exprs.len() == 16;
-                let is_d4_mode = data.input_exprs.len() == 6;
+                let d = config.d();
+                let width_ext = config.width_ext();
+                let rate_ext = config.rate_ext();
+                let is_d1_mode = d == 1;
+                let expected_inputs_ext = width_ext + 2;
 
-                if !is_d1_mode && !is_d4_mode {
+                let expected_inputs = if is_d1_mode { 16 } else { expected_inputs_ext };
+                if data.input_exprs.len() != expected_inputs {
                     return Err(CircuitBuilderError::NonPrimitiveOpArity {
                         op: "Poseidon2Perm",
-                        expected: "6 inputs (D=4 mode) or 16 inputs (D=1 mode)".to_string(),
+                        expected: format!("{} inputs (D=1: 16, D>1: width_ext+2)", expected_inputs),
                         got: data.input_exprs.len(),
                     });
                 }
 
-                // Validate output count based on mode
                 let valid_output_count = if is_d1_mode {
-                    // D=1: 8 (rate only) or 16 (with capacity)
                     data.output_exprs.len() == 8 || data.output_exprs.len() == 16
                 } else {
-                    // D=4: 2 (rate only) or 4 (with capacity)
-                    data.output_exprs.len() == 2 || data.output_exprs.len() == 4
+                    data.output_exprs.len() == rate_ext || data.output_exprs.len() == width_ext
                 };
 
                 if !valid_output_count {
@@ -164,7 +162,7 @@ where
                         expected: if is_d1_mode {
                             "8 or 16 outputs for D=1 mode".to_string()
                         } else {
-                            "2 or 4 outputs for D=4 mode".to_string()
+                            format!("{rate_ext} or {width_ext} outputs for D>1 mode")
                         },
                         got: data.output_exprs.len(),
                     });
@@ -196,8 +194,7 @@ where
                         inputs_widx.push(limb_widx);
                     }
                 } else {
-                    // D=4 mode: Inputs (Limbs 0-3)
-                    for (i, limb_exprs) in data.input_exprs.iter().take(4).enumerate() {
+                    for (i, limb_exprs) in data.input_exprs.iter().take(width_ext).enumerate() {
                         if !(limb_exprs.is_empty() || limb_exprs.len() == 1) {
                             return Err(CircuitBuilderError::NonPrimitiveOpArity {
                                 op: "Poseidon2Perm",
@@ -218,8 +215,7 @@ where
                         inputs_widx.push(limb_widx);
                     }
 
-                    // mmcs_index_sum (0 or 1 element)
-                    let mmcs_exprs = &data.input_exprs[4];
+                    let mmcs_exprs = &data.input_exprs[width_ext];
                     if !(mmcs_exprs.is_empty() || mmcs_exprs.len() == 1) {
                         return Err(CircuitBuilderError::NonPrimitiveOpArity {
                             op: "Poseidon2Perm",
@@ -235,8 +231,7 @@ where
                         .collect::<Result<Vec<WitnessId>, _>>()?;
                     inputs_widx.push(mmcs_widx);
 
-                    // mmcs_bit (0 or 1 element)
-                    let mmcs_bit_exprs = &data.input_exprs[5];
+                    let mmcs_bit_exprs = &data.input_exprs[width_ext + 1];
                     if !(mmcs_bit_exprs.is_empty() || mmcs_bit_exprs.len() == 1) {
                         return Err(CircuitBuilderError::NonPrimitiveOpArity {
                             op: "Poseidon2Perm",

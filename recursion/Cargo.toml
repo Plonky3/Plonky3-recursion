@@ -19,6 +19,7 @@ p3-circuit-prover.workspace = true
 p3-commit.workspace = true
 p3-field.workspace = true
 p3-fri.workspace = true
+p3-goldilocks.workspace = true
 p3-koala-bear.workspace = true
 p3-lookup.workspace = true
 p3-matrix.workspace = true
@@ -28,6 +29,7 @@ p3-poseidon2-circuit-air.workspace = true
 p3-symmetric.workspace = true
 p3-uni-stark.workspace = true
 p3-util.workspace = true
+rand.workspace = true
 
 # Other dependencies
 hashbrown.workspace = true

@@ -48,28 +48,28 @@ cognitive_complexity = "allow"
 
 [workspace.dependencies]
 # Plonky3 dependencies - shared across all crates
-p3-air = { git = "https://github.com/Plonky3/Plonky3", rev = "646d4af9" }
-p3-baby-bear = { git = "https://github.com/Plonky3/Plonky3", rev = "646d4af9" }
-p3-batch-stark = { git = "https://github.com/Plonky3/Plonky3", rev = "646d4af9" }
-p3-challenger = { git = "https://github.com/Plonky3/Plonky3", rev = "646d4af9" }
-p3-circle = { git = "https://github.com/Plonky3/Plonky3", rev = "646d4af9" }
-p3-commit = { git = "https://github.com/Plonky3/Plonky3", rev = "646d4af9" }
-p3-dft = { git = "https://github.com/Plonky3/Plonky3", rev = "646d4af9" }
-p3-field = { git = "https://github.com/Plonky3/Plonky3", rev = "646d4af9" }
-p3-fri = { git = "https://github.com/Plonky3/Plonky3", rev = "646d4af9" }
-p3-goldilocks = { git = "https://github.com/Plonky3/Plonky3", rev = "646d4af9" }
-p3-keccak = { git = "https://github.com/Plonky3/Plonky3", rev = "646d4af9" }
-p3-keccak-air = { git = "https://github.com/Plonky3/Plonky3", rev = "646d4af9" }
-p3-koala-bear = { git = "https://github.com/Plonky3/Plonky3", rev = "646d4af9" }
-p3-lookup = { git = "https://github.com/Plonky3/Plonky3", rev = "646d4af9" }
-p3-matrix = { git = "https://github.com/Plonky3/Plonky3", rev = "646d4af9" }
-p3-maybe-rayon = { git = "https://github.com/Plonky3/Plonky3", rev = "646d4af9" }
-p3-merkle-tree = { git = "https://github.com/Plonky3/Plonky3", rev = "646d4af9" }
-p3-poseidon2 = { git = "https://github.com/Plonky3/Plonky3", rev = "646d4af9" }
-p3-poseidon2-air = { git = "https://github.com/Plonky3/Plonky3", rev = "646d4af9" }
-p3-symmetric = { git = "https://github.com/Plonky3/Plonky3", rev = "646d4af9" }
-p3-uni-stark = { git = "https://github.com/Plonky3/Plonky3", rev = "646d4af9" }
-p3-util = { git = "https://github.com/Plonky3/Plonky3", rev = "646d4af9" }
+p3-air = { git = "https://github.com/Plonky3/Plonky3", rev = "161ff73fc580c54b90ca4c5cb9dcf3e98a85fcdd" }
+p3-baby-bear = { git = "https://github.com/Plonky3/Plonky3", rev = "161ff73fc580c54b90ca4c5cb9dcf3e98a85fcdd" }
+p3-batch-stark = { git = "https://github.com/Plonky3/Plonky3", rev = "161ff73fc580c54b90ca4c5cb9dcf3e98a85fcdd" }
+p3-challenger = { git = "https://github.com/Plonky3/Plonky3", rev = "161ff73fc580c54b90ca4c5cb9dcf3e98a85fcdd" }
+p3-circle = { git = "https://github.com/Plonky3/Plonky3", rev = "161ff73fc580c54b90ca4c5cb9dcf3e98a85fcdd" }
+p3-commit = { git = "https://github.com/Plonky3/Plonky3", rev = "161ff73fc580c54b90ca4c5cb9dcf3e98a85fcdd" }
+p3-dft = { git = "https://github.com/Plonky3/Plonky3", rev = "161ff73fc580c54b90ca4c5cb9dcf3e98a85fcdd" }
+p3-field = { git = "https://github.com/Plonky3/Plonky3", rev = "161ff73fc580c54b90ca4c5cb9dcf3e98a85fcdd" }
+p3-fri = { git = "https://github.com/Plonky3/Plonky3", rev = "161ff73fc580c54b90ca4c5cb9dcf3e98a85fcdd" }
+p3-goldilocks = { git = "https://github.com/Plonky3/Plonky3", rev = "161ff73fc580c54b90ca4c5cb9dcf3e98a85fcdd" }
+p3-keccak = { git = "https://github.com/Plonky3/Plonky3", rev = "161ff73fc580c54b90ca4c5cb9dcf3e98a85fcdd" }
+p3-keccak-air = { git = "https://github.com/Plonky3/Plonky3", rev = "161ff73fc580c54b90ca4c5cb9dcf3e98a85fcdd" }
+p3-koala-bear = { git = "https://github.com/Plonky3/Plonky3", rev = "161ff73fc580c54b90ca4c5cb9dcf3e98a85fcdd" }
+p3-lookup = { git = "https://github.com/Plonky3/Plonky3", rev = "161ff73fc580c54b90ca4c5cb9dcf3e98a85fcdd" }
+p3-matrix = { git = "https://github.com/Plonky3/Plonky3", rev = "161ff73fc580c54b90ca4c5cb9dcf3e98a85fcdd" }
+p3-maybe-rayon = { git = "https://github.com/Plonky3/Plonky3", rev = "161ff73fc580c54b90ca4c5cb9dcf3e98a85fcdd" }
+p3-merkle-tree = { git = "https://github.com/Plonky3/Plonky3", rev = "161ff73fc580c54b90ca4c5cb9dcf3e98a85fcdd" }
+p3-poseidon2 = { git = "https://github.com/Plonky3/Plonky3", rev = "161ff73fc580c54b90ca4c5cb9dcf3e98a85fcdd" }
+p3-poseidon2-air = { git = "https://github.com/Plonky3/Plonky3", rev = "161ff73fc580c54b90ca4c5cb9dcf3e98a85fcdd" }
+p3-symmetric = { git = "https://github.com/Plonky3/Plonky3", rev = "161ff73fc580c54b90ca4c5cb9dcf3e98a85fcdd" }
+p3-uni-stark = { git = "https://github.com/Plonky3/Plonky3", rev = "161ff73fc580c54b90ca4c5cb9dcf3e98a85fcdd" }
+p3-util = { git = "https://github.com/Plonky3/Plonky3", rev = "161ff73fc580c54b90ca4c5cb9dcf3e98a85fcdd" }
 
 p3-test-utils = { path = "test-utils", version = "0.1.0" }
 
