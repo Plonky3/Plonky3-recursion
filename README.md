@@ -225,7 +225,7 @@ The `TablePacking` configuration significantly impacts performance.
 Choose lane counts that fit best your circuit size:
 
 ```rust
-TablePacking::new(8, 2, 5)  // witness, public, alu lanes
+TablePacking::new(2, 5)  // public, alu lanes
 ```
 
 ### FRI Parameters
@@ -238,18 +238,10 @@ FRI parameters affect proof size and verification cost:
 
 For intermediate recursive layers, consider relaxed parameters (fewer queries, higher PoW bits).
 
-### Known Optimizations
-
-- **Merkle Caps**: Not yet implemented; could reduce Poseidon2 rows by ~10%
-- **Dedicated FRI Fold Table**: Could offload ~30K operations to a specialized AIR
-- **Removing the Witness bus**: Could remove the entire table at the cost of extra CTLs
-- **Switch to base field indexing**: Would remove the overhead of decomposing / recomposing 
-- **Optimization passes**: Additional optimizations at circuit building time to prune unused nodes.
-
 ## Current Limitations
 
 - **ZK Mode**: Currently only supports non-ZK STARKs (`config.is_zk() == 0`)
-- **Fixed Configurations**: Poseidon2 currently requires D=4, WIDTH=16 for extension fields
+- **Fixed Configurations**: Field extensions are currently not fully parametrizable.
 
 ## Documentation
 
