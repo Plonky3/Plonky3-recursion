@@ -4,7 +4,6 @@
 
 extern crate alloc;
 
-mod columns;
 mod open_input_air;
 
 pub use open_input_air::*;

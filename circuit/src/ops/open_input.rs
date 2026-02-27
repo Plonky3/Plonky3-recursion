@@ -4,6 +4,7 @@ use alloc::{format, vec};
 use core::any::Any;
 
 use p3_field::{ExtensionField, Field};
+use tracing::info;
 
 use crate::builder::NonPrimitiveOpParams;
 // TODO Linda: alpha_pow and intermediary ros should be private inputs.
@@ -34,7 +35,7 @@ pub struct OpenInputTrace<F> {
     pub rows: Vec<OpenInputRow<F>>,
 }
 
-impl<F: Clone + Send + Sync + 'static> NonPrimitiveTrace<F> for OpenInputTrace<F> {
+impl<TraceF: Clone + Send + Sync + 'static, CF> NonPrimitiveTrace<CF> for OpenInputTrace<TraceF> {
     fn op_type(&self) -> NonPrimitiveOpType {
         self.op_type
     }
@@ -47,7 +48,7 @@ impl<F: Clone + Send + Sync + 'static> NonPrimitiveTrace<F> for OpenInputTrace<F
         self
     }
 
-    fn boxed_clone(&self) -> Box<dyn NonPrimitiveTrace<F>> {
+    fn boxed_clone(&self) -> Box<dyn NonPrimitiveTrace<CF>> {
         Box::new(self.clone())
     }
 }
@@ -77,10 +78,10 @@ pub(crate) struct OpenInputExecutor {
 }
 
 impl OpenInputExecutor {
-    pub fn new() -> Self {
+    pub fn new(is_last: bool) -> Self {
         Self {
             op_type: NonPrimitiveOpType::OpenInput,
-            is_last: false,
+            is_last,
         }
     }
 }
@@ -92,7 +93,7 @@ impl<F: Field> NonPrimitiveExecutor<F> for OpenInputExecutor {
         outputs: &[Vec<WitnessId>],
         ctx: &mut ExecutionContext<'_, F>,
     ) -> Result<(), CircuitError> {
-        assert_eq!(inputs.len(), 6);
+        assert_eq!(inputs.len(), 4);
         // The OpenInput updates the reduced_openings and alpha_pow columns.
         let inps_and_indices = inputs
             .iter()
@@ -136,6 +137,10 @@ impl<F: Field> NonPrimitiveExecutor<F> for OpenInputExecutor {
 
         state.last_alpha_pow = Some(new_alpha_pow);
         state.last_ro = Some(new_ro);
+        info!("state ro {:?}", state.last_ro);
+        if self.is_last {
+            info!("LAST state ro {:?}", state.last_ro);
+        }
         state.rows.push(OpenInputRow {
             alpha: vec![alpha.0],
             alpha_index: alpha.1,
@@ -155,7 +160,7 @@ impl<F: Field> NonPrimitiveExecutor<F> for OpenInputExecutor {
             assert_eq!(outputs[0].len(), 1);
             ctx.set_witness(outputs[0][0], new_ro)?;
         } else {
-            assert_eq!(outputs.len(), 0);
+            assert_eq!(outputs[0].len(), 0);
         }
 
         Ok(())
@@ -216,12 +221,12 @@ impl<F: Field> NonPrimitiveExecutor<F> for OpenInputExecutor {
 }
 
 pub fn generate_open_input_trace<
-    const D: usize,
     BaseF: Field,
     F: CircuitField + ExtensionField<BaseF>,
+    const D: usize,
 >(
-    op_states: OpStateMap,
-) -> Result<Option<Box<dyn NonPrimitiveTrace<BaseF>>>, CircuitError> {
+    op_states: &OpStateMap,
+) -> Result<Option<Box<dyn NonPrimitiveTrace<F>>>, CircuitError> {
     let op_type = NonPrimitiveOpType::OpenInput;
 
     let Some(state) = op_states

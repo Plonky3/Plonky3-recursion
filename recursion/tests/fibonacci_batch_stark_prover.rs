@@ -140,6 +140,7 @@ fn test_fibonacci_batch_verifier() {
         generate_poseidon2_trace::<Challenge, BabyBearD4Width16>,
         poseidon2_perm,
     );
+    circuit_builder.enable_open_input::<BabyBear, D>();
 
     // Attach verifier without manually building circuit_airs
     let (verifier_inputs, mmcs_op_ids) = verify_p3_recursion_proof_circuit::<

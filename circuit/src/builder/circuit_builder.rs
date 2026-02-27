@@ -17,6 +17,7 @@ use super::compiler::{ExpressionLowerer, Optimizer};
 use super::{BuilderConfig, ExpressionBuilder, PublicInputTracker};
 use crate::circuit::Circuit;
 use crate::op::{NonPrimitiveExecutor, NonPrimitiveOpConfig, NonPrimitiveOpType};
+use crate::ops::open_input::generate_open_input_trace;
 use crate::ops::{Poseidon2Params, Poseidon2PermCall, Poseidon2PermCallBase};
 use crate::tables::TraceGeneratorFn;
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};
@@ -127,8 +128,15 @@ where
         self.config.enable_op(op, cfg);
     }
 
-    pub fn enable_open_input(&mut self) {
-        self.enable_op(NonPrimitiveOpType::OpenInput, NonPrimitiveOpConfig::None)
+    pub fn enable_open_input<BaseF: Field, const D: usize>(&mut self)
+    where
+        F: CircuitField + ExtensionField<BaseF>,
+    {
+        self.enable_op(NonPrimitiveOpType::OpenInput, NonPrimitiveOpConfig::None);
+        self.non_primitive_trace_generators.insert(
+            NonPrimitiveOpType::OpenInput,
+            generate_open_input_trace::<BaseF, F, D>,
+        );
     }
 
     /// Enables Poseidon2 permutation operations (one perm per table row).
