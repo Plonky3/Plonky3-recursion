@@ -3,9 +3,7 @@ use alloc::vec::Vec;
 use core::borrow::{Borrow, BorrowMut};
 
 use hashbrown::HashMap;
-use p3_circuit::op::{
-    NonPrimitiveOpType, NonPrimitivePreprocessedMap, Poseidon2Config, PrimitiveOpType,
-};
+use p3_circuit::op::{NonPrimitivePreprocessedMap, NpoTypeId, Poseidon2Config, PrimitiveOpType};
 use p3_circuit::{Circuit, CircuitError, PreprocessedColumns};
 use p3_field::{ExtensionField, PrimeCharacteristicRing, PrimeField64};
 use p3_poseidon2_circuit_air::{Poseidon2PreprocessedRow, poseidon2_preprocessed_width};
@@ -129,7 +127,7 @@ where
     // Phase 1: Scan Poseidon2 preprocessed data to count mmcs_index_sum conditional reads,
     // and update `ext_reads` accordingly. This must happen before computing multiplicities.
     for (op_type, prep) in preprocessed.non_primitive.iter() {
-        if matches!(op_type, NonPrimitiveOpType::Poseidon2Perm(_)) {
+        if op_type.as_str().starts_with("poseidon2_perm/") {
             let prep_base: Vec<Val<SC>> = prep
                 .iter()
                 .map(|v| v.as_base().ok_or(CircuitError::InvalidPreprocessedValues))
@@ -189,7 +187,7 @@ where
     // (reader contribution). For first-occurrence creators, out_ctl = +ext_reads[wid].
     let mut non_primitive_base: NonPrimitivePreprocessedMap<Val<SC>> = HashMap::new();
     for (op_type, prep) in preprocessed.non_primitive.iter() {
-        if matches!(op_type, NonPrimitiveOpType::Poseidon2Perm(_)) {
+        if op_type.as_str().starts_with("poseidon2_perm/") {
             let mut prep_base: Vec<Val<SC>> = prep
                 .iter()
                 .map(|v| v.as_base().ok_or(CircuitError::InvalidPreprocessedValues))
@@ -221,7 +219,7 @@ where
                 }
             }
 
-            non_primitive_base.insert(*op_type, prep_base);
+            non_primitive_base.insert(op_type.clone(), prep_base);
         }
     }
 
@@ -379,7 +377,7 @@ where
         for config in configs {
             match config {
                 NonPrimitiveConfig::Poseidon2(cfg) => {
-                    let op_type = NonPrimitiveOpType::Poseidon2Perm(*cfg);
+                    let op_type = NpoTypeId::poseidon2_perm(*cfg);
                     config_map.insert(op_type, *cfg);
                 }
             }
@@ -388,37 +386,35 @@ where
 
     // Add non-primitive (Poseidon2) AIR entries using the updated base field preprocessed data.
     for (op_type, prep_base) in non_primitive_base.iter() {
-        match op_type {
-            NonPrimitiveOpType::Poseidon2Perm(_) => {
-                let cfg = config_map
-                    .get(op_type)
-                    .copied()
-                    .ok_or(CircuitError::InvalidPreprocessedValues)?;
-                let poseidon2_prover = Poseidon2Prover::new(cfg, constraint_profile);
-                let width = poseidon2_prover.preprocessed_width_from_config();
-                let poseidon2_wrapper = poseidon2_prover
-                    .wrapper_from_config_with_preprocessed(prep_base.clone(), min_height);
-                let poseidon2_wrapper_air: CircuitTableAir<SC, D> =
-                    CircuitTableAir::Dynamic(poseidon2_wrapper);
-                let num_rows = prep_base.len().div_ceil(width);
-                table_preps.push((poseidon2_wrapper_air, compute_degree(num_rows)));
-            }
-            NonPrimitiveOpType::Unconstrained => {}
+        if op_type.as_str().starts_with("poseidon2_perm/") {
+            let cfg = config_map
+                .get(op_type)
+                .copied()
+                .ok_or(CircuitError::InvalidPreprocessedValues)?;
+            let poseidon2_prover = Poseidon2Prover::new(cfg, constraint_profile);
+            let width = poseidon2_prover.preprocessed_width_from_config();
+            let poseidon2_wrapper = poseidon2_prover
+                .wrapper_from_config_with_preprocessed(prep_base.clone(), min_height);
+            let poseidon2_wrapper_air: CircuitTableAir<SC, D> =
+                CircuitTableAir::Dynamic(poseidon2_wrapper);
+            let num_rows = prep_base.len().div_ceil(width);
+            table_preps.push((poseidon2_wrapper_air, compute_degree(num_rows)));
         }
+        // Other non-primitive ops: no special handling here
     }
 
     // Build base_prep for the output PreprocessedColumns (without Poseidon2 multiplicities).
     // The non_primitive_base already has the updated in_ctl/out_ctl values.
     let mut non_primitive_output: NonPrimitivePreprocessedMap<Val<SC>> = non_primitive_base;
 
-    // Also include any non-primitive ops that weren't Poseidon2 (e.g. Unconstrained)
+    // Also include any non-primitive ops that weren't Poseidon2
     for (op_type, prep) in preprocessed.non_primitive.iter() {
-        if !matches!(op_type, NonPrimitiveOpType::Poseidon2Perm(_)) {
+        if !op_type.as_str().starts_with("poseidon2_perm/") {
             let prep_base: Vec<Val<SC>> = prep
                 .iter()
                 .map(|v| v.as_base().ok_or(CircuitError::InvalidPreprocessedValues))
                 .collect::<Result<Vec<_>, CircuitError>>()?;
-            non_primitive_output.insert(*op_type, prep_base);
+            non_primitive_output.insert(op_type.clone(), prep_base);
         }
     }
 

@@ -1,6 +1,6 @@
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
-use alloc::sync::Arc;
+use alloc::string::String;
 use alloc::vec::Vec;
 use alloc::{format, vec};
 use core::any::Any;
@@ -12,7 +12,8 @@ use p3_field::{Field, PrimeCharacteristicRing};
 use serde::{Deserialize, Serialize};
 use strum_macros::EnumCount;
 
-use crate::ops::Poseidon2PermPrivateData;
+// Re-export Poseidon2 config types from their canonical location
+pub use crate::ops::poseidon2_perm::{Poseidon2Config, Poseidon2PermExec, Poseidon2PermExecBase};
 use crate::types::{NonPrimitiveOpId, WitnessId};
 use crate::{CircuitError, PreprocessedColumns};
 
@@ -34,26 +35,12 @@ pub enum AluOpKind {
 
 /// Circuit operations.
 ///
-/// Operations are distinguised as primitive and non-primitive:
+/// Operations are distinguised as primitive, non-primitive, and hints:
 ///
-/// # Primitive operations
-///
-/// Primitive operations that represent basic field arithmetic
-///
-/// These operations form the core computational primitives after expression lowering.
-/// All primitive operations:
-/// - Operate on witness table slots (WitnessId)
-/// - Can be heavily optimized (constant folding, CSE, etc.)
-/// - Are executed in topological order during circuit evaluation
-/// - Form a directed acyclic graph (DAG) of dependencies
-///
-/// # Non-primitive operations
-///
-/// Non-primitive operations may represent complex computations that would require too many,
-/// primitive operations to be expressed equivalently.
-///
-/// They can be user-defined and selected at runtime, have private data that does not appear
-/// in the central Witness bus, and are subject to their own optimization passes.
+/// - Primitive ops (`Const`, `Public`, `Alu`) are the basic arithmetic building blocks
+/// - Non-primitive ops (`NonPrimitiveOpWithExecutor`) are table-backed plugin operations
+/// - Hint ops (`Hint`) are non-deterministic witness assignments that do NOT have tables,
+///   AIR, or traces; they are purely a convenience for filling witnesses.
 #[derive(Debug)]
 pub enum Op<F> {
     /// Load a constant value into the witness table
@@ -87,6 +74,23 @@ pub enum Op<F> {
         /// Intermediate output for MulAdd: stores a * b when fused from separate mul + add.
         /// The runner sets this witness value so dependent operations still work.
         intermediate_out: Option<WitnessId>,
+    },
+
+    /// Hint operation: non-deterministically fills witness values via a user-provided closure.
+    ///
+    /// Hints are NOT table-backed:
+    /// - they do not have an AIR
+    /// - they do not participate in non-primitive traces
+    /// - they do not have private data or configs
+    ///
+    /// They are used for things like bit decompositions and extension-field decompositions.
+    Hint {
+        /// Input witnesses read by the hint.
+        inputs: Vec<WitnessId>,
+        /// Output witnesses written by the hint.
+        outputs: Vec<WitnessId>,
+        /// User-provided executor that implements the hint logic.
+        executor: Box<dyn HintExecutor<F>>,
     },
 
     /// Non-primitive operation with executor-based dispatch
@@ -193,6 +197,16 @@ impl<F> Op<F> {
                 *out = resolve(*out);
                 *intermediate_out = intermediate_out.map(resolve);
             }
+            Self::Hint {
+                inputs, outputs, ..
+            } => {
+                for w in inputs.iter_mut() {
+                    *w = resolve(*w);
+                }
+                for w in outputs.iter_mut() {
+                    *w = resolve(*w);
+                }
+            }
             Self::NonPrimitiveOpWithExecutor {
                 inputs, outputs, ..
             } => {
@@ -258,6 +272,15 @@ impl<F: Field + Clone> Clone for Op<F> {
                 out: *out,
                 intermediate_out: *intermediate_out,
             },
+            Self::Hint {
+                inputs,
+                outputs,
+                executor,
+            } => Self::Hint {
+                inputs: inputs.clone(),
+                outputs: outputs.clone(),
+                executor: executor.boxed(),
+            },
             Self::NonPrimitiveOpWithExecutor {
                 inputs,
                 outputs,
@@ -309,6 +332,21 @@ impl<F: Field + PartialEq> PartialEq for Op<F> {
                 },
             ) => k1 == k2 && a1 == a2 && b1 == b2 && c1 == c2 && o1 == o2 && io1 == io2,
             (
+                Self::Hint {
+                    inputs: i1,
+                    outputs: o1,
+                    executor: _,
+                },
+                Self::Hint {
+                    inputs: i2,
+                    outputs: o2,
+                    executor: _,
+                },
+            ) => {
+                // Compare by value layout only; executors are opaque closures.
+                i1 == i2 && o1 == o2
+            }
+            (
                 Self::NonPrimitiveOpWithExecutor {
                     inputs: i1,
                     outputs: o1,
@@ -327,101 +365,83 @@ impl<F: Field + PartialEq> PartialEq for Op<F> {
     }
 }
 
-/// Non-primitive operation types.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd, Serialize, Deserialize)]
-pub enum NonPrimitiveOpType {
-    /// Poseidon2 permutation operation (one Poseidon2 call / table row).
-    Poseidon2Perm(Poseidon2Config),
-    /// Unconstrained operation, used to set outputs to non-deterministic advices.
-    Unconstrained,
+/// Opaque, string-based identifier for non-primitive operation types.
+///
+/// Each unique (operation-kind, configuration) pair gets its own `NpoTypeId`.
+/// For example, Poseidon2 with BabyBear D=4 W=16 is `"poseidon2_perm/baby_bear_d4_w16"`.
+#[derive(Clone, PartialEq, Eq, Hash, Ord, PartialOrd, Serialize, Deserialize)]
+pub struct NpoTypeId(String);
+
+impl NpoTypeId {
+    /// Create a new NPO type identifier.
+    pub fn new(id: impl Into<String>) -> Self {
+        Self(id.into())
+    }
+
+    /// The string key.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Convenience: Poseidon2 permutation type ID for a given config.
+    pub fn poseidon2_perm(config: Poseidon2Config) -> Self {
+        Self::new(alloc::format!("poseidon2_perm/{}", config.variant_name()))
+    }
+
+    /// Convenience: Unconstrained (hint) operation type ID.
+    ///
+    /// This is kept only for profiling / debugging purposes; Unconstrained is
+    /// no longer a table-backed non-primitive op and is executed via `Op::Hint`.
+    pub fn unconstrained() -> Self {
+        Self::new("unconstrained")
+    }
 }
 
-// Re-export Poseidon2 config types from their canonical location
-pub use crate::ops::poseidon2_perm::{Poseidon2Config, Poseidon2PermExec, Poseidon2PermExecBase};
+impl Debug for NpoTypeId {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "NpoTypeId({})", self.0)
+    }
+}
+
+impl core::fmt::Display for NpoTypeId {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
 
 /// Preprocessed data for non-primitive tables, keyed by operation type.
-pub type NonPrimitivePreprocessedMap<F> = HashMap<NonPrimitiveOpType, Vec<F>>;
+pub type NonPrimitivePreprocessedMap<F> = HashMap<NpoTypeId, Vec<F>>;
 
-/// Non-primitive operation configuration.
+/// Type-erased, plugin-owned configuration for a non-primitive operation.
 ///
-/// Contains operation-specific configuration data, such as execution closures.
-pub enum NonPrimitiveOpConfig<F> {
-    /// No configuration needed (placeholder for future operations).
-    None,
-    /// Poseidon2 permutation configuration with exec closure (extension field mode).
-    Poseidon2Perm {
-        config: Poseidon2Config,
-        exec: Poseidon2PermExec<F>,
-    },
-    /// Poseidon2 permutation configuration for base field (D=1, 16 base elements).
-    Poseidon2PermBase {
-        config: Poseidon2Config,
-        exec: Poseidon2PermExecBase<F>,
-    },
+/// Each NPO plugin both produces and consumes its own typed data through
+/// this wrapper. The core infrastructure never inspects the contents.
+pub struct NpoConfig(pub Box<dyn Any + Send + Sync>);
+
+/// Backward-compatible alias during migration.
+pub type NonPrimitiveOpConfig = NpoConfig;
+
+impl NpoConfig {
+    /// Wrap a concrete config value.
+    pub fn new<T: Any + Send + Sync>(val: T) -> Self {
+        Self(Box::new(val))
+    }
+
+    /// Downcast to a concrete config type.
+    pub fn downcast_ref<T: Any>(&self) -> Option<&T> {
+        self.0.downcast_ref::<T>()
+    }
 }
 
-impl<F> Clone for NonPrimitiveOpConfig<F> {
+impl Clone for NpoConfig {
     fn clone(&self) -> Self {
-        match self {
-            Self::None => Self::None,
-            Self::Poseidon2Perm { config, exec } => Self::Poseidon2Perm {
-                config: *config,
-                exec: Arc::clone(exec),
-            },
-            Self::Poseidon2PermBase { config, exec } => Self::Poseidon2PermBase {
-                config: *config,
-                exec: Arc::clone(exec),
-            },
-        }
+        panic!("NpoConfig cannot be cloned generically; plugins must re-register their config")
     }
 }
 
-impl<F> Debug for NonPrimitiveOpConfig<F> {
+impl Debug for NpoConfig {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::None => write!(f, "None"),
-            Self::Poseidon2Perm { config, .. } => f
-                .debug_struct("Poseidon2Perm")
-                .field("config", config)
-                .field("exec", &"<closure>")
-                .finish(),
-            Self::Poseidon2PermBase { config, .. } => f
-                .debug_struct("Poseidon2PermBase")
-                .field("config", config)
-                .field("exec", &"<closure>")
-                .finish(),
-        }
-    }
-}
-
-// Compare/Hash by variant/config only (ignore closure contents)
-impl<F> PartialEq for NonPrimitiveOpConfig<F> {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Self::None, Self::None) => true,
-            (Self::Poseidon2Perm { config: c1, .. }, Self::Poseidon2Perm { config: c2, .. }) => {
-                c1 == c2
-            }
-            (
-                Self::Poseidon2PermBase { config: c1, .. },
-                Self::Poseidon2PermBase { config: c2, .. },
-            ) => c1 == c2,
-            _ => false,
-        }
-    }
-}
-
-impl<F> Eq for NonPrimitiveOpConfig<F> {}
-
-impl<F> Hash for NonPrimitiveOpConfig<F> {
-    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
-        core::mem::discriminant(self).hash(state);
-        match self {
-            Self::Poseidon2Perm { config, .. } | Self::Poseidon2PermBase { config, .. } => {
-                config.hash(state);
-            }
-            Self::None => {}
-        }
+        write!(f, "NpoConfig(<type-erased>)")
     }
 }
 
@@ -440,16 +460,37 @@ impl<F> Hash for NonPrimitiveOpConfig<F> {
 /// 3. Enable parallel development of different cryptographic primitives
 /// 4. Avoid optimization passes breaking complex constraint relationships
 ///
-/// Private auxiliary data for non-primitive operations
+/// Type-erased private auxiliary data for non-primitive operations.
 ///
 /// This data is NOT part of the witness table but provides additional
 /// parameters needed to fully specify complex operations. Private data:
 /// - Is set during circuit execution via `NonPrimitiveOpId`
 /// - Contains sensitive information like cryptographic witnesses
 /// - Is used by AIR tables to generate the appropriate constraints
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum NonPrimitiveOpPrivateData<F> {
-    Poseidon2Perm(Poseidon2PermPrivateData<F, 2>),
+///
+/// Each NPO plugin both produces and consumes its own typed data through
+/// this wrapper. The core infrastructure never inspects the contents.
+pub struct NpoPrivateData(pub Box<dyn Any + Send + Sync>);
+
+/// Backward-compatible alias during migration.
+pub type NonPrimitiveOpPrivateData = NpoPrivateData;
+
+impl NpoPrivateData {
+    /// Wrap concrete private data.
+    pub fn new<T: Any + Send + Sync>(val: T) -> Self {
+        Self(Box::new(val))
+    }
+
+    /// Downcast to a concrete private data type.
+    pub fn downcast_ref<T: Any>(&self) -> Option<&T> {
+        self.0.downcast_ref::<T>()
+    }
+}
+
+impl Debug for NpoPrivateData {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "NpoPrivateData(<type-erased>)")
+    }
 }
 
 /// Trait for operation-specific execution state.
@@ -471,7 +512,7 @@ pub trait OpExecutionState: Any + Send + Sync + Debug {
 ///
 /// This allows each operation type to maintain its own state without
 /// coupling `ExecutionContext` to specific operation implementations.
-pub type OpStateMap = BTreeMap<NonPrimitiveOpType, Box<dyn OpExecutionState>>;
+pub type OpStateMap = BTreeMap<NpoTypeId, Box<dyn OpExecutionState>>;
 
 /// Execution context providing operations access to witness table, private data, and configs
 ///
@@ -481,9 +522,9 @@ pub struct ExecutionContext<'a, F> {
     /// Mutable reference to witness table for reading/writing values
     witness: &'a mut [Option<F>],
     /// Private data map for non-primitive operations
-    non_primitive_op_private_data: &'a [Option<NonPrimitiveOpPrivateData<F>>],
+    non_primitive_op_private_data: &'a [Option<NpoPrivateData>],
     /// Operation configurations
-    enabled_ops: &'a HashMap<NonPrimitiveOpType, NonPrimitiveOpConfig<F>>,
+    enabled_ops: &'a HashMap<NpoTypeId, NpoConfig>,
     /// Current operation's NonPrimitiveOpId for error reporting
     operation_id: NonPrimitiveOpId,
     /// Operation-specific execution state storage.
@@ -495,8 +536,8 @@ impl<'a, F: PrimeCharacteristicRing + Eq + Clone> ExecutionContext<'a, F> {
     /// Create a new execution context
     pub fn new(
         witness: &'a mut [Option<F>],
-        non_primitive_op_private_data: &'a [Option<NonPrimitiveOpPrivateData<F>>],
-        enabled_ops: &'a HashMap<NonPrimitiveOpType, NonPrimitiveOpConfig<F>>,
+        non_primitive_op_private_data: &'a [Option<NpoPrivateData>],
+        enabled_ops: &'a HashMap<NpoTypeId, NpoConfig>,
         operation_id: NonPrimitiveOpId,
         op_states: &'a mut OpStateMap,
     ) -> Self {
@@ -531,14 +572,13 @@ impl<'a, F: PrimeCharacteristicRing + Eq + Clone> ExecutionContext<'a, F> {
         // Check for conflicting reassignment
         if let Some(existing_value) = slot.as_ref() {
             if *existing_value == value {
-                // Same value - this is fine (duplicate set via connect)
                 return Ok(());
             }
             return Err(CircuitError::WitnessConflict {
                 witness_id: widx,
                 existing: format!("{existing_value:?}"),
                 new: format!("{value:?}"),
-                expr_ids: vec![], // TODO: Could be filled with expression IDs if tracked
+                expr_ids: vec![],
             });
         }
 
@@ -547,7 +587,7 @@ impl<'a, F: PrimeCharacteristicRing + Eq + Clone> ExecutionContext<'a, F> {
     }
 
     /// Get private data for the current operation
-    pub fn get_private_data(&self) -> Result<&NonPrimitiveOpPrivateData<F>, CircuitError> {
+    pub fn get_private_data(&self) -> Result<&NpoPrivateData, CircuitError> {
         self.non_primitive_op_private_data
             .get(self.operation_id.0 as usize)
             .and_then(|opt| opt.as_ref())
@@ -557,13 +597,12 @@ impl<'a, F: PrimeCharacteristicRing + Eq + Clone> ExecutionContext<'a, F> {
     }
 
     /// Get operation configuration by type
-    pub fn get_config(
-        &self,
-        op_type: &NonPrimitiveOpType,
-    ) -> Result<&NonPrimitiveOpConfig<F>, CircuitError> {
-        self.enabled_ops
-            .get(op_type)
-            .ok_or(CircuitError::InvalidNonPrimitiveOpConfiguration { op: *op_type })
+    pub fn get_config(&self, op_type: &NpoTypeId) -> Result<&NpoConfig, CircuitError> {
+        self.enabled_ops.get(op_type).ok_or_else(|| {
+            CircuitError::InvalidNonPrimitiveOpConfiguration {
+                op: op_type.clone(),
+            }
+        })
     }
 
     /// Get the current operation ID
@@ -574,10 +613,7 @@ impl<'a, F: PrimeCharacteristicRing + Eq + Clone> ExecutionContext<'a, F> {
     /// Get operation-specific state for reading.
     ///
     /// Returns `None` if no state has been initialized for this operation type.
-    pub fn get_op_state<T: OpExecutionState + 'static>(
-        &self,
-        op_type: &NonPrimitiveOpType,
-    ) -> Option<&T> {
+    pub fn get_op_state<T: OpExecutionState + 'static>(&self, op_type: &NpoTypeId) -> Option<&T> {
         self.op_states
             .get(op_type)
             .and_then(|state| state.as_any().downcast_ref::<T>())
@@ -588,11 +624,11 @@ impl<'a, F: PrimeCharacteristicRing + Eq + Clone> ExecutionContext<'a, F> {
     /// This is the primary way executors should access their state.
     pub fn get_op_state_mut<T: OpExecutionState + Default + 'static>(
         &mut self,
-        op_type: &NonPrimitiveOpType,
+        op_type: &NpoTypeId,
     ) -> &mut T {
-        // Entry API with type-erased storage
         if !self.op_states.contains_key(op_type) {
-            self.op_states.insert(*op_type, Box::new(T::default()));
+            self.op_states
+                .insert(op_type.clone(), Box::new(T::default()));
         }
         self.op_states
             .get_mut(op_type)
@@ -620,7 +656,7 @@ pub trait NonPrimitiveExecutor<F: Field>: Debug {
     ) -> Result<(), CircuitError>;
 
     /// Get operation type identifier (for config lookup, error reporting)
-    fn op_type(&self) -> &NonPrimitiveOpType;
+    fn op_type(&self) -> &NpoTypeId;
 
     /// Allow downcasting to concrete executor types
     fn as_any(&self) -> &dyn core::any::Any;
@@ -646,6 +682,34 @@ pub trait NonPrimitiveExecutor<F: Field>: Debug {
 
 // Implement Clone for Box<dyn NonPrimitiveExecutor<F>>
 impl<F: Field> Clone for Box<dyn NonPrimitiveExecutor<F>> {
+    fn clone(&self) -> Self {
+        self.boxed()
+    }
+}
+
+/// Trait for executable hint operations.
+///
+/// Hints are non-deterministic witness assignments that do not have associated AIR tables
+/// or traces. They operate directly on the witness array.
+pub trait HintExecutor<F: Field>: Debug {
+    /// Execute the hint.
+    ///
+    /// - `inputs`: Witness IDs to read from
+    /// - `outputs`: Witness IDs to write to
+    /// - `witness`: Mutable reference to the witness table
+    fn execute(
+        &self,
+        inputs: &[WitnessId],
+        outputs: &[WitnessId],
+        witness: &mut [Option<F>],
+    ) -> Result<(), CircuitError>;
+
+    /// Clone as trait object.
+    fn boxed(&self) -> Box<dyn HintExecutor<F>>;
+}
+
+// Implement Clone for Box<dyn HintExecutor<F>>
+impl<F: Field> Clone for Box<dyn HintExecutor<F>> {
     fn clone(&self) -> Self {
         self.boxed()
     }
@@ -990,30 +1054,25 @@ mod tests {
 
     #[test]
     fn test_execution_context_get_private_data() {
-        // Create private auxiliary data for a verification operation
         let poseidon2_data: Poseidon2PermPrivateData<F, 2> = Poseidon2PermPrivateData {
             sibling: [F::ZERO, F::ZERO],
         };
-        let private_data = vec![Some(NonPrimitiveOpPrivateData::Poseidon2Perm(
-            poseidon2_data.clone(),
-        ))];
+        let private_data = vec![Some(NpoPrivateData::new(poseidon2_data.clone()))];
 
-        // Create execution context with access to private data
-        let mut witness = vec![];
+        let mut witness: Vec<Option<F>> = vec![];
         let configs = HashMap::new();
         let op_id = NonPrimitiveOpId(0);
         let mut op_states = BTreeMap::new();
-        let ctx =
+        let ctx: ExecutionContext<'_, F> =
             ExecutionContext::new(&mut witness, &private_data, &configs, op_id, &mut op_states);
 
-        // Operations can access their private data through the context
         let result = ctx.get_private_data();
-
-        // Verify private data access succeeded
-        assert_eq!(
-            *result.unwrap(),
-            NonPrimitiveOpPrivateData::Poseidon2Perm(poseidon2_data)
-        );
+        assert!(result.is_ok());
+        let downcast = result
+            .unwrap()
+            .downcast_ref::<Poseidon2PermPrivateData<F, 2>>()
+            .unwrap();
+        assert_eq!(*downcast, poseidon2_data);
     }
 
     #[test]
@@ -1044,12 +1103,10 @@ mod tests {
 
     #[test]
     fn test_execution_context_get_config() {
-        // Create a configuration map for operation parameters
         let mut configs = HashMap::new();
-        let op_type = NonPrimitiveOpType::Poseidon2Perm(Poseidon2Config::BabyBearD4Width16);
-        configs.insert(op_type, NonPrimitiveOpConfig::None);
+        let op_type = NpoTypeId::poseidon2_perm(Poseidon2Config::BabyBearD4Width16);
+        configs.insert(op_type.clone(), NpoConfig::new(42u32));
 
-        // Create execution context with configurations
         let mut witness = vec![];
         let private_data = vec![];
         let op_id = NonPrimitiveOpId(0);
@@ -1057,36 +1114,27 @@ mod tests {
         let ctx: ExecutionContext<'_, F> =
             ExecutionContext::new(&mut witness, &private_data, &configs, op_id, &mut op_states);
 
-        // Operations can query their configuration at runtime
         let result = ctx.get_config(&op_type);
-
-        // Verify configuration lookup succeeded
-        assert_eq!(*result.unwrap(), NonPrimitiveOpConfig::None);
+        assert!(result.is_ok());
     }
 
     #[test]
     fn test_execution_context_get_config_missing() {
-        // Create an empty configuration map
         let configs = HashMap::new();
         let mut witness = vec![];
         let private_data = vec![];
         let op_id = NonPrimitiveOpId(0);
         let mut op_states = BTreeMap::new();
 
-        // Create execution context
         let ctx: ExecutionContext<'_, F> =
             ExecutionContext::new(&mut witness, &private_data, &configs, op_id, &mut op_states);
 
-        // Attempt to access a configuration that wasn't registered
-        let op_type = NonPrimitiveOpType::Poseidon2Perm(Poseidon2Config::BabyBearD4Width16);
+        let op_type = NpoTypeId::poseidon2_perm(Poseidon2Config::BabyBearD4Width16);
         let result = ctx.get_config(&op_type);
 
-        // Missing configurations indicate setup errors
         assert!(result.is_err());
         match result {
-            Err(CircuitError::InvalidNonPrimitiveOpConfiguration { op }) => {
-                assert_eq!(op, op_type);
-            }
+            Err(CircuitError::InvalidNonPrimitiveOpConfiguration { .. }) => {}
             _ => panic!("Expected InvalidNonPrimitiveOpConfiguration error"),
         }
     }
@@ -1131,7 +1179,6 @@ mod tests {
 
     #[test]
     fn test_execution_context_op_state() {
-        // Test the generic operation state accessors
         let mut witness: Vec<Option<F>> = vec![];
         let private_data = vec![];
         let configs = HashMap::new();
@@ -1141,29 +1188,15 @@ mod tests {
         let mut ctx =
             ExecutionContext::new(&mut witness, &private_data, &configs, op_id, &mut op_states);
 
-        // Initially, no state should be present
-        assert!(
-            ctx.get_op_state::<TestOpState>(&NonPrimitiveOpType::Poseidon2Perm(
-                Poseidon2Config::BabyBearD4Width16,
-            ))
-            .is_none()
-        );
+        let key = NpoTypeId::poseidon2_perm(Poseidon2Config::BabyBearD4Width16);
 
-        // Get or create state (should create default)
-        let state = ctx.get_op_state_mut::<TestOpState>(&NonPrimitiveOpType::Poseidon2Perm(
-            Poseidon2Config::BabyBearD4Width16,
-        ));
+        assert!(ctx.get_op_state::<TestOpState>(&key).is_none());
+
+        let state = ctx.get_op_state_mut::<TestOpState>(&key);
         assert!(state.value.is_none());
-
-        // Modify the state
         state.value = Some(42);
 
-        // Verify the state was stored and can be retrieved
-        let state_ref = ctx
-            .get_op_state::<TestOpState>(&NonPrimitiveOpType::Poseidon2Perm(
-                Poseidon2Config::BabyBearD4Width16,
-            ))
-            .unwrap();
+        let state_ref = ctx.get_op_state::<TestOpState>(&key).unwrap();
         assert_eq!(state_ref.value, Some(42));
     }
 }

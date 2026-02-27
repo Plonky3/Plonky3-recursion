@@ -7,7 +7,6 @@ use alloc::{format, vec};
 use hashbrown::HashMap;
 use p3_air::{Air as P3Air, AirBuilder, BaseAir as P3BaseAir};
 use p3_batch_stark::CommonData;
-use p3_circuit::op::NonPrimitiveOpType;
 use p3_circuit::utils::ColumnsTargets;
 use p3_circuit::{CircuitBuilder, NonPrimitiveOpId};
 use p3_circuit_prover::air::{AluAir, ConstAir, PublicAir};
@@ -214,15 +213,15 @@ where
 
     // Add non-primitive AIRs (e.g., Poseidon2) from the proof manifest.
     for entry in &proof.non_primitives {
-        match entry.op_type {
-            NonPrimitiveOpType::Poseidon2Perm(config) => {
-                circuit_airs.push(CircuitTablesAir::Poseidon2(
-                    poseidon2_verifier_air_from_config(config),
-                ));
-            }
-            NonPrimitiveOpType::Unconstrained => {
-                // Unconstrained operations don't produce a separate AIR table.
-            }
+        if let Some(config) = entry
+            .op_type
+            .as_str()
+            .strip_prefix("poseidon2_perm/")
+            .and_then(Poseidon2Config::from_variant_name)
+        {
+            circuit_airs.push(CircuitTablesAir::Poseidon2(
+                poseidon2_verifier_air_from_config(config),
+            ));
         }
     }
 

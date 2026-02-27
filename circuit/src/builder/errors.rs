@@ -3,7 +3,7 @@ use alloc::string::String;
 use thiserror::Error;
 
 use crate::ExprId;
-use crate::op::NonPrimitiveOpType;
+use crate::op::NpoTypeId;
 use crate::types::NonPrimitiveOpId;
 
 /// Errors that can occur during circuit building/lowering.
@@ -39,15 +39,15 @@ pub enum CircuitBuilderError {
 
     /// Non-primitive operation rejected by the active policy/profile.
     #[error("Operation {op:?} is not allowed by the current profile")]
-    OpNotAllowed { op: NonPrimitiveOpType },
+    OpNotAllowed { op: NpoTypeId },
 
     /// Non-primitive operation is recognized but not implemented in lowering.
     #[error("Operation {op:?} is not implemented in lowering")]
-    UnsupportedNonPrimitiveOp { op: NonPrimitiveOpType },
+    UnsupportedNonPrimitiveOp { op: NpoTypeId },
 
     /// Mismatched non-primitive operation configuration
     #[error("Invalid configuration for operation {op:?}")]
-    InvalidNonPrimitiveOpConfiguration { op: NonPrimitiveOpType },
+    InvalidNonPrimitiveOpConfiguration { op: NpoTypeId },
 
     /// Merkle-path Poseidon2 rows require a direction bit.
     #[error("Poseidon2Perm merkle_path=true requires mmcs_bit")]
@@ -79,10 +79,7 @@ pub enum CircuitBuilderError {
 
     /// Failed to format openings for MMCS preprocessing; preserves some context.
     #[error("Failed to format openings for operation {op:?}: {details}")]
-    FormatOpeningsFailed {
-        op: NonPrimitiveOpType,
-        details: String,
-    },
+    FormatOpeningsFailed { op: NpoTypeId, details: String },
 
     /// Invalid dimension: expected a specific number of elements.
     #[error("Invalid dimension: expected {expected}, got {actual}")]

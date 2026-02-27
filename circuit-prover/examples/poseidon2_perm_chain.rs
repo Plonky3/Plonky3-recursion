@@ -2,7 +2,7 @@ use std::env;
 use std::error::Error;
 
 use p3_batch_stark::ProverData;
-use p3_circuit::op::NonPrimitiveOpType;
+use p3_circuit::op::NpoTypeId;
 use p3_circuit::ops::{Poseidon2PermCall, Poseidon2PermOps, generate_poseidon2_trace};
 use p3_circuit::{CircuitBuilder, ExprId};
 use p3_circuit_prover::common::{NonPrimitiveConfig, get_airs_and_degrees_with_prep};
@@ -166,7 +166,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     assert!(
         traces
             .non_primitive_traces
-            .get(&NonPrimitiveOpType::Poseidon2Perm(
+            .get(&NpoTypeId::poseidon2_perm(
                 Poseidon2Config::KoalaBearD4Width16
             ))
             .is_some_and(|t| t.rows() == chain_length),

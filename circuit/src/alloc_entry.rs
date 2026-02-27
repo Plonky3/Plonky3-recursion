@@ -9,7 +9,7 @@ use alloc::vec::Vec;
 use hashbrown::HashSet;
 
 use crate::ExprId;
-use crate::op::NonPrimitiveOpType;
+use crate::op::NpoTypeId;
 
 /// Type of allocation for debugging purposes
 #[derive(Debug, Clone)]
@@ -20,7 +20,7 @@ pub enum AllocationType {
     Sub,
     Mul,
     Div,
-    NonPrimitiveOp(NonPrimitiveOpType),
+    NonPrimitiveOp(NpoTypeId),
     NonPrimitiveOutput,
     WitnessHint,
 }
