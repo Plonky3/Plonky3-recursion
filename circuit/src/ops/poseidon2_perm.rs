@@ -29,15 +29,16 @@ use alloc::{format, vec};
 use core::any::Any;
 use core::fmt::Debug;
 
+use hashbrown::HashMap;
 use p3_field::{ExtensionField, Field, PrimeCharacteristicRing, PrimeField};
 use serde::{Deserialize, Serialize};
 
-use crate::builder::{CircuitBuilder, NonPrimitiveOpParams};
+use crate::builder::{CircuitBuilder, NonPrimitiveOpParams, NpoCircuitPlugin, NpoLoweringContext};
 use crate::circuit::CircuitField;
-use crate::op::{ExecutionContext, NonPrimitiveExecutor, NpoTypeId, OpExecutionState};
-use crate::tables::NonPrimitiveTrace;
+use crate::op::{ExecutionContext, NonPrimitiveExecutor, NpoTypeId, Op, OpExecutionState};
+use crate::tables::{NonPrimitiveTrace, TraceGeneratorFn};
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessId};
-use crate::{CircuitError, PreprocessedColumns};
+use crate::{CircuitBuilderError, CircuitError, PreprocessedColumns};
 
 // ============================================================================
 // Configuration
@@ -189,15 +190,308 @@ pub type Poseidon2PermExec<F> = Arc<dyn Fn(&[F]) -> Vec<F> + Send + Sync>;
 pub type Poseidon2PermExecBase<F> = Arc<dyn Fn(&[F; 16]) -> [F; 16] + Send + Sync>;
 
 /// Config data stored inside `NpoConfig` for Poseidon2 D>=2 (extension field) mode.
+#[derive(Clone)]
 pub struct Poseidon2PermConfigData<F> {
     pub config: Poseidon2Config,
     pub exec: Poseidon2PermExec<F>,
 }
 
 /// Config data stored inside `NpoConfig` for Poseidon2 D=1 (base field) mode.
+#[derive(Clone)]
 pub struct Poseidon2PermBaseConfigData<F> {
     pub config: Poseidon2Config,
     pub exec: Poseidon2PermExecBase<F>,
+}
+
+/// Internal enum to hold either extension or base-field config payload.
+enum Poseidon2PluginConfig<F> {
+    Ext(Poseidon2PermConfigData<F>),
+    Base(Poseidon2PermBaseConfigData<F>),
+}
+
+fn get_witness_id_for_poseidon2(
+    expr_to_widx: &HashMap<ExprId, WitnessId>,
+    expr_id: ExprId,
+    context: &str,
+) -> Result<WitnessId, CircuitBuilderError> {
+    expr_to_widx
+        .get(&expr_id)
+        .copied()
+        .ok_or_else(|| CircuitBuilderError::MissingExprMapping {
+            expr_id,
+            context: context.to_string(),
+        })
+}
+
+/// Circuit-layer plugin for Poseidon2 non-primitive operations.
+pub struct Poseidon2CircuitPlugin<F: Field> {
+    type_id: NpoTypeId,
+    poseidon2_config: Poseidon2Config,
+    config_payload: Poseidon2PluginConfig<F>,
+    trace_gen: TraceGeneratorFn<F>,
+}
+
+impl<F: Field> Poseidon2CircuitPlugin<F> {
+    pub fn new_ext(
+        config: Poseidon2Config,
+        exec: Poseidon2PermExec<F>,
+        trace_gen: TraceGeneratorFn<F>,
+    ) -> Self {
+        let type_id = NpoTypeId::poseidon2_perm(config);
+        let payload = Poseidon2PluginConfig::Ext(Poseidon2PermConfigData { config, exec });
+        Self {
+            type_id,
+            poseidon2_config: config,
+            config_payload: payload,
+            trace_gen,
+        }
+    }
+
+    pub fn new_base(
+        config: Poseidon2Config,
+        exec: Poseidon2PermExecBase<F>,
+        trace_gen: TraceGeneratorFn<F>,
+    ) -> Self {
+        let type_id = NpoTypeId::poseidon2_perm(config);
+        let payload = Poseidon2PluginConfig::Base(Poseidon2PermBaseConfigData { config, exec });
+        Self {
+            type_id,
+            poseidon2_config: config,
+            config_payload: payload,
+            trace_gen,
+        }
+    }
+
+    /// Minimal plugin used when an op is enabled via `enable_op` without an explicit
+    /// Poseidon2 registration. The executor will panic if actually invoked; this path
+    /// is intended only for tests that never execute the circuit.
+    pub fn new_config_only(config: Poseidon2Config) -> Self {
+        let type_id = NpoTypeId::poseidon2_perm(config);
+        let dummy_exec: Poseidon2PermExec<F> =
+            Arc::new(|_| panic!("Poseidon2PermExec used without proper registration"));
+        let payload = Poseidon2PluginConfig::Ext(Poseidon2PermConfigData {
+            config,
+            exec: dummy_exec,
+        });
+        let dummy_trace: TraceGeneratorFn<F> = |_op_states| Ok(None);
+        Self {
+            type_id,
+            poseidon2_config: config,
+            config_payload: payload,
+            trace_gen: dummy_trace,
+        }
+    }
+}
+
+impl<F> NpoCircuitPlugin<F> for Poseidon2CircuitPlugin<F>
+where
+    F: CircuitField,
+{
+    fn type_id(&self) -> NpoTypeId {
+        self.type_id.clone()
+    }
+
+    fn lower(
+        &self,
+        data: &crate::builder::NonPrimitiveOperationData<F>,
+        output_exprs: &[(u32, ExprId)],
+        ctx: &mut NpoLoweringContext<'_, F>,
+    ) -> Result<crate::op::Op<F>, crate::builder::CircuitBuilderError> {
+        let expr_to_widx = &mut *ctx.expr_to_widx;
+
+        // Enforce that output ExprIds map to witness IDs.
+        for (_output_idx, expr_id) in output_exprs {
+            expr_to_widx
+                .entry(*expr_id)
+                .or_insert_with(|| (ctx.alloc_witness_id)(expr_id.0 as usize));
+        }
+
+        // Recover config from plugin field.
+        let config = self.poseidon2_config;
+        let (new_start, merkle_path) = match data.params.as_ref().ok_or_else(|| {
+            crate::builder::CircuitBuilderError::InvalidNonPrimitiveOpConfiguration {
+                op: data.op_type.clone(),
+            }
+        })? {
+            NonPrimitiveOpParams::Poseidon2Perm {
+                new_start,
+                merkle_path,
+            } => (*new_start, *merkle_path),
+            _ => {
+                return Err(
+                    crate::builder::CircuitBuilderError::InvalidNonPrimitiveOpConfiguration {
+                        op: data.op_type.clone(),
+                    },
+                );
+            }
+        };
+
+        let d = config.d();
+        let width_ext = config.width_ext();
+        let rate_ext = config.rate_ext();
+        let is_d1_mode = d == 1;
+        let expected_inputs_ext = width_ext + 2;
+
+        let expected_inputs = if is_d1_mode { 16 } else { expected_inputs_ext };
+        if data.input_exprs.len() != expected_inputs {
+            return Err(crate::builder::CircuitBuilderError::NonPrimitiveOpArity {
+                op: "Poseidon2Perm",
+                expected: format!("{} inputs (D=1: 16, D>1: width_ext+2)", expected_inputs),
+                got: data.input_exprs.len(),
+            });
+        }
+
+        let valid_output_count = if is_d1_mode {
+            data.output_exprs.len() == 8 || data.output_exprs.len() == 16
+        } else {
+            data.output_exprs.len() == rate_ext || data.output_exprs.len() == width_ext
+        };
+
+        if !valid_output_count {
+            return Err(crate::builder::CircuitBuilderError::NonPrimitiveOpArity {
+                op: "Poseidon2Perm",
+                expected: if is_d1_mode {
+                    "8 or 16 outputs for D=1 mode".to_string()
+                } else {
+                    format!("{rate_ext} or {width_ext} outputs for D>1 mode")
+                },
+                got: data.output_exprs.len(),
+            });
+        }
+
+        let mut inputs_widx: Vec<Vec<WitnessId>> = Vec::with_capacity(data.input_exprs.len());
+
+        if is_d1_mode {
+            // D=1 mode: 16 input elements (no mmcs_index_sum, no mmcs_bit)
+            for (i, limb_exprs) in data.input_exprs.iter().enumerate() {
+                if !(limb_exprs.is_empty() || limb_exprs.len() == 1) {
+                    return Err(crate::builder::CircuitBuilderError::NonPrimitiveOpArity {
+                        op: "Poseidon2Perm",
+                        expected: "0 or 1 base field element per input".to_string(),
+                        got: limb_exprs.len(),
+                    });
+                }
+                let limb_widx = limb_exprs
+                    .iter()
+                    .map(|&expr| {
+                        get_witness_id_for_poseidon2(
+                            expr_to_widx,
+                            expr,
+                            &format!("Poseidon2Perm D=1 input {i}"),
+                        )
+                    })
+                    .collect::<Result<Vec<WitnessId>, _>>()?;
+                inputs_widx.push(limb_widx);
+            }
+        } else {
+            for (i, limb_exprs) in data.input_exprs.iter().take(width_ext).enumerate() {
+                if !(limb_exprs.is_empty() || limb_exprs.len() == 1) {
+                    return Err(crate::builder::CircuitBuilderError::NonPrimitiveOpArity {
+                        op: "Poseidon2Perm",
+                        expected: "0 or 1 extension element per input limb".to_string(),
+                        got: limb_exprs.len(),
+                    });
+                }
+                let limb_widx = limb_exprs
+                    .iter()
+                    .map(|&expr| {
+                        get_witness_id_for_poseidon2(
+                            expr_to_widx,
+                            expr,
+                            &format!("Poseidon2Perm input limb {i}"),
+                        )
+                    })
+                    .collect::<Result<Vec<WitnessId>, _>>()?;
+                inputs_widx.push(limb_widx);
+            }
+
+            let mmcs_exprs = &data.input_exprs[width_ext];
+            if !(mmcs_exprs.is_empty() || mmcs_exprs.len() == 1) {
+                return Err(crate::builder::CircuitBuilderError::NonPrimitiveOpArity {
+                    op: "Poseidon2Perm",
+                    expected: "0 or 1 element for mmcs_index_sum".to_string(),
+                    got: mmcs_exprs.len(),
+                });
+            }
+            let mmcs_widx = mmcs_exprs
+                .iter()
+                .map(|&expr| {
+                    get_witness_id_for_poseidon2(
+                        expr_to_widx,
+                        expr,
+                        "Poseidon2Perm mmcs_index_sum input",
+                    )
+                })
+                .collect::<Result<Vec<WitnessId>, _>>()?;
+            inputs_widx.push(mmcs_widx);
+
+            let mmcs_bit_exprs = &data.input_exprs[width_ext + 1];
+            if !(mmcs_bit_exprs.is_empty() || mmcs_bit_exprs.len() == 1) {
+                return Err(crate::builder::CircuitBuilderError::NonPrimitiveOpArity {
+                    op: "Poseidon2Perm",
+                    expected: "0 or 1 element for mmcs_bit".to_string(),
+                    got: mmcs_bit_exprs.len(),
+                });
+            }
+            let mmcs_bit_widx = mmcs_bit_exprs
+                .iter()
+                .map(|&expr| {
+                    get_witness_id_for_poseidon2(expr_to_widx, expr, "Poseidon2Perm mmcs_bit input")
+                })
+                .collect::<Result<Vec<WitnessId>, _>>()?;
+            inputs_widx.push(mmcs_bit_widx);
+        }
+
+        // Output CTL exposures (0 or 1 element each).
+        //
+        // For Poseidon2Perm we take outputs exclusively from `data.output_exprs` to avoid
+        // generating multiple witness ids per output limb (which breaks both execution and
+        // trace building).
+        let mut poseidon2_outputs: Vec<Vec<WitnessId>> =
+            Vec::with_capacity(data.output_exprs.len());
+        for (i, limb_exprs) in data.output_exprs.iter().enumerate() {
+            if !(limb_exprs.is_empty() || limb_exprs.len() == 1) {
+                return Err(crate::builder::CircuitBuilderError::NonPrimitiveOpArity {
+                    op: "Poseidon2Perm",
+                    expected: "0 or 1 element per output".to_string(),
+                    got: limb_exprs.len(),
+                });
+            }
+            if let Some(&expr) = limb_exprs.first() {
+                let w = get_witness_id_for_poseidon2(
+                    expr_to_widx,
+                    expr,
+                    &format!("Poseidon2Perm output {i}"),
+                )?;
+                poseidon2_outputs.push(vec![w]);
+            } else {
+                poseidon2_outputs.push(Vec::new());
+            }
+        }
+
+        Ok(Op::NonPrimitiveOpWithExecutor {
+            inputs: inputs_widx,
+            outputs: poseidon2_outputs,
+            executor: Box::new(Poseidon2PermExecutor::new(
+                data.op_type.clone(),
+                config,
+                new_start,
+                merkle_path,
+            )),
+            op_id: data.op_id,
+        })
+    }
+
+    fn trace_generator(&self) -> TraceGeneratorFn<F> {
+        self.trace_gen
+    }
+
+    fn config(&self) -> crate::op::NpoConfig {
+        match &self.config_payload {
+            Poseidon2PluginConfig::Ext(d) => crate::op::NpoConfig::new(d.clone()),
+            Poseidon2PluginConfig::Base(d) => crate::op::NpoConfig::new(d.clone()),
+        }
+    }
 }
 
 // ============================================================================
