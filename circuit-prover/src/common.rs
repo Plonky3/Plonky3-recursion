@@ -400,14 +400,14 @@ where
             let num_rows = prep_base.len().div_ceil(width);
             table_preps.push((poseidon2_wrapper_air, compute_degree(num_rows)));
         }
-        // NpoTypeId::Unconstrained and other types: no special handling
+        // Other non-primitive ops: no special handling here
     }
 
     // Build base_prep for the output PreprocessedColumns (without Poseidon2 multiplicities).
     // The non_primitive_base already has the updated in_ctl/out_ctl values.
     let mut non_primitive_output: NonPrimitivePreprocessedMap<Val<SC>> = non_primitive_base;
 
-    // Also include any non-primitive ops that weren't Poseidon2 (e.g. Unconstrained)
+    // Also include any non-primitive ops that weren't Poseidon2
     for (op_type, prep) in preprocessed.non_primitive.iter() {
         if !op_type.as_str().starts_with("poseidon2_perm/") {
             let prep_base: Vec<Val<SC>> = prep

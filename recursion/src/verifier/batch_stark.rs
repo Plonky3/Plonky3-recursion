@@ -223,7 +223,6 @@ where
                 poseidon2_verifier_air_from_config(config),
             ));
         }
-        // Other NPO types (e.g., unconstrained) don't produce a separate AIR table.
     }
 
     // TODO: public values are empty for all circuit tables for now.

@@ -325,11 +325,14 @@ where
                     .or_insert_with(|| alloc_witness_id_for_expr(expr_idx.0 as usize));
                 outputs.push(vec![widx]);
             }
-            ops.push(Op::NonPrimitiveOpWithExecutor {
-                inputs,
-                outputs,
+            let flat_inputs = inputs.into_iter().next().unwrap_or_default();
+
+            let flat_outputs: Vec<WitnessId> = outputs.into_iter().flatten().collect();
+
+            ops.push(Op::Hint {
+                inputs: flat_inputs,
+                outputs: flat_outputs,
                 executor,
-                op_id: data.op_id,
             });
         } else {
             return Err(CircuitBuilderError::InvalidNonPrimitiveOpConfiguration {

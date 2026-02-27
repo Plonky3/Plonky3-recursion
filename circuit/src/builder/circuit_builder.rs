@@ -16,7 +16,7 @@ use super::OpCounts;
 use super::compiler::{ExpressionLowerer, Optimizer};
 use super::{BuilderConfig, ExpressionBuilder, PublicInputTracker};
 use crate::circuit::Circuit;
-use crate::op::{NonPrimitiveExecutor, NpoConfig, NpoTypeId};
+use crate::op::{HintExecutor, NpoConfig, NpoTypeId};
 use crate::ops::poseidon2_perm::{Poseidon2PermBaseConfigData, Poseidon2PermConfigData};
 use crate::ops::{Poseidon2Params, Poseidon2PermCall, Poseidon2PermCallBase};
 use crate::tables::TraceGeneratorFn;
@@ -53,13 +53,8 @@ pub struct CircuitBuilder<F: Field> {
 /// Per-op extra parameters that are not encoded in the op type.
 #[derive(Debug)]
 pub enum NonPrimitiveOpParams<F> {
-    Poseidon2Perm {
-        new_start: bool,
-        merkle_path: bool,
-    },
-    Unconstrained {
-        executor: Box<dyn NonPrimitiveExecutor<F>>,
-    },
+    Poseidon2Perm { new_start: bool, merkle_path: bool },
+    Unconstrained { executor: Box<dyn HintExecutor<F>> },
 }
 
 impl<F: Field> Clone for NonPrimitiveOpParams<F> {
@@ -559,7 +554,7 @@ where
     ///
     /// This is used for creating new unconstrained wires assigned to a non-deterministic values
     /// computed by `hint`.
-    pub(crate) fn push_unconstrained_op<H: NonPrimitiveExecutor<F> + 'static>(
+    pub(crate) fn push_unconstrained_op<H: HintExecutor<F> + 'static>(
         &mut self,
         input_exprs: Vec<Vec<ExprId>>,
         n_outputs: usize,
@@ -1129,79 +1124,82 @@ where
 #[derive(Debug, Clone)]
 struct ExtDecompositionHint<BF: PrimeField64> {
     _phantom: PhantomData<BF>,
-    op_type: NpoTypeId,
 }
 
 impl<BF: PrimeField64> ExtDecompositionHint<BF> {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             _phantom: PhantomData,
-            op_type: NpoTypeId::unconstrained(),
         }
     }
 }
 
-impl<BF: PrimeField64, EF: ExtensionField<BF>> NonPrimitiveExecutor<EF>
-    for ExtDecompositionHint<BF>
-{
+impl<BF: PrimeField64, EF: ExtensionField<BF>> HintExecutor<EF> for ExtDecompositionHint<BF> {
     fn execute(
         &self,
-        inputs: &[Vec<crate::WitnessId>],
-        outputs: &[Vec<crate::WitnessId>],
-        ctx: &mut crate::op::ExecutionContext<'_, EF>,
+        inputs: &[crate::WitnessId],
+        outputs: &[crate::WitnessId],
+        witness: &mut [Option<EF>],
     ) -> Result<(), CircuitError> {
-        if inputs.len() != 1 || inputs[0].len() != 1 {
-            return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
-                op: self.op_type.clone(),
-                expected: "1 input".to_string(),
+        if inputs.len() != 1 {
+            return Err(CircuitError::UnconstrainedOpInputLengthMismatch {
+                op: "ExtDecompositionHint".to_string(),
+                expected: 1,
                 got: inputs.len(),
             });
         }
 
         if outputs.len() != EF::DIMENSION {
-            return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
-                op: self.op_type.clone(),
-                expected: format!("{} outputs", EF::DIMENSION),
+            return Err(CircuitError::UnconstrainedOpInputLengthMismatch {
+                op: "ExtDecompositionHint".to_string(),
+                expected: EF::DIMENSION,
                 got: outputs.len(),
             });
         }
 
-        outputs.iter().try_for_each(|out| {
-            if out.len() != 1 {
-                Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
-                    op: self.op_type.clone(),
-                    expected: "1".to_string(),
-                    got: out.len(),
-                })
-            } else {
-                Ok(())
-            }
-        })?;
-
-        let ext_val = ctx.get_witness(inputs[0][0])?;
+        let in_wid = inputs[0];
+        let in_idx = in_wid.0 as usize;
+        let ext_val = witness
+            .get(in_idx)
+            .and_then(|opt| opt.as_ref())
+            .cloned()
+            .ok_or(CircuitError::WitnessNotSet { witness_id: in_wid })?;
         let coeffs = ext_val.as_basis_coefficients_slice();
 
-        for (i, coeff) in coeffs.iter().enumerate() {
-            // Embed base field coefficient into extension field (zeroed higher coeffs)
+        for (i, &out_wid) in outputs.iter().enumerate() {
+            let coeff = coeffs
+                .get(i)
+                .ok_or(CircuitError::InvalidPreprocessedValues)?;
             let mut embedded = vec![BF::ZERO; EF::DIMENSION];
             embedded[0] = *coeff;
             let embedded_ef = EF::from_basis_coefficients_slice(&embedded)
                 .expect("embedded coefficients are valid");
-            ctx.set_witness(outputs[i][0], embedded_ef)?;
+
+            let out_idx = out_wid.0 as usize;
+            if out_idx >= witness.len() {
+                return Err(CircuitError::WitnessIdOutOfBounds {
+                    witness_id: out_wid,
+                });
+            }
+            let slot = &mut witness[out_idx];
+            if let Some(existing) = slot.as_ref() {
+                if *existing != embedded_ef {
+                    return Err(CircuitError::WitnessConflict {
+                        witness_id: out_wid,
+                        existing: format!("{existing:?}"),
+                        new: format!("{embedded_ef:?}"),
+                        expr_ids: vec![],
+                    });
+                }
+            } else {
+                *slot = Some(embedded_ef);
+            }
         }
 
         Ok(())
     }
 
-    fn op_type(&self) -> &NpoTypeId {
-        &self.op_type
-    }
-
-    fn as_any(&self) -> &dyn core::any::Any {
-        self
-    }
-
-    fn boxed(&self) -> alloc::boxed::Box<dyn NonPrimitiveExecutor<EF>> {
+    fn boxed(&self) -> alloc::boxed::Box<dyn HintExecutor<EF>> {
         Box::new(self.clone())
     }
 }
@@ -1215,81 +1213,81 @@ impl<BF: PrimeField64, EF: ExtensionField<BF>> NonPrimitiveExecutor<EF>
 struct BinaryDecompositionHint<BF: PrimeField64> {
     /// Phantom data for the base field type.
     _phantom: PhantomData<BF>,
-    op_type: NpoTypeId,
 }
 
 impl<BF: PrimeField64> BinaryDecompositionHint<BF> {
     /// Creates a new binary decomposition hint.
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             _phantom: PhantomData,
-            op_type: NpoTypeId::unconstrained(),
         }
     }
 }
 
-impl<BF: PrimeField64, EF: ExtensionField<BF>> NonPrimitiveExecutor<EF>
-    for BinaryDecompositionHint<BF>
-{
+impl<BF: PrimeField64, EF: ExtensionField<BF>> HintExecutor<EF> for BinaryDecompositionHint<BF> {
     fn execute(
         &self,
-        inputs: &[Vec<crate::WitnessId>],
-        outputs: &[Vec<crate::WitnessId>],
-        ctx: &mut crate::op::ExecutionContext<'_, EF>,
+        inputs: &[crate::WitnessId],
+        outputs: &[crate::WitnessId],
+        witness: &mut [Option<EF>],
     ) -> Result<(), CircuitError> {
-        if inputs.len() != 1 || inputs[0].len() != 1 {
-            return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
-                op: self.op_type.clone(),
-                expected: 1.to_string(),
+        if inputs.len() != 1 {
+            return Err(CircuitError::UnconstrainedOpInputLengthMismatch {
+                op: "BinaryDecompositionHint".to_string(),
+                expected: 1,
                 got: inputs.len(),
             });
         }
 
         let felt_bits = BF::bits();
-
         if outputs.len() > felt_bits * EF::DIMENSION {
-            return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
-                op: self.op_type.clone(),
-                expected: format!("<= {}", felt_bits * EF::DIMENSION),
-                got: outputs.len(),
+            return Err(CircuitError::BinaryDecompositionTooManyBits {
+                expected: felt_bits * EF::DIMENSION,
+                n_bits: outputs.len(),
             });
         }
-        outputs.iter().try_for_each(|out| {
-            if out.len() != 1 {
-                Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
-                    op: self.op_type.clone(),
-                    expected: 1.to_string(),
-                    got: out.len(),
-                })
-            } else {
-                Ok(())
-            }
-        })?;
 
-        let ext_val = ctx.get_witness(inputs[0][0])?;
+        let in_wid = inputs[0];
+        let in_idx = in_wid.0 as usize;
+        let ext_val = witness
+            .get(in_idx)
+            .and_then(|opt| opt.as_ref())
+            .cloned()
+            .ok_or(CircuitError::WitnessNotSet { witness_id: in_wid })?;
 
-        let bits = ext_val
+        let bits_iter = ext_val
             .as_basis_coefficients_slice()
             .iter()
             .map(BF::as_canonical_u64)
             .flat_map(|val| (0..felt_bits).map(move |i| EF::from_bool(val >> i & 1 == 1)))
             .take(outputs.len());
 
-        for (out, bit) in outputs.iter().zip(bits) {
-            ctx.set_witness(out[0], bit)?;
+        for (out_wid, bit) in outputs.iter().zip(bits_iter) {
+            let out_idx = out_wid.0 as usize;
+            if out_idx >= witness.len() {
+                return Err(CircuitError::WitnessIdOutOfBounds {
+                    witness_id: *out_wid,
+                });
+            }
+            let slot = &mut witness[out_idx];
+            if let Some(existing) = slot.as_ref() {
+                if *existing != bit {
+                    return Err(CircuitError::WitnessConflict {
+                        witness_id: *out_wid,
+                        existing: format!("{existing:?}"),
+                        new: format!("{bit:?}"),
+                        expr_ids: vec![],
+                    });
+                }
+            } else {
+                *slot = Some(bit);
+            }
         }
+
         Ok(())
     }
 
-    fn op_type(&self) -> &NpoTypeId {
-        &self.op_type
-    }
-
-    fn as_any(&self) -> &dyn core::any::Any {
-        self
-    }
-
-    fn boxed(&self) -> alloc::boxed::Box<dyn NonPrimitiveExecutor<EF>> {
+    fn boxed(&self) -> alloc::boxed::Box<dyn HintExecutor<EF>> {
         Box::new(self.clone())
     }
 }

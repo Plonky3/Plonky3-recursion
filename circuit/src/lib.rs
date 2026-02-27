@@ -22,7 +22,7 @@ pub use builder::{CircuitBuilder, CircuitBuilderError};
 pub use circuit::{Circuit, CircuitField, PreprocessedColumns};
 pub use errors::CircuitError;
 pub use expr::{Expr, ExpressionGraph};
-pub use op::{AluOpKind, NonPrimitiveOpPrivateData, NpoPrivateData, NpoTypeId, Op};
+pub use op::{AluOpKind, HintExecutor, NonPrimitiveOpPrivateData, NpoPrivateData, NpoTypeId, Op};
 pub use ops::Poseidon2PermOps;
 pub use tables::{CircuitRunner, Traces};
 pub use types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};

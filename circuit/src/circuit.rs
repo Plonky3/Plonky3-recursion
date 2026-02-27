@@ -415,7 +415,10 @@ impl<F: Field> Circuit<F> {
                             }
                         }
                     }
-                    // NpoTypeId::Unconstrained and other types: no special handling
+                    // Other non-primitive ops: no special handling here.
+                }
+                Op::Hint { .. } => {
+                    // Hints do not participate in preprocessed columns or table-backed ops.
                 }
             }
         }

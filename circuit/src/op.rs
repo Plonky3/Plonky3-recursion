@@ -35,26 +35,12 @@ pub enum AluOpKind {
 
 /// Circuit operations.
 ///
-/// Operations are distinguised as primitive and non-primitive:
+/// Operations are distinguised as primitive, non-primitive, and hints:
 ///
-/// # Primitive operations
-///
-/// Primitive operations that represent basic field arithmetic
-///
-/// These operations form the core computational primitives after expression lowering.
-/// All primitive operations:
-/// - Operate on witness table slots (WitnessId)
-/// - Can be heavily optimized (constant folding, CSE, etc.)
-/// - Are executed in topological order during circuit evaluation
-/// - Form a directed acyclic graph (DAG) of dependencies
-///
-/// # Non-primitive operations
-///
-/// Non-primitive operations may represent complex computations that would require too many,
-/// primitive operations to be expressed equivalently.
-///
-/// They can be user-defined and selected at runtime, have private data that does not appear
-/// in the central Witness bus, and are subject to their own optimization passes.
+/// - Primitive ops (`Const`, `Public`, `Alu`) are the basic arithmetic building blocks
+/// - Non-primitive ops (`NonPrimitiveOpWithExecutor`) are table-backed plugin operations
+/// - Hint ops (`Hint`) are non-deterministic witness assignments that do NOT have tables,
+///   AIR, or traces; they are purely a convenience for filling witnesses.
 #[derive(Debug)]
 pub enum Op<F> {
     /// Load a constant value into the witness table
@@ -88,6 +74,23 @@ pub enum Op<F> {
         /// Intermediate output for MulAdd: stores a * b when fused from separate mul + add.
         /// The runner sets this witness value so dependent operations still work.
         intermediate_out: Option<WitnessId>,
+    },
+
+    /// Hint operation: non-deterministically fills witness values via a user-provided closure.
+    ///
+    /// Hints are NOT table-backed:
+    /// - they do not have an AIR
+    /// - they do not participate in non-primitive traces
+    /// - they do not have private data or configs
+    ///
+    /// They are used for things like bit decompositions and extension-field decompositions.
+    Hint {
+        /// Input witnesses read by the hint.
+        inputs: Vec<WitnessId>,
+        /// Output witnesses written by the hint.
+        outputs: Vec<WitnessId>,
+        /// User-provided executor that implements the hint logic.
+        executor: Box<dyn HintExecutor<F>>,
     },
 
     /// Non-primitive operation with executor-based dispatch
@@ -194,6 +197,16 @@ impl<F> Op<F> {
                 *out = resolve(*out);
                 *intermediate_out = intermediate_out.map(resolve);
             }
+            Self::Hint {
+                inputs, outputs, ..
+            } => {
+                for w in inputs.iter_mut() {
+                    *w = resolve(*w);
+                }
+                for w in outputs.iter_mut() {
+                    *w = resolve(*w);
+                }
+            }
             Self::NonPrimitiveOpWithExecutor {
                 inputs, outputs, ..
             } => {
@@ -259,6 +272,15 @@ impl<F: Field + Clone> Clone for Op<F> {
                 out: *out,
                 intermediate_out: *intermediate_out,
             },
+            Self::Hint {
+                inputs,
+                outputs,
+                executor,
+            } => Self::Hint {
+                inputs: inputs.clone(),
+                outputs: outputs.clone(),
+                executor: executor.boxed(),
+            },
             Self::NonPrimitiveOpWithExecutor {
                 inputs,
                 outputs,
@@ -310,6 +332,21 @@ impl<F: Field + PartialEq> PartialEq for Op<F> {
                 },
             ) => k1 == k2 && a1 == a2 && b1 == b2 && c1 == c2 && o1 == o2 && io1 == io2,
             (
+                Self::Hint {
+                    inputs: i1,
+                    outputs: o1,
+                    executor: _,
+                },
+                Self::Hint {
+                    inputs: i2,
+                    outputs: o2,
+                    executor: _,
+                },
+            ) => {
+                // Compare by value layout only; executors are opaque closures.
+                i1 == i2 && o1 == o2
+            }
+            (
                 Self::NonPrimitiveOpWithExecutor {
                     inputs: i1,
                     outputs: o1,
@@ -352,6 +389,9 @@ impl NpoTypeId {
     }
 
     /// Convenience: Unconstrained (hint) operation type ID.
+    ///
+    /// This is kept only for profiling / debugging purposes; Unconstrained is
+    /// no longer a table-backed non-primitive op and is executed via `Op::Hint`.
     pub fn unconstrained() -> Self {
         Self::new("unconstrained")
     }
@@ -642,6 +682,34 @@ pub trait NonPrimitiveExecutor<F: Field>: Debug {
 
 // Implement Clone for Box<dyn NonPrimitiveExecutor<F>>
 impl<F: Field> Clone for Box<dyn NonPrimitiveExecutor<F>> {
+    fn clone(&self) -> Self {
+        self.boxed()
+    }
+}
+
+/// Trait for executable hint operations.
+///
+/// Hints are non-deterministic witness assignments that do not have associated AIR tables
+/// or traces. They operate directly on the witness array.
+pub trait HintExecutor<F: Field>: Debug {
+    /// Execute the hint.
+    ///
+    /// - `inputs`: Witness IDs to read from
+    /// - `outputs`: Witness IDs to write to
+    /// - `witness`: Mutable reference to the witness table
+    fn execute(
+        &self,
+        inputs: &[WitnessId],
+        outputs: &[WitnessId],
+        witness: &mut [Option<F>],
+    ) -> Result<(), CircuitError>;
+
+    /// Clone as trait object.
+    fn boxed(&self) -> Box<dyn HintExecutor<F>>;
+}
+
+// Implement Clone for Box<dyn HintExecutor<F>>
+impl<F: Field> Clone for Box<dyn HintExecutor<F>> {
     fn clone(&self) -> Self {
         self.boxed()
     }

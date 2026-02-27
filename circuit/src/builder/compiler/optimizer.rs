@@ -258,6 +258,13 @@ impl Optimizer {
                         }
                     }
                 }
+                Op::Hint { outputs, .. } => {
+                    for out_id in outputs {
+                        if !matches!(defs.get(out_id), Some((_, OpDef::Const(_)))) {
+                            defs.insert(*out_id, (idx, OpDef::Other));
+                        }
+                    }
+                }
             }
         }
 
@@ -534,6 +541,7 @@ impl Optimizer {
                     defs.insert(*out, OpDef::Other);
                 }
                 Op::NonPrimitiveOpWithExecutor { .. } => {}
+                Op::Hint { .. } => {}
             }
         }
 
