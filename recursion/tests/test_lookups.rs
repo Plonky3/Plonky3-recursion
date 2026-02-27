@@ -7,10 +7,10 @@ use p3_circuit::ops::{Poseidon2PermCall, generate_poseidon2_trace};
 use p3_circuit::{CircuitBuilder, Poseidon2PermOps};
 use p3_circuit_prover::air::{AluAir, ConstAir, PublicAir};
 use p3_circuit_prover::batch_stark_prover::PrimitiveTable;
-use p3_circuit_prover::common::{NonPrimitiveConfig, get_airs_and_degrees_with_prep};
+use p3_circuit_prover::common::{NpoPreprocessor, get_airs_and_degrees_with_prep};
 use p3_circuit_prover::{
     BatchStarkProof, BatchStarkProver, CircuitProverData, ConstraintProfile, Poseidon2Config,
-    TablePacking,
+    Poseidon2Preprocessor, TablePacking,
 };
 use p3_field::PrimeCharacteristicRing;
 use p3_fri::create_test_fri_params;
@@ -111,7 +111,7 @@ fn test_wrong_multiplicities() {
         get_airs_and_degrees_with_prep::<MyConfig, _, 1>(
             &circuit,
             table_packing,
-            None,
+            &[],
             ConstraintProfile::Standard,
         )
         .unwrap();
@@ -590,7 +590,7 @@ fn get_test_circuit_proof() -> TestCircuitProofData {
     let (airs_degrees, preprocessed_columns) = get_airs_and_degrees_with_prep::<MyConfig, _, 1>(
         &circuit,
         table_packing,
-        None,
+        &[],
         ConstraintProfile::Standard,
     )
     .unwrap();
@@ -849,10 +849,11 @@ fn test_poseidon2_ctl_lookups() {
 
     let circuit = builder.build().unwrap();
 
+    let poseidon2_prep: [Box<dyn NpoPreprocessor<F>>; 1] = [Box::new(Poseidon2Preprocessor)];
     let (airs_degrees, preprocessed_columns) = get_airs_and_degrees_with_prep::<MyConfig, _, 4>(
         &circuit,
         table_packing,
-        Some(&[NonPrimitiveConfig::Poseidon2(poseidon2_config)]),
+        &poseidon2_prep,
         ConstraintProfile::Standard,
     )
     .unwrap();
@@ -969,10 +970,11 @@ fn test_poseidon2_chained_ctl_lookups() {
 
     let circuit = builder.build().unwrap();
 
+    let poseidon2_prep: [Box<dyn NpoPreprocessor<F>>; 1] = [Box::new(Poseidon2Preprocessor)];
     let (airs_degrees, preprocessed_columns) = get_airs_and_degrees_with_prep::<MyConfig, _, 4>(
         &circuit,
         table_packing,
-        Some(&[NonPrimitiveConfig::Poseidon2(poseidon2_config)]),
+        &poseidon2_prep,
         ConstraintProfile::Standard,
     )
     .unwrap();

@@ -88,7 +88,7 @@ fn bench_prove_all_tables(c: &mut Criterion) {
                     get_airs_and_degrees_with_prep::<KoalaBearConfig, _, 1>(
                         &circuit,
                         table_packing,
-                        None,
+                        &[],
                         ConstraintProfile::Standard,
                     )
                     .unwrap();

@@ -4,10 +4,11 @@ use p3_batch_stark::ProverData;
 use p3_circuit::op::{NonPrimitiveOpPrivateData, NpoTypeId};
 use p3_circuit::ops::{Poseidon2PermPrivateData, generate_poseidon2_trace};
 use p3_circuit::{CircuitBuilder, ExprId, Poseidon2PermOps};
-use p3_circuit_prover::common::{NonPrimitiveConfig, get_airs_and_degrees_with_prep};
+use p3_circuit_prover::common::{NpoPreprocessor, get_airs_and_degrees_with_prep};
 use p3_circuit_prover::config::KoalaBearConfig;
 use p3_circuit_prover::{
-    BatchStarkProver, CircuitProverData, ConstraintProfile, Poseidon2Config, TablePacking, config,
+    BatchStarkProver, CircuitProverData, ConstraintProfile, Poseidon2Config, Poseidon2Preprocessor,
+    TablePacking, config,
 };
 use p3_field::extension::BinomialExtensionField;
 use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
@@ -217,11 +218,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     let table_packing = TablePacking::new(4, 4);
     let poseidon2_config = Poseidon2Config::KoalaBearD4Width16;
     let stark_config = config::koala_bear().build();
+    let poseidon2_prep: [Box<dyn NpoPreprocessor<Base>>; 1] = [Box::new(Poseidon2Preprocessor)];
     let (airs_degrees, preprocessed_columns) =
         get_airs_and_degrees_with_prep::<KoalaBearConfig, _, 4>(
             &circuit,
             table_packing,
-            Some(&[NonPrimitiveConfig::Poseidon2(poseidon2_config)]),
+            &poseidon2_prep,
             ConstraintProfile::Standard,
         )?;
     let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();

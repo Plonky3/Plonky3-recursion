@@ -40,7 +40,7 @@ fn test_babybear_batch_stark_base_field() {
         get_airs_and_degrees_with_prep::<BabyBearConfig, _, 1>(
             &circuit,
             TablePacking::default(),
-            None,
+            &[],
             ConstraintProfile::Standard,
         )
         .unwrap();
@@ -97,7 +97,7 @@ fn test_table_lookups() {
         get_airs_and_degrees_with_prep::<BabyBearConfig, _, 1>(
             &circuit,
             default_packing,
-            None,
+            &[],
             ConstraintProfile::Standard,
         )
         .unwrap();
@@ -182,7 +182,7 @@ fn test_extension_field_batch_stark() {
         get_airs_and_degrees_with_prep::<BabyBearConfig, _, D>(
             &circuit,
             TablePacking::default(),
-            None,
+            &[],
             ConstraintProfile::Standard,
         )
         .unwrap();
@@ -252,7 +252,7 @@ fn test_extension_field_table_lookups() {
         get_airs_and_degrees_with_prep::<BabyBearConfig, _, D>(
             &circuit,
             default_packing,
-            None,
+            &[],
             ConstraintProfile::Standard,
         )
         .unwrap();
@@ -362,7 +362,7 @@ fn test_koalabear_batch_stark_base_field() {
         get_airs_and_degrees_with_prep::<KoalaBearConfig, _, 1>(
             &circuit,
             TablePacking::default(),
-            None,
+            &[],
             ConstraintProfile::Standard,
         )
         .unwrap();
@@ -426,7 +426,7 @@ fn test_koalabear_batch_stark_extension_field_d8() {
         get_airs_and_degrees_with_prep::<KoalaBearConfig, _, D>(
             &circuit,
             TablePacking::default(),
-            None,
+            &[],
             ConstraintProfile::Standard,
         )
         .unwrap();
@@ -511,7 +511,7 @@ fn test_goldilocks_batch_stark_extension_field_d2() {
         get_airs_and_degrees_with_prep::<GoldilocksConfig, _, D>(
             &circuit,
             TablePacking::default(),
-            None,
+            &[],
             ConstraintProfile::Standard,
         )
         .unwrap();
@@ -657,7 +657,7 @@ fn test_mul_only_circuit_padding() {
         get_airs_and_degrees_with_prep::<BabyBearConfig, _, 1>(
             &circuit,
             TablePacking::default(),
-            None,
+            &[],
             ConstraintProfile::Standard,
         )
         .unwrap();
@@ -702,7 +702,7 @@ fn test_add_only_circuit_padding() {
         get_airs_and_degrees_with_prep::<BabyBearConfig, _, 1>(
             &circuit,
             TablePacking::default(),
-            None,
+            &[],
             ConstraintProfile::Standard,
         )
         .unwrap();

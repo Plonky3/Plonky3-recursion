@@ -1,12 +1,11 @@
-use alloc::collections::btree_map::BTreeMap;
+use alloc::boxed::Box;
 use alloc::vec::Vec;
-use core::borrow::{Borrow, BorrowMut};
+use core::any::Any;
 
 use hashbrown::HashMap;
-use p3_circuit::op::{NonPrimitivePreprocessedMap, NpoTypeId, Poseidon2Config, PrimitiveOpType};
+use p3_circuit::op::{NonPrimitivePreprocessedMap, PrimitiveOpType};
 use p3_circuit::{Circuit, CircuitError, PreprocessedColumns};
 use p3_field::{ExtensionField, PrimeCharacteristicRing, PrimeField64};
-use p3_poseidon2_circuit_air::{Poseidon2PreprocessedRow, poseidon2_preprocessed_width};
 use p3_uni_stark::{StarkGenericConfig, SymbolicExpression, Val};
 use p3_util::log2_ceil_usize;
 
@@ -14,7 +13,26 @@ use crate::air::{AluAir, ConstAir, PublicAir};
 use crate::config::StarkField;
 use crate::constraint_profile::ConstraintProfile;
 use crate::field_params::ExtractBinomialW;
-use crate::{DynamicAirEntry, Poseidon2Prover, TablePacking};
+use crate::{DynamicAirEntry, TablePacking};
+
+/// Plugin trait for NPO-owned preprocessing over generic circuits.
+///
+/// Each implementation can update `PreprocessedColumns` (ext_reads, multiplicities, etc.)
+/// and return base-field non-primitive preprocessed rows for its own `NpoTypeId`s.
+pub trait NpoPreprocessor<F>: Send + Sync
+where
+    F: StarkField + PrimeField64,
+{
+    /// Run plugin-owned preprocessing over a generic circuit.
+    ///
+    /// `circuit` and `preprocessed` are type-erased; implementations downcast to the
+    /// `PreprocessedColumns<ExtF>` shapes they support and return an empty map otherwise.
+    fn preprocess(
+        &self,
+        circuit: &dyn Any,
+        preprocessed: &mut dyn Any,
+    ) -> Result<NonPrimitivePreprocessedMap<F>, CircuitError>;
+}
 
 /// Enum wrapper to allow heterogeneous table AIRs in a single batch STARK aggregation.
 ///
@@ -30,13 +48,6 @@ where
     /// Unified ALU table for all arithmetic operations
     Alu(AluAir<Val<SC>, D>),
     Dynamic(DynamicAirEntry<SC>),
-}
-
-/// Non-primitive operation configurations.
-///
-/// This enables the preprocessing of preprocessing data depending on the non-primitive configurations.
-pub enum NonPrimitiveConfig {
-    Poseidon2(Poseidon2Config),
 }
 
 impl<SC, const D: usize> Clone for CircuitTableAir<SC, D>
@@ -64,7 +75,7 @@ pub fn get_airs_and_degrees_with_prep<
 >(
     circuit: &Circuit<ExtF>,
     packing: TablePacking,
-    non_primitive_configs: Option<&[NonPrimitiveConfig]>,
+    non_primitive_preprocessors: &[Box<dyn NpoPreprocessor<Val<SC>>>],
     constraint_profile: ConstraintProfile,
 ) -> Result<(CircuitAirsWithDegrees<SC, D>, PreprocessedColumns<Val<SC>>), CircuitError>
 where
@@ -110,7 +121,7 @@ where
 
     let w_binomial = ExtF::extract_w();
 
-    // First, get base field elements for the preprocessed values.
+    // First, get base field elements for the preprocessed primitive values.
     let mut base_prep: Vec<Vec<Val<SC>>> = preprocessed
         .primitive
         .iter()
@@ -121,105 +132,16 @@ where
         })
         .collect::<Result<Vec<_>, CircuitError>>()?;
 
-    let prep_row_width = poseidon2_preprocessed_width();
     let neg_one = <Val<SC>>::NEG_ONE;
 
-    // Phase 1: Scan Poseidon2 preprocessed data to count mmcs_index_sum conditional reads,
-    // and update `ext_reads` accordingly. This must happen before computing multiplicities.
-    for (op_type, prep) in preprocessed.non_primitive.iter() {
-        if op_type.as_str().starts_with("poseidon2_perm/") {
-            let prep_base: Vec<Val<SC>> = prep
-                .iter()
-                .map(|v| v.as_base().ok_or(CircuitError::InvalidPreprocessedValues))
-                .collect::<Result<Vec<_>, CircuitError>>()?;
-
-            let num_rows = prep_base.len() / prep_row_width;
-            let trace_height = num_rows.next_power_of_two();
-            let has_padding = trace_height > num_rows;
-
-            for row_idx in 0..num_rows {
-                let row_start = row_idx * prep_row_width;
-                let row: &Poseidon2PreprocessedRow<Val<SC>> =
-                    prep_base[row_start..row_start + prep_row_width].borrow();
-                let current_mmcs_merkle_flag = row.mmcs_merkle_flag;
-
-                // Check if next row exists and has new_start = 1.
-                // The Poseidon2 AIR pads the trace and sets new_start = 1 in the first
-                // padding row (only if padding exists), so the last real row can trigger a
-                // lookup if its mmcs_merkle_flag = 1 and there is padding.
-                let next_new_start = if row_idx + 1 < num_rows {
-                    let next_start = (row_idx + 1) * prep_row_width;
-                    let next_row: &Poseidon2PreprocessedRow<Val<SC>> =
-                        prep_base[next_start..next_start + prep_row_width].borrow();
-                    next_row.new_start
-                } else if has_padding {
-                    <Val<SC> as PrimeCharacteristicRing>::ONE
-                } else {
-                    let first_row: &Poseidon2PreprocessedRow<Val<SC>> =
-                        prep_base[0..prep_row_width].borrow();
-                    first_row.new_start
-                };
-
-                let multiplicity = current_mmcs_merkle_flag * next_new_start;
-                if multiplicity != <Val<SC> as PrimeCharacteristicRing>::ZERO {
-                    let mmcs_idx_u64 =
-                        <Val<SC> as PrimeField64>::as_canonical_u64(&row.mmcs_index_sum_ctl_idx);
-                    let mmcs_witness_idx = (mmcs_idx_u64 as usize) / D;
-
-                    if mmcs_witness_idx >= preprocessed.ext_reads.len() {
-                        preprocessed.ext_reads.resize(mmcs_witness_idx + 1, 0);
-                    }
-                    preprocessed.ext_reads[mmcs_witness_idx] += 1;
-                }
-            }
-        }
-    }
-
-    // Phase 2: Update Poseidon2 out_ctl values in the base field preprocessed data.
-    // in_ctl = +1 for active inputs (kept as-is from circuit.rs preprocessing).
-    //
-    // out_ctl placeholder from generate_preprocessed_columns:
-    //   ZERO → private output (no bus contribution; skip)
-    //   ONE  → active output (creator or duplicate reader; check poseidon2_dup_wids)
-    //
-    // Poseidon2 duplicate creators (from optimizer witness_rewrite deduplication)
-    // are recorded in `preprocessed.poseidon2_dup_wids`. For those, out_ctl = -1
-    // (reader contribution). For first-occurrence creators, out_ctl = +ext_reads[wid].
+    // Let plugins handle non-primitive preprocessing (ext_reads, multiplicities, etc.).
     let mut non_primitive_base: NonPrimitivePreprocessedMap<Val<SC>> = HashMap::new();
-    for (op_type, prep) in preprocessed.non_primitive.iter() {
-        if op_type.as_str().starts_with("poseidon2_perm/") {
-            let mut prep_base: Vec<Val<SC>> = prep
-                .iter()
-                .map(|v| v.as_base().ok_or(CircuitError::InvalidPreprocessedValues))
-                .collect::<Result<Vec<_>, CircuitError>>()?;
-
-            let num_rows = prep_base.len() / prep_row_width;
-
-            for row_idx in 0..num_rows {
-                let row_start = row_idx * prep_row_width;
-                let row: &mut Poseidon2PreprocessedRow<Val<SC>> =
-                    prep_base[row_start..row_start + prep_row_width].borrow_mut();
-
-                for out_limb in &mut row.output_limbs {
-                    if out_limb.out_ctl != <Val<SC> as PrimeCharacteristicRing>::ZERO {
-                        let out_wid =
-                            <Val<SC> as PrimeField64>::as_canonical_u64(&out_limb.idx) as usize / D;
-                        let is_dup = preprocessed
-                            .poseidon2_dup_wids
-                            .get(out_wid)
-                            .copied()
-                            .unwrap_or(false);
-                        if is_dup {
-                            out_limb.out_ctl = neg_one;
-                        } else {
-                            let n_reads = preprocessed.ext_reads.get(out_wid).copied().unwrap_or(0);
-                            out_limb.out_ctl = <Val<SC>>::from_u32(n_reads);
-                        }
-                    }
-                }
-            }
-
-            non_primitive_base.insert(op_type.clone(), prep_base);
+    let circuit_any: &dyn Any = circuit;
+    let preprocessed_any: &mut dyn Any = &mut preprocessed;
+    for plugin in non_primitive_preprocessors {
+        let plugin_prep = plugin.preprocess(circuit_any, preprocessed_any)?;
+        for (op_type, prep_base) in plugin_prep {
+            non_primitive_base.insert(op_type, prep_base);
         }
     }
 
@@ -372,26 +294,17 @@ where
         }
     }
 
-    let mut config_map = BTreeMap::new();
-    if let Some(configs) = non_primitive_configs {
-        for config in configs {
-            match config {
-                NonPrimitiveConfig::Poseidon2(cfg) => {
-                    let op_type = NpoTypeId::poseidon2_perm(*cfg);
-                    config_map.insert(op_type, *cfg);
-                }
-            }
-        }
-    }
-
-    // Add non-primitive (Poseidon2) AIR entries using the updated base field preprocessed data.
+    // Add non-primitive AIR entries using the updated base field preprocessed data.
     for (op_type, prep_base) in non_primitive_base.iter() {
         if op_type.as_str().starts_with("poseidon2_perm/") {
-            let cfg = config_map
-                .get(op_type)
-                .copied()
+            // Recover config from type id.
+            let suffix = op_type
+                .as_str()
+                .strip_prefix("poseidon2_perm/")
                 .ok_or(CircuitError::InvalidPreprocessedValues)?;
-            let poseidon2_prover = Poseidon2Prover::new(cfg, constraint_profile);
+            let cfg = crate::Poseidon2Config::from_variant_name(suffix)
+                .ok_or(CircuitError::InvalidPreprocessedValues)?;
+            let poseidon2_prover = crate::Poseidon2Prover::new(cfg, constraint_profile);
             let width = poseidon2_prover.preprocessed_width_from_config();
             let poseidon2_wrapper = poseidon2_prover
                 .wrapper_from_config_with_preprocessed(prep_base.clone(), min_height);
@@ -400,7 +313,6 @@ where
             let num_rows = prep_base.len().div_ceil(width);
             table_preps.push((poseidon2_wrapper_air, compute_degree(num_rows)));
         }
-        // Other non-primitive ops: no special handling here
     }
 
     // Build base_prep for the output PreprocessedColumns (without Poseidon2 multiplicities).

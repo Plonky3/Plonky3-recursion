@@ -466,7 +466,7 @@ macro_rules! define_field_module {
                     get_airs_and_degrees_with_prep::<ConfigWithFriParams, _, 1>(
                         &base_circuit,
                         table_packing_0,
-                        None,
+                        &[],
                         ConstraintProfile::Standard,
                     )
                     .unwrap();
