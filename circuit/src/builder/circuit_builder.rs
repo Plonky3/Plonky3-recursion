@@ -249,11 +249,7 @@ where
             output
         });
 
-        let plugin = crate::ops::poseidon2_perm::Poseidon2CircuitPlugin::new_ext(
-            Config::CONFIG,
-            exec,
-            trace_generator,
-        );
+        let plugin = Poseidon2CircuitPlugin::new_ext(Config::CONFIG, exec, trace_generator);
         self.register_npo(plugin);
     }
 
@@ -294,11 +290,7 @@ where
             }
             output
         });
-        let plugin = crate::ops::poseidon2_perm::Poseidon2CircuitPlugin::new_ext(
-            Config::CONFIG,
-            exec,
-            trace_generator,
-        );
+        let plugin = Poseidon2CircuitPlugin::new_ext(Config::CONFIG, exec, trace_generator);
         self.register_npo(plugin);
     }
 
@@ -332,11 +324,7 @@ where
         let exec: crate::op::Poseidon2PermExecBase<F> =
             Arc::new(move |input: &[F; 16]| perm.permute(*input));
 
-        let plugin = crate::ops::poseidon2_perm::Poseidon2CircuitPlugin::new_base(
-            Config::CONFIG,
-            exec,
-            trace_generator,
-        );
+        let plugin = Poseidon2CircuitPlugin::new_base(Config::CONFIG, exec, trace_generator);
         self.register_npo(plugin);
     }
 
@@ -585,7 +573,7 @@ where
     /// `output_labels` must have length equal to the op's output arity; each `Some(label)`
     /// creates an `Expr::NonPrimitiveOutput { call, output_idx }` node for that output index.
     /// The returned `Vec<Option<ExprId>>` is aligned with `output_labels`.
-    pub(crate) fn push_non_primitive_op_with_outputs(
+    pub fn push_non_primitive_op_with_outputs(
         &mut self,
         op_type: NpoTypeId,
         input_exprs: Vec<Vec<ExprId>>,
