@@ -17,6 +17,7 @@ use p3_circuit_prover::batch_stark_prover::{PrimitiveTable, RowCounts};
 use p3_commit::{Pcs, PolynomialSpace};
 use p3_field::extension::BinomialExtensionField;
 use p3_field::{BasedVectorSpace, ExtensionField, Field, PrimeCharacteristicRing, PrimeField64};
+use p3_fri_air::OpenInputAir;
 use p3_koala_bear::KoalaBear;
 use p3_lookup::lookup_traits::{Kind, Lookup, LookupData, LookupGadget};
 use p3_poseidon2_air::RoundConstants;
@@ -133,6 +134,7 @@ pub enum CircuitTablesAir<F: Field, const D: usize> {
     Public(PublicAir<F, D>),
     Alu(AluAir<F, D>),
     Poseidon2(Poseidon2VerifierAir),
+    OpenInput(OpenInputAir<F, D>),
 }
 
 impl<F: Field, const D: usize> P3BaseAir<F> for CircuitTablesAir<F, D> {
@@ -143,6 +145,7 @@ impl<F: Field, const D: usize> P3BaseAir<F> for CircuitTablesAir<F, D> {
             Self::Public(a) => P3BaseAir::width(a),
             Self::Alu(a) => P3BaseAir::width(a),
             Self::Poseidon2(a) => a.width_inner(),
+            Self::OpenInput(a) => P3BaseAir::width(a),
         }
     }
 }
@@ -160,6 +163,7 @@ where
             Self::Const(a) => P3Air::eval(a, builder),
             Self::Public(a) => P3Air::eval(a, builder),
             Self::Alu(a) => P3Air::eval(a, builder),
+            Self::OpenInput(a) => P3Air::eval(a, builder),
             Self::Poseidon2(p2) => match p2 {
                 Poseidon2VerifierAir::BabyBearD4Width16(air) => {
                     assert_eq!(F::from_u64(BABY_BEAR_MODULUS), F::ZERO);
@@ -209,6 +213,9 @@ where
                 P3Air::<p3_uni_stark::SymbolicAirBuilder<F, EF>>::add_lookup_columns(a)
             }
             Self::Alu(a) => P3Air::<p3_uni_stark::SymbolicAirBuilder<F, EF>>::add_lookup_columns(a),
+            Self::OpenInput(a) => {
+                P3Air::<p3_uni_stark::SymbolicAirBuilder<F, EF>>::add_lookup_columns(a)
+            }
             Self::Poseidon2(p2) => match p2 {
                 Poseidon2VerifierAir::BabyBearD4Width16(a) => {
                     type SAB = p3_uni_stark::SymbolicAirBuilder<
@@ -263,6 +270,7 @@ where
             Self::Const(a) => P3Air::<p3_uni_stark::SymbolicAirBuilder<F, EF>>::get_lookups(a),
             Self::Public(a) => P3Air::<p3_uni_stark::SymbolicAirBuilder<F, EF>>::get_lookups(a),
             Self::Alu(a) => P3Air::<p3_uni_stark::SymbolicAirBuilder<F, EF>>::get_lookups(a),
+            Self::OpenInput(a) => P3Air::<p3_uni_stark::SymbolicAirBuilder<F, EF>>::get_lookups(a),
             Self::Poseidon2(p2) => match p2 {
                 Poseidon2VerifierAir::BabyBearD4Width16(a) => unsafe {
                     assert_eq!(F::from_u64(BABY_BEAR_MODULUS), F::ZERO);
@@ -450,6 +458,10 @@ where
                 circuit_airs.push(CircuitTablesAir::Poseidon2(
                     Poseidon2VerifierAir::from_config(config),
                 ));
+            }
+            NonPrimitiveOpType::OpenInput => {
+                let w = extract_binomial_w::<Val<SC>, SC::Challenge>();
+                circuit_airs.push(CircuitTablesAir::OpenInput(OpenInputAir::new(w)))
             }
             NonPrimitiveOpType::Unconstrained => {
                 // Unconstrained operations don't produce a separate AIR table.

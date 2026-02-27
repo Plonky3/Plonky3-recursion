@@ -30,6 +30,7 @@ use crate::config::StarkField;
 use crate::field_params::ExtractBinomialW;
 
 mod dynamic_air;
+mod open_input;
 mod packing;
 mod poseidon2;
 

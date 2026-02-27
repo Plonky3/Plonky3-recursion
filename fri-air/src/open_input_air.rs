@@ -1,46 +1,57 @@
-use alloc::boxed::Box;
+use alloc::string::ToString;
 use alloc::vec;
 use alloc::vec::Vec;
+use core::iter;
 
-use p3_air::{Air, AirBuilder, BaseAir};
+use p3_air::lookup::{Direction, Kind, Lookup};
+use p3_air::{
+    Air, AirBuilder, AirBuilderWithPublicValues, BaseAir, PermutationAirBuilder, SymbolicExpression,
+};
 use p3_circuit::ops::open_input::{OpenInputRow, OpenInputTrace};
-use p3_circuit::tables::NonPrimitiveTrace;
-use p3_circuit::{CircuitError, NonPrimitiveOpType};
-use p3_field::{BasedVectorSpace, ExtensionField, Field, PrimeField};
+use p3_field::{BasedVectorSpace, ExtensionField, Field, PrimeCharacteristicRing};
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
+use p3_uni_stark::SymbolicAirBuilder;
 
 #[derive(Debug, Clone)]
 pub struct OpenInputAir<F, const D: usize = 1> {
+    pub w_binomial: F,
     pub preprocessed: Vec<F>,
     pub min_height: usize,
     pub num_lookup_columns: usize,
 }
 
 impl<F: Field, const D: usize> OpenInputAir<F, D> {
-    pub const fn new() -> Self {
+    pub const fn new(w_binomial: F) -> Self {
         Self {
+            w_binomial,
             preprocessed: Vec::new(),
             min_height: 1,
             num_lookup_columns: 0,
         }
     }
 
-    pub const fn new_with_preprocessed(preprocessed: Vec<F>) -> Self {
+    pub const fn new_with_preprocessed(w_binomial: F, preprocessed: Vec<F>) -> Self {
         Self {
+            w_binomial,
             preprocessed,
             min_height: 1,
             num_lookup_columns: 0,
         }
     }
 
+    pub fn with_min_height(mut self, min_height: usize) -> Self {
+        self.min_height = min_height;
+        self
+    }
+
     pub const fn width() -> usize {
-        7 * D
+        4 * D
     }
 
     pub const fn preprocessed_width() -> usize {
-        6 // Indices for alpha, x, z, p_at_x, p_at_z, ro. We don't need to keep track of alpha_pow's index
-        + 1 // ìs_last
+        4 // Indices for alpha, p_at_x, p_at_z, ro. 
+        + 2 // is_last and is_real
     }
 
     pub fn trace_to_matrix<ExtF: ExtensionField<F>>(
@@ -52,56 +63,36 @@ impl<F: Field, const D: usize> OpenInputAir<F, D> {
 
         let mut values = Vec::with_capacity(new_n * Self::width());
 
-        let mut alpha_pow = if open_input_ops.is_empty() {
-            ExtF::ZERO
-        } else {
-            open_input_ops[0].alpha[0]
-        };
         let mut ro = ExtF::ZERO;
         let mut reset = false;
 
         for row in open_input_ops {
             debug_assert_eq!(row.alpha.len(), 1);
-            debug_assert_eq!(row.x.len(), 1);
-            debug_assert_eq!(row.z.len(), 1);
             debug_assert_eq!(row.pow_at_x.len(), 1);
             debug_assert_eq!(row.pow_at_z.len(), 1);
 
             if reset {
-                alpha_pow = row.alpha[0];
                 ro = ExtF::ZERO;
             }
 
-            let new_ro =
-                ro + alpha_pow * (row.pow_at_z[0] - row.pow_at_x[0]) / (row.z[0] - row.x[0]);
-            let new_alpha_pow = alpha_pow * row.alpha[0];
+            let new_ro = ro * row.alpha[0] + (row.pow_at_z[0] - row.pow_at_x[0]);
 
             let alpha = row.alpha[0].as_basis_coefficients_slice();
-            let x = row.x[0].as_basis_coefficients_slice();
-            let z = row.z[0].as_basis_coefficients_slice();
-            let alpha_pow_basis = alpha_pow.as_basis_coefficients_slice();
             let pow_at_x = row.pow_at_x[0].as_basis_coefficients_slice();
             let pow_at_z = row.pow_at_z[0].as_basis_coefficients_slice();
-            let ro_basis = new_ro.as_basis_coefficients_slice();
+            let new_ro_basis = new_ro.as_basis_coefficients_slice();
 
             debug_assert_eq!(alpha.len(), D);
-            debug_assert_eq!(x.len(), D);
-            debug_assert_eq!(z.len(), D);
-            debug_assert_eq!(alpha_pow_basis.len(), D);
             debug_assert_eq!(pow_at_x.len(), D);
             debug_assert_eq!(pow_at_z.len(), D);
-            debug_assert_eq!(ro_basis.len(), D);
+            debug_assert_eq!(new_ro_basis.len(), D);
 
             values.extend_from_slice(alpha);
-            values.extend_from_slice(alpha_pow_basis);
-            values.extend_from_slice(x);
-            values.extend_from_slice(z);
             values.extend_from_slice(pow_at_x);
             values.extend_from_slice(pow_at_z);
-            values.extend_from_slice(ro_basis);
+            values.extend_from_slice(new_ro_basis);
 
             ro = new_ro;
-            alpha_pow = new_alpha_pow;
             if row.is_last {
                 reset = true;
             } else {
@@ -123,12 +114,12 @@ impl<F: Field, const D: usize> OpenInputAir<F, D> {
             .iter()
             .flat_map(|row| {
                 [
+                    F::from_u64(row.is_last as u64),
+                    F::from_u64(row.is_real as u64),
                     F::from_u64(row.alpha_index as u64),
-                    F::from_u64(row.x_index as u64),
-                    F::from_u64(row.z_index as u64),
                     F::from_u64(row.pow_at_x_index as u64),
                     F::from_u64(row.pow_at_z_index as u64),
-                    F::from_u64(row.is_last as u64),
+                    F::from_u64(row.ro_index as u64),
                 ]
             })
             .collect()
@@ -176,15 +167,54 @@ impl<F: Field + Sync, const D: usize> BaseAir<F> for OpenInputAir<F, D> {
     }
 }
 
+fn extension_multiplication<AB: AirBuilder, const D: usize>(
+    w_binomial: AB::Expr,
+    a: &[AB::Expr; D],
+    b: &[AB::Expr; D],
+) -> [AB::Expr; D]
+where
+    AB::F: Field,
+{
+    debug_assert_eq!(a.len(), b.len());
+    // MUL constraints: extension field multiplication
+    let mut mul_acc = [AB::Expr::ZERO; D];
+    for i in 0..D {
+        for j in 0..D {
+            let term = a[i].clone() * b[j].clone();
+            let k = i + j;
+            if k < D {
+                mul_acc[k] = mul_acc[k].clone() + term;
+            } else {
+                mul_acc[k - D] = mul_acc[k - D].clone() + w_binomial.clone() * term;
+            }
+        }
+    }
+    mul_acc
+}
+
+fn sub_extension<AB: AirBuilder, const D: usize>(
+    a: &[AB::Expr; D],
+    b: &[AB::Expr; D],
+) -> [AB::Expr; D] {
+    debug_assert_eq!(a.len(), b.len());
+    let mut result = [AB::Expr::ZERO; D];
+    for i in 0..D {
+        result[i] = a[i].clone() - b[i].clone();
+    }
+    result
+}
+
 impl<AB: AirBuilder, const D: usize> Air<AB> for OpenInputAir<AB::F, D>
 where
     AB::F: Field,
 {
     fn eval(&self, builder: &mut AB) {
+        // Need to check that result = acc * alpha + p_at_z
         let main = builder.main();
         debug_assert_eq!(main.width(), self.width(), "column width mismatch");
 
         let local = main.row_slice(0).expect("matrix must be non-empty");
+        let next = main.row_slice(1).expect("matrix must have at least 2 rows");
 
         let preprocessed = builder
             .preprocessed()
@@ -193,6 +223,111 @@ where
             .row_slice(0)
             .expect("preprocessed trace must be non-empty");
 
-        builder.when_first_row();
+        // Get current row values.
+        let w = AB::Expr::from(self.w_binomial);
+        let alpha: &[AB::Expr; D] = &core::array::from_fn(|i| AB::Expr::from(local[i].clone()));
+        let pow_at_x: &[AB::Expr; D] =
+            &core::array::from_fn(|i| AB::Expr::from(local[D + i].clone()));
+        let pow_at_z: &[AB::Expr; D] =
+            &core::array::from_fn(|i| AB::Expr::from(local[2 * D + i].clone()));
+        let ro: &[AB::Expr; D] =
+            &core::array::from_fn(|i| AB::Expr::from(local[3 * D + i].clone()));
+        let is_last = AB::Expr::from(preprocessed_local[0].clone());
+        let not_is_last = AB::Expr::ONE - is_last.clone();
+
+        // Assert that `is_last` is boolean.
+        builder.assert_bool(is_last);
+
+        // Verify that the first `reduced_opening` is computed correctly.
+        let p_at_z_minus_pow_at_x: [AB::Expr; D] = sub_extension::<AB, D>(pow_at_z, pow_at_x);
+        for i in 0..D {
+            builder
+                .when_first_row()
+                .assert_eq(ro[i].clone(), p_at_z_minus_pow_at_x[i].clone());
+        }
+
+        // Verify constraint transitions
+        let alpha_next: &[AB::Expr; D] = &core::array::from_fn(|i| AB::Expr::from(next[i].clone()));
+        let pow_at_x_next: &[AB::Expr; D] =
+            &core::array::from_fn(|i| AB::Expr::from(next[D + i].clone()));
+        let pow_at_z_next: &[AB::Expr; D] =
+            &core::array::from_fn(|i| AB::Expr::from(next[2 * D + i].clone()));
+        let ro_next: &[AB::Expr; D] =
+            &core::array::from_fn(|i| AB::Expr::from(next[3 * D + i].clone()));
+        let ro_mul_alpha = extension_multiplication::<AB, D>(w.clone(), ro, alpha_next);
+        let p_at_z_minus_pow_at_x_next: [AB::Expr; D] =
+            sub_extension::<AB, D>(pow_at_z_next, pow_at_x_next);
+        let lhs: [AB::Expr; D] = sub_extension::<AB, D>(ro_next, &p_at_z_minus_pow_at_x_next);
+        let constraint: [AB::Expr; D] = sub_extension::<AB, D>(&lhs, &ro_mul_alpha);
+        for i in 0..D {
+            builder
+                .when_transition()
+                .assert_zero(not_is_last.clone() * constraint[i].clone());
+        }
+
+        // Check that alpha is unchanged when is_last is false.
+        for i in 0..D {
+            builder
+                .when_transition()
+                .when(not_is_last.clone())
+                .assert_eq(alpha_next[i].clone(), AB::Expr::from(alpha[i].clone()));
+        }
+    }
+
+    fn add_lookup_columns(&mut self) -> Vec<usize> {
+        let new_idx = self.num_lookup_columns;
+        self.num_lookup_columns += 1;
+        vec![new_idx]
+    }
+
+    fn get_lookups(&mut self) -> Vec<Lookup<<AB>::F>>
+    where
+        AB: PermutationAirBuilder + AirBuilderWithPublicValues,
+    {
+        let symbolic_air_builder =
+            SymbolicAirBuilder::<AB::F>::new(Self::preprocessed_width(), Self::width(), 0, 0, 0);
+
+        let symbolic_main = symbolic_air_builder.main();
+        let symbolic_main_local = symbolic_main.row_slice(0).unwrap().to_vec();
+
+        let preprocessed = symbolic_air_builder
+            .preprocessed()
+            .expect("Expected preprocessed columns");
+        let preprocessed_local = preprocessed.row_slice(0).unwrap().to_vec();
+        // preprocessed mapping: is_last, is_real, then all indices.
+        let is_last = SymbolicExpression::from(preprocessed_local[0]);
+        let is_real = SymbolicExpression::from(preprocessed_local[1]);
+
+        let direction = Direction::Send;
+        let kind = Kind::Global("WitnessChecks".to_string());
+        // First, the values that always need to be checked.
+        // alpha, p_at_x, p_at_z
+        let global_lookups = (0..3).map(|i| {
+            let index = SymbolicExpression::from(preprocessed_local[2 + i]);
+            let values = (0..D).map(|j| SymbolicExpression::from(symbolic_main_local[i * D + j]));
+
+            let inputs = iter::once(index).chain(values).collect::<Vec<_>>();
+
+            (inputs, is_real.clone(), direction)
+        });
+
+        // Then only if is_last: ro
+        let ro_idx = SymbolicExpression::from(preprocessed_local[5]);
+        let ro = (0..D).map(|i| SymbolicExpression::from(symbolic_main_local[3 * D + i]));
+
+        let ro_inputs = iter::once(ro_idx).chain(ro).collect::<Vec<_>>();
+
+        let ro_inputs = (ro_inputs, is_last, direction);
+        let ro_lookup = <Self as Air<AB>>::register_lookup(self, kind.clone(), &[ro_inputs]);
+        let mut lookups = vec![];
+        lookups.push(ro_lookup);
+
+        lookups.extend(
+            global_lookups
+                .into_iter()
+                .map(|l| <Self as Air<AB>>::register_lookup(self, kind.clone(), &[l])),
+        );
+
+        lookups
     }
 }

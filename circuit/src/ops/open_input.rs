@@ -1,40 +1,62 @@
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use alloc::{format, vec};
+use core::any::Any;
 
-use p3_field::Field;
+use p3_field::{ExtensionField, Field};
 
+use crate::builder::NonPrimitiveOpParams;
 // TODO Linda: alpha_pow and intermediary ros should be private inputs.
-use crate::op::{ExecutionContext, NonPrimitiveExecutor, OpExecutionState};
-use crate::{CircuitError, NonPrimitiveOpType, WitnessId};
+use crate::op::{ExecutionContext, NonPrimitiveExecutor, OpExecutionState, OpStateMap};
+use crate::tables::NonPrimitiveTrace;
+use crate::{
+    CircuitBuilder, CircuitBuilderError, CircuitError, CircuitField, ExprId, NonPrimitiveOpId,
+    NonPrimitiveOpType, WitnessId,
+};
 
-#[derive(Debug, Clone)]
+#[derive(Default, Debug, Clone)]
 pub struct OpenInputRow<F> {
     // All `Vec`s correspond to one extension limb in execution rows, and D base field elements in trace rows.
-    pub alpha: Vec<F>,
+    pub alpha: Vec<F>, // Also corresponds to the accumulator when the operation is `EvalPoint`.
     pub alpha_index: u32,
-    pub x: Vec<F>,
-    pub x_index: u32,
-    pub z: Vec<F>,
-    pub z_index: u32,
-    pub pow_at_x: Vec<F>,
+    pub pow_at_x: Vec<F>, // Also corresponds to `g_pow` when the operation is `EvalPoint`.
     pub pow_at_x_index: u32,
-    pub pow_at_z: Vec<F>,
+    pub pow_at_z: Vec<F>, // The first column also corresponds to `g_pow` when the operation is `EvalPoint`.
     pub pow_at_z_index: u32,
     pub ro_index: u32,
     pub is_last: bool,
+    pub is_real: bool,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct OpenInputTrace<F> {
+    pub op_type: NonPrimitiveOpType,
     pub rows: Vec<OpenInputRow<F>>,
 }
 
-#[derive(Debug, Clone, Default)]
+impl<F: Clone + Send + Sync + 'static> NonPrimitiveTrace<F> for OpenInputTrace<F> {
+    fn op_type(&self) -> NonPrimitiveOpType {
+        self.op_type
+    }
+
+    fn rows(&self) -> usize {
+        self.rows.len()
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn boxed_clone(&self) -> Box<dyn NonPrimitiveTrace<F>> {
+        Box::new(self.clone())
+    }
+}
+
+#[derive(Default, Debug, Clone)]
 pub struct OpenInputState<F> {
     pub last_ro: Option<F>,
     pub last_alpha_pow: Option<F>,
-    pub trace: OpenInputTrace<F>,
+    pub rows: Vec<OpenInputRow<F>>,
 }
 
 impl<F: Field> OpExecutionState for OpenInputState<F> {
@@ -60,10 +82,6 @@ impl OpenInputExecutor {
             op_type: NonPrimitiveOpType::OpenInput,
             is_last: false,
         }
-    }
-
-    fn set_is_last(&mut self, is_last: bool) {
-        self.is_last = is_last;
     }
 }
 
@@ -98,17 +116,15 @@ impl<F: Field> NonPrimitiveExecutor<F> for OpenInputExecutor {
             .collect::<Result<Vec<_>, CircuitError>>()?;
 
         let alpha = &inps_and_indices[0];
-        let x = &inps_and_indices[1];
-        let z = &inps_and_indices[2];
-        let p_at_x = &inps_and_indices[3];
-        let p_at_z = &inps_and_indices[4];
+        let p_at_x = &inps_and_indices[1];
+        let p_at_z = &inps_and_indices[2];
 
         // Compute the next `alpha_pow` and `ro` values.
         let state = ctx.get_op_state_mut::<OpenInputState<F>>(&self.op_type);
         let alpha_pow = state.last_alpha_pow.unwrap_or(alpha.0);
         let new_alpha_pow = alpha.0 * alpha_pow;
         let ro = state.last_ro.unwrap_or(F::ZERO);
-        let new_ro = ro + alpha_pow * (p_at_z.0 - p_at_x.0) / (z.0 - x.0);
+        let new_ro = ro + alpha_pow * (p_at_z.0 - p_at_x.0);
 
         let output_index = if self.is_last {
             assert_eq!(outputs.len(), 1);
@@ -120,23 +136,20 @@ impl<F: Field> NonPrimitiveExecutor<F> for OpenInputExecutor {
 
         state.last_alpha_pow = Some(new_alpha_pow);
         state.last_ro = Some(new_ro);
-        state.trace.rows.push(OpenInputRow {
+        state.rows.push(OpenInputRow {
             alpha: vec![alpha.0],
             alpha_index: alpha.1,
-            x: vec![x.0],
-            x_index: x.1,
-            z: vec![z.0],
-            z_index: z.1,
             pow_at_x: vec![p_at_x.0],
             pow_at_x_index: p_at_x.1,
             pow_at_z: vec![p_at_z.0],
             pow_at_z_index: p_at_z.1,
             ro_index: output_index,
             is_last: self.is_last,
+            is_real: true,
         });
 
         // Update the witness values in the context.
-        // There only are outputs if last is true. And then we only need the last ro.
+        // There only are outputs if last is true. And in that case, we only need to set the value of the last ro.
         if self.is_last {
             assert_eq!(outputs.len(), 1);
             assert_eq!(outputs[0].len(), 1);
@@ -164,6 +177,15 @@ impl<F: Field> NonPrimitiveExecutor<F> for OpenInputExecutor {
     ) -> Result<(), CircuitError> {
         // We need to preprocess indices from the inputs, as well as whether the current operation is the last one in the sequence of OpenInput operations. We only need to preprocess the output index when it's the last operation.
 
+        // Preprocess `is_last`.
+        preprocessed.register_non_primitive_preprocessed_no_read(
+            self.op_type,
+            &[F::from_u64(self.is_last as u64)],
+        );
+
+        // Preprocess `is_real`
+        preprocessed.register_non_primitive_preprocessed_no_read(self.op_type, &[F::ONE]);
+
         // Preprocess input indices.
         for inp in inputs {
             if inp.len() != 1 {
@@ -185,16 +207,97 @@ impl<F: Field> NonPrimitiveExecutor<F> for OpenInputExecutor {
             preprocessed.register_non_primitive_preprocessed_no_read(self.op_type, &[F::ZERO]);
         }
 
-        // Preprocess `is_last`.
-        preprocessed.register_non_primitive_preprocessed_no_read(
-            self.op_type,
-            &[F::from_u64(self.is_last as u64)],
-        );
-
         Ok(())
     }
 
     fn boxed(&self) -> Box<dyn NonPrimitiveExecutor<F>> {
         Box::new(self.clone())
+    }
+}
+
+pub fn generate_open_input_trace<
+    const D: usize,
+    BaseF: Field,
+    F: CircuitField + ExtensionField<BaseF>,
+>(
+    op_states: OpStateMap,
+) -> Result<Option<Box<dyn NonPrimitiveTrace<BaseF>>>, CircuitError> {
+    let op_type = NonPrimitiveOpType::OpenInput;
+
+    let Some(state) = op_states
+        .get(&op_type)
+        .and_then(|s| s.as_any().downcast_ref::<OpenInputState<F>>())
+    else {
+        return Ok(None);
+    };
+
+    if state.rows.is_empty() {
+        return Ok(None);
+    }
+
+    let operations: Vec<OpenInputRow<BaseF>> = state
+        .rows
+        .iter()
+        .map(|row| -> Result<_, CircuitError> {
+            Ok(OpenInputRow {
+                alpha: row.alpha[0].as_basis_coefficients_slice().to_vec(),
+                alpha_index: row.alpha_index,
+                pow_at_x: row.pow_at_x[0].as_basis_coefficients_slice().to_vec(),
+                pow_at_x_index: row.pow_at_x_index,
+                pow_at_z: row.pow_at_z[0].as_basis_coefficients_slice().to_vec(),
+                pow_at_z_index: row.pow_at_z_index,
+                ro_index: row.ro_index,
+                is_last: row.is_last,
+                is_real: row.is_real,
+            })
+        })
+        .collect::<Result<Vec<_>, CircuitError>>()?;
+
+    Ok(Some(Box::new(OpenInputTrace {
+        op_type,
+        rows: operations,
+    })))
+}
+
+pub struct OpenInputCall {
+    pub alpha: ExprId,
+    pub p_at_x: ExprId,
+    pub p_at_z: ExprId,
+    pub is_last: bool,
+}
+
+pub trait OpenInputOp {
+    fn add_open_input(
+        &mut self,
+        call: OpenInputCall,
+    ) -> Result<(NonPrimitiveOpId, Option<ExprId>), CircuitBuilderError>;
+}
+
+impl<F: Field> OpenInputOp for CircuitBuilder<F> {
+    fn add_open_input(
+        &mut self,
+        call: OpenInputCall,
+    ) -> Result<(NonPrimitiveOpId, Option<ExprId>), CircuitBuilderError> {
+        let op_type = NonPrimitiveOpType::OpenInput;
+        self.ensure_op_enabled(op_type)?;
+
+        let input_exprs = vec![
+            vec![call.alpha],
+            vec![call.p_at_x],
+            vec![call.p_at_z],
+            vec![call.p_at_z],
+        ];
+
+        let (op_id, _call_expr_id, outputs) = self.push_non_primitive_op_with_outputs(
+            op_type,
+            input_exprs,
+            vec![call.is_last.then_some("OpenInput output")],
+            Some(NonPrimitiveOpParams::OpenInput {
+                is_last: call.is_last,
+            }),
+            "open_input",
+        );
+
+        Ok((op_id, outputs[0]))
     }
 }

@@ -5,6 +5,7 @@ use alloc::{format, vec};
 use core::iter;
 
 use p3_circuit::op::Poseidon2Config;
+use p3_circuit::ops::open_input::{OpenInputCall, OpenInputOp};
 use p3_circuit::{CircuitBuilder, NonPrimitiveOpId};
 use p3_field::coset::TwoAdicMultiplicativeCoset;
 use p3_field::{BasedVectorSpace, ExtensionField, Field, PrimeField64, TwoAdicField};
@@ -813,25 +814,36 @@ fn compute_single_reduced_opening<EF: Field>(
 {
     builder.push_scope("compute_single_reduced_opening");
 
-    let mut reduced_opening = builder.add_const(EF::ZERO);
+    let mut reduced_opening = None;
     let mut current_alpha_pow = alpha_pow;
 
-    for (&p_at_x, &p_at_z) in opened_values.iter().zip(point_values.iter()) {
+    let n = point_values.len();
+
+    for (p_idx, (&p_at_x, &p_at_z)) in opened_values.iter().zip(point_values.iter()).enumerate() {
         // diff = p_at_z - p_at_x
-        let diff = builder.sub(p_at_z, p_at_x);
+        // let diff = builder.sub(p_at_z, p_at_x);
 
-        // term = alpha_pow * diff
-        let alpha_diff = builder.mul(current_alpha_pow, diff);
+        let open_input_call = OpenInputCall {
+            alpha,
+            p_at_x,
+            p_at_z,
+            is_last: p_idx == n - 1,
+        };
+        let (_, ro) = builder.add_open_input(open_input_call).unwrap();
+        reduced_opening = ro;
 
-        reduced_opening = builder.add(reduced_opening, alpha_diff);
+        // // term = alpha_pow * diff
+        // let alpha_diff = builder.mul(current_alpha_pow, diff);
 
-        // advance alpha power for the *next column in this height*
+        // reduced_opening = builder.add(reduced_opening, alpha_diff);
+
+        // // advance alpha power for the *next column in this height*
         current_alpha_pow = builder.mul(current_alpha_pow, alpha);
     }
 
     // Apply division by (z - x) once at the end: reduced_opening / (z - x)
     let z_minus_x = builder.sub(challenge_point, evaluation_point);
-    let reduced_opening = builder.div(reduced_opening, z_minus_x);
+    let reduced_opening = builder.div(reduced_opening.unwrap(), z_minus_x);
 
     builder.pop_scope(); // close `compute_single_reduced_opening` scope
     (current_alpha_pow, reduced_opening)

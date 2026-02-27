@@ -56,6 +56,9 @@ pub enum NonPrimitiveOpParams<F> {
         new_start: bool,
         merkle_path: bool,
     },
+    OpenInput {
+        is_last: bool,
+    },
     Unconstrained {
         executor: Box<dyn NonPrimitiveExecutor<F>>,
     },
@@ -71,6 +74,7 @@ impl<F: Field> Clone for NonPrimitiveOpParams<F> {
                 new_start: *new_start,
                 merkle_path: *merkle_path,
             },
+            Self::OpenInput { is_last } => Self::OpenInput { is_last: *is_last },
             Self::Unconstrained { executor } => Self::Unconstrained {
                 executor: executor.boxed(),
             },
@@ -121,6 +125,10 @@ where
     /// Enables a non-primitive operation type on this builder.
     pub fn enable_op(&mut self, op: NonPrimitiveOpType, cfg: crate::op::NonPrimitiveOpConfig<F>) {
         self.config.enable_op(op, cfg);
+    }
+
+    pub fn enable_open_input(&mut self) {
+        self.enable_op(NonPrimitiveOpType::OpenInput, NonPrimitiveOpConfig::None)
     }
 
     /// Enables Poseidon2 permutation operations (one perm per table row).

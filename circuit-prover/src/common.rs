@@ -1,3 +1,4 @@
+use alloc::boxed::Box;
 use alloc::collections::btree_map::BTreeMap;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -8,6 +9,7 @@ use p3_circuit::op::{
 };
 use p3_circuit::{Circuit, CircuitError, PreprocessedColumns};
 use p3_field::{ExtensionField, PrimeCharacteristicRing, PrimeField64};
+use p3_fri_air::OpenInputAir;
 use p3_uni_stark::{StarkGenericConfig, SymbolicExpression, Val};
 use p3_util::log2_ceil_usize;
 
@@ -352,6 +354,24 @@ where
                     CircuitTableAir::Dynamic(poseidon2_wrapper);
                 let num_rows = prep.len().div_ceil(width);
                 table_preps.push((poseidon2_wrapper_air, compute_degree(num_rows)));
+            }
+            NonPrimitiveOpType::OpenInput => {
+                let prep_base = prep
+                    .iter()
+                    .map(|v| v.as_base().ok_or(CircuitError::InvalidPreprocessedValues))
+                    .collect::<Result<Vec<_>, CircuitError>>()?;
+                non_primitive_base.insert(*op_type, prep_base.clone());
+                let open_input_air = OpenInputAir::<Val<SC>, D>::new_with_preprocessed(
+                    w_binomial.unwrap(), // TODO Linda: case base field VS Extension field
+                    prep_base,
+                )
+                .with_min_height(min_height);
+                let num_rows = prep
+                    .len()
+                    .div_ceil(OpenInputAir::<Val<SC>, D>::preprocessed_width());
+                let open_input_wrapper =
+                    CircuitTableAir::Dynamic(DynamicAirEntry::new(Box::new(open_input_air)));
+                table_preps.push((open_input_wrapper, compute_degree(num_rows)));
             }
             // Unconstrained operations do not use tables
             NonPrimitiveOpType::Unconstrained => {}
