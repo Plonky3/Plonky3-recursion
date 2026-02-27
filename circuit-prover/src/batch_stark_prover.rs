@@ -11,7 +11,7 @@ use p3_air::DebugConstraintBuilder;
 use p3_air::{Air, AirBuilder, BaseAir};
 use p3_batch_stark::{BatchProof, CommonData, ProverData, StarkGenericConfig, StarkInstance, Val};
 use p3_circuit::PreprocessedColumns;
-use p3_circuit::op::{NonPrimitiveOpType, Poseidon2Config, PrimitiveOpType};
+use p3_circuit::op::{NpoTypeId, Poseidon2Config, PrimitiveOpType};
 use p3_circuit::tables::Traces;
 use p3_field::extension::{BinomialExtensionField, BinomiallyExtendable};
 use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing, PrimeField};
@@ -73,7 +73,7 @@ where
     SC: StarkGenericConfig,
 {
     /// Operation type (it should match `TableProver::op_type`).
-    pub op_type: NonPrimitiveOpType,
+    pub op_type: NpoTypeId,
     /// Number of logical rows produced for this table.
     pub rows: usize,
     /// Public values exposed by this table (if any).
@@ -128,8 +128,8 @@ impl<SC: StarkGenericConfig> CircuitProverData<SC> {
 ///
 /// ```ignore
 /// impl<SC> TableProver<SC> for MyPlugin {
-///     fn op_type(&self) -> NonPrimitiveOpType {
-///         NonPrimitiveOpType::Poseidon2Perm(Poseidon2Config::BabyBearD4Width16)
+///     fn op_type(&self) -> NpoTypeId {
+///         NpoTypeId::Poseidon2Perm(Poseidon2Config::BabyBearD4Width16)
 ///     }
 ///
 ///     impl_table_prover_batch_instances_from_base!(batch_instance_base);
@@ -316,7 +316,7 @@ pub enum BatchStarkProverError {
     Verify(String),
 
     #[error("missing table prover for non-primitive op `{0:?}`")]
-    MissingTableProver(NonPrimitiveOpType),
+    MissingTableProver(NpoTypeId),
 }
 
 impl<SC, const D: usize> BaseAir<Val<SC>> for CircuitTableAir<SC, D>
@@ -635,16 +635,16 @@ where
 
         // We first handle all non-primitive tables dynamically, which will then be batched alongside primitive ones.
         // Each trace must have a corresponding registered prover for it to be provable.
-        for (&op_type, trace) in &traces.non_primitive_traces {
+        for (op_type, trace) in &traces.non_primitive_traces {
             if trace.rows() == 0 {
                 continue;
             }
             if !self
                 .non_primitive_provers
                 .iter()
-                .any(|p| p.op_type() == op_type)
+                .any(|p| p.op_type().as_str() == op_type.as_str())
             {
-                return Err(BatchStarkProverError::MissingTableProver(op_type));
+                return Err(BatchStarkProverError::MissingTableProver(op_type.clone()));
             }
         }
 
@@ -784,7 +784,12 @@ where
             // Hence, we override with the committed preprocessed data so the debug
             // lookup check is consistent with the committed preprocessed trace.
             for (j, instance) in non_primitives.iter().enumerate() {
-                if let NonPrimitiveOpType::Poseidon2Perm(cfg) = instance.op_type
+                if instance.op_type.as_str().starts_with("poseidon2_perm/")
+                    && let Some(cfg) = instance
+                        .op_type
+                        .as_str()
+                        .strip_prefix("poseidon2_perm/")
+                        .and_then(Poseidon2Config::from_variant_name)
                     && let Some(committed_prep) = non_primitive.get(&instance.op_type)
                 {
                     let poseidon2_prover = Poseidon2Prover::new(cfg, ConstraintProfile::Standard);

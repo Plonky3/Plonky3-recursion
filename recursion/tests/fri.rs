@@ -739,7 +739,7 @@ fn run_fri_test_with_mmcs(setup: FriSetup) {
                 runner
                     .set_private_data(
                         mmcs_op_ids[op_idx],
-                        p3_circuit::NonPrimitiveOpPrivateData::Poseidon2Perm(
+                        p3_circuit::NonPrimitiveOpPrivateData::new(
                             p3_circuit::ops::Poseidon2PermPrivateData { sibling },
                         ),
                     )
@@ -773,7 +773,7 @@ fn run_fri_test_with_mmcs(setup: FriSetup) {
                     runner
                         .set_private_data(
                             mmcs_op_ids[op_idx],
-                            p3_circuit::NonPrimitiveOpPrivateData::Poseidon2Perm(
+                            p3_circuit::NonPrimitiveOpPrivateData::new(
                                 p3_circuit::ops::Poseidon2PermPrivateData { sibling },
                             ),
                         )

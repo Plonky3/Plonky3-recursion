@@ -1,7 +1,7 @@
 use std::error::Error;
 
 use p3_batch_stark::ProverData;
-use p3_circuit::op::{NonPrimitiveOpPrivateData, NonPrimitiveOpType};
+use p3_circuit::op::{NonPrimitiveOpPrivateData, NpoTypeId};
 use p3_circuit::ops::{Poseidon2PermPrivateData, generate_poseidon2_trace};
 use p3_circuit::{CircuitBuilder, ExprId, Poseidon2PermOps};
 use p3_circuit_prover::common::{NonPrimitiveConfig, get_airs_and_degrees_with_prep};
@@ -238,7 +238,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     // For Merkle mode, provide the sibling (2 limbs). Internal logic handles placement.
     runner.set_private_data(
         row1_op_id,
-        NonPrimitiveOpPrivateData::Poseidon2Perm(Poseidon2PermPrivateData {
+        NonPrimitiveOpPrivateData::new(Poseidon2PermPrivateData {
             sibling: [sibling1_limb2, sibling1_limb3],
         }),
     )?;
@@ -248,7 +248,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     // For Merkle mode, provide the sibling (2 limbs). Internal logic handles placement.
     runner.set_private_data(
         row2_op_id,
-        NonPrimitiveOpPrivateData::Poseidon2Perm(Poseidon2PermPrivateData {
+        NonPrimitiveOpPrivateData::new(Poseidon2PermPrivateData {
             sibling: [sibling2_limb2, sibling2_limb3],
         }),
     )?;
@@ -257,9 +257,9 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Check Poseidon2 trace rows and mmcs_index_sum exposure
     let poseidon2_trace = traces
-        .non_primitive_trace::<p3_circuit::ops::Poseidon2Trace<Base>>(
-            NonPrimitiveOpType::Poseidon2Perm(Poseidon2Config::KoalaBearD4Width16),
-        )
+        .non_primitive_trace::<p3_circuit::ops::Poseidon2Trace<Base>>(&NpoTypeId::poseidon2_perm(
+            Poseidon2Config::KoalaBearD4Width16,
+        ))
         .expect("poseidon2 trace missing");
     assert_eq!(poseidon2_trace.total_rows(), 3, "expected three perm rows");
 

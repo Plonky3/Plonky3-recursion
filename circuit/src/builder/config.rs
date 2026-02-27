@@ -1,29 +1,21 @@
 use hashbrown::HashMap;
 
-use crate::op::{NonPrimitiveOpConfig, NonPrimitiveOpType};
+use crate::op::{NpoConfig, NpoTypeId};
 
 /// Configuration for the circuit builder.
 #[derive(Debug)]
-pub struct BuilderConfig<F> {
+pub struct BuilderConfig {
     /// Enabled non-primitive operation types with their respective configuration.
-    enabled_ops: HashMap<NonPrimitiveOpType, NonPrimitiveOpConfig<F>>,
+    enabled_ops: HashMap<NpoTypeId, NpoConfig>,
 }
 
-impl<F> Default for BuilderConfig<F> {
+impl Default for BuilderConfig {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<F> Clone for BuilderConfig<F> {
-    fn clone(&self) -> Self {
-        Self {
-            enabled_ops: self.enabled_ops.clone(),
-        }
-    }
-}
-
-impl<F> BuilderConfig<F> {
+impl BuilderConfig {
     /// Creates a new builder configuration.
     pub fn new() -> Self {
         Self {
@@ -32,53 +24,49 @@ impl<F> BuilderConfig<F> {
     }
 
     /// Enables a non-primitive operation type with its configuration.
-    pub fn enable_op(&mut self, op: NonPrimitiveOpType, cfg: NonPrimitiveOpConfig<F>) {
+    pub fn enable_op(&mut self, op: NpoTypeId, cfg: NpoConfig) {
         self.enabled_ops.insert(op, cfg);
     }
 
     /// Checks whether an operation type is enabled.
-    pub fn is_op_enabled(&self, op: &NonPrimitiveOpType) -> bool {
+    pub fn is_op_enabled(&self, op: &NpoTypeId) -> bool {
         self.enabled_ops.contains_key(op)
     }
 
     /// Gets the configuration for an operation type, if enabled.
-    pub fn get_op_config(&self, op: &NonPrimitiveOpType) -> Option<&NonPrimitiveOpConfig<F>> {
+    pub fn get_op_config(&self, op: &NpoTypeId) -> Option<&NpoConfig> {
         self.enabled_ops.get(op)
     }
 
     /// Consumes the config and returns the enabled operations map.
-    pub fn into_enabled_ops(self) -> HashMap<NonPrimitiveOpType, NonPrimitiveOpConfig<F>> {
+    pub fn into_enabled_ops(self) -> HashMap<NpoTypeId, NpoConfig> {
         self.enabled_ops
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use p3_baby_bear::BabyBear;
-
     use super::*;
     use crate::op::Poseidon2Config;
 
-    type F = BabyBear;
-
     #[test]
     fn test_builder_config_default() {
-        let config = BuilderConfig::<F>::default();
-        assert!(!config.is_op_enabled(&NonPrimitiveOpType::Poseidon2Perm(
+        let config = BuilderConfig::default();
+        assert!(!config.is_op_enabled(&NpoTypeId::poseidon2_perm(
             Poseidon2Config::BabyBearD4Width16,
         )));
     }
 
     #[test]
     fn test_builder_config_enable_op() {
-        let mut config = BuilderConfig::<F>::new();
+        let mut config = BuilderConfig::new();
 
         config.enable_op(
-            NonPrimitiveOpType::Poseidon2Perm(Poseidon2Config::BabyBearD4Width16),
-            NonPrimitiveOpConfig::None,
+            NpoTypeId::poseidon2_perm(Poseidon2Config::BabyBearD4Width16),
+            NpoConfig::new(()),
         );
 
-        assert!(config.is_op_enabled(&NonPrimitiveOpType::Poseidon2Perm(
+        assert!(config.is_op_enabled(&NpoTypeId::poseidon2_perm(
             Poseidon2Config::BabyBearD4Width16,
         )));
     }

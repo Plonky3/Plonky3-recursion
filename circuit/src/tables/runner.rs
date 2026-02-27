@@ -13,7 +13,7 @@ use super::public::PublicTraceBuilder;
 use super::witness::WitnessTrace;
 use super::{NonPrimitiveTrace, Traces};
 use crate::circuit::Circuit;
-use crate::op::{ExecutionContext, NonPrimitiveOpPrivateData, NonPrimitiveOpType, Op, OpStateMap};
+use crate::op::{ExecutionContext, NpoPrivateData, NpoTypeId, Op, OpStateMap};
 use crate::types::{NonPrimitiveOpId, WitnessId};
 use crate::{AluOpKind, CircuitError, CircuitField};
 
@@ -24,7 +24,7 @@ pub struct CircuitRunner<F> {
     /// Witness values (None = unset, Some = computed).
     witness: Vec<Option<F>>,
     /// Private data for non-primitive operations (not on witness bus)
-    non_primitive_op_private_data: Vec<Option<NonPrimitiveOpPrivateData<F>>>,
+    non_primitive_op_private_data: Vec<Option<NpoPrivateData>>,
     /// Map from NonPrimitiveOpId -> index in `circuit.ops` for type checks.
     non_primitive_op_index_by_id: Vec<Option<usize>>,
     /// Operation-specific execution state (e.g., Poseidon chaining, row records).
@@ -61,7 +61,8 @@ impl<F: CircuitField> CircuitRunner<F> {
             }
         }
 
-        let non_primitive_op_private_data = vec![None; non_primitive_op_count];
+        let non_primitive_op_private_data: Vec<Option<NpoPrivateData>> =
+            (0..non_primitive_op_count).map(|_| None).collect();
         let op_states = BTreeMap::new();
         Self {
             circuit,
@@ -96,7 +97,7 @@ impl<F: CircuitField> CircuitRunner<F> {
     pub fn set_private_data(
         &mut self,
         op_id: NonPrimitiveOpId,
-        private_data: NonPrimitiveOpPrivateData<F>,
+        private_data: NpoPrivateData,
     ) -> Result<(), CircuitError> {
         // Validate that the op_id exists in the circuit.
         if op_id.0 as usize >= self.non_primitive_op_private_data.len()
@@ -127,21 +128,15 @@ impl<F: CircuitField> CircuitRunner<F> {
                 max_ops: self.non_primitive_op_private_data.len(),
             });
         };
-        match (executor.op_type(), &private_data) {
-            (
-                crate::op::NonPrimitiveOpType::Poseidon2Perm(_),
-                NonPrimitiveOpPrivateData::Poseidon2Perm(_),
-            ) => {
-                // ok
-            }
-            // Unconstrained operations don't need private data.
-            (crate::op::NonPrimitiveOpType::Unconstrained, _) => return Ok(()),
+        // Unconstrained operations don't need private data.
+        if executor.op_type().as_str() == "unconstrained" {
+            return Ok(());
         }
 
         // Disallow double-setting private data
         if self.non_primitive_op_private_data[op_id.0 as usize].is_some() {
             return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
-                op: *executor.op_type(),
+                op: executor.op_type().clone(),
                 operation_index: op_id,
                 expected: "private data not previously set".to_string(),
                 got: "already set".to_string(),
@@ -162,7 +157,7 @@ impl<F: CircuitField> CircuitRunner<F> {
     pub fn set_private_data_by_tag(
         &mut self,
         tag: &str,
-        private_data: NonPrimitiveOpPrivateData<F>,
+        private_data: NpoPrivateData,
     ) -> Result<(), CircuitError> {
         let op_id = self.circuit.tag_to_op_id.get(tag).copied().ok_or_else(|| {
             CircuitError::UnknownTag {
@@ -209,7 +204,7 @@ impl<F: CircuitField> CircuitRunner<F> {
         let public_trace = PublicTraceBuilder::new(&self.circuit.ops, &self.witness).build()?;
         let alu_trace = AluTraceBuilder::new(&self.circuit.ops, &self.witness).build()?;
 
-        let mut non_primitive_traces: HashMap<NonPrimitiveOpType, Box<dyn NonPrimitiveTrace<F>>> =
+        let mut non_primitive_traces: HashMap<NpoTypeId, Box<dyn NonPrimitiveTrace<F>>> =
             HashMap::new();
         // Iterate over generators in deterministic order (sorted by key)
         let _scope = tracing::debug_span!("generators").entered();
@@ -406,7 +401,6 @@ mod tests {
     use tracing_subscriber::{EnvFilter, Registry};
 
     use super::*;
-    use crate::NonPrimitiveOpType;
     use crate::builder::CircuitBuilder;
     use crate::op::NonPrimitiveExecutor;
     use crate::types::WitnessId;
@@ -458,11 +452,15 @@ mod tests {
 
     #[derive(Debug, Clone)]
     /// The hint defined by x in an equation a*x - b = 0
-    struct XHint {}
+    struct XHint {
+        op_type: NpoTypeId,
+    }
 
     impl XHint {
         pub fn new() -> Self {
-            Self {}
+            Self {
+                op_type: NpoTypeId::unconstrained(),
+            }
         }
     }
 
@@ -481,8 +479,8 @@ mod tests {
             Ok(())
         }
 
-        fn op_type(&self) -> &NonPrimitiveOpType {
-            &NonPrimitiveOpType::Unconstrained
+        fn op_type(&self) -> &NpoTypeId {
+            &self.op_type
         }
 
         fn as_any(&self) -> &dyn core::any::Any {
@@ -619,7 +617,7 @@ mod tests {
 
         let result = runner.set_private_data_by_tag(
             "nonexistent-tag",
-            crate::op::NonPrimitiveOpPrivateData::Poseidon2Perm(private_data),
+            crate::op::NpoPrivateData::new(private_data),
         );
 
         assert!(matches!(

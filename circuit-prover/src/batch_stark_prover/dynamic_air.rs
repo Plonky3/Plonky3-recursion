@@ -6,7 +6,7 @@ use alloc::vec::Vec;
 use p3_air::DebugConstraintBuilder;
 use p3_air::{Air, AirBuilder, BaseAir};
 use p3_batch_stark::{StarkGenericConfig, Val};
-use p3_circuit::op::NonPrimitiveOpType;
+use p3_circuit::op::NpoTypeId;
 use p3_circuit::tables::Traces;
 use p3_field::PrimeField;
 use p3_field::extension::BinomialExtensionField;
@@ -325,7 +325,7 @@ where
     SC: StarkGenericConfig,
 {
     /// Operation type (it should match `TableProver::op_type`).
-    pub op_type: NonPrimitiveOpType,
+    pub op_type: NpoTypeId,
     /// The AIR implementation for this table.
     pub air: DynamicAirEntry<SC>,
     /// The populated trace matrix for this table.
@@ -364,7 +364,7 @@ where
     SC: StarkGenericConfig + 'static,
 {
     /// Operation type for this prover.
-    fn op_type(&self) -> NonPrimitiveOpType;
+    fn op_type(&self) -> NpoTypeId;
 
     /// Produce a batched table instance for base-field traces.
     fn batch_instance_d1(

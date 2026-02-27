@@ -9,7 +9,7 @@ use p3_field::Field;
 use strum::EnumCount;
 
 use crate::op::{
-    NonPrimitiveOpConfig, NonPrimitiveOpType, NonPrimitivePreprocessedMap, Op, PrimitiveOpType,
+    NonPrimitiveOpConfig, NonPrimitivePreprocessedMap, NpoTypeId, Op, PrimitiveOpType,
 };
 use crate::tables::{CircuitRunner, TraceGeneratorFn};
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessId};
@@ -128,12 +128,8 @@ impl<F: Field> PreprocessedColumns<F> {
     /// Use this for non-primitive OUTPUTS: the table creates these witnesses on the
     /// `WitnessChecks` bus, so they are not readers. The `out_ctl` multiplicity is
     /// set separately by `get_airs_and_degrees_with_prep` based on `ext_reads`.
-    pub fn register_non_primitive_output_index(
-        &mut self,
-        op_type: NonPrimitiveOpType,
-        wids: &[WitnessId],
-    ) {
-        let entry = self.non_primitive.entry(op_type).or_default();
+    pub fn register_non_primitive_output_index(&mut self, op_type: &NpoTypeId, wids: &[WitnessId]) {
+        let entry = self.non_primitive.entry(op_type.clone()).or_default();
         let d = self.d as u32;
         let wids_field = wids.iter().map(|wid| F::from_u32(wid.0 * d));
         entry.extend(wids_field);
@@ -145,10 +141,10 @@ impl<F: Field> PreprocessedColumns<F> {
     /// Use this for non-primitive inputs that the table reads from the `WitnessChecks` bus.
     pub fn register_non_primitive_witness_reads(
         &mut self,
-        op_type: NonPrimitiveOpType,
+        op_type: &NpoTypeId,
         wids: &[WitnessId],
     ) -> Result<(), CircuitError> {
-        let entry = self.non_primitive.entry(op_type).or_default();
+        let entry = self.non_primitive.entry(op_type.clone()).or_default();
 
         let d = self.d as u32;
         let wids_field = wids.iter().map(|wid| F::from_u32(wid.0 * d));
@@ -163,7 +159,7 @@ impl<F: Field> PreprocessedColumns<F> {
     /// with a single witness index (D-scaled), and increments its ext-field read count.
     pub fn register_non_primitive_witness_read(
         &mut self,
-        op_type: NonPrimitiveOpType,
+        op_type: &NpoTypeId,
         wid: WitnessId,
     ) -> Result<(), CircuitError> {
         self.register_non_primitive_witness_reads(op_type, &[wid])
@@ -191,10 +187,10 @@ impl<F: Field> PreprocessedColumns<F> {
     /// Does not update read counts.
     pub fn register_non_primitive_preprocessed_no_read(
         &mut self,
-        op_type: NonPrimitiveOpType,
+        op_type: &NpoTypeId,
         values: &[F],
     ) {
-        let entry = self.non_primitive.entry(op_type).or_default();
+        let entry = self.non_primitive.entry(op_type.clone()).or_default();
         entry.extend(values);
     }
 }
@@ -231,13 +227,13 @@ pub struct Circuit<F> {
     /// Total number of public field elements
     pub public_flat_len: usize,
     /// Enabled non-primitive operation types with their respective configuration
-    pub enabled_ops: HashMap<NonPrimitiveOpType, NonPrimitiveOpConfig<F>>,
+    pub enabled_ops: HashMap<NpoTypeId, NonPrimitiveOpConfig>,
     /// Expression to witness index map
     pub expr_to_widx: HashMap<ExprId, WitnessId>,
     /// Registered non-primitive trace generators.
-    pub non_primitive_trace_generators: HashMap<NonPrimitiveOpType, TraceGeneratorFn<F>>,
+    pub non_primitive_trace_generators: HashMap<NpoTypeId, TraceGeneratorFn<F>>,
     /// Sorted keys of `non_primitive_trace_generators` for deterministic iteration without sorting each run.
-    pub non_primitive_trace_generator_order: Vec<NonPrimitiveOpType>,
+    pub non_primitive_trace_generator_order: Vec<NpoTypeId>,
     /// Tag to witness index mapping for probing values by name.
     pub tag_to_witness: HashMap<String, WitnessId>,
     /// Tag to non-primitive operation ID mapping.
@@ -398,31 +394,28 @@ impl<F: Field> Circuit<F> {
                     ..
                 } => {
                     executor.preprocess(inputs, outputs, &mut preprocessed)?;
-                    match executor.op_type() {
-                        NonPrimitiveOpType::Poseidon2Perm(_) => {
-                            for out_limb in outputs.iter().take(2) {
-                                for wid in out_limb {
-                                    let wid_idx = wid.0 as usize;
-                                    if wid_idx < defined.len() && defined[wid_idx] {
-                                        let dup_len = preprocessed.poseidon2_dup_wids.len();
-                                        if wid_idx >= dup_len {
-                                            preprocessed
-                                                .poseidon2_dup_wids
-                                                .resize(wid_idx + 1, false);
-                                        }
-                                        preprocessed.poseidon2_dup_wids[wid_idx] = true;
-                                        preprocessed.increment_ext_reads(&[*wid]);
-                                    } else {
-                                        if wid_idx >= defined.len() {
-                                            defined.resize(wid_idx + 1, false);
-                                        }
-                                        defined[wid_idx] = true;
+                    let op_type = executor.op_type();
+                    if op_type.as_str().starts_with("poseidon2_perm/") {
+                        for out_limb in outputs.iter().take(2) {
+                            for wid in out_limb {
+                                let wid_idx = wid.0 as usize;
+                                if wid_idx < defined.len() && defined[wid_idx] {
+                                    let dup_len = preprocessed.poseidon2_dup_wids.len();
+                                    if wid_idx >= dup_len {
+                                        preprocessed.poseidon2_dup_wids.resize(wid_idx + 1, false);
                                     }
+                                    preprocessed.poseidon2_dup_wids[wid_idx] = true;
+                                    preprocessed.increment_ext_reads(&[*wid]);
+                                } else {
+                                    if wid_idx >= defined.len() {
+                                        defined.resize(wid_idx + 1, false);
+                                    }
+                                    defined[wid_idx] = true;
                                 }
                             }
                         }
-                        NonPrimitiveOpType::Unconstrained => {}
                     }
+                    // NpoTypeId::Unconstrained and other types: no special handling
                 }
             }
         }

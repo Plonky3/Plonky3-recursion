@@ -34,10 +34,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::builder::{CircuitBuilder, NonPrimitiveOpParams};
 use crate::circuit::CircuitField;
-use crate::op::{
-    ExecutionContext, NonPrimitiveExecutor, NonPrimitiveOpConfig, NonPrimitiveOpPrivateData,
-    NonPrimitiveOpType, OpExecutionState,
-};
+use crate::op::{ExecutionContext, NonPrimitiveExecutor, NpoTypeId, OpExecutionState};
 use crate::tables::NonPrimitiveTrace;
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessId};
 use crate::{CircuitError, PreprocessedColumns};
@@ -153,6 +150,33 @@ impl Poseidon2Config {
     pub const fn width_ext(self) -> usize {
         self.rate_ext() + self.capacity_ext()
     }
+
+    /// Stable string name for this config variant, used to build `NpoTypeId`.
+    pub const fn variant_name(self) -> &'static str {
+        match self {
+            Self::BabyBearD1Width16 => "baby_bear_d1_w16",
+            Self::BabyBearD4Width16 => "baby_bear_d4_w16",
+            Self::BabyBearD4Width24 => "baby_bear_d4_w24",
+            Self::KoalaBearD1Width16 => "koala_bear_d1_w16",
+            Self::KoalaBearD4Width16 => "koala_bear_d4_w16",
+            Self::KoalaBearD4Width24 => "koala_bear_d4_w24",
+            Self::GoldilocksD2Width8 => "goldilocks_d2_w8",
+        }
+    }
+
+    /// Parse a `Poseidon2Config` from a variant name string.
+    pub fn from_variant_name(name: &str) -> Option<Self> {
+        match name {
+            "baby_bear_d1_w16" => Some(Self::BabyBearD1Width16),
+            "baby_bear_d4_w16" => Some(Self::BabyBearD4Width16),
+            "baby_bear_d4_w24" => Some(Self::BabyBearD4Width24),
+            "koala_bear_d1_w16" => Some(Self::KoalaBearD1Width16),
+            "koala_bear_d4_w16" => Some(Self::KoalaBearD4Width16),
+            "koala_bear_d4_w24" => Some(Self::KoalaBearD4Width24),
+            "goldilocks_d2_w8" => Some(Self::GoldilocksD2Width8),
+            _ => None,
+        }
+    }
 }
 
 /// Poseidon2 permutation execution closure (extension field mode).
@@ -163,6 +187,18 @@ pub type Poseidon2PermExec<F> = Arc<dyn Fn(&[F]) -> Vec<F> + Send + Sync>;
 ///
 /// The closure takes 16 base field elements and returns 16 base field elements.
 pub type Poseidon2PermExecBase<F> = Arc<dyn Fn(&[F; 16]) -> [F; 16] + Send + Sync>;
+
+/// Config data stored inside `NpoConfig` for Poseidon2 D>=2 (extension field) mode.
+pub struct Poseidon2PermConfigData<F> {
+    pub config: Poseidon2Config,
+    pub exec: Poseidon2PermExec<F>,
+}
+
+/// Config data stored inside `NpoConfig` for Poseidon2 D=1 (base field) mode.
+pub struct Poseidon2PermBaseConfigData<F> {
+    pub config: Poseidon2Config,
+    pub exec: Poseidon2PermExecBase<F>,
+}
 
 // ============================================================================
 // Private Data
@@ -326,8 +362,8 @@ where
         &mut self,
         call: Poseidon2PermCall,
     ) -> Result<(NonPrimitiveOpId, Vec<Option<ExprId>>), crate::CircuitBuilderError> {
-        let op_type = NonPrimitiveOpType::Poseidon2Perm(call.config);
-        self.ensure_op_enabled(op_type)?;
+        let op_type = NpoTypeId::poseidon2_perm(call.config);
+        self.ensure_op_enabled(&op_type)?;
         if call.merkle_path && call.mmcs_bit.is_none() {
             return Err(crate::CircuitBuilderError::Poseidon2MerkleMissingMmcsBit);
         }
@@ -388,8 +424,8 @@ where
         &mut self,
         call: Poseidon2PermCallBase,
     ) -> Result<(NonPrimitiveOpId, [Option<ExprId>; 16]), crate::CircuitBuilderError> {
-        let op_type = NonPrimitiveOpType::Poseidon2Perm(call.config);
-        self.ensure_op_enabled(op_type)?;
+        let op_type = NpoTypeId::poseidon2_perm(call.config);
+        self.ensure_op_enabled(&op_type)?;
 
         // Verify this is a D=1 configuration
         if call.config.d() != 1 {
@@ -467,15 +503,22 @@ where
 ///
 #[derive(Debug, Clone)]
 pub(crate) struct Poseidon2PermExecutor {
-    op_type: NonPrimitiveOpType,
+    op_type: NpoTypeId,
+    config: Poseidon2Config,
     pub new_start: bool,
     pub merkle_path: bool,
 }
 
 impl Poseidon2PermExecutor {
-    pub const fn new(op_type: NonPrimitiveOpType, new_start: bool, merkle_path: bool) -> Self {
+    pub const fn new(
+        op_type: NpoTypeId,
+        config: Poseidon2Config,
+        new_start: bool,
+        merkle_path: bool,
+    ) -> Self {
         Self {
             op_type,
+            config,
             new_start,
             merkle_path,
         }
@@ -489,21 +532,19 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for Poseidon2Perm
         outputs: &[Vec<WitnessId>],
         ctx: &mut ExecutionContext<'_, F>,
     ) -> Result<(), CircuitError> {
-        // Get the config to determine D value
         let config = ctx.get_config(&self.op_type)?;
 
-        let (poseidon2_config, exec) = match config {
-            NonPrimitiveOpConfig::Poseidon2PermBase { exec, .. } => {
-                return self.execute_base(inputs, outputs, ctx, &Arc::clone(exec));
-            }
-            NonPrimitiveOpConfig::Poseidon2Perm {
-                config: poseidon2_config,
-                exec,
-            } => (*poseidon2_config, Arc::clone(exec)),
-            NonPrimitiveOpConfig::None => {
-                return Err(CircuitError::InvalidNonPrimitiveOpConfiguration { op: self.op_type });
-            }
-        };
+        if let Some(base_cfg) = config.downcast_ref::<Poseidon2PermBaseConfigData<F>>() {
+            return self.execute_base(inputs, outputs, ctx, &Arc::clone(&base_cfg.exec));
+        }
+
+        let ext_cfg = config
+            .downcast_ref::<Poseidon2PermConfigData<F>>()
+            .ok_or_else(|| CircuitError::InvalidNonPrimitiveOpConfiguration {
+                op: self.op_type.clone(),
+            })?;
+        let poseidon2_config = ext_cfg.config;
+        let exec = Arc::clone(&ext_cfg.exec);
 
         let width_ext = poseidon2_config.width_ext();
         let rate_ext = poseidon2_config.rate_ext();
@@ -511,7 +552,7 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for Poseidon2Perm
 
         if inputs.len() != expected_inputs {
             return Err(CircuitError::NonPrimitiveOpLayoutMismatch {
-                op: self.op_type,
+                op: self.op_type.clone(),
                 expected: format!("{expected_inputs} input vectors"),
                 got: inputs.len(),
             });
@@ -519,7 +560,7 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for Poseidon2Perm
         for limb_inputs in inputs[..width_ext].iter() {
             if limb_inputs.len() > 1 {
                 return Err(CircuitError::NonPrimitiveOpLayoutMismatch {
-                    op: self.op_type,
+                    op: self.op_type.clone(),
                     expected: "0 or 1 witness per input limb (extension-only)".to_string(),
                     got: limb_inputs.len(),
                 });
@@ -527,39 +568,42 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for Poseidon2Perm
         }
         if inputs[width_ext].len() > 1 {
             return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
-                op: self.op_type,
+                op: self.op_type.clone(),
                 expected: "0 or 1 element for mmcs_index_sum".to_string(),
                 got: inputs[width_ext].len(),
             });
         }
         if inputs[width_ext + 1].len() > 1 {
             return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
-                op: self.op_type,
+                op: self.op_type.clone(),
                 expected: "0 or 1 element for mmcs_bit".to_string(),
                 got: inputs[width_ext + 1].len(),
             });
         }
         if outputs.len() != rate_ext && outputs.len() != width_ext {
             return Err(CircuitError::NonPrimitiveOpLayoutMismatch {
-                op: self.op_type,
+                op: self.op_type.clone(),
                 expected: format!("{rate_ext} or {width_ext} output vectors"),
                 got: outputs.len(),
             });
         }
 
-        // Get private data if available and validate usage rules.
         let private_inputs: Option<&[F]> = match ctx.get_private_data() {
-            Ok(NonPrimitiveOpPrivateData::Poseidon2Perm(data)) => {
-                if !self.merkle_path {
-                    return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
-                        op: self.op_type,
-                        operation_index: ctx.operation_id(),
-                        expected: "no private data (only Merkle mode accepts private data)"
-                            .to_string(),
-                        got: "private data provided for non-Merkle operation".to_string(),
-                    });
+            Ok(private_data) => {
+                if let Some(data) = private_data.downcast_ref::<Poseidon2PermPrivateData<F, 2>>() {
+                    if !self.merkle_path {
+                        return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
+                            op: self.op_type.clone(),
+                            operation_index: ctx.operation_id(),
+                            expected: "no private data (only Merkle mode accepts private data)"
+                                .to_string(),
+                            got: "private data provided for non-Merkle operation".to_string(),
+                        });
+                    }
+                    Some(&data.sibling[..])
+                } else {
+                    None
                 }
-                Some(&data.sibling[..])
             }
             Err(_) => None,
         };
@@ -571,7 +615,7 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for Poseidon2Perm
                 v if v == F::ONE => true,
                 v => {
                     return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
-                        op: self.op_type,
+                        op: self.op_type.clone(),
                         operation_index: ctx.operation_id(),
                         expected: "boolean mmcs_bit (0 or 1)".into(),
                         got: format!("{v:?}"),
@@ -580,7 +624,7 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for Poseidon2Perm
             }
         } else if self.merkle_path {
             return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
-                op: self.op_type,
+                op: self.op_type.clone(),
                 operation_index: ctx.operation_id(),
                 expected: "mmcs_bit must be provided when merkle_path=true".into(),
                 got: "missing mmcs_bit".into(),
@@ -673,7 +717,7 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for Poseidon2Perm
                 ctx.set_witness(wid, output[out_idx])?;
             } else if !out_slot.is_empty() {
                 return Err(CircuitError::NonPrimitiveOpLayoutMismatch {
-                    op: self.op_type,
+                    op: self.op_type.clone(),
                     expected: "0 or 1 witness per output limb".to_string(),
                     got: out_slot.len(),
                 });
@@ -710,7 +754,7 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for Poseidon2Perm
         Ok(())
     }
 
-    fn op_type(&self) -> &NonPrimitiveOpType {
+    fn op_type(&self) -> &NpoTypeId {
         &self.op_type
     }
 
@@ -724,10 +768,7 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for Poseidon2Perm
         outputs: &[Vec<WitnessId>],
         preprocessed: &mut PreprocessedColumns<F>,
     ) -> Result<(), CircuitError> {
-        let config = match &self.op_type {
-            NonPrimitiveOpType::Poseidon2Perm(c) => *c,
-            _ => return Err(CircuitError::InvalidNonPrimitiveOpConfiguration { op: self.op_type }),
-        };
+        let config = self.config;
         let width_ext = config.width_ext();
         let rate_ext = config.rate_ext();
 
@@ -735,7 +776,7 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for Poseidon2Perm
             if inp.is_empty() {
                 // Private input
                 preprocessed.register_non_primitive_preprocessed_no_read(
-                    self.op_type,
+                    &self.op_type,
                     &[F::ZERO, F::ZERO], // in_idx, in_ctl
                 );
             } else {
@@ -747,15 +788,15 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for Poseidon2Perm
                 if self.merkle_path {
                     // Don't update multiplicities - just register the D-scaled index
                     preprocessed.register_non_primitive_preprocessed_no_read(
-                        self.op_type,
+                        &self.op_type,
                         &[preprocessed.witness_index_as_field(inp[0])],
                     );
                 } else {
                     // Register the witness read (updates multiplicities)
-                    preprocessed.register_non_primitive_witness_reads(self.op_type, inp)?;
+                    preprocessed.register_non_primitive_witness_reads(&self.op_type, inp)?;
                 }
                 // Add in_ctl value
-                preprocessed.register_non_primitive_preprocessed_no_read(self.op_type, &[F::ONE]);
+                preprocessed.register_non_primitive_preprocessed_no_read(&self.op_type, &[F::ONE]);
             }
             let normal_chain_sel =
                 if !self.new_start && !self.merkle_path && inputs[limb_idx].is_empty() {
@@ -765,7 +806,7 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for Poseidon2Perm
                 };
 
             preprocessed
-                .register_non_primitive_preprocessed_no_read(self.op_type, &[normal_chain_sel]);
+                .register_non_primitive_preprocessed_no_read(&self.op_type, &[normal_chain_sel]);
 
             let merkle_chain_sel =
                 if !self.new_start && self.merkle_path && inputs[limb_idx].is_empty() {
@@ -774,14 +815,14 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for Poseidon2Perm
                     F::ZERO
                 };
             preprocessed
-                .register_non_primitive_preprocessed_no_read(self.op_type, &[merkle_chain_sel]);
+                .register_non_primitive_preprocessed_no_read(&self.op_type, &[merkle_chain_sel]);
         }
 
         for out in outputs.iter().take(rate_ext) {
             if out.is_empty() {
                 // Private output
                 preprocessed.register_non_primitive_preprocessed_no_read(
-                    self.op_type,
+                    &self.op_type,
                     &[F::ZERO, F::ZERO], // out_idx, out_ctl
                 );
             } else {
@@ -789,16 +830,16 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for Poseidon2Perm
                 // Do NOT increment ext_reads here; Poseidon2 is the CREATOR of this witness,
                 // not a reader. The out_ctl multiplicity (+N_reads) is computed in
                 // get_airs_and_degrees_with_prep based on how many other tables read this witness.
-                preprocessed.register_non_primitive_output_index(self.op_type, out);
+                preprocessed.register_non_primitive_output_index(&self.op_type, out);
                 // Add out_ctl value (placeholder 1; overwritten in get_airs_and_degrees_with_prep).
-                preprocessed.register_non_primitive_preprocessed_no_read(self.op_type, &[F::ONE]);
+                preprocessed.register_non_primitive_preprocessed_no_read(&self.op_type, &[F::ONE]);
             }
         }
         if inputs[width_ext].is_empty() {
-            preprocessed.register_non_primitive_preprocessed_no_read(self.op_type, &[F::ZERO]);
+            preprocessed.register_non_primitive_preprocessed_no_read(&self.op_type, &[F::ZERO]);
         } else {
             preprocessed.register_non_primitive_preprocessed_no_read(
-                self.op_type,
+                &self.op_type,
                 &[preprocessed.witness_index_as_field(inputs[width_ext][0])],
             );
         }
@@ -809,13 +850,14 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for Poseidon2Perm
         } else {
             F::ZERO
         };
-        preprocessed.register_non_primitive_preprocessed_no_read(self.op_type, &[mmcs_merkle_flag]);
+        preprocessed
+            .register_non_primitive_preprocessed_no_read(&self.op_type, &[mmcs_merkle_flag]);
 
         // We need to insert `new_start` and `merkle_path` as well.
         let new_start_val = if self.new_start { F::ONE } else { F::ZERO };
         let merkle_path_val = if self.merkle_path { F::ONE } else { F::ZERO };
         preprocessed.register_non_primitive_preprocessed_no_read(
-            self.op_type,
+            &self.op_type,
             &[new_start_val, merkle_path_val],
         );
 
@@ -840,7 +882,7 @@ impl Poseidon2PermExecutor {
         // Output layout: [out0, ..., out7] (rate) or [out0, ..., out15] (with capacity)
         if inputs.len() != 16 {
             return Err(CircuitError::NonPrimitiveOpLayoutMismatch {
-                op: self.op_type,
+                op: self.op_type.clone(),
                 expected: "16 input vectors for D=1 mode".to_string(),
                 got: inputs.len(),
             });
@@ -848,7 +890,7 @@ impl Poseidon2PermExecutor {
         for (i, inp) in inputs.iter().enumerate() {
             if inp.len() > 1 {
                 return Err(CircuitError::NonPrimitiveOpLayoutMismatch {
-                    op: self.op_type,
+                    op: self.op_type.clone(),
                     expected: format!("0 or 1 witness per input element {}", i),
                     got: inp.len(),
                 });
@@ -857,7 +899,7 @@ impl Poseidon2PermExecutor {
         // Support 8 outputs (rate only) or 16 outputs (with capacity)
         if outputs.len() != 8 && outputs.len() != 16 {
             return Err(CircuitError::NonPrimitiveOpLayoutMismatch {
-                op: self.op_type,
+                op: self.op_type.clone(),
                 expected: "8 or 16 output vectors for D=1 mode".to_string(),
                 got: outputs.len(),
             });
@@ -932,7 +974,7 @@ impl Poseidon2PermExecutor {
                 ctx.set_witness(wid, output[out_idx])?;
             } else if !out_slot.is_empty() {
                 return Err(CircuitError::NonPrimitiveOpLayoutMismatch {
-                    op: self.op_type,
+                    op: self.op_type.clone(),
                     expected: "0 or 1 witness per output element".to_string(),
                     got: out_slot.len(),
                 });
@@ -1131,7 +1173,7 @@ pub struct Poseidon2CircuitRow<F> {
 #[derive(Debug, Clone)]
 pub struct Poseidon2Trace<F> {
     /// Operation type for this Poseidon2 trace.
-    pub op_type: NonPrimitiveOpType,
+    pub op_type: NpoTypeId,
     /// All Poseidon2 operations (permutation rows) in this trace.
     pub operations: Vec<Poseidon2CircuitRow<F>>,
 }
@@ -1143,8 +1185,8 @@ impl<F> Poseidon2Trace<F> {
 }
 
 impl<TraceF: Clone + Send + Sync + 'static, CF> NonPrimitiveTrace<CF> for Poseidon2Trace<TraceF> {
-    fn op_type(&self) -> NonPrimitiveOpType {
-        self.op_type
+    fn op_type(&self) -> NpoTypeId {
+        self.op_type.clone()
     }
 
     fn rows(&self) -> usize {
@@ -1177,7 +1219,7 @@ pub fn generate_poseidon2_trace<
 >(
     op_states: &crate::op::OpStateMap,
 ) -> Result<Option<Box<dyn NonPrimitiveTrace<F>>>, CircuitError> {
-    let op_type = NonPrimitiveOpType::Poseidon2Perm(Config::CONFIG);
+    let op_type = NpoTypeId::poseidon2_perm(Config::CONFIG);
     let Some(state) = op_states
         .get(&op_type)
         .and_then(|s| s.as_any().downcast_ref::<Poseidon2ExecutionState<F>>())
@@ -1217,7 +1259,7 @@ pub fn generate_poseidon2_trace<
 
             let mmcs_index_sum = row.mmcs_index_sum.as_base().ok_or_else(|| {
                 CircuitError::IncorrectNonPrimitiveOpPrivateData {
-                    op: op_type,
+                    op: op_type.clone(),
                     operation_index: NonPrimitiveOpId(row_index as u32),
                     expected: "base field mmcs_index_sum".to_string(),
                     got: "extension value".to_string(),
