@@ -1,6 +1,7 @@
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use alloc::{format, vec};
 use core::any::Any;
@@ -15,7 +16,7 @@ use strum_macros::EnumCount;
 // Re-export Poseidon2 config types from their canonical location
 pub use crate::ops::poseidon2_perm::{Poseidon2Config, Poseidon2PermExec, Poseidon2PermExecBase};
 use crate::types::{NonPrimitiveOpId, WitnessId};
-use crate::{CircuitError, PreprocessedColumns};
+use crate::{CircuitError, NpoCircuitPlugin, PreprocessedColumns};
 
 /// ALU operation kinds for the unified arithmetic table.
 ///
@@ -412,6 +413,8 @@ impl core::fmt::Display for NpoTypeId {
 /// Preprocessed data for non-primitive tables, keyed by operation type.
 pub type NonPrimitivePreprocessedMap<F> = HashMap<NpoTypeId, Vec<F>>;
 
+/// Registry of NPO plugins, keyed by type ID.
+pub type NpoRegistry<F> = HashMap<NpoTypeId, Arc<dyn NpoCircuitPlugin<F>>>;
 /// Type-erased, plugin-owned configuration for a non-primitive operation.
 ///
 /// Each NPO plugin both produces and consumes its own typed data through

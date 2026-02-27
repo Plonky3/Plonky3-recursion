@@ -3,7 +3,6 @@ use alloc::string::{String, ToString as _};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use alloc::{format, vec};
-use core::any::Any;
 use core::hash::Hash;
 use core::marker::PhantomData;
 
@@ -17,8 +16,8 @@ use super::OpCounts;
 use super::compiler::{ExpressionLowerer, Optimizer};
 use super::{BuilderConfig, ExpressionBuilder, PublicInputTracker};
 use crate::circuit::Circuit;
-use crate::op::{HintExecutor, NpoConfig, NpoTypeId, Op};
-use crate::ops::poseidon2_perm::{Poseidon2PermBaseConfigData, Poseidon2PermConfigData};
+use crate::op::{HintExecutor, NpoConfig, NpoRegistry, NpoTypeId, Op, Poseidon2Config};
+use crate::ops::poseidon2_perm::Poseidon2CircuitPlugin;
 use crate::ops::{Poseidon2Params, Poseidon2PermCall, Poseidon2PermCallBase};
 use crate::tables::TraceGeneratorFn;
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};
@@ -43,6 +42,9 @@ pub struct CircuitBuilder<F: Field> {
 
     /// Registered non-primitive trace generators.
     non_primitive_trace_generators: HashMap<NpoTypeId, TraceGeneratorFn<F>>,
+
+    /// Registered circuit-layer NPO plugins, keyed by type ID.
+    npo_registry: NpoRegistry<F>,
 
     /// Tags for wires (ExprId) - enables probing values by name after execution.
     tag_to_expr: HashMap<String, ExprId>,
@@ -115,7 +117,7 @@ impl<'a, F> NpoLoweringContext<'a, F> {
 /// Implementors are responsible for:
 /// - Lowering their high-level operation description into a single `Op<F>`
 /// - Providing a trace generator for their dedicated table
-/// - Exposing a type-erased configuration value
+/// - Exposing their configuration as an `NpoConfig`
 pub trait NpoCircuitPlugin<F: Field>: Send + Sync {
     /// Unique type identifier for this NPO (e.g. "poseidon2_perm/baby_bear_d4_w16").
     fn type_id(&self) -> NpoTypeId;
@@ -134,8 +136,32 @@ pub trait NpoCircuitPlugin<F: Field>: Send + Sync {
     /// Produce the trace generator for this NPO.
     fn trace_generator(&self) -> TraceGeneratorFn<F>;
 
-    /// Return plugin-specific configuration, which will be type-erased at the registry boundary.
-    fn config(&self) -> Box<dyn Any + Send + Sync>;
+    /// Return plugin-specific configuration for this NPO.
+    fn config(&self) -> NpoConfig;
+}
+
+impl<F: Field> CircuitBuilder<F> {
+    /// Register a circuit-layer NPO plugin.
+    ///
+    /// This:
+    /// - stores the plugin in `npo_registry` for lowering
+    /// - enables the op type in the builder config with the plugin's config
+    /// - registers the plugin's trace generator
+    pub fn register_npo(&mut self, plugin: impl NpoCircuitPlugin<F> + 'static) {
+        let op_type: NpoTypeId = plugin.type_id();
+        let plugin = Arc::new(plugin);
+
+        // Enable op with plugin-provided config.
+        let cfg = plugin.config();
+        self.config.enable_op(op_type.clone(), cfg);
+
+        // Register trace generator.
+        self.non_primitive_trace_generators
+            .insert(op_type.clone(), plugin.trace_generator());
+
+        // Store plugin for lowering.
+        self.npo_registry.insert(op_type, plugin);
+    }
 }
 
 impl<F: Field> Default for CircuitBuilder<F>
@@ -160,14 +186,26 @@ where
             non_primitive_ops: Vec::new(),
             config: BuilderConfig::new(),
             non_primitive_trace_generators: HashMap::new(),
+            npo_registry: HashMap::new(),
             tag_to_expr: HashMap::new(),
             tag_to_op: HashMap::new(),
         }
     }
 
     /// Enables a non-primitive operation type on this builder.
-    pub fn enable_op(&mut self, op: NpoTypeId, cfg: NpoConfig) {
-        self.config.enable_op(op, cfg);
+    pub fn enable_op(&mut self, op: &NpoTypeId, cfg: NpoConfig) {
+        // Preserve the explicit config for this op type.
+        self.config.enable_op(op.clone(), cfg);
+
+        // Backwards-compatibility: if this is a Poseidon2 op and no plugin has been
+        // registered yet, install a minimal plugin so lowering can proceed.
+        if self.npo_registry.get(op).is_none()
+            && let Some(variant) = op.as_str().strip_prefix("poseidon2_perm/")
+            && let Some(poseidon_cfg) = Poseidon2Config::from_variant_name(variant)
+        {
+            let plugin = Poseidon2CircuitPlugin::<F>::new_config_only(poseidon_cfg);
+            self.register_npo(plugin);
+        }
     }
 
     /// Enables Poseidon2 permutation operations (one perm per table row).
@@ -211,16 +249,12 @@ where
             output
         });
 
-        let op_type = NpoTypeId::poseidon2_perm(Config::CONFIG);
-        self.config.enable_op(
-            op_type.clone(),
-            NpoConfig::new(Poseidon2PermConfigData {
-                config: Config::CONFIG,
-                exec,
-            }),
+        let plugin = crate::ops::poseidon2_perm::Poseidon2CircuitPlugin::new_ext(
+            Config::CONFIG,
+            exec,
+            trace_generator,
         );
-        self.non_primitive_trace_generators
-            .insert(op_type, trace_generator);
+        self.register_npo(plugin);
     }
 
     /// Enables Poseidon2 for configs with WIDTH=8 (e.g. Goldilocks).
@@ -260,16 +294,12 @@ where
             }
             output
         });
-        let op_type = NpoTypeId::poseidon2_perm(Config::CONFIG);
-        self.config.enable_op(
-            op_type.clone(),
-            NpoConfig::new(Poseidon2PermConfigData {
-                config: Config::CONFIG,
-                exec,
-            }),
+        let plugin = crate::ops::poseidon2_perm::Poseidon2CircuitPlugin::new_ext(
+            Config::CONFIG,
+            exec,
+            trace_generator,
         );
-        self.non_primitive_trace_generators
-            .insert(op_type, trace_generator);
+        self.register_npo(plugin);
     }
 
     /// Enables the Poseidon2 permutation operation for base field challenges (D=1).
@@ -302,16 +332,12 @@ where
         let exec: crate::op::Poseidon2PermExecBase<F> =
             Arc::new(move |input: &[F; 16]| perm.permute(*input));
 
-        let op_type = NpoTypeId::poseidon2_perm(Config::CONFIG);
-        self.config.enable_op(
-            op_type.clone(),
-            NpoConfig::new(Poseidon2PermBaseConfigData {
-                config: Config::CONFIG,
-                exec,
-            }),
+        let plugin = crate::ops::poseidon2_perm::Poseidon2CircuitPlugin::new_base(
+            Config::CONFIG,
+            exec,
+            trace_generator,
         );
-        self.non_primitive_trace_generators
-            .insert(op_type, trace_generator);
+        self.register_npo(plugin);
     }
 
     /// Checks whether an op type is enabled on this builder.
@@ -784,6 +810,7 @@ where
             self.expr_builder.pending_connects(),
             self.public_tracker.count(),
             self.witness_alloc,
+            &self.npo_registry,
         );
         let (ops, public_rows, expr_to_widx, public_mappings, witness_count) = lowerer.lower()?;
 
@@ -1629,7 +1656,7 @@ mod tests {
 
         let mut builder = CircuitBuilder::<Ext4>::new();
         builder.enable_op(
-            NpoTypeId::poseidon2_perm(Poseidon2Config::BabyBearD4Width16),
+            &NpoTypeId::poseidon2_perm(Poseidon2Config::BabyBearD4Width16),
             NpoConfig::new(()),
         );
 
