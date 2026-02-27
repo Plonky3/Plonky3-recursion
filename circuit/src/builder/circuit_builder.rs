@@ -3,6 +3,7 @@ use alloc::string::{String, ToString as _};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use alloc::{format, vec};
+use core::any::Any;
 use core::hash::Hash;
 use core::marker::PhantomData;
 
@@ -16,7 +17,7 @@ use super::OpCounts;
 use super::compiler::{ExpressionLowerer, Optimizer};
 use super::{BuilderConfig, ExpressionBuilder, PublicInputTracker};
 use crate::circuit::Circuit;
-use crate::op::{HintExecutor, NpoConfig, NpoTypeId};
+use crate::op::{HintExecutor, NpoConfig, NpoTypeId, Op};
 use crate::ops::poseidon2_perm::{Poseidon2PermBaseConfigData, Poseidon2PermConfigData};
 use crate::ops::{Poseidon2Params, Poseidon2PermCall, Poseidon2PermCallBase};
 use crate::tables::TraceGeneratorFn;
@@ -85,6 +86,56 @@ pub struct NonPrimitiveOperationData<F: Field> {
     /// Output expressions (e.g., for Poseidon2Perm: [out0, out1])
     pub output_exprs: Vec<Vec<ExprId>>,
     pub params: Option<NonPrimitiveOpParams<F>>,
+}
+
+/// Lowering context passed to `NpoCircuitPlugin::lower`, providing access to the
+/// expression-to-witness map and witness allocation function.
+pub struct NpoLoweringContext<'a, F> {
+    pub expr_to_widx: &'a mut HashMap<ExprId, WitnessId>,
+    pub alloc_witness_id: &'a mut dyn FnMut(usize) -> WitnessId,
+    /// Phantom to keep `F` in the type, even though we only carry witness IDs here.
+    _phantom: PhantomData<F>,
+}
+
+impl<'a, F> NpoLoweringContext<'a, F> {
+    pub fn new(
+        expr_to_widx: &'a mut HashMap<ExprId, WitnessId>,
+        alloc_witness_id: &'a mut dyn FnMut(usize) -> WitnessId,
+    ) -> Self {
+        Self {
+            expr_to_widx,
+            alloc_witness_id,
+            _phantom: PhantomData,
+        }
+    }
+}
+
+/// Circuit-layer plugin interface for non-primitive operations.
+///
+/// Implementors are responsible for:
+/// - Lowering their high-level operation description into a single `Op<F>`
+/// - Providing a trace generator for their dedicated table
+/// - Exposing a type-erased configuration value
+pub trait NpoCircuitPlugin<F: Field>: Send + Sync {
+    /// Unique type identifier for this NPO (e.g. "poseidon2_perm/baby_bear_d4_w16").
+    fn type_id(&self) -> NpoTypeId;
+
+    /// Convert a high-level NPO operation into a concrete `Op<F>`.
+    ///
+    /// The lowering context gives access to the expression→witness mapping and
+    /// witness allocation for any new outputs.
+    fn lower(
+        &self,
+        data: &NonPrimitiveOperationData<F>,
+        output_exprs: &[(u32, ExprId)],
+        ctx: &mut NpoLoweringContext<'_, F>,
+    ) -> Result<Op<F>, CircuitBuilderError>;
+
+    /// Produce the trace generator for this NPO.
+    fn trace_generator(&self) -> TraceGeneratorFn<F>;
+
+    /// Return plugin-specific configuration, which will be type-erased at the registry boundary.
+    fn config(&self) -> Box<dyn Any + Send + Sync>;
 }
 
 impl<F: Field> Default for CircuitBuilder<F>

@@ -7,7 +7,10 @@ mod errors;
 mod expression_builder;
 mod public_input_tracker;
 
-pub use circuit_builder::{CircuitBuilder, NonPrimitiveOpParams, NonPrimitiveOperationData};
+pub use circuit_builder::{
+    CircuitBuilder, NonPrimitiveOpParams, NonPrimitiveOperationData, NpoCircuitPlugin,
+    NpoLoweringContext,
+};
 pub use config::BuilderConfig;
 pub use errors::CircuitBuilderError;
 pub use expression_builder::ExpressionBuilder;
