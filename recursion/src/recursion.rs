@@ -9,7 +9,7 @@ use p3_batch_stark::{CommonData, ProverData};
 use p3_circuit::tables::Traces;
 use p3_circuit::utils::ColumnsTargets;
 use p3_circuit::{Circuit, CircuitBuilder, CircuitRunner, NonPrimitiveOpId};
-use p3_circuit_prover::common::{NonPrimitiveConfig, get_airs_and_degrees_with_prep};
+use p3_circuit_prover::common::get_airs_and_degrees_with_prep;
 use p3_circuit_prover::config::StarkField;
 use p3_circuit_prover::field_params::ExtractBinomialW;
 use p3_circuit_prover::{
@@ -256,16 +256,11 @@ where
         + ExtractBinomialW<Val<SC>>,
     SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
 {
-    let non_primitive = backend
-        .poseidon2_config_for_circuit()
-        .map(|c| alloc::vec![NonPrimitiveConfig::Poseidon2(c)]);
-    let non_primitive_ref = non_primitive.as_deref();
-
     let (airs_degrees, preprocessed_columns) = {
         get_airs_and_degrees_with_prep::<SC, SC::Challenge, D>(
             &verification_circuit,
             params.table_packing,
-            non_primitive_ref,
+            &[],
             params.constraint_profile,
         )
         .map_err(VerificationError::Circuit)?
@@ -502,13 +497,11 @@ where
         ));
     }
 
-    let non_primitive = <B as PcsRecursionBackend<SC, A1>>::poseidon2_config_for_circuit(backend)
-        .map(|c| alloc::vec![NonPrimitiveConfig::Poseidon2(c)]);
     let (airs_degrees, preprocessed_columns) = {
         get_airs_and_degrees_with_prep::<SC, SC::Challenge, D>(
             verification_circuit,
             params.table_packing,
-            non_primitive.as_deref(),
+            &[],
             params.constraint_profile,
         )
         .map_err(VerificationError::Circuit)?

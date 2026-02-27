@@ -85,7 +85,7 @@ fn test_aggregation_with_different_shapes() -> Result<(), VerificationError> {
     let (airs_degrees, preprocessed_columns) = get_airs_and_degrees_with_prep::<MyConfig, _, 1>(
         &circuit,
         table_packing,
-        None,
+        &[],
         ConstraintProfile::Standard,
     )
     .unwrap();
