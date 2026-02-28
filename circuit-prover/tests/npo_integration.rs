@@ -1,13 +1,14 @@
 use core::marker::PhantomData;
 
 use p3_baby_bear::BabyBear;
-use p3_circuit::{CircuitBuilderError, WitnessId};
 use p3_circuit::builder::{
     CircuitBuilder, NonPrimitiveOperationData, NpoCircuitPlugin, NpoLoweringContext,
 };
-use p3_circuit::op::{ExecutionContext, NonPrimitiveExecutor, NpoConfig, NpoTypeId, Op, OpStateMap};
+use p3_circuit::op::{
+    ExecutionContext, NonPrimitiveExecutor, NpoConfig, NpoTypeId, Op, OpStateMap,
+};
 use p3_circuit::tables::{NonPrimitiveTrace, TraceGeneratorFn};
-use p3_circuit::CircuitError;
+use p3_circuit::{CircuitBuilderError, CircuitError, WitnessId};
 use p3_field::{Field, PrimeCharacteristicRing};
 
 // Simple non-primitive "cube" op: y = x^3
@@ -27,7 +28,7 @@ struct CubeCircuitPlugin<F> {
 }
 
 impl<F> CubeCircuitPlugin<F> {
-    fn new() -> Self {
+    const fn new() -> Self {
         Self {
             _phantom: PhantomData,
         }

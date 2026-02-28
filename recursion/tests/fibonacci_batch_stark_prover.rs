@@ -166,6 +166,9 @@ fn test_fibonacci_batch_verifier() {
         common,
         &lookup_gadget,
         Poseidon2Config::KoalaBearD4Width16,
+        &p3_circuit_prover::batch_stark_prover::poseidon2_table_provers_d4(
+            Poseidon2Config::KoalaBearD4Width16,
+        ),
     )
     .unwrap();
 

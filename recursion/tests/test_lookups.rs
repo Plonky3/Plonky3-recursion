@@ -715,12 +715,14 @@ fn get_verifier_inputs_and_challenges(
 
     // Base field AIRs for native challenge generation
     let native_airs = vec![
-        CircuitTablesAir::Const(ConstAir::<F, TRACE_D>::new(rows[PrimitiveTable::Const])),
-        CircuitTablesAir::Public(PublicAir::<F, TRACE_D>::new(
+        CircuitTablesAir::<MyConfig, TRACE_D>::Const(ConstAir::<F, TRACE_D>::new(
+            rows[PrimitiveTable::Const],
+        )),
+        CircuitTablesAir::<MyConfig, TRACE_D>::Public(PublicAir::<F, TRACE_D>::new(
             rows[PrimitiveTable::Public],
             packing.public_lanes(),
         )),
-        CircuitTablesAir::Alu(AluAir::<F, TRACE_D>::new(
+        CircuitTablesAir::<MyConfig, TRACE_D>::Alu(AluAir::<F, TRACE_D>::new(
             rows[PrimitiveTable::Alu],
             packing.alu_lanes(),
         )),
@@ -744,6 +746,9 @@ fn get_verifier_inputs_and_challenges(
         common,
         lookup_gadget,
         Poseidon2Config::BabyBearD4Width16,
+        &p3_circuit_prover::batch_stark_prover::poseidon2_table_provers_d4(
+            Poseidon2Config::BabyBearD4Width16,
+        ),
     )
     .map(|(inputs, _mmcs_op_ids)| inputs);
 

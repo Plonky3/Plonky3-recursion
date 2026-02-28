@@ -247,6 +247,7 @@ macro_rules! define_field_module {
         $enable_poseidon2_fn:ident,
         $register_poseidon2_fn:ident,
         $default_perm_circuit:path,
+        $backend_ctor:ident,
         $backend_width:expr,
         $backend_rate:expr
     ) => {
@@ -449,7 +450,7 @@ macro_rules! define_field_module {
                 }
 
                 let backend =
-                    FriRecursionBackend::<$backend_width, $backend_rate>::new($poseidon2_config);
+                    FriRecursionBackend::<$backend_width, $backend_rate>::$backend_ctor($poseidon2_config);
                 let mut output: Option<RecursionOutput<ConfigWithFriParams>> = None;
 
                 for layer in 1..=num_recursive_layers {
@@ -521,6 +522,7 @@ define_field_module!(
     enable_poseidon2_perm,
     register_poseidon2_table,
     p3_koala_bear::default_koalabear_poseidon2_16,
+    new_d4,
     16,
     8
 );
@@ -539,6 +541,7 @@ define_field_module!(
     enable_poseidon2_perm,
     register_poseidon2_table,
     p3_baby_bear::default_babybear_poseidon2_16,
+    new_d4,
     16,
     8
 );
@@ -557,6 +560,7 @@ define_field_module!(
     enable_poseidon2_perm_width_8,
     register_poseidon2_table_d2,
     default_goldilocks_poseidon2_8,
+    new_d2,
     8,
     4
 );

@@ -1,5 +1,6 @@
 #![allow(clippy::upper_case_acronyms)]
 
+use alloc::boxed::Box;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use alloc::{format, vec};
@@ -10,9 +11,10 @@ use p3_batch_stark::CommonData;
 use p3_circuit::utils::ColumnsTargets;
 use p3_circuit::{CircuitBuilder, NonPrimitiveOpId};
 use p3_circuit_prover::air::{AluAir, ConstAir, PublicAir};
-use p3_circuit_prover::batch_stark_prover::{AirVariant, PrimitiveTable, RowCounts};
+use p3_circuit_prover::batch_stark_prover::{
+    AirVariant, DynamicAirEntry, PrimitiveTable, RowCounts, TableProver,
+};
 use p3_circuit_prover::field_params::ExtractBinomialW;
-use p3_circuit_prover::{Poseidon2AirWrapperInner, poseidon2_verifier_air_from_config};
 use p3_commit::{Pcs, PolynomialSpace};
 use p3_field::{BasedVectorSpace, ExtensionField, Field, PrimeCharacteristicRing, PrimeField64};
 use p3_lookup::lookup_traits::{Kind, Lookup, LookupData, LookupGadget};
@@ -43,54 +45,71 @@ pub type PcsVerifierParams<SC, InputProof, OpeningProof, Comm> =
         >>::Domain,
     >>::VerifierParams;
 
+/// Type-erased recursive AIR entry for non-primitive tables.
+pub type DynRecursionAirEntry<SC> = DynamicAirEntry<SC>;
+
 // TODO(Robin): Remove with dynamic dispatch
 /// Wrapper enum for heterogeneous circuit table AIRs used by circuit-prover tables.
-pub enum CircuitTablesAir<F: Field, const D: usize> {
-    Const(ConstAir<F, D>),
-    Public(PublicAir<F, D>),
-    Alu(AluAir<F, D>),
-    Poseidon2(Poseidon2AirWrapperInner),
+pub enum CircuitTablesAir<SC: StarkGenericConfig, const D: usize> {
+    Const(ConstAir<Val<SC>, D>),
+    Public(PublicAir<Val<SC>, D>),
+    Alu(AluAir<Val<SC>, D>),
+    Dynamic(DynRecursionAirEntry<SC>),
 }
 
-impl<F: Field, const D: usize> P3BaseAir<F> for CircuitTablesAir<F, D> {
+impl<SC, const D: usize> P3BaseAir<Val<SC>> for CircuitTablesAir<SC, D>
+where
+    SC: StarkGenericConfig,
+    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+{
     fn width(&self) -> usize {
         match self {
             Self::Const(a) => P3BaseAir::width(a),
             Self::Public(a) => P3BaseAir::width(a),
             Self::Alu(a) => P3BaseAir::width(a),
-            Self::Poseidon2(a) => a.width(),
+            Self::Dynamic(a) => P3BaseAir::width(a),
         }
     }
 }
 
-impl<F, EF, const D: usize> P3Air<p3_uni_stark::SymbolicAirBuilder<F, EF>>
-    for CircuitTablesAir<F, D>
+impl<SC, const D: usize>
+    P3Air<p3_uni_stark::SymbolicAirBuilder<Val<SC>, <SC as StarkGenericConfig>::Challenge>>
+    for CircuitTablesAir<SC, D>
 where
-    F: Field + PrimeField64,
-    EF: ExtensionField<F>,
-    SymbolicExpression<EF>: From<SymbolicExpression<F>>,
+    SC: StarkGenericConfig,
+    Val<SC>: PrimeField64,
+    <SC as StarkGenericConfig>::Challenge: ExtensionField<Val<SC>>,
+    SymbolicExpression<<SC as StarkGenericConfig>::Challenge>: From<SymbolicExpression<Val<SC>>>,
 {
-    fn eval(&self, builder: &mut p3_uni_stark::SymbolicAirBuilder<F, EF>) {
+    fn eval(
+        &self,
+        builder: &mut p3_uni_stark::SymbolicAirBuilder<
+            Val<SC>,
+            <SC as StarkGenericConfig>::Challenge,
+        >,
+    ) {
         match self {
             Self::Const(a) => P3Air::eval(a, builder),
             Self::Public(a) => P3Air::eval(a, builder),
             Self::Alu(a) => P3Air::eval(a, builder),
-            Self::Poseidon2(inner) => P3Air::eval(inner, builder),
+            Self::Dynamic(inner) => P3Air::eval(inner, builder),
         }
     }
 
     fn add_lookup_columns(&mut self) -> Vec<usize> {
         match self {
-            Self::Const(a) => {
-                P3Air::<p3_uni_stark::SymbolicAirBuilder<F, EF>>::add_lookup_columns(a)
-            }
-            Self::Public(a) => {
-                P3Air::<p3_uni_stark::SymbolicAirBuilder<F, EF>>::add_lookup_columns(a)
-            }
-            Self::Alu(a) => P3Air::<p3_uni_stark::SymbolicAirBuilder<F, EF>>::add_lookup_columns(a),
-            Self::Poseidon2(inner) => {
-                P3Air::<p3_uni_stark::SymbolicAirBuilder<F, EF>>::add_lookup_columns(inner)
-            }
+            Self::Const(a) => P3Air::<
+                p3_uni_stark::SymbolicAirBuilder<Val<SC>, <SC as StarkGenericConfig>::Challenge>,
+            >::add_lookup_columns(a),
+            Self::Public(a) => P3Air::<
+                p3_uni_stark::SymbolicAirBuilder<Val<SC>, <SC as StarkGenericConfig>::Challenge>,
+            >::add_lookup_columns(a),
+            Self::Alu(a) => P3Air::<
+                p3_uni_stark::SymbolicAirBuilder<Val<SC>, <SC as StarkGenericConfig>::Challenge>,
+            >::add_lookup_columns(a),
+            Self::Dynamic(inner) => P3Air::<
+                p3_uni_stark::SymbolicAirBuilder<Val<SC>, <SC as StarkGenericConfig>::Challenge>,
+            >::add_lookup_columns(inner),
         }
     }
 
@@ -99,16 +118,25 @@ where
         &mut self,
     ) -> Vec<
         p3_lookup::lookup_traits::Lookup<
-            <p3_uni_stark::SymbolicAirBuilder<F, EF> as AirBuilder>::F,
+            <p3_uni_stark::SymbolicAirBuilder<
+                Val<SC>,
+                <SC as StarkGenericConfig>::Challenge,
+            > as AirBuilder>::F,
         >,
-    > {
+    >{
         match self {
-            Self::Const(a) => P3Air::<p3_uni_stark::SymbolicAirBuilder<F, EF>>::get_lookups(a),
-            Self::Public(a) => P3Air::<p3_uni_stark::SymbolicAirBuilder<F, EF>>::get_lookups(a),
-            Self::Alu(a) => P3Air::<p3_uni_stark::SymbolicAirBuilder<F, EF>>::get_lookups(a),
-            Self::Poseidon2(inner) => {
-                P3Air::<p3_uni_stark::SymbolicAirBuilder<F, EF>>::get_lookups(inner)
-            }
+            Self::Const(a) => P3Air::<
+                p3_uni_stark::SymbolicAirBuilder<Val<SC>, <SC as StarkGenericConfig>::Challenge>,
+            >::get_lookups(a),
+            Self::Public(a) => P3Air::<
+                p3_uni_stark::SymbolicAirBuilder<Val<SC>, <SC as StarkGenericConfig>::Challenge>,
+            >::get_lookups(a),
+            Self::Alu(a) => P3Air::<
+                p3_uni_stark::SymbolicAirBuilder<Val<SC>, <SC as StarkGenericConfig>::Challenge>,
+            >::get_lookups(a),
+            Self::Dynamic(inner) => P3Air::<
+                p3_uni_stark::SymbolicAirBuilder<Val<SC>, <SC as StarkGenericConfig>::Challenge>,
+            >::get_lookups(inner),
         }
     }
 }
@@ -143,8 +171,9 @@ fn binomial_w_for_alu<F: Field, EF: ExtensionField<F> + ExtractBinomialW<F>>() -
 /// don't need to pass `circuit_airs` explicitly. Returns the allocated input builder to pack
 /// public inputs afterwards.
 #[allow(clippy::type_complexity)]
+#[allow(clippy::too_many_arguments)]
 pub fn verify_p3_batch_proof_circuit<
-    SC: StarkGenericConfig,
+    SC: StarkGenericConfig + 'static,
     Comm: Recursive<
             SC::Challenge,
             Input = <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment,
@@ -164,6 +193,7 @@ pub fn verify_p3_batch_proof_circuit<
     common_data: &CommonData<SC>,
     lookup_gadget: &LG,
     poseidon2_config: Poseidon2Config,
+    non_primitive_provers: &[Box<dyn TableProver<SC>>],
 ) -> Result<
     (
         BatchStarkVerifierInputsBuilder<SC, Comm, OpeningProof>,
@@ -200,7 +230,7 @@ where
         }
     };
 
-    let mut circuit_airs: Vec<CircuitTablesAir<Val<SC>, TRACE_D>> = vec![
+    let mut circuit_airs: Vec<CircuitTablesAir<SC, TRACE_D>> = vec![
         CircuitTablesAir::Const(ConstAir::<Val<SC>, TRACE_D>::new(
             rows[PrimitiveTable::Const],
         )),
@@ -211,18 +241,20 @@ where
         CircuitTablesAir::Alu(alu_air),
     ];
 
-    // Add non-primitive AIRs (e.g., Poseidon2) from the proof manifest.
     for entry in &proof.non_primitives {
-        if let Some(config) = entry
-            .op_type
-            .as_str()
-            .strip_prefix("poseidon2_perm/")
-            .and_then(Poseidon2Config::from_variant_name)
-        {
-            circuit_airs.push(CircuitTablesAir::Poseidon2(
-                poseidon2_verifier_air_from_config(config),
-            ));
-        }
+        let plugin = non_primitive_provers
+            .iter()
+            .find(|p| TableProver::op_type(p.as_ref()) == entry.op_type)
+            .ok_or_else(|| {
+                VerificationError::InvalidProofShape(format!(
+                    "unknown non-primitive op: {:?}",
+                    entry.op_type
+                ))
+            })?;
+        let air = plugin
+            .batch_air_from_table_entry(config, TRACE_D, entry)
+            .map_err(VerificationError::InvalidProofShape)?;
+        circuit_airs.push(CircuitTablesAir::Dynamic(air));
     }
 
     // TODO: public values are empty for all circuit tables for now.
@@ -237,7 +269,7 @@ where
     let common = &verifier_inputs.common_data;
 
     let mmcs_op_ids = verify_batch_circuit::<
-        CircuitTablesAir<Val<SC>, TRACE_D>,
+        CircuitTablesAir<SC, TRACE_D>,
         SC,
         Comm,
         InputProof,

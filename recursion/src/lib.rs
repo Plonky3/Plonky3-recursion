@@ -15,10 +15,10 @@ pub mod traits;
 pub mod types;
 pub mod verifier;
 
-/// FRI PCS backend for the unified recursion API. Use with [`prove_next_layer`] and a config implementing [`FriRecursionConfig`].
-pub use backend::FriRecursionBackend;
 /// Implement for your StarkConfig (or a wrapper holding FRI verifier params) to use [`FriRecursionBackend`].
 pub use backend::fri::FriRecursionConfig;
+/// FRI PCS backend for the unified recursion API. Use with [`prove_next_layer`] and a config implementing [`FriRecursionConfig`].
+pub use backend::{FriRecursionBackend, FriRecursionBackendD2, FriRecursionBackendD4};
 pub use challenger::CircuitChallenger;
 pub use generation::{
     GenerationError, PcsGeneration, generate_batch_challenges, generate_challenges,

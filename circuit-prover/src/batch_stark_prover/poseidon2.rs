@@ -1333,7 +1333,7 @@ where
         Some(self.wrapper_from_config_with_preprocessed(committed_prep, min_height))
     }
 }
-pub(crate) struct Poseidon2ProverD2(pub(crate) Poseidon2Prover);
+pub struct Poseidon2ProverD2(pub(crate) Poseidon2Prover);
 
 impl<SC> TableProver<SC> for Poseidon2ProverD2
 where

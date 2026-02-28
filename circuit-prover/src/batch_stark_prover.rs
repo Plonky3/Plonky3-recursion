@@ -38,9 +38,8 @@ pub use dynamic_air::{
     BatchAir, BatchTableInstance, CloneableBatchAir, DynamicAirEntry, TableProver,
 };
 pub use packing::{TablePacking, TraceLengths};
-use poseidon2::Poseidon2ProverD2;
 pub use poseidon2::{
-    Poseidon2AirWrapperInner, Poseidon2Preprocessor, Poseidon2Prover,
+    Poseidon2AirWrapperInner, Poseidon2Preprocessor, Poseidon2Prover, Poseidon2ProverD2,
     poseidon2_verifier_air_from_config,
 };
 
@@ -936,6 +935,35 @@ where
     fn register_poseidon2(&mut self, config: Poseidon2Config) {
         self.register_poseidon2_table(config);
     }
+}
+
+/// Create Poseidon2 table provers for D=2 (e.g. Goldilocks).
+pub fn poseidon2_table_provers_d2<SC>(
+    config: Poseidon2Config,
+) -> alloc::vec::Vec<alloc::boxed::Box<dyn TableProver<SC>>>
+where
+    SC: StarkGenericConfig + 'static + Send + Sync,
+    Val<SC>: BinomiallyExtendable<2> + StarkField,
+    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+{
+    alloc::vec![alloc::boxed::Box::new(Poseidon2ProverD2(
+        Poseidon2Prover::new(config, ConstraintProfile::Standard,)
+    ))]
+}
+
+/// Create Poseidon2 table provers for D=4 (e.g. BabyBear, KoalaBear).
+pub fn poseidon2_table_provers_d4<SC>(
+    config: Poseidon2Config,
+) -> alloc::vec::Vec<alloc::boxed::Box<dyn TableProver<SC>>>
+where
+    SC: StarkGenericConfig + 'static + Send + Sync,
+    Val<SC>: BinomiallyExtendable<4> + StarkField,
+    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+{
+    alloc::vec![alloc::boxed::Box::new(Poseidon2Prover::new(
+        config,
+        ConstraintProfile::Standard,
+    ))]
 }
 
 #[cfg(test)]

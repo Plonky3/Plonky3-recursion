@@ -1,5 +1,6 @@
 //! Unified recursion API: one entry point to prove the next layer over a uni-stark or batch-stark proof.
 
+use alloc::boxed::Box;
 use alloc::rc::Rc;
 use alloc::string::ToString;
 use alloc::vec::Vec;
@@ -9,6 +10,7 @@ use p3_batch_stark::{CommonData, ProverData};
 use p3_circuit::tables::Traces;
 use p3_circuit::utils::ColumnsTargets;
 use p3_circuit::{Circuit, CircuitBuilder, CircuitRunner, NonPrimitiveOpId};
+use p3_circuit_prover::batch_stark_prover::TableProver;
 use p3_circuit_prover::common::get_airs_and_degrees_with_prep;
 use p3_circuit_prover::config::StarkField;
 use p3_circuit_prover::field_params::ExtractBinomialW;
@@ -143,6 +145,12 @@ where
     /// If the backend uses Poseidon2 in the circuit (e.g. for MMCS), return its config for `get_airs_and_degrees_with_prep`.
     fn poseidon2_config_for_circuit(&self) -> Option<Poseidon2Config> {
         None
+    }
+
+    /// Non-primitive table provers for the given extension degree (e.g. Poseidon2 for D=2 or D=4).
+    /// Default returns empty; backends that use NPOs in the circuit override this.
+    fn non_primitive_provers(&self, _ext_degree: usize) -> Vec<Box<dyn TableProver<SC>>> {
+        Vec::new()
     }
 }
 
