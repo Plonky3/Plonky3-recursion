@@ -37,6 +37,7 @@ mod poseidon2;
 pub use dynamic_air::{
     BatchAir, BatchTableInstance, CloneableBatchAir, DynamicAirEntry, TableProver,
 };
+pub use open_input::OpenInputProver;
 pub use packing::{TablePacking, TraceLengths};
 pub use poseidon2::Poseidon2Prover;
 
@@ -448,6 +449,16 @@ where
         Val<SC>: BinomiallyExtendable<4>,
     {
         self.register_table_prover(Box::new(Poseidon2Prover::new(config)));
+    }
+
+    /// Register both the Poseidon2 and OpenInput non-primitive table provers.
+    pub fn register_standard_tables(&mut self, poseidon2_config: Poseidon2Config)
+    where
+        SC: Send + Sync,
+        Val<SC>: BinomiallyExtendable<4>,
+    {
+        self.register_table_prover(Box::new(Poseidon2Prover::new(poseidon2_config)));
+        self.register_table_prover(Box::new(OpenInputProver::new()));
     }
 
     #[inline]

@@ -11,7 +11,6 @@ use p3_field::coset::TwoAdicMultiplicativeCoset;
 use p3_field::{BasedVectorSpace, ExtensionField, Field, PrimeField64, TwoAdicField};
 use p3_matrix::Dimensions;
 use p3_util::zip_eq::zip_eq;
-use tracing::info;
 
 use super::{FriProofTargets, InputProofTargets};
 use crate::Target;
@@ -819,12 +818,11 @@ fn compute_single_reduced_opening<EF: Field>(
     let mut current_alpha_pow = alpha_pow;
 
     let n = point_values.len();
-    info!("{n}");
 
     for (p_idx, (&p_at_x, &p_at_z)) in opened_values
         .iter()
         .rev()
-        .zip(point_values.iter())
+        .zip(point_values.iter().rev())
         .enumerate()
     {
         // diff = p_at_z - p_at_x
@@ -852,7 +850,6 @@ fn compute_single_reduced_opening<EF: Field>(
     let z_minus_x = builder.sub(challenge_point, evaluation_point);
     let reduced_opening = builder.div(reduced_opening.unwrap(), z_minus_x);
     let reduced_opening = builder.mul(reduced_opening, alpha_pow); // Apply the initial alpha_pow multiplier for this height
-    info!("reduced opening {:?}", reduced_opening);
 
     builder.pop_scope(); // close `compute_single_reduced_opening` scope
     (current_alpha_pow, reduced_opening)
@@ -1000,7 +997,6 @@ where
         // trace matrix of height 1. In this case `f` is constant, so `(f(zeta) - f(x))/(zeta - x)`
         // must equal `0`.
         if let Some((_ap, ro0)) = reduced_openings.get(&log_blowup) {
-            info!("are we here? ro0 exprid: {:?}", ro0);
             let zero = builder.add_const(EF::ZERO);
             builder.connect(*ro0, zero);
         }

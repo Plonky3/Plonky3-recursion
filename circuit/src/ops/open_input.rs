@@ -4,7 +4,6 @@ use alloc::{format, vec};
 use core::any::Any;
 
 use p3_field::{ExtensionField, Field};
-use tracing::info;
 
 use crate::builder::NonPrimitiveOpParams;
 // TODO Linda: alpha_pow and intermediary ros should be private inputs.
@@ -56,7 +55,6 @@ impl<TraceF: Clone + Send + Sync + 'static, CF> NonPrimitiveTrace<CF> for OpenIn
 #[derive(Default, Debug, Clone)]
 pub struct OpenInputState<F> {
     pub last_ro: Option<F>,
-    pub last_alpha_pow: Option<F>,
     pub rows: Vec<OpenInputRow<F>>,
 }
 
@@ -93,7 +91,7 @@ impl<F: Field> NonPrimitiveExecutor<F> for OpenInputExecutor {
         outputs: &[Vec<WitnessId>],
         ctx: &mut ExecutionContext<'_, F>,
     ) -> Result<(), CircuitError> {
-        assert_eq!(inputs.len(), 4);
+        assert_eq!(inputs.len(), 3);
         // The OpenInput updates the reduced_openings and alpha_pow columns.
         let inps_and_indices = inputs
             .iter()
@@ -122,10 +120,8 @@ impl<F: Field> NonPrimitiveExecutor<F> for OpenInputExecutor {
 
         // Compute the next `alpha_pow` and `ro` values.
         let state = ctx.get_op_state_mut::<OpenInputState<F>>(&self.op_type);
-        let alpha_pow = state.last_alpha_pow.unwrap_or(alpha.0);
-        let new_alpha_pow = alpha.0 * alpha_pow;
         let ro = state.last_ro.unwrap_or(F::ZERO);
-        let new_ro = ro + alpha_pow * (p_at_z.0 - p_at_x.0);
+        let new_ro = ro * alpha.0 + (p_at_z.0 - p_at_x.0);
 
         let output_index = if self.is_last {
             assert_eq!(outputs.len(), 1);
@@ -135,12 +131,8 @@ impl<F: Field> NonPrimitiveExecutor<F> for OpenInputExecutor {
             0
         };
 
-        state.last_alpha_pow = Some(new_alpha_pow);
         state.last_ro = Some(new_ro);
-        info!("state ro {:?}", state.last_ro);
-        if self.is_last {
-            info!("LAST state ro {:?}", state.last_ro);
-        }
+
         state.rows.push(OpenInputRow {
             alpha: vec![alpha.0],
             alpha_index: alpha.1,
@@ -152,6 +144,10 @@ impl<F: Field> NonPrimitiveExecutor<F> for OpenInputExecutor {
             is_last: self.is_last,
             is_real: true,
         });
+
+        if self.is_last {
+            state.last_ro = None;
+        }
 
         // Update the witness values in the context.
         // There only are outputs if last is true. And in that case, we only need to set the value of the last ro.
@@ -286,12 +282,7 @@ impl<F: Field> OpenInputOp for CircuitBuilder<F> {
         let op_type = NonPrimitiveOpType::OpenInput;
         self.ensure_op_enabled(op_type)?;
 
-        let input_exprs = vec![
-            vec![call.alpha],
-            vec![call.p_at_x],
-            vec![call.p_at_z],
-            vec![call.p_at_z],
-        ];
+        let input_exprs = vec![vec![call.alpha], vec![call.p_at_x], vec![call.p_at_z]];
 
         let (op_id, _call_expr_id, outputs) = self.push_non_primitive_op_with_outputs(
             op_type,

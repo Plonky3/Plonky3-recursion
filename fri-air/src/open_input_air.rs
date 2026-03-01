@@ -12,7 +12,6 @@ use p3_field::{BasedVectorSpace, ExtensionField, Field, PrimeCharacteristicRing}
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_uni_stark::SymbolicAirBuilder;
-use tracing::info;
 
 #[derive(Debug, Clone)]
 pub struct OpenInputAir<F, const D: usize = 1> {
@@ -93,8 +92,6 @@ impl<F: Field, const D: usize> OpenInputAir<F, D> {
             values.extend_from_slice(pow_at_z);
             values.extend_from_slice(new_ro_basis);
 
-            info!("new ro basis {:?}", new_ro_basis);
-
             ro = new_ro;
             if row.is_last {
                 reset = true;
@@ -116,8 +113,6 @@ impl<F: Field, const D: usize> OpenInputAir<F, D> {
             .rows
             .iter()
             .flat_map(|row| {
-                info!("ro index {:?} row.ro_index,", row.ro_index);
-
                 [
                     F::from_u64(row.is_last as u64),
                     F::from_u64(row.is_real as u64),

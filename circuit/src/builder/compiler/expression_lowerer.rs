@@ -122,7 +122,7 @@ where
 
         match &data.op_type {
             NonPrimitiveOpType::OpenInput => {
-                assert_eq!(data.input_exprs.len(), 4);
+                assert_eq!(data.input_exprs.len(), 3);
                 assert!(data.output_exprs.len() <= 1); // Only the last OpenInput op can have an output, and it has at most 1 output.
 
                 let inputs_widx = data

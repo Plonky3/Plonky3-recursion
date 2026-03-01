@@ -227,7 +227,7 @@ fn test_fibonacci_batch_verifier() {
 
     let mut verification_prover =
         BatchStarkProver::new(config3).with_table_packing(verification_table_packing);
-    verification_prover.register_poseidon2_table(poseidon2_config);
+    verification_prover.register_standard_tables(poseidon2_config);
 
     // Prove the verification circuit
     let verification_proof = verification_prover
