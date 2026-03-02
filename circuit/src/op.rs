@@ -669,17 +669,26 @@ pub trait NonPrimitiveExecutor<F: Field>: Debug {
     /// - the multiplicity for the `Witness` table.
     ///
     /// Uses the `PreprocessedColumns` API to ensure witness multiplicities are updated
-    /// consistently when reading from the witness table. `defined` tracks which witness
-    /// indices have been defined so far; executors may update it and store plugin-owned
-    /// metadata in `preprocessed.non_primitive_metadata`.
+    /// consistently when reading from the witness table. Duplicate-output detection
+    /// (which outputs were already defined by an earlier op) is handled generically
+    /// by `generate_preprocessed_columns` after this method returns.
     fn preprocess(
         &self,
         _inputs: &[Vec<WitnessId>],
         _outputs: &[Vec<WitnessId>],
         _preprocessed: &mut PreprocessedColumns<F>,
-        _defined: &mut Vec<bool>,
     ) -> Result<(), CircuitError> {
         Ok(())
+    }
+
+    /// How many leading output groups are exposed as creators on the witness-checks bus.
+    /// `generate_preprocessed_columns` only performs duplicate-output detection on the
+    /// first `n` groups returned here.
+    ///
+    /// Override when some outputs are private (e.g. capacity elements in a permutation).
+    /// Default: all groups.
+    fn num_exposed_outputs(&self) -> Option<usize> {
+        None
     }
 
     /// Clone as trait object

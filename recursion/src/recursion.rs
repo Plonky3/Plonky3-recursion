@@ -163,11 +163,6 @@ where
     }
 }
 
-/// Implemented by backends that register their NPO table provers on the batch prover for a given degree.
-pub trait RegisterNposForDegree<SC: StarkGenericConfig, const D: usize> {
-    fn register_npos(&self, prover: &mut BatchStarkProver<SC>);
-}
-
 /// Parameters for the shared recursion pipeline (table packing, optional overrides).
 #[derive(Clone, Debug)]
 pub struct ProveNextLayerParams {
@@ -265,7 +260,7 @@ pub fn prove_next_layer<SC, A, B, const D: usize>(
 where
     SC: StarkGenericConfig + Send + Sync + Clone + 'static,
     A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
-    B: PcsRecursionBackend<SC, A, D> + RegisterNposForDegree<SC, D>,
+    B: PcsRecursionBackend<SC, A, D>,
     Val<SC>: PrimeField64 + StarkField + BinomiallyExtendable<D>,
     SC::Challenge: BasedVectorSpace<Val<SC>>
         + From<Val<SC>>
@@ -313,7 +308,9 @@ where
             ConstraintProfile::Standard => AirVariant::Baseline,
             ConstraintProfile::RecursionOptimized => AirVariant::Optimized,
         });
-    RegisterNposForDegree::<SC, D>::register_npos(backend, &mut prover);
+    for p in backend.non_primitive_provers(D) {
+        prover.register_table_prover(p);
+    }
     let proof = prover
         .prove_all_tables(&traces, &circuit_prover_data)
         .map_err(|e| proof_shape_err(&e.to_string()))?;
@@ -340,7 +337,7 @@ pub fn build_and_prove_next_layer<SC, A, B, const D: usize>(
 where
     SC: StarkGenericConfig + Send + Sync + Clone + 'static,
     A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
-    B: PcsRecursionBackend<SC, A, D> + RegisterNposForDegree<SC, D>,
+    B: PcsRecursionBackend<SC, A, D>,
     Val<SC>: PrimeField64 + StarkField + BinomiallyExtendable<D>,
     SC::Challenge: BasedVectorSpace<Val<SC>>
         + From<Val<SC>>
@@ -482,9 +479,7 @@ where
     SC: StarkGenericConfig + Send + Sync + Clone + 'static,
     A1: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
     A2: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
-    B: PcsRecursionBackend<SC, A1, D>
-        + PcsRecursionBackend<SC, A2, D>
-        + RegisterNposForDegree<SC, D>,
+    B: PcsRecursionBackend<SC, A1, D> + PcsRecursionBackend<SC, A2, D>,
     Val<SC>: PrimeField64 + StarkField + BinomiallyExtendable<D>,
     SC::Challenge: BasedVectorSpace<Val<SC>>
         + From<Val<SC>>
@@ -552,7 +547,9 @@ where
             ConstraintProfile::Standard => AirVariant::Baseline,
             ConstraintProfile::RecursionOptimized => AirVariant::Optimized,
         });
-    RegisterNposForDegree::<SC, D>::register_npos(backend, &mut prover);
+    for p in <B as PcsRecursionBackend<SC, A1, D>>::non_primitive_provers(backend, D) {
+        prover.register_table_prover(p);
+    }
     let proof = prover
         .prove_all_tables(&traces, &circuit_prover_data)
         .map_err(|e| proof_shape_err(&e.to_string()))?;
@@ -594,9 +591,7 @@ where
     SC: StarkGenericConfig + Send + Sync + Clone + 'static,
     A1: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
     A2: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
-    B: PcsRecursionBackend<SC, A1, D>
-        + PcsRecursionBackend<SC, A2, D>
-        + RegisterNposForDegree<SC, D>,
+    B: PcsRecursionBackend<SC, A1, D> + PcsRecursionBackend<SC, A2, D>,
     Val<SC>: PrimeField64 + StarkField + BinomiallyExtendable<D>,
     SC::Challenge: BasedVectorSpace<Val<SC>>
         + From<Val<SC>>

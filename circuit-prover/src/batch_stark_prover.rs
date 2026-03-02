@@ -552,7 +552,7 @@ where
             non_primitive,
             d: _,
             ext_reads: _,
-            non_primitive_metadata: _,
+            dup_npo_outputs: _,
         } = &circuit_prover_data.preprocessed_columns;
         let prover_data = &circuit_prover_data.prover_data;
 

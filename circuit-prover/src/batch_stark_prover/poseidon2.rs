@@ -1490,12 +1490,7 @@ where
     let mut non_primitive_base: NonPrimitivePreprocessedMap<F> = HashMap::new();
     for (op_type, prep) in preprocessed.non_primitive.iter() {
         if op_type.as_str().starts_with("poseidon2_perm/") {
-            let dup_wids: Vec<bool> = preprocessed
-                .non_primitive_metadata
-                .get(op_type)
-                .and_then(|b| b.downcast_ref::<Vec<bool>>())
-                .cloned()
-                .unwrap_or_default();
+            let dup_wids = preprocessed.dup_npo_outputs.get(op_type);
 
             let mut prep_base: Vec<F> = prep
                 .iter()
@@ -1512,7 +1507,9 @@ where
                 for out_limb in &mut row.output_limbs {
                     if out_limb.out_ctl != F::ZERO {
                         let out_wid = F::as_canonical_u64(&out_limb.idx) as usize / D;
-                        let is_dup = dup_wids.get(out_wid).copied().unwrap_or(false);
+                        let is_dup = dup_wids
+                            .and_then(|d| d.get(out_wid).copied())
+                            .unwrap_or(false);
                         if is_dup {
                             out_limb.out_ctl = neg_one;
                         } else {

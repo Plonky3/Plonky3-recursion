@@ -140,7 +140,6 @@ where
         _inputs: &[Vec<WitnessId>],
         _outputs: &[Vec<WitnessId>],
         _preprocessed: &mut p3_circuit::PreprocessedColumns<F>,
-        _defined: &mut Vec<bool>,
     ) -> Result<(), p3_circuit::CircuitError> {
         Ok(())
     }

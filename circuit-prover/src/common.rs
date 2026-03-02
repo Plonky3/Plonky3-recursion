@@ -330,7 +330,7 @@ where
         non_primitive: non_primitive_output,
         d: D,
         ext_reads: preprocessed.ext_reads,
-        non_primitive_metadata: preprocessed.non_primitive_metadata,
+        dup_npo_outputs: preprocessed.dup_npo_outputs,
     };
 
     Ok((table_preps, preprocessed_columns))

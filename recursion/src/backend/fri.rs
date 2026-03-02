@@ -13,7 +13,7 @@ use p3_circuit_prover::batch_stark_prover::{
 use p3_circuit_prover::common::{NpoAirBuilder, NpoPreprocessor};
 use p3_circuit_prover::config::StarkField;
 use p3_circuit_prover::field_params::ExtractBinomialW;
-use p3_circuit_prover::{BatchStarkProver, Poseidon2Preprocessor, TableProver};
+use p3_circuit_prover::{Poseidon2Preprocessor, TableProver};
 use p3_commit::Pcs;
 use p3_field::extension::BinomiallyExtendable;
 use p3_field::{BasedVectorSpace, ExtensionField, PrimeCharacteristicRing, PrimeField64};
@@ -22,9 +22,7 @@ use p3_uni_stark::{StarkGenericConfig, SymbolicExpression, Val};
 
 use crate::ops::Poseidon2Config;
 use crate::public_inputs::{BatchStarkVerifierInputsBuilder, StarkVerifierInputsBuilder};
-use crate::recursion::{
-    PcsRecursionBackend, RecursionInput, RegisterNposForDegree, VerifierCircuitResult,
-};
+use crate::recursion::{PcsRecursionBackend, RecursionInput, VerifierCircuitResult};
 use crate::traits::RecursiveAir;
 use crate::verifier::{
     ObservableCommitment, VerificationError, verify_p3_batch_proof_circuit,
@@ -518,47 +516,5 @@ where
 
     fn non_primitive_air_builders(&self) -> Vec<Box<dyn NpoAirBuilder<SC, 4>>> {
         poseidon2_air_builders_d4()
-    }
-}
-
-impl<SC, const WIDTH: usize, const RATE: usize> RegisterNposForDegree<SC, 2>
-    for FriRecursionBackendD2<WIDTH, RATE>
-where
-    SC: FriRecursionConfig + Send + Sync,
-    Val<SC>: BinomiallyExtendable<2> + StarkField,
-    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
-    SC::Pcs: RecursivePcs<
-            SC,
-            SC::InputProof,
-            SC::OpeningProof,
-            SC::Commitment,
-            <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain,
-        >,
-{
-    fn register_npos(&self, prover: &mut BatchStarkProver<SC>) {
-        for p in poseidon2_table_provers_d2(self.0.challenger_perm_config) {
-            prover.register_table_prover(p);
-        }
-    }
-}
-
-impl<SC, const WIDTH: usize, const RATE: usize> RegisterNposForDegree<SC, 4>
-    for FriRecursionBackendD4<WIDTH, RATE>
-where
-    SC: FriRecursionConfig + Send + Sync,
-    Val<SC>: BinomiallyExtendable<4> + StarkField,
-    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
-    SC::Pcs: RecursivePcs<
-            SC,
-            SC::InputProof,
-            SC::OpeningProof,
-            SC::Commitment,
-            <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain,
-        >,
-{
-    fn register_npos(&self, prover: &mut BatchStarkProver<SC>) {
-        for p in poseidon2_table_provers_d4(self.0.challenger_perm_config) {
-            prover.register_table_prover(p);
-        }
     }
 }

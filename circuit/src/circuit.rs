@@ -1,8 +1,6 @@
-use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
-use core::any::Any;
 use core::fmt::Debug;
 use core::ops::{Add, Mul, Sub};
 
@@ -55,9 +53,10 @@ pub struct PreprocessedColumns<F> {
     /// as an extension-field value. This is used by creator tables to set their
     /// signed multiplicity on the `WitnessChecks` bus.
     pub ext_reads: Vec<u32>,
-    /// Plugin-owned metadata keyed by NPO type (e.g. duplicate-output bits).
-    /// Plugins write and read their own data; the circuit does not interpret it.
-    pub non_primitive_metadata: HashMap<NpoTypeId, Box<dyn Any + Send + Sync>>,
+    /// Per-NPO duplicate-output flags: `dup_npo_outputs[op_type][wid] == true` means
+    /// `WitnessId(wid)` was already defined by an earlier op and this NPO occurrence is
+    /// a reader, not the creator. Populated by `generate_preprocessed_columns`.
+    pub dup_npo_outputs: HashMap<NpoTypeId, Vec<bool>>,
 }
 
 impl<F: Field + Clone> Clone for PreprocessedColumns<F> {
@@ -67,7 +66,7 @@ impl<F: Field + Clone> Clone for PreprocessedColumns<F> {
             non_primitive: self.non_primitive.clone(),
             d: self.d,
             ext_reads: self.ext_reads.clone(),
-            non_primitive_metadata: HashMap::new(),
+            dup_npo_outputs: self.dup_npo_outputs.clone(),
         }
     }
 }
@@ -81,7 +80,7 @@ impl<F: Field> PreprocessedColumns<F> {
             non_primitive: NonPrimitivePreprocessedMap::new(),
             d: 1,
             ext_reads: Vec::new(),
-            non_primitive_metadata: HashMap::new(),
+            dup_npo_outputs: HashMap::new(),
         }
     }
 
@@ -95,7 +94,7 @@ impl<F: Field> PreprocessedColumns<F> {
             non_primitive: NonPrimitivePreprocessedMap::new(),
             d,
             ext_reads: Vec::new(),
-            non_primitive_metadata: HashMap::new(),
+            dup_npo_outputs: HashMap::new(),
         }
     }
 
@@ -388,7 +387,31 @@ impl<F: Field> Circuit<F> {
                     outputs,
                     ..
                 } => {
-                    executor.preprocess(inputs, outputs, &mut preprocessed, &mut defined)?;
+                    executor.preprocess(inputs, outputs, &mut preprocessed)?;
+
+                    let op_type = executor.op_type();
+                    let n_exposed = executor.num_exposed_outputs().unwrap_or(outputs.len());
+                    for out_limb in outputs.iter().take(n_exposed) {
+                        for wid in out_limb {
+                            let wid_idx = wid.0 as usize;
+                            if wid_idx < defined.len() && defined[wid_idx] {
+                                let dup = preprocessed
+                                    .dup_npo_outputs
+                                    .entry(op_type.clone())
+                                    .or_default();
+                                if wid_idx >= dup.len() {
+                                    dup.resize(wid_idx + 1, false);
+                                }
+                                dup[wid_idx] = true;
+                                preprocessed.increment_ext_reads(&[*wid]);
+                            } else {
+                                if wid_idx >= defined.len() {
+                                    defined.resize(wid_idx + 1, false);
+                                }
+                                defined[wid_idx] = true;
+                            }
+                        }
+                    }
                 }
                 Op::Hint { .. } => {
                     // Hints do not participate in preprocessed columns or table-backed ops.
