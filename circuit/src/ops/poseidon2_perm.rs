@@ -1061,6 +1061,7 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for Poseidon2Perm
         inputs: &[Vec<WitnessId>],
         outputs: &[Vec<WitnessId>],
         preprocessed: &mut PreprocessedColumns<F>,
+        defined: &mut Vec<bool>,
     ) -> Result<(), CircuitError> {
         let config = self.config;
         let width_ext = config.width_ext();
@@ -1154,6 +1155,34 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for Poseidon2Perm
             &self.op_type,
             &[new_start_val, merkle_path_val],
         );
+
+        let op_type_key = <Self as NonPrimitiveExecutor<F>>::op_type(self).clone();
+        let mut dup_wids: Vec<bool> = preprocessed
+            .non_primitive_metadata
+            .remove(&op_type_key)
+            .and_then(|b| b.downcast::<Vec<bool>>().ok())
+            .map(|b| *b)
+            .unwrap_or_default();
+        for out_limb in outputs.iter().take(2) {
+            for wid in out_limb {
+                let wid_idx = wid.0 as usize;
+                if wid_idx < defined.len() && defined[wid_idx] {
+                    if wid_idx >= dup_wids.len() {
+                        dup_wids.resize(wid_idx + 1, false);
+                    }
+                    dup_wids[wid_idx] = true;
+                    preprocessed.increment_ext_reads(&[*wid]);
+                } else {
+                    if wid_idx >= defined.len() {
+                        defined.resize(wid_idx + 1, false);
+                    }
+                    defined[wid_idx] = true;
+                }
+            }
+        }
+        preprocessed
+            .non_primitive_metadata
+            .insert(op_type_key, Box::new(dup_wids));
 
         Ok(())
     }

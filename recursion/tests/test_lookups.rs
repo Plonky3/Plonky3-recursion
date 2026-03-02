@@ -6,7 +6,7 @@ use p3_circuit::op::PrimitiveOpType;
 use p3_circuit::ops::{Poseidon2PermCall, generate_poseidon2_trace};
 use p3_circuit::{CircuitBuilder, Poseidon2PermOps};
 use p3_circuit_prover::air::{AluAir, ConstAir, PublicAir};
-use p3_circuit_prover::batch_stark_prover::PrimitiveTable;
+use p3_circuit_prover::batch_stark_prover::{PrimitiveTable, poseidon2_air_builders_d4};
 use p3_circuit_prover::common::{NpoPreprocessor, get_airs_and_degrees_with_prep};
 use p3_circuit_prover::{
     BatchStarkProof, BatchStarkProver, CircuitProverData, ConstraintProfile, Poseidon2Config,
@@ -111,6 +111,7 @@ fn test_wrong_multiplicities() {
         get_airs_and_degrees_with_prep::<MyConfig, _, 1>(
             &circuit,
             table_packing,
+            &[],
             &[],
             ConstraintProfile::Standard,
         )
@@ -591,6 +592,7 @@ fn get_test_circuit_proof() -> TestCircuitProofData {
         &circuit,
         table_packing,
         &[],
+        &[],
         ConstraintProfile::Standard,
     )
     .unwrap();
@@ -735,6 +737,7 @@ fn get_verifier_inputs_and_challenges(
         InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>>,
         InnerFri,
         LogUpGadget,
+        _,
         WIDTH,
         RATE,
         TRACE_D,
@@ -859,6 +862,7 @@ fn test_poseidon2_ctl_lookups() {
         &circuit,
         table_packing,
         &poseidon2_prep,
+        &poseidon2_air_builders_d4(),
         ConstraintProfile::Standard,
     )
     .unwrap();
@@ -980,6 +984,7 @@ fn test_poseidon2_chained_ctl_lookups() {
         &circuit,
         table_packing,
         &poseidon2_prep,
+        &poseidon2_air_builders_d4(),
         ConstraintProfile::Standard,
     )
     .unwrap();

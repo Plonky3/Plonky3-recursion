@@ -342,7 +342,7 @@ macro_rules! define_field_module {
                     }
                 }
 
-                fn enable_poseidon2_on_circuit(
+                fn prepare_circuit_for_verification(
                     &self,
                     circuit: &mut CircuitBuilder<Challenge>,
                 ) -> Result<(), VerificationError> {
@@ -462,7 +462,7 @@ macro_rules! define_field_module {
                     .with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup);
                     let params = ProveNextLayerParams {
                         table_packing,
-                        use_poseidon2_in_circuit: true,
+                        use_npos_in_circuit: true,
                         constraint_profile: ConstraintProfile::Standard,
                     };
                     let config = config_with_fri_params(fri_params);

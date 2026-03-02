@@ -335,7 +335,7 @@ macro_rules! define_field_module {
                     }
                 }
 
-                fn enable_poseidon2_on_circuit(
+                fn prepare_circuit_for_verification(
                     &self,
                     circuit: &mut CircuitBuilder<Challenge>,
                 ) -> Result<(), VerificationError> {
@@ -468,6 +468,7 @@ macro_rules! define_field_module {
                         &base_circuit,
                         table_packing_0,
                         &[],
+                        &[],
                         ConstraintProfile::Standard,
                     )
                     .unwrap();
@@ -499,15 +500,16 @@ macro_rules! define_field_module {
                     return;
                 }
 
-                let backend =
-                    FriRecursionBackend::<$backend_width, $backend_rate>::$backend_ctor($poseidon2_config);
+                let backend = FriRecursionBackend::<$backend_width, $backend_rate>::$backend_ctor(
+                    $poseidon2_config,
+                );
                 let mut output = RecursionOutput(proof_0, Rc::new(circuit_prover_data_0));
 
                 for layer in 1..=num_recursive_layers {
                     let params = ProveNextLayerParams {
                         table_packing: table_packing
                             .with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup),
-                        use_poseidon2_in_circuit: true,
+                        use_npos_in_circuit: true,
                         constraint_profile: ConstraintProfile::Standard,
                     };
                     let config = config_with_fri_params(fri_params);

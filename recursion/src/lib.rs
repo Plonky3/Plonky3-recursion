@@ -6,6 +6,7 @@ extern crate alloc;
 
 pub mod backend;
 pub mod challenger;
+pub mod challenger_perm;
 pub mod generation;
 pub mod pcs;
 pub mod prelude;
@@ -20,6 +21,7 @@ pub use backend::fri::FriRecursionConfig;
 /// FRI PCS backend for the unified recursion API. Use with [`prove_next_layer`] and a config implementing [`FriRecursionConfig`].
 pub use backend::{FriRecursionBackend, FriRecursionBackendD2, FriRecursionBackendD4};
 pub use challenger::CircuitChallenger;
+pub use challenger_perm::ChallengerPermConfig;
 pub use generation::{
     GenerationError, PcsGeneration, generate_batch_challenges, generate_challenges,
 };

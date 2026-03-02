@@ -1,6 +1,8 @@
+use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
+use core::any::Any;
 use core::fmt::Debug;
 use core::ops::{Add, Mul, Sub};
 
@@ -53,16 +55,9 @@ pub struct PreprocessedColumns<F> {
     /// as an extension-field value. This is used by creator tables to set their
     /// signed multiplicity on the `WitnessChecks` bus.
     pub ext_reads: Vec<u32>,
-    /// Tracks WitnessIds that are duplicate Poseidon2 rate outputs.
-    ///
-    /// Due to the circuit optimizer's witness_rewrite deduplication, two distinct Poseidon2
-    /// operations can end up sharing the same output WitnessId (when they hash identical inputs).
-    /// The FIRST operation is the creator; subsequent ones must be treated as readers (out_ctl=-1).
-    ///
-    /// `poseidon2_dup_wids[i] = true` means WitnessId(i) is a duplicate Poseidon2 output:
-    /// the creator was a previous op. Used by the prover to set out_ctl = -1 instead
-    /// of +ext_reads[i].
-    pub poseidon2_dup_wids: Vec<bool>,
+    /// Plugin-owned metadata keyed by NPO type (e.g. duplicate-output bits).
+    /// Plugins write and read their own data; the circuit does not interpret it.
+    pub non_primitive_metadata: HashMap<NpoTypeId, Box<dyn Any + Send + Sync>>,
 }
 
 impl<F: Field + Clone> Clone for PreprocessedColumns<F> {
@@ -72,7 +67,7 @@ impl<F: Field + Clone> Clone for PreprocessedColumns<F> {
             non_primitive: self.non_primitive.clone(),
             d: self.d,
             ext_reads: self.ext_reads.clone(),
-            poseidon2_dup_wids: self.poseidon2_dup_wids.clone(),
+            non_primitive_metadata: HashMap::new(),
         }
     }
 }
@@ -86,7 +81,7 @@ impl<F: Field> PreprocessedColumns<F> {
             non_primitive: NonPrimitivePreprocessedMap::new(),
             d: 1,
             ext_reads: Vec::new(),
-            poseidon2_dup_wids: Vec::new(),
+            non_primitive_metadata: HashMap::new(),
         }
     }
 
@@ -100,7 +95,7 @@ impl<F: Field> PreprocessedColumns<F> {
             non_primitive: NonPrimitivePreprocessedMap::new(),
             d,
             ext_reads: Vec::new(),
-            poseidon2_dup_wids: Vec::new(),
+            non_primitive_metadata: HashMap::new(),
         }
     }
 
@@ -393,29 +388,7 @@ impl<F: Field> Circuit<F> {
                     outputs,
                     ..
                 } => {
-                    executor.preprocess(inputs, outputs, &mut preprocessed)?;
-                    let op_type = executor.op_type();
-                    if op_type.as_str().starts_with("poseidon2_perm/") {
-                        for out_limb in outputs.iter().take(2) {
-                            for wid in out_limb {
-                                let wid_idx = wid.0 as usize;
-                                if wid_idx < defined.len() && defined[wid_idx] {
-                                    let dup_len = preprocessed.poseidon2_dup_wids.len();
-                                    if wid_idx >= dup_len {
-                                        preprocessed.poseidon2_dup_wids.resize(wid_idx + 1, false);
-                                    }
-                                    preprocessed.poseidon2_dup_wids[wid_idx] = true;
-                                    preprocessed.increment_ext_reads(&[*wid]);
-                                } else {
-                                    if wid_idx >= defined.len() {
-                                        defined.resize(wid_idx + 1, false);
-                                    }
-                                    defined[wid_idx] = true;
-                                }
-                            }
-                        }
-                    }
-                    // Other non-primitive ops: no special handling here.
+                    executor.preprocess(inputs, outputs, &mut preprocessed, &mut defined)?;
                 }
                 Op::Hint { .. } => {
                     // Hints do not participate in preprocessed columns or table-backed ops.

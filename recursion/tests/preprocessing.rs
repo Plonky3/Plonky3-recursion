@@ -330,7 +330,7 @@ fn test_batch_verifier_with_mixed_preprocessed() -> Result<(), VerificationError
     // 1. MulAir (has preprocessed columns)
     // 2. AddAirNoPreprocessed (no preprocessed columns)
     // 3. SubAirPartialPreprocessed (some preprocessed columns)
-    verify_batch_circuit::<_, _, _, _, _, _, WIDTH, RATE>(
+    verify_batch_circuit::<_, _, _, _, _, _, _, WIDTH, RATE>(
         &config,
         &airs,
         &mut circuit_builder,

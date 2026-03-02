@@ -22,7 +22,7 @@ use p3_uni_stark::{StarkGenericConfig, SymbolicExpression, Val};
 
 use super::{ObservableCommitment, VerificationError, recompose_quotient_from_chunks_circuit};
 use crate::challenger::CircuitChallenger;
-use crate::ops::Poseidon2Config;
+use crate::challenger_perm::ChallengerPermConfig;
 use crate::traits::{
     LookupMetadata, Recursive, RecursiveAir, RecursiveChallenger, RecursiveLookupGadget,
     RecursivePcs,
@@ -182,6 +182,7 @@ pub fn verify_p3_batch_proof_circuit<
     InputProof: Recursive<SC::Challenge>,
     OpeningProof: Recursive<SC::Challenge, Input = <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Proof>,
     LG: RecursiveLookupGadget<SC::Challenge>,
+    CP: ChallengerPermConfig,
     const WIDTH: usize,
     const RATE: usize,
     const TRACE_D: usize,
@@ -192,7 +193,7 @@ pub fn verify_p3_batch_proof_circuit<
     pcs_params: &PcsVerifierParams<SC, InputProof, OpeningProof, Comm>,
     common_data: &CommonData<SC>,
     lookup_gadget: &LG,
-    poseidon2_config: Poseidon2Config,
+    challenger_perm_config: CP,
     non_primitive_provers: &[Box<dyn TableProver<SC>>],
 ) -> Result<
     (
@@ -275,6 +276,7 @@ where
         InputProof,
         OpeningProof,
         LG,
+        CP,
         WIDTH,
         RATE,
     >(
@@ -286,7 +288,7 @@ where
         pcs_params,
         common,
         lookup_gadget,
-        poseidon2_config,
+        challenger_perm_config,
     )?;
 
     Ok((verifier_inputs, mmcs_op_ids))
@@ -311,6 +313,7 @@ pub fn verify_batch_circuit<
     InputProof: Recursive<SC::Challenge>,
     OpeningProof: Recursive<SC::Challenge>,
     LG: RecursiveLookupGadget<SC::Challenge>,
+    CP: ChallengerPermConfig,
     const WIDTH: usize,
     const RATE: usize,
 >(
@@ -322,7 +325,7 @@ pub fn verify_batch_circuit<
     pcs_params: &PcsVerifierParams<SC, InputProof, OpeningProof, Comm>,
     common: &CommonDataTargets<SC, Comm>,
     lookup_gadget: &LG,
-    poseidon2_config: crate::ops::Poseidon2Config,
+    challenger_perm_config: CP,
 ) -> Result<Vec<NonPrimitiveOpId>, VerificationError>
 where
     A: RecursiveAir<Val<SC>, SC::Challenge, LG>,
@@ -454,7 +457,7 @@ where
     // Challenger initialisation mirrors the native batch-STARK verifier transcript.
     // Native uses observe_base_as_algebra_element which decomposes to D coefficients,
     // so we use observe_ext to match.
-    let mut challenger = CircuitChallenger::<WIDTH, RATE>::new(poseidon2_config);
+    let mut challenger = CircuitChallenger::<WIDTH, RATE, CP>::new(challenger_perm_config);
     let inst_count_target = circuit.alloc_const(
         SC::Challenge::from_usize(n_instances),
         "number of instances",
@@ -522,7 +525,7 @@ where
     }
 
     // Fetch lookups and sample their challenges.
-    let challenges_per_instance = get_perm_challenges::<SC, WIDTH, RATE, LG>(
+    let challenges_per_instance = get_perm_challenges::<SC, CP, WIDTH, RATE, LG>(
         circuit,
         &mut challenger,
         all_lookups,
@@ -747,14 +750,14 @@ where
     // Native observes per-instance: trace_local, trace_next, then quotient chunks,
     // then preprocessed, then permutation.
     // The flattened structure has the wrong order, so we observe from instances directly.
-    observe_opened_values_circuit::<SC, WIDTH, RATE>(
+    observe_opened_values_circuit::<SC, CP, WIDTH, RATE>(
         circuit,
         &mut challenger,
         instances,
         &quotient_degrees,
     );
 
-    let pcs_challenges = SC::Pcs::get_challenges_circuit::<WIDTH, RATE>(
+    let pcs_challenges = SC::Pcs::get_challenges_circuit::<WIDTH, RATE, CP>(
         circuit,
         &mut challenger,
         &proof_targets.opening_proof,
@@ -762,7 +765,7 @@ where
         pcs_params,
     )?;
 
-    let mmcs_op_ids = pcs.verify_circuit::<WIDTH, RATE>(
+    let mmcs_op_ids = pcs.verify_circuit::<WIDTH, RATE, CP>(
         circuit,
         &pcs_challenges,
         &mut challenger,
@@ -901,12 +904,13 @@ where
 
 pub(crate) fn get_perm_challenges<
     SC: StarkGenericConfig,
+    CP: ChallengerPermConfig,
     const WIDTH: usize,
     const RATE: usize,
     LG: LookupGadget,
 >(
     circuit: &mut CircuitBuilder<SC::Challenge>,
-    challenger: &mut CircuitChallenger<WIDTH, RATE>,
+    challenger: &mut CircuitChallenger<WIDTH, RATE, CP>,
     all_lookups: &[Vec<Lookup<Val<SC>>>],
     lookup_gadget: &LG,
 ) -> Vec<Vec<Target>>
@@ -972,9 +976,14 @@ fn lookup_data_to_pv_index(
 /// 2. Quotient round: for each instance, for each chunk, observe quotient
 /// 3. Preprocessed round: for each instance, observe prep_local then prep_next
 /// 4. Permutation round: for each instance, observe perm_local then perm_next
-fn observe_opened_values_circuit<SC, const WIDTH: usize, const RATE: usize>(
+fn observe_opened_values_circuit<
+    SC,
+    CP: ChallengerPermConfig,
+    const WIDTH: usize,
+    const RATE: usize,
+>(
     circuit: &mut CircuitBuilder<SC::Challenge>,
-    challenger: &mut CircuitChallenger<WIDTH, RATE>,
+    challenger: &mut CircuitChallenger<WIDTH, RATE, CP>,
     instances: &[OpenedValuesTargetsWithLookups<SC>],
     quotient_degrees: &[usize],
 ) where

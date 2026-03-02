@@ -36,13 +36,15 @@ use p3_poseidon2_circuit_air::{
 use p3_uni_stark::{
     ProverConstraintFolder, SymbolicAirBuilder, SymbolicExpression, VerifierConstraintFolder,
 };
+use p3_util::log2_ceil_usize;
 
 use super::dynamic_air::{BatchAir, BatchTableInstance, DynamicAirEntry, TableProver};
 use crate::batch_stark_prover::{
     BABY_BEAR_MODULUS, KOALA_BEAR_MODULUS, NonPrimitiveTableEntry, TablePacking,
 };
-use crate::common::NpoPreprocessor;
+use crate::common::{CircuitTableAir, NpoAirBuilder, NpoPreprocessor};
 use crate::config::{BabyBearConfig, GoldilocksConfig, KoalaBearConfig, StarkField};
+use crate::constraint_profile::ConstraintProfile;
 
 pub enum Poseidon2AirWrapperInner {
     BabyBearD4Width16(Box<Poseidon2CircuitAirBabyBearD4Width16>),
@@ -1483,11 +1485,18 @@ where
     // Phase 2: update Poseidon2 out_ctl values in the base-field preprocessed data.
     //
     // Poseidon2 duplicate creators (from optimizer witness_rewrite deduplication)
-    // are recorded in `preprocessed.poseidon2_dup_wids`. For those, out_ctl = -1
+    // are recorded in plugin-owned metadata under this op_type. For those, out_ctl = -1
     // (reader contribution). For first-occurrence creators, out_ctl = +ext_reads[wid].
     let mut non_primitive_base: NonPrimitivePreprocessedMap<F> = HashMap::new();
     for (op_type, prep) in preprocessed.non_primitive.iter() {
         if op_type.as_str().starts_with("poseidon2_perm/") {
+            let dup_wids: Vec<bool> = preprocessed
+                .non_primitive_metadata
+                .get(op_type)
+                .and_then(|b| b.downcast_ref::<Vec<bool>>())
+                .cloned()
+                .unwrap_or_default();
+
             let mut prep_base: Vec<F> = prep
                 .iter()
                 .map(|v| v.as_base().ok_or(CircuitError::InvalidPreprocessedValues))
@@ -1503,11 +1512,7 @@ where
                 for out_limb in &mut row.output_limbs {
                     if out_limb.out_ctl != F::ZERO {
                         let out_wid = F::as_canonical_u64(&out_limb.idx) as usize / D;
-                        let is_dup = preprocessed
-                            .poseidon2_dup_wids
-                            .get(out_wid)
-                            .copied()
-                            .unwrap_or(false);
+                        let is_dup = dup_wids.get(out_wid).copied().unwrap_or(false);
                         if is_dup {
                             out_limb.out_ctl = neg_one;
                         } else {
@@ -1593,4 +1598,89 @@ impl NpoPreprocessor<Goldilocks> for Poseidon2Preprocessor {
         }
         Ok(NonPrimitivePreprocessedMap::new())
     }
+}
+
+#[derive(Clone, Default)]
+pub struct Poseidon2AirBuilderD2;
+
+impl<SC> NpoAirBuilder<SC, 2> for Poseidon2AirBuilderD2
+where
+    SC: StarkGenericConfig + 'static + Send + Sync,
+    Val<SC>: StarkField + BinomiallyExtendable<2>,
+    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+{
+    fn try_build(
+        &self,
+        op_type: &NpoTypeId,
+        prep_base: &[Val<SC>],
+        min_height: usize,
+        constraint_profile: ConstraintProfile,
+    ) -> Option<(CircuitTableAir<SC, 2>, usize)> {
+        let suffix = op_type.as_str().strip_prefix("poseidon2_perm/")?;
+        let config = Poseidon2Config::from_variant_name(suffix)?;
+        let Poseidon2Config::GoldilocksD2Width8 = config else {
+            return None;
+        };
+        let prover = Poseidon2ProverD2(Poseidon2Prover::new(config, constraint_profile));
+        let wrapper = prover
+            .0
+            .wrapper_from_config_with_preprocessed(prep_base.to_vec(), min_height);
+        let width = prover.0.preprocessed_width_from_config();
+        let num_rows = prep_base.len().div_ceil(width);
+        let degree = log2_ceil_usize(
+            num_rows
+                .next_power_of_two()
+                .max(min_height.next_power_of_two()),
+        );
+        Some((CircuitTableAir::Dynamic(wrapper), degree))
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct Poseidon2AirBuilderD4;
+
+impl<SC> NpoAirBuilder<SC, 4> for Poseidon2AirBuilderD4
+where
+    SC: StarkGenericConfig + 'static + Send + Sync,
+    Val<SC>: StarkField + BinomiallyExtendable<4>,
+    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+{
+    fn try_build(
+        &self,
+        op_type: &NpoTypeId,
+        prep_base: &[Val<SC>],
+        min_height: usize,
+        constraint_profile: ConstraintProfile,
+    ) -> Option<(CircuitTableAir<SC, 4>, usize)> {
+        let suffix = op_type.as_str().strip_prefix("poseidon2_perm/")?;
+        let config = Poseidon2Config::from_variant_name(suffix)?;
+        let config = match config {
+            Poseidon2Config::BabyBearD1Width16
+            | Poseidon2Config::BabyBearD4Width16
+            | Poseidon2Config::BabyBearD4Width24
+            | Poseidon2Config::KoalaBearD1Width16
+            | Poseidon2Config::KoalaBearD4Width16
+            | Poseidon2Config::KoalaBearD4Width24 => config,
+            _ => return None,
+        };
+        let prover = Poseidon2Prover::new(config, constraint_profile);
+        let wrapper = prover.wrapper_from_config_with_preprocessed(prep_base.to_vec(), min_height);
+        let width = prover.preprocessed_width_from_config();
+        let num_rows = prep_base.len().div_ceil(width);
+        let degree = log2_ceil_usize(
+            num_rows
+                .next_power_of_two()
+                .max(min_height.next_power_of_two()),
+        );
+        Some((CircuitTableAir::Dynamic(wrapper), degree))
+    }
+}
+
+/// Returns a type-erased Poseidon2 preprocessor for use when `Val<SC>` is BabyBear, Goldilocks, or KoalaBear.
+pub fn poseidon2_preprocessor<F>() -> Box<dyn NpoPreprocessor<F>>
+where
+    F: StarkField + PrimeField64,
+    Poseidon2Preprocessor: NpoPreprocessor<F>,
+{
+    Box::new(Poseidon2Preprocessor)
 }

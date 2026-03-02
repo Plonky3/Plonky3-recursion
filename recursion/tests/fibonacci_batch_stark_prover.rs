@@ -3,6 +3,7 @@ mod common;
 use p3_batch_stark::ProverData;
 use p3_circuit::CircuitBuilder;
 use p3_circuit::ops::generate_poseidon2_trace;
+use p3_circuit_prover::batch_stark_prover::poseidon2_air_builders_d4;
 use p3_circuit_prover::common::{NpoPreprocessor, get_airs_and_degrees_with_prep};
 use p3_circuit_prover::{
     BatchStarkProver, CircuitProverData, ConstraintProfile, Poseidon2Preprocessor, TablePacking,
@@ -84,6 +85,7 @@ fn test_fibonacci_batch_verifier() {
         &circuit,
         table_packing,
         &[],
+        &[],
         ConstraintProfile::Standard,
     )
     .unwrap();
@@ -155,6 +157,7 @@ fn test_fibonacci_batch_verifier() {
         InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>>,
         InnerFri,
         LogUpGadget,
+        _,
         WIDTH,
         RATE,
         TRACE_D,
@@ -190,6 +193,7 @@ fn test_fibonacci_batch_verifier() {
             &verification_circuit,
             verification_table_packing,
             &poseidon2_prep,
+            &poseidon2_air_builders_d4(),
             ConstraintProfile::Standard,
         )
         .unwrap();

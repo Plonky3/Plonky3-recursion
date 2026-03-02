@@ -4,6 +4,7 @@ use p3_batch_stark::ProverData;
 use p3_circuit::op::{NonPrimitiveOpPrivateData, NpoTypeId};
 use p3_circuit::ops::{Poseidon2PermPrivateData, generate_poseidon2_trace};
 use p3_circuit::{CircuitBuilder, ExprId, Poseidon2PermOps};
+use p3_circuit_prover::batch_stark_prover::poseidon2_air_builders_d4;
 use p3_circuit_prover::common::{NpoPreprocessor, get_airs_and_degrees_with_prep};
 use p3_circuit_prover::config::KoalaBearConfig;
 use p3_circuit_prover::{
@@ -224,6 +225,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             &circuit,
             table_packing,
             &poseidon2_prep,
+            &poseidon2_air_builders_d4(),
             ConstraintProfile::Standard,
         )?;
     let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();

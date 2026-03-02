@@ -1,27 +1,36 @@
 //! FRI PCS backend for the unified recursion API.
 
+use alloc::boxed::Box;
+use alloc::string::ToString;
 use alloc::vec::Vec;
+use alloc::{format, vec};
 
 use p3_circuit::{CircuitBuilder, CircuitRunner, NonPrimitiveOpId};
-use p3_circuit_prover::BatchStarkProver;
+use p3_circuit_prover::batch_stark_prover::{
+    poseidon2_air_builders_d2, poseidon2_air_builders_d4, poseidon2_preprocessor,
+    poseidon2_table_provers_d2, poseidon2_table_provers_d4,
+};
+use p3_circuit_prover::common::{NpoAirBuilder, NpoPreprocessor};
+use p3_circuit_prover::config::StarkField;
 use p3_circuit_prover::field_params::ExtractBinomialW;
+use p3_circuit_prover::{BatchStarkProver, Poseidon2Preprocessor, TableProver};
 use p3_commit::Pcs;
 use p3_field::extension::BinomiallyExtendable;
-use p3_field::{BasedVectorSpace, PrimeField64};
+use p3_field::{BasedVectorSpace, ExtensionField, PrimeCharacteristicRing, PrimeField64};
 use p3_lookup::logup::LogUpGadget;
-use p3_uni_stark::{StarkGenericConfig, Val};
+use p3_uni_stark::{StarkGenericConfig, SymbolicExpression, Val};
 
 use crate::ops::Poseidon2Config;
 use crate::public_inputs::{BatchStarkVerifierInputsBuilder, StarkVerifierInputsBuilder};
 use crate::recursion::{
-    PcsRecursionBackend, RecursionInput, RegisterPoseidon2ForDegree, VerifierCircuitResult,
+    PcsRecursionBackend, RecursionInput, RegisterNposForDegree, VerifierCircuitResult,
 };
 use crate::traits::RecursiveAir;
 use crate::verifier::{
     ObservableCommitment, VerificationError, verify_p3_batch_proof_circuit,
     verify_p3_uni_proof_circuit,
 };
-use crate::{Recursive, RecursivePcs};
+use crate::{ChallengerPermConfig, Recursive, RecursivePcs};
 
 /// Config that uses FRI with Merkle-tree MMCS and fixed constants (WIDTH, RATE, DIGEST_ELEMS).
 /// Implement this for your StarkConfig to use [`FriRecursionBackend`].
@@ -64,8 +73,8 @@ where
     where
         A: RecursiveAir<Val<Self>, Self::Challenge, LogUpGadget>;
 
-    /// Enable Poseidon2 permutation on the circuit (for MMCS verification). Called by the backend before building the verifier.
-    fn enable_poseidon2_on_circuit(
+    /// Prepare the circuit for verification (e.g. enable challenger permutation and NPOs). Called by the backend before building the verifier.
+    fn prepare_circuit_for_verification(
         &self,
         circuit: &mut CircuitBuilder<Self::Challenge>,
     ) -> Result<(), VerificationError>;
@@ -91,26 +100,38 @@ where
     ) -> Result<(), &'static str>;
 }
 
-/// FRI-based recursion backend. Holds Poseidon2 config; verifier params come from the config via [`FriRecursionConfig::pcs_verifier_params`].
-/// `WIDTH` and `RATE` are the Poseidon2 circuit parameters (typically 16 and 8).
+/// FRI-based recursion backend, holding the challenger permutation config.
+/// The verifier params come from the config via [`FriRecursionConfig::pcs_verifier_params`].
+/// `WIDTH` and `RATE` are the permutation circuit parameters (typically 16 and 8).
+// TODO: Make this generic over the challenger permutation config.
 #[derive(Clone)]
 pub struct FriRecursionBackend<const WIDTH: usize = 16, const RATE: usize = 8> {
-    pub poseidon2_config: Poseidon2Config,
+    pub challenger_perm_config: Poseidon2Config,
 }
 
 impl<const WIDTH: usize, const RATE: usize> FriRecursionBackend<WIDTH, RATE> {
-    pub const fn new(poseidon2_config: Poseidon2Config) -> Self {
-        Self { poseidon2_config }
+    pub const fn new(challenger_perm_config: Poseidon2Config) -> Self {
+        Self {
+            challenger_perm_config,
+        }
     }
 
     /// For Goldilocks (D=2). Use this when `Val<SC>` is Goldilocks.
-    pub const fn new_d2(poseidon2_config: Poseidon2Config) -> FriRecursionBackendD2<WIDTH, RATE> {
-        FriRecursionBackendD2(Self { poseidon2_config })
+    pub const fn new_d2(
+        challenger_perm_config: Poseidon2Config,
+    ) -> FriRecursionBackendD2<WIDTH, RATE> {
+        FriRecursionBackendD2(Self {
+            challenger_perm_config,
+        })
     }
 
     /// For BabyBear/KoalaBear (D=4). Use this when `Val<SC>` is BabyBear or KoalaBear.
-    pub const fn new_d4(poseidon2_config: Poseidon2Config) -> FriRecursionBackendD4<WIDTH, RATE> {
-        FriRecursionBackendD4(Self { poseidon2_config })
+    pub const fn new_d4(
+        challenger_perm_config: Poseidon2Config,
+    ) -> FriRecursionBackendD4<WIDTH, RATE> {
+        FriRecursionBackendD4(Self {
+            challenger_perm_config,
+        })
     }
 }
 
@@ -185,9 +206,7 @@ where
                 },
             ) => Ok(builder.pack_values(table_public_inputs, &proof.proof, common_data)),
             _ => Err(VerificationError::InvalidProofShape(
-                alloc::string::ToString::to_string(
-                    "RecursionInput variant does not match verifier result",
-                ),
+                "RecursionInput variant does not match verifier result".to_string(),
             )),
         }
     }
@@ -204,9 +223,7 @@ fn build_verifier_circuit_impl<SC, A, const WIDTH: usize, const RATE: usize>(
     prev: &RecursionInput<'_, SC, A>,
     config: &SC,
     circuit: &mut CircuitBuilder<SC::Challenge>,
-    non_primitive_provers: &[alloc::boxed::Box<
-        dyn p3_circuit_prover::batch_stark_prover::TableProver<SC>,
-    >],
+    non_primitive_provers: &[Box<dyn TableProver<SC>>],
 ) -> Result<FriVerifierResult<SC>, VerificationError>
 where
     SC: FriRecursionConfig + Send + Sync + 'static,
@@ -214,12 +231,11 @@ where
     Val<SC>: PrimeField64,
     SC::Challenge: BasedVectorSpace<Val<SC>>
         + From<Val<SC>>
-        + p3_field::ExtensionField<Val<SC>>
-        + p3_field::PrimeCharacteristicRing
+        + ExtensionField<Val<SC>>
+        + PrimeCharacteristicRing
         + ExtractBinomialW<Val<SC>>,
     <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain: Clone,
-    p3_uni_stark::SymbolicExpression<SC::Challenge>:
-        From<p3_uni_stark::SymbolicExpression<Val<SC>>>,
+    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
     SC::Pcs: RecursivePcs<
             SC,
             SC::InputProof,
@@ -248,6 +264,7 @@ where
                 SC::Commitment,
                 SC::InputProof,
                 SC::OpeningProof,
+                _,
                 WIDTH,
                 RATE,
             >(
@@ -258,7 +275,7 @@ where
                 &verifier_inputs.air_public_targets,
                 &verifier_inputs.preprocessed_commit,
                 config.pcs_verifier_params(),
-                backend.poseidon2_config,
+                backend.challenger_perm_config,
             )?;
             Ok(FriVerifierResult::UniStark(verifier_inputs, op_ids))
         }
@@ -275,6 +292,7 @@ where
                     SC::InputProof,
                     SC::OpeningProof,
                     _,
+                    _,
                     WIDTH,
                     RATE,
                     1,
@@ -285,7 +303,7 @@ where
                     config.pcs_verifier_params(),
                     common_data,
                     &lookup_gadget,
-                    backend.poseidon2_config,
+                    backend.challenger_perm_config,
                     non_primitive_provers,
                 )?,
                 2 => verify_p3_batch_proof_circuit::<
@@ -293,6 +311,7 @@ where
                     SC::Commitment,
                     SC::InputProof,
                     SC::OpeningProof,
+                    _,
                     _,
                     WIDTH,
                     RATE,
@@ -304,7 +323,7 @@ where
                     config.pcs_verifier_params(),
                     common_data,
                     &lookup_gadget,
-                    backend.poseidon2_config,
+                    backend.challenger_perm_config,
                     non_primitive_provers,
                 )?,
                 4 => verify_p3_batch_proof_circuit::<
@@ -312,6 +331,7 @@ where
                     SC::Commitment,
                     SC::InputProof,
                     SC::OpeningProof,
+                    _,
                     _,
                     WIDTH,
                     RATE,
@@ -323,11 +343,11 @@ where
                     config.pcs_verifier_params(),
                     common_data,
                     &lookup_gadget,
-                    backend.poseidon2_config,
+                    backend.challenger_perm_config,
                     non_primitive_provers,
                 )?,
                 d => {
-                    return Err(VerificationError::InvalidProofShape(alloc::format!(
+                    return Err(VerificationError::InvalidProofShape(format!(
                         "unsupported batch proof ext_degree {}",
                         d
                     )));
@@ -339,22 +359,20 @@ where
     }
 }
 
-impl<SC, A, const WIDTH: usize, const RATE: usize> PcsRecursionBackend<SC, A>
+impl<SC, A, const WIDTH: usize, const RATE: usize> PcsRecursionBackend<SC, A, 2>
     for FriRecursionBackendD2<WIDTH, RATE>
 where
     SC: FriRecursionConfig + Send + Sync + 'static,
     A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
-    Val<SC>: PrimeField64
-        + p3_field::extension::BinomiallyExtendable<2>
-        + p3_circuit_prover::config::StarkField,
+    Val<SC>: PrimeField64 + BinomiallyExtendable<2> + StarkField,
+    Poseidon2Preprocessor: NpoPreprocessor<Val<SC>>,
     SC::Challenge: BasedVectorSpace<Val<SC>>
         + From<Val<SC>>
-        + p3_field::ExtensionField<Val<SC>>
-        + p3_field::PrimeCharacteristicRing
+        + ExtensionField<Val<SC>>
+        + PrimeCharacteristicRing
         + ExtractBinomialW<Val<SC>>,
     <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain: Clone,
-    p3_uni_stark::SymbolicExpression<SC::Challenge>:
-        From<p3_uni_stark::SymbolicExpression<Val<SC>>>,
+    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
     SC::Pcs: RecursivePcs<
             SC,
             SC::InputProof,
@@ -370,7 +388,7 @@ where
         config: &SC,
         circuit: &mut CircuitBuilder<SC::Challenge>,
     ) -> Result<(), VerificationError> {
-        config.enable_poseidon2_on_circuit(circuit)
+        config.prepare_circuit_for_verification(circuit)
     }
 
     fn build_verifier_circuit(
@@ -381,9 +399,9 @@ where
     ) -> Result<Self::VerifierResult, VerificationError> {
         let provers = match prev {
             RecursionInput::BatchStark { proof, .. } => {
-                PcsRecursionBackend::<SC, A>::non_primitive_provers(self, proof.ext_degree)
+                PcsRecursionBackend::<SC, A, 2>::non_primitive_provers(self, proof.ext_degree)
             }
-            _ => alloc::vec::Vec::new(),
+            _ => Vec::new(),
         };
         build_verifier_circuit_impl(&self.0, prev, config, circuit, &provers)
     }
@@ -401,42 +419,41 @@ where
         })
     }
 
-    fn poseidon2_config_for_circuit(&self) -> Option<Poseidon2Config> {
-        Some(self.0.poseidon2_config)
+    fn challenger_perm_config(&self) -> Option<Box<dyn ChallengerPermConfig>> {
+        Some(Box::new(self.0.challenger_perm_config))
     }
 
-    fn non_primitive_provers(
-        &self,
-        ext_degree: usize,
-    ) -> alloc::vec::Vec<
-        alloc::boxed::Box<dyn p3_circuit_prover::batch_stark_prover::TableProver<SC>>,
-    > {
+    fn non_primitive_preprocessors(&self) -> Vec<Box<dyn NpoPreprocessor<Val<SC>>>> {
+        vec![poseidon2_preprocessor::<Val<SC>>()]
+    }
+
+    fn non_primitive_provers(&self, ext_degree: usize) -> Vec<Box<dyn TableProver<SC>>> {
         if ext_degree == 2 {
-            p3_circuit_prover::batch_stark_prover::poseidon2_table_provers_d2(
-                self.0.poseidon2_config,
-            )
+            poseidon2_table_provers_d2(self.0.challenger_perm_config)
         } else {
-            alloc::vec::Vec::new()
+            Vec::new()
         }
+    }
+
+    fn non_primitive_air_builders(&self) -> Vec<Box<dyn NpoAirBuilder<SC, 2>>> {
+        poseidon2_air_builders_d2()
     }
 }
 
-impl<SC, A, const WIDTH: usize, const RATE: usize> PcsRecursionBackend<SC, A>
+impl<SC, A, const WIDTH: usize, const RATE: usize> PcsRecursionBackend<SC, A, 4>
     for FriRecursionBackendD4<WIDTH, RATE>
 where
     SC: FriRecursionConfig + Send + Sync + 'static,
     A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
-    Val<SC>: PrimeField64
-        + p3_field::extension::BinomiallyExtendable<4>
-        + p3_circuit_prover::config::StarkField,
+    Val<SC>: PrimeField64 + BinomiallyExtendable<4> + StarkField,
+    Poseidon2Preprocessor: NpoPreprocessor<Val<SC>>,
     SC::Challenge: BasedVectorSpace<Val<SC>>
         + From<Val<SC>>
-        + p3_field::ExtensionField<Val<SC>>
-        + p3_field::PrimeCharacteristicRing
+        + ExtensionField<Val<SC>>
+        + PrimeCharacteristicRing
         + ExtractBinomialW<Val<SC>>,
     <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain: Clone,
-    p3_uni_stark::SymbolicExpression<SC::Challenge>:
-        From<p3_uni_stark::SymbolicExpression<Val<SC>>>,
+    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
     SC::Pcs: RecursivePcs<
             SC,
             SC::InputProof,
@@ -452,7 +469,7 @@ where
         config: &SC,
         circuit: &mut CircuitBuilder<SC::Challenge>,
     ) -> Result<(), VerificationError> {
-        config.enable_poseidon2_on_circuit(circuit)
+        config.prepare_circuit_for_verification(circuit)
     }
 
     fn build_verifier_circuit(
@@ -463,9 +480,9 @@ where
     ) -> Result<Self::VerifierResult, VerificationError> {
         let provers = match prev {
             RecursionInput::BatchStark { proof, .. } => {
-                PcsRecursionBackend::<SC, A>::non_primitive_provers(self, proof.ext_degree)
+                PcsRecursionBackend::<SC, A, 4>::non_primitive_provers(self, proof.ext_degree)
             }
-            _ => alloc::vec::Vec::new(),
+            _ => Vec::new(),
         };
         build_verifier_circuit_impl(&self.0, prev, config, circuit, &provers)
     }
@@ -483,53 +500,54 @@ where
         })
     }
 
-    fn poseidon2_config_for_circuit(&self) -> Option<Poseidon2Config> {
-        Some(self.0.poseidon2_config)
+    fn challenger_perm_config(&self) -> Option<Box<dyn ChallengerPermConfig>> {
+        Some(Box::new(self.0.challenger_perm_config))
     }
 
-    fn non_primitive_provers(
-        &self,
-        ext_degree: usize,
-    ) -> alloc::vec::Vec<
-        alloc::boxed::Box<dyn p3_circuit_prover::batch_stark_prover::TableProver<SC>>,
-    > {
+    fn non_primitive_preprocessors(&self) -> Vec<Box<dyn NpoPreprocessor<Val<SC>>>> {
+        vec![poseidon2_preprocessor::<Val<SC>>()]
+    }
+
+    fn non_primitive_provers(&self, ext_degree: usize) -> Vec<Box<dyn TableProver<SC>>> {
         if ext_degree == 4 {
-            p3_circuit_prover::batch_stark_prover::poseidon2_table_provers_d4(
-                self.0.poseidon2_config,
-            )
+            poseidon2_table_provers_d4(self.0.challenger_perm_config)
         } else {
-            alloc::vec::Vec::new()
+            Vec::new()
+        }
+    }
+
+    fn non_primitive_air_builders(&self) -> Vec<Box<dyn NpoAirBuilder<SC, 4>>> {
+        poseidon2_air_builders_d4()
+    }
+}
+
+impl<SC, const WIDTH: usize, const RATE: usize> RegisterNposForDegree<SC, 2>
+    for FriRecursionBackendD2<WIDTH, RATE>
+where
+    SC: FriRecursionConfig + Send + Sync,
+    Val<SC>: BinomiallyExtendable<2> + StarkField,
+    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+    SC::Pcs: RecursivePcs<
+            SC,
+            SC::InputProof,
+            SC::OpeningProof,
+            SC::Commitment,
+            <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain,
+        >,
+{
+    fn register_npos(&self, prover: &mut BatchStarkProver<SC>) {
+        for p in poseidon2_table_provers_d2(self.0.challenger_perm_config) {
+            prover.register_table_prover(p);
         }
     }
 }
 
-impl<SC, const WIDTH: usize, const RATE: usize> RegisterPoseidon2ForDegree<SC, 2>
-    for FriRecursionBackendD2<WIDTH, RATE>
-where
-    SC: FriRecursionConfig + Send + Sync,
-    Val<SC>: BinomiallyExtendable<2> + p3_circuit_prover::config::StarkField,
-    p3_uni_stark::SymbolicExpression<SC::Challenge>:
-        From<p3_uni_stark::SymbolicExpression<Val<SC>>>,
-    SC::Pcs: RecursivePcs<
-            SC,
-            SC::InputProof,
-            SC::OpeningProof,
-            SC::Commitment,
-            <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain,
-        >,
-{
-    fn register_poseidon2(&self, prover: &mut BatchStarkProver<SC>, config: Poseidon2Config) {
-        prover.register_poseidon2_table_d2(config);
-    }
-}
-
-impl<SC, const WIDTH: usize, const RATE: usize> RegisterPoseidon2ForDegree<SC, 4>
+impl<SC, const WIDTH: usize, const RATE: usize> RegisterNposForDegree<SC, 4>
     for FriRecursionBackendD4<WIDTH, RATE>
 where
     SC: FriRecursionConfig + Send + Sync,
-    Val<SC>: BinomiallyExtendable<4> + p3_circuit_prover::config::StarkField,
-    p3_uni_stark::SymbolicExpression<SC::Challenge>:
-        From<p3_uni_stark::SymbolicExpression<Val<SC>>>,
+    Val<SC>: BinomiallyExtendable<4> + StarkField,
+    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
     SC::Pcs: RecursivePcs<
             SC,
             SC::InputProof,
@@ -538,7 +556,9 @@ where
             <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain,
         >,
 {
-    fn register_poseidon2(&self, prover: &mut BatchStarkProver<SC>, config: Poseidon2Config) {
-        prover.register_poseidon2_table(config);
+    fn register_npos(&self, prover: &mut BatchStarkProver<SC>) {
+        for p in poseidon2_table_provers_d4(self.0.challenger_perm_config) {
+            prover.register_table_prover(p);
+        }
     }
 }

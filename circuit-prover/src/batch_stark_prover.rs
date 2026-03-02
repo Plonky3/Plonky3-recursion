@@ -14,7 +14,7 @@ use p3_circuit::PreprocessedColumns;
 use p3_circuit::op::{NpoTypeId, Poseidon2Config, PrimitiveOpType};
 use p3_circuit::tables::Traces;
 use p3_field::extension::{BinomialExtensionField, BinomiallyExtendable};
-use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing, PrimeField};
+use p3_field::{BasedVectorSpace, Field, PrimeField};
 use p3_lookup::folder::{ProverConstraintFolderWithLookups, VerifierConstraintFolderWithLookups};
 use p3_lookup::lookup_traits::Lookup;
 use p3_matrix::dense::RowMajorMatrix;
@@ -25,7 +25,7 @@ use tracing::instrument;
 
 use crate::air::{AluAir, ConstAir, PublicAir};
 use crate::batch_stark_prover::dynamic_air::transmute_traces;
-use crate::common::CircuitTableAir;
+use crate::common::{CircuitTableAir, NpoAirBuilder};
 use crate::config::StarkField;
 use crate::constraint_profile::ConstraintProfile;
 use crate::field_params::ExtractBinomialW;
@@ -39,8 +39,8 @@ pub use dynamic_air::{
 };
 pub use packing::{TablePacking, TraceLengths};
 pub use poseidon2::{
-    Poseidon2AirWrapperInner, Poseidon2Preprocessor, Poseidon2Prover, Poseidon2ProverD2,
-    poseidon2_verifier_air_from_config,
+    Poseidon2AirBuilderD2, Poseidon2AirBuilderD4, Poseidon2AirWrapperInner, Poseidon2Preprocessor,
+    Poseidon2Prover, Poseidon2ProverD2, poseidon2_preprocessor, poseidon2_verifier_air_from_config,
 };
 
 pub const BABY_BEAR_MODULUS: u64 = 0x7800_0001;
@@ -552,7 +552,7 @@ where
             non_primitive,
             d: _,
             ext_reads: _,
-            poseidon2_dup_wids: _,
+            non_primitive_metadata: _,
         } = &circuit_prover_data.preprocessed_columns;
         let prover_data = &circuit_prover_data.prover_data;
 
@@ -777,31 +777,19 @@ where
                 .map(|inst| inst.air.preprocessed_trace())
                 .collect();
 
-            // The `batch_instance_dN` methods regenerate Poseidon2 preprocessed data from
-            // runtime ops using `extract_preprocessed_from_operations`. This omits changes
-            // done like for duplicate Poseidon2 outputs.
-            //
-            // Hence, we override with the committed preprocessed data so the debug
-            // lookup check is consistent with the committed preprocessed trace.
             for (j, instance) in non_primitives.iter().enumerate() {
-                if instance.op_type.as_str().starts_with("poseidon2_perm/")
-                    && let Some(cfg) = instance
-                        .op_type
-                        .as_str()
-                        .strip_prefix("poseidon2_perm/")
-                        .and_then(Poseidon2Config::from_variant_name)
-                    && let Some(committed_prep) = non_primitive.get(&instance.op_type)
-                {
-                    let poseidon2_prover = Poseidon2Prover::new(cfg, ConstraintProfile::Standard);
-                    let width = poseidon2_prover.preprocessed_width_from_config();
-                    let padded_rows = instance.rows.next_power_of_two().max(min_height);
-                    let mut prep_data = committed_prep.clone();
-                    prep_data.resize(
-                        padded_rows * width,
-                        <Val<SC> as PrimeCharacteristicRing>::ZERO,
-                    );
-                    preprocessed_traces[NUM_PRIMITIVE_TABLES + j] =
-                        Some(RowMajorMatrix::new(prep_data, width));
+                if let Some(committed_prep) = non_primitive.get(&instance.op_type) {
+                    let prover = self
+                        .non_primitive_provers
+                        .iter()
+                        .find(|p| TableProver::op_type(p.as_ref()) == instance.op_type);
+                    if let Some(prover) = prover
+                        && let Some(air) = prover
+                            .air_with_committed_preprocessed(committed_prep.clone(), min_height)
+                        && let Some(trace) = air.preprocessed_trace()
+                    {
+                        preprocessed_traces[NUM_PRIMITIVE_TABLES + j] = Some(trace);
+                    }
                 }
             }
 
@@ -910,33 +898,6 @@ where
     }
 }
 
-/// Trait to register Poseidon2 by extension degree so recursion can dispatch D=2 vs D=4.
-pub trait RegisterPoseidon2ForDegree<const D: usize> {
-    fn register_poseidon2(&mut self, config: Poseidon2Config);
-}
-
-impl<SC> RegisterPoseidon2ForDegree<2> for BatchStarkProver<SC>
-where
-    SC: StarkGenericConfig + Send + Sync,
-    Val<SC>: BinomiallyExtendable<2> + StarkField,
-    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
-{
-    fn register_poseidon2(&mut self, config: Poseidon2Config) {
-        self.register_poseidon2_table_d2(config);
-    }
-}
-
-impl<SC> RegisterPoseidon2ForDegree<4> for BatchStarkProver<SC>
-where
-    SC: StarkGenericConfig + Send + Sync,
-    Val<SC>: BinomiallyExtendable<4> + StarkField,
-    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
-{
-    fn register_poseidon2(&mut self, config: Poseidon2Config) {
-        self.register_poseidon2_table(config);
-    }
-}
-
 /// Create Poseidon2 table provers for D=2 (e.g. Goldilocks).
 pub fn poseidon2_table_provers_d2<SC>(
     config: Poseidon2Config,
@@ -964,6 +925,26 @@ where
         config,
         ConstraintProfile::Standard,
     ))]
+}
+
+/// Poseidon2 AIR builders for D=2 (e.g. Goldilocks).
+pub fn poseidon2_air_builders_d2<SC>() -> Vec<Box<dyn NpoAirBuilder<SC, 2>>>
+where
+    SC: StarkGenericConfig + 'static + Send + Sync,
+    Val<SC>: BinomiallyExtendable<2> + StarkField,
+    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+{
+    vec![Box::new(Poseidon2AirBuilderD2)]
+}
+
+/// Poseidon2 AIR builders for D=4 (e.g. BabyBear, KoalaBear).
+pub fn poseidon2_air_builders_d4<SC>() -> Vec<Box<dyn NpoAirBuilder<SC, 4>>>
+where
+    SC: StarkGenericConfig + 'static + Send + Sync,
+    Val<SC>: BinomiallyExtendable<4> + StarkField,
+    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+{
+    vec![Box::new(Poseidon2AirBuilderD4)]
 }
 
 #[cfg(test)]

@@ -86,6 +86,7 @@ fn test_aggregation_with_different_shapes() -> Result<(), VerificationError> {
         &circuit,
         table_packing,
         &[],
+        &[],
         ConstraintProfile::Standard,
     )
     .unwrap();
@@ -128,6 +129,7 @@ fn test_aggregation_with_different_shapes() -> Result<(), VerificationError> {
         MerkleCapTargets<F, DIGEST_ELEMS>,
         InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>>,
         InnerFri,
+        _,
         WIDTH,
         RATE,
     >(
@@ -153,6 +155,7 @@ fn test_aggregation_with_different_shapes() -> Result<(), VerificationError> {
         InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>>,
         InnerFri,
         LogUpGadget,
+        _,
         WIDTH,
         RATE,
         TRACE_D,

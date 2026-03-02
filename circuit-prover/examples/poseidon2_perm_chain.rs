@@ -5,6 +5,7 @@ use p3_batch_stark::ProverData;
 use p3_circuit::op::NpoTypeId;
 use p3_circuit::ops::{Poseidon2PermCall, Poseidon2PermOps, generate_poseidon2_trace};
 use p3_circuit::{CircuitBuilder, ExprId};
+use p3_circuit_prover::batch_stark_prover::poseidon2_air_builders_d4;
 use p3_circuit_prover::common::{NpoPreprocessor, get_airs_and_degrees_with_prep};
 use p3_circuit_prover::config::KoalaBearConfig;
 use p3_circuit_prover::{
@@ -133,6 +134,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             &circuit,
             table_packing,
             &poseidon2_prep,
+            &poseidon2_air_builders_d4(),
             ConstraintProfile::Standard,
         )
         .unwrap();

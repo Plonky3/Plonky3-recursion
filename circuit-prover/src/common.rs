@@ -3,7 +3,7 @@ use alloc::vec::Vec;
 use core::any::Any;
 
 use hashbrown::HashMap;
-use p3_circuit::op::{NonPrimitivePreprocessedMap, PrimitiveOpType};
+use p3_circuit::op::{NonPrimitivePreprocessedMap, NpoTypeId, PrimitiveOpType};
 use p3_circuit::{Circuit, CircuitError, PreprocessedColumns};
 use p3_field::{ExtensionField, PrimeCharacteristicRing, PrimeField64};
 use p3_uni_stark::{StarkGenericConfig, SymbolicExpression, Val};
@@ -32,6 +32,23 @@ where
         circuit: &dyn Any,
         preprocessed: &mut dyn Any,
     ) -> Result<NonPrimitivePreprocessedMap<F>, CircuitError>;
+}
+
+/// Builds (AIR, degree) from preprocessed base data for a given NPO op_type.
+/// Used by `get_airs_and_degrees_with_prep` so that AIR construction is plugin-driven
+/// without requiring generic methods on the preprocessor trait (object safety).
+pub trait NpoAirBuilder<SC, const D: usize>: Send + Sync
+where
+    SC: StarkGenericConfig,
+    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+{
+    fn try_build(
+        &self,
+        op_type: &NpoTypeId,
+        prep_base: &[Val<SC>],
+        min_height: usize,
+        constraint_profile: ConstraintProfile,
+    ) -> Option<(CircuitTableAir<SC, D>, usize)>;
 }
 
 /// Enum wrapper to allow heterogeneous table AIRs in a single batch STARK aggregation.
@@ -76,6 +93,7 @@ pub fn get_airs_and_degrees_with_prep<
     circuit: &Circuit<ExtF>,
     packing: TablePacking,
     non_primitive_preprocessors: &[Box<dyn NpoPreprocessor<Val<SC>>>],
+    non_primitive_air_builders: &[Box<dyn NpoAirBuilder<SC, D>>],
     constraint_profile: ConstraintProfile,
 ) -> Result<(CircuitAirsWithDegrees<SC, D>, PreprocessedColumns<Val<SC>>), CircuitError>
 where
@@ -294,48 +312,25 @@ where
         }
     }
 
-    // Add non-primitive AIR entries using the updated base field preprocessed data.
     for (op_type, prep_base) in non_primitive_base.iter() {
-        if op_type.as_str().starts_with("poseidon2_perm/") {
-            // Recover config from type id.
-            let suffix = op_type
-                .as_str()
-                .strip_prefix("poseidon2_perm/")
-                .ok_or(CircuitError::InvalidPreprocessedValues)?;
-            let cfg = crate::Poseidon2Config::from_variant_name(suffix)
-                .ok_or(CircuitError::InvalidPreprocessedValues)?;
-            let poseidon2_prover = crate::Poseidon2Prover::new(cfg, constraint_profile);
-            let width = poseidon2_prover.preprocessed_width_from_config();
-            let poseidon2_wrapper = poseidon2_prover
-                .wrapper_from_config_with_preprocessed(prep_base.clone(), min_height);
-            let poseidon2_wrapper_air: CircuitTableAir<SC, D> =
-                CircuitTableAir::Dynamic(poseidon2_wrapper);
-            let num_rows = prep_base.len().div_ceil(width);
-            table_preps.push((poseidon2_wrapper_air, compute_degree(num_rows)));
+        for builder in non_primitive_air_builders {
+            if let Some((air, degree)) =
+                builder.try_build(op_type, prep_base, min_height, constraint_profile)
+            {
+                table_preps.push((air, degree));
+                break;
+            }
         }
     }
 
-    // Build base_prep for the output PreprocessedColumns (without Poseidon2 multiplicities).
-    // The non_primitive_base already has the updated in_ctl/out_ctl values.
-    let mut non_primitive_output: NonPrimitivePreprocessedMap<Val<SC>> = non_primitive_base;
-
-    // Also include any non-primitive ops that weren't Poseidon2
-    for (op_type, prep) in preprocessed.non_primitive.iter() {
-        if !op_type.as_str().starts_with("poseidon2_perm/") {
-            let prep_base: Vec<Val<SC>> = prep
-                .iter()
-                .map(|v| v.as_base().ok_or(CircuitError::InvalidPreprocessedValues))
-                .collect::<Result<Vec<_>, CircuitError>>()?;
-            non_primitive_output.insert(op_type.clone(), prep_base);
-        }
-    }
+    let non_primitive_output: NonPrimitivePreprocessedMap<Val<SC>> = non_primitive_base;
 
     let preprocessed_columns = PreprocessedColumns {
         primitive: base_prep,
         non_primitive: non_primitive_output,
         d: D,
         ext_reads: preprocessed.ext_reads,
-        poseidon2_dup_wids: preprocessed.poseidon2_dup_wids,
+        non_primitive_metadata: preprocessed.non_primitive_metadata,
     };
 
     Ok((table_preps, preprocessed_columns))

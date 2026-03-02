@@ -6,6 +6,7 @@ use p3_circuit::{CircuitBuilder, CircuitBuilderError, NonPrimitiveOpId};
 use p3_uni_stark::StarkGenericConfig;
 
 use super::Recursive;
+use crate::challenger_perm::ChallengerPermConfig;
 use crate::types::{OpenedValuesTargetsWithLookups, RecursiveLagrangeSelectors};
 use crate::verifier::VerificationError;
 use crate::{CircuitChallenger, Target};
@@ -52,9 +53,9 @@ pub trait RecursivePcs<
     ///
     /// # Returns
     /// Vector of challenge targets (ordering depends on PCS scheme)
-    fn get_challenges_circuit<const WIDTH: usize, const RATE: usize>(
+    fn get_challenges_circuit<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>(
         circuit: &mut CircuitBuilder<SC::Challenge>,
-        challenger: &mut CircuitChallenger<WIDTH, RATE>,
+        challenger: &mut CircuitChallenger<WIDTH, RATE, C>,
         proof_targets: &OpeningProof,
         opened_values: &OpenedValuesTargetsWithLookups<SC>,
         params: &Self::VerifierParams,
@@ -81,11 +82,11 @@ pub trait RecursivePcs<
     /// (e.g., Merkle sibling values for MMCS verification). The caller must set
     /// private data for these operations before running the circuit.
     /// `Err` if there was a structural error in the proof.
-    fn verify_circuit<const WIDTH: usize, const RATE: usize>(
+    fn verify_circuit<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>(
         &self,
         circuit: &mut CircuitBuilder<SC::Challenge>,
         challenges: &[Target],
-        challenger: &mut CircuitChallenger<WIDTH, RATE>,
+        challenger: &mut CircuitChallenger<WIDTH, RATE, C>,
         commitments_with_opening_points: &ComsWithOpeningsTargets<Comm, Domain>,
         opening_proof: &OpeningProof,
         params: &Self::VerifierParams,

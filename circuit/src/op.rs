@@ -669,12 +669,15 @@ pub trait NonPrimitiveExecutor<F: Field>: Debug {
     /// - the multiplicity for the `Witness` table.
     ///
     /// Uses the `PreprocessedColumns` API to ensure witness multiplicities are updated
-    /// consistently when reading from the witness table.
+    /// consistently when reading from the witness table. `defined` tracks which witness
+    /// indices have been defined so far; executors may update it and store plugin-owned
+    /// metadata in `preprocessed.non_primitive_metadata`.
     fn preprocess(
         &self,
         _inputs: &[Vec<WitnessId>],
         _outputs: &[Vec<WitnessId>],
         _preprocessed: &mut PreprocessedColumns<F>,
+        _defined: &mut Vec<bool>,
     ) -> Result<(), CircuitError> {
         Ok(())
     }

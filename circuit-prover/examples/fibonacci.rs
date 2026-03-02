@@ -70,6 +70,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             &circuit,
             table_packing,
             &[],
+            &[],
             ConstraintProfile::Standard,
         )
         .unwrap();

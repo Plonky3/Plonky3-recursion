@@ -89,6 +89,7 @@ fn bench_prove_all_tables(c: &mut Criterion) {
                         &circuit,
                         table_packing,
                         &[],
+                        &[],
                         ConstraintProfile::Standard,
                     )
                     .unwrap();

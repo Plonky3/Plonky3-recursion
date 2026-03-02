@@ -318,7 +318,7 @@ macro_rules! define_field_module {
                     }
                 }
 
-                fn enable_poseidon2_on_circuit(
+                fn prepare_circuit_for_verification(
                     &self,
                     circuit: &mut CircuitBuilder<Challenge>,
                 ) -> Result<(), VerificationError> {
@@ -421,6 +421,7 @@ macro_rules! define_field_module {
                         &circuit,
                         table_packing,
                         &[],
+                        &[],
                         ConstraintProfile::Standard,
                     )
                     .unwrap();
@@ -457,8 +458,9 @@ macro_rules! define_field_module {
                 let config = config_with_fri_params(fri_params);
                 let base_table_packing = TablePacking::new(1, 1)
                     .with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup);
-                let backend =
-                    FriRecursionBackend::<$backend_width, $backend_rate>::$backend_ctor($poseidon2_config);
+                let backend = FriRecursionBackend::<$backend_width, $backend_rate>::$backend_ctor(
+                    $poseidon2_config,
+                );
 
                 let tree_depth = num_recursive_layers;
                 let num_leaves = 1usize << tree_depth;
@@ -490,7 +492,7 @@ macro_rules! define_field_module {
                             table_packing.clone()
                         }
                         .with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup),
-                        use_poseidon2_in_circuit: true,
+                        use_npos_in_circuit: true,
                         constraint_profile: ConstraintProfile::Standard,
                     };
 

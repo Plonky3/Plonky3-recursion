@@ -10,7 +10,9 @@ use p3_symmetric::CryptographicHasher;
 
 use super::*;
 use crate::ConstraintProfile;
-use crate::batch_stark_prover::{BABY_BEAR_MODULUS, KOALA_BEAR_MODULUS};
+use crate::batch_stark_prover::{
+    BABY_BEAR_MODULUS, KOALA_BEAR_MODULUS, poseidon2_air_builders_d2, poseidon2_air_builders_d4,
+};
 use crate::common::get_airs_and_degrees_with_prep;
 use crate::config::{self, BabyBearConfig, GoldilocksConfig, KoalaBearConfig};
 
@@ -40,6 +42,7 @@ fn test_babybear_batch_stark_base_field() {
         get_airs_and_degrees_with_prep::<BabyBearConfig, _, 1>(
             &circuit,
             TablePacking::default(),
+            &[],
             &[],
             ConstraintProfile::Standard,
         )
@@ -97,6 +100,7 @@ fn test_table_lookups() {
         get_airs_and_degrees_with_prep::<BabyBearConfig, _, 1>(
             &circuit,
             default_packing,
+            &[],
             &[],
             ConstraintProfile::Standard,
         )
@@ -183,6 +187,7 @@ fn test_extension_field_batch_stark() {
             &circuit,
             TablePacking::default(),
             &[],
+            &[],
             ConstraintProfile::Standard,
         )
         .unwrap();
@@ -253,6 +258,7 @@ fn test_extension_field_table_lookups() {
             &circuit,
             default_packing,
             &[],
+            &poseidon2_air_builders_d4(),
             ConstraintProfile::Standard,
         )
         .unwrap();
@@ -363,6 +369,7 @@ fn test_koalabear_batch_stark_base_field() {
             &circuit,
             TablePacking::default(),
             &[],
+            &[],
             ConstraintProfile::Standard,
         )
         .unwrap();
@@ -426,6 +433,7 @@ fn test_koalabear_batch_stark_extension_field_d8() {
         get_airs_and_degrees_with_prep::<KoalaBearConfig, _, D>(
             &circuit,
             TablePacking::default(),
+            &[],
             &[],
             ConstraintProfile::Standard,
         )
@@ -512,6 +520,7 @@ fn test_goldilocks_batch_stark_extension_field_d2() {
             &circuit,
             TablePacking::default(),
             &[],
+            &poseidon2_air_builders_d2(),
             ConstraintProfile::Standard,
         )
         .unwrap();
@@ -658,6 +667,7 @@ fn test_mul_only_circuit_padding() {
             &circuit,
             TablePacking::default(),
             &[],
+            &[],
             ConstraintProfile::Standard,
         )
         .unwrap();
@@ -702,6 +712,7 @@ fn test_add_only_circuit_padding() {
         get_airs_and_degrees_with_prep::<BabyBearConfig, _, 1>(
             &circuit,
             TablePacking::default(),
+            &[],
             &[],
             ConstraintProfile::Standard,
         )
