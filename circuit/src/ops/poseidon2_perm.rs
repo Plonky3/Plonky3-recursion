@@ -1216,8 +1216,8 @@ impl Poseidon2PermExecutor {
         // Execute the permutation
         let output = exec(&resolved_inputs);
 
-        let mut in_ctl = vec![false; 4];
-        let mut input_indices = vec![0u32; 4];
+        let mut in_ctl = [false; 4];
+        let mut input_indices = [0u32; 4];
         for limb in 0..4 {
             for d in 0..4 {
                 let idx = limb * 4 + d;
@@ -1230,8 +1230,8 @@ impl Poseidon2PermExecutor {
             }
         }
 
-        let mut out_ctl = vec![false; 2];
-        let mut output_indices = vec![0u32; 2];
+        let mut out_ctl = [false; 2];
+        let mut output_indices = [0u32; 2];
         for limb in 0..2 {
             for d in 0..4 {
                 let idx = limb * 4 + d;
@@ -1253,10 +1253,10 @@ impl Poseidon2PermExecutor {
             mmcs_bit: false,
             mmcs_index_sum: F::ZERO,
             input_values,
-            in_ctl,
-            input_indices,
-            out_ctl,
-            output_indices,
+            in_ctl: in_ctl.to_vec(),
+            input_indices: input_indices.to_vec(),
+            out_ctl: out_ctl.to_vec(),
+            output_indices: output_indices.to_vec(),
             mmcs_index_sum_idx: 0,
             mmcs_ctl_enabled: false,
         };
