@@ -7,9 +7,9 @@ use p3_circuit_prover::BatchStarkProver;
 use p3_circuit_prover::field_params::ExtractBinomialW;
 use p3_commit::Pcs;
 use p3_field::extension::BinomiallyExtendable;
-use p3_field::{BasedVectorSpace, PrimeField64};
+use p3_field::{Algebra, BasedVectorSpace, PrimeField64};
 use p3_lookup::logup::LogUpGadget;
-use p3_uni_stark::{StarkGenericConfig, Val};
+use p3_uni_stark::{StarkGenericConfig, SymbolicExpressionExt, Val};
 
 use crate::ops::Poseidon2Config;
 use crate::public_inputs::{BatchStarkVerifierInputsBuilder, StarkVerifierInputsBuilder};
@@ -189,8 +189,8 @@ where
         + p3_field::PrimeCharacteristicRing
         + ExtractBinomialW<Val<SC>>,
     <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain: Clone,
-    p3_uni_stark::SymbolicExpression<SC::Challenge>:
-        From<p3_uni_stark::SymbolicExpression<Val<SC>>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        From<p3_uni_stark::SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
     SC::Pcs: RecursivePcs<
             SC,
             SC::InputProof,
@@ -346,8 +346,8 @@ impl<SC, const WIDTH: usize, const RATE: usize> RegisterPoseidon2ForDegree<SC, 2
 where
     SC: FriRecursionConfig + Send + Sync,
     Val<SC>: BinomiallyExtendable<2> + p3_circuit_prover::config::StarkField,
-    p3_uni_stark::SymbolicExpression<SC::Challenge>:
-        From<p3_uni_stark::SymbolicExpression<Val<SC>>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        From<p3_uni_stark::SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
     SC::Pcs: RecursivePcs<
             SC,
             SC::InputProof,
@@ -366,8 +366,8 @@ impl<SC, const WIDTH: usize, const RATE: usize> RegisterPoseidon2ForDegree<SC, 4
 where
     SC: FriRecursionConfig + Send + Sync,
     Val<SC>: BinomiallyExtendable<4> + p3_circuit_prover::config::StarkField,
-    p3_uni_stark::SymbolicExpression<SC::Challenge>:
-        From<p3_uni_stark::SymbolicExpression<Val<SC>>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        From<p3_uni_stark::SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
     SC::Pcs: RecursivePcs<
             SC,
             SC::InputProof,

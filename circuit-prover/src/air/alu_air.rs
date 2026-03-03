@@ -271,10 +271,6 @@ impl<F: Field, const D: usize> BaseAir<F> for AluAir<F, D> {
     }
 
     fn preprocessed_trace(&self) -> Option<RowMajorMatrix<F>> {
-        if self.num_ops > 0 {
-            assert!(!self.preprocessed.is_empty());
-        }
-
         Some(create_direct_preprocessed_trace(
             &self.preprocessed,
             Self::preprocessed_lane_width(),
@@ -313,36 +309,33 @@ where
                 let main_offset = lane * lane_width;
                 let prep_offset = lane * preprocessed_lane_width;
 
-                let a = local[main_offset].clone();
-                let b = local[main_offset + 1].clone();
-                let c = local[main_offset + 2].clone();
-                let out = local[main_offset + 3].clone();
+                let a = local[main_offset];
+                let b = local[main_offset + 1];
+                let c = local[main_offset + 2];
+                let out = local[main_offset + 3];
 
                 // Preprocessed layout: [active, mult_a, sel1, sel2, sel3, a_idx, b_idx, c_idx, out_idx, mult_b, mult_out, mult_c]
-                let active = preprocessed_local[prep_offset].clone();
-                let sel_add_vs_mul = preprocessed_local[prep_offset + 2].clone();
-                let sel_bool = preprocessed_local[prep_offset + 3].clone();
-                let sel_muladd = preprocessed_local[prep_offset + 4].clone();
+                let active = preprocessed_local[prep_offset];
+                let sel_add_vs_mul = preprocessed_local[prep_offset + 2];
+                let sel_bool = preprocessed_local[prep_offset + 3];
+                let sel_muladd = preprocessed_local[prep_offset + 4];
 
                 // Derive MUL selector linearly:
                 // sel_mul = active - sel_bool - sel_muladd - sel_add_vs_mul
-                let sel_mul =
-                    active - sel_bool.clone() - sel_muladd.clone() - sel_add_vs_mul.clone();
+                let sel_mul = active - sel_bool - sel_muladd - sel_add_vs_mul;
 
                 // ADD constraint: sel_add_vs_mul * (a + b - out) = 0
-                builder.assert_zero(sel_add_vs_mul.clone() * (a.clone() + b.clone() - out.clone()));
+                builder.assert_zero(sel_add_vs_mul * (a + b - out));
 
                 // MUL constraint: sel_mul * (a * b - out) = 0
-                builder.assert_zero(sel_mul.clone() * (a.clone() * b.clone() - out.clone()));
+                builder.assert_zero(sel_mul * (a * b - out));
 
                 // BOOL_CHECK constraint: sel_bool * a * (a - 1) = 0
                 let one = AB::Expr::ONE;
-                builder.assert_zero(sel_bool.clone() * a.clone() * (a.clone() - one.clone()));
+                builder.assert_zero(sel_bool * a * (a - one));
 
                 // MUL_ADD constraint: sel_muladd * (a * b + c - out) = 0
-                builder.assert_zero(
-                    sel_muladd.clone() * (a.clone() * b.clone() + c.clone() - out.clone()),
-                );
+                builder.assert_zero(sel_muladd * (a * b + c - out));
             }
         } else {
             // Extension field case (D > 1)
@@ -362,27 +355,23 @@ where
                 let out_slice = &local[main_offset + 3 * D..main_offset + 4 * D];
 
                 // Preprocessed layout: [active, mult_a, sel1, sel2, sel3, a_idx, b_idx, c_idx, out_idx, mult_b, mult_out, mult_c]
-                let active = preprocessed_local[prep_offset].clone();
-                let sel_add_vs_mul = preprocessed_local[prep_offset + 2].clone();
-                let sel_bool = preprocessed_local[prep_offset + 3].clone();
-                let sel_muladd = preprocessed_local[prep_offset + 4].clone();
+                let active = preprocessed_local[prep_offset];
+                let sel_add_vs_mul = preprocessed_local[prep_offset + 2];
+                let sel_bool = preprocessed_local[prep_offset + 3];
+                let sel_muladd = preprocessed_local[prep_offset + 4];
 
-                let sel_mul =
-                    active - sel_bool.clone() - sel_muladd.clone() - sel_add_vs_mul.clone();
+                let sel_mul = active - sel_bool - sel_muladd - sel_add_vs_mul;
 
                 // ADD constraints: sel_add_vs_mul * (a[i] + b[i] - out[i]) = 0
                 for i in 0..D {
-                    builder.assert_zero(
-                        sel_add_vs_mul.clone()
-                            * (a_slice[i].clone() + b_slice[i].clone() - out_slice[i].clone()),
-                    );
+                    builder.assert_zero(sel_add_vs_mul * (a_slice[i] + b_slice[i] - out_slice[i]));
                 }
 
                 // MUL constraints: extension field multiplication
                 let mut mul_acc = vec![AB::Expr::ZERO; D];
                 for i in 0..D {
                     for j in 0..D {
-                        let term = a_slice[i].clone() * b_slice[j].clone();
+                        let term = a_slice[i] * b_slice[j];
                         let k = i + j;
                         if k < D {
                             mul_acc[k] = mul_acc[k].clone() + term;
@@ -392,22 +381,19 @@ where
                     }
                 }
                 for i in 0..D {
-                    builder
-                        .assert_zero(sel_mul.clone() * (mul_acc[i].clone() - out_slice[i].clone()));
+                    builder.assert_zero(sel_mul.clone() * (mul_acc[i].clone() - out_slice[i]));
                 }
 
                 // BOOL_CHECK constraints: sel_bool * a[i] * (a[i] - 1) = 0 for i=0 only (base component)
                 // For extension fields, boolean check only makes sense on the base component
                 let one = AB::Expr::ONE;
-                builder.assert_zero(
-                    sel_bool.clone() * a_slice[0].clone() * (a_slice[0].clone() - one.clone()),
-                );
+                builder.assert_zero(sel_bool * a_slice[0] * (a_slice[0] - one));
 
                 // MUL_ADD constraints: a * b + c = out (extension field)
                 let mut muladd_acc = vec![AB::Expr::ZERO; D];
                 for i in 0..D {
                     for j in 0..D {
-                        let term = a_slice[i].clone() * b_slice[j].clone();
+                        let term = a_slice[i] * b_slice[j];
                         let k = i + j;
                         if k < D {
                             muladd_acc[k] = muladd_acc[k].clone() + term;
@@ -418,12 +404,10 @@ where
                 }
                 // Add c component-wise
                 for i in 0..D {
-                    muladd_acc[i] = muladd_acc[i].clone() + c_slice[i].clone();
+                    muladd_acc[i] = muladd_acc[i].clone() + c_slice[i];
                 }
                 for i in 0..D {
-                    builder.assert_zero(
-                        sel_muladd.clone() * (muladd_acc[i].clone() - out_slice[i].clone()),
-                    );
+                    builder.assert_zero(sel_muladd * (muladd_acc[i].clone() - out_slice[i]));
                 }
             }
         }

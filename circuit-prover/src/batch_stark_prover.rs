@@ -14,11 +14,11 @@ use p3_circuit::PreprocessedColumns;
 use p3_circuit::op::{NpoTypeId, Poseidon2Config, PrimitiveOpType};
 use p3_circuit::tables::Traces;
 use p3_field::extension::{BinomialExtensionField, BinomiallyExtendable};
-use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing, PrimeField};
+use p3_field::{Algebra, BasedVectorSpace, Field, PrimeCharacteristicRing, PrimeField};
 use p3_lookup::folder::{ProverConstraintFolderWithLookups, VerifierConstraintFolderWithLookups};
 use p3_lookup::lookup_traits::Lookup;
 use p3_matrix::dense::RowMajorMatrix;
-use p3_uni_stark::{SymbolicAirBuilder, SymbolicExpression};
+use p3_uni_stark::{SymbolicAirBuilder, SymbolicExpression, SymbolicExpressionExt};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tracing::instrument;
@@ -322,7 +322,7 @@ pub enum BatchStarkProverError {
 impl<SC, const D: usize> BaseAir<Val<SC>> for CircuitTableAir<SC, D>
 where
     SC: StarkGenericConfig,
-    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
 {
     fn width(&self) -> usize {
         match self {
@@ -380,7 +380,8 @@ impl<SC, const D: usize> Air<SymbolicAirBuilder<Val<SC>, SC::Challenge>> for Cir
 where
     SC: StarkGenericConfig,
     Val<SC>: PrimeField,
-    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        From<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
     impl_circuit_table_air_for_builder!(SymbolicAirBuilder<Val<SC>, SC::Challenge>);
 }
@@ -391,7 +392,7 @@ impl<'a, SC, const D: usize> Air<DebugConstraintBuilder<'a, Val<SC>, SC::Challen
 where
     SC: StarkGenericConfig,
     Val<SC>: PrimeField,
-    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
 {
     impl_circuit_table_air_for_builder!(DebugConstraintBuilder<'a, Val<SC>, SC::Challenge>);
 }
@@ -401,7 +402,7 @@ impl<'a, SC, const D: usize> Air<ProverConstraintFolderWithLookups<'a, SC>>
 where
     SC: StarkGenericConfig,
     Val<SC>: PrimeField,
-    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
 {
     impl_circuit_table_air_for_builder!(ProverConstraintFolderWithLookups<'a, SC>);
 }
@@ -411,7 +412,7 @@ impl<'a, SC, const D: usize> Air<VerifierConstraintFolderWithLookups<'a, SC>>
 where
     SC: StarkGenericConfig,
     Val<SC>: PrimeField,
-    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
 {
     impl_circuit_table_air_for_builder!(VerifierConstraintFolderWithLookups<'a, SC>);
 }
@@ -420,7 +421,8 @@ impl<SC> BatchStarkProver<SC>
 where
     SC: StarkGenericConfig + 'static,
     Val<SC>: StarkField,
-    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        From<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
     pub fn new(config: SC) -> Self {
         Self {
@@ -504,7 +506,7 @@ where
     ) -> Result<BatchStarkProof<SC>, BatchStarkProverError>
     where
         EF: Field + BasedVectorSpace<Val<SC>> + ExtractBinomialW<Val<SC>>,
-        SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+        SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
     {
         let w_opt = EF::extract_w();
         match EF::DIMENSION {
@@ -753,21 +755,13 @@ where
             });
         }
 
-        let instances: Vec<StarkInstance<'_, SC, CircuitTableAir<SC, D>>> = air_storage
-            .iter_mut()
-            .zip(trace_storage)
-            .zip(public_storage)
-            .map(|((air, trace), public_values)| {
-                let lookups = Air::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::get_lookups(air);
-
-                StarkInstance {
-                    air,
-                    trace,
-                    public_values,
-                    lookups,
-                }
-            })
-            .collect();
+        let instances: Vec<StarkInstance<'_, SC, CircuitTableAir<SC, D>>> =
+            StarkInstance::new_multiple(
+                &air_storage,
+                &trace_storage,
+                &public_storage,
+                &prover_data.common,
+            );
 
         if self.debug_lookups {
             use p3_lookup::debug_util::{LookupDebugInstance, check_lookups};
@@ -919,7 +913,8 @@ impl<SC> RegisterPoseidon2ForDegree<2> for BatchStarkProver<SC>
 where
     SC: StarkGenericConfig + Send + Sync,
     Val<SC>: BinomiallyExtendable<2> + StarkField,
-    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        From<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
     fn register_poseidon2(&mut self, config: Poseidon2Config) {
         self.register_poseidon2_table_d2(config);
@@ -930,7 +925,8 @@ impl<SC> RegisterPoseidon2ForDegree<4> for BatchStarkProver<SC>
 where
     SC: StarkGenericConfig + Send + Sync,
     Val<SC>: BinomiallyExtendable<4> + StarkField,
-    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        From<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
     fn register_poseidon2(&mut self, config: Poseidon2Config) {
         self.register_poseidon2_table(config);
