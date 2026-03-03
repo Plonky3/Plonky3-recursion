@@ -130,6 +130,7 @@ fn one_hot_from_three_bits<EF: Field>(
 }
 
 /// Optimized one-hot computation for 4 bits, using two 2-bit one-hots.
+#[unroll::unroll_for_loops]
 fn one_hot_from_four_bits<EF: Field>(
     builder: &mut CircuitBuilder<EF>,
     bits: &[Target],

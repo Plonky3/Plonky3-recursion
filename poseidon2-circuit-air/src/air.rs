@@ -437,6 +437,7 @@ pub fn extract_preprocessed_from_operations<F: Field, OF: Field>(
     preprocessed
 }
 
+#[unroll::unroll_for_loops]
 pub(crate) fn eval<
     AB: AirBuilder,
     LinearLayers: GenericPoseidon2LinearLayers<WIDTH>,

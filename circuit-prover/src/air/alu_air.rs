@@ -284,6 +284,7 @@ impl<AB: AirBuilder, const D: usize> Air<AB> for AluAir<AB::F, D>
 where
     AB::F: Field,
 {
+    #[unroll::unroll_for_loops]
     #[allow(clippy::needless_range_loop)]
     fn eval(&self, builder: &mut AB) {
         let main = builder.main();

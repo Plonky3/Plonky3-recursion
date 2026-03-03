@@ -1169,6 +1169,7 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for Poseidon2Perm
 
 impl Poseidon2PermExecutor {
     /// Execute D=1 (base field) permutation with 16 input/output elements.
+    #[unroll::unroll_for_loops]
     fn execute_base<F: Field + Send + Sync + 'static>(
         &self,
         inputs: &[Vec<WitnessId>],
