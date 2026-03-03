@@ -650,7 +650,8 @@ where
             }
         }
 
-        let mut dynamic_instances: Vec<BatchTableInstance<SC>> = Vec::new();
+        let mut dynamic_instances: Vec<BatchTableInstance<SC>> =
+            Vec::with_capacity(self.non_primitive_provers.len());
         if D == 1 {
             let t: &Traces<Val<SC>> = unsafe { transmute_traces(traces) };
             for p in &self.non_primitive_provers {
@@ -720,7 +721,7 @@ where
             Vec::with_capacity(NUM_PRIMITIVE_TABLES + dynamic_instances.len());
         let mut public_storage: Vec<Vec<Val<SC>>> =
             Vec::with_capacity(NUM_PRIMITIVE_TABLES + dynamic_instances.len());
-        let mut non_primitives: Vec<NonPrimitiveTableEntry<SC>> =
+        let mut non_primitive_meta: Vec<(NpoTypeId, usize, AirVariant)> =
             Vec::with_capacity(dynamic_instances.len());
 
         // Pad all trace matrices to at least min_height (for FRI compatibility)
@@ -746,13 +747,8 @@ where
             } = instance;
             air_storage.push(CircuitTableAir::Dynamic(air));
             trace_storage.push(packing::pad_matrix_to_min_height(trace, min_height));
-            public_storage.push(public_values.clone());
-            non_primitives.push(NonPrimitiveTableEntry {
-                op_type,
-                rows,
-                public_values,
-                air_variant: AirVariant::Baseline,
-            });
+            public_storage.push(public_values);
+            non_primitive_meta.push((op_type, rows, AirVariant::Baseline));
         }
 
         let instances: Vec<StarkInstance<'_, SC, CircuitTableAir<SC, D>>> =
@@ -771,12 +767,12 @@ where
                 .map(|inst| inst.air.preprocessed_trace())
                 .collect();
 
-            for (j, instance) in non_primitives.iter().enumerate() {
-                if let Some(committed_prep) = non_primitive.get(&instance.op_type) {
+            for (j, (op_type, _, _)) in non_primitive_meta.iter().enumerate() {
+                if let Some(committed_prep) = non_primitive.get(op_type) {
                     let prover = self
                         .non_primitive_provers
                         .iter()
-                        .find(|p| TableProver::op_type(p.as_ref()) == instance.op_type);
+                        .find(|p| TableProver::op_type(p.as_ref()) == *op_type);
                     if let Some(prover) = prover
                         && let Some(air) = prover
                             .air_with_committed_preprocessed(committed_prep.clone(), min_height)
@@ -802,6 +798,20 @@ where
         }
 
         let proof = p3_batch_stark::prove_batch(&self.config, &instances, prover_data);
+
+        let dynamic_public_values = public_storage.drain(NUM_PRIMITIVE_TABLES..);
+        let non_primitives: Vec<NonPrimitiveTableEntry<SC>> = non_primitive_meta
+            .into_iter()
+            .zip(dynamic_public_values)
+            .map(
+                |((op_type, rows, air_variant), public_values)| NonPrimitiveTableEntry {
+                    op_type,
+                    rows,
+                    public_values,
+                    air_variant,
+                },
+            )
+            .collect();
 
         // Ensure all primitive table row counts are at least 1
         // RowCounts::new requires non-zero counts, so pad zeros to 1
@@ -864,7 +874,9 @@ where
         };
         let mut airs = vec![const_air, public_air, alu_air];
         // TODO: Handle public values.
-        let mut pvs: Vec<Vec<Val<SC>>> = vec![Vec::new(); NUM_PRIMITIVE_TABLES];
+        let mut pvs: Vec<Vec<Val<SC>>> =
+            Vec::with_capacity(NUM_PRIMITIVE_TABLES + proof.non_primitives.len());
+        pvs.resize_with(NUM_PRIMITIVE_TABLES, Vec::new);
 
         for entry in &proof.non_primitives {
             let plugin = self

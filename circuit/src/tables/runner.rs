@@ -61,8 +61,9 @@ impl<F: CircuitField> CircuitRunner<F> {
             }
         }
 
-        let non_primitive_op_private_data: Vec<Option<NpoPrivateData>> =
-            (0..non_primitive_op_count).map(|_| None).collect();
+        let mut non_primitive_op_private_data: Vec<Option<NpoPrivateData>> =
+            Vec::with_capacity(non_primitive_op_count);
+        non_primitive_op_private_data.resize_with(non_primitive_op_count, || None);
         let op_states = BTreeMap::new();
         Self {
             circuit,
@@ -168,7 +169,7 @@ impl<F: CircuitField> CircuitRunner<F> {
         self.execute_all()?;
 
         if let Some(rewrite) = self.circuit.witness_rewrite.take() {
-            let mut resolved: HashMap<WitnessId, WitnessId> = HashMap::new();
+            let mut resolved: HashMap<WitnessId, WitnessId> = HashMap::with_capacity(rewrite.len());
             let mut root = |canon: WitnessId| {
                 *resolved.entry(canon).or_insert_with(|| {
                     let mut cur = canon;
@@ -187,20 +188,18 @@ impl<F: CircuitField> CircuitRunner<F> {
         }
 
         // Build witness trace directly from the populated witness table.
-        let witness_values: Result<Vec<_>, _> = self
-            .witness
-            .iter()
-            .enumerate()
-            .map(|(i, v)| (*v).ok_or(CircuitError::WitnessNotSetForIndex { index: i }))
-            .collect();
-        let witness_trace = WitnessTrace::new(witness_values?);
+        let mut witness_values = Vec::with_capacity(self.witness.len());
+        for (i, value) in self.witness.iter().enumerate() {
+            witness_values.push((*value).ok_or(CircuitError::WitnessNotSetForIndex { index: i })?);
+        }
+        let witness_trace = WitnessTrace::new(witness_values);
 
         let const_trace = ConstTraceBuilder::new(&self.circuit.ops).build()?;
         let public_trace = PublicTraceBuilder::new(&self.circuit.ops, &self.witness).build()?;
         let alu_trace = AluTraceBuilder::new(&self.circuit.ops, &self.witness).build()?;
 
         let mut non_primitive_traces: HashMap<NpoTypeId, Box<dyn NonPrimitiveTrace<F>>> =
-            HashMap::new();
+            HashMap::with_capacity(self.circuit.non_primitive_trace_generator_order.len());
         // Iterate over generators in deterministic order (sorted by key)
         let _scope = tracing::debug_span!("generators").entered();
 

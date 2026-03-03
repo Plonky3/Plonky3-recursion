@@ -295,9 +295,9 @@ impl<F: Field> Circuit<F> {
     ) -> Result<PreprocessedColumns<F>, CircuitError> {
         let mut preprocessed = PreprocessedColumns::new_with_d(d);
 
-        let mut defined = alloc::vec![false; self.witness_count as usize];
-        let mut unconstrained_reads: Vec<u32> = alloc::vec![0; self.witness_count as usize];
-        let mut alu_creator_flags: Vec<(F, F)> = alloc::vec![];
+        let mut defined = vec![false; self.witness_count as usize];
+        let mut unconstrained_reads: Vec<u32> = vec![0; self.witness_count as usize];
+        let mut alu_creator_flags: Vec<(F, F)> = vec![];
 
         // Pass 1: build defined[], unconstrained_reads[], ext_reads; emit Const/Public; do not emit ALU rows.
         for op in &self.ops {
@@ -366,7 +366,7 @@ impl<F: Field> Circuit<F> {
                             defined.resize(out_idx + 1, false);
                         }
                         defined[out_idx] = true;
-                        let readers = alloc::vec![*b, *a, c_wid];
+                        let readers = [*b, *a, c_wid];
                         preprocessed.increment_ext_reads(&readers);
                     } else if !b_already_defined {
                         let b_idx = b.0 as usize;
@@ -374,10 +374,10 @@ impl<F: Field> Circuit<F> {
                             defined.resize(b_idx + 1, false);
                         }
                         defined[b_idx] = true;
-                        let readers = alloc::vec![*out, *a, c_wid];
+                        let readers = [*out, *a, c_wid];
                         preprocessed.increment_ext_reads(&readers);
                     } else {
-                        let readers = alloc::vec![*b, *out, *a, c_wid];
+                        let readers = [*b, *out, *a, c_wid];
                         preprocessed.increment_ext_reads(&readers);
                     }
                 }
@@ -421,7 +421,7 @@ impl<F: Field> Circuit<F> {
 
         let neg_one = F::ZERO - F::ONE;
         let d_u32 = d as u32;
-        let mut seen_unconstrained = alloc::vec![false; self.witness_count as usize];
+        let mut seen_unconstrained = vec![false; self.witness_count as usize];
         let mut alu_flag_idx = 0_usize;
 
         // Pass 2: emit ALU preprocessed with mult_a_eff and mult_c_eff (first unconstrained = creator).

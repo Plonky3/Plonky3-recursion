@@ -190,7 +190,7 @@ where
         vec![]
     };
 
-    coms_to_verify.extend(vec![
+    coms_to_verify.extend([
         (
             trace_targets.clone(),
             vec![(

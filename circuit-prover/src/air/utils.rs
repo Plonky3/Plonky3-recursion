@@ -1,4 +1,3 @@
-use alloc::vec;
 use alloc::vec::Vec;
 use core::iter;
 
@@ -297,7 +296,7 @@ pub fn create_chunked_preprocessed_trace<F: Field>(
     let padding_len =
         preprocessed_width - preprocessed_with_multiplicity.len() % preprocessed_width;
     if padding_len != preprocessed_width {
-        preprocessed_with_multiplicity.extend(vec![F::ZERO; padding_len]);
+        preprocessed_with_multiplicity.extend(core::iter::repeat_n(F::ZERO, padding_len));
     }
 
     let mat = RowMajorMatrix::new(preprocessed_with_multiplicity, preprocessed_width);

@@ -160,9 +160,7 @@ where
     let preprocessed_any: &mut dyn Any = &mut preprocessed;
     for plugin in non_primitive_preprocessors {
         let plugin_prep = plugin.preprocess(circuit_any, preprocessed_any)?;
-        for (op_type, prep_base) in plugin_prep {
-            non_primitive_base.insert(op_type, prep_base);
-        }
+        non_primitive_base.extend(plugin_prep);
     }
 
     // Get min_height from packing configuration and pass it to AIRs
@@ -175,7 +173,8 @@ where
         log2_ceil_usize(natural_height.max(min_rows))
     };
 
-    let mut table_preps: Vec<(CircuitTableAir<SC, D>, usize)> = Vec::with_capacity(base_prep.len());
+    let mut table_preps: Vec<(CircuitTableAir<SC, D>, usize)> =
+        Vec::with_capacity(base_prep.len() + non_primitive_base.len());
 
     #[allow(clippy::needless_range_loop)]
     for idx in 0..base_prep.len() {
@@ -189,58 +188,57 @@ where
                 // mult_a_eff / mult_c_eff: -1 (reader or later unconstrained), or +N (first
                 // unconstrained creator). We convert to 12 values for AluAir (same order, mult_c_eff last).
                 let lane_11 = 11_usize;
+                let mut chunks = base_prep[idx].chunks_exact(lane_11);
+                let mut prep_12col: Vec<Val<SC>> =
+                    Vec::with_capacity(chunks.len() * 12 + if alu_empty { 12 } else { 0 });
+                for chunk in &mut chunks {
+                    let sel1 = chunk[0];
+                    let sel2 = chunk[1];
+                    let sel3 = chunk[2];
+                    let a_idx = chunk[3];
+                    let b_idx = chunk[4];
+                    let c_idx = chunk[5];
+                    let out_idx = chunk[6];
+                    let mult_a_eff = chunk[7];
+                    let b_is_creator = <Val<SC> as PrimeField64>::as_canonical_u64(&chunk[8]) != 0;
+                    let mult_c_eff = chunk[9];
+                    let out_is_creator =
+                        <Val<SC> as PrimeField64>::as_canonical_u64(&chunk[10]) != 0;
 
-                let mut prep_12col: Vec<Val<SC>> = base_prep[idx]
-                    .chunks(lane_11)
-                    .flat_map(|chunk| {
-                        let sel1 = chunk[0];
-                        let sel2 = chunk[1];
-                        let sel3 = chunk[2];
-                        let a_idx = chunk[3];
-                        let b_idx = chunk[4];
-                        let c_idx = chunk[5];
-                        let out_idx = chunk[6];
-                        let mult_a_eff = chunk[7];
-                        let b_is_creator =
-                            <Val<SC> as PrimeField64>::as_canonical_u64(&chunk[8]) != 0;
-                        let mult_c_eff = chunk[9];
-                        let out_is_creator =
-                            <Val<SC> as PrimeField64>::as_canonical_u64(&chunk[10]) != 0;
+                    let mult_b = if b_is_creator {
+                        let b_wid =
+                            <Val<SC> as PrimeField64>::as_canonical_u64(&b_idx) as usize / D;
+                        let n_reads = preprocessed.ext_reads.get(b_wid).copied().unwrap_or(0);
+                        <Val<SC>>::from_u32(n_reads)
+                    } else {
+                        neg_one
+                    };
 
-                        let mult_b = if b_is_creator {
-                            let b_wid =
-                                <Val<SC> as PrimeField64>::as_canonical_u64(&b_idx) as usize / D;
-                            let n_reads = preprocessed.ext_reads.get(b_wid).copied().unwrap_or(0);
-                            <Val<SC>>::from_u32(n_reads)
-                        } else {
-                            neg_one
-                        };
+                    let mult_out = if out_is_creator {
+                        let out_wid =
+                            <Val<SC> as PrimeField64>::as_canonical_u64(&out_idx) as usize / D;
+                        let n_reads = preprocessed.ext_reads.get(out_wid).copied().unwrap_or(0);
+                        <Val<SC>>::from_u32(n_reads)
+                    } else {
+                        neg_one
+                    };
 
-                        let mult_out = if out_is_creator {
-                            let out_wid =
-                                <Val<SC> as PrimeField64>::as_canonical_u64(&out_idx) as usize / D;
-                            let n_reads = preprocessed.ext_reads.get(out_wid).copied().unwrap_or(0);
-                            <Val<SC>>::from_u32(n_reads)
-                        } else {
-                            neg_one
-                        };
-
-                        [
-                            <Val<SC>>::ONE, // active (1 for active row; padding rows are all zeros)
-                            mult_a_eff,
-                            sel1,
-                            sel2,
-                            sel3,
-                            a_idx,
-                            b_idx,
-                            c_idx,
-                            out_idx,
-                            mult_b,
-                            mult_out,
-                            mult_c_eff,
-                        ]
-                    })
-                    .collect();
+                    prep_12col.extend([
+                        <Val<SC>>::ONE, // active (1 for active row; padding rows are all zeros)
+                        mult_a_eff,
+                        sel1,
+                        sel2,
+                        sel3,
+                        a_idx,
+                        b_idx,
+                        c_idx,
+                        out_idx,
+                        mult_b,
+                        mult_out,
+                        mult_c_eff,
+                    ]);
+                }
+                debug_assert!(chunks.remainder().is_empty());
 
                 if alu_empty {
                     prep_12col.extend([<Val<SC>>::ZERO; 12]);
@@ -268,15 +266,14 @@ where
             PrimitiveOpType::Public => {
                 // Public preprocessed per op from circuit.rs: 1 value (D-scaled out_idx).
                 // Convert to [ext_mult, out_idx] pairs using ext_reads.
-                let prep_2col: Vec<Val<SC>> = base_prep[idx]
-                    .iter()
-                    .flat_map(|&out_idx| {
-                        let out_wid =
-                            (<Val<SC> as PrimeField64>::as_canonical_u64(&out_idx) as usize) / D;
-                        let n_reads = preprocessed.ext_reads.get(out_wid).copied().unwrap_or(0);
-                        [<Val<SC>>::from_u32(n_reads), out_idx]
-                    })
-                    .collect();
+                let mut prep_2col: Vec<Val<SC>> = Vec::with_capacity(base_prep[idx].len() * 2);
+                for &out_idx in &base_prep[idx] {
+                    let out_wid =
+                        (<Val<SC> as PrimeField64>::as_canonical_u64(&out_idx) as usize) / D;
+                    let n_reads = preprocessed.ext_reads.get(out_wid).copied().unwrap_or(0);
+                    prep_2col.push(<Val<SC>>::from_u32(n_reads));
+                    prep_2col.push(out_idx);
+                }
 
                 let num_ops = prep_2col.len() / 2;
                 let public_air = PublicAir::new_with_preprocessed(
@@ -295,15 +292,14 @@ where
             PrimitiveOpType::Const => {
                 // Const preprocessed per op from circuit.rs: 1 value (D-scaled out_idx).
                 // Convert to [ext_mult, out_idx] pairs using ext_reads.
-                let prep_2col: Vec<Val<SC>> = base_prep[idx]
-                    .iter()
-                    .flat_map(|&out_idx| {
-                        let out_wid =
-                            (<Val<SC> as PrimeField64>::as_canonical_u64(&out_idx) as usize) / D;
-                        let n_reads = preprocessed.ext_reads.get(out_wid).copied().unwrap_or(0);
-                        [<Val<SC>>::from_u32(n_reads), out_idx]
-                    })
-                    .collect();
+                let mut prep_2col: Vec<Val<SC>> = Vec::with_capacity(base_prep[idx].len() * 2);
+                for &out_idx in &base_prep[idx] {
+                    let out_wid =
+                        (<Val<SC> as PrimeField64>::as_canonical_u64(&out_idx) as usize) / D;
+                    let n_reads = preprocessed.ext_reads.get(out_wid).copied().unwrap_or(0);
+                    prep_2col.push(<Val<SC>>::from_u32(n_reads));
+                    prep_2col.push(out_idx);
+                }
 
                 let height = prep_2col.len() / 2;
                 let const_air = ConstAir::new_with_preprocessed(height, prep_2col.clone())
