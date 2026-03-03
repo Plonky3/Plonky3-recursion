@@ -832,7 +832,10 @@ let traces = runner.run()?;</code></pre>
 use p3_circuit_prover::common::get_airs_and_degrees_with_prep;
 
 let (airs_degrees, preprocessed) = get_airs_and_degrees_with_prep::&lt;SC, EF, D&gt;(
-    &amp;circuit, table_packing, Some(&amp;[NonPrimitiveConfig::Poseidon2(poseidon2_config)]),
+    &amp;circuit, table_packing, &amp;[Box::new(Poseidon2Prover::new(
+        poseidon2_config,
+        ConstraintProfile::Standard,
+    ))],
 )?;
 
 let (mut airs, degrees): (Vec&lt;_&gt;, Vec&lt;_&gt;) = airs_degrees.into_iter().unzip();
