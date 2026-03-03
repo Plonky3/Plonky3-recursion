@@ -390,20 +390,8 @@ where
                 let one = AB::Expr::ONE;
                 builder.assert_zero(sel_bool * a_slice[0] * (a_slice[0] - one));
 
-                // MUL_ADD constraints: a * b + c = out (extension field)
-                let mut muladd_acc = vec![AB::Expr::ZERO; D];
-                for i in 0..D {
-                    for j in 0..D {
-                        let term = a_slice[i] * b_slice[j];
-                        let k = i + j;
-                        if k < D {
-                            muladd_acc[k] = muladd_acc[k].clone() + term;
-                        } else {
-                            muladd_acc[k - D] = muladd_acc[k - D].clone() + w.clone() * term;
-                        }
-                    }
-                }
-                // Add c component-wise
+                // MUL_ADD constraints: a * b + c = out (extension field), reuse mul_acc
+                let mut muladd_acc = mul_acc.clone();
                 for i in 0..D {
                     muladd_acc[i] = muladd_acc[i].clone() + c_slice[i];
                 }
