@@ -3,13 +3,13 @@
 use alloc::vec::Vec;
 
 use hashbrown::HashMap;
-use p3_air::Air;
+use p3_air::{Air, BaseEntry, BaseLeaf, ExtLeaf, SymbolicExpressionExt, SymbolicVariable};
 use p3_batch_stark::symbolic::{get_log_num_quotient_chunks, get_symbolic_constraints};
 use p3_circuit::CircuitBuilder;
-use p3_circuit::utils::{ColumnsTargets, symbolic_to_circuit_base, symbolic_to_circuit_ext};
-use p3_field::{ExtensionField, Field};
+use p3_circuit::utils::{ColumnsTargets, symbolic_ext_expr_to_circuit, symbolic_to_circuit_base};
+use p3_field::{Algebra, ExtensionField, Field};
 use p3_lookup::lookup_traits::{Lookup, LookupData, LookupGadget};
-use p3_uni_stark::{Entry, SymbolicAirBuilder, SymbolicExpression, SymbolicVariable};
+use p3_uni_stark::{SymbolicAirBuilder, SymbolicExpression};
 
 use crate::Target;
 use crate::types::RecursiveLagrangeSelectors;
@@ -87,7 +87,7 @@ pub trait RecursiveAir<F: Field, EF: ExtensionField<F>, LG: LookupGadget> {
 impl<F: Field, EF: ExtensionField<F>, A, LG: LookupGadget> RecursiveAir<F, EF, LG> for A
 where
     A: Air<SymbolicAirBuilder<F, EF>>,
-    SymbolicExpression<EF>: From<SymbolicExpression<F>>,
+    SymbolicExpressionExt<F, EF>: From<SymbolicExpression<F>> + Algebra<EF>,
 {
     fn width(&self) -> usize {
         Self::width(self)
@@ -114,15 +114,16 @@ where
             .map(|ld| LookupData {
                 name: ld.name.clone(),
                 aux_idx: ld.aux_idx,
-                expected_cumulated: SymbolicExpression::Variable(SymbolicVariable::new(
-                    Entry::Public,
-                    ld.expected_cumulated,
+                expected_cumulated: SymbolicExpressionExt::Leaf(ExtLeaf::Base(
+                    SymbolicExpression::Leaf(BaseLeaf::Variable(SymbolicVariable::new(
+                        BaseEntry::Public,
+                        ld.expected_cumulated,
+                    ))),
                 )),
             })
             .collect::<Vec<_>>();
 
         let num_preprocessed = columns.local_prep_values.len();
-        // Get symbolic constraints from the AIR
         let (base_symbolic_constraints, extension_symbolic_constraints) = get_symbolic_constraints(
             self,
             num_preprocessed,
@@ -156,8 +157,14 @@ where
         let mut ext_cache = HashMap::new();
         for s_c in &extension_symbolic_constraints {
             let mul_prev = builder.mul(acc, *alpha);
-            let constraints =
-                symbolic_to_circuit_ext(sels.row_selectors, &columns, s_c, builder, &mut ext_cache);
+            let constraints = symbolic_ext_expr_to_circuit(
+                sels.row_selectors,
+                &columns,
+                s_c,
+                builder,
+                &mut base_cache,
+                &mut ext_cache,
+            );
             acc = builder.add(mul_prev, constraints);
         }
 
@@ -176,7 +183,7 @@ where
     where
         F: Field,
         EF: ExtensionField<F>,
-        SymbolicExpression<EF>: From<SymbolicExpression<F>>,
+        SymbolicExpressionExt<F, EF>: From<SymbolicExpression<F>>,
         LG: LookupGadget,
     {
         let ld_dummy_expected = lookup_data
@@ -184,9 +191,11 @@ where
             .map(|ld| LookupData {
                 name: ld.name.clone(),
                 aux_idx: ld.aux_idx,
-                expected_cumulated: SymbolicExpression::Variable(SymbolicVariable::new(
-                    Entry::Public,
-                    ld.expected_cumulated,
+                expected_cumulated: SymbolicExpressionExt::Leaf(ExtLeaf::Base(
+                    SymbolicExpression::Leaf(BaseLeaf::Variable(SymbolicVariable::new(
+                        BaseEntry::Public,
+                        ld.expected_cumulated,
+                    ))),
                 )),
             })
             .collect::<Vec<_>>();

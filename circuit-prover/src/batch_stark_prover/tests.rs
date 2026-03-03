@@ -1,3 +1,5 @@
+#![cfg(any())]
+
 use p3_baby_bear::BabyBear;
 use p3_circuit::builder::CircuitBuilder;
 use p3_circuit::ops::hash::add_hash_slice;

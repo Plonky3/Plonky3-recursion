@@ -15,9 +15,11 @@ use p3_circuit_prover::batch_stark_prover::{AirVariant, PrimitiveTable, RowCount
 use p3_circuit_prover::field_params::ExtractBinomialW;
 use p3_circuit_prover::{Poseidon2AirWrapperInner, poseidon2_verifier_air_from_config};
 use p3_commit::{Pcs, PolynomialSpace};
-use p3_field::{BasedVectorSpace, ExtensionField, Field, PrimeCharacteristicRing, PrimeField64};
+use p3_field::{
+    Algebra, BasedVectorSpace, ExtensionField, Field, PrimeCharacteristicRing, PrimeField64,
+};
 use p3_lookup::lookup_traits::{Kind, Lookup, LookupData, LookupGadget};
-use p3_uni_stark::{StarkGenericConfig, SymbolicExpression, Val};
+use p3_uni_stark::{StarkGenericConfig, SymbolicExpression, SymbolicExpressionExt, Val};
 
 use super::{ObservableCommitment, VerificationError, recompose_quotient_from_chunks_circuit};
 use crate::challenger::CircuitChallenger;
@@ -69,7 +71,7 @@ impl<F, EF, const D: usize> P3Air<p3_uni_stark::SymbolicAirBuilder<F, EF>>
 where
     F: Field + PrimeField64,
     EF: ExtensionField<F>,
-    SymbolicExpression<EF>: From<SymbolicExpression<F>>,
+    SymbolicExpressionExt<F, EF>: From<SymbolicExpression<F>> + Algebra<EF>,
 {
     fn eval(&self, builder: &mut p3_uni_stark::SymbolicAirBuilder<F, EF>) {
         match self {
@@ -125,12 +127,22 @@ where
     EF: ExtensionField<F> + ExtractBinomialW<F>,
 {
     if TRACE_D == 1 {
-        AluAir::<F, TRACE_D>::new(num_ops, lanes)
+        let preprocessed = if num_ops == 0 {
+            Vec::new()
+        } else {
+            vec![F::ZERO; num_ops * AluAir::<F, TRACE_D>::preprocessed_lane_width()]
+        };
+        AluAir::<F, TRACE_D>::new_with_preprocessed(num_ops, lanes, preprocessed)
     } else {
         // For D > 1, extract W from the extension field
         // BinomialExtensionField<F, D> has W as the constant such that x^D = W
         let w = binomial_w_for_alu::<F, EF>();
-        AluAir::<F, TRACE_D>::new_binomial(num_ops, lanes, w)
+        let preprocessed = if num_ops == 0 {
+            Vec::new()
+        } else {
+            vec![F::ZERO; num_ops * AluAir::<F, TRACE_D>::preprocessed_lane_width()]
+        };
+        AluAir::<F, TRACE_D>::new_binomial_with_preprocessed(num_ops, lanes, w, preprocessed)
     }
 }
 
@@ -183,7 +195,8 @@ where
     Val<SC>: PrimeField64,
     SC::Challenge: ExtensionField<Val<SC>> + PrimeCharacteristicRing + ExtractBinomialW<Val<SC>>,
     <<SC as StarkGenericConfig>::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain: Clone,
-    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        From<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
     assert_eq!(proof.ext_degree, TRACE_D, "trace extension degree mismatch");
     let rows: RowCounts = proof.rows;

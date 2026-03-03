@@ -73,12 +73,12 @@ impl<AB: AirBuilder, const RATE: usize, const CAPACITY: usize> Air<AB>
         let local: &SpongeCols<AB::Var, RATE, CAPACITY> = (*local).borrow();
         let _next: &SpongeCols<AB::Var, RATE, CAPACITY> = (*next).borrow();
 
-        let _output_mode = AB::Expr::ONE - local.absorb.clone();
+        let _output_mode = AB::Expr::ONE - local.absorb;
 
         // When resetting the state, we just have to clear the capacity. The rate will be overwritten by the input.
         builder
-            .when(local.reset.clone())
-            .assert_zeros::<CAPACITY, _>(array::from_fn(|i| local.capacity[i].clone()));
+            .when(local.reset)
+            .assert_zeros::<CAPACITY, _>(array::from_fn(|i| local.capacity[i]));
 
         // TODO: Add all lookups:
         // - If local.absorb = 1:
