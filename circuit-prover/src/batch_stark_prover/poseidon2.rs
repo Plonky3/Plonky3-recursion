@@ -82,7 +82,7 @@ impl<SC> BatchAir<SC> for Poseidon2AirWrapper<SC>
 where
     SC: StarkGenericConfig + Send + Sync,
     Val<SC>: StarkField,
-    SymbolicExpressionExt<Val<SC>, SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
 {
 }
 
@@ -417,7 +417,7 @@ impl<F, EF> Air<SymbolicAirBuilder<F, EF>> for Poseidon2AirWrapperInner
 where
     F: Field + PrimeField64,
     EF: ExtensionField<F>,
-    SymbolicExpressionExt<F, EF>: From<SymbolicExpression<F>>,
+    SymbolicExpressionExt<F, EF>: Algebra<SymbolicExpression<F>>,
 {
     fn eval(&self, builder: &mut SymbolicAirBuilder<F, EF>) {
         eval_symbolic_inner!(self, builder, F);
@@ -560,7 +560,7 @@ impl<'a, SC> Air<ProverConstraintFolder<'a, SC>> for Poseidon2AirWrapper<SC>
 where
     SC: StarkGenericConfig + Send + Sync,
     Val<SC>: StarkField + PrimeField,
-    SymbolicExpressionExt<Val<SC>, SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
 {
     fn eval(&self, builder: &mut ProverConstraintFolder<'a, SC>) {
         let main = builder.main();

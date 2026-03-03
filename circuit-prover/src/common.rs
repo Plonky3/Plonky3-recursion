@@ -25,7 +25,7 @@ use crate::{DynamicAirEntry, Poseidon2Prover, TablePacking};
 pub enum CircuitTableAir<SC, const D: usize>
 where
     SC: StarkGenericConfig,
-    SymbolicExpressionExt<Val<SC>, SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
 {
     Const(ConstAir<Val<SC>, D>),
     Public(PublicAir<Val<SC>, D>),
@@ -44,7 +44,7 @@ pub enum NonPrimitiveConfig {
 impl<SC, const D: usize> Clone for CircuitTableAir<SC, D>
 where
     SC: StarkGenericConfig,
-    SymbolicExpressionExt<Val<SC>, SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
 {
     fn clone(&self) -> Self {
         match self {

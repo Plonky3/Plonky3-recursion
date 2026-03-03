@@ -220,7 +220,7 @@ where
         + From<Val<SC>>
         + ExtensionField<Val<SC>>
         + ExtractBinomialW<Val<SC>>,
-    SymbolicExpressionExt<Val<SC>, SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
 {
     let mut circuit_builder = CircuitBuilder::new();
     // Enable Poseidon2
@@ -381,7 +381,7 @@ where
         + From<Val<SC>>
         + ExtensionField<Val<SC>>
         + ExtractBinomialW<Val<SC>>,
-    SymbolicExpressionExt<Val<SC>, SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
 {
     let mut circuit_builder = CircuitBuilder::new();
 

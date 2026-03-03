@@ -322,7 +322,7 @@ pub enum BatchStarkProverError {
 impl<SC, const D: usize> BaseAir<Val<SC>> for CircuitTableAir<SC, D>
 where
     SC: StarkGenericConfig,
-    SymbolicExpressionExt<Val<SC>, SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
 {
     fn width(&self) -> usize {
         match self {
@@ -392,7 +392,7 @@ impl<'a, SC, const D: usize> Air<DebugConstraintBuilder<'a, Val<SC>, SC::Challen
 where
     SC: StarkGenericConfig,
     Val<SC>: PrimeField,
-    SymbolicExpressionExt<Val<SC>, SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
 {
     impl_circuit_table_air_for_builder!(DebugConstraintBuilder<'a, Val<SC>, SC::Challenge>);
 }
@@ -402,7 +402,7 @@ impl<'a, SC, const D: usize> Air<ProverConstraintFolderWithLookups<'a, SC>>
 where
     SC: StarkGenericConfig,
     Val<SC>: PrimeField,
-    SymbolicExpressionExt<Val<SC>, SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
 {
     impl_circuit_table_air_for_builder!(ProverConstraintFolderWithLookups<'a, SC>);
 }
@@ -412,7 +412,7 @@ impl<'a, SC, const D: usize> Air<VerifierConstraintFolderWithLookups<'a, SC>>
 where
     SC: StarkGenericConfig,
     Val<SC>: PrimeField,
-    SymbolicExpressionExt<Val<SC>, SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
 {
     impl_circuit_table_air_for_builder!(VerifierConstraintFolderWithLookups<'a, SC>);
 }
@@ -506,7 +506,7 @@ where
     ) -> Result<BatchStarkProof<SC>, BatchStarkProverError>
     where
         EF: Field + BasedVectorSpace<Val<SC>> + ExtractBinomialW<Val<SC>>,
-        SymbolicExpressionExt<Val<SC>, SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+        SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
     {
         let w_opt = EF::extract_w();
         match EF::DIMENSION {

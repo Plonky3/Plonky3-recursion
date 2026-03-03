@@ -87,7 +87,7 @@ pub trait RecursiveAir<F: Field, EF: ExtensionField<F>, LG: LookupGadget> {
 impl<F: Field, EF: ExtensionField<F>, A, LG: LookupGadget> RecursiveAir<F, EF, LG> for A
 where
     A: Air<SymbolicAirBuilder<F, EF>>,
-    SymbolicExpressionExt<F, EF>: From<SymbolicExpression<F>> + Algebra<EF>,
+    SymbolicExpressionExt<F, EF>: Algebra<SymbolicExpression<F>> + Algebra<EF>,
 {
     fn width(&self) -> usize {
         Self::width(self)
@@ -183,7 +183,7 @@ where
     where
         F: Field,
         EF: ExtensionField<F>,
-        SymbolicExpressionExt<F, EF>: From<SymbolicExpression<F>>,
+        SymbolicExpressionExt<F, EF>: Algebra<SymbolicExpression<F>>,
         LG: LookupGadget,
     {
         let ld_dummy_expected = lookup_data

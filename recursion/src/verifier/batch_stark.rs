@@ -71,7 +71,7 @@ impl<F, EF, const D: usize> P3Air<p3_uni_stark::SymbolicAirBuilder<F, EF>>
 where
     F: Field + PrimeField64,
     EF: ExtensionField<F>,
-    SymbolicExpressionExt<F, EF>: From<SymbolicExpression<F>> + Algebra<EF>,
+    SymbolicExpressionExt<F, EF>: Algebra<SymbolicExpression<F>> + Algebra<EF>,
 {
     fn eval(&self, builder: &mut p3_uni_stark::SymbolicAirBuilder<F, EF>) {
         match self {

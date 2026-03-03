@@ -50,7 +50,7 @@ where
 impl<SC> Clone for DynamicAirEntry<SC>
 where
     SC: StarkGenericConfig,
-    SymbolicExpressionExt<Val<SC>, SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
 {
     fn clone(&self) -> Self {
         Self {
@@ -62,7 +62,7 @@ where
 impl<SC> BaseAir<Val<SC>> for DynamicAirEntry<SC>
 where
     SC: StarkGenericConfig,
-    SymbolicExpressionExt<Val<SC>, SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
 {
     fn width(&self) -> usize {
         <dyn CloneableBatchAir<SC> as BaseAir<Val<SC>>>::width(self.air())
@@ -87,7 +87,7 @@ macro_rules! impl_air_for_dynamic_entry {
         where
             SC: StarkGenericConfig,
             Val<SC>: PrimeField,
-            SymbolicExpressionExt<Val<SC>, SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+            SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
         {
             fn eval(&self, builder: &mut $builder) {
                 self.air().$eval_method(builder);
@@ -116,7 +116,7 @@ macro_rules! impl_air_for_dynamic_entry {
         where
             SC: StarkGenericConfig,
             Val<SC>: PrimeField,
-            SymbolicExpressionExt<Val<SC>, SC::Challenge>: From<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+            SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
         {
             fn eval(&self, builder: &mut $builder) {
                 self.air().$eval_method(builder);
@@ -180,7 +180,7 @@ pub trait BatchAir<SC>:
     + Sync
 where
     SC: StarkGenericConfig,
-    SymbolicExpressionExt<Val<SC>, SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
 {
 }
 
@@ -194,7 +194,7 @@ pub trait BatchAir<SC>:
     + Sync
 where
     SC: StarkGenericConfig,
-    SymbolicExpressionExt<Val<SC>, SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
 {
 }
 
@@ -249,7 +249,7 @@ macro_rules! impl_cloneable_batch_air_forwarding {
 pub trait CloneableBatchAir<SC>: BaseAir<Val<SC>> + Send + Sync
 where
     SC: StarkGenericConfig,
-    SymbolicExpressionExt<Val<SC>, SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
 {
     fn clone_box(&self) -> Box<dyn CloneableBatchAir<SC>>;
 
