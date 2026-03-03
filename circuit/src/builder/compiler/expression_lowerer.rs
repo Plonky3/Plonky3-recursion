@@ -1,5 +1,5 @@
-use alloc::boxed::Box;
 use alloc::string::ToString;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use alloc::{format, vec};
 use core::hash::Hash;
@@ -8,11 +8,12 @@ use hashbrown::{HashMap, HashSet};
 use p3_field::{Field, PrimeCharacteristicRing};
 
 use crate::builder::CircuitBuilderError;
-use crate::builder::circuit_builder::{NonPrimitiveOpParams, NonPrimitiveOperationData};
+use crate::builder::circuit_builder::{
+    NonPrimitiveOpParams, NonPrimitiveOperationData, NpoCircuitPlugin, NpoLoweringContext,
+};
 use crate::builder::compiler::get_witness_id;
 use crate::expr::{Expr, ExpressionGraph};
-use crate::op::{NonPrimitiveOpType, Op};
-use crate::ops::Poseidon2PermExecutor;
+use crate::op::{NpoTypeId, Op};
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};
 
 /// Sparse disjoint-set "find" with path compression over a HashMap (iterative).
@@ -64,7 +65,6 @@ fn build_connect_dsu(connects: &[(ExprId, ExprId)]) -> HashMap<usize, usize> {
 /// - Managing witness allocation during lowering
 /// - Implementing the DSU-based connection strategy for witness sharing
 /// - Building the mapping from ExprId to WitnessId
-#[derive(Debug)]
 pub struct ExpressionLowerer<'a, F: Field> {
     /// Reference to the expression graph to lower
     graph: &'a ExpressionGraph<F>,
@@ -80,6 +80,9 @@ pub struct ExpressionLowerer<'a, F: Field> {
 
     /// Witness allocator
     witness_alloc: WitnessAllocator,
+
+    /// Registered NPO plugins, keyed by type ID.
+    npo_registry: &'a HashMap<NpoTypeId, Arc<dyn NpoCircuitPlugin<F>>>,
 }
 
 impl<'a, F> ExpressionLowerer<'a, F>
@@ -93,6 +96,7 @@ where
         pending_connects: &'a [(ExprId, ExprId)],
         public_input_count: usize,
         witness_alloc: WitnessAllocator,
+        npo_registry: &'a HashMap<NpoTypeId, Arc<dyn NpoCircuitPlugin<F>>>,
     ) -> Self {
         Self {
             graph,
@@ -100,10 +104,12 @@ where
             pending_connects,
             public_input_count,
             witness_alloc,
+            npo_registry,
         }
     }
 
     fn emit_non_primitive_op<AllocFn>(
+        npo_registry: &HashMap<NpoTypeId, Arc<dyn NpoCircuitPlugin<F>>>,
         data: &NonPrimitiveOperationData<F>,
         output_exprs: &[(u32, ExprId)],
         expr_to_widx: &mut HashMap<ExprId, WitnessId>,
@@ -119,221 +125,65 @@ where
                 .or_insert_with(|| alloc_witness_id_for_expr(expr_id.0 as usize));
         }
 
-        match &data.op_type {
-            NonPrimitiveOpType::Poseidon2Perm(config) => {
-                let (new_start, merkle_path) = match data.params.as_ref().ok_or(
-                    CircuitBuilderError::InvalidNonPrimitiveOpConfiguration { op: data.op_type },
-                )? {
-                    NonPrimitiveOpParams::Poseidon2Perm {
-                        new_start,
-                        merkle_path,
-                    } => (*new_start, *merkle_path),
-                    _ => {
-                        return Err(CircuitBuilderError::InvalidNonPrimitiveOpConfiguration {
-                            op: NonPrimitiveOpType::Poseidon2Perm(*config),
-                        });
-                    }
-                };
-
-                // Detect D=1 (base field) vs D=4 (extension field) based on input count
-                // D=4 mode: 6 inputs [in0..3, mmcs_index_sum, mmcs_bit], 2 or 4 outputs
-                // D=1 mode: 16 inputs [in0..15], 8 or 16 outputs (no merkle support)
-                let is_d1_mode = data.input_exprs.len() == 16;
-                let is_d4_mode = data.input_exprs.len() == 6;
-
-                if !is_d1_mode && !is_d4_mode {
-                    return Err(CircuitBuilderError::NonPrimitiveOpArity {
-                        op: "Poseidon2Perm",
-                        expected: "6 inputs (D=4 mode) or 16 inputs (D=1 mode)".to_string(),
-                        got: data.input_exprs.len(),
+        // Unconstrained => handled directly as Op::Hint (non-table-backed).
+        if data.op_type == NpoTypeId::unconstrained() {
+            let executor = match data.params.as_ref().ok_or_else(|| {
+                CircuitBuilderError::InvalidNonPrimitiveOpConfiguration {
+                    op: data.op_type.clone(),
+                }
+            })? {
+                NonPrimitiveOpParams::Unconstrained { executor } => executor.clone(),
+                _ => {
+                    return Err(CircuitBuilderError::InvalidNonPrimitiveOpConfiguration {
+                        op: data.op_type.clone(),
                     });
                 }
+            };
 
-                // Validate output count based on mode
-                let valid_output_count = if is_d1_mode {
-                    // D=1: 8 (rate only) or 16 (with capacity)
-                    data.output_exprs.len() == 8 || data.output_exprs.len() == 16
-                } else {
-                    // D=4: 2 (rate only) or 4 (with capacity)
-                    data.output_exprs.len() == 2 || data.output_exprs.len() == 4
-                };
-
-                if !valid_output_count {
-                    return Err(CircuitBuilderError::NonPrimitiveOpArity {
-                        op: "Poseidon2Perm",
-                        expected: if is_d1_mode {
-                            "8 or 16 outputs for D=1 mode".to_string()
-                        } else {
-                            "2 or 4 outputs for D=4 mode".to_string()
-                        },
-                        got: data.output_exprs.len(),
-                    });
-                }
-
-                let mut inputs_widx: Vec<Vec<WitnessId>> =
-                    Vec::with_capacity(data.input_exprs.len());
-
-                if is_d1_mode {
-                    // D=1 mode: 16 input elements (no mmcs_index_sum, no mmcs_bit)
-                    for (i, limb_exprs) in data.input_exprs.iter().enumerate() {
-                        if !(limb_exprs.is_empty() || limb_exprs.len() == 1) {
-                            return Err(CircuitBuilderError::NonPrimitiveOpArity {
-                                op: "Poseidon2Perm",
-                                expected: "0 or 1 base field element per input".to_string(),
-                                got: limb_exprs.len(),
-                            });
-                        }
-                        let limb_widx = limb_exprs
-                            .iter()
-                            .map(|&expr| {
-                                get_witness_id(
-                                    expr_to_widx,
-                                    expr,
-                                    &format!("Poseidon2Perm D=1 input {i}"),
-                                )
-                            })
-                            .collect::<Result<Vec<WitnessId>, _>>()?;
-                        inputs_widx.push(limb_widx);
-                    }
-                } else {
-                    // D=4 mode: Inputs (Limbs 0-3)
-                    for (i, limb_exprs) in data.input_exprs.iter().take(4).enumerate() {
-                        if !(limb_exprs.is_empty() || limb_exprs.len() == 1) {
-                            return Err(CircuitBuilderError::NonPrimitiveOpArity {
-                                op: "Poseidon2Perm",
-                                expected: "0 or 1 extension element per input limb".to_string(),
-                                got: limb_exprs.len(),
-                            });
-                        }
-                        let limb_widx = limb_exprs
-                            .iter()
-                            .map(|&expr| {
-                                get_witness_id(
-                                    expr_to_widx,
-                                    expr,
-                                    &format!("Poseidon2Perm input limb {i}"),
-                                )
-                            })
-                            .collect::<Result<Vec<WitnessId>, _>>()?;
-                        inputs_widx.push(limb_widx);
-                    }
-
-                    // mmcs_index_sum (0 or 1 element)
-                    let mmcs_exprs = &data.input_exprs[4];
-                    if !(mmcs_exprs.is_empty() || mmcs_exprs.len() == 1) {
-                        return Err(CircuitBuilderError::NonPrimitiveOpArity {
-                            op: "Poseidon2Perm",
-                            expected: "0 or 1 element for mmcs_index_sum".to_string(),
-                            got: mmcs_exprs.len(),
-                        });
-                    }
-                    let mmcs_widx = mmcs_exprs
-                        .iter()
-                        .map(|&expr| {
-                            get_witness_id(expr_to_widx, expr, "Poseidon2Perm mmcs_index_sum input")
-                        })
-                        .collect::<Result<Vec<WitnessId>, _>>()?;
-                    inputs_widx.push(mmcs_widx);
-
-                    // mmcs_bit (0 or 1 element)
-                    let mmcs_bit_exprs = &data.input_exprs[5];
-                    if !(mmcs_bit_exprs.is_empty() || mmcs_bit_exprs.len() == 1) {
-                        return Err(CircuitBuilderError::NonPrimitiveOpArity {
-                            op: "Poseidon2Perm",
-                            expected: "0 or 1 element for mmcs_bit".to_string(),
-                            got: mmcs_bit_exprs.len(),
-                        });
-                    }
-                    let mmcs_bit_widx = mmcs_bit_exprs
-                        .iter()
-                        .map(|&expr| {
-                            get_witness_id(expr_to_widx, expr, "Poseidon2Perm mmcs_bit input")
-                        })
-                        .collect::<Result<Vec<WitnessId>, _>>()?;
-                    inputs_widx.push(mmcs_bit_widx);
-                }
-
-                // Output CTL exposures (0 or 1 element each).
-                //
-                // For Poseidon2Perm we take outputs exclusively from `data.output_exprs` to avoid
-                // generating multiple witness ids per output limb (which breaks both execution and
-                // trace building).
-                let mut poseidon2_outputs: Vec<Vec<WitnessId>> =
-                    Vec::with_capacity(data.output_exprs.len());
-                for (i, limb_exprs) in data.output_exprs.iter().enumerate() {
-                    if !(limb_exprs.is_empty() || limb_exprs.len() == 1) {
-                        return Err(CircuitBuilderError::NonPrimitiveOpArity {
-                            op: "Poseidon2Perm",
-                            expected: "0 or 1 element per output".to_string(),
-                            got: limb_exprs.len(),
-                        });
-                    }
-                    if let Some(&expr) = limb_exprs.first() {
-                        let w = get_witness_id(
-                            expr_to_widx,
-                            expr,
-                            &format!("Poseidon2Perm output {i}"),
-                        )?;
-                        poseidon2_outputs.push(vec![w]);
-                    } else {
-                        poseidon2_outputs.push(Vec::new());
-                    }
-                }
-
-                ops.push(Op::NonPrimitiveOpWithExecutor {
-                    inputs: inputs_widx,
-                    outputs: poseidon2_outputs,
-                    executor: Box::new(Poseidon2PermExecutor::new(
-                        data.op_type,
-                        new_start,
-                        merkle_path,
-                    )),
-                    op_id: data.op_id,
+            // Expected layout: [in]
+            if data.input_exprs.len() != 1 {
+                return Err(CircuitBuilderError::NonPrimitiveOpArity {
+                    op: "Unconstrained",
+                    expected: "1 [in]".to_string(),
+                    got: data.input_exprs.len(),
                 });
             }
-            NonPrimitiveOpType::Unconstrained => {
-                let executor = match data.params.as_ref().ok_or(
-                    CircuitBuilderError::InvalidNonPrimitiveOpConfiguration { op: data.op_type },
-                )? {
-                    NonPrimitiveOpParams::Unconstrained { executor } => executor.clone(),
-                    _ => {
-                        return Err(CircuitBuilderError::InvalidNonPrimitiveOpConfiguration {
-                            op: NonPrimitiveOpType::Unconstrained,
-                        });
-                    }
-                };
 
-                // Expected layout: [in]
-                if data.input_exprs.len() != 1 {
-                    return Err(CircuitBuilderError::NonPrimitiveOpArity {
-                        op: "Unconstrained",
-                        expected: "1 [in]".to_string(),
-                        got: data.input_exprs.len(),
-                    });
-                }
-
-                let inputs = vec![
-                    data.input_exprs[0]
-                        .iter()
-                        .map(|&expr| {
-                            get_witness_id(expr_to_widx, expr, "Unconstrained operation input")
-                        })
-                        .collect::<Result<_, _>>()?,
-                ];
-                let mut outputs: Vec<Vec<WitnessId>> = Vec::with_capacity(output_exprs.len());
-                for (_output_idx, expr_idx) in output_exprs {
-                    let widx = *expr_to_widx
-                        .entry(*expr_idx)
-                        .or_insert_with(|| alloc_witness_id_for_expr(expr_idx.0 as usize));
-                    outputs.push(vec![widx]);
-                }
-                ops.push(Op::NonPrimitiveOpWithExecutor {
-                    inputs,
-                    outputs,
-                    executor,
-                    op_id: data.op_id,
-                });
+            let inputs = vec![
+                data.input_exprs[0]
+                    .iter()
+                    .map(|&expr| {
+                        get_witness_id(expr_to_widx, expr, "Unconstrained operation input")
+                    })
+                    .collect::<Result<_, _>>()?,
+            ];
+            let mut outputs: Vec<Vec<WitnessId>> = Vec::with_capacity(output_exprs.len());
+            for (_output_idx, expr_idx) in output_exprs {
+                let widx = *expr_to_widx
+                    .entry(*expr_idx)
+                    .or_insert_with(|| alloc_witness_id_for_expr(expr_idx.0 as usize));
+                outputs.push(vec![widx]);
             }
+            let flat_inputs = inputs.into_iter().next().unwrap_or_default();
+
+            let flat_outputs: Vec<WitnessId> = outputs.into_iter().flatten().collect();
+
+            ops.push(Op::Hint {
+                inputs: flat_inputs,
+                outputs: flat_outputs,
+                executor,
+            });
+        } else {
+            // Delegate all table-backed NPOs to the registry.
+            let plugin = npo_registry.get(&data.op_type).ok_or_else(|| {
+                CircuitBuilderError::UnsupportedNonPrimitiveOp {
+                    op: data.op_type.clone(),
+                }
+            })?;
+
+            let mut ctx = NpoLoweringContext::new(expr_to_widx, alloc_witness_id_for_expr);
+            let op = plugin.lower(data, output_exprs, &mut ctx)?;
+            ops.push(op);
         }
 
         Ok(())
@@ -601,6 +451,7 @@ where
                             .map(Vec::as_slice)
                             .unwrap_or(&[]);
                         Self::emit_non_primitive_op(
+                            self.npo_registry,
                             data,
                             outputs,
                             &mut expr_to_widx,
@@ -632,6 +483,7 @@ where
                             .map(Vec::as_slice)
                             .unwrap_or(&[]);
                         Self::emit_non_primitive_op(
+                            self.npo_registry,
                             data,
                             outputs,
                             &mut expr_to_widx,
@@ -791,8 +643,9 @@ mod tests {
 
         let connects = vec![];
         let alloc = WitnessAllocator::new();
+        let registry = HashMap::new();
 
-        let lowerer = ExpressionLowerer::new(&graph, &[], &connects, 3, alloc);
+        let lowerer = ExpressionLowerer::new(&graph, &[], &connects, 3, alloc, &registry);
         let (prims, public_rows, expr_map, public_map, witness_count) = lowerer.lower().unwrap();
 
         // Verify Primitives
@@ -1003,8 +856,9 @@ mod tests {
         // Group C: sum ~ p4 (operation result shared)
         let connects = vec![(c_42, p0), (p1, p2), (p2, p3), (sum, p4)];
         let alloc = WitnessAllocator::new();
+        let registry = HashMap::new();
 
-        let lowerer = ExpressionLowerer::new(&graph, &[], &connects, 5, alloc);
+        let lowerer = ExpressionLowerer::new(&graph, &[], &connects, 5, alloc, &registry);
         let (prims, public_rows, expr_map, public_map, witness_count) = lowerer.lower().unwrap();
 
         // Verify Primitives
@@ -1149,7 +1003,8 @@ mod tests {
 
         let connects = vec![];
         let alloc = WitnessAllocator::new();
-        let lowerer = ExpressionLowerer::new(&graph, &[], &connects, 0, alloc);
+        let registry = HashMap::new();
+        let lowerer = ExpressionLowerer::new(&graph, &[], &connects, 0, alloc, &registry);
         let result = lowerer.lower();
 
         assert!(result.is_err());
@@ -1170,7 +1025,8 @@ mod tests {
 
         let connects = vec![];
         let alloc = WitnessAllocator::new();
-        let lowerer = ExpressionLowerer::new(&graph, &[], &connects, 0, alloc);
+        let registry = HashMap::new();
+        let lowerer = ExpressionLowerer::new(&graph, &[], &connects, 0, alloc, &registry);
         let result = lowerer.lower();
 
         assert!(result.is_err());

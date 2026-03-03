@@ -3,8 +3,11 @@ mod common;
 use p3_batch_stark::ProverData;
 use p3_circuit::CircuitBuilder;
 use p3_circuit::ops::generate_poseidon2_trace;
-use p3_circuit_prover::common::{NonPrimitiveConfig, get_airs_and_degrees_with_prep};
-use p3_circuit_prover::{BatchStarkProver, CircuitProverData, ConstraintProfile, TablePacking};
+use p3_circuit_prover::batch_stark_prover::poseidon2_air_builders_d4;
+use p3_circuit_prover::common::{NpoPreprocessor, get_airs_and_degrees_with_prep};
+use p3_circuit_prover::{
+    BatchStarkProver, CircuitProverData, ConstraintProfile, Poseidon2Preprocessor, TablePacking,
+};
 use p3_field::PrimeCharacteristicRing;
 use p3_fri::create_test_fri_params;
 use p3_koala_bear::default_koalabear_poseidon2_16;
@@ -81,7 +84,8 @@ fn test_fibonacci_batch_verifier() {
     let (airs_degrees, preprocessed_columns) = get_airs_and_degrees_with_prep::<MyConfig, _, 1>(
         &circuit,
         table_packing,
-        None,
+        &[],
+        &[],
         ConstraintProfile::Standard,
     )
     .unwrap();
@@ -153,6 +157,7 @@ fn test_fibonacci_batch_verifier() {
         InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>>,
         InnerFri,
         LogUpGadget,
+        _,
         WIDTH,
         RATE,
         TRACE_D,
@@ -164,6 +169,9 @@ fn test_fibonacci_batch_verifier() {
         common,
         &lookup_gadget,
         Poseidon2Config::KoalaBearD4Width16,
+        &p3_circuit_prover::batch_stark_prover::poseidon2_table_provers_d4(
+            Poseidon2Config::KoalaBearD4Width16,
+        ),
     )
     .unwrap();
 
@@ -179,11 +187,13 @@ fn test_fibonacci_batch_verifier() {
 
     let verification_table_packing = TablePacking::new(1, 8);
     let poseidon2_config = Poseidon2Config::KoalaBearD4Width16;
+    let poseidon2_prep: [Box<dyn NpoPreprocessor<F>>; 1] = [Box::new(Poseidon2Preprocessor)];
     let (verification_airs_degrees, verification_preprocessed_columns) =
         get_airs_and_degrees_with_prep::<MyConfig, _, 4>(
             &verification_circuit,
             verification_table_packing,
-            Some(&[NonPrimitiveConfig::Poseidon2(poseidon2_config)]),
+            &poseidon2_prep,
+            &poseidon2_air_builders_d4(),
             ConstraintProfile::Standard,
         )
         .unwrap();

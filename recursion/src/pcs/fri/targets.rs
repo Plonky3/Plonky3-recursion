@@ -547,9 +547,13 @@ where
     >;
 
     /// Observes all opened values and derives PCS-specific challenges.
-    fn get_challenges_circuit<const WIDTH: usize, const RATE: usize>(
+    fn get_challenges_circuit<
+        const WIDTH: usize,
+        const RATE: usize,
+        C: crate::ChallengerPermConfig,
+    >(
         circuit: &mut CircuitBuilder<SC::Challenge>,
-        challenger: &mut CircuitChallenger<WIDTH, RATE>,
+        challenger: &mut CircuitChallenger<WIDTH, RATE, C>,
         fri_proof: &RecursiveFriProof<
             SC,
             RecursiveFriMmcs,
@@ -612,11 +616,11 @@ where
         Ok(challenges)
     }
 
-    fn verify_circuit<const WIDTH: usize, const RATE: usize>(
+    fn verify_circuit<const WIDTH: usize, const RATE: usize, C: crate::ChallengerPermConfig>(
         &self,
         circuit: &mut CircuitBuilder<SC::Challenge>,
         challenges: &[Target],
-        challenger: &mut CircuitChallenger<WIDTH, RATE>,
+        challenger: &mut CircuitChallenger<WIDTH, RATE, C>,
         commitments_with_opening_points: &ComsWithOpeningsTargets<
             Comm,
             TwoAdicMultiplicativeCoset<Val<SC>>,

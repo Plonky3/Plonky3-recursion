@@ -427,10 +427,6 @@ impl<F: Field, const D: usize> BaseAir<F> for AluAir<F, D> {
     }
 
     fn preprocessed_trace(&self) -> Option<RowMajorMatrix<F>> {
-        if self.num_ops > 0 {
-            assert!(!self.preprocessed.is_empty());
-        }
-
         self.schedule.as_ref().map_or_else(
             || {
                 Some(create_direct_preprocessed_trace(
@@ -480,52 +476,43 @@ where
                 let main_offset = lane * lane_width;
                 let prep_offset = lane * preprocessed_lane_width;
 
-                let a = local[main_offset].clone();
-                let b = local[main_offset + 1].clone();
-                let c = local[main_offset + 2].clone();
-                let out = local[main_offset + 3].clone();
+                let a = local[main_offset];
+                let b = local[main_offset + 1];
+                let c = local[main_offset + 2];
+                let out = local[main_offset + 3];
 
-                // mult_a = neg_one (-1) for active rows, 0 for padding rows.
-                // active = -mult_a = 1 for active rows, 0 for padding.
-                let mult_a = preprocessed_local[prep_offset].clone();
-                let sel_add_vs_mul = preprocessed_local[prep_offset + 1].clone();
-                let sel_bool = preprocessed_local[prep_offset + 2].clone();
-                let sel_muladd = preprocessed_local[prep_offset + 3].clone();
-                let sel_horner = preprocessed_local[prep_offset + 4].clone();
+                // Preprocessed layout: [mult_a, sel_add_vs_mul, sel_bool, sel_muladd, sel_horner, a_idx, b_idx, c_idx, out_idx, mult_b, mult_out, a_is_reader, c_is_reader]
+                let mult_a = preprocessed_local[prep_offset];
+                let sel_add_vs_mul = preprocessed_local[prep_offset + 1];
+                let sel_bool = preprocessed_local[prep_offset + 2];
+                let sel_muladd = preprocessed_local[prep_offset + 3];
+                let sel_horner = preprocessed_local[prep_offset + 4];
 
                 // active = -mult_a: 1 for active rows, 0 for padding
                 let active = AB::Expr::ZERO - mult_a;
                 // sel_mul = active - sel_bool - sel_muladd - sel_horner - sel_add_vs_mul
-                let sel_mul = active
-                    - sel_bool.clone()
-                    - sel_muladd.clone()
-                    - sel_horner.clone()
-                    - sel_add_vs_mul.clone();
+                let sel_mul = active - sel_bool - sel_muladd - sel_horner - sel_add_vs_mul;
 
                 // ADD constraint: sel_add_vs_mul * (a + b - out) = 0
-                builder.assert_zero(sel_add_vs_mul.clone() * (a.clone() + b.clone() - out.clone()));
+                builder.assert_zero(sel_add_vs_mul * (a + b - out));
 
                 // MUL constraint: sel_mul * (a * b - out) = 0
-                builder.assert_zero(sel_mul.clone() * (a.clone() * b.clone() - out.clone()));
+                builder.assert_zero(sel_mul * (a * b - out));
 
                 // BOOL_CHECK constraint: sel_bool * a * (a - 1) = 0
                 let one = AB::Expr::ONE;
-                builder.assert_zero(sel_bool.clone() * a.clone() * (a.clone() - one.clone()));
+                builder.assert_zero(sel_bool * a * (a - one));
 
                 // MUL_ADD constraint: sel_muladd * (a * b + c - out) = 0
-                builder.assert_zero(
-                    sel_muladd.clone() * (a.clone() * b.clone() + c.clone() - out.clone()),
-                );
+                builder.assert_zero(sel_muladd * (a * b + c - out));
 
                 // HORNER_ACC constraint (inter-row): next_sel_horner * (local_out * next_b + next_c - next_a - next_out) = 0
-                let next_sel_horner = preprocessed_next[prep_offset + 4].clone();
-                let next_b = next[main_offset + 1].clone();
-                let next_c = next[main_offset + 2].clone();
-                let next_a = next[main_offset].clone();
-                let next_out = next[main_offset + 3].clone();
-                builder.assert_zero(
-                    next_sel_horner * (out.clone() * next_b + next_c - next_a - next_out),
-                );
+                let next_sel_horner = preprocessed_next[prep_offset + 4];
+                let next_b = next[main_offset + 1];
+                let next_c = next[main_offset + 2];
+                let next_a = next[main_offset];
+                let next_out = next[main_offset + 3];
+                builder.assert_zero(next_sel_horner * (out * next_b + next_c - next_a - next_out));
             }
         } else {
             // Extension field case (D > 1)
@@ -544,36 +531,28 @@ where
                 let c_slice = &local[main_offset + 2 * D..main_offset + 3 * D];
                 let out_slice = &local[main_offset + 3 * D..main_offset + 4 * D];
 
-                // mult_a = neg_one (-1) for active rows, 0 for padding rows.
-                // active = -mult_a = 1 for active rows, 0 for padding.
-                let mult_a = preprocessed_local[prep_offset].clone();
-                let sel_add_vs_mul = preprocessed_local[prep_offset + 1].clone();
-                let sel_bool = preprocessed_local[prep_offset + 2].clone();
-                let sel_muladd = preprocessed_local[prep_offset + 3].clone();
-                let sel_horner = preprocessed_local[prep_offset + 4].clone();
+                // Preprocessed layout: [mult_a, sel_add_vs_mul, sel_bool, sel_muladd, sel_horner, a_idx, b_idx, c_idx, out_idx, mult_b, mult_out, a_is_reader, c_is_reader]
+                let mult_a = preprocessed_local[prep_offset];
+                let sel_add_vs_mul = preprocessed_local[prep_offset + 1];
+                let sel_bool = preprocessed_local[prep_offset + 2];
+                let sel_muladd = preprocessed_local[prep_offset + 3];
+                let sel_horner = preprocessed_local[prep_offset + 4];
 
                 // active = -mult_a: 1 for active rows, 0 for padding
                 let active = AB::Expr::ZERO - mult_a;
                 // sel_mul = active - sel_bool - sel_muladd - sel_horner - sel_add_vs_mul
-                let sel_mul = active
-                    - sel_bool.clone()
-                    - sel_muladd.clone()
-                    - sel_horner.clone()
-                    - sel_add_vs_mul.clone();
+                let sel_mul = active - sel_bool - sel_muladd - sel_horner - sel_add_vs_mul;
 
                 // ADD constraints
                 for i in 0..D {
-                    builder.assert_zero(
-                        sel_add_vs_mul.clone()
-                            * (a_slice[i].clone() + b_slice[i].clone() - out_slice[i].clone()),
-                    );
+                    builder.assert_zero(sel_add_vs_mul * (a_slice[i] + b_slice[i] - out_slice[i]));
                 }
 
                 // MUL constraints: extension field multiplication
                 let mut mul_acc = vec![AB::Expr::ZERO; D];
                 for i in 0..D {
                     for j in 0..D {
-                        let term = a_slice[i].clone() * b_slice[j].clone();
+                        let term = a_slice[i] * b_slice[j];
                         let k = i + j;
                         if k < D {
                             mul_acc[k] = mul_acc[k].clone() + term;
@@ -583,21 +562,18 @@ where
                     }
                 }
                 for i in 0..D {
-                    builder
-                        .assert_zero(sel_mul.clone() * (mul_acc[i].clone() - out_slice[i].clone()));
+                    builder.assert_zero(sel_mul.clone() * (mul_acc[i].clone() - out_slice[i]));
                 }
 
                 // BOOL_CHECK constraint (base component only)
                 let one = AB::Expr::ONE;
-                builder.assert_zero(
-                    sel_bool.clone() * a_slice[0].clone() * (a_slice[0].clone() - one.clone()),
-                );
+                builder.assert_zero(sel_bool * a_slice[0] * (a_slice[0] - one));
 
                 // MUL_ADD constraints: a * b + c = out (extension field)
                 let mut muladd_acc = vec![AB::Expr::ZERO; D];
                 for i in 0..D {
                     for j in 0..D {
-                        let term = a_slice[i].clone() * b_slice[j].clone();
+                        let term = a_slice[i] * b_slice[j];
                         let k = i + j;
                         if k < D {
                             muladd_acc[k] = muladd_acc[k].clone() + term;
@@ -607,17 +583,15 @@ where
                     }
                 }
                 for i in 0..D {
-                    muladd_acc[i] = muladd_acc[i].clone() + c_slice[i].clone();
+                    muladd_acc[i] = muladd_acc[i].clone() + c_slice[i];
                 }
                 for i in 0..D {
-                    builder.assert_zero(
-                        sel_muladd.clone() * (muladd_acc[i].clone() - out_slice[i].clone()),
-                    );
+                    builder.assert_zero(sel_muladd * (muladd_acc[i].clone() - out_slice[i]));
                 }
 
                 // HORNER_ACC constraint (inter-row, extension field):
                 // next_out = local_out * next_b + next_c - next_a
-                let next_sel_horner = preprocessed_next[prep_offset + 4].clone();
+                let next_sel_horner = preprocessed_next[prep_offset + 4];
                 let next_a_slice = &next[main_offset..main_offset + D];
                 let next_b_slice = &next[main_offset + D..main_offset + 2 * D];
                 let next_c_slice = &next[main_offset + 2 * D..main_offset + 3 * D];
@@ -627,7 +601,7 @@ where
                 let mut horner_mul = vec![AB::Expr::ZERO; D];
                 for i in 0..D {
                     for j in 0..D {
-                        let term = out_slice[i].clone() * next_b_slice[j].clone();
+                        let term = out_slice[i] * next_b_slice[j];
                         let k = i + j;
                         if k < D {
                             horner_mul[k] = horner_mul[k].clone() + term;
@@ -639,10 +613,10 @@ where
                 // horner_result = local_out * next_b + next_c - next_a
                 for i in 0..D {
                     builder.assert_zero(
-                        next_sel_horner.clone()
-                            * (horner_mul[i].clone() + next_c_slice[i].clone()
-                                - next_a_slice[i].clone()
-                                - next_out_slice[i].clone()),
+                        next_sel_horner
+                            * (horner_mul[i].clone() + next_c_slice[i]
+                                - next_a_slice[i]
+                                - next_out_slice[i]),
                     );
                 }
             }

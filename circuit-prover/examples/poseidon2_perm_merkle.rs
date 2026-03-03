@@ -1,13 +1,15 @@
 use std::error::Error;
 
 use p3_batch_stark::ProverData;
-use p3_circuit::op::{NonPrimitiveOpPrivateData, NonPrimitiveOpType};
+use p3_circuit::op::{NonPrimitiveOpPrivateData, NpoTypeId};
 use p3_circuit::ops::{Poseidon2PermPrivateData, generate_poseidon2_trace};
 use p3_circuit::{CircuitBuilder, ExprId, Poseidon2PermOps};
-use p3_circuit_prover::common::{NonPrimitiveConfig, get_airs_and_degrees_with_prep};
+use p3_circuit_prover::batch_stark_prover::poseidon2_air_builders_d4;
+use p3_circuit_prover::common::{NpoPreprocessor, get_airs_and_degrees_with_prep};
 use p3_circuit_prover::config::KoalaBearConfig;
 use p3_circuit_prover::{
-    BatchStarkProver, CircuitProverData, ConstraintProfile, Poseidon2Config, TablePacking, config,
+    BatchStarkProver, CircuitProverData, ConstraintProfile, Poseidon2Config, Poseidon2Preprocessor,
+    TablePacking, config,
 };
 use p3_field::extension::BinomialExtensionField;
 use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
@@ -171,16 +173,13 @@ fn main() -> Result<(), Box<dyn Error>> {
             new_start: true,
             merkle_path: true,
             mmcs_bit: Some(mmcs_bit_row0),
-            inputs: inputs_row0.map(Some),
-            out_ctl: [false, false],
+            inputs: inputs_row0.iter().map(|&x| Some(x)).collect(),
+            out_ctl: vec![false, false],
             return_all_outputs: false,
             mmcs_index_sum: None,
         })?;
 
-    // Row 1: Merkle right. Chain previous digest into limbs 2-3 and provide sibling1 in limbs 0-1.
-    // All inputs are private (chained from row 0 or provided via private data)
-    let sibling1_inputs: [Option<ExprId>; 4] = [None, None, None, None];
-    // Public root limbs
+    let sibling1_inputs: Vec<Option<ExprId>> = vec![None; 4];
     let out0 = builder.public_input();
     let out1 = builder.public_input();
     let mmcs_idx_sum_expr = builder.public_input();
@@ -193,14 +192,13 @@ fn main() -> Result<(), Box<dyn Error>> {
             merkle_path: true,
             mmcs_bit: Some(mmcs_bit_row1),
             inputs: sibling1_inputs,
-            out_ctl: [false, false],
+            out_ctl: vec![false, false],
             return_all_outputs: false,
             mmcs_index_sum: None,
         })?;
 
-    // Row 2: merkle left - all inputs private (chained from row 1 or provided via private data)
     let mmcs_bit_row2 = builder.alloc_const(Ext4::from_prime_subfield(Base::ZERO), "mmcs_bit_row2");
-    let sibling2_inputs: [Option<ExprId>; 4] = [None, None, None, None];
+    let sibling2_inputs: Vec<Option<ExprId>> = vec![None; 4];
     let (row2_op_id, row2_outputs) =
         builder.add_poseidon2_perm(p3_circuit::ops::Poseidon2PermCall {
             config: Poseidon2Config::KoalaBearD4Width16,
@@ -208,7 +206,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             merkle_path: true,
             mmcs_bit: Some(mmcs_bit_row2),
             inputs: sibling2_inputs,
-            out_ctl: [true, true],
+            out_ctl: vec![true, true],
             return_all_outputs: false,
             mmcs_index_sum: Some(mmcs_idx_sum_expr),
         })?;
@@ -221,11 +219,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     let table_packing = TablePacking::new(4, 4);
     let poseidon2_config = Poseidon2Config::KoalaBearD4Width16;
     let stark_config = config::koala_bear().build();
+    let poseidon2_prep: [Box<dyn NpoPreprocessor<Base>>; 1] = [Box::new(Poseidon2Preprocessor)];
     let (airs_degrees, preprocessed_columns) =
         get_airs_and_degrees_with_prep::<KoalaBearConfig, _, 4>(
             &circuit,
             table_packing,
-            Some(&[NonPrimitiveConfig::Poseidon2(poseidon2_config)]),
+            &poseidon2_prep,
+            &poseidon2_air_builders_d4(),
             ConstraintProfile::Standard,
         )?;
     let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
@@ -242,7 +242,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     // For Merkle mode, provide the sibling (2 limbs). Internal logic handles placement.
     runner.set_private_data(
         row1_op_id,
-        NonPrimitiveOpPrivateData::Poseidon2Perm(Poseidon2PermPrivateData {
+        NonPrimitiveOpPrivateData::new(Poseidon2PermPrivateData {
             sibling: [sibling1_limb2, sibling1_limb3],
         }),
     )?;
@@ -252,7 +252,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     // For Merkle mode, provide the sibling (2 limbs). Internal logic handles placement.
     runner.set_private_data(
         row2_op_id,
-        NonPrimitiveOpPrivateData::Poseidon2Perm(Poseidon2PermPrivateData {
+        NonPrimitiveOpPrivateData::new(Poseidon2PermPrivateData {
             sibling: [sibling2_limb2, sibling2_limb3],
         }),
     )?;
@@ -261,9 +261,9 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Check Poseidon2 trace rows and mmcs_index_sum exposure
     let poseidon2_trace = traces
-        .non_primitive_trace::<p3_circuit::ops::Poseidon2Trace<Base>>(
-            NonPrimitiveOpType::Poseidon2Perm(Poseidon2Config::KoalaBearD4Width16),
-        )
+        .non_primitive_trace::<p3_circuit::ops::Poseidon2Trace<Base>>(&NpoTypeId::poseidon2_perm(
+            Poseidon2Config::KoalaBearD4Width16,
+        ))
         .expect("poseidon2 trace missing");
     assert_eq!(poseidon2_trace.total_rows(), 3, "expected three perm rows");
 

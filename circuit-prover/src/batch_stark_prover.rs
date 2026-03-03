@@ -11,21 +11,21 @@ use p3_air::DebugConstraintBuilder;
 use p3_air::{Air, AirBuilder, BaseAir};
 use p3_batch_stark::{BatchProof, CommonData, ProverData, StarkGenericConfig, StarkInstance, Val};
 use p3_circuit::PreprocessedColumns;
-use p3_circuit::op::{NonPrimitiveOpType, Poseidon2Config, PrimitiveOpType};
+use p3_circuit::op::{NpoTypeId, Poseidon2Config, PrimitiveOpType};
 use p3_circuit::tables::Traces;
 use p3_field::extension::{BinomialExtensionField, BinomiallyExtendable};
-use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing, PrimeField};
+use p3_field::{Algebra, BasedVectorSpace, Field, PrimeField};
 use p3_lookup::folder::{ProverConstraintFolderWithLookups, VerifierConstraintFolderWithLookups};
 use p3_lookup::lookup_traits::Lookup;
 use p3_matrix::dense::RowMajorMatrix;
-use p3_uni_stark::{SymbolicAirBuilder, SymbolicExpression};
+use p3_uni_stark::{SymbolicAirBuilder, SymbolicExpression, SymbolicExpressionExt};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tracing::instrument;
 
 use crate::air::{AluAir, ConstAir, PublicAir};
 use crate::batch_stark_prover::dynamic_air::transmute_traces;
-use crate::common::CircuitTableAir;
+use crate::common::{CircuitTableAir, NpoAirBuilder};
 use crate::config::StarkField;
 use crate::constraint_profile::ConstraintProfile;
 use crate::field_params::ExtractBinomialW;
@@ -39,7 +39,8 @@ pub use dynamic_air::{
 };
 pub use packing::{TablePacking, TraceLengths};
 pub use poseidon2::{
-    Poseidon2AirWrapperInner, Poseidon2Prover, poseidon2_verifier_air_from_config,
+    Poseidon2AirBuilderD2, Poseidon2AirBuilderD4, Poseidon2AirWrapperInner, Poseidon2Preprocessor,
+    Poseidon2Prover, Poseidon2ProverD2, poseidon2_preprocessor, poseidon2_verifier_air_from_config,
 };
 
 pub const BABY_BEAR_MODULUS: u64 = 0x7800_0001;
@@ -72,7 +73,7 @@ where
     SC: StarkGenericConfig,
 {
     /// Operation type (it should match `TableProver::op_type`).
-    pub op_type: NonPrimitiveOpType,
+    pub op_type: NpoTypeId,
     /// Number of logical rows produced for this table.
     pub rows: usize,
     /// Public values exposed by this table (if any).
@@ -127,8 +128,8 @@ impl<SC: StarkGenericConfig> CircuitProverData<SC> {
 ///
 /// ```ignore
 /// impl<SC> TableProver<SC> for MyPlugin {
-///     fn op_type(&self) -> NonPrimitiveOpType {
-///         NonPrimitiveOpType::Poseidon2Perm(Poseidon2Config::BabyBearD4Width16)
+///     fn op_type(&self) -> NpoTypeId {
+///         NpoTypeId::Poseidon2Perm(Poseidon2Config::BabyBearD4Width16)
 ///     }
 ///
 ///     impl_table_prover_batch_instances_from_base!(batch_instance_base);
@@ -315,13 +316,13 @@ pub enum BatchStarkProverError {
     Verify(String),
 
     #[error("missing table prover for non-primitive op `{0:?}`")]
-    MissingTableProver(NonPrimitiveOpType),
+    MissingTableProver(NpoTypeId),
 }
 
 impl<SC, const D: usize> BaseAir<Val<SC>> for CircuitTableAir<SC, D>
 where
     SC: StarkGenericConfig,
-    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
 {
     fn width(&self) -> usize {
         match self {
@@ -379,7 +380,8 @@ impl<SC, const D: usize> Air<SymbolicAirBuilder<Val<SC>, SC::Challenge>> for Cir
 where
     SC: StarkGenericConfig,
     Val<SC>: PrimeField,
-    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
     impl_circuit_table_air_for_builder!(SymbolicAirBuilder<Val<SC>, SC::Challenge>);
 }
@@ -390,7 +392,7 @@ impl<'a, SC, const D: usize> Air<DebugConstraintBuilder<'a, Val<SC>, SC::Challen
 where
     SC: StarkGenericConfig,
     Val<SC>: PrimeField,
-    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
 {
     impl_circuit_table_air_for_builder!(DebugConstraintBuilder<'a, Val<SC>, SC::Challenge>);
 }
@@ -400,7 +402,7 @@ impl<'a, SC, const D: usize> Air<ProverConstraintFolderWithLookups<'a, SC>>
 where
     SC: StarkGenericConfig,
     Val<SC>: PrimeField,
-    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
 {
     impl_circuit_table_air_for_builder!(ProverConstraintFolderWithLookups<'a, SC>);
 }
@@ -410,7 +412,7 @@ impl<'a, SC, const D: usize> Air<VerifierConstraintFolderWithLookups<'a, SC>>
 where
     SC: StarkGenericConfig,
     Val<SC>: PrimeField,
-    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
 {
     impl_circuit_table_air_for_builder!(VerifierConstraintFolderWithLookups<'a, SC>);
 }
@@ -419,7 +421,8 @@ impl<SC> BatchStarkProver<SC>
 where
     SC: StarkGenericConfig + 'static,
     Val<SC>: StarkField,
-    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
     pub fn new(config: SC) -> Self {
         Self {
@@ -458,10 +461,7 @@ where
         self
     }
 
-    /// Register the non-primitive Poseidon2 prover plugin with the given configuration.
-    ///
-    /// Uses the standard constraint profile; recursion-specific code paths
-    /// can instantiate `Poseidon2Prover` directly with other profiles if needed.
+    /// Register the non-primitive Poseidon2 prover plugin with the given configuration (D=4).
     pub fn register_poseidon2_table(&mut self, config: Poseidon2Config)
     where
         SC: Send + Sync,
@@ -471,6 +471,18 @@ where
             config,
             ConstraintProfile::Standard,
         )));
+    }
+
+    /// Register Poseidon2 for D=2 challenge field (e.g. Goldilocks).
+    pub fn register_poseidon2_table_d2(&mut self, config: Poseidon2Config)
+    where
+        SC: Send + Sync,
+        Val<SC>: BinomiallyExtendable<2>,
+    {
+        self.register_table_prover(Box::new(Poseidon2ProverD2(Poseidon2Prover::new(
+            config,
+            ConstraintProfile::Standard,
+        ))));
     }
 
     #[inline]
@@ -494,7 +506,7 @@ where
     ) -> Result<BatchStarkProof<SC>, BatchStarkProverError>
     where
         EF: Field + BasedVectorSpace<Val<SC>> + ExtractBinomialW<Val<SC>>,
-        SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+        SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
     {
         let w_opt = EF::extract_w();
         match EF::DIMENSION {
@@ -542,7 +554,7 @@ where
             non_primitive,
             d: _,
             ext_reads: _,
-            poseidon2_dup_wids: _,
+            dup_npo_outputs: _,
         } = &circuit_prover_data.preprocessed_columns;
         let prover_data = &circuit_prover_data.prover_data;
 
@@ -624,16 +636,16 @@ where
 
         // We first handle all non-primitive tables dynamically, which will then be batched alongside primitive ones.
         // Each trace must have a corresponding registered prover for it to be provable.
-        for (&op_type, trace) in &traces.non_primitive_traces {
+        for (op_type, trace) in &traces.non_primitive_traces {
             if trace.rows() == 0 {
                 continue;
             }
             if !self
                 .non_primitive_provers
                 .iter()
-                .any(|p| p.op_type() == op_type)
+                .any(|p| p.op_type().as_str() == op_type.as_str())
             {
-                return Err(BatchStarkProverError::MissingTableProver(op_type));
+                return Err(BatchStarkProverError::MissingTableProver(op_type.clone()));
             }
         }
 
@@ -742,21 +754,13 @@ where
             });
         }
 
-        let instances: Vec<StarkInstance<'_, SC, CircuitTableAir<SC, D>>> = air_storage
-            .iter_mut()
-            .zip(trace_storage)
-            .zip(public_storage)
-            .map(|((air, trace), public_values)| {
-                let lookups = Air::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::get_lookups(air);
-
-                StarkInstance {
-                    air,
-                    trace,
-                    public_values,
-                    lookups,
-                }
-            })
-            .collect();
+        let instances: Vec<StarkInstance<'_, SC, CircuitTableAir<SC, D>>> =
+            StarkInstance::new_multiple(
+                &air_storage,
+                &trace_storage,
+                &public_storage,
+                &prover_data.common,
+            );
 
         if self.debug_lookups {
             use p3_lookup::debug_util::{LookupDebugInstance, check_lookups};
@@ -772,19 +776,18 @@ where
             //
             // Hence, we override with the committed preprocessed data so the debug
             for (j, instance) in non_primitives.iter().enumerate() {
-                if let NonPrimitiveOpType::Poseidon2Perm(cfg) = instance.op_type
-                    && let Some(committed_prep) = non_primitive.get(&instance.op_type)
-                {
-                    let poseidon2_prover = Poseidon2Prover::new(cfg, ConstraintProfile::Standard);
-                    let width = poseidon2_prover.preprocessed_width_from_config();
-                    let padded_rows = instance.rows.next_power_of_two().max(min_height);
-                    let mut prep_data = committed_prep.clone();
-                    prep_data.resize(
-                        padded_rows * width,
-                        <Val<SC> as PrimeCharacteristicRing>::ZERO,
-                    );
-                    preprocessed_traces[NUM_PRIMITIVE_TABLES + j] =
-                        Some(RowMajorMatrix::new(prep_data, width));
+                if let Some(committed_prep) = non_primitive.get(&instance.op_type) {
+                    let prover = self
+                        .non_primitive_provers
+                        .iter()
+                        .find(|p| TableProver::op_type(p.as_ref()) == instance.op_type);
+                    if let Some(prover) = prover
+                        && let Some(air) = prover
+                            .air_with_committed_preprocessed(committed_prep.clone(), min_height)
+                        && let Some(trace) = air.preprocessed_trace()
+                    {
+                        preprocessed_traces[NUM_PRIMITIVE_TABLES + j] = Some(trace);
+                    }
                 }
             }
 
@@ -891,6 +894,56 @@ where
         p3_batch_stark::verify_batch(&self.config, &airs, &proof.proof, &pvs, common)
             .map_err(|e| BatchStarkProverError::Verify(format!("{e:?}")))
     }
+}
+
+/// Create Poseidon2 table provers for D=2 (e.g. Goldilocks).
+pub fn poseidon2_table_provers_d2<SC>(config: Poseidon2Config) -> Vec<Box<dyn TableProver<SC>>>
+where
+    SC: StarkGenericConfig + 'static + Send + Sync,
+    Val<SC>: BinomiallyExtendable<2> + StarkField,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+{
+    vec![Box::new(Poseidon2ProverD2(Poseidon2Prover::new(
+        config,
+        ConstraintProfile::Standard,
+    )))]
+}
+
+/// Create Poseidon2 table provers for D=4 (e.g. BabyBear, KoalaBear).
+pub fn poseidon2_table_provers_d4<SC>(config: Poseidon2Config) -> Vec<Box<dyn TableProver<SC>>>
+where
+    SC: StarkGenericConfig + 'static + Send + Sync,
+    Val<SC>: BinomiallyExtendable<4> + StarkField,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+{
+    vec![Box::new(Poseidon2Prover::new(
+        config,
+        ConstraintProfile::Standard,
+    ))]
+}
+
+/// Poseidon2 AIR builders for D=2 (e.g. Goldilocks).
+pub fn poseidon2_air_builders_d2<SC>() -> Vec<Box<dyn NpoAirBuilder<SC, 2>>>
+where
+    SC: StarkGenericConfig + 'static + Send + Sync,
+    Val<SC>: BinomiallyExtendable<2> + StarkField,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+{
+    vec![Box::new(Poseidon2AirBuilderD2)]
+}
+
+/// Poseidon2 AIR builders for D=4 (e.g. BabyBear, KoalaBear).
+pub fn poseidon2_air_builders_d4<SC>() -> Vec<Box<dyn NpoAirBuilder<SC, 4>>>
+where
+    SC: StarkGenericConfig + 'static + Send + Sync,
+    Val<SC>: BinomiallyExtendable<4> + StarkField,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+{
+    vec![Box::new(Poseidon2AirBuilderD4)]
 }
 
 #[cfg(test)]

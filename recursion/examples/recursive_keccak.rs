@@ -78,6 +78,7 @@ use tracing_subscriber::{EnvFilter, Registry};
 enum FieldOption {
     KoalaBear,
     BabyBear,
+    Goldilocks,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -214,7 +215,21 @@ fn main() {
                 &table_packing,
             );
         }
+        FieldOption::Goldilocks => {
+            goldilocks::run(
+                args.num_hashes,
+                args.num_recursive_layers,
+                &fri_params,
+                &table_packing,
+            );
+        }
     }
+}
+
+fn default_goldilocks_poseidon2_8() -> p3_goldilocks::Poseidon2Goldilocks<8> {
+    use rand::SeedableRng;
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(1);
+    p3_goldilocks::Poseidon2Goldilocks::<8>::new_from_rng_128(&mut rng)
 }
 
 macro_rules! define_field_module {
@@ -224,26 +239,36 @@ macro_rules! define_field_module {
         $perm:ty,
         $default_perm:path,
         $poseidon2_config:expr,
-        $poseidon2_circuit_config:ty
+        $poseidon2_circuit_config:ty,
+        $d:expr,
+        $width:expr,
+        $rate:expr,
+        $digest_elems:expr,
+        $enable_poseidon2_fn:ident,
+        $register_poseidon2_fn:ident,
+        $default_perm_circuit:path,
+        $backend_ctor:ident,
+        $backend_width:expr,
+        $backend_rate:expr
     ) => {
         mod $mod_name {
             use super::*;
 
             pub type F = $field;
-            pub const D: usize = 4;
-            const WIDTH: usize = 16;
-            const RATE: usize = 8;
-            const DIGEST_ELEMS: usize = 8;
+            pub const D: usize = $d;
+            const WIDTH: usize = $width;
+            const RATE: usize = $rate;
+            const DIGEST_ELEMS: usize = $digest_elems;
 
             type Challenge = BinomialExtensionField<F, D>;
             type Dft = Radix2DitParallel<F>;
             type Perm = $perm;
-            type MyHash = PaddingFreeSponge<Perm, 16, RATE, 8>;
-            type MyCompress = TruncatedPermutation<Perm, 2, 8, 16>;
+            type MyHash = PaddingFreeSponge<Perm, WIDTH, RATE, DIGEST_ELEMS>;
+            type MyCompress = TruncatedPermutation<Perm, 2, DIGEST_ELEMS, WIDTH>;
             type ValMmcs =
-                MerkleTreeMmcs<<F as Field>::Packing, <F as Field>::Packing, MyHash, MyCompress, 8>;
+                MerkleTreeMmcs<<F as Field>::Packing, <F as Field>::Packing, MyHash, MyCompress, DIGEST_ELEMS>;
             type ChallengeMmcs = ExtensionMmcs<F, Challenge, ValMmcs>;
-            type Challenger = DuplexChallenger<F, Perm, 16, RATE>;
+            type Challenger = DuplexChallenger<F, Perm, WIDTH, RATE>;
             type MyPcs = TwoAdicFriPcs<F, Dft, ValMmcs, ChallengeMmcs>;
             type MyConfig = StarkConfig<MyPcs, Challenge, Challenger>;
 
@@ -300,7 +325,7 @@ macro_rules! define_field_module {
                     InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>>;
                 type OpeningProof = InnerFri;
                 type RawOpeningProof = <MyPcs as Pcs<Challenge, Challenger>>::Proof;
-                const DIGEST_ELEMS: usize = 8;
+                const DIGEST_ELEMS: usize = $digest_elems;
 
                 fn with_fri_opening_proof<'a, A, R>(
                     prev: &RecursionInput<'a, Self, A>,
@@ -317,12 +342,12 @@ macro_rules! define_field_module {
                     }
                 }
 
-                fn enable_poseidon2_on_circuit(
+                fn prepare_circuit_for_verification(
                     &self,
                     circuit: &mut CircuitBuilder<Challenge>,
                 ) -> Result<(), VerificationError> {
-                    let perm = $default_perm();
-                    circuit.enable_poseidon2_perm::<$poseidon2_circuit_config, _>(
+                    let perm = $default_perm_circuit();
+                    circuit.$enable_poseidon2_fn::<$poseidon2_circuit_config, _>(
                         generate_poseidon2_trace::<Challenge, $poseidon2_circuit_config>,
                         perm,
                     );
@@ -424,7 +449,8 @@ macro_rules! define_field_module {
                     return;
                 }
 
-                let backend = FriRecursionBackend::<WIDTH, RATE>::new($poseidon2_config);
+                let backend =
+                    FriRecursionBackend::<$backend_width, $backend_rate>::$backend_ctor($poseidon2_config);
                 let mut output: Option<RecursionOutput<ConfigWithFriParams>> = None;
 
                 for layer in 1..=num_recursive_layers {
@@ -436,7 +462,7 @@ macro_rules! define_field_module {
                     .with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup);
                     let params = ProveNextLayerParams {
                         table_packing,
-                        use_poseidon2_in_circuit: true,
+                        use_npos_in_circuit: true,
                         constraint_profile: ConstraintProfile::Standard,
                     };
                     let config = config_with_fri_params(fri_params);
@@ -468,7 +494,7 @@ macro_rules! define_field_module {
                     report_proof_size(&out.0);
                     let mut prover = BatchStarkProver::new(config.clone())
                         .with_table_packing(params.table_packing);
-                    prover.register_poseidon2_table($poseidon2_config);
+                    prover.$register_poseidon2_fn($poseidon2_config);
                     prover
                         .verify_all_tables(&out.0, out.1.common_data())
                         .unwrap_or_else(|e| panic!("Failed to verify layer {layer}: {e:?}"));
@@ -488,7 +514,17 @@ define_field_module!(
     p3_koala_bear::Poseidon2KoalaBear<16>,
     p3_koala_bear::default_koalabear_poseidon2_16,
     Poseidon2Config::KoalaBearD4Width16,
-    p3_poseidon2_circuit_air::KoalaBearD4Width16
+    p3_poseidon2_circuit_air::KoalaBearD4Width16,
+    4,
+    16,
+    8,
+    8,
+    enable_poseidon2_perm,
+    register_poseidon2_table,
+    p3_koala_bear::default_koalabear_poseidon2_16,
+    new_d4,
+    16,
+    8
 );
 
 define_field_module!(
@@ -497,7 +533,36 @@ define_field_module!(
     p3_baby_bear::Poseidon2BabyBear<16>,
     p3_baby_bear::default_babybear_poseidon2_16,
     Poseidon2Config::BabyBearD4Width16,
-    p3_poseidon2_circuit_air::BabyBearD4Width16
+    p3_poseidon2_circuit_air::BabyBearD4Width16,
+    4,
+    16,
+    8,
+    8,
+    enable_poseidon2_perm,
+    register_poseidon2_table,
+    p3_baby_bear::default_babybear_poseidon2_16,
+    new_d4,
+    16,
+    8
+);
+
+define_field_module!(
+    goldilocks,
+    p3_goldilocks::Goldilocks,
+    p3_goldilocks::Poseidon2Goldilocks<8>,
+    default_goldilocks_poseidon2_8,
+    Poseidon2Config::GoldilocksD2Width8,
+    p3_circuit::ops::GoldilocksD2Width8,
+    2,
+    8,
+    4,
+    4,
+    enable_poseidon2_perm_width_8,
+    register_poseidon2_table_d2,
+    default_goldilocks_poseidon2_8,
+    new_d2,
+    8,
+    4
 );
 
 /// Report the size of the serialized proof.

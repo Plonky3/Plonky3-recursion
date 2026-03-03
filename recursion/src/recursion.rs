@@ -1,15 +1,17 @@
 //! Unified recursion API: one entry point to prove the next layer over a uni-stark or batch-stark proof.
 
+use alloc::boxed::Box;
 use alloc::rc::Rc;
 use alloc::string::ToString;
 use alloc::vec::Vec;
 
-use p3_air::SymbolicExpression;
+use p3_air::{SymbolicExpression, SymbolicExpressionExt};
 use p3_batch_stark::{CommonData, ProverData};
 use p3_circuit::tables::Traces;
 use p3_circuit::utils::ColumnsTargets;
 use p3_circuit::{Circuit, CircuitBuilder, CircuitRunner, NonPrimitiveOpId};
-use p3_circuit_prover::common::{NonPrimitiveConfig, get_airs_and_degrees_with_prep};
+use p3_circuit_prover::batch_stark_prover::TableProver;
+use p3_circuit_prover::common::{NpoAirBuilder, NpoPreprocessor, get_airs_and_degrees_with_prep};
 use p3_circuit_prover::config::StarkField;
 use p3_circuit_prover::field_params::ExtractBinomialW;
 use p3_circuit_prover::{
@@ -18,17 +20,16 @@ use p3_circuit_prover::{
 };
 use p3_commit::Pcs;
 use p3_field::extension::BinomiallyExtendable;
-use p3_field::{BasedVectorSpace, ExtensionField, Field, PrimeField64};
+use p3_field::{Algebra, BasedVectorSpace, ExtensionField, Field, PrimeField64};
 use p3_lookup::logup::LogUpGadget;
 use p3_lookup::lookup_traits::{Lookup, LookupData, LookupGadget};
 use p3_uni_stark::{Proof, StarkGenericConfig, Val};
 use tracing::instrument;
 
-use crate::Target;
-use crate::ops::Poseidon2Config;
 use crate::traits::{LookupMetadata, RecursiveAir};
 use crate::types::RecursiveLagrangeSelectors;
 use crate::verifier::VerificationError;
+use crate::{ChallengerPermConfig, Target};
 
 fn proof_shape_err(e: &impl ToString) -> VerificationError {
     VerificationError::InvalidProofShape(e.to_string())
@@ -108,7 +109,7 @@ where
 }
 
 /// PCS-specific backend for building verifier circuits and setting private data.
-pub trait PcsRecursionBackend<SC, A>
+pub trait PcsRecursionBackend<SC, A, const D: usize>
 where
     SC: StarkGenericConfig,
     A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
@@ -116,7 +117,7 @@ where
     /// Opaque verifier result returned by `build_verifier_circuit`.
     type VerifierResult: VerifierCircuitResult<SC, A>;
 
-    /// Prepare the circuit before building the verifier (e.g. enable Poseidon2). Called before `build_verifier_circuit`.
+    /// Prepare the circuit before building the verifier (e.g. enable challenger permutation and NPOs). Called before `build_verifier_circuit`.
     fn prepare_circuit(
         &self,
         config: &SC,
@@ -140,9 +141,25 @@ where
         prev: &RecursionInput<'_, SC, A>,
     ) -> Result<(), &'static str>;
 
-    /// If the backend uses Poseidon2 in the circuit (e.g. for MMCS), return its config for `get_airs_and_degrees_with_prep`.
-    fn poseidon2_config_for_circuit(&self) -> Option<Poseidon2Config> {
+    /// Challenger permutation config for the in-circuit verifier (e.g. for Fiat–Shamir). Default none.
+    fn challenger_perm_config(&self) -> Option<Box<dyn ChallengerPermConfig>> {
         None
+    }
+
+    /// Non-primitive preprocessors for this extension degree (e.g. for NPOs that need preprocessing).
+    fn non_primitive_preprocessors(&self) -> Vec<Box<dyn NpoPreprocessor<Val<SC>>>> {
+        Vec::new()
+    }
+
+    /// Non-primitive table provers for the given extension degree.
+    /// Default returns empty; backends that use NPOs in the circuit override this.
+    fn non_primitive_provers(&self, _ext_degree: usize) -> Vec<Box<dyn TableProver<SC>>> {
+        Vec::new()
+    }
+
+    /// AIR builders for NPOs from preprocessed data.
+    fn non_primitive_air_builders(&self) -> Vec<Box<dyn NpoAirBuilder<SC, D>>> {
+        Vec::new()
     }
 }
 
@@ -150,7 +167,8 @@ where
 #[derive(Clone, Debug)]
 pub struct ProveNextLayerParams {
     pub table_packing: TablePacking,
-    pub use_poseidon2_in_circuit: bool,
+    /// Whether to register NPO table provers (e.g. challenger permutation) on the circuit prover.
+    pub use_npos_in_circuit: bool,
     /// Constraint profile controlling which AIR variants are used for this layer.
     pub constraint_profile: ConstraintProfile,
 }
@@ -159,7 +177,7 @@ impl Default for ProveNextLayerParams {
     fn default() -> Self {
         Self {
             table_packing: TablePacking::new(1, 4),
-            use_poseidon2_in_circuit: true,
+            use_npos_in_circuit: true,
             constraint_profile: ConstraintProfile::Standard,
         }
     }
@@ -201,7 +219,7 @@ impl<F: Field, EF: ExtensionField<F>, LG: LookupGadget> RecursiveAir<F, EF, LG> 
 
 /// Build a verifier circuit for a recursion layer.
 #[instrument(skip_all)]
-fn build_next_layer_circuit<SC, A, B>(
+fn build_next_layer_circuit<SC, A, B, const D: usize>(
     prev: &RecursionInput<'_, SC, A>,
     config: &SC,
     backend: &B,
@@ -209,16 +227,15 @@ fn build_next_layer_circuit<SC, A, B>(
 where
     SC: StarkGenericConfig + Send + Sync + Clone + 'static,
     A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
-    B: PcsRecursionBackend<SC, A>,
-    Val<SC>: PrimeField64 + StarkField + BinomiallyExtendable<4>,
+    B: PcsRecursionBackend<SC, A, D>,
+    Val<SC>: PrimeField64 + StarkField + BinomiallyExtendable<D>,
     SC::Challenge: BasedVectorSpace<Val<SC>>
         + From<Val<SC>>
         + ExtensionField<Val<SC>>
         + ExtractBinomialW<Val<SC>>,
-    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
 {
     let mut circuit_builder = CircuitBuilder::new();
-    // Enable Poseidon2
     backend.prepare_circuit(config, &mut circuit_builder)?;
 
     // Build verifier constraints.
@@ -243,24 +260,23 @@ pub fn prove_next_layer<SC, A, B, const D: usize>(
 where
     SC: StarkGenericConfig + Send + Sync + Clone + 'static,
     A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
-    B: PcsRecursionBackend<SC, A>,
-    Val<SC>: PrimeField64 + StarkField + BinomiallyExtendable<4>,
+    B: PcsRecursionBackend<SC, A, D>,
+    Val<SC>: PrimeField64 + StarkField + BinomiallyExtendable<D>,
     SC::Challenge: BasedVectorSpace<Val<SC>>
         + From<Val<SC>>
         + ExtensionField<Val<SC>>
         + ExtractBinomialW<Val<SC>>,
-    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
-    let non_primitive = backend
-        .poseidon2_config_for_circuit()
-        .map(|c| alloc::vec![NonPrimitiveConfig::Poseidon2(c)]);
-    let non_primitive_ref = non_primitive.as_deref();
-
     let (airs_degrees, preprocessed_columns) = {
+        let preprocessors = backend.non_primitive_preprocessors();
+        let air_builders = backend.non_primitive_air_builders();
         get_airs_and_degrees_with_prep::<SC, SC::Challenge, D>(
             &verification_circuit,
             params.table_packing,
-            non_primitive_ref,
+            &preprocessors,
+            &air_builders,
             params.constraint_profile,
         )
         .map_err(VerificationError::Circuit)?
@@ -293,8 +309,8 @@ where
             ConstraintProfile::Standard => AirVariant::Baseline,
             ConstraintProfile::RecursionOptimized => AirVariant::Optimized,
         });
-    if let Some(cfg) = backend.poseidon2_config_for_circuit() {
-        prover.register_poseidon2_table(cfg);
+    for p in backend.non_primitive_provers(D) {
+        prover.register_table_prover(p);
     }
     let proof = prover
         .prove_all_tables(&traces, &circuit_prover_data)
@@ -322,16 +338,17 @@ pub fn build_and_prove_next_layer<SC, A, B, const D: usize>(
 where
     SC: StarkGenericConfig + Send + Sync + Clone + 'static,
     A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
-    B: PcsRecursionBackend<SC, A>,
-    Val<SC>: PrimeField64 + StarkField + BinomiallyExtendable<4>,
+    B: PcsRecursionBackend<SC, A, D>,
+    Val<SC>: PrimeField64 + StarkField + BinomiallyExtendable<D>,
     SC::Challenge: BasedVectorSpace<Val<SC>>
         + From<Val<SC>>
         + ExtensionField<Val<SC>>
         + ExtractBinomialW<Val<SC>>,
-    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
     let (verification_circuit, verifier_result) =
-        build_next_layer_circuit::<SC, A, B>(prev, config, backend)?;
+        build_next_layer_circuit::<SC, A, B, D>(prev, config, backend)?;
 
     prove_next_layer::<SC, A, B, D>(
         prev,
@@ -358,8 +375,8 @@ fn build_aggregation_layer_circuit<SC, A1, A2, B, const D: usize>(
     (
         Circuit<SC::Challenge>,
         (
-            <B as PcsRecursionBackend<SC, A1>>::VerifierResult, // left
-            <B as PcsRecursionBackend<SC, A2>>::VerifierResult, // right
+            <B as PcsRecursionBackend<SC, A1, D>>::VerifierResult, // left
+            <B as PcsRecursionBackend<SC, A2, D>>::VerifierResult, // right
         ),
     ),
     VerificationError,
@@ -368,19 +385,18 @@ where
     SC: StarkGenericConfig + Send + Sync + Clone + 'static,
     A1: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
     A2: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
-    B: PcsRecursionBackend<SC, A1> + PcsRecursionBackend<SC, A2>,
-    Val<SC>: PrimeField64 + StarkField + BinomiallyExtendable<4>,
+    B: PcsRecursionBackend<SC, A1, D> + PcsRecursionBackend<SC, A2, D>,
+    Val<SC>: PrimeField64 + StarkField + BinomiallyExtendable<D>,
     SC::Challenge: BasedVectorSpace<Val<SC>>
         + From<Val<SC>>
         + ExtensionField<Val<SC>>
         + ExtractBinomialW<Val<SC>>,
-    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
 {
     let mut circuit_builder = CircuitBuilder::new();
 
-    // Enable Poseidon2 once — shared by both verifications.
-    <B as PcsRecursionBackend<SC, A1>>::prepare_circuit(backend, config, &mut circuit_builder)?;
-    <B as PcsRecursionBackend<SC, A2>>::prepare_circuit(backend, config, &mut circuit_builder)?;
+    <B as PcsRecursionBackend<SC, A1, D>>::prepare_circuit(backend, config, &mut circuit_builder)?;
+    <B as PcsRecursionBackend<SC, A2, D>>::prepare_circuit(backend, config, &mut circuit_builder)?;
 
     // Build left verifier constraints.
     let left_result = backend.build_verifier_circuit(left, config, &mut circuit_builder)?;
@@ -394,11 +410,11 @@ where
     Ok((verification_circuit, (left_result, right_result)))
 }
 
-fn run_aggregation_verification_circuit<SC, A1, A2, B>(
+fn run_aggregation_verification_circuit<SC, A1, A2, B, const D: usize>(
     left: &RecursionInput<'_, SC, A1>,
     right: &RecursionInput<'_, SC, A2>,
-    left_result: &<B as PcsRecursionBackend<SC, A1>>::VerifierResult,
-    right_result: &<B as PcsRecursionBackend<SC, A2>>::VerifierResult,
+    left_result: &<B as PcsRecursionBackend<SC, A1, D>>::VerifierResult,
+    right_result: &<B as PcsRecursionBackend<SC, A2, D>>::VerifierResult,
     verification_circuit: &Circuit<SC::Challenge>,
     config: &SC,
     backend: &B,
@@ -407,7 +423,7 @@ where
     SC: StarkGenericConfig,
     A1: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
     A2: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
-    B: PcsRecursionBackend<SC, A1> + PcsRecursionBackend<SC, A2>,
+    B: PcsRecursionBackend<SC, A1, D> + PcsRecursionBackend<SC, A2, D>,
     Val<SC>: PrimeField64,
 {
     let mut public_inputs = left_result.pack_public_inputs(left)?;
@@ -418,7 +434,7 @@ where
         .set_public_inputs(&public_inputs)
         .map_err(VerificationError::Circuit)?;
 
-    <B as PcsRecursionBackend<SC, A1>>::set_private_data(
+    <B as PcsRecursionBackend<SC, A1, D>>::set_private_data(
         backend,
         config,
         &mut runner,
@@ -427,7 +443,7 @@ where
     )
     .map_err(|e| proof_shape_err(&e.to_string()))?;
 
-    <B as PcsRecursionBackend<SC, A2>>::set_private_data(
+    <B as PcsRecursionBackend<SC, A2, D>>::set_private_data(
         backend,
         config,
         &mut runner,
@@ -453,8 +469,8 @@ where
 pub fn prove_aggregation_layer<SC, A1, A2, B, const D: usize>(
     left: &RecursionInput<'_, SC, A1>,
     right: &RecursionInput<'_, SC, A2>,
-    left_result: &<B as PcsRecursionBackend<SC, A1>>::VerifierResult,
-    right_result: &<B as PcsRecursionBackend<SC, A2>>::VerifierResult,
+    left_result: &<B as PcsRecursionBackend<SC, A1, D>>::VerifierResult,
+    right_result: &<B as PcsRecursionBackend<SC, A2, D>>::VerifierResult,
     verification_circuit: &Circuit<SC::Challenge>,
     config: &SC,
     backend: &B,
@@ -465,18 +481,19 @@ where
     SC: StarkGenericConfig + Send + Sync + Clone + 'static,
     A1: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
     A2: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
-    B: PcsRecursionBackend<SC, A1> + PcsRecursionBackend<SC, A2>,
-    Val<SC>: PrimeField64 + StarkField + BinomiallyExtendable<4>,
+    B: PcsRecursionBackend<SC, A1, D> + PcsRecursionBackend<SC, A2, D>,
+    Val<SC>: PrimeField64 + StarkField + BinomiallyExtendable<D>,
     SC::Challenge: BasedVectorSpace<Val<SC>>
         + From<Val<SC>>
         + ExtensionField<Val<SC>>
         + ExtractBinomialW<Val<SC>>,
-    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
     if let Some(ref mut cache_slot) = prep_cache
         && let Some(cached) = cache_slot.as_ref()
     {
-        let traces = run_aggregation_verification_circuit(
+        let traces = run_aggregation_verification_circuit::<SC, A1, A2, B, D>(
             left,
             right,
             left_result,
@@ -495,13 +512,16 @@ where
         ));
     }
 
-    let non_primitive = <B as PcsRecursionBackend<SC, A1>>::poseidon2_config_for_circuit(backend)
-        .map(|c| alloc::vec![NonPrimitiveConfig::Poseidon2(c)]);
     let (airs_degrees, preprocessed_columns) = {
+        let preprocessors =
+            <B as PcsRecursionBackend<SC, A1, D>>::non_primitive_preprocessors(backend);
+        let air_builders =
+            <B as PcsRecursionBackend<SC, A1, D>>::non_primitive_air_builders(backend);
         get_airs_and_degrees_with_prep::<SC, SC::Challenge, D>(
             verification_circuit,
             params.table_packing,
-            non_primitive.as_deref(),
+            &preprocessors,
+            &air_builders,
             params.constraint_profile,
         )
         .map_err(VerificationError::Circuit)?
@@ -509,7 +529,7 @@ where
 
     let (mut airs, degrees): (Vec<_>, Vec<_>) = airs_degrees.into_iter().unzip();
 
-    let traces = run_aggregation_verification_circuit(
+    let traces = run_aggregation_verification_circuit::<SC, A1, A2, B, D>(
         left,
         right,
         left_result,
@@ -530,8 +550,8 @@ where
             ConstraintProfile::Standard => AirVariant::Baseline,
             ConstraintProfile::RecursionOptimized => AirVariant::Optimized,
         });
-    if let Some(cfg) = <B as PcsRecursionBackend<SC, A1>>::poseidon2_config_for_circuit(backend) {
-        prover.register_poseidon2_table(cfg);
+    for p in <B as PcsRecursionBackend<SC, A1, D>>::non_primitive_provers(backend, D) {
+        prover.register_table_prover(p);
     }
     let proof = prover
         .prove_all_tables(&traces, &circuit_prover_data)
@@ -574,13 +594,14 @@ where
     SC: StarkGenericConfig + Send + Sync + Clone + 'static,
     A1: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
     A2: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
-    B: PcsRecursionBackend<SC, A1> + PcsRecursionBackend<SC, A2>,
-    Val<SC>: PrimeField64 + StarkField + BinomiallyExtendable<4>,
+    B: PcsRecursionBackend<SC, A1, D> + PcsRecursionBackend<SC, A2, D>,
+    Val<SC>: PrimeField64 + StarkField + BinomiallyExtendable<D>,
     SC::Challenge: BasedVectorSpace<Val<SC>>
         + From<Val<SC>>
         + ExtensionField<Val<SC>>
         + ExtractBinomialW<Val<SC>>,
-    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
     let (verification_circuit, (left_result, right_result)) =
         build_aggregation_layer_circuit::<SC, A1, A2, B, D>(left, right, config, backend)?;

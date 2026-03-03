@@ -128,9 +128,9 @@ where
         let main = builder.main();
         let main_local = main.row_slice(0).expect("Matrix is empty?");
 
-        let a = main_local[0].clone();
-        let b = main_local[1].clone();
-        let c = main_local[2].clone();
+        let a = main_local[0];
+        let b = main_local[1];
+        let c = main_local[2];
 
         // Constraint: a + b = c
         builder.assert_zero(a + b - c);
@@ -217,9 +217,9 @@ where
             .row_slice(0)
             .expect("Preprocessed matrix is empty?");
 
-        let a = main_local[0].clone();
-        let result = main_local[1].clone();
-        let constant = preprocessed_local[0].clone();
+        let a = main_local[0];
+        let result = main_local[1];
+        let constant = preprocessed_local[0];
 
         // Constraint: a - constant = result
         builder.assert_zero(a - constant - result);
@@ -330,7 +330,7 @@ fn test_batch_verifier_with_mixed_preprocessed() -> Result<(), VerificationError
     // 1. MulAir (has preprocessed columns)
     // 2. AddAirNoPreprocessed (no preprocessed columns)
     // 3. SubAirPartialPreprocessed (some preprocessed columns)
-    verify_batch_circuit::<_, _, _, _, _, _, WIDTH, RATE>(
+    verify_batch_circuit::<_, _, _, _, _, _, _, WIDTH, RATE>(
         &config,
         &airs,
         &mut circuit_builder,

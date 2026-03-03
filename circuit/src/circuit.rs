@@ -9,7 +9,7 @@ use p3_field::Field;
 use strum::EnumCount;
 
 use crate::op::{
-    NonPrimitiveOpConfig, NonPrimitiveOpType, NonPrimitivePreprocessedMap, Op, PrimitiveOpType,
+    NonPrimitiveOpConfig, NonPrimitivePreprocessedMap, NpoTypeId, Op, PrimitiveOpType,
 };
 use crate::tables::{CircuitRunner, TraceGeneratorFn};
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessId};
@@ -53,16 +53,10 @@ pub struct PreprocessedColumns<F> {
     /// as an extension-field value. This is used by creator tables to set their
     /// signed multiplicity on the `WitnessChecks` bus.
     pub ext_reads: Vec<u32>,
-    /// Tracks WitnessIds that are duplicate Poseidon2 rate outputs.
-    ///
-    /// Due to the circuit optimizer's witness_rewrite deduplication, two distinct Poseidon2
-    /// operations can end up sharing the same output WitnessId (when they hash identical inputs).
-    /// The FIRST operation is the creator; subsequent ones must be treated as readers (out_ctl=-1).
-    ///
-    /// `poseidon2_dup_wids[i] = true` means WitnessId(i) is a duplicate Poseidon2 output:
-    /// the creator was a previous op. Used by `common.rs` Phase 2 to set out_ctl = -1 instead
-    /// of +ext_reads[i].
-    pub poseidon2_dup_wids: Vec<bool>,
+    /// Per-NPO duplicate-output flags: `dup_npo_outputs[op_type][wid] == true` means
+    /// `WitnessId(wid)` was already defined by an earlier op and this NPO occurrence is
+    /// a reader, not the creator. Populated by `generate_preprocessed_columns`.
+    pub dup_npo_outputs: HashMap<NpoTypeId, Vec<bool>>,
 }
 
 impl<F: Field + Clone> Clone for PreprocessedColumns<F> {
@@ -72,7 +66,7 @@ impl<F: Field + Clone> Clone for PreprocessedColumns<F> {
             non_primitive: self.non_primitive.clone(),
             d: self.d,
             ext_reads: self.ext_reads.clone(),
-            poseidon2_dup_wids: self.poseidon2_dup_wids.clone(),
+            dup_npo_outputs: self.dup_npo_outputs.clone(),
         }
     }
 }
@@ -86,7 +80,7 @@ impl<F: Field> PreprocessedColumns<F> {
             non_primitive: NonPrimitivePreprocessedMap::new(),
             d: 1,
             ext_reads: Vec::new(),
-            poseidon2_dup_wids: Vec::new(),
+            dup_npo_outputs: HashMap::new(),
         }
     }
 
@@ -100,7 +94,7 @@ impl<F: Field> PreprocessedColumns<F> {
             non_primitive: NonPrimitivePreprocessedMap::new(),
             d,
             ext_reads: Vec::new(),
-            poseidon2_dup_wids: Vec::new(),
+            dup_npo_outputs: HashMap::new(),
         }
     }
 
@@ -128,12 +122,8 @@ impl<F: Field> PreprocessedColumns<F> {
     /// Use this for non-primitive OUTPUTS: the table creates these witnesses on the
     /// `WitnessChecks` bus, so they are not readers. The `out_ctl` multiplicity is
     /// set separately by `get_airs_and_degrees_with_prep` based on `ext_reads`.
-    pub fn register_non_primitive_output_index(
-        &mut self,
-        op_type: NonPrimitiveOpType,
-        wids: &[WitnessId],
-    ) {
-        let entry = self.non_primitive.entry(op_type).or_default();
+    pub fn register_non_primitive_output_index(&mut self, op_type: &NpoTypeId, wids: &[WitnessId]) {
+        let entry = self.non_primitive.entry(op_type.clone()).or_default();
         let d = self.d as u32;
         let wids_field = wids.iter().map(|wid| F::from_u32(wid.0 * d));
         entry.extend(wids_field);
@@ -145,10 +135,10 @@ impl<F: Field> PreprocessedColumns<F> {
     /// Use this for non-primitive inputs that the table reads from the `WitnessChecks` bus.
     pub fn register_non_primitive_witness_reads(
         &mut self,
-        op_type: NonPrimitiveOpType,
+        op_type: &NpoTypeId,
         wids: &[WitnessId],
     ) -> Result<(), CircuitError> {
-        let entry = self.non_primitive.entry(op_type).or_default();
+        let entry = self.non_primitive.entry(op_type.clone()).or_default();
 
         let d = self.d as u32;
         let wids_field = wids.iter().map(|wid| F::from_u32(wid.0 * d));
@@ -163,7 +153,7 @@ impl<F: Field> PreprocessedColumns<F> {
     /// with a single witness index (D-scaled), and increments its ext-field read count.
     pub fn register_non_primitive_witness_read(
         &mut self,
-        op_type: NonPrimitiveOpType,
+        op_type: &NpoTypeId,
         wid: WitnessId,
     ) -> Result<(), CircuitError> {
         self.register_non_primitive_witness_reads(op_type, &[wid])
@@ -191,10 +181,10 @@ impl<F: Field> PreprocessedColumns<F> {
     /// Does not update read counts.
     pub fn register_non_primitive_preprocessed_no_read(
         &mut self,
-        op_type: NonPrimitiveOpType,
+        op_type: &NpoTypeId,
         values: &[F],
     ) {
-        let entry = self.non_primitive.entry(op_type).or_default();
+        let entry = self.non_primitive.entry(op_type.clone()).or_default();
         entry.extend(values);
     }
 }
@@ -231,13 +221,13 @@ pub struct Circuit<F> {
     /// Total number of public field elements
     pub public_flat_len: usize,
     /// Enabled non-primitive operation types with their respective configuration
-    pub enabled_ops: HashMap<NonPrimitiveOpType, NonPrimitiveOpConfig<F>>,
+    pub enabled_ops: HashMap<NpoTypeId, NonPrimitiveOpConfig>,
     /// Expression to witness index map
     pub expr_to_widx: HashMap<ExprId, WitnessId>,
     /// Registered non-primitive trace generators.
-    pub non_primitive_trace_generators: HashMap<NonPrimitiveOpType, TraceGeneratorFn<F>>,
+    pub non_primitive_trace_generators: HashMap<NpoTypeId, TraceGeneratorFn<F>>,
     /// Sorted keys of `non_primitive_trace_generators` for deterministic iteration without sorting each run.
-    pub non_primitive_trace_generator_order: Vec<NonPrimitiveOpType>,
+    pub non_primitive_trace_generator_order: Vec<NpoTypeId>,
     /// Tag to witness index mapping for probing values by name.
     pub tag_to_witness: HashMap<String, WitnessId>,
     /// Tag to non-primitive operation ID mapping.
@@ -455,47 +445,34 @@ impl<F: Field> Circuit<F> {
                 } => {
                     executor.preprocess(inputs, outputs, &mut preprocessed)?;
 
-                    // Mark Poseidon2 rate outputs as 'defined': they are created on the
-                    // WitnessChecks bus by the Poseidon2 AIR, so subsequent ALU ops that
-                    // read them are constrained readers (mult = -1).
-                    //
-                    // The circuit optimizer's witness_rewrite deduplication can cause two
-                    // Poseidon2 ops to share the same output WitnessId (when hashing the same
-                    // inputs). The FIRST op is the creator; subsequent ops are readers. Duplicates
-                    // are recorded in `preprocessed.poseidon2_dup_wids` so that Phase 2 in
-                    // common.rs can set out_ctl = -1 (reader) instead of +ext_reads (creator).
-                    //
-                    // Unconstrained ops have no AIR; their outputs remain undefined so
-                    // ALU reads are treated as unconstrained (mult = 0, no bus lookup).
-                    match executor.op_type() {
-                        NonPrimitiveOpType::Poseidon2Perm(_) => {
-                            for out_limb in outputs.iter().take(2) {
-                                for wid in out_limb {
-                                    let wid_idx = wid.0 as usize;
-                                    if wid_idx < defined.len() && defined[wid_idx] {
-                                        // Duplicate: a previous Poseidon2 op already created
-                                        // this WitnessId. Record it as a duplicate reader.
-                                        let dup_len = preprocessed.poseidon2_dup_wids.len();
-                                        if wid_idx >= dup_len {
-                                            preprocessed
-                                                .poseidon2_dup_wids
-                                                .resize(wid_idx + 1, false);
-                                        }
-                                        preprocessed.poseidon2_dup_wids[wid_idx] = true;
-                                        // Increment ext_reads: this op reads the witness.
-                                        preprocessed.increment_ext_reads(&[*wid]);
-                                    } else {
-                                        // First occurrence: mark as defined (creator).
-                                        if wid_idx >= defined.len() {
-                                            defined.resize(wid_idx + 1, false);
-                                        }
-                                        defined[wid_idx] = true;
-                                    }
+                    // Track duplicate non-primitive outputs: first occurrence is a creator,
+                    // subsequent occurrences are treated as readers on WitnessChecks.
+                    let op_type = executor.op_type();
+                    let n_exposed = executor.num_exposed_outputs().unwrap_or(outputs.len());
+                    for out_limb in outputs.iter().take(n_exposed) {
+                        for wid in out_limb {
+                            let wid_idx = wid.0 as usize;
+                            if wid_idx < defined.len() && defined[wid_idx] {
+                                let dup = preprocessed
+                                    .dup_npo_outputs
+                                    .entry(op_type.clone())
+                                    .or_default();
+                                if wid_idx >= dup.len() {
+                                    dup.resize(wid_idx + 1, false);
                                 }
+                                dup[wid_idx] = true;
+                                preprocessed.increment_ext_reads(&[*wid]);
+                            } else {
+                                if wid_idx >= defined.len() {
+                                    defined.resize(wid_idx + 1, false);
+                                }
+                                defined[wid_idx] = true;
                             }
                         }
-                        NonPrimitiveOpType::Unconstrained => {}
                     }
+                }
+                Op::Hint { .. } => {
+                    // Hints do not participate in preprocessed columns or table-backed ops.
                 }
             }
         }

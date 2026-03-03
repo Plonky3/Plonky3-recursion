@@ -18,11 +18,14 @@ pub mod utils;
 // Re-export public API
 #[cfg(feature = "debugging")]
 pub use alloc_entry::{AllocationEntry, AllocationType, dump_expr_ids};
-pub use builder::{CircuitBuilder, CircuitBuilderError};
+pub use builder::{
+    CircuitBuilder, CircuitBuilderError, NonPrimitiveOperationData, NpoCircuitPlugin,
+    NpoLoweringContext,
+};
 pub use circuit::{Circuit, CircuitField, PreprocessedColumns};
 pub use errors::CircuitError;
 pub use expr::{Expr, ExpressionGraph};
-pub use op::{AluOpKind, NonPrimitiveOpPrivateData, NonPrimitiveOpType, Op};
+pub use op::{AluOpKind, HintExecutor, NonPrimitiveOpPrivateData, NpoPrivateData, NpoTypeId, Op};
 pub use ops::Poseidon2PermOps;
 pub use tables::{CircuitRunner, Traces};
 pub use types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};

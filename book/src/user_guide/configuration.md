@@ -95,12 +95,11 @@ The `Poseidon2Config` must be consistent between:
 `TablePacking` controls how circuit operations are distributed across table lanes. Each lane adds columns to a table; more lanes means shorter (fewer rows) but wider (more columns) tables.
 
 ```rust,ignore
-TablePacking::new(witness_lanes, public_lanes, alu_lanes)
+TablePacking::new(public_lanes, alu_lanes)
 ```
 
 | Parameter | Controls | Trade-off |
 |-----------|----------|-----------|
-| `witness_lanes` | Witness table width | More lanes → fewer rows, but wider table |
 | `public_lanes` | Public input table width | Often the bottleneck for row count |
 | `alu_lanes` | ALU (add/mul) table width | Most operations land here |
 
@@ -124,7 +123,7 @@ Halving the max table height cuts FRI proving time by roughly 40-50% (one fewer 
 Use `.with_fri_params(log_final_poly_len, log_blowup)` to set minimum row counts:
 
 ```rust,ignore
-let packing = TablePacking::new(5, 2, 3)
+let packing = TablePacking::new(2, 3)
     .with_fri_params(log_final_poly_len, log_blowup);
 ```
 
@@ -134,8 +133,8 @@ The first recursive layer (verifying the original proof) often has a different o
 
 ```rust,ignore
 let packing = if layer == 1 {
-    TablePacking::new(1, 1, 1)
+    TablePacking::new(1, 1)
 } else {
-    TablePacking::new(5, 1, 3)
+    TablePacking::new(1, 3)
 }.with_fri_params(log_final_poly_len, log_blowup);
 ```

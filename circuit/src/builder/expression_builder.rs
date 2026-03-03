@@ -15,7 +15,7 @@ use core::hash::Hash;
 use hashbrown::HashMap;
 use p3_field::PrimeCharacteristicRing;
 
-use crate::NonPrimitiveOpType;
+use crate::NpoTypeId;
 use crate::expr::{Expr, ExpressionGraph};
 use crate::types::{ExprId, NonPrimitiveOpId};
 #[cfg(feature = "debugging")]
@@ -42,7 +42,7 @@ pub struct OpCounts {
     /// Number of Horner accumulator expressions allocated.
     pub horner_accs: u64,
     /// Number of non-primitive calls allocated, broken down by type.
-    pub non_primitives: HashMap<NonPrimitiveOpType, u64>,
+    pub non_primitives: HashMap<NpoTypeId, u64>,
 }
 
 /// Internal profiling state tracking global and per-scope counts.
@@ -105,9 +105,13 @@ impl ProfilingState {
     }
 
     #[inline]
-    fn bump_non_primitive(&mut self, op_type: NonPrimitiveOpType) {
+    fn bump_non_primitive(&mut self, op_type: NpoTypeId) {
         // Global totals.
-        *self.global.non_primitives.entry(op_type).or_default() += 1;
+        *self
+            .global
+            .non_primitives
+            .entry(op_type.clone())
+            .or_default() += 1;
 
         // Per-scope totals (if a scope is active).
         if let Some(scope) = self.scope_stack.last().cloned() {
@@ -578,7 +582,7 @@ where
     pub fn add_non_primitive_call(
         &mut self,
         op_id: NonPrimitiveOpId,
-        op_type: NonPrimitiveOpType,
+        op_type: &NpoTypeId,
         inputs: Vec<ExprId>,
         label: &'static str,
     ) -> ExprId {
@@ -591,11 +595,14 @@ where
 
         // Count non-primitive calls when profiling is enabled.
         #[cfg(feature = "profiling")]
-        self.profiling.bump_non_primitive(op_type);
+        self.profiling.bump_non_primitive(op_type.clone());
 
         #[cfg(feature = "debugging")]
         self.log_alloc(expr_id, label, || {
-            (AllocationType::NonPrimitiveOp(op_type), dependencies)
+            (
+                AllocationType::NonPrimitiveOp(op_type.clone()),
+                dependencies,
+            )
         });
         #[cfg(not(feature = "debugging"))]
         self.log_alloc(expr_id, label, || ());
@@ -740,7 +747,7 @@ where
     /// # Arguments
     ///
     /// - `op_id`: The non-primitive operation ID
-    /// - `op_type`: The type of operation (e.g., `NonPrimitiveOpType::MmcsVerify`)
+    /// - `op_type`: The type of operation (e.g., `NpoTypeId::MmcsVerify`)
     /// - `input_deps`: Input expression dependencies for this operation
     /// - `output_deps`: Output expression dependencies for this operation
     /// - `label`: Human-readable label
@@ -748,7 +755,7 @@ where
     pub fn log_non_primitive_op(
         &mut self,
         op_id: crate::types::NonPrimitiveOpId,
-        op_type: crate::op::NonPrimitiveOpType,
+        op_type: crate::op::NpoTypeId,
         input_deps: Vec<Vec<ExprId>>,
         output_deps: Vec<Vec<ExprId>>,
         label: &'static str,

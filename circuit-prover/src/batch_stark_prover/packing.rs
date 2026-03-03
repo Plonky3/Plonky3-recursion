@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 
-use p3_circuit::op::NonPrimitiveOpType;
+use p3_circuit::op::NpoTypeId;
 use p3_circuit::tables::Traces;
 use p3_field::Field;
 use p3_matrix::Matrix;
@@ -103,7 +103,7 @@ pub struct TraceLengths {
     pub alu: usize,
     pub public_lanes: usize,
     pub alu_lanes: usize,
-    pub non_primitive: Vec<(NonPrimitiveOpType, usize)>,
+    pub non_primitive: Vec<(NpoTypeId, usize)>,
 }
 
 impl TraceLengths {
@@ -118,7 +118,7 @@ impl TraceLengths {
             non_primitive: traces
                 .non_primitive_traces
                 .iter()
-                .map(|(&op, t)| (op, t.rows()))
+                .map(|(op, t)| (op.clone(), t.rows()))
                 .collect(),
         }
     }

@@ -7,13 +7,15 @@ use std::env;
 use std::error::Error;
 
 use p3_batch_stark::ProverData;
-use p3_circuit::op::NonPrimitiveOpType;
+use p3_circuit::op::NpoTypeId;
 use p3_circuit::ops::{Poseidon2PermCall, Poseidon2PermOps, generate_poseidon2_trace};
 use p3_circuit::{CircuitBuilder, ExprId};
-use p3_circuit_prover::common::{NonPrimitiveConfig, get_airs_and_degrees_with_prep};
+use p3_circuit_prover::batch_stark_prover::poseidon2_air_builders_d4;
+use p3_circuit_prover::common::{NpoPreprocessor, get_airs_and_degrees_with_prep};
 use p3_circuit_prover::config::KoalaBearConfig;
 use p3_circuit_prover::{
-    BatchStarkProver, CircuitProverData, ConstraintProfile, Poseidon2Config, TablePacking, config,
+    BatchStarkProver, CircuitProverData, ConstraintProfile, Poseidon2Config, Poseidon2Preprocessor,
+    TablePacking, config,
 };
 use p3_field::extension::BinomialExtensionField;
 use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
@@ -84,14 +86,13 @@ fn main() -> Result<(), Box<dyn Error>> {
         builder.alloc_const(final_limbs_ext[i], "poseidon2_perm_expected_output")
     });
 
-    // Add permutation rows.
-    let mut last_outputs: [Option<ExprId>; 4] = [None, None, None, None];
+    let mut last_outputs: Vec<Option<ExprId>> = vec![None; 4];
 
     for row in 0..chain_length {
         let is_first = row == 0;
         let is_last = row + 1 == chain_length;
 
-        let mut inputs: [Option<ExprId>; 4] = [None, None, None, None];
+        let mut inputs: Vec<Option<ExprId>> = vec![None; 4];
         if is_first {
             for limb in 0..4 {
                 inputs[limb] = Some(first_inputs_expr[limb]);
@@ -102,18 +103,17 @@ fn main() -> Result<(), Box<dyn Error>> {
             config: Poseidon2Config::KoalaBearD4Width16,
             new_start: is_first,
             merkle_path: false,
-            mmcs_bit: None, // Must be None when merkle_path=false
+            mmcs_bit: None,
             inputs,
-            out_ctl: [is_last, is_last],
+            out_ctl: vec![is_last, is_last],
             return_all_outputs: false,
             mmcs_index_sum: None,
         })?;
 
         if is_last {
             last_outputs = outputs;
-
-            let out0 = outputs[0].ok_or("missing out0 expr")?;
-            let out1 = outputs[1].ok_or("missing out1 expr")?;
+            let out0 = last_outputs[0].ok_or("missing out0 expr")?;
+            let out1 = last_outputs[1].ok_or("missing out1 expr")?;
             builder.connect(out0, expected_final_output_exprs[0]);
             builder.connect(out1, expected_final_output_exprs[1]);
         }
@@ -129,11 +129,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     let stark_config = config::koala_bear().build();
     let table_packing = TablePacking::new(2, 2);
     let poseidon2_config = Poseidon2Config::KoalaBearD4Width16;
+    let poseidon2_prep: [Box<dyn NpoPreprocessor<Base>>; 1] = [Box::new(Poseidon2Preprocessor)];
     let (airs_degrees, preprocessed_columns) =
         get_airs_and_degrees_with_prep::<KoalaBearConfig, _, 4>(
             &circuit,
             table_packing,
-            Some(&[NonPrimitiveConfig::Poseidon2(poseidon2_config)]),
+            &poseidon2_prep,
+            &poseidon2_air_builders_d4(),
             ConstraintProfile::Standard,
         )
         .unwrap();
@@ -169,7 +171,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     assert!(
         traces
             .non_primitive_traces
-            .get(&NonPrimitiveOpType::Poseidon2Perm(
+            .get(&NpoTypeId::poseidon2_perm(
                 Poseidon2Config::KoalaBearD4Width16
             ))
             .is_some_and(|t| t.rows() == chain_length),

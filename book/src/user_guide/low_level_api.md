@@ -83,7 +83,10 @@ use p3_circuit_prover::{BatchStarkProver, CircuitProverData};
 use p3_circuit_prover::common::get_airs_and_degrees_with_prep;
 
 let (airs_degrees, preprocessed) = get_airs_and_degrees_with_prep::<SC, EF, D>(
-    &circuit, table_packing, Some(&[NonPrimitiveConfig::Poseidon2(poseidon2_config)]),
+    &circuit, table_packing, &[Box::new(Poseidon2Prover::new(
+        poseidon2_config,
+        ConstraintProfile::Standard,
+    ))],
 )?;
 
 let (mut airs, degrees): (Vec<_>, Vec<_>) = airs_degrees.into_iter().unzip();
