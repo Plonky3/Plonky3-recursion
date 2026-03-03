@@ -592,9 +592,12 @@ where
         let mut outputs: Vec<Option<ExprId>> = vec![None; output_labels.len()];
         for (i, maybe_label) in output_labels.into_iter().enumerate() {
             if let Some(out_label) = maybe_label {
-                let out_expr_id =
-                    self.expr_builder
-                        .add_non_primitive_output(call_expr_id, i as u32, out_label);
+                let out_expr_id = self.expr_builder.add_non_primitive_output(
+                    &op_type,
+                    call_expr_id,
+                    i as u32,
+                    out_label,
+                );
                 output_exprs[i] = vec![out_expr_id];
                 outputs[i] = Some(out_expr_id);
             }

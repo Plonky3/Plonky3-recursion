@@ -6,6 +6,9 @@
 //! - nodes represent field operations,
 //! - edges represent dependencies between expressions.
 
+#![allow(unused_variables)]
+#![allow(clippy::missing_const_for_fn)]
+
 use alloc::string::String;
 #[cfg(feature = "debugging")]
 use alloc::vec;
@@ -511,6 +514,7 @@ where
     /// the dependency explicit in the DAG structure.
     pub fn add_non_primitive_output(
         &mut self,
+        op_type: &NpoTypeId,
         call: ExprId,
         output_idx: u32,
         label: &'static str,
@@ -521,7 +525,10 @@ where
 
         #[cfg(feature = "debugging")]
         self.log_alloc(expr_id, label, || {
-            (AllocationType::NonPrimitiveOutput, vec![vec![call]])
+            (
+                AllocationType::NonPrimitiveOp(op_type.clone()),
+                vec![vec![call]],
+            )
         });
         #[cfg(not(feature = "debugging"))]
         self.log_alloc(expr_id, label, || ());
@@ -583,7 +590,6 @@ where
     ///
     /// An [`ExprId`] handle to the newly created expression.
     #[inline(always)]
-    #[allow(unused_variables)]
     fn add_bin_op(
         &mut self,
         expr: Expr<F>,
@@ -748,8 +754,6 @@ where
     /// # Arguments
     ///
     /// - `scope`: Human-readable scope name
-    #[allow(unused_variables)]
-    #[allow(clippy::missing_const_for_fn)]
     pub fn push_scope(&mut self, scope: &str) {
         #[cfg(any(feature = "debugging", feature = "profiling"))]
         {
@@ -777,7 +781,6 @@ where
     /// # Panics
     ///
     /// Panics if the scope stack is empty (mismatched push/pop).
-    #[allow(clippy::missing_const_for_fn)]
     pub fn pop_scope(&mut self) {
         #[cfg(feature = "debugging")]
         self.scope_stack.pop();
@@ -814,8 +817,6 @@ where
     /// Dumps the allocation log for specific `ExprId`s.
     ///
     /// If debug_assertions are not enabled, this is a no-op.
-    #[allow(clippy::missing_const_for_fn)]
-    #[allow(unused_variables)]
     pub fn dump_expr_ids(&self, expr_ids: &[ExprId]) {
         #[cfg(feature = "debugging")]
         crate::alloc_entry::dump_expr_ids(&self.allocation_log, expr_ids);
@@ -830,7 +831,6 @@ where
     ///
     /// In debug builds, outputs a detailed allocation report. In release builds,
     /// this method does nothing.
-    #[allow(clippy::missing_const_for_fn)]
     pub fn dump_allocation_log(&self) {
         #[cfg(feature = "debugging")]
         crate::alloc_entry::dump_allocation_log(&self.allocation_log);
@@ -845,7 +845,6 @@ where
     ///
     /// - **Debug builds**: Vector of unique scope names
     /// - **Release builds**: Empty vector (no scopes tracked)
-    #[allow(clippy::missing_const_for_fn)]
     pub fn list_scopes(&self) -> Vec<String> {
         #[cfg(feature = "debugging")]
         {
