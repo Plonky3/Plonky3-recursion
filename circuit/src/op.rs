@@ -449,7 +449,7 @@ pub type NpoRegistry<F> = HashMap<NpoTypeId, Arc<dyn NpoCircuitPlugin<F>>>;
 ///
 /// Each NPO plugin both produces and consumes its own typed data through
 /// this wrapper. The core infrastructure never inspects the contents.
-pub struct NpoConfig(pub Box<dyn Any + Send + Sync>);
+pub struct NpoConfig(pub(crate) Arc<dyn Any + Send + Sync>);
 
 /// Backward-compatible alias during migration.
 pub type NonPrimitiveOpConfig = NpoConfig;
@@ -457,7 +457,7 @@ pub type NonPrimitiveOpConfig = NpoConfig;
 impl NpoConfig {
     /// Wrap a concrete config value.
     pub fn new<T: Any + Send + Sync>(val: T) -> Self {
-        Self(Box::new(val))
+        Self(Arc::new(val))
     }
 
     /// Downcast to a concrete config type.
@@ -468,7 +468,8 @@ impl NpoConfig {
 
 impl Clone for NpoConfig {
     fn clone(&self) -> Self {
-        panic!("NpoConfig cannot be cloned generically; plugins must re-register their config")
+        // Shared, immutable plugin config; cloning just bumps the refcount.
+        Self(self.0.clone())
     }
 }
 
@@ -503,7 +504,7 @@ impl Debug for NpoConfig {
 ///
 /// Each NPO plugin both produces and consumes its own typed data through
 /// this wrapper. The core infrastructure never inspects the contents.
-pub struct NpoPrivateData(pub Box<dyn Any + Send + Sync>);
+pub struct NpoPrivateData(pub(crate) Box<dyn Any + Send + Sync>);
 
 /// Backward-compatible alias during migration.
 pub type NonPrimitiveOpPrivateData = NpoPrivateData;
