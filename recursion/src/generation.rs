@@ -275,7 +275,7 @@ where
     A: Air<SymbolicAirBuilder<Val<SC>, SC::Challenge>>,
     SC::Pcs: PcsGeneration<SC, <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Proof>,
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
-        From<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
     debug_assert_eq!(config.is_zk(), 0, "batch recursion assumes non-ZK");
     if SC::Pcs::ZK {

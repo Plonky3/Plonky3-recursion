@@ -214,7 +214,7 @@ where
     SC::Challenge: ExtensionField<Val<SC>> + PrimeCharacteristicRing + ExtractBinomialW<Val<SC>>,
     <<SC as StarkGenericConfig>::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain: Clone,
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
-        From<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
     assert_eq!(proof.ext_degree, TRACE_D, "trace extension degree mismatch");
     let rows: RowCounts = proof.rows;

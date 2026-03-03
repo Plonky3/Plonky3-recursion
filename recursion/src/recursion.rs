@@ -267,7 +267,7 @@ where
         + ExtensionField<Val<SC>>
         + ExtractBinomialW<Val<SC>>,
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
-        From<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
     let (airs_degrees, preprocessed_columns) = {
         let preprocessors = backend.non_primitive_preprocessors();
@@ -345,7 +345,7 @@ where
         + ExtensionField<Val<SC>>
         + ExtractBinomialW<Val<SC>>,
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
-        From<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
     let (verification_circuit, verifier_result) =
         build_next_layer_circuit::<SC, A, B, D>(prev, config, backend)?;
@@ -488,7 +488,7 @@ where
         + ExtensionField<Val<SC>>
         + ExtractBinomialW<Val<SC>>,
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
-        From<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
     if let Some(ref mut cache_slot) = prep_cache
         && let Some(cached) = cache_slot.as_ref()
@@ -601,7 +601,7 @@ where
         + ExtensionField<Val<SC>>
         + ExtractBinomialW<Val<SC>>,
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
-        From<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
     let (verification_circuit, (left_result, right_result)) =
         build_aggregation_layer_circuit::<SC, A1, A2, B, D>(left, right, config, backend)?;

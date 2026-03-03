@@ -41,7 +41,7 @@ pub trait NpoAirBuilder<SC, const D: usize>: Send + Sync
 where
     SC: StarkGenericConfig,
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
-        From<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
     fn try_build(
         &self,
@@ -99,7 +99,7 @@ pub fn get_airs_and_degrees_with_prep<
 ) -> Result<(CircuitAirsWithDegrees<SC, D>, PreprocessedColumns<Val<SC>>), CircuitError>
 where
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
-        From<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
     Val<SC>: StarkField,
 {
     let mut preprocessed = circuit.generate_preprocessed_columns(D)?;

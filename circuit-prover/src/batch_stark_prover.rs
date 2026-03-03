@@ -381,7 +381,7 @@ where
     SC: StarkGenericConfig,
     Val<SC>: PrimeField,
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
-        From<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
     impl_circuit_table_air_for_builder!(SymbolicAirBuilder<Val<SC>, SC::Challenge>);
 }
@@ -422,7 +422,7 @@ where
     SC: StarkGenericConfig + 'static,
     Val<SC>: StarkField,
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
-        From<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
     pub fn new(config: SC) -> Self {
         Self {
@@ -898,7 +898,7 @@ where
     SC: StarkGenericConfig + 'static + Send + Sync,
     Val<SC>: BinomiallyExtendable<2> + StarkField,
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
-        From<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
     vec![Box::new(Poseidon2ProverD2(Poseidon2Prover::new(
         config,
@@ -912,7 +912,7 @@ where
     SC: StarkGenericConfig + 'static + Send + Sync,
     Val<SC>: BinomiallyExtendable<4> + StarkField,
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
-        From<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
     vec![Box::new(Poseidon2Prover::new(
         config,
@@ -926,7 +926,7 @@ where
     SC: StarkGenericConfig + 'static + Send + Sync,
     Val<SC>: BinomiallyExtendable<2> + StarkField,
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
-        From<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
     vec![Box::new(Poseidon2AirBuilderD2)]
 }
@@ -937,7 +937,7 @@ where
     SC: StarkGenericConfig + 'static + Send + Sync,
     Val<SC>: BinomiallyExtendable<4> + StarkField,
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
-        From<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
     vec![Box::new(Poseidon2AirBuilderD4)]
 }

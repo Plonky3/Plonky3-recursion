@@ -277,7 +277,7 @@ where
     SC: StarkGenericConfig,
     T: BatchAir<SC> + Clone + 'static,
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
-        From<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
     fn clone_box(&self) -> Box<dyn CloneableBatchAir<SC>> {
         Box::new(self.clone())

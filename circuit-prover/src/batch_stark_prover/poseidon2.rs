@@ -1029,7 +1029,7 @@ impl Poseidon2Prover {
         SC: StarkGenericConfig + 'static + Send + Sync,
         Val<SC>: StarkField,
         SymbolicExpressionExt<Val<SC>, SC::Challenge>:
-            From<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+            Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
     {
         DynamicAirEntry::new(Box::new(Poseidon2AirWrapper {
             inner: Self::air_wrapper_for_config_with_preprocessed::<Val<SC>>(
@@ -1072,7 +1072,7 @@ impl Poseidon2Prover {
         Val<SC>: StarkField,
         CF: Field + ExtensionField<Val<SC>>,
         SymbolicExpressionExt<Val<SC>, SC::Challenge>:
-            From<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+            Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
     {
         let t = traces.non_primitive_trace::<Poseidon2Trace<Val<SC>>>(
             &NpoTypeId::poseidon2_perm(self.config),
@@ -1118,7 +1118,7 @@ impl Poseidon2Prover {
         SC: StarkGenericConfig + 'static + Send + Sync,
         Val<SC>: StarkField,
         SymbolicExpressionExt<Val<SC>, SC::Challenge>:
-            From<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+            Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
     {
         let rows = t.total_rows();
 
@@ -1263,7 +1263,7 @@ where
     SC: StarkGenericConfig + 'static + Send + Sync,
     Val<SC>: StarkField + BinomiallyExtendable<4>,
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
-        From<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
     fn op_type(&self) -> NpoTypeId {
         self.poseidon2_op_type()
@@ -1347,7 +1347,7 @@ where
     SC: StarkGenericConfig + 'static + Send + Sync,
     Val<SC>: StarkField + BinomiallyExtendable<2>,
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
-        From<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
     fn op_type(&self) -> NpoTypeId {
         self.0.poseidon2_op_type()
@@ -1611,7 +1611,7 @@ where
     SC: StarkGenericConfig + 'static + Send + Sync,
     Val<SC>: StarkField + BinomiallyExtendable<2>,
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
-        From<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
     fn try_build(
         &self,
@@ -1648,7 +1648,7 @@ where
     SC: StarkGenericConfig + 'static + Send + Sync,
     Val<SC>: StarkField + BinomiallyExtendable<4>,
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
-        From<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
     fn try_build(
         &self,
