@@ -16,9 +16,9 @@ use p3_circuit_prover::field_params::ExtractBinomialW;
 use p3_circuit_prover::{Poseidon2Preprocessor, TableProver};
 use p3_commit::Pcs;
 use p3_field::extension::BinomiallyExtendable;
-use p3_field::{BasedVectorSpace, ExtensionField, PrimeCharacteristicRing, PrimeField64};
+use p3_field::{Algebra, BasedVectorSpace, ExtensionField, PrimeCharacteristicRing, PrimeField64};
 use p3_lookup::logup::LogUpGadget;
-use p3_uni_stark::{StarkGenericConfig, SymbolicExpression, Val};
+use p3_uni_stark::{StarkGenericConfig, SymbolicExpressionExt, Val};
 
 use crate::ops::Poseidon2Config;
 use crate::public_inputs::{BatchStarkVerifierInputsBuilder, StarkVerifierInputsBuilder};
@@ -233,7 +233,8 @@ where
         + PrimeCharacteristicRing
         + ExtractBinomialW<Val<SC>>,
     <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain: Clone,
-    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        From<p3_uni_stark::SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
     SC::Pcs: RecursivePcs<
             SC,
             SC::InputProof,
@@ -282,7 +283,7 @@ where
             common_data,
             table_public_inputs,
         } => {
-            let lookup_gadget = p3_lookup::logup::LogUpGadget::new();
+            let lookup_gadget = LogUpGadget::new();
             let (verifier_inputs, op_ids) = match proof.ext_degree {
                 1 => verify_p3_batch_proof_circuit::<
                     SC,
@@ -370,7 +371,8 @@ where
         + PrimeCharacteristicRing
         + ExtractBinomialW<Val<SC>>,
     <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain: Clone,
-    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        From<p3_uni_stark::SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
     SC::Pcs: RecursivePcs<
             SC,
             SC::InputProof,
@@ -451,7 +453,8 @@ where
         + PrimeCharacteristicRing
         + ExtractBinomialW<Val<SC>>,
     <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain: Clone,
-    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        From<p3_uni_stark::SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
     SC::Pcs: RecursivePcs<
             SC,
             SC::InputProof,

@@ -5,7 +5,7 @@ use alloc::rc::Rc;
 use alloc::string::ToString;
 use alloc::vec::Vec;
 
-use p3_air::SymbolicExpression;
+use p3_air::{SymbolicExpression, SymbolicExpressionExt};
 use p3_batch_stark::{CommonData, ProverData};
 use p3_circuit::tables::Traces;
 use p3_circuit::utils::ColumnsTargets;
@@ -20,7 +20,7 @@ use p3_circuit_prover::{
 };
 use p3_commit::Pcs;
 use p3_field::extension::BinomiallyExtendable;
-use p3_field::{BasedVectorSpace, ExtensionField, Field, PrimeField64};
+use p3_field::{Algebra, BasedVectorSpace, ExtensionField, Field, PrimeField64};
 use p3_lookup::logup::LogUpGadget;
 use p3_lookup::lookup_traits::{Lookup, LookupData, LookupGadget};
 use p3_uni_stark::{Proof, StarkGenericConfig, Val};
@@ -233,7 +233,7 @@ where
         + From<Val<SC>>
         + ExtensionField<Val<SC>>
         + ExtractBinomialW<Val<SC>>,
-    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
 {
     let mut circuit_builder = CircuitBuilder::new();
     backend.prepare_circuit(config, &mut circuit_builder)?;
@@ -266,7 +266,8 @@ where
         + From<Val<SC>>
         + ExtensionField<Val<SC>>
         + ExtractBinomialW<Val<SC>>,
-    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        From<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
     let (airs_degrees, preprocessed_columns) = {
         let preprocessors = backend.non_primitive_preprocessors();
@@ -343,7 +344,8 @@ where
         + From<Val<SC>>
         + ExtensionField<Val<SC>>
         + ExtractBinomialW<Val<SC>>,
-    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        From<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
     let (verification_circuit, verifier_result) =
         build_next_layer_circuit::<SC, A, B, D>(prev, config, backend)?;
@@ -389,7 +391,7 @@ where
         + From<Val<SC>>
         + ExtensionField<Val<SC>>
         + ExtractBinomialW<Val<SC>>,
-    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
 {
     let mut circuit_builder = CircuitBuilder::new();
 
@@ -485,7 +487,8 @@ where
         + From<Val<SC>>
         + ExtensionField<Val<SC>>
         + ExtractBinomialW<Val<SC>>,
-    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        From<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
     if let Some(ref mut cache_slot) = prep_cache
         && let Some(cached) = cache_slot.as_ref()
@@ -597,7 +600,8 @@ where
         + From<Val<SC>>
         + ExtensionField<Val<SC>>
         + ExtractBinomialW<Val<SC>>,
-    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        From<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
     let (verification_circuit, (left_result, right_result)) =
         build_aggregation_layer_circuit::<SC, A1, A2, B, D>(left, right, config, backend)?;

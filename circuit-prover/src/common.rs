@@ -5,8 +5,8 @@ use core::any::Any;
 use hashbrown::HashMap;
 use p3_circuit::op::{NonPrimitivePreprocessedMap, NpoTypeId, PrimitiveOpType};
 use p3_circuit::{Circuit, CircuitError, PreprocessedColumns};
-use p3_field::{ExtensionField, PrimeCharacteristicRing, PrimeField64};
-use p3_uni_stark::{StarkGenericConfig, SymbolicExpression, Val};
+use p3_field::{Algebra, ExtensionField, Field, PrimeCharacteristicRing, PrimeField64};
+use p3_uni_stark::{StarkGenericConfig, SymbolicExpression, SymbolicExpressionExt, Val};
 use p3_util::log2_ceil_usize;
 
 use crate::air::{AluAir, ConstAir, PublicAir};
@@ -40,7 +40,8 @@ where
 pub trait NpoAirBuilder<SC, const D: usize>: Send + Sync
 where
     SC: StarkGenericConfig,
-    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        From<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
     fn try_build(
         &self,
@@ -58,7 +59,7 @@ where
 pub enum CircuitTableAir<SC, const D: usize>
 where
     SC: StarkGenericConfig,
-    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
 {
     Const(ConstAir<Val<SC>, D>),
     Public(PublicAir<Val<SC>, D>),
@@ -70,7 +71,7 @@ where
 impl<SC, const D: usize> Clone for CircuitTableAir<SC, D>
 where
     SC: StarkGenericConfig,
-    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
 {
     fn clone(&self) -> Self {
         match self {
@@ -87,7 +88,7 @@ type CircuitAirsWithDegrees<SC, const D: usize> = Vec<(CircuitTableAir<SC, D>, u
 
 pub fn get_airs_and_degrees_with_prep<
     SC: StarkGenericConfig + 'static + Send + Sync,
-    ExtF: ExtensionField<Val<SC>> + ExtractBinomialW<Val<SC>>,
+    ExtF: Field + ExtensionField<Val<SC>> + ExtractBinomialW<Val<SC>>,
     const D: usize,
 >(
     circuit: &Circuit<ExtF>,
@@ -97,7 +98,8 @@ pub fn get_airs_and_degrees_with_prep<
     constraint_profile: ConstraintProfile,
 ) -> Result<(CircuitAirsWithDegrees<SC, D>, PreprocessedColumns<Val<SC>>), CircuitError>
 where
-    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        From<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
     Val<SC>: StarkField,
 {
     let mut preprocessed = circuit.generate_preprocessed_columns(D)?;

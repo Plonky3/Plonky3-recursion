@@ -6,7 +6,7 @@ use alloc::vec::Vec;
 use alloc::{format, vec};
 
 use hashbrown::HashMap;
-use p3_air::{Air as P3Air, AirBuilder, BaseAir as P3BaseAir};
+use p3_air::{Air as P3Air, AirBuilder, BaseAir as P3BaseAir, SymbolicAirBuilder};
 use p3_batch_stark::CommonData;
 use p3_circuit::utils::ColumnsTargets;
 use p3_circuit::{CircuitBuilder, NonPrimitiveOpId};
@@ -16,9 +16,11 @@ use p3_circuit_prover::batch_stark_prover::{
 };
 use p3_circuit_prover::field_params::ExtractBinomialW;
 use p3_commit::{Pcs, PolynomialSpace};
-use p3_field::{BasedVectorSpace, ExtensionField, Field, PrimeCharacteristicRing, PrimeField64};
+use p3_field::{
+    Algebra, BasedVectorSpace, ExtensionField, Field, PrimeCharacteristicRing, PrimeField64,
+};
 use p3_lookup::lookup_traits::{Kind, Lookup, LookupData, LookupGadget};
-use p3_uni_stark::{StarkGenericConfig, SymbolicExpression, Val};
+use p3_uni_stark::{StarkGenericConfig, SymbolicExpression, SymbolicExpressionExt, Val};
 
 use super::{ObservableCommitment, VerificationError, recompose_quotient_from_chunks_circuit};
 use crate::challenger::CircuitChallenger;
@@ -60,7 +62,7 @@ pub enum CircuitTablesAir<SC: StarkGenericConfig, const D: usize> {
 impl<SC, const D: usize> P3BaseAir<Val<SC>> for CircuitTablesAir<SC, D>
 where
     SC: StarkGenericConfig,
-    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
 {
     fn width(&self) -> usize {
         match self {
@@ -72,21 +74,18 @@ where
     }
 }
 
-impl<SC, const D: usize>
-    P3Air<p3_uni_stark::SymbolicAirBuilder<Val<SC>, <SC as StarkGenericConfig>::Challenge>>
+impl<SC, const D: usize> P3Air<SymbolicAirBuilder<Val<SC>, <SC as StarkGenericConfig>::Challenge>>
     for CircuitTablesAir<SC, D>
 where
     SC: StarkGenericConfig,
     Val<SC>: PrimeField64,
     <SC as StarkGenericConfig>::Challenge: ExtensionField<Val<SC>>,
-    SymbolicExpression<<SC as StarkGenericConfig>::Challenge>: From<SymbolicExpression<Val<SC>>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
     fn eval(
         &self,
-        builder: &mut p3_uni_stark::SymbolicAirBuilder<
-            Val<SC>,
-            <SC as StarkGenericConfig>::Challenge,
-        >,
+        builder: &mut SymbolicAirBuilder<Val<SC>, <SC as StarkGenericConfig>::Challenge>,
     ) {
         match self {
             Self::Const(a) => P3Air::eval(a, builder),
@@ -99,16 +98,16 @@ where
     fn add_lookup_columns(&mut self) -> Vec<usize> {
         match self {
             Self::Const(a) => P3Air::<
-                p3_uni_stark::SymbolicAirBuilder<Val<SC>, <SC as StarkGenericConfig>::Challenge>,
+                SymbolicAirBuilder<Val<SC>, <SC as StarkGenericConfig>::Challenge>,
             >::add_lookup_columns(a),
             Self::Public(a) => P3Air::<
-                p3_uni_stark::SymbolicAirBuilder<Val<SC>, <SC as StarkGenericConfig>::Challenge>,
+                SymbolicAirBuilder<Val<SC>, <SC as StarkGenericConfig>::Challenge>,
             >::add_lookup_columns(a),
             Self::Alu(a) => P3Air::<
-                p3_uni_stark::SymbolicAirBuilder<Val<SC>, <SC as StarkGenericConfig>::Challenge>,
+                SymbolicAirBuilder<Val<SC>, <SC as StarkGenericConfig>::Challenge>,
             >::add_lookup_columns(a),
             Self::Dynamic(inner) => P3Air::<
-                p3_uni_stark::SymbolicAirBuilder<Val<SC>, <SC as StarkGenericConfig>::Challenge>,
+                SymbolicAirBuilder<Val<SC>, <SC as StarkGenericConfig>::Challenge>,
             >::add_lookup_columns(inner),
         }
     }
@@ -118,25 +117,16 @@ where
         &mut self,
     ) -> Vec<
         p3_lookup::lookup_traits::Lookup<
-            <p3_uni_stark::SymbolicAirBuilder<
-                Val<SC>,
-                <SC as StarkGenericConfig>::Challenge,
-            > as AirBuilder>::F,
+            <SymbolicAirBuilder<Val<SC>, <SC as StarkGenericConfig>::Challenge> as AirBuilder>::F,
         >,
-    >{
+    > {
         match self {
-            Self::Const(a) => P3Air::<
-                p3_uni_stark::SymbolicAirBuilder<Val<SC>, <SC as StarkGenericConfig>::Challenge>,
-            >::get_lookups(a),
-            Self::Public(a) => P3Air::<
-                p3_uni_stark::SymbolicAirBuilder<Val<SC>, <SC as StarkGenericConfig>::Challenge>,
-            >::get_lookups(a),
-            Self::Alu(a) => P3Air::<
-                p3_uni_stark::SymbolicAirBuilder<Val<SC>, <SC as StarkGenericConfig>::Challenge>,
-            >::get_lookups(a),
-            Self::Dynamic(inner) => P3Air::<
-                p3_uni_stark::SymbolicAirBuilder<Val<SC>, <SC as StarkGenericConfig>::Challenge>,
-            >::get_lookups(inner),
+            Self::Const(a) => P3Air::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::get_lookups(a),
+            Self::Public(a) => P3Air::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::get_lookups(a),
+            Self::Alu(a) => P3Air::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::get_lookups(a),
+            Self::Dynamic(inner) => {
+                P3Air::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::get_lookups(inner)
+            }
         }
     }
 }
@@ -152,12 +142,22 @@ where
     EF: ExtensionField<F> + ExtractBinomialW<F>,
 {
     if TRACE_D == 1 {
-        AluAir::<F, TRACE_D>::new(num_ops, lanes)
+        let preprocessed = if num_ops == 0 {
+            Vec::new()
+        } else {
+            vec![F::ZERO; num_ops * AluAir::<F, TRACE_D>::preprocessed_lane_width()]
+        };
+        AluAir::<F, TRACE_D>::new_with_preprocessed(num_ops, lanes, preprocessed)
     } else {
         // For D > 1, extract W from the extension field
         // BinomialExtensionField<F, D> has W as the constant such that x^D = W
         let w = binomial_w_for_alu::<F, EF>();
-        AluAir::<F, TRACE_D>::new_binomial(num_ops, lanes, w)
+        let preprocessed = if num_ops == 0 {
+            Vec::new()
+        } else {
+            vec![F::ZERO; num_ops * AluAir::<F, TRACE_D>::preprocessed_lane_width()]
+        };
+        AluAir::<F, TRACE_D>::new_binomial_with_preprocessed(num_ops, lanes, w, preprocessed)
     }
 }
 
@@ -213,7 +213,8 @@ where
     Val<SC>: PrimeField64,
     SC::Challenge: ExtensionField<Val<SC>> + PrimeCharacteristicRing + ExtractBinomialW<Val<SC>>,
     <<SC as StarkGenericConfig>::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain: Clone,
-    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        From<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
     assert_eq!(proof.ext_degree, TRACE_D, "trace extension degree mismatch");
     let rows: RowCounts = proof.rows;

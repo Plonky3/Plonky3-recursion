@@ -128,9 +128,9 @@ where
         let main = builder.main();
         let main_local = main.row_slice(0).expect("Matrix is empty?");
 
-        let a = main_local[0].clone();
-        let b = main_local[1].clone();
-        let c = main_local[2].clone();
+        let a = main_local[0];
+        let b = main_local[1];
+        let c = main_local[2];
 
         // Constraint: a + b = c
         builder.assert_zero(a + b - c);
@@ -217,9 +217,9 @@ where
             .row_slice(0)
             .expect("Preprocessed matrix is empty?");
 
-        let a = main_local[0].clone();
-        let result = main_local[1].clone();
-        let constant = preprocessed_local[0].clone();
+        let a = main_local[0];
+        let result = main_local[1];
+        let constant = preprocessed_local[0];
 
         // Constraint: a - constant = result
         builder.assert_zero(a - constant - result);

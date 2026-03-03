@@ -17,7 +17,7 @@ use p3_circuit::ops::{GoldilocksD2Width8, Poseidon2CircuitRow, Poseidon2Params, 
 use p3_circuit::tables::Traces;
 use p3_circuit::{CircuitError, PreprocessedColumns};
 use p3_field::extension::{BinomialExtensionField, BinomiallyExtendable};
-use p3_field::{ExtensionField, Field, PrimeCharacteristicRing, PrimeField, PrimeField64};
+use p3_field::{Algebra, ExtensionField, Field, PrimeCharacteristicRing, PrimeField, PrimeField64};
 use p3_goldilocks::{GenericPoseidon2LinearLayersGoldilocks, Goldilocks};
 use p3_koala_bear::{GenericPoseidon2LinearLayersKoalaBear, KoalaBear};
 use p3_lookup::folder::{ProverConstraintFolderWithLookups, VerifierConstraintFolderWithLookups};
@@ -34,7 +34,8 @@ use p3_poseidon2_circuit_air::{
     goldilocks_d2_width8_round_constants, poseidon2_preprocessed_width,
 };
 use p3_uni_stark::{
-    ProverConstraintFolder, SymbolicAirBuilder, SymbolicExpression, VerifierConstraintFolder,
+    ProverConstraintFolder, SymbolicAirBuilder, SymbolicExpression, SymbolicExpressionExt,
+    VerifierConstraintFolder,
 };
 use p3_util::log2_ceil_usize;
 
@@ -87,7 +88,7 @@ impl<SC> BatchAir<SC> for Poseidon2AirWrapper<SC>
 where
     SC: StarkGenericConfig + Send + Sync,
     Val<SC>: StarkField,
-    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
 {
 }
 
@@ -422,7 +423,7 @@ impl<F, EF> Air<SymbolicAirBuilder<F, EF>> for Poseidon2AirWrapperInner
 where
     F: Field + PrimeField64,
     EF: ExtensionField<F>,
-    SymbolicExpression<EF>: From<SymbolicExpression<F>>,
+    SymbolicExpressionExt<F, EF>: Algebra<SymbolicExpression<F>>,
 {
     fn eval(&self, builder: &mut SymbolicAirBuilder<F, EF>) {
         eval_symbolic_inner!(self, builder, F);
@@ -565,7 +566,7 @@ impl<'a, SC> Air<ProverConstraintFolder<'a, SC>> for Poseidon2AirWrapper<SC>
 where
     SC: StarkGenericConfig + Send + Sync,
     Val<SC>: StarkField + PrimeField,
-    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
 {
     fn eval(&self, builder: &mut ProverConstraintFolder<'a, SC>) {
         let main = builder.main();
@@ -1027,7 +1028,8 @@ impl Poseidon2Prover {
     where
         SC: StarkGenericConfig + 'static + Send + Sync,
         Val<SC>: StarkField,
-        SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+        SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+            From<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
     {
         DynamicAirEntry::new(Box::new(Poseidon2AirWrapper {
             inner: Self::air_wrapper_for_config_with_preprocessed::<Val<SC>>(
@@ -1069,7 +1071,8 @@ impl Poseidon2Prover {
         SC: StarkGenericConfig + 'static + Send + Sync,
         Val<SC>: StarkField,
         CF: Field + ExtensionField<Val<SC>>,
-        SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+        SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+            From<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
     {
         let t = traces.non_primitive_trace::<Poseidon2Trace<Val<SC>>>(
             &NpoTypeId::poseidon2_perm(self.config),
@@ -1114,7 +1117,8 @@ impl Poseidon2Prover {
     where
         SC: StarkGenericConfig + 'static + Send + Sync,
         Val<SC>: StarkField,
-        SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+        SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+            From<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
     {
         let rows = t.total_rows();
 
@@ -1258,7 +1262,8 @@ impl<SC> TableProver<SC> for Poseidon2Prover
 where
     SC: StarkGenericConfig + 'static + Send + Sync,
     Val<SC>: StarkField + BinomiallyExtendable<4>,
-    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        From<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
     fn op_type(&self) -> NpoTypeId {
         self.poseidon2_op_type()
@@ -1341,7 +1346,8 @@ impl<SC> TableProver<SC> for Poseidon2ProverD2
 where
     SC: StarkGenericConfig + 'static + Send + Sync,
     Val<SC>: StarkField + BinomiallyExtendable<2>,
-    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        From<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
     fn op_type(&self) -> NpoTypeId {
         self.0.poseidon2_op_type()
@@ -1604,7 +1610,8 @@ impl<SC> NpoAirBuilder<SC, 2> for Poseidon2AirBuilderD2
 where
     SC: StarkGenericConfig + 'static + Send + Sync,
     Val<SC>: StarkField + BinomiallyExtendable<2>,
-    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        From<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
     fn try_build(
         &self,
@@ -1640,7 +1647,8 @@ impl<SC> NpoAirBuilder<SC, 4> for Poseidon2AirBuilderD4
 where
     SC: StarkGenericConfig + 'static + Send + Sync,
     Val<SC>: StarkField + BinomiallyExtendable<4>,
-    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        From<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
     fn try_build(
         &self,

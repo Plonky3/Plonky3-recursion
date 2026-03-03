@@ -5,7 +5,7 @@ use core::borrow::Borrow;
 use core::iter;
 use core::mem::MaybeUninit;
 
-use p3_air::{Air, AirBuilder, BaseAir, PermutationAirBuilder};
+use p3_air::{Air, AirBuilder, BaseAir, BaseLeaf, PermutationAirBuilder};
 use p3_circuit::ops::Poseidon2CircuitRow;
 use p3_field::{Field, PrimeCharacteristicRing, PrimeField};
 use p3_lookup::lookup_traits::{Direction, Kind, Lookup};
@@ -494,22 +494,22 @@ pub(crate) fn eval<
     // with the value column mmcs_index_sum.
 
     let next_prep: &Poseidon2PreprocessedRow<AB::Var> = next_preprocessed.borrow();
-    let next_bit = next.mmcs_bit.clone();
+    let next_bit = next.mmcs_bit;
     let local_out = &local.poseidon2.ending_full_rounds[HALF_FULL_ROUNDS - 1].post;
     let next_in = &next.poseidon2.inputs;
 
     // mmcs_bit should always be boolean.
-    builder.assert_bool(local.mmcs_bit.clone());
+    builder.assert_bool(local.mmcs_bit);
 
     // Normal chaining: when normal_chain_sel[limb] = 1 (i.e., !new_start && !merkle_path &&
     // !in_ctl[limb]), the input of the next row equals the output of the current row.
     for limb in 0..POSEIDON2_LIMBS {
         for d in 0..D {
-            let gate = next_prep.input_limbs[limb].normal_chain_sel.clone();
+            let gate = next_prep.input_limbs[limb].normal_chain_sel;
             builder
                 .when_transition()
                 .when(gate)
-                .assert_zero(next_in[limb * D + d].clone() - local_out[limb * D + d].clone());
+                .assert_zero(next_in[limb * D + d] - local_out[limb * D + d]);
         }
     }
 
@@ -521,50 +521,47 @@ pub(crate) fn eval<
     // Input limbs 0-1 use merkle_chain_sel[0] and merkle_chain_sel[1].
     // Input limbs 2-3 reuse merkle_chain_sel[0] and merkle_chain_sel[1] (same physical
     // sel, gated by mmcs_bit instead).
-    let is_left = AB::Expr::ONE - next_bit.clone().into();
+    let is_left = AB::Expr::ONE - next_bit.into();
 
     for d in 0..D {
-        let gate = next_prep.input_limbs[0].merkle_chain_sel.clone() * is_left.clone();
+        let gate = next_prep.input_limbs[0].merkle_chain_sel * is_left.clone();
         builder
             .when_transition()
             .when(gate)
-            .assert_zero(next_in[d].clone() - local_out[d].clone());
+            .assert_zero(next_in[d] - local_out[d]);
     }
     for d in 0..D {
-        let gate = next_prep.input_limbs[1].merkle_chain_sel.clone() * is_left.clone();
+        let gate = next_prep.input_limbs[1].merkle_chain_sel * is_left.clone();
         builder
             .when_transition()
             .when(gate)
-            .assert_zero(next_in[D + d].clone() - local_out[D + d].clone());
+            .assert_zero(next_in[D + d] - local_out[D + d]);
     }
     for d in 0..D {
-        let gate = next_prep.input_limbs[0].merkle_chain_sel.clone() * next_bit.clone();
+        let gate = next_prep.input_limbs[0].merkle_chain_sel * next_bit;
         builder
             .when_transition()
             .when(gate)
-            .assert_zero(next_in[2 * D + d].clone() - local_out[d].clone());
+            .assert_zero(next_in[2 * D + d] - local_out[d]);
     }
     for d in 0..D {
-        let gate = next_prep.input_limbs[1].merkle_chain_sel.clone() * next_bit.clone();
+        let gate = next_prep.input_limbs[1].merkle_chain_sel * next_bit;
         builder
             .when_transition()
             .when(gate)
-            .assert_zero(next_in[3 * D + d].clone() - local_out[D + d].clone());
+            .assert_zero(next_in[3 * D + d] - local_out[D + d]);
     }
 
     // MMCS accumulator update.
     // When !new_start_{r+1} && merkle_path_{r+1}:
     //   mmcs_index_sum_{r+1} = mmcs_index_sum_r * 2 + mmcs_bit_{r+1}
     let two = AB::Expr::ONE + AB::Expr::ONE;
-    let not_next_new_start = AB::Expr::ONE - next_prep.new_start.clone().into();
+    let not_next_new_start = AB::Expr::ONE - next_prep.new_start.into();
     builder
         .when_transition()
         .when(not_next_new_start)
-        .when(next_prep.merkle_path.clone())
-        .assert_zero(
-            next.mmcs_index_sum.clone()
-                - (local.mmcs_index_sum.clone() * two + next.mmcs_bit.clone().into()),
-        );
+        .when(next_prep.merkle_path)
+        .assert_zero(next.mmcs_index_sum - (local.mmcs_index_sum * two + next.mmcs_bit.into()));
 
     let p3_poseidon2_num_cols = p3_poseidon2_air::num_cols::<
         WIDTH,
@@ -927,7 +924,7 @@ where
         //   during creation (in `add_hash_slice` with merkle_path=false)
         // - Sibling values are private proof data (wrong siblings → wrong root)
         // - Chained values are AIR-constrained to equal previous Poseidon2 outputs
-        let not_merkle = SymbolicExpression::Constant(AB::F::ONE)
+        let not_merkle = SymbolicExpression::Leaf(BaseLeaf::Constant(AB::F::ONE))
             - SymbolicExpression::from(local_prep.merkle_path);
 
         for limb_idx in 0..POSEIDON2_LIMBS {
@@ -985,7 +982,7 @@ where
         ];
         // Extend `mmcs_index_sum` to D elements with zeros.
         mmcs_index_sum_lookup.extend(iter::repeat_n(
-            SymbolicExpression::Constant(AB::F::ZERO),
+            SymbolicExpression::Leaf(BaseLeaf::Constant(AB::F::ZERO)),
             D - 1,
         ));
 
