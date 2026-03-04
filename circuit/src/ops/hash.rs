@@ -158,6 +158,7 @@ mod tests {
     /// extension elements are padded with zeros, which overwrites all rate positions.
     ///
     /// This test demonstrates the mismatch for 9 base field elements (not a multiple of 4).
+    #[cfg(debug_assertions)]
     #[test]
     #[should_panic(expected = "WitnessConflict")]
     fn test_hash_non_aligned_shows_mismatch() {

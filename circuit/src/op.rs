@@ -3,7 +3,6 @@ use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use alloc::{format, vec};
 use core::any::Any;
 use core::fmt::Debug;
 use core::hash::Hash;
@@ -587,36 +586,57 @@ impl<'a, F: PrimeCharacteristicRing + Eq + Clone> ExecutionContext<'a, F> {
     /// Get witness value at the given index
     #[inline]
     pub fn get_witness(&self, widx: WitnessId) -> Result<F, CircuitError> {
-        self.witness
-            .get(widx.0 as usize)
-            .and_then(|opt| opt.as_ref())
-            .cloned()
-            .ok_or(CircuitError::WitnessNotSet { witness_id: widx })
+        #[cfg(debug_assertions)]
+        {
+            self.witness
+                .get(widx.0 as usize)
+                .and_then(|opt| opt.as_ref())
+                .cloned()
+                .ok_or(CircuitError::WitnessNotSet { witness_id: widx })
+        }
+
+        #[cfg(not(debug_assertions))]
+        {
+            unsafe {
+                Ok(self
+                    .witness
+                    .get_unchecked(widx.0 as usize)
+                    .clone()
+                    .expect("witness not set?"))
+            }
+        }
     }
 
     /// Set witness value at the given index
     #[inline]
     pub fn set_witness(&mut self, widx: WitnessId, value: F) -> Result<(), CircuitError> {
-        if widx.0 as usize >= self.witness.len() {
-            return Err(CircuitError::WitnessIdOutOfBounds { witness_id: widx });
+        #[cfg(debug_assertions)]
+        {
+            if widx.0 as usize >= self.witness.len() {
+                return Err(CircuitError::WitnessIdOutOfBounds { witness_id: widx });
+            }
         }
 
         let slot = &mut self.witness[widx.0 as usize];
 
         // Check for conflicting reassignment
-        if let Some(existing_value) = slot.as_ref() {
-            if *existing_value == value {
-                return Ok(());
+        #[cfg(debug_assertions)]
+        {
+            if let Some(existing_value) = slot.as_ref() {
+                if *existing_value == value {
+                    return Ok(());
+                }
+                return Err(CircuitError::WitnessConflict {
+                    witness_id: widx,
+                    existing: alloc::format!("{existing_value:?}"),
+                    new: alloc::format!("{value:?}"),
+                    expr_ids: alloc::vec![],
+                });
             }
-            return Err(CircuitError::WitnessConflict {
-                witness_id: widx,
-                existing: format!("{existing_value:?}"),
-                new: format!("{value:?}"),
-                expr_ids: vec![],
-            });
         }
 
         *slot = Some(value);
+
         Ok(())
     }
 
@@ -640,6 +660,7 @@ impl<'a, F: PrimeCharacteristicRing + Eq + Clone> ExecutionContext<'a, F> {
     }
 
     /// Get the current operation ID
+    #[inline]
     pub const fn operation_id(&self) -> NonPrimitiveOpId {
         self.operation_id
     }
@@ -968,6 +989,7 @@ mod tests {
         assert_eq!(result.unwrap(), val);
     }
 
+    #[cfg(debug_assertions)]
     #[test]
     fn test_execution_context_get_witness_unset() {
         // Create a witness table where some values are not yet set
@@ -1018,6 +1040,7 @@ mod tests {
         assert_eq!(witness[0], Some(val));
     }
 
+    #[cfg(debug_assertions)]
     #[test]
     fn test_execution_context_set_witness_conflict() {
         // Create a witness table with an existing value
@@ -1072,6 +1095,7 @@ mod tests {
         assert_eq!(witness[0], Some(val));
     }
 
+    #[cfg(debug_assertions)]
     #[test]
     fn test_execution_context_set_witness_out_of_bounds() {
         // Create a small witness table with limited capacity
