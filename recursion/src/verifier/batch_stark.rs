@@ -543,6 +543,11 @@ where
                 .expect("We checked that the commitment exists")
                 .to_observation_targets(),
         );
+        for instance_data in global_lookup_data {
+            for ld in instance_data {
+                challenger.observe_ext(circuit, ld.expected_cumulated);
+            }
+        }
     }
 
     // Sample alpha challenge (extension field element)

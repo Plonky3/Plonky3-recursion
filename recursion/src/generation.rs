@@ -419,6 +419,11 @@ where
                 .clone()
                 .expect("We checked that the commitment exists"),
         );
+        for instance_data in global_lookup_data {
+            for ld in instance_data {
+                challenger.observe_algebra_element(ld.expected_cumulated);
+            }
+        }
     }
 
     let alpha = challenger.sample_algebra_element();
