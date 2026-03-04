@@ -196,7 +196,12 @@ where
         } else {
             vec![F::ZERO; num_ops * AluAirOptimized::<F, TRACE_D>::preprocessed_lane_width()]
         };
-        AluAirOptimized::<F, TRACE_D>::new_binomial_with_preprocessed(num_ops, lanes, w, preprocessed)
+        AluAirOptimized::<F, TRACE_D>::new_binomial_with_preprocessed(
+            num_ops,
+            lanes,
+            w,
+            preprocessed,
+        )
     }
 }
 
@@ -259,12 +264,17 @@ where
 
     let num_ops = rows[PrimitiveTable::Alu].max(1);
     let alu_air = match proof.alu_variant {
-        AirVariant::Baseline => CircuitTablesAir::Alu(
-            create_alu_air::<Val<SC>, SC::Challenge, TRACE_D>(rows[PrimitiveTable::Alu], alu_lanes),
-        ),
-        AirVariant::Optimized => CircuitTablesAir::AluOptimized(
-            create_alu_air_optimized::<Val<SC>, SC::Challenge, TRACE_D>(num_ops, alu_lanes),
-        ),
+        AirVariant::Baseline => {
+            CircuitTablesAir::Alu(create_alu_air::<Val<SC>, SC::Challenge, TRACE_D>(
+                rows[PrimitiveTable::Alu],
+                alu_lanes,
+            ))
+        }
+        AirVariant::Optimized => CircuitTablesAir::AluOptimized(create_alu_air_optimized::<
+            Val<SC>,
+            SC::Challenge,
+            TRACE_D,
+        >(num_ops, alu_lanes)),
     };
 
     let mut circuit_airs: Vec<CircuitTablesAir<SC, TRACE_D>> = vec![

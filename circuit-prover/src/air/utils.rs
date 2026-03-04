@@ -75,26 +75,25 @@ pub fn get_alu_index_lookups<AB: PermutationAirBuilder, const D: usize>(
         .collect()
 }
 
-/// Get ALU lookups for the 4 operands (a, b, c, out) — Optimized layout (10 columns per lane).
+/// Get ALU lookups for the 4 operands (a, b, c, out) — Optimized layout (9 columns per lane).
 ///
-/// Layout: [mult_a, op, a_idx, b_idx, c_idx, out_idx, mult_b, mult_out, a_is_reader, c_is_reader]
+/// Layout: [op, a_idx, b_idx, c_idx, out_idx, mult_b, mult_out, eff_mult_a, eff_mult_c]
+///
+/// `eff_mult_a = mult_a * a_is_reader` and `eff_mult_c = mult_a * c_is_reader` are stored
+/// directly, collapsing (mult_a, a_is_reader, c_is_reader) into two columns.
 pub fn get_alu_index_lookups_optimized<AB: PermutationAirBuilder, const D: usize>(
     main_start: usize,
     preprocessed_start: usize,
     main: &[SymbolicVariable<<AB as AirBuilder>::F>],
     preprocessed: &[SymbolicVariable<<AB as AirBuilder>::F>],
 ) -> Vec<LookupInput<AB::F>> {
-    let mult_a = SymbolicExpression::from(preprocessed[preprocessed_start]);
-    let mult_b = SymbolicExpression::from(preprocessed[preprocessed_start + 6]);
-    let mult_out = SymbolicExpression::from(preprocessed[preprocessed_start + 7]);
-    let a_is_reader = SymbolicExpression::from(preprocessed[preprocessed_start + 8]);
-    let c_is_reader = SymbolicExpression::from(preprocessed[preprocessed_start + 9]);
-
-    let eff_mult_a = mult_a.clone() * a_is_reader;
-    let eff_mult_c = mult_a * c_is_reader;
+    let mult_b = SymbolicExpression::from(preprocessed[preprocessed_start + 5]);
+    let mult_out = SymbolicExpression::from(preprocessed[preprocessed_start + 6]);
+    let eff_mult_a = SymbolicExpression::from(preprocessed[preprocessed_start + 7]);
+    let eff_mult_c = SymbolicExpression::from(preprocessed[preprocessed_start + 8]);
 
     let multiplicities = [eff_mult_a, mult_b, eff_mult_c, mult_out];
-    let idx_offset = 2;
+    let idx_offset = 1;
 
     (0..4)
         .map(|i| {

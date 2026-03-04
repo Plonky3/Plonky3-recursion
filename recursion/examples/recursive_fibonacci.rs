@@ -464,7 +464,7 @@ macro_rules! define_field_module {
 
                 let config_0 = config_with_fri_params(fri_params);
                 let constraint_profile = match fri_params.log_blowup {
-                    1 |2 => ConstraintProfile::Standard,
+                    1 | 2 => ConstraintProfile::Standard,
                     _ => ConstraintProfile::RecursionOptimized,
                 };
                 let (airs_degrees_0, preprocessed_columns_0) =
@@ -511,7 +511,7 @@ macro_rules! define_field_module {
 
                 for layer in 1..=num_recursive_layers {
                     let constraint_profile = match fri_params.log_blowup {
-                        1 |2 => ConstraintProfile::Standard,
+                        1 | 2 => ConstraintProfile::Standard,
                         _ => ConstraintProfile::RecursionOptimized,
                     };
                     let params = ProveNextLayerParams {

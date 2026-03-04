@@ -417,7 +417,7 @@ macro_rules! define_field_module {
 
                 let circuit = builder.build().unwrap();
                 let constraint_profile = match config.fri_verifier_params.log_blowup {
-                    1 |2 => ConstraintProfile::Standard,
+                    1 | 2 => ConstraintProfile::Standard,
                     _ => ConstraintProfile::RecursionOptimized,
                 };
                 let (airs_degrees, preprocessed_columns) =
@@ -488,9 +488,9 @@ macro_rules! define_field_module {
                         "Aggregation level {level}: {} proofs -> {pairs}",
                         proofs.len()
                     );
-                    
+
                     let constraint_profile = match config.fri_verifier_params.log_blowup {
-                        1 |2 => ConstraintProfile::Standard,
+                        1 | 2 => ConstraintProfile::Standard,
                         _ => ConstraintProfile::RecursionOptimized,
                     };
                     let agg_params = ProveNextLayerParams {

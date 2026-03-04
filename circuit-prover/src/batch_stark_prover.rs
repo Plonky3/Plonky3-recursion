@@ -14,7 +14,7 @@ use p3_circuit::PreprocessedColumns;
 use p3_circuit::op::{NpoTypeId, Poseidon2Config, PrimitiveOpType};
 use p3_circuit::tables::Traces;
 use p3_field::extension::{BinomialExtensionField, BinomiallyExtendable};
-use p3_field::{Algebra, BasedVectorSpace, Field, PrimeField, PrimeCharacteristicRing};
+use p3_field::{Algebra, BasedVectorSpace, Field, PrimeCharacteristicRing, PrimeField};
 use p3_lookup::folder::{ProverConstraintFolderWithLookups, VerifierConstraintFolderWithLookups};
 use p3_lookup::lookup_traits::Lookup;
 use p3_matrix::dense::RowMajorMatrix;
@@ -649,13 +649,8 @@ where
                         .with_min_height(min_height)
                 } else {
                     let w = w_binomial.ok_or(BatchStarkProverError::MissingWForExtension)?;
-                    AluAir::new_binomial_with_preprocessed(
-                        alu_num_ops,
-                        alu_lanes,
-                        w,
-                        alu_prep,
-                    )
-                    .with_min_height(min_height)
+                    AluAir::new_binomial_with_preprocessed(alu_num_ops, alu_lanes, w, alu_prep)
+                        .with_min_height(min_height)
                 };
                 let matrix = air.trace_to_matrix(&traces.alu_trace);
                 (CircuitTableAir::Alu(air), matrix)
@@ -910,7 +905,8 @@ where
                 let preprocessed = vec![
                     <Val<SC> as PrimeCharacteristicRing>::ZERO;
                     proof.rows[PrimitiveTable::Alu].max(1)
-                        * AluAirOptimized::<Val<SC>, D>::preprocessed_lane_width()
+                        * AluAirOptimized::<Val<SC>, D>::preprocessed_lane_width(
+                        )
                 ];
                 if D == 1 {
                     CircuitTableAir::AluOptimized(

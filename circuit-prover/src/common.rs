@@ -186,7 +186,7 @@ where
                 let mut prep_13col: Vec<Val<SC>> = Vec::with_capacity(
                     chunks.len() * lane_12 + if alu_empty { 0 } else { lane_12 },
                 );
-                let mut prep_10col: Vec<Val<SC>> = Vec::with_capacity(chunks.len() * 10);
+                let mut prep_8col: Vec<Val<SC>> = Vec::with_capacity(chunks.len() * 9);
 
                 for chunk in &mut chunks {
                     let sel1 = chunk[0];
@@ -250,45 +250,39 @@ where
                     ]);
 
                     let op = if sel1 == <Val<SC>>::ONE {
-                        <Val<SC>>::ZERO
+                        <Val<SC>>::ZERO // Add
                     } else if sel2 == <Val<SC>>::ONE {
-                        <Val<SC>>::from_u32(2)
+                        <Val<SC>>::from_u32(2) // BoolCheck
                     } else if sel3 == <Val<SC>>::ONE {
-                        <Val<SC>>::from_u32(3)
+                        <Val<SC>>::from_u32(3) // MulAdd
                     } else if sel4 == <Val<SC>>::ONE {
-                        <Val<SC>>::from_u32(4)
+                        <Val<SC>>::from_u32(4) // HornerAcc
                     } else {
-                        <Val<SC>>::ONE
+                        <Val<SC>>::ONE // Mul
                     };
 
-                    prep_10col.extend([
-                        mult_a,
-                        op,
-                        a_idx,
-                        b_idx,
-                        c_idx,
-                        out_idx,
-                        mult_b,
-                        mult_out,
-                        a_reader_col,
-                        c_reader_col,
+                    let eff_mult_a = if a_is_reader { mult_a } else { <Val<SC>>::ZERO };
+                    let eff_mult_c = if c_is_reader { mult_a } else { <Val<SC>>::ZERO };
+
+                    prep_8col.extend([
+                        op, a_idx, b_idx, c_idx, out_idx, mult_b, mult_out, eff_mult_a, eff_mult_c,
                     ]);
                 }
                 debug_assert!(chunks.remainder().is_empty());
 
                 if alu_empty {
                     prep_13col.extend([<Val<SC>>::ZERO; 13]);
-                    prep_10col.extend([<Val<SC>>::ZERO; 10]);
+                    prep_8col.extend([<Val<SC>>::ZERO; 9]);
                 }
 
                 match constraint_profile {
                     crate::ConstraintProfile::RecursionOptimized => {
-                        let num_ops = prep_10col.len() / 10;
+                        let num_ops = prep_8col.len() / 9;
                         let alu_air = if D == 1 {
                             AluAirOptimized::new_with_preprocessed(
                                 num_ops,
                                 effective_alu_lanes,
-                                prep_10col.clone(),
+                                prep_8col.clone(),
                             )
                             .with_min_height(min_height)
                         } else {
@@ -297,13 +291,13 @@ where
                                 num_ops,
                                 effective_alu_lanes,
                                 w,
-                                prep_10col.clone(),
+                                prep_8col.clone(),
                             )
                             .with_min_height(min_height)
                         };
                         let num_entries = alu_air.scheduled_entry_count();
                         let num_rows = num_entries.div_ceil(effective_alu_lanes);
-                        base_prep[idx] = prep_10col;
+                        base_prep[idx] = prep_8col;
                         table_preps.push((
                             CircuitTableAir::AluOptimized(alu_air),
                             compute_degree(num_rows),
@@ -312,8 +306,12 @@ where
                     crate::ConstraintProfile::Standard => {
                         let num_ops = prep_13col.len() / 13;
                         let alu_air = if D == 1 {
-                            AluAir::new_with_preprocessed(num_ops, effective_alu_lanes, prep_13col.clone())
-                                .with_min_height(min_height)
+                            AluAir::new_with_preprocessed(
+                                num_ops,
+                                effective_alu_lanes,
+                                prep_13col.clone(),
+                            )
+                            .with_min_height(min_height)
                         } else {
                             let w = w_binomial.unwrap();
                             AluAir::new_binomial_with_preprocessed(

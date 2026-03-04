@@ -656,10 +656,14 @@ where
     }
 }
 
-/// Optimized ALU AIR with degree-9 constraints and single-column op encoding.
+/// Optimized ALU AIR with degree-9 constraints and reduced preprocessed columns.
 ///
-/// Uses op ∈ {0,1,2,3,4} for Add, Mul, BoolCheck, MulAdd, HornerAcc.
-/// 10 preprocessed columns per lane (vs 13 for standard AluAir).
+/// Preprocessed layout per lane (9 columns vs 13 for standard AluAir):
+///   [op, a_idx, b_idx, c_idx, out_idx, mult_b, mult_out, eff_mult_a, eff_mult_c]
+///
+/// `op ∈ {0..4}`: Add=0, Mul=1, BoolCheck=2, MulAdd=3, HornerAcc=4.
+/// `eff_mult_a = mult_a * a_is_reader` and `eff_mult_c = mult_a * c_is_reader` collapse the
+/// three columns (mult_a, a_is_reader, c_is_reader) from the standard layout into two.
 #[derive(Debug, Clone)]
 pub struct AluAirOptimized<F, const D: usize = 1> {
     pub num_ops: usize,
@@ -754,7 +758,7 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AluAirOptimized<F, D> {
     }
 
     pub const fn preprocessed_lane_width() -> usize {
-        10
+        9
     }
 
     pub const fn preprocessed_width(&self) -> usize {
@@ -774,7 +778,7 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AluAirOptimized<F, D> {
 
         let four = F::from_u32(4);
         let is_horner: Vec<bool> = (0..num_ops)
-            .map(|i| preprocessed[i * plw + 1] == four)
+            .map(|i| preprocessed[i * plw] == four)
             .collect();
 
         if !is_horner.iter().any(|&h| h) {
@@ -932,9 +936,8 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AluAirOptimized<F, D> {
                 AluOpKind::MulAdd => F::from_u32(3),
                 AluOpKind::HornerAcc => F::from_u32(4),
             };
-
+            // In standalone tests all operands are constrained: eff_mult_a = eff_mult_c = -1
             preprocessed_values.extend(&[
-                neg_one,
                 op,
                 F::from_u32(trace.indices[i][0].0 * D as u32),
                 F::from_u32(trace.indices[i][1].0 * D as u32),
@@ -942,8 +945,8 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AluAirOptimized<F, D> {
                 F::from_u32(trace.indices[i][3].0 * D as u32),
                 neg_one,
                 F::ONE,
-                F::ONE,
-                F::ONE,
+                neg_one,
+                neg_one,
             ]);
         }
 
@@ -981,23 +984,33 @@ where
         let main = builder.main();
         let local = main.row_slice(0).expect("matrix must be non-empty");
         let lane_width = Self::lane_width();
-        let preprocessed = builder.preprocessed().expect("AluAirOptimized requires preprocessed");
-        let preprocessed_local = preprocessed.row_slice(0).expect("preprocessed must be non-empty");
+        let preprocessed = builder
+            .preprocessed()
+            .expect("AluAirOptimized requires preprocessed");
+        let preprocessed_local = preprocessed
+            .row_slice(0)
+            .expect("preprocessed must be non-empty");
         let preprocessed_lane_width = Self::preprocessed_lane_width();
         let next = main.row_slice(1).expect("matrix must have next row");
-        let preprocessed_next = preprocessed.row_slice(1).expect("preprocessed must have next row");
+        let preprocessed_next = preprocessed
+            .row_slice(1)
+            .expect("preprocessed must have next row");
+
+        // encoded_op = op_kind + 5 * a_is_reader + 10 * c_is_reader, range 0–19.
+        //
+        // n_k(enc, k): degree-4 selector that is nonzero iff enc mod 5 == k (for valid enc).
+        // The lookup multiplicities use the degree-5 selectors in get_alu_index_lookups_optimized,
+        // which are preprocessed expressions (degree 0 in the AIR).
 
         let one = AB::Expr::ONE;
-        let two = AB::Expr::from(AB::F::from_u32(2));
-        let three = AB::Expr::from(AB::F::from_u32(3));
-        let four = AB::Expr::from(AB::F::from_u32(4));
 
-        let n_k = |op: AB::Expr, k: u32| -> AB::Expr {
+        // Selector for op_kind == k: product_{j in 0..5, j != k} (enc - j), degree 4.
+        let n_k = |enc: AB::Expr, k: u32| -> AB::Expr {
             let mut acc = AB::Expr::ONE;
             for j in 0u32..5 {
                 if j != k {
                     let j_expr = AB::Expr::from(AB::F::from_u32(j));
-                    acc = acc * (op.clone() - j_expr);
+                    acc *= enc.clone() - j_expr;
                 }
             }
             acc
@@ -1013,24 +1026,14 @@ where
                 let c = local[main_offset + 2];
                 let out = local[main_offset + 3];
 
-                let mult_a = preprocessed_local[prep_offset];
-                let op = preprocessed_local[prep_offset + 1];
+                let op = preprocessed_local[prep_offset];
 
-                let active = AB::Expr::ZERO - mult_a;
+                builder.assert_zero(n_k(op.into(), 0) * (a + b - out));
+                builder.assert_zero(n_k(op.into(), 1) * (a * b - out));
+                builder.assert_zero(n_k(op.into(), 2) * a * (a - one.clone()));
+                builder.assert_zero(n_k(op.into(), 3) * (a * b + c - out));
 
-                builder.assert_zero(active.clone() * op.clone() * (op.clone() - one.clone())
-                    * (op.clone() - two.clone())
-                    * (op.clone() - three.clone())
-                    * (op.clone() - four.clone()));
-
-                builder.assert_zero(n_k(op.clone().into(), 0) * (a.clone() + b.clone() - out.clone()));
-                builder.assert_zero(n_k(op.clone().into(), 1) * (a.clone() * b.clone() - out.clone()));
-                builder.assert_zero(n_k(op.clone().into(), 2) * a.clone() * (a.clone() - one.clone()));
-                builder.assert_zero(
-                    n_k(op.clone().into(), 3) * (a.clone() * b.clone() + c.clone() - out.clone()),
-                );
-
-                let next_op = preprocessed_next[prep_offset + 1];
+                let next_op = preprocessed_next[prep_offset];
                 let next_b = next[main_offset + 1];
                 let next_c = next[main_offset + 2];
                 let next_a = next[main_offset];
@@ -1055,18 +1058,11 @@ where
                 let c_slice = &local[main_offset + 2 * D..main_offset + 3 * D];
                 let out_slice = &local[main_offset + 3 * D..main_offset + 4 * D];
 
-                let mult_a = preprocessed_local[prep_offset];
-                let op = preprocessed_local[prep_offset + 1];
-
-                let active = AB::Expr::ZERO - mult_a;
-
-                builder.assert_zero(active.clone() * op.clone() * (op.clone() - one.clone())
-                    * (op.clone() - two.clone())
-                    * (op.clone() - three.clone())
-                    * (op.clone() - four.clone()));
+                let op = preprocessed_local[prep_offset];
 
                 for i in 0..D {
-                    builder.assert_zero(n_k(op.clone().into(), 0) * (a_slice[i] + b_slice[i] - out_slice[i]));
+                    builder
+                        .assert_zero(n_k(op.into(), 0) * (a_slice[i] + b_slice[i] - out_slice[i]));
                 }
 
                 let mut mul_acc = vec![AB::Expr::ZERO; D];
@@ -1082,20 +1078,20 @@ where
                     }
                 }
                 for i in 0..D {
-                    builder.assert_zero(n_k(op.clone().into(), 1) * (mul_acc[i].clone() - out_slice[i]));
+                    builder.assert_zero(n_k(op.into(), 1) * (mul_acc[i].clone() - out_slice[i]));
                 }
 
-                builder.assert_zero(n_k(op.clone().into(), 2) * a_slice[0] * (a_slice[0] - one.clone()));
+                builder.assert_zero(n_k(op.into(), 2) * a_slice[0] * (a_slice[0] - one.clone()));
 
                 let mut muladd_acc = mul_acc.clone();
                 for i in 0..D {
                     muladd_acc[i] = muladd_acc[i].clone() + c_slice[i];
                 }
                 for i in 0..D {
-                    builder.assert_zero(n_k(op.clone().into(), 3) * (muladd_acc[i].clone() - out_slice[i]));
+                    builder.assert_zero(n_k(op.into(), 3) * (muladd_acc[i].clone() - out_slice[i]));
                 }
 
-                let next_op = preprocessed_next[prep_offset + 1];
+                let next_op = preprocessed_next[prep_offset];
                 let next_a_slice = &next[main_offset..main_offset + D];
                 let next_b_slice = &next[main_offset + D..main_offset + 2 * D];
                 let next_c_slice = &next[main_offset + 2 * D..main_offset + 3 * D];
@@ -1442,7 +1438,7 @@ mod tests {
         let air = AluAirOptimized::<Val, 1>::new_with_preprocessed(n, 1, preprocessed_values);
         let matrix: RowMajorMatrix<Val> = air.trace_to_matrix(&trace);
         assert_eq!(matrix.width(), 4);
-        assert_eq!(air.preprocessed_width(), 10);
+        assert_eq!(air.preprocessed_width(), 9);
 
         let config = build_test_config();
         let pis: Vec<Val> = vec![];
@@ -1452,5 +1448,4 @@ mod tests {
         verify_with_preprocessed(&config, &air, &proof, &pis, Some(&verifier_data))
             .expect("AluAirOptimized verification failed");
     }
-
 }
