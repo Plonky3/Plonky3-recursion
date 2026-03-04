@@ -108,12 +108,12 @@ struct Args {
 
     #[arg(
         long,
-        default_value_t = 4,
+        default_value_t = 3,
         help = "Maximum arity allowed during FRI folding phases"
     )]
     max_log_arity: usize,
 
-    #[arg(long, default_value_t = 0, help = "Height of the Merkle cap to open")]
+    #[arg(long, default_value_t = 2, help = "Height of the Merkle cap to open")]
     cap_height: usize,
 
     #[arg(
@@ -150,6 +150,14 @@ struct Args {
         help = "Number of ALU lanes for the table packing in recursive layers"
     )]
     alu_lanes: usize,
+
+    // TODO: Update once https://github.com/Plonky3/Plonky3/pull/1329 lands
+    #[arg(
+        long,
+        default_value_t = 124,
+        help = "Targeted security level (conjectured)"
+    )]
+    security_level: usize,
 }
 
 fn init_logger() {
@@ -187,13 +195,28 @@ fn main() {
 
     match args.field {
         FieldOption::KoalaBear => {
-            koala_bear::run(args.num_recursive_layers, &fri_params, &table_packing);
+            koala_bear::run(
+                args.num_recursive_layers,
+                &fri_params,
+                &table_packing,
+                args.security_level,
+            );
         }
         FieldOption::BabyBear => {
-            baby_bear::run(args.num_recursive_layers, &fri_params, &table_packing);
+            baby_bear::run(
+                args.num_recursive_layers,
+                &fri_params,
+                &table_packing,
+                args.security_level,
+            );
         }
         FieldOption::Goldilocks => {
-            goldilocks::run(args.num_recursive_layers, &fri_params, &table_packing);
+            goldilocks::run(
+                args.num_recursive_layers,
+                &fri_params,
+                &table_packing,
+                args.security_level,
+            );
         }
     }
 }
@@ -363,7 +386,7 @@ macro_rules! define_field_module {
                 }
             }
 
-            fn create_config(fp: &FriParams) -> MyConfig {
+            fn create_config(fp: &FriParams, security_level: usize) -> MyConfig {
                 let perm = $default_perm();
                 let hash = MyHash::new(perm.clone());
                 let compress = MyCompress::new(perm.clone());
@@ -371,7 +394,7 @@ macro_rules! define_field_module {
                 let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
                 let dft = Dft::default();
 
-                let num_queries = (100 - fp.query_pow_bits) / fp.log_blowup;
+                let num_queries = (security_level - fp.query_pow_bits) / fp.log_blowup;
 
                 let fri_params = FriParameters {
                     max_log_arity: fp.max_log_arity,
@@ -397,9 +420,12 @@ macro_rules! define_field_module {
                 )
             }
 
-            fn config_with_fri_params(fp: &FriParams) -> ConfigWithFriParams {
+            fn config_with_fri_params(
+                fp: &FriParams,
+                security_level: usize,
+            ) -> ConfigWithFriParams {
                 ConfigWithFriParams {
-                    config: Arc::new(create_config(fp)),
+                    config: Arc::new(create_config(fp, security_level)),
                     fri_verifier_params: create_fri_verifier_params(fp),
                 }
             }
@@ -454,8 +480,9 @@ macro_rules! define_field_module {
                 num_recursive_layers: usize,
                 fri_params: &FriParams,
                 table_packing: &TablePacking,
+                security_level: usize,
             ) {
-                let config = config_with_fri_params(fri_params);
+                let config = config_with_fri_params(fri_params, security_level);
                 let base_table_packing = TablePacking::new(1, 1)
                     .with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup);
                 let backend = FriRecursionBackend::<$backend_width, $backend_rate>::$backend_ctor(

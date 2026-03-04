@@ -30,15 +30,16 @@ RUSTFLAGS=-Ctarget-cpu=native RUSTFLAGS=-Copt-level=3 RUST_LOG=info cargo run --
 
 Each example supports additional parameterization around the FRI parameters, namely:
 - `--log-blowup`: logarithmic blowup factor for the LDE. Default 3.
-- `--max-log-arity`: maximum arity allowed during the FRI folding phases. Default 4.
+- `--max-log-arity`: maximum arity allowed during the FRI folding phases. Default 3.
 - `--log-final-poly-len`: logarithmic size (or degree) allowed for the final polynomial after folding. Default 5.
-- `--cap-height`: the height at which the MMCS tree is truncated for commitments. Default 0 (unique root).
+- `--cap-height`: the height at which the MMCS tree is truncated for commitments. Default varies per examples.
 - `--commit-pow-bits`: additional PoW grinding during the FRI commit phase. Default 0.
 - `--query-pow-bits`: additional PoW grinding during the FRI query phase. Default 16.
 - `--num-recursive-layers`: number of recursive proofs to be generated in a chain, starting from the base proof (Keccak or Fibonacci). Default 3.
 - `--witness-lanes`: number of witness lanes for the table packing in recursive layers. Default varies per examples.
-- `--public-lanes`: number of public lanes for the table packing in recursive layers. Default varies per examples.
-- `--alu-lanes`: number of ALU lanes for the table packing in recursive layers. Default varies per examples.
+- `--public-lanes`: number of public lanes for the table packing in recursive layers. Default 2.
+- `--alu-lanes`: number of ALU lanes for the table packing in recursive layers. Default 3.
+- `--security-level`: targeted conjectured security in bits. Default 124.
 
 ## Results
 
