@@ -21,12 +21,95 @@ This library provides a **fixed recursive verifier** for Plonky3 STARK (both `p3
 
 ## Quick Start
 
-### Basic Usage
+### Unified recursion API
 
-The main entry point for recursive verification is `verify_p3_recursion_proof_circuit`, which handles batch STARK proofs:
+#### Recursive verification
+
+For most use cases, use the **unified API**: a single entry point works for both uni-stark (e.g. Keccak) and batch-stark (e.g. Fibonacci) proofs. Implement [`FriRecursionConfig`] for your config (or a wrapper that holds FRI verifier params), then call [`prove_next_layer`] in a loop.
+
+[`FriRecursionConfig`]: https://docs.rs/p3-recursion/latest/p3_recursion/trait.FriRecursionConfig.html
+[`prove_next_layer`]: https://docs.rs/p3-recursion/latest/p3_recursion/fn.prove_next_layer.html
 
 ```rust
-use p3_recursion::verifier::verify_p3_recursion_proof_circuit;
+use p3_recursion::{
+    FriRecursionBackend, FriRecursionConfig, ProveNextLayerParams, RecursionInput, RecursionOutput,
+    prove_next_layer,
+};
+
+// First layer: recurse on a uni-stark proof (e.g. Keccak)
+let input = RecursionInput::UniStark {
+    proof: &base_proof,
+    air: &keccak_air,
+    public_inputs: pis.clone(),
+    preprocessed_commit: None,
+};
+let backend = FriRecursionBackend::new(poseidon2_config);
+let params = ProveNextLayerParams { table_packing, use_poseidon2_in_circuit: true };
+let (verification_circuit, verifier_result) = build_next_layer_circuit(&input, &config, &backend)?;
+let output = prove_next_layer(
+    &input,
+    verification_circuit,
+    &verifier_result,
+    &config,
+    &backend,
+    &params,
+)?;
+
+// Next layers: recurse on the previous batch proof
+let input = output.into_recursion_input::<BatchOnly>();
+let (verification_circuit, verifier_result) = build_next_layer_circuit(&input, &config, &backend)?;
+let output = prove_next_layer(
+    &input,
+    verification_circuit,
+    &verifier_result,
+    &config,
+    &backend,
+    &params,
+)?;
+```
+
+`RecursionOutput` is `(BatchStarkProof, CircuitProverData)`; use `into_recursion_input::<BatchOnly>()` to chain further layers.
+
+#### Recursive aggregation
+
+This library also supports 2-to-1 recursive aggregation by building circuits verifying possibly different circuits (for instance 
+`RecursionInput::UniStark` as left child and `RecursionInput::BatchStark` as right child).
+
+```rust
+let input_1 = RecursionInput::UniStark {
+    proof: &base_proof_1,
+    air: &air_1,
+    public_inputs: pis_1.clone(),
+    preprocessed_commit: None,
+};
+let input_2 = RecursionInput::UniStark {
+    proof: &base_proof_2,
+    air: &air_2,
+    public_inputs: pis_2.clone(),
+    preprocessed_commit: None,
+};
+
+let backend = FriRecursionBackend::new(poseidon2_config);
+let params = ProveNextLayerParams { table_packing, use_poseidon2_in_circuit: true };
+let (verification_circuit, verifier_result_1, verifier_result_2) = build_aggregation_layer_circuit(&input_1, &input_2, &config, &backend)?;
+let output = prove_aggregation_layer(
+    &input_1,
+    &input_2,
+    verification_circuit,
+    &verifier_result_1,
+    &verifier_result_2,
+    &config,
+    &backend,
+    &params,
+)?;
+```
+
+### Low-level API
+
+For fine-grained control, you can build the verification circuit and run the prover pipeline yourself via `verify_p3_batch_proof_circuit` (batch) or `verify_circuit` (uni-stark):
+
+```rust
+use p3_recursion::verifier::verify_p3_batch_proof_circuit;
 use p3_recursion::public_inputs::BatchStarkVerifierInputsBuilder;
 use p3_circuit::CircuitBuilder;
 
@@ -34,7 +117,7 @@ use p3_circuit::CircuitBuilder;
 let mut circuit_builder = CircuitBuilder::new();
 circuit_builder.enable_poseidon2_perm::<Config, _>(trace_generator, poseidon2_perm);
 
-let (verifier_inputs, mmcs_op_ids) = verify_p3_recursion_proof_circuit::<
+let (verifier_inputs, mmcs_op_ids) = verify_p3_batch_proof_circuit::<
     MyConfig,
     HashTargets<F, DIGEST_ELEMS>,
     InputProofTargets<F, Challenge, RecValMmcs<...>>,
@@ -69,14 +152,14 @@ let traces = runner.run()?;
 
 ### Examples
 
-See the `recursion/examples/` directory for complete working examples:
+Both examples use the unified API (`prove_next_layer`, `RecursionInput`, `FriRecursionBackend`):
 
-- **`recursive_fibonacci.rs`**: Multi-layer recursive verification of the Fibonacci sequence, constructed as a `p3-batch-stark` proof with this library's `CircuitBuilder` 
+- **`recursive_fibonacci.rs`**: Base layer is a batch-stark circuit (Fibonacci); recursive layers use `into_recursion_input::<BatchOnly>()` and `prove_next_layer`.
   ```bash
   cargo run --release --example recursive_fibonacci -- --field koala-bear --n 1000 --num-recursive-layers 5
   ```
 
-- **`recursive_keccak.rs`**: Multi-layer recursive verification of the Keccak hash permutation, taken from the Plonky3's `p3-uni-stark` Keccak AIR.
+- **`recursive_keccak.rs`**: Base layer is a uni-stark Keccak proof; layer 1 uses `RecursionInput::UniStark`, then further layers use `into_recursion_input::<BatchOnly>()` and `prove_next_layer`.
   ```bash
   cargo run --release --example recursive_keccak -- --field koala-bear --n 100 --num-recursive-layers 5
   ```
@@ -89,8 +172,8 @@ See the `recursion/examples/` directory for complete working examples:
 The `CircuitBuilder<F>` provides a modular API for building circuits:
 
 **Primitive Operations** (always available):
-- `add_const(val)` - Add a constant
-- `add_public_input()` - Allocate a public input
+- `define_const(val)` - Add a constant
+- `public_input()` - Allocate a public input
 - `mul(a, b)` - Multiply two expressions
 - `add(a, b)` / `sub(a, b)` - Arithmetic operations
 - `connect(a, b)` - Constrain two expressions to be equal
@@ -142,7 +225,7 @@ The `TablePacking` configuration significantly impacts performance.
 Choose lane counts that fit best your circuit size:
 
 ```rust
-TablePacking::new(8, 2, 5)  // witness, public, alu lanes
+TablePacking::new(2, 5)  // public, alu lanes
 ```
 
 ### FRI Parameters
@@ -155,18 +238,10 @@ FRI parameters affect proof size and verification cost:
 
 For intermediate recursive layers, consider relaxed parameters (fewer queries, higher PoW bits).
 
-### Known Optimizations
-
-- **Merkle Caps**: Not yet implemented; could reduce Poseidon2 rows by ~10%
-- **Dedicated FRI Fold Table**: Could offload ~30K operations to a specialized AIR
-- **Removing the Witness bus**: Could remove the entire table at the cost of extra CTLs
-- **Switch to base field indexing**: Would remove the overhead of decomposing / recomposing 
-- **Optimization passes**: Additional optimizations at circuit building time to prune unused nodes.
-
 ## Current Limitations
 
 - **ZK Mode**: Currently only supports non-ZK STARKs (`config.is_zk() == 0`)
-- **Fixed Configurations**: Poseidon2 currently requires D=4, WIDTH=16 for extension fields
+- **Fixed Configurations**: Field extensions are currently not fully parametrizable.
 
 ## Documentation
 

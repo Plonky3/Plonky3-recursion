@@ -55,9 +55,9 @@ Consider a simple Fibonacci circuit computing `F(5)`:
 ```rust,ignore
 let mut builder = CircuitBuilder::new();
 
-let expected = builder.add_public_input();
-let mut a = builder.add_const(F::ZERO);
-let mut b = builder.add_const(F::ONE);
+let expected = builder.public_input();
+let mut a = builder.define_const(F::ZERO);
+let mut b = builder.define_const(F::ONE);
 
 for _ in 2..=5 {
     let next = builder.add(a, b);

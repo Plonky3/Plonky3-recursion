@@ -4,9 +4,7 @@ use alloc::vec::Vec;
 use core::iter;
 
 use p3_air::lookup::{Direction, Kind, Lookup};
-use p3_air::{
-    Air, AirBuilder, AirBuilderWithPublicValues, BaseAir, PermutationAirBuilder, SymbolicExpression,
-};
+use p3_air::{Air, AirBuilder, BaseAir, PermutationAirBuilder, SymbolicExpression};
 use p3_circuit::ops::open_input::{OpenInputRow, OpenInputTrace};
 use p3_field::{BasedVectorSpace, ExtensionField, Field, PrimeCharacteristicRing};
 use p3_matrix::Matrix;
@@ -50,8 +48,9 @@ impl<F: Field, const D: usize> OpenInputAir<F, D> {
     }
 
     pub const fn preprocessed_width() -> usize {
-        4 // Indices for alpha, p_at_x, p_at_z, ro. 
+        4 // Indices for alpha, p_at_x, p_at_z, ro.
         + 2 // is_last and is_real
+        + 1 // ro_ext_mult: creator multiplicity for ro output (= ext_reads[ro_wid])
     }
 
     pub fn trace_to_matrix<ExtF: ExtensionField<F>>(
@@ -120,6 +119,7 @@ impl<F: Field, const D: usize> OpenInputAir<F, D> {
                     F::from_u64(row.pow_at_x_index as u64),
                     F::from_u64(row.pow_at_z_index as u64),
                     F::from_u64(row.ro_index as u64),
+                    F::ZERO, // ro_ext_mult placeholder (populated by committed preprocessed)
                 ]
             })
             .collect()
@@ -282,7 +282,7 @@ where
 
     fn get_lookups(&mut self) -> Vec<Lookup<<AB>::F>>
     where
-        AB: PermutationAirBuilder + AirBuilderWithPublicValues,
+        AB: PermutationAirBuilder,
     {
         let symbolic_air_builder =
             SymbolicAirBuilder::<AB::F>::new(Self::preprocessed_width(), Self::width(), 0, 0, 0);
@@ -294,30 +294,33 @@ where
             .preprocessed()
             .expect("Expected preprocessed columns");
         let preprocessed_local = preprocessed.row_slice(0).unwrap().to_vec();
-        // preprocessed mapping: is_last, is_real, then all indices.
-        let is_last = SymbolicExpression::from(preprocessed_local[0]);
+        // Preprocessed layout per row (7 columns):
+        //   [0] is_last, [1] is_real,
+        //   [2] alpha_idx, [3] p_at_x_idx, [4] p_at_z_idx, [5] ro_idx,
+        //   [6] ro_ext_mult
         let is_real = SymbolicExpression::from(preprocessed_local[1]);
+        let ro_ext_mult = SymbolicExpression::from(preprocessed_local[6]);
 
-        let direction = Direction::Send;
         let kind = Kind::Global("WitnessChecks".to_string());
-        // First, the values that always need to be checked.
-        // alpha, p_at_x, p_at_z
+
+        // Inputs (alpha, p_at_x, p_at_z) are READS from the bus → Send (negative multiplicity).
         let global_lookups = (0..3).map(|i| {
             let index = SymbolicExpression::from(preprocessed_local[2 + i]);
             let values = (0..D).map(|j| SymbolicExpression::from(symbolic_main_local[i * D + j]));
 
             let inputs = iter::once(index).chain(values).collect::<Vec<_>>();
 
-            (inputs, is_real.clone(), direction)
+            (inputs, is_real.clone(), Direction::Send)
         });
 
-        // Then only if is_last: ro
+        // ro is an OUTPUT created by this table → Receive (positive multiplicity).
+        // Multiplicity = ro_ext_mult = ext_reads[ro_wid] (set by prover preprocessing).
+        // On non-last rows ro_ext_mult is 0, so no bus contribution.
         let ro_idx = SymbolicExpression::from(preprocessed_local[5]);
         let ro = (0..D).map(|i| SymbolicExpression::from(symbolic_main_local[3 * D + i]));
-
         let ro_inputs = iter::once(ro_idx).chain(ro).collect::<Vec<_>>();
 
-        let ro_inputs = (ro_inputs, is_last, direction);
+        let ro_inputs = (ro_inputs, ro_ext_mult, Direction::Receive);
         let ro_lookup = <Self as Air<AB>>::register_lookup(self, kind.clone(), &[ro_inputs]);
         let mut lookups = vec![];
         lookups.push(ro_lookup);

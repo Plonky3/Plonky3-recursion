@@ -216,4 +216,19 @@ where
             d => Err(format!("OpenInputProver: unsupported extension degree {d}")),
         }
     }
+
+    fn air_with_committed_preprocessed(
+        &self,
+        committed_prep: Vec<Val<SC>>,
+        min_height: usize,
+    ) -> Option<DynamicAirEntry<SC>> {
+        // The committed preprocessed data from `get_airs_and_degrees_with_prep` uses
+        // D-scaled witness indices, while `trace_to_preprocessed` uses raw WitnessId
+        // indices. We must override with the committed data so lookup tuples match
+        // the D-scaled indices used by all other tables (Const, Public, ALU, Poseidon2).
+        let w = <Val<SC> as BinomiallyExtendable<4>>::W;
+        let air = OpenInputAir::<Val<SC>, 4>::new_with_preprocessed(w, committed_prep)
+            .with_min_height(min_height);
+        Some(DynamicAirEntry::new(Box::new(air)))
+    }
 }

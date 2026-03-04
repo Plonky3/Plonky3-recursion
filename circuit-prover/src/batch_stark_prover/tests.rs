@@ -1,10 +1,15 @@
 use p3_baby_bear::BabyBear;
 use p3_circuit::builder::CircuitBuilder;
+use p3_circuit::ops::hash::add_hash_slice;
+use p3_circuit::ops::poseidon2_perm::GoldilocksD2Width8;
+use p3_circuit::ops::{Poseidon2Config, generate_poseidon2_trace};
 use p3_field::PrimeCharacteristicRing;
-use p3_goldilocks::Goldilocks;
+use p3_goldilocks::{Goldilocks, Poseidon2Goldilocks};
 use p3_koala_bear::KoalaBear;
+use p3_symmetric::CryptographicHasher;
 
 use super::*;
+use crate::ConstraintProfile;
 use crate::batch_stark_prover::{BABY_BEAR_MODULUS, KOALA_BEAR_MODULUS};
 use crate::common::get_airs_and_degrees_with_prep;
 use crate::config::{self, BabyBearConfig, GoldilocksConfig, KoalaBearConfig};
@@ -14,12 +19,12 @@ fn test_babybear_batch_stark_base_field() {
     let mut builder = CircuitBuilder::<BabyBear>::new();
 
     // x + 5*2 - 3 + (-1) == expected
-    let x = builder.add_public_input();
-    let expected = builder.add_public_input();
-    let c5 = builder.add_const(BabyBear::from_u64(5));
-    let c2 = builder.add_const(BabyBear::from_u64(2));
-    let c3 = builder.add_const(BabyBear::from_u64(3));
-    let neg_one = builder.add_const(BabyBear::NEG_ONE);
+    let x = builder.public_input();
+    let expected = builder.public_input();
+    let c5 = builder.define_const(BabyBear::from_u64(5));
+    let c2 = builder.define_const(BabyBear::from_u64(2));
+    let c3 = builder.define_const(BabyBear::from_u64(3));
+    let neg_one = builder.define_const(BabyBear::NEG_ONE);
 
     let mul_result = builder.mul(c5, c2); // 10
     let add_result = builder.add(x, mul_result); // x + 10
@@ -36,6 +41,7 @@ fn test_babybear_batch_stark_base_field() {
             &circuit,
             TablePacking::default(),
             None,
+            ConstraintProfile::Standard,
         )
         .unwrap();
     let (mut airs, log_degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
@@ -70,12 +76,12 @@ fn test_table_lookups() {
     let cfg = config::baby_bear().build();
 
     // x + 5*2 - 3 + (-1) == expected
-    let x = builder.add_public_input();
-    let expected = builder.add_public_input();
-    let c5 = builder.add_const(BabyBear::from_u64(5));
-    let c2 = builder.add_const(BabyBear::from_u64(2));
-    let c3 = builder.add_const(BabyBear::from_u64(3));
-    let neg_one = builder.add_const(BabyBear::NEG_ONE);
+    let x = builder.public_input();
+    let expected = builder.public_input();
+    let c5 = builder.define_const(BabyBear::from_u64(5));
+    let c2 = builder.define_const(BabyBear::from_u64(2));
+    let c3 = builder.define_const(BabyBear::from_u64(3));
+    let neg_one = builder.define_const(BabyBear::NEG_ONE);
 
     let mul_result = builder.mul(c5, c2); // 10
     let add_result = builder.add(x, mul_result); // x + 10
@@ -88,40 +94,14 @@ fn test_table_lookups() {
     let circuit = builder.build().unwrap();
     let default_packing = TablePacking::default();
     let (airs_degrees, preprocessed_columns) =
-        get_airs_and_degrees_with_prep::<BabyBearConfig, _, 1>(&circuit, default_packing, None)
-            .unwrap();
+        get_airs_and_degrees_with_prep::<BabyBearConfig, _, 1>(
+            &circuit,
+            default_packing,
+            None,
+            ConstraintProfile::Standard,
+        )
+        .unwrap();
     let (mut airs, log_degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
-
-    // Witness multiplicities: index 0 gets c_idx lookups from ALU ops without c; values from preprocessed.
-    let mut expected_multiplicities = vec![BabyBear::from_u64(2); 11];
-    expected_multiplicities[0] = BabyBear::from_u64(5);
-    expected_multiplicities[7] = BabyBear::from_u64(0);
-    // Pad multiplicities.
-    let total_witness_length = (expected_multiplicities
-        .len()
-        .div_ceil(default_packing.witness_lanes()))
-    .next_power_of_two()
-        * default_packing.witness_lanes();
-    expected_multiplicities.resize(total_witness_length, BabyBear::ZERO);
-
-    // Get expected preprocessed trace for `WitnessAir`.
-    let expected_preprocessed_trace = RowMajorMatrix::new(
-        expected_multiplicities
-            .iter()
-            .enumerate()
-            .flat_map(|(i, m)| vec![*m, BabyBear::from_usize(i)])
-            .collect::<Vec<_>>(),
-        2 * TablePacking::default().witness_lanes(),
-    );
-    assert_eq!(
-        airs[0]
-            .preprocessed_trace()
-            .expect("Witness table should have preprocessed trace"),
-        expected_preprocessed_trace,
-        "witness_multiplicities {:?} expected {:?}",
-        airs[0].preprocessed_trace(),
-        expected_preprocessed_trace,
-    );
 
     let mut runner = circuit.runner();
 
@@ -154,15 +134,6 @@ fn test_table_lookups() {
             );
 
         match air {
-            CircuitTableAir::Witness(_) => {
-                assert_eq!(
-                    lookups.len(),
-                    default_packing.witness_lanes(),
-                    "Witness table should have {} lookups, found {}",
-                    default_packing.witness_lanes(),
-                    lookups.len()
-                );
-            }
             CircuitTableAir::Const(_) => {
                 assert_eq!(lookups.len(), 1, "Const table should have one lookup");
             }
@@ -197,10 +168,10 @@ fn test_extension_field_batch_stark() {
     let cfg = config::baby_bear().build();
 
     let mut builder = CircuitBuilder::<Ext4>::new();
-    let x = builder.add_public_input();
-    let y = builder.add_public_input();
-    let z = builder.add_public_input();
-    let expected = builder.add_public_input();
+    let x = builder.public_input();
+    let y = builder.public_input();
+    let z = builder.public_input();
+    let expected = builder.public_input();
     let xy = builder.mul(x, y);
     let res = builder.add(xy, z);
     let diff = builder.sub(res, expected);
@@ -212,6 +183,7 @@ fn test_extension_field_batch_stark() {
             &circuit,
             TablePacking::default(),
             None,
+            ConstraintProfile::Standard,
         )
         .unwrap();
     let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
@@ -265,10 +237,10 @@ fn test_extension_field_table_lookups() {
     let cfg = config::baby_bear().build();
 
     let mut builder = CircuitBuilder::<Ext4>::new();
-    let x = builder.add_public_input();
-    let y = builder.add_public_input();
-    let z = builder.add_public_input();
-    let expected = builder.add_public_input();
+    let x = builder.public_input();
+    let y = builder.public_input();
+    let z = builder.public_input();
+    let expected = builder.public_input();
     let xy = builder.mul(x, y);
     let res = builder.add(xy, z);
     let diff = builder.sub(res, expected);
@@ -277,42 +249,14 @@ fn test_extension_field_table_lookups() {
     let circuit = builder.build().unwrap();
     let default_packing = TablePacking::default();
     let (airs_degrees, preprocessed_columns) =
-        get_airs_and_degrees_with_prep::<BabyBearConfig, _, D>(&circuit, default_packing, None)
-            .unwrap();
+        get_airs_and_degrees_with_prep::<BabyBearConfig, _, D>(
+            &circuit,
+            default_packing,
+            None,
+            ConstraintProfile::Standard,
+        )
+        .unwrap();
     let (mut airs, log_degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
-
-    // Check that the multiplicities of `WitnessAir` are computed correctly.
-    // With MulAdd fusion, mul+add pairs are fused, reducing the number of ALU ops.
-    let mut expected_multiplicities = vec![BabyBear::from_u64(2); 7];
-    expected_multiplicities[0] = BabyBear::from_u64(3); // reduced due to MulAdd fusion
-    expected_multiplicities[5] = BabyBear::from_u64(0); // changed due to fusion
-    // Pad multiplicities.
-    let total_witness_length = (expected_multiplicities
-        .len()
-        .div_ceil(default_packing.witness_lanes()))
-    .next_power_of_two()
-        * default_packing.witness_lanes();
-    expected_multiplicities.resize(total_witness_length, BabyBear::ZERO);
-
-    // Get expected preprocessed trace for `WitnessAir`.
-    let expected_preprocessed_trace = RowMajorMatrix::new(
-        expected_multiplicities
-            .iter()
-            .enumerate()
-            .flat_map(|(i, m)| vec![*m, BabyBear::from_usize(i)])
-            .collect::<Vec<_>>(),
-        2 * TablePacking::default().witness_lanes(),
-    );
-
-    assert_eq!(
-        airs[0]
-            .preprocessed_trace()
-            .expect("Witness table should have preprocessed trace"),
-        expected_preprocessed_trace,
-        "witness_multiplicities {:?} expected {:?}",
-        airs[0].preprocessed_trace(),
-        expected_preprocessed_trace,
-    );
 
     let mut runner = circuit.runner();
 
@@ -368,15 +312,6 @@ fn test_extension_field_table_lookups() {
             );
 
         match air {
-            CircuitTableAir::Witness(_) => {
-                assert_eq!(
-                    lookups.len(),
-                    default_packing.witness_lanes(),
-                    "Witness table should have {} lookups, found {}",
-                    default_packing.witness_lanes(),
-                    lookups.len()
-                );
-            }
             CircuitTableAir::Const(_) => {
                 assert_eq!(lookups.len(), 1, "Const table should have one lookup");
             }
@@ -410,11 +345,11 @@ fn test_koalabear_batch_stark_base_field() {
     let cfg = config::koala_bear().build();
 
     // a * b + 100 - (-1) == expected
-    let a = builder.add_public_input();
-    let b = builder.add_public_input();
-    let expected = builder.add_public_input();
-    let c = builder.add_const(KoalaBear::from_u64(100));
-    let d = builder.add_const(KoalaBear::NEG_ONE);
+    let a = builder.public_input();
+    let b = builder.public_input();
+    let expected = builder.public_input();
+    let c = builder.define_const(KoalaBear::from_u64(100));
+    let d = builder.define_const(KoalaBear::NEG_ONE);
 
     let ab = builder.mul(a, b);
     let add = builder.add(ab, c);
@@ -423,12 +358,14 @@ fn test_koalabear_batch_stark_base_field() {
     builder.assert_zero(diff);
 
     let circuit = builder.build().unwrap();
-    let (airs_degrees, preprocessed_columns) = get_airs_and_degrees_with_prep::<
-        KoalaBearConfig,
-        _,
-        1,
-    >(&circuit, TablePacking::default(), None)
-    .unwrap();
+    let (airs_degrees, preprocessed_columns) =
+        get_airs_and_degrees_with_prep::<KoalaBearConfig, _, 1>(
+            &circuit,
+            TablePacking::default(),
+            None,
+            ConstraintProfile::Standard,
+        )
+        .unwrap();
     let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
     let mut runner = circuit.runner();
 
@@ -462,10 +399,10 @@ fn test_koalabear_batch_stark_extension_field_d8() {
     let cfg = config::koala_bear().build();
 
     // x * y * z == expected
-    let x = builder.add_public_input();
-    let y = builder.add_public_input();
-    let expected = builder.add_public_input();
-    let z = builder.add_const(
+    let x = builder.public_input();
+    let y = builder.public_input();
+    let expected = builder.public_input();
+    let z = builder.define_const(
         KBExtField::from_basis_coefficients_slice(&[
             KoalaBear::from_u64(1),
             KoalaBear::NEG_ONE,
@@ -485,12 +422,14 @@ fn test_koalabear_batch_stark_extension_field_d8() {
     builder.assert_zero(diff);
 
     let circuit = builder.build().unwrap();
-    let (airs_degrees, preprocessed_columns) = get_airs_and_degrees_with_prep::<
-        KoalaBearConfig,
-        _,
-        D,
-    >(&circuit, TablePacking::default(), None)
-    .unwrap();
+    let (airs_degrees, preprocessed_columns) =
+        get_airs_and_degrees_with_prep::<KoalaBearConfig, _, D>(
+            &circuit,
+            TablePacking::default(),
+            None,
+            ConstraintProfile::Standard,
+        )
+        .unwrap();
     let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
     let mut runner = circuit.runner();
 
@@ -557,10 +496,10 @@ fn test_goldilocks_batch_stark_extension_field_d2() {
     let cfg = config::goldilocks().build();
 
     // x * y + z == expected
-    let x = builder.add_public_input();
-    let y = builder.add_public_input();
-    let z = builder.add_public_input();
-    let expected = builder.add_public_input();
+    let x = builder.public_input();
+    let y = builder.public_input();
+    let z = builder.public_input();
+    let expected = builder.public_input();
 
     let xy = builder.mul(x, y);
     let res = builder.add(xy, z);
@@ -568,12 +507,14 @@ fn test_goldilocks_batch_stark_extension_field_d2() {
     builder.assert_zero(diff);
 
     let circuit = builder.build().unwrap();
-    let (airs_degrees, preprocessed_columns) = get_airs_and_degrees_with_prep::<
-        GoldilocksConfig,
-        _,
-        D,
-    >(&circuit, TablePacking::default(), None)
-    .unwrap();
+    let (airs_degrees, preprocessed_columns) =
+        get_airs_and_degrees_with_prep::<GoldilocksConfig, _, D>(
+            &circuit,
+            TablePacking::default(),
+            None,
+            ConstraintProfile::Standard,
+        )
+        .unwrap();
     let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
     let mut runner = circuit.runner();
 
@@ -606,6 +547,48 @@ fn test_goldilocks_batch_stark_extension_field_d2() {
     prover
         .verify_all_tables(&proof, circuit_prover_data.common_data())
         .unwrap();
+}
+
+#[test]
+fn test_goldilocks_poseidon2_circuit_build_and_run() {
+    const D: usize = 2;
+    type Ext2 = BinomialExtensionField<Goldilocks, D>;
+    let mut rng = <rand::rngs::SmallRng as rand::SeedableRng>::seed_from_u64(0);
+    let perm = Poseidon2Goldilocks::<8>::new_from_rng_128(&mut rng);
+    let perm_for_hash = perm.clone();
+    let mut builder = CircuitBuilder::<Ext2>::new();
+    builder.enable_poseidon2_perm_width_8::<GoldilocksD2Width8, _>(
+        generate_poseidon2_trace::<Ext2, GoldilocksD2Width8>,
+        perm,
+    );
+    let poseidon2_config = Poseidon2Config::GoldilocksD2Width8;
+    let inputs = [builder.public_input(), builder.public_input()];
+    let hash_outputs = add_hash_slice(&mut builder, &poseidon2_config, &inputs, true).unwrap();
+    let expected0 = builder.public_input();
+    let expected1 = builder.public_input();
+    let sub0 = builder.sub(hash_outputs[0], expected0);
+    builder.assert_zero(sub0);
+    let sub1 = builder.sub(hash_outputs[1], expected1);
+    builder.assert_zero(sub1);
+    let circuit = builder.build().unwrap();
+    let mut runner = circuit.runner();
+    let in0 =
+        Ext2::from_basis_coefficients_slice(&[Goldilocks::from_u64(1), Goldilocks::ZERO]).unwrap();
+    let in1 =
+        Ext2::from_basis_coefficients_slice(&[Goldilocks::from_u64(2), Goldilocks::ZERO]).unwrap();
+    let hasher =
+        p3_symmetric::PaddingFreeSponge::<Poseidon2Goldilocks<8>, 8, 4, 4>::new(perm_for_hash);
+    let base_inputs = [
+        Goldilocks::from_u64(1),
+        Goldilocks::ZERO,
+        Goldilocks::from_u64(2),
+        Goldilocks::ZERO,
+    ];
+    let expected_hash = hasher.hash_iter(base_inputs);
+    let out0 = Ext2::from_basis_coefficients_slice(&expected_hash[0..2]).unwrap();
+    let out1 = Ext2::from_basis_coefficients_slice(&expected_hash[2..4]).unwrap();
+    runner.set_public_inputs(&[in0, in1, out0, out1]).unwrap();
+    let _traces = runner.run().unwrap();
 }
 
 #[test]
@@ -663,8 +646,8 @@ fn test_mul_only_circuit_padding() {
     let mut builder = CircuitBuilder::<BabyBear>::new();
     let cfg = config::baby_bear().build();
 
-    let x = builder.add_public_input();
-    let y = builder.add_public_input();
+    let x = builder.public_input();
+    let y = builder.public_input();
 
     // Only multiplication, no addition
     builder.mul(x, y);
@@ -675,6 +658,7 @@ fn test_mul_only_circuit_padding() {
             &circuit,
             TablePacking::default(),
             None,
+            ConstraintProfile::Standard,
         )
         .unwrap();
     let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
@@ -704,9 +688,9 @@ fn test_add_only_circuit_padding() {
     let mut builder = CircuitBuilder::<BabyBear>::new();
     let cfg = config::baby_bear().build();
 
-    let x = builder.add_public_input();
-    let y = builder.add_public_input();
-    let expected = builder.add_public_input();
+    let x = builder.public_input();
+    let y = builder.public_input();
+    let expected = builder.public_input();
 
     // Only addition, no multiplication
     let sum = builder.add(x, y);
@@ -719,6 +703,7 @@ fn test_add_only_circuit_padding() {
             &circuit,
             TablePacking::default(),
             None,
+            ConstraintProfile::Standard,
         )
         .unwrap();
     let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();

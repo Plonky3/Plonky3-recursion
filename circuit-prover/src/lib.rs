@@ -20,10 +20,10 @@
 //! use p3_circuit_prover::BatchStarkProver;
 //!
 //! let mut builder = CircuitBuilder::<BabyBear>::new();
-//! let x = builder.add_public_input();
-//! let y = builder.add_public_input();
+//! let x = builder.public_input();
+//! let y = builder.public_input();
 //! let z = builder.add(x, y);
-//! builder.assert_zero(builder.sub(z, builder.add_const(BabyBear::from_u64(3))));
+//! builder.assert_zero(builder.sub(z, builder.define_const(BabyBear::from_u64(3))));
 //! let circuit = builder.build();
 //! let mut runner = circuit.runner();
 //! runner.set_public_inputs(&[BabyBear::from_u64(1), BabyBear::from_u64(2)]).unwrap();
@@ -41,11 +41,10 @@ pub mod air;
 pub mod batch_stark_prover;
 pub mod common;
 pub mod config;
+pub mod constraint_profile;
 pub mod field_params;
 
 // Re-export main API
-pub use batch_stark_prover::{
-    BatchStarkProof, BatchStarkProver, BatchTableInstance, CircuitProverData, DynamicAirEntry,
-    NonPrimitiveTableEntry, Poseidon2Prover, TablePacking, TableProver,
-};
+pub use batch_stark_prover::*;
+pub use constraint_profile::ConstraintProfile;
 pub use p3_circuit::op::Poseidon2Config;

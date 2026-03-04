@@ -13,7 +13,7 @@ use p3_field::{
 };
 use p3_fri::{CommitPhaseProofStep, FriProof, QueryProof, TwoAdicFriPcs};
 use p3_merkle_tree::MerkleTreeMmcs;
-use p3_symmetric::{CryptographicHasher, Hash, PseudoCompressionFunction};
+use p3_symmetric::{CryptographicHasher, MerkleCap, PseudoCompressionFunction};
 use p3_uni_stark::{StarkGenericConfig, Val};
 use serde::{Deserialize, Serialize};
 
@@ -205,7 +205,7 @@ impl<F: Field, EF: ExtensionField<F> + BasedVectorSpace<F>, RecMmcs: RecursiveEx
 
         let mut result = coeffs[0];
         for (i, &basis_elem) in basis.iter().enumerate().skip(1) {
-            let basis_const = circuit.add_const(basis_elem);
+            let basis_const = circuit.define_const(basis_elem);
             let term = circuit.mul(coeffs[i], basis_const);
             result = circuit.add(result, term);
         }
@@ -317,39 +317,55 @@ impl<F: Field, EF: ExtensionField<F>, Inner: RecursiveMmcs<F, EF>> Recursive<EF>
 
 // Now, we define the commitment schemes.
 
-/// `HashTargets` corresponds to a commitment in the form of hashes with `DIGEST_ELEMS` digest elements.
+/// `MerkleCapTargets` corresponds to a Merkle cap commitment with `2^cap_height` hash entries,
+/// each having `DIGEST_ELEMS` digest elements.
 ///
 /// Uses **lifted representation**: each base field hash element is stored as a separate extension
 /// field target `EF([v, 0, 0, 0])`. This is consistent with Fiat-Shamir observation.
+///
+/// A cap of height 0 contains a single entry (the root), while a cap of height `h` contains
+/// `2^h` entries. The Fiat-Shamir transcript observes all entries sequentially.
 #[derive(Clone)]
-pub struct HashTargets<F, const DIGEST_ELEMS: usize> {
-    pub hash_targets: [Target; DIGEST_ELEMS],
+pub struct MerkleCapTargets<F, const DIGEST_ELEMS: usize> {
+    pub cap_targets: Vec<[Target; DIGEST_ELEMS]>,
     _phantom: PhantomData<F>,
 }
 
-impl<F, const DIGEST_ELEMS: usize> ObservableCommitment for HashTargets<F, DIGEST_ELEMS> {
+impl<F, const DIGEST_ELEMS: usize> ObservableCommitment for MerkleCapTargets<F, DIGEST_ELEMS> {
     fn to_observation_targets(&self) -> Vec<Target> {
-        self.hash_targets.to_vec()
+        self.cap_targets
+            .iter()
+            .flat_map(|entry| entry.iter().copied())
+            .collect()
     }
 }
 
 type ValMmcsCommitment<F, const DIGEST_ELEMS: usize> =
-    Hash<<F as PackedValue>::Value, <F as PackedValue>::Value, DIGEST_ELEMS>;
+    MerkleCap<<F as PackedValue>::Value, [<F as PackedValue>::Value; DIGEST_ELEMS]>;
 
 impl<F: Field, EF: ExtensionField<F>, const DIGEST_ELEMS: usize> Recursive<EF>
-    for HashTargets<F, DIGEST_ELEMS>
+    for MerkleCapTargets<F, DIGEST_ELEMS>
 {
     type Input = ValMmcsCommitment<F, DIGEST_ELEMS>;
 
-    fn new(circuit: &mut CircuitBuilder<EF>, _input: &Self::Input) -> Self {
+    fn new(circuit: &mut CircuitBuilder<EF>, input: &Self::Input) -> Self {
+        let cap_targets = (0..input.num_roots())
+            .map(|_| circuit.alloc_public_input_array("MMCS commitment cap entry"))
+            .collect();
         Self {
-            hash_targets: circuit.alloc_public_input_array("MMCS commitment digest"),
+            cap_targets,
             _phantom: PhantomData,
         }
     }
 
     fn get_values(input: &Self::Input) -> Vec<EF> {
-        input.into_iter().map(|v| EF::from(v)).collect()
+        input
+            .roots()
+            .iter()
+            .flat_map(|entry: &[<F as PackedValue>::Value; DIGEST_ELEMS]| {
+                entry.iter().map(|v| EF::from(*v))
+            })
+            .collect()
     }
 }
 
@@ -433,7 +449,7 @@ where
 {
     type Input = MerkleTreeMmcs<F::Packing, F::Packing, H, C, DIGEST_ELEMS>;
 
-    type Commitment = HashTargets<F, DIGEST_ELEMS>;
+    type Commitment = MerkleCapTargets<F, DIGEST_ELEMS>;
 
     type Proof = HashProofTargets<F, DIGEST_ELEMS>;
 }
@@ -588,26 +604,19 @@ where
             fri_proof.pow_witness.witness,
         )?;
 
-        // Sample query indices - base field elements used as indices
-        let num_queries = fri_proof.query_proofs.len();
-        let mut query_indices = Vec::with_capacity(num_queries);
-        for _ in 0..num_queries {
-            let index = challenger.sample(circuit);
-            query_indices.push(index);
-        }
-
-        // Return challenges in order: [fri_alpha, betas..., query_indices...]
-        let mut challenges = Vec::with_capacity(1 + betas.len() + num_queries);
+        // Query indices are sampled in-circuit by verify_circuit from the challenger
+        // (which is left in the correct state here) to ensure soundness.
+        let mut challenges = Vec::with_capacity(1 + betas.len());
         challenges.push(fri_alpha);
         challenges.extend(betas);
-        challenges.extend(query_indices);
         Ok(challenges)
     }
 
-    fn verify_circuit(
+    fn verify_circuit<const WIDTH: usize, const RATE: usize>(
         &self,
         circuit: &mut CircuitBuilder<SC::Challenge>,
         challenges: &[Target],
+        challenger: &mut CircuitChallenger<WIDTH, RATE>,
         commitments_with_opening_points: &ComsWithOpeningsTargets<
             Comm,
             TwoAdicMultiplicativeCoset<Val<SC>>,
@@ -622,22 +631,12 @@ where
             query_pow_bits: _,
             permutation_config,
         } = *params;
-        // Extract FRI challenges from the challenges slice.
-        // Layout: [alpha, beta_0, ..., beta_{n-1}, query_0, ..., query_{m-1}]
-        // where:
-        //   - alpha: FRI batch combination challenge
-        //   - betas: one challenge per FRI folding round
-        //   - query indices: sampled indices for FRI queries (as field elements)
         let num_betas = opening_proof.commit_phase_commits.len();
         let num_queries = opening_proof.query_proofs.len();
 
         let alpha = challenges[0];
         let betas = &challenges[1..1 + num_betas];
 
-        let query_indices = &challenges[1 + num_betas..1 + num_betas + num_queries];
-
-        // Calculate the maximum height of the FRI proof tree.
-        // With variable arity, total log reduction = sum(log_arities), not just num_betas.
         let total_log_reduction: usize = opening_proof.log_arities.iter().sum();
         let log_max_height = total_log_reduction + log_final_poly_len + log_blowup;
 
@@ -647,19 +646,9 @@ where
             )));
         }
 
-        let index_bits_per_query: Vec<Vec<Target>> = query_indices
-            .iter()
-            .map(|&index_target| {
-                let all_bits =
-                    circuit.decompose_to_bits::<Val<SC>>(index_target, MAX_QUERY_INDEX_BITS);
-                all_bits.map(|all_bits| {
-                    all_bits
-                        .into_iter()
-                        .take(log_max_height)
-                        .collect::<Vec<_>>()
-                })
-            })
-            .collect::<Result<_, _>>()?;
+        let index_bits_per_query: Vec<Vec<Target>> = (0..num_queries)
+            .map(|_| challenger.sample_bits(circuit, log_max_height))
+            .collect::<Result<Vec<_>, _>>()?;
 
         verify_fri_circuit(
             circuit,

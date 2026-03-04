@@ -25,4 +25,4 @@ pub use crate::types::{
     CommitmentTargets, OpenedValuesTargets, ProofTargets, RecursiveLagrangeSelectors,
     StarkChallenges,
 };
-pub use crate::verifier::{ObservableCommitment, VerificationError, verify_circuit};
+pub use crate::verifier::{ObservableCommitment, VerificationError, verify_p3_uni_proof_circuit};

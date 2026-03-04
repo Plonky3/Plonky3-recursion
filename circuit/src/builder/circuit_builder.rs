@@ -155,46 +155,81 @@ where
         F: CircuitField + ExtensionField<Config::BaseField>,
         P: Permutation<[Config::BaseField; 16]> + Clone + Send + Sync + 'static,
     {
-        // Hard gate on D=4 and WIDTH=16 to avoid silently accepting incompatible configs.
-        assert!(
-            Config::D == 4,
-            "Poseidon2 perm op only supports extension degree D=4"
-        );
-        assert!(
-            Config::WIDTH == 16,
-            "Poseidon2 perm op only supports WIDTH=16"
-        );
-
-        // Build exec closure that:
-        // 1. Converts [F;4] extension limbs to [Base;16] using basis coefficients
-        // 2. Calls perm.permute([Base;16])
-        // 3. Converts output [Base;16] back to [F;4]
-        let exec: crate::op::Poseidon2PermExec<F, 4> = Arc::new(move |input: &[F; 4]| {
-            // Convert 4 extension elements to 16 base elements
-            let mut base_input = [Config::BaseField::ZERO; 16];
+        let d = Config::D;
+        let width_ext = Config::WIDTH_EXT;
+        let width = Config::WIDTH;
+        let exec: crate::op::Poseidon2PermExec<F> = Arc::new(move |input: &[F]| {
+            let mut base_input = vec![Config::BaseField::ZERO; width];
             for (i, ext_elem) in input.iter().enumerate() {
                 let coeffs = ext_elem.as_basis_coefficients_slice();
-                debug_assert_eq!(
-                    coeffs.len(),
-                    4,
-                    "Extension field should have D=4 basis coefficients"
-                );
-                base_input[i * 4..(i + 1) * 4].copy_from_slice(coeffs);
+                base_input[i * d..(i + 1) * d].copy_from_slice(coeffs);
             }
-
-            // Apply permutation
-            let base_output = perm.permute(base_input);
-
-            // Convert 16 base elements back to 4 extension elements
-            let mut output = [F::ZERO; 4];
-            for i in 0..4 {
-                let coeffs = &base_output[i * 4..(i + 1) * 4];
-                output[i] = F::from_basis_coefficients_slice(coeffs)
-                    .expect("basis coefficients should be valid");
+            let base_output = perm.permute(
+                base_input
+                    .try_into()
+                    .expect("base_input length must equal WIDTH"),
+            );
+            let mut output = Vec::with_capacity(width_ext);
+            for i in 0..width_ext {
+                let coeffs = &base_output[i * d..(i + 1) * d];
+                output.push(
+                    F::from_basis_coefficients_slice(coeffs)
+                        .expect("basis coefficients should be valid"),
+                );
             }
             output
         });
 
+        self.config.enable_op(
+            NonPrimitiveOpType::Poseidon2Perm(Config::CONFIG),
+            NonPrimitiveOpConfig::Poseidon2Perm {
+                config: Config::CONFIG,
+                exec,
+            },
+        );
+        self.non_primitive_trace_generators.insert(
+            NonPrimitiveOpType::Poseidon2Perm(Config::CONFIG),
+            trace_generator,
+        );
+    }
+
+    /// Enables Poseidon2 for configs with WIDTH=8 (e.g. Goldilocks).
+    pub fn enable_poseidon2_perm_width_8<Config, P>(
+        &mut self,
+        trace_generator: TraceGeneratorFn<F>,
+        perm: P,
+    ) where
+        Config: Poseidon2Params,
+        F: CircuitField + ExtensionField<Config::BaseField>,
+        P: Permutation<[Config::BaseField; 8]> + Clone + Send + Sync + 'static,
+    {
+        assert!(
+            Config::WIDTH == 8,
+            "enable_poseidon2_perm_width_8 requires WIDTH=8"
+        );
+        let d = Config::D;
+        let width_ext = Config::WIDTH_EXT;
+        let exec: crate::op::Poseidon2PermExec<F> = Arc::new(move |input: &[F]| {
+            let mut base_input = vec![Config::BaseField::ZERO; 8];
+            for (i, ext_elem) in input.iter().enumerate() {
+                let coeffs = ext_elem.as_basis_coefficients_slice();
+                base_input[i * d..(i + 1) * d].copy_from_slice(coeffs);
+            }
+            let base_output = perm.permute(
+                base_input
+                    .try_into()
+                    .expect("base_input length must equal 8"),
+            );
+            let mut output = Vec::with_capacity(width_ext);
+            for i in 0..width_ext {
+                let coeffs = &base_output[i * d..(i + 1) * d];
+                output.push(
+                    F::from_basis_coefficients_slice(coeffs)
+                        .expect("basis coefficients should be valid"),
+                );
+            }
+            output
+        });
         self.config.enable_op(
             NonPrimitiveOpType::Poseidon2Perm(Config::CONFIG),
             NonPrimitiveOpConfig::Poseidon2Perm {
@@ -270,7 +305,7 @@ where
     /// Adds a public input to the circuit.
     ///
     /// Cost: 1 row in Public table + 1 row in witness table.
-    pub fn add_public_input(&mut self) -> ExprId {
+    pub fn public_input(&mut self) -> ExprId {
         self.alloc_public_input("")
     }
 
@@ -281,7 +316,7 @@ where
     /// Cost: 1 row in Public table + 1 row in witness table.
     pub fn alloc_public_input(&mut self, label: &'static str) -> ExprId {
         let pos = self.public_tracker.alloc();
-        self.expr_builder.add_public(pos, label)
+        self.expr_builder.public(pos, label)
     }
 
     /// Allocates multiple public inputs with a descriptive label.
@@ -303,7 +338,7 @@ where
     ///
     /// If this value was previously added, returns the original ExprId.
     /// Cost: 1 row in Const table + 1 row in witness table (only for new constants).
-    pub fn add_const(&mut self, val: F) -> ExprId {
+    pub fn define_const(&mut self, val: F) -> ExprId {
         self.alloc_const(val, "")
     }
 
@@ -311,7 +346,7 @@ where
     ///
     /// Cost: 1 row in Const table + 1 row in witness table (only for new constants).
     pub fn alloc_const(&mut self, val: F, label: &'static str) -> ExprId {
-        self.expr_builder.add_const(val, label)
+        self.expr_builder.define_const(val, label)
     }
 
     /// Adds two expressions.
@@ -325,7 +360,7 @@ where
     ///
     /// Cost: 1 row in the ALU table (add selector) + 1 row in the witness table.
     pub fn alloc_add(&mut self, lhs: ExprId, rhs: ExprId, label: &'static str) -> ExprId {
-        self.expr_builder.add_add(lhs, rhs, label)
+        self.expr_builder.add(lhs, rhs, label)
     }
 
     /// Subtracts two expressions.
@@ -339,7 +374,7 @@ where
     ///
     /// Cost: 1 row in the ALU table (add selector) + 1 row in the witness table.
     pub fn alloc_sub(&mut self, lhs: ExprId, rhs: ExprId, label: &'static str) -> ExprId {
-        self.expr_builder.add_sub(lhs, rhs, label)
+        self.expr_builder.sub(lhs, rhs, label)
     }
 
     /// Multiplies two expressions.
@@ -353,7 +388,7 @@ where
     ///
     /// Cost: 1 row in the ALU table (mul selector) + 1 row in the witness table.
     pub fn alloc_mul(&mut self, lhs: ExprId, rhs: ExprId, label: &'static str) -> ExprId {
-        self.expr_builder.add_mul(lhs, rhs, label)
+        self.expr_builder.mul(lhs, rhs, label)
     }
 
     /// Computes and returns `a * b + c`.
@@ -386,7 +421,7 @@ where
     pub fn mul_many(&mut self, inputs: &[ExprId]) -> ExprId {
         // Handle edge cases for empty or single-element slices.
         if inputs.is_empty() {
-            return self.add_const(F::ONE);
+            return self.define_const(F::ONE);
         }
         if inputs.len() == 1 {
             return inputs[0];
@@ -416,7 +451,7 @@ where
     /// # Cost
     /// `N` multiplications and `N-1` additions, where `N` is the length of the slices.
     pub fn inner_product(&mut self, a: &[ExprId], b: &[ExprId]) -> ExprId {
-        let zero = self.add_const(F::ZERO);
+        let zero = self.define_const(F::ZERO);
 
         // Calculate the sum of element-wise products.
         zip_eq(a, b).fold(zero, |acc, (&x, &y)| self.mul_add(x, y, acc))
@@ -433,7 +468,7 @@ where
     ///
     /// Cost: 1 row in the ALU table (mul selector) + 1 row in the witness table.
     pub fn alloc_div(&mut self, lhs: ExprId, rhs: ExprId, label: &'static str) -> ExprId {
-        self.expr_builder.add_div(lhs, rhs, label)
+        self.expr_builder.div(lhs, rhs, label)
     }
 
     /// Asserts that an expression equals zero by connecting it to Const(0).
@@ -448,7 +483,7 @@ where
     /// Encodes the constraint b · (b − 1) = 0 via `assert_zero`.
     /// Cost: 1 mul + 1 add.
     pub fn assert_bool(&mut self, b: ExprId) {
-        let one = self.add_const(F::ONE);
+        let one = self.define_const(F::ONE);
         let b_minus_one = self.sub(b, one);
         let prod = self.mul(b, b_minus_one);
         self.assert_zero(prod);
@@ -466,8 +501,19 @@ where
     ///
     /// When `b` ∈ {0,1}, this returns `t` if b = 1, else `s` if b = 0.
     /// Call `assert_bool(b)` beforehand if you need booleanity enforced.
-    /// Cost: 1 mul + 2 add.
+    /// Cost: 1 sub + 1 mul_add (0 if trivial).
     pub fn select(&mut self, b: ExprId, t: ExprId, s: ExprId) -> ExprId {
+        // Trivial: both branches identical
+        if t == s {
+            return s;
+        }
+        // Selector is known constant
+        if self.expr_builder.is_const_zero(b) {
+            return s;
+        }
+        if self.expr_builder.is_const_one(b) {
+            return t;
+        }
         let t_minus_s = self.sub(t, s);
         let scaled = self.mul(b, t_minus_s);
         self.add(s, scaled)
@@ -718,15 +764,32 @@ where
 
         // Stage 2: IR transformations and optimizations
         let optimizer = Optimizer::new();
-        let ops = optimizer.optimize(ops);
+        let (ops, rewrite) = optimizer.optimize(ops);
+
+        let resolve = |id: WitnessId| Optimizer::resolve_witness(&rewrite, id);
+        let expr_to_widx = expr_to_widx
+            .into_iter()
+            .map(|(e, w)| (e, resolve(w)))
+            .collect();
+        let public_rows = public_rows.into_iter().map(resolve).collect();
 
         // Stage 3: Generate final circuit
         let mut circuit = Circuit::new(witness_count, expr_to_widx);
         circuit.ops = ops;
         circuit.public_rows = public_rows;
+        if !rewrite.is_empty() {
+            circuit.witness_rewrite = Some(rewrite);
+        }
         circuit.public_flat_len = self.public_tracker.count();
         circuit.enabled_ops = self.config.into_enabled_ops();
         circuit.non_primitive_trace_generators = self.non_primitive_trace_generators;
+        let mut gen_order: Vec<_> = circuit
+            .non_primitive_trace_generators
+            .keys()
+            .copied()
+            .collect();
+        gen_order.sort();
+        circuit.non_primitive_trace_generator_order = gen_order;
 
         // Transfer wire tags, converting ExprId to WitnessId
         for (tag, expr_id) in self.tag_to_expr {
@@ -855,7 +918,7 @@ where
         }
 
         // Accumulator for the running sum.
-        let mut acc = self.add_const(F::ZERO);
+        let mut acc = self.define_const(F::ZERO);
 
         for (i, chunk) in bits.chunks(BF::bits()).enumerate() {
             // The canonical basis element e_i.
@@ -865,7 +928,7 @@ where
                 F::from_basis_coefficients_slice(&e_i).expect("`basis` is of size `F::DIMENSION`");
             for (j, &b) in chunk.iter().enumerate() {
                 // Add the constant `2^j * e_i`
-                let pow2 = self.add_const(e_i * BF::from_u64(1 << j));
+                let pow2 = self.define_const(e_i * BF::from_u64(1 << j));
                 // Ensure each bit is boolean.
                 self.assert_bool(b);
 
@@ -915,7 +978,7 @@ where
 
         self.push_scope("recompose_base_coeffs_to_ext");
 
-        let mut acc = self.add_const(F::ZERO);
+        let mut acc = self.define_const(F::ZERO);
 
         for (i, &coeff) in coeffs.iter().enumerate() {
             // Construct the i-th canonical basis element: [0, ..., 0, 1, 0, ..., 0]
@@ -925,7 +988,7 @@ where
                 .expect("basis coefficients are valid");
 
             // Multiply coefficient by basis element
-            let basis_const = self.add_const(basis_elem);
+            let basis_const = self.define_const(basis_elem);
             let term = self.mul(coeff, basis_const);
             acc = self.add(acc, term);
         }
@@ -996,46 +1059,39 @@ where
     ///
     /// # Parameters
     /// - `config`: The Poseidon2 configuration to use
-    /// - `inputs`: 4 extension element targets (the sponge state)
+    /// - `inputs`: width_ext extension element targets (the sponge state)
     ///
     /// # Returns
-    /// 4 extension element targets (the permuted state)
+    /// width_ext extension element targets (the permuted state)
     ///
     /// # Errors
     /// Returns error if the Poseidon2 operation is not enabled
     pub fn add_poseidon2_perm_for_challenger(
         &mut self,
         config: crate::ops::Poseidon2Config,
-        inputs: [ExprId; 4],
-    ) -> Result<[ExprId; 4], CircuitBuilderError> {
+        inputs: &[ExprId],
+    ) -> Result<Vec<ExprId>, CircuitBuilderError> {
         self.push_scope("poseidon2_perm_for_challenger");
 
         // Use add_poseidon2_perm with CTL verification for soundness
         // - All 4 inputs are CTL-verified
         // - Outputs 0-1 are CTL-verified (rate elements)
         // - Outputs 2-3 are returned but NOT CTL-verified (capacity elements)
+        let width_ext = config.width_ext();
         let (_op_id, outputs) = self.add_poseidon2_perm(Poseidon2PermCall {
             config,
             new_start: true, // Each challenger permutation is independent
             merkle_path: false,
             mmcs_bit: None,
-            inputs: [
-                Some(inputs[0]),
-                Some(inputs[1]),
-                Some(inputs[2]),
-                Some(inputs[3]),
-            ],
-            out_ctl: [true, true],    // CTL-verify rate outputs
-            return_all_outputs: true, // Return all 4 outputs for sponge state
+            inputs: inputs.iter().map(|&x| Some(x)).collect(),
+            out_ctl: vec![true; config.rate_ext()],
+            return_all_outputs: true,
             mmcs_index_sum: None,
         })?;
 
-        let output_exprs: [ExprId; 4] = [
-            outputs[0].ok_or(CircuitBuilderError::MissingOutput)?,
-            outputs[1].ok_or(CircuitBuilderError::MissingOutput)?,
-            outputs[2].ok_or(CircuitBuilderError::MissingOutput)?,
-            outputs[3].ok_or(CircuitBuilderError::MissingOutput)?,
-        ];
+        let output_exprs: Vec<ExprId> = (0..width_ext)
+            .map(|i| outputs[i].ok_or(CircuitBuilderError::MissingOutput))
+            .collect::<Result<Vec<_>, _>>()?;
 
         self.pop_scope();
         Ok(output_exprs)
@@ -1280,7 +1336,7 @@ mod tests {
     #[test]
     fn test_add_public_input_single() {
         let mut builder = CircuitBuilder::<BabyBear>::new();
-        builder.add_public_input();
+        builder.public_input();
         assert_eq!(builder.public_input_count(), 1);
     }
 
@@ -1304,24 +1360,24 @@ mod tests {
     fn test_public_input_count_increments() {
         let mut builder = CircuitBuilder::<BabyBear>::new();
         assert_eq!(builder.public_input_count(), 0);
-        builder.add_public_input();
+        builder.public_input();
         assert_eq!(builder.public_input_count(), 1);
-        builder.add_public_input();
+        builder.public_input();
         assert_eq!(builder.public_input_count(), 2);
     }
 
     #[test]
     fn test_add_const_deduplication() {
         let mut builder = CircuitBuilder::<BabyBear>::new();
-        let c1 = builder.add_const(BabyBear::from_u64(99));
-        let c2 = builder.add_const(BabyBear::from_u64(99));
+        let c1 = builder.define_const(BabyBear::from_u64(99));
+        let c2 = builder.define_const(BabyBear::from_u64(99));
         assert_eq!(c1, c2);
     }
 
     #[test]
     fn test_exp_power_of_2_zero() {
         let mut builder = CircuitBuilder::<BabyBear>::new();
-        let base = builder.add_const(BabyBear::from_u64(5));
+        let base = builder.define_const(BabyBear::from_u64(5));
         let result = builder.exp_power_of_2(base, 0);
         assert_eq!(result, base);
     }
@@ -1329,12 +1385,30 @@ mod tests {
     #[test]
     fn test_select_operation() {
         let mut builder = CircuitBuilder::<BabyBear>::new();
-        let b = builder.add_public_input();
-        let t = builder.add_const(BabyBear::from_u64(10));
-        let s = builder.add_const(BabyBear::from_u64(5));
+        let b = builder.public_input();
+        let t = builder.define_const(BabyBear::from_u64(10));
+        let s = builder.define_const(BabyBear::from_u64(5));
         let _result = builder.select(b, t, s);
         // Should create: t_minus_s, scaled, and result
         assert_eq!(builder.public_input_count(), 1);
+    }
+
+    #[test]
+    fn test_select_shortcuts() {
+        let mut builder = CircuitBuilder::<BabyBear>::new();
+        let t = builder.public_input();
+        let s = builder.public_input();
+        let zero = builder.define_const(BabyBear::ZERO);
+        let one = builder.define_const(BabyBear::ONE);
+
+        // select(b, t, t) = t (identical branches)
+        assert_eq!(builder.select(zero, t, t), t);
+
+        // select(0, t, s) = s
+        assert_eq!(builder.select(zero, t, s), s);
+
+        // select(1, t, s) = t
+        assert_eq!(builder.select(one, t, s), t);
     }
 
     #[test]
@@ -1342,7 +1416,7 @@ mod tests {
     fn test_scope_operations() {
         let mut builder = CircuitBuilder::<BabyBear>::new();
         builder.push_scope("test_scope");
-        builder.add_const(BabyBear::ONE);
+        builder.define_const(BabyBear::ONE);
         builder.pop_scope();
         let scopes = builder.list_scopes();
         assert!(scopes.contains(&("test_scope".to_string())));
@@ -1380,8 +1454,8 @@ mod tests {
     #[test]
     fn test_build_with_public_inputs() {
         let mut builder = CircuitBuilder::<BabyBear>::new();
-        builder.add_public_input();
-        builder.add_public_input();
+        builder.public_input();
+        builder.public_input();
         let circuit = builder
             .build()
             .expect("Circuit with public inputs should build");
@@ -1422,8 +1496,8 @@ mod tests {
     #[test]
     fn test_build_with_constants() {
         let mut builder = CircuitBuilder::<BabyBear>::new();
-        builder.add_const(BabyBear::from_u64(1));
-        builder.add_const(BabyBear::from_u64(2));
+        builder.define_const(BabyBear::from_u64(1));
+        builder.define_const(BabyBear::from_u64(2));
         let circuit = builder
             .build()
             .expect("Circuit with constants should build");
@@ -1460,38 +1534,36 @@ mod tests {
 
     #[test]
     fn test_build_with_operations() {
+        // Use a public input so constant folding doesn't eliminate the Add
         let mut builder = CircuitBuilder::<BabyBear>::new();
-        let a = builder.add_const(BabyBear::from_u64(2));
-        let b = builder.add_const(BabyBear::from_u64(3));
+        let a = builder.public_input();
+        let b = builder.define_const(BabyBear::from_u64(3));
         builder.add(a, b);
         let circuit = builder
             .build()
             .expect("Circuit with operations should build");
 
+        // zero const + public + const(3) + add result = 4 witnesses
         assert_eq!(circuit.witness_count, 4);
-        assert_eq!(circuit.ops.len(), 4);
 
-        match &circuit.ops[3] {
-            crate::op::Op::Alu {
-                kind: crate::op::AluOpKind::Add,
-                a,
-                b,
-                out,
-                ..
-            } => {
-                assert_eq!(*out, WitnessId(3));
-                assert_eq!(*a, WitnessId(1));
-                assert_eq!(*b, WitnessId(2));
-            }
-            _ => panic!("Expected ALU Add at index 3"),
-        }
+        // Should contain an ALU Add op
+        let has_alu_add = circuit.ops.iter().any(|op| {
+            matches!(
+                op,
+                crate::op::Op::Alu {
+                    kind: crate::op::AluOpKind::Add,
+                    ..
+                }
+            )
+        });
+        assert!(has_alu_add, "Expected an ALU Add operation");
     }
 
     #[test]
     fn test_build_with_public_mapping() {
         let mut builder = CircuitBuilder::<BabyBear>::new();
-        let p0 = builder.add_public_input();
-        let p1 = builder.add_public_input();
+        let p0 = builder.public_input();
+        let p1 = builder.public_input();
         let (circuit, mapping) = builder
             .build_with_public_mapping()
             .expect("Circuit should build with public mapping");
@@ -1505,8 +1577,8 @@ mod tests {
     #[test]
     fn test_build_with_connect_deduplication() {
         let mut builder = CircuitBuilder::<BabyBear>::new();
-        let a = builder.add_const(BabyBear::from_u64(5));
-        let b = builder.add_const(BabyBear::from_u64(5));
+        let a = builder.define_const(BabyBear::from_u64(5));
+        let b = builder.define_const(BabyBear::from_u64(5));
         builder.connect(a, b);
         let circuit = builder
             .build()
@@ -1529,16 +1601,15 @@ mod tests {
             NonPrimitiveOpConfig::None,
         );
 
-        // Use add_poseidon2_perm with out_ctl to expose outputs.
-        let z = builder.add_const(Ext4::ZERO);
+        let z = builder.define_const(Ext4::ZERO);
         let (op_id, outputs) = builder
             .add_poseidon2_perm(Poseidon2PermCall {
                 config: Poseidon2Config::BabyBearD4Width16,
                 new_start: true,
                 merkle_path: false,
-                mmcs_bit: None, // Must be None when merkle_path=false
-                inputs: [Some(z), Some(z), Some(z), Some(z)],
-                out_ctl: [true, true],
+                mmcs_bit: None,
+                inputs: vec![Some(z), Some(z), Some(z), Some(z)],
+                out_ctl: vec![true, true],
                 return_all_outputs: false,
                 mmcs_index_sum: None,
             })
@@ -1547,7 +1618,7 @@ mod tests {
         let out0 = outputs[0].unwrap();
         let out1 = outputs[1].unwrap();
 
-        let one = builder.add_const(Ext4::ONE);
+        let one = builder.define_const(Ext4::ONE);
         let sum0 = builder.add(out0, one);
         let sum1 = builder.add(out1, one);
 
@@ -1618,8 +1689,8 @@ mod tests {
     #[test]
     fn test_basic_tagging() {
         let mut builder = CircuitBuilder::<BabyBear>::new();
-        let a = builder.add_const(BabyBear::from_u64(5));
-        let b = builder.add_const(BabyBear::from_u64(7));
+        let a = builder.define_const(BabyBear::from_u64(5));
+        let b = builder.define_const(BabyBear::from_u64(7));
         let sum = builder.add(a, b);
 
         builder.tag(sum, "my-sum").unwrap();
@@ -1635,8 +1706,8 @@ mod tests {
     #[test]
     fn test_tag_multiple_wires() {
         let mut builder = CircuitBuilder::<BabyBear>::new();
-        let a = builder.add_const(BabyBear::from_u64(10));
-        let b = builder.add_const(BabyBear::from_u64(20));
+        let a = builder.define_const(BabyBear::from_u64(10));
+        let b = builder.define_const(BabyBear::from_u64(20));
         let sum = builder.add(a, b);
         let prod = builder.mul(a, b);
 
@@ -1657,7 +1728,7 @@ mod tests {
     #[test]
     fn test_probe_unknown_tag() {
         let mut builder = CircuitBuilder::<BabyBear>::new();
-        let a = builder.add_const(BabyBear::ONE);
+        let a = builder.define_const(BabyBear::ONE);
         builder.tag(a, "known").unwrap();
 
         let circuit = builder.build().unwrap();
@@ -1671,8 +1742,8 @@ mod tests {
     #[test]
     fn test_duplicate_tag() {
         let mut builder = CircuitBuilder::<BabyBear>::new();
-        let a = builder.add_const(BabyBear::ONE);
-        let b = builder.add_const(BabyBear::from_u64(2));
+        let a = builder.define_const(BabyBear::ONE);
+        let b = builder.define_const(BabyBear::from_u64(2));
 
         builder.tag(a, "same-tag").unwrap();
         let result = builder.tag(b, "same-tag");
@@ -1688,7 +1759,7 @@ mod tests {
         let mut builder = CircuitBuilder::<BabyBear>::new();
 
         for i in 0..3 {
-            let val = builder.add_const(BabyBear::from_u64(i as u64));
+            let val = builder.define_const(BabyBear::from_u64(i as u64));
             builder.tag(val, format!("wire-{}", i)).unwrap();
         }
 
@@ -1712,8 +1783,8 @@ mod tests {
     fn test_connected_tags_resolve_after_optimization() {
         let mut builder = CircuitBuilder::<BabyBear>::new();
 
-        let x = builder.add_public_input();
-        let one = builder.add_const(BabyBear::ONE);
+        let x = builder.public_input();
+        let one = builder.define_const(BabyBear::ONE);
         let a = builder.add(x, one);
         let b = builder.add(x, one); // b == a
 
@@ -1763,13 +1834,13 @@ mod proptests {
         #[test]
         fn field_add_commutative(a in field_element(), b in field_element()) {
             let mut builder1 = CircuitBuilder::<BabyBear>::new();
-            let ca = builder1.add_const(a);
-            let cb = builder1.add_const(b);
+            let ca = builder1.define_const(a);
+            let cb = builder1.define_const(b);
             let sum1 = builder1.add(ca, cb);
 
             let mut builder2 = CircuitBuilder::<BabyBear>::new();
-            let ca2 = builder2.add_const(a);
-            let cb2 = builder2.add_const(b);
+            let ca2 = builder2.define_const(a);
+            let cb2 = builder2.define_const(b);
             let sum2 = builder2.add(cb2, ca2);
 
             let circuit1 = builder1.build().unwrap();
@@ -1791,13 +1862,13 @@ mod proptests {
         #[test]
         fn field_mul_commutative(a in field_element(), b in field_element()) {
             let mut builder1 = CircuitBuilder::<BabyBear>::new();
-            let ca = builder1.add_const(a);
-            let cb = builder1.add_const(b);
+            let ca = builder1.define_const(a);
+            let cb = builder1.define_const(b);
             let prod1 = builder1.mul(ca, cb);
 
             let mut builder2 = CircuitBuilder::<BabyBear>::new();
-            let ca2 = builder2.add_const(a);
-            let cb2 = builder2.add_const(b);
+            let ca2 = builder2.define_const(a);
+            let cb2 = builder2.define_const(b);
             let prod2 = builder2.mul(cb2, ca2);
 
             let circuit1 = builder1.build().unwrap();
@@ -1819,8 +1890,8 @@ mod proptests {
         #[test]
         fn field_add_identity(a in field_element()) {
             let mut builder = CircuitBuilder::<BabyBear>::new();
-            let ca = builder.add_const(a);
-            let zero = builder.add_const(BabyBear::ZERO);
+            let ca = builder.define_const(a);
+            let zero = builder.define_const(BabyBear::ZERO);
             let result = builder.add(ca, zero);
 
             let circuit = builder.build().unwrap();
@@ -1837,8 +1908,8 @@ mod proptests {
         #[test]
         fn field_mul_identity(a in field_element()) {
             let mut builder = CircuitBuilder::<BabyBear>::new();
-            let ca = builder.add_const(a);
-            let one = builder.add_const(BabyBear::ONE);
+            let ca = builder.define_const(a);
+            let one = builder.define_const(BabyBear::ONE);
             let result = builder.mul(ca, one);
 
             let circuit = builder.build().unwrap();
@@ -1855,8 +1926,8 @@ mod proptests {
         #[test]
         fn field_add_sub(a in field_element(), b in field_element()) {
             let mut builder = CircuitBuilder::<BabyBear>::new();
-            let ca = builder.add_const(a);
-            let cb = builder.add_const(b);
+            let ca = builder.define_const(a);
+            let cb = builder.define_const(b);
             let diff = builder.sub(ca, cb);
             let result = builder.add(diff, cb);
 
@@ -1874,8 +1945,8 @@ mod proptests {
         #[test]
         fn field_mul_div(a in field_element(), b in field_element().prop_filter("b must be non-zero", |&x| x != BabyBear::ZERO)) {
             let mut builder = CircuitBuilder::<BabyBear>::new();
-            let ca = builder.add_const(a);
-            let cb = builder.add_const(b);
+            let ca = builder.define_const(a);
+            let cb = builder.define_const(b);
             let quot = builder.div(ca, cb);
             let result = builder.mul(quot, cb);
 
@@ -1896,9 +1967,9 @@ mod proptests {
         // Test case 1: Basic computation (3 * 4 + 5 = 17)
         {
             let mut builder = CircuitBuilder::<BabyBear>::new();
-            let a = builder.add_const(BabyBear::from_u64(3));
-            let b = builder.add_const(BabyBear::from_u64(4));
-            let c = builder.add_const(BabyBear::from_u64(5));
+            let a = builder.define_const(BabyBear::from_u64(3));
+            let b = builder.define_const(BabyBear::from_u64(4));
+            let c = builder.define_const(BabyBear::from_u64(5));
             let result = builder.mul_add(a, b, c);
 
             let circuit = builder.build().unwrap();
@@ -1914,9 +1985,9 @@ mod proptests {
         // Test case 2: With zero product (0 * 7 + 9 = 9)
         {
             let mut builder = CircuitBuilder::<BabyBear>::new();
-            let zero = builder.add_const(BabyBear::ZERO);
-            let b = builder.add_const(BabyBear::from_u64(7));
-            let c = builder.add_const(BabyBear::from_u64(9));
+            let zero = builder.define_const(BabyBear::ZERO);
+            let b = builder.define_const(BabyBear::from_u64(7));
+            let c = builder.define_const(BabyBear::from_u64(9));
             let result = builder.mul_add(zero, b, c);
 
             let circuit = builder.build().unwrap();
@@ -1952,7 +2023,7 @@ mod proptests {
             let mut builder = CircuitBuilder::<BabyBear>::new();
             let vals: Vec<ExprId> = vec![2, 3, 4, 5]
                 .into_iter()
-                .map(|v| builder.add_const(BabyBear::from_u64(v)))
+                .map(|v| builder.define_const(BabyBear::from_u64(v)))
                 .collect();
             let result = builder.mul_many(&vals);
 
@@ -1970,9 +2041,9 @@ mod proptests {
         {
             let mut builder = CircuitBuilder::<BabyBear>::new();
             let with_zero = vec![
-                builder.add_const(BabyBear::from_u64(5)),
-                builder.add_const(BabyBear::ZERO),
-                builder.add_const(BabyBear::from_u64(7)),
+                builder.define_const(BabyBear::from_u64(5)),
+                builder.define_const(BabyBear::ZERO),
+                builder.define_const(BabyBear::from_u64(7)),
             ];
             let result = builder.mul_many(&with_zero);
 
@@ -1994,11 +2065,11 @@ mod proptests {
             let mut builder = CircuitBuilder::<BabyBear>::new();
             let a: Vec<ExprId> = vec![1, 2, 3]
                 .into_iter()
-                .map(|v| builder.add_const(BabyBear::from_u64(v)))
+                .map(|v| builder.define_const(BabyBear::from_u64(v)))
                 .collect();
             let b: Vec<ExprId> = vec![4, 5, 6]
                 .into_iter()
-                .map(|v| builder.add_const(BabyBear::from_u64(v)))
+                .map(|v| builder.define_const(BabyBear::from_u64(v)))
                 .collect();
             let result = builder.inner_product(&a, &b);
 
@@ -2032,10 +2103,12 @@ mod proptests {
         // Test case 3: Zero vector [0,0,0] · [5,6,7] = 0
         {
             let mut builder = CircuitBuilder::<BabyBear>::new();
-            let zeros: Vec<ExprId> = (0..3).map(|_| builder.add_const(BabyBear::ZERO)).collect();
+            let zeros: Vec<ExprId> = (0..3)
+                .map(|_| builder.define_const(BabyBear::ZERO))
+                .collect();
             let vals: Vec<ExprId> = vec![5, 6, 7]
                 .into_iter()
-                .map(|v| builder.add_const(BabyBear::from_u64(v)))
+                .map(|v| builder.define_const(BabyBear::from_u64(v)))
                 .collect();
             let result = builder.inner_product(&zeros, &vals);
 
@@ -2059,11 +2132,11 @@ mod proptests {
         // Create vectors with different lengths: [1,2] vs [3,4,5]
         let a: Vec<ExprId> = vec![1, 2]
             .into_iter()
-            .map(|v| builder.add_const(BabyBear::from_u64(v)))
+            .map(|v| builder.define_const(BabyBear::from_u64(v)))
             .collect();
         let b: Vec<ExprId> = vec![3, 4, 5]
             .into_iter()
-            .map(|v| builder.add_const(BabyBear::from_u64(v)))
+            .map(|v| builder.define_const(BabyBear::from_u64(v)))
             .collect();
 
         // Should panic: lengths don't match (2 != 3)
@@ -2079,9 +2152,9 @@ mod proptests {
         ) {
             // Build circuit with mul_add
             let mut builder = CircuitBuilder::<BabyBear>::new();
-            let ca = builder.add_const(a);
-            let cb = builder.add_const(b);
-            let cc = builder.add_const(c);
+            let ca = builder.define_const(a);
+            let cb = builder.define_const(b);
+            let cc = builder.define_const(c);
             let result = builder.mul_add(ca, cb, cc);
 
             // Execute circuit
@@ -2107,7 +2180,7 @@ mod proptests {
             let mut builder = CircuitBuilder::<BabyBear>::new();
             let expr_ids: Vec<ExprId> = values
                 .iter()
-                .map(|&v| builder.add_const(v))
+                .map(|&v| builder.define_const(v))
                 .collect();
             let result = builder.mul_many(&expr_ids);
 
@@ -2140,8 +2213,8 @@ mod proptests {
 
             // Build circuit with inner_product
             let mut builder = CircuitBuilder::<BabyBear>::new();
-            let a: Vec<ExprId> = vec1.iter().map(|&v| builder.add_const(v)).collect();
-            let b: Vec<ExprId> = vec2.iter().map(|&v| builder.add_const(v)).collect();
+            let a: Vec<ExprId> = vec1.iter().map(|&v| builder.define_const(v)).collect();
+            let b: Vec<ExprId> = vec2.iter().map(|&v| builder.define_const(v)).collect();
             let result = builder.inner_product(&a, &b);
 
             // Execute circuit
@@ -2168,15 +2241,15 @@ mod proptests {
         let mut builder = CircuitBuilder::<BabyBear>::new();
 
         // Test reconstructing the value 5 (binary: 101)
-        let bit0 = builder.add_const(BabyBear::ONE); // 1
-        let bit1 = builder.add_const(BabyBear::ZERO); // 0
-        let bit2 = builder.add_const(BabyBear::ONE); // 1
+        let bit0 = builder.define_const(BabyBear::ONE); // 1
+        let bit1 = builder.define_const(BabyBear::ZERO); // 0
+        let bit2 = builder.define_const(BabyBear::ONE); // 1
 
         let bits = vec![bit0, bit1, bit2];
         let result = builder.reconstruct_index_from_bits(&bits).unwrap();
 
         // Connect result to a public input so we can verify its value
-        let output = builder.add_public_input();
+        let output = builder.public_input();
         builder.connect(result, output);
 
         // Build and run the circuit
@@ -2202,14 +2275,14 @@ mod proptests {
         let mut builder = CircuitBuilder::<Ext4>::new();
 
         // Test reconstructing a value from an alternating 124-bit pattern (0xAAAA…)
-        let bits: [_; 124] = array::from_fn(|i| builder.add_const(Ext4::from_usize(i % 2)));
+        let bits: [_; 124] = array::from_fn(|i| builder.define_const(Ext4::from_usize(i % 2)));
 
         let result = builder
             .reconstruct_index_from_bits::<BabyBear>(&bits)
             .unwrap();
 
         // Connect result to a public input so we can verify its value
-        let output = builder.add_public_input();
+        let output = builder.public_input();
         builder.connect(result, output);
 
         // Build and run the circuit
@@ -2250,7 +2323,7 @@ mod proptests {
         let mut builder = CircuitBuilder::<BabyBear>::new();
 
         // Create a target representing the value we want to decompose
-        let value = builder.add_const(BabyBear::from_u64(6)); // Binary: 110
+        let value = builder.define_const(BabyBear::from_u64(6)); // Binary: 110
 
         // Decompose into 3 bits - this creates its own public inputs for the bits
         let bits = builder.decompose_to_bits::<BabyBear>(value, 3).unwrap();
@@ -2281,7 +2354,7 @@ mod proptests {
         let mut builder = CircuitBuilder::<Ext4>::new();
 
         // Create a target representing the value we want to decompose
-        let value = builder.add_const(
+        let value = builder.define_const(
             Ext4::from_basis_coefficients_slice(&[
                 BabyBear::from_u32(0x40000006), // Binary: 01100000 00000000 00000000 00000001
                 BabyBear::from_u32(0x55555555), // Binary: 10101010 10101010 10101010 10101010
@@ -2349,10 +2422,10 @@ mod proptests {
 
         let mut builder = CircuitBuilder::<Ext4>::new();
 
-        let c0 = builder.add_const(Ext4::from(BabyBear::from_u64(1)));
-        let c1 = builder.add_const(Ext4::from(BabyBear::from_u64(2)));
-        let c2 = builder.add_const(Ext4::from(BabyBear::from_u64(3)));
-        let c3 = builder.add_const(Ext4::from(BabyBear::from_u64(4)));
+        let c0 = builder.define_const(Ext4::from(BabyBear::from_u64(1)));
+        let c1 = builder.define_const(Ext4::from(BabyBear::from_u64(2)));
+        let c2 = builder.define_const(Ext4::from(BabyBear::from_u64(3)));
+        let c3 = builder.define_const(Ext4::from(BabyBear::from_u64(4)));
 
         let coeffs = [c0, c1, c2, c3];
         let recomposed = builder
@@ -2391,7 +2464,7 @@ mod proptests {
             BabyBear::from_u64(8),
         ])
         .unwrap();
-        let x = builder.add_const(ext_val);
+        let x = builder.define_const(ext_val);
 
         let coeffs = builder.decompose_ext_to_base_coeffs::<BabyBear>(x).unwrap();
 
@@ -2438,7 +2511,7 @@ mod proptests {
             BabyBear::from_u64(101112),
         ])
         .unwrap();
-        let x = builder.add_const(original);
+        let x = builder.define_const(original);
 
         let coeffs = builder.decompose_ext_to_base_coeffs::<BabyBear>(x).unwrap();
         let recomposed = builder
@@ -2467,9 +2540,9 @@ mod proptests {
 
         let mut builder = CircuitBuilder::<Ext4>::new();
 
-        let c0 = builder.add_const(Ext4::ONE);
-        let c1 = builder.add_const(Ext4::ONE);
-        let c2 = builder.add_const(Ext4::ONE);
+        let c0 = builder.define_const(Ext4::ONE);
+        let c1 = builder.define_const(Ext4::ONE);
+        let c2 = builder.define_const(Ext4::ONE);
 
         let result = builder.recompose_base_coeffs_to_ext::<BabyBear>(&[c0, c1, c2]);
 
@@ -2487,7 +2560,7 @@ mod proptests {
     fn test_bool_check_fusion() {
         let mut builder = CircuitBuilder::<BabyBear>::new();
 
-        let b = builder.add_public_input();
+        let b = builder.public_input();
         builder.assert_bool(b);
 
         let circuit = builder.build().unwrap();
@@ -2501,7 +2574,7 @@ mod proptests {
         );
 
         let mut builder2 = CircuitBuilder::<BabyBear>::new();
-        let b2 = builder2.add_public_input();
+        let b2 = builder2.public_input();
         builder2.assert_bool(b2);
         let circuit2 = builder2.build().unwrap();
         let mut runner2 = circuit2.runner();

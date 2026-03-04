@@ -10,7 +10,7 @@ use tracing::instrument;
 use super::alu::AluTraceBuilder;
 use super::constant::ConstTraceBuilder;
 use super::public::PublicTraceBuilder;
-use super::witness::WitnessTraceBuilder;
+use super::witness::WitnessTrace;
 use super::{NonPrimitiveTrace, Traces};
 use crate::circuit::Circuit;
 use crate::op::{ExecutionContext, NonPrimitiveOpPrivateData, NonPrimitiveOpType, Op, OpStateMap};
@@ -188,8 +188,34 @@ impl<F: CircuitField> CircuitRunner<F> {
     pub fn run(mut self) -> Result<Traces<F>, CircuitError> {
         self.execute_all()?;
 
-        // Delegate to trace builders for each table
-        let witness_trace = WitnessTraceBuilder::new(&self.witness).build()?;
+        if let Some(rewrite) = self.circuit.witness_rewrite.take() {
+            let mut resolved: HashMap<WitnessId, WitnessId> = HashMap::new();
+            let mut root = |canon: WitnessId| {
+                *resolved.entry(canon).or_insert_with(|| {
+                    let mut cur = canon;
+                    while let Some(&next) = rewrite.get(&cur) {
+                        cur = next;
+                    }
+                    cur
+                })
+            };
+            for (dup, canon) in &rewrite {
+                let r = root(*canon);
+                if let Some(ref val) = self.witness[r.0 as usize] {
+                    self.set_witness(*dup, *val)?;
+                }
+            }
+        }
+
+        // Build witness trace directly from the populated witness table.
+        let witness_values: Result<Vec<_>, _> = self
+            .witness
+            .iter()
+            .enumerate()
+            .map(|(i, v)| (*v).ok_or(CircuitError::WitnessNotSetForIndex { index: i }))
+            .collect();
+        let witness_trace = WitnessTrace::new(witness_values?);
+
         let const_trace = ConstTraceBuilder::new(&self.circuit.ops).build()?;
         let public_trace = PublicTraceBuilder::new(&self.circuit.ops, &self.witness).build()?;
         let alu_trace = AluTraceBuilder::new(&self.circuit.ops, &self.witness).build()?;
@@ -199,9 +225,7 @@ impl<F: CircuitField> CircuitRunner<F> {
         // Iterate over generators in deterministic order (sorted by key)
         let _scope = tracing::debug_span!("generators").entered();
 
-        let mut op_types: Vec<_> = self.circuit.non_primitive_trace_generators.keys().collect();
-        op_types.sort();
-        for op_type in op_types {
+        for op_type in &self.circuit.non_primitive_trace_generator_order {
             let generator = &self.circuit.non_primitive_trace_generators[op_type];
             if let Some(trace) = generator(&self.op_states)? {
                 let trace_op_type = trace.op_type();
@@ -245,63 +269,57 @@ impl<F: CircuitField> CircuitRunner<F> {
                     c,
                     out,
                     intermediate_out,
-                } => {
-                    match kind {
-                        AluOpKind::Add => {
-                            let a_val = self.get_witness(*a)?;
-                            if let Ok(b_val) = self.get_witness(*b) {
-                                let result = a_val + b_val;
-                                self.set_witness(*out, result)?;
-                            } else {
-                                let out_val = self.get_witness(*out)?;
-                                let b_val = out_val - a_val;
-                                self.set_witness(*b, b_val)?;
-                            }
-                        }
-                        AluOpKind::Mul => {
-                            // Mul is used to represent either `Mul` or `Div` operations.
-                            // We determine which based on which inputs are set.
-                            let a_val = self.get_witness(*a)?;
-                            if let Ok(b_val) = self.get_witness(*b) {
-                                let result = a_val * b_val;
-                                self.set_witness(*out, result)?;
-                            } else {
-                                let result_val = self.get_witness(*out)?;
-                                let a_inv =
-                                    a_val.try_inverse().ok_or(CircuitError::DivisionByZero)?;
-                                let b_val = result_val * a_inv;
-                                self.set_witness(*b, b_val)?;
-                            }
-                        }
-                        AluOpKind::BoolCheck => {
-                            // BoolCheck constraint is checked in the AIR; here we just ensure out = a
-                            let a_val = self.get_witness(*a)?;
-                            self.set_witness(*out, a_val)?;
-                        }
-                        AluOpKind::MulAdd => {
-                            // out = a * b + c
-                            let a_val = self.get_witness(*a)?;
-                            let b_val = self.get_witness(*b)?;
-                            let ab_product = a_val * b_val;
-                            let intermediate_out_id = *intermediate_out;
-                            let c_id_opt = *c;
-                            let out_id = *out;
-
-                            // Set intermediate_out if fused from separate operations
-                            if let Some(io) = intermediate_out_id {
-                                self.set_witness(io, ab_product)?;
-                            }
-
-                            let c_val = if let Some(c_id) = c_id_opt {
-                                self.get_witness(c_id)?
-                            } else {
-                                F::ZERO
-                            };
-                            let result = ab_product + c_val;
-                            self.set_witness(out_id, result)?;
+                } => match kind {
+                    AluOpKind::Add => {
+                        let a_val = self.get_witness(*a)?;
+                        if let Ok(b_val) = self.get_witness(*b) {
+                            let result = a_val + b_val;
+                            self.set_witness(*out, result)?;
+                        } else {
+                            let out_val = self.get_witness(*out)?;
+                            let b_val = out_val - a_val;
+                            self.set_witness(*b, b_val)?;
                         }
                     }
-                }
+                    AluOpKind::Mul => {
+                        // Mul is used to represent either `Mul` or `Div` operations.
+                        // We determine which based on which inputs are set.
+                        let a_val = self.get_witness(*a)?;
+                        if let Ok(b_val) = self.get_witness(*b) {
+                            self.set_witness(*out, a_val * b_val)?;
+                        } else {
+                            let result_val = self.get_witness(*out)?;
+                            let a_inv = a_val.try_inverse().ok_or(CircuitError::DivisionByZero)?;
+                            self.set_witness(*b, result_val * a_inv)?;
+                        }
+                    }
+                    AluOpKind::BoolCheck => {
+                        // BoolCheck constraint is checked in the AIR; here we just ensure out = a
+                        let a_val = self.get_witness(*a)?;
+                        self.set_witness(*out, a_val)?;
+                    }
+                    AluOpKind::MulAdd => {
+                        // out = a * b + c
+                        let a_val = self.get_witness(*a)?;
+                        let b_val = self.get_witness(*b)?;
+                        let ab_product = a_val * b_val;
+                        let intermediate_out_id = *intermediate_out;
+                        let c_id_opt = *c;
+                        let out_id = *out;
+
+                        // Set intermediate_out if fused from separate operations
+                        if let Some(io) = intermediate_out_id {
+                            self.set_witness(io, ab_product)?;
+                        }
+
+                        let c_val = if let Some(c_id) = c_id_opt {
+                            self.get_witness(c_id)?
+                        } else {
+                            F::ZERO
+                        };
+                        self.set_witness(out_id, ab_product + c_val)?;
+                    }
+                },
                 Op::NonPrimitiveOpWithExecutor {
                     inputs,
                     outputs,
@@ -324,7 +342,7 @@ impl<F: CircuitField> CircuitRunner<F> {
     }
 
     /// Gets witness value by ID.
-    #[inline]
+    #[inline(always)]
     fn get_witness(&self, widx: WitnessId) -> Result<F, CircuitError> {
         self.witness
             .get(widx.0 as usize)
@@ -347,6 +365,7 @@ impl<F: CircuitField> CircuitRunner<F> {
             if *existing_value == value {
                 return Ok(());
             }
+            #[cfg(feature = "debugging")]
             let expr_ids = self
                 .circuit
                 .expr_to_widx
@@ -359,6 +378,9 @@ impl<F: CircuitField> CircuitRunner<F> {
                     }
                 })
                 .collect::<Vec<_>>();
+            #[cfg(not(feature = "debugging"))]
+            let expr_ids = vec![];
+
             return Err(CircuitError::WitnessConflict {
                 witness_id: widx,
                 existing: format!("{existing_value:?}"),
@@ -417,8 +439,8 @@ mod tests {
         let mut builder = CircuitBuilder::new();
 
         // Simple test: x + 5 = result
-        let x = builder.add_public_input();
-        let c5 = builder.add_const(BabyBear::from_u64(5));
+        let x = builder.public_input();
+        let c5 = builder.define_const(BabyBear::from_u64(5));
         let _result = builder.add(x, c5);
 
         let circuit = builder.build().unwrap();
@@ -490,8 +512,8 @@ mod tests {
 
         let mut builder = CircuitBuilder::new();
 
-        let c37 = builder.add_const(BabyBear::from_u64(37));
-        let c111 = builder.add_const(BabyBear::from_u64(111));
+        let c37 = builder.define_const(BabyBear::from_u64(37));
+        let c111 = builder.define_const(BabyBear::from_u64(111));
         let x_hint = XHint::new();
         let x = builder
             .push_unconstrained_op(vec![vec![c37, c111]], 1, x_hint, "x")
@@ -540,9 +562,9 @@ mod tests {
         let mut builder = CircuitBuilder::new();
 
         // Test extension field operations: x + y * z
-        let x = builder.add_public_input();
-        let y = builder.add_public_input();
-        let z = builder.add_public_input();
+        let x = builder.public_input();
+        let y = builder.public_input();
+        let z = builder.public_input();
 
         let yz = builder.mul(y, z);
         let _result = builder.add(x, yz);

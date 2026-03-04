@@ -30,7 +30,7 @@ let a_plus_bc = builder.alloc_add(input_a, b_times_c, "a_plus_bc");
 let a_minus_bc = builder.alloc_sub(input_a, b_times_c, "a_minus_bc");
 
 // Default allocation
-let x = builder.add_public_input(); // unlabelled
+let x = builder.public_input(); // unlabelled
 let y = builder.add(x, z);          // unlabelled
 ```
 

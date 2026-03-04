@@ -45,14 +45,14 @@ fn test_transcript_single_observe_sample() {
     // Observe a single value
     let val = F::from_u64(42);
     native.observe(val);
-    let val_target = circuit.add_const(EF::from(val));
+    let val_target = circuit.define_const(EF::from(val));
     RecursiveChallenger::<F, EF>::observe(&mut circuit_challenger, &mut circuit, val_target);
 
     // Fill to RATE to trigger duplexing
     for i in 1..RATE {
         let v = F::from_u64(i as u64);
         native.observe(v);
-        let v_t = circuit.add_const(EF::from(v));
+        let v_t = circuit.define_const(EF::from(v));
         RecursiveChallenger::<F, EF>::observe(&mut circuit_challenger, &mut circuit, v_t);
     }
 
@@ -62,7 +62,7 @@ fn test_transcript_single_observe_sample() {
         RecursiveChallenger::<F, EF>::sample(&mut circuit_challenger, &mut circuit);
 
     // Connect circuit sample to expected native value
-    let expected = circuit.add_const(EF::from(native_sample));
+    let expected = circuit.define_const(EF::from(native_sample));
     circuit.connect(circuit_sample, expected);
 
     // Build and run - if values match, no WitnessConflict
@@ -90,13 +90,13 @@ fn test_transcript_observe_ext_compatibility() {
     // Observe a base value as algebra element (like batch-STARK does)
     let base_val = F::from_usize(123);
     native.observe_base_as_algebra_element::<EF>(base_val);
-    let val_target = circuit.add_const(EF::from(base_val));
+    let val_target = circuit.define_const(EF::from(base_val));
     RecursiveChallenger::<F, EF>::observe_ext(&mut circuit_challenger, &mut circuit, val_target);
 
     // Observe another value
     let base_val2 = F::from_usize(456);
     native.observe_base_as_algebra_element::<EF>(base_val2);
-    let val_target2 = circuit.add_const(EF::from(base_val2));
+    let val_target2 = circuit.define_const(EF::from(base_val2));
     RecursiveChallenger::<F, EF>::observe_ext(&mut circuit_challenger, &mut circuit, val_target2);
 
     // Sample extension element
@@ -104,7 +104,7 @@ fn test_transcript_observe_ext_compatibility() {
     let circuit_ext =
         RecursiveChallenger::<F, EF>::sample_ext(&mut circuit_challenger, &mut circuit);
 
-    let expected = circuit.add_const(native_ext);
+    let expected = circuit.define_const(native_ext);
     circuit.connect(circuit_ext, expected);
 
     let compiled = circuit.build().expect("Circuit should build");
@@ -129,42 +129,42 @@ fn test_transcript_multiple_duplexing_rounds() {
     for i in 0..RATE {
         let val = F::from_u64(i as u64 + 100);
         native.observe(val);
-        let t = circuit.add_const(EF::from(val));
+        let t = circuit.define_const(EF::from(val));
         RecursiveChallenger::<F, EF>::observe(&mut circuit_challenger, &mut circuit, t);
     }
 
     // Sample after first round
     let native_s1: F = native.sample();
     let circuit_s1 = RecursiveChallenger::<F, EF>::sample(&mut circuit_challenger, &mut circuit);
-    let expected_s1 = circuit.add_const(EF::from(native_s1));
+    let expected_s1 = circuit.define_const(EF::from(native_s1));
     circuit.connect(circuit_s1, expected_s1);
 
     // Second round: observe more elements
     for i in 0..RATE {
         let val = F::from_u64(i as u64 + 200);
         native.observe(val);
-        let t = circuit.add_const(EF::from(val));
+        let t = circuit.define_const(EF::from(val));
         RecursiveChallenger::<F, EF>::observe(&mut circuit_challenger, &mut circuit, t);
     }
 
     // Sample after second round
     let native_s2: F = native.sample();
     let circuit_s2 = RecursiveChallenger::<F, EF>::sample(&mut circuit_challenger, &mut circuit);
-    let expected_s2 = circuit.add_const(EF::from(native_s2));
+    let expected_s2 = circuit.define_const(EF::from(native_s2));
     circuit.connect(circuit_s2, expected_s2);
 
     // Third round with extension samples
     for i in 0..4 {
         let val = F::from_u64(i as u64 + 300);
         native.observe_base_as_algebra_element::<EF>(val);
-        let t = circuit.add_const(EF::from(val));
+        let t = circuit.define_const(EF::from(val));
         RecursiveChallenger::<F, EF>::observe_ext(&mut circuit_challenger, &mut circuit, t);
     }
 
     let native_ext: EF = native.sample_algebra_element();
     let circuit_ext =
         RecursiveChallenger::<F, EF>::sample_ext(&mut circuit_challenger, &mut circuit);
-    let expected_ext = circuit.add_const(native_ext);
+    let expected_ext = circuit.define_const(native_ext);
     circuit.connect(circuit_ext, expected_ext);
 
     let compiled = circuit.build().expect("Circuit should build");
@@ -189,7 +189,7 @@ fn test_transcript_partial_absorption() {
     for i in 0..3 {
         let val = F::from_u64(i as u64 + 50);
         native.observe(val);
-        let t = circuit.add_const(EF::from(val));
+        let t = circuit.define_const(EF::from(val));
         RecursiveChallenger::<F, EF>::observe(&mut circuit_challenger, &mut circuit, t);
     }
 
@@ -198,7 +198,7 @@ fn test_transcript_partial_absorption() {
     let circuit_sample =
         RecursiveChallenger::<F, EF>::sample(&mut circuit_challenger, &mut circuit);
 
-    let expected = circuit.add_const(EF::from(native_sample));
+    let expected = circuit.define_const(EF::from(native_sample));
     circuit.connect(circuit_sample, expected);
 
     let compiled = circuit.build().expect("Circuit should build");
@@ -231,7 +231,7 @@ fn test_transcript_observe_extension_element() {
     // Native: observe_algebra_element decomposes to D coefficients
     native.observe_algebra_element(ext_val);
     // Circuit: observe_ext does the same decomposition
-    let ext_target = circuit.add_const(ext_val);
+    let ext_target = circuit.define_const(ext_val);
     RecursiveChallenger::<F, EF>::observe_ext(&mut circuit_challenger, &mut circuit, ext_target);
 
     // Observe more to trigger duplexing
@@ -243,7 +243,7 @@ fn test_transcript_observe_extension_element() {
     ])
     .unwrap();
     native.observe_algebra_element(ext_val2);
-    let ext_target2 = circuit.add_const(ext_val2);
+    let ext_target2 = circuit.define_const(ext_val2);
     RecursiveChallenger::<F, EF>::observe_ext(&mut circuit_challenger, &mut circuit, ext_target2);
 
     // Sample and compare
@@ -251,7 +251,7 @@ fn test_transcript_observe_extension_element() {
     let circuit_ext =
         RecursiveChallenger::<F, EF>::sample_ext(&mut circuit_challenger, &mut circuit);
 
-    let expected = circuit.add_const(native_ext);
+    let expected = circuit.define_const(native_ext);
     circuit.connect(circuit_ext, expected);
 
     let compiled = circuit.build().expect("Circuit should build");
@@ -276,35 +276,35 @@ fn test_transcript_mixed_observations() {
     for i in 0..3 {
         let val = F::from_u64(i as u64);
         native.observe(val);
-        let t = circuit.add_const(EF::from(val));
+        let t = circuit.define_const(EF::from(val));
         RecursiveChallenger::<F, EF>::observe(&mut circuit_challenger, &mut circuit, t);
     }
 
     // Extension field observation
     let base_as_ext = F::from_usize(999);
     native.observe_base_as_algebra_element::<EF>(base_as_ext);
-    let t = circuit.add_const(EF::from(base_as_ext));
+    let t = circuit.define_const(EF::from(base_as_ext));
     RecursiveChallenger::<F, EF>::observe_ext(&mut circuit_challenger, &mut circuit, t);
 
     // More base observations
     for i in 0..2 {
         let val = F::from_u64(i as u64 + 100);
         native.observe(val);
-        let t = circuit.add_const(EF::from(val));
+        let t = circuit.define_const(EF::from(val));
         RecursiveChallenger::<F, EF>::observe(&mut circuit_challenger, &mut circuit, t);
     }
 
     // Sample base field element
     let native_base: F = native.sample();
     let circuit_base = RecursiveChallenger::<F, EF>::sample(&mut circuit_challenger, &mut circuit);
-    let expected_base = circuit.add_const(EF::from(native_base));
+    let expected_base = circuit.define_const(EF::from(native_base));
     circuit.connect(circuit_base, expected_base);
 
     // Sample extension field element
     let native_ext: EF = native.sample_algebra_element();
     let circuit_ext =
         RecursiveChallenger::<F, EF>::sample_ext(&mut circuit_challenger, &mut circuit);
-    let expected_ext = circuit.add_const(native_ext);
+    let expected_ext = circuit.define_const(native_ext);
     circuit.connect(circuit_ext, expected_ext);
 
     let compiled = circuit.build().expect("Circuit should build");
@@ -332,7 +332,7 @@ fn test_transcript_clear_produces_fresh_state() {
     // First, do some observations to dirty the state
     for i in 0..5 {
         let val = F::from_u64(i as u64);
-        let t = circuit.add_const(EF::from(val));
+        let t = circuit.define_const(EF::from(val));
         RecursiveChallenger::<F, EF>::observe(&mut circuit_challenger, &mut circuit, t);
     }
 
@@ -344,7 +344,7 @@ fn test_transcript_clear_produces_fresh_state() {
     for i in 0..RATE {
         let val = F::from_u64(i as u64 + 1000);
         native.observe(val);
-        let t = circuit.add_const(EF::from(val));
+        let t = circuit.define_const(EF::from(val));
         RecursiveChallenger::<F, EF>::observe(&mut circuit_challenger, &mut circuit, t);
     }
 
@@ -353,7 +353,7 @@ fn test_transcript_clear_produces_fresh_state() {
     let circuit_sample =
         RecursiveChallenger::<F, EF>::sample(&mut circuit_challenger, &mut circuit);
 
-    let expected = circuit.add_const(EF::from(native_sample));
+    let expected = circuit.define_const(EF::from(native_sample));
     circuit.connect(circuit_sample, expected);
 
     let compiled = circuit.build().expect("Circuit should build");
@@ -378,7 +378,7 @@ fn test_transcript_consecutive_samples() {
     for i in 0..RATE {
         let val = F::from_u64(i as u64 + 77);
         native.observe(val);
-        let t = circuit.add_const(EF::from(val));
+        let t = circuit.define_const(EF::from(val));
         RecursiveChallenger::<F, EF>::observe(&mut circuit_challenger, &mut circuit, t);
     }
 
@@ -386,7 +386,7 @@ fn test_transcript_consecutive_samples() {
     for _ in 0..5 {
         let native_s: F = native.sample();
         let circuit_s = RecursiveChallenger::<F, EF>::sample(&mut circuit_challenger, &mut circuit);
-        let expected = circuit.add_const(EF::from(native_s));
+        let expected = circuit.define_const(EF::from(native_s));
         circuit.connect(circuit_s, expected);
     }
 
@@ -417,7 +417,7 @@ fn test_edge_case_exactly_rate_observations() {
     for i in 0..RATE {
         let val = F::from_u64(i as u64 + 500);
         native.observe(val);
-        let t = circuit.add_const(EF::from(val));
+        let t = circuit.define_const(EF::from(val));
         RecursiveChallenger::<F, EF>::observe(&mut circuit_challenger, &mut circuit, t);
     }
 
@@ -427,13 +427,13 @@ fn test_edge_case_exactly_rate_observations() {
     // Sample should come from output buffer without triggering new duplexing
     let native_s1: F = native.sample();
     let circuit_s1 = RecursiveChallenger::<F, EF>::sample(&mut circuit_challenger, &mut circuit);
-    let expected_s1 = circuit.add_const(EF::from(native_s1));
+    let expected_s1 = circuit.define_const(EF::from(native_s1));
     circuit.connect(circuit_s1, expected_s1);
 
     // Sample again to verify output buffer state
     let native_s2: F = native.sample();
     let circuit_s2 = RecursiveChallenger::<F, EF>::sample(&mut circuit_challenger, &mut circuit);
-    let expected_s2 = circuit.add_const(EF::from(native_s2));
+    let expected_s2 = circuit.define_const(EF::from(native_s2));
     circuit.connect(circuit_s2, expected_s2);
 
     let compiled = circuit.build().expect("Circuit should build");
@@ -459,7 +459,7 @@ fn test_edge_case_drain_output_buffer_completely() {
     for i in 0..RATE {
         let val = F::from_u64(i as u64 + 600);
         native.observe(val);
-        let t = circuit.add_const(EF::from(val));
+        let t = circuit.define_const(EF::from(val));
         RecursiveChallenger::<F, EF>::observe(&mut circuit_challenger, &mut circuit, t);
     }
 
@@ -467,7 +467,7 @@ fn test_edge_case_drain_output_buffer_completely() {
     for j in 0..RATE {
         let native_s: F = native.sample();
         let circuit_s = RecursiveChallenger::<F, EF>::sample(&mut circuit_challenger, &mut circuit);
-        let expected = circuit.add_const(EF::from(native_s));
+        let expected = circuit.define_const(EF::from(native_s));
         circuit.connect(circuit_s, expected);
 
         // Verify we got a valid sample at each step
@@ -479,7 +479,7 @@ fn test_edge_case_drain_output_buffer_completely() {
     // Now output buffer is empty - this sample should trigger new duplexing
     let native_extra: F = native.sample();
     let circuit_extra = RecursiveChallenger::<F, EF>::sample(&mut circuit_challenger, &mut circuit);
-    let expected_extra = circuit.add_const(EF::from(native_extra));
+    let expected_extra = circuit.define_const(EF::from(native_extra));
     circuit.connect(circuit_extra, expected_extra);
 
     let compiled = circuit.build().expect("Circuit should build");
@@ -508,46 +508,46 @@ fn test_edge_case_interleaved_observe_sample() {
     for i in 0..3 {
         let val = F::from_u64(i as u64 + 700);
         native.observe(val);
-        let t = circuit.add_const(EF::from(val));
+        let t = circuit.define_const(EF::from(val));
         RecursiveChallenger::<F, EF>::observe(&mut circuit_challenger, &mut circuit, t);
     }
 
     // Sample (triggers duplexing with 3 inputs)
     let native_s1: F = native.sample();
     let circuit_s1 = RecursiveChallenger::<F, EF>::sample(&mut circuit_challenger, &mut circuit);
-    let expected_s1 = circuit.add_const(EF::from(native_s1));
+    let expected_s1 = circuit.define_const(EF::from(native_s1));
     circuit.connect(circuit_s1, expected_s1);
 
     // Observe 2 more (invalidates output buffer)
     for i in 0..2 {
         let val = F::from_u64(i as u64 + 800);
         native.observe(val);
-        let t = circuit.add_const(EF::from(val));
+        let t = circuit.define_const(EF::from(val));
         RecursiveChallenger::<F, EF>::observe(&mut circuit_challenger, &mut circuit, t);
     }
 
     // Sample (triggers new duplexing with 2 inputs)
     let native_s2: F = native.sample();
     let circuit_s2 = RecursiveChallenger::<F, EF>::sample(&mut circuit_challenger, &mut circuit);
-    let expected_s2 = circuit.add_const(EF::from(native_s2));
+    let expected_s2 = circuit.define_const(EF::from(native_s2));
     circuit.connect(circuit_s2, expected_s2);
 
     // Sample again (from output buffer)
     let native_s3: F = native.sample();
     let circuit_s3 = RecursiveChallenger::<F, EF>::sample(&mut circuit_challenger, &mut circuit);
-    let expected_s3 = circuit.add_const(EF::from(native_s3));
+    let expected_s3 = circuit.define_const(EF::from(native_s3));
     circuit.connect(circuit_s3, expected_s3);
 
     // Observe 1 more
     let val = F::from_u64(900);
     native.observe(val);
-    let t = circuit.add_const(EF::from(val));
+    let t = circuit.define_const(EF::from(val));
     RecursiveChallenger::<F, EF>::observe(&mut circuit_challenger, &mut circuit, t);
 
     // Final sample
     let native_s4: F = native.sample();
     let circuit_s4 = RecursiveChallenger::<F, EF>::sample(&mut circuit_challenger, &mut circuit);
-    let expected_s4 = circuit.add_const(EF::from(native_s4));
+    let expected_s4 = circuit.define_const(EF::from(native_s4));
     circuit.connect(circuit_s4, expected_s4);
 
     let compiled = circuit.build().expect("Circuit should build");
@@ -572,13 +572,13 @@ fn test_edge_case_sample_without_observations() {
     // Sample immediately (duplexing with zero-initialized state)
     let native_s1: F = native.sample();
     let circuit_s1 = RecursiveChallenger::<F, EF>::sample(&mut circuit_challenger, &mut circuit);
-    let expected_s1 = circuit.add_const(EF::from(native_s1));
+    let expected_s1 = circuit.define_const(EF::from(native_s1));
     circuit.connect(circuit_s1, expected_s1);
 
     // Sample again
     let native_s2: F = native.sample();
     let circuit_s2 = RecursiveChallenger::<F, EF>::sample(&mut circuit_challenger, &mut circuit);
-    let expected_s2 = circuit.add_const(EF::from(native_s2));
+    let expected_s2 = circuit.define_const(EF::from(native_s2));
     circuit.connect(circuit_s2, expected_s2);
 
     let compiled = circuit.build().expect("Circuit should build");
@@ -603,14 +603,14 @@ fn test_edge_case_single_observe_multiple_samples() {
     // Single observation
     let val = F::from_u64(12345);
     native.observe(val);
-    let t = circuit.add_const(EF::from(val));
+    let t = circuit.define_const(EF::from(val));
     RecursiveChallenger::<F, EF>::observe(&mut circuit_challenger, &mut circuit, t);
 
     // Multiple samples (first triggers duplexing, rest from buffer)
     for _ in 0..RATE {
         let native_s: F = native.sample();
         let circuit_s = RecursiveChallenger::<F, EF>::sample(&mut circuit_challenger, &mut circuit);
-        let expected = circuit.add_const(EF::from(native_s));
+        let expected = circuit.define_const(EF::from(native_s));
         circuit.connect(circuit_s, expected);
     }
 
@@ -637,7 +637,7 @@ fn test_edge_case_extension_samples_drain_buffer() {
     for i in 0..RATE {
         let val = F::from_u64(i as u64 + 1000);
         native.observe(val);
-        let t = circuit.add_const(EF::from(val));
+        let t = circuit.define_const(EF::from(val));
         RecursiveChallenger::<F, EF>::observe(&mut circuit_challenger, &mut circuit, t);
     }
 
@@ -646,20 +646,20 @@ fn test_edge_case_extension_samples_drain_buffer() {
     let native_ext1: EF = native.sample_algebra_element();
     let circuit_ext1 =
         RecursiveChallenger::<F, EF>::sample_ext(&mut circuit_challenger, &mut circuit);
-    let expected_ext1 = circuit.add_const(native_ext1);
+    let expected_ext1 = circuit.define_const(native_ext1);
     circuit.connect(circuit_ext1, expected_ext1);
 
     let native_ext2: EF = native.sample_algebra_element();
     let circuit_ext2 =
         RecursiveChallenger::<F, EF>::sample_ext(&mut circuit_challenger, &mut circuit);
-    let expected_ext2 = circuit.add_const(native_ext2);
+    let expected_ext2 = circuit.define_const(native_ext2);
     circuit.connect(circuit_ext2, expected_ext2);
 
     // Third ext sample should trigger new duplexing
     let native_ext3: EF = native.sample_algebra_element();
     let circuit_ext3 =
         RecursiveChallenger::<F, EF>::sample_ext(&mut circuit_challenger, &mut circuit);
-    let expected_ext3 = circuit.add_const(native_ext3);
+    let expected_ext3 = circuit.define_const(native_ext3);
     circuit.connect(circuit_ext3, expected_ext3);
 
     let compiled = circuit.build().expect("Circuit should build");

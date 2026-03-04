@@ -30,7 +30,7 @@ overhead of handling arbitrary control flow, and makes the resulting AIR(s) stat
 
 - **Reusability**: adapting to a new program requires a new circuit.
 
-The rest of this book explains how this approach is built, [how to soften its rigidity](extensions.md#strategies),
+The rest of this book explains how this approach is built, [how to soften its rigidity](scaling.md),
 and why it provides a powerful foundation for recursive proof systems.
 
 ## Execution IR

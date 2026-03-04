@@ -22,7 +22,7 @@ pub use alu::{AluTrace, AluTraceBuilder};
 pub use constant::{ConstTrace, ConstTraceBuilder};
 pub use public::{PublicTrace, PublicTraceBuilder};
 pub use runner::CircuitRunner;
-pub use witness::{WitnessTrace, WitnessTraceBuilder};
+pub use witness::WitnessTrace;
 
 /// Trait implemented by all non-primitive operation traces.
 pub trait NonPrimitiveTrace<F>: Send + Sync {

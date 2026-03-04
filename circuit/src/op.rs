@@ -162,25 +162,70 @@ impl<F> Op<F> {
     pub fn is_mul(&self) -> bool {
         self.is_alu_kind(AluOpKind::Mul)
     }
+
+    /// Rewrite witness IDs in place using the given map (follows chains to canonical ID).
+    /// Used by the optimizer to apply ALU dedup without re-boxing non-primitive executors.
+    pub fn apply_witness_rewrite(&mut self, rewrite: &HashMap<WitnessId, WitnessId>) {
+        if rewrite.is_empty() {
+            return;
+        }
+        let resolve = |id: WitnessId| {
+            let mut cur = id;
+            while let Some(&next) = rewrite.get(&cur) {
+                cur = next;
+            }
+            cur
+        };
+        match self {
+            Self::Const { out, .. } => *out = resolve(*out),
+            Self::Public { out, .. } => *out = resolve(*out),
+            Self::Alu {
+                a,
+                b,
+                c,
+                out,
+                intermediate_out,
+                ..
+            } => {
+                *a = resolve(*a);
+                *b = resolve(*b);
+                *c = c.map(resolve);
+                *out = resolve(*out);
+                *intermediate_out = intermediate_out.map(resolve);
+            }
+            Self::NonPrimitiveOpWithExecutor {
+                inputs, outputs, ..
+            } => {
+                for g in inputs.iter_mut() {
+                    for w in g.iter_mut() {
+                        *w = resolve(*w);
+                    }
+                }
+                for g in outputs.iter_mut() {
+                    for w in g.iter_mut() {
+                        *w = resolve(*w);
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[derive(EnumCount, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PrimitiveOpType {
-    Witness = 0,
-    Const = 1,
-    Public = 2,
+    Const = 0,
+    Public = 1,
     /// Unified ALU table (combines Add, Mul, BoolCheck, MulAdd)
-    Alu = 3,
+    Alu = 2,
 }
 
 #[allow(clippy::fallible_impl_from)]
 impl From<usize> for PrimitiveOpType {
     fn from(value: usize) -> Self {
         match value {
-            0 => Self::Witness,
-            1 => Self::Const,
-            2 => Self::Public,
-            3 => Self::Alu,
+            0 => Self::Const,
+            1 => Self::Public,
+            2 => Self::Alu,
             _ => panic!("Invalid PrimitiveOpType value: {}", value),
         }
     }
@@ -297,7 +342,9 @@ pub enum NonPrimitiveOpType {
 pub use crate::ops::poseidon2_perm::{Poseidon2Config, Poseidon2PermExec, Poseidon2PermExecBase};
 
 /// Preprocessed data for non-primitive tables, keyed by operation type.
-pub type NonPrimitivePreprocessedMap<F> = HashMap<NonPrimitiveOpType, Vec<F>>;
+/// Uses BTreeMap to ensure deterministic iteration order, which is critical
+/// for matching AIR ordering between `get_airs_and_degrees_with_prep` and `prove`.
+pub type NonPrimitivePreprocessedMap<F> = BTreeMap<NonPrimitiveOpType, Vec<F>>;
 
 /// Non-primitive operation configuration.
 ///
@@ -305,10 +352,10 @@ pub type NonPrimitivePreprocessedMap<F> = HashMap<NonPrimitiveOpType, Vec<F>>;
 pub enum NonPrimitiveOpConfig<F> {
     /// No configuration needed (placeholder for future operations).
     None,
-    /// Poseidon2 permutation configuration with exec closure (D=4, 4 extension elements).
+    /// Poseidon2 permutation configuration with exec closure (extension field mode).
     Poseidon2Perm {
         config: Poseidon2Config,
-        exec: Poseidon2PermExec<F, 4>,
+        exec: Poseidon2PermExec<F>,
     },
     /// Poseidon2 permutation configuration for base field (D=1, 16 base elements).
     Poseidon2PermBase {

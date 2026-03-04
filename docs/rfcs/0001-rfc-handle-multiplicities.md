@@ -2,7 +2,7 @@
 
 - **Author(s):** @LindaGuiga
 - **DRI:** @LindaGuiga
-- **Status:** In Review
+- **Status:** Implemented
 - **Created:** 2026-01-09
 - **Tracking issue:** #234
 

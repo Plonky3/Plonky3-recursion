@@ -44,7 +44,6 @@ macro_rules! assert_air_constraint_degree {
         let (base_constraints, extension_constraints) = get_symbolic_constraints(
             &air,
             preprocessed_width,
-            0,
             &lookups,
             &lookup_data,
             &lookup_gadget,

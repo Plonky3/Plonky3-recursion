@@ -5,11 +5,12 @@ use p3_batch_stark::{CommonData, ProverData};
 use p3_circuit::op::PrimitiveOpType;
 use p3_circuit::ops::{Poseidon2PermCall, generate_poseidon2_trace};
 use p3_circuit::{CircuitBuilder, Poseidon2PermOps};
-use p3_circuit_prover::air::{AluAir, ConstAir, PublicAir, WitnessAir};
+use p3_circuit_prover::air::{AluAir, ConstAir, PublicAir};
 use p3_circuit_prover::batch_stark_prover::PrimitiveTable;
 use p3_circuit_prover::common::{NonPrimitiveConfig, get_airs_and_degrees_with_prep};
 use p3_circuit_prover::{
-    BatchStarkProof, BatchStarkProver, CircuitProverData, Poseidon2Config, TablePacking,
+    BatchStarkProof, BatchStarkProver, CircuitProverData, ConstraintProfile, Poseidon2Config,
+    TablePacking,
 };
 use p3_field::PrimeCharacteristicRing;
 use p3_fri::create_test_fri_params;
@@ -17,8 +18,8 @@ use p3_lookup::logup::LogUpGadget;
 use p3_lookup::lookup_traits::LookupData;
 use p3_poseidon2_circuit_air::BabyBearD4Width16;
 use p3_recursion::generation::generate_batch_challenges;
-use p3_recursion::pcs::fri::{FriVerifierParams, HashTargets, InputProofTargets, RecValMmcs};
-use p3_recursion::verifier::{CircuitTablesAir, verify_p3_recursion_proof_circuit};
+use p3_recursion::pcs::fri::{FriVerifierParams, InputProofTargets, MerkleCapTargets, RecValMmcs};
+use p3_recursion::verifier::{CircuitTablesAir, verify_p3_batch_proof_circuit};
 use p3_recursion::{BatchStarkVerifierInputsBuilder, GenerationError, VerificationError};
 const TRACE_D: usize = 1; // Proof traces are in base field
 
@@ -101,17 +102,22 @@ fn test_wrong_multiplicities() {
     // Get a circuit that computes arithmetic operations.
     let builder = get_circuit(n);
 
-    let table_packing = TablePacking::new(1, 4, 4);
+    let table_packing = TablePacking::new(4, 4);
 
     let config_proving = get_proving_config();
 
     let circuit = builder.build().unwrap();
     let (airs_degrees, mut preprocessed_columns) =
-        get_airs_and_degrees_with_prep::<MyConfig, _, 1>(&circuit, table_packing, None).unwrap();
+        get_airs_and_degrees_with_prep::<MyConfig, _, 1>(
+            &circuit,
+            table_packing,
+            None,
+            ConstraintProfile::Standard,
+        )
+        .unwrap();
 
-    // Introduce an error in the witness multiplicities.
-    preprocessed_columns.primitive[PrimitiveOpType::Witness as usize]
-        [PrimitiveTable::Alu as usize] += F::ONE;
+    // Introduce an error in the Const table multiplicities.
+    preprocessed_columns.primitive[PrimitiveOpType::Const as usize][0] += F::ONE;
     let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
     let mut runner = circuit.runner();
 
@@ -211,7 +217,7 @@ fn test_wrong_expected_cumulated() {
     // which causes a WitnessConflict during recursive verification.
     batch_stark_proof.proof.global_lookup_data[0][0].expected_cumulated += F::ONE;
     // Introduce an error in the expected cumulated values for the first lookup.
-    assert!(batch_stark_proof.proof.global_lookup_data.len() == 4);
+    assert!(batch_stark_proof.proof.global_lookup_data.len() == 3);
 
     // Build the recursive verification circuit
     let mut circuit_builder = setup_circuit_builder();
@@ -266,7 +272,7 @@ fn test_inconsistent_lookup_name() {
 
     let real_lookup_data = batch_stark_proof.proof.global_lookup_data.clone();
     // First, modify the first global lookup data's name.
-    assert!(real_lookup_data.len() == 4);
+    assert!(real_lookup_data.len() == 3);
     let mut fake_global_lookup_data = real_lookup_data.clone();
     fake_global_lookup_data[0][0].name = "ModifiedLookup".to_string();
 
@@ -390,8 +396,8 @@ fn test_inconsistent_lookup_order_shape() {
 
     let real_lookup_data = batch_stark_proof.proof.global_lookup_data.clone();
     let mut fake_global_lookup_data = real_lookup_data.clone();
-    assert!(fake_global_lookup_data[3].len() > 1);
-    fake_global_lookup_data[3].swap(0, 1);
+    assert!(fake_global_lookup_data[2].len() > 1);
+    fake_global_lookup_data[2].swap(0, 1);
 
     // Build the recursive verification circuit
     let mut circuit_builder = setup_circuit_builder();
@@ -576,13 +582,18 @@ fn get_test_circuit_proof() -> TestCircuitProofData {
     // Get a circuit that computes arithmetic operations.
     let builder = get_circuit(n);
 
-    let table_packing = TablePacking::new(1, 4, 4);
+    let table_packing = TablePacking::new(4, 4);
 
     let config_proving = get_proving_config();
 
     let circuit = builder.build().unwrap();
-    let (airs_degrees, preprocessed_columns) =
-        get_airs_and_degrees_with_prep::<MyConfig, _, 1>(&circuit, table_packing, None).unwrap();
+    let (airs_degrees, preprocessed_columns) = get_airs_and_degrees_with_prep::<MyConfig, _, 1>(
+        &circuit,
+        table_packing,
+        None,
+        ConstraintProfile::Standard,
+    )
+    .unwrap();
 
     let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
     let mut runner = circuit.runner();
@@ -619,7 +630,7 @@ fn get_test_circuit_proof() -> TestCircuitProofData {
         pow_bits,
         log_height_max,
     };
-    let pis = vec![vec![]; 4];
+    let pis = vec![vec![]; 3];
 
     TestCircuitProofData {
         batch_stark_proof,
@@ -638,7 +649,7 @@ fn get_proving_config() -> MyConfig {
     let perm = default_babybear_poseidon2_16();
     let hash = MyHash::new(perm.clone());
     let compress = MyCompress::new(perm.clone());
-    let val_mmcs = ValMmcs::new(hash, compress);
+    let val_mmcs = ValMmcs::new(hash, compress, 0);
     let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
     let dft = Dft::default();
 
@@ -656,7 +667,7 @@ fn get_recursive_config_and_params() -> (MyConfig, FriVerifierParams, usize, usi
     let perm2 = default_babybear_poseidon2_16();
     let hash2 = MyHash::new(perm2.clone());
     let compress2 = MyCompress::new(perm2.clone());
-    let val_mmcs2 = ValMmcs::new(hash2, compress2);
+    let val_mmcs2 = ValMmcs::new(hash2, compress2, 0);
     let challenge_mmcs2 = ChallengeMmcs::new(val_mmcs2.clone());
     let fri_params2 = create_test_fri_params(challenge_mmcs2, 0);
     let fri_verifier_params = FriVerifierParams::from(&fri_params2);
@@ -674,7 +685,7 @@ fn get_recursive_config_and_params() -> (MyConfig, FriVerifierParams, usize, usi
 
 type ResultVerifierInputsAndChallenges = (
     Result<
-        BatchStarkVerifierInputsBuilder<MyConfig, HashTargets<F, DIGEST_ELEMS>, InnerFri>,
+        BatchStarkVerifierInputsBuilder<MyConfig, MerkleCapTargets<F, DIGEST_ELEMS>, InnerFri>,
         VerificationError,
     >,
     Result<Vec<Challenge>, GenerationError>,
@@ -704,10 +715,6 @@ fn get_verifier_inputs_and_challenges(
 
     // Base field AIRs for native challenge generation
     let native_airs = vec![
-        CircuitTablesAir::Witness(WitnessAir::<F, TRACE_D>::new(
-            rows[PrimitiveTable::Witness],
-            packing.witness_lanes(),
-        )),
         CircuitTablesAir::Const(ConstAir::<F, TRACE_D>::new(rows[PrimitiveTable::Const])),
         CircuitTablesAir::Public(PublicAir::<F, TRACE_D>::new(
             rows[PrimitiveTable::Public],
@@ -720,9 +727,9 @@ fn get_verifier_inputs_and_challenges(
     ];
 
     // Attach verifier without manually building circuit_airs
-    let verifier_inputs = verify_p3_recursion_proof_circuit::<
+    let verifier_inputs = verify_p3_batch_proof_circuit::<
         MyConfig,
-        HashTargets<F, DIGEST_ELEMS>,
+        MerkleCapTargets<F, DIGEST_ELEMS>,
         InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>>,
         InnerFri,
         LogUpGadget,
@@ -770,10 +777,10 @@ fn get_verifier_inputs_and_challenges(
 fn get_circuit(n: usize) -> CircuitBuilder<F> {
     let mut builder = CircuitBuilder::<F>::new();
 
-    let x = builder.add_public_input();
-    let a = builder.add_public_input();
-    let b = builder.add_public_input();
-    let expected_result = builder.add_public_input();
+    let x = builder.public_input();
+    let a = builder.public_input();
+    let b = builder.public_input();
+    let expected_result = builder.public_input();
 
     // y = a * x + b
     let mut y = builder.mul(a, x);
@@ -802,8 +809,8 @@ fn test_poseidon2_ctl_lookups() {
     );
 
     // Create public inputs that will also serve as witnesses for the Poseidon2 inputs
-    let input0 = builder.add_public_input();
-    let input1 = builder.add_public_input();
+    let input0 = builder.public_input();
+    let input1 = builder.public_input();
 
     // Create a Poseidon2 operation with input CTL enabled for limbs 0 and 1
     let (_op_id, outputs) = builder
@@ -812,8 +819,8 @@ fn test_poseidon2_ctl_lookups() {
             new_start: true,
             merkle_path: false,
             mmcs_bit: None,
-            inputs: [Some(input0), Some(input1), None, None],
-            out_ctl: [true, true], // Enable output CTL
+            inputs: vec![Some(input0), Some(input1), None, None],
+            out_ctl: vec![true, true],
             return_all_outputs: false,
             mmcs_index_sum: None,
         })
@@ -830,14 +837,14 @@ fn test_poseidon2_ctl_lookups() {
             new_start: true,
             merkle_path: false,
             mmcs_bit: None,
-            inputs: [Some(output0), Some(output1), None, None],
-            out_ctl: [false, false],
+            inputs: vec![Some(output0), Some(output1), None, None],
+            out_ctl: vec![false, false],
             return_all_outputs: false,
             mmcs_index_sum: None,
         })
         .unwrap();
 
-    let table_packing = TablePacking::new(1, 1, 4);
+    let table_packing = TablePacking::new(1, 4);
     let config_proving = get_proving_config();
 
     let circuit = builder.build().unwrap();
@@ -846,6 +853,7 @@ fn test_poseidon2_ctl_lookups() {
         &circuit,
         table_packing,
         Some(&[NonPrimitiveConfig::Poseidon2(poseidon2_config)]),
+        ConstraintProfile::Standard,
     )
     .unwrap();
 
@@ -896,18 +904,18 @@ fn test_poseidon2_chained_ctl_lookups() {
     );
 
     // Create public inputs for the first operation's inputs
-    let input0 = builder.add_public_input();
-    let input1 = builder.add_public_input();
+    let input0 = builder.public_input();
+    let input1 = builder.public_input();
 
     // First Poseidon2 operation: new_start=true, inputs from witness
     let (_op_id, _outputs) = builder
         .add_poseidon2_perm(Poseidon2PermCall {
             config: poseidon2_config,
             new_start: true,
-            merkle_path: false, // Sponge mode
+            merkle_path: false,
             mmcs_bit: None,
-            inputs: [Some(input0), Some(input1), None, None],
-            out_ctl: [false, false], // Not exposing outputs yet
+            inputs: vec![Some(input0), Some(input1), None, None],
+            out_ctl: vec![false, false],
             return_all_outputs: false,
             mmcs_index_sum: None,
         })
@@ -917,11 +925,11 @@ fn test_poseidon2_chained_ctl_lookups() {
     let (_op_id2, _outputs2) = builder
         .add_poseidon2_perm(Poseidon2PermCall {
             config: poseidon2_config,
-            new_start: false, // Chained
+            new_start: false,
             merkle_path: false,
             mmcs_bit: None,
-            inputs: [None, None, None, None], // Chained from previous output
-            out_ctl: [false, false],
+            inputs: vec![None, None, None, None],
+            out_ctl: vec![false, false],
             return_all_outputs: false,
             mmcs_index_sum: None,
         })
@@ -934,8 +942,8 @@ fn test_poseidon2_chained_ctl_lookups() {
             new_start: false,
             merkle_path: false,
             mmcs_bit: None,
-            inputs: [None, None, None, None],
-            out_ctl: [true, true], // Expose outputs via CTL
+            inputs: vec![None, None, None, None],
+            out_ctl: vec![true, true],
             return_all_outputs: false,
             mmcs_index_sum: None,
         })
@@ -949,14 +957,14 @@ fn test_poseidon2_chained_ctl_lookups() {
             new_start: true,
             merkle_path: false,
             mmcs_bit: None,
-            inputs: [outputs3[0], outputs3[1], None, None],
-            out_ctl: [false, false],
+            inputs: vec![outputs3[0], outputs3[1], None, None],
+            out_ctl: vec![false, false],
             return_all_outputs: false,
             mmcs_index_sum: None,
         })
         .unwrap();
 
-    let table_packing = TablePacking::new(1, 1, 4);
+    let table_packing = TablePacking::new(1, 4);
     let config_proving = get_proving_config();
 
     let circuit = builder.build().unwrap();
@@ -965,6 +973,7 @@ fn test_poseidon2_chained_ctl_lookups() {
         &circuit,
         table_packing,
         Some(&[NonPrimitiveConfig::Poseidon2(poseidon2_config)]),
+        ConstraintProfile::Standard,
     )
     .unwrap();
 

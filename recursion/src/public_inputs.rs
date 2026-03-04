@@ -492,7 +492,7 @@ where
         //
         // These targets come first in the overall public input ordering.
         let air_public_targets = (0..num_air_public_inputs)
-            .map(|_| circuit.add_public_input())
+            .map(|_| circuit.public_input())
             .collect();
 
         // Allocate targets for all proof components based on the reference proof.
@@ -626,7 +626,7 @@ where
         // For each instance, allocate `count` public input targets.
         let air_public_targets = air_public_counts
             .iter()
-            .map(|&count| (0..count).map(|_| circuit.add_public_input()).collect())
+            .map(|&count| (0..count).map(|_| circuit.public_input()).collect())
             .collect();
 
         // Allocate targets for the batch proof structure, based on the reference proof.

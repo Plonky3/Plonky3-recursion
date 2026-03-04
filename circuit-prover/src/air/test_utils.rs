@@ -33,7 +33,7 @@ pub fn build_test_config() -> StarkConfig<
     let perm = Perm::<16>::new_from_rng_128(&mut rng);
     let hash = MyHash::<Perm<16>, 16, 8, 8>::new(perm.clone());
     let compress = MyCompress::<Perm<16>, 2, 8, 16>::new(perm.clone());
-    let val_mmcs = ValMmcs::new(hash, compress);
+    let val_mmcs = ValMmcs::new(hash, compress, 0);
     let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
     let dft = Dft::<Val>::default();
     let fri_params = create_test_fri_params::<ChallengeMmcs>(challenge_mmcs, 0);

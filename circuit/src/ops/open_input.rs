@@ -200,13 +200,19 @@ impl<F: Field> NonPrimitiveExecutor<F> for OpenInputExecutor {
         }
 
         // Preprocess output index if this is the last OpenInput operation.
+        // ro is an OUTPUT (creator on the bus), not a read, so we use
+        // register_non_primitive_output_index to avoid incrementing ext_reads.
         if self.is_last {
             assert_eq!(outputs.len(), 1);
             assert_eq!(outputs[0].len(), 1);
-            preprocessed.register_non_primitive_witness_read(self.op_type, outputs[0][0])?;
+            preprocessed.register_non_primitive_output_index(self.op_type, &outputs[0]);
         } else {
             preprocessed.register_non_primitive_preprocessed_no_read(self.op_type, &[F::ZERO]);
         }
+
+        // ro_ext_mult placeholder (populated later by get_airs_and_degrees_with_prep
+        // from ext_reads[ro_wid]).
+        preprocessed.register_non_primitive_preprocessed_no_read(self.op_type, &[F::ZERO]);
 
         Ok(())
     }

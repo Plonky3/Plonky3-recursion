@@ -3,7 +3,7 @@ mod common;
 use p3_air::{Air, BaseAir};
 use p3_circuit::utils::{ColumnsTargets, RowSelectorsTargets};
 use p3_circuit::{CircuitBuilder, CircuitError};
-use p3_circuit_prover::air::{AluAir, ConstAir, PublicAir, WitnessAir};
+use p3_circuit_prover::air::{AluAir, ConstAir, PublicAir};
 use p3_commit::ExtensionMmcs;
 use p3_field::PrimeCharacteristicRing;
 use p3_fri::TwoAdicFriPcs;
@@ -76,22 +76,22 @@ where
 
     let mut builder = CircuitBuilder::<F>::new();
     let selector_targets = [
-        builder.add_public_input(),
-        builder.add_public_input(),
-        builder.add_public_input(),
+        builder.public_input(),
+        builder.public_input(),
+        builder.public_input(),
     ];
     let public_targets: Vec<_> = (0..num_public_values)
-        .map(|_| builder.add_public_input())
+        .map(|_| builder.public_input())
         .collect();
 
     let pre_local_targets: Vec<_> = (0..preprocessed_width)
-        .map(|_| builder.add_public_input())
+        .map(|_| builder.public_input())
         .collect();
     let pre_next_targets: Vec<_> = (0..preprocessed_width)
-        .map(|_| builder.add_public_input())
+        .map(|_| builder.public_input())
         .collect();
-    let local_targets: Vec<_> = (0..width).map(|_| builder.add_public_input()).collect();
-    let next_targets: Vec<_> = (0..width).map(|_| builder.add_public_input()).collect();
+    let local_targets: Vec<_> = (0..width).map(|_| builder.public_input()).collect();
+    let next_targets: Vec<_> = (0..width).map(|_| builder.public_input()).collect();
 
     let row_selectors = RowSelectorsTargets {
         is_first_row: selector_targets[0],
@@ -110,10 +110,10 @@ where
         next_values: &next_targets,
     };
 
-    let alpha_t = builder.add_const(alpha);
+    let alpha_t = builder.define_const(alpha);
     let sels = RecursiveLagrangeSelectors {
         row_selectors,
-        inv_vanishing: builder.add_const(F::ONE),
+        inv_vanishing: builder.define_const(F::ONE),
     };
     let lookup_gadget = LogUpGadget {};
     let dummy_lookup_metadata = LookupMetadata {
@@ -128,7 +128,7 @@ where
         columns,
         &lookup_gadget,
     );
-    let const_target = builder.add_const(folded_value);
+    let const_target = builder.define_const(folded_value);
     builder.connect(const_target, sum);
 
     let mut all_public_inputs = Vec::new();
@@ -175,9 +175,6 @@ fn primitive_airs_symbolic_to_circuit() -> Result<(), CircuitError> {
 
     let public_air = PublicAir::<F, 1>::new_with_preprocessed(1, 1, vec![F::from_u64(4)]);
     run_recursive(&public_air, public_air.preprocessed_width(), 1, &mut rng)?;
-
-    let witness_air = WitnessAir::<F, 1>::new(1, 1);
-    run_recursive(&witness_air, witness_air.preprocessed_width(), 0, &mut rng)?;
 
     Ok(())
 }

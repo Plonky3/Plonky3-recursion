@@ -20,7 +20,7 @@ use crate::Target;
 /// values from the previous permutation output.
 ///
 /// This function implements the same behavior in the circuit by:
-/// 1. Processing base coefficients in chunks of `rate` (8 for BabyBear)
+/// 1. Processing base coefficients in chunks of `rate` (8 for BabyBear / KoalaBear)
 /// 2. For partial chunks, mixing absorbed values with previous output for remaining positions
 /// 3. Using proper chaining for the capacity portion
 ///
@@ -41,28 +41,24 @@ where
 {
     if base_coeffs.is_empty() {
         // Return zeros for empty input (shouldn't happen in practice)
-        let zero = circuit.add_const(EF::ZERO);
+        let zero = circuit.define_const(EF::ZERO);
         return Ok(vec![zero, zero]);
     }
 
     let ext_degree = <EF as BasedVectorSpace<F>>::DIMENSION;
-    let rate = permutation_config.rate(); // Base field rate (8 for BabyBear)
-    let rate_ext = permutation_config.rate_ext(); // Extension rate (2 for D=4)
+    let rate = permutation_config.rate();
+    let rate_ext = permutation_config.rate_ext();
+    let width_ext = permutation_config.width_ext();
 
-    // Process in chunks of `rate` base field values
     let num_chunks = base_coeffs.len().div_ceil(rate);
-    // Only store rate outputs (0-1) for overwrite mode chaining
-    let mut last_rate_outputs: Option<[Target; 2]> = None;
-    let mut final_outputs = [None, None, None, None];
+    let mut last_rate_outputs: Option<Vec<Target>> = None;
+    let mut final_outputs: Vec<Option<Target>> = vec![None; width_ext];
 
     for (chunk_idx, chunk) in base_coeffs.chunks(rate).enumerate() {
         let is_first = chunk_idx == 0;
         let is_last = chunk_idx == num_chunks - 1;
 
-        // Build inputs for this permutation
-        // Rate portion (inputs[0..rate_ext]): absorbed values with overwrite semantics
-        // Capacity portion (inputs[rate_ext..4]): None for chaining
-        let mut inputs: [Option<Target>; 4] = [None; 4];
+        let mut inputs: Vec<Option<Target>> = vec![None; width_ext];
 
         for ext_idx in 0..rate_ext {
             let base_start = ext_idx * ext_degree;
@@ -99,7 +95,7 @@ where
                         ext_coeffs.push(prev[coeff_idx]);
                     } else {
                         // First permutation with new_start, use zero
-                        ext_coeffs.push(circuit.add_const(EF::ZERO));
+                        ext_coeffs.push(circuit.define_const(EF::ZERO));
                     }
                 }
 
@@ -107,130 +103,200 @@ where
             }
         }
 
-        // Capacity positions (rate_ext..4) are None for chaining from previous permutation
-
         // Add permutation
-        // Always get rate outputs (0-1) for potential chaining; capacity outputs not needed
         let (_, maybe_outputs) = circuit.add_poseidon2_perm(Poseidon2PermCall {
             config: *permutation_config,
             new_start: if is_first { reset } else { false },
             merkle_path: false,
             mmcs_bit: None,
             inputs,
-            out_ctl: [true, true],     // Always expose rate outputs
-            return_all_outputs: false, // Don't need capacity outputs
+            out_ctl: vec![true; rate_ext],
+            return_all_outputs: false,
             mmcs_index_sum: None,
         })?;
 
-        // Store rate outputs for next iteration (for overwrite mode chaining)
         if !is_last {
-            // Only need rate outputs (0-1) for overwrite mode - capacity is handled by chaining
-            last_rate_outputs = Some([
-                maybe_outputs[0].ok_or(CircuitBuilderError::MissingOutput)?,
-                maybe_outputs[1].ok_or(CircuitBuilderError::MissingOutput)?,
-            ]);
+            last_rate_outputs = Some(
+                maybe_outputs
+                    .iter()
+                    .take(rate_ext)
+                    .map(|o| o.ok_or(CircuitBuilderError::MissingOutput))
+                    .collect::<Result<Vec<_>, _>>()?,
+            );
         }
 
         final_outputs = maybe_outputs;
     }
 
-    // Return rate outputs (0-1) as the hash digest
-    [final_outputs[0], final_outputs[1]]
+    final_outputs
         .into_iter()
+        .take(rate_ext)
         .map(|o| o.ok_or(CircuitBuilderError::MissingOutput))
         .collect()
 }
 
-/// Recursive verison of `MerkleTreeMmcs::verify_batch`. Adds a circuit that verifies an opened batch of rows with respect to a given commitment.
+/// Hash extension field elements directly (no recompose). Use when values are already
+/// extension elements (e.g. FRI commit-phase evals). Absorbs in chunks of `rate_ext`.
+fn add_hash_extension_elements<F, EF>(
+    circuit: &mut CircuitBuilder<EF>,
+    permutation_config: &Poseidon2Config,
+    ext_elements: &[Target],
+    reset: bool,
+) -> Result<Vec<Target>, CircuitBuilderError>
+where
+    F: Field + PrimeField64,
+    EF: ExtensionField<F>,
+{
+    let rate_ext = permutation_config.rate_ext();
+    let width_ext = permutation_config.width_ext();
+    if ext_elements.is_empty() {
+        let zero = circuit.define_const(EF::ZERO);
+        return Ok(vec![zero; rate_ext]);
+    }
+
+    let zero = circuit.define_const(EF::ZERO);
+    let mut last_rate_outputs: Option<Vec<Target>> = None;
+    let mut final_outputs: Vec<Option<Target>> = vec![None; width_ext];
+
+    for (i, chunk) in ext_elements.chunks(rate_ext).enumerate() {
+        let is_first = i == 0;
+        let mut inputs: Vec<Option<Target>> = vec![None; width_ext];
+        for (j, &t) in chunk.iter().enumerate() {
+            inputs[j] = Some(t);
+        }
+        for j in chunk.len()..rate_ext {
+            inputs[j] = Some(if is_first {
+                zero
+            } else {
+                last_rate_outputs.as_ref().map(|o| o[j]).unwrap_or(zero)
+            });
+        }
+
+        let (_, maybe_outputs) = circuit.add_poseidon2_perm(Poseidon2PermCall {
+            config: *permutation_config,
+            new_start: is_first && reset,
+            merkle_path: false,
+            mmcs_bit: None,
+            inputs,
+            out_ctl: vec![true; rate_ext],
+            return_all_outputs: false,
+            mmcs_index_sum: None,
+        })?;
+
+        if chunk.len() == rate_ext {
+            last_rate_outputs = Some(
+                maybe_outputs
+                    .iter()
+                    .take(rate_ext)
+                    .map(|o| o.ok_or(CircuitBuilderError::MissingOutput))
+                    .collect::<Result<Vec<_>, _>>()?,
+            );
+        }
+        final_outputs = maybe_outputs;
+    }
+
+    final_outputs
+        .into_iter()
+        .take(rate_ext)
+        .map(|o| o.ok_or(CircuitBuilderError::MissingOutput))
+        .collect()
+}
+
+/// Recursive version of `MerkleTreeMmcs::verify_batch`. Adds a circuit that verifies an opened
+/// batch of rows with respect to a given commitment (Merkle cap).
 ///
 /// - `circuit`: The circuit builder to which we add the verify_batch circuit
-/// - `commit`: The merkle root of the tree.
+/// - `commitment_cap`: The Merkle cap entries. Each inner slice has `rate_ext` packed extension
+///   targets representing one cap entry. A single-element cap (`cap_height = 0`) corresponds to
+///   the traditional single root.
 /// - `dimensions`: A vector of the dimensions of the matrices committed to.
-/// - `directions`: The little-endian binary decomposition of the index of a leaf in the tree.
-/// - `opened_values`: A vector of matrix rows. Assume that the tallest matrix committed
-///   to has height `2^n >= M_tall.height() > 2^{n - 1}` and the `j`th matrix has height
-///   `2^m >= Mj.height() > 2^{m - 1}`. Then `j`'th value of opened values must be the row `Mj[index >> (m - n)]`.
-/// - `proof`: A vector of sibling nodes. The `i`th element should be the node at level `i`
-///   with index `(index << i) ^ 1`.
+/// - `index_bits`: The little-endian binary decomposition of the index of a leaf in the tree.
+///   Length must equal `log2_ceil(max_height)`.
+/// - `opened_values`: A vector of matrix rows (packed extension field targets).
 ///
-/// Returns the list of permutations operations requiring private data, otherwise returns an error.
+/// Returns the list of permutation operations requiring private data, otherwise returns an error.
 ///
-/// This function properly handles matrices with arbitrary base field widths by:
-/// 1. Decomposing extension field targets to base field coefficients
-/// 2. Truncating to actual widths (removing zero-padding from extension packing)
-/// 3. Re-packing for hashing that matches native MMCS
+/// # Merkle Cap Support
+///
+/// The Merkle cap of height `h` is the `h`-th layer from the root. A cap of height 0 is the root
+/// itself. When `cap_height > 0`, the opening proof is `cap_height` elements shorter and the
+/// remaining upper index bits select the correct cap entry to verify against.
 ///
 /// # Parameters
 /// - `circuit`: The circuit builder
 /// - `permutation_config`: Poseidon2 configuration
-/// - `commitment`: The Merkle root (2 extension elements)
+/// - `commitment_cap`: Merkle cap entries, each with `rate_ext` packed extension targets
 /// - `dimensions`: Matrix dimensions (height used for tree structure)
-/// - `base_widths`: Actual base field column widths per matrix (for proper truncation)
-/// - `index_bits`: Merkle path direction bits
-/// - `opened_values`: Packed extension field targets (may contain zero-padding)
+/// - `index_bits`: All Merkle path direction bits (length = `log_max_height`)
+/// - `opened_base_coeffs`: Base field coefficients per matrix (already decomposed)
 pub fn verify_batch_circuit<F, EF>(
     circuit: &mut CircuitBuilder<EF>,
     permutation_config: Poseidon2Config,
-    commitment: &[Target],
+    commitment_cap: &[Vec<Target>],
     dimensions: &[Dimensions],
-    base_widths: &[usize],
     index_bits: &[Target],
-    opened_values: &[Vec<Target>],
+    opened_base_coeffs: &[Vec<Target>],
 ) -> Result<Vec<NonPrimitiveOpId>, CircuitBuilderError>
 where
     F: Field + TwoAdicField + PrimeField64,
     EF: ExtensionField<F>,
 {
     use p3_circuit::ops::mmcs::add_mmcs_verify;
+    use p3_util::log2_strict_usize;
 
-    // Check that the openings have the correct shape.
-    if dimensions.len() != opened_values.len() || dimensions.len() != base_widths.len() {
+    if dimensions.len() != opened_base_coeffs.len() {
         return Err(CircuitBuilderError::WrongBatchSize {
             expected: dimensions.len(),
-            got: opened_values.len(),
+            got: opened_base_coeffs.len(),
         });
     }
+
+    assert!(
+        !commitment_cap.is_empty(),
+        "commitment cap must have at least one entry"
+    );
 
     use core::cmp::Reverse;
 
     use itertools::Itertools;
 
-    let ext_degree = <EF as BasedVectorSpace<F>>::DIMENSION;
+    // Derive cap_height from commitment size: cap has 2^cap_height entries
+    let cap_height = if commitment_cap.len() == 1 {
+        0
+    } else {
+        log2_strict_usize(commitment_cap.len())
+    };
 
-    // Decompose extension targets to base coefficients and truncate to actual widths
-    let truncated_openings: Vec<Vec<Target>> = opened_values
-        .iter()
-        .zip(base_widths.iter())
-        .map(|(ext_targets, &base_width)| {
-            // Decompose each extension target to base field coefficients
-            let mut base_coeffs: Vec<Target> = Vec::with_capacity(ext_targets.len() * ext_degree);
-            for &ext_target in ext_targets {
-                let coeffs = circuit.decompose_ext_to_base_coeffs::<F>(ext_target)?;
-                base_coeffs.extend(coeffs);
-            }
-            // Truncate to actual base field width (remove zero-padding)
-            base_coeffs.truncate(base_width);
-            Ok(base_coeffs)
-        })
-        .collect::<Result<Vec<_>, CircuitBuilderError>>()?;
+    let max_height_log = index_bits.len();
+    let path_depth = max_height_log - cap_height;
+
+    // Split index_bits into path bits (for Merkle traversal) and cap index bits
+    let path_bits = &index_bits[..path_depth];
+    let cap_index_bits = &index_bits[path_depth..];
+
+    // Select the correct cap entry using a multiplexer
+    let selected_root = select_cap_entry(circuit, commitment_cap, cap_index_bits);
 
     // Group matrices by height level (matching format_openings logic)
     // Native MMCS combines all matrices at the same height THEN hashes them together
-    let max_height_log = index_bits.len();
     let mut heights_tallest_first = dimensions
         .iter()
         .enumerate()
         .sorted_by_key(|(_, dims)| Reverse(dims.height))
         .peekable();
 
-    let mut formatted_digests = vec![vec![]; max_height_log];
+    // Build digests for path_depth levels (the Merkle path below the cap) plus one
+    // extra level for matrices whose heights match the cap level. In the native MMCS,
+    // these cap-level rows are injected after the last sibling compression.
+    let digest_levels = path_depth + 1;
+    let mut formatted_digests = vec![vec![]; digest_levels];
     for (i, digest) in formatted_digests.iter_mut().enumerate() {
         let curr_height = 1 << (max_height_log - i);
 
         // Collect all base coefficients from matrices at this height level
         let all_base_coeffs: Vec<Target> = heights_tallest_first
             .peeking_take_while(|(_, dims)| dims.height.next_power_of_two() == curr_height)
-            .flat_map(|(mat_idx, _)| truncated_openings[mat_idx].clone())
+            .flat_map(|(mat_idx, _)| opened_base_coeffs[mat_idx].clone())
             .collect();
 
         if all_base_coeffs.is_empty() {
@@ -252,9 +318,136 @@ where
         circuit,
         permutation_config,
         &op_vals_digests,
-        index_bits,
-        commitment,
+        path_bits,
+        &selected_root,
     )
+}
+
+/// Like `verify_batch_circuit` but opened values are already extension elements (no decompose).
+/// Use for FRI commit-phase where evals are extension and only the challenger needs base form.
+pub fn verify_batch_circuit_from_extension_opened<F, EF>(
+    circuit: &mut CircuitBuilder<EF>,
+    permutation_config: Poseidon2Config,
+    commitment_cap: &[Vec<Target>],
+    dimensions: &[Dimensions],
+    index_bits: &[Target],
+    opened_extension_values: &[Vec<Target>],
+) -> Result<Vec<NonPrimitiveOpId>, CircuitBuilderError>
+where
+    F: Field + TwoAdicField + PrimeField64,
+    EF: ExtensionField<F>,
+{
+    use core::cmp::Reverse;
+
+    use itertools::Itertools;
+    use p3_circuit::ops::mmcs::add_mmcs_verify;
+    use p3_util::log2_strict_usize;
+
+    if dimensions.len() != opened_extension_values.len() {
+        return Err(CircuitBuilderError::WrongBatchSize {
+            expected: dimensions.len(),
+            got: opened_extension_values.len(),
+        });
+    }
+
+    assert!(
+        !commitment_cap.is_empty(),
+        "commitment cap must have at least one entry"
+    );
+
+    let cap_height = if commitment_cap.len() == 1 {
+        0
+    } else {
+        log2_strict_usize(commitment_cap.len())
+    };
+
+    let max_height_log = index_bits.len();
+    let path_depth = max_height_log - cap_height;
+    let path_bits = &index_bits[..path_depth];
+    let cap_index_bits = &index_bits[path_depth..];
+
+    let selected_root = select_cap_entry(circuit, commitment_cap, cap_index_bits);
+
+    let mut heights_tallest_first = dimensions
+        .iter()
+        .enumerate()
+        .sorted_by_key(|(_, dims)| Reverse(dims.height))
+        .peekable();
+
+    let digest_levels = path_depth + 1;
+    let mut formatted_digests = vec![vec![]; digest_levels];
+    for (i, digest) in formatted_digests.iter_mut().enumerate() {
+        let curr_height = 1 << (max_height_log - i);
+
+        let all_ext: Vec<Target> = heights_tallest_first
+            .peeking_take_while(|(_, dims)| dims.height.next_power_of_two() == curr_height)
+            .flat_map(|(mat_idx, _)| opened_extension_values[mat_idx].clone())
+            .collect();
+
+        if all_ext.is_empty() {
+            continue;
+        }
+
+        *digest =
+            add_hash_extension_elements::<F, EF>(circuit, &permutation_config, &all_ext, true)?;
+    }
+
+    add_mmcs_verify(
+        circuit,
+        permutation_config,
+        &formatted_digests,
+        path_bits,
+        &selected_root,
+    )
+}
+
+/// Select one cap entry from a Merkle cap using a binary tree multiplexer.
+///
+/// For `cap_height = 0` (single entry), returns the entry directly.
+/// For `cap_height > 0`, progressively halves the candidates using one index bit
+/// at each level. Each selection step computes `left + bit * (right - left)` per
+/// component, requiring only one multiplication per component per level.
+///
+/// Total cost: `rate_ext * (2^cap_height - 1)` multiplications, compared to
+/// `(cap_height + rate_ext) * 2^cap_height` for the one-hot + dot-product approach.
+fn select_cap_entry<EF: Field>(
+    circuit: &mut CircuitBuilder<EF>,
+    cap: &[Vec<Target>],
+    index_bits: &[Target],
+) -> Vec<Target> {
+    if cap.len() == 1 {
+        return cap[0].clone();
+    }
+
+    debug_assert_eq!(cap.len(), 1 << index_bits.len());
+
+    let rate_ext = cap[0].len();
+
+    // Binary tree selection: each bit halves the number of candidates.
+    // bit[0] (LSB) selects between adjacent pairs, bit[1] between groups of 4, etc.
+    let mut current: Vec<Vec<Target>> = cap.to_vec();
+
+    for &bit in index_bits {
+        let half = current.len() / 2;
+        let mut next = Vec::with_capacity(half);
+        for i in 0..half {
+            let left = &current[2 * i];
+            let right = &current[2 * i + 1];
+            let mut selected = Vec::with_capacity(rate_ext);
+            for j in 0..rate_ext {
+                // left[j] + bit * (right[j] - left[j])
+                let diff = circuit.sub(right[j], left[j]);
+                let term = circuit.mul(bit, diff);
+                let val = circuit.add(left[j], term);
+                selected.push(val);
+            }
+            next.push(selected);
+        }
+        current = next;
+    }
+
+    debug_assert_eq!(current.len(), 1);
+    current.into_iter().next().unwrap()
 }
 
 /// Convert a base field Merkle proof to extension field sibling values.
@@ -387,7 +580,6 @@ mod test {
     use core::cmp::Reverse;
 
     use itertools::Itertools;
-    use p3_baby_bear::{BabyBear, Poseidon2BabyBear, default_babybear_poseidon2_16};
     use p3_circuit::op::Poseidon2Config;
     use p3_circuit::ops::mmcs::{add_mmcs_verify, format_openings};
     use p3_circuit::ops::{Poseidon2PermPrivateData, generate_poseidon2_trace};
@@ -395,10 +587,11 @@ mod test {
     use p3_commit::Mmcs;
     use p3_field::extension::BinomialExtensionField;
     use p3_field::{BasedVectorSpace, ExtensionField, Field, PrimeCharacteristicRing};
+    use p3_koala_bear::{KoalaBear, Poseidon2KoalaBear, default_koalabear_poseidon2_16};
     use p3_matrix::dense::{DenseMatrix, RowMajorMatrix};
     use p3_matrix::{Dimensions, Matrix};
     use p3_merkle_tree::MerkleTreeMmcs;
-    use p3_poseidon2_circuit_air::BabyBearD4Width16;
+    use p3_poseidon2_circuit_air::KoalaBearD4Width16;
     use p3_symmetric::{CryptographicHasher, PaddingFreeSponge, TruncatedPermutation};
     use p3_util::log2_ceil_usize;
     use rand::SeedableRng;
@@ -411,10 +604,10 @@ mod test {
 
     use crate::pcs::verify_batch_circuit;
 
-    type F = BabyBear;
+    type F = KoalaBear;
     type CF = BinomialExtensionField<F, 4>;
 
-    type Perm = Poseidon2BabyBear<16>;
+    type Perm = Poseidon2KoalaBear<16>;
     type MyHash = PaddingFreeSponge<Perm, 16, 8, 8>;
     type MyCompress = TruncatedPermutation<Perm, 2, 8, 16>;
     type MyMmcs =
@@ -439,10 +632,14 @@ mod test {
     }
 
     fn test_all_openings(mats: Vec<RowMajorMatrix<F>>) {
-        let perm = default_babybear_poseidon2_16();
+        test_all_openings_with_cap_height(mats, 0);
+    }
+
+    fn test_all_openings_with_cap_height(mats: Vec<RowMajorMatrix<F>>, cap_height: usize) {
+        let perm = default_koalabear_poseidon2_16();
         let hash = MyHash::new(perm.clone());
         let compress = MyCompress::new(perm.clone());
-        let mmcs = MyMmcs::new(hash, compress);
+        let mmcs = MyMmcs::new(hash, compress, cap_height);
 
         let dimensions = mats.iter().map(DenseMatrix::dimensions).collect_vec();
 
@@ -456,46 +653,45 @@ mod test {
 
         let (commit, prover_data) = mmcs.commit(mats);
 
-        let path_depth = log2_ceil_usize(max_height);
+        let log_max_height = log2_ceil_usize(max_height);
         for index in 0..max_height {
             let mut builder = CircuitBuilder::<CF>::new();
-            let permutation_config = Poseidon2Config::BabyBearD4Width16;
-            builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
-                generate_poseidon2_trace::<CF, BabyBearD4Width16>,
+            let permutation_config = Poseidon2Config::KoalaBearD4Width16;
+            builder.enable_poseidon2_perm::<KoalaBearD4Width16, _>(
+                generate_poseidon2_trace::<CF, KoalaBearD4Width16>,
                 perm.clone(),
             );
 
             let batch_opening = mmcs.open_batch(index, &prover_data);
 
-            let directions = (0..path_depth).map(|k| index >> k & 1 == 1).collect_vec();
+            let directions = (0..log_max_height)
+                .map(|k| index >> k & 1 == 1)
+                .collect_vec();
 
-            let openings = batch_opening
+            let openings: Vec<Vec<_>> = batch_opening
                 .opened_values
                 .iter()
                 .map(|opening| {
-                    opening
-                        .chunks(<CF as BasedVectorSpace<F>>::DIMENSION)
-                        .map(|_| builder.add_public_input())
+                    (0..opening.len())
+                        .map(|_| builder.public_input())
                         .collect_vec()
                 })
                 .collect_vec();
 
-            let directions_expr = builder.alloc_public_inputs(path_depth, "directions");
-            let root = builder.alloc_public_inputs(permutation_config.rate_ext(), "root");
+            let directions_expr = builder.alloc_public_inputs(log_max_height, "directions");
 
-            // Compute actual base field widths (number of base field values per matrix)
-            let base_widths: Vec<usize> = batch_opening
-                .opened_values
-                .iter()
-                .map(|v| v.len())
-                .collect_vec();
+            // Allocate cap entries: each entry has rate_ext extension targets
+            let cap_len = commit.num_roots();
+            let rate_ext = permutation_config.rate_ext();
+            let cap_exprs: Vec<Vec<_>> = (0..cap_len)
+                .map(|_| builder.alloc_public_inputs(rate_ext, "cap entry").to_vec())
+                .collect();
 
             let permutation_mmcs_ops = verify_batch_circuit::<F, CF>(
                 &mut builder,
                 permutation_config,
-                &root,
+                &cap_exprs,
                 &dimensions,
-                &base_widths,
                 &directions_expr,
                 &openings,
             )
@@ -509,29 +705,18 @@ mod test {
                 .map(|&bit| CF::from_bool(bit))
                 .collect_vec();
 
-            let mut public_inputs = vec![];
-            public_inputs.extend(
-                batch_opening
-                    .opened_values
-                    .iter()
-                    .flat_map(|openings| {
-                        openings
-                            .chunks(<CF as BasedVectorSpace<F>>::DIMENSION)
-                            .map(|chunk| {
-                                let mut coeffs = [F::ZERO; 4];
-                                for (i, &val) in chunk.iter().enumerate() {
-                                    coeffs[i] = val;
-                                }
-                                CF::from_basis_coefficients_slice(&coeffs).expect("packed opening")
-                            })
-                    })
-                    .collect_vec(),
-            );
+            let mut public_inputs: Vec<CF> = batch_opening
+                .opened_values
+                .iter()
+                .flat_map(|values| values.iter().map(|&v| CF::from(v)))
+                .collect();
             public_inputs.extend(directions_expr_vals.iter());
-            let commit_base = commit.into_iter().collect_vec();
-            let commit_ext = base_digest_to_ext(&commit_base, permutation_config);
-            debug_assert_eq!(permutation_config.rate_ext(), commit_ext.len());
-            public_inputs.extend(commit_ext);
+            // Pack each cap entry to extension field and add as public inputs
+            for entry in commit.roots() {
+                let commit_ext = base_digest_to_ext(entry, permutation_config);
+                debug_assert_eq!(rate_ext, commit_ext.len());
+                public_inputs.extend(commit_ext);
+            }
 
             runner.set_public_inputs(&public_inputs).unwrap();
 
@@ -558,8 +743,6 @@ mod test {
                     .unwrap();
             }
 
-            // Whe then we run the runner and the MMCS trace is generated, it will be checked that
-            // the root computed by the MmcsVerify gate matches that given as input.
             let _ = runner.run().unwrap();
         }
     }
@@ -701,12 +884,49 @@ mod test {
     }
 
     #[test]
+    fn commit_with_cap_height_1() {
+        init_logger();
+        let mut rng = SmallRng::seed_from_u64(99);
+        let mat = RowMajorMatrix::<F>::rand(&mut rng, 8, 3);
+        test_all_openings_with_cap_height(vec![mat], 1);
+    }
+
+    #[test]
+    fn commit_with_cap_height_2() {
+        init_logger();
+        let mut rng = SmallRng::seed_from_u64(99);
+        let mat_0 = RowMajorMatrix::<F>::rand(&mut rng, 16, 2);
+        let mat_1 = RowMajorMatrix::<F>::rand(&mut rng, 4, 3);
+        test_all_openings_with_cap_height(vec![mat_0, mat_1], 2);
+    }
+
+    #[test]
+    fn commit_batch_stark_with_cap_height() {
+        init_logger();
+        let mut rng = SmallRng::seed_from_u64(42);
+        let mat_0 = RowMajorMatrix::<F>::rand(&mut rng, 512, 1);
+        let mat_1 = RowMajorMatrix::<F>::rand(&mut rng, 8, 1);
+        let mat_2 = RowMajorMatrix::<F>::rand(&mut rng, 4, 1);
+        let mat_3 = RowMajorMatrix::<F>::rand(&mut rng, 128, 12);
+        let mat_4 = RowMajorMatrix::<F>::rand(&mut rng, 4, 3);
+        test_all_openings_with_cap_height(vec![mat_0, mat_1, mat_2, mat_3, mat_4], 2);
+    }
+
+    #[test]
+    fn lifted_verify_with_cap_height() {
+        init_logger();
+        let mut rng = SmallRng::seed_from_u64(99);
+        let mat = RowMajorMatrix::<F>::rand(&mut rng, 8, 3);
+        test_lifted_openings_with_cap_height(vec![mat], 1);
+    }
+
+    #[test]
     fn verify_tampered_proof_fails() {
         let mut rng = SmallRng::seed_from_u64(1);
         let perm = Perm::new_from_rng_128(&mut rng);
         let hash = MyHash::new(perm.clone());
         let compress = MyCompress::new(perm);
-        let mmcs = MyMmcs::new(hash.clone(), compress);
+        let mmcs = MyMmcs::new(hash.clone(), compress, 0);
 
         // 4 8x1 matrixes, 4 8x2 matrixes
         let mut mats = (0..4)
@@ -726,10 +946,10 @@ mod test {
         let (commit, prover_data) = mmcs.commit(mats);
 
         let mut builder = CircuitBuilder::<CF>::new();
-        let permutation_config = Poseidon2Config::BabyBearD4Width16;
-        let perm = default_babybear_poseidon2_16();
-        builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
-            generate_poseidon2_trace::<CF, BabyBearD4Width16>,
+        let permutation_config = Poseidon2Config::KoalaBearD4Width16;
+        let perm = default_koalabear_poseidon2_16();
+        builder.enable_poseidon2_perm::<KoalaBearD4Width16, _>(
+            generate_poseidon2_trace::<CF, KoalaBearD4Width16>,
             perm,
         );
 
@@ -759,7 +979,7 @@ mod test {
             .map(|mat_hash| {
                 mat_hash
                     .iter()
-                    .map(|_| builder.add_public_input())
+                    .map(|_| builder.public_input())
                     .collect_vec()
             })
             .collect_vec();
@@ -791,8 +1011,9 @@ mod test {
                 .flat_map(|digest| digest.map(CF::from)),
         );
         public_inputs.extend(directions.iter());
-        let commit_base = commit.into_iter().collect_vec();
-        let commit_ext = base_digest_to_ext(&commit_base, permutation_config);
+        // For cap_height=0, commit has 1 entry
+        let commit_entry = &commit.roots()[0];
+        let commit_ext = base_digest_to_ext(commit_entry, permutation_config);
         debug_assert_eq!(permutation_config.rate_ext(), commit_ext.len());
         public_inputs.extend(commit_ext);
 
@@ -820,7 +1041,7 @@ mod test {
                 .unwrap();
         }
 
-        // When the we run the runner and the MMCS trace is generated, it will be checked that
+        // When we run the runner and the MMCS trace is generated, it will be checked that
         // the root computed by the MmcsVerify gate does not match the one given as input.
         let result = runner.run();
 
@@ -841,10 +1062,10 @@ mod test {
     fn verify_batch_with_lifted_representation() {
         init_logger();
 
-        let perm = default_babybear_poseidon2_16();
+        let perm = default_koalabear_poseidon2_16();
         let hash = MyHash::new(perm.clone());
         let compress = MyCompress::new(perm.clone());
-        let mmcs = MyMmcs::new(hash, compress);
+        let mmcs = MyMmcs::new(hash, compress, 0);
 
         // Create a small matrix (similar to small FRI proofs)
         let mat = RowMajorMatrix::new(
@@ -863,64 +1084,50 @@ mod test {
 
         let dimensions = vec![mat.dimensions()];
         let max_height = mat.height();
-        let path_depth = log2_ceil_usize(max_height);
+        let log_max_height = log2_ceil_usize(max_height);
 
         let (commit, prover_data) = mmcs.commit(vec![mat]);
 
         for index in 0..max_height {
             let mut builder = CircuitBuilder::<CF>::new();
-            let permutation_config = Poseidon2Config::BabyBearD4Width16;
-            builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
-                generate_poseidon2_trace::<CF, BabyBearD4Width16>,
+            let permutation_config = Poseidon2Config::KoalaBearD4Width16;
+            builder.enable_poseidon2_perm::<KoalaBearD4Width16, _>(
+                generate_poseidon2_trace::<CF, KoalaBearD4Width16>,
                 perm.clone(),
             );
 
             let batch_opening = mmcs.open_batch(index, &prover_data);
 
-            let directions = (0..path_depth).map(|k| index >> k & 1 == 1).collect_vec();
+            let directions = (0..log_max_height)
+                .map(|k| index >> k & 1 == 1)
+                .collect_vec();
 
-            // Allocate openings as LIFTED targets (one target per base field value)
-            // This mimics how FRI verifier allocates BatchOpeningTargets
             let lifted_openings: Vec<Vec<_>> = batch_opening
                 .opened_values
                 .iter()
-                .map(|values| {
-                    values
-                        .iter()
-                        .map(|_| builder.add_public_input())
-                        .collect_vec()
-                })
+                .map(|values| values.iter().map(|_| builder.public_input()).collect_vec())
                 .collect();
 
-            // Pack lifted targets into extension targets (like FRI verifier does)
-            let packed_openings: Vec<Vec<_>> = lifted_openings
-                .iter()
-                .map(|lifted| pack_lifted_targets::<F, CF>(&mut builder, lifted))
-                .collect();
+            let directions_expr = builder.alloc_public_inputs(log_max_height, "directions");
 
-            let directions_expr = builder.alloc_public_inputs(path_depth, "directions");
-
-            // Allocate root as LIFTED targets, then pack (like FRI verifier does)
-            let lifted_root: Vec<_> = (0..permutation_config.rate())
-                .map(|_| builder.add_public_input())
-                .collect();
-            let packed_root = pack_lifted_targets::<F, CF>(&mut builder, &lifted_root);
-
-            // Base widths = number of base field values per matrix
-            let base_widths: Vec<usize> = batch_opening
-                .opened_values
-                .iter()
-                .map(|v| v.len())
-                .collect_vec();
+            // Allocate cap entries as LIFTED targets, then pack
+            let cap_len = commit.num_roots();
+            let mut cap_exprs = Vec::with_capacity(cap_len);
+            for _ in 0..cap_len {
+                let lifted: Vec<_> = (0..permutation_config.rate())
+                    .map(|_| builder.public_input())
+                    .collect();
+                let packed = pack_lifted_targets::<F, CF>(&mut builder, &lifted);
+                cap_exprs.push(packed);
+            }
 
             let _permutation_mmcs_ops = verify_batch_circuit::<F, CF>(
                 &mut builder,
                 permutation_config,
-                &packed_root,
+                &cap_exprs,
                 &dimensions,
-                &base_widths,
                 &directions_expr,
-                &packed_openings,
+                &lifted_openings,
             )
             .unwrap();
 
@@ -928,7 +1135,6 @@ mod test {
             let mut runner = circuit.runner();
 
             // Set public inputs using LIFTED representation
-            // First: lifted opened values (one EF per base field value)
             let mut public_inputs: Vec<CF> = batch_opening
                 .opened_values
                 .iter()
@@ -938,9 +1144,10 @@ mod test {
             // Then: direction bits
             public_inputs.extend(directions.iter().map(|&bit| CF::from_bool(bit)));
 
-            // Then: lifted root (one EF per base field digest element)
-            let commit_base = commit.into_iter().collect_vec();
-            public_inputs.extend(commit_base.iter().map(|&v| CF::from(v)));
+            // Then: lifted cap entries (one EF per base field digest element per entry)
+            for entry in commit.roots() {
+                public_inputs.extend(entry.iter().map(|&v| CF::from(v)));
+            }
 
             runner.set_public_inputs(&public_inputs).unwrap();
 
@@ -968,7 +1175,6 @@ mod test {
                     .unwrap();
             }
 
-            // Run and verify
             let result = runner.run();
             assert!(
                 result.is_ok(),
@@ -1005,11 +1211,10 @@ mod test {
         lifted
             .chunks(d)
             .map(|chunk| {
-                let mut acc = builder.add_const(EF::ZERO);
+                let mut acc = builder.define_const(EF::ZERO);
                 for (i, &target) in chunk.iter().enumerate() {
-                    let basis_const = builder.add_const(basis[i]);
-                    let term = builder.mul(target, basis_const);
-                    acc = builder.add(acc, term);
+                    let basis_const = builder.define_const(basis[i]);
+                    acc = builder.mul_add(target, basis_const, acc);
                 }
                 acc
             })
@@ -1018,10 +1223,14 @@ mod test {
 
     /// Test helper that runs MMCS verification using lifted representation for various matrix configs.
     fn test_lifted_openings(mats: Vec<RowMajorMatrix<F>>) {
-        let perm = default_babybear_poseidon2_16();
+        test_lifted_openings_with_cap_height(mats, 0);
+    }
+
+    fn test_lifted_openings_with_cap_height(mats: Vec<RowMajorMatrix<F>>, cap_height: usize) {
+        let perm = default_koalabear_poseidon2_16();
         let hash = MyHash::new(perm.clone());
         let compress = MyCompress::new(perm.clone());
-        let mmcs = MyMmcs::new(hash, compress);
+        let mmcs = MyMmcs::new(hash, compress, cap_height);
 
         let dimensions = mats.iter().map(DenseMatrix::dimensions).collect_vec();
 
@@ -1035,60 +1244,47 @@ mod test {
 
         let (commit, prover_data) = mmcs.commit(mats);
 
-        let path_depth = log2_ceil_usize(max_height);
+        let log_max_height = log2_ceil_usize(max_height);
         for index in 0..max_height {
             let mut builder = CircuitBuilder::<CF>::new();
-            let permutation_config = Poseidon2Config::BabyBearD4Width16;
-            builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
-                generate_poseidon2_trace::<CF, BabyBearD4Width16>,
+            let permutation_config = Poseidon2Config::KoalaBearD4Width16;
+            builder.enable_poseidon2_perm::<KoalaBearD4Width16, _>(
+                generate_poseidon2_trace::<CF, KoalaBearD4Width16>,
                 perm.clone(),
             );
 
             let batch_opening = mmcs.open_batch(index, &prover_data);
 
-            let directions = (0..path_depth).map(|k| index >> k & 1 == 1).collect_vec();
+            let directions = (0..log_max_height)
+                .map(|k| index >> k & 1 == 1)
+                .collect_vec();
 
-            // Allocate openings as LIFTED targets (like FRI verifier)
             let lifted_openings: Vec<Vec<_>> = batch_opening
                 .opened_values
                 .iter()
-                .map(|values| {
-                    values
-                        .iter()
-                        .map(|_| builder.add_public_input())
-                        .collect_vec()
-                })
+                .map(|values| values.iter().map(|_| builder.public_input()).collect_vec())
                 .collect();
 
-            // Pack lifted to extension (like FRI verifier)
-            let packed_openings: Vec<Vec<_>> = lifted_openings
-                .iter()
-                .map(|lifted| pack_lifted_targets::<F, CF>(&mut builder, lifted))
-                .collect();
+            let directions_expr = builder.alloc_public_inputs(log_max_height, "directions");
 
-            let directions_expr = builder.alloc_public_inputs(path_depth, "directions");
-
-            // Allocate root as LIFTED, then pack
-            let lifted_root: Vec<_> = (0..permutation_config.rate())
-                .map(|_| builder.add_public_input())
-                .collect();
-            let packed_root = pack_lifted_targets::<F, CF>(&mut builder, &lifted_root);
-
-            // Base widths = number of base field values per matrix
-            let base_widths: Vec<usize> = batch_opening
-                .opened_values
-                .iter()
-                .map(|v| v.len())
-                .collect_vec();
+            // Allocate cap entries as LIFTED, then pack
+            let cap_len = commit.num_roots();
+            let mut cap_exprs = Vec::with_capacity(cap_len);
+            for _ in 0..cap_len {
+                let lifted: Vec<_> = (0..permutation_config.rate())
+                    .map(|_| builder.public_input())
+                    .collect();
+                let packed = pack_lifted_targets::<F, CF>(&mut builder, &lifted);
+                cap_exprs.push(packed);
+            }
 
             let permutation_mmcs_ops = verify_batch_circuit::<F, CF>(
                 &mut builder,
                 permutation_config,
-                &packed_root,
+                &cap_exprs,
                 &dimensions,
-                &base_widths,
                 &directions_expr,
-                &packed_openings,
+                &lifted_openings,
             )
             .unwrap();
 
@@ -1104,8 +1300,10 @@ mod test {
 
             public_inputs.extend(directions.iter().map(|&bit| CF::from_bool(bit)));
 
-            let commit_base = commit.into_iter().collect_vec();
-            public_inputs.extend(commit_base.iter().map(|&v| CF::from(v)));
+            // Lifted cap entries
+            for entry in commit.roots() {
+                public_inputs.extend(entry.iter().map(|&v| CF::from(v)));
+            }
 
             runner.set_public_inputs(&public_inputs).unwrap();
 

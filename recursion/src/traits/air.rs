@@ -77,7 +77,6 @@ pub trait RecursiveAir<F: Field, EF: ExtensionField<F>, LG: LookupGadget> {
     fn get_log_num_quotient_chunks(
         &self,
         preprocessed_width: usize,
-        num_public_values: usize,
         contexts: &[Lookup<F>],
         lookup_data: &[LookupData<usize>],
         is_zk: usize,
@@ -127,7 +126,6 @@ where
         let (base_symbolic_constraints, extension_symbolic_constraints) = get_symbolic_constraints(
             self,
             num_preprocessed,
-            columns.public_values.len(),
             contexts,
             &ld_expected,
             lookup_gadget,
@@ -141,7 +139,7 @@ where
         //
         // Additionally, the cache is shared across all constraint calls to reuse circuit
         // operations for sub-expressions shared between different constraints.
-        let mut acc = builder.add_const(EF::ZERO);
+        let mut acc = builder.define_const(EF::ZERO);
         let mut base_cache = HashMap::new();
         for s_c in &base_symbolic_constraints {
             let mul_prev = builder.mul(acc, *alpha);
@@ -170,7 +168,6 @@ where
     fn get_log_num_quotient_chunks(
         &self,
         preprocessed_width: usize,
-        num_public_values: usize,
         contexts: &[Lookup<F>],
         lookup_data: &[LookupData<usize>],
         is_zk: usize,
@@ -196,7 +193,6 @@ where
         get_log_num_quotient_chunks(
             self,
             preprocessed_width,
-            num_public_values,
             contexts,
             &ld_dummy_expected,
             is_zk,

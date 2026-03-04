@@ -23,14 +23,14 @@ use alloc::string::ToString;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use p3_air::{Air, AirBuilder, AirBuilderWithPublicValues, BaseAir, PermutationAirBuilder};
+use p3_air::{Air, AirBuilder, BaseAir, PermutationAirBuilder};
 use p3_circuit::tables::PublicTrace;
 use p3_field::{BasedVectorSpace, Field};
 use p3_lookup::lookup_traits::{Direction, Kind, Lookup};
 use p3_matrix::dense::RowMajorMatrix;
 
 use crate::air::utils::{
-    create_preprocessed_trace_with_multiplicity, create_symbolic_variables, get_index_lookups,
+    create_direct_preprocessed_trace, create_symbolic_variables, get_index_lookups,
 };
 
 /// PublicAir: vector-valued public input binding with generic extension degree D.
@@ -157,12 +157,14 @@ impl<F: Field, const D: usize> PublicAir<F, D> {
         mat
     }
 
-    /// Extract preprocessed indices from a PublicTrace (without multiplicities).
+    /// Returns `[ext_mult, index]` pairs for each public input, with `ext_mult = F::ONE` as a
+    /// placeholder. In the full pipeline, `common.rs` computes actual multiplicities from
+    /// `ext_reads`.
     pub fn trace_to_preprocessed<ExtF: BasedVectorSpace<F>>(trace: &PublicTrace<ExtF>) -> Vec<F> {
         trace
             .index
             .iter()
-            .map(|widx| F::from_u64(widx.0 as u64))
+            .flat_map(|widx| [F::ONE, F::from_u64(widx.0 as u64 * D as u64)])
             .collect()
     }
 }
@@ -173,18 +175,11 @@ impl<F: Field, const D: usize> BaseAir<F> for PublicAir<F, D> {
     }
 
     fn preprocessed_trace(&self) -> Option<RowMajorMatrix<F>> {
-        Some(create_preprocessed_trace_with_multiplicity(
+        Some(create_direct_preprocessed_trace(
             &self.preprocessed,
             Self::preprocessed_lane_width(),
             self.lanes,
             self.min_height,
-            |op_idx| {
-                if op_idx < self.preprocessed.len() {
-                    F::ONE
-                } else {
-                    F::ZERO
-                }
-            },
         ))
     }
 }
@@ -205,7 +200,7 @@ where
 
     fn get_lookups(&mut self) -> Vec<Lookup<<AB>::F>>
     where
-        AB: PermutationAirBuilder + AirBuilderWithPublicValues,
+        AB: PermutationAirBuilder,
     {
         let mut lookups = Vec::new();
         self.num_lookup_columns = 0;
@@ -227,7 +222,7 @@ where
                 1,
                 &symbolic_main_local,
                 &preprocessed_local,
-                Direction::Send,
+                Direction::Receive,
             );
 
             lookups.extend(lane_lookup_inputs.into_iter().map(|inps| {
@@ -267,10 +262,10 @@ mod tests {
         let values: Vec<F> = (1..=n as u64).map(F::from_u64).collect();
         let indices: Vec<WitnessId> = (0..n as u32).map(WitnessId).collect();
 
-        // Get preprocessed index values.
+        // Preprocessed values are [ext_mult, index] pairs.
         let preprocessed_values = indices
             .iter()
-            .map(|idx| F::from_u64(idx.0 as u64))
+            .flat_map(|idx| [F::ONE, F::from_u64(idx.0 as u64)])
             .collect::<Vec<_>>();
 
         let trace = PublicTrace {
@@ -305,10 +300,9 @@ mod tests {
         let preprocessed = air.preprocessed_trace().unwrap();
         let row0 = preprocessed.row_slice(0).unwrap();
         let last_row = preprocessed.row_slice(n - 1).unwrap();
-        // The multiplicity is 1 for active rows.
-        assert_eq!(row0[0], F::from_u64(1)); // first index
-        assert_eq!(last_row[0], F::from_u64(1)); // last index
-        // Check the witness indices.
+        // Layout: [ext_mult, index]
+        assert_eq!(row0[0], F::ONE); // ext_mult
+        assert_eq!(last_row[0], F::ONE); // ext_mult
         assert_eq!(row0[1], F::from_u64(0)); // first index
         assert_eq!(last_row[1], F::from_u64((n - 1) as u64)); // last index
 
@@ -326,10 +320,10 @@ mod tests {
         let values: Vec<F> = (1..=n as u64).map(F::from_u64).collect();
         let indices: Vec<WitnessId> = (0..n as u32).map(WitnessId).collect();
 
-        // Get preprocessed index values.
+        // Preprocessed values are [ext_mult, index] pairs.
         let preprocessed_values = indices
             .iter()
-            .map(|idx| F::from_u64(idx.0 as u64))
+            .flat_map(|idx| [F::ONE, F::from_u64(idx.0 as u64)])
             .collect::<Vec<_>>();
 
         let trace = PublicTrace {
@@ -373,17 +367,14 @@ mod tests {
         assert!(preprocessed.height() == 8);
         for i in 0..n {
             let row = preprocessed.row_slice(i).unwrap();
-            // The multiplicity is 1 for active rows.
-            assert_eq!(row[0], F::from_u64(1)); // first index
-            // Check the witness indices.
-            assert_eq!(row[1], F::from_u64(i as u64)); // first index
+            // Layout: [ext_mult, index]
+            assert_eq!(row[0], F::ONE); // ext_mult
+            assert_eq!(row[1], F::from_u64(i as u64)); // witness index
         }
         for i in n..preprocessed.height() {
             let row = preprocessed.row_slice(i).unwrap();
-            // The multiplicity is 0 for padded rows.
-            assert_eq!(row[0], F::ZERO); // first index
-            // Check the witness indices.
-            assert_eq!(row[1], F::ZERO); // last original index
+            assert_eq!(row[0], F::ZERO); // padding
+            assert_eq!(row[1], F::ZERO); // padding
         }
 
         let pis: Vec<F> = vec![];
@@ -414,9 +405,10 @@ mod tests {
 
         let values = vec![a, b];
         let indices = vec![WitnessId(10), WitnessId(20)];
+        // Preprocessed values are [ext_mult, index] pairs; indices are D-scaled.
         let preprocessed_values = indices
             .iter()
-            .map(|idx| F::from_u64(idx.0 as u64))
+            .flat_map(|idx| [F::ONE, F::from_u64(idx.0 as u64 * 4)])
             .collect();
 
         let trace = PublicTrace {
@@ -448,15 +440,14 @@ mod tests {
             setup_preprocessed(&config, &air, log2_ceil_usize(matrix.height())).unwrap();
 
         let prep = air.preprocessed_trace().unwrap();
-        // Check the correctness of preprocessed values.
         let row0 = prep.row_slice(0).unwrap();
         let last_row = prep.row_slice(1).unwrap();
-        // The multiplicity is 1 for active rows.
-        assert_eq!(row0[0], F::from_u64(1)); // first index
-        assert_eq!(last_row[0], F::from_u64(1)); // last index
-        // Check the witness indices.
-        assert_eq!(row0[1], F::from_u64(10)); // first index
-        assert_eq!(last_row[1], F::from_u64(20)); // last index
+        // Layout: [ext_mult, index]
+        assert_eq!(row0[0], F::ONE); // ext_mult
+        assert_eq!(last_row[0], F::ONE); // ext_mult
+        // D-scaled: WitnessId(10) → 10 * 4 = 40, WitnessId(20) → 20 * 4 = 80
+        assert_eq!(row0[1], F::from_u64(40));
+        assert_eq!(last_row[1], F::from_u64(80));
 
         let pis: Vec<F> = vec![];
 
@@ -480,7 +471,8 @@ mod tests {
 
     #[test]
     fn test_air_constraint_degree() {
-        let air = PublicAir::<F, 1>::new_with_preprocessed(8, 1, vec![F::ZERO; 8]);
+        // 8 ops * 2 columns per op ([ext_mult, index])
+        let air = PublicAir::<F, 1>::new_with_preprocessed(8, 1, vec![F::ZERO; 16]);
         p3_test_utils::assert_air_constraint_degree!(air, "PublicAir");
     }
 }

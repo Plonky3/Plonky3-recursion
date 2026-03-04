@@ -131,7 +131,7 @@ pub struct ExpressionBuilder<F> {
     ///
     /// Maps field values to their unique [`ExprId`] in the graph.
     ///
-    /// When a constant is requested via [`add_const`](Self::add_const), this pool is checked first.
+    /// When a constant is requested via [`define_const`](Self::define_const), this pool is checked first.
     ///
     /// If the value exists, the cached ID is returned immediately, avoiding duplicate nodes.
     const_pool: HashMap<F, ExprId>,
@@ -181,13 +181,21 @@ where
     F: Clone + PrimeCharacteristicRing + Eq + Hash,
 {
     #[inline]
-    fn is_const_zero(&self, id: ExprId) -> bool {
+    pub(crate) fn is_const_zero(&self, id: ExprId) -> bool {
         matches!(self.graph.get_expr(id), Expr::Const(val) if *val == F::ZERO)
     }
 
     #[inline]
-    fn is_const_one(&self, id: ExprId) -> bool {
+    pub(crate) fn is_const_one(&self, id: ExprId) -> bool {
         matches!(self.graph.get_expr(id), Expr::Const(val) if *val == F::ONE)
+    }
+
+    #[inline]
+    fn get_const_value(&self, id: ExprId) -> Option<F> {
+        match self.graph.get_expr(id) {
+            Expr::Const(val) => Some(val.clone()),
+            _ => None,
+        }
     }
 
     /// Creates a new expression builder with zero constant pre-allocated.
@@ -253,7 +261,7 @@ where
     ///
     /// **Important**: Only new allocations are logged. Returning a cached constant
     /// does not create a new log entry.
-    pub fn add_const(&mut self, val: F, label: &'static str) -> ExprId {
+    pub fn define_const(&mut self, val: F, label: &'static str) -> ExprId {
         // Check if this constant already exists in the pool.
         if let Some(&cached_id) = self.const_pool.get(&val) {
             // Found a cached entry. Return it immediately without allocating.
@@ -299,7 +307,7 @@ where
     /// # Returns
     ///
     /// A new [`ExprId`] handle to the public input expression.
-    pub fn add_public(&mut self, pos: usize, label: &'static str) -> ExprId {
+    pub fn public(&mut self, pos: usize, label: &'static str) -> ExprId {
         // Create a new Public expression node in the graph.
         //
         // The `pos` field indicates which public input slot this expression reads from.
@@ -333,13 +341,18 @@ where
     /// # Returns
     ///
     /// An [`ExprId`] handle to the addition expression.
-    pub fn add_add(&mut self, lhs: ExprId, rhs: ExprId, label: &'static str) -> ExprId {
+    pub fn add(&mut self, lhs: ExprId, rhs: ExprId, label: &'static str) -> ExprId {
         // x + 0 = x, 0 + x = x
         if self.is_const_zero(lhs) {
             return rhs;
         }
         if self.is_const_zero(rhs) {
             return lhs;
+        }
+
+        // Constant folding: const + const = const
+        if let (Some(a), Some(b)) = (self.get_const_value(lhs), self.get_const_value(rhs)) {
+            return self.define_const(a + b, label);
         }
 
         #[cfg(feature = "profiling")]
@@ -371,7 +384,21 @@ where
     /// # Returns
     ///
     /// An [`ExprId`] handle to the subtraction expression.
-    pub fn add_sub(&mut self, lhs: ExprId, rhs: ExprId, label: &'static str) -> ExprId {
+    pub fn sub(&mut self, lhs: ExprId, rhs: ExprId, label: &'static str) -> ExprId {
+        // x - 0 = x
+        if self.is_const_zero(rhs) {
+            return lhs;
+        }
+        // x - x = 0
+        if lhs == rhs {
+            return ExprId::ZERO;
+        }
+
+        // Constant folding: const - const = const
+        if let (Some(a), Some(b)) = (self.get_const_value(lhs), self.get_const_value(rhs)) {
+            return self.define_const(a - b, label);
+        }
+
         #[cfg(feature = "profiling")]
         self.profiling.bump_sub();
 
@@ -398,7 +425,7 @@ where
     /// # Returns
     ///
     /// An [`ExprId`] handle to the multiplication expression.
-    pub fn add_mul(&mut self, lhs: ExprId, rhs: ExprId, label: &'static str) -> ExprId {
+    pub fn mul(&mut self, lhs: ExprId, rhs: ExprId, label: &'static str) -> ExprId {
         // x * 0 = 0, 0 * x = 0
         if self.is_const_zero(lhs) || self.is_const_zero(rhs) {
             return ExprId::ZERO;
@@ -410,6 +437,11 @@ where
         }
         if self.is_const_one(rhs) {
             return lhs;
+        }
+
+        // Constant folding: const * const = const
+        if let (Some(a), Some(b)) = (self.get_const_value(lhs), self.get_const_value(rhs)) {
+            return self.define_const(a * b, label);
         }
 
         #[cfg(feature = "profiling")]
@@ -441,7 +473,20 @@ where
     /// # Returns
     ///
     /// An [`ExprId`] handle to the division expression.
-    pub fn add_div(&mut self, lhs: ExprId, rhs: ExprId, label: &'static str) -> ExprId {
+    pub fn div(&mut self, lhs: ExprId, rhs: ExprId, label: &'static str) -> ExprId {
+        // x / 1 = x
+        if self.is_const_one(rhs) {
+            return lhs;
+        }
+        // 0 / x = 0
+        if self.is_const_zero(lhs) {
+            return ExprId::ZERO;
+        }
+        // x / x = 1
+        if lhs == rhs {
+            return self.define_const(F::ONE, label);
+        }
+
         #[cfg(feature = "profiling")]
         self.profiling.bump_div();
 
@@ -855,7 +900,7 @@ mod tests {
         // Adding a single constant should work
         let mut builder = ExpressionBuilder::<BabyBear>::new();
 
-        let c1 = builder.add_const(BabyBear::ONE, "test_const");
+        let c1 = builder.define_const(BabyBear::ONE, "test_const");
 
         // Should have 2 nodes: zero + one
         assert_eq!(builder.graph().nodes().len(), 2);
@@ -876,8 +921,8 @@ mod tests {
         // Adding the same constant twice should return same ExprId
         let mut builder = ExpressionBuilder::<BabyBear>::new();
 
-        let c1 = builder.add_const(BabyBear::from_u64(42), "first");
-        let c2 = builder.add_const(BabyBear::from_u64(42), "second");
+        let c1 = builder.define_const(BabyBear::from_u64(42), "first");
+        let c2 = builder.define_const(BabyBear::from_u64(42), "second");
 
         // Should return same ExprId
         assert_eq!(c1, c2);
@@ -894,9 +939,9 @@ mod tests {
         // Adding different constants should create distinct ExprIds
         let mut builder = ExpressionBuilder::<BabyBear>::new();
 
-        let c1 = builder.add_const(BabyBear::from_u64(1), "one");
-        let c2 = builder.add_const(BabyBear::from_u64(2), "two");
-        let c3 = builder.add_const(BabyBear::from_u64(3), "three");
+        let c1 = builder.define_const(BabyBear::from_u64(1), "one");
+        let c2 = builder.define_const(BabyBear::from_u64(2), "two");
+        let c3 = builder.define_const(BabyBear::from_u64(3), "three");
 
         // All should be different
         assert_ne!(c1, c2);
@@ -913,7 +958,7 @@ mod tests {
         // Adding zero constant should return pre-allocated ExprId::ZERO
         let mut builder = ExpressionBuilder::<BabyBear>::new();
 
-        let zero = builder.add_const(BabyBear::ZERO, "explicit_zero");
+        let zero = builder.define_const(BabyBear::ZERO, "explicit_zero");
 
         // Should return ExprId::ZERO (the pre-allocated one)
         assert_eq!(zero, ExprId::ZERO);
@@ -928,7 +973,7 @@ mod tests {
         // Adding a single public input
         let mut builder = ExpressionBuilder::<BabyBear>::new();
 
-        let p0 = builder.add_public(0, "public_0");
+        let p0 = builder.public(0, "public_0");
 
         // Should have 2 nodes: zero + public
         assert_eq!(builder.graph().nodes().len(), 2);
@@ -946,9 +991,9 @@ mod tests {
         // Adding multiple public inputs with different positions
         let mut builder = ExpressionBuilder::<BabyBear>::new();
 
-        let p0 = builder.add_public(0, "p0");
-        let p1 = builder.add_public(1, "p1");
-        let p2 = builder.add_public(2, "p2");
+        let p0 = builder.public(0, "p0");
+        let p1 = builder.public(1, "p1");
+        let p2 = builder.public(2, "p2");
 
         // All should be different
         assert_ne!(p0, p1);
@@ -977,8 +1022,8 @@ mod tests {
         // Adding public inputs with same position creates different nodes
         let mut builder = ExpressionBuilder::<BabyBear>::new();
 
-        let p0_a = builder.add_public(0, "first");
-        let p0_b = builder.add_public(0, "second");
+        let p0_a = builder.public(0, "first");
+        let p0_b = builder.public(0, "second");
 
         // Should be different ExprIds (no deduplication for Public)
         assert_ne!(p0_a, p0_b);
@@ -989,14 +1034,14 @@ mod tests {
 
     #[test]
     fn test_add_operation() {
-        // Test Add operation
+        // Test Add operation with non-constant operands (constant folding applies to const+const)
         let mut builder = ExpressionBuilder::<BabyBear>::new();
 
-        let a = builder.add_const(BabyBear::from_u64(2), "a");
-        let b = builder.add_const(BabyBear::from_u64(3), "b");
-        let _sum = builder.add_add(a, b, "sum");
+        let a = builder.public(0, "a");
+        let b = builder.public(1, "b");
+        let _sum = builder.add(a, b, "sum");
 
-        // Should have 4 nodes: zero + 2 + 3 + add
+        // Should have 4 nodes: zero + pub_a + pub_b + add
         assert_eq!(builder.graph().nodes().len(), 4);
 
         // Verify Add node
@@ -1010,13 +1055,30 @@ mod tests {
     }
 
     #[test]
-    fn test_sub_operation() {
-        // Test Sub operation
+    fn test_add_const_folding() {
+        // Test that const + const is folded at build time
         let mut builder = ExpressionBuilder::<BabyBear>::new();
 
-        let a = builder.add_const(BabyBear::from_u64(5), "a");
-        let b = builder.add_const(BabyBear::from_u64(3), "b");
-        let _diff = builder.add_sub(a, b, "diff");
+        let a = builder.define_const(BabyBear::from_u64(2), "a");
+        let b = builder.define_const(BabyBear::from_u64(3), "b");
+        let sum = builder.add(a, b, "sum");
+
+        // Should have 4 nodes: zero + 2 + 3 + 5 (folded constant, no Add node)
+        assert_eq!(builder.graph().nodes().len(), 4);
+        match &builder.graph().nodes()[sum.0 as usize] {
+            Expr::Const(val) => assert_eq!(*val, BabyBear::from_u64(5)),
+            _ => panic!("Expected constant folding to produce Const(5)"),
+        }
+    }
+
+    #[test]
+    fn test_sub_operation() {
+        // Test Sub operation with non-constant operands
+        let mut builder = ExpressionBuilder::<BabyBear>::new();
+
+        let a = builder.public(0, "a");
+        let b = builder.public(1, "b");
+        let _diff = builder.sub(a, b, "diff");
 
         assert_eq!(builder.graph().nodes().len(), 4);
 
@@ -1030,13 +1092,39 @@ mod tests {
     }
 
     #[test]
-    fn test_mul_operation() {
-        // Test Mul operation
+    fn test_sub_const_folding() {
         let mut builder = ExpressionBuilder::<BabyBear>::new();
 
-        let a = builder.add_const(BabyBear::from_u64(7), "a");
-        let b = builder.add_const(BabyBear::from_u64(6), "b");
-        let _prod = builder.add_mul(a, b, "prod");
+        let a = builder.define_const(BabyBear::from_u64(5), "a");
+        let b = builder.define_const(BabyBear::from_u64(3), "b");
+        let diff = builder.sub(a, b, "diff");
+
+        match &builder.graph().nodes()[diff.0 as usize] {
+            Expr::Const(val) => assert_eq!(*val, BabyBear::from_u64(2)),
+            _ => panic!("Expected constant folding to produce Const(2)"),
+        }
+    }
+
+    #[test]
+    fn test_sub_identity() {
+        let mut builder = ExpressionBuilder::<BabyBear>::new();
+        let a = builder.public(0, "a");
+        let zero = builder.define_const(BabyBear::ZERO, "zero");
+
+        // x - 0 = x
+        assert_eq!(builder.sub(a, zero, "sub_zero"), a);
+        // x - x = 0
+        assert_eq!(builder.sub(a, a, "sub_self"), ExprId::ZERO);
+    }
+
+    #[test]
+    fn test_mul_operation() {
+        // Test Mul operation with non-constant operands
+        let mut builder = ExpressionBuilder::<BabyBear>::new();
+
+        let a = builder.public(0, "a");
+        let b = builder.public(1, "b");
+        let _prod = builder.mul(a, b, "prod");
 
         assert_eq!(builder.graph().nodes().len(), 4);
 
@@ -1050,13 +1138,27 @@ mod tests {
     }
 
     #[test]
+    fn test_mul_const_folding() {
+        let mut builder = ExpressionBuilder::<BabyBear>::new();
+
+        let a = builder.define_const(BabyBear::from_u64(7), "a");
+        let b = builder.define_const(BabyBear::from_u64(6), "b");
+        let prod = builder.mul(a, b, "prod");
+
+        match &builder.graph().nodes()[prod.0 as usize] {
+            Expr::Const(val) => assert_eq!(*val, BabyBear::from_u64(42)),
+            _ => panic!("Expected constant folding to produce Const(42)"),
+        }
+    }
+
+    #[test]
     fn test_div_operation() {
         // Test Div operation
         let mut builder = ExpressionBuilder::<BabyBear>::new();
 
-        let a = builder.add_const(BabyBear::from_u64(10), "a");
-        let b = builder.add_const(BabyBear::from_u64(2), "b");
-        let _quot = builder.add_div(a, b, "quot");
+        let a = builder.define_const(BabyBear::from_u64(10), "a");
+        let b = builder.define_const(BabyBear::from_u64(2), "b");
+        let _quot = builder.div(a, b, "quot");
 
         assert_eq!(builder.graph().nodes().len(), 4);
 
@@ -1070,20 +1172,39 @@ mod tests {
     }
 
     #[test]
+    fn test_div_identity() {
+        let mut builder = ExpressionBuilder::<BabyBear>::new();
+        let a = builder.public(0, "a");
+        let one = builder.define_const(BabyBear::ONE, "one");
+        let zero = ExprId::ZERO;
+
+        // x / 1 = x
+        assert_eq!(builder.div(a, one, "div_one"), a);
+        // 0 / x = 0
+        assert_eq!(builder.div(zero, a, "zero_div"), ExprId::ZERO);
+        // x / x = 1
+        let result = builder.div(a, a, "div_self");
+        match builder.graph().get_expr(result) {
+            Expr::Const(val) => assert_eq!(*val, BabyBear::ONE),
+            _ => panic!("Expected div(x,x) to produce Const(1)"),
+        }
+    }
+
+    #[test]
     fn test_nested_operations() {
-        // Test nested operations: (a + b) * (c - d)
+        // Test nested operations with non-constant inputs: (a + b) * (c - d)
         let mut builder = ExpressionBuilder::<BabyBear>::new();
 
-        let a = builder.add_const(BabyBear::from_u64(1), "a");
-        let b = builder.add_const(BabyBear::from_u64(2), "b");
-        let c = builder.add_const(BabyBear::from_u64(3), "c");
-        let d = builder.add_const(BabyBear::from_u64(4), "d");
+        let a = builder.public(0, "a");
+        let b = builder.public(1, "b");
+        let c = builder.public(2, "c");
+        let d = builder.public(3, "d");
 
-        let sum = builder.add_add(a, b, "sum");
-        let diff = builder.add_sub(c, d, "diff");
-        let _prod = builder.add_mul(sum, diff, "prod");
+        let sum = builder.add(a, b, "sum");
+        let diff = builder.sub(c, d, "diff");
+        let _prod = builder.mul(sum, diff, "prod");
 
-        // zero + 4 consts + 3 ops = 8 nodes
+        // zero + 4 publics + 3 ops = 8 nodes
         assert_eq!(builder.graph().nodes().len(), 8);
 
         // Verify final operation references intermediate results
@@ -1097,12 +1218,36 @@ mod tests {
     }
 
     #[test]
+    fn test_nested_const_folding() {
+        // Constant folding should chain: (1+2) * (3-4) = 3 * (-1) = -3
+        let mut builder = ExpressionBuilder::<BabyBear>::new();
+
+        let a = builder.define_const(BabyBear::from_u64(1), "a");
+        let b = builder.define_const(BabyBear::from_u64(2), "b");
+        let c = builder.define_const(BabyBear::from_u64(3), "c");
+        let d = builder.define_const(BabyBear::from_u64(4), "d");
+
+        // folded to Const(3) — same as c, deduplicated
+        let sum = builder.add(a, b, "sum");
+        // folded to Const(-1)
+        let diff = builder.sub(c, d, "diff");
+        // folded to Const(-3)
+        let prod = builder.mul(sum, diff, "prod");
+
+        // All intermediates are constant-folded
+        match &builder.graph().nodes()[prod.0 as usize] {
+            Expr::Const(val) => assert_eq!(*val, -BabyBear::from_u64(3)),
+            _ => panic!("Expected full constant folding"),
+        }
+    }
+
+    #[test]
     fn test_connect_different_expressions() {
         // Connecting different expressions should add to pending_connects
         let mut builder = ExpressionBuilder::<BabyBear>::new();
 
-        let a = builder.add_const(BabyBear::ONE, "a");
-        let b = builder.add_const(BabyBear::from_u64(2), "b");
+        let a = builder.define_const(BabyBear::ONE, "a");
+        let b = builder.define_const(BabyBear::from_u64(2), "b");
 
         builder.connect(a, b);
 
@@ -1116,7 +1261,7 @@ mod tests {
         // Connecting an expression to itself should be a no-op
         let mut builder = ExpressionBuilder::<BabyBear>::new();
 
-        let a = builder.add_const(BabyBear::ONE, "a");
+        let a = builder.define_const(BabyBear::ONE, "a");
 
         builder.connect(a, a);
 
@@ -1129,9 +1274,9 @@ mod tests {
         // Multiple connections should all be tracked
         let mut builder = ExpressionBuilder::<BabyBear>::new();
 
-        let a = builder.add_const(BabyBear::from_u64(1), "a");
-        let b = builder.add_const(BabyBear::from_u64(2), "b");
-        let c = builder.add_const(BabyBear::from_u64(3), "c");
+        let a = builder.define_const(BabyBear::from_u64(1), "a");
+        let b = builder.define_const(BabyBear::from_u64(2), "b");
+        let c = builder.define_const(BabyBear::from_u64(3), "c");
 
         builder.connect(a, b);
         builder.connect(b, c);
@@ -1146,10 +1291,10 @@ mod tests {
         // Can connect operation results
         let mut builder = ExpressionBuilder::<BabyBear>::new();
 
-        let a = builder.add_const(BabyBear::ONE, "a");
-        let b = builder.add_const(BabyBear::from_u64(2), "b");
-        let sum = builder.add_add(a, b, "sum");
-        let c = builder.add_public(0, "c");
+        let a = builder.define_const(BabyBear::ONE, "a");
+        let b = builder.define_const(BabyBear::from_u64(2), "b");
+        let sum = builder.add(a, b, "sum");
+        let c = builder.public(0, "c");
 
         builder.connect(sum, c);
 
@@ -1162,7 +1307,7 @@ mod tests {
         // graph() should return reference to underlying graph
         let mut builder = ExpressionBuilder::<BabyBear>::new();
 
-        builder.add_const(BabyBear::ONE, "one");
+        builder.define_const(BabyBear::ONE, "one");
 
         let graph = builder.graph();
         assert_eq!(graph.nodes().len(), 2); // zero + one
@@ -1173,8 +1318,8 @@ mod tests {
         // pending_connects() should return slice of connections
         let mut builder = ExpressionBuilder::<BabyBear>::new();
 
-        let a = builder.add_const(BabyBear::ONE, "a");
-        let b = builder.add_const(BabyBear::from_u64(2), "b");
+        let a = builder.define_const(BabyBear::ONE, "a");
+        let b = builder.define_const(BabyBear::from_u64(2), "b");
 
         builder.connect(a, b);
 
@@ -1219,17 +1364,17 @@ mod tests {
         assert_eq!(builder.allocation_log().len(), 0); // Zero is pre-allocated without logging
 
         // Add a const
-        builder.add_const(BabyBear::ONE, "test_const");
+        builder.define_const(BabyBear::ONE, "test_const");
         assert_eq!(builder.allocation_log().len(), 1);
 
         // Add a public
-        builder.add_public(0, "test_public");
+        builder.public(0, "test_public");
         assert_eq!(builder.allocation_log().len(), 2);
 
         // Add an operation
-        let a = builder.add_const(BabyBear::from_u64(2), "a");
-        let b = builder.add_const(BabyBear::from_u64(3), "b");
-        builder.add_add(a, b, "sum");
+        let a = builder.define_const(BabyBear::from_u64(2), "a");
+        let b = builder.define_const(BabyBear::from_u64(3), "b");
+        builder.add(a, b, "sum");
         assert_eq!(builder.allocation_log().len(), 5); // +3 more (2 consts + 1 add)
     }
 
@@ -1240,13 +1385,13 @@ mod tests {
         let mut builder = ExpressionBuilder::<BabyBear>::new();
 
         builder.push_scope("scope_a");
-        builder.add_const(BabyBear::ONE, "in_a");
+        builder.define_const(BabyBear::ONE, "in_a");
 
         builder.push_scope("scope_b");
-        builder.add_const(BabyBear::from_u64(2), "in_b");
+        builder.define_const(BabyBear::from_u64(2), "in_b");
 
         builder.pop_scope();
-        builder.add_const(BabyBear::from_u64(3), "in_a_again");
+        builder.define_const(BabyBear::from_u64(3), "in_a_again");
 
         let scopes = builder.list_scopes();
         assert!(scopes.contains(&("scope_a".to_string())));

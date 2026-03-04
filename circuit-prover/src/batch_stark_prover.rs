@@ -6,9 +6,9 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use alloc::{format, vec};
 
-use p3_air::{Air, AirBuilder, BaseAir};
 #[cfg(debug_assertions)]
-use p3_batch_stark::DebugConstraintBuilderWithLookups;
+use p3_air::DebugConstraintBuilder;
+use p3_air::{Air, AirBuilder, BaseAir};
 use p3_batch_stark::{BatchProof, CommonData, ProverData, StarkGenericConfig, StarkInstance, Val};
 use p3_circuit::PreprocessedColumns;
 use p3_circuit::op::{NonPrimitiveOpType, Poseidon2Config, PrimitiveOpType};
@@ -23,10 +23,11 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tracing::instrument;
 
-use crate::air::{AluAir, ConstAir, PublicAir, WitnessAir};
+use crate::air::{AluAir, ConstAir, PublicAir};
 use crate::batch_stark_prover::dynamic_air::transmute_traces;
 use crate::common::CircuitTableAir;
 use crate::config::StarkField;
+use crate::constraint_profile::ConstraintProfile;
 use crate::field_params::ExtractBinomialW;
 
 mod dynamic_air;
@@ -39,10 +40,27 @@ pub use dynamic_air::{
 };
 pub use open_input::OpenInputProver;
 pub use packing::{TablePacking, TraceLengths};
-pub use poseidon2::Poseidon2Prover;
+use poseidon2::Poseidon2ProverD2;
+pub use poseidon2::{
+    Poseidon2AirWrapperInner, Poseidon2Prover, poseidon2_verifier_air_from_config,
+};
 
 pub const BABY_BEAR_MODULUS: u64 = 0x7800_0001;
 pub const KOALA_BEAR_MODULUS: u64 = 0x7f00_0001;
+
+/// Opaque variant tag for a non-primitive AIR in a batch proof.
+///
+/// Each [`NonPrimitiveTableEntry`] has one tag. The **meaning** of the tag is
+/// defined by that entry's `op_type`: the corresponding [`TableProver`] interprets
+/// it when building the AIR in [`TableProver::batch_air_from_table_entry`].
+#[derive(Clone, Copy, Default, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum AirVariant {
+    /// Baseline AIR for this op type (default behaviour).
+    #[default]
+    Baseline = 0,
+    /// Recursion-optimized variant.
+    Optimized = 1,
+}
 
 /// Metadata describing a non-primitive table inside a batch proof.
 ///
@@ -62,6 +80,9 @@ where
     pub rows: usize,
     /// Public values exposed by this table (if any).
     pub public_values: Vec<Val<SC>>,
+    /// AIR variant used for this non-primitive table.
+    #[serde(default)]
+    pub air_variant: AirVariant,
 }
 
 /// Combined data for circuit proving, including STARK prover data and preprocessed columns.
@@ -245,6 +266,8 @@ where
     pub table_packing: TablePacking,
     /// The number of rows in each of the circuit tables.
     pub rows: RowCounts,
+    /// Variant used for the primitive ALU table.
+    pub alu_variant: AirVariant,
     /// The degree of the field extension (`D`) used for the proof.
     pub ext_degree: usize,
     /// The binomial coefficient `W` for extension field multiplication, if `ext_degree > 1`.
@@ -274,6 +297,8 @@ where
 {
     config: SC,
     table_packing: TablePacking,
+    /// Variant used for the primitive ALU AIR.
+    alu_variant: AirVariant,
     /// Registered dynamic non-primitive table provers.
     non_primitive_provers: Vec<Box<dyn TableProver<SC>>>,
     /// When true, run the lookup debugger before proving to report imbalanced multisets.
@@ -303,7 +328,6 @@ where
 {
     fn width(&self) -> usize {
         match self {
-            Self::Witness(a) => a.width(),
             Self::Const(a) => a.width(),
             Self::Public(a) => a.width(),
             Self::Alu(a) => a.width(),
@@ -313,7 +337,6 @@ where
 
     fn preprocessed_trace(&self) -> Option<RowMajorMatrix<Val<SC>>> {
         match self {
-            Self::Witness(a) => a.preprocessed_trace(),
             Self::Const(a) => a.preprocessed_trace(),
             Self::Public(a) => a.preprocessed_trace(),
             Self::Alu(a) => a.preprocessed_trace(),
@@ -328,7 +351,6 @@ macro_rules! impl_circuit_table_air_for_builder {
     ($builder_ty:ty) => {
         fn eval(&self, builder: &mut $builder_ty) {
             match self {
-                Self::Witness(a) => Air::<$builder_ty>::eval(a, builder),
                 Self::Const(a) => Air::<$builder_ty>::eval(a, builder),
                 Self::Public(a) => Air::<$builder_ty>::eval(a, builder),
                 Self::Alu(a) => Air::<$builder_ty>::eval(a, builder),
@@ -338,7 +360,6 @@ macro_rules! impl_circuit_table_air_for_builder {
 
         fn add_lookup_columns(&mut self) -> Vec<usize> {
             match self {
-                Self::Witness(a) => Air::<$builder_ty>::add_lookup_columns(a),
                 Self::Const(a) => Air::<$builder_ty>::add_lookup_columns(a),
                 Self::Public(a) => Air::<$builder_ty>::add_lookup_columns(a),
                 Self::Alu(a) => Air::<$builder_ty>::add_lookup_columns(a),
@@ -348,7 +369,6 @@ macro_rules! impl_circuit_table_air_for_builder {
 
         fn get_lookups(&mut self) -> Vec<Lookup<<$builder_ty as AirBuilder>::F>> {
             match self {
-                Self::Witness(a) => Air::<$builder_ty>::get_lookups(a),
                 Self::Const(a) => Air::<$builder_ty>::get_lookups(a),
                 Self::Public(a) => Air::<$builder_ty>::get_lookups(a),
                 Self::Alu(a) => Air::<$builder_ty>::get_lookups(a),
@@ -368,16 +388,14 @@ where
 }
 
 #[cfg(debug_assertions)]
-impl<'a, SC, const D: usize> Air<DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>>
+impl<'a, SC, const D: usize> Air<DebugConstraintBuilder<'a, Val<SC>, SC::Challenge>>
     for CircuitTableAir<SC, D>
 where
     SC: StarkGenericConfig,
     Val<SC>: PrimeField,
     SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
 {
-    impl_circuit_table_air_for_builder!(
-        DebugConstraintBuilderWithLookups<'a, Val<SC>, SC::Challenge>
-    );
+    impl_circuit_table_air_for_builder!(DebugConstraintBuilder<'a, Val<SC>, SC::Challenge>);
 }
 
 impl<'a, SC, const D: usize> Air<ProverConstraintFolderWithLookups<'a, SC>>
@@ -410,6 +428,7 @@ where
         Self {
             config,
             table_packing: TablePacking::default(),
+            alu_variant: AirVariant::Optimized,
             non_primitive_provers: Vec::new(),
             debug_lookups: false,
         }
@@ -442,13 +461,28 @@ where
         self
     }
 
-    /// Register the non-primitive Poseidon2 prover plugin with the given configuration.
+    /// Register the non-primitive Poseidon2 prover plugin with the given configuration (D=4).
     pub fn register_poseidon2_table(&mut self, config: Poseidon2Config)
     where
         SC: Send + Sync,
         Val<SC>: BinomiallyExtendable<4>,
     {
-        self.register_table_prover(Box::new(Poseidon2Prover::new(config)));
+        self.register_table_prover(Box::new(Poseidon2Prover::new(
+            config,
+            ConstraintProfile::Standard,
+        )));
+    }
+
+    /// Register Poseidon2 for D=2 challenge field (e.g. Goldilocks).
+    pub fn register_poseidon2_table_d2(&mut self, config: Poseidon2Config)
+    where
+        SC: Send + Sync,
+        Val<SC>: BinomiallyExtendable<2>,
+    {
+        self.register_table_prover(Box::new(Poseidon2ProverD2(Poseidon2Prover::new(
+            config,
+            ConstraintProfile::Standard,
+        ))));
     }
 
     /// Register both the Poseidon2 and OpenInput non-primitive table provers.
@@ -457,13 +491,20 @@ where
         SC: Send + Sync,
         Val<SC>: BinomiallyExtendable<4>,
     {
-        self.register_table_prover(Box::new(Poseidon2Prover::new(poseidon2_config)));
+        self.register_poseidon2_table(poseidon2_config);
         self.register_table_prover(Box::new(OpenInputProver::new()));
     }
 
     #[inline]
     pub const fn table_packing(&self) -> TablePacking {
         self.table_packing
+    }
+
+    /// Select which ALU AIR variant to use for primitive tables.
+    #[must_use]
+    pub const fn with_alu_variant(mut self, variant: AirVariant) -> Self {
+        self.alu_variant = variant;
+        self
     }
 
     /// Generate a unified batch STARK proof for all circuit tables.
@@ -520,13 +561,15 @@ where
     {
         let PreprocessedColumns {
             primitive,
-            non_primitive: _,
+            non_primitive,
+            d: _,
+            ext_reads: _,
+            poseidon2_dup_wids: _,
         } = &circuit_prover_data.preprocessed_columns;
         let prover_data = &circuit_prover_data.prover_data;
 
         // Build matrices and AIRs per table.
         let packing = self.table_packing;
-        let witness_lanes = packing.witness_lanes();
         let min_height = packing.min_trace_height();
 
         // Check if Alu table has only dummy operations (trace length <= 1).
@@ -534,9 +577,6 @@ where
         // Using lanes > 1 with only dummy operations causes issues in recursive verification
         // due to a bug in how multi-lane padding interacts with lookup constraints.
         // We automatically reduce lanes to 1 in these cases with a warning.
-        //
-        // The trace length check is more reliable than checking preprocessed width because
-        // the circuit tables add dummy rows to avoid empty traces.
         let alu_trace_only_dummy = traces.alu_trace.op_kind.len() <= 1;
 
         let alu_lanes = if alu_trace_only_dummy && packing.alu_lanes() > 1 {
@@ -553,19 +593,7 @@ where
 
         TraceLengths::from_traces(traces, packing).log();
 
-        // Witness
-        let witness_rows = traces.witness_trace.num_rows();
-        let witness_multiplicities = primitive[PrimitiveOpType::Witness as usize].clone();
-        let witness_air = WitnessAir::<Val<SC>, D>::new_with_preprocessed(
-            witness_rows,
-            witness_lanes,
-            witness_multiplicities,
-        )
-        .with_min_height(min_height);
-        let witness_matrix: RowMajorMatrix<Val<SC>> =
-            WitnessAir::<Val<SC>, D>::trace_to_matrix(&traces.witness_trace, witness_lanes);
-
-        // Const
+        // Const — preprocessed is already in [ext_mult, index] 2-col format.
         let const_rows = traces.const_trace.values.len();
         let const_prep = primitive[PrimitiveOpType::Const as usize].clone();
         let const_air = ConstAir::<Val<SC>, D>::new_with_preprocessed(const_rows, const_prep)
@@ -573,8 +601,7 @@ where
         let const_matrix: RowMajorMatrix<Val<SC>> =
             ConstAir::<Val<SC>, D>::trace_to_matrix(&traces.const_trace);
 
-        // Public
-        // Similar to other primitive tables, reduce lanes to 1 if the table has only dummy operations.
+        // Public — reduce lanes to 1 if the table has only dummy operations.
         let public_trace_only_dummy = traces.public_trace.values.len() <= 1;
         let public_lanes = if public_trace_only_dummy && packing.public_lanes() > 1 {
             tracing::warn!(
@@ -588,6 +615,7 @@ where
             packing.public_lanes()
         };
 
+        // Preprocessed is already in [ext_mult, index] 2-col format.
         let public_rows = traces.public_trace.values.len();
         let public_prep = primitive[PrimitiveOpType::Public as usize].clone();
         let public_air =
@@ -596,26 +624,23 @@ where
         let public_matrix: RowMajorMatrix<Val<SC>> =
             PublicAir::<Val<SC>, D>::trace_to_matrix(&traces.public_trace, public_lanes);
 
-        // ALU (unified Add/Mul/BoolCheck/MulAdd)
-        // When the ALU trace is empty, we add a dummy operation to match
-        // what get_airs_and_degrees_with_prep does for the CommonData preprocessed commitment.
-        // This ensures the prover's AIR.preprocessed_trace() matches the committed data.
+        // ALU — preprocessed is already in 10-col format (with multiplicities) from
+        // get_airs_and_degrees_with_prep. When the trace is empty, a dummy row is included.
         let alu_rows = traces.alu_trace.a_values.len();
-        let (alu_rows, alu_prep) = if alu_rows == 0 {
-            // Add dummy operation with indices [0, 0, 0]
-            let dummy_prep =
-                vec![Val::<SC>::ZERO; AluAir::<Val<SC>, D>::preprocessed_lane_width() - 1];
-            (1, dummy_prep)
-        } else {
-            (alu_rows, primitive[PrimitiveOpType::Alu as usize].clone())
-        };
+        let alu_prep = primitive[PrimitiveOpType::Alu as usize].clone();
+        let alu_num_ops = alu_prep.len() / AluAir::<Val<SC>, D>::preprocessed_lane_width();
         let alu_air: AluAir<Val<SC>, D> = if D == 1 {
-            AluAir::<Val<SC>, D>::new_with_preprocessed(alu_rows, alu_lanes, alu_prep)
+            AluAir::<Val<SC>, D>::new_with_preprocessed(alu_num_ops, alu_lanes, alu_prep)
                 .with_min_height(min_height)
         } else {
             let w = w_binomial.ok_or(BatchStarkProverError::MissingWForExtension)?;
-            AluAir::<Val<SC>, D>::new_binomial_with_preprocessed(alu_rows, alu_lanes, w, alu_prep)
-                .with_min_height(min_height)
+            AluAir::<Val<SC>, D>::new_binomial_with_preprocessed(
+                alu_num_ops,
+                alu_lanes,
+                w,
+                alu_prep,
+            )
+            .with_min_height(min_height)
         };
         let alu_matrix: RowMajorMatrix<Val<SC>> =
             AluAir::<Val<SC>, D>::trace_to_matrix(&traces.alu_trace, alu_lanes);
@@ -677,6 +702,26 @@ where
             }
         }
 
+        // The `batch_instance_dN` methods regenerate Poseidon2 preprocessed data from
+        // runtime ops using `extract_preprocessed_from_operations`.
+        //
+        // Hence, we override here with the committed preprocessed data so the debug
+        // lookup check is consistent with the committed preprocessed trace.
+        for instance in &mut dynamic_instances {
+            if let Some(committed_prep) = non_primitive.get(&instance.op_type) {
+                for p in &self.non_primitive_provers {
+                    if p.op_type() == instance.op_type {
+                        if let Some(new_air) =
+                            p.air_with_committed_preprocessed(committed_prep.clone(), min_height)
+                        {
+                            instance.air = new_air;
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+
         // Wrap AIRs in enum for heterogeneous batching and build instances in fixed order.
         // TODO: Support public values for tables
         let mut air_storage: Vec<CircuitTableAir<SC, D>> =
@@ -689,13 +734,6 @@ where
             Vec::with_capacity(dynamic_instances.len());
 
         // Pad all trace matrices to at least min_height (for FRI compatibility)
-        air_storage.push(CircuitTableAir::Witness(witness_air));
-        trace_storage.push(packing::pad_matrix_to_min_height(
-            witness_matrix,
-            min_height,
-        ));
-        public_storage.push(Vec::new());
-
         air_storage.push(CircuitTableAir::Const(const_air));
         trace_storage.push(packing::pad_matrix_to_min_height(const_matrix, min_height));
         public_storage.push(Vec::new());
@@ -723,6 +761,7 @@ where
                 op_type,
                 rows,
                 public_values,
+                air_variant: AirVariant::Baseline,
             });
         }
 
@@ -745,10 +784,34 @@ where
         if self.debug_lookups {
             use p3_lookup::debug_util::{LookupDebugInstance, check_lookups};
 
-            let preprocessed_traces: Vec<Option<RowMajorMatrix<Val<SC>>>> = instances
+            let mut preprocessed_traces: Vec<Option<RowMajorMatrix<Val<SC>>>> = instances
                 .iter()
                 .map(|inst| inst.air.preprocessed_trace())
                 .collect();
+
+            // The `batch_instance_dN` methods regenerate Poseidon2 preprocessed data from
+            // runtime ops using `extract_preprocessed_from_operations`. This omits changes
+            // done like for duplicate Poseidon2 outputs.
+            //
+            // Hence, we override with the committed preprocessed data so the debug
+            // lookup check is consistent with the committed preprocessed trace.
+            for (j, instance) in non_primitives.iter().enumerate() {
+                if let NonPrimitiveOpType::Poseidon2Perm(cfg) = instance.op_type
+                    && let Some(committed_prep) = non_primitive.get(&instance.op_type)
+                {
+                    let poseidon2_prover = Poseidon2Prover::new(cfg, ConstraintProfile::Standard);
+                    let width = poseidon2_prover.preprocessed_width_from_config();
+                    let padded_rows = instance.rows.next_power_of_two().max(min_height);
+                    let mut prep_data = committed_prep.clone();
+                    prep_data.resize(
+                        padded_rows * width,
+                        <Val<SC> as PrimeCharacteristicRing>::ZERO,
+                    );
+                    preprocessed_traces[NUM_PRIMITIVE_TABLES + j] =
+                        Some(RowMajorMatrix::new(prep_data, width));
+                }
+            }
+
             let debug_instances: Vec<LookupDebugInstance<'_, Val<SC>>> = instances
                 .iter()
                 .zip(preprocessed_traces.iter())
@@ -767,25 +830,20 @@ where
 
         // Ensure all primitive table row counts are at least 1
         // RowCounts::new requires non-zero counts, so pad zeros to 1
-        let witness_rows_padded = witness_rows.max(1);
         let const_rows_padded = const_rows.max(1);
         let public_rows_padded = public_rows.max(1);
         let alu_rows_padded = alu_rows.max(1);
 
         // Store the effective packing (with reduced lanes if applicable) so the verifier
         // uses the same configuration that was actually used during proving.
-        let effective_packing = TablePacking::new(witness_lanes, public_lanes, alu_lanes)
-            .with_min_trace_height(min_height);
+        let effective_packing =
+            TablePacking::new(public_lanes, alu_lanes).with_min_trace_height(min_height);
 
         Ok(BatchStarkProof {
             proof,
             table_packing: effective_packing,
-            rows: RowCounts::new([
-                witness_rows_padded,
-                const_rows_padded,
-                public_rows_padded,
-                alu_rows_padded,
-            ]),
+            rows: RowCounts::new([const_rows_padded, public_rows_padded, alu_rows_padded]),
+            alu_variant: self.alu_variant,
             ext_degree: D,
             w_binomial: if D > 1 { w_binomial } else { None },
             non_primitives,
@@ -805,15 +863,10 @@ where
     ) -> Result<(), BatchStarkProverError> {
         // Rebuild AIRs in the same order as prove.
         let packing = proof.table_packing;
-        let witness_lanes = packing.witness_lanes();
         let public_lanes = packing.public_lanes();
         let alu_lanes = packing.alu_lanes();
         let min_height = packing.min_trace_height();
 
-        let witness_air = CircuitTableAir::Witness(
-            WitnessAir::<Val<SC>, D>::new(proof.rows[PrimitiveTable::Witness], witness_lanes)
-                .with_min_height(min_height),
-        );
         let const_air = CircuitTableAir::Const(
             ConstAir::<Val<SC>, D>::new(proof.rows[PrimitiveTable::Const])
                 .with_min_height(min_height),
@@ -834,7 +887,7 @@ where
                     .with_min_height(min_height),
             )
         };
-        let mut airs = vec![witness_air, const_air, public_air, alu_air];
+        let mut airs = vec![const_air, public_air, alu_air];
         // TODO: Handle public values.
         let mut pvs: Vec<Vec<Val<SC>>> = vec![Vec::new(); NUM_PRIMITIVE_TABLES];
 
@@ -861,6 +914,33 @@ where
 
         p3_batch_stark::verify_batch(&self.config, &airs, &proof.proof, &pvs, common)
             .map_err(|e| BatchStarkProverError::Verify(format!("{e:?}")))
+    }
+}
+
+/// Trait to register Poseidon2 by extension degree so recursion can dispatch D=2 vs D=4.
+pub trait RegisterPoseidon2ForDegree<const D: usize> {
+    fn register_poseidon2(&mut self, config: Poseidon2Config);
+}
+
+impl<SC> RegisterPoseidon2ForDegree<2> for BatchStarkProver<SC>
+where
+    SC: StarkGenericConfig + Send + Sync,
+    Val<SC>: BinomiallyExtendable<2> + StarkField,
+    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+{
+    fn register_poseidon2(&mut self, config: Poseidon2Config) {
+        self.register_poseidon2_table_d2(config);
+    }
+}
+
+impl<SC> RegisterPoseidon2ForDegree<4> for BatchStarkProver<SC>
+where
+    SC: StarkGenericConfig + Send + Sync,
+    Val<SC>: BinomiallyExtendable<4> + StarkField,
+    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+{
+    fn register_poseidon2(&mut self, config: Poseidon2Config) {
+        self.register_poseidon2_table(config);
     }
 }
 
