@@ -327,22 +327,22 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AluAir<F, D> {
                 if let ScheduleEntry::Op(i) = entry {
                     write_op(
                         pos,
-                        &trace.a_values[*i],
-                        &trace.b_values[*i],
-                        &trace.c_values[*i],
-                        &trace.out_values[*i],
+                        &trace.values[*i][0], // a
+                        &trace.values[*i][1], // b
+                        &trace.values[*i][2], // c
+                        &trace.values[*i][3], // out
                     );
                 }
                 // Separator entries stay zero (already initialized)
             }
         } else {
-            for op_idx in 0..trace.a_values.len() {
+            for op_idx in 0..trace.values.len() {
                 write_op(
                     op_idx,
-                    &trace.a_values[op_idx],
-                    &trace.b_values[op_idx],
-                    &trace.c_values[op_idx],
-                    &trace.out_values[op_idx],
+                    &trace.values[op_idx][0], // a
+                    &trace.values[op_idx][1], // b
+                    &trace.values[op_idx][2], // c
+                    &trace.values[op_idx][3], // out
                 );
             }
         }
@@ -387,7 +387,7 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AluAir<F, D> {
     /// Layout: `[mult_a, sel_add_vs_mul, sel_bool, sel_muladd, sel_horner, a_idx, b_idx, c_idx, out_idx, mult_b, mult_out, a_is_reader, c_is_reader]`.
     /// Indices are D-scaled. In standalone tests, `a_is_reader = c_is_reader = 1`.
     pub fn trace_to_preprocessed<ExtF: BasedVectorSpace<F>>(trace: &AluTrace<ExtF>) -> Vec<F> {
-        let total_len = trace.a_index.len() * Self::preprocessed_lane_width();
+        let total_len = trace.indices.len() * Self::preprocessed_lane_width();
         let mut preprocessed_values = Vec::with_capacity(total_len);
         let neg_one = F::ZERO - F::ONE;
 
@@ -406,10 +406,10 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AluAir<F, D> {
                 sel_bool,
                 sel_muladd,
                 sel_horner,
-                F::from_u32(trace.a_index[i].0 * D as u32),
-                F::from_u32(trace.b_index[i].0 * D as u32),
-                F::from_u32(trace.c_index[i].0 * D as u32),
-                F::from_u32(trace.out_index[i].0 * D as u32),
+                F::from_u32(trace.indices[i][0].0 * D as u32),
+                F::from_u32(trace.indices[i][1].0 * D as u32),
+                F::from_u32(trace.indices[i][2].0 * D as u32),
+                F::from_u32(trace.indices[i][3].0 * D as u32),
                 neg_one, // mult_b (reader placeholder)
                 F::ONE,  // mult_out (creator placeholder)
                 F::ONE,  // a_is_reader (standalone: constrained)
@@ -673,26 +673,22 @@ mod tests {
     #[test]
     fn prove_verify_alu_add_base_field() {
         let n = 8;
-        let a_values = vec![Val::from_u64(3); n];
-        let b_values = vec![Val::from_u64(5); n];
-        let c_values = vec![Val::ZERO; n];
-        let out_values = vec![Val::from_u64(8); n];
         let op_kind = vec![AluOpKind::Add; n];
-        let a_index = vec![WitnessId(1); n];
-        let b_index = vec![WitnessId(2); n];
-        let c_index = vec![WitnessId(0); n];
-        let out_index = vec![WitnessId(3); n];
+        let values = vec![
+            [
+                Val::from_u64(3),
+                Val::from_u64(5),
+                Val::ZERO,
+                Val::from_u64(8)
+            ];
+            n
+        ];
+        let indices = vec![[WitnessId(1), WitnessId(2), WitnessId(0), WitnessId(3)]; n];
 
         let trace = AluTrace {
             op_kind,
-            a_values,
-            a_index,
-            b_values,
-            b_index,
-            c_values,
-            c_index,
-            out_values,
-            out_index,
+            values,
+            indices,
         };
 
         let preprocessed_values = AluAir::<Val, 1>::trace_to_preprocessed(&trace);
@@ -712,26 +708,22 @@ mod tests {
     #[test]
     fn prove_verify_alu_mul_base_field() {
         let n = 8;
-        let a_values = vec![Val::from_u64(3); n];
-        let b_values = vec![Val::from_u64(5); n];
-        let c_values = vec![Val::ZERO; n];
-        let out_values = vec![Val::from_u64(15); n];
         let op_kind = vec![AluOpKind::Mul; n];
-        let a_index = vec![WitnessId(1); n];
-        let b_index = vec![WitnessId(2); n];
-        let c_index = vec![WitnessId(0); n];
-        let out_index = vec![WitnessId(3); n];
+        let values = vec![
+            [
+                Val::from_u64(3),
+                Val::from_u64(5),
+                Val::ZERO,
+                Val::from_u64(15)
+            ];
+            n
+        ];
+        let indices = vec![[WitnessId(1), WitnessId(2), WitnessId(0), WitnessId(3)]; n];
 
         let trace = AluTrace {
             op_kind,
-            a_values,
-            a_index,
-            b_values,
-            b_index,
-            c_values,
-            c_index,
-            out_values,
-            out_index,
+            values,
+            indices,
         };
 
         let preprocessed_values = AluAir::<Val, 1>::trace_to_preprocessed(&trace);
@@ -752,26 +744,23 @@ mod tests {
     fn prove_verify_alu_bool_check() {
         let n = 8;
         // Test with valid boolean values (0 and 1)
-        let a_values: Vec<Val> = (0..n).map(|i| Val::from_u64(i as u64 % 2)).collect();
-        let b_values = vec![Val::ZERO; n]; // unused for bool check
-        let c_values = vec![Val::ZERO; n];
-        let out_values = a_values.clone(); // out = a for bool check
         let op_kind = vec![AluOpKind::BoolCheck; n];
-        let a_index = vec![WitnessId(1); n];
-        let b_index = vec![WitnessId(0); n];
-        let c_index = vec![WitnessId(0); n];
-        let out_index = vec![WitnessId(1); n]; // out points to same as a
+        let values = (0..n)
+            .map(|i| {
+                [
+                    Val::from_u64(i as u64 % 2),
+                    Val::ZERO,
+                    Val::ZERO,
+                    Val::from_u64(i as u64 % 2),
+                ]
+            })
+            .collect();
+        let indices = vec![[WitnessId(1), WitnessId(0), WitnessId(0), WitnessId(1)]; n];
 
         let trace = AluTrace {
             op_kind,
-            a_values,
-            a_index,
-            b_values,
-            b_index,
-            c_values,
-            c_index,
-            out_values,
-            out_index,
+            values,
+            indices,
         };
 
         let preprocessed_values = AluAir::<Val, 1>::trace_to_preprocessed(&trace);
@@ -792,26 +781,22 @@ mod tests {
     fn prove_verify_alu_muladd() {
         let n = 8;
         // a * b + c = out => 3 * 5 + 2 = 17
-        let a_values = vec![Val::from_u64(3); n];
-        let b_values = vec![Val::from_u64(5); n];
-        let c_values = vec![Val::from_u64(2); n];
-        let out_values = vec![Val::from_u64(17); n];
         let op_kind = vec![AluOpKind::MulAdd; n];
-        let a_index = vec![WitnessId(1); n];
-        let b_index = vec![WitnessId(2); n];
-        let c_index = vec![WitnessId(3); n];
-        let out_index = vec![WitnessId(4); n];
+        let values = vec![
+            [
+                Val::from_u64(3),
+                Val::from_u64(5),
+                Val::from_u64(2),
+                Val::from_u64(17)
+            ];
+            n
+        ];
+        let indices = vec![[WitnessId(1), WitnessId(2), WitnessId(3), WitnessId(4)]; n];
 
         let trace = AluTrace {
             op_kind,
-            a_values,
-            a_index,
-            b_values,
-            b_index,
-            c_values,
-            c_index,
-            out_values,
-            out_index,
+            values,
+            indices,
         };
 
         let preprocessed_values = AluAir::<Val, 1>::trace_to_preprocessed(&trace);
@@ -831,22 +816,30 @@ mod tests {
     #[test]
     fn prove_verify_alu_mixed_ops() {
         // Mix of ADD and MUL operations
-        let a_vals = vec![Val::from_u64(3), Val::from_u64(4)];
-        let b_vals = vec![Val::from_u64(5), Val::from_u64(6)];
-        let c_vals = vec![Val::ZERO, Val::ZERO];
-        let out_vals = vec![Val::from_u64(8), Val::from_u64(24)]; // 3+5=8, 4*6=24
-        let ops = vec![AluOpKind::Add, AluOpKind::Mul];
+        let op_kind = vec![AluOpKind::Add, AluOpKind::Mul];
+        let values = vec![
+            [
+                Val::from_u64(3),
+                Val::from_u64(5),
+                Val::ZERO,
+                Val::from_u64(8),
+            ],
+            [
+                Val::from_u64(4),
+                Val::from_u64(6),
+                Val::ZERO,
+                Val::from_u64(24),
+            ],
+        ];
+        let indices = vec![
+            [WitnessId(1), WitnessId(2), WitnessId(0), WitnessId(3)],
+            [WitnessId(1), WitnessId(2), WitnessId(0), WitnessId(3)],
+        ];
 
         let trace = AluTrace {
-            op_kind: ops,
-            a_values: a_vals,
-            a_index: vec![WitnessId(0), WitnessId(1)],
-            b_values: b_vals,
-            b_index: vec![WitnessId(2), WitnessId(3)],
-            c_values: c_vals,
-            c_index: vec![WitnessId(0), WitnessId(0)],
-            out_values: out_vals,
-            out_index: vec![WitnessId(4), WitnessId(5)],
+            op_kind,
+            values,
+            indices,
         };
 
         let preprocessed_values = AluAir::<Val, 1>::trace_to_preprocessed(&trace);
@@ -888,14 +881,8 @@ mod tests {
 
         let trace = AluTrace {
             op_kind: vec![AluOpKind::Mul; n],
-            a_values: vec![a; n],
-            a_index: vec![WitnessId(1); n],
-            b_values: vec![b; n],
-            b_index: vec![WitnessId(2); n],
-            c_values: vec![c; n],
-            c_index: vec![WitnessId(0); n],
-            out_values: vec![out; n],
-            out_index: vec![WitnessId(3); n],
+            values: vec![[a, b, c, out]; n],
+            indices: vec![[WitnessId(1), WitnessId(2), WitnessId(0), WitnessId(3)]; n],
         };
 
         let preprocessed_values = AluAir::<Val, 4>::trace_to_preprocessed(&trace);

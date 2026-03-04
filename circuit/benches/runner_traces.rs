@@ -5,7 +5,7 @@
 
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use p3_circuit::CircuitBuilder;
-use p3_circuit::tables::{AluTraceBuilder, ConstTraceBuilder, PublicTraceBuilder};
+use p3_circuit::tables::{ConstTraceBuilder, PublicTraceBuilder};
 use p3_field::PrimeCharacteristicRing;
 use p3_koala_bear::KoalaBear;
 
@@ -144,9 +144,6 @@ fn bench_trace_build(c: &mut Criterion) {
     });
     group.bench_function("public", |b| {
         b.iter(|| black_box(PublicTraceBuilder::new(ops, witness).build().unwrap()));
-    });
-    group.bench_function("alu", |b| {
-        b.iter(|| black_box(AluTraceBuilder::new(ops, witness).build().unwrap()));
     });
     group.finish();
 }

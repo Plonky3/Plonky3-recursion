@@ -68,7 +68,7 @@ fn bench_trace_to_matrix(c: &mut Criterion) {
                     &traces.public_trace,
                     lanes_p,
                 ));
-                let alu_air = AluAir::<F, 1>::new(traces.alu_trace.a_values.len(), lanes_a);
+                let alu_air = AluAir::<F, 1>::new(traces.alu_trace.values.len(), lanes_a);
                 let _ = black_box(alu_air.trace_to_matrix(&traces.alu_trace));
             });
         });

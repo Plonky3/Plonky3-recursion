@@ -616,7 +616,7 @@ where
 
         // ALU — preprocessed is already in 10-col format (with multiplicities) from
         // get_airs_and_degrees_with_prep. When the trace is empty, a dummy row is included.
-        let alu_rows = traces.alu_trace.a_values.len();
+        let alu_rows = traces.alu_trace.values.len();
         let alu_prep = primitive[PrimitiveOpType::Alu as usize].clone();
         let alu_num_ops = alu_prep.len() / AluAir::<Val<SC>, D>::preprocessed_lane_width();
         let alu_air: AluAir<Val<SC>, D> = if D == 1 {

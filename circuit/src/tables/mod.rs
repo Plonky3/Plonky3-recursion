@@ -18,7 +18,7 @@ mod public;
 mod runner;
 mod witness;
 
-pub use alu::{AluTrace, AluTraceBuilder};
+pub use alu::{AluOpRecord, AluTrace};
 pub use constant::{ConstTrace, ConstTraceBuilder};
 pub use public::{PublicTrace, PublicTraceBuilder};
 pub use runner::CircuitRunner;
@@ -165,19 +165,19 @@ impl<F: alloc::fmt::Debug> Traces<F> {
             }
 
             tracing::debug!("\n=== ALU TRACE ===");
-            for i in 0..self.alu_trace.a_values.len() {
+            for i in 0..self.alu_trace.values.len() {
                 tracing::debug!(
                     "Row {}: {:?} WitnessId({}) op WitnessId({}) [c={}] -> WitnessId({}) | {:?} op {:?} [{:?}] -> {:?}",
                     i,
                     self.alu_trace.op_kind[i],
-                    self.alu_trace.a_index[i],
-                    self.alu_trace.b_index[i],
-                    self.alu_trace.c_index[i],
-                    self.alu_trace.out_index[i],
-                    self.alu_trace.a_values[i],
-                    self.alu_trace.b_values[i],
-                    self.alu_trace.c_values[i],
-                    self.alu_trace.out_values[i]
+                    self.alu_trace.indices[i][0],
+                    self.alu_trace.indices[i][1],
+                    self.alu_trace.indices[i][2],
+                    self.alu_trace.indices[i][3],
+                    self.alu_trace.values[i][0],
+                    self.alu_trace.values[i][1],
+                    self.alu_trace.values[i][2],
+                    self.alu_trace.values[i][3]
                 );
             }
         }
