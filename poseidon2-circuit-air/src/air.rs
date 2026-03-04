@@ -876,6 +876,7 @@ where
             0,
             0, // Here, we do not need the permutation trace
             0,
+            0,
         );
         let symbolic_main = symbolic_air_builder.main();
         let symbolic_main_local = symbolic_main.row_slice(0).expect("The matrix is empty?");

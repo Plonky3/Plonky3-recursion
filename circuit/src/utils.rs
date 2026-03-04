@@ -281,6 +281,11 @@ fn symbolic_to_circuit_core<CF: Field, F: Field>(
                                 get_val(offset, v.index, local_values, next_values)
                             }
                             BaseEntry::Public => public_values[v.index],
+                            BaseEntry::Periodic => {
+                                unimplemented!(
+                                    "Periodic values are not supported in symbolic_to_circuit"
+                                )
+                            }
                         };
                         cache.insert(key, id);
                         stack.push(id);

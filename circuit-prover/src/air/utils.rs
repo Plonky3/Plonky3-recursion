@@ -191,6 +191,7 @@ pub fn create_symbolic_variables<F: Field>(
         0,
         num_public_values,
         num_permutation_cols,
+        0,
     );
 
     let symbolic_main = symbolic_air_builder.main();
