@@ -120,7 +120,7 @@ struct Args {
     )]
     max_log_arity: usize,
 
-    #[arg(long, default_value_t = 0, help = "Height of the Merkle cap to open")]
+    #[arg(long, default_value_t = 2, help = "Height of the Merkle cap to open")]
     cap_height: usize,
 
     #[arg(
@@ -139,7 +139,7 @@ struct Args {
 
     #[arg(
         long,
-        default_value_t = 16,
+        default_value_t = 18,
         help = "PoW grinding bits during FRI query phase"
     )]
     query_pow_bits: usize,
