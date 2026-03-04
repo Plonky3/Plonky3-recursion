@@ -4,7 +4,7 @@ use core::iter;
 use itertools::Itertools;
 use p3_air::lookup::LookupEvaluator;
 use p3_air::{Air, AirBuilder, PermutationAirBuilder};
-use p3_field::Field;
+use p3_field::{Field, PrimeCharacteristicRing};
 use p3_lookup::lookup_traits::{Direction, Lookup, LookupData, LookupInput};
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
@@ -75,22 +75,43 @@ pub fn get_alu_index_lookups<AB: PermutationAirBuilder, const D: usize>(
         .collect()
 }
 
-/// Get ALU lookups for the 4 operands (a, b, c, out) — Optimized layout (9 columns per lane).
+/// Get ALU lookups for the 4 operands (a, b, c, out) — Optimized layout (8 columns per lane).
 ///
-/// Layout: [op, a_idx, b_idx, c_idx, out_idx, mult_b, mult_out, eff_mult_a, eff_mult_c]
+/// Layout: [op, a_idx, b_idx, c_idx, out_idx, mult_b, mult_out, packed_ac]
 ///
-/// `eff_mult_a = mult_a * a_is_reader` and `eff_mult_c = mult_a * c_is_reader` are stored
-/// directly, collapsing (mult_a, a_is_reader, c_is_reader) into two columns.
+/// `packed_ac = eff_mult_a + 2 * eff_mult_c` where both are in `{-1, 0}`, so `packed_ac ∈ {0,-1,-2,-3}`.
+///
+/// Recovery via degree-3 Lagrange interpolation over `{0,-1,-2,-3}` (all preprocessed, degree 0):
+///   eff_mult_a(p) = p(p+2)(p+3)/2 + p(p+1)(p+2)/6
+///   eff_mult_c(p) = -p(p+1)(p+3)/2 + p(p+1)(p+2)/6
 pub fn get_alu_index_lookups_optimized<AB: PermutationAirBuilder, const D: usize>(
     main_start: usize,
     preprocessed_start: usize,
     main: &[SymbolicVariable<<AB as AirBuilder>::F>],
     preprocessed: &[SymbolicVariable<<AB as AirBuilder>::F>],
-) -> Vec<LookupInput<AB::F>> {
+) -> Vec<LookupInput<AB::F>>
+where
+    AB::F: PrimeCharacteristicRing,
+{
     let mult_b = SymbolicExpression::from(preprocessed[preprocessed_start + 5]);
     let mult_out = SymbolicExpression::from(preprocessed[preprocessed_start + 6]);
-    let eff_mult_a = SymbolicExpression::from(preprocessed[preprocessed_start + 7]);
-    let eff_mult_c = SymbolicExpression::from(preprocessed[preprocessed_start + 8]);
+    let p = SymbolicExpression::from(preprocessed[preprocessed_start + 7]);
+
+    let one = SymbolicExpression::from(AB::F::ONE);
+    let two = SymbolicExpression::from(AB::F::from_u32(2));
+    let three = SymbolicExpression::from(AB::F::from_u32(3));
+    let inv2 = SymbolicExpression::from(AB::F::from_u32(2).inverse());
+    let inv6 = SymbolicExpression::from(AB::F::from_u32(6).inverse());
+
+    // p(p+2)(p+3)/2 + p(p+1)(p+2)/6
+    let term_a1 =
+        p.clone() * (p.clone() + two.clone()) * (p.clone() + three.clone()) * inv2.clone();
+    let term_shared = p.clone() * (p.clone() + one.clone()) * (p.clone() + two) * inv6;
+    let eff_mult_a = term_a1 + term_shared.clone();
+
+    // -p(p+1)(p+3)/2 + p(p+1)(p+2)/6
+    let term_c1 = p.clone() * (p.clone() + one) * (p + three) * inv2;
+    let eff_mult_c = term_shared - term_c1;
 
     let multiplicities = [eff_mult_a, mult_b, eff_mult_c, mult_out];
     let idx_offset = 1;

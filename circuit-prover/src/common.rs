@@ -186,7 +186,7 @@ where
                 let mut prep_13col: Vec<Val<SC>> = Vec::with_capacity(
                     chunks.len() * lane_12 + if alu_empty { 0 } else { lane_12 },
                 );
-                let mut prep_8col: Vec<Val<SC>> = Vec::with_capacity(chunks.len() * 9);
+                let mut prep_8col: Vec<Val<SC>> = Vec::with_capacity(chunks.len() * 8);
 
                 for chunk in &mut chunks {
                     let sel1 = chunk[0];
@@ -261,23 +261,26 @@ where
                         <Val<SC>>::ONE // Mul
                     };
 
+                    // packed_ac = eff_mult_a + 2 * eff_mult_c
+                    // eff_mult_a = mult_a * a_is_reader, eff_mult_c = mult_a * c_is_reader
                     let eff_mult_a = if a_is_reader { mult_a } else { <Val<SC>>::ZERO };
                     let eff_mult_c = if c_is_reader { mult_a } else { <Val<SC>>::ZERO };
+                    let packed_ac = eff_mult_a + eff_mult_c + eff_mult_c;
 
                     prep_8col.extend([
-                        op, a_idx, b_idx, c_idx, out_idx, mult_b, mult_out, eff_mult_a, eff_mult_c,
+                        op, a_idx, b_idx, c_idx, out_idx, mult_b, mult_out, packed_ac,
                     ]);
                 }
                 debug_assert!(chunks.remainder().is_empty());
 
                 if alu_empty {
                     prep_13col.extend([<Val<SC>>::ZERO; 13]);
-                    prep_8col.extend([<Val<SC>>::ZERO; 9]);
+                    prep_8col.extend([<Val<SC>>::ZERO; 8]);
                 }
 
                 match constraint_profile {
                     crate::ConstraintProfile::RecursionOptimized => {
-                        let num_ops = prep_8col.len() / 9;
+                        let num_ops = prep_8col.len() / 8;
                         let alu_air = if D == 1 {
                             AluAirOptimized::new_with_preprocessed(
                                 num_ops,

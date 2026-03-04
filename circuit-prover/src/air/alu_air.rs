@@ -658,12 +658,18 @@ where
 
 /// Optimized ALU AIR with degree-9 constraints and reduced preprocessed columns.
 ///
-/// Preprocessed layout per lane (9 columns vs 13 for standard AluAir):
-///   [op, a_idx, b_idx, c_idx, out_idx, mult_b, mult_out, eff_mult_a, eff_mult_c]
+/// Preprocessed layout per lane (8 columns vs 13 for standard AluAir):
+///   [op, a_idx, b_idx, c_idx, out_idx, mult_b, mult_out, packed_ac]
 ///
 /// `op ∈ {0..4}`: Add=0, Mul=1, BoolCheck=2, MulAdd=3, HornerAcc=4.
-/// `eff_mult_a = mult_a * a_is_reader` and `eff_mult_c = mult_a * c_is_reader` collapse the
-/// three columns (mult_a, a_is_reader, c_is_reader) from the standard layout into two.
+///
+/// `packed_ac = eff_mult_a + 2 * eff_mult_c` where `eff_mult_a = mult_a * a_is_reader`
+/// and `eff_mult_c = mult_a * c_is_reader`. Since both are in `{-1, 0}`, `packed_ac ∈ {0,-1,-2,-3}`.
+/// This collapses (mult_a, a_is_reader, c_is_reader) from the standard layout into one column.
+///
+/// Recovery via degree-3 Lagrange interpolation (preprocessed expressions, degree 0 in AIR):
+///   eff_mult_a(p) = p(p+2)(p+3)/2 + p(p+1)(p+2)/6
+///   eff_mult_c(p) = -p(p+1)(p+3)/2 + p(p+1)(p+2)/6
 #[derive(Debug, Clone)]
 pub struct AluAirOptimized<F, const D: usize = 1> {
     pub num_ops: usize,
@@ -758,7 +764,7 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AluAirOptimized<F, D> {
     }
 
     pub const fn preprocessed_lane_width() -> usize {
-        9
+        8
     }
 
     pub const fn preprocessed_width(&self) -> usize {
@@ -937,6 +943,8 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AluAirOptimized<F, D> {
                 AluOpKind::HornerAcc => F::from_u32(4),
             };
             // In standalone tests all operands are constrained: eff_mult_a = eff_mult_c = -1
+            // packed_ac = eff_mult_a + 2 * eff_mult_c = -1 + 2*(-1) = -3
+            let neg_three = F::ZERO - F::from_u32(3);
             preprocessed_values.extend(&[
                 op,
                 F::from_u32(trace.indices[i][0].0 * D as u32),
@@ -945,8 +953,7 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AluAirOptimized<F, D> {
                 F::from_u32(trace.indices[i][3].0 * D as u32),
                 neg_one,
                 F::ONE,
-                neg_one,
-                neg_one,
+                neg_three,
             ]);
         }
 
@@ -1438,7 +1445,7 @@ mod tests {
         let air = AluAirOptimized::<Val, 1>::new_with_preprocessed(n, 1, preprocessed_values);
         let matrix: RowMajorMatrix<Val> = air.trace_to_matrix(&trace);
         assert_eq!(matrix.width(), 4);
-        assert_eq!(air.preprocessed_width(), 9);
+        assert_eq!(air.preprocessed_width(), 8);
 
         let config = build_test_config();
         let pis: Vec<Val> = vec![];
