@@ -10,7 +10,7 @@ use p3_air::{Air as P3Air, AirBuilder, BaseAir as P3BaseAir, SymbolicAirBuilder}
 use p3_batch_stark::CommonData;
 use p3_circuit::utils::ColumnsTargets;
 use p3_circuit::{CircuitBuilder, NonPrimitiveOpId};
-use p3_circuit_prover::air::{AluAir, ConstAir, PublicAir};
+use p3_circuit_prover::air::{AluAir, AluAirOptimized, ConstAir, PublicAir};
 use p3_circuit_prover::batch_stark_prover::{
     AirVariant, DynamicAirEntry, PrimitiveTable, RowCounts, TableProver,
 };
@@ -56,6 +56,7 @@ pub enum CircuitTablesAir<SC: StarkGenericConfig, const D: usize> {
     Const(ConstAir<Val<SC>, D>),
     Public(PublicAir<Val<SC>, D>),
     Alu(AluAir<Val<SC>, D>),
+    AluOptimized(AluAirOptimized<Val<SC>, D>),
     Dynamic(DynRecursionAirEntry<SC>),
 }
 
@@ -69,6 +70,7 @@ where
             Self::Const(a) => P3BaseAir::width(a),
             Self::Public(a) => P3BaseAir::width(a),
             Self::Alu(a) => P3BaseAir::width(a),
+            Self::AluOptimized(a) => P3BaseAir::width(a),
             Self::Dynamic(a) => P3BaseAir::width(a),
         }
     }
@@ -91,6 +93,7 @@ where
             Self::Const(a) => P3Air::eval(a, builder),
             Self::Public(a) => P3Air::eval(a, builder),
             Self::Alu(a) => P3Air::eval(a, builder),
+            Self::AluOptimized(a) => P3Air::eval(a, builder),
             Self::Dynamic(inner) => P3Air::eval(inner, builder),
         }
     }
@@ -104,6 +107,9 @@ where
                 SymbolicAirBuilder<Val<SC>, <SC as StarkGenericConfig>::Challenge>,
             >::add_lookup_columns(a),
             Self::Alu(a) => P3Air::<
+                SymbolicAirBuilder<Val<SC>, <SC as StarkGenericConfig>::Challenge>,
+            >::add_lookup_columns(a),
+            Self::AluOptimized(a) => P3Air::<
                 SymbolicAirBuilder<Val<SC>, <SC as StarkGenericConfig>::Challenge>,
             >::add_lookup_columns(a),
             Self::Dynamic(inner) => P3Air::<
@@ -124,6 +130,9 @@ where
             Self::Const(a) => P3Air::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::get_lookups(a),
             Self::Public(a) => P3Air::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::get_lookups(a),
             Self::Alu(a) => P3Air::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::get_lookups(a),
+            Self::AluOptimized(a) => {
+                P3Air::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::get_lookups(a)
+            }
             Self::Dynamic(inner) => {
                 P3Air::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::get_lookups(inner)
             }
@@ -163,6 +172,32 @@ where
 
 fn binomial_w_for_alu<F: Field, EF: ExtensionField<F> + ExtractBinomialW<F>>() -> F {
     EF::extract_w().expect("extension field must provide binomial W for ALU AIR")
+}
+
+fn create_alu_air_optimized<F, EF, const TRACE_D: usize>(
+    num_ops: usize,
+    lanes: usize,
+) -> AluAirOptimized<F, TRACE_D>
+where
+    F: Field + PrimeCharacteristicRing,
+    EF: ExtensionField<F> + ExtractBinomialW<F>,
+{
+    if TRACE_D == 1 {
+        let preprocessed = if num_ops == 0 {
+            Vec::new()
+        } else {
+            vec![F::ZERO; num_ops * AluAirOptimized::<F, TRACE_D>::preprocessed_lane_width()]
+        };
+        AluAirOptimized::<F, TRACE_D>::new_with_preprocessed(num_ops, lanes, preprocessed)
+    } else {
+        let w = binomial_w_for_alu::<F, EF>();
+        let preprocessed = if num_ops == 0 {
+            Vec::new()
+        } else {
+            vec![F::ZERO; num_ops * AluAirOptimized::<F, TRACE_D>::preprocessed_lane_width()]
+        };
+        AluAirOptimized::<F, TRACE_D>::new_binomial_with_preprocessed(num_ops, lanes, w, preprocessed)
+    }
 }
 
 /// Build and attach a recursive verifier circuit for a circuit-prover [`BatchStarkProof`].
@@ -222,14 +257,14 @@ where
     let public_lanes = packing.public_lanes();
     let alu_lanes = packing.alu_lanes();
 
-    // Create AluAir with appropriate constructor based on TRACE_D and the stored
-    // primitive ALU variant used during proving.
-    // For now both variants share the same AIR type; this hook allows us to swap
-    // in a different ALU AIR in the future based on `proof.alu_variant`.
+    let num_ops = rows[PrimitiveTable::Alu].max(1);
     let alu_air = match proof.alu_variant {
-        AirVariant::Baseline | AirVariant::Optimized => {
-            create_alu_air::<Val<SC>, SC::Challenge, TRACE_D>(rows[PrimitiveTable::Alu], alu_lanes)
-        }
+        AirVariant::Baseline => CircuitTablesAir::Alu(
+            create_alu_air::<Val<SC>, SC::Challenge, TRACE_D>(rows[PrimitiveTable::Alu], alu_lanes),
+        ),
+        AirVariant::Optimized => CircuitTablesAir::AluOptimized(
+            create_alu_air_optimized::<Val<SC>, SC::Challenge, TRACE_D>(num_ops, alu_lanes),
+        ),
     };
 
     let mut circuit_airs: Vec<CircuitTablesAir<SC, TRACE_D>> = vec![
@@ -240,7 +275,7 @@ where
             rows[PrimitiveTable::Public],
             public_lanes,
         )),
-        CircuitTablesAir::Alu(alu_air),
+        alu_air,
     ];
 
     for entry in &proof.non_primitives {

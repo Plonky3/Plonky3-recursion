@@ -146,8 +146,7 @@ fn test_table_lookups() {
             CircuitTableAir::Public(_) => {
                 assert_eq!(lookups.len(), 1, "Public table should have one lookup");
             }
-            CircuitTableAir::Alu(_) => {
-                // ALU table sends 4 lookups per lane: one for each operand (a, b, c, out)
+            CircuitTableAir::Alu(_) | CircuitTableAir::AluOptimized(_) => {
                 let expected_num_lookups = default_packing.alu_lanes() * 4;
                 assert_eq!(
                     lookups.len(),
@@ -326,8 +325,7 @@ fn test_extension_field_table_lookups() {
             CircuitTableAir::Public(_) => {
                 assert_eq!(lookups.len(), 1, "Public table should have one lookup");
             }
-            CircuitTableAir::Alu(_) => {
-                // ALU table sends 4 lookups per lane: one for each operand (a, b, c, out)
+            CircuitTableAir::Alu(_) | CircuitTableAir::AluOptimized(_) => {
                 let expected_num_lookups = default_packing.alu_lanes() * 4;
                 assert_eq!(
                     lookups.len(),

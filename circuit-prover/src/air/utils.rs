@@ -75,6 +75,39 @@ pub fn get_alu_index_lookups<AB: PermutationAirBuilder, const D: usize>(
         .collect()
 }
 
+/// Get ALU lookups for the 4 operands (a, b, c, out) — Optimized layout (10 columns per lane).
+///
+/// Layout: [mult_a, op, a_idx, b_idx, c_idx, out_idx, mult_b, mult_out, a_is_reader, c_is_reader]
+pub fn get_alu_index_lookups_optimized<AB: PermutationAirBuilder, const D: usize>(
+    main_start: usize,
+    preprocessed_start: usize,
+    main: &[SymbolicVariable<<AB as AirBuilder>::F>],
+    preprocessed: &[SymbolicVariable<<AB as AirBuilder>::F>],
+) -> Vec<LookupInput<AB::F>> {
+    let mult_a = SymbolicExpression::from(preprocessed[preprocessed_start]);
+    let mult_b = SymbolicExpression::from(preprocessed[preprocessed_start + 6]);
+    let mult_out = SymbolicExpression::from(preprocessed[preprocessed_start + 7]);
+    let a_is_reader = SymbolicExpression::from(preprocessed[preprocessed_start + 8]);
+    let c_is_reader = SymbolicExpression::from(preprocessed[preprocessed_start + 9]);
+
+    let eff_mult_a = mult_a.clone() * a_is_reader;
+    let eff_mult_c = mult_a * c_is_reader;
+
+    let multiplicities = [eff_mult_a, mult_b, eff_mult_c, mult_out];
+    let idx_offset = 2;
+
+    (0..4)
+        .map(|i| {
+            let idx = SymbolicExpression::from(preprocessed[preprocessed_start + idx_offset + i]);
+
+            let values = (0..D).map(|j| SymbolicExpression::from(main[main_start + i * D + j]));
+            let inps = iter::once(idx).chain(values).collect::<Vec<_>>();
+
+            (inps, multiplicities[i].clone(), Direction::Receive)
+        })
+        .collect()
+}
+
 /// Helper to create a preprocessed trace from complete preprocessed values (already including
 /// multiplicities). Simply reshapes the flat per-op data into a row-major matrix.
 pub fn create_direct_preprocessed_trace<F: Field>(

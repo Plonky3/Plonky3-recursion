@@ -463,13 +463,17 @@ macro_rules! define_field_module {
                     .with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup);
 
                 let config_0 = config_with_fri_params(fri_params);
+                let constraint_profile = match fri_params.log_blowup {
+                    1 |2 => ConstraintProfile::Standard,
+                    _ => ConstraintProfile::RecursionOptimized,
+                };
                 let (airs_degrees_0, preprocessed_columns_0) =
                     get_airs_and_degrees_with_prep::<ConfigWithFriParams, _, 1>(
                         &base_circuit,
                         table_packing_0,
                         &[],
                         &[],
-                        ConstraintProfile::Standard,
+                        constraint_profile,
                     )
                     .unwrap();
                 let (mut airs_0, degrees_0): (Vec<_>, Vec<_>) = airs_degrees_0.into_iter().unzip();
@@ -506,11 +510,15 @@ macro_rules! define_field_module {
                 let mut output = RecursionOutput(proof_0, Rc::new(circuit_prover_data_0));
 
                 for layer in 1..=num_recursive_layers {
+                    let constraint_profile = match fri_params.log_blowup {
+                        1 |2 => ConstraintProfile::Standard,
+                        _ => ConstraintProfile::RecursionOptimized,
+                    };
                     let params = ProveNextLayerParams {
                         table_packing: table_packing
                             .with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup),
                         use_npos_in_circuit: true,
-                        constraint_profile: ConstraintProfile::Standard,
+                        constraint_profile,
                     };
                     let config = config_with_fri_params(fri_params);
 

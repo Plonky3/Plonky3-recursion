@@ -416,13 +416,17 @@ macro_rules! define_field_module {
                 builder.connect(c, expected);
 
                 let circuit = builder.build().unwrap();
+                let constraint_profile = match config.fri_verifier_params.log_blowup {
+                    1 |2 => ConstraintProfile::Standard,
+                    _ => ConstraintProfile::RecursionOptimized,
+                };
                 let (airs_degrees, preprocessed_columns) =
                     get_airs_and_degrees_with_prep::<ConfigWithFriParams, _, 1>(
                         &circuit,
                         table_packing,
                         &[],
                         &[],
-                        ConstraintProfile::Standard,
+                        constraint_profile,
                     )
                     .unwrap();
                 let (mut airs, degrees): (Vec<_>, Vec<_>) = airs_degrees.into_iter().unzip();
@@ -484,7 +488,11 @@ macro_rules! define_field_module {
                         "Aggregation level {level}: {} proofs -> {pairs}",
                         proofs.len()
                     );
-
+                    
+                    let constraint_profile = match config.fri_verifier_params.log_blowup {
+                        1 |2 => ConstraintProfile::Standard,
+                        _ => ConstraintProfile::RecursionOptimized,
+                    };
                     let agg_params = ProveNextLayerParams {
                         table_packing: if level == 1 {
                             TablePacking::new(2, 2)
@@ -493,7 +501,7 @@ macro_rules! define_field_module {
                         }
                         .with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup),
                         use_npos_in_circuit: true,
-                        constraint_profile: ConstraintProfile::Standard,
+                        constraint_profile,
                     };
 
                     let mut next_level = Vec::with_capacity(pairs);

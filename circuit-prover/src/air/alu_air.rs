@@ -54,7 +54,7 @@ use p3_matrix::dense::RowMajorMatrix;
 
 use crate::air::utils::{
     create_direct_preprocessed_trace, create_symbolic_variables, get_alu_index_lookups,
-    pad_matrix_with_min_height,
+    get_alu_index_lookups_optimized, pad_matrix_with_min_height,
 };
 
 /// Entry in the HornerAcc lane schedule.
@@ -656,6 +656,517 @@ where
     }
 }
 
+/// Optimized ALU AIR with degree-9 constraints and single-column op encoding.
+///
+/// Uses op ∈ {0,1,2,3,4} for Add, Mul, BoolCheck, MulAdd, HornerAcc.
+/// 10 preprocessed columns per lane (vs 13 for standard AluAir).
+#[derive(Debug, Clone)]
+pub struct AluAirOptimized<F, const D: usize = 1> {
+    pub num_ops: usize,
+    pub lanes: usize,
+    pub w_binomial: Option<F>,
+    pub preprocessed: Vec<F>,
+    pub num_lookup_columns: usize,
+    pub min_height: usize,
+    schedule: Option<Vec<ScheduleEntry>>,
+    _phantom: PhantomData<F>,
+}
+
+impl<F: Field + PrimeCharacteristicRing, const D: usize> AluAirOptimized<F, D> {
+    pub const fn new(num_ops: usize, lanes: usize) -> Self {
+        assert!(lanes > 0, "lane count must be non-zero");
+        assert!(D == 1, "Use new_binomial for D > 1");
+        Self {
+            num_ops,
+            lanes,
+            w_binomial: None,
+            preprocessed: Vec::new(),
+            num_lookup_columns: 0,
+            min_height: 1,
+            schedule: None,
+            _phantom: PhantomData,
+        }
+    }
+
+    pub fn new_with_preprocessed(num_ops: usize, lanes: usize, preprocessed: Vec<F>) -> Self {
+        assert!(lanes > 0, "lane count must be non-zero");
+        assert!(D == 1, "Use new_binomial_with_preprocessed for D > 1");
+        let schedule = Self::compute_schedule(&preprocessed, lanes);
+        Self {
+            num_ops,
+            lanes,
+            w_binomial: None,
+            preprocessed,
+            num_lookup_columns: 0,
+            min_height: 1,
+            schedule,
+            _phantom: PhantomData,
+        }
+    }
+
+    pub const fn new_binomial(num_ops: usize, lanes: usize, w: F) -> Self {
+        assert!(lanes > 0, "lane count must be non-zero");
+        assert!(D >= 2, "Binomial constructor requires D >= 2");
+        Self {
+            num_ops,
+            lanes,
+            w_binomial: Some(w),
+            preprocessed: Vec::new(),
+            num_lookup_columns: 0,
+            min_height: 1,
+            schedule: None,
+            _phantom: PhantomData,
+        }
+    }
+
+    pub fn new_binomial_with_preprocessed(
+        num_ops: usize,
+        lanes: usize,
+        w: F,
+        preprocessed: Vec<F>,
+    ) -> Self {
+        assert!(lanes > 0, "lane count must be non-zero");
+        assert!(D >= 2, "Binomial constructor requires D >= 2");
+        let schedule = Self::compute_schedule(&preprocessed, lanes);
+        Self {
+            num_ops,
+            lanes,
+            w_binomial: Some(w),
+            preprocessed,
+            num_lookup_columns: 0,
+            min_height: 1,
+            schedule,
+            _phantom: PhantomData,
+        }
+    }
+
+    pub const fn with_min_height(mut self, min_height: usize) -> Self {
+        self.min_height = min_height;
+        self
+    }
+
+    pub const fn lane_width() -> usize {
+        4 * D
+    }
+
+    pub const fn total_width(&self) -> usize {
+        self.lanes * Self::lane_width()
+    }
+
+    pub const fn preprocessed_lane_width() -> usize {
+        10
+    }
+
+    pub const fn preprocessed_width(&self) -> usize {
+        self.lanes * Self::preprocessed_lane_width()
+    }
+
+    pub fn scheduled_entry_count(&self) -> usize {
+        self.schedule.as_ref().map_or(self.num_ops, |s| s.len())
+    }
+
+    fn compute_schedule(preprocessed: &[F], lanes: usize) -> Option<Vec<ScheduleEntry>> {
+        let plw = Self::preprocessed_lane_width();
+        let num_ops = preprocessed.len() / plw;
+        if num_ops == 0 {
+            return None;
+        }
+
+        let four = F::from_u32(4);
+        let is_horner: Vec<bool> = (0..num_ops)
+            .map(|i| preprocessed[i * plw + 1] == four)
+            .collect();
+
+        if !is_horner.iter().any(|&h| h) {
+            return None;
+        }
+
+        let mut chains: Vec<Vec<usize>> = Vec::new();
+        let mut current_chain: Vec<usize> = Vec::new();
+        let mut non_chain: Vec<usize> = Vec::new();
+
+        for (i, &h) in is_horner.iter().enumerate() {
+            if h {
+                current_chain.push(i);
+            } else {
+                if !current_chain.is_empty() {
+                    chains.push(core::mem::take(&mut current_chain));
+                }
+                non_chain.push(i);
+            }
+        }
+        if !current_chain.is_empty() {
+            chains.push(current_chain);
+        }
+
+        let mut schedule: Vec<ScheduleEntry> = Vec::new();
+        let mut nc = 0usize;
+
+        let fill_row = |schedule: &mut Vec<ScheduleEntry>, nc: &mut usize, non_chain: &[usize]| {
+            while !schedule.len().is_multiple_of(lanes) {
+                if *nc < non_chain.len() {
+                    schedule.push(ScheduleEntry::Op(non_chain[*nc]));
+                    *nc += 1;
+                } else {
+                    schedule.push(ScheduleEntry::Separator);
+                }
+            }
+        };
+
+        for (chain_idx, chain) in chains.iter().enumerate() {
+            if chain_idx > 0 {
+                fill_row(&mut schedule, &mut nc, &non_chain);
+                schedule.push(ScheduleEntry::Separator);
+                fill_row(&mut schedule, &mut nc, &non_chain);
+            }
+
+            for &op_idx in chain {
+                schedule.push(ScheduleEntry::Op(op_idx));
+                fill_row(&mut schedule, &mut nc, &non_chain);
+            }
+        }
+
+        fill_row(&mut schedule, &mut nc, &non_chain);
+
+        while nc < non_chain.len() {
+            schedule.push(ScheduleEntry::Op(non_chain[nc]));
+            nc += 1;
+        }
+        fill_row(&mut schedule, &mut nc, &non_chain);
+
+        Some(schedule)
+    }
+
+    pub fn trace_to_matrix<ExtF: BasedVectorSpace<F>>(
+        &self,
+        trace: &AluTrace<ExtF>,
+    ) -> RowMajorMatrix<F> {
+        let lanes = self.lanes;
+        let lane_width = Self::lane_width();
+        let width = lane_width * lanes;
+        let entry_count = self.scheduled_entry_count();
+        let row_count = entry_count.div_ceil(lanes);
+
+        let mut values = F::zero_vec(width * row_count.max(1));
+
+        let mut write_op =
+            |pos: usize, a_val: &ExtF, b_val: &ExtF, c_val: &ExtF, out_val: &ExtF| {
+                let row = pos / lanes;
+                let lane = pos % lanes;
+                let mut cursor = row * width + lane * lane_width;
+
+                let a_coeffs = a_val.as_basis_coefficients_slice();
+                values[cursor..cursor + D].copy_from_slice(a_coeffs);
+                cursor += D;
+                let b_coeffs = b_val.as_basis_coefficients_slice();
+                values[cursor..cursor + D].copy_from_slice(b_coeffs);
+                cursor += D;
+                let c_coeffs = c_val.as_basis_coefficients_slice();
+                values[cursor..cursor + D].copy_from_slice(c_coeffs);
+                cursor += D;
+                let out_coeffs = out_val.as_basis_coefficients_slice();
+                values[cursor..cursor + D].copy_from_slice(out_coeffs);
+            };
+
+        if let Some(ref schedule) = self.schedule {
+            for (pos, entry) in schedule.iter().enumerate() {
+                if let ScheduleEntry::Op(i) = entry {
+                    write_op(
+                        pos,
+                        &trace.values[*i][0],
+                        &trace.values[*i][1],
+                        &trace.values[*i][2],
+                        &trace.values[*i][3],
+                    );
+                }
+            }
+        } else {
+            for op_idx in 0..trace.values.len() {
+                write_op(
+                    op_idx,
+                    &trace.values[op_idx][0],
+                    &trace.values[op_idx][1],
+                    &trace.values[op_idx][2],
+                    &trace.values[op_idx][3],
+                );
+            }
+        }
+
+        let mut mat = RowMajorMatrix::new(values, width);
+        mat.pad_to_power_of_two_height(F::ZERO);
+        mat
+    }
+
+    fn build_scheduled_preprocessed_trace(&self, schedule: &[ScheduleEntry]) -> RowMajorMatrix<F> {
+        let plw = Self::preprocessed_lane_width();
+        let row_count = schedule.len().div_ceil(self.lanes);
+        let row_width = self.lanes * plw;
+
+        let mut values = F::zero_vec(row_count.max(1) * row_width);
+
+        for (pos, entry) in schedule.iter().enumerate() {
+            let row = pos / self.lanes;
+            let lane = pos % self.lanes;
+            let base = row * row_width + lane * plw;
+
+            if let ScheduleEntry::Op(i) = entry {
+                let src = &self.preprocessed[i * plw..(i + 1) * plw];
+                values[base..base + plw].copy_from_slice(src);
+            }
+        }
+
+        let mat = RowMajorMatrix::new(values, row_width);
+        pad_matrix_with_min_height(mat, self.min_height)
+    }
+
+    pub fn trace_to_preprocessed<ExtF: BasedVectorSpace<F>>(trace: &AluTrace<ExtF>) -> Vec<F> {
+        let total_len = trace.indices.len() * Self::preprocessed_lane_width();
+        let mut preprocessed_values = Vec::with_capacity(total_len);
+        let neg_one = F::ZERO - F::ONE;
+
+        for (i, kind) in trace.op_kind.iter().enumerate() {
+            let op = match kind {
+                AluOpKind::Add => F::ZERO,
+                AluOpKind::Mul => F::ONE,
+                AluOpKind::BoolCheck => F::from_u32(2),
+                AluOpKind::MulAdd => F::from_u32(3),
+                AluOpKind::HornerAcc => F::from_u32(4),
+            };
+
+            preprocessed_values.extend(&[
+                neg_one,
+                op,
+                F::from_u32(trace.indices[i][0].0 * D as u32),
+                F::from_u32(trace.indices[i][1].0 * D as u32),
+                F::from_u32(trace.indices[i][2].0 * D as u32),
+                F::from_u32(trace.indices[i][3].0 * D as u32),
+                neg_one,
+                F::ONE,
+                F::ONE,
+                F::ONE,
+            ]);
+        }
+
+        preprocessed_values
+    }
+}
+
+impl<F: Field, const D: usize> BaseAir<F> for AluAirOptimized<F, D> {
+    fn width(&self) -> usize {
+        self.total_width()
+    }
+
+    fn preprocessed_trace(&self) -> Option<RowMajorMatrix<F>> {
+        self.schedule.as_ref().map_or_else(
+            || {
+                Some(create_direct_preprocessed_trace(
+                    &self.preprocessed,
+                    Self::preprocessed_lane_width(),
+                    self.lanes,
+                    self.min_height,
+                ))
+            },
+            |schedule| Some(self.build_scheduled_preprocessed_trace(schedule)),
+        )
+    }
+}
+
+impl<AB: AirBuilder, const D: usize> Air<AB> for AluAirOptimized<AB::F, D>
+where
+    AB::F: Field,
+{
+    #[unroll::unroll_for_loops]
+    #[allow(clippy::needless_range_loop)]
+    fn eval(&self, builder: &mut AB) {
+        let main = builder.main();
+        let local = main.row_slice(0).expect("matrix must be non-empty");
+        let lane_width = Self::lane_width();
+        let preprocessed = builder.preprocessed().expect("AluAirOptimized requires preprocessed");
+        let preprocessed_local = preprocessed.row_slice(0).expect("preprocessed must be non-empty");
+        let preprocessed_lane_width = Self::preprocessed_lane_width();
+        let next = main.row_slice(1).expect("matrix must have next row");
+        let preprocessed_next = preprocessed.row_slice(1).expect("preprocessed must have next row");
+
+        let one = AB::Expr::ONE;
+        let two = AB::Expr::from(AB::F::from_u32(2));
+        let three = AB::Expr::from(AB::F::from_u32(3));
+        let four = AB::Expr::from(AB::F::from_u32(4));
+
+        let n_k = |op: AB::Expr, k: u32| -> AB::Expr {
+            let mut acc = AB::Expr::ONE;
+            for j in 0u32..5 {
+                if j != k {
+                    let j_expr = AB::Expr::from(AB::F::from_u32(j));
+                    acc = acc * (op.clone() - j_expr);
+                }
+            }
+            acc
+        };
+
+        if D == 1 {
+            for lane in 0..self.lanes {
+                let main_offset = lane * lane_width;
+                let prep_offset = lane * preprocessed_lane_width;
+
+                let a = local[main_offset];
+                let b = local[main_offset + 1];
+                let c = local[main_offset + 2];
+                let out = local[main_offset + 3];
+
+                let mult_a = preprocessed_local[prep_offset];
+                let op = preprocessed_local[prep_offset + 1];
+
+                let active = AB::Expr::ZERO - mult_a;
+
+                builder.assert_zero(active.clone() * op.clone() * (op.clone() - one.clone())
+                    * (op.clone() - two.clone())
+                    * (op.clone() - three.clone())
+                    * (op.clone() - four.clone()));
+
+                builder.assert_zero(n_k(op.clone().into(), 0) * (a.clone() + b.clone() - out.clone()));
+                builder.assert_zero(n_k(op.clone().into(), 1) * (a.clone() * b.clone() - out.clone()));
+                builder.assert_zero(n_k(op.clone().into(), 2) * a.clone() * (a.clone() - one.clone()));
+                builder.assert_zero(
+                    n_k(op.clone().into(), 3) * (a.clone() * b.clone() + c.clone() - out.clone()),
+                );
+
+                let next_op = preprocessed_next[prep_offset + 1];
+                let next_b = next[main_offset + 1];
+                let next_c = next[main_offset + 2];
+                let next_a = next[main_offset];
+                let next_out = next[main_offset + 3];
+                builder.assert_zero(
+                    n_k(next_op.into(), 4) * (out * next_b + next_c - next_a - next_out),
+                );
+            }
+        } else {
+            let w = self
+                .w_binomial
+                .as_ref()
+                .map(|w| AB::Expr::from(*w))
+                .expect("AluAirOptimized with D>1 requires binomial parameter W");
+
+            for lane in 0..self.lanes {
+                let main_offset = lane * lane_width;
+                let prep_offset = lane * preprocessed_lane_width;
+
+                let a_slice = &local[main_offset..main_offset + D];
+                let b_slice = &local[main_offset + D..main_offset + 2 * D];
+                let c_slice = &local[main_offset + 2 * D..main_offset + 3 * D];
+                let out_slice = &local[main_offset + 3 * D..main_offset + 4 * D];
+
+                let mult_a = preprocessed_local[prep_offset];
+                let op = preprocessed_local[prep_offset + 1];
+
+                let active = AB::Expr::ZERO - mult_a;
+
+                builder.assert_zero(active.clone() * op.clone() * (op.clone() - one.clone())
+                    * (op.clone() - two.clone())
+                    * (op.clone() - three.clone())
+                    * (op.clone() - four.clone()));
+
+                for i in 0..D {
+                    builder.assert_zero(n_k(op.clone().into(), 0) * (a_slice[i] + b_slice[i] - out_slice[i]));
+                }
+
+                let mut mul_acc = vec![AB::Expr::ZERO; D];
+                for i in 0..D {
+                    for j in 0..D {
+                        let term = a_slice[i] * b_slice[j];
+                        let k = i + j;
+                        if k < D {
+                            mul_acc[k] = mul_acc[k].clone() + term;
+                        } else {
+                            mul_acc[k - D] = mul_acc[k - D].clone() + w.clone() * term;
+                        }
+                    }
+                }
+                for i in 0..D {
+                    builder.assert_zero(n_k(op.clone().into(), 1) * (mul_acc[i].clone() - out_slice[i]));
+                }
+
+                builder.assert_zero(n_k(op.clone().into(), 2) * a_slice[0] * (a_slice[0] - one.clone()));
+
+                let mut muladd_acc = mul_acc.clone();
+                for i in 0..D {
+                    muladd_acc[i] = muladd_acc[i].clone() + c_slice[i];
+                }
+                for i in 0..D {
+                    builder.assert_zero(n_k(op.clone().into(), 3) * (muladd_acc[i].clone() - out_slice[i]));
+                }
+
+                let next_op = preprocessed_next[prep_offset + 1];
+                let next_a_slice = &next[main_offset..main_offset + D];
+                let next_b_slice = &next[main_offset + D..main_offset + 2 * D];
+                let next_c_slice = &next[main_offset + 2 * D..main_offset + 3 * D];
+                let next_out_slice = &next[main_offset + 3 * D..main_offset + 4 * D];
+
+                let mut horner_mul = vec![AB::Expr::ZERO; D];
+                for i in 0..D {
+                    for j in 0..D {
+                        let term = out_slice[i] * next_b_slice[j];
+                        let k = i + j;
+                        if k < D {
+                            horner_mul[k] = horner_mul[k].clone() + term;
+                        } else {
+                            horner_mul[k - D] = horner_mul[k - D].clone() + w.clone() * term;
+                        }
+                    }
+                }
+                for i in 0..D {
+                    builder.assert_zero(
+                        n_k(next_op.into(), 4)
+                            * (horner_mul[i].clone() + next_c_slice[i]
+                                - next_a_slice[i]
+                                - next_out_slice[i]),
+                    );
+                }
+            }
+        }
+    }
+
+    fn add_lookup_columns(&mut self) -> Vec<usize> {
+        let new_idx = self.num_lookup_columns;
+        self.num_lookup_columns += 1;
+        vec![new_idx]
+    }
+
+    fn get_lookups(&mut self) -> Vec<Lookup<<AB>::F>>
+    where
+        AB: PermutationAirBuilder,
+    {
+        let mut lookups = Vec::new();
+        self.num_lookup_columns = 0;
+
+        let (symbolic_main_local, preprocessed_local) = create_symbolic_variables::<AB::F>(
+            self.preprocessed_width(),
+            BaseAir::<AB::F>::width(self),
+            0,
+            0,
+        );
+
+        for lane in 0..self.lanes {
+            let lane_offset = lane * Self::lane_width();
+            let preprocessed_lane_offset = lane * Self::preprocessed_lane_width();
+
+            let lane_lookup_inputs = get_alu_index_lookups_optimized::<AB, D>(
+                lane_offset,
+                preprocessed_lane_offset,
+                &symbolic_main_local,
+                &preprocessed_local,
+            );
+            lookups.extend(lane_lookup_inputs.into_iter().map(|inps| {
+                <Self as Air<AB>>::register_lookup(
+                    self,
+                    Kind::Global("WitnessChecks".to_string()),
+                    &[inps],
+                )
+            }));
+        }
+        lookups
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use alloc::vec;
@@ -905,8 +1416,41 @@ mod tests {
 
     #[test]
     fn test_alu_air_constraint_degree() {
-        let preprocessed = vec![Val::ZERO; 8 * 13]; // 8 ops * 13 preprocessed columns per op
+        let preprocessed = vec![Val::ZERO; 8 * 13];
         let air = AluAir::<Val, 1>::new_with_preprocessed(8, 2, preprocessed);
         p3_test_utils::assert_air_constraint_degree!(air, "AluAir");
     }
+
+    #[test]
+    fn prove_verify_alu_optimized_add_base_field() {
+        let n = 8;
+        let trace = AluTrace {
+            op_kind: vec![AluOpKind::Add; n],
+            values: vec![
+                [
+                    Val::from_u64(3),
+                    Val::from_u64(5),
+                    Val::ZERO,
+                    Val::from_u64(8),
+                ];
+                n
+            ],
+            indices: vec![[WitnessId(1), WitnessId(2), WitnessId(0), WitnessId(3)]; n],
+        };
+
+        let preprocessed_values = AluAirOptimized::<Val, 1>::trace_to_preprocessed(&trace);
+        let air = AluAirOptimized::<Val, 1>::new_with_preprocessed(n, 1, preprocessed_values);
+        let matrix: RowMajorMatrix<Val> = air.trace_to_matrix(&trace);
+        assert_eq!(matrix.width(), 4);
+        assert_eq!(air.preprocessed_width(), 10);
+
+        let config = build_test_config();
+        let pis: Vec<Val> = vec![];
+        let (prover_data, verifier_data) =
+            setup_preprocessed(&config, &air, log2_ceil_usize(matrix.height())).unwrap();
+        let proof = prove_with_preprocessed(&config, &air, matrix, &pis, Some(&prover_data));
+        verify_with_preprocessed(&config, &air, &proof, &pis, Some(&verifier_data))
+            .expect("AluAirOptimized verification failed");
+    }
+
 }

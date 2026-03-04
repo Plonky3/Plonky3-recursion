@@ -14,7 +14,7 @@ use p3_circuit::PreprocessedColumns;
 use p3_circuit::op::{NpoTypeId, Poseidon2Config, PrimitiveOpType};
 use p3_circuit::tables::Traces;
 use p3_field::extension::{BinomialExtensionField, BinomiallyExtendable};
-use p3_field::{Algebra, BasedVectorSpace, Field, PrimeField};
+use p3_field::{Algebra, BasedVectorSpace, Field, PrimeField, PrimeCharacteristicRing};
 use p3_lookup::folder::{ProverConstraintFolderWithLookups, VerifierConstraintFolderWithLookups};
 use p3_lookup::lookup_traits::Lookup;
 use p3_matrix::dense::RowMajorMatrix;
@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tracing::instrument;
 
-use crate::air::{AluAir, ConstAir, PublicAir};
+use crate::air::{AluAir, AluAirOptimized, ConstAir, PublicAir};
 use crate::batch_stark_prover::dynamic_air::transmute_traces;
 use crate::common::{CircuitTableAir, NpoAirBuilder};
 use crate::config::StarkField;
@@ -329,6 +329,7 @@ where
             Self::Const(a) => a.width(),
             Self::Public(a) => a.width(),
             Self::Alu(a) => a.width(),
+            Self::AluOptimized(a) => a.width(),
             Self::Dynamic(a) => <dyn CloneableBatchAir<SC> as BaseAir<Val<SC>>>::width(a.air()),
         }
     }
@@ -338,6 +339,7 @@ where
             Self::Const(a) => a.preprocessed_trace(),
             Self::Public(a) => a.preprocessed_trace(),
             Self::Alu(a) => a.preprocessed_trace(),
+            Self::AluOptimized(a) => a.preprocessed_trace(),
             Self::Dynamic(a) => {
                 <dyn CloneableBatchAir<SC> as BaseAir<Val<SC>>>::preprocessed_trace(a.air())
             }
@@ -352,6 +354,7 @@ macro_rules! impl_circuit_table_air_for_builder {
                 Self::Const(a) => Air::<$builder_ty>::eval(a, builder),
                 Self::Public(a) => Air::<$builder_ty>::eval(a, builder),
                 Self::Alu(a) => Air::<$builder_ty>::eval(a, builder),
+                Self::AluOptimized(a) => Air::<$builder_ty>::eval(a, builder),
                 Self::Dynamic(a) => Air::<$builder_ty>::eval(a, builder),
             }
         }
@@ -361,6 +364,7 @@ macro_rules! impl_circuit_table_air_for_builder {
                 Self::Const(a) => Air::<$builder_ty>::add_lookup_columns(a),
                 Self::Public(a) => Air::<$builder_ty>::add_lookup_columns(a),
                 Self::Alu(a) => Air::<$builder_ty>::add_lookup_columns(a),
+                Self::AluOptimized(a) => Air::<$builder_ty>::add_lookup_columns(a),
                 Self::Dynamic(a) => Air::<$builder_ty>::add_lookup_columns(a),
             }
         }
@@ -370,6 +374,7 @@ macro_rules! impl_circuit_table_air_for_builder {
                 Self::Const(a) => Air::<$builder_ty>::get_lookups(a),
                 Self::Public(a) => Air::<$builder_ty>::get_lookups(a),
                 Self::Alu(a) => Air::<$builder_ty>::get_lookups(a),
+                Self::AluOptimized(a) => Air::<$builder_ty>::get_lookups(a),
                 Self::Dynamic(a) => Air::<$builder_ty>::get_lookups(a),
             }
         }
@@ -428,7 +433,7 @@ where
         Self {
             config,
             table_packing: TablePacking::default(),
-            alu_variant: AirVariant::Optimized,
+            alu_variant: AirVariant::Baseline,
             non_primitive_provers: Vec::new(),
             debug_lookups: false,
         }
@@ -614,25 +619,48 @@ where
         let public_matrix: RowMajorMatrix<Val<SC>> =
             PublicAir::<Val<SC>, D>::trace_to_matrix(&traces.public_trace, public_lanes);
 
-        // ALU — preprocessed is already in 10-col format (with multiplicities) from
-        // get_airs_and_degrees_with_prep. When the trace is empty, a dummy row is included.
         let alu_rows = traces.alu_trace.values.len();
         let alu_prep = primitive[PrimitiveOpType::Alu as usize].clone();
-        let alu_num_ops = alu_prep.len() / AluAir::<Val<SC>, D>::preprocessed_lane_width();
-        let alu_air: AluAir<Val<SC>, D> = if D == 1 {
-            AluAir::<Val<SC>, D>::new_with_preprocessed(alu_num_ops, alu_lanes, alu_prep)
-                .with_min_height(min_height)
-        } else {
-            let w = w_binomial.ok_or(BatchStarkProverError::MissingWForExtension)?;
-            AluAir::<Val<SC>, D>::new_binomial_with_preprocessed(
-                alu_num_ops,
-                alu_lanes,
-                w,
-                alu_prep,
-            )
-            .with_min_height(min_height)
+        let (alu_air, alu_matrix) = match self.alu_variant {
+            AirVariant::Optimized => {
+                let plw = AluAirOptimized::<Val<SC>, D>::preprocessed_lane_width();
+                let alu_num_ops = alu_prep.len() / plw;
+                let air: AluAirOptimized<Val<SC>, D> = if D == 1 {
+                    AluAirOptimized::new_with_preprocessed(alu_num_ops, alu_lanes, alu_prep)
+                        .with_min_height(min_height)
+                } else {
+                    let w = w_binomial.ok_or(BatchStarkProverError::MissingWForExtension)?;
+                    AluAirOptimized::new_binomial_with_preprocessed(
+                        alu_num_ops,
+                        alu_lanes,
+                        w,
+                        alu_prep,
+                    )
+                    .with_min_height(min_height)
+                };
+                let matrix = air.trace_to_matrix(&traces.alu_trace);
+                (CircuitTableAir::AluOptimized(air), matrix)
+            }
+            AirVariant::Baseline => {
+                let plw = AluAir::<Val<SC>, D>::preprocessed_lane_width();
+                let alu_num_ops = alu_prep.len() / plw;
+                let air: AluAir<Val<SC>, D> = if D == 1 {
+                    AluAir::new_with_preprocessed(alu_num_ops, alu_lanes, alu_prep)
+                        .with_min_height(min_height)
+                } else {
+                    let w = w_binomial.ok_or(BatchStarkProverError::MissingWForExtension)?;
+                    AluAir::new_binomial_with_preprocessed(
+                        alu_num_ops,
+                        alu_lanes,
+                        w,
+                        alu_prep,
+                    )
+                    .with_min_height(min_height)
+                };
+                let matrix = air.trace_to_matrix(&traces.alu_trace);
+                (CircuitTableAir::Alu(air), matrix)
+            }
         };
-        let alu_matrix: RowMajorMatrix<Val<SC>> = alu_air.trace_to_matrix(&traces.alu_trace);
 
         // We first handle all non-primitive tables dynamically, which will then be batched alongside primitive ones.
         // Each trace must have a corresponding registered prover for it to be provable.
@@ -732,7 +760,7 @@ where
         trace_storage.push(packing::pad_matrix_to_min_height(public_matrix, min_height));
         public_storage.push(Vec::new());
 
-        air_storage.push(CircuitTableAir::Alu(alu_air));
+        air_storage.push(alu_air);
         trace_storage.push(packing::pad_matrix_to_min_height(alu_matrix, min_height));
         public_storage.push(Vec::new());
 
@@ -859,17 +887,53 @@ where
             PublicAir::<Val<SC>, D>::new(proof.rows[PrimitiveTable::Public], public_lanes)
                 .with_min_height(min_height),
         );
-        let alu_air: CircuitTableAir<SC, D> = if D == 1 {
-            CircuitTableAir::Alu(
-                AluAir::<Val<SC>, D>::new(proof.rows[PrimitiveTable::Alu], alu_lanes)
-                    .with_min_height(min_height),
-            )
-        } else {
-            let w = w_binomial.ok_or(BatchStarkProverError::MissingWForExtension)?;
-            CircuitTableAir::Alu(
-                AluAir::<Val<SC>, D>::new_binomial(proof.rows[PrimitiveTable::Alu], alu_lanes, w)
-                    .with_min_height(min_height),
-            )
+        let alu_air: CircuitTableAir<SC, D> = match proof.alu_variant {
+            AirVariant::Baseline => {
+                if D == 1 {
+                    CircuitTableAir::Alu(
+                        AluAir::<Val<SC>, D>::new(proof.rows[PrimitiveTable::Alu], alu_lanes)
+                            .with_min_height(min_height),
+                    )
+                } else {
+                    let w = w_binomial.ok_or(BatchStarkProverError::MissingWForExtension)?;
+                    CircuitTableAir::Alu(
+                        AluAir::<Val<SC>, D>::new_binomial(
+                            proof.rows[PrimitiveTable::Alu],
+                            alu_lanes,
+                            w,
+                        )
+                        .with_min_height(min_height),
+                    )
+                }
+            }
+            AirVariant::Optimized => {
+                let preprocessed = vec![
+                    <Val<SC> as PrimeCharacteristicRing>::ZERO;
+                    proof.rows[PrimitiveTable::Alu].max(1)
+                        * AluAirOptimized::<Val<SC>, D>::preprocessed_lane_width()
+                ];
+                if D == 1 {
+                    CircuitTableAir::AluOptimized(
+                        AluAirOptimized::new_with_preprocessed(
+                            proof.rows[PrimitiveTable::Alu].max(1),
+                            alu_lanes,
+                            preprocessed,
+                        )
+                        .with_min_height(min_height),
+                    )
+                } else {
+                    let w = w_binomial.ok_or(BatchStarkProverError::MissingWForExtension)?;
+                    CircuitTableAir::AluOptimized(
+                        AluAirOptimized::new_binomial_with_preprocessed(
+                            proof.rows[PrimitiveTable::Alu].max(1),
+                            alu_lanes,
+                            w,
+                            preprocessed,
+                        )
+                        .with_min_height(min_height),
+                    )
+                }
+            }
         };
         let mut airs = vec![const_air, public_air, alu_air];
         // TODO: Handle public values.

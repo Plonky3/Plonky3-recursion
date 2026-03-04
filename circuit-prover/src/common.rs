@@ -9,7 +9,7 @@ use p3_field::{Algebra, ExtensionField, Field, PrimeCharacteristicRing, PrimeFie
 use p3_uni_stark::{StarkGenericConfig, SymbolicExpression, SymbolicExpressionExt, Val};
 use p3_util::log2_ceil_usize;
 
-use crate::air::{AluAir, ConstAir, PublicAir};
+use crate::air::{AluAir, AluAirOptimized, ConstAir, PublicAir};
 use crate::config::StarkField;
 use crate::field_params::ExtractBinomialW;
 use crate::{ConstraintProfile, DynamicAirEntry, TablePacking};
@@ -62,8 +62,8 @@ where
 {
     Const(ConstAir<Val<SC>, D>),
     Public(PublicAir<Val<SC>, D>),
-    /// Unified ALU table for all arithmetic operations
     Alu(AluAir<Val<SC>, D>),
+    AluOptimized(AluAirOptimized<Val<SC>, D>),
     Dynamic(DynamicAirEntry<SC>),
 }
 
@@ -77,6 +77,7 @@ where
             Self::Const(air) => Self::Const(air.clone()),
             Self::Public(air) => Self::Public(air.clone()),
             Self::Alu(air) => Self::Alu(air.clone()),
+            Self::AluOptimized(air) => Self::AluOptimized(air.clone()),
             Self::Dynamic(air) => Self::Dynamic(air.clone()),
         }
     }
@@ -178,12 +179,6 @@ where
         let table = PrimitiveOpType::from(idx);
         match table {
             PrimitiveOpType::Alu => {
-                // ALU preprocessed per op from circuit.rs: 12 values
-                // [sel_add_vs_mul, sel_bool, sel_muladd, sel_horner, a_idx, b_idx, c_idx, out_idx,
-                //  mult_a_eff, b_is_creator, mult_c_eff, out_is_creator]
-                //
-                // mult_a_eff / mult_c_eff: -1 (reader or later unconstrained), or +N (first
-                // unconstrained creator). We convert to 12 values for AluAir (same order, mult_c_eff last).
                 let lane_12 = 12_usize;
                 let neg_one = <Val<SC>>::ZERO - <Val<SC>>::ONE;
 
@@ -191,6 +186,8 @@ where
                 let mut prep_13col: Vec<Val<SC>> = Vec::with_capacity(
                     chunks.len() * lane_12 + if alu_empty { 0 } else { lane_12 },
                 );
+                let mut prep_10col: Vec<Val<SC>> = Vec::with_capacity(chunks.len() * 10);
+
                 for chunk in &mut chunks {
                     let sel1 = chunk[0];
                     let sel2 = chunk[1];
@@ -206,9 +203,6 @@ where
                     let out_is_creator =
                         <Val<SC> as PrimeField64>::as_canonical_u64(&chunk[11]) != 0;
 
-                    // mult_a = -1 for all active rows; active = -mult_a = 1 always.
-                    // Effective a-lookup mult = mult_a * a_is_reader_col (in get_alu_index_lookups).
-                    // Effective c-lookup mult = mult_a * c_is_reader_col (in get_alu_index_lookups).
                     let mult_a = neg_one;
                     let a_reader_col = if a_is_reader {
                         <Val<SC>>::ONE
@@ -221,7 +215,6 @@ where
                         <Val<SC>>::ZERO
                     };
 
-                    // b: creator if b_is_creator, reader otherwise.
                     let mult_b = if b_is_creator {
                         let b_wid =
                             <Val<SC> as PrimeField64>::as_canonical_u64(&b_idx) as usize / D;
@@ -231,7 +224,6 @@ where
                         neg_one
                     };
 
-                    // out: creator if out_is_creator, reader otherwise.
                     let mult_out = if out_is_creator {
                         let out_wid =
                             <Val<SC> as PrimeField64>::as_canonical_u64(&out_idx) as usize / D;
@@ -256,33 +248,88 @@ where
                         a_reader_col,
                         c_reader_col,
                     ]);
+
+                    let op = if sel1 == <Val<SC>>::ONE {
+                        <Val<SC>>::ZERO
+                    } else if sel2 == <Val<SC>>::ONE {
+                        <Val<SC>>::from_u32(2)
+                    } else if sel3 == <Val<SC>>::ONE {
+                        <Val<SC>>::from_u32(3)
+                    } else if sel4 == <Val<SC>>::ONE {
+                        <Val<SC>>::from_u32(4)
+                    } else {
+                        <Val<SC>>::ONE
+                    };
+
+                    prep_10col.extend([
+                        mult_a,
+                        op,
+                        a_idx,
+                        b_idx,
+                        c_idx,
+                        out_idx,
+                        mult_b,
+                        mult_out,
+                        a_reader_col,
+                        c_reader_col,
+                    ]);
                 }
                 debug_assert!(chunks.remainder().is_empty());
 
-                // If ALU was empty, add a dummy row (all zeros = padding, no logup contribution).
                 if alu_empty {
                     prep_13col.extend([<Val<SC>>::ZERO; 13]);
+                    prep_10col.extend([<Val<SC>>::ZERO; 10]);
                 }
 
-                let num_ops = prep_13col.len() / 13;
-                let alu_air = if D == 1 {
-                    AluAir::new_with_preprocessed(num_ops, effective_alu_lanes, prep_13col.clone())
-                        .with_min_height(min_height)
-                } else {
-                    let w = w_binomial.unwrap();
-                    AluAir::new_binomial_with_preprocessed(
-                        num_ops,
-                        effective_alu_lanes,
-                        w,
-                        prep_13col.clone(),
-                    )
-                    .with_min_height(min_height)
-                };
-                let num_entries = alu_air.scheduled_entry_count();
-                let num_rows = num_entries.div_ceil(effective_alu_lanes);
-                // Store the converted 13-col format so the prover can use it directly.
-                base_prep[idx] = prep_13col;
-                table_preps.push((CircuitTableAir::Alu(alu_air), compute_degree(num_rows)));
+                match constraint_profile {
+                    crate::ConstraintProfile::RecursionOptimized => {
+                        let num_ops = prep_10col.len() / 10;
+                        let alu_air = if D == 1 {
+                            AluAirOptimized::new_with_preprocessed(
+                                num_ops,
+                                effective_alu_lanes,
+                                prep_10col.clone(),
+                            )
+                            .with_min_height(min_height)
+                        } else {
+                            let w = w_binomial.unwrap();
+                            AluAirOptimized::new_binomial_with_preprocessed(
+                                num_ops,
+                                effective_alu_lanes,
+                                w,
+                                prep_10col.clone(),
+                            )
+                            .with_min_height(min_height)
+                        };
+                        let num_entries = alu_air.scheduled_entry_count();
+                        let num_rows = num_entries.div_ceil(effective_alu_lanes);
+                        base_prep[idx] = prep_10col;
+                        table_preps.push((
+                            CircuitTableAir::AluOptimized(alu_air),
+                            compute_degree(num_rows),
+                        ));
+                    }
+                    crate::ConstraintProfile::Standard => {
+                        let num_ops = prep_13col.len() / 13;
+                        let alu_air = if D == 1 {
+                            AluAir::new_with_preprocessed(num_ops, effective_alu_lanes, prep_13col.clone())
+                                .with_min_height(min_height)
+                        } else {
+                            let w = w_binomial.unwrap();
+                            AluAir::new_binomial_with_preprocessed(
+                                num_ops,
+                                effective_alu_lanes,
+                                w,
+                                prep_13col.clone(),
+                            )
+                            .with_min_height(min_height)
+                        };
+                        let num_entries = alu_air.scheduled_entry_count();
+                        let num_rows = num_entries.div_ceil(effective_alu_lanes);
+                        base_prep[idx] = prep_13col;
+                        table_preps.push((CircuitTableAir::Alu(alu_air), compute_degree(num_rows)));
+                    }
+                }
             }
             PrimitiveOpType::Public => {
                 // Public preprocessed per op from circuit.rs: 1 value (D-scaled out_idx).

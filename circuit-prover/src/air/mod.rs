@@ -6,6 +6,6 @@ pub mod utils;
 #[cfg(test)]
 pub mod test_utils;
 
-pub use alu_air::AluAir;
+pub use alu_air::{AluAir, AluAirOptimized};
 pub use const_air::ConstAir;
 pub use public_air::PublicAir;
