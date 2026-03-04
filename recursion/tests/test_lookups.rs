@@ -32,6 +32,7 @@ fn setup_circuit_builder() -> CircuitBuilder<Challenge> {
         generate_poseidon2_trace::<Challenge, BabyBearD4Width16>,
         poseidon2_perm,
     );
+    circuit_builder.enable_open_input::<BabyBear, 4>();
     circuit_builder
 }
 
@@ -807,7 +808,7 @@ fn test_poseidon2_ctl_lookups() {
         generate_poseidon2_trace::<Challenge, BabyBearD4Width16>,
         poseidon2_perm,
     );
-
+    builder.enable_open_input::<BabyBear, 4>();
     // Create public inputs that will also serve as witnesses for the Poseidon2 inputs
     let input0 = builder.public_input();
     let input1 = builder.public_input();
@@ -902,6 +903,7 @@ fn test_poseidon2_chained_ctl_lookups() {
         generate_poseidon2_trace::<Challenge, BabyBearD4Width16>,
         poseidon2_perm,
     );
+    builder.enable_open_input::<BabyBear, 4>();
 
     // Create public inputs for the first operation's inputs
     let input0 = builder.public_input();

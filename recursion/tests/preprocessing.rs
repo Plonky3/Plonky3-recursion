@@ -1,7 +1,7 @@
 mod common;
 
 use p3_air::{Air, AirBuilder, BaseAir};
-use p3_baby_bear::default_babybear_poseidon2_16;
+use p3_baby_bear::{BabyBear, default_babybear_poseidon2_16};
 use p3_batch_stark::{ProverData, StarkInstance, prove_batch, verify_batch};
 use p3_circuit::CircuitBuilder;
 use p3_circuit::ops::generate_poseidon2_trace;
@@ -309,6 +309,7 @@ fn test_batch_verifier_with_mixed_preprocessed() -> Result<(), VerificationError
         generate_poseidon2_trace::<Challenge, BabyBearD4Width16>,
         perm,
     );
+    circuit_builder.enable_open_input::<BabyBear, 4>();
 
     // Allocate batch verifier inputs
     let air_public_counts = vec![0usize; batch_proof.opened_values.instances.len()];

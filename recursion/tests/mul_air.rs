@@ -2,7 +2,7 @@
 
 mod common;
 
-use p3_baby_bear::default_babybear_poseidon2_16;
+use p3_baby_bear::{BabyBear, default_babybear_poseidon2_16};
 use p3_circuit::CircuitBuilder;
 use p3_circuit::ops::generate_poseidon2_trace;
 use p3_fri::create_test_fri_params;
@@ -66,6 +66,7 @@ fn test_mul_verifier_circuit() -> Result<(), VerificationError> {
         generate_poseidon2_trace::<Challenge, BabyBearD4Width16>,
         perm,
     );
+    circuit_builder.enable_open_input::<BabyBear, 4>();
 
     // Allocate all targets
     let verifier_inputs = StarkVerifierInputsBuilder::<

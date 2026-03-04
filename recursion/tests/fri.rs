@@ -400,6 +400,7 @@ fn run_fri_test(setup: FriSetup, build_only: bool) {
     // ——— Build circuit once (using first proof's shape) ———
     let mut builder = CircuitBuilder::<Challenge>::new();
 
+    builder.enable_open_input::<BabyBear, 4>();
     // 1) Allocate FriProofTargets using instance 1
     let fri_targets = FriTargets::new(&mut builder, &result_1.fri_proof);
 
@@ -572,6 +573,7 @@ fn run_fri_test_with_mmcs(setup: FriSetup) {
         generate_poseidon2_trace::<Challenge, BabyBearD4Width16>,
         perm_for_circuit,
     );
+    builder.enable_open_input::<BabyBear, 4>();
 
     // 1) Allocate FriProofTargets
     let fri_targets = FriTargets::new(&mut builder, &result.fri_proof);

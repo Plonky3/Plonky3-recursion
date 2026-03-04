@@ -149,6 +149,7 @@ fn test_poseidon2_perm_verifier() -> Result<(), VerificationError> {
         generate_poseidon2_trace::<Challenge, BabyBearD1Width16>,
         perm,
     );
+    circuit_builder.enable_open_input::<BabyBear, 1>();
     let verifier_inputs = StarkVerifierInputsBuilder::<
         MyConfig,
         MerkleCapTargets<F, DIGEST_ELEMS>,
