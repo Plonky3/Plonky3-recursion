@@ -437,6 +437,7 @@ pub fn extract_preprocessed_from_operations<F: Field, OF: Field>(
     preprocessed
 }
 
+#[unroll::unroll_for_loops]
 pub(crate) fn eval<
     AB: AirBuilder,
     LinearLayers: GenericPoseidon2LinearLayers<WIDTH>,
@@ -523,32 +524,32 @@ pub(crate) fn eval<
     // sel, gated by mmcs_bit instead).
     let is_left = AB::Expr::ONE - next_bit.into();
 
+    let gate = next_prep.input_limbs[0].merkle_chain_sel * is_left.clone();
     for d in 0..D {
-        let gate = next_prep.input_limbs[0].merkle_chain_sel * is_left.clone();
         builder
             .when_transition()
-            .when(gate)
+            .when(gate.clone())
             .assert_zero(next_in[d] - local_out[d]);
     }
+    let gate = next_prep.input_limbs[1].merkle_chain_sel * is_left;
     for d in 0..D {
-        let gate = next_prep.input_limbs[1].merkle_chain_sel * is_left.clone();
         builder
             .when_transition()
-            .when(gate)
+            .when(gate.clone())
             .assert_zero(next_in[D + d] - local_out[D + d]);
     }
+    let gate = next_prep.input_limbs[0].merkle_chain_sel * next_bit;
     for d in 0..D {
-        let gate = next_prep.input_limbs[0].merkle_chain_sel * next_bit;
         builder
             .when_transition()
-            .when(gate)
+            .when(gate.clone())
             .assert_zero(next_in[2 * D + d] - local_out[d]);
     }
+    let gate = next_prep.input_limbs[1].merkle_chain_sel * next_bit;
     for d in 0..D {
-        let gate = next_prep.input_limbs[1].merkle_chain_sel * next_bit;
         builder
             .when_transition()
-            .when(gate)
+            .when(gate.clone())
             .assert_zero(next_in[3 * D + d] - local_out[D + d]);
     }
 

@@ -157,9 +157,7 @@ where
     let preprocessed_any: &mut dyn Any = &mut preprocessed;
     for plugin in non_primitive_preprocessors {
         let plugin_prep = plugin.preprocess(circuit_any, preprocessed_any)?;
-        for (op_type, prep_base) in plugin_prep {
-            non_primitive_base.insert(op_type, prep_base);
-        }
+        non_primitive_base.extend(plugin_prep);
     }
 
     // Get min_height from packing configuration and pass it to AIRs
@@ -172,7 +170,8 @@ where
         log2_ceil_usize(natural_height.max(min_rows))
     };
 
-    let mut table_preps: Vec<(CircuitTableAir<SC, D>, usize)> = Vec::with_capacity(base_prep.len());
+    let mut table_preps: Vec<(CircuitTableAir<SC, D>, usize)> =
+        Vec::with_capacity(base_prep.len() + non_primitive_base.len());
 
     #[allow(clippy::needless_range_loop)]
     for idx in 0..base_prep.len() {
@@ -188,78 +187,77 @@ where
                 let lane_12 = 12_usize;
                 let neg_one = <Val<SC>>::ZERO - <Val<SC>>::ONE;
 
-                let mut prep_13col: Vec<Val<SC>> = base_prep[idx]
-                    .chunks(lane_12)
-                    .flat_map(|chunk| {
-                        let sel1 = chunk[0];
-                        let sel2 = chunk[1];
-                        let sel3 = chunk[2];
-                        let sel_horner = chunk[3];
-                        let a_idx = chunk[4];
-                        let b_idx = chunk[5];
-                        let c_idx = chunk[6];
-                        let out_idx = chunk[7];
-                        let a_is_reader =
-                            <Val<SC> as PrimeField64>::as_canonical_u64(&chunk[8]) != 0;
-                        let b_is_creator =
-                            <Val<SC> as PrimeField64>::as_canonical_u64(&chunk[9]) != 0;
-                        let c_is_reader =
-                            <Val<SC> as PrimeField64>::as_canonical_u64(&chunk[10]) != 0;
-                        let out_is_creator =
-                            <Val<SC> as PrimeField64>::as_canonical_u64(&chunk[11]) != 0;
+                let mut chunks = base_prep[idx].chunks_exact(lane_12);
+                let mut prep_13col: Vec<Val<SC>> = Vec::with_capacity(
+                    chunks.len() * lane_12 + if alu_empty { 0 } else { lane_12 },
+                );
+                for chunk in &mut chunks {
+                    let sel1 = chunk[0];
+                    let sel2 = chunk[1];
+                    let sel3 = chunk[2];
+                    let sel4 = chunk[3];
+                    let a_idx = chunk[4];
+                    let b_idx = chunk[5];
+                    let c_idx = chunk[6];
+                    let out_idx = chunk[7];
+                    let a_is_reader = <Val<SC> as PrimeField64>::as_canonical_u64(&chunk[8]) != 0;
+                    let b_is_creator = <Val<SC> as PrimeField64>::as_canonical_u64(&chunk[9]) != 0;
+                    let c_is_reader = <Val<SC> as PrimeField64>::as_canonical_u64(&chunk[10]) != 0;
+                    let out_is_creator =
+                        <Val<SC> as PrimeField64>::as_canonical_u64(&chunk[11]) != 0;
 
-                        // mult_a = -1 for all active rows; active = -mult_a = 1 always.
-                        // Effective a-lookup mult = mult_a * a_is_reader_col (in get_alu_index_lookups).
-                        // Effective c-lookup mult = mult_a * c_is_reader_col (in get_alu_index_lookups).
-                        let mult_a = neg_one;
-                        let a_reader_col = if a_is_reader {
-                            <Val<SC>>::ONE
-                        } else {
-                            <Val<SC>>::ZERO
-                        };
-                        let c_reader_col = if c_is_reader {
-                            <Val<SC>>::ONE
-                        } else {
-                            <Val<SC>>::ZERO
-                        };
+                    // mult_a = -1 for all active rows; active = -mult_a = 1 always.
+                    // Effective a-lookup mult = mult_a * a_is_reader_col (in get_alu_index_lookups).
+                    // Effective c-lookup mult = mult_a * c_is_reader_col (in get_alu_index_lookups).
+                    let mult_a = neg_one;
+                    let a_reader_col = if a_is_reader {
+                        <Val<SC>>::ONE
+                    } else {
+                        <Val<SC>>::ZERO
+                    };
+                    let c_reader_col = if c_is_reader {
+                        <Val<SC>>::ONE
+                    } else {
+                        <Val<SC>>::ZERO
+                    };
 
-                        // b: creator if b_is_creator, reader otherwise.
-                        let mult_b = if b_is_creator {
-                            let b_wid =
-                                <Val<SC> as PrimeField64>::as_canonical_u64(&b_idx) as usize / D;
-                            let n_reads = preprocessed.ext_reads.get(b_wid).copied().unwrap_or(0);
-                            <Val<SC>>::from_u32(n_reads)
-                        } else {
-                            neg_one
-                        };
+                    // b: creator if b_is_creator, reader otherwise.
+                    let mult_b = if b_is_creator {
+                        let b_wid =
+                            <Val<SC> as PrimeField64>::as_canonical_u64(&b_idx) as usize / D;
+                        let n_reads = preprocessed.ext_reads.get(b_wid).copied().unwrap_or(0);
+                        <Val<SC>>::from_u32(n_reads)
+                    } else {
+                        neg_one
+                    };
 
-                        // out: creator if out_is_creator, reader otherwise.
-                        let mult_out = if out_is_creator {
-                            let out_wid =
-                                <Val<SC> as PrimeField64>::as_canonical_u64(&out_idx) as usize / D;
-                            let n_reads = preprocessed.ext_reads.get(out_wid).copied().unwrap_or(0);
-                            <Val<SC>>::from_u32(n_reads)
-                        } else {
-                            neg_one
-                        };
+                    // out: creator if out_is_creator, reader otherwise.
+                    let mult_out = if out_is_creator {
+                        let out_wid =
+                            <Val<SC> as PrimeField64>::as_canonical_u64(&out_idx) as usize / D;
+                        let n_reads = preprocessed.ext_reads.get(out_wid).copied().unwrap_or(0);
+                        <Val<SC>>::from_u32(n_reads)
+                    } else {
+                        neg_one
+                    };
 
-                        [
-                            mult_a,
-                            sel1,
-                            sel2,
-                            sel3,
-                            sel_horner,
-                            a_idx,
-                            b_idx,
-                            c_idx,
-                            out_idx,
-                            mult_b,
-                            mult_out,
-                            a_reader_col,
-                            c_reader_col,
-                        ]
-                    })
-                    .collect();
+                    prep_13col.extend([
+                        mult_a,
+                        sel1,
+                        sel2,
+                        sel3,
+                        sel4,
+                        a_idx,
+                        b_idx,
+                        c_idx,
+                        out_idx,
+                        mult_b,
+                        mult_out,
+                        a_reader_col,
+                        c_reader_col,
+                    ]);
+                }
+                debug_assert!(chunks.remainder().is_empty());
 
                 // If ALU was empty, add a dummy row (all zeros = padding, no logup contribution).
                 if alu_empty {
@@ -289,15 +287,14 @@ where
             PrimitiveOpType::Public => {
                 // Public preprocessed per op from circuit.rs: 1 value (D-scaled out_idx).
                 // Convert to [ext_mult, out_idx] pairs using ext_reads.
-                let prep_2col: Vec<Val<SC>> = base_prep[idx]
-                    .iter()
-                    .flat_map(|&out_idx| {
-                        let out_wid =
-                            (<Val<SC> as PrimeField64>::as_canonical_u64(&out_idx) as usize) / D;
-                        let n_reads = preprocessed.ext_reads.get(out_wid).copied().unwrap_or(0);
-                        [<Val<SC>>::from_u32(n_reads), out_idx]
-                    })
-                    .collect();
+                let mut prep_2col: Vec<Val<SC>> = Vec::with_capacity(base_prep[idx].len() * 2);
+                for &out_idx in &base_prep[idx] {
+                    let out_wid =
+                        (<Val<SC> as PrimeField64>::as_canonical_u64(&out_idx) as usize) / D;
+                    let n_reads = preprocessed.ext_reads.get(out_wid).copied().unwrap_or(0);
+                    prep_2col.push(<Val<SC>>::from_u32(n_reads));
+                    prep_2col.push(out_idx);
+                }
 
                 let num_ops = prep_2col.len() / 2;
                 let public_air = PublicAir::new_with_preprocessed(
@@ -317,15 +314,14 @@ where
             PrimitiveOpType::Const => {
                 // Const preprocessed per op from circuit.rs: 1 value (D-scaled out_idx).
                 // Convert to [ext_mult, out_idx] pairs using ext_reads.
-                let prep_2col: Vec<Val<SC>> = base_prep[idx]
-                    .iter()
-                    .flat_map(|&out_idx| {
-                        let out_wid =
-                            (<Val<SC> as PrimeField64>::as_canonical_u64(&out_idx) as usize) / D;
-                        let n_reads = preprocessed.ext_reads.get(out_wid).copied().unwrap_or(0);
-                        [<Val<SC>>::from_u32(n_reads), out_idx]
-                    })
-                    .collect();
+                let mut prep_2col: Vec<Val<SC>> = Vec::with_capacity(base_prep[idx].len() * 2);
+                for &out_idx in &base_prep[idx] {
+                    let out_wid =
+                        (<Val<SC> as PrimeField64>::as_canonical_u64(&out_idx) as usize) / D;
+                    let n_reads = preprocessed.ext_reads.get(out_wid).copied().unwrap_or(0);
+                    prep_2col.push(<Val<SC>>::from_u32(n_reads));
+                    prep_2col.push(out_idx);
+                }
 
                 let height = prep_2col.len() / 2;
                 let const_air = ConstAir::new_with_preprocessed(height, prep_2col.clone())

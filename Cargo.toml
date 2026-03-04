@@ -95,6 +95,7 @@ tracing-forest = "0.3.0"
 tracing-subscriber = { version = "0.3.17", default-features = false, features = [
     "alloc",
 ] }
+unroll = { version = "0.1.5", default-features = false }
 
 # Local dependencies
 p3-challenger-air = { path = "challenger-air", version = "0.1.0" }

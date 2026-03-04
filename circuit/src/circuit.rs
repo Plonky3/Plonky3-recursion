@@ -296,7 +296,7 @@ impl<F: Field> Circuit<F> {
         // Track which witnesses have been defined (first-occurrence = creator).
         // Const and Public define their outputs first. ALU ops define their output (forward)
         // or their `b` operand (backward/sub encoding where `out` was already defined).
-        let mut defined = alloc::vec![false; self.witness_count as usize];
+        let mut defined = vec![false; self.witness_count as usize];
 
         // Process each primitive operation.
         for op in &self.ops {
@@ -400,7 +400,7 @@ impl<F: Field> Circuit<F> {
                             defined.resize(out_idx + 1, false);
                         }
                         defined[out_idx] = true;
-                        let mut readers = alloc::vec![*b];
+                        let mut readers = vec![*b];
                         if a_is_reader {
                             readers.push(*a);
                         }
@@ -416,7 +416,7 @@ impl<F: Field> Circuit<F> {
                             defined.resize(b_idx + 1, false);
                         }
                         defined[b_idx] = true;
-                        let mut readers = alloc::vec![*out];
+                        let mut readers = vec![*out];
                         if a_is_reader {
                             readers.push(*a);
                         }
@@ -427,7 +427,7 @@ impl<F: Field> Circuit<F> {
                     } else {
                         // All-reader: b and out are always readers.
                         // a and c contribute to ext_reads only if they are constrained.
-                        let mut readers = alloc::vec![*b, *out];
+                        let mut readers = vec![*b, *out];
                         if a_is_reader {
                             readers.push(*a);
                         }

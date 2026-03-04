@@ -188,7 +188,7 @@ where
     } else {
         vec![]
     };
-    coms_to_verify.extend(vec![
+    coms_to_verify.extend([
         (
             commitments.trace.clone(),
             vec![(

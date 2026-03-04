@@ -1124,26 +1124,23 @@ impl Poseidon2Prover {
 
         let padded_rows = rows.next_power_of_two();
         let mut padded_ops = t.operations.clone();
-        while padded_ops.len() < padded_rows {
-            padded_ops.push(
-                padded_ops
-                    .last()
-                    .cloned()
-                    .unwrap_or_else(|| Poseidon2CircuitRow {
-                        new_start: true,
-                        merkle_path: false,
-                        mmcs_bit: false,
-                        mmcs_index_sum: Val::<SC>::ZERO,
-                        input_values: vec![Val::<SC>::ZERO; WIDTH],
-                        in_ctl: vec![false; 4],
-                        input_indices: vec![0; 4],
-                        out_ctl: vec![false; 2],
-                        output_indices: vec![0; 2],
-                        mmcs_index_sum_idx: 0,
-                        mmcs_ctl_enabled: false,
-                    }),
-            );
-        }
+        let last_op = padded_ops
+            .last()
+            .cloned()
+            .unwrap_or_else(|| Poseidon2CircuitRow {
+                new_start: true,
+                merkle_path: false,
+                mmcs_bit: false,
+                mmcs_index_sum: Val::<SC>::ZERO,
+                input_values: vec![Val::<SC>::ZERO; WIDTH],
+                in_ctl: vec![false; 4],
+                input_indices: vec![0; 4],
+                out_ctl: vec![false; 2],
+                output_indices: vec![0; 2],
+                mmcs_index_sum_idx: 0,
+                mmcs_ctl_enabled: false,
+            });
+        padded_ops.resize(padded_rows, last_op);
 
         let (air, matrix) = match self.config {
             Poseidon2Config::BabyBearD1Width16 | Poseidon2Config::BabyBearD4Width16 => {
@@ -1154,8 +1151,7 @@ impl Poseidon2Prover {
                 );
                 let air =
                     BabyBearD4Width16::default_air_with_preprocessed(preprocessed, min_height);
-                let ops: Vec<Poseidon2CircuitRow<BabyBear>> =
-                    unsafe { transmute(padded_ops.clone()) };
+                let ops: Vec<Poseidon2CircuitRow<BabyBear>> = unsafe { transmute(padded_ops) };
                 let matrix_f = air.generate_trace_rows(&ops, &constants, 0);
                 let matrix: RowMajorMatrix<Val<SC>> = unsafe { transmute(matrix_f) };
                 (
@@ -1174,8 +1170,7 @@ impl Poseidon2Prover {
                 );
                 let air =
                     BabyBearD4Width24::default_air_with_preprocessed(preprocessed, min_height);
-                let ops: Vec<Poseidon2CircuitRow<BabyBear>> =
-                    unsafe { transmute(padded_ops.clone()) };
+                let ops: Vec<Poseidon2CircuitRow<BabyBear>> = unsafe { transmute(padded_ops) };
                 let matrix_f = air.generate_trace_rows(&ops, &constants, 0);
                 let matrix: RowMajorMatrix<Val<SC>> = unsafe { transmute(matrix_f) };
                 (
@@ -1194,8 +1189,7 @@ impl Poseidon2Prover {
                 );
                 let air =
                     KoalaBearD4Width16::default_air_with_preprocessed(preprocessed, min_height);
-                let ops: Vec<Poseidon2CircuitRow<KoalaBear>> =
-                    unsafe { transmute(padded_ops.clone()) };
+                let ops: Vec<Poseidon2CircuitRow<KoalaBear>> = unsafe { transmute(padded_ops) };
                 let matrix_f = air.generate_trace_rows(&ops, &constants, 0);
                 let matrix: RowMajorMatrix<Val<SC>> = unsafe { transmute(matrix_f) };
                 (
@@ -1214,8 +1208,7 @@ impl Poseidon2Prover {
                 );
                 let air =
                     KoalaBearD4Width24::default_air_with_preprocessed(preprocessed, min_height);
-                let ops: Vec<Poseidon2CircuitRow<KoalaBear>> =
-                    unsafe { transmute(padded_ops.clone()) };
+                let ops: Vec<Poseidon2CircuitRow<KoalaBear>> = unsafe { transmute(padded_ops) };
                 let matrix_f = air.generate_trace_rows(&ops, &constants, 0);
                 let matrix: RowMajorMatrix<Val<SC>> = unsafe { transmute(matrix_f) };
                 (
@@ -1234,8 +1227,7 @@ impl Poseidon2Prover {
                 );
                 let air =
                     goldilocks_d2_width8_default_air_with_preprocessed(preprocessed, min_height);
-                let ops: Vec<Poseidon2CircuitRow<Goldilocks>> =
-                    unsafe { transmute(padded_ops.clone()) };
+                let ops: Vec<Poseidon2CircuitRow<Goldilocks>> = unsafe { transmute(padded_ops) };
                 let matrix_f = air.generate_trace_rows(&ops, &constants, 0);
                 let matrix: RowMajorMatrix<Val<SC>> = unsafe { transmute(matrix_f) };
                 (
