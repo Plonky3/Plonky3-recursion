@@ -3,7 +3,9 @@
 //! Includes micro-benchmarks: execute_all (evaluation only), per-table trace
 //! building, and full run. Parameterized by instance size and shape.
 
-use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
+use core::hint::black_box;
+
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use p3_circuit::CircuitBuilder;
 use p3_circuit::tables::{ConstTraceBuilder, PublicTraceBuilder};
 use p3_field::PrimeCharacteristicRing;

@@ -572,7 +572,7 @@ where
         let main = builder.main();
         let local_slice = main.row_slice(0).expect("The matrix is empty?");
         let next_slice = main.row_slice(1).expect("The matrix has only one row?");
-        let preprocessed = builder.preprocessed().clone();
+        let preprocessed = *builder.preprocessed();
         let next_preprocessed_slice = preprocessed
             .row_slice(1)
             .expect("The preprocessed matrix has only one row?");
@@ -604,7 +604,7 @@ where
         let main = builder.main();
         let local_slice = main.row_slice(0).expect("The matrix is empty?");
         let next_slice = main.row_slice(1).expect("The matrix has only one row?");
-        let preprocessed = builder.preprocessed().clone();
+        let preprocessed = *builder.preprocessed();
         let next_preprocessed_slice = preprocessed
             .row_slice(1)
             .expect("The preprocessed matrix has only one row?");
@@ -637,7 +637,7 @@ where
         let main = builder.main();
         let local_slice = main.row_slice(0).expect("The matrix is empty?");
         let next_slice = main.row_slice(1).expect("The matrix has only one row?");
-        let preprocessed = builder.preprocessed().clone();
+        let preprocessed = *builder.preprocessed();
         let next_preprocessed_slice = preprocessed
             .row_slice(1)
             .expect("The preprocessed matrix has only one row?");
@@ -661,7 +661,7 @@ where
         let main = builder.main();
         let local_slice = main.row_slice(0).expect("The matrix is empty?");
         let next_slice = main.row_slice(1).expect("The matrix has only one row?");
-        let preprocessed = builder.preprocessed().clone();
+        let preprocessed = *builder.preprocessed();
         let next_preprocessed_slice = preprocessed
             .row_slice(1)
             .expect("The preprocessed matrix has only one row?");
@@ -697,7 +697,7 @@ where
         let main = builder.main();
         let local_slice = main.row_slice(0).expect("The matrix is empty?");
         let next_slice = main.row_slice(1).expect("The matrix has only one row?");
-        let preprocessed = builder.preprocessed().clone();
+        let preprocessed = *builder.preprocessed();
         let next_preprocessed_slice = preprocessed
             .row_slice(1)
             .expect("The preprocessed matrix has only one row?");
