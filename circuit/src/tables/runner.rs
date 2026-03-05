@@ -7,13 +7,13 @@ use alloc::{format, vec};
 use hashbrown::HashMap;
 use tracing::instrument;
 
-use super::alu::AluTraceBuilder;
+use super::alu::{AluOpRecord, AluTrace};
 use super::constant::ConstTraceBuilder;
 use super::public::PublicTraceBuilder;
 use super::witness::WitnessTrace;
 use super::{NonPrimitiveTrace, Traces};
 use crate::circuit::Circuit;
-use crate::op::{ExecutionContext, NonPrimitiveOpPrivateData, NonPrimitiveOpType, Op, OpStateMap};
+use crate::op::{ExecutionContext, NpoPrivateData, NpoTypeId, Op, OpStateMap};
 use crate::types::{NonPrimitiveOpId, WitnessId};
 use crate::{AluOpKind, CircuitError, CircuitField};
 
@@ -24,7 +24,7 @@ pub struct CircuitRunner<F> {
     /// Witness values (None = unset, Some = computed).
     witness: Vec<Option<F>>,
     /// Private data for non-primitive operations (not on witness bus)
-    non_primitive_op_private_data: Vec<Option<NonPrimitiveOpPrivateData<F>>>,
+    non_primitive_op_private_data: Vec<Option<NpoPrivateData>>,
     /// Map from NonPrimitiveOpId -> index in `circuit.ops` for type checks.
     non_primitive_op_index_by_id: Vec<Option<usize>>,
     /// Operation-specific execution state (e.g., Poseidon chaining, row records).
@@ -61,7 +61,9 @@ impl<F: CircuitField> CircuitRunner<F> {
             }
         }
 
-        let non_primitive_op_private_data = vec![None; non_primitive_op_count];
+        let mut non_primitive_op_private_data: Vec<Option<NpoPrivateData>> =
+            Vec::with_capacity(non_primitive_op_count);
+        non_primitive_op_private_data.resize_with(non_primitive_op_count, || None);
         let op_states = BTreeMap::new();
         Self {
             circuit,
@@ -96,7 +98,7 @@ impl<F: CircuitField> CircuitRunner<F> {
     pub fn set_private_data(
         &mut self,
         op_id: NonPrimitiveOpId,
-        private_data: NonPrimitiveOpPrivateData<F>,
+        private_data: NpoPrivateData,
     ) -> Result<(), CircuitError> {
         // Validate that the op_id exists in the circuit.
         if op_id.0 as usize >= self.non_primitive_op_private_data.len()
@@ -127,32 +129,10 @@ impl<F: CircuitField> CircuitRunner<F> {
                 max_ops: self.non_primitive_op_private_data.len(),
             });
         };
-        match (executor.op_type(), &private_data) {
-            (
-                crate::op::NonPrimitiveOpType::Poseidon2Perm(_),
-                NonPrimitiveOpPrivateData::Poseidon2Perm(_),
-            ) => {
-                // ok
-            }
-            (crate::op::NonPrimitiveOpType::OpenInput, NonPrimitiveOpPrivateData::OpenInput) => {
-                // ok
-            }
-            // Unconstrained operations don't need private data.
-            (crate::op::NonPrimitiveOpType::Unconstrained, _) => return Ok(()),
-            _ => {
-                return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
-                    op: executor.op_type().clone(),
-                    operation_index: op_id,
-                    expected: format!("private data matching op type {:?}", executor.op_type()),
-                    got: format!("{:?}", private_data),
-                });
-            }
-        }
-
         // Disallow double-setting private data
         if self.non_primitive_op_private_data[op_id.0 as usize].is_some() {
             return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
-                op: *executor.op_type(),
+                op: executor.op_type().clone(),
                 operation_index: op_id,
                 expected: "private data not previously set".to_string(),
                 got: "already set".to_string(),
@@ -173,7 +153,7 @@ impl<F: CircuitField> CircuitRunner<F> {
     pub fn set_private_data_by_tag(
         &mut self,
         tag: &str,
-        private_data: NonPrimitiveOpPrivateData<F>,
+        private_data: NpoPrivateData,
     ) -> Result<(), CircuitError> {
         let op_id = self.circuit.tag_to_op_id.get(tag).copied().ok_or_else(|| {
             CircuitError::UnknownTag {
@@ -186,10 +166,10 @@ impl<F: CircuitField> CircuitRunner<F> {
     /// Run the circuit and generate traces
     #[instrument(skip_all)]
     pub fn run(mut self) -> Result<Traces<F>, CircuitError> {
-        self.execute_all()?;
+        let alu_records = self.execute_all()?;
 
         if let Some(rewrite) = self.circuit.witness_rewrite.take() {
-            let mut resolved: HashMap<WitnessId, WitnessId> = HashMap::new();
+            let mut resolved: HashMap<WitnessId, WitnessId> = HashMap::with_capacity(rewrite.len());
             let mut root = |canon: WitnessId| {
                 *resolved.entry(canon).or_insert_with(|| {
                     let mut cur = canon;
@@ -208,20 +188,18 @@ impl<F: CircuitField> CircuitRunner<F> {
         }
 
         // Build witness trace directly from the populated witness table.
-        let witness_values: Result<Vec<_>, _> = self
-            .witness
-            .iter()
-            .enumerate()
-            .map(|(i, v)| (*v).ok_or(CircuitError::WitnessNotSetForIndex { index: i }))
-            .collect();
-        let witness_trace = WitnessTrace::new(witness_values?);
+        let mut witness_values = Vec::with_capacity(self.witness.len());
+        for (i, value) in self.witness.iter().enumerate() {
+            witness_values.push((*value).ok_or(CircuitError::WitnessNotSetForIndex { index: i })?);
+        }
+        let witness_trace = WitnessTrace::new(witness_values);
 
         let const_trace = ConstTraceBuilder::new(&self.circuit.ops).build()?;
         let public_trace = PublicTraceBuilder::new(&self.circuit.ops, &self.witness).build()?;
-        let alu_trace = AluTraceBuilder::new(&self.circuit.ops, &self.witness).build()?;
+        let alu_trace = AluTrace::from_records(alu_records);
 
-        let mut non_primitive_traces: HashMap<NonPrimitiveOpType, Box<dyn NonPrimitiveTrace<F>>> =
-            HashMap::new();
+        let mut non_primitive_traces: HashMap<NpoTypeId, Box<dyn NonPrimitiveTrace<F>>> =
+            HashMap::with_capacity(self.circuit.non_primitive_trace_generator_order.len());
         // Iterate over generators in deterministic order (sorted by key)
         let _scope = tracing::debug_span!("generators").entered();
 
@@ -249,7 +227,9 @@ impl<F: CircuitField> CircuitRunner<F> {
     /// The circuit is already lowered into a valid execution order, so this function
     /// can blindly execute from index 0 to end.
     #[instrument(skip_all, level = "debug")]
-    pub fn execute_all(&mut self) -> Result<(), CircuitError> {
+    pub fn execute_all(&mut self) -> Result<Vec<AluOpRecord<F>>, CircuitError> {
+        let mut alu_records = Vec::with_capacity(1 << 16);
+
         for i in 0..self.circuit.ops.len() {
             let op = &self.circuit.ops[i];
             match op {
@@ -257,7 +237,6 @@ impl<F: CircuitField> CircuitRunner<F> {
                     self.set_witness(*out, *val)?;
                 }
                 Op::Public { out, public_pos: _ } => {
-                    // Public inputs should already be set
                     if self.witness[out.0 as usize].is_none() {
                         return Err(CircuitError::PublicInputNotSet { witness_id: *out });
                     }
@@ -269,57 +248,157 @@ impl<F: CircuitField> CircuitRunner<F> {
                     c,
                     out,
                     intermediate_out,
-                } => match kind {
-                    AluOpKind::Add => {
-                        let a_val = self.get_witness(*a)?;
-                        if let Ok(b_val) = self.get_witness(*b) {
-                            let result = a_val + b_val;
-                            self.set_witness(*out, result)?;
-                        } else {
-                            let out_val = self.get_witness(*out)?;
-                            let b_val = out_val - a_val;
-                            self.set_witness(*b, b_val)?;
+                } => {
+                    let kind = *kind;
+                    let a = *a;
+                    let b = *b;
+                    let c_index = c.unwrap_or(WitnessId(0));
+                    let out = *out;
+                    let intermediate_out = *intermediate_out;
+                    match kind {
+                        AluOpKind::Add => {
+                            let a_val = self.get_witness(a)?;
+                            if let Ok(b_val) = self.get_witness(b) {
+                                let result = a_val + b_val;
+                                self.set_witness(out, result)?;
+                                alu_records.push(AluOpRecord {
+                                    kind,
+                                    a_index: a,
+                                    b_index: b,
+                                    c_index,
+                                    out_index: out,
+                                    a_val,
+                                    b_val,
+                                    c_val: F::ZERO,
+                                    out_val: result,
+                                });
+                            } else {
+                                let out_val = self.get_witness(out)?;
+                                let b_val = out_val - a_val;
+                                self.set_witness(b, b_val)?;
+                                alu_records.push(AluOpRecord {
+                                    kind,
+                                    a_index: a,
+                                    b_index: b,
+                                    c_index,
+                                    out_index: out,
+                                    a_val,
+                                    b_val,
+                                    c_val: F::ZERO,
+                                    out_val,
+                                });
+                            }
                         }
-                    }
-                    AluOpKind::Mul => {
-                        // Mul is used to represent either `Mul` or `Div` operations.
-                        // We determine which based on which inputs are set.
-                        let a_val = self.get_witness(*a)?;
-                        if let Ok(b_val) = self.get_witness(*b) {
-                            self.set_witness(*out, a_val * b_val)?;
-                        } else {
-                            let result_val = self.get_witness(*out)?;
-                            let a_inv = a_val.try_inverse().ok_or(CircuitError::DivisionByZero)?;
-                            self.set_witness(*b, result_val * a_inv)?;
+                        AluOpKind::Mul => {
+                            let a_val = self.get_witness(a)?;
+                            if let Ok(b_val) = self.get_witness(b) {
+                                let result = a_val * b_val;
+                                self.set_witness(out, result)?;
+                                alu_records.push(AluOpRecord {
+                                    kind,
+                                    a_index: a,
+                                    b_index: b,
+                                    c_index,
+                                    out_index: out,
+                                    a_val,
+                                    b_val,
+                                    c_val: F::ZERO,
+                                    out_val: result,
+                                });
+                            } else {
+                                let result_val = self.get_witness(out)?;
+                                let a_inv =
+                                    a_val.try_inverse().ok_or(CircuitError::DivisionByZero)?;
+                                let b_val = result_val * a_inv;
+                                self.set_witness(b, b_val)?;
+                                alu_records.push(AluOpRecord {
+                                    kind,
+                                    a_index: a,
+                                    b_index: b,
+                                    c_index,
+                                    out_index: out,
+                                    a_val,
+                                    b_val,
+                                    c_val: F::ZERO,
+                                    out_val: result_val,
+                                });
+                            }
                         }
-                    }
-                    AluOpKind::BoolCheck => {
-                        // BoolCheck constraint is checked in the AIR; here we just ensure out = a
-                        let a_val = self.get_witness(*a)?;
-                        self.set_witness(*out, a_val)?;
-                    }
-                    AluOpKind::MulAdd => {
-                        // out = a * b + c
-                        let a_val = self.get_witness(*a)?;
-                        let b_val = self.get_witness(*b)?;
-                        let ab_product = a_val * b_val;
-                        let intermediate_out_id = *intermediate_out;
-                        let c_id_opt = *c;
-                        let out_id = *out;
+                        AluOpKind::BoolCheck => {
+                            let a_val = self.get_witness(a)?;
+                            self.set_witness(out, a_val)?;
+                            alu_records.push(AluOpRecord {
+                                kind,
+                                a_index: a,
+                                b_index: b,
+                                c_index,
+                                out_index: out,
+                                a_val,
+                                b_val: F::ZERO,
+                                c_val: a_val,
+                                out_val: a_val,
+                            });
+                        }
+                        AluOpKind::MulAdd => {
+                            let a_val = self.get_witness(a)?;
+                            let b_val = self.get_witness(b)?;
+                            let ab_product = a_val * b_val;
+                            let c_id_opt = *c;
 
-                        // Set intermediate_out if fused from separate operations
-                        if let Some(io) = intermediate_out_id {
-                            self.set_witness(io, ab_product)?;
-                        }
+                            if let Some(io) = intermediate_out {
+                                self.set_witness(io, ab_product)?;
+                            }
 
-                        let c_val = if let Some(c_id) = c_id_opt {
-                            self.get_witness(c_id)?
-                        } else {
-                            F::ZERO
-                        };
-                        self.set_witness(out_id, ab_product + c_val)?;
+                            let c_val = if let Some(c_id) = c_id_opt {
+                                self.get_witness(c_id)?
+                            } else {
+                                F::ZERO
+                            };
+                            let out_val = ab_product + c_val;
+                            self.set_witness(out, out_val)?;
+                            alu_records.push(AluOpRecord {
+                                kind,
+                                a_index: a,
+                                b_index: b,
+                                c_index,
+                                out_index: out,
+                                a_val,
+                                b_val,
+                                c_val,
+                                out_val,
+                            });
+                        }
+                        AluOpKind::HornerAcc => {
+                            let acc_id = intermediate_out
+                                .expect("HornerAcc requires acc in intermediate_out");
+                            let c_id = c.expect("HornerAcc requires c operand");
+                            let acc_val = self.get_witness(acc_id)?;
+                            let a_val = self.get_witness(a)?;
+                            let b_val = self.get_witness(b)?;
+                            let c_val = self.get_witness(c_id)?;
+                            let result = acc_val * b_val + c_val - a_val;
+                            self.set_witness(out, result)?;
+                            alu_records.push(AluOpRecord {
+                                kind,
+                                a_index: a,
+                                b_index: b,
+                                c_index,
+                                out_index: out,
+                                a_val,
+                                b_val,
+                                c_val,
+                                out_val: result,
+                            });
+                        }
                     }
-                },
+                }
+                Op::Hint {
+                    inputs,
+                    outputs,
+                    executor,
+                } => {
+                    executor.execute(inputs, outputs, &mut self.witness)?;
+                }
                 Op::NonPrimitiveOpWithExecutor {
                     inputs,
                     outputs,
@@ -338,7 +417,8 @@ impl<F: CircuitField> CircuitRunner<F> {
                 }
             }
         }
-        Ok(())
+
+        Ok(alu_records)
     }
 
     /// Gets witness value by ID.
@@ -417,9 +497,8 @@ mod tests {
     use tracing_subscriber::{EnvFilter, Registry};
 
     use super::*;
-    use crate::NonPrimitiveOpType;
     use crate::builder::CircuitBuilder;
-    use crate::op::NonPrimitiveExecutor;
+    use crate::op::HintExecutor;
     use crate::types::WitnessId;
 
     /// Initializes a global logger with default parameters.
@@ -464,43 +543,80 @@ mod tests {
         assert!(!traces.public_trace.values.is_empty());
 
         // Check that we have ALU trace entries
-        assert!(!traces.alu_trace.a_values.is_empty());
+        assert!(!traces.alu_trace.values.is_empty());
     }
 
     #[derive(Debug, Clone)]
     /// The hint defined by x in an equation a*x - b = 0
-    struct XHint {}
+    struct XHint;
 
     impl XHint {
         pub fn new() -> Self {
-            Self {}
+            Self
         }
     }
 
-    impl<F: Field> NonPrimitiveExecutor<F> for XHint {
+    impl<F: Field> HintExecutor<F> for XHint {
         fn execute(
             &self,
-            inputs: &[Vec<WitnessId>],
-            outputs: &[Vec<WitnessId>],
-            ctx: &mut ExecutionContext<'_, F>,
+            inputs: &[WitnessId],
+            outputs: &[WitnessId],
+            witness: &mut [Option<F>],
         ) -> Result<(), CircuitError> {
-            let a = ctx.get_witness(inputs[0][0])?;
-            let b = ctx.get_witness(inputs[0][1])?;
+            if inputs.len() != 2 || outputs.len() != 1 {
+                return Err(CircuitError::UnconstrainedOpInputLengthMismatch {
+                    op: "XHint".to_string(),
+                    expected: 2,
+                    got: inputs.len(),
+                });
+            }
+
+            let a_idx = inputs[0].0 as usize;
+            let b_idx = inputs[1].0 as usize;
+
+            let a = witness
+                .get(a_idx)
+                .and_then(|opt| opt.as_ref())
+                .cloned()
+                .ok_or(CircuitError::WitnessNotSet {
+                    witness_id: inputs[0],
+                })?;
+            let b = witness
+                .get(b_idx)
+                .and_then(|opt| opt.as_ref())
+                .cloned()
+                .ok_or(CircuitError::WitnessNotSet {
+                    witness_id: inputs[1],
+                })?;
+
             let inv_a = a.try_inverse().ok_or(CircuitError::DivisionByZero)?;
             let x = b * inv_a;
-            ctx.set_witness(outputs[0][0], x)?;
+
+            let out_wid = outputs[0];
+            let out_idx = out_wid.0 as usize;
+            if out_idx >= witness.len() {
+                return Err(CircuitError::WitnessIdOutOfBounds {
+                    witness_id: out_wid,
+                });
+            }
+            let slot = &mut witness[out_idx];
+            if let Some(existing) = slot.as_ref() {
+                if *existing != x {
+                    return Err(CircuitError::WitnessConflict {
+                        witness_id: out_wid,
+                        existing: format!("{existing:?}"),
+                        new: format!("{x:?}"),
+                        expr_ids: vec![],
+                    });
+                }
+            } else {
+                *slot = Some(x);
+            }
+
             Ok(())
         }
 
-        fn op_type(&self) -> &NonPrimitiveOpType {
-            &NonPrimitiveOpType::Unconstrained
-        }
-
-        fn as_any(&self) -> &dyn core::any::Any {
-            self
-        }
-
-        fn boxed(&self) -> Box<dyn NonPrimitiveExecutor<F>> {
+        fn boxed(&self) -> Box<dyn HintExecutor<F>> {
             Box::new(self.clone())
         }
     }
@@ -552,7 +668,7 @@ mod tests {
         // Should have one mul operation: 37 * x
         // And one add operation for sub: result + rhs = lhs
         // Total 2 ALU operations
-        assert_eq!(traces.alu_trace.a_values.len(), 2);
+        assert_eq!(traces.alu_trace.values.len(), 2);
     }
 
     #[test]
@@ -605,15 +721,15 @@ mod tests {
         assert_eq!(traces.public_trace.values[2], z_val);
 
         // Should have one MulAdd operation (fused from y * z + x)
-        assert_eq!(traces.alu_trace.a_values.len(), 1);
+        assert_eq!(traces.alu_trace.values.len(), 1);
 
         // Verify MulAdd operation: y * z + x
         let expected_yz = y_val * z_val;
         let expected_result = expected_yz + x_val;
-        assert_eq!(traces.alu_trace.a_values[0], y_val);
-        assert_eq!(traces.alu_trace.b_values[0], z_val);
-        assert_eq!(traces.alu_trace.c_values[0], x_val);
-        assert_eq!(traces.alu_trace.out_values[0], expected_result);
+        assert_eq!(traces.alu_trace.values[0][0], y_val);
+        assert_eq!(traces.alu_trace.values[0][1], z_val);
+        assert_eq!(traces.alu_trace.values[0][2], x_val);
+        assert_eq!(traces.alu_trace.values[0][3], expected_result);
     }
 
     #[test]
@@ -630,7 +746,7 @@ mod tests {
 
         let result = runner.set_private_data_by_tag(
             "nonexistent-tag",
-            crate::op::NonPrimitiveOpPrivateData::Poseidon2Perm(private_data),
+            crate::op::NpoPrivateData::new(private_data),
         );
 
         assert!(matches!(

@@ -5,7 +5,7 @@ use core::borrow::Borrow;
 use core::iter;
 use core::mem::MaybeUninit;
 
-use p3_air::{Air, AirBuilder, BaseAir, PermutationAirBuilder};
+use p3_air::{Air, AirBuilder, BaseAir, BaseLeaf, PermutationAirBuilder};
 use p3_circuit::ops::Poseidon2CircuitRow;
 use p3_field::{Field, PrimeCharacteristicRing, PrimeField};
 use p3_lookup::lookup_traits::{Direction, Kind, Lookup};
@@ -62,7 +62,7 @@ pub struct Poseidon2CircuitAir<
         PARTIAL_ROUNDS,
     >,
     /// Current number of lookup columns registered.
-    pub num_lookup_cols: usize,
+    pub(crate) num_lookup_cols: usize,
     /// Preprocessed values for the AIR. These values are only needed by the prover. During verification, the `Vec` can be empty.
     preprocessed: Vec<F>,
     /// Minimum trace height (for FRI compatibility with higher log_final_poly_len).
@@ -106,6 +106,7 @@ impl<
     }
 }
 
+/// Return the number of columns in the Poseidon2 preprocessed trace.
 pub const fn poseidon2_preprocessed_width() -> usize {
     core::mem::size_of::<Poseidon2PreprocessedRow<u8>>()
 }
@@ -137,6 +138,10 @@ impl<
         PARTIAL_ROUNDS,
     >
 {
+    /// Create a new `Poseidon2CircuitAir` with the given round constants.
+    ///
+    /// The preprocessed trace is left empty; call [`Self::new_with_preprocessed`] or
+    /// populate it separately before proving.
     pub const fn new(
         constants: RoundConstants<F, WIDTH, HALF_FULL_ROUNDS, PARTIAL_ROUNDS>,
     ) -> Self {
@@ -153,11 +158,19 @@ impl<
         }
     }
 
+    /// Set the minimum trace height (rounded up to the next power of two).
+    ///
+    /// Use this when FRI parameters require a minimum domain size larger than the
+    /// number of Poseidon2 rows actually produced.
     pub fn with_min_height(mut self, min_height: usize) -> Self {
         self.min_height = min_height.next_power_of_two().max(1);
         self
     }
 
+    /// Create a `Poseidon2CircuitAir` with pre-populated preprocessed trace data.
+    ///
+    /// Use this when the preprocessed columns have already been committed and you
+    /// want to skip regenerating them at verification time.
     pub const fn new_with_preprocessed(
         constants: RoundConstants<F, WIDTH, HALF_FULL_ROUNDS, PARTIAL_ROUNDS>,
         preprocessed: Vec<F>,
@@ -175,10 +188,18 @@ impl<
         }
     }
 
+    /// Return the number of preprocessed columns for this AIR.
+    ///
+    /// Delegates to [`poseidon2_preprocessed_width`].
     pub const fn preprocessed_width() -> usize {
         poseidon2_preprocessed_width()
     }
 
+    /// Generate the execution trace matrix from a sequence of Poseidon2 circuit rows.
+    ///
+    /// `sponge_ops` must have a length that is a power of two.
+    /// `extra_capacity_bits` controls how many additional zero-padded rows are appended
+    /// beyond the minimum power-of-two height.
     pub fn generate_trace_rows(
         &self,
         sponge_ops: &[Poseidon2CircuitRow<F>],
@@ -437,6 +458,7 @@ pub fn extract_preprocessed_from_operations<F: Field, OF: Field>(
     preprocessed
 }
 
+#[unroll::unroll_for_loops]
 pub(crate) fn eval<
     AB: AirBuilder,
     LinearLayers: GenericPoseidon2LinearLayers<WIDTH>,
@@ -494,22 +516,22 @@ pub(crate) fn eval<
     // with the value column mmcs_index_sum.
 
     let next_prep: &Poseidon2PreprocessedRow<AB::Var> = next_preprocessed.borrow();
-    let next_bit = next.mmcs_bit.clone();
+    let next_bit = next.mmcs_bit;
     let local_out = &local.poseidon2.ending_full_rounds[HALF_FULL_ROUNDS - 1].post;
     let next_in = &next.poseidon2.inputs;
 
     // mmcs_bit should always be boolean.
-    builder.assert_bool(local.mmcs_bit.clone());
+    builder.assert_bool(local.mmcs_bit);
 
     // Normal chaining: when normal_chain_sel[limb] = 1 (i.e., !new_start && !merkle_path &&
     // !in_ctl[limb]), the input of the next row equals the output of the current row.
     for limb in 0..POSEIDON2_LIMBS {
         for d in 0..D {
-            let gate = next_prep.input_limbs[limb].normal_chain_sel.clone();
+            let gate = next_prep.input_limbs[limb].normal_chain_sel;
             builder
                 .when_transition()
                 .when(gate)
-                .assert_zero(next_in[limb * D + d].clone() - local_out[limb * D + d].clone());
+                .assert_zero(next_in[limb * D + d] - local_out[limb * D + d]);
         }
     }
 
@@ -521,50 +543,47 @@ pub(crate) fn eval<
     // Input limbs 0-1 use merkle_chain_sel[0] and merkle_chain_sel[1].
     // Input limbs 2-3 reuse merkle_chain_sel[0] and merkle_chain_sel[1] (same physical
     // sel, gated by mmcs_bit instead).
-    let is_left = AB::Expr::ONE - next_bit.clone().into();
+    let is_left = AB::Expr::ONE - next_bit.into();
 
+    let gate = next_prep.input_limbs[0].merkle_chain_sel * is_left.clone();
     for d in 0..D {
-        let gate = next_prep.input_limbs[0].merkle_chain_sel.clone() * is_left.clone();
         builder
             .when_transition()
-            .when(gate)
-            .assert_zero(next_in[d].clone() - local_out[d].clone());
+            .when(gate.clone())
+            .assert_zero(next_in[d] - local_out[d]);
     }
+    let gate = next_prep.input_limbs[1].merkle_chain_sel * is_left;
     for d in 0..D {
-        let gate = next_prep.input_limbs[1].merkle_chain_sel.clone() * is_left.clone();
         builder
             .when_transition()
-            .when(gate)
-            .assert_zero(next_in[D + d].clone() - local_out[D + d].clone());
+            .when(gate.clone())
+            .assert_zero(next_in[D + d] - local_out[D + d]);
     }
+    let gate = next_prep.input_limbs[0].merkle_chain_sel * next_bit;
     for d in 0..D {
-        let gate = next_prep.input_limbs[0].merkle_chain_sel.clone() * next_bit.clone();
         builder
             .when_transition()
-            .when(gate)
-            .assert_zero(next_in[2 * D + d].clone() - local_out[d].clone());
+            .when(gate.clone())
+            .assert_zero(next_in[2 * D + d] - local_out[d]);
     }
+    let gate = next_prep.input_limbs[1].merkle_chain_sel * next_bit;
     for d in 0..D {
-        let gate = next_prep.input_limbs[1].merkle_chain_sel.clone() * next_bit.clone();
         builder
             .when_transition()
-            .when(gate)
-            .assert_zero(next_in[3 * D + d].clone() - local_out[D + d].clone());
+            .when(gate.clone())
+            .assert_zero(next_in[3 * D + d] - local_out[D + d]);
     }
 
     // MMCS accumulator update.
     // When !new_start_{r+1} && merkle_path_{r+1}:
     //   mmcs_index_sum_{r+1} = mmcs_index_sum_r * 2 + mmcs_bit_{r+1}
     let two = AB::Expr::ONE + AB::Expr::ONE;
-    let not_next_new_start = AB::Expr::ONE - next_prep.new_start.clone().into();
+    let not_next_new_start = AB::Expr::ONE - next_prep.new_start.into();
     builder
         .when_transition()
         .when(not_next_new_start)
-        .when(next_prep.merkle_path.clone())
-        .assert_zero(
-            next.mmcs_index_sum.clone()
-                - (local.mmcs_index_sum.clone() * two + next.mmcs_bit.clone().into()),
-        );
+        .when(next_prep.merkle_path)
+        .assert_zero(next.mmcs_index_sum - (local.mmcs_index_sum * two + next.mmcs_bit.into()));
 
     let p3_poseidon2_num_cols = p3_poseidon2_air::num_cols::<
         WIDTH,
@@ -878,6 +897,7 @@ where
             0,
             0, // Here, we do not need the permutation trace
             0,
+            0,
         );
         let symbolic_main = symbolic_air_builder.main();
         let symbolic_main_local = symbolic_main.row_slice(0).expect("The matrix is empty?");
@@ -927,7 +947,7 @@ where
         //   during creation (in `add_hash_slice` with merkle_path=false)
         // - Sibling values are private proof data (wrong siblings → wrong root)
         // - Chained values are AIR-constrained to equal previous Poseidon2 outputs
-        let not_merkle = SymbolicExpression::Constant(AB::F::ONE)
+        let not_merkle = SymbolicExpression::Leaf(BaseLeaf::Constant(AB::F::ONE))
             - SymbolicExpression::from(local_prep.merkle_path);
 
         for limb_idx in 0..POSEIDON2_LIMBS {
@@ -985,7 +1005,7 @@ where
         ];
         // Extend `mmcs_index_sum` to D elements with zeros.
         mmcs_index_sum_lookup.extend(iter::repeat_n(
-            SymbolicExpression::Constant(AB::F::ZERO),
+            SymbolicExpression::Leaf(BaseLeaf::Constant(AB::F::ZERO)),
             D - 1,
         ));
 

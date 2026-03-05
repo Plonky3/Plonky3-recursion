@@ -81,7 +81,7 @@ fn test_mul_verifier_circuit() -> Result<(), VerificationError> {
     );
 
     // Add the verification circuit to the builder
-    verify_p3_uni_proof_circuit::<_, _, _, _, _, WIDTH, RATE>(
+    verify_p3_uni_proof_circuit::<_, _, _, _, _, _, WIDTH, RATE>(
         &config,
         &air,
         &mut circuit_builder,

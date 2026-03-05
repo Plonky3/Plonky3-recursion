@@ -6,6 +6,9 @@
 //! - nodes represent field operations,
 //! - edges represent dependencies between expressions.
 
+#![allow(unused_variables)]
+#![allow(clippy::missing_const_for_fn)]
+
 use alloc::string::String;
 #[cfg(feature = "debugging")]
 use alloc::vec;
@@ -15,7 +18,7 @@ use core::hash::Hash;
 use hashbrown::HashMap;
 use p3_field::PrimeCharacteristicRing;
 
-use crate::NonPrimitiveOpType;
+use crate::NpoTypeId;
 use crate::expr::{Expr, ExpressionGraph};
 use crate::types::{ExprId, NonPrimitiveOpId};
 #[cfg(feature = "debugging")]
@@ -39,8 +42,10 @@ pub struct OpCounts {
     pub muls: u64,
     /// Number of division expressions allocated.
     pub divs: u64,
+    /// Number of Horner accumulator expressions allocated.
+    pub horner_accs: u64,
     /// Number of non-primitive calls allocated, broken down by type.
-    pub non_primitives: HashMap<NonPrimitiveOpType, u64>,
+    pub non_primitives: HashMap<NpoTypeId, u64>,
 }
 
 /// Internal profiling state tracking global and per-scope counts.
@@ -98,9 +103,18 @@ impl ProfilingState {
     }
 
     #[inline]
-    fn bump_non_primitive(&mut self, op_type: NonPrimitiveOpType) {
+    fn bump_horner_acc(&mut self) {
+        self.bump_with(|c| c.horner_accs += 1);
+    }
+
+    #[inline]
+    fn bump_non_primitive(&mut self, op_type: NpoTypeId) {
         // Global totals.
-        *self.global.non_primitives.entry(op_type).or_default() += 1;
+        *self
+            .global
+            .non_primitives
+            .entry(op_type.clone())
+            .or_default() += 1;
 
         // Per-scope totals (if a scope is active).
         if let Some(scope) = self.scope_stack.last().cloned() {
@@ -500,6 +514,40 @@ where
         )
     }
 
+    /// Adds a Horner accumulator step to the graph: result = acc * alpha + p_at_z - p_at_x.
+    ///
+    /// Lowers to a single HornerAcc ALU op with no intermediate witnesses.
+    pub fn add_horner_acc(
+        &mut self,
+        acc: ExprId,
+        alpha: ExprId,
+        p_at_z: ExprId,
+        p_at_x: ExprId,
+        label: &'static str,
+    ) -> ExprId {
+        #[cfg(feature = "profiling")]
+        self.profiling.bump_horner_acc();
+
+        let expr_id = self.graph.add_expr(Expr::HornerAcc {
+            acc,
+            alpha,
+            p_at_z,
+            p_at_x,
+        });
+
+        #[cfg(feature = "debugging")]
+        self.log_alloc(expr_id, label, || {
+            (
+                AllocationType::HornerAcc,
+                vec![vec![acc], vec![alpha], vec![p_at_z], vec![p_at_x]],
+            )
+        });
+        #[cfg(not(feature = "debugging"))]
+        self.log_alloc(expr_id, label, || ());
+
+        expr_id
+    }
+
     /// Adds a non-primitive output expression to the graph.
     ///
     /// This expression represents a value produced by a non-primitive operation.
@@ -507,6 +555,7 @@ where
     /// the dependency explicit in the DAG structure.
     pub fn add_non_primitive_output(
         &mut self,
+        op_type: &NpoTypeId,
         call: ExprId,
         output_idx: u32,
         label: &'static str,
@@ -517,7 +566,10 @@ where
 
         #[cfg(feature = "debugging")]
         self.log_alloc(expr_id, label, || {
-            (AllocationType::NonPrimitiveOutput, vec![vec![call]])
+            (
+                AllocationType::NonPrimitiveOp(op_type.clone()),
+                vec![vec![call]],
+            )
         });
         #[cfg(not(feature = "debugging"))]
         self.log_alloc(expr_id, label, || ());
@@ -537,7 +589,7 @@ where
     pub fn add_non_primitive_call(
         &mut self,
         op_id: NonPrimitiveOpId,
-        op_type: NonPrimitiveOpType,
+        op_type: &NpoTypeId,
         inputs: Vec<ExprId>,
         label: &'static str,
     ) -> ExprId {
@@ -550,11 +602,14 @@ where
 
         // Count non-primitive calls when profiling is enabled.
         #[cfg(feature = "profiling")]
-        self.profiling.bump_non_primitive(op_type);
+        self.profiling.bump_non_primitive(op_type.clone());
 
         #[cfg(feature = "debugging")]
         self.log_alloc(expr_id, label, || {
-            (AllocationType::NonPrimitiveOp(op_type), dependencies)
+            (
+                AllocationType::NonPrimitiveOp(op_type.clone()),
+                dependencies,
+            )
         });
         #[cfg(not(feature = "debugging"))]
         self.log_alloc(expr_id, label, || ());
@@ -576,7 +631,6 @@ where
     ///
     /// An [`ExprId`] handle to the newly created expression.
     #[inline(always)]
-    #[allow(unused_variables)]
     fn add_bin_op(
         &mut self,
         expr: Expr<F>,
@@ -699,7 +753,7 @@ where
     /// # Arguments
     ///
     /// - `op_id`: The non-primitive operation ID
-    /// - `op_type`: The type of operation (e.g., `NonPrimitiveOpType::MmcsVerify`)
+    /// - `op_type`: The type of operation (e.g., `NpoTypeId::MmcsVerify`)
     /// - `input_deps`: Input expression dependencies for this operation
     /// - `output_deps`: Output expression dependencies for this operation
     /// - `label`: Human-readable label
@@ -707,7 +761,7 @@ where
     pub fn log_non_primitive_op(
         &mut self,
         op_id: crate::types::NonPrimitiveOpId,
-        op_type: crate::op::NonPrimitiveOpType,
+        op_type: crate::op::NpoTypeId,
         input_deps: Vec<Vec<ExprId>>,
         output_deps: Vec<Vec<ExprId>>,
         label: &'static str,
@@ -741,8 +795,6 @@ where
     /// # Arguments
     ///
     /// - `scope`: Human-readable scope name
-    #[allow(unused_variables)]
-    #[allow(clippy::missing_const_for_fn)]
     pub fn push_scope(&mut self, scope: &str) {
         #[cfg(any(feature = "debugging", feature = "profiling"))]
         {
@@ -770,7 +822,6 @@ where
     /// # Panics
     ///
     /// Panics if the scope stack is empty (mismatched push/pop).
-    #[allow(clippy::missing_const_for_fn)]
     pub fn pop_scope(&mut self) {
         #[cfg(feature = "debugging")]
         self.scope_stack.pop();
@@ -807,8 +858,6 @@ where
     /// Dumps the allocation log for specific `ExprId`s.
     ///
     /// If debug_assertions are not enabled, this is a no-op.
-    #[allow(clippy::missing_const_for_fn)]
-    #[allow(unused_variables)]
     pub fn dump_expr_ids(&self, expr_ids: &[ExprId]) {
         #[cfg(feature = "debugging")]
         crate::alloc_entry::dump_expr_ids(&self.allocation_log, expr_ids);
@@ -823,7 +872,6 @@ where
     ///
     /// In debug builds, outputs a detailed allocation report. In release builds,
     /// this method does nothing.
-    #[allow(clippy::missing_const_for_fn)]
     pub fn dump_allocation_log(&self) {
         #[cfg(feature = "debugging")]
         crate::alloc_entry::dump_allocation_log(&self.allocation_log);
@@ -838,7 +886,6 @@ where
     ///
     /// - **Debug builds**: Vector of unique scope names
     /// - **Release builds**: Empty vector (no scopes tracked)
-    #[allow(clippy::missing_const_for_fn)]
     pub fn list_scopes(&self) -> Vec<String> {
         #[cfg(feature = "debugging")]
         {

@@ -9,7 +9,7 @@ use alloc::vec::Vec;
 use hashbrown::HashSet;
 
 use crate::ExprId;
-use crate::op::NonPrimitiveOpType;
+use crate::op::NpoTypeId;
 
 /// Type of allocation for debugging purposes
 #[derive(Debug, Clone)]
@@ -20,8 +20,8 @@ pub enum AllocationType {
     Sub,
     Mul,
     Div,
-    NonPrimitiveOp(NonPrimitiveOpType),
-    NonPrimitiveOutput,
+    HornerAcc,
+    NonPrimitiveOp(NpoTypeId),
     WitnessHint,
 }
 
@@ -116,6 +116,7 @@ fn dump_internal_log(allocation_log: &[AllocationEntry]) {
     let mut subs = Vec::new();
     let mut muls = Vec::new();
     let mut divs = Vec::new();
+    let mut horner_accs = Vec::new();
     let mut non_primitives = Vec::new();
     let mut witness_hints = Vec::new();
 
@@ -135,7 +136,8 @@ fn dump_internal_log(allocation_log: &[AllocationEntry]) {
             AllocationType::Sub => subs.push(entry),
             AllocationType::Mul => muls.push(entry),
             AllocationType::Div => divs.push(entry),
-            AllocationType::NonPrimitiveOp(_) | AllocationType::NonPrimitiveOutput => {
+            AllocationType::HornerAcc => horner_accs.push(entry),
+            AllocationType::NonPrimitiveOp(_) => {
                 non_primitives.push(entry);
             }
             AllocationType::WitnessHint => witness_hints.push(entry),
@@ -256,6 +258,18 @@ fn dump_internal_log(allocation_log: &[AllocationEntry]) {
         tracing::debug!("");
     }
 
+    if !horner_accs.is_empty() {
+        tracing::debug!("--- Horner Accumulator Steps ({}) ---", horner_accs.len());
+        for entry in horner_accs {
+            tracing::debug!(
+                "  expr_{} (HornerAcc){}",
+                entry.expr_id.0,
+                display_label(entry.label)
+            );
+        }
+        tracing::debug!("");
+    }
+
     if !non_primitives.is_empty() {
         tracing::debug!(
             "--- Non-Primitive Operations ({}) ---",
@@ -264,7 +278,6 @@ fn dump_internal_log(allocation_log: &[AllocationEntry]) {
         for entry in non_primitives {
             let op_name = match &entry.alloc_type {
                 AllocationType::NonPrimitiveOp(op_type) => format!("{op_type:?}").to_string(),
-                AllocationType::NonPrimitiveOutput => "NonPrimitiveOutput".to_string(),
                 _ => "Unknown".to_string(),
             };
             if !entry.dependencies.is_empty() {

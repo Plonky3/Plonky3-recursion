@@ -535,9 +535,7 @@ where
                 runner
                     .set_private_data(
                         op_ids[op_idx],
-                        NonPrimitiveOpPrivateData::Poseidon2Perm(Poseidon2PermPrivateData {
-                            sibling,
-                        }),
+                        NonPrimitiveOpPrivateData::new(Poseidon2PermPrivateData { sibling }),
                     )
                     .map_err(|_| "Failed to set private data for input batch MMCS")?;
                 op_idx += 1;
@@ -556,9 +554,7 @@ where
                 runner
                     .set_private_data(
                         op_ids[op_idx],
-                        NonPrimitiveOpPrivateData::Poseidon2Perm(Poseidon2PermPrivateData {
-                            sibling,
-                        }),
+                        NonPrimitiveOpPrivateData::new(Poseidon2PermPrivateData { sibling }),
                     )
                     .map_err(|_| "Failed to set private data for commit-phase MMCS")?;
                 op_idx += 1;
@@ -733,11 +729,12 @@ mod test {
                 .collect_vec();
 
             for (&op_id, sibling) in permutation_mmcs_ops.iter().zip(siblings) {
+                let sibling_arr: [CF; 2] = sibling.try_into().unwrap();
                 runner
                     .set_private_data(
                         op_id,
-                        NonPrimitiveOpPrivateData::Poseidon2Perm(Poseidon2PermPrivateData {
-                            sibling: sibling.try_into().unwrap(),
+                        NonPrimitiveOpPrivateData::new(Poseidon2PermPrivateData {
+                            sibling: sibling_arr,
                         }),
                     )
                     .unwrap();
@@ -1036,7 +1033,7 @@ mod test {
             runner
                 .set_private_data(
                     op_id,
-                    NonPrimitiveOpPrivateData::Poseidon2Perm(Poseidon2PermPrivateData { sibling }),
+                    NonPrimitiveOpPrivateData::new(Poseidon2PermPrivateData { sibling }),
                 )
                 .unwrap();
         }
@@ -1165,11 +1162,12 @@ mod test {
                 .collect_vec();
 
             for (&op_id, sibling) in _permutation_mmcs_ops.iter().zip(siblings) {
+                let sibling_arr: [CF; 2] = sibling.try_into().unwrap();
                 runner
                     .set_private_data(
                         op_id,
-                        NonPrimitiveOpPrivateData::Poseidon2Perm(Poseidon2PermPrivateData {
-                            sibling: sibling.try_into().unwrap(),
+                        NonPrimitiveOpPrivateData::new(Poseidon2PermPrivateData {
+                            sibling: sibling_arr,
                         }),
                     )
                     .unwrap();
@@ -1321,11 +1319,12 @@ mod test {
                 .collect_vec();
 
             for (&op_id, sibling) in permutation_mmcs_ops.iter().zip(siblings) {
+                let sibling_arr: [CF; 2] = sibling.try_into().unwrap();
                 runner
                     .set_private_data(
                         op_id,
-                        NonPrimitiveOpPrivateData::Poseidon2Perm(Poseidon2PermPrivateData {
-                            sibling: sibling.try_into().unwrap(),
+                        NonPrimitiveOpPrivateData::new(Poseidon2PermPrivateData {
+                            sibling: sibling_arr,
                         }),
                     )
                     .unwrap();

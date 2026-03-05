@@ -24,7 +24,7 @@ pub struct StarkChallenges {
 }
 
 /// Parameters for STARK challenge allocation that match native challenger behavior.
-pub struct StarkChallengeParams<'a, SC: StarkGenericConfig, Comm> {
+pub(crate) struct StarkChallengeParams<'a, SC: StarkGenericConfig, Comm> {
     /// Log₂ of trace domain size
     pub degree_bits: usize,
     /// is_zk flag (0 or 1)
@@ -64,7 +64,7 @@ impl StarkChallenges {
     ///
     /// # Returns
     /// The three base STARK challenges
-    pub fn allocate<SC, Comm, OpeningProof>(
+    pub(crate) fn allocate<SC, Comm, OpeningProof>(
         circuit: &mut CircuitBuilder<SC::Challenge>,
         challenger: &mut impl RecursiveChallenger<Val<SC>, SC::Challenge>,
         proof_targets: &ProofTargets<SC, Comm, OpeningProof>,

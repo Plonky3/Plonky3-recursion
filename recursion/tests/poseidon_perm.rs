@@ -167,6 +167,7 @@ fn test_poseidon2_perm_verifier() -> Result<(), VerificationError> {
         MerkleCapTargets<F, DIGEST_ELEMS>,
         InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>>,
         InnerFri,
+        _,
         WIDTH,
         RATE,
     >(

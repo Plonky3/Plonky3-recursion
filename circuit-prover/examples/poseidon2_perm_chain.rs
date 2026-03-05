@@ -1,21 +1,24 @@
+//! Poseidon2 permutation chain example using the Poseidon2Perm op.
+//!
+//! Builds a chain of Poseidon2 permutations and verifies the final output against a native
+//! computation.
+
 use std::env;
 use std::error::Error;
 
 use p3_batch_stark::ProverData;
-use p3_circuit::op::NonPrimitiveOpType;
+use p3_circuit::op::NpoTypeId;
 use p3_circuit::ops::{Poseidon2PermCall, Poseidon2PermOps, generate_poseidon2_trace};
 use p3_circuit::{CircuitBuilder, ExprId};
-use p3_circuit_prover::common::{NonPrimitiveConfig, get_airs_and_degrees_with_prep};
+use p3_circuit_prover::batch_stark_prover::poseidon2_air_builders_d4;
+use p3_circuit_prover::common::{NpoPreprocessor, get_airs_and_degrees_with_prep};
 use p3_circuit_prover::config::KoalaBearConfig;
 use p3_circuit_prover::{
-    BatchStarkProver, CircuitProverData, ConstraintProfile, Poseidon2Config, TablePacking, config,
+    BatchStarkProver, CircuitProverData, ConstraintProfile, Poseidon2Config, Poseidon2Preprocessor,
+    TablePacking, config,
 };
 use p3_field::extension::BinomialExtensionField;
 use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
-/// Poseidon2 permutation chain example using the Poseidon2Perm op.
-///
-/// Builds a chain of Poseidon2 permutations and verifies the final output against a native
-/// computation.
 use p3_koala_bear::{KoalaBear, default_koalabear_poseidon2_16};
 use p3_poseidon2_circuit_air::KoalaBearD4Width16;
 use p3_symmetric::Permutation;
@@ -126,11 +129,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     let stark_config = config::koala_bear().build();
     let table_packing = TablePacking::new(2, 2);
     let poseidon2_config = Poseidon2Config::KoalaBearD4Width16;
+    let poseidon2_prep: [Box<dyn NpoPreprocessor<Base>>; 1] = [Box::new(Poseidon2Preprocessor)];
     let (airs_degrees, preprocessed_columns) =
         get_airs_and_degrees_with_prep::<KoalaBearConfig, _, 4>(
             &circuit,
             table_packing,
-            Some(&[NonPrimitiveConfig::Poseidon2(poseidon2_config)]),
+            &poseidon2_prep,
+            &poseidon2_air_builders_d4(),
             ConstraintProfile::Standard,
         )
         .unwrap();
@@ -166,7 +171,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     assert!(
         traces
             .non_primitive_traces
-            .get(&NonPrimitiveOpType::Poseidon2Perm(
+            .get(&NpoTypeId::poseidon2_perm(
                 Poseidon2Config::KoalaBearD4Width16
             ))
             .is_some_and(|t| t.rows() == chain_length),

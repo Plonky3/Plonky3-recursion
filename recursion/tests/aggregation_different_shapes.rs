@@ -62,7 +62,7 @@ fn test_aggregation_with_different_shapes() -> Result<(), VerificationError> {
     let left_config = make_config(&perm, 2, 3);
     // Batch-Stark (dummy circuit) with log_blowup=3, max_arity_log=4.
     let right_config = make_config(&perm, 3, 4);
-    let right_config_verif = make_config(&perm, 3, 4); // TODO(p3): StarkConfig does not implement Clone
+    let right_config_verif = right_config.clone();
 
     // Generate the Fibonacci trace.
     let n = 1 << 3;
@@ -85,7 +85,8 @@ fn test_aggregation_with_different_shapes() -> Result<(), VerificationError> {
     let (airs_degrees, preprocessed_columns) = get_airs_and_degrees_with_prep::<MyConfig, _, 1>(
         &circuit,
         table_packing,
-        None,
+        &[],
+        &[],
         ConstraintProfile::Standard,
     )
     .unwrap();
@@ -129,6 +130,7 @@ fn test_aggregation_with_different_shapes() -> Result<(), VerificationError> {
         MerkleCapTargets<F, DIGEST_ELEMS>,
         InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>>,
         InnerFri,
+        _,
         WIDTH,
         RATE,
     >(
@@ -154,6 +156,7 @@ fn test_aggregation_with_different_shapes() -> Result<(), VerificationError> {
         InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>>,
         InnerFri,
         LogUpGadget,
+        _,
         WIDTH,
         RATE,
         TRACE_D,
@@ -165,6 +168,9 @@ fn test_aggregation_with_different_shapes() -> Result<(), VerificationError> {
         common,
         &lookup_gadget,
         Poseidon2Config::KoalaBearD4Width16,
+        &p3_circuit_prover::batch_stark_prover::poseidon2_table_provers_d4(
+            Poseidon2Config::KoalaBearD4Width16,
+        ),
     )?;
 
     // Build the verification circuit.

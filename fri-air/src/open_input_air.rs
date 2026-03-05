@@ -41,12 +41,12 @@ impl<F: Field, const D: usize> OpenInputAir<F, D> {
         }
     }
 
-    pub fn with_generator(mut self, generator: F) -> Self {
+    pub const fn with_generator(mut self, generator: F) -> Self {
         self.generator = generator;
         self
     }
 
-    pub fn with_min_height(mut self, min_height: usize) -> Self {
+    pub const fn with_min_height(mut self, min_height: usize) -> Self {
         self.min_height = min_height;
         self
     }
@@ -87,7 +87,7 @@ impl<F: Field, const D: usize> OpenInputAir<F, D> {
                 }
 
                 let rev_bit = row.pow_at_x[0];
-                let g_power = ExtF::from(row.g_power);
+                let g_power = row.g_power;
                 let mult = ExtF::ONE + rev_bit * (g_power - ExtF::ONE);
 
                 let eval = if reset {
@@ -278,34 +278,29 @@ where
 
         // Current row traced columns.
         let w = AB::Expr::from(self.w_binomial);
-        let alpha: &[AB::Expr; D] = &core::array::from_fn(|i| AB::Expr::from(local[i].clone()));
-        let pow_at_x: &[AB::Expr; D] =
-            &core::array::from_fn(|i| AB::Expr::from(local[D + i].clone()));
-        let pow_at_z: &[AB::Expr; D] =
-            &core::array::from_fn(|i| AB::Expr::from(local[2 * D + i].clone()));
-        let ro: &[AB::Expr; D] =
-            &core::array::from_fn(|i| AB::Expr::from(local[3 * D + i].clone()));
+        let alpha: &[AB::Expr; D] = &core::array::from_fn(|i| AB::Expr::from(local[i]));
+        let pow_at_x: &[AB::Expr; D] = &core::array::from_fn(|i| AB::Expr::from(local[D + i]));
+        let pow_at_z: &[AB::Expr; D] = &core::array::from_fn(|i| AB::Expr::from(local[2 * D + i]));
+        let ro: &[AB::Expr; D] = &core::array::from_fn(|i| AB::Expr::from(local[3 * D + i]));
 
         // Next row traced columns.
-        let alpha_next: &[AB::Expr; D] = &core::array::from_fn(|i| AB::Expr::from(next[i].clone()));
-        let pow_at_x_next: &[AB::Expr; D] =
-            &core::array::from_fn(|i| AB::Expr::from(next[D + i].clone()));
+        let alpha_next: &[AB::Expr; D] = &core::array::from_fn(|i| AB::Expr::from(next[i]));
+        let pow_at_x_next: &[AB::Expr; D] = &core::array::from_fn(|i| AB::Expr::from(next[D + i]));
         let pow_at_z_next: &[AB::Expr; D] =
-            &core::array::from_fn(|i| AB::Expr::from(next[2 * D + i].clone()));
-        let ro_next: &[AB::Expr; D] =
-            &core::array::from_fn(|i| AB::Expr::from(next[3 * D + i].clone()));
+            &core::array::from_fn(|i| AB::Expr::from(next[2 * D + i]));
+        let ro_next: &[AB::Expr; D] = &core::array::from_fn(|i| AB::Expr::from(next[3 * D + i]));
 
         // Preprocessed columns (current row).
-        let is_last = AB::Expr::from(preprocessed_local[0].clone());
+        let is_last = AB::Expr::from(preprocessed_local[0]);
         let not_is_last = AB::Expr::ONE - is_last.clone();
-        let is_eval = AB::Expr::from(preprocessed_local[7].clone());
+        let is_eval = AB::Expr::from(preprocessed_local[7]);
         let not_is_eval = AB::Expr::ONE - is_eval.clone();
-        let g_power = AB::Expr::from(preprocessed_local[8].clone());
+        let g_power = AB::Expr::from(preprocessed_local[8]);
 
         // Preprocessed columns (next row).
-        let is_eval_next = AB::Expr::from(preprocessed_next[7].clone());
+        let is_eval_next = AB::Expr::from(preprocessed_next[7]);
         let not_is_eval_next = AB::Expr::ONE - is_eval_next.clone();
-        let g_power_next = AB::Expr::from(preprocessed_next[8].clone());
+        let g_power_next = AB::Expr::from(preprocessed_next[8]);
 
         let generator = AB::Expr::from(self.generator);
 
@@ -325,7 +320,7 @@ where
         }
 
         // Transition recurrence: ro_next = ro * alpha_next + (p_at_z_next - p_at_x_next)
-        let ro_mul_alpha = extension_multiplication::<AB, D>(w.clone(), ro, alpha_next);
+        let ro_mul_alpha = extension_multiplication::<AB, D>(w, ro, alpha_next);
         let p_at_z_minus_pow_at_x_next: [AB::Expr; D] =
             sub_extension::<AB, D>(pow_at_z_next, pow_at_x_next);
         let lhs: [AB::Expr; D] = sub_extension::<AB, D>(ro_next, &p_at_z_minus_pow_at_x_next);
@@ -358,7 +353,7 @@ where
         // And rev_bit = pow_at_x[0] when the operation is EvalPoint
 
         // First row init: ro[0] = mult * GENERATOR, ro[1..D] = 0
-        let mult_local = AB::Expr::ONE + pow_at_x[0].clone() * (g_power.clone() - AB::Expr::ONE);
+        let mult_local = AB::Expr::ONE + pow_at_x[0].clone() * (g_power - AB::Expr::ONE);
         for j in 0..D {
             if j == 0 {
                 builder.when_first_row().assert_zero(
@@ -372,8 +367,7 @@ where
         }
 
         // After is_last, init next EvalPoint sequence: ro_next[0] = mult_next * GENERATOR
-        let mult_next =
-            AB::Expr::ONE + pow_at_x_next[0].clone() * (g_power_next.clone() - AB::Expr::ONE);
+        let mult_next = AB::Expr::ONE + pow_at_x_next[0].clone() * (g_power_next - AB::Expr::ONE);
         for j in 0..D {
             if j == 0 {
                 builder.when_transition().assert_zero(
@@ -425,7 +419,7 @@ where
         AB: PermutationAirBuilder,
     {
         let symbolic_air_builder =
-            SymbolicAirBuilder::<AB::F>::new(Self::preprocessed_width(), Self::width(), 0, 0, 0);
+            SymbolicAirBuilder::<AB::F>::new(Self::preprocessed_width(), Self::width(), 0, 0, 0, 0);
 
         let symbolic_main = symbolic_air_builder.main();
         let symbolic_main_local = symbolic_main.row_slice(0).unwrap().to_vec();
@@ -438,9 +432,9 @@ where
         //   [0] is_last, [1] is_real,
         //   [2] alpha_idx, [3] p_at_x_idx, [4] p_at_z_idx, [5] ro_idx,
         //   [6] ro_ext_mult, [7] is_eval, [8] g_power
-        let is_real = SymbolicExpression::from(preprocessed_local[1].clone());
-        let ro_ext_mult = SymbolicExpression::from(preprocessed_local[6].clone());
-        let is_eval = SymbolicExpression::from(preprocessed_local[7].clone());
+        let is_real = SymbolicExpression::from(preprocessed_local[1]);
+        let ro_ext_mult = SymbolicExpression::from(preprocessed_local[6]);
+        let is_eval = SymbolicExpression::from(preprocessed_local[7]);
         let not_is_eval = SymbolicExpression::ONE - is_eval;
 
         let kind = Kind::Global("WitnessChecks".to_string());
@@ -449,9 +443,8 @@ where
         // alpha (i=0) and p_at_z (i=2): multiplicity = is_real * (1 - is_eval)
         // p_at_x (i=1): multiplicity = is_real (active for both op types)
         let global_lookups = (0..3).map(|i| {
-            let index = SymbolicExpression::from(preprocessed_local[2 + i].clone());
-            let values =
-                (0..D).map(|j| SymbolicExpression::from(symbolic_main_local[i * D + j].clone()));
+            let index = SymbolicExpression::from(preprocessed_local[2 + i]);
+            let values = (0..D).map(|j| SymbolicExpression::from(symbolic_main_local[i * D + j]));
 
             let inputs = iter::once(index).chain(values).collect::<Vec<_>>();
 
@@ -469,7 +462,7 @@ where
         // ro is an OUTPUT created by this table → Receive (positive multiplicity).
         // Multiplicity = ro_ext_mult = ext_reads[ro_wid] (set by prover preprocessing).
         // On non-last rows ro_ext_mult is 0, so no bus contribution.
-        let ro_idx = SymbolicExpression::from(preprocessed_local[5].clone());
+        let ro_idx = SymbolicExpression::from(preprocessed_local[5]);
         let ro = (0..D).map(|i| SymbolicExpression::from(symbolic_main_local[3 * D + i]));
         let ro_inputs = iter::once(ro_idx).chain(ro).collect::<Vec<_>>();
 

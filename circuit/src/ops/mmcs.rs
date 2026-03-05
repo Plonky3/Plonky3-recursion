@@ -8,7 +8,7 @@ use p3_field::Field;
 use p3_matrix::Dimensions;
 
 use crate::builder::{CircuitBuilder, CircuitBuilderError};
-use crate::op::{NonPrimitiveOpType, Poseidon2Config};
+use crate::op::{NpoTypeId, Poseidon2Config};
 use crate::ops::Poseidon2PermCall;
 use crate::ops::poseidon2_perm::Poseidon2PermOps;
 use crate::types::ExprId;
@@ -26,7 +26,7 @@ pub fn format_openings<T: Clone + alloc::fmt::Debug>(
 ) -> Result<Vec<Vec<T>>, CircuitError> {
     if openings.len() > 1 << max_height_log {
         return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
-            op: NonPrimitiveOpType::Poseidon2Perm(permutation_config),
+            op: NpoTypeId::poseidon2_perm(permutation_config),
             expected: format!("at most {}", max_height_log),
             got: openings.len(),
         });

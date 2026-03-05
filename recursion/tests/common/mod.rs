@@ -231,20 +231,18 @@ where
 
         for i in 0..REPETITIONS {
             let prep_start = i * 2;
-            let a = preprocessed_local[prep_start].clone();
-            let b = preprocessed_local[prep_start + 1].clone();
-            let c = main_local[i].clone();
+            let a = preprocessed_local[prep_start];
+            let b = preprocessed_local[prep_start + 1];
+            let c = main_local[i];
 
             // Constraint 1: a^(degree-1) * b = c
-            builder.assert_zero(a.clone().into().exp_u64(self.degree - 1) * b.clone() - c);
+            builder.assert_zero(a.into().exp_u64(self.degree - 1) * b - c);
 
             // Constraint 2: On first row, b = a^2 + 1
-            builder
-                .when_first_row()
-                .assert_eq(a.clone() * a.clone() + AB::Expr::ONE, b);
+            builder.when_first_row().assert_eq(a * a + AB::Expr::ONE, b);
 
             // Constraint 3: On transition rows, a' = a + REPETITIONS
-            let next_a = preprocessed_next[prep_start].clone();
+            let next_a = preprocessed_next[prep_start];
             builder
                 .when_transition()
                 .assert_eq(a + AB::Expr::from_u8(REPETITIONS as u8), next_a);

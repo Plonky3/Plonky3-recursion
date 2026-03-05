@@ -18,6 +18,7 @@ use p3_circuit::{CircuitBuilder, CircuitBuilderError};
 use p3_field::{ExtensionField, PrimeField64};
 
 use crate::Target;
+use crate::challenger_perm::ChallengerPermConfig;
 use crate::traits::RecursiveChallenger;
 
 /// Circuit challenger with coefficient-level state management.
@@ -28,19 +29,10 @@ use crate::traits::RecursiveChallenger;
 /// # Type Parameters
 /// - `WIDTH`: Sponge state width (16 for Poseidon2)
 /// - `RATE`: Sponge rate (8 for typical configuration)
-///
-/// # Design
-/// The state is represented as WIDTH targets, each representing a base field element
-/// embedded in the extension field (i.e., higher coefficients are zero).
-/// When duplexing:
-/// 1. State[0..input_buffer.len()] is overwritten with inputs
-/// 2. State is recomposed to WIDTH/D extension elements
-/// 3. Poseidon2 permutation is applied (CTL-verified against Poseidon2 AIR table)
-/// 4. Output extension elements are decomposed back to coefficients
-/// 5. Output buffer is filled from state[0..RATE]
-pub struct CircuitChallenger<const WIDTH: usize, const RATE: usize> {
-    /// Poseidon2 configuration for the permutation.
-    poseidon2_config: Poseidon2Config,
+/// - `C`: Challenger permutation config (e.g. [`Poseidon2Config`])
+pub struct CircuitChallenger<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig> {
+    /// Permutation config for the challenger (e.g. Poseidon2).
+    config: C,
 
     /// Sponge state: WIDTH base field coefficient targets.
     /// Each target represents a base field element embedded in EF.
@@ -56,16 +48,18 @@ pub struct CircuitChallenger<const WIDTH: usize, const RATE: usize> {
     initialized: bool,
 }
 
-impl<const WIDTH: usize, const RATE: usize> CircuitChallenger<WIDTH, RATE> {
+impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
+    CircuitChallenger<WIDTH, RATE, C>
+{
     /// Create a new uninitialized circuit challenger.
     ///
     /// # Parameters
-    /// - `poseidon2_config`: The Poseidon2 configuration to use for permutations
+    /// - `config`: The permutation configuration (e.g. Poseidon2) for the challenger.
     ///
     /// Call `init()` to initialize the state with zeros before use.
-    pub const fn new(poseidon2_config: Poseidon2Config) -> Self {
+    pub const fn new(config: C) -> Self {
         Self {
-            poseidon2_config,
+            config,
             state: Vec::new(),
             input_buffer: Vec::new(),
             output_buffer: Vec::new(),
@@ -101,7 +95,7 @@ impl<const WIDTH: usize, const RATE: usize> CircuitChallenger<WIDTH, RATE> {
         debug_assert!(self.input_buffer.len() <= RATE, "Input buffer exceeds RATE");
 
         // Validate config matches extension field dimension
-        let config_d = self.poseidon2_config.d();
+        let config_d = self.config.extension_degree();
         assert_eq!(
             config_d,
             EF::DIMENSION,
@@ -134,19 +128,20 @@ impl<const WIDTH: usize, const RATE: usize> CircuitChallenger<WIDTH, RATE> {
     where
         EF: p3_field::Field,
     {
-        // State is already 16 base field elements, use directly
+        let poseidon2_config = self
+            .config
+            .as_poseidon2()
+            .expect("only Poseidon2 challenger permutation is supported");
         let inputs: [Target; 16] = self
             .state
             .clone()
             .try_into()
             .expect("state should have WIDTH=16 elements");
 
-        // CTL-verified within `add_poseidon2_perm_for_challenger_base`.
         let outputs = circuit
-            .add_poseidon2_perm_for_challenger_base(self.poseidon2_config, inputs)
+            .add_poseidon2_perm_for_challenger_base(*poseidon2_config, inputs)
             .expect("poseidon2 base permutation should succeed");
 
-        // Update state directly
         self.state = outputs.to_vec();
     }
 
@@ -155,6 +150,10 @@ impl<const WIDTH: usize, const RATE: usize> CircuitChallenger<WIDTH, RATE> {
         BF: PrimeField64,
         EF: ExtensionField<BF>,
     {
+        let poseidon2_config = self
+            .config
+            .as_poseidon2()
+            .expect("only Poseidon2 challenger permutation is supported");
         let num_ext_limbs = WIDTH / EF::DIMENSION;
         let mut ext_inputs = Vec::with_capacity(num_ext_limbs);
         for i in 0..num_ext_limbs {
@@ -167,7 +166,7 @@ impl<const WIDTH: usize, const RATE: usize> CircuitChallenger<WIDTH, RATE> {
         }
 
         let ext_outputs = circuit
-            .add_poseidon2_perm_for_challenger(self.poseidon2_config, &ext_inputs)
+            .add_poseidon2_perm_for_challenger(*poseidon2_config, &ext_inputs)
             .expect("poseidon2 permutation should succeed");
 
         for (limb, &ext_out) in ext_outputs.iter().enumerate() {
@@ -182,7 +181,7 @@ impl<const WIDTH: usize, const RATE: usize> CircuitChallenger<WIDTH, RATE> {
     }
 }
 
-impl<const WIDTH: usize, const RATE: usize> CircuitChallenger<WIDTH, RATE> {
+impl<const WIDTH: usize, const RATE: usize> CircuitChallenger<WIDTH, RATE, Poseidon2Config> {
     /// Create a challenger with BabyBear D4 Width16 configuration (default).
     pub const fn new_babybear() -> Self {
         Self::new(Poseidon2Config::BabyBearD4Width16)
@@ -204,15 +203,15 @@ impl<const WIDTH: usize, const RATE: usize> CircuitChallenger<WIDTH, RATE> {
     }
 }
 
-impl CircuitChallenger<8, 4> {
+impl CircuitChallenger<8, 4, Poseidon2Config> {
     /// Create a challenger with Goldilocks D2 Width8 configuration.
     pub const fn new_goldilocks() -> Self {
         Self::new(Poseidon2Config::GoldilocksD2Width8)
     }
 }
 
-impl<BF, EF, const WIDTH: usize, const RATE: usize> RecursiveChallenger<BF, EF>
-    for CircuitChallenger<WIDTH, RATE>
+impl<BF, EF, const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
+    RecursiveChallenger<BF, EF> for CircuitChallenger<WIDTH, RATE, C>
 where
     BF: PrimeField64,
     EF: ExtensionField<BF>,

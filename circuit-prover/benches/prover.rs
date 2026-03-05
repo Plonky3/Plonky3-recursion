@@ -68,7 +68,8 @@ fn bench_trace_to_matrix(c: &mut Criterion) {
                     &traces.public_trace,
                     lanes_p,
                 ));
-                let _ = black_box(AluAir::<F, 1>::trace_to_matrix(&traces.alu_trace, lanes_a));
+                let alu_air = AluAir::<F, 1>::new(traces.alu_trace.values.len(), lanes_a);
+                let _ = black_box(alu_air.trace_to_matrix(&traces.alu_trace));
             });
         });
     }
@@ -88,7 +89,8 @@ fn bench_prove_all_tables(c: &mut Criterion) {
                     get_airs_and_degrees_with_prep::<KoalaBearConfig, _, 1>(
                         &circuit,
                         table_packing,
-                        None,
+                        &[],
+                        &[],
                         ConstraintProfile::Standard,
                     )
                     .unwrap();

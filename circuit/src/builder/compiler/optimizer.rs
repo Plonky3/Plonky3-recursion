@@ -114,7 +114,7 @@ impl Optimizer {
                             b: b.0,
                             c: 0,
                         },
-                        AluOpKind::MulAdd => AluKey {
+                        AluOpKind::MulAdd | AluOpKind::HornerAcc => AluKey {
                             kind: *kind,
                             a: a.0,
                             b: b.0,
@@ -255,6 +255,13 @@ impl Optimizer {
                             if !matches!(defs.get(out_id), Some((_, OpDef::Const(_)))) {
                                 defs.insert(*out_id, (idx, OpDef::Other));
                             }
+                        }
+                    }
+                }
+                Op::Hint { outputs, .. } => {
+                    for out_id in outputs {
+                        if !matches!(defs.get(out_id), Some((_, OpDef::Const(_)))) {
+                            defs.insert(*out_id, (idx, OpDef::Other));
                         }
                     }
                 }
@@ -534,6 +541,7 @@ impl Optimizer {
                     defs.insert(*out, OpDef::Other);
                 }
                 Op::NonPrimitiveOpWithExecutor { .. } => {}
+                Op::Hint { .. } => {}
             }
         }
 

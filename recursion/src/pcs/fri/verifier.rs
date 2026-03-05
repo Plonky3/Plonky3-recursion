@@ -131,6 +131,7 @@ fn one_hot_from_three_bits<EF: Field>(
 }
 
 /// Optimized one-hot computation for 4 bits, using two 2-bit one-hots.
+#[unroll::unroll_for_loops]
 fn one_hot_from_four_bits<EF: Field>(
     builder: &mut CircuitBuilder<EF>,
     bits: &[Target],
@@ -847,7 +848,7 @@ fn compute_single_reduced_opening<EF: Field>(
             is_last: p_idx == n - 1,
         };
         let (_, ro) = builder.add_open_input(open_input_call).unwrap();
-        reduced_opening = ro; // We still need to multiply by alpha_pow and (z - x)^{-1} outside the loop, but we can accumulate the sum of diffs in the OpenInput gadget to save some gates.
+        reduced_opening = ro;
     }
 
     // Advance alpha_pow by alpha^n using square-and-multiply

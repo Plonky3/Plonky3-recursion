@@ -6,14 +6,14 @@ use alloc::vec::Vec;
 use p3_air::DebugConstraintBuilder;
 use p3_air::{Air, AirBuilder, BaseAir};
 use p3_batch_stark::{StarkGenericConfig, Val};
-use p3_circuit::op::NonPrimitiveOpType;
+use p3_circuit::op::NpoTypeId;
 use p3_circuit::tables::Traces;
-use p3_field::PrimeField;
 use p3_field::extension::BinomialExtensionField;
+use p3_field::{Algebra, PrimeField};
 use p3_lookup::folder::{ProverConstraintFolderWithLookups, VerifierConstraintFolderWithLookups};
 use p3_lookup::lookup_traits::Lookup;
 use p3_matrix::dense::RowMajorMatrix;
-use p3_uni_stark::{SymbolicAirBuilder, SymbolicExpression};
+use p3_uni_stark::{SymbolicAirBuilder, SymbolicExpression, SymbolicExpressionExt};
 
 use super::TablePacking;
 
@@ -34,14 +34,17 @@ impl<SC> DynamicAirEntry<SC>
 where
     SC: StarkGenericConfig,
 {
+    /// Wrap a boxed [`CloneableBatchAir`] into a `DynamicAirEntry`.
     pub fn new(inner: Box<dyn CloneableBatchAir<SC>>) -> Self {
         Self { air: inner }
     }
 
+    /// Return a shared reference to the inner AIR.
     pub fn air(&self) -> &dyn CloneableBatchAir<SC> {
         &*self.air
     }
 
+    /// Return a mutable reference to the inner AIR.
     pub fn air_mut(&mut self) -> &mut dyn CloneableBatchAir<SC> {
         &mut *self.air
     }
@@ -50,7 +53,7 @@ where
 impl<SC> Clone for DynamicAirEntry<SC>
 where
     SC: StarkGenericConfig,
-    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
 {
     fn clone(&self) -> Self {
         Self {
@@ -62,7 +65,7 @@ where
 impl<SC> BaseAir<Val<SC>> for DynamicAirEntry<SC>
 where
     SC: StarkGenericConfig,
-    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
 {
     fn width(&self) -> usize {
         <dyn CloneableBatchAir<SC> as BaseAir<Val<SC>>>::width(self.air())
@@ -87,7 +90,7 @@ macro_rules! impl_air_for_dynamic_entry {
         where
             SC: StarkGenericConfig,
             Val<SC>: PrimeField,
-            SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+            SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
         {
             fn eval(&self, builder: &mut $builder) {
                 self.air().$eval_method(builder);
@@ -116,7 +119,7 @@ macro_rules! impl_air_for_dynamic_entry {
         where
             SC: StarkGenericConfig,
             Val<SC>: PrimeField,
-            SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+            SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
         {
             fn eval(&self, builder: &mut $builder) {
                 self.air().$eval_method(builder);
@@ -180,10 +183,12 @@ pub trait BatchAir<SC>:
     + Sync
 where
     SC: StarkGenericConfig,
-    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
 {
 }
 
+/// Simple super trait of [`Air`] describing the behaviour of a non-primitive
+/// dynamically dispatched AIR used in batched proofs.
 #[cfg(not(debug_assertions))]
 pub trait BatchAir<SC>:
     BaseAir<Val<SC>>
@@ -194,7 +199,7 @@ pub trait BatchAir<SC>:
     + Sync
 where
     SC: StarkGenericConfig,
-    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
 {
 }
 
@@ -246,10 +251,14 @@ macro_rules! impl_cloneable_batch_air_forwarding {
     };
 }
 
+/// Object-safe extension of [`BatchAir`] that adds cloning support.
+///
+/// This trait is automatically implemented for any `T: BatchAir<SC> + Clone + 'static`.
+/// It is the concrete trait object type stored inside [`DynamicAirEntry`].
 pub trait CloneableBatchAir<SC>: BaseAir<Val<SC>> + Send + Sync
 where
     SC: StarkGenericConfig,
-    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
 {
     fn clone_box(&self) -> Box<dyn CloneableBatchAir<SC>>;
 
@@ -276,7 +285,8 @@ impl<SC, T> CloneableBatchAir<SC> for T
 where
     SC: StarkGenericConfig,
     T: BatchAir<SC> + Clone + 'static,
-    SymbolicExpression<SC::Challenge>: From<SymbolicExpression<Val<SC>>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
     fn clone_box(&self) -> Box<dyn CloneableBatchAir<SC>> {
         Box::new(self.clone())
@@ -325,7 +335,7 @@ where
     SC: StarkGenericConfig,
 {
     /// Operation type (it should match `TableProver::op_type`).
-    pub op_type: NonPrimitiveOpType,
+    pub op_type: NpoTypeId,
     /// The AIR implementation for this table.
     pub air: DynamicAirEntry<SC>,
     /// The populated trace matrix for this table.
@@ -364,7 +374,7 @@ where
     SC: StarkGenericConfig + 'static,
 {
     /// Operation type for this prover.
-    fn op_type(&self) -> NonPrimitiveOpType;
+    fn op_type(&self) -> NpoTypeId;
 
     /// Produce a batched table instance for base-field traces.
     fn batch_instance_d1(

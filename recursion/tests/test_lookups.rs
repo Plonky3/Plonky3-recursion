@@ -6,11 +6,11 @@ use p3_circuit::op::PrimitiveOpType;
 use p3_circuit::ops::{Poseidon2PermCall, generate_poseidon2_trace};
 use p3_circuit::{CircuitBuilder, Poseidon2PermOps};
 use p3_circuit_prover::air::{AluAir, ConstAir, PublicAir};
-use p3_circuit_prover::batch_stark_prover::PrimitiveTable;
-use p3_circuit_prover::common::{NonPrimitiveConfig, get_airs_and_degrees_with_prep};
+use p3_circuit_prover::batch_stark_prover::{PrimitiveTable, poseidon2_air_builders_d4};
+use p3_circuit_prover::common::{NpoPreprocessor, get_airs_and_degrees_with_prep};
 use p3_circuit_prover::{
     BatchStarkProof, BatchStarkProver, CircuitProverData, ConstraintProfile, Poseidon2Config,
-    TablePacking,
+    Poseidon2Preprocessor, TablePacking,
 };
 use p3_field::PrimeCharacteristicRing;
 use p3_fri::create_test_fri_params;
@@ -112,7 +112,8 @@ fn test_wrong_multiplicities() {
         get_airs_and_degrees_with_prep::<MyConfig, _, 1>(
             &circuit,
             table_packing,
-            None,
+            &[],
+            &[],
             ConstraintProfile::Standard,
         )
         .unwrap();
@@ -591,7 +592,8 @@ fn get_test_circuit_proof() -> TestCircuitProofData {
     let (airs_degrees, preprocessed_columns) = get_airs_and_degrees_with_prep::<MyConfig, _, 1>(
         &circuit,
         table_packing,
-        None,
+        &[],
+        &[],
         ConstraintProfile::Standard,
     )
     .unwrap();
@@ -716,12 +718,14 @@ fn get_verifier_inputs_and_challenges(
 
     // Base field AIRs for native challenge generation
     let native_airs = vec![
-        CircuitTablesAir::Const(ConstAir::<F, TRACE_D>::new(rows[PrimitiveTable::Const])),
-        CircuitTablesAir::Public(PublicAir::<F, TRACE_D>::new(
+        CircuitTablesAir::<MyConfig, TRACE_D>::Const(ConstAir::<F, TRACE_D>::new(
+            rows[PrimitiveTable::Const],
+        )),
+        CircuitTablesAir::<MyConfig, TRACE_D>::Public(PublicAir::<F, TRACE_D>::new(
             rows[PrimitiveTable::Public],
             packing.public_lanes(),
         )),
-        CircuitTablesAir::Alu(AluAir::<F, TRACE_D>::new(
+        CircuitTablesAir::<MyConfig, TRACE_D>::Alu(AluAir::<F, TRACE_D>::new(
             rows[PrimitiveTable::Alu],
             packing.alu_lanes(),
         )),
@@ -734,6 +738,7 @@ fn get_verifier_inputs_and_challenges(
         InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>>,
         InnerFri,
         LogUpGadget,
+        _,
         WIDTH,
         RATE,
         TRACE_D,
@@ -745,6 +750,9 @@ fn get_verifier_inputs_and_challenges(
         common,
         lookup_gadget,
         Poseidon2Config::BabyBearD4Width16,
+        &p3_circuit_prover::batch_stark_prover::poseidon2_table_provers_d4(
+            Poseidon2Config::BabyBearD4Width16,
+        ),
     )
     .map(|(inputs, _mmcs_op_ids)| inputs);
 
@@ -850,10 +858,12 @@ fn test_poseidon2_ctl_lookups() {
 
     let circuit = builder.build().unwrap();
 
+    let poseidon2_prep: [Box<dyn NpoPreprocessor<F>>; 1] = [Box::new(Poseidon2Preprocessor)];
     let (airs_degrees, preprocessed_columns) = get_airs_and_degrees_with_prep::<MyConfig, _, 4>(
         &circuit,
         table_packing,
-        Some(&[NonPrimitiveConfig::Poseidon2(poseidon2_config)]),
+        &poseidon2_prep,
+        &poseidon2_air_builders_d4(),
         ConstraintProfile::Standard,
     )
     .unwrap();
@@ -971,10 +981,12 @@ fn test_poseidon2_chained_ctl_lookups() {
 
     let circuit = builder.build().unwrap();
 
+    let poseidon2_prep: [Box<dyn NpoPreprocessor<F>>; 1] = [Box::new(Poseidon2Preprocessor)];
     let (airs_degrees, preprocessed_columns) = get_airs_and_degrees_with_prep::<MyConfig, _, 4>(
         &circuit,
         table_packing,
-        Some(&[NonPrimitiveConfig::Poseidon2(poseidon2_config)]),
+        &poseidon2_prep,
+        &poseidon2_air_builders_d4(),
         ConstraintProfile::Standard,
     )
     .unwrap();

@@ -119,12 +119,12 @@ struct Args {
 
     #[arg(
         long,
-        default_value_t = 4,
+        default_value_t = 3,
         help = "Maximum arity allowed during FRI folding phases"
     )]
     max_log_arity: usize,
 
-    #[arg(long, default_value_t = 0, help = "Height of the Merkle cap to open")]
+    #[arg(long, default_value_t = 2, help = "Height of the Merkle cap to open")]
     cap_height: usize,
 
     #[arg(
@@ -143,7 +143,7 @@ struct Args {
 
     #[arg(
         long,
-        default_value_t = 16,
+        default_value_t = 18,
         help = "PoW grinding bits during FRI query phase"
     )]
     query_pow_bits: usize,
@@ -157,10 +157,18 @@ struct Args {
 
     #[arg(
         long,
-        default_value_t = 4,
+        default_value_t = 3,
         help = "Number of ALU lanes for the table packing in recursive layers"
     )]
     alu_lanes: usize,
+
+    // TODO: Update once https://github.com/Plonky3/Plonky3/pull/1329 lands
+    #[arg(
+        long,
+        default_value_t = 124,
+        help = "Targeted security level (conjectured)"
+    )]
+    security_level: usize,
 }
 
 fn init_logger() {
@@ -205,6 +213,7 @@ fn main() {
                 args.num_recursive_layers,
                 &fri_params,
                 &table_packing,
+                args.security_level,
             );
         }
         FieldOption::BabyBear => {
@@ -213,6 +222,7 @@ fn main() {
                 args.num_recursive_layers,
                 &fri_params,
                 &table_packing,
+                args.security_level,
             );
         }
         FieldOption::Goldilocks => {
@@ -221,6 +231,7 @@ fn main() {
                 args.num_recursive_layers,
                 &fri_params,
                 &table_packing,
+                args.security_level,
             );
         }
     }
@@ -247,6 +258,7 @@ macro_rules! define_field_module {
         $enable_poseidon2_fn:ident,
         $register_poseidon2_fn:ident,
         $default_perm_circuit:path,
+        $backend_ctor:ident,
         $backend_width:expr,
         $backend_rate:expr
     ) => {
@@ -341,7 +353,7 @@ macro_rules! define_field_module {
                     }
                 }
 
-                fn enable_poseidon2_on_circuit(
+                fn prepare_circuit_for_verification(
                     &self,
                     circuit: &mut CircuitBuilder<Challenge>,
                 ) -> Result<(), VerificationError> {
@@ -350,6 +362,7 @@ macro_rules! define_field_module {
                         generate_poseidon2_trace::<Challenge, $poseidon2_circuit_config>,
                         perm,
                     );
+                    circuit.enable_open_input::<F, D>();
                     Ok(())
                 }
 
@@ -382,7 +395,7 @@ macro_rules! define_field_module {
                 }
             }
 
-            fn create_config(fp: &FriParams) -> MyConfig {
+            fn create_config(fp: &FriParams, security_level: usize) -> MyConfig {
                 let perm = $default_perm();
                 let hash = MyHash::new(perm.clone());
                 let compress = MyCompress::new(perm.clone());
@@ -390,7 +403,7 @@ macro_rules! define_field_module {
                 let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
                 let dft = Dft::default();
 
-                let num_queries = (100 - fp.query_pow_bits) / fp.log_blowup;
+                let num_queries = (security_level - fp.query_pow_bits) / fp.log_blowup;
 
                 let fri_params = FriParameters {
                     max_log_arity: fp.max_log_arity,
@@ -416,14 +429,14 @@ macro_rules! define_field_module {
                 )
             }
 
-            fn config_with_fri_params(fp: &FriParams) -> ConfigWithFriParams {
+            fn config_with_fri_params(fp: &FriParams, security_level: usize) -> ConfigWithFriParams {
                 ConfigWithFriParams {
-                    config: Arc::new(create_config(fp)),
+                    config: Arc::new(create_config(fp, security_level)),
                     fri_verifier_params: create_fri_verifier_params(fp),
                 }
             }
 
-            pub fn run(num_hashes: usize, num_recursive_layers: usize, fri_params: &FriParams, table_packing: &TablePacking) {
+            pub fn run(num_hashes: usize, num_recursive_layers: usize, fri_params: &FriParams, table_packing: &TablePacking, security_level: usize) {
                 let keccak_air = KeccakAir {};
                 let min_trace_rows: usize =
                     1 << (fri_params.log_final_poly_len + fri_params.log_blowup + 1);
@@ -435,7 +448,7 @@ macro_rules! define_field_module {
                 let trace =
                     keccak_air.generate_trace_rows(effective_num_hashes, fri_params.log_blowup);
 
-                let config_0 = config_with_fri_params(fri_params);
+                let config_0 = config_with_fri_params(fri_params, security_level);
                 let pis: Vec<F> = vec![];
 
                 let proof_0 = prove(&config_0, &keccak_air, trace, &pis);
@@ -449,22 +462,22 @@ macro_rules! define_field_module {
                 }
 
                 let backend =
-                    FriRecursionBackend::<$backend_width, $backend_rate>::new($poseidon2_config);
+                    FriRecursionBackend::<$backend_width, $backend_rate>::$backend_ctor($poseidon2_config);
                 let mut output: Option<RecursionOutput<ConfigWithFriParams>> = None;
 
                 for layer in 1..=num_recursive_layers {
                     let table_packing = if layer == 1 {
-                        TablePacking::new(1, 1)
+                        TablePacking::new(1, 2)
                     } else {
                         table_packing.clone()
                     }
                     .with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup);
                     let params = ProveNextLayerParams {
                         table_packing,
-                        use_poseidon2_in_circuit: true,
+                        use_npos_in_circuit: true,
                         constraint_profile: ConstraintProfile::Standard,
                     };
-                    let config = config_with_fri_params(fri_params);
+                    let config = config_with_fri_params(fri_params, security_level);
 
                     let out = if layer == 1 {
                         let input = RecursionInput::UniStark {
@@ -519,8 +532,9 @@ define_field_module!(
     8,
     8,
     enable_poseidon2_perm,
-    register_poseidon2_table,
+    register_standard_tables,
     p3_koala_bear::default_koalabear_poseidon2_16,
+    new_d4,
     16,
     8
 );
@@ -537,8 +551,9 @@ define_field_module!(
     8,
     8,
     enable_poseidon2_perm,
-    register_poseidon2_table,
+    register_standard_tables,
     p3_baby_bear::default_babybear_poseidon2_16,
+    new_d4,
     16,
     8
 );
@@ -555,8 +570,9 @@ define_field_module!(
     4,
     4,
     enable_poseidon2_perm_width_8,
-    register_poseidon2_table_d2,
+    register_standard_tables_d2,
     default_goldilocks_poseidon2_8,
+    new_d2,
     8,
     4
 );

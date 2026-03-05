@@ -13,7 +13,7 @@ use p3_uni_stark::{StarkGenericConfig, Val};
 use super::{ObservableCommitment, VerificationError, recompose_quotient_from_chunks_circuit};
 use crate::Target;
 use crate::challenger::CircuitChallenger;
-use crate::ops::Poseidon2Config;
+use crate::challenger_perm::ChallengerPermConfig;
 use crate::traits::{LookupMetadata, Recursive, RecursiveAir, RecursivePcs};
 use crate::types::{
     CommitmentTargets, OpenedValuesTargets, OpenedValuesTargetsWithLookups, ProofTargets,
@@ -66,6 +66,7 @@ pub fn verify_p3_uni_proof_circuit<
         + ObservableCommitment,
     InputProof: Recursive<SC::Challenge>,
     OpeningProof: Recursive<SC::Challenge>,
+    CP: ChallengerPermConfig,
     const WIDTH: usize,
     const RATE: usize,
 >(
@@ -76,7 +77,7 @@ pub fn verify_p3_uni_proof_circuit<
     public_values: &[Target],
     preprocessed_commit: &Option<Comm>,
     pcs_params: &PcsVerifierParams<SC, InputProof, OpeningProof, Comm>,
-    poseidon2_config: Poseidon2Config,
+    challenger_perm_config: CP,
 ) -> Result<Vec<NonPrimitiveOpId>, VerificationError>
 where
     A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
@@ -145,7 +146,7 @@ where
 
     // Generate all challenges (alpha, zeta, zeta_next, PCS challenges)
     let (challenge_targets, mut challenger) =
-        get_circuit_challenges::<A, SC, Comm, InputProof, OpeningProof, WIDTH, RATE>(
+        get_circuit_challenges::<A, SC, Comm, InputProof, OpeningProof, CP, WIDTH, RATE>(
             air,
             config,
             proof_targets,
@@ -155,7 +156,7 @@ where
             &init_trace_domain,
             circuit,
             pcs_params,
-            poseidon2_config,
+            challenger_perm_config,
         )?;
 
     // Validate ZK randomization consistency
@@ -189,7 +190,7 @@ where
         vec![]
     };
 
-    coms_to_verify.extend(vec![
+    coms_to_verify.extend([
         (
             trace_targets.clone(),
             vec![(
@@ -239,7 +240,7 @@ where
     }
 
     // Verify polynomial openings using PCS
-    let mmcs_op_ids = pcs.verify_circuit::<WIDTH, RATE>(
+    let mmcs_op_ids = pcs.verify_circuit::<WIDTH, RATE, CP>(
         circuit,
         &challenge_targets[3..], // PCS challenges (after alpha, zeta, zeta_next)
         &mut challenger,
@@ -316,6 +317,7 @@ fn get_circuit_challenges<
         > + ObservableCommitment,
     InputProof: Recursive<SC::Challenge>,
     OpeningProof: Recursive<SC::Challenge>,
+    CP: ChallengerPermConfig,
     const WIDTH: usize,
     const RATE: usize,
 >(
@@ -328,8 +330,8 @@ fn get_circuit_challenges<
     init_trace_domain: &PcsDomain<SC>,
     circuit: &mut CircuitBuilder<SC::Challenge>,
     pcs_params: &PcsVerifierParams<SC, InputProof, OpeningProof, Comm>,
-    poseidon2_config: Poseidon2Config,
-) -> Result<(Vec<Target>, CircuitChallenger<WIDTH, RATE>), CircuitBuilderError>
+    challenger_perm_config: CP,
+) -> Result<(Vec<Target>, CircuitChallenger<WIDTH, RATE, CP>), CircuitBuilderError>
 where
     SC::Pcs: RecursivePcs<
             SC,
@@ -351,7 +353,7 @@ where
         .expect("init_trace_domain should have next_point");
     let trace_domain_generator = next_point * first_point.inverse();
 
-    let mut challenger = CircuitChallenger::<WIDTH, RATE>::new(poseidon2_config);
+    let mut challenger = CircuitChallenger::<WIDTH, RATE, CP>::new(challenger_perm_config);
 
     // Set up challenge parameters matching native challenger behavior
     let challenge_params = StarkChallengeParams {
@@ -382,7 +384,7 @@ where
     opened_values_no_lookups.observe(circuit, &mut challenger);
 
     // Get PCS-specific challenges (FRI betas, query indices, etc.)
-    let pcs_challenges = SC::Pcs::get_challenges_circuit::<WIDTH, RATE>(
+    let pcs_challenges = SC::Pcs::get_challenges_circuit::<WIDTH, RATE, CP>(
         circuit,
         &mut challenger,
         &proof_targets.opening_proof,

@@ -65,12 +65,13 @@ jobs:
           cargo run --package p3-circuit-prover --example fibonacci
           cargo run --package p3-circuit-prover --example poseidon2_perm_chain
           cargo run --package p3-circuit-prover --example poseidon2_perm_merkle
+          cargo run --release --features parallel --example recursive_aggregation -- --field koala-bear --num-recursive-layers 1
 
-      - name: Run allocation_log example with debug logging
+      - name: Run allocation_log example with debugging feature and debug logging
         if: ${{ !matrix.features }}
         env:
           RUST_LOG: debug
-        run: cargo run --package p3-circuit --example allocation_log
+        run: cargo run --package p3-circuit --example allocation_log --features debugging
 
       - name: Disk usage (after)
         if: always()
@@ -109,18 +110,13 @@ jobs:
           du -sh "${CARGO_TARGET_DIR}" || true
           du -sh ~/.cargo/registry ~/.cargo/git || true
 
-      # NB: Some crates are currently skipped as unimplemented.
       - name: Build
         run: |
-          # cargo build --verbose --target ${{ env.target }} -p p3-challenger-air
           cargo build --verbose --target ${{ env.target }} -p p3-circuit
           cargo build --verbose --target ${{ env.target }} -p p3-circuit-prover
-          # cargo build --verbose --target ${{ env.target }} -p p3-field-air
-          # cargo build --verbose --target ${{ env.target }} -p p3-fri-air
-          # cargo build --verbose --target ${{ env.target }} -p p3-interpolation-air
           cargo build --verbose --target ${{ env.target }} -p p3-poseidon2-circuit-air
-          cargo build --verbose --target ${{ env.target }} -p p3-symmetric-air
           cargo build --verbose --target ${{ env.target }} -p p3-recursion
+          cargo build --verbose --target ${{ env.target }} -p p3-test-utils
 
       - name: Disk usage (after)
         if: always()

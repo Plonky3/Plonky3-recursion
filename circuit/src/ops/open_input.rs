@@ -1,17 +1,20 @@
 use alloc::boxed::Box;
+use alloc::string::ToString;
 use alloc::vec::Vec;
 use alloc::{format, vec};
 use core::any::Any;
 
 use p3_field::{ExtensionField, Field};
 
-use crate::builder::NonPrimitiveOpParams;
+use crate::builder::{NonPrimitiveOpParams, NpoCircuitPlugin, NpoLoweringContext};
 // TODO Linda: alpha_pow and intermediary ros should be private inputs.
-use crate::op::{ExecutionContext, NonPrimitiveExecutor, OpExecutionState, OpStateMap};
-use crate::tables::NonPrimitiveTrace;
+use crate::op::{
+    ExecutionContext, NonPrimitiveExecutor, NpoConfig, NpoTypeId, Op, OpExecutionState, OpStateMap,
+};
+use crate::tables::{NonPrimitiveTrace, TraceGeneratorFn};
 use crate::{
     CircuitBuilder, CircuitBuilderError, CircuitError, CircuitField, ExprId, NonPrimitiveOpId,
-    NonPrimitiveOpType, WitnessId,
+    WitnessId,
 };
 
 #[derive(Default, Debug, Clone)]
@@ -19,26 +22,27 @@ pub struct OpenInputRow<F> {
     // All `Vec`s correspond to one extension limb in execution rows, and D base field elements in trace rows.
     pub alpha: Vec<F>,
     pub alpha_index: u32,
-    pub pow_at_x: Vec<F>, // For EvalPoint: [rev_bit, 0, ..., 0]
+    pub pow_at_x: Vec<F>,    // For EvalPoint: [rev_bit, 0, ..., 0]
     pub pow_at_x_index: u32, // For EvalPoint: rev_bit witness index
     pub pow_at_z: Vec<F>,
     pub pow_at_z_index: u32,
     pub ro_index: u32, // For EvalPoint: output index for eval result
     pub is_last: bool,
     pub is_real: bool,
-    pub is_eval: bool,  // true for EvalPoint rows, false for ReducedOpening rows
-    pub g_power: F,     // g^(2^i) for EvalPoint rows, F::ZERO otherwise
+    pub is_eval: bool, // true for EvalPoint rows, false for ReducedOpening rows
+    pub g_power: F,    // g^(2^i) for EvalPoint rows, F::ZERO otherwise
 }
 
 #[derive(Debug, Clone)]
 pub struct OpenInputTrace<F> {
-    pub op_type: NonPrimitiveOpType,
     pub rows: Vec<OpenInputRow<F>>,
+    /// Extension degree of the proof being verified (not the verification circuit's own degree).
+    pub d: usize,
 }
 
 impl<TraceF: Clone + Send + Sync + 'static, CF> NonPrimitiveTrace<CF> for OpenInputTrace<TraceF> {
-    fn op_type(&self) -> NonPrimitiveOpType {
-        self.op_type
+    fn op_type(&self) -> NpoTypeId {
+        NpoTypeId::open_input_d(self.d)
     }
 
     fn rows(&self) -> usize {
@@ -73,14 +77,14 @@ impl<F: Field> OpExecutionState for OpenInputState<F> {
 /// Executor for OpenInput operations.
 #[derive(Debug, Clone)]
 pub(crate) struct OpenInputExecutor {
-    op_type: NonPrimitiveOpType,
+    op_type: NpoTypeId,
     is_last: bool,
 }
 
 impl OpenInputExecutor {
-    pub fn new(is_last: bool) -> Self {
+    pub fn new(is_last: bool, d: usize) -> Self {
         Self {
-            op_type: NonPrimitiveOpType::OpenInput,
+            op_type: NpoTypeId::open_input_d(d),
             is_last,
         }
     }
@@ -100,7 +104,7 @@ impl<F: Field> NonPrimitiveExecutor<F> for OpenInputExecutor {
             .map(|inp| {
                 if inp.len() != 1 {
                     return Err(CircuitError::NonPrimitiveOpLayoutMismatch {
-                        op: self.op_type,
+                        op: self.op_type.clone(),
                         expected: format!("0 or 1 witness per input element {}", inp.len()),
                         got: inp.len(),
                     });
@@ -166,7 +170,7 @@ impl<F: Field> NonPrimitiveExecutor<F> for OpenInputExecutor {
         Ok(())
     }
 
-    fn op_type(&self) -> &NonPrimitiveOpType {
+    fn op_type(&self) -> &NpoTypeId {
         &self.op_type
     }
 
@@ -184,23 +188,23 @@ impl<F: Field> NonPrimitiveExecutor<F> for OpenInputExecutor {
 
         // Preprocess `is_last`.
         preprocessed.register_non_primitive_preprocessed_no_read(
-            self.op_type,
+            &self.op_type,
             &[F::from_u64(self.is_last as u64)],
         );
 
         // Preprocess `is_real`
-        preprocessed.register_non_primitive_preprocessed_no_read(self.op_type, &[F::ONE]);
+        preprocessed.register_non_primitive_preprocessed_no_read(&self.op_type, &[F::ONE]);
 
         // Preprocess input indices.
         for inp in inputs {
             if inp.len() != 1 {
                 return Err(CircuitError::NonPrimitiveOpLayoutMismatch {
-                    op: self.op_type,
+                    op: self.op_type.clone(),
                     expected: format!("0 or 1 witness per input element {}", inp.len()),
                     got: inp.len(),
                 });
             }
-            preprocessed.register_non_primitive_witness_read(self.op_type, inp[0])?;
+            preprocessed.register_non_primitive_witness_read(&self.op_type, inp[0])?;
         }
 
         // Preprocess output index if this is the last OpenInput operation.
@@ -209,20 +213,20 @@ impl<F: Field> NonPrimitiveExecutor<F> for OpenInputExecutor {
         if self.is_last {
             assert_eq!(outputs.len(), 1);
             assert_eq!(outputs[0].len(), 1);
-            preprocessed.register_non_primitive_output_index(self.op_type, &outputs[0]);
+            preprocessed.register_non_primitive_output_index(&self.op_type, &outputs[0]);
         } else {
-            preprocessed.register_non_primitive_preprocessed_no_read(self.op_type, &[F::ZERO]);
+            preprocessed.register_non_primitive_preprocessed_no_read(&self.op_type, &[F::ZERO]);
         }
 
         // ro_ext_mult placeholder (populated later by get_airs_and_degrees_with_prep
         // from ext_reads[ro_wid]).
-        preprocessed.register_non_primitive_preprocessed_no_read(self.op_type, &[F::ZERO]);
+        preprocessed.register_non_primitive_preprocessed_no_read(&self.op_type, &[F::ZERO]);
 
         // is_eval = 0 for ReducedOpening rows.
-        preprocessed.register_non_primitive_preprocessed_no_read(self.op_type, &[F::ZERO]);
+        preprocessed.register_non_primitive_preprocessed_no_read(&self.op_type, &[F::ZERO]);
 
         // g_power = 0 for ReducedOpening rows.
-        preprocessed.register_non_primitive_preprocessed_no_read(self.op_type, &[F::ZERO]);
+        preprocessed.register_non_primitive_preprocessed_no_read(&self.op_type, &[F::ZERO]);
 
         Ok(())
     }
@@ -239,7 +243,7 @@ pub fn generate_open_input_trace<
 >(
     op_states: &OpStateMap,
 ) -> Result<Option<Box<dyn NonPrimitiveTrace<F>>>, CircuitError> {
-    let op_type = NonPrimitiveOpType::OpenInput;
+    let op_type = NpoTypeId::open_input_d(D);
 
     let Some(state) = op_states
         .get(&op_type)
@@ -252,29 +256,14 @@ pub fn generate_open_input_trace<
         return Ok(None);
     }
 
-    let operations: Vec<OpenInputRow<BaseF>> = state
-        .rows
-        .iter()
-        .map(|row| -> Result<_, CircuitError> {
-            Ok(OpenInputRow {
-                alpha: row.alpha[0].as_basis_coefficients_slice().to_vec(),
-                alpha_index: row.alpha_index,
-                pow_at_x: row.pow_at_x[0].as_basis_coefficients_slice().to_vec(),
-                pow_at_x_index: row.pow_at_x_index,
-                pow_at_z: row.pow_at_z[0].as_basis_coefficients_slice().to_vec(),
-                pow_at_z_index: row.pow_at_z_index,
-                ro_index: row.ro_index,
-                is_last: row.is_last,
-                is_real: row.is_real,
-                is_eval: row.is_eval,
-                g_power: row.g_power.as_basis_coefficients_slice()[0],
-            })
-        })
-        .collect::<Result<Vec<_>, CircuitError>>()?;
+    // Keep the circuit-field (EF) values as-is. The trace rows store EF elements so that
+    // `OpenInputAir<BaseF, D>::trace_to_matrix::<F>` can correctly extract D base-field
+    // limbs per value (matching the D-column layout of the AIR).
+    let operations: Vec<OpenInputRow<F>> = state.rows.clone();
 
     Ok(Some(Box::new(OpenInputTrace {
-        op_type,
         rows: operations,
+        d: D,
     })))
 }
 
@@ -297,8 +286,12 @@ impl<F: Field> OpenInputOp for CircuitBuilder<F> {
         &mut self,
         call: OpenInputCall,
     ) -> Result<(NonPrimitiveOpId, Option<ExprId>), CircuitBuilderError> {
-        let op_type = NonPrimitiveOpType::OpenInput;
-        self.ensure_op_enabled(op_type)?;
+        let op_type = self.open_input_type_id().ok_or_else(|| {
+            CircuitBuilderError::UnsupportedNonPrimitiveOp {
+                op: NpoTypeId::open_input_d(1),
+            }
+        })?;
+        self.ensure_op_enabled(&op_type)?;
 
         let input_exprs = vec![vec![call.alpha], vec![call.p_at_x], vec![call.p_at_z]];
 
@@ -321,10 +314,10 @@ impl<F: Field> OpenInputOp for CircuitBuilder<F> {
 // ---------------------------------------------------------------------------
 
 pub struct EvalPointCall<F> {
-    pub rev_bit: ExprId,  // Witness target for the reversed bit
-    pub g_power: F,       // g^(2^i) constant for this row
-    pub generator: F,     // Coset generator (F::GENERATOR promoted to EF)
-    pub is_last: bool,    // Last row of eval sequence
+    pub rev_bit: ExprId, // Witness target for the reversed bit
+    pub g_power: F,      // g^(2^i) constant for this row
+    pub generator: F,    // Coset generator (F::GENERATOR promoted to EF)
+    pub is_last: bool,   // Last row of eval sequence
 }
 
 pub trait EvalPointOp<F> {
@@ -339,8 +332,12 @@ impl<F: Field> EvalPointOp<F> for CircuitBuilder<F> {
         &mut self,
         call: EvalPointCall<F>,
     ) -> Result<(NonPrimitiveOpId, Option<ExprId>), CircuitBuilderError> {
-        let op_type = NonPrimitiveOpType::OpenInput;
-        self.ensure_op_enabled(op_type)?;
+        let op_type = self.open_input_type_id().ok_or_else(|| {
+            CircuitBuilderError::UnsupportedNonPrimitiveOp {
+                op: NpoTypeId::open_input_d(1),
+            }
+        })?;
+        self.ensure_op_enabled(&op_type)?;
 
         // Inputs layout: [alpha(empty), p_at_x(rev_bit), p_at_z(empty)]
         let input_exprs = vec![vec![], vec![call.rev_bit], vec![]];
@@ -364,16 +361,16 @@ impl<F: Field> EvalPointOp<F> for CircuitBuilder<F> {
 /// Executor for EvalPoint operations within the OpenInput table.
 #[derive(Debug, Clone)]
 pub struct EvalPointExecutor<F> {
-    op_type: NonPrimitiveOpType,
+    op_type: NpoTypeId,
     is_last: bool,
     g_power: F,
     generator: F,
 }
 
 impl<F: Field> EvalPointExecutor<F> {
-    pub fn new(is_last: bool, g_power: F, generator: F) -> Self {
+    pub fn new(is_last: bool, g_power: F, generator: F, d: usize) -> Self {
         Self {
-            op_type: NonPrimitiveOpType::OpenInput,
+            op_type: NpoTypeId::open_input_d(d),
             is_last,
             g_power,
             generator,
@@ -390,14 +387,26 @@ impl<F: Field> NonPrimitiveExecutor<F> for EvalPointExecutor<F> {
     ) -> Result<(), CircuitError> {
         assert_eq!(inputs.len(), 3);
         // Only inputs[1] (p_at_x slot) has a value: the rev_bit.
-        assert!(inputs[0].is_empty(), "alpha slot must be empty for EvalPoint");
-        assert_eq!(inputs[1].len(), 1, "p_at_x slot must have exactly 1 witness for rev_bit");
-        assert!(inputs[2].is_empty(), "p_at_z slot must be empty for EvalPoint");
+        assert!(
+            inputs[0].is_empty(),
+            "alpha slot must be empty for EvalPoint"
+        );
+        assert_eq!(
+            inputs[1].len(),
+            1,
+            "p_at_x slot must have exactly 1 witness for rev_bit"
+        );
+        assert!(
+            inputs[2].is_empty(),
+            "p_at_z slot must be empty for EvalPoint"
+        );
 
         let rev_bit_wid = inputs[1][0];
-        let rev_bit = ctx.get_witness(rev_bit_wid).map_err(|_| CircuitError::WitnessNotSet {
-            witness_id: rev_bit_wid,
-        })?;
+        let rev_bit = ctx
+            .get_witness(rev_bit_wid)
+            .map_err(|_| CircuitError::WitnessNotSet {
+                witness_id: rev_bit_wid,
+            })?;
 
         // mult = 1 + rev_bit * (g_power - 1)
         let mult = F::ONE + rev_bit * (self.g_power - F::ONE);
@@ -406,10 +415,9 @@ impl<F: Field> NonPrimitiveExecutor<F> for EvalPointExecutor<F> {
 
         // If first in sequence (last_ro is None), start at GENERATOR * mult.
         // Otherwise, continue accumulation: prev_eval * mult.
-        let eval = match state.last_ro {
-            Some(prev) => prev * mult,
-            None => self.generator * mult,
-        };
+        let eval = state
+            .last_ro
+            .map_or_else(|| self.generator * mult, |prev| prev * mult);
 
         let output_index = if self.is_last {
             assert_eq!(outputs.len(), 1);
@@ -447,7 +455,7 @@ impl<F: Field> NonPrimitiveExecutor<F> for EvalPointExecutor<F> {
         Ok(())
     }
 
-    fn op_type(&self) -> &NonPrimitiveOpType {
+    fn op_type(&self) -> &NpoTypeId {
         &self.op_type
     }
 
@@ -463,45 +471,160 @@ impl<F: Field> NonPrimitiveExecutor<F> for EvalPointExecutor<F> {
     ) -> Result<(), CircuitError> {
         // [0] is_last
         preprocessed.register_non_primitive_preprocessed_no_read(
-            self.op_type,
+            &self.op_type,
             &[F::from_u64(self.is_last as u64)],
         );
 
         // [1] is_real
-        preprocessed.register_non_primitive_preprocessed_no_read(self.op_type, &[F::ONE]);
+        preprocessed.register_non_primitive_preprocessed_no_read(&self.op_type, &[F::ONE]);
 
         // [2] alpha_index = 0 (unused for EvalPoint)
-        preprocessed.register_non_primitive_preprocessed_no_read(self.op_type, &[F::ZERO]);
+        preprocessed.register_non_primitive_preprocessed_no_read(&self.op_type, &[F::ZERO]);
 
         // [3] p_at_x_index = rev_bit witness index
         assert_eq!(inputs[1].len(), 1);
-        preprocessed.register_non_primitive_witness_read(self.op_type, inputs[1][0])?;
+        preprocessed.register_non_primitive_witness_read(&self.op_type, inputs[1][0])?;
 
         // [4] p_at_z_index = 0 (unused for EvalPoint)
-        preprocessed.register_non_primitive_preprocessed_no_read(self.op_type, &[F::ZERO]);
+        preprocessed.register_non_primitive_preprocessed_no_read(&self.op_type, &[F::ZERO]);
 
         // [5] ro_index
         if self.is_last {
             assert_eq!(outputs.len(), 1);
             assert_eq!(outputs[0].len(), 1);
-            preprocessed.register_non_primitive_output_index(self.op_type, &outputs[0]);
+            preprocessed.register_non_primitive_output_index(&self.op_type, &outputs[0]);
         } else {
-            preprocessed.register_non_primitive_preprocessed_no_read(self.op_type, &[F::ZERO]);
+            preprocessed.register_non_primitive_preprocessed_no_read(&self.op_type, &[F::ZERO]);
         }
 
         // [6] ro_ext_mult placeholder
-        preprocessed.register_non_primitive_preprocessed_no_read(self.op_type, &[F::ZERO]);
+        preprocessed.register_non_primitive_preprocessed_no_read(&self.op_type, &[F::ZERO]);
 
         // [7] is_eval = 1
-        preprocessed.register_non_primitive_preprocessed_no_read(self.op_type, &[F::ONE]);
+        preprocessed.register_non_primitive_preprocessed_no_read(&self.op_type, &[F::ONE]);
 
         // [8] g_power
-        preprocessed.register_non_primitive_preprocessed_no_read(self.op_type, &[self.g_power]);
+        preprocessed.register_non_primitive_preprocessed_no_read(&self.op_type, &[self.g_power]);
 
         Ok(())
     }
 
     fn boxed(&self) -> Box<dyn NonPrimitiveExecutor<F>> {
         Box::new(self.clone())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Circuit-layer plugin for OpenInput / EvalPoint NPOs.
+// ---------------------------------------------------------------------------
+
+pub struct OpenInputCircuitPlugin<BaseF, F, const D: usize> {
+    trace_gen: TraceGeneratorFn<F>,
+    _phantom: core::marker::PhantomData<BaseF>,
+}
+
+impl<BaseF, F, const D: usize> OpenInputCircuitPlugin<BaseF, F, D>
+where
+    BaseF: Field,
+    F: CircuitField + ExtensionField<BaseF>,
+{
+    pub fn new(trace_gen: TraceGeneratorFn<F>) -> Self {
+        Self {
+            trace_gen,
+            _phantom: core::marker::PhantomData,
+        }
+    }
+}
+
+impl<BaseF, F, const D: usize> NpoCircuitPlugin<F> for OpenInputCircuitPlugin<BaseF, F, D>
+where
+    BaseF: Field,
+    F: CircuitField + ExtensionField<BaseF>,
+{
+    fn type_id(&self) -> NpoTypeId {
+        NpoTypeId::open_input_d(D)
+    }
+
+    fn lower(
+        &self,
+        data: &crate::builder::NonPrimitiveOperationData<F>,
+        output_exprs: &[(u32, ExprId)],
+        ctx: &mut NpoLoweringContext<'_, F>,
+    ) -> Result<Op<F>, CircuitBuilderError> {
+        let expr_to_widx = &mut *ctx.expr_to_widx;
+
+        for (_output_idx, expr_id) in output_exprs {
+            expr_to_widx
+                .entry(*expr_id)
+                .or_insert_with(|| (ctx.alloc_witness_id)(expr_id.0 as usize));
+        }
+
+        let params = data.params.as_ref().ok_or_else(|| {
+            CircuitBuilderError::InvalidNonPrimitiveOpConfiguration {
+                op: data.op_type.clone(),
+            }
+        })?;
+
+        let get_wid =
+            |expr_to_widx: &hashbrown::HashMap<ExprId, WitnessId>, expr: ExprId, ctx_str: &str| {
+                expr_to_widx.get(&expr).copied().ok_or_else(|| {
+                    CircuitBuilderError::MissingExprMapping {
+                        expr_id: expr,
+                        context: ctx_str.to_string(),
+                    }
+                })
+            };
+
+        let map_slot =
+            |expr_to_widx: &hashbrown::HashMap<ExprId, WitnessId>, slot: &[ExprId], label: &str| {
+                slot.iter()
+                    .map(|&e| get_wid(expr_to_widx, e, label))
+                    .collect::<Result<Vec<WitnessId>, _>>()
+            };
+
+        let inputs: Vec<Vec<WitnessId>> = data
+            .input_exprs
+            .iter()
+            .enumerate()
+            .map(|(i, slot)| map_slot(expr_to_widx, slot, &format!("OpenInput input {i}")))
+            .collect::<Result<_, _>>()?;
+
+        let outputs: Vec<Vec<WitnessId>> = data
+            .output_exprs
+            .iter()
+            .enumerate()
+            .map(|(i, slot)| map_slot(expr_to_widx, slot, &format!("OpenInput output {i}")))
+            .collect::<Result<_, _>>()?;
+
+        let executor: Box<dyn NonPrimitiveExecutor<F>> = match params {
+            NonPrimitiveOpParams::OpenInput { is_last } => {
+                Box::new(OpenInputExecutor::new(*is_last, D))
+            }
+            NonPrimitiveOpParams::EvalPoint {
+                is_last,
+                g_power,
+                generator,
+            } => Box::new(EvalPointExecutor::new(*is_last, *g_power, *generator, D)),
+            _ => {
+                return Err(CircuitBuilderError::InvalidNonPrimitiveOpConfiguration {
+                    op: data.op_type.clone(),
+                });
+            }
+        };
+
+        Ok(Op::NonPrimitiveOpWithExecutor {
+            inputs,
+            outputs,
+            executor,
+            op_id: data.op_id,
+        })
+    }
+
+    fn trace_generator(&self) -> TraceGeneratorFn<F> {
+        self.trace_gen
+    }
+
+    fn config(&self) -> NpoConfig {
+        NpoConfig::new(())
     }
 }

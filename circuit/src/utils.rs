@@ -2,8 +2,9 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use hashbrown::HashMap;
+use p3_air::{BaseEntry, BaseLeaf, ExtEntry, ExtLeaf, SymbolicExpressionExt};
 use p3_field::{ExtensionField, Field};
-use p3_uni_stark::{Entry, SymbolicExpression};
+use p3_uni_stark::SymbolicExpression;
 
 use crate::{CircuitBuilder, ExprId};
 
@@ -86,6 +87,121 @@ pub fn symbolic_to_circuit_ext<F: Field>(
     symbolic_to_circuit_core(row_selectors, columns, symbolic, circuit, cache, |c| c)
 }
 
+/// Convert extension-field [`SymbolicExpressionExt`] constraints to circuit operations.
+///
+/// Handles the split representation where extension expressions can embed
+/// base-field sub-trees via [`ExtLeaf::Base`], extension-field variables
+/// (permutation columns / challenges) via [`ExtLeaf::ExtVariable`], and
+/// extension-field constants via [`ExtLeaf::ExtConstant`].
+pub fn symbolic_ext_expr_to_circuit<F: Field, EF: ExtensionField<F>>(
+    row_selectors: RowSelectorsTargets,
+    columns: &ColumnsTargets<'_>,
+    symbolic: &SymbolicExpressionExt<F, EF>,
+    circuit: &mut CircuitBuilder<EF>,
+    base_cache: &mut HashMap<*const SymbolicExpression<F>, ExprId>,
+    ext_cache: &mut HashMap<*const SymbolicExpressionExt<F, EF>, ExprId>,
+) -> ExprId {
+    enum Work<'a, F: Field, EF> {
+        Eval(&'a SymbolicExpressionExt<F, EF>),
+        Build(*const SymbolicExpressionExt<F, EF>, Op, usize),
+    }
+
+    #[derive(Copy, Clone)]
+    enum Op {
+        Add,
+        Sub,
+        Mul,
+        Neg,
+    }
+
+    let mut tasks = vec![Work::Eval(symbolic)];
+    let mut stack = Vec::with_capacity(16);
+
+    while let Some(work) = tasks.pop() {
+        match work {
+            Work::Eval(expr) => {
+                let key = expr as *const _;
+                if let Some(&cached) = ext_cache.get(&key) {
+                    stack.push(cached);
+                    continue;
+                }
+                match expr {
+                    SymbolicExpressionExt::Leaf(ExtLeaf::Base(base_expr)) => {
+                        let id = symbolic_to_circuit_base(
+                            row_selectors,
+                            columns,
+                            base_expr,
+                            circuit,
+                            base_cache,
+                        );
+                        ext_cache.insert(key, id);
+                        stack.push(id);
+                    }
+                    SymbolicExpressionExt::Leaf(ExtLeaf::ExtVariable(v)) => {
+                        let id = match v.entry {
+                            ExtEntry::Permutation { offset } => match offset {
+                                0 => columns.permutation_local_values[v.index],
+                                1 => columns.permutation_next_values[v.index],
+                                _ => {
+                                    panic!("Cannot have expressions involving more than two rows.")
+                                }
+                            },
+                            ExtEntry::Challenge => columns.challenges[v.index],
+                        };
+                        ext_cache.insert(key, id);
+                        stack.push(id);
+                    }
+                    SymbolicExpressionExt::Leaf(ExtLeaf::ExtConstant(c)) => {
+                        let id = circuit.define_const(*c);
+                        ext_cache.insert(key, id);
+                        stack.push(id);
+                    }
+                    SymbolicExpressionExt::Neg { x, .. } => {
+                        tasks.push(Work::Build(key, Op::Neg, 1));
+                        tasks.push(Work::Eval(x));
+                    }
+                    SymbolicExpressionExt::Add { x, y, .. } => {
+                        tasks.push(Work::Build(key, Op::Add, 2));
+                        tasks.push(Work::Eval(y));
+                        tasks.push(Work::Eval(x));
+                    }
+                    SymbolicExpressionExt::Sub { x, y, .. } => {
+                        tasks.push(Work::Build(key, Op::Sub, 2));
+                        tasks.push(Work::Eval(y));
+                        tasks.push(Work::Eval(x));
+                    }
+                    SymbolicExpressionExt::Mul { x, y, .. } => {
+                        tasks.push(Work::Build(key, Op::Mul, 2));
+                        tasks.push(Work::Eval(y));
+                        tasks.push(Work::Eval(x));
+                    }
+                }
+            }
+            Work::Build(key, op, arity) => {
+                let rhs = stack.pop().expect("rhs");
+                let lhs = if arity == 2 {
+                    stack.pop().expect("lhs")
+                } else {
+                    rhs
+                };
+                let id = match op {
+                    Op::Add => circuit.add(lhs, rhs),
+                    Op::Sub => circuit.sub(lhs, rhs),
+                    Op::Mul => circuit.mul(lhs, rhs),
+                    Op::Neg => {
+                        let zero = circuit.define_const(EF::ZERO);
+                        circuit.sub(zero, rhs)
+                    }
+                };
+                ext_cache.insert(key, id);
+                stack.push(id);
+            }
+        }
+    }
+
+    stack.pop().expect("final target")
+}
+
 /// Core implementation of symbolic-to-circuit conversion.
 ///
 /// Generic over the expression constant field (`CF`) and circuit field (`F`).
@@ -118,10 +234,10 @@ fn symbolic_to_circuit_core<CF: Field, F: Field>(
     } = row_selectors;
 
     let ColumnsTargets {
-        challenges,
+        challenges: _,
         public_values,
-        permutation_local_values,
-        permutation_next_values,
+        permutation_local_values: _,
+        permutation_next_values: _,
         local_prep_values,
         next_prep_values,
         local_values,
@@ -140,12 +256,12 @@ fn symbolic_to_circuit_core<CF: Field, F: Field>(
                     continue;
                 }
                 match expr {
-                    SymbolicExpression::Constant(c) => {
+                    SymbolicExpression::Leaf(BaseLeaf::Constant(c)) => {
                         let id = circuit.define_const(convert_const(*c));
                         cache.insert(key, id);
                         stack.push(id);
                     }
-                    SymbolicExpression::Variable(v) => {
+                    SymbolicExpression::Leaf(BaseLeaf::Variable(v)) => {
                         let get_val =
                             |offset: usize,
                              index: usize,
@@ -158,27 +274,25 @@ fn symbolic_to_circuit_core<CF: Field, F: Field>(
                                 }
                             };
                         let id = match v.entry {
-                            Entry::Preprocessed { offset } => {
+                            BaseEntry::Preprocessed { offset } => {
                                 get_val(offset, v.index, local_prep_values, next_prep_values)
                             }
-                            Entry::Permutation { offset } => get_val(
-                                offset,
-                                v.index,
-                                permutation_local_values,
-                                permutation_next_values,
-                            ),
-                            Entry::Main { offset } => {
+                            BaseEntry::Main { offset } => {
                                 get_val(offset, v.index, local_values, next_values)
                             }
-                            Entry::Public => public_values[v.index],
-                            Entry::Challenge => challenges[v.index],
+                            BaseEntry::Public => public_values[v.index],
+                            BaseEntry::Periodic => {
+                                unimplemented!(
+                                    "Periodic values are not supported in symbolic_to_circuit"
+                                )
+                            }
                         };
                         cache.insert(key, id);
                         stack.push(id);
                     }
-                    SymbolicExpression::IsFirstRow => stack.push(is_first_row),
-                    SymbolicExpression::IsLastRow => stack.push(is_last_row),
-                    SymbolicExpression::IsTransition => stack.push(is_transition),
+                    SymbolicExpression::Leaf(BaseLeaf::IsFirstRow) => stack.push(is_first_row),
+                    SymbolicExpression::Leaf(BaseLeaf::IsLastRow) => stack.push(is_last_row),
+                    SymbolicExpression::Leaf(BaseLeaf::IsTransition) => stack.push(is_transition),
                     SymbolicExpression::Neg { x, .. } => {
                         tasks.push(Work::Build(key, Op::Neg, 1));
                         tasks.push(Work::Eval(x));
@@ -322,8 +436,9 @@ mod tests {
 
         // Fold the symbolic constraints using `alpha`.
         let folded_symbolic_constraints = {
-            let mut acc = SymbolicExpression::<Challenge>::Constant(Challenge::ZERO);
-            let ch = SymbolicExpression::Constant(alpha);
+            let mut acc =
+                SymbolicExpression::<Challenge>::Leaf(BaseLeaf::Constant(Challenge::ZERO));
+            let ch = SymbolicExpression::Leaf(BaseLeaf::Constant(alpha));
             for s_c in symbolic_constraints.iter() {
                 acc = ch.clone() * acc;
                 acc += s_c.clone();

@@ -3,7 +3,7 @@ use alloc::vec::Vec;
 
 use thiserror::Error;
 
-use crate::op::NonPrimitiveOpType;
+use crate::op::NpoTypeId;
 use crate::types::NonPrimitiveOpId;
 use crate::{CircuitBuilderError, ExprId, WitnessId};
 
@@ -82,12 +82,12 @@ pub enum CircuitError {
 
     /// Mismatched non-primitive operation configuration
     #[error("Invalid configuration for operation {op:?}")]
-    InvalidNonPrimitiveOpConfiguration { op: NonPrimitiveOpType },
+    InvalidNonPrimitiveOpConfiguration { op: NpoTypeId },
 
     /// Non-primitive operation has incorrect input/output layout.
     #[error("Incorrect layout for operation {op:?}: expected {expected}, got {got}")]
     NonPrimitiveOpLayoutMismatch {
-        op: NonPrimitiveOpType,
+        op: NpoTypeId,
         expected: String,
         got: usize,
     },
@@ -97,7 +97,7 @@ pub enum CircuitError {
         "Incorrect size of private data provided for operation {op:?}: expected {expected}, got {got}"
     )]
     IncorrectNonPrimitiveOpPrivateDataSize {
-        op: NonPrimitiveOpType,
+        op: NpoTypeId,
         expected: String,
         got: usize,
     },
@@ -105,7 +105,7 @@ pub enum CircuitError {
     /// Incorrect input size provided for a non-primitive operation.
     #[error("Incorrect input size provided for operation {op:?}: expected {expected}, got {got}")]
     IncorrectNonPrimitiveOpInputSize {
-        op: NonPrimitiveOpType,
+        op: NpoTypeId,
         expected: String,
         got: usize,
     },
@@ -115,7 +115,7 @@ pub enum CircuitError {
         "Incorrect private data provided for op {op:?} (operation {operation_index}): expected {expected}, got {got}"
     )]
     IncorrectNonPrimitiveOpPrivateData {
-        op: NonPrimitiveOpType,
+        op: NpoTypeId,
         operation_index: NonPrimitiveOpId,
         expected: String,
         got: String,

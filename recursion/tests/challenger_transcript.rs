@@ -7,7 +7,7 @@ mod common;
 
 use p3_baby_bear::{BabyBear, default_babybear_poseidon2_16};
 use p3_challenger::{CanObserve, CanSample, DuplexChallenger, FieldChallenger};
-use p3_circuit::ops::generate_poseidon2_trace;
+use p3_circuit::ops::{Poseidon2Config, generate_poseidon2_trace};
 use p3_circuit::{CircuitBuilder, Traces};
 use p3_field::extension::BinomialExtensionField;
 use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
@@ -40,7 +40,7 @@ fn test_transcript_single_observe_sample() {
 
     // Circuit challenger
     let mut circuit = setup_circuit_with_poseidon2();
-    let mut circuit_challenger = CircuitChallenger::<WIDTH, RATE>::new_babybear();
+    let mut circuit_challenger = CircuitChallenger::<WIDTH, RATE, Poseidon2Config>::new_babybear();
 
     // Observe a single value
     let val = F::from_u64(42);
@@ -85,7 +85,7 @@ fn test_transcript_observe_ext_compatibility() {
 
     let mut native = DuplexChallenger::<F, _, WIDTH, RATE>::new(perm);
     let mut circuit = setup_circuit_with_poseidon2();
-    let mut circuit_challenger = CircuitChallenger::<WIDTH, RATE>::new_babybear();
+    let mut circuit_challenger = CircuitChallenger::<WIDTH, RATE, Poseidon2Config>::new_babybear();
 
     // Observe a base value as algebra element (like batch-STARK does)
     let base_val = F::from_usize(123);
@@ -123,7 +123,7 @@ fn test_transcript_multiple_duplexing_rounds() {
 
     let mut native = DuplexChallenger::<F, _, WIDTH, RATE>::new(perm);
     let mut circuit = setup_circuit_with_poseidon2();
-    let mut circuit_challenger = CircuitChallenger::<WIDTH, RATE>::new_babybear();
+    let mut circuit_challenger = CircuitChallenger::<WIDTH, RATE, Poseidon2Config>::new_babybear();
 
     // First round: observe RATE elements
     for i in 0..RATE {
@@ -183,7 +183,7 @@ fn test_transcript_partial_absorption() {
 
     let mut native = DuplexChallenger::<F, _, WIDTH, RATE>::new(perm);
     let mut circuit = setup_circuit_with_poseidon2();
-    let mut circuit_challenger = CircuitChallenger::<WIDTH, RATE>::new_babybear();
+    let mut circuit_challenger = CircuitChallenger::<WIDTH, RATE, Poseidon2Config>::new_babybear();
 
     // Observe only 3 elements (less than RATE=8)
     for i in 0..3 {
@@ -217,7 +217,7 @@ fn test_transcript_observe_extension_element() {
 
     let mut native = DuplexChallenger::<F, _, WIDTH, RATE>::new(perm);
     let mut circuit = setup_circuit_with_poseidon2();
-    let mut circuit_challenger = CircuitChallenger::<WIDTH, RATE>::new_babybear();
+    let mut circuit_challenger = CircuitChallenger::<WIDTH, RATE, Poseidon2Config>::new_babybear();
 
     // Create extension field elements
     let ext_val = EF::from_basis_coefficients_slice(&[
@@ -270,7 +270,7 @@ fn test_transcript_mixed_observations() {
 
     let mut native = DuplexChallenger::<F, _, WIDTH, RATE>::new(perm);
     let mut circuit = setup_circuit_with_poseidon2();
-    let mut circuit_challenger = CircuitChallenger::<WIDTH, RATE>::new_babybear();
+    let mut circuit_challenger = CircuitChallenger::<WIDTH, RATE, Poseidon2Config>::new_babybear();
 
     // Mix of base field observations
     for i in 0..3 {
@@ -327,7 +327,7 @@ fn test_transcript_clear_produces_fresh_state() {
     let mut native = DuplexChallenger::<F, _, WIDTH, RATE>::new(perm);
 
     let mut circuit = setup_circuit_with_poseidon2();
-    let mut circuit_challenger = CircuitChallenger::<WIDTH, RATE>::new_babybear();
+    let mut circuit_challenger = CircuitChallenger::<WIDTH, RATE, Poseidon2Config>::new_babybear();
 
     // First, do some observations to dirty the state
     for i in 0..5 {
@@ -372,7 +372,7 @@ fn test_transcript_consecutive_samples() {
 
     let mut native = DuplexChallenger::<F, _, WIDTH, RATE>::new(perm);
     let mut circuit = setup_circuit_with_poseidon2();
-    let mut circuit_challenger = CircuitChallenger::<WIDTH, RATE>::new_babybear();
+    let mut circuit_challenger = CircuitChallenger::<WIDTH, RATE, Poseidon2Config>::new_babybear();
 
     // Initial observations
     for i in 0..RATE {
@@ -411,7 +411,7 @@ fn test_edge_case_exactly_rate_observations() {
 
     let mut native = DuplexChallenger::<F, _, WIDTH, RATE>::new(perm);
     let mut circuit = setup_circuit_with_poseidon2();
-    let mut circuit_challenger = CircuitChallenger::<WIDTH, RATE>::new_babybear();
+    let mut circuit_challenger = CircuitChallenger::<WIDTH, RATE, Poseidon2Config>::new_babybear();
 
     // Observe exactly RATE elements (should trigger duplexing on last observe)
     for i in 0..RATE {
@@ -453,7 +453,7 @@ fn test_edge_case_drain_output_buffer_completely() {
 
     let mut native = DuplexChallenger::<F, _, WIDTH, RATE>::new(perm);
     let mut circuit = setup_circuit_with_poseidon2();
-    let mut circuit_challenger = CircuitChallenger::<WIDTH, RATE>::new_babybear();
+    let mut circuit_challenger = CircuitChallenger::<WIDTH, RATE, Poseidon2Config>::new_babybear();
 
     // Observe RATE elements to trigger duplexing
     for i in 0..RATE {
@@ -499,7 +499,7 @@ fn test_edge_case_interleaved_observe_sample() {
 
     let mut native = DuplexChallenger::<F, _, WIDTH, RATE>::new(perm);
     let mut circuit = setup_circuit_with_poseidon2();
-    let mut circuit_challenger = CircuitChallenger::<WIDTH, RATE>::new_babybear();
+    let mut circuit_challenger = CircuitChallenger::<WIDTH, RATE, Poseidon2Config>::new_babybear();
 
     // Pattern: observe a few, sample, observe more, sample, etc.
     // This tests output buffer invalidation on observe
@@ -567,7 +567,7 @@ fn test_edge_case_sample_without_observations() {
 
     let mut native = DuplexChallenger::<F, _, WIDTH, RATE>::new(perm);
     let mut circuit = setup_circuit_with_poseidon2();
-    let mut circuit_challenger = CircuitChallenger::<WIDTH, RATE>::new_babybear();
+    let mut circuit_challenger = CircuitChallenger::<WIDTH, RATE, Poseidon2Config>::new_babybear();
 
     // Sample immediately (duplexing with zero-initialized state)
     let native_s1: F = native.sample();
@@ -598,7 +598,7 @@ fn test_edge_case_single_observe_multiple_samples() {
 
     let mut native = DuplexChallenger::<F, _, WIDTH, RATE>::new(perm);
     let mut circuit = setup_circuit_with_poseidon2();
-    let mut circuit_challenger = CircuitChallenger::<WIDTH, RATE>::new_babybear();
+    let mut circuit_challenger = CircuitChallenger::<WIDTH, RATE, Poseidon2Config>::new_babybear();
 
     // Single observation
     let val = F::from_u64(12345);
@@ -631,7 +631,7 @@ fn test_edge_case_extension_samples_drain_buffer() {
 
     let mut native = DuplexChallenger::<F, _, WIDTH, RATE>::new(perm);
     let mut circuit = setup_circuit_with_poseidon2();
-    let mut circuit_challenger = CircuitChallenger::<WIDTH, RATE>::new_babybear();
+    let mut circuit_challenger = CircuitChallenger::<WIDTH, RATE, Poseidon2Config>::new_babybear();
 
     // Observe RATE elements
     for i in 0..RATE {

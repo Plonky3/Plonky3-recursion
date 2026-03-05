@@ -16,8 +16,8 @@ use super::OpCounts;
 use super::compiler::{ExpressionLowerer, Optimizer};
 use super::{BuilderConfig, ExpressionBuilder, PublicInputTracker};
 use crate::circuit::Circuit;
-use crate::op::{NonPrimitiveExecutor, NonPrimitiveOpConfig, NonPrimitiveOpType};
-use crate::ops::open_input::generate_open_input_trace;
+use crate::op::{HintExecutor, NpoConfig, NpoRegistry, NpoTypeId, Op, Poseidon2Config};
+use crate::ops::poseidon2_perm::Poseidon2CircuitPlugin;
 use crate::ops::{Poseidon2Params, Poseidon2PermCall, Poseidon2PermCallBase};
 use crate::tables::TraceGeneratorFn;
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};
@@ -38,10 +38,13 @@ pub struct CircuitBuilder<F: Field> {
     non_primitive_ops: Vec<NonPrimitiveOperationData<F>>,
 
     /// Builder configuration
-    config: BuilderConfig<F>,
+    config: BuilderConfig,
 
     /// Registered non-primitive trace generators.
-    non_primitive_trace_generators: HashMap<NonPrimitiveOpType, TraceGeneratorFn<F>>,
+    non_primitive_trace_generators: HashMap<NpoTypeId, TraceGeneratorFn<F>>,
+
+    /// Registered circuit-layer NPO plugins, keyed by type ID.
+    npo_registry: NpoRegistry<F>,
 
     /// Tags for wires (ExprId) - enables probing values by name after execution.
     tag_to_expr: HashMap<String, ExprId>,
@@ -66,7 +69,7 @@ pub enum NonPrimitiveOpParams<F> {
         generator: F,
     },
     Unconstrained {
-        executor: Box<dyn NonPrimitiveExecutor<F>>,
+        executor: Box<dyn HintExecutor<F>>,
     },
 }
 
@@ -102,12 +105,96 @@ impl<F: Field> Clone for NonPrimitiveOpParams<F> {
 #[derive(Debug, Clone)]
 pub struct NonPrimitiveOperationData<F: Field> {
     pub op_id: NonPrimitiveOpId,
-    pub op_type: NonPrimitiveOpType,
+    pub op_type: NpoTypeId,
     /// Input expressions (e.g., for Poseidon2Perm: [in0, in1, in2, in3, mmcs_index_sum, mmcs_bit])
     pub input_exprs: Vec<Vec<ExprId>>,
     /// Output expressions (e.g., for Poseidon2Perm: [out0, out1])
     pub output_exprs: Vec<Vec<ExprId>>,
     pub params: Option<NonPrimitiveOpParams<F>>,
+}
+
+/// Lowering context passed to `NpoCircuitPlugin::lower`, providing access to the
+/// expression-to-witness map and witness allocation function.
+pub struct NpoLoweringContext<'a, F> {
+    pub expr_to_widx: &'a mut HashMap<ExprId, WitnessId>,
+    pub alloc_witness_id: &'a mut dyn FnMut(usize) -> WitnessId,
+    /// Phantom to keep `F` in the type, even though we only carry witness IDs here.
+    _phantom: PhantomData<F>,
+}
+
+impl<'a, F> NpoLoweringContext<'a, F> {
+    pub fn new(
+        expr_to_widx: &'a mut HashMap<ExprId, WitnessId>,
+        alloc_witness_id: &'a mut dyn FnMut(usize) -> WitnessId,
+    ) -> Self {
+        Self {
+            expr_to_widx,
+            alloc_witness_id,
+            _phantom: PhantomData,
+        }
+    }
+}
+
+/// Circuit-layer plugin interface for non-primitive operations.
+///
+/// Implementors are responsible for:
+/// - Lowering their high-level operation description into a single `Op<F>`
+/// - Providing a trace generator for their dedicated table
+/// - Exposing their configuration as an `NpoConfig`
+pub trait NpoCircuitPlugin<F: Field>: Send + Sync {
+    /// Unique type identifier for this NPO (e.g. "poseidon2_perm/baby_bear_d4_w16").
+    fn type_id(&self) -> NpoTypeId;
+
+    /// Convert a high-level NPO operation into a concrete `Op<F>`.
+    ///
+    /// The lowering context gives access to the expression→witness mapping and
+    /// witness allocation for any new outputs.
+    fn lower(
+        &self,
+        data: &NonPrimitiveOperationData<F>,
+        output_exprs: &[(u32, ExprId)],
+        ctx: &mut NpoLoweringContext<'_, F>,
+    ) -> Result<Op<F>, CircuitBuilderError>;
+
+    /// Produce the trace generator for this NPO.
+    fn trace_generator(&self) -> TraceGeneratorFn<F>;
+
+    /// Return plugin-specific configuration for this NPO.
+    fn config(&self) -> NpoConfig;
+}
+
+impl<F: Field> CircuitBuilder<F> {
+    /// Returns the registered `NpoTypeId` for the open_input NPO, if any.
+    ///
+    /// The type ID encodes the proof extension degree D (e.g. `"open_input/d1"`).
+    pub fn open_input_type_id(&self) -> Option<NpoTypeId> {
+        self.npo_registry
+            .keys()
+            .find(|k| k.as_str().starts_with("open_input/"))
+            .cloned()
+    }
+
+    /// Register a circuit-layer NPO plugin.
+    ///
+    /// This:
+    /// - stores the plugin in `npo_registry` for lowering
+    /// - enables the op type in the builder config with the plugin's config
+    /// - registers the plugin's trace generator
+    pub fn register_npo(&mut self, plugin: impl NpoCircuitPlugin<F> + 'static) {
+        let op_type: NpoTypeId = plugin.type_id();
+        let plugin = Arc::new(plugin);
+
+        // Enable op with plugin-provided config.
+        let cfg = plugin.config();
+        self.config.enable_op(op_type.clone(), cfg);
+
+        // Register trace generator.
+        self.non_primitive_trace_generators
+            .insert(op_type.clone(), plugin.trace_generator());
+
+        // Store plugin for lowering.
+        self.npo_registry.insert(op_type, plugin);
+    }
 }
 
 impl<F: Field> Default for CircuitBuilder<F>
@@ -132,25 +219,36 @@ where
             non_primitive_ops: Vec::new(),
             config: BuilderConfig::new(),
             non_primitive_trace_generators: HashMap::new(),
+            npo_registry: HashMap::new(),
             tag_to_expr: HashMap::new(),
             tag_to_op: HashMap::new(),
         }
     }
 
     /// Enables a non-primitive operation type on this builder.
-    pub fn enable_op(&mut self, op: NonPrimitiveOpType, cfg: crate::op::NonPrimitiveOpConfig<F>) {
-        self.config.enable_op(op, cfg);
+    pub fn enable_op(&mut self, op: &NpoTypeId, cfg: NpoConfig) {
+        // Preserve the explicit config for this op type.
+        self.config.enable_op(op.clone(), cfg);
+
+        // Backwards-compatibility: if this is a Poseidon2 op and no plugin has been
+        // registered yet, install a minimal plugin so lowering can proceed.
+        if self.npo_registry.get(op).is_none()
+            && let Some(variant) = op.as_str().strip_prefix("poseidon2_perm/")
+            && let Some(poseidon_cfg) = Poseidon2Config::from_variant_name(variant)
+        {
+            let plugin = Poseidon2CircuitPlugin::<F>::new_config_only(poseidon_cfg);
+            self.register_npo(plugin);
+        }
     }
 
     pub fn enable_open_input<BaseF: Field, const D: usize>(&mut self)
     where
         F: CircuitField + ExtensionField<BaseF>,
     {
-        self.enable_op(NonPrimitiveOpType::OpenInput, NonPrimitiveOpConfig::None);
-        self.non_primitive_trace_generators.insert(
-            NonPrimitiveOpType::OpenInput,
-            generate_open_input_trace::<BaseF, F, D>,
-        );
+        use crate::ops::open_input::{OpenInputCircuitPlugin, generate_open_input_trace};
+        let plugin =
+            OpenInputCircuitPlugin::<BaseF, F, D>::new(generate_open_input_trace::<BaseF, F, D>);
+        self.register_npo(plugin);
     }
 
     /// Enables Poseidon2 permutation operations (one perm per table row).
@@ -194,17 +292,8 @@ where
             output
         });
 
-        self.config.enable_op(
-            NonPrimitiveOpType::Poseidon2Perm(Config::CONFIG),
-            NonPrimitiveOpConfig::Poseidon2Perm {
-                config: Config::CONFIG,
-                exec,
-            },
-        );
-        self.non_primitive_trace_generators.insert(
-            NonPrimitiveOpType::Poseidon2Perm(Config::CONFIG),
-            trace_generator,
-        );
+        let plugin = Poseidon2CircuitPlugin::new_ext(Config::CONFIG, exec, trace_generator);
+        self.register_npo(plugin);
     }
 
     /// Enables Poseidon2 for configs with WIDTH=8 (e.g. Goldilocks).
@@ -244,17 +333,8 @@ where
             }
             output
         });
-        self.config.enable_op(
-            NonPrimitiveOpType::Poseidon2Perm(Config::CONFIG),
-            NonPrimitiveOpConfig::Poseidon2Perm {
-                config: Config::CONFIG,
-                exec,
-            },
-        );
-        self.non_primitive_trace_generators.insert(
-            NonPrimitiveOpType::Poseidon2Perm(Config::CONFIG),
-            trace_generator,
-        );
+        let plugin = Poseidon2CircuitPlugin::new_ext(Config::CONFIG, exec, trace_generator);
+        self.register_npo(plugin);
     }
 
     /// Enables the Poseidon2 permutation operation for base field challenges (D=1).
@@ -287,31 +367,19 @@ where
         let exec: crate::op::Poseidon2PermExecBase<F> =
             Arc::new(move |input: &[F; 16]| perm.permute(*input));
 
-        self.config.enable_op(
-            NonPrimitiveOpType::Poseidon2Perm(Config::CONFIG),
-            crate::op::NonPrimitiveOpConfig::Poseidon2PermBase {
-                config: Config::CONFIG,
-                exec,
-            },
-        );
-        self.non_primitive_trace_generators.insert(
-            NonPrimitiveOpType::Poseidon2Perm(Config::CONFIG),
-            trace_generator,
-        );
+        let plugin = Poseidon2CircuitPlugin::new_base(Config::CONFIG, exec, trace_generator);
+        self.register_npo(plugin);
     }
 
     /// Checks whether an op type is enabled on this builder.
-    fn is_op_enabled(&self, op: &NonPrimitiveOpType) -> bool {
+    fn is_op_enabled(&self, op: &NpoTypeId) -> bool {
         self.config.is_op_enabled(op)
     }
 
-    pub(crate) fn ensure_op_enabled(
-        &self,
-        op: NonPrimitiveOpType,
-    ) -> Result<(), CircuitBuilderError> {
-        // Unconstrained operations are always enable
-        if !self.is_op_enabled(&op) && op != NonPrimitiveOpType::Unconstrained {
-            return Err(CircuitBuilderError::OpNotAllowed { op });
+    pub(crate) fn ensure_op_enabled(&self, op: &NpoTypeId) -> Result<(), CircuitBuilderError> {
+        // Unconstrained operations are always enabled
+        if !self.is_op_enabled(op) && *op != NpoTypeId::unconstrained() {
+            return Err(CircuitBuilderError::OpNotAllowed { op: op.clone() });
         }
         Ok(())
     }
@@ -420,6 +488,21 @@ where
     pub fn mul_add(&mut self, a: ExprId, b: ExprId, c: ExprId) -> ExprId {
         let product = self.mul(a, b);
         self.add(product, c)
+    }
+
+    /// Horner accumulator step: result = acc * alpha + p_at_z - p_at_x
+    ///
+    /// Emits a single HornerAcc ALU operation, avoiding intermediate witnesses
+    /// that would arise from separate mul + add + sub.
+    pub fn horner_acc_step(
+        &mut self,
+        acc: ExprId,
+        alpha: ExprId,
+        p_at_z: ExprId,
+        p_at_x: ExprId,
+    ) -> ExprId {
+        self.expr_builder
+            .add_horner_acc(acc, alpha, p_at_z, p_at_x, "")
     }
 
     /// Multiplies a slice of expressions together.
@@ -548,9 +631,9 @@ where
     /// `output_labels` must have length equal to the op's output arity; each `Some(label)`
     /// creates an `Expr::NonPrimitiveOutput { call, output_idx }` node for that output index.
     /// The returned `Vec<Option<ExprId>>` is aligned with `output_labels`.
-    pub(crate) fn push_non_primitive_op_with_outputs(
+    pub fn push_non_primitive_op_with_outputs(
         &mut self,
-        op_type: NonPrimitiveOpType,
+        op_type: NpoTypeId,
         input_exprs: Vec<Vec<ExprId>>,
         output_labels: Vec<Option<&'static str>>,
         params: Option<NonPrimitiveOpParams<F>>,
@@ -561,15 +644,18 @@ where
         let flattened_inputs: Vec<ExprId> = input_exprs.iter().flatten().copied().collect();
         let call_expr_id =
             self.expr_builder
-                .add_non_primitive_call(op_id, op_type, flattened_inputs, label);
+                .add_non_primitive_call(op_id, &op_type, flattened_inputs, label);
 
         let mut output_exprs: Vec<Vec<ExprId>> = vec![Vec::new(); output_labels.len()];
         let mut outputs: Vec<Option<ExprId>> = vec![None; output_labels.len()];
         for (i, maybe_label) in output_labels.into_iter().enumerate() {
             if let Some(out_label) = maybe_label {
-                let out_expr_id =
-                    self.expr_builder
-                        .add_non_primitive_output(call_expr_id, i as u32, out_label);
+                let out_expr_id = self.expr_builder.add_non_primitive_output(
+                    &op_type,
+                    call_expr_id,
+                    i as u32,
+                    out_label,
+                );
                 output_exprs[i] = vec![out_expr_id];
                 outputs[i] = Some(out_expr_id);
             }
@@ -594,7 +680,7 @@ where
     ///
     /// This is used for creating new unconstrained wires assigned to a non-deterministic values
     /// computed by `hint`.
-    pub(crate) fn push_unconstrained_op<H: NonPrimitiveExecutor<F> + 'static>(
+    pub(crate) fn push_unconstrained_op<H: HintExecutor<F> + 'static>(
         &mut self,
         input_exprs: Vec<Vec<ExprId>>,
         n_outputs: usize,
@@ -602,7 +688,7 @@ where
         label: &'static str,
     ) -> (NonPrimitiveOpId, ExprId, Vec<Option<ExprId>>) {
         self.push_non_primitive_op_with_outputs(
-            NonPrimitiveOpType::Unconstrained,
+            NpoTypeId::unconstrained(),
             input_exprs,
             (0..n_outputs).map(|_| Some(label)).collect(),
             Some(NonPrimitiveOpParams::Unconstrained {
@@ -765,7 +851,7 @@ where
     ) -> Result<(Circuit<F>, HashMap<ExprId, WitnessId>), CircuitBuilderError> {
         // Stage 1: Lower expressions and non-primitives into a single op list
         for data in &self.non_primitive_ops {
-            self.ensure_op_enabled(data.op_type)?;
+            self.ensure_op_enabled(&data.op_type)?;
         }
         let lowerer = ExpressionLowerer::new(
             self.expr_builder.graph(),
@@ -773,6 +859,7 @@ where
             self.expr_builder.pending_connects(),
             self.public_tracker.count(),
             self.witness_alloc,
+            &self.npo_registry,
         );
         let (ops, public_rows, expr_to_widx, public_mappings, witness_count) = lowerer.lower()?;
 
@@ -800,7 +887,7 @@ where
         let mut gen_order: Vec<_> = circuit
             .non_primitive_trace_generators
             .keys()
-            .copied()
+            .cloned()
             .collect();
         gen_order.sort();
         circuit.non_primitive_trace_generator_order = gen_order;
@@ -1174,67 +1261,72 @@ impl<BF: PrimeField64> ExtDecompositionHint<BF> {
     }
 }
 
-impl<BF: PrimeField64, EF: ExtensionField<BF>> NonPrimitiveExecutor<EF>
-    for ExtDecompositionHint<BF>
-{
+impl<BF: PrimeField64, EF: ExtensionField<BF>> HintExecutor<EF> for ExtDecompositionHint<BF> {
     fn execute(
         &self,
-        inputs: &[Vec<crate::WitnessId>],
-        outputs: &[Vec<crate::WitnessId>],
-        ctx: &mut crate::op::ExecutionContext<'_, EF>,
+        inputs: &[crate::WitnessId],
+        outputs: &[crate::WitnessId],
+        witness: &mut [Option<EF>],
     ) -> Result<(), CircuitError> {
-        if inputs.len() != 1 || inputs[0].len() != 1 {
-            return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
-                op: NonPrimitiveOpType::Unconstrained,
-                expected: "1 input".to_string(),
+        if inputs.len() != 1 {
+            return Err(CircuitError::UnconstrainedOpInputLengthMismatch {
+                op: "ExtDecompositionHint".to_string(),
+                expected: 1,
                 got: inputs.len(),
             });
         }
 
         if outputs.len() != EF::DIMENSION {
-            return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
-                op: NonPrimitiveOpType::Unconstrained,
-                expected: format!("{} outputs", EF::DIMENSION),
+            return Err(CircuitError::UnconstrainedOpInputLengthMismatch {
+                op: "ExtDecompositionHint".to_string(),
+                expected: EF::DIMENSION,
                 got: outputs.len(),
             });
         }
 
-        outputs.iter().try_for_each(|out| {
-            if out.len() != 1 {
-                Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
-                    op: NonPrimitiveOpType::Unconstrained,
-                    expected: "1".to_string(),
-                    got: out.len(),
-                })
-            } else {
-                Ok(())
-            }
-        })?;
-
-        let ext_val = ctx.get_witness(inputs[0][0])?;
+        let in_wid = inputs[0];
+        let in_idx = in_wid.0 as usize;
+        let ext_val = witness
+            .get(in_idx)
+            .and_then(|opt| opt.as_ref())
+            .cloned()
+            .ok_or(CircuitError::WitnessNotSet { witness_id: in_wid })?;
         let coeffs = ext_val.as_basis_coefficients_slice();
 
-        for (i, coeff) in coeffs.iter().enumerate() {
-            // Embed base field coefficient into extension field (zeroed higher coeffs)
+        for (i, &out_wid) in outputs.iter().enumerate() {
+            let coeff = coeffs
+                .get(i)
+                .ok_or(CircuitError::InvalidPreprocessedValues)?;
             let mut embedded = vec![BF::ZERO; EF::DIMENSION];
             embedded[0] = *coeff;
             let embedded_ef = EF::from_basis_coefficients_slice(&embedded)
                 .expect("embedded coefficients are valid");
-            ctx.set_witness(outputs[i][0], embedded_ef)?;
+
+            let out_idx = out_wid.0 as usize;
+            if out_idx >= witness.len() {
+                return Err(CircuitError::WitnessIdOutOfBounds {
+                    witness_id: out_wid,
+                });
+            }
+            let slot = &mut witness[out_idx];
+            if let Some(existing) = slot.as_ref() {
+                if *existing != embedded_ef {
+                    return Err(CircuitError::WitnessConflict {
+                        witness_id: out_wid,
+                        existing: format!("{existing:?}"),
+                        new: format!("{embedded_ef:?}"),
+                        expr_ids: vec![],
+                    });
+                }
+            } else {
+                *slot = Some(embedded_ef);
+            }
         }
 
         Ok(())
     }
 
-    fn op_type(&self) -> &NonPrimitiveOpType {
-        &NonPrimitiveOpType::Unconstrained
-    }
-
-    fn as_any(&self) -> &dyn core::any::Any {
-        self
-    }
-
-    fn boxed(&self) -> alloc::boxed::Box<dyn NonPrimitiveExecutor<EF>> {
+    fn boxed(&self) -> alloc::boxed::Box<dyn HintExecutor<EF>> {
         Box::new(self.clone())
     }
 }
@@ -1259,68 +1351,70 @@ impl<BF: PrimeField64> BinaryDecompositionHint<BF> {
     }
 }
 
-impl<BF: PrimeField64, EF: ExtensionField<BF>> NonPrimitiveExecutor<EF>
-    for BinaryDecompositionHint<BF>
-{
+impl<BF: PrimeField64, EF: ExtensionField<BF>> HintExecutor<EF> for BinaryDecompositionHint<BF> {
     fn execute(
         &self,
-        inputs: &[Vec<crate::WitnessId>],
-        outputs: &[Vec<crate::WitnessId>],
-        ctx: &mut crate::op::ExecutionContext<'_, EF>,
+        inputs: &[crate::WitnessId],
+        outputs: &[crate::WitnessId],
+        witness: &mut [Option<EF>],
     ) -> Result<(), CircuitError> {
-        if inputs.len() != 1 || inputs[0].len() != 1 {
-            return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
-                op: NonPrimitiveOpType::Unconstrained,
-                expected: 1.to_string(),
+        if inputs.len() != 1 {
+            return Err(CircuitError::UnconstrainedOpInputLengthMismatch {
+                op: "BinaryDecompositionHint".to_string(),
+                expected: 1,
                 got: inputs.len(),
             });
         }
 
         let felt_bits = BF::bits();
-
         if outputs.len() > felt_bits * EF::DIMENSION {
-            return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
-                op: NonPrimitiveOpType::Unconstrained,
-                expected: format!("<= {}", felt_bits * EF::DIMENSION),
-                got: outputs.len(),
+            return Err(CircuitError::BinaryDecompositionTooManyBits {
+                expected: felt_bits * EF::DIMENSION,
+                n_bits: outputs.len(),
             });
         }
-        outputs.iter().try_for_each(|out| {
-            if out.len() != 1 {
-                Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
-                    op: NonPrimitiveOpType::Unconstrained,
-                    expected: 1.to_string(),
-                    got: out.len(),
-                })
-            } else {
-                Ok(())
-            }
-        })?;
 
-        let ext_val = ctx.get_witness(inputs[0][0])?;
+        let in_wid = inputs[0];
+        let in_idx = in_wid.0 as usize;
+        let ext_val = witness
+            .get(in_idx)
+            .and_then(|opt| opt.as_ref())
+            .cloned()
+            .ok_or(CircuitError::WitnessNotSet { witness_id: in_wid })?;
 
-        let bits = ext_val
+        let bits_iter = ext_val
             .as_basis_coefficients_slice()
             .iter()
             .map(BF::as_canonical_u64)
             .flat_map(|val| (0..felt_bits).map(move |i| EF::from_bool(val >> i & 1 == 1)))
             .take(outputs.len());
 
-        for (out, bit) in outputs.iter().zip(bits) {
-            ctx.set_witness(out[0], bit)?;
+        for (out_wid, bit) in outputs.iter().zip(bits_iter) {
+            let out_idx = out_wid.0 as usize;
+            if out_idx >= witness.len() {
+                return Err(CircuitError::WitnessIdOutOfBounds {
+                    witness_id: *out_wid,
+                });
+            }
+            let slot = &mut witness[out_idx];
+            if let Some(existing) = slot.as_ref() {
+                if *existing != bit {
+                    return Err(CircuitError::WitnessConflict {
+                        witness_id: *out_wid,
+                        existing: format!("{existing:?}"),
+                        new: format!("{bit:?}"),
+                        expr_ids: vec![],
+                    });
+                }
+            } else {
+                *slot = Some(bit);
+            }
         }
+
         Ok(())
     }
 
-    fn op_type(&self) -> &crate::NonPrimitiveOpType {
-        &crate::NonPrimitiveOpType::Unconstrained
-    }
-
-    fn as_any(&self) -> &dyn core::any::Any {
-        self
-    }
-
-    fn boxed(&self) -> alloc::boxed::Box<dyn NonPrimitiveExecutor<EF>> {
+    fn boxed(&self) -> alloc::boxed::Box<dyn HintExecutor<EF>> {
         Box::new(self.clone())
     }
 }
@@ -1332,7 +1426,7 @@ mod tests {
     use p3_field::extension::BinomialExtensionField;
 
     use super::*;
-    use crate::op::NonPrimitiveOpConfig;
+    use crate::op::{NpoConfig, NpoTypeId};
 
     #[test]
     fn test_new_builder_initialization() {
@@ -1611,8 +1705,8 @@ mod tests {
 
         let mut builder = CircuitBuilder::<Ext4>::new();
         builder.enable_op(
-            NonPrimitiveOpType::Poseidon2Perm(Poseidon2Config::BabyBearD4Width16),
-            NonPrimitiveOpConfig::None,
+            &NpoTypeId::poseidon2_perm(Poseidon2Config::BabyBearD4Width16),
+            NpoConfig::new(()),
         );
 
         let z = builder.define_const(Ext4::ZERO);
