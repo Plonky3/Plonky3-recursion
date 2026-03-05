@@ -12,6 +12,7 @@ This library provides a **fixed recursive verifier** for Plonky3 STARK (both `p3
 - **Batch STARK Support**: Verify multiple proofs in a single batch
 - **Modular Circuit Builder**: Build circuits with primitive operations (add, mul, etc.) and non-primitive operations (Poseidon2)
 - **FRI-based PCS**: Full support for FRI (Fast Reed-Solomon Interactive) polynomial commitment scheme verification in-circuit
+- **ZK support**: Full support for Zero-Knowledge.
 
 ## Production Use
 
@@ -240,7 +241,6 @@ For intermediate recursive layers, consider relaxed parameters (fewer queries, h
 
 ## Current Limitations
 
-- **ZK Mode Wiring**: Use a ZK-capable PCS (for example `HidingFriPcs`) and matching recursive proof targets/config wiring.
 - **Fixed Configurations**: Field extensions are currently not fully parametrizable.
 
 ## Documentation

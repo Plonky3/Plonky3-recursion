@@ -65,8 +65,6 @@ The circuit performs the full FRI verification protocol:
 
 The circuit challenger implements a duplex sponge construction identical to Plonky3's native `DuplexChallenger`. It absorbs commitments and opened values in the same order as the native verifier, producing identical challenges. See [Hashing and Fiat-Shamir](./hashing.md) for details on transcript compatibility.
 
-## Current limitations
-
 ### ZK mode
 
 The recursive verifier supports ZK-enabled STARK configurations, including batch recursion transcript/randomization handling.
@@ -74,6 +72,8 @@ The recursive verifier supports ZK-enabled STARK configurations, including batch
 ### Challenger Poseidon2: CTL-verified
 
 The Fiat-Shamir challenger's Poseidon2 permutations are connected to the Poseidon2 AIR table via cross-table lookups (CTLs). The circuit builder's `add_poseidon2_perm_for_challenger` / `add_poseidon2_perm_for_challenger_base` use the standard Poseidon2 non-primitive op with full input and rate-output CTL exposure; the executor runs the real permutation and the lookup argument enforces that the (input, output) pair appears in the Poseidon2 table. The MMCS Poseidon2 calls (Merkle verification) are also CTL-verified.
+
+## Current limitations
 
 ### Fixed Poseidon2 parameters
 

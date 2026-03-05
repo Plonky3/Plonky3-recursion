@@ -2,9 +2,6 @@
 
 This page tracks planned improvements and known optimization opportunities.
 
-## Soundness
-- **ZK mode**: Recursive verifier supports zero-knowledge STARK trace randomization.
-
 ## Performance
 
 - **Eliminate decompose/recompose round-trips**: Base field values are currently lifted to extension field targets and then repacked before MMCS verification, which decomposes them again. Keeping values in base coefficient form throughout would eliminate ~15-20% of circuit operations.

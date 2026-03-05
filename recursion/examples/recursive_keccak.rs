@@ -40,32 +40,44 @@
 //!     --query-pow-bits 16
 //! ```
 
+use std::rc::Rc;
 use std::sync::Arc;
 
 use clap::{Parser, ValueEnum};
+use p3_batch_stark::{ProverData, StarkInstance, prove_batch, verify_batch};
 use p3_challenger::DuplexChallenger;
 use p3_circuit::ops::generate_poseidon2_trace;
 use p3_circuit::{CircuitBuilder, CircuitRunner, NonPrimitiveOpId};
-use p3_circuit_prover::{BatchStarkProver, ConstraintProfile, TablePacking};
+use p3_circuit_prover::batch_stark_prover::{poseidon2_air_builders_d2, poseidon2_air_builders_d4};
+use p3_circuit_prover::common::{NpoPreprocessor, get_airs_and_degrees_with_prep};
+use p3_circuit_prover::{
+    BatchStarkProver, CircuitProverData, ConstraintProfile, Poseidon2Preprocessor, TablePacking,
+};
 use p3_commit::{ExtensionMmcs, Pcs};
 use p3_dft::Radix2DitParallel;
-use p3_field::Field;
 use p3_field::extension::BinomialExtensionField;
-use p3_fri::{FriParameters, TwoAdicFriPcs};
+use p3_field::{Field, PrimeCharacteristicRing};
+use p3_fri::{FriParameters, HidingFriPcs, TwoAdicFriPcs};
 use p3_keccak_air::KeccakAir;
 use p3_lookup::logup::LogUpGadget;
+use p3_matrix::Matrix;
+use p3_matrix::dense::RowMajorMatrix;
 use p3_merkle_tree::MerkleTreeMmcs;
+use p3_recursion::pcs::fri::HidingFriProofTargets;
 use p3_recursion::pcs::{
     InputProofTargets, MerkleCapTargets, RecValMmcs, set_fri_mmcs_private_data,
 };
 use p3_recursion::traits::{RecursiveAir, RecursivePcs};
 use p3_recursion::verifier::VerificationError;
 use p3_recursion::{
-    BatchOnly, FriRecursionBackend, FriRecursionConfig, FriVerifierParams, Poseidon2Config,
-    ProveNextLayerParams, RecursionInput, RecursionOutput, build_and_prove_next_layer,
+    BatchOnly, BatchStarkVerifierInputsBuilder, FriRecursionBackend, FriRecursionConfig,
+    FriVerifierParams, Poseidon2Config, ProveNextLayerParams, RecursionInput, RecursionOutput,
+    build_and_prove_next_layer, verify_batch_circuit,
 };
 use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
 use p3_uni_stark::{StarkConfig, StarkGenericConfig, Val, prove, verify};
+use rand::SeedableRng;
+use rand::rngs::SmallRng as ZkRng;
 use serde::Serialize;
 use tracing::info;
 use tracing_forest::ForestLayer;
@@ -169,6 +181,13 @@ struct Args {
         help = "Targeted security level (conjectured)"
     )]
     security_level: usize,
+
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "Use ZK (hiding) PCS for base proof"
+    )]
+    zk: bool,
 }
 
 fn init_logger() {
@@ -208,31 +227,61 @@ fn main() {
 
     match args.field {
         FieldOption::KoalaBear => {
-            koala_bear::run(
-                args.num_hashes,
-                args.num_recursive_layers,
-                &fri_params,
-                &table_packing,
-                args.security_level,
-            );
+            if args.zk {
+                koala_bear::run_zk(
+                    args.num_hashes,
+                    args.num_recursive_layers,
+                    &fri_params,
+                    &table_packing,
+                    args.security_level,
+                );
+            } else {
+                koala_bear::run(
+                    args.num_hashes,
+                    args.num_recursive_layers,
+                    &fri_params,
+                    &table_packing,
+                    args.security_level,
+                );
+            }
         }
         FieldOption::BabyBear => {
-            baby_bear::run(
-                args.num_hashes,
-                args.num_recursive_layers,
-                &fri_params,
-                &table_packing,
-                args.security_level,
-            );
+            if args.zk {
+                baby_bear::run_zk(
+                    args.num_hashes,
+                    args.num_recursive_layers,
+                    &fri_params,
+                    &table_packing,
+                    args.security_level,
+                );
+            } else {
+                baby_bear::run(
+                    args.num_hashes,
+                    args.num_recursive_layers,
+                    &fri_params,
+                    &table_packing,
+                    args.security_level,
+                );
+            }
         }
         FieldOption::Goldilocks => {
-            goldilocks::run(
-                args.num_hashes,
-                args.num_recursive_layers,
-                &fri_params,
-                &table_packing,
-                args.security_level,
-            );
+            if args.zk {
+                goldilocks::run_zk(
+                    args.num_hashes,
+                    args.num_recursive_layers,
+                    &fri_params,
+                    &table_packing,
+                    args.security_level,
+                );
+            } else {
+                goldilocks::run(
+                    args.num_hashes,
+                    args.num_recursive_layers,
+                    &fri_params,
+                    &table_packing,
+                    args.security_level,
+                );
+            }
         }
     }
 }
@@ -241,6 +290,26 @@ fn default_goldilocks_poseidon2_8() -> p3_goldilocks::Poseidon2Goldilocks<8> {
     use rand::SeedableRng;
     let mut rng = rand::rngs::SmallRng::seed_from_u64(1);
     p3_goldilocks::Poseidon2Goldilocks::<8>::new_from_rng_128(&mut rng)
+}
+
+#[derive(Clone)]
+struct ZkAddAir;
+
+impl<Val: p3_field::Field> p3_air::BaseAir<Val> for ZkAddAir {
+    fn width(&self) -> usize {
+        3
+    }
+}
+
+impl<AB: p3_air::AirBuilder> p3_air::Air<AB> for ZkAddAir
+where
+    AB::F: p3_field::Field,
+{
+    fn eval(&self, builder: &mut AB) {
+        let main = builder.main();
+        let row = main.row_slice(0).expect("row must exist");
+        builder.assert_zero(row[0] + row[1] - row[2]);
+    }
 }
 
 macro_rules! define_field_module {
@@ -258,6 +327,7 @@ macro_rules! define_field_module {
         $enable_poseidon2_fn:ident,
         $register_poseidon2_fn:ident,
         $default_perm_circuit:path,
+        $poseidon2_air_builders_fn:ident,
         $backend_ctor:ident,
         $backend_width:expr,
         $backend_rate:expr
@@ -435,6 +505,223 @@ macro_rules! define_field_module {
                 }
             }
 
+            type MyPcsZk = HidingFriPcs<F, Dft, ValMmcs, ChallengeMmcs, ZkRng>;
+            type MyConfigZk = StarkConfig<MyPcsZk, Challenge, Challenger>;
+
+            type InnerFriZk = HidingFriProofTargets<
+                F,
+                Challenge,
+                p3_recursion::pcs::RecExtensionValMmcs<
+                    F,
+                    Challenge,
+                    DIGEST_ELEMS,
+                    RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>,
+                >,
+                InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>>,
+                p3_recursion::pcs::Witness<F>,
+            >;
+
+            fn create_zk_config(fp: &FriParams, security_level: usize) -> MyConfigZk {
+                let perm = $default_perm();
+                let hash = MyHash::new(perm.clone());
+                let compress = MyCompress::new(perm.clone());
+                let val_mmcs = ValMmcs::new(hash, compress, fp.cap_height);
+                let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
+                let dft = Dft::default();
+
+                let num_queries = (security_level - fp.query_pow_bits) / fp.log_blowup;
+
+                let fri_params_obj = FriParameters {
+                    max_log_arity: fp.max_log_arity,
+                    log_blowup: fp.log_blowup,
+                    log_final_poly_len: fp.log_final_poly_len,
+                    num_queries,
+                    commit_proof_of_work_bits: fp.commit_pow_bits,
+                    query_proof_of_work_bits: fp.query_pow_bits,
+                    mmcs: challenge_mmcs,
+                };
+                let pcs = MyPcsZk::new(dft, val_mmcs, fri_params_obj, 2, ZkRng::seed_from_u64(42));
+                let challenger = Challenger::new(perm);
+                MyConfigZk::new(pcs, challenger)
+            }
+
+            fn generate_zk_add_trace(rows: usize) -> RowMajorMatrix<F> {
+                let rows = rows.max(1).next_power_of_two();
+                let mut vals = F::zero_vec(rows * 3);
+                for i in 0..rows {
+                    let a = F::from_usize(i);
+                    let b = F::from_usize(i + 1);
+                    vals[i * 3] = a;
+                    vals[i * 3 + 1] = b;
+                    vals[i * 3 + 2] = a + b;
+                }
+                RowMajorMatrix::new(vals, 3)
+            }
+
+            pub fn run_zk(
+                num_hashes: usize,
+                num_recursive_layers: usize,
+                fri_params: &FriParams,
+                table_packing: &TablePacking,
+                security_level: usize,
+            ) {
+                let _ = num_hashes;
+                let config_zk = create_zk_config(fri_params, security_level);
+                let air = ZkAddAir;
+                let trace = generate_zk_add_trace(64);
+                let pvs: Vec<Vec<F>> = vec![vec![]];
+
+                let instances = vec![StarkInstance {
+                    air: &air,
+                    trace,
+                    public_values: pvs[0].clone(),
+                    lookups: vec![],
+                }];
+                let prover_data_zk = ProverData::from_instances(&config_zk, &instances);
+                let common_0 = &prover_data_zk.common;
+
+                let proof_zk = prove_batch(&config_zk, &instances, &prover_data_zk);
+
+                verify_batch(&config_zk, core::slice::from_ref(&air), &proof_zk, &pvs, common_0)
+                    .expect("Failed to verify base ZK proof");
+                eprintln!("ZK layer 0: proved with HidingFriPcs");
+
+                if num_recursive_layers == 0 {
+                    info!("ZK proof verified successfully");
+                    return;
+                }
+
+                let fri_verifier_params = create_fri_verifier_params(fri_params);
+                let config_rec = config_with_fri_params(fri_params, security_level);
+
+                let perm_rec = $default_perm_circuit();
+                let mut circuit_builder = CircuitBuilder::new();
+                circuit_builder.$enable_poseidon2_fn::<$poseidon2_circuit_config, _>(
+                    generate_poseidon2_trace::<Challenge, $poseidon2_circuit_config>,
+                    perm_rec,
+                );
+
+                let lookup_gadget = LogUpGadget::new();
+                let air_public_counts = vec![0usize; proof_zk.opened_values.instances.len()];
+                let verifier_inputs = BatchStarkVerifierInputsBuilder::<
+                    MyConfigZk,
+                    MerkleCapTargets<F, DIGEST_ELEMS>,
+                    InnerFriZk,
+                >::allocate(&mut circuit_builder, &proof_zk, common_0, &air_public_counts);
+
+                let mmcs_op_ids = verify_batch_circuit::<
+                    _,
+                    MyConfigZk,
+                    MerkleCapTargets<F, DIGEST_ELEMS>,
+                    InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>>,
+                    InnerFriZk,
+                    _,
+                    _,
+                    WIDTH,
+                    RATE,
+                >(
+                    &config_zk,
+                    &[air],
+                    &mut circuit_builder,
+                    &verifier_inputs.proof_targets,
+                    &verifier_inputs.air_public_targets,
+                    &fri_verifier_params,
+                    &verifier_inputs.common_data,
+                    &lookup_gadget,
+                    $poseidon2_config,
+                )
+                .expect("Failed to build ZK verification circuit");
+
+                let verification_circuit = circuit_builder.build().unwrap();
+                let public_inputs = verifier_inputs.pack_values(&pvs, &proof_zk, common_0);
+
+                let table_packing_1 = table_packing
+                    .with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup);
+                let poseidon2_prep: [Box<dyn NpoPreprocessor<F>>; 1] =
+                    [Box::new(Poseidon2Preprocessor)];
+                let (rec_airs_degrees, rec_preprocessed_columns) =
+                    get_airs_and_degrees_with_prep::<ConfigWithFriParams, _, D>(
+                        &verification_circuit,
+                        table_packing_1,
+                        &poseidon2_prep,
+                        &$poseidon2_air_builders_fn(),
+                        ConstraintProfile::Standard,
+                    )
+                    .unwrap();
+                let (mut rec_airs, rec_degrees): (Vec<_>, Vec<_>) =
+                    rec_airs_degrees.into_iter().unzip();
+
+                let mut runner_1 = verification_circuit.clone().runner();
+                runner_1.set_public_inputs(&public_inputs).unwrap();
+                if !mmcs_op_ids.is_empty() {
+                    set_fri_mmcs_private_data::<
+                        F,
+                        Challenge,
+                        ChallengeMmcs,
+                        ValMmcs,
+                        MyHash,
+                        MyCompress,
+                        DIGEST_ELEMS,
+                    >(&mut runner_1, &mmcs_op_ids, &proof_zk.opening_proof.1)
+                    .expect("Failed to set MMCS private data for ZK proof");
+                }
+                let traces_1 = runner_1.run().unwrap();
+
+                let prover_data_1 =
+                    ProverData::from_airs_and_degrees(&config_rec, &mut rec_airs, &rec_degrees);
+                let circuit_prover_data_1 =
+                    CircuitProverData::new(prover_data_1, rec_preprocessed_columns);
+
+                let mut prover_1 = BatchStarkProver::new(config_rec.clone())
+                    .with_table_packing(table_packing_1);
+                prover_1.$register_poseidon2_fn($poseidon2_config);
+                let proof_1 = prover_1
+                    .prove_all_tables(&traces_1, &circuit_prover_data_1)
+                    .expect("Failed to prove ZK recursive layer 1");
+                report_proof_size(&proof_1);
+                prover_1
+                    .verify_all_tables(&proof_1, circuit_prover_data_1.common_data())
+                    .expect("Failed to verify ZK recursive layer 1");
+                eprintln!("ZK layer 1: recursive ZK verification proved with TwoAdicFriPcs");
+
+                if num_recursive_layers == 1 {
+                    info!("ZK recursive proof verified successfully");
+                    return;
+                }
+
+                let backend = FriRecursionBackend::<$backend_width, $backend_rate>::$backend_ctor(
+                    $poseidon2_config,
+                );
+                let mut output = RecursionOutput(proof_1, Rc::new(circuit_prover_data_1));
+
+                for layer in 2..=num_recursive_layers {
+                    let params = ProveNextLayerParams {
+                        table_packing: table_packing
+                            .with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup),
+                        use_npos_in_circuit: true,
+                        constraint_profile: ConstraintProfile::Standard,
+                    };
+                    let config = config_with_fri_params(fri_params, security_level);
+                    let input = output.into_recursion_input::<BatchOnly>();
+                    let out = build_and_prove_next_layer::<ConfigWithFriParams, _, _, D>(
+                        &input, &config, &backend, &params,
+                    )
+                    .unwrap_or_else(|e| panic!("Failed to prove ZK layer {layer}: {e:?}"));
+
+                    report_proof_size(&out.0);
+                    let mut prover = BatchStarkProver::new(config.clone())
+                        .with_table_packing(params.table_packing);
+                    prover.$register_poseidon2_fn($poseidon2_config);
+                    prover
+                        .verify_all_tables(&out.0, out.1.common_data())
+                        .unwrap_or_else(|e| panic!("Failed to verify ZK layer {layer}: {e:?}"));
+
+                    output = out;
+                }
+
+                info!("ZK recursive proof verified successfully");
+            }
+
             pub fn run(num_hashes: usize, num_recursive_layers: usize, fri_params: &FriParams, table_packing: &TablePacking, security_level: usize) {
                 let keccak_air = KeccakAir {};
                 let min_trace_rows: usize =
@@ -533,6 +820,7 @@ define_field_module!(
     enable_poseidon2_perm,
     register_poseidon2_table,
     p3_koala_bear::default_koalabear_poseidon2_16,
+    poseidon2_air_builders_d4,
     new_d4,
     16,
     8
@@ -552,6 +840,7 @@ define_field_module!(
     enable_poseidon2_perm,
     register_poseidon2_table,
     p3_baby_bear::default_babybear_poseidon2_16,
+    poseidon2_air_builders_d4,
     new_d4,
     16,
     8
@@ -571,6 +860,7 @@ define_field_module!(
     enable_poseidon2_perm_width_8,
     register_poseidon2_table_d2,
     default_goldilocks_poseidon2_8,
+    poseidon2_air_builders_d2,
     new_d2,
     8,
     4

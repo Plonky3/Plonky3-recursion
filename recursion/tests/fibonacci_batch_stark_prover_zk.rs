@@ -2,10 +2,15 @@ mod common;
 
 use p3_air::{Air, AirBuilder, BaseAir};
 use p3_batch_stark::{ProverData, StarkInstance, prove_batch, verify_batch};
+use p3_circuit::CircuitBuilder;
 use p3_circuit::ops::generate_poseidon2_trace;
-use p3_circuit::{CircuitBuilder, Op};
+use p3_circuit_prover::batch_stark_prover::poseidon2_air_builders_d4;
+use p3_circuit_prover::common::{NpoPreprocessor, get_airs_and_degrees_with_prep};
+use p3_circuit_prover::{
+    BatchStarkProver, CircuitProverData, ConstraintProfile, Poseidon2Preprocessor, TablePacking,
+};
 use p3_field::Field;
-use p3_fri::{HidingFriPcs, create_test_fri_params};
+use p3_fri::{HidingFriPcs, TwoAdicFriPcs, create_test_fri_params};
 use p3_koala_bear::default_koalabear_poseidon2_16;
 use p3_lookup::logup::LogUpGadget;
 use p3_matrix::Matrix;
@@ -15,6 +20,7 @@ use p3_recursion::pcs::fri::{
     FriVerifierParams, HidingFriProofTargets, InputProofTargets, MerkleCapTargets,
     RecExtensionValMmcs, RecValMmcs, Witness,
 };
+use p3_recursion::pcs::set_fri_mmcs_private_data;
 use p3_recursion::{
     BatchStarkVerifierInputsBuilder, Poseidon2Config, VerificationError, verify_batch_circuit,
 };
@@ -26,6 +32,9 @@ use crate::common::koala_bear_params::{
     Challenge, ChallengeMmcs, Challenger, DIGEST_ELEMS, Dft, F, MyCompress, MyHash, RATE, ValMmcs,
     WIDTH,
 };
+
+// Non-ZK config used for the outer recursive proof of the verification circuit.
+type MyConfig = StarkConfig<TwoAdicFriPcs<F, Dft, ValMmcs, ChallengeMmcs>, Challenge, Challenger>;
 
 type MyPcsZk = HidingFriPcs<F, Dft, ValMmcs, ChallengeMmcs, SmallRng>;
 type MyConfigZk = StarkConfig<MyPcsZk, Challenge, Challenger>;
@@ -76,17 +85,18 @@ fn generate_add_trace<Val: Field>(rows: usize) -> RowMajorMatrix<Val> {
     RowMajorMatrix::new(values, width)
 }
 
+/// Full end-to-end ZK recursive verification test.
+///
+/// This test proves an AddAir statement with HidingFriPcs (ZK), then builds and
+/// runs a recursive verification circuit for that ZK proof, and finally proves
+/// the verification circuit itself with another BatchStarkProver.
 #[test]
 fn test_batch_verifier_zk_hiding_fri() -> Result<(), VerificationError> {
     let air = AddAir;
-    eprintln!(
-        "main_next_cols={}, prep_next_cols={}",
-        <AddAir as p3_air::BaseAir<F>>::main_next_row_columns(&air).len(),
-        <AddAir as p3_air::BaseAir<F>>::preprocessed_next_row_columns(&air).len()
-    );
     let trace = generate_add_trace::<F>(1 << 6);
     let pvs = vec![vec![]];
 
+    // --- Step 1: Prove the AddAir with HidingFriPcs ---
     let perm = default_koalabear_poseidon2_16();
     let hash = MyHash::new(perm.clone());
     let compress = MyCompress::new(perm.clone());
@@ -111,6 +121,7 @@ fn test_batch_verifier_zk_hiding_fri() -> Result<(), VerificationError> {
 
     verify_batch(&config_proving, &[air], &batch_stark_proof, &pvs, common).unwrap();
 
+    // --- Step 2: Build the recursive verification circuit ---
     let perm2 = default_koalabear_poseidon2_16();
     let hash2 = MyHash::new(perm2.clone());
     let compress2 = MyCompress::new(perm2.clone());
@@ -156,49 +167,81 @@ fn test_batch_verifier_zk_hiding_fri() -> Result<(), VerificationError> {
     let verification_circuit = circuit_builder.build().unwrap();
     let public_inputs = verifier_inputs.pack_values(&pvs, &batch_stark_proof, common);
     assert_eq!(public_inputs.len(), verification_circuit.public_flat_len);
-    {
-        use std::collections::HashMap;
-        let mut first_seen: HashMap<u32, usize> = HashMap::new();
-        for (i, w) in verification_circuit.public_rows.iter().enumerate() {
-            if let Some(prev) = first_seen.insert(w.0, i) {
-                assert_eq!(
-                    public_inputs[prev], public_inputs[i],
-                    "conflicting public inputs assigned to same witness {} at positions {} and {}",
-                    w.0, prev, i
-                );
-            }
-        }
-    }
 
-    for (i, op) in verification_circuit.ops.iter().enumerate() {
-        match op {
-            Op::Const { out, val } if out.0 == 0 => {
-                eprintln!("op[{i}] writes w0 as Const({val:?})");
-            }
-            Op::Public { out, public_pos } if out.0 == 0 => {
-                eprintln!("op[{i}] writes w0 as Public(pos={public_pos})");
-            }
-            Op::Alu { out, kind, .. } if out.0 == 0 => {
-                eprintln!("op[{i}] writes w0 as Alu({kind:?})");
-            }
-            Op::Hint { outputs, .. } if outputs.iter().any(|w| w.0 == 0) => {
-                eprintln!("op[{i}] writes w0 as Hint");
-            }
-            Op::NonPrimitiveOpWithExecutor { outputs, .. }
-                if outputs.iter().flatten().any(|w| w.0 == 0) =>
-            {
-                eprintln!("op[{i}] writes w0 as NonPrimitive");
-            }
-            _ => {}
-        }
-    }
-
-    let mut verification_runner = verification_circuit.runner();
+    // --- Step 3: Run the verification circuit ---
+    let mut verification_runner = verification_circuit.clone().runner();
     verification_runner
         .set_public_inputs(&public_inputs)
         .unwrap();
-    assert!(mmcs_op_ids.is_empty());
 
-    let _verification_traces = verification_runner.run().unwrap();
+    // HidingFriPcs proof is (random_opened_values, inner_fri_proof); pass the inner part.
+    // With test FRI params (num_queries = 0), there may be no Merkle openings.
+    if !mmcs_op_ids.is_empty() {
+        set_fri_mmcs_private_data::<
+            F,
+            Challenge,
+            ChallengeMmcs,
+            ValMmcs,
+            MyHash,
+            MyCompress,
+            DIGEST_ELEMS,
+        >(
+            &mut verification_runner,
+            &mmcs_op_ids,
+            &batch_stark_proof.opening_proof.1,
+        )
+        .expect("Failed to set MMCS private data for ZK proof");
+    }
+
+    let verification_traces = verification_runner.run().unwrap();
+
+    // --- Step 4: Prove the verification circuit itself ---
+    // Use non-ZK PCS for the outer recursive proof; ZK is only required for the inner proof.
+    let perm3 = default_koalabear_poseidon2_16();
+    let hash3 = MyHash::new(perm3.clone());
+    let compress3 = MyCompress::new(perm3.clone());
+    let val_mmcs3 = ValMmcs::new(hash3, compress3, 0);
+    let challenge_mmcs3 = ChallengeMmcs::new(val_mmcs3.clone());
+    let dft3 = Dft::default();
+    let fri_params3 = create_test_fri_params(challenge_mmcs3, 0);
+    let pcs3 = TwoAdicFriPcs::new(dft3, val_mmcs3, fri_params3);
+    let challenger3 = Challenger::new(perm3);
+    let config3 = MyConfig::new(pcs3, challenger3);
+
+    let verification_table_packing = TablePacking::new(1, 8);
+    let poseidon2_config = Poseidon2Config::KoalaBearD4Width16;
+    let poseidon2_prep: [Box<dyn NpoPreprocessor<F>>; 1] = [Box::new(Poseidon2Preprocessor)];
+    let (verification_airs_degrees, verification_preprocessed_columns) =
+        get_airs_and_degrees_with_prep::<MyConfig, _, 4>(
+            &verification_circuit,
+            verification_table_packing,
+            &poseidon2_prep,
+            &poseidon2_air_builders_d4(),
+            ConstraintProfile::Standard,
+        )
+        .unwrap();
+    let (mut verification_airs, verification_degrees): (Vec<_>, Vec<usize>) =
+        verification_airs_degrees.into_iter().unzip();
+
+    let verification_prover_data =
+        ProverData::from_airs_and_degrees(&config3, &mut verification_airs, &verification_degrees);
+    let verification_circuit_prover_data =
+        CircuitProverData::new(verification_prover_data, verification_preprocessed_columns);
+
+    let mut verification_prover =
+        BatchStarkProver::new(config3).with_table_packing(verification_table_packing);
+    verification_prover.register_poseidon2_table(poseidon2_config);
+
+    let verification_proof = verification_prover
+        .prove_all_tables(&verification_traces, &verification_circuit_prover_data)
+        .expect("Failed to prove ZK verification circuit");
+
+    verification_prover
+        .verify_all_tables(
+            &verification_proof,
+            verification_circuit_prover_data.common_data(),
+        )
+        .expect("Failed to verify proof of ZK verification circuit");
+
     Ok(())
 }
