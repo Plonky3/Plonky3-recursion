@@ -123,7 +123,7 @@ where
         match &data.op_type {
             NonPrimitiveOpType::OpenInput => {
                 assert_eq!(data.input_exprs.len(), 3);
-                assert!(data.output_exprs.len() <= 1); // Only the last OpenInput op can have an output, and it has at most 1 output.
+                assert!(data.output_exprs.len() <= 1);
 
                 let inputs_widx = data
                     .input_exprs
@@ -151,12 +151,25 @@ where
                     .collect::<Result<Vec<Vec<WitnessId>>, _>>()?;
 
                 let is_last = !outputs_widx[0].is_empty();
-                let executor = OpenInputExecutor::new(is_last);
+
+                let executor: Box<dyn crate::op::NonPrimitiveExecutor<F>> =
+                    match data.params.as_ref() {
+                        Some(NonPrimitiveOpParams::EvalPoint {
+                            is_last,
+                            g_power,
+                            generator,
+                        }) => Box::new(
+                            crate::ops::open_input::EvalPointExecutor::new(
+                                *is_last, *g_power, *generator,
+                            ),
+                        ),
+                        _ => Box::new(OpenInputExecutor::new(is_last)),
+                    };
 
                 ops.push(Op::NonPrimitiveOpWithExecutor {
                     inputs: inputs_widx,
                     outputs: outputs_widx,
-                    executor: Box::new(executor),
+                    executor,
                     op_id: data.op_id,
                 });
             }

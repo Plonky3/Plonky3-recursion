@@ -70,7 +70,9 @@ impl OpenInputProver {
 
         let min_height = packing.min_trace_height();
         let preprocessed = OpenInputAir::<Val<SC>, D>::trace_to_preprocessed(trace);
+        let generator = Val::<SC>::GENERATOR;
         let air = OpenInputAir::<Val<SC>, D>::new_with_preprocessed(w_binomial, preprocessed)
+            .with_generator(generator)
             .with_min_height(min_height);
 
         // Convert base-field rows (D coefficients each) to extension-field rows (1 EF element
@@ -101,6 +103,8 @@ impl OpenInputProver {
                 ro_index: row.ro_index,
                 is_last: row.is_last,
                 is_real: row.is_real,
+                is_eval: row.is_eval,
+                g_power: BinomialExtensionField::<Val<SC>, D>::from(row.g_power),
             })
             .collect();
 
@@ -143,8 +147,10 @@ where
 
         let min_height = packing.min_trace_height();
         let preprocessed = OpenInputAir::<Val<SC>, 1>::trace_to_preprocessed(trace);
+        let generator = Val::<SC>::GENERATOR;
         // w_binomial is unused for D=1 (no extension multiplication).
         let air = OpenInputAir::<Val<SC>, 1>::new_with_preprocessed(Val::<SC>::ZERO, preprocessed)
+            .with_generator(generator)
             .with_min_height(min_height);
         let matrix = air.trace_to_matrix::<Val<SC>>(&trace.rows);
         let padded_rows = rows.next_power_of_two();
@@ -205,13 +211,16 @@ where
         degree: usize,
         _table_entry: &NonPrimitiveTableEntry<SC>,
     ) -> Result<DynamicAirEntry<SC>, String> {
+        let generator = Val::<SC>::GENERATOR;
         match degree {
-            1 => Ok(DynamicAirEntry::new(Box::new(OpenInputAir::<Val<SC>, 1>::new(
-                Val::<SC>::ZERO,
-            )))),
+            1 => Ok(DynamicAirEntry::new(Box::new(
+                OpenInputAir::<Val<SC>, 1>::new(Val::<SC>::ZERO).with_generator(generator),
+            ))),
             4 => {
                 let w = <Val<SC> as BinomiallyExtendable<4>>::W;
-                Ok(DynamicAirEntry::new(Box::new(OpenInputAir::<Val<SC>, 4>::new(w))))
+                Ok(DynamicAirEntry::new(Box::new(
+                    OpenInputAir::<Val<SC>, 4>::new(w).with_generator(generator),
+                )))
             }
             d => Err(format!("OpenInputProver: unsupported extension degree {d}")),
         }
@@ -227,7 +236,9 @@ where
         // indices. We must override with the committed data so lookup tuples match
         // the D-scaled indices used by all other tables (Const, Public, ALU, Poseidon2).
         let w = <Val<SC> as BinomiallyExtendable<4>>::W;
+        let generator = Val::<SC>::GENERATOR;
         let air = OpenInputAir::<Val<SC>, 4>::new_with_preprocessed(w, committed_prep)
+            .with_generator(generator)
             .with_min_height(min_height);
         Some(DynamicAirEntry::new(Box::new(air)))
     }

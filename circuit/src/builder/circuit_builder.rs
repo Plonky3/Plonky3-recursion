@@ -60,6 +60,11 @@ pub enum NonPrimitiveOpParams<F> {
     OpenInput {
         is_last: bool,
     },
+    EvalPoint {
+        is_last: bool,
+        g_power: F,
+        generator: F,
+    },
     Unconstrained {
         executor: Box<dyn NonPrimitiveExecutor<F>>,
     },
@@ -76,6 +81,15 @@ impl<F: Field> Clone for NonPrimitiveOpParams<F> {
                 merkle_path: *merkle_path,
             },
             Self::OpenInput { is_last } => Self::OpenInput { is_last: *is_last },
+            Self::EvalPoint {
+                is_last,
+                g_power,
+                generator,
+            } => Self::EvalPoint {
+                is_last: *is_last,
+                g_power: *g_power,
+                generator: *generator,
+            },
             Self::Unconstrained { executor } => Self::Unconstrained {
                 executor: executor.boxed(),
             },

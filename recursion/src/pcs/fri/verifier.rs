@@ -9,7 +9,7 @@ use core::iter;
 
 use hashbrown::HashMap;
 use p3_circuit::op::Poseidon2Config;
-use p3_circuit::ops::open_input::{OpenInputCall, OpenInputOp};
+use p3_circuit::ops::open_input::{EvalPointCall, EvalPointOp, OpenInputCall, OpenInputOp};
 use p3_circuit::{CircuitBuilder, NonPrimitiveOpId};
 use p3_field::coset::TwoAdicMultiplicativeCoset;
 use p3_field::{BasedVectorSpace, ExtensionField, Field, PrimeField64, TwoAdicField};
@@ -763,70 +763,50 @@ where
     result
 }
 
-/// Precompute evaluation points for all unique heights.
+/// Compute an evaluation point via the OpenInput table's EvalPoint operation.
 ///
-/// Runs a single select-mul chain for the tallest height's reversed index bits and derives
-/// smaller heights via `exp_power_of_2` on captured intermediates.
-fn precompute_evaluation_points<F, EF>(
+/// Adds `log_height` rows to the OpenInput table, one per reversed index bit,
+/// computing `x = GENERATOR * g^{reversed_bits}` for the given height.
+fn compute_eval_point_via_table<F, EF>(
     builder: &mut CircuitBuilder<EF>,
-    unique_heights_desc: &[usize],
     index_bits: &[Target],
     log_global_max_height: usize,
-) -> BTreeMap<usize, Target>
+    log_height: usize,
+) -> Target
 where
     F: Field + TwoAdicField,
     EF: ExtensionField<F>,
 {
-    builder.push_scope("precompute_evaluation_points");
-
-    debug_assert!(
-        !unique_heights_desc.is_empty(),
-        "must have at least one height"
-    );
-    debug_assert!(
-        unique_heights_desc.windows(2).all(|w| w[0] > w[1]),
-        "heights must be sorted in strictly descending order"
-    );
-
-    let h_max = unique_heights_desc[0];
-    let bits_reduced = log_global_max_height - h_max;
-    let rev_bits: Vec<Target> = index_bits[bits_reduced..bits_reduced + h_max]
+    let bits_reduced = log_global_max_height - log_height;
+    let rev_bits: Vec<Target> = index_bits[bits_reduced..bits_reduced + log_height]
         .iter()
         .rev()
         .copied()
         .collect();
 
-    let g = F::two_adic_generator(h_max);
-    let powers_of_g: Vec<_> = iter::successors(Some(g), |&prev| Some(prev.square()))
-        .take(h_max)
-        .map(|p| builder.define_const(EF::from(p)))
-        .collect();
+    let g = F::two_adic_generator(log_height);
+    let generator_ef = EF::from(F::GENERATOR);
 
-    let capture_set: BTreeMap<usize, ()> =
-        unique_heights_desc[1..].iter().map(|&h| (h, ())).collect();
-
-    let one = builder.define_const(EF::ONE);
-    let generator = builder.alloc_const(EF::from(F::GENERATOR), "coset_generator");
-    let mut g_pow = one;
-    let mut result = BTreeMap::new();
-
-    for i in 0..h_max {
-        let multiplier = builder.select(rev_bits[i], powers_of_g[i], one);
-        g_pow = builder.mul(g_pow, multiplier);
-
-        let bits_done = i + 1;
-        if capture_set.contains_key(&bits_done) {
-            let derived = builder.exp_power_of_2(g_pow, h_max - bits_done);
-            let x = builder.alloc_mul(generator, derived, "eval_point");
-            result.insert(bits_done, x);
+    let mut eval_point = None;
+    let mut g_power = g;
+    for i in 0..log_height {
+        let is_last = i == log_height - 1;
+        let call = EvalPointCall {
+            rev_bit: rev_bits[i],
+            g_power: EF::from(g_power),
+            generator: generator_ef,
+            is_last,
+        };
+        let (_, output) = builder.add_eval_point(call).unwrap();
+        if is_last {
+            eval_point = output;
+        }
+        if i + 1 < log_height {
+            g_power = g_power.square();
         }
     }
 
-    let x_max = builder.alloc_mul(generator, g_pow, "eval_point");
-    result.insert(h_max, x_max);
-
-    builder.pop_scope(); // close `precompute_evaluation_points` scope
-    result
+    eval_point.expect("log_height must be > 0")
 }
 
 /// Compute reduced opening for a single matrix in circuit form (EF-field).
@@ -944,31 +924,8 @@ where
         "index_bits.len() must equal log_global_max_height"
     );
 
-    // Collect unique heights across all matrices and precompute evaluation points.
-    let unique_heights_desc: Vec<usize> = {
-        let mut heights: Vec<usize> = commitments_with_opening_points
-            .iter()
-            .flat_map(|(_, mats)| {
-                mats.iter()
-                    .map(|(domain, _)| domain.log_size() + log_blowup)
-            })
-            .collect();
-        heights.sort_unstable();
-        heights.dedup();
-        heights.reverse();
-        heights
-    };
-
-    let eval_points = if unique_heights_desc.is_empty() {
-        BTreeMap::new()
-    } else {
-        precompute_evaluation_points::<F, EF>(
-            builder,
-            &unique_heights_desc,
-            index_bits,
-            log_global_max_height,
-        )
-    };
+    // Cache of eval points per log_height to avoid redundant computation for same-height matrices.
+    let mut eval_points: BTreeMap<usize, Target> = BTreeMap::new();
 
     // height -> (alpha_pow_for_this_height, ro_sum_for_this_height)
     let mut reduced_openings = BTreeMap::<usize, (Target, Target)>::new();
@@ -1039,7 +996,15 @@ where
         {
             let log_height = mat_domain.log_size() + log_blowup;
 
-            let x = eval_points[&log_height];
+            // Compute or reuse cached evaluation point for this height.
+            let x = *eval_points.entry(log_height).or_insert_with(|| {
+                compute_eval_point_via_table::<F, EF>(
+                    builder,
+                    index_bits,
+                    log_global_max_height,
+                    log_height,
+                )
+            });
 
             // Initialize / fetch per-height (alpha_pow, ro)
             let (alpha_pow_h, ro_h) = reduced_openings.entry(log_height).or_insert_with(|| {

@@ -17,15 +17,17 @@ use crate::{
 #[derive(Default, Debug, Clone)]
 pub struct OpenInputRow<F> {
     // All `Vec`s correspond to one extension limb in execution rows, and D base field elements in trace rows.
-    pub alpha: Vec<F>, // Also corresponds to the accumulator when the operation is `EvalPoint`.
+    pub alpha: Vec<F>,
     pub alpha_index: u32,
-    pub pow_at_x: Vec<F>, // Also corresponds to `g_pow` when the operation is `EvalPoint`.
-    pub pow_at_x_index: u32,
-    pub pow_at_z: Vec<F>, // The first column also corresponds to `g_pow` when the operation is `EvalPoint`.
+    pub pow_at_x: Vec<F>, // For EvalPoint: [rev_bit, 0, ..., 0]
+    pub pow_at_x_index: u32, // For EvalPoint: rev_bit witness index
+    pub pow_at_z: Vec<F>,
     pub pow_at_z_index: u32,
-    pub ro_index: u32,
+    pub ro_index: u32, // For EvalPoint: output index for eval result
     pub is_last: bool,
     pub is_real: bool,
+    pub is_eval: bool,  // true for EvalPoint rows, false for ReducedOpening rows
+    pub g_power: F,     // g^(2^i) for EvalPoint rows, F::ZERO otherwise
 }
 
 #[derive(Debug, Clone)]
@@ -143,6 +145,8 @@ impl<F: Field> NonPrimitiveExecutor<F> for OpenInputExecutor {
             ro_index: output_index,
             is_last: self.is_last,
             is_real: true,
+            is_eval: false,
+            g_power: F::ZERO,
         });
 
         if self.is_last {
@@ -214,6 +218,12 @@ impl<F: Field> NonPrimitiveExecutor<F> for OpenInputExecutor {
         // from ext_reads[ro_wid]).
         preprocessed.register_non_primitive_preprocessed_no_read(self.op_type, &[F::ZERO]);
 
+        // is_eval = 0 for ReducedOpening rows.
+        preprocessed.register_non_primitive_preprocessed_no_read(self.op_type, &[F::ZERO]);
+
+        // g_power = 0 for ReducedOpening rows.
+        preprocessed.register_non_primitive_preprocessed_no_read(self.op_type, &[F::ZERO]);
+
         Ok(())
     }
 
@@ -256,6 +266,8 @@ pub fn generate_open_input_trace<
                 ro_index: row.ro_index,
                 is_last: row.is_last,
                 is_real: row.is_real,
+                is_eval: row.is_eval,
+                g_power: row.g_power.as_basis_coefficients_slice()[0],
             })
         })
         .collect::<Result<Vec<_>, CircuitError>>()?;
@@ -301,5 +313,195 @@ impl<F: Field> OpenInputOp for CircuitBuilder<F> {
         );
 
         Ok((op_id, outputs[0]))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// EvalPoint operation — computes evaluation points within the OpenInput table.
+// ---------------------------------------------------------------------------
+
+pub struct EvalPointCall<F> {
+    pub rev_bit: ExprId,  // Witness target for the reversed bit
+    pub g_power: F,       // g^(2^i) constant for this row
+    pub generator: F,     // Coset generator (F::GENERATOR promoted to EF)
+    pub is_last: bool,    // Last row of eval sequence
+}
+
+pub trait EvalPointOp<F> {
+    fn add_eval_point(
+        &mut self,
+        call: EvalPointCall<F>,
+    ) -> Result<(NonPrimitiveOpId, Option<ExprId>), CircuitBuilderError>;
+}
+
+impl<F: Field> EvalPointOp<F> for CircuitBuilder<F> {
+    fn add_eval_point(
+        &mut self,
+        call: EvalPointCall<F>,
+    ) -> Result<(NonPrimitiveOpId, Option<ExprId>), CircuitBuilderError> {
+        let op_type = NonPrimitiveOpType::OpenInput;
+        self.ensure_op_enabled(op_type)?;
+
+        // Inputs layout: [alpha(empty), p_at_x(rev_bit), p_at_z(empty)]
+        let input_exprs = vec![vec![], vec![call.rev_bit], vec![]];
+
+        let (op_id, _call_expr_id, outputs) = self.push_non_primitive_op_with_outputs(
+            op_type,
+            input_exprs,
+            vec![call.is_last.then_some("EvalPoint output")],
+            Some(NonPrimitiveOpParams::EvalPoint {
+                is_last: call.is_last,
+                g_power: call.g_power,
+                generator: call.generator,
+            }),
+            "eval_point",
+        );
+
+        Ok((op_id, outputs[0]))
+    }
+}
+
+/// Executor for EvalPoint operations within the OpenInput table.
+#[derive(Debug, Clone)]
+pub struct EvalPointExecutor<F> {
+    op_type: NonPrimitiveOpType,
+    is_last: bool,
+    g_power: F,
+    generator: F,
+}
+
+impl<F: Field> EvalPointExecutor<F> {
+    pub fn new(is_last: bool, g_power: F, generator: F) -> Self {
+        Self {
+            op_type: NonPrimitiveOpType::OpenInput,
+            is_last,
+            g_power,
+            generator,
+        }
+    }
+}
+
+impl<F: Field> NonPrimitiveExecutor<F> for EvalPointExecutor<F> {
+    fn execute(
+        &self,
+        inputs: &[Vec<WitnessId>],
+        outputs: &[Vec<WitnessId>],
+        ctx: &mut ExecutionContext<'_, F>,
+    ) -> Result<(), CircuitError> {
+        assert_eq!(inputs.len(), 3);
+        // Only inputs[1] (p_at_x slot) has a value: the rev_bit.
+        assert!(inputs[0].is_empty(), "alpha slot must be empty for EvalPoint");
+        assert_eq!(inputs[1].len(), 1, "p_at_x slot must have exactly 1 witness for rev_bit");
+        assert!(inputs[2].is_empty(), "p_at_z slot must be empty for EvalPoint");
+
+        let rev_bit_wid = inputs[1][0];
+        let rev_bit = ctx.get_witness(rev_bit_wid).map_err(|_| CircuitError::WitnessNotSet {
+            witness_id: rev_bit_wid,
+        })?;
+
+        // mult = 1 + rev_bit * (g_power - 1)
+        let mult = F::ONE + rev_bit * (self.g_power - F::ONE);
+
+        let state = ctx.get_op_state_mut::<OpenInputState<F>>(&self.op_type);
+
+        // If first in sequence (last_ro is None), start at GENERATOR * mult.
+        // Otherwise, continue accumulation: prev_eval * mult.
+        let eval = match state.last_ro {
+            Some(prev) => prev * mult,
+            None => self.generator * mult,
+        };
+
+        let output_index = if self.is_last {
+            assert_eq!(outputs.len(), 1);
+            assert_eq!(outputs[0].len(), 1);
+            outputs[0][0].0
+        } else {
+            0
+        };
+
+        state.last_ro = Some(eval);
+
+        state.rows.push(OpenInputRow {
+            alpha: vec![F::ZERO],
+            alpha_index: 0,
+            pow_at_x: vec![rev_bit],
+            pow_at_x_index: rev_bit_wid.0,
+            pow_at_z: vec![F::ZERO],
+            pow_at_z_index: 0,
+            ro_index: output_index,
+            is_last: self.is_last,
+            is_real: true,
+            is_eval: true,
+            g_power: self.g_power,
+        });
+
+        if self.is_last {
+            state.last_ro = None;
+            assert_eq!(outputs.len(), 1);
+            assert_eq!(outputs[0].len(), 1);
+            ctx.set_witness(outputs[0][0], eval)?;
+        } else {
+            assert_eq!(outputs[0].len(), 0);
+        }
+
+        Ok(())
+    }
+
+    fn op_type(&self) -> &NonPrimitiveOpType {
+        &self.op_type
+    }
+
+    fn as_any(&self) -> &dyn core::any::Any {
+        self
+    }
+
+    fn preprocess(
+        &self,
+        inputs: &[Vec<WitnessId>],
+        outputs: &[Vec<WitnessId>],
+        preprocessed: &mut crate::PreprocessedColumns<F>,
+    ) -> Result<(), CircuitError> {
+        // [0] is_last
+        preprocessed.register_non_primitive_preprocessed_no_read(
+            self.op_type,
+            &[F::from_u64(self.is_last as u64)],
+        );
+
+        // [1] is_real
+        preprocessed.register_non_primitive_preprocessed_no_read(self.op_type, &[F::ONE]);
+
+        // [2] alpha_index = 0 (unused for EvalPoint)
+        preprocessed.register_non_primitive_preprocessed_no_read(self.op_type, &[F::ZERO]);
+
+        // [3] p_at_x_index = rev_bit witness index
+        assert_eq!(inputs[1].len(), 1);
+        preprocessed.register_non_primitive_witness_read(self.op_type, inputs[1][0])?;
+
+        // [4] p_at_z_index = 0 (unused for EvalPoint)
+        preprocessed.register_non_primitive_preprocessed_no_read(self.op_type, &[F::ZERO]);
+
+        // [5] ro_index
+        if self.is_last {
+            assert_eq!(outputs.len(), 1);
+            assert_eq!(outputs[0].len(), 1);
+            preprocessed.register_non_primitive_output_index(self.op_type, &outputs[0]);
+        } else {
+            preprocessed.register_non_primitive_preprocessed_no_read(self.op_type, &[F::ZERO]);
+        }
+
+        // [6] ro_ext_mult placeholder
+        preprocessed.register_non_primitive_preprocessed_no_read(self.op_type, &[F::ZERO]);
+
+        // [7] is_eval = 1
+        preprocessed.register_non_primitive_preprocessed_no_read(self.op_type, &[F::ONE]);
+
+        // [8] g_power
+        preprocessed.register_non_primitive_preprocessed_no_read(self.op_type, &[self.g_power]);
+
+        Ok(())
+    }
+
+    fn boxed(&self) -> Box<dyn NonPrimitiveExecutor<F>> {
+        Box::new(self.clone())
     }
 }
