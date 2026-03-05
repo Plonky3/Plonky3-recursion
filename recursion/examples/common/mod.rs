@@ -1,0 +1,389 @@
+//! Common code for all recursive examples.
+
+#![allow(unused_imports)]
+
+pub use std::rc::Rc;
+pub use std::sync::Arc;
+
+pub use clap::{Args as ClapArgs, Parser, ValueEnum};
+pub use p3_challenger::DuplexChallenger;
+pub use p3_circuit::ops::generate_poseidon2_trace;
+pub use p3_circuit::{CircuitBuilder, CircuitRunner, NonPrimitiveOpId};
+pub use p3_circuit_prover::batch_stark_prover::{
+    poseidon2_air_builders_d2, poseidon2_air_builders_d4,
+};
+pub use p3_circuit_prover::common::{NpoPreprocessor, get_airs_and_degrees_with_prep};
+pub use p3_circuit_prover::{
+    BatchStarkProver, CircuitProverData, ConstraintProfile, Poseidon2Preprocessor, TablePacking,
+};
+pub use p3_commit::{ExtensionMmcs, Pcs};
+pub use p3_dft::Radix2DitParallel;
+pub use p3_field::extension::BinomialExtensionField;
+pub use p3_field::{Field, PrimeCharacteristicRing};
+pub use p3_fri::{FriParameters, TwoAdicFriPcs};
+pub use p3_lookup::logup::LogUpGadget;
+pub use p3_matrix::Matrix;
+pub use p3_matrix::dense::RowMajorMatrix;
+pub use p3_merkle_tree::MerkleTreeMmcs;
+pub use p3_recursion::pcs::{
+    InputProofTargets, MerkleCapTargets, RecValMmcs, set_fri_mmcs_private_data,
+};
+pub use p3_recursion::traits::{RecursiveAir, RecursivePcs};
+pub use p3_recursion::verifier::VerificationError;
+pub use p3_recursion::{
+    AggregationPrepCache, BatchOnly, BatchStarkVerifierInputsBuilder, FriRecursionBackend,
+    FriRecursionConfig, FriVerifierParams, Poseidon2Config, ProveNextLayerParams, RecursionInput,
+    RecursionOutput, build_and_prove_aggregation_layer, build_and_prove_next_layer,
+    verify_batch_circuit,
+};
+pub use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
+pub use p3_uni_stark::{StarkConfig, StarkGenericConfig, Val};
+pub use serde::Serialize;
+pub use tracing::info;
+pub use tracing_forest::ForestLayer;
+pub use tracing_forest::util::LevelFilter;
+pub use tracing_subscriber::layer::SubscriberExt;
+pub use tracing_subscriber::util::SubscriberInitExt;
+pub use tracing_subscriber::{EnvFilter, Registry};
+
+pub fn init_logger() {
+    let env_filter = EnvFilter::builder()
+        .with_default_directive(LevelFilter::INFO.into())
+        .from_env_lossy();
+
+    let _ = Registry::default()
+        .with(env_filter)
+        .with(ForestLayer::default())
+        .try_init();
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct FriParams {
+    pub log_blowup: usize,
+    pub max_log_arity: usize,
+    pub cap_height: usize,
+    pub log_final_poly_len: usize,
+    pub commit_pow_bits: usize,
+    pub query_pow_bits: usize,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum FieldOption {
+    KoalaBear,
+    BabyBear,
+    Goldilocks,
+}
+
+/// CLI arguments shared by all recursive examples.
+///
+/// Embed this in an example's `Args` struct with `#[command(flatten)]`.
+#[derive(ClapArgs, Debug, Clone)]
+pub struct CommonArgs {
+    #[arg(short, long, ignore_case = true, value_enum, default_value_t = FieldOption::KoalaBear)]
+    pub field: FieldOption,
+
+    #[arg(
+        long,
+        default_value_t = 3,
+        help = "Logarithmic blowup factor for the LDE"
+    )]
+    pub log_blowup: usize,
+
+    #[arg(
+        long,
+        default_value_t = 3,
+        help = "Maximum arity allowed during FRI folding phases"
+    )]
+    pub max_log_arity: usize,
+
+    #[arg(long, default_value_t = 2, help = "Height of the Merkle cap to open")]
+    pub cap_height: usize,
+
+    #[arg(
+        long,
+        default_value_t = 5,
+        help = "Log size of final polynomial after FRI folding"
+    )]
+    pub log_final_poly_len: usize,
+
+    #[arg(
+        long,
+        default_value_t = 0,
+        help = "PoW grinding bits during FRI commit phase"
+    )]
+    pub commit_pow_bits: usize,
+
+    #[arg(
+        long,
+        default_value_t = 18,
+        help = "PoW grinding bits during FRI query phase"
+    )]
+    pub query_pow_bits: usize,
+
+    #[arg(
+        long,
+        default_value_t = 2,
+        help = "Number of public lanes for the table packing in recursive layers"
+    )]
+    pub public_lanes: usize,
+
+    #[arg(
+        long,
+        default_value_t = 3,
+        help = "Number of ALU lanes for the table packing in recursive layers"
+    )]
+    pub alu_lanes: usize,
+
+    // TODO: Update once https://github.com/Plonky3/Plonky3/pull/1329 lands
+    #[arg(
+        long,
+        default_value_t = 124,
+        help = "Targeted security level (conjectured)"
+    )]
+    pub security_level: usize,
+
+    #[arg(long, default_value_t = false, help = "Enable ZK mode (HidingFriPcs)")]
+    pub zk: bool,
+}
+
+impl CommonArgs {
+    pub const fn to_fri_params(&self) -> FriParams {
+        FriParams {
+            log_blowup: self.log_blowup,
+            max_log_arity: self.max_log_arity,
+            cap_height: self.cap_height,
+            log_final_poly_len: self.log_final_poly_len,
+            commit_pow_bits: self.commit_pow_bits,
+            query_pow_bits: self.query_pow_bits,
+        }
+    }
+
+    pub fn table_packing(&self) -> TablePacking {
+        TablePacking::new(self.public_lanes, self.alu_lanes)
+    }
+}
+
+pub fn default_goldilocks_poseidon2_8() -> p3_goldilocks::Poseidon2Goldilocks<8> {
+    use rand::SeedableRng;
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(1);
+    p3_goldilocks::Poseidon2Goldilocks::<8>::new_from_rng_128(&mut rng)
+}
+
+/// Report the size of the serialized proof.
+#[inline]
+pub fn report_proof_size<S: Serialize>(proof: &S) {
+    let proof_bytes = postcard::to_allocvec(proof).expect("Failed to serialize proof");
+    println!("Proof size: {} bytes", proof_bytes.len());
+}
+
+/// Expands to all shared field-specific types and helper functions used by every
+/// recursive example, **without** a surrounding `mod` block.
+///
+/// Each example's `define_field_module!` wraps a call to this macro inside its
+/// own `mod $mod_name { use super::*; ... }` block and then appends the
+/// example-specific `run` / `run_zk` functions.
+///
+/// Defines (inline, no module wrapper):
+/// - Type aliases: `F`, `D`, `Challenge`, `Dft`, `Perm`, `MyHash`, `MyCompress`,
+///   `ValMmcs`, `ChallengeMmcs`, `Challenger`, `MyPcs`, `MyConfig`, `InnerFri`,
+///   `ConfigWithFriParams`
+/// - Functions: `create_config`, `create_fri_verifier_params`, `config_with_fri_params`
+/// - Trait impls: `Deref`, `StarkGenericConfig`, `FriRecursionConfig` for `ConfigWithFriParams`
+#[macro_export]
+macro_rules! define_field_module_types {
+    (
+        $field:ty,
+        $perm:ty,
+        $default_perm:path,
+        $poseidon2_config:expr,
+        $poseidon2_circuit_config:ty,
+        $d:expr,
+        $width:expr,
+        $rate:expr,
+        $digest_elems:expr,
+        $enable_poseidon2_fn:ident,
+        $register_poseidon2_fn:ident,
+        $default_perm_circuit:path,
+        $poseidon2_air_builders_fn:ident,
+        $backend_ctor:ident,
+        $backend_width:expr,
+        $backend_rate:expr
+    ) => {
+        pub type F = $field;
+        pub const D: usize = $d;
+        const WIDTH: usize = $width;
+        const RATE: usize = $rate;
+        const DIGEST_ELEMS: usize = $digest_elems;
+
+        type Challenge = BinomialExtensionField<F, D>;
+        type Dft = Radix2DitParallel<F>;
+        type Perm = $perm;
+        type MyHash = PaddingFreeSponge<Perm, WIDTH, RATE, DIGEST_ELEMS>;
+        type MyCompress = TruncatedPermutation<Perm, 2, DIGEST_ELEMS, WIDTH>;
+        type ValMmcs = MerkleTreeMmcs<
+            <F as Field>::Packing,
+            <F as Field>::Packing,
+            MyHash,
+            MyCompress,
+            DIGEST_ELEMS,
+        >;
+        type ChallengeMmcs = ExtensionMmcs<F, Challenge, ValMmcs>;
+        type Challenger = DuplexChallenger<F, Perm, WIDTH, RATE>;
+        type MyPcs = TwoAdicFriPcs<F, Dft, ValMmcs, ChallengeMmcs>;
+        type MyConfig = StarkConfig<MyPcs, Challenge, Challenger>;
+
+        type InnerFri = p3_recursion::pcs::FriProofTargets<
+            F,
+            Challenge,
+            p3_recursion::pcs::RecExtensionValMmcs<
+                F,
+                Challenge,
+                DIGEST_ELEMS,
+                RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>,
+            >,
+            InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>>,
+            p3_recursion::pcs::Witness<F>,
+        >;
+
+        #[derive(Clone)]
+        struct ConfigWithFriParams {
+            config: Arc<MyConfig>,
+            fri_verifier_params: FriVerifierParams,
+        }
+
+        impl core::ops::Deref for ConfigWithFriParams {
+            type Target = MyConfig;
+            fn deref(&self) -> &MyConfig {
+                &self.config
+            }
+        }
+
+        impl StarkGenericConfig for ConfigWithFriParams {
+            type Challenge = Challenge;
+            type Challenger = Challenger;
+            type Pcs = MyPcs;
+            fn pcs(&self) -> &MyPcs {
+                self.config.pcs()
+            }
+            fn initialise_challenger(&self) -> Challenger {
+                self.config.initialise_challenger()
+            }
+        }
+
+        impl FriRecursionConfig for ConfigWithFriParams
+        where
+            MyPcs: RecursivePcs<
+                    ConfigWithFriParams,
+                    InputProofTargets<
+                        F,
+                        Challenge,
+                        RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>,
+                    >,
+                    InnerFri,
+                    MerkleCapTargets<F, DIGEST_ELEMS>,
+                    <MyPcs as Pcs<Challenge, Challenger>>::Domain,
+                >,
+        {
+            type Commitment = MerkleCapTargets<F, DIGEST_ELEMS>;
+            type InputProof =
+                InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>>;
+            type OpeningProof = InnerFri;
+            type RawOpeningProof = <MyPcs as Pcs<Challenge, Challenger>>::Proof;
+            const DIGEST_ELEMS: usize = $digest_elems;
+
+            fn with_fri_opening_proof<'a, A, R>(
+                prev: &RecursionInput<'a, Self, A>,
+                f: impl FnOnce(&Self::RawOpeningProof) -> R,
+            ) -> R
+            where
+                A: RecursiveAir<Val<Self>, Self::Challenge, LogUpGadget>,
+            {
+                match prev {
+                    RecursionInput::UniStark { proof, .. } => f(&proof.opening_proof),
+                    RecursionInput::BatchStark { proof, .. } => f(&proof.proof.opening_proof),
+                }
+            }
+
+            fn prepare_circuit_for_verification(
+                &self,
+                circuit: &mut CircuitBuilder<Challenge>,
+            ) -> Result<(), VerificationError> {
+                let perm = $default_perm_circuit();
+                circuit.$enable_poseidon2_fn::<$poseidon2_circuit_config, _>(
+                    generate_poseidon2_trace::<Challenge, $poseidon2_circuit_config>,
+                    perm,
+                );
+                Ok(())
+            }
+
+            fn pcs_verifier_params(
+                &self,
+            ) -> &<MyPcs as RecursivePcs<
+                ConfigWithFriParams,
+                InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>>,
+                InnerFri,
+                MerkleCapTargets<F, DIGEST_ELEMS>,
+                <MyPcs as Pcs<Challenge, Challenger>>::Domain,
+            >>::VerifierParams {
+                &self.fri_verifier_params
+            }
+
+            fn set_fri_private_data(
+                runner: &mut CircuitRunner<Challenge>,
+                op_ids: &[NonPrimitiveOpId],
+                opening_proof: &Self::RawOpeningProof,
+            ) -> Result<(), &'static str> {
+                set_fri_mmcs_private_data::<
+                    F,
+                    Challenge,
+                    ChallengeMmcs,
+                    ValMmcs,
+                    MyHash,
+                    MyCompress,
+                    DIGEST_ELEMS,
+                >(runner, op_ids, opening_proof)
+            }
+        }
+
+        fn create_config(fp: &FriParams, security_level: usize) -> MyConfig {
+            let perm = $default_perm();
+            let hash = MyHash::new(perm.clone());
+            let compress = MyCompress::new(perm.clone());
+            let val_mmcs = ValMmcs::new(hash, compress, fp.cap_height);
+            let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
+            let dft = Dft::default();
+
+            let num_queries = (security_level - fp.query_pow_bits) / fp.log_blowup;
+
+            let fri_params = FriParameters {
+                max_log_arity: fp.max_log_arity,
+                log_blowup: fp.log_blowup,
+                log_final_poly_len: fp.log_final_poly_len,
+                num_queries,
+                commit_proof_of_work_bits: fp.commit_pow_bits,
+                query_proof_of_work_bits: fp.query_pow_bits,
+                mmcs: challenge_mmcs,
+            };
+            let pcs = MyPcs::new(dft, val_mmcs, fri_params);
+            let challenger = Challenger::new(perm);
+            MyConfig::new(pcs, challenger)
+        }
+
+        const fn create_fri_verifier_params(fp: &FriParams) -> FriVerifierParams {
+            FriVerifierParams::with_mmcs(
+                fp.log_blowup,
+                fp.log_final_poly_len,
+                fp.commit_pow_bits,
+                fp.query_pow_bits,
+                $poseidon2_config,
+            )
+        }
+
+        fn config_with_fri_params(fp: &FriParams, security_level: usize) -> ConfigWithFriParams {
+            ConfigWithFriParams {
+                config: Arc::new(create_config(fp, security_level)),
+                fri_verifier_params: create_fri_verifier_params(fp),
+            }
+        }
+    };
+}

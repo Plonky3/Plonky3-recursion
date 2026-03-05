@@ -40,6 +40,7 @@ Each example supports additional parameterization around the FRI parameters, nam
 - `--public-lanes`: number of public lanes for the table packing in recursive layers. Default 2.
 - `--alu-lanes`: number of ALU lanes for the table packing in recursive layers. Default 3.
 - `--security-level`: targeted conjectured security in bits. Default 124.
+- `--zk`: activates the Zero-Knowledge property. Default `false`.
 
 ## Results
 
