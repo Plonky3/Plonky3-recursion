@@ -1,3 +1,4 @@
+use alloc::string::ToString;
 use alloc::vec::Vec;
 use alloc::{format, vec};
 use core::marker::PhantomData;
@@ -5,13 +6,13 @@ use core::marker::PhantomData;
 use p3_challenger::{CanObserve, GrindingChallenger};
 use p3_circuit::utils::RowSelectorsTargets;
 use p3_circuit::{CircuitBuilder, CircuitBuilderError, NonPrimitiveOpId};
-use p3_commit::{BatchOpening, ExtensionMmcs, Mmcs, PolynomialSpace};
+use p3_commit::{BatchOpening, ExtensionMmcs, Mmcs, OpenedValues, PolynomialSpace};
 use p3_field::coset::TwoAdicMultiplicativeCoset;
 use p3_field::{
     BasedVectorSpace, ExtensionField, Field, PackedValue, PrimeCharacteristicRing, PrimeField64,
     TwoAdicField,
 };
-use p3_fri::{CommitPhaseProofStep, FriProof, QueryProof, TwoAdicFriPcs};
+use p3_fri::{CommitPhaseProofStep, FriProof, HidingFriPcs, QueryProof, TwoAdicFriPcs};
 use p3_merkle_tree::MerkleTreeMmcs;
 use p3_symmetric::{CryptographicHasher, MerkleCap, PseudoCompressionFunction};
 use p3_uni_stark::{StarkGenericConfig, Val};
@@ -730,5 +731,391 @@ where
 
     fn first_point(&self, trace_domain: &TwoAdicMultiplicativeCoset<Val<SC>>) -> SC::Challenge {
         trace_domain.first_point().into()
+    }
+
+    // This is not used for non-ZK FRI proofs.
+    fn get_fri_random_opened_values(
+        _proof: &RecursiveFriProof<
+            SC,
+            RecursiveFriMmcs,
+            InputProofTargets<Val<SC>, SC::Challenge, RecursiveInputMmcs>,
+        >,
+    ) -> &[Vec<Vec<Vec<Target>>>] {
+        &[]
+    }
+}
+
+/// Recursive targets for the extra random opened values carried by `HidingFriPcs`.
+pub struct HidingOpenedValuesTargets<EF: Field> {
+    /// Layout: rounds -> matrices -> points -> values.
+    pub rounds: Vec<Vec<Vec<Vec<Target>>>>,
+    _phantom: PhantomData<EF>,
+}
+
+impl<EF: Field> Recursive<EF> for HidingOpenedValuesTargets<EF> {
+    type Input = OpenedValues<EF>;
+
+    fn new(circuit: &mut CircuitBuilder<EF>, input: &Self::Input) -> Self {
+        let rounds = input
+            .iter()
+            .map(|round| {
+                round
+                    .iter()
+                    .map(|matrix| {
+                        matrix
+                            .iter()
+                            .map(|point_vals| {
+                                circuit.alloc_public_inputs(
+                                    point_vals.len(),
+                                    "hiding random opened values",
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+
+        Self {
+            rounds,
+            _phantom: PhantomData,
+        }
+    }
+
+    fn get_values(input: &Self::Input) -> Vec<EF> {
+        input
+            .iter()
+            .flat_map(|round| round.iter())
+            .flat_map(|matrix| matrix.iter())
+            .flat_map(|point_vals| point_vals.iter().copied())
+            .collect()
+    }
+}
+
+/// Recursive proof targets for `HidingFriPcs`.
+///
+/// This wraps:
+/// 1. Random opened values split out by `HidingFriPcs`
+/// 2. The inner FRI proof (same structure as `TwoAdicFriPcs`)
+pub struct HidingFriProofTargets<
+    F: Field,
+    EF: ExtensionField<F>,
+    RecMmcs: RecursiveExtensionMmcs<F, EF>,
+    InputProof: Recursive<EF>,
+    PowWitness: Recursive<EF>,
+> {
+    pub random_opened_values: HidingOpenedValuesTargets<EF>,
+    pub inner_proof: FriProofTargets<F, EF, RecMmcs, InputProof, PowWitness>,
+}
+
+impl<
+    F: Field,
+    EF: ExtensionField<F>,
+    RecMmcs: RecursiveExtensionMmcs<F, EF>,
+    InputProof: Recursive<EF>,
+    PowWitness: Recursive<EF>,
+> Recursive<EF> for HidingFriProofTargets<F, EF, RecMmcs, InputProof, PowWitness>
+{
+    type Input = (
+        OpenedValues<EF>,
+        FriProof<EF, RecMmcs::Input, PowWitness::Input, InputProof::Input>,
+    );
+
+    fn new(circuit: &mut CircuitBuilder<EF>, input: &Self::Input) -> Self {
+        Self {
+            random_opened_values: HidingOpenedValuesTargets::new(circuit, &input.0),
+            inner_proof: FriProofTargets::new(circuit, &input.1),
+        }
+    }
+
+    fn get_values(input: &Self::Input) -> Vec<EF> {
+        HidingOpenedValuesTargets::<EF>::get_values(&input.0)
+            .into_iter()
+            .chain(FriProofTargets::<F, EF, RecMmcs, InputProof, PowWitness>::get_values(&input.1))
+            .collect()
+    }
+}
+
+type RecursiveHidingFriProof<SC, RecursiveFriMmcs, RecursiveInputProof> = HidingFriProofTargets<
+    Val<SC>,
+    <SC as StarkGenericConfig>::Challenge,
+    RecursiveFriMmcs,
+    RecursiveInputProof,
+    Witness<Val<SC>>,
+>;
+
+/// Merged commitments with opening points and random opened values.
+type HidingMergedCommitments<SC, Comm> = (
+    Comm,
+    Vec<(
+        TwoAdicMultiplicativeCoset<Val<SC>>,
+        Vec<(Target, Vec<Target>)>,
+    )>,
+);
+
+fn merge_hiding_random_openings<SC, Comm>(
+    commitments_with_opening_points: &ComsWithOpeningsTargets<
+        Comm,
+        TwoAdicMultiplicativeCoset<Val<SC>>,
+    >,
+    random_opened_values: &[Vec<Vec<Vec<Target>>>],
+) -> Result<Vec<HidingMergedCommitments<SC, Comm>>, VerificationError>
+where
+    SC: StarkGenericConfig,
+    Val<SC>: TwoAdicField,
+    Comm: Clone,
+{
+    if commitments_with_opening_points.len() != random_opened_values.len() {
+        return Err(VerificationError::InvalidProofShape(
+            "Hiding FRI proof shape mismatch: random rounds count does not match commitments"
+                .to_string(),
+        ));
+    }
+
+    let mut merged = Vec::with_capacity(commitments_with_opening_points.len());
+
+    for ((commitment, mats), rand_round) in commitments_with_opening_points
+        .iter()
+        .zip(random_opened_values.iter())
+    {
+        if mats.len() != rand_round.len() {
+            return Err(VerificationError::InvalidProofShape(
+                "Hiding FRI proof shape mismatch: random matrices count does not match".to_string(),
+            ));
+        }
+
+        let mut merged_mats = Vec::with_capacity(mats.len());
+        for ((domain, points), rand_mat) in mats.iter().zip(rand_round.iter()) {
+            if points.len() != rand_mat.len() {
+                return Err(VerificationError::InvalidProofShape(
+                    "Hiding FRI proof shape mismatch: random points count does not match"
+                        .to_string(),
+                ));
+            }
+
+            let mut merged_points = Vec::with_capacity(points.len());
+            for ((point, vals), rand_point) in points.iter().zip(rand_mat.iter()) {
+                let mut merged_vals = vals.clone();
+                merged_vals.extend(rand_point.iter().copied());
+                merged_points.push((*point, merged_vals));
+            }
+
+            merged_mats.push((*domain, merged_points));
+        }
+
+        merged.push((commitment.clone(), merged_mats));
+    }
+
+    Ok(merged)
+}
+
+impl<SC, Dft, Comm, InputMmcs, RecursiveInputMmcs, RecursiveFriMmcs, FriMmcs, R>
+    RecursivePcs<
+        SC,
+        InputProofTargets<Val<SC>, SC::Challenge, RecursiveInputMmcs>,
+        RecursiveHidingFriProof<
+            SC,
+            RecursiveFriMmcs,
+            InputProofTargets<Val<SC>, SC::Challenge, RecursiveInputMmcs>,
+        >,
+        Comm,
+        TwoAdicMultiplicativeCoset<Val<SC>>,
+    > for HidingFriPcs<Val<SC>, Dft, InputMmcs, FriMmcs, R>
+where
+    SC: StarkGenericConfig,
+    Val<SC>: TwoAdicField + PrimeField64,
+    InputMmcs: Mmcs<Val<SC>>,
+    FriMmcs: Mmcs<SC::Challenge>,
+    Comm: Recursive<SC::Challenge> + ObservableCommitment + Clone,
+    RecursiveInputMmcs: RecursiveMmcs<Val<SC>, SC::Challenge, Input = InputMmcs>,
+    RecursiveFriMmcs: RecursiveExtensionMmcs<Val<SC>, SC::Challenge, Input = FriMmcs>,
+    RecursiveFriMmcs::Commitment: ObservableCommitment,
+    SC::Challenger: GrindingChallenger + CanObserve<FriMmcs::Commitment>,
+{
+    type VerifierParams = FriVerifierParams;
+    type RecursiveProof = RecursiveHidingFriProof<
+        SC,
+        RecursiveFriMmcs,
+        InputProofTargets<Val<SC>, SC::Challenge, RecursiveInputMmcs>,
+    >;
+
+    fn get_challenges_circuit<
+        const WIDTH: usize,
+        const RATE: usize,
+        C: crate::ChallengerPermConfig,
+    >(
+        circuit: &mut CircuitBuilder<SC::Challenge>,
+        challenger: &mut CircuitChallenger<WIDTH, RATE, C>,
+        proof_targets: &Self::RecursiveProof,
+        _opened_values: &OpenedValuesTargetsWithLookups<SC>,
+        params: &Self::VerifierParams,
+    ) -> Result<Vec<Target>, CircuitBuilderError>
+    where
+        Val<SC>: PrimeField64,
+        SC::Challenge: ExtensionField<Val<SC>>,
+    {
+        let fri_proof = &proof_targets.inner_proof;
+
+        let fri_alpha = challenger.sample_ext(circuit);
+
+        let mut betas = Vec::with_capacity(fri_proof.commit_phase_commits.len());
+        for (commit, pow) in fri_proof
+            .commit_phase_commits
+            .iter()
+            .zip(fri_proof.commit_pow_witnesses.iter())
+        {
+            let commit_targets = commit.to_observation_targets();
+            challenger.observe_slice(circuit, &commit_targets);
+            challenger.check_pow_witness(circuit, params.commit_pow_bits, pow.witness)?;
+            let beta = challenger.sample_ext(circuit);
+            betas.push(beta);
+        }
+
+        challenger.observe_ext_slice(circuit, &fri_proof.final_poly);
+
+        for &log_arity in &fri_proof.log_arities {
+            let log_arity_target =
+                circuit.alloc_const(SC::Challenge::from_usize(log_arity), "FRI log_arity");
+            challenger.observe(circuit, log_arity_target);
+        }
+
+        challenger.check_pow_witness(
+            circuit,
+            params.query_pow_bits,
+            fri_proof.pow_witness.witness,
+        )?;
+
+        let mut challenges = Vec::with_capacity(1 + betas.len());
+        challenges.push(fri_alpha);
+        challenges.extend(betas);
+        Ok(challenges)
+    }
+
+    fn verify_circuit<const WIDTH: usize, const RATE: usize, C: crate::ChallengerPermConfig>(
+        &self,
+        circuit: &mut CircuitBuilder<SC::Challenge>,
+        challenges: &[Target],
+        challenger: &mut CircuitChallenger<WIDTH, RATE, C>,
+        commitments_with_opening_points: &ComsWithOpeningsTargets<
+            Comm,
+            TwoAdicMultiplicativeCoset<Val<SC>>,
+        >,
+        opening_proof: &Self::RecursiveProof,
+        params: &Self::VerifierParams,
+    ) -> Result<Vec<NonPrimitiveOpId>, VerificationError> {
+        let FriVerifierParams {
+            log_blowup,
+            log_final_poly_len,
+            commit_pow_bits: _,
+            query_pow_bits: _,
+            permutation_config,
+        } = *params;
+        let fri_proof = &opening_proof.inner_proof;
+        let num_betas = fri_proof.commit_phase_commits.len();
+        let num_queries = fri_proof.query_proofs.len();
+
+        let alpha = challenges[0];
+        let betas = &challenges[1..1 + num_betas];
+
+        let total_log_reduction: usize = fri_proof.log_arities.iter().sum();
+        let log_max_height = total_log_reduction + log_final_poly_len + log_blowup;
+
+        if log_max_height > MAX_QUERY_INDEX_BITS {
+            return Err(VerificationError::InvalidProofShape(format!(
+                "log_max_height {log_max_height} exceeds MAX_QUERY_INDEX_BITS {MAX_QUERY_INDEX_BITS}"
+            )));
+        }
+
+        let index_bits_per_query: Vec<Vec<Target>> = (0..num_queries)
+            .map(|_| challenger.sample_bits(circuit, log_max_height))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let merged_commitments = merge_hiding_random_openings::<SC, Comm>(
+            commitments_with_opening_points,
+            &opening_proof.random_opened_values.rounds,
+        )?;
+
+        verify_fri_circuit(
+            circuit,
+            fri_proof,
+            alpha,
+            betas,
+            &index_bits_per_query,
+            &merged_commitments,
+            log_blowup,
+            permutation_config,
+        )
+    }
+
+    fn selectors_at_point_circuit(
+        &self,
+        circuit: &mut CircuitBuilder<SC::Challenge>,
+        domain: &TwoAdicMultiplicativeCoset<Val<SC>>,
+        point: &Target,
+    ) -> RecursiveLagrangeSelectors {
+        let shift_inv =
+            circuit.alloc_const(SC::Challenge::from(domain.shift_inverse()), "shift_inv");
+        let one = circuit.alloc_const(SC::Challenge::from(Val::<SC>::ONE), "1");
+        let subgroup_gen_inv = circuit.alloc_const(
+            SC::Challenge::from(domain.subgroup_generator().inverse()),
+            "subgroup_gen_inv",
+        );
+
+        let unshifted_point = circuit.alloc_mul(shift_inv, *point, "unshifted_point");
+        let us_exp = circuit.exp_power_of_2(unshifted_point, domain.log_size());
+        let z_h = circuit.alloc_sub(us_exp, one, "z_h");
+
+        let us_minus_one = circuit.alloc_sub(unshifted_point, one, "us_minus_one");
+        let us_minus_gen_inv =
+            circuit.alloc_sub(unshifted_point, subgroup_gen_inv, "us_minus_gen_inv");
+
+        let is_first_row = circuit.alloc_div(z_h, us_minus_one, "is_first_row");
+        let is_last_row = circuit.alloc_div(z_h, us_minus_gen_inv, "is_last_row");
+        let is_transition = us_minus_gen_inv;
+        let inv_vanishing = circuit.alloc_div(one, z_h, "inv_vanishing");
+
+        let row_selectors = RowSelectorsTargets {
+            is_first_row,
+            is_last_row,
+            is_transition,
+        };
+        RecursiveLagrangeSelectors {
+            row_selectors,
+            inv_vanishing,
+        }
+    }
+
+    fn create_disjoint_domain(
+        &self,
+        trace_domain: TwoAdicMultiplicativeCoset<Val<SC>>,
+        degree: usize,
+    ) -> TwoAdicMultiplicativeCoset<Val<SC>> {
+        trace_domain.create_disjoint_domain(degree)
+    }
+
+    fn split_domains(
+        &self,
+        trace_domain: &TwoAdicMultiplicativeCoset<Val<SC>>,
+        degree: usize,
+    ) -> Vec<TwoAdicMultiplicativeCoset<Val<SC>>> {
+        trace_domain.split_domains(degree)
+    }
+
+    fn log_size(&self, trace_domain: &TwoAdicMultiplicativeCoset<Val<SC>>) -> usize {
+        trace_domain.log_size()
+    }
+
+    fn first_point(&self, trace_domain: &TwoAdicMultiplicativeCoset<Val<SC>>) -> SC::Challenge {
+        trace_domain.first_point().into()
+    }
+
+    fn get_fri_random_opened_values(
+        proof: &RecursiveHidingFriProof<
+            SC,
+            RecursiveFriMmcs,
+            InputProofTargets<Val<SC>, SC::Challenge, RecursiveInputMmcs>,
+        >,
+    ) -> &[Vec<Vec<Vec<Target>>>] {
+        &proof.random_opened_values.rounds
     }
 }

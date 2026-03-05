@@ -351,8 +351,6 @@ where
     } = proof_targets;
     let instances = &opened_values_targets.instances;
 
-    //TODO: Add support for ZK mode.
-    debug_assert_eq!(config.is_zk(), 0, "batch recursion assumes non-ZK");
     if airs.is_empty() {
         return Err(VerificationError::InvalidProofShape(
             "batch-STARK verification requires at least one instance".to_string(),
@@ -372,13 +370,16 @@ where
 
     let pcs = config.pcs();
 
-    if commitments_targets.random_commit.is_some() {
-        return Err(VerificationError::InvalidProofShape(
-            "Batch-STARK verifier does not support random commitments".to_string(),
-        ));
-    }
-
     let n_instances = airs.len();
+
+    // Check randomization consistency against the PCS ZK setting.
+    if (instances
+        .iter()
+        .any(|inst| inst.opened_values_no_lookups.random_targets.is_some() != SC::Pcs::ZK))
+        || (commitments_targets.random_commit.is_some() != SC::Pcs::ZK)
+    {
+        return Err(VerificationError::RandomizationError);
+    }
 
     // Pre-compute per-instance quotient degrees and preprocessed widths, and validate proof shape.
     let mut preprocessed_widths = Vec::with_capacity(airs.len());
@@ -396,6 +397,7 @@ where
             preprocessed_local_targets,
             preprocessed_next_targets,
             quotient_chunks_targets,
+            random_targets,
             ..
         } = &instance.opened_values_no_lookups;
 
@@ -449,6 +451,13 @@ where
                 "Invalid quotient chunk length: expected {}",
                 SC::Challenge::DIMENSION
             )));
+        }
+
+        if random_targets
+            .as_ref()
+            .is_some_and(|r_vals| r_vals.len() != SC::Challenge::DIMENSION)
+        {
+            return Err(VerificationError::RandomizationError);
         }
 
         log_quotient_degrees.push(log_qd);
@@ -559,6 +568,9 @@ where
             .quotient_chunks_targets
             .to_observation_targets(),
     );
+    if let Some(random_commit) = &commitments_targets.random_commit {
+        challenger.observe_slice(circuit, &random_commit.to_observation_targets());
+    }
     // Sample zeta challenge (extension field element)
     let zeta = challenger.sample_ext(circuit);
 
@@ -566,22 +578,45 @@ where
     let mut trace_domains = Vec::with_capacity(n_instances);
     let mut ext_trace_domains = Vec::with_capacity(n_instances);
     for &ext_db in degree_bits {
-        let base_db = ext_db - config.is_zk();
+        let base_db = ext_db.checked_sub(config.is_zk()).ok_or_else(|| {
+            VerificationError::InvalidProofShape(
+                "Extended degree bits smaller than ZK adjustment".to_string(),
+            )
+        })?;
         trace_domains.push(pcs.natural_domain_for_degree(1 << base_db));
         ext_trace_domains.push(pcs.natural_domain_for_degree(1 << ext_db));
     }
 
     // Collect commitments with opening points for PCS verification.
-    // We have, in the typical lookup case, up to four rounds:
-    // trace, quotient, optional preprocessed, and optional permutation.
-    let mut coms_to_verify = Vec::with_capacity(4);
+    // We have, in the typical lookup case, up to five rounds:
+    // optional random, trace, quotient, optional preprocessed, and optional permutation.
+    let mut coms_to_verify = Vec::with_capacity(5);
+
+    if let Some(random_commit) = &commitments_targets.random_commit {
+        coms_to_verify.push((
+            random_commit.clone(),
+            ext_trace_domains
+                .iter()
+                .zip(instances.iter())
+                .map(|(domain, inst)| {
+                    let random_vals = inst
+                        .opened_values_no_lookups
+                        .random_targets
+                        .as_ref()
+                        .ok_or(VerificationError::RandomizationError)?;
+                    Ok((*domain, vec![(zeta, random_vals.clone())]))
+                })
+                .collect::<Result<Vec<_>, VerificationError>>()?,
+        ));
+    }
 
     let trace_round: Vec<_> = ext_trace_domains
         .iter()
+        .zip(trace_domains.iter())
         .zip(instances.iter())
-        .map(|(ext_dom, inst)| {
-            let first_point = pcs.first_point(ext_dom);
-            let next_point = ext_dom.next_point(first_point).ok_or_else(|| {
+        .map(|((ext_dom, trace_dom), inst)| {
+            let first_point = pcs.first_point(trace_dom);
+            let next_point = trace_dom.next_point(first_point).ok_or_else(|| {
                 VerificationError::InvalidProofShape(
                     "Trace domain does not provide next point".to_string(),
                 )
@@ -610,16 +645,37 @@ where
         .iter()
         .zip(ext_trace_domains.iter())
         .zip(log_quotient_degrees.iter())
-        .map(|((&ext_db, ext_dom), &log_qd)| {
-            let base_db = ext_db - config.is_zk();
-            let q_domain = ext_dom.create_disjoint_domain(1 << (base_db + log_qd + config.is_zk()));
-            q_domain.split_domains(1 << (log_qd + config.is_zk()))
+        .map(
+            |((&ext_db, ext_dom), &log_qd)| -> Result<Vec<_>, VerificationError> {
+                let base_db = ext_db.checked_sub(config.is_zk()).ok_or_else(|| {
+                    VerificationError::InvalidProofShape(
+                        "Extended degree bits smaller than ZK adjustment".to_string(),
+                    )
+                })?;
+                let q_domain =
+                    ext_dom.create_disjoint_domain(1 << (base_db + log_qd + config.is_zk()));
+                Ok(q_domain.split_domains(1 << (log_qd + config.is_zk())))
+            },
+        )
+        .collect::<Result<Vec<_>, VerificationError>>()?;
+
+    let randomized_quotient_domains: Vec<Vec<_>> = quotient_domains
+        .iter()
+        .map(|domains| {
+            domains
+                .iter()
+                .map(|domain| pcs.natural_domain_for_degree(pcs.size(domain) << config.is_zk()))
+                .collect()
         })
         .collect();
 
-    let mut quotient_round =
-        Vec::with_capacity(quotient_domains.iter().map(|domains| domains.len()).sum());
-    for (domains, inst) in quotient_domains.iter().zip(instances.iter()) {
+    let mut quotient_round = Vec::with_capacity(
+        randomized_quotient_domains
+            .iter()
+            .map(|domains| domains.len())
+            .sum(),
+    );
+    for (domains, inst) in randomized_quotient_domains.iter().zip(instances.iter()) {
         if domains.len() != inst.opened_values_no_lookups.quotient_chunks_targets.len() {
             return Err(VerificationError::InvalidProofShape(
                 "Quotient chunk count mismatch across domains".to_string(),
@@ -667,9 +723,8 @@ where
                         "Missing preprocessed next columns".to_string(),
                     )
                 })?;
-            // Validate that the preprocessed data's base degree matches what we expect.
+            // Validate that the preprocessed data's degree metadata matches this instance.
             let ext_db = degree_bits[inst_idx];
-            let expected_base_db = ext_db - config.is_zk();
 
             let meta = global.instances.instances[inst_idx]
                 .as_ref()
@@ -678,7 +733,7 @@ where
                         "Missing preprocessed instance metadata".to_string(),
                     )
                 })?;
-            if meta.matrix_index != matrix_index || meta.degree_bits != expected_base_db {
+            if meta.matrix_index != matrix_index || meta.degree_bits != ext_db {
                 return Err(VerificationError::InvalidProofShape(
                     "Preprocessed instance metadata mismatch".to_string(),
                 ));
@@ -687,10 +742,10 @@ where
             // Compute base preprocessed domain (matching prover in generation.rs)
             let pre_domain = pcs.natural_domain_for_degree(1 << meta.degree_bits);
 
-            // Use extended trace domain for zeta_next computation (same generator)
-            let ext_dom = &ext_trace_domains[inst_idx];
-            let first_point = pcs.first_point(ext_dom);
-            let next_point = ext_dom.next_point(first_point).ok_or_else(|| {
+            // Use the base trace domain for zeta_next computation.
+            let trace_dom = &trace_domains[inst_idx];
+            let first_point = pcs.first_point(trace_dom);
+            let next_point = trace_dom.next_point(first_point).ok_or_else(|| {
                 VerificationError::InvalidProofShape(
                     "Preprocessed domain does not provide next point".to_string(),
                 )
@@ -729,8 +784,9 @@ where
             }
 
             if !permutation_local.is_empty() {
-                let first_point = pcs.first_point(ext_dom);
-                let next_point = ext_dom.next_point(first_point).ok_or_else(|| {
+                let trace_dom = &trace_domains[i];
+                let first_point = pcs.first_point(trace_dom);
+                let next_point = trace_dom.next_point(first_point).ok_or_else(|| {
                     VerificationError::InvalidProofShape(
                         "Trace domain does not provide next point".to_string(),
                     )
@@ -753,14 +809,18 @@ where
     }
 
     // Observe opened values in the correct order (matching native).
-    // Native observes per-instance: trace_local, trace_next, then quotient chunks,
-    // then preprocessed, then permutation.
-    // The flattened structure has the wrong order, so we observe from instances directly.
+    // For HidingFriPcs, the native verifier merges FRI-level random opened values into
+    // each point's values before observing. We must do the same here to keep the
+    // Fiat-Shamir transcript in sync with the prover/verifier.
+    let fri_random_rounds = SC::Pcs::get_fri_random_opened_values(&proof_targets.opening_proof);
     observe_opened_values_circuit::<SC, CP, WIDTH, RATE>(
         circuit,
         &mut challenger,
         instances,
         &quotient_degrees,
+        fri_random_rounds,
+        common.preprocessed.is_some(),
+        is_lookup,
     );
 
     let pcs_challenges = SC::Pcs::get_challenges_circuit::<WIDTH, RATE, CP>(
@@ -977,11 +1037,18 @@ fn lookup_data_to_pv_index(
 
 /// Observe opened values in the circuit in the correct order to match native.
 ///
-/// Native observes opened values in this order:
-/// 1. Trace round: for each instance, observe trace_local then trace_next
-/// 2. Quotient round: for each instance, for each chunk, observe quotient
-/// 3. Preprocessed round: for each instance, observe prep_local then prep_next
-/// 4. Permutation round: for each instance, observe perm_local then perm_next
+/// For `HidingFriPcs`, the native verifier merges FRI-level random opened values into
+/// each point's values before observing them. `fri_random_rounds` carries those extra
+/// values (layout: `rounds[round][mat][point]`) and must be interleaved here to keep
+/// the Fiat-Shamir transcript in sync. For `TwoAdicFriPcs`, pass an empty slice.
+///
+/// Observation order (matching native batch-STARK verifier):
+/// 1. Random round (if ZK): for each instance, observe random opened values (+ FRI random)
+/// 2. Trace round: for each instance, observe trace_local (+ FRI random) then trace_next (+ FRI random)
+/// 3. Quotient round: for each chunk, observe quotient values (+ FRI random)
+/// 4. Preprocessed round (if present): for each matrix, observe prep_local (+ FRI random) then prep_next (+ FRI random)
+/// 5. Permutation round (if present): for each instance, observe perm_local (+ FRI random) then perm_next (+ FRI random)
+#[allow(clippy::too_many_arguments)]
 fn observe_opened_values_circuit<
     SC,
     CP: ChallengerPermConfig,
@@ -992,46 +1059,142 @@ fn observe_opened_values_circuit<
     challenger: &mut CircuitChallenger<WIDTH, RATE, CP>,
     instances: &[OpenedValuesTargetsWithLookups<SC>],
     quotient_degrees: &[usize],
+    fri_random_rounds: &[Vec<Vec<Vec<Target>>>],
+    has_preprocessed: bool,
+    is_lookup: bool,
 ) where
     SC: StarkGenericConfig,
     Val<SC>: PrimeField64,
     SC::Challenge: ExtensionField<Val<SC>>,
 {
-    // 1. Trace round: for each instance, observe trace_local then trace_next
-    for inst in instances {
-        challenger.observe_ext_slice(circuit, &inst.opened_values_no_lookups.trace_local_targets);
-        challenger.observe_ext_slice(circuit, &inst.opened_values_no_lookups.trace_next_targets);
+    // Helper: observe a point's original values followed by any FRI random values.
+    let observe_point = |circuit: &mut CircuitBuilder<SC::Challenge>,
+                         challenger: &mut CircuitChallenger<WIDTH, RATE, CP>,
+                         original: &[Target],
+                         fri_random: Option<&Vec<Target>>| {
+        challenger.observe_ext_slice(circuit, original);
+        if let Some(rand_vals) = fri_random {
+            challenger.observe_ext_slice(circuit, rand_vals);
+        }
+    };
+
+    // Track which round index within `fri_random_rounds` we are at.
+    let mut round_idx: usize = 0;
+
+    // 1. Random round (if ZK): for each instance (= mat), one point at zeta.
+    let has_random_round = instances
+        .first()
+        .is_some_and(|i| i.opened_values_no_lookups.random_targets.is_some());
+    if has_random_round {
+        let rand_round = fri_random_rounds.get(round_idx);
+        for (mat_idx, inst) in instances.iter().enumerate() {
+            if let Some(random_vals) = &inst.opened_values_no_lookups.random_targets {
+                let fri_rand = rand_round
+                    .and_then(|r| r.get(mat_idx))
+                    .and_then(|m| m.first());
+                observe_point(circuit, challenger, random_vals, fri_rand);
+            }
+        }
+        round_idx += 1;
     }
 
-    // 2. Quotient round: for each instance, for each chunk, observe quotient
-    for (inst, &qd) in instances.iter().zip(quotient_degrees.iter()) {
-        for chunk_values in inst
-            .opened_values_no_lookups
-            .quotient_chunks_targets
-            .iter()
-            .take(qd)
-        {
-            challenger.observe_ext_slice(circuit, chunk_values);
+    // 2. Trace round: for each instance (= mat), two points (zeta, zeta_next).
+    {
+        let rand_round = fri_random_rounds.get(round_idx);
+        for (mat_idx, inst) in instances.iter().enumerate() {
+            let fri_rand_local = rand_round
+                .and_then(|r| r.get(mat_idx))
+                .and_then(|m| m.first());
+            let fri_rand_next = rand_round
+                .and_then(|r| r.get(mat_idx))
+                .and_then(|m| m.get(1));
+            observe_point(
+                circuit,
+                challenger,
+                &inst.opened_values_no_lookups.trace_local_targets,
+                fri_rand_local,
+            );
+            observe_point(
+                circuit,
+                challenger,
+                &inst.opened_values_no_lookups.trace_next_targets,
+                fri_rand_next,
+            );
         }
+        round_idx += 1;
     }
 
-    // 3. Preprocessed round: for each instance, observe prep_local then prep_next
-    for inst in instances {
-        if let Some(prep_local) = &inst.opened_values_no_lookups.preprocessed_local_targets {
-            challenger.observe_ext_slice(circuit, prep_local);
+    // 3. Quotient round: mats are flattened chunks across all instances, one point each.
+    {
+        let rand_round = fri_random_rounds.get(round_idx);
+        let mut flat_mat_idx: usize = 0;
+        for (inst, &qd) in instances.iter().zip(quotient_degrees.iter()) {
+            for chunk_values in inst
+                .opened_values_no_lookups
+                .quotient_chunks_targets
+                .iter()
+                .take(qd)
+            {
+                let fri_rand = rand_round
+                    .and_then(|r| r.get(flat_mat_idx))
+                    .and_then(|m| m.first());
+                observe_point(circuit, challenger, chunk_values, fri_rand);
+                flat_mat_idx += 1;
+            }
         }
-        if let Some(prep_next) = &inst.opened_values_no_lookups.preprocessed_next_targets {
-            challenger.observe_ext_slice(circuit, prep_next);
-        }
+        round_idx += 1;
     }
 
-    // 4. Permutation round: for each instance, observe perm_local then perm_next
-    for inst in instances {
-        if !inst.permutation_local_targets.is_empty() {
-            challenger.observe_ext_slice(circuit, &inst.permutation_local_targets);
+    // 4. Preprocessed round (if present): mats are indexed by matrix_to_instance order.
+    if has_preprocessed {
+        let rand_round = fri_random_rounds.get(round_idx);
+        let mut mat_idx: usize = 0;
+        for inst in instances {
+            if let Some(prep_local) = &inst.opened_values_no_lookups.preprocessed_local_targets {
+                let fri_rand_local = rand_round
+                    .and_then(|r| r.get(mat_idx))
+                    .and_then(|m| m.first());
+                let fri_rand_next = rand_round
+                    .and_then(|r| r.get(mat_idx))
+                    .and_then(|m| m.get(1));
+                observe_point(circuit, challenger, prep_local, fri_rand_local);
+                if let Some(prep_next) = &inst.opened_values_no_lookups.preprocessed_next_targets {
+                    observe_point(circuit, challenger, prep_next, fri_rand_next);
+                }
+                mat_idx += 1;
+            }
         }
-        if !inst.permutation_next_targets.is_empty() {
-            challenger.observe_ext_slice(circuit, &inst.permutation_next_targets);
+        round_idx += 1;
+    }
+
+    // 5. Permutation round (if present): for each instance with non-empty permutation.
+    if is_lookup {
+        let rand_round = fri_random_rounds.get(round_idx);
+        let mut mat_idx: usize = 0;
+        for inst in instances {
+            if !inst.permutation_local_targets.is_empty() {
+                let fri_rand_local = rand_round
+                    .and_then(|r| r.get(mat_idx))
+                    .and_then(|m| m.first());
+                let fri_rand_next = rand_round
+                    .and_then(|r| r.get(mat_idx))
+                    .and_then(|m| m.get(1));
+                observe_point(
+                    circuit,
+                    challenger,
+                    &inst.permutation_local_targets,
+                    fri_rand_local,
+                );
+                if !inst.permutation_next_targets.is_empty() {
+                    observe_point(
+                        circuit,
+                        challenger,
+                        &inst.permutation_next_targets,
+                        fri_rand_next,
+                    );
+                }
+                mat_idx += 1;
+            }
         }
     }
 }

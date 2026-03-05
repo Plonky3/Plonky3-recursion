@@ -3,8 +3,7 @@
 This page tracks planned improvements and known optimization opportunities.
 
 ## Soundness
-
-- **ZK mode**: Support zero-knowledge STARKs (trace randomization). Currently only non-ZK mode is supported.
+- **ZK mode**: Recursive verifier supports zero-knowledge STARK trace randomization.
 
 ## Performance
 

@@ -67,9 +67,9 @@ The circuit challenger implements a duplex sponge construction identical to Plon
 
 ## Current limitations
 
-### Non-ZK mode only
+### ZK mode
 
-The library currently supports only non-ZK STARKs (`config.is_zk() == 0`). The recursive verifier does not handle zero-knowledge randomization of traces.
+The recursive verifier supports ZK-enabled STARK configurations, including batch recursion transcript/randomization handling.
 
 ### Challenger Poseidon2: CTL-verified
 

@@ -6,7 +6,7 @@ use p3_circuit::op::{NonPrimitiveOpPrivateData, Poseidon2Config};
 use p3_circuit::ops::poseidon2_perm::Poseidon2PermOps;
 use p3_circuit::ops::{Poseidon2PermCall, Poseidon2PermPrivateData};
 use p3_circuit::{CircuitBuilder, CircuitBuilderError, CircuitRunner, NonPrimitiveOpId};
-use p3_commit::BatchOpening;
+use p3_commit::{BatchOpening, OpenedValues};
 use p3_field::{BasedVectorSpace, ExtensionField, Field, PrimeField64, TwoAdicField};
 use p3_fri::FriProof;
 use p3_matrix::Dimensions;
@@ -567,6 +567,46 @@ where
     }
 
     Ok(())
+}
+
+/// [HidingFriPcs](p3_fri::HidingFriPcs) wraps the inner FRI proof as
+/// `(random_opened_values, inner_fri_proof)`.
+pub(crate) type HidingFriProof<F, EF, FriMmcs, InputMmcs> = (
+    OpenedValues<EF>,
+    FriProof<EF, FriMmcs, F, Vec<BatchOpening<F, InputMmcs>>>,
+);
+
+/// Variant of [`set_fri_mmcs_private_data`] for [HidingFriPcs](p3_fri::HidingFriPcs) opening proofs.
+pub fn set_hiding_fri_mmcs_private_data<
+    F,
+    EF,
+    FriMmcs,
+    InputMmcs,
+    H,
+    C,
+    const DIGEST_ELEMS: usize,
+>(
+    runner: &mut CircuitRunner<EF>,
+    op_ids: &[NonPrimitiveOpId],
+    fri_proof: &HidingFriProof<F, EF, FriMmcs, InputMmcs>,
+) -> Result<(), &'static str>
+where
+    F: Field,
+    EF: ExtensionField<F> + BasedVectorSpace<F>,
+    FriMmcs: p3_commit::Mmcs<EF, Proof = Vec<[F; DIGEST_ELEMS]>>,
+    InputMmcs: p3_commit::Mmcs<F, Proof = Vec<[F; DIGEST_ELEMS]>>,
+    H: p3_symmetric::CryptographicHasher<F, [F; DIGEST_ELEMS]>
+        + p3_symmetric::CryptographicHasher<F::Packing, [F::Packing; DIGEST_ELEMS]>
+        + Sync,
+    C: p3_symmetric::PseudoCompressionFunction<[F; DIGEST_ELEMS], 2>
+        + p3_symmetric::PseudoCompressionFunction<[F::Packing; DIGEST_ELEMS], 2>
+        + Sync,
+{
+    set_fri_mmcs_private_data::<F, EF, FriMmcs, InputMmcs, H, C, DIGEST_ELEMS>(
+        runner,
+        op_ids,
+        &fri_proof.1,
+    )
 }
 
 #[cfg(test)]

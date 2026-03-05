@@ -313,6 +313,7 @@ impl<
         let mut aggregated_preprocessed_local = Vec::with_capacity(num_instances);
         let mut aggregated_preprocessed_next = Vec::with_capacity(num_instances);
         let mut aggregated_quotient_chunks = Vec::with_capacity(num_instances);
+        let mut aggregated_random = Vec::with_capacity(num_instances);
 
         let commitments_targets = CommitmentTargets::new(circuit, &input.commitments);
         let opened_values_targets = BatchOpenedValuesTargets::new(circuit, &input.opened_values);
@@ -350,6 +351,9 @@ impl<
             for chunk in &instance.opened_values_no_lookups.quotient_chunks_targets {
                 aggregated_quotient_chunks.push(chunk.clone());
             }
+            if let Some(random) = &instance.opened_values_no_lookups.random_targets {
+                aggregated_random.extend(random);
+            }
         }
 
         let flattened_opened_values_targets = OpenedValuesTargetsWithLookups {
@@ -367,7 +371,11 @@ impl<
                     Some(aggregated_preprocessed_next)
                 },
                 quotient_chunks_targets: aggregated_quotient_chunks,
-                random_targets: None, // Batch proofs do not have random values
+                random_targets: if aggregated_random.is_empty() {
+                    None
+                } else {
+                    Some(aggregated_random)
+                },
                 _phantom: PhantomData,
             },
             permutation_local_targets: aggregated_permutation_local,
@@ -425,7 +433,7 @@ where
             trace_targets,
             permutation_targets,
             quotient_chunks_targets,
-            random_commit: None, // ZK is not supported in batch proofs yet
+            random_commit: input.random.as_ref().map(|rand| Comm::new(circuit, rand)),
             _phantom: PhantomData,
         }
     }

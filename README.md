@@ -240,7 +240,7 @@ For intermediate recursive layers, consider relaxed parameters (fewer queries, h
 
 ## Current Limitations
 
-- **ZK Mode**: Currently only supports non-ZK STARKs (`config.is_zk() == 0`)
+- **ZK Mode Wiring**: Use a ZK-capable PCS (for example `HidingFriPcs`) and matching recursive proof targets/config wiring.
 - **Fixed Configurations**: Field extensions are currently not fully parametrizable.
 
 ## Documentation
