@@ -197,10 +197,11 @@ pub fn create_symbolic_variables<F: Field>(
     let symbolic_main = symbolic_air_builder.main();
     let symbolic_main_local = symbolic_main.row_slice(0).unwrap().to_vec();
 
-    let preprocessed = symbolic_air_builder
-        .preprocessed()
-        .expect("Expected preprocessed columns");
-    let preprocessed_local = preprocessed.row_slice(0).unwrap().to_vec();
+    let preprocessed = symbolic_air_builder.preprocessed().clone();
+    let preprocessed_local = preprocessed
+        .row_slice(0)
+        .expect("The preprocessed matrix has only one row?")
+        .to_vec();
 
     (symbolic_main_local, preprocessed_local)
 }

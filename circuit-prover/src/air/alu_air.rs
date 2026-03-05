@@ -455,9 +455,7 @@ where
         let lane_width = Self::lane_width();
 
         // Get preprocessed columns
-        let preprocessed = builder
-            .preprocessed()
-            .expect("AluAir requires preprocessed trace");
+        let preprocessed = builder.preprocessed().clone();
         let preprocessed_local = preprocessed
             .row_slice(0)
             .expect("preprocessed must be non-empty");

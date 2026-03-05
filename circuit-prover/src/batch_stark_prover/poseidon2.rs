@@ -572,12 +572,11 @@ where
         let main = builder.main();
         let local_slice = main.row_slice(0).expect("The matrix is empty?");
         let next_slice = main.row_slice(1).expect("The matrix has only one row?");
-        let preprocessed = builder
-            .preprocessed()
-            .expect("Expected preprocessed columns");
+        let preprocessed = builder.preprocessed().clone();
         let next_preprocessed_slice = preprocessed
             .row_slice(1)
             .expect("The preprocessed matrix has only one row?");
+
         eval_folder_inner!(
             &self.inner, builder, local_slice, next_slice, next_preprocessed_slice;
             bb=ProverConstraintFolder<'a, BabyBearConfig>,
@@ -605,9 +604,7 @@ where
         let main = builder.main();
         let local_slice = main.row_slice(0).expect("The matrix is empty?");
         let next_slice = main.row_slice(1).expect("The matrix has only one row?");
-        let preprocessed = builder
-            .preprocessed()
-            .expect("Expected preprocessed columns");
+        let preprocessed = builder.preprocessed().clone();
         let next_preprocessed_slice = preprocessed
             .row_slice(1)
             .expect("The preprocessed matrix has only one row?");
@@ -640,12 +637,11 @@ where
         let main = builder.main();
         let local_slice = main.row_slice(0).expect("The matrix is empty?");
         let next_slice = main.row_slice(1).expect("The matrix has only one row?");
-        let preprocessed = builder
-            .preprocessed()
-            .expect("Expected preprocessed columns");
+        let preprocessed = builder.preprocessed().clone();
         let next_preprocessed_slice = preprocessed
             .row_slice(1)
             .expect("The preprocessed matrix has only one row?");
+
         eval_verifier_inner!(
             &self.inner, builder, &local_slice, &next_slice, &next_preprocessed_slice;
             ab=VerifierConstraintFolder<'a, SC>,
@@ -665,12 +661,11 @@ where
         let main = builder.main();
         let local_slice = main.row_slice(0).expect("The matrix is empty?");
         let next_slice = main.row_slice(1).expect("The matrix has only one row?");
-        let preprocessed = builder
-            .preprocessed()
-            .expect("Expected preprocessed columns");
+        let preprocessed = builder.preprocessed().clone();
         let next_preprocessed_slice = preprocessed
             .row_slice(1)
             .expect("The preprocessed matrix has only one row?");
+
         eval_verifier_inner!(
             &self.inner, builder, &local_slice, &next_slice, &next_preprocessed_slice;
             ab=VerifierConstraintFolderWithLookups<'a, SC>,
@@ -702,9 +697,7 @@ where
         let main = builder.main();
         let local_slice = main.row_slice(0).expect("The matrix is empty?");
         let next_slice = main.row_slice(1).expect("The matrix has only one row?");
-        let preprocessed = builder
-            .preprocessed()
-            .expect("Expected preprocessed columns");
+        let preprocessed = builder.preprocessed().clone();
         let next_preprocessed_slice = preprocessed
             .row_slice(1)
             .expect("The preprocessed matrix has only one row?");

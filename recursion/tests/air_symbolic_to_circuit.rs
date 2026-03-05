@@ -54,12 +54,15 @@ where
         RowMajorMatrixView::new_row(&trace_next),
     );
     let preprocessed = if preprocessed_width > 0 {
-        Some(VerticalPair::new(
+        VerticalPair::new(
             RowMajorMatrixView::new_row(&preprocessed_local),
             RowMajorMatrixView::new_row(&preprocessed_next),
-        ))
+        )
     } else {
-        None
+        VerticalPair::new(
+            RowMajorMatrixView::new(&[], 0),
+            RowMajorMatrixView::new(&[], 0),
+        )
     };
     let mut folder: VerifierConstraintFolder<'_, MyConfig> = VerifierConstraintFolder {
         main,

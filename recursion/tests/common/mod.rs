@@ -219,9 +219,7 @@ where
         let main = builder.main();
         let main_local = main.row_slice(0).expect("Matrix is empty?");
 
-        let preprocessed = builder
-            .preprocessed()
-            .expect("Expected preprocessed columns");
+        let preprocessed = builder.preprocessed().clone();
         let preprocessed_local = preprocessed
             .row_slice(0)
             .expect("Preprocessed matrix is empty?");

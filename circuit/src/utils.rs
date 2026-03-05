@@ -419,7 +419,10 @@ mod tests {
         // Fold the constraints using random values for the trace and selectors.
         let mut folder: VerifierConstraintFolder<'_, MyConfig> = VerifierConstraintFolder {
             main,
-            preprocessed: None,
+            preprocessed: VerticalPair::new(
+                RowMajorMatrixView::new(&[], 0),
+                RowMajorMatrixView::new(&[], 0),
+            ),
             public_values: &pis,
             is_first_row: sels[0],
             is_last_row: sels[1],

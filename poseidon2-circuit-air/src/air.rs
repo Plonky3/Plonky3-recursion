@@ -837,9 +837,7 @@ where
         let next = main.row_slice(1).expect("The matrix has only one row?");
         let next = (*next).borrow();
 
-        let preprocessed = builder
-            .preprocessed()
-            .expect("Expected preprocessed columns");
+        let preprocessed = builder.preprocessed().clone();
         let next_preprocessed = preprocessed
             .row_slice(1)
             .expect("The preprocessed matrix has only one row?");
@@ -897,9 +895,7 @@ where
         // [in_idx[0], in_ctl[0], normal_chain_sel[0], merkle_chain_sel[0], ..., in_idx[3], in_ctl[3], normal_chain_sel[3], merkle_chain_sel[3],
         //  out_idx[0], out_ctl[0], out_idx[1], out_ctl[1], mmcs_index_sum_ctl_idx, mmcs_merkle_flag, new_start, merkle_path]
         // The following corresponds to the size of the data related to one input limb (in_idx[i], in_ctl[i], normal_chain_sel[i], merkle_chain_sel[i]).
-        let preprocessed = symbolic_air_builder
-            .preprocessed()
-            .expect("Expected preprocessed columns");
+        let preprocessed = symbolic_air_builder.preprocessed();
         let local_preprocessed = preprocessed
             .row_slice(0)
             .expect("The preprocessed matrix has only one row?");
@@ -909,9 +905,9 @@ where
             .expect("The preprocessed matrix has only one row?");
         let next_preprocessed: &[SymbolicVariable<AB::F>] = (*next_preprocessed).borrow();
 
-        let local_prep: &Poseidon2PreprocessedRow<SymbolicVariable<AB::F>> =
+        let local_preprocessed: &Poseidon2PreprocessedRow<SymbolicVariable<AB::F>> =
             local_preprocessed.borrow();
-        let next_prep: &Poseidon2PreprocessedRow<SymbolicVariable<AB::F>> =
+        let next_preprocessed: &Poseidon2PreprocessedRow<SymbolicVariable<AB::F>> =
             next_preprocessed.borrow();
 
         // There are POSEIDON2_LIMBS input limbs and POSEIDON2_PUBLIC_OUTPUT_LIMBS output limbs
@@ -927,10 +923,10 @@ where
         // - Sibling values are private proof data (wrong siblings → wrong root)
         // - Chained values are AIR-constrained to equal previous Poseidon2 outputs
         let not_merkle = SymbolicExpression::Leaf(BaseLeaf::Constant(AB::F::ONE))
-            - SymbolicExpression::from(local_prep.merkle_path);
+            - SymbolicExpression::from(local_preprocessed.merkle_path);
 
         for limb_idx in 0..POSEIDON2_LIMBS {
-            let limb = &local_prep.input_limbs[limb_idx];
+            let limb = &local_preprocessed.input_limbs[limb_idx];
             let input_idx_limb = iter::once(limb.idx)
                 .chain(
                     local.poseidon2.inputs[limb_idx * D..(limb_idx + 1) * D]
@@ -951,7 +947,7 @@ where
         }
 
         for limb_idx in 0..POSEIDON2_PUBLIC_OUTPUT_LIMBS {
-            let limb = &local_prep.output_limbs[limb_idx];
+            let limb = &local_preprocessed.output_limbs[limb_idx];
             let output_idx_limb = iter::once(limb.idx)
                 .chain(
                     local.poseidon2.ending_full_rounds[HALF_FULL_ROUNDS - 1].post
@@ -976,10 +972,10 @@ where
         // If mmcs_merkle_flag = 1 AND next.new_start = 1, expose mmcs_index_sum via CTL.
         // mmcs_merkle_flag is precomputed as: mmcs_ctl_enabled * merkle_path.
         // This keeps multiplicity at degree 2 (safe for constraint evaluation).
-        let multiplicity = local_prep.mmcs_merkle_flag * next_prep.new_start;
+        let multiplicity = local_preprocessed.mmcs_merkle_flag * next_preprocessed.new_start;
 
         let mut mmcs_index_sum_lookup = vec![
-            SymbolicExpression::from(local_prep.mmcs_index_sum_ctl_idx),
+            SymbolicExpression::from(local_preprocessed.mmcs_index_sum_ctl_idx),
             SymbolicExpression::from(local.mmcs_index_sum),
         ];
         // Extend `mmcs_index_sum` to D elements with zeros.
