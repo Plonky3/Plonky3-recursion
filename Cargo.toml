@@ -2,15 +2,10 @@
 [workspace]
 resolver = "2"
 members = [
-    "challenger-air",
     "circuit",
     "circuit-prover",
-    "field-air",
-    "fri-air",
-    "interpolation-air",
     "poseidon2-circuit-air",
     "recursion",
-    "symmetric-air",
     "test-utils",
 ]
 
