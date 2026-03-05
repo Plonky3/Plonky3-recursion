@@ -4,7 +4,9 @@ use core::mem::size_of;
 
 use p3_poseidon2_air::Poseidon2Cols;
 
+/// Number of extension-field limbs used for Poseidon2 input/output in the circuit table.
 pub const POSEIDON2_LIMBS: usize = 4;
+/// Number of extension-field output limbs exposed as public values via CTL.
 pub const POSEIDON2_PUBLIC_OUTPUT_LIMBS: usize = 2;
 
 /// Columns for a Poseidon2 AIR which computes one permutation per row.
@@ -35,6 +37,11 @@ pub struct Poseidon2CircuitCols<T, P: PermutationColumns<T>> {
     pub mmcs_index_sum: T,
 }
 
+/// Marker trait for types that represent the Poseidon2 permutation columns.
+///
+/// Implemented for [`p3_poseidon2_air::Poseidon2Cols`] with matching const parameters.
+/// Used as a bound on [`Poseidon2CircuitCols`] to remain generic over the concrete
+/// Poseidon2 column layout.
 pub trait PermutationColumns<T> {}
 
 impl<
@@ -49,6 +56,7 @@ impl<
 {
 }
 
+/// Return the total number of columns in a [`Poseidon2CircuitCols`] row for permutation type `P`.
 pub const fn num_cols<P: PermutationColumns<u8>>() -> usize {
     size_of::<Poseidon2CircuitCols<u8, P>>()
 }
@@ -73,34 +81,59 @@ impl<T, P: PermutationColumns<T>> BorrowMut<Poseidon2CircuitCols<T, P>> for [T] 
     }
 }
 
+/// Preprocessed columns for a single Poseidon2 input limb.
+///
+/// Each of the [`POSEIDON2_LIMBS`] input limbs has its own set of preprocessed
+/// columns that encode CTL membership and chain selectors.
 #[derive(Clone, Copy, Debug, Default)]
 #[repr(C)]
 pub struct Poseidon2PrepInputLimb<T> {
+    /// Witness index for this input limb (used in the CTL lookup).
     pub idx: T,
+    /// Cross-table-lookup flag: 1 when this limb participates in an input CTL.
     pub in_ctl: T,
+    /// Selector for the normal (challenger-style sponge) chain.
     pub normal_chain_sel: T,
+    /// Selector for the Merkle-path chain.
     pub merkle_chain_sel: T,
 }
 
+/// Preprocessed columns for a single Poseidon2 output limb.
+///
+/// Only the first [`POSEIDON2_PUBLIC_OUTPUT_LIMBS`] output limbs are exposed
+/// publicly via CTL.
 #[derive(Clone, Copy, Debug, Default)]
 #[repr(C)]
 pub struct Poseidon2PrepOutputLimb<T> {
+    /// Witness index for this output limb (used in the CTL lookup).
     pub idx: T,
+    /// Cross-table-lookup flag: 1 when this limb participates in an output CTL.
     pub out_ctl: T,
 }
 
+/// Full preprocessed row for the Poseidon2 circuit table.
+///
+/// One row is generated per Poseidon2 permutation invocation. The preprocessed
+/// data is committed once during setup and reused across all proofs.
 #[derive(Clone, Copy, Debug, Default)]
 #[repr(C)]
 pub struct Poseidon2PreprocessedRow<T> {
+    /// Per-limb preprocessed input columns (length = [`POSEIDON2_LIMBS`]).
     pub input_limbs: [Poseidon2PrepInputLimb<T>; POSEIDON2_LIMBS],
+    /// Per-limb preprocessed output columns (length = [`POSEIDON2_PUBLIC_OUTPUT_LIMBS`]).
     pub output_limbs: [Poseidon2PrepOutputLimb<T>; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
+    /// CTL index for the MMCS index-sum accumulator column.
     pub mmcs_index_sum_ctl_idx: T,
+    /// Flag indicating this row is part of a Merkle-path hashing chain.
     pub mmcs_merkle_flag: T,
+    /// Flag indicating this row starts a new sponge or Merkle chain.
     pub new_start: T,
+    /// Flag indicating this row is a Merkle-path step (as opposed to a sponge step).
     pub merkle_path: T,
 }
 
 impl<T: Copy> Poseidon2PreprocessedRow<T> {
+    /// Serialize this row into `buf` in column-major order matching the `#[repr(C)]` layout.
     pub fn write_into(self, buf: &mut Vec<T>) {
         for limb in self.input_limbs {
             buf.push(limb.idx);

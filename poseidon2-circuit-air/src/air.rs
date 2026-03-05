@@ -106,6 +106,7 @@ impl<
     }
 }
 
+/// Return the number of columns in the Poseidon2 preprocessed trace.
 pub const fn poseidon2_preprocessed_width() -> usize {
     core::mem::size_of::<Poseidon2PreprocessedRow<u8>>()
 }
@@ -137,6 +138,10 @@ impl<
         PARTIAL_ROUNDS,
     >
 {
+    /// Create a new `Poseidon2CircuitAir` with the given round constants.
+    ///
+    /// The preprocessed trace is left empty; call [`Self::new_with_preprocessed`] or
+    /// populate it separately before proving.
     pub const fn new(
         constants: RoundConstants<F, WIDTH, HALF_FULL_ROUNDS, PARTIAL_ROUNDS>,
     ) -> Self {
@@ -153,11 +158,19 @@ impl<
         }
     }
 
+    /// Set the minimum trace height (rounded up to the next power of two).
+    ///
+    /// Use this when FRI parameters require a minimum domain size larger than the
+    /// number of Poseidon2 rows actually produced.
     pub fn with_min_height(mut self, min_height: usize) -> Self {
         self.min_height = min_height.next_power_of_two().max(1);
         self
     }
 
+    /// Create a `Poseidon2CircuitAir` with pre-populated preprocessed trace data.
+    ///
+    /// Use this when the preprocessed columns have already been committed and you
+    /// want to skip regenerating them at verification time.
     pub const fn new_with_preprocessed(
         constants: RoundConstants<F, WIDTH, HALF_FULL_ROUNDS, PARTIAL_ROUNDS>,
         preprocessed: Vec<F>,
@@ -175,10 +188,18 @@ impl<
         }
     }
 
+    /// Return the number of preprocessed columns for this AIR.
+    ///
+    /// Delegates to [`poseidon2_preprocessed_width`].
     pub const fn preprocessed_width() -> usize {
         poseidon2_preprocessed_width()
     }
 
+    /// Generate the execution trace matrix from a sequence of Poseidon2 circuit rows.
+    ///
+    /// `sponge_ops` must have a length that is a power of two.
+    /// `extra_capacity_bits` controls how many additional zero-padded rows are appended
+    /// beyond the minimum power-of-two height.
     pub fn generate_trace_rows(
         &self,
         sponge_ops: &[Poseidon2CircuitRow<F>],

@@ -47,7 +47,9 @@ pub struct BatchProofTargets<
     OpeningProof: Recursive<SC::Challenge>,
 > {
     /// Commitments to trace, quotient chunks, and optional random polynomial
+    /// Commitments to trace, quotient chunks, and optional random polynomial
     pub commitments_targets: CommitmentTargets<SC::Challenge, Comm>,
+    /// Aggregated opened values across all instances, used for the shared PCS opening proof.
     pub flattened_opened_values_targets: OpenedValuesTargetsWithLookups<SC>,
     /// Opened values at evaluation points (zeta, zeta_next)
     pub opened_values_targets: BatchOpenedValuesTargets<SC>,
@@ -72,6 +74,7 @@ pub struct CommitmentTargets<F: Field, Comm: Recursive<F>> {
     pub quotient_chunks_targets: Comm,
     /// Optional commitment to random polynomial (ZK mode)
     pub random_commit: Option<Comm>,
+    /// Phantom data to bind the field type `F` without storing a value.
     pub _phantom: PhantomData<F>,
 }
 
@@ -89,6 +92,7 @@ pub struct OpenedValuesTargets<SC: StarkGenericConfig> {
     pub quotient_chunks_targets: Vec<Vec<Target>>,
     /// Optional random polynomial values (ZK mode)
     pub random_targets: Option<Vec<Target>>,
+    /// Phantom data to bind the STARK config type `SC` without storing a value.
     pub _phantom: PhantomData<SC>,
 }
 

@@ -33,7 +33,9 @@ pub(crate) fn pad_matrix_to_min_height<F: Field>(
 /// Configuration for packing multiple primitive operations into a single AIR row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TablePacking {
+    /// Number of public-input operations packed per AIR row.
     public_lanes: usize,
+    /// Number of ALU operations packed per AIR row.
     alu_lanes: usize,
     /// Minimum trace height for all tables (must be power of two).
     /// This is required for FRI with higher `log_final_poly_len`.
@@ -43,6 +45,7 @@ pub struct TablePacking {
 }
 
 impl TablePacking {
+    /// Create a new [`TablePacking`] with the given lane counts (clamped to at least 1).
     pub fn new(public_lanes: usize, alu_lanes: usize) -> Self {
         Self {
             public_lanes: public_lanes.max(1),
@@ -51,7 +54,7 @@ impl TablePacking {
         }
     }
 
-    /// Create TablePacking with a minimum trace height requirement.
+    /// Update the current [`TablePacking`] with a minimum trace height requirement.
     ///
     /// Use this when FRI parameters have `log_final_poly_len > 0`.
     /// The minimum trace height must satisfy: `min_trace_height > 2^(log_final_poly_len + log_blowup)`
@@ -65,7 +68,7 @@ impl TablePacking {
         self
     }
 
-    /// Create TablePacking with minimum height derived from FRI parameters.
+    /// Update the current [`TablePacking`] with minimum height derived from FRI parameters.
     ///
     /// This automatically calculates the minimum trace height from `log_final_poly_len` and `log_blowup`.
     pub const fn with_fri_params(mut self, log_final_poly_len: usize, log_blowup: usize) -> Self {
@@ -76,14 +79,17 @@ impl TablePacking {
         self
     }
 
+    /// Return the number of public-input operations packed per AIR row.
     pub const fn public_lanes(self) -> usize {
         self.public_lanes
     }
 
+    /// Return the number of ALU operations packed per AIR row.
     pub const fn alu_lanes(self) -> usize {
         self.alu_lanes
     }
 
+    /// Return the minimum trace height (always a power of two, at least 1).
     pub const fn min_trace_height(self) -> usize {
         self.min_trace_height
     }
@@ -98,11 +104,17 @@ impl Default for TablePacking {
 /// Summary of trace lengths for all circuit tables.
 #[derive(Debug, Clone)]
 pub struct TraceLengths {
+    /// Number of entries in the constant table.
     pub const_: usize,
+    /// Number of logical public-input rows (before lane packing).
     pub public: usize,
+    /// Number of logical ALU rows (before lane packing).
     pub alu: usize,
+    /// Number of public-input operations packed per AIR row.
     pub public_lanes: usize,
+    /// Number of ALU operations packed per AIR row.
     pub alu_lanes: usize,
+    /// Per-plugin row counts: `(op_type, rows)` for each non-primitive table.
     pub non_primitive: Vec<(NpoTypeId, usize)>,
 }
 
