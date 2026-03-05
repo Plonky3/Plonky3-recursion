@@ -103,7 +103,7 @@ impl Default for TablePacking {
 
 /// Summary of trace lengths for all circuit tables.
 #[derive(Debug, Clone)]
-pub struct TraceLengths {
+pub(crate) struct TraceLengths {
     /// Number of entries in the constant table.
     pub const_: usize,
     /// Number of logical public-input rows (before lane packing).

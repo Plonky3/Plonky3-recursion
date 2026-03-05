@@ -37,7 +37,8 @@ mod poseidon2;
 pub use dynamic_air::{
     BatchAir, BatchTableInstance, CloneableBatchAir, DynamicAirEntry, TableProver,
 };
-pub use packing::{TablePacking, TraceLengths};
+pub use packing::TablePacking;
+pub(crate) use packing::TraceLengths;
 pub use poseidon2::{
     Poseidon2AirBuilderD2, Poseidon2AirBuilderD4, Poseidon2AirWrapperInner, Poseidon2Preprocessor,
     Poseidon2Prover, Poseidon2ProverD2, poseidon2_preprocessor, poseidon2_verifier_air_from_config,

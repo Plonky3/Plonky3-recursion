@@ -140,14 +140,14 @@ impl<const WIDTH: usize, const RATE: usize> FriRecursionBackend<WIDTH, RATE> {
 #[derive(Clone)]
 pub struct FriRecursionBackendD2<const WIDTH: usize = 16, const RATE: usize = 8>(
     /// The inner backend holding the challenger permutation config.
-    pub FriRecursionBackend<WIDTH, RATE>,
+    pub(crate) FriRecursionBackend<WIDTH, RATE>,
 );
 
 /// FRI backend for D=4 extension (e.g. BabyBear, KoalaBear).
 #[derive(Clone)]
 pub struct FriRecursionBackendD4<const WIDTH: usize = 16, const RATE: usize = 8>(
     /// The inner backend holding the challenger permutation config.
-    pub FriRecursionBackend<WIDTH, RATE>,
+    pub(crate) FriRecursionBackend<WIDTH, RATE>,
 );
 
 /// Verifier result from the FRI backend: either uni-stark or batch-stark builder + op_ids.

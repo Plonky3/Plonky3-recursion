@@ -52,7 +52,7 @@ pub struct BatchProofTargets<
     /// Aggregated opened values across all instances, used for the shared PCS opening proof.
     pub flattened_opened_values_targets: OpenedValuesTargetsWithLookups<SC>,
     /// Opened values at evaluation points (zeta, zeta_next)
-    pub opened_values_targets: BatchOpenedValuesTargets<SC>,
+    pub(crate) opened_values_targets: BatchOpenedValuesTargets<SC>,
     /// PCS opening proof
     pub opening_proof: OpeningProof,
     /// Data necessary to verify the global lookup arguments across all instances
@@ -126,13 +126,13 @@ pub struct OpenedValuesTargetsWithLookups<SC: StarkGenericConfig> {
 
 /// Target structure for opened values for all instances in a batch-STARK proof.
 #[derive(Clone)]
-pub struct BatchOpenedValuesTargets<SC: StarkGenericConfig> {
+pub(crate) struct BatchOpenedValuesTargets<SC: StarkGenericConfig> {
     /// Opened values for each instance, in the same order as provided to the prover.
     pub instances: Vec<OpenedValuesTargetsWithLookups<SC>>,
 }
 
 /// Structure which holds the targets and metadata for existing global preprocessed data.
-pub struct GlobalPreprocessedTargets<Comm> {
+pub(crate) struct GlobalPreprocessedTargets<Comm> {
     /// Global commitment targets for all preprocessed columns, over all instances.
     pub commitment: Comm,
     /// Per-instance metadata for preprocessed traces.
@@ -142,7 +142,7 @@ pub struct GlobalPreprocessedTargets<Comm> {
 }
 
 /// Structure which holds per-instance metadata for preprocessed traces
-pub struct PreprocessedInstanceMetas {
+pub(crate) struct PreprocessedInstanceMetas {
     /// Vector of optional per-instance metadata
     pub instances: Vec<Option<PreprocessedInstanceMeta>>,
 }
@@ -150,7 +150,7 @@ pub struct PreprocessedInstanceMetas {
 /// Target structure which holds the common data shared between prover and verifier.
 pub struct CommonDataTargets<SC: StarkGenericConfig, Comm> {
     /// Preprocessed verifier data targets.
-    pub preprocessed: Option<GlobalPreprocessedTargets<Comm>>,
+    pub(crate) preprocessed: Option<GlobalPreprocessedTargets<Comm>>,
     /// Lookup data
     pub lookups: Vec<Vec<Lookup<Val<SC>>>>,
 }

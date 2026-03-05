@@ -62,7 +62,7 @@ fn test_aggregation_with_different_shapes() -> Result<(), VerificationError> {
     let left_config = make_config(&perm, 2, 3);
     // Batch-Stark (dummy circuit) with log_blowup=3, max_arity_log=4.
     let right_config = make_config(&perm, 3, 4);
-    let right_config_verif = make_config(&perm, 3, 4); // TODO(p3): StarkConfig does not implement Clone
+    let right_config_verif = right_config.clone();
 
     // Generate the Fibonacci trace.
     let n = 1 << 3;

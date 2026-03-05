@@ -62,7 +62,7 @@ pub struct Poseidon2CircuitAir<
         PARTIAL_ROUNDS,
     >,
     /// Current number of lookup columns registered.
-    pub num_lookup_cols: usize,
+    pub(crate) num_lookup_cols: usize,
     /// Preprocessed values for the AIR. These values are only needed by the prover. During verification, the `Vec` can be empty.
     preprocessed: Vec<F>,
     /// Minimum trace height (for FRI compatibility with higher log_final_poly_len).
