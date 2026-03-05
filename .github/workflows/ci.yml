@@ -110,18 +110,13 @@ jobs:
           du -sh "${CARGO_TARGET_DIR}" || true
           du -sh ~/.cargo/registry ~/.cargo/git || true
 
-      # NB: Some crates are currently skipped as unimplemented.
       - name: Build
         run: |
-          # cargo build --verbose --target ${{ env.target }} -p p3-challenger-air
           cargo build --verbose --target ${{ env.target }} -p p3-circuit
           cargo build --verbose --target ${{ env.target }} -p p3-circuit-prover
-          # cargo build --verbose --target ${{ env.target }} -p p3-field-air
-          # cargo build --verbose --target ${{ env.target }} -p p3-fri-air
-          # cargo build --verbose --target ${{ env.target }} -p p3-interpolation-air
           cargo build --verbose --target ${{ env.target }} -p p3-poseidon2-circuit-air
-          cargo build --verbose --target ${{ env.target }} -p p3-symmetric-air
           cargo build --verbose --target ${{ env.target }} -p p3-recursion
+          cargo build --verbose --target ${{ env.target }} -p p3-test-utils
 
       - name: Disk usage (after)
         if: always()

@@ -66,8 +66,6 @@ p3-symmetric = { git = "https://github.com/Plonky3/Plonky3", rev = "789c67a21dad
 p3-uni-stark = { git = "https://github.com/Plonky3/Plonky3", rev = "789c67a21dad6658a8b78d42e131f5df91442fd4" }
 p3-util = { git = "https://github.com/Plonky3/Plonky3", rev = "789c67a21dad6658a8b78d42e131f5df91442fd4" }
 
-p3-test-utils = { path = "test-utils", version = "0.1.0" }
-
 # Other common dependencies
 clap = { version = "4.5", features = ["derive"] }
 hashbrown = "0.16.0"
@@ -87,12 +85,9 @@ unroll = { version = "0.1.5", default-features = false }
 p3-challenger-air = { path = "challenger-air", version = "0.1.0" }
 p3-circuit = { path = "circuit", version = "0.1.0" }
 p3-circuit-prover = { path = "circuit-prover", version = "0.1.0" }
-p3-field-air = { path = "field-air", version = "0.1.0" }
-p3-fri-air = { path = "fri-air", version = "0.1.0" }
-p3-interpolation-air = { path = "interpolation-air", version = "0.1.0" }
 p3-poseidon2-circuit-air = { path = "poseidon2-circuit-air", version = "0.1.0" }
 p3-recursion = { path = "recursion", version = "0.1.0" }
-p3-symmetric-air = { path = "symmetric-air", version = "0.1.0" }
+p3-test-utils = { path = "test-utils", version = "0.1.0" }
 
 [profile.profiling]
 inherits = "release"
